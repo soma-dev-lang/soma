@@ -1220,6 +1220,11 @@ impl<'a> Walker<'a> {
                 self.walk_expr(subject);
                 // an arm's bindings end with the arm (the runtime scopes them)
                 for arm in arms {
+                    // a string pattern is interpolated in the enclosing scope
+                    // (`"{nosuch}" -> …` passed check)
+                    let mut texts: Vec<&str> = Vec::new();
+                    pattern_strings(&arm.pattern, &mut texts);
+                    for t in texts { self.scan_string(t, span); }
                     let mut bound: HashSet<String> = HashSet::new();
                     bind_pattern(&arm.pattern, &mut bound);
                     let bound: Vec<String> = bound.into_iter().collect();
@@ -1648,6 +1653,18 @@ fn bind_expr(expr: &Expr, scope: &mut HashSet<String>) {
 }
 
 /// Names bound by a match pattern.
+fn pattern_strings<'a>(p: &'a MatchPattern, out: &mut Vec<&'a str>) {
+    match p {
+        MatchPattern::Literal(Literal::String(s)) => out.push(s),
+        MatchPattern::StringPrefix { prefix, .. } => out.push(prefix),
+        MatchPattern::Or(alts) => for a in alts { pattern_strings(a, out) },
+        MatchPattern::MapDestructure(fields) => for (_, q) in fields { pattern_strings(q, out) },
+        MatchPattern::Variant { fields: VariantPatternFields::Tuple(ps), .. } => for q in ps { pattern_strings(q, out) },
+        MatchPattern::Variant { fields: VariantPatternFields::Struct { fields, .. }, .. } => for (_, q) in fields { pattern_strings(q, out) },
+        _ => {}
+    }
+}
+
 pub(super) fn bind_pattern(pattern: &MatchPattern, scope: &mut HashSet<String>) {
     match pattern {
         MatchPattern::Variable(name) => {

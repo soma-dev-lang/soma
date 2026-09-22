@@ -3257,3 +3257,31 @@ fn a_literal_arm_does_not_make_a_variant_match_exhaustive() {
     assert_eq!(code, 0, "{out}");
     let _ = std::fs::remove_dir_all(dir);
 }
+
+#[test]
+fn a_string_pattern_is_interpolated_like_any_string() {
+    // `match v { "user-{id}" -> … }` compared the raw text, braces included,
+    // while `v == "user-{id}"` was true; `"{nosuch}"` passed check
+    passes("pattern_interpolation", r#"
+cell P {
+    on m(v: String, id: String) { return match v { "user-{id}" -> "matched"  _ -> "no" } }
+    on esc(v: String) { return match v { "{{x}}" -> "escaped"  _ -> "no" } }
+    on pre(v: String, base: String) { return match v { "{base}/" + rest -> rest  _ -> "none" } }
+}
+cell test T {
+    rules {
+        assert P.m("user-42", "42") == "matched"
+        assert P.m("user-{{id}}", "42") == "no"
+        assert P.esc("{{x}}") == "escaped"
+        assert P.esc("{{{{x}}}}") == "no"
+        assert P.pre("/api/users", "/api") == "users"
+    }
+}
+"#);
+    let dir = scratch("pattern_interpolation_check");
+    std::fs::write(dir.join("app.cell"), "cell P {\n  on f(v: String) { return match v { \"{nosuch}\" -> 1  _ -> 2 } }\n}\n").unwrap();
+    let (code, out) = soma(&dir, &["check", "app.cell"]);
+    assert_ne!(code, 0, "{out}");
+    assert!(out.contains("undefined variable 'nosuch'"), "{out}");
+    let _ = std::fs::remove_dir_all(dir);
+}

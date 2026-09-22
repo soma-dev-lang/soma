@@ -2574,7 +2574,15 @@ impl Interpreter {
             Expr::Match { subject, arms } => {
                 let val = self.eval_expr(&subject.node, env, cell_name, signal_name)?;
                 for arm in arms {
-                    let (matches, bindings) = self.match_pattern(&arm.pattern, &val);
+                    // a string pattern is interpolated like any string: `"user-{id}"`
+                    // compared the raw text, braces included, while
+                    // `v == "user-{id}"` was true
+                    let resolved;
+                    let pattern = if pattern_interpolates(&arm.pattern) {
+                        resolved = self.resolve_pattern(&arm.pattern, env, cell_name, signal_name)?;
+                        &resolved
+                    } else { &arm.pattern };
+                    let (matches, bindings) = self.match_pattern(pattern, &val);
                     if matches {
                         // the arm is a scope: its pattern bindings and `let`s
                         // hide outer names only inside it (they overwrote the
@@ -3637,6 +3645,26 @@ impl Interpreter {
             Literal::Percentage(p) => Value::Float(*p),
             Literal::Unit => Value::Unit,
         }
+    }
+
+    /// The pattern with its string literals interpolated in `env`.
+    fn resolve_pattern(&mut self, pattern: &MatchPattern, env: &mut Env, cell_name: &str, signal_name: &str) -> Result<MatchPattern, ExecError> {
+        Ok(match pattern {
+            MatchPattern::Literal(Literal::String(s)) if s.contains('{') || s.contains('}') =>
+                MatchPattern::Literal(Literal::String(self.interpolate_string(s, env, cell_name, signal_name)?)),
+            MatchPattern::StringPrefix { prefix, rest } if prefix.contains('{') || prefix.contains('}') =>
+                MatchPattern::StringPrefix { prefix: self.interpolate_string(prefix, env, cell_name, signal_name)?, rest: rest.clone() },
+            MatchPattern::Or(alts) => MatchPattern::Or(alts.iter().map(|a| self.resolve_pattern(a, env, cell_name, signal_name)).collect::<Result<_, _>>()?),
+            MatchPattern::MapDestructure(fields) => MatchPattern::MapDestructure(fields.iter()
+                .map(|(k, p)| Ok((k.clone(), self.resolve_pattern(p, env, cell_name, signal_name)?))).collect::<Result<_, ExecError>>()?),
+            MatchPattern::Variant { type_name, name, fields } => MatchPattern::Variant { type_name: type_name.clone(), name: name.clone(), fields: match fields {
+                VariantPatternFields::Unit => VariantPatternFields::Unit,
+                VariantPatternFields::Tuple(ps) => VariantPatternFields::Tuple(ps.iter().map(|p| self.resolve_pattern(p, env, cell_name, signal_name)).collect::<Result<_, _>>()?),
+                VariantPatternFields::Struct { fields, rest } => VariantPatternFields::Struct { rest: *rest, fields: fields.iter()
+                    .map(|(k, p)| Ok((k.clone(), self.resolve_pattern(p, env, cell_name, signal_name)?))).collect::<Result<_, ExecError>>()? },
+            } },
+            other => other.clone(),
+        })
     }
 
     /// Match a pattern against a value, returning (matches, bindings)
@@ -7250,3 +7278,16 @@ mod transaction_tests;
 
 #[cfg(test)]
 mod backend_tests;
+
+/// Does a pattern hold a string to interpolate (`"user-{id}"`, `"{{x}}"`)?
+fn pattern_interpolates(p: &MatchPattern) -> bool {
+    match p {
+        MatchPattern::Literal(Literal::String(s)) => s.contains('{') || s.contains('}'),
+        MatchPattern::StringPrefix { prefix, .. } => prefix.contains('{') || prefix.contains('}'),
+        MatchPattern::Or(alts) => alts.iter().any(pattern_interpolates),
+        MatchPattern::MapDestructure(fields) => fields.iter().any(|(_, p)| pattern_interpolates(p)),
+        MatchPattern::Variant { fields: VariantPatternFields::Tuple(ps), .. } => ps.iter().any(pattern_interpolates),
+        MatchPattern::Variant { fields: VariantPatternFields::Struct { fields, .. }, .. } => fields.iter().any(|(_, p)| pattern_interpolates(p)),
+        _ => false,
+    }
+}

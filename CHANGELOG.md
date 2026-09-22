@@ -2,6 +2,14 @@
 
 ## Unreleased
 
+### A string pattern is interpolated like any string
+
+- `v == "user-{id}"` was true, but `match v { "user-{id}" -> … }` compared
+  the raw text, braces included, and fell through; `"{{x}}"` was not
+  unescaped either, a `"{base}/" + rest` prefix pattern the same, and
+  `"{nosuch}"` passed `soma check`. Pattern strings are now interpolated in
+  the enclosing scope, and checked like any other interpolation.
+
 ### A literal arm does not make a variant `match` exhaustive
 
 - Any arm that was not a variant pattern counted as a catch-all: `match l {
