@@ -2,6 +2,14 @@
 
 ## Unreleased
 
+### A native BigInt prints through `to_string` and `sb_push_int`
+
+- In a `[native]` handler, an Int grown past 64 bits could be returned as
+  `to_string(s)`, but `str_len(to_string(s))` and `sb_push_int(sb, s)` —
+  the way the reference says to pack results — lowered it to i64 and raised
+  kind `range`, advising a `let` the value already had. Both now print the
+  full Int, as the interpreter does.
+
 ### An edge repeating a move with another guard is refused
 
 - A transition takes the first declared edge that matches. After `* ->

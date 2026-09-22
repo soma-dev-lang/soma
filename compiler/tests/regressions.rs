@@ -3079,3 +3079,34 @@ fn an_edge_repeating_a_move_with_another_guard_is_refused() {
     assert_eq!(code, 0, "{out}");
     let _ = std::fs::remove_dir_all(dir);
 }
+
+#[test]
+fn a_native_bigint_prints_through_to_string_and_sb_push_int() {
+    // `str_len(to_string(s))` and `sb_push_int(sb, s)` lowered s to i64 and
+    // raised kind range once s had grown past 64 bits; a returned
+    // `to_string(s)` worked
+    passes("native_bigint_print", r#"
+cell N {
+    on f(n: Int) [native] {
+        let s = 1
+        for i in range(0, n) { s = s * 3 }
+        return str_len(to_string(s))
+    }
+    on g(n: Int) [native] {
+        let s = 1
+        for i in range(0, n) { s = s * 3 }
+        let sb = strbuf()
+        sb_push_int(sb, s)
+        sb_push(sb, "!")
+        return sb_finish(sb)
+    }
+}
+cell test T {
+    rules {
+        assert N.f(50) == 24
+        assert N.g(50) == "717897987691852588770249!"
+        assert N.g(3) == "27!"
+    }
+}
+"#);
+}

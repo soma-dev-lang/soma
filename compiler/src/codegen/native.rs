@@ -4138,7 +4138,7 @@ impl FnGenerator {
                     }
                     if fname == "sb_push_int" && args.len() == 2 {
                         if let Expr::Ident(sb) = &args[0].node {
-                            let v = self.gen_expr_direct(&args[1].node, NativeType::Int);
+                            let v = self.gen_int_display(&args[1].node);
                             return format!(
                                 "{}{{ use std::fmt::Write; write!({}, \"{{}}\", {}).unwrap(); }}\n",
                                 ind, sb, v
@@ -4193,6 +4193,13 @@ impl FnGenerator {
             return self.gen_int_to_i64_rug(expr);
         }
         self.gen_expr_direct(expr, NativeType::Int)
+    }
+
+    /// An Int to print (to_string, sb_push_int). In Rug mode the value may
+    /// be past 64 bits: an Integer prints as it is, where the i64 lowering
+    /// raised kind range (`str_len(to_string(3^50))`).
+    fn gen_int_display(&self, expr: &Expr) -> String {
+        if self.mode == Mode::Rug { self.gen_expr_rug(expr) } else { self.gen_expr_direct(expr, NativeType::Int) }
     }
 
     fn gen_expr_direct(&self, expr: &Expr, target_ty: NativeType) -> String {
@@ -4582,7 +4589,7 @@ impl FnGenerator {
             }
             "sb_push_int" if args.len() == 2 => {
                 if let Expr::Ident(sb) = &args[0].node {
-                    let v = self.gen_expr_direct(&args[1].node, NativeType::Int);
+                    let v = self.gen_int_display(&args[1].node);
                     return format!("{{ use std::fmt::Write; write!({}, \"{{}}\", {}).unwrap(); 0i64 }}", sb, v);
                 }
                 self.err("sb_push_int: first arg must be an identifier");
@@ -4590,7 +4597,7 @@ impl FnGenerator {
             }
             "sb_push_char" if args.len() == 2 => {
                 if let Expr::Ident(sb) = &args[0].node {
-                    let v = self.gen_expr_direct(&args[1].node, NativeType::Int);
+                    let v = self.gen_int_display(&args[1].node);
                     // by code point (it took the low byte: 1000 became 'è')
                     return format!("{{ let _c: i64 = {}; match u32::try_from(_c).ok().and_then(char::from_u32) {{ Some(ch) => {}.push(ch), None => panic!(\"soma:type: sb_push_char: {{}} is not a Unicode code point\", _c) }}; 0i64 }}", v, sb);
                 }
@@ -4738,6 +4745,8 @@ impl FnGenerator {
                     // the interpreter prints an integral Float as "1.0",
                     // and an exact Int / Int quotient as an Int
                     self.gen_float_to_string_direct(&args[0].node)
+                } else if a_ty == NativeType::Int {
+                    format!("format!(\"{{}}\", {})", self.gen_int_display(&args[0].node))
                 } else {
                     let a = self.gen_expr_direct(&args[0].node, a_ty);
                     format!("format!(\"{{}}\", {})", a)
@@ -6132,7 +6141,7 @@ impl FnGenerator {
             }
             "sb_push_int" if args.len() == 2 => {
                 if let Expr::Ident(sb) = &args[0].node {
-                    let v = self.gen_expr_direct(&args[1].node, NativeType::Int);
+                    let v = self.gen_int_display(&args[1].node);
                     return format!("{{ use std::fmt::Write; write!({}, \"{{}}\", {}).unwrap(); Integer::from(0i64) }}", sb, v);
                 }
                 self.err("sb_push_int: first arg must be an identifier");
