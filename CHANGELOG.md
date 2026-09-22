@@ -2,6 +2,13 @@
 
 ## Unreleased
 
+### Native runaway recursion is a `stack_overflow`
+
+- A `[native]` handler recursing past 20,000 calls came back as kind `type`
+  (detail "stack_overflow: …"), which a `try` caught — though the reference
+  says it raises `stack_overflow`, and interpreted runaway recursion fails
+  the handler. It is now the same `stack_overflow` error.
+
 ### A native Float → Int conversion past 64 bits answers
 
 - In a `[native]` handler, `let n = to_int(x)` — and `floor`, `ceil`,

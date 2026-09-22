@@ -1526,6 +1526,9 @@ impl Interpreter {
                 Err(e) => return Err(match e.split_once(": ") {
                     Some((k, rest)) if matches!(k, "loop_bound" | "range" | "index") => RuntimeError::Domain { kind: k.to_string(), message: rest.to_string() },
                     Some(("type", rest)) => RuntimeError::TypeError(rest.to_string()),
+                    // the depth guard's panic is the interpreter's stack
+                    // overflow (it came back as kind "type", catchable)
+                    Some(("stack_overflow", _)) => RuntimeError::StackOverflow,
                     _ => RuntimeError::TypeError(e),
                 }),
             }

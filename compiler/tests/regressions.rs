@@ -2989,3 +2989,28 @@ cell test T {
 }
 "#);
 }
+
+#[test]
+fn native_runaway_recursion_is_a_stack_overflow() {
+    // the native depth guard came back as kind "type", which a try caught;
+    // interpreted, runaway recursion is a stack_overflow that fails the
+    // handler
+    let dir = scratch("native_stack_overflow");
+    std::fs::write(dir.join("app.cell"), r#"
+cell R {
+    on d(n: Int) [native] {
+        if n == 0 { return 0 }
+        return 1 + d(n - 1)
+    }
+    on run() {
+        print(d(100))
+        let r = try { d(30000) }
+        print("caught {r.kind}")
+    }
+}
+"#).unwrap();
+    let (code, out) = soma(&dir, &["run", "app.cell"]);
+    assert_ne!(code, 0, "{out}");
+    assert!(out.contains("100") && out.contains("stack overflow") && !out.contains("caught"), "{out}");
+    let _ = std::fs::remove_dir_all(dir);
+}
