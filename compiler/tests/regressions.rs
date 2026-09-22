@@ -1846,3 +1846,26 @@ fn lint_reads_interior_cells() {
     assert!(out.contains("unchecked .get()"), "the interior handler must be linted too\n{out}");
     let _ = std::fs::remove_dir_all(dir);
 }
+
+#[test]
+fn fix_never_deletes_code_past_the_handler_line() {
+    // removing a handler's `-> T` searched the WHOLE file for the opening
+    // brace: with no body on that line it found the next cell's `{` and
+    // deleted everything between — the closing brace and a whole cell
+    // declaration — while reporting the fix as applied
+    let dir = scratch("fix_return_type");
+    let broken = "cell A {\n    on go(a: Int) -> Int\n}\ncell B {\n    on h() { return 1 }\n}\n";
+    std::fs::write(dir.join("app.cell"), broken).unwrap();
+    let (_, out) = soma(&dir, &["fix", "app.cell"]);
+    assert_eq!(std::fs::read_to_string(dir.join("app.cell")).unwrap(), broken,
+        "fix must leave the file alone when it cannot fix it\n{out}");
+    assert!(out.contains("handlers do not declare return types"), "{out}");
+    // the ordinary form, body on the same line, is still fixed
+    std::fs::write(dir.join("app.cell"), "cell A {\n    on go(a: Int) -> Int { return a }\n}\n").unwrap();
+    let (code, out) = soma(&dir, &["fix", "app.cell"]);
+    assert_eq!(code, 0, "{out}");
+    assert!(out.contains("removed the return type"), "{out}");
+    assert_eq!(std::fs::read_to_string(dir.join("app.cell")).unwrap(),
+        "cell A {\n    on go(a: Int) { return a }\n}\n");
+    let _ = std::fs::remove_dir_all(dir);
+}

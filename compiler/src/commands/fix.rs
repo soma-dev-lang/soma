@@ -192,8 +192,12 @@ fn syntax_fixes(source: &mut String) -> Vec<String> {
                     continue;
                 }
                 if msg.starts_with("handlers do not declare return types") && source[span.start..].starts_with("->") {
-                    // drop ` -> T` up to the opening brace
-                    if let Some(rel) = source[span.start..].find('{') {
+                    // drop ` -> T` up to the opening brace, which is on the
+                    // SAME line: searching the whole file found the NEXT
+                    // cell's `{` and deleted everything between, cell
+                    // declaration included, while reporting the fix as applied
+                    let line_end = source[span.start..].find('\n').map(|i| span.start + i).unwrap_or(source.len());
+                    if let Some(rel) = source[span.start..line_end].find('{') {
                         let mut start = span.start;
                         while start > 0 && source.as_bytes()[start - 1] == b' ' { start -= 1; }
                         source.replace_range(start..span.start + rel, " ");

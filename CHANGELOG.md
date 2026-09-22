@@ -170,6 +170,13 @@
 - `soma lint` reads the cells inside `interior { }`: it walked only top-level
   cells, so their handlers were never linted (it already covered `every` and
   `after` bodies). One regression test.
+- `soma fix` no longer deletes code past the handler it is fixing: removing a
+  handler's `-> T` searched the whole file for the opening brace, so a handler
+  written without a body on that line had everything up to the NEXT cell's `{`
+  deleted — the closing brace and a whole cell declaration — and the fix was
+  reported as applied. The brace is looked for on that line only; otherwise
+  the file is left untouched and `check` explains what to write. One
+  regression test.
 - The guard prover reads a negated `require`: `require !(n < 0)` establishes
   `n >= 0`, `!(a || b)` establishes both negations, and a guard written as
   `!(n < 0)` is proven from `require n >= 0`. Two regression tests.
