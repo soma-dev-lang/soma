@@ -2,6 +2,13 @@
 
 ## Unreleased
 
+### A sort order other than "asc" or "desc" is refused
+
+- `sort(xs, "DESC")`, `sort(xs, "descending")`, `xs.sort(true)` and the same
+  in both forms of `sort_by` sorted ascending in silence: only the exact
+  text "desc" was read. The order is now `"asc"` or `"desc"`; anything else
+  raises kind `type`.
+
 ### `/signal/<handler>?…` binds the query by name
 
 - `POST /signal/store?v=VAL&k=KEY` filled `on store(k, v)` in query order,

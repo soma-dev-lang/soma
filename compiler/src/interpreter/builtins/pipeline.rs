@@ -110,7 +110,7 @@ pub fn call_builtin(name: &str, args: &[Value]) -> Option<Result<Value, RuntimeE
         "sort_by" => {
             if let Some(Value::List(items)) = args.first() {
                 let field = if args.len() >= 2 { format!("{}", args[1]) } else { return Some(Ok(Value::List(items.clone()))); };
-                let desc = args.get(2).map(|v| format!("{}", v) == "desc").unwrap_or(false);
+                let desc = match super::sort_descending("sort_by", args.get(2)) { Ok(d) => d, Err(e) => return Some(Err(e)) };
                 // Generic, stable ordering of the field values: numbers by
                 // value, strings lexicographically (they used to all compare
                 // as 0, i.e. not sort at all).

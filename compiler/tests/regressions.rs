@@ -2680,3 +2680,25 @@ cell App {
     let ordered = get(port, "/signal/pair?a=KEY&b=VAL");
     assert!(ordered.contains("KEY=VAL"), "{ordered}");
 }
+
+#[test]
+fn a_sort_order_other_than_asc_or_desc_is_refused() {
+    // "DESC", "descending" or `true` sorted ascending in silence
+    passes("sort_order", r#"
+cell S {
+    on k(r: Map) { return if r.error != () { "ERR:" + r.kind } else { to_string(r.value) } }
+}
+cell test T {
+    rules {
+        assert sort([1, 3, 2], "desc") == [3, 2, 1]
+        assert sort([1, 3, 2], "asc") == [1, 2, 3]
+        assert sort_by([map("a", 1), map("a", 2)], "a", "desc") == [map("a", 2), map("a", 1)]
+        assert sort_by([1, 2], x => x, "desc") == [2, 1]
+        assert S.k(try { sort([1, 3, 2], "DESC") }) == "ERR:type"
+        assert S.k(try { [1, 3, 2].sort(true) }) == "ERR:type"
+        assert S.k(try { sort_by([map("a", 1)], "a", "descending") }) == "ERR:type"
+        assert S.k(try { sort_by([1, 2], x => x, "DESC") }) == "ERR:type"
+    }
+}
+"#);
+}

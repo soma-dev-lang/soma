@@ -449,7 +449,7 @@ pub fn call_builtin(name: &str, args: &[Value]) -> Option<Result<Value, RuntimeE
         "sort" => {
             if let Some(Value::List(items)) = args.first() {
                 let mut sorted = items.clone();
-                let desc = args.get(1).map(|a| format!("{}", a) == "desc").unwrap_or(false);
+                let desc = match super::sort_descending("sort", args.get(1)) { Ok(d) => d, Err(e) => return Some(Err(e)) };
                 let mut incomparable: Option<String> = None;
                 sorted.sort_by(|a, b| {
                     let ordering = match (a, b) {

@@ -16,6 +16,20 @@ use std::collections::HashMap;
 
 /// Dispatch builtin calls to sub-modules.
 /// Returns None if the name is not a known builtin.
+
+/// The `order` argument of sort / sort_by: "asc" or "desc". Anything else
+/// (`"DESC"`, `"descending"`, `true`) used to sort ascending in silence.
+pub(crate) fn sort_descending(name: &str, order: Option<&Value>) -> Result<bool, RuntimeError> {
+    match order {
+        None => Ok(false),
+        Some(Value::String(s)) if s == "desc" => Ok(true),
+        Some(Value::String(s)) if s == "asc" => Ok(false),
+        Some(other) => Err(RuntimeError::Domain { kind: "type".to_string(), message: format!(
+            "{}(): the order is \"asc\" or \"desc\", got {} {}",
+            name, crate::interpreter::value_type_name(other), string::to_json_string(other)) }),
+    }
+}
+
 pub fn call_builtin(interp: &mut super::Interpreter, name: &str, args: &[Value], cell_name: &str) -> Option<Result<Value, RuntimeError>> {
     // V1: track nondeterminism for [record] / replay divergence detection.
     // If a recorded handler calls now()/random()/..., we want to know.
@@ -257,7 +271,7 @@ pub fn call_lambda_builtin(interp: &mut super::Interpreter, name: &str, args: &[
         // sort_by(rows, r => [0 - r.total, r.name])   several keys: a list
         // Stable: ties keep their input order.
         "sort_by" => {
-            let desc = args.get(2).map(|v| format!("{}", v) == "desc").unwrap_or(false);
+            let desc = match sort_descending("sort_by", args.get(2)) { Ok(d) => d, Err(e) => return Some(Err(e)) };
             let mut keyed: Vec<(Value, Value)> = Vec::with_capacity(list.len());
             for item in list {
                 match call(interp, item.clone()) {
