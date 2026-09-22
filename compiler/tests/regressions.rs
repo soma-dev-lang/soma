@@ -1907,6 +1907,32 @@ fn lint_names_the_method_that_reaches_an_unrouted_handler() {
 }
 
 #[test]
+fn lint_does_not_suggest_a_match_that_would_change_the_answer() {
+    // `if s == "a" { s = "b" }` then `if s == "b" { … }` runs BOTH, on the
+    // rewritten value; a `match s` takes one arm. The note suggested the
+    // rewrite anyway, so following it changed what the handler returned
+    let dir = scratch("lint_if_chain_rebind");
+    std::fs::write(dir.join("rebind.cell"),
+        "cell C {\n    on step(s: String) {\n        let cur = s\n        let trace = \"\"\n         \x20       if cur == \"a\" { cur = \"b\"  trace = trace + \"a\" }\n         \x20       if cur == \"b\" { cur = \"c\"  trace = trace + \"b\" }\n         \x20       if cur == \"c\" { cur = \"d\"  trace = trace + \"c\" }\n         \x20       return [cur, trace]\n    }\n}\n").unwrap();
+    // the three ifs really do run in sequence
+    let (code, out) = soma(&dir, &["run", "rebind.cell", "step", "a"]);
+    assert_eq!(code, 0, "{out}");
+    assert!(out.contains("\"d\"") && out.contains("\"abc\""),
+        "the chain runs on the rewritten value\n{out}");
+    let (code, out) = soma(&dir, &["lint", "rebind.cell"]);
+    assert_eq!(code, 0, "{out}");
+    assert!(!out.contains("if-chain"),
+        "a branch that rewrites the compared variable rules the match out\n{out}");
+
+    // a chain that leaves the compared variable alone is still reported
+    std::fs::write(dir.join("plain.cell"),
+        "cell C {\n    on step(s: String) {\n        let out = 0\n         \x20       if s == \"a\" { out = 1 }\n        if s == \"b\" { out = 2 }\n         \x20       if s == \"c\" { out = 3 }\n        return out\n    }\n}\n").unwrap();
+    let (_, out) = soma(&dir, &["lint", "plain.cell"]);
+    assert!(out.contains("3 branches on 's'"), "{out}");
+    let _ = std::fs::remove_dir_all(dir);
+}
+
+#[test]
 fn fix_never_deletes_code_past_the_handler_line() {
     // removing a handler's `-> T` searched the WHOLE file for the opening
     // brace: with no body on that line it found the next cell's `{` and

@@ -2,6 +2,15 @@
 
 ## Unreleased
 
+### `soma lint`: no `match` suggestion that would change the answer
+
+- A branch that rewrites the variable the chain compares makes the ifs run in
+  sequence on the new value: `if s == "a" { s = "b" }` followed by
+  `if s == "b" { … }` runs both, where a `match s` takes one arm. The note
+  suggested the rewrite there anyway, so following it changed what the handler
+  returned. It is no longer raised when any branch of the chain assigns the
+  compared variable; a chain that leaves it alone is still reported.
+
 ### `soma lint`: the unrouted-handler note matches what `soma serve` does
 
 - The note named POST for every handler: `soma serve` answers a GET on one

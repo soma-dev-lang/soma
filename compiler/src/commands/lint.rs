@@ -486,23 +486,33 @@ impl<'a> LintPass<'a> {
         let mut chain_start_line = 0;
         let mut compared_field: Option<String> = None;
 
+        // a branch that rewrites the compared variable makes the ifs run in
+        // sequence on the NEW value: `if s == "a" { s = "b" }` then
+        // `if s == "b" { … }` fires both, where a `match` takes one arm.
+        // Suggesting the rewrite there changed the program's answer.
+        let mut chain_rebinds = false;
+
         for stmt in body {
-            if let Statement::If { condition, .. } = &stmt.node {
+            if let Statement::If { condition, then_body, else_body } = &stmt.node {
                 if let Some(field) = self.is_field_eq_string_check(&condition.node) {
+                    let rebinds = assigns_name(then_body, &field) || assigns_name(else_body, &field);
                     if let Some(ref prev) = compared_field {
                         if &field == prev {
                             consecutive_eq_ifs += 1;
+                            chain_rebinds = chain_rebinds || rebinds;
                         } else {
                             // Different field, reset
-                            if consecutive_eq_ifs >= 3 {
+                            if consecutive_eq_ifs >= 3 && !chain_rebinds {
                                 self.emit_if_chain_warning(chain_start_line, consecutive_eq_ifs, compared_field.as_deref().unwrap_or("value"));
                             }
                             consecutive_eq_ifs = 1;
+                            chain_rebinds = rebinds;
                             chain_start_line = self.line_of(&stmt.span);
                             compared_field = Some(field);
                         }
                     } else {
                         consecutive_eq_ifs = 1;
+                        chain_rebinds = rebinds;
                         chain_start_line = self.line_of(&stmt.span);
                         compared_field = Some(field);
                     }
@@ -510,15 +520,16 @@ impl<'a> LintPass<'a> {
                 }
             }
             // Not a matching if — emit if we had a chain, then reset
-            if consecutive_eq_ifs >= 3 {
+            if consecutive_eq_ifs >= 3 && !chain_rebinds {
                 self.emit_if_chain_warning(chain_start_line, consecutive_eq_ifs, compared_field.as_deref().unwrap_or("value"));
             }
             consecutive_eq_ifs = 0;
+            chain_rebinds = false;
             compared_field = None;
         }
 
         // Check trailing chain
-        if consecutive_eq_ifs >= 3 {
+        if consecutive_eq_ifs >= 3 && !chain_rebinds {
             self.emit_if_chain_warning(chain_start_line, consecutive_eq_ifs, compared_field.as_deref().unwrap_or("value"));
         }
     }
@@ -966,4 +977,20 @@ fn literal_default(ty: &ast::TypeExpr) -> Option<String> {
         },
         ast::TypeExpr::CellRef { .. } => None,
     }
+}
+
+
+/// Does any statement of the block assign `name` (a field of it counts)?
+/// A branch that rewrites the variable the chain compares makes the ifs run
+/// in sequence, which a `match` does not do.
+fn assigns_name(stmts: &[ast::Spanned<Statement>], name: &str) -> bool {
+    let mut hit = false;
+    crate::checker::literals::for_each_stmt_deep(stmts, &mut |st| match st {
+        Statement::Assign { name: n, .. } | Statement::IndexSet { name: n, .. } => {
+            if n == name || n.split('.').next() == Some(name) { hit = true; }
+        }
+        Statement::MethodCall { target, .. } => { if target == name { hit = true; } }
+        _ => {}
+    });
+    hit
 }
