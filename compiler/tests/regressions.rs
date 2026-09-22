@@ -3300,3 +3300,24 @@ fn an_or_pattern_binds_only_what_every_alternative_binds() {
     assert_eq!(code, 0, "{out}");
     let _ = std::fs::remove_dir_all(dir);
 }
+
+#[test]
+fn a_record_pattern_matches_a_record() {
+    // `Game { bet } -> …` only matched a struct variant: a record (a Map
+    // carrying `_type`) always fell through to the next arm
+    passes("record_pattern", r#"
+cell X {
+    on f(v: Any) { return match v { Game { bet } -> "game {bet}"  _ -> "other" } }
+    on g(v: Any) { return match v { Game { bet, .. } -> "game {bet}"  _ -> "other" } }
+}
+cell test T {
+    rules {
+        assert X.f(Game { bet: 10 }) == "game 10"
+        assert X.f(Game { bet: 10, who: "a" }) == "other"
+        assert X.g(Game { bet: 10, who: "a" }) == "game 10"
+        assert X.f(Bet { bet: 1 }) == "other"
+        assert X.f(map("bet", 3)) == "other"
+    }
+}
+"#);
+}

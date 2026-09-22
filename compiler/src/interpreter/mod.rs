@@ -3769,6 +3769,21 @@ impl Interpreter {
                         }
                         _ => (false, vec![]),
                     }
+                } else if let (Value::Map(entries), VariantPatternFields::Struct { fields: pf, rest }, None) = (val, fields, type_name) {
+                    // `Game { bet }` is also a record pattern: a record is a
+                    // Map carrying `_type` (the arm never matched one)
+                    if !matches!(entries.get("_type"), Some(Value::String(t)) if t == name) { return (false, vec![]); }
+                    let mut bindings = Vec::new();
+                    for (fname, sub) in pf {
+                        let Some(fv) = entries.get(fname) else { return (false, vec![]) };
+                        let (m, sub_b) = self.match_pattern(sub, fv);
+                        if !m { return (false, vec![]); }
+                        bindings.extend(sub_b);
+                    }
+                    if !*rest && pf.len() != entries.keys().filter(|k| k.as_str() != "_type").count() {
+                        return (false, vec![]);
+                    }
+                    (true, bindings)
                 } else {
                     (false, vec![])
                 }

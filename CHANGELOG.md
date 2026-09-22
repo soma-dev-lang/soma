@@ -2,6 +2,14 @@
 
 ## Unreleased
 
+### A record pattern matches a record
+
+- `match v { Game { bet } -> … }` matched only a struct variant named
+  `Game`: a record built as `Game { bet: 10 }` — a Map carrying `_type` —
+  always fell through, though the design shares the syntax. A record now
+  matches when its `_type` is the name, with the fields read like a struct
+  variant's (all of them, or some with `..`).
+
 ### An or-pattern binds only what every alternative binds
 
 - `match m { Up(n) || Wait -> n … }` passed `soma check`, and `Wait` then
