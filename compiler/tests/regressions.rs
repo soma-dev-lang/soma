@@ -1869,3 +1869,34 @@ fn fix_never_deletes_code_past_the_handler_line() {
         "cell A {\n    on go(a: Int) { return a }\n}\n");
     let _ = std::fs::remove_dir_all(dir);
 }
+
+#[test]
+fn add_keeps_the_manifest_the_author_wrote() {
+    // `soma add` re-serialized the parsed manifest, so every comment the
+    // author wrote disappeared and every default value was spelled out
+    let dir = scratch("add_manifest");
+    let hand = "# the project manifest — keep this order\n[package]\nname = \"demo\"\nversion = \"0.1.0\"\nentry = \"app.cell\"\n\n# what to prove\n[verify]\ndeadlock_free = true\neventually = [\"Done\"]\n\n[dependencies]\n";
+    std::fs::write(dir.join("soma.toml"), hand).unwrap();
+    let (code, out) = soma(&dir, &["add", "other", "--version", "1.2.3"]);
+    assert_eq!(code, 0, "{out}");
+    let after = std::fs::read_to_string(dir.join("soma.toml")).unwrap();
+    assert_eq!(after, format!("{hand}other = \"1.2.3\"\n"), "only the dependency line may appear\n{after}");
+    // a git dependency, then replacing an entry in place
+    let (code, out) = soma(&dir, &["add", "mypkg", "--git", "https://example.com/x.git"]);
+    assert_eq!(code, 0, "{out}");
+    let (code, out) = soma(&dir, &["add", "other", "--version", "2.0.0"]);
+    assert_eq!(code, 0, "{out}");
+    let after = std::fs::read_to_string(dir.join("soma.toml")).unwrap();
+    assert!(after.contains("# the project manifest — keep this order"), "{after}");
+    assert!(after.contains("# what to prove"), "{after}");
+    assert!(after.contains("other = \"2.0.0\"") && !after.contains("1.2.3"), "{after}");
+    assert!(after.contains("[dependencies.mypkg]"), "{after}");
+    assert!(!after.contains("author ="), "no default should be written out\n{after}");
+    // and with no [dependencies] table at all
+    std::fs::write(dir.join("soma.toml"), "# bare\n[package]\nname = \"demo\"\nversion = \"0.1.0\"\n").unwrap();
+    let (code, out) = soma(&dir, &["add", "p", "--path", "../lib"]);
+    assert_eq!(code, 0, "{out}");
+    let after = std::fs::read_to_string(dir.join("soma.toml")).unwrap();
+    assert!(after.starts_with("# bare\n") && after.contains("[dependencies.p]") && after.contains("path = \"../lib\""), "{after}");
+    let _ = std::fs::remove_dir_all(dir);
+}

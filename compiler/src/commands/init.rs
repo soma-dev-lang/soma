@@ -81,6 +81,63 @@ pub fn cmd_init(name: Option<&str>) {
     println!("  soma docs agent | guarantees | serving    # the language, offline");
 }
 
+/// The `[dependencies.<name>]` block for a dependency, as TOML text.
+fn dependency_block(name: &str, dep: &pkg::Dependency) -> String {
+    match dep {
+        pkg::Dependency::Version(v) => format!("[dependencies]\n{} = \"{}\"\n", name, v),
+        pkg::Dependency::Full(spec) => {
+            let mut out = format!("[dependencies.{}]\n", name);
+            for (k, v) in [("git", &spec.git), ("path", &spec.path), ("version", &spec.version),
+                           ("branch", &spec.branch), ("subdir", &spec.subdir)] {
+                if let Some(v) = v { out.push_str(&format!("{} = \"{}\"\n", k, v)); }
+            }
+            out
+        }
+    }
+}
+
+/// Put `name` in the manifest text, replacing any entry it already has,
+/// and leaving every other line — comments included — exactly as written.
+fn insert_dependency(text: &str, name: &str, dep: &pkg::Dependency) -> String {
+    let header_of = |l: &str| {
+        let t = l.trim();
+        (t.starts_with('[') && t.ends_with(']')).then(|| t[1..t.len() - 1].trim().to_string())
+    };
+    // drop what this package already has: its line under [dependencies],
+    // and any [dependencies.<name>] block
+    let mut kept: Vec<&str> = Vec::new();
+    let mut table = String::new();
+    let mut skipping = false;
+    for line in text.lines() {
+        if let Some(h) = header_of(line) {
+            skipping = h == format!("dependencies.{}", name);
+            table = h;
+            if skipping { continue; }
+        } else if skipping {
+            continue;
+        } else if table == "dependencies" {
+            let t = line.trim_start();
+            if t.starts_with(name) && t[name.len()..].trim_start().starts_with('=') { continue; }
+        }
+        kept.push(line);
+    }
+    let mut out = kept.join("\n");
+    if !out.ends_with('\n') { out.push('\n'); }
+    match dep {
+        // a simple version goes under the existing [dependencies] header
+        pkg::Dependency::Version(v) if out.lines().any(|l| header_of(l).as_deref() == Some("dependencies")) => {
+            let at = out.lines().position(|l| header_of(l).as_deref() == Some("dependencies")).unwrap();
+            let mut lines: Vec<String> = out.lines().map(|l| l.to_string()).collect();
+            lines.insert(at + 1, format!("{} = \"{}\"", name, v));
+            lines.join("\n") + "\n"
+        }
+        _ => {
+            if !out.ends_with("\n\n") { out.push('\n'); }
+            out + &dependency_block(name, dep)
+        }
+    }
+}
+
 pub fn cmd_add(package: &str, version: Option<&str>, git: Option<&str>, path: Option<&str>) {
     if !crate::pkg::resolver::valid_package_name(package) {
         eprintln!("error: '{}' is not a package name (letters, digits, `_`, `-`, `.`; no `/`, no `..`)", package);
@@ -119,8 +176,20 @@ pub fn cmd_add(package: &str, version: Option<&str>, git: Option<&str>, path: Op
         pkg::Dependency::Version(version.unwrap_or("*").to_string())
     };
 
-    manifest.dependencies.insert(package.to_string(), dep);
-    manifest.save(&manifest_path).unwrap_or_else(|e| {
+    manifest.dependencies.insert(package.to_string(), dep.clone());
+    // Edit the manifest's TEXT: re-serializing the struct dropped every
+    // comment the author wrote and spelled out every default value.
+    let text = std::fs::read_to_string(&manifest_path).unwrap_or_default();
+    let edited = insert_dependency(&text, package, &dep);
+    let ok = toml::from_str::<pkg::Manifest>(&edited)
+        .map(|m| m.dependencies.contains_key(package))
+        .unwrap_or(false);
+    if !ok {
+        eprintln!("error: soma.toml could not be edited safely — add the dependency by hand:");
+        eprintln!("{}", dependency_block(package, &dep).trim_end());
+        process::exit(1);
+    }
+    std::fs::write(&manifest_path, edited).unwrap_or_else(|e| {
         eprintln!("error: {}", e);
         process::exit(1);
     });
