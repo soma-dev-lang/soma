@@ -30,9 +30,14 @@ impl<'a> PropertyChecker<'a> {
         for prop in &slot.properties {
             let name = prop.node.name();
             if !self.registry.is_known_property(name) {
+                // a typo silently dropped the property: `[persistant]` kept
+                // nothing across a restart, `[consistant]` gave no ordering
+                let known: Vec<String> = self.registry.properties.keys().cloned().collect();
+                let near = crate::checker::names::suggest(name, known.iter());
                 self.warnings.push(CheckWarning::UnknownProperty {
                     slot: slot.name.clone(),
                     property: name.to_string(),
+                    near,
                     span: prop.span,
                 });
             }

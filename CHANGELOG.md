@@ -2,6 +2,16 @@
 
 ## Unreleased
 
+### An unknown slot property names the one it is a letter away from
+
+- `[natif]` on a handler already answered "did you mean [native]?". A slot
+  property did not, so `[persistant]` read as a property of the author's own
+  and the slot silently kept nothing across a restart, `[consistant]` gave no
+  ordering, `[encripted]` no encryption. The warning now names the near miss
+  when there is one, in the text and in the `--json` fix. A property of the
+  author's own is not second-guessed, and an unknown property stays a
+  warning, not an error.
+
 ### Nine quantitative builtins refuse an option they do not read
 
 - `http_*`, `from_csv` / `read_csv`, `think` and `soma.toml` all refuse an

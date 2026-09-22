@@ -245,6 +245,9 @@ pub enum CheckWarning {
     UnknownProperty {
         slot: String,
         property: String,
+        /// the known property it is one or two letters away from, when there
+        /// is one: `[persistant]` silently kept nothing across a restart
+        near: Option<String>,
         span: Span,
     },
     UnverifiablePromise {
@@ -348,8 +351,11 @@ impl std::fmt::Display for CheckWarning {
             Self::PropertyImplication { slot, flag, implied, .. } => {
                 write!(f, "note: '{flag}' on '{slot}' implies '{implied}' (added automatically)")
             }
-            Self::UnknownProperty { slot, property, .. } => {
-                write!(f, "warning: unknown property '{property}' on '{slot}' (not defined in any loaded cell property)")
+            Self::UnknownProperty { slot, property, near, .. } => {
+                match near {
+                    Some(n) => write!(f, "warning: unknown property '{property}' on '{slot}' — did you mean '{n}'? (it is not defined in any loaded cell property, so it does nothing)"),
+                    None => write!(f, "warning: unknown property '{property}' on '{slot}' (not defined in any loaded cell property)"),
+                }
             }
             Self::UnverifiablePromise { cell, promise, .. } => {
                 write!(f, "note: promise on '{cell}' is documentation (not machine-verifiable): \"{promise}\"")
@@ -2477,9 +2483,12 @@ impl<'a> Checker<'a> {
                 format!("{}", warn),
                 format!("Add a handler 'on {signal}(...)' to cell '{cell}', or remove the emit if it's unused."),
             ),
-            CheckWarning::UnknownProperty { slot, property, .. } => (
+            CheckWarning::UnknownProperty { slot, property, near, .. } => (
                 format!("{}", warn),
-                format!("Check spelling of property '{property}' on slot '{slot}'. Define it with 'cell property {property} {{ }}' or remove it."),
+                match near {
+                    Some(n) => format!("Write '{n}' on slot '{slot}', or, if '{property}' is a property of your own, define it with 'cell property {property} {{ }}'."),
+                    None => format!("Check spelling of property '{property}' on slot '{slot}'. Define it with 'cell property {property} {{ }}' or remove it."),
+                },
             ),
             CheckWarning::UnverifiablePromise { promise, .. } => (
                 format!("{}", warn),

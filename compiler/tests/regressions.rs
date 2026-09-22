@@ -2191,6 +2191,36 @@ fn a_quant_builtin_refuses_an_option_it_does_not_read() {
 }
 
 #[test]
+fn an_unknown_slot_property_names_the_one_it_is_a_letter_from() {
+    // a handler annotation already offered the near miss; a slot property
+    // did not, so `[persistant]` read as a property of the author's own and
+    // the slot silently kept nothing across a restart
+    let dir = scratch("slot_property_typo");
+    for (typo, want) in [("persistant", "persistent"), ("consistant", "consistent"),
+                         ("ephemerale", "ephemeral"), ("encripted", "encrypted"),
+                         ("imutable", "immutable"), ("capacty(10)", "capacity")] {
+        std::fs::write(dir.join("app.cell"), format!(
+            "cell A {{\n    memory {{ m: Map<String, Int> [{typo}] }}\n    on r() {{ return 1 }}\n}}\n")).unwrap();
+        let (code, out) = soma(&dir, &["check", "app.cell"]);
+        assert_eq!(code, 0, "an unknown property stays a warning\n{out}");
+        assert!(out.contains(&format!("did you mean '{want}'?")), "[{typo}]\n{out}");
+    }
+    // a property of the author's own is not second-guessed
+    std::fs::write(dir.join("app.cell"),
+        "cell A {\n    memory { m: Map<String, Int> [my_custom_flag] }\n    on r() { return 1 }\n}\n").unwrap();
+    let (_, out) = soma(&dir, &["check", "app.cell"]);
+    assert!(out.contains("unknown property 'my_custom_flag'"), "{out}");
+    assert!(!out.contains("did you mean"), "{out}");
+    // the spelling it meant passes clean
+    std::fs::write(dir.join("app.cell"),
+        "cell A {\n    memory { m: Map<String, Int> [persistent] }\n    on r() { return 1 }\n}\n").unwrap();
+    let (code, out) = soma(&dir, &["check", "app.cell"]);
+    assert_eq!(code, 0, "{out}");
+    assert!(!out.contains("unknown property"), "{out}");
+    let _ = std::fs::remove_dir_all(dir);
+}
+
+#[test]
 fn fix_never_deletes_code_past_the_handler_line() {
     // removing a handler's `-> T` searched the WHOLE file for the opening
     // brace: with no body on that line it found the next cell's `{` and
