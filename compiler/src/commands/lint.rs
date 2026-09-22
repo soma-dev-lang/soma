@@ -228,7 +228,7 @@ impl<'a> LintPass<'a> {
                     self.check_expr_for_lints(&arg.node, &arg.span, memory_slots);
                 }
                 // items.set(id, to_json(data)) -> redundant to_json
-                if method == "set" && memory_slots.contains(target) {
+                if method == "set" && memory_slots.contains(target) && !self.text_slot(target) {
                     for arg in args {
                         if let Expr::FnCall { name, args: inner_args } = &arg.node {
                             if name == "to_json" {
@@ -289,7 +289,7 @@ impl<'a> LintPass<'a> {
                 if let Expr::MethodCall { target, method, args, .. } = &expr.node {
                     if method == "set" {
                         if let Expr::Ident(ref tgt_name) = target.node {
-                            if memory_slots.contains(tgt_name) {
+                            if memory_slots.contains(tgt_name) && !self.text_slot(tgt_name) {
                                 for arg in args {
                                     if let Expr::FnCall { name, args: inner_args } = &arg.node {
                                         if name == "to_json" {
@@ -326,7 +326,7 @@ impl<'a> LintPass<'a> {
                 self.check_alias(name, span, false);
                 if name == "from_json" {
                     if let Some(first) = args.first() {
-                        if self.is_storage_get(&first.node, memory_slots) {
+                        if self.is_storage_get(&first.node, memory_slots) && !self.holds_json_text(&first.node) {
                             let line = self.line_of(span);
                             let inner = self.expr_to_source(&first.node);
                             self.warn(
@@ -359,7 +359,7 @@ impl<'a> LintPass<'a> {
             Expr::Pipe { left, right } => {
                 // Check for items.get(id) |> from_json()
                 if let Expr::FnCall { name, .. } = &right.node {
-                    if name == "from_json" && self.is_storage_get(&left.node, memory_slots) {
+                    if name == "from_json" && self.is_storage_get(&left.node, memory_slots) && !self.holds_json_text(&left.node) {
                         let line = self.line_of(span);
                         let inner = self.expr_to_source(&left.node);
                         self.warn(
@@ -413,6 +413,17 @@ impl<'a> LintPass<'a> {
             ),
             &format!("replace '{}' with '{}'", name, canonical),
         );
+    }
+
+    /// A slot whose values are declared String keeps JSON as TEXT: dropping
+    /// the to_json / from_json around it (the redundant_* advice) made the
+    /// write a type error and the read a String — the program broke.
+    fn text_slot(&self, slot: &str) -> bool {
+        self.slot_value.get(slot).map_or(false, |(t, _)| t == "String")
+    }
+
+    fn holds_json_text(&self, get: &Expr) -> bool {
+        matches!(get, Expr::MethodCall { target, .. } if matches!(&target.node, Expr::Ident(n) if self.text_slot(n)))
     }
 
     fn is_storage_get(&self, expr: &Expr, memory_slots: &[String]) -> bool {

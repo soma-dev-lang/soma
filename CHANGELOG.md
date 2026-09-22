@@ -2,6 +2,14 @@
 
 ## Unreleased
 
+### `soma lint` keeps the JSON around a String slot
+
+- `redundant_to_json` / `redundant_from_json` advised dropping `to_json` and
+  `from_json` around any slot. For a `Map<String, String>` slot they are
+  what keeps the value text: following the advice made the write a type
+  error and the read a String, and the program broke. The advice is now
+  given only for slots whose values are not declared String.
+
 ### Each test cell starts with no hordes
 
 - "Each `cell test` starts with fresh slots, machines, mocks and trace()",

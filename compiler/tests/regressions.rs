@@ -3347,3 +3347,18 @@ cell test T2 {
 }
 "#);
 }
+
+#[test]
+fn lint_does_not_advise_dropping_json_around_a_string_slot() {
+    // a `Map<String, String>` slot keeps JSON as text: dropping to_json /
+    // from_json as advised made the write a type error and the read a String
+    let dir = scratch("lint_json_text_slot");
+    let src = "cell A {\n    memory {\n        docs: Map<String, String> [persistent]\n        maps: Map<String, Map> [persistent]\n    }\n    on save(k: String, n: Int) {\n        docs.set(k, to_json(map(\"n\", n)))\n        maps.set(k, to_json(map(\"n\", n)))\n        return k\n    }\n    on load(k: String) {\n        return from_json(docs.get(k)).n\n    }\n    on load2(k: String) {\n        return from_json(maps.get(k))\n    }\n}\n";
+    std::fs::write(dir.join("app.cell"), src).unwrap();
+    let (_, out) = soma(&dir, &["lint", "app.cell"]);
+    assert_eq!(out.matches("redundant to_json()").count(), 1, "{out}");
+    assert_eq!(out.matches("redundant from_json()").count(), 1, "{out}");
+    assert!(out.contains("line 8:") && out.contains("line 15:"), "{out}");
+    assert!(!out.contains("line 7:") && !out.contains("line 12:"), "{out}");
+    let _ = std::fs::remove_dir_all(dir);
+}

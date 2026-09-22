@@ -438,10 +438,12 @@ fn test_fix_missing_handler() {
 #[test]
 fn test_lint_redundant_to_json() {
     let tmp = std::env::temp_dir().join("test_lint_redundant.cell");
+    // a Map-valued slot: around a String slot the to_json is what keeps
+    // the value text, and the advice would break the program
     std::fs::write(&tmp, r#"
         cell Store {
             memory {
-                items: Map<String, String> [persistent]
+                items: Map<String, Map> [persistent]
             }
             on save(id: String) {
                 let data = map("name", "alice")
