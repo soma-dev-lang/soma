@@ -3214,3 +3214,31 @@ cell T {
     }
     let _ = std::fs::remove_dir_all(dir);
 }
+
+#[test]
+fn an_invariant_is_not_proven_through_a_float_modulo_or_a_nan_into_an_untyped_slot() {
+    // `x % 3` was bounded by 2 whatever x held (2.5 % 3 is 2.5), and the NaN
+    // guard only looked at slots typed Float: `abs(sqrt(x))` into a `Map`
+    // slot was "proven" >= 0, then NaN was rejected at run time
+    let dir = scratch("invariant_float_mod_nan");
+    std::fs::write(dir.join("app.cell"), r#"
+cell T {
+    memory {
+        c: Map [persistent]
+        d: Map [persistent]
+        e: Map<String, Int> [persistent]
+        invariant c <= 2
+        invariant d >= 0
+        invariant e <= 2
+    }
+    on rem(x: Float) { c.set("r", x % 3) }
+    on mag(x: Float) { d.set("m", abs(sqrt(x))) }
+    on irem(x: Int) { e.set("r", x % 3) }
+}
+"#).unwrap();
+    let (_, out) = soma(&dir, &["verify", "app.cell"]);
+    assert!(out.contains("⚠ invariant c <= 2"), "{out}");
+    assert!(out.contains("⚠ invariant d >= 0"), "{out}");
+    assert!(out.contains("writer 'irem' proven"), "{out}");
+    let _ = std::fs::remove_dir_all(dir);
+}

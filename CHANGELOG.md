@@ -2,6 +2,18 @@
 
 ## Unreleased
 
+### An invariant is not proven through a Float modulo, or a NaN into an untyped slot
+
+- `x % 3` was bounded by 2 whatever `x` held, so `invariant c <= 2` was
+  proven for `c.set("r", x % 3)` with `x: Float`, and `rem(2.5)` was then
+  rejected at run time. For a dividend that may be a Float, the bound is
+  now below 3, not 2; an Int dividend keeps `n - 1`.
+- The NaN guard (NaN fails every comparison) applied only to slots typed
+  `Float`: `abs(sqrt(x))` written into a `Map` slot with no value type was
+  proven `>= 0`, and `mag(-1.0)` was rejected. It now applies to every slot
+  that may hold a Float, `Map`, `Any` and `List` included.
+- The repository's invariant verdicts are unchanged.
+
 ### Termination needs one measure, and a base case at the halving fixed point
 
 - A recursive handler was proven terminating when each self-call decreased

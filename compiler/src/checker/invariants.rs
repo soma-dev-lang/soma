@@ -844,7 +844,7 @@ pub fn verify_program_invariants(program: &Program) -> Vec<VerifyResult> {
                 // every comparison, and no interval says a value is not NaN —
                 // `x >= 0.0` "proven" for `abs(v)` rejected abs(sqrt(-1.0))
                 let float_slot = cell.sections.iter().any(|s| match &s.node {
-                    Section::Memory(m) => m.slots.iter().any(|sl| sl.node.name == *slot && type_mentions_float(&sl.node.ty.node)),
+                    Section::Memory(m) => m.slots.iter().any(|sl| sl.node.name == *slot && may_hold_float(&sl.node.ty.node)),
                     _ => false,
                 });
                 let mut nan_open = false;
@@ -1188,13 +1188,15 @@ impl RangeCtx<'_> {
                 if matches!(op, BinOp::Mul) && same_var && bounds(self.range_of(&left.node)).is_none() {
                     return mk(0.0, f64::INFINITY);
                 }
-                // `x % n` with a literal n: |x % n| < n (and ≥ 0 when x is)
+                // `x % n` with a literal n: |x % n| < n (and ≥ 0 when x is);
+                // for an Int x that is at most n - 1, for a Float only below n
                 if matches!(op, BinOp::Mod) {
                     if let Some((nl, nh)) = bounds(self.range_of(&right.node)) {
                         if nl == nh && nl != 0.0 {
                             let n = nl.abs();
-                            let lo = match bounds(self.range_of(&left.node)) { Some((l, _)) if l >= 0.0 => 0.0, _ => -(n - 1.0) };
-                            return mk(lo, n - 1.0);
+                            let top = if may_be_float(&left.node, &self.vars) || nl.fract() != 0.0 { n } else { n - 1.0 };
+                            let lo = match bounds(self.range_of(&left.node)) { Some((l, _)) if l >= 0.0 => 0.0, _ => -top };
+                            return mk(lo, top);
                         }
                         let _ = nh;
                     }
@@ -1649,7 +1651,34 @@ fn local_ranges_at(
     let mut binders: HashSet<String> = HashSet::new();
     collect_binders_stmts(&on.body, &mut binders);
     for b in &binders { vars.insert(b.clone(), Known::Unknown); }
+    // names that may hold a Float (`__float__x`): `x % 3` is below 3, not
+    // below 2, when x is 2.5 — a parameter not typed Int, a binder, and a
+    // local any of whose values may be a Float
+    for p in &on.params {
+        if !matches!(&p.ty.node, TypeExpr::Simple(t) if t == "Int") { vars.insert(format!("__float__{}", p.name), Known::Exact(1.0)); }
+    }
+    for b in &binders { vars.insert(format!("__float__{}", b), Known::Exact(1.0)); }
+    loop {
+        let before = vars.len();
+        for (name, value) in &assigns {
+            if !params.contains(name) && may_be_float(value, &vars) { vars.insert(format!("__float__{}", name), Known::Exact(1.0)); }
+        }
+        if vars.len() == before { break; }
+    }
     vars
+}
+
+/// Can `e` be a Float, given the names already marked `__float__`? Int
+/// literals, Int-typed names and `+ - * %` over them cannot; a Float
+/// literal, `/`, a call or a field read may.
+fn may_be_float(e: &Expr, vars: &HashMap<String, Known>) -> bool {
+    match e {
+        Expr::Literal(Literal::Int(_)) | Expr::Literal(Literal::BigInt(_)) | Expr::Literal(Literal::Bool(_)) | Expr::Literal(Literal::String(_)) => false,
+        Expr::Ident(n) => vars.contains_key(&format!("__float__{}", n)),
+        Expr::BinaryOp { left, op: BinOp::Add | BinOp::Sub | BinOp::Mul | BinOp::Mod, right } => may_be_float(&left.node, vars) || may_be_float(&right.node, vars),
+        Expr::FnCall { name, .. } => !matches!(name.as_str(), "len" | "idiv" | "mod" | "to_int" | "floor" | "ceil" | "round" | "ipow" | "abs_int" | "count" | "size"),
+        _ => true,
+    }
 }
 
 /// `if a || b { return … }` after which ¬a ∧ ¬b holds: the negated leaves.
@@ -2671,6 +2700,18 @@ fn subst_render(c: &Expr, slot: &str, value: &Expr, key: Option<&str>) -> String
         }
     }
     render_expr(&go(c, slot, &shown, key))
+}
+
+/// The values a slot type admits include a Float: `Map<String, Float>`, and
+/// also a slot with no value type (`Map`, `Any`, `List`) — its NaN write
+/// (`abs(sqrt(-1.0))`) passed a `>= 0` "proven" by the interval alone.
+fn may_hold_float(t: &TypeExpr) -> bool {
+    match t {
+        TypeExpr::Simple(n) => matches!(n.as_str(), "Float" | "Any" | "Map" | "List"),
+        TypeExpr::Generic { name, args } if name == "Map" => args.last().map_or(true, |a| may_hold_float(&a.node)),
+        TypeExpr::Generic { name, args } if name == "List" => args.first().map_or(true, |a| may_hold_float(&a.node)),
+        _ => type_mentions_float(t),
+    }
 }
 
 fn type_mentions_float(t: &TypeExpr) -> bool {
