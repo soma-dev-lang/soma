@@ -2778,3 +2778,40 @@ cell test T {
 }
 "#);
 }
+
+#[test]
+fn a_header_named_twice_sends_both_values() {
+    // the second Set-Cookie overwrote the first: the session cookie was
+    // dropped in silence, by response() and html() alike
+    let dir = scratch("twice_headers");
+    std::fs::write(dir.join("app.cell"), r#"
+cell C {
+    on request(method: String, path: String, body: String) {
+        return match path {
+            "/c" -> response(200, "ok", "Set-Cookie", "sid=1; HttpOnly", "Set-Cookie", "csrf=2", "X-One", "a")
+            "/h" -> html(200, "<p>x</p>", "Set-Cookie", "a=1", "Set-Cookie", "b=2", "Set-Cookie", "c=3")
+            _ -> response(404, "no")
+        }
+    }
+}
+"#).unwrap();
+    let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+    let port = listener.local_addr().unwrap().port();
+    drop(listener);
+    let _server = Server(
+        Command::new(env!("CARGO_BIN_EXE_soma"))
+            .args(["serve", "app.cell", "--no-schedule", "-p", &port.to_string()])
+            .current_dir(&dir)
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .spawn()
+            .unwrap(),
+    );
+    wait_http(port);
+    let c = get(port, "/c");
+    assert!(c.contains("Set-Cookie: sid=1; HttpOnly\r\n") && c.contains("Set-Cookie: csrf=2\r\n") && c.contains("X-One: a\r\n"), "{c}");
+    let h = get(port, "/h");
+    for v in ["a=1", "b=2", "c=3"] {
+        assert!(h.contains(&format!("Set-Cookie: {v}\r\n")), "{h}");
+    }
+}

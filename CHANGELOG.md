@@ -2,6 +2,13 @@
 
 ## Unreleased
 
+### A response header named twice sends both values
+
+- `response(200, "ok", "Set-Cookie", "sid=1; HttpOnly", "Set-Cookie",
+  "csrf=2")` sent only `csrf=2`: the second pair overwrote the first, so the
+  session cookie was dropped in silence. `html(status, body, …)` did the
+  same. A header named several times now goes out once per value.
+
 ### A native comparison on a BigInt answers outside an `if`
 
 - In a `[native]` handler, `if x > 0` compared an Int past 64 bits, but

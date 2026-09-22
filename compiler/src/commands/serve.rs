@@ -1967,9 +1967,13 @@ pub fn cmd_serve(path: &PathBuf, port: u16, host: &str, verbose: bool, join: Opt
                     let body_val = entries.get("_body")
                         .cloned()
                         .unwrap_or(interpreter::Value::Unit);
+                    // a List is a header named several times (two Set-Cookie)
                     let headers: Vec<(String, String)> = entries.iter()
                         .filter(|(k, _)| !k.starts_with('_') && !k.eq_ignore_ascii_case("content-type"))
-                        .map(|(k, v)| (k.clone(), format!("{}", v)))
+                        .flat_map(|(k, v)| match v {
+                            interpreter::Value::List(vs) => vs.iter().map(|x| (k.clone(), format!("{}", x))).collect::<Vec<_>>(),
+                            other => vec![(k.clone(), format!("{}", other))],
+                        })
                         .collect();
                     // any non-JSON type sends a String body as it is
                     let is_html = content_type.contains("html") || (explicit_ct.is_some() && !content_type.contains("json"));

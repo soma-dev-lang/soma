@@ -79,11 +79,7 @@ pub fn call_builtin(name: &str, args: &[Value]) -> Option<Result<Value, RuntimeE
                 ("_response".to_string(), crate::interpreter::http_marker()),
             ]);
             if let Value::Map(m) = &mut entries {
-                let mut i = 2;
-                while i + 1 < args.len() {
-                    m.insert(format!("{}", args[i]), args[i + 1].clone());
-                    i += 2;
-                }
+                add_header_pairs(m, &args[2..]);
             }
             Some(Ok(entries))
         }
@@ -120,13 +116,7 @@ pub fn call_builtin(name: &str, args: &[Value]) -> Option<Result<Value, RuntimeE
             entries.insert("_status".to_string(), status);
             entries.insert("_body".to_string(), body);
             entries.insert("_response".to_string(), crate::interpreter::http_marker());
-            let mut i = 2;
-            while i + 1 < args.len() {
-                let key = format!("{}", args[i]);
-                let val = args[i + 1].clone();
-                entries.insert(key, val);
-                i += 2;
-            }
+            add_header_pairs(&mut entries, args.get(2..).unwrap_or(&[]));
             Some(Ok(Value::Map(entries)))
         }
         "redirect" => {
@@ -229,6 +219,21 @@ pub fn call_builtin(name: &str, args: &[Value]) -> Option<Result<Value, RuntimeE
             }
         }
         _ => None,
+    }
+}
+
+/// `"Set-Cookie", "sid=1", "Set-Cookie", "csrf=2"`: a header named twice
+/// keeps both values, as a List the server sends as one line each (the
+/// second overwrote the first — a session cookie dropped in silence).
+fn add_header_pairs(entries: &mut IndexMap<String, Value>, pairs: &[Value]) {
+    for pair in pairs.chunks(2) {
+        let [name, val] = pair else { break };
+        let key = format!("{}", name);
+        match entries.get_mut(&key) {
+            Some(Value::List(vs)) => vs.push(val.clone()),
+            Some(prev) => { let first = std::mem::replace(prev, Value::Unit); *prev = Value::List(vec![first, val.clone()]); }
+            None => { entries.insert(key, val.clone()); }
+        }
     }
 }
 
