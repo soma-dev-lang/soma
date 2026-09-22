@@ -2724,3 +2724,18 @@ cell test T {
 }
 "#);
 }
+
+#[test]
+fn a_list_literal_needs_its_commas() {
+    // the comma was optional: `[1 2 3]` passed, and an unescaped quote
+    // inside an interpolation turned one element into three in silence
+    let dir = scratch("list_commas");
+    for (i, src) in ["[1 2 3]", "[\"a\" \"b\"]", "[\"n={m.get(\"1\")}\"]"].iter().enumerate() {
+        std::fs::write(dir.join(format!("l{i}.cell")), format!("cell L {{\n  on run() {{\n    let m = map(\"1\", 2)\n    print({src})\n  }}\n}}\n")).unwrap();
+        let (code, out) = soma(&dir, &["check", &format!("l{i}.cell")]);
+        assert_ne!(code, 0, "{src}: {out}");
+        assert!(out.contains("separated by commas") || out.contains("quote"), "{src}: {out}");
+    }
+    passes("list_commas_ok", "cell L {\n  on t() { return [\n    1,\n    2,\n  ] }\n}\ncell test T {\n  rules {\n    assert L.t() == [1, 2]\n    assert [1 -1] == [0]\n  }\n}\n");
+    let _ = std::fs::remove_dir_all(dir);
+}

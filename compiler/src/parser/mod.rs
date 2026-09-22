@@ -3281,7 +3281,14 @@ impl Parser {
                 let mut elements = Vec::new();
                 while !self.check(&Token::RBracket) && !self.is_at_end() {
                     elements.push(self.parse_expr()?);
-                    if self.check(&Token::Comma) { self.advance(); }
+                    // the comma was optional: `[1 -1]` read as `[0]` and
+                    // `["a" "b"]` as two elements, while `[1 2]` passed
+                    if self.check(&Token::Comma) { self.advance(); } else if !self.check(&Token::RBracket) && !self.is_at_end() {
+                        return Err(ParseError::FixIt {
+                            message: format!("expected ',' or ']' in a list, found {} — list elements are separated by commas: `[a, b]`", display_token(&self.peek().clone())),
+                            span: self.peek_span(),
+                        });
+                    }
                 }
                 self.expect(Token::RBracket)?;
                 Ok(Spanned::new(Expr::ListLiteral(elements), start.merge(self.prev_span())))

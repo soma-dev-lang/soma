@@ -2,6 +2,15 @@
 
 ## Unreleased
 
+### A list literal needs its commas
+
+- The comma between list elements was optional: `[1 2 3]` and `["a" "b"]`
+  passed `soma check`, and `["n={m.get("1")}"]` — an unescaped quote inside
+  an interpolation, a check error anywhere else — silently became a list of
+  three elements. A missing comma is now a parse error that says so. A
+  trailing comma is still accepted, and every program of the repository
+  still parses.
+
 ### `agg` refuses a function it does not compute
 
 - `agg(rows, "g", "v:median")` and `"v:SUM"` answered `v_median: ()`, a bare
