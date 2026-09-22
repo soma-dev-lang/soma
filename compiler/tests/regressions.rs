@@ -2300,6 +2300,23 @@ fn a_malformed_budget_annotation_is_refused_rather_than_defaulted() {
         assert_eq!(code, 0, "[{ann}]\n{out}");
     }
 
+    // a `memory:` the budget parser cannot read was indistinguishable from
+    // declaring none: the proof was silently skipped and check said nothing
+    let scaled = |mem: &str| format!(
+        "cell A {{\n    memory {{ m: Map<String, Int> [persistent, capacity(10)] }}\n         \x20   scale {{\n        replicas: 1\n        memory: \"{mem}\"\n    }}\n         \x20   on r() {{ return 1 }}\n}}\n");
+    for mem in ["128 Mo", "", "abc", "12.5Gi"] {
+        std::fs::write(dir.join("app.cell"), scaled(mem)).unwrap();
+        let (code, out) = soma(&dir, &["check", "app.cell"]);
+        assert_ne!(code, 0, "[{mem}]\n{out}");
+        assert!(out.contains("is not a size"), "[{mem}]\n{out}");
+    }
+    for mem in ["128Mi", "8Gi", "1Ti", "2G"] {
+        std::fs::write(dir.join("app.cell"), scaled(mem)).unwrap();
+        let (code, out) = soma(&dir, &["check", "app.cell"]);
+        assert_eq!(code, 0, "[{mem}]\n{out}");
+        assert!(out.contains("budget proven"), "[{mem}]\n{out}");
+    }
+
     // and the bound that is written is the bound that is proven
     std::fs::write(dir.join("app.cell"), cell("capacity(10)")).unwrap();
     let (_, tight) = soma(&dir, &["check", "app.cell"]);

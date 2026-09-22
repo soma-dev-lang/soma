@@ -16,6 +16,10 @@
   annotation in that position is refused: `max_instances` is the only one
   anything reads there, so `[max_instanes(10)]` sat doing nothing while the
   proof used the default instance count.
+- A `scale { memory: … }` the budget parser cannot read was indistinguishable
+  from declaring none: the proof was silently skipped, `soma check` said
+  nothing, and `soma deploy` wrote the string out as it stood. `"128 Mo"`,
+  `""`, `"abc"` and `"12.5Gi"` are now refused, naming the shapes that work.
 
 ### A `cell property` rule naming nothing is reported
 

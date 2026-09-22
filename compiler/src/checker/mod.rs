@@ -1450,6 +1450,23 @@ impl<'a> Checker<'a> {
             if let Section::State(ref sm) = section.node {
                 properties::check_state_machine_properties(sm, &mut prop_checker.errors);
             }
+            // a `memory:` the budget parser cannot read was indistinguishable
+            // from declaring none: the proof was silently skipped and `soma
+            // check` said nothing, while deploy wrote the string out verbatim
+            if let Section::Scale(ref sc) = section.node {
+                if let Some(m) = sc.memory.as_ref() {
+                    if budget::parse_budget_bytes(m).is_none() {
+                        prop_checker.errors.push(CheckError::Static {
+                            kind: "scale_memory",
+                            message: format!(
+                                "scale memory \"{}\" in cell '{}' is not a size — no budget is proven and deploy writes it out as it stands. Write a number with an optional unit: 512Mi, 8Gi, 1Ti, 256K, 2G or plain bytes",
+                                m, cell.name
+                            ),
+                            span: section.span,
+                        });
+                    }
+                }
+            }
         }
         self.errors.extend(prop_checker.errors);
         self.warnings.extend(prop_checker.warnings);
