@@ -1605,3 +1605,33 @@ fn a_checker_predicate_nothing_implements_is_refused() {
     assert_eq!(code, 0, "{out}");
     let _ = std::fs::remove_dir_all(dir);
 }
+
+#[test]
+fn a_variant_pattern_of_the_wrong_shape_is_refused() {
+    // `check` called these matches exhaustive and the runtime then raised
+    // "variant 'Box' not handled" on every value: the arm could never match
+    let dir = scratch("variant_shape");
+    let head = "cell type Shape { variants { Box { w: Int } Dot Pair(Int, Int) } }\ncell X {\n";
+    let bad = [
+        ("match v { Nosuch(x) -> x  Box { w } -> w  Dot -> 0  Pair(a, b) -> a }", "which no `cell type` declares as a variant"),
+        ("match v { Box { z } -> z  Dot -> 0  Pair(a, b) -> a }", "`z` is not a field of `Box`"),
+        ("match v { Box { w } -> w  Dot -> 0  Pair(a) -> a }", "`Pair` declares 2 positional fields"),
+        ("match v { Box(w) -> w  Dot -> 0  Pair(a, b) -> a }", "`Box` declares the field `w`"),
+        ("match v { Dot(x) -> x  Box { w } -> w  Pair(a, b) -> a }", "`Dot` declares no payload"),
+    ];
+    for (m, want) in bad {
+        std::fs::write(dir.join("app.cell"), format!("{head}    on a(v: Shape) {{ return {m} }}\n}}\n")).unwrap();
+        let (code, out) = soma(&dir, &["check", "app.cell"]);
+        assert_ne!(code, 0, "{m}\n{out}");
+        assert!(out.contains(want), "{m}\nwant: {want}\n{out}");
+    }
+    // the shapes that do fit, including `..`, an or-pattern and a literal
+    std::fs::write(dir.join("app.cell"), format!(
+        "{head}    on a(v: Shape) {{ return match v {{ Box {{ w }} -> w  Dot -> 0  Pair(a, b) -> a + b }} }}\n\
+         \x20   on b(v: Shape) {{ return match v {{ Box {{ .. }} -> 1  Dot -> 0  Pair(a, b) -> a }} }}\n\
+         \x20   on c(v: Shape) {{ return match v {{ Box {{ w }} || Dot -> 1  Pair(a, b) -> a }} }}\n\
+         \x20   on d(v: Shape) {{ return match v {{ Pair(1, b) -> b  _ -> 0 }} }}\n}}\n")).unwrap();
+    let (code, out) = soma(&dir, &["check", "app.cell"]);
+    assert_eq!(code, 0, "{out}");
+    let _ = std::fs::remove_dir_all(dir);
+}

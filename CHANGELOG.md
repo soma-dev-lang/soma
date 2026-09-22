@@ -127,6 +127,12 @@
   instead. A checker now reads the same vocabulary as `face { promise … }`
   (`require all_persistent` was silently true there too) and an unknown name
   is an error naming the predicates, reported once. One regression test.
+- A `match` arm whose variant pattern does not fit the variant is refused:
+  an unknown variant name, a struct field the variant does not declare, a
+  tuple pattern with the wrong number of bindings, or a struct pattern on a
+  tuple variant all passed `check` — which then called the match exhaustive —
+  and raised "variant not handled" at run time on every value of it. The
+  message names what the variant declares. One regression test.
 - The guard prover reads a negated `require`: `require !(n < 0)` establishes
   `n >= 0`, `!(a || b)` establishes both negations, and a guard written as
   `!(n < 0)` is proven from `require n >= 0`. Two regression tests.

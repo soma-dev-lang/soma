@@ -40,12 +40,35 @@ pub struct VariantRegistry {
     pub variant_to_type: HashMap<String, String>,
     pub type_to_variants: HashMap<String, Vec<String>>,
     pub duplicates: Vec<(String, Vec<String>)>, // (variant, types that defined it)
+    /// what each variant declares, so a pattern of the wrong shape is
+    /// refused instead of never matching at run time
+    pub variant_shape: HashMap<String, VariantShape>,
+}
+
+/// A variant's payload as DECLARED (the pattern side is `VariantPatternFields`).
+#[derive(Debug, Clone, PartialEq)]
+pub enum VariantShape {
+    Unit,
+    Tuple(usize),
+    Struct(Vec<String>),
+}
+
+impl VariantShape {
+    fn describe(&self) -> String {
+        match self {
+            VariantShape::Unit => "no payload".to_string(),
+            VariantShape::Tuple(n) => format!("{} positional field{}", n, if *n == 1 { "" } else { "s" }),
+            VariantShape::Struct(f) => format!("the field{} {}", if f.len() == 1 { "" } else { "s" },
+                f.iter().map(|n| format!("`{}`", n)).collect::<Vec<_>>().join(", ")),
+        }
+    }
 }
 
 impl VariantRegistry {
     pub fn build(program: &Program) -> Self {
         let mut variant_to_type: HashMap<String, String> = HashMap::new();
         let mut type_to_variants: HashMap<String, Vec<String>> = HashMap::new();
+        let mut variant_shape: HashMap<String, VariantShape> = HashMap::new();
         let mut collisions: HashMap<String, Vec<String>> = HashMap::new();
         for cell in &program.cells {
             if !matches!(cell.node.kind, CellKind::Type) {
@@ -56,6 +79,11 @@ impl VariantRegistry {
                     let mut names = Vec::with_capacity(vs.variants.len());
                     for vd in &vs.variants {
                         names.push(vd.node.name.clone());
+                        variant_shape.insert(vd.node.name.clone(), match &vd.node.fields {
+                            crate::ast::VariantFields::Unit => VariantShape::Unit,
+                            crate::ast::VariantFields::Tuple(ts) => VariantShape::Tuple(ts.len()),
+                            crate::ast::VariantFields::Struct(fs) => VariantShape::Struct(fs.iter().map(|(n, _)| n.clone()).collect()),
+                        });
                         if let Some(existing) = variant_to_type.get(&vd.node.name) {
                             collisions
                                 .entry(vd.node.name.clone())
@@ -73,7 +101,7 @@ impl VariantRegistry {
             .into_iter()
             .map(|(v, types)| (v, types))
             .collect();
-        Self { variant_to_type, type_to_variants, duplicates }
+        Self { variant_to_type, type_to_variants, duplicates, variant_shape }
     }
 }
 
@@ -392,6 +420,7 @@ fn check_match_exhaustiveness(
     let mut has_wildcard = false;
 
     for arm in arms {
+        check_variant_pattern_shape(&arm.pattern, span, reg, issues);
         if arm.guard.is_some() {
             // A guard might fail, so this arm does NOT cover its variant
             // (`Sq(s) if s > 5.0` alone raised "variant 'Sq' not handled"
@@ -431,6 +460,76 @@ fn check_match_exhaustiveness(
                 names.iter().map(|n| format!("`{}`", n)).collect::<Vec<_>>().join(", ")
             ),
         });
+    }
+}
+
+/// A variant pattern that names no variant, or whose payload does not match
+/// what the variant declares, never matched at run time: `check` called the
+/// match exhaustive and every value of that variant raised "variant not
+/// handled". Refuse the pattern instead.
+fn check_variant_pattern_shape(
+    pat: &MatchPattern,
+    span: Span,
+    reg: &VariantRegistry,
+    issues: &mut Vec<SumTypeIssue>,
+) {
+    match pat {
+        MatchPattern::Variant { type_name, name, fields } => {
+            let known = reg.variant_shape.get(name);
+            let Some(shape) = known else {
+                // not a variant at all: only report when this file declares
+                // variants (otherwise `Name { … }` is a record pattern)
+                if !reg.variant_to_type.is_empty() {
+                    let near = crate::checker::names::suggest(name, reg.variant_to_type.keys())
+                        .map(|s| format!(" (did you mean `{}`?)", s))
+                        .unwrap_or_default();
+                    issues.push(SumTypeIssue {
+                        kind: SumTypeIssueKind::UnknownVariant,
+                        span,
+                        message: format!("match arm names `{}`{}, which no `cell type` declares as a variant — the arm can never match", name, near),
+                    });
+                }
+                return;
+            };
+            if let Some(t) = type_name {
+                if reg.variant_to_type.get(name) != Some(t) {
+                    issues.push(SumTypeIssue {
+                        kind: SumTypeIssueKind::UnknownVariant,
+                        span,
+                        message: format!("match arm names `{}::{}`, but `{}` is a variant of '{}'", t, name,
+                            name, reg.variant_to_type.get(name).cloned().unwrap_or_default()),
+                    });
+                }
+            }
+            let bad = match (fields, shape) {
+                (VariantPatternFields::Unit, VariantShape::Unit) => None,
+                (VariantPatternFields::Tuple(ps), VariantShape::Tuple(n)) if ps.len() == *n => None,
+                (VariantPatternFields::Struct { fields: fs, rest }, VariantShape::Struct(declared)) => {
+                    match fs.iter().find(|(n, _)| !declared.contains(n)) {
+                        Some((n, _)) => Some(format!("`{}` is not a field of `{}` — it declares {}", n, name, shape.describe())),
+                        None if !*rest && fs.len() != declared.len() =>
+                            Some(format!("`{}` declares {}, the pattern binds {} — add the missing one{} or `..`",
+                                name, shape.describe(), fs.len(), if declared.len() - fs.len() == 1 { "" } else { "s" })),
+                        None => None,
+                    }
+                }
+                _ => Some(format!("`{}` declares {}", name, shape.describe())),
+            };
+            if let Some(why) = bad {
+                issues.push(SumTypeIssue {
+                    kind: SumTypeIssueKind::UnknownVariant,
+                    span,
+                    message: format!("match arm on `{}` does not fit the variant: {} — the arm can never match", name, why),
+                });
+            }
+            match fields {
+                VariantPatternFields::Tuple(ps) => for p in ps { check_variant_pattern_shape(p, span, reg, issues); },
+                VariantPatternFields::Struct { fields: fs, .. } => for (_, p) in fs { check_variant_pattern_shape(p, span, reg, issues); },
+                VariantPatternFields::Unit => {}
+            }
+        }
+        MatchPattern::Or(alts) => for a in alts { check_variant_pattern_shape(a, span, reg, issues); },
+        _ => {}
     }
 }
 
