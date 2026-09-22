@@ -56,7 +56,7 @@ cell Analytics {
             |> select("ticker", "volume", "sector", "price")
             |> sort_by("volume", "desc")
 
-        let unique_tickers = trades |> distinct("ticker") |> pluck("ticker")
+        let unique_tickers = trades |> distinct("ticker")
         let total_volume = trades |> sum_by("volume")
 
         // ── Print results ────────────────────────────────────────────
