@@ -144,6 +144,12 @@
   range, or an or-pattern whose alternatives are all already taken. A guarded
   arm may fail its guard, so it kills nothing. It is a warning, like the other
   unreachable code. One regression test.
+- A cell nested in `interior { }` gets the same static checks as a top-level
+  one: the sum-type gates (exhaustive `match`, variant-pattern shape, a state
+  compared with a variant), the invariant validation (an unknown name, a
+  `status` rule without a machine) and the builtin arity check walked only
+  top-level cells, so the same code was refused outside and passed inside.
+  One regression test.
 - The guard prover reads a negated `require`: `require !(n < 0)` establishes
   `n >= 0`, `!(a || b)` establishes both negations, and a guard written as
   `!(n < 0)` is proven from `require n >= 0`. Two regression tests.

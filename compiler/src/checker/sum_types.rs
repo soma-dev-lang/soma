@@ -123,11 +123,13 @@ pub fn check_program(program: &Program) -> Vec<SumTypeIssue> {
     }
 
     // Walk every handler body looking for match expressions.
-    for cell in &program.cells {
-        if !matches!(cell.node.kind, CellKind::Cell | CellKind::Agent) {
+    // interior cells too: a non-exhaustive match inside `interior { }` was
+    // unchecked, like the `every` bodies below
+    for cell in crate::checker::names::collect_cells(program) {
+        if !matches!(cell.kind, CellKind::Cell | CellKind::Agent) {
             continue;
         }
-        for section in &cell.node.sections {
+        for section in &cell.sections {
             // `every` / `after` bodies too: a non-exhaustive match there
             // passed `check` and failed every tick at run time, rolled back,
             // visible only in the server log
@@ -144,11 +146,11 @@ pub fn check_program(program: &Program) -> Vec<SumTypeIssue> {
 
     // Typed state-machine refinement: for `state X: T { … }`, every
     // state name appearing in the block must be a variant of `T`.
-    for cell in &program.cells {
-        if !matches!(cell.node.kind, CellKind::Cell | CellKind::Agent) {
+    for cell in crate::checker::names::collect_cells(program) {
+        if !matches!(cell.kind, CellKind::Cell | CellKind::Agent) {
             continue;
         }
-        for section in &cell.node.sections {
+        for section in &cell.sections {
             if let Section::State(ref sm) = section.node {
                 if let Some(state_type) = &sm.state_type {
                     let variants = match registry.type_to_variants.get(state_type) {
@@ -202,7 +204,7 @@ pub fn check_program(program: &Program) -> Vec<SumTypeIssue> {
                         }
                     }
                     // Check every transition() call in every handler.
-                    for section in &cell.node.sections {
+                    for section in &cell.sections {
                         if let Section::OnSignal(ref on) = section.node {
                             for stmt in &on.body {
                                 walk_typed_transitions(

@@ -702,8 +702,10 @@ impl<'a> Checker<'a> {
             let handler_names: std::collections::HashSet<String> = program.cells.iter().flat_map(|c| c.node.sections.iter().filter_map(|s| match &s.node {
                 Section::OnSignal(on) => Some(on.signal_name.clone()), _ => None })).collect();
             let mut reported: std::collections::HashSet<String> = std::collections::HashSet::new();
-            for cell in &program.cells {
-                for sec in &cell.node.sections {
+            // interior cells too: a builtin called with too many arguments
+            // was unchecked inside `interior { }`
+            for cell in crate::checker::names::collect_cells(program) {
+                for sec in &cell.sections {
                     let body = match &sec.node {
                         Section::OnSignal(on) => &on.body,
                         Section::Every(e) | Section::After(e) => &e.body,

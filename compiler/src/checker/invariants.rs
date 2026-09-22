@@ -38,12 +38,14 @@ const GENERIC_BINDINGS: &[&str] = &[
 /// resolvable when the runtime evaluates it.
 pub fn validate_program(program: &Program) -> Vec<InvariantIssue> {
     let mut issues = Vec::new();
-    for cell in &program.cells {
-        if !matches!(cell.node.kind, CellKind::Cell | CellKind::Agent) {
+    // interior cells too: an invariant naming an unknown slot, or reading
+    // `status` without a machine, was unchecked inside `interior { }`
+    for cell in crate::checker::names::collect_cells(program) {
+        if !matches!(cell.kind, CellKind::Cell | CellKind::Agent) {
             continue;
         }
-        set_slot_int(&cell.node);
-        for section in &cell.node.sections {
+        set_slot_int(cell);
+        for section in &cell.sections {
             let Section::Memory(mem) = &section.node else { continue };
             let slot_names: HashSet<&str> =
                 mem.slots.iter().map(|s| s.node.name.as_str()).collect();
@@ -53,10 +55,10 @@ pub fn validate_program(program: &Program) -> Vec<InvariantIssue> {
                 // `status` is the machine state of the written key: it needs
                 // a `state` section in this cell
                 if deep_idents(&inv.node).contains("status")
-                    && !cell.node.sections.iter().any(|s| matches!(&s.node, Section::State(_)))
+                    && !cell.sections.iter().any(|s| matches!(&s.node, Section::State(_)))
                 {
                     issues.push(InvariantIssue {
-                        message: format!("memory invariant reads `status` (the machine state of the written key), but cell '{}' declares no `state {{ }}` machine", cell.node.name),
+                        message: format!("memory invariant reads `status` (the machine state of the written key), but cell '{}' declares no `state {{ }}` machine", cell.name),
                         span: inv.span,
                     });
                 }

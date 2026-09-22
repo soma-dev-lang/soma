@@ -1692,3 +1692,32 @@ fn a_match_arm_that_can_never_run_is_reported() {
     assert!(!out.contains("never runs"), "{out}");
     let _ = std::fs::remove_dir_all(dir);
 }
+
+#[test]
+fn interior_cells_get_the_same_static_checks() {
+    // a cell nested in `interior { }` skipped the sum-type checks, the
+    // invariant name/`status` validation and the builtin arity check: the
+    // same code was refused at the top level and passed inside
+    let dir = scratch("interior_checks");
+    let head = "cell type Shape { variants { Box { w: Int } Dot Pair(Int, Int) } }\n";
+    let cases: [(&str, &str); 5] = [
+        ("    on h(v: Shape) { return match v { Box { w } -> w  Dot -> 0 } }", "non-exhaustive match"),
+        ("    on h(v: Shape) { return match v { Box { z } -> z  Dot -> 0  Pair(a, b) -> a } }", "is not a field of `Box`"),
+        ("    on h() { return len(1, 2, 3) }", "len() takes at most 1 argument"),
+        ("    memory { n: Map<String, Int>\n        invariant nosuchname >= 0\n    }\n    on h() { return 1 }", "references unknown name 'nosuchname'"),
+        ("    memory { n: Map<String, Int>\n        invariant status != \"x\"\n    }\n    on h() { return 1 }", "declares no `state"),
+    ];
+    for (body, want) in cases {
+        std::fs::write(dir.join("app.cell"), format!("{head}cell T {{\n{body}\n}}\n")).unwrap();
+        let (code, top) = soma(&dir, &["check", "app.cell"]);
+        assert_ne!(code, 0, "{body}\n{top}");
+        assert!(top.contains(want), "at top level\n{body}\n{top}");
+        let nested: String = body.lines().map(|l| format!("    {l}\n")).collect();
+        std::fs::write(dir.join("app.cell"), format!(
+            "{head}cell Outer {{\n    on run() {{ return 1 }}\n    interior {{\n        cell T {{\n{nested}        }}\n    }}\n}}\n")).unwrap();
+        let (code, inner) = soma(&dir, &["check", "app.cell"]);
+        assert_ne!(code, 0, "inside interior\n{body}\n{inner}");
+        assert!(inner.contains(want), "inside interior\n{body}\n{inner}");
+    }
+    let _ = std::fs::remove_dir_all(dir);
+}
