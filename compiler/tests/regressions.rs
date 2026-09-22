@@ -2815,3 +2815,9 @@ cell C {
         assert!(h.contains(&format!("Set-Cookie: {v}\r\n")), "{h}");
     }
 }
+
+#[test]
+fn html_with_one_argument_still_answers() {
+    // the header pairs were read from args[2..] even with one argument
+    passes("html_one_arg", "cell H {\n  on p() { return html(\"<p>x</p>\") }\n}\ncell test T {\n  rules {\n    assert H.p()._status == 200\n    assert html()._body == \"\"\n  }\n}\n");
+}

@@ -79,7 +79,7 @@ pub fn call_builtin(name: &str, args: &[Value]) -> Option<Result<Value, RuntimeE
                 ("_response".to_string(), crate::interpreter::http_marker()),
             ]);
             if let Value::Map(m) = &mut entries {
-                add_header_pairs(m, &args[2..]);
+                add_header_pairs(m, args.get(2..).unwrap_or(&[]));
             }
             Some(Ok(entries))
         }
