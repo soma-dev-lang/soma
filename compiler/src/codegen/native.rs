@@ -860,7 +860,22 @@ fn _soma_div_f_big(a: Integer, b: Integer) -> f64 {
         }
         return _soma_i2f(&q);
     }
-    _soma_i2f(&a) / _soma_i2f(&b)
+    // one rounding, as the interpreter: dividing the two f64 conversions
+    // rounded twice (10^25 / 7 came out one ulp high). A quotient of 55+
+    // bits with the remainder as a sticky low bit rounds once in _soma_i2f,
+    // then an exact power of two scales it back.
+    let neg = (a < 0) != (b < 0);
+    let na = Integer::from(a.abs_ref());
+    let nb = Integer::from(b.abs_ref());
+    let k: i64 = 55 - (na.significant_bits() as i64 - nb.significant_bits() as i64);
+    let (n, d) = if k >= 0 { (na << (k as u32), nb) } else { (na, nb << ((-k) as u32)) };
+    let (q, r) = n.div_rem(d);
+    let mut q2 = q << 1u32;
+    if r != 0 { q2 += 1; }
+    let m = _soma_i2f(&q2);
+    let e = -(k + 1);
+    let v = if (-1022..=1023).contains(&e) { m * f64::from_bits(((e + 1023) as u64) << 52) } else { m * 2f64.powi(e as i32) };
+    if neg { -v } else { v }
 }
 "#;
 

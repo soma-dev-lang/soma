@@ -3014,3 +3014,32 @@ cell R {
     assert!(out.contains("100") && out.contains("stack overflow") && !out.contains("caught"), "{out}");
     let _ = std::fs::remove_dir_all(dir);
 }
+
+#[test]
+fn a_native_bigint_division_rounds_once() {
+    // the inexact BigInt / Int quotient divided the two f64 conversions,
+    // rounding twice: 10^25 / 7 came out one ulp above the interpreter
+    passes("native_bigint_div_round", r#"
+cell D {
+    on f(n: Int, d: Int) [native] {
+        let s = 1
+        for i in range(0, n) { s = s * 10 }
+        return s / d
+    }
+    on g(n: Int, d: Int) {
+        let s = 1
+        for i in range(0, n) { s = s * 10 }
+        return s / d
+    }
+}
+cell test T {
+    rules {
+        assert D.f(25, 7) == D.g(25, 7)
+        assert D.f(40, 0 - 7) == D.g(40, 0 - 7)
+        assert D.f(33, 17) == D.g(33, 17)
+        assert D.f(70, 6) == D.g(70, 6)
+        assert D.f(20, 999999937) == D.g(20, 999999937)
+    }
+}
+"#);
+}

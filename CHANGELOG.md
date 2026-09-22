@@ -2,6 +2,14 @@
 
 ## Unreleased
 
+### A native BigInt division rounds once
+
+- In a `[native]` handler, an inexact `BigInt / Int` converted both operands
+  to Float and divided them — two roundings, so `10^25 / 7` answered
+  `1428571428571428800000000.0` where the interpreter's correctly rounded
+  `1428571428571428500000000.0` is right. The quotient is now rounded once,
+  as the interpreter does.
+
 ### Native runaway recursion is a `stack_overflow`
 
 - A `[native]` handler recursing past 20,000 calls came back as kind `type`
