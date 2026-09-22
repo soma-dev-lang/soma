@@ -53,6 +53,33 @@ pub fn check_cell(cell: &CellDef) -> Vec<LiteralIssue> {
         _ => None,
     }).collect();
 
+    // two edges for one move: a transition takes the FIRST edge that matches,
+    // so `* -> cancelled` before `pending -> cancelled { guard { … } }` left
+    // that guard never evaluated (and verify still called it runtime-checked);
+    // in the other order a failing guard refused a move the wildcard allows
+    for s in &cell.sections {
+        let Section::State(sm) = &s.node else { continue };
+        let covers = |t: &Transition, state: &str| if t.from == "*" { sm.wildcard_applies(t, state) } else { t.from == state };
+        let sources: Vec<String> = states.iter().flatten().cloned().collect();
+        for (j, later) in sm.transitions.iter().enumerate() {
+            // the same guard (none on both: `resolved -> closed` then
+            // `* -> closed`) answers the same whichever edge is taken
+            let guard_text = |t: &Transition| t.guard.as_ref().map(|g| crate::ast::render_expr(&g.node));
+            let Some(first) = sm.transitions[..j].iter().find(|t| t.node.to == later.node.to
+                && guard_text(&t.node) != guard_text(&later.node)
+                && sources.iter().any(|st| covers(&t.node, st) && covers(&later.node, st))) else { continue };
+            let shared: Vec<&String> = sources.iter().filter(|st| covers(&first.node, st) && covers(&later.node, st)).collect();
+            let edge = |t: &Transition| format!("{} -> {}{}", t.from, t.to, if t.guard.is_some() { " { guard … }" } else { "" });
+            out.push(LiteralIssue { kind: "duplicate_edge", span: later.span,
+                message: format!(
+                    "`{}` repeats the move {} -> {} that `{}` already declares with {} — a transition takes the first edge that matches, so {} there. Declare each move once{}",
+                    edge(&later.node), shared.iter().map(|s| s.as_str()).collect::<Vec<_>>().join("/"), later.node.to, edge(&first.node),
+                    if first.node.guard.is_some() { "a guard" } else { "no guard" },
+                    if later.node.guard.is_some() { "this guard is never evaluated" } else { "the first edge's guard refuses a move this one allows" },
+                    if first.node.from == "*" { format!(", or keep the state out of the wildcard: `* -> {} except [{}]`", first.node.to, shared.iter().map(|s| s.as_str()).collect::<Vec<_>>().join(", ")) } else { String::new() }) });
+        }
+    }
+
     // `* -> cancelled except [setled]`: a name no edge declares excepted
     // nothing, and the wildcard left the state the author meant to keep final
     if let Some(states) = &states {

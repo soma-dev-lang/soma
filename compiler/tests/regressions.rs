@@ -3061,3 +3061,21 @@ fn a_compound_or_comparison_face_promise_is_checked_or_refused() {
     assert_eq!(code, 0, "{out}");
     let _ = std::fs::remove_dir_all(dir);
 }
+
+#[test]
+fn an_edge_repeating_a_move_with_another_guard_is_refused() {
+    // a transition takes the FIRST edge that matches: `* -> c` before
+    // `a -> c { guard }` left the guard never evaluated, and `b -> d { guard }`
+    // before `b -> d` refused a move the second edge allowed
+    let dir = scratch("duplicate_edges");
+    std::fs::write(dir.join("app.cell"), "cell O {\n  state s {\n    initial: a\n    a -> b\n    * -> c\n    a -> c { guard { x > 0 } }\n    b -> d { guard { x > 0 } }\n    b -> d\n  }\n  on go(id: String, x: Int) { transition(id, \"c\")  transition(id, \"d\") }\n}\n").unwrap();
+    let (code, out) = soma(&dir, &["check", "app.cell"]);
+    assert_ne!(code, 0, "{out}");
+    assert!(out.contains("`a -> c { guard … }` repeats the move a -> c that `* -> c` already declares"), "{out}");
+    assert!(out.contains("`b -> d` repeats the move b -> d that `b -> d { guard … }` already declares"), "{out}");
+    // the same guard on both (none here) answers the same either way
+    std::fs::write(dir.join("app.cell"), "cell O {\n  state s {\n    initial: a\n    a -> b\n    b -> c\n    * -> c\n  }\n  on go(id: String) { transition(id, \"c\") }\n}\n").unwrap();
+    let (code, out) = soma(&dir, &["check", "app.cell"]);
+    assert_eq!(code, 0, "{out}");
+    let _ = std::fs::remove_dir_all(dir);
+}

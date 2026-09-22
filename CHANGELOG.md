@@ -2,6 +2,16 @@
 
 ## Unreleased
 
+### An edge repeating a move with another guard is refused
+
+- A transition takes the first declared edge that matches. After `* ->
+  cancelled`, a `pending -> cancelled { guard { reason != "" } }` was never
+  taken — its guard never ran, while `soma verify` reported it as
+  runtime-checked — and `b -> d { guard { … } }` declared before `b -> d`
+  refused a move the second edge allows. `soma check` now reports two edges
+  that share a move but not a guard, suggesting `except` for a wildcard.
+  Repeating a move with the same guard (or none on either) is unchanged.
+
 ### A compound or comparison face promise is checked or refused
 
 - Only a bare structural promise was evaluated. `promise all_persistent &&
