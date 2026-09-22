@@ -2254,6 +2254,37 @@ fn a_property_rule_naming_nothing_is_reported() {
 }
 
 #[test]
+fn a_malformed_budget_annotation_is_refused_rather_than_defaulted() {
+    // `capacity("big")` and `capacity()` fell back to the DEFAULT capacity
+    // and `soma check` still printed "budget proven" — on a number the
+    // author never wrote (66 MiB proven where `capacity(10)` proves 24)
+    let dir = scratch("budget_annotation");
+    let cell = |prop: &str| format!(
+        "cell A {{\n    memory {{ m: Map<String, Int> [persistent, {prop}] }}\n         \x20   scale {{\n        replicas: 1\n        memory: \"128Mi\"\n    }}\n         \x20   on r() {{ return 1 }}\n}}\n");
+    for prop in ["capacity()", "capacity(\"big\")", "capacity(1.5)",
+                 "capacity(10, 20)", "max_value_bytes()"] {
+        std::fs::write(dir.join("app.cell"), cell(prop)).unwrap();
+        let (code, out) = soma(&dir, &["check", "app.cell"]);
+        assert_ne!(code, 0, "`{prop}` must not be proven on a default\n{out}");
+        assert!(out.contains("the memory proof would silently use the default"), "[{prop}]\n{out}");
+    }
+    // a well-formed bound still proves, and a parameterised property that
+    // feeds no proof is untouched
+    for prop in ["capacity(10)", "max_key_bytes(64)", "ttl(30min)"] {
+        std::fs::write(dir.join("app.cell"), cell(prop)).unwrap();
+        let (code, out) = soma(&dir, &["check", "app.cell"]);
+        assert_eq!(code, 0, "[{prop}]\n{out}");
+    }
+    // and the bound that is written is the bound that is proven
+    std::fs::write(dir.join("app.cell"), cell("capacity(10)")).unwrap();
+    let (_, tight) = soma(&dir, &["check", "app.cell"]);
+    std::fs::write(dir.join("app.cell"), cell("capacity(100)")).unwrap();
+    let (_, loose) = soma(&dir, &["check", "app.cell"]);
+    assert_ne!(tight, loose, "the declared capacity must move the proven peak");
+    let _ = std::fs::remove_dir_all(dir);
+}
+
+#[test]
 fn fix_never_deletes_code_past_the_handler_line() {
     // removing a handler's `-> T` searched the WHOLE file for the opening
     // brace: with no body on that line it found the next cell's `{` and

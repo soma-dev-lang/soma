@@ -2,6 +2,17 @@
 
 ## Unreleased
 
+### A malformed budget annotation is refused, not quietly defaulted
+
+- `capacity(N)`, `max_key_bytes(N)`, `max_value_bytes(N)` and
+  `max_element_bytes(N)` feed the memory proof. A malformed argument fell back
+  to the built-in default and `soma check` still printed "budget proven" — on
+  a number the author never wrote. `capacity("big")`, `capacity()` and
+  `capacity(1.5)` all proved 66 MiB where `capacity(10)` proves 24, and
+  `capacity(10, 20)` silently read only the first. Each is now refused, naming
+  what is wrong. A parameterised property that feeds no proof, such as
+  `ttl(30min)`, is untouched.
+
 ### A `cell property` rule naming nothing is reported
 
 - `cell property my_flag { rules { implies [persistant] } }` was accepted in

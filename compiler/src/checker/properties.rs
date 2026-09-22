@@ -43,6 +43,36 @@ impl<'a> PropertyChecker<'a> {
             }
         }
 
+        // A budget annotation feeds the memory proof: `capacity("big")` and
+        // `capacity()` fell back to the DEFAULT capacity and `soma check`
+        // still printed "budget proven", on a number the author never wrote
+        const BUDGET_PARAMS: &[&str] = &["capacity", "max_key_bytes", "max_value_bytes", "max_element_bytes"];
+        for prop in &slot.properties {
+            let MemoryProperty::Param(ref p) = prop.node else { continue };
+            if !BUDGET_PARAMS.contains(&p.name.as_str()) { continue }
+            let bad = match p.values.as_slice() {
+                [one] => match one.node {
+                    Literal::Int(n) if n >= 0 => None,
+                    Literal::Int(n) => Some(format!("{} is negative", n)),
+                    _ => Some("its argument is not a whole number".to_string()),
+                },
+                [] => Some("it carries no bound".to_string()),
+                many => Some(format!("it carries {} arguments, and only the first would be read", many.len())),
+            };
+            if let Some(why) = bad {
+                self.errors.push(CheckError::Static {
+                    kind: "budget_annotation",
+                    message: format!(
+                        "`{}({})` on '{}': {} — the memory proof would silently use the default instead. Write `{}(N)` with one whole number, or drop it",
+                        p.name,
+                        p.values.iter().map(|v| format!("{}", crate::ast::render_expr(&Expr::Literal(v.node.clone())))).collect::<Vec<_>>().join(", "),
+                        slot.name, why, p.name
+                    ),
+                    span: prop.span,
+                });
+            }
+        }
+
         // 2. Check contradictions (from registry)
         for (i, prop_a) in prop_names.iter().enumerate() {
             let contradictions = self.registry.contradictions_for(prop_a);
