@@ -40,14 +40,16 @@ pub fn verify_program(program: &Program) -> Vec<VerifyResult> {
     // interior cells too: a machine, an invariant or a loop inside
     // `interior { }` was never proven — verify said OK on a statically
     // violated invariant
-    for cell in super::names::collect_cells(program) {
+    let all_cells = super::names::collect_cells(program);
+    // counted once: it was recomputed for every machine of every cell
+    let machine_cells = all_cells.iter().filter(|c| c.sections.iter().any(|s| matches!(s.node, Section::State(_)))).count();
+    for cell in all_cells.iter().copied() {
         if !matches!(cell.kind, CellKind::Cell | CellKind::Agent) { continue; }
         for section in &cell.sections {
             if let Section::State(ref sm) = section.node {
                 let mut result = verify_state_machine(sm, &cell);
                 // several machines: name the CELL too (two `s` blocks could
                 // not be told apart)
-                let machine_cells = super::names::collect_cells(program).iter().filter(|c| c.sections.iter().any(|s| matches!(s.node, Section::State(_)))).count();
                 if machine_cells > 1 { result.machine_name = format!("{}.{}", cell.name, sm.name); }
                 // ── V1.3: refinement check ─────────────────────────────
                 // The CTL checker proves properties about the *picture* of

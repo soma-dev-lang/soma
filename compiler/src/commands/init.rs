@@ -82,14 +82,14 @@ pub fn cmd_init(name: Option<&str>) {
 }
 
 /// The `[dependencies.<name>]` block for a dependency, as TOML text.
-fn dependency_block(name: &str, dep: &pkg::Dependency) -> String {
+fn dependency_block(name: &str, dep: &pkg::Dependency, nl: &str) -> String {
     match dep {
-        pkg::Dependency::Version(v) => format!("[dependencies]\n{} = \"{}\"\n", name, v),
+        pkg::Dependency::Version(v) => format!("[dependencies]{nl}{} = \"{}\"{nl}", name, v),
         pkg::Dependency::Full(spec) => {
-            let mut out = format!("[dependencies.{}]\n", name);
+            let mut out = format!("[dependencies.{}]{nl}", name);
             for (k, v) in [("git", &spec.git), ("path", &spec.path), ("version", &spec.version),
                            ("branch", &spec.branch), ("subdir", &spec.subdir)] {
-                if let Some(v) = v { out.push_str(&format!("{} = \"{}\"\n", k, v)); }
+                if let Some(v) = v { out.push_str(&format!("{} = \"{}\"{nl}", k, v)); }
             }
             out
         }
@@ -99,6 +99,9 @@ fn dependency_block(name: &str, dep: &pkg::Dependency) -> String {
 /// Put `name` in the manifest text, replacing any entry it already has,
 /// and leaving every other line — comments included — exactly as written.
 fn insert_dependency(text: &str, name: &str, dep: &pkg::Dependency) -> String {
+    // a CRLF manifest stays CRLF: rewriting every line ending is the kind of
+    // whole-file diff this function exists to avoid
+    let nl = if text.contains("\r\n") { "\r\n" } else { "\n" };
     let header_of = |l: &str| {
         let t = l.trim();
         (t.starts_with('[') && t.ends_with(']')).then(|| t[1..t.len() - 1].trim().to_string())
@@ -121,19 +124,20 @@ fn insert_dependency(text: &str, name: &str, dep: &pkg::Dependency) -> String {
         }
         kept.push(line);
     }
-    let mut out = kept.join("\n");
-    if !out.ends_with('\n') { out.push('\n'); }
+    let mut out = kept.join(nl);
+    if !out.ends_with(nl) { out.push_str(nl); }
     match dep {
         // a simple version goes under the existing [dependencies] header
         pkg::Dependency::Version(v) if out.lines().any(|l| header_of(l).as_deref() == Some("dependencies")) => {
             let at = out.lines().position(|l| header_of(l).as_deref() == Some("dependencies")).unwrap();
             let mut lines: Vec<String> = out.lines().map(|l| l.to_string()).collect();
             lines.insert(at + 1, format!("{} = \"{}\"", name, v));
-            lines.join("\n") + "\n"
+            lines.join(nl) + nl
         }
         _ => {
-            if !out.ends_with("\n\n") { out.push('\n'); }
-            out + &dependency_block(name, dep)
+            let blank = format!("{nl}{nl}");
+            if !out.ends_with(&blank) { out.push_str(nl); }
+            out + &dependency_block(name, dep, nl)
         }
     }
 }
@@ -186,7 +190,7 @@ pub fn cmd_add(package: &str, version: Option<&str>, git: Option<&str>, path: Op
         .unwrap_or(false);
     if !ok {
         eprintln!("error: soma.toml could not be edited safely — add the dependency by hand:");
-        eprintln!("{}", dependency_block(package, &dep).trim_end());
+        eprintln!("{}", dependency_block(package, &dep, "\n").trim_end());
         process::exit(1);
     }
     std::fs::write(&manifest_path, edited).unwrap_or_else(|e| {

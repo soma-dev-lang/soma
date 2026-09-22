@@ -1898,6 +1898,14 @@ fn add_keeps_the_manifest_the_author_wrote() {
     assert_eq!(code, 0, "{out}");
     let after = std::fs::read_to_string(dir.join("soma.toml")).unwrap();
     assert!(after.starts_with("# bare\n") && after.contains("[dependencies.p]") && after.contains("path = \"../lib\""), "{after}");
+    // a CRLF manifest keeps CRLF: rewriting every line ending is the same
+    // whole-file diff this edit exists to avoid
+    std::fs::write(dir.join("soma.toml"), "# windows\r\n[package]\r\nname = \"demo\"\r\nversion = \"0.1.0\"\r\n\r\n[dependencies]\r\n").unwrap();
+    let (code, out) = soma(&dir, &["add", "w", "--version", "1.0"]);
+    assert_eq!(code, 0, "{out}");
+    let after = std::fs::read_to_string(dir.join("soma.toml")).unwrap();
+    assert!(after.contains("w = \"1.0\""), "{after}");
+    assert!(!after.replace("\r\n", "").contains('\n'), "every newline must stay CRLF\n{after:?}");
     let _ = std::fs::remove_dir_all(dir);
 }
 
