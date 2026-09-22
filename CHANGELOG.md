@@ -2,6 +2,16 @@
 
 ## Unreleased
 
+### `soma verify`: the reason a write is not proven names the rebinding
+
+- A handler that reassigns a parameter before writing it was told that
+  `amount` is a parameter and to narrow it with `require amount >= 0 else …`
+  — advice it had already followed, and which cannot work: the require
+  describes a value that is gone by the write. The reason now names the
+  rebinding and says to write the value that was checked, or to require the
+  one written. A parameter written straight through still gets the require
+  advice.
+
 ### `soma check`: a name reached for out of habit gets the same answer either way
 
 - `x.str()` was answered with `to_string(x)`, while `str(x)` fell through to

@@ -921,6 +921,18 @@ pub fn verify_program_invariants(program: &Program) -> Vec<VerifyResult> {
                             if open_txt.iter().all(|t| ctx.vars.contains_key(&format!("__req__{}", t))) {
                                 return format!("`{n}` is a parameter; the matching `require {}` is there, but it proves the write only when it is the handler's one write to the slot, outside loops, with nothing between that could write the slot (put the require and the write in a handler of their own)", open_txt.join(" && "));
                             }
+                            // the handler rebinds the parameter, so a require
+                            // on it describes a value that is gone by the
+                            // write: telling the author to add one (or that
+                            // theirs is missing) sent them after a fix that
+                            // cannot work
+                            let mut rebinds: Vec<(&str, &Expr)> = Vec::new();
+                            if let Some(o) = on { collect_assigns(&o.body, &mut rebinds); }
+                            if rebinds.iter().any(|(m, _)| *m == n.as_str()) {
+                                return format!(
+                                    "`{n}` is a parameter the handler rebinds before the write, so no `require` on it describes the value written — write the value you checked, or require the one you write"
+                                );
+                            }
                             format!("`{n}` is a parameter (narrow it: `require {} else …`)", open_txt.join(" && "))
                         } else {
                             let mut assigns: Vec<(&str, &Expr)> = Vec::new();

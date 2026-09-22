@@ -1961,6 +1961,32 @@ fn a_name_reached_for_out_of_habit_is_answered_the_same_as_a_call_and_a_method()
 }
 
 #[test]
+fn verify_names_a_rebound_parameter_as_the_reason_the_write_is_not_proven() {
+    // the handler already had `require amount >= 0`, and verify still told
+    // the author to add one. The require was not the problem: the handler
+    // reassigns the parameter before the write, so no require on it can
+    // describe what is written
+    let dir = scratch("verify_rebind_reason");
+    let head = "cell T {\n    memory {\n        bal: Map<String, Int> [persistent]\n                \x20       invariant bal >= 0\n    }\n                \x20   state flow {\n        initial: open\n        open -> closed\n    }\n                \x20   on close(id: String) { transition(id, \"closed\")  return 1 }\n";
+    std::fs::write(dir.join("rebind.cell"), format!(
+        "{head}    on put(id: String, amount: Int) {{\n         \x20       require amount >= 0 else BadAmount\n         \x20       amount = 0 - 5\n        bal.set(id, amount)\n        return 1\n    }}\n}}\n")).unwrap();
+    let (code, out) = soma(&dir, &["check", "rebind.cell"]);
+    assert_eq!(code, 0, "{out}");
+    let (_, out) = soma(&dir, &["verify", "rebind.cell"]);
+    assert!(out.contains("rebinds before the write"), "{out}");
+    assert!(!out.contains("narrow it: `require"),
+        "the require is already there; repeating the advice sends the author after a fix that cannot work\n{out}");
+
+    // a parameter written straight through still gets the require advice
+    std::fs::write(dir.join("plain.cell"), format!(
+        "{head}    on put(id: String, amount: Int) {{\n         \x20       bal.set(id, amount)\n        return 1\n    }}\n}}\n")).unwrap();
+    let (_, out) = soma(&dir, &["verify", "plain.cell"]);
+    assert!(out.contains("narrow it: `require amount >= 0 else"), "{out}");
+    assert!(!out.contains("rebinds before the write"), "{out}");
+    let _ = std::fs::remove_dir_all(dir);
+}
+
+#[test]
 fn fix_never_deletes_code_past_the_handler_line() {
     // removing a handler's `-> T` searched the WHOLE file for the opening
     // brace: with no body on that line it found the next cell's `{` and
