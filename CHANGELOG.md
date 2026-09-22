@@ -2,6 +2,14 @@
 
 ## Unreleased
 
+### `soma check`: a name reached for out of habit gets the same answer either way
+
+- `x.str()` was answered with `to_string(x)`, while `str(x)` fell through to
+  edit distance and suggested `shr`, a bit shift. So did `size` (`sin`),
+  `pop` (`pow`) and `add` (`abs`), and thirteen more names got no help at all.
+  A plain call and a string interpolation now consult the same table the
+  method form does. A genuine typo still gets its near-miss.
+
 ### `soma lint`: no `match` suggestion that would change the answer
 
 - A branch that rewrites the variable the chain compares makes the ifs run in

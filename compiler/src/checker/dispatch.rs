@@ -225,6 +225,11 @@ pub fn check_program(program: &Program) -> (Vec<DispatchFinding>, Vec<DispatchFi
                         let suggestion = if matches!(name.as_str(),
                             "keys" | "values" | "entries" | "has" | "delete") {
                             format!(" ('{name}' is a method — write m.{name}())")
+                        } else if let Some(soma) = super::habits::alias_hint(&name) {
+                            // a name reached for out of habit has a curated
+                            // answer; edit distance sent `str` to `shr`,
+                            // `size` to `sin` and `pop` to `pow`
+                            format!(" (in Soma: {soma})")
                         } else {
                             suggest(&name, index.known.iter().chain(bound.iter()))
                                 .map(|s| format!(" (did you mean '{}'?)", s))

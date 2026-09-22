@@ -24,6 +24,13 @@ const RUNTIME_METHODS: &[&str] = &[
     "len", "length", "list", "push", "put", "remove", "set", "size", "values", "split",
 ];
 
+/// The Soma spelling for a name reached for out of habit, when there is one.
+/// Used for a method call AND for a plain call: `str(x)` used to be answered
+/// with "did you mean 'shr'?" while `x.str()` named `to_string`.
+pub fn alias_hint(name: &str) -> Option<&'static str> {
+    ALIASES.iter().find(|(a, _)| *a == name).map(|(_, soma)| *soma)
+}
+
 /// Names models reach for, and what Soma calls them.
 const ALIASES: &[(&str, &str)] = &[
     ("includes", "contains(xs, x)"),

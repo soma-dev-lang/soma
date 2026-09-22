@@ -1933,6 +1933,34 @@ fn lint_does_not_suggest_a_match_that_would_change_the_answer() {
 }
 
 #[test]
+fn a_name_reached_for_out_of_habit_is_answered_the_same_as_a_call_and_a_method() {
+    // `x.str()` named to_string, while `str(x)` fell through to edit
+    // distance and answered "did you mean 'shr'?" — a bit shift. Same for
+    // `size` (sin), `pop` (pow) and `add` (abs)
+    let dir = scratch("habit_call_hint");
+    for (name, want) in [("str", "to_string(x)"), ("size", "len(x)"),
+                         ("toUpperCase", "uppercase(s)"), ("forEach", "for x in xs")] {
+        std::fs::write(dir.join("app.cell"), format!(
+            "cell A {{\n    on f(x: Int) {{\n        return {name}(x)\n    }}\n}}\n")).unwrap();
+        let (code, out) = soma(&dir, &["check", "app.cell"]);
+        assert_ne!(code, 0, "{out}");
+        assert!(out.contains(&format!("in Soma: {want}")), "`{name}(x)` must name {want}\n{out}");
+        assert!(!out.contains("did you mean"), "`{name}(x)` must not guess by edit distance\n{out}");
+    }
+    // inside a string interpolation too
+    std::fs::write(dir.join("interp.cell"),
+        "cell A {\n    on f(x: Int) {\n        return \"v={str(x)}\"\n    }\n}\n").unwrap();
+    let (_, out) = soma(&dir, &["check", "interp.cell"]);
+    assert!(out.contains("in Soma: to_string(x)"), "{out}");
+    // a genuine typo still gets the near-miss
+    std::fs::write(dir.join("typo.cell"),
+        "cell A {\n    on f(x: Int) {\n        return lenn(x)\n    }\n}\n").unwrap();
+    let (_, out) = soma(&dir, &["check", "typo.cell"]);
+    assert!(out.contains("did you mean 'len'?"), "{out}");
+    let _ = std::fs::remove_dir_all(dir);
+}
+
+#[test]
 fn fix_never_deletes_code_past_the_handler_line() {
     // removing a handler's `-> T` searched the WHOLE file for the opening
     // brace: with no body on that line it found the next cell's `{` and

@@ -1525,9 +1525,14 @@ impl<'a> Walker<'a> {
     }
 
     fn report_undefined_fn(&mut self, name: &str, span: Span) {
-        let suggestion = suggest(name, self.scope.iter().chain(self.index.known.iter()))
-            .map(|s| format!(" (did you mean '{}'?)", s))
-            .unwrap_or_default();
+        let suggestion = match crate::checker::habits::alias_hint(name) {
+            // a name reached for out of habit has a curated answer; edit
+            // distance sent `str` to `shr` and `size` to `sin`
+            Some(soma) => format!(" (in Soma: {soma})"),
+            None => suggest(name, self.scope.iter().chain(self.index.known.iter()))
+                .map(|s| format!(" (did you mean '{}'?)", s))
+                .unwrap_or_default(),
+        };
         self.issues.push(InterpolationIssue {
             message: format!(
                 "string interpolation calls undefined function '{name}'{suggestion} — \
