@@ -320,36 +320,49 @@ fn call_bulk_io(name: &str, args: &[Value]) -> Option<Result<Value, RuntimeError
             // Parallel file reading using threads
             if args.len() >= 2 {
                 if let (Value::String(dir), Value::Int(count_si)) = (&args[0], &args[1]) {
-                    let count_limit = count_si.to_i64().unwrap_or(0) as usize;
-                    let paths: Vec<std::path::PathBuf> = std::fs::read_dir(dir)
+                    // the same files as read_files: the first N BY NAME that
+                    // read as UTF-8 text. It took the first N in directory
+                    // order (another set than read_files, and a non-UTF-8
+                    // file used up a place), and an empty or missing
+                    // directory made a chunk size of 0, which panics.
+                    let count_limit = count_si.to_i64().unwrap_or(0).max(0) as usize;
+                    let mut paths: Vec<std::path::PathBuf> = std::fs::read_dir(dir)
                         .map(|entries| {
                             entries.filter_map(|e| e.ok())
-                                .filter(|e| e.path().is_file())
-                                .take(count_limit)
                                 .map(|e| e.path())
+                                .filter(|p| p.is_file())
                                 .collect()
                         })
                         .unwrap_or_default();
+                    paths.sort();
 
                     let n_threads = std::thread::available_parallelism()
                         .map(|n| n.get()).unwrap_or(1);
-                    let chunk = (paths.len() + n_threads - 1) / n_threads;
-
-                    let results: Vec<Value> = std::thread::scope(|s| {
-                        let handles: Vec<_> = paths.chunks(chunk).map(|chunk_paths| {
-                            s.spawn(move || {
-                                chunk_paths.iter().filter_map(|path| {
-                                    std::fs::read_to_string(path).ok().map(|content| {
-                                        map_from_pairs(vec![
-                                            ("path".to_string(), Value::String(path.display().to_string())),
-                                            ("content".to_string(), Value::String(content)),
-                                        ])
-                                    })
-                                }).collect::<Vec<_>>()
-                            })
-                        }).collect();
-                        handles.into_iter().flat_map(|h| h.join().unwrap()).collect()
-                    });
+                    let mut results: Vec<Value> = Vec::new();
+                    let mut rest: &[std::path::PathBuf] = &paths;
+                    // read the next (count - found) candidates in parallel, in
+                    // order, until enough were text or none are left
+                    while results.len() < count_limit && !rest.is_empty() {
+                        let batch = &rest[..(count_limit - results.len()).min(rest.len())];
+                        rest = &rest[batch.len()..];
+                        let chunk = batch.len().div_ceil(n_threads).max(1);
+                        let read: Vec<Value> = std::thread::scope(|s| {
+                            let handles: Vec<_> = batch.chunks(chunk).map(|chunk_paths| {
+                                s.spawn(move || {
+                                    chunk_paths.iter().filter_map(|path| {
+                                        std::fs::read_to_string(path).ok().map(|content| {
+                                            map_from_pairs(vec![
+                                                ("path".to_string(), Value::String(path.display().to_string())),
+                                                ("content".to_string(), Value::String(content)),
+                                            ])
+                                        })
+                                    }).collect::<Vec<_>>()
+                                })
+                            }).collect();
+                            handles.into_iter().flat_map(|h| h.join().unwrap()).collect()
+                        });
+                        results.extend(read);
+                    }
 
                     Some(Ok(Value::List(results)))
                 } else {
@@ -364,7 +377,8 @@ fn call_bulk_io(name: &str, args: &[Value]) -> Option<Result<Value, RuntimeError
             if let Some(Value::List(items)) = args.first() {
                 let n_threads = std::thread::available_parallelism()
                     .map(|n| n.get()).unwrap_or(1);
-                let chunk = (items.len() + n_threads - 1) / n_threads;
+                // an empty list made a chunk size of 0, which panics
+                let chunk = items.len().div_ceil(n_threads).max(1);
 
                 let merged: HashMap<String, i64> = std::thread::scope(|s| {
                     let handles: Vec<_> = items.chunks(chunk).map(|chunk_items| {

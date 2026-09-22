@@ -2,6 +2,16 @@
 
 ## Unreleased
 
+### `par_read_files` and `par_word_count` answer an empty input
+
+- `par_word_count(list())`, and `par_read_files` on an empty or missing
+  directory or with a count of 0, panicked (kind `internal`) where
+  `word_count` and `read_files` answer `{}` and `[]`.
+- `par_read_files(dir, n)` took the first `n` files in directory order, so it
+  read other files than `read_files(dir, n)`, and a file that is not UTF-8
+  used up a place before being dropped. It now reads the same files: the
+  first `n` text files by name.
+
 ### A `cost` axis speaks only for the bound it was given
 
 - An empty `cost { }`, and `cost { usd: 1 }`, were both told their `tokens`

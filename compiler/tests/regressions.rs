@@ -2556,3 +2556,39 @@ cell test T {
     assert!(out.contains("1 tests: 1 passed"), "{out}");
     let _ = std::fs::remove_dir_all(dir);
 }
+
+#[test]
+fn parallel_bulk_io_reads_what_the_sequential_form_reads() {
+    // an empty list, an empty or missing directory, or a count of 0 made a
+    // chunk size of 0 and panicked; par_read_files also took the first N in
+    // directory order, not by name, and let a non-UTF-8 file use up a place
+    let dir = scratch("par_bulk_io");
+    let files = dir.join("files");
+    std::fs::create_dir_all(&files).unwrap();
+    for f in ["c", "a", "d", "b"] {
+        std::fs::write(files.join(f), format!("w {f}")).unwrap();
+    }
+    std::fs::write(files.join("a0"), [0xffu8, 0xfe]).unwrap();
+    std::fs::create_dir_all(dir.join("empty")).unwrap();
+    std::fs::write(dir.join("app.cell"), r#"
+cell P {
+    on names(n: Int) { return par_read_files("files", n) |> map(f => f.content) }
+    on seq(n: Int) { return read_files("files", n) |> map(f => f.content) }
+}
+cell test T {
+    rules {
+        assert par_word_count(list()) == map()
+        assert par_read_files("empty", 5) == []
+        assert par_read_files("missing", 5) == []
+        assert P.names(0) == []
+        assert P.names(2) == ["w a", "w b"]
+        assert P.names(2) == P.seq(2)
+        assert P.names(9) == P.seq(9)
+    }
+}
+"#).unwrap();
+    let (code, out) = soma(&dir, &["test", "app.cell"]);
+    assert_eq!(code, 0, "{out}");
+    assert!(out.contains("7 tests: 7 passed"), "{out}");
+    let _ = std::fs::remove_dir_all(dir);
+}
