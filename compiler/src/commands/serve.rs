@@ -1672,16 +1672,12 @@ pub fn cmd_serve(path: &PathBuf, port: u16, host: &str, verbose: bool, join: Opt
                 let _ = request.respond(cors(resp));
                 return;
             }
-            let args: Vec<interpreter::Value> = if query.is_empty() {
-                vec![]
-            } else {
-                query.split('&')
-                    .filter_map(|pair| {
-                        let (_, v) = pair.split_once('=')?;
-                        Some(coerce_query_value(&urlencoding_decode(v)))
-                    })
-                    .collect()
-            };
+            let mut args: Vec<interpreter::Value> = Vec::new();
+            if !query.is_empty() {
+                fill_from_query(&mut args, query,
+                    &handler_params.get(sig_name).cloned().unwrap_or_default(),
+                    handler_types.get(sig_name).map(|t| t.as_slice()).unwrap_or(&[]));
+            }
             (sig_name.to_string(), args)
         } else {
             let (url_path, query_string) = url.split_once('?').unwrap_or((&url, ""));
@@ -1713,50 +1709,9 @@ pub fn cmd_serve(path: &PathBuf, port: u16, host: &str, verbose: bool, join: Opt
                         .collect()
                 };
                 if !query_string.is_empty() {
-                    // query values fill the parameters the path left open —
-                    // by name when the key is one, else in order; a key the
-                    // handler has no room for (?utm_source=…) is ignored
-                    // rather than a "expected 1 argument, got 2"
-                    let param_names = handler_params.get(sig).cloned().unwrap_or_default();
-                    // a trailing `opts: Map` the path did not fill collects the
-                    // query keys that name no parameter (`/add/1?step=7` →
-                    // opts.step == 7; it used to be fed positionally)
-                    let opts_idx = handler_types.get(sig).and_then(|t| {
-                        let last = t.len().checked_sub(1)?;
-                        (t[last] == "Map" && last >= args.len()).then_some(last)
-                    });
-                    let mut opts_map: Vec<(String, interpreter::Value)> = Vec::new();
-                    let mut by_name: Vec<(usize, interpreter::Value)> = Vec::new();
-                    let mut positional: Vec<interpreter::Value> = Vec::new();
-                    for pair in query_string.split('&').filter(|pair| !pair.is_empty()) {
-                        let (k, v) = pair.split_once('=').unwrap_or((pair, ""));
-                        let decoded = urlencoding_decode(v);
-                        let key = urlencoding_decode(k);
-                        match param_names.iter().position(|p| *p == key) {
-                            Some(i) if i >= args.len() => by_name.push((i, coerce_query_value(&decoded))),
-                            Some(_) => {}
-                            None if opts_idx.is_some() => opts_map.push((key, coerce_query_value(&decoded))),
-                            None => positional.push(coerce_query_value(&decoded)),
-                        }
-                    }
-                    if let Some(oi) = opts_idx {
-                        if !opts_map.is_empty() && !by_name.iter().any(|(i, _)| *i == oi) {
-                            by_name.push((oi, interpreter::map_from_pairs(opts_map)));
-                        }
-                    }
-                    let mut slots: Vec<Option<interpreter::Value>> = vec![None; param_names.len().saturating_sub(args.len())];
-                    for (i, v) in by_name {
-                        if let Some(slot) = slots.get_mut(i - args.len()) { *slot = Some(v); }
-                    }
-                    let mut positional = positional.into_iter();
-                    for slot in slots.iter_mut() {
-                        if slot.is_none() {
-                            if let Some(v) = positional.next() { *slot = Some(v); }
-                        }
-                    }
-                    for slot in slots.into_iter().flatten() {
-                        args.push(slot);
-                    }
+                    fill_from_query(&mut args, query_string,
+                        &handler_params.get(sig).cloned().unwrap_or_default(),
+                        handler_types.get(sig).map(|t| t.as_slice()).unwrap_or(&[]));
                 }
                 if method == "POST" && !body.is_empty() {
                     if let Some(ref bv) = body_value {
@@ -2280,6 +2235,54 @@ pub(crate) fn coerce_to_type(ty: &str, v: interpreter::Value) -> interpreter::Va
             }
         }
         _ => v,
+    }
+}
+
+/// Fill the parameters the path left open from a query string: by name when
+/// the key is one, else in order. Shared by `/handler?…` and
+/// `/signal/handler?…` — the latter filled them in order only, so
+/// `?v=1&k=2` bound k to "1" and v to "2".
+fn fill_from_query(args: &mut Vec<interpreter::Value>, query_string: &str, param_names: &[String], handler_types: &[String]) {
+    // query values fill the parameters the path left open —
+    // by name when the key is one, else in order; a key the
+    // handler has no room for (?utm_source=…) is ignored
+    // rather than a "expected 1 argument, got 2"
+    // a trailing `opts: Map` the path did not fill collects the
+    // query keys that name no parameter (`/add/1?step=7` →
+    // opts.step == 7; it used to be fed positionally)
+    let opts_idx = handler_types.len().checked_sub(1)
+        .filter(|&last| handler_types[last] == "Map" && last >= args.len());
+    let mut opts_map: Vec<(String, interpreter::Value)> = Vec::new();
+    let mut by_name: Vec<(usize, interpreter::Value)> = Vec::new();
+    let mut positional: Vec<interpreter::Value> = Vec::new();
+    for pair in query_string.split('&').filter(|pair| !pair.is_empty()) {
+        let (k, v) = pair.split_once('=').unwrap_or((pair, ""));
+        let decoded = urlencoding_decode(v);
+        let key = urlencoding_decode(k);
+        match param_names.iter().position(|p| *p == key) {
+            Some(i) if i >= args.len() => by_name.push((i, coerce_query_value(&decoded))),
+            Some(_) => {}
+            None if opts_idx.is_some() => opts_map.push((key, coerce_query_value(&decoded))),
+            None => positional.push(coerce_query_value(&decoded)),
+        }
+    }
+    if let Some(oi) = opts_idx {
+        if !opts_map.is_empty() && !by_name.iter().any(|(i, _)| *i == oi) {
+            by_name.push((oi, interpreter::map_from_pairs(opts_map)));
+        }
+    }
+    let mut slots: Vec<Option<interpreter::Value>> = vec![None; param_names.len().saturating_sub(args.len())];
+    for (i, v) in by_name {
+        if let Some(slot) = slots.get_mut(i - args.len()) { *slot = Some(v); }
+    }
+    let mut positional = positional.into_iter();
+    for slot in slots.iter_mut() {
+        if slot.is_none() {
+            if let Some(v) = positional.next() { *slot = Some(v); }
+        }
+    }
+    for slot in slots.into_iter().flatten() {
+        args.push(slot);
     }
 }
 

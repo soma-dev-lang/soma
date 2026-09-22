@@ -2650,3 +2650,33 @@ cell Order {
     assert!(line.contains("proven in `kept`"), "{out}");
     let _ = std::fs::remove_dir_all(dir);
 }
+
+#[test]
+fn signal_route_binds_query_keys_by_name() {
+    // `/signal/h?v=…&k=…` filled the parameters in query order, so the key
+    // and the value of a write were swapped; `/h?…` already bound by name
+    let dir = scratch("signal_query");
+    std::fs::write(dir.join("app.cell"), r#"
+cell App {
+    on pair(k: String, v: String) { return k + "=" + v }
+}
+"#).unwrap();
+    let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+    let port = listener.local_addr().unwrap().port();
+    drop(listener);
+    let _server = Server(
+        Command::new(env!("CARGO_BIN_EXE_soma"))
+            .args(["serve", "app.cell", "--no-schedule", "-p", &port.to_string()])
+            .current_dir(&dir)
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .spawn()
+            .unwrap(),
+    );
+    wait_http(port);
+    let named = get(port, "/signal/pair?v=VAL&k=KEY");
+    assert!(named.contains("KEY=VAL"), "{named}");
+    assert!(get(port, "/pair?v=VAL&k=KEY").contains("KEY=VAL"));
+    let ordered = get(port, "/signal/pair?a=KEY&b=VAL");
+    assert!(ordered.contains("KEY=VAL"), "{ordered}");
+}

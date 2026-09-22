@@ -2,6 +2,14 @@
 
 ## Unreleased
 
+### `/signal/<handler>?…` binds the query by name
+
+- `POST /signal/store?v=VAL&k=KEY` filled `on store(k, v)` in query order,
+  so the write stored `VAL → KEY`: key and value swapped, with no error.
+  `/store?v=VAL&k=KEY` already bound by name. Both routes now share one
+  binding: by name when a key names a parameter, else in order, with a
+  trailing `opts: Map` collecting the other keys.
+
 ### A transition guard is not proven through a rebinding
 
 - `soma verify` proved `guard { amount > 0 }` whenever the calling handler
