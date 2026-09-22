@@ -3110,3 +3110,23 @@ cell test T {
 }
 "#);
 }
+
+#[test]
+fn zip_enumerate_and_flatten_refuse_what_is_not_a_list() {
+    // zip([1], "ab"), enumerate("ab") and flatten(5) answered [] in silence
+    passes("list_builtins_types", r#"
+cell S {
+    on k(r: Map) { return if r.error != () { "ERR:" + r.kind } else { to_string(r.value) } }
+}
+cell test T {
+    rules {
+        assert zip([1, 2], ["a"]) == [map("left", 1, "right", "a")]
+        assert enumerate(["x"]) == [map("index", 0, "value", "x")]
+        assert flatten([[1], 2, [3, 4]]) == [1, 2, 3, 4]
+        assert S.k(try { zip([1], "ab") }) == "ERR:type"
+        assert S.k(try { enumerate("ab") }) == "ERR:type"
+        assert S.k(try { flatten(5) }) == "ERR:type"
+    }
+}
+"#);
+}

@@ -2,6 +2,12 @@
 
 ## Unreleased
 
+### `zip`, `enumerate` and `flatten` refuse what is not a List
+
+- `zip([1], "ab")`, `enumerate("ab")` and `flatten(5)` answered `[]` in
+  silence, so a String or a Map where a List was meant emptied the result.
+  Each now raises kind `type`, naming what it got.
+
 ### A native BigInt prints through `to_string` and `sb_push_int`
 
 - In a `[native]` handler, an Int grown past 64 bits could be returned as

@@ -324,7 +324,7 @@ pub fn call_builtin(name: &str, args: &[Value]) -> Option<Result<Value, RuntimeE
                     if let Value::List(inner) = item { inner.clone() } else { vec![item.clone()] }
                 }).collect();
                 Some(Ok(Value::List(result)))
-            } else { Some(Ok(Value::List(vec![]))) }
+            } else { not_a_list("flatten(list)", args.first()) }
         }
         "zip" => {
             if args.len() >= 2 {
@@ -333,7 +333,7 @@ pub fn call_builtin(name: &str, args: &[Value]) -> Option<Result<Value, RuntimeE
                         map_from_pairs(vec![("left".to_string(), l.clone()), ("right".to_string(), r.clone())])
                     }).collect();
                     Some(Ok(Value::List(result)))
-                } else { Some(Ok(Value::List(vec![]))) }
+                } else { not_a_list("zip(a, b)", args[..2].iter().find(|v| !matches!(v, Value::List(_)))) }
             } else { Some(Err(RuntimeError::TypeError("zip expects (list, list)".to_string()))) }
         }
         "enumerate" => {
@@ -342,7 +342,7 @@ pub fn call_builtin(name: &str, args: &[Value]) -> Option<Result<Value, RuntimeE
                     map_from_pairs(vec![("index".to_string(), Value::Int(SomaInt::from_i64(i as i64))), ("value".to_string(), v.clone())])
                 }).collect();
                 Some(Ok(Value::List(result)))
-            } else { Some(Ok(Value::List(vec![]))) }
+            } else { not_a_list("enumerate(list)", args.first()) }
         }
         "render_each" => {
             if args.len() >= 2 {
@@ -518,4 +518,12 @@ pub fn call_builtin(name: &str, args: &[Value]) -> Option<Result<Value, RuntimeE
         }
         _ => None,
     }
+}
+
+/// The error for a list builtin handed something else (`zip([1], "ab")`,
+/// `enumerate("ab")` and `flatten(5)` answered [] in silence).
+fn not_a_list(call: &str, got: Option<&Value>) -> Option<Result<Value, RuntimeError>> {
+    Some(Err(RuntimeError::Domain { kind: "type".to_string(), message: format!(
+        "{} takes a List, got {}", call,
+        got.map(|v| format!("{} {}", crate::interpreter::value_type_name(v), super::string::to_json_string(v))).unwrap_or_else(|| "nothing".to_string())) }))
 }
