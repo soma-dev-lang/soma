@@ -2382,7 +2382,7 @@ fn routable(names: &[String], h: &str) -> bool {
 
 /// Handlers that change state: a slot write, a transition, an emit, a call
 /// into another cell — or a call to a sibling that does (transitively).
-fn mutating_handlers(cell: &ast::CellDef, foreign: &std::collections::HashSet<String>) -> std::collections::HashSet<String> {
+pub(crate) fn mutating_handlers(cell: &ast::CellDef, foreign: &std::collections::HashSet<String>) -> std::collections::HashSet<String> {
     use ast::{Expr, Section, Statement};
     use std::collections::{HashMap, HashSet};
     let slots: HashSet<String> = cell.sections.iter().filter_map(|s| match &s.node {

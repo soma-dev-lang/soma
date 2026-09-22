@@ -2,6 +2,20 @@
 
 ## Unreleased
 
+### `soma lint`: the unrouted-handler note matches what `soma serve` does
+
+- The note named POST for every handler: `soma serve` answers a GET on one
+  that does not write, so a read-only handler now reads `reachable as GET or
+  POST /<name>/<args>`. The two commands share one write analysis, so they
+  cannot drift apart.
+- A handler `request` reaches through one of its own helpers was reported as
+  an open endpoint. `soma serve` does not expose it — `request` owns it — so
+  `request` → `submit` → `validate` left `validate` described as reachable at
+  `/validate/<args>` when nothing answered there, with the advice to rename it
+  private. The note now uses the same ownership analysis `soma serve` applies.
+  Of the nineteen shipped `soma example` programs carrying the note, eleven
+  were in this case.
+
 ### `soma lint`: the `.get()` fallback has the slot's value type
 
 - The `unchecked .get()` warning suggested `?? map()` whatever the slot held.

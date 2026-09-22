@@ -54,6 +54,17 @@ struct LintPass<'a> {
     /// slot -> (value type as written, literal default for it if one exists).
     /// `Map<String, String>.get()` was told to fall back on `map()`.
     slot_value: std::collections::HashMap<String, (String, Option<String>)>,
+    /// handlers of the cell being linted that write: the others answer a GET,
+    /// and the unrouted-handler note used to name POST for every one of them
+    mutating: std::collections::HashSet<String>,
+    /// every handler name of the OTHER cells, for the write analysis
+    foreign_handlers: std::collections::HashSet<String>,
+    /// the program with interpolation and UFCS calls made explicit
+    analysis: Option<ast::Program>,
+    /// what `request` owns: the routes it spells out and the handlers it
+    /// reaches, through its own helpers too. `soma serve` does not expose
+    /// those, so calling them reachable was wrong.
+    request_owned: Vec<String>,
 }
 
 impl<'a> LintPass<'a> {
@@ -66,6 +77,10 @@ impl<'a> LintPass<'a> {
             suppress_unchecked_get: false,
             known_keys: Vec::new(),
             slot_value: std::collections::HashMap::new(),
+            mutating: std::collections::HashSet::new(),
+            request_owned: Vec::new(),
+            foreign_handlers: std::collections::HashSet::new(),
+            analysis: None,
         }
     }
 
@@ -87,6 +102,7 @@ impl<'a> LintPass<'a> {
     // ── Top-level walk ──────────────────────────────────────────────
 
     fn check_program(&mut self, program: &ast::Program) {
+        self.analysis = Some(crate::checker::desugar::expose_for_analysis(program));
         // interior cells too: their handlers were never linted
         for cell in crate::checker::names::collect_cells(program) {
             if matches!(cell.kind, ast::CellKind::Cell | ast::CellKind::Agent) {
@@ -117,6 +133,28 @@ impl<'a> LintPass<'a> {
                     }
                 }
             }
+        }
+
+        // which handlers write, so the unrouted-handler note names the
+        // method that actually reaches them: a read-only one answers a GET
+        self.mutating.clear();
+        self.foreign_handlers.clear();
+        self.request_owned.clear();
+        if let Some(analysis) = self.analysis.take() {
+            let cells = crate::checker::names::collect_cells(&analysis);
+            self.foreign_handlers = cells.iter()
+                .filter(|c| c.name != cell.name)
+                .flat_map(|c| c.sections.iter().filter_map(|s| match &s.node {
+                    ast::Section::OnSignal(on) => Some(on.signal_name.clone()),
+                    _ => None,
+                }))
+                .collect();
+            if let Some(acell) = cells.iter().find(|c| c.name == cell.name) {
+                self.mutating = super::serve::mutating_handlers(acell, &self.foreign_handlers);
+                self.request_owned =
+                    crate::checker::routes::explicit_routes_in(&analysis, acell).first_segments();
+            }
+            self.analysis = Some(analysis);
         }
 
         // Collect handler names and check for routing references
@@ -629,12 +667,18 @@ impl<'a> LintPass<'a> {
             // Not referenced by `request`: still an endpoint at /<name>/…
             // (that is the documented rule 3, and how HTML forms post).
             // Say what it is; renaming it would REMOVE the endpoint.
-            if !routed.iter().any(|r| r == name) {
+            // `request` reaching it through a helper owns it just as much as
+            // calling it: `request` → `submit` → `validate` left `validate`
+            // reported as an open endpoint that `soma serve` never exposes
+            if !routed.iter().any(|r| r == name) && !self.request_owned.iter().any(|r| r == name) {
                 self.warn(
                     "private_helper",
                     Severity::Info,
                     *line,
-                    &format!("handler '{}' is not referenced by `request` — it is still reachable as POST /{}/<args>", name, name),
+                    &format!("handler '{}' is not referenced by `request` — it is still reachable as {} /{}/<args>",
+                        name,
+                        if self.mutating.contains(name) { "POST" } else { "GET or POST" },
+                        name),
                     &format!("intended? fine. Internal only? rename it '_{}' (private handlers are never routed)", name),
                 );
             }

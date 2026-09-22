@@ -1884,6 +1884,29 @@ fn lint_defaults_the_unchecked_get_to_the_slot_value_type() {
 }
 
 #[test]
+fn lint_names_the_method_that_reaches_an_unrouted_handler() {
+    // the note said "reachable as POST /<h>/<args>" for every handler,
+    // but `soma serve` answers a GET on one that does not write — and it
+    // exposes no endpoint at all for a handler `request` reaches through
+    // one of its own helpers, which the note still called reachable
+    let dir = scratch("lint_unrouted_method");
+    std::fs::write(dir.join("app.cell"),
+        "cell A {\n    memory { n: Map<String, Int> }\n         \x20   on request(path: String) {\n        if path == \"/s\" { return submit(1) }\n         \x20       return map(\"ok\", false)\n    }\n         \x20   on submit(v: Int) { return check_it(v) }\n         \x20   on check_it(v: Int) { return v > 0 }\n         \x20   on bump(k: String) {\n        n.set(k, (n.get(k) ?? 0) + 1)\n        return 1\n    }\n         \x20   on peek(k: String) { return n.get(k) ?? 0 }\n}\n").unwrap();
+    let (code, out) = soma(&dir, &["lint", "app.cell"]);
+    assert_eq!(code, 0, "{out}");
+    // a handler that writes is POST-only, a read-only one answers a GET too
+    assert!(out.contains("'bump' is not referenced by `request` — it is still reachable as POST /bump/<args>"),
+        "a writing handler is POST-only\n{out}");
+    assert!(out.contains("'peek' is not referenced by `request` — it is still reachable as GET or POST /peek/<args>"),
+        "a read-only handler answers a GET too\n{out}");
+    // `request` -> `submit` -> `check_it`: both belong to `request`
+    assert!(!out.contains("'submit' is not referenced"), "request calls submit\n{out}");
+    assert!(!out.contains("'check_it' is not referenced"),
+        "request reaches check_it through submit, so serve exposes no endpoint for it\n{out}");
+    let _ = std::fs::remove_dir_all(dir);
+}
+
+#[test]
 fn fix_never_deletes_code_past_the_handler_line() {
     // removing a handler's `-> T` searched the WHOLE file for the opening
     // brace: with no body on that line it found the next cell's `{` and
