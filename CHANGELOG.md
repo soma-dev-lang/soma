@@ -2,6 +2,14 @@
 
 ## Unreleased
 
+### `agg` refuses a function it does not compute
+
+- `agg(rows, "g", "v:median")` and `"v:SUM"` answered `v_median: ()`, a bare
+  `"v"` was dropped, and a text value in a summed column was skipped where
+  `sum_by` refuses it. Each now raises kind `type`, naming the five functions
+  (sum, avg, min, max, count) or the value that is not a number. `count`
+  still counts every present value, and a blank CSV cell is still missing.
+
 ### A sort order other than "asc" or "desc" is refused
 
 - `sort(xs, "DESC")`, `sort(xs, "descending")`, `xs.sort(true)` and the same

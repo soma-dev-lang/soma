@@ -2702,3 +2702,25 @@ cell test T {
 }
 "#);
 }
+
+#[test]
+fn agg_refuses_a_function_it_does_not_compute() {
+    // "v:median" and "v:SUM" answered v_median: () / v_SUM: (), a bare "v"
+    // was dropped, and a text value was skipped where sum_by refuses it
+    passes("agg_funcs", r#"
+cell S {
+    on k(r: Map) { return if r.error != () { "ERR:" + r.kind } else { to_string(r.value) } }
+}
+cell test T {
+    rules {
+        assert agg([map("g", 1, "v", 2), map("g", 1, "v", 4)], "g", "v:sum", "v:avg", "v:count")[0].v_avg == 3
+        assert agg([map("g", 1, "v", "x")], "g", "v:count")[0].v_count == 1
+        assert agg([map("g", 1, "v", "")], "g", "v:sum")[0].count == 1
+        assert S.k(try { agg([map("g", 1, "v", 2)], "g", "v:median") }) == "ERR:type"
+        assert S.k(try { agg([map("g", 1, "v", 2)], "g", "v:SUM") }) == "ERR:type"
+        assert S.k(try { agg([map("g", 1, "v", 2)], "g", "v") }) == "ERR:type"
+        assert S.k(try { agg([map("g", 1, "v", "abc"), map("g", 1, "v", 1)], "g", "v:sum") }) == "ERR:type"
+    }
+}
+"#);
+}

@@ -312,6 +312,26 @@ pub fn call_builtin(name: &str, args: &[Value]) -> Option<Result<Value, RuntimeE
                 if let Value::List(items) = &args[0] {
                     let group_field = format!("{}", args[1]);
                     let ops: Vec<String> = args[2..].iter().map(|a| format!("{}", a)).collect();
+                    // an op without a colon, or a func outside the five, used
+                    // to be dropped or answer () in silence ("v:median",
+                    // "v:SUM"); a text value was skipped where sum_by refuses it
+                    for op_str in &ops {
+                        let Some((col, func)) = op_str.split_once(':') else {
+                            return Some(Err(RuntimeError::Domain { kind: "type".to_string(), message: format!(
+                                "agg(): \"{}\" names no function — write \"{}:sum\" (sum, avg, min, max or count)", op_str, op_str) }));
+                        };
+                        if !matches!(func, "sum" | "avg" | "min" | "max" | "count") {
+                            return Some(Err(RuntimeError::Domain { kind: "type".to_string(), message: format!(
+                                "agg(): unknown function '{}' in \"{}\" — the function is sum, avg, min, max or count", func, op_str) }));
+                        }
+                        if func != "count" {
+                            if let Some(bad) = non_numeric(items, col) {
+                                return Some(Err(RuntimeError::Domain { kind: "type".to_string(), message: format!(
+                                    "agg(): field '{}' holds {} {} — not a number ({} counts numbers and numeric text only)",
+                                    col, crate::interpreter::value_type_name(&bad), crate::interpreter::builtins::string::to_json_string(&bad), func) }));
+                            }
+                        }
+                    }
                     let mut groups: IndexMap<String, Vec<&Value>> = IndexMap::new();
                     for item in items {
                         let key = if let Value::Map(entries) = item {
