@@ -2821,3 +2821,28 @@ fn html_with_one_argument_still_answers() {
     // the header pairs were read from args[2..] even with one argument
     passes("html_one_arg", "cell H {\n  on p() { return html(\"<p>x</p>\") }\n}\ncell test T {\n  rules {\n    assert H.p()._status == 200\n    assert html()._body == \"\"\n  }\n}\n");
 }
+
+#[test]
+fn html_checks_its_status_like_response() {
+    // the String "404" answered 200, and 1000 answered 500 after the
+    // handler's writes had committed; response() refused both
+    passes("html_status", r#"
+cell H {
+    memory { kv: Map<String, Int> [persistent] }
+    on k(r: Map) { return if r.error != () { "ERR:" + r.kind } else { "ok" } }
+    on page(code: Any) {
+        kv.set("hit", 1)
+        return html(code, "<p>x</p>")
+    }
+}
+cell test T {
+    rules {
+        assert H.k(try { H.page("404") }) == "ERR:response"
+        assert H.k(try { H.page(1000) }) == "ERR:response"
+        assert kv.get("hit") == ()
+        assert H.k(try { H.page(404) }) == "ok"
+        assert H.k(try { html("<p>x</p>") }) == "ok"
+    }
+}
+"#);
+}

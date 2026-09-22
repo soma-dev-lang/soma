@@ -2,6 +2,13 @@
 
 ## Unreleased
 
+### `html(status, body)` checks its status like `response()`
+
+- `html(query.code, …)` with the String `"404"` answered 200, and
+  `html(1000, …)` answered 500 after the handler's writes had committed —
+  `response()` refuses both, rolling the handler back. `html` now raises
+  kind `response` the same way; `html(body)` alone still answers 200.
+
 ### A response header named twice sends both values
 
 - `response(200, "ok", "Set-Cookie", "sid=1; HttpOnly", "Set-Cookie",

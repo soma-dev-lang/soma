@@ -49,6 +49,15 @@ pub fn call_builtin(name: &str, args: &[Value]) -> Option<Result<Value, RuntimeE
         }
         "html" => {
             let (status, mut body) = if args.len() >= 2 {
+                // checked like response()'s: `html(query.code, …)` with the
+                // String "404" answered 200, and `html(1000, …)` answered 500
+                // AFTER the handler's writes had committed
+                match &args[0] {
+                    Value::Int(si) if si.to_i64().map_or(false, |n| (200..=599).contains(&n)) => {}
+                    other => return Some(Err(RuntimeError::Domain { kind: "response".to_string(), message: format!(
+                        "html(status, body): the status must be an HTTP status Int 200–599, got {} {} — html(body) alone answers 200",
+                        crate::interpreter::value_type_name(other), other) })),
+                }
                 (args[0].clone(), format!("{}", args[1]))
             } else {
                 (Value::Int(SomaInt::from_i64(200)), args.first().map(|a| format!("{}", a)).unwrap_or_default())
