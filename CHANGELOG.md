@@ -95,6 +95,8 @@
   type name); the gotchas said the opposite, and the builtin doc mentioned
   records only. The gotcha now shows the two names `is_a` accepts, that a
   struct variant's field reads with `.`, and `match` for branching.
+- Docs: `divmod` promised `0 <= r < |b|`; with a negative divisor the remainder
+  takes the divisor's sign (`divmod(7, -3)` is `[-3, -2]`), as `mod` documents.
 - The guard prover reads a negated `require`: `require !(n < 0)` establishes
   `n >= 0`, `!(a || b)` establishes both negations, and a guard written as
   `!(n < 0)` is proven from `require n >= 0`. Two regression tests.

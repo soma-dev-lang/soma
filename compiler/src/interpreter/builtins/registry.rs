@@ -82,7 +82,7 @@ pub static BUILTINS: &[BuiltinDoc] = &[
     doc("mod", "math", "mod(a: Int, b: Int) -> Int",
         "Modulo with the DIVISOR's sign (Ruby/Python `%`): mod(-150, 100) = 50. The `%` operator keeps the dividend's sign (C/Rust): -150 % 100 = -50."),
     doc("divmod", "math", "divmod(a: Int, b: Int) -> [q, r]",
-        "[floor_div(a, b), mod(a, b)] — q * b + r == a with 0 <= r < |b|."),
+        "[floor_div(a, b), mod(a, b)] — q * b + r == a, with r taking the DIVISOR's sign (|r| < |b|): divmod(7, -3) = [-3, -2]."),
     doc("parse_date", "time", "parse_date(s: \"YYYY-MM-DD\") -> {year, month, day, weekday, epoch_day}",
         "Strict ISO date to its parts (weekday 1 = Monday); raises kind \"date\" otherwise."),
     doc("add_days", "time", "add_days(date: String, n: Int) -> String",
