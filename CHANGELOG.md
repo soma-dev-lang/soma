@@ -2,6 +2,14 @@
 
 ## Unreleased
 
+### A literal arm does not make a variant `match` exhaustive
+
+- Any arm that was not a variant pattern counted as a catch-all: `match l {
+  Red -> …  "Yellow" -> … }` or `Red -> …  () -> …` passed `soma check`, and
+  `Green` then raised "non-exhaustive match" at run time. Only `_` and a
+  bare binding catch every value now; a literal, `()`, a range or a prefix
+  arm covers no variant.
+
 ### An invariant is not proven through a Float modulo, or a NaN into an untyped slot
 
 - `x % 3` was bounded by 2 whatever `x` held, so `invariant c <= 2` was

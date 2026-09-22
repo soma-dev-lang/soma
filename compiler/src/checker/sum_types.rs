@@ -437,8 +437,11 @@ fn check_match_exhaustiveness(
             collect_variants(&arm.pattern, reg, &mut scratch, &mut inferred_type);
             continue;
         }
-        if !collect_variants(&arm.pattern, reg, &mut covered, &mut inferred_type) {
-            // Arm doesn't have a variant pattern → wildcard for our purposes.
+        // only `_` or a bare binding catches every value: a literal, `()`, a
+        // range or a prefix arm covers no variant (`"Yellow" -> …` beside
+        // `Red -> …` used to switch the check off, and Green then raised
+        // "non-exhaustive match" at run time)
+        if !collect_variants(&arm.pattern, reg, &mut covered, &mut inferred_type) && catches_all(&arm.pattern) {
             has_wildcard = true;
         }
     }
@@ -570,6 +573,14 @@ fn check_variant_pattern_shape(
 /// Walk a pattern and accumulate the variant names it covers.
 /// Returns `true` if the pattern is a variant pattern (i.e., contributes
 /// to coverage), `false` if it's a catch-all (wildcard/variable/etc).
+fn catches_all(pat: &MatchPattern) -> bool {
+    match pat {
+        MatchPattern::Wildcard | MatchPattern::Variable(_) => true,
+        MatchPattern::Or(alts) => alts.iter().any(catches_all),
+        _ => false,
+    }
+}
+
 fn collect_variants(
     pat: &MatchPattern,
     reg: &VariantRegistry,

@@ -3242,3 +3242,18 @@ cell T {
     assert!(out.contains("writer 'irem' proven"), "{out}");
     let _ = std::fs::remove_dir_all(dir);
 }
+
+#[test]
+fn a_literal_arm_does_not_make_a_variant_match_exhaustive() {
+    // `"Yellow" -> …` or `() -> …` beside `Red -> …` switched the check off,
+    // and Green raised "non-exhaustive match" at run time
+    let dir = scratch("exhaustive_literal_arm");
+    std::fs::write(dir.join("app.cell"), "cell type Light { variants { Red  Yellow  Green } }\ncell X {\n  on lit(l: Light) { return match l { Red -> \"stop\"  \"Yellow\" -> \"slow\" } }\n  on unit(l: Light) { return match l { Red -> \"stop\"  () -> \"none\" } }\n}\n").unwrap();
+    let (code, out) = soma(&dir, &["check", "app.cell"]);
+    assert_ne!(code, 0, "{out}");
+    assert_eq!(out.matches("non-exhaustive match on 'Light'").count(), 2, "{out}");
+    std::fs::write(dir.join("app.cell"), "cell type Light { variants { Red  Yellow  Green } }\ncell X {\n  on a(l: Light) { return match l { Red -> \"stop\"  \"Yellow\" -> \"slow\"  _ -> \"go\" } }\n  on b(l: Light) { return match l { Red -> \"stop\"  other -> \"go\" } }\n}\n").unwrap();
+    let (code, out) = soma(&dir, &["check", "app.cell"]);
+    assert_eq!(code, 0, "{out}");
+    let _ = std::fs::remove_dir_all(dir);
+}
