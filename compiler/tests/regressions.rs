@@ -2876,3 +2876,18 @@ fn an_empty_top_level_verify_list_is_refused() {
         let _ = std::fs::remove_dir_all(dir);
     }
 }
+
+#[test]
+fn a_wildcard_except_names_a_declared_state() {
+    // `except [setled]` was accepted: it excepted nothing, and the wildcard
+    // still left `settled`, the state the author meant to keep final
+    let dir = scratch("except_unknown");
+    std::fs::write(dir.join("app.cell"), "cell O {\n  state order {\n    initial: pending\n    pending -> settled\n    * -> cancelled except [setled]\n  }\n  on go(id: String) { transition(id, \"settled\") }\n}\n").unwrap();
+    let (code, out) = soma(&dir, &["check", "app.cell"]);
+    assert_ne!(code, 0, "{out}");
+    assert!(out.contains("names 'setled' (did you mean 'settled'?)"), "{out}");
+    std::fs::write(dir.join("app.cell"), "cell O {\n  state order {\n    initial: pending\n    pending -> settled\n    * -> cancelled except [settled]\n  }\n  on go(id: String) { transition(id, \"settled\") }\n}\n").unwrap();
+    let (code, out) = soma(&dir, &["check", "app.cell"]);
+    assert_eq!(code, 0, "{out}");
+    let _ = std::fs::remove_dir_all(dir);
+}

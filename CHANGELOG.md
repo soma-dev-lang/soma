@@ -2,6 +2,13 @@
 
 ## Unreleased
 
+### A wildcard `except` names a declared state
+
+- `* -> cancelled except [setled]` was accepted: the misspelt name excepted
+  nothing, so `settled` — the state the author meant to keep final — could
+  still be cancelled, and nothing mentioned the name. `soma check` now
+  refuses a name no transition declares, with the near miss.
+
 ### An empty `[verify]` state list is refused
 
 - `eventually = []`, `never = []` and `always = []` under `[verify]` checked

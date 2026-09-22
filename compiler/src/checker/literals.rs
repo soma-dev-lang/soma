@@ -53,6 +53,23 @@ pub fn check_cell(cell: &CellDef) -> Vec<LiteralIssue> {
         _ => None,
     }).collect();
 
+    // `* -> cancelled except [setled]`: a name no edge declares excepted
+    // nothing, and the wildcard left the state the author meant to keep final
+    if let Some(states) = &states {
+        for s in &cell.sections {
+            let Section::State(sm) = &s.node else { continue };
+            for t in &sm.transitions {
+                for e in &t.node.except {
+                    if states.contains(e) { continue; }
+                    let near = crate::checker::names::suggest(e, states.iter()).map(|s| format!(" (did you mean '{}'?)", s)).unwrap_or_default();
+                    out.push(LiteralIssue { kind: "unknown_state", span: t.span,
+                        message: format!("`* -> {} except [{}]` names '{}'{}, which no transition of `state {}` declares — it excepts nothing",
+                            t.node.to, t.node.except.join(", "), e, near, sm.name) });
+                }
+            }
+        }
+    }
+
     for section in &cell.sections {
         let (body, owner): (&[Spanned<Statement>], String) = match &section.node {
             Section::OnSignal(h) => (&h.body, format!("handler '{}'", h.signal_name)),
