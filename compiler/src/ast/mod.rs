@@ -776,7 +776,17 @@ pub fn render_expr(expr: &Expr) -> String {
         Expr::Literal(Literal::String(s)) => format!("\"{s}\""),
         Expr::Literal(Literal::Bool(b)) => b.to_string(),
         Expr::Literal(Literal::Unit) => "()".to_string(),
-        Expr::Literal(other) => format!("{other:?}"),
+        // as the author wrote them: the catch-all printed Rust's `Debug`
+        // (`Duration(Duration { value: 200.0, unit: Milliseconds })`)
+        Expr::Literal(Literal::Duration(d)) => format!("{}{}", d.value, match d.unit {
+            DurationUnit::Milliseconds => "ms",
+            DurationUnit::Seconds => "s",
+            DurationUnit::Minutes => "min",
+            DurationUnit::Hours => "h",
+            DurationUnit::Days => "d",
+            DurationUnit::Years => "y",
+        }),
+        Expr::Literal(Literal::Percentage(p)) => format!("{p}%"),
         Expr::Ident(name) => name.clone(),
         Expr::FieldAccess { target, field } => format!("{}.{}", render_expr(&target.node), field),
         Expr::Index { target, index } => format!("{}[{}]", render_expr(&target.node), render_expr(&index.node)),

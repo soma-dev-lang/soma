@@ -188,6 +188,11 @@
   `/__soma/hordes` deliberately withhold the header, so a page on another
   origin cannot read the program's cells, invariants and machines. A test
   pins both sides of that posture.
+- A duration or percentage literal renders as written everywhere: the shared
+  expression renderer had no arm for either, so `promise latency < 200ms`
+  came out of `describe --faces` as Rust's `Debug`
+  (`Duration(Duration { value: 200.0, unit: Milliseconds })`). One regression
+  test.
 - The guard prover reads a negated `require`: `require !(n < 0)` establishes
   `n >= 0`, `!(a || b)` establishes both negations, and a guard written as
   `!(n < 0)` is proven from `require n >= 0`. Two regression tests.

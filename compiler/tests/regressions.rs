@@ -1947,3 +1947,18 @@ cell App {
     }
     let _ = std::fs::remove_dir_all(dir);
 }
+
+#[test]
+fn duration_and_percentage_literals_render_as_written() {
+    // the shared expression renderer had no arm for either, so they came out
+    // as Rust's Debug — `promise latency < 200ms` printed
+    // `Duration(Duration { value: 200.0, unit: Milliseconds })` in describe
+    let dir = scratch("duration_render");
+    std::fs::write(dir.join("app.cell"), "cell D {\n    face {\n        signal go() -> Int\n        promise latency < 200ms\n        promise error_rate < 5%\n    }\n    on go() { return 1 }\n}\n").unwrap();
+    let (code, out) = soma(&dir, &["describe", "app.cell", "--faces"]);
+    assert_eq!(code, 0, "{out}");
+    assert!(out.contains("promise latency < 200ms"), "{out}");
+    assert!(out.contains("promise error_rate < 5%"), "{out}");
+    assert!(!out.contains("Duration {") && !out.contains("Milliseconds"), "no Rust Debug\n{out}");
+    let _ = std::fs::remove_dir_all(dir);
+}
