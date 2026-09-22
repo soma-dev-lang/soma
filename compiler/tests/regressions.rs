@@ -2075,6 +2075,40 @@ fn a_handler_named_after_a_native_primitive_is_refused_where_it_is_ambiguous() {
 }
 
 #[test]
+fn the_write_guard_follows_the_link_to_what_the_write_lands_on() {
+    // the guard read the path as written, so a symlink walked straight past
+    // it: `write_file("upload.csv", …)` with upload.csv -> app.cell replaced
+    // the program, which the guard exists to prevent
+    let dir = scratch("write_guard_symlink");
+    std::fs::write(dir.join("app.cell"),
+        "cell G {\n    on w(p: String, c: String) {\n         \x20       let r = try { write_file(p, c) }\n         \x20       if r.error != () { return map(\"refused\", true) }\n         \x20       return map(\"refused\", false)\n    }\n}\n").unwrap();
+    std::fs::write(dir.join("victim.cell"), "ORIGINAL\n").unwrap();
+    let _ = std::fs::remove_file(dir.join("link.csv"));
+    #[cfg(unix)]
+    std::os::unix::fs::symlink("victim.cell", dir.join("link.csv")).unwrap();
+
+    #[cfg(unix)]
+    {
+        let (code, out) = soma(&dir, &["run", "app.cell", "w", "link.csv", "PWNED"]);
+        assert_eq!(code, 0, "{out}");
+        assert!(out.contains("\"refused\": true"), "a link to a .cell is a write to that .cell\n{out}");
+        assert_eq!(std::fs::read_to_string(dir.join("victim.cell")).unwrap(), "ORIGINAL\n",
+            "the program's source must be untouched");
+    }
+    // a trailing dot names the same file on Windows
+    let (_, out) = soma(&dir, &["run", "app.cell", "w", "victim.cell.", "X"]);
+    assert!(out.contains("\"refused\": true"), "{out}");
+    // ordinary writes still go through, including into a directory that
+    // does not exist yet
+    for p in ["report.csv", "new/deep/x.csv"] {
+        let (code, out) = soma(&dir, &["run", "app.cell", "w", p, "X"]);
+        assert_eq!(code, 0, "{out}");
+        assert!(out.contains("\"refused\": false"), "`{p}` must be written\n{out}");
+    }
+    let _ = std::fs::remove_dir_all(dir);
+}
+
+#[test]
 fn fix_never_deletes_code_past_the_handler_line() {
     // removing a handler's `-> T` searched the WHOLE file for the opening
     // brace: with no body on that line it found the next cell's `{` and

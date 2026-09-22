@@ -686,12 +686,53 @@ fn path_refused(path: &str, builtin: &str) -> Option<RuntimeError> {
         // compared case-insensitively: macOS / Windows file systems are
         // (`APP.CELL` overwrote app.cell, `.SOMA_DATA/soma.db` the live db)
         let lower: Vec<String> = parts.iter().map(|p| p.to_ascii_lowercase()).collect();
-        let file = lower.last().map(|s| s.as_str()).unwrap_or("");
-        if file.ends_with(".cell") || file == "soma.toml" || file == "soma.lock" || lower.iter().any(|p| p == ".soma_data") {
+        // the guard read the name as written, so a symlink walked past it:
+        // `write_file("upload.csv", …)` with upload.csv -> app.cell replaced
+        // the program. What the write lands on is what has to be checked.
+        let real = resolved_write_target(path);
+        let real_parts: Vec<String> = real.split(['/', '\\']).map(|p| p.to_ascii_lowercase()).collect();
+        // Windows drops a trailing dot or space from a file name, so
+        // `app.cell.` names app.cell there
+        let file = real_parts.last().map(|s| s.trim_end_matches(['.', ' '])).unwrap_or("");
+        let under_project = project_segments(&real);
+        if file.ends_with(".cell") || file == "soma.toml" || file == "soma.lock"
+            || lower.iter().any(|p| p == ".soma_data")
+            || under_project.iter().any(|p| p == ".soma_data")
+        {
             return Some(RuntimeError::Domain { kind: "path".to_string(), message: format!("path: {}(\"{}\") would overwrite the program, its configuration or its storage", builtin, path) });
         }
     }
     None
+}
+
+/// The file a write really lands on. A symlink is followed, so the guard
+/// sees the file that would change rather than the name it was given. The
+/// target need not exist yet: then the directory is resolved and the name
+/// kept. Unresolvable paths are left as written.
+fn resolved_write_target(path: &str) -> String {
+    let p = std::path::Path::new(path);
+    if let Ok(real) = std::fs::canonicalize(p) {
+        return real.to_string_lossy().into_owned();
+    }
+    if let Some(name) = p.file_name() {
+        let parent = p.parent().filter(|d| !d.as_os_str().is_empty())
+            .unwrap_or_else(|| std::path::Path::new("."));
+        if let Ok(dir) = std::fs::canonicalize(parent) {
+            return dir.join(name).to_string_lossy().into_owned();
+        }
+    }
+    path.to_string()
+}
+
+/// The resolved path's segments below the working directory, lowercased.
+/// Only those: a project that happens to live under a directory named
+/// `.soma_data` must not have every write refused.
+fn project_segments(resolved: &str) -> Vec<String> {
+    let Ok(cwd) = std::env::current_dir().and_then(|d| d.canonicalize()) else { return Vec::new() };
+    let Ok(rel) = std::path::Path::new(resolved).strip_prefix(&cwd) else { return Vec::new() };
+    rel.components()
+        .map(|c| c.as_os_str().to_string_lossy().to_ascii_lowercase())
+        .collect()
 }
 
 /// `write_csv("zreports/z.csv", …)`: the directory is created (it answered

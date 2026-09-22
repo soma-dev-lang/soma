@@ -2,6 +2,18 @@
 
 ## Unreleased
 
+### The file write guard follows the link to what the write lands on
+
+- The guard that refuses a write to the program, its configuration or its
+  storage read the path as written, so a symlink walked straight past it:
+  `write_file("upload.csv", …)` with `upload.csv` pointing at `app.cell`
+  replaced the program's own source, which is the case the guard exists for.
+  It now resolves the path first, so the check sees the file that would
+  change. A directory link into `.soma_data` is refused the same way, and a
+  trailing dot or space (which Windows drops from a file name) no longer
+  hides a `.cell` or `soma.toml`. Ordinary writes, including into a directory
+  that does not exist yet, are unaffected.
+
 ### `soma check`: one call text cannot mean two things
 
 - `buffer`, `hashmap`, `strbuf` and their fifteen operations exist only inside
