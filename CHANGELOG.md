@@ -2,6 +2,13 @@
 
 ## Unreleased
 
+### `to_float` reads what `to_int` reads
+
+- `to_int(" 12 ")` and `to_int("12\n")` trim the text; `to_float(" 1.5 ")`
+  and `to_float("1.5\n")` — a line read from a file or stdin — answered
+  `()`. And `to_float(true)` answered `()` where `to_int(true)` is 1.
+  `to_float` now trims surrounding whitespace and reads a Bool as 1.0 / 0.0.
+
 ### `zip`, `enumerate` and `flatten` refuse what is not a List
 
 - `zip([1], "ab")`, `enumerate("ab")` and `flatten(5)` answered `[]` in

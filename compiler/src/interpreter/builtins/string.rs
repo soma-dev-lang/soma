@@ -327,13 +327,17 @@ pub fn call_builtin(name: &str, args: &[Value]) -> Option<Result<Value, RuntimeE
                 // past the Float range an Int became `inf`, silently
                 Value::Int(si) => { let f = si.to_f64(); if f.is_finite() { Ok(Value::Float(f)) } else {
                     Err(RuntimeError::Domain { kind: "range".to_string(), message: "range: to_float: this Int is past the Float range (~1.8e308)".to_string() }) } }
+                // surrounding whitespace is allowed, as to_int allows it: a
+                // line read with its "\n" gave () where to_int gave the Int
                 Value::String(s) => {
-                    if let Ok(f) = s.parse::<f64>() {
+                    if let Ok(f) = s.trim().parse::<f64>() {
                         Ok(Value::Float(f))
                     } else {
                         Ok(Value::Unit)
                     }
                 },
+                // to_int(true) is 1; to_float(true) answered ()
+                Value::Bool(b) => Ok(Value::Float(if *b { 1.0 } else { 0.0 })),
                 _ => Ok(Value::Unit),
             })
         }

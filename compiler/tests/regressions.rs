@@ -3130,3 +3130,21 @@ cell test T {
 }
 "#);
 }
+
+#[test]
+fn to_float_reads_what_to_int_reads() {
+    // to_float(" 1.5 ") and a line with its "\n" gave () where to_int
+    // trims; to_float(true) gave () where to_int(true) is 1
+    passes("to_float_like_to_int", r#"
+cell test T {
+    rules {
+        assert to_float(" 1.5 ") == 1.5
+        assert to_float("2.5\n") == 2.5
+        assert to_int(" 12 ") == 12
+        assert to_float(true) == 1.0
+        assert to_float(false) == 0.0
+        assert to_float("x") == ()
+    }
+}
+"#);
+}
