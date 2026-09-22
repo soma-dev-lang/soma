@@ -36,6 +36,22 @@ pub const EFFECT_BUILTINS: &[&str] = &[
 /// tables again. The registry's 'reserved' category (documented but
 /// never dispatched) is excluded on purpose: calls to those names fail
 /// at runtime and must therefore fail check too.
+/// The primitives that exist only inside a `[native]` handler (`buffer`,
+/// `hashmap`, `strbuf` and their operations). They are deliberately absent
+/// from `builtin_names()`, since an interpreted handler has no such builtin
+/// — which is why a handler may carry one of these names.
+pub fn native_only_names() -> &'static HashSet<&'static str> {
+    use std::sync::OnceLock;
+    static SET: OnceLock<HashSet<&'static str>> = OnceLock::new();
+    SET.get_or_init(|| {
+        crate::interpreter::builtins::registry::BUILTINS
+            .iter()
+            .filter(|b| b.category == "native")
+            .map(|b| b.name)
+            .collect()
+    })
+}
+
 pub fn builtin_names() -> &'static HashSet<&'static str> {
     use std::sync::OnceLock;
     static SET: OnceLock<HashSet<&'static str>> = OnceLock::new();

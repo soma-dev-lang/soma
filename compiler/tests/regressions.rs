@@ -2041,6 +2041,40 @@ fn refinement_does_not_count_a_transition_past_a_return() {
 }
 
 #[test]
+fn a_handler_named_after_a_native_primitive_is_refused_where_it_is_ambiguous() {
+    // `buffer`, `hashmap`, `strbuf` … exist only inside a [native] handler,
+    // so a handler may carry one of those names. Then the same call text
+    // meant two things — the primitive inside [native], the handler outside
+    // — and both compiled silently
+    let dir = scratch("native_primitive_shadow");
+    let body = "    on native_use(n: Int) [native] {\n        let b = buffer(n)\n                \x20       buf_set(b, 0, 7)\n        return buf_get(b, 0)\n    }\n                \x20   on interp_use(n: Int) { return buffer(n) }\n";
+    std::fs::write(dir.join("same.cell"), format!(
+        "cell A {{\n    on buffer(n: Int) {{ return 0 - 1 }}\n{body}}}\n")).unwrap();
+    let (code, out) = soma(&dir, &["check", "same.cell"]);
+    assert_ne!(code, 0, "{out}");
+    assert!(out.contains("is the primitive, not the handler `buffer`"), "{out}");
+
+    // the handler in another cell is the same ambiguity
+    std::fs::write(dir.join("other.cell"), format!(
+        "cell Other {{\n    face {{ signal buffer(n: Int) -> Int }}\n         \x20   on buffer(n: Int) {{ return 0 - 1 }}\n}}\ncell A {{\n{body}}}\n")).unwrap();
+    let (code, out) = soma(&dir, &["check", "other.cell"]);
+    assert_ne!(code, 0, "{out}");
+
+    // a [native] handler using the primitives with no homonym is untouched
+    std::fs::write(dir.join("clean.cell"),
+        "cell A {\n    on native_use(n: Int) [native] {\n        let b = buffer(n)\n         \x20       buf_set(b, 0, 7)\n        return buf_get(b, 0)\n    }\n}\n").unwrap();
+    let (code, out) = soma(&dir, &["check", "clean.cell"]);
+    assert_eq!(code, 0, "{out}");
+
+    // and so is a handler named `buffer` in a program with no native handler
+    std::fs::write(dir.join("interp.cell"),
+        "cell A {\n    on buffer(n: Int) { return n }\n    on call_it(n: Int) { return buffer(n) }\n}\n").unwrap();
+    let (code, out) = soma(&dir, &["check", "interp.cell"]);
+    assert_eq!(code, 0, "{out}");
+    let _ = std::fs::remove_dir_all(dir);
+}
+
+#[test]
 fn fix_never_deletes_code_past_the_handler_line() {
     // removing a handler's `-> T` searched the WHOLE file for the opening
     // brace: with no body on that line it found the next cell's `{` and

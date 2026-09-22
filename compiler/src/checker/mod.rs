@@ -1142,6 +1142,49 @@ impl<'a> Checker<'a> {
                 }
             }
         }
+        // `buffer`, `hashmap`, `strbuf` and their operations exist only
+        // inside a [native] handler, so a handler may carry one of those
+        // names — and then the SAME call text means two things: inside
+        // [native] it is the primitive, everywhere else it is the handler.
+        // Both compiled, silently, and renaming a handler to `buffer` made
+        // every native call stop reaching it.
+        {
+            let defined: std::collections::HashSet<String> = names::collect_cells(program)
+                .iter()
+                .flat_map(|c| c.sections.iter().filter_map(|s| match &s.node {
+                    Section::OnSignal(on) => Some(on.signal_name.clone()),
+                    _ => None,
+                }))
+                .collect();
+            let native_only = names::native_only_names();
+            for cell in names::collect_cells(program) {
+                for sec in &cell.sections {
+                    let Section::OnSignal(on) = &sec.node else { continue };
+                    if !on.properties.iter().any(|p| p == "native") { continue }
+                    let mut clash: Option<String> = None;
+                    literals::for_each_expr(&on.body, &mut |e| {
+                        if let Expr::FnCall { name, .. } = e {
+                            if clash.is_none()
+                                && native_only.contains(name.as_str())
+                                && defined.contains(name)
+                            {
+                                clash = Some(name.clone());
+                            }
+                        }
+                    });
+                    if let Some(name) = clash {
+                        self.errors.push(CheckError::Static {
+                            kind: "native_primitive_shadowed",
+                            message: format!(
+                                "`{name}(…)` in the [native] handler `{}` is the primitive, not the handler `{name}` this program defines — the same call in an interpreted handler goes to the handler, so one name means two things. Rename the handler (`on {name}_of(…)`)",
+                                on.signal_name
+                            ),
+                            span: sec.span,
+                        });
+                    }
+                }
+            }
+        }
         // `transition()` in a cell with no state machine: it moved the
         // program's only machine unseen by refinement, think-isolation and
         // the guard rule (or raised at run time with several machines)

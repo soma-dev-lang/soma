@@ -2,6 +2,18 @@
 
 ## Unreleased
 
+### `soma check`: one call text cannot mean two things
+
+- `buffer`, `hashmap`, `strbuf` and their fifteen operations exist only inside
+  a `[native]` handler, so they are absent from the builtin list a handler
+  name is checked against — and a handler could be named after one. The same
+  call then meant the primitive inside `[native]` and the handler everywhere
+  else, and both compiled without a word: renaming a handler to `buffer` made
+  every native call stop reaching it. A `[native]` handler that calls a name
+  the program also defines as a handler is now refused, and told which name
+  to change. A program with no `[native]` handler, and a `[native]` handler
+  with no homonym, are untouched.
+
 ### `soma verify`: a transition past a `return` is not an edge the handler takes
 
 - The refinement proof walked a handler's whole body, so a `transition()`
