@@ -1991,3 +1991,33 @@ fn a_lambda_builtin_refuses_extra_arguments() {
     assert_eq!(code, 0, "{out}");
     let _ = std::fs::remove_dir_all(dir);
 }
+
+#[test]
+fn concat_needs_both_values() {
+    // `concat(xs)` answered `xs` unchanged, so a forgotten second argument
+    // produced a wrong result in silence — every sibling (split, replace,
+    // contains…) refuses a missing argument with a `type` error
+    let dir = scratch("concat_arity");
+    std::fs::write(dir.join("app.cell"), r#"
+cell C {
+    on one() { let r = try { concat("a") } return if r.error != () { "ERR:" + r.kind } else { to_string(r.value) } }
+    on none() { let r = try { concat() } return if r.error != () { "ERR:" + r.kind } else { to_string(r.value) } }
+    on strings() { return concat("a", "b") }
+    on lists() { return concat([1], [2]) }
+    on mixed() { return concat("a", 1) }
+}
+cell test T {
+    rules {
+        assert C.one() == "ERR:type"
+        assert C.none() == "ERR:type"
+        assert C.strings() == "ab"
+        assert C.lists() == [1, 2]
+        assert C.mixed() == "a1"
+    }
+}
+"#).unwrap();
+    let (code, out) = soma(&dir, &["test", "app.cell"]);
+    assert_eq!(code, 0, "{out}");
+    assert!(out.contains("5 tests: 5 passed"), "{out}");
+    let _ = std::fs::remove_dir_all(dir);
+}

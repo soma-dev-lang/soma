@@ -22,10 +22,13 @@ pub fn call_builtin(name: &str, args: &[Value]) -> Option<Result<Value, RuntimeE
                     }
                     _ => Some(Ok(Value::String(format!("{}{}", args[0], args[1]))))
                 }
-            } else if args.len() == 1 {
-                Some(Ok(args[0].clone()))
             } else {
-                Some(Err(RuntimeError::TypeError("concat expects arguments".to_string())))
+                // one argument answered it UNCHANGED, so a forgotten second
+                // one passed silently with a wrong result; every sibling
+                // (split, replace, contains…) refuses a missing argument
+                Some(Err(RuntimeError::TypeError(format!(
+                    "concat(a, b) joins TWO values, got {} — with one there is nothing to join (`concat(xs, ys)` for lists, `a + b` for strings)",
+                    args.len()))))
             }
         }
         "split" => {

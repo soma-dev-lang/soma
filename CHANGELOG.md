@@ -199,6 +199,10 @@
   could be derived and `filter`, `find`, `any`, `all`, `count`, `reduce` and
   `sort_by` accepted any number of arguments, the extra ones silently ignored
   at run time. One regression test.
+- `concat` with one argument is refused: it answered that argument unchanged,
+  so a forgotten second one produced a wrong result in silence, while every
+  sibling (`split`, `replace`, `contains`…) raises on a missing argument. The
+  message names the two forms. One regression test.
 - The guard prover reads a negated `require`: `require !(n < 0)` establishes
   `n >= 0`, `!(a || b)` establishes both negations, and a guard written as
   `!(n < 0)` is proven from `require n >= 0`. Two regression tests.
