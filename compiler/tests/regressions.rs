@@ -2154,6 +2154,43 @@ fn a_mistyped_manifest_key_is_refused_in_every_section() {
 }
 
 #[test]
+fn a_quant_builtin_refuses_an_option_it_does_not_read() {
+    // http, csv, think and soma.toml all refuse an unknown option; these
+    // nine dropped it, so `var_historical(r, map("alfa", 0.99))` quietly
+    // computed the default confidence level and answered a different number
+    let dir = scratch("quant_unknown_opt");
+    let calls = [
+        ("var_historical", "var_historical(rr, BAD)"),
+        ("var_gaussian", "var_gaussian(rr, BAD)"),
+        ("expected_shortfall_historical", "expected_shortfall_historical(rr, BAD)"),
+        ("clean_covariance", "clean_covariance(cov, BAD)"),
+        ("impact_sqrt", "impact_sqrt(100.0, 1000.0, 0.2, BAD)"),
+        ("importance_sample_rows", "importance_sample_rows(A, BAD)"),
+        ("svd_lowrank", "svd_lowrank(A, BAD)"),
+        ("regress_sgd", "regress_sgd(A, [1.0, 2.0, 3.0, 4.0, 5.0], BAD)"),
+        ("to_sampled", "to_sampled(A, BAD)"),
+    ];
+    let head = "cell Q {\n    on t() {\n        \x20       let A = [[1.0, 2.0, 3.0], [4.0, 5.0, 6.0], [7.0, 8.0, 9.0], [1.0, 0.0, 0.0], [0.0, 1.0, 0.0]]\n        \x20       let rr = [0.01, 0.02, 0 - 0.01, 0.03, 0 - 0.02, 0.005]\n        \x20       let cov = [[1.0, 0.1], [0.1, 1.0]]\n";
+    for (name, call) in calls {
+        let body = call.replace("BAD", "map(\"alfa\", 0.99)");
+        std::fs::write(dir.join("app.cell"), format!("{head}        return {body}\n    }}\n}}\n")).unwrap();
+        let (_, out) = soma(&dir, &["run", "app.cell", "t"]);
+        assert!(out.contains(&format!("{name}: unknown option 'alfa'")),
+            "{name} must refuse an option it does not read\n{out}");
+    }
+    // every option these builtins do read is still accepted
+    let good = "[var_historical(rr, map(\"alpha\", 0.95, \"max_obs\", 64, \"max_assets\", 8)), \
+                var_gaussian(rr, map(\"alpha\", 0.95, \"mu\", 0.0, \"sigma\", 0.1, \"max_obs\", 64)), \
+                expected_shortfall_historical(rr, map(\"alpha\", 0.95, \"max_obs\", 64)), \
+                impact_sqrt(100.0, 1000.0, 0.2, map(\"Y\", 1.0))]";
+    std::fs::write(dir.join("app.cell"), format!("{head}        return {good}\n    }}\n}}\n")).unwrap();
+    let (code, out) = soma(&dir, &["run", "app.cell", "t"]);
+    assert_eq!(code, 0, "{out}");
+    assert!(!out.contains("unknown option"), "{out}");
+    let _ = std::fs::remove_dir_all(dir);
+}
+
+#[test]
 fn fix_never_deletes_code_past_the_handler_line() {
     // removing a handler's `-> T` searched the WHOLE file for the opening
     // brace: with no body on that line it found the next cell's `{` and

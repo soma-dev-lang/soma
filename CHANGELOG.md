@@ -2,6 +2,20 @@
 
 ## Unreleased
 
+### Nine quantitative builtins refuse an option they do not read
+
+- `http_*`, `from_csv` / `read_csv`, `think` and `soma.toml` all refuse an
+  unknown option. These nine dropped it, so `var_historical(r, map("alfa",
+  0.99))` quietly computed the default confidence level and answered a
+  different risk number with no warning. `var_historical`, `var_gaussian`,
+  `expected_shortfall_historical`, `clean_covariance`, `impact_sqrt`,
+  `importance_sample_rows`, `svd_lowrank`, `regress_sgd` and `to_sampled` now
+  name the unknown option and the ones they take.
+- Three signatures did not list every option the code reads, so following
+  them would now be refused: `var_gaussian` also takes `max_obs`,
+  `importance_sample_rows` also takes `max_dim`, and `regress_sgd` also takes
+  `eta`, `rigorous` and `samples_per_iter`.
+
 ### `soma.toml`: a mistyped key is refused in every section
 
 - `[verify]` and `[agent]` already refused an unknown key, on the grounds

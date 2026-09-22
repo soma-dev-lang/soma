@@ -472,11 +472,11 @@ pub static BUILTINS: &[BuiltinDoc] = &[
         "Draw one row index by ℓ²-norm importance sampling (time-seeded PRNG)."),
     doc("drop_sampled", "linalg", "drop_sampled(handle: Map) -> Bool",
         "Free a to_sampled() registry entry; true if it existed."),
-    doc("importance_sample_rows", "linalg", "importance_sample_rows(A, opts: {samples}) -> Map",
+    doc("importance_sample_rows", "linalg", "importance_sample_rows(A, opts: {samples, max_dim}) -> Map",
         "Sample rows by squared-norm importance (time-seeded PRNG)."),
     doc("svd_lowrank", "linalg", "svd_lowrank(A, opts: {row_samples, col_samples, rank, max_dim}) -> Map",
         "Sublinear randomized low-rank SVD with declared sampling bounds."),
-    doc("regress_sgd", "linalg", "regress_sgd(A, b: List<Float>, opts: {eps, lambda, max_iter, max_dim}) -> Map",
+    doc("regress_sgd", "linalg", "regress_sgd(A, b: List<Float>, opts: {eps, eta, lambda, max_iter, rigorous, samples_per_iter, max_dim}) -> Map",
         "Ridge regression via stochastic gradient descent with declared bounds."),
     doc("clean_covariance", "linalg", "clean_covariance(returns: List<List<Float>>, opts: {method: \"rie\"|\"clip\"|\"raw\", eta, center, max_assets, max_obs}) -> Map",
         "RMT (Bouchaud-Potters) covariance cleaning: rows are observations (T), columns assets (N); the sample covariance divides by T (population — numpy cov uses T-1); center (default true) subtracts each column mean; clip replaces the eigenvalues inside the Marchenko-Pastur bulk by their mean; .matrix is the cleaned N×N, .eigenvalues the cleaned spectrum (no eigenvectors). max_obs / max_assets past the data raise kind range."),
@@ -500,7 +500,7 @@ pub static BUILTINS: &[BuiltinDoc] = &[
         "Historical Value-at-Risk as a POSITIVE loss: -quantile(returns, 1 - alpha) (returns positive for gains); alpha in (0, 1), else kind range; more observations than max_obs raise kind range."),
     doc("expected_shortfall_historical", "linalg", "expected_shortfall_historical(returns: List<Float>, opts?: {alpha, max_obs}) -> Float",
         "Historical expected shortfall (CVaR) as a positive loss: minus the mean of the returns at or below the (1 - alpha) quantile; alpha in (0, 1); max_obs as for var_historical."),
-    doc("var_gaussian", "linalg", "var_gaussian(returns: List<Float>, opts?: {alpha, mu, sigma}) -> Float",
+    doc("var_gaussian", "linalg", "var_gaussian(returns: List<Float>, opts?: {alpha, mu, sigma, max_obs}) -> Float",
         "Gaussian VaR assuming N(mu, sigma^2); moments inferred unless overridden."),
 
     // ── internal ────────────────────────────────────────────────────

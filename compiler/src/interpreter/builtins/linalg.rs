@@ -437,7 +437,39 @@ fn opt_get(opts: &Value, key: &str) -> Option<Value> {
 /// `max_assets` past the data's size, and an `alpha` outside (0, 1), were
 /// accepted silently (the result used every observation, alpha 1.5 gave a
 /// number).
+/// Every option a builtin reads, at run time or in the budget checker.
+/// An unknown key was accepted and dropped, so `var_historical(r,
+/// map("alfa", 0.99))` quietly computed the default confidence level.
+fn allowed_opts(name: &str) -> Option<&'static [&'static str]> {
+    Some(match name {
+        "var_historical" | "expected_shortfall_historical" => &["alpha", "max_obs", "max_assets"],
+        "var_gaussian" => &["alpha", "mu", "sigma", "max_obs", "max_assets"],
+        "clean_covariance" => &["method", "eta", "center", "max_assets", "max_obs"],
+        "impact_sqrt" => &["Y"],
+        "importance_sample_rows" => &["samples", "max_dim"],
+        "svd_lowrank" => &["row_samples", "col_samples", "rank", "max_dim"],
+        "regress_sgd" => &["eps", "eta", "lambda", "max_iter", "rigorous", "samples_per_iter", "max_dim"],
+        "to_sampled" => &["max_rows", "max_cols"],
+        _ => return None,
+    })
+}
+
+/// Refuse an option the builtin does not read, the way http and csv do.
+fn opts_known(name: &str, opts: &Value) -> Result<(), RuntimeError> {
+    let Some(allowed) = allowed_opts(name) else { return Ok(()) };
+    let Value::Map(m) = opts else { return Ok(()) };
+    for key in m.keys() {
+        if !allowed.iter().any(|a| a == key) {
+            return Err(RuntimeError::TypeError(format!(
+                "{}: unknown option '{}' — the options are {}", name, key, allowed.join(", ")
+            )));
+        }
+    }
+    Ok(())
+}
+
 fn quant_opts_ok(name: &str, data: &Value, opts: &Value) -> Result<(), RuntimeError> {
+    opts_known(name, opts)?;
     let range_err = |m: String| RuntimeError::Domain { kind: "range".to_string(), message: format!("{}: {}", name, m) };
     let (rows, cols) = match data {
         Value::List(xs) => (xs.len(), match xs.first() { Some(Value::List(r)) => Some(r.len()), _ => None }),
@@ -1538,7 +1570,7 @@ pub fn call_builtin(name: &str, args: &[Value]) -> Option<Result<Value, RuntimeE
                     "importance_sample_rows expects (matrix, opts)".into(),
                 )));
             }
-            Some(importance_sample_rows_impl(&args[0], &args[1]))
+            Some(opts_known("importance_sample_rows", &args[1]).and_then(|_| importance_sample_rows_impl(&args[0], &args[1])))
         }
         "svd_lowrank" => {
             if args.len() < 2 {
@@ -1546,7 +1578,7 @@ pub fn call_builtin(name: &str, args: &[Value]) -> Option<Result<Value, RuntimeE
                     "svd_lowrank expects (matrix, opts)".into(),
                 )));
             }
-            Some(svd_lowrank_impl(&args[0], &args[1]))
+            Some(opts_known("svd_lowrank", &args[1]).and_then(|_| svd_lowrank_impl(&args[0], &args[1])))
         }
         "regress_sgd" => {
             if args.len() < 3 {
@@ -1554,7 +1586,7 @@ pub fn call_builtin(name: &str, args: &[Value]) -> Option<Result<Value, RuntimeE
                     "regress_sgd expects (matrix, b, opts)".into(),
                 )));
             }
-            Some(regress_sgd_impl(&args[0], &args[1], &args[2]))
+            Some(opts_known("regress_sgd", &args[2]).and_then(|_| regress_sgd_impl(&args[0], &args[1], &args[2])))
         }
         "clean_covariance" => {
             if args.len() < 2 {
@@ -1572,7 +1604,7 @@ pub fn call_builtin(name: &str, args: &[Value]) -> Option<Result<Value, RuntimeE
                 )));
             }
             let opts = args.get(3).cloned().unwrap_or(Value::Map(IndexMap::new()));
-            Some(impact_sqrt_impl(args, &opts))
+            Some(opts_known("impact_sqrt", &opts).and_then(|_| impact_sqrt_impl(args, &opts)))
         }
         // Empirical quantile of a sample.
         "quantile" => {
@@ -1875,6 +1907,9 @@ pub fn call_builtin(name: &str, args: &[Value]) -> Option<Result<Value, RuntimeE
                 return Some(Err(RuntimeError::TypeError(
                     "to_sampled expects (matrix: List<List<Float>>) or (matrix, opts: Map)".into(),
                 )));
+            }
+            if let Some(o) = args.get(1) {
+                if let Err(e) = opts_known("to_sampled", o) { return Some(Err(e)); }
             }
             // If the user already has a sampled handle, return it as-is.
             if as_sampled(&args[0]).is_some() {
