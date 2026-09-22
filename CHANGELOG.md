@@ -2,6 +2,20 @@
 
 ## Unreleased
 
+### Termination needs one measure, and a base case at the halving fixed point
+
+- A recursive handler was proven terminating when each self-call decreased
+  some argument on its own: `walk(n - 1, m + 1)` beside `walk(n + 1, m - 1)`
+  passed `verify --strict`, and `walk(5, 5)` cycles (5, 5) → (6, 4) → (5, 5)
+  into a stack overflow. One parameter must now decrease in every self-call.
+- Halving was accepted with any lower-bound base case: `log2(idiv(n, 2))`
+  with `if n < 0` passed, and `log2(0)` recursed forever since `idiv(0, 2)`
+  is 0. The base case must now catch the fixed point: 0 for `idiv` and `/`
+  (`n == 0` is enough), 0 and -1 for `floor_div`, `div` and `shr`.
+- `require n >= 0` as the lower bound of `n - 1` was never recognised (it is
+  read as `(n >= 0) == true`); it now is, and for halving it takes
+  `require n >= 1`. The repository's termination verdicts are unchanged.
+
 ### `soma fix` keeps annotations and the meaning of arithmetic
 
 - Removing a handler's return type took everything up to the `{`: `on

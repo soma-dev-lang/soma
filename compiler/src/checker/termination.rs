@@ -192,23 +192,25 @@ fn check_cell_termination_raw(cell: &CellDef, program: &Program) -> Vec<Terminat
                     }
                 });
             }
-            // a decreasing argument over a parameter the body re-binds is no measure
+            // a decreasing argument over a parameter the body re-binds is no
+            // measure — and ONE parameter must decrease in EVERY self-call:
+            // `walk(n - 1, m + 1)` beside `walk(n + 1, m - 1)` each decrease
+            // something, and (5, 5) → (6, 4) → (5, 5) never ends
+            let mut measures: Vec<&Param> = Vec::new();
             if self_recursive && reasons.is_empty() {
-                let mut measured = false;
-                for stmt in &on.body {
-                    walk_stmt(&stmt.node, &mut |e| {
-                        if let Expr::FnCall { name, args } = e {
-                            if name == &on.signal_name && args.iter().enumerate().any(|(i, a)|
-                                on.params.get(i).map_or(false, |p| (is_decreasing_arg(&a.node, &p.name) || decreasing_through_local(&on.body, &a.node, &p.name)) && !rebinds(&on.body, &p.name)))
-                            { measured = true; }
-                        }
-                    });
-                }
-                if !measured {
-                    reasons.push(format!(
+                let calls = self_calls(&on.body, &on.signal_name, &on.params);
+                measures = on.params.iter().enumerate().filter(|(i, p)| !rebinds(&on.body, &p.name) && calls.iter().all(|args|
+                    args.get(*i).map_or(false, |a| decrease_kind(&on.body, a, &p.name).is_some()))).map(|(_, p)| p).collect();
+                if measures.is_empty() {
+                    let rebound = on.params.iter().enumerate().any(|(i, p)| rebinds(&on.body, &p.name) && calls.iter().all(|args|
+                        args.get(i).map_or(false, |a| decrease_kind(&on.body, a, &p.name).is_some())));
+                    reasons.push(if rebound { format!(
                         "handler `{}`: recursive call without provable decreasing argument (the parameter is re-assigned or re-bound in the body)",
                         on.signal_name
-                    ));
+                    ) } else { format!(
+                        "handler `{}`: no single parameter decreases in every recursive call — one call lowering a parameter while another raises it can cycle; one parameter must go down in each call",
+                        on.signal_name
+                    ) });
                 }
             }
             // `delegate("T", name, n)` with a computed handler name may call
@@ -243,25 +245,26 @@ fn check_cell_termination_raw(cell: &CellDef, program: &Program) -> Vec<Terminat
             // base case is a LOWER BOUND on an Int parameter (`if n <= 0 {
             // return … }`, `require n >= 0`): `n == 0` is stepped over
             if self_recursive && reasons.is_empty() {
-                let decreasing: Vec<&Param> = on.params.iter().filter(|p| {
-                    let mut used = false;
-                    for stmt in &on.body {
-                        walk_stmt(&stmt.node, &mut |e| {
-                            if let Expr::FnCall { name, args } = e {
-                                if name == &on.signal_name && args.iter().any(|a| is_decreasing_arg(&a.node, &p.name)) { used = true; }
-                            }
-                        });
-                    }
-                    used
-                }).collect();
-                for p in decreasing {
-                    let is_int = matches!(&p.ty.node, TypeExpr::Simple(t) if t == "Int");
-                    if !is_int {
+                let calls = self_calls(&on.body, &on.signal_name, &on.params);
+                let bounded_measure = measures.iter().any(|p| {
+                    let i = on.params.iter().position(|q| q.name == p.name).unwrap_or(0);
+                    matches!(&p.ty.node, TypeExpr::Simple(t) if t == "Int") && has_lower_bound_exit(&on.body, &p.name, &on.signal_name, halving_of(&calls, i, &on.body, &p.name))
+                });
+                if !bounded_measure {
+                    let p = measures[0];
+                    let i = on.params.iter().position(|q| q.name == p.name).unwrap_or(0);
+                    let halving = halving_of(&calls, i, &on.body, &p.name) != Decrease::Sub;
+                    if !matches!(&p.ty.node, TypeExpr::Simple(t) if t == "Int") {
                         reasons.push(format!(
                             "handler `{}`: the decreasing argument `{}` is not an Int (a Float step can stall: x - 1 == x past 2^53)",
                             on.signal_name, p.name
                         ));
-                    } else if !has_lower_bound_exit(&on.body, &p.name, &on.signal_name) {
+                    } else if halving {
+                        reasons.push(format!(
+                            "handler `{}`: halving `{}` stops at 0 (and -1 when it rounds down), where it no longer decreases — the base case must catch them: `if {} <= 0 {{ return … }}`",
+                            on.signal_name, p.name, p.name
+                        ));
+                    } else {
                         reasons.push(format!(
                             "handler `{}`: `{} - k` decreases but no base case bounds it from below — write `if {} <= 0 {{ return … }}` (an `== 0` test is stepped over from a negative start)",
                             on.signal_name, p.name, p.name
@@ -793,6 +796,50 @@ fn is_collection_iter(expr: &Expr) -> bool {
     )
 }
 
+/// `n - k`, or halving: truncating toward zero (`idiv`, `/`: 0 is the only
+/// fixed point) or rounding down (`floor_div`, `div`, `shr`: -1 too).
+#[derive(Clone, Copy, PartialEq, Debug)]
+enum Decrease { Sub, HalveTrunc, HalveFloor }
+
+/// How an argument decreases a parameter, directly or through a local
+/// (`let m = n - 1  … c(m)`).
+fn decrease_kind(body: &[Spanned<Statement>], arg: &Expr, param: &str) -> Option<Decrease> {
+    let kind = |e: &Expr| if !is_decreasing_arg(e, param) { None } else { Some(match e {
+        Expr::BinaryOp { op: BinOp::Sub, .. } => Decrease::Sub,
+        Expr::FnCall { name, .. } if name == "idiv" => Decrease::HalveTrunc,
+        Expr::BinaryOp { op: BinOp::Div, .. } => Decrease::HalveTrunc,
+        _ => Decrease::HalveFloor,
+    }) };
+    if let Some(k) = kind(arg) { return Some(k); }
+    if !decreasing_through_local(body, arg, param) { return None; }
+    let Expr::Ident(local) = arg else { return None };
+    let mut found = None;
+    crate::checker::literals::for_each_stmt_deep(body, &mut |st| if let Statement::Let { name, value } = st {
+        if name == local { found = kind(&value.node); }
+    });
+    found
+}
+
+/// The weakest decrease of parameter `i` over the self-calls: rounding-down
+/// halving over truncating halving over subtraction.
+fn halving_of(calls: &[Vec<&Expr>], i: usize, body: &[Spanned<Statement>], param: &str) -> Decrease {
+    let kinds: Vec<Decrease> = calls.iter().filter_map(|args| args.get(i).and_then(|a| decrease_kind(body, a, param))).collect();
+    if kinds.contains(&Decrease::HalveFloor) { Decrease::HalveFloor }
+    else if kinds.contains(&Decrease::HalveTrunc) { Decrease::HalveTrunc }
+    else { Decrease::Sub }
+}
+
+/// The argument lists of every direct self-call.
+fn self_calls<'a>(body: &'a [Spanned<Statement>], handler: &str, params: &[Param]) -> Vec<Vec<&'a Expr>> {
+    let mut out = Vec::new();
+    crate::checker::literals::for_each_expr(body, &mut |e| if let Expr::FnCall { name, args } = e {
+        if name == handler && crate::ast::accepted_arities(params).contains(&args.len()) {
+            out.push(args.iter().map(|a| &a.node).collect());
+        }
+    });
+    out
+}
+
 /// Check if an argument is provably smaller than a parameter.
 /// Recognizes patterns like: `param - 1`, `param - literal`.
 fn is_decreasing_arg(arg: &Expr, param_name: &str) -> bool {
@@ -829,21 +876,42 @@ fn decreasing_through_local(body: &[Spanned<Statement>], arg: &Expr, param_name:
 /// Does the body stop the descent with a lower bound on `param` before any
 /// statement can recurse: `if param <= c { … return … }` (or `< c`, or the
 /// flipped spelling), or `require param >= c` — with a literal `c`?
-fn has_lower_bound_exit(body: &[Spanned<Statement>], param: &str, handler: &str) -> bool {
-    fn bounded(cond: &Expr, param: &str) -> bool {
-        match cond {
-            Expr::CmpOp { left, op, right } => {
-                let lit = |e: &Expr| matches!(e, Expr::Literal(Literal::Int(_)));
-                match (&left.node, &right.node) {
-                    (Expr::Ident(n), r) if n == param && lit(r) => matches!(op, CmpOp::Le | CmpOp::Lt),
-                    (l, Expr::Ident(n)) if n == param && lit(l) => matches!(op, CmpOp::Ge | CmpOp::Gt),
-                    _ => false,
+/// Halving (`idiv(n, 2)`) stops decreasing at 0, and at -1 when it rounds
+/// down: its base case must catch both (`n <= c` with c >= 0, `n < c` with
+/// c >= 1, `require n >= 1`) — `if n < 0` let `log2(0)` recurse forever.
+fn has_lower_bound_exit(body: &[Spanned<Statement>], param: &str, handler: &str, decrease: Decrease) -> bool {
+    let halving = decrease != Decrease::Sub;
+    // `param <= c` (strict: `param < c`) with a literal c: does it stop there?
+    let stops = |c: i64, strict: bool| !halving || if strict { c >= 1 } else { c >= 0 };
+    // truncating halving only ever lands on 0: `if n == 0` catches it
+    let eq_zero_stops = decrease == Decrease::HalveTrunc;
+    let bounded = |cond: &Expr| -> bool {
+        fn walk(cond: &Expr, param: &str, stops: &dyn Fn(i64, bool) -> bool, eq_zero: bool) -> bool {
+            match cond {
+                Expr::CmpOp { left, op, right } => {
+                    let lit = |e: &Expr| if let Expr::Literal(Literal::Int(k)) = e { Some(*k) } else { None };
+                    match (&left.node, &right.node) {
+                        (Expr::Ident(n), r) if n == param && lit(r).is_some() => match op {
+                            CmpOp::Le => stops(lit(r).unwrap(), false),
+                            CmpOp::Lt => stops(lit(r).unwrap(), true),
+                            CmpOp::Eq => eq_zero && lit(r) == Some(0),
+                            _ => false,
+                        },
+                        (l, Expr::Ident(n)) if n == param && lit(l).is_some() => match op {
+                            CmpOp::Ge => stops(lit(l).unwrap(), false),
+                            CmpOp::Gt => stops(lit(l).unwrap(), true),
+                            CmpOp::Eq => eq_zero && lit(l) == Some(0),
+                            _ => false,
+                        },
+                        _ => false,
+                    }
                 }
+                Expr::BinaryOp { left, op: BinOp::Or, right } => walk(&left.node, param, stops, eq_zero) || walk(&right.node, param, stops, eq_zero),
+                _ => false,
             }
-            Expr::BinaryOp { left, op: BinOp::Or, right } => bounded(&left.node, param) || bounded(&right.node, param),
-            _ => false,
         }
-    }
+        walk(cond, param, &stops, eq_zero_stops)
+    };
     for st in body {
         // a self-call BEFORE any base case runs unconditionally: `let rest =
         // count(n - 1)  if n <= 0 { return 0 }` never reaches the base case
@@ -853,14 +921,34 @@ fn has_lower_bound_exit(body: &[Spanned<Statement>], param: &str, handler: &str)
             Statement::If { condition, then_body, .. } => {
                 let exits = matches!(then_body.last().map(|s| &s.node), Some(Statement::Return { .. }))
                     || matches!(then_body.last().map(|s| &s.node), Some(Statement::ExprStmt { expr }) if matches!(&expr.node, Expr::FnCall { name, .. } if name == "fail"));
-                if exits && bounded(&condition.node, param) && !calls_self(then_body, handler) { return true; }
+                if exits && bounded(&condition.node) && !calls_self(then_body, handler) { return true; }
             }
             Statement::Require { constraint, .. } => {
-                if let Constraint::Comparison { left, op, right } = &constraint.node {
+                // `require n >= 0` parses as the expression `n >= 0` == true:
+                // unwrapped, or this rule never matched
+                let cmp = match &constraint.node {
+                    Constraint::Comparison { left, op: CmpOp::Eq, right } if matches!(right.node, Expr::Literal(Literal::Bool(true))) =>
+                        match &left.node { Expr::CmpOp { left, op, right } => Some((left.as_ref(), *op, right.as_ref())), _ => None },
+                    Constraint::Comparison { left, op, right } => Some((left, *op, right)),
+                    _ => None,
+                };
+                if let Some((left, op, right)) = cmp {
+                    let op = &op;
                     let lit = |e: &Expr| matches!(e, Expr::Literal(Literal::Int(_)));
+                    // `require n >= c`: past it the call fails, which ends the
+                    // descent — for halving only if c excludes 0 (idiv(0, 2) is 0)
+                    let at_least = |c: i64, strict: bool| !halving || if strict { c >= 0 } else { c >= 1 };
                     let ok = match (&left.node, &right.node) {
-                        (Expr::Ident(n), r) if n == param && lit(r) => matches!(op, CmpOp::Ge | CmpOp::Gt),
-                        (l, Expr::Ident(n)) if n == param && lit(l) => matches!(op, CmpOp::Le | CmpOp::Lt),
+                        (Expr::Ident(n), r) if n == param && lit(r) => match (op, &r) {
+                            (CmpOp::Ge, Expr::Literal(Literal::Int(c))) => at_least(*c, false),
+                            (CmpOp::Gt, Expr::Literal(Literal::Int(c))) => at_least(*c, true),
+                            _ => false,
+                        },
+                        (l, Expr::Ident(n)) if n == param && lit(l) => match (op, &l) {
+                            (CmpOp::Le, Expr::Literal(Literal::Int(c))) => at_least(*c, false),
+                            (CmpOp::Lt, Expr::Literal(Literal::Int(c))) => at_least(*c, true),
+                            _ => false,
+                        },
                         _ => false,
                     };
                     if ok { return true; }

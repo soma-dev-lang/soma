@@ -3166,3 +3166,51 @@ fn soma_fix_keeps_annotations_and_the_meaning_of_arithmetic() {
     assert_ne!(code, 0, "{out}");
     let _ = std::fs::remove_dir_all(dir);
 }
+
+#[test]
+fn termination_needs_one_measure_and_a_base_case_at_the_halving_fixed_point() {
+    // `log2(0)` (base cases n < 0 and n == 1) recursed forever on idiv(0, 2);
+    // `walk` decreased n in one call and m in the other: (5,5) → (6,4) →
+    // (5,5). verify --strict proved both.
+    let dir = scratch("termination_measure");
+    std::fs::write(dir.join("app.cell"), r#"
+cell T {
+    on log2(n: Int) {
+        if n < 0 { return -1 }
+        if n == 1 { return 0 }
+        return 1 + log2(idiv(n, 2))
+    }
+    on walk(n: Int, m: Int) {
+        if n <= 0 { return 0 }
+        if m <= 0 { return 0 }
+        if n > m { return walk(n - 1, m + 1) }
+        return walk(n + 1, m - 1)
+    }
+    on ok_log(n: Int) {
+        if n <= 1 { return 0 }
+        return 1 + ok_log(idiv(n, 2))
+    }
+    on ok_digits(a: Int) {
+        if a == 0 { return 0 }
+        return 1 + ok_digits(idiv(a, 3))
+    }
+    on ok_req(n: Int) {
+        require n >= 0 else "neg"
+        if n == 0 { return 0 }
+        return 1 + ok_req(n - 1)
+    }
+    on ok_two(n: Int, m: Int) {
+        if n <= 0 { return m }
+        if m > 3 { return ok_two(n - 1, m - 1) }
+        return ok_two(n - 2, m + 1)
+    }
+}
+"#).unwrap();
+    let (_, out) = soma(&dir, &["verify", "app.cell"]);
+    assert!(out.contains("handler `log2`: halving `n`"), "{out}");
+    assert!(out.contains("handler `walk`: no single parameter"), "{out}");
+    for ok in ["ok_log", "ok_digits", "ok_req", "ok_two"] {
+        assert!(!out.contains(&format!("handler `{ok}`")), "{ok}: {out}");
+    }
+    let _ = std::fs::remove_dir_all(dir);
+}
