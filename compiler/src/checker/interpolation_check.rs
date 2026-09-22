@@ -59,7 +59,9 @@ fn count_field_defaults(body: &[Spanned<Statement>]) -> Vec<String> {
                 }
                 if name != "_coalesce" || args.len() != 2 { return; }
                 if let Expr::FieldAccess { target, field } = &args[0].node {
-                    if matches!(field.as_str(), "size" | "len" | "count" | "keys" | "values") {
+                    // (`count` is NOT in this list: on a value `.count` reads
+                    // the field — `plan(x).count`, a JSON record's count)
+                    if matches!(field.as_str(), "size" | "len" | "length" | "keys" | "values") {
                         let t = render_expr(&target.node);
                         let m = format!("`{t}.{field} ?? …`: on a Map `.{field}` is the {} (never `()`), so the default never applies — to read a field named `{field}`, write `{t}.get(\"{field}\") ?? …`",
                             if matches!(field.as_str(), "keys" | "values") { format!("list of its {field}") } else { "number of entries".to_string() });

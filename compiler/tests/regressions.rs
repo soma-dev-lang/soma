@@ -1465,3 +1465,31 @@ cell test T {
     assert!(out.contains("2 tests: 2 passed"), "{out}");
     let _ = std::fs::remove_dir_all(dir);
 }
+
+#[test]
+fn count_is_a_field_on_values_and_length_counts_on_slots() {
+    // `.count` on a local Map read the field (a JSON record's count) while
+    // check warned "on a Map `.count` is the number of entries (never ())";
+    // `.length` counted on a value but read as a missing field on a slot
+    let dir = scratch("count_length");
+    std::fs::write(dir.join("app.cell"), r#"
+cell P {
+    memory { m: Map<String, Int>  xs: List<Int> }
+    on rec() { let r = from_json("{\"count\": 7}") let e = map("a", 1) return [r.count ?? 0, e.count ?? 0, e.length, e.len] }
+    on slots() { m.set("count", 5) m.set("b", 1) xs.push(1) return [m.count, m.length, m.len, xs.count, xs.length, xs.len] }
+}
+cell test T {
+    rules {
+        assert P.rec() == [7, 0, 1, 1]
+        assert P.slots() == [2, 2, 2, 1, 1, 1]
+    }
+}
+"#).unwrap();
+    let (code, out) = soma(&dir, &["check", "app.cell"]);
+    assert_eq!(code, 0, "{out}");
+    assert!(!out.contains("number of entries"), "{out}");
+    let (code, out) = soma(&dir, &["test", "app.cell"]);
+    assert_eq!(code, 0, "{out}");
+    assert!(out.contains("2 tests: 2 passed"), "{out}");
+    let _ = std::fs::remove_dir_all(dir);
+}

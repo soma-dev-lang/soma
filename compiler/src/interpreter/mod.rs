@@ -3027,7 +3027,7 @@ impl Interpreter {
                 backend.list().into_iter().map(|v| self.from_slot(cell_name, slot_name, stored_to_value(v))).collect()
             };
             match method {
-                "len" | "size" | "count" if args.is_empty() => return Ok(Value::Int(SomaInt::from_i64(backend.list_len() as i64))),
+                "len" | "size" | "count" | "length" if args.is_empty() => return Ok(Value::Int(SomaInt::from_i64(backend.list_len() as i64))),
                 "values" | "all" | "list" | "entries" | "items" => return Ok(Value::List(items())),
                 "first" => return Ok(items().into_iter().next().unwrap_or(Value::Unit)),
                 "last" => return Ok(items().into_iter().last().unwrap_or(Value::Unit)),
@@ -3291,7 +3291,8 @@ impl Interpreter {
                 }
                 Ok(Value::Unit)
             }
-            "len" | "size" | "count" => {
+            // `length` counts on a local Map / List too (it read as a missing field here)
+            "len" | "size" | "count" | "length" => {
                 Ok(Value::Int(SomaInt::from_i64(backend.len() as i64)))
             }
             "list" | "all" => {

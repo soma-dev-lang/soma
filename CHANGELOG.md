@@ -97,6 +97,12 @@
   struct variant's field reads with `.`, and `match` for branching.
 - Docs: `divmod` promised `0 <= r < |b|`; with a negative divisor the remainder
   takes the divisor's sign (`divmod(7, -3)` is `[-3, -2]`), as `mod` documents.
+- `.count` and `.length`: on a local Map `.count` reads the field (a JSON
+  record's `count`), yet `check` warned "on a Map `.count` is the number of
+  entries (never ())" and told the author to rewrite a correct read. The
+  warning is limited to `len`, `size`, `length`, `keys`, `values`. On a memory
+  slot `.length` read as a missing field while it counts on a value; slots now
+  accept `len`, `size`, `count` and `length` alike. One regression test.
 - The guard prover reads a negated `require`: `require !(n < 0)` establishes
   `n >= 0`, `!(a || b)` establishes both negations, and a guard written as
   `!(n < 0)` is proven from `require n >= 0`. Two regression tests.
