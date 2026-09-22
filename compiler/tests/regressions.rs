@@ -2109,6 +2109,51 @@ fn the_write_guard_follows_the_link_to_what_the_write_lands_on() {
 }
 
 #[test]
+fn a_mistyped_manifest_key_is_refused_in_every_section() {
+    // `[verify]` and `[agent]` already refused an unknown key, five other
+    // sections dropped it: `seedz` left the node standalone while the
+    // operator believed it had joined a cluster, `entri` fell back to
+    // main.cell, `pathh` resolved a local dependency through the registry
+    let dir = scratch("manifest_typo");
+    std::fs::write(dir.join("app.cell"), "cell A {\n    on run() { return 1 }\n}\n").unwrap();
+    for (label, toml, field) in [
+        ("compute", "[compute]\nthreadz = 4\n", "threadz"),
+        ("cluster", "[cluster]\nseedz = [\"a:1\"]\n", "seedz"),
+        ("parallel", "[compute.parallel]\nhandlerz = [\"h\"]\n", "handlerz"),
+        ("package", "[package]\nentri = \"app.cell\"\n", "entri"),
+        ("dependency", "[dependencies]\nlib = { pathh = \"./lib\" }\n", "pathh"),
+    ] {
+        std::fs::write(dir.join("soma.toml"), toml).unwrap();
+        let (code, out) = soma(&dir, &["check", "app.cell"]);
+        assert_ne!(code, 0, "[{label}] a mistyped key must not be dropped\n{out}");
+        if label == "dependency" {
+            // an untagged enum names no field, so the valid keys are spelled out
+            assert!(out.contains("a dependency is a version string"), "[{label}]\n{out}");
+        } else {
+            assert!(out.contains(&format!("unknown field `{field}`")), "[{label}]\n{out}");
+        }
+        // the [verify] key list belongs to a [verify] error, not this one
+        assert!(!out.contains("valid [verify] keys"), "[{label}]\n{out}");
+    }
+    // the spellings these sections actually take still parse
+    for toml in [
+        "[compute]\nbackend = \"threads\"\nthreads = 4\n",
+        "[cluster]\nseeds = [\"a:1\"]\nnode_id = \"n1\"\n",
+        "[package]\nname = \"x\"\nentry = \"app.cell\"\n",
+        "[dependencies]\nlib = \"1.0\"\n",
+    ] {
+        std::fs::write(dir.join("soma.toml"), toml).unwrap();
+        let (code, out) = soma(&dir, &["check", "app.cell"]);
+        assert_eq!(code, 0, "{toml}\n{out}");
+    }
+    // a [verify] error still gets the key list
+    std::fs::write(dir.join("soma.toml"), "[verify]\nbefor = []\n").unwrap();
+    let (_, out) = soma(&dir, &["check", "app.cell"]);
+    assert!(out.contains("valid [verify] keys"), "{out}");
+    let _ = std::fs::remove_dir_all(dir);
+}
+
+#[test]
 fn fix_never_deletes_code_past_the_handler_line() {
     // removing a handler's `-> T` searched the WHOLE file for the opening
     // brace: with no body on that line it found the next cell's `{` and

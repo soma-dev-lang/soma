@@ -120,6 +120,7 @@ impl AgentConfig {
 }
 
 #[derive(Debug, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)] // `threadz = 4` ran sequentially, silently
 pub struct ComputeConfig {
     /// Backend: "threads", "spark", "ray", "gpu"
     #[serde(default = "default_compute_backend")]
@@ -145,6 +146,8 @@ impl Default for ComputeConfig {
 fn default_compute_backend() -> String { "sequential".to_string() }
 
 #[derive(Debug, Default, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)] // `seedz` left the node standalone while the
+// operator believed it had joined the cluster
 pub struct ClusterConfig {
     /// Seed node addresses for cluster discovery
     #[serde(default)]
@@ -161,6 +164,7 @@ impl ClusterConfig {
 }
 
 #[derive(Debug, Default, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)] // `handlerz` parallelised nothing
 pub struct ParallelConfig {
     /// Handler names to parallelize
     #[serde(default)]
@@ -219,6 +223,7 @@ pub struct AfterConfig {
 }
 
 #[derive(Debug, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)] // `entri` fell back to main.cell, silently
 pub struct PackageInfo {
     #[serde(default)]
     pub name: String,
@@ -258,6 +263,8 @@ pub enum Dependency {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)] // `pathh = "./lib"` was resolved through the
+// registry by name instead of from the path
 pub struct DependencySpec {
     #[serde(default)]
     pub git: Option<String>,

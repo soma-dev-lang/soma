@@ -88,7 +88,17 @@ fn validate_manifest_beside(path: &PathBuf) {
         for line in e.to_string().lines() {
             eprintln!("  {}", line);
         }
-        eprintln!("  valid [verify] keys: cells, deadlock_free, eventually, never, always, [verify.after.<state>] with eventually / never, [verify.before.<state>] with requires / requires_all");
+        // the [verify] key list is for a [verify] error: printed under a
+        // `[cluster]` or `[package]` typo it only pointed the wrong way
+        let msg = e.to_string();
+        // an untagged enum reports only that no variant matched, so the
+        // mistyped key is never named: say what a dependency may hold
+        if msg.contains("untagged enum Dependency") {
+            eprintln!("  a dependency is a version string (`lib = \"1.0\"`) or a table with git, path, version, branch or subdir");
+        }
+        if msg.contains("verify") || msg.contains("deadlock_free") || msg.contains("requires_all") {
+            eprintln!("  valid [verify] keys: cells, deadlock_free, eventually, never, always, [verify.after.<state>] with eventually / never, [verify.before.<state>] with requires / requires_all");
+        }
         fatal_exit();
     }
 }

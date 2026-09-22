@@ -2,6 +2,20 @@
 
 ## Unreleased
 
+### `soma.toml`: a mistyped key is refused in every section
+
+- `[verify]` and `[agent]` already refused an unknown key, on the grounds
+  that a typo'd property must not vanish silently. Five sections still
+  dropped one: `[cluster]`, `[compute]`, `[compute.parallel]`, `[package]`
+  and a dependency table. So `seedz` left the node standalone while the
+  operator believed it had joined a cluster, `threadz` ran sequentially,
+  `entri` fell back to `main.cell`, and `pathh = "./lib"` resolved a local
+  dependency through the registry by name. All five now name the unknown key
+  and the ones the section takes. A dependency table reports through an
+  untagged enum, which names no field, so the valid keys are spelled out.
+- The `[verify]` key list is printed only under a `[verify]` error. It used
+  to follow every manifest error, pointing the wrong way.
+
 ### The file write guard follows the link to what the write lands on
 
 - The guard that refuses a write to the program, its configuration or its
