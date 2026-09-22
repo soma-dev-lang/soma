@@ -211,6 +211,13 @@ fn analyze_handler(on: &OnSection, span: Span) -> HandlerEffect {
 fn walk_stmts(body: &[Spanned<Statement>], path: &mut Vec<String>, eff: &mut HandlerEffect) {
     for stmt in body {
         walk_stmt(&stmt.node, stmt.span, path, eff);
+        // a transition past a `return` (or a `break`/`continue`) never runs:
+        // it was counted as an edge the handler takes, so `verify` answered
+        // that a handler reaches a state nothing could reach through it.
+        // `soma check` already warns that the statement is unreachable.
+        if matches!(stmt.node, Statement::Return { .. } | Statement::Break | Statement::Continue) {
+            break;
+        }
     }
 }
 

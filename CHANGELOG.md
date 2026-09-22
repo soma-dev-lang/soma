@@ -2,6 +2,16 @@
 
 ## Unreleased
 
+### `soma verify`: a transition past a `return` is not an edge the handler takes
+
+- The refinement proof walked a handler's whole body, so a `transition()`
+  after a `return` counted as a move the handler makes. `soma check` already
+  warns that the statement is unreachable, and the runtime leaves the instance
+  where it was, but verify answered that the handler reaches that state — the
+  opposite of what an audit asking "what can move this to `released`?" needs.
+  The walk now stops where the flow leaves the block. A `return` inside an
+  `if` still does not end the handler, so what follows is counted as before.
+
 ### `soma verify`: the reason a write is not proven names the rebinding
 
 - A handler that reassigns a parameter before writing it was told that
