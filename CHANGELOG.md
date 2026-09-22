@@ -2,6 +2,18 @@
 
 ## Unreleased
 
+### A `cell property` rule naming nothing is reported
+
+- `cell property my_flag { rules { implies [persistant] } }` was accepted in
+  silence, and the note even told the author that the slot implied
+  `persistant` — a name nothing defines, so the slot got no persistence at
+  all. The same held for `contradicts`, where the constraint it was meant to
+  forbid simply never applied. `implies`, `contradicts` and `requires` now
+  report a name no loaded cell property defines, with the near miss when
+  there is one. A name defined further down the file still resolves. Under
+  `requires` the warning explains the "not present" error that already
+  followed.
+
 ### An unknown slot property names the one it is a letter away from
 
 - `[natif]` on a handler already answered "did you mean [native]?". A slot

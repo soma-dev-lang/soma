@@ -250,6 +250,16 @@ pub enum CheckWarning {
         near: Option<String>,
         span: Span,
     },
+    /// `implies [persistant]` inside a `cell property`: the name resolves to
+    /// nothing, so the implication (or the contradiction it was meant to
+    /// forbid) never applies
+    UnknownPropertyRef {
+        property: String,
+        in_property: String,
+        rule: &'static str,
+        near: Option<String>,
+        span: Span,
+    },
     UnverifiablePromise {
         cell: String,
         promise: String,
@@ -357,6 +367,12 @@ impl std::fmt::Display for CheckWarning {
                     None => write!(f, "warning: unknown property '{property}' on '{slot}' (not defined in any loaded cell property)"),
                 }
             }
+            Self::UnknownPropertyRef { property, in_property, rule, near, .. } => {
+                match near {
+                    Some(n) => write!(f, "warning: `cell property {in_property}` {rule} '{property}', which no loaded cell property defines — did you mean '{n}'? (as written the rule never applies)"),
+                    None => write!(f, "warning: `cell property {in_property}` {rule} '{property}', which no loaded cell property defines — as written the rule never applies"),
+                }
+            }
             Self::UnverifiablePromise { cell, promise, .. } => {
                 write!(f, "note: promise on '{cell}' is documentation (not machine-verifiable): \"{promise}\"")
             }
@@ -441,6 +457,7 @@ impl CheckWarning {
             Self::UnhandledSignal { span, .. }
             | Self::PropertyImplication { span, .. }
             | Self::UnknownProperty { span, .. }
+            | Self::UnknownPropertyRef { span, .. }
             | Self::UnverifiablePromise { span, .. }
             | Self::AwaitWithoutHandler { span, .. }
             | Self::ScaleEventualConsistency { span, .. }
@@ -1144,6 +1161,36 @@ impl<'a> Checker<'a> {
                             message: format!("a handler cannot be named `{}`: it would replace the builtin {}() for every bare call in the program (state machines, approvals and errors included) — rename it (`on {}_{}(…)`)", on.signal_name, on.signal_name, on.signal_name, cell.node.name.to_lowercase()),
                             span: sec.span,
                         });
+                    }
+                }
+            }
+        }
+        // a `cell property` whose `implies` / `contradicts` / `requires`
+        // names a property nothing defines: the rule silently never applies,
+        // so `implies [persistant]` gave the slot no persistence at all
+        {
+            for cell in &program.cells {
+                if cell.node.kind != CellKind::Property { continue }
+                for sec in &cell.node.sections {
+                    let Section::Rules(rules) = &sec.node else { continue };
+                    for rule in &rules.rules {
+                        let (verb, names) = match &rule.node {
+                            Rule::Implies(n) => ("implies", n),
+                            Rule::Contradicts(n) => ("contradicts", n),
+                            Rule::Requires(n) => ("requires", n),
+                            _ => continue,
+                        };
+                        for name in names {
+                            if self.registry.is_known_property(name) { continue }
+                            let known: Vec<String> = self.registry.properties.keys().cloned().collect();
+                            self.warnings.push(CheckWarning::UnknownPropertyRef {
+                                property: name.clone(),
+                                in_property: cell.node.name.clone(),
+                                rule: verb,
+                                near: names::suggest(name, known.iter()),
+                                span: rule.span,
+                            });
+                        }
                     }
                 }
             }
@@ -2488,6 +2535,13 @@ impl<'a> Checker<'a> {
                 match near {
                     Some(n) => format!("Write '{n}' on slot '{slot}', or, if '{property}' is a property of your own, define it with 'cell property {property} {{ }}'."),
                     None => format!("Check spelling of property '{property}' on slot '{slot}'. Define it with 'cell property {property} {{ }}' or remove it."),
+                },
+            ),
+            CheckWarning::UnknownPropertyRef { property, in_property, near, .. } => (
+                format!("{}", warn),
+                match near {
+                    Some(n) => format!("Write '{n}' in `cell property {in_property}`, or define '{property}' with 'cell property {property} {{ }}'."),
+                    None => format!("Define '{property}' with 'cell property {property} {{ }}', or remove it from `cell property {in_property}`."),
                 },
             ),
             CheckWarning::UnverifiablePromise { promise, .. } => (

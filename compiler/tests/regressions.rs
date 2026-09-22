@@ -2221,6 +2221,39 @@ fn an_unknown_slot_property_names_the_one_it_is_a_letter_from() {
 }
 
 #[test]
+fn a_property_rule_naming_nothing_is_reported() {
+    // `cell property my_flag { rules { implies [persistant] } }` was
+    // accepted in silence, and the note even said the slot implied
+    // `persistant` — a name nothing defines, so the slot got no persistence
+    let dir = scratch("property_rule_ref");
+    let tail = "cell A {\n    memory { m: Map<String, Int> [my_flag] }\n    on r() { return 1 }\n}\n";
+    for (rule, name, want) in [
+        ("implies", "persistant", Some("persistent")),
+        ("requires", "ephemeralle", Some("ephemeral")),
+        ("contradicts", "nosuchprop", None),
+    ] {
+        std::fs::write(dir.join("app.cell"), format!(
+            "cell property my_flag {{\n    rules {{ {rule} [{name}] }}\n}}\n{tail}")).unwrap();
+        let (code, out) = soma(&dir, &["check", "app.cell"]);
+        // `requires` also raises the pre-existing "not present" error, which
+        // this warning is what explains
+        if rule != "requires" { assert_eq!(code, 0, "it stays a warning\n{out}"); }
+        assert!(out.contains(&format!("{rule} '{name}', which no loaded cell property defines")), "{out}");
+        match want {
+            Some(n) => assert!(out.contains(&format!("did you mean '{n}'?")), "{out}"),
+            None => assert!(out.contains("as written the rule never applies"), "{out}"),
+        }
+    }
+    // a name that resolves, even one defined further down the file, is quiet
+    std::fs::write(dir.join("app.cell"), format!(
+        "cell property my_flag {{\n    rules {{ implies [other_flag] }}\n}}\n         cell property other_flag {{\n    rules {{ implies [persistent] }}\n}}\n{tail}")).unwrap();
+    let (code, out) = soma(&dir, &["check", "app.cell"]);
+    assert_eq!(code, 0, "{out}");
+    assert!(!out.contains("no loaded cell property defines"), "{out}");
+    let _ = std::fs::remove_dir_all(dir);
+}
+
+#[test]
 fn fix_never_deletes_code_past_the_handler_line() {
     // removing a handler's `-> T` searched the WHOLE file for the opening
     // brace: with no body on that line it found the next cell's `{` and
