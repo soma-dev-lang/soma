@@ -3321,3 +3321,29 @@ cell test T {
 }
 "#);
 }
+
+#[test]
+fn each_test_cell_starts_with_no_hordes() {
+    // T1's horde and its results were visible to T2, and T2's first horde
+    // was Audit:h2: the horde tables outlived the per-cell reset
+    passes("horde_test_isolation", r#"
+cell Audit {
+    on work(x: Int) [task] { return x * 2 }
+    on start() { return horde(Audit.work, [1, 2, 3], map("concurrency", 2)) }
+    on seen(id: String) { let r = try { horde_status(id) }  return r.error == () }
+}
+cell test T1 {
+    rules {
+        let h = start()
+        assert h == "Audit:h1"
+        assert horde_status(h).done == 3
+    }
+}
+cell test T2 {
+    rules {
+        assert Audit.seen("Audit:h1") == false
+        assert start() == "Audit:h1"
+    }
+}
+"#);
+}

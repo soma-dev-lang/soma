@@ -2,6 +2,13 @@
 
 ## Unreleased
 
+### Each test cell starts with no hordes
+
+- "Each `cell test` starts with fresh slots, machines, mocks and trace()",
+  but not fresh hordes: a horde started in one test cell, with its results,
+  was visible to the next, whose first horde was numbered after it
+  (`Audit:h2`). The horde tables are now reset with the rest.
+
 ### A record pattern matches a record
 
 - `match v { Game { bet } -> … }` matched only a struct variant named

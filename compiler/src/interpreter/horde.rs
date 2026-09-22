@@ -216,8 +216,16 @@ fn live() -> &'static (Mutex<HashMap<String, Live>>, Condvar) {
 type Pair = (Arc<dyn StorageBackend>, Arc<dyn StorageBackend>);
 
 /// The owner cell's two tables: hordes, tasks.
+static B: OnceLock<Mutex<HashMap<String, Pair>>> = OnceLock::new();
+
+/// `soma test`: each test cell starts with no hordes and the id sequence
+/// at h1 (T1's hordes and results were visible to T2, its ids went on).
+pub fn reset_for_test_cell() {
+    if !super::IN_TEST.load(std::sync::atomic::Ordering::Relaxed) { return; }
+    if let Some(m) = B.get() { m.lock().unwrap_or_else(|e| e.into_inner()).clear(); }
+}
+
 pub(crate) fn backends(owner: &str) -> Pair {
-    static B: OnceLock<Mutex<HashMap<String, Pair>>> = OnceLock::new();
     let mut m = B.get_or_init(|| Mutex::new(HashMap::new())).lock().unwrap_or_else(|e| e.into_inner());
     m.entry(owner.to_string()).or_insert_with(|| {
         // under serve / run a horde is always persisted (a program with no

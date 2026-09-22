@@ -198,6 +198,8 @@ pub fn cmd_test(path: &PathBuf, json: bool, registry: &mut Registry) {
         interp.agent_conversations.clear();
         // remember() memory and next_id counters are per test cell too
         interp.storage.retain(|k, _| !k.ends_with(".__agent_memory") && !k.ends_with(".__counters"));
+        // …and the hordes the cell before started
+        interpreter::horde::reset_for_test_cell();
         if cell_idx > 0 {
             for cell in &program.cells {
                 if matches!(cell.node.kind, ast::CellKind::Cell | ast::CellKind::Agent) {
