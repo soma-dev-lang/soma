@@ -1614,7 +1614,8 @@ cell C {
     assert!(!out.contains("\"x\""), "{out}");
     let (out, code) = soma_in(&d, &["run", "s.cell", "deep", "100000000"]);
     assert_eq!(code, 1, "{out}");
-    assert!(out.contains("stack_overflow"), "{out}");
+    // the interpreter's stack overflow, as for interpreted recursion
+    assert!(out.contains("stack overflow"), "{out}");
 
     std::fs::write(d.join("soma.toml"), "[verfy]\nnever = [\"x\"]\n").unwrap();
     let (out, code) = soma_in(&d, &["verify", "s.cell"]);
