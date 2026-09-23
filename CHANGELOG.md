@@ -2,6 +2,22 @@
 
 ## Unreleased
 
+### Native code: each quotient keeps its own exactness, and an Int spot never truncates
+
+- Whether an Int quotient carried as a Float was exact was one flag for the
+  whole call: after any inexact division (`let mean = total / n`), an exact
+  `let h = n / 2` returned `2.0` and printed "2.0". Each quotient local now
+  records its own exactness, a `return` reports only its own, and a sibling
+  `[native]` handler returning a quotient passes its exactness to the caller
+  (`to_string(half(8))` was "4.0", `half(8) * 2` was `8.0`).
+- An exact quotient used in further arithmetic lost digits past 2^53 without
+  a word: `let q = x / y  return q * q % 1000` answered 0 for 100000001 / 1
+  (the interpreter answers 1). It now raises, as an exact quotient past 2^53
+  already did, pointing at `idiv(a, b)`.
+- A Float value in a spot that holds an Int (`s = s + q` with an Int `s`)
+  was truncated: 10.5 became 9. It raises now, as documented ("it never
+  truncates"); an integral value converts as before.
+
 ### Native code: Float locals print as Floats; mixed Bool returns and `String + number` are refused
 
 - `to_string` of a Float local printed an integral value as an Int: every

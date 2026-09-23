@@ -3631,3 +3631,37 @@ cell P {
     assert!(out.contains("`\"n=\" + (n + 1)`"), "{out}");
     let _ = std::fs::remove_dir_all(dir);
 }
+
+#[test]
+fn native_quotients_keep_their_own_exactness() {
+    // exactness was one handler-wide flag: an unrelated inexact division
+    // made an exact quotient a Float; a sibling's exact quotient reached its
+    // caller as a Float; `q * q` past 2^53 answered wrong digits; and
+    // `s = s + q` truncated 10.5 to 9
+    passes("native_quotient_exactness", r#"
+cell P {
+    on mean_and_half(total: Int, n: Int) [native] { let mean = total / n  let h = n / 2  return h }
+    on show_half(total: Int, n: Int) [native] { let mean = total / n  let h = n / 2  return to_string(h) }
+    on half(n: Int) [native] { return n / 2 }
+    on sib_str(n: Int) [native] { return to_string(half(n)) }
+    on sib_let(n: Int) [native] { let a = half(n)  return a }
+    on sib_mul(n: Int) [native] { return half(n) * 2 }
+    on sqmod(x: Int, y: Int) [native] { let q = x / y  return q * q % 1000 }
+    on acc(x: Int, y: Int) [native] { let q = x / y  let s = 0  for i in range(0, 3) { s = s + q }  return s }
+}
+cell test T { rules {
+    assert mean_and_half(7, 4) == 2
+    assert type_of(mean_and_half(7, 4)) == "Int"
+    assert show_half(7, 4) == "2"
+    assert sib_str(8) == "4"
+    assert sib_str(7) == "3.5"
+    assert sib_let(8) == 4
+    assert type_of(sib_let(8)) == "Int"
+    assert sib_mul(8) == 8
+    assert sqmod(1000, 10) == 0
+    assert_fails sqmod(100000001, 1) matching "2^53"
+    assert acc(8, 2) == 12
+    assert_fails acc(7, 2) matching "never truncates"
+} }
+"#);
+}

@@ -155,6 +155,7 @@ pub fn generate_native_source_with_config(
             param_types,
             return_type: NativeType::Float,
             mode: Mode::Direct,
+            int_rational: false,
         });
     }
     loop {
@@ -167,8 +168,10 @@ pub fn generate_native_source_with_config(
             }
             tmp.infer_body_types(&handler.body);
             let return_type = tmp.infer_return_type(&handler.body);
+            let int_rational = return_type == NativeType::Float && tmp.returns_int_rational(&handler.body);
             if let Some(info) = pre_sibling_info.get_mut(&handler.signal_name) {
                 info.return_type = return_type;
+                info.int_rational = int_rational;
             }
         }
         if prev == pre_sibling_info { break; }
@@ -283,6 +286,7 @@ pub fn generate_native_source_with_config(
             param_types,
             return_type: NativeType::Float,  // placeholder, refined below
             mode: *mode,
+            int_rational: false,
         });
     }
     // Fixpoint pass to refine return types — handles mutual recursion / sibling chains
@@ -296,8 +300,10 @@ pub fn generate_native_source_with_config(
             }
             tmp.infer_body_types(&handler.body);
             let return_type = tmp.infer_return_type(&handler.body);
+            let int_rational = return_type == NativeType::Float && tmp.returns_int_rational(&handler.body);
             if let Some(info) = sibling_info.get_mut(&handler.signal_name) {
                 info.return_type = return_type;
+                info.int_rational = int_rational;
             }
         }
         if prev == sibling_info { break; }
@@ -328,6 +334,7 @@ pub fn generate_native_source_with_config(
     // interpreter raises a type error; native code truncated it (bit_len(2.5)
     // answered 2). Only an integral value — an exact Int / Int quotient the
     // interpreter kept as an Int — passes.
+    out.push_str("#[inline(always)] #[allow(dead_code)] fn _soma_f2i(v: f64) -> i64 { if v.is_finite() && v.fract() == 0.0 && v.abs() <= 9007199254740992.0 { v as i64 } else { panic!(\"soma:type: this spot holds an Int, got the Float {} — native code never truncates: write floor(), round(), to_int() or idiv(a, b)\", _soma_fmt_f(v)) } }\n");
     out.push_str("#[inline(always)] #[allow(dead_code)] fn _soma_int_arg(v: f64, name: &str) -> i64 { if v.is_finite() && v.fract() == 0.0 && v.abs() <= 9007199254740992.0 { v as i64 } else { panic!(\"soma:type: {}(): expected Int arguments, got Float {}\", name, _soma_fmt_f(v)) } }\n");
     // buffer(n) / buffer_f(n): a negative n became `(-3) as usize`, a
     // 16-exabyte allocation refused as "capacity overflow"
@@ -450,6 +457,7 @@ pub fn generate_native_source_with_config(
         let int_rational_return =
             ret_type == NativeType::Float && gen.returns_int_rational(&handler.body);
         gen.fn_return_type = ret_type;
+        gen.int_rational_ret = int_rational_return;
 
         match mode {
             Mode::Direct => {
@@ -473,6 +481,7 @@ pub fn generate_native_source_with_config(
                 }
                 fast_gen.infer_body_types(&handler.body);
                 fast_gen.fn_return_type = ret_type;
+                fast_gen.int_rational_ret = int_rational_return;
 
                 // Auto-memo only applies to Int-returning handlers (cache
                 // values must be Copy/Clone-cheap and round-trippable).
@@ -709,6 +718,44 @@ fn _soma_div_exact(a: i64, b: i64) -> i64 {
 /// Set when a Float-context Int / Int had a remainder during this call
 /// (process-wide: parallel handlers divide on worker threads).
 static _SOMA_DIV_INEXACT: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+
+// Exactness of Int quotients carried as f64. The flag is bracketed around
+// each definition of a quotient local (whose own exactness is then kept in
+// a `__soma_qx_<name>` bool), around `to_string` and before each `return`;
+// a function restores its caller's flag on exit and adds its own return's
+// inexactness only when it returns a quotient. A handler-wide flag made an
+// exact quotient print as a Float after any unrelated inexact division.
+#[allow(dead_code)]
+#[inline(always)]
+fn _soma_q_take() -> bool { _SOMA_DIV_INEXACT.swap(false, std::sync::atomic::Ordering::Relaxed) }
+#[allow(dead_code)]
+#[inline(always)]
+fn _soma_q_mark(b: bool) { if b { _SOMA_DIV_INEXACT.store(true, std::sync::atomic::Ordering::Relaxed); } }
+/// An exact Int computed in f64 past 2^53 has lost digits: raise, as an
+/// exact quotient past 2^53 does (`q * q % 1000` answered 0 for 1).
+#[allow(dead_code)]
+#[inline(always)]
+fn _soma_q_big(v: f64, inexact: bool) -> f64 {
+    if !inexact && !_SOMA_DIV_INEXACT.load(std::sync::atomic::Ordering::Relaxed) && v.is_finite() && v.abs() > 9007199254740992.0 {
+        panic!("soma:an exact Int computed from an Int / Int went past 2^53, where a Float (native `/` is typed Float) loses digits — write idiv(a, b) to keep the exact Int");
+    }
+    v
+}
+#[allow(dead_code)]
+fn _soma_fmt_q2(q: f64, inexact: bool) -> String {
+    if !inexact && q.is_finite() && q.fract() == 0.0 && q.abs() <= 9007199254740992.0 { format!("{}", q as i64) } else { _soma_fmt_f(q) }
+}
+#[allow(dead_code)]
+struct _SomaQ { saved: bool, ret: bool }
+#[allow(dead_code)]
+impl _SomaQ {
+    #[inline(always)]
+    fn enter(ret: bool) -> Self { _SomaQ { saved: _soma_q_take(), ret } }
+}
+impl Drop for _SomaQ {
+    #[inline(always)]
+    fn drop(&mut self) { let d = _soma_q_take(); _soma_q_mark(self.saved || (self.ret && d)); }
+}
 
 #[allow(dead_code)]
 #[inline(always)]
@@ -1242,6 +1289,7 @@ fn gen_direct_inner_fn(
         "fn inner_{}({}) -> {} {{\n    let _depth_guard = _SomaDepth::enter();\n",
         fn_name, param_str, ret_type.rust_str()
     ));
+    out.push_str(&gen.q_prologue());
     for stmt in &handler.body {
         out.push_str(&gen.gen_stmt_direct(&stmt.node, 1));
     }
@@ -1305,6 +1353,7 @@ fn gen_rug_inner_fn(
         .join(", ");
 
     out.push_str(&format!("fn inner_{}({}) -> {} {{\n    let _depth_guard = _SomaDepth::enter();\n", fn_name, mut_param_str, inner_ret));
+    out.push_str(&gen.q_prologue());
     let ctx = RugCtx::new(ret_type);
     out.push_str(&gen.gen_body_rug(&handler.body, 1, &ctx));
     let last_is_return = handler.body.last()
@@ -3137,6 +3186,9 @@ struct SiblingInfo {
     param_types: Vec<NativeType>,
     return_type: NativeType,
     mode: Mode,
+    /// Returns an Int quotient carried as f64 (`return n / 2`): a caller
+    /// treats the call like any quotient (`to_string(half(8))` is "4").
+    int_rational: bool,
 }
 
 /// Context for the Rug-mode statement walker. Captures everything that
@@ -3223,6 +3275,12 @@ struct FnGenerator {
     /// only these may hold an exact quotient that prints as an Int. A local
     /// defined from a Float (`let t = 0.0`) printed "2" for 2.0.
     rational_locals: HashSet<String>,
+    /// Every return of the handler is an int-rational Float (restored to an
+    /// Int by the caller when exact).
+    int_rational_ret: bool,
+    /// Set while generating the inner statement of a quotient-local
+    /// definition (the bracket around it is emitted once).
+    in_q_wrap: std::cell::Cell<bool>,
 }
 
 impl FnGenerator {
@@ -3254,6 +3312,8 @@ impl FnGenerator {
             dualmode_siblings: HashSet::new(),
             is_fast_variant: false,
             rational_locals: HashSet::new(),
+            int_rational_ret: false,
+            in_q_wrap: std::cell::Cell::new(false),
         }
     }
 
@@ -3829,6 +3889,40 @@ impl FnGenerator {
         !returns.is_empty() && returns.iter().all(|e| self.is_int_rational(e, &rational))
     }
 
+    /// The exactness bools of the quotient locals `e` reads, or'd.
+    fn q_shadows(&self, e: &Expr) -> String {
+        let mut names: Vec<String> = Vec::new();
+        crate::checker::literals::for_each_in_expr(e, &mut |x| {
+            if let Expr::Ident(n) = x {
+                if self.rational_locals.contains(n) && !names.contains(n) { names.push(n.clone()); }
+            }
+        });
+        if names.is_empty() { return "false".to_string(); }
+        names.iter().map(|n| format!("__soma_qx_{}", n)).collect::<Vec<_>>().join(" || ")
+    }
+
+    /// Declarations every inner function starts with (after the depth guard).
+    fn q_prologue(&self) -> String {
+        let mut s = format!("    let _soma_q = _SomaQ::enter({});\n", self.int_rational_ret);
+        let mut names: Vec<&String> = self.rational_locals.iter().collect();
+        names.sort();
+        for n in names { s.push_str(&format!("    let mut __soma_qx_{}: bool = false;\n", n)); }
+        s
+    }
+
+    /// `let q = <quotient>` / `q = <quotient>`: record whether it is exact.
+    fn q_wrap_def(&self, name: &str, value: &Expr, inner: String, ind: &str) -> String {
+        format!("{ind}let _soma_qw = _soma_q_take();\n{inner}{ind}__soma_qx_{name} = _soma_q_take() || {sh};\n{ind}_soma_q_mark(_soma_qw);\n",
+            ind = ind, inner = inner, name = name, sh = self.q_shadows(value))
+    }
+
+    /// Before `return <quotient>`: the flag holds only this return's
+    /// inexactness (its divisions, the locals it reads, the siblings it calls).
+    fn q_before_return(&self, value: &Expr, ind: &str) -> String {
+        if !self.int_rational_ret { return String::new(); }
+        format!("{}_soma_q_take(); _soma_q_mark({});\n", ind, self.q_shadows(value))
+    }
+
     /// Float locals whose every definition is int-rational (fixpoint:
     /// a later bad assignment disqualifies the variable).
     fn compute_rational_locals(&self, body: &[Spanned<Statement>]) -> HashSet<String> {
@@ -3905,7 +3999,9 @@ impl FnGenerator {
                     && self.is_int_rational(&left.node, rational)
                     && self.is_int_rational(&right.node, rational)
             }
-            Expr::FnCall { .. } => self.infer_expr_type(expr) == NativeType::Int,
+            Expr::FnCall { name, args } => self.infer_expr_type(expr) == NativeType::Int
+                || (self.siblings.contains(name)
+                    && self.sibling_info.get(name).map_or(false, |s| s.int_rational && s.param_types.len() == args.len())),
             _ => false,
         }
     }
@@ -3961,6 +4057,14 @@ impl FnGenerator {
 
     fn gen_stmt_direct(&self, stmt: &Statement, indent: usize) -> String {
         let ind = Self::indent(indent);
+        if let Statement::Let { name, value } | Statement::Assign { name, value } = stmt {
+            if self.rational_locals.contains(name) && !self.in_q_wrap.get() {
+                self.in_q_wrap.set(true);
+                let inner = self.gen_stmt_direct(stmt, indent);
+                self.in_q_wrap.set(false);
+                return self.q_wrap_def(name, &value.node, inner, &ind);
+            }
+        }
         match stmt {
             Statement::Let { name, value } => {
                 // Buffer creation: `let X = buffer(N)` →
@@ -4055,7 +4159,7 @@ impl FnGenerator {
                 if ret_ty == NativeType::String {
                     return format!("{}return ({}).to_string();\n", ind, expr);
                 }
-                format!("{}return {};\n", ind, expr)
+                format!("{}{}return {};\n", self.q_before_return(&value.node, &ind), ind, expr)
             }
             Statement::If { condition, then_body, else_body } => {
                 let cond = self.gen_expr_direct(&condition.node, NativeType::Bool);
@@ -4244,7 +4348,17 @@ impl FnGenerator {
                 self.coerce_direct(name.clone(), var_ty, target_ty)
             }
             Expr::BinaryOp { left, op, right } => {
-                self.gen_binop_direct(&left.node, *op, &right.node, target_ty)
+                let code = self.gen_binop_direct(&left.node, *op, &right.node, target_ty);
+                // an exact Int carried as f64 (`q * q` for `let q = a / b`)
+                // past 2^53 has lost digits: raise rather than answer them
+                if matches!(op, BinOp::Add | BinOp::Sub | BinOp::Mul | BinOp::Mod)
+                    && target_ty == NativeType::Float
+                    && self.infer_expr_type(expr) == NativeType::Float
+                    && self.is_int_rational(expr, &self.rational_locals)
+                {
+                    return format!("_soma_q_big({}, {})", code, self.q_shadows(expr));
+                }
+                code
             }
             Expr::CmpOp { left, op, right } => {
                 let lt = self.infer_expr_type(&left.node);
@@ -4317,7 +4431,8 @@ impl FnGenerator {
         if from == to { return expr; }
         match (from, to) {
             (NativeType::Int, NativeType::Float) => format!("({} as f64)", expr),
-            (NativeType::Float, NativeType::Int) => format!("({} as i64)", expr),
+            // never `as i64`: `s = s + q` with `q = 7 / 2` stored 9 for 10.5
+            (NativeType::Float, NativeType::Int) => format!("_soma_f2i({})", expr),
             (NativeType::Bool, NativeType::Int) => format!("({} as i64)", expr),
             (NativeType::Int, NativeType::Bool) => format!("({} != 0)", expr),
             (_, NativeType::String) => format!("format!(\"{{}}\", {})", expr),
@@ -4439,7 +4554,8 @@ impl FnGenerator {
                     _ => false,
                 }
             }
-            format!("{{ let _w = _soma_div_inexact_take(); let _q: f64 = {}; let _n = _soma_div_inexact_take(); _soma_fmt_q(_q, _w != 0, _n != 0, {}) }}", a, has_div(arg))
+            let _ = has_div;
+            format!("{{ let _w = _soma_q_take(); let _q: f64 = {}; let _n = _soma_q_take(); _soma_q_mark(_w || _n); _soma_fmt_q2(_q, _n || {}) }}", a, self.q_shadows(arg))
         } else {
             format!("_soma_fmt_f({})", a)
         }
@@ -5017,6 +5133,14 @@ impl FnGenerator {
         rest: &[Spanned<Statement>],
     ) -> String {
         let ind = Self::indent(indent);
+        if let Statement::Let { name, value } | Statement::Assign { name, value } = stmt {
+            if self.rational_locals.contains(name) && !self.in_q_wrap.get() {
+                self.in_q_wrap.set(true);
+                let inner = self.gen_stmt_rug(stmt, indent, ctx, rest);
+                self.in_q_wrap.set(false);
+                return self.q_wrap_def(name, &value.node, inner, &ind);
+            }
+        }
         match stmt {
             Statement::Let { name, value } => {
                 // Buffer creation: same as Direct mode — emit Vec<i64> or Vec<f64>.
@@ -5312,7 +5436,7 @@ impl FnGenerator {
             }
             NativeType::Float => {
                 let expr = self.gen_expr_direct(value, fn_ret_type);
-                format!("{}return {};\n", ind, expr)
+                format!("{}{}return {};\n", self.q_before_return(value, ind), ind, expr)
             }
             NativeType::Bool => {
                 let expr = self.gen_bool_rug(value);
