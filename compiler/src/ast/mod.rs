@@ -719,6 +719,8 @@ pub enum Literal {
 pub struct Duration {
     pub value: f64,
     pub unit: DurationUnit,
+    /// the exact whole milliseconds (the lexer refuses a fraction of one)
+    pub ms: i64,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

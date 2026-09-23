@@ -73,7 +73,7 @@ fn display_token(token: &Token) -> String {
         Token::Scale => "'scale'".to_string(),
         Token::Eof => "end of file".to_string(),
         // never a Rust name (`DurationLit(5.0, S)`, `DotDot`) in a message
-        Token::DurationLit(v, u) => format!("duration '{}{}'", v, match u {
+        Token::DurationLit(v, u, _) => format!("duration '{}{}'", v, match u {
             DurationUnitTok::Ms => "ms", DurationUnitTok::S => "s", DurationUnitTok::Min => "min",
             DurationUnitTok::H => "h", DurationUnitTok::D => "d", DurationUnitTok::Years => "years" }),
         Token::DotDot => "'..'".to_string(),
@@ -172,7 +172,11 @@ fn reserved_word(t: &Token) -> Option<&'static str> {
 fn reserved_error(t: &Token, span: Span) -> Option<ParseError> {
     reserved_word(t).map(|w| ParseError::FixIt {
         // `x => require ok else Nope`: a statement where a value is expected
-        message: if matches!(w, "require" | "let" | "return" | "for" | "while" | "break" | "continue") {
+        // a lambda's value is its expression: `x => return x + 1` is `x => x + 1`
+        // (the block form suggested before refuses `return` too)
+        message: if w == "return" {
+            "`return` starts a statement and cannot stand where a value is expected (a lambda `x => …`, an operand, an argument) — a lambda's value is its expression: drop the `return` (`x => x + 1`, or `x => { let y = x * 2  y + 1 }`); as a name it is reserved (`return_id`)".to_string()
+        } else if matches!(w, "require" | "let" | "for" | "while" | "break" | "continue") {
             format!("`{w}` starts a statement and cannot stand where a value is expected (a lambda `x => …`, an operand, an argument) — in a lambda write a block (`x => {{ {w} …  x }}`), or move it into the handler body; as a name it is reserved (`{w}_id`)")
         } else {
             format!("`{w}` is a reserved word in Soma and cannot name a variable, parameter or field — rename it (`{w}_id`, `the_{w}`); to read a JSON field of that name write `d[\"{w}\"]`")
@@ -1654,17 +1658,9 @@ impl Parser {
         // Parse interval: 30s, 5min, 1h, 500ms, or bare number (seconds)
         let tok = &self.tokens[self.pos].clone();
         let interval_ms = match &tok.token {
-            Token::DurationLit(val, unit) => {
+            Token::DurationLit(_, _, ms) => {
                 self.advance();
-                let multiplier = match unit {
-                    crate::lexer::DurationUnitTok::Ms => 1.0,
-                    crate::lexer::DurationUnitTok::S => 1000.0,
-                    crate::lexer::DurationUnitTok::Min => 60_000.0,
-                    crate::lexer::DurationUnitTok::H => 3_600_000.0,
-                    crate::lexer::DurationUnitTok::D => 86_400_000.0,
-                    crate::lexer::DurationUnitTok::Years => 365.25 * 86_400_000.0,
-                };
-                (val * multiplier) as u64
+                (*ms).max(0) as u64
             }
             Token::IntLit(n) => {
                 if *n < 0 {
@@ -1703,17 +1699,9 @@ impl Parser {
         self.expect(Token::After)?;
         let tok = &self.tokens[self.pos].clone();
         let interval_ms = match &tok.token {
-            Token::DurationLit(val, unit) => {
+            Token::DurationLit(_, _, ms) => {
                 self.advance();
-                let multiplier = match unit {
-                    crate::lexer::DurationUnitTok::Ms => 1.0,
-                    crate::lexer::DurationUnitTok::S => 1000.0,
-                    crate::lexer::DurationUnitTok::Min => 60_000.0,
-                    crate::lexer::DurationUnitTok::H => 3_600_000.0,
-                    crate::lexer::DurationUnitTok::D => 86_400_000.0,
-                    crate::lexer::DurationUnitTok::Years => 365.25 * 86_400_000.0,
-                };
-                (val * multiplier) as u64
+                (*ms).max(0) as u64
             }
             Token::IntLit(n) => {
                 if *n < 0 {
@@ -1872,17 +1860,9 @@ impl Parser {
                 "latency" => {
                     // Accept "30s", "5000ms" — lexed as DurationLit(value, unit).
                     match self.peek().clone() {
-                        Token::DurationLit(v, unit) => {
+                        Token::DurationLit(_, _, ms) => {
                             self.advance();
-                            let ms = match unit {
-                                crate::lexer::DurationUnitTok::Ms => v,
-                                crate::lexer::DurationUnitTok::S => v * 1000.0,
-                                crate::lexer::DurationUnitTok::Min => v * 60_000.0,
-                                crate::lexer::DurationUnitTok::H => v * 3_600_000.0,
-                                crate::lexer::DurationUnitTok::D => v * 86_400_000.0,
-                                crate::lexer::DurationUnitTok::Years => v * 86_400_000.0 * 365.0,
-                            };
-                            cs.latency_ms = Some(ms as i64);
+                            cs.latency_ms = Some(ms);
                         }
                         Token::IntLit(n) => {
                             self.advance();
@@ -2070,8 +2050,10 @@ impl Parser {
             Token::Return => {
                 self.advance();
                 // a bare `return` before `}` returns () (it was "expected
-                // expression, found '}'")
-                let value = if self.check(&Token::RBrace) {
+                // expression, found '}'"); a newline after `return` ends it
+                // too, so the next line is a statement of its own, not the
+                // returned value (it was run as `return log_it(x)`)
+                let value = if self.check(&Token::RBrace) || self.check(&Token::Eof) || self.at_line_start() {
                     Spanned::new(Expr::Literal(Literal::Unit), self.prev_span())
                 } else {
                     self.parse_expr()?
@@ -2917,7 +2899,9 @@ impl Parser {
             let span = start.merge(expr.span);
             return Ok(Spanned::new(
                 Expr::BinaryOp {
-                    left: Box::new(Spanned::new(Expr::Literal(Literal::Int(0)), start)),
+                    // the `0` of a unary minus is zero-width: that marks it
+                    // (a runtime error says "cannot negate", not "0 - null")
+                    left: Box::new(Spanned::new(Expr::Literal(Literal::Int(0)), Span::new(start.start, start.start))),
                     op: BinOp::Sub,
                     right: Box::new(expr),
                 },
@@ -3038,7 +3022,7 @@ impl Parser {
                 self.advance();
                 Ok(Spanned::new(Expr::Literal(Literal::Bool(false)), start))
             }
-            Token::DurationLit(val, unit) => {
+            Token::DurationLit(val, unit, ms) => {
                 self.advance();
                 let du = match unit {
                     DurationUnitTok::Ms => DurationUnit::Milliseconds,
@@ -3049,7 +3033,7 @@ impl Parser {
                     DurationUnitTok::Years => DurationUnit::Years,
                 };
                 Ok(Spanned::new(
-                    Expr::Literal(Literal::Duration(Duration { value: val, unit: du })),
+                    Expr::Literal(Literal::Duration(Duration { value: val, unit: du, ms })),
                     start,
                 ))
             }
@@ -3610,7 +3594,7 @@ impl Parser {
                 self.advance();
                 Ok(Spanned::new(Literal::String(s), start))
             }
-            Token::DurationLit(val, unit) => {
+            Token::DurationLit(val, unit, ms) => {
                 self.advance();
                 let du = match unit {
                     DurationUnitTok::Ms => DurationUnit::Milliseconds,
@@ -3621,7 +3605,7 @@ impl Parser {
                     DurationUnitTok::Years => DurationUnit::Years,
                 };
                 Ok(Spanned::new(
-                    Literal::Duration(Duration { value: val, unit: du }),
+                    Literal::Duration(Duration { value: val, unit: du, ms }),
                     start,
                 ))
             }

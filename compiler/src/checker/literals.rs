@@ -399,3 +399,37 @@ pub fn for_each_stmt_in_expr<'a>(e: &'a Expr, f: &mut dyn FnMut(&'a Statement)) 
         }
     }
 }
+
+/// The span of the innermost statement of `body` for which `hit` holds
+/// (`hit` sees a whole statement, nested blocks included; the blocks of an
+/// `if` / `for` / `while` are searched first). A finding reported there
+/// points at its line, not at the handler's `on` line.
+pub fn innermost_stmt(body: &[Spanned<Statement>], hit: &mut dyn FnMut(&Spanned<Statement>) -> bool) -> Option<Span> {
+    for st in body {
+        if !hit(st) { continue; }
+        let inner: Vec<&[Spanned<Statement>]> = match &st.node {
+            Statement::If { then_body, else_body, .. } => vec![then_body.as_slice(), else_body.as_slice()],
+            Statement::For { body, .. } | Statement::While { body, .. } => vec![body.as_slice()],
+            _ => vec![],
+        };
+        for b in inner { if let Some(sp) = innermost_stmt(b, hit) { return Some(sp); } }
+        return Some(st.span);
+    }
+    None
+}
+
+/// The innermost statement containing an expression for which `expr` holds.
+pub fn stmt_with_expr(body: &[Spanned<Statement>], expr: &mut dyn FnMut(&Expr) -> bool) -> Option<Span> {
+    innermost_stmt(body, &mut |st| {
+        let mut found = false;
+        for_each_expr(std::slice::from_ref(st), &mut |e| if !found && expr(e) { found = true; });
+        found
+    })
+}
+
+/// The span of the first call `name(…)` in a body.
+pub fn call_site(body: &[Spanned<Statement>], name: &str) -> Option<Span> {
+    let mut at = None;
+    for_each_call(body, &mut |n, _, sp| if at.is_none() && n == name { at = Some(sp); });
+    at
+}

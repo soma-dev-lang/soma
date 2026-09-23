@@ -169,6 +169,7 @@ pub(crate) fn lex_error_position(e: &lexer::LexError) -> Option<usize> {
         lexer::LexError::FloatOverflow { pos, .. } => Some(*pos),
         lexer::LexError::InvalidEscape { pos, .. } => Some(*pos),
         lexer::LexError::UnknownUnit { pos, .. } => Some(*pos),
+        lexer::LexError::InexactDuration { pos, .. } => Some(*pos),
     }
 }
 

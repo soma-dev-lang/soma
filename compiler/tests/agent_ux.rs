@@ -3880,7 +3880,7 @@ cell App {
 }
 "#).unwrap();
     let (out, _) = soma_in(&d, &["run", "r.cell"]);
-    assert!(out.contains("Line { sku: a, qty: 2 }") && out.contains("true") && out.contains("[\"sku\", \"qty\"]") && out.contains("has no field 'nope'"), "{out}");
+    assert!(out.contains("Line { sku: \"a\", qty: 2 }") && out.contains("true") && out.contains("[\"sku\", \"qty\"]") && out.contains("has no field 'nope'"), "{out}");
     // undefined function: the error points at the call, not the header
     std::fs::write(d.join("u.cell"), "cell A {\n  on main() {\n    let a = 1\n    print(repeat(\"x\", 3))\n  }\n}\n").unwrap();
     let (out, _) = soma_in(&d, &["check", "u.cell"]);
@@ -4769,7 +4769,8 @@ cell C {
         print("hour={split(t, \":\")[0]} url={\"http://x\"}")
         print("body {{ color: red }} .x {margin: 0}")
         let n = 3
-        print("{n:>5} and {n}")
+        // (a format spec is a check error now: the literal is spelled `{{…}}`)
+        print("{{n:>5}} and {n}")
     }
 }
 "#).unwrap();

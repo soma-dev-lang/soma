@@ -535,6 +535,21 @@ impl<'a> Checker<'a> {
         // once per program, not per cell: a checker rule naming a predicate
         // nothing implements is refused before it silently holds everywhere
         self.validate_checker_predicates();
+        // `let q = a // b` is `let q = a` and a comment
+        if let Some((_, text)) = &self.source {
+            for (span, c) in crate::lexer::odd_escapes(text) {
+                self.warnings.push(CheckWarning::HabitWarning {
+                    message: format!("`\\{c}` is not an escape — the string keeps the backslash and the `{c}`; the escapes are \\n \\t \\r \\0 \\\\ \\\" \\u{{…}} (a literal backslash is `\\\\`)"),
+                    span,
+                });
+            }
+            for (span, operand) in crate::lexer::floor_div_comments(text) {
+                self.warnings.push(CheckWarning::HabitWarning {
+                    message: format!("`// {operand}` starts a comment, so the expression before it ends there — for floor division write floor_div(a, {operand})"),
+                    span,
+                });
+            }
+        }
         // Structure: something to check, one machine per cell with a start
         // state, unique cell names. Each of these used to pass silently
         // (the runtime kept the LAST machine / merged same-named cells).
@@ -786,15 +801,17 @@ impl<'a> Checker<'a> {
                             Section::Every(e) | Section::After(e) => &e.body,
                             _ => continue,
                         };
-                        let mut bad: Vec<String> = Vec::new();
+                        // (message, where: the field's value, else the first field's)
+                        let mut bad: Vec<(String, Span)> = Vec::new();
                         literals::for_each_expr(body, &mut |e| if let Expr::Record { type_name, fields } = e {
                             let Some(decl) = shapes.get(type_name) else { return };
+                            let at = fields.first().map_or(sec.span, |(_, v)| v.span);
                             for (n, _) in decl {
-                                if !fields.iter().any(|(f, _)| f == n) { bad.push(format!("`{type_name} {{ … }}` is missing the field `{n}`")); }
+                                if !fields.iter().any(|(f, _)| f == n) { bad.push((format!("`{type_name} {{ … }}` is missing the field `{n}`"), at)); }
                             }
                             for (f, v) in fields {
                                 match decl.iter().find(|(n, _)| n == f) {
-                                    None => bad.push(format!("`{type_name} {{ … }}` has no field `{f}` (the variant declares {})", decl.iter().map(|(n, _)| n.as_str()).collect::<Vec<_>>().join(", "))),
+                                    None => bad.push((format!("`{type_name} {{ … }}` has no field `{f}` (the variant declares {})", decl.iter().map(|(n, _)| n.as_str()).collect::<Vec<_>>().join(", ")), v.span)),
                                     Some((_, TypeExpr::Simple(t))) => {
                                         let lit = match &v.node {
                                             Expr::Literal(Literal::Int(_)) | Expr::Literal(Literal::BigInt(_)) => Some("Int"),
@@ -805,7 +822,7 @@ impl<'a> Checker<'a> {
                                         };
                                         if let Some(l) = lit {
                                             let fits = l == t || (t == "Float" && l == "Int") || !matches!(t.as_str(), "Int" | "Float" | "String" | "Bool");
-                                            if !fits { bad.push(format!("`{type_name} {{ {f}: … }}` is a {l} literal but the variant declares `{f}: {t}`")); }
+                                            if !fits { bad.push((format!("`{type_name} {{ {f}: … }}` is a {l} literal but the variant declares `{f}: {t}`"), v.span)); }
                                         }
                                     }
                                     _ => {}
@@ -813,8 +830,8 @@ impl<'a> Checker<'a> {
                             }
                         });
                         bad.dedup();
-                        for m in bad {
-                            self.errors.push(CheckError::Static { kind: "variant_shape", message: m, span: sec.span });
+                        for (m, span) in bad {
+                            self.errors.push(CheckError::Static { kind: "variant_shape", message: m, span });
                         }
                     }
                 }
@@ -1020,10 +1037,15 @@ impl<'a> Checker<'a> {
                         }
                     });
                     for (c, f) in hits {
+                        let span = literals::stmt_with_expr(body, &mut |e| match e {
+                            Expr::FieldAccess { target, field } => matches!(&target.node, Expr::Ident(x) if *x == c) && *field == f,
+                            Expr::Index { target, index } => matches!((&target.node, &index.node), (Expr::Ident(x), Expr::Literal(Literal::String(y))) if *x == c && *y == f),
+                            _ => false,
+                        }).unwrap_or(sec.span);
                         self.errors.push(CheckError::Static {
                             kind: "foreign_slot",
                             message: format!("`{}.{}` reads the memory of another cell — a cell's slots are private to it (this raises \"undefined variable: {}\" at run time); add a handler to {} that returns what you need (`on get_{}(k: String) {{ return {}.get(k) }}`) and call `{}.get_{}(k)`", c, f, c, c, f, f, c, f),
-                            span: sec.span,
+                            span,
                         });
                     }
                 }
@@ -1101,6 +1123,7 @@ impl<'a> Checker<'a> {
                         _ => continue,
                     };
                     let mut bad: Vec<(bool, String)> = Vec::new();
+                    let mut at: Vec<Span> = Vec::new();
                     literals::for_each_expr(body, &mut |e| if let Expr::FnCall { name, args } = e {
                         if name == "delegate" && args.len() >= 2 {
                             if let (Expr::Literal(Literal::String(c)), Expr::Literal(Literal::String(h))) = (&args[0].node, &args[1].node) {
@@ -1122,13 +1145,13 @@ impl<'a> Checker<'a> {
                                         _ => None,
                                     },
                                 };
-                                if let Some(m) = msg { if !bad.contains(&m) { bad.push(m); } }
+                                if let Some(m) = msg { if !bad.contains(&m) { bad.push(m); at.push(args[0].span); } }
                             }
                         }
                     });
-                    for (err, m) in bad {
-                        if err { self.errors.push(CheckError::Static { kind: "undefined_delegate", message: m, span: sec.span }); }
-                        else { self.warnings.push(CheckWarning::HabitWarning { message: m, span: sec.span }); }
+                    for ((err, m), span) in bad.into_iter().zip(at) {
+                        if err { self.errors.push(CheckError::Static { kind: "undefined_delegate", message: m, span }); }
+                        else { self.warnings.push(CheckWarning::HabitWarning { message: m, span }); }
                     }
                 }
             }
@@ -1142,20 +1165,22 @@ impl<'a> Checker<'a> {
                     Section::Every(e) | Section::After(e) => &e.body,
                     _ => continue,
                 };
-                let mut bad: Vec<String> = Vec::new();
+                // (the option / tool name, the span of its literal)
+                let mut bad: Vec<(String, Span)> = Vec::new();
                 let tools: Vec<String> = cell.node.sections.iter().filter_map(|s| match &s.node {
                     Section::Face(f) => Some(f.declarations.iter().filter_map(|d| match &d.node { FaceDecl::Tool(t) => Some(t.name.clone()), _ => None }).collect::<Vec<_>>()),
                     _ => None,
                 }).flatten().collect();
-                let mut not_tools: Vec<String> = Vec::new();
+                let mut not_tools: Vec<(String, Span)> = Vec::new();
                 literals::for_each_expr(body, &mut |e| if let Expr::FnCall { name, args } = e {
                     if matches!(name.as_str(), "think" | "think_json") {
                         for a in args {
                             if let Expr::FnCall { name: m, args: kv } = &a.node {
                                 if m == "map" {
                                     for k in kv.iter().step_by(2) {
+                                        let ksp = k.span;
                                         if let Expr::Literal(Literal::String(k)) = &k.node {
-                                            if !matches!(k.as_str(), "max_tokens" | "timeout" | "timeout_ms" | "max_rounds" | "tools_allowed" | "requires") && !bad.contains(k) { bad.push(k.clone()); }
+                                            if !matches!(k.as_str(), "max_tokens" | "timeout" | "timeout_ms" | "max_rounds" | "tools_allowed" | "requires") && !bad.iter().any(|(b, _)| b == k) { bad.push((k.clone(), ksp)); }
                                         }
                                     }
                                     // `tools_allowed: ["admin"]` naming a handler that is
@@ -1166,7 +1191,7 @@ impl<'a> Checker<'a> {
                                                 if let Expr::ListLiteral(items) = &v.node {
                                                     for it in items {
                                                         if let Expr::Literal(Literal::String(t)) = &it.node {
-                                                            if !tools.contains(t) && !not_tools.contains(t) { not_tools.push(t.clone()); }
+                                                            if !tools.contains(t) && !not_tools.iter().any(|(n, _)| n == t) { not_tools.push((t.clone(), it.span)); }
                                                         }
                                                     }
                                                 }
@@ -1178,11 +1203,11 @@ impl<'a> Checker<'a> {
                         }
                     }
                 });
-                for t in not_tools {
-                    self.errors.push(CheckError::Static { kind: "think_option", message: format!("tools_allowed names \"{}\", which is not a tool of {} — declare it in the face (`tool {}(…) -> … \"what it does\"`) or drop it", t, cell.node.name, t), span: sec.span });
+                for (t, span) in not_tools {
+                    self.errors.push(CheckError::Static { kind: "think_option", message: format!("tools_allowed names \"{}\", which is not a tool of {} — declare it in the face (`tool {}(…) -> … \"what it does\"`) or drop it", t, cell.node.name, t), span });
                 }
-                for k in bad {
-                    self.errors.push(CheckError::Static { kind: "think_option", message: format!("\"{}\" is not a think() option — the options are max_tokens, max_rounds, timeout (ms), tools_allowed and requires; a JSON shape is checked by your own code after think_json()", k), span: sec.span });
+                for (k, span) in bad {
+                    self.errors.push(CheckError::Static { kind: "think_option", message: format!("\"{}\" is not a think() option — the options are max_tokens, max_rounds, timeout (ms), tools_allowed and requires; a JSON shape is checked by your own code after think_json()", k), span });
                 }
             }
         }
@@ -1256,6 +1281,7 @@ impl<'a> Checker<'a> {
                     let Section::OnSignal(on) = &sec.node else { continue };
                     if !on.properties.iter().any(|p| p == "native") { continue }
                     let mut clash: Option<String> = None;
+                    let body = &on.body;
                     literals::for_each_expr(&on.body, &mut |e| {
                         if let Expr::FnCall { name, .. } = e {
                             if clash.is_none()
@@ -1273,7 +1299,7 @@ impl<'a> Checker<'a> {
                                 "`{name}(…)` in the [native] handler `{}` is the primitive, not the handler `{name}` this program defines — the same call in an interpreted handler goes to the handler, so one name means two things. Rename the handler (`on {name}_of(…)`)",
                                 on.signal_name
                             ),
-                            span: sec.span,
+                            span: literals::call_site(body, &name).unwrap_or(sec.span),
                         });
                     }
                 }
@@ -1309,7 +1335,7 @@ impl<'a> Checker<'a> {
                             } else {
                                 format!("cell {} calls {}() but the program declares no state machine", cell.node.name, f)
                             },
-                            span: sec.span,
+                            span: literals::call_site(body, &f).unwrap_or(sec.span),
                         });
                     }
                 }

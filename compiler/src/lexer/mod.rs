@@ -23,6 +23,8 @@ pub enum LexError {
     FloatOverflow { pos: usize, text: String },
     #[error("unknown duration unit '{suffix}' — the units are ms, s, min, h, d, years (`90min`, not `90m`)")]
     UnknownUnit { pos: usize, suffix: String },
+    #[error("the duration {text} {reason}")]
+    InexactDuration { pos: usize, text: String, reason: String },
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -104,7 +106,8 @@ pub enum Token {
     BigIntLit(String),
     FloatLit(f64),
     StringLit(String),
-    DurationLit(f64, DurationUnitTok),
+    /// the value as written, its unit, and the exact whole milliseconds
+    DurationLit(f64, DurationUnitTok, i64),
     PercentLit(f64),
 
     // Operators
@@ -172,6 +175,11 @@ pub struct Lexer<'a> {
     input: &'a str,
     chars: Vec<char>,
     pos: usize,
+    /// (start, end) of each `//` line comment, `//` included
+    pub line_comments: Vec<(usize, usize)>,
+    /// (position, letter) of each `\\q`-style escape that is neither a
+    /// string escape nor a regex one: it stays two characters
+    pub odd_escapes: Vec<(usize, char)>,
 }
 
 impl<'a> Lexer<'a> {
@@ -180,6 +188,8 @@ impl<'a> Lexer<'a> {
             input,
             chars: input.chars().collect(),
             pos: 0,
+            line_comments: Vec::new(),
+            odd_escapes: Vec::new(),
         }
     }
 
@@ -215,9 +225,11 @@ impl<'a> Lexer<'a> {
                 && self.chars[self.pos + 1] == '/'
             {
                 // Line comment
+                let start = self.pos;
                 while self.pos < self.chars.len() && self.chars[self.pos] != '\n' {
                     self.pos += 1;
                 }
+                self.line_comments.push((start, self.pos));
                 continue;
             }
 
@@ -482,8 +494,15 @@ impl<'a> Lexer<'a> {
                                             None => return Err(LexError::InvalidEscape { pos: esc_start, text: format!("\\u{{{}}}", hex) }),
                                         }
                                     }
-                                    // other backslashes stay literal (regex patterns: "\d+")
-                                    _ => s.push('\\'),
+                                    // other backslashes stay literal (regex patterns: "\d+");
+                                    // a letter that is no regex escape either is noted
+                                    Some(c) => {
+                                        if c.is_ascii_alphabetic() && !"dDwWsSbBAzZpPxuUafvtnrkhHG".contains(c) {
+                                            self.odd_escapes.push((self.pos - 1, c));
+                                        }
+                                        s.push('\\')
+                                    }
+                                    None => s.push('\\'),
                                 }
                             }
                             Some(c) => {
@@ -729,8 +748,12 @@ impl<'a> Lexer<'a> {
                     let val: f64 = num_str
                         .parse()
                         .map_err(|_| LexError::InvalidNumber { pos: start })?;
+                    // the milliseconds from the literal's decimal text, not
+                    // through a Float (`1.15h` was 4139999, `1.005s` 1004)
+                    let ms = duration_ms_exact(&num_str, unit).map_err(|reason| LexError::InexactDuration {
+                        pos: start, text: format!("{}{}", num_str, suffix), reason })?;
                     return Ok(SpannedToken { newline_before: false,
-                        token: Token::DurationLit(val, unit),
+                        token: Token::DurationLit(val, unit, ms),
                         span: Span::new(start, self.pos),
                     });
                 } else {
@@ -772,6 +795,92 @@ impl<'a> Lexer<'a> {
             }
         }
     }
+}
+
+/// `"a\qb"`: an escape that is neither a string escape (\n \t \r \0 \\
+/// \" \u{…}) nor a regex one stays a backslash and the letter.
+pub fn odd_escapes(source: &str) -> Vec<(Span, char)> {
+    let mut lexer = Lexer::new(source);
+    if lexer.tokenize().is_err() { return Vec::new(); }
+    lexer.odd_escapes.iter().map(|&(p, c)| (Span::new(p, p + 2), c)).collect()
+}
+
+/// `let q = a // b`: `//` starts a comment in Soma, so the line silently
+/// became `let q = a`. A comment right after an operand on the same line
+/// one space away, whose whole text is one operand — a number, or a name
+/// the code uses — is that habit (a prose comment has several words;
+/// `// cents` names nothing the code uses). Returns the comment's span and its text.
+pub fn floor_div_comments(source: &str) -> Vec<(Span, String)> {
+    let mut lexer = Lexer::new(source);
+    let Ok(tokens) = lexer.tokenize() else { return Vec::new() };
+    let idents: std::collections::HashSet<&str> = tokens.iter().filter_map(|t| match &t.token {
+        Token::Ident(n) => Some(n.as_str()),
+        _ => None,
+    }).collect();
+    let chars = &lexer.chars;
+    let mut out = Vec::new();
+    for &(start, end) in &lexer.line_comments {
+        // the token just before the comment, on the same line
+        let Some(prev) = tokens.iter().take_while(|t| t.span.end <= start).last() else { continue };
+        // `a // b` sits one space from its operand; a trailing comment
+        // is usually set apart further (`check(1, 1)    // 1`)
+        if chars[prev.span.end..start].contains(&'\n') || start - prev.span.end > 1 { continue; }
+        if !matches!(chars.get(start + 2), Some(' ')) { continue; }
+        if !matches!(prev.token, Token::Ident(_) | Token::IntLit(_) | Token::FloatLit(_) | Token::RParen | Token::RBracket) { continue; }
+        let text: String = chars[start + 2..end].iter().collect();
+        let operand = text.trim();
+        let number = !operand.is_empty() && operand.chars().all(|c| c.is_ascii_digit() || c == '.' || c == '_');
+        let name = operand.starts_with(|c: char| c.is_alphabetic() || c == '_')
+            && operand.chars().all(|c| c.is_alphanumeric() || c == '_')
+            && idents.contains(operand);
+        if number || name {
+            out.push((Span::new(start, end), operand.to_string()));
+        }
+    }
+    out
+}
+
+/// Milliseconds per duration unit (a year is 365.25 days).
+pub fn duration_unit_ms(unit: DurationUnitTok) -> i64 {
+    match unit {
+        DurationUnitTok::Ms => 1,
+        DurationUnitTok::S => 1_000,
+        DurationUnitTok::Min => 60_000,
+        DurationUnitTok::H => 3_600_000,
+        DurationUnitTok::D => 86_400_000,
+        DurationUnitTok::Years => 31_557_600_000,
+    }
+}
+
+/// The exact whole milliseconds of a duration literal's number text
+/// (`1.15`, `1e3`, `90`) in `unit`, or why it has none.
+fn duration_ms_exact(num: &str, unit: DurationUnitTok) -> Result<i64, String> {
+    let (mantissa, exp) = match num.find(|c| c == 'e' || c == 'E') {
+        Some(i) => (&num[..i], num[i + 1..].parse::<i64>().map_err(|_| "is not a number".to_string())?),
+        None => (num, 0),
+    };
+    let (int_part, frac_part) = mantissa.split_once('.').unwrap_or((mantissa, ""));
+    let digits = format!("{}{}", int_part, frac_part);
+    let digits = digits.trim_start_matches('0');
+    let too_long = || "is past the Int range of milliseconds".to_string();
+    if digits.is_empty() { return Ok(0); }
+    // the power of ten the digits are scaled by
+    let scale = exp - frac_part.len() as i64;
+    if scale > 40 { return Err(too_long()); }
+    let mut n = rug::Integer::from_str_radix(digits, 10).map_err(|_| "is not a number".to_string())?;
+    n *= duration_unit_ms(unit);
+    if scale >= 0 {
+        n *= rug::Integer::from(rug::Integer::u_pow_u(10, scale as u32));
+    } else {
+        if -scale > 400 { return Err("is not a whole number of milliseconds".to_string()); }
+        let d = rug::Integer::from(rug::Integer::u_pow_u(10, (-scale) as u32));
+        let (q, r) = n.div_rem(d);
+        if r != 0 {
+            return Err("is not a whole number of milliseconds (a duration is an Int of ms)".to_string());
+        }
+        n = q;
+    }
+    n.to_i64().ok_or_else(too_long)
 }
 
 #[cfg(test)]
@@ -822,9 +931,16 @@ mod tests {
         let input = "30min 7years 100ms";
         let mut lexer = Lexer::new(input);
         let tokens = lexer.tokenize().unwrap();
-        assert!(matches!(tokens[0].token, Token::DurationLit(30.0, DurationUnitTok::Min)));
-        assert!(matches!(tokens[1].token, Token::DurationLit(7.0, DurationUnitTok::Years)));
-        assert!(matches!(tokens[2].token, Token::DurationLit(100.0, DurationUnitTok::Ms)));
+        assert!(matches!(tokens[0].token, Token::DurationLit(30.0, DurationUnitTok::Min, 1_800_000)));
+        assert!(matches!(tokens[1].token, Token::DurationLit(7.0, DurationUnitTok::Years, 220_903_200_000)));
+        assert!(matches!(tokens[2].token, Token::DurationLit(100.0, DurationUnitTok::Ms, 100)));
+        let tokens = Lexer::new("1.15h 1.005s 9007199254740993ms 1.5e3ms").tokenize().unwrap();
+        assert!(matches!(tokens[0].token, Token::DurationLit(_, _, 4_140_000)));
+        assert!(matches!(tokens[1].token, Token::DurationLit(_, _, 1005)));
+        assert!(matches!(tokens[2].token, Token::DurationLit(_, _, 9007199254740993)));
+        assert!(matches!(tokens[3].token, Token::DurationLit(_, _, 1500)));
+        assert!(Lexer::new("0.5ms").tokenize().is_err());
+        assert!(Lexer::new("999999999999d").tokenize().is_err());
     }
 
     #[test]

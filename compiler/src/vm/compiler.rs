@@ -605,7 +605,7 @@ impl BytecodeCompiler {
             Literal::Bool(false) => { chunk.emit(Op::False); }
             Literal::Unit => { chunk.emit(Op::Unit); }
             Literal::Duration(d) => {
-                let idx = chunk.add_constant(Constant::Float(d.value));
+                let idx = chunk.add_constant(Constant::Int(d.ms));
                 chunk.emit_u16(Op::Const, idx);
             }
             Literal::Percentage(p) => {

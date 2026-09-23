@@ -82,6 +82,26 @@ pub fn check_program(program: &Program) -> (Vec<HabitFinding>, Vec<HabitFinding>
                 Section::Every(ev) | Section::After(ev) => (&ev.body, &[]),
                 _ => continue,
             };
+            // `m.a ?? 0 + m.b ?? 0` / `if m.get(k) ?? 0 > 5`: `??` binds
+            // looser than arithmetic and comparisons, so the default took the
+            // whole right side (`m.a ?? (0 + m.b)`, `m.get(k) ?? (0 > 5)`)
+            super::literals::for_each_call(body, &mut |name, args, _| {
+                if name != "_coalesce" || args.len() != 2 { return; }
+                let r = &args[1];
+                let (rl, op, rr) = match &r.node {
+                    Expr::BinaryOp { left, op, right } if !matches!(op, BinOp::And | BinOp::Or) => (left, op.to_string(), right),
+                    Expr::CmpOp { left, op, right } => (left, op.to_string(), right),
+                    _ => return,
+                };
+                // a parenthesized operand's span covers its parentheses
+                if r.span.start != rl.span.start || r.span.end != rr.span.end { return; }
+                let l = crate::ast::render_expr(&args[0].node);
+                let (a, b) = (crate::ast::render_expr(&rl.node), crate::ast::render_expr(&rr.node));
+                warnings.push(HabitFinding {
+                    message: format!("`{l} ?? {a} {op} {b}` reads as `{l} ?? ({a} {op} {b})` — `??` binds looser than arithmetic and comparisons; write `({l} ?? {a}) {op} {b}`, or parenthesize the default you meant"),
+                    span: r.span,
+                });
+            });
             let mut bound: HashSet<String> = params.iter().map(|p| p.name.clone()).collect();
             super::dispatch::bind_all(body, &mut bound);
             let mut w = Walk { bound, index: &index, cells: &cell_names, errors: &mut errors, warnings: &mut warnings };

@@ -181,17 +181,7 @@ impl<'a> PropertyChecker<'a> {
 
 fn duration_to_ms(lit: &Literal) -> Option<f64> {
     match lit {
-        Literal::Duration(d) => {
-            let multiplier = match d.unit {
-                DurationUnit::Milliseconds => 1.0,
-                DurationUnit::Seconds => 1_000.0,
-                DurationUnit::Minutes => 60_000.0,
-                DurationUnit::Hours => 3_600_000.0,
-                DurationUnit::Days => 86_400_000.0,
-                DurationUnit::Years => 365.25 * 86_400_000.0,
-            };
-            Some(d.value * multiplier)
-        }
+        Literal::Duration(d) => Some(d.ms as f64),
         _ => None,
     }
 }
@@ -363,6 +353,7 @@ mod tests {
                     Literal::Duration(Duration {
                         value: 7.0,
                         unit: DurationUnit::Years,
+                        ms: 220_903_200_000,
                     }),
                 ),
             ],
@@ -384,6 +375,7 @@ mod tests {
                     Literal::Duration(Duration {
                         value: 30.0,
                         unit: DurationUnit::Days,
+                        ms: 2_592_000_000,
                     }),
                 ),
                 param(
@@ -391,6 +383,7 @@ mod tests {
                     Literal::Duration(Duration {
                         value: 7.0,
                         unit: DurationUnit::Years,
+                        ms: 220_903_200_000,
                     }),
                 ),
             ],

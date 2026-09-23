@@ -236,9 +236,21 @@ pub fn check_program(program: &Program) -> Vec<InterpolationIssue> {
                             hits.dedup();
                             for (slot, what) in hits {
                                 {
+                                    let span = super::literals::innermost_stmt(&on.body, &mut |st| {
+                                        let mut found = false;
+                                        super::literals::for_each_stmt_deep(std::slice::from_ref(st), &mut |x| match x {
+                                            Statement::MethodCall { target, method, .. } if *target == slot && matches!(method.as_str(), "delete" | "remove") => found = true,
+                                            Statement::IndexSet { name, .. } if *name == slot => found = true,
+                                            _ => {}
+                                        });
+                                        super::literals::for_each_expr(std::slice::from_ref(st), &mut |e| if let Expr::MethodCall { target, method, .. } = e {
+                                            if matches!(&target.node, Expr::Ident(t) if *t == slot) && matches!(method.as_str(), "delete" | "remove") { found = true; }
+                                        });
+                                        found
+                                    }).unwrap_or(section.span);
                                     issues.push(InterpolationIssue {
                                         message: format!("`{}.{}` in handler `{}`: '{}' is [immutable], so this can only fail at run time (an entry never changes once written)", slot, what, on.signal_name, slot),
-                                        span: section.span, warning: true, habit: true, kind: "immutable_write",
+                                        span, warning: true, habit: true, kind: "immutable_write",
                                     });
                                 }
                             }
@@ -303,9 +315,21 @@ pub fn check_program(program: &Program) -> Vec<InterpolationIssue> {
                     });
                     hit.sort(); hit.dedup();
                     if let Some(h) = hit.first() {
+                        let span = super::literals::innermost_stmt(body, &mut |st| {
+                            let mut found = false;
+                            super::literals::for_each_expr(std::slice::from_ref(st), &mut |e| match e {
+                                Expr::FnCall { name, .. } if name == h => found = true,
+                                Expr::MethodCall { target, method, .. } => if matches!(&target.node, Expr::Ident(t) if format!("{}.{}", t, method) == *h) { found = true },
+                                _ => {}
+                            });
+                            super::literals::for_each_stmt_deep(std::slice::from_ref(st), &mut |x| if let Statement::MethodCall { target, method, .. } = x {
+                                if format!("{}.{}", target, method) == *h { found = true; }
+                            });
+                            found
+                        }).unwrap_or(sec.span);
                         issues.push(InterpolationIssue {
                             message: format!("{} calls [task] `{}` but is not a task itself: `{}` then runs inside the caller's atomic unit and its think() holds the lock (concurrent requests wait) — {}", who, h, h, fix),
-                            span: sec.span, warning: true, habit: true, kind: "task_called_atomically",
+                            span, warning: true, habit: true, kind: "task_called_atomically",
                         });
                     }
                 }
@@ -481,9 +505,22 @@ pub fn check_program(program: &Program) -> Vec<InterpolationIssue> {
                     });
                     hits.sort(); hits.dedup();
                     for h in hits {
+                        let span = super::literals::innermost_stmt(body, &mut |st| {
+                            let mut found = false;
+                            super::literals::for_each_stmt_deep(std::slice::from_ref(st), &mut |x| match x {
+                                Statement::ExprStmt { expr } => match &expr.node {
+                                    Expr::FnCall { name, .. } if *name == h => found = true,
+                                    Expr::MethodCall { target, method, .. } => if matches!(&target.node, Expr::Ident(t) if format!("{}.{}", t, method) == h) { found = true },
+                                    _ => {}
+                                },
+                                Statement::MethodCall { target, method, .. } if format!("{}.{}", target, method) == h => found = true,
+                                _ => {}
+                            });
+                            found
+                        }).unwrap_or(sec.span);
                         issues.push(InterpolationIssue {
                             message: format!("`{}` can answer with refusal(…) and its result is thrown away here: a refusal does NOT roll the caller back (an error would) — bind it (`let r = {}(…)`) and return it, or check `r._status`", h, h),
-                            span: sec.span, warning: true, habit: true, kind: "refusal_discarded",
+                            span, warning: true, habit: true, kind: "refusal_discarded",
                         });
                     }
                 }
@@ -560,9 +597,15 @@ pub fn check_program(program: &Program) -> Vec<InterpolationIssue> {
                 });
             });
             if let Some(v) = hit {
+                // the loop's line (the growing assignment is inside it)
+                let span = super::literals::innermost_stmt(body, &mut |st| {
+                    let mut found = false;
+                    super::literals::for_each_stmt_deep(std::slice::from_ref(st), &mut |x| if matches!(x, Statement::Assign { name, .. } if *name == v) { found = true; });
+                    found
+                }).unwrap_or(sec.span);
                 issues.push(InterpolationIssue {
                     message: format!("`{}` grows by concatenation inside a loop — each step copies the whole value, so the loop is quadratic (8 MB took 32 s, a list + join() 30 ms): push the pieces to a List and `join(parts, \"\")` once", v),
-                    span: sec.span, warning: true, habit: true, kind: "quadratic_concat",
+                    span, warning: true, habit: true, kind: "quadratic_concat",
                 });
             }
         }
@@ -615,11 +658,15 @@ struct Walker<'a> {
     cell_slots: HashSet<String>,
     /// walking a `cell test` (its rules and helpers name every cell's slots)
     in_test: bool,
+    /// names a loop body assigns (`x = …`) but that were not bound before
+    /// the loop: readable in the body (iteration 2+ sees them), but not
+    /// yet a declared variable for the assignment check
+    prebound: HashSet<String>,
 }
 
 impl<'a> Walker<'a> {
     fn new(index: &'a ProgramIndex) -> Self {
-        Self { index, scope: HashSet::new(), block_lets: HashSet::new(), issues: Vec::new(), try_depth: 0, loop_depth: 0, lambda_depth: 0, blessed: false, cell_slots: HashSet::new(), in_test: false }
+        Self { index, scope: HashSet::new(), block_lets: HashSet::new(), issues: Vec::new(), try_depth: 0, loop_depth: 0, lambda_depth: 0, blessed: false, cell_slots: HashSet::new(), in_test: false, prebound: HashSet::new() }
     }
 
     fn known(&self, name: &str) -> bool {
@@ -699,6 +746,21 @@ impl<'a> Walker<'a> {
         self.block_lets.clear();
     }
 
+    /// Bind the names a loop body assigns that are not bound yet; returns them.
+    fn prebind_loop(&mut self, body: &[Spanned<Statement>]) -> Vec<String> {
+        let mut assigned = HashSet::new();
+        assigned_stmts(body, &mut assigned);
+        let mut added = Vec::new();
+        for n in assigned {
+            if !self.scope.contains(&n) {
+                self.scope.insert(n.clone());
+                self.prebound.insert(n.clone());
+                added.push(n);
+            }
+        }
+        added
+    }
+
     fn walk_stmt(&mut self, stmt: &Spanned<Statement>) {
         match &stmt.node {
             Statement::Let { name, value } => {
@@ -714,10 +776,14 @@ impl<'a> Walker<'a> {
                 }
                 self.scope.insert(name.clone());
                 self.block_lets.insert(name.clone());
+                self.prebound.remove(name);
             }
             Statement::Assign { name, value } => {
                 self.walk_expr(value);
-                if !self.scope.contains(name) && !self.index.slots.contains(name) && !self.index.known.contains(name) {
+                // a name only pre-bound by the enclosing loop is not declared yet
+                let declared = self.scope.contains(name) && !self.prebound.contains(name);
+                self.prebound.remove(name);
+                if !declared && !self.index.slots.contains(name) && !self.index.known.contains(name) {
                     // `totl = x` creates a NEW variable: the typo'd name is
                     // never seen again (`total` keeps its old value)
                     self.issues.push(InterpolationIssue {
@@ -728,7 +794,7 @@ impl<'a> Walker<'a> {
                         kind: "assignment_without_let",
                     });
                 }
-                if !self.scope.contains(name) && self.index.slots.contains(name) {
+                if !declared && self.index.slots.contains(name) {
                     let kind = if self.index.list_slots.contains(name) { Some("List") } else { Some("Map") };
                     self.issues.push(InterpolationIssue {
                         message: crate::interpreter::slot_assign_message(name, kind),
@@ -815,29 +881,31 @@ impl<'a> Walker<'a> {
                 self.walk_expr(iter);
                 let var = var.clone();
                 self.scoped(&[var], |w| {
-                    // Pre-bind everything the body binds: on iteration 2+
-                    // those names exist, so flagging them would be a false
-                    // positive for any string evaluated after the binding.
-                    bind_stmts(body, &mut w.scope);
+                    // Pre-bind the names the body ASSIGNS: on iteration 2+
+                    // they exist. A `let` is fresh each iteration, so a read
+                    // before it fails every time (it was pre-bound too).
+                    let pre = w.prebind_loop(body);
                     w.loop_depth += 1;
                     // a loop body has no value: its LAST statement is thrown
                     // away too (`s = s + "<td>{m.k ?? ""}</td>"` split in two
                     // passed check as the body's "last value")
                     w.walk_stmts_discarding(body);
                     w.loop_depth -= 1;
+                    for n in pre { w.prebound.remove(&n); }
                 });
             }
             Statement::While { condition, body, .. } => {
                 self.int_builtin_as_bool(condition);
                 self.walk_expr(condition);
                 self.scoped(&[], |w| {
-                    bind_stmts(body, &mut w.scope);
+                    let pre = w.prebind_loop(body);
                     w.loop_depth += 1;
                     // a loop body has no value: its LAST statement is thrown
                     // away too (`s = s + "<td>{m.k ?? ""}</td>"` split in two
                     // passed check as the body's "last value")
                     w.walk_stmts_discarding(body);
                     w.loop_depth -= 1;
+                    for n in pre { w.prebound.remove(&n); }
                 });
             }
             Statement::Emit { signal_name, args } => {
@@ -1300,6 +1368,11 @@ impl<'a> Walker<'a> {
                 }
                 if let Some(end) = crate::interpreter::interp_segment_end(s, pos) {
                     let expr_str = &s[pos + 1..pos + 1 + end];
+                    // `{total:.2f}`: a Python format spec prints literally
+                    if self.format_spec_segment(expr_str, span) {
+                        pos = pos + 1 + end + 1;
+                        continue;
+                    }
                     // Skipped as CSS/HTML — runtime advances one byte
                     // and rescans, so nested segments are still found.
                     if crate::interpreter::interp_segment_is_literal(expr_str) {
@@ -1318,6 +1391,77 @@ impl<'a> Walker<'a> {
             }
             pos += 1;
         }
+    }
+
+    /// The name a `{…}` segment starts with, when it starts like code that
+    /// refers to this scope: a local (or parameter) right after the `{`, or
+    /// a known function called there (`{len(xs}`). Literal braces — JSON
+    /// (`{"a": 1}`), CSS (`{ color: red }`), prose — start otherwise.
+    fn code_like_start<'s>(&self, seg: &'s str) -> Option<&'s str> {
+        let end = seg.find(|c: char| !(c.is_alphanumeric() || c == '_')).unwrap_or(seg.len());
+        let word = &seg[..end];
+        if word.is_empty() || !word.starts_with(|c: char| c.is_alphabetic() || c == '_') { return None; }
+        if self.scope.contains(word) { return Some(word); }
+        if seg[end..].starts_with('(') && self.known(word) { return Some(word); }
+        None
+    }
+
+    /// `{total:.2f}` / `{n:>5}` / `{total / n:.1f}`: a Python format spec
+    /// after an expression of this scope. It printed literally and check
+    /// passed. Returns true when reported.
+    fn format_spec_segment(&mut self, seg: &str, span: Span) -> bool {
+        let Some(colon) = seg.rfind(':') else { return false };
+        let (expr, spec) = (&seg[..colon], &seg[colon + 1..]);
+        if expr.trim().is_empty() || spec.is_empty() || self.code_like_start(expr).is_none() { return false; }
+        // [[fill]align][sign][#][0][width][,|_][.precision][type]
+        let b = spec.as_bytes();
+        let mut i = 0;
+        if b.len() >= 2 && matches!(b[1], b'<' | b'>' | b'^' | b'=') { i = 2; }
+        else if matches!(b.first(), Some(b'<' | b'>' | b'^' | b'=')) { i = 1; }
+        if matches!(b.get(i), Some(b'+' | b'-' | b' ')) { i += 1; }
+        if b.get(i) == Some(&b'#') { i += 1; }
+        while b.get(i).map_or(false, |c| c.is_ascii_digit()) { i += 1; }
+        if matches!(b.get(i), Some(b',' | b'_')) { i += 1; }
+        if b.get(i) == Some(&b'.') {
+            i += 1;
+            let d = i;
+            while b.get(i).map_or(false, |c| c.is_ascii_digit()) { i += 1; }
+            if i == d { return false; }
+        }
+        if b.get(i).map_or(false, |c| b"bcdeEfFgGnosxX%".contains(c)) { i += 1; }
+        if i != b.len() { return false; }
+        let prec = spec.split_once('.').map(|(_, p)| p.trim_end_matches(|c: char| !c.is_ascii_digit()).to_string());
+        let x = expr.trim();
+        let fix = match prec {
+            Some(p) => format!("`{{to_fixed({x}, {p})}}` (printf-style: `let s = format(\"%.{p}f\", {x})`, then `{{s}}`)"),
+            None => format!("`let s = format(\"%5d\", {x})` (printf-style), then `{{s}}`; or pad_left / pad_right"),
+        };
+        self.issues.push(InterpolationIssue {
+            message: format!("string interpolation `{{{seg}}}` has a Python format spec — Soma has none, so it would print literally; format the value: {fix}"),
+            span,
+            warning: false,
+            habit: false,
+            kind: "interpolation_format_spec",
+        });
+        true
+    }
+
+    /// A segment that starts like code of this scope (`{total +}`,
+    /// `{items[0}`, `{n, total}`, `{len(items}`) but does not parse: it
+    /// printed literally and check passed.
+    fn malformed_segment(&mut self, seg: &str, span: Span) {
+        if self.code_like_start(seg).is_none() { return; }
+        // a comma list is code only when every item is (`{n, total}`), not
+        // a field list in prose (`body: {method,universe,top_k}`)
+        if seg.contains(',') && !seg.contains('(') && !seg.contains('[')
+            && seg.split(',').any(|part| self.code_like_start(part.trim()).is_none()) { return; }
+        self.issues.push(InterpolationIssue {
+            message: format!("string interpolation `{{{seg}}}` is not an expression — it would print literally; fix it, or write `{{{{…}}}}` for literal braces"),
+            span,
+            warning: false,
+            habit: false,
+            kind: "interpolation_malformed",
+        });
     }
 
     /// Check a single `{...}` segment. Returns true if the runtime
@@ -1368,12 +1512,12 @@ impl<'a> Walker<'a> {
         let mut lexer = crate::lexer::Lexer::new(&wrapped);
         let tokens = match lexer.tokenize() {
             Ok(t) => t,
-            Err(_) => return false,
+            Err(_) => { self.malformed_segment(expr_str, span); return false; }
         };
         let mut parser = crate::parser::Parser::new(tokens);
         let program = match parser.parse_program() {
             Ok(p) => p,
-            Err(_) => return false,
+            Err(_) => { self.malformed_segment(expr_str, span); return false; }
         };
         // `{total - fee junk}` parses as TWO statements: the runtime refuses it
         let several = program.cells.first().map_or(false, |cell| cell.node.sections.iter().any(|s| matches!(&s.node, Section::OnSignal(on) if on.body.len() > 1)));
@@ -1519,6 +1663,10 @@ impl<'a> Walker<'a> {
             "this" | "self" => Some("there is no `this`: memory slots and handlers of the cell are in scope by name"),
             "True" | "TRUE" => Some("write `true`"),
             "False" | "FALSE" => Some("write `false`"),
+            // `let bad = not ok` suggested 'bnot' (bitwise)
+            "not" => Some("negation is `!`: `!ok`"),
+            "and" => Some("the boolean operators are `&&`, `||`, `!`"),
+            "or" => Some("the boolean operators are `&&`, `||`, `!`"),
             _ => None,
         };
         if let Some(hint) = foreign {
@@ -1565,6 +1713,32 @@ impl<'a> Walker<'a> {
                 habit: false,
                 kind: "undefined_function",
         });
+    }
+}
+
+/// The names a statement list assigns with a plain `x = …` (which persist
+/// past their block, unlike a `let`), through nested blocks and `if` /
+/// `match` expressions — not through lambdas (they assign a copy).
+fn assigned_stmts(stmts: &[Spanned<Statement>], out: &mut HashSet<String>) {
+    for stmt in stmts {
+        match &stmt.node {
+            Statement::Assign { name, value } => { out.insert(name.clone()); assigned_expr(&value.node, out); }
+            Statement::Let { value, .. } | Statement::Return { value } | Statement::ExprStmt { expr: value } => assigned_expr(&value.node, out),
+            Statement::For { body, .. } | Statement::While { body, .. } => assigned_stmts(body, out),
+            Statement::If { then_body, else_body, .. } => { assigned_stmts(then_body, out); assigned_stmts(else_body, out); }
+            _ => {}
+        }
+    }
+}
+
+fn assigned_expr(expr: &Expr, out: &mut HashSet<String>) {
+    match expr {
+        Expr::Match { arms, .. } => for arm in arms { assigned_stmts(&arm.body, out); assigned_expr(&arm.result.node, out); },
+        Expr::IfExpr { then_body, then_result, else_body, else_result, .. } => {
+            assigned_stmts(then_body, out); assigned_expr(&then_result.node, out);
+            assigned_stmts(else_body, out); assigned_expr(&else_result.node, out);
+        }
+        _ => {}
     }
 }
 

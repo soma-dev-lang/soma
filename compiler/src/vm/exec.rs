@@ -366,8 +366,8 @@ impl VM {
                     let val = self.stack.pop().unwrap_or(Value::Unit);
                     let items = match val {
                         Value::List(items) => items,
-                        Value::String(s) if s.contains('\n') => {
-                            s.split('\n').filter(|l| !l.is_empty())
+                        Value::String(s) => {
+                            s.split('\n').map(|l| l.strip_suffix('\r').unwrap_or(l)).filter(|l| !l.is_empty())
                                 .map(|l| Value::String(l.to_string())).collect()
                         }
                         other => vec![other],

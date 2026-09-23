@@ -71,7 +71,7 @@ pub fn check_program(program: &Program) -> (Vec<DispatchFinding>, Vec<DispatchFi
                 };
                 // a bare `pack("o1")` when Orders and Warehouse both define
                 // `pack`: it used to pass check and pick a cell at random
-                visit_calls_expr(&expr.node, &mut |name, _argc, _| {
+                visit_calls_expr(&expr.node, expr.span, &mut |name, _argc, _, _| {
                     let Some(definers) = index.handler_map.get(name) else { return };
                     if definers.len() >= 2 && ambiguous_seen.insert(name.to_string()) {
                         errors.push(DispatchFinding {
@@ -83,7 +83,7 @@ pub fn check_program(program: &Program) -> (Vec<DispatchFinding>, Vec<DispatchFi
                         });
                     }
                 });
-                visit_calls_expr(&expr.node, &mut |name, argc, _has_lambda| {
+                visit_calls_expr(&expr.node, expr.span, &mut |name, argc, _has_lambda, _| {
                     if !super::names::builtin_names().contains(name) {
                         return;
                     }
@@ -126,10 +126,11 @@ pub fn check_program(program: &Program) -> (Vec<DispatchFinding>, Vec<DispatchFi
             bind_all(body, &mut bound);
 
             let mut calls: Vec<String> = Vec::new();
-            let mut call_shapes: Vec<(String, usize, bool)> = Vec::new();
-            visit_calls(body, &mut |name, argc, has_lambda| {
+            // (name, argument count, has a lambda argument, the call's span)
+            let mut call_shapes: Vec<(String, usize, bool, Span)> = Vec::new();
+            visit_calls(body, &mut |name, argc, has_lambda, sp| {
                 calls.push(name.to_string());
-                call_shapes.push((name.to_string(), argc, has_lambda));
+                call_shapes.push((name.to_string(), argc, has_lambda, sp));
             });
             let caller_native = match &section.node {
                 Section::OnSignal(on) => on.properties.iter().any(|p| p == "native"),
@@ -141,6 +142,8 @@ pub fn check_program(program: &Program) -> (Vec<DispatchFinding>, Vec<DispatchFi
                 if !seen.insert(name.clone()) {
                     continue; // report each callee once per handler
                 }
+                // the first call of `name` (a finding there, not at the `on` line)
+                let first_call = call_shapes.iter().find(|(n, _, _, _)| n == &name).map_or(section.span, |c| c.3);
                 if bound.contains(&name)
                     || index.variants.contains(&name)
                     || index.slots.contains(&name)
@@ -149,11 +152,11 @@ pub fn check_program(program: &Program) -> (Vec<DispatchFinding>, Vec<DispatchFi
                 }
                 if super::names::builtin_names().contains(name.as_str()) {
                     if let Some(takes) = arities.get(&name) {
-                        let argcs: Vec<usize> =
-                            call_shapes.iter().filter(|(n, _, _)| n == &name).map(|(_, a, _)| *a).collect();
+                        let argcs: Vec<(usize, Span)> =
+                            call_shapes.iter().filter(|(n, _, _, _)| n == &name).map(|(_, a, _, sp)| (*a, *sp)).collect();
                         let definer = index.handler_map.get(&name).map(|d| d[0].clone()).unwrap_or_default();
                         let own = index.handler_map.get(&name).map_or(false, |d| d.contains(&cell.name));
-                        for argc in argcs {
+                        for (argc, call_sp) in argcs {
                             if takes.contains(&argc) && !own && cell.kind != CellKind::Test {
                                 // another cell's handler named like a builtin does
                                 // NOT replace the builtin (a library's
@@ -162,7 +165,7 @@ pub fn check_program(program: &Program) -> (Vec<DispatchFinding>, Vec<DispatchFi
                                     message: format!(
                                         "`{name}(…)` here calls the BUILTIN {name}(), not the handler {definer}.{name} — a handler of another cell never replaces a builtin; call it as `{definer}.{name}(…)`"
                                     ),
-                                    span: section.span,
+                                    span: call_sp,
                                 });
                                 break;
                             }
@@ -178,7 +181,7 @@ pub fn check_program(program: &Program) -> (Vec<DispatchFinding>, Vec<DispatchFi
                                              shadows a builtin of the same name and arity. For an empty list write []",
                                             caller = cell.name,
                                         ),
-                                        span: section.span,
+                                        span: call_sp,
                                     });
                                 }
                             } else if handler_label != name {
@@ -191,7 +194,7 @@ pub fn check_program(program: &Program) -> (Vec<DispatchFinding>, Vec<DispatchFi
                                          {takes:?}. If you meant the handler, pass its argument count",
                                         caller = cell.name,
                                     ),
-                                    span: section.span,
+                                    span: call_sp,
                                 });
                             }
                         }
@@ -215,7 +218,7 @@ pub fn check_program(program: &Program) -> (Vec<DispatchFinding>, Vec<DispatchFi
                                     message: format!(
                                         "'{name}' is a [native]-only primitive — it exists inside `on h(...) [native] {{ }}` handlers only; in an interpreted handler use a Map/List (or mark the handler [native])"
                                     ),
-                                    span: section.span,
+                                    span: first_call,
                                 });
                             }
                             continue;
@@ -240,14 +243,14 @@ pub fn check_program(program: &Program) -> (Vec<DispatchFinding>, Vec<DispatchFi
                                 "undefined function '{name}'{suggestion} — no cell defines a \
                                  handler 'on {name}(...)' and it is not a builtin"
                             ),
-                            span: call_span(body, &name).unwrap_or(section.span),
+                            span: first_call,
                         });
                     }
                     Some(definers) => {
                         // wrong number of arguments: a runtime error on the
                         // path that calls it, unless check says so first
                         if let Some(takes) = arities.get(&name) {
-                            for (_, argc, _) in call_shapes.iter().filter(|(n, _, _)| n == &name) {
+                            for (_, argc, _, call_sp) in call_shapes.iter().filter(|(n, _, _, _)| n == &name) {
                                 if !takes.contains(argc) {
                                     errors.push(DispatchFinding {
                                         message: format!(
@@ -255,7 +258,7 @@ pub fn check_program(program: &Program) -> (Vec<DispatchFinding>, Vec<DispatchFi
                                             definers[0],
                                             takes.iter().map(|t| t.to_string()).collect::<Vec<_>>().join(" or "),
                                         ),
-                                        span: section.span,
+                                        span: *call_sp,
                                     });
                                     break;
                                 }
@@ -274,7 +277,7 @@ pub fn check_program(program: &Program) -> (Vec<DispatchFinding>, Vec<DispatchFi
                                          you meant {other}'s, rename one of them",
                                         caller = cell.name,
                                     ),
-                                    span: section.span,
+                                    span: first_call,
                                 });
                             } else {
                                 warnings.push(DispatchFinding {
@@ -284,7 +287,7 @@ pub fn check_program(program: &Program) -> (Vec<DispatchFinding>, Vec<DispatchFi
                                          {caller}'s own; write {other}.{name}(...) if you meant {other}'s",
                                         caller = cell.name,
                                     ),
-                                    span: section.span,
+                                    span: first_call,
                                 });
                             }
                         } else if !caller_defines && definers.len() >= 2 {
@@ -300,7 +303,7 @@ pub fn check_program(program: &Program) -> (Vec<DispatchFinding>, Vec<DispatchFi
                                     "ambiguous call '{name}': defined by cells {listed} — \
                                      qualify it (`{first}.{name}(…)`) or rename one handler", first = definers[0]
                                 ),
-                                span: section.span,
+                                span: first_call,
                             });
                         }
                         // Exactly one definer → unambiguous, silent.
@@ -309,9 +312,9 @@ pub fn check_program(program: &Program) -> (Vec<DispatchFinding>, Vec<DispatchFi
             }
             // `emit nobody_listens(...)`: no cell handles it — a typo in an
             // event name used to be a silently lost event
-            let mut emits: Vec<String> = Vec::new();
+            let mut emits: Vec<(String, Span)> = Vec::new();
             visit_emits(body, &mut emits);
-            for ev in emits {
+            for (ev, emit_span) in emits {
                 if !index.handler_map.contains_key(&ev) && !index.known.contains(&ev)
                     && !crate::commands::HAS_PEERS.load(std::sync::atomic::Ordering::Relaxed) {
                     warnings.push(DispatchFinding {
@@ -319,7 +322,7 @@ pub fn check_program(program: &Program) -> (Vec<DispatchFinding>, Vec<DispatchFi
                             "emit {ev}(…) in {}.{handler_label}: no cell has `on {ev}(…)` — the event goes nowhere in this process (declare the handler, or fix the name)",
                             cell.name
                         ),
-                        span: section.span,
+                        span: emit_span,
                     });
                 }
             }
@@ -329,10 +332,10 @@ pub fn check_program(program: &Program) -> (Vec<DispatchFinding>, Vec<DispatchFi
     (errors, warnings)
 }
 
-fn visit_emits(stmts: &[Spanned<Statement>], out: &mut Vec<String>) {
+fn visit_emits(stmts: &[Spanned<Statement>], out: &mut Vec<(String, Span)>) {
     for st in stmts {
         match &st.node {
-            Statement::Emit { signal_name, .. } => out.push(signal_name.clone()),
+            Statement::Emit { signal_name, .. } => out.push((signal_name.clone(), st.span)),
             Statement::If { then_body, else_body, .. } => { visit_emits(then_body, out); visit_emits(else_body, out); }
             Statement::For { body, .. } | Statement::While { body, .. } => visit_emits(body, out),
             _ => {}
@@ -342,31 +345,31 @@ fn visit_emits(stmts: &[Spanned<Statement>], out: &mut Vec<String>) {
 
 /// Visit every FnCall (name, argument count) in a statement list, in
 /// source order.
-fn visit_calls(stmts: &[Spanned<Statement>], out: &mut dyn FnMut(&str, usize, bool)) {
+fn visit_calls(stmts: &[Spanned<Statement>], out: &mut dyn FnMut(&str, usize, bool, Span)) {
     for stmt in stmts {
         match &stmt.node {
             Statement::Let { value, .. }
             | Statement::Assign { value, .. }
             | Statement::Return { value }
-            | Statement::Ensure { condition: value } => visit_calls_expr(&value.node, out),
-            Statement::ExprStmt { expr } => visit_calls_expr(&expr.node, out),
-            Statement::IndexSet { index, value, .. } => { visit_calls_expr(&index.node, out); visit_calls_expr(&value.node, out); }
+            | Statement::Ensure { condition: value } => visit_calls_expr(&value.node, value.span, out),
+            Statement::ExprStmt { expr } => visit_calls_expr(&expr.node, expr.span, out),
+            Statement::IndexSet { index, value, .. } => { visit_calls_expr(&index.node, index.span, out); visit_calls_expr(&value.node, value.span, out); }
             Statement::If { condition, then_body, else_body } => {
-                visit_calls_expr(&condition.node, out);
+                visit_calls_expr(&condition.node, condition.span, out);
                 visit_calls(then_body, out);
                 visit_calls(else_body, out);
             }
             Statement::For { iter, body, .. } => {
-                visit_calls_expr(&iter.node, out);
+                visit_calls_expr(&iter.node, iter.span, out);
                 visit_calls(body, out);
             }
             Statement::While { condition, body, .. } => {
-                visit_calls_expr(&condition.node, out);
+                visit_calls_expr(&condition.node, condition.span, out);
                 visit_calls(body, out);
             }
             Statement::Emit { args, .. } | Statement::MethodCall { args, .. } => {
                 for a in args {
-                    visit_calls_expr(&a.node, out);
+                    visit_calls_expr(&a.node, a.span, out);
                 }
             }
             Statement::Require { constraint, .. } => {
@@ -377,11 +380,11 @@ fn visit_calls(stmts: &[Spanned<Statement>], out: &mut dyn FnMut(&str, usize, bo
     }
 }
 
-fn visit_calls_constraint(c: &Constraint, out: &mut dyn FnMut(&str, usize, bool)) {
+fn visit_calls_constraint(c: &Constraint, out: &mut dyn FnMut(&str, usize, bool, Span)) {
     match c {
         Constraint::Comparison { left, right, .. } => {
-            visit_calls_expr(&left.node, out);
-            visit_calls_expr(&right.node, out);
+            visit_calls_expr(&left.node, left.span, out);
+            visit_calls_expr(&right.node, right.span, out);
         }
         Constraint::And(a, b) | Constraint::Or(a, b) => {
             visit_calls_constraint(&a.node, out);
@@ -393,84 +396,84 @@ fn visit_calls_constraint(c: &Constraint, out: &mut dyn FnMut(&str, usize, bool)
     }
 }
 
-fn visit_calls_expr(expr: &Expr, out: &mut dyn FnMut(&str, usize, bool)) {
+fn visit_calls_expr(expr: &Expr, sp: Span, out: &mut dyn FnMut(&str, usize, bool, Span)) {
     match expr {
         Expr::FnCall { name, args } => {
             let has_lambda = args
                 .iter()
                 .any(|a| matches!(a.node, Expr::Lambda { .. } | Expr::LambdaBlock { .. }));
-            out(name, args.len(), has_lambda);
+            out(name, args.len(), has_lambda, sp);
             for a in args {
-                visit_calls_expr(&a.node, out);
+                visit_calls_expr(&a.node, a.span, out);
             }
         }
-        Expr::FieldAccess { target, .. } => visit_calls_expr(&target.node, out),
-        Expr::Index { target, index } => { visit_calls_expr(&target.node, out); visit_calls_expr(&index.node, out); }
+        Expr::FieldAccess { target, .. } => visit_calls_expr(&target.node, target.span, out),
+        Expr::Index { target, index } => { visit_calls_expr(&target.node, target.span, out); visit_calls_expr(&index.node, index.span, out); }
         Expr::MethodCall { target, args, .. } => {
-            visit_calls_expr(&target.node, out);
+            visit_calls_expr(&target.node, target.span, out);
             for a in args {
-                visit_calls_expr(&a.node, out);
+                visit_calls_expr(&a.node, a.span, out);
             }
         }
         Expr::BinaryOp { left, right, .. }
         | Expr::CmpOp { left, right, .. } => {
-            visit_calls_expr(&left.node, out);
-            visit_calls_expr(&right.node, out);
+            visit_calls_expr(&left.node, left.span, out);
+            visit_calls_expr(&right.node, right.span, out);
         }
         Expr::Pipe { left, right } => {
-            visit_calls_expr(&left.node, out);
+            visit_calls_expr(&left.node, left.span, out);
             // The runtime supports `expr |> fn` with a BARE identifier on
             // the right (interpreter rewrites it to fn(expr)) — that
             // identifier is a call, not a variable reference.
             if let Expr::Ident(name) = &right.node {
-                out(name, 1, false);
+                out(name, 1, false, right.span);
             } else if let Expr::FnCall { name, args } = &right.node {
                 // `xs |> f(a)` calls f(xs, a): the piped value is an argument
                 let has_lambda = args
                     .iter()
                     .any(|a| matches!(a.node, Expr::Lambda { .. } | Expr::LambdaBlock { .. }));
-                out(name, args.len() + 1, has_lambda);
+                out(name, args.len() + 1, has_lambda, right.span);
                 for a in args {
-                    visit_calls_expr(&a.node, out);
+                    visit_calls_expr(&a.node, a.span, out);
                 }
             } else {
-                visit_calls_expr(&right.node, out);
+                visit_calls_expr(&right.node, right.span, out);
             }
         }
         Expr::Not(inner) | Expr::Try(inner) | Expr::TryPropagate(inner) => {
-            visit_calls_expr(&inner.node, out);
+            visit_calls_expr(&inner.node, inner.span, out);
         }
         Expr::ListLiteral(items) => {
             for item in items {
-                visit_calls_expr(&item.node, out);
+                visit_calls_expr(&item.node, item.span, out);
             }
         }
         Expr::Record { fields, .. } => {
             for (_, v) in fields {
-                visit_calls_expr(&v.node, out);
+                visit_calls_expr(&v.node, v.span, out);
             }
         }
-        Expr::Lambda { body, .. } => visit_calls_expr(&body.node, out),
+        Expr::Lambda { body, .. } => visit_calls_expr(&body.node, body.span, out),
         Expr::LambdaBlock { stmts, result, .. } => {
             visit_calls(stmts, out);
-            visit_calls_expr(&result.node, out);
+            visit_calls_expr(&result.node, result.span, out);
         }
         Expr::Match { subject, arms } => {
-            visit_calls_expr(&subject.node, out);
+            visit_calls_expr(&subject.node, subject.span, out);
             for arm in arms {
                 if let Some(g) = &arm.guard {
-                    visit_calls_expr(&g.node, out);
+                    visit_calls_expr(&g.node, g.span, out);
                 }
                 visit_calls(&arm.body, out);
-                visit_calls_expr(&arm.result.node, out);
+                visit_calls_expr(&arm.result.node, arm.result.span, out);
             }
         }
         Expr::IfExpr { condition, then_body, then_result, else_body, else_result } => {
-            visit_calls_expr(&condition.node, out);
+            visit_calls_expr(&condition.node, condition.span, out);
             visit_calls(then_body, out);
-            visit_calls_expr(&then_result.node, out);
+            visit_calls_expr(&then_result.node, then_result.span, out);
             visit_calls(else_body, out);
-            visit_calls_expr(&else_result.node, out);
+            visit_calls_expr(&else_result.node, else_result.span, out);
         }
         Expr::Literal(_) | Expr::Ident(_) => {}
     }
@@ -478,11 +481,11 @@ fn visit_calls_expr(expr: &Expr, out: &mut dyn FnMut(&str, usize, bool)) {
 
 /// Collect every FnCall name in a statement list, in source order.
 pub(super) fn collect_calls(stmts: &[Spanned<Statement>], out: &mut Vec<String>) {
-    visit_calls(stmts, &mut |name, _, _| out.push(name.to_string()));
+    visit_calls(stmts, &mut |name, _, _, _| out.push(name.to_string()));
 }
 
 pub(super) fn collect_calls_expr(expr: &Expr, out: &mut Vec<String>) {
-    visit_calls_expr(expr, &mut |name, _, _| out.push(name.to_string()));
+    visit_calls_expr(expr, Span::new(0, 0), &mut |name, _, _, _| out.push(name.to_string()));
 }
 
 /// Can the builtin `name` accept a call with `argc` arguments? Read off
@@ -665,23 +668,4 @@ fn index_native(program: &Program, name: &str) -> bool {
             _ => false,
         })
     })
-}
-
-
-/// The span of the innermost statement that calls `name` (an error used to
-/// point at the handler's header, lines away from the call).
-fn call_span(body: &[Spanned<Statement>], name: &str) -> Option<crate::ast::Span> {
-    for st in body {
-        let mut here = false;
-        visit_calls(std::slice::from_ref(st), &mut |n, _, _| if n == name { here = true; });
-        if !here { continue; }
-        let inner: Vec<&[Spanned<Statement>]> = match &st.node {
-            Statement::If { then_body, else_body, .. } => vec![then_body.as_slice(), else_body.as_slice()],
-            Statement::For { body, .. } | Statement::While { body, .. } => vec![body.as_slice()],
-            _ => vec![],
-        };
-        for b in inner { if let Some(sp) = call_span(b, name) { return Some(sp); } }
-        return Some(st.span);
-    }
-    None
 }

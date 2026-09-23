@@ -498,11 +498,17 @@ impl std::fmt::Display for Value {
             Value::LambdaBlock { param, .. } => write!(f, "<lambda({})>", param),
             Value::Variant { variant, fields, .. } => match fields {
                 VariantValue::Unit => write!(f, "{}", variant),
+                // a String field is quoted, as in a List or a Map (`Person
+                // { name: Ann, age: 3 }` hid where the name ended, and
+                // `Named("")` printed `Named()`)
                 VariantValue::Tuple(vs) => {
                     write!(f, "{}(", variant)?;
                     for (i, v) in vs.iter().enumerate() {
                         if i > 0 { write!(f, ", ")?; }
-                        write!(f, "{}", v)?;
+                        match v {
+                            Value::String(s) => write!(f, "\"{}\"", json_escape_str(s))?,
+                            other => write!(f, "{}", other)?,
+                        }
                     }
                     write!(f, ")")
                 }
@@ -510,7 +516,10 @@ impl std::fmt::Display for Value {
                     write!(f, "{} {{", variant)?;
                     for (i, (k, v)) in entries.iter().enumerate() {
                         if i > 0 { write!(f, ",")?; }
-                        write!(f, " {}: {}", k, v)?;
+                        match v {
+                            Value::String(s) => write!(f, " {}: \"{}\"", k, json_escape_str(s))?,
+                            other => write!(f, " {}: {}", k, other)?,
+                        }
                     }
                     write!(f, " }}")
                 }
@@ -2040,15 +2049,14 @@ impl Interpreter {
                             ])
                         }).collect()
                     }
+                    // a String iterates its non-empty lines: "" has none,
+                    // and a CRLF line ends before its `\r`
                     Value::String(s) => {
-                        if s.contains('\n') {
-                            s.split('\n')
-                                .filter(|l| !l.is_empty())
-                                .map(|l| Value::String(l.to_string()))
-                                .collect()
-                        } else {
-                            vec![Value::String(s)]
-                        }
+                        s.split('\n')
+                            .map(|l| l.strip_suffix('\r').unwrap_or(l))
+                            .filter(|l| !l.is_empty())
+                            .map(|l| Value::String(l.to_string()))
+                            .collect()
                     }
                     // an absent value (`slot.get(missing)`) has no elements
                     // (the body ran once with `()`); a number is not a
@@ -2366,13 +2374,27 @@ impl Interpreter {
                 }
                 let l = self.eval_expr(&left.node, env, cell_name, signal_name)?;
                 let r = self.eval_expr(&right.node, env, cell_name, signal_name)?;
-                self.eval_binop(&l, *op, &r).map_err(ExecError::Runtime)
+                // `-x` (parsed as a zero-width `0` minus x) on a non-number
+                if *op == BinOp::Sub && left.span.start == left.span.end && matches!(left.node, Expr::Literal(Literal::Int(0)))
+                    && !matches!(r, Value::Int(_) | Value::Float(_) | Value::List(_))
+                {
+                    let what = if matches!(r, Value::Unit) {
+                        "() (a missing key or field?): default it, `-(m.get(k) ?? 0)`".to_string()
+                    } else { format!("{} {}", value_type_name(&r), short_value(&r)) };
+                    self.last_span = Some(left.span.merge(right.span));
+                    return Err(ExecError::Runtime(RuntimeError::TypeError(format!("cannot negate {}", what))));
+                }
+                // at this operation, not the first line of a multi-line
+                // statement around it (`sum([\n xs[0],\n xs[1] / z ])`)
+                self.eval_binop(&l, *op, &r).map_err(|e| { self.last_span = Some(left.span.merge(right.span)); ExecError::Runtime(e) })
             }
 
             Expr::CmpOp { left, op, right } => {
                 let l = self.eval_expr(&left.node, env, cell_name, signal_name)?;
                 let r = self.eval_expr(&right.node, env, cell_name, signal_name)?;
-                self.eval_cmpop(&l, *op, &r).map_err(ExecError::Runtime)
+                // the error is reported at this comparison (not the first
+                // line of a multi-line statement around it)
+                self.eval_cmpop(&l, *op, &r).map_err(|e| { self.last_span = Some(left.span.merge(right.span)); ExecError::Runtime(e) })
             }
 
             Expr::FnCall { name, args } => {
@@ -2842,6 +2864,9 @@ impl Interpreter {
                     // record (`l.qty` on `Line { sku, qty }`)
                     Value::Variant { fields: VariantValue::Struct(ref fs), ref variant, .. } => match fs.get(field.as_str()) {
                         Some(v) => Ok(v.clone()),
+                        // `.len` / `.size` / `.keys` of a record without such
+                        // a field is () (the documented reading; it raised)
+                        None if matches!(field.as_str(), "len" | "size" | "keys") => Ok(Value::Unit),
                         None => Err(ExecError::Runtime(RuntimeError::TypeError(format!(
                             "variant {} has no field '{}' (fields: {})", variant, field, fs.keys().cloned().collect::<Vec<_>>().join(", "))))),
                     },
@@ -3779,17 +3804,7 @@ impl Interpreter {
             Literal::Float(n) => Value::Float(*n),
             Literal::String(s) => Value::String(s.clone()),
             Literal::Bool(b) => Value::Bool(*b),
-            Literal::Duration(d) => {
-                let ms = match d.unit {
-                    DurationUnit::Milliseconds => d.value,
-                    DurationUnit::Seconds => d.value * 1000.0,
-                    DurationUnit::Minutes => d.value * 60_000.0,
-                    DurationUnit::Hours => d.value * 3_600_000.0,
-                    DurationUnit::Days => d.value * 86_400_000.0,
-                    DurationUnit::Years => d.value * 365.25 * 86_400_000.0,
-                };
-                Value::Int(SomaInt::from_i64(ms as i64))
-            }
+            Literal::Duration(d) => Value::Int(SomaInt::from_i64(d.ms)),
             // `5%` is 0.05 (it was 5.0: `p * (1 - 5%)` answered -4p)
             Literal::Percentage(p) => Value::Float(*p / 100.0),
             Literal::Unit => Value::Unit,
@@ -4276,7 +4291,15 @@ impl Interpreter {
                             .map_err(|e| format!("{}.{}: {}", variant, name, e))?;
                     }
                 }
-                Ok(VariantValue::Struct(fields))
+                // the declared field order, whatever order the literal
+                // wrote them in (`P { y: 5.0, x: 9 }` had keys ["y", "x"]
+                // and a CSV header y,x above rows of x,y records)
+                let mut ordered = IndexMap::with_capacity(fields.len());
+                for (name, _) in types {
+                    if let Some(v) = fields.shift_remove(name) { ordered.insert(name.clone(), v); }
+                }
+                ordered.extend(fields);
+                Ok(VariantValue::Struct(ordered))
             }
             (Some(VariantFields::Tuple(types)), VariantValue::Tuple(fields)) => {
                 let mut out = Vec::with_capacity(fields.len());
@@ -4654,6 +4677,12 @@ impl Interpreter {
             (Value::Float(_), Value::Int(_) | Value::Float(_)) | (Value::Int(_), Value::Float(_)) => {
                 let a = l.as_float()?;
                 let b = r.as_float()?;
+                // an Int past the Float range became inf (`ipow(10, 400) +
+                // 0.5`), where to_float refuses it
+                if (matches!(l, Value::Int(_)) && a.is_infinite()) || (matches!(r, Value::Int(_)) && b.is_infinite()) {
+                    return Err(RuntimeError::Domain { kind: "range".to_string(), message: format!(
+                        "cannot {} Int and Float: the Int is past the Float range (~1.8e308) — keep it in Ints (div_round, floor_div) or scale it down first", binop_verb(op)) });
+                }
                 match op {
                     BinOp::Add => Ok(Value::Float(a + b)),
                     BinOp::Sub => Ok(Value::Float(a - b)),
@@ -7418,7 +7447,13 @@ pub(crate) fn int_div_value(a: &SomaInt, b: &SomaInt) -> Result<Value, RuntimeEr
         // exact big division stays an Int — same rule as small ints
         Ok(Value::Int(a.clone().div(b.clone())))
     } else {
-        Ok(Value::Float(rational_to_f64(rug::Rational::from((a.to_rug(), b.to_rug())))))
+        // a quotient past the Float range was inf (`ipow(10, 400) / 3`)
+        let q = rational_to_f64(rug::Rational::from((a.to_rug(), b.to_rug())));
+        if q.is_infinite() {
+            return Err(RuntimeError::Domain { kind: "range".to_string(), message:
+                "this Int division is not exact and its Float quotient is past the Float range (~1.8e308) — use floor_div(a, b) or div_round(a, b) for an Int quotient".to_string() });
+        }
+        Ok(Value::Float(q))
     }
 }
 

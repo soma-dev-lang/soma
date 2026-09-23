@@ -5213,4 +5213,194 @@ cell test T { rules {
     let (code, out) = soma(&dir, &["check", "app.cell"]);
     assert_ne!(code, 0, "{out}");
     assert!(out.contains("read_file"), "{out}");
+
+fn core_fifth_pass_runtime() {
+    passes("core_fifth_pass_runtime", r##"
+cell type Person { variants { Person { name: String, tags: List<String> } } }
+cell type Tag { variants { Named(String) } }
+cell type P { variants { P { x: Int, y: Float } } }
+cell C {
+    on count_lines(s: String) {
+        let n = 0
+        for l in s { n += 1 }
+        return n
+    }
+    on lines_of(s: String) {
+        let out = []
+        for l in s { out = push(out, l) }
+        return out
+    }
+    on log_it(x: Int) { return x }
+    on early(x: Int) {
+        if x > 0 {
+            return
+            log_it(x)
+        }
+        return 5
+    }
+    on show() { return to_string(Person { name: "Ann, age: 3", tags: ["x"] }) }
+    on show_named() { return to_string([Named("")]) }
+    on show_top() { let s = "plain"  return "{s}" }
+    on order() { let q = P { y: 5.0, x: 9 }  return keys(q) }
+    on order_values() { let q = P { y: 5.0, x: 9 }  return values(q) }
+    on rec_size() { let q = P { x: 1, y: 2.0 }  return q.size }
+    on nested() { let mm = map("a", map())  mm["x"]["y"] = 3  return mm }
+    on nested_scalar() { let xs = [1, 2]  xs[0].y = 3  return xs }
+    on negate() { let m = map()  return -m.a }
+    on big_plus() { return ipow(10, 400) + 0.5 }
+    on big_div() { return ipow(10, 400) / 3 }
+}
+cell test T { rules {
+    assert count_lines("") == 0
+    assert count_lines("\n\n") == 0
+    assert lines_of("a\r\nb\r\n") == ["a", "b"]
+    assert lines_of("one") == ["one"]
+    assert early(1) == ()
+    assert early(0) == 5
+    assert 1.15h == 4140000
+    assert 1.005s == 1005
+    assert 9007199254740993ms == 9007199254740993
+    assert 2.5years == 78894000000
+    assert show() == "Person { name: \"Ann, age: 3\", tags: [\"x\"] }"
+    assert show_named() == "[Named(\"\")]"
+    assert show_top() == "plain"
+    assert order() == ["x", "y"]
+    assert order_values() == [9, 5.0]
+    assert rec_size() == ()
+    assert_fails nested() matching "cannot set key \"y\" inside ()"
+    assert_fails nested_scalar() matching "inside Int 1"
+    assert_fails negate() matching "cannot negate ()"
+    assert_fails big_plus() matching "past the Float range"
+    assert_fails big_div() matching "past the Float range"
+} }
+"##);
+}
+
+/// `soma check` output of one source file.
+fn check_out(name: &str, src: &str) -> (i32, String) {
+    let dir = scratch(name);
+    std::fs::write(dir.join("app.cell"), src).unwrap();
+    soma(&dir, &["check", "app.cell"])
+}
+
+#[test]
+fn core_fifth_pass_check() {
+    // malformed interpolation segments and format specs are errors;
+    // JSON / CSS / prose braces stay literal text
+    let (code, out) = check_out("c5_interp", r##"
+cell A {
+    on main() {
+        let total = 12.5
+        let n = 3
+        let items = ["a", "b"]
+        let method = "GET"
+        print("total: {total:.2f}")
+        print("sum: {total +}")
+        print("first: {items[0}")
+        print("pair: {n, total}")
+        print("call: {len(items}")
+        print("json: {\"a\": 1}")
+        print("css: p { color: red }")
+        print("doc: {method,universe,top_k}")
+    }
+}
+"##);
+    assert_ne!(code, 0, "{out}");
+    assert!(out.contains("`{total:.2f}` has a Python format spec") && out.contains("to_fixed(total, 2)"), "{out}");
+    for seg in ["{total +}", "{items[0}", "{n, total}", "{len(items}"] {
+        assert!(out.contains(&format!("`{seg}` is not an expression")), "{seg}: {out}");
+    }
+    assert!(!out.contains("1}` is not") && !out.contains("color") && !out.contains("method,universe"), "{out}");
+
+    // a `let` in a loop body is fresh per iteration; a typo'd assignment in a
+    // loop creates a variable
+    let (_, out) = check_out("c5_loop", r#"
+cell A {
+    on main() {
+        let out = []
+        for i in range(0, 3) {
+            if i > 0 { out = push(out, prev) }
+            let prev = i
+        }
+        let total = 0
+        for i in range(0, 3) { totl = total + i }
+        let acc = 0
+        let j = 0
+        while j < 3 { acc = acc + j  j += 1 }
+        let last = 0
+        for i in range(0, 3) { if i > 0 { print(last) }  last = i }
+        print(out)
+        print(acc)
+    }
+}
+"#);
+    assert!(out.contains("undefined variable 'prev'") && out.contains("app.cell:6:"), "{out}");
+    assert!(out.contains("assignment creates a new variable 'totl'"), "{out}");
+    assert!(!out.contains("'acc'") && !out.contains("'last'"), "{out}");
+
+    // `??` precedence, `a // b`, unknown escapes, exact durations
+    let (_, out) = check_out("c5_habits", r#"
+cell A {
+    on total(m: Map) { return m.a ?? 0 + m.b ?? 0 }
+    on over(m: Map, k: String) { if (m.get(k) ?? 0) > 5 { return 1 }  return 0 }
+    on half(a: Int, b: Int) {
+        let q = a // b
+        let r = a    // 2
+        let s = a // the half
+        return q + r + s
+    }
+    on esc() { return ["a\qb", regex_match("a1", "\d+")] }
+}
+"#);
+    assert!(out.contains("`m.a ?? 0 + m.b` reads as `m.a ?? (0 + m.b)`"), "{out}");
+    assert_eq!(out.matches("reads as").count(), 1, "{out}");
+    assert!(out.contains("`// b` starts a comment") && out.matches("starts a comment").count() == 1, "{out}");
+    assert!(out.contains("`\\q` is not an escape") && !out.contains("`\\d`"), "{out}");
+    let (code, out) = check_out("c5_dur", "cell A { on main() { print(0.5ms) } }\n");
+    assert_ne!(code, 0);
+    assert!(out.contains("0.5ms is not a whole number of milliseconds"), "{out}");
+
+    // findings at the offending call / literal, not the handler's `on` line
+    let (_, out) = check_out("c5_lines", r#"
+cell type P { variants { P { x: Int, y: Float } } }
+cell A {
+    on dbl(x: Int) { return x * 2 }
+    on main() {
+        let a = 1
+        let b = dbl(1, 2)
+        let p = P { x: 1.5, y: 1.0 }
+        let q = P { x: 1 }
+        print(b)
+    }
+}
+"#);
+    assert!(out.contains("app.cell:7:17"), "{out}");
+    assert!(out.contains("app.cell:8:24") && out.contains("app.cell:9:24"), "{out}");
+
+    // hints that name the working form
+    let (_, out) = check_out("c5_hints", "cell A { on main() { let ok = true  let bad = not ok  print(bad) } }\n");
+    assert!(out.contains("negation is `!`") && !out.contains("bnot"), "{out}");
+    let (_, out) = check_out("c5_lam", "cell A { on main() { let f = x => return x + 1  print(f(1)) } }\n");
+    assert!(out.contains("drop the `return`") && !out.contains("x => { return"), "{out}");
+}
+
+#[test]
+fn core_fifth_pass_runtime_error_lines() {
+    let dir = scratch("c5_errline");
+    std::fs::write(dir.join("app.cell"), r#"
+cell A {
+    on main() {
+        let z = 0
+        let xs = [1, 2, 3]
+        let total = sum([
+            xs[0],
+            xs[1] / z,
+            xs[2]
+        ])
+        print(total)
+    }
+}
+"#).unwrap();
+    let (_, out) = soma(&dir, &["run", "app.cell"]);
+    assert!(out.contains("division by zero") && out.contains("app.cell:8:13"), "{out}");
 }

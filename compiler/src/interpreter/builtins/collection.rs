@@ -161,8 +161,8 @@ pub fn call_builtin(name: &str, args: &[Value]) -> Option<Result<Value, RuntimeE
             let Value::Map(m) = &args[0] else { return None };
             Some(Ok(Value::List(m.values().cloned().collect())))
         }
-        "entries" if args.len() == 1 && matches!(args[0], Value::Map(_)) => {
-            let Value::Map(m) = &args[0] else { return None };
+        "entries" if args.len() == 1 && matches!(args[0], Value::Map(_) | Value::Variant { fields: crate::interpreter::VariantValue::Struct(_), .. }) => {
+            let (Value::Map(m) | Value::Variant { fields: crate::interpreter::VariantValue::Struct(m), .. }) = &args[0] else { return None };
             Some(Ok(Value::List(
                 m.iter()
                     .map(|(k, v)| map_from_pairs(vec![
@@ -271,6 +271,14 @@ pub fn call_builtin(name: &str, args: &[Value]) -> Option<Result<Value, RuntimeE
                     result[idx as usize] = args[2].clone();
                     Some(Ok(Value::List(result)))
                 }
+                // a nested write `mm["x"]["y"] = 3` / `xs[0].y = 3` reaches
+                // here with the missing (or scalar) container: name the key
+                Some(Value::Unit) if args.len() == 3 => Some(Err(RuntimeError::TypeError(format!(
+                    "cannot set key {} inside () — the enclosing key or field is missing (in `m[a][b] = v`, m[a] must exist: set `m[a] = map()` first, or write `m[a] = map(b, v)`)",
+                    crate::interpreter::short_value(&args[1]))))),
+                Some(other) if args.len() == 3 => Some(Err(RuntimeError::TypeError(format!(
+                    "cannot set key {} inside {} {} — only a Map, a List or a record holds keys",
+                    crate::interpreter::short_value(&args[1]), crate::interpreter::value_type_name(other), crate::interpreter::short_value(other))))),
                 _ => Some(Err(RuntimeError::TypeError(
                     "with expects (map, key, value) or (list, index, value)".to_string()))),
             }
