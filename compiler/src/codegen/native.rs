@@ -4775,7 +4775,7 @@ impl FnGenerator {
             // asin / acos refuse an argument outside [-1, 1] as interpreted
             "asin" | "acos" if args.len() == 1 => {
                 let a = self.gen_expr_direct(&args[0].node, NativeType::Float);
-                format!("{{ let _x: f64 = {}; if !(-1.0..=1.0).contains(&_x) {{ panic!(\"soma:range: {}({{}}) — the argument must be in [-1, 1]\", _x) }} _x.{}() }}", a, name, name)
+                format!("{{ let _x: f64 = {}; if !(-1.0..=1.0).contains(&_x) {{ panic!(\"soma:range: range: {}({{}}) — the argument must be in [-1, 1]\", _x) }} _x.{}() }}", a, name, name)
             }
             "atan2" if args.len() == 2 => {
                 let y = self.gen_expr_direct(&args[0].node, NativeType::Float);
@@ -5010,7 +5010,7 @@ impl FnGenerator {
                 let m = self.gen_int_arg_direct(&args[2].node, name);
                 // the result is in [0, m) like the interpreter (a negative
                 // base gave -1 for pow_mod(-1, 1, 7), not 6)
-                format!("{{ let (_m, _base, mut _e): (i128, i128, i64) = (({}) as i128, ({}) as i128, {}); if _m == 0 {{ panic!(\"soma:type: pow_mod(): modulus 0\") }} let mut _r: i128 = 1i128.rem_euclid(_m); let mut _b: i128 = _base.rem_euclid(_m); if _e < 0 {{ panic!(\"soma:type: pow_mod(): negative exponent\") }} while _e > 0 {{ if _e & 1 == 1 {{ _r = (_r * _b).rem_euclid(_m); }} _e >>= 1; _b = (_b * _b).rem_euclid(_m); }} _r as i64 }}",
+                format!("{{ let (_m, _base, mut _e): (i128, i128, i64) = (({}) as i128, ({}) as i128, {}); if _m == 0 {{ panic!(\"soma:type: pow_mod(): modulus 0\") }} let mut _r: i128 = 1i128.rem_euclid(_m); let mut _b: i128 = _base.rem_euclid(_m); if _e < 0 {{ panic!(\"soma:type: pow_mod: negative exponent (a modular inverse is not computed)\") }} while _e > 0 {{ if _e & 1 == 1 {{ _r = (_r * _b).rem_euclid(_m); }} _e >>= 1; _b = (_b * _b).rem_euclid(_m); }} _r as i64 }}",
                     m, base, exp)
             }
             other => {
@@ -5588,6 +5588,12 @@ impl FnGenerator {
         if self.is_small_int_expr(left) && self.is_small_int_expr(right) && self.is_small_int_expr(&whole) {
             let l = self.gen_expr_direct(left, NativeType::Int);
             let r = self.gen_expr_direct(right, NativeType::Int);
+            // "small" operands go up to 2^60: `x * x` for x = 3037000500
+            // overflowed i64 here, inside the BigInt fallback itself
+            let checked = match op { BinOp::Add => Some("checked_add"), BinOp::Sub => Some("checked_sub"), BinOp::Mul => Some("checked_mul"), _ => None };
+            if let Some(m) = checked {
+                return format!("{{ let (_a, _b): (i64, i64) = ({}, {}); match _a.{}(_b) {{ Some(_v) => Integer::from(_v), None => Integer::from(_a) {} _b }} }}", l, r, m, op_str);
+            }
             return format!("Integer::from({} {} {})", l, op_str, r);
         }
         // Mixed: pick representation that rug supports
@@ -5667,7 +5673,7 @@ impl FnGenerator {
                     if self.small_int_vars.contains(name) {
                         name.clone()
                     } else {
-                        format!("{}.to_i64().unwrap()", name)
+                        format!("{}.to_i64().unwrap_or_else(|| panic!(\"{}\"))", name, BIG_BOUND)
                     }
                 } else {
                     format!("{} as i64", name)
@@ -5680,7 +5686,7 @@ impl FnGenerator {
                 if matches!(op, BinOp::Div) { return format!("_soma_div_exact({}, {})", l, r); }
                 format!("({} {} {})", l, arith_op_str(*op), r)
             }
-            _ => format!("{}.to_i64().unwrap()", self.gen_expr_rug(expr)),
+            _ => format!("{}.to_i64().unwrap_or_else(|| panic!(\"{}\"))", self.gen_expr_rug(expr), BIG_BOUND),
         }
     }
 
@@ -6517,7 +6523,7 @@ impl FnGenerator {
                 let base = self.gen_expr_rug(&args[0].node);
                 let exp = self.gen_int_borrow_rug(&args[1].node);
                 let m = self.gen_int_borrow_rug(&args[2].node);
-                format!("{{ if Integer::from({}) < 0 {{ panic!(\"soma:type: pow_mod(): negative exponent\") }} if Integer::from({}) == 0 {{ panic!(\"soma:type: pow_mod(): modulus 0\") }} ({}).pow_mod({}, {}).expect(\"pow_mod failed\") }}", exp, m, base, exp, m)
+                format!("{{ if Integer::from({}) < 0 {{ panic!(\"soma:type: pow_mod: negative exponent (a modular inverse is not computed)\") }} if Integer::from({}) == 0 {{ panic!(\"soma:type: pow_mod(): modulus 0\") }} ({}).pow_mod({}, {}).expect(\"pow_mod failed\") }}", exp, m, base, exp, m)
             }
             "random" if args.len() == 1 => {
                 let m = self.gen_int_to_i64_rug(&args[0].node);
@@ -6775,6 +6781,10 @@ fn unbrace(s: &str) -> String {
     }
     out
 }
+
+/// An index or a range bound past 64 bits (it leaked Rust's "called
+/// `Option::unwrap()` on a `None` value").
+const BIG_BOUND: &str = "soma:range: range(): bounds and step must fit in 64 bits (an index too)";
 
 /// `mut ` when the loop body assigns its own loop variable: `i = i + 2`
 /// inside `for i in range(…)` (the interpreter rebinds it for the rest of

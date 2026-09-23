@@ -2,6 +2,16 @@
 
 ## Unreleased
 
+### Native BigInt mode: a product of two small locals promotes
+
+- `let x = 3037000500  return x * x` failed natively with "an Int past 64
+  bits inside a Float, Bool or index expression": the BigInt fallback
+  multiplied its two i64 locals without an overflow check. The i64 fast
+  path now promotes on overflow.
+- A range bound or index past 64 bits leaked Rust's "called `Option::unwrap()`
+  on a `None` value"; the native messages of `range`, `asin`/`acos` and
+  `pow_mod` read as the interpreter's.
+
 ### Native code: each quotient keeps its own exactness, and an Int spot never truncates
 
 - Whether an Int quotient carried as a Float was exact was one flag for the

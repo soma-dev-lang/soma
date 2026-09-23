@@ -3665,3 +3665,26 @@ cell test T { rules {
 } }
 "#);
 }
+
+#[test]
+fn native_bigint_products_of_small_locals_promote() {
+    // `let x = 3037000500  return x * x` overflowed i64 inside the BigInt
+    // fallback itself; a range bound past 64 bits leaked Rust's
+    // "called `Option::unwrap()` on a `None` value"
+    passes("native_small_products", r#"
+cell P {
+    on sq() [native] { let x = 3037000500  let y = x * x  return y }
+    on sq_abs() [native] { let x = 3037000500  return abs(x * x) }
+    on loop_sum(k: Int) [native] { let x = 3037000000 + k  let s = 0  for i in range(0, 3) { s = s + x * x }  return s }
+    on r(b: Int) [native] { let s = 0  for i in range(b, b + 3) { s = s + 1 }  return s }
+    on p(e: Int) [native] { return pow_mod(2, e, 7) }
+}
+cell test T { rules {
+    assert sq() == 9223372037000250000
+    assert sq_abs() == 9223372037000250000
+    assert loop_sum(5) == 27670107091110000075
+    assert_fails r(100000000000000000000) matching "64 bits"
+    assert_fails p(0 - 1) matching "modular inverse"
+} }
+"#);
+}
