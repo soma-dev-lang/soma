@@ -2,6 +2,18 @@
 
 ## Unreleased
 
+### `check` counts a `think()` in an index, an assignment in a `require`, and `delegate`'s arguments
+
+- The cost proof never looked inside an index: `labels[to_int(think(…,
+  map("max_tokens", 100)))]` beside another 100-token `think()` was "proven"
+  under a 100-token bound while both calls ran.
+- An assignment inside a `require` condition (`require len(try { v = n }) >
+  0 else Never`) was not a reassignment for the invariant prover, which
+  proved `c.set(k, v)` with `v = 5`.
+- `delegate("A", "h", 1)` for `on h(x: Int, y: Int)` passed `check` and
+  raised "expected 2 arguments" at run time; a literal delegate is now
+  checked for its argument count as a direct call is.
+
 ### `verify` no longer proves an invariant or a guard through a value that changed
 
 - Invariants: a callee's `return` inside a match arm, a `try` block or an

@@ -1078,6 +1078,12 @@ impl<'a> Checker<'a> {
                 Section::OnSignal(on) => Some(on.signal_name.clone()),
                 _ => None,
             }).collect())).collect();
+            // and the argument counts each accepts (`delegate("A", "h", 1)`
+            // for `on h(x, y)` raised "expected 2 arguments" at run time)
+            let arities: std::collections::HashMap<(String, String), Vec<usize>> = program.cells.iter().flat_map(|c| c.node.sections.iter().filter_map(move |s| match &s.node {
+                Section::OnSignal(on) => Some(((c.node.name.clone(), on.signal_name.clone()), crate::ast::accepted_arities(&on.params).into_iter().collect::<Vec<usize>>())),
+                _ => None,
+            })).collect();
             for cell in &program.cells {
                 for sec in &cell.node.sections {
                     let body = match &sec.node {
@@ -1095,7 +1101,13 @@ impl<'a> Checker<'a> {
                                 let msg = match defs.get(c) {
                                     None => Some((false, format!("delegate(\"{}\", \"{}\", …): no cell named {} in this program — it raises \"no handler found\" unless that cell is loaded beside it", c, h, c))),
                                     Some(hs) if !hs.contains(h) => Some((true, format!("delegate(\"{}\", \"{}\", …): cell {} has no handler '{}'", c, h, c, h))),
-                                    _ => None,
+                                    _ => match arities.get(&(c.clone(), h.clone())) {
+                                        Some(ok) if !ok.is_empty() && !ok.contains(&(args.len() - 2)) => Some((true, format!(
+                                            "delegate(\"{}\", \"{}\", …) passes {} argument{}, but {}.{} takes {}",
+                                            c, h, args.len() - 2, if args.len() == 3 { "" } else { "s" }, c, h,
+                                            { let mut v = ok.clone(); v.sort(); v.iter().map(|n| n.to_string()).collect::<Vec<_>>().join(" or ") }))),
+                                        _ => None,
+                                    },
                                 };
                                 if let Some(m) = msg { if !bad.contains(&m) { bad.push(m); } }
                             }

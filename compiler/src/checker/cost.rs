@@ -570,6 +570,12 @@ impl<'a> CostWalk<'a> {
             Expr::ListLiteral(items) => {
                 for it in items { self.visit_expr(&it.node, handler_name); }
             }
+            // `labels[to_int(think(…))]`: the index spends too (it was never
+            // counted, and a 200-token handler "proved" a 100 bound)
+            Expr::Index { target, index } => {
+                self.visit_expr(&target.node, handler_name);
+                self.visit_expr(&index.node, handler_name);
+            }
             _ => {}
         }
     }

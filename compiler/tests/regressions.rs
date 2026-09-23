@@ -3829,3 +3829,31 @@ fn verify_proves_no_guard_through_a_changed_value() {
     let src = format!("{} on validate(id: String, amount: Int) {{ require amount > 0 else Bad  transition(id, \"validated\") }}\n}}\n", head.replace("GUARD", "amount > 0"));
     assert!(verify_out("guard_plain", &src).contains("proven — every caller"));
 }
+
+#[test]
+fn check_counts_what_it_was_missing() {
+    // a think() inside an index was never counted (200 tokens "proved"
+    // under a 100 bound); an assignment inside a `require` condition was
+    // not a reassignment; delegate's argument count was not checked
+    let dir = scratch("check_missing_counts");
+    std::fs::write(dir.join("cost.cell"), r#"
+cell agent Bot { cost { tokens: 100 }
+  on classify(q: String) {
+    let summary = think("summarize: {q}", map("max_tokens", 100))
+    let labels = list("ham", "spam")
+    return labels[to_int(think("0 or 1? {summary}", map("max_tokens", 100)))]
+  }
+}
+"#).unwrap();
+    let (code, out) = soma(&dir, &["check", "cost.cell"]);
+    assert_ne!(code, 0, "{out}");
+    assert!(out.contains("computed 200 tokens > declared 100"), "{out}");
+    std::fs::write(dir.join("inv.cell"), "cell A {\n memory { c: Map<String, Int> [persistent]\n  invariant c >= 0 }\n on put(k: String, n: Int) { let v = 5  require len(try { v = n }) > 0 else Never  c.set(k, v) }\n}\n").unwrap();
+    let (_, out) = soma(&dir, &["verify", "inv.cell"]);
+    assert!(out.contains("runtime-checked") && !out.contains("✓ invariant"), "{out}");
+    std::fs::write(dir.join("dl.cell"), "cell A { on h(x: Int, y: Int) { return x + y } }\ncell B { on go() { return delegate(\"A\", \"h\", 1) }\n on ok() { return delegate(\"A\", \"h\", 1, 2) } }\n").unwrap();
+    let (code, out) = soma(&dir, &["check", "dl.cell"]);
+    assert_ne!(code, 0, "{out}");
+    assert_eq!(out.matches("passes 1 argument, but A.h takes 2").count(), 1, "{out}");
+    let _ = std::fs::remove_dir_all(dir);
+}

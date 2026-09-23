@@ -1976,6 +1976,18 @@ fn collect_assigns<'e>(stmts: &'e [Spanned<Statement>], out: &mut Vec<(&'e str, 
             Statement::Return { value } | Statement::ExprStmt { expr: value } | Statement::Ensure { condition: value } => expr_block_assigns(&value.node, out),
             Statement::IndexSet { index, value, .. } => { expr_block_assigns(&index.node, out); expr_block_assigns(&value.node, out); }
             Statement::MethodCall { args, .. } | Statement::Emit { args, .. } => { for a in args { expr_block_assigns(&a.node, out); } }
+            // `require len(try { v = n }) > 0 else Never` reassigns v too
+            Statement::Require { constraint, .. } => {
+                fn con<'e>(c: &'e Constraint, out: &mut Vec<(&'e str, &'e Expr)>) {
+                    match c {
+                        Constraint::Comparison { left, right, .. } => { expr_block_assigns(&left.node, out); expr_block_assigns(&right.node, out); }
+                        Constraint::And(a, b) | Constraint::Or(a, b) => { con(&a.node, out); con(&b.node, out); }
+                        Constraint::Not(i) => con(&i.node, out),
+                        _ => {}
+                    }
+                }
+                con(&constraint.node, out);
+            }
             _ => {}
         }
     }
