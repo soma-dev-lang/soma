@@ -775,6 +775,21 @@ fn _soma_div_f(a: i64, b: i64) -> f64 {
             _ => panic!("{}", _SOMA_BIG_QUOTIENT),
         };
     }
+    // operands past 2^53 were rounded before dividing (fib(90) / fib(89)
+    // came out one ulp low): one rounding, as _soma_div_f_big does
+    if a.unsigned_abs() > (1u64 << 53) || b.unsigned_abs() > (1u64 << 53) {
+        let neg = (a < 0) != (b < 0);
+        let (na, nb) = (a.unsigned_abs() as u128, b.unsigned_abs() as u128);
+        let bits = |x: u128| 128 - x.leading_zeros() as i64;
+        let k: i64 = 55 - (bits(na) - bits(nb));
+        let (n, d) = if k >= 0 { (na << (k as u32), nb) } else { (na, nb << ((-k) as u32)) };
+        let (q, r) = (n / d, n % d);
+        let q2 = (q << 1) | (r != 0) as u128;
+        let m = q2 as f64;
+        let e = -(k + 1);
+        let v = m * 2f64.powi(e as i32);
+        return if neg { -v } else { v };
+    }
     a as f64 / b as f64
 }
 
@@ -3886,7 +3901,9 @@ impl FnGenerator {
                 returns.push(&expr.node);
             }
         }
-        !returns.is_empty() && returns.iter().all(|e| self.is_int_rational(e, &rational))
+        // ANY: a Float handler with an Int return (`if x > 0.0 { return x }
+        // return 0`) answers that Int, each return reporting whether it is one
+        !returns.is_empty() && returns.iter().any(|e| self.is_int_rational(e, &rational))
     }
 
     /// The exactness bools of the quotient locals `e` reads, or'd.
@@ -3920,6 +3937,10 @@ impl FnGenerator {
     /// inexactness (its divisions, the locals it reads, the siblings it calls).
     fn q_before_return(&self, value: &Expr, ind: &str) -> String {
         if !self.int_rational_ret { return String::new(); }
+        // a Float return of a handler that may answer an Int is never one
+        if !self.is_int_rational(value, &self.rational_locals) {
+            return format!("{}_soma_q_take(); _soma_q_mark(true);\n", ind);
+        }
         format!("{}_soma_q_take(); _soma_q_mark({});\n", ind, self.q_shadows(value))
     }
 
@@ -3999,6 +4020,10 @@ impl FnGenerator {
                     && self.is_int_rational(&left.node, rational)
                     && self.is_int_rational(&right.node, rational)
             }
+            // abs / min / max of quotients keep their exactness (`abs(q)` of
+            // `q = n / 2` printed "4.0")
+            Expr::FnCall { name, args } if matches!(name.as_str(), "abs" | "min" | "max")
+                && !args.is_empty() && args.iter().all(|a| self.is_int_rational(&a.node, rational)) => true,
             Expr::FnCall { name, args } => self.infer_expr_type(expr) == NativeType::Int
                 || (self.siblings.contains(name)
                     && self.sibling_info.get(name).map_or(false, |s| s.int_rational && s.param_types.len() == args.len())),
@@ -4006,45 +4031,44 @@ impl FnGenerator {
         }
     }
 
+    /// The handler's return type: every `return` (and a trailing value)
+    /// counts. It came from the FIRST return: `if x < 0.0 { return 0 }
+    /// return x` was typed Int and raised on 1.5.
     fn infer_return_type(&self, body: &[Spanned<Statement>]) -> NativeType {
+        let mut types: Vec<NativeType> = Vec::new();
+        self.collect_return_types(body, &mut types);
+        if let Some(last) = body.last() {
+            if let Statement::ExprStmt { expr } = &last.node {
+                types.push(self.infer_expr_type(&expr.node));
+            }
+        }
+        if types.is_empty() { return NativeType::Float; }
+        // one String / Bool type is refused beside a number by the checker;
+        // among numbers a Float anywhere makes the handler Float
+        if types.contains(&NativeType::String) { return NativeType::String; }
+        if types.iter().all(|t| *t == NativeType::Bool) { return NativeType::Bool; }
+        if types.contains(&NativeType::Float) { return NativeType::Float; }
+        types[0]
+    }
+
+    fn collect_return_types(&self, body: &[Spanned<Statement>], out: &mut Vec<NativeType>) {
         for stmt in body {
             match &stmt.node {
-                Statement::Return { value } => {
-                    return self.infer_expr_type(&value.node);
-                }
+                Statement::Return { value } => out.push(self.infer_expr_type(&value.node)),
                 Statement::If { then_body, else_body, .. } => {
-                    if let Some(ty) = self.find_return_type(then_body) { return ty; }
-                    if let Some(ty) = self.find_return_type(else_body) { return ty; }
+                    self.collect_return_types(then_body, out);
+                    self.collect_return_types(else_body, out);
                 }
-                Statement::While { body, .. } => {
-                    if let Some(ty) = self.find_return_type(body) { return ty; }
-                }
+                Statement::While { body, .. } | Statement::For { body, .. } => self.collect_return_types(body, out),
                 _ => {}
             }
         }
-        if let Some(last) = body.last() {
-            if let Statement::ExprStmt { expr } = &last.node {
-                return self.infer_expr_type(&expr.node);
-            }
-        }
-        NativeType::Float
     }
 
     fn find_return_type(&self, body: &[Spanned<Statement>]) -> Option<NativeType> {
-        for stmt in body {
-            match &stmt.node {
-                Statement::Return { value } => return Some(self.infer_expr_type(&value.node)),
-                Statement::If { then_body, else_body, .. } => {
-                    if let Some(t) = self.find_return_type(then_body) { return Some(t); }
-                    if let Some(t) = self.find_return_type(else_body) { return Some(t); }
-                }
-                Statement::While { body, .. } => {
-                    if let Some(t) = self.find_return_type(body) { return Some(t); }
-                }
-                _ => {}
-            }
-        }
-        None
+        let mut types: Vec<NativeType> = Vec::new();
+        self.collect_return_types(body, &mut types);
+        if types.is_empty() { None } else if types.contains(&NativeType::Float) { Some(NativeType::Float) } else { Some(types[0]) }
     }
 
     fn indent(level: usize) -> String {
@@ -5053,9 +5077,16 @@ impl FnGenerator {
         let arg_strs: Vec<String> = args.iter().zip(sibling.param_types.iter())
             .map(|(arg, &expected)| {
                 if effective_mode == Mode::Rug && expected == NativeType::Int {
-                    // Sibling expects Integer, we have i64 → Integer::from(...)
+                    // Sibling expects Integer: from BigInt code, the Integer
+                    // itself (it went through i64 and raised past 64 bits:
+                    // `let x = n * n  return isev(x)`); else Integer::from(i64)
+                    if self.mode == Mode::Rug { return self.gen_expr_rug(&arg.node); }
                     let e = self.gen_expr_direct(&arg.node, NativeType::Int);
                     format!("Integer::from({})", e)
+                } else if expected == NativeType::Int && self.mode == Mode::Rug {
+                    // a 64-bit-only sibling: past 64 bits the call reruns
+                    // interpreted
+                    self.marshal_arg_to_sibling(&arg.node, NativeType::Int, Mode::Direct)
                 } else if expected == NativeType::String {
                     // String params are passed by &str — pass a borrow
                     // when we can, otherwise build an owned String and
@@ -6591,10 +6622,10 @@ impl FnGenerator {
                     if self.small_int_vars.contains(name) {
                         return name.clone();
                     }
-                    return format!("({}.to_i64().expect(\"BigInt overflow in sibling call\"))", name);
+                    return format!("({}.to_i64().unwrap_or_else(|| panic!(\"{}\")))", name, SIBLING_RERUN);
                 }
                 let e = self.gen_expr_rug(expr);
-                format!("({}).to_i64().expect(\"BigInt overflow in sibling call\")", e)
+                format!("({}).to_i64().unwrap_or_else(|| panic!(\"{}\"))", e, SIBLING_RERUN)
             } else {
                 self.gen_expr_direct(expr, NativeType::Int)
             }
@@ -6781,6 +6812,10 @@ fn unbrace(s: &str) -> String {
     }
     out
 }
+
+/// A BigInt handed to a sibling compiled for 64 bits only: the caller
+/// reruns interpreted (it raised "an Int past 64 bits … bind it with let").
+const SIBLING_RERUN: &str = "soma:overflow_rerun: a BigInt argument to a 64-bit sibling handler";
 
 /// An index or a range bound past 64 bits (it leaked Rust's "called
 /// `Option::unwrap()` on a `None` value").

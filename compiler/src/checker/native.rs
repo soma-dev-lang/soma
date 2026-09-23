@@ -237,9 +237,17 @@ pub fn check_native_handler(
                 Expr::Literal(Literal::Int(_) | Literal::BigInt(_) | Literal::Float(_)) => Some('n'),
                 Expr::Literal(Literal::Bool(_)) | Expr::CmpOp { .. } | Expr::Not(_)
                 | Expr::BinaryOp { op: BinOp::And | BinOp::Or, .. } => Some('b'),
-                Expr::FnCall { name, .. } if matches!(name.as_str(), "to_string" | "concat" | "format" | "substring" | "upper" | "lower" | "trim") => Some('s'),
+                Expr::FnCall { name, .. } if matches!(name.as_str(), "to_string" | "concat" | "format" | "substring" | "upper" | "lower" | "trim" | "sb_to_string") => Some('s'),
+                // the native builtins that answer a number (`s + str_len(s)`
+                // joined "abc3" where the interpreter raises)
+                Expr::FnCall { name, .. } if matches!(name.as_str(), "str_len" | "str_at" | "idiv" | "abs" | "min" | "max" | "len"
+                    | "buf_get" | "buf_len" | "sb_len" | "hm_get" | "hm_len" | "gcd" | "lcm" | "pow_mod" | "floor" | "ceil" | "round"
+                    | "sqrt" | "pow" | "ipow" | "log" | "ln" | "log10" | "exp" | "sin" | "cos" | "tan" | "atan" | "atan2" | "asin" | "acos"
+                    | "to_int" | "to_float" | "random" | "shl" | "shr" | "band" | "bor" | "bxor" | "bnot" | "popcount" | "bit_test" | "bit_set" | "bit_clr") => Some('n'),
                 Expr::BinaryOp { op: BinOp::Sub | BinOp::Mul | BinOp::Div | BinOp::Mod, .. } => Some('n'),
-                Expr::BinaryOp { op: BinOp::Add, left, right } => kind(&left.node, kinds).filter(|k| *k == 'n').or_else(|| kind(&right.node, kinds).filter(|k| *k == 'n')),
+                Expr::BinaryOp { op: BinOp::Add, left, right } => kind(&left.node, kinds).filter(|k| *k == 'n').or_else(|| kind(&right.node, kinds).filter(|k| *k == 'n'))
+                    // String + String is a String (`let t = "x" + s` then `t + k`)
+                    .or_else(|| (kind(&left.node, kinds) == Some('s') && kind(&right.node, kinds) == Some('s')).then_some('s')),
                 Expr::Ident(n) => kinds.get(n).copied(),
                 _ => None,
             }
@@ -270,6 +278,22 @@ pub fn check_native_handler(
             _ => None,
         }).collect();
         problem = walk(body, &mut kinds);
+        // `if n > 0 { n * 10 } else { 0 - n }` ending the handler: its value
+        // is the interpreter's answer, but native code returned 0.0
+        if problem.is_none() {
+            fn ends_in_value(stmts: &[Spanned<Statement>]) -> bool {
+                match stmts.last().map(|s| &s.node) {
+                    Some(Statement::ExprStmt { expr }) => !matches!(expr.node, Expr::FnCall { .. } | Expr::MethodCall { .. }),
+                    Some(Statement::If { then_body, else_body, .. }) => ends_in_value(then_body) || ends_in_value(else_body),
+                    _ => false,
+                }
+            }
+            if let Some(Statement::If { then_body, else_body, .. }) = body.last().map(|s| &s.node) {
+                if ends_in_value(then_body) || ends_in_value(else_body) {
+                    problem = Some("ends with an `if` whose branches end in a value — a native handler answers with `return`: write `return …` in each branch".to_string());
+                }
+            }
+        }
         // one return type per native handler: `return a / b` (a Float) on
         // one path and `return "neg"` on another passed check, then rustc
         // refused the generated code (E0308)
@@ -301,6 +325,26 @@ pub fn check_native_handler(
             if problem.is_none() {
                 crate::checker::literals::for_each_expr(body, &mut |e| {
                     if problem.is_some() { return; }
+                    // a comparison between kinds the interpreter refuses
+                    // (`b == n` answered true for (true, 1); a String against
+                    // a number failed in rustc)
+                    if let Expr::CmpOp { left, right, .. } = e {
+                        let (l, r) = (kind(&left.node, &kinds2), kind(&right.node, &kinds2));
+                        if let (Some(a), Some(b)) = (l, r) {
+                            if a != b {
+                                let w = |k: char| match k { 's' => "a String", 'n' => "a number", _ => "a Bool" };
+                                problem = Some(format!("compares {} with {} in `{}` — the interpreter raises \"cannot compare …\"", w(a), w(b), crate::ast::render_expr(e)));
+                                return;
+                            }
+                        }
+                    }
+                    // to_int(true) is 1 when interpreted; native code failed in rustc
+                    if let Expr::FnCall { name, args } = e {
+                        if matches!(name.as_str(), "to_int" | "to_float") && args.len() == 1 && kind(&args[0].node, &kinds2) == Some('b') {
+                            problem = Some(format!("{}() of a Bool in `{}` is not native — keep a number (`let n = 0  if b {{ n = 1 }}`)", name, crate::ast::render_expr(e)));
+                            return;
+                        }
+                    }
                     if let Expr::BinaryOp { op: BinOp::Add, left, right } = e {
                         let (l, r) = (kind(&left.node, &kinds2), kind(&right.node, &kinds2));
                         if matches!((l, r), (Some('s'), Some('n' | 'b')) | (Some('n' | 'b'), Some('s'))) {

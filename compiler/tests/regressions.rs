@@ -4183,3 +4183,48 @@ cell App {
     assert!(out.starts_with("HTTP/1.0 200"), "{out}");
     let _ = std::fs::remove_dir_all(dir);
 }
+
+#[test]
+fn native_second_pass_answers_like_the_interpreter() {
+    // the return type came from the first return (a later Float or
+    // quotient raised); a Float handler printed its Int return as a Float;
+    // abs(q) of a quotient; an i64 quotient past 2^53 rounded twice; a
+    // BigInt local handed to a sibling raised
+    passes("native_second_pass", r#"
+cell P {
+    on clamp0(x: Float) [native] { if x < 0.0 { return 0 }  return x }
+    on halve(n: Int) [native] { if n == 0 { return 0 }  return n / 2 }
+    on absq(n: Int) [native] { let q = n / 2  return abs(q) }
+    on ratio(a: Int, b: Int) [native] { return a / b }
+    on isev(n: Int) [native] { return n % 2 == 0 }
+    on sq_even(n: Int) [native] { let x = n * n  return isev(x) }
+}
+cell test T { rules {
+    assert clamp0(1.5) == 1.5
+    assert type_of(clamp0(0.0 - 2.0)) == "Int"
+    assert halve(5) == 2.5
+    assert halve(4) == 2
+    assert absq(8) == 4
+    assert type_of(absq(8)) == "Int"
+    assert ratio(2880067194370816120, 1779979416004714189) == 1.618033988749895
+    assert sq_even(5000000000) == true
+} }
+"#);
+    // refused at check: a tail if that ends in values, String + an Int
+    // builtin, mismatched comparisons, to_int of a Bool
+    let dir = scratch("native_second_pass_check");
+    std::fs::write(dir.join("app.cell"), r#"
+cell P {
+    on pick(n: Int) [native] { if n > 0 { n * 10 } else { 0 - n } }
+    on label(s: String) [native] { return s + str_len(s) }
+    on same(b: Bool, n: Int) [native] { return b == n }
+    on flag(n: Int) [native] { let b = n > 0  return to_int(b) }
+}
+"#).unwrap();
+    let (code, out) = soma(&dir, &["check", "app.cell"]);
+    assert_ne!(code, 0, "{out}");
+    for h in ["'pick'", "'label'", "'same'", "'flag'"] {
+        assert!(out.contains(&format!("handler {h} is marked [native]")), "{h}: {out}");
+    }
+    let _ = std::fs::remove_dir_all(dir);
+}

@@ -1516,7 +1516,8 @@ impl Interpreter {
                 }
                 Err(e) if e.contains("overflow_rerun") => {
                     // i128 overflow — fall through to interpreted path for BigInt
-                    eprintln!("[native] i128 overflow, falling back to interpreted BigInt");
+                    // a BigInt reached code compiled for 64 bits: the handler
+                    // is pure, so it runs again interpreted
                 }
                 // a native `soma:<kind>: …` refusal keeps its kind (a
                 // loop_bound overrun was kind "type" natively, "loop_bound"

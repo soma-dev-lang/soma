@@ -2,6 +2,29 @@
 
 ## Unreleased
 
+### Second pass: native code answers like the interpreter
+
+- The return type of a `[native]` handler came from its FIRST `return`:
+  `if x < 0.0 { return 0 }  return x` was typed Int, and since native code
+  no longer truncates, `clamp0(1.5)` raised (it answered 1 before);
+  `if n == 0 { return 0 }  return n / 2` raised on 5. Every return counts now
+  (a Float anywhere makes the handler Float), and each return reports
+  whether it is an Int: `clamp0(-2.0)` is `0`, not `0.0`, as interpreted.
+  `abs`, `min` and `max` of a quotient keep its exactness (`abs(n / 2)` was
+  `4.0`).
+- An inexact `a / b` with an operand past 2^53 was rounded twice natively
+  (fib(90) / fib(89) one ulp low); it is rounded once, as interpreted.
+- A BigInt local handed to a sibling `[native]` handler went through i64 and
+  raised "an Int past 64 bits … bind it with let" although it was bound; a
+  sibling with a BigInt variant gets the Integer, and a 64-bit-only sibling
+  makes the call run again interpreted.
+- `soma check` refuses what native code answered differently or failed to
+  compile: a handler ending in an `if` whose branches end in values (it
+  returned 0.0), `String + number` through a number-returning builtin
+  (`s + str_len(s)` gave "abc3"), comparisons between a Bool, a number and a
+  String (`b == n` was true for (true, 1)), and `to_int` / `to_float` of a
+  Bool (a rustc error).
+
 ### Second pass: a handler passed as a value is a callee
 
 - `horde(worker, xs)` and `vote(worker, q, k)` run the handler they are
