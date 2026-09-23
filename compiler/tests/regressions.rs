@@ -3536,3 +3536,28 @@ cell Order {
     assert_ne!(code, 0);
     let _ = std::fs::remove_dir_all(dir);
 }
+
+#[test]
+fn a_method_form_transition_reads_the_callers_locals() {
+    // `id.transition("approved")` never handed its locals to the guard: it
+    // failed "undefined variable", or read the locals an earlier invalid
+    // transition() had left behind and approved 5000 under `amount < 1000`
+    passes("method_transition_guard", r#"
+cell Orders {
+    state o { initial: pending  pending -> approved { guard { amount < 1000 } } }
+    on approve_order(id: String, amount: Int) { id.transition("approved")  return get_status(id) }
+    on approve_plain(id: String, amount: Int) { let r = try { transition(id, "approved") }  return r.kind }
+    on after_invalid() {
+        approve_plain("small", 5)
+        approve_plain("small", 5)
+        let r = try { approve_order("big", 5000) }
+        return r.kind
+    }
+}
+cell test T { rules {
+    assert approve_order("a", 5) == "approved"
+    assert_fails approve_order("b", 5000) matching "guard"
+    assert after_invalid() == "guard_failed"
+} }
+"#);
+}

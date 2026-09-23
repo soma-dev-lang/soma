@@ -2951,6 +2951,11 @@ impl Interpreter {
                                 return res.map_err(ExecError::Runtime);
                             }
                         }
+                        // `id.transition("approved")`: the guard reads this
+                        // handler's locals, as for transition(id, …)
+                        if method == "transition" {
+                            self.transition_env = Some(env.clone());
+                        }
                         if let Some(res) = self.call_builtin(method, &ufcs, cell_name) {
                             return res.map_err(ExecError::Runtime);
                         }
@@ -5286,6 +5291,9 @@ impl Interpreter {
     /// must be; anywhere else is an invalid transition even when an edge
     /// into `to` exists from the actual state.
     pub(crate) fn do_transition_from_for(&mut self, cell_name: &str, id: &str, expected_from: Option<&str>, target: &str) -> Result<Value, RuntimeError> {
+        // taken first: an invalid move returned early and left the caller's
+        // locals behind for the next guard (a method-form call read them)
+        let caller_env = self.transition_env.take();
         let (sm, status_slot) = self.find_state_machine_for(cell_name)
             .ok_or_else(|| RuntimeError::TypeError(format!(
                 "transition(): cell '{}' has no state machine{} — a transition moves the machine of the calling cell: call a handler of the cell that owns it",
@@ -5331,7 +5339,6 @@ impl Interpreter {
         let guard_clone = transition.node.guard.as_ref().map(|g| g.node.clone());
 
         // Evaluate guard expression if present
-        let caller_env = self.transition_env.take();
         if let Some(guard_expr) = guard_clone {
             // Guard scope: the locals of the handler that called
             // transition(), the cell's memory slots, and _id / _from / _to.

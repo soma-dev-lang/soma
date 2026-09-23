@@ -2,6 +2,15 @@
 
 ## Unreleased
 
+### `id.transition(…)` evaluates its guard over the caller's locals
+
+- The method form of `transition` never handed the calling handler's locals
+  to the guard: `id.transition("approved")` under `guard { amount < 1000 }`
+  failed with "undefined variable: amount" — or, after an invalid
+  `transition()` earlier in the same run, read the locals that call had left
+  behind and approved an order of 5000. Both forms now evaluate the guard
+  over the caller's locals, and an invalid move no longer leaves them behind.
+
 ### A slot name starting with `__` is refused
 
 - A slot named `__sm_<Cell>_<machine>` shared the store of the state machine:
