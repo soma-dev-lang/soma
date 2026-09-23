@@ -57,10 +57,30 @@ fn num_avg(xs: &[Num]) -> Value {
 }
 
 fn field_num(item: &Value, field: &str) -> Option<Num> {
-    if let Value::Map(e) = item { e.get(field).and_then(num_of) } else { None }
+    row_fields(item).and_then(|e| e.get(field)).and_then(num_of)
+}
+
+/// The fields of a row: a Map, or a record (`Line { sku, qty }`, the row
+/// type `List<Line>` parameters decode to — every field builtin answered
+/// empty on them).
+pub(crate) fn row_fields(item: &Value) -> Option<&IndexMap<String, Value>> {
+    match item {
+        Value::Map(m) => Some(m),
+        Value::Variant { fields: crate::interpreter::VariantValue::Struct(m), .. } => Some(m),
+        _ => None,
+    }
 }
 
 pub fn call_builtin(name: &str, args: &[Value]) -> Option<Result<Value, RuntimeError>> {
+    // a field is named by a String: a lambda or a number was turned into
+    // text and every row missed it (`sum_by(rows, r => r.v)` was 0)
+    if matches!(name, "filter_by" | "sum_by" | "avg_by" | "min_by" | "max_by" | "pluck" | "group_by" | "count_by" | "agg" | "distinct" | "sort_by")
+        && args.len() >= 2 && matches!(args[0], Value::List(_)) && !matches!(args[1], Value::String(_) | Value::Lambda { .. } | Value::LambdaBlock { .. })
+    {
+        return Some(Err(RuntimeError::Domain { kind: "type".to_string(), message: format!(
+            "{}(rows, field): the field is a String name, got {} — for a computed value, map the rows first (`rows |> map(r => …)`)",
+            name, crate::interpreter::value_type_name(&args[1])) }));
+    }
     match name {
         "filter_by" => {
             if let Some(Value::List(items)) = args.first() {
@@ -79,7 +99,7 @@ pub fn call_builtin(name: &str, args: &[Value]) -> Option<Result<Value, RuntimeE
                     ))),
                 }
                 let result: Vec<Value> = items.iter().filter(|item| {
-                    let Value::Map(entries) = item else { return false };
+                    let Some(entries) = row_fields(item) else { return false };
                     let Some(val) = entries.get(&field) else { return false };
                     // numbers compare exactly (BigInt included); other values as text
                     // against a NUMBER threshold, numeric text compares as a
@@ -123,10 +143,7 @@ pub fn call_builtin(name: &str, args: &[Value]) -> Option<Result<Value, RuntimeE
                 // value, strings lexicographically (they used to all compare
                 // as 0, i.e. not sort at all).
                 let field_of = |row: &Value| -> Value {
-                    match row {
-                        Value::Map(entries) => entries.get(&field).cloned().unwrap_or(Value::Unit),
-                        _ => Value::Unit,
-                    }
+                    row_fields(row).and_then(|e| e.get(&field)).cloned().unwrap_or(Value::Unit)
                 };
                 let mut sorted = items.clone();
                 let nan = |v: &Value| matches!(v, Value::Float(f) if f.is_nan());
@@ -219,7 +236,7 @@ pub fn call_builtin(name: &str, args: &[Value]) -> Option<Result<Value, RuntimeE
                 if let Value::List(items) = &args[0] {
                     let field = format!("{}", args[1]);
                     let result: Vec<Value> = items.iter().map(|item| {
-                        if let Value::Map(entries) = item {
+                        if let Some(entries) = row_fields(item) {
                             entries.get(&field).cloned().unwrap_or(Value::Unit)
                         } else { Value::Unit }
                     }).collect();
@@ -237,7 +254,7 @@ pub fn call_builtin(name: &str, args: &[Value]) -> Option<Result<Value, RuntimeE
                     let field = format!("{}", args[1]);
                     let mut groups: IndexMap<String, Vec<Value>> = IndexMap::new();
                     for item in items {
-                        let key = if let Value::Map(entries) = item {
+                        let key = if let Some(entries) = row_fields(item) {
                             entries.get(&field)
                                 .map(|v| format!("{}", v)).unwrap_or("unknown".to_string())
                         } else { "unknown".to_string() };
@@ -260,7 +277,7 @@ pub fn call_builtin(name: &str, args: &[Value]) -> Option<Result<Value, RuntimeE
                 let mut seen: std::collections::HashSet<String> = std::collections::HashSet::new();
                 let mut result: Vec<Value> = Vec::new();
                 for item in items {
-                    let v = if let Value::Map(e) = item { e.get(&field).cloned().unwrap_or(Value::Unit) } else { item.clone() };
+                    let v = if let Some(e) = row_fields(item) { e.get(&field).cloned().unwrap_or(Value::Unit) } else { item.clone() };
                     if distinct_key(&v).map_or(true, |key| seen.insert(key)) {
                         result.push(item.clone());
                     }
@@ -279,7 +296,7 @@ pub fn call_builtin(name: &str, args: &[Value]) -> Option<Result<Value, RuntimeE
                     let mut seen: std::collections::HashSet<String> = std::collections::HashSet::new();
                     let mut result: Vec<Value> = Vec::new();
                     for item in items {
-                        let v = if let Value::Map(e) = item {
+                        let v = if let Some(e) = row_fields(item) {
                             e.get(&field).cloned().unwrap_or(Value::Unit)
                         } else { item.clone() };
                         if distinct_key(&v).map_or(true, |key| seen.insert(key)) {
@@ -302,7 +319,7 @@ pub fn call_builtin(name: &str, args: &[Value]) -> Option<Result<Value, RuntimeE
                     let field = format!("{}", args[1]);
                     let target = format!("{}", args[2]);
                     let count = items.iter().filter(|item| {
-                        if let Value::Map(entries) = item {
+                        if let Some(entries) = row_fields(item) {
                             entries.get(&field).map(|v| format!("{}", v) == target).unwrap_or(false)
                         } else { false }
                     }).count() as i64;
@@ -317,9 +334,14 @@ pub fn call_builtin(name: &str, args: &[Value]) -> Option<Result<Value, RuntimeE
         "select" => {
             if args.len() >= 2 {
                 if let Value::List(items) = &args[0] {
-                    let fields: Vec<String> = args[1..].iter().map(|a| format!("{}", a)).collect();
+                    // names, or one list of them (`select(rows, ["id", "a"])` read
+                    // the list's text as one name and gave `{}` per row)
+                    let fields: Vec<String> = args[1..].iter().flat_map(|a| match a {
+                        Value::List(xs) => xs.iter().map(|x| format!("{}", x)).collect::<Vec<_>>(),
+                        other => vec![format!("{}", other)],
+                    }).collect();
                     let result: Vec<Value> = items.iter().map(|item| {
-                        if let Value::Map(entries) = item {
+                        if let Some(entries) = row_fields(item) {
                             let filtered: IndexMap<String, Value> = fields.iter()
                                 .filter_map(|f| entries.get(f).map(|v| (f.clone(), v.clone())))
                                 .collect();
@@ -361,7 +383,7 @@ pub fn call_builtin(name: &str, args: &[Value]) -> Option<Result<Value, RuntimeE
                     }
                     let mut groups: IndexMap<String, Vec<&Value>> = IndexMap::new();
                     for item in items {
-                        let key = if let Value::Map(entries) = item {
+                        let key = if let Some(entries) = row_fields(item) {
                             entries.get(&group_field).map(|v| format!("{}", v)).unwrap_or("unknown".to_string())
                         } else { "unknown".to_string() };
                         groups.entry(key).or_default().push(item);
@@ -381,7 +403,7 @@ pub fn call_builtin(name: &str, args: &[Value]) -> Option<Result<Value, RuntimeE
                                     "min" => vals.iter().cloned().min_by(num_cmp).map(num_value).unwrap_or(Value::Unit),
                                     "max" => vals.iter().cloned().max_by(num_cmp).map(num_value).unwrap_or(Value::Unit),
                                     // every present value counts (a String id too)
-                                    "count" => Value::Int(SomaInt::from_i64(group.iter().filter(|item| matches!(item, Value::Map(e) if e.get(col).map_or(false, |v| !matches!(v, Value::Unit)))).count() as i64)),
+                                    "count" => Value::Int(SomaInt::from_i64(group.iter().filter(|item| row_fields(item).map_or(false, |e| e.get(col).map_or(false, |v| !matches!(v, Value::Unit)))).count() as i64)),
                                     _ => Value::Unit,
                                 };
                                 row.insert(format!("{}_{}", col, func), agg_val);
@@ -406,7 +428,7 @@ pub fn call_builtin(name: &str, args: &[Value]) -> Option<Result<Value, RuntimeE
 fn non_numeric(items: &[Value], field: &str) -> Option<Value> {
     items.iter().find_map(|it| match it {
         // a blank CSV cell ("") is a missing value, as agg() treats it
-        Value::Map(m) => m.get(field).filter(|v| !matches!(v, Value::Unit) && !matches!(v, Value::String(s) if s.trim().is_empty()) && num_of(v).is_none()).cloned(),
+        Value::Map(_) | Value::Variant { .. } => row_fields(it).and_then(|m| m.get(field)).filter(|v| !matches!(v, Value::Unit) && !matches!(v, Value::String(s) if s.trim().is_empty()) && num_of(v).is_none()).cloned(),
         _ => None,
     })
 }

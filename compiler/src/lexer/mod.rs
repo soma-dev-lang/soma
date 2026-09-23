@@ -683,8 +683,9 @@ impl<'a> Lexer<'a> {
             // `N%` is a percentage only where no operand follows: `10%-3`,
             // `10%3` and `10%n` are the modulo (it read `10%-3` as 10.0 - 3)
             let operand_follows = {
-                let mut i = self.pos + 1;
-                while i < self.chars.len() && (self.chars[i] == ' ' || self.chars[i] == '\t') { i += 1; }
+                // only an operand TOUCHING the `%` (`10%-3`, `10%n`): with a
+                // space it is a percentage (`5% - r` read 5 mod -r)
+                let i = self.pos + 1;
                 let word: String = self.chars[i.min(self.chars.len())..].iter().take_while(|c| c.is_alphanumeric() || **c == '_').collect();
                 // a keyword starts the next statement (`let d = 5%  return p`)
                 let keyword = matches!(word.as_str(), "return" | "let" | "if" | "else" | "match" | "for" | "while" | "require" | "ensure"

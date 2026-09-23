@@ -2,6 +2,10 @@
 
 ## Unreleased
 
+### Records in pipeline builtins; `%` touches its operand; field names are Strings
+
+sum_by, avg_by, min_by, max_by, pluck, group_by, count_by, agg, filter_by, sort_by, to_csv and the joins read typed records the same as maps (they returned 0, [] or the input unchanged). `select(rows, ["a", "b"])` takes a list of names. A non-String field (`sort_by(rows, 5)`) is refused instead of ignored. `5% - 0.01` is a percentage and `10%-3` a modulo: a percentage is a `%` touching its number with no operand right after.
+
 ### Fourth pass: `serve`, route ownership, `soma fix`, `check`
 
 - The internal `_content_type` key (set with `with(html(x), "_content_type",

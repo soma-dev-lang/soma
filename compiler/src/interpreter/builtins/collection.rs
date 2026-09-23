@@ -405,15 +405,15 @@ pub fn call_builtin(name: &str, args: &[Value]) -> Option<Result<Value, RuntimeE
                     // join take 8 s (quadratic)
                     let mut index: std::collections::HashMap<String, &Value> = std::collections::HashMap::new();
                     for r in right {
-                        if let Value::Map(e) = r {
+                        if let Some(e) = super::pipeline::row_fields(r) {
                             if let Some(v) = e.get(&key) {
                                 index.entry(format!("{}", v)).or_insert(r);
                             }
                         }
                     }
                     let merge = |l: &Value, r: Option<&&Value>| -> Value {
-                        let mut merged = if let Value::Map(e) = l { e.clone() } else { IndexMap::new() };
-                        if let Some(Value::Map(re)) = r {
+                        let mut merged = super::pipeline::row_fields(l).cloned().unwrap_or_default();
+                        if let Some(re) = r.and_then(|r| super::pipeline::row_fields(r)) {
                             for (rk, rv) in re {
                                 if rk != &key && !merged.contains_key(rk) {
                                     merged.insert(rk.clone(), rv.clone());
@@ -424,12 +424,12 @@ pub fn call_builtin(name: &str, args: &[Value]) -> Option<Result<Value, RuntimeE
                     };
                     let result: Vec<Value> = if name == "inner_join" {
                         left.iter().filter_map(|l| {
-                            let lk = if let Value::Map(e) = l { e.get(&key).map(|v| format!("{}", v)) } else { None };
+                            let lk = super::pipeline::row_fields(l).and_then(|e| e.get(&key)).map(|v| format!("{}", v));
                             lk.and_then(|lk_val| index.get(&lk_val)).map(|r| merge(l, Some(r)))
                         }).collect()
                     } else {
                         left.iter().map(|l| {
-                            let lk = if let Value::Map(e) = l { e.get(&key).map(|v| format!("{}", v)) } else { None };
+                            let lk = super::pipeline::row_fields(l).and_then(|e| e.get(&key)).map(|v| format!("{}", v));
                             merge(l, lk.and_then(|lk_val| index.get(&lk_val)))
                         }).collect()
                     };

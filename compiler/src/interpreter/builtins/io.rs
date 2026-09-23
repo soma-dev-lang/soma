@@ -603,18 +603,19 @@ fn csv_text(items: &[Value]) -> String {
             s.to_string()
         }
     };
-    if let Some(Value::Map(_)) = items.first() {
+    // records as well as maps (`to_csv(lines)` of `List<Line>` was "")
+    if items.first().and_then(|f| super::pipeline::row_fields(f)).is_some() {
         // every key of every row, in first-seen order (a key only in a
         // later row was dropped with its value)
         let mut headers: Vec<&str> = Vec::new();
         for it in items {
-            if let Value::Map(m) = it { for k in m.keys() { if !headers.contains(&k.as_str()) { headers.push(k.as_str()); } } }
+            if let Some(m) = super::pipeline::row_fields(it) { for k in m.keys() { if !headers.contains(&k.as_str()) { headers.push(k.as_str()); } } }
         }
         output.push_str(&headers.iter().map(|h| quote(h, false)).collect::<Vec<_>>().join(","));
         output.push('\n');
         // Write rows
         for item in items {
-            if let Value::Map(entries) = item {
+            if let Some(entries) = super::pipeline::row_fields(item) {
                 let vals: Vec<String> = headers.iter().map(|h| {
                     entries.get(*h)
                         .map(|v| match v {

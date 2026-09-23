@@ -4619,3 +4619,28 @@ fn fix_fourth_pass() {
     assert!(fixed[app..].contains("on go(") && !fixed[..app].contains("on go("), "{fixed}");
     let _ = std::fs::remove_dir_all(dir);
 }
+
+#[test]
+fn pipeline_fourth_pass() {
+    passes("pipeline_fourth_pass", r#"
+cell type Line { variants { Line { sku: String, qty: Int } } }
+cell P {
+    on rows() { return [Line { sku: "a", qty: 2 }, Line { sku: "b", qty: 5 }, Line { sku: "c", qty: 1 }] }
+    on units() { return sum_by(rows(), "qty") }
+    on sorted() { return sort_by(rows(), "qty") |> pluck("sku") }
+    on csv() { return to_csv(rows()) }
+    on picked() { return select([map("id", 1, "a", 2, "b", 3)], ["id", "a"]) }
+    on bad_sort() { return sort_by(rows(), 5) }
+    on pct() { return 5% - 0.01 }
+    on modulo() { return 10%-3 }
+}
+cell test T { rules {
+    assert units() == 8
+    assert sorted() == ["c", "a", "b"]
+    assert csv() == "sku,qty\na,2\nb,5\nc,1\n"
+    assert picked() == [map("id", 1, "a", 2)]
+    assert_fails bad_sort() matching "String name"
+    assert modulo() == 1
+} }
+"#);
+}
