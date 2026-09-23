@@ -2,6 +2,29 @@
 
 ## Unreleased
 
+### Third pass: native code
+
+- "An Int spot never truncates" covered the 64-bit path only: once a
+  handler re-ran in BigInt mode, a Float in an Int position was cut
+  (`s + sq(2.5)` computed `sq(2)`, `shr(s, 3.5)` shifted by 3). Every
+  conversion goes through the checked one, and a Float handed to an Int
+  parameter of a sibling is refused as interpreted ("an Int parameter got
+  the Float 3.0" — an integral one passed natively).
+- A Float-typed handler returning an Int past 2^53 on one path rounded it
+  (`100000000000000001` came back `1e17`); it raises, as an exact quotient
+  past 2^53 does.
+- `pos(n) + 1` with a Bool-returning sibling, `st(n) + n` with a String one,
+  and `str_eq(…) + 1` passed check (a wrong answer or a rustc error): a
+  sibling's return kind now counts in those refusals.
+- False refusal: an Int local given `to_int(x * 100.0)`, `round(x * 10.0)` or
+  `floor(sqrt(x))` was refused as receiving a Float.
+- A quotient local reassigned a Float on a path not taken (`if n > 100 { q =
+  q + 0.5 }`) printed its exact value as a Float on every path; exactness is
+  decided when each definition runs.
+- The 2^53 check raised where a quotient is only an operand of a Float
+  (`q * 10^12 * 1.5`, a comparison, `sqrt(…)`); it applies where the exact
+  Int itself is kept.
+
 ### Third pass: core evaluation
 
 - The `let` restoration of the second pass missed match arms and

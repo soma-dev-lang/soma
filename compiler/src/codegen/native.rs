@@ -334,6 +334,7 @@ pub fn generate_native_source_with_config(
     // interpreter raises a type error; native code truncated it (bit_len(2.5)
     // answered 2). Only an integral value — an exact Int / Int quotient the
     // interpreter kept as an Int — passes.
+    out.push_str("#[inline(always)] #[allow(dead_code)] fn _soma_i2f_ret(v: i64) -> f64 { if v.unsigned_abs() > (1u64 << 53) { panic!(\"soma:range: an Int past 2^53 returned by a handler that may also return a Float loses digits in native code — return to_string(n), or split the handler\") } v as f64 }\n");
     out.push_str("#[inline(always)] #[allow(dead_code)] fn _soma_f2i(v: f64) -> i64 { if v.is_finite() && v.fract() == 0.0 && v.abs() <= 9007199254740992.0 { v as i64 } else { panic!(\"soma:type: this spot holds an Int, got the Float {} — native code never truncates: write floor(), round(), to_int() or idiv(a, b)\", _soma_fmt_f(v)) } }\n");
     out.push_str("#[inline(always)] #[allow(dead_code)] fn _soma_int_arg(v: f64, name: &str) -> i64 { if v.is_finite() && v.fract() == 0.0 && v.abs() <= 9007199254740992.0 { v as i64 } else { panic!(\"soma:type: {}(): expected Int arguments, got Float {}\", name, _soma_fmt_f(v)) } }\n");
     // buffer(n) / buffer_f(n): a negative n became `(-3) as usize`, a
@@ -889,6 +890,23 @@ fn guard_exported_handlers(src: &str) -> String {
 
 /// BigInt flavors of the Int / Int helpers (see PANIC_GUARD_SUPPORT).
 const BIG_DIV_SUPPORT: &str = r#"
+/// An Int returned through a Float return type: exact up to 2^53, else refused.
+#[allow(dead_code)]
+fn _soma_big2f_ret(v: Integer) -> f64 {
+    if v.significant_bits() > 53 { panic!("soma:range: an Int past 2^53 returned by a handler that may also return a Float loses digits in native code — return to_string(n), or split the handler"); }
+    v.to_f64()
+}
+
+/// A Float where an Int is needed, in BigInt mode: exact when whole, else
+/// refused — `as i64` truncated 2.5 to 2 (and 1e20 to i64::MAX)
+#[allow(dead_code)]
+fn _soma_f2big(v: f64) -> Integer {
+    if v.is_finite() && v.fract() == 0.0 {
+        return Integer::from_f64(v).unwrap_or_default();
+    }
+    panic!("soma:type: this spot holds an Int, got the Float {} — native code never truncates: write floor(), round(), to_int() or idiv(a, b)", _soma_fmt_f(v));
+}
+
 #[allow(dead_code)]
 #[allow(dead_code)]
 fn _soma_bits_cap(x: Integer) -> Integer {
@@ -3298,6 +3316,10 @@ struct FnGenerator {
     /// Set while generating the inner statement of a quotient-local
     /// definition (the bracket around it is emitted once).
     in_q_wrap: std::cell::Cell<bool>,
+    /// Generating inside a Float computation, a comparison or a call's
+    /// arguments: an exact quotient there is only an operand of a Float, so
+    /// digits past 2^53 are not an error (`q * 10^12 * 1.5`)
+    in_float_ctx: std::cell::Cell<bool>,
 }
 
 impl FnGenerator {
@@ -3331,6 +3353,7 @@ impl FnGenerator {
             rational_locals: HashSet::new(),
             int_rational_ret: false,
             in_q_wrap: std::cell::Cell::new(false),
+            in_float_ctx: std::cell::Cell::new(false),
         }
     }
 
@@ -3931,8 +3954,10 @@ impl FnGenerator {
 
     /// `let q = <quotient>` / `q = <quotient>`: record whether it is exact.
     fn q_wrap_def(&self, name: &str, value: &Expr, inner: String, ind: &str) -> String {
+        // a definition that is no quotient (`q + 0.5`) makes the local a Float
+        let sh = if self.is_int_rational(value, &self.rational_locals) { self.q_shadows(value) } else { "true".to_string() };
         format!("{ind}let _soma_qw = _soma_q_take();\n{inner}{ind}__soma_qx_{name} = _soma_q_take() || {sh};\n{ind}_soma_q_mark(_soma_qw);\n",
-            ind = ind, inner = inner, name = name, sh = self.q_shadows(value))
+            ind = ind, inner = inner, name = name, sh = sh)
     }
 
     /// Before `return <quotient>`: the flag holds only this return's
@@ -3973,11 +3998,12 @@ impl FnGenerator {
                     if self.var_types.get(name).copied() != Some(NativeType::Float) {
                         continue;
                     }
-                    if !banned.contains(name) && self.is_int_rational(&value.node, rational) {
+                    // one quotient definition is enough: each other one marks
+                    // the local inexact when it runs (`if n > 100 { q = q + 0.5 }`
+                    // made an exact q print as a Float on every path)
+                    let _ = &banned;
+                    if self.is_int_rational(&value.node, rational) {
                         rational.insert(name.clone());
-                    } else {
-                        rational.remove(name);
-                        banned.insert(name.clone());
                     }
                 }
                 Statement::If { then_body, else_body, .. } => {
@@ -4179,7 +4205,10 @@ impl FnGenerator {
                 // Use the function's return type, not the expression's inferred type,
                 // so that mixed-type returns (e.g. `return 0` from a Float function) get coerced.
                 let ret_ty = self.fn_return_type;
-                let expr = self.gen_expr_direct(&value.node, ret_ty);
+                // an Int returned by a Float handler: past 2^53 it lost digits
+                let expr = if ret_ty == NativeType::Float && self.int_rational_ret && self.infer_expr_type(&value.node) == NativeType::Int {
+                    format!("_soma_i2f_ret({})", self.gen_expr_direct(&value.node, NativeType::Int))
+                } else { self.gen_expr_direct(&value.node, ret_ty) };
                 // a String parameter is a `&str` in the fast function:
                 // `return s` failed to compile (after a clean check)
                 if ret_ty == NativeType::String {
@@ -4374,36 +4403,39 @@ impl FnGenerator {
                 self.coerce_direct(name.clone(), var_ty, target_ty)
             }
             Expr::BinaryOp { left, op, right } => {
+                let rational = self.is_int_rational(expr, &self.rational_locals);
+                // a Float operation: its operands are Float operands
+                let outer = self.in_float_ctx.get();
+                if !rational { self.in_float_ctx.set(true); }
                 let code = self.gen_binop_direct(&left.node, *op, &right.node, target_ty);
+                self.in_float_ctx.set(outer);
                 // an exact Int carried as f64 (`q * q` for `let q = a / b`)
                 // past 2^53 has lost digits: raise rather than answer them
                 if matches!(op, BinOp::Add | BinOp::Sub | BinOp::Mul | BinOp::Mod)
                     && target_ty == NativeType::Float
                     && self.infer_expr_type(expr) == NativeType::Float
-                    && self.is_int_rational(expr, &self.rational_locals)
+                    && rational && !outer
                 {
                     return format!("_soma_q_big({}, {})", code, self.q_shadows(expr));
                 }
                 code
             }
             Expr::CmpOp { left, op, right } => {
-                let lt = self.infer_expr_type(&left.node);
-                let rt = self.infer_expr_type(&right.node);
-                if matches!((lt, rt), (NativeType::Int, NativeType::Float) | (NativeType::Float, NativeType::Int)) {
-                    return self.gen_mixed_comparison(&left.node, *op, &right.node, lt);
-                }
-                let common = if lt == NativeType::Float || rt == NativeType::Float {
-                    NativeType::Float
-                } else if lt == NativeType::String || rt == NativeType::String {
-                    NativeType::String
-                } else if lt == NativeType::Bool && rt == NativeType::Bool {
-                    NativeType::Bool
+                let outer = self.in_float_ctx.replace(true);
+                let r = self.gen_cmp_direct(&left.node, *op, &right.node);
+                self.in_float_ctx.set(outer);
+                r
+            }
+            Expr::FnCall { name, args } if !self.siblings.contains(name) && !matches!(name.as_str(), "to_string") && !self.in_float_ctx.get() => {
+                // a builtin's arguments are operands of its answer
+                let outer = self.in_float_ctx.replace(true);
+                let out = self.gen_fn_call_direct(name, args, target_ty);
+                self.in_float_ctx.set(outer);
+                if target_ty == NativeType::Float && self.infer_expr_type(expr) == NativeType::Int {
+                    self.coerce_direct(out, NativeType::Int, NativeType::Float)
                 } else {
-                    NativeType::Int
-                };
-                let l = self.gen_expr_direct(&left.node, common);
-                let r = self.gen_expr_direct(&right.node, common);
-                format!("({} {} {})", l, cmp_op_str(*op), r)
+                    out
+                }
             }
             Expr::Not(inner) => {
                 let e = self.gen_expr_direct(&inner.node, NativeType::Bool);
@@ -4426,6 +4458,28 @@ impl FnGenerator {
             }
         }
     }
+
+    /// A comparison in direct code (its operands are Float operands: no
+    /// 2^53 check on a quotient compared).
+    fn gen_cmp_direct(&self, left: &Expr, op: CmpOp, right: &Expr) -> String {
+        let lt = self.infer_expr_type(left);
+        let rt = self.infer_expr_type(right);
+        if matches!((lt, rt), (NativeType::Int, NativeType::Float) | (NativeType::Float, NativeType::Int)) {
+            return self.gen_mixed_comparison(left, op, right, lt);
+        }
+        let common = if lt == NativeType::Float || rt == NativeType::Float {
+            NativeType::Float
+        } else if lt == NativeType::String || rt == NativeType::String {
+            NativeType::String
+        } else if lt == NativeType::Bool && rt == NativeType::Bool {
+            NativeType::Bool
+        } else {
+            NativeType::Int
+        };
+        let l = self.gen_expr_direct(left, common);
+        let r = self.gen_expr_direct(right, common);
+        format!("({} {} {})", l, cmp_op_str(op), r)
+        }
 
     /// Compare Int/Float without converting the Int to a rounded float.
     fn gen_mixed_comparison(&self, left: &Expr, op: CmpOp, right: &Expr, left_ty: NativeType) -> String {
@@ -5088,7 +5142,7 @@ impl FnGenerator {
                 } else if expected == NativeType::Int && self.mode == Mode::Rug {
                     // a 64-bit-only sibling: past 64 bits the call reruns
                     // interpreted
-                    self.marshal_arg_to_sibling(&arg.node, NativeType::Int, Mode::Direct)
+                    self.marshal_arg_to_sibling(name, &arg.node, NativeType::Int, Mode::Direct)
                 } else if expected == NativeType::String {
                     // String params are passed by &str — pass a borrow
                     // when we can, otherwise build an owned String and
@@ -5111,6 +5165,8 @@ impl FnGenerator {
                             self.gen_expr_direct(&arg.node, NativeType::String)
                         }
                     }
+                } else if expected == NativeType::Int && self.infer_expr_type(&arg.node) == NativeType::Float {
+                    self.float_to_int_param(name, &arg.node)
                 } else {
                     self.gen_expr_direct(&arg.node, expected)
                 }
@@ -5468,7 +5524,9 @@ impl FnGenerator {
                 format!("{}return {};\n", ind, expr)
             }
             NativeType::Float => {
-                let expr = self.gen_expr_direct(value, fn_ret_type);
+                let expr = if self.int_rational_ret && self.infer_expr_type(value) == NativeType::Int {
+                    format!("_soma_big2f_ret({})", self.gen_expr_rug(value))
+                } else { self.gen_expr_direct(value, fn_ret_type) };
                 format!("{}{}return {};\n", self.q_before_return(value, ind), ind, expr)
             }
             NativeType::Bool => {
@@ -5529,7 +5587,8 @@ impl FnGenerator {
                         format!("Integer::from({})", name)
                     }
                     NativeType::Int => format!("{}.clone()", name),
-                    NativeType::Float => format!("Integer::from({} as i64)", name),
+                    // never `as i64` (BigInt mode truncated sq(2.5) to sq(2))
+                    NativeType::Float => format!("_soma_f2big({})", name),
                     NativeType::Bool => {
                         format!("Integer::from(if {} {{ 1i64 }} else {{ 0i64 }})", name)
                     }
@@ -5739,7 +5798,7 @@ impl FnGenerator {
                         format!("&{}", name)
                     }
                 } else {
-                    format!("&Integer::from({} as i64)", name)
+                    format!("&_soma_f2big({})", name)
                 }
             }
             Expr::Literal(Literal::Int(n)) => format!("&Integer::from({}i64)", n),
@@ -5765,7 +5824,7 @@ impl FnGenerator {
                 match var_ty {
                     NativeType::Int if self.small_int_vars.contains(name) => name.clone(),
                     NativeType::Int => format!("&{}", name),
-                    NativeType::Float => format!("({} as i64)", name),
+                    NativeType::Float => format!("_soma_f2i({})", name),
                     NativeType::Bool => format!("(if {} {{ 1i64 }} else {{ 0i64 }})", name),
                     NativeType::String => {
                         self.err(format!("cannot use String variable '{}' as an Integer operand", name));
@@ -6187,7 +6246,7 @@ impl FnGenerator {
             {
                 let info = self.sibling_info.get(name).cloned().unwrap();
                 let arg_strs: Vec<String> = args.iter().zip(info.param_types.iter())
-                    .map(|(arg, &expected)| self.marshal_arg_to_sibling(&arg.node, expected, info.mode))
+                    .map(|(arg, &expected)| self.marshal_arg_to_sibling(name, &arg.node, expected, info.mode))
                     .collect();
                 format!("inner_handler_{}({})", name, arg_strs.join(", "))
             }
@@ -6240,7 +6299,7 @@ impl FnGenerator {
             "buf_get_f" if args.len() == 2 => {
                 if let Expr::Ident(buf_name) = &args[0].node {
                     let i = self.gen_expr_direct(&args[1].node, NativeType::Int);
-                    return format!("Integer::from({}[({}) as usize] as i64)", buf_name, i);
+                    return format!("_soma_f2big({}[({}) as usize])", buf_name, i);
                 }
                 self.err("buf_get_f: first arg must be an identifier");
                 "Integer::from(0i64)".to_string()
@@ -6593,14 +6652,14 @@ impl FnGenerator {
         sibling: &SiblingInfo,
     ) -> String {
         let arg_strs: Vec<String> = args.iter().zip(sibling.param_types.iter())
-            .map(|(arg, &expected)| self.marshal_arg_to_sibling(&arg.node, expected, sibling.mode))
+            .map(|(arg, &expected)| self.marshal_arg_to_sibling(name, &arg.node, expected, sibling.mode))
             .collect();
         let call = format!("inner_handler_{}({})", name, arg_strs.join(", "));
         // Convert return to Integer
         match (sibling.mode, sibling.return_type) {
             (Mode::Rug, NativeType::Int) => call,  // already Integer
             (Mode::Direct, NativeType::Int) => format!("Integer::from({})", call),
-            (_, NativeType::Float) => format!("Integer::from({} as i64)", call),
+            (_, NativeType::Float) => format!("_soma_f2big({})", call),
             (_, NativeType::Bool) => format!("Integer::from(if {} {{ 1i64 }} else {{ 0i64 }})", call),
             (_, NativeType::String) => {
                 self.err("cannot use a String-returning sibling in an Integer context");
@@ -6612,7 +6671,18 @@ impl FnGenerator {
     /// Marshal an arg expression for a sibling call.
     /// `expected`: the parameter's NativeType
     /// `callee_mode`: the sibling's mode
-    fn marshal_arg_to_sibling(&self, expr: &Expr, expected: NativeType, callee_mode: Mode) -> String {
+    /// A Float handed to an Int parameter of a sibling: the interpreter
+    /// refuses it ("expects Int, got Float 3.0"), native code passed 3.
+    fn float_to_int_param(&self, sibling: &str, arg: &Expr) -> String {
+        let v = self.gen_expr_direct(arg, NativeType::Float);
+        let msg = format!("soma:type: {}(): an Int parameter got the Float {{}}", sibling);
+        format!("{{ let _f: f64 = {}; panic!(\"{}\", _soma_fmt_f(_f)) }}", v, msg)
+    }
+
+    fn marshal_arg_to_sibling(&self, callee: &str, expr: &Expr, expected: NativeType, callee_mode: Mode) -> String {
+        if expected == NativeType::Int && self.infer_expr_type(expr) == NativeType::Float {
+            return self.float_to_int_param(callee, expr);
+        }
         if expected == NativeType::Int && callee_mode == Mode::Rug {
             // Callee expects Integer
             self.gen_expr_rug(expr)

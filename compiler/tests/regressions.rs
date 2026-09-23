@@ -4501,3 +4501,36 @@ cell test T { rules {
 } }
 "#);
 }
+
+#[test]
+fn native_third_pass() {
+    passes("native_third_pass", r#"
+cell P {
+    on sq(n: Int) [native] { return n * n }
+    on c(n: Int, x: Float) [native] { let s = 1  for i in range(0, n) { s = s * 3 }  return s + sq(x) }
+    on h(n: Int, x: Float) [native] { if x < 0.0 { return n }  return x }
+    on g(x: Float) [native] { let t = 0  t = to_int(x * 100.0)  return t }
+    on qb(n: Int) [native] { let q = n / 2  if n > 100 { q = q + 0.5 }  return q }
+    on fl(n: Int) [native] { let q = n / 2  return q * 1000000000000 * 1.5 }
+    on cmp(n: Int) [native] { let q = n / 2  if q * 1000000000000 > 1000000000000000 { return 1 }  return 0 }
+    on isq(x: Float) [native] { return sq(x) }
+}
+cell test T { rules {
+    assert_fails c(50, 2.5) matching "Int parameter got the Float"
+    assert_fails isq(3.0) matching "Int parameter got the Float"
+    assert h(5, 0.0 - 1.0) == 5
+    assert_fails h(100000000000000001, 0.0 - 1.0) matching "2^53"
+    assert g(2.5) == 250
+    assert qb(4) == 2
+    assert type_of(qb(4)) == "Int"
+    assert qb(200) == 100.5
+    assert fl(40000) == 30000000000000000.0
+    assert cmp(40000) == 1
+} }
+"#);
+    let dir = scratch("native_third_pass_check");
+    std::fs::write(dir.join("app.cell"), "cell P {\n on pos(n: Int) [native] { return n > 0 }\n on st(n: Int) [native] { return to_string(n) }\n on a(n: Int) [native] { return pos(n) + 1 }\n on b(n: Int) [native] { return st(n) + n }\n}\n").unwrap();
+    let (code, out) = soma(&dir, &["check", "app.cell"]);
+    assert!(code != 0 && out.contains("handler 'a' is marked [native]") && out.contains("handler 'b' is marked [native]"), "{out}");
+    let _ = std::fs::remove_dir_all(dir);
+}

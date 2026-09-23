@@ -2267,7 +2267,9 @@ impl<'a> Checker<'a> {
             }
         }
         for h in natives.iter().copied() {
-            if let Err(e) = native::check_native_handler(&h.signal_name, &h.params, &h.body, &siblings) {
+            let kinds: std::collections::HashMap<String, char> = natives.iter()
+                .filter_map(|o| native::return_kind(&o.params, &o.body).map(|k| (o.signal_name.clone(), k))).collect();
+            if let Err(e) = native::check_native_handler_with(&h.signal_name, &h.params, &h.body, &siblings, &kinds) {
                 let span = cell.sections.iter().find_map(|s| match &s.node {
                     Section::OnSignal(x) if x.signal_name == h.signal_name => Some(s.span),
                     _ => None,

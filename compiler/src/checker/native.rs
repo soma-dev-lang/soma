@@ -96,6 +96,56 @@ pub(crate) const ALLOWED_BUILTINS: &[&str] = &[
     "read_file", "read_stdin", "write_str",
 ];
 
+thread_local! {
+    /// What each sibling [native] handler returns ('n' number, 's' String,
+    /// 'b' Bool): `pos(n) + 1` with a Bool `pos` passed the kind checks.
+    static SIBLING_KINDS: std::cell::RefCell<std::collections::HashMap<String, char>> = std::cell::RefCell::new(std::collections::HashMap::new());
+}
+
+fn sibling_kind(name: &str) -> Option<char> {
+    SIBLING_KINDS.with(|k| k.borrow().get(name).copied())
+}
+
+/// The kind a handler returns, from its `return`s over its parameters.
+pub fn return_kind(params: &[Param], body: &[Spanned<Statement>]) -> Option<char> {
+    let mut rets: Vec<&Expr> = Vec::new();
+    collect_returns(body, &mut rets);
+    let ps: std::collections::HashMap<&str, char> = params.iter().filter_map(|p| match &p.ty.node {
+        TypeExpr::Simple(t) if t == "String" => Some((p.name.as_str(), 's')),
+        TypeExpr::Simple(t) if t == "Int" || t == "Float" => Some((p.name.as_str(), 'n')),
+        TypeExpr::Simple(t) if t == "Bool" => Some((p.name.as_str(), 'b')),
+        _ => None,
+    }).collect();
+    let one = |e: &Expr| -> Option<char> {
+        match e {
+            Expr::Literal(Literal::String(_)) => Some('s'),
+            Expr::Literal(Literal::Int(_) | Literal::BigInt(_) | Literal::Float(_)) => Some('n'),
+            Expr::Literal(Literal::Bool(_)) | Expr::CmpOp { .. } | Expr::Not(_) | Expr::BinaryOp { op: BinOp::And | BinOp::Or, .. } => Some('b'),
+            Expr::BinaryOp { op: BinOp::Sub | BinOp::Mul | BinOp::Div | BinOp::Mod, .. } => Some('n'),
+            Expr::FnCall { name, .. } if matches!(name.as_str(), "to_string" | "concat" | "format" | "substring" | "sb_to_string") => Some('s'),
+            Expr::FnCall { name, .. } if name == "str_eq" => Some('b'),
+            Expr::Ident(n) => ps.get(n.as_str()).copied(),
+            _ => None,
+        }
+    };
+    let kinds: Vec<char> = rets.iter().filter_map(|e| one(e)).collect();
+    if kinds.is_empty() || kinds.iter().any(|k| *k != kinds[0]) { None } else { Some(kinds[0]) }
+}
+
+/// check_native_handler, knowing what each sibling returns.
+pub fn check_native_handler_with(
+    handler_name: &str,
+    params: &[Param],
+    body: &[Spanned<Statement>],
+    siblings: &NativeSiblings,
+    kinds: &std::collections::HashMap<String, char>,
+) -> Result<(), NativeCheckError> {
+    SIBLING_KINDS.with(|k| *k.borrow_mut() = kinds.clone());
+    let r = check_native_handler(handler_name, params, body, siblings);
+    SIBLING_KINDS.with(|k| k.borrow_mut().clear());
+    r
+}
+
 /// Validate all statements in a [native] handler body.
 pub fn check_native_handler(
     handler_name: &str,
@@ -205,6 +255,8 @@ pub fn check_native_handler(
                 Expr::CmpOp { .. } | Expr::Not(_) | Expr::Literal(Literal::Bool(_)) => true,
                 Expr::BinaryOp { op: BinOp::And | BinOp::Or, .. } => true,
                 Expr::Ident(n) => bools.contains(n),
+                // `pos(n) + 1` with a Bool-returning sibling, `str_eq(…) + 1`
+                Expr::FnCall { name, .. } => name == "str_eq" || sibling_kind(name) == Some('b'),
                 _ => false,
             }
         }
@@ -249,6 +301,9 @@ pub fn check_native_handler(
                     // String + String is a String (`let t = "x" + s` then `t + k`)
                     .or_else(|| (kind(&left.node, kinds) == Some('s') && kind(&right.node, kinds) == Some('s')).then_some('s')),
                 Expr::Ident(n) => kinds.get(n).copied(),
+                // a sibling's answer (`st(n) + n`, `pos(n) == 1`)
+                Expr::FnCall { name, .. } if name == "str_eq" => Some('b'),
+                Expr::FnCall { name, .. } => sibling_kind(name),
                 _ => None,
             }
         }
@@ -409,6 +464,10 @@ fn has_float_literal(e: &Expr) -> bool {
     match e {
         Expr::Literal(Literal::Float(_)) => true,
         Expr::BinaryOp { left, right, .. } => has_float_literal(&left.node) || has_float_literal(&right.node),
+        // a call that answers an Int hides its Float arguments
+        // (`t = to_int(x * 100.0)` was refused as giving `t` a Float)
+        Expr::FnCall { name, args } if matches!(name.as_str(), "to_int" | "floor" | "ceil" | "idiv" | "len" | "str_len" | "str_at")
+            || (name == "round" && args.len() == 1) => false,
         Expr::FnCall { name, args } => matches!(name.as_str(), "sqrt" | "to_float" | "sin" | "cos" | "tan" | "atan" | "atan2" | "asin" | "acos" | "pi" | "exp" | "log") || args.iter().any(|a| has_float_literal(&a.node)),
         _ => false,
     }
