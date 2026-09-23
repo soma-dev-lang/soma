@@ -128,8 +128,12 @@ pub fn generate_native_source_with_config(
     // start of the body. Runs AFTER auto-iter so it sees the loop body
     // (auto-iter wraps the body in `while true`); the CSE walker
     // descends one level into that loop. Skips handlers with no fires.
+    // only siblings without effects (transitively): `f() - f()` with a
+    // random `f` answered 0, and a writing `w(1) + w(1)` wrote once
+    let impure = impure_handlers(&handlers_owned);
     let cse_siblings: HashSet<String> = handlers_owned.iter()
         .map(|h| h.signal_name.clone())
+        .filter(|n| !impure.contains(n))
         .collect();
     for h in &mut handlers_owned {
         // Only [native] handlers are eligible
@@ -332,7 +336,7 @@ pub fn generate_native_source_with_config(
     out.push_str("struct _SomaDepth;\n");
     out.push_str("impl _SomaDepth { #[inline(always)] fn enter() -> _SomaDepth { _SOMA_DEPTH.with(|d| { let n = d.get() + 1; d.set(n); if n > 20_000 { panic!(\"soma:stack_overflow: native recursion deeper than 20000 calls\") } }); _SomaDepth } }\n");
     // a bit index: 0 ≤ i ≤ 2^24 (a negative one became a 4-billion-bit set_bit: a hang)
-    out.push_str("#[inline(always)] #[allow(dead_code)] fn _soma_bit_index(k: i64) -> i64 { if k < 0 || k > (1i64 << 24) { panic!(\"soma:type: bit index {} out of range\", k) } k }\n");
+    out.push_str("#[inline(always)] #[allow(dead_code)] fn _soma_bit_index(k: i64, f: &str) -> i64 { if k < 0 || k > (1i64 << 24) { panic!(\"soma:type: {}(): bit index {} out of range\", f, k) } k }\n");
     // a Float reaching an Int-only builtin (band, gcd, pow_mod…): the
     // interpreter raises a type error; native code truncated it (bit_len(2.5)
     // answered 2). Only an integral value — an exact Int / Int quotient the
@@ -345,7 +349,7 @@ pub fn generate_native_source_with_config(
     // `$1` then a word character is group 1 then that text, as interpreted
     out.push_str(RX_REP_HELPER);
     out.push_str("#[inline(always)] #[allow(dead_code)] fn _soma_buf_len(n: i64) -> usize { if n < 0 { panic!(\"soma:range: buffer(n): n is a number of elements, 0 or more — got {}\", n) } n as usize }\n");
-    out.push_str("#[inline(always)] #[allow(dead_code)] fn _soma_next_bit(a: i64, k: i64) -> i64 { let k = _soma_bit_index(k); if k >= 64 { return if a < 0 { k } else { -1 }; } let bits = (a as u64) & (u64::MAX << k); if bits == 0 { -1 } else { bits.trailing_zeros() as i64 } }\n");
+    out.push_str("#[inline(always)] #[allow(dead_code)] fn _soma_next_bit(a: i64, k: i64) -> i64 { let k = _soma_bit_index(k, \"bit_next\"); if k >= 64 { return if a < 0 { k } else { -1 }; } let bits = (a as u64) & (u64::MAX << k); if bits == 0 { -1 } else { bits.trailing_zeros() as i64 } }\n");
     // a Float prints like the interpreter's (an integral Float as "8.0")
     out.push_str("#[inline] #[allow(dead_code)] fn _soma_fmt_f(f: f64) -> String { let t = format!(\"{}\", f); if f.is_finite() && !t.contains('.') { format!(\"{}.0\", t) } else { t } }\n");
     // to_string(a / b): the interpreter prints the exact quotient as an Int
@@ -439,7 +443,9 @@ pub fn generate_native_source_with_config(
         // small literal). The detection rule is verified against the 20-cell
         // memo_corpus. Eligible handlers get a thread_local cache wrapper
         // that turns naive O(branching^depth) recursion into O(input_space).
-        let is_memo = auto_memo_eligible(handler);
+        // never for a handler with effects (transitively): a cached
+        // `write_str` ran once, a cached `random` answered the same value
+        let is_memo = auto_memo_eligible(handler) && !impure.contains(&handler.signal_name);
 
         let mut gen = FnGenerator::new(&handler.params, &siblings, *mode)
             .with_sibling_info(sibling_info.clone())
@@ -616,7 +622,7 @@ pub fn generate_native_source_with_config(
         err_block.push_str("const _: () = {\n");
         for e in &all_errors {
             // Escape quotes and backslashes
-            let escaped: String = e.replace('\\', "\\\\").replace('"', "\\\"");
+            let escaped: String = rust_str_body(&e);
             err_block.push_str(&format!("    compile_error!(\"[soma codegen] {}\");\n", escaped));
         }
         err_block.push_str("};\n");
@@ -828,6 +834,43 @@ fn _soma_read_stdin() -> String {
     let _ = std::io::stdin().read_to_string(&mut text);
     _SOMA_STDIN.with(|s| { let mut s = s.borrow_mut(); if s.2 && !s.3 { s.0.push(text.clone()); } });
     text
+}
+
+// write_str: flushed at once (the dylib has its own stdout buffer, which
+// the host never drains: a statement-level write_str was lost). While the
+// i64 fast path of a handler runs, output is held back: when it overflows
+// and the handler re-runs in BigInt mode, the text is written once, not twice.
+thread_local! {
+    static _SOMA_OUT: std::cell::RefCell<(bool, String)> = std::cell::RefCell::new((false, String::new()));
+}
+
+#[allow(dead_code)]
+fn _soma_write_str(s: &str) {
+    let held = _SOMA_OUT.with(|o| { let mut o = o.borrow_mut(); if o.0 { o.1.push_str(s); true } else { false } });
+    if !held {
+        use std::io::Write;
+        let mut out = std::io::stdout();
+        let _ = out.write_all(s.as_bytes());
+        let _ = out.flush();
+    }
+}
+
+#[allow(dead_code)]
+fn _soma_out_begin() {
+    _SOMA_OUT.with(|o| { let mut o = o.borrow_mut(); o.0 = true; o.1.clear(); });
+}
+
+/// The fast path's text is final: write it.
+#[allow(dead_code)]
+fn _soma_out_commit() {
+    let text = _SOMA_OUT.with(|o| { let mut o = o.borrow_mut(); o.0 = false; std::mem::take(&mut o.1) });
+    if !text.is_empty() { _soma_write_str(&text); }
+}
+
+/// The fast path is re-run in BigInt mode: forget its text.
+#[allow(dead_code)]
+fn _soma_out_discard() {
+    _SOMA_OUT.with(|o| { let mut o = o.borrow_mut(); o.0 = false; o.1.clear(); });
 }
 
 /// 1 if an Int / Int was inexact since the last call; clears the flag.
@@ -1393,6 +1436,7 @@ fn gen_rug_inner_fn(
     out.push_str(&format!("fn inner_{}({}) -> {} {{\n    let _depth_guard = _SomaDepth::enter();\n", fn_name, mut_param_str, inner_ret));
     out.push_str(&gen.q_prologue());
     let ctx = RugCtx::new(ret_type);
+    *gen.full_body.borrow_mut() = handler.body.clone();
     out.push_str(&gen.gen_body_rug(&handler.body, 1, &ctx));
     let last_is_return = handler.body.last()
         .map(|s| matches!(s.node, Statement::Return { .. }))
@@ -1487,6 +1531,7 @@ fn emit_dualmode_wrapper(
     out.push_str(&format!("#[no_mangle]\npub extern \"C\" fn {}() -> i64 {{\n", fn_name));
     out.push_str("    _soma_install_quiet_hook();\n");
     out.push_str("    _soma_stdin_begin();\n");
+    out.push_str("    _soma_out_begin();\n");
     out.push_str("    // Fast path: try Direct (i64/f64). Bail out via None if\n");
     out.push_str("    // any arg doesn't fit i64; catch overflow panics from\n");
     out.push_str("    // checked arithmetic and fall back to the Rug version.\n");
@@ -1508,10 +1553,11 @@ fn emit_dualmode_wrapper(
     // not an i64 overflow: it must reach the guard, not the Rug fallback.
     out.push_str("    if let Err(_p) = &_fast {\n");
     out.push_str("        let _m = _p.downcast_ref::<String>().map(|s| s.as_str()).or_else(|| _p.downcast_ref::<&str>().copied()).unwrap_or(\"\");\n");
-    out.push_str("        if _m.starts_with(\"soma:\") { std::panic::panic_any(_m.to_string()); }\n");
+    out.push_str("        if _m.starts_with(\"soma:\") { _soma_out_commit(); std::panic::panic_any(_m.to_string()); }\n");
     out.push_str("    }\n");
     // If fast path returned a value, encode it directly. Otherwise fall back.
     out.push_str("    if let Ok(Some(_fast_v)) = _fast {\n");
+    out.push_str("        _soma_out_commit();\n");
     match ret_type {
         NativeType::Int => {
             out.push_str("        return _fast_v;\n");
@@ -1531,6 +1577,7 @@ fn emit_dualmode_wrapper(
     out.push_str("    }\n");
 
     // Rug fallback
+    out.push_str("    _soma_out_discard();\n");
     out.push_str("    _soma_stdin_replay();\n");
     let rug_call = rug_call_args.join(", ");
     match ret_type {
@@ -1728,67 +1775,95 @@ fn emit_memo_wrapper_rug(
 const TAB_MAX_DIM: i64 = 1024;
 const TAB_MAX_TOTAL: i64 = 1_000_000;
 
-/// Render a tab-simple expression as Rust source. Self-calls become
-/// table-index accesses; everything else uses straightforward Rust
-/// operators. Used for the *final return* expression only.
-fn render_tab_value_expr(e: &Expr, fn_name: &str, tab_var: &str) -> String {
-    match e {
-        Expr::Literal(Literal::Int(n)) => format!("{}i64", n),
-        Expr::Literal(Literal::Bool(b)) => b.to_string(),
-        Expr::Ident(name) => name.clone(),
+/// Render a tab-simple Int expression as Rust source. Self-calls become
+/// table-index accesses. Only what renders faithfully in i64 (overflow is
+/// checked, so it falls back to BigInt): Int literals, parameters, `+ - *
+/// %` and self-calls. Anything else is None and the handler is not
+/// tabulated (a non-self call became `0i64`, a `/` Rust's truncating one).
+fn render_tab_value_expr(e: &Expr, fn_name: &str, tab_var: &str, params: &HashSet<String>) -> Option<String> {
+    Some(match e {
+        Expr::Literal(Literal::Int(n)) => format!("({}i64)", n),
+        Expr::Ident(name) if params.contains(name) => name.clone(),
         Expr::BinaryOp { left, op, right } => {
-            let l = render_tab_value_expr(&left.node, fn_name, tab_var);
-            let r = render_tab_value_expr(&right.node, fn_name, tab_var);
             let opstr = match op {
-                BinOp::Add => "+", BinOp::Sub => "-", BinOp::Mul => "*",
-                BinOp::Div => "/", BinOp::Mod => "%",
-                _ => "+", // unreachable per tab-simple body check
+                BinOp::Add => "+", BinOp::Sub => "-", BinOp::Mul => "*", BinOp::Mod => "%",
+                _ => return None,
             };
+            let l = render_tab_value_expr(&left.node, fn_name, tab_var, params)?;
+            let r = render_tab_value_expr(&right.node, fn_name, tab_var, params)?;
             format!("({} {} {})", l, opstr, r)
         }
-        Expr::FnCall { name, args } if name == fn_name => {
+        Expr::FnCall { name, args } if name == fn_name && !fn_name.is_empty() => {
             let mut s = tab_var.to_string();
             for arg in args {
                 s.push_str(&format!(
                     "[({}) as usize]",
-                    render_tab_value_expr(&arg.node, fn_name, tab_var)
+                    render_tab_value_expr(&arg.node, fn_name, tab_var, params)?
                 ));
             }
             s
         }
-        // Should never reach here for tab-simple bodies
-        _ => "0i64".to_string(),
-    }
+        _ => return None,
+    })
 }
 
-/// Render a guard condition (no self-calls allowed). Same as the value
-/// renderer but also handles CmpOp.
-fn render_tab_guard_expr(e: &Expr) -> String {
-    match e {
-        Expr::Literal(Literal::Int(n)) => format!("{}i64", n),
+/// Render a guard condition (no self-calls allowed): comparisons of
+/// tab-simple Int expressions, `&&`, `||`, `!` and Bool literals. Anything
+/// else is None (it rendered `||` as `+` and a call or Float as `false`).
+fn render_tab_guard_expr(e: &Expr, params: &HashSet<String>) -> Option<String> {
+    Some(match e {
         Expr::Literal(Literal::Bool(b)) => b.to_string(),
-        Expr::Ident(name) => name.clone(),
-        Expr::BinaryOp { left, op, right } => {
-            let l = render_tab_guard_expr(&left.node);
-            let r = render_tab_guard_expr(&right.node);
-            let opstr = match op {
-                BinOp::Add => "+", BinOp::Sub => "-", BinOp::Mul => "*",
-                BinOp::Div => "/", BinOp::Mod => "%",
-                _ => "+",
-            };
-            format!("({} {} {})", l, opstr, r)
+        Expr::BinaryOp { left, op: op @ (BinOp::And | BinOp::Or), right } => {
+            let l = render_tab_guard_expr(&left.node, params)?;
+            let r = render_tab_guard_expr(&right.node, params)?;
+            format!("({} {} {})", l, if matches!(op, BinOp::And) { "&&" } else { "||" }, r)
         }
+        Expr::Not(inner) => format!("(!{})", render_tab_guard_expr(&inner.node, params)?),
         Expr::CmpOp { left, op, right } => {
-            let l = render_tab_guard_expr(&left.node);
-            let r = render_tab_guard_expr(&right.node);
+            let l = render_tab_value_expr(&left.node, "", "", params)?;
+            let r = render_tab_value_expr(&right.node, "", "", params)?;
             let opstr = match op {
                 CmpOp::Lt => "<", CmpOp::Gt => ">", CmpOp::Le => "<=",
                 CmpOp::Ge => ">=", CmpOp::Eq => "==", CmpOp::Ne => "!=",
             };
             format!("({} {} {})", l, opstr, r)
         }
-        _ => "false".to_string(),
+        _ => return None,
+    })
+}
+
+/// The body of the cell-compute function, or None when some guard, base
+/// value or the final expression cannot be rendered faithfully.
+fn render_tab_cell_body(handler: &NativeHandler) -> Option<String> {
+    let params: HashSet<String> = handler.params.iter().map(|p| p.name.clone()).collect();
+    let (last, guards) = handler.body.split_last()?;
+    let mut out = String::new();
+    for stmt in guards {
+        let Statement::If { condition, then_body, else_body } = &stmt.node else { return None };
+        let cond = render_tab_guard_expr(&condition.node, &params)?;
+        // each branch is a single Return per is_guard_return_only
+        let ret = |b: &[Spanned<Statement>]| -> Option<String> {
+            match b {
+                [one] => match &one.node {
+                    Statement::Return { value } => render_tab_value_expr(&value.node, &handler.signal_name, "_tab", &params),
+                    _ => None,
+                },
+                _ => None,
+            }
+        };
+        let base = ret(then_body)?;
+        if else_body.is_empty() {
+            out.push_str(&format!("    if {} {{ return {}; }}\n", cond, base));
+        } else {
+            // the else branch returns too (it was dropped)
+            let other = ret(else_body)?;
+            out.push_str(&format!("    if {} {{ return {}; }} else {{ return {}; }}\n", cond, base, other));
+        }
     }
+    let Statement::Return { value } = &last.node else { return None };
+    let final_expr = render_tab_value_expr(&value.node, &handler.signal_name, "_tab", &params)?;
+    out.push_str(&format!("    {}\n", final_expr));
+    Some(out)
 }
 
 /// The Rust type for a tab of arity n: `Vec<...Vec<i64>>`.
@@ -1815,24 +1890,7 @@ fn emit_tab_cell_fn(
         "fn inner_{}({}, _tab: &{}) -> i64 {{\n    let _depth_guard = _SomaDepth::enter();\n",
         cell_fn_name, param_decl, tab_ty
     ));
-    // Emit guards
-    for stmt in &handler.body[..handler.body.len() - 1] {
-        if let Statement::If { condition, then_body, .. } = &stmt.node {
-            let cond = render_tab_guard_expr(&condition.node);
-            // then_body is a single Return per is_guard_return_only
-            if let Statement::Return { value } = &then_body[0].node {
-                let base = render_tab_value_expr(&value.node, &handler.signal_name, "_tab");
-                out.push_str(&format!("    if {} {{ return {}; }}\n", cond, base));
-            }
-        }
-    }
-    // Emit final return
-    if let Some(last) = handler.body.last() {
-        if let Statement::Return { value } = &last.node {
-            let final_expr = render_tab_value_expr(&value.node, &handler.signal_name, "_tab");
-            out.push_str(&format!("    {}\n", final_expr));
-        }
-    }
+    out.push_str(&render_tab_cell_body(handler).expect("auto_tab_eligible checked the body renders"));
     out.push_str("}\n\n");
 }
 
@@ -2349,6 +2407,37 @@ fn first_ref_in_stmt(s: &Statement, var: &str) -> FirstRef {
     }
 }
 
+/// Every mention of `name` in `body`: reads, `let` / assignment targets,
+/// loop variables.
+fn name_mentions(body: &[Spanned<Statement>], name: &str) -> usize {
+    let mut n = 0;
+    crate::checker::literals::for_each_expr(body, &mut |e| if matches!(e, Expr::Ident(x) if x == name) { n += 1; });
+    fn targets(body: &[Spanned<Statement>], name: &str, n: &mut usize) {
+        for s in body {
+            match &s.node {
+                Statement::Let { name: t, .. } | Statement::Assign { name: t, .. } | Statement::IndexSet { name: t, .. } if t == name => *n += 1,
+                Statement::If { then_body, else_body, .. } => { targets(then_body, name, n); targets(else_body, name, n); }
+                Statement::While { body, .. } => targets(body, name, n),
+                Statement::For { var, body, .. } => { if var == name { *n += 1; } targets(body, name, n); }
+                _ => {}
+            }
+        }
+    }
+    targets(body, name, &mut n);
+    n
+}
+
+/// How many distinct blocks of `body` (nested ones included) declare `name`
+/// with `let`.
+fn let_blocks_of(body: &[Spanned<Statement>], name: &str) -> usize {
+    let here = body.iter().any(|s| matches!(&s.node, Statement::Let { name: t, .. } if t == name)) as usize;
+    here + body.iter().map(|s| match &s.node {
+        Statement::If { then_body, else_body, .. } => let_blocks_of(then_body, name) + let_blocks_of(else_body, name),
+        Statement::While { body, .. } | Statement::For { body, .. } => let_blocks_of(body, name),
+        _ => 0,
+    }).sum::<usize>()
+}
+
 fn stmt_references(stmt: &Statement, name: &str) -> bool {
     match stmt {
         Statement::Let { value, .. } | Statement::Assign { value, .. } | Statement::Return { value } => {
@@ -2584,6 +2673,8 @@ fn auto_tab_eligible(handler: &NativeHandler) -> Option<TabPlan> {
         return None;
     }
     let pnames: Vec<String> = handler.params.iter().map(|p| p.name.clone()).collect();
+    // every guard, base value and the final expression renders faithfully
+    render_tab_cell_body(handler)?;
     // (2) body must be tab-simple
     let final_calls = match tab_simple_body(&handler.body, &handler.signal_name) {
         Some(c) => c,
@@ -2781,19 +2872,61 @@ fn is_pure_callee(name: &str, siblings: &HashSet<String>) -> bool {
 /// vars are unsafe to use in CSE arg checking — even one reassignment
 /// anywhere kills CSE for that var.
 fn collect_reassigned_vars(body: &[Spanned<Statement>], out: &mut HashSet<String>) {
-    for s in body {
-        match &s.node {
-            Statement::Assign { name, .. } => { out.insert(name.clone()); }
-            Statement::If { then_body, else_body, .. } => {
-                collect_reassigned_vars(then_body, out);
-                collect_reassigned_vars(else_body, out);
+    // a second `let` of a name (a shadow) or a loop variable rebinds it too:
+    // `let x = a  let p = f(x)  let x = a * 4  let q = f(x)` shared one value
+    fn walk(body: &[Spanned<Statement>], out: &mut HashSet<String>, lets: &mut HashSet<String>) {
+        for s in body {
+            match &s.node {
+                Statement::Assign { name, .. } | Statement::IndexSet { name, .. } => { out.insert(name.clone()); }
+                Statement::Let { name, .. } => {
+                    if !lets.insert(name.clone()) { out.insert(name.clone()); }
+                }
+                Statement::If { then_body, else_body, .. } => {
+                    walk(then_body, out, lets);
+                    walk(else_body, out, lets);
+                }
+                Statement::While { body, .. } => walk(body, out, lets),
+                Statement::For { var, body, .. } => {
+                    out.insert(var.clone());
+                    walk(body, out, lets);
+                }
+                _ => {}
             }
-            Statement::While { body, .. } | Statement::For { body, .. } => {
-                collect_reassigned_vars(body, out);
-            }
-            _ => {}
         }
     }
+    let mut lets = HashSet::new();
+    walk(body, out, &mut lets);
+}
+
+/// [native] handlers whose calls may have an effect or answer differently
+/// for the same arguments: they call random, write_str, read_stdin or
+/// read_file, or (transitively) such a sibling. A call to one of them is
+/// never shared (CSE) nor cached (memo / table).
+fn impure_handlers(handlers: &[NativeHandler]) -> HashSet<String> {
+    const EFFECTS: &[&str] = &["random", "write_str", "read_stdin", "read_file"];
+    let names: HashSet<String> = handlers.iter().map(|h| h.signal_name.clone()).collect();
+    let mut impure: HashSet<String> = HashSet::new();
+    loop {
+        let mut changed = false;
+        for h in handlers {
+            if impure.contains(&h.signal_name) { continue; }
+            let mut bad = false;
+            crate::checker::literals::for_each_expr(&h.body, &mut |e| {
+                if let Expr::FnCall { name, .. } = e {
+                    if names.contains(name) {
+                        if impure.contains(name) { bad = true; }
+                    } else if EFFECTS.contains(&name.as_str())
+                        || !crate::checker::native::ALLOWED_BUILTINS.contains(&name.as_str())
+                    {
+                        bad = true;
+                    }
+                }
+            });
+            if bad { impure.insert(h.signal_name.clone()); changed = true; }
+        }
+        if !changed { break; }
+    }
+    impure
 }
 
 /// Render an expression in a canonical text form, used as a CSE key.
@@ -2861,18 +2994,27 @@ fn collect_cse_forms_in_expr(
     e: &Expr,
     siblings: &HashSet<String>,
     reassigned: &HashSet<String>,
-    out: &mut Vec<(String, Spanned<Expr>)>,
+    always: bool,
+    out: &mut Vec<(String, Spanned<Expr>, bool)>,
 ) {
     match e {
-        Expr::BinaryOp { left, right, .. } | Expr::CmpOp { left, right, .. } => {
-            collect_cse_forms_in_expr(&left.node, siblings, reassigned, out);
-            collect_cse_forms_in_expr(&right.node, siblings, reassigned, out);
+        // the right side of `&&` / `||` runs only sometimes: a call there
+        // is not evaluated whenever the statement is (hoisting it raised
+        // str_at's error behind `i < 3 &&`, and recursed forever behind
+        // `n <= 0 ||`)
+        Expr::BinaryOp { left, op: BinOp::And | BinOp::Or, right } => {
+            collect_cse_forms_in_expr(&left.node, siblings, reassigned, always, out);
+            collect_cse_forms_in_expr(&right.node, siblings, reassigned, false, out);
         }
-        Expr::Not(inner) => collect_cse_forms_in_expr(&inner.node, siblings, reassigned, out),
+        Expr::BinaryOp { left, right, .. } | Expr::CmpOp { left, right, .. } => {
+            collect_cse_forms_in_expr(&left.node, siblings, reassigned, always, out);
+            collect_cse_forms_in_expr(&right.node, siblings, reassigned, always, out);
+        }
+        Expr::Not(inner) => collect_cse_forms_in_expr(&inner.node, siblings, reassigned, always, out),
         Expr::FnCall { name, args } => {
             // Recurse first (children may have their own CSE-able calls)
             for a in args.iter() {
-                collect_cse_forms_in_expr(&a.node, siblings, reassigned, out);
+                collect_cse_forms_in_expr(&a.node, siblings, reassigned, always, out);
             }
             if is_pure_callee(name, siblings)
                 && args.iter().all(|a| expr_is_cse_safe(&a.node, reassigned))
@@ -2881,7 +3023,7 @@ fn collect_cse_forms_in_expr(
                 out.push((form, Spanned {
                     node: e.clone(),
                     span: Span::new(0, 0),
-                }));
+                }, always));
             }
         }
         _ => {}
@@ -2926,10 +3068,12 @@ fn apply_cse_rewrite(h: &mut NativeHandler, siblings: &HashSet<String>) {
         };
         for e in exprs {
             let mut found = Vec::new();
-            collect_cse_forms_in_expr(e, siblings, &reassigned, &mut found);
-            for (form, sample) in found {
+            collect_cse_forms_in_expr(e, siblings, &reassigned, true, &mut found);
+            for (form, sample, always) in found {
                 *counts.entry(form.clone()).or_insert(0) += 1;
-                first_idx.entry(form.clone()).or_insert(i);
+                // hoisted before the first statement that ALWAYS evaluates
+                // the call; occurrences before it keep their own call
+                if always { first_idx.entry(form.clone()).or_insert(i); }
                 samples.entry(form).or_insert(sample);
             }
         }
@@ -2938,7 +3082,7 @@ fn apply_cse_rewrite(h: &mut NativeHandler, siblings: &HashSet<String>) {
     // (local_name, first_stmt_idx).
     let mut plans: Vec<(String, String, usize)> = Vec::new();
     let mut idx = 0;
-    let mut keys: Vec<&String> = counts.keys().filter(|f| counts[*f] >= 2).collect();
+    let mut keys: Vec<&String> = counts.keys().filter(|f| counts[*f] >= 2 && first_idx.contains_key(*f)).collect();
     keys.sort();
     for f in keys {
         plans.push((f.clone(), format!("__soma_cse_{}", idx), first_idx[f]));
@@ -2947,12 +3091,14 @@ fn apply_cse_rewrite(h: &mut NativeHandler, siblings: &HashSet<String>) {
     if plans.is_empty() {
         return;
     }
-    let cse_forms: HashMap<String, String> = plans.iter()
-        .map(|(f, n, _)| (f.clone(), n.clone())).collect();
-
     // Pass 2: rewrite all matching call sites. (We do this BEFORE
     // inserting the hoist lets so the indices in `plans` stay valid.)
-    for s in block.iter_mut() {
+    for (i, s) in block.iter_mut().enumerate() {
+        // only in statements at or after the hoist point of each form
+        let cse_forms: HashMap<String, String> = plans.iter()
+            .filter(|(_, _, fidx)| *fidx <= i)
+            .map(|(f, n, _)| (f.clone(), n.clone())).collect();
+        if cse_forms.is_empty() { continue; }
         let exprs: Vec<&mut Expr> = match &mut s.node {
             Statement::Let { value, .. }
             | Statement::Assign { value, .. }
@@ -3254,6 +3400,8 @@ struct FnGenerator {
     /// In Rug mode, Int variables that can be safely represented as i64
     /// (assigned only from literals or `self ± literal` patterns).
     small_int_vars: HashSet<String>,
+    /// Upper bound (in bits) on the magnitude of each small Int local.
+    small_int_bits: HashMap<String, u32>,
     /// In Rug mode, variables that can be SAFELY moved out via
     /// `std::mem::swap` when the RHS of an assignment, instead of
     /// `clone_from`. The criterion (precomputed once per handler from
@@ -3323,6 +3471,14 @@ struct FnGenerator {
     /// arguments: an exact quotient there is only an operand of a Float, so
     /// digits past 2^53 are not an error (`q * 10^12 * 1.5`)
     in_float_ctx: std::cell::Cell<bool>,
+    /// Rug mode: the statements that follow each enclosing block (innermost
+    /// last) — the swap-on-assign liveness check must see a read after the
+    /// enclosing `if` / loop, not only the rest of the inner block.
+    outer_rest: RefCell<Vec<Vec<Spanned<Statement>>>>,
+    /// Rug mode: the whole body being generated (a loop may only hoist a
+    /// `let` whose name is not used outside the loop).
+    full_body: RefCell<Vec<Spanned<Statement>>>,
+    param_names: HashSet<String>,
 }
 
 impl FnGenerator {
@@ -3341,6 +3497,7 @@ impl FnGenerator {
             sibling_info: HashMap::new(),
             mode,
             small_int_vars: HashSet::new(),
+            small_int_bits: HashMap::new(),
             swap_safe_vars: HashSet::new(),
             buf_vars: HashSet::new(),
             buf_f_vars: HashSet::new(),
@@ -3357,6 +3514,9 @@ impl FnGenerator {
             int_rational_ret: false,
             in_q_wrap: std::cell::Cell::new(false),
             in_float_ctx: std::cell::Cell::new(false),
+            outer_rest: RefCell::new(Vec::new()),
+            full_body: RefCell::new(Vec::new()),
+            param_names: params.iter().map(|p| p.name.clone()).collect(),
         }
     }
 
@@ -3432,20 +3592,192 @@ impl FnGenerator {
         // Only meaningful in Rug mode — Direct mode is i64 throughout.
         if self.mode != Mode::Rug { return; }
 
-        // Initial candidate set: every Int local whose first assignment
-        // (Let or earliest Assign) is a "safe-init" expression.
-        let mut small: HashSet<String> = HashSet::new();
-        Self::collect_safe_init(body, &mut small, int_params);
-
-        // Iterate the existing classifier to fixpoint, removing any var
-        // whose subsequent assignments aren't bounded.
-        loop {
-            let prev = small.clone();
-            Self::run_classifier(body, &mut small, &self.siblings, Some(&self.var_types));
-            if small == prev { break; }
+        // Bit-bound classifier: a local stays i64 only when an upper bound
+        // on its magnitude is provably below 2^62 (so + and - of two of them
+        // fit i64). Every assignment raises the bound; a self-referential
+        // one (`i = i + 1`, `x = x - k`) may run up to 2^32 times, so it adds
+        // 33 bits once to the larger of its base and step. A self-update
+        // that multiplies (`x = x * 2`, `x = x - (0 - x)`), a sibling's
+        // result, a parameter or an unknown call is unbounded: the local is
+        // an Integer. (The old rules kept `x = fact(30)`, `y * 2^32` and
+        // `k = x  x = x + k` as i64 and overflowed inside the BigInt
+        // fallback itself.)
+        let mut loop_vars: HashSet<String> = HashSet::new();
+        fn for_vars(body: &[Spanned<Statement>], out: &mut HashSet<String>) {
+            for st in body {
+                match &st.node {
+                    Statement::For { var, body, .. } => { out.insert(var.clone()); for_vars(body, out); }
+                    Statement::While { body, .. } => for_vars(body, out),
+                    Statement::If { then_body, else_body, .. } => { for_vars(then_body, out); for_vars(else_body, out); }
+                    _ => {}
+                }
+            }
         }
-
+        for_vars(body, &mut loop_vars);
+        let mut assigns: Vec<(String, Expr)> = Vec::new();
+        fn collect_assigns(body: &[Spanned<Statement>], out: &mut Vec<(String, Expr)>) {
+            for st in body {
+                match &st.node {
+                    Statement::Let { name, value } | Statement::Assign { name, value } => out.push((name.clone(), value.node.clone())),
+                    Statement::If { then_body, else_body, .. } => { collect_assigns(then_body, out); collect_assigns(else_body, out); }
+                    Statement::While { body, .. } | Statement::For { body, .. } => collect_assigns(body, out),
+                    _ => {}
+                }
+            }
+        }
+        collect_assigns(body, &mut assigns);
+        let mut bounds: HashMap<String, u32> = HashMap::new();
+        for (name, _) in &assigns {
+            if self.var_types.get(name).copied() == Some(NativeType::Int)
+                && !int_params.contains(name) && !loop_vars.contains(name)
+                && !self.param_names.contains(name)
+            {
+                bounds.insert(name.clone(), 0);
+            }
+        }
+        loop {
+            let mut changed = false;
+            let names: Vec<String> = { let mut v: Vec<String> = bounds.keys().cloned().collect(); v.sort(); v };
+            for v in names {
+                let mut base: Option<u32> = Some(0);
+                let mut grows = false;
+                for (name, rhs) in &assigns {
+                    if name != &v { continue; }
+                    if !Self::expr_references(rhs, &v) {
+                        base = base.zip(Self::int_bits(rhs, &bounds, &self.var_types, 62)).map(|(a, b)| a.max(b));
+                    } else {
+                        match Self::self_growth(rhs, &v, &bounds, &self.var_types) {
+                            Some((0, a)) => base = base.map(|b| b.max(a)),
+                            Some((1, a)) => { base = base.map(|b| b.max(a)); grows = true; }
+                            _ => base = None,
+                        }
+                    }
+                }
+                let bound = base.map(|b| if grows { b + 33 } else { b });
+                match bound {
+                    Some(b) if b <= 62 => {
+                        if b > bounds[&v] { bounds.insert(v.clone(), b); changed = true; }
+                    }
+                    _ => { bounds.remove(&v); changed = true; }
+                }
+            }
+            if !changed { break; }
+        }
+        let small: HashSet<String> = bounds.keys().cloned().collect();
+        self.small_int_bits = bounds;
         self.small_int_vars = small;
+    }
+
+    /// An upper bound on the bits of |value| of an Int expression, given
+    /// the bounds of the small locals; None when unbounded (a parameter, a
+    /// big local, a sibling's result, an unknown call) or when any
+    /// sub-expression may need more than `cap` bits.
+    fn int_bits(e: &Expr, bounds: &HashMap<String, u32>, var_types: &HashMap<String, NativeType>, cap: u32) -> Option<u32> {
+        let bits_of = |n: i64| 64 - n.unsigned_abs().leading_zeros();
+        let r = |x: &Spanned<Expr>| Self::int_bits(&x.node, bounds, var_types, cap);
+        let b = match e {
+            Expr::Literal(Literal::Int(n)) => bits_of(*n),
+            Expr::Literal(Literal::Bool(_)) => 1,
+            Expr::Ident(n) => match var_types.get(n).copied() {
+                Some(NativeType::Bool) => 1,
+                Some(NativeType::Int) => *bounds.get(n)?,
+                _ => return None,
+            },
+            Expr::BinaryOp { left, op, right } => {
+                let (l, rr) = (r(left)?, r(right)?);
+                match op {
+                    BinOp::Add | BinOp::Sub => l.max(rr) + 1,
+                    BinOp::Mul => l + rr,
+                    // an exact quotient is no larger than the dividend
+                    BinOp::Div => l,
+                    BinOp::Mod => l.min(rr),
+                    _ => return None,
+                }
+            }
+            Expr::FnCall { name, args } => {
+                let a = |i: usize| args.get(i).and_then(|x| r(x));
+                let lit = |i: usize| match args.get(i).map(|x| &x.node) { Some(Expr::Literal(Literal::Int(k))) => Some(*k), _ => None };
+                match name.as_str() {
+                    "bit_test" => 1,
+                    "bit_len" => 7,
+                    "bit_next" => 26,
+                    "band" | "bor" | "bxor" | "gcd" | "min" | "max" if args.len() == 2 => a(0)?.max(a(1)?),
+                    "bnot" if args.len() == 1 => a(0)? + 1,
+                    "abs" | "idiv" | "shr" if !args.is_empty() => { for i in 1..args.len() { a(i)?; } a(0)? }
+                    "sqrt_int" if args.len() == 1 => a(0)? / 2 + 1,
+                    "pow_mod" if args.len() == 3 => { a(0)?; a(1)?; a(2)? }
+                    "shl" if args.len() == 2 => { let k = lit(1)?; if !(0..60).contains(&k) { return None; } a(0)? + k as u32 }
+                    "bit_set" | "bit_clr" if args.len() == 2 => { let k = lit(1)?; if !(0..60).contains(&k) { return None; } a(0)?.max(k as u32 + 1) + 1 }
+                    "to_int" | "floor" | "ceil" | "round" if args.len() == 1 => Self::float_bits(&args[0].node, bounds, var_types)?,
+                    _ => return None,
+                }
+            }
+            _ => return None,
+        };
+        if b > cap { None } else { Some(b) }
+    }
+
+    /// Bits of the integral part of a Float expression built from small
+    /// Ints and Float literals (the argument of to_int / floor / …).
+    fn float_bits(e: &Expr, bounds: &HashMap<String, u32>, var_types: &HashMap<String, NativeType>) -> Option<u32> {
+        let r = |x: &Spanned<Expr>| Self::float_bits(&x.node, bounds, var_types);
+        let b = match e {
+            Expr::Literal(Literal::Int(n)) => 64 - n.unsigned_abs().leading_zeros(),
+            Expr::Literal(Literal::Float(f)) if f.is_finite() && f.abs() < 4.0e18 => 64 - (f.abs().ceil() as u64).leading_zeros(),
+            Expr::Ident(n) if var_types.get(n).copied() == Some(NativeType::Int) => *bounds.get(n)?,
+            Expr::BinaryOp { left, op, right } => {
+                let (l, rr) = (r(left)?, r(right)?);
+                match op {
+                    BinOp::Add | BinOp::Sub => l.max(rr) + 1,
+                    BinOp::Mul => l + rr,
+                    // dividing by a literal of magnitude ≥ 1 cannot grow it
+                    BinOp::Div if matches!(&right.node, Expr::Literal(Literal::Int(k)) if *k != 0)
+                        || matches!(&right.node, Expr::Literal(Literal::Float(f)) if f.abs() >= 1.0) => l,
+                    _ => return None,
+                }
+            }
+            _ => return None,
+        };
+        if b > 62 { None } else { Some(b) }
+    }
+
+    /// For a self-referential update `target = expr`: (growth, step bits),
+    /// where |new| ≤ growth·|target| + 2^step. Growth above 1 (a doubling,
+    /// a product) is None.
+    fn self_growth(e: &Expr, target: &str, bounds: &HashMap<String, u32>, var_types: &HashMap<String, NativeType>) -> Option<(u32, u32)> {
+        if !Self::expr_references(e, target) {
+            return Self::int_bits(e, bounds, var_types, 62).map(|b| (0, b));
+        }
+        let g = |x: &Spanned<Expr>| Self::self_growth(&x.node, target, bounds, var_types);
+        let bits = |x: &Spanned<Expr>| Self::int_bits(&x.node, bounds, var_types, 62);
+        let res = match e {
+            Expr::Ident(n) if n == target => (1, 0),
+            Expr::BinaryOp { left, op, right } => match op {
+                BinOp::Add | BinOp::Sub => {
+                    let ((gl, al), (gr, ar)) = (g(left)?, g(right)?);
+                    (gl + gr, al.max(ar) + 1)
+                }
+                BinOp::Div if !Self::expr_references(&right.node, target) => { bits(right)?; g(left)? }
+                // |a % b| < |b| and ≤ |a|
+                BinOp::Mod if !Self::expr_references(&right.node, target) => (0, bits(right)?),
+                BinOp::Mod if !Self::expr_references(&left.node, target) => (0, bits(left)?),
+                _ => return None,
+            },
+            Expr::FnCall { name, args } => match name.as_str() {
+                "bit_test" => (0, 1),
+                "bit_len" => (0, 7),
+                "bit_next" => (0, 26),
+                "abs" | "min" | "max" | "band" | "bor" | "bxor" | "gcd" | "idiv" | "shr" | "sqrt_int" => {
+                    let mut acc = (0u32, 0u32);
+                    for x in args { let (gx, ax) = g(x)?; acc = (acc.0.max(gx), acc.1.max(ax)); }
+                    acc
+                }
+                "pow_mod" if args.len() == 3 && !Self::expr_references(&args[2].node, target) => (0, bits(&args[2])?),
+                _ => return None,
+            },
+            _ => return None,
+        };
+        if res.0 > 1 || res.1 > 62 { None } else { Some(res) }
     }
 
     /// Collect locals whose initialization is a "safe init" — small
@@ -3883,9 +4215,10 @@ impl FnGenerator {
                     "bit_test" | "bit_set" | "bit_clr" | "bit_next" => NativeType::Int,
                     "gcd" | "pow_mod" | "sqrt_int" | "idiv" => NativeType::Int,
                     "str_len" | "str_at" => NativeType::Int,
-                    "str_eq" => NativeType::Bool,
+                    // hm_has is a Bool, as documented (it answered 1 / 0)
+                    "str_eq" | "hm_has" => NativeType::Bool,
                     // Buffer/HashMap/StringBuf accessors that return values
-                    "buf_get" | "hm_get" | "hm_inc" | "hm_set" | "hm_len" | "hm_has"
+                    "buf_get" | "hm_get" | "hm_inc" | "hm_set" | "hm_len"
                     | "sb_len" | "buf_set" | "buf_set_f" | "sb_push" | "sb_push_int"
                     | "sb_push_char" | "write_str" => NativeType::Int,
                     "buf_get_f" => NativeType::Float,
@@ -4196,6 +4529,11 @@ impl FnGenerator {
                                     }
                                 }
                                 let r = self.gen_expr_direct(&right.node, NativeType::String);
+                                // `s = s + s`: the right side borrows s while
+                                // push_str mutates it (E0502) — copy it first
+                                if Self::expr_references(&right.node, name) {
+                                    return format!("{}{{ let _r: String = ({}).to_string(); {}.push_str(&_r); }}\n", ind, r, name);
+                                }
                                 return format!("{}{}.push_str(&{});\n", ind, name, r);
                             }
                         }
@@ -4326,10 +4664,7 @@ impl FnGenerator {
                     }
                     if fname == "write_str" && args.len() == 1 {
                         let s = self.gen_expr_direct(&args[0].node, NativeType::String);
-                        return format!(
-                            "{}{{ use std::io::Write; let _ = std::io::stdout().write_all({}.as_bytes()); }}\n",
-                            ind, s
-                        );
+                        return format!("{}_soma_write_str(&{});\n", ind, s);
                     }
                 }
                 // Statement-level expression (e.g. a fn call for side effects).
@@ -4386,7 +4721,7 @@ impl FnGenerator {
             Expr::Literal(Literal::Float(f)) => format!("{}f64", f),
             Expr::Literal(Literal::Bool(b)) => format!("{}", b),
             Expr::Literal(Literal::String(s)) => {
-                format!("\"{}\".to_string()", unbrace(s).replace('\\', "\\\\").replace('"', "\\\""))
+                format!("\"{}\".to_string()", rust_str_body(&unbrace(s)))
             }
             Expr::Ident(name) => {
                 let var_ty = self.var_types.get(name).copied().unwrap_or(NativeType::Float);
@@ -4732,9 +5067,9 @@ impl FnGenerator {
             }
             "hm_has" if args.len() == 2 => {
                 if let Expr::Ident(hm) = &args[0].node {
-                    let k = self.gen_expr_direct(&args[1].node, NativeType::Int);
-                    let inner = format!("(if {}.contains_key(&({})) {{ 1i64 }} else {{ 0i64 }})", hm, k);
-                    return self.coerce_direct(inner, NativeType::Int, target_ty);
+                    let k = if self.mode == Mode::Rug { self.gen_hm_key_rug(&args[1].node) } else { self.gen_expr_direct(&args[1].node, NativeType::Int) };
+                    let inner = format!("({}.contains_key(&({})))", hm, k);
+                    return self.coerce_direct(inner, NativeType::Bool, target_ty);
                 }
                 self.err("hm_has: first arg must be an identifier");
                 "0i64".to_string()
@@ -4749,7 +5084,7 @@ impl FnGenerator {
                 };
                 let counter = { let mut c = self.regex_counter.borrow_mut(); let v = *c; *c += 1; v };
                 let text = self.gen_expr_direct(&args[0].node, NativeType::String);
-                let pat_escaped = pat.replace('\\', "\\\\").replace('"', "\\\"");
+                let pat_escaped = rust_str_body(&pat);
                 let inner = format!(
                     "{{ static RX_{}: std::sync::OnceLock<regex::Regex> = std::sync::OnceLock::new(); \
                      RX_{}.get_or_init(|| regex::Regex::new(\"{}\").unwrap()).find_iter(&{}).count() as i64 }}",
@@ -4764,7 +5099,7 @@ impl FnGenerator {
                 };
                 let counter = { let mut c = self.regex_counter.borrow_mut(); let v = *c; *c += 1; v };
                 let text = self.gen_expr_direct(&args[0].node, NativeType::String);
-                let pat_escaped = pat.replace('\\', "\\\\").replace('"', "\\\"");
+                let pat_escaped = rust_str_body(&pat);
                 let inner = format!(
                     "{{ static RX_{}: std::sync::OnceLock<regex::Regex> = std::sync::OnceLock::new(); \
                      if RX_{}.get_or_init(|| regex::Regex::new(\"{}\").unwrap()).is_match(&{}) {{ 1i64 }} else {{ 0i64 }} }}",
@@ -4780,7 +5115,7 @@ impl FnGenerator {
                 let counter = { let mut c = self.regex_counter.borrow_mut(); let v = *c; *c += 1; v };
                 let text = self.gen_expr_direct(&args[0].node, NativeType::String);
                 let repl = self.gen_expr_direct(&args[2].node, NativeType::String);
-                let pat_escaped = pat.replace('\\', "\\\\").replace('"', "\\\"");
+                let pat_escaped = rust_str_body(&pat);
                 let inner = format!(
                     "{{ static RX_{}: std::sync::OnceLock<regex::Regex> = std::sync::OnceLock::new(); \
                      let _rx = RX_{}.get_or_init(|| regex::Regex::new(\"{}\").unwrap()); _rx.replace_all(&{}, _soma_rx_rep(&{}, _rx.captures_len() - 1, &_rx.capture_names().flatten().collect::<Vec<_>>()).as_str()).into_owned() }}",
@@ -4843,7 +5178,7 @@ impl FnGenerator {
             "write_str" if args.len() == 1 => {
                 let s = self.gen_expr_direct(&args[0].node, NativeType::String);
                 // flush: the dylib has its own stdout buffer the host never drains
-                return format!("{{ use std::io::Write; let mut _o = std::io::stdout(); let _ = _o.write_all({}.as_bytes()); let _ = _o.flush(); 0i64 }}", s);
+                return format!("{{ _soma_write_str(&{}); 0i64 }}", s);
             }
             // random(max) / random(min, max) are Ints, like the interpreter
             "random" if args.len() == 1 => {
@@ -5030,7 +5365,7 @@ impl FnGenerator {
             // surrounding small_int_var consumer skip the Integer wrap.
             "bit_test" if args.len() == 2 => {
                 let b_expr = &args[1].node;
-                let b = format!("_soma_bit_index({})", self.gen_int_arg_direct(b_expr, name));
+                let b = format!("_soma_bit_index({}, \"{}\")", self.gen_int_arg_direct(b_expr, name), name);
                 if self.mode == Mode::Rug {
                     if let Expr::Ident(name) = &args[0].node {
                         if !self.small_int_vars.contains(name) {
@@ -5046,18 +5381,18 @@ impl FnGenerator {
             "bit_set" if args.len() == 2 => {
                 let b_expr = &args[1].node;
                 let a = self.gen_int_arg_direct(&args[0].node, name);
-                let b = format!("_soma_bit_index({})", self.gen_int_arg_direct(b_expr, name));
+                let b = format!("_soma_bit_index({}, \"{}\")", self.gen_int_arg_direct(b_expr, name), name);
                 // bit 63 and above do not fit an i64: the BigInt variant computes it
                 format!("({{ let (_k, _a): (i64, i64) = ({}, {}); if _k >= 63 {{ panic!(\"attempt to shift left with overflow\") }} _a | (1i64 << _k) }})", b, a)
             }
             "bit_clr" if args.len() == 2 => {
                 let b_expr = &args[1].node;
                 let a = self.gen_int_arg_direct(&args[0].node, name);
-                let b = format!("_soma_bit_index({})", self.gen_int_arg_direct(b_expr, name));
+                let b = format!("_soma_bit_index({}, \"{}\")", self.gen_int_arg_direct(b_expr, name), name);
                 format!("({{ let (_k, _a): (i64, i64) = ({}, {}); if _k >= 63 {{ panic!(\"attempt to shift left with overflow\") }} _a & !(1i64 << _k) }})", b, a)
             }
             "bit_next" if args.len() == 2 => {
-                let b = format!("_soma_bit_index({})", self.gen_int_arg_direct(&args[1].node, name));
+                let b = format!("_soma_bit_index({}, \"{}\")", self.gen_int_arg_direct(&args[1].node, name), name);
                 // Mixed mode: big-Integer source in Rug mode → use GMP scan.
                 if self.mode == Mode::Rug {
                     if let Expr::Ident(name) = &args[0].node {
@@ -5099,7 +5434,7 @@ impl FnGenerator {
                 let m = self.gen_int_arg_direct(&args[2].node, name);
                 // the result is in [0, m) like the interpreter (a negative
                 // base gave -1 for pow_mod(-1, 1, 7), not 6)
-                format!("{{ let (_m, _base, mut _e): (i128, i128, i64) = (({}) as i128, ({}) as i128, {}); if _m == 0 {{ panic!(\"soma:type: pow_mod(): modulus 0\") }} let mut _r: i128 = 1i128.rem_euclid(_m); let mut _b: i128 = _base.rem_euclid(_m); if _e < 0 {{ panic!(\"soma:type: pow_mod: negative exponent (a modular inverse is not computed)\") }} while _e > 0 {{ if _e & 1 == 1 {{ _r = (_r * _b).rem_euclid(_m); }} _e >>= 1; _b = (_b * _b).rem_euclid(_m); }} _r as i64 }}",
+                format!("{{ let (_m, _base, mut _e): (i128, i128, i64) = (({}) as i128, ({}) as i128, {}); if _m == 0 {{ panic!(\"soma:type: pow_mod: modulus is zero\") }} let mut _r: i128 = 1i128.rem_euclid(_m); let mut _b: i128 = _base.rem_euclid(_m); if _e < 0 {{ panic!(\"soma:type: pow_mod: negative exponent (a modular inverse is not computed)\") }} while _e > 0 {{ if _e & 1 == 1 {{ _r = (_r * _b).rem_euclid(_m); }} _e >>= 1; _b = (_b * _b).rem_euclid(_m); }} _r as i64 }}",
                     m, base, exp)
             }
             other => {
@@ -5241,6 +5576,23 @@ impl FnGenerator {
                 return self.q_wrap_def(name, &value.node, inner, &ind);
             }
         }
+        if matches!(stmt, Statement::If { .. } | Statement::While { .. } | Statement::For { .. }) {
+            self.outer_rest.borrow_mut().push(rest.to_vec());
+            let out = self.gen_stmt_rug_inner(stmt, indent, ctx, rest);
+            self.outer_rest.borrow_mut().pop();
+            return out;
+        }
+        self.gen_stmt_rug_inner(stmt, indent, ctx, rest)
+    }
+
+    fn gen_stmt_rug_inner(
+        &self,
+        stmt: &Statement,
+        indent: usize,
+        ctx: &RugCtx,
+        rest: &[Spanned<Statement>],
+    ) -> String {
+        let ind = Self::indent(indent);
         match stmt {
             Statement::Let { name, value } => {
                 // Buffer creation: same as Direct mode — emit Vec<i64> or Vec<f64>.
@@ -5330,6 +5682,18 @@ impl FnGenerator {
                 let mut new_hoisted: HashSet<String> = HashSet::new();
                 self.collect_loop_int_vars(body, &mut new_hoisted);
                 for v in &ctx.hoisted { new_hoisted.remove(v); }
+                // Only a name the loop owns: hoisting a `let x` that shadows
+                // an outer `x` (or a parameter) replaced the outer binding
+                // after the loop, and one declared in two nested blocks of
+                // the loop would share one variable across both scopes.
+                {
+                    let full = self.full_body.borrow();
+                    new_hoisted.retain(|v| {
+                        !self.param_names.contains(v)
+                            && name_mentions(&full, v) == name_mentions(body, v)
+                            && let_blocks_of(body, v) <= 1
+                    });
+                }
                 let mut sorted: Vec<&String> = new_hoisted.iter().collect();
                 sorted.sort();
                 for var in &sorted {
@@ -5409,7 +5773,7 @@ impl FnGenerator {
                     }
                     if fname == "hm_inc" && args.len() == 2 {
                         if let Expr::Ident(hm) = &args[0].node {
-                            let k = self.gen_expr_direct(&args[1].node, NativeType::Int);
+                            let k = self.gen_hm_key_rug(&args[1].node);
                             return format!("{}*{}.entry({}).or_insert(0i64) += 1;\n", ind, hm, k);
                         }
                     }
@@ -5501,8 +5865,14 @@ impl FnGenerator {
                                     );
                                 }
                                 // Compound int expression (e.g. `c - 48`):
-                                // lower as i64 expression and write directly.
-                                let arg = self.gen_int_to_i64_rug(&args[0].node);
+                                // i64 when it provably fits, else an Integer
+                                // (`to_string(a * 2)` of a BigInt raised a
+                                // "range()" error)
+                                let arg = if self.is_small_int_expr(&args[0].node) {
+                                    self.gen_expr_direct(&args[0].node, NativeType::Int)
+                                } else {
+                                    self.gen_expr_rug(&args[0].node)
+                                };
                                 return format!(
                                     "{}{{ use std::fmt::Write; write!({}, \"{{}}\", ({})).unwrap(); }}\n",
                                     ind, name, arg
@@ -5512,6 +5882,9 @@ impl FnGenerator {
                     }
                     // General: result.push_str(rhs)
                     let rhs = self.gen_expr_rug_string(&right.node);
+                    if Self::expr_references(&right.node, name) {
+                        return format!("{}{{ let _r: String = {}; {}.push_str(&_r); }}\n", ind, rhs, name);
+                    }
                     return format!("{}{}.push_str(&{});\n", ind, name, rhs);
                 }
             }
@@ -5699,6 +6072,19 @@ impl FnGenerator {
             }
             return format!("Integer::from({} {} {})", l, op_str, r);
         }
+        // `%` by a zero Integer: rug panics "division by zero" where the
+        // interpreter says "modulo by zero" — test the divisor first
+        let nonzero_lit = matches!(right, Expr::Literal(Literal::Int(k)) if *k != 0);
+        if matches!(op, BinOp::Mod) && !nonzero_lit {
+            let (l_bind, l_use) = match left {
+                Expr::Literal(Literal::Int(_)) | Expr::Ident(_) => (String::new(), self.gen_expr_rug_operand(left)),
+                _ => (format!("let _l: Integer = {}; ", self.gen_expr_rug(left)), "&_l".to_string()),
+            };
+            let l_use = if l_use.ends_with("i64") || l_use.ends_with("u32") || l_use.ends_with("i32")
+                || matches!(left, Expr::Ident(n) if self.small_int_vars.contains(n)) { format!("Integer::from({})", l_use) } else { l_use };
+            let r_bind = format!("let _r: Integer = {};", self.gen_expr_rug(right));
+            return format!("{{ {}{} if _r == 0 {{ panic!(\"soma:modulo by zero\") }} Integer::from({} % &_r) }}", l_bind, r_bind, l_use);
+        }
         // Mixed: pick representation that rug supports
         // Rug supports: Integer op &Integer, Integer op u32/i32/u64/i64
         // For "small * Integer" we want: small as i64 * &big = Integer
@@ -5744,16 +6130,16 @@ impl FnGenerator {
             // `/` is the exact quotient or an error (gen_binop_rug), never
             // rug's / i64's truncating division: `m = (lo + hi) / 2` after
             // an overflow re-run returned the truncated midpoint
-            Expr::BinaryOp { op: BinOp::Div, .. } => self.gen_expr_rug(expr),
+            Expr::BinaryOp { op: BinOp::Div | BinOp::Mod, .. } => self.gen_expr_rug(expr),
             Expr::BinaryOp { left, op, right } => {
                 let lt = self.infer_expr_type(&left.node);
                 let rt = self.infer_expr_type(&right.node);
                 if lt == NativeType::Int && rt == NativeType::Int {
                     let op_str = arith_op_str(*op);
+                    // two small operands: checked, promoting to an Integer
+                    // on overflow (`a * a` overflowed i64 here)
                     if self.is_small_int_expr(&left.node) && self.is_small_int_expr(&right.node) {
-                        let l = self.gen_expr_direct(&left.node, NativeType::Int);
-                        let r = self.gen_expr_direct(&right.node, NativeType::Int);
-                        return format!("{} {} {}", l, op_str, r);
+                        return self.gen_binop_rug(&left.node, *op, &right.node);
                     }
                     let l = self.gen_expr_rug_operand(&left.node);
                     let r = self.gen_expr_rug_operand(&right.node);
@@ -5873,6 +6259,12 @@ impl FnGenerator {
                 return format!("{}{}.clone_from(&{});\n", ind, name, src);
             }
         }
+        // `let x = x + 1` over a hoisted x: `x.assign(&x + 1)` borrows x
+        // twice (E0502) — compute into a temporary first
+        if Self::expr_references(value, name) {
+            let expr = self.gen_expr_rug(value);
+            return format!("{}{{ let mut _t: Integer = {}; std::mem::swap(&mut {}, &mut _t); }}\n", ind, expr, name);
+        }
         // General: assign from incomplete expression
         let expr = self.gen_expr_rug_incomplete(value);
         format!("{}{}.assign({});\n", ind, name, expr)
@@ -5942,7 +6334,9 @@ impl FnGenerator {
                 // — i.e. nothing later in the current straight-line
                 // block reads src after the swap, which would observe
                 // the now-swapped junk.
-                if self.swap_safe_vars.contains(src) && !body_references(rest, src) {
+                if self.swap_safe_vars.contains(src) && !body_references(rest, src)
+                    && !self.outer_rest.borrow().iter().any(|r| body_references(r, src))
+                {
                     return format!("{}std::mem::swap(&mut {}, &mut {});\n", ind, name, src);
                 }
                 // Fallback: clone_from is correct in all contexts.
@@ -5976,7 +6370,7 @@ impl FnGenerator {
             "bit_clr" => "false",
             _ => return None,
         };
-        let i = self.gen_int_to_i64_rug(&args[1].node);
+        let i = format!("_soma_bit_index({}, \"{}\")", self.gen_int_to_i64_rug(&args[1].node), fname);
         Some(format!("{}{}.set_bit(({}) as u32, {});\n", ind, name, i, bit_value))
     }
 
@@ -6000,7 +6394,10 @@ impl FnGenerator {
         let op_assign = match op {
             BinOp::Add => "+=", BinOp::Sub => "-=", BinOp::Mul => "*=",
             // no `/=`: rug's truncates; `/` must go through _soma_div_exact_big
-            BinOp::Mod => "%=", _ => return None,
+            // `%=` only by a nonzero literal (a zero divisor must say
+            // "modulo by zero", see gen_binop_rug)
+            BinOp::Mod if matches!(&right.node, Expr::Literal(Literal::Int(k)) if *k != 0) => "%=",
+            _ => return None,
         };
 
         // Form 1: name = name OP rhs
@@ -6053,7 +6450,7 @@ impl FnGenerator {
                         let i = self.gen_int_to_i64_rug(&args[1].node);
                         let getbit = if let Expr::Ident(name) = &args[0].node {
                             if self.small_int_vars.contains(name) {
-                                format!("((({}) >> ({})) & 1i64) != 0", name, i)
+                                format!("(((({}) >> ({})) & 1i64) != 0)", name, i)
                             } else {
                                 format!("{}.get_bit(({}) as u32)", name, i)
                             }
@@ -6084,7 +6481,9 @@ impl FnGenerator {
                     }
                     let l = self.gen_cmp_operand_rug(&left.node);
                     let r = self.gen_cmp_operand_rug(&right.node);
-                    format!("{} {} {}", l, op_str, r)
+                    // parenthesized: `!(m > 1)` became `(!m > 1i64)` —
+                    // `!` on the Integer, then the comparison
+                    format!("({} {} {})", l, op_str, r)
                 } else if matches!((lt, rt), (NativeType::Int, NativeType::Float) | (NativeType::Float, NativeType::Int)) {
                     self.gen_mixed_comparison(&left.node, *op, &right.node, lt)
                 } else if lt == NativeType::Bool && rt == NativeType::Bool {
@@ -6146,39 +6545,13 @@ impl FnGenerator {
         }
     }
 
-    /// True if expr only references small_int_vars or i64 literals.
+    /// True if expr evaluates in i64 without overflow: an Int literal, or
+    /// literals and small locals whose every sub-expression provably fits
+    /// (`a * a` of two small locals is not small unless their bounds say
+    /// so; `(0 - 9223372036854775807 - 1) * -1` is not).
     fn is_small_int_expr(&self, expr: &Expr) -> bool {
-        // literal arithmetic is small only when it does not overflow i64:
-        // `(0 - 9223372036854775807 - 1) * -1` panicked where the
-        // interpreter promotes to BigInt
-        fn fold(e: &Expr) -> Option<Option<i64>> {
-            match e {
-                Expr::Literal(Literal::Int(n)) => Some(Some(*n)),
-                Expr::BinaryOp { left, op, right } => {
-                    let (l, r) = (fold(&left.node)?, fold(&right.node)?);
-                    let (Some(l), Some(r)) = (l, r) else { return Some(None) };
-                    Some(match op {
-                        BinOp::Add => l.checked_add(r),
-                        BinOp::Sub => l.checked_sub(r),
-                        BinOp::Mul => l.checked_mul(r),
-                        _ => None,
-                    })
-                }
-                _ => None,
-            }
-        }
-        if let Some(v) = fold(expr) { return v.is_some(); }
-        match expr {
-            Expr::Literal(Literal::Int(_)) => true,
-            Expr::Ident(name) => self.small_int_vars.contains(name),
-            Expr::BinaryOp { left, right, .. } => {
-                // a near-i64::MAX literal next to a small variable overflows too
-                let huge = |e: &Expr| matches!(e, Expr::Literal(Literal::Int(n)) if n.unsigned_abs() >= 1 << 31);
-                !huge(&left.node) && !huge(&right.node)
-                    && self.is_small_int_expr(&left.node) && self.is_small_int_expr(&right.node)
-            }
-            _ => false,
-        }
+        if matches!(expr, Expr::Literal(Literal::Int(_))) { return true; }
+        Self::int_bits(expr, &self.small_int_bits, &self.var_types, 63).is_some()
     }
 
     fn gen_cmp_operand_rug(&self, expr: &Expr) -> String {
@@ -6196,7 +6569,7 @@ impl FnGenerator {
     fn gen_expr_rug_string(&self, expr: &Expr) -> String {
         match expr {
             Expr::Literal(Literal::String(s)) => {
-                format!("\"{}\".to_string()", unbrace(s).replace('\\', "\\\\").replace('"', "\\\""))
+                format!("\"{}\".to_string()", rust_str_body(&unbrace(s)))
             }
             Expr::BinaryOp { left, op: BinOp::Add, right } => {
                 let l = self.gen_expr_rug_string(&left.node);
@@ -6225,7 +6598,7 @@ impl FnGenerator {
                 let counter = { let mut c = self.regex_counter.borrow_mut(); let v = *c; *c += 1; v };
                 let text = self.gen_expr_rug_string(&args[0].node);
                 let repl = self.gen_expr_rug_string(&args[2].node);
-                let pat_escaped = pat.replace('\\', "\\\\").replace('"', "\\\"");
+                let pat_escaped = rust_str_body(&pat);
                 format!(
                     "{{ static RX_{}: std::sync::OnceLock<regex::Regex> = std::sync::OnceLock::new(); \
                      let _rx = RX_{}.get_or_init(|| regex::Regex::new(\"{}\").unwrap()); _rx.replace_all(&{}, _soma_rx_rep(&{}, _rx.captures_len() - 1, &_rx.capture_names().flatten().collect::<Vec<_>>()).as_str()).into_owned() }}",
@@ -6275,6 +6648,17 @@ impl FnGenerator {
                 let inner = self.gen_expr_rug(expr);
                 format!("{}.to_string()", inner)
             }
+        }
+    }
+
+    /// A hashmap key in BigInt mode: i64 arithmetic when the key is a
+    /// provably small expression, else computed as an Integer and narrowed
+    /// (`hm_inc(m, a % 10)` with a BigInt `a` raised "BigInt overflow").
+    fn gen_hm_key_rug(&self, key: &Expr) -> String {
+        if self.is_small_int_expr(key) {
+            self.gen_expr_direct(key, NativeType::Int)
+        } else {
+            hm_i64(&self.gen_expr_rug(key), "key")
         }
     }
 
@@ -6330,7 +6714,7 @@ impl FnGenerator {
             // HashMap accessors (Rug-mode wrapping)
             "hm_get" if args.len() == 2 => {
                 if let Expr::Ident(hm) = &args[0].node {
-                    let k = self.gen_expr_direct(&args[1].node, NativeType::Int);
+                    let k = self.gen_hm_key_rug(&args[1].node);
                     return format!("Integer::from(*{}.get(&({})).unwrap_or(&0i64))", hm, k);
                 }
                 self.err("hm_get: first arg must be an identifier");
@@ -6347,7 +6731,7 @@ impl FnGenerator {
             }
             "hm_inc" if args.len() == 2 => {
                 if let Expr::Ident(hm) = &args[0].node {
-                    let k = self.gen_expr_direct(&args[1].node, NativeType::Int);
+                    let k = self.gen_hm_key_rug(&args[1].node);
                     return format!("{{ *{}.entry({}).or_insert(0i64) += 1; Integer::from(0i64) }}", hm, k);
                 }
                 self.err("hm_inc: first arg must be an identifier");
@@ -6362,7 +6746,7 @@ impl FnGenerator {
             }
             "hm_has" if args.len() == 2 => {
                 if let Expr::Ident(hm) = &args[0].node {
-                    let k = self.gen_expr_direct(&args[1].node, NativeType::Int);
+                    let k = self.gen_hm_key_rug(&args[1].node);
                     return format!("Integer::from(if {}.contains_key(&({})) {{ 1i64 }} else {{ 0i64 }})", hm, k);
                 }
                 self.err("hm_has: first arg must be an identifier");
@@ -6403,7 +6787,7 @@ impl FnGenerator {
             // write_str: side-effecting, returns 0
             "write_str" if args.len() == 1 => {
                 let s = self.gen_expr_rug_string(&args[0].node);
-                return format!("{{ use std::io::Write; let _ = std::io::stdout().write_all({}.as_bytes()); Integer::from(0i64) }}", s);
+                return format!("{{ _soma_write_str(&{}); Integer::from(0i64) }}", s);
             }
             // Regex count/match in Rug mode
             "regex_count" if args.len() == 2 => {
@@ -6413,7 +6797,7 @@ impl FnGenerator {
                 };
                 let counter = { let mut c = self.regex_counter.borrow_mut(); let v = *c; *c += 1; v };
                 let text = self.gen_expr_rug_string(&args[0].node);
-                let pat_escaped = pat.replace('\\', "\\\\").replace('"', "\\\"");
+                let pat_escaped = rust_str_body(&pat);
                 return format!(
                     "Integer::from({{ static RX_{}: std::sync::OnceLock<regex::Regex> = std::sync::OnceLock::new(); \
                      RX_{}.get_or_init(|| regex::Regex::new(\"{}\").unwrap()).find_iter(&{}).count() as i64 }})",
@@ -6427,7 +6811,7 @@ impl FnGenerator {
                 };
                 let counter = { let mut c = self.regex_counter.borrow_mut(); let v = *c; *c += 1; v };
                 let text = self.gen_expr_rug_string(&args[0].node);
-                let pat_escaped = pat.replace('\\', "\\\\").replace('"', "\\\"");
+                let pat_escaped = rust_str_body(&pat);
                 return format!(
                     "Integer::from({{ static RX_{}: std::sync::OnceLock<regex::Regex> = std::sync::OnceLock::new(); \
                      if RX_{}.get_or_init(|| regex::Regex::new(\"{}\").unwrap()).is_match(&{}) {{ 1i64 }} else {{ 0i64 }} }})",
@@ -6562,7 +6946,7 @@ impl FnGenerator {
                 // an Integer ident. For small_int_var idents (i64), use a
                 // pure-i64 shift. For non-idents, fall through to building
                 // an Integer.
-                let b = format!("_soma_bit_index({})", self.gen_int_to_i64_rug(&args[1].node));
+                let b = format!("_soma_bit_index({}, \"{}\")", self.gen_int_to_i64_rug(&args[1].node), name);
                 if let Expr::Ident(name) = &args[0].node {
                     if self.small_int_vars.contains(name) {
                         return format!("Integer::from({{ let (_k, _a): (i64, i64) = ({}, {}); if _k >= 64 {{ if _a < 0 {{ 1i64 }} else {{ 0i64 }} }} else {{ (_a >> _k) & 1i64 }} }})", b, name);
@@ -6580,19 +6964,19 @@ impl FnGenerator {
                 // new value (for non-self-assign uses; self-assign goes
                 // through try_inplace_bit and never reaches here).
                 let a = self.gen_expr_rug(&args[0].node);
-                let b = format!("_soma_bit_index({})", self.gen_int_to_i64_rug(&args[1].node));
+                let b = format!("_soma_bit_index({}, \"{}\")", self.gen_int_to_i64_rug(&args[1].node), name);
                 format!("{{ let (mut _t, _k) = (Integer::from({}), {}); _t.set_bit(_k as u32, true); _soma_bits_cap(_t) }}", a, b)
             }
             "bit_clr" if args.len() == 2 => {
                 let a = self.gen_expr_rug(&args[0].node);
-                let b = format!("_soma_bit_index({})", self.gen_int_to_i64_rug(&args[1].node));
+                let b = format!("_soma_bit_index({}, \"{}\")", self.gen_int_to_i64_rug(&args[1].node), name);
                 format!("{{ let (mut _t, _k) = (Integer::from({}), {}); _t.set_bit(_k as u32, false); _soma_bits_cap(_t) }}", a, b)
             }
             // bit_next(x, start) — find the next 1-bit at position ≥ start
             // (or -1 if none). Maps to rug's find_one which uses GMP's
             // mpz_scan1 — O(1) amortized over the limbs.
             "bit_next" if args.len() == 2 => {
-                let b = format!("_soma_bit_index({})", self.gen_int_to_i64_rug(&args[1].node));
+                let b = format!("_soma_bit_index({}, \"{}\")", self.gen_int_to_i64_rug(&args[1].node), name);
                 if let Expr::Ident(name) = &args[0].node {
                     if self.small_int_vars.contains(name) {
                         // i64 path: mask off bits below b, then trailing_zeros
@@ -6626,7 +7010,7 @@ impl FnGenerator {
                 let base = self.gen_expr_rug(&args[0].node);
                 let exp = self.gen_int_borrow_rug(&args[1].node);
                 let m = self.gen_int_borrow_rug(&args[2].node);
-                format!("{{ if Integer::from({}) < 0 {{ panic!(\"soma:type: pow_mod: negative exponent (a modular inverse is not computed)\") }} if Integer::from({}) == 0 {{ panic!(\"soma:type: pow_mod(): modulus 0\") }} ({}).pow_mod({}, {}).expect(\"pow_mod failed\") }}", exp, m, base, exp, m)
+                format!("{{ if Integer::from({}) < 0 {{ panic!(\"soma:type: pow_mod: negative exponent (a modular inverse is not computed)\") }} if Integer::from({}) == 0 {{ panic!(\"soma:type: pow_mod: modulus is zero\") }} ({}).pow_mod({}, {}).expect(\"pow_mod failed\") }}", exp, m, base, exp, m)
             }
             "random" if args.len() == 1 => {
                 let m = self.gen_int_to_i64_rug(&args[0].node);
@@ -6883,6 +7267,13 @@ fn hm_i64(rug_expr: &str, what: &str) -> String {
         "{{ let _v: Integer = {}; _v.to_i64().unwrap_or_else(|| panic!(\"soma:range: a hashmap holds 64-bit Ints — {} {{}} does not fit (mask it, or keep it in a scalar, which promotes to BigInt)\", _v)) }}",
         rug_expr, what
     )
+}
+
+/// `s` as the inside of a Rust string literal: every control character
+/// escaped (a raw CR was a rustc error, a CRLF silently became LF).
+fn rust_str_body(s: &str) -> String {
+    let dbg = format!("{:?}", s);
+    dbg[1..dbg.len() - 1].to_string()
 }
 
 /// `{{` / `}}` in a Soma string literal are one brace, as in the

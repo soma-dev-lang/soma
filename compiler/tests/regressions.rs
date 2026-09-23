@@ -5071,3 +5071,146 @@ cell App {
     assert_ne!(code, 0);
     let _ = std::fs::remove_dir_all(dir);
 }
+
+#[test]
+fn native_fifth_pass_bigint_mode_matches_interpreted() {
+    // BigInt-mode codegen: `!(m > 1)` read `(!m > 1)` (and failed rustc on a
+    // parameter); a swap-on-assign missed a read after the enclosing `if`;
+    // a loop `let x` hoisted over an outer x; `let x = x + 1` in a loop;
+    // i64 locals that outgrew 64 bits in the BigInt fallback itself;
+    // `s = s + s`; a hashmap key computed from a BigInt; `%` by zero
+    passes("native_fifth_bigint", r#"
+cell A {
+    on neg(n: Int) [native] { let m = n * n - n * n  if !(m > 1) { return 1 }  return 0 }
+    on fact(n: Int) [native] { if !(n > 1) { return 1 }  return n * fact(n - 1) }
+    on sw(n: Int) [native] { let a = n * n  let b = 0  if n > 0 { b = a }  return a + b }
+    on hoist(n: Int) [native] { let x = n * n  let i = 0  while i < 2 { let x = n + i  i = i + 1 }  return x }
+    on selflet(n: Int) [native] { let x = n * n  let i = 0  while i < 2 { let x = x + 1  i = i + 1 }  return x }
+    on sib(n: Int) [native] { let x = 0  x = fact(30)  return x + n }
+    on lit(n: Int) [native] { let y = 4294967296  let x = y * 4294967296  return x + n }
+    on dbl(n: Int) [native] { let x = 3  for i in range(0, n) { x = x - (0 - x) }  return x }
+    on copy(n: Int) [native] { let x = 3  let k = 0  for i in range(0, n) { k = x  x = x + k }  return x }
+    on txt(n: Int) [native] { let s = "v="  let a = n * n  s = s + to_string(a * 2)  return s }
+    on grow(n: Int) [native] { let s = "ab"  for i in range(0, n) { s = s + s }  return s }
+    on key(n: Int) [native] { let a = n * n  let m = hashmap()  hm_inc(m, a % 10)  hm_inc(m, a % 10)  return hm_get(m, a % 10) }
+    on has(n: Int) [native] { let m = hashmap()  hm_set(m, 1, 2)  return hm_has(m, n) }
+    on md(a: Int, b: Int) [native] { let x = a * a  return x % b }
+}
+cell test T { rules {
+    assert neg(1099511627776) == 1
+    assert fact(25) == 15511210043330985984000000
+    assert sw(4294967297) == 36893488164598972418
+    assert hoist(4294967297) == 18446744082299486209
+    assert selflet(3) == 9
+    assert sib(5) == 265252859812191058636308480000005
+    assert lit(5) == 18446744073709551621
+    assert dbl(100) == 3802951800684688204490109616128
+    assert copy(100) == 3802951800684688204490109616128
+    assert txt(4294967297) == "v=36893488164598972418"
+    assert grow(2) == "abababab"
+    assert key(4294967297) == 2
+    assert has(1) == true
+    assert has(2) == false
+    assert_fails md(4294967297, 0) matching "modulo by zero"
+    assert_fails md(3, 0) matching "modulo by zero"
+} }
+"#);
+}
+
+#[test]
+fn native_fifth_pass_cse_memo_and_tables_stay_faithful() {
+    // shared calls (CSE), caches (memo) and bottom-up tables (tab) only
+    // where they cannot change the answer: not over random / effects, not
+    // across a shadowing `let`, not out of `&&` / `||`, and a table only
+    // when every guard and value renders faithfully
+    passes("native_fifth_cse", r#"
+cell A {
+    on r(n: Int) [native] { return random(n) }
+    on d() [native] { return r(1000000000) - r(1000000000) }
+    on q(n: Int) [native] { if n <= 1 { return random(1000000000) }  return q(n - 1) - q(n - 2) }
+    on sh(a: Int) [native] { let x = a  let p = sqrt_int(x)  let x = a * 4  let q = sqrt_int(x)  return p * 1000 + q }
+    on g(i: Int) [native] { return str_at("abc", i) }
+    on sc(i: Int) [native] { let ok = i < 3 && g(i) + g(i) > 0  if ok { return 1 }  return 0 }
+    on inf(n: Int) [native] { let z = n <= 0 || inf(n - 1) + inf(n - 1) >= 0  if z { return 1 }  return 0 }
+    on el(n: Int) [native] { if n < 2 { return 1 } else { return n * 10 }  return el(n - 1) + el(n - 2) }
+    on cb(n: Int) [native] { if n < 2 { return max(n, 7) }  return cb(n - 1) + cb(n - 2) }
+    on dv(n: Int) [native] { if n < 2 { return 1 }  if n / 3 == 1 { return 100 }  return dv(n - 1) + dv(n - 2) }
+    on orf(n: Int) [native] { if n == 0 || n == 1 { return 1 }  return orf(n - 1) + orf(n - 2) }
+    on fg(n: Int) [native] { if n < 2.5 { return 1 }  return fg(n - 1) + fg(n - 2) }
+    on cg(n: Int) [native] { if abs(n) < 2 { return 1 }  return cg(n - 1) + cg(n - 2) }
+    on nt(n: Int) [native] { if !(n > 1) { return 1 }  return nt(n - 1) + nt(n - 2) }
+}
+cell test T { rules {
+    assert d() != 0 || d() != 0 || d() != 0
+    assert q(3) != q(3) || q(3) != q(3) || q(3) != q(3)
+    assert sh(49) == 7014
+    assert sc(5) == 0
+    assert inf(3) == 1
+    assert el(6) == 60
+    assert cb(6) == 91
+    assert dv(8) == 810
+    assert orf(10) == 89
+    assert fg(8) == 21
+    assert cg(6) == 13
+    assert nt(10) == 89
+} }
+"#);
+}
+
+#[test]
+fn native_fifth_pass_write_str_is_flushed_once() {
+    // a statement-level write_str was never flushed; a writing sibling
+    // shared by CSE or cached by memo wrote once; an i64 overflow re-ran
+    // the handler in BigInt mode and wrote everything twice
+    let dir = scratch("native_fifth_write");
+    std::fs::write(dir.join("app.cell"), r#"
+cell A {
+    on w(n: Int) [native] { write_str("A")  write_str("B")  return n }
+    on one(n: Int) [native] { write_str("W")  return n }
+    on two() [native] { return one(1) + one(1) }
+    on p(n: Int) [native] { if n <= 1 { write_str("L")  return 1 }  return p(n - 1) + p(n - 2) }
+    on big(n: Int) [native] { write_str("S")  let x = n * n  return x * x * x }
+    on run() {
+        let a = w(1)
+        print("|")
+        let b = two()
+        print("|")
+        let c = p(3)
+        print("|")
+        let d = big(100000)
+        print("|{d}")
+    }
+}
+"#).unwrap();
+    let (code, out) = soma(&dir, &["run", "app.cell", "run"]);
+    assert_eq!(code, 0, "{out}");
+    assert!(out.contains("AB|\nWW|\nLLL|\nS|1000000000000000000000000000000"), "{out}");
+}
+
+#[test]
+fn native_fifth_pass_text_literals_and_refusals() {
+    // CR / CRLF in a literal (a rustc error, or CRLF read as LF); read_file
+    // answers a Map on failure, which native code cannot hold: refused at
+    // check; error texts as interpreted
+    passes("native_fifth_text", r#"
+cell A {
+    on crlf() [native] { return str_len("a\r\nb") }
+    on cr() [native] { return str_len("a\rb") }
+    on rep(s: String) [native] { return str_len(regex_replace(s, "\r\n", "|")) }
+    on pm(a: Int) [native] { return pow_mod(a, 2, 0) }
+    on bt(a: Int) [native] { return bit_test(a, 0 - 1) }
+}
+cell test T { rules {
+    assert crlf() == 4
+    assert cr() == 3
+    assert rep("x\r\ny\r\n") == 4
+    assert_fails pm(5) matching "modulus is zero"
+    assert_fails bt(5) matching "bit_test"
+} }
+"#);
+    let dir = scratch("native_fifth_read_file");
+    std::fs::write(dir.join("app.cell"), "cell A {\n    on rf(p: String) [native] { return read_file(p) }\n}\n").unwrap();
+    let (code, out) = soma(&dir, &["check", "app.cell"]);
+    assert_ne!(code, 0, "{out}");
+    assert!(out.contains("read_file"), "{out}");
+}

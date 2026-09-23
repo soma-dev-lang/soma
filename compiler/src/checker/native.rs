@@ -123,7 +123,7 @@ pub fn return_kind(params: &[Param], body: &[Spanned<Statement>]) -> Option<char
             Expr::Literal(Literal::Bool(_)) | Expr::CmpOp { .. } | Expr::Not(_) | Expr::BinaryOp { op: BinOp::And | BinOp::Or, .. } => Some('b'),
             Expr::BinaryOp { op: BinOp::Sub | BinOp::Mul | BinOp::Div | BinOp::Mod, .. } => Some('n'),
             Expr::FnCall { name, .. } if matches!(name.as_str(), "to_string" | "concat" | "format" | "substring" | "sb_to_string") => Some('s'),
-            Expr::FnCall { name, .. } if name == "str_eq" => Some('b'),
+            Expr::FnCall { name, .. } if name == "str_eq" || name == "hm_has" => Some('b'),
             Expr::Ident(n) => ps.get(n.as_str()).copied(),
             _ => None,
         }
@@ -256,7 +256,7 @@ pub fn check_native_handler(
                 Expr::BinaryOp { op: BinOp::And | BinOp::Or, .. } => true,
                 Expr::Ident(n) => bools.contains(n),
                 // `pos(n) + 1` with a Bool-returning sibling, `str_eq(…) + 1`
-                Expr::FnCall { name, .. } => name == "str_eq" || sibling_kind(name) == Some('b'),
+                Expr::FnCall { name, .. } => name == "str_eq" || name == "hm_has" || sibling_kind(name) == Some('b'),
                 _ => false,
             }
         }
@@ -303,7 +303,7 @@ pub fn check_native_handler(
                     .or_else(|| (kind(&left.node, kinds) == Some('s') && kind(&right.node, kinds) == Some('s')).then_some('s')),
                 Expr::Ident(n) => kinds.get(n).copied(),
                 // a sibling's answer (`st(n) + n`, `pos(n) == 1`)
-                Expr::FnCall { name, .. } if name == "str_eq" => Some('b'),
+                Expr::FnCall { name, .. } if name == "str_eq" || name == "hm_has" => Some('b'),
                 Expr::FnCall { name, .. } => sibling_kind(name),
                 _ => None,
             }
@@ -697,6 +697,14 @@ fn check_expr(handler_name: &str, expr: &Expr, siblings: &NativeSiblings) -> Res
                 return Err(NativeCheckError {
                     handler_name: handler_name.to_string(),
                     reason: format!("builds a {} with `{}(…)` — no maps or lists natively: return one scalar per handler (or a String), and build the record in an interpreted handler", if name == "map" { "map" } else { "list" }, name),
+                });
+            }
+            // read_file answers {error: …} (a Map) when the file cannot be
+            // read; native code cannot hold a Map and answered "" instead
+            if name == "read_file" && !siblings.contains(name) {
+                return Err(NativeCheckError {
+                    handler_name: handler_name.to_string(),
+                    reason: "calls read_file(), which answers a Map {error: …} when the file cannot be read — native code cannot hold a Map: read the file in an interpreted handler and pass the text as a String parameter".to_string(),
                 });
             }
             // Allow known math builtins and calls to other native handlers
