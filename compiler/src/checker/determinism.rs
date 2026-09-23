@@ -31,7 +31,9 @@ fn forbid_reason(name: &str) -> Option<&'static str> {
     match name {
         "now" | "now_ms" | "timestamp" | "today" | "date_now" =>
             Some("reads wall-clock time"),
-        "random" | "rand" | "uuid" | "next_id" =>
+        "random" | "rand" | "uuid" | "next_id" | "random_token"
+        // they draw from a PRNG too
+        | "sample_row" | "importance_sample_rows" | "svd_lowrank" | "regress_sgd" =>
             Some("reads a non-deterministic source"),
         "think" | "think_json" =>
             Some("calls the LLM (output is not a function of the prompt)"),

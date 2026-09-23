@@ -34,6 +34,26 @@ pub const EFFECT_BUILTINS: &[&str] = &[
     "horde_cancel",
 ];
 
+/// Builtins whose answer can differ between two calls in one handler run:
+/// a `require` over one says nothing about the value a later call gives.
+/// Every `deterministic: false` builtin of the registry is one too; these
+/// draw from a PRNG without being marked (`require sample_row(m).index == 0`
+/// "proved" a guard the next draw failed), or read time, the network, files,
+/// the model, the lifecycle or another handler's run.
+const UNSTABLE_BUILTINS: &[&str] = &[
+    "sample_row", "importance_sample_rows", "svd_lowrank", "regress_sgd",
+    "uuid", "next_id", "think", "think_json", "vote", "horde", "horde_status", "horde_results", "horde_cancel",
+    "approve", "http_get", "http_post", "http_put", "http_patch", "http_delete", "fetch", "fetch_json",
+    "ws_connect", "ws_send", "subscribe", "link", "recall", "remember", "get_status", "has_state", "valid_transitions",
+    "transition", "tokens_used", "tokens_remaining", "trace", "delegate",
+];
+
+/// Can two calls of builtin `name` in one handler run answer differently?
+pub fn unstable_builtin(name: &str) -> bool {
+    UNSTABLE_BUILTINS.contains(&name) || IO_BUILTINS.contains(&name)
+        || crate::interpreter::record_log::NONDET_BUILTINS.iter().any(|n| *n == name)
+}
+
 /// Every builtin callable by bare name at runtime, DERIVED from the
 /// builtin registry (interpreter/builtins/registry.rs — the single
 /// source of truth) so this list can never drift from the dispatch

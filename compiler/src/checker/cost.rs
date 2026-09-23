@@ -386,25 +386,13 @@ impl<'a> CostWalk<'a> {
                 if name == "think" || name == "think_json" {
                     let (max_tokens, timeout_ms) = extract_think_opts(args);
                     // map("max_rounds", N) with a literal N caps the rounds
-                    let rounds = args.last().and_then(|a| match &a.node {
-                        Expr::FnCall { name, args: kv } if name == "map" => kv.chunks(2)
-                            .filter(|c| matches!(&c[0].node, Expr::Literal(Literal::String(k)) if k == "max_rounds"))
-                            .last()
-                            .and_then(|c| match c.get(1).map(|v| &v.node) { Some(Expr::Literal(Literal::Int(n))) => Some((*n).clamp(1, 10)), _ => None }),
-                        _ => None,
-                    }).map_or(self.rounds, |r| r.min(self.rounds));
-                    let _ = rounds;
+                    // the LAST `max_rounds` key wins, as in the map the runtime
+                    // builds (the first was costed, the last ran; a computed
+                    // key after it may be `max_rounds` too)
+                    let rounds = args.last().and_then(|a| map_opt(&a.node, "max_rounds").flatten())
+                        .map(|n| n.clamp(1, 10)).map_or(self.rounds, |r| r.min(self.rounds));
                     match max_tokens {
                         Some(t) => {
-                            let rounds = args.last().and_then(|a| match &a.node {
-                                // the LAST `max_rounds` key wins, as in the map the
-                                // runtime builds (the first was costed, the last ran)
-                                Expr::FnCall { name, args: kv } if name == "map" => kv.chunks(2)
-                                    .filter(|c| matches!(&c[0].node, Expr::Literal(Literal::String(k)) if k == "max_rounds"))
-                                    .last()
-                                    .and_then(|c| match c.get(1).map(|v| &v.node) { Some(Expr::Literal(Literal::Int(n))) => Some((*n).clamp(1, 10)), _ => None }),
-                                _ => None,
-                            }).map_or(self.rounds, |r| r.min(self.rounds));
                             self.tokens = self.tokens.saturating_add(t.saturating_mul(rounds))
                         }
                         None => {
@@ -456,10 +444,13 @@ impl<'a> CostWalk<'a> {
                     let opts_at = if matches!(name.as_str(), "http_get" | "http_delete") { 1 } else { 2 };
                     let opts = args.get(opts_at).map(|a| &a.node);
                     let timeout = opts.and_then(extract_timeout_ms);
-                    let literal_map_without_timeout = matches!(opts, Some(Expr::FnCall { name, args: kv }) if name == "map"
-                        && !kv.iter().step_by(2).any(|k| matches!(&k.node, Expr::Literal(Literal::String(s)) if s == "timeout")));
+                    // (a computed key may be `timeout`)
+                    let literal_map_without_timeout = opts.map_or(false, |o| map_opt(o, "timeout").is_none());
                     match (timeout, opts) {
-                        (Some(ms), _) => self.latency_ms = self.latency_ms.saturating_add(ms),
+                        (Some(ms), _) if ms > 0 => self.latency_ms = self.latency_ms.saturating_add(ms),
+                        // a timeout <= 0 is refused before the request: no wait
+                        // (it was ADDED, and `-100000` cancelled a think's 60 s)
+                        (Some(_), _) => {}
                         // the runtime default is 30 s (10 s was counted)
                         (None, None) => self.latency_ms = self.latency_ms.saturating_add(30_000),
                         (None, Some(_)) if literal_map_without_timeout => self.latency_ms = self.latency_ms.saturating_add(30_000),
@@ -595,49 +586,43 @@ impl<'a> CostWalk<'a> {
 /// Returns (max_tokens, timeout_ms) extracted from think()'s second arg.
 fn extract_think_opts(args: &[Spanned<Expr>]) -> (Option<i64>, Option<i64>) {
     if args.len() < 2 { return (None, None); }
-    let mut max_tokens = None;
-    let mut timeout = None;
     // The options map is the LAST argument, exactly as the runtime reads it:
     // think(prompt, map(..)) and think(prompt, system, map(..)) are both bounded.
-    if let Expr::FnCall { name, args: kvs } = &args[args.len() - 1].node {
-        if name == "map" {
-            let mut i = 0;
-            while i + 1 < kvs.len() {
-                if let Expr::Literal(Literal::String(k)) = &kvs[i].node {
-                    if let Expr::Literal(Literal::Int(v)) = &kvs[i + 1].node {
-                        match k.as_str() {
-                            // 0 / negative is refused at run time (it sent 2048): not a bound
-                            "max_tokens" => max_tokens = if *v > 0 { Some(*v) } else { None },
-                            "timeout" => timeout = Some(*v),
-                            _ => {}
-                        }
-                    }
-                }
-                i += 2;
-            }
+    // 0 / negative is ignored at run time (max_tokens sent 2048, a timeout of
+    // 0 waited the provider's 60 s): not a bound
+    let positive = |v: Option<Option<i64>>| v.flatten().filter(|n| *n > 0);
+    let timeout = match map_opt(&args[args.len() - 1].node, "timeout") {
+        // the runtime reads `timeout_ms` only when there is no `timeout` key
+        None => positive(map_opt(&args[args.len() - 1].node, "timeout_ms")),
+        t => positive(t),
+    };
+    (positive(map_opt(&args[args.len() - 1].node, "max_tokens")), timeout)
+}
+
+/// The value key `key` ends with in a literal `map(k, v, …)`, as the runtime
+/// builds it — the LAST pair wins (the first was costed, the last ran):
+/// None when no pair has that key, Some(None) when the winning value is not
+/// a literal Int or a computed key after it may be `key`, or when `opts` is
+/// no literal map.
+fn map_opt(opts: &Expr, key: &str) -> Option<Option<i64>> {
+    let Expr::FnCall { name, args: kvs } = opts else { return Some(None) };
+    if name != "map" { return Some(None); }
+    let mut found: Option<Option<i64>> = None;
+    for pair in kvs.chunks(2) {
+        match &pair[0].node {
+            Expr::Literal(Literal::String(k)) if k == key =>
+                found = Some(match pair.get(1).map(|v| &v.node) { Some(Expr::Literal(Literal::Int(v))) => Some(*v), _ => None }),
+            Expr::Literal(_) => {}
+            _ => found = Some(None),
         }
     }
-    (max_tokens, timeout)
+    found
 }
 
 fn extract_timeout_ms(opts: &Expr) -> Option<i64> {
-    let mut found: Option<Option<i64>> = None;
-    if let Expr::FnCall { name, args } = opts {
-        if name == "map" {
-            let mut i = 0;
-            while i + 1 < args.len() {
-                if let Expr::Literal(Literal::String(k)) = &args[i].node {
-                    // the LAST `timeout` wins, as at run time (the first was read:
-                    // map("timeout", 100, "timeout", 60000) "proved" 100 ms)
-                    if k == "timeout" {
-                        found = match &args[i + 1].node { Expr::Literal(Literal::Int(v)) => Some(Some(*v)), _ => Some(None) };
-                    }
-                }
-                i += 2;
-            }
-        }
-    }
-    found.flatten()
+    // the LAST `timeout` wins, as at run time (the first was read:
+    // map("timeout", 100, "timeout", 60000) "proved" 100 ms)
+    map_opt(opts, "timeout").flatten()
 }
 
 /// Per-model USD cost per 1000 input tokens (very rough). Override

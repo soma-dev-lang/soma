@@ -4706,5 +4706,227 @@ cell App {
     let body = "{\"a\":1,\"b\":2}";
     let out = raw_request(port, &format!("POST /opt?q=1 HTTP/1.0\r\nHost: localhost\r\nContent-Type: application/json\r\nContent-Length: {}\r\n\r\n{}", body.len(), body));
     assert!(out.contains("\"q\":1") && out.contains("\"b\":2"), "{out}");
+
+fn verify_fourth_pass_soundness() {
+    let dir = scratch("verify_fourth_pass");
+    let verify = |name: &str, src: &str| -> String {
+        std::fs::write(dir.join(name), src).unwrap();
+        soma(&dir, &["verify", name]).1
+    };
+    let inv = "memory {\n        bal: Map<String, Int> [persistent]\n        invariant bal >= 0\n    }";
+    // a write inside an index expression is a write
+    let out = verify("idx.cell", &format!("cell App {{\n    {inv}\n    on viaindex(k: String) {{\n        let xs = [1, 2, 3]\n        return xs[bal.set(k, -5) ?? 0]\n    }}\n}}\n"));
+    assert!(out.contains("writes -5 to 'bal': statically violated"), "{out}");
+    // a horde task (or callback) that deletes the required key: no size proof
+    let out = verify("horde.cell", r#"cell App {
+    memory {
+        bal: Map<String, Int> [persistent]
+        invariant size <= 1
+    }
+    on seed(k: String) {
+        require len(bal) < 1 else Full
+        bal.set(k, 1)
+        return 1
+    }
+    on drop_one(k: String) {
+        bal.delete(k)
+        return 1
+    }
+    on noop(k: String) [task] { return 1 }
+    on bump(k: String, k2: String) {
+        require bal.get(k) != () else Missing
+        horde(drop_one, [k])
+        seed(k2)
+        bal.set(k, 2)
+        return len(bal)
+    }
+    on bump2(k: String) {
+        require bal.get(k) != () else Missing
+        horde(noop, [k], map("on_done", "drop_one"))
+        bal.set(k, 2)
+        return len(bal)
+    }
+}
+"#);
+    assert!(!out.contains("writer 'bump' proven") && !out.contains("writer 'bump2' proven"), "{out}");
+    // sample_row draws again, directly or through a handler: no fact
+    let out = verify("rand.cell", &format!(r#"cell App {{
+    {inv}
+    state order {{
+        initial: pending
+        pending -> validated {{ guard {{ sample_row(m).index == 0 }} }}
+    }}
+    on validate(id: String) {{
+        let m = [[1.0, 0.0], [0.0, 1.0]]
+        require sample_row(m).index == 0 else Unlucky
+        transition(id, "pending", "validated")
+        return get_status(id)
+    }}
+    on put_it(k: String) {{
+        let m = [[1.0, 0.0], [0.0, 1.0]]
+        require 0 - sample_row(m).index >= 0 else Unlucky
+        bal.set(k, 0 - sample_row(m).index)
+        return 1
+    }}
+    on price() {{ return random(1, 20) }}
+    on buy(k: String) {{
+        require (bal.get(k) ?? 0) - price() >= 0 else Low
+        bal.set(k, (bal.get(k) ?? 0) - price())
+        return 1
+    }}
+}}
+"#));
+    assert!(out.contains("runtime-checked in `validate`"), "{out}");
+    assert!(!out.contains("writer 'put_it' proven") && !out.contains("writer 'buy' proven"), "{out}");
+    // a field written after the require, a callee's own `let` of a slot
+    // name, a callee that can end without a value
+    let out = verify("part.cell", &format!(r#"cell App {{
+    {inv}
+    on spend(k: String, n: Int) {{
+        let cur = map("amount", 10)
+        require cur.amount - n >= 0 else Low
+        cur.amount = 0
+        bal.set(k, cur.amount - n)
+        return 1
+    }}
+    on spend2(k: String, n: Int) {{
+        let cur = map("amount", 10)
+        require cur["amount"] - n >= 0 else Low
+        cur["amount"] = 0
+        bal.set(k, cur["amount"] - n)
+        return 1
+    }}
+    on default_bal(plan: String) {{
+        let bal = map("free", -1, "pro", 100)
+        return bal.get(plan) ?? 0
+    }}
+    on open(k: String, plan: String) {{
+        bal.set(k, default_bal(plan))
+        return 1
+    }}
+    on bonus(n: Int) {{
+        if n > 0 {{ return 5 }}
+    }}
+    on grant(k: String, n: Int) {{
+        bal.set(k, bonus(n))
+        return 1
+    }}
+}}
+"#));
+    for h in ["spend", "spend2", "open", "grant"] {
+        assert!(!out.contains(&format!("writer '{h}' proven")), "{h}: {out}");
+    }
+    // a monotone counter whose increment calls a handler that writes it
+    let out = verify("mono.cell", r#"cell App {
+    memory {
+        seq: Map<String, Int> [persistent]
+        invariant value >= (seq.get(key) ?? 0)
+    }
+    on bump(k: String) {
+        seq.set(k, (seq.get(k) ?? 0) + 100)
+        return 1
+    }
+    on next(k: String) {
+        seq.set(k, (seq.get(k) ?? 0) + bump(k))
+        return 1
+    }
+}
+"#);
+    assert!(out.contains("writer 'bump' proven") && !out.contains("writer 'next' proven"), "{out}");
+    // a [task] think() does not change a parameter
+    let out = verify("task.cell", r#"cell Grader {
+    memory {
+        scores: Map<String, Int> [persistent]
+        invariant scores >= 0 && scores <= 100
+    }
+    on grade(k: String, n: Int) [task] {
+        require n >= 0 && n <= 100 else OutOfRange
+        let note = think("comment on {n}", map("max_tokens", 50, "timeout", 5000))
+        scores.set(k, n)
+        return note
+    }
+}
+"#);
+    assert!(out.contains("writer 'grade' proven"), "{out}");
+    // recursion in a non-base `if`, and a decreasing local shadowed by a
+    // match arm or a lambda parameter
+    let out = verify("term.cell", r#"cell App {
+    state job {
+        initial: queued
+        queued -> done
+    }
+    on finish(id: String) {
+        transition(id, "queued", "done")
+        return 1
+    }
+    on depth(n: Int) {
+        if n < 100 {
+            let r = depth(n - 1)
+        }
+        if n <= 0 { return 0 }
+        return depth(n - 1)
+    }
+    on rec(n: Int) {
+        if n <= 0 { return 0 }
+        let m = n - 1
+        let r = match n + 1 {
+            m -> rec(m)
+        }
+        return r
+    }
+    on rec2(n: Int) {
+        if n <= 0 { return 0 }
+        let m = n - 1
+        let rs = [n + 1] |> map(m => rec2(m))
+        return rs[0]
+    }
+    on down(n: Int) {
+        if n > 0 { return n + down(n - 1) }
+        if n <= 0 { return 0 }
+        return 0
+    }
+}
+"#);
+    assert!(out.contains("handler `depth`") && out.contains("handler `rec`") && out.contains("handler `rec2`"), "{out}");
+    assert!(!out.contains("handler `down`"), "{out}");
+    // a stored lambda runs its transition() when called, after a reassignment
+    let out = verify("lam.cell", r#"cell App {
+    state order {
+        initial: pending
+        pending -> validated { guard { amount > 0 } }
+    }
+    on validate(id: String, amount: Int) {
+        require amount > 0 else Bad
+        let go = x => transition(id, "pending", "validated")
+        amount = amount - 10
+        go(1)
+        return get_status(id)
+    }
+}
+"#);
+    assert!(out.contains("runtime-checked in `validate`"), "{out}");
+    // think() options: the last key wins, a computed key may be any, and a
+    // timeout <= 0 is no bound
+    std::fs::write(dir.join("cost.cell"), r#"cell App {
+    cost { tokens: 100  latency: 1s }
+    on a(q: String, n: Int) {
+        return think(q, map("max_tokens", 50, "timeout", 500, "max_tokens", n))
+    }
+    on b(q: String) {
+        return think(q, map("max_tokens", 50, "timeout", 0))
+    }
+    on c(q: String, w: Int) {
+        return think(q, map("max_tokens", 50, "timeout", 500, "timeout", w))
+    }
+    on d(q: String) {
+        let x = http_get("http://example.com", map("timeout", -100000))
+        return think(q, map("max_tokens", 50, "timeout", 900))
+    }
+}
+"#).unwrap();
+    let (code, out) = soma(&dir, &["check", "cost.cell"]);
+    assert_ne!(code, 0, "{out}");
+    assert!(out.contains("a::think (max_tokens is computed") && out.contains("b::think without a literal timeout")
+        && out.contains("c::think without a literal timeout"), "{out}");
     let _ = std::fs::remove_dir_all(dir);
 }

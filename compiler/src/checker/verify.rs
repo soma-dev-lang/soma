@@ -1001,19 +1001,12 @@ impl Facts {
     }
 }
 
-/// Builtins whose answer can change between the `require` and the
-/// transition() (time, randomness, the network, the model).
-const UNSTABLE_GUARD_CALLS: &[&str] = &[
-    "random", "rand", "now", "now_ms", "timestamp", "today", "date_now", "uuid", "next_id",
-    "think", "think_json", "http_get", "http_post", "http_put", "http_patch", "http_delete",
-    "fetch", "fetch_json", "read_file", "recall", "get_status", "valid_transitions", "tokens_used", "tokens_remaining",
-];
-
 /// (never a fact, reads state)
 fn fact_kind(e: &Expr) -> (bool, bool) {
     let (mut never, mut state) = (false, false);
     super::literals::for_each_in_expr(e, &mut |x| match x {
-        Expr::FnCall { name, .. } if UNSTABLE_GUARD_CALLS.contains(&name.as_str()) => never = true,
+        // time, randomness (sample_row too), the network, the model: never a fact
+        Expr::FnCall { name, .. } if super::names::unstable_builtin(name) => never = true,
         Expr::FnCall { .. } | Expr::MethodCall { .. } | Expr::Index { .. } | Expr::FieldAccess { .. } => state = true,
         _ => {}
     });
@@ -1301,6 +1294,12 @@ fn implied_past(facts: &Facts, rebound: &HashSet<String>, guard: &[Vec<Atom>]) -
     guard_implied(&f, guard)
 }
 
+thread_local! {
+    /// The names the handler under proof assigns anywhere (for a stored
+    /// lambda, called at an unknown later point).
+    static ASSIGNED_ANYWHERE: std::cell::RefCell<HashSet<String>> = std::cell::RefCell::new(HashSet::new());
+}
+
 /// Walk a handler body with the facts established so far; at every call of
 /// transition() to the edge, record whether the guard atoms are implied.
 fn walk_guard(stmts: &[Spanned<Statement>], facts: &mut Facts, to: &str, from: &str,
@@ -1325,7 +1324,15 @@ fn walk_guard(stmts: &[Spanned<Statement>], facts: &mut Facts, to: &str, from: &
         match &st.node {
             Statement::Require { constraint, .. } => narrow_constraint(facts, &constraint.node),
             Statement::Let { name, value } | Statement::Assign { name, value } => {
-                if expr_calls_transition_to(&value.node, to, from) {
+                // a lambda stored in a name runs when it is CALLED, later:
+                // `let go = x => transition(…)  amount = amount - 10  go(1)`
+                // was judged with the facts of its definition
+                if matches!(value.node, Expr::Lambda { .. } | Expr::LambdaBlock { .. }) && expr_calls_transition_to(&value.node, to, from) {
+                    let mut later = facts.clone();
+                    later.forget_state();
+                    ASSIGNED_ANYWHERE.with(|a| for n in a.borrow().iter() { later.forget(n); });
+                    out.push(implied_past(&later, &rebound_within(std::slice::from_ref(st)), guard));
+                } else if expr_calls_transition_to(&value.node, to, from) {
                     out.push(implied_past(facts, &rebound_within(std::slice::from_ref(st)), guard));
                 }
                 facts.forget(name);
@@ -1441,6 +1448,12 @@ fn prove_guards(sm: &StateMachineSection, handlers: &[(&OnSection, Span)], findi
             let mut facts = Facts::default();
             facts.nan_free = on.params.iter().filter(|p| matches!(&p.ty.node, TypeExpr::Simple(t) if t == "Int")).map(|p| p.name.clone()).collect();
             let mut verdicts: Vec<bool> = Vec::new();
+            let mut assigned: HashSet<String> = HashSet::new();
+            super::literals::for_each_stmt_deep(&on.body, &mut |x| match x {
+                Statement::Assign { name, .. } | Statement::IndexSet { name, .. } => { assigned.insert(name.clone()); }
+                _ => {}
+            });
+            ASSIGNED_ANYWHERE.with(|a| *a.borrow_mut() = assigned);
             walk_guard(&on.body, &mut facts, to, from, &atoms, &mut verdicts);
             if !verdicts.is_empty() && verdicts.iter().all(|v| *v) { proven.push(name.clone()); } else { open.push(name.clone()); }
         }

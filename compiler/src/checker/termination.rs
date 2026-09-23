@@ -901,7 +901,22 @@ fn decreasing_through_local(body: &[Spanned<Statement>], arg: &Expr, param_name:
     crate::checker::literals::for_each_stmt_deep(body, &mut |st| if let Statement::Assign { name, .. } = st {
         if name == local { assigned = true; }
     });
-    !assigned && bound.len() == 1 && is_decreasing_arg(bound[0], param_name)
+    // …nor re-bound by a loop, a lambda or a match arm: `match n + 1 { m ->
+    // rec(m) }` / `map(m => rec(m))` pass THAT binding, not the `let`
+    let mut shadowed = false;
+    crate::checker::literals::for_each_stmt_deep(body, &mut |st| if let Statement::For { var, .. } = st {
+        if var == local { shadowed = true; }
+    });
+    crate::checker::literals::for_each_expr(body, &mut |e| match e {
+        Expr::Lambda { param, .. } | Expr::LambdaBlock { param, .. } if param == local => shadowed = true,
+        Expr::Match { arms, .. } => for arm in arms {
+            let mut b = HashSet::new();
+            crate::checker::invariants::pattern_binders(&arm.pattern, &mut b);
+            if b.contains(local) { shadowed = true; }
+        },
+        _ => {}
+    });
+    !assigned && !shadowed && bound.len() == 1 && is_decreasing_arg(bound[0], param_name)
 }
 
 /// Does the body stop the descent with a lower bound on `param` before any
@@ -955,10 +970,32 @@ fn has_lower_bound_exit(body: &[Spanned<Statement>], param: &str, handler: &str,
             if calls_self(std::slice::from_ref(&cond), handler) { return false; }
         }
         match &st.node {
-            Statement::If { condition, then_body, .. } => {
+            Statement::If { condition, then_body, else_body } => {
                 let exits = matches!(then_body.last().map(|s| &s.node), Some(Statement::Return { .. }))
                     || matches!(then_body.last().map(|s| &s.node), Some(Statement::ExprStmt { expr }) if matches!(&expr.node, Expr::FnCall { name, .. } if name == "fail"));
                 if exits && bounded(&condition.node) && !calls_self(then_body, handler) { return true; }
+                // a self-call in a branch of an `if` that is no base case runs
+                // before any later one (`if n < 100 { depth(n - 1) }` then
+                // `if n <= 0 { return 0 }` descended forever): the branch
+                // must be taken only above the bound, or stop on its own
+                // then-branch: taken when the condition holds, so its negation
+                // must be a stop (`if n > 0 { … f(n - 1) … }`)
+                let negated_stops = |c: &Expr| -> bool {
+                    fn neg(c: &Expr) -> Vec<Expr> {
+                        match c {
+                            Expr::CmpOp { left, op, right } => vec![Expr::CmpOp { left: left.clone(), op: match op {
+                                CmpOp::Lt => CmpOp::Ge, CmpOp::Le => CmpOp::Gt, CmpOp::Gt => CmpOp::Le, CmpOp::Ge => CmpOp::Lt,
+                                CmpOp::Eq => CmpOp::Ne, CmpOp::Ne => CmpOp::Eq }, right: right.clone() }],
+                            // `a && b` holds: each conjunct holds, one negation stopping is enough
+                            Expr::BinaryOp { left, op: BinOp::And, right } => { let mut v = neg(&left.node); v.extend(neg(&right.node)); v }
+                            _ => vec![],
+                        }
+                    }
+                    neg(c).iter().any(|n| bounded(n))
+                };
+                if calls_self(then_body, handler) && !negated_stops(&condition.node) && !has_lower_bound_exit(then_body, param, handler, decrease) { return false; }
+                // else-branch: taken when the condition fails, so the condition must be a stop
+                if calls_self(else_body, handler) && !bounded(&condition.node) && !has_lower_bound_exit(else_body, param, handler, decrease) { return false; }
             }
             Statement::Require { constraint, .. } => {
                 // `require n >= 0` parses as the expression `n >= 0` == true:

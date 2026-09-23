@@ -272,20 +272,21 @@ fn extract_map_literal_int(args: &[Spanned<Expr>], key: &str) -> Option<u64> {
     let last = args.last()?;
     if let Expr::FnCall { name, args: map_args } = &last.node {
         if name != "map" { return None; }
-        // map(k1, v1, k2, v2, ...) — iterate in pairs
-        let mut i = 0;
-        while i + 1 < map_args.len() {
-            if let Expr::Literal(Literal::String(k)) = &map_args[i].node {
-                if k == key {
-                    if let Expr::Literal(Literal::Int(n)) = &map_args[i + 1].node {
-                        if *n >= 0 {
-                            return Some(*n as u64);
-                        }
-                    }
-                }
+        // map(k1, v1, k2, v2, ...) — iterate in pairs; the LAST pair wins, as
+        // in the map the runtime builds (the first was read), and a computed
+        // key after it may be `key`
+        let mut found: Option<u64> = None;
+        for pair in map_args.chunks(2) {
+            match &pair[0].node {
+                Expr::Literal(Literal::String(k)) if k == key => found = match pair.get(1).map(|v| &v.node) {
+                    Some(Expr::Literal(Literal::Int(n))) if *n >= 0 => Some(*n as u64),
+                    _ => None,
+                },
+                Expr::Literal(_) => {}
+                _ => found = None,
             }
-            i += 2;
         }
+        return found;
     }
     None
 }
@@ -347,7 +348,8 @@ pub fn expr_cost(e: &Expr) -> Cost {
             if let Some(_reason) = unbounded_builtin_reason(name) {
                 match name.as_str() {
                     "think" | "think_json" => {
-                        if let Some(mt) = extract_map_literal_int(args, "max_tokens") {
+                        // `max_tokens` 0 is ignored at run time (no bound)
+                        if let Some(mt) = extract_map_literal_int(args, "max_tokens").filter(|m| *m > 0) {
                             // Bounded: 4 bytes per token (conservative)
                             return arg_cost.plus(Cost::bytes(mt.saturating_mul(4)));
                         }

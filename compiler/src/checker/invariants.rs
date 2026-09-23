@@ -545,7 +545,24 @@ pub fn verify_program_invariants(program: &Program) -> Vec<VerifyResult> {
                     }
                     t
                 };
-                if task_with_think { vars_w.clear(); }
+                // …except about the PARAMETERS, which nothing but the handler
+                // rebinds (`require n >= 0 && n <= 100` was cleared too, a
+                // spurious ⚠ on `scores.set(k, n)`)
+                if task_with_think {
+                    let params: HashSet<&str> = handlers.get(handler).map(|on| on.params.iter()
+                        .filter(|p| { let mut a = Vec::new(); collect_assigns(&on.body, &mut a); !a.iter().any(|(m, _)| *m == p.name) })
+                        .map(|p| p.name.as_str()).collect()).unwrap_or_default();
+                    vars_w.retain(|k, _| {
+                        let text = match k.strip_prefix("__") { Some(rest) => rest.split_once("__").map_or(rest, |(_, t)| t), None => k.as_str() };
+                        // only names (no call, field or index), each a parameter
+                        let mut q = false;
+                        let mut plain = String::new();
+                        for c in text.chars() { if c == '"' { q = !q; plain.push(' '); } else if !q { plain.push(c); } }
+                        !plain.contains(|c| matches!(c, '(' | '.' | '['))
+                            && plain.split(|c: char| !(c.is_alphanumeric() || c == '_')).filter(|w| !w.is_empty() && !w.starts_with(|c: char| c.is_ascii_digit()))
+                                .all(|w| params.contains(w) || w == "true" || w == "false")
+                    });
+                }
                 if rewritten {
                     let get_pat = format!("{}.get(", slot);
                     let idx_pat = format!("{}[", slot);
@@ -595,6 +612,10 @@ pub fn verify_program_invariants(program: &Program) -> Vec<VerifyResult> {
                         }
                     };
                     if !reads_own_key(&right.node) { continue; }
+                    // the value must not call what can write the slot between
+                    // its read and the write: `(seq.get(k) ?? 0) + bump(k)`
+                    // wrote old + 1 after bump(k) stored old + 100
+                    if value_may_write(value_expr, &handlers) { continue; }
                     // the written value: old + n (n ≥ 0, and > 0 for a strict >), or max(old, …)
                     let same_key = |e: &Expr| -> bool {
                         let inner = match e { Expr::FnCall { name, args } if name == "_coalesce" && args.len() == 2 => &args[0].node, other => other };
@@ -1237,9 +1258,15 @@ impl RangeCtx<'_> {
                 // (`on clamp(x, lo, hi) { return x }` was trusted as clamp)
                 (_, _) if self.depth < 3 && self.handlers.contains_key(name) => match self.handlers.get(name) {
                     Some(on) => {
+                        // a body that can end without a value returns ():
+                        // `if n > 0 { return 5 }` is not "5"
+                        if may_fall_off(&on.body) { return Known::Unknown; }
+                        // the CALLEE's slot bounds: a `let limits = map(…)` there
+                        // hides the slot `limits` (the caller's were used)
+                        let hyp = hyp_for(on, self.hyp);
                         let inner = RangeCtx {
-                            hyp: self.hyp,
-                            vars: local_ranges_at(on, self.hyp, self.handlers, self.depth + 1, &[], None),
+                            hyp: &hyp,
+                            vars: local_ranges_at(on, &hyp, self.handlers, self.depth + 1, &[], None),
                             handlers: self.handlers,
                             depth: self.depth + 1,
                         };
@@ -1344,6 +1371,17 @@ fn collect_return_values<'e>(stmts: &'e [Spanned<Statement>], out: &mut Vec<&'e 
     collect_tail_values(stmts, out);
 }
 
+/// Can the body end without a value — no `return` or tail expression on some
+/// path (an `if` without `else`, a loop that runs zero times)? The handler
+/// then returns ().
+fn may_fall_off(stmts: &[Spanned<Statement>]) -> bool {
+    match stmts.last().map(|s| &s.node) {
+        Some(Statement::Return { .. }) | Some(Statement::ExprStmt { .. }) => false,
+        Some(Statement::If { then_body, else_body, .. }) => may_fall_off(then_body) || may_fall_off(else_body),
+        _ => true,
+    }
+}
+
 /// The value of a body that ends without `return` (its last expression).
 fn collect_tail_values<'e>(stmts: &'e [Spanned<Statement>], out: &mut Vec<&'e Expr>) {
     for (i, stmt) in stmts.iter().enumerate() {
@@ -1383,16 +1421,6 @@ fn local_ranges(
     local_ranges_at(on, hyp, handlers, 0, write_path, target)
 }
 
-/// Builtins whose answer can differ between two evaluations: a `require`
-/// over them says nothing about the value the write evaluates again
-/// (`require random(2) <= 0` then `c.set(k, random(2))`).
-const UNSTABLE_BUILTINS: &[&str] = &[
-    "random", "rand", "now", "now_ms", "timestamp", "today", "date_now", "uuid", "next_id",
-    "think", "think_json", "http_get", "http_post", "http_put", "http_patch", "http_delete",
-    "fetch", "fetch_json", "read_file", "read_csv", "recall", "get_status", "valid_transitions",
-    "tokens_used", "tokens_remaining", "delegate",
-];
-
 /// Does `e` evaluate to the same value at the `require` and at the write
 /// under proof? Not when it calls an unstable builtin, reads state that
 /// the handler also writes (other than the one read-modify-write of the
@@ -1404,8 +1432,11 @@ fn expr_stable(e: &Expr, on: &OnSection, handlers: &HashMap<String, &OnSection>,
     let mut reads: Vec<String> = Vec::new();
     let mut calls = false;
     super::literals::for_each_in_expr(e, &mut |x| match x {
-        Expr::FnCall { name, .. } if UNSTABLE_BUILTINS.contains(&name.as_str()) => ok = false,
-        Expr::FnCall { name, .. } if handlers.contains_key(name) => calls = true,
+        Expr::FnCall { name, .. } if super::names::unstable_builtin(name) => ok = false,
+        // a handler that draws a random number (or reads the clock, the
+        // model…) answers differently at the write: `require (c.get(k) ?? 0)
+        // - price() >= 0` said nothing about the second price()
+        Expr::FnCall { name, .. } if handlers.contains_key(name) => { calls = true; if callee_unstable(name, handlers, 0) { ok = false; } }
         Expr::MethodCall { target: t, .. } | Expr::Index { target: t, .. } | Expr::FieldAccess { target: t, .. } => {
             if let Expr::Ident(n) = &t.node {
                 if n.chars().next().map_or(false, |c| c.is_ascii_uppercase()) { ok = false; }
@@ -1415,6 +1446,26 @@ fn expr_stable(e: &Expr, on: &OnSection, handlers: &HashMap<String, &OnSection>,
         _ => {}
     });
     if !ok { return false; }
+    // a local or parameter whose PARTS the handler writes (`cur.amount = 0`,
+    // `cur["amount"] = 0`): `cur.amount` at the require is not `cur.amount`
+    // at the write
+    let mut part_written: HashSet<String> = HashSet::new();
+    super::literals::for_each_stmt_deep(&on.body, &mut |st| match st {
+        Statement::IndexSet { name, .. } => { part_written.insert(name.split(|c| c == '.' || c == '[').next().unwrap_or(name).to_string()); }
+        Statement::Assign { name, .. } if name.contains('.') || name.contains('[') => {
+            part_written.insert(name.split(|c| c == '.' || c == '[').next().unwrap_or(name).to_string());
+        }
+        _ => {}
+    });
+    let mut reads_part = false;
+    super::literals::for_each_in_expr(e, &mut |x| match x {
+        Expr::MethodCall { target: t, .. } | Expr::Index { target: t, .. } | Expr::FieldAccess { target: t, .. } => {
+            // (a slot's `c[k] = v` is its one read-modify-write, judged below)
+            if matches!(&t.node, Expr::Ident(n) if part_written.contains(n) && !is_state(n)) { reads_part = true; }
+        }
+        _ => {}
+    });
+    if reads_part { return false; }
     // every write of the handler body, by target name; emits; handler calls
     let mut writes: HashMap<String, usize> = HashMap::new();
     let mut other_effects = false;
@@ -1456,6 +1507,43 @@ fn expr_stable(e: &Expr, on: &OnSection, handlers: &HashMap<String, &OnSection>,
         if n > 0 { return false; }
     }
     true
+}
+
+/// Can two calls of handler `name` answer differently: does it (or a
+/// handler it calls) call an unstable builtin, another cell, or a name the
+/// prover cannot follow?
+fn callee_unstable(name: &str, handlers: &HashMap<String, &OnSection>, depth: usize) -> bool {
+    let Some(on) = handlers.get(name) else { return true };
+    if depth > 6 { return true; }
+    let mut hit = false;
+    super::literals::for_each_expr(&on.body, &mut |x| match x {
+        Expr::FnCall { name: n, .. } if handlers.contains_key(n) => { if n != name && callee_unstable(n, handlers, depth + 1) { hit = true; } }
+        Expr::FnCall { name: n, .. } if super::names::unstable_builtin(n) => hit = true,
+        Expr::FnCall { name: n, .. } if !super::names::builtin_names().contains(n.as_str()) && n != "_coalesce" => hit = true,
+        Expr::MethodCall { target, .. } if matches!(&target.node, Expr::Ident(t) if t.chars().next().map_or(false, |c| c.is_ascii_uppercase())) => hit = true,
+        _ => {}
+    });
+    hit
+}
+
+/// Can evaluating `e` write state: a slot write in it, a handler that writes
+/// (or one of another cell, or a name the prover cannot follow), an effect
+/// builtin (think() may run a tool that writes)?
+fn value_may_write(e: &Expr, handlers: &HashMap<String, &OnSection>) -> bool {
+    let mut hit = false;
+    super::literals::for_each_in_expr(e, &mut |x| match x {
+        Expr::FnCall { name, .. } if handlers.contains_key(name) => { if callee_writes(name, handlers, 0) { hit = true; } }
+        Expr::FnCall { name, .. } if super::names::EFFECT_BUILTINS.contains(&name.as_str()) => hit = true,
+        Expr::FnCall { name, .. } if !super::names::builtin_names().contains(name.as_str()) && name != "_coalesce" => hit = true,
+        Expr::MethodCall { method, .. } if matches!(method.as_str(), "set" | "put" | "delete" | "remove" | "push" | "append" | "clear") => hit = true,
+        Expr::MethodCall { target, .. } if matches!(&target.node, Expr::Ident(t) if t.chars().next().map_or(false, |c| c.is_ascii_uppercase())) => hit = true,
+        _ => {}
+    });
+    super::literals::for_each_stmt_in_expr(e, &mut |st| match st {
+        Statement::MethodCall { .. } | Statement::IndexSet { .. } | Statement::Emit { .. } => hit = true,
+        _ => {}
+    });
+    hit
 }
 
 /// Does handler `name` (or a handler it calls) write state or emit?
@@ -1703,9 +1791,13 @@ fn local_ranges_at(
                             };
                             // every name in it must be bound once (else the
                             // written expression is not the required one)
-                            let mut used = HashSet::new();
-                            collect_idents(e, &mut used);
-                            if used.iter().any(|u| dup.contains(u.as_str()) || reassigned_param(u)) { continue; }
+                            // Field / Index targets included, and none whose parts
+                            // are written (`require cur.amount - n >= 0` then
+                            // `cur.amount = 0` was still a fact at the write)
+                            let mut used: HashSet<String> = HashSet::new();
+                            crate::interpreter::free_names_expr(e, &mut used);
+                            if used.iter().any(|u| dup.contains(u.as_str()) || reassigned_param(u)
+                                || (part_written.contains(u.as_str()) && (params.contains(u.as_str()) || local_names.contains(u.as_str())))) { continue; }
                             // re-evaluated at the write: it must give the same value
                             if !expr_stable(e, on, handlers, &local_names, target, in_loop) { continue; }
                             let (lo, hi) = match op {
@@ -2210,11 +2302,12 @@ fn collect_writes_stmts_at(stmts: &[Spanned<Statement>], handler: &str, in_try: 
                 collect_writes_stmts_at(else_body, handler, in_try, &sub(i, 1), out);
             }
             Statement::While { condition, body, .. } => {
-                collect_writes_expr(&condition.node, handler, in_try, path, out);
+                // the condition runs on every pass: a write there is in the loop
+                collect_writes_expr(&condition.node, handler, in_try, &sub(i, 2), out);
                 collect_writes_stmts_at(body, handler, in_try, &sub(i, 2), out);
             }
             Statement::For { iter, body, .. } => {
-                collect_writes_expr(&iter.node, handler, in_try, path, out);
+                collect_writes_expr(&iter.node, handler, in_try, &sub(i, 3), out);
                 collect_writes_stmts_at(body, handler, in_try, &sub(i, 2), out);
             }
             // `slot[k] = v` — same write path as slot.set(k, v) at runtime.
@@ -2286,6 +2379,11 @@ fn collect_writes_expr(expr: &Expr, handler: &str, in_try: bool, path: &[usize],
             }
         }
         Expr::FieldAccess { target, .. } => collect_writes_expr(&target.node, handler, in_try, path, out),
+        // `xs[bal.set(k, -5) ?? 0]`: the index runs too ("no handler writes")
+        Expr::Index { target, index } => {
+            collect_writes_expr(&target.node, handler, in_try, path, out);
+            collect_writes_expr(&index.node, handler, in_try, path, out);
+        }
         Expr::BinaryOp { left, right, .. }
         | Expr::CmpOp { left, right, .. }
         | Expr::Pipe { left, right } => {
@@ -2742,16 +2840,40 @@ fn calls_of(stmts: &[Spanned<Statement>], cells: &HashSet<String>, tools: &[Stri
             }
         }
         // `vote(Cell.h, input, k)` runs its target k times, right here
-        // (a size bound was "proven" past a vote whose target wrote the slot)
-        if name == "vote" && args.len() == 3 {
-            match &args[0].node {
-                Expr::FieldAccess { target, field } => if let Expr::Ident(c) = &target.node { out.push((Some(c.clone()), field.clone())); },
-                Expr::Ident(h) => out.push((None, h.clone())),
+        // (a size bound was "proven" past a vote whose target wrote the slot);
+        // `horde(h, inputs)` runs h once per input, and its callbacks — a
+        // horde whose task deleted the required key "proved" a size bound
+        if (name == "vote" && args.len() == 3) || name == "horde" {
+            let mut target = |e: &Expr| match e {
+                Expr::FieldAccess { target, field } => match &target.node {
+                    Expr::Ident(c) => out.push((Some(c.clone()), field.clone())),
+                    _ => for (c, hs) in cell_handlers { for h in hs { out.push((Some(c.clone()), h.clone())); } },
+                },
+                // a bare name that is no handler is a local holding the
+                // target's name: any handler
+                Expr::Ident(h) if cell_handlers.values().any(|hs| hs.contains(h)) => out.push((None, h.clone())),
                 Expr::Literal(Literal::String(t)) => match t.split_once('.') {
                     Some((c, h)) => out.push((Some(c.to_string()), h.to_string())),
                     None => out.push((None, t.clone())),
                 },
                 _ => for (c, hs) in cell_handlers { for h in hs { out.push((Some(c.clone()), h.clone())); } },
+            };
+            if let Some(a) = args.first() { target(&a.node); }
+            if name == "horde" {
+                match args.get(2).map(|a| &a.node) {
+                    Some(Expr::FnCall { name: m, args: kv }) if m == "map" => for c in kv.chunks(2) {
+                        match (&c[0].node, c.get(1).map(|v| &v.node)) {
+                            (Expr::Literal(Literal::String(k)), Some(v)) if matches!(k.as_str(), "on_result" | "apply" | "on_done" | "on_error") => target(v),
+                            (Expr::Literal(Literal::String(_)), _) => {}
+                            // a computed key may name a callback
+                            (_, Some(v)) => target(v),
+                            _ => {}
+                        }
+                    },
+                    // computed options: any callback
+                    Some(_) => for (c, hs) in cell_handlers { for h in hs { out.push((Some(c.clone()), h.clone())); } },
+                    None => {}
+                }
             }
         }
         // a literal handler: that handler of the named cell — or of ANY

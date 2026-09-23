@@ -276,7 +276,9 @@ pub fn for_each_expr<'a>(stmts: &'a [Spanned<Statement>], f: &mut dyn FnMut(&'a 
             Constraint::Comparison { left, right, .. } => { ex(left, f); ex(right, f); }
             Constraint::And(a, b) | Constraint::Or(a, b) => { con(&a.node, f); con(&b.node, f); }
             Constraint::Not(i) => con(&i.node, f),
-            _ => {}
+            // `require valid(f(x)) else …`: its arguments run too
+            Constraint::Predicate { args, .. } => { for a in args { ex(a, f); } }
+            Constraint::Descriptive(_) => {}
         }
     }
     for st in stmts {
