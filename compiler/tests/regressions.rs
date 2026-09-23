@@ -3966,3 +3966,30 @@ fn http_int_parameters_read_digits_and_big_integers() {
     assert!(out.ends_with("{\"result\":\"100000000000000000000\"}"), "{out}");
     let _ = std::fs::remove_dir_all(dir);
 }
+
+#[test]
+fn small_builtin_and_literal_fixes() {
+    // round capped digits at 15; to_fixed of an Int went through f64;
+    // `-2.abs()` failed to parse; "%08.2f" padded inf with zeros
+    passes("small_builtin_fixes", r#"
+cell test T { rules {
+    assert round(1e-16, 16) == 0.0000000000000001
+    assert to_fixed(9007199254740993, 0) == "9007199254740993"
+    assert to_fixed(123456789012345678901234567890, 2) == "123456789012345678901234567890.00"
+    assert -2.abs() == -2
+    assert format("%08.2f", 1.0 / 0.0) == "     inf"
+    assert format("%08.2f", 0.0 - 3.5) == "-0003.50"
+} }
+"#);
+    // a float literal past the range is refused; an arity error names
+    // the line of each call
+    let dir = scratch("literal_and_arity");
+    std::fs::write(dir.join("big.cell"), "cell P { on run() { return 1e400 } }\n").unwrap();
+    let (code, out) = soma(&dir, &["check", "big.cell"]);
+    assert_ne!(code, 0, "{out}");
+    assert!(out.contains("past the Float range"), "{out}");
+    std::fs::write(dir.join("ar.cell"), "cell P {\n on run() {\n  let a = 1\n  return abs(1, 2)\n }\n on other() { return abs(3, 4) }\n}\n").unwrap();
+    let (_, out) = soma(&dir, &["check", "ar.cell"]);
+    assert!(out.contains("ar.cell:4:") && out.contains("ar.cell:6:"), "{out}");
+    let _ = std::fs::remove_dir_all(dir);
+}

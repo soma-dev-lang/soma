@@ -2806,8 +2806,11 @@ impl Parser {
             self.advance();
             // Optimise: if the next token is an integer or float literal,
             // fold the negation directly so that i64::MIN (-9223372036854775808)
-            // can be written as a literal without overflow.
-            match self.peek().clone() {
+            // can be written as a literal without overflow — unless a
+            // suffix follows it (`-2.abs()` is -(2.abs()); the fold left
+            // `.abs()` behind, a parse error)
+            let suffixed = matches!(self.peek_at(1), Token::Dot | Token::LBracket);
+            match if suffixed { Token::Eof } else { self.peek().clone() } {
                 Token::IntLit(n) => {
                     let end = self.peek_span();
                     self.advance();

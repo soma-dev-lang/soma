@@ -734,20 +734,26 @@ impl<'a> Checker<'a> {
                         Section::Every(e) | Section::After(e) => &e.body,
                         _ => continue,
                     };
-                    let mut piped: std::collections::HashSet<*const Expr> = std::collections::HashSet::new();
-                    literals::for_each_expr(body, &mut |e| if let Expr::Pipe { right, .. } = e { piped.insert(&right.node as *const Expr); });
-                    let mut bad: Vec<String> = Vec::new();
-                    literals::for_each_expr(body, &mut |e| if let Expr::FnCall { name, args } = e {
+                    // a piped call (`xs |> f(a)` passes xs too), known by its
+                    // span (an empty argument list has no address of its own)
+                    let mut piped: std::collections::HashSet<(usize, usize)> = std::collections::HashSet::new();
+                    literals::for_each_expr(body, &mut |e| if let Expr::Pipe { right, .. } = e {
+                        if matches!(right.node, Expr::FnCall { .. }) { piped.insert((right.span.start, right.span.end)); }
+                    });
+                    // every call site, at its own line (they were reported
+                    // at the handler's header, once per program)
+                    let mut bad: Vec<(String, crate::ast::Span)> = Vec::new();
+                    literals::for_each_call(body, &mut |name, args, span| {
                         if handler_names.contains(name) { return; }
-                        let n = args.len() + if piped.contains(&(e as *const Expr)) { 1 } else { 0 };
+                        let n = args.len() + if piped.contains(&(span.start, span.end)) { 1 } else { 0 };
                         if let Some(max) = crate::interpreter::builtins::registry::max_arity(name) {
-                            if n > max && reported.insert(format!("{}:{}", name, n)) {
-                                bad.push(format!("{}() takes at most {} argument{} ({} given) — the extra ones were silently ignored", name, max, if max == 1 { "" } else { "s" }, n));
+                            if n > max && reported.insert(format!("{}:{}:{}", name, n, span.start)) {
+                                bad.push((format!("{}() takes at most {} argument{} ({} given) — the extra ones were silently ignored", name, max, if max == 1 { "" } else { "s" }, n), span));
                             }
                         }
                     });
-                    for m in bad {
-                        self.errors.push(CheckError::Static { kind: "builtin_arity", message: m, span: sec.span });
+                    for (m, span) in bad {
+                        self.errors.push(CheckError::Static { kind: "builtin_arity", message: m, span });
                     }
                 }
             }

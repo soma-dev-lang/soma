@@ -2,6 +2,21 @@
 
 ## Unreleased
 
+### Small builtin, literal and diagnostic fixes
+
+- `round(x, digits)` capped `digits` at 15: `round(1e-16, 16)` was 0.0.
+- `to_fixed` of an Int went through f64: `to_fixed(9007199254740993, 0)` was
+  "9007199254740992" (`format("%.2f", …)` was already exact).
+- `-2.abs()` failed to parse (the negative literal left `.abs()` behind); it
+  is `-(2.abs())`.
+- A float literal past the Float range (`1e400`) was silently `inf`; it is a
+  lexing error, as `from_json("1E400")` raises.
+- `format("%08.2f", inf)` padded with zeros ("00000inf"); inf and NaN pad
+  with spaces, as in C.
+- A builtin called with too many arguments was reported at the header of
+  the handler, and only its first occurrence in the program; every call is
+  now reported at its own line.
+
 ### Integer text is digits; a decimal string truncates exactly
 
 - `to_int`, the aggregates (`sum_by`, `agg`, `filter_by`…), a `soma run`

@@ -19,6 +19,8 @@ pub enum LexError {
     UnterminatedComment { pos: usize },
     #[error("invalid number")]
     InvalidNumber { pos: usize },
+    #[error("the number {text} is past the Float range (about ±1.8e308) — it would be inf")]
+    FloatOverflow { pos: usize, text: String },
     #[error("unknown duration unit '{suffix}' — the units are ms, s, min, h, d, years (`90min`, not `90m`)")]
     UnknownUnit { pos: usize, suffix: String },
 }
@@ -736,6 +738,10 @@ impl<'a> Lexer<'a> {
             let val: f64 = num_str
                 .parse()
                 .map_err(|_| LexError::InvalidNumber { pos: start })?;
+            // `1e400` was silently inf (from_json("1E400") raises)
+            if val.is_infinite() {
+                return Err(LexError::FloatOverflow { pos: start, text: num_str });
+            }
             Ok(SpannedToken { newline_before: false,
                 token: Token::FloatLit(val),
                 span: Span::new(start, self.pos),

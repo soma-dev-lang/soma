@@ -613,7 +613,8 @@ fn printf_subset(fmt: &str, args: &[Value]) -> Result<Value, RuntimeError> {
         let pad = w - len;
         if left {
             out.push_str(&body); out.push_str(&" ".repeat(pad));
-        } else if zero && conv != 's' {
+        // inf / NaN pad with spaces, as in C ("00000inf")
+        } else if zero && conv != 's' && body.trim_start_matches('-').starts_with(|c: char| c.is_ascii_digit()) {
             let (sign, digits) = if body.starts_with('-') { ("-", &body[1..]) } else { ("", body.as_str()) };
             out.push_str(sign); out.push_str(&"0".repeat(pad)); out.push_str(digits);
         } else {

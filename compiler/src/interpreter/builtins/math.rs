@@ -58,7 +58,9 @@ pub fn call_builtin(name: &str, args: &[Value]) -> Option<Result<Value, RuntimeE
                 _ => return Some(Err(RuntimeError::TypeError("round(x, digits): x must be a number".to_string()))),
             };
             let d = match &args[1] {
-                Value::Int(i) if i.to_i64().map_or(false, |d| d >= 0) => i.to_i64().unwrap_or(0).min(15) as i32,
+                // (it capped at 15: round(1e-16, 16) was 0.0) — past the
+                // 17 significant digits a Float has, rounding changes nothing
+                Value::Int(i) if i.to_i64().map_or(false, |d| d >= 0) => i.to_i64().unwrap_or(0).min(400) as i32,
                 Value::Int(_) => return Some(Err(RuntimeError::TypeError("round(x, digits): digits must be ≥ 0 (to round to tens, use round(x / 10) * 10)".to_string()))),
                 _ => return Some(Err(RuntimeError::TypeError("round(x, digits): digits must be an Int".to_string()))),
             };
@@ -107,6 +109,10 @@ pub fn call_builtin(name: &str, args: &[Value]) -> Option<Result<Value, RuntimeE
                 return Some(Err(RuntimeError::TypeError(format!("to_fixed(x, digits): digits must be an Int 0..100, got {}", args[1]))));
             }
             let d = d as usize;
+            // an Int is exact: through f64, 9007199254740993 printed …992
+            if let Value::Int(i) = &args[0] {
+                return Some(Ok(Value::String(if d == 0 { i.to_string() } else { format!("{}.{}", i, "0".repeat(d)) })));
+            }
             if d > 15 { return Some(Ok(Value::String(format!("{:.*}", d, x)))); }
             Some(Ok(Value::String(fixed_string(x, d))))
         }
