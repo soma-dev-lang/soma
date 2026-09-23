@@ -2,6 +2,13 @@
 
 ## Unreleased
 
+### `10%-3` is the modulo
+
+- A number touching `%` lexed as a percentage literal whatever followed:
+  `10%-3` was `10.0 - 3` = 7.0 (the modulo is 1) and passed `check`,
+  `100%+1` was 101.0, and `10%3` / `10%n` failed to parse. `N%` is a
+  percentage only where no operand follows it (`[threshold(50%)]`).
+
 ### A line starting with `[` or `(` is a new expression
 
 - "Newlines separate statements", but a line starting with `[` indexed the

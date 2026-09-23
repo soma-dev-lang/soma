@@ -673,7 +673,14 @@ impl<'a> Lexer<'a> {
 
         // Check for duration suffix or percentage
         if let Some(c) = self.peek() {
-            if c == '%' {
+            // `N%` is a percentage only where no operand follows: `10%-3`,
+            // `10%3` and `10%n` are the modulo (it read `10%-3` as 10.0 - 3)
+            let operand_follows = {
+                let mut i = self.pos + 1;
+                while i < self.chars.len() && (self.chars[i] == ' ' || self.chars[i] == '\t') { i += 1; }
+                self.chars.get(i).map_or(false, |n| n.is_alphanumeric() || matches!(n, '(' | '[' | '-' | '+' | '"' | '_' | '.' | '!'))
+            };
+            if c == '%' && !operand_follows {
                 self.advance();
                 let val: f64 = num_str
                     .parse()

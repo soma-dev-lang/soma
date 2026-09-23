@@ -3894,3 +3894,17 @@ cell test T { rules {
 } }
 "#);
 }
+
+#[test]
+fn a_number_touching_percent_is_the_modulo_when_an_operand_follows() {
+    // `10%-3` lexed as the percentage 10% then `- 3` (7.0); `10%3` and
+    // `10%n` failed to parse
+    passes("percent_or_modulo", r#"
+cell P {
+    on run() { let n = 3  return [10%-3, 10%3, 10%n, 7%2*2] }
+}
+cell test T { rules {
+    assert run() == [1, 1, 1, 2]
+} }
+"#);
+}
