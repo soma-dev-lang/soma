@@ -191,7 +191,8 @@ fn date_arg(v: &Value, what: &str) -> Result<(i64, i64, i64), RuntimeError> {
             if !(0..=9999).contains(&y) { return Err(out_of_years(what)); }
             Ok((y, m, d))
         }
-        other => Err(RuntimeError::TypeError(format!("{}: expected a \"YYYY-MM-DD\" String, got {}", what, other))),
+        // it takes both: a Float timestamp was told only about the String form
+        other => Err(RuntimeError::TypeError(format!("{}: expected a \"YYYY-MM-DD\" String or an Int of Unix seconds, got {} {}", what, crate::interpreter::value_type_name(other), other))),
     }
 }
 

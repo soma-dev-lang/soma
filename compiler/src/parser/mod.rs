@@ -40,6 +40,8 @@ fn display_token(token: &Token) -> String {
         Token::IntLit(n) => format!("number '{}'", n),
         Token::BigIntLit(ref s) => format!("number '{}'", s),
         Token::FloatLit(n) => format!("number '{}'", n),
+        // not the Rust name `PercentLit(50.0)`
+        Token::PercentLit(p) => format!("percentage '{}%'", p),
         Token::StringLit(s) => format!("string \"{}\"", s),
         Token::Ident(s) => format!("'{}'", s),
         Token::TypeIdent(s) => format!("'{}'", s),

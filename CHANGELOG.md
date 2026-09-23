@@ -2,6 +2,28 @@
 
 ## Unreleased
 
+### Second pass: tools and diagnostics
+
+- `soma fix` searched names as substrings: removing a contradictory property
+  of the slot `log` edited `catalog` (which silently lost `ephemeral`), and
+  a handler stub for `cell App` went into `cell AppStore` (one more copy per
+  run). Names are matched as whole words, a slot by its declaration, and a
+  property exactly.
+- `soma check` accepted two `on ping()` in one cell, of which the runtime
+  keeps the last one ("last definition wins" was printed only by `soma
+  run`); it is an error.
+- A local lambda calling itself (`let fib = n => … fib(n - 1) …`) or a lambda
+  bound after it passed `check` and raised "undefined function" at run time:
+  a lambda captures the locals bound before it. `check` says so and points
+  at a handler for recursion.
+- `soma verify <dir>` answered "cannot read '.': Is a directory"; it runs
+  over the directory like `check` and `test` (with `--strict` and `--json`).
+- `soma run app.cell h -0` passed the Float -0.0; `-0` is the text "-0", as
+  over HTTP (a Float is written with a point or an exponent).
+- Messages: a parse error named the Rust token `PercentLit(50.0)`;
+  `round(x, 10^20)` said "digits must be ≥ 0"; `format_date(1.5e9)` asked
+  for a String only (it takes an Int of Unix seconds too).
+
 ### Second pass: parser and builtins
 
 - A line starting with `-` touching its operand (`-amount`) continued the

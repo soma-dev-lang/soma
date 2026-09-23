@@ -341,7 +341,7 @@ fn main_inner() {
 
     match cli.command {
         Commands::Check { file, json } => {
-            if file.is_dir() { run_over_dir("check", &file, json); }
+            if file.is_dir() { run_over_dir("check", &file, json, &[]); }
             commands::check::cmd_check(&file, json, &mut registry)
         }
         Commands::Lint { file, json } => commands::lint::cmd_lint(&file, json),
@@ -421,7 +421,7 @@ fn main_inner() {
             }
         }
         Commands::Test { file, json } => {
-            if file.is_dir() { run_over_dir("test", &file, json); }
+            if file.is_dir() { run_over_dir("test", &file, json, &[]); }
             commands::test_cmd::cmd_test(&file, json, &mut registry)
         }
         Commands::Replay { file, log, at } => commands::replay::cmd_replay(&file, log.as_ref(), at.as_deref(), &mut registry),
@@ -434,7 +434,14 @@ fn main_inner() {
         Commands::TestProvider { name } => commands::provider::cmd_test_provider(&name),
         Commands::Migrate { from, to } => commands::provider::cmd_migrate(&from, &to),
         Commands::Props => commands::props::cmd_props(&registry),
-        Commands::Verify { files, json, strict } => cmd_verify(&files, json, strict),
+        Commands::Verify { files, json, strict } => {
+            // a directory, as check and test take one (it answered "cannot
+            // read '.': Is a directory")
+            if files.len() == 1 && files[0].is_dir() {
+                run_over_dir("verify", &files[0], json, if strict { &["--strict"] } else { &[] });
+            }
+            cmd_verify(&files, json, strict)
+        }
         Commands::Deploy { file, target, region } => commands::deploy::cmd_deploy(&file, &target, region.as_deref()),
         Commands::Describe { file, builtins, faces, json } => {
             if builtins {
@@ -991,7 +998,7 @@ fn cells_in_db(file: &std::path::Path, db: &std::path::Path) -> (Vec<String>, Ve
 
 /// `soma test lib/` (also check): every .cell file under the directory, one
 /// after another — a project-wide gate used to need a shell loop.
-fn run_over_dir(cmd: &str, dir: &std::path::Path, json: bool) -> ! {
+fn run_over_dir(cmd: &str, dir: &std::path::Path, json: bool, extra: &[&str]) -> ! {
     fn walk(d: &std::path::Path, out: &mut Vec<std::path::PathBuf>) {
         let Ok(entries) = std::fs::read_dir(d) else { return };
         let mut es: Vec<_> = entries.flatten().map(|e| e.path()).collect();
@@ -1031,7 +1038,7 @@ fn run_over_dir(cmd: &str, dir: &std::path::Path, json: bool) -> ! {
     for f in &files {
         eprintln!("── {} ──", f.display());
         let mut c = std::process::Command::new(&exe);
-        c.arg(cmd).arg(f);
+        c.arg(cmd).arg(f).args(extra);
         let ok = if json {
             c.arg("--json");
             match c.stderr(std::process::Stdio::inherit()).output() {

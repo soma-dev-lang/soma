@@ -76,7 +76,9 @@ pub fn cmd_run(path: &PathBuf, args: &[String], use_jit: bool, signal_flag: Opti
             } else if let Some(big) = a.parse::<rug::Integer>().ok().filter(|b| &b.to_string() == a) {
                 // 99999999999999999999 is an Int, not a Float saturated to i64
                 interpreter::Value::Int(crate::interpreter::soma_int::SomaInt::from_rug(big))
-            } else if let Some(n) = a.parse::<f64>().ok().filter(|n| n.is_finite() && (format!("{}", n) == *a || format!("{:?}", n) == *a)) {
+            // a Float is written with a point or an exponent: "-0" printed
+            // as -0.0 (Rust shows -0.0 as "-0"); it is the text "-0", as over HTTP
+            } else if let Some(n) = a.parse::<f64>().ok().filter(|n| n.is_finite() && a.contains(['.', 'e', 'E']) && (format!("{}", n) == *a || format!("{:?}", n) == *a)) {
                 // "NaN" / "inf" stay Strings: a NaN passes no comparison
                 interpreter::Value::Float(n)
             } else if a == "true" {

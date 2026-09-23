@@ -61,6 +61,8 @@ pub fn call_builtin(name: &str, args: &[Value]) -> Option<Result<Value, RuntimeE
                 // (it capped at 15: round(1e-16, 16) was 0.0) — past the
                 // 17 significant digits a Float has, rounding changes nothing
                 Value::Int(i) if i.to_i64().map_or(false, |d| d >= 0) => i.to_i64().unwrap_or(0).min(400) as i32,
+                // past 64 bits a positive count is just "all of them"
+                Value::Int(i) if i.to_rug() > 0 => 400,
                 Value::Int(_) => return Some(Err(RuntimeError::TypeError("round(x, digits): digits must be ≥ 0 (to round to tens, use round(x / 10) * 10)".to_string()))),
                 _ => return Some(Err(RuntimeError::TypeError("round(x, digits): digits must be an Int".to_string()))),
             };

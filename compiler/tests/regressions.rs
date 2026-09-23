@@ -4316,3 +4316,32 @@ cell test T { rules {
     assert_eq!((code, out.trim()), (0, "true"), "{out}");
     let _ = std::fs::remove_dir_all(dir);
 }
+
+#[test]
+fn cli_fixes_of_the_second_pass() {
+    let dir = scratch("cli_second_pass");
+    // fix edits the slot and the cell it names, not one containing the name
+    std::fs::write(dir.join("s.cell"), "cell A {\n    memory {\n        catalog: Map<String, String> [ephemeral, local]\n        log: Map<String, String> [persistent, ephemeral]\n    }\n    on r() { return 1 }\n}\n").unwrap();
+    soma(&dir, &["fix", "s.cell"]);
+    let fixed = std::fs::read_to_string(dir.join("s.cell")).unwrap();
+    assert!(fixed.contains("catalog: Map<String, String> [ephemeral, local]"), "{fixed}");
+    assert!(!fixed.contains("[persistent, ephemeral]"), "{fixed}");
+    std::fs::write(dir.join("c.cell"), "cell AppStore {\n    on x() { return 1 }\n}\ncell App {\n    face { signal ping() -> Int }\n}\n").unwrap();
+    soma(&dir, &["fix", "c.cell"]);
+    let fixed = std::fs::read_to_string(dir.join("c.cell")).unwrap();
+    let app = fixed.find("cell App {").unwrap();
+    assert!(fixed[app..].contains("on ping()") && !fixed[..app].contains("on ping()"), "{fixed}");
+    // two handlers of one name; a recursive local lambda
+    std::fs::write(dir.join("d.cell"), "cell A {\n on ping() { return 1 }\n on ping() { return 2 }\n on f(n: Int) { let fib = k => if k < 2 { k } else { fib(k - 1) + fib(k - 2) }  return fib(n) }\n}\n").unwrap();
+    let (code, out) = soma(&dir, &["check", "d.cell"]);
+    assert!(code != 0 && out.contains("duplicate signal 'ping'") && out.contains("the lambda `fib` calls `fib`"), "{out}");
+    // verify over a directory; `-0` is the text "-0"
+    let sub = dir.join("progs");
+    std::fs::create_dir_all(&sub).unwrap();
+    std::fs::write(sub.join("m.cell"), "cell M {\n state s { initial: a  a -> b }\n on go(id: String) { transition(id, \"b\")  return 1 }\n on txt(x: String) { return x }\n}\n").unwrap();
+    let (code, out) = soma(&dir, &["verify", "progs"]);
+    assert!(code == 0 && out.contains("verify: 1 file(s), 0 failed"), "{out}");
+    let (_, out) = soma(&sub, &["run", "m.cell", "txt", "-0"]);
+    assert_eq!(out.trim(), "-0", "{out}");
+    let _ = std::fs::remove_dir_all(dir);
+}

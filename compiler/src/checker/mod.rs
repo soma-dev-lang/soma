@@ -1469,6 +1469,7 @@ impl<'a> Checker<'a> {
         // 1. Structural checks
         self.check_structure(cell);
         self.check_face_return_literals(cell);
+        self.check_lambda_self_reference(cell);
         self.check_native_vocabulary(cell);
         for issue in literals::check_cell(cell) {
             self.errors.push(CheckError::Static { kind: issue.kind, message: issue.message, span: issue.span });
@@ -2310,6 +2311,50 @@ impl<'a> Checker<'a> {
 
     /// `signal f() -> Int` with `return "text"` (or a trailing literal of
     /// the wrong kind): the contract is checkable without running.
+    /// A lambda captures the locals bound BEFORE it: `let fib = n => …
+    /// fib(n - 1)` (or a call to a lambda bound later) passed check and
+    /// raised "undefined function: fib" at run time.
+    fn check_lambda_self_reference(&mut self, cell: &CellDef) {
+        let handlers: std::collections::HashSet<&str> = cell.sections.iter().filter_map(|s| match &s.node {
+            Section::OnSignal(o) => Some(o.signal_name.as_str()), _ => None }).collect();
+        fn scan(stmts: &[Spanned<Statement>], handlers: &std::collections::HashSet<&str>, out: &mut Vec<(String, Span)>) {
+            for (i, st) in stmts.iter().enumerate() {
+                if let Statement::Let { name, value } = &st.node {
+                    if matches!(value.node, Expr::Lambda { .. } | Expr::LambdaBlock { .. }) && !handlers.contains(name.as_str()) {
+                        let mut called: Vec<String> = Vec::new();
+                        literals::for_each_in_expr(&value.node, &mut |e| if let Expr::FnCall { name: n, .. } = e { called.push(n.clone()); });
+                        // bound earlier in this block: captured, fine
+                        let before: std::collections::HashSet<&str> = stmts[..i].iter().filter_map(|s| match &s.node {
+                            Statement::Let { name, .. } => Some(name.as_str()), _ => None }).collect();
+                        let later: std::collections::HashSet<&str> = stmts[i + 1..].iter().filter_map(|s| match &s.node {
+                            Statement::Let { name, value } if matches!(value.node, Expr::Lambda { .. } | Expr::LambdaBlock { .. }) => Some(name.as_str()), _ => None }).collect();
+                        for c in called {
+                            if handlers.contains(c.as_str()) || before.contains(c.as_str()) { continue; }
+                            if c == *name || later.contains(c.as_str()) {
+                                out.push((format!("the lambda `{}` calls `{}`, which it cannot see: a lambda captures the locals bound before it — for recursion write a handler (`on {}(…)`){}", name, c, c,
+                                    if c == *name { "" } else { ", or bind it first" }), value.span));
+                            }
+                        }
+                    }
+                }
+            }
+        }
+        for section in &cell.sections {
+            let body = match &section.node { Section::OnSignal(o) => &o.body, Section::Every(e) | Section::After(e) => &e.body, _ => continue };
+            let mut found: Vec<(String, Span)> = Vec::new();
+            scan(body, &handlers, &mut found);
+            literals::for_each_stmt_deep(body, &mut |st| match st {
+                Statement::If { then_body, else_body, .. } => { scan(then_body, &handlers, &mut found); scan(else_body, &handlers, &mut found); }
+                Statement::For { body, .. } | Statement::While { body, .. } => scan(body, &handlers, &mut found),
+                _ => {}
+            });
+            found.dedup();
+            for (message, span) in found {
+                self.errors.push(CheckError::Static { kind: "lambda_scope", message, span });
+            }
+        }
+    }
+
     fn check_face_return_literals(&mut self, cell: &CellDef) {
         // (signal, outer type, scalar element type of a Map<K, V> / List<T>)
         let declared: Vec<(String, String, Option<String>)> = cell.sections.iter().flat_map(|s| match &s.node {
@@ -2415,6 +2460,18 @@ impl<'a> Checker<'a> {
     fn check_structure(&mut self, cell: &CellDef) {
         let mut signal_names: Vec<(String, Span)> = Vec::new();
         let mut slot_names: Vec<(String, Span)> = Vec::new();
+        // two `on h` in one cell: the runtime keeps the last one, whatever
+        // their parameters ("last definition wins" printed at run time only)
+        let mut handler_names: Vec<String> = Vec::new();
+        for section in &cell.sections {
+            if let Section::OnSignal(on) = &section.node {
+                if handler_names.contains(&on.signal_name) {
+                    self.errors.push(CheckError::DuplicateSignal { cell: cell.name.clone(), name: on.signal_name.clone(), span: section.span });
+                } else {
+                    handler_names.push(on.signal_name.clone());
+                }
+            }
+        }
 
         for section in &cell.sections {
             match &section.node {

@@ -77,12 +77,27 @@ fn find_cell<'a>(program: &'a ast::Program, cell_name: &str) -> Option<&'a ast::
         .map(|c| &c.node)
 }
 
+/// The offset of `word` in `source` from `from` on, as a whole word (`log`
+/// is not inside `catalog`, `cell App` not inside `cell AppStore`).
+fn find_word(source: &str, from: usize, word: &str) -> Option<usize> {
+    let ident = |c: char| c.is_alphanumeric() || c == '_';
+    let mut at = from;
+    while let Some(i) = source[at..].find(word) {
+        let abs = at + i;
+        let before_ok = source[..abs].chars().next_back().map_or(true, |c| !ident(c));
+        let after_ok = source[abs + word.len()..].chars().next().map_or(true, |c| !ident(c));
+        if before_ok && after_ok { return Some(abs); }
+        at = abs + word.len();
+    }
+    None
+}
+
 /// Find the byte offset of the last `}` that closes a cell block in the source.
 /// We search for `cell <name>` and then find its matching closing brace.
 fn find_cell_closing_brace(source: &str, cell_name: &str) -> Option<usize> {
     // Look for `cell <name>` pattern
     let pattern = format!("cell {}", cell_name);
-    let cell_start = source.find(&pattern)?;
+    let cell_start = find_word(source, 0, &pattern)?;
 
     // Find the opening `{` after the cell name
     let after_name = cell_start + pattern.len();
@@ -131,7 +146,7 @@ fn find_duplicate_signal_line(source: &str, signal_name: &str) -> Option<(usize,
 /// Compute the indentation used inside a cell (look at existing `on` handlers or sections).
 fn detect_indent(source: &str, cell_name: &str) -> String {
     let pattern = format!("cell {}", cell_name);
-    if let Some(cell_start) = source.find(&pattern) {
+    if let Some(cell_start) = find_word(source, 0, &pattern) {
         // Look for an `on ` line inside the cell to detect its indent
         for line in source[cell_start..].lines().skip(1) {
             let trimmed = line.trim_start();
@@ -491,8 +506,12 @@ fn remove_property_from_source(source: &mut String, slot_name: &str, prop: &str)
 
     // Search for slot name followed eventually by a bracket list containing the property
     let mut search_from = 0;
-    while let Some(slot_pos) = source[search_from..].find(slot_name) {
-        let abs_pos = search_from + slot_pos;
+    while let Some(abs_pos) = find_word(source, search_from, slot_name) {
+        // the declaration `name:` — not the name inside another word or a use
+        if !source[abs_pos + slot_name.len()..].trim_start_matches([' ', '\t']).starts_with(':') {
+            search_from = abs_pos + slot_name.len();
+            continue;
+        }
         // Find the end of this line
         let line_end = source[abs_pos..].find('\n').map(|i| abs_pos + i).unwrap_or(source.len());
         let line = &source[abs_pos..line_end];
@@ -504,7 +523,7 @@ fn remove_property_from_source(source: &mut String, slot_name: &str, prop: &str)
                 let bracket_abs_end = abs_pos + bracket_start + bracket_end + 1;
                 let bracket_content = &source[bracket_abs_start + 1..bracket_abs_end - 1];
 
-                if bracket_content.contains(prop) {
+                if bracket_content.split(',').any(|p| p.trim() == prop) {
                     // Parse the properties
                     let props: Vec<&str> = bracket_content.split(',')
                         .map(|s| s.trim())
