@@ -5694,14 +5694,20 @@ impl Interpreter {
             kind: "type".to_string(), message: format!("slot '{}': {}", slot_name, m),
         }))?;
         // the NESTED declared types too (`Map<String, List<Int>>` took ["x"])
-        if let Some(inner) = self.slot_inner_type(cell_name, slot_name) {
+        let promoted;
+        let val = if let Some(inner) = self.slot_inner_type(cell_name, slot_name) {
             if let Err(m) = self.value_fits(&inner, val) {
                 return Err(ExecError::Runtime(RuntimeError::Domain {
                     kind: "type".to_string(),
                     message: format!("slot '{}': {}", slot_name, m),
                 }));
             }
-        }
+            // an Int where a Float is declared becomes a Float at every
+            // depth (`Map<String, List<Float>>` kept [1, 2] as Ints)
+            promoted = promote_declared_floats(&inner, val)
+                .map_err(|m| ExecError::Runtime(RuntimeError::TypeError(format!("slot '{}': {}", slot_name, m))))?;
+            &promoted
+        } else { val };
         let Some(ty) = self.slot_value_type(cell_name, slot_name) else { return Ok(val.clone()) };
         let ok = match (ty.as_str(), val) {
             ("Any", _) | ("Int", Value::Int(_)) | ("Float", Value::Float(_))
@@ -5992,6 +5998,23 @@ pub(crate) fn value_to_stored(val: &Value) -> StoredValue {
 }
 
 /// Implicit Float promotion must not turn a finite integer into infinity.
+/// `v` with every Int that the declared generic type `ty` places in a Float
+/// position made a Float (lists and map values, at any depth).
+fn promote_declared_floats(ty: &TypeExpr, v: &Value) -> Result<Value, String> {
+    match (ty, v) {
+        (TypeExpr::Simple(t), Value::Int(i)) if t == "Float" => promote_int_to_float(i),
+        (TypeExpr::Generic { name, args }, Value::List(xs)) if name == "List" => match args.first() {
+            Some(t) => Ok(Value::List(xs.iter().map(|x| promote_declared_floats(&t.node, x)).collect::<Result<_, _>>()?)),
+            None => Ok(v.clone()),
+        },
+        (TypeExpr::Generic { name, args }, Value::Map(m)) if name == "Map" => match args.last() {
+            Some(t) => Ok(Value::Map(m.iter().map(|(k, x)| promote_declared_floats(&t.node, x).map(|x| (k.clone(), x))).collect::<Result<_, _>>()?)),
+            None => Ok(v.clone()),
+        },
+        _ => Ok(v.clone()),
+    }
+}
+
 fn promote_int_to_float(i: &SomaInt) -> Result<Value, String> {
     let f = i.to_f64();
     if f.is_finite() { Ok(Value::Float(f)) }

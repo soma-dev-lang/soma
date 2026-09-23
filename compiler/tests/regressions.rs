@@ -3729,3 +3729,23 @@ cell Escrow {
     assert!(out.contains("transitions to Funded(n) built with fields"), "{out}");
     let _ = std::fs::remove_dir_all(dir);
 }
+
+#[test]
+fn an_int_in_a_nested_float_position_becomes_a_float() {
+    // only a top-level Float slot promoted an Int: Map<String, List<Float>>
+    // kept [1, 2] as Ints
+    passes("nested_float_promotion", r#"
+cell Prices {
+    memory {
+        hist: Map<String, List<Float>> [persistent]
+        nested: Map<String, Map<String, Float>> [persistent]
+    }
+    on put() { hist.set("a", [1, 2.5])  nested.set("a", map("x", 3)) }
+    on show() { return [type_of(hist.get("a")[0]), to_json(hist.get("a")), type_of(nested.get("a").x)] }
+}
+cell test T { rules {
+    let p = put()
+    assert show() == ["Float", "[1.0,2.5]", "Float"]
+} }
+"#);
+}

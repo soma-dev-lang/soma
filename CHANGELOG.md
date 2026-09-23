@@ -2,6 +2,13 @@
 
 ## Unreleased
 
+### An Int in a nested Float position becomes a Float
+
+- "An Int written to a Float slot becomes a Float" held at the top level
+  only: `Map<String, List<Float>>` stored `[1, 2]` as Ints (`type_of` said
+  "Int", `to_json` gave `[1,2]`), and so did `Map<String, Map<String,
+  Float>>`. The declared type now promotes at every depth.
+
 ### A typed machine state that carries fields is refused
 
 - `state s: St` where `St` declares `Funded(Int)` passed `check` and `verify`,
