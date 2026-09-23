@@ -340,15 +340,33 @@ interior {
 }
 ```
 
+Interior cells run through the parent's `runtime` section under `soma run`
+(`soma run app.cell Child.handler args` runs one of their handlers). A
+`signal` emitted by an interior cell reaches its siblings (and the parent),
+never a top-level cell; the fan-out follows declaration order. Their
+state-machine instances, `next_id()` counters and `remember()` memory are
+kept per qualified cell (`Sys.Worker`), apart from any same-named cell.
+`every` / `after` blocks are not allowed in an interior cell (`soma check`
+refuses them: nothing schedules them) — put timers in a top-level cell.
+
 ## Runtime Section
 
 ```
 runtime {
     start ChildCell
     connect Producer.data -> Consumer
-    emit initialize()
+    let limit = 3
+    print("starting")
+    signal initialize(map("limit", limit))
 }
 ```
+
+`soma run app.cell` (no handler named) runs the section once, in order:
+`let`s and statements run in the interpreter, `signal` arguments are
+evaluated expressions (checked like handler code: undefined names, argument
+count, literals of the wrong type). `start` and `connect` are declarations
+(`soma check` validates the cell names): interior cells are live from the
+start, and a signal reaches every sibling that handles it.
 
 ## Imports
 
@@ -376,7 +394,7 @@ Run tests: `soma test file.cell`
 |---------|-------------|
 | `soma run file.cell [args...]` | Execute signal handler |
 | `soma run file.cell --signal name [args...]` | Execute specific handler |
-| `soma run file.cell --jit [args...]` | Use bytecode VM |
+| `soma run file.cell --jit [args...]` | Deprecated no-op (a warning; runs as `soma run`) — mark hot handlers `[native]` instead |
 | `soma serve file.cell [-p port]` | HTTP server |
 | `soma serve file.cell --verbose` | Verbose HTTP logging |
 | `soma serve file.cell --watch` | Auto-reload on changes |
@@ -422,7 +440,7 @@ myapp/
   .soma_env/         # isolated environment
     stdlib/          # property definitions
     packages/        # installed dependencies
-    cache/           # compiled bytecode cache
+    cache/           # reserved (unused for now)
   .soma_data/        # runtime data
     soma.db          # SQLite database for persistent memory
 ```

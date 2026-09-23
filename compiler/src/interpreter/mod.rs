@@ -851,6 +851,12 @@ pub struct Interpreter {
     pub(crate) type_variants: HashMap<String, Vec<String>>,
     /// (type, variant) → declared payload: shape and field types
     pub(crate) variant_fields: HashMap<(String, String), VariantFields>,
+    /// Set by the interior runtime: the cells of the interior scope being
+    /// run (the children and their parent). A `signal` emitted by one of
+    /// them reaches only the others; one emitted by any other cell reaches
+    /// only cells outside the scope (an interior `signal pong` ran the
+    /// top-level `on pong` of an unrelated cell, without its storage).
+    pub emit_scope: Option<std::collections::HashSet<String>>,
 }
 
 /// What kind of payload a registered variant takes.
@@ -1130,6 +1136,7 @@ impl Interpreter {
             variant_registry,
             type_variants,
             variant_fields,
+            emit_scope: None,
         }
     }
 
@@ -1157,6 +1164,11 @@ impl Interpreter {
         let prefix = format!("{}.", cell.name);
         self.invariants.retain(|k, _| !k.starts_with(&prefix));
         collect_cell_invariants(&cell, &mut self.invariants);
+        // in declaration order after the program's cells: the fan-out of a
+        // `signal` among interior siblings followed HashMap order
+        if !self.cell_order.contains(&cell.name) {
+            self.cell_order.push(cell.name.clone());
+        }
         self.cells.insert(cell.name.clone(), cell);
     }
 
@@ -2326,6 +2338,10 @@ impl Interpreter {
                     .map(|(c, _)| c.clone())
                     .collect();
                 matching_cells.sort_by_key(|c| self.cell_order.iter().position(|o| o == c).unwrap_or(usize::MAX));
+                if let Some(scope) = &self.emit_scope {
+                    let inside = scope.contains(cell_name);
+                    matching_cells.retain(|c| scope.contains(c) == inside);
+                }
                 for target_cell in matching_cells {
                     self.call_signal(&target_cell, sig, dispatch_args.clone())
                         .map_err(ExecError::Runtime)?;

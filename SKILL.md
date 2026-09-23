@@ -564,7 +564,9 @@ cell System {
 ```
 
 - Interior cells are composed children. Their faces are checked for signal matching with each other and the parent.
-- `runtime { }` is orchestration: `start`, `connect producer.signal -> consumer`, `emit initial_signal(args)`.
+- `runtime { }` is orchestration, run once by a bare `soma run app.cell`: `let`s, statements (`print(…)`) and `signal initial_signal(args)` with evaluated arguments, in order. `start` / `connect` are declarations (names checked; interior cells are always live, a signal reaches every sibling that handles it). `soma run app.cell Child.handler args` runs one interior handler.
+- An interior `signal` reaches the siblings (and the parent), never a top-level cell of the program. Machine instances, `next_id()` and `remember()` are per qualified cell (`Sys.Worker`), apart from same-named cells elsewhere.
+- No `every` / `after` inside an interior cell (check error: nothing schedules them) — put timers in a top-level cell.
 - `soma describe` dumps the full interior graph as JSON.
 
 ## 15. Agents (`cell agent ...`) and LLM builtins
@@ -766,7 +768,7 @@ myapp/
   .soma_env/        # isolated env
     stdlib/         # property defs
     packages/       # dependencies
-    cache/          # bytecode cache
+    cache/          # reserved (unused for now)
   .soma_data/
     soma.db         # SQLite for [persistent]
 ```
@@ -831,7 +833,7 @@ Run: `soma test file.cell`. The test harness exposes handlers in the same file. 
 |---|---|
 | `soma run file.cell [args]` | Execute entry handler |
 | `soma run file.cell --signal name [args]` | Execute a specific handler |
-| `soma run file.cell --jit [args]` | Use bytecode VM backend |
+| `soma run file.cell --jit [args]` | Deprecated no-op (runs as `soma run`; use `[native]` handlers) |
 | `soma serve file.cell [-p 8080]` | HTTP server |
 | `soma serve file.cell --verbose` | Verbose logging |
 | `soma serve file.cell --watch` | Hot reload |
@@ -857,13 +859,12 @@ Run: `soma test file.cell`. The test harness exposes handlers in the same file. 
 | `soma env` | Environment info |
 | `soma props` | List registered properties |
 
-Three execution backends co-exist:
+Two execution backends co-exist:
 
-1. **Tree-walking interpreter** — default; best for development.
-2. **Bytecode VM** — `--jit`; compiled once, faster for hot loops.
-3. **Native Rust codegen** — via `soma build`; the current frontier, with dual-mode `Int`/`BigInt` dispatch. Whole-loop BigInt via `rug` (GMP) is near-native speed; single BigInt ops go through FFI and are slower.
+1. **Tree-walking interpreter** — default; the reference semantics.
+2. **Native Rust codegen** — `[native]` handlers (and `soma build`), with dual-mode `Int`/`BigInt` dispatch. Whole-loop BigInt via `rug` (GMP) is near-native speed; single BigInt ops go through FFI and are slower.
 
-All three backends must agree on semantics. If you see divergence, the interpreter is the reference.
+(`--jit`, the former bytecode VM, is a deprecated no-op.) Both backends must agree on semantics. If you see divergence, the interpreter is the reference.
 
 ## 22. MCP tools (`mcp__soma__*`)
 

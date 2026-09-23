@@ -111,11 +111,17 @@ pub fn check_program(program: &Program) -> (Vec<DispatchFinding>, Vec<DispatchFi
             continue;
         }
         for section in &cell.sections {
+            // the runtime section runs its statements in the interpreter too
+            let runtime_body: Vec<Spanned<Statement>>;
             let (handler_label, params, body): (String, &[Param], &[Spanned<Statement>]) =
                 match &section.node {
                     Section::OnSignal(on) => (on.signal_name.clone(), &on.params, &on.body),
                     Section::Every(ev) => ("every".to_string(), &[], &ev.body),
                     Section::After(ev) => ("after".to_string(), &[], &ev.body),
+                    Section::Runtime(rt) => {
+                        runtime_body = super::runtime_section::as_statements(rt);
+                        ("runtime".to_string(), &[], &runtime_body[..])
+                    }
                     _ => continue,
                 };
 

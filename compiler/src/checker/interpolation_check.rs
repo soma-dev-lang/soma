@@ -168,6 +168,17 @@ pub fn check_program(program: &Program) -> Vec<InterpolationIssue> {
         }
         for section in &cell.sections {
             match &section.node {
+                // the runtime section runs in the interpreter (its `let`s,
+                // statements and `signal` arguments): an undefined name
+                // there raised at run time — or, before, was delivered as
+                // its own text
+                Section::Runtime(rt) => {
+                    let stmts = super::runtime_section::as_statements(rt);
+                    let mut w = Walker::new(&index);
+                    w.cell_slots = cell_slots.clone();
+                    w.walk_stmts(&stmts);
+                    issues.extend(w.issues);
+                }
                 Section::OnSignal(on) => {
                     let mut w = Walker::new(&index);
                     w.cell_slots = cell_slots.clone();

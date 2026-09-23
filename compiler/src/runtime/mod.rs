@@ -1,7 +1,7 @@
 pub mod storage;
 pub mod cluster;
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
 
 use indexmap::IndexMap;
@@ -14,6 +14,9 @@ use storage::{StorageBackend, resolve_backend};
 #[derive(Clone)]
 pub struct CellInstance {
     pub name: String,
+    /// Qualified path (`Sys.Worker` for an interior cell): the prefix of
+    /// its slot files and of its runtime tables
+    pub path: String,
     pub def: CellDef,
     /// Memory slots backed by storage
     pub memory: HashMap<String, Arc<dyn StorageBackend>>,
@@ -34,6 +37,24 @@ pub struct Runtime {
     /// State-machine instances of the cells run here (`__sm_<Cell>_<m>`),
     /// kept across handler runs: every run builds a fresh interpreter
     machine_storage: HashMap<String, Arc<dyn StorageBackend>>,
+    /// The runtime tables of each interior cell, by its qualified path:
+    /// machine instances, next_id() counters, remember() memory — keyed as
+    /// the interpreter looks them up (`__sm_Worker_flow`, `Worker.__counters`)
+    /// but stored under the qualified name (`Sys.Worker__sm_flow`). Under
+    /// the bare name they were shared with every same-named cell, top-level
+    /// or in another program of the directory.
+    scope_tables: HashMap<String, HashMap<String, Arc<dyn StorageBackend>>>,
+    /// names of the program's top-level cells
+    top_names: HashSet<String>,
+}
+
+fn exec_error_text(e: interpreter::ExecError) -> String {
+    match e {
+        interpreter::ExecError::Runtime(e) => e.to_string(),
+        interpreter::ExecError::Return(_) => "`return` outside of a handler".to_string(),
+        interpreter::ExecError::Break => "break outside of loop".to_string(),
+        interpreter::ExecError::Continue => "continue outside of loop".to_string(),
+    }
 }
 
 impl Runtime {
@@ -49,12 +70,15 @@ impl Runtime {
             let instance = Self::instantiate_cell(cell, "");
             cells.insert(cell.name.clone(), instance);
         }
+        let top_names = program.cells.iter().map(|c| c.node.name.clone()).collect();
 
         Self {
             cells,
             signal_log: Vec::new(),
             program,
             machine_storage: HashMap::new(),
+            scope_tables: HashMap::new(),
+            top_names,
         }
     }
 
@@ -95,10 +119,104 @@ impl Runtime {
 
         CellInstance {
             name: def.name.clone(),
+            path: cell_path,
             def: def.clone(),
             memory,
             children,
         }
+    }
+
+    /// The runtime tables of the interior cell `child` (created on first
+    /// use, then kept for the whole run): persistent under `soma run`, in
+    /// memory otherwise. Rows a legacy bare-named table held are copied
+    /// once into the new qualified table — unless a top-level cell of the
+    /// program has that name (the bare table is then its own).
+    fn child_tables(&mut self, child: &CellInstance) -> HashMap<String, Arc<dyn StorageBackend>> {
+        if let Some(t) = self.scope_tables.get(&child.path) {
+            return t.clone();
+        }
+        let persistent = interpreter::PERSIST_MACHINES.load(std::sync::atomic::Ordering::Relaxed)
+            || child.memory.values().any(|b| matches!(b.backend_name(), "sqlite" | "file"));
+        let mut wanted: Vec<(String, String, &'static str)> = vec![
+            (format!("{}.__counters", child.name), "_counters".to_string(), "next_id() counter"),
+            (format!("{}.__agent_memory", child.name), "_agent_memory".to_string(), "remember() memory"),
+        ];
+        for s in &child.def.sections {
+            if let Section::State(sm) = &s.node {
+                wanted.push((format!("__sm_{}_{}", child.name, sm.name), format!("_sm_{}", sm.name), "state-machine instances"));
+            }
+        }
+        let mut out: HashMap<String, Arc<dyn StorageBackend>> = HashMap::new();
+        for (key, slot, what) in wanted {
+            let backend: Arc<dyn StorageBackend> = if !persistent {
+                Arc::new(storage::MemoryBackend::new())
+            } else if self.top_names.contains(&child.name) {
+                Arc::new(storage::SqliteBackend::new(&child.path, &slot))
+            } else {
+                let legacy = format!("{}_{}", child.name, slot);
+                let (b, copied) = storage::sqlite_adopting(&child.path, &slot, &legacy);
+                if copied > 0 {
+                    eprintln!("note: interior cell {} keeps its {} in table \"{}_{}\" from now on — {} row(s) copied from the shared table \"{}\" (left as it was)",
+                        child.path, what, child.path, slot, copied, legacy);
+                }
+                Arc::new(b)
+            };
+            out.insert(key, backend);
+        }
+        self.scope_tables.insert(child.path.clone(), out.clone());
+        out
+    }
+
+    /// An interpreter for the interior scope of `parent_cell`: its children
+    /// registered (handlers, machines, invariants, in declaration order),
+    /// every sibling's slots and runtime tables injected, the parent's slots
+    /// too, and `signal` dispatch confined to the scope.
+    fn scope_interpreter(&mut self, parent_cell: &str) -> Result<interpreter::Interpreter, String> {
+        let parent = self.find_cell(parent_cell)
+            .ok_or_else(|| format!("cell '{}' not found", parent_cell))?
+            .clone();
+        let mut interp = interpreter::Interpreter::new(&self.program);
+
+        // interior cell definitions — with their state machines and memory
+        // invariants (register_cell), as `soma verify` proves them
+        for section in &parent.def.sections {
+            if let Section::Interior(ref interior) = section.node {
+                for child_def in &interior.cells {
+                    interp.register_cell(child_def.node.clone());
+                }
+            }
+        }
+
+        // every sibling's slots, under `Cell.slot`: a handler's `signal`
+        // runs the siblings' handlers in the interpreter, which found no
+        // storage for them ("undefined variable: vals")
+        for (name, sibling) in &parent.children {
+            let keyed: HashMap<String, Arc<dyn StorageBackend>> = sibling.memory.iter()
+                .map(|(slot, b)| (format!("{}.{}", name, slot), b.clone()))
+                .collect();
+            interp.set_storage_raw(&keyed);
+            let tables = self.child_tables(sibling);
+            interp.set_storage_raw(&tables);
+        }
+
+        // the parent's storage
+        interp.set_storage(parent_cell, &parent.memory);
+
+        // machine instances survive from one handler run to the next
+        interp.set_storage_raw(&self.machine_storage);
+        interp.ensure_state_machine_storage();
+        for (k, b) in interp.storage.iter() {
+            if k.starts_with("__sm_") && !self.machine_storage.contains_key(k) {
+                self.machine_storage.insert(k.clone(), b.clone());
+            }
+        }
+
+        // an interior `signal` reaches the siblings (and the parent), never
+        // a top-level cell that happens to handle the same name
+        let mut scope: HashSet<String> = parent.children.keys().cloned().collect();
+        scope.insert(parent.name.clone());
+        interp.emit_scope = Some(scope);
+        Ok(interp)
     }
 
     /// Emit a signal into the system. Finds handlers among siblings and executes them.
@@ -170,49 +288,11 @@ impl Runtime {
         handler: &OnSection,
         args: Vec<Value>,
     ) -> Result<Value, String> {
-        // Build a program with all cells flattened so the interpreter can find them
-        let mut interp = interpreter::Interpreter::new(&self.program);
+        let mut interp = self.scope_interpreter(parent_cell)?;
 
-        // Also inject interior cells and their storage
-        let parent = self.find_cell(parent_cell)
-            .ok_or_else(|| format!("cell '{}' not found", parent_cell))?;
-
-        // Add interior cell definitions to interpreter — with their state
-        // machines and memory invariants (register_cell), as `soma verify`
-        // proves them
-        for section in &parent.def.sections {
-            if let Section::Interior(ref interior) = section.node {
-                for child_def in &interior.cells {
-                    interp.register_cell(child_def.node.clone());
-                }
-            }
-        }
-
-        // every sibling's slots, under `Cell.slot`: a handler's `signal`
-        // runs the siblings' handlers in the interpreter, which found no
-        // storage for them ("undefined variable: vals")
-        for (name, sibling) in &parent.children {
-            let keyed: HashMap<String, Arc<dyn StorageBackend>> = sibling.memory.iter()
-                .map(|(slot, b)| (format!("{}.{}", name, slot), b.clone()))
-                .collect();
-            interp.set_storage_raw(&keyed);
-        }
-
-        // Inject storage backends for the child cell being executed
-        if let Some(child_instance) = parent.children.get(child_name) {
+        // the running child's own slots, also under their bare names
+        if let Some(child_instance) = self.find_cell(parent_cell).and_then(|p| p.children.get(child_name)) {
             interp.set_storage(child_name, &child_instance.memory);
-        }
-
-        // Also inject parent's storage
-        interp.set_storage(parent_cell, &parent.memory);
-
-        // machine instances survive from one handler run to the next
-        interp.set_storage_raw(&self.machine_storage);
-        interp.ensure_state_machine_storage();
-        for (k, b) in interp.storage.iter() {
-            if k.starts_with("__sm_") && !self.machine_storage.contains_key(k) {
-                self.machine_storage.insert(k.clone(), b.clone());
-            }
         }
 
         let result = interp.call_signal(child_name, &handler.signal_name, args)
@@ -243,43 +323,62 @@ impl Runtime {
         self.execute_handler(parent_cell, child_name, &on, args)
     }
 
-    /// Run a top-level cell's runtime section
+    /// Run a top-level cell's runtime section, in order: `let`s and other
+    /// statements run in the interpreter (in one environment, so a later
+    /// `signal go(k)` reads the `let k`), and the arguments of a `signal`
+    /// are evaluated there — they were read as literals only (`[1, 2]`,
+    /// `1 + 2` arrived as (), a name as its own text).
     pub fn run_cell(&mut self, cell_name: &str) -> Result<(), String> {
         let cell = self.find_cell(cell_name)
             .ok_or_else(|| format!("cell '{}' not found", cell_name))?;
 
         // Find the runtime section
-        let runtime_entries: Vec<RuntimeEntry> = cell.def.sections.iter()
+        let runtime_entries: Vec<Spanned<RuntimeEntry>> = cell.def.sections.iter()
             .filter_map(|s| {
                 if let Section::Runtime(ref rt) = s.node {
-                    Some(rt.entries.iter().map(|e| e.node.clone()).collect::<Vec<_>>())
+                    Some(rt.entries.clone())
                 } else {
                     None
                 }
             })
             .flatten()
             .collect();
+        if runtime_entries.is_empty() {
+            return Ok(());
+        }
 
-        // Execute runtime entries
+        let mut interp = self.scope_interpreter(cell_name)?;
+        let mut env = interpreter::Env::default();
+
         for entry in &runtime_entries {
-            match entry {
+            match &entry.node {
                 RuntimeEntry::Emit { signal_name, args } => {
-                    // Evaluate args (for now, just convert literals)
-                    let values: Vec<Value> = args.iter()
-                        .map(|a| expr_to_value(&a.node))
-                        .collect();
+                    let std_env: HashMap<String, Value> = env.iter().map(|(k, v)| (k.clone(), v.clone())).collect();
+                    let mut values = Vec::with_capacity(args.len());
+                    for a in args {
+                        let v = interp.eval_expr_with_env(&a.node, &std_env, cell_name, "runtime")
+                            .map_err(|e| format!("runtime section, `signal {}`: {}", signal_name, exec_error_text(e)))?;
+                        values.push(v);
+                    }
                     self.emit_signal(cell_name, signal_name, values)?;
                 }
                 RuntimeEntry::Start { cell_name: child } => {
-                    self.signal_log.push(format!("starting child: {}", child));
+                    // every interior cell is live from the start
+                    self.signal_log.push(format!("start {}: already running (interior cells run from the start)", child));
                 }
                 RuntimeEntry::Connect { from_cell, signal, to_cell } => {
+                    // a declaration: a `signal` reaches every sibling that
+                    // handles it, wired or not (check validates the names)
                     self.signal_log.push(format!(
-                        "wired: {}.{} -> {}",
+                        "connect {}.{} -> {} (declared; signals reach every sibling handling them)",
                         from_cell, signal, to_cell
                     ));
                 }
-                RuntimeEntry::Stmt(_) => {}
+                RuntimeEntry::Stmt(stmt) => {
+                    let body = [Spanned { node: stmt.clone(), span: entry.span }];
+                    interp.exec_every(&body, &mut env, cell_name)
+                        .map_err(|e| format!("runtime section: {}", e))?;
+                }
             }
         }
 
@@ -316,18 +415,6 @@ impl Runtime {
             }
             println!("}}");
         }
-    }
-}
-
-/// Convert an AST expression to a runtime value (for simple literal args)
-fn expr_to_value(expr: &Expr) -> Value {
-    match expr {
-        Expr::Literal(Literal::Int(n)) => Value::Int(crate::interpreter::soma_int::SomaInt::from_i64(*n)),
-        Expr::Literal(Literal::Float(n)) => Value::Float(*n),
-        Expr::Literal(Literal::String(s)) => Value::String(s.clone()),
-        Expr::Literal(Literal::Bool(b)) => Value::Bool(*b),
-        Expr::Ident(name) => Value::String(name.clone()),
-        _ => Value::Unit,
     }
 }
 

@@ -5,7 +5,6 @@ use crate::ast;
 use crate::interpreter;
 use crate::registry::Registry;
 use crate::runtime;
-use crate::vm;
 use super::{read_source, lex_with_location, parse_with_location, resolve_imports, load_meta_cells_from_program};
 
 /// `soma run --fresh`: the reset, run once the program passed its check
@@ -166,9 +165,9 @@ pub fn cmd_run(path: &PathBuf, args: &[String], use_jit: bool, signal_flag: Opti
         if let Some(first) = args.first() {
             let t = first.trim();
             let data_like = t.parse::<f64>().is_ok() || t.starts_with(['[', '{', '"']) || t == "true" || t == "false";
+            let mut names: Vec<String> = all_handlers.iter().filter(|(_, h)| !h.starts_with('_')).map(|(_, h)| h.clone()).collect();
+            names.extend(interior_handlers.iter().filter(|(_, _, h)| !h.starts_with('_')).map(|(_, c, h)| format!("{}.{}", c, h)));
             if !data_like {
-                let mut names: Vec<String> = all_handlers.iter().filter(|(_, h)| !h.starts_with('_')).map(|(_, h)| h.clone()).collect();
-                names.extend(interior_handlers.iter().filter(|(_, _, h)| !h.starts_with('_')).map(|(_, c, h)| format!("{}.{}", c, h)));
                 let near = crate::checker::names::suggest(first, names.iter())
                     .map(|h| format!(" (did you mean '{}'?)", h))
                     .unwrap_or_default();
@@ -176,86 +175,17 @@ pub fn cmd_run(path: &PathBuf, args: &[String], use_jit: bool, signal_flag: Opti
                     first, near, names.join(", "));
                 process::exit(1);
             }
+            // data with no handler name: the runtime guessed the first
+            // child's first handler (`soma run app.cell 7` withdrew 7)
+            eprintln!("error: '{}' is an argument, and no handler is named — a program with a runtime section runs it with a bare `soma run app.cell`; to call one handler, name it: soma run app.cell <handler> {} — handlers: [{}]",
+                first, args.join(" "), names.join(", "));
+            process::exit(1);
         }
-        run_with_runtime(program, &arg_values);
+        run_with_runtime(program);
     } else {
         // The deprecated flag is a compatibility no-op, as the warning
         // promises. The experimental VM cannot preserve language semantics.
         run_single_cell(program, arg_values, registry, signal_flag, record_all, path, &source);
-    }
-}
-
-fn run_with_vm(program: ast::Program, arg_values: Vec<interpreter::Value>, registry: &Registry, source: &str, signal_flag: Option<&str>) {
-    eprintln!("note: --jit mode does not support all features yet (e.g., string interpolation)");
-    let chunks = if let Some(cached) = vm::load_cached(source) {
-        cached
-    } else {
-        let mut compiler = vm::BytecodeCompiler::new();
-        compiler.compile_program(&program);
-        vm::save_cache(source, &compiler.chunks);
-        compiler.chunks
-    };
-
-    let cell = program.cells.iter()
-        .find(|c| matches!(c.node.kind, ast::CellKind::Cell | ast::CellKind::Agent) && c.node.sections.iter().any(|s| {
-            if let ast::Section::OnSignal(ref on) = s.node { on.signal_name == "run" } else { false }
-        }))
-        .or_else(|| program.cells.iter().find(|c| matches!(c.node.kind, ast::CellKind::Cell | ast::CellKind::Agent) && c.node.sections.iter().any(|s| {
-            if let ast::Section::OnSignal(ref on) = s.node { on.signal_name == "request" } else { false }
-        })))
-        .or_else(|| program.cells.iter().find(|c| matches!(c.node.kind, ast::CellKind::Cell | ast::CellKind::Agent) && c.node.sections.iter().any(|s| matches!(s.node, ast::Section::OnSignal(_)))))
-        .or_else(|| program.cells.iter().find(|c| matches!(c.node.kind, ast::CellKind::Cell | ast::CellKind::Agent)))
-        .unwrap_or_else(|| { eprintln!("error: no cell found"); process::exit(1); });
-    let cell_name = cell.node.name.clone();
-
-    let handler_names: Vec<String> = cell.node.sections.iter()
-        .filter_map(|s| if let ast::Section::OnSignal(ref on) = s.node { Some(on.signal_name.clone()) } else { None })
-        .collect();
-
-    // Collect handler param counts for smart auto-dispatch
-    let handler_params: Vec<(String, usize)> = cell.node.sections.iter()
-        .filter_map(|s| if let ast::Section::OnSignal(ref on) = s.node {
-            Some((on.signal_name.clone(), on.params.len()))
-        } else { None })
-        .collect();
-
-    let (signal_name, actual_args) = if let Some(sig) = signal_flag {
-        (sig.to_string(), arg_values)
-    } else if let Some(interpreter::Value::String(ref name)) = arg_values.first() {
-        if handler_names.contains(name) {
-            (name.clone(), arg_values[1..].to_vec())
-        } else {
-            let name = name.clone();
-            unknown_handler_or_default(&name, &handler_names, &handler_params, arg_values)
-        }
-    } else {
-        (default_handler(&cell_name, &handler_params, arg_values.len()), arg_values)
-    };
-
-    let mut vm = vm::VM::new(chunks);
-
-    for section in &cell.node.sections {
-        if let ast::Section::Memory(ref mem) = section.node {
-            let mut slots = std::collections::HashMap::new();
-            for slot in &mem.slots {
-                let props: Vec<String> = slot.node.properties.iter()
-                    .map(|p| p.node.name().to_string()).collect();
-                let backend = runtime::storage::resolve_backend_from_registry(
-                    &cell_name, &slot.node.name, &props, registry);
-                slots.insert(slot.node.name.clone(), backend);
-            }
-            vm.set_storage(&cell_name, &slots);
-        }
-    }
-
-    let actual_args = coerce_cli_args(&cell.node, &signal_name, actual_args);
-
-    match vm.call_signal(&cell_name, &signal_name, actual_args) {
-        // the handler's value is the command's output; `()` prints nothing
-        // (a `main` that only prints used to end with a stray `null`)
-        Ok(interpreter::Value::Unit) => {}
-        Ok(val) => println!("{}", run_output(&val)),
-        Err(e) => { eprintln!("vm error: {}", e); process::exit(1); }
     }
 }
 
@@ -719,6 +649,7 @@ fn run_interior_handler(program: ast::Program, parent: &str, child: &str, handle
         Some(def) => coerce_cli_args(&def, handler, args),
         None => args,
     };
+    crate::interpreter::PERSIST_MACHINES.store(true, std::sync::atomic::Ordering::Relaxed);
     let mut rt = runtime::Runtime::new(program);
     let result = rt.call_child_handler(parent, child, handler, args);
     if let Some(conn) = crate::runtime::storage::shared_connection() {
@@ -735,7 +666,10 @@ fn run_interior_handler(program: ast::Program, parent: &str, child: &str, handle
     }
 }
 
-fn run_with_runtime(program: ast::Program, args: &[interpreter::Value]) {
+fn run_with_runtime(program: ast::Program) {
+    // machine instances, next_id() counters and remember() memory persist,
+    // as under a named handler
+    crate::interpreter::PERSIST_MACHINES.store(true, std::sync::atomic::Ordering::Relaxed);
     let mut rt = runtime::Runtime::new(program);
 
     eprintln!("soma runtime v0.1.0");
@@ -758,35 +692,6 @@ fn run_with_runtime(program: ast::Program, args: &[interpreter::Value]) {
     if let Err(e) = rt.run_cell(&main_cell) {
         eprintln!("runtime error: {}", e);
         process::exit(1);
-    }
-
-    if !args.is_empty() {
-        let handler_info: Option<(String, String)> = rt.cells.get(&main_cell)
-            .and_then(|cell| {
-                cell.children.values().find_map(|child| {
-                    child.def.sections.iter().find_map(|s| {
-                        if let ast::Section::OnSignal(ref on) = s.node {
-                            Some((child.name.clone(), on.signal_name.clone()))
-                        } else {
-                            None
-                        }
-                    })
-                })
-            });
-
-        if let Some((_child_name, signal_name)) = handler_info {
-            match rt.emit_signal(&main_cell, &signal_name, args.to_vec()) {
-                Ok(results) => {
-                    for val in results {
-                        println!("{}", val);
-                    }
-                }
-                Err(e) => {
-                    eprintln!("runtime error: {}", e);
-                    process::exit(1);
-                }
-            }
-        }
     }
 
     if !rt.signal_log.is_empty() {

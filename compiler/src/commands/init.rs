@@ -79,7 +79,7 @@ pub fn cmd_init(name: Option<&str>) {
     println!("  {}.soma_env/       isolated environment", rel_prefix);
     println!("    stdlib/         {} property definitions", env.all_cell_paths().len());
     println!("    packages/      dependencies (empty)");
-    println!("    cache/          compiled bytecode");
+    println!("    cache/          reserved (unused for now)");
     println!("");
     println!("next steps:");
     if name.is_some() {

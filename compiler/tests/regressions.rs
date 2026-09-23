@@ -7128,3 +7128,192 @@ cell test T { rules {
     assert!(out.contains("the Int parameter `x` is later given a Float"), "{out}");
     let _ = std::fs::remove_dir_all(dir);
 }
+
+#[test]
+fn interior_timers_are_refused_at_check() {
+    // `every` / `after` in an interior cell never ran (soma run or serve),
+    // silently
+    let dir = scratch("interior_timer");
+    std::fs::write(dir.join("app.cell"), r#"
+cell Sys {
+    interior {
+        cell A {
+            face { signal go(n: Int) }
+            on go(n: Int) { print("go", n) }
+            every 300ms { print("tick") }
+            after 500ms { print("after") }
+        }
+    }
+    runtime { signal go(1) }
+}
+"#).unwrap();
+    let (code, out) = soma(&dir, &["check", "app.cell"]);
+    assert_ne!(code, 0, "{out}");
+    assert!(out.contains("`every` block in the interior cell Sys.A never runs"), "{out}");
+    assert!(out.contains("`after` block in the interior cell Sys.A never runs"), "{out}");
+}
+
+#[test]
+fn interior_runtime_tables_are_qualified_by_the_cell_path() {
+    // Sys1.Worker shared its machine instances, next_id() counter and
+    // remember() memory with the top-level Worker (`Worker__sm_flow`)
+    let dir = scratch("interior_tables");
+    std::fs::write(dir.join("app.cell"), r#"
+cell Worker {
+    memory { cnt: Map<String, Int> [persistent] }
+    state flow { initial: idle  idle -> busy  busy -> idle }
+    on peek() { return [get_status("job"), next_id(), recall("who")] }
+}
+cell Sys1 {
+    interior {
+        cell Worker {
+            face { signal go(n: Int) }
+            memory { cnt: Map<String, Int> [persistent] }
+            state flow { initial: idle  idle -> busy  busy -> idle }
+            on go(n: Int) {
+                transition("job", "busy")
+                remember("who", "interior")
+                print("interior", get_status("job"), next_id())
+            }
+        }
+    }
+    runtime { signal go(1) }
+}
+"#).unwrap();
+    let (code, out) = soma(&dir, &["run", "app.cell"]);
+    assert_eq!(code, 0, "{out}");
+    assert!(out.contains("interior busy 1"), "{out}");
+    let (code, out) = soma(&dir, &["run", "app.cell", "Worker.peek"]);
+    assert_eq!(code, 0, "{out}");
+    assert!(out.contains(r#"["idle", 1, null]"#), "{out}");
+    // a second interior run sees its own state (busy → busy is refused)
+    let (code, out) = soma(&dir, &["run", "app.cell"]);
+    assert_ne!(code, 0, "{out}");
+    assert!(out.contains("busy → busy"), "{out}");
+    // --fresh resets the interior cell's tables and slot files
+    let (code, out) = soma(&dir, &["run", "--fresh", "app.cell"]);
+    assert_eq!(code, 0, "{out}");
+    assert!(out.contains("interior busy 1"), "{out}");
+}
+
+#[test]
+fn interior_signals_stay_in_their_scope_in_declaration_order() {
+    // an interior `signal pong` also ran the top-level `on pong` (which then
+    // crashed on its own slot), and the sibling fan-out order varied
+    let dir = scratch("interior_scope");
+    std::fs::write(dir.join("app.cell"), r#"
+cell Audit {
+    memory { log: List<Int> [persistent] }
+    on pong(n: Int) { log.push(n)  print("TOP-LEVEL", n) }
+}
+cell Sys {
+    interior {
+        cell A {
+            face { signal go(n: Int) }
+            on go(n: Int) { signal pong(n) }
+        }
+        cell B {
+            face { signal pong(n: Int) }
+            on pong(n: Int) { print("B.pong", n) }
+        }
+        cell C {
+            face { signal pong(n: Int) }
+            on pong(n: Int) { print("C.pong", n) }
+        }
+        cell D {
+            face { signal pong(n: Int) }
+            on pong(n: Int) { print("D.pong", n) }
+        }
+    }
+    runtime { signal go(1) }
+}
+"#).unwrap();
+    for _ in 0..3 {
+        let (code, out) = soma(&dir, &["run", "app.cell"]);
+        assert_eq!(code, 0, "{out}");
+        assert!(!out.contains("TOP-LEVEL"), "{out}");
+        let b = out.find("B.pong 1").expect(&out);
+        let c = out.find("C.pong 1").expect(&out);
+        let d = out.find("D.pong 1").expect(&out);
+        assert!(b < c && c < d, "{out}");
+    }
+}
+
+#[test]
+fn runtime_section_is_evaluated_and_checked() {
+    // arguments were read as literals only ([1, 2] and 1 + 2 arrived as (),
+    // a name as its own text), statements were ignored
+    let dir = scratch("runtime_eval");
+    std::fs::write(dir.join("app.cell"), r#"
+cell Sys {
+    interior {
+        cell A {
+            face { signal go(n: Any)  signal cfg(opts: Map) }
+            on go(n: Any) { print("go got", to_json(n)) }
+            on cfg(opts: Map) { print("limit", opts.limit ?? 10) }
+        }
+    }
+    runtime {
+        print("runtime stmt")
+        let k = 4
+        signal go(k)
+        signal go([1, 2])
+        signal go(1 + 2)
+        signal cfg(map("limit", 3))
+    }
+}
+"#).unwrap();
+    let (code, out) = soma(&dir, &["run", "app.cell"]);
+    assert_eq!(code, 0, "{out}");
+    for want in ["runtime stmt", "go got 4", "go got [1,2]", "go got 3", "limit 3"] {
+        assert!(out.contains(want), "{want}: {out}");
+    }
+    std::fs::write(dir.join("bad.cell"), r#"
+cell Sys {
+    interior {
+        cell A {
+            face { signal go(n: Int) }
+            on go(n: Int) { print("go", n) }
+        }
+    }
+    runtime {
+        start Nope
+        signal go("5")
+        signal go(alice)
+    }
+}
+"#).unwrap();
+    let (code, out) = soma(&dir, &["check", "bad.cell"]);
+    assert_ne!(code, 0, "{out}");
+    assert!(out.contains("no interior cell named Nope"), "{out}");
+    assert!(out.contains("parameter 'n' of A.go is Int, and the runtime section passes a String literal"), "{out}");
+    assert!(out.contains("undefined variable 'alice'"), "{out}");
+}
+
+#[test]
+fn bare_data_argument_to_an_interior_program_is_refused() {
+    // `soma run app.cell 7` ran the first child's first handler with 7
+    let dir = scratch("interior_bare_arg");
+    std::fs::write(dir.join("app.cell"), r#"
+cell Sys {
+    interior {
+        cell A {
+            face { signal withdraw(n: Int) }
+            on withdraw(n: Int) { print("WITHDREW", n) }
+        }
+        cell B {
+            face { signal echo(n: Int) }
+            on echo(n: Int) { print("echo", n) }
+        }
+    }
+    runtime { signal echo(0) }
+}
+"#).unwrap();
+    let (code, out) = soma(&dir, &["run", "app.cell", "7"]);
+    assert_ne!(code, 0, "{out}");
+    assert!(!out.contains("WITHDREW"), "{out}");
+    assert!(out.contains("A.withdraw") && out.contains("B.echo"), "{out}");
+    let (code, out) = soma(&dir, &["run", "app.cell", "A.withdraw", "7"]);
+    assert_eq!(code, 0, "{out}");
+    assert!(out.contains("WITHDREW 7"), "{out}");
+}

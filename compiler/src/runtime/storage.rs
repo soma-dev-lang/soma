@@ -329,6 +329,43 @@ pub fn integrity_check() -> Result<(), String> {
     }
 }
 
+/// The SQLite table `{cell}_{slot}` of an INTERIOR cell (`Sys.Worker`),
+/// adopting once the rows of `legacy` — the table the same data had under
+/// the bare cell name (`Worker__sm_flow`), shared with every same-named
+/// cell — when the qualified table does not exist yet. The legacy table is
+/// left untouched (another cell may own it). Returns the backend and the
+/// number of rows copied.
+pub fn sqlite_adopting(cell: &str, slot: &str, legacy: &str) -> (SqliteBackend, usize) {
+    let target = format!("{}_{}", cell, slot);
+    let conn = SqliteBackend::open_shared().unwrap_or_else(|e| db_fatal(&data_dir().join("soma.db"), &e));
+    let exists = |name: &str| -> bool {
+        let c = conn.lock().unwrap_or_else(|e| e.into_inner());
+        c.query_row("SELECT count(*) FROM sqlite_master WHERE type = 'table' AND name = ?1", [name], |r| r.get::<_, i64>(0)).unwrap_or(0) > 0
+    };
+    // once per table: `soma run --fresh` drops the qualified table and
+    // keeps the legacy one (it may be another program's) — the marker keeps
+    // the old rows from coming back on the next run
+    let marker = data_dir().join("interior_adopted");
+    let adopted = std::fs::read_to_string(&marker).map_or(false, |t| t.lines().any(|l| l == target));
+    let had_target = exists(&target);
+    let had_legacy = exists(legacy);
+    let backend = SqliteBackend::new(cell, slot);
+    let mut copied = 0usize;
+    if !adopted {
+        let c = conn.lock().unwrap_or_else(|e| e.into_inner());
+        if !had_target && had_legacy {
+            copied = c.execute(&format!(
+                "INSERT OR IGNORE INTO \"{}\" (key, value, type) SELECT key, value, type FROM \"{}\"",
+                target.replace('"', "\"\""), legacy.replace('"', "\"\"")), []).unwrap_or(0);
+        }
+        use std::io::Write as _;
+        if let Ok(mut f) = std::fs::OpenOptions::new().create(true).append(true).open(&marker) {
+            let _ = writeln!(f, "{}", target);
+        }
+    }
+    (backend, copied)
+}
+
 /// The shared connection, if any persistent slot opened the database.
 pub fn shared_connection() -> Option<Arc<std::sync::Mutex<rusqlite::Connection>>> {
     SHARED_CONN.get().cloned()
@@ -408,7 +445,8 @@ impl SqliteBackend {
             .unwrap_or_else(|e| db_fatal(&data_dir().join("soma.db"), &e))
     }
 
-    pub fn try_new(cell_name: &str, slot_name: &str) -> Result<Self, String> {
+    /// The process's connection to `soma.db`, opened on first use.
+    fn open_shared() -> Result<Arc<std::sync::Mutex<rusqlite::Connection>>, String> {
         std::fs::create_dir_all(data_dir()).map_err(|e| e.to_string())?;
         let db_path = data_dir().join("soma.db");
         if SHARED_CONN.get().is_none() {
@@ -417,7 +455,11 @@ impl SqliteBackend {
             Self::initialize(&c, "PRAGMA journal_mode=WAL;")?;
             let _ = SHARED_CONN.set(Arc::new(std::sync::Mutex::new(c)));
         }
-        let shared = SHARED_CONN.get().unwrap().clone();
+        Ok(SHARED_CONN.get().unwrap().clone())
+    }
+
+    pub fn try_new(cell_name: &str, slot_name: &str) -> Result<Self, String> {
+        let shared = Self::open_shared()?;
         let conn = shared.lock().unwrap_or_else(|e| e.into_inner());
 
         let table = format!("{}_{}", cell_name, slot_name);

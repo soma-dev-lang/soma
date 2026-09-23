@@ -25,6 +25,7 @@ pub mod guards;
 pub mod habits;
 pub mod routes;
 pub mod cross_machine;
+pub mod runtime_section;
 
 pub use properties::PropertyChecker;
 pub use signals::SignalChecker;
@@ -1628,6 +1629,12 @@ impl<'a> Checker<'a> {
         }
         self.errors.extend(prop_checker.errors);
         self.warnings.extend(prop_checker.warnings);
+
+        // interior timers (never scheduled) and the runtime section's
+        // start / connect names and signal arguments
+        for issue in runtime_section::check_cell(cell) {
+            self.errors.push(CheckError::Static { kind: issue.kind, message: issue.message, span: issue.span });
+        }
 
         // 3. Signal checks within interior
         for section in &cell.sections {

@@ -391,12 +391,19 @@ fn main_inner() {
                     // the database is per DIRECTORY: `--fresh other.cell` wiped
                     // the app's data beside it — when other programs' cells have
                     // tables there, only THIS program's tables are reset
-                    if data.join("soma.db").exists() {
-                        let (own, foreign, kept) = cells_in_db(&file, &data.join("soma.db"));
+                    if data.exists() {
+                        let (own, mut foreign, kept) = cells_in_db(&file, &data.join("soma.db"));
+                        // the JSON slot files (interior cells' [persistent]
+                        // slots, `Sys.A_cnt.json`): this program's are reset
+                        // with its tables — they survived a partial reset
+                        let (own_files, foreign_files) = slot_files_in(&file, &data);
+                        foreign.extend(foreign_files);
                         if !foreign.is_empty() || !kept.is_empty() {
                             if let Ok(conn) = rusqlite::Connection::open(data.join("soma.db")) {
                                 for t in &own { let _ = conn.execute_batch(&format!("DROP TABLE IF EXISTS \"{}\"", t.replace('"', "\"\""))); }
                             }
+                            for f in &own_files { let _ = std::fs::remove_file(f); }
+                            let own: Vec<String> = own.iter().cloned().chain(own_files.iter().filter_map(|f| f.file_name().map(|n| n.to_string_lossy().to_string()))).collect();
                             if foreign.is_empty() {
                                 eprintln!("fresh: reset {} table(s) of this program", own.len());
                             } else {
@@ -962,6 +969,51 @@ fn cmd_tokens(path: &PathBuf) {
     for tok in &tokens {
         println!("{:?}  @ {:?}", tok.token, tok.span);
     }
+}
+
+/// The JSON slot files (`{cell path}_{slot}.json`) in the data directory
+/// `data`: those of the cells of `file` (interior cells included, by their
+/// qualified path), and the others — which belong to other programs beside it.
+fn slot_files_in(file: &std::path::Path, data: &std::path::Path) -> (Vec<std::path::PathBuf>, Vec<String>) {
+    fn files_of(p: &std::path::Path) -> Vec<String> {
+        let mut names: Vec<String> = Vec::new();
+        let Some(program) = std::fs::read_to_string(p).ok()
+            .and_then(|src| lexer::Lexer::new(&src).tokenize().ok())
+            .and_then(|t| parser::Parser::new(t).parse_program().ok()) else { return names };
+        fn rec(c: &ast::CellDef, path: &str, names: &mut Vec<String>) {
+            let cell = if path.is_empty() { c.name.clone() } else { format!("{}.{}", path, c.name) };
+            for sec in &c.sections {
+                match &sec.node {
+                    ast::Section::Memory(m) => for slot in &m.slots { names.push(format!("{}_{}.json", cell, slot.node.name)); },
+                    ast::Section::Interior(i) => for ch in &i.cells { rec(&ch.node, &cell, names); },
+                    _ => {}
+                }
+            }
+        }
+        for c in &program.cells { rec(&c.node, "", &mut names); }
+        names
+    }
+    let names = files_of(file);
+    // a file another program beside this one declares too is its data as well
+    let mut sibling: Vec<String> = Vec::new();
+    let base = file.parent().filter(|b| !b.as_os_str().is_empty()).unwrap_or(std::path::Path::new("."));
+    let me = file.canonicalize().unwrap_or_else(|_| file.to_path_buf());
+    if let Ok(es) = std::fs::read_dir(base) {
+        for e in es.flatten() {
+            let p = e.path();
+            if p.extension().map_or(true, |x| x != "cell") || p.canonicalize().map_or(false, |c| c == me) { continue; }
+            sibling.extend(files_of(&p));
+        }
+    }
+    let (mut own, mut foreign) = (Vec::new(), Vec::new());
+    if let Ok(es) = std::fs::read_dir(data) {
+        for e in es.flatten() {
+            let n = e.file_name().to_string_lossy().to_string();
+            if !n.ends_with(".json") { continue; }
+            if names.contains(&n) && !sibling.contains(&n) { own.push(e.path()); } else { foreign.push(n); }
+        }
+    }
+    (own, foreign)
 }
 
 /// The tables of `db` owned by the cells of `file` (and of its lib/ and
