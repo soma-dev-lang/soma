@@ -1026,6 +1026,13 @@ fn run_over_dir(cmd: &str, dir: &std::path::Path, json: bool, extra: &[&str]) ->
         for f in &without { eprintln!("── {} ── no test cells, skipped", f.display()); }
         if with.is_empty() {
             eprintln!("no test cells in any .cell file under {}", dir.display());
+            // --json still answers one document (stdout was empty)
+            if json {
+                println!("{}", serde_json::to_string_pretty(&serde_json::json!({
+                    "command": cmd, "files": [], "total": 0, "failed": 0, "ok": false,
+                    "note": "no test cells in any .cell file",
+                })).unwrap());
+            }
             std::process::exit(1);
         }
         files = with;

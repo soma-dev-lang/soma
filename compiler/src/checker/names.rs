@@ -30,6 +30,8 @@ pub const EFFECT_BUILTINS: &[&str] = &[
     "set_budget", "sleep", "link", "subscribe", "ws_connect", "ws_send", "approve", "clear_context", "clear_trace",
     // they run the handler they are given
     "horde", "vote",
+    // it stops a running horde (a GET cancelled one)
+    "horde_cancel",
 ];
 
 /// Every builtin callable by bare name at runtime, DERIVED from the

@@ -130,6 +130,11 @@ pub fn call_builtin(name: &str, args: &[Value]) -> Option<Result<Value, RuntimeE
         }
         "redirect" => {
             let url = args.first().map(|a| format!("{}", a)).unwrap_or("/".to_string());
+            // a control character (a CR/LF from the query) cannot be sent as
+            // a header: the 302 went out with no Location at all
+            if url.bytes().any(|b| b < 0x20 || b == 0x7f) {
+                return Some(Err(RuntimeError::Domain { kind: "type".to_string(), message: "redirect(url): the URL holds a control character (CR, LF, …) — encode it".to_string() }));
+            }
             Some(Ok(map_from_pairs(vec![
                 ("_status".to_string(), Value::Int(SomaInt::from_i64(302))),
                 ("_body".to_string(), Value::String(String::new())),

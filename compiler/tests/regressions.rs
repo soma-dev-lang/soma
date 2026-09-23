@@ -4345,3 +4345,59 @@ fn cli_fixes_of_the_second_pass() {
     assert_eq!(out.trim(), "-0", "{out}");
     let _ = std::fs::remove_dir_all(dir);
 }
+
+#[test]
+fn serve_third_pass_binding_and_gates() {
+    let dir = scratch("serve_third_pass");
+    std::fs::write(dir.join("app.cell"), r#"
+cell Store {
+    memory { docs: Map<String, Map> [persistent]  bal: Map<String, Int> [persistent] }
+    on put_doc(key: String, data: Map) { docs.set(key, data)  return docs.get(key) }
+    on put_note(key: String, text: String) { return text }
+    on tag(name: String, meta: Map) { return [name, meta] }
+    on add(n: Int, opts: Map) { return [n, opts] }
+    on hello() { return "hi" }
+    on reset_one(k: String) { bal.set(k, 0)  return k }
+    on stop(h: String) { return horde_cancel(h) }
+    on request(method: String, path: String, body: String, headers: Map) {
+        if headers.get("authorization") != "Bearer s3cret" { return response(401, "no") }
+        if starts_with(path, "/admin/reset/") { return horde(Store.reset_one, [replace(path, "/admin/reset/", "")]) }
+        return response(404, "nf")
+    }
+}
+"#).unwrap();
+    let (_server, port) = serve_dir(&dir);
+    let send = |m: &str, path: &str, ct: &str, body: &str| raw_request(port, &format!(
+        "{m} {path} HTTP/1.0\r\nHost: localhost\r\nContent-Type: {ct}\r\nContent-Length: {}\r\n\r\n{body}", body.len()));
+    let j = "application/json";
+    // an unknown query key never takes the body's place
+    assert!(send("PUT", "/put_doc/k1?v=2", j, r#"{"title":"Q3"}"#).ends_with(r#"{"title":"Q3"}"#));
+    assert!(send("PUT", "/put_note/k1?utm_source=mail", "text/plain", "call the bank").ends_with(r#"{"result":"call the bank"}"#));
+    // a missing trailing Map is empty; the body's other keys fill it
+    assert!(send("POST", "/tag", j, r#"{"name":"x"}"#).ends_with(r#"["x",{}]"#));
+    assert!(send("POST", "/add", j, r#"{"n":1,"step":7}"#).ends_with(r#"[1,{"step":7}]"#));
+    // a body for a handler with no open parameter is ignored
+    assert!(send("POST", "/hello", j, r#"{"x":1}"#).ends_with(r#"{"result":"hi"}"#));
+    // `horde(Store.reset_one, …)` makes reset_one request's; horde_cancel writes
+    assert!(send("POST", "/reset_one/alice", j, "").starts_with("HTTP/1.0 401"));
+    assert!(get(port, "/stop?h=x").starts_with("HTTP/1.0 405"));
+    let _ = std::fs::remove_dir_all(dir);
+}
+
+#[test]
+fn fix_edits_the_cell_the_error_names() {
+    // a slot of the same name in another cell was edited; a comment naming
+    // the cell received the handler stub
+    let dir = scratch("fix_scoped");
+    std::fs::write(dir.join("a.cell"), "cell A {\n    memory { log: List<String> [ephemeral] }\n    on r() { return 1 }\n}\ncell B {\n    memory { log: List<String> [persistent, ephemeral] }\n    on s() { return 1 }\n}\n").unwrap();
+    soma(&dir, &["fix", "a.cell"]);
+    let fixed = std::fs::read_to_string(dir.join("a.cell")).unwrap();
+    assert!(fixed.contains("memory { log: List<String> [ephemeral] }") && !fixed.contains("[persistent, ephemeral]"), "{fixed}");
+    std::fs::write(dir.join("b.cell"), "// Helper is used by cell App below\ncell Helper {\n    on x() { return 1 }\n}\ncell App {\n    face { signal go(n: Int) }\n}\n").unwrap();
+    let (code, out) = soma(&dir, &["fix", "b.cell"]);
+    assert_eq!(code, 0, "{out}");
+    let fixed = std::fs::read_to_string(dir.join("b.cell")).unwrap();
+    let app = fixed.find("cell App {").unwrap();
+    assert!(fixed[app..].contains("on go(") && !fixed[..app].contains("on go("), "{fixed}");
+    let _ = std::fs::remove_dir_all(dir);
+}

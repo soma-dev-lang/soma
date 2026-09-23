@@ -2,6 +2,31 @@
 
 ## Unreleased
 
+### Third pass: `soma serve` binding, gates and `soma fix`
+
+- An unknown query key took the body's place: `PUT /put_doc/k1?v=2` with a
+  JSON body stored `{"v": 2}`, and `?utm_source=mail` replaced a text body.
+  Parameters now bind in this order: the query's names, the body's names,
+  the body whole (when none of its keys names a parameter — as text for a
+  String parameter, so `on hook(payload: String)` receives a JSON body), a
+  trailing `opts: Map` from the keys that name no parameter (the body's
+  too: `{"n": 1, "step": 7}` for `add(n, opts)`), then the query's unnamed
+  values. A missing trailing Map is empty (`{"name": "x"}` for `tag(name,
+  meta: Map)` was a 400 "the request body must be JSON"), and a body sent to
+  a handler with no open parameter is ignored (it was an arity 400).
+- `horde(App.reset_one, …)` — the documented `Cell.handler` spelling — did
+  not make `request` own `reset_one` (reachable directly, around its auth),
+  and `horde_cancel` did not count as a write for the GET gate (a GET, e.g.
+  an `<img>` on any site, cancelled a running horde).
+- `soma fix` removed a contradictory property from a slot of the same name
+  in ANOTHER cell, and put a handler stub into the cell a comment named
+  (`// Helper is used by cell App`); it now edits the declaration the error
+  points at and skips comments and strings.
+- `soma test <dir> --json` wrote nothing on stdout when no file has a test
+  cell; `redirect(url)` with a CR/LF sent a 302 without `Location` (it
+  raises); the undefined-name advice of `check --json` no longer speaks of
+  braces for code.
+
 ### Second pass: tools and diagnostics
 
 - `soma fix` searched names as substrings: removing a contradictory property

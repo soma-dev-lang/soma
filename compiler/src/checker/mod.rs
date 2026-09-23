@@ -2708,7 +2708,7 @@ impl<'a> Checker<'a> {
             ),
             CheckError::InterpolationUndefined { .. } => (
                 format!("{}", err),
-                "Bind the variable before this string is evaluated, fix the spelling, or escape the braces as '{{...}}' if the text is literal.".to_string(),
+                "Bind the name before it is used or fix its spelling — inside a string, escape the braces as '{{...}}' if the text is literal.".to_string(),
                 "interpolation_undefined",
             ),
             CheckError::DispatchIssue { .. } => (

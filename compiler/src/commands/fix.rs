@@ -81,6 +81,11 @@ fn find_cell<'a>(program: &'a ast::Program, cell_name: &str) -> Option<&'a ast::
 /// is not inside `catalog`, `cell App` not inside `cell AppStore`).
 fn find_word(source: &str, from: usize, word: &str) -> Option<usize> {
     let ident = |c: char| c.is_alphanumeric() || c == '_';
+    // not inside a comment or a string (`// Helper is used by cell App`
+    // put App's handler into Helper): searched in a copy where they are
+    // blanked, byte for byte
+    let masked = mask_comments_and_strings(source);
+    let source = masked.as_str();
     let mut at = from;
     while let Some(i) = source[at..].find(word) {
         let abs = at + i;
@@ -90,6 +95,29 @@ fn find_word(source: &str, from: usize, word: &str) -> Option<usize> {
         at = abs + word.len();
     }
     None
+}
+
+/// `source` with every comment and string literal replaced by spaces (ASCII
+/// spaces for ASCII bytes, the same byte length overall).
+fn mask_comments_and_strings(source: &str) -> String {
+    let b = source.as_bytes();
+    let mut out = b.to_vec();
+    let mut i = 0;
+    let blank = |out: &mut Vec<u8>, a: usize, z: usize| for k in a..z.min(out.len()) { if out[k] < 0x80 && out[k] != b'\n' { out[k] = b' '; } else if out[k] >= 0x80 { out[k] = b' '; } };
+    while i < b.len() {
+        if b[i] == b'/' && b.get(i + 1) == Some(&b'/') {
+            let end = source[i..].find('\n').map(|e| i + e).unwrap_or(b.len());
+            blank(&mut out, i, end); i = end;
+        } else if b[i] == b'/' && b.get(i + 1) == Some(&b'*') {
+            let end = source[i + 2..].find("*/").map(|e| i + 2 + e + 2).unwrap_or(b.len());
+            blank(&mut out, i, end); i = end;
+        } else if b[i] == b'"' {
+            let mut j = i + 1;
+            while j < b.len() && b[j] != b'"' { if b[j] == b'\\' { j += 1; } j += 1; }
+            blank(&mut out, i + 1, j); i = j + 1;
+        } else { i += 1; }
+    }
+    String::from_utf8(out).unwrap_or_else(|_| source.to_string())
 }
 
 /// Find the byte offset of the last `}` that closes a cell block in the source.
@@ -279,7 +307,7 @@ pub fn cmd_fix(path: &PathBuf, json: bool, registry: &mut Registry) {
     }
     enum FixKind {
         InsertHandler { cell_name: String, signal_name: String, params: String, ret: String },
-        RemoveContradictoryProperty { slot_name: String, property_to_remove: String },
+        RemoveContradictoryProperty { slot_name: String, property_to_remove: String, from: usize },
         RemoveDuplicateSignal { signal_name: String },
     }
 
@@ -350,7 +378,7 @@ pub fn cmd_fix(path: &PathBuf, json: bool, registry: &mut Registry) {
                     }
                 }
             }
-            CheckError::PropertyContradiction { slot, a, b, .. } => {
+            CheckError::PropertyContradiction { slot, a, b, span } => {
                 // Remove the "less safe" property. If one is ephemeral, remove it.
                 // Otherwise remove b (the second one listed).
                 let to_remove = if a == "ephemeral" {
@@ -365,6 +393,9 @@ pub fn cmd_fix(path: &PathBuf, json: bool, registry: &mut Registry) {
                     kind: FixKind::RemoveContradictoryProperty {
                         slot_name: slot.clone(),
                         property_to_remove: to_remove,
+                        // the declaration the error points at (a slot of that
+                        // name in another cell was edited instead)
+                        from: span.start,
                     },
                 });
             }
@@ -419,11 +450,13 @@ pub fn cmd_fix(path: &PathBuf, json: bool, registry: &mut Registry) {
                     });
                 }
             }
-            FixKind::RemoveContradictoryProperty { slot_name, property_to_remove } => {
+            FixKind::RemoveContradictoryProperty { slot_name, property_to_remove, from } => {
                 // Find pattern like `[persistent, ephemeral]` or `[ephemeral, persistent]`
                 // and remove the offending property from the bracket list.
                 // Strategy: find the slot line and remove the property from its bracket list.
-                let removed = remove_property_from_source(&mut source, slot_name, property_to_remove);
+                // spans count characters; the search takes a byte offset
+                let from_byte = source.char_indices().nth(*from).map(|(b, _)| b).unwrap_or(0);
+                let removed = remove_property_from_source(&mut source, slot_name, property_to_remove, from_byte);
                 if removed {
                     fixes.push(AppliedFix {
                         description: format!("removed contradictory property: {} on slot '{}'", property_to_remove, slot_name),
@@ -496,7 +529,7 @@ pub fn cmd_fix(path: &PathBuf, json: bool, registry: &mut Registry) {
 /// Remove a specific property from a memory slot's property list in the source.
 /// E.g., given slot "items" with `[persistent, ephemeral]`, remove "ephemeral"
 /// to produce `[persistent]`.
-fn remove_property_from_source(source: &mut String, slot_name: &str, prop: &str) -> bool {
+fn remove_property_from_source(source: &mut String, slot_name: &str, prop: &str, from: usize) -> bool {
     // Find the slot declaration line. Look for the slot name preceded by `[...]`
     // Typical patterns:
     //   items: Map<String, Item> = map() [persistent, ephemeral]
@@ -505,7 +538,7 @@ fn remove_property_from_source(source: &mut String, slot_name: &str, prop: &str)
     // where the bracket contains the property.
 
     // Search for slot name followed eventually by a bracket list containing the property
-    let mut search_from = 0;
+    let mut search_from = from;
     while let Some(abs_pos) = find_word(source, search_from, slot_name) {
         // the declaration `name:` — not the name inside another word or a use
         if !source[abs_pos + slot_name.len()..].trim_start_matches([' ', '\t']).starts_with(':') {

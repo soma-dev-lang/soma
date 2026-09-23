@@ -222,8 +222,13 @@ pub fn explicit_routes_in(program: &Program, cell: &CellDef) -> ExplicitRoutes {
             // a handler passed as a value (`horde(worker, xs)`, `vote(worker,
             // q, 3)`) runs too: POST /worker/a skipped request's auth
             for a in args {
-                if let Expr::Ident(v) = &a.node {
-                    if defs.contains_key(&(cur.clone(), v.clone())) { edges.push((None, v.clone())); }
+                match &a.node {
+                    Expr::Ident(v) if defs.contains_key(&(cur.clone(), v.clone())) => edges.push((None, v.clone())),
+                    // `horde(App.reset_one, …)`, the documented spelling
+                    Expr::FieldAccess { target, field } => if let Expr::Ident(c) = &target.node {
+                        if defs.contains_key(&(c.clone(), field.clone())) { edges.push((Some(c.clone()), field.clone())); }
+                    },
+                    _ => {}
                 }
             }
         });

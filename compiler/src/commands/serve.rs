@@ -2270,20 +2270,21 @@ pub(crate) fn coerce_to_type(ty: &str, v: interpreter::Value) -> interpreter::Va
 /// the key is one, else in order. Shared by `/handler?…` and
 /// `/signal/handler?…` — the latter filled them in order only, so
 /// `?v=1&k=2` bound k to "1" and v to "2".
-/// Bind the parameters the path left open: by NAME from the query, then
-/// by name from a JSON body, then the query's unnamed values in order, then
-/// the body whole. A parameter set by name keeps its position (the slots
-/// were compacted, so `POST /two?b=B {"a":"A"}` bound B to `a`); a gap
-/// before a bound parameter is `()`, which the parameter check names.
+/// Bind the parameters the path left open, in this order: by NAME from the
+/// query; by name from a JSON body; the body whole (when none of its keys
+/// names a parameter — as text for a String parameter); a trailing `opts:
+/// Map` from the query keys that name no parameter; the query's unnamed
+/// values. A parameter set by name keeps its position (they were compacted:
+/// `POST /two?b=B {"a":"A"}` bound B to `a`); an unknown query key never
+/// takes the body's place (`PUT /put_doc/k1?v=2` stored {"v": 2}); a gap
+/// before a bound parameter is `()`, which the parameter check names; a
+/// body for a handler with no open parameter is ignored.
 fn bind_open_params(args: &mut Vec<interpreter::Value>, query_string: &str, body: Option<(Option<&interpreter::Value>, &str)>, param_names: &[String], handler_types: &[String]) {
-    // a trailing `opts: Map` the path did not fill collects the query keys
-    // that name no parameter (`/add/1?step=7` → opts.step == 7)
-    let opts_idx = handler_types.len().checked_sub(1)
-        .filter(|&last| handler_types[last] == "Map" && last >= args.len());
     let base = args.len();
-    let mut slots: Vec<Option<interpreter::Value>> = vec![None; param_names.len().saturating_sub(base)];
-    let mut opts_map: Vec<(String, interpreter::Value)> = Vec::new();
-    let mut positional: Vec<interpreter::Value> = Vec::new();
+    let open_len = param_names.len().saturating_sub(base);
+    let mut slots: Vec<Option<interpreter::Value>> = vec![None; open_len];
+    let ty = |i: usize| handler_types.get(base + i).map(|t| t.as_str()).unwrap_or("");
+    let mut unknown: Vec<(String, interpreter::Value)> = Vec::new();
     for pair in query_string.split('&').filter(|pair| !pair.is_empty()) {
         let (k, v) = pair.split_once('=').unwrap_or((pair, ""));
         let decoded = urlencoding_decode(v);
@@ -2291,52 +2292,62 @@ fn bind_open_params(args: &mut Vec<interpreter::Value>, query_string: &str, body
         match param_names.iter().position(|p| *p == key) {
             Some(i) if i >= base => slots[i - base] = Some(coerce_query_value(&decoded)),
             Some(_) => {}
-            None if opts_idx.is_some() => opts_map.push((key, coerce_query_value(&decoded))),
-            // a key the handler has no room for (?utm_source=…) is dropped
-            // below rather than a "expected 1 argument, got 2"
-            None => positional.push(coerce_query_value(&decoded)),
+            None => unknown.push((key, coerce_query_value(&decoded))),
         }
     }
-    if let Some(oi) = opts_idx {
-        if !opts_map.is_empty() && slots[oi - base].is_none() {
-            slots[oi - base] = Some(interpreter::map_from_pairs(opts_map));
-        }
-    }
-    // the body: a JSON object by parameter name — or whole, for the one
-    // open parameter it names no key of (`on deploy(data: Map)`)
-    let mut whole_body: Option<interpreter::Value> = None;
     if let Some((body_value, raw)) = body {
+        let open: Vec<usize> = (0..slots.len()).filter(|i| slots[*i].is_none()).collect();
         match body_value {
             Some(bv @ interpreter::Value::Map(entries)) => {
-                let open: Vec<usize> = (0..slots.len()).filter(|i| slots[*i].is_none()).collect();
-                if open.len() == 1 && !entries.contains_key(&param_names[base + open[0]]) {
-                    slots[open[0]] = Some(bv.clone());
-                } else if open.is_empty() && slots.is_empty() {
-                    whole_body = Some(bv.clone());
-                } else {
-                    for i in open {
-                        slots[i] = Some(entries.get(&param_names[base + i]).cloned().unwrap_or(interpreter::Value::Unit));
+                let named: Vec<usize> = open.iter().copied().filter(|i| entries.contains_key(&param_names[base + i])).collect();
+                for i in &named { slots[*i] = entries.get(&param_names[base + i]).cloned(); }
+                // the body's other keys fill a trailing `opts: Map`, as the
+                // query's do (`{"n": 1, "step": 7}` for `add(n, opts)`)
+                let last = handler_types.len().checked_sub(1).filter(|&l| handler_types[l] == "Map" && l >= base);
+                if let Some(oi) = last {
+                    if !named.is_empty() && slots[oi - base].is_none() {
+                        let extra: Vec<(String, interpreter::Value)> = entries.iter()
+                            .filter(|(k, _)| !param_names.iter().any(|p| p == *k))
+                            .map(|(k, v)| (k.clone(), v.clone())).collect();
+                        if !extra.is_empty() { slots[oi - base] = Some(interpreter::map_from_pairs(extra)); }
+                    }
+                }
+                // no key names a parameter: the body is the first open one
+                if named.is_empty() {
+                    if let Some(&i) = open.first() {
+                        slots[i] = Some(if ty(i) == "String" { interpreter::Value::String(raw.to_string()) } else { bv.clone() });
                     }
                 }
             }
-            Some(other) => whole_body = Some(other.clone()),
-            None => whole_body = Some(interpreter::Value::String(raw.to_string())),
+            Some(other) => {
+                if let Some(&i) = open.first() {
+                    slots[i] = Some(if ty(i) == "String" && !matches!(other, interpreter::Value::String(_)) { interpreter::Value::String(raw.to_string()) } else { other.clone() });
+                }
+            }
+            None => { if let Some(&i) = open.first() { slots[i] = Some(interpreter::Value::String(raw.to_string())); } }
         }
     }
-    let mut rest = positional.into_iter().chain(whole_body);
-    for slot in slots.iter_mut() {
-        if slot.is_none() {
-            if let Some(v) = rest.next() { *slot = Some(v); }
+    // a trailing `opts: Map` still open collects the query keys that name no
+    // parameter (`/add/1?step=7` → opts.step == 7); else they fill the open
+    // parameters in order, and a key with no room (?utm_source=…) is dropped
+    let opts_idx = handler_types.len().checked_sub(1).filter(|&last| handler_types[last] == "Map" && last >= base);
+    match opts_idx {
+        Some(oi) if slots[oi - base].is_none() && !unknown.is_empty() => {
+            slots[oi - base] = Some(interpreter::map_from_pairs(unknown));
+        }
+        Some(_) => {}
+        None => {
+            let mut rest = unknown.into_iter().map(|(_, v)| v);
+            for slot in slots.iter_mut() {
+                if slot.is_none() { if let Some(v) = rest.next() { *slot = Some(v); } }
+            }
         }
     }
-    // a handler of unknown parameters (or none open) still gets the body
-    let extra: Vec<interpreter::Value> = if slots.is_empty() { rest.filter(|v| !matches!(v, interpreter::Value::Unit)).take(1).collect() } else { Vec::new() };
     if let Some(last) = slots.iter().rposition(|s| s.is_some()) {
         for slot in slots.into_iter().take(last + 1) {
             args.push(slot.unwrap_or(interpreter::Value::Unit));
         }
     }
-    args.extend(extra);
 }
 
 fn coerce_query_value(decoded: &str) -> interpreter::Value {
@@ -2465,7 +2476,13 @@ pub(crate) fn mutating_handlers(cell: &ast::CellDef, foreign: &std::collections:
                 // a handler passed as a value runs too (`horde(worker, xs)`:
                 // GET /wipe_all/a,b zeroed every balance)
                 for a in args {
-                    if let Expr::Ident(v) = &a.node {
+                    let v = match &a.node {
+                        Expr::Ident(v) => Some(v),
+                        // `horde(App.reset_one, …)` names this cell's handler too
+                        Expr::FieldAccess { target, field } if matches!(&target.node, Expr::Ident(c) if *c == cell.name) => Some(field),
+                        _ => None,
+                    };
+                    if let Some(v) = v {
                         if cell.sections.iter().any(|s| matches!(&s.node, Section::OnSignal(o) if o.signal_name == *v)) { callees.push(v.clone()); }
                     }
                 }
