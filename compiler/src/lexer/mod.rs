@@ -685,7 +685,11 @@ impl<'a> Lexer<'a> {
             let operand_follows = {
                 let mut i = self.pos + 1;
                 while i < self.chars.len() && (self.chars[i] == ' ' || self.chars[i] == '\t') { i += 1; }
-                self.chars.get(i).map_or(false, |n| n.is_alphanumeric() || matches!(n, '(' | '[' | '-' | '+' | '"' | '_' | '.' | '!'))
+                let word: String = self.chars[i.min(self.chars.len())..].iter().take_while(|c| c.is_alphanumeric() || **c == '_').collect();
+                // a keyword starts the next statement (`let d = 5%  return p`)
+                let keyword = matches!(word.as_str(), "return" | "let" | "if" | "else" | "match" | "for" | "while" | "require" | "ensure"
+                    | "emit" | "signal" | "break" | "continue" | "on" | "try" | "in");
+                !keyword && self.chars.get(i).map_or(false, |n| n.is_alphanumeric() || matches!(n, '(' | '[' | '-' | '+' | '"' | '_' | '.' | '!'))
             };
             if c == '%' && !operand_follows {
                 self.advance();

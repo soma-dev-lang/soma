@@ -3714,7 +3714,8 @@ impl Interpreter {
                 };
                 Value::Int(SomaInt::from_i64(ms as i64))
             }
-            Literal::Percentage(p) => Value::Float(*p),
+            // `5%` is 0.05 (it was 5.0: `p * (1 - 5%)` answered -4p)
+            Literal::Percentage(p) => Value::Float(*p / 100.0),
             Literal::Unit => Value::Unit,
         }
     }

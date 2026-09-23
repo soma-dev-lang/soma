@@ -4720,7 +4720,7 @@ impl FnGenerator {
                 let pat_escaped = pat.replace('\\', "\\\\").replace('"', "\\\"");
                 let inner = format!(
                     "{{ static RX_{}: std::sync::OnceLock<regex::Regex> = std::sync::OnceLock::new(); \
-                     let _rx = RX_{}.get_or_init(|| regex::Regex::new(\"{}\").unwrap()); _rx.replace_all(&{}, _soma_rx_rep(&{}, _rx.captures_len() - 1).as_str()).into_owned() }}",
+                     let _rx = RX_{}.get_or_init(|| regex::Regex::new(\"{}\").unwrap()); _rx.replace_all(&{}, _soma_rx_rep(&{}, _rx.captures_len() - 1, &_rx.capture_names().flatten().collect::<Vec<_>>()).as_str()).into_owned() }}",
                     counter, counter, pat_escaped, text, repl
                 );
                 self.coerce_direct(inner, NativeType::String, target_ty)
@@ -6158,7 +6158,7 @@ impl FnGenerator {
                 let pat_escaped = pat.replace('\\', "\\\\").replace('"', "\\\"");
                 format!(
                     "{{ static RX_{}: std::sync::OnceLock<regex::Regex> = std::sync::OnceLock::new(); \
-                     let _rx = RX_{}.get_or_init(|| regex::Regex::new(\"{}\").unwrap()); _rx.replace_all(&{}, _soma_rx_rep(&{}, _rx.captures_len() - 1).as_str()).into_owned() }}",
+                     let _rx = RX_{}.get_or_init(|| regex::Regex::new(\"{}\").unwrap()); _rx.replace_all(&{}, _soma_rx_rep(&{}, _rx.captures_len() - 1, &_rx.capture_names().flatten().collect::<Vec<_>>()).as_str()).into_owned() }}",
                     counter, counter, pat_escaped, text, repl
                 )
             }
@@ -6835,7 +6835,7 @@ fn loop_var_mut(body: &[Spanned<Statement>], var: &str) -> &'static str {
 }
 
 const RX_REP_HELPER: &str = r#"
-#[allow(dead_code)] fn _soma_rx_rep(rep: &str, groups: usize) -> String {
+#[allow(dead_code)] fn _soma_rx_rep(rep: &str, groups: usize, names: &[&str]) -> String {
     let b: Vec<char> = rep.chars().collect();
     let mut out = String::with_capacity(rep.len() + 8);
     let mut i = 0;
@@ -6849,6 +6849,16 @@ const RX_REP_HELPER: &str = r#"
             let mut k = digits.len();
             while k > 0 && digits[..k].parse::<usize>().map_or(true, |n| n > groups) { k -= 1; }
             if k == 0 { out.push_str("$$"); out.push_str(&digits); } else { out.push_str(&format!("${{{}}}{}", &digits[..k], &digits[k..])); }
+            i = j;
+        } else if b[i] == '$' && i + 1 < b.len() && (b[i + 1].is_ascii_alphabetic() || b[i + 1] == '_') {
+            // `$name`: the longest prefix that names a group (`$y_x` is
+            // group y then "_x"); none: the text (`$USD` was deleted)
+            let mut j = i + 1;
+            while j < b.len() && (b[j].is_ascii_alphanumeric() || b[j] == '_') { j += 1; }
+            let word: String = b[i + 1..j].iter().collect();
+            let mut k = word.len();
+            while k > 0 && !names.contains(&&word[..k]) { k -= 1; }
+            if k == 0 { out.push_str("$$"); out.push_str(&word); } else { out.push_str(&format!("${{{}}}{}", &word[..k], &word[k..])); }
             i = j;
         } else if b[i] == '$' && i + 1 < b.len() && b[i + 1] == '$' {
             out.push_str("$$");

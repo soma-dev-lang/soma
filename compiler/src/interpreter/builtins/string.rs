@@ -139,7 +139,7 @@ pub fn call_builtin(name: &str, args: &[Value]) -> Option<Result<Value, RuntimeE
                     };
                     // `$1` then a letter, digit or `_` is group 1 then that text
                     // (Rust read `$1_v2` as the group named "1_v2": "doc_.txt")
-                    Value::String(rx.replace_all(text, js_style_replacement(rep, rx.captures_len() - 1).as_str()).into_owned())
+                    Value::String(rx.replace_all(text, js_style_replacement(rep, rx.captures_len() - 1, &rx.capture_names().flatten().collect::<Vec<_>>()).as_str()).into_owned())
                 }
             }))
         }
@@ -571,7 +571,10 @@ fn printf_subset(fmt: &str, args: &[Value]) -> Result<Value, RuntimeError> {
                     Value::Int(n) => n.to_string(),
                     // an infinite / NaN Float has no integer (it printed i64::MAX)
                     Value::Float(f) if !f.is_finite() => return Err(RuntimeError::Domain { kind: "range".to_string(), message: format!("format(): %d of {} — it has no integer value", f) }),
-                    Value::Float(f) => rug::Integer::from_f64(f.trunc()).map(|i| i.to_string()).unwrap_or_default(),
+                    // a whole Float prints its digits; a fraction is refused
+                    // (`format("%d", 10 / 4)` printed "2")
+                    Value::Float(f) if f.fract() == 0.0 => rug::Integer::from_f64(*f).map(|i| i.to_string()).unwrap_or_default(),
+                    Value::Float(f) => return Err(RuntimeError::Domain { kind: "type".to_string(), message: format!("format(): %d of {} — it has a fraction: round it first (round(x)) or use %f", f) }),
                     other => return Err(RuntimeError::TypeError(format!("format(): %d needs an Int, got {}", super::super::value_type_name(other)))),
                 };
                 // `%.3d`: at least that many digits, as in C (the precision
@@ -596,6 +599,25 @@ fn printf_subset(fmt: &str, args: &[Value]) -> Result<Value, RuntimeError> {
                 super::math::fixed_string(x, prec.unwrap_or(6))
             }
             // scientific notation, C-style: format("%.3e", 6.02214076e23) = "6.022e+23"
+            // an Int past the Float range: scientific notation from its digits
+            // (it printed "inf" where %f printed the exact digits)
+            'e' if matches!(&arg, Value::Int(n) if !n.to_f64().is_finite()) => {
+                let Value::Int(n) = &arg else { unreachable!() };
+                let r = n.to_rug();
+                let neg = r < 0;
+                let digits = r.abs().to_string();
+                let p = prec.unwrap_or(6);
+                let keep = (p + 1).min(digits.len());
+                let mut mant: rug::Integer = digits[..keep].parse().unwrap_or_default();
+                let mut exp = digits.len() - 1;
+                // round half up on the first dropped digit
+                if digits.len() > keep && digits.as_bytes()[keep] >= b'5' { mant += 1; }
+                let mut m = mant.to_string();
+                if m.len() > keep { m.pop(); exp += 1; }
+                while m.len() < p + 1 { m.push('0'); }
+                let (a, b) = m.split_at(1);
+                format!("{}{}{}e+{:02}", if neg { "-" } else { "" }, a, if p > 0 { format!(".{}", b) } else { String::new() }, exp)
+            }
             'e' => {
                 let x = match &arg { Value::Float(f) => *f, Value::Int(n) => n.to_f64(), other => return Err(RuntimeError::TypeError(format!("format(): %e needs a number, got {}", super::super::value_type_name(other)))) };
                 if !x.is_finite() { format!("{}", x) } else {
@@ -737,7 +759,7 @@ fn range_err() -> RuntimeError {
 }
 
 /// A replacement where `$N` is group N whatever follows it.
-pub fn js_style_replacement(rep: &str, groups: usize) -> String {
+pub fn js_style_replacement(rep: &str, groups: usize, names: &[&str]) -> String {
     let b: Vec<char> = rep.chars().collect();
     let mut out = String::with_capacity(rep.len() + 8);
     let mut i = 0;
@@ -751,6 +773,16 @@ pub fn js_style_replacement(rep: &str, groups: usize) -> String {
             let mut k = digits.len();
             while k > 0 && digits[..k].parse::<usize>().map_or(true, |n| n > groups) { k -= 1; }
             if k == 0 { out.push_str("$$"); out.push_str(&digits); } else { out.push_str(&format!("${{{}}}{}", &digits[..k], &digits[k..])); }
+            i = j;
+        } else if b[i] == '$' && i + 1 < b.len() && (b[i + 1].is_ascii_alphabetic() || b[i + 1] == '_') {
+            // `$name`: the longest prefix that names a group (`$y_x` is
+            // group y then "_x"); none: the text (`$USD` was deleted)
+            let mut j = i + 1;
+            while j < b.len() && (b[j].is_ascii_alphanumeric() || b[j] == '_') { j += 1; }
+            let word: String = b[i + 1..j].iter().collect();
+            let mut k = word.len();
+            while k > 0 && !names.contains(&&word[..k]) { k -= 1; }
+            if k == 0 { out.push_str("$$"); out.push_str(&word); } else { out.push_str(&format!("${{{}}}{}", &word[..k], &word[k..])); }
             i = j;
         } else if b[i] == '$' && i + 1 < b.len() && b[i + 1] == '$' {
             out.push_str("$$");

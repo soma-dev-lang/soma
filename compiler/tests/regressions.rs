@@ -4401,3 +4401,39 @@ fn fix_edits_the_cell_the_error_names() {
     assert!(fixed[app..].contains("on go(") && !fixed[..app].contains("on go("), "{fixed}");
     let _ = std::fs::remove_dir_all(dir);
 }
+
+#[test]
+fn parser_and_builtins_third_pass() {
+    passes("builtins_third_pass", r#"
+cell P {
+    on g(m: Map, n: Int) {
+        let k = m.len
+        (n * 2)
+    }
+    on h(a: Int) {
+        let d = (a
+          -2)
+        return d
+    }
+    on price(p: Float) { let discount = 5%  return p * (1 - discount) }
+}
+cell test T { rules {
+    assert g(map("a", 1), 5) == 10
+    assert h(5) == 3
+    assert price(100.0) == 95.0
+    assert to_fixed(1.005, 16) == "1.0050000000000000"
+    assert regex_replace("price: 10", "(\\d+)", "$1 $USD") == "price: 10 $USD"
+    assert regex_replace("2024-05", "(?P<y>\\d{4})-(?P<m>\\d\\d)", "$m/$y_x") == "05/2024_x"
+    assert_fails format("%d", 2.5) matching "fraction"
+    assert format("%d", 3.0) == "3"
+    assert format("%.2e", 2 * ipow(10, 400) - 1) == "2.00e+400"
+    assert_fails matrix("1e400 1") matching "range"
+} }
+"#);
+    // a Rust token name never reaches a message
+    let dir = scratch("token_names");
+    std::fs::write(dir.join("app.cell"), "cell P { on r() { for i in 1..3 { print(i) } } }\n").unwrap();
+    let (_, out) = soma(&dir, &["check", "app.cell"]);
+    assert!(!out.contains("DotDot") && out.contains("'..'"), "{out}");
+    let _ = std::fs::remove_dir_all(dir);
+}

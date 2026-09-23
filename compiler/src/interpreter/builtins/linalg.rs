@@ -1836,6 +1836,11 @@ pub fn call_builtin(name: &str, args: &[Value]) -> Option<Result<Value, RuntimeE
                     .map(|t| t.parse::<f64>())
                     .collect();
                 match entries {
+                    // "1e400" is past the Float range (it became inf), as the
+                    // literal and to_float refuse it
+                    Ok(v) if v.iter().any(|x| x.is_infinite()) => {
+                        return Some(Err(RuntimeError::Domain { kind: "range".to_string(), message: format!("matrix: row {} holds a number past the Float range (~1.8e308)", i) }));
+                    }
                     Ok(v) => rows.push(v),
                     Err(e) => {
                         return Some(Err(RuntimeError::TypeError(format!(

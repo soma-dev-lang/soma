@@ -2,6 +2,29 @@
 
 ## Unreleased
 
+### Third pass: parser and builtins
+
+- The new line rules had two gaps: `let k = m.len` then `(n * 2)` on the
+  next line still called `len` (the handler answered `()`), and inside
+  parentheses or brackets a line starting with `-2` (`(a\n -2)`) was refused
+  although no statement can start there — it continues the expression again.
+- A percentage literal was its raw number: `5%` was 5.0, so `p * (1 - 5%)`
+  answered `-4p`; it is 0.05. It may also start a statement, and a keyword
+  after it (`let d = 5%  return …`) is no modulo operand.
+- `to_fixed(x, d)` past 15 digits printed the binary expansion
+  (`to_fixed(1.005, 16)` was "1.0049999999999999"); every width rounds on the
+  decimal text, as documented.
+- `regex_replace` deleted `$USD` (an unknown group name) and read `$y_x` as a
+  group named "y_x"; `$name` is the longest prefix naming a group, else text
+  (interpreted and native).
+- `format("%d", 10 / 4)` printed "2": a Float with a fraction is refused (a
+  whole Float prints its digits). `format("%e", n)` of an Int past the Float
+  range printed "inf"; it prints the exact leading digits.
+- `matrix("1e400 1")` held `inf`, and a CLI Int past the Float range passed to
+  a Float parameter became `inf`; both are refused. A CLI Float parameter
+  accepts `1_000` as an Int one does.
+- Parse errors no longer name Rust tokens (`DurationLit(5.0, S)`, `DotDot`).
+
 ### Third pass: `soma serve` binding, gates and `soma fix`
 
 - An unknown query key took the body's place: `PUT /put_doc/k1?v=2` with a

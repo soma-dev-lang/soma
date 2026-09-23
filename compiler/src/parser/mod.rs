@@ -72,7 +72,16 @@ fn display_token(token: &Token) -> String {
         Token::AgentKw => "'agent'".to_string(),
         Token::Scale => "'scale'".to_string(),
         Token::Eof => "end of file".to_string(),
-        _ => format!("{:?}", token),
+        // never a Rust name (`DurationLit(5.0, S)`, `DotDot`) in a message
+        Token::DurationLit(v, u) => format!("duration '{}{}'", v, match u {
+            DurationUnitTok::Ms => "ms", DurationUnitTok::S => "s", DurationUnitTok::Min => "min",
+            DurationUnitTok::H => "h", DurationUnitTok::D => "d", DurationUnitTok::Years => "years" }),
+        Token::DotDot => "'..'".to_string(),
+        other => {
+            let name = format!("{:?}", other);
+            let base = name.split('(').next().unwrap_or(&name).to_lowercase();
+            format!("'{}'", base)
+        }
     }
 }
 
@@ -123,6 +132,10 @@ pub struct Parser {
     /// expression nesting, to refuse a 5 000-deep `((((…` with an error
     /// instead of a stack overflow abort
     depth: usize,
+    /// Open `(` / `[` around the expression being parsed (reset inside each
+    /// statement of a block): there no new statement can start, so a line
+    /// starting with `-2` continues the expression (`(a\n -2)`).
+    bracket_depth: usize,
 }
 
 const MAX_EXPR_DEPTH: usize = 400;
@@ -170,7 +183,7 @@ fn reserved_error(t: &Token, span: Span) -> Option<ParseError> {
 
 impl Parser {
     pub fn new(tokens: Vec<SpannedToken>) -> Self {
-        Self { tokens, pos: 0, depth: 0 }
+        Self { tokens, pos: 0, depth: 0, bracket_depth: 0 }
     }
 
     pub fn parse_program(&mut self) -> Result<Program, ParseError> {
@@ -2000,6 +2013,13 @@ impl Parser {
     }
 
     fn parse_statement(&mut self) -> Result<Spanned<Statement>, ParseError> {
+        let saved = std::mem::replace(&mut self.bracket_depth, 0);
+        let r = self.parse_statement_raw();
+        self.bracket_depth = saved;
+        r
+    }
+
+    fn parse_statement_raw(&mut self) -> Result<Spanned<Statement>, ParseError> {
         // nested blocks share the expression depth budget: 10 000 nested
         // `if` used to overflow the compiler's own stack (SIGABRT)
         if self.depth >= MAX_EXPR_DEPTH {
@@ -2423,7 +2443,7 @@ impl Parser {
             Token::Match | Token::Try |
             Token::IntLit(_) | Token::BigIntLit(_) | Token::FloatLit(_) | Token::StringLit(_) |
             Token::True | Token::False | Token::LParen |
-            Token::Bang | Token::Minus | Token::LBracket |
+            Token::Bang | Token::Minus | Token::LBracket | Token::PercentLit(_) |
             Token::TypeIdent(_) => {
                 let expr = self.parse_expr()?;
                 Ok(Spanned::new(
@@ -2440,6 +2460,13 @@ impl Parser {
     }
 
     fn parse_arg_list(&mut self) -> Result<Vec<Spanned<Expr>>, ParseError> {
+        self.bracket_depth += 1;
+        let r = self.parse_arg_list_inner();
+        self.bracket_depth -= 1;
+        r
+    }
+
+    fn parse_arg_list_inner(&mut self) -> Result<Vec<Spanned<Expr>>, ParseError> {
         let mut args = Vec::new();
         if self.check(&Token::RParen) {
             return Ok(args);
@@ -2758,7 +2785,7 @@ impl Parser {
             // new expression, the value of a block: `let fee = 2` then
             // `-amount` read as `2 - amount`. `- amount` (spaced) still
             // continues the line before, as a leading `+` does.
-            if matches!(self.peek(), Token::Minus) && self.at_line_start()
+            if matches!(self.peek(), Token::Minus) && self.at_line_start() && self.bracket_depth == 0
                 && self.tokens.get(self.pos + 1).map_or(false, |n| n.span.start == self.peek_span().end)
             {
                 break;
@@ -2905,7 +2932,9 @@ impl Parser {
                 self.advance();
                 let (field, field_span) = self.expect_ident()?;
 
-                if self.check(&Token::LParen) {
+                // `let k = m.len` then `(n * 2)` on the next line is not a
+                // call of `len` (it answered `()`)
+                if self.check(&Token::LParen) && !self.at_line_start() {
                     self.advance();
                     let args = self.parse_arg_list()?;
                     let end = self.peek_span();
@@ -3332,7 +3361,10 @@ impl Parser {
                 self.advance();
                 let mut elements = Vec::new();
                 while !self.check(&Token::RBracket) && !self.is_at_end() {
-                    elements.push(self.parse_expr()?);
+                    self.bracket_depth += 1;
+                    let e = self.parse_expr();
+                    self.bracket_depth -= 1;
+                    elements.push(e?);
                     // the comma was optional: `[1 -1]` read as `[0]` and
                     // `["a" "b"]` as two elements, while `[1 2]` passed
                     if self.check(&Token::Comma) { self.advance(); } else if !self.check(&Token::RBracket) && !self.is_at_end() {
@@ -3353,7 +3385,10 @@ impl Parser {
                     self.advance();
                     return Ok(Spanned::new(Expr::Literal(Literal::Unit), start.merge(end)));
                 }
-                let expr = self.parse_expr()?;
+                self.bracket_depth += 1;
+                let expr = self.parse_expr();
+                self.bracket_depth -= 1;
+                let expr = expr?;
                 let end = self.peek_span();
                 self.expect(Token::RParen)?;
                 // the span covers the parentheses: `(x |> f()) + 1` echoes whole

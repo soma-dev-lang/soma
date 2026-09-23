@@ -563,9 +563,11 @@ fn coerce_cli_args(cell: &ast::CellDef, signal_name: &str, args: Vec<interpreter
                 interpreter::Value::Int(crate::interpreter::soma_int::SomaInt::from_rug(crate::interpreter::builtins::string::parse_int_text(t.trim()).unwrap())),
             ("Int", other) => fail(&format!("'{}'", other)),
             ("Float", interpreter::Value::Float(_)) => arg,
-            ("Float", interpreter::Value::Int(si)) => interpreter::Value::Float(si.to_f64()),
-            ("Float", interpreter::Value::String(t)) if t.trim().parse::<f64>().map_or(false, |f| f.is_finite()) =>
-                interpreter::Value::Float(t.trim().parse::<f64>().unwrap()),
+            // past the Float range it was inf, silently
+            ("Float", interpreter::Value::Int(si)) if si.to_f64().is_finite() => interpreter::Value::Float(si.to_f64()),
+            // digit separators as for an Int (`1_000` was refused here only)
+            ("Float", interpreter::Value::String(t)) if crate::interpreter::builtins::string::parse_float_text(t.trim()).map_or(false, |f| f.is_finite()) =>
+                interpreter::Value::Float(crate::interpreter::builtins::string::parse_float_text(t.trim()).unwrap()),
             ("Float", other) => fail(&format!("'{}'", other)),
             ("Bool", interpreter::Value::Bool(_)) => arg,
             ("Bool", other) => fail(&format!("'{}'", other)),

@@ -115,7 +115,9 @@ pub fn call_builtin(name: &str, args: &[Value]) -> Option<Result<Value, RuntimeE
             if let Value::Int(i) = &args[0] {
                 return Some(Ok(Value::String(if d == 0 { i.to_string() } else { format!("{}.{}", i, "0".repeat(d)) })));
             }
-            if d > 15 { return Some(Ok(Value::String(format!("{:.*}", d, x)))); }
+            // every width rounds on the decimal text, as documented (past
+            // 15 digits it rounded the binary value: to_fixed(1.005, 16) was
+            // "1.0049999999999999")
             Some(Ok(Value::String(fixed_string(x, d))))
         }
         "round" => {
@@ -878,7 +880,15 @@ pub fn round_decimal(x: f64, digits: i32) -> f64 {
 /// decimal text (printf's %.Nf, minus its banker's quirks).
 pub fn fixed_string(x: f64, digits: usize) -> String {
     let r = round_decimal(x, digits as i32);
-    let t = format!("{:.*}", digits, r);
+    // the decimal text padded with zeros (`{:.16}` printed the binary
+    // expansion: 1.005 → "1.0049999999999999")
+    let shortest = format!("{}", r);
+    let t = if r.is_finite() && !shortest.contains('e') {
+        let (ip, fp) = shortest.split_once('.').unwrap_or((shortest.as_str(), ""));
+        if fp.len() <= digits {
+            if digits == 0 { ip.to_string() } else { format!("{}.{}{}", ip, fp, "0".repeat(digits - fp.len())) }
+        } else { format!("{:.*}", digits, r) }
+    } else { format!("{:.*}", digits, r) };
     if t.starts_with("-0") && t.trim_start_matches('-').chars().all(|c| c == '0' || c == '.') { t[1..].to_string() } else { t }
 }
 
