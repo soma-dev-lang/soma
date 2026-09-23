@@ -2,6 +2,14 @@
 
 ## Unreleased
 
+### A failing `try` in a test rule rolls back
+
+- In a `cell test` rule, `try { dep("x", 5)  transition("x", "frozen")
+  fail("boom", "") }` kept the write and the transition: each handler the
+  block called committed on its own. The same block in a handler is undone.
+  A `try` outside any handler is now one unit, rolled back when it fails, so
+  a test sees what production does.
+
 ### `id.transition(…)` evaluates its guard over the caller's locals
 
 - The method form of `transition` never handed the calling handler's locals

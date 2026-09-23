@@ -2465,7 +2465,14 @@ impl Interpreter {
                 // try { expr } → returns map("value", result) or map("error", message)
                 // savepoint: what a failing `try` block wrote is undone
                 let savepoint = self.journal.as_ref().map(|j| (self.journal_gen, j.len()));
-                let outcome = self.eval_expr(&inner.node, env, cell_name, signal_name);
+                // outside any unit (a `cell test` rule) the block is its own
+                // unit: each handler it called committed on its own, so a
+                // failing `try` kept writes a handler would have undone
+                let outcome = if self.journal.is_none() && self.task_unit.is_none() {
+                    self.atomically(|s| s.eval_expr(&inner.node, env, cell_name, signal_name))
+                } else {
+                    self.eval_expr(&inner.node, env, cell_name, signal_name)
+                };
                 self.check_transaction()?;
                 // a `[task]` step committed inside the try (a think()): what it
                 // committed stays; everything of the current step is undone

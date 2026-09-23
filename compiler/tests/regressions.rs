@@ -3561,3 +3561,25 @@ cell test T { rules {
 } }
 "#);
 }
+
+#[test]
+fn a_failing_try_in_a_test_rule_rolls_back_like_in_a_handler() {
+    // each handler called from the `try` committed on its own: the rule
+    // saw writes and transitions a handler's `try` would have undone
+    passes("test_rule_try_rollback", r#"
+cell Bank {
+    memory { bal: Map<String, Int> [persistent] }
+    state acct { initial: open  open -> frozen }
+    on dep(k: String, n: Int) { bal.set(k, n) }
+    on getb(k: String) { return bal.get(k) }
+}
+cell test T { rules {
+    let r = try { dep("x", 5)  transition("x", "frozen")  fail("boom", "") }
+    assert r.kind == "boom"
+    assert getb("x") == ()
+    assert get_status("x") == "open"
+    let ok = try { dep("y", 7) }
+    assert getb("y") == 7
+} }
+"#);
+}
