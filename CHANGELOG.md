@@ -2,6 +2,26 @@
 
 ## Unreleased
 
+### Third pass: `verify` and `check`
+
+- `delegate("{who}", "drain", k)`: the analyses read the interpolated cell
+  name as a fixed (missing) cell, so an invariant, termination, a latency
+  and a token bound were "proven" while the call ran the real handler, and
+  a GET served it. `check` refuses an interpolated cell name (as it refused
+  an interpolated handler name); `delegate(who, …)` is a computed target
+  every analysis already treats as such.
+- `invariant size <= N` was proven by "the key already exists" across a
+  `think()` of a `[task]` handler, while other requests may delete it then.
+- An http options map naming `timeout` twice was read at its first value;
+  the runtime uses the last. `link()` counted 0 ms of latency (it waits on a
+  connection); the bound is advisory.
+- A local named `_from` / `_to` / `_id` proved a guard on the machine's own
+  `_from` (`let _from = "pending"  require _from != "paid"`).
+- False positive: a guard variable bound in the branch that takes the
+  transition (`else { let reason = …  transition(id, "filed", "approved") }`)
+  was refused as bound "only inside a branch".
+- A returned `()` element (`[1, ()]` for `-> List<Int>`) passed check.
+
 ### Third pass: parser and builtins
 
 - The new line rules had two gaps: `let k = m.len` then `(n * 2)` on the

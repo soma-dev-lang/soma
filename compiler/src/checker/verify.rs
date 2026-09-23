@@ -1110,6 +1110,11 @@ fn learn_comparison(facts: &mut Facts, left: &Expr, op: CmpOp, right: &Expr) {
 /// `negated`: the comparison is the negation of what was written, false
 /// for NaN operands — learned only over names that cannot be NaN.
 fn learn_comparison_as(facts: &mut Facts, left: &Expr, op: CmpOp, right: &Expr, negated: bool) {
+    // `_from` / `_to` / `_id` in a guard are the machine's, not a local of
+    // that name (`let _from = "pending"  require _from != "paid"` proved it)
+    let mut names = idents_of(left);
+    names.extend(idents_of(right));
+    if names.iter().any(|n| matches!(n.as_str(), "_from" | "_to" | "_id")) { return; }
     if negated {
         let mut names = idents_of(left);
         names.extend(idents_of(right));

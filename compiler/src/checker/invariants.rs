@@ -707,7 +707,10 @@ pub fn verify_program_invariants(program: &Program) -> Vec<VerifyResult> {
                         // a require / early exit covers only the writes AFTER it
                         && after.map_or(true, |j| path.get(fp.len()).map_or(false, |s| *s / 4 > j)))
                 };
-                if size_upper_bound_any(&parts, slot) && key_exists(wpath, wkey) {
+                // not across a think() of a [task]: other requests run during
+                // it and may delete the key (a `require m.get(k) != ()` then
+                // think then m.set(k, …) grew the slot past `size <= 2`)
+                if size_upper_bound_any(&parts, slot) && key_exists(wpath, wkey) && !task_with_think {
                     for (c, v) in parts.iter().zip(verdicts.iter_mut()) {
                         if size_upper_bound(c, slot).is_some() { *v = Proof::Holds; }
                     }

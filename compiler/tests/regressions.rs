@@ -4437,3 +4437,28 @@ cell test T { rules {
     assert!(!out.contains("DotDot") && out.contains("'..'"), "{out}");
     let _ = std::fs::remove_dir_all(dir);
 }
+
+#[test]
+fn verify_third_pass() {
+    let dir = scratch("verify_third_pass");
+    // an interpolated delegate cell is refused (it was read as a fixed name)
+    std::fs::write(dir.join("d.cell"), "cell App {\n memory { c: Map<String, Int> [persistent]  invariant c >= 0 }\n on drain(k: String) { c.set(k, 0)  return 0 }\n on w(k: String, who: String) { let r = delegate(\"{who}\", \"drain\", k)  return r }\n}\n").unwrap();
+    let (code, out) = soma(&dir, &["check", "d.cell"]);
+    assert!(code != 0 && out.contains("an interpolated cell name is computed"), "{out}");
+    // the last timeout counts; link() makes latency advisory
+    std::fs::write(dir.join("t.cell"), "cell A {\n cost { latency: 1s }\n on go(q: String) { return http_get(q, map(\"timeout\", 100, \"timeout\", 60000)) }\n}\n").unwrap();
+    let (_, out) = soma(&dir, &["check", "t.cell"]);
+    assert!(out.contains("computed 60000 ms"), "{out}");
+    std::fs::write(dir.join("l.cell"), "cell A {\n cost { latency: 100ms }\n on go(u: String) { let r = link(u)  return 1 }\n}\n").unwrap();
+    let (_, out) = soma(&dir, &["check", "l.cell"]);
+    assert!(!out.contains("latency' bound proven"), "{out}");
+    // a local named _from proves nothing about the machine's _from
+    std::fs::write(dir.join("g.cell"), "cell O {\n state o { initial: pending  pending -> paid  * -> cancelled { guard { _from != \"paid\" } } }\n on pay(id: String) { transition(id, \"paid\") }\n on cancel(id: String) { let _from = \"pending\"  require _from != \"paid\" else nope  transition(id, \"cancelled\") }\n}\n").unwrap();
+    let (_, out) = soma(&dir, &["verify", "g.cell"]);
+    assert!(!out.contains("proven — every caller"), "{out}");
+    // a guard variable bound in the branch that transitions is accepted
+    std::fs::write(dir.join("b.cell"), "cell R {\n state s { initial: filed  filed -> approved { guard { reason != \"\" } }  filed -> escalated }\n on review(id: String, amount: Int) {\n  if amount > 100 { transition(id, \"filed\", \"escalated\") }\n  else { let reason = \"auto\"  transition(id, \"filed\", \"approved\") }\n }\n}\n").unwrap();
+    let (code, out) = soma(&dir, &["check", "b.cell"]);
+    assert_eq!(code, 0, "{out}");
+    let _ = std::fs::remove_dir_all(dir);
+}

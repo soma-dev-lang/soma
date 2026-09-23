@@ -152,6 +152,29 @@ pub fn check_program(program: &Program) -> Vec<GuardIssue> {
                                 match &st.node {
                                     Statement::For { var, body, .. } => { out.insert(var.clone()); lets_before(body, to, out); }
                                     Statement::While { body, .. } => lets_before(body, to, out),
+                                    // bound before the transition in EVERY branch that
+                                    // takes it (`else { let reason = …  transition(…) }`
+                                    // was refused as bound "only inside a branch")
+                                    Statement::If { then_body, else_body, .. } => {
+                                        let takes = |b: &[Spanned<Statement>]| {
+                                            let mut hit = false;
+                                            for s in b { super::termination::walk_stmt(&s.node, &mut |e| if let Expr::FnCall { name, args } = e {
+                                                if name == "transition" {
+                                                    let target = if args.len() >= 3 { args.get(2) } else { args.get(1) };
+                                                    hit |= match target.map(|a| &a.node) { Some(Expr::Literal(Literal::String(s))) => s == to || s.contains('{'), _ => true };
+                                                }
+                                            }); }
+                                            hit
+                                        };
+                                        let mut common: Option<HashSet<String>> = None;
+                                        for b in [then_body, else_body] {
+                                            if !takes(b) { continue; }
+                                            let mut set = out.clone();
+                                            lets_before(b, to, &mut set);
+                                            common = Some(match common { None => set, Some(c) => c.intersection(&set).cloned().collect() });
+                                        }
+                                        if let Some(c) = common { *out = c; }
+                                    }
                                     _ => {}
                                 }
                                 break;

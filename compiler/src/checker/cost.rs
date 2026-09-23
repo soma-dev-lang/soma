@@ -447,8 +447,8 @@ impl<'a> CostWalk<'a> {
                 // writes block too (a FIFO blocked forever at "peak 0 ms"), and
                 // a subscription waits on another server's handshake
                 if matches!(name.as_str(), "read_stdin" | "read_file" | "read_csv" | "read_files" | "par_read_files" | "load" | "include" | "load_template"
-                    | "write_file" | "write_csv" | "append_file" | "subscribe" | "ws_connect" | "connect") {
-                    self.latency_sites.push(format!("{}::{} (file / stdin I/O)", handler_name, name));
+                    | "write_file" | "write_csv" | "append_file" | "subscribe" | "ws_connect" | "connect" | "link") {
+                    self.latency_sites.push(format!("{}::{} (network, file or stdin I/O)", handler_name, name));
                 }
                 if matches!(name.as_str(), "http_get" | "http_post" | "http_put" | "http_patch" | "http_delete") {
                     // the options follow the body for post / put / patch (the
@@ -621,22 +621,23 @@ fn extract_think_opts(args: &[Spanned<Expr>]) -> (Option<i64>, Option<i64>) {
 }
 
 fn extract_timeout_ms(opts: &Expr) -> Option<i64> {
+    let mut found: Option<Option<i64>> = None;
     if let Expr::FnCall { name, args } = opts {
         if name == "map" {
             let mut i = 0;
             while i + 1 < args.len() {
                 if let Expr::Literal(Literal::String(k)) = &args[i].node {
+                    // the LAST `timeout` wins, as at run time (the first was read:
+                    // map("timeout", 100, "timeout", 60000) "proved" 100 ms)
                     if k == "timeout" {
-                        if let Expr::Literal(Literal::Int(v)) = &args[i + 1].node {
-                            return Some(*v);
-                        }
+                        found = match &args[i + 1].node { Expr::Literal(Literal::Int(v)) => Some(Some(*v)), _ => Some(None) };
                     }
                 }
                 i += 2;
             }
         }
     }
-    None
+    found.flatten()
 }
 
 /// Per-model USD cost per 1000 input tokens (very rough). Override

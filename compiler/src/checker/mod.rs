@@ -1108,6 +1108,10 @@ impl<'a> Checker<'a> {
                                 // is legitimate: a warning; a missing handler
                                 // of a cell this program defines is an error
                                 let msg = match defs.get(c) {
+                                    // `"{c}"` is computed at run time: the proofs read it
+                                    // as a fixed (missing) cell and proved what the call
+                                    // broke — write the expression itself
+                                    None if c.contains('{') => Some((true, format!("delegate(\"{}\", \"{}\", …): an interpolated cell name is computed at run time — pass the expression (`delegate(c, \"{}\", …)`) so the analyses treat it as a computed target", c, h, h))),
                                     None => Some((false, format!("delegate(\"{}\", \"{}\", …): no cell named {} in this program — it raises \"no handler found\" unless that cell is loaded beside it", c, h, c))),
                                     Some(hs) if !hs.contains(h) => Some((true, format!("delegate(\"{}\", \"{}\", …): cell {} has no handler '{}'", c, h, c, h))),
                                     _ => match arities.get(&(c.clone(), h.clone())) {
@@ -2430,7 +2434,10 @@ impl<'a> Checker<'a> {
                     // `-> Map<String, Int>` returning map("status", "ok")
                     // passed check and failed every call
                     if let (Some(elem), true) = (elem, compatible(ty, got)) {
-                        if let Some(bad) = elements(value).into_iter().filter_map(literal_kind).find(|k| !compatible(elem, k)) {
+                        // `()` as an element too (`[1, ()]` for `-> List<Int>`)
+                        if let Some(bad) = elements(value).into_iter()
+                            .filter_map(|e| if matches!(e, Expr::Literal(Literal::Unit)) { Some("()") } else { literal_kind(e) })
+                            .find(|k| !compatible(elem, k)) {
                             self.errors.push(CheckError::Static {
                                 kind: "face_return_type",
                                 message: format!(
