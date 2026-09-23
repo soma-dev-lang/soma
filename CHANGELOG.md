@@ -2,6 +2,15 @@
 
 ## Unreleased
 
+### A typed machine state that carries fields is refused
+
+- `state s: St` where `St` declares `Funded(Int)` passed `check` and `verify`,
+  then `transition(id, Funded(n))` raised "invalid transition: Pending →
+  Funded(5)" on every call (and `transition(id, Funded)` "takes payload"). A
+  machine state is a name — `get_status` answers `"Funded"` — so `check`
+  now refuses such a state and a transition target built with fields, and
+  says to keep the data in a slot keyed by the instance id.
+
 ### A `()` key reads nothing and deletes nothing
 
 - `set((), v)` is refused (an absent value, often a mistyped field, is no

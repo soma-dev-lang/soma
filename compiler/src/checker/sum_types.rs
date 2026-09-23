@@ -167,6 +167,27 @@ pub fn check_program(program: &Program) -> Vec<SumTypeIssue> {
                             continue;
                         }
                     };
+                    // a state is a name: a variant with fields cannot be one
+                    // (`transition(id, Funded(n))` raised "invalid transition"
+                    // and `transition(id, Funded)` "takes payload", after a
+                    // clean check and verify)
+                    let mut used: Vec<&String> = vec![&sm.initial];
+                    for t in &sm.transitions { used.push(&t.node.from); used.push(&t.node.to); }
+                    let mut named: Vec<&String> = Vec::new();
+                    for v in used {
+                        if named.contains(&v) { continue; }
+                        named.push(v);
+                        if !matches!(registry.variant_shape.get(v.as_str()), None | Some(VariantShape::Unit)) && variants.contains(v) {
+                            issues.push(SumTypeIssue {
+                                kind: SumTypeIssueKind::UnknownVariant,
+                                span: section.span,
+                                message: format!(
+                                    "state '{}' of machine '{}' is a variant of '{}' that carries fields — a machine state is a bare name (get_status answers \"{}\"): declare `{}` without fields and keep the data in a slot keyed by the instance id",
+                                    v, sm.name, state_type, v, v
+                                ),
+                            });
+                        }
+                    }
                     // Check initial.
                     if !sm.initial.is_empty() && !variants.contains(&sm.initial) {
                         issues.push(SumTypeIssue {
@@ -272,6 +293,25 @@ fn walk_typed_transitions_expr(
             // transition(id, from, to): both states must be variants
             let state_args: Vec<&Spanned<Expr>> = if args.len() >= 3 { args[1..3].iter().collect() } else { args.get(1).into_iter().collect() };
             for target_expr in state_args {
+                // `transition(id, Funded(n))`: a state is a name, it carries
+                // no fields — the call raised "invalid transition: Pending →
+                // Funded(5)" on every run after a clean check
+                let built = match &target_expr.node {
+                    Expr::FnCall { name, args } if !args.is_empty() && variants.contains(name) => Some(name.clone()),
+                    Expr::Record { type_name, .. } if variants.contains(type_name) => Some(type_name.clone()),
+                    _ => None,
+                };
+                if let Some(v) = built {
+                    issues.push(SumTypeIssue {
+                        kind: SumTypeIssueKind::UnknownVariant,
+                        span,
+                        message: format!(
+                            "handler '{}' transitions to {} built with fields — a machine state is a bare variant name (`transition(id, {})`, the variant declared without fields; keep the data in a slot keyed by the id)",
+                            handler, crate::ast::render_expr(&target_expr.node), v
+                        ),
+                    });
+                    continue;
+                }
                 let target_name = match &target_expr.node {
                     Expr::Ident(n) if n.chars().next().map_or(false, |c| c.is_ascii_uppercase()) => Some(n.clone()),
                     Expr::Literal(Literal::String(s)) => Some(s.clone()),

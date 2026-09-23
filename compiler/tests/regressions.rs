@@ -3709,3 +3709,23 @@ cell test T { rules {
 } }
 "#);
 }
+
+#[test]
+fn a_machine_state_with_fields_is_refused() {
+    // `state s: St` with `Funded(Int)` passed check and verify, then
+    // `transition(id, Funded(n))` raised "invalid transition" on every run
+    // (and `transition(id, Funded)` "takes payload")
+    let dir = scratch("machine_state_fields");
+    std::fs::write(dir.join("app.cell"), r#"
+cell type St { variants { Pending  Funded(Int)  Done { at: Int } } }
+cell Escrow {
+    state s: St { initial: Pending  Pending -> Funded  Funded -> Done }
+    on fund(id: String, n: Int) { transition(id, Funded(n))  return get_status(id) }
+}
+"#).unwrap();
+    let (code, out) = soma(&dir, &["check", "app.cell"]);
+    assert_ne!(code, 0, "{out}");
+    assert!(out.contains("state 'Funded' of machine 's'") && out.contains("state 'Done' of machine 's'"), "{out}");
+    assert!(out.contains("transitions to Funded(n) built with fields"), "{out}");
+    let _ = std::fs::remove_dir_all(dir);
+}
