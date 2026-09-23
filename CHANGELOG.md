@@ -2,6 +2,26 @@
 
 ## Unreleased
 
+### Fourth pass: `serve`, route ownership, `soma fix`, `check`
+
+- The internal `_content_type` key (set with `with(html(x), "_content_type",
+  t)` or `merge`) escaped the header check of the first pass: a CR/LF from
+  the query added headers and a non-ASCII byte panicked the request thread.
+  It is checked like `Content-Type`. `redirect("/café")` sent a 302 without
+  `Location`; its non-ASCII bytes are percent-encoded.
+- Route ownership: `delegate(who, "wipe", k)` (a computed cell, a literal
+  handler) made nothing request's, and with several computed delegates only
+  the last one counted — `POST /wipe/a` ran around `request`'s auth.
+- `soma fix` located the slot of a contradictory property by a character
+  offset that earlier edits (`None` → `()`) had shifted, and edited another
+  cell's slot; it now searches the error's cell. Two `on ping` handlers
+  are left to the author (the fix deleted a face `signal ping` line), and a
+  `}` in a comment or a `"""…"""` string no longer ends a cell.
+- `on request(method: String, path: String)` passed check and every request
+  failed ("expected 2 arguments, got 3"): it receives the arguments it
+  declares. `ledger[k] = 0` on another cell's slot passed check (`.set` was
+  refused); it is refused too.
+
 ### Fourth pass: native regressions of the return-type and exactness rework
 
 - Since "every return types the handler", a self- or mutually recursive

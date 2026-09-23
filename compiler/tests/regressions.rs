@@ -4563,3 +4563,59 @@ cell test T { rules {
 } }
 "#);
 }
+
+#[test]
+fn serve_fourth_pass() {
+    let dir = scratch("serve_fourth_pass");
+    std::fs::write(dir.join("app.cell"), r#"
+cell App {
+    memory { bal: Map<String, Int> [persistent] }
+    on page(t: String) { return with(html("<b>hi</b>"), "_content_type", t) }
+    on go(to: String) { return redirect(to) }
+    on wipe(k: String) { bal.set(k, 0)  return "wiped" }
+    on request(method: String, path: String, body: String) {
+        if path == "/admin" && body == "secret" { let who = "App"  return delegate(who, "wipe", "a") }
+        return response(404, "nf")
+    }
+}
+"#).unwrap();
+    let (_server, port) = serve_dir(&dir);
+    let out = get(port, "/page?t=text%2Fhtml%0D%0ASet-Cookie%3A%20pwn%3D1");
+    assert!(!out.to_ascii_lowercase().contains("set-cookie"), "{out}");
+    assert!(get(port, "/page?t=text%2Fhtml%C3%A9").starts_with("HTTP/1.0 200"));
+    let out = get(port, "/go?to=%2Fcaf%C3%A9");
+    assert!(out.contains("Location: /caf%C3%A9"), "{out}");
+    // `delegate(who, "wipe", …)` makes wipe request's
+    let out = raw_request(port, "POST /wipe/a HTTP/1.0\r\nHost: localhost\r\nContent-Length: 0\r\n\r\n");
+    assert!(!out.contains("wiped"), "{out}");
+    let _ = std::fs::remove_dir_all(dir);
+    // request(method, path) takes no body
+    let dir = scratch("serve_request_two");
+    std::fs::write(dir.join("app.cell"), "cell App { on request(method: String, path: String) { return path } }\n").unwrap();
+    let (_server, port) = serve_dir(&dir);
+    assert!(get(port, "/x").contains("/x"));
+    let _ = std::fs::remove_dir_all(dir);
+}
+
+#[test]
+fn fix_fourth_pass() {
+    let dir = scratch("fix_fourth_pass");
+    // an idiom edit before the error no longer shifts which slot is edited
+    std::fs::write(dir.join("a.cell"), "cell Z {\n    on z() { let a = None\n        let b = None\n        return 1 }\n}\ncell A {\n    memory { log: List<String> [persistent, ephemeral] }\n    on r() { return 1 }\n}\ncell B {\n    memory { log: List<String> [ephemeral, local] }\n    on s() { return 1 }\n}\n").unwrap();
+    soma(&dir, &["fix", "a.cell"]);
+    let fixed = std::fs::read_to_string(dir.join("a.cell")).unwrap();
+    assert!(fixed.contains("log: List<String> [ephemeral, local]") && !fixed.contains("[persistent, ephemeral]"), "{fixed}");
+    // two handlers of one name are not "fixed" by deleting a face line
+    std::fs::write(dir.join("d.cell"), "cell B {\n    face { signal ping(x: Int) -> Int }\n    on ping(x: Int) { return 1 }\n    on ping(x: Int) { return 2 }\n}\n").unwrap();
+    soma(&dir, &["fix", "d.cell"]);
+    let fixed = std::fs::read_to_string(dir.join("d.cell")).unwrap();
+    assert!(fixed.contains("signal ping(x: Int) -> Int"), "{fixed}");
+    // a brace in a comment or a triple-quoted string is not the cell's end
+    std::fs::write(dir.join("c.cell"), "cell H {\n    on x() { return \"\"\"see \"cell App\" docs\"\"\" }\n}\ncell App {\n    face { signal go(n: Int) }\n    on y() {\n        // closes early: }\n        return 1\n    }\n}\n").unwrap();
+    let (code, out) = soma(&dir, &["fix", "c.cell"]);
+    assert_eq!(code, 0, "{out}");
+    let fixed = std::fs::read_to_string(dir.join("c.cell")).unwrap();
+    let app = fixed.find("cell App {").unwrap();
+    assert!(fixed[app..].contains("on go(") && !fixed[..app].contains("on go("), "{fixed}");
+    let _ = std::fs::remove_dir_all(dir);
+}

@@ -1821,6 +1821,11 @@ pub fn cmd_serve(path: &PathBuf, port: u16, host: &str, verbose: bool, join: Opt
                         req_args.push(interpreter::map_from_pairs(query_map.clone()));
                     }
                 }
+                // `request(method, path)` takes no body: every request answered
+                // "expected 2 arguments, got 3"
+                if let Some(n) = handler_params.get("request").map(|p| p.len()) {
+                    if n < req_args.len() { req_args.truncate(n); }
+                }
                 (
                     "request".to_string(),
                     req_args,
@@ -1983,8 +1988,15 @@ pub fn cmd_serve(path: &PathBuf, port: u16, host: &str, verbose: bool, join: Opt
                             }
                             ok
                         });
+                    // `_content_type` too: `with(html(x), "_content_type", t)`
+                    // from the query split the response and panicked
                     let content_type = explicit_ct.clone().or_else(|| entries.get("_content_type")
-                        .and_then(|v| if let interpreter::Value::String(s) = v { Some(s.clone()) } else { None }))
+                        .and_then(|v| if let interpreter::Value::String(s) = v { Some(s.clone()) } else { None })
+                        .filter(|v| {
+                            let ok = header_value_ok(v);
+                            if !ok { eprintln!("warning: {} {}: response content type dropped (a control or non-ASCII character in the value)", method, url); }
+                            ok
+                        }))
                         .unwrap_or("application/json".to_string());
                     let body_val = entries.get("_body")
                         .cloned()
@@ -2044,7 +2056,8 @@ pub fn cmd_serve(path: &PathBuf, port: u16, host: &str, verbose: bool, join: Opt
                 } else {
                     tiny_http::Response::from_string(body_str)
                         .with_status_code(tiny_http::StatusCode(status_code))
-                        .with_header(tiny_http::Header::from_bytes(&b"Content-Type"[..], content_type.as_bytes()).unwrap())
+                        .with_header(tiny_http::Header::from_bytes(&b"Content-Type"[..], content_type.as_bytes())
+                            .unwrap_or_else(|_| tiny_http::Header::from_bytes(&b"Content-Type"[..], &b"application/json"[..]).unwrap()))
                 };
                 // a JSON answer echoing client text is never sniffed as HTML
                 if content_type.contains("json") && !bodyless {

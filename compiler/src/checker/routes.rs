@@ -272,14 +272,22 @@ pub fn explicit_routes_in(program: &Program, cell: &CellDef) -> ExplicitRoutes {
         // `delegate("Api", op, id)` with a COMPUTED handler name can reach any
         // handler of that cell: all of them are request's (POST /wipe/k
         // skipped the auth check)
-        let mut computed: Option<Option<String>> = None;
+        // every such call counts (the last one overwrote the others), and a
+        // computed CELL with a literal handler reaches that handler in every
+        // cell that has it (`delegate(who, "wipe", k)` added no edge)
+        let mut owns_all = false;
         super::literals::for_each_expr(&h.body, &mut |e| if let Expr::FnCall { name, args } = e {
-            if name == "delegate" && args.len() >= 2 && !matches!(args[1].node, Expr::Literal(Literal::String(_))) {
-                computed = Some(match &args[0].node { Expr::Literal(Literal::String(c)) => Some(c.clone()), _ => None });
+            if name == "delegate" && args.len() >= 2 {
+                let cell_lit = match &args[0].node { Expr::Literal(Literal::String(c)) if !c.contains('{') => Some(c.clone()), _ => None };
+                match &args[1].node {
+                    Expr::Literal(Literal::String(hn)) if cell_lit.is_none() => edges.push((Some("*".to_string()), hn.clone())),
+                    Expr::Literal(Literal::String(_)) => {}
+                    _ => if cell_lit.as_deref().map_or(true, |c| c == cell.name) { owns_all = true; },
+                }
             }
         });
-        if let Some(target) = computed {
-            if target.as_deref().map_or(true, |c| c == cell.name) {
+        if owns_all {
+            {
                 for sec in &cell.sections {
                     if let Section::OnSignal(o) = &sec.node {
                         if o.signal_name != "request" && !o.signal_name.starts_with('_') && !routes.owned.contains(&o.signal_name) {

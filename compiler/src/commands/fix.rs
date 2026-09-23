@@ -111,6 +111,10 @@ fn mask_comments_and_strings(source: &str) -> String {
         } else if b[i] == b'/' && b.get(i + 1) == Some(&b'*') {
             let end = source[i + 2..].find("*/").map(|e| i + 2 + e + 2).unwrap_or(b.len());
             blank(&mut out, i, end); i = end;
+        } else if source[i..].starts_with("\"\"\"") {
+            // a triple-quoted string may hold `"` and braces
+            let end = source[i + 3..].find("\"\"\"").map(|e| i + 3 + e).unwrap_or(b.len());
+            blank(&mut out, i + 3, end); i = end + 3;
         } else if b[i] == b'"' {
             let mut j = i + 1;
             while j < b.len() && b[j] != b'"' { if b[j] == b'\\' { j += 1; } j += 1; }
@@ -127,7 +131,10 @@ fn find_cell_closing_brace(source: &str, cell_name: &str) -> Option<usize> {
     let pattern = format!("cell {}", cell_name);
     let cell_start = find_word(source, 0, &pattern)?;
 
-    // Find the opening `{` after the cell name
+    // Find the opening `{` after the cell name — counting braces outside
+    // comments and strings (`// closes early: }` ended the cell there)
+    let masked = mask_comments_and_strings(source);
+    let source = masked.as_str();
     let after_name = cell_start + pattern.len();
     let open_brace = source[after_name..].find('{')? + after_name;
 
@@ -154,10 +161,13 @@ fn find_cell_closing_brace(source: &str, cell_name: &str) -> Option<usize> {
 
 /// Find the second occurrence of `signal <name>(` in the source and return
 /// the byte range of that entire line (including trailing newline).
-fn find_duplicate_signal_line(source: &str, signal_name: &str) -> Option<(usize, usize)> {
+fn find_duplicate_signal_line(source: &str, from: usize, signal_name: &str) -> Option<(usize, usize)> {
+    // in the error's cell, outside comments and strings (a comment naming
+    // the signal counted as its first declaration)
+    let masked = mask_comments_and_strings(source);
     let pattern = format!("signal {}(", signal_name);
-    let first = source.find(&pattern)?;
-    let rest = &source[first + 1..];
+    let first = from + masked[from..].find(&pattern)?;
+    let rest = &masked[first + 1..];
     let second_offset = rest.find(&pattern)?;
     let second_abs = first + 1 + second_offset;
 
@@ -307,8 +317,8 @@ pub fn cmd_fix(path: &PathBuf, json: bool, registry: &mut Registry) {
     }
     enum FixKind {
         InsertHandler { cell_name: String, signal_name: String, params: String, ret: String },
-        RemoveContradictoryProperty { slot_name: String, property_to_remove: String, from: usize },
-        RemoveDuplicateSignal { signal_name: String },
+        RemoveContradictoryProperty { slot_name: String, property_to_remove: String, cell: Option<String> },
+        RemoveDuplicateSignal { signal_name: String, cell: Option<String> },
     }
 
     let mut actions: Vec<FixAction> = Vec::new();
@@ -393,18 +403,30 @@ pub fn cmd_fix(path: &PathBuf, json: bool, registry: &mut Registry) {
                     kind: FixKind::RemoveContradictoryProperty {
                         slot_name: slot.clone(),
                         property_to_remove: to_remove,
-                        // the declaration the error points at (a slot of that
-                        // name in another cell was edited instead)
-                        from: span.start,
+                        // the cell of the declaration the error points at (a
+                        // slot of that name in another cell was edited; a
+                        // character offset went stale after earlier edits)
+                        cell: cell_at(&program, span.start),
                     },
                 });
             }
-            CheckError::DuplicateSignal { name, .. } => {
-                actions.push(FixAction {
-                    kind: FixKind::RemoveDuplicateSignal {
-                        signal_name: name.clone(),
-                    },
-                });
+            CheckError::DuplicateSignal { name, span, .. } => {
+                // two `on` handlers: which one is meant is the author's call
+                // (the fix deleted a FACE line and left both handlers)
+                let is_handler = program.cells.iter().flat_map(|c| c.node.sections.iter())
+                    .any(|s| matches!(s.node, ast::Section::OnSignal(_)) && s.span.start == span.start);
+                if is_handler {
+                    if !json {
+                        println!("  \u{2717} skipped: two handlers 'on {}' in one cell — keep one by hand (manual fix required)", name);
+                    }
+                } else {
+                    actions.push(FixAction {
+                        kind: FixKind::RemoveDuplicateSignal {
+                            signal_name: name.clone(),
+                            cell: cell_at(&program, span.start),
+                        },
+                    });
+                }
             }
             CheckError::ParamCountMismatch { cell, signal, expected, actual, .. } => {
                 // Too risky to auto-fix — just report
@@ -450,12 +472,12 @@ pub fn cmd_fix(path: &PathBuf, json: bool, registry: &mut Registry) {
                     });
                 }
             }
-            FixKind::RemoveContradictoryProperty { slot_name, property_to_remove, from } => {
+            FixKind::RemoveContradictoryProperty { slot_name, property_to_remove, cell } => {
                 // Find pattern like `[persistent, ephemeral]` or `[ephemeral, persistent]`
                 // and remove the offending property from the bracket list.
                 // Strategy: find the slot line and remove the property from its bracket list.
-                // spans count characters; the search takes a byte offset
-                let from_byte = source.char_indices().nth(*from).map(|(b, _)| b).unwrap_or(0);
+                // searched from the start of its cell, in the text as it is now
+                let from_byte = cell.as_ref().and_then(|c| find_word(&source, 0, &format!("cell {}", c))).unwrap_or(0);
                 let removed = remove_property_from_source(&mut source, slot_name, property_to_remove, from_byte);
                 if removed {
                     fixes.push(AppliedFix {
@@ -463,8 +485,9 @@ pub fn cmd_fix(path: &PathBuf, json: bool, registry: &mut Registry) {
                     });
                 }
             }
-            FixKind::RemoveDuplicateSignal { signal_name } => {
-                if let Some((start, end)) = find_duplicate_signal_line(&source, signal_name) {
+            FixKind::RemoveDuplicateSignal { signal_name, cell } => {
+                let from = cell.as_ref().and_then(|c| find_word(&source, 0, &format!("cell {}", c))).unwrap_or(0);
+                if let Some((start, end)) = find_duplicate_signal_line(&source, from, signal_name) {
                     source.replace_range(start..end, "");
                     fixes.push(AppliedFix {
                         description: format!("removed duplicate signal declaration: signal {}(...)", signal_name),
@@ -772,4 +795,9 @@ fn unit_variant_of(program: &ast::Program, ty: &str) -> Option<String> {
         ast::Section::Variants(vs) => vs.variants.iter().find(|v| matches!(v.node.fields, ast::VariantFields::Unit)).map(|v| v.node.name.clone()),
         _ => None,
     })
+}
+
+/// The name of the cell whose source span holds `pos` (a character offset).
+fn cell_at(program: &ast::Program, pos: usize) -> Option<String> {
+    program.cells.iter().find(|c| c.span.start <= pos && pos <= c.span.end).map(|c| c.node.name.clone())
 }

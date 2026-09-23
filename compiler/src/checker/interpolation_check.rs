@@ -754,6 +754,12 @@ impl<'a> Walker<'a> {
             }
             Statement::ExprStmt { expr } => self.walk_expr(expr),
             Statement::IndexSet { name, index, value } => {
+                // another cell's slot written by index (`ledger[k] = 0` passed
+                // check where `ledger.set(k, 0)` was refused)
+                if !self.scope.contains(name) && self.index.slots.contains(name) && !self.cell_slots.contains(name) {
+                    let root = Spanned::new(Expr::Ident(name.split('.').next().unwrap_or(name).to_string()), index.span);
+                    self.walk_expr(&root);
+                }
                 // `rows[0] = v` on a slot is a slot write, not a local:
                 // it must not hide a later `rows = …` from the check above
                 if !self.index.slots.contains(name) || self.scope.contains(name) {
