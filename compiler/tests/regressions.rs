@@ -6869,3 +6869,33 @@ fn serve_eighth_pass_form_flags_and_static_paths() {
     }
     let _ = std::fs::remove_dir_all(dir);
 }
+
+#[test]
+fn ninth_pass_core() {
+    passes("ninth_pass_core", r#"
+cell type Line { variants { Line { sku: String, price: Float } } }
+cell P {
+    memory { fk: Map<Float, Int> [ephemeral]  bk: Map<Bool, Int> [ephemeral]  vers: Map<String, String> [ephemeral] }
+    on merged() { return merge(response(200, "x"), map("_status", 999)) }
+    on pad_unit() { return pad_right("a", 3, ()) }
+    on fkey() { fk.set(2.5, 1)  return keys(fk) }
+    on fbad() { fk.set("abc", 1)  return 1 }
+    on bbad() { bk.set("maybe", 1)  return 1 }
+    on jline() { let l = from_json("{{\"_type\": \"Line\", \"_variant\": \"Line\", \"sku\": \"a\", \"price\": 2}}")  return type_of(l.price) }
+    on nonrow() { return avg_by([map("a", 1), 5], "a") }
+    on wide() { return from_csv("a,b\n1,2,3\n") }
+    on intmap(m: Map<Int, String>) { return len(m) }
+}
+cell test T { rules {
+    assert_fails merged() matching "_status"
+    assert_fails pad_unit() matching "fill is a String"
+    assert fkey() == [2.5]
+    assert_fails fbad() matching "Map<Float"
+    assert_fails bbad() matching "Map<Bool"
+    assert jline() == "Float"
+    assert_fails nonrow() matching "not a Map or record"
+    assert_fails wide() matching "has 3 fields"
+    assert_fails intmap(map("007", "x")) matching "not an Int"
+} }
+"#);
+}

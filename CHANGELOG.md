@@ -2,6 +2,10 @@
 
 ## Unreleased
 
+### Ninth pass: merge and _status, typed Float/Bool/Int keys, from_json Float fields, rows only in pipelines, wide CSV records
+
+merge() checks a response's `_status` as with() does (a 999 answered 500 after the writes committed; a String was ignored). A Map<Float, V> / Map<Bool, V> slot refuses keys of another type and gives its keys back typed; a Map<Int|Float|Bool, V> parameter checks its keys (it took {"007": …}). from_json of a `_type` object gives a declared Float field a Float. The pipeline builtins with a field (sum_by, avg_by, min_by, max_by, count_by, filter_by, pluck, group_by, agg, select, distinct_by, distinct(rows, f)) refuse an item that is not a row, as sort_by does (a number was its own field value in distinct, dropped from avg_by). from_csv refuses a record wider than its header (the extra cells were dropped). pad_left/pad_right refuse a fill that is not a String. The start-up audit of old Float-written keys skips String-keyed slots (a version key "2.0" is real). from_json names the nesting limit instead of "not valid JSON". The corpus programs that plucked the values distinct(rows, f) already returns are fixed.
+
 ### serve eighth pass: malformed chunked bodies refused, client-safe try results, typed query/headers, interior handlers by name, fix with generic types, --fresh sibling slots, stable --json schemas, form flags, static %2F
 
 - **Request smuggling closed**: a malformed or truncated body (a bad chunk size, a chunk longer than declared, an EOF before the last chunk or before Content-Length bytes) ran the handler on what was read and left the connection open, its rest parsed as the next request. It is now answered 400 and the connection closed and poisoned. The vendored tiny_http gets a strict chunked decoder: trailers after the last chunk are read and discarded (`0\r\nX-T: 1\r\n\r\n` made the next pipelined request a 400), chunk sizes are plain hex, bare CR/LF are errors.

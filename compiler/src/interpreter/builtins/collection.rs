@@ -395,7 +395,11 @@ pub fn call_builtin(name: &str, args: &[Value]) -> Option<Result<Value, RuntimeE
                     result.insert(key.clone(), val.clone());
                 }
             }
-            Some(Ok(Value::Map(result)))
+            // a response's `_status` set by merging (`merge(response(200, x),
+            // map("_status", 999))`) is checked as with() checks it
+            let out = Value::Map(result);
+            if let Err(e) = crate::interpreter::check_response_status(&out) { return Some(Err(e)); }
+            Some(Ok(out))
         }
         "join" => {
             // Smart dispatch: join(list, list, key) → data join, join(list, sep) → string join

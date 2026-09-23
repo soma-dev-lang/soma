@@ -1431,6 +1431,15 @@ impl Interpreter {
         for key in names {
             let Some((cell_name, slot_name)) = key.split_once('.') else { continue };
             if self.slot_kind(cell_name, slot_name) != Some("Map") { continue; }
+            // a String-keyed slot holds "2.0" as the text it was given (a
+            // version key) — only a key typed Float / Any / untyped was
+            // written from a Float
+            let string_keys = self.cells.get(cell_name).map_or(false, |cell| cell.sections.iter().any(|s| match &s.node {
+                Section::Memory(mem) => mem.slots.iter().any(|sl| sl.node.name == slot_name && matches!(&sl.node.ty.node,
+                    TypeExpr::Generic { name, args } if name == "Map" && matches!(args.first().map(|a| &a.node), Some(TypeExpr::Simple(k)) if k == "String" || k == "Int"))),
+                _ => false,
+            }));
+            if string_keys { continue; }
             let Some(backend) = self.storage.get(&key).cloned() else { continue };
             let stale: Vec<String> = backend.keys().into_iter().take(100_000).filter(|k| k.contains('.')
                 && k.parse::<f64>().map_or(false, |f| f.is_finite() && f.fract() == 0.0 && key_text(&Value::Float(f)) != *k && k.trim() == k)).collect();
@@ -3426,6 +3435,16 @@ impl Interpreter {
                     return Err(ExecError::Runtime(RuntimeError::Domain { kind: "type".to_string(), message: format!(
                         "{}.set({}, …): the slot is declared Map<Int, …> — its keys are Ints, got {}", slot_name, key, value_type_name(key)) }));
                 }
+                // Map<Float, V> / Map<Bool, V> took any key too ("abc", "maybe")
+                match self.slot_key_type(cell_name, slot_name).as_deref() {
+                    Some("Float") if !matches!(key, Value::Int(_) | Value::Float(_) | Value::Unit) =>
+                        return Err(ExecError::Runtime(RuntimeError::Domain { kind: "type".to_string(), message: format!(
+                            "{}.set({}, …): the slot is declared Map<Float, …> — its keys are numbers, got {}", slot_name, key, value_type_name(key)) })),
+                    Some("Bool") if !matches!(key, Value::Bool(_) | Value::Unit) =>
+                        return Err(ExecError::Runtime(RuntimeError::Domain { kind: "type".to_string(), message: format!(
+                            "{}.set({}, …): the slot is declared Map<Bool, …> — its keys are Bools, got {}", slot_name, key, value_type_name(key)) })),
+                    _ => {}
+                }
                 // `()` became the key "null" (the same entry as "null"): a
                 // mistyped field used as a key wrote silently
                 if matches!(key, Value::Unit) {
@@ -3571,7 +3590,8 @@ impl Interpreter {
                 let mut out = Vec::new();
                 for k in backend.keys() {
                     if let Some(v) = backend.get(&k) {
-                        out.push((self.slot_key_value(int_keys, k), self.from_slot(cell_name, slot_name, stored_to_value(v))));
+                        let kv = self.slot_key_restore(cell_name, slot_name, int_keys, k);
+                        out.push((kv, self.from_slot(cell_name, slot_name, stored_to_value(v))));
                     }
                 }
                 if int_keys { out.sort_by(|a, b| numeric_cmp(&a.0, &b.0).unwrap_or(std::cmp::Ordering::Equal)); }
@@ -3581,7 +3601,7 @@ impl Interpreter {
                 // a Map<Int, V> answers its keys as Ints, in numeric order
                 // (["10", "2"]: max() and `t + k` refused them)
                 let int_keys = self.slot_int_keys(cell_name, slot_name);
-                let mut keys: Vec<Value> = backend.keys().into_iter().map(|k| self.slot_key_value(int_keys, k)).collect();
+                let mut keys: Vec<Value> = backend.keys().into_iter().map(|k| self.slot_key_restore(cell_name, slot_name, int_keys, k)).collect();
                 if int_keys { keys.sort_by(|a, b| numeric_cmp(a, b).unwrap_or(std::cmp::Ordering::Equal)); }
                 Ok(Value::List(keys))
             }
@@ -5527,9 +5547,38 @@ impl Interpreter {
                 if let Err(m) = self.decoded_variants_ok(v) {
                     return Some(Err(RuntimeError::Domain { kind: "type".to_string(), message: format!("from_json: {}", m) }));
                 }
+                // a declared Float field holds a Float (`"price": 2` stayed an
+                // Int where the constructor and a plain map give 2.0)
+                return Some(Ok(self.promote_variant_floats(v.clone())));
             }
         }
         out
+    }
+
+    fn promote_variant_floats(&self, v: Value) -> Value {
+        match v {
+            Value::Variant { type_name, variant, fields } => {
+                let decl = self.variant_fields.get(&(type_name.clone(), variant.clone())).cloned();
+                let fix = |t: Option<&TypeExpr>, x: Value| -> Value {
+                    let x = self.promote_variant_floats(x);
+                    match (t, &x) {
+                        (Some(TypeExpr::Simple(t)), Value::Int(si)) if t == "Float" => Value::Float(si.to_f64()),
+                        _ => x,
+                    }
+                };
+                let fields = match (decl, fields) {
+                    (Some(VariantFields::Struct(fs)), VariantValue::Struct(m)) => VariantValue::Struct(m.into_iter()
+                        .map(|(k, x)| { let t = fs.iter().find(|(n, _)| *n == k).map(|(_, t)| &t.node); let x = fix(t, x); (k, x) }).collect()),
+                    (Some(VariantFields::Tuple(ts)), VariantValue::Tuple(xs)) => VariantValue::Tuple(xs.into_iter().enumerate()
+                        .map(|(i, x)| fix(ts.get(i).map(|t| &t.node), x)).collect()),
+                    (_, f) => f,
+                };
+                Value::Variant { type_name, variant, fields }
+            }
+            Value::List(xs) => Value::List(xs.into_iter().map(|x| self.promote_variant_floats(x)).collect()),
+            Value::Map(m) => Value::Map(m.into_iter().map(|(k, x)| (k, self.promote_variant_floats(x))).collect()),
+            other => other,
+        }
     }
 
     fn decoded_variants_ok(&self, v: &Value) -> Result<(), String> {
@@ -5833,6 +5882,19 @@ impl Interpreter {
             },
             TypeExpr::Generic { name, args } if name == "Map" => match v {
                 Value::Map(m) | Value::Variant { fields: VariantValue::Struct(m), .. } => {
+                    // the key type too: a Map<Int, String> parameter took
+                    // {"007": …, "abc": …}, which its slot refuses
+                    if args.len() == 2 {
+                        if let TypeExpr::Simple(kt) = &args[0].node {
+                            let bad = m.keys().find(|k| match kt.as_str() {
+                                "Int" => crate::interpreter::builtins::string::parse_int_text(k).map_or(true, |n| n.to_string() != **k),
+                                "Float" => k.parse::<f64>().map_or(true, |f| !f.is_finite()),
+                                "Bool" => k.as_str() != "true" && k.as_str() != "false",
+                                _ => false,
+                            });
+                            if let Some(k) = bad { return Err(format!("key {:?} is not {} {}", k, if kt == "Int" { "an" } else { "a" }, kt)); }
+                        }
+                    }
                     if let Some(t) = args.last() { for (k, x) in m.iter() { self.value_fits(&t.node, x).map_err(|e| format!("key {:?}: {}", k, e))?; } }
                     Ok(())
                 }
@@ -5963,7 +6025,8 @@ impl Interpreter {
     fn int_slot_view(&mut self, target: &Expr, view: &str, env: &Env, cell_name: &str) -> Option<Result<Value, ExecError>> {
         let Expr::Ident(n) = target else { return None };
         if env.contains_key(n) || !matches!(view, "keys" | "entries" | "values" | "items") { return None; }
-        if self.slot_kind(cell_name, n) != Some("Map") || !self.slot_int_keys(cell_name, n) { return None; }
+        if self.slot_kind(cell_name, n) != Some("Map") { return None; }
+        if !self.slot_int_keys(cell_name, n) && !matches!(self.slot_key_type(cell_name, n).as_deref(), Some("Float" | "Bool")) { return None; }
         let n = n.clone();
         Some(self.call_storage_method(cell_name, &n, if view == "items" { "entries" } else { view }, &[]))
     }
@@ -5996,6 +6059,31 @@ impl Interpreter {
     }
 
     /// A stored key read back: an Int for a `Map<Int, V>` slot.
+    /// The declared key type of a Map slot (`Map<Float, V>` → "Float").
+    fn slot_key_type(&self, cell_name: &str, slot: &str) -> Option<String> {
+        let owner = self.slot_owner(cell_name, slot);
+        self.cells.get(owner.as_str()).and_then(|cell| cell.sections.iter().find_map(|s| match &s.node {
+            Section::Memory(mem) => mem.slots.iter().find(|sl| sl.node.name == slot).and_then(|sl| match &sl.node.ty.node {
+                TypeExpr::Generic { name, args } if name == "Map" => match args.first().map(|a| &a.node) { Some(TypeExpr::Simple(k)) => Some(k.clone()), _ => None },
+                _ => None,
+            }),
+            _ => None,
+        }))
+    }
+
+    /// A stored key read back as its declared type: Int, Float or Bool (a
+    /// Map<Float, V> slot gave its keys back as Strings: `s + k` refused).
+    fn slot_key_restore(&self, cell_name: &str, slot: &str, int_keys: bool, k: String) -> Value {
+        if !int_keys {
+            match self.slot_key_type(cell_name, slot).as_deref() {
+                Some("Float") => if let Ok(f) = k.parse::<f64>() { return Value::Float(f); },
+                Some("Bool") => match k.as_str() { "true" => return Value::Bool(true), "false" => return Value::Bool(false), _ => {} },
+                _ => {}
+            }
+        }
+        self.slot_key_value(int_keys, k)
+    }
+
     fn slot_key_value(&self, int_keys: bool, k: String) -> Value {
         if int_keys && crate::interpreter::builtins::string::is_int_text(&k) {
             return Value::Int(SomaInt::from_decimal_str(&k));

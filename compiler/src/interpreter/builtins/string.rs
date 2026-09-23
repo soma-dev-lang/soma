@@ -399,7 +399,14 @@ pub fn call_builtin(name: &str, args: &[Value]) -> Option<Result<Value, RuntimeE
                 Value::Int(i) => i.to_i64().unwrap_or(0).max(0) as usize,
                 _ => return Some(Err(RuntimeError::TypeError(format!("{name}(s, width, fill?): width must be an Int")))),
             };
-            let fill = args.get(2).map(|f| format!("{}", f)).filter(|f| !f.is_empty()).unwrap_or_else(|| " ".to_string());
+            // the fill is text: `pad_right("a", 3, ())` gave "anu", a Map its JSON
+            let fill = match args.get(2) {
+                None => " ".to_string(),
+                Some(Value::String(f)) if !f.is_empty() => f.clone(),
+                Some(Value::String(_)) => " ".to_string(),
+                Some(other) => return Some(Err(RuntimeError::Domain { kind: "type".to_string(), message: format!(
+                    "{name}(s, width, fill?): the fill is a String, got {} {}", crate::interpreter::value_type_name(other), other) })),
+            };
             let have = text.chars().count();
             // one request asking for pad_left("x", 2^62) aborted the process
             if width > crate::interpreter::MAX_BUILT_LEN {
@@ -418,9 +425,12 @@ pub fn call_builtin(name: &str, args: &[Value]) -> Option<Result<Value, RuntimeE
                     // as the input string, so `try { from_json(s) }` never failed
                     Value::String(s) if serde_json::from_str::<serde_json::Value>(s).is_err() => {
                         let shown: String = s.chars().take(60).collect();
+                        // valid JSON nested past the parser's depth limit (to_json
+                        // of a 1000-deep list) was "not valid JSON"
+                        let deep = serde_json::from_str::<serde_json::Value>(s).err().map_or(false, |e| e.to_string().contains("recursion limit"));
                         Err(RuntimeError::Domain {
                             kind: "json".to_string(),
-                            message: format!("json: not valid JSON: {}", shown),
+                            message: if deep { "json: the text nests more than 128 levels deep (the reader's limit)".to_string() } else { format!("json: not valid JSON: {}", shown) },
                         })
                     }
                     // `1e400` read as Float inf (greater than every number,

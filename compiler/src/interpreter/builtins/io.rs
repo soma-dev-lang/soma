@@ -569,8 +569,13 @@ fn csv_rows(content: &str, (raw, delim): (bool, char), source: &str) -> Result<V
         return Err(RuntimeError::Domain { kind: "csv".to_string(), message: format!("csv: {}: the header names column '{}' twice — a row is a map, so one would overwrite the other; rename one", path, dup) });
     }
     let mut rows = Vec::new();
-    for rec in records {
+    for (n, rec) in records.enumerate() {
         if rec.len() == 1 && rec[0].0.trim().is_empty() && !rec[0].1 { continue; }
+        // a record wider than the header lost its extra cells silently
+        if rec.len() > headers.len() && rec[headers.len()..].iter().any(|(t, q)| *q || !t.trim().is_empty()) {
+            return Err(RuntimeError::Domain { kind: "csv".to_string(), message: format!(
+                "csv: {}: record {} has {} fields, the header names {} — quote a cell that holds the delimiter", path, n + 2, rec.len(), headers.len()) });
+        }
         let mut entries = IndexMap::new();
         for (i, header) in headers.iter().enumerate() {
             let (text, quoted) = rec.get(i).cloned().unwrap_or((String::new(), false));

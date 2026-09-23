@@ -28,7 +28,7 @@ cell LogAnalysis {
             |> sort_by("ms_avg", "desc")
     }
 
-    on unique_paths() { return entries() |> distinct("path") |> pluck("path") }
+    on unique_paths() { return entries() |> distinct("path") }
 
     // Requests per IP, busiest first.
     on traffic_by_ip() {

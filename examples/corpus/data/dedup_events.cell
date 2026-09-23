@@ -19,8 +19,8 @@ cell DedupEvents {
     on unique_events() { return events() |> distinct() }
 
     // Value-level dedup: the set of users / kinds that appear.
-    on unique_users() { return events() |> distinct("user") |> pluck("user") }
-    on kinds() { return events() |> distinct("kind") |> pluck("kind") }
+    on unique_users() { return events() |> distinct("user") }
+    on kinds() { return events() |> distinct("kind") }
 
     // Event volume per kind after dedup, busiest first.
     on volume_by_kind() {

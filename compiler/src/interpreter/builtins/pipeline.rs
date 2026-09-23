@@ -82,6 +82,18 @@ pub fn call_builtin(name: &str, args: &[Value]) -> Option<Result<Value, RuntimeE
             "{}(rows, field): the field is a String name, got {} — for a computed value, map the rows first (`rows |> map(r => …)`)",
             name, crate::interpreter::value_type_name(&args[1])) }));
     }
+    // every item is a row (a Map or a record): a number among the rows was
+    // its own field value in distinct, dropped from avg_by's mean, passed
+    // through select — sort_by, to_csv and render_each refuse it
+    if matches!(name, "sum_by" | "avg_by" | "min_by" | "max_by" | "count_by" | "filter_by" | "pluck" | "group_by" | "agg" | "select" | "distinct_by" | "unique_by")
+        || (name == "distinct" && args.len() >= 2) {
+        if let Some(Value::List(items)) = args.first() {
+            if let Some((i, bad)) = items.iter().enumerate().find(|(_, r)| row_fields(r).is_none()) {
+                return Some(Err(RuntimeError::Domain { kind: "type".to_string(), message: format!(
+                    "{}(rows, …): item {} is {} {}, not a Map or record", name, i, crate::interpreter::value_type_name(bad), bad) }));
+            }
+        }
+    }
     // a field no row has is a typo (`sum_by(rows, "zz")` was 0, `max_by` ()),
     // as sort_by refuses it
     if matches!(name, "sum_by" | "avg_by" | "min_by" | "max_by" | "count_by" | "filter_by") && args.len() >= 2 {
