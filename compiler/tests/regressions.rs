@@ -4671,3 +4671,40 @@ cell test T { rules {
 } }
 "#);
 }
+
+#[test]
+fn check_and_serve_fourth_pass() {
+    // an indexed write to a name never bound is refused by check
+    let dir = scratch("undeclared_index_write");
+    std::fs::write(dir.join("a.cell"), "cell A {\n    on u() { ys[1] = 1  return 1 }\n    on v() { let zs = map()  zs.x = 1  return zs }\n}\n").unwrap();
+    let (code, out) = soma(&dir, &["check", "a.cell"]);
+    assert_ne!(code, 0, "{out}");
+    assert!(out.contains("undefined variable 'ys'") && !out.contains("'zs'"), "{out}");
+    // an empty directory still answers one JSON document
+    let empty = dir.join("empty");
+    std::fs::create_dir_all(&empty).unwrap();
+    let (_, out) = soma(&dir, &["check", "empty", "--json"]);
+    assert!(out.contains("\"files\": []"), "{out}");
+    let _ = std::fs::remove_dir_all(dir);
+    // a hoisted index is quoted as written
+    let out = verify_out("hoisted_hint", r#"
+cell App {
+    memory { bal: Map<String, Int> [persistent]  invariant bal >= 0 }
+    on pick(i: Int) { return i }
+    on w(k: String, n: Int) { let ks = [k]  bal[ks[pick(0)]] -= n  return 1 }
+}
+"#);
+    assert!(!out.contains("__soma_ix") && out.contains("bal[ks[pick(0)]]"), "{out}");
+    // static paths are percent-decoded; query keys join the body's in opts
+    let dir = scratch("serve_static_decode");
+    std::fs::create_dir_all(dir.join("static")).unwrap();
+    std::fs::write(dir.join("static/a b.css"), "body{}").unwrap();
+    std::fs::write(dir.join("app.cell"), "cell App { on opt(a: Int, opts: Map) { return opts } }\n").unwrap();
+    let (_server, port) = serve_dir(&dir);
+    assert!(get(port, "/static/a%20b.css").contains("body{}"));
+    assert!(get(port, "/static/%2e%2e/app.cell").starts_with("HTTP/1.1 403") || !get(port, "/static/%2e%2e/app.cell").contains("cell App"));
+    let body = "{\"a\":1,\"b\":2}";
+    let out = raw_request(port, &format!("POST /opt?q=1 HTTP/1.0\r\nHost: localhost\r\nContent-Type: application/json\r\nContent-Length: {}\r\n\r\n{}", body.len(), body));
+    assert!(out.contains("\"q\":1") && out.contains("\"b\":2"), "{out}");
+    let _ = std::fs::remove_dir_all(dir);
+}

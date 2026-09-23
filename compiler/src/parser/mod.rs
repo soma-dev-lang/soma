@@ -2335,6 +2335,7 @@ impl Parser {
                                 if calls(&acc.node) {
                                     let tmp = format!("__soma_ix_{}_{}", acc.span.start, hoisted.len());
                                     let aspan = acc.span;
+                                    crate::ast::note_hoisted(&tmp, &acc.node);
                                     hoisted.push(Spanned::new(Statement::Let { name: tmp.clone(), value: acc.clone() }, aspan));
                                     *acc = Spanned::new(Expr::Ident(tmp), aspan);
                                 }

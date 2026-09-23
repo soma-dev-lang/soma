@@ -760,6 +760,17 @@ impl<'a> Walker<'a> {
                     let root = Spanned::new(Expr::Ident(name.split('.').next().unwrap_or(name).to_string()), index.span);
                     self.walk_expr(&root);
                 }
+                // `ys[1] = 1` / `ys.x = 1` on a name never bound passed check
+                // and failed at runtime with "undefined variable"
+                if !name.contains('.') && !self.scope.contains(name) && !self.index.slots.contains(name) && !self.index.known.contains(name) {
+                    self.issues.push(InterpolationIssue {
+                        message: format!("undefined variable '{name}' — an indexed or field write changes an existing List, Map or record; declare it first (`let {name} = map()` / `let {name} = []`), or fix the name"),
+                        span: stmt.span,
+                        warning: false,
+                        habit: false,
+                        kind: "write_to_undefined",
+                    });
+                }
                 // `rows[0] = v` on a slot is a slot write, not a local:
                 // it must not hide a later `rows = …` from the check above
                 if !self.index.slots.contains(name) || self.scope.contains(name) {

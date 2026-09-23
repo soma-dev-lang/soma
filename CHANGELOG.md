@@ -2,6 +2,10 @@
 
 ## Unreleased
 
+### Undeclared indexed writes, hoisted index names, static paths, query keys in opts
+
+`ys[1] = 1` or `ys.x = 1` on a name never bound is a check error (it failed at run time with "undefined variable"). Verify hints quote a compound write's index as written (`bal[ks[pick(0)]]`) instead of a parser temporary. `soma check|test|verify <dir> --json` on a directory with no .cell file prints one JSON document. `soma serve` percent-decodes `/static/` paths (`a%20b.css`) and still refuses `%2e%2e`; a POST whose JSON body fills `opts` keeps the query's unknown keys too (the body wins a tie).
+
 ### Regex brace groups, CSV signs, text keys on Int-keyed slots, () map keys
 
 `${{5}}` or `${{USD}}` in a regex replacement with no such group is kept as text (it was deleted), in interpreted and [native] handlers alike. from_csv keeps `+0612345678`, `-007` and `+5` as text instead of reading them as numbers without their sign or zeros. `contains(seats, "1")`, `seats |> contains("1")` and `without(seats, "1")` over a `Map<Int, V>` slot treat the text key as absent, as `seats.has("1")` does. `map(m.nope, 5)` is refused instead of storing the key "null".

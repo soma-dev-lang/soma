@@ -764,6 +764,18 @@ impl fmt::Display for BinOp {
     }
 }
 
+/// The index a parser temporary stands for (`bal[ks[pick(0)]] -= n` reads
+/// its index once into `__soma_ix_…`): diagnostics quote the author's text.
+fn hoisted_names() -> &'static std::sync::Mutex<std::collections::HashMap<String, String>> {
+    static H: std::sync::OnceLock<std::sync::Mutex<std::collections::HashMap<String, String>>> = std::sync::OnceLock::new();
+    H.get_or_init(Default::default)
+}
+
+pub fn note_hoisted(tmp: &str, index: &Expr) {
+    let text = render_expr(index);
+    if let Ok(mut h) = hoisted_names().lock() { h.insert(tmp.to_string(), text); }
+}
+
 /// Render an expression back to (approximate) source text. Used by
 /// diagnostics that quote the offending expression — memory invariant
 /// violations, verify output — so the message shows `abs(position) <= 5`
@@ -787,6 +799,8 @@ pub fn render_expr(expr: &Expr) -> String {
             DurationUnit::Years => "y",
         }),
         Expr::Literal(Literal::Percentage(p)) => format!("{p}%"),
+        Expr::Ident(name) if name.starts_with("__soma_ix_") => hoisted_names().lock().ok()
+            .and_then(|h| h.get(name).cloned()).unwrap_or_else(|| name.clone()),
         Expr::Ident(name) => name.clone(),
         Expr::FieldAccess { target, field } => format!("{}.{}", render_expr(&target.node), field),
         Expr::Index { target, index } => format!("{}[{}]", render_expr(&target.node), render_expr(&index.node)),

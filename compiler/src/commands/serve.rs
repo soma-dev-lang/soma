@@ -1564,7 +1564,10 @@ pub fn cmd_serve(path: &PathBuf, port: u16, host: &str, verbose: bool, join: Opt
 
         if url.starts_with("/static/") {
             // drop any ?query (cache-busting `a.css?v=2`) before hitting disk
-            let url_path = url.split('?').next().unwrap_or(&url);
+            // `/static/my%20file.css` names `my file.css` (it was looked up
+            // with the escapes in, a 404); a path's `+` is a plus
+            let url_path = urlencoding_decode(&url.split('?').next().unwrap_or(&url).replace('+', "%2B"));
+            let url_path = url_path.as_str();
             // a dotfile (`.env`, `.git/…`) dropped in static/ is not served
             if url_path.split('/').any(|seg| seg.starts_with('.') && seg != "..") {
                 let resp = tiny_http::Response::from_string("not found").with_status_code(404);
@@ -2319,9 +2322,13 @@ fn bind_open_params(args: &mut Vec<interpreter::Value>, query_string: &str, body
                 let last = handler_types.len().checked_sub(1).filter(|&l| handler_types[l] == "Map" && l >= base);
                 if let Some(oi) = last {
                     if !named.is_empty() && slots[oi - base].is_none() {
-                        let extra: Vec<(String, interpreter::Value)> = entries.iter()
+                        // the query's unknown keys too (`POST /opt?q=1` with a
+                        // body key left q out); the body's value wins a tie
+                        let mut extra: Vec<(String, interpreter::Value)> = unknown.iter()
+                            .filter(|(k, _)| !entries.contains_key(k)).cloned().collect();
+                        extra.extend(entries.iter()
                             .filter(|(k, _)| !param_names.iter().any(|p| p == *k))
-                            .map(|(k, v)| (k.clone(), v.clone())).collect();
+                            .map(|(k, v)| (k.clone(), v.clone())));
                         if !extra.is_empty() { slots[oi - base] = Some(interpreter::map_from_pairs(extra)); }
                     }
                 }

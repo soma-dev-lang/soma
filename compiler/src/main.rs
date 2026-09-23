@@ -1014,6 +1014,13 @@ fn run_over_dir(cmd: &str, dir: &std::path::Path, json: bool, extra: &[&str]) ->
     walk(dir, &mut files);
     if files.is_empty() {
         eprintln!("no .cell file under {}", dir.display());
+        // --json answers one document here too (stdout was empty)
+        if json {
+            println!("{}", serde_json::to_string_pretty(&serde_json::json!({
+                "command": cmd, "files": [], "total": 0, "failed": 0, "ok": false,
+                "note": "no .cell file under the directory",
+            })).unwrap());
+        }
         std::process::exit(1);
     }
     // `test`: a file with no test cell (a `use lib::…` library, a helper
