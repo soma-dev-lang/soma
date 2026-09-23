@@ -2,6 +2,14 @@
 
 ## Unreleased
 
+### A slot name starting with `__` is refused
+
+- A slot named `__sm_<Cell>_<machine>` shared the store of the state machine:
+  `__sm_Order_order.set(id, "shipped")` moved an instance with no
+  `transition()`, so no edge, guard or `status` rule was checked, and the
+  properties `verify` had proven no longer held. `soma check` now reserves
+  the `__` prefix for the runtime's own storage.
+
 ### A `Content-Type` value is checked like any response header
 
 - `response(200, body, "Content-Type", v)` sent `v` unchecked: a CR/LF in it

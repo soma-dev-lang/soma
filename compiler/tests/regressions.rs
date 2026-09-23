@@ -3516,3 +3516,23 @@ cell T {
     assert!(!out.contains("handler 'ok'"), "{out}");
     let _ = std::fs::remove_dir_all(dir);
 }
+
+#[test]
+fn a_slot_named_like_a_machine_store_is_refused() {
+    // `__sm_Order_order.set(id, "shipped")` moved the machine with no
+    // transition(): no edge, guard or status rule was checked
+    let dir = scratch("reserved_slot_prefix");
+    std::fs::write(dir.join("app.cell"), r#"
+cell Order {
+    memory { __sm_Order_order: Map<String, String> [persistent] }
+    state order { initial: pending  pending -> paid }
+    on hack(id: String) { __sm_Order_order.set(id, "paid") return get_status(id) }
+}
+"#).unwrap();
+    let (code, out) = soma(&dir, &["check", "app.cell"]);
+    assert_ne!(code, 0, "{out}");
+    assert!(out.contains("reserved for the runtime"), "{out}");
+    let (code, _) = soma(&dir, &["run", "app.cell", "hack", "o1"]);
+    assert_ne!(code, 0);
+    let _ = std::fs::remove_dir_all(dir);
+}

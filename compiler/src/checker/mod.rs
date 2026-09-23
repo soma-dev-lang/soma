@@ -931,6 +931,22 @@ impl<'a> Checker<'a> {
                 }
             }
         }
+        // the runtime keeps a machine's instances beside the slots, under
+        // `__sm_<Cell>_<machine>`: a slot of that name wrote the state
+        // without transition() — no edge, guard or `status` rule checked
+        for cell in &program.cells {
+            if !matches!(cell.node.kind, CellKind::Cell | CellKind::Agent) { continue; }
+            for sec in &cell.node.sections {
+                let Section::Memory(m) = &sec.node else { continue };
+                for sl in m.slots.iter().filter(|sl| sl.node.name.starts_with("__")) {
+                    self.errors.push(CheckError::Static {
+                        kind: "storage_collision",
+                        message: format!("slot {}.{}: a name starting with `__` is reserved for the runtime's own storage (state machine instances live under `__sm_…`) — rename the slot", cell.node.name, sl.node.name),
+                        span: sl.span,
+                    });
+                }
+            }
+        }
         // `Store.config.get(k)` from another cell passed check and raised
         // "undefined variable: Store" at run time: a cell's memory is its own
         {
