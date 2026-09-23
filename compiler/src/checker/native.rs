@@ -235,7 +235,8 @@ pub fn check_native_handler(
             match e {
                 Expr::Literal(Literal::String(_)) => Some('s'),
                 Expr::Literal(Literal::Int(_) | Literal::BigInt(_) | Literal::Float(_)) => Some('n'),
-                Expr::Literal(Literal::Bool(_)) => Some('b'),
+                Expr::Literal(Literal::Bool(_)) | Expr::CmpOp { .. } | Expr::Not(_)
+                | Expr::BinaryOp { op: BinOp::And | BinOp::Or, .. } => Some('b'),
                 Expr::FnCall { name, .. } if matches!(name.as_str(), "to_string" | "concat" | "format" | "substring" | "upper" | "lower" | "trim") => Some('s'),
                 Expr::BinaryOp { op: BinOp::Sub | BinOp::Mul | BinOp::Div | BinOp::Mod, .. } => Some('n'),
                 Expr::BinaryOp { op: BinOp::Add, left, right } => kind(&left.node, kinds).filter(|k| *k == 'n').or_else(|| kind(&right.node, kinds).filter(|k| *k == 'n')),
@@ -290,6 +291,24 @@ pub fn check_native_handler(
             let seen: HashSet<char> = rets.iter().filter_map(|e| kind(e, &kinds2)).collect();
             if seen.contains(&'s') && seen.len() > 1 {
                 problem = Some("returns a String on one path and a number or Bool on another — a native handler has one return type (return to_string(x), or split the handler)".to_string());
+            } else if seen.contains(&'b') && seen.len() > 1 {
+                // `if x < 0 { return false }  return x * 2` answered true for 5
+                problem = Some("returns a Bool on one path and a number on another — a native handler has one return type (return a number on every path, or split the handler)".to_string());
+            }
+            // `"n=" + n` raises in the interpreter ("cannot add String and
+            // Int"); native code joined the text (and, past 64 bits, the
+            // digits of both operands of `"n=" + (n + 1)`)
+            if problem.is_none() {
+                crate::checker::literals::for_each_expr(body, &mut |e| {
+                    if problem.is_some() { return; }
+                    if let Expr::BinaryOp { op: BinOp::Add, left, right } = e {
+                        let (l, r) = (kind(&left.node, &kinds2), kind(&right.node, &kinds2));
+                        if matches!((l, r), (Some('s'), Some('n' | 'b')) | (Some('n' | 'b'), Some('s'))) {
+                            problem = Some(format!("adds a String and a {} in `{}` — the interpreter raises \"cannot add String and …\": convert it (`\"n=\" + to_string(n)`)",
+                                if l == Some('b') || r == Some('b') { "Bool" } else { "number" }, crate::ast::render_expr(e)));
+                        }
+                    }
+                });
             }
         }
     }

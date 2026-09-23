@@ -809,9 +809,11 @@ pub fn render_expr(expr: &Expr) -> String {
             let l = render_expr(&left.node);
             let r = render_expr(&right.node);
             let l = if expr_prec(&left.node) < p { format!("({})", l) } else { l };
-            let right_assoc_breaks = matches!(op, BinOp::Sub | BinOp::Div | BinOp::Mod);
+            // operators parse left to right: a right operand of the same
+            // precedence was parenthesized by its author (`"n=" + (n + 1)`
+            // was shown as `"n=" + n + 1`, a different value)
             let rp = expr_prec(&right.node);
-            let r = if rp < p || (rp == p && right_assoc_breaks) { format!("({})", r) } else { r };
+            let r = if rp <= p { format!("({})", r) } else { r };
             format!("{} {} {}", l, op, r)
         }
         Expr::CmpOp { left, op, right } => {

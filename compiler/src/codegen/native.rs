@@ -3219,6 +3219,10 @@ struct FnGenerator {
     /// (Doesn't change codegen of the body — only matters for the inner
     /// function name when emitting.)
     is_fast_variant: bool,
+    /// Float locals whose every definition is int-rational (`let q = a / b`):
+    /// only these may hold an exact quotient that prints as an Int. A local
+    /// defined from a Float (`let t = 0.0`) printed "2" for 2.0.
+    rational_locals: HashSet<String>,
 }
 
 impl FnGenerator {
@@ -3249,6 +3253,7 @@ impl FnGenerator {
             fn_return_type: NativeType::Float,
             dualmode_siblings: HashSet::new(),
             is_fast_variant: false,
+            rational_locals: HashSet::new(),
         }
     }
 
@@ -3675,6 +3680,7 @@ impl FnGenerator {
         for stmt in body {
             self.infer_stmt_types(&stmt.node);
         }
+        self.rational_locals = self.compute_rational_locals(body);
     }
 
     fn infer_stmt_types(&mut self, stmt: &Statement) {
@@ -3812,8 +3818,20 @@ impl FnGenerator {
     /// `/` on Ints is; the interpreter would answer an Int whenever every
     /// division along the way is exact.
     fn returns_int_rational(&self, body: &[Spanned<Statement>]) -> bool {
-        // Float locals whose every definition is int-rational (fixpoint:
-        // a later bad assignment disqualifies the variable).
+        let rational = self.compute_rational_locals(body);
+        let mut returns: Vec<&Expr> = Vec::new();
+        Self::collect_return_exprs(body, &mut returns);
+        if let Some(last) = body.last() {
+            if let Statement::ExprStmt { expr } = &last.node {
+                returns.push(&expr.node);
+            }
+        }
+        !returns.is_empty() && returns.iter().all(|e| self.is_int_rational(e, &rational))
+    }
+
+    /// Float locals whose every definition is int-rational (fixpoint:
+    /// a later bad assignment disqualifies the variable).
+    fn compute_rational_locals(&self, body: &[Spanned<Statement>]) -> HashSet<String> {
         let mut rational: HashSet<String> = HashSet::new();
         let mut banned: HashSet<String> = HashSet::new();
         for _ in 0..4 {
@@ -3823,14 +3841,7 @@ impl FnGenerator {
                 break;
             }
         }
-        let mut returns: Vec<&Expr> = Vec::new();
-        Self::collect_return_exprs(body, &mut returns);
-        if let Some(last) = body.last() {
-            if let Statement::ExprStmt { expr } = &last.node {
-                returns.push(&expr.node);
-            }
-        }
-        !returns.is_empty() && returns.iter().all(|e| self.is_int_rational(e, &rational))
+        rational
     }
 
     fn scan_rational_defs(
@@ -4082,7 +4093,7 @@ impl FnGenerator {
                 let counter = self.fresh_local();
                 let mut s = String::new();
                 if bound.is_some() { s.push_str(&format!("{}let mut {counter}: u64 = 0;\n", ind)); }
-                s.push_str(&format!("{}for {} in {} {{\n", ind, var, iter_code));
+                s.push_str(&format!("{}for {}{} in {} {{\n", ind, loop_var_mut(body, var), var, iter_code));
                 if let Some(b) = bound { s.push_str(&format!("{}    {counter} += 1; if {counter} > {}u64 {{ panic!(\"soma:loop_bound: [loop_bound({})] exceeded — the declared bound is part of the cost/termination proof\") }}\n", ind, b, b)); }
                 for st in body {
                     s.push_str(&self.gen_stmt_direct(&st.node, indent + 1));
@@ -4402,11 +4413,8 @@ impl FnGenerator {
                 return self.gen_expr_direct(expr, NativeType::Int);
             }
         }
-        let maybe_int: HashSet<String> = self.var_types.iter()
-            .filter(|(n, t)| **t == NativeType::Float && !self.float_params.contains(*n))
-            .map(|(n, _)| n.clone())
-            .collect();
-        if !self.is_int_rational(expr, &maybe_int) {
+        let maybe_int = &self.rational_locals;
+        if !self.is_int_rational(expr, maybe_int) {
             self.err(format!(
                 "{}() takes Ints, got the Float `{}` (the interpreter raises \"expected Int arguments, got Float\") — write floor(), round() or to_int() for the Int you mean",
                 fname, crate::ast::render_expr(expr)
@@ -4420,12 +4428,9 @@ impl FnGenerator {
     /// interpreter does: the exact quotient is an Int ("2", not "2.0"),
     /// decided at run time from the inexact-division flag.
     fn gen_float_to_string_direct(&self, arg: &Expr) -> String {
-        let maybe_int: HashSet<String> = self.var_types.iter()
-            .filter(|(n, t)| **t == NativeType::Float && !self.float_params.contains(*n))
-            .map(|(n, _)| n.clone())
-            .collect();
+        let maybe_int = &self.rational_locals;
         let a = self.gen_expr_direct(arg, NativeType::Float);
-        if self.is_int_rational(arg, &maybe_int) {
+        if self.is_int_rational(arg, maybe_int) {
             // the expression divides itself: only ITS divisions decide;
             // a plain local carries whatever happened before
             fn has_div(e: &Expr) -> bool {
@@ -5131,7 +5136,7 @@ impl FnGenerator {
                 let pre = if bound.is_some() { format!("{}let mut {counter}: u64 = 0;\n", ind) } else { String::new() };
                 let guard = match bound { Some(b) => format!("{}    {counter} += 1; if {counter} > {}u64 {{ panic!(\"soma:loop_bound: [loop_bound({})] exceeded — the declared bound is part of the cost/termination proof\") }}\n", ind, b, b), None => String::new() };
                 if small {
-                    let mut s = format!("{}{}for {} in {} {{\n{}", pre, ind, var, iter_code, guard);
+                    let mut s = format!("{}{}for {}{} in {} {{\n{}", pre, ind, loop_var_mut(body, var), var, iter_code, guard);
                     s.push_str(&self.gen_body_rug(body, indent + 1, ctx));
                     s.push_str(&format!("{}}}\n", ind));
                     s
@@ -6645,4 +6650,15 @@ fn unbrace(s: &str) -> String {
         out.push(c);
     }
     out
+}
+
+/// `mut ` when the loop body assigns its own loop variable: `i = i + 2`
+/// inside `for i in range(…)` (the interpreter rebinds it for the rest of
+/// the iteration) failed in rustc with E0384.
+fn loop_var_mut(body: &[Spanned<Statement>], var: &str) -> &'static str {
+    let mut hit = false;
+    crate::checker::literals::for_each_stmt_deep(body, &mut |st| {
+        if let Statement::Assign { name, .. } = st { if name == var { hit = true; } }
+    });
+    if hit { "mut " } else { "" }
 }

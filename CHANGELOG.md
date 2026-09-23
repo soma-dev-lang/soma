@@ -2,6 +2,25 @@
 
 ## Unreleased
 
+### Native code: Float locals print as Floats; mixed Bool returns and `String + number` are refused
+
+- `to_string` of a Float local printed an integral value as an Int: every
+  local of type Float counted as a possible exact quotient, so a sum of
+  `0.5`s printed "2", `-0.0` printed "0" and a copy of a Float parameter "3".
+  Only a local whose every definition is an Int quotient (`let q = a / b`)
+  prints as an Int when exact, as interpreted.
+- A `[native]` handler returning a Bool on one path and a number on another
+  (`if x < 0 { return false }  return x * 2`) passed check and answered
+  `true` for 5; it is refused like a String/number mix.
+- `"n=" + n` in a `[native]` handler joined the text where the interpreter
+  raises "cannot add String and Int" (and `"n=" + (n + 1)` past 64 bits joined
+  the digits of both operands); it is refused with the fix, `to_string(n)`.
+- Assigning a `for` loop variable in a `[native]` handler (`i = i + 2`)
+  passed check and failed in rustc (E0384).
+- Diagnostics printed `a + (b + c)` as `a + b + c`: a right operand of the
+  same precedence keeps its parentheses (`"n=" + (n + 1)` is not
+  `("n=" + n) + 1`).
+
 ### A failing `try` in a test rule rolls back
 
 - In a `cell test` rule, `try { dep("x", 5)  transition("x", "frozen")

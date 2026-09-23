@@ -3583,3 +3583,51 @@ cell test T { rules {
 } }
 "#);
 }
+
+#[test]
+fn native_float_locals_print_as_floats() {
+    // every Float local counted as a possible exact quotient: a sum of
+    // 0.5s printed "2", -0.0 printed "0", a copy of a Float param "3"
+    passes("native_float_locals", r#"
+cell P {
+    on acc() [native] { let t = 0.0  for i in range(0, 4) { t = t + 0.5 }  return to_string(t) }
+    on negz() [native] { let z = -0.0  return to_string(z) }
+    on fcopy(x: Float) [native] { let y = x  return to_string(y) }
+    on prod() [native] { let b = 1.5 * 2.0  return to_string(b) }
+    on quot(a: Int, b: Int) [native] { let q = a / b  return to_string(q) }
+    on loopvar() [native] { let s = 0  for i in range(0, 5) { i = i + 2  s = s + i }  return s }
+}
+cell test T { rules {
+    assert acc() == "2.0"
+    assert negz() == "-0.0"
+    assert fcopy(3.0) == "3.0"
+    assert prod() == "3.0"
+    assert quot(8, 4) == "2"
+    assert quot(7, 2) == "3.5"
+    assert loopvar() == 20
+} }
+"#);
+}
+
+#[test]
+fn native_refuses_a_bool_or_number_return_and_string_plus_number() {
+    // `if x < 0 { return false }  return x * 2` answered true for 5, and
+    // `"n=" + n` joined the text where the interpreter raises
+    let dir = scratch("native_mixed_types");
+    std::fs::write(dir.join("app.cell"), r#"
+cell P {
+    on f(x: Int) [native] { if x < 0 { return false }  return x * 2 }
+    on g(x: Int) [native] { if x < 0 { return x > -5 }  return x * 2 }
+    on label(n: Int) [native] { return "n=" + (n + 1) }
+    on and_mix(x: Int) [native] { if x < 0 { return 1 }  return x > 2 && x < 9 }
+}
+"#).unwrap();
+    let (code, out) = soma(&dir, &["check", "app.cell"]);
+    assert_ne!(code, 0, "{out}");
+    assert!(out.contains("handler 'f' is marked [native] but returns a Bool on one path"), "{out}");
+    assert!(out.contains("handler 'g' is marked [native] but returns a Bool on one path"), "{out}");
+    assert!(out.contains("handler 'and_mix' is marked [native] but returns a Bool on one path"), "{out}");
+    // the diagnostic keeps the author's parentheses
+    assert!(out.contains("`\"n=\" + (n + 1)`"), "{out}");
+    let _ = std::fs::remove_dir_all(dir);
+}
