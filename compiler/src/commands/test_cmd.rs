@@ -470,7 +470,9 @@ pub fn cmd_test(path: &PathBuf, json: bool, registry: &mut Registry) {
                 // "assert x == y — FAILED" / "assert f() — ERROR: <message>":
                 // the rule, what went wrong, and whether the rule RAISED
                 let (rule, message) = split_rule(msg);
-                let raised = message.starts_with("ERROR") || rule.starts_with("assert_fails");
+                // an assert_fails that FAILED raised only if its message says
+                // so ("expected a runtime error, but it succeeded" did not)
+                let raised = message.starts_with("ERROR") || (rule.starts_with("assert_fails") && message.starts_with("FAILED: it raised"));
                 let message = message.strip_prefix("ERROR: ").unwrap_or(message);
                 records.push(serde_json::json!({"cell": cell, "status": "fail", "line": line_no, "rule": rule, "message": message, "raised": raised}));
             } else if let Some(detail) = t.strip_prefix("         ") {
@@ -688,11 +690,18 @@ fn describe_error(e: &interpreter::ExecError) -> String {
 }
 
 /// "rule — message" at the first " — " OUTSIDE parentheses (a sampled
-/// property's rule text holds one: "(… fixed seed — NOT a proof)")
+/// property's rule text holds one: "(… fixed seed — NOT a proof)") and
+/// outside a string literal (`assert s() == "a — b"` was cut inside it)
 fn split_rule(s: &str) -> (&str, &str) {
-    let mut depth = 0i32;
+    let (mut depth, mut quoted, mut escaped) = (0i32, false, false);
     for (i, c) in s.char_indices() {
+        if escaped { escaped = false; continue; }
+        if quoted {
+            match c { '\\' => escaped = true, '"' => quoted = false, _ => {} }
+            continue;
+        }
         match c {
+            '"' => quoted = true,
             '(' => depth += 1,
             ')' => depth -= 1,
             ' ' if depth <= 0 && s[i..].starts_with(" — ") => return (&s[..i], &s[i + " — ".len()..]),

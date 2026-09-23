@@ -2,6 +2,12 @@
 
 ## Unreleased
 
+### `soma test --json` keeps a rule with a dash and says what raised
+
+- The JSON records are read back from the report text: a rule holding a
+  string with " — " (`assert s() == "a — b"`) was cut inside the string, and
+  an `assert_fails` that did not raise was recorded `"raised": true`.
+
 ### `lint` and `fix` advice keeps the program working
 
 - `soma lint` advised replacing `r.length` with `r.len`: without

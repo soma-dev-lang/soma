@@ -4052,3 +4052,17 @@ fn lint_and_fix_advice_keeps_the_program_working() {
     assert!(out.contains("holding a String literal"), "{out}");
     let _ = std::fs::remove_dir_all(dir);
 }
+
+#[test]
+fn test_json_keeps_a_rule_with_a_dash_and_says_what_raised() {
+    // the record was re-read from the text: `"a — c"` in a rule was cut at
+    // its dash, and an assert_fails that did NOT raise said raised: true
+    let dir = scratch("test_json_records");
+    std::fs::write(dir.join("app.cell"), "cell P {\n on s() { return \"a — b\" }\n on ok() { return 1 }\n}\ncell test T { rules {\n assert s() == \"a — c\"\n assert_fails ok()\n} }\n").unwrap();
+    let (_, out) = soma(&dir, &["test", "app.cell", "--json"]);
+    let json: serde_json::Value = serde_json::from_str(&out).unwrap_or_else(|e| panic!("{e}: {out}"));
+    let results = json["results"].as_array().unwrap();
+    assert_eq!(results[0]["rule"], "assert s() == \"a — c\"", "{out}");
+    assert_eq!(results[1]["raised"], false, "{out}");
+    let _ = std::fs::remove_dir_all(dir);
+}
