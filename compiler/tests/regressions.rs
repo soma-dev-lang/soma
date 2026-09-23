@@ -4029,3 +4029,26 @@ cell App {
     assert_eq!(json["kind"], "not_found", "{out}");
     let _ = std::fs::remove_dir_all(dir);
 }
+
+#[test]
+fn lint_and_fix_advice_keeps_the_program_working() {
+    let dir = scratch("lint_fix_advice");
+    // `.length` on a map is its key: no alias advice; an if-chain with
+    // `else` branches is not a match
+    std::fs::write(dir.join("l.cell"), "cell L {\n on f() { let r = map(\"length\", 5, \"w\", 2)  return r.length }\n on score(s: String) {\n  let n = 0\n  if s == \"a\" { n += 1 } else { n += 10 }\n  if s == \"b\" { n += 2 } else { n += 20 }\n  if s == \"c\" { n += 3 } else { n += 30 }\n  return n\n }\n}\n").unwrap();
+    let (_, out) = soma(&dir, &["lint", "l.cell"]);
+    assert!(!out.contains("'length' is an alias") && !out.contains("if_chain") && !out.contains("consider using match"), "{out}");
+    // fix writes stubs of the declared type; check reads a map literal's values
+    std::fs::write(dir.join("fx.cell"), "cell type Opt { variants { Some(Int)  Nothing } }\ncell type Only { variants { One(Int) } }\ncell A {\n face {\n  signal a(x: Int) -> Map<String, Int>\n  signal g() -> Opt\n  signal h() -> Only\n }\n}\n").unwrap();
+    let (code, out) = soma(&dir, &["fix", "fx.cell"]);
+    assert_eq!(code, 0, "{out}");
+    let (code, out) = soma(&dir, &["run", "fx.cell", "a", "1"]);
+    assert_eq!(code, 0, "{out}");
+    let (code, out) = soma(&dir, &["run", "fx.cell", "g"]);
+    assert_eq!(code, 0, "{out}");
+    std::fs::write(dir.join("fr.cell"), "cell A {\n face { signal a(x: Int) -> Map<String, Int> }\n on a(x: Int) { return map(\"status\", \"ok\") }\n}\n").unwrap();
+    let (code, out) = soma(&dir, &["check", "fr.cell"]);
+    assert_ne!(code, 0, "{out}");
+    assert!(out.contains("holding a String literal"), "{out}");
+    let _ = std::fs::remove_dir_all(dir);
+}

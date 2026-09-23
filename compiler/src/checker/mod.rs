@@ -2308,12 +2308,20 @@ impl<'a> Checker<'a> {
     /// `signal f() -> Int` with `return "text"` (or a trailing literal of
     /// the wrong kind): the contract is checkable without running.
     fn check_face_return_literals(&mut self, cell: &CellDef) {
-        let declared: Vec<(String, String)> = cell.sections.iter().flat_map(|s| match &s.node {
+        // (signal, outer type, scalar element type of a Map<K, V> / List<T>)
+        let declared: Vec<(String, String, Option<String>)> = cell.sections.iter().flat_map(|s| match &s.node {
             Section::Face(face) => face.declarations.iter().filter_map(|d| match &d.node {
-                FaceDecl::Signal(sig) => sig.return_type.as_ref().map(|t| (sig.name.clone(), match &t.node {
-                    TypeExpr::Simple(n) | TypeExpr::Generic { name: n, .. } => n.clone(),
-                    _ => "Any".to_string(),
-                })),
+                FaceDecl::Signal(sig) => sig.return_type.as_ref().map(|t| {
+                    let (outer, elem) = match &t.node {
+                        TypeExpr::Simple(n) => (n.clone(), None),
+                        TypeExpr::Generic { name: n, args } => (n.clone(), args.last().and_then(|a| match &a.node {
+                            TypeExpr::Simple(e) if matches!(e.as_str(), "Int" | "Float" | "String" | "Bool") => Some(e.clone()),
+                            _ => None,
+                        })),
+                        _ => ("Any".to_string(), None),
+                    };
+                    (sig.name.clone(), outer, elem)
+                }),
                 _ => None,
             }).collect::<Vec<_>>(),
             _ => Vec::new(),
@@ -2337,15 +2345,24 @@ impl<'a> Checker<'a> {
                 || (declared == "Float" && got == "Int")
                 || (declared == "Map" && got == "Map")
         }
-        fn walk(stmts: &[Spanned<Statement>], last_is_value: bool, out: &mut Vec<(Span, &'static str)>) {
+        // the literal elements of a returned map(…) (its values) or list
+        fn elements(e: &Expr) -> Vec<&Expr> {
+            match e {
+                Expr::FnCall { name, args } if name == "map" => args.iter().skip(1).step_by(2).map(|a| &a.node).collect(),
+                Expr::FnCall { name, args } if name == "list" => args.iter().map(|a| &a.node).collect(),
+                Expr::ListLiteral(items) => items.iter().map(|a| &a.node).collect(),
+                _ => Vec::new(),
+            }
+        }
+        fn walk<'e>(stmts: &'e [Spanned<Statement>], last_is_value: bool, out: &mut Vec<(Span, &'static str, &'e Expr)>) {
             let n = stmts.len();
             for (i, st) in stmts.iter().enumerate() {
                 match &st.node {
                     Statement::Return { value } => {
-                        if let Some(k) = literal_kind(&value.node) { out.push((value.span, k)); }
+                        if let Some(k) = literal_kind(&value.node) { out.push((value.span, k, &value.node)); }
                     }
                     Statement::ExprStmt { expr } if last_is_value && i + 1 == n => {
-                        if let Some(k) = literal_kind(&expr.node) { out.push((expr.span, k)); }
+                        if let Some(k) = literal_kind(&expr.node) { out.push((expr.span, k, &expr.node)); }
                     }
                     Statement::If { then_body, else_body, .. } => {
                         walk(then_body, last_is_value && i + 1 == n, out);
@@ -2358,10 +2375,25 @@ impl<'a> Checker<'a> {
         for section in &cell.sections {
             if let Section::OnSignal(ref h) = section.node {
                 if h.signal_name == "request" { continue; } // the router answers with whatever the route returns
-                let Some((_, ty)) = declared.iter().find(|(n, _)| n == &h.signal_name) else { continue };
+                let Some((_, ty, elem)) = declared.iter().find(|(n, _, _)| n == &h.signal_name) else { continue };
                 let mut found = Vec::new();
                 walk(&h.body, true, &mut found);
-                for (span, got) in found {
+                for (span, got, value) in found {
+                    // `-> Map<String, Int>` returning map("status", "ok")
+                    // passed check and failed every call
+                    if let (Some(elem), true) = (elem, compatible(ty, got)) {
+                        if let Some(bad) = elements(value).into_iter().filter_map(literal_kind).find(|k| !compatible(elem, k)) {
+                            self.errors.push(CheckError::Static {
+                                kind: "face_return_type",
+                                message: format!(
+                                    "handler '{}' returns a {} holding a {} literal but its face declares `-> {}` — fix the value or the face",
+                                    h.signal_name, got, bad, if ty == "Map" { format!("Map<…, {}>", elem) } else { format!("{}<{}>", ty, elem) }
+                                ),
+                                span,
+                            });
+                            continue;
+                        }
+                    }
                     if !compatible(ty, got) {
                         self.errors.push(CheckError::Static {
                             kind: "face_return_type",

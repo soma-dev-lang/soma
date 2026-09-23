@@ -351,9 +351,9 @@ impl<'a> LintPass<'a> {
                     self.check_expr_for_lints(&arg.node, &arg.span, memory_slots);
                 }
             }
-            Expr::FieldAccess { target, field } => {
-                // xs.length -> xs.len: canonical alias
-                self.check_alias(field, span, true);
+            Expr::FieldAccess { target, .. } => {
+                // no alias advice: without parentheses `r.length` reads the
+                // key "length" of a map, and `r.len` is its entry count
                 self.check_expr_for_lints(&target.node, &target.span, memory_slots);
             }
             Expr::Pipe { left, right } => {
@@ -506,7 +506,10 @@ impl<'a> LintPass<'a> {
         for stmt in body {
             if let Statement::If { condition, then_body, else_body } = &stmt.node {
                 if let Some(field) = self.is_field_eq_string_check(&condition.node) {
-                    let rebinds = assigns_name(then_body, &field) || assigns_name(else_body, &field);
+                    // …and an `else` runs for EVERY other value: three
+                    // `if s == "x" {…} else {…}` add up (51 for "a") where a
+                    // match takes one arm
+                    let rebinds = assigns_name(then_body, &field) || assigns_name(else_body, &field) || !else_body.is_empty();
                     if let Some(ref prev) = compared_field {
                         if &field == prev {
                             consecutive_eq_ifs += 1;

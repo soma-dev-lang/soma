@@ -313,7 +313,14 @@ pub fn cmd_fix(path: &PathBuf, json: bool, registry: &mut Registry) {
                                 "Bool" => "false".to_string(),
                                 "String" => "\"\"".to_string(),
                                 "List" => "[]".to_string(),
-                                _ => "map(\"status\", \"ok\")".to_string(),
+                                // an empty map fits every `Map<K, V>` (a
+                                // "status": "ok" entry broke `Map<String, Int>`)
+                                "Map" => "map()".to_string(),
+                                "Any" => "map(\"status\", \"ok\")".to_string(),
+                                // a sum type: one of its bare variants, else a
+                                // stub that says it is one (a Map broke `-> Opt`)
+                                other => unit_variant_of(&program, other)
+                                    .unwrap_or_else(|| format!("fail(\"not_implemented\", \"{} is a stub written by soma fix\")", signal)),
                             },
                             _ => "map(\"status\", \"ok\")".to_string(),
                         };
@@ -705,4 +712,12 @@ fn strip_outer_parens(text: &str) -> &str {
         }
     }
     strip_outer_parens(&t[1..t.len() - 1])
+}
+
+/// A variant without fields of the sum type `ty`, if it declares one.
+fn unit_variant_of(program: &ast::Program, ty: &str) -> Option<String> {
+    program.cells.iter().filter(|c| c.node.name == ty).flat_map(|c| c.node.sections.iter()).find_map(|s| match &s.node {
+        ast::Section::Variants(vs) => vs.variants.iter().find(|v| matches!(v.node.fields, ast::VariantFields::Unit)).map(|v| v.node.name.clone()),
+        _ => None,
+    })
 }

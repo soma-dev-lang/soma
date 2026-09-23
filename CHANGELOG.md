@@ -2,6 +2,22 @@
 
 ## Unreleased
 
+### `lint` and `fix` advice keeps the program working
+
+- `soma lint` advised replacing `r.length` with `r.len`: without
+  parentheses `r.length` reads the key "length" of a map (5) and `r.len` is
+  its entry count (2). The alias advice is for calls only.
+- The if-chain advice ("consider using match") fired for ifs with `else`
+  branches, which run for every other value and add up; no `match` gives
+  that answer.
+- `soma fix` wrote `return map("status", "ok")` for a face declaring
+  `-> Map<String, Int>` or a sum type, then reported "All checks passed"
+  while every call failed. A Map gets `map()`, a sum type one of its bare
+  variants (or a `fail("not_implemented", …)` stub when it has none).
+- `soma check` refused a returned literal of the wrong kind but not its
+  elements: `map("status", "ok")` for `-> Map<String, Int>` and `[1, "x"]`
+  for `-> List<Int>` passed and failed at run time.
+
 ### `soma serve` binds every request body and keeps a `+` in a path
 
 - A request body was bound to a handler only for an exact `POST`: `PUT`,
