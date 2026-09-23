@@ -2,6 +2,12 @@
 
 ## Unreleased
 
+### `mock approve` takes a Bool
+
+- `mock approve "false"` approved: the scripted answer went through
+  truthiness, and a non-empty String is truthy. An answer is now `true` or
+  `false` (or a List of them); anything else is reported on the mock line.
+
 ### `soma lint` keeps the JSON around a String slot
 
 - `redundant_to_json` / `redundant_from_json` advised dropping `to_json` and

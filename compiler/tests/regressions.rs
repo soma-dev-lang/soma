@@ -3362,3 +3362,16 @@ fn lint_does_not_advise_dropping_json_around_a_string_slot() {
     assert!(!out.contains("line 7:") && !out.contains("line 12:"), "{out}");
     let _ = std::fs::remove_dir_all(dir);
 }
+
+#[test]
+fn mock_approve_takes_a_bool() {
+    // `mock approve "false"` approved: the answer went through is_truthy,
+    // and a non-empty String is truthy
+    let dir = scratch("mock_approve_bool");
+    std::fs::write(dir.join("app.cell"), "cell G {\n  on ask() { return approve(\"ship?\") }\n}\ncell test T {\n  rules {\n    mock approve \"false\"\n  }\n}\ncell test U {\n  rules {\n    mock approve [true, false]\n    assert G.ask() == true\n    assert G.ask() == false\n  }\n}\n").unwrap();
+    let (code, out) = soma(&dir, &["test", "app.cell"]);
+    assert_ne!(code, 0, "{out}");
+    assert!(out.contains("mock approve takes true / false"), "{out}");
+    assert!(out.contains("✓ assert G.ask() == true") && out.contains("✓ assert G.ask() == false"), "{out}");
+    let _ = std::fs::remove_dir_all(dir);
+}

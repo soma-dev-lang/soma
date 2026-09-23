@@ -310,13 +310,18 @@ pub fn cmd_test(path: &PathBuf, json: bool, registry: &mut Registry) {
                             }
                         }
                         ast::Rule::MockApprove { reply } => {
-                            match eval_test_expr(&mut interp, &reply.node, &test_env) {
-                                Ok(interpreter::Value::List(items)) => {
-                                    for it in items {
-                                        interp.approve_queue.push_back(it.is_truthy());
-                                    }
-                                }
-                                Ok(v) => interp.approve_queue.push_back(v.is_truthy()),
+                            // an answer is a Bool: `mock approve "false"` approved
+                            // (a non-empty String is truthy)
+                            let answers = match eval_test_expr(&mut interp, &reply.node, &test_env) {
+                                Ok(interpreter::Value::List(items)) => Ok(items),
+                                Ok(v) => Ok(vec![v]),
+                                Err(e) => Err(e),
+                            }.and_then(|items| items.into_iter().map(|it| match it {
+                                interpreter::Value::Bool(b) => Ok(b),
+                                other => Err(format!("mock approve takes true / false (or a list of them), got {} {}", interpreter::value_type_name(&other), other)),
+                            }).collect::<Result<Vec<bool>, String>>());
+                            match answers {
+                                Ok(bs) => interp.approve_queue.extend(bs),
                                 Err(e) => {
                                     total += 1;
                                     failed += 1;
