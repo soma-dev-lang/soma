@@ -639,7 +639,14 @@ fn run_with_runtime(program: ast::Program, args: &[interpreter::Value]) {
     rt.dump_state();
     eprintln!("---");
 
-    let main_cell = rt.cells.keys().next().cloned().unwrap_or_else(|| {
+    // the cell that drives the program: the one with a `runtime` section,
+    // else one with an `interior` (the first cell of the file ran instead,
+    // so a helper cell declared above skipped the runtime section)
+    let has = |c: &runtime::CellInstance, runtime_sec: bool| c.def.sections.iter().any(|s| if runtime_sec {
+        matches!(s.node, ast::Section::Runtime(_)) } else { matches!(s.node, ast::Section::Interior(_)) });
+    let main_cell = rt.cells.iter().find(|(_, c)| has(c, true)).or_else(|| rt.cells.iter().find(|(_, c)| has(c, false)))
+        .map(|(k, _)| k.clone())
+        .or_else(|| rt.cells.keys().next().cloned()).unwrap_or_else(|| {
         eprintln!("error: no runnable cell found");
         process::exit(1);
     });

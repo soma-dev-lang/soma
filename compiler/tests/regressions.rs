@@ -6402,3 +6402,14 @@ fn check_seventh_pass_local_functions_determinism_and_growth() {
     }
     let _ = std::fs::remove_dir_all(dir);
 }
+
+#[test]
+fn run_picks_the_runtime_cell() {
+    // a helper cell declared above the one with `runtime { }`: a bare
+    // `soma run` ran the first cell and the runtime section never ran
+    let dir = scratch("run_runtime_cell");
+    std::fs::write(dir.join("app.cell"), "cell Helper {\n    on h() { return 1 }\n}\ncell Outer {\n    interior {\n        cell W {\n            face { signal hi(n: Int) }\n            on hi(n: Int) { print(\"hi ran {n}\") }\n        }\n    }\n    runtime {\n        signal hi(7)\n    }\n}\n").unwrap();
+    let (_, out) = soma(&dir, &["run", "app.cell"]);
+    assert!(out.contains("hi ran 7"), "{out}");
+    let _ = std::fs::remove_dir_all(dir);
+}
