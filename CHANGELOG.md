@@ -2,6 +2,13 @@
 
 ## Unreleased
 
+### A variant pattern on `get_status` is refused
+
+- `get_status(id) == Funded` was already refused (the state is a String),
+  but `match get_status(id) { Pending -> … }` passed `soma check` and raised
+  "match expects a variant … got String" on every call. It is now refused
+  the same way, pointing at `"Pending" -> …`.
+
 ### `format("%.3d", 7)` is "007"
 
 - The precision of a `%d` directive was parsed and dropped, so `%.3d`

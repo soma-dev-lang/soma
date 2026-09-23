@@ -355,6 +355,23 @@ fn walk_expr(expr: &Expr, span: Span, reg: &VariantRegistry, issues: &mut Vec<Su
     match expr {
         Expr::Match { subject, arms } => {
             walk_expr(&subject.node, subject.span, reg, issues);
+            // `match get_status(id) { Pending -> … }`: the state is a String,
+            // so a variant arm never matches and the match raised on every
+            // call (the `== Pending` spelling was already refused)
+            if matches!(&subject.node, Expr::FnCall { name, .. } if name == "get_status") {
+                if let Some(v) = arms.iter().find_map(|a| match &a.pattern {
+                    MatchPattern::Variant { name, .. } if reg.variant_shape.contains_key(name) => Some(name.clone()),
+                    _ => None,
+                }) {
+                    issues.push(SumTypeIssue {
+                        kind: SumTypeIssueKind::UnknownVariant,
+                        span,
+                        message: format!(
+                            "get_status(…) answers a String and the arm `{}` is a variant pattern — it never matches, and the match raises on every call. Match the names: `\"{}\" -> …` (only `transition()` takes the variant)",
+                            v, v),
+                    });
+                }
+            }
             check_match_exhaustiveness(arms, span, reg, issues);
             for arm in arms {
                 if let Some(g) = &arm.guard {

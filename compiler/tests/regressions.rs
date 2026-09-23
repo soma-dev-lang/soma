@@ -3411,3 +3411,15 @@ cell test T {
 }
 "#);
 }
+
+#[test]
+fn a_variant_pattern_on_get_status_is_refused() {
+    // `match get_status(id) { Pending -> … }` passed check and raised
+    // "match expects a variant … got String" on every call
+    let dir = scratch("get_status_variant_match");
+    std::fs::write(dir.join("app.cell"), "cell type S { variants { Pending Done } }\ncell L {\n  state todo: S { initial: Pending  Pending -> Done }\n  on show(id: String) { return match get_status(id) { Pending -> \"p\"  Done -> \"d\" } }\n  on ok(id: String) { return match get_status(id) { \"Pending\" -> \"p\"  _ -> \"o\" } }\n}\n").unwrap();
+    let (code, out) = soma(&dir, &["check", "app.cell"]);
+    assert_ne!(code, 0, "{out}");
+    assert_eq!(out.matches("is a variant pattern").count(), 1, "{out}");
+    let _ = std::fs::remove_dir_all(dir);
+}
