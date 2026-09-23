@@ -76,6 +76,10 @@ pub struct Request {
 
     // soma patch: shuts the connection's socket down (both directions)
     closer: Option<std::sync::Arc<dyn Fn() + Send + Sync>>,
+
+    // soma patch: false while a chunked body is not read to its end — any
+    // response then closes the connection
+    body_done: std::sync::Arc<std::sync::atomic::AtomicBool>,
 }
 
 struct NotifyOnDrop<R> {
@@ -173,24 +177,15 @@ where
         }
     };
 
-    // true if the client sent a `Connection: upgrade` header
-    let connection_upgrade = {
-        match headers
-            .iter()
-            .find(|h: &&Header| h.field.equiv("Connection"))
-            .map(|h| h.value.as_str())
-        {
-            Some(v) if v.to_ascii_lowercase().contains("upgrade") => true,
-            _ => false,
-        }
-    };
+    // soma patch: `Connection: upgrade` no longer hands the raw socket over
+    // as the body (the next request was swallowed, or the read hung): the
+    // body is framed by Content-Length / Transfer-Encoding like any other
+    // (soma serve never upgrades on its HTTP port)
+    let body_done = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(true));
 
     // we wrap `source_data` around a reading whose nature depends on the transfer-encoding and
     // content-length headers
-    let reader = if connection_upgrade {
-        // if we have a `Connection: upgrade`, always keeping the whole reader
-        Box::new(source_data) as Box<dyn Read + Send + 'static>
-    } else if let Some(content_length) = content_length {
+    let reader = if let Some(content_length) = content_length {
         if content_length == 0 {
             Box::new(io::empty()) as Box<dyn Read + Send + 'static>
         } else if content_length <= 1024 && !expects_continue {
@@ -220,7 +215,11 @@ where
     } else if transfer_encoding.is_some() {
         // if a transfer-encoding was specified, then "chunked" is ALWAYS applied
         // over the message (RFC2616 #3.6)
-        Box::new(FusedReader::new(ChunkedDecoder::new(source_data))) as Box<dyn Read + Send + 'static>
+        // soma patch: until the decoder reaches the last chunk, the body is
+        // unread — answering then closes the connection (its chunks would
+        // be parsed as the next request)
+        body_done.store(false, std::sync::atomic::Ordering::SeqCst);
+        Box::new(EofFlag { inner: FusedReader::new(ChunkedDecoder::new(source_data)), flag: body_done.clone() }) as Box<dyn Read + Send + 'static>
     } else {
         // if we have neither a Content-Length nor a Transfer-Encoding,
         // assuming that we have no data
@@ -241,7 +240,24 @@ where
         must_send_continue: expects_continue,
         notify_when_responded: None,
         closer: None,
+        body_done,
     })
+}
+
+/// soma patch: sets `flag` once the wrapped body reader reports its end
+struct EofFlag<R> {
+    inner: R,
+    flag: std::sync::Arc<std::sync::atomic::AtomicBool>,
+}
+
+impl<R: Read> Read for EofFlag<R> {
+    fn read(&mut self, buf: &mut [u8]) -> io::Result<usize> {
+        let n = self.inner.read(buf)?;
+        if n == 0 && !buf.is_empty() {
+            self.flag.store(true, std::sync::atomic::Ordering::SeqCst);
+        }
+        Ok(n)
+    }
 }
 
 impl Request {
@@ -459,7 +475,16 @@ impl Request {
             None,
         ))?;
 
-        Self::ignore_client_closing_errors(writer.flush())
+        let res = Self::ignore_client_closing_errors(writer.flush());
+        // soma patch: a response before the body was read to its end (a
+        // refusal before the handler ran): the connection closes, so the
+        // unread body is never parsed as the next request
+        if !self.body_done.load(std::sync::atomic::Ordering::SeqCst) {
+            if let Some(close) = self.closer.take() {
+                close();
+            }
+        }
+        res
     }
 
     fn ignore_client_closing_errors(result: io::Result<()>) -> io::Result<()> {

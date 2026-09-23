@@ -17,7 +17,14 @@ soma run   app.cell request GET /stats ""     # call the router with no server
    request carrying both Content-Length and
    Transfer-Encoding, or a repeated / non-numeric Content-Length, is refused
    (400); a declared body past 256 MB is refused (413) before it is read —
-   and the connection is closed.
+   and the connection is closed. Header lines are strict: an obs-fold line
+   (starting with a space or tab), a bare CR / LF or a NUL in the request
+   line or a header, or junk after the HTTP version is a 400; a line past
+   16 KiB, a header section past 64 KiB or more than 200 headers is a 431 —
+   the connection closed each time. Any answer given before the body was
+   read (a 403 Host / Origin refusal) closes the connection too.
+   `Connection: Upgrade` changes nothing on the HTTP port (WebSockets have
+   their own port).
 2. A path that the cell's `request(method, path, body)` handler **matches
    explicitly** — a literal (`"/stats"`) or a prefix pattern (`"/hold/" + id`)
    in one of its `match` arms, or a path it tests (`path == "/reset"`,
@@ -48,15 +55,17 @@ its own; add a handler to Store that returns the value).
 `headers: Map` when it declares them, bound BY NAME (a 4th parameter named
 `query` or `q` gets the query, `headers` or `hdrs` the headers; with five,
 the 4th is the query and the 5th the headers, named so; any other name is
-refused by `soma check` and at start-up; both are typed `Map` or `Any`, any
-other type is refused too): `on request(method:
+refused by `soma check` and at start-up; both are typed `Map`,
+`Map<String, String>` or `Any`, any other type is refused too): `on request(method:
 String, path: String, body: Map, query: Map, headers: Map)`. Header names
 are lower-case (`headers.authorization`); a repeated header is one entry,
 its values joined with ", " (a repeated QUERY key keeps its last value). `OPTIONS`
 requests are answered 204 with permissive CORS headers before any handler. A trailing `Map` parameter may be left out by a
-caller (it is `map()`), so a test still calls `request("GET", "/x", "")`.
+caller (it is `map()`) — the query / headers parameter too, whatever its
+allowed type — so a test still calls `request("GET", "/x", "")`.
 Query keys without `=` are present with an empty String (`?flag` gives
-`query.flag == ""`; a form body likewise: `a=1&flag` gives `body.flag == ""`). In query keys and values, `+` means a space and `%2B`
+`query.flag == ""`; a form body likewise: `a=1&flag` gives `body.flag == ""`, and a body
+declared `application/x-www-form-urlencoded` is a form even with no `=`). In query keys and values, `+` means a space and `%2B`
 means a literal plus sign. Decoding happens once; empty separators are ignored.
 
 The declared type of `body` decides its shape:
@@ -103,6 +112,9 @@ full text goes to the server log. Returning or re-raising a try result
 (`return r`, `fail(r.error)`, `fail(r.kind, r.detail)`) therefore never
 sends stored data to a client. `soma run` / `soma test` keep the full text
 (for asserts and debugging), so branch on `r.kind`, never on the text.
+Likewise the `error` text of an `http_*` failure map names its URL without
+userinfo, query string or fragment under `soma serve` (`?api_key=…` and
+`user:pw@` never reach a client); `soma run` / `soma test` keep the full URL.
 
 Path segments reach `request` percent-decoded (`/stock/a%20b` → `"/stock/a b"`),
 except an encoded slash: `%2F` stays `%2F`, so a value cannot fake a path

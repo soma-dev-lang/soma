@@ -81,7 +81,23 @@ impl<R: Read> ChunkedDecoder<R> {
             Some(i) => (&line[..i], Some(&line[i + 1..])),
             None => (&line[..], None),
         };
-        if size.is_empty() || size.len() > 15 || !size.iter().all(|b| b.is_ascii_hexdigit()) {
+        // optional whitespace before `;` (RFC 9112 §7.1.1 BWS) is accepted
+        let size = if ext.is_some() {
+            let mut end = size.len();
+            while end > 0 && (size[end - 1] == b' ' || size[end - 1] == b'\t') {
+                end -= 1;
+            }
+            &size[..end]
+        } else {
+            size
+        };
+        if size.is_empty() || !size.iter().all(|b| b.is_ascii_hexdigit()) {
+            return Err(bad("a chunk size is not plain hex digits"));
+        }
+        // leading zeros do not count toward the 15-digit cap on the value
+        let first = size.iter().position(|&b| b != b'0').unwrap_or(size.len() - 1);
+        let size = &size[first..];
+        if size.len() > 15 {
             return Err(bad("a chunk size is not plain hex digits"));
         }
         if let Some(ext) = ext {
@@ -185,5 +201,9 @@ mod test {
         assert!(dec(b"3\r\nabcX\r\n0\r\n\r\n").is_err());
         assert!(dec(b"3\nabc\r\n0\r\n\r\n").is_err());
         assert!(dec(b"0\r\nbad trailer\r\n\r\n").is_err());
+        assert_eq!(dec(b"3 ;x\r\nabc\r\n0\r\n\r\n").unwrap(), b"abc");
+        assert_eq!(dec(b"00000000000000000003\r\nabc\r\n0\r\n\r\n").unwrap(), b"abc");
+        assert!(dec(b"3 \r\nabc\r\n0\r\n\r\n").is_err());
+        assert!(dec(b"1000000000000000\r\nabc\r\n0\r\n\r\n").is_err());
     }
 }

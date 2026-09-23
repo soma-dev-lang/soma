@@ -12,3 +12,20 @@ error (a truncated body read as complete), chunk sizes are plain hex digits,
 bare CR/LF are errors, and an error is sticky. soma serve answers any body read
 error with 400 and closes the connection.
 src/util/equal_reader.rs — an EOF before Content-Length bytes is an UnexpectedEof error.
+src/client.rs — header lines are strict: a bare CR, a bare LF or a NUL inside the
+request line or a header line is a 400 (read_next_line ended only at CRLF: a bare
+LF hid a second header); an obs-fold line (leading SP / HTAB, trimmed into a
+header of its own) is a 400 (RFC 9112 §5.2); a field name must be a non-empty
+token; the request line is exactly `METHOD SP target SP version` (junk after the
+version is a 400). A request line or header line past 16 KiB, a header section
+past 64 KiB or more than 200 headers is a 431. The connection closes after each.
+An absolute-form target (`http://host/p`, RFC 9112 §3.2.2) is routed by its path
+and its authority replaces the Host header. The closer handed to requests also
+marks the connection closed: no request already buffered behind a closed one is
+parsed.
+src/request.rs — `Connection: upgrade` no longer hands the raw socket over as the
+body (a hang / the next request swallowed): Content-Length / Transfer-Encoding
+frame it as always. A response given while a chunked body is not read to its
+last chunk closes the connection (its unread chunks would be the next request).
+src/util/chunked.rs — whitespace before `;` in a chunk-size line is accepted
+(BWS), and leading zeros do not count toward the 15-hex-digit cap.

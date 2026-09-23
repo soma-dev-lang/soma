@@ -861,7 +861,18 @@ pub fn render_expr(expr: &Expr) -> String {
 pub fn accepted_arities(params: &[Param]) -> Vec<usize> {
     let mut out = vec![params.len()];
     let mut n = params.len();
-    while n > 0 && matches!(&params[n - 1].ty.node, TypeExpr::Simple(t) if t == "Map") {
+    // a trailing `Map` / `Map<…>` — and `request`'s query / headers
+    // parameter by the role rule (`Map<String, String>` or `Any`, named
+    // `query` / `headers`): `request(m, p, b)` used to fail when they were
+    // typed anything but plain `Map`
+    let omittable = |i: usize| {
+        let p = &params[i];
+        matches!(&p.ty.node, TypeExpr::Simple(t) if t == "Map")
+            || matches!(&p.ty.node, TypeExpr::Generic { name, .. } if name == "Map")
+            || (i >= 3 && (REQUEST_QUERY_NAMES.contains(&p.name.as_str()) || REQUEST_HEADER_NAMES.contains(&p.name.as_str()))
+                && request_map_type_ok(&p.ty.node))
+    };
+    while n > 0 && omittable(n - 1) {
         n -= 1;
         out.push(n);
     }
@@ -912,28 +923,43 @@ pub fn request_extra_roles(names: &[&str]) -> Result<Vec<RequestExtra>, String> 
 }
 
 /// `request_extra_roles` over a handler's parameters — and their TYPES: the
-/// query and the headers arrive as a Map, so a `query` / `headers`
-/// parameter is typed `Map` (any `Map<…>`) or `Any`. `query: String` or
-/// `headers: String` passed check and start-up, then every request failed
-/// its binding (and the 400 quoted the client's headers, cookies included).
+/// query and the headers arrive as a Map of String → String, so a `query` /
+/// `headers` parameter is typed `Map`, `Map<String, String>` or `Any`.
+/// `query: String` or `headers: String` passed check and start-up, then
+/// every request failed its binding (and the 400 quoted the client's
+/// headers, cookies included); `Map<String, Int>` / `Map<Int, String>` /
+/// `Map<String, List>` did the same.
 pub fn request_param_roles(params: &[Param]) -> Result<Vec<RequestExtra>, String> {
     let names: Vec<&str> = params.iter().map(|p| p.name.as_str()).collect();
     let roles = request_extra_roles(&names)?;
     for (i, role) in roles.iter().enumerate() {
         let p = &params[3 + i];
-        let head = match &p.ty.node {
-            TypeExpr::Simple(t) => t.as_str(),
-            TypeExpr::Generic { name, .. } => name.as_str(),
-            TypeExpr::CellRef { .. } => "",
-        };
-        if head != "Map" && head != "Any" {
+        if !request_map_type_ok(&p.ty.node) {
             let what = if *role == RequestExtra::Query { "the URL query" } else { "the request headers" };
-            let shown = match &p.ty.node {
-                TypeExpr::CellRef { cell, member } => format!("{}.{}", cell, member),
-                _ => head.to_string(),
-            };
-            return Err(format!("`request`'s parameter `{}` receives {} as a Map: declare it `{}: Map` (it declares `{}`)", p.name, what, p.name, shown));
+            return Err(format!("`request`'s parameter `{}` receives {} as a Map of String to String: declare it `{}: Map` (or `Map<String, String>` / `Any`; it declares `{}`)", p.name, what, p.name, type_expr_text(&p.ty.node)));
         }
     }
     Ok(roles)
+}
+
+/// `Map`, `Map<String, String>` or `Any` — the types a request's query /
+/// headers map binds to
+pub fn request_map_type_ok(t: &TypeExpr) -> bool {
+    match t {
+        TypeExpr::Simple(n) => n == "Map" || n == "Any",
+        TypeExpr::Generic { name, args } => name == "Map" && args.len() == 2
+            && args.iter().all(|a| matches!(&a.node, TypeExpr::Simple(n) if n == "String")),
+        _ => false,
+    }
+}
+
+/// a type as written: `Map<String, Int>`, `Orders.OrderId`
+pub fn type_expr_text(t: &TypeExpr) -> String {
+    match t {
+        TypeExpr::Simple(n) => n.clone(),
+        TypeExpr::Generic { name, args } => format!("{}<{}>", name, args.iter().map(|a| type_expr_text(&a.node)).collect::<Vec<_>>().join(", ")),
+        TypeExpr::CellRef { cell, member } => format!("{}.{}", cell, member),
+        #[allow(unreachable_patterns)]
+        _ => "?".to_string(),
+    }
 }

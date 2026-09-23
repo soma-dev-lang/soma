@@ -1017,6 +1017,10 @@ fn cells_in_db(file: &std::path::Path, db: &std::path::Path) -> (Vec<String>, Ve
     // mentions a cell it seems to declare (the regex fallback: keeping
     // data is the safe error)
     let (mut sibling_tables, mut sibling_cells): (Vec<String>, Vec<String>) = (Vec::new(), Vec::new());
+    // cells of a sibling that does not parse: every table named after them
+    // stays (its slot tables cannot be told apart — `--fresh a.cell` dropped
+    // the `App_items` a broken b.cell also declares)
+    let (mut unparsed_cells, mut unparsed): (Vec<String>, Vec<String>) = (Vec::new(), Vec::new());
     {
         let re = regex::Regex::new(r"(?m)^\s*cell\s+(?:[a-z_]+\s+)?([A-Za-z_][A-Za-z0-9_]*)").unwrap();
         let me = file.canonicalize().unwrap_or_else(|_| file.to_path_buf());
@@ -1027,7 +1031,15 @@ fn cells_in_db(file: &std::path::Path, db: &std::path::Path) -> (Vec<String>, Ve
                 match tables_of(&p) {
                     Some((n, c)) => { sibling_tables.extend(n); sibling_cells.extend(c); }
                     None => if let Ok(src) = std::fs::read_to_string(&p) {
-                        for c in re.captures_iter(&src) { sibling_cells.push(c[1].to_ascii_lowercase()); }
+                        let mut seen = Vec::new();
+                        for c in re.captures_iter(&src) {
+                            sibling_cells.push(c[1].to_ascii_lowercase());
+                            unparsed_cells.push(c[1].to_ascii_lowercase());
+                            seen.push(c[1].to_string());
+                        }
+                        if !seen.is_empty() {
+                            unparsed.push(format!("{} (cell {})", p.file_name().map(|n| n.to_string_lossy().to_string()).unwrap_or_default(), seen.join(", ")));
+                        }
                     },
                 }
             }
@@ -1068,9 +1080,13 @@ fn cells_in_db(file: &std::path::Path, db: &std::path::Path) -> (Vec<String>, Ve
         let lt = t.to_ascii_lowercase();
         let base = lt.strip_suffix("_log").unwrap_or(&lt);
         if sibling_tables.iter().any(|n| n == &lt || n == base) { kept.push(t.clone()); return false; }
+        if unparsed_cells.iter().any(|c| lt.starts_with(&format!("{}_", c))) { kept.push(t.clone()); return false; }
         let Some(cell) = ["__counters", "__agent_memory", "__horde-meta", "__horde-tasks"].iter().find_map(|sfx| lt.strip_suffix(sfx)) else { return true };
         if foreign.iter().any(|f| match owner_of(f) { Some(o) => o == cell, None => f.to_ascii_lowercase().starts_with(&format!("{}_", cell)) }) || sibling_cells.iter().any(|c| c == cell) { kept.push(t.clone()); false } else { true }
     });
+    if !unparsed.is_empty() && !kept.is_empty() {
+        eprintln!("fresh: {} beside this program does not parse — every table of the cell(s) it seems to declare is kept (fix it, then run --fresh again to reset them)", unparsed.join(", "));
+    }
     (own, foreign, kept)
 }
 
@@ -1105,6 +1121,8 @@ fn run_over_dir(cmd: &str, dir: &std::path::Path, json: bool, extra: &[&str]) ->
     // `test`: a file with no test cell (a `use lib::…` library, a helper
     // cell) has nothing to run — it was counted as a failed file, so every
     // multi-file project failed `soma test .`
+    // the summary's `note` is always there (null when there is nothing to say)
+    let mut skipped = 0usize;
     if cmd == "test" {
         // parsed, not matched by a line regex: `} cell test U {…}` on one
         // line was "skipped"; a file that does not parse is run (and fails)
@@ -1119,6 +1137,7 @@ fn run_over_dir(cmd: &str, dir: &std::path::Path, json: bool, extra: &[&str]) ->
         let (with, without): (Vec<_>, Vec<_>) = files.into_iter()
             .partition(|f| std::fs::read_to_string(f).map_or(true, |t| has_tests(&t)));
         for f in &without { eprintln!("── {} ── no test cells, skipped", f.display()); }
+        skipped = without.len();
         if with.is_empty() {
             eprintln!("no test cells in any .cell file under {}", dir.display());
             // --json still answers one document (stdout was empty)
@@ -1161,6 +1180,7 @@ fn run_over_dir(cmd: &str, dir: &std::path::Path, json: bool, extra: &[&str]) ->
     if json {
         println!("{}", serde_json::to_string_pretty(&serde_json::json!({
             "command": cmd, "files": reports, "total": total, "failed": failed, "ok": failed == 0,
+            "note": if skipped > 0 { serde_json::json!(format!("{} file(s) with no test cells skipped", skipped)) } else { serde_json::Value::Null },
         })).unwrap());
     }
     std::process::exit(if failed > 0 { 1 } else { 0 });

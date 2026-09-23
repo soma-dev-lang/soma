@@ -104,12 +104,31 @@ fn calls_own_server(url: &str) -> bool {
     }))
 }
 
+/// `soma serve` sets this: the `error` text of an http_* failure map names
+/// the URL without its userinfo, query string or fragment — a handler that
+/// returns the map (or `fail`s with `r.error`) sent the API key in
+/// `?api_key=…` or the password in `user:pw@` to the client. `soma run` /
+/// `soma test` keep the full URL (like try results, see `TryTextFilter`).
+pub static REDACT_URLS: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+
+/// `scheme://user:pw@host:port/path?q#f` → `scheme://host:port/path`
+pub fn redact_url(url: &str) -> String {
+    let (scheme, rest) = match url.split_once("://") { Some((s, r)) => (Some(s), r), None => (None, url) };
+    let rest = rest.split(['?', '#']).next().unwrap_or("");
+    let (auth, path) = match rest.find('/') { Some(i) => (&rest[..i], &rest[i..]), None => (rest, "") };
+    let auth = auth.rsplit('@').next().unwrap_or(auth);
+    match scheme { Some(s) => format!("{}://{}{}", s, auth, path), None => format!("{}{}", auth, path) }
+}
+
 fn http_call(method: &str, url: &str, body: Option<String>, opts: Option<&indexmap::IndexMap<String, Value>>) -> Result<Value, RuntimeError> {
+    let redact = REDACT_URLS.load(std::sync::atomic::Ordering::Relaxed);
+    let full_url = url;
+    let shown = if redact { redact_url(url) } else { url.to_string() };
     // a request to this very server from inside a handler waits for the
     // handler lock the caller holds — it timed out, freezing every client
     if calls_own_server(url) {
         return Ok(crate::interpreter::map_from_pairs(vec![
-            ("error".to_string(), Value::String(format!("self_call: {} is this server — a handler cannot call its own endpoints over HTTP (the handler lock is held); call the handler directly", url))),
+            ("error".to_string(), Value::String(format!("self_call: {} is this server — a handler cannot call its own endpoints over HTTP (the handler lock is held); call the handler directly", shown))),
             ("kind".to_string(), Value::String("self_call".to_string())),
             ("status".to_string(), Value::Int(crate::interpreter::soma_int::SomaInt::from_i64(0))),
             ("body".to_string(), Value::Unit),
@@ -193,12 +212,12 @@ fn http_call(method: &str, url: &str, body: Option<String>, opts: Option<&indexm
         let mut buf = Vec::new();
         let mut reader = resp.into_reader().take(limit as u64 + 1);
         match reader.read_to_end(&mut buf) {
-            Ok(_) if buf.len() > limit => Err(("too_large".to_string(), format!("{} {}: the body is larger than max_bytes ({})", method, url, limit))),
+            Ok(_) if buf.len() > limit => Err(("too_large".to_string(), format!("{} {}: the body is larger than max_bytes ({})", method, shown, limit))),
             Ok(_) => Ok(String::from_utf8_lossy(&buf).into_owned()),
             Err(e) => {
                 let m = e.to_string().to_lowercase();
                 let kind = if m.contains("timed out") || m.contains("timeout") || m.contains("would block") { "timeout" } else { "network" };
-                Err((kind.to_string(), format!("{} {}: reading the body failed: {}", method, url, e)))
+                Err((kind.to_string(), format!("{} {}: reading the body failed: {}", method, shown, e)))
             }
         }
     };
@@ -209,16 +228,25 @@ fn http_call(method: &str, url: &str, body: Option<String>, opts: Option<&indexm
                 Err((kind, msg)) => err(&kind, msg, status as i64, Value::Unit),
                 // a 3xx that was not followed (a 307 to a POST) is not a success
                 Ok(text) if !(200..300).contains(&status) =>
-                    err("http_status", format!("{} {}: status code {}", method, url, status), status as i64, parse(text)),
+                    err("http_status", format!("{} {}: status code {}", method, shown, status), status as i64, parse(text)),
                 Ok(text) => parse(text),
             }
         }
         Err(ureq::Error::Status(code, resp)) => {
             let b = read_body(resp).map(parse).unwrap_or(Value::Unit);
-            err("http_status", format!("{} {}: status code {}", method, url, code), code as i64, b)
+            err("http_status", format!("{} {}: status code {}", method, shown, code), code as i64, b)
         }
         Err(ureq::Error::Transport(t)) => {
-            let msg = format!("{} {}: {}", method, url, t);
+            let mut detail = t.to_string();
+            if redact {
+                // the transport text quotes the URL (and a redirect target)
+                if let Some(u) = t.url() {
+                    let u = u.to_string();
+                    detail = detail.replace(&u, &redact_url(&u));
+                }
+                detail = detail.replace(full_url, &shown);
+            }
+            let msg = format!("{} {}: {}", method, shown, detail);
             let lower = msg.to_lowercase();
             let kind = if lower.contains("timed out") || lower.contains("timeout") { "timeout" }
                 else if lower.contains("refused") { "refused" }

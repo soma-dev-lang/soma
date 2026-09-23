@@ -1,6 +1,8 @@
 use crate::ast::*;
 use super::{CheckError, CheckWarning};
-use std::collections::HashMap;
+// declaration order: the errors come out the same on every run (a HashMap
+// printed them in a different order each time)
+use indexmap::IndexMap as HashMap;
 
 /// Checks signal wiring between sibling cells:
 /// - Every `await` has a matching `signal` from a sibling

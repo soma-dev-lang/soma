@@ -105,6 +105,8 @@ pub fn cmd_serve(path: &PathBuf, port: u16, host: &str, verbose: bool, join: Opt
     crate::interpreter::IN_SERVE.store(true, std::sync::atomic::Ordering::Relaxed);
     // a caught error's texts are the client-safe ones (see try_texts)
     crate::interpreter::builtins::collection::set_try_text_filter(served_try_texts);
+    // …and an http_* failure map names its URL without userinfo / query
+    crate::interpreter::builtins::http::REDACT_URLS.store(true, std::sync::atomic::Ordering::Relaxed);
     let source = read_source(path);
     let file_str = path.display().to_string();
     let tokens = lex_with_location(&source, Some(&file_str));
@@ -298,7 +300,10 @@ pub fn cmd_serve(path: &PathBuf, port: u16, host: &str, verbose: bool, join: Opt
         if let ast::Section::Scale(ref sc) = s.node { Some(sc.clone()) } else { None }
     });
 
-    let bus_port = if (port as u32) + 2 <= 65535 { port + 2 } else { 0 };
+    // `-p 0`: the HTTP port is the OS's pick, known only once bound — the
+    // bus has no PORT+2 (it logged "port 2 stays closed", and a program with
+    // peers would have bound port 2)
+    let bus_port = if port == 0 { 0 } else if (port as u32) + 2 <= 65535 { port + 2 } else { 0 };
 
     // Determine node_id and seeds to join
     let node_id = std::env::var("SOMA_NODE_ID")
@@ -518,6 +523,9 @@ pub fn cmd_serve(path: &PathBuf, port: u16, host: &str, verbose: bool, join: Opt
         } else {
             eprintln!("bus: not started (no [peers] / [bus] accept / scale / --join; port {} stays closed)", bus_port);
         }
+    }
+    if bus_port == 0 && bus_wanted {
+        eprintln!("bus: not started (no PORT+2 for the bus: -p 0 picks a random HTTP port, or the port is past 65533 — pass a fixed -p)");
     }
     if bus_port > 0 && bus_wanted {
         let peer_bus_clone = peer_bus.clone();
@@ -1371,7 +1379,7 @@ pub fn cmd_serve(path: &PathBuf, port: u16, host: &str, verbose: bool, join: Opt
             }));
             if bad_host || bad_origin {
                 let why = if bad_host { "the Host header names another site (a DNS-rebinding page?) — this server listens on loopback only" } else { "a page from another origin may not change state on a loopback server" };
-                refuse_early(request, 403, why, "forbidden", false);
+                refuse_early(request, 403, why, "forbidden", true);
                 continue;
             }
         }
@@ -1561,10 +1569,15 @@ pub fn cmd_serve(path: &PathBuf, port: u16, host: &str, verbose: bool, join: Opt
             } else {
                 None
             }
-        } else if !body_raw.is_empty() && !body_raw.starts_with('{') && body_raw.contains('=')
+        } else if !body_raw.is_empty() && !body_raw.starts_with('{')
             // a form only when it says so (or says nothing): a text/plain
-            // "aGVsbG8=" was read as the map {"aGVsbG8": ""}
-            && req_headers.iter().find(|(k, _)| k == "content-type").map_or(true, |(_, v)| format!("{}", v).to_ascii_lowercase().contains("application/x-www-form-urlencoded"))
+            // "aGVsbG8=" was read as the map {"aGVsbG8": ""}; a declared
+            // form of keys only (`flag`, `flag&x`) is a form too (it was
+            // refused as "must be JSON")
+            && match req_headers.iter().find(|(k, _)| k == "content-type") {
+                None => body_raw.contains('='),
+                Some((_, v)) => format!("{}", v).to_ascii_lowercase().contains("application/x-www-form-urlencoded"),
+            }
         {
             // Parse as form-encoded: key=value&key2=value2
             let mut form_data = Vec::new();

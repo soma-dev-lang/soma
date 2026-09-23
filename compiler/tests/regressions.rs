@@ -6899,3 +6899,135 @@ cell test T { rules {
 } }
 "#);
 }
+
+
+#[test]
+fn serve_ninth_pass_header_framing_is_strict() {
+    let dir = scratch("serve9_framing");
+    std::fs::write(dir.join("app.cell"), "cell App {\n    memory { hits: Map<String, Int> [persistent] }\n    on request(method: String, path: String, body: String, query: Map, headers: Map) {\n        hits.set(path, (hits.get(path) ?? 0) + 1)\n        return map(\"p\", path, \"b\", body, \"n\", hits.get(path), \"h\", headers)\n    }\n}\n").unwrap();
+    let (_server, port) = serve_dir(&dir);
+    // a refusal before the body is read (403 Origin / Host) closes the
+    // connection: the chunked body's smuggled request never runs
+    let smug = "POST /smug HTTP/1.1\r\nHost: localhost\r\nContent-Length: 0\r\n\r\n";
+    let chunked = format!("{:x}\r\n{}\r\n0\r\n\r\n", smug.len(), smug);
+    let out = raw_request(port, &format!("POST /a HTTP/1.1\r\nHost: localhost\r\nOrigin: http://evil.com\r\nTransfer-Encoding: chunked\r\n\r\n{chunked}"));
+    assert!(out.contains(" 403 ") && !out.contains("/smug"), "{out}");
+    let out = raw_request(port, &format!("POST /a HTTP/1.1\r\nHost: evil.com\r\nTransfer-Encoding: chunked\r\n\r\n{chunked}"));
+    assert!(out.contains(" 403 ") && !out.contains("/smug"), "{out}");
+    // obs-fold, bare LF / CR, NUL, junk after the version: 400 and closed
+    for req in [
+        "GET /h HTTP/1.1\r\nHost: localhost\r\nX-A: 1\r\n Authorization: Bearer x\r\n\r\n",
+        "GET /h HTTP/1.1\r\nHost: localhost\r\nX-A: 1\r\n\tTransfer-Encoding: chunked\r\n\r\n",
+        "POST /h HTTP/1.1\r\nHost: localhost\r\nX-A: 1\nContent-Length: 5\r\n\r\nhello",
+        "POST /h HTTP/1.1\r\nHost: localhost\r\nX-A: 1\rContent-Length: 5\r\n\r\nhello",
+        "GET /h HTTP/1.1\r\nHost: localhost\r\nX-A: 1\0x\r\n\r\n",
+        "GET /h HTTP/1.1 junk\r\nHost: localhost\r\n\r\n",
+    ] {
+        let out = raw_request(port, req);
+        assert!(out.starts_with("HTTP/1.1 400") && !out.contains("\"p\""), "{req:?}: {out}");
+    }
+    // oversized lines / header sections: 431 and closed
+    let long = format!("GET /h HTTP/1.1\r\nHost: localhost\r\nX-A: {}\r\n\r\n", "a".repeat(20_000));
+    let many = format!("GET /h HTTP/1.1\r\nHost: localhost\r\n{}\r\n", (0..250).map(|i| format!("X-{i}: 1\r\n")).collect::<String>());
+    let total = format!("GET /h HTTP/1.1\r\nHost: localhost\r\n{}\r\n", (0..80).map(|i| format!("X-{i}: {}\r\n", "b".repeat(1000))).collect::<String>());
+    for req in [long, many, total] {
+        let out = raw_request(port, &req);
+        assert!(out.starts_with("HTTP/1.1 431"), "{out}");
+    }
+    // Connection: Upgrade keeps the Content-Length framing (the raw socket was the body)
+    let out = raw_request(port, "POST /u HTTP/1.1\r\nHost: localhost\r\nConnection: Upgrade\r\nUpgrade: websocket\r\nContent-Length: 5\r\n\r\nhelloGET /u2 HTTP/1.1\r\nHost: localhost\r\n\r\n");
+    assert!(out.contains("\"b\":\"hello\"") && !out.contains("GET /u2"), "{out}");
+    // chunk sizes: whitespace before `;`, leading zeros
+    let out = raw_request(port, "POST /c HTTP/1.1\r\nHost: localhost\r\nTransfer-Encoding: chunked\r\nConnection: close\r\n\r\n3 ;x\r\nabc\r\n00000000000000000002\r\nde\r\n0\r\n\r\n");
+    assert!(out.contains("\"b\":\"abcde\""), "{out}");
+    // absolute-form target: its path is routed, its authority is the Host
+    let out = raw_request(port, "GET http://localhost/abs HTTP/1.1\r\nHost: localhost\r\nConnection: close\r\n\r\n");
+    assert!(out.contains("\"p\":\"/abs\""), "{out}");
+    let out = raw_request(port, "GET http://evil.com/abs HTTP/1.1\r\nHost: localhost\r\nConnection: close\r\n\r\n");
+    assert!(out.contains(" 403 "), "{out}");
+    // the smuggled request never ran
+    let out = raw_request(port, "POST /smug HTTP/1.1\r\nHost: localhost\r\nContent-Length: 0\r\nConnection: close\r\n\r\n");
+    assert!(out.contains("\"n\":1"), "/smug ran before: {out}");
+    let _ = std::fs::remove_dir_all(dir);
+}
+
+#[test]
+fn serve_ninth_pass_http_errors_do_not_quote_url_secrets() {
+    let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+    let dead = listener.local_addr().unwrap().port();
+    drop(listener);
+    let dir = scratch("serve9_http_redact");
+    std::fs::write(dir.join("app.cell"), format!(r#"
+cell App {{
+    on fetch() {{ return http_get("http://127.0.0.1:{dead}/v1?api_key=SECRETKEY9", map("timeout", 2000)) }}
+    on fetch2() {{
+        let r = http_get("http://user:PASSWD9@127.0.0.1:{dead}/v1", map("timeout", 2000))
+        fail("upstream", r.error)
+    }}
+}}
+"#)).unwrap();
+    let (code, out) = soma(&dir, &["run", "app.cell", "fetch"]);
+    assert_eq!(code, 0, "{out}");
+    assert!(out.contains("SECRETKEY9"), "soma run keeps the full URL: {out}");
+    let (_server, port) = serve_dir(&dir);
+    let out = get(port, "/fetch");
+    assert!(!out.contains("SECRETKEY9") && out.contains("/v1") && out.contains("refused"), "{out}");
+    let out = get(port, "/fetch2");
+    assert!(!out.contains("PASSWD9") && out.contains("upstream"), "{out}");
+    let _ = std::fs::remove_dir_all(dir);
+}
+
+#[test]
+fn ninth_pass_request_maps_forms_fresh_and_check_order() {
+    // query / headers typed a Map of anything but String → String: refused
+    for (name, sig) in [
+        ("serve9_q_int", "query: Map<String, Int>"),
+        ("serve9_h_keys", "query: Map, headers: Map<Int, String>"),
+        ("serve9_q_list", "query: Map<String, List>"),
+    ] {
+        let dir = scratch(name);
+        std::fs::write(dir.join("app.cell"), format!("cell App {{\n    on request(method: String, path: String, body: String, {sig}) {{ return 1 }}\n}}\n")).unwrap();
+        let (code, out) = soma(&dir, &["check", "app.cell"]);
+        assert_ne!(code, 0, "{out}");
+        assert!(out.contains("Map of String to String"), "{out}");
+        let out = serve_refused(&dir);
+        assert!(out.contains("Map of String to String"), "{out}");
+        let _ = std::fs::remove_dir_all(dir);
+    }
+    // the trailing query / headers may be left out whatever their allowed type
+    let dir = scratch("run9_request_omit");
+    std::fs::write(dir.join("app.cell"), "cell App {\n    on request(method: String, path: String, body: String, query: Map<String, String>, headers: Any) { return map(\"p\", path, \"q\", query) }\n}\ncell test T {\n    rules { assert App.request(\"GET\", \"/x\", \"\").p == \"/x\" }\n}\n").unwrap();
+    let (code, out) = soma(&dir, &["run", "app.cell", "request", "GET", "/x", ""]);
+    assert_eq!(code, 0, "{out}");
+    assert!(out.contains("\"p\": \"/x\""), "{out}");
+    let (code, out) = soma(&dir, &["test", "app.cell"]);
+    assert_eq!(code, 0, "{out}");
+    let _ = std::fs::remove_dir_all(dir);
+    // a declared form of keys only
+    let dir = scratch("serve9_form_keys");
+    std::fs::write(dir.join("app.cell"), "cell App {\n    on form(body: Map) { return body }\n}\n").unwrap();
+    let (server, port) = serve_dir(&dir);
+    let out = raw_request(port, "POST /form HTTP/1.0\r\nHost: localhost\r\nContent-Type: application/x-www-form-urlencoded\r\nContent-Length: 6\r\n\r\nflag&x");
+    assert!(out.starts_with("HTTP/1.0 200") && out.contains(r#""flag":"""#) && out.contains(r#""x":"""#), "{out}");
+    drop(server);
+    let _ = std::fs::remove_dir_all(dir);
+    // --fresh with a sibling that does not parse keeps that cell's tables
+    let dir = scratch("fresh9_unparsed");
+    std::fs::write(dir.join("a.cell"), "cell App {\n    memory { items: Map<String, Int> [persistent] }\n    on put(k: String) { items.set(k, 1)  return len(items) }\n}\n").unwrap();
+    std::fs::write(dir.join("b.cell"), "cell App {\n    memory { items: Map<String, Int> [persistent] }\n    on show() { return items.keys( }\n}\n").unwrap();
+    soma(&dir, &["run", "a.cell", "put", "x"]);
+    let (_, out) = soma(&dir, &["run", "--fresh", "a.cell", "put", "y"]);
+    assert!(out.contains("b.cell") && out.contains("does not parse") && out.lines().any(|l| l.trim() == "2"), "{out}");
+    let _ = std::fs::remove_dir_all(dir);
+    // soma check prints its errors in one order
+    let dir = scratch("check9_order");
+    std::fs::write(dir.join("app.cell"), "cell Sys {\n    interior {\n        cell A {\n            on booked(x: Int) { return x }\n            on dup(x: Int) { return x }\n        }\n        cell B {\n            on dup(x: Int) { return x }\n            on other(x: Int) { return x }\n        }\n    }\n}\n").unwrap();
+    let first = soma(&dir, &["check", "app.cell"]).1;
+    for _ in 0..4 { assert_eq!(soma(&dir, &["check", "app.cell"]).1, first); }
+    // a directory run's --json summary always has `note`
+    std::fs::write(dir.join("app.cell"), "cell App {\n    on add(k: String) { return 1 }\n}\ncell test T {\n    rules { assert App.add(\"a\") == 1 }\n}\n").unwrap();
+    let out = Command::new(env!("CARGO_BIN_EXE_soma")).args(["test", ".", "--json"]).current_dir(&dir).output().unwrap();
+    let v: serde_json::Value = serde_json::from_slice(&out.stdout).unwrap();
+    assert!(v.as_object().unwrap().contains_key("note"), "{v}");
+    let _ = std::fs::remove_dir_all(dir);
+}

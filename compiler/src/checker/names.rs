@@ -190,6 +190,8 @@ impl ProgramIndex {
                         if is_top_level && matches!(cell.kind, CellKind::Cell | CellKind::Agent) {
                             // a trailing Map / List parameter may be left out
                             let optional = on.params.iter().rev().take_while(|p| matches!(&p.ty.node, TypeExpr::Simple(t) if t == "Map" || t == "List") || matches!(&p.ty.node, TypeExpr::Generic { name, .. } if name == "Map" || name == "List")).count();
+                            // `request`'s query / headers typed `Any` too (the role rule)
+                            let optional = optional.max(on.params.len() - crate::ast::accepted_arities(&on.params).into_iter().min().unwrap_or(on.params.len()));
                             arity.insert((cell.name.clone(), on.signal_name.clone()), (on.params.len() - optional, on.params.len()));
                             let definers = handler_map
                                 .entry(on.signal_name.clone())
