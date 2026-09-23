@@ -2316,7 +2316,7 @@ fn a_malformed_budget_annotation_is_refused_rather_than_defaulted() {
         std::fs::write(dir.join("app.cell"), scaled(mem)).unwrap();
         let (code, out) = soma(&dir, &["check", "app.cell"]);
         assert_eq!(code, 0, "[{mem}]\n{out}");
-        assert!(out.contains("budget proven"), "[{mem}]\n{out}");
+        assert!(out.contains("budget holds"), "[{mem}]\n{out}");
     }
 
     // and the bound that is written is the bound that is proven
@@ -4226,5 +4226,34 @@ cell P {
     for h in ["'pick'", "'label'", "'same'", "'flag'"] {
         assert!(out.contains(&format!("handler {h} is marked [native]")), "{h}: {out}");
     }
+    let _ = std::fs::remove_dir_all(dir);
+}
+
+#[test]
+fn verify_second_pass_false_proofs() {
+    // a require before a loop proved every pass's write; a bare call into
+    // another cell was no effect; emitting its own event to another cell's
+    // looping or echoing handler terminated; recursion in the base case's
+    // condition terminated; http_patch took no time and post's body was read
+    // as its options
+    let inv_loop = "cell A {\n memory { c: Map<String, Int> [persistent]\n  invariant c >= 0 }\n on go(k: String, n: Int) {\n  require ((c.get(k) ?? 0) - n) >= 0 else \"low\"\n  for i in range(0, 3) { c.set(k, (c.get(k) ?? 0) - n) }\n  return c.get(k)\n }\n}\n";
+    assert!(!verify_out("vr_loop", inv_loop).contains("writer 'go' proven"));
+    let inv_cell = "cell A {\n memory { c: Map<String, Int> [persistent]\n  d: Map<String, Int> [persistent]\n  invariant c >= 0 }\n on setd(k: String, v: Int) { d.set(k, v)  return v }\n on go(k: String) {\n  require (d.get(k) ?? 0) >= 0 else \"neg\"\n  sabotage(k)\n  c.set(k, d.get(k) ?? 0)\n }\n}\ncell B { on sabotage(k: String) { A.setd(k, -5)  return 0 } }\n";
+    assert!(!verify_out("vr_cell", inv_cell).contains("writer 'go' proven"));
+    let echo = "cell A {\n state s { initial: a  a -> b }\n on ping(n: Int) { emit ping(n + 1)  return n }\n on go(id: String) { transition(id, \"b\")  return 1 }\n}\ncell B { on ping(n: Int) { emit ping(n)  return n } }\n";
+    assert!(verify_out("vr_echo", echo).contains("emits it back") || verify_out("vr_echo", echo).contains("emits back"));
+    let rec = "cell A {\n state s { initial: a  a -> b }\n on f(n: Int) { if f(n - 1) > 100 || n <= 0 { return 0 }  return 1 }\n on go(id: String) { transition(id, \"b\")  return 1 }\n}\n";
+    assert!(!verify_out("vr_rec", rec).contains("all 2 handlers structurally terminate"));
+    let dir = scratch("vr_latency");
+    std::fs::write(dir.join("a.cell"), "cell A {\n cost { latency: 1s }\n on go(url: String) { return http_patch(url, map(\"q\", 1), map(\"timeout\", 5000)) }\n}\n").unwrap();
+    let (code, out) = soma(&dir, &["check", "a.cell"]);
+    assert!(code != 0 && out.contains("computed 5000 ms"), "{out}");
+    std::fs::write(dir.join("b.cell"), "cell A {\n cost { latency: 45s }\n on go(url: String) { return http_post(url, map(\"q\", 1), map(\"timeout\", 60000)) }\n}\n").unwrap();
+    let (code, out) = soma(&dir, &["check", "b.cell"]);
+    assert!(code != 0 && out.contains("computed 60000 ms"), "{out}");
+    // emitting its own event is counted once, not twice
+    std::fs::write(dir.join("c.cell"), "cell A {\n cost { tokens: 100 }\n on ping(q: String) {\n  let a = think(q, map(\"max_tokens\", 100))\n  emit ping(q)\n  return a\n }\n}\ncell B { on ping(q: String) { print(\"B got {q}\")  return q } }\n").unwrap();
+    let (code, out) = soma(&dir, &["check", "c.cell"]);
+    assert_eq!(code, 0, "{out}");
     let _ = std::fs::remove_dir_all(dir);
 }

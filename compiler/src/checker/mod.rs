@@ -401,7 +401,10 @@ impl std::fmt::Display for CheckWarning {
                 )
             }
             Self::BudgetOk { cell, proven, budget, breakdown } => {
-                write!(f, "✓ budget proven for cell '{cell}': peak ≤ {proven} ≤ declared {budget}\n    breakdown: {breakdown}")
+                // the slot sizes are ASSUMED (their annotations, else 10 000
+                // entries × 4 KiB): nothing enforces them at run time, and a
+                // 214 MB process read "peak ≤ 66 MiB ≤ 128 MiB, proven"
+                write!(f, "✓ budget holds for cell '{cell}' while its slots stay within their assumed sizes: peak ≤ {proven} ≤ declared {budget}\n    breakdown: {breakdown}\n    assumed: each slot within [capacity(N)] / [max_key_bytes(N)] / [max_value_bytes(N)] (else 10 000 entries of 256-byte keys and 4 KiB values) — not enforced at run time")
             }
             Self::CostAdvisory { message, .. } => write!(f, "advisory: {message}"),
             Self::CostProven { message, .. } => write!(f, "✓ {message}"),

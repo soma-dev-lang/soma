@@ -62,7 +62,7 @@ fn test_linalg_qi_rebalancer_budget_proven() {
     let (out, _, code) = soma(&["check", "../examples/qi_rebalancer.cell"]);
     assert_eq!(code, 0, "soma check failed: {out}");
     assert!(
-        out.contains("budget proven for cell 'QiOptimizer'"),
+        out.contains("budget holds for cell 'QiOptimizer'"),
         "no budget proof in output: {out}"
     );
     // The proof must include the breakdown line.
@@ -257,7 +257,7 @@ fn test_risk_check_budget_proven() {
     let (out, _, code) = soma(&["check", "../examples/risk_check.cell"]);
     assert_eq!(code, 0, "stdout = {out}");
     assert!(
-        out.contains("budget proven for cell 'RiskCheck'"),
+        out.contains("budget holds for cell 'RiskCheck'"),
         "no budget proof: {out}"
     );
 }

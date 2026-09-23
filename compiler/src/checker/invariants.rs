@@ -1394,7 +1394,7 @@ const UNSTABLE_BUILTINS: &[&str] = &[
 /// under proof? Not when it calls an unstable builtin, reads state that
 /// the handler also writes (other than the one read-modify-write of the
 /// target slot), or calls a handler while this handler has other effects.
-fn expr_stable(e: &Expr, on: &OnSection, handlers: &HashMap<String, &OnSection>, locals: &HashSet<&str>, target: Option<&str>) -> bool {
+fn expr_stable(e: &Expr, on: &OnSection, handlers: &HashMap<String, &OnSection>, locals: &HashSet<&str>, target: Option<&str>, in_loop: bool) -> bool {
     let params: HashSet<&str> = on.params.iter().map(|p| p.name.as_str()).collect();
     let is_state = |t: &str| !params.contains(t) && !locals.contains(t);
     let mut ok = true;
@@ -1433,11 +1433,16 @@ fn expr_stable(e: &Expr, on: &OnSection, handlers: &HashMap<String, &OnSection>,
         Expr::FnCall { name, .. } if handlers.contains_key(name) && name != &on.signal_name => {
             other_effects |= callee_writes(name, handlers, 0);
         }
+        // a bare name that is no builtin and no handler of this cell is
+        // another cell's handler (`sabotage(k)` → B.sabotage)
+        Expr::FnCall { name, .. } if !handlers.contains_key(name) && !super::names::builtin_names().contains(name.as_str()) && name != "_coalesce" => other_effects = true,
         Expr::MethodCall { target: t, .. } if matches!(&t.node, Expr::Ident(n) if n.chars().next().map_or(false, |c| c.is_ascii_uppercase())) => other_effects = true,
         _ => {}
     });
-    // a called handler (or another cell) may write what is read
-    if !reads.is_empty() && other_effects { return false; }
+    // a called handler (or another cell) may write what is read; and a
+    // write in a loop runs again after itself (`require (c.get(k) ?? 0) - n
+    // >= 0` held for the first pass only)
+    if !reads.is_empty() && (other_effects || in_loop) { return false; }
     for r in &reads {
         let w = writes.get(r).copied().unwrap_or(0);
         if w > 1 || (w == 1 && Some(r.as_str()) != target) { return false; }
@@ -1463,7 +1468,10 @@ fn callee_writes(name: &str, handlers: &HashMap<String, &OnSection>, depth: usiz
     if hit { return true; }
     super::literals::for_each_expr(&on.body, &mut |x| match x {
         Expr::MethodCall { method, .. } if matches!(method.as_str(), "set" | "put" | "delete" | "remove" | "push" | "append" | "clear") => hit = true,
-        Expr::FnCall { name: n, .. } if n == "transition" || n == "remember" => hit = true,
+        Expr::FnCall { name: n, .. } if n == "transition" || n == "remember" || n == "delegate" => hit = true,
+        // another cell's handler (`B.h()`), or a bare name that is one
+        Expr::MethodCall { target, .. } if matches!(&target.node, Expr::Ident(t) if t.chars().next().map_or(false, |c| c.is_ascii_uppercase())) => hit = true,
+        Expr::FnCall { name: n, .. } if !handlers.contains_key(n) && !super::names::builtin_names().contains(n.as_str()) && n != "_coalesce" => hit = true,
         Expr::FnCall { name: n, .. } if handlers.contains_key(n) && n != name => { if callee_writes(n, handlers, depth + 1) { hit = true; } }
         _ => {}
     });
@@ -1484,6 +1492,7 @@ fn local_ranges_at(
     let mut assigns: Vec<(&str, &Expr)> = Vec::new();
     collect_assigns(&on.body, &mut assigns);
     let local_names: HashSet<&str> = assigns.iter().map(|(n, _)| *n).collect();
+    let in_loop = write_path.iter().any(|step| step % 4 == 2 || *step == usize::MAX / 2);
     let params: HashSet<&str> = on.params.iter().map(|p| p.name.as_str()).collect();
     // names whose PARTS are written (`a.x = 500`, `a["x"] = …`, `xs[0] = …`,
     // `a.x += …`): a require over `a.x` says nothing after such a write
@@ -1634,7 +1643,7 @@ fn local_ranges_at(
                     crate::interpreter::free_names_expr(left, &mut used);
                     crate::interpreter::free_names_expr(right, &mut used);
                     if used.iter().all(|u| !dup.contains(u.as_str()) && !reassigned_param(u) && !part_written.contains(u.as_str()))
-                        && expr_stable(left, on, handlers, &local_names, target) && expr_stable(right, on, handlers, &local_names, target)
+                        && expr_stable(left, on, handlers, &local_names, target, in_loop) && expr_stable(right, on, handlers, &local_names, target, in_loop)
                     {
                         let cmp = Expr::CmpOp { left: Box::new(Spanned::new(left.clone(), Span::new(0, 0))), op, right: Box::new(Spanned::new(right.clone(), Span::new(0, 0))) };
                         vars.insert(format!("__req__{}", render_expr(&cmp)), Known::Exact(1.0));
@@ -1695,7 +1704,7 @@ fn local_ranges_at(
                             collect_idents(e, &mut used);
                             if used.iter().any(|u| dup.contains(u.as_str()) || reassigned_param(u)) { continue; }
                             // re-evaluated at the write: it must give the same value
-                            if !expr_stable(e, on, handlers, &local_names, target) { continue; }
+                            if !expr_stable(e, on, handlers, &local_names, target, in_loop) { continue; }
                             let (lo, hi) = match op {
                                 CmpOp::Lt => (f64::NEG_INFINITY, if looks_int(e) && c.fract() == 0.0 { c - 1.0 } else { c.next_down() }),
                                 CmpOp::Le => (f64::NEG_INFINITY, c),

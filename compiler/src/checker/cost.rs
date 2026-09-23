@@ -450,10 +450,21 @@ impl<'a> CostWalk<'a> {
                     | "write_file" | "write_csv" | "append_file" | "subscribe" | "ws_connect" | "connect") {
                     self.latency_sites.push(format!("{}::{} (file / stdin I/O)", handler_name, name));
                 }
-                if matches!(name.as_str(), "http_get" | "http_post" | "http_put" | "http_delete") {
-                    let timeout = args.get(1).and_then(|a| extract_timeout_ms(&a.node));
-                    // the runtime default is 30 s (10 s was counted)
-                    self.latency_ms = self.latency_ms.saturating_add(timeout.unwrap_or(30_000));
+                if matches!(name.as_str(), "http_get" | "http_post" | "http_put" | "http_patch" | "http_delete") {
+                    // the options follow the body for post / put / patch (the
+                    // body was read as the options; http_patch was not counted)
+                    let opts_at = if matches!(name.as_str(), "http_get" | "http_delete") { 1 } else { 2 };
+                    let opts = args.get(opts_at).map(|a| &a.node);
+                    let timeout = opts.and_then(extract_timeout_ms);
+                    let literal_map_without_timeout = matches!(opts, Some(Expr::FnCall { name, args: kv }) if name == "map"
+                        && !kv.iter().step_by(2).any(|k| matches!(&k.node, Expr::Literal(Literal::String(s)) if s == "timeout")));
+                    match (timeout, opts) {
+                        (Some(ms), _) => self.latency_ms = self.latency_ms.saturating_add(ms),
+                        // the runtime default is 30 s (10 s was counted)
+                        (None, None) => self.latency_ms = self.latency_ms.saturating_add(30_000),
+                        (None, Some(_)) if literal_map_without_timeout => self.latency_ms = self.latency_ms.saturating_add(30_000),
+                        (None, Some(_)) => self.latency_sites.push(format!("{}::{} (a computed timeout)", handler_name, name)),
+                    }
                 }
                 for a in args { self.visit_expr(&a.node, handler_name); }
                 // `delegate("Cell", "handler", …)` with literal names runs
@@ -721,6 +732,9 @@ pub fn check_cell(cell: &CellDef, manifest: Option<&Manifest>, all: &AllHandlers
                 }
             }
             walk.stack.push(hname.clone());
+            // …and under its qualified name: `emit ping(…)` inside `on ping`
+            // expanded `A.ping` (itself) again — 200 tokens for a 100 handler
+            walk.stack.push(format!("{}.{}", cell.name, hname));
             walk.visit_seq(body, &hname);
             if walk.tokens > peak_tokens { peak_tokens = walk.tokens; peak_tokens_in = hname.clone(); }
             if walk.latency_ms > peak_latency_ms { peak_latency_ms = walk.latency_ms; peak_latency_in = hname.clone(); }

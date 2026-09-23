@@ -33,8 +33,8 @@ fn assert_pass(source: &str, name: &str) -> String {
     let (out, err, code) = soma_check(source, name);
     assert_eq!(code, 0, "{name}: expected exit 0, got {code}\nstdout:\n{out}\nstderr:\n{err}");
     assert!(
-        out.contains("budget proven"),
-        "{name}: expected 'budget proven' in output, got:\n{out}"
+        out.contains("budget holds"),
+        "{name}: expected 'budget holds' in output, got:\n{out}"
     );
     out
 }
@@ -63,7 +63,7 @@ fn assert_silent(source: &str, name: &str) -> String {
     let (out, _err, code) = soma_check(source, name);
     assert_eq!(code, 0, "{name}: expected exit 0, got {code}\nstdout:\n{out}");
     assert!(
-        !out.contains("budget proven") && !out.contains("budget exceeded") && !out.contains("advisory:"),
+        !out.contains("budget holds") && !out.contains("budget exceeded") && !out.contains("advisory:"),
         "{name}: expected no budget output (no scale.memory declared), got:\n{out}"
     );
     out

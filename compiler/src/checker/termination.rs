@@ -55,6 +55,26 @@ pub enum TerminationFinding {
 /// call graph: handlers call each other by bare name, across cells too.
 pub fn check_cell_termination(cell: &CellDef, program: &Program) -> Vec<TerminationFinding> {
     let mut findings = check_cell_termination_raw(cell, program);
+    // `emit ping(…)` inside `on ping` reaches every OTHER cell's `on ping`
+    // (the call graph is by name, so that edge read as a self-call and was
+    // dropped): a listener that re-emits it is an endless ping-pong
+    {
+        let emits = |on: &OnSection, ev: &str| {
+            let mut hit = false;
+            crate::checker::literals::for_each_stmt_deep(&on.body, &mut |st| if matches!(st, Statement::Emit { signal_name, .. } if signal_name == ev) { hit = true; });
+            hit
+        };
+        for f in findings.iter_mut() {
+            let TerminationFinding::Terminates { handler } = f else { continue };
+            let Some(on) = cell.sections.iter().find_map(|s| match &s.node { Section::OnSignal(o) if &o.signal_name == handler => Some(o), _ => None }) else { continue };
+            if !emits(on, handler) { continue; }
+            let echo = program.cells.iter().filter(|c| c.node.name != cell.name && matches!(c.node.kind, CellKind::Cell | CellKind::Agent))
+                .flat_map(|c| c.node.sections.iter()).any(|s| matches!(&s.node, Section::OnSignal(o) if &o.signal_name == handler && emits(o, handler)));
+            if echo {
+                *f = TerminationFinding::MayNotTerminate { handler: handler.clone(), reasons: vec![format!("emits `{}`, which another cell's `on {}` emits back — nothing bounds the exchange", handler, handler)] };
+            }
+        }
+    }
     // a handler that CALLS one that may not terminate may not terminate
     // either (`go` calling an imported `spin` with `while true` was "✓
     // structurally terminates")
@@ -71,6 +91,17 @@ pub fn check_cell_termination(cell: &CellDef, program: &Program) -> Vec<Terminat
         if let TerminationFinding::Terminates { handler } = f {
             let mut seen: std::collections::HashSet<String> = std::collections::HashSet::new();
             let mut todo: Vec<String> = graph.get(handler.as_str()).cloned().unwrap_or_default();
+            // its own event, handled by another cell, is a callee too
+            let own_event = cell.sections.iter().any(|s| matches!(&s.node, Section::OnSignal(o) if &o.signal_name == handler && {
+                let mut hit = false;
+                crate::checker::literals::for_each_stmt_deep(&o.body, &mut |st| if matches!(st, Statement::Emit { signal_name, .. } if signal_name == handler) { hit = true; });
+                hit
+            }));
+            let elsewhere = program.cells.iter().any(|c| c.node.name != cell.name && c.node.sections.iter().any(|s| matches!(&s.node, Section::OnSignal(o) if &o.signal_name == handler)));
+            if own_event && elsewhere && bad.contains(handler.as_str()) {
+                *f = TerminationFinding::MayNotTerminate { handler: handler.clone(), reasons: vec![format!("emits `{}`, and another cell's `on {}` may not terminate", handler, handler)] };
+                continue;
+            }
             let mut culprit: Option<String> = None;
             while let Some(n) = todo.pop() {
                 if !seen.insert(n.clone()) { continue; }
@@ -917,6 +948,12 @@ fn has_lower_bound_exit(body: &[Spanned<Statement>], param: &str, handler: &str,
         // count(n - 1)  if n <= 0 { return 0 }` never reaches the base case
         let is_base_if = matches!(&st.node, Statement::If { .. });
         if !is_base_if && calls_self(std::slice::from_ref(st), handler) { return false; }
+        // …and so does one in the base case's own condition (`if f(n - 1) >
+        // 100 || n <= 0 { return 0 }` recursed before testing n)
+        if let Statement::If { condition, .. } = &st.node {
+            let cond = Spanned::new(Statement::ExprStmt { expr: condition.clone() }, st.span);
+            if calls_self(std::slice::from_ref(&cond), handler) { return false; }
+        }
         match &st.node {
             Statement::If { condition, then_body, .. } => {
                 let exits = matches!(then_body.last().map(|s| &s.node), Some(Statement::Return { .. }))

@@ -2,6 +2,31 @@
 
 ## Unreleased
 
+### Second pass: `verify` and `check` no longer prove what a run violates
+
+- An invariant was proven for a write inside a loop from one `require`
+  before it (`require (c.get(k) ?? 0) - n >= 0` then three
+  `c.set(k, (c.get(k) ?? 0) - n)`): a fact over state holds for the first
+  pass only. A bare call resolving to another cell's handler
+  (`sabotage(k)` → `B.sabotage`), and `Other.h()` / `delegate` inside a
+  called handler, now count as effects that may change what was read.
+- Termination: `emit ping(…)` inside `on ping` reaches every other cell's
+  `on ping` (the call graph, by name, read it as a self-call): a listener
+  that may not terminate, or that emits it back, now makes the emitter
+  unproven. A recursive call inside the base case's own condition
+  (`if f(n - 1) > 100 || n <= 0 { return 0 }`) no longer passes as a base
+  case.
+- Latency: `http_patch` took no time, and the timeout of `http_post` /
+  `http_put` was read from the body (their options come third). An options
+  map with a computed timeout makes the bound advisory.
+- Cost: `emit ping(…)` inside `on ping` counted the handler twice (a false
+  "budget exceeded").
+- Memory budget: the slot sizes it uses (the `[capacity]` /
+  `[max_*_bytes]` annotations, else defaults) are assumptions nothing
+  enforces at run time; the line said "budget proven". It now says "budget
+  holds … while its slots stay within their assumed sizes" and names the
+  assumption (the verdict is unchanged).
+
 ### Second pass: native code answers like the interpreter
 
 - The return type of a `[native]` handler came from its FIRST `return`:

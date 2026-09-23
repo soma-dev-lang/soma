@@ -236,7 +236,7 @@ pub fn unbounded_builtin_reason(name: &str) -> Option<&'static str> {
             Some("from_json input size is not statically bounded"),
         "to_json" =>
             Some("to_json output size depends on input size"),
-        "http_get" | "http_post" | "http_put" | "http_delete" =>
+        "http_get" | "http_post" | "http_put" | "http_patch" | "http_delete" =>
             Some("HTTP response size is not statically bounded"),
         "read_file" =>
             Some("file size is not statically bounded"),
