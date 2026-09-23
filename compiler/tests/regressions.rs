@@ -4066,3 +4066,84 @@ fn test_json_keeps_a_rule_with_a_dash_and_says_what_raised() {
     assert_eq!(results[1]["raised"], false, "{out}");
     let _ = std::fs::remove_dir_all(dir);
 }
+
+#[test]
+fn a_map_int_slot_reads_the_same_through_every_spelling() {
+    // values were in text order while keys were numeric; keys(s),
+    // entries(s), `s |> keys` and `for e in s` gave text keys; a test rule
+    // saw text keys
+    passes("map_int_every_spelling", r#"
+cell Seats {
+    memory { seats: Map<Int, String> [persistent] }
+    on book(n: Int, who: String) { seats.set(n, who) }
+    on pairs() { return zip(seats.keys, seats.values) }
+    on spelled() {
+        let t = 0
+        for e in seats { t = t + e.key }
+        return [keys(seats), seats |> keys, entries(seats)[0].key, t, seats.values()]
+    }
+}
+cell test T { rules {
+    let a = book(2, "two")
+    let b = book(10, "ten")
+    assert pairs() == [map("left", 2, "right", "two"), map("left", 10, "right", "ten")]
+    assert spelled() == [[2, 10], [2, 10], 2, 12, ["two", "ten"]]
+    assert seats.keys == [2, 10]
+} }
+"#);
+}
+
+#[test]
+fn core_evaluation_fixes_of_the_second_pass() {
+    // an index that calls ran 2-3 times; a `return` in a `let x = if …`
+    // branch became x; an outer assignment before a block's own `let` of
+    // that name was undone; a negative index failed below the first level;
+    // a lambda did not capture a name read by an interpolated pattern;
+    // `m[()] = v` wrote the entry "null"
+    passes("core_second_pass", r#"
+cell App {
+    memory { calls: Map<String, Int> [persistent] }
+    on _next() { let n = calls.get("n") ?? 0  calls.set("n", n + 1)  return n }
+    on nested() {
+        calls.set("n", 0)
+        let grid = [[10, 11], [20, 21]]
+        grid[_next()][1] = 5
+        let xs = [100, 200]
+        xs[_next()] += 1
+        return [grid, xs, calls.get("n")]
+    }
+    on early(xs: List<Int>) {
+        let found = if len(xs) == 0 { return "empty" } else { xs[0] }
+        return "first={found}"
+    }
+    on shadow() {
+        let x = 1
+        if true { x = 5  let x = 6 }
+        let acc = 0
+        for i in range(0, 3) { acc = acc + i  let acc = 1000 }
+        return [x, acc]
+    }
+    on negative() { let g = [[1, 2], [3, 4]]  g[0][-1] = 8  return g }
+    on captured() { let id = "42"  return ["user-42", "x"] |> map(v => match v { "user-{id}" -> "hit"  _ -> "miss" }) }
+    on unit_key(body: Map) { let mm = map()  mm[body.userid] = "alice"  return mm }
+    on unit_read() { let mm = map("null", 1)  return [mm[()], mm.get(()), mm.has(())] }
+}
+cell test T { rules {
+    assert nested() == [[[10, 5], [20, 21]], [100, 201], 2]
+    assert early([]) == "empty"
+    assert early([7]) == "first=7"
+    assert shadow() == [5, 3]
+    assert negative() == [[1, 8], [3, 4]]
+    assert captured() == ["hit", "miss"]
+    assert_fails unit_key(map("user_id", "u")) matching "the key is ()"
+    assert unit_read() == [(), (), false]
+} }
+"#);
+    // a record pattern beside a declared sum type
+    let dir = scratch("record_pattern_with_types");
+    std::fs::write(dir.join("app.cell"), "cell type Color { variants { Red  Green } }\ncell App { on main() {\n let g = Game { bet: 10 }\n return match g { Game { bet } -> \"bet {bet}\"  _ -> \"fell through\" }\n} }\n").unwrap();
+    let (code, out) = soma(&dir, &["run", "app.cell"]);
+    assert_eq!(code, 0, "{out}");
+    assert!(out.contains("bet 10"), "{out}");
+    let _ = std::fs::remove_dir_all(dir);
+}

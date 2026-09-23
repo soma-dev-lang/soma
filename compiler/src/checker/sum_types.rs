@@ -573,8 +573,13 @@ fn check_variant_pattern_shape(
             let Some(shape) = known else {
                 // not a variant at all: only report when this file declares
                 // variants (otherwise `Name { … }` is a record pattern)
-                if !reg.variant_to_type.is_empty() {
-                    let near = crate::checker::names::suggest(name, reg.variant_to_type.keys())
+                // a struct-shaped pattern far from every variant name is a
+                // record pattern (`Game { bet }` for `Game { bet: 10 }`): it
+                // was refused as soon as the file declared any `cell type`
+                let suggestion = crate::checker::names::suggest(name, reg.variant_to_type.keys());
+                let record_like = matches!(fields, VariantPatternFields::Struct { .. }) && suggestion.is_none();
+                if !reg.variant_to_type.is_empty() && !record_like {
+                    let near = suggestion
                         .map(|s| format!(" (did you mean `{}`?)", s))
                         .unwrap_or_default();
                     issues.push(SumTypeIssue {

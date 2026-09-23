@@ -236,6 +236,11 @@ pub fn call_builtin(name: &str, args: &[Value]) -> Option<Result<Value, RuntimeE
                     let mut result = entries.clone();
                     let mut i = 1;
                     while i + 1 < args.len() {
+                        // `()` is no key (it became the entry "null")
+                        if matches!(args[i], Value::Unit) {
+                            return Some(Err(RuntimeError::Domain { kind: "type".to_string(), message:
+                                "with(map, (), …): the key is () — an absent value (a mistyped field?) cannot be a key".to_string() }));
+                        }
                         let key = format!("{}", args[i]);
                         let val = args[i + 1].clone();
                         result.insert(key, val);
@@ -245,8 +250,11 @@ pub fn call_builtin(name: &str, args: &[Value]) -> Option<Result<Value, RuntimeE
                 }
                 // with(list, index, value) → new list with element replaced.
                 Some(Value::List(items)) if args.len() == 3 => {
+                    // negative from the end, as `xs[-1]` (a nested write
+                    // `g[0][-1] = 8` goes through here); past 64 bits it is
+                    // out of bounds
                     let idx = match &args[1] {
-                        Value::Int(si) => si.to_i64().unwrap_or(-1),
+                        Value::Int(si) => si.to_i64().map(|i| if i < 0 { i + items.len() as i64 } else { i }).unwrap_or(i64::MAX),
                         _ => return Some(Err(RuntimeError::TypeError(
                             "with(list, index, value): index must be an Int".to_string()))),
                     };

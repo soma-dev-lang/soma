@@ -2,6 +2,38 @@
 
 ## Unreleased
 
+### Second pass: core evaluation
+
+- An index expression that calls something was evaluated two or three
+  times by a nested or compound assignment: `grid[next()][1] = 5` copied
+  another row over row 0, and `xs[next()] += 1` wrote `xs[0] = xs[1] + 1`
+  (a List slot too). Such an index is evaluated once.
+- A `return` ending a branch of an if-expression (`let found = if
+  len(xs) == 0 { return "empty" } else { xs[0] }`) became the value of the
+  `if` instead of returning.
+- An assignment to an outer variable was undone when the same block later
+  declared a `let` of that name (`if c { x = 5  let x = 6 }` left x at 1): a
+  block now restores the value its `let` shadowed when that `let` ran.
+- A negative index failed below the first level of an assignment
+  (`g[0][-1] = 8`, `p.pts[-1] = 9`); `with(list, -1, v)` counts from the end.
+- A lambda did not capture a name read by an interpolated match pattern
+  (`map(v => match v { "user-{id}" -> … })` raised "undefined variable: id").
+- A record pattern (`Game { bet }` for `Game { bet: 10 }`) was refused as
+  soon as the file declared any `cell type`; it is refused only when it
+  looks like a mistyped variant.
+- A `()` key on a local map wrote and read the entry "null"
+  (`mm[body.userid] = v` with a mistyped field); it is refused for writes
+  and absent for reads, as on a slot.
+
+### Second pass: a `Map<Int, V>` slot reads the same through every spelling
+
+- The Int-keys fix covered `seats.keys` and `seats.entries` only: `values`
+  (and `list`) stayed in text order, so `zip(seats.keys, seats.values)`
+  paired 2 with "ten"; `keys(seats)`, `entries(seats)`, `seats |> keys` and
+  `for e in seats` answered text keys in text order; and a `cell test` rule
+  read the slot with text keys and could write any key. Every spelling now
+  answers Int keys in numeric order, with values in the same order.
+
 ### `soma test --json` keeps a rule with a dash and says what raised
 
 - The JSON records are read back from the report text: a rule holding a

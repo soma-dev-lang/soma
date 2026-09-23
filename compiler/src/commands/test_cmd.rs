@@ -563,6 +563,13 @@ fn eval_side(
     if matches!(field.as_str(), "T" | "shape") {
         return Ok((eval_test_expr(interp, expr, env)?, None));
     }
+    // a memory slot answers its own fields (`s.keys` of a Map<Int, V> slot
+    // is Ints; read as a plain map here it was the text keys)
+    if let ast::Expr::Ident(n) = &target.node {
+        if !env.contains_key(n) && interp.slot_kind("", n).is_some() {
+            return Ok((eval_test_expr(interp, expr, env)?, None));
+        }
+    }
     let base = eval_test_expr(interp, &target.node, env)?;
     let interpreter::Value::Map(entries) = &base else {
         let mut scope = env.clone();

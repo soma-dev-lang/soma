@@ -1715,6 +1715,7 @@ impl Interpreter {
             Statement::Let { name, value } => {
                 self.last_span = Some(value.span);
                 let val = self.eval_expr(&value.node, env, cell_name, signal_name)?;
+                record_shadow(env, name);
                 env.insert(name.clone(), val);
                 Ok(Value::Unit)
             }
@@ -1746,6 +1747,12 @@ impl Interpreter {
                         Ok(Value::Unit)
                     }
                     Some(Value::Map(entries)) => {
+                        // `m[body.userid] = v` with a mistyped field: refused,
+                        // as for a slot (every row folded into "null")
+                        if matches!(idx_val, Value::Unit) {
+                            return Err(ExecError::Runtime(RuntimeError::Domain { kind: "type".to_string(), message: format!(
+                                "{}[()] = …: the key is () — an absent value (a mistyped field?) cannot be a key", name) }));
+                        }
                         entries.insert(format!("{}", idx_val), new_val);
                         Ok(Value::Unit)
                     }
@@ -1988,8 +1995,12 @@ impl Interpreter {
                     }
                 }
 
-                // General path: evaluate iterator
-                let iter_val = self.eval_expr(&iter.node, env, cell_name, signal_name)?;
+                // General path: evaluate iterator (a Map<Int, V> slot gives
+                // its entries with Int keys, as `slot.entries` does)
+                let iter_val = match self.int_slot_view(&iter.node, "entries", env, cell_name) {
+                    Some(r) => r?,
+                    None => self.eval_expr(&iter.node, env, cell_name, signal_name)?,
+                };
 
                 let items = match iter_val {
                     Value::List(items) => items,
@@ -2337,6 +2348,9 @@ impl Interpreter {
             }
 
             Expr::FnCall { name, args } => {
+                if args.len() == 1 && !self.handler_shadows_builtin(name, 1, cell_name) && !env.contains_key(name) {
+                    if let Some(r) = self.int_slot_view(&args[0].node, name, env, cell_name) { return r; }
+                }
                 // `a ?? b` short-circuits: `m.get(k) ?? fail(…)` failed on a
                 // present key, `id ?? next_id()` burned an id per call
                 if name == "_coalesce" && args.len() == 2 {
@@ -2666,6 +2680,17 @@ impl Interpreter {
             }
 
             Expr::Pipe { left, right } => {
+                // `seats |> keys` over a Map<Int, V> slot: its Int keys
+                let view = match &right.node {
+                    Expr::FnCall { name, args } if args.is_empty() => Some(name.as_str()),
+                    Expr::Ident(name) => Some(name.as_str()),
+                    _ => None,
+                };
+                if let Some(v) = view {
+                    if !self.handler_shadows_builtin(v, 1, cell_name) && !env.contains_key(v) {
+                        if let Some(r) = self.int_slot_view(&left.node, v, env, cell_name) { return r; }
+                    }
+                }
                 // Evaluate left side
                 let left_val = self.eval_expr(&left.node, env, cell_name, signal_name)?;
 
@@ -2835,6 +2860,8 @@ impl Interpreter {
                             return Ok(items[i].clone());
                         }
                         Some(Value::Map(entries)) => {
+                            // `()` is no key: it read the entry "null"
+                            if matches!(idx_val, Value::Unit) { return Ok(Value::Unit); }
                             let key = format!("{}", idx_val);
                             return Ok(entries.get(&key).cloned().unwrap_or(Value::Unit));
                         }
@@ -2855,6 +2882,7 @@ impl Interpreter {
                         Ok(items[i].clone())
                     }
                     Value::Map(ref entries) => {
+                        if matches!(idx_val, Value::Unit) { return Ok(Value::Unit); }
                         let key = format!("{}", idx_val);
                         Ok(entries.get(&key).cloned().unwrap_or(Value::Unit))
                     }
@@ -2917,7 +2945,7 @@ impl Interpreter {
                         Ok(Value::Int(SomaInt::from_i64(items.len() as i64)))
                     }
                     (Value::Map(entries), "get") => {
-                        if let Some(key) = arg_vals.first() {
+                        if let Some(key) = arg_vals.first().filter(|k| !matches!(k, Value::Unit)) {
                             let key_str = format!("{}", key);
                             Ok(entries.get(&key_str).cloned().unwrap_or(Value::Unit))
                         } else {
@@ -2931,7 +2959,7 @@ impl Interpreter {
                         Ok(Value::List(entries.values().cloned().collect()))
                     }
                     (Value::Map(entries), "has") => {
-                        if let Some(key) = arg_vals.first() {
+                        if let Some(key) = arg_vals.first().filter(|k| !matches!(k, Value::Unit)) {
                             let key_str = format!("{}", key);
                             Ok(Value::Bool(entries.contains_key(&key_str)))
                         } else {
@@ -3338,6 +3366,12 @@ impl Interpreter {
                 Ok(Value::Int(SomaInt::from_i64(backend.len() as i64)))
             }
             "list" | "all" if args.is_empty() => {
+                // a Map<Int, V> lists its values in the order of its keys
+                if self.slot_int_keys(cell_name, slot_name) {
+                    let vals: Vec<Value> = Self::int_key_order(backend.keys()).into_iter()
+                        .filter_map(|k| backend.get(&k)).map(|v| self.from_slot(cell_name, slot_name, stored_to_value(v))).collect();
+                    return Ok(Value::List(vals));
+                }
                 let items = backend.list();
                 Ok(Value::List(items.into_iter().map(stored_to_value).collect()))
             }
@@ -3365,6 +3399,13 @@ impl Interpreter {
             "values" => {
                 // Full replicas: values/keys/len/get read the same local
                 // snapshot. Fan-out duplicated keys and mixed handler states.
+                // …in the order of `keys` (numeric for Map<Int, V>: values
+                // were in text order while keys were numeric)
+                if self.slot_int_keys(cell_name, slot_name) {
+                    let vals: Vec<Value> = Self::int_key_order(backend.keys()).into_iter()
+                        .filter_map(|k| backend.get(&k)).map(|v| self.from_slot(cell_name, slot_name, stored_to_value(v))).collect();
+                    return Ok(Value::List(vals));
+                }
                 let vals = backend.values();
                 Ok(Value::List(vals.into_iter().map(stored_to_value).collect()))
             }
@@ -5678,7 +5719,33 @@ impl Interpreter {
                 TypeExpr::Generic { name, args } if name == "Map" && args.len() == 2 && matches!(&args[0].node, TypeExpr::Simple(k) if k == "Int"))),
             _ => None,
         });
-        self.cells.get(cell_name).and_then(declared).unwrap_or(false)
+        // a test cell reads the slot of the cell that declares it
+        let owner = self.slot_owner(cell_name, name);
+        self.cells.get(owner.as_str()).and_then(declared).unwrap_or(false)
+    }
+
+    /// The stored keys of a `Map<Int, V>` slot in numeric order (as text).
+    fn int_key_order(keys: Vec<String>) -> Vec<String> {
+        let mut ks: Vec<(Option<rug::Integer>, String)> = keys.into_iter()
+            .map(|k| (crate::interpreter::builtins::string::parse_int_text(&k), k)).collect();
+        ks.sort_by(|a, b| match (&a.0, &b.0) {
+            (Some(x), Some(y)) => x.cmp(y),
+            (Some(_), None) => std::cmp::Ordering::Less,
+            (None, Some(_)) => std::cmp::Ordering::Greater,
+            (None, None) => a.1.cmp(&b.1),
+        });
+        ks.into_iter().map(|(_, k)| k).collect()
+    }
+
+    /// `keys(s)` / `entries(s)` / `values(s)` / `s |> keys` / `for e in s`
+    /// over a `Map<Int, V>` slot: the slot's own methods (Int keys, numeric
+    /// order). Its bare name reads a map, whose keys are text.
+    fn int_slot_view(&mut self, target: &Expr, view: &str, env: &Env, cell_name: &str) -> Option<Result<Value, ExecError>> {
+        let Expr::Ident(n) = target else { return None };
+        if env.contains_key(n) || !matches!(view, "keys" | "entries" | "values" | "items") { return None; }
+        if self.slot_kind(cell_name, n) != Some("Map") || !self.slot_int_keys(cell_name, n) { return None; }
+        let n = n.clone();
+        Some(self.call_storage_method(cell_name, &n, if view == "items" { "entries" } else { view }, &[]))
     }
 
     /// A stored key read back: an Int for a `Map<Int, V>` slot.
@@ -5763,6 +5830,14 @@ impl Interpreter {
             .or_else(|| if cell_name.is_empty() || self.is_test_cell(cell_name) { self.storage.get(name) } else { None })?.clone();
         Some(match kind {
             "List" => Value::List(backend.list().into_iter().map(|v| self.from_slot(cell_name, name, stored_to_value(v))).collect()),
+            _ if self.slot_int_keys(cell_name, name) => {
+                // numeric order, as `keys` answers it
+                let mut out = Vec::new();
+                for k in Self::int_key_order(backend.keys()) {
+                    if let Some(v) = backend.get(&k) { out.push((k, self.from_slot(cell_name, name, stored_to_value(v)))); }
+                }
+                Value::Map(out.into_iter().collect())
+            }
             _ => {
                 let mut m = std::collections::BTreeMap::new();
                 for k in backend.keys() {
@@ -6993,16 +7068,37 @@ mod tests {
     }
 }
 
+thread_local! {
+    /// Open blocks: (their env, the names they `let`, each name's outer
+    /// value recorded when its `let` RUNS).
+    static LEX_FRAMES: std::cell::RefCell<Vec<(usize, Vec<String>, Vec<(String, Option<Value>)>)>> = const { std::cell::RefCell::new(Vec::new()) };
+}
+
+/// A `let` about to shadow `name` in `env`: the innermost open block that
+/// declares it keeps the outer value to restore at its end.
+fn record_shadow(env: &Env, name: &str) {
+    let id = env as *const Env as usize;
+    LEX_FRAMES.with(|f| {
+        let mut f = f.borrow_mut();
+        if let Some(top) = f.iter_mut().rev().find(|fr| fr.0 == id && fr.1.iter().any(|n| n == name)) {
+            if !top.2.iter().any(|(n, _)| n == name) { top.2.push((name.to_string(), env.get(name).cloned())); }
+        }
+    });
+}
+
 /// Run a lexical block without cloning unrelated locals. Assignments persist;
 /// `let` bindings are restored even when evaluation raises or returns early.
 fn with_lexical_scope<T>(body: &[Spanned<Statement>], env: &mut Env, f: impl FnOnce(&mut Env) -> T) -> T {
     if !body_has_let(body) { return f(env); }
-    let saved: Vec<(String, Option<Value>)> = body.iter().filter_map(|stmt| {
-        if let Statement::Let { name, .. } = &stmt.node {
-            Some((name.clone(), env.get(name).cloned()))
-        } else { None }
+    // the outer value is the one the `let` shadows WHEN it runs: saved at
+    // block entry, `if c { x = 5  let x = 6 }` lost the assignment to x
+    let names: Vec<String> = body.iter().filter_map(|stmt| {
+        if let Statement::Let { name, .. } = &stmt.node { Some(name.clone()) } else { None }
     }).collect();
+    let id = &*env as *const Env as usize;
+    LEX_FRAMES.with(|fr| fr.borrow_mut().push((id, names, Vec::new())));
     let outcome = f(env);
+    let saved = LEX_FRAMES.with(|fr| fr.borrow_mut().pop().map(|t| t.2).unwrap_or_default());
     for (name, old) in saved {
         match old {
             Some(value) => { env.insert(name, value); }
@@ -7064,6 +7160,23 @@ fn expr_may_assign(expr: &Expr) -> bool {
 /// Every name a lambda body could read — an over-approximation on purpose
 /// (identifiers, call names, `{name…}` inside string literals): capturing
 /// a name the body never uses costs a clone, missing one is a runtime error.
+fn free_names_pattern(p: &MatchPattern, out: &mut HashSet<String>) {
+    let text = |t: &str, out: &mut HashSet<String>| {
+        for seg in crate::checker::desugar::segments(t) {
+            if let Some(expr) = crate::checker::desugar::parse_segment(&seg) { free_names_expr(&expr, out); }
+        }
+    };
+    match p {
+        MatchPattern::Literal(Literal::String(t)) => text(t, out),
+        MatchPattern::StringPrefix { prefix, .. } => text(prefix, out),
+        MatchPattern::Or(ps) => { for q in ps { free_names_pattern(q, out); } }
+        MatchPattern::MapDestructure(fs) => { for (_, q) in fs { free_names_pattern(q, out); } }
+        MatchPattern::Variant { fields: VariantPatternFields::Tuple(ps), .. } => { for q in ps { free_names_pattern(q, out); } }
+        MatchPattern::Variant { fields: VariantPatternFields::Struct { fields, .. }, .. } => { for (_, q) in fields { free_names_pattern(q, out); } }
+        _ => {}
+    }
+}
+
 pub(crate) fn free_names_expr(e: &Expr, out: &mut HashSet<String>) {
     match e {
         Expr::Literal(Literal::String(s)) => {
@@ -7087,6 +7200,9 @@ pub(crate) fn free_names_expr(e: &Expr, out: &mut HashSet<String>) {
         Expr::Match { subject, arms } => {
             free_names_expr(&subject.node, out);
             for arm in arms {
+                // an interpolated pattern (`"user-{id}"`) reads names too: a
+                // lambda holding it did not capture `id`
+                free_names_pattern(&arm.pattern, out);
                 if let Some(g) = &arm.guard { free_names_expr(&g.node, out); }
                 free_names_stmts(&arm.body, out);
                 free_names_expr(&arm.result.node, out);

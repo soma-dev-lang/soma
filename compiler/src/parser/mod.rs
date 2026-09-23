@@ -2295,6 +2295,27 @@ impl Parser {
                         self.advance();
                         let rhs = self.parse_expr()?;
                         let sp = start;
+                        // the rewrite below repeats every index expression
+                        // (`g[f()][1] = v` read g[f()] and wrote g[f()]; `xs[f()]
+                        // += 1` called f three times): an index that calls
+                        // anything is evaluated once, into a temporary, first
+                        let calls = |e: &Expr| {
+                            let mut hit = false;
+                            crate::checker::literals::for_each_in_expr(e, &mut |x| if matches!(x, Expr::FnCall { .. } | Expr::MethodCall { .. }) { hit = true; });
+                            hit
+                        };
+                        let repeated = compound.is_some() || accessors.len() > 1;
+                        let mut hoisted: Vec<Spanned<Statement>> = Vec::new();
+                        if repeated {
+                            for acc in accessors.iter_mut() {
+                                if calls(&acc.node) {
+                                    let tmp = format!("__soma_ix_{}_{}", acc.span.start, hoisted.len());
+                                    let aspan = acc.span;
+                                    hoisted.push(Spanned::new(Statement::Let { name: tmp.clone(), value: acc.clone() }, aspan));
+                                    *acc = Spanned::new(Expr::Ident(tmp), aspan);
+                                }
+                            }
+                        }
                         // `m[k] += 1`, `acc.balance -= x`: read the same chain
                         // and write `read op rhs` back through it
                         let value = match compound {
@@ -2320,10 +2341,20 @@ impl Parser {
                             index: Box::new(k0.clone()),
                         }, sp);
                         let new_val = build_nested_with(base0, &accessors[1..], value, sp);
-                        return Ok(Spanned::new(
+                        let set = Spanned::new(
                             Statement::IndexSet { name, index: k0, value: new_val },
                             start.merge(self.prev_span()),
-                        ));
+                        );
+                        if hoisted.is_empty() { return Ok(set); }
+                        // one block: the temporaries, then the write (an
+                        // assignment inside a block reaches the outer name)
+                        let whole = start.merge(self.prev_span());
+                        hoisted.push(set);
+                        return Ok(Spanned::new(Statement::If {
+                            condition: Spanned::new(Expr::Literal(Literal::Bool(true)), whole),
+                            then_body: hoisted,
+                            else_body: vec![],
+                        }, whole));
                     }
                     // not an lvalue assignment — parse the whole thing as
                     // an expression statement (postfix handles reads/calls)
@@ -3924,11 +3955,12 @@ fn build_nested_with(
 fn block_result(stmts: &mut Vec<Spanned<Statement>>, span: Span) -> Spanned<Expr> {
     let unit = || Spanned::new(Expr::Literal(Literal::Unit), span);
     match stmts.last().map(|l| &l.node) {
-        Some(Statement::ExprStmt { .. }) | Some(Statement::Return { .. }) => {
+        // a trailing `return` stays a return: `let x = if xs == [] { return
+        // "empty" } else { xs[0] }` gave x = "empty" and went on
+        Some(Statement::ExprStmt { .. }) => {
             let last = stmts.pop().unwrap();
             match last.node {
                 Statement::ExprStmt { expr } => expr,
-                Statement::Return { value } => value,
                 _ => unit(),
             }
         }
