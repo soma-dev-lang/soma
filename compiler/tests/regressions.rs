@@ -3749,3 +3749,29 @@ cell test T { rules {
 } }
 "#);
 }
+
+#[test]
+fn a_map_int_slot_keeps_int_keys() {
+    // Map<Int, V> ignored its key type: keys came back as Strings sorted as
+    // text (["10", "2"]), "not-a-number" was stored, and `invariant key >= 1`
+    // was refused as comparing a String key
+    passes("map_int_keys", r#"
+cell Seats {
+    memory { seats: Map<Int, String> [persistent]
+        invariant key >= 1 }
+    on book(n: Int, who: String) { seats.set(n, who)  return seats.keys }
+    on bad() { seats.set("not-a-number", "x") }
+    on total() { let t = 0  for k in seats.keys { t = t + k }  return t }
+    on first_entry() { return seats.entries()[0].key }
+}
+cell test T { rules {
+    assert book(2, "ada") == [2]
+    assert book(10, "bob") == [2, 10]
+    assert max(book(3, "cy")) == 10
+    assert total() == 15
+    assert first_entry() == 2
+    assert_fails bad() matching "keys are Ints"
+    assert_fails book(0, "zed") matching "invariant"
+} }
+"#);
+}

@@ -650,3 +650,11 @@ pub fn json_has_inf(v: &serde_json::Value) -> bool {
         _ => false,
     }
 }
+
+/// Integer text as the language writes it: an optional `-` or `+`, then
+/// ASCII digits only. rug's parser also skips spaces and `_` inside the
+/// digits ("1 2" read as 12).
+pub fn is_int_text(s: &str) -> bool {
+    let d = s.strip_prefix('-').or_else(|| s.strip_prefix('+')).unwrap_or(s);
+    !d.is_empty() && d.bytes().all(|b| b.is_ascii_digit())
+}

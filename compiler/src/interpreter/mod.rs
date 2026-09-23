@@ -3208,6 +3208,11 @@ impl Interpreter {
                     return Err(ExecError::Runtime(RuntimeError::Domain { kind: "type".to_string(), message: format!(
                         "{}.set(\"{}\", …): keys starting with `__` are reserved by the storage — prefix user keys differently", slot_name, key) }));
                 }
+                // `Map<Int, V>` took any key and gave them back as Strings
+                if !matches!(key, Value::Int(_) | Value::Unit) && self.slot_int_keys(cell_name, slot_name) {
+                    return Err(ExecError::Runtime(RuntimeError::Domain { kind: "type".to_string(), message: format!(
+                        "{}.set({}, …): the slot is declared Map<Int, …> — its keys are Ints, got {}", slot_name, key, value_type_name(key)) }));
+                }
                 // `()` became the key "null" (the same entry as "null"): a
                 // mistyped field used as a key wrote silently
                 if matches!(key, Value::Unit) {
@@ -3339,20 +3344,23 @@ impl Interpreter {
             // like entries(m): {key, value} records, sorted by key (it
             // returned the bare values)
             "entries" | "items" if args.is_empty() => {
+                let int_keys = self.slot_int_keys(cell_name, slot_name);
                 let mut out = Vec::new();
                 for k in backend.keys() {
                     if let Some(v) = backend.get(&k) {
-                        out.push(map_from_pairs(vec![
-                            ("key".to_string(), Value::String(k)),
-                            ("value".to_string(), self.from_slot(cell_name, slot_name, stored_to_value(v))),
-                        ]));
+                        out.push((self.slot_key_value(int_keys, k), self.from_slot(cell_name, slot_name, stored_to_value(v))));
                     }
                 }
-                Ok(Value::List(out))
+                if int_keys { out.sort_by(|a, b| numeric_cmp(&a.0, &b.0).unwrap_or(std::cmp::Ordering::Equal)); }
+                Ok(Value::List(out.into_iter().map(|(k, v)| map_from_pairs(vec![("key".to_string(), k), ("value".to_string(), v)])).collect()))
             }
             "keys" => {
-                let keys = backend.keys();
-                Ok(Value::List(keys.into_iter().map(Value::String).collect()))
+                // a Map<Int, V> answers its keys as Ints, in numeric order
+                // (["10", "2"]: max() and `t + k` refused them)
+                let int_keys = self.slot_int_keys(cell_name, slot_name);
+                let mut keys: Vec<Value> = backend.keys().into_iter().map(|k| self.slot_key_value(int_keys, k)).collect();
+                if int_keys { keys.sort_by(|a, b| numeric_cmp(a, b).unwrap_or(std::cmp::Ordering::Equal)); }
+                Ok(Value::List(keys))
             }
             "values" => {
                 // Full replicas: values/keys/len/get read the same local
@@ -4358,7 +4366,7 @@ impl Interpreter {
             // never found the element a write-once invariant guards)
             let key_val = if self.slot_kind(cell_name, slot_name) == Some("List") {
                 key_str.trim_start_matches('#').parse::<i64>().map(|i| Value::Int(SomaInt::from_i64(i))).unwrap_or_else(|_| Value::String(key_str.to_string()))
-            } else { Value::String(key_str.to_string()) };
+            } else { self.slot_key_value(self.slot_int_keys(cell_name, slot_name), key_str.to_string()) };
             env.insert("key".to_string(), key_val);
             env.insert("size".to_string(), Value::Int(SomaInt::from_i64(size_after)));
             // `status`: the state of the machine instance whose id is the key
@@ -5661,6 +5669,24 @@ impl Interpreter {
             }
             _ => Err(format!("{}.{}: the payload does not have the declared shape", type_name, variant)),
         }
+    }
+
+    /// A `Map<Int, V>` slot: its keys are Ints (stored as their digits).
+    fn slot_int_keys(&self, cell_name: &str, name: &str) -> bool {
+        let declared = |cell: &CellDef| cell.sections.iter().find_map(|s| match s.node {
+            Section::Memory(ref mem) => mem.slots.iter().find(|sl| sl.node.name == name).map(|sl| matches!(&sl.node.ty.node,
+                TypeExpr::Generic { name, args } if name == "Map" && args.len() == 2 && matches!(&args[0].node, TypeExpr::Simple(k) if k == "Int"))),
+            _ => None,
+        });
+        self.cells.get(cell_name).and_then(declared).unwrap_or(false)
+    }
+
+    /// A stored key read back: an Int for a `Map<Int, V>` slot.
+    fn slot_key_value(&self, int_keys: bool, k: String) -> Value {
+        if int_keys && crate::interpreter::builtins::string::is_int_text(&k) {
+            return Value::Int(SomaInt::from_decimal_str(&k));
+        }
+        Value::String(k)
     }
 
     fn slot_value_type(&self, cell_name: &str, name: &str) -> Option<String> {

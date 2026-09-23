@@ -130,6 +130,9 @@ pub fn validate_program(program: &Program) -> Vec<InvariantIssue> {
                 if named.is_empty() && deep.contains("key") {
                     let kind_of = |sl: &crate::ast::Spanned<crate::ast::MemorySlot>| match &sl.node.ty.node {
                         crate::ast::TypeExpr::Generic { name, .. } if name == "List" => Some("List"),
+                        // a Map<Int, V>'s key is an Int
+                        crate::ast::TypeExpr::Generic { name, args } if name == "Map"
+                            && args.len() == 2 && matches!(&args[0].node, crate::ast::TypeExpr::Simple(k) if k == "Int") => Some("IntMap"),
                         crate::ast::TypeExpr::Generic { name, .. } if name == "Map" => Some("Map"),
                         _ => None,
                     };

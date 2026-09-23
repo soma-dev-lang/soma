@@ -2,6 +2,15 @@
 
 ## Unreleased
 
+### A `Map<Int, V>` slot keeps Int keys
+
+- The key type of a Map slot was ignored: `Map<Int, String>` answered its
+  keys as Strings sorted as text (`["10", "2"]`, so `max(seats.keys)` and
+  `t + k` raised), stored `seats.set("not-a-number", …)`, and `check` refused
+  `invariant key >= 1` as comparing a String key. Its `keys` and `entries`
+  are now Ints in numeric order, a key of another type is refused (kind
+  `type`), and the invariant binds `key` as an Int.
+
 ### An Int in a nested Float position becomes a Float
 
 - "An Int written to a Float slot becomes a Float" held at the top level
