@@ -787,6 +787,19 @@ pub fn js_style_replacement(rep: &str, groups: usize, names: &[&str]) -> String 
             while k > 0 && !names.contains(&&word[..k]) { k -= 1; }
             if k == 0 { out.push_str("$$"); out.push_str(&word); } else { out.push_str(&format!("${{{}}}{}", &word[..k], &word[k..])); }
             i = j;
+        } else if b[i] == '$' && i + 1 < b.len() && b[i + 1] == '{' {
+            // `${1}` / `${name}` for a group that exists; any other brace
+            // (`${5}` with one group, `${USD}`) is text, not deleted
+            let close = b[i + 2..].iter().position(|&c| c == '}').map(|p| i + 2 + p);
+            let inner: Option<String> = close.map(|c| b[i + 2..c].iter().collect());
+            let known = inner.as_deref().map_or(false, |w| match w.parse::<usize>() {
+                Ok(n) => n <= groups,
+                Err(_) => names.contains(&w),
+            });
+            match (known, close) {
+                (true, Some(c)) => { out.extend(&b[i..=c]); i = c + 1; }
+                _ => { out.push_str("$$"); i += 1; }
+            }
         } else if b[i] == '$' && i + 1 < b.len() && b[i + 1] == '$' {
             out.push_str("$$");
             i += 2;

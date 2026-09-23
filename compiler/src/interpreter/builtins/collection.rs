@@ -191,6 +191,9 @@ pub fn call_builtin(name: &str, args: &[Value]) -> Option<Result<Value, RuntimeE
             while i + 1 < args.len() {
                 let key = match &args[i] {
                     Value::String(s) => s.clone(),
+                    // `map(m.nope, 5)` stored the key "null", as `with` refuses
+                    Value::Unit => return Some(Err(RuntimeError::TypeError(format!(
+                        "map(): key {} is () — an absent value (a mistyped field?) cannot be a key", i / 2 + 1)))),
                     other => format!("{}", other),
                 };
                 let val = args[i + 1].clone();

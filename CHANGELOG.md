@@ -2,6 +2,10 @@
 
 ## Unreleased
 
+### Regex brace groups, CSV signs, text keys on Int-keyed slots, () map keys
+
+`${{5}}` or `${{USD}}` in a regex replacement with no such group is kept as text (it was deleted), in interpreted and [native] handlers alike. from_csv keeps `+0612345678`, `-007` and `+5` as text instead of reading them as numbers without their sign or zeros. `contains(seats, "1")`, `seats |> contains("1")` and `without(seats, "1")` over a `Map<Int, V>` slot treat the text key as absent, as `seats.has("1")` does. `map(m.nope, 5)` is refused instead of storing the key "null".
+
 ### Records in pipeline builtins; `%` touches its operand; field names are Strings
 
 sum_by, avg_by, min_by, max_by, pluck, group_by, count_by, agg, filter_by, sort_by, to_csv and the joins read typed records the same as maps (they returned 0, [] or the input unchanged). `select(rows, ["a", "b"])` takes a list of names. A non-String field (`sort_by(rows, 5)`) is refused instead of ignored. `5% - 0.01` is a percentage and `10%-3` a modulo: a percentage is a `%` touching its number with no operand right after.

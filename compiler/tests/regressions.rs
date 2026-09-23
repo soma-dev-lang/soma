@@ -4644,3 +4644,30 @@ cell test T { rules {
 } }
 "#);
 }
+
+#[test]
+fn builtins_fourth_pass() {
+    passes("builtins_fourth_pass", r#"
+cell P {
+    memory { seats: Map<Int, String> [ephemeral] }
+    on rx_unknown() { return regex_replace("x1", "(\\d)", "${{5}}|${{USD}}|${{1}}") }
+    on rx_native(s: String) [native] { return regex_replace(s, "(\\d)", "${{5}}|${{USD}}|${{1}}") }
+    on csv() { return from_csv("v\n+0612345678\n-007\n+5\n-0.5\n-3\n") |> pluck("v") }
+    on absent_key() { let m = map("a", 1)  return map(m.nope, 5) }
+    on seat_probe() {
+        seats.set(1, "a")
+        seats.set(10, "b")
+        return [contains(seats, "1"), seats |> contains("1"), contains(seats, 1), len(without(seats, "10"))]
+    }
+    on lambda_group() { return group_by([map("g", "x")], r => r.g) }
+}
+cell test T { rules {
+    assert rx_unknown() == "x${{5}}|${{USD}}|1"
+    assert rx_native("x1") == "x${{5}}|${{USD}}|1"
+    assert csv() == ["+0612345678", "-007", "+5", -0.5, -3]
+    assert_fails absent_key() matching "cannot be a key"
+    assert seat_probe() == [false, false, true, 2]
+    assert_fails lambda_group() matching "String name"
+} }
+"#);
+}

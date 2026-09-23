@@ -75,7 +75,8 @@ pub fn call_builtin(name: &str, args: &[Value]) -> Option<Result<Value, RuntimeE
     // a field is named by a String: a lambda or a number was turned into
     // text and every row missed it (`sum_by(rows, r => r.v)` was 0)
     if matches!(name, "filter_by" | "sum_by" | "avg_by" | "min_by" | "max_by" | "pluck" | "group_by" | "count_by" | "agg" | "distinct" | "sort_by")
-        && args.len() >= 2 && matches!(args[0], Value::List(_)) && !matches!(args[1], Value::String(_) | Value::Lambda { .. } | Value::LambdaBlock { .. })
+        && args.len() >= 2 && matches!(args[0], Value::List(_)) && !matches!(args[1], Value::String(_))
+        && !(name == "sort_by" && matches!(args[1], Value::Lambda { .. } | Value::LambdaBlock { .. }))
     {
         return Some(Err(RuntimeError::Domain { kind: "type".to_string(), message: format!(
             "{}(rows, field): the field is a String name, got {} — for a computed value, map the rows first (`rows |> map(r => …)`)",

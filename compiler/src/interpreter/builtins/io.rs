@@ -560,7 +560,11 @@ fn csv_rows(content: &str, (raw, delim): (bool, char), source: &str) -> Result<V
             let val = if quoted || raw { text.as_str() } else { text.trim() };
             // a quoted cell is text; so is `007` (an id,
             // not seven); raw mode keeps everything text
-            let leading_zero = val.len() > 1 && val.starts_with('0') && val.as_bytes()[1].is_ascii_digit();
+            // `-007` and `+0612345678` too: after a sign, and an explicit `+`
+            // (a phone number, "+5" as written) keeps the text as given
+            let unsigned = val.strip_prefix('-').unwrap_or(val);
+            let leading_zero = (unsigned.len() > 1 && unsigned.starts_with('0') && unsigned.as_bytes()[1].is_ascii_digit())
+                || (val.len() > 1 && val.starts_with('+'));
             let typed = if raw || quoted || leading_zero {
                 Value::String(val.to_string())
             } else if let Ok(n) = val.parse::<i64>() {

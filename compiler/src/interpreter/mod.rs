@@ -2417,6 +2417,7 @@ impl Interpreter {
                     if i == 0 { if let Some(r) = &handler_ref { arg_vals.push(Value::String(r.clone())); continue; } }
                     arg_vals.push(self.eval_expr(&arg.node, env, cell_name, signal_name)?);
                 }
+                if let Some(v) = args.first().and_then(|a| self.int_slot_foreign_key(&a.node, name, &arg_vals, env, cell_name)) { return Ok(v); }
 
                 self.eval_named_call(name, arg_vals, env, cell_name, signal_name)
             }
@@ -2715,6 +2716,7 @@ impl Interpreter {
                             && matches!(all_args[1], Value::Lambda { .. } | Value::LambdaBlock { .. }) {
                             return Err(ExecError::Runtime(RuntimeError::TypeError("map(list, f) needs a List, got String".to_string())));
                         }
+                        if let Some(v) = self.int_slot_foreign_key(&left.node, name, &all_args, env, cell_name) { return Ok(v); }
                         self.eval_named_call(name, all_args, env, cell_name, signal_name)
                     }
                     Expr::Ident(name) => {
@@ -5761,6 +5763,17 @@ impl Interpreter {
         if self.slot_kind(cell_name, n) != Some("Map") || !self.slot_int_keys(cell_name, n) { return None; }
         let n = n.clone();
         Some(self.call_storage_method(cell_name, &n, if view == "items" { "entries" } else { view }, &[]))
+    }
+
+    /// `contains(seats, "1")` / `without(seats, "1")` over a `Map<Int, V>`
+    /// slot: its keys are Ints, so a text key is absent (as `seats.has("1")`
+    /// answers) — the stored digits matched it and said true / removed 1.
+    fn int_slot_foreign_key(&self, target: &Expr, name: &str, vals: &[Value], env: &Env, cell_name: &str) -> Option<Value> {
+        let Expr::Ident(n) = target else { return None };
+        if vals.len() != 2 || !matches!(name, "contains" | "has" | "without") || env.contains_key(n) || env.contains_key(name) { return None; }
+        if matches!(vals[1], Value::Int(_) | Value::Unit) || !matches!(vals[0], Value::Map(_)) { return None; }
+        if self.handler_shadows_builtin(name, 2, cell_name) || self.slot_kind(cell_name, n) != Some("Map") || !self.slot_int_keys(cell_name, n) { return None; }
+        Some(if name == "without" { vals[0].clone() } else { Value::Bool(false) })
     }
 
     /// A stored key read back: an Int for a `Map<Int, V>` slot.
