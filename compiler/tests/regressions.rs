@@ -3993,3 +3993,39 @@ cell test T { rules {
     assert!(out.contains("ar.cell:4:") && out.contains("ar.cell:6:"), "{out}");
     let _ = std::fs::remove_dir_all(dir);
 }
+
+#[test]
+fn serve_binds_every_body_and_keeps_a_path_plus() {
+    // PUT / PATCH / DELETE (and a lowercase `post`) dropped their body, as
+    // did every /signal/ route; a text/plain body with `=` was read as a
+    // form; `/a+b` reached `request` as "/a b"; the /signal/ 404 was
+    // invalid JSON for a URL holding a quote
+    let dir = scratch("serve_bodies");
+    std::fs::write(dir.join("app.cell"), r#"
+cell App {
+    memory { docs: Map<String, Map> [persistent] }
+    on save(data: Map) { docs.set("last", data)  return data }
+    on add(n: Int) { return n + 1 }
+    on echo_str(s: String) { return s }
+    on request(method: String, path: String, body: String) { return map("path", path) }
+}
+"#).unwrap();
+    let (_server, port) = serve_dir(&dir);
+    let send = |method: &str, path: &str, ct: &str, body: &str| raw_request(port, &format!(
+        "{method} {path} HTTP/1.0\r\nHost: localhost\r\nContent-Type: {ct}\r\nContent-Length: {}\r\n\r\n{body}", body.len()));
+    for m in ["PUT", "PATCH", "DELETE", "post"] {
+        let out = send(m, "/save", "application/json", r#"{"title":"hello"}"#);
+        assert!(out.ends_with(r#"{"title":"hello"}"#), "{m}: {out}");
+    }
+    let out = send("POST", "/signal/add", "application/json", r#"{"n":2}"#);
+    assert!(out.contains(r#""result": 3"#) || out.contains(r#""result":3"#), "{out}");
+    let out = send("POST", "/echo_str", "text/plain", "aGVsbG8=");
+    assert!(out.ends_with(r#"{"result":"aGVsbG8="}"#), "{out}");
+    let out = get(port, "/a+b");
+    assert!(out.contains(r#""/a+b""#), "{out}");
+    let out = raw_request(port, "GET /signal/a\"b HTTP/1.0\r\nHost: localhost\r\n\r\n");
+    let body = out.split_once("\r\n\r\n").map(|(_, b)| b).unwrap_or("");
+    let json: serde_json::Value = serde_json::from_str(body).unwrap_or_else(|e| panic!("{e}: {out}"));
+    assert_eq!(json["kind"], "not_found", "{out}");
+    let _ = std::fs::remove_dir_all(dir);
+}

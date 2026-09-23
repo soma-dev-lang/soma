@@ -2,6 +2,21 @@
 
 ## Unreleased
 
+### `soma serve` binds every request body and keeps a `+` in a path
+
+- A request body was bound to a handler only for an exact `POST`: `PUT`,
+  `PATCH` and `DELETE` (which the write gate accepts), a lowercase `post`, and
+  every `/signal/<handler>` route dropped it — `on save(data: Map)` stored
+  `{}` and answered 200. They bind it as POST does.
+- A body with an `=` was parsed as a form whatever its `Content-Type`: a
+  `text/plain` "aGVsbG8=" reached a String parameter as the map
+  `{"aGVsbG8": ""}` (a 400). A body is a form when it says so, or says
+  nothing.
+- `request` received `/a+b` as `"/a b"`: a `+` in a path is a plus sign
+  (the automatic routes already kept it).
+- The 404 of an unknown `/signal/` route was built without escaping (a `"`
+  in the URL made it invalid JSON) and had no `kind`; it is `not_found`.
+
 ### Small builtin, literal and diagnostic fixes
 
 - `round(x, digits)` capped `digits` at 15: `round(1e-16, 16)` was 0.0.

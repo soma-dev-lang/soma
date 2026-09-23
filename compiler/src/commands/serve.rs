@@ -1501,7 +1501,11 @@ pub fn cmd_serve(path: &PathBuf, port: u16, host: &str, verbose: bool, join: Opt
             } else {
                 None
             }
-        } else if !body_raw.is_empty() && !body_raw.starts_with('{') && body_raw.contains('=') {
+        } else if !body_raw.is_empty() && !body_raw.starts_with('{') && body_raw.contains('=')
+            // a form only when it says so (or says nothing): a text/plain
+            // "aGVsbG8=" was read as the map {"aGVsbG8": ""}
+            && req_headers.iter().find(|(k, _)| k == "content-type").map_or(true, |(_, v)| format!("{}", v).to_ascii_lowercase().contains("application/x-www-form-urlencoded"))
+        {
             // Parse as form-encoded: key=value&key2=value2
             let mut form_data = Vec::new();
             for pair in body_raw.split('&') {
@@ -1688,12 +1692,14 @@ pub fn cmd_serve(path: &PathBuf, port: u16, host: &str, verbose: bool, join: Opt
             }
         }
 
+        let body_method = matches!(method.to_ascii_uppercase().as_str(), "POST" | "PUT" | "PATCH" | "DELETE");
         let (signal_name, args) = if url.starts_with("/signal/") {
             let signal = url.trim_start_matches("/signal/");
             let (sig_name, query) = signal.split_once('?').unwrap_or((signal, ""));
             if !handler_names.iter().any(|h| h == sig_name) || !routable(&handler_names, sig_name) || request_routes.first_segments().iter().any(|f| f == sig_name) {
+                // escaped (a `"` in the URL made the body invalid JSON), with a kind
                 let resp = tiny_http::Response::from_string(
-                    format!("{{\"error\": \"no handler for '{}'\"}}", url)
+                    error_body(&format!("no handler for '{}'", url), "not_found")
                 )
                 .with_status_code(404)
                 .with_header(
@@ -1709,6 +1715,10 @@ pub fn cmd_serve(path: &PathBuf, port: u16, host: &str, verbose: bool, join: Opt
                 fill_from_query(&mut args, query,
                     &handler_params.get(sig_name).cloned().unwrap_or_default(),
                     handler_types.get(sig_name).map(|t| t.as_slice()).unwrap_or(&[]));
+            }
+            // a `/signal/` POST carries its body too (it was dropped)
+            if body_method && !body.is_empty() {
+                bind_body(&mut args, body_value.as_ref(), &body, handler_params.get(sig_name));
             }
             (sig_name.to_string(), args)
         } else {
@@ -1745,35 +1755,11 @@ pub fn cmd_serve(path: &PathBuf, port: u16, host: &str, verbose: bool, join: Opt
                         &handler_params.get(sig).cloned().unwrap_or_default(),
                         handler_types.get(sig).map(|t| t.as_slice()).unwrap_or(&[]));
                 }
-                if method == "POST" && !body.is_empty() {
-                    if let Some(ref bv) = body_value {
-                        if let Some(param_names) = handler_params.get(sig) {
-                            if let interpreter::Value::Map(ref entries) = bv {
-                                let remaining_params = &param_names[args.len()..];
-                                // If there's exactly one remaining param and it doesn't
-                                // match any key in the body, pass the whole Map
-                                // (e.g. `on deploy(data: Map)` with body {"name":"x",...})
-                                if remaining_params.len() == 1
-                                    && !entries.contains_key(&remaining_params[0])
-                                {
-                                    args.push(bv.clone());
-                                } else {
-                                    for pname in remaining_params {
-                                        let val = entries.get(pname)
-                                            .cloned()
-                                            .unwrap_or(interpreter::Value::Unit);
-                                        args.push(val);
-                                    }
-                                }
-                            } else {
-                                args.push(bv.clone());
-                            }
-                        } else {
-                            args.push(bv.clone());
-                        }
-                    } else {
-                        args.push(interpreter::Value::String(body.clone()));
-                    }
+                // PUT / PATCH / DELETE carry a body as POST does (the write
+                // gate accepts them, and their body was dropped: `on save(data:
+                // Map)` stored {})
+                if body_method && !body.is_empty() {
+                    bind_body(&mut args, body_value.as_ref(), &body, handler_params.get(sig));
                 }
                 (sig.to_string(), args)
             } else if handler_names.contains(&"request".to_string()) {
@@ -1821,7 +1807,8 @@ pub fn cmd_serve(path: &PathBuf, port: u16, host: &str, verbose: bool, join: Opt
                     interpreter::Value::String(method.clone()),
                     // percent-decoded per segment (`/stock/a%20b` reaches the
                     // handler as "/stock/a b"; an encoded slash stays one segment)
-                    interpreter::Value::String(req_path.split('/').map(|seg| urlencoding_decode(seg).replace('/', "%2F")).collect::<Vec<_>>().join("/")),
+                    // a `+` in a PATH is a plus sign (only a query encodes spaces so)
+                    interpreter::Value::String(req_path.split('/').map(|seg| urlencoding_decode(&seg.replace('+', "%2B")).replace('/', "%2F")).collect::<Vec<_>>().join("/")),
                     body_arg,
                 ];
                 // The query map is the optional 4th parameter of `request`.
@@ -2501,4 +2488,30 @@ fn log_safe(s: &str) -> String {
 /// A CR/LF would split the response; tiny_http refuses a non-ASCII byte.
 fn header_value_ok(v: &str) -> bool {
     v.bytes().all(|b| b == b'\t' || (0x20..0x7f).contains(&b))
+}
+
+/// The request body bound to the parameters the path and query left open:
+/// a JSON object by parameter name (or whole, for a single Map parameter
+/// it names no key of), any other JSON value or form as the next argument,
+/// else the raw text.
+fn bind_body(args: &mut Vec<interpreter::Value>, body_value: Option<&interpreter::Value>, body: &str, param_names: Option<&Vec<String>>) {
+    let Some(bv) = body_value else {
+        args.push(interpreter::Value::String(body.to_string()));
+        return;
+    };
+    match (param_names, bv) {
+        (Some(param_names), interpreter::Value::Map(entries)) => {
+            let remaining_params = &param_names[args.len().min(param_names.len())..];
+            // exactly one remaining parameter that names no key of the body:
+            // the whole Map (`on deploy(data: Map)` with {"name": "x", …})
+            if remaining_params.len() == 1 && !entries.contains_key(&remaining_params[0]) {
+                args.push(bv.clone());
+            } else {
+                for pname in remaining_params {
+                    args.push(entries.get(pname).cloned().unwrap_or(interpreter::Value::Unit));
+                }
+            }
+        }
+        _ => args.push(bv.clone()),
+    }
 }
