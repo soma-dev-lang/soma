@@ -981,14 +981,65 @@ struct Bound {
 #[derive(Clone, Default, Debug)]
 struct Facts {
     bounds: HashMap<String, Bound>,
-    exact: Vec<(String, HashSet<String>)>,
+    /// (comparison text, names it reads, reads state: a slot, a call)
+    exact: Vec<(String, HashSet<String>, bool)>,
+    /// Names that cannot hold NaN (Int parameters): only they are narrowed
+    /// by a NEGATED comparison — `!(x < 0)` is true for NaN
+    nan_free: HashSet<String>,
 }
 
 impl Facts {
     fn forget(&mut self, name: &str) {
+        // `cap.max = 0` / `xs[0] = v` change what `cap` / `xs` hold
+        let name = name.split(|c| c == '.' || c == '[').next().unwrap_or(name);
         self.bounds.remove(name);
-        self.exact.retain(|(_, idents)| !idents.contains(name));
+        self.exact.retain(|(_, idents, _)| !idents.contains(name));
     }
+    /// After a write, a call or a pause: a fact over state no longer holds.
+    fn forget_state(&mut self) {
+        self.exact.retain(|(_, _, state)| !state);
+    }
+}
+
+/// Builtins whose answer can change between the `require` and the
+/// transition() (time, randomness, the network, the model).
+const UNSTABLE_GUARD_CALLS: &[&str] = &[
+    "random", "rand", "now", "now_ms", "timestamp", "today", "date_now", "uuid", "next_id",
+    "think", "think_json", "http_get", "http_post", "http_put", "http_patch", "http_delete",
+    "fetch", "fetch_json", "read_file", "recall", "get_status", "valid_transitions", "tokens_used", "tokens_remaining",
+];
+
+/// (never a fact, reads state)
+fn fact_kind(e: &Expr) -> (bool, bool) {
+    let (mut never, mut state) = (false, false);
+    super::literals::for_each_in_expr(e, &mut |x| match x {
+        Expr::FnCall { name, .. } if UNSTABLE_GUARD_CALLS.contains(&name.as_str()) => never = true,
+        Expr::FnCall { .. } | Expr::MethodCall { .. } | Expr::Index { .. } | Expr::FieldAccess { .. } => state = true,
+        _ => {}
+    });
+    (never, state)
+}
+
+/// Does the statement write state, call a handler, emit or pause?
+fn stmt_has_effect(st: &Spanned<Statement>) -> bool {
+    let write = |m: &str| matches!(m, "set" | "put" | "delete" | "remove" | "push" | "append" | "clear");
+    let mut hit = false;
+    super::literals::for_each_stmt_deep(std::slice::from_ref(st), &mut |x| match x {
+        Statement::MethodCall { method, .. } if write(method) => hit = true,
+        Statement::MethodCall { target, .. } if target.chars().next().map_or(false, |c| c.is_ascii_uppercase()) => hit = true,
+        Statement::IndexSet { .. } | Statement::Emit { .. } => hit = true,
+        Statement::Assign { name, .. } if name.contains('.') || name.contains('[') => hit = true,
+        _ => {}
+    });
+    super::literals::for_each_expr(std::slice::from_ref(st), &mut |x| match x {
+        Expr::MethodCall { method, .. } if write(method) => hit = true,
+        Expr::MethodCall { target, .. } if matches!(&target.node, Expr::Ident(n) if n.chars().next().map_or(false, |c| c.is_ascii_uppercase())) => hit = true,
+        // a handler of the program, or an effect builtin (sleep, think…)
+        Expr::FnCall { name, .. } if name != "transition" && (!super::names::builtin_names().contains(name.as_str())
+            || super::names::EFFECT_BUILTINS.contains(&name.as_str())) => hit = true,
+        _ => {}
+    });
+    hit
 }
 
 /// One guard atom: a variable against a literal (interval reasoning), or
@@ -1011,10 +1062,13 @@ fn idents_of(e: &Expr) -> HashSet<String> {
 
 fn literal_text(e: &Expr) -> Option<(String, Option<f64>)> {
     match e {
-        Expr::Literal(Literal::Int(n)) => Some((n.to_string(), Some(*n as f64))),
+        // an Int past 2^53 has no exact f64: 9007199254740992 and …993 were
+        // the same bound (`> …992` proved `> …993`)
+        Expr::Literal(Literal::Int(n)) => Some((n.to_string(), if n.unsigned_abs() <= 1u64 << 53 { Some(*n as f64) } else { None })),
         Expr::Literal(Literal::Float(f)) => Some((f.to_string(), Some(*f))),
-        Expr::Literal(Literal::BigInt(s)) => Some((s.clone(), s.parse::<f64>().ok())),
-        Expr::Literal(Literal::String(s)) => Some((s.clone(), None)),
+        Expr::Literal(Literal::BigInt(s)) => Some((s.clone(), None)),
+        // quoted: `code == "5"` is not `code == 5`
+        Expr::Literal(Literal::String(s)) => Some((format!("{:?}", s), None)),
         Expr::Literal(Literal::Bool(b)) => Some((b.to_string(), None)),
         _ => None,
     }
@@ -1050,13 +1104,30 @@ fn narrow(facts: &mut Facts, var: &str, op: CmpOp, text: &str, num: Option<f64>)
 /// One established comparison: a bound when one side is a literal, an
 /// exact fact otherwise.
 fn learn_comparison(facts: &mut Facts, left: &Expr, op: CmpOp, right: &Expr) {
+    learn_comparison_as(facts, left, op, right, false)
+}
+
+/// `negated`: the comparison is the negation of what was written, false
+/// for NaN operands — learned only over names that cannot be NaN.
+fn learn_comparison_as(facts: &mut Facts, left: &Expr, op: CmpOp, right: &Expr, negated: bool) {
+    if negated {
+        let mut names = idents_of(left);
+        names.extend(idents_of(right));
+        let (_, state) = fact_kind(&Expr::CmpOp { left: Box::new(Spanned::new(left.clone(), Span::new(0, 0))), op, right: Box::new(Spanned::new(right.clone(), Span::new(0, 0))) });
+        if state || !names.iter().all(|n| facts.nan_free.contains(n)) { return; }
+    }
     match atom(left, op, right) {
         Some((v, op, t, n)) => narrow(facts, &v, op, &t, n),
         None => {
+            let (never_l, state_l) = fact_kind(left);
+            let (never_r, state_r) = fact_kind(right);
+            // `require now() <= expires` then `sleep(…)`: not the same value
+            if never_l || never_r { return; }
             let mut idents = idents_of(left);
             idents.extend(idents_of(right));
-            facts.exact.push((comparison_text(left, op, right), idents.clone()));
-            facts.exact.push((comparison_text(right, flip(op), left), idents));
+            let state = state_l || state_r;
+            facts.exact.push((comparison_text(left, op, right), idents.clone(), state));
+            facts.exact.push((comparison_text(right, flip(op), left), idents, state));
         }
     }
 }
@@ -1076,7 +1147,7 @@ fn narrow_constraint(facts: &mut Facts, c: &Constraint) {
             Constraint::Comparison { left, op: CmpOp::Eq, right } if matches!(right.node, Expr::Literal(Literal::Bool(true))) => {
                 narrow_expr(facts, &Expr::Not(Box::new(left.clone())));
             }
-            Constraint::Comparison { left, op, right } => learn_comparison(facts, &left.node, negate_cmp(*op), &right.node),
+            Constraint::Comparison { left, op, right } => learn_comparison_as(facts, &left.node, negate_cmp(*op), &right.node, true),
             Constraint::Not(back) => narrow_constraint(facts, &back.node),
             _ => {}
         },
@@ -1091,7 +1162,7 @@ fn narrow_expr(facts: &mut Facts, e: &Expr) {
         Expr::BinaryOp { left, op: BinOp::And, right } => { narrow_expr(facts, &left.node); narrow_expr(facts, &right.node); }
         // `require !(n < 0)` establishes `n >= 0`; `!(a || b)` establishes both negations
         Expr::Not(inner) => match &inner.node {
-            Expr::CmpOp { left, op, right } => learn_comparison(facts, &left.node, negate_cmp(*op), &right.node),
+            Expr::CmpOp { left, op, right } => learn_comparison_as(facts, &left.node, negate_cmp(*op), &right.node, true),
             Expr::BinaryOp { left, op: BinOp::Or, right } => {
                 narrow_expr(facts, &Expr::Not(left.clone()));
                 narrow_expr(facts, &Expr::Not(right.clone()));
@@ -1110,7 +1181,7 @@ fn negate_cmp(op: CmpOp) -> CmpOp {
 fn atom_implied(facts: &Facts, a: &Atom) -> bool {
     match a {
         Atom::Numeric(var, op, text, num) => implied(&facts.bounds, var, *op, text, *num),
-        Atom::Exact(text) => facts.exact.iter().any(|(t, _)| t == text),
+        Atom::Exact(text) => facts.exact.iter().any(|(t, _, _)| t == text),
     }
 }
 
@@ -1236,6 +1307,16 @@ fn walk_guard(stmts: &[Spanned<Statement>], facts: &mut Facts, to: &str, from: &
         if !matches!(st.node, Statement::If { .. } | Statement::While { .. } | Statement::For { .. }) {
             super::literals::for_each_stmt_deep(std::slice::from_ref(st), &mut |x| if let Statement::Assign { name, .. } = x { leaked.push(name); });
         }
+        // …and one inside an if / while condition or a for iterator
+        // (`if len(try { amount = 0 - 5 }) >= 0 { … }`)
+        let head = match &st.node {
+            Statement::If { condition, .. } | Statement::While { condition, .. } => Some(&condition.node),
+            Statement::For { iter, .. } => Some(&iter.node),
+            _ => None,
+        };
+        if let Some(h) = head {
+            for n in rebound_within_expr(h) { facts.forget(&n); }
+        }
         match &st.node {
             Statement::Require { constraint, .. } => narrow_constraint(facts, &constraint.node),
             Statement::Let { name, value } | Statement::Assign { name, value } => {
@@ -1265,11 +1346,20 @@ fn walk_guard(stmts: &[Spanned<Statement>], facts: &mut Facts, to: &str, from: &
                 }
             }
             Statement::While { body, .. } | Statement::For { body, .. } => {
+                // a for iterator runs once, before the body
+                if let Statement::For { iter, .. } = &st.node {
+                    if expr_calls_transition_to(&iter.node, to, from) { out.push(guard_implied(facts, guard)); }
+                }
                 // the body runs again after its own assignments, and the
                 // loop variable is rebound on every pass
                 let mut rebound = rebound_within(body);
                 if let Statement::For { var, .. } = &st.node { rebound.insert(var.clone()); }
                 for n in &rebound { facts.forget(n); }
+                if body.iter().any(stmt_has_effect) { facts.forget_state(); }
+                // a while condition runs again after each pass
+                if let Statement::While { condition, .. } = &st.node {
+                    if expr_calls_transition_to(&condition.node, to, from) { out.push(guard_implied(facts, guard)); }
+                }
                 let mut inner = facts.clone();
                 walk_guard(body, &mut inner, to, from, guard, out);
             }
@@ -1288,6 +1378,9 @@ fn walk_guard(stmts: &[Spanned<Statement>], facts: &mut Facts, to: &str, from: &
             }
         }
         for n in leaked { facts.forget(n); }
+        // a slot write, a handler call, an emit or a pause: what a
+        // `require` said about state no longer holds after it
+        if stmt_has_effect(st) { facts.forget_state(); }
     }
 }
 
@@ -1325,9 +1418,23 @@ fn prove_guards(sm: &StateMachineSection, handlers: &[(&OnSection, Span)], findi
             continue;
         }
         let (mut proven, mut open): (Vec<String>, Vec<String>) = (Vec::new(), Vec::new());
+        // a computed target (`transition(id, t)`, `id.transition(t)`) may be
+        // this edge: its handler narrows nothing here
+        for f in findings {
+            if let super::refinement::RefinementFinding::DynamicTarget { handler, .. } = f {
+                if !open.contains(handler) { open.push(handler.clone()); }
+            }
+        }
+        for (h, _) in handlers {
+            let mut method_form = false;
+            super::literals::for_each_expr(&h.body, &mut |e| if matches!(e, Expr::MethodCall { method, .. } if method == "transition") { method_form = true; });
+            if method_form && !open.contains(&h.signal_name) { open.push(h.signal_name.clone()); }
+        }
         for name in &callers {
+            if open.contains(name) { continue; }
             let Some((on, _)) = handlers.iter().find(|(h, _)| &h.signal_name == name) else { continue };
             let mut facts = Facts::default();
+            facts.nan_free = on.params.iter().filter(|p| matches!(&p.ty.node, TypeExpr::Simple(t) if t == "Int")).map(|p| p.name.clone()).collect();
             let mut verdicts: Vec<bool> = Vec::new();
             walk_guard(&on.body, &mut facts, to, from, &atoms, &mut verdicts);
             if !verdicts.is_empty() && verdicts.iter().all(|v| *v) { proven.push(name.clone()); } else { open.push(name.clone()); }

@@ -3775,3 +3775,57 @@ cell test T { rules {
 } }
 "#);
 }
+
+/// `soma verify` on one program: its output.
+fn verify_out(name: &str, src: &str) -> String {
+    let dir = scratch(name);
+    std::fs::write(dir.join("app.cell"), src).unwrap();
+    let (_, out) = soma(&dir, &["verify", "app.cell"]);
+    let _ = std::fs::remove_dir_all(dir);
+    out
+}
+
+#[test]
+fn verify_proves_no_invariant_through_a_changed_value() {
+    // proven, then the run rejected the write: a callee's `return` in a
+    // match arm was not one of its values; a require over a slot another
+    // handler rewrites, over random() or now(), held "at the write"
+    let cases = [
+        ("inv_match_return", "cell A {\n memory { c: Map<String, Int> [persistent]\n  invariant c >= 0 }\n on score(n: Int) { let r = match n { 1 -> { return 0 - 5 } _ -> 0 }  return 1 }\n on put(k: String, n: Int) { c.set(k, score(n))  return \"ok\" }\n}\n"),
+        ("inv_callee_write", "cell A {\n memory { c: Map<String, Int> [persistent]\n  limits: Map<String, Int> [persistent]\n  invariant c >= 0 && c <= 2 }\n on set_limit(k: String, v: Int) { limits.set(k, v) }\n on copy(k: String) {\n  require (limits.get(k) ?? 0) >= 0 && (limits.get(k) ?? 0) <= 2 else Bad\n  set_limit(k, 99)\n  c.set(k, limits.get(k) ?? 0)\n }\n}\n"),
+        ("inv_random", "cell A {\n memory { c: Map<String, Int> [persistent]\n  invariant c <= 0 }\n on roll() { require random(2) <= 0 else Unlucky  c.set(\"r\", random(2)) }\n}\n"),
+    ];
+    for (name, src) in cases {
+        let out = verify_out(name, src);
+        assert!(out.contains("runtime-checked") && !out.contains("✓ invariant"), "{name}: {out}");
+    }
+}
+
+#[test]
+fn verify_proves_no_guard_through_a_changed_value() {
+    let head = "cell O {\n state o { initial: pending  pending -> validated { guard { GUARD } }  validated -> done }\n";
+    let cases = [
+        // a field write after the require
+        ("guard_field", "amount <= cap.max", " on validate(id: String, amount: Int) { let cap = map(\"max\", 100)  require amount <= cap.max else Big  cap.max = 0  transition(id, \"validated\") }\n"),
+        // time passes
+        ("guard_time", "now() <= expires", " on validate(id: String, expires: Int) { require now() <= expires else Late  sleep(1)  transition(id, \"validated\") }\n"),
+        // NaN passes a negated require
+        ("guard_nan", "amount >= 0", " on validate(id: String, x: Float) { let amount = sqrt(x)  require !(amount < 0) else Bad  transition(id, \"validated\") }\n"),
+        // a String literal is not an Int literal
+        ("guard_type", "code == 5", " on validate(id: String, code: String) { require code == \"5\" else Bad  transition(id, \"validated\") }\n"),
+        // two Ints that are one f64
+        ("guard_big", "amount > 9007199254740993", " on validate(id: String, amount: Int) { require amount > 9007199254740992 else Small  transition(id, \"validated\") }\n"),
+        // an assignment inside an if condition
+        ("guard_cond", "amount > 0", " on validate(id: String, amount: Int) { require amount > 0 else Bad  if len(try { amount = 0 - 5 }) >= 0 { print(1) }  transition(id, \"validated\") }\n"),
+        // a computed target beside a narrowed caller
+        ("guard_dynamic", "amount > 0", " on validate(id: String, amount: Int) { require amount > 0 else Bad  transition(id, \"validated\") }\n on sneaky(id: String, amount: Int, t: String) { transition(id, t) }\n"),
+    ];
+    for (name, guard, handlers) in cases {
+        let src = format!("{}{}}}\n", head.replace("GUARD", guard), handlers);
+        let out = verify_out(name, &src);
+        assert!(out.contains("runtime-checked") && !out.contains("proven — every caller"), "{name}: {out}");
+    }
+    // still proven: a plain require on an Int parameter
+    let src = format!("{} on validate(id: String, amount: Int) {{ require amount > 0 else Bad  transition(id, \"validated\") }}\n}}\n", head.replace("GUARD", "amount > 0"));
+    assert!(verify_out("guard_plain", &src).contains("proven — every caller"));
+}

@@ -2,6 +2,26 @@
 
 ## Unreleased
 
+### `verify` no longer proves an invariant or a guard through a value that changed
+
+- Invariants: a callee's `return` inside a match arm, a `try` block or an
+  if-expression was not one of its values (`c.set(k, score(n))` proven
+  `c >= 0` while `score(1)` returned -5); and a `require` over an expression
+  was taken to hold at the write even when that expression reads a slot the
+  handler rewrites in between (directly or through a called handler), or
+  calls `random()`, `now()`, `think()` or the network. Such a fact now counts
+  only when the expression gives the same value at the write.
+- Transition guards: a `require` was taken to hold at the transition after a
+  field write (`cap.max = 0`), a slot write, a handler call or a `sleep`; a
+  guard over `now()` or `random()` was "proven"; `require !(x < 0)` proved
+  `x >= 0` for a `sqrt` that is NaN; `require code == "5"` proved
+  `code == 5`; `require amount > 9007199254740992` proved `amount >
+  9007199254740993` (one f64); an assignment inside an `if` condition and a
+  transition() inside a `for` iterator or `while` condition were not seen;
+  and a guard read "proven — every caller narrows it" beside a handler that
+  transitions to a computed target. All of these are now runtime-checked
+  (⚠). No program of the repository changes verdict.
+
 ### A `Map<Int, V>` slot keeps Int keys
 
 - The key type of a Map slot was ignored: `Map<Int, String>` answered its

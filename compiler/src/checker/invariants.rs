@@ -403,9 +403,9 @@ pub fn verify_program_invariants(program: &Program) -> Vec<VerifyResult> {
         // local variable ranges, per (handler, write site): the facts that
         // hold differ by block
         let mut locals: HashMap<(String, Vec<usize>), HashMap<String, Known>> = HashMap::new();
-        for (name, _, _, _, path, _) in &writes {
+        for (name, slot_at, _, _, path, _) in &writes {
             if let Some(on) = handlers.get(name) {
-                locals.entry((name.clone(), path.clone())).or_insert_with(|| local_ranges(on, &hyp_for(on, &hyp), &handlers, path));
+                locals.entry((name.clone(), path.clone())).or_insert_with(|| local_ranges(on, &hyp_for(on, &hyp), &handlers, path, Some(slot_at.as_str())));
             }
         }
 
@@ -1236,7 +1236,7 @@ impl RangeCtx<'_> {
                     Some(on) => {
                         let inner = RangeCtx {
                             hyp: self.hyp,
-                            vars: local_ranges_at(on, self.hyp, self.handlers, self.depth + 1, &[]),
+                            vars: local_ranges_at(on, self.hyp, self.handlers, self.depth + 1, &[], None),
                             handlers: self.handlers,
                             depth: self.depth + 1,
                         };
@@ -1332,15 +1332,25 @@ fn uses_slot_read(expr: &Expr, ctx: &RangeCtx) -> bool {
 }
 
 fn collect_return_values<'e>(stmts: &'e [Spanned<Statement>], out: &mut Vec<&'e Expr>) {
+    // a `return` inside a match arm, a `try` block or an if-expression
+    // returns from the handler too: `let r = match n { 1 -> { return 0 - 5 } … }`
+    // was left out, and `c.set(k, score(n))` was proven `c >= 0`
+    super::literals::for_each_stmt_deep(stmts, &mut |st| {
+        if let Statement::Return { value } = st { out.push(&value.node); }
+    });
+    collect_tail_values(stmts, out);
+}
+
+/// The value of a body that ends without `return` (its last expression).
+fn collect_tail_values<'e>(stmts: &'e [Spanned<Statement>], out: &mut Vec<&'e Expr>) {
     for (i, stmt) in stmts.iter().enumerate() {
         match &stmt.node {
-            Statement::Return { value } => out.push(&value.node),
             Statement::ExprStmt { expr } if i + 1 == stmts.len() => out.push(&expr.node),
             Statement::If { then_body, else_body, .. } => {
-                collect_return_values(then_body, out);
-                collect_return_values(else_body, out);
+                collect_tail_values(then_body, out);
+                collect_tail_values(else_body, out);
             }
-            Statement::While { body, .. } | Statement::For { body, .. } => collect_return_values(body, out),
+            Statement::While { body, .. } | Statement::For { body, .. } => collect_tail_values(body, out),
             _ => {}
         }
     }
@@ -1365,8 +1375,99 @@ fn local_ranges(
     hyp: &HashMap<String, (f64, f64)>,
     handlers: &HashMap<String, &OnSection>,
     write_path: &[usize],
+    target: Option<&str>,
 ) -> HashMap<String, Known> {
-    local_ranges_at(on, hyp, handlers, 0, write_path)
+    local_ranges_at(on, hyp, handlers, 0, write_path, target)
+}
+
+/// Builtins whose answer can differ between two evaluations: a `require`
+/// over them says nothing about the value the write evaluates again
+/// (`require random(2) <= 0` then `c.set(k, random(2))`).
+const UNSTABLE_BUILTINS: &[&str] = &[
+    "random", "rand", "now", "now_ms", "timestamp", "today", "date_now", "uuid", "next_id",
+    "think", "think_json", "http_get", "http_post", "http_put", "http_patch", "http_delete",
+    "fetch", "fetch_json", "read_file", "read_csv", "recall", "get_status", "valid_transitions",
+    "tokens_used", "tokens_remaining", "delegate",
+];
+
+/// Does `e` evaluate to the same value at the `require` and at the write
+/// under proof? Not when it calls an unstable builtin, reads state that
+/// the handler also writes (other than the one read-modify-write of the
+/// target slot), or calls a handler while this handler has other effects.
+fn expr_stable(e: &Expr, on: &OnSection, handlers: &HashMap<String, &OnSection>, locals: &HashSet<&str>, target: Option<&str>) -> bool {
+    let params: HashSet<&str> = on.params.iter().map(|p| p.name.as_str()).collect();
+    let is_state = |t: &str| !params.contains(t) && !locals.contains(t);
+    let mut ok = true;
+    let mut reads: Vec<String> = Vec::new();
+    let mut calls = false;
+    super::literals::for_each_in_expr(e, &mut |x| match x {
+        Expr::FnCall { name, .. } if UNSTABLE_BUILTINS.contains(&name.as_str()) => ok = false,
+        Expr::FnCall { name, .. } if handlers.contains_key(name) => calls = true,
+        Expr::MethodCall { target: t, .. } | Expr::Index { target: t, .. } | Expr::FieldAccess { target: t, .. } => {
+            if let Expr::Ident(n) = &t.node {
+                if n.chars().next().map_or(false, |c| c.is_ascii_uppercase()) { ok = false; }
+                else if is_state(n) { reads.push(n.clone()); }
+            }
+        }
+        _ => {}
+    });
+    if !ok { return false; }
+    // every write of the handler body, by target name; emits; handler calls
+    let mut writes: HashMap<String, usize> = HashMap::new();
+    let mut other_effects = false;
+    let write_method = |m: &str| matches!(m, "set" | "put" | "delete" | "remove" | "push" | "append" | "clear");
+    super::literals::for_each_stmt_deep(&on.body, &mut |st| match st {
+        Statement::MethodCall { target: t, method, .. } if write_method(method) && is_state(t) => *writes.entry(t.clone()).or_default() += 1,
+        Statement::IndexSet { name, .. } | Statement::Assign { name, .. } => {
+            let root = name.split(|c| c == '.' || c == '[').next().unwrap_or(name);
+            if is_state(root) { *writes.entry(root.to_string()).or_default() += 1; }
+        }
+        Statement::Emit { .. } => other_effects = true,
+        _ => {}
+    });
+    super::literals::for_each_expr(&on.body, &mut |x| match x {
+        Expr::MethodCall { target: t, method, .. } if write_method(method) => {
+            if let Expr::Ident(n) = &t.node { if is_state(n) { *writes.entry(n.clone()).or_default() += 1; } }
+        }
+        // a call of another handler, or of another cell, may write anything
+        Expr::FnCall { name, .. } if handlers.contains_key(name) && name != &on.signal_name => {
+            other_effects |= callee_writes(name, handlers, 0);
+        }
+        Expr::MethodCall { target: t, .. } if matches!(&t.node, Expr::Ident(n) if n.chars().next().map_or(false, |c| c.is_ascii_uppercase())) => other_effects = true,
+        _ => {}
+    });
+    // a called handler (or another cell) may write what is read
+    if !reads.is_empty() && other_effects { return false; }
+    for r in &reads {
+        let w = writes.get(r).copied().unwrap_or(0);
+        if w > 1 || (w == 1 && Some(r.as_str()) != target) { return false; }
+    }
+    if calls {
+        if other_effects { return false; }
+        let n: usize = writes.iter().map(|(k, v)| if Some(k.as_str()) == target { v.saturating_sub(1) } else { *v }).sum();
+        if n > 0 { return false; }
+    }
+    true
+}
+
+/// Does handler `name` (or a handler it calls) write state or emit?
+fn callee_writes(name: &str, handlers: &HashMap<String, &OnSection>, depth: usize) -> bool {
+    let Some(on) = handlers.get(name) else { return true };
+    if depth > 6 { return true; }
+    let mut hit = false;
+    super::literals::for_each_stmt_deep(&on.body, &mut |st| match st {
+        Statement::MethodCall { method, .. } if matches!(method.as_str(), "set" | "put" | "delete" | "remove" | "push" | "append" | "clear") => hit = true,
+        Statement::IndexSet { .. } | Statement::Emit { .. } => hit = true,
+        _ => {}
+    });
+    if hit { return true; }
+    super::literals::for_each_expr(&on.body, &mut |x| match x {
+        Expr::MethodCall { method, .. } if matches!(method.as_str(), "set" | "put" | "delete" | "remove" | "push" | "append" | "clear") => hit = true,
+        Expr::FnCall { name: n, .. } if n == "transition" || n == "remember" => hit = true,
+        Expr::FnCall { name: n, .. } if handlers.contains_key(n) && n != name => { if callee_writes(n, handlers, depth + 1) { hit = true; } }
+        _ => {}
+    });
+    hit
 }
 
 /// Range of every local: the join of all its assignments. Three rounds;
@@ -1378,9 +1479,11 @@ fn local_ranges_at(
     handlers: &HashMap<String, &OnSection>,
     depth: usize,
     write_path: &[usize],
+    target: Option<&str>,
 ) -> HashMap<String, Known> {
     let mut assigns: Vec<(&str, &Expr)> = Vec::new();
     collect_assigns(&on.body, &mut assigns);
+    let local_names: HashSet<&str> = assigns.iter().map(|(n, _)| *n).collect();
     let params: HashSet<&str> = on.params.iter().map(|p| p.name.as_str()).collect();
     // names whose PARTS are written (`a.x = 500`, `a["x"] = …`, `xs[0] = …`,
     // `a.x += …`): a require over `a.x` says nothing after such a write
@@ -1530,7 +1633,9 @@ fn local_ranges_at(
                     let mut used: HashSet<String> = HashSet::new();
                     crate::interpreter::free_names_expr(left, &mut used);
                     crate::interpreter::free_names_expr(right, &mut used);
-                    if used.iter().all(|u| !dup.contains(u.as_str()) && !reassigned_param(u) && !part_written.contains(u.as_str())) {
+                    if used.iter().all(|u| !dup.contains(u.as_str()) && !reassigned_param(u) && !part_written.contains(u.as_str()))
+                        && expr_stable(left, on, handlers, &local_names, target) && expr_stable(right, on, handlers, &local_names, target)
+                    {
                         let cmp = Expr::CmpOp { left: Box::new(Spanned::new(left.clone(), Span::new(0, 0))), op, right: Box::new(Spanned::new(right.clone(), Span::new(0, 0))) };
                         vars.insert(format!("__req__{}", render_expr(&cmp)), Known::Exact(1.0));
                     }
@@ -1589,6 +1694,8 @@ fn local_ranges_at(
                             let mut used = HashSet::new();
                             collect_idents(e, &mut used);
                             if used.iter().any(|u| dup.contains(u.as_str()) || reassigned_param(u)) { continue; }
+                            // re-evaluated at the write: it must give the same value
+                            if !expr_stable(e, on, handlers, &local_names, target) { continue; }
                             let (lo, hi) = match op {
                                 CmpOp::Lt => (f64::NEG_INFINITY, if looks_int(e) && c.fract() == 0.0 { c - 1.0 } else { c.next_down() }),
                                 CmpOp::Le => (f64::NEG_INFINITY, c),
