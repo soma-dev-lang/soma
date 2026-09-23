@@ -535,6 +535,8 @@ pub fn check_program(program: &Program) -> Vec<InterpolationIssue> {
                 Section::Every(e) | Section::After(e) => (&e.body, &[]),
                 _ => continue,
             };
+            // a [native] handler has no List / join: its builder is strbuf
+            let native = matches!(&sec.node, Section::OnSignal(on) if on.properties.iter().any(|p| p == "native"));
             // what a variable holds: Some(true) a String, Some(false) a
             // number, None unknown — `total = total + x` on an Int
             // accumulator is not a concatenation (every numeric loop
@@ -603,8 +605,13 @@ pub fn check_program(program: &Program) -> Vec<InterpolationIssue> {
                     super::literals::for_each_stmt_deep(std::slice::from_ref(st), &mut |x| if matches!(x, Statement::Assign { name, .. } if *name == v) { found = true; });
                     found
                 }).unwrap_or(sec.span);
+                let fix = if native {
+                    "build it with `let sb = strbuf()`, `sb_push(sb, piece)` in the loop and `sb_finish(sb)` once (a [native] handler has no List / join)".to_string()
+                } else {
+                    "push the pieces to a List and `join(parts, \"\")` once".to_string()
+                };
                 issues.push(InterpolationIssue {
-                    message: format!("`{}` grows by concatenation inside a loop — each step copies the whole value, so the loop is quadratic (8 MB took 32 s, a list + join() 30 ms): push the pieces to a List and `join(parts, \"\")` once", v),
+                    message: format!("`{}` grows by concatenation inside a loop — each step copies the whole value, so the loop is quadratic (8 MB took 32 s, a list + join() 30 ms): {}", v, fix),
                     span, warning: true, habit: true, kind: "quadratic_concat",
                 });
             }

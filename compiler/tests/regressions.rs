@@ -6413,3 +6413,151 @@ fn run_picks_the_runtime_cell() {
     assert!(out.contains("hi ran 7"), "{out}");
     let _ = std::fs::remove_dir_all(dir);
 }
+
+#[test]
+fn native_sixth_pass_bindings_and_generated_names() {
+    // one Rust name per binding: a tail call past a `let` shadowing a
+    // parameter assigned the shadow; an inner `let` of another type retyped
+    // the outer local; `let t = t` in a loop; user names colliding with
+    // generated ones (`_i0`, the memo closure's `c`, `f_compute`, `_par`)
+    passes("native_sixth_names", r#"
+cell A {
+    on tg(n: Int, acc: Int) [native] { if n <= 0 { return acc }  let acc = acc * 2  return tg(n - 1, acc + 1) }
+    on tf(n: Int, acc: Int) [native] { if n <= 0 { return acc }  let n = n - 1  return tf(n, acc + n) }
+    on total(n: Int) [native] { return n + 1 }
+    on total_par(n: Int) [native] { return n * 1000 }
+    on count(n: Int) [native] { return n + 2 }
+    on count_arr(n: Int) [native] { return n - 100 }
+    on tab(a: Int, _i0: Int) [native] { if a <= 0 || _i0 <= 0 { return 1 }  return tab(a - 1, _i0) + tab(a, _i0 - 1) }
+    on mc(a: Int, c: Int) [native] { if a == 0 { return c }  if c == 0 { return a }  return (mc(a - 1, c) + mc(a, c - 1)) % 1000003 }
+    on sa(n: Int) [native] { let x = n * n  if n > 2 { let x = 2.5  x = x * 2.0 }  return x }
+    on sb(n: Int) [native] { let x = n / 2  for i in range(0, 2) { let x = i }  return x }
+    on sc(n: Int) [native] { let s = 0  for i in range(0, n) { let s = 2.5 }  return s }
+    on st(n: Int) [native] { let big = n * n  let i = 0  let s = 0  while i < 2 { let t = big  let t = t  s = s + t  i = i + 1 }  return s }
+    on un(n: Int) [native] { let _tab = n + 1  let u_x = _tab * 2  let x = u_x + 1  return x }
+    on f(n: Int) [native] { if n < 2 { return n }  return f(n - 1) + f(n - 2) }
+    on f_compute(n: Int) [native] { return n * 1000 }
+    on f_fast(n: Int) [native] { return n * 3 }
+}
+cell test T { rules {
+    assert tg(5, 0) == 31
+    assert tg(100, 1) == 2535301200456458802993406410751
+    assert tf(5, 0) == 10
+    assert total(5) == 6
+    assert total_par(5) == 5000
+    assert count(5) == 7
+    assert count_arr(5) == -95
+    assert tab(5, 5) == 252
+    assert mc(20, 20) == 29108
+    assert sa(3) == 9
+    assert sa(4294967297) == 18446744082299486209
+    assert sb(3) == 1.5
+    assert sc(3) == 0
+    assert st(3) == 18
+    assert un(2) == 7
+    assert f(30) == 832040
+    assert f_compute(7) == 7000
+    assert f_fast(7) == 21
+} }
+"#);
+}
+
+#[test]
+fn native_sixth_pass_values_match_interpreted() {
+    // write_str's byte count; bit_test's index check in a BigInt condition;
+    // bit_len / bit_test / bit_next of a BigInt bound to a local; String
+    // copies (rustc E0382 / E0308); `"}}"` without `{` kept as written; the
+    // Int size cap on a `let` product in a loop; a BigInt-derived index or
+    // range bound that fits 64 bits; a `for` variable kept 64-bit; hm_inc's
+    // own range message; a memoized recursion counted once per level
+    passes("native_sixth_values", r#"
+cell A {
+    on w(s: String) [native] { return write_str(s) }
+    on wx(n: Int) [native] { let k = write_str("xyz")  return k + n }
+    on bt(n: Int, k: Int) [native] { if bit_test(n, k) == 1 { return 1 }  return 0 }
+    on bs(n: Int, k: Int) [native] { let x = 5  let m = n * 2  if bit_test(x, k) == 1 { return m }  return 0 - m }
+    on bl(x: Int) [native] { let L = bit_len(x)  return L }
+    on bb(a: Int) [native] { let r = bit_test(a * a, 3)  return r }
+    on bn(a: Int) [native] { if bit_next(a * a, 1) > 0 { return 1 }  return 0 }
+    on cse(s: String, i: Int) [native] { let k = write_str("") + str_at(s, i)  let m = str_at(s, i)  return k + m }
+    on c1(n: Int) [native] { let a = to_string(n)  return a + to_string(n) }
+    on c2(n: Int) [native] { let a = to_string(n)  let b = a  return b + a }
+    on c3(s: String) [native] { let t = s  return t }
+    on lb() [native] { return "a}}b" }
+    on lc(n: Int) [native] { return str_len("x}}") + n }
+    on lp(n: Int) [native] { let x = shl(1, n)  let r = 0  let i = 0  while i < 1 { let t = x * x  r = t % 7  i = i + 1 }  return r }
+    on bi(n: Int) [native] { let big = n * n  let b = buffer(10)  buf_set(b, big % 10, 5)  return buf_get(b, big % 10) }
+    on fb(n: Int) [native] { let big = n * n  let s = 0  for i in range(0, big % 5 + 2) { s = s + big }  return s }
+    on fr(n: Int) [native] { let x = shl(1, 80)  let s = 0  for i in range(0, n) { s = s + i % 3 }  return s + x - x }
+    on hi(n: Int) [native] { let m = hashmap()  hm_set(m, 1, 9223372036854775807)  hm_inc(m, 1)  return hm_get(m, 1) + n }
+    on dm(n: Int) [native] { if n <= 0 { return 0 }  let a = dm(n - 1)  return (a + dm(n - 2) * 0 + 1) % 1000000007 }
+}
+cell test T { rules {
+    assert w("hello") == 5
+    assert wx(1) == 4
+    assert_fails bt(shl(1, 70), -1) matching "bit index -1 out of range"
+    assert bs(shl(1, 70), 70) == -2361183241434822606848
+    assert bl(shl(1, 100)) == 101
+    assert bb(4294967297) == 0
+    assert bn(4294967297) == 1
+    assert_fails cse("xy", 5) matching "index 5 out of range"
+    assert c1(3) == "33"
+    assert c2(3) == "33"
+    assert c3("ab") == "ab"
+    assert lb() == "a}}b"
+    assert lc(0) == 3
+    assert_fails lp(9000000) matching "an Int product of 9000001 + 9000001 bits"
+    assert bi(4294967297) == 5
+    assert fb(4294967297) == 110680464493796917254
+    assert fr(1000) == 999
+    assert_fails hi(1) matching "a hashmap holds 64-bit Ints — the count 9223372036854775807 + 1"
+    assert dm(15000) == 15000
+} }
+"#);
+}
+
+#[test]
+fn native_sixth_pass_effects_order_and_refusals() {
+    // a shared (CSE) call is not hoisted above an effect of its statement
+    let dir = scratch("native_sixth_cse_order");
+    std::fs::write(dir.join("app.cell"), r#"
+cell A {
+    on f(s: String, i: Int) [native] { let k = write_str("A") + str_at(s, i)  let m = str_at(s, i)  return k + m }
+    on run() { let a = try { f("xy", 5) }  print(" <- {a.error}") }
+}
+"#).unwrap();
+    let (code, out) = soma(&dir, &["run", "app.cell", "run"]);
+    assert_eq!(code, 0, "{out}");
+    assert!(out.contains("A <- str_at: index 5 out of range"), "{out}");
+    let _ = std::fs::remove_dir_all(dir);
+
+    // a path without `return` is refused (interpreted it answers ())
+    let dir = scratch("native_sixth_falloff");
+    std::fs::write(dir.join("app.cell"), "cell A {\n    on a(n: Int) [native] { let x = n + 1 }\n    on b(n: Int) [native] { if n > 5 { return n } }\n    on c(n: Int) [native] { if n > 5 { return n } else { return 0 } }\n    on d(n: Int) [native] { while true { if n > 0 { return n } } }\n}\n").unwrap();
+    let (code, out) = soma(&dir, &["check", "app.cell"]);
+    assert_ne!(code, 0, "{out}");
+    assert!(out.contains("handler 'a' is marked [native] but can reach the end of its body without `return`"), "{out}");
+    assert!(out.contains("handler 'b' is marked [native] but can reach the end"), "{out}");
+    assert!(!out.contains("handler 'c'") && !out.contains("handler 'd'"), "{out}");
+    let _ = std::fs::remove_dir_all(dir);
+
+    // the native checks see one name per binding: an inner `let s = 1` no
+    // longer hides the outer String `s` (native joined "a1"), and an inner
+    // String shadow no longer refuses the outer number
+    let dir = scratch("native_sixth_scoped_check");
+    std::fs::write(dir.join("app.cell"), "cell A {\n    on bad(n: Int) [native] { let s = \"a\"  if n > 0 { let s = 1  s = s + n }  return s + n }\n}\n").unwrap();
+    let (code, out) = soma(&dir, &["check", "app.cell"]);
+    assert_ne!(code, 0, "{out}");
+    assert!(out.contains("adds a String and a number in `s + n`"), "{out}");
+    std::fs::write(dir.join("app.cell"), "cell A {\n    on ok(n: Int) [native] { let s = 0  if n > 0 { let s = \"x\"  if s == \"x\" { return 1 } }  return s + n }\n}\ncell test T { rules {\n    assert ok(0) == 0\n    assert ok(3) == 1\n} }\n").unwrap();
+    let (code, out) = soma(&dir, &["test", "app.cell"]);
+    assert_eq!(code, 0, "{out}");
+    let _ = std::fs::remove_dir_all(dir);
+
+    // the quadratic-concatenation warning points a [native] handler to strbuf
+    let dir = scratch("native_sixth_strbuf_hint");
+    std::fs::write(dir.join("app.cell"), "cell A {\n    on s(n: Int) [native] { let r = \"\"  for i in range(0, n) { r = r + \"x\" }  return r }\n}\n").unwrap();
+    let (_, out) = soma(&dir, &["check", "app.cell"]);
+    assert!(out.contains("grows by concatenation") && out.contains("strbuf()") && !out.contains("join(parts"), "{out}");
+    let _ = std::fs::remove_dir_all(dir);
+}

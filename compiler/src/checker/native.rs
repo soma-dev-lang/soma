@@ -108,6 +108,10 @@ fn sibling_kind(name: &str) -> Option<char> {
 
 /// The kind a handler returns, from its `return`s over its parameters.
 pub fn return_kind(params: &[Param], body: &[Spanned<Statement>]) -> Option<char> {
+    let mut params = params.to_vec();
+    let mut body = body.to_vec();
+    crate::codegen::native::rename_bindings(&mut params, &mut body);
+    let (params, body) = (&params[..], &body[..]);
     let mut rets: Vec<&Expr> = Vec::new();
     collect_returns(body, &mut rets);
     let ps: std::collections::HashMap<&str, char> = params.iter().filter_map(|p| match &p.ty.node {
@@ -146,8 +150,27 @@ pub fn check_native_handler_with(
     r
 }
 
-/// Validate all statements in a [native] handler body.
+/// Validate all statements in a [native] handler body. The analyses are
+/// keyed by name, so they run on the body with one name per binding (as
+/// the code generator sees it): an inner `let s = 1` of an outer String
+/// `s` made the outer `s + 1` pass (native joined "a1", interpreted it
+/// raises), and valid code was refused.
 pub fn check_native_handler(
+    handler_name: &str,
+    params: &[Param],
+    body: &[Spanned<Statement>],
+    siblings: &NativeSiblings,
+) -> Result<(), NativeCheckError> {
+    let mut params = params.to_vec();
+    let mut body = body.to_vec();
+    crate::codegen::native::rename_bindings(&mut params, &mut body);
+    check_native_handler_renamed(handler_name, &params, &body, siblings).map_err(|mut e| {
+        e.reason = crate::codegen::native::user_facing_names(&e.reason);
+        e
+    })
+}
+
+fn check_native_handler_renamed(
     handler_name: &str,
     params: &[Param],
     body: &[Spanned<Statement>],
@@ -156,6 +179,14 @@ pub fn check_native_handler(
     check_params(handler_name, params)?;
     for stmt in body {
         check_stmt(handler_name, &stmt.node, siblings)?;
+    }
+    // a path that reaches the end without `return`: the interpreter answers
+    // `()` there, native code answered 0 / 0.0 / false
+    if !body_always_returns(body, true) {
+        return Err(NativeCheckError {
+            handler_name: handler_name.to_string(),
+            reason: "can reach the end of its body without `return` — interpreted it answers () there, which native code cannot hold: a [native] handler must return on every path (end it with `return …`)".to_string(),
+        });
     }
     // what codegen refuses, said here (each used to pass check and die in
     // rustc behind a 600-line dump)
@@ -242,7 +273,7 @@ pub fn check_native_handler(
             }
         }
         binders(body, &mut names);
-        if let Some(n) = names.iter().find(|n| RUST_WORDS.contains(&n.as_str())) {
+        if let Some(n) = names.iter().map(|n| crate::codegen::native::user_facing_names(n)).find(|n| RUST_WORDS.contains(&n.as_str())) {
             problem = Some(format!("names a value `{}`, a word Rust reserves — rename it (`{}_`)", n, n));
         }
     }
@@ -460,6 +491,31 @@ pub fn check_native_handler(
             "passes the buffer `{}` to the sibling handler `{}` — only Int, Float, Bool or String cross between [native] handlers; do the work in one handler, or pass the values one by one", buf, callee) });
     }
     Ok(())
+}
+
+/// Every path through `stmts` ends in a `return` (or an endless
+/// `while true` without `break`). `top`: the handler's own body, whose
+/// last bare expression is its answer.
+fn body_always_returns(stmts: &[Spanned<Statement>], top: bool) -> bool {
+    fn breaks(stmts: &[Spanned<Statement>]) -> bool {
+        stmts.iter().any(|s| match &s.node {
+            Statement::Break => true,
+            Statement::If { then_body, else_body, .. } => breaks(then_body) || breaks(else_body),
+            _ => false,
+        })
+    }
+    for (i, st) in stmts.iter().enumerate() {
+        match &st.node {
+            Statement::Return { .. } => return true,
+            Statement::ExprStmt { .. } if top && i + 1 == stmts.len() => return true,
+            Statement::If { then_body, else_body, .. }
+                if body_always_returns(then_body, false) && body_always_returns(else_body, false) => return true,
+            Statement::While { condition, body, .. }
+                if matches!(condition.node, Expr::Literal(Literal::Bool(true))) && !breaks(body) => return true,
+            _ => {}
+        }
+    }
+    false
 }
 
 fn is_buffer_ctor(e: &Expr) -> bool {

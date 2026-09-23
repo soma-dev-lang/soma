@@ -176,14 +176,10 @@ pub fn compile_and_load_natives_with_config(
                 *sym
             };
 
-            let raw_name = sig.fn_name
-                .strip_prefix("handler_").unwrap_or(&sig.fn_name);
-            let handler_name = raw_name
-                .strip_suffix("_par_arr")
-                .or_else(|| raw_name.strip_suffix("_par"))
-                .or_else(|| raw_name.strip_suffix("_arr"))
-                .unwrap_or(raw_name);
-            let key = (cell.node.name.clone(), handler_name.to_string());
+            // the handler each symbol runs, as the code generator recorded it
+            // (stripping `_par` / `_arr` from every symbol let a handler
+            // named `total_par` replace `total`)
+            let key = (cell.node.name.clone(), sig.handler.clone());
 
             // We need to keep the library alive. Since multiple functions share one lib,
             // we'll re-open the library for each (cheap on most OSes — same mapping).

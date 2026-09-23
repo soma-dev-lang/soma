@@ -2357,18 +2357,8 @@ impl<'a> Checker<'a> {
         if natives.is_empty() { return; }
         let siblings: native::NativeSiblings = natives.iter().map(|h| h.signal_name.clone()).collect();
         let errors_before = self.errors.len();
-        // `f` and `f_fast`: the generated `inner_handler_f_fast` of each
-        // collided (rustc E0428)
-        for h in natives.iter() {
-            let twin = format!("{}_fast", h.signal_name);
-            if natives.iter().any(|o| o.signal_name == twin) {
-                self.errors.push(CheckError::Static {
-                    kind: "native_vocabulary",
-                    message: format!("[native] handlers '{}' and '{}' collide in the generated code (the first one's fast path is named '{}') — rename one", h.signal_name, twin, twin),
-                    span: Span { start: 0, end: 0 },
-                });
-            }
-        }
+        // (`f` and `f_fast` no longer collide: generated names derived from a
+        // handler are length-prefixed, see codegen::native::derived_sym)
         for h in natives.iter().copied() {
             let kinds: std::collections::HashMap<String, char> = natives.iter()
                 .filter_map(|o| native::return_kind(&o.params, &o.body).map(|k| (o.signal_name.clone(), k))).collect();

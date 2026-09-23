@@ -49,6 +49,10 @@ pub struct NativeHandler {
 #[derive(Debug, Clone)]
 pub struct NativeSig {
     pub fn_name: String,
+    /// The Soma handler this symbol runs (`fn_name` is not parsed back:
+    /// a handler named `total_par` replaced `total` when suffixes were
+    /// stripped from every symbol)
+    pub handler: String,
     pub param_types: Vec<NativeType>,
     pub return_type: NativeType,
     /// If true, args are passed via shared buffer (_soma_push_*), not C params
@@ -103,6 +107,18 @@ pub fn generate_native_source_with_config(
         body: h.body.clone(),
         properties: h.properties.clone(),
     }).collect();
+    // ── One Rust name per binding ──
+    //
+    // Every parameter, `let`, loop variable and lambda parameter gets its
+    // own Rust identifier (`u_x`, a shadow `u1_x`, …) before any analysis.
+    // Native types and the rewrites were keyed by NAME: an inner-block
+    // `let x = 2.5` retyped the outer Int `x`, a tail call rebinding `acc`
+    // assigned a `let acc` shadow instead of the parameter, and a user
+    // name could collide with a generated one (`_i0`, `_tab`, the memo
+    // closure's `c`). Generated identifiers never start with `u_` / `u<N>_`.
+    for h in &mut handlers_owned {
+        rename_user_bindings(h);
+    }
     // ── Implicit tail return ──
     //
     // Soma handlers return their last expression; the interpreter honors
@@ -348,6 +364,9 @@ pub fn generate_native_source_with_config(
     // 16-exabyte allocation refused as "capacity overflow"
     // `$1` then a word character is group 1 then that text, as interpreted
     out.push_str(RX_REP_HELPER);
+    // hm_inc past i64::MAX: the hashmap's own range message (it read as an
+    // Int past 64 bits "inside a Float, Bool or index expression")
+    out.push_str("#[inline(always)] #[allow(dead_code)] fn _soma_hm_inc(m: &mut std::collections::HashMap<i64, i64>, k: i64) { let e = m.entry(k).or_insert(0i64); let v = *e; *e = v.checked_add(1).unwrap_or_else(|| panic!(\"soma:range: a hashmap holds 64-bit Ints — the count {} + 1 does not fit (keep such a count in a scalar, which promotes to BigInt)\", v)); }\n");
     out.push_str("#[inline(always)] #[allow(dead_code)] fn _soma_buf_len(n: i64) -> usize { if n < 0 { panic!(\"soma:range: buffer(n): n is a number of elements, 0 or more — got {}\", n) } n as usize }\n");
     out.push_str("#[inline(always)] #[allow(dead_code)] fn _soma_next_bit(a: i64, k: i64) -> i64 { let k = _soma_bit_index(k, \"bit_next\"); if k >= 64 { return if a < 0 { k } else { -1 }; } let bits = (a as u64) & (u64::MAX << k); if bits == 0 { -1 } else { bits.trailing_zeros() as i64 } }\n");
     // a Float prints like the interpreter's (an integral Float as "8.0")
@@ -504,20 +523,20 @@ pub fn generate_native_source_with_config(
                 // a Vec-based bottom-up fill instead of a HashMap memo.
                 let tab_plan = if memo_now { auto_tab_eligible(handler) } else { None };
 
-                let fast_inner_name = format!("{}_fast", fn_name);
+                let fast_inner_name = derived_sym(&handler.signal_name, "fast");
                 if memo_now {
                     // Body emitted under `_compute`; cache wrapper emitted
                     // under the original name so recursive sibling calls in
                     // the body (which target `inner_handler_X_fast(...)`)
                     // automatically route through the cache.
-                    let fast_compute_name = format!("{}_compute", fast_inner_name);
+                    let fast_compute_name = derived_sym(&handler.signal_name, "fast_compute");
                     gen_direct_inner_fn(&mut out, &fast_gen, handler, &fast_compute_name, ret_type);
                     if tab_plan.is_some() {
                         // Tab path: emit cell-compute, memo wrapper (as the
                         // big-input fallback), and entry that picks tab
                         // when inputs fit the cap.
-                        let memo_name = format!("{}_memo", fast_inner_name);
-                        let cell_name = format!("{}_cell", fast_inner_name);
+                        let memo_name = derived_sym(&handler.signal_name, "fast_memo");
+                        let cell_name = derived_sym(&handler.signal_name, "fast_cell");
                         emit_memo_wrapper_fast(&mut out, handler, &memo_name, &fast_compute_name);
                         emit_tab_cell_fn(&mut out, handler, &cell_name);
                         emit_tab_entry_fn(&mut out, handler, &fast_inner_name, &cell_name, &memo_name);
@@ -530,7 +549,7 @@ pub fn generate_native_source_with_config(
 
                 // Rug inner — the safe fallback
                 if memo_now {
-                    let rug_compute_name = format!("{}_compute", fn_name);
+                    let rug_compute_name = derived_sym(&handler.signal_name, "compute");
                     gen_rug_inner_fn(&mut out, &gen, handler, &rug_compute_name, ret_type);
                     emit_memo_wrapper_rug(&mut out, handler, &fn_name, &rug_compute_name);
                 } else {
@@ -563,6 +582,7 @@ pub fn generate_native_source_with_config(
                 // Rug handlers always go through shared buffer
                 sigs.push(NativeSig {
                     fn_name,
+                    handler: handler.signal_name.clone(),
                     param_types,
                     return_type: ret_type,
                     uses_shared_args: true,
@@ -574,7 +594,8 @@ pub fn generate_native_source_with_config(
                     if param_types.len() > 3 {
                         emit_array_wrapper(&mut out, handler, &fn_name, ret_type, true);
                         sigs.push(NativeSig {
-                            fn_name: format!("{}_par_arr", fn_name),
+                            fn_name: derived_sym(&handler.signal_name, "par_arr"),
+                            handler: handler.signal_name.clone(),
                             param_types,
                             return_type: ret_type,
                             uses_shared_args: false,
@@ -582,7 +603,8 @@ pub fn generate_native_source_with_config(
                         });
                     } else {
                         sigs.push(NativeSig {
-                            fn_name: format!("{}_par", fn_name),
+                            fn_name: derived_sym(&handler.signal_name, "par"),
+                            handler: handler.signal_name.clone(),
                             param_types,
                             return_type: ret_type,
                             uses_shared_args: false,
@@ -592,7 +614,8 @@ pub fn generate_native_source_with_config(
                 } else if param_types.len() > 3 {
                     emit_array_wrapper(&mut out, handler, &fn_name, ret_type, false);
                     sigs.push(NativeSig {
-                        fn_name: format!("{}_arr", fn_name),
+                        fn_name: derived_sym(&handler.signal_name, "arr"),
+                        handler: handler.signal_name.clone(),
                         param_types,
                         return_type: ret_type,
                         uses_shared_args: false,
@@ -601,6 +624,7 @@ pub fn generate_native_source_with_config(
                 } else {
                     sigs.push(NativeSig {
                         fn_name,
+                        handler: handler.signal_name.clone(),
                         param_types,
                         return_type: ret_type,
                         uses_shared_args: false,
@@ -631,6 +655,147 @@ pub fn generate_native_source_with_config(
 
     let out = guard_exported_handlers(&out);
     (out, sigs)
+}
+
+/// A generated function name derived from handler `sig` (its fast path, its
+/// memo compute, its parallel entry…). The base symbol is `handler_<sig>`;
+/// a derived one never starts with `handler_`, and the length prefix makes
+/// `(sig, suffix)` unambiguous: `f` + `compute` and a handler named
+/// `f_compute` used to both emit `inner_handler_f_compute` (rustc E0428).
+fn derived_sym(sig: &str, suffix: &str) -> String {
+    format!("hx{}_{}_{}", sig.len(), sig, suffix)
+}
+
+/// Scope-aware renaming of the user's bindings (see the call site).
+fn rename_user_bindings(h: &mut NativeHandler) {
+    rename_bindings(&mut h.params, &mut h.body);
+}
+
+/// The renaming itself, for a handler's parameters and body (the native
+/// checker runs its name-keyed analyses on a renamed copy too: a shadow of
+/// another type in an inner block retyped the outer name there as well).
+pub(crate) fn rename_bindings(params: &mut [Param], body: &mut [Spanned<Statement>]) {
+    struct R { scopes: Vec<HashMap<String, String>>, counts: HashMap<String, u32> }
+    impl R {
+        fn bind(&mut self, name: &str) -> String {
+            let n = self.counts.entry(name.to_string()).or_insert(0);
+            let fresh = if *n == 0 { format!("u_{}", name) } else { format!("u{}_{}", n, name) };
+            *n += 1;
+            self.scopes.last_mut().unwrap().insert(name.to_string(), fresh.clone());
+            fresh
+        }
+        fn lookup(&self, name: &str) -> Option<String> {
+            self.scopes.iter().rev().find_map(|s| s.get(name).cloned())
+        }
+        fn rename_ref(&self, name: &mut String) {
+            if let Some(n) = self.lookup(name) { *name = n; }
+        }
+        fn block(&mut self, body: &mut [Spanned<Statement>]) {
+            self.scopes.push(HashMap::new());
+            for s in body.iter_mut() { self.stmt(&mut s.node); }
+            self.scopes.pop();
+        }
+        fn stmt(&mut self, s: &mut Statement) {
+            match s {
+                Statement::Let { name, value } => {
+                    self.expr(&mut value.node);
+                    *name = self.bind(name);
+                }
+                Statement::Assign { name, value } => { self.expr(&mut value.node); self.rename_ref(name); }
+                Statement::IndexSet { name, index, value } => { self.expr(&mut index.node); self.expr(&mut value.node); self.rename_ref(name); }
+                Statement::Return { value } => self.expr(&mut value.node),
+                Statement::ExprStmt { expr } => self.expr(&mut expr.node),
+                Statement::Ensure { condition } => self.expr(&mut condition.node),
+                Statement::If { condition, then_body, else_body } => {
+                    self.expr(&mut condition.node);
+                    self.block(then_body);
+                    self.block(else_body);
+                }
+                Statement::While { condition, body, .. } => { self.expr(&mut condition.node); self.block(body); }
+                Statement::For { var, iter, body, .. } => {
+                    self.expr(&mut iter.node);
+                    self.scopes.push(HashMap::new());
+                    *var = self.bind(var);
+                    for s in body.iter_mut() { self.stmt(&mut s.node); }
+                    self.scopes.pop();
+                }
+                Statement::Emit { args, .. } => for a in args { self.expr(&mut a.node) },
+                Statement::MethodCall { target, args, .. } => { for a in args { self.expr(&mut a.node) } self.rename_ref(target); }
+                Statement::Require { .. } | Statement::Break | Statement::Continue => {}
+            }
+        }
+        fn expr(&mut self, e: &mut Expr) {
+            match e {
+                Expr::Ident(n) => self.rename_ref(n),
+                Expr::Literal(_) => {}
+                Expr::FieldAccess { target, .. } => self.expr(&mut target.node),
+                Expr::Index { target, index } => { self.expr(&mut target.node); self.expr(&mut index.node); }
+                Expr::MethodCall { target, args, .. } => { self.expr(&mut target.node); for a in args { self.expr(&mut a.node) } }
+                Expr::FnCall { args, .. } => for a in args { self.expr(&mut a.node) },
+                Expr::BinaryOp { left, right, .. } | Expr::CmpOp { left, right, .. } | Expr::Pipe { left, right } => {
+                    self.expr(&mut left.node); self.expr(&mut right.node);
+                }
+                Expr::Not(i) | Expr::Try(i) | Expr::TryPropagate(i) => self.expr(&mut i.node),
+                Expr::Record { fields, .. } => for (_, v) in fields { self.expr(&mut v.node) },
+                Expr::ListLiteral(xs) => for x in xs { self.expr(&mut x.node) },
+                Expr::Lambda { param, body } => {
+                    self.scopes.push(HashMap::new());
+                    *param = self.bind(param);
+                    self.expr(&mut body.node);
+                    self.scopes.pop();
+                }
+                Expr::LambdaBlock { param, stmts, result } => {
+                    self.scopes.push(HashMap::new());
+                    *param = self.bind(param);
+                    for s in stmts.iter_mut() { self.stmt(&mut s.node); }
+                    self.expr(&mut result.node);
+                    self.scopes.pop();
+                }
+                Expr::IfExpr { condition, then_body, then_result, else_body, else_result } => {
+                    self.expr(&mut condition.node);
+                    self.scopes.push(HashMap::new());
+                    for s in then_body.iter_mut() { self.stmt(&mut s.node); }
+                    self.expr(&mut then_result.node);
+                    self.scopes.pop();
+                    self.scopes.push(HashMap::new());
+                    for s in else_body.iter_mut() { self.stmt(&mut s.node); }
+                    self.expr(&mut else_result.node);
+                    self.scopes.pop();
+                }
+                // not native (refused by the checker and the emitters): only
+                // the subject is renamed, the arms keep their own names
+                Expr::Match { subject, .. } => self.expr(&mut subject.node),
+            }
+        }
+    }
+    let mut r = R { scopes: vec![HashMap::new()], counts: HashMap::new() };
+    for p in params.iter_mut() {
+        p.name = r.bind(&p.name);
+    }
+    for s in body.iter_mut() { r.stmt(&mut s.node); }
+}
+
+/// A generated Rust name back to the user's (`u_x` / `u2_x` → `x`), for
+/// messages that quote code.
+pub(crate) fn user_facing_names(msg: &str) -> String {
+    let b = msg.as_bytes();
+    let mut out = String::with_capacity(msg.len());
+    let mut i = 0;
+    while i < b.len() {
+        let at_word_start = i == 0 || !(b[i - 1].is_ascii_alphanumeric() || b[i - 1] == b'_');
+        if at_word_start && b[i] == b'u' {
+            let mut j = i + 1;
+            while j < b.len() && b[j].is_ascii_digit() { j += 1; }
+            if j < b.len() && b[j] == b'_' && j + 1 < b.len() && (b[j + 1].is_ascii_alphabetic() || b[j + 1] == b'_') {
+                i = j + 1;
+                continue;
+            }
+        }
+        let ch = msg[i..].chars().next().unwrap();
+        out.push(ch);
+        i += ch.len_utf8();
+    }
+    out
 }
 
 /// Runtime support for the panic guard: an error buffer the host polls
@@ -845,7 +1010,7 @@ thread_local! {
 }
 
 #[allow(dead_code)]
-fn _soma_write_str(s: &str) {
+fn _soma_write_str(s: &str) -> i64 {
     let held = _SOMA_OUT.with(|o| { let mut o = o.borrow_mut(); if o.0 { o.1.push_str(s); true } else { false } });
     if !held {
         use std::io::Write;
@@ -853,6 +1018,8 @@ fn _soma_write_str(s: &str) {
         let _ = out.write_all(s.as_bytes());
         let _ = out.flush();
     }
+    // the byte count, as interpreted
+    s.len() as i64
 }
 
 #[allow(dead_code)]
@@ -953,7 +1120,26 @@ fn _soma_f2big(v: f64) -> Integer {
     panic!("soma:type: this spot holds an Int, got the Float {} — native code never truncates: write floor(), round(), to_int() or idiv(a, b)", _soma_fmt_f(v));
 }
 
+/// The interpreter's product cap, checked BEFORE multiplying, on the
+/// operands' sizes (a product is at most their sum): same outcome and same
+/// message as interpreted — the check after the fact let a product of
+/// exactly 2^24 bits through, and a `let` product in a loop had none.
 #[allow(dead_code)]
+trait _SomaBits { fn _soma_bits(&self) -> u64; }
+impl _SomaBits for Integer { #[inline(always)] fn _soma_bits(&self) -> u64 { self.significant_bits() as u64 } }
+impl _SomaBits for &Integer { #[inline(always)] fn _soma_bits(&self) -> u64 { (**self).significant_bits() as u64 } }
+impl _SomaBits for i64 { #[inline(always)] fn _soma_bits(&self) -> u64 { 64 - self.unsigned_abs().leading_zeros() as u64 } }
+impl _SomaBits for i32 { #[inline(always)] fn _soma_bits(&self) -> u64 { 32 - self.unsigned_abs().leading_zeros() as u64 } }
+impl _SomaBits for u32 { #[inline(always)] fn _soma_bits(&self) -> u64 { 32 - self.leading_zeros() as u64 } }
+#[allow(dead_code)]
+#[inline(always)]
+fn _soma_mul_ck<A: _SomaBits, B: _SomaBits>(a: &A, b: &B) {
+    let (x, y) = (a._soma_bits(), b._soma_bits());
+    if x + y > (1u64 << 24) {
+        panic!("soma:range: range: an Int product of {} + {} bits is past the limit of {} bits", x, y, 1u64 << 24);
+    }
+}
+
 #[allow(dead_code)]
 fn _soma_bits_cap(x: Integer) -> Integer {
     if x.significant_bits() > (1u32 << 24) {
@@ -1544,8 +1730,8 @@ fn emit_dualmode_wrapper(
         out.push('\n');
     }
     out.push_str(&format!(
-        "        Some(inner_{}_fast({}))\n",
-        fn_name, fast_call_args.join(", ")
+        "        Some(inner_{}({}))\n",
+        derived_sym(&handler.signal_name, "fast"), fast_call_args.join(", ")
     ));
     out.push_str("    }));\n");
 
@@ -1662,7 +1848,7 @@ fn emit_memo_wrapper_fast(
     };
 
     out.push_str(&format!(
-        "fn inner_{}({}) -> i64 {{\n    let _depth_guard = _SomaDepth::enter();\n",
+        "fn inner_{}({}) -> i64 {{\n",
         wrapper_name, param_decl
     ));
     out.push_str(&format!(
@@ -1725,7 +1911,7 @@ fn emit_memo_wrapper_rug(
     };
 
     out.push_str(&format!(
-        "fn inner_{}({}) -> Integer {{\n    let _depth_guard = _SomaDepth::enter();\n",
+        "fn inner_{}({}) -> Integer {{\n",
         wrapper_name, param_decl
     ));
     out.push_str(&format!(
@@ -1887,7 +2073,7 @@ fn emit_tab_cell_fn(
         .join(", ");
     let tab_ty = tab_type_for_arity(n_arity);
     out.push_str(&format!(
-        "fn inner_{}({}, _tab: &{}) -> i64 {{\n    let _depth_guard = _SomaDepth::enter();\n",
+        "fn inner_{}({}, _tab: &{}) -> i64 {{\n",
         cell_fn_name, param_decl, tab_ty
     ));
     out.push_str(&render_tab_cell_body(handler).expect("auto_tab_eligible checked the body renders"));
@@ -1917,7 +2103,7 @@ fn emit_tab_entry_fn(
     let tab_ty = tab_type_for_arity(n_arity);
 
     out.push_str(&format!(
-        "fn inner_{}({}) -> i64 {{\n    let _depth_guard = _SomaDepth::enter();\n",
+        "fn inner_{}({}) -> i64 {{\n",
         wrapper_name, param_decl
     ));
     // Negative-input bypass
@@ -2075,6 +2261,7 @@ fn emit_parallel_wrapper(
     parallel: &ParallelConfig,
 ) {
     let n_threads = parallel.threads;
+    let par_name = derived_sym(&handler.signal_name, "par");
     let threads_expr = if n_threads > 0 {
         format!("{}usize", n_threads)
     } else {
@@ -2094,7 +2281,7 @@ fn emit_parallel_wrapper(
     };
 
     out.push_str(&format!(
-        "#[no_mangle]\npub extern \"C\" fn {fn_name}_par({full_param_str}) -> {} {{\n\
+        "#[no_mangle]\npub extern \"C\" fn {par_name}({full_param_str}) -> {} {{\n\
         \tlet _n_threads = {threads_expr};\n\
         \tlet _total = {first_param} as usize;\n\
         \tif _total < _n_threads * 1000 {{\n\
@@ -2125,11 +2312,11 @@ fn emit_array_wrapper(
     ret_type: NativeType,
     is_parallel: bool,
 ) {
-    let suffix = if is_parallel { "_par_arr" } else { "_arr" };
-    let inner = if is_parallel { format!("{}_par", fn_name) } else { fn_name.to_string() };
+    let exported = derived_sym(&handler.signal_name, if is_parallel { "par_arr" } else { "arr" });
+    let inner = if is_parallel { derived_sym(&handler.signal_name, "par") } else { fn_name.to_string() };
     // Args are passed as raw u64 bits to preserve full i64 / f64 precision
     // (a previous f64-array design lost precision for i64 values > 2^53).
-    out.push_str(&format!("#[no_mangle]\npub extern \"C\" fn {}{}(args: *const u64, _count: i64) -> u64 {{\n", fn_name, suffix));
+    out.push_str(&format!("#[no_mangle]\npub extern \"C\" fn {}(args: *const u64, _count: i64) -> u64 {{\n", exported));
     out.push_str("    unsafe {\n");
     let call_args: Vec<String> = handler.params.iter().enumerate().map(|(i, p)| {
         let ty = type_expr_to_native(&p.ty.node);
@@ -2990,11 +3177,16 @@ fn walk_expr_postorder(e: &mut Expr, visit: &mut dyn FnMut(&mut Expr)) {
 /// Collect every CSE-able call form found in `e` (post-order). A form
 /// is the canonical text rendering. Each form is recorded once per call
 /// site occurrence — duplicates expected.
+/// `busy`: something evaluated earlier in the same statement may have an
+/// effect or fail (a call, a division). A call evaluated after it cannot
+/// be hoisted above the statement: `write_str("A") + str_at(s, i)` raised
+/// str_at's error before writing "A".
 fn collect_cse_forms_in_expr(
     e: &Expr,
     siblings: &HashSet<String>,
     reassigned: &HashSet<String>,
     always: bool,
+    busy: &mut bool,
     out: &mut Vec<(String, Spanned<Expr>, bool)>,
 ) {
     match e {
@@ -3003,18 +3195,24 @@ fn collect_cse_forms_in_expr(
         // str_at's error behind `i < 3 &&`, and recursed forever behind
         // `n <= 0 ||`)
         Expr::BinaryOp { left, op: BinOp::And | BinOp::Or, right } => {
-            collect_cse_forms_in_expr(&left.node, siblings, reassigned, always, out);
-            collect_cse_forms_in_expr(&right.node, siblings, reassigned, false, out);
+            collect_cse_forms_in_expr(&left.node, siblings, reassigned, always, busy, out);
+            collect_cse_forms_in_expr(&right.node, siblings, reassigned, false, busy, out);
         }
-        Expr::BinaryOp { left, right, .. } | Expr::CmpOp { left, right, .. } => {
-            collect_cse_forms_in_expr(&left.node, siblings, reassigned, always, out);
-            collect_cse_forms_in_expr(&right.node, siblings, reassigned, always, out);
+        Expr::BinaryOp { left, op, right } => {
+            collect_cse_forms_in_expr(&left.node, siblings, reassigned, always, busy, out);
+            collect_cse_forms_in_expr(&right.node, siblings, reassigned, always, busy, out);
+            if matches!(op, BinOp::Div | BinOp::Mod) { *busy = true; }
         }
-        Expr::Not(inner) => collect_cse_forms_in_expr(&inner.node, siblings, reassigned, always, out),
+        Expr::CmpOp { left, right, .. } => {
+            collect_cse_forms_in_expr(&left.node, siblings, reassigned, always, busy, out);
+            collect_cse_forms_in_expr(&right.node, siblings, reassigned, always, busy, out);
+        }
+        Expr::Not(inner) => collect_cse_forms_in_expr(&inner.node, siblings, reassigned, always, busy, out),
         Expr::FnCall { name, args } => {
+            let first = !*busy;
             // Recurse first (children may have their own CSE-able calls)
             for a in args.iter() {
-                collect_cse_forms_in_expr(&a.node, siblings, reassigned, always, out);
+                collect_cse_forms_in_expr(&a.node, siblings, reassigned, always, busy, out);
             }
             if is_pure_callee(name, siblings)
                 && args.iter().all(|a| expr_is_cse_safe(&a.node, reassigned))
@@ -3023,8 +3221,9 @@ fn collect_cse_forms_in_expr(
                 out.push((form, Spanned {
                     node: e.clone(),
                     span: Span::new(0, 0),
-                }, always));
+                }, always && first));
             }
+            *busy = true;
         }
         _ => {}
     }
@@ -3068,7 +3267,7 @@ fn apply_cse_rewrite(h: &mut NativeHandler, siblings: &HashSet<String>) {
         };
         for e in exprs {
             let mut found = Vec::new();
-            collect_cse_forms_in_expr(e, siblings, &reassigned, true, &mut found);
+            collect_cse_forms_in_expr(e, siblings, &reassigned, true, &mut false, &mut found);
             for (form, sample, always) in found {
                 *counts.entry(form.clone()).or_insert(0) += 1;
                 // hoisted before the first statement that ALWAYS evaluates
@@ -3557,7 +3756,7 @@ impl FnGenerator {
     }
 
     fn err(&self, msg: impl Into<String>) {
-        let m = format!("[{}] {}", self.handler_name, msg.into());
+        let m = format!("[{}] {}", self.handler_name, user_facing_names(&msg.into()));
         self.errors.borrow_mut().push(m);
     }
 
@@ -3602,18 +3801,33 @@ impl FnGenerator {
         // an Integer. (The old rules kept `x = fact(30)`, `y * 2^32` and
         // `k = x  x = x + k` as i64 and overflowed inside the BigInt
         // fallback itself.)
+        // a `for` variable is bounded by its range: i in [a, b) — at most
+        // max(|a|, |b|), and (the rule `i = i + 1` in a while follows) at
+        // most 2^32 steps past a. A range that is not `range(a, b)` keeps
+        // the variable an Integer. (Excluding every loop variable made a
+        // BigInt-mode `for` 60-140x slower than the same `while`.)
         let mut loop_vars: HashSet<String> = HashSet::new();
-        fn for_vars(body: &[Spanned<Statement>], out: &mut HashSet<String>) {
+        let mut for_ranges: HashMap<String, (Expr, Expr)> = HashMap::new();
+        fn for_vars(body: &[Spanned<Statement>], out: &mut HashSet<String>, ranges: &mut HashMap<String, (Expr, Expr)>) {
             for st in body {
                 match &st.node {
-                    Statement::For { var, body, .. } => { out.insert(var.clone()); for_vars(body, out); }
-                    Statement::While { body, .. } => for_vars(body, out),
-                    Statement::If { then_body, else_body, .. } => { for_vars(then_body, out); for_vars(else_body, out); }
+                    Statement::For { var, iter, body, .. } => {
+                        match &iter.node {
+                            Expr::FnCall { name, args } if name == "range" && args.len() == 2 && !ranges.contains_key(var) => {
+                                ranges.insert(var.clone(), (args[0].node.clone(), args[1].node.clone()));
+                            }
+                            _ => { out.insert(var.clone()); }
+                        }
+                        for_vars(body, out, ranges);
+                    }
+                    Statement::While { body, .. } => for_vars(body, out, ranges),
+                    Statement::If { then_body, else_body, .. } => { for_vars(then_body, out, ranges); for_vars(else_body, out, ranges); }
                     _ => {}
                 }
             }
         }
-        for_vars(body, &mut loop_vars);
+        for_vars(body, &mut loop_vars, &mut for_ranges);
+        for v in &loop_vars { for_ranges.remove(v); }
         let mut assigns: Vec<(String, Expr)> = Vec::new();
         fn collect_assigns(body: &[Spanned<Statement>], out: &mut Vec<(String, Expr)>) {
             for st in body {
@@ -3627,8 +3841,9 @@ impl FnGenerator {
         }
         collect_assigns(body, &mut assigns);
         let mut bounds: HashMap<String, u32> = HashMap::new();
-        for (name, _) in &assigns {
-            if self.var_types.get(name).copied() == Some(NativeType::Int)
+        for name in assigns.iter().map(|(n, _)| n).chain(for_ranges.keys()) {
+            if self.var_types.get(name).copied().unwrap_or(NativeType::Int) == NativeType::Int
+                && (self.var_types.contains_key(name) || for_ranges.contains_key(name))
                 && !int_params.contains(name) && !loop_vars.contains(name)
                 && !self.param_names.contains(name)
             {
@@ -3639,7 +3854,13 @@ impl FnGenerator {
             let mut changed = false;
             let names: Vec<String> = { let mut v: Vec<String> = bounds.keys().cloned().collect(); v.sort(); v };
             for v in names {
-                let mut base: Option<u32> = Some(0);
+                let mut base: Option<u32> = match for_ranges.get(&v) {
+                    Some((a, b)) => Self::int_bits(a, &bounds, &self.var_types, 62).map(|ba| {
+                        let steps = ba.max(32) + 1;
+                        match Self::int_bits(b, &bounds, &self.var_types, 62) { Some(bb) => ba.max(bb).min(steps), None => steps }
+                    }),
+                    None => Some(0),
+                };
                 let mut grows = false;
                 for (name, rhs) in &assigns {
                     if name != &v { continue; }
@@ -3673,8 +3894,16 @@ impl FnGenerator {
     /// big local, a sibling's result, an unknown call) or when any
     /// sub-expression may need more than `cap` bits.
     fn int_bits(e: &Expr, bounds: &HashMap<String, u32>, var_types: &HashMap<String, NativeType>, cap: u32) -> Option<u32> {
+        Self::int_bits_x(e, bounds, var_types, cap, false)
+    }
+
+    /// `strict`: also every argument of bit_test / bit_len / bit_next is
+    /// bounded — the expression then evaluates in i64 as a whole. Without
+    /// it only the RESULT is bounded (`bit_len(x)` of a BigInt x is small,
+    /// but computing it takes x as an Integer).
+    fn int_bits_x(e: &Expr, bounds: &HashMap<String, u32>, var_types: &HashMap<String, NativeType>, cap: u32, strict: bool) -> Option<u32> {
         let bits_of = |n: i64| 64 - n.unsigned_abs().leading_zeros();
-        let r = |x: &Spanned<Expr>| Self::int_bits(&x.node, bounds, var_types, cap);
+        let r = |x: &Spanned<Expr>| Self::int_bits_x(&x.node, bounds, var_types, cap, strict);
         let b = match e {
             Expr::Literal(Literal::Int(n)) => bits_of(*n),
             Expr::Literal(Literal::Bool(_)) => 1,
@@ -3697,10 +3926,12 @@ impl FnGenerator {
             Expr::FnCall { name, args } => {
                 let a = |i: usize| args.get(i).and_then(|x| r(x));
                 let lit = |i: usize| match args.get(i).map(|x| &x.node) { Some(Expr::Literal(Literal::Int(k))) => Some(*k), _ => None };
+                let args_ok = || !strict || args.iter().all(|x| r(x).is_some());
                 match name.as_str() {
-                    "bit_test" => 1,
-                    "bit_len" => 7,
-                    "bit_next" => 26,
+                    // a bit index is at most 2^24 (_soma_bit_index)
+                    "bit_test" => { if !args_ok() { return None; } 1 }
+                    "bit_len" => { if !args_ok() { return None; } 25 }
+                    "bit_next" => { if !args_ok() { return None; } 26 }
                     "band" | "bor" | "bxor" | "gcd" | "min" | "max" if args.len() == 2 => a(0)?.max(a(1)?),
                     "bnot" if args.len() == 1 => a(0)? + 1,
                     "abs" | "idiv" | "shr" if !args.is_empty() => { for i in 1..args.len() { a(i)?; } a(0)? }
@@ -3765,7 +3996,7 @@ impl FnGenerator {
             },
             Expr::FnCall { name, args } => match name.as_str() {
                 "bit_test" => (0, 1),
-                "bit_len" => (0, 7),
+                "bit_len" => (0, 25),
                 "bit_next" => (0, 26),
                 "abs" | "min" | "max" | "band" | "bor" | "bxor" | "gcd" | "idiv" | "shr" | "sqrt_int" => {
                     let mut acc = (0u32, 0u32);
@@ -4501,7 +4732,7 @@ impl FnGenerator {
                     }
                 }
                 let ty = self.var_types.get(name).copied().unwrap_or(NativeType::Float);
-                let expr = self.gen_expr_direct(&value.node, ty);
+                let expr = self.string_copy(&value.node, ty).unwrap_or_else(|| self.gen_expr_direct(&value.node, ty));
                 format!("{}let mut {}: {} = {};\n", ind, name, ty.rust_str(), expr)
             }
             Statement::Assign { name, value } => {
@@ -4539,7 +4770,7 @@ impl FnGenerator {
                         }
                     }
                 }
-                let expr = self.gen_expr_direct(&value.node, ty);
+                let expr = self.string_copy(&value.node, ty).unwrap_or_else(|| self.gen_expr_direct(&value.node, ty));
                 format!("{}{} = {};\n", ind, name, expr)
             }
             Statement::Return { value } => {
@@ -4638,7 +4869,7 @@ impl FnGenerator {
                     if fname == "hm_inc" && args.len() == 2 {
                         if let Expr::Ident(hm) = &args[0].node {
                             let k = self.gen_expr_direct(&args[1].node, NativeType::Int);
-                            return format!("{}*{}.entry({}).or_insert(0i64) += 1;\n", ind, hm, k);
+                            return format!("{}_soma_hm_inc(&mut {}, {});\n", ind, hm, k);
                         }
                     }
                     if fname == "sb_push" && args.len() == 2 {
@@ -4676,6 +4907,17 @@ impl FnGenerator {
                 self.err(format!("unsupported statement in Direct mode: {:?}", other));
                 format!("{}// codegen error\n", ind)
             }
+        }
+    }
+
+    /// `let b = a` / `b = a` of a String: a copy, never a move (the source
+    /// is still read after — rustc E0382), and owned when the source is a
+    /// `&str` parameter (E0308).
+    fn string_copy(&self, value: &Expr, ty: NativeType) -> Option<String> {
+        match value {
+            Expr::Ident(src) if ty == NativeType::String
+                && self.var_types.get(src).copied() == Some(NativeType::String) => Some(format!("{}.to_string()", src)),
+            _ => None,
         }
     }
 
@@ -5060,7 +5302,7 @@ impl FnGenerator {
             "hm_inc" if args.len() == 2 => {
                 if let Expr::Ident(hm) = &args[0].node {
                     let k = self.gen_expr_direct(&args[1].node, NativeType::Int);
-                    return format!("{{ *{}.entry({}).or_insert(0i64) += 1; 0i64 }}", hm, k);
+                    return format!("{{ _soma_hm_inc(&mut {}, {}); 0i64 }}", hm, k);
                 }
                 self.err("hm_inc: first arg must be an identifier");
                 "0i64".to_string()
@@ -5185,8 +5427,9 @@ impl FnGenerator {
             }
             "write_str" if args.len() == 1 => {
                 let s = self.gen_expr_direct(&args[0].node, NativeType::String);
-                // flush: the dylib has its own stdout buffer the host never drains
-                return format!("{{ _soma_write_str(&{}); 0i64 }}", s);
+                // flush: the dylib has its own stdout buffer the host never
+                // drains; the answer is the byte count, as interpreted
+                return self.coerce_direct(format!("_soma_write_str(&{})", s), NativeType::Int, target_ty);
             }
             // random(max) / random(min, max) are Ints, like the interpreter
             "random" if args.len() == 1 => {
@@ -5527,7 +5770,7 @@ impl FnGenerator {
             })
             .collect();
         let inner_name = if calling_fast_variant {
-            format!("inner_handler_{}_fast", name)
+            format!("inner_{}", derived_sym(name, "fast"))
         } else {
             format!("inner_handler_{}", name)
         };
@@ -5607,7 +5850,7 @@ impl FnGenerator {
                 if self.buf_vars.contains(name) {
                     if let Expr::FnCall { name: fname, args } = value.node.clone() {
                         if fname == "buffer" && args.len() == 1 {
-                            let n_expr = self.gen_expr_direct(&args[0].node, NativeType::Int);
+                            let n_expr = self.gen_int_to_i64_rug(&args[0].node);
                             return format!(
                                 "{}let mut {}: Vec<i64> = vec![0i64; _soma_buf_len({})];\n",
                                 ind, name, n_expr
@@ -5618,7 +5861,7 @@ impl FnGenerator {
                 if self.buf_f_vars.contains(name) {
                     if let Expr::FnCall { name: fname, args } = value.node.clone() {
                         if fname == "buffer_f" && args.len() == 1 {
-                            let n_expr = self.gen_expr_direct(&args[0].node, NativeType::Int);
+                            let n_expr = self.gen_int_to_i64_rug(&args[0].node);
                             return format!(
                                 "{}let mut {}: Vec<f64> = vec![0.0f64; _soma_buf_len({})];\n",
                                 ind, name, n_expr
@@ -5639,7 +5882,7 @@ impl FnGenerator {
                 if self.sb_vars.contains(name) {
                     if let Expr::FnCall { name: fname, args } = value.node.clone() {
                         if fname == "strbuf" && args.len() <= 1 {
-                            let cap = args.first().map(|a| self.gen_expr_direct(&a.node, NativeType::Int)).unwrap_or_else(|| "64i64".to_string());
+                            let cap = args.first().map(|a| self.gen_int_to_i64_rug(&a.node)).unwrap_or_else(|| "64i64".to_string());
                             return format!(
                                 "{}let mut {}: String = String::with_capacity(({}) as usize);\n",
                                 ind, name, cap
@@ -5750,7 +5993,7 @@ impl FnGenerator {
                 if let Expr::FnCall { name: fname, args } = &expr.node {
                     if fname == "buf_set" && args.len() == 3 {
                         if let Expr::Ident(buf_name) = &args[0].node {
-                            let i = self.gen_expr_direct(&args[1].node, NativeType::Int);
+                            let i = self.gen_int_to_i64_rug(&args[1].node);
                             // BigInt arithmetic for the value (this body is the
                             // retry after an i64 overflow): a Buf holds 64-bit
                             // Ints, so a value that does not fit is a `range`
@@ -5764,7 +6007,7 @@ impl FnGenerator {
                     }
                     if fname == "buf_set_f" && args.len() == 3 {
                         if let Expr::Ident(buf_name) = &args[0].node {
-                            let i = self.gen_expr_direct(&args[1].node, NativeType::Int);
+                            let i = self.gen_int_to_i64_rug(&args[1].node);
                             let v = self.gen_expr_direct(&args[2].node, NativeType::Float);
                             return format!(
                                 "{}{}[({}) as usize] = {};\n",
@@ -5782,7 +6025,7 @@ impl FnGenerator {
                     if fname == "hm_inc" && args.len() == 2 {
                         if let Expr::Ident(hm) = &args[0].node {
                             let k = self.gen_hm_key_rug(&args[1].node);
-                            return format!("{}*{}.entry({}).or_insert(0i64) += 1;\n", ind, hm, k);
+                            return format!("{}_soma_hm_inc(&mut {}, {});\n", ind, hm, k);
                         }
                     }
                 }
@@ -5800,7 +6043,7 @@ impl FnGenerator {
     fn gen_let_rug(&self, name: &str, ty: NativeType, value: &Expr, ind: &str) -> String {
         match ty {
             NativeType::Int if self.small_int_vars.contains(name) => {
-                let expr = self.gen_expr_direct(value, NativeType::Int);
+                let expr = self.gen_small_int_value(value);
                 format!("{}let mut {}: i64 = {};\n", ind, name, expr)
             }
             NativeType::Int => {
@@ -5822,6 +6065,17 @@ impl FnGenerator {
         }
     }
 
+    /// The value of a small (i64) Int local in Rug mode. Its RESULT is
+    /// bounded, but its operands may not be: `let L = bit_len(x)` of a
+    /// BigInt x computes on the Integer, then narrows (it raised "an Int
+    /// past 64 bits" through the i64 lowering).
+    fn gen_small_int_value(&self, value: &Expr) -> String {
+        if self.is_small_int_expr(value) || self.infer_expr_type(value) != NativeType::Int {
+            return self.gen_expr_direct(value, NativeType::Int);
+        }
+        format!("({{ let _v: Integer = {}; _v.to_i64().expect(\"BigInt overflow\") }})", self.gen_expr_rug(value))
+    }
+
     /// Type-dispatched `name = value` assignment in Rug mode.
     /// `rest` is the slice of statements that follow this Assign in the
     /// same body — used by the swap optimization to check whether the
@@ -5836,7 +6090,7 @@ impl FnGenerator {
     ) -> String {
         match ty {
             NativeType::Int if self.small_int_vars.contains(name) => {
-                let expr = self.gen_expr_direct(value, NativeType::Int);
+                let expr = self.gen_small_int_value(value);
                 format!("{}{} = {};\n", ind, name, expr)
             }
             NativeType::Int => self.gen_assign_rug(name, value, ind, rest),
@@ -6117,7 +6371,7 @@ impl FnGenerator {
         // a product is capped as interpreted (x = x * x over a client
         // number grew to gigabytes)
         if matches!(op, BinOp::Mul) {
-            return format!("_soma_bits_cap(Integer::from({} {} {}))", l, op_str, r);
+            return format!("{{ let (_ma, _mb) = ({}, {}); _soma_mul_ck(&_ma, &_mb); _soma_bits_cap(Integer::from(_ma * _mb)) }}", l, r);
         }
         format!("Integer::from({} {} {})", l, op_str, r)
     }
@@ -6149,6 +6403,11 @@ impl FnGenerator {
                     if self.is_small_int_expr(&left.node) && self.is_small_int_expr(&right.node) {
                         return self.gen_binop_rug(&left.node, *op, &right.node);
                     }
+                    // a product is size-checked first: in place only over
+                    // plain operands (the caller emits the check)
+                    if matches!(op, BinOp::Mul) && self.mul_precheck(expr, "").is_none() {
+                        return self.gen_expr_rug(expr);
+                    }
                     let l = self.gen_expr_rug_operand(&left.node);
                     let r = self.gen_expr_rug_operand(&right.node);
                     format!("{} {} {}", l, op_str, r)
@@ -6158,6 +6417,21 @@ impl FnGenerator {
             }
             _ => self.gen_expr_rug(expr),
         }
+    }
+
+    /// `_soma_mul_ck(…);` before an in-place `x.assign(a * b)` of plain
+    /// operands (an Int local or literal each); None for anything else.
+    fn mul_precheck(&self, value: &Expr, ind: &str) -> Option<String> {
+        let Expr::BinaryOp { left, op: BinOp::Mul, right } = value else { return None };
+        let plain = |e: &Expr| matches!(e, Expr::Literal(Literal::Int(_)))
+            || matches!(e, Expr::Ident(n) if self.var_types.get(n).copied() == Some(NativeType::Int));
+        if !plain(&left.node) || !plain(&right.node) { return None; }
+        if self.infer_expr_type(&left.node) != NativeType::Int || self.infer_expr_type(&right.node) != NativeType::Int { return None; }
+        let op = |e: &Expr| match e {
+            Expr::Literal(Literal::Int(n)) => format!("{}i64", n),
+            _ => self.gen_expr_rug_ref(e),
+        };
+        Some(format!("{}_soma_mul_ck(&{}, &{});\n", ind, op(&left.node), op(&right.node)))
     }
 
     /// Convert a Rug-mode Int expression to an i64 (for use as a usize index, etc.)
@@ -6173,17 +6447,23 @@ impl FnGenerator {
                         format!("{}.to_i64().unwrap_or_else(|| panic!(\"{}\"))", name, BIG_BOUND)
                     }
                 } else {
-                    format!("{} as i64", name)
+                    // never `as i64` for a Float (it truncated)
+                    self.gen_expr_direct(expr, NativeType::Int)
                 }
             }
-            Expr::BinaryOp { left, op, right } => {
+            // operands that fit i64 as a whole: i64 arithmetic
+            Expr::BinaryOp { left, op, right } if self.is_small_int_expr(expr) => {
                 let l = self.gen_int_to_i64_rug(&left.node);
                 let r = self.gen_int_to_i64_rug(&right.node);
                 // an index `i / 2` is exact or an error, as everywhere
                 if matches!(op, BinOp::Div) { return format!("_soma_div_exact({}, {})", l, r); }
                 format!("({} {} {})", l, arith_op_str(*op), r)
             }
-            _ => format!("{}.to_i64().unwrap_or_else(|| panic!(\"{}\"))", self.gen_expr_rug(expr), BIG_BOUND),
+            // otherwise the VALUE is narrowed, not each operand: `big % 10`
+            // is a fine index of a BigInt (it raised "must fit in 64 bits")
+            _ if self.infer_expr_type(expr) == NativeType::Int =>
+                format!("({{ let _v: Integer = {}; _v.to_i64().unwrap_or_else(|| panic!(\"{}\")) }})", self.gen_expr_rug(expr), BIG_BOUND),
+            _ => self.gen_expr_direct(expr, NativeType::Int),
         }
     }
 
@@ -6252,6 +6532,11 @@ impl FnGenerator {
     /// Initialize a hoisted Integer with `name = value`.
     /// Unlike gen_assign_rug, this does NOT swap (Let statements must
     /// preserve the source value for later reads).
+    ///
+    /// Every product is held to the Int size cap BEFORE it is computed
+    /// (`_soma_mul_ck`, as interpreted: a `let` product in a loop had no
+    /// cap, and a check of the result after the fact also refused
+    /// `a * b + c` when only the sum passed 2^24 bits).
     fn gen_init_rug(&self, name: &str, value: &Expr, ind: &str) -> String {
         // Literal: assign(N)
         if let Expr::Literal(Literal::Int(n)) = value {
@@ -6274,8 +6559,11 @@ impl FnGenerator {
             return format!("{}{{ let mut _t: Integer = {}; std::mem::swap(&mut {}, &mut _t); }}\n", ind, expr, name);
         }
         // General: assign from incomplete expression
+        let pre = if matches!(value, Expr::BinaryOp { op: BinOp::Mul, left, right } if !(self.is_small_int_expr(&left.node) && self.is_small_int_expr(&right.node))) {
+            self.mul_precheck(value, ind).unwrap_or_default()
+        } else { String::new() };
         let expr = self.gen_expr_rug_incomplete(value);
-        format!("{}{}.assign({});\n", ind, name, expr)
+        format!("{}{}{}.assign({});\n", pre, ind, name, expr)
     }
 
     /// Efficient in-place Integer assignment for `name = value` (Rug mode).
@@ -6297,14 +6585,9 @@ impl FnGenerator {
         ind: &str,
         rest: &[Spanned<Statement>],
     ) -> String {
-        let code = self.gen_assign_rug_uncapped(name, value, ind, rest);
         // a product assigned in place (`x = x * x` → square_mut, `x = x * y`
-        // → assign) is held to the Int size cap as interpreted
-        let mut has_mul = false;
-        crate::checker::literals::for_each_in_expr(value, &mut |e| if matches!(e, Expr::BinaryOp { op: BinOp::Mul, .. }) { has_mul = true; });
-        if has_mul {
-            format!("{}{}if {}.significant_bits() > (1u32 << 24) {{ panic!(\"soma:range: an Int of {{}} bits is past the limit of {{}} bits\", {}.significant_bits(), 1u32 << 24) }}\n", code, ind, name, name)
-        } else { code }
+        // → assign) is size-checked first, as every product (_soma_mul_ck)
+        self.gen_assign_rug_uncapped(name, value, ind, rest)
     }
 
     fn gen_assign_rug_uncapped(
@@ -6360,8 +6643,11 @@ impl FnGenerator {
             );
         }
 
+        let pre = if matches!(value, Expr::BinaryOp { op: BinOp::Mul, left, right } if !(self.is_small_int_expr(&left.node) && self.is_small_int_expr(&right.node))) {
+            self.mul_precheck(value, ind).unwrap_or_default()
+        } else { String::new() };
         let expr = self.gen_expr_rug_incomplete(value);
-        format!("{}{}.assign({});\n", ind, name, expr)
+        format!("{}{}{}.assign({});\n", pre, ind, name, expr)
     }
 
     /// Match `name = bit_set(name, i)` or `name = bit_clr(name, i)` and
@@ -6387,7 +6673,7 @@ impl FnGenerator {
         if let Expr::BinaryOp { left, op: BinOp::Mul, right } = value {
             if let (Expr::Ident(ln), Expr::Ident(rn)) = (&left.node, &right.node) {
                 if ln == name && rn == name {
-                    return Some(format!("{}{}.square_mut();\n", ind, name));
+                    return Some(format!("{}_soma_mul_ck(&{}, &{}); {}.square_mut();\n", ind, name, name, name));
                 }
             }
         }
@@ -6417,9 +6703,15 @@ impl FnGenerator {
                 // Integer.
                 if self.is_small_int_expr(&right.node) {
                     let r = self.gen_expr_direct(&right.node, NativeType::Int);
+                    if matches!(op, BinOp::Mul) {
+                        return Some(format!("{}{{ let _mr: i64 = {}; _soma_mul_ck(&{}, &_mr); {} *= _mr; }}\n", ind, r, name, name));
+                    }
                     return Some(format!("{}{} {} ({});\n", ind, name, op_assign, r));
                 }
                 let r = self.gen_expr_rug_ref(&right.node);
+                if matches!(op, BinOp::Mul) {
+                    return Some(format!("{}{{ let _mr = {}; _soma_mul_ck(&{}, &_mr); {} *= _mr; }}\n", ind, r, name, name));
+                }
                 return Some(format!("{}{} {} {};\n", ind, name, op_assign, r));
             }
         }
@@ -6430,9 +6722,15 @@ impl FnGenerator {
                 if rname == name && !Self::expr_references(&left.node, name) {
                     if self.is_small_int_expr(&left.node) {
                         let l = self.gen_expr_direct(&left.node, NativeType::Int);
+                        if matches!(op, BinOp::Mul) {
+                            return Some(format!("{}{{ let _ml: i64 = {}; _soma_mul_ck(&_ml, &{}); {} *= _ml; }}\n", ind, l, name, name));
+                        }
                         return Some(format!("{}{} {} ({});\n", ind, name, op_assign, l));
                     }
                     let l = self.gen_expr_rug_ref(&left.node);
+                    if matches!(op, BinOp::Mul) {
+                        return Some(format!("{}{{ let _ml = {}; _soma_mul_ck(&_ml, &{}); {} *= _ml; }}\n", ind, l, name, name));
+                    }
                     return Some(format!("{}{} {} {};\n", ind, name, op_assign, l));
                 }
             }
@@ -6455,16 +6753,19 @@ impl FnGenerator {
                             (CmpOp::Eq, 0) | (CmpOp::Ne, 1) => false,
                             _ => return self.gen_cond_rug_general(expr),
                         };
-                        let i = self.gen_int_to_i64_rug(&args[1].node);
+                        // the index is checked as bit_test's own (a negative
+                        // one read bit 4294967295; a small local shifted by
+                        // 64+ panicked "shift right with overflow")
+                        let i = format!("_soma_bit_index({}, \"bit_test\")", self.gen_int_to_i64_rug(&args[1].node));
                         let getbit = if let Expr::Ident(name) = &args[0].node {
                             if self.small_int_vars.contains(name) {
-                                format!("(((({}) >> ({})) & 1i64) != 0)", name, i)
+                                format!("{{ let (_k, _a): (i64, i64) = ({}, {}); if _k >= 64 {{ _a < 0 }} else {{ ((_a >> _k) & 1i64) != 0 }} }}", i, name)
                             } else {
                                 format!("{}.get_bit(({}) as u32)", name, i)
                             }
                         } else {
                             let a = self.gen_expr_rug(&args[0].node);
-                            format!("({}).get_bit(({}) as u32)", a, i)
+                            format!("{{ let _a: Integer = {}; _a.get_bit(({}) as u32) }}", a, i)
                         };
                         return if want_one { getbit } else { format!("!({})", getbit) };
                     }
@@ -6559,7 +6860,7 @@ impl FnGenerator {
     /// so; `(0 - 9223372036854775807 - 1) * -1` is not).
     fn is_small_int_expr(&self, expr: &Expr) -> bool {
         if matches!(expr, Expr::Literal(Literal::Int(_))) { return true; }
-        Self::int_bits(expr, &self.small_int_bits, &self.var_types, 63).is_some()
+        Self::int_bits_x(expr, &self.small_int_bits, &self.var_types, 63, true).is_some()
     }
 
     fn gen_cmp_operand_rug(&self, expr: &Expr) -> String {
@@ -6676,7 +6977,7 @@ impl FnGenerator {
             // (callers in Rug mode expect Integer return values).
             "buf_get" if args.len() == 2 => {
                 if let Expr::Ident(buf_name) = &args[0].node {
-                    let i = self.gen_expr_direct(&args[1].node, NativeType::Int);
+                    let i = self.gen_int_to_i64_rug(&args[1].node);
                     return format!("Integer::from({}[({}) as usize])", buf_name, i);
                 }
                 self.err("buf_get: first arg must be an identifier");
@@ -6684,7 +6985,7 @@ impl FnGenerator {
             }
             "buf_set" if args.len() == 3 => {
                 if let Expr::Ident(buf_name) = &args[0].node {
-                    let i = self.gen_expr_direct(&args[1].node, NativeType::Int);
+                    let i = self.gen_int_to_i64_rug(&args[1].node);
                     // the value in BigInt arithmetic (this is the retry after
                     // an i64 overflow): a Buf holds 64-bit Ints, so a value
                     // that does not fit is a clear `range` error, not a
@@ -6701,7 +7002,7 @@ impl FnGenerator {
             // buf_get_f / buf_set_f — float buffer accessors
             "buf_get_f" if args.len() == 2 => {
                 if let Expr::Ident(buf_name) = &args[0].node {
-                    let i = self.gen_expr_direct(&args[1].node, NativeType::Int);
+                    let i = self.gen_int_to_i64_rug(&args[1].node);
                     return format!("_soma_f2big({}[({}) as usize])", buf_name, i);
                 }
                 self.err("buf_get_f: first arg must be an identifier");
@@ -6709,7 +7010,7 @@ impl FnGenerator {
             }
             "buf_set_f" if args.len() == 3 => {
                 if let Expr::Ident(buf_name) = &args[0].node {
-                    let i = self.gen_expr_direct(&args[1].node, NativeType::Int);
+                    let i = self.gen_int_to_i64_rug(&args[1].node);
                     let v = self.gen_expr_direct(&args[2].node, NativeType::Float);
                     return format!(
                         "{{ {}[({}) as usize] = {}; Integer::from(0i64) }}",
@@ -6740,7 +7041,7 @@ impl FnGenerator {
             "hm_inc" if args.len() == 2 => {
                 if let Expr::Ident(hm) = &args[0].node {
                     let k = self.gen_hm_key_rug(&args[1].node);
-                    return format!("{{ *{}.entry({}).or_insert(0i64) += 1; Integer::from(0i64) }}", hm, k);
+                    return format!("{{ _soma_hm_inc(&mut {}, {}); Integer::from(0i64) }}", hm, k);
                 }
                 self.err("hm_inc: first arg must be an identifier");
                 "Integer::from(0i64)".to_string()
@@ -6792,10 +7093,10 @@ impl FnGenerator {
                 self.err("sb_len: first arg must be an identifier");
                 "Integer::from(0i64)".to_string()
             }
-            // write_str: side-effecting, returns 0
+            // write_str: side-effecting, answers the byte count
             "write_str" if args.len() == 1 => {
                 let s = self.gen_expr_rug_string(&args[0].node);
-                return format!("{{ _soma_write_str(&{}); Integer::from(0i64) }}", s);
+                return format!("Integer::from(_soma_write_str(&{}))", s);
             }
             // Regex count/match in Rug mode
             "regex_count" if args.len() == 2 => {
@@ -7285,8 +7586,11 @@ fn rust_str_body(s: &str) -> String {
 }
 
 /// `{{` / `}}` in a Soma string literal are one brace, as in the
-/// interpreter (`"a{{b}}c"` printed `a{{b}}c` natively)
+/// interpreter (`"a{{b}}c"` printed `a{{b}}c` natively) — but only in a
+/// literal the interpreter interpolates, one containing `{`: `"a}}b"` is
+/// kept as written there (it collapsed to `a}b` natively)
 fn unbrace(s: &str) -> String {
+    if !s.contains('{') { return s.to_string(); }
     let mut out = String::with_capacity(s.len());
     let mut it = s.chars().peekable();
     while let Some(c) = it.next() {
