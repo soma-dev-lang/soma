@@ -6,7 +6,8 @@
 
 - `soma lint` advised replacing `r.length` with `r.len`: without
   parentheses `r.length` reads the key "length" of a map (5) and `r.len` is
-  its entry count (2). The alias advice is for calls only.
+  its entry count (2). The alias advice is kept where it holds: calls, and
+  a memory slot (`items.length` is its entry count).
 - The if-chain advice ("consider using match") fired for ifs with `else`
   branches, which run for every other value and add up; no `match` gives
   that answer.

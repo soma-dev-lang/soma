@@ -351,9 +351,13 @@ impl<'a> LintPass<'a> {
                     self.check_expr_for_lints(&arg.node, &arg.span, memory_slots);
                 }
             }
-            Expr::FieldAccess { target, .. } => {
-                // no alias advice: without parentheses `r.length` reads the
-                // key "length" of a map, and `r.len` is its entry count
+            Expr::FieldAccess { target, field } => {
+                // on a memory slot `items.length` is the entry count, like
+                // `items.len`; on a map VALUE it reads the key "length" (5)
+                // where `r.len` is the entry count (2): no advice there
+                if matches!(&target.node, Expr::Ident(t) if memory_slots.iter().any(|m| m == t)) {
+                    self.check_alias(field, span, true);
+                }
                 self.check_expr_for_lints(&target.node, &target.span, memory_slots);
             }
             Expr::Pipe { left, right } => {
