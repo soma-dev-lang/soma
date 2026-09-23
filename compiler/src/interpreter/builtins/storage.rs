@@ -103,7 +103,7 @@ pub fn call_builtin(interp: &mut Interpreter, name: &str, args: &[Value], cell_n
                 if matches!(args[0], Value::Unit) {
                     return Some(Err(RuntimeError::TypeError("remember(key, value): the key is () — an absent value (a mistyped field?) cannot be a key".to_string())));
                 }
-                let key = match &interp.horde_instance { Some(i) => instance_key(i, &format!("{}", args[0])), None => format!("{}", args[0]) };
+                let key = match &interp.horde_instance { Some(i) => instance_key(i, &crate::interpreter::key_text(&args[0])), None => crate::interpreter::key_text(&args[0]) };
                 let val = &args[1];
                 if let Err(message) = super::super::validate_storable(val) {
                     return Some(Err(RuntimeError::TypeError(format!("remember(): {}", message))));
@@ -124,7 +124,7 @@ pub fn call_builtin(interp: &mut Interpreter, name: &str, args: &[Value], cell_n
         }
         "recall" => {
             // any key remember() takes (recall(1) after remember(1, v) raised)
-            let text_key = match args.first() { Some(Value::Unit) | None => None, Some(Value::String(k)) => Some(k.clone()), Some(other) => Some(format!("{}", other)) };
+            let text_key = match args.first() { Some(Value::Unit) | None => None, Some(Value::String(k)) => Some(k.clone()), Some(other) => Some(crate::interpreter::key_text(other)) };
             if let Some(key) = text_key.as_ref() {
                 let scoped = interp.horde_instance.as_ref().map(|i| instance_key(i, key));
                 let key = scoped.as_ref().unwrap_or(key);

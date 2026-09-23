@@ -742,6 +742,20 @@ impl<'a> Checker<'a> {
                 }
             }
         }
+        // a transition's `effect { … }` is parsed and never run: its writes
+        // were invisible to verify ("no handler writes") and never happened
+        for cell in crate::checker::names::collect_cells(program) {
+            for sec in &cell.sections {
+                let Section::State(sm) = &sec.node else { continue };
+                for t in &sm.transitions {
+                    if let Some(first) = t.node.effect.first() {
+                        self.errors.push(CheckError::Static { kind: "transition_effect", message: format!(
+                            "the transition {} -> {} has an `effect {{ … }}` block, which this runtime does not run — do that work in the handler, right after its transition()",
+                            t.node.from, t.node.to), span: first.span });
+                    }
+                }
+            }
+        }
         // `[ttl(d)]` and `[evict(lru)]` are accepted and combined by the
         // property rules, but no runtime code expires or evicts: an entry
         // was readable after its ttl and a `capacity(2), evict(lru)` slot
@@ -820,7 +834,11 @@ impl<'a> Checker<'a> {
                         if let Expr::Ident(t) = &target.node {
                             if slots.contains(t.as_str()) || program.cells.iter().any(|c| &c.node.name == t) { return; }
                         }
-                        if own_handlers.contains(method.as_str()) || matches!(method.as_str(), "get" | "has" | "keys" | "values" | "len" | "length") { return; }
+                        // a builtin-named method runs the BUILTIN even when this
+                        // cell has a handler of that name (`"x".pad_left(3, "0", "!")`
+                        // dropped "!"); only get takes a default in method form
+                        let _ = &own_handlers;
+                        if method == "get" { return; }
                         let n = args.len() + 1;
                         if let Some(max) = crate::interpreter::builtins::registry::max_arity(method) {
                             if n > max && reported.insert(format!("{}:{}:{}", method, n, target.span.start)) {

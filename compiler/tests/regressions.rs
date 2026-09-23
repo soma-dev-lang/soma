@@ -6561,3 +6561,45 @@ cell A {
     assert!(out.contains("grows by concatenation") && out.contains("strbuf()") && !out.contains("join(parts"), "{out}");
     let _ = std::fs::remove_dir_all(dir);
 }
+
+#[test]
+fn eighth_pass_core_and_verify() {
+    passes("eighth_pass_core", r#"
+cell P {
+    memory { qty: Map<Int, Int> [ephemeral] }
+    on fast_with() { let m = map()  m = with(m, 3.0, "a")  let w = map(5, "x")  w = without(w, 5.0)  return [m[3], len(w)] }
+    on fast_status() { let r = response(200, "x")  r = with(r, "_status", "abc")  return r }
+    on big_key() { qty.set(99999999999999999999, 1)  return qty.get("99999999999999999999") }
+    on rec() { remember(7.0, "x")  return recall(7) }
+    on typo() { return count_by([map("a", 1)], "zz", 1) }
+    on joined() { return join(["a", ()], ",") }
+}
+cell test T { rules {
+    assert fast_with() == ["a", 0]
+    assert_fails fast_status() matching "_status"
+    assert big_key() == 1
+    assert rec() == "x"
+    assert_fails typo() matching "no row has the field"
+    assert_fails joined() matching "absent value"
+} }
+"#);
+    let dir = scratch("eighth_pass_verify");
+    let v = |name: &str, src: &str| -> String {
+        std::fs::write(dir.join(format!("{name}.cell")), src).unwrap();
+        soma(&dir, &["verify", &format!("{name}.cell")]).1
+    };
+    // a guard reading a slot is not proven by another cell's require on its own slot
+    let out = v("fs", "cell App {\n    memory { cap: Map<String, Int> [persistent] }\n    state flow {\n        initial: draft\n        draft -> approved { guard { amount < cap.get(\"x\") } }\n    }\n    on setcap(n: Int) { cap.set(\"x\", n)  return n }\n}\ncell Force {\n    memory { cap: Map<String, Int> [persistent] }\n    on go(id: String, amount: Int) {\n        require amount < cap.get(\"x\") else Over\n        transition(id, \"approved\")\n        return 1\n    }\n}\n");
+    assert!(out.contains("runtime-checked in `go`"), "{out}");
+    // two every blocks of one interval are both walked
+    let out = v("e1", "cell App {\n    state flow {\n        initial: draft\n        draft -> approved { guard { amount < 1000 } }\n    }\n    every 1s { let amount = 5  require amount < 1000 else Big  transition(\"x\", \"approved\") }\n    every 1s { let amount = 5000  transition(\"y\", \"approved\") }\n}\n");
+    assert!(out.contains("runtime-checked in `every@1000ms#"), "{out}");
+    // a transition effect block is refused (it never ran)
+    let out = v("eff", "cell App {\n    state flow {\n        initial: a\n        a -> b { effect { print(\"x\") } }\n    }\n    on go(id: String) { transition(id, \"b\")  return 1 }\n}\n");
+    assert!(out.contains("does not run"), "{out}");
+    // [deterministic]: a binder named like a slot does not hide a later slot read
+    std::fs::write(dir.join("d.cell"), "cell D {\n    memory { vals: Map<String, Int> [persistent] }\n    on d(x: Int) [deterministic] { let r = [1] |> map(vals => vals)  return x + (vals.get(\"a\") ?? 0) }\n}\n").unwrap();
+    let (_, out) = soma(&dir, &["check", "d.cell"]);
+    assert!(out.contains("reads persistent storage"), "{out}");
+    let _ = std::fs::remove_dir_all(dir);
+}

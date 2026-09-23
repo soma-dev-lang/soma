@@ -185,7 +185,9 @@ fn check_native_handler_renamed(
     if !body_always_returns(body, true) {
         return Err(NativeCheckError {
             handler_name: handler_name.to_string(),
-            reason: "can reach the end of its body without `return` — interpreted it answers () there, which native code cannot hold: a [native] handler must return on every path (end it with `return …`)".to_string(),
+            // (a trailing `if … { a } else { b }` has a value when
+            // interpreted: the old text said it answered (), which was false)
+            reason: "can reach the end of its body without `return` — a [native] handler returns with `return` on every path: write `return …` in each branch (a trailing `if … { a } else { b }` becomes `if … { return a } else { return b }`), and a path that ends without a value (it answers () interpreted) cannot be compiled".to_string(),
         });
     }
     // what codegen refuses, said here (each used to pass check and die in

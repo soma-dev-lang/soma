@@ -84,7 +84,7 @@ pub fn call_builtin(name: &str, args: &[Value]) -> Option<Result<Value, RuntimeE
     }
     // a field no row has is a typo (`sum_by(rows, "zz")` was 0, `max_by` ()),
     // as sort_by refuses it
-    if matches!(name, "sum_by" | "avg_by" | "min_by" | "max_by") && args.len() >= 2 {
+    if matches!(name, "sum_by" | "avg_by" | "min_by" | "max_by" | "count_by" | "filter_by") && args.len() >= 2 {
         if let (Value::List(items), Value::String(field)) = (&args[0], &args[1]) {
             if !items.is_empty() && items.iter().all(|r| row_fields(r).is_some_and(|m| !m.contains_key(field))) {
                 return Some(Err(RuntimeError::Domain { kind: "type".to_string(), message: format!(

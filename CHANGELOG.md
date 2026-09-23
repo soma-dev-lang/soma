@@ -2,6 +2,10 @@
 
 ## Unreleased
 
+### Eighth pass: guards across cells, one name per scheduled block, effect blocks refused, deterministic scopes, fast-path keys and _status
+
+verify: a guard that reads a slot is not proven by a caller of another cell (its require read its own slot of that name, the guard reads the machine cell's); two every/after blocks of one interval are proven one by one (`every@1000ms#3`, the second was never walked); a `!=` guard is decided on values (`-0` and `0`); a transition `effect { … }` block, which the runtime never ran, is refused by check; [deterministic] sees a slot read after a binder of that name, and refuses to_sampled/drop_sampled (a process-wide registry). A [native] handler ending in `if … { a } else { b }` is told to return in each branch (the refusal said it answered (), which was false). `m = with(m, 3.0, …)`, `m |> with(…)` and `w = without(w, 5.0)` normalize Float keys and check `_status` like the call forms. The builtin method arity check applies whatever handlers the cell has (a builtin-named method always runs the builtin). The start-up audit names Map keys an older version wrote for a whole Float ("3.0"). remember/recall normalize keys; a Map<Int, V> slot takes the canonical text of a big Int; count_by/filter_by refuse a field no row has; join refuses a () element.
+
 ### A bare soma run starts the cell with the runtime section
 
 With a helper cell declared above the cell that has `runtime { }` (or `interior`), a bare `soma run app.cell` ran the first cell and the runtime section never ran; it now starts the cell that has the runtime section, else one with an interior.

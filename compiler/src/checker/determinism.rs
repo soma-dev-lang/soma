@@ -42,6 +42,8 @@ fn forbid_reason(name: &str) -> Option<&'static str> {
             Some("performs network I/O"),
         "read_file" | "write_file" | "append_file" | "delete_file" =>
             Some("performs file I/O"),
+        "to_sampled" | "drop_sampled" =>
+            Some("reads and writes a process-wide handle registry"),
         "delegate" =>
             Some("invokes another cell (state outside this handler)"),
         "transition" | "get_status" | "has_state" | "valid_transitions" =>
@@ -100,6 +102,10 @@ fn scan(
     // the names the body BINDS (lets, loop / lambda / match binders) — not
     // the ones it assigns (`bal[k] = 2` writes the slot)
     let mut locals: std::collections::HashSet<String> = handler.params.iter().map(|p| p.name.clone()).collect();
+    // only a parameter hides a slot everywhere in the body: the binders are
+    // scoped (`map(vals => vals)` then `vals.get("a")` read the slot, and the
+    // flat set let it pass)
+    let params: std::collections::HashSet<String> = locals.clone();
     super::invariants::collect_binders_stmts(body, &mut locals);
     crate::checker::literals::for_each_stmt_deep(body, &mut |st| match st {
         Statement::Let { name, .. } => { locals.insert(name.clone()); }
@@ -142,7 +148,7 @@ fn scan(
             // `x.random()` / `ts.now()`: the builtin, called in method form
             else if let Some(reason) = forbid_reason(method) { push(method.clone(), reason.to_string()); }
         }
-        Expr::Ident(n) if slots.contains(n) && !locals.contains(n) =>
+        Expr::Ident(n) if slots.contains(n) && !params.contains(n) =>
             push(format!("the memory slot {}", n), "reads persistent storage (state outside its arguments)".to_string()),
         _ => {}
     });
@@ -151,7 +157,7 @@ fn scan(
         Statement::MethodCall { method, .. } if mutating_method(method) =>
             push(format!(".{}()", method), "mutates persistent storage".to_string()),
         Statement::IndexSet { name, .. } | Statement::Assign { name, .. }
-            if { let root = name.split(|c| c == '.' || c == '[').next().unwrap_or(""); slots.contains(root) && !locals.contains(root) } =>
+            if { let root = name.split(|c| c == '.' || c == '[').next().unwrap_or(""); slots.contains(root) && !params.contains(root) } =>
             push(format!("{} = …", name), "mutates persistent storage".to_string()),
         _ => {}
     });

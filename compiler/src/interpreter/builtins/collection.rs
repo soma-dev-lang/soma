@@ -378,6 +378,11 @@ pub fn call_builtin(name: &str, args: &[Value]) -> Option<Result<Value, RuntimeE
                         return Some(Err(RuntimeError::Domain { kind: "type".to_string(), message: format!(
                             "join(list, sep): the separator is a String, got {} {}", crate::interpreter::value_type_name(&args[1]), args[1]) }));
                     };
+                    // an absent element is not text (`join(["a", ()], ",")` was "a,null")
+                    if let Some(i) = items.iter().position(|v| matches!(v, Value::Unit)) {
+                        return Some(Err(RuntimeError::Domain { kind: "type".to_string(), message: format!(
+                            "join(list, sep): element {} is () — an absent value is not text; drop it or default it first", i) }));
+                    }
                     let parts: Vec<String> = items.iter().map(|v| format!("{}", v)).collect();
                     Some(Ok(Value::String(parts.join(sep))))
                 } else {

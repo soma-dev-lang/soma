@@ -46,6 +46,8 @@ const UNSTABLE_BUILTINS: &[&str] = &[
     "approve", "http_get", "http_post", "http_put", "http_patch", "http_delete", "fetch", "fetch_json",
     "ws_connect", "ws_send", "subscribe", "link", "recall", "remember", "get_status", "has_state", "valid_transitions",
     "transition", "tokens_used", "tokens_remaining", "trace", "delegate",
+    // a process-wide handle registry: to_sampled(A) answered handle 1 then 2
+    "to_sampled", "drop_sampled",
 ];
 
 /// Can two calls of builtin `name` in one handler run answer differently?

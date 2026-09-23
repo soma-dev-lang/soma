@@ -62,9 +62,11 @@ pub fn verify_program(program: &Program) -> Vec<VerifyResult> {
                 // scheduler blocks (`every 1s { … }`, `after 5s { … }`) are
                 // handler bodies too: an undeclared transition target in one
                 // used to pass verify and raise every tick under serve
-                let scheduled: Vec<OnSection> = cell.sections.iter().filter_map(|s| match &s.node {
-                    Section::Every(e) => Some(OnSection { signal_name: format!("every@{}ms", e.interval_ms), params: vec![], body: e.body.clone(), properties: vec![] }),
-                    Section::After(e) => Some(OnSection { signal_name: format!("after@{}ms", e.interval_ms), params: vec![], body: e.body.clone(), properties: vec![] }),
+                // one name per block (`every 1s #2`): two blocks of the same
+                // interval shared `every@1000ms` and only the first was proven
+                let scheduled: Vec<OnSection> = cell.sections.iter().enumerate().filter_map(|(i, s)| match &s.node {
+                    Section::Every(e) => Some(OnSection { signal_name: format!("every@{}ms#{}", e.interval_ms, i), params: vec![], body: e.body.clone(), properties: vec![] }),
+                    Section::After(e) => Some(OnSection { signal_name: format!("after@{}ms#{}", e.interval_ms, i), params: vec![], body: e.body.clone(), properties: vec![] }),
                     _ => None,
                 }).collect();
                 // the every / after ticks of machine-less cells move the
@@ -73,9 +75,9 @@ pub fn verify_program(program: &Program) -> Vec<VerifyResult> {
                 let machine_count = program.cells.iter().filter(|c| c.node.sections.iter().any(|s| matches!(s.node, Section::State(_)))).count();
                 let foreign_scheduled: Vec<(OnSection, Span)> = if machine_count == 1 {
                     program.cells.iter().filter(|c| matches!(c.node.kind, CellKind::Cell | CellKind::Agent) && !c.node.sections.iter().any(|s| matches!(s.node, Section::State(_))))
-                        .flat_map(|c| c.node.sections.iter().filter_map(move |s| match &s.node {
-                            Section::Every(e) => Some((OnSection { signal_name: format!("{}.every@{}ms", c.node.name, e.interval_ms), params: vec![], body: e.body.clone(), properties: vec![] }, s.span)),
-                            Section::After(e) => Some((OnSection { signal_name: format!("{}.after@{}ms", c.node.name, e.interval_ms), params: vec![], body: e.body.clone(), properties: vec![] }, s.span)),
+                        .flat_map(|c| c.node.sections.iter().enumerate().filter_map(move |(i, s)| match &s.node {
+                            Section::Every(e) => Some((OnSection { signal_name: format!("{}.every@{}ms#{}", c.node.name, e.interval_ms, i), params: vec![], body: e.body.clone(), properties: vec![] }, s.span)),
+                            Section::After(e) => Some((OnSection { signal_name: format!("{}.after@{}ms#{}", c.node.name, e.interval_ms, i), params: vec![], body: e.body.clone(), properties: vec![] }, s.span)),
                             _ => None,
                         })).collect()
                 } else { Vec::new() };
@@ -89,6 +91,9 @@ pub fn verify_program(program: &Program) -> Vec<VerifyResult> {
                 // own `appr` was dropped, and its unguarded transition()
                 // escaped the guard and refinement proofs
                 let mut foreign_handlers: Vec<(OnSection, Span)> = Vec::new();
+                // the handlers of OTHER cells (kept under their own name when
+                // it is free): a guard reading a slot is not theirs to prove
+                let mut foreign_names: HashSet<String> = HashSet::new();
                 // the only machine of the program as `soma run`/`serve` see it
                 // (top-level cells) or as the interior runtime sees it (every
                 // cell): either way the machine-less cells' transition()s move it
@@ -98,6 +103,7 @@ pub fn verify_program(program: &Program) -> Vec<VerifyResult> {
                         for s in &other.sections {
                             if let Section::OnSignal(ref on) = s.node {
                                 if handlers.iter().all(|(h, _)| h.signal_name != on.signal_name) {
+                                    foreign_names.insert(on.signal_name.clone());
                                     handlers.push((on, s.span));
                                 } else {
                                     let mut named = on.clone();
@@ -258,7 +264,7 @@ pub fn verify_program(program: &Program) -> Vec<VerifyResult> {
                 }
                 // guards: proven from the calling handler's `require`s (and
                 // enclosing `if`s), or runtime-checked
-                for check in prove_guards(sm, &handlers, &findings) {
+                for check in prove_guards(sm, &handlers, &findings, &foreign_names) {
                     result.checks.push(check);
                 }
                 // V1.6: effect summary for think() in each handler.
@@ -1213,8 +1219,10 @@ fn implied(bounds: &HashMap<String, Bound>, var: &str, op: CmpOp, text: &str, nu
         (CmpOp::Ge, Some(c)) => b.lo.map_or(false, |(l, _)| l >= c),
         (CmpOp::Eq, Some(c)) => b.eq.as_deref() == Some(text) || (b.lo == Some((c, true)) && b.hi == Some((c, true))),
         (CmpOp::Eq, None) => b.eq.as_deref() == Some(text),
+        // a known value differs from c by VALUE, not by text (`-0` and `0`
+        // are two texts of one number: `amount == -0.0` proved `amount != 0`)
         (CmpOp::Ne, Some(c)) => b.ne.iter().any(|t| t == text)
-            || b.eq.as_ref().map_or(false, |e| e != text)
+            || b.eq.as_ref().map_or(false, |e| match e.parse::<f64>() { Ok(v) => v != c, Err(_) => false })
             || b.hi.map_or(false, |(h, i)| h < c || (h == c && !i))
             || b.lo.map_or(false, |(l, i)| l > c || (l == c && !i)),
         (CmpOp::Ne, None) => b.ne.iter().any(|t| t == text) || b.eq.as_ref().map_or(false, |e| e != text),
@@ -1411,7 +1419,7 @@ fn walk_guard(stmts: &[Spanned<Statement>], facts: &mut Facts, to: &str, from: &
     }
 }
 
-fn prove_guards(sm: &StateMachineSection, handlers: &[(&OnSection, Span)], findings: &[super::refinement::RefinementFinding]) -> Vec<VerifyCheck> {
+fn prove_guards(sm: &StateMachineSection, handlers: &[(&OnSection, Span)], findings: &[super::refinement::RefinementFinding], foreign: &HashSet<String>) -> Vec<VerifyCheck> {
     let mut out = Vec::new();
     // handlers that transition to each edge (literal targets), from refinement
     let callers_of = |from: &str, to: &str| -> Vec<String> {
@@ -1457,8 +1465,14 @@ fn prove_guards(sm: &StateMachineSection, handlers: &[(&OnSection, Span)], findi
             super::literals::for_each_expr(&h.body, &mut |e| if matches!(e, Expr::MethodCall { method, .. } if method == "transition") { method_form = true; });
             if method_form && !open.contains(&h.signal_name) { open.push(h.signal_name.clone()); }
         }
+        // a guard reading a slot (`cap.get("x")`) reads the MACHINE cell's
+        // slot at run time: a caller of another cell (`Force.go`) whose
+        // `require` read its own `cap` proved nothing about it
+        let mut reads_state = false;
+        super::literals::for_each_in_expr(&guard.node, &mut |e| if matches!(e, Expr::MethodCall { .. } | Expr::Index { .. } | Expr::FieldAccess { .. }) { reads_state = true; });
         for name in &callers {
             if open.contains(name) { continue; }
+            if reads_state && (name.contains('.') || foreign.contains(name)) { open.push(name.clone()); continue; }
             let Some((on, _)) = handlers.iter().find(|(h, _)| &h.signal_name == name) else { continue };
             let mut facts = Facts::default();
             let mut verdicts: Vec<bool> = Vec::new();

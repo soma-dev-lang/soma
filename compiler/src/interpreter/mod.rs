@@ -1423,6 +1423,22 @@ impl Interpreter {
                 out.push(format!("{} stored entr(ies) of List slot '{}' violate its invariant today (e.g. {}, size {}): fix the data or the invariant", bad, slot_name, sample, size));
             }
         }
+        // a Map key an older version wrote for a whole Float (`m.set(3.0, …)`
+        // stored "3.0"): the key is "3" now, so the old entry is unreachable
+        // and a new write makes a second one — name it so it can be moved
+        let mut names: Vec<String> = self.storage.keys().filter(|k| k.contains('.') && !k.contains("__")).cloned().collect();
+        names.sort();
+        for key in names {
+            let Some((cell_name, slot_name)) = key.split_once('.') else { continue };
+            if self.slot_kind(cell_name, slot_name) != Some("Map") { continue; }
+            let Some(backend) = self.storage.get(&key).cloned() else { continue };
+            let stale: Vec<String> = backend.keys().into_iter().take(100_000).filter(|k| k.contains('.')
+                && k.parse::<f64>().map_or(false, |f| f.is_finite() && f.fract() == 0.0 && key_text(&Value::Float(f)) != *k && k.trim() == k)).collect();
+            if let Some(first) = stale.first() {
+                out.push(format!("slot '{}' holds {} key(s) written for a whole Float by an older version (e.g. \"{}\", now read as \"{}\"): they are unreachable — move them with a one-shot program (`for k in keys(slot) {{ … }}`)",
+                    key, stale.len(), first, key_text(&Value::Float(first.parse::<f64>().unwrap_or(0.0)))));
+            }
+        }
         out
     }
 
@@ -1910,7 +1926,7 @@ impl Interpreter {
                                 // a `()` key goes through with(), which refuses it
                                 // (the in-place update wrote the entry "null")
                                 if !self.builtin_fast_path(fn_name, args.len() + 1, env, cell_name)
-                                    || values.chunks_exact(2).any(|p| matches!(p[0], Value::Unit)) {
+                                    || values.chunks_exact(2).any(|p| matches!(p[0], Value::Unit) || matches!(&p[0], Value::String(k) if k == "_status")) {
                                     let mut all = vec![snapshot.unwrap_or_else(|| env[name].clone())];
                                     all.extend(values);
                                     let val = self.eval_named_call(fn_name, all, env, cell_name, signal_name)?;
@@ -1918,7 +1934,7 @@ impl Interpreter {
                                 } else {
                                     let mut base = snapshot.unwrap_or_else(|| env.remove(name).unwrap());
                                     if let Value::Map(m) = &mut base {
-                                        for pair in values.chunks_exact(2) { m.insert(format!("{}", pair[0]), pair[1].clone()); }
+                                        for pair in values.chunks_exact(2) { m.insert(key_text(&pair[0]), pair[1].clone()); }
                                     }
                                     env.insert(name.clone(), base);
                                 }
@@ -1940,7 +1956,9 @@ impl Interpreter {
                         let snapshot = args[1..].iter().any(|a| expr_may_assign(&a.node)).then(|| env[name].clone());
                         let values = args[1..].iter().map(|a| self.eval_expr(&a.node, env, cell_name, signal_name)).collect::<Result<Vec<_>, _>>()?;
                         // a `()` key goes through with()/without(), which refuse it
-                        let unit_key = if fn_name == "with" { values.chunks_exact(2).any(|p| matches!(p[0], Value::Unit)) } else { values.iter().any(|v| matches!(v, Value::Unit)) };
+                        // … and so does a `_status` (with() checks it before the
+                        // writes commit; the fast path stored "abc" / 99)
+                        let unit_key = if fn_name == "with" { values.chunks_exact(2).any(|p| matches!(p[0], Value::Unit) || matches!(&p[0], Value::String(k) if k == "_status")) } else { values.iter().any(|v| matches!(v, Value::Unit)) };
                         if !self.builtin_fast_path(fn_name, args.len(), env, cell_name) || unit_key {
                             let mut all = vec![snapshot.unwrap_or_else(|| env[name].clone())];
                             all.extend(values);
@@ -1950,9 +1968,9 @@ impl Interpreter {
                             let mut base = snapshot.unwrap_or_else(|| env.remove(name).unwrap());
                             if let Value::Map(m) = &mut base {
                                 if fn_name == "with" {
-                                    for pair in values.chunks_exact(2) { m.insert(format!("{}", pair[0]), pair[1].clone()); }
+                                    for pair in values.chunks_exact(2) { m.insert(key_text(&pair[0]), pair[1].clone()); }
                                 } else {
-                                    for k in &values { m.shift_remove(&format!("{}", k)); }
+                                    for k in &values { m.shift_remove(&key_text(k)); }
                                 }
                             }
                             env.insert(name.clone(), base);
@@ -3179,9 +3197,9 @@ impl Interpreter {
         // them was refused; "007" or "abc" name no Int and stay refused
         let canon_args: Vec<Value>;
         let args: &[Value] = match args.first() {
-            Some(Value::String(t)) if matches!(method, "get" | "at" | "has" | "contains" | "set" | "put" | "delete" | "remove")
+            Some(Value::String(t)) if matches!(method, "get" | "at" | "nth" | "has" | "contains" | "set" | "put" | "delete" | "remove")
                 && self.slot_int_keys(cell_name, slot_name)
-                && t.parse::<i64>().map_or(false, |n| n.to_string() == *t) => {
+                && crate::interpreter::builtins::string::parse_int_text(t).map_or(false, |n| n.to_string() == *t) => {
                 canon_args = std::iter::once(Value::Int(SomaInt::from_decimal_str(t))).chain(args[1..].iter().cloned()).collect();
                 &canon_args
             }
@@ -5957,7 +5975,7 @@ impl Interpreter {
         if vals.len() != 2 || !matches!(name, "contains" | "has" | "without") || env.contains_key(n) || env.contains_key(name) { return None; }
         if matches!(vals[1], Value::Int(_) | Value::Unit) || !matches!(vals[0], Value::Map(_)) { return None; }
         // the canonical text of an Int is that key (the map's keys are text)
-        if let Value::String(t) = &vals[1] { if t.parse::<i64>().map_or(false, |n| n.to_string() == *t) { return None; } }
+        if let Value::String(t) = &vals[1] { if crate::interpreter::builtins::string::parse_int_text(t).map_or(false, |n| n.to_string() == *t) { return None; } }
         if self.handler_shadows_builtin(name, 2, cell_name) || self.slot_kind(cell_name, n) != Some("Map") || !self.slot_int_keys(cell_name, n) { return None; }
         // refused, as `seats.has("1")` and `seats.set("1", …)` are
         Some(Err(ExecError::Runtime(RuntimeError::Domain { kind: "type".to_string(), message: format!(

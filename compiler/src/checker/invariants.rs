@@ -2653,7 +2653,7 @@ pub fn lint_program(program: &Program) -> Vec<InvariantIssue> {
                 if slots.len() > 1 && !slots.iter().any(|sl| refs.contains(sl.as_str())) {
                     out.push(InvariantIssue {
                         message: format!(
-                            "`invariant {}` names no slot, so it guards EVERY slot of this memory ({}) — name the slot it is about (e.g. `{}.get(key)` / `len({})`), or move it to a memory of its own",
+                            "`invariant {}` names no slot, so it guards EVERY slot of this memory ({}) — name the slot it is about (`{}` is the value being written — `get(key)` inside an invariant reads the value BEFORE the write — and `len({})` its size), or move it to a memory of its own",
                             render_expr(&inv.node), slots.join(", "), slots[0], slots[0]),
                         span: inv.span,
                     });
