@@ -2,6 +2,12 @@
 
 ## Unreleased
 
+### `format("%.3d", 7)` is "007"
+
+- The precision of a `%d` directive was parsed and dropped, so `%.3d`
+  printed `7`. It is now a minimum number of digits, as in C (`-007` for a
+  negative value; a width still pads around it).
+
 ### `soma test <dir>` passes a multi-file project, and `--json` is one document
 
 - Over a directory, `soma test` counted a file with no test cell — a

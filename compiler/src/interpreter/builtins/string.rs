@@ -553,13 +553,24 @@ fn printf_subset(fmt: &str, args: &[Value]) -> Result<Value, RuntimeError> {
             return Err(RuntimeError::Domain { kind: "range".to_string(), message: format!("format(): a width or precision past {} characters", crate::interpreter::MAX_BUILT_LEN) });
         }
         let body = match conv {
-            'd' => match &arg {
-                Value::Int(n) => n.to_string(),
-                // an infinite / NaN Float has no integer (it printed i64::MAX)
-                Value::Float(f) if !f.is_finite() => return Err(RuntimeError::Domain { kind: "range".to_string(), message: format!("format(): %d of {} — it has no integer value", f) }),
-                Value::Float(f) => rug::Integer::from_f64(f.trunc()).map(|i| i.to_string()).unwrap_or_default(),
-                other => return Err(RuntimeError::TypeError(format!("format(): %d needs an Int, got {}", super::super::value_type_name(other)))),
-            },
+            'd' => {
+                let digits = match &arg {
+                    Value::Int(n) => n.to_string(),
+                    // an infinite / NaN Float has no integer (it printed i64::MAX)
+                    Value::Float(f) if !f.is_finite() => return Err(RuntimeError::Domain { kind: "range".to_string(), message: format!("format(): %d of {} — it has no integer value", f) }),
+                    Value::Float(f) => rug::Integer::from_f64(f.trunc()).map(|i| i.to_string()).unwrap_or_default(),
+                    other => return Err(RuntimeError::TypeError(format!("format(): %d needs an Int, got {}", super::super::value_type_name(other)))),
+                };
+                // `%.3d`: at least that many digits, as in C (the precision
+                // was read and dropped: format("%.3d", 7) gave "7")
+                match prec {
+                    Some(p) => {
+                        let (sign, d) = match digits.strip_prefix('-') { Some(d) => ("-", d), None => ("", digits.as_str()) };
+                        format!("{}{}{}", sign, "0".repeat(p.saturating_sub(d.len())), d)
+                    }
+                    None => digits,
+                }
+            }
             // an Int is exact: its digits, then `.000…` (a BigInt went
             // through a Float: 123456789012345678901234567890 printed …877719597056)
             'f' if matches!(arg, Value::Int(_)) => {

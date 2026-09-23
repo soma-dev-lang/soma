@@ -3394,3 +3394,20 @@ fn soma_test_over_a_project_skips_libraries_and_answers_one_json_document() {
     assert_eq!(doc["files"].as_array().map(|a| a.len()), Some(1), "{doc}");
     let _ = std::fs::remove_dir_all(dir);
 }
+
+#[test]
+fn format_d_reads_its_precision_as_a_minimum_of_digits() {
+    // the precision of %d was parsed and dropped: format("%.3d", 7) was "7"
+    passes("format_d_precision", r#"
+cell test T {
+    rules {
+        assert format("%.3d", 7) == "007"
+        assert format("%.3d", 0 - 7) == "-007"
+        assert format("%6.3d|", 7) == "   007|"
+        assert format("%-6.3d|", 7) == "007   |"
+        assert format("%.2d", 1234) == "1234"
+        assert format("%05d", 0 - 3) == "-0003"
+    }
+}
+"#);
+}
