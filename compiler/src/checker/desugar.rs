@@ -26,28 +26,52 @@ struct Ctx {
     slots: HashSet<String>,
 }
 
-pub fn expose_for_analysis(program: &Program) -> Program {
-    let mut p = program.clone();
-    let handlers: HashSet<String> = p.cells.iter().flat_map(|c| c.node.sections.iter().filter_map(|s| match &s.node {
+/// (handler names, cell names) of every cell, interior ones included.
+pub fn program_names(program: &Program) -> (HashSet<String>, HashSet<String>) {
+    let all = crate::checker::names::collect_cells(program);
+    let handlers: HashSet<String> = all.iter().flat_map(|c| c.sections.iter().filter_map(|s| match &s.node {
         Section::OnSignal(on) => Some(on.signal_name.clone()),
         _ => None,
     })).collect();
-    let cells: HashSet<String> = p.cells.iter().map(|c| c.node.name.clone()).collect();
-    for cell in &mut p.cells {
-        let slots: HashSet<String> = cell.node.sections.iter().filter_map(|s| match &s.node {
-            Section::Memory(m) => Some(m.slots.iter().map(|sl| sl.node.name.clone()).collect::<Vec<_>>()),
-            _ => None,
-        }).flatten().collect();
-        let ctx = Ctx { handlers: handlers.clone(), cells: cells.clone(), slots };
-        for sec in &mut cell.node.sections {
+    let cells: HashSet<String> = all.iter().map(|c| c.name.clone()).collect();
+    (handlers, cells)
+}
+
+pub fn expose_for_analysis(program: &Program) -> Program {
+    let mut p = program.clone();
+    // interior cells too: their handlers are proven (and run) as well
+    let (handlers, cells) = program_names(program);
+    fn fix_cell(cell: &mut CellDef, handlers: &HashSet<String>, cells: &HashSet<String>) {
+        let ctx = Ctx { handlers: handlers.clone(), cells: cells.clone(), slots: slots_of(cell) };
+        for sec in &mut cell.sections {
             match &mut sec.node {
                 Section::OnSignal(on) => fix_stmts(&mut on.body, &ctx),
                 Section::Every(e) | Section::After(e) => fix_stmts(&mut e.body, &ctx),
+                Section::Interior(i) => { for child in &mut i.cells { fix_cell(&mut child.node, handlers, cells); } }
                 _ => {}
             }
         }
     }
+    for cell in &mut p.cells {
+        fix_cell(&mut cell.node, &handlers, &cells);
+    }
     p
+}
+
+fn slots_of(cell: &CellDef) -> HashSet<String> {
+    cell.sections.iter().filter_map(|s| match &s.node {
+        Section::Memory(m) => Some(m.slots.iter().map(|sl| sl.node.name.clone()).collect::<Vec<_>>()),
+        _ => None,
+    }).flatten().collect()
+}
+
+/// One handler of `cell` with its hidden calls made explicit (as
+/// `expose_for_analysis` does for the whole program).
+pub fn expose_handler(on: &OnSection, cell: &CellDef, names: &(HashSet<String>, HashSet<String>)) -> OnSection {
+    let ctx = Ctx { handlers: names.0.clone(), cells: names.1.clone(), slots: slots_of(cell) };
+    let mut out = on.clone();
+    fix_stmts(&mut out.body, &ctx);
+    out
 }
 
 fn fix_stmts(stmts: &mut Vec<Spanned<Statement>>, ctx: &Ctx) {

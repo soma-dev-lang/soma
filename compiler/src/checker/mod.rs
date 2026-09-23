@@ -491,6 +491,9 @@ pub struct Checker<'a> {
     pub all_handlers: cost::AllHandlers,
     /// cells with interpolation / UFCS / pipe calls made explicit (desugar)
     analysis_cells: std::collections::HashMap<String, CellDef>,
+    /// (handler names, cell names) of every cell, interior ones included —
+    /// what the desugaring of one handler needs
+    analysis_names: (std::collections::HashSet<String>, std::collections::HashSet<String>),
 }
 
 /// Every predicate name a checker constraint mentions that no structural
@@ -528,6 +531,7 @@ impl<'a> Checker<'a> {
             warnings: Vec::new(),
             all_handlers: Default::default(),
             analysis_cells: Default::default(),
+            analysis_names: Default::default(),
         }
     }
 
@@ -911,6 +915,7 @@ impl<'a> Checker<'a> {
         // handlers of every top-level cell, for cross-cell cost composition
         let analysis = desugar::expose_for_analysis(program);
         self.analysis_cells = analysis.cells.iter().map(|c| (c.node.name.clone(), c.node.clone())).collect();
+        self.analysis_names = desugar::program_names(program);
         self.all_handlers = analysis.cells.iter().map(|c| {
             let mut hs: std::collections::HashMap<String, Vec<Spanned<Statement>>> = c.node.sections.iter().filter_map(|s| match &s.node {
                 Section::OnSignal(h) => Some((h.signal_name.clone(), h.body.clone())),
@@ -1627,7 +1632,10 @@ impl<'a> Checker<'a> {
         for section in &cell.sections {
             if let Section::OnSignal(ref handler) = section.node {
                 if handler.properties.iter().any(|p| p == "deterministic") {
-                    let errs = determinism::check_deterministic_handler(handler, cell, &self.analysis_cells);
+                    // on the analysis form: `"{random()}"`, `x.roll()` and
+                    // `p.think()` call what they hide
+                    let exposed = desugar::expose_handler(handler, cell, &self.analysis_names);
+                    let errs = determinism::check_deterministic_handler(&exposed, cell, &self.analysis_cells);
                     for e in errs {
                         self.errors.push(CheckError::DeterminismViolation {
                             message: e.to_string(),

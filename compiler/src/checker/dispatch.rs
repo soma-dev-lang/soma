@@ -140,10 +140,12 @@ pub fn check_program(program: &Program) -> (Vec<DispatchFinding>, Vec<DispatchFi
                     .filter(|p| !matches!(&p.ty.node, crate::ast::TypeExpr::Simple(t)
                         if matches!(t.as_str(), "Int" | "Float" | "String" | "Bool" | "BigInt" | "List" | "Map")))
                     .map(|p| p.name.clone()).collect();
-                let let_pos = bind_callable(body, &mut callable);
+                let data_params: HashSet<String> = params.iter().map(|p| p.name.clone()).filter(|n| !callable.contains(n)).collect();
+                let handler_names: HashSet<&str> = index.handler_map.keys().map(|k| k.as_str()).collect();
+                let local_fns = bind_callable(body, &mut callable, &data_params, &handler_names);
                 let mut reported: HashSet<&str> = HashSet::new();
                 for (name, _, _, sp) in &call_shapes {
-                    let local = callable.contains(name) || let_pos.get(name).is_some_and(|from| sp.start >= *from);
+                    let local = callable.contains(name) || local_fns.hides(name, *sp);
                     if !local || reported.contains(name.as_str()) { continue; }
                     let what = if super::names::builtin_names().contains(name.as_str()) {
                         format!("the builtin {name}()")
@@ -612,21 +614,148 @@ pub(super) fn bind_all(stmts: &[Spanned<Statement>], bound: &mut HashSet<String>
     bind_all_opt(stmts, bound, false)
 }
 
-/// Can this bound value be a function? A literal, arithmetic, a comparison,
-/// a list or a record never is (`let count = 0` then `count(xs)` still runs
-/// the builtin: only a function value in scope replaces it).
-fn may_be_function(e: &Expr) -> bool {
-    !matches!(e, Expr::Literal(_) | Expr::BinaryOp { .. } | Expr::CmpOp { .. } | Expr::Not(_)
-        | Expr::ListLiteral(_) | Expr::Record { .. })
+/// The `let` / assignment locals of a handler that may hold a FUNCTION when
+/// a call names them — with where each such binding takes effect.
+pub(super) struct LocalFns {
+    /// name → the source offsets its function-valued bindings take effect
+    /// from (the END of the bound value: `let pot = pot()` calls the
+    /// handler, the local does not exist yet)
+    pos: std::collections::HashMap<String, Vec<usize>>,
+    /// the regions of the loops (condition / iterable to the last body
+    /// statement): a binding inside one reaches the calls before it on the
+    /// next pass
+    loops: Vec<(usize, usize)>,
+}
+
+impl LocalFns {
+    /// Does the call of `name` at `sp` run a local function?
+    pub(super) fn hides(&self, name: &str, sp: Span) -> bool {
+        let Some(ps) = self.pos.get(name) else { return false };
+        let inside = |r: &(usize, usize), at: usize| r.0 <= at && at <= r.1;
+        ps.iter().any(|p| *p <= sp.start)
+            // `abs = v => …` later in the same loop: the call's next pass runs it
+            || self.loops.iter().any(|r| inside(r, sp.start) && ps.iter().any(|p| inside(r, *p)))
+    }
 }
 
 /// The names a handler body binds to a value that may be a function: the
-/// lambda / loop / match binders (bound anywhere), and — with the source
-/// offset they are bound from — the `let`s of a lambda or a call's result.
-pub(super) fn bind_callable(stmts: &[Spanned<Statement>], bound: &mut HashSet<String>) -> std::collections::HashMap<String, usize> {
-    LET_POS.with(|m| m.borrow_mut().clear());
+/// lambda / loop / match binders (bound anywhere, into `bound`), and the
+/// `let`s / assignments whose value may be a function (a lambda, a handler
+/// or local-function result, a name that may hold one, an element of a
+/// container that may hold one). Data never is: `let max = max(rows)` (a
+/// builtin over data), `let len = n` (an Int local), a literal, arithmetic,
+/// a list, a record — the call `max(4, 5)` then runs the builtin.
+pub(super) fn bind_callable(stmts: &[Spanned<Statement>], bound: &mut HashSet<String>, data_params: &HashSet<String>, handlers: &HashSet<&str>) -> LocalFns {
     bind_all_opt(stmts, bound, true);
-    LET_POS.with(|m| std::mem::take(&mut *m.borrow_mut()))
+    // every binding, with the offset it takes effect from
+    let mut bindings: Vec<(&str, &Expr, usize)> = Vec::new();
+    let mut locals: HashSet<&str> = HashSet::new();
+    super::literals::for_each_stmt_deep(stmts, &mut |st| {
+        if let Statement::Let { name, value } | Statement::Assign { name, value } = st {
+            if !name.contains(['.', '[']) {
+                bindings.push((name.as_str(), &value.node, value.span.end));
+                locals.insert(name.as_str());
+            }
+        }
+    });
+    let mut loops: Vec<(usize, usize)> = Vec::new();
+    let region = |head: usize, body: &[Spanned<Statement>]| (head, body.iter().map(|b| b.span.end).max().unwrap_or(head));
+    super::literals::for_each_stmt_deep(stmts, &mut |st| match st {
+        Statement::For { iter, body, .. } => loops.push(region(iter.span.start, body)),
+        Statement::While { condition, body, .. } => loops.push(region(condition.span.start, body)),
+        _ => {}
+    });
+    // fixpoint: `callable` names may hold a function, `carry` names may hold
+    // one or a container with one (`let fs = [v => v]  let f = first(fs)`)
+    let mut callable: HashSet<&str> = HashSet::new();
+    let mut carry: HashSet<&str> = HashSet::new();
+    loop {
+        let before = (callable.len(), carry.len());
+        for (name, value, _) in &bindings {
+            let ctx = FnCtx { callable: &callable, carry: &carry, locals: &locals, bound, data_params, handlers };
+            let (c, k) = (ctx.callable(value), ctx.carries(value));
+            if c { callable.insert(name); }
+            if c || k { carry.insert(name); }
+        }
+        if (callable.len(), carry.len()) == before { break; }
+    }
+    let mut pos: std::collections::HashMap<String, Vec<usize>> = std::collections::HashMap::new();
+    let ctx = FnCtx { callable: &callable, carry: &carry, locals: &locals, bound, data_params, handlers };
+    for (name, value, end) in &bindings {
+        if ctx.callable(value) { pos.entry(name.to_string()).or_default().push(*end); }
+    }
+    LocalFns { pos, loops }
+}
+
+struct FnCtx<'a, 'b> {
+    callable: &'a HashSet<&'b str>,
+    carry: &'a HashSet<&'b str>,
+    locals: &'a HashSet<&'b str>,
+    bound: &'a HashSet<String>,
+    data_params: &'a HashSet<String>,
+    handlers: &'a HashSet<&'a str>,
+}
+
+impl FnCtx<'_, '_> {
+    /// a name no `let` of the handler binds and no data parameter: a lambda
+    /// / match binder, a function parameter, a handler, a global
+    fn unknown(&self, n: &str) -> bool {
+        !self.locals.contains(n) && !self.data_params.contains(n)
+    }
+    fn name_callable(&self, n: &str) -> bool {
+        self.callable.contains(n) || self.bound.contains(n) || self.unknown(n)
+    }
+    fn name_carries(&self, n: &str) -> bool {
+        self.carry.contains(n) || self.name_callable(n)
+    }
+    /// Can a call named `name` (a builtin over these arguments) return a
+    /// function? A handler, a local function, an unknown name: yes; a
+    /// builtin only hands back what its arguments carry.
+    fn call_callable(&self, name: &str, args: &[&Expr]) -> bool {
+        if self.handlers.contains(name) || self.callable.contains(name) || self.bound.contains(name)
+            || !super::names::builtin_names().contains(name) {
+            return true;
+        }
+        args.iter().any(|a| match a {
+            // a mapper / predicate: what IT returns
+            Expr::Lambda { body, .. } => self.carries(&body.node),
+            Expr::LambdaBlock { result, .. } => self.carries(&result.node),
+            other => self.carries(other),
+        })
+    }
+    fn callable(&self, e: &Expr) -> bool {
+        match e {
+            Expr::Lambda { .. } | Expr::LambdaBlock { .. } => true,
+            Expr::Literal(_) | Expr::BinaryOp { .. } | Expr::CmpOp { .. } | Expr::Not(_)
+            | Expr::ListLiteral(_) | Expr::Record { .. } => false,
+            Expr::Ident(n) => self.name_callable(n),
+            Expr::FnCall { name, args } => self.call_callable(name, &args.iter().map(|a| &a.node).collect::<Vec<_>>()),
+            Expr::Pipe { left, right } => match &right.node {
+                Expr::FnCall { name, args } => {
+                    let mut all: Vec<&Expr> = vec![&left.node];
+                    all.extend(args.iter().map(|a| &a.node));
+                    self.call_callable(name, &all)
+                }
+                Expr::Ident(name) => self.call_callable(name, &[&left.node]),
+                _ => true,
+            },
+            Expr::IfExpr { then_result, else_result, .. } => self.callable(&then_result.node) || self.callable(&else_result.node),
+            Expr::Match { arms, .. } => arms.iter().any(|a| self.callable(&a.result.node)),
+            Expr::Try(i) | Expr::TryPropagate(i) => self.carries(&i.node),
+            Expr::Index { target, .. } | Expr::FieldAccess { target, .. } => self.carries(&target.node),
+            Expr::MethodCall { target, args, .. } => self.carries(&target.node) || args.iter().any(|a| self.carries(&a.node)),
+        }
+    }
+    fn carries(&self, e: &Expr) -> bool {
+        if self.callable(e) { return true; }
+        match e {
+            Expr::Ident(n) => self.name_carries(n),
+            Expr::ListLiteral(items) => items.iter().any(|i| self.carries(&i.node)),
+            Expr::Record { fields, .. } => fields.iter().any(|(_, v)| self.carries(&v.node)),
+            Expr::BinaryOp { left, right, .. } => self.carries(&left.node) || self.carries(&right.node),
+            _ => false,
+        }
+    }
 }
 
 fn bind_all_opt(stmts: &[Spanned<Statement>], bound: &mut HashSet<String>, fn_only: bool) {
@@ -639,7 +768,6 @@ fn bind_all_opt(stmts: &[Spanned<Statement>], bound: &mut HashSet<String>, fn_on
 
 thread_local! {
     static FN_ONLY: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
-    static LET_POS: std::cell::RefCell<std::collections::HashMap<String, usize>> = std::cell::RefCell::new(std::collections::HashMap::new());
 }
 
 fn bind_all_inner(stmts: &[Spanned<Statement>], bound: &mut HashSet<String>) {
@@ -649,11 +777,6 @@ fn bind_all_inner(stmts: &[Spanned<Statement>], bound: &mut HashSet<String>) {
         match &stmt.node {
             Statement::Let { name, value } | Statement::Assign { name, value } => {
                 if !fn_only { bound.insert(name.clone()); }
-                else if may_be_function(&value.node) {
-                    // bound from the END of its value on: `let pot = pot()`
-                    // calls the handler, the local does not exist yet
-                    LET_POS.with(|m| { let mut m = m.borrow_mut(); let e = m.entry(name.clone()).or_insert(usize::MAX); *e = (*e).min(value.span.end); });
-                }
                 bind_all_expr(&value.node, bound);
             }
             Statement::Return { value } | Statement::Ensure { condition: value } => {

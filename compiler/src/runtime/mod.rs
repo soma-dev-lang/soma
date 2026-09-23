@@ -31,6 +31,9 @@ pub struct Runtime {
     pub signal_log: Vec<String>,
     /// All cell definitions (for the interpreter)
     pub program: Program,
+    /// State-machine instances of the cells run here (`__sm_<Cell>_<m>`),
+    /// kept across handler runs: every run builds a fresh interpreter
+    machine_storage: HashMap<String, Arc<dyn StorageBackend>>,
 }
 
 impl Runtime {
@@ -51,6 +54,7 @@ impl Runtime {
             cells,
             signal_log: Vec::new(),
             program,
+            machine_storage: HashMap::new(),
         }
     }
 
@@ -173,13 +177,25 @@ impl Runtime {
         let parent = self.find_cell(parent_cell)
             .ok_or_else(|| format!("cell '{}' not found", parent_cell))?;
 
-        // Add interior cell definitions to interpreter
+        // Add interior cell definitions to interpreter — with their state
+        // machines and memory invariants (register_cell), as `soma verify`
+        // proves them
         for section in &parent.def.sections {
             if let Section::Interior(ref interior) = section.node {
                 for child_def in &interior.cells {
                     interp.register_cell(child_def.node.clone());
                 }
             }
+        }
+
+        // every sibling's slots, under `Cell.slot`: a handler's `signal`
+        // runs the siblings' handlers in the interpreter, which found no
+        // storage for them ("undefined variable: vals")
+        for (name, sibling) in &parent.children {
+            let keyed: HashMap<String, Arc<dyn StorageBackend>> = sibling.memory.iter()
+                .map(|(slot, b)| (format!("{}.{}", name, slot), b.clone()))
+                .collect();
+            interp.set_storage_raw(&keyed);
         }
 
         // Inject storage backends for the child cell being executed
@@ -190,14 +206,24 @@ impl Runtime {
         // Also inject parent's storage
         interp.set_storage(parent_cell, &parent.memory);
 
+        // machine instances survive from one handler run to the next
+        interp.set_storage_raw(&self.machine_storage);
+        interp.ensure_state_machine_storage();
+        for (k, b) in interp.storage.iter() {
+            if k.starts_with("__sm_") && !self.machine_storage.contains_key(k) {
+                self.machine_storage.insert(k.clone(), b.clone());
+            }
+        }
+
         let result = interp.call_signal(child_name, &handler.signal_name, args)
             .map_err(|e| format!("{}", e))?;
 
-        // Check if the handler emitted signals (from the signal log)
-        // For now, collect emitted signals and dispatch them
+        // The interpreter already ran every sibling handler of the signals
+        // this handler emitted (in order, synchronously); dispatching them
+        // again here ran each handler twice
         let emitted = interp.take_emitted_signals();
-        for (sig_name, sig_args) in emitted {
-            self.emit_signal(parent_cell, &sig_name, sig_args)?;
+        for (sig_name, _) in emitted {
+            self.signal_log.push(format!("signal {} (emitted by {}.{})", sig_name, child_name, handler.signal_name));
         }
 
         Ok(result)

@@ -116,8 +116,11 @@ fn scan(
     let mut callees: Vec<(String, String)> = Vec::new();
     crate::checker::literals::for_each_expr(body, &mut |e| match e {
         Expr::FnCall { name, .. } => {
-            if locals.contains(name) { return; }
+            // before the locals: a DATA local named like the builtin
+            // (`let random = 0  random()`) leaves the builtin to run, and
+            // a function local of that name is refused by `soma check`
             if let Some(reason) = forbid_reason(name) { push(name.clone(), reason.to_string()); return; }
+            if locals.contains(name) { return; }
             // a handler of this cell (it wins over a builtin), or a bare
             // call of another cell's handler
             if find_handler(cell, name).is_some() {
@@ -136,6 +139,8 @@ fn scan(
                 }
             }
             if mutating_method(method) { push(format!(".{}()", method), "mutates persistent storage".to_string()); }
+            // `x.random()` / `ts.now()`: the builtin, called in method form
+            else if let Some(reason) = forbid_reason(method) { push(method.clone(), reason.to_string()); }
         }
         Expr::Ident(n) if slots.contains(n) && !locals.contains(n) =>
             push(format!("the memory slot {}", n), "reads persistent storage (state outside its arguments)".to_string()),

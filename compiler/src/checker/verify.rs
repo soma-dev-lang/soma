@@ -85,18 +85,30 @@ pub fn verify_program(program: &Program) -> Vec<VerifyResult> {
                 // the only machine of the program is also moved by the
                 // transition() calls of cells without one (they escaped
                 // refinement, think-isolation and the literal-target check)
-                let machine_cells = program.cells.iter().filter(|c| c.node.sections.iter().any(|s| matches!(s.node, Section::State(_)))).count();
-                if machine_cells == 1 {
-                    for other in program.cells.iter().filter(|c| matches!(c.node.kind, CellKind::Cell | CellKind::Agent) && !c.node.sections.iter().any(|s| matches!(s.node, Section::State(_)))) {
-                        for s in &other.node.sections {
+                // keyed by (cell, handler): `Force.appr` beside this cell's
+                // own `appr` was dropped, and its unguarded transition()
+                // escaped the guard and refinement proofs
+                let mut foreign_handlers: Vec<(OnSection, Span)> = Vec::new();
+                // the only machine of the program as `soma run`/`serve` see it
+                // (top-level cells) or as the interior runtime sees it (every
+                // cell): either way the machine-less cells' transition()s move it
+                let top_machines = program.cells.iter().filter(|c| c.node.sections.iter().any(|s| matches!(s.node, Section::State(_)))).count();
+                if top_machines == 1 || machine_cells == 1 {
+                    for other in all_cells.iter().copied().filter(|c| matches!(c.kind, CellKind::Cell | CellKind::Agent) && !c.sections.iter().any(|s| matches!(s.node, Section::State(_)))) {
+                        for s in &other.sections {
                             if let Section::OnSignal(ref on) = s.node {
                                 if handlers.iter().all(|(h, _)| h.signal_name != on.signal_name) {
                                     handlers.push((on, s.span));
+                                } else {
+                                    let mut named = on.clone();
+                                    named.signal_name = format!("{}.{}", other.name, on.signal_name);
+                                    foreign_handlers.push((named, s.span));
                                 }
                             }
                         }
                     }
                 }
+                for (on, sp) in &foreign_handlers { handlers.push((on, *sp)); }
                 for (i, s) in cell.sections.iter().enumerate() {
                     if matches!(s.node, Section::Every(_) | Section::After(_)) {
                         let idx = cell.sections[..i].iter().filter(|x| matches!(x.node, Section::Every(_) | Section::After(_))).count();
@@ -356,17 +368,18 @@ pub fn verify_program(program: &Program) -> Vec<VerifyResult> {
 
     // termination in cells WITHOUT a state machine (it was only analysed
     // next to one: `while true` in a plain cell passed `--strict` silently)
-    for cell in &program.cells {
-        if !matches!(cell.node.kind, CellKind::Cell | CellKind::Agent) { continue; }
-        if cell.node.sections.iter().any(|s| matches!(s.node, Section::State(_))) { continue; }
-        let findings = super::termination::check_cell_termination(&cell.node, program);
+    // (interior cells too, as for the cells with a machine)
+    for cell in super::names::collect_cells(program) {
+        if !matches!(cell.kind, CellKind::Cell | CellKind::Agent) { continue; }
+        if cell.sections.iter().any(|s| matches!(s.node, Section::State(_))) { continue; }
+        let findings = super::termination::check_cell_termination(cell, program);
         let warnings: Vec<String> = findings.iter().filter_map(|f| match f {
             super::termination::TerminationFinding::MayNotTerminate { reasons, .. } => Some(reasons.clone()),
             _ => None,
         }).flatten().collect();
         if !warnings.is_empty() {
             results.push(VerifyResult {
-                machine_name: format!("{}/termination", cell.node.name),
+                machine_name: format!("{}/termination", cell.name),
                 states: vec![],
                 initial: String::new(),
                 terminal_states: vec![],
@@ -994,6 +1007,8 @@ impl Facts {
         let name = name.split(|c| c == '.' || c == '[').next().unwrap_or(name);
         self.bounds.remove(name);
         self.exact.retain(|(_, idents, _)| !idents.contains(name));
+        // `amount = sqrt(-1.0)`: an Int parameter reassigned may be NaN
+        self.nan_free.remove(name);
     }
     /// After a write, a call or a pause: a fact over state no longer holds.
     fn forget_state(&mut self) {
@@ -1446,13 +1461,23 @@ fn prove_guards(sm: &StateMachineSection, handlers: &[(&OnSection, Span)], findi
             if open.contains(name) { continue; }
             let Some((on, _)) = handlers.iter().find(|(h, _)| &h.signal_name == name) else { continue };
             let mut facts = Facts::default();
-            facts.nan_free = on.params.iter().filter(|p| matches!(&p.ty.node, TypeExpr::Simple(t) if t == "Int")).map(|p| p.name.clone()).collect();
             let mut verdicts: Vec<bool> = Vec::new();
             let mut assigned: HashSet<String> = HashSet::new();
+            // an Int parameter reassigned or shadowed anywhere (`amount =
+            // sqrt(-1.0)`, `let amount = …`, a lambda / match binding) is
+            // no longer known NaN-free: a negated require passes NaN
+            let mut rebound: HashSet<String> = HashSet::new();
             super::literals::for_each_stmt_deep(&on.body, &mut |x| match x {
-                Statement::Assign { name, .. } | Statement::IndexSet { name, .. } => { assigned.insert(name.clone()); }
+                Statement::Assign { name, .. } | Statement::IndexSet { name, .. } => {
+                    assigned.insert(name.clone());
+                    rebound.insert(name.split(|c| c == '.' || c == '[').next().unwrap_or(name).to_string());
+                }
+                Statement::Let { name, .. } => { rebound.insert(name.clone()); }
+                Statement::For { var, .. } => { rebound.insert(var.clone()); }
                 _ => {}
             });
+            super::invariants::collect_binders_stmts(&on.body, &mut rebound);
+            facts.nan_free = on.params.iter().filter(|p| matches!(&p.ty.node, TypeExpr::Simple(t) if t == "Int") && !rebound.contains(&p.name)).map(|p| p.name.clone()).collect();
             ASSIGNED_ANYWHERE.with(|a| *a.borrow_mut() = assigned);
             walk_guard(&on.body, &mut facts, to, from, &atoms, &mut verdicts);
             if !verdicts.is_empty() && verdicts.iter().all(|v| *v) { proven.push(name.clone()); } else { open.push(name.clone()); }

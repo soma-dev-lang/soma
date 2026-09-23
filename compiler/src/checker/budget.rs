@@ -691,33 +691,99 @@ pub fn stmt_cost(s: &Statement) -> Cost {
 }
 
 fn self_growth_reason(x: &str) -> String {
-    format!("`{x}` is rebuilt from itself more than once per loop round (`{x} = concat({x}, {x})` doubles it every round) — its size is not bounded by the round count")
+    format!("`{x}` is rebuilt from itself or another loop-carried value two or more times per round (`{x} = concat({x}, {x})`, `\"{{{x}}}{{{x}}}\"`, or `{x}` grown from another value the loop also grows) — its size may grow geometrically, not bounded by the round count")
 }
 
-/// A loop whose body reassigns an outer name from TWO or more copies of
-/// itself (`xs = concat(xs, xs)`, `s = s + s`, `let ys = xs  xs = xs + ys`):
-/// the value grows geometrically, so no per-round allocation × round count
-/// bounds it (24 doublings of a one-element list charged 8 MiB and took 6 GB).
+/// A loop in which a loop-carried name (one the body reassigns) gets a new
+/// value whose size can depend on TWO or more loop-carried sizes — itself
+/// twice (`xs = concat(xs, xs)`, `s = "{s}{s}"`), or itself and another
+/// grown value (`a = concat(a, b)  b = concat(b, a)`; `ys = xs  xs =
+/// concat(xs, ys)`), through names, interpolation, `+`, calls, and copies
+/// by `let` or assignment: the value may grow geometrically, so no
+/// per-round allocation × round count bounds it (24 doublings of a
+/// one-element list charged 8 MiB and took 6 GB).
 fn loop_self_growth(body: &[Spanned<Statement>]) -> Option<String> {
+    use std::collections::{HashMap, HashSet};
+    // the loop-carried names: reassigned, or grown in place, in the body
+    let mut carried: HashSet<&str> = HashSet::new();
     let mut assigns: Vec<(&str, &Expr)> = Vec::new();
-    let mut copies: Vec<(&str, &str)> = Vec::new();
+    let mut grows: Vec<(&str, Vec<&Expr>)> = Vec::new();
+    let mut lets: Vec<(&str, &Expr)> = Vec::new();
     crate::checker::literals::for_each_stmt_deep(body, &mut |st| match st {
-        Statement::Assign { name, value } if !name.contains('.') && !name.contains('[') => assigns.push((name.as_str(), &value.node)),
-        Statement::Let { name, value } => if let Expr::Ident(src) = &value.node { copies.push((name.as_str(), src.as_str())) },
+        Statement::Assign { name, value } if !name.contains('.') && !name.contains('[') => {
+            carried.insert(name.as_str());
+            assigns.push((name.as_str(), &value.node));
+        }
+        // a list grown in place: `xs.push(xs)` is `xs = xs + [xs]`
+        Statement::MethodCall { target, method, args } if matches!(method.as_str(), "push" | "append" | "extend" | "insert") => {
+            carried.insert(target.as_str());
+            grows.push((target.as_str(), args.iter().map(|a| &a.node).collect()));
+        }
+        Statement::Let { name, value } => lets.push((name.as_str(), &value.node)),
         _ => {}
     });
-    for (x, value) in assigns {
-        // x and the plain copies of it made in the loop (`let ys = xs`)
-        let mut names: std::collections::HashSet<&str> = std::collections::HashSet::new();
-        names.insert(x);
-        loop {
-            let before = names.len();
-            for (a, src) in &copies { if names.contains(src) { names.insert(a); } }
-            if names.len() == before { break; }
+    // a name the body `let`s is fresh every round (`let w = …  w = 0.0 - w`)
+    for (name, _) in &lets { carried.remove(name); }
+    assigns.retain(|(x, _)| carried.contains(x));
+    grows.retain(|(x, _)| carried.contains(x));
+    if carried.is_empty() { return None; }
+    // how many loop-carried sizes a value can hold (a `let` of the loop
+    // counts what its value holds; the widest of its bindings)
+    fn count(e: &Expr, carried: &HashSet<&str>, lets: &HashMap<&str, usize>) -> usize {
+        match e {
+            Expr::Ident(n) if carried.contains(n.as_str()) => 1,
+            Expr::Ident(n) => lets.get(n.as_str()).copied().unwrap_or(0),
+            // interpolation: each `{…}` segment is a value in the string
+            Expr::Literal(Literal::String(t)) => super::desugar::segments(t).iter()
+                .filter_map(|seg| super::desugar::parse_segment(seg))
+                .map(|x| count(&x, carried, lets)).sum(),
+            Expr::Literal(_) => 0,
+            // a Bool, or a number of elements / characters: no size carried
+            Expr::CmpOp { .. } | Expr::Not(_) => 0,
+            Expr::FnCall { name, .. } if matches!(name.as_str(), "len" | "size" | "count" | "length" | "str_len"
+                | "contains" | "has" | "starts_with" | "ends_with" | "index_of" | "is_empty" | "to_int" | "to_float"
+                | "abs" | "sqrt" | "floor" | "ceil" | "round") => 0,
+            Expr::MethodCall { method, .. } if matches!(method.as_str(), "len" | "size" | "count" | "length"
+                | "contains" | "has" | "starts_with" | "ends_with" | "index_of" | "is_empty") => 0,
+            // the direct children, each counted with its own rule
+            _ => children(e).into_iter().map(|c| count(c, carried, lets)).sum(),
         }
-        let mut uses = 0;
-        crate::checker::literals::for_each_in_expr(value, &mut |e| if let Expr::Ident(n) = e { if names.contains(n.as_str()) { uses += 1; } });
-        if uses >= 2 { return Some(x.to_string()); }
+    }
+    fn children(e: &Expr) -> Vec<&Expr> {
+        match e {
+            Expr::FnCall { args, .. } => args.iter().map(|a| &a.node).collect(),
+            Expr::MethodCall { target, args, .. } => std::iter::once(&target.node).chain(args.iter().map(|a| &a.node)).collect(),
+            Expr::BinaryOp { left, right, .. } | Expr::Pipe { left, right } => vec![&left.node, &right.node],
+            Expr::Try(i) | Expr::TryPropagate(i) => vec![&i.node],
+            Expr::FieldAccess { target, .. } => vec![&target.node],
+            Expr::Index { target, .. } => vec![&target.node],
+            Expr::ListLiteral(items) => items.iter().map(|i| &i.node).collect(),
+            Expr::Record { fields, .. } => fields.iter().map(|(_, v)| &v.node).collect(),
+            Expr::Lambda { body, .. } => vec![&body.node],
+            Expr::LambdaBlock { result, .. } => vec![&result.node],
+            // either branch: the wider one
+            Expr::IfExpr { then_result, else_result, .. } => vec![&then_result.node, &else_result.node],
+            Expr::Match { arms, .. } => arms.iter().map(|a| &a.result.node).collect(),
+            _ => Vec::new(),
+        }
+    }
+    // the `let`s of the loop, to a fixpoint (a let over a let)
+    let mut let_counts: HashMap<&str, usize> = HashMap::new();
+    loop {
+        let mut changed = false;
+        for (name, value) in &lets {
+            let c = count(value, &carried, &let_counts).min(8);
+            let cur = let_counts.entry(name).or_insert(0);
+            if c > *cur { *cur = c; changed = true; }
+        }
+        if !changed { break; }
+    }
+    for (x, value) in &assigns {
+        if count(value, &carried, &let_counts) >= 2 { return Some(x.to_string()); }
+    }
+    for (x, args) in &grows {
+        // the grown value itself, plus what the added piece holds
+        if 1 + args.iter().map(|a| count(a, &carried, &let_counts)).sum::<usize>() >= 2 { return Some(x.to_string()); }
     }
     None
 }

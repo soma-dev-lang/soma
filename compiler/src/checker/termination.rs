@@ -68,8 +68,8 @@ pub fn check_cell_termination(cell: &CellDef, program: &Program) -> Vec<Terminat
             let TerminationFinding::Terminates { handler } = f else { continue };
             let Some(on) = cell.sections.iter().find_map(|s| match &s.node { Section::OnSignal(o) if &o.signal_name == handler => Some(o), _ => None }) else { continue };
             if !emits(on, handler) { continue; }
-            let echo = program.cells.iter().filter(|c| c.node.name != cell.name && matches!(c.node.kind, CellKind::Cell | CellKind::Agent))
-                .flat_map(|c| c.node.sections.iter()).any(|s| matches!(&s.node, Section::OnSignal(o) if &o.signal_name == handler && emits(o, handler)));
+            let echo = super::names::collect_cells(program).into_iter().filter(|c| c.name != cell.name && matches!(c.kind, CellKind::Cell | CellKind::Agent))
+                .flat_map(|c| c.sections.iter()).any(|s| matches!(&s.node, Section::OnSignal(o) if &o.signal_name == handler && emits(o, handler)));
             if echo {
                 *f = TerminationFinding::MayNotTerminate { handler: handler.clone(), reasons: vec![format!("emits `{}`, which another cell's `on {}` emits back — nothing bounds the exchange", handler, handler)] };
             }
@@ -79,9 +79,9 @@ pub fn check_cell_termination(cell: &CellDef, program: &Program) -> Vec<Terminat
     // either (`go` calling an imported `spin` with `while true` was "✓
     // structurally terminates")
     let mut bad: std::collections::HashSet<String> = std::collections::HashSet::new();
-    for c in &program.cells {
-        if !matches!(c.node.kind, CellKind::Cell | CellKind::Agent) { continue; }
-        for f in check_cell_termination_raw(&c.node, program) {
+    for c in super::names::collect_cells(program) {
+        if !matches!(c.kind, CellKind::Cell | CellKind::Agent) { continue; }
+        for f in check_cell_termination_raw(c, program) {
             if let TerminationFinding::MayNotTerminate { handler, .. } = f { bad.insert(handler); }
         }
     }
@@ -114,7 +114,7 @@ pub fn check_cell_termination(cell: &CellDef, program: &Program) -> Vec<Terminat
                 crate::checker::literals::for_each_stmt_deep(&o.body, &mut |st| if matches!(st, Statement::Emit { signal_name, .. } if signal_name == handler) { hit = true; });
                 hit
             }));
-            let elsewhere = program.cells.iter().any(|c| c.node.name != cell.name && c.node.sections.iter().any(|s| matches!(&s.node, Section::OnSignal(o) if &o.signal_name == handler)));
+            let elsewhere = super::names::collect_cells(program).into_iter().any(|c| c.name != cell.name && c.sections.iter().any(|s| matches!(&s.node, Section::OnSignal(o) if &o.signal_name == handler)));
             if own_event && elsewhere && bad.contains(handler.as_str()) {
                 *f = TerminationFinding::MayNotTerminate { handler: handler.clone(), reasons: vec![format!("emits `{}`, and another cell's `on {}` may not terminate", handler, handler)] };
                 continue;
@@ -282,19 +282,22 @@ fn check_cell_termination_raw(cell: &CellDef, program: &Program) -> Vec<Terminat
 /// handler name → names of the handlers its body calls (self-edges are
 /// excluded: direct recursion is judged by the decreasing-argument rule).
 fn call_graph(program: &Program) -> HashMap<String, Vec<String>> {
+    // every cell, interior ones included: the handlers of `interior { }`
+    // contributed no edge (A.ping → B.pong → A.ping "✓ terminates")
+    let all_cells = super::names::collect_cells(program);
     let mut handlers: Vec<&OnSection> = Vec::new();
-    for cell in &program.cells {
-        if !matches!(cell.node.kind, CellKind::Cell | CellKind::Agent) {
+    for cell in all_cells.iter().copied() {
+        if !matches!(cell.kind, CellKind::Cell | CellKind::Agent) {
             continue;
         }
-        for section in &cell.node.sections {
+        for section in &cell.sections {
             if let Section::OnSignal(ref on) = section.node {
                 handlers.push(on);
             }
         }
     }
     let names: HashSet<&str> = handlers.iter().map(|h| h.signal_name.as_str()).collect();
-    let cells: HashSet<&str> = program.cells.iter().map(|c| c.node.name.as_str()).collect();
+    let cells: HashSet<&str> = all_cells.iter().map(|c| c.name.as_str()).collect();
     let mut graph: HashMap<String, Vec<String>> = HashMap::new();
     for on in handlers {
         let mut calls = Vec::new();
@@ -360,9 +363,9 @@ fn call_graph(program: &Program) -> HashMap<String, Vec<String>> {
     // think() hands control to the model, which may call any tool it can
     // dispatch there: a tool that calls back the handler is a recursion the
     // MODEL drives (5 250 LLM calls from one `soma run`, "✓ terminates")
-    for cell in &program.cells {
-        if !matches!(cell.node.kind, CellKind::Cell | CellKind::Agent) { continue; }
-        for fx in crate::checker::effects::check_cell(&cell.node) {
+    for cell in all_cells.iter().copied() {
+        if !matches!(cell.kind, CellKind::Cell | CellKind::Agent) { continue; }
+        for fx in crate::checker::effects::check_cell(cell) {
             let edges = graph.entry(fx.handler.clone()).or_default();
             for t in fx.think_tools {
                 if names.contains(t.as_str()) && !edges.contains(&t) { edges.push(t); }

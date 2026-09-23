@@ -276,6 +276,13 @@ enum Proof {
 /// untyped / Any / Float slots may hold 9.5, so a read of them gets no
 /// integer narrowing
 fn set_slot_int(cell: &CellDef) {
+    CELL_HANDLERS.with(|h| {
+        let mut h = h.borrow_mut();
+        h.clear();
+        for sec in &cell.sections {
+            if let Section::OnSignal(on) = &sec.node { h.insert(on.signal_name.clone()); }
+        }
+    });
     SLOT_INT.with(|m| {
         let mut m = m.borrow_mut();
         m.clear();
@@ -1201,7 +1208,11 @@ impl RangeCtx<'_> {
             Expr::IfExpr { then_result, else_result, .. } =>
                 join(self.range_of(&then_result.node), self.range_of(&else_result.node)),
             // a match whose arms all have bounded results
-            Expr::Match { arms, .. } if !arms.is_empty() =>
+            // — with a catch-all arm: without one a value no arm matches
+            // gives () (`match x { 1 -> 5  2 -> 6 }` on 3); a match on
+            // variants is exhaustive (`soma check` refuses a missing one)
+            Expr::Match { arms, .. } if !arms.is_empty() && arms.iter().any(|a| (a.guard.is_none() && matches!(a.pattern, MatchPattern::Wildcard | MatchPattern::Variable(_)))
+                || matches!(a.pattern, MatchPattern::Variant { .. })) =>
                 arms.iter().map(|a| self.range_of(&a.result.node)).reduce(join).unwrap_or(Known::Unknown),
             Expr::Literal(Literal::Int(n)) => mk(*n as f64, *n as f64),
             Expr::Literal(Literal::Float(f)) => Known::Exact(*f),
@@ -1261,10 +1272,16 @@ impl RangeCtx<'_> {
                     _ => Known::Unknown,
                 }
             }
-            Expr::FnCall { name, args } => match (name.as_str(), args.len()) {
+            Expr::FnCall { name, args } => {
+            // a handler named like a builtin runs only for an arity it
+            // accepts: `max(x, 0)` beside `on max(a, b, c)` is the builtin
+            // (the handler's `return 5` was taken for it)
+            let builtin_call = self.handlers.get(name).map_or(false, |on| super::names::builtin_names().contains(name.as_str())
+                && !crate::ast::accepted_arities(&on.params).contains(&args.len()));
+            match (name.as_str(), args.len()) {
                 // a handler of the cell named like a builtin IS what runs
                 // (`on clamp(x, lo, hi) { return x }` was trusted as clamp)
-                (_, _) if self.depth < 3 && self.handlers.contains_key(name) => match self.handlers.get(name) {
+                (_, _) if !builtin_call && self.depth < 3 && self.handlers.contains_key(name) => match self.handlers.get(name) {
                     Some(on) => {
                         // a body that can end without a value returns ():
                         // `if n > 0 { return 5 }` is not "5"
@@ -1287,7 +1304,7 @@ impl RangeCtx<'_> {
                     }
                     None => Known::Unknown,
                 },
-                (_, _) if self.handlers.contains_key(name) => Known::Unknown,
+                (_, _) if !builtin_call && self.handlers.contains_key(name) => Known::Unknown,
                 // a ?? b: a when present, else b
                 ("_coalesce", 2) => join(self.range_of(&args[0].node), self.range_of(&args[1].node)),
                 ("clamp", 3) => match (bounds(self.range_of(&args[1].node)), bounds(self.range_of(&args[2].node))) {
@@ -1315,9 +1332,11 @@ impl RangeCtx<'_> {
                     }
                     None => mk(0.0, f64::INFINITY),
                 },
-                // `len("abc")` / `len([1, 2])`: exactly what it is
+                // `len("abc")` / `len([1, 2])`: exactly what it is — a
+                // literal with a brace is interpolated (`"{s}"`) or escaped
+                // (`"{{}}"` is 2 characters): only `>= 0` is known then
                 ("len", 1) => match &args[0].node {
-                    Expr::Literal(Literal::String(t)) => { let n = t.chars().count() as f64; mk(n, n) }
+                    Expr::Literal(Literal::String(t)) if !t.contains(['{', '}']) => { let n = t.chars().count() as f64; mk(n, n) }
                     Expr::ListLiteral(items) => { let n = items.len() as f64; mk(n, n) }
                     _ => mk(0.0, f64::INFINITY),
                 },
@@ -1345,7 +1364,8 @@ impl RangeCtx<'_> {
                 // or `_drop_hold(id, sku)` returning a slot read — its
                 // parameters are unknown inside, its returns are joined
                 _ => Known::Unknown,
-            },
+            }
+            }
             _ => Known::Unknown,
         }
     }
@@ -1451,7 +1471,16 @@ fn expr_stable(e: &Expr, on: &OnSection, handlers: &HashMap<String, &OnSection>,
     let mut work: Vec<&Expr> = vec![e];
     let mut seen_fns: HashSet<&str> = HashSet::new();
     while let Some(e) = work.pop() {
+    // the names the expression binds itself (a lambda parameter, a match
+    // binding) are no state
+    let mut bound_here: HashSet<String> = HashSet::new();
+    collect_binders_expr(e, &mut bound_here);
     super::literals::for_each_in_expr(e, &mut |x| match x {
+        // a slot passed whole is read too (`len(c) + n`, `sum(c)`, `c |> …`):
+        // only `c.get(..)` / `c[..]` counted, and `require len(c) + n <= 5`
+        // held for every later `c.set(k, len(c) + n)`
+        Expr::Ident(n) if is_state(n) && !bound_here.contains(n.as_str())
+            && n.chars().next().map_or(false, |c| c.is_ascii_lowercase() || c == '_') => reads.push(n.clone()),
         Expr::FnCall { name, .. } if super::names::unstable_builtin(name) => ok = false,
         Expr::FnCall { name, .. } if !handlers.contains_key(name) && name != "_coalesce"
             && (lambdas.contains_key(name.as_str()) || params.contains(name.as_str()) || !super::names::builtin_names().contains(name.as_str())) => {
@@ -1535,6 +1564,9 @@ fn expr_stable(e: &Expr, on: &OnSection, handlers: &HashMap<String, &OnSection>,
     }
     if calls {
         if other_effects { return false; }
+        // a handler call re-evaluated in a loop or a lambda (`for … {
+        // c.set("a", total() + n) }`) reads what the previous pass wrote
+        if in_loop && !writes.is_empty() { return false; }
         let n: usize = writes.iter().map(|(k, v)| if Some(k.as_str()) == target { v.saturating_sub(1) } else { *v }).sum();
         if n > 0 { return false; }
     }
@@ -2062,6 +2094,8 @@ fn constraint_comparisons(c: &Constraint) -> Vec<(&Expr, CmpOp, &Expr)> {
 thread_local! {
     /// slots of the cell being verified: name → its values are Ints
     static SLOT_INT: std::cell::RefCell<HashMap<String, bool>> = std::cell::RefCell::new(HashMap::new());
+    /// handlers of the cell being verified (a call of one is no builtin)
+    static CELL_HANDLERS: std::cell::RefCell<HashSet<String>> = std::cell::RefCell::new(HashSet::new());
     /// parameters of the handler being analysed that are NOT Int
     static NON_INT_PARAMS: std::cell::RefCell<HashSet<String>> = std::cell::RefCell::new(HashSet::new());
 }
@@ -2086,8 +2120,13 @@ fn known_int(expr: &Expr, single: &HashMap<&str, &Expr>, int_params: &HashSet<&s
         Expr::MethodCall { method, .. } => matches!(method.as_str(), "len" | "size" | "count"),
         Expr::Index { target, .. } => slot_int(&target.node),
         Expr::BinaryOp { left, op: BinOp::Add | BinOp::Sub | BinOp::Mul | BinOp::Mod, right } => ki(&left.node) && ki(&right.node),
+        // a handler of the cell named like a builtin may return anything
+        Expr::FnCall { name, .. } if CELL_HANDLERS.with(|h| h.borrow().contains(name.as_str())) => false,
         Expr::FnCall { name, args } => match name.as_str() {
-            "len" | "count" | "size" | "str_len" | "to_int" | "floor" | "ceil" | "round" | "idiv" | "mod" | "floor_div" | "ipow" | "abs_int" => true,
+            // round(x, digits) is a Float (round(9.95, 1) == 10.0 but
+            // round(9.94, 1) == 9.9): only the one-argument form is an Int
+            "round" => args.len() == 1,
+            "len" | "count" | "size" | "str_len" | "to_int" | "floor" | "ceil" | "idiv" | "mod" | "floor_div" | "ipow" | "abs_int" => true,
             "abs" | "min" | "max" | "clamp" | "_coalesce" => !args.is_empty() && args.iter().all(|a| ki(&a.node)),
             _ => false,
         },

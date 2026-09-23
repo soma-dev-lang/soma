@@ -6186,3 +6186,219 @@ fn cli_seventh_pass_fresh_keeps_a_sibling_programs_memory_and_json_schemas() {
     }
     let _ = std::fs::remove_dir_all(dir);
 }
+
+#[test]
+fn verify_seventh_pass_interior_cells_keep_their_invariants_machines_and_edges() {
+    // an interior cell's invariant is checked when the runtime runs it
+    let dir = scratch("v7_interior_inv");
+    std::fs::write(dir.join("app.cell"), r#"
+cell Outer {
+    interior {
+        cell Inner {
+            face {
+                signal bad(k: String, x: Int)
+            }
+            memory {
+                vals: Map<String, Int>
+                invariant vals >= 0
+            }
+            on bad(k: String, x: Int) {
+                vals.set(k, x)
+                print("bad wrote {x}")
+            }
+        }
+    }
+    runtime {
+        signal bad("k", -5)
+    }
+}
+"#).unwrap();
+    let (_, out) = soma(&dir, &["run", "app.cell"]);
+    assert!(out.contains("memory invariant violated") && !out.contains("bad wrote -5"), "{out}");
+    let _ = std::fs::remove_dir_all(dir);
+
+    // an interior state machine exists at run time, keeps its instances
+    // between signals, and its guards run
+    let dir = scratch("v7_interior_sm");
+    std::fs::write(dir.join("app.cell"), r#"
+cell Outer {
+    interior {
+        cell Inner {
+            face {
+                signal go(id: String, n: Int)
+                signal fin(id: String)
+            }
+            state flow {
+                initial: a
+                a -> b { guard { n < 10 } }
+                b -> c
+            }
+            on go(id: String, n: Int) {
+                transition(id, "b")
+                print("go ok")
+            }
+            on fin(id: String) {
+                transition(id, "c")
+                let s = get_status(id)
+                print("now {s}")
+            }
+        }
+    }
+    runtime {
+        signal go("i", 1)
+        signal fin("i")
+    }
+}
+"#).unwrap();
+    let (_, out) = soma(&dir, &["run", "app.cell"]);
+    assert!(out.contains("go ok") && out.contains("now c") && !out.contains("has no state machine"), "{out}");
+    std::fs::write(dir.join("app.cell"), std::fs::read_to_string(dir.join("app.cell")).unwrap().replace("signal go(\"i\", 1)", "signal go(\"j\", 50)")).unwrap();
+    let (_, out) = soma(&dir, &["run", "app.cell"]);
+    assert!(out.contains("guard failed") && !out.contains("go ok"), "{out}");
+    let _ = std::fs::remove_dir_all(dir);
+
+    // a sibling's handler run by `signal` finds its slots, and runs once
+    let dir = scratch("v7_interior_sibling");
+    std::fs::write(dir.join("app.cell"), r#"
+cell Outer {
+    interior {
+        cell Src {
+            face {
+                signal start(k: String)
+            }
+            on start(k: String) {
+                signal inc(k)
+            }
+        }
+        cell Inner {
+            face {
+                await start(k: String)
+                signal inc(k: String)
+            }
+            memory {
+                vals: Map<String, Int>
+            }
+            on inc(k: String) {
+                vals.set(k, (vals.get(k) ?? 0) + 1)
+                let v = vals.get(k)
+                print("inc now {v}")
+            }
+        }
+    }
+    runtime {
+        signal start("k")
+    }
+}
+"#).unwrap();
+    let (_, out) = soma(&dir, &["run", "app.cell"]);
+    assert!(out.contains("inc now 1") && !out.contains("inc now 2") && !out.contains("undefined variable"), "{out}");
+    let _ = std::fs::remove_dir_all(dir);
+
+    // interior handlers are edges of the call graph
+    let out = verify_out("v7_interior_term", r#"
+cell Outer {
+    interior {
+        cell A {
+            face {
+                signal ping(n: Int)
+                await pong(n: Int)
+            }
+            state flow { initial: x  x -> y }
+            on ping(n: Int) {
+                signal pong(n + 1)
+            }
+        }
+        cell B {
+            face {
+                signal pong(n: Int)
+                await ping(n: Int)
+            }
+            on pong(n: Int) {
+                signal ping(n + 1)
+            }
+        }
+    }
+    runtime {
+        signal ping(1)
+    }
+}
+"#);
+    assert!(out.contains("mutual recursion") && !out.contains("all 1 handlers structurally terminate"), "{out}");
+}
+
+#[test]
+fn verify_seventh_pass_stability_arity_literals_and_rounding() {
+    // a slot passed whole (`len(c)`) is a read; an accessor in a loop too
+    for (name, src) in [
+        ("v7_len_slot", "cell App {\n    memory {\n        c: Map<String, Int> [persistent]\n        invariant c >= 0 && c <= 5\n    }\n    on w(n: Int) {\n        require n >= 0 else Neg\n        require len(c) + n <= 5 else Full\n        c.set(\"x\", 0)\n        c.set(\"y\", len(c) + n)\n        return c\n    }\n}\n"),
+        ("v7_len_loop", "cell App {\n    memory {\n        c: Map<String, Int> [persistent]\n        invariant c >= 0 && c <= 5\n    }\n    on w(n: Int) {\n        require n >= 0 else Neg\n        require len(c) + n <= 5 else Full\n        for i in range(0, 5) {\n            c.set(\"k{i}\", len(c) + n)\n        }\n        return c\n    }\n}\n"),
+        ("v7_accessor_loop", "cell App {\n    memory {\n        c: Map<String, Int> [persistent]\n        invariant c >= 0 && c <= 5\n    }\n    on total() {\n        return c.get(\"a\") ?? 0\n    }\n    on w(n: Int) {\n        require n >= 0 else Neg\n        require total() + n <= 5 else Full\n        for i in range(0, 3) {\n            c.set(\"a\", total() + n)\n        }\n        return c.get(\"a\")\n    }\n}\n"),
+        ("v7_accessor_lambda", "cell App {\n    memory {\n        c: Map<String, Int> [persistent]\n        invariant c >= 0 && c <= 5\n    }\n    on total() {\n        return c.get(\"a\") ?? 0\n    }\n    on w(n: Int) {\n        require n >= 0 else Neg\n        require total() + n <= 5 else Full\n        let r = [1, 2, 3] |> map(i => c.set(\"a\", total() + n))\n        return c.get(\"a\")\n    }\n}\n"),
+    ] {
+        let out = verify_out(name, src);
+        assert!(!out.contains("invariant c >= 0 && c <= 5 — writer 'w' proven by induction") && out.contains("runtime-checked"), "{name}: {out}");
+    }
+    // a handler named like a builtin but called with another arity: the builtin runs
+    let out = verify_out("v7_arity", "cell App {\n    memory {\n        vals: Map<String, Int> [persistent]\n        invariant vals <= 10\n    }\n    on max(a: Int, b: Int, c: Int) {\n        return 5\n    }\n    on w(k: String, x: Int) {\n        vals.set(k, max(x, 0))\n        return vals.get(k)\n    }\n}\n");
+    assert!(!out.contains("✓ invariant vals <= 10"), "{out}");
+    // len() of an interpolated or escaped literal
+    for (name, lit, inv) in [("v7_len_interp", "\"{s}\"", "ints <= 3"), ("v7_len_escape", "\"{{}}\"", "ints >= 4")] {
+        let src = format!("cell App {{\n    memory {{\n        ints: Map<String, Int> [persistent]\n        invariant {inv}\n    }}\n    on w(k: String, s: String) {{\n        ints.set(k, len({lit}))\n        return ints.get(k)\n    }}\n}}\n");
+        let out = verify_out(name, &src);
+        assert!(!out.contains(&format!("✓ invariant {inv}")), "{name}: {out}");
+    }
+    // round(x, digits) is a Float: `y < 10` is not `y <= 9`
+    let out = verify_out("v7_round2", "cell App {\n    memory {\n        vals: Map<String, Float> [persistent]\n        invariant vals <= 9.0\n    }\n    on w(k: String, x: Float) {\n        let y = round(x, 1)\n        require y < 10 else Big\n        vals.set(k, y)\n        return vals.get(k)\n    }\n}\n");
+    assert!(!out.contains("✓ invariant vals <= 9.0"), "{out}");
+    // a match without a catch-all may give ()
+    let out = verify_out("v7_match_unit", "cell App {\n    memory {\n        vals: Map<String, Int> [persistent]\n        invariant vals >= 0\n    }\n    on w(k: String, x: Int) {\n        let y = match x {\n            1 -> 5\n            2 -> 6\n        }\n        vals.set(k, y)\n        return vals.get(k)\n    }\n}\n");
+    assert!(!out.contains("✓ invariant vals >= 0"), "{out}");
+}
+
+#[test]
+fn verify_seventh_pass_guards_foreign_handlers_and_reassigned_params() {
+    let machine = "cell App {\n    state flow {\n        initial: draft\n        draft -> approved { guard { amount < 1000 } }\n        draft -> rejected\n    }\n    on appr(id: String, amount: Int) {\n        require amount < 1000 else TooBig\n        transition(id, \"approved\")\n        return get_status(id)\n    }\n    on reject(id: String) { transition(id, \"rejected\")  return 1 }\n}\n";
+    // another cell's handler with the same name as one of the machine's cell
+    let out = verify_out("v7_foreign_same_name", &format!("{machine}cell Force {{\n    on appr(id: String, amount: Int) {{\n        transition(id, \"approved\")\n        return get_status(id)\n    }}\n}}\n"));
+    assert!(out.contains("runtime-checked in `Force.appr`") && !out.contains("proven — every caller"), "{out}");
+    let out = verify_out("v7_foreign_bogus", &format!("{machine}cell Force {{\n    on appr(id: String, amount: Int) {{\n        transition(id, \"bogus\")\n        return get_status(id)\n    }}\n}}\n"));
+    assert!(out.contains("VERIFY FAILED") && out.contains("bogus"), "{out}");
+    // an Int parameter reassigned (or shadowed) may be NaN: `!(amount >= 1000)` proves nothing
+    let out = verify_out("v7_nan_reassigned", "cell App {\n    state flow {\n        initial: draft\n        draft -> approved { guard { amount < 1000 } }\n    }\n    on appr(id: String, amount: Int) {\n        amount = sqrt(0.0 - 1.0)\n        require !(amount >= 1000) else TooBig\n        transition(id, \"approved\")\n        return get_status(id)\n    }\n    on appr2(id: String, amount: Int) {\n        let amount = sqrt(0.0 - 1.0)\n        require !(amount >= 1000) else TooBig\n        transition(id, \"approved\")\n        return get_status(id)\n    }\n}\n");
+    assert!(out.contains("runtime-checked in `appr`, `appr2`"), "{out}");
+}
+
+#[test]
+fn check_seventh_pass_local_functions_determinism_and_growth() {
+    // a local reassigned to a lambda later in the loop hides the builtin
+    let dir = scratch("v7_loop_lambda");
+    std::fs::write(dir.join("app.cell"), "cell App {\n    memory {\n        vals: Map<String, Int> [persistent]\n        invariant vals >= 0\n    }\n    on put(k: String) {\n        let abs = 3\n        for i in range(0, 2) {\n            if i == 1 {\n                vals.set(k, abs(5))\n            }\n            abs = v => 0 - v\n        }\n        return vals.get(k)\n    }\n}\n").unwrap();
+    let (code, out) = soma(&dir, &["check", "app.cell"]);
+    assert!(code != 0 && out.contains("local function hiding the builtin abs()"), "{out}");
+    // a DATA local named like a builtin leaves the builtin to run: no error
+    std::fs::write(dir.join("app.cell"), "cell App {\n    on main() {\n        let rows = [1, 2, 3]\n        let max = max(rows)\n        let total = sum(rows)\n        print(\"max {max} of {total}\")\n        print(max(4, 5))\n        let n = 2\n        let len = n\n        print(len(\"abc\"))\n    }\n}\n").unwrap();
+    let (code, out) = soma(&dir, &["check", "app.cell"]);
+    assert_eq!(code, 0, "{out}");
+    let (_, out) = soma(&dir, &["run", "app.cell", "main"]);
+    assert!(out.contains("max 3 of 6") && out.lines().any(|l| l.trim() == "5") && out.lines().any(|l| l.trim() == "3"), "{out}");
+    let _ = std::fs::remove_dir_all(dir);
+
+    // [deterministic]: interpolation, UFCS, a data local named like the builtin
+    let dir = scratch("v7_deterministic");
+    std::fs::write(dir.join("app.cell"), "cell App {\n    on roll(x: Int) { return x + random() }\n    on d1(x: Int) [deterministic] {\n        return \"{random()}\"\n    }\n    on d2(x: Int) [deterministic] {\n        return x.roll()\n    }\n    on d3(x: Int) [deterministic] {\n        let now_ms = 1\n        return now_ms()\n    }\n    on d4(x: Int) [deterministic] {\n        return \"tok {random_token(8)}\"\n    }\n}\n").unwrap();
+    let (_, out) = soma(&dir, &["check", "app.cell"]);
+    for h in ["'d1'", "'d2'", "'d3'", "'d4'"] {
+        assert!(out.contains(&format!("handler {h} is [deterministic]")), "{h}: {out}");
+    }
+    let _ = std::fs::remove_dir_all(dir);
+
+    // geometric growth: interpolation, a copy by assignment
+    let dir = scratch("v7_budget_growth");
+    for body in ["let s = \"x\"\n        for i in range(0, 27) { s = \"{s}{s}\" }\n        return len(s)",
+                 "let xs = [1]\n        let ys = [1]\n        for i in range(0, 24) {\n            ys = xs\n            xs = concat(xs, ys)\n        }\n        return len(xs)"] {
+        std::fs::write(dir.join("app.cell"), format!("cell App {{\n    scale {{ memory: \"64Mi\" }}\n    on grow(n: Int) {{\n        {body}\n    }}\n}}\n")).unwrap();
+        let (_, out) = soma(&dir, &["check", "app.cell"]);
+        assert!(out.contains("is rebuilt from itself or another loop-carried value") && !out.contains("✓ budget holds"), "{out}");
+    }
+    let _ = std::fs::remove_dir_all(dir);
+}

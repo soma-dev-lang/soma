@@ -954,6 +954,41 @@ pub fn bus_event_allowed(name: &str, data: Option<&serde_json::Value>) -> Result
 /// default of every interpreter it creates.
 pub static DEFAULT_AGENT: std::sync::OnceLock<(Option<crate::pkg::manifest::AgentConfig>, std::collections::HashMap<String, crate::pkg::manifest::AgentConfig>)> = std::sync::OnceLock::new();
 
+/// The memory invariants a cell declares, keyed `Cell.slot` and by the
+/// bare slot name (shared by `Interpreter::new` and `register_cell`: the
+/// interior cells the runtime registers kept none, so their writes were
+/// never checked while `soma verify` proved the rules)
+fn collect_cell_invariants(cell: &CellDef, invariants: &mut HashMap<String, Vec<Expr>>) {
+    for section in &cell.sections {
+        if let Section::Memory(ref mem) = section.node {
+            let slot_names: Vec<&str> =
+                mem.slots.iter().map(|s| s.node.name.as_str()).collect();
+            for inv in &mem.invariants {
+                // deep, as the checker counts them: a slot named in a
+                // lambda (`all([0], y => a >= 0)`) guards `a` only
+                let refs = crate::checker::invariants::deep_idents(&inv.node);
+                let named: Vec<&str> = slot_names.iter()
+                    .filter(|n| refs.contains(**n))
+                    .copied()
+                    .collect();
+                let targets: &[&str] = if named.is_empty() { &slot_names } else { &named };
+                // `links.size <= N` → the generic `size`, scoped above to `links`
+                for t in targets {
+                    // normalized for THIS target: `t.size` is the
+                    // written slot's size, another slot's `.size`
+                    // keeps its name (it is that slot's entry count,
+                    // bound at check time — it used to be stripped to
+                    // the same `size` and the rule was vacuous)
+                    let inv_expr = crate::checker::invariants::normalize_invariant(&inv.node, &[t.to_string()]);
+                    let key = format!("{}.{}", cell.name, t);
+                    invariants.entry(key).or_default().push(inv_expr.clone());
+                    invariants.entry((*t).to_string()).or_default().push(inv_expr);
+                }
+            }
+        }
+    }
+}
+
 /// Set by `soma run` and `soma serve`: state-machine instances live in
 /// .soma_data/soma.db whatever the slots of the program.
 pub static PERSIST_MACHINES: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
@@ -1028,34 +1063,7 @@ impl Interpreter {
         // in its section.
         let mut invariants: HashMap<String, Vec<Expr>> = HashMap::new();
         for cell in &program.cells {
-            for section in &cell.node.sections {
-                if let Section::Memory(ref mem) = section.node {
-                    let slot_names: Vec<&str> =
-                        mem.slots.iter().map(|s| s.node.name.as_str()).collect();
-                    for inv in &mem.invariants {
-                        // deep, as the checker counts them: a slot named in a
-                        // lambda (`all([0], y => a >= 0)`) guards `a` only
-                        let refs = crate::checker::invariants::deep_idents(&inv.node);
-                        let named: Vec<&str> = slot_names.iter()
-                            .filter(|n| refs.contains(**n))
-                            .copied()
-                            .collect();
-                        let targets: &[&str] = if named.is_empty() { &slot_names } else { &named };
-                        // `links.size <= N` → the generic `size`, scoped above to `links`
-                        for t in targets {
-                            // normalized for THIS target: `t.size` is the
-                            // written slot's size, another slot's `.size`
-                            // keeps its name (it is that slot's entry count,
-                            // bound at check time — it used to be stripped to
-                            // the same `size` and the rule was vacuous)
-                            let inv_expr = crate::checker::invariants::normalize_invariant(&inv.node, &[t.to_string()]);
-                            let key = format!("{}.{}", cell.node.name, t);
-                            invariants.entry(key).or_default().push(inv_expr.clone());
-                            invariants.entry((*t).to_string()).or_default().push(inv_expr);
-                        }
-                    }
-                }
-            }
+            collect_cell_invariants(&cell.node, &mut invariants);
         }
         Self {
             cells,
@@ -1136,6 +1144,19 @@ impl Interpreter {
                 self.handler_arities.entry(on.signal_name.clone()).or_default().extend(crate::ast::accepted_arities(&on.params));
             }
         }
+        // its machines and memory invariants too (an interior cell run by the
+        // runtime had neither: `transition()` raised "has no state machine"
+        // and an invariant `soma verify` proved was never checked); a cell
+        // registered under the name of another replaces its rules
+        self.state_machines.retain(|(c, _), _| c != &cell.name);
+        for section in &cell.sections {
+            if let Section::State(ref sm) = section.node {
+                self.state_machines.insert((cell.name.clone(), sm.name.clone()), sm.clone());
+            }
+        }
+        let prefix = format!("{}.", cell.name);
+        self.invariants.retain(|k, _| !k.starts_with(&prefix));
+        collect_cell_invariants(&cell, &mut self.invariants);
         self.cells.insert(cell.name.clone(), cell);
     }
 
