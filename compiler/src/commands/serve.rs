@@ -1991,8 +1991,17 @@ pub fn cmd_serve(path: &PathBuf, port: u16, host: &str, verbose: bool, join: Opt
                     // `response(200, "<b>x</b>", "Content-Type", "text/html")`:
                     // the header IS the content type (it went out beside a
                     // JSON-wrapped body)
+                    // checked like any header value: a CR/LF in it split the
+                    // response, a non-ASCII byte panicked the request thread
                     let explicit_ct = entries.iter().find(|(k, _)| k.eq_ignore_ascii_case("content-type"))
-                        .map(|(_, v)| format!("{}", v));
+                        .map(|(_, v)| format!("{}", v))
+                        .filter(|v| {
+                            let ok = header_value_ok(v);
+                            if !ok {
+                                eprintln!("warning: {} {}: response header \"Content-Type\" dropped (a control or non-ASCII character in the value)", method, url);
+                            }
+                            ok
+                        });
                     let content_type = explicit_ct.clone().or_else(|| entries.get("_content_type")
                         .and_then(|v| if let interpreter::Value::String(s) = v { Some(s.clone()) } else { None }))
                         .unwrap_or("application/json".to_string());
@@ -2065,10 +2074,10 @@ pub fn cmd_serve(path: &PathBuf, port: u16, host: &str, verbose: bool, join: Opt
                     // control character (`filename={name}` with %0d%0a split
                     // the response); framing headers belong to the server
                     let name_ok = !key.is_empty() && key.bytes().all(|b| b.is_ascii_alphanumeric() || b"!#$%&'*+-.^_`|~".contains(&b));
-                    let value_ok = val.bytes().all(|b| b == b'\t' || (b >= 0x20 && b != 0x7f));
+                    let value_ok = header_value_ok(val);
                     let framing = matches!(key.to_ascii_lowercase().as_str(), "content-length" | "transfer-encoding" | "connection");
                     if !name_ok || !value_ok || framing {
-                        eprintln!("warning: {} {}: response header {:?} dropped (invalid name, a control character in the value, or a framing header)", method, url, key);
+                        eprintln!("warning: {} {}: response header {:?} dropped (invalid name, a control or non-ASCII character in the value, or a framing header)", method, url, key);
                         continue;
                     }
                     if let Ok(h) = tiny_http::Header::from_bytes(key.as_bytes(), val.as_bytes()) {
@@ -2428,7 +2437,7 @@ pub(crate) fn mutating_handlers(cell: &ast::CellDef, foreign: &std::collections:
         Section::Memory(m) => Some(m.slots.iter().map(|sl| sl.node.name.clone()).collect::<Vec<_>>()),
         _ => None,
     }).flatten().collect();
-    const WRITES: [&str; 8] = ["set", "push", "append", "delete", "remove", "clear", "update", "pop"];
+    const WRITES: [&str; 9] = ["set", "put", "push", "append", "delete", "remove", "clear", "update", "pop"];
     let mut direct: HashSet<String> = HashSet::new();
     let mut calls: HashMap<String, Vec<String>> = HashMap::new();
     for sec in &cell.sections {
@@ -2480,4 +2489,10 @@ pub(crate) fn mutating_handlers(cell: &ast::CellDef, foreign: &std::collections:
 /// Control characters (newline, NUL, ESC…) shown escaped in the request log.
 fn log_safe(s: &str) -> String {
     s.chars().map(|c| if c.is_control() { c.escape_default().to_string() } else { c.to_string() }).collect()
+}
+
+/// A response header value the server sends: visible ASCII, space and tab.
+/// A CR/LF would split the response; tiny_http refuses a non-ASCII byte.
+fn header_value_ok(v: &str) -> bool {
+    v.bytes().all(|b| b == b'\t' || (0x20..0x7f).contains(&b))
 }

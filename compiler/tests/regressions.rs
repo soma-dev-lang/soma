@@ -3423,3 +3423,96 @@ fn a_variant_pattern_on_get_status_is_refused() {
     assert_eq!(out.matches("is a variant pattern").count(), 1, "{out}");
     let _ = std::fs::remove_dir_all(dir);
 }
+
+/// Start `soma serve app.cell` in `dir` on a free port.
+fn serve_dir(dir: &Path) -> (Server, u16) {
+    let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+    let port = listener.local_addr().unwrap().port();
+    drop(listener);
+    let server = Server(
+        Command::new(env!("CARGO_BIN_EXE_soma"))
+            .args(["serve", "app.cell", "--no-schedule", "-p", &port.to_string()])
+            .current_dir(dir)
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .spawn()
+            .unwrap(),
+    );
+    wait_http(port);
+    (server, port)
+}
+
+/// Send one raw HTTP/1.0 request and read the whole answer.
+fn raw_request(port: u16, request: &str) -> String {
+    let mut stream = std::net::TcpStream::connect(("127.0.0.1", port)).unwrap();
+    stream.set_read_timeout(Some(std::time::Duration::from_secs(5))).unwrap();
+    stream.write_all(request.as_bytes()).unwrap();
+    let mut out = Vec::new();
+    let _ = stream.read_to_end(&mut out);
+    String::from_utf8_lossy(&out).into_owned()
+}
+
+#[test]
+fn a_content_type_value_is_checked_like_any_header() {
+    // `response(200, x, "Content-Type", q.t)` sent a CR/LF in the value as a
+    // second header (Set-Cookie injection) and panicked on a non-ASCII byte
+    let dir = scratch("content_type_header");
+    std::fs::write(dir.join("app.cell"), r#"
+cell App {
+    on request(method: String, path: String, body: String, q: Map) {
+        return response(200, "hello", "Content-Type", q.t ?? "text/plain", "X-Name", q.n ?? "ok")
+    }
+}
+"#).unwrap();
+    let (_server, port) = serve_dir(&dir);
+    let out = get(port, "/ct?t=text/plain%0D%0ASet-Cookie:%20pwn=1");
+    assert!(out.starts_with("HTTP/1.0 200"), "{out}");
+    assert!(!out.to_ascii_lowercase().contains("set-cookie"), "{out}");
+    let out = get(port, "/ct?t=text/plain%3B%20charset%3D%C3%A9&n=%C3%A9");
+    assert!(out.starts_with("HTTP/1.0 200"), "{out}");
+    assert!(out.contains("hello"), "{out}");
+    let out = get(port, "/ct?t=text/csv");
+    assert!(out.contains("Content-Type: text/csv"), "{out}");
+    let _ = std::fs::remove_dir_all(dir);
+}
+
+#[test]
+fn a_handler_writing_through_put_is_not_run_on_get() {
+    // `bal.put(k, v)` is `bal.set(k, v)`, but the GET gate did not count it
+    // as a write: `GET /wipe/alice` zeroed the balance (CSRF)
+    let dir = scratch("put_on_get");
+    std::fs::write(dir.join("app.cell"), r#"
+cell App {
+    memory { bal: Map<String, Int> [persistent] }
+    on wipe(k: String) { bal.put(k, 0)  return "ok" }
+}
+"#).unwrap();
+    let (_server, port) = serve_dir(&dir);
+    let out = get(port, "/wipe/alice");
+    assert!(out.starts_with("HTTP/1.0 405"), "{out}");
+    let _ = std::fs::remove_dir_all(dir);
+}
+
+#[test]
+fn a_deterministic_handler_refuses_every_storage_write() {
+    // only .set/.delete/.push were refused: put, remove, slot[k] = v and a
+    // clock read in a `require` passed the contract
+    let dir = scratch("deterministic_storage");
+    std::fs::write(dir.join("app.cell"), r#"
+cell T {
+    memory { bal: Map<String, Int> [persistent] }
+    on p(k: String) [deterministic] { bal.put(k, 1) return 1 }
+    on i(k: String) [deterministic] { bal[k] = 2 return 1 }
+    on r(k: String) [deterministic] { bal.remove(k) return 1 }
+    on c(k: String) [deterministic] { require now() > 0 else Late  return 1 }
+    on ok(bal: Int) [deterministic] { return bal + 1 }
+}
+"#).unwrap();
+    let (code, out) = soma(&dir, &["check", "app.cell"]);
+    assert_ne!(code, 0, "{out}");
+    for h in ["'p'", "'i'", "'r'", "'c'"] {
+        assert!(out.contains(&format!("handler {h} is [deterministic]")), "{h}: {out}");
+    }
+    assert!(!out.contains("handler 'ok'"), "{out}");
+    let _ = std::fs::remove_dir_all(dir);
+}

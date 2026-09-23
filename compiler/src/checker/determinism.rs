@@ -46,128 +46,41 @@ fn forbid_reason(name: &str) -> Option<&'static str> {
     }
 }
 
+/// The slot methods that write (`put` is `set`, `remove` is `delete`).
 fn mutating_method(name: &str) -> bool {
-    matches!(name, "set" | "delete" | "append" | "clear" | "push")
+    matches!(name, "set" | "put" | "delete" | "remove" | "append" | "push" | "clear")
 }
 
+/// Every call and storage write of the body, blocks included: a `require`
+/// condition, `slot.put(k, v)`, `slot.remove(k)` and `slot[k] = v` passed
+/// the contract (only `.set/.delete/.push` were refused).
 pub fn check_deterministic_handler(
     handler_name: &str,
     body: &[Spanned<Statement>],
+    slots: &std::collections::HashSet<String>,
 ) -> Vec<DeterminismError> {
-    let mut errs = Vec::new();
-    for stmt in body {
-        walk_stmt(handler_name, &stmt.node, &mut errs);
-    }
+    let mut errs: Vec<DeterminismError> = Vec::new();
+    let mut push = |bad_call: String, reason: &'static str| {
+        if !errs.iter().any(|e| e.bad_call == bad_call) {
+            errs.push(DeterminismError { handler_name: handler_name.to_string(), bad_call, reason });
+        }
+    };
+    crate::checker::literals::for_each_expr(body, &mut |e| match e {
+        Expr::FnCall { name, .. } => {
+            if let Some(reason) = forbid_reason(name) { push(name.clone(), reason); }
+        }
+        Expr::MethodCall { method, .. } if mutating_method(method) =>
+            push(format!(".{}()", method), "mutates persistent storage"),
+        _ => {}
+    });
+    crate::checker::literals::for_each_stmt_deep(body, &mut |st| match st {
+        Statement::Emit { .. } => push("emit".to_string(), "raises a signal (cross-cell effect)"),
+        Statement::MethodCall { method, .. } if mutating_method(method) =>
+            push(format!(".{}()", method), "mutates persistent storage"),
+        Statement::IndexSet { name, .. } | Statement::Assign { name, .. }
+            if slots.contains(name.split('.').next().unwrap_or("")) =>
+            push(format!("{} = …", name), "mutates persistent storage"),
+        _ => {}
+    });
     errs
-}
-
-fn walk_stmt(handler_name: &str, stmt: &Statement, errs: &mut Vec<DeterminismError>) {
-    match stmt {
-        Statement::Let { value, .. }
-        | Statement::Assign { value, .. }
-        | Statement::Return { value }
-        | Statement::Ensure { condition: value } => walk_expr(handler_name, &value.node, errs),
-        Statement::ExprStmt { expr } => walk_expr(handler_name, &expr.node, errs),
-        Statement::IndexSet { index, value, .. } => {
-            walk_expr(handler_name, &index.node, errs);
-            walk_expr(handler_name, &value.node, errs);
-        }
-        Statement::If { condition, then_body, else_body } => {
-            walk_expr(handler_name, &condition.node, errs);
-            for s in then_body { walk_stmt(handler_name, &s.node, errs); }
-            for s in else_body { walk_stmt(handler_name, &s.node, errs); }
-        }
-        Statement::While { condition, body, .. } => {
-            walk_expr(handler_name, &condition.node, errs);
-            for s in body { walk_stmt(handler_name, &s.node, errs); }
-        }
-        Statement::For { iter, body, .. } => {
-            walk_expr(handler_name, &iter.node, errs);
-            for s in body { walk_stmt(handler_name, &s.node, errs); }
-        }
-        Statement::Emit { .. } => {
-            errs.push(DeterminismError {
-                handler_name: handler_name.to_string(),
-                bad_call: "emit".to_string(),
-                reason: "raises a signal (cross-cell effect)",
-            });
-        }
-        Statement::MethodCall { method, args, .. } => {
-            if mutating_method(method) {
-                errs.push(DeterminismError {
-                    handler_name: handler_name.to_string(),
-                    bad_call: format!(".{}()", method),
-                    reason: "mutates persistent storage",
-                });
-            }
-            for arg in args { walk_expr(handler_name, &arg.node, errs); }
-        }
-        Statement::Require { .. } | Statement::Break | Statement::Continue => {}
-    }
-}
-
-fn walk_expr(handler_name: &str, expr: &Expr, errs: &mut Vec<DeterminismError>) {
-    match expr {
-        Expr::Literal(_) | Expr::Ident(_) => {}
-        Expr::BinaryOp { left, right, .. } | Expr::CmpOp { left, right, .. }
-        | Expr::Pipe { left, right } => {
-            walk_expr(handler_name, &left.node, errs);
-            walk_expr(handler_name, &right.node, errs);
-        }
-        Expr::Not(inner) | Expr::Try(inner) | Expr::TryPropagate(inner) => {
-            walk_expr(handler_name, &inner.node, errs);
-        }
-        Expr::FnCall { name, args } => {
-            if let Some(reason) = forbid_reason(name) {
-                errs.push(DeterminismError {
-                    handler_name: handler_name.to_string(),
-                    bad_call: name.clone(),
-                    reason,
-                });
-            }
-            for arg in args { walk_expr(handler_name, &arg.node, errs); }
-        }
-        Expr::Lambda { body, .. } => walk_expr(handler_name, &body.node, errs),
-        Expr::LambdaBlock { stmts, result, .. } => {
-            for s in stmts { walk_stmt(handler_name, &s.node, errs); }
-            walk_expr(handler_name, &result.node, errs);
-        }
-        Expr::FieldAccess { target, .. } => walk_expr(handler_name, &target.node, errs),
-        Expr::Index { target, index } => {
-            walk_expr(handler_name, &target.node, errs);
-            walk_expr(handler_name, &index.node, errs);
-        }
-        Expr::MethodCall { target, method, args } => {
-            walk_expr(handler_name, &target.node, errs);
-            if mutating_method(method) {
-                errs.push(DeterminismError {
-                    handler_name: handler_name.to_string(),
-                    bad_call: format!(".{}()", method),
-                    reason: "mutates persistent storage",
-                });
-            }
-            for arg in args { walk_expr(handler_name, &arg.node, errs); }
-        }
-        Expr::Record { fields, .. } => {
-            for (_, v) in fields { walk_expr(handler_name, &v.node, errs); }
-        }
-        Expr::Match { subject, arms } => {
-            walk_expr(handler_name, &subject.node, errs);
-            for arm in arms {
-                if let Some(g) = &arm.guard { walk_expr(handler_name, &g.node, errs); }
-                for s in &arm.body { walk_stmt(handler_name, &s.node, errs); }
-                walk_expr(handler_name, &arm.result.node, errs);
-            }
-        }
-        Expr::IfExpr { condition, then_body, then_result, else_body, else_result } => {
-            walk_expr(handler_name, &condition.node, errs);
-            for s in then_body { walk_stmt(handler_name, &s.node, errs); }
-            walk_expr(handler_name, &then_result.node, errs);
-            for s in else_body { walk_stmt(handler_name, &s.node, errs); }
-            walk_expr(handler_name, &else_result.node, errs);
-        }
-        Expr::ListLiteral(items) => {
-            for it in items { walk_expr(handler_name, &it.node, errs); }
-        }
-    }
 }

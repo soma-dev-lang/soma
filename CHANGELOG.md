@@ -2,6 +2,28 @@
 
 ## Unreleased
 
+### A `Content-Type` value is checked like any response header
+
+- `response(200, body, "Content-Type", v)` sent `v` unchecked: a CR/LF in it
+  (a value taken from the query) added headers of the client's choosing
+  (`Set-Cookie`), and a non-ASCII byte panicked the request thread (500, empty
+  body). Such a value is now dropped with a warning, as every other header
+  value is; a non-ASCII value of another header is named in that warning
+  instead of vanishing silently.
+
+### A handler that writes through `slot.put(k, v)` is not run on GET
+
+- `put` is `set`, but the GET gate of `soma serve` did not count it as a
+  write: `GET /wipe/alice` ran `bal.put(k, 0)` (a link or an image tag could
+  trigger it). It now answers 405 like `set`.
+
+### `[deterministic]` refuses every storage write
+
+- Only `.set()`, `.delete()`, `.append()`, `.push()` and `.clear()` were
+  refused: `slot.put(k, v)`, `slot.remove(k)` and `slot[k] = v` passed the
+  contract, and a call inside a `require` condition (`require now() > 0`) was
+  never looked at. The whole body is now walked, blocks included.
+
 ### A variant pattern on `get_status` is refused
 
 - `get_status(id) == Funded` was already refused (the state is a String),

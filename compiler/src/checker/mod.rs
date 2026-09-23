@@ -1492,8 +1492,13 @@ impl<'a> Checker<'a> {
         for section in &cell.sections {
             if let Section::OnSignal(ref handler) = section.node {
                 if handler.properties.iter().any(|p| p == "deterministic") {
+                    let slots: std::collections::HashSet<String> = cell.sections.iter()
+                        .filter_map(|s| if let Section::Memory(m) = &s.node { Some(m) } else { None })
+                        .flat_map(|m| m.slots.iter().map(|sl| sl.node.name.clone()))
+                        .filter(|n| !handler.params.iter().any(|p| &p.name == n))
+                        .collect();
                     let errs = determinism::check_deterministic_handler(
-                        &handler.signal_name, &handler.body,
+                        &handler.signal_name, &handler.body, &slots,
                     );
                     for e in errs {
                         self.errors.push(CheckError::DeterminismViolation {
