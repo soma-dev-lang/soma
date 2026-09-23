@@ -2,6 +2,17 @@
 
 ## Unreleased
 
+### Interpolation reads quoted braces and semicolons as code
+
+- `"parts: {join(parts, \"}\")}"` printed its own source: the segment ended
+  at the quoted `}`. A `;` inside a quoted argument (`{join(xs, \";\")}`)
+  made the segment literal text (CSS is still text: its `;` is not quoted).
+  Both passed `check`.
+- A string pattern holding `}}` did not match the same literal: `match s {
+  "a}}" -> … }` for `s = "a}}"` fell through, since a pattern was
+  interpolated on a `}` alone and an expression only on a `{`. Both now
+  interpolate on a `{`.
+
 ### `10%-3` is the modulo
 
 - A number touching `%` lexed as a percentage literal whatever followed:

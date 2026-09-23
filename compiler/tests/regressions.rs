@@ -3908,3 +3908,25 @@ cell test T { rules {
 } }
 "#);
 }
+
+#[test]
+fn interpolation_reads_quoted_braces_and_semicolons_as_code() {
+    // a `}` or a `;` inside a quoted argument printed the source text; a
+    // pattern "a}}" did not match the string "a}}"
+    passes("interp_quotes", r#"
+cell P {
+    on parts() { let parts = ["a", "b"]  return "parts: {join(parts, \"}\")}" }
+    on get() { let m = map("}", 7)  return "[{m.get(\"}\")}]" }
+    on csv() { let xs = ["a", "b"]  return "csv: {join(xs, \";\")}" }
+    on css() { return "css: {color: red; margin: 0}" }
+    on pat() { let s = "a}}"  return match s { "a}}" -> "matched"  _ -> "fell through" } }
+}
+cell test T { rules {
+    assert parts() == "parts: a}b"
+    assert get() == "[7]"
+    assert csv() == "csv: a;b"
+    assert css() == "css: {color: red; margin: 0}"
+    assert pat() == "matched"
+} }
+"#);
+}

@@ -3680,9 +3680,9 @@ impl Interpreter {
     /// The pattern with its string literals interpolated in `env`.
     fn resolve_pattern(&mut self, pattern: &MatchPattern, env: &mut Env, cell_name: &str, signal_name: &str) -> Result<MatchPattern, ExecError> {
         Ok(match pattern {
-            MatchPattern::Literal(Literal::String(s)) if s.contains('{') || s.contains('}') =>
+            MatchPattern::Literal(Literal::String(s)) if s.contains('{') =>
                 MatchPattern::Literal(Literal::String(self.interpolate_string(s, env, cell_name, signal_name)?)),
-            MatchPattern::StringPrefix { prefix, rest } if prefix.contains('{') || prefix.contains('}') =>
+            MatchPattern::StringPrefix { prefix, rest } if prefix.contains('{') =>
                 MatchPattern::StringPrefix { prefix: self.interpolate_string(prefix, env, cell_name, signal_name)?, rest: rest.clone() },
             MatchPattern::Or(alts) => MatchPattern::Or(alts.iter().map(|a| self.resolve_pattern(a, env, cell_name, signal_name)).collect::<Result<_, _>>()?),
             MatchPattern::MapDestructure(fields) => MatchPattern::MapDestructure(fields.iter()
@@ -7023,14 +7023,16 @@ pub(crate) fn invariant_reads_status(inv: &Expr) -> bool {
 }
 
 pub(crate) fn interp_segment_is_literal(segment: &str) -> bool {
-    let (mut quoted, mut escaped, mut colon) = (false, false, false);
+    let (mut quoted, mut escaped, mut colon, mut semi) = (false, false, false, false);
     for ch in segment.chars() {
         if escaped { escaped = false; continue; }
         if quoted && ch == '\\' { escaped = true; continue; }
         if ch == '"' { quoted = !quoted; }
         if !quoted && ch == ':' { colon = true; }
+        // a `;` inside a quoted argument (`{join(xs, ";")}`) is code
+        if !quoted && ch == ';' { semi = true; }
     }
-    segment.is_empty() || segment.contains(';')
+    segment.is_empty() || semi
         || segment.chars().all(|c| c.is_ascii_digit() || c == ',' || c == ' ')
         || (colon && !segment.contains('(') && !segment.contains('['))
 }
@@ -7307,12 +7309,21 @@ pub(crate) fn reserved_storage_key(v: &Value) -> Option<String> {
 pub(crate) fn interp_segment_end(s: &str, open: usize) -> Option<usize> {
     let rest = &s[open + 1..];
     let first = rest.find('}')?;
-    if !rest[..first].contains('{') || rest.trim_start().starts_with('{') {
+    // a quote before the first `}`: braces inside a quoted argument are
+    // text (`{join(parts, "}")}` ended at the quoted brace and printed
+    // the source)
+    if !rest[..first].contains('{') && !rest[..first].contains('"') || rest.trim_start().starts_with('{') {
         return Some(first);
     }
-    let mut depth = 0i32;
+    let (mut depth, mut quoted, mut escaped) = (0i32, false, false);
     for (i, c) in rest.char_indices() {
+        if escaped { escaped = false; continue; }
+        if quoted {
+            match c { '\\' => escaped = true, '"' => quoted = false, _ => {} }
+            continue;
+        }
         match c {
+            '"' => quoted = true,
             '{' => depth += 1,
             '}' => {
                 if depth == 0 { return Some(i); }
@@ -7384,8 +7395,8 @@ mod backend_tests;
 /// Does a pattern hold a string to interpolate (`"user-{id}"`, `"{{x}}"`)?
 fn pattern_interpolates(p: &MatchPattern) -> bool {
     match p {
-        MatchPattern::Literal(Literal::String(s)) => s.contains('{') || s.contains('}'),
-        MatchPattern::StringPrefix { prefix, .. } => prefix.contains('{') || prefix.contains('}'),
+        MatchPattern::Literal(Literal::String(s)) => s.contains('{'),
+        MatchPattern::StringPrefix { prefix, .. } => prefix.contains('{'),
         MatchPattern::Or(alts) => alts.iter().any(pattern_interpolates),
         MatchPattern::MapDestructure(fields) => fields.iter().any(|(_, p)| pattern_interpolates(p)),
         MatchPattern::Variant { fields: VariantPatternFields::Tuple(ps), .. } => ps.iter().any(pattern_interpolates),
