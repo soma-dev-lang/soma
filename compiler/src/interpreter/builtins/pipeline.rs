@@ -13,7 +13,8 @@ fn num_of(v: &Value) -> Option<Num> {
     match v {
         Value::Int(si) => Some(Num::I(si.to_rug())),
         Value::Float(f) => Some(Num::F(*f)),
-        Value::String(s) => s.trim().parse::<rug::Integer>().ok().map(Num::I)
+        // "1 2" is not a number (rug's parser read it as 12)
+        Value::String(s) => super::string::parse_int_text(s.trim()).map(Num::I)
             .or_else(|| s.trim().parse::<f64>().ok().filter(|f| f.is_finite()).map(Num::F)),
         _ => None,
     }

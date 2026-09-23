@@ -2,6 +2,22 @@
 
 ## Unreleased
 
+### Integer text is digits; a decimal string truncates exactly
+
+- `to_int`, the aggregates (`sum_by`, `agg`, `filter_by`…), a `soma run`
+  argument and an HTTP parameter read integers with a parser that skipped
+  spaces inside the digits: `to_int("1 2 3")` was 123, `sum_by` summed
+  `"1 2"` as 12, `GET /echo_int?n=1+2` answered 13. Only digits count now,
+  with `_` between two digits as in a literal (`1_000`); `to_float` reads
+  the same separators.
+- `to_int` of a decimal string went through f64: `to_int("9223372036854775807.5")`
+  was …808 and `to_int("99999999999999999999.9")` 10^20. The digits are now
+  truncated exactly, and surrounding whitespace is allowed as for an Int
+  (`to_int(" 12.5 ")` was `()`).
+- An HTTP query value past i64 that prints like a Float (`?n=100000000000000000000`)
+  became a Float: an Int parameter refused it and a String parameter got
+  `"100000000000000000000.0"`. It is an Int.
+
 ### Interpolation reads quoted braces and semicolons as code
 
 - `"parts: {join(parts, \"}\")}"` printed its own source: the segment ended

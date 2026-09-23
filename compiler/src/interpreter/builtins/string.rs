@@ -306,12 +306,18 @@ pub fn call_builtin(name: &str, args: &[Value]) -> Option<Result<Value, RuntimeE
                 Value::String(s) if s.trim().trim_start_matches(['-', '+']).len() > 5_050_446 =>
                     Err(RuntimeError::Domain { kind: "range".to_string(), message: format!("range: to_int of {} characters is past the Int limit of {} bits", s.len(), SomaInt::MAX_BITS) }),
                 Value::String(s) => {
-                    if let Ok(n) = s.parse::<i64>() {
+                    let t = s.trim();
+                    if let Ok(n) = t.parse::<i64>() {
                         Ok(Value::Int(SomaInt::from_i64(n)))
-                    } else if let Ok(big) = s.trim().parse::<rug::Integer>() {
+                    } else if let Some(big) = parse_int_text(t) {
                         // integers beyond i64 stay exact instead of clamping
                         Ok(Value::Int(SomaInt::from_rug(big)))
-                    } else if let Ok(f) = s.parse::<f64>() {
+                    } else if let Some(r) = trunc_decimal_text(t) {
+                        // "9223372036854775807.5" went through f64 and came
+                        // back as …808: the digits are truncated exactly
+                        r.map(|i| Value::Int(SomaInt::from_rug(i)))
+                    } else if let Ok(f) = t.parse::<f64>() {
+                        // "inf" / "NaN": no integer value
                         float_to_int(f)
                     } else {
                         Ok(Value::Unit)
@@ -330,7 +336,7 @@ pub fn call_builtin(name: &str, args: &[Value]) -> Option<Result<Value, RuntimeE
                 // surrounding whitespace is allowed, as to_int allows it: a
                 // line read with its "\n" gave () where to_int gave the Int
                 Value::String(s) => {
-                    if let Ok(f) = s.trim().parse::<f64>() {
+                    if let Some(f) = parse_float_text(s.trim()) {
                         Ok(Value::Float(f))
                     } else {
                         Ok(Value::Unit)
@@ -657,4 +663,67 @@ pub fn json_has_inf(v: &serde_json::Value) -> bool {
 pub fn is_int_text(s: &str) -> bool {
     let d = s.strip_prefix('-').or_else(|| s.strip_prefix('+')).unwrap_or(s);
     !d.is_empty() && d.bytes().all(|b| b.is_ascii_digit())
+}
+
+/// `1_000` as the literal syntax writes it: each `_` between two digits.
+/// The text without them, or None ("_1", "1__0", "1_").
+fn without_digit_separators(t: &str) -> Option<String> {
+    if !t.contains('_') { return Some(t.to_string()); }
+    let b = t.as_bytes();
+    for (i, c) in b.iter().enumerate() {
+        if *c == b'_' && !(i > 0 && b[i - 1].is_ascii_digit() && b.get(i + 1).map_or(false, |n| n.is_ascii_digit())) {
+            return None;
+        }
+    }
+    Some(t.replace('_', ""))
+}
+
+/// A whole number written as text (`-12`, `+7`, `1_000`), exact at any
+/// size. rug's own parser also took "1 2" as 12.
+pub fn parse_int_text(t: &str) -> Option<rug::Integer> {
+    let t = without_digit_separators(t)?;
+    if !is_int_text(&t) { return None; }
+    t.trim_start_matches('+').parse::<rug::Integer>().ok()
+}
+
+/// A Float written as text, digit separators allowed (`1_000.5`).
+pub fn parse_float_text(t: &str) -> Option<f64> {
+    without_digit_separators(t)?.parse::<f64>().ok()
+}
+
+/// A decimal number as text (`12.5`, `-3.`, `.5`, `1.25e3`), truncated
+/// toward zero exactly from its digits. None when it is not that syntax.
+pub fn trunc_decimal_text(t: &str) -> Option<Result<rug::Integer, RuntimeError>> {
+    let owned = without_digit_separators(t)?;
+    let t = owned.as_str();
+    let (neg, body) = match t.as_bytes().first() {
+        Some(b'-') => (true, &t[1..]),
+        Some(b'+') => (false, &t[1..]),
+        _ => (false, t),
+    };
+    let (mant, exp) = match body.find(['e', 'E']) {
+        Some(i) => (&body[..i], Some(&body[i + 1..])),
+        None => (body, None),
+    };
+    let (ip, fp) = match mant.find('.') { Some(i) => (&mant[..i], &mant[i + 1..]), None => (mant, "") };
+    if ip.is_empty() && fp.is_empty() { return None; }
+    if !ip.bytes().all(|b| b.is_ascii_digit()) || !fp.bytes().all(|b| b.is_ascii_digit()) { return None; }
+    let exp: i64 = match exp {
+        Some(e) if is_int_text(e) => match e.trim_start_matches('+').parse::<i64>() { Ok(v) => v, Err(_) => return Some(Err(range_err())) },
+        Some(_) => return None,
+        None => 0,
+    };
+    let digits = format!("{}{}", ip, fp);
+    let point = ip.len() as i64 + exp;
+    if point <= 0 { return Some(Ok(rug::Integer::new())); }
+    if point > 5_050_446 { return Some(Err(range_err())); }
+    let point = point as usize;
+    let int_digits: String = if point <= digits.len() { digits[..point].to_string() } else { format!("{}{}", digits, "0".repeat(point - digits.len())) };
+    let mut v = int_digits.parse::<rug::Integer>().unwrap_or_default();
+    if neg { v = -v; }
+    Some(Ok(v))
+}
+
+fn range_err() -> RuntimeError {
+    RuntimeError::Domain { kind: "range".to_string(), message: format!("range: to_int: the number is past the Int limit of {} bits", SomaInt::MAX_BITS) }
 }

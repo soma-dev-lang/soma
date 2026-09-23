@@ -3930,3 +3930,39 @@ cell test T { rules {
 } }
 "#);
 }
+
+#[test]
+fn integer_text_is_digits_and_decimals_truncate_exactly() {
+    // rug's parser skipped spaces inside the digits ("1 2 3" was 123, also
+    // in sum_by), and a decimal string went through f64 (…807.5 became …808)
+    passes("int_text", r#"
+cell test T { rules {
+    assert to_int("1 2 3") == ()
+    assert to_int("1_000") == 1000
+    assert to_int("1__0") == ()
+    assert to_int(" 12.5 ") == 12
+    assert to_int("-7.9") == -7
+    assert to_int("9223372036854775807.5") == 9223372036854775807
+    assert to_int("99999999999999999999.9") == 99999999999999999999
+    assert to_int("12345678901234567891e0") == 12345678901234567891
+    assert to_int("1.25e3") == 1250
+    assert to_float("1_000.5") == 1000.5
+    assert_fails sum_by([map("v", "1 2"), map("v", "3")], "v") matching "not a number"
+} }
+"#);
+}
+
+#[test]
+fn http_int_parameters_read_digits_and_big_integers() {
+    // `?n=1+2` ("1 2") was the Int 12; `?n=100000000000000000000` became a
+    // Float and failed an Int parameter, and a String parameter got ".0"
+    let dir = scratch("http_int_text");
+    std::fs::write(dir.join("app.cell"), "cell A {\n on echo_int(n: Int) { return n + 1 }\n on echo_str(s: String) { return s }\n}\n").unwrap();
+    let (_server, port) = serve_dir(&dir);
+    assert!(get(port, "/echo_int?n=1+2").starts_with("HTTP/1.0 400"));
+    let out = get(port, "/echo_int?n=100000000000000000000");
+    assert!(out.contains("100000000000000000001"), "{out}");
+    let out = get(port, "/echo_str?s=100000000000000000000");
+    assert!(out.ends_with("{\"result\":\"100000000000000000000\"}"), "{out}");
+    let _ = std::fs::remove_dir_all(dir);
+}

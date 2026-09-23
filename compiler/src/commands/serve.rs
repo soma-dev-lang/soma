@@ -2263,8 +2263,10 @@ pub(crate) fn coerce_to_type(ty: &str, v: interpreter::Value) -> interpreter::Va
         // "NaN" / "inf" are not numbers a handler can compare: left a String
         ("Float", Value::String(s)) if s.parse::<f64>().map_or(false, |f| f.is_finite()) => Value::Float(s.parse().unwrap()),
         ("Int", Value::String(s)) if s.parse::<i64>().is_ok() => Value::Int(crate::interpreter::soma_int::SomaInt::from_i64(s.parse().unwrap())),
-        // Int is arbitrary precision: 99999999999999999999999 is an Int
-        ("Int", Value::String(s)) if s.parse::<rug::Integer>().is_ok() => Value::Int(crate::interpreter::soma_int::SomaInt::from_rug(s.parse::<rug::Integer>().unwrap())),
+        // Int is arbitrary precision: 99999999999999999999999 is an Int —
+        // in digits only ("1 2" and "1_000" read as 12 and 1000)
+        ("Int", Value::String(s)) if crate::interpreter::builtins::string::parse_int_text(s).is_some() =>
+            Value::Int(crate::interpreter::soma_int::SomaInt::from_rug(crate::interpreter::builtins::string::parse_int_text(s).unwrap())),
         // exactly representable only (|f| < 2^53): `1e20` saturated to
         // i64::MAX and was stored; past it the parameter check refuses
         ("Int", Value::Float(f)) if f.fract() == 0.0 && f.abs() < 9.0e15 => Value::Int(crate::interpreter::soma_int::SomaInt::from_i64(*f as i64)),
@@ -2337,7 +2339,11 @@ fn coerce_query_value(decoded: &str) -> interpreter::Value {
     // a declared Int / Float parameter still converts them
     if let Some(n) = decoded.parse::<i64>().ok().filter(|n| n.to_string() == decoded) {
         interpreter::Value::Int(crate::interpreter::soma_int::SomaInt::from_i64(n))
-    } else if let Some(f) = decoded.parse::<f64>().ok().filter(|f| f.is_finite() && format!("{}", f) == decoded) {
+    } else if let Some(n) = crate::interpreter::builtins::string::parse_int_text(decoded).filter(|n| n.to_string() == decoded) {
+        // past i64 an integer is still an Int: `100000000000000000000`
+        // printed back as a Float and failed an Int parameter
+        interpreter::Value::Int(crate::interpreter::soma_int::SomaInt::from_rug(n))
+    } else if let Some(f) = decoded.parse::<f64>().ok().filter(|f| f.is_finite() && format!("{}", f) == decoded && decoded.contains(['.', 'e', 'E'])) {
         interpreter::Value::Float(f)
     } else if decoded == "true" {
         interpreter::Value::Bool(true)
