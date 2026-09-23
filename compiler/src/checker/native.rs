@@ -289,7 +289,8 @@ pub fn check_native_handler(
                 Expr::Literal(Literal::Int(_) | Literal::BigInt(_) | Literal::Float(_)) => Some('n'),
                 Expr::Literal(Literal::Bool(_)) | Expr::CmpOp { .. } | Expr::Not(_)
                 | Expr::BinaryOp { op: BinOp::And | BinOp::Or, .. } => Some('b'),
-                Expr::FnCall { name, .. } if matches!(name.as_str(), "to_string" | "concat" | "format" | "substring" | "upper" | "lower" | "trim" | "sb_to_string") => Some('s'),
+                Expr::FnCall { name, .. } if matches!(name.as_str(), "to_string" | "concat" | "format" | "substring" | "upper" | "lower" | "trim" | "sb_to_string"
+                    | "sb_finish" | "read_stdin" | "read_file" | "regex_replace") => Some('s'),
                 // the native builtins that answer a number (`s + str_len(s)`
                 // joined "abc3" where the interpreter raises)
                 Expr::FnCall { name, .. } if matches!(name.as_str(), "str_len" | "str_at" | "idiv" | "abs" | "min" | "max" | "len"
@@ -395,6 +396,11 @@ pub fn check_native_handler(
                     }
                     // to_int(true) is 1 when interpreted; native code failed in rustc
                     if let Expr::FnCall { name, args } = e {
+                        // …or of a String (`to_int(to_string(n))`: a rustc error)
+                        if matches!(name.as_str(), "to_int" | "to_float") && args.len() == 1 && kind(&args[0].node, &kinds2) == Some('s') {
+                            problem = Some(format!("{}() of a String in `{}` is not native — parse the text in an interpreted handler", name, crate::ast::render_expr(e)));
+                            return;
+                        }
                         if matches!(name.as_str(), "to_int" | "to_float") && args.len() == 1 && kind(&args[0].node, &kinds2) == Some('b') {
                             problem = Some(format!("{}() of a Bool in `{}` is not native — keep a number (`let n = 0  if b {{ n = 1 }}`)", name, crate::ast::render_expr(e)));
                             return;

@@ -4525,7 +4525,7 @@ cell test T { rules {
     assert type_of(qb(4)) == "Int"
     assert qb(200) == 100.5
     assert fl(40000) == 30000000000000000.0
-    assert cmp(40000) == 1
+    assert_fails cmp(40000) matching "2^53"
 } }
 "#);
     let dir = scratch("native_third_pass_check");
@@ -4533,4 +4533,33 @@ cell test T { rules {
     let (code, out) = soma(&dir, &["check", "app.cell"]);
     assert!(code != 0 && out.contains("handler 'a' is marked [native]") && out.contains("handler 'b' is marked [native]"), "{out}");
     let _ = std::fs::remove_dir_all(dir);
+}
+
+#[test]
+fn native_recursion_and_exact_quotients_after_the_type_rework() {
+    // regressions of the third pass: a recursive Int handler read its own
+    // placeholder return type as Float; an exact quotient to an Int
+    // parameter was refused; abs/min/max/to_int of an exact Int hid a loss
+    // of digits
+    passes("native_fourth_pass", r#"
+cell P {
+    on fact(n: Int) [native] { if n <= 1 { return 1 }  return n * fact(n - 1) }
+    on f(n: Int) [native] { if n <= 1 { return 1 }  return g(n - 1) * n }
+    on g(n: Int) [native] { if n <= 1 { return 1 }  return f(n - 1) * n }
+    on even(n: Int) [native] { if n == 0 { return true }  return odd(n - 1) }
+    on odd(n: Int) [native] { if n == 0 { return false }  return even(n - 1) }
+    on sq(x: Int) [native] { return x * x }
+    on a(n: Int) [native] { return sq(n / 2) }
+    on m(x: Int, y: Int) [native] { let q = x / y  return abs(q * q) % 1000 }
+}
+cell test T { rules {
+    assert fact(25) == 15511210043330985984000000
+    assert f(30) == 265252859812191058636308480000000
+    assert even(10) == true
+    assert a(8) == 16
+    assert_fails a(7) matching "not exact"
+    assert m(1000, 10) == 0
+    assert_fails m(100000001, 1) matching "2^53"
+} }
+"#);
 }

@@ -2,6 +2,23 @@
 
 ## Unreleased
 
+### Fourth pass: native regressions of the return-type and exactness rework
+
+- Since "every return types the handler", a self- or mutually recursive
+  Int handler read its sibling's placeholder return type (Float) and stayed
+  Float: `fact(20)` raised "an exact Int … went past 2^53" (no division),
+  and an `even`/`odd` Bool pair failed in rustc. The placeholder now starts
+  at Int and only rises.
+- An exact quotient handed to an Int parameter of a sibling was refused
+  (`sq(n / 2)` for 8 is `sq(4)` = 16); only a Float that is no exact Int is.
+- `abs`, `min`, `max`, `to_int`, `floor`, `round` of an exact quotient past
+  2^53, and a comparison of two exact Ints, answered lost digits silently
+  (`abs(q * q) % 1000` gave 0 for 1; `q * q == 10000000200000000` took the
+  wrong branch). Only a Float function's arguments and a comparison with a
+  Float are Float operands; elsewhere the value past 2^53 raises.
+- `to_int(to_string(n))` (a String from a builtin) passed check and failed
+  in rustc; it is refused like a String parameter.
+
 ### Third pass: native code
 
 - "An Int spot never truncates" covered the 64-bit path only: once a

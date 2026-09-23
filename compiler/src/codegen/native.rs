@@ -153,7 +153,10 @@ pub fn generate_native_source_with_config(
             .collect();
         pre_sibling_info.insert(handler.signal_name.clone(), SiblingInfo {
             param_types,
-            return_type: NativeType::Float,
+            // a placeholder the fixpoint RAISES from: starting at Float, `n *
+            // fact(n - 1)` read Float and a recursive Int handler could never
+            // come back to Int (every return counts since the second pass)
+            return_type: NativeType::Int,
             mode: Mode::Direct,
             int_rational: false,
         });
@@ -284,7 +287,7 @@ pub fn generate_native_source_with_config(
             .collect();
         sibling_info.insert(handler.signal_name.clone(), SiblingInfo {
             param_types,
-            return_type: NativeType::Float,  // placeholder, refined below
+            return_type: NativeType::Int,  // placeholder the fixpoint raises from
             mode: *mode,
             int_rational: false,
         });
@@ -4421,12 +4424,18 @@ impl FnGenerator {
                 code
             }
             Expr::CmpOp { left, op, right } => {
-                let outer = self.in_float_ctx.replace(true);
+                // two exact Ints compared are no Float operands (`q * q ==
+                // 10000000200000000` took the wrong branch)
+                let exact = self.is_int_rational(&left.node, &self.rational_locals) && self.is_int_rational(&right.node, &self.rational_locals);
+                let outer = self.in_float_ctx.replace(!exact || self.in_float_ctx.get());
                 let r = self.gen_cmp_direct(&left.node, *op, &right.node);
                 self.in_float_ctx.set(outer);
                 r
             }
-            Expr::FnCall { name, args } if !self.siblings.contains(name) && !matches!(name.as_str(), "to_string") && !self.in_float_ctx.get() => {
+            // only a Float function's arguments are Float operands: abs, min,
+            // max, to_int, floor, round keep an exact Int exact
+            Expr::FnCall { name, args } if !self.siblings.contains(name) && !self.in_float_ctx.get()
+                && matches!(name.as_str(), "sqrt" | "sin" | "cos" | "tan" | "atan" | "atan2" | "asin" | "acos" | "exp" | "log" | "ln" | "log10" | "pow" | "to_float") => {
                 // a builtin's arguments are operands of its answer
                 let outer = self.in_float_ctx.replace(true);
                 let out = self.gen_fn_call_direct(name, args, target_ty);
@@ -5165,7 +5174,9 @@ impl FnGenerator {
                             self.gen_expr_direct(&arg.node, NativeType::String)
                         }
                     }
-                } else if expected == NativeType::Int && self.infer_expr_type(&arg.node) == NativeType::Float {
+                } else if expected == NativeType::Int && self.infer_expr_type(&arg.node) == NativeType::Float
+                    && !self.is_int_rational(&arg.node, &self.rational_locals) {
+                    // an exact quotient is an Int (`sq(n / 2)` for 8 is sq(4))
                     self.float_to_int_param(name, &arg.node)
                 } else {
                     self.gen_expr_direct(&arg.node, expected)
@@ -6680,7 +6691,8 @@ impl FnGenerator {
     }
 
     fn marshal_arg_to_sibling(&self, callee: &str, expr: &Expr, expected: NativeType, callee_mode: Mode) -> String {
-        if expected == NativeType::Int && self.infer_expr_type(expr) == NativeType::Float {
+        if expected == NativeType::Int && self.infer_expr_type(expr) == NativeType::Float
+            && !self.is_int_rational(expr, &self.rational_locals) {
             return self.float_to_int_param(callee, expr);
         }
         if expected == NativeType::Int && callee_mode == Mode::Rug {
