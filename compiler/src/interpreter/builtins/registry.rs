@@ -235,8 +235,8 @@ pub static BUILTINS: &[BuiltinDoc] = &[
         "Copy of the map with every key-value pair inserted, or copy of the list with element i replaced. An incomplete pair raises kind type; large Int map keys are stringified, while list indices must fit signed 64 bits."),
     doc("without", "collection", "without(m: Map, keys...) -> Map",
         "Return a copy of the map with the given keys removed."),
-    doc("merge", "collection", "merge(a: Map, b: Map) -> Map",
-        "Copy of `a` with all entries of `b` inserted (b wins on conflict)."),
+    doc("merge", "collection", "merge(a: Map, b: Map, ...) -> Map",
+        "Copy of `a` with all entries of `b` (and of each later map) inserted — a later map wins on conflict."),
     doc("join", "collection", "join(list: List, sep: String) -> String | join(left: List, right: List, key) -> List",
         "Join list elements into a string — or, with two lists, an inner data join on `key`."),
 

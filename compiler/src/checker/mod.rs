@@ -738,6 +738,28 @@ impl<'a> Checker<'a> {
                 }
             }
         }
+        // `[ttl(d)]` and `[evict(lru)]` are accepted and combined by the
+        // property rules, but no runtime code expires or evicts: an entry
+        // was readable after its ttl and a `capacity(2), evict(lru)` slot
+        // held 3 — say so, as for [encrypted]
+        for cell in crate::checker::names::collect_cells(program) {
+            for sec in &cell.sections {
+                let Section::Memory(mem) = &sec.node else { continue };
+                for slot in &mem.slots {
+                    for prop in &slot.node.properties {
+                        let what = match prop.node.name() {
+                            "ttl" => "entries are NOT expired after the ttl — delete them yourself (an `every` handler)",
+                            "evict" => "entries are NOT evicted at capacity — the capacity is a budget assumption, not a limit; delete old entries yourself",
+                            _ => continue,
+                        };
+                        self.warnings.push(CheckWarning::HabitWarning {
+                            message: format!("slot '{}' of '{}' is marked [{}]: {}", slot.node.name, cell.name, prop.node.name(), what),
+                            span: prop.span,
+                        });
+                    }
+                }
+            }
+        }
         // a builtin called with more arguments than any of its forms takes
         {
             let handler_names: std::collections::HashSet<String> = program.cells.iter().flat_map(|c| c.node.sections.iter().filter_map(|s| match &s.node {
@@ -746,10 +768,24 @@ impl<'a> Checker<'a> {
             // interior cells too: a builtin called with too many arguments
             // was unchecked inside `interior { }`
             for cell in crate::checker::names::collect_cells(program) {
+                // the handlers a method call on a value can reach: this cell's
+                // (a handler named `split` in another cell skipped the check)
+                let own_handlers: std::collections::HashSet<&str> = cell.sections.iter().filter_map(|s| match &s.node {
+                    Section::OnSignal(on) => Some(on.signal_name.as_str()), _ => None }).collect();
                 for sec in &cell.sections {
+                    // a test cell's rules too (`assert split("a,b", ",", 1) == …` passed)
+                    let rule_body: Vec<Spanned<Statement>>;
                     let body = match &sec.node {
                         Section::OnSignal(on) => &on.body,
                         Section::Every(e) | Section::After(e) => &e.body,
+                        Section::Rules(r) => {
+                            rule_body = r.rules.iter().filter_map(|ru| match &ru.node {
+                                Rule::Assert(e) | Rule::AssertFails(e) | Rule::AssertFailsMatching(e, _) | Rule::Let { value: e, .. } =>
+                                    Some(Spanned::new(Statement::ExprStmt { expr: e.clone() }, e.span)),
+                                _ => None,
+                            }).collect();
+                            &rule_body
+                        }
                         _ => continue,
                     };
                     // a piped call (`xs |> f(a)` passes xs too), known by its
@@ -780,7 +816,7 @@ impl<'a> Checker<'a> {
                         if let Expr::Ident(t) = &target.node {
                             if slots.contains(t.as_str()) || program.cells.iter().any(|c| &c.node.name == t) { return; }
                         }
-                        if handler_names.contains(method) || matches!(method.as_str(), "get" | "has" | "keys" | "values" | "len" | "length") { return; }
+                        if own_handlers.contains(method.as_str()) || matches!(method.as_str(), "get" | "has" | "keys" | "values" | "len" | "length") { return; }
                         let n = args.len() + 1;
                         if let Some(max) = crate::interpreter::builtins::registry::max_arity(method) {
                             if n > max && reported.insert(format!("{}:{}:{}", method, n, target.span.start)) {

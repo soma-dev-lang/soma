@@ -153,8 +153,23 @@ impl Walk<'_> {
                 }
             }
             let any_all = arms.iter().any(|a| a.guard.is_none() && catch_all(&a.pattern));
-            let variants = arms.iter().any(|a| matches!(a.pattern, MatchPattern::Variant { .. }));
-            if !arms.is_empty() && !any_all && !variants {
+            // a sum-type match (exhaustiveness is checked elsewhere), also in
+            // or-patterns (`Hearts || Diamonds -> …`); a Bool match with both
+            fn has_variant(p: &MatchPattern) -> bool {
+                match p { MatchPattern::Variant { .. } => true, MatchPattern::Or(ps) => ps.iter().any(has_variant), _ => false }
+            }
+            fn bools(p: &MatchPattern, out: &mut (bool, bool)) {
+                match p {
+                    MatchPattern::Literal(crate::ast::Literal::Bool(true)) => out.0 = true,
+                    MatchPattern::Literal(crate::ast::Literal::Bool(false)) => out.1 = true,
+                    MatchPattern::Or(ps) => for q in ps { bools(q, out) },
+                    _ => {}
+                }
+            }
+            let variants = arms.iter().any(|a| has_variant(&a.pattern));
+            let mut tf = (false, false);
+            for a in arms.iter().filter(|a| a.guard.is_none()) { bools(&a.pattern, &mut tf); }
+            if !arms.is_empty() && !any_all && !variants && tf != (true, true) {
                 self.warnings.push(HabitFinding {
                     message: "this match has no catch-all arm: a value no arm matches gives () — add `_ -> …` (or `_ -> fail(\"kind\", \"…\")`)".to_string(),
                     span: *span,

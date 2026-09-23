@@ -82,6 +82,16 @@ pub fn call_builtin(name: &str, args: &[Value]) -> Option<Result<Value, RuntimeE
             "{}(rows, field): the field is a String name, got {} — for a computed value, map the rows first (`rows |> map(r => …)`)",
             name, crate::interpreter::value_type_name(&args[1])) }));
     }
+    // a field no row has is a typo (`sum_by(rows, "zz")` was 0, `max_by` ()),
+    // as sort_by refuses it
+    if matches!(name, "sum_by" | "avg_by" | "min_by" | "max_by") && args.len() >= 2 {
+        if let (Value::List(items), Value::String(field)) = (&args[0], &args[1]) {
+            if !items.is_empty() && items.iter().all(|r| row_fields(r).is_some_and(|m| !m.contains_key(field))) {
+                return Some(Err(RuntimeError::Domain { kind: "type".to_string(), message: format!(
+                    "{}(rows, \"{}\"): no row has the field '{}'", name, field, field) }));
+            }
+        }
+    }
     match name {
         "filter_by" => {
             if let Some(Value::List(items)) = args.first() {
@@ -269,7 +279,7 @@ pub fn call_builtin(name: &str, args: &[Value]) -> Option<Result<Value, RuntimeE
                     for item in items {
                         let key = if let Some(entries) = row_fields(item) {
                             entries.get(&field)
-                                .map(|v| format!("{}", v)).unwrap_or("unknown".to_string())
+                                .map(crate::interpreter::key_text).unwrap_or("unknown".to_string())
                         } else { "unknown".to_string() };
                         groups.entry(key).or_default().push(item.clone());
                     }
@@ -330,18 +340,15 @@ pub fn call_builtin(name: &str, args: &[Value]) -> Option<Result<Value, RuntimeE
             if args.len() >= 3 {
                 if let Value::List(items) = &args[0] {
                     let field = format!("{}", args[1]);
-                    let target = format!("{}", args[2]);
-                    let count = items.iter().filter(|item| {
-                        if let Some(entries) = row_fields(item) {
-                            // two numbers compare as numbers (1.0 counted apart from
-                            // 1 while filter_by and == say equal); else as text
-                            entries.get(&field).map(|v| match (v, &args[2]) {
-                                (Value::Int(_) | Value::Float(_), Value::Int(_) | Value::Float(_)) =>
-                                    crate::interpreter::numeric_cmp(v, &args[2]) == Some(std::cmp::Ordering::Equal),
-                                _ => format!("{}", v) == target,
-                            }).unwrap_or(false)
-                        } else { false }
-                    }).count() as i64;
+                    // the rows filter_by(rows, field, "==", value) keeps: the two
+                    // disagreed on 1 / 1.0 / "1" (count 2, filter 3)
+                    let kept = match call_builtin("filter_by", &[args[0].clone(), args[1].clone(), Value::String("==".to_string()), args[2].clone()]) {
+                        Some(Ok(Value::List(k))) => k,
+                        Some(Err(e)) => return Some(Err(e)),
+                        _ => Vec::new(),
+                    };
+                    let _ = items;
+                    let count = kept.len() as i64;
                     Some(Ok(Value::Int(SomaInt::from_i64(count))))
                 } else if matches!(args[0], Value::Unit) { Some(Ok(Value::Int(SomaInt::from_i64(0)))) }
                 // a Map or a String answered an empty result (`distinct(m)` was [])
@@ -410,7 +417,7 @@ pub fn call_builtin(name: &str, args: &[Value]) -> Option<Result<Value, RuntimeE
                     let mut groups: IndexMap<String, Vec<&Value>> = IndexMap::new();
                     for item in items {
                         let key = if let Some(entries) = row_fields(item) {
-                            entries.get(&group_field).map(|v| format!("{}", v)).unwrap_or("unknown".to_string())
+                            entries.get(&group_field).map(crate::interpreter::key_text).unwrap_or("unknown".to_string())
                         } else { "unknown".to_string() };
                         groups.entry(key).or_default().push(item);
                     }

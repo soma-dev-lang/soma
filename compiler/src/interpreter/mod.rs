@@ -884,7 +884,11 @@ pub fn is_http_response(v: &Value) -> bool {
 /// entries though `3 == 3.0`; `round(x, 0)` buckets missed `counts[3]`).
 pub fn key_text(v: &Value) -> String {
     if let Value::Float(f) = v {
-        if f.is_finite() && f.fract() == 0.0 && f.abs() < 9007199254740992.0 { return format!("{}", *f as i64); }
+        // (past 2^53 too: `m[1e16]` and `m[10000000000000000]` are one entry)
+        if f.is_finite() && f.fract() == 0.0 {
+            if f.abs() < 9007199254740992.0 { return format!("{}", *f as i64); }
+            if let Some(i) = rug::Integer::from_f64(*f) { return i.to_string(); }
+        }
     }
     format!("{}", v)
 }
@@ -3008,9 +3012,10 @@ impl Interpreter {
                             // an Int past 64 bits is out of bounds, not element
                             // 0; a negative one counts from the end, as nth and a
                             // List slot's get do (`xs.get(-1)` was ())
+                            // `xs.get(i, default)` answers the default, as a slot's
                             Some(Value::Int(si)) => Ok(si.to_i64()
                                 .and_then(|i| if i < 0 { (items.len() as i64).checked_add(i).filter(|j| *j >= 0) } else { Some(i) })
-                                .and_then(|i| items.get(i as usize)).cloned().unwrap_or(Value::Unit)),
+                                .and_then(|i| items.get(i as usize)).cloned().unwrap_or_else(|| arg_vals.get(1).cloned().unwrap_or(Value::Unit))),
                             Some(other) => Err(ExecError::Runtime(RuntimeError::TypeError(format!(
                                 "list.get(i): the index is an Int, got {} {}", value_type_name(other), other)))),
                             None => Ok(Value::Unit),
@@ -3139,6 +3144,20 @@ impl Interpreter {
             }
         };
 
+        // a `Map<Int, V>` slot takes the canonical text of an Int as that Int
+        // ("9" is 9, as the docs say `m.set(1, …)` and `m.set("1", …)` are
+        // one entry): a local copy's keys are text, and `other.get(k)` over
+        // them was refused; "007" or "abc" name no Int and stay refused
+        let canon_args: Vec<Value>;
+        let args: &[Value] = match args.first() {
+            Some(Value::String(t)) if matches!(method, "get" | "at" | "has" | "contains" | "set" | "put" | "delete" | "remove")
+                && self.slot_int_keys(cell_name, slot_name)
+                && t.parse::<i64>().map_or(false, |n| n.to_string() == *t) => {
+                canon_args = std::iter::once(Value::Int(SomaInt::from_decimal_str(t))).chain(args[1..].iter().cloned()).collect();
+                &canon_args
+            }
+            _ => args,
+        };
         // the slot methods' arities: an extra argument was dropped silently
         // (`rows.push(1, 2)` pushed 1, `m.set("a", 1, "b", 2)` set a)
         let want: Option<(usize, usize, &str)> = match method {
@@ -3194,6 +3213,12 @@ impl Interpreter {
                         return Ok(if idx >= 0 {
                             backend.list_get(idx as usize).map(|v| self.from_slot(cell_name, slot_name, stored_to_value(v))).unwrap_or(Value::Unit)
                         } else { Value::Unit });
+                    }
+                    // a List is indexed by Int: `l.get("0")` read the empty
+                    // keyed table under the list and answered ()
+                    if let Some(other) = args.first() {
+                        return Err(ExecError::Runtime(RuntimeError::TypeError(format!(
+                            "{}.{}(i): a List slot is indexed by Int, got {} {}", slot_name, method, value_type_name(other), other))));
                     }
                 }
                 "has" | "contains" => {
@@ -5902,6 +5927,8 @@ impl Interpreter {
         let Expr::Ident(n) = target else { return None };
         if vals.len() != 2 || !matches!(name, "contains" | "has" | "without") || env.contains_key(n) || env.contains_key(name) { return None; }
         if matches!(vals[1], Value::Int(_) | Value::Unit) || !matches!(vals[0], Value::Map(_)) { return None; }
+        // the canonical text of an Int is that key (the map's keys are text)
+        if let Value::String(t) = &vals[1] { if t.parse::<i64>().map_or(false, |n| n.to_string() == *t) { return None; } }
         if self.handler_shadows_builtin(name, 2, cell_name) || self.slot_kind(cell_name, n) != Some("Map") || !self.slot_int_keys(cell_name, n) { return None; }
         // refused, as `seats.has("1")` and `seats.set("1", …)` are
         Some(Err(ExecError::Runtime(RuntimeError::Domain { kind: "type".to_string(), message: format!(
@@ -6176,6 +6203,10 @@ pub(crate) fn deep_equal(a: &Value, b: &Value) -> bool {
             Value::Variant { type_name: t1, variant: v1, fields: f1 },
             Value::Variant { type_name: t2, variant: v2, fields: f2 },
         ) => t1 == t2 && v1 == v2 && variant_fields_equal(f1, f2),
+        // two responses' markers are the same mark (a response never equalled
+        // itself: `assert request(…) == response(404, …)` failed with
+        // identical sides)
+        (Value::Lambda { param: p, .. }, Value::Lambda { param: q, .. }) => p == HTTP_MARK && q == HTTP_MARK,
         _ => false,
     }
 }

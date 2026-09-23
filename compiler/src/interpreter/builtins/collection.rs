@@ -138,7 +138,7 @@ pub fn call_builtin(name: &str, args: &[Value]) -> Option<Result<Value, RuntimeE
                 Value::List(items) => Some(Ok(Value::Bool(
                     items.iter().any(|it| crate::interpreter::deep_equal(it, &args[1])),
                 ))),
-                Value::Map(entries) => Some(Ok(Value::Bool(entries.contains_key(&format!("{}", args[1]))))),
+                Value::Map(entries) => Some(Ok(Value::Bool(entries.contains_key(&crate::interpreter::key_text(&args[1]))))),
                 _ => None,
             }
         }
@@ -228,7 +228,8 @@ pub fn call_builtin(name: &str, args: &[Value]) -> Option<Result<Value, RuntimeE
                     // `map(m.nope, 5)` stored the key "null", as `with` refuses
                     Value::Unit => return Some(Err(RuntimeError::TypeError(format!(
                         "map(): key {} is () — an absent value (a mistyped field?) cannot be a key", i / 2 + 1)))),
-                    other => format!("{}", other),
+                    // `map(3.0, "q")` is the key "3", as `m[3.0] = "q"` writes it
+                    other => crate::interpreter::key_text(other),
                 };
                 let val = args[i + 1].clone();
                 entries.insert(key, val);
@@ -323,7 +324,7 @@ pub fn call_builtin(name: &str, args: &[Value]) -> Option<Result<Value, RuntimeE
                 return Some(Err(RuntimeError::Domain { kind: "type".to_string(), message: "without(map, ()): the key is () — an absent value (a mistyped field?) cannot be a key".to_string() }));
             }
             if let Some(Value::Map(entries)) = args.first() {
-                let keys_to_remove: Vec<String> = args[1..].iter().map(|a| format!("{}", a)).collect();
+                let keys_to_remove: Vec<String> = args[1..].iter().map(crate::interpreter::key_text).collect();
                 let result: IndexMap<String, Value> = entries.iter()
                     .filter(|(k, _)| !keys_to_remove.contains(k))
                     .map(|(k, v)| (k.clone(), v.clone()))

@@ -4488,7 +4488,7 @@ cell App {
     }
     on with_unit(body: Map) { let m = map()  m = with(m, body.userid, 1)  return m }
     on without_unit(body: Map) { let m = map("null", 1)  return [contains(m, body.userid), try { without(m, body.userid) }.kind] }
-    on int_keys() { seats.set(1, "a")  return [try { seats.get("1") }.kind, try { seats.has("1") }.kind, try { seats.delete("1") }.kind, seats.len] }
+    on int_keys() { seats.set(1, "a")  return [try { seats.get("x1") }.kind, try { seats.has("x1") }.kind, try { seats.delete("x1") }.kind, seats.len] }
 }
 cell test T { rules {
     assert arm() == 5
@@ -4659,8 +4659,9 @@ cell P {
         seats.set(10, "b")
         return [contains(seats, 1), len(without(seats, 10))]
     }
-    on seat_text() { seats.set(1, "a")  return contains(seats, "1") }
-    on seat_pipe() { seats.set(1, "a")  return seats |> contains("1") }
+    on seat_text() { seats.set(1, "a")  return contains(seats, "abc") }
+    on seat_pipe() { seats.set(1, "a")  return seats |> contains("01") }
+    on seat_canon() { seats.set(1, "a")  return [contains(seats, "1"), seats.get("1")] }
     on lambda_group() { return group_by([map("g", "x")], r => r.g) }
 }
 cell test T { rules {
@@ -4671,6 +4672,7 @@ cell test T { rules {
     assert seat_probe() == [true, 1]
     assert_fails seat_text() matching "keys are Ints"
     assert_fails seat_pipe() matching "keys are Ints"
+    assert seat_canon() == [true, "a"]
     assert_fails lambda_group() matching "String name"
 } }
 "#);
@@ -5420,7 +5422,8 @@ cell P {
     memory { qty: Map<Int, Int> [ephemeral] }
     face { signal unit_price(total: Int, n: Int) -> Float }
     on unit_price(total: Int, n: Int) { return total / n }
-    on text_key() { qty.set(42, 7)  return qty.get("42") }
+    on text_key() { qty.set(42, 7)  return qty.get("042") }
+    on canon_key() { qty.set(42, 7)  return qty.get("42") }
     on low() { return lowercase(map("a", 1).email) }
     on typo() { return sort_by([map("score", 1)], "scroe") }
     on scalars() { return sort_by([3, 1, 2], "score") }
@@ -5436,6 +5439,7 @@ cell P {
 cell test T { rules {
     assert unit_price(10, 4) == 2.5
     assert_fails text_key() matching "keys are Ints"
+    assert canon_key() == 7
     assert_fails low() matching "absent value"
     assert_fails typo() matching "no row has the field"
     assert_fails scalars() matching "not a Map or record"
@@ -5893,5 +5897,40 @@ cell App {
 "#).unwrap();
     let (_, out) = soma(&dir, &["check", "app.cell"]);
     assert!(out.contains("is not an HTTP endpoint") && !out.contains("still calls the handler directly"), "{out}");
+    let _ = std::fs::remove_dir_all(dir);
+}
+
+#[test]
+fn core_seventh_pass() {
+    passes("core_seventh_pass", r#"
+cell P {
+    memory { l: List<Int> [ephemeral]  seats: Map<Int, String> [ephemeral]  other: Map<Int, String> [ephemeral] }
+    on resp_eq() { let a = response(201, map("ok", true))  let c = a  return [a == response(201, map("ok", true)), c == a, contains([a], a)] }
+    on fkeys() { let m = map(3.0, "q")  let g = group_by([map("k", 1.0), map("k", 1)], "k")  return [m[3.0], m.get(3), len(keys(g)), contains(m, 3.0)] }
+    on snap() { seats.set(9, "a")  other.set(9, "b")  let s = seats  let out = []  for k in keys(s) { out = push(out, other.get(k)) }  return out }
+    on lget() { l.push(10)  return l.get("0") }
+    on local_default() { return [[10].get(5, 7), [10].get(0, 7)] }
+    on sum_typo() { return sum_by([map("a", 1)], "zz") }
+    on cnt() { let rows = [map("k", 1), map("k", "1"), map("k", 1.0)]  return [count_by(rows, "k", "1"), len(filter_by(rows, "k", "1"))] }
+}
+cell test T { rules {
+    assert resp_eq() == [true, true, true]
+    assert fkeys() == ["q", "q", 1, true]
+    assert snap() == ["b"]
+    assert_fails lget() matching "indexed by Int"
+    assert local_default() == [7, 10]
+    assert_fails sum_typo() matching "no row has the field"
+    assert cnt() == [3, 3]
+} }
+"#);
+    let dir = scratch("core_seventh_check");
+    // no false "no catch-all" on Bool or or-pattern sum-type matches; ttl is said to be unenforced;
+    // a builtin method with extra arguments is refused in test rules and when another cell has a handler of that name
+    std::fs::write(dir.join("c.cell"), "cell type Suit { variants { Hearts  Diamonds  Spades  Clubs } }\ncell Other { on split(s: String, a: String, b: Int) { return s } }\ncell C {\n    memory { cache: Map<String, Int> [persistent, ttl(1s)] }\n    on b(x: Bool) { return match x { true -> 1  false -> 0 } }\n    on c(s: Suit) { return match s { Hearts || Diamonds -> \"red\"  Spades || Clubs -> \"black\" } }\n    on d() { return \"a,b\".split(\",\", 1) }\n}\n").unwrap();
+    let (_, out) = soma(&dir, &["check", "c.cell"]);
+    assert!(!out.contains("catch-all") && out.contains("NOT expired") && out.contains("split() takes at most"), "{out}");
+    std::fs::write(dir.join("t.cell"), "cell A { on f() { return 1 } }\ncell test T { rules { assert split(\"a,b\", \",\", 1) == [\"a\", \"b\"] } }\n").unwrap();
+    let (_, out) = soma(&dir, &["check", "t.cell"]);
+    assert!(out.contains("split() takes at most"), "{out}");
     let _ = std::fs::remove_dir_all(dir);
 }
