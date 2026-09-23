@@ -409,23 +409,21 @@ impl<'a> Lexer<'a> {
                             content = content[..last_nl].to_string();
                         }
                     }
-                    // Dedent: find minimum leading whitespace across non-empty lines
+                    // Dedent: the minimum leading indentation (spaces and
+                    // tabs) across non-empty lines. Measured in ASCII: a
+                    // pasted non-breaking space counted as indentation and
+                    // the slice cut inside it (a panic in the lexer).
+                    let indent_of = |l: &str| l.bytes().take_while(|b| *b == b' ' || *b == b'\t').count();
                     let min_indent = content
                         .lines()
                         .filter(|l| !l.trim().is_empty())
-                        .map(|l| l.len() - l.trim_start().len())
+                        .map(indent_of)
                         .min()
                         .unwrap_or(0);
                     if min_indent > 0 {
                         content = content
                             .lines()
-                            .map(|l| {
-                                if l.len() >= min_indent {
-                                    &l[min_indent..]
-                                } else {
-                                    l
-                                }
-                            })
+                            .map(|l| &l[indent_of(l).min(min_indent)..])
                             .collect::<Vec<_>>()
                             .join("\n");
                     }

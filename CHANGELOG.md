@@ -2,6 +2,13 @@
 
 ## Unreleased
 
+### A triple-quoted string with a non-breaking space no longer panics
+
+- The dedent of a `"""…"""` string measured indentation with Unicode
+  whitespace and cut it in bytes: a pasted U+00A0 (or U+3000) at the start
+  of a line panicked `soma check` ("byte index 5 is not a char boundary").
+  Indentation is spaces and tabs; any other character is content.
+
 ### `check` counts a `think()` in an index, an assignment in a `require`, and `delegate`'s arguments
 
 - The cost proof never looked inside an index: `labels[to_int(think(…,

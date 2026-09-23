@@ -3857,3 +3857,15 @@ cell agent Bot { cost { tokens: 100 }
     assert_eq!(out.matches("passes 1 argument, but A.h takes 2").count(), 1, "{out}");
     let _ = std::fs::remove_dir_all(dir);
 }
+
+#[test]
+fn a_triple_quoted_string_dedents_around_a_non_breaking_space() {
+    // the indentation was measured with Unicode whitespace and sliced in
+    // bytes: a pasted U+00A0 panicked the lexer ("not a char boundary")
+    let dir = scratch("triple_quote_nbsp");
+    std::fs::write(dir.join("app.cell"), "cell P {\n  on run() {\n    let s = \"\"\"\n     ab\n    \u{a0}cd\n    \"\"\"\n    return s == \" ab\\n\u{a0}cd\"\n  }\n}\n").unwrap();
+    let (code, out) = soma(&dir, &["run", "app.cell"]);
+    assert_eq!(code, 0, "{out}");
+    assert_eq!(out.trim(), "true", "{out}");
+    let _ = std::fs::remove_dir_all(dir);
+}
