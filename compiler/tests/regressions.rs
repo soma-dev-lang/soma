@@ -4462,3 +4462,42 @@ fn verify_third_pass() {
     assert_eq!(code, 0, "{out}");
     let _ = std::fs::remove_dir_all(dir);
 }
+
+#[test]
+fn core_third_pass() {
+    passes("core_third_pass", r#"
+cell App {
+    memory { calls: Map<String, Int> [persistent]  seats: Map<Int, String> [persistent] }
+    on _next() { let n = calls.get("n") ?? 0  calls.set("n", n + 1)  return n }
+    on arm() { let x = 1  match 1 { 1 -> { x = 5  let x = 6 }  _ -> 0 }  return x }
+    on tryblk() { let x = 1  let r = try { x = 5  let x = 7  x }  return [x, r.value] }
+    on sum() {
+        let total = 0
+        for i in [1, 2, 3] {
+            let d = match i { 2 -> { let total = 100  total }  _ -> 0 }
+            total = total + i
+            let total = -1
+        }
+        return total
+    }
+    on interp_key() {
+        calls.set("n", 0)
+        let m = map("k0", 10, "k1", 20)
+        m["k{_next()}"] += 1
+        return [m, calls.get("n")]
+    }
+    on with_unit(body: Map) { let m = map()  m = with(m, body.userid, 1)  return m }
+    on without_unit(body: Map) { let m = map("null", 1)  return [contains(m, body.userid), try { without(m, body.userid) }.kind] }
+    on int_keys() { seats.set(1, "a")  return [seats.get("1"), seats.has("1"), try { seats.delete("1") }.kind, seats.len] }
+}
+cell test T { rules {
+    assert arm() == 5
+    assert tryblk() == [5, 7]
+    assert sum() == 6
+    assert interp_key() == [map("k0", 11, "k1", 20), 1]
+    assert_fails with_unit(map("user_id", "u")) matching "the key is ()"
+    assert without_unit(map("user_id", "u")) == [false, "type"]
+    assert int_keys() == [(), false, "type", 1]
+} }
+"#);
+}

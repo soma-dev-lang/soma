@@ -1842,7 +1842,10 @@ impl Interpreter {
                             {
                                 let snapshot = args.iter().any(|a| expr_may_assign(&a.node)).then(|| env[name].clone());
                                 let values = args.iter().map(|a| self.eval_expr(&a.node, env, cell_name, signal_name)).collect::<Result<Vec<_>, _>>()?;
-                                if !self.builtin_fast_path(fn_name, args.len() + 1, env, cell_name) {
+                                // a `()` key goes through with(), which refuses it
+                                // (the in-place update wrote the entry "null")
+                                if !self.builtin_fast_path(fn_name, args.len() + 1, env, cell_name)
+                                    || values.chunks_exact(2).any(|p| matches!(p[0], Value::Unit)) {
                                     let mut all = vec![snapshot.unwrap_or_else(|| env[name].clone())];
                                     all.extend(values);
                                     let val = self.eval_named_call(fn_name, all, env, cell_name, signal_name)?;
@@ -1871,7 +1874,9 @@ impl Interpreter {
                     {
                         let snapshot = args[1..].iter().any(|a| expr_may_assign(&a.node)).then(|| env[name].clone());
                         let values = args[1..].iter().map(|a| self.eval_expr(&a.node, env, cell_name, signal_name)).collect::<Result<Vec<_>, _>>()?;
-                        if !self.builtin_fast_path(fn_name, args.len(), env, cell_name) {
+                        // a `()` key goes through with()/without(), which refuse it
+                        let unit_key = if fn_name == "with" { values.chunks_exact(2).any(|p| matches!(p[0], Value::Unit)) } else { values.iter().any(|v| matches!(v, Value::Unit)) };
+                        if !self.builtin_fast_path(fn_name, args.len(), env, cell_name) || unit_key {
                             let mut all = vec![snapshot.unwrap_or_else(|| env[name].clone())];
                             all.extend(values);
                             let val = self.eval_named_call(fn_name, all, env, cell_name, signal_name)?;
@@ -2614,10 +2619,11 @@ impl Interpreter {
                         let remember = |name: &str, env: &Env, saved: &mut Vec<(String, Option<Value>)>| {
                             if !saved.iter().any(|(n, _)| n == name) { saved.push((name.to_string(), env.get(name).cloned())); }
                         };
+                        // the pattern's bindings hide outer names from the start;
+                        // the body's `let`s restore what they shadowed WHEN they
+                        // ran (saved at arm entry, `x = 5  let x = 6` lost the 5,
+                        // and the inner record corrupted an enclosing block's)
                         for (name, _) in &bindings { remember(name, env, &mut saved); }
-                        for stmt in &arm.body {
-                            if let Statement::Let { name, .. } = &stmt.node { remember(name, env, &mut saved); }
-                        }
                         let restore = |env: &mut Env, saved: Vec<(String, Option<Value>)>| {
                             for (name, prev) in saved {
                                 match prev { Some(v) => { env.insert(name, v); } None => { env.remove(&name); } }
@@ -2641,7 +2647,7 @@ impl Interpreter {
                                 continue;
                             }
                         }
-                        let outcome = (|| -> Result<Value, ExecError> {
+                        let outcome = with_lexical_scope(&arm.body, env, |env| -> Result<Value, ExecError> {
                             // Execute body statements, capturing last value
                             let mut last_val = Value::Unit;
                             for stmt in &arm.body {
@@ -2654,7 +2660,7 @@ impl Interpreter {
                                 return Ok(last_val);
                             }
                             self.eval_expr(&arm.result.node, env, cell_name, signal_name)
-                        })();
+                        });
                         restore(env, saved);
                         return outcome;
                     }
@@ -3213,8 +3219,10 @@ impl Interpreter {
                     .ok_or_else(|| ExecError::Runtime(RuntimeError::TypeError(
                         "get() requires a key argument".to_string()
                     )))?;
-                // `()` is no key (set refuses it): it read the "null" entry
+                // `()` is no key (set refuses it): it read the "null" entry;
+                // nor is "1" a key of a Map<Int, V> (it read the Int key 1)
                 if matches!(key, Value::Unit) { return Ok(Value::Unit); }
+                if !matches!(key, Value::Int(_)) && self.slot_int_keys(cell_name, slot_name) { return Ok(Value::Unit); }
                 let key_str = format!("{}", key);
 
                 match backend.get(&key_str) {
@@ -3294,6 +3302,10 @@ impl Interpreter {
                 if matches!(key, Value::Unit) {
                     return Err(ExecError::Runtime(RuntimeError::Domain { kind: "type".to_string(), message: format!(
                         "{}.delete(()): the key is () — an absent value (a mistyped field?) cannot be a key", slot_name) }));
+                }
+                if !matches!(key, Value::Int(_)) && self.slot_int_keys(cell_name, slot_name) {
+                    return Err(ExecError::Runtime(RuntimeError::Domain { kind: "type".to_string(), message: format!(
+                        "{}.delete({}): the slot is declared Map<Int, …> — its keys are Ints, got {}", slot_name, key, value_type_name(key)) }));
                 }
                 let key_str = format!("{}", key);
                 if self.slot_immutable(cell_name, slot_name) && backend.get(&key_str).is_some() {
@@ -3416,6 +3428,7 @@ impl Interpreter {
                         "has() requires a key argument".to_string()
                     )))?;
                 if matches!(key, Value::Unit) { return Ok(Value::Bool(false)); }
+                if !matches!(key, Value::Int(_)) && self.slot_int_keys(cell_name, slot_name) { return Ok(Value::Bool(false)); }
                 let key_str = format!("{}", key);
                 Ok(Value::Bool(backend.has(&key_str)))
             }

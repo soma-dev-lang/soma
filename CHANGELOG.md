@@ -2,6 +2,23 @@
 
 ## Unreleased
 
+### Third pass: core evaluation
+
+- The `let` restoration of the second pass missed match arms and
+  multi-statement `try` blocks (a try block is a one-arm match): `match 1 {
+  1 -> { x = 5  let x = 6 } … }` left x at 1, and a `let` inside an arm wrote
+  into the enclosing block's record, losing a later assignment there
+  (`total = total + i` in the loop body).
+- An index holding an interpolated call (`stock["sku{pick()}"] -= 1`) was
+  still evaluated twice (sku0 received sku1 - 1); an interpolated key is
+  evaluated once, like any index that calls.
+- A `()` key through `m = with(m, k, v)` and `m = m |> with(k, v)` (the
+  in-place forms) still wrote the entry "null"; `without(m, ())` deleted it
+  and `contains(m, ())` found it. All refuse or answer absent, as a slot does.
+- A `Map<Int, V>` slot answered `get("1")`, `has("1")` and `delete("1")` for
+  the Int key 1 (and the delete removed it): a key of another type is absent
+  for reads and refused for a delete.
+
 ### Third pass: `verify` and `check`
 
 - `delegate("{who}", "drain", k)`: the analyses read the interpolated cell

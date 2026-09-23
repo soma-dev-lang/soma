@@ -271,6 +271,10 @@ pub fn call_builtin(name: &str, args: &[Value]) -> Option<Result<Value, RuntimeE
             }
         }
         "without" => {
+            // `()` is no key: it deleted the entry "null"
+            if matches!(args.first(), Some(Value::Map(_))) && args[1..].iter().any(|a| matches!(a, Value::Unit)) {
+                return Some(Err(RuntimeError::Domain { kind: "type".to_string(), message: "without(map, ()): the key is () — an absent value (a mistyped field?) cannot be a key".to_string() }));
+            }
             if let Some(Value::Map(entries)) = args.first() {
                 let keys_to_remove: Vec<String> = args[1..].iter().map(|a| format!("{}", a)).collect();
                 let result: IndexMap<String, Value> = entries.iter()

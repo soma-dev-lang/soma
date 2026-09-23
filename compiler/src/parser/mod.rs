@@ -2323,7 +2323,9 @@ impl Parser {
                         // anything is evaluated once, into a temporary, first
                         let calls = |e: &Expr| {
                             let mut hit = false;
-                            crate::checker::literals::for_each_in_expr(e, &mut |x| if matches!(x, Expr::FnCall { .. } | Expr::MethodCall { .. }) { hit = true; });
+                            // an interpolated key may call too (`m["k{f()}"] -= 1`)
+                            crate::checker::literals::for_each_in_expr(e, &mut |x| if matches!(x, Expr::FnCall { .. } | Expr::MethodCall { .. })
+                                || matches!(x, Expr::Literal(Literal::String(t)) if t.contains('{')) { hit = true; });
                             hit
                         };
                         let repeated = compound.is_some() || accessors.len() > 1;

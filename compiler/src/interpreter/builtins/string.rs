@@ -65,6 +65,9 @@ pub fn call_builtin(name: &str, args: &[Value]) -> Option<Result<Value, RuntimeE
             if args.len() >= 2 {
                 if let (Value::String(haystack), Value::String(needle)) = (&args[0], &args[1]) {
                     Some(Ok(Value::Bool(haystack.contains(needle.as_str()))))
+                } else if matches!(args[0], Value::Map(_)) && matches!(args[1], Value::Unit) {
+                    // `()` is no key (it matched the entry "null")
+                    Some(Ok(Value::Bool(false)))
                 } else if matches!(args[0], Value::List(_) | Value::Map(_)) {
                     // list / map membership: collection.rs
                     None
