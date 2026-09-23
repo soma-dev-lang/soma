@@ -2468,7 +2468,8 @@ impl Interpreter {
                 // outside any unit (a `cell test` rule) the block is its own
                 // unit: each handler it called committed on its own, so a
                 // failing `try` kept writes a handler would have undone
-                let outcome = if self.journal.is_none() && self.task_unit.is_none() {
+                // (a [task] handler it calls keeps its own step commits)
+                let outcome = if self.journal.is_none() && self.task_unit.is_none() && !self.reaches_task(&inner.node) {
                     self.atomically(|s| s.eval_expr(&inner.node, env, cell_name, signal_name))
                 } else {
                     self.eval_expr(&inner.node, env, cell_name, signal_name)
@@ -4930,6 +4931,20 @@ impl Interpreter {
             }
             None => Ok(f()),
         }
+    }
+
+    /// Does `e` call a `[task]` handler of any cell (`t(…)`, `A.t(…)`)?
+    fn reaches_task(&self, e: &Expr) -> bool {
+        let mut hit = false;
+        crate::checker::literals::for_each_in_expr(e, &mut |x| {
+            let name = match x {
+                Expr::FnCall { name, .. } => name,
+                Expr::MethodCall { method, .. } => method,
+                _ => return,
+            };
+            if self.cells.keys().any(|c| self.handler_is_task(c, name)) { hit = true; }
+        });
+        hit
     }
 
     fn handler_is_task(&self, cell_name: &str, signal_name: &str) -> bool {

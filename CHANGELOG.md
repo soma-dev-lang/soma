@@ -8,7 +8,8 @@
   fail("boom", "") }` kept the write and the transition: each handler the
   block called committed on its own. The same block in a handler is undone.
   A `try` outside any handler is now one unit, rolled back when it fails, so
-  a test sees what production does.
+  a test sees what production does (a `[task]` handler it calls still commits
+  the steps before each `think()`, as a task entry does).
 
 ### `id.transition(…)` evaluates its guard over the caller's locals
 
