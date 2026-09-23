@@ -1523,6 +1523,11 @@ pub fn call_builtin(name: &str, args: &[Value]) -> Option<Result<Value, RuntimeE
             match &args[0] {
                 Value::List(items) if items.iter().all(|x| matches!(x, Value::List(_))) && !items.is_empty() => {
                     let cols = if let Some(Value::List(r0)) = items.first() { r0.len() } else { 0 };
+                    // rows of different lengths have no shape (transpose and
+                    // det refuse them; shape answered the first row's width)
+                    if items.iter().any(|r| matches!(r, Value::List(x) if x.len() != cols)) {
+                        return Some(Err(te("shape: ragged matrix (rows of different lengths)")));
+                    }
                     Some(Ok(Value::List(vec![int(items.len()), int(cols)])))
                 }
                 Value::List(items) => Some(Ok(Value::List(vec![int(items.len())]))),
@@ -1556,7 +1561,10 @@ pub fn call_builtin(name: &str, args: &[Value]) -> Option<Result<Value, RuntimeE
         "scale" => {
             // scale(matrix, k) — scalar multiply
             let m = match to_matrix(&args[0]) { Ok(m) => m, Err(e) => return Some(Err(e)) };
-            let k = arg_f64(&args[1]);
+            // a non-number was 0 (`scale(m, "3")` zeroed the matrix)
+            let Some(k) = args.get(1).and_then(|v| val_to_f64(v).ok()) else {
+                return Some(Err(RuntimeError::Domain { kind: "type".to_string(), message: format!("scale(matrix, k): k must be a number, got {}", args.get(1).map(crate::interpreter::value_type_name).unwrap_or("nothing")) }));
+            };
             let r: Vec<Vec<f64>> = m.iter().map(|row| row.iter().map(|x| x * k).collect()).collect();
             Some(Ok(matrix_to_value(&r)))
         }

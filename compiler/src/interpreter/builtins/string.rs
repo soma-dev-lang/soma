@@ -137,7 +137,9 @@ pub fn call_builtin(name: &str, args: &[Value]) -> Option<Result<Value, RuntimeE
                     let Some(Value::String(rep)) = args.get(2) else {
                         return Some(Err(RuntimeError::TypeError("regex_replace(text, pattern, replacement)".to_string())));
                     };
-                    Value::String(rx.replace_all(text, rep.as_str()).into_owned())
+                    // `$1` then a letter, digit or `_` is group 1 then that text
+                    // (Rust read `$1_v2` as the group named "1_v2": "doc_.txt")
+                    Value::String(rx.replace_all(text, js_style_replacement(rep, rx.captures_len() - 1).as_str()).into_owned())
                 }
             }))
         }
@@ -337,6 +339,11 @@ pub fn call_builtin(name: &str, args: &[Value]) -> Option<Result<Value, RuntimeE
                 // line read with its "\n" gave () where to_int gave the Int
                 Value::String(s) => {
                     if let Some(f) = parse_float_text(s.trim()) {
+                        // "1e400" is past the Float range (it was inf), as
+                        // to_float of such an Int and the literal are refused
+                        if f.is_infinite() && !s.to_ascii_lowercase().contains("inf") {
+                            return Err(RuntimeError::Domain { kind: "range".to_string(), message: format!("range: to_float(\"{}\"): past the Float range (~1.8e308)", s.trim()) });
+                        }
                         Ok(Value::Float(f))
                     } else {
                         Ok(Value::Unit)
@@ -727,4 +734,31 @@ pub fn trunc_decimal_text(t: &str) -> Option<Result<rug::Integer, RuntimeError>>
 
 fn range_err() -> RuntimeError {
     RuntimeError::Domain { kind: "range".to_string(), message: format!("range: to_int: the number is past the Int limit of {} bits", SomaInt::MAX_BITS) }
+}
+
+/// A replacement where `$N` is group N whatever follows it.
+pub fn js_style_replacement(rep: &str, groups: usize) -> String {
+    let b: Vec<char> = rep.chars().collect();
+    let mut out = String::with_capacity(rep.len() + 8);
+    let mut i = 0;
+    while i < b.len() {
+        if b[i] == '$' && i + 1 < b.len() && b[i + 1].is_ascii_digit() {
+            let mut j = i + 1;
+            while j < b.len() && b[j].is_ascii_digit() { j += 1; }
+            let digits: String = b[i + 1..j].iter().collect();
+            // the longest prefix that names a group (`$12` with one group is
+            // group 1 then "2"); none: the text itself, as JavaScript does
+            let mut k = digits.len();
+            while k > 0 && digits[..k].parse::<usize>().map_or(true, |n| n > groups) { k -= 1; }
+            if k == 0 { out.push_str("$$"); out.push_str(&digits); } else { out.push_str(&format!("${{{}}}{}", &digits[..k], &digits[k..])); }
+            i = j;
+        } else if b[i] == '$' && i + 1 < b.len() && b[i + 1] == '$' {
+            out.push_str("$$");
+            i += 2;
+        } else {
+            out.push(b[i]);
+            i += 1;
+        }
+    }
+    out
 }

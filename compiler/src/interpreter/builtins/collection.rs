@@ -313,11 +313,11 @@ pub fn call_builtin(name: &str, args: &[Value]) -> Option<Result<Value, RuntimeE
                     let sep = format!("{}", args[1]);
                     let parts: Vec<String> = items.iter().map(|v| format!("{}", v)).collect();
                     Some(Ok(Value::String(parts.join(&sep))))
-                } else if let Value::List(items) = &args[0] {
-                    let parts: Vec<String> = items.iter().map(|v| format!("{}", v)).collect();
-                    Some(Ok(Value::String(parts.join(""))))
                 } else {
-                    Some(Ok(Value::String(format!("{}", args[0]))))
+                    // `join(map("a", 1), ",")` printed the map, `join((), ",")`
+                    // "null": the text of a non-list is not its elements joined
+                    Some(Err(RuntimeError::Domain { kind: "type".to_string(), message: format!(
+                        "join(list, sep): needs a List, got {}", crate::interpreter::value_type_name(&args[0])) }))
                 }
             } else if let Some(Value::List(items)) = args.first() {
                 let parts: Vec<String> = items.iter().map(|v| format!("{}", v)).collect();

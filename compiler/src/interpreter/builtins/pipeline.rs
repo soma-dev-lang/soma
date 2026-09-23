@@ -82,8 +82,15 @@ pub fn call_builtin(name: &str, args: &[Value]) -> Option<Result<Value, RuntimeE
                     let Value::Map(entries) = item else { return false };
                     let Some(val) = entries.get(&field) else { return false };
                     // numbers compare exactly (BigInt included); other values as text
+                    // against a NUMBER threshold, numeric text compares as a
+                    // number ("99" > 100 was true as text) and a value that
+                    // is no number passes no ordering ((), true were kept)
+                    let numeric_threshold = matches!(threshold, Value::Int(_) | Value::Float(_));
+                    if numeric_threshold && num_of(val).is_none() {
+                        return op == "!=";
+                    }
                     match (num_of(val), num_of(threshold)) {
-                        (Some(a), Some(b)) if !matches!(val, Value::String(_)) => {
+                        (Some(a), Some(b)) if !matches!(val, Value::String(_)) || numeric_threshold => {
                             let Some(o) = num_partial_cmp(&a, &b) else { return op == "!="; };
                             match op.as_str() {
                                 ">" => o.is_gt(), ">=" => o.is_ge(), "<" => o.is_lt(), "<=" => o.is_le(),
@@ -176,7 +183,9 @@ pub fn call_builtin(name: &str, args: &[Value]) -> Option<Result<Value, RuntimeE
                     }
                     let xs: Vec<Num> = items.iter().filter_map(|it| field_num(it, &field)).collect();
                     Some(Ok(num_avg(&xs)))
-                } else { Some(Ok(Value::Unit)) }
+                } else if matches!(args[0], Value::Unit) { Some(Ok(Value::Unit)) }
+                // a Map or a String answered an empty result (`distinct(m)` was [])
+                else { Some(Err(RuntimeError::Domain { kind: "type".to_string(), message: format!("avg_by(): needs a List of rows, got {}", crate::interpreter::value_type_name(&args[0])) })) }
             } else {
                 Some(Err(RuntimeError::TypeError("avg_by expects (list, field)".to_string())))
             }
@@ -187,13 +196,20 @@ pub fn call_builtin(name: &str, args: &[Value]) -> Option<Result<Value, RuntimeE
                     let field = format!("{}", args[1]);
                     let is_max = name == "max_by";
                     let mut best: Option<(Num, &Value)> = None;
+                    // a value that is no number is refused, as agg does (it
+                    // was skipped: max_by over "n/a", 3, 1 gave the 3 row)
+                    if let Some(bad) = non_numeric(items, &field) {
+                        return Some(Err(RuntimeError::Domain { kind: "type".to_string(), message: format!("{}(): field '{}' holds {} {} — not a number (a missing field is skipped)", name, field, crate::interpreter::value_type_name(&bad), crate::interpreter::builtins::string::to_json_string(&bad)) }));
+                    }
                     for it in items {
                         let Some(n) = field_num(it, &field) else { continue };
                         let better = match &best { None => true, Some((b, _)) => if is_max { num_cmp(&n, b).is_gt() } else { num_cmp(&n, b).is_lt() } };
                         if better { best = Some((n, it)); }
                     }
                     Some(Ok(best.map(|(_, v)| v.clone()).unwrap_or(Value::Unit)))
-                } else { Some(Ok(Value::Unit)) }
+                } else if matches!(args[0], Value::Unit) { Some(Ok(Value::Unit)) }
+                // a Map or a String answered an empty result (`distinct(m)` was [])
+                else { Some(Err(RuntimeError::Domain { kind: "type".to_string(), message: format!("min_by/max_by(): needs a List of rows, got {}", crate::interpreter::value_type_name(&args[0])) })) }
             } else {
                 Some(Err(RuntimeError::TypeError("min_by/max_by expects (list, field)".to_string())))
             }
@@ -208,7 +224,9 @@ pub fn call_builtin(name: &str, args: &[Value]) -> Option<Result<Value, RuntimeE
                         } else { Value::Unit }
                     }).collect();
                     Some(Ok(Value::List(result)))
-                } else { Some(Ok(Value::List(vec![]))) }
+                } else if matches!(args[0], Value::Unit) { Some(Ok(Value::List(vec![]))) }
+                // a Map or a String answered an empty result (`distinct(m)` was [])
+                else { Some(Err(RuntimeError::Domain { kind: "type".to_string(), message: format!("pluck(): needs a List of rows, got {}", crate::interpreter::value_type_name(&args[0])) })) }
             } else {
                 Some(Err(RuntimeError::TypeError("map_by expects (list, field)".to_string())))
             }
@@ -228,7 +246,9 @@ pub fn call_builtin(name: &str, args: &[Value]) -> Option<Result<Value, RuntimeE
                     let result: IndexMap<String, Value> = groups.into_iter()
                         .map(|(k, v)| (k, Value::List(v))).collect();
                     Some(Ok(Value::Map(result)))
-                } else { Some(Ok(Value::Map(IndexMap::new()))) }
+                } else if matches!(args[0], Value::Unit) { Some(Ok(Value::Map(IndexMap::new()))) }
+                // a Map or a String answered an empty result (`distinct(m)` was [])
+                else { Some(Err(RuntimeError::Domain { kind: "type".to_string(), message: format!("group_by(): needs a List of rows, got {}", crate::interpreter::value_type_name(&args[0])) })) }
             } else {
                 Some(Err(RuntimeError::TypeError("group_by expects (list, field)".to_string())))
             }
@@ -272,7 +292,9 @@ pub fn call_builtin(name: &str, args: &[Value]) -> Option<Result<Value, RuntimeE
                     let result: Vec<Value> = items.iter().filter(|item| distinct_key(item).map_or(true, |key| seen.insert(key))).cloned().collect();
                     Some(Ok(Value::List(result)))
                 }
-            } else { Some(Ok(Value::List(vec![]))) }
+            } else if matches!(args[0], Value::Unit) { Some(Ok(Value::List(vec![]))) }
+            // a Map or a String answered an empty result (`distinct(m)` was [])
+            else { Some(Err(RuntimeError::Domain { kind: "type".to_string(), message: format!("distinct(): needs a List of rows, got {}", crate::interpreter::value_type_name(&args[0])) })) }
         }
         "count_by" => {
             if args.len() >= 3 {
@@ -285,7 +307,9 @@ pub fn call_builtin(name: &str, args: &[Value]) -> Option<Result<Value, RuntimeE
                         } else { false }
                     }).count() as i64;
                     Some(Ok(Value::Int(SomaInt::from_i64(count))))
-                } else { Some(Ok(Value::Int(SomaInt::from_i64(0)))) }
+                } else if matches!(args[0], Value::Unit) { Some(Ok(Value::Int(SomaInt::from_i64(0)))) }
+                // a Map or a String answered an empty result (`distinct(m)` was [])
+                else { Some(Err(RuntimeError::Domain { kind: "type".to_string(), message: format!("count_by(): needs a List of rows, got {}", crate::interpreter::value_type_name(&args[0])) })) }
             } else {
                 Some(Err(RuntimeError::TypeError("count_by expects (list, field, value)".to_string())))
             }
@@ -303,7 +327,9 @@ pub fn call_builtin(name: &str, args: &[Value]) -> Option<Result<Value, RuntimeE
                         } else { item.clone() }
                     }).collect();
                     Some(Ok(Value::List(result)))
-                } else { Some(Ok(Value::List(vec![]))) }
+                } else if matches!(args[0], Value::Unit) { Some(Ok(Value::List(vec![]))) }
+                // a Map or a String answered an empty result (`distinct(m)` was [])
+                else { Some(Err(RuntimeError::Domain { kind: "type".to_string(), message: format!("select(): needs a List of rows, got {}", crate::interpreter::value_type_name(&args[0])) })) }
             } else {
                 Some(Err(RuntimeError::TypeError("select expects (list, field1, field2, ...)".to_string())))
             }
@@ -364,7 +390,9 @@ pub fn call_builtin(name: &str, args: &[Value]) -> Option<Result<Value, RuntimeE
                         Value::Map(row)
                     }).collect();
                     Some(Ok(Value::List(result)))
-                } else { Some(Ok(Value::List(vec![]))) }
+                } else if matches!(args[0], Value::Unit) { Some(Ok(Value::List(vec![]))) }
+                // a Map or a String answered an empty result (`distinct(m)` was [])
+                else { Some(Err(RuntimeError::Domain { kind: "type".to_string(), message: format!("agg(): needs a List of rows, got {}", crate::interpreter::value_type_name(&args[0])) })) }
             } else {
                 Some(Err(RuntimeError::TypeError("agg expects (list, group_field, \"col:func\", ...)".to_string())))
             }

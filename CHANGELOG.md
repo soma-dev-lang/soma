@@ -2,6 +2,32 @@
 
 ## Unreleased
 
+### Second pass: parser and builtins
+
+- A line starting with `-` touching its operand (`-amount`) continued the
+  line before: `let fee = 2` then `-amount` as the value of a block read
+  `2 - amount` (the block answered `()`). It starts a new expression;
+  `- amount` with a space still continues the line.
+- `filter_by(rows, "price", ">", 100)` compared numeric text as text ("99"
+  passed) and kept `()` and `true` values ("null" > "5"). Against a number,
+  numeric text compares as a number and a value that is no number passes no
+  ordering; two Strings still compare as text (ISO dates).
+- `min_by` / `max_by` skipped a value that is no number (`"n/a"`) where `agg`
+  refuses it; they refuse it too. `distinct`, `pluck`, `group_by`, `select`,
+  `agg`, `count_by`, `avg_by`, `min_by`, `max_by` answered an empty result
+  for a Map or a String, and `join` joined the text of a non-list; they are
+  refused (`()` still gives the empty result).
+- `regex_replace(s, p, "doc_$1_v2")` dropped the group (`$1_v2` read as a
+  group named "1_v2"); `$N` is group N whatever follows, and `$5` with no
+  such group is the text "$5" (interpreted and native).
+- `sqrt`, `log` and `log10` of an Int past the Float range answered `inf`
+  (`sqrt(10^400)` is 1e200); `to_float("1e400")` was `inf` and is refused as
+  the literal is.
+- A triple-quoted string in a CRLF file kept a leading newline and a
+  trailing "\r".
+- `scale(m, "3")` zeroed the matrix; `shape` of a ragged matrix answered the
+  first row's width. Both are refused.
+
 ### A parameter bound by name keeps its position
 
 - `soma serve` compacted the parameters a query bound by name before the

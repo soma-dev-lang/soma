@@ -408,6 +408,11 @@ impl<'a> Lexer<'a> {
                         content.push(c);
                         self.pos += 1;
                     }
+                    // a CRLF source: the same string as with LF (it kept a
+                    // leading "\n" and a trailing "\r")
+                    if content.contains('\r') {
+                        content = content.replace("\r\n", "\n");
+                    }
                     // Strip leading newline after opening """
                     if content.starts_with('\n') {
                         content = content[1..].to_string();

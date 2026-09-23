@@ -4271,3 +4271,48 @@ fn a_parameter_bound_by_name_keeps_its_position() {
     assert!(out.contains("parameter 'a'"), "{out}");
     let _ = std::fs::remove_dir_all(dir);
 }
+
+#[test]
+fn parser_and_builtin_fixes_of_the_second_pass() {
+    passes("builtins_second_pass", r#"
+cell P {
+    on refund(amount: Int) {
+        let r = if amount > 0 {
+            let fee = 2
+            -amount
+        } else { 0 }
+        return r
+    }
+    on spaced(a: Int) {
+        let x = a
+            - 1
+        return x
+    }
+}
+cell test T { rules {
+    assert refund(50) == -50
+    assert spaced(5) == 4
+    assert len(filter_by([map("p", "99"), map("p", "150")], "p", ">", 100)) == 1
+    assert len(filter_by([map("s", ()), map("s", 3), map("s", true), map("s", 7)], "s", ">", 5)) == 1
+    assert len(filter_by([map("d", "2024-01-02")], "d", ">", "2024-01-01")) == 1
+    assert_fails max_by([map("p", "n/a"), map("p", 3)], "p") matching "not a number"
+    assert_fails distinct(map("a", 1)) matching "type"
+    assert_fails join(5, ",") matching "type"
+    assert distinct(()) == []
+    assert regex_replace("file_1.txt", "file_(\\d+)", "doc_$1_v2") == "doc_1_v2.txt"
+    assert regex_replace("12", "(\\d)(\\d)", "$1a$2") == "1a2"
+    assert regex_replace("cost: X", "X", "$5") == "cost: $5"
+    assert sqrt(ipow(10, 400)) > 9.9e199
+    assert log10(ipow(10, 400)) == 400.0
+    assert_fails to_float("1e400") matching "range"
+    assert_fails scale([[1, 2]], "3") matching "type"
+    assert_fails shape([[1, 2], [3]]) matching "ragged"
+} }
+"#);
+    // a triple-quoted string reads the same in a CRLF file
+    let dir = scratch("crlf_triple");
+    std::fs::write(dir.join("app.cell"), "cell P {\r\n on run() {\r\n  let s = \"\"\"\r\n  a\r\n    b\r\n  c\r\n  \"\"\"\r\n  return s == \"a\\n  b\\nc\"\r\n }\r\n}\r\n").unwrap();
+    let (code, out) = soma(&dir, &["run", "app.cell"]);
+    assert_eq!((code, out.trim()), (0, "true"), "{out}");
+    let _ = std::fs::remove_dir_all(dir);
+}

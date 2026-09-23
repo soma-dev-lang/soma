@@ -195,9 +195,17 @@ pub fn call_builtin(name: &str, args: &[Value]) -> Option<Result<Value, RuntimeE
                 _ => { let Some(y) = args.get(1).and_then(f) else { return Some(Err(RuntimeError::TypeError("atan2(y, x)".to_string()))) }; x.atan2(y) }
             })))
         }
-        "sqrt" => { args.first().map(|a| Ok(Value::Float(match a { Value::Float(n) => n.sqrt(), Value::Int(si) => si.to_f64().sqrt(), _ => 0.0 }))) }
+        // an Int past the Float range has a finite root and log (sqrt(10^400)
+        // was inf): computed from the exact Int
+        "sqrt" => { args.first().map(|a| Ok(Value::Float(match a {
+            Value::Float(n) => n.sqrt(),
+            Value::Int(si) if si.to_f64().is_finite() => si.to_f64().sqrt(),
+            Value::Int(si) if si.to_rug() > 0 => SomaInt::from_rug(si.to_rug().sqrt()).to_f64(),
+            Value::Int(_) => f64::NAN,
+            _ => 0.0 }))) }
         "log" | "ln" => {
             args.first().map(|a| {
+                if let Value::Int(si) = a { if !si.to_f64().is_finite() { return Ok(Value::Float(big_ln(si))); } }
                 let n = match a { Value::Float(n) => *n, Value::Int(si) => si.to_f64(), _ => 0.0 };
                 Ok(Value::Float(n.ln()))
             })
@@ -210,6 +218,7 @@ pub fn call_builtin(name: &str, args: &[Value]) -> Option<Result<Value, RuntimeE
         }
         "log10" => {
             args.first().map(|a| {
+                if let Value::Int(si) = a { if !si.to_f64().is_finite() { return Ok(Value::Float(big_log10(si))); } }
                 let n = match a { Value::Float(n) => *n, Value::Int(si) => si.to_f64(), _ => 0.0 };
                 Ok(Value::Float(n.log10()))
             })
@@ -869,4 +878,24 @@ pub fn fixed_string(x: f64, digits: usize) -> String {
     let r = round_decimal(x, digits as i32);
     let t = format!("{:.*}", digits, r);
     if t.starts_with("-0") && t.trim_start_matches('-').chars().all(|c| c == '0' || c == '.') { t[1..].to_string() } else { t }
+}
+
+/// ln of an Int past the Float range: 60 leading bits, then the power of two.
+fn big_ln(si: &SomaInt) -> f64 {
+    let r = si.to_rug();
+    if r <= 0 { return f64::NAN; }
+    let bits = r.significant_bits() as i64;
+    let shift = (bits - 60).max(0);
+    let m = SomaInt::from_rug(r >> (shift as u32)).to_f64();
+    m.ln() + shift as f64 * std::f64::consts::LN_2
+}
+
+/// log10 of an Int past the Float range, from its decimal digits (exact for
+/// a power of ten: 400.0 for 10^400, not 399.99999999999994).
+fn big_log10(si: &SomaInt) -> f64 {
+    let r = si.to_rug();
+    if r <= 0 { return f64::NAN; }
+    let digits = r.to_string();
+    let lead: f64 = digits[..digits.len().min(17)].parse().unwrap_or(1.0);
+    lead.log10() + (digits.len() as f64 - digits.len().min(17) as f64)
 }

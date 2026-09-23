@@ -2752,6 +2752,15 @@ impl Parser {
         let mut left = self.parse_multiplicative()?;
         let mut chain = 0usize;
         while matches!(self.peek(), Token::Plus | Token::Minus) {
+            // a line starting with `-` TOUCHING its operand (`-amount`) is a
+            // new expression, the value of a block: `let fee = 2` then
+            // `-amount` read as `2 - amount`. `- amount` (spaced) still
+            // continues the line before, as a leading `+` does.
+            if matches!(self.peek(), Token::Minus) && self.at_line_start()
+                && self.tokens.get(self.pos + 1).map_or(false, |n| n.span.start == self.peek_span().end)
+            {
+                break;
+            }
             chain += 1;
             self.chain_limit(chain)?;
             // `"neg"  -1..1 -> "small"`: the `-1` starts the NEXT match arm
