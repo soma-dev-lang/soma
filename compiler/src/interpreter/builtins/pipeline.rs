@@ -382,6 +382,13 @@ pub fn call_builtin(name: &str, args: &[Value]) -> Option<Result<Value, RuntimeE
                             }
                         }
                     }
+                    // an output column named like the group field replaced the
+                    // group's key (grouping by "count" gave count: 1 per row)
+                    let outputs: Vec<String> = std::iter::once("count".to_string()).chain(ops.iter().map(|o| o.replacen(':', "_", 1))).collect();
+                    if let Some(clash) = outputs.iter().find(|o| **o == group_field) {
+                        return Some(Err(RuntimeError::Domain { kind: "type".to_string(), message: format!(
+                            "agg(): the group field '{}' has the name of an output column ('{}') — rename the field first (`rows |> map(r => with(r, \"key\", r.{}))`)", group_field, clash, group_field) }));
+                    }
                     let mut groups: IndexMap<String, Vec<&Value>> = IndexMap::new();
                     for item in items {
                         let key = if let Some(entries) = row_fields(item) {

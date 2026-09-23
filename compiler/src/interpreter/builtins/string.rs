@@ -20,6 +20,12 @@ pub fn call_builtin(name: &str, args: &[Value]) -> Option<Result<Value, RuntimeE
                         out.extend(b.iter().cloned());
                         Some(Ok(Value::List(out)))
                     }
+                    // a List or () on one side is a mistake, not text:
+                    // concat([1, 2], 3) was the String "[1, 2]3"
+                    (a, b) if [a, b].iter().any(|v| matches!(v, Value::List(_) | Value::Map(_) | Value::Unit | Value::Variant { .. } | Value::Lambda { .. } | Value::LambdaBlock { .. })) =>
+                        Some(Err(RuntimeError::Domain { kind: "type".to_string(), message: format!(
+                            "concat(a, b) takes two Strings or two Lists, got {} and {} — append one element with push(xs, x)",
+                            crate::interpreter::value_type_name(a), crate::interpreter::value_type_name(b)) })),
                     _ => Some(Ok(Value::String(format!("{}{}", args[0], args[1]))))
                 }
             } else {
@@ -359,6 +365,19 @@ pub fn call_builtin(name: &str, args: &[Value]) -> Option<Result<Value, RuntimeE
         }
         "to_json" => {
             args.first().map(|arg| {
+                // a function has no JSON form (it was the text "<lambda(x)>",
+                // which from_json reads back as a String)
+                fn has_fn(v: &Value) -> bool {
+                    match v {
+                        Value::Lambda { .. } | Value::LambdaBlock { .. } => true,
+                        Value::List(xs) => xs.iter().any(has_fn),
+                        Value::Map(m) => m.values().any(has_fn),
+                        other => super::pipeline::row_fields(other).map_or(false, |m| m.values().any(has_fn)),
+                    }
+                }
+                if has_fn(arg) {
+                    return Err(RuntimeError::Domain { kind: "type".to_string(), message: "to_json: the value holds a function, which has no JSON form".to_string() });
+                }
                 let mut out = String::new();
                 write_json(arg, &mut out);
                 Ok(Value::String(out))
@@ -401,7 +420,9 @@ pub fn call_builtin(name: &str, args: &[Value]) -> Option<Result<Value, RuntimeE
                     Value::String(s) => Ok(json_to_value(s)),
                     Value::Map(_) | Value::List(_) => Ok(arg.clone()),
                     Value::Unit => Ok(Value::Unit),
-                    other => Ok(Value::String(format!("{}", other))),
+                    // a number or a Bool is already its JSON value (it came
+                    // back as its text: from_json(5) == "5")
+                    other => Ok(other.clone()),
                 }
             })
         }
@@ -414,7 +435,7 @@ pub fn call_builtin(name: &str, args: &[Value]) -> Option<Result<Value, RuntimeE
                     Value::Bool(_) => "Bool",
                     Value::List(_) => "List",
                     Value::Map(_) => "Map",
-                    Value::Lambda { .. } | Value::LambdaBlock { .. } => "Lambda",
+                    Value::Lambda { .. } | Value::LambdaBlock { .. } => "Function", // as documented (and as errors name it)
                     Value::Variant { .. } => "Variant",
                     Value::Unit => "Unit",
                 };

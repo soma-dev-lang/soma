@@ -52,6 +52,11 @@ pub fn call_builtin(name: &str, args: &[Value]) -> Option<Result<Value, RuntimeE
         }
         // round(x, digits): keep `digits` decimals → Float (round(2.345, 2) = 2.35)
         "round" if args.len() == 2 => {
+            // an Int has no digits after the point: it stays exact (through a
+            // Float, round(12345678901234567890123, 2) lost its last digits)
+            if let (Value::Int(i), Value::Int(d)) = (&args[0], &args[1]) {
+                if d.to_rug() >= 0 { return Some(Ok(Value::Int(i.clone()))); }
+            }
             let x = match &args[0] {
                 Value::Float(f) => *f,
                 Value::Int(i) => i.to_f64(),
@@ -233,8 +238,21 @@ pub fn call_builtin(name: &str, args: &[Value]) -> Option<Result<Value, RuntimeE
                 (Some(Value::Float(_) | Value::Int(_)), Some(Value::Float(_) | Value::Int(_))) => {}
                 _ => return Some(Err(RuntimeError::TypeError(format!("pow(base, exp) needs two numbers, got {}", args.iter().map(|a| crate::interpreter::value_type_name(a)).collect::<Vec<_>>().join(", "))))),
             }
+            // an Int past the Float range is refused, as to_float does (it
+            // was inf: pow(10^400, 0.5) = inf while sqrt answered 1e200)
+            if let Value::Int(si) = &args[0] {
+                if !si.to_f64().is_finite() {
+                    return Some(Err(RuntimeError::Domain { kind: "range".to_string(), message: "pow(base, exp): the Int base is past the Float range — use ipow for an exact Int power, or sqrt".to_string() }));
+                }
+            }
             let base = match &args[0] { Value::Float(n) => *n, Value::Int(si) => si.to_f64(), _ => 0.0 };
             let exp = match &args[1] { Value::Float(n) => *n, Value::Int(si) => si.to_f64(), _ => 0.0 };
+            // an Int exponent keeps its parity: 2^53 + 1 read as a Float is
+            // even, so pow(-1, 9007199254740993) was 1
+            if let (true, Value::Int(e)) = (base < 0.0, &args[1]) {
+                let mag = (-base).powf(exp);
+                return Some(Ok(Value::Float(if e.to_rug().is_odd() { -mag } else { mag })));
+            }
             Some(Ok(Value::Float(base.powf(exp))))
         }
         // exact Int power: `to_int(pow(3, 40))` was off by 33 (a Float)
@@ -808,6 +826,8 @@ fn numeric_reduce(args: &[Value], op: &str) -> Result<Value, RuntimeError> {
         let r = match op {
             "sum" => nums.iter().sum(),
             "product" => nums.iter().product(),
+            // NaN in, NaN out (f64::min skipped it: max([NaN]) was -inf)
+            "min" | "max" if nums.iter().any(|x| x.is_nan()) => f64::NAN,
             "min" => nums.iter().cloned().fold(f64::INFINITY, f64::min),
             "max" => nums.iter().cloned().fold(f64::NEG_INFINITY, f64::max),
             _ => 0.0,

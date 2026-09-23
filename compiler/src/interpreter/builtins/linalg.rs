@@ -1309,10 +1309,18 @@ fn clean_covariance_impl(returns: &Value, opts: &Value) -> Result<Value, Runtime
 // for less liquid assets.  See Tóth et al. arXiv:1105.1694.
 
 fn impact_sqrt_impl(args: &[Value], opts: &Value) -> Result<Value, RuntimeError> {
-    let q = val_to_f64(&args[0])?.abs();
-    let v = val_to_f64(&args[1])?.max(1e-12);
-    let sigma = val_to_f64(&args[2])?.abs();
+    // a sell is a negative quantity (its size counts); a volume of 0 or
+    // less, a negative σ or Y, a NaN had a cost of billions of bps
+    let range = |m: String| RuntimeError::Domain { kind: "range".to_string(), message: format!("range: impact_sqrt: {}", m) };
+    let q = val_to_f64(&args[0])?;
+    if !q.is_finite() { return Err(range(format!("the quantity must be finite, got {}", q))); }
+    let q = q.abs();
+    let v = val_to_f64(&args[1])?;
+    if !(v > 0.0 && v.is_finite()) { return Err(range(format!("the daily volume must be > 0, got {}", v))); }
+    let sigma = val_to_f64(&args[2])?;
+    if !(sigma >= 0.0 && sigma.is_finite()) { return Err(range(format!("the volatility must be ≥ 0, got {}", sigma))); }
     let y = opt_f64(opts, "Y", 1.0)?;
+    if !(y >= 0.0 && y.is_finite()) { return Err(range(format!("Y must be ≥ 0, got {}", y))); }
     let impact = y * sigma * (q / v).sqrt();
     let cost_bps = impact * 10_000.0;
     let mut out = IndexMap::new();
@@ -1341,7 +1349,10 @@ fn quantile_impl(xs: &Value, q: &Value) -> Result<Value, RuntimeError> {
         // the same kind as median([]) / pstdev([])
         return Err(RuntimeError::Domain { kind: "empty".to_string(), message: "empty: quantile of an empty list".to_string() });
     }
-    v.sort_by(|a, b| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal));
+    // a NaN return is NaN, as numpy answers (the sort with a NaN "equal"
+    // to all gave quantile([3, NaN, 1, 2], 0) = 3 and a negative VaR)
+    if v.iter().any(|x| x.is_nan()) { return Ok(Value::Float(f64::NAN)); }
+    v.sort_by(|a, b| a.total_cmp(b));
     let n = v.len();
     let pos = q * (n - 1) as f64;
     let lo = pos.floor() as usize;

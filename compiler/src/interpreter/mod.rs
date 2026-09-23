@@ -2943,11 +2943,16 @@ impl Interpreter {
                 }
                 match (&target_val, method.as_str()) {
                     (Value::List(items), "get") => {
-                        if let Some(Value::Int(si)) = arg_vals.first() {
-                            // an Int past 64 bits is out of bounds, not element 0
-                            Ok(si.to_i64().and_then(|i| items.get(i as usize)).cloned().unwrap_or(Value::Unit))
-                        } else {
-                            Ok(Value::Unit)
+                        match arg_vals.first() {
+                            // an Int past 64 bits is out of bounds, not element
+                            // 0; a negative one counts from the end, as nth and a
+                            // List slot's get do (`xs.get(-1)` was ())
+                            Some(Value::Int(si)) => Ok(si.to_i64()
+                                .and_then(|i| if i < 0 { (items.len() as i64).checked_add(i).filter(|j| *j >= 0) } else { Some(i) })
+                                .and_then(|i| items.get(i as usize)).cloned().unwrap_or(Value::Unit)),
+                            Some(other) => Err(ExecError::Runtime(RuntimeError::TypeError(format!(
+                                "list.get(i): the index is an Int, got {} {}", value_type_name(other), other)))),
+                            None => Ok(Value::Unit),
                         }
                     }
                     (Value::List(items), "len" | "length") => {
@@ -2976,13 +2981,8 @@ impl Interpreter {
                         }
                     }
                     (Value::String(s), "len" | "length") => Ok(Value::Int(SomaInt::from_i64(s.chars().count() as i64))),
-                    (Value::String(s), "split") => {
-                        if let Some(Value::String(delim)) = arg_vals.first() {
-                            Ok(Value::List(s.split(delim.as_str()).map(|p| Value::String(p.to_string())).collect()))
-                        } else {
-                            Ok(Value::Unit)
-                        }
-                    }
+                    // `s.split(d)` is split(s, d) (a fast path here split "" into
+                    // ["", "a", "b", "c", ""] and answered () for a non-String)
                     _ => {
                         // UFCS: x.method(a, b) → method(x, a, b) for any
                         // builtin. Makes matrices first-class — m.reshape(2,2),

@@ -317,9 +317,13 @@ pub fn call_builtin(name: &str, args: &[Value]) -> Option<Result<Value, RuntimeE
             }
             if args.len() >= 2 {
                 if let Value::List(items) = &args[0] {
-                    let sep = format!("{}", args[1]);
+                    // the separator is text (`join(xs, ())` put "null" between)
+                    let Value::String(sep) = &args[1] else {
+                        return Some(Err(RuntimeError::Domain { kind: "type".to_string(), message: format!(
+                            "join(list, sep): the separator is a String, got {} {}", crate::interpreter::value_type_name(&args[1]), args[1]) }));
+                    };
                     let parts: Vec<String> = items.iter().map(|v| format!("{}", v)).collect();
-                    Some(Ok(Value::String(parts.join(&sep))))
+                    Some(Ok(Value::String(parts.join(sep))))
                 } else {
                     // `join(map("a", 1), ",")` printed the map, `join((), ",")`
                     // "null": the text of a non-list is not its elements joined
@@ -364,7 +368,13 @@ pub fn call_builtin(name: &str, args: &[Value]) -> Option<Result<Value, RuntimeE
                 if let (Value::List(items), Value::String(template)) = (&args[0], &args[1]) {
                     let mut result = String::with_capacity(template.len() * items.len());
                     for item in items {
-                        if let Value::Map(entries) = item {
+                        // records too (a List<Row> rendered ""); any other
+                        // item was skipped without a word
+                        let Some(entries) = super::pipeline::row_fields(item) else {
+                            return Some(Err(RuntimeError::Domain { kind: "type".to_string(), message: format!(
+                                "render_each(rows, template): each row is a Map or a record, got {} {}", crate::interpreter::value_type_name(item), item) }));
+                        };
+                        {
                             let vars: HashMap<String, String> = entries.iter()
                                 .map(|(k, v)| (k.clone(), format!("{}", v)))
                                 .collect();

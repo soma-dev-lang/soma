@@ -2,6 +2,10 @@
 
 ## Unreleased
 
+### NaN, big Ints, records and incomplete arguments in builtins
+
+min/max and quantile (so var_historical and expected_shortfall_historical) answer NaN for a NaN input instead of an infinity or a misplaced percentile. pow keeps an Int exponent's parity (`pow(-1, 2^53 + 1)` is -1.0) and refuses an Int base past the Float range; `round(Int, digits)` keeps the Int exact. render_each, word_count and par_word_count read records; to_csv/write_csv refuse a row that is neither a Map nor a record with fields (it was dropped). agg refuses a group field named like an output column. `s.split(d)` and `xs.get(i)` behave as split(s, d) and nth (negative index from the end, non-Int refused). type_of of a function is "Function", as documented. render/load_template and response/html refuse a key or header with no value; render takes one Map. concat refuses a List, Map or () mixed with another type; join needs a String separator. impact_sqrt refuses a volume ≤ 0, a negative σ or Y and a NaN quantity. to_json refuses a function; from_json passes a number or Bool through.
+
 ### Undeclared indexed writes, hoisted index names, static paths, query keys in opts
 
 `ys[1] = 1` or `ys.x = 1` on a name never bound is a check error (it failed at run time with "undefined variable"). Verify hints quote a compound write's index as written (`bal[ks[pick(0)]]`) instead of a parser temporary. `soma check|test|verify <dir> --json` on a directory with no .cell file prints one JSON document. `soma serve` percent-decodes `/static/` paths (`a%20b.css`) and still refuses `%2e%2e`; a POST whose JSON body fills `opts` keeps the query's unknown keys too (the body wins a tie).

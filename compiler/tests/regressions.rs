@@ -4706,7 +4706,10 @@ cell App {
     let body = "{\"a\":1,\"b\":2}";
     let out = raw_request(port, &format!("POST /opt?q=1 HTTP/1.0\r\nHost: localhost\r\nContent-Type: application/json\r\nContent-Length: {}\r\n\r\n{}", body.len(), body));
     assert!(out.contains("\"q\":1") && out.contains("\"b\":2"), "{out}");
+    let _ = std::fs::remove_dir_all(dir);
+}
 
+#[test]
 fn verify_fourth_pass_soundness() {
     let dir = scratch("verify_fourth_pass");
     let verify = |name: &str, src: &str| -> String {
@@ -4929,4 +4932,46 @@ fn verify_fourth_pass_soundness() {
     assert!(out.contains("a::think (max_tokens is computed") && out.contains("b::think without a literal timeout")
         && out.contains("c::think without a literal timeout"), "{out}");
     let _ = std::fs::remove_dir_all(dir);
+}
+
+#[test]
+fn builtins_fifth_pass() {
+    passes("builtins_fifth_pass", r#"
+cell type Row { variants { Row { g: String, v: Int } } }
+cell type Shape { variants { Dot, Circle { r: Int } } }
+cell type Doc { variants { Doc { content: String } } }
+cell P {
+    on nan() { return 0.0 / 0.0 }
+    on max_nan() { return max([1.0, nan()]) }
+    on q_nan() { return quantile([3.0, nan(), 1.0, 2.0], 0.0) }
+    on each() { return render_each([Row { g: "x", v: 1 }], "{{g}}={{v}};") }
+    on words() { return word_count([Doc { content: "x y x" }]) }
+    on csv_dot() { return to_csv([Dot, Circle { r: 1 }]) }
+    on agg_count() { return agg([map("count", "a", "v", 1)], "count", "v:sum") }
+    on last() { let xs = [1, 2, 3]  return xs.get(-1) }
+    on odd_render() { return render("Hi {{name}}", "name") }
+    on map_render() { return render("Hi {{name}}", map("name", "Bo")) }
+    on bad_concat() { return concat([1, 2], 3) }
+    on fn_json() { return to_json(map("f", x => x)) }
+}
+cell test T { rules {
+    assert max_nan() != max_nan()
+    assert q_nan() != q_nan()
+    assert pow(-1, 9007199254740993) == -1.0
+    assert each() == "x=1;"
+    assert words() == map("x", 2, "y", 1)
+    assert_fails csv_dot() matching "row 0"
+    assert_fails agg_count() matching "output column"
+    assert last() == 3
+    assert "abc".split("") == ["a", "b", "c"]
+    assert type_of(x => x) == "Function"
+    assert round(12345678901234567890123, 2) == 12345678901234567890123
+    assert_fails odd_render() matching "has no value"
+    assert map_render() == "Hi Bo"
+    assert_fails bad_concat() matching "two Strings or two Lists"
+    assert_fails impact_sqrt(1000, 0, 0.02) matching "volume"
+    assert_fails fn_json() matching "function"
+    assert from_json(5) == 5
+} }
+"#);
 }

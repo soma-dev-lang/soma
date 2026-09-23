@@ -29,7 +29,7 @@ pub fn call_builtin(name: &str, args: &[Value]) -> Option<Result<Value, RuntimeE
                             // one pass, as render(): a value `{token}` is text,
                             // not a placeholder the next pair fills (it leaked
                             // the secret passed after it)
-                            Some(Ok(Value::String(substitute_once(&content, &args[1..]))))
+                            Some(substitute_once(name, &content, &args[1..]).map(Value::String))
                         } else {
                             Some(Ok(Value::String(content)))
                         }
@@ -42,7 +42,7 @@ pub fn call_builtin(name: &str, args: &[Value]) -> Option<Result<Value, RuntimeE
         }
         "render" => {
             if let Some(Value::String(template)) = args.first() {
-                Some(Ok(Value::String(substitute_once(template, &args[1..]))))
+                Some(substitute_once("render", template, &args[1..]).map(Value::String))
             } else {
                 Some(Err(RuntimeError::TypeError("render expects a template string".to_string())))
             }
@@ -87,8 +87,13 @@ pub fn call_builtin(name: &str, args: &[Value]) -> Option<Result<Value, RuntimeE
                 ("_content_type".to_string(), Value::String("text/html; charset=utf-8".to_string())),
                 ("_response".to_string(), crate::interpreter::http_marker()),
             ]);
+            let headers = args.get(2..).unwrap_or(&[]);
+            if headers.len() % 2 != 0 {
+                return Some(Err(RuntimeError::Domain { kind: "response".to_string(), message: format!(
+                    "html(status, body, name, value, …): header \"{}\" has no value", headers[headers.len() - 1]) }));
+            }
             if let Value::Map(m) = &mut entries {
-                add_header_pairs(m, args.get(2..).unwrap_or(&[]));
+                add_header_pairs(m, headers);
             }
             Some(Ok(entries))
         }
@@ -125,7 +130,13 @@ pub fn call_builtin(name: &str, args: &[Value]) -> Option<Result<Value, RuntimeE
             entries.insert("_status".to_string(), status);
             entries.insert("_body".to_string(), body);
             entries.insert("_response".to_string(), crate::interpreter::http_marker());
-            add_header_pairs(&mut entries, args.get(2..).unwrap_or(&[]));
+            // a header name with no value was dropped silently
+            let headers = args.get(2..).unwrap_or(&[]);
+            if headers.len() % 2 != 0 {
+                return Some(Err(RuntimeError::Domain { kind: "response".to_string(), message: format!(
+                    "response(status, body, name, value, …): header \"{}\" has no value", headers[headers.len() - 1]) }));
+            }
+            add_header_pairs(&mut entries, headers);
             Some(Ok(Value::Map(entries)))
         }
         "redirect" => {
@@ -213,7 +224,7 @@ pub fn call_builtin(name: &str, args: &[Value]) -> Option<Result<Value, RuntimeE
         // CSV as a String (an HTTP download): no temp file
         "to_csv" => {
             match args.first() {
-                Some(Value::List(items)) if args.len() == 1 => Some(Ok(Value::String(csv_text(items)))),
+                Some(Value::List(items)) if args.len() == 1 => Some(csv_rows_ok("to_csv", items).map(|_| Value::String(csv_text(items)))),
                 _ => Some(Err(RuntimeError::TypeError("to_csv(rows: List<Map>) -> String".to_string()))),
             }
         }
@@ -221,6 +232,7 @@ pub fn call_builtin(name: &str, args: &[Value]) -> Option<Result<Value, RuntimeE
             // write_csv(path, list_of_maps)
             if args.len() >= 2 {
                 if let (Value::String(path), Value::List(items)) = (&args[0], &args[1]) {
+                    if let Err(e) = csv_rows_ok("write_csv", items) { return Some(Err(e)); }
                     let output = csv_text(items);
                     match write_creating_dirs(path, &output) {
                         Ok(_) => Some(Ok(Value::Bool(true))),
@@ -317,15 +329,15 @@ fn call_bulk_io(name: &str, args: &[Value]) -> Option<Result<Value, RuntimeError
                     // Aggregate word counts across all strings in the list
                     let mut counts: IndexMap<String, i64> = IndexMap::new();
                     for item in items {
+                        // a String, or a {content} map / record (a record doc,
+                        // a number, a non-String content was skipped: `{}`)
                         let text = match item {
                             Value::String(s) => s.clone(),
-                            Value::Map(entries) => {
-                                // If it's a {content: "..."} map, extract content
-                                entries.get("content")
-                                    .and_then(|v| if let Value::String(s) = v { Some(s.clone()) } else { None })
-                                    .unwrap_or_default()
-                            }
-                            _ => continue,
+                            other => match super::pipeline::row_fields(other).and_then(|m| m.get("content")) {
+                                Some(Value::String(s)) => s.clone(),
+                                _ => return Some(Err(RuntimeError::Domain { kind: "type".to_string(), message: format!(
+                                    "word_count(docs): each doc is a String or has a String `content`, got {} {}", crate::interpreter::value_type_name(other), other) })),
+                            },
                         };
                         for word in text.split_whitespace() {
                             let w = word.to_lowercase();
@@ -399,6 +411,12 @@ fn call_bulk_io(name: &str, args: &[Value]) -> Option<Result<Value, RuntimeError
         "par_word_count" => {
             // Parallel word count: split list across threads, merge counts
             if let Some(Value::List(items)) = args.first() {
+                // the same docs word_count takes (others were counted as "")
+                if let Some(bad) = items.iter().find(|it| !matches!(it, Value::String(_))
+                    && !matches!(super::pipeline::row_fields(it).and_then(|m| m.get("content")), Some(Value::String(_)))) {
+                    return Some(Err(RuntimeError::Domain { kind: "type".to_string(), message: format!(
+                        "par_word_count(docs): each doc is a String or has a String `content`, got {} {}", crate::interpreter::value_type_name(bad), bad) }));
+                }
                 let n_threads = std::thread::available_parallelism()
                     .map(|n| n.get()).unwrap_or(1);
                 // an empty list made a chunk size of 0, which panics
@@ -411,12 +429,10 @@ fn call_bulk_io(name: &str, args: &[Value]) -> Option<Result<Value, RuntimeError
                             for item in chunk_items {
                                 let text = match item {
                                     Value::String(s) => s.as_str(),
-                                    Value::Map(entries) => {
-                                        entries.get("content")
-                                            .and_then(|v| if let Value::String(s) = v { Some(s.as_str()) } else { None })
-                                            .unwrap_or("")
-                                    }
-                                    _ => "",
+                                    other => match super::pipeline::row_fields(other).and_then(|m| m.get("content")) {
+                                        Some(Value::String(s)) => s.as_str(),
+                                        _ => "",
+                                    },
                                 };
                                 for word in text.split_whitespace() {
                                     *local.entry(word.to_lowercase()).or_insert(0) += 1;
@@ -587,6 +603,16 @@ fn csv_rows(content: &str, (raw, delim): (bool, char), source: &str) -> Result<V
     Ok(Value::List(rows))
 }
 
+/// Every row a Map or a record: another row (a field-less variant, a
+/// number) was skipped, so `to_csv([Dot, Circle{r: 1}])` was "".
+fn csv_rows_ok(name: &str, items: &[Value]) -> Result<(), RuntimeError> {
+    match items.iter().position(|it| super::pipeline::row_fields(it).is_none()) {
+        Some(i) => Err(RuntimeError::Domain { kind: "type".to_string(), message: format!(
+            "{}: row {} is {} {} — every row is a Map or a record with fields", name, i, crate::interpreter::value_type_name(&items[i]), items[i]) }),
+        None => Ok(()),
+    }
+}
+
 /// The CSV text write_csv writes (header from the first row, quoting that
 /// read_csv reads back exactly).
 fn csv_text(items: &[Value]) -> String {
@@ -687,8 +713,20 @@ fn parse_csv(text: &str, delim: char) -> Result<Vec<Vec<(String, bool)>>, usize>
 
 /// `{key}` placeholders filled from (key, value) pairs in ONE left-to-right
 /// pass: a substituted value is never rescanned.
-fn substitute_once(template: &str, pairs: &[Value]) -> String {
+fn substitute_once(name: &str, template: &str, pairs: &[Value]) -> Result<String, RuntimeError> {
     let mut vars: HashMap<String, String> = HashMap::new();
+    // one Map / record of values, or key, value pairs — a key with no value
+    // (`render(t, "name")`, `render(t, m)` read as a key) was dropped silently
+    if let [one] = pairs {
+        let Some(fields) = super::pipeline::row_fields(one) else {
+            return Err(RuntimeError::Domain { kind: "type".to_string(), message: format!(
+                "{}(template, …): key \"{}\" has no value — pass key, value pairs or one Map", name, one) });
+        };
+        for (k, v) in fields { vars.insert(k.clone(), format!("{}", v)); }
+    } else if pairs.len() % 2 != 0 {
+        return Err(RuntimeError::Domain { kind: "type".to_string(), message: format!(
+            "{}(template, …): key \"{}\" has no value — pass key, value pairs or one Map", name, pairs[pairs.len() - 1]) });
+    }
     let mut i = 0;
     while i + 1 < pairs.len() {
         vars.insert(format!("{}", pairs[i]), format!("{}", pairs[i + 1]));
@@ -713,7 +751,7 @@ fn substitute_once(template: &str, pairs: &[Value]) -> String {
             pos += 1;
         }
     }
-    result
+    Ok(result)
 }
 
 /// File paths built from client input: a `..` segment walked out of the
