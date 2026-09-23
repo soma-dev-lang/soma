@@ -2,6 +2,20 @@
 
 ## Unreleased
 
+### serve tenth pass: a reset client ended the server, HTTP/2 lines hung, pipelined refusals stalled the accept loop, bodiless statuses, request targets and Host, loopback by address, WebSocket JSON and logs, query-borne inf, static files
+
+- **A client could stop `soma serve`**: a request followed at once by a TCP reset left the accepted connection without a peer address; the vendored tiny_http unwrapped it and the panic ended the process (exit 70). The request now has no address instead.
+- **A refusal pipelined behind a long answer stalled every client**: refusals made in the accept loop (403 Host / Origin, framing 400s) waited for the earlier answers on their connection — behind an SSE stream or a large response the client did not read, the accept loop (and so the whole server) stopped. They are written on a thread of their own.
+- `GET / HTTP/2.0` (or 3.0) was never answered: the 505 waited behind the request's own writer forever. It is answered 505 and the connection closes; `HTTP/0.9` is 505 too (it was served as keep-alive 1.x).
+- RFC 9110 §8.6: a 204 and the interim `100 Continue` carried `Content-Length`, a 304 `Content-Length: 0`, the OPTIONS 204 `Content-Type: text/plain`; none now. A 205 has no content. An HTTP/1.0 `Expect: 100-continue` is ignored (the 1.0 client read the 100 as its response).
+- A request target that is not `/…` (`GET hello/x`) was routed to `hello`; an HTTP/1.1 request without Host was served; `Transfer-Encoding` in an HTTP/1.0 request was decoded. All three are 400 and the connection closes.
+- A HEAD on an SSE route was sent the endless stream; it gets the headers only.
+- The refusals the HTTP layer makes itself (400 on a bad request line, 431, 505, 417) carry `Access-Control-Allow-Origin: *` like every other answer (a 431 for a browser's oversized cookies was unreadable to a page on another origin).
+- `--host [::1]` (or any loopback address but the three spellings `127.0.0.1`, `localhost`, `::1`) turned off the Host / Origin checks of a loopback server and the WebSocket Origin rule; loopback is now decided by address. An IPv6 host is bracketed in the banner (`http://[::1]:8080`) and the in-use probe.
+- `on ws` replies: a Map / List is sent as JSON (its display text sent `NaN`); the error log line escapes the frame's text (`fail("bad", message)` with a newline forged log lines), as do the bus failure line and `--verbose` bodies.
+- A Map argument from the query or a path segment refuses a number beyond Float range, as the body does (`?data={"a":1e400}` handed the handler an inf).
+- Static files: an unreadable file answered 200 with an empty body (a cache kept it) — 404 now; an upper-case extension (`logo.PNG`, `IMG_1.JPG`) gets its content type.
+
 ### Ninth pass: merge and _status, typed Float/Bool/Int keys, from_json Float fields, rows only in pipelines, wide CSV records
 
 merge() checks a response's `_status` as with() does (a 999 answered 500 after the writes committed; a String was ignored). A Map<Float, V> / Map<Bool, V> slot refuses keys of another type and gives its keys back typed; a Map<Int|Float|Bool, V> parameter checks its keys (it took {"007": …}). from_json of a `_type` object gives a declared Float field a Float. The pipeline builtins with a field (sum_by, avg_by, min_by, max_by, count_by, filter_by, pluck, group_by, agg, select, distinct_by, distinct(rows, f)) refuse an item that is not a row, as sort_by does (a number was its own field value in distinct, dropped from avg_by). from_csv refuses a record wider than its header (the extra cells were dropped). pad_left/pad_right refuse a fill that is not a String. The start-up audit of old Float-written keys skips String-keyed slots (a version key "2.0" is real). from_json names the nesting limit instead of "not valid JSON". The corpus programs that plucked the values distinct(rows, f) already returns are fixed.

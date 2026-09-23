@@ -29,3 +29,12 @@ frame it as always. A response given while a chunked body is not read to its
 last chunk closes the connection (its unread chunks would be the next request).
 src/util/chunked.rs — whitespace before `;` in a chunk-size line is accepted
 (BWS), and leading zeros do not count toward the 15-hex-digit cap.
+src/client.rs — a connection whose peer address is gone (a reset before it was
+accepted) gives its request no address: the unwrap panicked and ended soma serve.
+A request line with a version other than HTTP/1.0 / 1.1 is answered 505 before
+its headers and the connection closes (the 505 was written behind the request's
+own sequential writer and never went out).
+src/client.rs — its own refusals (400, 408, 417, 431, 505) carry Access-Control-Allow-Origin: *.
+src/response.rs — a 1xx, 204 or 304 response carries no Content-Length /
+Transfer-Encoding (RFC 9110 §8.6).
+src/request.rs — `Expect: 100-continue` in an HTTP/1.0 request is ignored.

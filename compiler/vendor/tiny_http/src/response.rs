@@ -397,8 +397,14 @@ where
                 _ => false,
             };
 
+        // soma patch: a 1xx, 204 or 304 carries no framing header — RFC 9110
+        // §8.6 / RFC 9112 §6.1: no Content-Length / Transfer-Encoding in a 1xx
+        // or 204, and a 304's would describe the 200 it stands for (it said
+        // `Content-Length: 0`)
+        let framing = !matches!(self.status_code.0, 100..=199 | 204 | 304);
+
         // preparing headers for transfer
-        match transfer_encoding {
+        match transfer_encoding.filter(|_| framing) {
             Some(TransferEncoding::Chunked) => self
                 .headers
                 .push(Header::from_bytes(&b"Transfer-Encoding"[..], &b"chunked"[..]).unwrap()),

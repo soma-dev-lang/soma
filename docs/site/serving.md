@@ -22,7 +22,10 @@ soma run   app.cell request GET /stats ""     # call the router with no server
    line or a header, or junk after the HTTP version is a 400; a line past
    16 KiB, a header section past 64 KiB or more than 200 headers is a 431 —
    the connection closed each time. Any answer given before the body was
-   read (a 403 Host / Origin refusal) closes the connection too.
+   read (a 403 Host / Origin refusal) closes the connection too. A request
+   target that is not `/…` (or `*` for OPTIONS), an HTTP/1.1 request without
+   Host and Transfer-Encoding in an HTTP/1.0 request are 400; a version other
+   than HTTP/1.0 / 1.1 is 505 — the connection closed each time.
    `Connection: Upgrade` changes nothing on the HTTP port (WebSockets have
    their own port).
 2. A path that the cell's `request(method, path, body)` handler **matches
@@ -165,7 +168,8 @@ raises kind `type`): validate which variant you got before trusting it.
   have no per-client routing: EVERY one receives every `publish`, so do not
   publish one user's or tenant's data where others hold a WebSocket — give
   each an SSE stream of its own.
-- SSE: a `request` route returns `sse("stream1", "ev")`; the client receives
+- SSE: a `request` route returns `sse("stream1", "ev")` (a HEAD gets the
+  headers only); the client receives
   only the named streams (`sse()` with no name: every `publish` stream) — so per-tenant
   streams (`sse("t_" + tenant)`) behind your own auth check in `request` keep
   tenants apart. The first event is `connected`. There is no replay — after
@@ -338,7 +342,8 @@ and firewall the bus port.
 
 ## Security notes for handlers
 
-- **Loopback servers** (the default bind) refuse a request whose `Host` names
+- **Loopback servers** (the default bind, or any loopback `--host`:
+  `localhost`, `127.0.0.x`, `::1` / `[::1]`) refuse a request whose `Host` names
   another site (DNS rebinding) and a state-changing request whose `Origin`
   is another site (a cross-site form POST) — 403. With `--host` the server is
   public: authenticate every writing route.

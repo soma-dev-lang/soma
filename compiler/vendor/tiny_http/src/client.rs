@@ -58,6 +58,8 @@ enum ReadError {
     TooLarge,
     /// the client sent an unrecognized `Expect` header
     ExpectationFailed(HTTPVersion),
+    /// soma patch: a version other than HTTP/1.0 or HTTP/1.1 (505, closed)
+    VersionNotSupported,
     ReadIoError(IoError),
 }
 
@@ -154,6 +156,14 @@ impl ClientConnection {
 
                 parse_request_line(line.as_str())?
             };
+            // soma patch: HTTP/0.9, 2.0, 3.0 — refused before the headers.
+            // The 505 was written while the request (and its writer) was
+            // still alive: the connection's writers are sequential, so the
+            // 505 waited for that request forever — no answer, a thread and
+            // a socket held (and HTTP/0.9 was served as a keep-alive 1.x)
+            if version != HTTPVersion(1, 0) && version != HTTPVersion(1, 1) {
+                return Err(ReadError::VersionNotSupported);
+            }
 
             // getting all headers
             let mut headers = {
@@ -219,7 +229,10 @@ impl ClientConnection {
             path,
             version.clone(),
             headers,
-            *self.remote_addr.as_ref().unwrap(),
+            // soma patch: a client that reset the connection before it was
+            // accepted has no peer address (ENOTCONN) — its already-buffered
+            // request panicked here, and the panic ended `soma serve`
+            self.remote_addr.as_ref().ok().copied().flatten(),
             data_source,
             writer,
         )
@@ -256,7 +269,7 @@ impl Iterator for ClientConnection {
             let rq = match self.read() {
                 Err(ReadError::WrongRequestLine) => {
                     let writer = self.sink.next().unwrap();
-                    let response = Response::new_empty(StatusCode(400));
+                    let response = Response::new_empty(StatusCode(400)).with_header(acao());
                     response
                         .raw_print(writer, HTTPVersion(1, 1), &[], false, None)
                         .ok();
@@ -266,7 +279,7 @@ impl Iterator for ClientConnection {
 
                 Err(ReadError::TooLarge) => {
                     let writer = self.sink.next().unwrap();
-                    let response = Response::new_empty(StatusCode(431));
+                    let response = Response::new_empty(StatusCode(431)).with_header(acao());
                     response
                         .raw_print(writer, HTTPVersion(1, 1), &[], false, None)
                         .ok();
@@ -275,7 +288,7 @@ impl Iterator for ClientConnection {
 
                 Err(ReadError::WrongHeader(ver)) => {
                     let writer = self.sink.next().unwrap();
-                    let response = Response::new_empty(StatusCode(400));
+                    let response = Response::new_empty(StatusCode(400)).with_header(acao());
                     response.raw_print(writer, ver, &[], false, None).ok();
                     return None; // we don't know where the next request would start,
                                  // se we have to close
@@ -284,7 +297,7 @@ impl Iterator for ClientConnection {
                 Err(ReadError::ReadIoError(ref err)) if err.kind() == ErrorKind::TimedOut => {
                     // request timeout
                     let writer = self.sink.next().unwrap();
-                    let response = Response::new_empty(StatusCode(408));
+                    let response = Response::new_empty(StatusCode(408)).with_header(acao());
                     response
                         .raw_print(writer, HTTPVersion(1, 1), &[], false, None)
                         .ok();
@@ -293,9 +306,21 @@ impl Iterator for ClientConnection {
 
                 Err(ReadError::ExpectationFailed(ver)) => {
                     let writer = self.sink.next().unwrap();
-                    let response = Response::new_empty(StatusCode(417));
+                    let response = Response::new_empty(StatusCode(417)).with_header(acao());
                     response.raw_print(writer, ver, &[], true, None).ok();
                     return None; // TODO: should be recoverable, but needs handling in case of body
+                }
+
+                Err(ReadError::VersionNotSupported) => {
+                    let writer = self.sink.next().unwrap();
+                    let response = Response::from_string(
+                        "This server only supports HTTP versions 1.0 and 1.1".to_owned(),
+                    )
+                    .with_status_code(StatusCode(505)).with_header(acao());
+                    response
+                        .raw_print(writer, HTTPVersion(1, 1), &[], false, None)
+                        .ok();
+                    return None; // closing the connection
                 }
 
                 Err(ReadError::ReadIoError(_)) => return None,
@@ -310,19 +335,6 @@ impl Iterator for ClientConnection {
                     rq
                 }
             };
-
-            // checking HTTP version
-            if *rq.http_version() > (1, 1) {
-                let writer = self.sink.next().unwrap();
-                let response = Response::from_string(
-                    "This server only supports HTTP versions 1.0 and 1.1".to_owned(),
-                )
-                .with_status_code(StatusCode(505));
-                response
-                    .raw_print(writer, HTTPVersion(1, 1), &[], false, None)
-                    .ok();
-                continue;
-            }
 
             // updating the status of the connection
             let connection_header = rq
@@ -349,6 +361,14 @@ impl Iterator for ClientConnection {
             return Some(rq);
         }
     }
+}
+
+/// soma patch: every answer soma serve gives carries
+/// `Access-Control-Allow-Origin: *` (the documented rule) — the refusals made
+/// here too (a 431 for a browser's oversized cookies was unreadable to a
+/// page on another origin)
+fn acao() -> crate::Header {
+    crate::Header::from_bytes(&b"Access-Control-Allow-Origin"[..], &b"*"[..]).unwrap()
 }
 
 /// Parses a "HTTP/1.1" string.

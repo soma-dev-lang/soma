@@ -398,7 +398,10 @@ pub fn cmd_serve(path: &PathBuf, port: u16, host: &str, verbose: bool, join: Opt
     // Loopback by default: a fresh service is not on the network until
     // asked (--host 0.0.0.0). SO_REUSEADDR lets a wildcard bind succeed
     // beside a process that owns 127.0.0.1:port, so probe first.
-    let addr = format!("{}:{}", host, port);
+    // an IPv6 address in brackets (`--host ::1`): `::1:8080` is no socket
+    // address (the in-use probe was skipped) and no URL (the banner's)
+    let url_host = if host.contains(':') && !host.starts_with('[') { format!("[{}]", host) } else { host.to_string() };
+    let addr = format!("{}:{}", url_host, port);
     let probe = if host == "0.0.0.0" { format!("127.0.0.1:{}", port) } else { addr.clone() };
     if let Ok(sa) = probe.parse::<std::net::SocketAddr>() {
         if std::net::TcpStream::connect_timeout(&sa, std::time::Duration::from_millis(200)).is_ok() {
@@ -454,9 +457,9 @@ pub fn cmd_serve(path: &PathBuf, port: u16, host: &str, verbose: bool, join: Opt
     }
     let db = crate::runtime::storage::data_dir().join("soma.db");
     eprintln!("database: {}", db.canonicalize().unwrap_or(db).display());
-    let shown_host = if host == "0.0.0.0" { "0.0.0.0 (all interfaces)".to_string() } else { host.to_string() };
+    let shown_host = if host == "0.0.0.0" { "0.0.0.0 (all interfaces)".to_string() } else { url_host.clone() };
     eprintln!("listening on http://{}:{}", shown_host, port);
-    eprintln!("dashboard: http://{}:{}/__soma/", if host == "0.0.0.0" { "localhost" } else { host }, port);
+    eprintln!("dashboard: http://{}:{}/__soma/", if host == "0.0.0.0" { "localhost" } else { url_host.as_str() }, port);
     if let Some(line) = llm_status_line(&program) { eprintln!("llm: {}", line); }
     eprintln!("---");
 
@@ -737,7 +740,7 @@ pub fn cmd_serve(path: &PathBuf, port: u16, host: &str, verbose: bool, join: Opt
                                 if targets.is_empty() { targets.push(cname2.to_string()); }
                                 for target in targets {
                                     if let Err(e) = interp.call_signal(&target, event_name, vec![data.clone()]) {
-                                        eprintln!("bus: event '{}' failed in {} (rolled back): {}", event_name, target, e);
+                                        eprintln!("bus: event '{}' failed in {} (rolled back): {}", log_safe(event_name), target, log_safe(&e.to_string()));
                                     }
                                 }
                             }
@@ -902,9 +905,9 @@ pub fn cmd_serve(path: &PathBuf, port: u16, host: &str, verbose: bool, join: Opt
         let cname = cell_name.clone();
         let bus = event_bus.clone();
 
-        eprintln!("websocket: ws://{}:{}", if host == "0.0.0.0" { "localhost" } else { host }, ws_port);
+        eprintln!("websocket: ws://{}:{}", if host == "0.0.0.0" { "localhost" } else { url_host.as_str() }, ws_port);
         let ws_host = host.to_string();
-        let loopback_bind = matches!(host, "127.0.0.1" | "localhost" | "::1");
+        let loopback_bind = loopback_host(host);
 
         let natives = natives.clone();
         // `emit` from `on ws` reaches [peers] and sharded writes replicate, as
@@ -1090,7 +1093,13 @@ pub fn cmd_serve(path: &PathBuf, port: u16, host: &str, verbose: bool, join: Opt
                                                 interpreter::Value::Map(m) if m.contains_key("_status") && m.contains_key("_body") => m.get("_body").cloned().unwrap_or(interpreter::Value::Unit),
                                                 _ => val,
                                             };
-                                            let response = format!("{}", val);
+                                            // a Map / List as JSON, as over HTTP: its
+                                            // display text is not (NaN, inf, a record)
+                                            let response = match &val {
+                                                interpreter::Value::Map(_) | interpreter::Value::List(_) | interpreter::Value::Variant { .. } =>
+                                                    interpreter::builtins::string::to_json_string(&val),
+                                                _ => format!("{}", val),
+                                            };
                                             if let Ok(mut ws_w) = ws_write.lock() {
                                                 let _ = ws_w.send(tungstenite::Message::Text(response));
                                                 let _ = ws_w.flush();
@@ -1099,7 +1108,9 @@ pub fn cmd_serve(path: &PathBuf, port: u16, host: &str, verbose: bool, join: Opt
                                     }
                                     Err(e) => {
                                         // the same shape as an HTTP error: {"error", "kind"}
-                                        eprintln!("ws: message → error ({}) {}", e.kind(), e);
+                                        // escaped like the HTTP log: a frame's text in the error (`fail("bad",
+                                        // message)`) forged log lines with a newline
+                                        eprintln!("ws: message → error ({}) {}", log_safe(&e.kind()), log_safe(&e.to_string()));
                                         let err_msg = error_body(&client_error_text(&e), &e.kind());
                                         if let Ok(mut ws_w) = ws_write.lock() {
                                             let _ = ws_w.send(tungstenite::Message::Text(err_msg));
@@ -1345,8 +1356,35 @@ pub fn cmd_serve(path: &PathBuf, port: u16, host: &str, verbose: bool, join: Opt
     if has_ws_handler { own.push(port.wrapping_add(1)); }
     if bus_port > 0 && bus_wanted { own.push(port.wrapping_add(2)); }
     let _ = crate::interpreter::builtins::http::OWN_PORTS.set(own);
-    let http_loopback = matches!(host, "127.0.0.1" | "localhost" | "::1");
+    let http_loopback = loopback_host(host);
     for mut request in server.incoming_requests() {
+        {
+            let hdr_count = |n: &str| request.headers().iter().filter(|h| h.field.as_str().as_str().eq_ignore_ascii_case(n)).count();
+            let v11 = *request.http_version() == tiny_http::HTTPVersion(1, 1);
+            // RFC 9112 §3.2: an HTTP/1.1 request without a Host header is a 400
+            // (it was served — and a loopback server's Host check passed it)
+            let why = if v11 && hdr_count("host") == 0 {
+                Some("an HTTP/1.1 request carries a Host header")
+            // RFC 9112 §3.2.1: a target is `/path` (or `*` for OPTIONS); `GET
+            // hello/x` was routed to the handler `hello` although no router
+            // names that path
+            } else if !(request.url().starts_with('/') || (request.url() == "*" && *request.method() == tiny_http::Method::Options)) {
+                Some("the request target must be an absolute path (`/…`)")
+            // RFC 9112 §6.1: Transfer-Encoding in an HTTP/1.0 request is faulty
+            // framing (a 1.0 intermediary does not decode chunks: smuggling)
+            } else if !v11 && hdr_count("transfer-encoding") > 0 {
+                Some("an HTTP/1.0 request may not carry Transfer-Encoding")
+            } else {
+                None
+            };
+            if let Some(why) = why {
+                if let Some(addr) = request.remote_addr().copied() {
+                    poisoned_connections().lock().unwrap_or_else(|e| e.into_inner()).insert(addr, std::time::Instant::now());
+                }
+                refuse_early(request, 400, why, "bad_request", true);
+                continue;
+            }
+        }
         if http_loopback {
             let header = |n: &str| request.headers().iter().find(|h| h.field.as_str().as_str().eq_ignore_ascii_case(n)).map(|h| h.value.as_str().to_string());
             // the WHOLE authority: `localhost:9540.evil.com` and
@@ -1658,8 +1696,8 @@ pub fn cmd_serve(path: &PathBuf, port: u16, host: &str, verbose: bool, join: Opt
                 if token && !allow.iter().any(|a| a.eq_ignore_ascii_case(name)) && allow.len() < 32 { allow.push(name.to_string()); }
             }
             let allow_headers = allow.join(", ");
-            let resp = tiny_http::Response::from_string("")
-                .with_status_code(204)
+            // no content, so no Content-Type (it said text/plain)
+            let resp = tiny_http::Response::new(tiny_http::StatusCode(204), vec![], std::io::Cursor::new(Vec::new()), Some(0), None)
                 .with_header(tiny_http::Header::from_bytes(&b"Access-Control-Allow-Origin"[..], &b"*"[..]).unwrap())
                 .with_header(tiny_http::Header::from_bytes(&b"Access-Control-Allow-Methods"[..], &b"GET, POST, PUT, PATCH, DELETE, OPTIONS"[..]).unwrap())
                 .with_header(tiny_http::Header::from_bytes(&b"Access-Control-Allow-Headers"[..], allow_headers.as_bytes()).unwrap())
@@ -1721,8 +1759,21 @@ pub fn cmd_serve(path: &PathBuf, port: u16, host: &str, verbose: bool, join: Opt
                 })
             };
             if canonical.starts_with(&base_canonical) && canonical.is_file() && exact_case {
-                let content = std::fs::read(&canonical).unwrap_or_default();
-                let mime = match file_path.extension().and_then(|e| e.to_str()) {
+                // a file that cannot be read (its mode, a race with a
+                // delete) answered 200 with an EMPTY body — which a cache
+                // then kept; a 404 like any file it cannot serve
+                let content = match std::fs::read(&canonical) {
+                    Ok(c) => c,
+                    Err(e) => {
+                        eprintln!("{} {} → 404 0ms static file unreadable: {}", method, log_safe(&url), e);
+                        let _ = request.respond(cors(tiny_http::Response::from_string("not found").with_status_code(404)));
+                        return;
+                    }
+                };
+                // the extension in any case: a camera's `IMG_1.JPG` or a
+                // `logo.PNG` went out as application/octet-stream
+                let ext = file_path.extension().and_then(|e| e.to_str()).map(|e| e.to_ascii_lowercase());
+                let mime = match ext.as_deref() {
                     Some("css") => "text/css",
                     Some("js") => "application/javascript",
                     Some("html") => "text/html; charset=utf-8",
@@ -2044,6 +2095,17 @@ pub fn cmd_serve(path: &PathBuf, port: u16, host: &str, verbose: bool, join: Opt
                     false
                 };
 
+                if is_sse && method.eq_ignore_ascii_case("HEAD") {
+                    // a HEAD gets the stream's headers only: it was sent the
+                    // endless stream itself (a HEAD response has no content)
+                    eprintln!("{} {} → 200 SSE headers only", method, log_safe(&url));
+                    let resp = tiny_http::Response::new(tiny_http::StatusCode(200), vec![
+                        tiny_http::Header::from_bytes(&b"Content-Type"[..], &b"text/event-stream"[..]).unwrap(),
+                        tiny_http::Header::from_bytes(&b"Cache-Control"[..], &b"no-cache"[..]).unwrap(),
+                    ], std::io::empty(), None, None);
+                    let _ = request.respond(cors(resp));
+                    return;
+                }
                 if is_sse {
                     eprintln!("{} {} → SSE stream", method, log_safe(&url));
                     // only the streams this client subscribed to (every client
@@ -2194,8 +2256,9 @@ pub fn cmd_serve(path: &PathBuf, port: u16, host: &str, verbose: bool, join: Opt
 
                 let verbose_body = if verbose { Some(body_str.clone()) } else { None };
                 // 204 / 304 carry no body (HTTP): `response(204, x)` sent one
-                let body_str = if status_code == 204 || status_code == 304 { String::new() } else { body_str };
-                let bodyless = status_code == 204 || status_code == 304;
+                // …nor a 205 (RFC 9110 §15.3.6: it must not generate content)
+                let bodyless = status_code == 204 || status_code == 205 || status_code == 304;
+                let body_str = if bodyless { String::new() } else { body_str };
                 // no body, no Content-Type (a 304 said application/json)
                 let mut resp = if bodyless {
                     tiny_http::Response::new(tiny_http::StatusCode(status_code), vec![], std::io::Cursor::new(Vec::new()), Some(0), None)
@@ -2229,7 +2292,7 @@ pub fn cmd_serve(path: &PathBuf, port: u16, host: &str, verbose: bool, join: Opt
                 let elapsed = start_time.elapsed();
                 eprintln!("{} {} → {} {}ms", method, log_safe(&url), status_code, elapsed.as_millis());
                 if let Some(ref vb) = verbose_body {
-                    eprintln!("  response body: {}", vb);
+                    eprintln!("  response body: {}", log_safe(vb));
                 }
                 let _ = request.respond(cors(resp));
             }
@@ -2319,7 +2382,18 @@ fn refuse_early(request: tiny_http::Request, status: u16, message: &str, kind: &
         .with_header(tiny_http::Header::from_bytes(&b"Content-Type"[..], &b"application/json"[..]).unwrap());
     eprintln!("{} {} → {} 0ms {}", request.method(), log_safe(request.url()), status, message);
     let resp = cors(resp);
-    let _ = if close { request.respond_and_close(resp) } else { request.respond(resp) };
+    // written on a thread of its own: most refusals are made in the ACCEPT
+    // loop, and a connection's responses go out in order — a refused request
+    // pipelined behind one still answering (an SSE stream, a large response
+    // the client does not read) blocked the accept loop, and every other
+    // client with it, until that answer ended. The request (and its unread
+    // body) lives until the connection is closed, so nothing behind it is
+    // parsed in the meantime.
+    // (no thread to be had: the request is dropped with the closure, and
+    // tiny_http answers it 500)
+    let _ = std::thread::Builder::new().spawn(move || {
+        let _ = if close { request.respond_and_close(resp) } else { request.respond(resp) };
+    });
 }
 
 fn cors<R: std::io::Read>(mut r: tiny_http::Response<R>) -> tiny_http::Response<R> {
@@ -2644,6 +2718,9 @@ pub(crate) fn coerce_to_type(ty: &str, v: interpreter::Value) -> interpreter::Va
             match serde_json::from_str::<serde_json::Value>(s) {
                 // `_type` / `_variant` would forge a record or a variant
                 Ok(j) if reserved_json_key(&j, false).is_some() => v,
+                // 1e400 is refused as it is in a body (`/save?data={"a":1e400}`
+                // handed the handler an inf)
+                Ok(j) if crate::interpreter::builtins::string::json_has_inf(&j) => v,
                 Ok(j) => crate::interpreter::builtins::serde_json_to_value(&j),
                 Err(_) => v,
             }
@@ -2927,6 +3004,16 @@ pub(crate) fn mutating_handlers(cell: &ast::CellDef, foreign: &std::collections:
         if direct.len() == before { break; }
     }
     direct
+}
+
+/// A `--host` that is this machine only: `localhost` or any loopback address
+/// (`--host [::1]`, `::1`, `127.0.0.2`). Only the three spellings
+/// `127.0.0.1`, `localhost`, `::1` were: `--host [::1]` served on loopback
+/// with the Host / Origin checks (DNS rebinding, cross-site writes) off.
+fn loopback_host(host: &str) -> bool {
+    let h = host.trim();
+    let h = h.strip_prefix('[').and_then(|x| x.strip_suffix(']')).unwrap_or(h);
+    h.eq_ignore_ascii_case("localhost") || h.parse::<std::net::IpAddr>().map_or(false, |ip| ip.is_loopback())
 }
 
 /// Control characters (newline, NUL, ESC…) shown escaped in the request log.

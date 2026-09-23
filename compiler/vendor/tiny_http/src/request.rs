@@ -165,7 +165,10 @@ where
     };
 
     // true if the client sent a `Expect: 100-continue` header
-    let expects_continue = {
+    // soma patch: an HTTP/1.0 request's expectation is ignored (RFC 9110
+    // §10.1.1 — a 1.0 client does not understand the interim `100 Continue`,
+    // which it read as the response)
+    let expects_continue = version >= HTTPVersion(1, 1) && {
         match headers
             .iter()
             .find(|h: &&Header| h.field.equiv("Expect"))
