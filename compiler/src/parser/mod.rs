@@ -464,6 +464,13 @@ impl Parser {
         Ok((name, span))
     }
 
+    /// The next token starts a line: `[` or `(` there opens a new
+    /// expression, not an index or a call of the previous line's value
+    /// (`let xs = [1, 2]` then `[i]` read as `[1, 2][i]`).
+    fn at_line_start(&self) -> bool {
+        self.tokens.get(self.pos).map_or(false, |t| t.newline_before)
+    }
+
     fn check(&self, token: &Token) -> bool {
         std::mem::discriminant(self.peek()) == std::mem::discriminant(token)
     }
@@ -2885,7 +2892,7 @@ impl Parser {
                         span,
                     );
                 }
-            } else if self.check(&Token::LBracket) {
+            } else if self.check(&Token::LBracket) && !self.at_line_start() {
                 // Postfix index: expr[index] — list position, map key, or
                 // string char index.
                 self.advance();
@@ -3045,8 +3052,8 @@ impl Parser {
                         ));
                     }
                 }
-                // Check for function call: name(args)
-                if self.check(&Token::LParen) {
+                // Check for function call: name(args) — on the same line
+                if self.check(&Token::LParen) && !self.at_line_start() {
                     self.advance();
                     let args = self.parse_arg_list()?;
                     let end = self.peek_span();

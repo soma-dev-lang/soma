@@ -3869,3 +3869,28 @@ fn a_triple_quoted_string_dedents_around_a_non_breaking_space() {
     assert_eq!(out.trim(), "true", "{out}");
     let _ = std::fs::remove_dir_all(dir);
 }
+
+#[test]
+fn a_line_starting_with_a_bracket_or_paren_is_a_new_expression() {
+    // `let xs = [10, 20, 30]` then `[i]` on the next line parsed as
+    // `[10, 20, 30][i]`, and `let b = a` then `(1 + 2)` as the call a(1 + 2)
+    passes("newline_bracket", r#"
+cell P {
+    on f(i: Int) {
+        let xs = [10, 20, 30]
+        [i]
+    }
+    on g() {
+        let a = 5
+        let b = a
+        (1 + 2)
+    }
+    on h(i: Int) { let xs = [10, 20, 30]  return xs[i] }
+}
+cell test T { rules {
+    assert f(1) == [1]
+    assert g() == 3
+    assert h(1) == 20
+} }
+"#);
+}

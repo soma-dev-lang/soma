@@ -2,6 +2,16 @@
 
 ## Unreleased
 
+### A line starting with `[` or `(` is a new expression
+
+- "Newlines separate statements", but a line starting with `[` indexed the
+  value that ended the line before: `let xs = [10, 20, 30]` then `[i]`
+  parsed as `[10, 20, 30][i]` (the handler answered `()` instead of `[1]`,
+  after a clean check), and `let b = a` then `(1 + 2)` called `a`. An index
+  or a call now needs its `[` or `(` on the same line; a `.method` chain
+  continued on the next line is unchanged. No program of the repository
+  changes its `check` result.
+
 ### A triple-quoted string with a non-breaking space no longer panics
 
 - The dedent of a `"""…"""` string measured indentation with Unicode

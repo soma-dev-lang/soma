@@ -160,6 +160,10 @@ pub enum DurationUnitTok {
 pub struct SpannedToken {
     pub token: Token,
     pub span: Span,
+    /// A line break (or a comment ending one) separates it from the token
+    /// before: `[i]` / `(x)` at the start of a line is not an index or a
+    /// call of the previous line's last value.
+    pub newline_before: bool,
 }
 
 pub struct Lexer<'a> {
@@ -180,15 +184,19 @@ impl<'a> Lexer<'a> {
     pub fn tokenize(&mut self) -> Result<Vec<SpannedToken>, LexError> {
         let mut tokens = Vec::new();
         loop {
+            let before = self.pos;
             self.skip_whitespace_and_comments()?;
+            let newline_before = self.chars[before..self.pos.min(self.chars.len())].contains(&'\n');
             if self.pos >= self.chars.len() {
-                tokens.push(SpannedToken {
+                tokens.push(SpannedToken { newline_before,
                     token: Token::Eof,
                     span: Span::new(self.pos, self.pos),
                 });
                 break;
             }
-            tokens.push(self.next_token()?);
+            let mut t = self.next_token()?;
+            t.newline_before = newline_before;
+            tokens.push(t);
         }
         Ok(tokens)
     }
@@ -569,7 +577,7 @@ impl<'a> Lexer<'a> {
             _ => return Err(LexError::UnexpectedChar { ch, pos: start }),
         };
 
-        Ok(SpannedToken {
+        Ok(SpannedToken { newline_before: false,
             token,
             span: Span::new(start, self.pos),
         })
@@ -601,7 +609,7 @@ impl<'a> Lexer<'a> {
                         Some(v) => Token::IntLit(v),
                         None => Token::BigIntLit(value.to_string()),
                     };
-                    return Ok(SpannedToken { token, span: Span::new(start, self.pos) });
+                    return Ok(SpannedToken { newline_before: false, token, span: Span::new(start, self.pos) });
                 }
             }
         }
@@ -670,7 +678,7 @@ impl<'a> Lexer<'a> {
                 let val: f64 = num_str
                     .parse()
                     .map_err(|_| LexError::InvalidNumber { pos: start })?;
-                return Ok(SpannedToken {
+                return Ok(SpannedToken { newline_before: false,
                     token: Token::PercentLit(val),
                     span: Span::new(start, self.pos),
                 });
@@ -702,7 +710,7 @@ impl<'a> Lexer<'a> {
                     let val: f64 = num_str
                         .parse()
                         .map_err(|_| LexError::InvalidNumber { pos: start })?;
-                    return Ok(SpannedToken {
+                    return Ok(SpannedToken { newline_before: false,
                         token: Token::DurationLit(val, unit),
                         span: Span::new(start, self.pos),
                     });
@@ -721,19 +729,19 @@ impl<'a> Lexer<'a> {
             let val: f64 = num_str
                 .parse()
                 .map_err(|_| LexError::InvalidNumber { pos: start })?;
-            Ok(SpannedToken {
+            Ok(SpannedToken { newline_before: false,
                 token: Token::FloatLit(val),
                 span: Span::new(start, self.pos),
             })
         } else {
             match num_str.parse::<i64>() {
-                Ok(val) => Ok(SpannedToken {
+                Ok(val) => Ok(SpannedToken { newline_before: false,
                     token: Token::IntLit(val),
                     span: Span::new(start, self.pos),
                 }),
                 Err(_) => {
                     // Number overflows i64 — emit as BigInt literal
-                    Ok(SpannedToken {
+                    Ok(SpannedToken { newline_before: false,
                         token: Token::BigIntLit(num_str),
                         span: Span::new(start, self.pos),
                     })
