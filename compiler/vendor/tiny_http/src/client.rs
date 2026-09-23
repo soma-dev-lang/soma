@@ -34,6 +34,9 @@ pub struct ClientConnection {
 
     // true if the connection goes through SSL
     secure: bool,
+
+    // soma patch: shuts the socket down (Request::respond_and_close)
+    closer: Option<std::sync::Arc<dyn Fn() + Send + Sync>>,
 }
 
 /// Error that can happen when reading a request.
@@ -54,6 +57,7 @@ impl ClientConnection {
     ) -> ClientConnection {
         let remote_addr = read_socket.peer_addr();
         let secure = read_socket.secure();
+        let closer = read_socket.closer();
 
         let mut source = SequentialReaderBuilder::new(BufReader::with_capacity(1024, read_socket));
         let first_header = source.next().unwrap();
@@ -65,6 +69,7 @@ impl ClientConnection {
             next_header_source: first_header,
             no_more_requests: false,
             secure,
+            closer,
         }
     }
 
@@ -165,7 +170,7 @@ impl ClientConnection {
         })?;
 
         // return the request
-        Ok(request)
+        Ok(request.with_closer(self.closer.clone()))
     }
 }
 

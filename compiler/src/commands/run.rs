@@ -515,11 +515,20 @@ fn coerce_cli_args(cell: &ast::CellDef, signal_name: &str, args: Vec<interpreter
     // `soma run app.cell request GET "/a?x=1" ""` — split the query off the
     // path as `soma serve` does (the route got "/a?x=1" and an empty query)
     let mut args = args;
+    // `request`'s 4th / 5th parameters, bound by the rule `soma serve` and
+    // `soma check` apply (`ast::request_extra_roles`); a name it refuses is
+    // refused here too
+    let roles: Vec<ast::RequestExtra> = if signal_name == "request" {
+        match ast::request_param_roles(params) {
+            Ok(r) => r,
+            Err(msg) => { eprintln!("error: {}", msg); std::process::exit(1); }
+        }
+    } else { Vec::new() };
+    let role_at = |r: ast::RequestExtra| roles.iter().position(|x| *x == r).map(|i| i + 3);
     if signal_name == "request" {
-        // by POSITION, as `soma serve` binds them: path 2nd, query 4th
-        // (unless it is a lone 4th parameter called `headers`)
+        // path 2nd, the query where the rule puts it
         let pi = if params.len() >= 2 { Some(1) } else { None };
-        let qi = if params.len() >= 4 && !(params.len() == 4 && params[3].name == "headers") { Some(3) } else { None };
+        let qi = role_at(ast::RequestExtra::Query);
         if let Some(pi) = pi {
             if let Some(interpreter::Value::String(full)) = args.get(pi).cloned() {
                 // path segments reach request percent-decoded, as under serve
@@ -545,7 +554,7 @@ fn coerce_cli_args(cell: &ast::CellDef, signal_name: &str, args: Vec<interpreter
     let coerced: Vec<interpreter::Value> = args.into_iter().enumerate().map(|(i, arg)| {
         let Some(param) = params.get(i) else { return arg };
         // `request`'s headers map: lower-case names, as `soma serve` gives them
-        let headers_at = if params.len() >= 5 { Some(4) } else if params.len() == 4 && params[3].name == "headers" { Some(3) } else { None };
+        let headers_at = role_at(ast::RequestExtra::Headers);
         if signal_name == "request" && headers_at == Some(i) {
             if let interpreter::Value::Map(m) = &arg {
                 return interpreter::Value::Map(m.iter().map(|(k, v)| (k.to_ascii_lowercase(), v.clone())).collect());

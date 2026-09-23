@@ -126,16 +126,58 @@ pub fn set_fatal(msg: String) {
     if let Ok(mut m) = FATAL_MSG.lock() { if m.is_none() { *m = Some(msg); } }
 }
 
+/// Set by `soma test`: a load failure under --json is printed in the test
+/// report's schema (`passed` is a COUNT there, not a Bool).
+pub static TEST_MODE: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+/// The file `soma test` is loading (for that report's `file` key).
+pub static TEST_FILE: std::sync::Mutex<String> = std::sync::Mutex::new(String::new());
+
+/// `soma verify --json`: ONE schema for every outcome (proof, vacuous, check
+/// failure, load failure) —
+/// `{"ok": Bool, "passed": Bool (== ok), "verdict": String,
+///   "state_machines": [..], "temporal": [..], "hordes": [..],
+///   "check_errors": [String], "errors": [{"level", "kind", "message"}],
+///   "cells": [String], "note"?: String}`.
+/// A caller fills in what it has; the keys are always there.
+pub fn verify_json(ok: bool, verdict: &str) -> serde_json::Value {
+    serde_json::json!({
+        "ok": ok, "passed": ok, "verdict": verdict,
+        "state_machines": [], "temporal": [], "hordes": [],
+        "check_errors": [], "errors": [], "cells": [],
+    })
+}
+
+/// The one JSON document for a program that does not load, in the schema
+/// of the command that was running (`check`'s by default).
+fn load_failure_json(kind: &str, message: &str, fix: Option<&str>) -> serde_json::Value {
+    let mut err = serde_json::json!({"level": "error", "kind": kind, "message": message});
+    if let Some(f) = fix { err["fix"] = serde_json::json!(f); }
+    if VERIFY_MODE.load(std::sync::atomic::Ordering::Relaxed) {
+        let mut doc = verify_json(false, "VERIFY FAILED — the program does not load");
+        doc["errors"] = serde_json::json!([err]);
+        doc
+    } else if TEST_MODE.load(std::sync::atomic::Ordering::Relaxed) {
+        // `soma test --json`: {file, total, passed, failed, ok, results, error?, …}
+        let file = TEST_FILE.lock().map(|f| f.clone()).unwrap_or_default();
+        serde_json::json!({
+            "file": file, "total": 0, "passed": 0, "failed": 0, "ok": false,
+            "error": message, "errors": [err], "results": [],
+        })
+    } else {
+        serde_json::json!({
+            "errors": [err],
+            "warnings": [], "notes": [], "error_count": 1, "warning_count": 0, "passed": false
+        })
+    }
+}
+
 pub fn fatal_exit() -> ! {
     if VERIFY_MODE.load(std::sync::atomic::Ordering::Relaxed) && !JSON_MODE.load(std::sync::atomic::Ordering::Relaxed) {
         println!("VERIFY FAILED — the program does not load (fix the error above, then verify)");
     }
     if JSON_MODE.load(std::sync::atomic::Ordering::Relaxed) && !JSON_DONE.load(std::sync::atomic::Ordering::Relaxed) {
         let msg = FATAL_MSG.lock().ok().and_then(|m| m.clone()).unwrap_or_else(|| "the program does not load (details on stderr)".to_string());
-        println!("{}", serde_json::json!({
-            "errors": [{"level": "error", "kind": "load", "message": msg}],
-            "warnings": [], "notes": [], "error_count": 1, "warning_count": 0, "passed": false
-        }));
+        println!("{}", load_failure_json("load", &msg, None));
     }
     process::exit(1)
 }
@@ -149,10 +191,7 @@ pub fn read_source(path: &PathBuf) -> String {
         Err(e) => {
             eprintln!("error: cannot read '{}': {}", path.display(), e);
             if JSON_MODE.load(std::sync::atomic::Ordering::Relaxed) {
-                println!("{}", serde_json::json!({
-                    "errors": [{"level": "error", "kind": "io", "message": format!("cannot read '{}': {}", path.display(), e), "fix": "check the path"}],
-                    "warnings": [], "notes": [], "error_count": 1, "warning_count": 0, "passed": false
-                }));
+                println!("{}", load_failure_json("io", &format!("cannot read '{}': {}", path.display(), e), Some("check the path")));
                 JSON_DONE.store(true, std::sync::atomic::Ordering::Relaxed);
             }
             fatal_exit();

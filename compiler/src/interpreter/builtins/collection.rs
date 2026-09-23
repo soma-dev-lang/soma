@@ -91,7 +91,7 @@ fn failure_hash(kind: &str, message: &str) -> u64 {
     h.finish()
 }
 
-fn note_authored_failure(kind: &str, message: &str) {
+pub(crate) fn note_authored_failure(kind: &str, message: &str) {
     let cell = AUTHORED_FAILURES.get_or_init(Default::default);
     let mut g = cell.lock().unwrap_or_else(|e| e.into_inner());
     let h = failure_hash(kind, message);
@@ -117,6 +117,17 @@ pub fn call_builtin(name: &str, args: &[Value]) -> Option<Result<Value, RuntimeE
                 Some(Value::Map(m)) if m.contains_key("error") => {
                     let kind = m.get("kind").map(|v| format!("{}", v)).unwrap_or_else(|| "error".to_string());
                     let message = m.get("error").map(|v| format!("{}", v)).unwrap_or_default();
+                    // `fail(map("error", "no item {x}", "kind", "not_found"))`
+                    // is the program's own text, like `fail(kind, detail)`.
+                    // A try-result (`fail(r)`, keys value/error/kind/detail)
+                    // is NOT marked: it re-raises what was caught, which is
+                    // already marked when the program wrote it and is the
+                    // runtime's own text (quoting values) when it did not.
+                    // An interpolated message may embed stored values: that
+                    // is the author's choice, sent as written.
+                    if !m.contains_key("detail") && !m.contains_key("value") {
+                        note_authored_failure(&kind, &message);
+                    }
                     Some(Err(RuntimeError::Domain { kind, message }))
                 }
                 Some(k) => {

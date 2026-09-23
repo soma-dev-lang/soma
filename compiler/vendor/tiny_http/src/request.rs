@@ -74,6 +74,9 @@ pub struct Request {
 
     // If Some, a message must be sent after responding
     notify_when_responded: Option<Sender<()>>,
+
+    // soma patch: shuts the connection's socket down (both directions)
+    closer: Option<std::sync::Arc<dyn Fn() + Send + Sync>>,
 }
 
 struct NotifyOnDrop<R> {
@@ -238,6 +241,7 @@ where
         body_length: content_length,
         must_send_continue: expects_continue,
         notify_when_responded: None,
+        closer: None,
     })
 }
 
@@ -467,6 +471,29 @@ impl Request {
             ErrorKind::ConnectionReset => Ok(()),
             _ => Err(err),
         })
+    }
+
+    /// soma patch: sends a response, then shuts the connection down — the
+    /// bytes after a refused framing (an oversized or malformed body) are
+    /// never read as a next request, and the client sees the socket close.
+    pub fn respond_and_close<R>(mut self, response: Response<R>) -> Result<(), IoError>
+    where
+        R: Read,
+    {
+        let closer = self.closer.take();
+        let res = self.respond_impl(response);
+        if let Some(close) = closer {
+            close();
+        }
+        if let Some(sender) = self.notify_when_responded.take() {
+            sender.send(()).unwrap();
+        }
+        res
+    }
+
+    pub(crate) fn with_closer(mut self, closer: Option<std::sync::Arc<dyn Fn() + Send + Sync>>) -> Self {
+        self.closer = closer;
+        self
     }
 
     pub(crate) fn with_notify_sender(mut self, sender: Sender<()>) -> Self {

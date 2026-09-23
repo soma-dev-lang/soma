@@ -347,7 +347,7 @@ fn main_inner() {
         Commands::Lint { file, json } => commands::lint::cmd_lint(&file, json),
         Commands::Fix { file, json, native_idiv } => {
             if native_idiv {
-                commands::fix::cmd_fix_native_idiv(&file);
+                commands::fix::cmd_fix_native_idiv(&file, json);
             } else {
                 commands::fix::cmd_fix(&file, json, &mut registry);
             }
@@ -389,12 +389,16 @@ fn main_inner() {
                     // tables there, only THIS program's tables are reset
                     if data.join("soma.db").exists() {
                         let (own, foreign, kept) = cells_in_db(&file, &data.join("soma.db"));
-                        if !foreign.is_empty() {
+                        if !foreign.is_empty() || !kept.is_empty() {
                             if let Ok(conn) = rusqlite::Connection::open(data.join("soma.db")) {
                                 for t in &own { let _ = conn.execute_batch(&format!("DROP TABLE IF EXISTS \"{}\"", t.replace('"', "\"\""))); }
                             }
-                            eprintln!("fresh: reset {} table(s) of this program — {} also holds tables {} (other programs in this directory), kept",
-                                own.len(), data.display(), foreign.join(", "));
+                            if foreign.is_empty() {
+                                eprintln!("fresh: reset {} table(s) of this program", own.len());
+                            } else {
+                                eprintln!("fresh: reset {} table(s) of this program — {} also holds tables {} (other programs in this directory), kept",
+                                    own.len(), data.display(), foreign.join(", "));
+                            }
                             if !kept.is_empty() {
                                 eprintln!("fresh: kept {} too — next_id() counters / remember() memory of a cell another program here also uses",
                                     kept.join(", "));
@@ -524,7 +528,9 @@ fn cmd_verify(files: &[PathBuf], json: bool, strict: bool) {
                     if in_error && !json { println!("  {}", line); }
                 }
                 if json {
-                    println!("{}", serde_json::json!({"ok": false, "verdict": "VERIFY FAILED — soma check failed", "cells": [], "check_errors": errors}));
+                    let mut doc = commands::verify_json(false, "VERIFY FAILED — soma check failed");
+                    doc["check_errors"] = serde_json::json!(errors);
+                    println!("{}", doc);
                 } else {
                     println!("VERIFY FAILED — soma check failed (fix the errors above, then verify)");
                 }
@@ -683,7 +689,7 @@ fn cmd_verify(files: &[PathBuf], json: bool, strict: bool) {
     if all_results.is_empty() && check_failed {
         // still ONE verdict line, the one every caller greps for
         if json {
-            println!("{}", serde_json::json!({"ok": false, "verdict": "VERIFY FAILED — soma check failed", "cells": []}));
+            println!("{}", commands::verify_json(false, "VERIFY FAILED — soma check failed"));
         } else {
             println!("VERIFY FAILED — soma check failed (fix the errors above, then verify)");
         }
@@ -698,7 +704,16 @@ fn cmd_verify(files: &[PathBuf], json: bool, strict: bool) {
                 || !cfg.after.is_empty() || !cfg.before.is_empty()
         }).unwrap_or(false);
         if json {
-            println!("{{\"state_machines\":[], \"temporal\":[], \"passed\": true, \"note\": \"no state machine: nothing beyond soma check was proven\"}}");
+            // --strict: an unbounded horde is no proof, under --json too
+            let unbounded = horde_lines.iter().filter(|(ok, _)| !ok).count();
+            let ok = !(strict && unbounded > 0);
+            let verdict = if ok { "VERIFY OK (vacuous — no state machine)".to_string() } else { format!("VERIFY FAILED — --strict: {} horde cost bound(s) unprovable", unbounded) };
+            let mut doc = commands::verify_json(ok, &verdict);
+            doc["note"] = serde_json::json!("no state machine: nothing beyond soma check was proven");
+            doc["hordes"] = serde_json::json!(horde_lines.iter().map(|(ok, l)| serde_json::json!({"status": if *ok { "pass" } else { "warning" }, "message": format!("cost: {}", l)})).collect::<Vec<_>>());
+            doc["cells"] = serde_json::json!(all_cell_names);
+            println!("{}", doc);
+            if !ok { std::process::exit(1); }
         } else {
             eprintln!("No state machine in this program: nothing to prove beyond `soma check` (invariants and lifecycles are what verify proves).");
             for (ok, line) in &horde_lines { println!("  {} cost: {}", if *ok { "✓" } else { "⚠" }, line); }
@@ -833,12 +848,12 @@ fn cmd_verify(files: &[PathBuf], json: bool, strict: bool) {
             serde_json::json!({"state_machine": name, "properties": props})
         }).collect();
 
-        let mut output = serde_json::json!({
-            "passed": !has_failures,
-            "state_machines": sm_results,
-            "temporal": temporal_results,
-            "hordes": horde_lines.iter().map(|(ok, l)| serde_json::json!({"status": if *ok { "pass" } else { "warning" }, "message": format!("cost: {}", l)})).collect::<Vec<_>>(),
-        });
+        let mut output = commands::verify_json(!has_failures, if has_failures { "VERIFY FAILED" } else { "VERIFY OK" });
+        output["state_machines"] = serde_json::json!(sm_results);
+        output["temporal"] = serde_json::json!(temporal_results);
+        output["hordes"] = serde_json::json!(horde_lines.iter().map(|(ok, l)| serde_json::json!({"status": if *ok { "pass" } else { "warning" }, "message": format!("cost: {}", l)})).collect::<Vec<_>>());
+        output["errors"] = serde_json::json!(unknown_states.iter().map(|u| serde_json::json!({"level": "error", "kind": "verify", "message": u})).collect::<Vec<_>>());
+        output["cells"] = serde_json::json!(all_cell_names);
         if total_cells > 1 {
             output["note"] = serde_json::json!(
                 "verification is per-cell. Cross-cell signal composition is not yet verified."
@@ -1000,12 +1015,30 @@ fn cells_in_db(file: &std::path::Path, db: &std::path::Path) -> (Vec<String>, Ve
     // horde's queue) are SHARED by every program that names the cell so:
     // when another program here has tables of the same cell, they stay
     // (`--fresh a2.cell` restarted `App`'s ids under a.cell's records)
+    // …and when ANOTHER .cell file beside this one declares the same cell
+    // (with no slots of its own there are no tables to tell: `--fresh
+    // a.cell` wiped b.cell's remember() memory and next_id() counters)
+    let sibling_cells: Vec<String> = {
+        let re = regex::Regex::new(r"(?m)^\s*cell\s+(?:[a-z_]+\s+)?([A-Za-z_][A-Za-z0-9_]*)").unwrap();
+        let me = file.canonicalize().unwrap_or_else(|_| file.to_path_buf());
+        let mut out = Vec::new();
+        if let Ok(es) = std::fs::read_dir(if base.as_os_str().is_empty() { std::path::Path::new(".") } else { base }) {
+            for e in es.flatten() {
+                let p = e.path();
+                if p.extension().map_or(true, |x| x != "cell") || p.canonicalize().map_or(false, |c| c == me) { continue; }
+                if let Ok(src) = std::fs::read_to_string(&p) {
+                    for c in re.captures_iter(&src) { out.push(c[1].to_ascii_lowercase()); }
+                }
+            }
+        }
+        out
+    };
     let mut kept: Vec<String> = Vec::new();
     own.retain(|t| {
         let lt = t.to_ascii_lowercase();
         let Some(cell) = ["__counters", "__agent_memory", "__horde-meta", "__horde-tasks"].iter().find_map(|sfx| lt.strip_suffix(sfx)) else { return true };
         let prefix = format!("{}_", cell);
-        if foreign.iter().any(|f| f.to_ascii_lowercase().starts_with(&prefix)) { kept.push(t.clone()); false } else { true }
+        if foreign.iter().any(|f| f.to_ascii_lowercase().starts_with(&prefix)) || sibling_cells.iter().any(|c| c == cell) { kept.push(t.clone()); false } else { true }
     });
     (own, foreign, kept)
 }

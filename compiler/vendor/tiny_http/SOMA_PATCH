@@ -1,3 +1,7 @@
 soma patch of tiny_http 0.12.0 (MIT OR Apache-2.0, licenses kept):
 src/util/equal_reader.rs — Drop drains the unread body in 64 KiB chunks
 instead of one allocation of the declared Content-Length.
+src/client.rs, src/request.rs, src/util/refined_tcp_stream.rs — Request::respond_and_close
+sends the response then shuts the socket down in both directions: a refused
+framing (oversized / malformed body) closes the connection instead of
+reading the bytes after it as a next request.

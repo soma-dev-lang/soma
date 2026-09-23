@@ -2210,9 +2210,14 @@ impl Interpreter {
                     if let Some((tag, detail)) = else_signal.split_once('\u{1f}') {
                         // `else Tag "detail {x}"`: kind Tag, interpolated detail
                         let text = self.interpolate_string(detail, env, cell_name, signal_name)?;
+                        // the program's own words: `soma serve` sends them to
+                        // a client as written (an interpolated value is the
+                        // author's choice to show)
+                        let message = format!("{}: {}", tag, text);
+                        crate::interpreter::builtins::collection::note_authored_failure(tag, &message);
                         return Err(ExecError::Runtime(RuntimeError::Domain {
                             kind: tag.to_string(),
-                            message: format!("{}: {}", tag, text),
+                            message,
                         }));
                     }
                     let is_tag = !else_signal.is_empty()
@@ -2223,9 +2228,12 @@ impl Interpreter {
                         )))
                     } else {
                         let text = self.interpolate_string(else_signal, env, cell_name, signal_name)?;
+                        // authored, as above
+                        let message = format!("require failed: {}", text);
+                        crate::interpreter::builtins::collection::note_authored_failure("require", &message);
                         Err(ExecError::Runtime(RuntimeError::Domain {
                             kind: "require".to_string(),
-                            message: format!("require failed: {}", text),
+                            message,
                         }))
                     }
                 } else {

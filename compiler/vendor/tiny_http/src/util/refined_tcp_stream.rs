@@ -121,6 +121,20 @@ impl RefinedTcpStream {
     pub(crate) fn peer_addr(&mut self) -> IoResult<Option<SocketAddr>> {
         self.stream.peer_addr()
     }
+
+    /// soma patch: a handle that shuts the socket down in both directions
+    /// (plain connections only).
+    pub(crate) fn closer(&self) -> Option<std::sync::Arc<dyn Fn() + Send + Sync>> {
+        match &self.stream {
+            Stream::Http(c) => c.try_clone().ok().map(|c| {
+                std::sync::Arc::new(move || {
+                    let _ = c.shutdown(Shutdown::Both);
+                }) as std::sync::Arc<dyn Fn() + Send + Sync>
+            }),
+            #[cfg(any(feature = "ssl-openssl", feature = "ssl-rustls"))]
+            Stream::Https(_) => None,
+        }
+    }
 }
 
 impl Drop for RefinedTcpStream {

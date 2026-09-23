@@ -9,9 +9,11 @@ soma run   app.cell request GET /stats ""     # call the router with no server
 
 1. `GET /static/<file>` serves `<project>/static/<file>` — confined to that
    directory (`..` and symlinks cannot escape it; dotfiles such as `.env`
-   are never served). A request carrying both Content-Length and
+   are never served; anything outside it is a 404, like a missing file). A
+   request carrying both Content-Length and
    Transfer-Encoding, or a repeated / non-numeric Content-Length, is refused
-   (400); a declared body past 256 MB is refused (413) before it is read.
+   (400); a declared body past 256 MB is refused (413) before it is read —
+   and the connection is closed.
 2. A path that the cell's `request(method, path, body)` handler **matches
    explicitly** — a literal (`"/stats"`) or a prefix pattern (`"/hold/" + id`)
    in one of its `match` arms, or a path it tests (`path == "/reset"`,
@@ -39,10 +41,10 @@ its own; add a handler to Store that returns the value).
 ## Requests and responses
 
 `request` receives `(method, path, body)` — plus `query: Map` and
-`headers: Map` when it declares them, bound BY POSITION (the 4th is the query,
-the 5th the headers, whatever their names; a lone 4th parameter called
-`headers` gets the headers, and `headers` 4th of 5 or `query` 5th is refused at
-start-up): `on request(method:
+`headers: Map` when it declares them, bound BY NAME (a 4th parameter named
+`query` or `q` gets the query, `headers` or `hdrs` the headers; with five,
+the 4th is the query and the 5th the headers, named so; any other name is
+refused by `soma check` and at start-up): `on request(method:
 String, path: String, body: Map, query: Map, headers: Map)`. Header names
 are lower-case (`headers.authorization`); a repeated header is one entry,
 its values joined with ", " (a repeated QUERY key keeps its last value). `OPTIONS`

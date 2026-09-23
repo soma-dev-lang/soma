@@ -923,6 +923,19 @@ impl<'a> Checker<'a> {
             }
             (c.node.name.clone(), hs)
         }).collect();
+        // `request`'s 4th / 5th parameters must say what they receive —
+        // the rule `soma serve` refuses at start-up (`ast::request_extra_roles`)
+        for c in &program.cells {
+            for sec in &c.node.sections {
+                if let Section::OnSignal(on) = &sec.node {
+                    if on.signal_name == "request" {
+                        if let Err(msg) = crate::ast::request_param_roles(&on.params) {
+                            self.errors.push(CheckError::Static { kind: "request_signature", message: msg, span: sec.span });
+                        }
+                    }
+                }
+            }
+        }
         // two cells with `request`: serve routes only the FIRST — say so
         {
             let routers: Vec<&Spanned<CellDef>> = program.cells.iter().filter(|c| matches!(c.node.kind, CellKind::Cell | CellKind::Agent)

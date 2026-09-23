@@ -69,6 +69,7 @@ cell W {
     assert!(css.contains("body{}"), "static file must be served: {css}");
     assert!(css_q.contains("body{}"), "?query must be ignored: {css_q}");
     assert!(!toml.contains("sk-SECRET"), "soma.toml leaked through /static/..: {toml}");
-    assert!(toml.starts_with("HTTP/1.0 403") || toml.starts_with("HTTP/1.1 403"), "got: {toml}");
+    // 404 like a missing file: a 403 told which files exist outside static/
+    assert!(toml.starts_with("HTTP/1.0 404") || toml.starts_with("HTTP/1.1 404"), "got: {toml}");
     assert!(!cell.contains("cell W"), "source leaked through /static/..: {cell}");
 }

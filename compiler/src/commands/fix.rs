@@ -44,6 +44,15 @@ fn run_checker(path: &PathBuf, registry: &mut Registry) -> Vec<CheckError> {
     chk.errors
 }
 
+/// The first lex / parse error of `source`, if any (without exiting).
+fn parse_error(source: &str) -> Option<String> {
+    let mut lex = crate::lexer::Lexer::new(source);
+    match lex.tokenize() {
+        Err(e) => Some(e.to_string()),
+        Ok(tokens) => crate::parser::Parser::new(tokens).parse_program().err().map(|e| e.to_string()),
+    }
+}
+
 /// Parse the program and return the AST (for reading face declarations).
 fn parse_program(path: &PathBuf) -> ast::Program {
     let source = read_source(path);
@@ -124,18 +133,25 @@ fn mask_comments_and_strings(source: &str) -> String {
     String::from_utf8(out).unwrap_or_else(|_| source.to_string())
 }
 
+/// The declaration `cell Name` — or `cell agent Name`, `cell <kind> Name`
+/// (the literal `cell Name` never matched those: a missing handler of an
+/// agent could not be added) — outside comments and strings: the byte
+/// offsets of `cell` and of the end of the name.
+fn find_cell_decl(source: &str, cell_name: &str) -> Option<(usize, usize)> {
+    let masked = mask_comments_and_strings(source);
+    let re = regex::Regex::new(&format!(r"\bcell\s+(?:[a-z_]+\s+)?{}\b", regex::escape(cell_name))).ok()?;
+    re.find(&masked).map(|m| (m.start(), m.end()))
+}
+
 /// Find the byte offset of the last `}` that closes a cell block in the source.
 /// We search for `cell <name>` and then find its matching closing brace.
 fn find_cell_closing_brace(source: &str, cell_name: &str) -> Option<usize> {
-    // Look for `cell <name>` pattern
-    let pattern = format!("cell {}", cell_name);
-    let cell_start = find_word(source, 0, &pattern)?;
+    let (_, after_name) = find_cell_decl(source, cell_name)?;
 
     // Find the opening `{` after the cell name — counting braces outside
     // comments and strings (`// closes early: }` ended the cell there)
     let masked = mask_comments_and_strings(source);
     let source = masked.as_str();
-    let after_name = cell_start + pattern.len();
     let open_brace = source[after_name..].find('{')? + after_name;
 
     // Walk forward counting braces to find the matching close
@@ -183,8 +199,7 @@ fn find_duplicate_signal_line(source: &str, from: usize, signal_name: &str) -> O
 
 /// Compute the indentation used inside a cell (look at existing `on` handlers or sections).
 fn detect_indent(source: &str, cell_name: &str) -> String {
-    let pattern = format!("cell {}", cell_name);
-    if let Some(cell_start) = find_word(source, 0, &pattern) {
+    if let Some((cell_start, _)) = find_cell_decl(source, cell_name) {
         // Look for an `on ` line inside the cell to detect its indent
         for line in source[cell_start..].lines().skip(1) {
             let trimmed = line.trim_start();
@@ -210,7 +225,7 @@ fn char_to_byte(src: &str, c: usize) -> usize {
     src.char_indices().nth(c).map(|(b, _)| b).unwrap_or(src.len())
 }
 
-fn syntax_fixes(source: &mut String) -> Vec<String> {
+fn syntax_fixes(source: &mut String, skipped: &mut Vec<String>) -> Vec<String> {
     let mut done: Vec<String> = Vec::new();
     for _ in 0..40 {
         let mut lex = crate::lexer::Lexer::new(source);
@@ -219,9 +234,12 @@ fn syntax_fixes(source: &mut String) -> Vec<String> {
             Err(e) => {
                 let Some(cpos) = super::lex_error_position(&e) else { break };
                 let pos = char_to_byte(source, cpos);
+                // the character there may be several bytes (`print(“hi”)`
+                // panicked slicing inside `“`): step over it whole
+                let next = pos + source[pos..].chars().next().map_or(0, char::len_utf8);
                 // …unless what follows would continue the expression: `let d =
                 // a; -b` became `let d = a   -b`, which is a - b
-                let continues = source[pos + 1..].trim_start_matches([' ', '\t'])
+                let continues = source[next..].trim_start_matches([' ', '\t'])
                     .starts_with(['-', '+', '*', '/', '%', '(', '[', '.', '|', '&', '=', '<', '>', '?', '!']);
                 if matches!(e, crate::lexer::LexError::UnexpectedChar { .. }) && source[pos..].starts_with(';') && !continues {
                     // `a = 1; b = 2` — two spaces separate statements on one line
@@ -249,19 +267,17 @@ fn syntax_fixes(source: &mut String) -> Vec<String> {
                     continue;
                 }
                 if msg.starts_with("handlers do not declare return types") && source[span.start..].starts_with("->") {
-                    // drop ` -> T` up to the opening brace, which is on the
-                    // SAME line: searching the whole file found the NEXT
-                    // cell's `{` and deleted everything between, cell
-                    // declaration included, while reporting the fix as applied
-                    let line_end = source[span.start..].find('\n').map(|i| span.start + i).unwrap_or(source.len());
-                    // …and stop at an annotation: `-> Int [native] {` lost
-                    // its [native] (and `[task]`) with the type
-                    if let Some(rel) = source[span.start..line_end].find(['[', '{']) {
-                        let mut start = span.start;
-                        while start > 0 && source.as_bytes()[start - 1] == b' ' { start -= 1; }
-                        source.replace_range(start..span.start + rel, " ");
-                        done.push(format!("line {}: removed the return type from the handler (it belongs on the face signal)", line));
-                        continue;
+                    // the return type MOVES to the face signal (it used to be
+                    // dropped: the contract was lost); when that cannot be
+                    // done safely the text is left as it is, reported
+                    match move_return_type_to_face(source, span.start) {
+                        Ok(desc) => {
+                            done.push(format!("line {}: {}", line, desc));
+                            continue;
+                        }
+                        Err(why) => {
+                            skipped.push(format!("line {}: the handler declares a return type, and {} — move `-> T` onto its `signal` inside face {{ }} by hand", line, why));
+                        }
                     }
                 }
                 break;
@@ -271,12 +287,116 @@ fn syntax_fixes(source: &mut String) -> Vec<String> {
     done
 }
 
+/// `on f(x: Int) -> Map<String, Int> {` (a parse error at `->`, byte
+/// `arrow`): the type moves onto the face signal — added to `signal f(x:
+/// Int)` in the cell's face, or a new `signal` line, or a new face — and
+/// the handler line keeps everything else (`[native]`, the brace). Err: why
+/// it was not done (nothing changed).
+fn move_return_type_to_face(source: &mut String, arrow: usize) -> Result<String, String> {
+    let line_start = source[..arrow].rfind('\n').map_or(0, |i| i + 1);
+    let line_end = source[arrow..].find('\n').map_or(source.len(), |i| arrow + i);
+    // the type runs to the annotation or the brace, on the SAME line
+    // (searching further found the NEXT cell's `{`)
+    let rel = source[arrow..line_end].find(['[', '{']).ok_or("its type does not end on the same line")?;
+    let ty = source[arrow + 2..arrow + rel].trim().to_string();
+    if ty.is_empty() { return Err("its type is empty".to_string()); }
+    // `on f(…)` right before the arrow (a one-line `cell P { on run() -> Int { … } }` too)
+    let head_re = regex::Regex::new(r"(?:^|[\s{])on\s+([A-Za-z_][A-Za-z0-9_]*)\s*\(([^()]*)\)\s*$").unwrap();
+    let caps = head_re.captures(&source[line_start..arrow]).ok_or("its parameters do not fit on one line")?;
+    let indent: String = source[line_start..arrow].chars().take_while(|c| *c == ' ' || *c == '\t').collect();
+    let name = caps[1].to_string();
+    let params = caps[2].trim().to_string();
+    if !params.is_empty() && params.split(',').any(|p| !p.contains(':')) {
+        return Err("a parameter has no type (a face signal needs them)".to_string());
+    }
+    let masked = mask_comments_and_strings(source);
+    // the matching `}` of the `{` at `open`
+    let close_of = |open: usize| -> Option<usize> {
+        let mut depth = 0i64;
+        for (i, b) in masked.as_bytes()[open..].iter().enumerate() {
+            match b {
+                b'{' => depth += 1,
+                b'}' => { depth -= 1; if depth == 0 { return Some(open + i); } }
+                _ => {}
+            }
+        }
+        None
+    };
+    // the innermost cell whose braces hold the handler
+    let cell_re = regex::Regex::new(r"\bcell\s+(?:[a-z_]+\s+)?[A-Za-z_][A-Za-z0-9_]*[^{]*\{").unwrap();
+    let (cell_open, cell_close) = cell_re.find_iter(&masked[..arrow]).map(|m| m.end() - 1)
+        .filter_map(|o| close_of(o).map(|c| (o, c)))
+        .filter(|(_, c)| *c > arrow)
+        .last().ok_or("no enclosing cell was found")?;
+    // its OWN face: at depth 1 inside the cell
+    let face_re = regex::Regex::new(r"\bface\s*\{").unwrap();
+    let depth_at = |pos: usize| -> i64 {
+        masked.as_bytes()[cell_open..pos].iter().fold(0i64, |d, b| match b { b'{' => d + 1, b'}' => d - 1, _ => d })
+    };
+    let face = face_re.find_iter(&masked[cell_open..cell_close]).map(|m| (cell_open + m.start(), cell_open + m.end() - 1))
+        .find(|(start, _)| depth_at(*start) == 1);
+    let unit = if indent.contains('\t') { "\t" } else { "    " };
+    // edits as (position, bytes removed, text inserted), applied last first
+    let mut edits: Vec<(usize, usize, String)> = Vec::new();
+    let mut handler_start = arrow;
+    while handler_start > line_start && source.as_bytes()[handler_start - 1] == b' ' { handler_start -= 1; }
+    edits.push((handler_start, arrow + rel - handler_start, " ".to_string()));
+    let desc;
+    match face {
+        Some((_, face_open)) => {
+            let face_close = close_of(face_open).ok_or("its face is not closed")?;
+            let sig_re = regex::Regex::new(&format!(r"\bsignal\s+{}\s*\(", regex::escape(&name))).unwrap();
+            if let Some(m) = sig_re.find(&masked[face_open..face_close]) {
+                let paren = face_open + m.end() - 1;
+                let mut depth = 0i64;
+                let mut close_paren = None;
+                for (i, b) in masked.as_bytes()[paren..face_close].iter().enumerate() {
+                    match b { b'(' => depth += 1, b')' => { depth -= 1; if depth == 0 { close_paren = Some(paren + i); break; } } _ => {} }
+                }
+                let close_paren = close_paren.ok_or("its face signal is not closed")?;
+                let sig_line_end = source[close_paren..].find('\n').map_or(source.len(), |i| close_paren + i);
+                let after = masked[close_paren + 1..sig_line_end].trim_start();
+                if let Some(declared) = after.strip_prefix("->") {
+                    let declared = declared.split('[').next().unwrap_or("").trim();
+                    if declared.split_whitespace().collect::<String>() != ty.split_whitespace().collect::<String>() {
+                        return Err(format!("its face signal already returns `{}`, not `{}`", declared, ty));
+                    }
+                    desc = format!("removed `-> {}` from `on {}` (its face signal already declares it)", ty, name);
+                } else {
+                    edits.push((close_paren + 1, 0, format!(" -> {}", ty)));
+                    desc = format!("moved the return type to the face: `signal {}(…) -> {}` (`on {}` no longer declares it)", name, ty, name);
+                }
+            } else {
+                // a new signal line, just before the face's closing brace
+                let close_line = source[..face_close].rfind('\n').map_or(0, |i| i + 1);
+                let face_indent: String = source[close_line..face_close].chars().take_while(|c| c.is_whitespace()).collect();
+                let at = if source[close_line..face_close].trim().is_empty() { close_line } else { face_close };
+                let lead = if at == face_close { "\n".to_string() } else { String::new() };
+                edits.push((at, 0, format!("{}{}{}signal {}({}) -> {}\n{}", lead, face_indent, unit, name, params, ty, if at == face_close { face_indent.clone() } else { String::new() })));
+                desc = format!("moved the return type to the face: added `signal {}({}) -> {}`", name, params, ty);
+            }
+        }
+        None => {
+            // a new face, first thing in the cell
+            edits.push((cell_open + 1, 0, format!("\n{i}face {{\n{i}{u}signal {n}({p}) -> {t}\n{i}}}", i = indent, u = unit, n = name, p = params, t = ty)));
+            desc = format!("moved the return type to a new face: `signal {}({}) -> {}`", name, params, ty);
+        }
+    }
+    edits.sort_by(|a, b| b.0.cmp(&a.0));
+    for (at, len, text) in edits {
+        source.replace_range(at..at + len, &text);
+    }
+    Ok(desc)
+}
+
 pub fn cmd_fix(path: &PathBuf, json: bool, registry: &mut Registry) {
     let mut fixes: Vec<AppliedFix> = Vec::new();
+    // what a fix-it named but could not apply safely (left unchanged)
+    let mut skipped: Vec<String> = Vec::new();
     // 0. Syntax fix-its first: nothing else runs on a file that does not parse
     {
         let mut src = read_source(path);
-        let done = syntax_fixes(&mut src);
+        let done = syntax_fixes(&mut src, &mut skipped);
         if !done.is_empty() {
             std::fs::write(path, &src).unwrap_or_else(|e| {
                 eprintln!("error: cannot write '{}': {}", path.display(), e);
@@ -286,6 +406,24 @@ pub fn cmd_fix(path: &PathBuf, json: bool, registry: &mut Registry) {
                 for d in &done { println!("  \u{2713} {}", d); }
             }
             fixes.extend(done.into_iter().map(|description| AppliedFix { description }));
+        }
+        if !json {
+            for s in &skipped { println!("  \u{2717} skipped: {} (manual fix required)", s); }
+        }
+        // still no parse: the checker cannot run. --json reports what WAS
+        // written (the fixes were applied, and the report said nothing)
+        if json {
+            if let Some(err) = parse_error(&src) {
+                println!("{}", serde_json::to_string_pretty(&serde_json::json!({
+                    "fixes": fixes.iter().map(|f| serde_json::json!({"description": f.description})).collect::<Vec<_>>(),
+                    "fix_count": fixes.len(),
+                    "passed": false,
+                    "remaining_errors": 1,
+                    "skipped": skipped,
+                    "parse_error": err,
+                })).unwrap());
+                std::process::exit(1);
+            }
         }
     }
     // 1. Run checker to find errors
@@ -297,6 +435,8 @@ pub fn cmd_fix(path: &PathBuf, json: bool, registry: &mut Registry) {
                 "fixes": fixes.iter().map(|f| serde_json::json!({"description": f.description})).collect::<Vec<_>>(),
                 "fix_count": fixes.len(),
                 "passed": true,
+                "remaining_errors": 0,
+                "skipped": skipped,
             }));
         } else {
             if fixes.is_empty() { println!("  \u{2713} All checks passed — nothing to fix."); }
@@ -477,7 +617,7 @@ pub fn cmd_fix(path: &PathBuf, json: bool, registry: &mut Registry) {
                 // and remove the offending property from the bracket list.
                 // Strategy: find the slot line and remove the property from its bracket list.
                 // searched from the start of its cell, in the text as it is now
-                let from_byte = cell.as_ref().and_then(|c| find_word(&source, 0, &format!("cell {}", c))).unwrap_or(0);
+                let from_byte = cell.as_ref().and_then(|c| find_cell_decl(&source, c)).map_or(0, |d| d.0);
                 let removed = remove_property_from_source(&mut source, slot_name, property_to_remove, from_byte);
                 if removed {
                     fixes.push(AppliedFix {
@@ -486,7 +626,7 @@ pub fn cmd_fix(path: &PathBuf, json: bool, registry: &mut Registry) {
                 }
             }
             FixKind::RemoveDuplicateSignal { signal_name, cell } => {
-                let from = cell.as_ref().and_then(|c| find_word(&source, 0, &format!("cell {}", c))).unwrap_or(0);
+                let from = cell.as_ref().and_then(|c| find_cell_decl(&source, c)).map_or(0, |d| d.0);
                 if let Some((start, end)) = find_duplicate_signal_line(&source, from, signal_name) {
                     source.replace_range(start..end, "");
                     fixes.push(AppliedFix {
@@ -503,6 +643,8 @@ pub fn cmd_fix(path: &PathBuf, json: bool, registry: &mut Registry) {
                 "fixes": [],
                 "fix_count": 0,
                 "passed": false,
+                "remaining_errors": errors.len(),
+                "skipped": skipped,
                 "note": "errors found but none are auto-fixable",
             }));
         } else {
@@ -538,6 +680,7 @@ pub fn cmd_fix(path: &PathBuf, json: bool, registry: &mut Registry) {
             "fix_count": fixes.len(),
             "passed": recheck_errors.is_empty(),
             "remaining_errors": recheck_errors.len(),
+            "skipped": skipped,
         })).unwrap());
     } else {
         if recheck_errors.is_empty() {
@@ -623,7 +766,7 @@ fn remove_property_from_source(source: &mut String, slot_name: &str, prop: &str,
 /// [native] handler to `idiv(a, b)`. Native `/` used to truncate; it is now
 /// 3.5 like everywhere else, so code that relied on the integer quotient
 /// must say so. Innermost divisions first, one pass per nesting level.
-pub fn cmd_fix_native_idiv(path: &PathBuf) {
+pub fn cmd_fix_native_idiv(path: &PathBuf, json: bool) {
     let mut total = 0usize;
     for _pass in 0..16 {
         let source = match std::fs::read_to_string(path) {
@@ -667,7 +810,17 @@ pub fn cmd_fix_native_idiv(path: &PathBuf) {
             std::process::exit(1);
         }
     }
-    println!("{}: {} division(s) rewritten to idiv()", path.display(), total);
+    if json {
+        println!("{}", serde_json::json!({
+            "file": path.display().to_string(),
+            "fixes": if total > 0 { vec![serde_json::json!({"description": format!("{} division(s) rewritten to idiv()", total)})] } else { vec![] },
+            "fix_count": total,
+            "rewritten": total,
+            "passed": true,
+        }));
+    } else {
+        println!("{}: {} division(s) rewritten to idiv()", path.display(), total);
+    }
 }
 
 /// Replacement for one division given its operand spans. Spans cover the

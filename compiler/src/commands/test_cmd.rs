@@ -34,6 +34,12 @@ use super::{read_source, lex_with_location, parse_with_location, resolve_imports
 
 pub fn cmd_test(path: &PathBuf, json: bool, registry: &mut Registry) {
     crate::interpreter::IN_TEST.store(true, std::sync::atomic::Ordering::Relaxed);
+    // `--json` schema, every outcome (load failure, check failure, no test
+    // cell, a run): {"file", "total", "passed" (a COUNT), "failed", "ok"
+    // (Bool), "results", and "error" / "errors" / "check_errors" when it
+    // did not run}
+    super::TEST_MODE.store(true, std::sync::atomic::Ordering::Relaxed);
+    if let Ok(mut f) = super::TEST_FILE.lock() { *f = path.display().to_string(); }
     // every line the runner would print, kept for --json
     let mut out_lines: Vec<String> = Vec::new();
     let source = read_source(path);

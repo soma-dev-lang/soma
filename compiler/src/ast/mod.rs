@@ -867,3 +867,52 @@ pub fn accepted_arities(params: &[Param]) -> Vec<usize> {
     }
     out
 }
+
+/// What one of `request`'s optional 4th / 5th parameters receives.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum RequestExtra {
+    Query,
+    Headers,
+}
+
+/// Names a `request` parameter may take to receive the URL query map.
+pub const REQUEST_QUERY_NAMES: &[&str] = &["query", "q"];
+/// Names a `request` parameter may take to receive the request headers.
+pub const REQUEST_HEADER_NAMES: &[&str] = &["headers", "hdrs"];
+
+/// THE rule for `on request(method, path, body, …)`'s optional parameters,
+/// shared by `soma serve` (start-up and binding), `soma check` and `soma run
+/// … request`. The name decides, and it must say which it is: a 4th
+/// parameter named `query` / `q` gets the query, `headers` / `hdrs` the
+/// headers; with five, the 4th is the query and the 5th the headers, named
+/// so. Any other name is refused — a lone `h: Map` used to receive the
+/// QUERY, so `?authorization=…` forged a header.
+pub fn request_extra_roles(names: &[&str]) -> Result<Vec<RequestExtra>, String> {
+    let is_query = |n: &str| REQUEST_QUERY_NAMES.contains(&n);
+    let is_headers = |n: &str| REQUEST_HEADER_NAMES.contains(&n);
+    match names.len() {
+        0..=3 => Ok(Vec::new()),
+        4 => {
+            let n = names[3];
+            if is_query(n) { Ok(vec![RequestExtra::Query]) }
+            else if is_headers(n) { Ok(vec![RequestExtra::Headers]) }
+            else {
+                Err(format!("`request`'s 4th parameter `{}` does not say what it receives: name it `query` (the URL query map) or `headers` (the request headers)", n))
+            }
+        }
+        5 => {
+            if is_query(names[3]) && is_headers(names[4]) {
+                Ok(vec![RequestExtra::Query, RequestExtra::Headers])
+            } else {
+                Err(format!("`request`'s 4th parameter is the query and its 5th the headers: name them `query` and `headers` — write `on request(method, path, body, query: Map, headers: Map)` (it declares `{}, {}`)", names[3], names[4]))
+            }
+        }
+        n => Err(format!("`request` takes at most 5 parameters (method, path, body, query: Map, headers: Map), it declares {}", n)),
+    }
+}
+
+/// `request_extra_roles` over a handler's parameters.
+pub fn request_param_roles(params: &[Param]) -> Result<Vec<RequestExtra>, String> {
+    let names: Vec<&str> = params.iter().map(|p| p.name.as_str()).collect();
+    request_extra_roles(&names)
+}

@@ -213,25 +213,24 @@ pub fn cmd_serve(path: &PathBuf, port: u16, host: &str, verbose: bool, join: Opt
             }
         })
         .collect();
-    // `request`'s optional 4th and 5th parameters are bound by POSITION —
-    // the 4th is the query, the 5th the headers, whatever their names (a
-    // 5th called `hdrs` used to get the QUERY: `?authorization=…` forged a
-    // header). The one exception, kept from earlier releases: a 4-parameter
-    // `request(…, headers: Map)` gets the headers. Names that contradict
-    // their position (`query` 5th, `headers` 4th of 5) are refused here.
-    if let Some(ps) = handler_params.get("request") {
-        let bad = match ps.len() {
-            5 if ps[3] == "headers" || ps[4] == "query" => Some(format!(
-                "`request`'s 4th parameter is the query and its 5th the headers: write `on request(method, path, body, query: Map, headers: Map)` (it declares `{}: Map, {}: Map`)",
-                ps[3], ps[4])),
-            n if n > 5 => Some(format!("`request` takes at most 5 parameters (method, path, body, query: Map, headers: Map), it declares {}", n)),
-            _ => None,
-        };
-        if let Some(msg) = bad {
-            eprintln!("error: {}", msg);
-            std::process::exit(1);
+    // `request`'s optional 4th and 5th parameters: a name that did not say
+    // which it was used to get the QUERY (a lone 4th `h: Map`, a 5th of any
+    // name before) — `?authorization=…` forged a header. Now the NAME decides and must be unambiguous (`query`/`q`,
+    // `headers`/`hdrs`): see `ast::request_extra_roles`, the one rule
+    // `soma check` and `soma run … request` apply too.
+    let request_roles: Vec<ast::RequestExtra> = match handler_params.get("request") {
+        Some(ps) => {
+            let names: Vec<&str> = ps.iter().map(String::as_str).collect();
+            match ast::request_extra_roles(&names) {
+                Ok(r) => r,
+                Err(msg) => {
+                    eprintln!("error: {}", msg);
+                    std::process::exit(1);
+                }
+            }
         }
-    }
+        None => Vec::new(),
+    };
     // The declared type of `request`'s body parameter decides its shape:
     // `body: String` gets the raw text (parse it with from_json), a Map /
     // List / Any / untyped parameter gets the parsed JSON. Before, JSON
@@ -1367,8 +1366,7 @@ pub fn cmd_serve(path: &PathBuf, port: u16, host: &str, verbose: bool, join: Opt
             }));
             if bad_host || bad_origin {
                 let why = if bad_host { "the Host header names another site (a DNS-rebinding page?) — this server listens on loopback only" } else { "a page from another origin may not change state on a loopback server" };
-                let resp = tiny_http::Response::from_string(error_body(why, "forbidden")).with_status_code(403);
-                let _ = request.respond(resp);
+                refuse_early(request, 403, why, "forbidden", false);
                 continue;
             }
         }
@@ -1378,6 +1376,7 @@ pub fn cmd_serve(path: &PathBuf, port: u16, host: &str, verbose: bool, join: Opt
         let mutating = mutating.clone();
         let request_routes = request_routes.clone();
         let handler_params = handler_params.clone();
+        let request_roles = request_roles.clone();
         let request_body_type = request_body_type.clone();
         let handler_types = handler_types.clone();
         let cell_name = cell_name.clone();
@@ -1394,17 +1393,16 @@ pub fn cmd_serve(path: &PathBuf, port: u16, host: &str, verbose: bool, join: Opt
         // framing checks in the ACCEPT loop, in connection order: a check
         // in the handler thread raced the smuggled request behind it
         {
-            // a connection that sent a malformed framing is poisoned: the
-            // bytes tiny_http reads after it are a smuggled request (the
-            // server drops `Connection: close`, so the socket stays open)
+            // a connection that sent a malformed framing is closed after
+            // its answer (`refuse_early`); the peer address also stays
+            // poisoned 60 s, in case bytes were already read behind it
             let poisoned = poisoned_connections();
             if let Some(addr) = request.remote_addr().copied() {
                 let mut p = poisoned.lock().unwrap_or_else(|e| e.into_inner());
                 p.retain(|_, t| t.elapsed() < std::time::Duration::from_secs(60));
                 if p.contains_key(&addr) {
                     drop(p);
-                    let resp = tiny_http::Response::from_string(error_body("this connection sent a malformed request; open a new one", "bad_request")).with_status_code(400);
-                    let _ = request.respond(cors(resp));
+                    refuse_early(request, 400, "this connection sent a malformed request; open a new one", "bad_request", true);
                     continue;
                 }
             }
@@ -1423,19 +1421,14 @@ pub fn cmd_serve(path: &PathBuf, port: u16, host: &str, verbose: bool, join: Opt
             if cls.len() == 1 && cls[0].bytes().all(|b| b.is_ascii_digit()) && !cls[0].is_empty()
                 && cls[0].parse::<u64>().map_or(true, |n| n > max_body()) {
                 poison(&request);
-                let resp = tiny_http::Response::from_string(error_body(&too_large_message(), "payload_too_large"))
-                    .with_status_code(413);
-                let _ = request.respond(cors(resp));
+                refuse_early(request, 413, &too_large_message(), "payload_too_large", true);
                 continue;
             }
             if cls.len() > 1 || cls.iter().any(|v| v.is_empty() || !v.bytes().all(|b| b.is_ascii_digit())) {
                 poison(&request);
                 // …and the connection closes: the bytes after the first length
                 // would otherwise be read as a second (smuggled) request
-                let resp = tiny_http::Response::from_string(error_body("a request carries one Content-Length of plain digits", "bad_request"))
-                    .with_status_code(400)
-                    .with_header(tiny_http::Header::from_bytes(&b"Connection"[..], &b"close"[..]).unwrap());
-                let _ = request.respond(cors(resp));
+                refuse_early(request, 400, "a request carries one Content-Length of plain digits", "bad_request", true);
                 continue;
             }
             // a transfer coding other than plain `chunked` (gzip, identity, a
@@ -1444,17 +1437,12 @@ pub fn cmd_serve(path: &PathBuf, port: u16, host: &str, verbose: bool, join: Opt
             let tes: Vec<String> = request.headers().iter().filter(|h| h.field.as_str().as_str().eq_ignore_ascii_case("transfer-encoding")).map(|h| h.value.as_str().trim().to_ascii_lowercase()).collect();
             if !tes.is_empty() && (tes.len() > 1 || tes[0] != "chunked") {
                 poison(&request);
-                let resp = tiny_http::Response::from_string(error_body("the only Transfer-Encoding the server reads is `chunked`", "not_implemented"))
-                    .with_status_code(501)
-                    .with_header(tiny_http::Header::from_bytes(&b"Connection"[..], &b"close"[..]).unwrap());
-                let _ = request.respond(cors(resp));
+                refuse_early(request, 501, "the only Transfer-Encoding the server reads is `chunked`", "not_implemented", true);
                 continue;
             }
             if has("content-length") && has("transfer-encoding") {
                 poison(&request);
-                let resp = tiny_http::Response::from_string(error_body("a request may not carry both Content-Length and Transfer-Encoding", "bad_request"))
-                    .with_status_code(400);
-                let _ = request.respond(cors(resp));
+                refuse_early(request, 400, "a request may not carry both Content-Length and Transfer-Encoding", "bad_request", true);
                 continue;
             }
         }
@@ -1501,11 +1489,7 @@ pub fn cmd_serve(path: &PathBuf, port: u16, host: &str, verbose: bool, join: Opt
             if let Some(addr) = request.remote_addr().copied() {
                 poisoned_connections().lock().unwrap_or_else(|e| e.into_inner()).insert(addr, std::time::Instant::now());
             }
-            let resp = tiny_http::Response::from_string(error_body(&too_large_message(), "payload_too_large"))
-                .with_status_code(413)
-                .with_header(tiny_http::Header::from_bytes(&b"Connection"[..], &b"close"[..]).unwrap());
-            eprintln!("{} {} → 413 0ms {}", method, log_safe(&url), too_large_message());
-            let _ = request.respond(cors(resp));
+            refuse_early(request, 413, &too_large_message(), "payload_too_large", true);
             return;
         }
         let body_raw = match String::from_utf8(body_bytes) {
@@ -1530,6 +1514,9 @@ pub fn cmd_serve(path: &PathBuf, port: u16, host: &str, verbose: bool, join: Opt
         // not declare, stored and matched later); `_status` at the top would
         // make an echoed body an HTTP response
         let mut reserved_hit: Option<&'static str> = None;
+        // a form field whose escapes decode to no UTF-8 text (`k=%E9`):
+        // each became U+FFFD, so `%E9=a&%EA=b` collided on one key
+        let mut form_not_utf8 = false;
         if (body_raw.starts_with('{') || body_raw.starts_with('[')) && interpreter::json_too_many_values(&body_raw) {
             let msg = format!("the request body holds more than {} JSON values", interpreter::JSON_MAX_VALUES);
             let resp = tiny_http::Response::from_string(error_body(&msg, "json"))
@@ -1565,6 +1552,7 @@ pub fn cmd_serve(path: &PathBuf, port: u16, host: &str, verbose: bool, join: Opt
             let mut form_data = Vec::new();
             for pair in body_raw.split('&') {
                 if let Some((key, val)) = pair.split_once('=') {
+                    if !url_escapes_are_utf8(key) || !url_escapes_are_utf8(val) { form_not_utf8 = true; }
                     let key = urlencoding_decode(key);
                     let val = urlencoding_decode(val);
                     form_data.push((key, interpreter::Value::String(val)));
@@ -1606,6 +1594,14 @@ pub fn cmd_serve(path: &PathBuf, port: u16, host: &str, verbose: bool, join: Opt
             return;
         }
 
+        if form_not_utf8 {
+            let resp = tiny_http::Response::from_string(error_body("the form body's percent-escapes are not UTF-8 text (encode é as %C3%A9)", "bad_request"))
+                .with_status_code(400)
+                .with_header(tiny_http::Header::from_bytes(&b"Content-Type"[..], &b"application/json"[..]).unwrap());
+            eprintln!("{} {} → 400 0ms form escapes are not UTF-8", method, log_safe(&url));
+            let _ = request.respond(cors(resp));
+            return;
+        }
         // escapes that decode to no UTF-8 text (`%E9` alone): each became
         // U+FFFD, so `/put/%E9` and `/put/%EA` wrote the same key
         if !url_escapes_are_utf8(&url) {
@@ -1648,13 +1644,17 @@ pub fn cmd_serve(path: &PathBuf, port: u16, host: &str, verbose: bool, join: Opt
             // with the escapes in, a 404); a path's `+` is a plus
             let url_path = urlencoding_decode(&url.split('?').next().unwrap_or(&url).replace('+', "%2B"));
             let url_path = url_path.as_str();
-            // a dotfile (`.env`, `.git/…`) dropped in static/ is not served
-            if url_path.split('/').any(|seg| seg.starts_with('.') && seg != "..") {
+            // a dotfile (`.env`, `.git/…`) dropped in static/ is not served;
+            // `.` is the current directory (`/static/sub/./x.txt`), and `..`
+            // is refused before any disk access: 404 like a missing file —
+            // a 403 for "exists outside static/" was an existence oracle
+            let segs: Vec<&str> = url_path.split('/').filter(|seg| !seg.is_empty() && *seg != ".").collect();
+            if segs.iter().any(|seg| seg.starts_with('.')) {
                 let resp = tiny_http::Response::from_string("not found").with_status_code(404);
                 let _ = request.respond(cors(resp));
                 return;
             }
-            let file_path = base_dir.join(&url_path[1..]);
+            let file_path = base_dir.join(segs.join("/"));
             // Canonicalize to prevent path traversal attacks
             let canonical = match file_path.canonicalize() {
                 Ok(p) => p,
@@ -1671,14 +1671,10 @@ pub fn cmd_serve(path: &PathBuf, port: u16, host: &str, verbose: bool, join: Opt
             // to a path nothing can be under.
             let static_root = base_dir.join("static");
             let base_canonical = static_root.canonicalize().unwrap_or(static_root);
-            if !canonical.starts_with(&base_canonical) {
-                let resp = tiny_http::Response::from_string("forbidden")
-                    .with_status_code(403);
-                let _ = request.respond(cors(resp));
-                return;
-            }
-            if file_path.exists() && file_path.is_file() {
-                let content = std::fs::read(&file_path).unwrap_or_default();
+            // outside static/ (a symlink out): 404, the same answer as a
+            // missing file
+            if canonical.starts_with(&base_canonical) && canonical.is_file() {
+                let content = std::fs::read(&canonical).unwrap_or_default();
                 let mime = match file_path.extension().and_then(|e| e.to_str()) {
                     Some("css") => "text/css",
                     Some("js") => "application/javascript",
@@ -1892,14 +1888,9 @@ pub fn cmd_serve(path: &PathBuf, port: u16, host: &str, verbose: bool, join: Opt
                 // Passing it to a 3-parameter handler made ANY url with a
                 // query string (?utm_source=…, a cache-buster) a 500:
                 // "request() expected 3 arguments, got 4".
-                // parameters 4 and 5 are bound BY POSITION (query, then
-                // headers — whatever their names; a 5th `hdrs: Map` used to
-                // receive the query, so `?authorization=` forged a header).
-                // A lone 4th parameter called `headers` gets the headers.
-                let extra: Vec<String> = handler_params.get("request").map(|p| p.iter().skip(3).take(2).cloned().collect()).unwrap_or_default();
-                for (i, name) in extra.iter().enumerate() {
-                    let headers_here = i == 1 || (extra.len() == 1 && name == "headers");
-                    if headers_here {
+                // (bound by `ast::request_extra_roles`: the name decides)
+                for role in request_roles.iter() {
+                    if *role == ast::RequestExtra::Headers {
                         req_args.push(interpreter::map_from_pairs(req_headers.clone()));
                     } else {
                         req_args.push(interpreter::map_from_pairs(query_map.clone()));
@@ -2067,7 +2058,7 @@ pub fn cmd_serve(path: &PathBuf, port: u16, host: &str, verbose: bool, join: Opt
                 };
                 let (status_code, body_str, content_type, extra_headers) = if is_response {
                     let entries = if let interpreter::Value::Map(ref e) = val { e } else { unreachable!() };
-                    // a status outside 100–599 was wrapped mod 65536 (99999
+                    // a status outside 200–599 was wrapped mod 65536 (99999
                     // went out as 34463, 65736 as 200): answer 500 instead
                     let raw_status = entries.get("_status")
                         .and_then(|v| if let interpreter::Value::Int(si) = v { si.to_i64() } else { None });
@@ -2075,7 +2066,7 @@ pub fn cmd_serve(path: &PathBuf, port: u16, host: &str, verbose: bool, join: Opt
                         Some(n) if (200..=599).contains(&n) => n as u16,
                         None => 200,
                         Some(n) => {
-                            eprintln!("error: {} {}: response status {} is not an HTTP status (100–599) — answered 500", method, url, n);
+                            eprintln!("error: {} {}: response status {} is not a status a handler may answer (200–599) — answered 500", method, url, n);
                             500
                         }
                     };
@@ -2270,6 +2261,20 @@ fn llm_status_line(program: &ast::Program) -> Option<String> {
 
 /// Every response carries the CORS header — the documented rule (it used to
 /// be missing on `/static/*`, the dashboard and the pre-handler 400s).
+/// A refusal answered BEFORE any handler (a framing, Host or Origin
+/// check): a JSON error body with its Content-Type, logged like every other
+/// response. `close`: the connection is shut down after the answer — the
+/// bytes after a refused framing are never read as a next request (a
+/// keep-alive proxy's socket used to answer 400 to everything for 60 s).
+fn refuse_early(request: tiny_http::Request, status: u16, message: &str, kind: &str, close: bool) {
+    let resp = tiny_http::Response::from_string(error_body(message, kind))
+        .with_status_code(status)
+        .with_header(tiny_http::Header::from_bytes(&b"Content-Type"[..], &b"application/json"[..]).unwrap());
+    eprintln!("{} {} → {} 0ms {}", request.method(), log_safe(request.url()), status, message);
+    let resp = cors(resp);
+    let _ = if close { request.respond_and_close(resp) } else { request.respond(resp) };
+}
+
 fn cors<R: std::io::Read>(mut r: tiny_http::Response<R>) -> tiny_http::Response<R> {
     if !r.headers().iter().any(|h| h.field.equiv("Access-Control-Allow-Origin")) {
         r.add_header(tiny_http::Header::from_bytes(&b"Access-Control-Allow-Origin"[..], &b"*"[..]).unwrap());
@@ -2311,25 +2316,83 @@ fn client_error_text(e: &interpreter::RuntimeError) -> String {
             };
         }
     }
-    if kind == "guard_failed" {
-        if let Some(i) = text.find(": `") { return text[..i].to_string(); }
+    client_refusal_text(&text, &kind)
+}
+
+/// The client text of a `RequireFailed` — audited against EVERY producer
+/// in interpreter/mod.rs (grep `RequireFailed(format!`). Whitelisted
+/// shapes only; each keeps what the PROGRAM declared (a tag, a slot name,
+/// state names) and drops what the runtime quoted (a rule, a value, a
+/// runtime error text, an instance id):
+///
+/// - `require failed: Tag: constraint violated` (`require … else Tag`) — passes;
+/// - `ensure postcondition failed` — passes;
+/// - `invalid transition: A → B. Current state: 'A'. Valid targets: [..]` — passes;
+/// - `invalid transition: A → B — transition(id, "F", "B") declares its
+///   source, and '<id>' is in …` — cut to the states;
+/// - `guard failed for transition A → B: `<rule>` is false` — the rule is cut;
+/// - `memory invariant violated on 'slot': <rule> — rejected <op> of
+///   <value> (key "k")…` and the `[immutable]` refusal — slot (and key);
+/// - `memory invariant on 'slot' could not be evaluated: <rule> (<runtime
+///   text>)` and `memory invariant on 'slot' reads `status`, but <runtime
+///   text>` — the slot only;
+/// - anything else (a producer added later) → the generic sentence.
+fn client_refusal_text(text: &str, kind: &str) -> String {
+    let prefix_len = handler_prefix_len(text);
+    let (head, body) = text.split_at(prefix_len);
+    static TAG: std::sync::OnceLock<regex::Regex> = std::sync::OnceLock::new();
+    let tag = TAG.get_or_init(|| regex::Regex::new(r"^require failed: [A-Za-z0-9_]+: constraint violated$").unwrap());
+    if tag.is_match(body) || body == "ensure postcondition failed" {
+        return text.to_string();
     }
-    // `memory invariant violated on 'bal': bal >= 0 && bal != 31337 — …`:
-    // the rule stays in the log
-    if kind == "invariant" || text.contains("memory invariant violated on '") {
-        if let Some(start) = text.find("memory invariant violated on '") {
-            let rest = &text[start + 30..];
-            if let Some(q) = rest.find("':") {
-                // the key stays (which freezer was full), the rule does not
-                let key = text.find("(key \"").and_then(|i| text[i + 6..].find('"').map(|j| text[i + 6..i + 6 + j].to_string()));
-                return match key {
-                    Some(k) => format!("{}memory invariant violated on '{}' (key \"{}\") — the write was refused", &text[..start], &rest[..q], k),
-                    None => format!("{}memory invariant violated on '{}' — the write was refused", &text[..start], &rest[..q]),
-                };
+    // state names are the program's own (declared in its `state` block)
+    let state = |s: &str| !s.is_empty() && s.chars().all(|c| c.is_alphanumeric() || c == '_' || c == '*');
+    if let Some(rest) = body.strip_prefix("invalid transition: ") {
+        if let Some((from, after)) = rest.split_once(" → ") {
+            let to_end = after.find(|c: char| !(c.is_alphanumeric() || c == '_')).unwrap_or(after.len());
+            let to = &after[..to_end];
+            let tail = &after[to_end..];
+            if state(from) && state(to) {
+                if tail.starts_with(" — transition(") {
+                    return format!("{}invalid transition: {} → {} — the instance is not in the source state the call declares", head, from, to);
+                }
+                static VALID: std::sync::OnceLock<regex::Regex> = std::sync::OnceLock::new();
+                let valid = VALID.get_or_init(|| regex::Regex::new(r"^\. Current state: '[A-Za-z0-9_]+'\. Valid targets: \[[A-Za-z0-9_, ]*\]$").unwrap());
+                if valid.is_match(tail) { return text.to_string(); }
+                return format!("{}invalid transition: {} → {}", head, from, to);
             }
         }
     }
-    text
+    if let Some(rest) = body.strip_prefix("guard failed for transition ") {
+        if let Some((from, after)) = rest.split_once(" → ") {
+            let to_end = after.find(|c: char| !(c.is_alphanumeric() || c == '_')).unwrap_or(after.len());
+            if state(from) && state(&after[..to_end]) {
+                return format!("{}guard failed for transition {} → {}", head, from, &after[..to_end]);
+            }
+        }
+    }
+    // `memory invariant violated on 'bal': …` / `memory invariant on 'm'
+    // could not be evaluated: …` / `… reads `status`, but …`: the slot
+    // name (an identifier) stays, the rule and every quoted value do not
+    for (lead, violated) in [("memory invariant violated on '", true), ("memory invariant on '", false)] {
+        if let Some(rest) = body.strip_prefix(lead) {
+            let slot_end = rest.find(|c: char| !(c.is_alphanumeric() || c == '_')).unwrap_or(rest.len());
+            let slot = &rest[..slot_end];
+            if slot.is_empty() || !rest[slot_end..].starts_with('\'') { break; }
+            if violated {
+                // the key is the LAST `(key "…")` (the rejected value comes
+                // before it and may itself contain that text)
+                let key = body.strip_suffix("\"); the slot is unchanged")
+                    .and_then(|b| b.rfind("(key \"").map(|i| b[i + 6..].to_string()));
+                return match key {
+                    Some(k) => format!("{}memory invariant violated on '{}' (key \"{}\") — the write was refused", head, slot, k),
+                    None => format!("{}memory invariant violated on '{}' — the write was refused", head, slot),
+                };
+            }
+            return format!("{}memory invariant on '{}' could not be evaluated — the write was refused (the server log has the details)", head, slot);
+        }
+    }
+    format!("{}{}", head, generic_error_sentence(kind))
 }
 
 /// Length of the leading `name(): ` / `Cell.name(): ` segments of an error
@@ -2395,7 +2458,13 @@ pub(crate) fn audit_slot_keys(program: &ast::Program, interp: &interpreter::Inte
                 if name != "Map" || args.len() != 2 || !matches!(&args[0].node, ast::TypeExpr::Simple(k) if k == "Int") { continue; }
                 let key = format!("{}.{}", cell.node.name, slot.node.name);
                 let Some(backend) = interp.storage.get(&key) else { continue };
-                let is_int = |k: &str| { let d = k.strip_prefix('-').unwrap_or(k); !d.is_empty() && d.bytes().all(|b| b.is_ascii_digit()) };
+                // CANONICAL digits only: `"007"` or `"-0"` is no Int key an Int
+                // reads back (7 reads "7"), so it is as stranded as "abc"
+                let is_int = |k: &str| {
+                    let d = k.strip_prefix('-').unwrap_or(k);
+                    !d.is_empty() && d.bytes().all(|b| b.is_ascii_digit())
+                        && (d == "0" || !d.starts_with('0')) && k != "-0"
+                };
                 let bad: Vec<String> = backend.keys().into_iter().take(10_000).filter(|k| !is_int(k)).collect();
                 if let Some(first) = bad.first() {
                     let shown: String = first.chars().take(40).collect();

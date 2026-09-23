@@ -2382,9 +2382,10 @@ fn fix_never_deletes_code_past_the_handler_line() {
     std::fs::write(dir.join("app.cell"), "cell A {\n    on go(a: Int) -> Int { return a }\n}\n").unwrap();
     let (code, out) = soma(&dir, &["fix", "app.cell"]);
     assert_eq!(code, 0, "{out}");
-    assert!(out.contains("removed the return type"), "{out}");
+    // …by MOVING the type onto a face signal (dropping it lost the contract)
+    assert!(out.contains("moved the return type"), "{out}");
     assert_eq!(std::fs::read_to_string(dir.join("app.cell")).unwrap(),
-        "cell A {\n    on go(a: Int) { return a }\n}\n");
+        "cell A {\n    face {\n        signal go(a: Int) -> Int\n    }\n    on go(a: Int) { return a }\n}\n");
     let _ = std::fs::remove_dir_all(dir);
 }
 
@@ -5932,5 +5933,256 @@ cell test T { rules {
     std::fs::write(dir.join("t.cell"), "cell A { on f() { return 1 } }\ncell test T { rules { assert split(\"a,b\", \",\", 1) == [\"a\", \"b\"] } }\n").unwrap();
     let (_, out) = soma(&dir, &["check", "t.cell"]);
     assert!(out.contains("split() takes at most"), "{out}");
+    let _ = std::fs::remove_dir_all(dir);
+}
+
+/// Run `soma serve` expecting it to refuse to start; its whole output.
+fn serve_refused(dir: &Path) -> String {
+    let mut child = Command::new(env!("CARGO_BIN_EXE_soma"))
+        .args(["serve", "app.cell", "--no-schedule", "-p", "0"])
+        .current_dir(dir).stdout(Stdio::piped()).stderr(Stdio::piped()).spawn().unwrap();
+    let mut done = None;
+    for _ in 0..400 {
+        if let Some(st) = child.try_wait().unwrap() { done = Some(st); break; }
+        std::thread::sleep(std::time::Duration::from_millis(25));
+    }
+    if done.is_none() { let _ = child.kill(); }
+    let out = child.wait_with_output().unwrap();
+    let text = format!("{}{}", String::from_utf8_lossy(&out.stdout), String::from_utf8_lossy(&out.stderr));
+    assert!(done.is_some() && !out.status.success(), "serve started: {text}");
+    text
+}
+
+#[test]
+fn serve_seventh_pass_request_extra_parameters_are_named() {
+    // a lone 4th Map not spelled `headers` received the QUERY: `?authorization=`
+    // forged a header. The name decides now, in check, serve and run alike.
+    let dir = scratch("serve7_names");
+    std::fs::write(dir.join("app.cell"), "cell App {\n    on request(method: String, path: String, body: String, h: Map) { return h }\n}\n").unwrap();
+    let (code, out) = soma(&dir, &["check", "app.cell"]);
+    assert_ne!(code, 0, "{out}");
+    assert!(out.contains("name it `query`") && out.contains("`headers`"), "{out}");
+    let text = serve_refused(&dir);
+    assert!(text.contains("name it `query`"), "{text}");
+    let (code, out) = soma(&dir, &["run", "app.cell", "request", "GET", "/x?authorization=forged", ""]);
+    assert_ne!(code, 0, "{out}");
+    assert!(!out.contains("forged"), "{out}");
+    std::fs::write(dir.join("app.cell"), "cell App {\n    on request(method: String, path: String, body: String, a: Map, b: Map) { return b }\n}\n").unwrap();
+    let (code, out) = soma(&dir, &["check", "app.cell"]);
+    assert_ne!(code, 0, "{out}");
+    assert!(out.contains("name them `query` and `headers`"), "{out}");
+    // `hdrs` alone is the headers; `q` alone the query
+    std::fs::write(dir.join("app.cell"), "cell App {\n    on request(method: String, path: String, body: String, hdrs: Map) { return map(\"auth\", hdrs.authorization ?? \"none\") }\n}\n").unwrap();
+    let (code, out) = soma(&dir, &["check", "app.cell"]);
+    assert_eq!(code, 0, "{out}");
+    {
+        let (_server, port) = serve_dir(&dir);
+        let out = get(port, "/x?authorization=forged");
+        assert!(out.contains("\"auth\":\"none\"") || out.contains("\"auth\": \"none\""), "{out}");
+        let out = raw_request(port, "GET /x HTTP/1.0\r\nHost: localhost\r\nAuthorization: real\r\n\r\n");
+        assert!(out.contains("real"), "{out}");
+    }
+    std::fs::write(dir.join("app.cell"), "cell App {\n    on request(method: String, path: String, body: String, q: Map) { return map(\"v\", q.v ?? \"none\") }\n}\n").unwrap();
+    let (_server, port) = serve_dir(&dir);
+    let out = get(port, "/x?v=hello");
+    assert!(out.contains("hello"), "{out}");
+    let _ = std::fs::remove_dir_all(dir);
+}
+
+#[test]
+fn serve_seventh_pass_refusals_hide_rules_and_values_but_keep_authored_text() {
+    let dir = scratch("serve7_refusals");
+    std::fs::write(dir.join("app.cell"), r#"
+cell App {
+    memory {
+        tokens: Map<String, Any> [persistent]
+        m: Map<String, Any> [persistent]
+        invariant m * 2 > 0
+    }
+    on init() { tokens.set("alice", "sk-live-ALICE-TOKEN") }
+    on mirror(k: String) { m.set(k, tokens.get(k))  return "ok" }
+    on tagdetail(x: Int) {
+        require x > 0 else not_found "no item {x}"
+        return x
+    }
+    on plain(x: Int) {
+        require x > 0 else "x must be positive, got {x}"
+        return x
+    }
+    on mapfail(x: String) { fail(map("error", "custom text {x}", "kind", "not_found")) }
+    on rethrow() {
+        let r = try { from_json(tokens.get("alice")) }
+        fail(r)
+    }
+}
+"#).unwrap();
+    let (_server, port) = serve_dir(&dir);
+    let post = |p: &str| raw_request(port, &format!("POST {p} HTTP/1.0\r\nHost: localhost\r\nContent-Length: 0\r\n\r\n"));
+    let out = post("/mirror/alice");
+    assert!(out.contains("memory invariant on 'm'") && out.contains("the write was refused"), "{out}");
+    assert!(!out.contains("ALICE") && !out.contains("m * 2"), "{out}");
+    let out = post("/tagdetail/-1");
+    assert!(out.contains(" 404 ") && out.contains("no item -1"), "{out}");
+    let out = post("/plain/-1");
+    assert!(out.contains("x must be positive, got -1"), "{out}");
+    let out = post("/mapfail/abc");
+    assert!(out.contains(" 404 ") && out.contains("custom text abc"), "{out}");
+    // a caught RUNTIME error re-raised stays generic
+    let out = post("/rethrow");
+    assert!(out.contains("\"error\"") && !out.contains("ALICE"), "{out}");
+    let _ = std::fs::remove_dir_all(dir);
+}
+
+#[test]
+fn serve_seventh_pass_refused_framing_closes_the_connection() {
+    // a 413 left the keep-alive socket open, and every later request on it
+    // was answered 400 for 60 s
+    let dir = scratch("serve7_close");
+    std::fs::write(dir.join("app.cell"), "cell App {\n    on ping() { return \"pong\" }\n}\n").unwrap();
+    let (_server, port) = serve_dir_env(&dir, &[("SOMA_MAX_BODY_BYTES", "1000")]);
+    for first in [
+        "POST /ping HTTP/1.1\r\nHost: localhost\r\nContent-Length: 5000\r\n\r\nabc",
+        "POST /ping HTTP/1.1\r\nHost: localhost\r\nTransfer-Encoding: gzip\r\n\r\n",
+        "POST /ping HTTP/1.1\r\nHost: localhost\r\nContent-Length: 1, 2\r\n\r\n",
+    ] {
+        let mut stream = std::net::TcpStream::connect(("127.0.0.1", port)).unwrap();
+        stream.set_read_timeout(Some(std::time::Duration::from_secs(5))).unwrap();
+        stream.write_all(first.as_bytes()).unwrap();
+        std::thread::sleep(std::time::Duration::from_millis(200));
+        let _ = stream.write_all(b"GET /ping HTTP/1.1\r\nHost: localhost\r\n\r\n");
+        let mut out = Vec::new();
+        let closed = stream.read_to_end(&mut out).is_ok();
+        let text = String::from_utf8_lossy(&out).to_string();
+        let reset = !closed && text.contains("HTTP/1.1 ");
+        assert!(closed || reset, "the connection stayed open: {text}");
+        assert_eq!(text.matches("HTTP/1.1 ").count(), 1, "{text}");
+        assert!(text.contains("Content-Type: application/json"), "{text}");
+    }
+    // a normal keep-alive connection still serves several requests
+    let mut stream = std::net::TcpStream::connect(("127.0.0.1", port)).unwrap();
+    stream.set_read_timeout(Some(std::time::Duration::from_secs(2))).unwrap();
+    stream.write_all(b"GET /ping HTTP/1.1\r\nHost: localhost\r\n\r\nGET /ping HTTP/1.1\r\nHost: localhost\r\nConnection: close\r\n\r\n").unwrap();
+    let mut out = Vec::new();
+    let _ = stream.read_to_end(&mut out);
+    assert_eq!(String::from_utf8_lossy(&out).matches("pong").count(), 2, "{}", String::from_utf8_lossy(&out));
+    let _ = std::fs::remove_dir_all(dir);
+}
+
+#[test]
+fn serve_seventh_pass_static_outside_is_404_and_forms_refuse_bad_escapes() {
+    let dir = scratch("serve7_static");
+    std::fs::create_dir_all(dir.join("static/sub")).unwrap();
+    std::fs::write(dir.join("static/sub/x.txt"), "hi").unwrap();
+    std::fs::write(dir.join("static/.env"), "secret").unwrap();
+    std::fs::write(dir.join("soma.toml"), "[package]\nname = \"x\"\nversion = \"0.1.0\"\n").unwrap();
+    std::fs::write(dir.join("app.cell"), "cell App {\n    memory { kv: Map<String, String> [persistent] }\n    on save(data: Map) {\n        for e in data { kv.set(e.key, e.value) }\n        return kv.keys()\n    }\n}\n").unwrap();
+    let (_server, port) = serve_dir(&dir);
+    // an existing file outside static/ and a missing one answer alike
+    let a = get(port, "/static/../soma.toml");
+    let b = get(port, "/static/../nope.toml");
+    assert!(a.starts_with("HTTP/1.0 404") && b.starts_with("HTTP/1.0 404"), "{a}\n{b}");
+    assert!(get(port, "/static/.env").starts_with("HTTP/1.0 404"));
+    // `.` is the current directory, not a dotfile
+    let out = get(port, "/static/sub/./x.txt");
+    assert!(out.starts_with("HTTP/1.0 200") && out.ends_with("hi"), "{out}");
+    // a form field whose escapes are not UTF-8 is refused, not merged
+    let form = |body: &str| raw_request(port, &format!("POST /save HTTP/1.0\r\nHost: localhost\r\nContent-Type: application/x-www-form-urlencoded\r\nContent-Length: {}\r\n\r\n{}", body.len(), body));
+    let out = form("%E9=a&%EA=b");
+    assert!(out.contains(" 400 ") && out.contains("not UTF-8"), "{out}");
+    let out = form("%C3%A9=a");
+    assert!(out.contains(" 200 ") && out.contains("é"), "{out}");
+    let _ = std::fs::remove_dir_all(dir);
+}
+
+#[test]
+fn serve_seventh_pass_int_key_audit_wants_canonical_digits() {
+    let dir = scratch("serve7_intkeys");
+    std::fs::write(dir.join("v1.cell"), "cell App {\n    memory { a: Map<String, Int> [persistent] }\n    on w() { a.set(\"007\", 1)  a.set(\"-0\", 2)  a.set(\"7\", 3)  return 1 }\n}\n").unwrap();
+    std::fs::write(dir.join("v2.cell"), "cell App {\n    memory { a: Map<Int, Int> [persistent] }\n    on r() { return a.size }\n}\n").unwrap();
+    let (code, out) = soma(&dir, &["run", "v1.cell", "w"]);
+    assert_eq!(code, 0, "{out}");
+    let (_, out) = soma(&dir, &["run", "v2.cell", "r"]);
+    assert!(out.contains("slot 'a' holds 2 key(s) that are not Ints"), "{out}");
+    let _ = std::fs::remove_dir_all(dir);
+}
+
+#[test]
+fn fix_seventh_pass_non_ascii_agents_return_types_and_json() {
+    let dir = scratch("fix7");
+    // a non-ASCII character at a lex error panicked
+    std::fs::write(dir.join("b1.cell"), "cell App {\n    on run() {\n        print(\u{201c}hi\u{201d})\n    }\n}\n").unwrap();
+    let (code, out) = soma(&dir, &["fix", "b1.cell"]);
+    assert_ne!(code, 0);
+    assert!(!out.contains("panicked"), "{out}");
+    let (code, out) = soma(&dir, &["fix", "b1.cell", "--json"]);
+    assert_ne!(code, 0);
+    let v: serde_json::Value = serde_json::from_str(out.lines().skip_while(|l| !l.starts_with('{')).collect::<Vec<_>>().join("\n").as_str()).unwrap_or_else(|e| panic!("{e}: {out}"));
+    assert_eq!(v["passed"], false, "{out}");
+    // fixes applied before a remaining parse error are reported
+    std::fs::write(dir.join("d1.cell"), "cell App {\n    on run() {\n        let a = 1; let b = 2\n        print(a + b\n    }\n}\n").unwrap();
+    let (_, out) = soma(&dir, &["fix", "d1.cell", "--json"]);
+    let json: String = out.lines().skip_while(|l| !l.starts_with('{')).collect::<Vec<_>>().join("\n");
+    let v: serde_json::Value = serde_json::from_str(&json).unwrap_or_else(|e| panic!("{e}: {out}"));
+    assert_eq!(v["fix_count"], 1, "{out}");
+    assert!(v["parse_error"].is_string(), "{out}");
+    // a missing handler of `cell agent X` is added
+    std::fs::write(dir.join("a1.cell"), "cell agent Bot {\n    face {\n        signal ask(q: String) -> String\n        signal run()\n    }\n    on run() {\n        print(\"hi\")\n    }\n}\n").unwrap();
+    let (code, out) = soma(&dir, &["fix", "a1.cell"]);
+    assert_eq!(code, 0, "{out}");
+    assert!(std::fs::read_to_string(dir.join("a1.cell")).unwrap().contains("on ask(q: String)"));
+    // a handler's return type moves to the face; it is never dropped
+    std::fs::write(dir.join("r2.cell"), "cell App {\n    on f(x: Int) -> Map<String, Int> {\n        return map(\"a\", x)\n    }\n    on run() {\n        print(f(1))\n    }\n}\n").unwrap();
+    let (code, out) = soma(&dir, &["fix", "r2.cell"]);
+    assert_eq!(code, 0, "{out}");
+    let src = std::fs::read_to_string(dir.join("r2.cell")).unwrap();
+    assert!(src.contains("signal f(x: Int) -> Map<String, Int>") && src.contains("on f(x: Int) {"), "{src}");
+    // …a conflicting face type is left for the author
+    let conflict = "cell App {\n    face {\n        signal f(x: Int) -> Int\n    }\n    on f(x: Int) -> String {\n        return \"a\"\n    }\n}\n";
+    std::fs::write(dir.join("r3.cell"), conflict).unwrap();
+    let (code, out) = soma(&dir, &["fix", "r3.cell"]);
+    assert_ne!(code, 0);
+    assert!(out.contains("manual fix required"), "{out}");
+    assert_eq!(std::fs::read_to_string(dir.join("r3.cell")).unwrap(), conflict);
+    // --native-idiv --json is JSON
+    std::fs::write(dir.join("n1.cell"), "cell App {\n    on calc(n: Int) [native] {\n        return n / 2\n    }\n}\n").unwrap();
+    let (code, out) = soma(&dir, &["fix", "n1.cell", "--native-idiv", "--json"]);
+    assert_eq!(code, 0, "{out}");
+    let v: serde_json::Value = serde_json::from_str(out.trim()).unwrap_or_else(|e| panic!("{e}: {out}"));
+    assert_eq!(v["fix_count"], 1, "{out}");
+    let _ = std::fs::remove_dir_all(dir);
+}
+
+#[test]
+fn cli_seventh_pass_fresh_keeps_a_sibling_programs_memory_and_json_schemas() {
+    // b.cell (no slots) keeps its remember() memory across `--fresh a.cell`
+    let dir = scratch("cli7_fresh");
+    std::fs::write(dir.join("a.cell"), "cell App {\n    memory { items: Map<String, String> [persistent] }\n    on run() {\n        items.set(\"k{next_id()}\", \"v\")\n        print(\"n={len(items.keys())}\")\n    }\n}\n").unwrap();
+    std::fs::write(dir.join("b.cell"), "cell App {\n    on run() {\n        let n = to_int(recall(\"visits\") ?? \"0\") + 1\n        remember(\"visits\", to_string(n))\n        print(\"visits={n}\")\n    }\n}\n").unwrap();
+    for _ in 0..2 { let (code, out) = soma(&dir, &["run", "b.cell"]); assert_eq!(code, 0, "{out}"); }
+    let (code, out) = soma(&dir, &["run", "a.cell"]);
+    assert_eq!(code, 0, "{out}");
+    let (code, out) = soma(&dir, &["run", "--fresh", "a.cell"]);
+    assert_eq!(code, 0, "{out}");
+    assert!(out.contains("n=1"), "{out}");
+    let (_, out) = soma(&dir, &["run", "b.cell"]);
+    assert!(out.contains("visits=3"), "{out}");
+    let _ = std::fs::remove_dir_all(dir);
+
+    // `passed` means one thing per command, whatever the outcome
+    let dir = scratch("cli7_json");
+    std::fs::write(dir.join("broken.cell"), "cell App {\n  on run() {\n    print(1\n  }\n}\n").unwrap();
+    std::fs::write(dir.join("ok.cell"), "cell App {\n  on f() { return 1 }\n}\ncell test T { rules {\n assert f() == 1\n} }\n").unwrap();
+    let parse = |out: &str| -> serde_json::Value {
+        let start = out.find('{').unwrap_or_else(|| panic!("no JSON: {out}"));
+        serde_json::Deserializer::from_str(&out[start..]).into_iter::<serde_json::Value>().next().unwrap().unwrap()
+    };
+    for f in ["broken.cell", "ok.cell", "missing.cell"] {
+        let (_, out) = soma(&dir, &["test", f, "--json"]);
+        let v = parse(&out);
+        assert!(v["passed"].is_u64() && v["ok"].is_boolean() && v["results"].is_array(), "test {f}: {out}");
+        let (_, out) = soma(&dir, &["verify", f, "--json"]);
+        let v = parse(&out);
+        assert!(v["passed"].is_boolean() && v["ok"] == v["passed"] && v["verdict"].is_string() && v["state_machines"].is_array(), "verify {f}: {out}");
+    }
     let _ = std::fs::remove_dir_all(dir);
 }
