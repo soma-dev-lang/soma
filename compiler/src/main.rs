@@ -1003,22 +1003,56 @@ fn run_over_dir(cmd: &str, dir: &std::path::Path, json: bool) -> ! {
             if p.is_dir() { walk(&p, out); } else if p.extension().is_some_and(|x| x == "cell") { out.push(p); }
         }
     }
-    let mut files = Vec::new();
+    let mut files: Vec<std::path::PathBuf> = Vec::new();
     walk(dir, &mut files);
     if files.is_empty() {
         eprintln!("no .cell file under {}", dir.display());
         std::process::exit(1);
     }
+    // `test`: a file with no test cell (a `use lib::…` library, a helper
+    // cell) has nothing to run — it was counted as a failed file, so every
+    // multi-file project failed `soma test .`
+    if cmd == "test" {
+        let has_tests = regex::Regex::new(r"(?m)^\s*cell\s+test\b").unwrap();
+        let (with, without): (Vec<_>, Vec<_>) = files.into_iter()
+            .partition(|f| std::fs::read_to_string(f).map_or(true, |t| has_tests.is_match(&t)));
+        for f in &without { eprintln!("── {} ── no test cells, skipped", f.display()); }
+        if with.is_empty() {
+            eprintln!("no test cells in any .cell file under {}", dir.display());
+            std::process::exit(1);
+        }
+        files = with;
+    }
     let exe = std::env::current_exe().unwrap_or_else(|_| std::path::PathBuf::from("soma"));
     let (mut failed, total) = (0usize, files.len());
+    // --json: ONE document holding each file's report (the per-file objects
+    // were written back to back, which no JSON reader accepts)
+    let mut reports: Vec<serde_json::Value> = Vec::new();
     for f in &files {
         eprintln!("── {} ──", f.display());
         let mut c = std::process::Command::new(&exe);
         c.arg(cmd).arg(f);
-        if json { c.arg("--json"); }
-        let ok = c.status().map(|s| s.success()).unwrap_or(false);
+        let ok = if json {
+            c.arg("--json");
+            match c.stderr(std::process::Stdio::inherit()).output() {
+                Ok(out) => {
+                    let text = String::from_utf8_lossy(&out.stdout).to_string();
+                    let report = serde_json::from_str::<serde_json::Value>(&text).unwrap_or(serde_json::Value::String(text));
+                    reports.push(serde_json::json!({ "file": f.display().to_string(), "ok": out.status.success(), "report": report }));
+                    out.status.success()
+                }
+                Err(_) => false,
+            }
+        } else {
+            c.status().map(|s| s.success()).unwrap_or(false)
+        };
         if !ok { failed += 1; }
     }
     eprintln!("{}: {} file(s), {} failed", cmd, total, failed);
+    if json {
+        println!("{}", serde_json::to_string_pretty(&serde_json::json!({
+            "command": cmd, "files": reports, "total": total, "failed": failed, "ok": failed == 0,
+        })).unwrap());
+    }
     std::process::exit(if failed > 0 { 1 } else { 0 });
 }

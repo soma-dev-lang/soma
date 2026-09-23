@@ -3375,3 +3375,22 @@ fn mock_approve_takes_a_bool() {
     assert!(out.contains("✓ assert G.ask() == true") && out.contains("✓ assert G.ask() == false"), "{out}");
     let _ = std::fs::remove_dir_all(dir);
 }
+
+#[test]
+fn soma_test_over_a_project_skips_libraries_and_answers_one_json_document() {
+    // `soma test .` counted `lib/helpers.cell` (no test cell) as a failed
+    // file, so every multi-file project failed; --json wrote one object per
+    // file back to back
+    let dir = scratch("test_dir_project");
+    std::fs::create_dir_all(dir.join("lib")).unwrap();
+    std::fs::write(dir.join("lib/helpers.cell"), "cell Helpers {\n  on double(x: Int) { return x * 2 }\n}\n").unwrap();
+    std::fs::write(dir.join("app.cell"), "use lib::helpers\ncell App {\n  on run(x: Int) { return double(x) }\n}\ncell test AppTests {\n  rules {\n    assert run(2) == 4\n  }\n}\n").unwrap();
+    let (code, out) = soma(&dir, &["test", "."]);
+    assert_eq!(code, 0, "{out}");
+    assert!(out.contains("no test cells, skipped"), "{out}");
+    let json = Command::new(env!("CARGO_BIN_EXE_soma")).args(["test", "--json", "."]).current_dir(&dir).output().unwrap();
+    let doc: serde_json::Value = serde_json::from_slice(&json.stdout).expect("one JSON document");
+    assert_eq!(doc["ok"], true, "{doc}");
+    assert_eq!(doc["files"].as_array().map(|a| a.len()), Some(1), "{doc}");
+    let _ = std::fs::remove_dir_all(dir);
+}

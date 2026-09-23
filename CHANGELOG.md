@@ -2,6 +2,17 @@
 
 ## Unreleased
 
+### `soma test <dir>` passes a multi-file project, and `--json` is one document
+
+- Over a directory, `soma test` counted a file with no test cell — a
+  `lib/helpers.cell` library the entry file `use`s — as a failed file, so
+  every multi-file project failed `soma test .` (exit 1) while `soma test
+  app.cell` passed. Such files are now skipped and named; a directory with
+  no test cell at all still fails.
+- `--json` over a directory wrote one object per file back to back, which no
+  JSON reader accepts. It now writes one document: `{command, files: [{file,
+  ok, report}], total, failed, ok}` (for `check` and `verify` too).
+
 ### `mock approve` takes a Bool
 
 - `mock approve "false"` approved: the scripted answer went through
