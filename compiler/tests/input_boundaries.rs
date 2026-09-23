@@ -132,7 +132,7 @@ case!(
     r#"
 cell A {
  face { signal result() -> Map<String, Int> }
- on result() { return map("_speed","bad") }
+ on result() { let v = "bad"  return map("_speed", v) }
 }
 cell test T { rules { assert_fails A.result() matching "type" } }
 "#
