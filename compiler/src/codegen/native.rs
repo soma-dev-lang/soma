@@ -173,6 +173,7 @@ pub fn generate_native_source_with_config(
             .collect();
         pre_sibling_info.insert(handler.signal_name.clone(), SiblingInfo {
             param_types,
+            param_names: handler.params.iter().map(|p| user_binding_name(&p.name).to_string()).collect(),
             // a placeholder the fixpoint RAISES from: starting at Float, `n *
             // fact(n - 1)` read Float and a recursive Int handler could never
             // come back to Int (every return counts since the second pass)
@@ -307,6 +308,7 @@ pub fn generate_native_source_with_config(
             .collect();
         sibling_info.insert(handler.signal_name.clone(), SiblingInfo {
             param_types,
+            param_names: handler.params.iter().map(|p| user_binding_name(&p.name).to_string()).collect(),
             return_type: NativeType::Int,  // placeholder the fixpoint raises from
             mode: *mode,
             int_rational: false,
@@ -359,6 +361,16 @@ pub fn generate_native_source_with_config(
     // interpreter kept as an Int — passes.
     out.push_str("#[inline(always)] #[allow(dead_code)] fn _soma_i2f_ret(v: i64) -> f64 { if v.unsigned_abs() > (1u64 << 53) { panic!(\"soma:range: an Int past 2^53 returned by a handler that may also return a Float loses digits in native code — return to_string(n), or split the handler\") } v as f64 }\n");
     out.push_str("#[inline(always)] #[allow(dead_code)] fn _soma_f2i(v: f64) -> i64 { if v.is_finite() && v.fract() == 0.0 && v.abs() <= 9007199254740992.0 { v as i64 } else { panic!(\"soma:type: this spot holds an Int, got the Float {} — native code never truncates: write floor(), round(), to_int() or idiv(a, b)\", _soma_fmt_f(v)) } }\n");
+    // a value an Int-only spot reads (a range bound, an Int builtin's
+    // argument, a sibling's Int parameter) carried as f64: `isf` says it is
+    // a Float to the interpreter (a Float source, or an inexact quotient) —
+    // then the interpreter's type error for that spot (`{v}`: the value);
+    // an exact Int passes
+    out.push_str("#[inline(never)] #[allow(dead_code)] fn _soma_int_ctx_fail(v: f64, isf: bool, msg: &str) -> ! { if !isf && v.is_finite() && v.fract() == 0.0 { panic!(\"soma:an exact Int computed from an Int / Int went past 2^53, where a Float (native `/` is typed Float) loses digits — write idiv(a, b) to keep the exact Int\") } panic!(\"soma:type: {}\", msg.replace(\"{v}\", &_soma_fmt_f(v))) }\n");
+    // Int / Int read where only an Int fits: the exact quotient, else the
+    // spot's own error with the Float the interpreter would have made
+    out.push_str("#[inline(always)] #[allow(dead_code)] fn _soma_div_ctx(a: i64, b: i64, msg: &str) -> i64 { if b == 0 { panic!(\"division by zero\") } match a.checked_rem(b) { Some(0) => a / b, Some(_) => _soma_int_ctx_fail(_soma_div_f(a, b), true, msg), None => panic!(\"attempt to divide with overflow\") } }\n");
+    out.push_str("#[inline(always)] #[allow(dead_code)] fn _soma_int_ctx(v: f64, isf: bool, msg: &str) -> i64 { if !isf && v.is_finite() && v.fract() == 0.0 && v.abs() <= 9007199254740992.0 { v as i64 } else { _soma_int_ctx_fail(v, isf, msg) } }\n");
     out.push_str("#[inline(always)] #[allow(dead_code)] fn _soma_int_arg(v: f64, name: &str) -> i64 { if v.is_finite() && v.fract() == 0.0 && v.abs() <= 9007199254740992.0 { v as i64 } else { panic!(\"soma:type: {}(): expected Int arguments, got Float {}\", name, _soma_fmt_f(v)) } }\n");
     // buffer(n) / buffer_f(n): a negative n became `(-3) as usize`, a
     // 16-exabyte allocation refused as "capacity overflow"
@@ -775,25 +787,67 @@ pub(crate) fn rename_bindings(params: &mut [Param], body: &mut [Spanned<Statemen
     for s in body.iter_mut() { r.stmt(&mut s.node); }
 }
 
-/// A generated Rust name back to the user's (`u_x` / `u2_x` → `x`), for
-/// messages that quote code.
-pub(crate) fn user_facing_names(msg: &str) -> String {
-    let b = msg.as_bytes();
-    let mut out = String::with_capacity(msg.len());
-    let mut i = 0;
-    while i < b.len() {
-        let at_word_start = i == 0 || !(b[i - 1].is_ascii_alphanumeric() || b[i - 1] == b'_');
-        if at_word_start && b[i] == b'u' {
-            let mut j = i + 1;
-            while j < b.len() && b[j].is_ascii_digit() { j += 1; }
-            if j < b.len() && b[j] == b'_' && j + 1 < b.len() && (b[j + 1].is_ascii_alphabetic() || b[j + 1] == b'_') {
-                i = j + 1;
-                continue;
+/// The user's name of a renamed binding (`u_x` / `u2_x` → `x`).
+pub(crate) fn user_binding_name(n: &str) -> &str {
+    if let Some(rest) = n.strip_prefix('u') {
+        let digits = rest.bytes().take_while(|b| b.is_ascii_digit()).count();
+        if let Some(name) = rest[digits..].strip_prefix('_') { return name; }
+    }
+    n
+}
+
+/// Every binding name of a renamed handler (parameters, lets, loop
+/// variables, lambda parameters).
+pub(crate) fn binding_names(params: &[Param], body: &[Spanned<Statement>]) -> HashSet<String> {
+    let mut out: HashSet<String> = params.iter().map(|p| p.name.clone()).collect();
+    fn stmts(body: &[Spanned<Statement>], out: &mut HashSet<String>) {
+        for st in body {
+            match &st.node {
+                Statement::Let { name, .. } => { out.insert(name.clone()); }
+                Statement::For { var, body, .. } => { out.insert(var.clone()); stmts(body, out); }
+                Statement::If { then_body, else_body, .. } => { stmts(then_body, out); stmts(else_body, out); }
+                Statement::While { body, .. } => stmts(body, out),
+                _ => {}
             }
         }
-        let ch = msg[i..].chars().next().unwrap();
-        out.push(ch);
-        i += ch.len_utf8();
+    }
+    stmts(body, &mut out);
+    out
+}
+
+/// The generated Rust names of `bindings` back to the user's (`u_x` /
+/// `u2_x` → `x`), for messages that quote code. Only those exact
+/// identifiers, and never inside a quoted string: a textual `u_` strip
+/// rewrote a sibling handler named `u_id` and the literal "u_x".
+pub(crate) fn user_facing_names(msg: &str, bindings: &HashSet<String>) -> String {
+    let mut out = String::with_capacity(msg.len());
+    let mut in_str = false;
+    let mut prev: Option<char> = None;
+    let mut chars = msg.char_indices().peekable();
+    while let Some((i, c)) = chars.next() {
+        if in_str {
+            out.push(c);
+            if c == '\\' {
+                if let Some((_, n)) = chars.next() { out.push(n); prev = Some(n); continue; }
+            } else if c == '"' { in_str = false; }
+            prev = Some(c);
+            continue;
+        }
+        if c == '"' { in_str = true; out.push(c); prev = Some(c); continue; }
+        let at_word_start = !prev.map_or(false, |p| p.is_alphanumeric() || p == '_');
+        if at_word_start && (c.is_alphabetic() || c == '_') {
+            let mut end = i + c.len_utf8();
+            let mut last = c;
+            while let Some(&(j, n)) = chars.peek() {
+                if n.is_alphanumeric() || n == '_' { end = j + n.len_utf8(); last = n; chars.next(); } else { break; }
+            }
+            let word = &msg[i..end];
+            if bindings.contains(word) { out.push_str(user_binding_name(word)); } else { out.push_str(word); }
+            prev = Some(last);
+            continue;
+        }
+        out.push(c);
+        prev = Some(c);
     }
     out
 }
@@ -809,6 +863,10 @@ const PANIC_GUARD_SUPPORT: &str = r#"
 thread_local! {
     static _SOMA_ERROR: std::cell::RefCell<Option<String>> = std::cell::RefCell::new(None);
     static _SOMA_GUARD_DEPTH: std::cell::Cell<u32> = std::cell::Cell::new(0);
+    // one per call from the host: a memo cache belongs to one call (it
+    // persisted, so the recursion depth — and the stack limit — depended
+    // on earlier calls, and a serving process only ever grew it)
+    static _SOMA_CALL_GEN: std::cell::Cell<u64> = std::cell::Cell::new(0);
 }
 static _SOMA_GUARD_HOOK: std::sync::Once = std::sync::Once::new();
 
@@ -822,6 +880,7 @@ fn _soma_guard<T: Default>(f: impl FnOnce() -> T) -> T {
             }
         }));
     });
+    if _SOMA_GUARD_DEPTH.with(|d| d.get()) == 0 { _SOMA_CALL_GEN.with(|g| g.set(g.get().wrapping_add(1))); }
     _SOMA_GUARD_DEPTH.with(|d| d.set(d.get() + 1));
     let r = std::panic::catch_unwind(std::panic::AssertUnwindSafe(f));
     _SOMA_GUARD_DEPTH.with(|d| d.set(d.get() - 1));
@@ -1110,6 +1169,15 @@ fn _soma_big2f_ret(v: Integer) -> f64 {
     v.to_f64()
 }
 
+/// Int / Int where only an Int fits, in BigInt mode (see _soma_div_ctx).
+#[allow(dead_code)]
+fn _soma_div_ctx_big(a: Integer, b: Integer, msg: &str) -> Integer {
+    if b == 0 { panic!("division by zero"); }
+    let (q, r) = Integer::from(&a).div_rem(Integer::from(&b));
+    if r != 0 { _soma_int_ctx_fail(_soma_div_f_big(a, b), true, msg) }
+    q
+}
+
 /// A Float where an Int is needed, in BigInt mode: exact when whole, else
 /// refused — `as i64` truncated 2.5 to 2 (and 1e20 to i64::MAX)
 #[allow(dead_code)]
@@ -1138,6 +1206,15 @@ fn _soma_mul_ck<A: _SomaBits, B: _SomaBits>(a: &A, b: &B) {
     if x + y > (1u64 << 24) {
         panic!("soma:range: range: an Int product of {} + {} bits is past the limit of {} bits", x, y, 1u64 << 24);
     }
+}
+
+/// bit_set / bit_clr past the Int size limit: the interpreter's words
+#[allow(dead_code)]
+fn _soma_bit_res(x: Integer, name: &str) -> Integer {
+    if x.significant_bits() > (1u32 << 24) {
+        panic!("soma:range: {}(): result is past the Int size limit", name);
+    }
+    x
 }
 
 #[allow(dead_code)]
@@ -1556,6 +1633,15 @@ fn gen_direct_inner_fn(
         "fn inner_{}({}) -> {} {{\n    let _depth_guard = _SomaDepth::enter();\n",
         fn_name, param_str, ret_type.rust_str()
     ));
+    // a String parameter the body assigns: an owned copy shadows the
+    // `&str` (`s = "z"` / `s = s + "!"` failed in rustc after a clean check)
+    let mut assigned: HashSet<String> = HashSet::new();
+    collect_assignment_targets(&handler.body, &mut assigned);
+    for p in &handler.params {
+        if type_expr_to_native(&p.ty.node) == NativeType::String && assigned.contains(&p.name) {
+            out.push_str(&format!("    let mut {}: String = {}.to_string();\n", p.name, p.name));
+        }
+    }
     out.push_str(&gen.q_prologue());
     for stmt in &handler.body {
         out.push_str(&gen.gen_stmt_direct(&stmt.node, 1));
@@ -1855,6 +1941,8 @@ fn emit_memo_wrapper_fast(
         "    thread_local! {{ static _MEMO: std::cell::RefCell<std::collections::HashMap<{}, i64>> = std::cell::RefCell::new(std::collections::HashMap::new()); }}\n",
         key_ty
     ));
+    out.push_str("    thread_local! { static _MEMO_GEN: std::cell::Cell<u64> = std::cell::Cell::new(0); }\n");
+    out.push_str("    let _gen = _SOMA_CALL_GEN.with(|g| g.get()); if _MEMO_GEN.with(|g| g.replace(_gen)) != _gen { _MEMO.with(|c| c.borrow_mut().clear()); }\n");
     out.push_str(&format!(
         "    if let Some(_v) = _MEMO.with(|c| c.borrow().get(&{}).copied()) {{ return _v; }}\n",
         key_expr
@@ -1918,6 +2006,8 @@ fn emit_memo_wrapper_rug(
         "    thread_local! {{ static _MEMO: std::cell::RefCell<std::collections::HashMap<{}, Integer>> = std::cell::RefCell::new(std::collections::HashMap::new()); }}\n",
         key_ty
     ));
+    out.push_str("    thread_local! { static _MEMO_GEN: std::cell::Cell<u64> = std::cell::Cell::new(0); }\n");
+    out.push_str("    let _gen = _SOMA_CALL_GEN.with(|g| g.get()); if _MEMO_GEN.with(|g| g.replace(_gen)) != _gen { _MEMO.with(|c| c.borrow_mut().clear()); }\n");
     // Try to pull i64 keys from each Integer arg. If any doesn't fit,
     // bypass the cache.
     for p in &handler.params {
@@ -3572,6 +3662,9 @@ struct SiblingInfo {
     /// Returns an Int quotient carried as f64 (`return n / 2`): a caller
     /// treats the call like any quotient (`to_string(half(8))` is "4").
     int_rational: bool,
+    /// The parameters' names as written (for the interpreter's
+    /// "parameter 'n' expects Int" message).
+    param_names: Vec<String>,
 }
 
 /// Context for the Rug-mode statement walker. Captures everything that
@@ -3678,6 +3771,13 @@ struct FnGenerator {
     /// `let` whose name is not used outside the loop).
     full_body: RefCell<Vec<Spanned<Statement>>>,
     param_names: HashSet<String>,
+    /// Int locals retyped Float because they are also given a Float.
+    promoted_floats: HashSet<String>,
+    /// The handler's (renamed) binding names, mapped back in messages.
+    binding_names: HashSet<String>,
+    /// BigInt mode, inside an Int-only builtin's arguments: the
+    /// interpreter's words for a Float there (see float_to_int_ctx).
+    int_ctx_msg: RefCell<Option<String>>,
 }
 
 impl FnGenerator {
@@ -3716,6 +3816,9 @@ impl FnGenerator {
             outer_rest: RefCell::new(Vec::new()),
             full_body: RefCell::new(Vec::new()),
             param_names: params.iter().map(|p| p.name.clone()).collect(),
+            promoted_floats: HashSet::new(),
+            binding_names: HashSet::new(),
+            int_ctx_msg: RefCell::new(None),
         }
     }
 
@@ -3756,7 +3859,7 @@ impl FnGenerator {
     }
 
     fn err(&self, msg: impl Into<String>) {
-        let m = format!("[{}] {}", self.handler_name, user_facing_names(&msg.into()));
+        let m = format!("[{}] {}", self.handler_name, user_facing_names(&msg.into(), &self.binding_names));
         self.errors.borrow_mut().push(m);
     }
 
@@ -4343,10 +4446,98 @@ impl FnGenerator {
     }
 
     fn infer_body_types(&mut self, body: &[Spanned<Statement>]) {
-        for stmt in body {
-            self.infer_stmt_types(&stmt.node);
+        self.binding_names = binding_names(&[], body);
+        self.binding_names.extend(self.param_names.iter().cloned());
+        // An Int local later given a Float (`let t = 0  t = f`, `t = t + f`
+        // in a loop, `t = fl(x)`) holds a Float when interpreted: its type
+        // is the join, a Float whose exactness flag says when the value is
+        // still an Int (it was read as an Int: 3.0 printed "3", bit_len(4.0)
+        // answered 3). Promotion feeds back into the types of the lets that
+        // read it: iterate to a fixpoint (Int → Float only, so it ends).
+        loop {
+            let before = self.var_types.clone();
+            for stmt in body {
+                self.infer_stmt_types(&stmt.node);
+            }
+            let mut promote: Vec<String> = Vec::new();
+            self.collect_float_promotions(body, &mut promote);
+            for n in &promote { self.promoted_floats.insert(n.clone()); self.var_types.insert(n.clone(), NativeType::Float); }
+            if before == self.var_types { break; }
+        }
+        // an Int PARAMETER given a Float keeps its Int representation (its
+        // callers pass an Int): refused, where it read the Float as an Int
+        let mut bad: Vec<String> = Vec::new();
+        self.collect_float_param_writes(body, &mut bad);
+        for p in bad {
+            self.err(format!("the Int parameter `{}` is later given a Float — a native parameter keeps its type: bind the Float to its own local (`let {}_f = …`)", user_binding_name(&p), user_binding_name(&p)));
         }
         self.rational_locals = self.compute_rational_locals(body);
+    }
+
+    /// Int locals (never parameters) assigned a value that is a Float for
+    /// a reason other than an Int / Int quotient (those keep the exact
+    /// Int-or-error lowering of an Int slot).
+    fn collect_float_promotions(&self, body: &[Spanned<Statement>], out: &mut Vec<String>) {
+        for st in body {
+            match &st.node {
+                Statement::Assign { name, value } => {
+                    if self.var_types.get(name).copied() == Some(NativeType::Int)
+                        && !self.param_names.contains(name)
+                        && self.is_genuine_float(&value.node)
+                        && !out.contains(name)
+                    {
+                        out.push(name.clone());
+                    }
+                }
+                Statement::If { then_body, else_body, .. } => {
+                    self.collect_float_promotions(then_body, out);
+                    self.collect_float_promotions(else_body, out);
+                }
+                Statement::While { body, .. } | Statement::For { body, .. } => self.collect_float_promotions(body, out),
+                _ => {}
+            }
+        }
+    }
+
+    fn collect_float_param_writes(&self, body: &[Spanned<Statement>], out: &mut Vec<String>) {
+        for st in body {
+            match &st.node {
+                Statement::Assign { name, value } => {
+                    if self.param_names.contains(name)
+                        && self.var_types.get(name).copied() == Some(NativeType::Int)
+                        && self.is_genuine_float(&value.node)
+                        && !out.contains(name)
+                    {
+                        out.push(name.clone());
+                    }
+                }
+                Statement::If { then_body, else_body, .. } => {
+                    self.collect_float_param_writes(then_body, out);
+                    self.collect_float_param_writes(else_body, out);
+                }
+                Statement::While { body, .. } | Statement::For { body, .. } => self.collect_float_param_writes(body, out),
+                _ => {}
+            }
+        }
+    }
+
+    /// A Float value that is no Int / Int quotient: a Float literal, a
+    /// Float local or parameter, a Float builtin, a sibling answering a
+    /// Float that is not an Int quotient, arithmetic over one of these.
+    fn is_genuine_float(&self, e: &Expr) -> bool {
+        match e {
+            Expr::Literal(Literal::Float(_)) => true,
+            Expr::Ident(n) => self.var_types.get(n).copied() == Some(NativeType::Float),
+            Expr::BinaryOp { left, op: BinOp::Add | BinOp::Sub | BinOp::Mul | BinOp::Div | BinOp::Mod, right } =>
+                self.infer_expr_type(e) == NativeType::Float && (self.is_genuine_float(&left.node) || self.is_genuine_float(&right.node)),
+            Expr::FnCall { name, args } => match name.as_str() {
+                "abs" | "min" | "max" => args.iter().any(|a| self.is_genuine_float(&a.node)),
+                _ if self.siblings.contains(name) => self.sibling_info.get(name).map_or(false, |s| s.return_type == NativeType::Float && !s.int_rational),
+                _ => self.infer_expr_type(e) == NativeType::Float
+                    && matches!(name.as_str(), "random" | "sqrt" | "log" | "exp" | "pow" | "sin" | "cos" | "tan" | "atan" | "atan2" | "asin" | "acos" | "pi" | "to_float" | "buf_get_f"),
+            },
+            _ => false,
+        }
     }
 
     fn infer_stmt_types(&mut self, stmt: &Statement) {
@@ -4374,7 +4565,8 @@ impl FnGenerator {
                         return;
                     }
                 }
-                let ty = self.infer_expr_type(&value.node);
+                let mut ty = self.infer_expr_type(&value.node);
+                if ty == NativeType::Int && self.promoted_floats.contains(name) { ty = NativeType::Float; }
                 self.var_types.insert(name.clone(), ty);
             }
             Statement::Assign { name, value } => {
@@ -4500,12 +4692,23 @@ impl FnGenerator {
 
     /// The exactness bools of the quotient locals `e` reads, or'd.
     fn q_shadows(&self, e: &Expr) -> String {
-        let mut names: Vec<String> = Vec::new();
-        crate::checker::literals::for_each_in_expr(e, &mut |x| {
-            if let Expr::Ident(n) = x {
-                if self.rational_locals.contains(n) && !names.contains(n) { names.push(n.clone()); }
+        // only the locals whose VALUE flows into e: `x / to_int(g)` reads g
+        // through an Int (it made an exact 4 print "4.0" after g held 1.5)
+        fn flow(e: &Expr, rational: &HashSet<String>, names: &mut Vec<String>) {
+            match e {
+                Expr::Ident(n) => { if rational.contains(n) && !names.contains(n) { names.push(n.clone()); } }
+                Expr::BinaryOp { left, op: BinOp::Add | BinOp::Sub | BinOp::Mul | BinOp::Div | BinOp::Mod, right } => {
+                    flow(&left.node, rational, names);
+                    flow(&right.node, rational, names);
+                }
+                Expr::FnCall { name, args } if matches!(name.as_str(), "abs" | "min" | "max") => {
+                    for a in args { flow(&a.node, rational, names); }
+                }
+                _ => {}
             }
-        });
+        }
+        let mut names: Vec<String> = Vec::new();
+        flow(e, &self.rational_locals, &mut names);
         if names.is_empty() { return "false".to_string(); }
         names.iter().map(|n| format!("__soma_qx_{}", n)).collect::<Vec<_>>().join(" || ")
     }
@@ -4515,7 +4718,9 @@ impl FnGenerator {
         let mut s = format!("    let _soma_q = _SomaQ::enter({});\n", self.int_rational_ret);
         let mut names: Vec<&String> = self.rational_locals.iter().collect();
         names.sort();
-        for n in names { s.push_str(&format!("    let mut __soma_qx_{}: bool = false;\n", n)); }
+        // a Float parameter holds a Float until a quotient replaces it (it
+        // started "exact": `if x > 0 { return f }  f = x / 2` printed 3 for 3.0)
+        for n in names { s.push_str(&format!("    let mut __soma_qx_{}: bool = {};\n", n, self.float_params.contains(n))); }
         s
     }
 
@@ -4904,7 +5109,7 @@ impl FnGenerator {
                 format!("{}let _ = {};\n", ind, code)
             }
             other => {
-                self.err(format!("unsupported statement in Direct mode: {:?}", other));
+                self.err(unsupported_stmt(other));
                 format!("{}// codegen error\n", ind)
             }
         }
@@ -4928,7 +5133,7 @@ impl FnGenerator {
                 // local could be `Integer` — convert via to_i64().
                 let a = self.gen_for_bound(&args[0].node);
                 let b = self.gen_for_bound(&args[1].node);
-                return format!("{}..{}", a, b);
+                return format!("({})..({})", a, b);
             }
         }
         self.err("unsupported for-loop iterator (only range(a, b) is supported)");
@@ -4939,8 +5144,13 @@ impl FnGenerator {
     /// modes — in Direct mode every Int local is already i64; in Rug mode,
     /// non-small Int locals/params are `Integer` and need .to_i64().unwrap().
     fn gen_for_bound(&self, expr: &Expr) -> String {
+        // a Float bound is the interpreter's type error (range(0, f) ran
+        // f times; range(0, 7 / 2) said "Int / Int is not exact here")
+        if self.infer_expr_type(expr) == NativeType::Float {
+            return format!("({})", self.float_to_int_ctx(expr, "range(start: Int, end: Int, step?: Int), got Float {v}"));
+        }
         if self.mode == Mode::Rug {
-            return self.gen_int_to_i64_rug(expr);
+            return self.gen_int_to_i64_rug_msg(expr, "\"soma:range: range(): bounds and step must fit in 64 bits\"");
         }
         self.gen_expr_direct(expr, NativeType::Int)
     }
@@ -4979,6 +5189,9 @@ impl FnGenerator {
                         NativeType::Bool => format!("({} != 0)", name),
                         NativeType::String => format!("{}.to_string()", name),
                     };
+                }
+                if var_ty == NativeType::Float && target_ty == NativeType::Int && self.rational_locals.contains(name) {
+                    return self.float_to_int_ctx(expr, INT_SPOT);
                 }
                 self.coerce_direct(name.clone(), var_ty, target_ty)
             }
@@ -5194,15 +5407,13 @@ impl FnGenerator {
         if self.infer_expr_type(expr) != NativeType::Float {
             return self.gen_expr_direct(expr, NativeType::Int);
         }
-        // Int / Int in an Int slot: the exact-or-error division, already i64
-        if let Expr::BinaryOp { left, op: BinOp::Div, right } = expr {
-            if self.infer_expr_type(&left.node) == NativeType::Int
-                && self.infer_expr_type(&right.node) == NativeType::Int
-            {
-                return self.gen_expr_direct(expr, NativeType::Int);
-            }
-        }
         let maybe_int = &self.rational_locals;
+        // an Int / Int chain: an Int when exact, the interpreter's type
+        // error when not (bit_len(7 / 2) said "Int / Int is not exact here")
+        if self.is_int_rational(expr, maybe_int) {
+            let msg = if fname == "str_at" { "str_at expects (String, Int)".to_string() } else { format!("{}(): expected Int arguments, got Float {{v}}", fname) };
+            return self.float_to_int_ctx(expr, &msg);
+        }
         if !self.is_int_rational(expr, maybe_int) {
             self.err(format!(
                 "{}() takes Ints, got the Float `{}` (the interpreter raises \"expected Int arguments, got Float\") — write floor(), round() or to_int() for the Int you mean",
@@ -5211,6 +5422,43 @@ impl FnGenerator {
             return "0i64".to_string();
         }
         format!("_soma_int_arg({}, \"{}\")", self.gen_expr_direct(expr, NativeType::Float), fname)
+    }
+
+    /// `a / b` of two Ints where only an Int fits: the exact quotient (a
+    /// BigInt one in BigInt mode — through f64 it was refused past 2^53),
+    /// else the spot's error `m` (already a Rust string body). `big`: an
+    /// Integer is wanted, else an i64.
+    fn int_div_ctx(&self, expr: &Expr, m: &str, big: bool) -> Option<String> {
+        let Expr::BinaryOp { left, op: BinOp::Div, right } = expr else { return None; };
+        if self.infer_expr_type(&left.node) != NativeType::Int || self.infer_expr_type(&right.node) != NativeType::Int { return None; }
+        if self.mode == Mode::Rug && !(self.is_small_int_expr(&left.node) && self.is_small_int_expr(&right.node)) {
+            let q = format!("_soma_div_ctx_big({}, {}, \"{}\")", self.gen_expr_rug(&left.node), self.gen_expr_rug(&right.node), m);
+            return Some(if big { q } else { format!("{}.to_i64().expect(\"BigInt overflow\")", q) });
+        }
+        let q = format!("_soma_div_ctx({}, {}, \"{}\")", self.gen_expr_direct(&left.node, NativeType::Int), self.gen_expr_direct(&right.node, NativeType::Int), m);
+        Some(if big { format!("Integer::from({})", q) } else { q })
+    }
+
+    /// A Float-typed value read where only an Int fits, as an i64. The
+    /// exact Int an Int / Int chain carries passes — its exactness flags
+    /// decide at run time (bit_len(t) of `let t = 0.0  if … { t = x }`
+    /// answered 0 for the Float 0.0); a Float is the interpreter's error
+    /// `msg` for that spot (`{v}` stands for the value).
+    fn float_to_int_ctx(&self, expr: &Expr, msg: &str) -> String {
+        let ctx = self.int_ctx_msg.borrow().clone();
+        let msg = match ctx { Some(c) if msg == INT_SPOT => c, _ => msg.to_string() };
+        let m = rust_str_body(&msg);
+        if let Expr::Ident(n) = expr {
+            if self.rational_locals.contains(n) {
+                return format!("_soma_int_ctx({}, __soma_qx_{}, \"{}\")", n, n, m);
+            }
+        }
+        if let Some(code) = self.int_div_ctx(expr, &m, false) { return code; }
+        let v = self.gen_expr_direct(expr, NativeType::Float);
+        if self.is_int_rational(expr, &self.rational_locals) {
+            return format!("{{ let _w = _soma_q_take(); let _q: f64 = {}; let _n = _soma_q_take(); _soma_q_mark(_w || _n); _soma_int_ctx(_q, _n || {}, \"{}\") }}", v, self.q_shadows(expr), m);
+        }
+        format!("_soma_int_ctx({}, true, \"{}\")", v, m)
     }
 
     /// `to_string(x)` for a Float-typed x. An Int / Int chain prints as the
@@ -5725,8 +5973,13 @@ impl FnGenerator {
         let calling_fast_variant =
             self.mode == Mode::Direct && self.dualmode_siblings.contains(name);
         let effective_mode = if calling_fast_variant { Mode::Direct } else { sibling.mode };
-        let arg_strs: Vec<String> = args.iter().zip(sibling.param_types.iter())
-            .map(|(arg, &expected)| {
+        let arg_strs: Vec<String> = args.iter().zip(sibling.param_types.iter()).enumerate()
+            .map(|(idx, (arg, &expected))| {
+                if expected == NativeType::Int && self.infer_expr_type(&arg.node) == NativeType::Float {
+                    // a Float for an Int parameter: the interpreter's error;
+                    // an exact quotient is an Int (`sq(n / 2)` for 8 is sq(4))
+                    return if effective_mode == Mode::Rug { self.float_to_big_param(name, idx, &arg.node) } else { self.float_to_int_param(name, idx, &arg.node) };
+                }
                 if effective_mode == Mode::Rug && expected == NativeType::Int {
                     // Sibling expects Integer: from BigInt code, the Integer
                     // itself (it went through i64 and raised past 64 bits:
@@ -5737,7 +5990,7 @@ impl FnGenerator {
                 } else if expected == NativeType::Int && self.mode == Mode::Rug {
                     // a 64-bit-only sibling: past 64 bits the call reruns
                     // interpreted
-                    self.marshal_arg_to_sibling(name, &arg.node, NativeType::Int, Mode::Direct)
+                    self.marshal_arg_to_sibling(name, idx, &arg.node, NativeType::Int, Mode::Direct)
                 } else if expected == NativeType::String {
                     // String params are passed by &str — pass a borrow
                     // when we can, otherwise build an owned String and
@@ -5760,10 +6013,6 @@ impl FnGenerator {
                             self.gen_expr_direct(&arg.node, NativeType::String)
                         }
                     }
-                } else if expected == NativeType::Int && self.infer_expr_type(&arg.node) == NativeType::Float
-                    && !self.is_int_rational(&arg.node, &self.rational_locals) {
-                    // an exact quotient is an Int (`sq(n / 2)` for 8 is sq(4))
-                    self.float_to_int_param(name, &arg.node)
                 } else {
                     self.gen_expr_direct(&arg.node, expected)
                 }
@@ -6033,7 +6282,7 @@ impl FnGenerator {
                 format!("{}let _ = {};\n", ind, code)
             }
             other => {
-                self.err(format!("unsupported statement in Rug mode: {:?}", other));
+                self.err(unsupported_stmt(other));
                 format!("{}// codegen error\n", ind)
             }
         }
@@ -6224,6 +6473,14 @@ impl FnGenerator {
 
     /// Rug-mode expression returning rug::Integer.
     fn gen_expr_rug(&self, expr: &Expr) -> String {
+        // a Float value where an Integer is wanted (`bit_len(t + 1)` of a
+        // Float local): checked at run time like any Int spot — an Int / Int
+        // quotient keeps its exact BigInt division below
+        let int_div = matches!(expr, Expr::BinaryOp { left, op: BinOp::Div, right }
+            if self.infer_expr_type(&left.node) != NativeType::Float && self.infer_expr_type(&right.node) != NativeType::Float);
+        if !int_div && matches!(expr, Expr::BinaryOp { .. }) && self.infer_expr_type(expr) == NativeType::Float {
+            return format!("Integer::from({})", self.float_to_int_ctx(expr, INT_SPOT));
+        }
         match expr {
             Expr::Literal(Literal::Int(n)) => format!("Integer::from({}i64)", n),
             Expr::Ident(name) => {
@@ -6233,6 +6490,7 @@ impl FnGenerator {
                         format!("Integer::from({})", name)
                     }
                     NativeType::Int => format!("{}.clone()", name),
+                    NativeType::Float if self.rational_locals.contains(name) => format!("Integer::from({})", self.float_to_int_ctx(expr, INT_SPOT)),
                     // never `as i64` (BigInt mode truncated sq(2.5) to sq(2))
                     NativeType::Float => format!("_soma_f2big({})", name),
                     NativeType::Bool => {
@@ -6436,6 +6694,14 @@ impl FnGenerator {
 
     /// Convert a Rug-mode Int expression to an i64 (for use as a usize index, etc.)
     fn gen_int_to_i64_rug(&self, expr: &Expr) -> String {
+        self.gen_int_to_i64_rug_msg(expr, &format!("\"{}\"", BIG_BOUND))
+    }
+
+    /// The same, with the panic! arguments said when the value is past 64
+    /// bits (`_v` is the Integer): each spot has the interpreter's words
+    /// (str_at's "an Int argument past 64 bits", range's "bounds and step
+    /// must fit in 64 bits" — both said "(an index too)" natively).
+    fn gen_int_to_i64_rug_msg(&self, expr: &Expr, big: &str) -> String {
         match expr {
             Expr::Literal(Literal::Int(n)) => format!("{}i64", n),
             Expr::Ident(name) => {
@@ -6444,7 +6710,7 @@ impl FnGenerator {
                     if self.small_int_vars.contains(name) {
                         name.clone()
                     } else {
-                        format!("{}.to_i64().unwrap_or_else(|| panic!(\"{}\"))", name, BIG_BOUND)
+                        format!("({{ let _v: &Integer = &{}; _v.to_i64().unwrap_or_else(|| panic!({})) }})", name, big)
                     }
                 } else {
                     // never `as i64` for a Float (it truncated)
@@ -6453,8 +6719,8 @@ impl FnGenerator {
             }
             // operands that fit i64 as a whole: i64 arithmetic
             Expr::BinaryOp { left, op, right } if self.is_small_int_expr(expr) => {
-                let l = self.gen_int_to_i64_rug(&left.node);
-                let r = self.gen_int_to_i64_rug(&right.node);
+                let l = self.gen_int_to_i64_rug_msg(&left.node, big);
+                let r = self.gen_int_to_i64_rug_msg(&right.node, big);
                 // an index `i / 2` is exact or an error, as everywhere
                 if matches!(op, BinOp::Div) { return format!("_soma_div_exact({}, {})", l, r); }
                 format!("({} {} {})", l, arith_op_str(*op), r)
@@ -6462,7 +6728,7 @@ impl FnGenerator {
             // otherwise the VALUE is narrowed, not each operand: `big % 10`
             // is a fine index of a BigInt (it raised "must fit in 64 bits")
             _ if self.infer_expr_type(expr) == NativeType::Int =>
-                format!("({{ let _v: Integer = {}; _v.to_i64().unwrap_or_else(|| panic!(\"{}\")) }})", self.gen_expr_rug(expr), BIG_BOUND),
+                format!("({{ let _v: Integer = {}; _v.to_i64().unwrap_or_else(|| panic!({})) }})", self.gen_expr_rug(expr), big),
             _ => self.gen_expr_direct(expr, NativeType::Int),
         }
     }
@@ -6482,6 +6748,8 @@ impl FnGenerator {
                         // Already an Integer — just borrow
                         format!("&{}", name)
                     }
+                } else if self.rational_locals.contains(name) {
+                    format!("&Integer::from({})", self.float_to_int_ctx(expr, INT_SPOT))
                 } else {
                     format!("&_soma_f2big({})", name)
                 }
@@ -6509,6 +6777,7 @@ impl FnGenerator {
                 match var_ty {
                     NativeType::Int if self.small_int_vars.contains(name) => name.clone(),
                     NativeType::Int => format!("&{}", name),
+                    NativeType::Float if self.rational_locals.contains(name) => self.float_to_int_ctx(expr, INT_SPOT),
                     NativeType::Float => format!("_soma_f2i({})", name),
                     NativeType::Bool => format!("(if {} {{ 1i64 }} else {{ 0i64 }})", name),
                     NativeType::String => {
@@ -6664,8 +6933,8 @@ impl FnGenerator {
             "bit_clr" => "false",
             _ => return None,
         };
-        let i = format!("_soma_bit_index({}, \"{}\")", self.gen_int_to_i64_rug(&args[1].node), fname);
-        Some(format!("{}{}.set_bit(({}) as u32, {});\n", ind, name, i, bit_value))
+        let i = format!("_soma_bit_index({}, \"{}\")", self.gen_int_to_i64_rug_msg(&args[1].node, &format!("\"soma:range: {}(): bit index {{}} out of range\", _v", fname)), fname);
+        Some(format!("{}{}.set_bit(({}) as u32, {}); if {}.significant_bits() > (1u32 << 24) {{ panic!(\"soma:range: {}(): result is past the Int size limit\") }}\n", ind, name, i, bit_value, name, fname))
     }
 
     /// Match `name = name * name` and produce `name.square_mut()`.
@@ -6756,7 +7025,7 @@ impl FnGenerator {
                         // the index is checked as bit_test's own (a negative
                         // one read bit 4294967295; a small local shifted by
                         // 64+ panicked "shift right with overflow")
-                        let i = format!("_soma_bit_index({}, \"bit_test\")", self.gen_int_to_i64_rug(&args[1].node));
+                        let i = format!("_soma_bit_index({}, \"bit_test\")", self.gen_int_to_i64_rug_msg(&args[1].node, "\"soma:range: bit_test(): bit index {} out of range\", _v"));
                         let getbit = if let Expr::Ident(name) = &args[0].node {
                             if self.small_int_vars.contains(name) {
                                 format!("{{ let (_k, _a): (i64, i64) = ({}, {}); if _k >= 64 {{ _a < 0 }} else {{ ((_a >> _k) & 1i64) != 0 }} }}", i, name)
@@ -6939,7 +7208,7 @@ impl FnGenerator {
             {
                 let info = self.sibling_info.get(name).cloned().unwrap();
                 let arg_strs: Vec<String> = args.iter().zip(info.param_types.iter())
-                    .map(|(arg, &expected)| self.marshal_arg_to_sibling(name, &arg.node, expected, info.mode))
+                    .enumerate().map(|(idx, (arg, &expected))| self.marshal_arg_to_sibling(name, idx, &arg.node, expected, info.mode))
                     .collect();
                 format!("inner_handler_{}({})", name, arg_strs.join(", "))
             }
@@ -6972,6 +7241,22 @@ impl FnGenerator {
     }
 
     fn gen_fn_call_rug(&self, name: &str, args: &[Spanned<Expr>]) -> String {
+        // a Float argument of an Int-only builtin raises the interpreter's
+        // words (BigInt mode said "this spot holds an Int")
+        let msg = match name {
+            "str_at" => Some("str_at expects (String, Int)".to_string()),
+            "band" | "bor" | "bxor" | "bnot" | "shl" | "shr" | "bit_test" | "bit_set" | "bit_clr" | "bit_next" | "bit_len"
+            | "gcd" | "sqrt_int" | "pow_mod" | "random" => Some(format!("{}(): expected Int arguments, got Float {{v}}", name)),
+            _ => None,
+        };
+        if msg.is_none() || self.siblings.contains(name) { return self.gen_fn_call_rug_inner(name, args); }
+        let prev = self.int_ctx_msg.replace(msg);
+        let out = self.gen_fn_call_rug_inner(name, args);
+        *self.int_ctx_msg.borrow_mut() = prev;
+        out
+    }
+
+    fn gen_fn_call_rug_inner(&self, name: &str, args: &[Spanned<Expr>]) -> String {
         match name {
             // Buffer accessors — emit Vec indexing wrapped in Integer
             // (callers in Rug mode expect Integer return values).
@@ -7154,7 +7439,7 @@ impl FnGenerator {
                 };
                 // The index is an Int expression in Rug mode (could be Integer)
                 // — produce code that yields a usize.
-                let i_int = self.gen_int_to_i64_rug(&args[1].node);
+                let i_int = self.gen_int_to_i64_rug_msg(&args[1].node, "\"soma:range: str_at(): an Int argument past 64 bits (a count, index or width is at most 2^63 - 1)\"");
                 format!("Integer::from(_soma_str_at(&{}, {}))", s_name, i_int)
             }
             "min" | "max" if args.len() == 2 => {
@@ -7182,7 +7467,7 @@ impl FnGenerator {
             }
             "floor" | "ceil" | "round" => {
                 let a = self.gen_expr_direct(&args[0].node, NativeType::Float);
-                format!("({{ let _f: f64 = ({}).{}(); if !_f.is_finite() {{ panic!(\"soma:{}: {{}} is out of integer range\", _f) }} Integer::from_f64(_f).unwrap() }})", a, name, name)
+                format!("({{ let _f: f64 = ({}).{}(); if !_f.is_finite() {{ panic!(\"soma:range: {}: {{}} has no integer value\", _f) }} Integer::from_f64(_f).unwrap() }})", a, name, name)
             }
             // Bit operations on Integer — need owned operands so the result
             // can be a BigInt regardless of operand sizes.
@@ -7235,8 +7520,8 @@ impl FnGenerator {
                 // Wrap the base in Integer so the shift can produce a BigInt
                 // (u32 << u32 in plain Rust would panic for shift > 31).
                 let a = self.gen_expr_rug(&args[0].node);
-                let b = self.gen_int_to_i64_rug(&args[1].node);
-                format!("{{ let (_k, _a) = ({}, Integer::from({})); if _k < 0 || _k > (1i64 << 24) {{ panic!(\"soma:type: shl(): shift count {{}} out of range\", _k) }} _soma_bits_cap(_a << (_k as u32)) }}", b, a)
+                let b = self.gen_int_to_i64_rug_msg(&args[1].node, "\"soma:range: shl(): shift count {} out of range\", _v");
+                format!("{{ let (_k, _a) = ({}, Integer::from({})); if _k < 0 || _k > (1i64 << 24) {{ panic!(\"soma:type: shl(): shift count {{}} out of range\", _k) }} if _a.significant_bits() as u64 + _k as u64 > (1u64 << 24) {{ panic!(\"soma:range: range: shl() would build an Int of {{}} bits, past the limit of {{}}\", _a.significant_bits() as u64 + _k as u64, 1u64 << 24) }} _a << (_k as u32) }}", b, a)
             }
             "shr" if args.len() == 2 => {
                 let a = self.gen_expr_rug(&args[0].node);
@@ -7255,7 +7540,7 @@ impl FnGenerator {
                 // an Integer ident. For small_int_var idents (i64), use a
                 // pure-i64 shift. For non-idents, fall through to building
                 // an Integer.
-                let b = format!("_soma_bit_index({}, \"{}\")", self.gen_int_to_i64_rug(&args[1].node), name);
+                let b = format!("_soma_bit_index({}, \"{}\")", self.gen_int_to_i64_rug_msg(&args[1].node, &format!("\"soma:range: {}(): bit index {{}} out of range\", _v", name)), name);
                 if let Expr::Ident(name) = &args[0].node {
                     if self.small_int_vars.contains(name) {
                         return format!("Integer::from({{ let (_k, _a): (i64, i64) = ({}, {}); if _k >= 64 {{ if _a < 0 {{ 1i64 }} else {{ 0i64 }} }} else {{ (_a >> _k) & 1i64 }} }})", b, name);
@@ -7273,19 +7558,19 @@ impl FnGenerator {
                 // new value (for non-self-assign uses; self-assign goes
                 // through try_inplace_bit and never reaches here).
                 let a = self.gen_expr_rug(&args[0].node);
-                let b = format!("_soma_bit_index({}, \"{}\")", self.gen_int_to_i64_rug(&args[1].node), name);
-                format!("{{ let (mut _t, _k) = (Integer::from({}), {}); _t.set_bit(_k as u32, true); _soma_bits_cap(_t) }}", a, b)
+                let b = format!("_soma_bit_index({}, \"{}\")", self.gen_int_to_i64_rug_msg(&args[1].node, &format!("\"soma:range: {}(): bit index {{}} out of range\", _v", name)), name);
+                format!("{{ let (mut _t, _k) = (Integer::from({}), {}); _t.set_bit(_k as u32, true); _soma_bit_res(_t, \"bit_set\") }}", a, b)
             }
             "bit_clr" if args.len() == 2 => {
                 let a = self.gen_expr_rug(&args[0].node);
-                let b = format!("_soma_bit_index({}, \"{}\")", self.gen_int_to_i64_rug(&args[1].node), name);
-                format!("{{ let (mut _t, _k) = (Integer::from({}), {}); _t.set_bit(_k as u32, false); _soma_bits_cap(_t) }}", a, b)
+                let b = format!("_soma_bit_index({}, \"{}\")", self.gen_int_to_i64_rug_msg(&args[1].node, &format!("\"soma:range: {}(): bit index {{}} out of range\", _v", name)), name);
+                format!("{{ let (mut _t, _k) = (Integer::from({}), {}); _t.set_bit(_k as u32, false); _soma_bit_res(_t, \"bit_clr\") }}", a, b)
             }
             // bit_next(x, start) — find the next 1-bit at position ≥ start
             // (or -1 if none). Maps to rug's find_one which uses GMP's
             // mpz_scan1 — O(1) amortized over the limbs.
             "bit_next" if args.len() == 2 => {
-                let b = format!("_soma_bit_index({}, \"{}\")", self.gen_int_to_i64_rug(&args[1].node), name);
+                let b = format!("_soma_bit_index({}, \"{}\")", self.gen_int_to_i64_rug_msg(&args[1].node, &format!("\"soma:range: {}(): bit index {{}} out of range\", _v", name)), name);
                 if let Expr::Ident(name) = &args[0].node {
                     if self.small_int_vars.contains(name) {
                         // i64 path: mask off bits below b, then trailing_zeros
@@ -7322,12 +7607,12 @@ impl FnGenerator {
                 format!("{{ if Integer::from({}) < 0 {{ panic!(\"soma:type: pow_mod: negative exponent (a modular inverse is not computed)\") }} if Integer::from({}) == 0 {{ panic!(\"soma:type: pow_mod: modulus is zero\") }} ({}).pow_mod({}, {}).expect(\"pow_mod failed\") }}", exp, m, base, exp, m)
             }
             "random" if args.len() == 1 => {
-                let m = self.gen_int_to_i64_rug(&args[0].node);
+                let m = self.gen_int_to_i64_rug_msg(&args[0].node, "\"soma:range: random(): an Int argument past 64 bits (a count, index or width is at most 2^63 - 1)\"");
                 format!("Integer::from(_soma_random_below(0, {}))", m)
             }
             "random" if args.len() == 2 => {
-                let lo = self.gen_int_to_i64_rug(&args[0].node);
-                let hi = self.gen_int_to_i64_rug(&args[1].node);
+                let lo = self.gen_int_to_i64_rug_msg(&args[0].node, "\"soma:range: random(): an Int argument past 64 bits (a count, index or width is at most 2^63 - 1)\"");
+                let hi = self.gen_int_to_i64_rug_msg(&args[1].node, "\"soma:range: random(): an Int argument past 64 bits (a count, index or width is at most 2^63 - 1)\"");
                 format!("Integer::from(_soma_random_below({}, {}))", lo, hi)
             }
             "sqrt_int" if args.len() == 1 => {
@@ -7356,7 +7641,7 @@ impl FnGenerator {
         sibling: &SiblingInfo,
     ) -> String {
         let arg_strs: Vec<String> = args.iter().zip(sibling.param_types.iter())
-            .map(|(arg, &expected)| self.marshal_arg_to_sibling(name, &arg.node, expected, sibling.mode))
+            .enumerate().map(|(idx, (arg, &expected))| self.marshal_arg_to_sibling(name, idx, &arg.node, expected, sibling.mode))
             .collect();
         let call = format!("inner_handler_{}({})", name, arg_strs.join(", "));
         // Convert return to Integer
@@ -7377,16 +7662,28 @@ impl FnGenerator {
     /// `callee_mode`: the sibling's mode
     /// A Float handed to an Int parameter of a sibling: the interpreter
     /// refuses it ("expects Int, got Float 3.0"), native code passed 3.
-    fn float_to_int_param(&self, sibling: &str, arg: &Expr) -> String {
-        let v = self.gen_expr_direct(arg, NativeType::Float);
-        let msg = format!("soma:type: {}(): an Int parameter got the Float {{}}", sibling);
-        format!("{{ let _f: f64 = {}; panic!(\"{}\", _soma_fmt_f(_f)) }}", v, msg)
+    fn float_to_int_param(&self, sibling: &str, idx: usize, arg: &Expr) -> String {
+        self.float_to_int_ctx(arg, &self.param_msg(sibling, idx))
     }
 
-    fn marshal_arg_to_sibling(&self, callee: &str, expr: &Expr, expected: NativeType, callee_mode: Mode) -> String {
-        if expected == NativeType::Int && self.infer_expr_type(expr) == NativeType::Float
-            && !self.is_int_rational(expr, &self.rational_locals) {
-            return self.float_to_int_param(callee, expr);
+    fn param_msg(&self, sibling: &str, idx: usize) -> String {
+        let p = self.sibling_info.get(sibling).and_then(|i| i.param_names.get(idx).cloned()).unwrap_or_default();
+        format!("{}(): parameter '{}' expects Int, got Float {{v}}", sibling, p)
+    }
+
+    /// The same for a parameter taking an Integer (a BigInt quotient stays exact).
+    fn float_to_big_param(&self, sibling: &str, idx: usize, arg: &Expr) -> String {
+        let m = rust_str_body(&self.param_msg(sibling, idx));
+        if let Some(code) = self.int_div_ctx(arg, &m, true) { return code; }
+        format!("Integer::from({})", self.float_to_int_param(sibling, idx, arg))
+    }
+
+    fn marshal_arg_to_sibling(&self, callee: &str, idx: usize, expr: &Expr, expected: NativeType, callee_mode: Mode) -> String {
+        // a Float handed to an Int parameter: the interpreter's message
+        // ("an Int parameter got the Float" was native wording); an exact
+        // Int / Int quotient passes
+        if expected == NativeType::Int && self.infer_expr_type(expr) == NativeType::Float {
+            return if callee_mode == Mode::Rug { self.float_to_big_param(callee, idx, expr) } else { self.float_to_int_param(callee, idx, expr) };
         }
         if expected == NativeType::Int && callee_mode == Mode::Rug {
             // Callee expects Integer
@@ -7606,6 +7903,9 @@ const SIBLING_RERUN: &str = "soma:overflow_rerun: a BigInt argument to a 64-bit 
 
 /// An index or a range bound past 64 bits (it leaked Rust's "called
 /// `Option::unwrap()` on a `None` value").
+/// A Float where an Int must be, in a spot with no message of its own.
+const INT_SPOT: &str = "this spot holds an Int, got the Float {v} — native code never truncates: write floor(), round(), to_int() or idiv(a, b)";
+
 const BIG_BOUND: &str = "soma:range: range(): bounds and step must fit in 64 bits (an index too)";
 
 /// `mut ` when the loop body assigns its own loop variable: `i = i + 2`
@@ -7667,3 +7967,17 @@ const RX_REP_HELPER: &str = r#"
     out
 }
 "#;
+
+/// A statement the native emitters do not compile, in the user's words
+/// (it was a Debug dump of the AST, spans and generated names included).
+fn unsupported_stmt(s: &Statement) -> String {
+    let what = match s {
+        Statement::Ensure { .. } => "`ensure`",
+        Statement::Require { .. } => "`require`",
+        Statement::Emit { .. } => "`emit`",
+        Statement::MethodCall { .. } => "a method call",
+        Statement::IndexSet { .. } => "an indexed assignment (`x[k] = v`)",
+        _ => "this statement",
+    };
+    format!("{} is not in the native vocabulary — do it in an interpreted handler that calls this one", what)
+}

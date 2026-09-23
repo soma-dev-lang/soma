@@ -3664,7 +3664,8 @@ cell test T { rules {
     assert sqmod(1000, 10) == 0
     assert_fails sqmod(100000001, 1) matching "2^53"
     assert acc(8, 2) == 12
-    assert_fails acc(7, 2) matching "never truncates"
+    assert acc(7, 2) == 10.5
+    assert type_of(acc(8, 2)) == "Int"
 } }
 "#);
 }
@@ -4517,8 +4518,8 @@ cell P {
     on isq(x: Float) [native] { return sq(x) }
 }
 cell test T { rules {
-    assert_fails c(50, 2.5) matching "Int parameter got the Float"
-    assert_fails isq(3.0) matching "Int parameter got the Float"
+    assert_fails c(50, 2.5) matching "sq(): parameter 'n' expects Int, got Float 2.5"
+    assert_fails isq(3.0) matching "sq(): parameter 'n' expects Int, got Float 3.0"
     assert h(5, 0.0 - 1.0) == 5
     assert_fails h(100000000000000001, 0.0 - 1.0) matching "2^53"
     assert g(2.5) == 250
@@ -4558,7 +4559,7 @@ cell test T { rules {
     assert f(30) == 265252859812191058636308480000000
     assert even(10) == true
     assert a(8) == 16
-    assert_fails a(7) matching "not exact"
+    assert_fails a(7) matching "sq(): parameter 'x' expects Int, got Float 3.5"
     assert m(1000, 10) == 0
     assert_fails m(100000001, 1) matching "2^53"
 } }
@@ -7029,5 +7030,101 @@ fn ninth_pass_request_maps_forms_fresh_and_check_order() {
     let out = Command::new(env!("CARGO_BIN_EXE_soma")).args(["test", ".", "--json"]).current_dir(&dir).output().unwrap();
     let v: serde_json::Value = serde_json::from_slice(&out.stdout).unwrap();
     assert!(v.as_object().unwrap().contains_key("note"), "{v}");
+    let _ = std::fs::remove_dir_all(dir);
+}
+
+#[test]
+fn native_eighth_pass() {
+    // an Int local given a Float is a Float (joined type); a Float parameter
+    // starts as a Float; a quotient read through to_int() is exact; Float
+    // range bounds / Int arguments raise the interpreter's errors; String
+    // parameters can be assigned; 64-bit and size-limit texts as interpreted;
+    // Rust keywords as names; the memo cache belongs to one call
+    passes("native_eighth_pass", r#"
+cell A {
+    on join_lit(f: Float) [native] { let t = 0  t = f  return to_string(t) }
+    on join_loop(x: Int, f: Float) [native] { let t = 0  for i in range(0, x) { t = t + f }  return to_string(t) }
+    on join_lit2(x: Int) [native] { let t = 0  if x > 0 { t = 1.5 }  return to_string(t) }
+    on fl(x: Int) [native] { return to_float(x) * 1.5 }
+    on join_sib(x: Int) [native] { let t = 0  t = fl(x)  return to_string(t) }
+    on join_int_spot(x: Int, f: Float) [native] { let t = 1  if x > 0 { t = f }  return bit_len(t) }
+    on zero_spot(x: Int) [native] { let t = 0.0  if x > 0 { t = x }  return bit_len(t) }
+    on join_idx(f: Float) [native] { let t = 1  t = f  return str_at("abcdef", t) }
+    on fparam(x: Int, f: Float) [native] { if x > 0 { return to_string(f) }  f = x / 2  return to_string(f) }
+    on fparam_ret(x: Int, f: Float) [native] { if x > 0 { return f * 2 }  f = x / 2  return f }
+    on through_int(x: Int, f: Float) [native] { f = f + 0.5  f = x / to_int(f)  return to_string(f) }
+    on fbound(f: Float) [native] { let t = 0  for i in range(0, f) { t = t + i }  return t }
+    on fstart(f: Float) [native] { let t = 0  for i in range(f, 5) { t = t + i }  return t }
+    on qbound(x: Int) [native] { let t = 0  for i in range(0, x / 2) { t = t + i }  return t }
+    on ii(n: Int) [native] { return n + 1 }
+    on fparam_sib(f: Float) [native] { return ii(f) }
+    on sassign(s: String) [native] { s = s + "!"  s = to_string(str_len(s)) + s  return s }
+    on sset(x: Int, s: String) [native] { let t = "q"  if x > 1 { s = t }  return s }
+    on sgrow(s: String, x: Int) [native] { let t = s  for i in range(0, x) { t = t + "x" }  return t }
+    on bigend(x: Int) [native] { let t = 0  for i in range(9223372036854775805, 9223372036854775805 + 3) { t = t + 1 }  return t + x }
+    on bigidx(x: Int, s: String) [native] { let big = shl(x, 70)  return str_at(s, big) }
+    on bigbound(x: Int) [native] { let big = shl(x, 70)  let t = 0  for i in range(0, big) { t = t + 1 }  return t }
+    on shlcap(k: Int) [native] { let x = shl(1, k)  return bit_len(shl(x, k)) }
+    on bitcap(x: Int, k: Int) [native] { let big = shl(x, 70)  let r = bit_set(big, k)  return bit_len(r) }
+    on floorinf(x: Int, f: Float) [native] { let v = bit_set(x, 68)  return pow_mod(floor(f / 0.0), 22, 45) }
+    on kw(n: Int) [native] { let fn = n + 1  let String = fn * 2  let loop = 0  for impl in range(0, 3) { loop = loop + impl }  return String + loop }
+    on kself(self: Int, type: Float) [native] { return self * 2 + to_int(type) }
+    on memo(n: Int) [native] {
+        if n < 2 { return n }
+        return (memo(n - 1) + memo(n - 2)) % 1000000007
+    }
+}
+cell test T { rules {
+    assert join_lit(3.0) == "3.0"
+    assert join_lit(3.5) == "3.5"
+    assert join_loop(3, 1.0) == "3.0"
+    assert join_loop(0, 1.0) == "0"
+    assert join_lit2(1) == "1.5"
+    assert join_lit2(0) == "0"
+    assert join_sib(2) == "3.0"
+    assert join_int_spot(0, 4.0) == 1
+    assert_fails join_int_spot(1, 4.0) matching "bit_len(): expected Int arguments, got Float 4.0"
+    assert_fails zero_spot(0) matching "bit_len(): expected Int arguments, got Float 0.0"
+    assert zero_spot(4) == 3
+    assert_fails join_idx(2.0) matching "str_at expects (String, Int)"
+    assert fparam(1, 3.0) == "3.0"
+    assert fparam(-4, 3.0) == "-2"
+    assert fparam(-3, 3.0) == "-1.5"
+    assert to_string(fparam_ret(1, 3.0)) == "6.0"
+    assert to_string(fparam_ret(-4, 3.0)) == "-2"
+    assert through_int(4, 0.75) == "4"
+    assert_fails fbound(3.0) matching "range(start: Int, end: Int, step?: Int), got Float 3.0"
+    assert_fails fstart(2.0) matching "range(start: Int, end: Int, step?: Int), got Float 2.0"
+    assert qbound(6) == 3
+    assert_fails qbound(7) matching "range(start: Int, end: Int, step?: Int), got Float 3.5"
+    assert_fails fparam_sib(2.0) matching "ii(): parameter 'n' expects Int, got Float 2.0"
+    assert sassign("p") == "2p!"
+    assert sset(4, "p") == "q"
+    assert sset(0, "p") == "p"
+    assert sgrow("a", 3) == "axxx"
+    assert_fails bigend(1) matching "range(): bounds and step must fit in 64 bits"
+    assert_fails bigidx(1, "abc") matching "str_at(): an Int argument past 64 bits"
+    assert_fails bigbound(1) matching "bounds and step must fit in 64 bits"
+    assert_fails shlcap(8388609) matching "shl() would build an Int of 16777219 bits"
+    assert_fails bitcap(5, 16777216) matching "bit_set(): result is past the Int size limit"
+    assert_fails floorinf(1, 2.0) matching "floor: inf has no integer value"
+    assert kw(3) == 11
+    assert kself(3, 2.5) == 8
+    assert memo(15000) == 180112895
+    assert_fails memo(30000) matching "stack overflow"
+} }
+"#);
+    let dir = scratch("native_eighth_pass_check");
+    // only the generated names map back in messages: a sibling `u_id` and a
+    // literal "u_x" are quoted as written
+    std::fs::write(dir.join("a.cell"), "cell A {\n    on u_id(s: String) [native] { return s }\n    on f(x: Int, s: String) [native] {\n        if x > 0 { let t = s  return to_int(t + u_id(\"u_x\")) }\n        return 0\n    }\n}\n").unwrap();
+    let (code, out) = soma(&dir, &["check", "a.cell"]);
+    assert_ne!(code, 0, "{out}");
+    assert!(out.contains("`to_int(t + u_id(\"u_x\"))`"), "{out}");
+    // an Int parameter given a Float is refused (its callers pass an Int)
+    std::fs::write(dir.join("b.cell"), "cell B {\n    on f(x: Int, g: Float) [native] { x = x + g  return x }\n}\n").unwrap();
+    let (code, out) = soma(&dir, &["check", "b.cell"]);
+    assert_ne!(code, 0, "{out}");
+    assert!(out.contains("the Int parameter `x` is later given a Float"), "{out}");
     let _ = std::fs::remove_dir_all(dir);
 }

@@ -2086,7 +2086,8 @@ cell N {
 "#).unwrap();
     let (out, code) = soma_in(&d, &["check", "n.cell"]);
     assert_ne!(code, 0, "{out}");
-    assert!(out.contains("arithmetic on a Bool") && out.contains("a word Rust reserves"), "{out}");
+    // a Rust keyword as a name compiles (bindings are renamed `u_fn`)
+    assert!(out.contains("arithmetic on a Bool") && !out.contains("Rust reserves") && !out.contains("handler 'g'"), "{out}");
 
     std::fs::write(d.join("t.cell"), "cell agent T { on a(q: String) { return think(q, map(\"max_tokens\", 5, \"schema\", 1)) } on b(q: String) { return think(q, map(\"max_tokens\", 5, \"tools_allowed\", [])) } }\n").unwrap();
     let (out, code) = soma_in(&d, &["check", "t.cell"]);

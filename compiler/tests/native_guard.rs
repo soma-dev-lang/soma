@@ -296,9 +296,11 @@ fn native_int_builtins_refuse_floats_and_keep_exact_quotients() {
         let out = run(sig, "7", "0", "0");
         assert!(out.contains("band(): expected Int arguments, got Float 3.5"), "{sig}: {out}");
     }
-    // a non-exact quotient in pow_mod's exponent slot is an error, not a value
+    // a non-exact quotient in pow_mod's exponent slot is the interpreter's
+    // error, not a value
     let out = run("bigexp_n", "3", "6", "4");
-    assert!(out.contains("not exact") && out.contains("idiv"), "got: {out}");
+    assert!(out.contains("pow_mod(): expected Int arguments, got Float 1.5"), "got: {out}");
+    assert_eq!(out, run("bigexp_i", "3", "6", "4"), "interpreted and native agree");
     assert!(!out.contains("internal"), "got: {out}");
 
     // a Float literal or parameter in an Int-only builtin is refused statically

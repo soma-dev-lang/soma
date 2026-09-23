@@ -164,8 +164,9 @@ pub fn check_native_handler(
     let mut params = params.to_vec();
     let mut body = body.to_vec();
     crate::codegen::native::rename_bindings(&mut params, &mut body);
+    let bindings = crate::codegen::native::binding_names(&params, &body);
     check_native_handler_renamed(handler_name, &params, &body, siblings).map_err(|mut e| {
-        e.reason = crate::codegen::native::user_facing_names(&e.reason);
+        e.reason = crate::codegen::native::user_facing_names(&e.reason, &bindings);
         e
     })
 }
@@ -216,25 +217,8 @@ fn check_native_handler_renamed(
             _ => {}
         }
     });
-    fn grows_text(stmts: &[Spanned<Statement>], texts: &HashSet<String>) -> Option<String> {
-        stmts.iter().find_map(|st| match &st.node {
-            Statement::Assign { name, value } if texts.contains(name) && matches!(value.node, Expr::BinaryOp { op: BinOp::Add, .. }) => Some(name.clone()),
-            Statement::If { then_body, else_body, .. } => grows_text(then_body, texts).or_else(|| grows_text(else_body, texts)),
-            Statement::For { body, .. } | Statement::While { body, .. } => grows_text(body, texts),
-            _ => None,
-        })
-    }
-    // only a local that ALIASES a String parameter (`let u = s`, a &str in
-    // Rust) cannot grow; `let r = ""  r = r + …` compiles
-    let param_aliases: HashSet<String> = body.iter().filter_map(|st| match &st.node {
-        Statement::Let { name, value } if matches!(&value.node, Expr::Ident(n) if params.iter().any(|p| &p.name == n && matches!(&p.ty.node, TypeExpr::Simple(t) if t == "String"))) => Some(name.clone()),
-        _ => None,
-    }).collect();
-    if problem.is_none() {
-        if let Some(n) = grows_text(body, &param_aliases) {
-            problem = Some(format!("grows the String `{}` with + — build text with strbuf() / sb_push / sb_finish", n));
-        }
-    }
+    // a local copied from a String parameter (`let t = s`) grows with `+`
+    // like any String local: the copy is an owned String
     // a Float buffer index was truncated silently (buf_set(b, 1.7, 9) wrote b[1])
     if problem.is_none() {
         let mut floats: HashSet<String> = params.iter()
@@ -258,27 +242,8 @@ fn check_native_handler_renamed(
             }
         });
     }
-    // names Rust reserves: `let fn = 1` / `on f(loop: Int)` passed check and
-    // rustc refused the generated code
-    if problem.is_none() {
-        const RUST_WORDS: &[&str] = &["as", "async", "await", "break", "const", "continue", "crate", "dyn", "else", "enum", "extern", "false", "fn", "for", "if", "impl", "in", "let", "loop", "match", "mod", "move", "mut", "pub", "ref", "return", "self", "Self", "static", "struct", "super", "trait", "true", "type", "unsafe", "use", "where", "while", "abstract", "become", "box", "do", "final", "macro", "override", "priv", "typeof", "unsized", "virtual", "yield", "try", "gen", "union", "None", "Some", "Ok", "Err", "Vec", "String", "Option", "Result", "Box"];
-        let mut names: Vec<String> = params.iter().map(|p| p.name.clone()).collect();
-        fn binders(stmts: &[Spanned<Statement>], out: &mut Vec<String>) {
-            for st in stmts {
-                match &st.node {
-                    Statement::Let { name, .. } => out.push(name.clone()),
-                    Statement::For { var, body, .. } => { out.push(var.clone()); binders(body, out); }
-                    Statement::If { then_body, else_body, .. } => { binders(then_body, out); binders(else_body, out); }
-                    Statement::While { body, .. } => binders(body, out),
-                    _ => {}
-                }
-            }
-        }
-        binders(body, &mut names);
-        if let Some(n) = names.iter().map(|n| crate::codegen::native::user_facing_names(n)).find(|n| RUST_WORDS.contains(&n.as_str())) {
-            problem = Some(format!("names a value `{}`, a word Rust reserves — rename it (`{}_`)", n, n));
-        }
-    }
+    // a name Rust reserves (`let fn = 1`, a parameter `self`) is fine:
+    // every binding is renamed (`u_fn`) before code generation
     // a Bool in arithmetic: native code turned `b * 10 + 1` into a Bool
     // (true), the interpreter raises "cannot add Bool and Int"
     if problem.is_none() {
@@ -539,23 +504,9 @@ fn has_float_literal(e: &Expr) -> bool {
 
 fn check_codegen_limits(handler_name: &str, body: &[Spanned<Statement>], bufs: &mut HashSet<String>) -> Result<(), NativeCheckError> {
     let err = |reason: String| Err(NativeCheckError { handler_name: handler_name.to_string(), reason });
-    // `let x = 0 … x = 1.5`: one native variable has one type (rustc
-    // "mismatched types" used to be the message)
-    let int_lets: HashSet<String> = body.iter().filter_map(|st| match &st.node {
-        Statement::Let { name, value } if matches!(value.node, Expr::Literal(Literal::Int(_))) => Some(name.clone()),
-        _ => None,
-    }).collect();
-    fn assigns_float(stmts: &[Spanned<Statement>], ints: &HashSet<String>) -> Option<String> {
-        stmts.iter().find_map(|st| match &st.node {
-            Statement::Assign { name, value } if ints.contains(name) && has_float_literal(&value.node) => Some(name.clone()),
-            Statement::If { then_body, else_body, .. } => assigns_float(then_body, ints).or_else(|| assigns_float(else_body, ints)),
-            Statement::For { body, .. } | Statement::While { body, .. } => assigns_float(body, ints),
-            _ => None,
-        })
-    }
-    if let Some(n) = assigns_float(body, &int_lets) {
-        return err(format!("`{n}` starts as an Int and is later given a Float — a native variable has one type: start it as a Float (`let {n} = 0.0`)"));
-    }
+    // `let x = 0 … x = 1.5` is fine: the code generator types such a
+    // local as the join of what it holds (a Float that knows when it is
+    // still an Int), as the interpreter's value is
     // one type per variable and per return: Bool / String / number do not
     // mix (each passed check and failed in rustc with "mismatched types")
     fn lit_kind(e: &Expr) -> Option<&'static str> {
