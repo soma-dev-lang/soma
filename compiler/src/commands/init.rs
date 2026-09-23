@@ -7,6 +7,17 @@ pub fn cmd_init(name: Option<&str>) {
     let cwd = std::env::current_dir().unwrap();
 
     let (project_dir, project_name) = if let Some(n) = name {
+        // a new directory named by plain segments: `work/tmp/..` is the
+        // existing `work` (it was initialized over), and the last segment is
+        // the package name written into soma.toml (`bad name` was taken)
+        let path = std::path::Path::new(n);
+        let plain = path.components().all(|c| matches!(c, std::path::Component::Normal(_)));
+        let last = path.file_name().and_then(|f| f.to_str()).unwrap_or("");
+        let name_ok = !last.is_empty() && !last.starts_with('.') && last.chars().all(|c| c.is_ascii_alphanumeric() || c == '-' || c == '_' || c == '.');
+        if !plain || !name_ok {
+            eprintln!("error: '{}' is not a project name — use letters, digits, '-', '_' (an optional parent path of plain directories, no '..' or absolute path)", n);
+            process::exit(1);
+        }
         let dir = cwd.join(n);
         if dir.exists() {
             eprintln!("error: directory '{}' already exists", n);
@@ -16,7 +27,7 @@ pub fn cmd_init(name: Option<&str>) {
             eprintln!("error: cannot create directory '{}': {}", n, e);
             process::exit(1);
         });
-        (dir, n.to_string())
+        (dir, last.to_string())
     } else {
         let n = cwd.file_name()
             .and_then(|n| n.to_str())
@@ -54,8 +65,8 @@ pub fn cmd_init(name: Option<&str>) {
         fs::write(&agents_path, AGENTS_MD).ok();
     }
 
-    let rel_prefix = if name.is_some() {
-        format!("{}/", project_name)
+    let rel_prefix = if let Some(n) = name {
+        format!("{}/", n.trim_end_matches('/'))
     } else {
         String::new()
     };

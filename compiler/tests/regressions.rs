@@ -5025,3 +5025,49 @@ cell test T { rules {
 } }
 "#);
 }
+
+#[test]
+fn serve_fifth_pass() {
+    let dir = scratch("serve_fifth_pass");
+    std::fs::write(dir.join("app.cell"), r#"
+cell App {
+    memory { c: Map<String, Int> [persistent] }
+    on mkey(k: String) { let conf = map("api_key", "sk-live-123")  return conf[k] + 1 }
+    on _debit(n: Int) { c.set("d", n)  return n }
+    on st2(code: Int) { c.set("z", 1)  return with(response(200, "x"), "_status", code) }
+    on js() { return response(200, to_json("hi"), "Content-Type", "application/json") }
+    on typ(x: Any) { return type_of(x) }
+    on put(k: String, v: String) { c.set(k, 1)  return k }
+}
+"#).unwrap();
+    let (_server, port) = serve_dir(&dir);
+    let out = raw_request(port, "POST /mkey/api_key HTTP/1.0\r\nHost: localhost\r\nContent-Length: 0\r\n\r\n");
+    assert!(out.contains("cannot add String and Int") && !out.contains("sk-live"), "{out}");
+    // a private handler is not confirmed by a 405
+    let out = get(port, "/signal/_debit");
+    assert!(!out.contains(" 405 "), "{out}");
+    // a bad _status is refused before the write commits
+    let out = raw_request(port, "POST /st2/700 HTTP/1.0\r\nHost: localhost\r\nContent-Length: 0\r\n\r\n");
+    assert!(out.contains("_status"), "{out}");
+    assert!(get(port, "/js").contains("\r\n\r\n\"hi\""));
+    assert!(get(port, "/typ/1.5").contains("Float"));
+    // an unsupported transfer coding and non-UTF-8 escapes are refused
+    let out = raw_request(port, "POST /put/a/b HTTP/1.1\r\nHost: localhost\r\nTransfer-Encoding: gzip\r\nConnection: close\r\n\r\n{}");
+    assert!(out.contains(" 501 "), "{out}");
+    let out = raw_request(port, "POST /put/%E9/x HTTP/1.0\r\nHost: localhost\r\nContent-Length: 0\r\n\r\n");
+    assert!(out.contains(" 400 "), "{out}");
+    // a preflight allows the headers asked for
+    let out = raw_request(port, "OPTIONS /put HTTP/1.0\r\nHost: localhost\r\nOrigin: http://x\r\nAccess-Control-Request-Method: POST\r\nAccess-Control-Request-Headers: x-api-key\r\n\r\n");
+    assert!(out.to_ascii_lowercase().contains("x-api-key"), "{out}");
+    drop(_server);
+    // soma test <dir>: a one-line test cell runs, a file that does not parse fails
+    let tdir = dir.join("t");
+    std::fs::create_dir_all(&tdir).unwrap();
+    std::fs::write(tdir.join("one.cell"), "cell B { on g(x: Int) { return x } } cell test U { rules { assert B.g(1) == 999 } }\n").unwrap();
+    let (code, out) = soma(&dir, &["test", "t"]);
+    assert_ne!(code, 0, "{out}");
+    // soma init refuses a path through ..
+    let (code, _) = soma(&dir, &["init", "t/x/.."]);
+    assert_ne!(code, 0);
+    let _ = std::fs::remove_dir_all(dir);
+}

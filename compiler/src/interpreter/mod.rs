@@ -871,6 +871,21 @@ pub fn is_http_response(v: &Value) -> bool {
     matches!(v, Value::Map(m) if matches!(m.get("_response"), Some(Value::Lambda { param, .. }) if param == HTTP_MARK))
 }
 
+/// A response's `_status` changed after response()/html(): checked where it
+/// is written, before the handler's writes commit (`with(r, "_status", 700)`
+/// answered 500 after them, a String status was ignored: 200).
+pub fn check_response_status(v: &Value) -> Result<(), RuntimeError> {
+    if let (true, Value::Map(m)) = (is_http_response(v), v) {
+        match m.get("_status") {
+            None => {}
+            Some(Value::Int(si)) if si.to_i64().map_or(false, |n| (200..=599).contains(&n)) => {}
+            Some(other) => return Err(RuntimeError::Domain { kind: "response".to_string(), message: format!(
+                "_status: the status must be an HTTP status Int 200–599, got {} {}", value_type_name(other), other) }),
+        }
+    }
+    Ok(())
+}
+
 /// Handlers some `emit` of this program targets (set by `soma serve`).
 /// The most elements (characters, list items, matrix cells) one builtin call
 /// builds: a single absurd size in a request aborted the whole process
@@ -1754,7 +1769,14 @@ impl Interpreter {
                             return Err(ExecError::Runtime(RuntimeError::Domain { kind: "type".to_string(), message: format!(
                                 "{}[()] = …: the key is () — an absent value (a mistyped field?) cannot be a key", name) }));
                         }
-                        entries.insert(format!("{}", idx_val), new_val);
+                        let key = format!("{}", idx_val);
+                        if key == "_status" && matches!(entries.get("_response"), Some(Value::Lambda { param, .. }) if param == HTTP_MARK) {
+                            let mut probe = IndexMap::new();
+                            probe.insert("_status".to_string(), new_val.clone());
+                            probe.insert("_response".to_string(), http_marker());
+                            check_response_status(&Value::Map(probe)).map_err(ExecError::Runtime)?;
+                        }
+                        entries.insert(key, new_val);
                         Ok(Value::Unit)
                     }
                     // a record: `l.qty = v` on a struct variant sets a declared field

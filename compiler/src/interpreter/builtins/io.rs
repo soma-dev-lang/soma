@@ -148,7 +148,8 @@ pub fn call_builtin(name: &str, args: &[Value]) -> Option<Result<Value, RuntimeE
             }
             // a header is ASCII: `/café` went out as a 302 with no Location —
             // its non-ASCII bytes are percent-encoded, as a browser does
-            let url: String = url.bytes().map(|b| if b >= 0x80 { format!("%{:02X}", b) } else { (b as char).to_string() }).collect();
+            // (a space too: `Location: /a b` is no URL)
+            let url: String = url.bytes().map(|b| if b >= 0x80 || b == b' ' { format!("%{:02X}", b) } else { (b as char).to_string() }).collect();
             Some(Ok(map_from_pairs(vec![
                 ("_status".to_string(), Value::Int(SomaInt::from_i64(302))),
                 ("_body".to_string(), Value::String(String::new())),

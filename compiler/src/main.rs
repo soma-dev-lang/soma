@@ -1027,9 +1027,18 @@ fn run_over_dir(cmd: &str, dir: &std::path::Path, json: bool, extra: &[&str]) ->
     // cell) has nothing to run — it was counted as a failed file, so every
     // multi-file project failed `soma test .`
     if cmd == "test" {
-        let has_tests = regex::Regex::new(r"(?m)^\s*cell\s+test\b").unwrap();
+        // parsed, not matched by a line regex: `} cell test U {…}` on one
+        // line was "skipped"; a file that does not parse is run (and fails)
+        // instead of skipped with exit 0
+        let has_tests = |text: &str| -> bool {
+            let Ok(tokens) = lexer::Lexer::new(text).tokenize() else { return true };
+            match parser::Parser::new(tokens).parse_program() {
+                Ok(p) => p.cells.iter().any(|c| matches!(c.node.kind, ast::CellKind::Test)),
+                Err(_) => true,
+            }
+        };
         let (with, without): (Vec<_>, Vec<_>) = files.into_iter()
-            .partition(|f| std::fs::read_to_string(f).map_or(true, |t| has_tests.is_match(&t)));
+            .partition(|f| std::fs::read_to_string(f).map_or(true, |t| has_tests(&t)));
         for f in &without { eprintln!("── {} ── no test cells, skipped", f.display()); }
         if with.is_empty() {
             eprintln!("no test cells in any .cell file under {}", dir.display());

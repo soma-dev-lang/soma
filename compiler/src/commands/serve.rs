@@ -876,6 +876,11 @@ pub fn cmd_serve(path: &PathBuf, port: u16, host: &str, verbose: bool, join: Opt
         let loopback_bind = matches!(host, "127.0.0.1" | "localhost" | "::1");
 
         let natives = natives.clone();
+        // `emit` from `on ws` reaches [peers] and sharded writes replicate, as
+        // from an HTTP handler (the ws interpreter had neither: silent loss)
+        let ws_peer_bus = peer_bus.clone();
+        let ws_cluster = cluster_node.clone();
+        let ws_sharded = sharded_slots.clone();
         crate::interpreter::spawn_handler_thread(move || {
             let listener = match std::net::TcpListener::bind(format!("{}:{}", ws_host, ws_port)) {
                 Ok(l) => l,
@@ -949,6 +954,9 @@ pub fn cmd_serve(path: &PathBuf, port: u16, host: &str, verbose: bool, join: Opt
                 let next_client = next_client.clone();
 
                 let natives = natives.clone();
+                let ws_peer_bus = ws_peer_bus.clone();
+                let ws_cluster = ws_cluster.clone();
+                let ws_sharded = ws_sharded.clone();
                 crate::interpreter::spawn_handler_thread(move || {
                     // a client that stops reading: its send times out and it is
                     // dropped (the blocking broadcast stalled every other client
@@ -1036,6 +1044,8 @@ pub fn cmd_serve(path: &PathBuf, port: u16, host: &str, verbose: bool, join: Opt
                                 interp.set_storage_raw(&slots);
                                 interp.ensure_state_machine_storage();
                                 interp.event_bus = Some(bus.clone());
+                                interp.peer_bus = Some(ws_peer_bus.clone());
+                                if let Some(ref c) = ws_cluster { interp.set_cluster(c.clone(), &ws_sharded); }
 
                                 let args = vec![interpreter::Value::String(text)];
                                 let started = std::time::Instant::now();
@@ -1411,6 +1421,18 @@ pub fn cmd_serve(path: &PathBuf, port: u16, host: &str, verbose: bool, join: Opt
                 let _ = request.respond(cors(resp));
                 continue;
             }
+            // a transfer coding other than plain `chunked` (gzip, identity, a
+            // list): the body went unread and the handler answered 200 on an
+            // empty one — 501, as RFC 9112 §6.1 says, and the connection closes
+            let tes: Vec<String> = request.headers().iter().filter(|h| h.field.as_str().as_str().eq_ignore_ascii_case("transfer-encoding")).map(|h| h.value.as_str().trim().to_ascii_lowercase()).collect();
+            if !tes.is_empty() && (tes.len() > 1 || tes[0] != "chunked") {
+                poison(&request);
+                let resp = tiny_http::Response::from_string(error_body("the only Transfer-Encoding the server reads is `chunked`", "not_implemented"))
+                    .with_status_code(501)
+                    .with_header(tiny_http::Header::from_bytes(&b"Connection"[..], &b"close"[..]).unwrap());
+                let _ = request.respond(cors(resp));
+                continue;
+            }
             if has("content-length") && has("transfer-encoding") {
                 poison(&request);
                 let resp = tiny_http::Response::from_string(error_body("a request may not carry both Content-Length and Transfer-Encoding", "bad_request"))
@@ -1551,18 +1573,43 @@ pub fn cmd_serve(path: &PathBuf, port: u16, host: &str, verbose: bool, join: Opt
             return;
         }
 
+        // escapes that decode to no UTF-8 text (`%E9` alone): each became
+        // U+FFFD, so `/put/%E9` and `/put/%EA` wrote the same key
+        if !url_escapes_are_utf8(&url) {
+            let resp = tiny_http::Response::from_string(error_body("the URL's percent-escapes are not UTF-8 text (encode é as %C3%A9)", "bad_request"))
+                .with_status_code(400)
+                .with_header(tiny_http::Header::from_bytes(&b"Content-Type"[..], &b"application/json"[..]).unwrap());
+            eprintln!("{} {} → 400 0ms URL escapes are not UTF-8", method, log_safe(&url));
+            let _ = request.respond(cors(resp));
+            return;
+        }
+
         if method == "OPTIONS" {
+            // the headers the browser asks for (`x-api-key`, `idempotency-key`)
+            // when they are header tokens; only Content-Type, Authorization
+            // were allowed, so a client with its own header was blocked
+            let asked: String = request.headers().iter()
+                .find(|h| h.field.as_str().as_str().eq_ignore_ascii_case("access-control-request-headers"))
+                .map(|h| h.value.as_str().to_string()).unwrap_or_default();
+            let mut allow = vec!["Content-Type".to_string(), "Authorization".to_string()];
+            for name in asked.split(',').map(str::trim).filter(|n| !n.is_empty()) {
+                let token = name.len() <= 64 && name.bytes().all(|b| b.is_ascii_alphanumeric() || b"!#$%&'*+-.^_`|~".contains(&b));
+                if token && !allow.iter().any(|a| a.eq_ignore_ascii_case(name)) && allow.len() < 32 { allow.push(name.to_string()); }
+            }
+            let allow_headers = allow.join(", ");
             let resp = tiny_http::Response::from_string("")
                 .with_status_code(204)
                 .with_header(tiny_http::Header::from_bytes(&b"Access-Control-Allow-Origin"[..], &b"*"[..]).unwrap())
                 .with_header(tiny_http::Header::from_bytes(&b"Access-Control-Allow-Methods"[..], &b"GET, POST, PUT, PATCH, DELETE, OPTIONS"[..]).unwrap())
-                .with_header(tiny_http::Header::from_bytes(&b"Access-Control-Allow-Headers"[..], &b"Content-Type, Authorization"[..]).unwrap())
+                .with_header(tiny_http::Header::from_bytes(&b"Access-Control-Allow-Headers"[..], allow_headers.as_bytes()).unwrap())
                 .with_header(tiny_http::Header::from_bytes(&b"Access-Control-Max-Age"[..], &b"86400"[..]).unwrap());
             let _ = request.respond(cors(resp));
             return;
         }
 
-        if url.starts_with("/static/") {
+        // a path `request` matches explicitly is request's, `/static/…` too
+        let owned_by_request = |u: &str| handler_names.iter().any(|h| h == "request") && request_routes.matches(u.split('?').next().unwrap_or(u));
+        if url.starts_with("/static/") && !owned_by_request(&url) {
             // drop any ?query (cache-busting `a.css?v=2`) before hitting disk
             // `/static/my%20file.css` names `my file.css` (it was looked up
             // with the escapes in, a 404); a path's `+` is a plus
@@ -1674,8 +1721,11 @@ pub fn cmd_serve(path: &PathBuf, port: u16, host: &str, verbose: bool, join: Opt
         // `Get`, TRACE…) is a read
         if !matches!(method.to_ascii_uppercase().as_str(), "POST" | "PUT" | "PATCH" | "DELETE") {
             let url_path = url.split('?').next().unwrap_or(&url);
-            let target: Option<&str> = if let Some(sig) = url_path.strip_prefix("/signal/") {
-                Some(sig)
+            let target: Option<&str> = if let Some(sig) = url_path.strip_prefix("/signal/").filter(|_| !owned_by_request(url_path)) {
+                // only an endpoint: a private, event-only or request-owned
+                // handler answered 405 here, confirming it exists
+                (handler_names.iter().any(|h| h == sig) && routable(&handler_names, sig)
+                    && !request_routes.first_segments().iter().any(|f| f == sig)).then_some(sig)
             } else {
                 let sig = url_path.trim_start_matches('/').split('/').next().unwrap_or("");
                 // a request-owned handler or tool is not an endpoint: its GET is
@@ -1696,7 +1746,7 @@ pub fn cmd_serve(path: &PathBuf, port: u16, host: &str, verbose: bool, join: Opt
         }
 
         let body_method = matches!(method.to_ascii_uppercase().as_str(), "POST" | "PUT" | "PATCH" | "DELETE");
-        let (signal_name, args) = if url.starts_with("/signal/") {
+        let (signal_name, args) = if url.starts_with("/signal/") && !owned_by_request(&url) {
             let signal = url.trim_start_matches("/signal/");
             let (sig_name, query) = signal.split_once('?').unwrap_or((signal, ""));
             if !handler_names.iter().any(|h| h == sig_name) || !routable(&handler_names, sig_name) || request_routes.first_segments().iter().any(|f| f == sig_name) {
@@ -1740,12 +1790,9 @@ pub fn cmd_serve(path: &PathBuf, port: u16, host: &str, verbose: bool, join: Opt
                     // PATH is a plus sign (only a query encodes spaces so)
                     rest.trim_end_matches('/').split('/')
                         .map(|s| {
-                            let decoded = urlencoding_decode(&s.replace('+', "%2B"));
-                            if let Some(n) = decoded.parse::<i64>().ok().filter(|n| n.to_string() == decoded) {
-                                interpreter::Value::Int(crate::interpreter::soma_int::SomaInt::from_i64(n))
-                            } else {
-                                interpreter::Value::String(decoded)
-                            }
+                            // as a query value is read (`/typ/1.5` was a String
+                            // where `?x=1.5` was a Float for an `Any` parameter)
+                            coerce_query_value(&urlencoding_decode(&s.replace('+', "%2B")))
                         })
                         .collect()
                 };
@@ -2026,7 +2073,10 @@ pub fn cmd_serve(path: &PathBuf, port: u16, host: &str, verbose: bool, join: Opt
                             interpreter::Value::Map(_) | interpreter::Value::List(_) | interpreter::Value::Variant { .. } =>
                                 interpreter::builtins::string::to_json_string(&body_val),
                             interpreter::Value::String(s) => {
-                                if (s.starts_with('{') || s.starts_with('[')) && serde_json::from_str::<serde_json::Value>(s).is_ok() { s.clone() }
+                                // an explicit JSON Content-Type sends any JSON text
+                                // as it is (`to_json("hi")` was wrapped again)
+                                let json_ct = explicit_ct.is_some() && content_type.contains("json");
+                                if (json_ct || s.starts_with('{') || s.starts_with('[')) && serde_json::from_str::<serde_json::Value>(s).is_ok() { s.clone() }
                                 else { serde_json::json!({ "result": s }).to_string() }
                             }
                             // valid JSON: NaN / inf → null, a lambda → its text
@@ -2179,7 +2229,13 @@ fn cors<R: std::io::Read>(mut r: tiny_http::Response<R>) -> tiny_http::Response<
 /// names, and a failed guard without its source (`role == "owner"` told
 /// every API client the rule); the server log keeps everything.
 fn client_error_text(e: &interpreter::RuntimeError) -> String {
-    let text = hide_private_names(&format!("{}", e));
+    let mut text = hide_private_names(&format!("{}", e));
+    // the values a runtime error quotes stay in the log: `cannot multiply
+    // Map and Int: {"pw_hash": …} * 2` sent another user's record, and
+    // `got String sk-live-…` a secret, to any client
+    if !matches!(e, interpreter::RuntimeError::RequireFailed(_)) {
+        text = redact_values(&text);
+    }
     if e.kind() == "guard_failed" {
         if let Some(i) = text.find(": `") { return text[..i].to_string(); }
     }
@@ -2199,6 +2255,15 @@ fn client_error_text(e: &interpreter::RuntimeError) -> String {
         }
     }
     text
+}
+
+fn redact_values(text: &str) -> String {
+    static OP: std::sync::OnceLock<regex::Regex> = std::sync::OnceLock::new();
+    static GOT: std::sync::OnceLock<regex::Regex> = std::sync::OnceLock::new();
+    let op = OP.get_or_init(|| regex::Regex::new(r"(?s)(cannot [a-z]+ [A-Za-z]+ and [A-Za-z]+): .*?( — one side is \(\).*)?$").unwrap());
+    let got = GOT.get_or_init(|| regex::Regex::new(r"(?s)\b(got|found) (Int|Float|String|Bool|List|Map|Variant|Function|Unit|Lambda) .*?( — .*)?$").unwrap());
+    let text = op.replace(text, "$1$2");
+    got.replace(&text, "$1 $2$3").into_owned()
 }
 
 fn hide_private_names(message: &str) -> String {
@@ -2389,6 +2454,23 @@ fn coerce_query_value(decoded: &str) -> interpreter::Value {
     } else {
         interpreter::Value::String(decoded.to_string())
     }
+}
+
+/// Every run of percent-escapes in the URL decodes to UTF-8 text.
+fn url_escapes_are_utf8(url: &str) -> bool {
+    let raw = url.as_bytes();
+    let mut bytes = Vec::with_capacity(raw.len());
+    let mut i = 0;
+    while i < raw.len() {
+        if raw[i] == b'%' && i + 2 < raw.len() && raw[i + 1].is_ascii_hexdigit() && raw[i + 2].is_ascii_hexdigit() {
+            bytes.push((hex_val(raw[i + 1]) << 4) | hex_val(raw[i + 2]));
+            i += 3;
+        } else {
+            bytes.push(raw[i]);
+            i += 1;
+        }
+    }
+    std::str::from_utf8(&bytes).is_ok()
 }
 
 pub(crate) fn urlencoding_decode(s: &str) -> String {

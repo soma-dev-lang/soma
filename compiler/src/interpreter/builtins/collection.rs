@@ -249,7 +249,9 @@ pub fn call_builtin(name: &str, args: &[Value]) -> Option<Result<Value, RuntimeE
                         result.insert(key, val);
                         i += 2;
                     }
-                    Some(Ok(Value::Map(result)))
+                    let out = Value::Map(result);
+                    if let Err(e) = crate::interpreter::check_response_status(&out) { return Some(Err(e)); }
+                    Some(Ok(out))
                 }
                 // with(list, index, value) → new list with element replaced.
                 Some(Value::List(items)) if args.len() == 3 => {

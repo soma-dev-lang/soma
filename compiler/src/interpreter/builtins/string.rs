@@ -369,7 +369,9 @@ pub fn call_builtin(name: &str, args: &[Value]) -> Option<Result<Value, RuntimeE
                 // which from_json reads back as a String)
                 fn has_fn(v: &Value) -> bool {
                     match v {
-                        Value::Lambda { .. } | Value::LambdaBlock { .. } => true,
+                        // (a response's marker is not the program's function)
+                        Value::Lambda { param, .. } => param != crate::interpreter::HTTP_MARK,
+                        Value::LambdaBlock { .. } => true,
                         Value::List(xs) => xs.iter().any(has_fn),
                         Value::Map(m) => m.values().any(has_fn),
                         other => super::pipeline::row_fields(other).map_or(false, |m| m.values().any(has_fn)),
