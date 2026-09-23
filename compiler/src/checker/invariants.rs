@@ -579,7 +579,8 @@ pub fn verify_program_invariants(program: &Program) -> Vec<VerifyResult> {
                 // write, kind invariant) — `c.get(k) + 1` raises before writing
                 fn may_be_unit(e: &Expr) -> bool {
                     match e {
-                        Expr::MethodCall { method, .. } if method == "get" => true,
+                        // `get(k, default)` gives the default on a missing key
+                        Expr::MethodCall { method, args, .. } if method == "get" => args.get(1).map_or(true, |d| may_be_unit(&d.node) || matches!(d.node, Expr::Literal(Literal::Unit))),
                         Expr::Index { .. } => true,
                         Expr::IfExpr { then_result, else_result, .. } => may_be_unit(&then_result.node) || may_be_unit(&else_result.node),
                         Expr::Match { arms, .. } => arms.iter().any(|a| may_be_unit(&a.result.node)),
@@ -1167,6 +1168,13 @@ impl RangeCtx<'_> {
         if lo.is_infinite() && hi.is_infinite() {
             return None;
         }
+        // `slot.get(k, default)`: a missing key gives the DEFAULT, which no
+        // invariant bounds (`vals.get(k, -50)` under `vals >= 0` is -50)
+        if let Expr::MethodCall { args, .. } = expr {
+            if let Some(d) = args.get(1) {
+                return Some(join(mk(*lo, *hi), self.range_of(&d.node)));
+            }
+        }
         Some(mk(*lo, *hi))
     }
 
@@ -1315,11 +1323,10 @@ impl RangeCtx<'_> {
                 },
                 // `mod(a, n)` / `idiv(a, n)` / `sqrt_int(x)` / `band(x, mask)`
                 ("mod", 2) => match bounds(self.range_of(&args[1].node)) {
-                    Some((nl, nh)) if nl == nh && nl != 0.0 => {
-                        let n = nl.abs();
-                        let lo = match bounds(self.range_of(&args[0].node)) { Some((l, _)) if l >= 0.0 => 0.0, _ => -(n - 1.0) };
-                        mk(lo, n - 1.0)
-                    }
+                    // floored: the result takes the DIVISOR's sign
+                    // (mod(7, -3) == -2, mod(-7, 3) == 2)
+                    Some((nl, nh)) if nl == nh && nl > 0.0 => mk(0.0, nl - 1.0),
+                    Some((nl, nh)) if nl == nh && nl < 0.0 => mk(nl + 1.0, 0.0),
                     _ => Known::Unknown,
                 },
                 ("idiv", 2) => match (bounds(self.range_of(&args[0].node)), bounds(self.range_of(&args[1].node))) {
@@ -1431,8 +1438,32 @@ fn expr_stable(e: &Expr, on: &OnSection, handlers: &HashMap<String, &OnSection>,
     let mut ok = true;
     let mut reads: Vec<String> = Vec::new();
     let mut calls = false;
+    // a call of a LOCAL function is as stable as the lambda's body: `let f =
+    // v => random()` then `require f(1) <= 0.5` said nothing about the
+    // second f(1). The bodies are scanned with the expression itself; a
+    // name bound to anything but one `let f = <lambda>` is not followed.
+    let mut lambdas: HashMap<&str, Vec<&Expr>> = HashMap::new();
+    super::literals::for_each_stmt_deep(&on.body, &mut |st| {
+        if let Statement::Let { name, value } | Statement::Assign { name, value } = st {
+            lambdas.entry(name.as_str()).or_default().push(&value.node);
+        }
+    });
+    let mut work: Vec<&Expr> = vec![e];
+    let mut seen_fns: HashSet<&str> = HashSet::new();
+    while let Some(e) = work.pop() {
     super::literals::for_each_in_expr(e, &mut |x| match x {
         Expr::FnCall { name, .. } if super::names::unstable_builtin(name) => ok = false,
+        Expr::FnCall { name, .. } if !handlers.contains_key(name) && name != "_coalesce"
+            && (lambdas.contains_key(name.as_str()) || params.contains(name.as_str()) || !super::names::builtin_names().contains(name.as_str())) => {
+            match lambdas.get(name.as_str()).map(|v| v.as_slice()) {
+                Some([Expr::Lambda { body, .. }]) if !params.contains(name.as_str()) => {
+                    if let Some((k, _)) = lambdas.get_key_value(name.as_str()) {
+                        if seen_fns.insert(k) { work.push(&body.node); }
+                    }
+                }
+                _ => ok = false,
+            }
+        }
         // a handler that draws a random number (or reads the clock, the
         // model…) answers differently at the write: `require (c.get(k) ?? 0)
         // - price() >= 0` said nothing about the second price()
@@ -1445,6 +1476,7 @@ fn expr_stable(e: &Expr, on: &OnSection, handlers: &HashMap<String, &OnSection>,
         }
         _ => {}
     });
+    }
     if !ok { return false; }
     // a local or parameter whose PARTS the handler writes (`cur.amount = 0`,
     // `cur["amount"] = 0`): `cur.amount` at the require is not `cur.amount`
@@ -1801,9 +1833,9 @@ fn local_ranges_at(
                             // re-evaluated at the write: it must give the same value
                             if !expr_stable(e, on, handlers, &local_names, target, in_loop) { continue; }
                             let (lo, hi) = match op {
-                                CmpOp::Lt => (f64::NEG_INFINITY, if looks_int(e) && c.fract() == 0.0 { c - 1.0 } else { c.next_down() }),
+                                CmpOp::Lt => (f64::NEG_INFINITY, if known_int(e, &single, &int_params, &dup, 0) && c.fract() == 0.0 { c - 1.0 } else { c.next_down() }),
                                 CmpOp::Le => (f64::NEG_INFINITY, c),
-                                CmpOp::Gt => (if looks_int(e) && c.fract() == 0.0 { c + 1.0 } else { c.next_up() }, f64::INFINITY),
+                                CmpOp::Gt => (if known_int(e, &single, &int_params, &dup, 0) && c.fract() == 0.0 { c + 1.0 } else { c.next_up() }, f64::INFINITY),
                                 CmpOp::Ge => (c, f64::INFINITY),
                                 CmpOp::Eq => (c, c),
                                 CmpOp::Ne => continue,
@@ -1820,7 +1852,7 @@ fn local_ranges_at(
                 };
                 if dup.contains(name) || reassigned_param(name) { continue; }
                 let integral = bound.fract() == 0.0 && match single.get(name) {
-                    Some(value) => looks_int(value),
+                    Some(value) => known_int(value, &single, &int_params, &dup, 0),
                     None if params.contains(name) => int_params.contains(name),
                     None => continue,
                 };
@@ -2034,27 +2066,34 @@ thread_local! {
     static NON_INT_PARAMS: std::cell::RefCell<HashSet<String>> = std::cell::RefCell::new(HashSet::new());
 }
 
-fn looks_int(expr: &Expr) -> bool {
-    // a read of an untyped / Any / Float slot, or a Float parameter, is not
-    // an Int: `require c < 10` does not make `c + 1 <= 10` (9.5 + 1)
-    let slot_read_int = |target: &Expr| -> Option<bool> {
-        let Expr::Ident(n) = target else { return None };
-        SLOT_INT.with(|m| m.borrow().get(n).copied())
+/// Is `expr` KNOWN to be an Int — so `require e < 10` means `e <= 9`?
+/// Int literals, Int parameters, once-bound locals over them, reads of an
+/// Int slot, Int-returning builtins and `+ - * %` of known Ints. Anything
+/// else (a parse_float(), a field of a Map, a list element, a random()…)
+/// may be 9.5: no integer tightening.
+fn known_int(expr: &Expr, single: &HashMap<&str, &Expr>, int_params: &HashSet<&str>, dup: &HashSet<&str>, depth: usize) -> bool {
+    if depth > 8 { return false; }
+    let ki = |e: &Expr| known_int(e, single, int_params, dup, depth + 1);
+    let slot_int = |target: &Expr| -> bool {
+        let Expr::Ident(n) = target else { return false };
+        SLOT_INT.with(|m| m.borrow().get(n).copied()).unwrap_or(false) && !single.contains_key(n.as_str()) && !int_params.contains(n.as_str())
     };
     match expr {
         Expr::Literal(Literal::Int(_)) | Expr::Literal(Literal::BigInt(_)) => true,
-        Expr::Literal(Literal::Float(_)) => false,
-        Expr::Literal(_) => true,
-        Expr::Ident(n) if NON_INT_PARAMS.with(|p| p.borrow().contains(n)) => false,
-        Expr::MethodCall { target, method, .. } if method == "get" && slot_read_int(&target.node).is_some() => slot_read_int(&target.node).unwrap_or(false),
-        Expr::Index { target, .. } if slot_read_int(&target.node).is_some() => slot_read_int(&target.node).unwrap_or(false),
-        Expr::Ident(_) => true,
-        Expr::BinaryOp { left, op, right } => !matches!(op, BinOp::Div) && looks_int(&left.node) && looks_int(&right.node),
-        Expr::FnCall { name, args } => !matches!(name.as_str(), "to_float" | "avg" | "sqrt" | "pow" | "log" | "exp" | "sin" | "cos" | "quantile" | "median" | "pstdev" | "variance")
-            && args.iter().all(|a| looks_int(&a.node)),
-        Expr::MethodCall { args, .. } => args.iter().all(|a| looks_int(&a.node)),
-        Expr::FieldAccess { .. } | Expr::Index { .. } => true,
-        _ => true,
+        Expr::Ident(n) if dup.contains(n.as_str()) => false,
+        Expr::Ident(n) => int_params.contains(n.as_str()) || single.get(n.as_str()).is_some_and(|v| ki(v)),
+        Expr::MethodCall { target, method, args } if method == "get" => slot_int(&target.node) && args.get(1).map_or(true, |d| ki(&d.node)),
+        Expr::MethodCall { method, .. } => matches!(method.as_str(), "len" | "size" | "count"),
+        Expr::Index { target, .. } => slot_int(&target.node),
+        Expr::BinaryOp { left, op: BinOp::Add | BinOp::Sub | BinOp::Mul | BinOp::Mod, right } => ki(&left.node) && ki(&right.node),
+        Expr::FnCall { name, args } => match name.as_str() {
+            "len" | "count" | "size" | "str_len" | "to_int" | "floor" | "ceil" | "round" | "idiv" | "mod" | "floor_div" | "ipow" | "abs_int" => true,
+            "abs" | "min" | "max" | "clamp" | "_coalesce" => !args.is_empty() && args.iter().all(|a| ki(&a.node)),
+            _ => false,
+        },
+        Expr::IfExpr { then_result, else_result, .. } => ki(&then_result.node) && ki(&else_result.node),
+        Expr::Match { arms, .. } => !arms.is_empty() && arms.iter().all(|a| ki(&a.result.node)),
+        _ => false,
     }
 }
 

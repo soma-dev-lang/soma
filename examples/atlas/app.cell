@@ -10,7 +10,7 @@
 //
 //   #10 sum types in memory      — `intents: Map<String, Intent> [persistent]`
 //   #1  typed tool returns       — `tool vault_read(k) -> CacheResult`
-//   #6  [deterministic] handler  — `on draft_ack(...) [deterministic]`
+//   #6  [deterministic] handler  — `on classify(...) [deterministic]`
 //   #9  model capability check   — `think(..., "requires", ["json_mode"])`
 //   #4  tool capabilities        — `tool send_reply(...) [capability: "smtp:gmail.com"]`
 //   #5  structured trace         — `transition()` and `think()` push TraceStep variants
@@ -210,9 +210,9 @@ cell agent Atlas [model: claude_sonnet] {
         return map("invoice_id", id, "amount", amount, "vendor", vendor)
     }
 
-    // V1.6 #6: boilerplate ack body. Deterministic — replays bit-exact
-    // in golden tests. Compile error if it ever calls now() or think().
-    on draft_ack(id: String) [deterministic] {
+    // V1.6 #6: boilerplate ack body. Not [deterministic]: transition()
+    // depends on the instance's current state, not only on `id`.
+    on draft_ack(id: String) {
         transition(id, "Drafting")
         transition(id, "AwaitingApproval")
         return map("ack", id)

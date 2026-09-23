@@ -21,7 +21,7 @@ cell DataStore {
         // Ephemeral + local: in-memory cache, lost on restart
         cache: Map<String, String> [ephemeral, local]
 
-        // Encrypted: data at rest is encrypted
+        // Encrypted: marks sensitive data — NOT encrypted at rest by this runtime (use an encrypted volume)
         secrets: Map<String, String> [persistent, encrypted]
     }
 

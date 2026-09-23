@@ -5,7 +5,8 @@
 
 cell SecureVault {
     face {
-        // STRUCTURAL — compiler verifies this
+        // STRUCTURAL — compiler verifies the slot marks ([encrypted] is a mark:
+        // values are stored in plaintext, so check warns all_encrypted is not enforced)
         promise all_encrypted
         promise all_persistent
 

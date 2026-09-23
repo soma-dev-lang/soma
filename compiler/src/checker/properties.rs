@@ -264,7 +264,7 @@ mod tests {
                 }
             }
             cell property encrypted {
-                face { promise "encrypted at rest" }
+                face { promise "marks the slot as sensitive; values are NOT encrypted at rest by this runtime — use an encrypted volume" }
                 rules {}
             }
             "#,

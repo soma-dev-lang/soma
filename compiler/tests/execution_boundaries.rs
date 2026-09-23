@@ -155,15 +155,18 @@ cell test T { rules { assert A.run()==map("custom",7) } }
 "#
 );
 
-case!(
-    local_len_callable_overrides_builtin_optimization,
-    r#"
-cell A {
- on run() { let len=x => 77 let xs=[1,2] return len(xs) }
+// a local function named like a builtin is refused at check (every prover
+// read `len(xs)` as the builtin while the local ran)
+#[test]
+fn local_len_callable_is_refused() {
+    let dir = std::env::temp_dir().join(format!("soma_execution_{}_local_len", std::process::id()));
+    std::fs::create_dir_all(&dir).unwrap();
+    std::fs::write(dir.join("app.cell"), "cell A {\n on run() { let len=x => 77 let xs=[1,2] return len(xs) }\n}\ncell test T { rules { assert A.run()==77 } }\n").unwrap();
+    let out = Command::new(env!("CARGO_BIN_EXE_soma")).args(["check", "app.cell"]).current_dir(&dir).output().unwrap();
+    let text = format!("{}{}", String::from_utf8_lossy(&out.stdout), String::from_utf8_lossy(&out.stderr));
+    assert!(!out.status.success() && text.contains("local function hiding the builtin len()"), "{text}");
+    std::fs::remove_dir_all(dir).unwrap();
 }
-cell test T { rules { assert A.run()==77 } }
-"#
-);
 
 case!(
     nth_does_not_retry_an_invalid_index_expression,

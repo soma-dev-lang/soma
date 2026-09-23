@@ -14,7 +14,7 @@ native = "sqlite"
 
 [[backend]]
 name = "sqlite-encrypted"
-description = "SQLite with encrypted properties"
+description = "SQLite for slots marked [encrypted] — values are stored in plaintext (no encryption at rest in this runtime; use an encrypted volume)"
 requires = ["persistent", "encrypted"]
 optional = ["consistent", "retain"]
 native = "sqlite"

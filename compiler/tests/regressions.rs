@@ -5461,3 +5461,224 @@ cell test T { rules {
     assert!(out.contains("changes a copy") && out.contains("catch-all") && out.contains("max() takes at most"), "{out}");
     let _ = std::fs::remove_dir_all(dir);
 }
+
+#[test]
+fn verify_sixth_pass_local_functions_named_like_builtins_or_states_are_refused() {
+    // `let abs = v => v` then `vals.set(k, abs(x))` was "proven" >= 0; a local
+    // `Rejected = "Approved"` passed as transition(id, Rejected) was read as
+    // the literal state Rejected
+    let (code, out) = check_out("v6_shadow", r#"
+cell App {
+    memory {
+        vals: Map<String, Int> [persistent]
+        invariant vals >= 0
+    }
+    on put(k: String, x: Int) {
+        let abs = v => v
+        vals.set(k, abs(x))
+        return vals.get(k)
+    }
+    on spin(n: Int) {
+        let f = len => len(len)
+        return f(f)
+    }
+}
+"#);
+    assert_ne!(code, 0, "{out}");
+    assert!(out.contains("`abs` here is a local function hiding the builtin abs()"), "{out}");
+    assert!(out.contains("`len` here is a local function hiding the builtin len()"), "{out}");
+    // plain data locals named like builtins stay allowed, and a let whose
+    // value CALLS the homonymous handler is not a local call yet
+    let (code, out) = check_out("v6_shadow_ok", r#"
+cell App {
+    memory { rows: List<Int> [persistent] }
+    on pot() { return 5 }
+    on add(x: Int) {
+        let len = len(rows)
+        let max = 3
+        let pot = pot()
+        require len < max else Full
+        rows.push(x + pot)
+        return count([1, 2])
+    }
+}
+"#);
+    assert_eq!(code, 0, "{out}");
+    let (code, out) = check_out("v6_state_local", r#"
+cell App {
+    state flow {
+        initial: Draft
+        Draft -> Approved { guard { amount < 1000 } }
+        Draft -> Rejected
+    }
+    on approve_it(id: String, amount: Int) {
+        require amount < 1000 else TooBig
+        transition(id, "Approved")
+        return get_status(id)
+    }
+    on reject_it(id: String, amount: Int) {
+        let Rejected = "Approved"
+        transition(id, Rejected)
+        return get_status(id)
+    }
+}
+"#);
+    assert_ne!(code, 0, "{out}");
+    assert!(out.contains("`Rejected` is bound here as a local, but Rejected is a state name"), "{out}");
+}
+
+#[test]
+fn verify_sixth_pass_invariant_ranges() {
+    // a Float `y < 10` is not `y <= 9`; get(k, default) can give the default;
+    // mod() takes the divisor's sign; a local lambda calling random() is not
+    // the same value at the require and at the write
+    let out = verify_out("v6_ranges", r#"
+cell App {
+    memory {
+        vals: Map<String, Float> [persistent]
+        invariant vals <= 9.0
+        ints: Map<String, Int> [persistent]
+        invariant ints >= 0 && ints <= 100
+        rs: Map<String, Float> [persistent]
+        invariant rs <= 0.5
+    }
+    on q1(k: String, flag: Bool) {
+        let y = if flag { 9.5 } else { 1.0 }
+        require y < 10 else Big
+        vals.set(k, y)
+        return 1
+    }
+    on q2(k: String, r: Map) {
+        let y = r.price
+        require y < 10 else Big
+        vals.set(k, y)
+        return 1
+    }
+    on bump(k: String) {
+        let cur = ints.get(k, -50)
+        require cur < 100 else Full
+        ints.set(k, cur + 1)
+        return 1
+    }
+    on m2(k: String, x: Int) {
+        require x >= 0 else Neg
+        ints.set(k, mod(x, -3))
+        return 1
+    }
+    on r1(k: String) {
+        let f = v => random()
+        require f(1) <= 0.5 else Big
+        rs.set(k, f(1))
+        return 1
+    }
+    on ok(k: String, n: Int) {
+        require n < 10 else Big
+        ints.set(k, max(n, 0))
+        return 1
+    }
+}
+"#);
+    for bad in ["writer 'q1' proven", "writer 'q2' proven", "writer 'r1' proven"] {
+        assert!(!out.contains(bad), "{bad}: {out}");
+    }
+    assert!(!out.contains("invariant ints >= 0 && ints <= 100 — writer 'bump' proven"), "{out}");
+    assert!(!out.contains("invariant ints >= 0 && ints <= 100 — writer 'm2' proven"), "{out}");
+    assert!(out.contains("writer 'ok' proven"), "{out}");
+}
+
+#[test]
+fn verify_sixth_pass_termination_of_self_applied_lambdas() {
+    // `after` blocks skipped the lambda check; a capitalized local was
+    // taken for a constructor
+    let out = verify_out("v6_term", r#"
+cell App {
+    state flow {
+        initial: idle
+        idle -> busy
+        busy -> idle
+    }
+    on start(id: String) { transition(id, "busy")  return 1 }
+    on stop(id: String) { transition(id, "idle")  return 1 }
+    on spin(n: Int) {
+        let f = g => {
+            let K = g
+            K(K)
+        }
+        return f(f)
+    }
+    after 10ms {
+        let f = g => g(g)
+        let r = f(f)
+        print("done")
+    }
+}
+"#);
+    assert!(out.contains("handler `spin` calls the function value `K`"), "{out}");
+    assert!(out.contains("`after 10ms` calls the function value `g`"), "{out}");
+    assert!(!out.contains("all 3 handlers structurally terminate"), "{out}");
+}
+
+#[test]
+fn verify_sixth_pass_deterministic_is_transitive() {
+    let (code, out) = check_out("v6_det", r#"
+cell App {
+    memory {
+        counts: Map<String, Int> [persistent]
+    }
+    state flow {
+        initial: a
+        a -> b
+        b -> a
+    }
+    on roll() { return random() }
+    on d1(x: Int) [deterministic] { return x + roll() }
+    on d2(x: Int) [deterministic] { return x + (counts.get("n") ?? 0) }
+    on d3(x: Int) [deterministic] { return x + Other.clock() }
+    on d4(id: String) [deterministic] { return get_status(id) }
+    on d5(p: String) [deterministic] { return read_csv(p) }
+    on sq(x: Int) [deterministic] { return x * x }
+    on ok(x: Int) [deterministic] { return sq(x) + Other.pure(x) }
+}
+cell Other {
+    on clock() { return now_ms() }
+    on pure(x: Int) { return x + 1 }
+}
+"#);
+    assert_ne!(code, 0, "{out}");
+    for h in ["'d1'", "'d2'", "'d3'", "'d4'", "'d5'"] {
+        assert!(out.contains(&format!("handler {h} is [deterministic]")), "{h}: {out}");
+    }
+    assert!(!out.contains("handler 'ok'") && !out.contains("handler 'sq'"), "{out}");
+}
+
+#[test]
+fn verify_sixth_pass_budget_and_encrypted_are_not_overclaimed() {
+    // 24 doublings of a list were "✓ budget holds" at 24 MiB (5.9 GB at run
+    // time); `promise all_encrypted` passed over plaintext storage
+    let (_, out) = check_out("v6_budget", r#"
+cell App {
+    scale { memory: "64Mi" }
+    on grow(n: Int) {
+        let xs = [1]
+        for i in range(0, 24) { xs = concat(xs, xs) }
+        return len(xs)
+    }
+}
+"#);
+    assert!(!out.contains("budget holds"), "{out}");
+    assert!(out.contains("`xs` is rebuilt from itself"), "{out}");
+    let (code, out) = check_out("v6_enc", r#"
+cell Vault {
+    face {
+        signal put(k: String, v: String)
+        promise all_encrypted
+    }
+    memory {
+        secrets: Map<String, String> [persistent, encrypted]
+    }
+    on put(k: String, v: String) { secrets.set(k, v)  return "ok" }
+}
+"#);
+    assert_eq!(code, 0, "{out}");
+    assert!(out.contains("promises all_encrypted, which is NOT enforced"), "{out}");
+}

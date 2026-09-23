@@ -41,7 +41,7 @@ $ soma check examples/atlas/app.cell
 | Model capabilities | `think(..., "requires", list("json_mode"))` — claude_sonnet advertises this in `soma.toml` |
 | Effect tracking | `think(..., "tools_allowed", list("vault_read"))` — verifier reports the narrowed dispatch set |
 | Typed tool return | `tool vault_read -> CacheResult` with `Hit / Miss / Stale` variants |
-| `[deterministic]` | `on classify`, `on draft_ack`, `on vault_read` — compiler refuses non-deterministic calls |
+| `[deterministic]` | `on classify`, `on vault_read` — compiler refuses non-deterministic calls, storage and state-machine reads, and calls of handlers that do them |
 | Structured trace | `trace()` returns `List<TraceStep>`; `transition()` and `think()` push variants automatically |
 | Protocol | `protocol Escalation { roles: a = Atlas, h = HumanFounder; a -> h: ping(...); h -> a: verdict(...) }` |
 | Property tests | `tests.cell` — `property "spam_is_classified_as_spam" forall x in 0..1000 ensures classify(...) == Spam` |

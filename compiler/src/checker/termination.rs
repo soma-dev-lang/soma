@@ -91,6 +91,23 @@ pub fn check_cell_termination(cell: &CellDef, program: &Program) -> Vec<Terminat
         if let TerminationFinding::Terminates { handler } = f {
             let mut seen: std::collections::HashSet<String> = std::collections::HashSet::new();
             let mut todo: Vec<String> = graph.get(handler.as_str()).cloned().unwrap_or_default();
+            // an `every` / `after` block's callees (`after 10ms { spin() }`)
+            for s in &cell.sections {
+                if let Section::Every(e) | Section::After(e) = &s.node {
+                    let label = format!("{} {}ms", if matches!(s.node, Section::Every(_)) { "every" } else { "after" }, e.interval_ms);
+                    if &label != handler { continue; }
+                    for st in &e.body {
+                        walk_stmt(&st.node, &mut |x| {
+                            let callee = match x {
+                                Expr::FnCall { name, .. } => Some(name),
+                                Expr::MethodCall { target, method, .. } if matches!(&target.node, Expr::Ident(c) if c.starts_with(|ch: char| ch.is_ascii_uppercase())) => Some(method),
+                                _ => None,
+                            };
+                            if let Some(n) = callee { if graph.contains_key(n.as_str()) { todo.push(n.clone()); } }
+                        });
+                    }
+                }
+            }
             // its own event, handled by another cell, is a callee too
             let own_event = cell.sections.iter().any(|s| matches!(&s.node, Section::OnSignal(o) if &o.signal_name == handler && {
                 let mut hit = false;
@@ -109,7 +126,7 @@ pub fn check_cell_termination(cell: &CellDef, program: &Program) -> Vec<Terminat
                 if let Some(next) = graph.get(n.as_str()) { todo.extend(next.iter().cloned()); }
             }
             if let Some(c) = culprit {
-                *f = TerminationFinding::MayNotTerminate { handler: handler.clone(), reasons: vec![format!("calls `{}`, which may not terminate", c)] };
+                *f = TerminationFinding::MayNotTerminate { handler: handler.clone(), reasons: vec![format!("`{}` calls `{}`, which may not terminate", handler, c)] };
             }
         }
     }
@@ -129,6 +146,10 @@ fn check_cell_termination_raw(cell: &CellDef, program: &Program) -> Vec<Terminat
             for stmt in &e.body {
                 check_stmt_termination(&stmt.node, &label, &[], &mut reasons);
             }
+            // a lambda applied to itself runs forever here too
+            if let Some(f) = lambda_self_call(&e.body, &[], cell, &graph) {
+                reasons.push(format!("`{}` calls the function value `{}` — a lambda can call itself (`g => g(g)`), so termination is not proven", label, f));
+            }
             if reasons.is_empty() {
                 findings.push(TerminationFinding::Terminates { handler: label });
             } else {
@@ -143,77 +164,8 @@ fn check_cell_termination_raw(cell: &CellDef, program: &Program) -> Vec<Terminat
             for stmt in &on.body {
                 check_stmt_termination(&stmt.node, &on.signal_name, &on.params, &mut reasons);
             }
-            // recursion with no handler call: a LAMBDA whose body calls — or
-            // hands to map / filter / find / … — a function value that could
-            // be itself (`g => g(g)`, `g => [g] |> map(g)`, an alias
-            // `let k = [g][0]  k(k)`), or a handler calling its own
-            // function-valued parameter (`_ap(f) { f(f) }`). A lambda bound by
-            // a handler-level `let` cannot refer to itself, so calling one
-            // (`let dbl = x => inc(x)`) is fine.
-            {
-                let handler_names: std::collections::HashSet<&str> = graph.keys().map(|s| s.as_str()).collect();
-                let builtins = crate::checker::names::builtin_names();
-                fn top_lets(stmts: &[Spanned<Statement>], out: &mut std::collections::HashSet<String>) {
-                    for st in stmts {
-                        match &st.node {
-                            Statement::Let { name, .. } => { out.insert(name.clone()); }
-                            Statement::If { then_body, else_body, .. } => { top_lets(then_body, out); top_lets(else_body, out); }
-                            Statement::For { body, .. } | Statement::While { body, .. } => top_lets(body, out),
-                            _ => {}
-                        }
-                    }
-                }
-                let mut safe: std::collections::HashSet<String> = std::collections::HashSet::new();
-                top_lets(&on.body, &mut safe);
-                // a memory slot holds data, never a function value (`history |>
-                // filter(…)` inside a nested lambda was "calls the function value")
-                for sec in &cell.sections {
-                    if let Section::Memory(m) = &sec.node { for sl in &m.slots { safe.insert(sl.node.name.clone()); } }
-                }
-                // (a parameter shadowing a slot may be a function value —
-                // unless its declared type is data: `month: String`)
-                for p in &on.params {
-                    let data = matches!(&p.ty.node, crate::ast::TypeExpr::Simple(t) if matches!(t.as_str(), "String" | "Int" | "Float" | "Bool" | "Map" | "List"))
-                        || matches!(&p.ty.node, crate::ast::TypeExpr::Generic { name, .. } if name == "Map" || name == "List");
-                    if data { safe.insert(p.name.clone()); } else { safe.remove(&p.name); }
-                }
-                let risky = |n: &str| !handler_names.contains(n) && !builtins.contains(n) && !safe.contains(n) && !n.starts_with(|c: char| c.is_uppercase());
-                const HIGHER: &[&str] = &["map", "filter", "find", "reduce", "any", "all", "count", "sort_by", "each", "flat_map", "fold", "group_by", "min_by", "max_by"];
-                let mut hit: Option<String> = None;
-                let scan = |x: &Expr, hit: &mut Option<String>| {
-                    crate::checker::literals::for_each_in_expr(x, &mut |y| {
-                        if hit.is_some() { return; }
-                        if let Expr::FnCall { name, args } = y {
-                            if risky(name) { *hit = Some(name.clone()); return; }
-                            // `map("k", v)` builds a Map: no function argument
-                            let constructor = name == "map" && matches!(args.first().map(|a| &a.node), Some(Expr::Literal(_)));
-                            if HIGHER.contains(&name.as_str()) && !constructor {
-                                for a in args {
-                                    if let Expr::Ident(v) = &a.node { if risky(v) { *hit = Some(v.clone()); return; } }
-                                }
-                            }
-                        }
-                    });
-                };
-                crate::checker::literals::for_each_expr(&on.body, &mut |e| {
-                    if hit.is_some() { return; }
-                    match e {
-                        Expr::Lambda { body, .. } => scan(&body.node, &mut hit),
-                        Expr::LambdaBlock { stmts, result, .. } => {
-                            crate::checker::literals::for_each_expr(stmts, &mut |x| scan(x, &mut hit));
-                            scan(&result.node, &mut hit);
-                        }
-                        _ => {}
-                    }
-                });
-                if hit.is_none() {
-                    crate::checker::literals::for_each_expr(&on.body, &mut |e| if let Expr::FnCall { name, .. } = e {
-                        if hit.is_none() && on.params.iter().any(|p| &p.name == name) && !safe.contains(name) { hit = Some(name.clone()); }
-                    });
-                }
-                if let Some(f) = hit {
-                    reasons.push(format!("handler `{}` calls the function value `{}` — a lambda can call itself (`g => g(g)`), so termination is not proven", on.signal_name, f));
-                }
+            if let Some(f) = lambda_self_call(&on.body, &on.params, cell, &graph) {
+                reasons.push(format!("handler `{}` calls the function value `{}` — a lambda can call itself (`g => g(g)`), so termination is not proven", on.signal_name, f));
             }
             let mut self_recursive = false;
             for stmt in &on.body {
@@ -1086,4 +1038,87 @@ fn hidden_self_call(stmts: &[Spanned<Statement>], handler: &str) -> bool {
         _ => {}
     });
     hit
+}
+
+/// A lambda of `body` that calls — or hands to map / filter / … — a function
+/// value that could be itself, or a call of a function-valued parameter:
+/// the name called, when there is one.
+fn lambda_self_call(body: &[Spanned<Statement>], params: &[Param], cell: &CellDef, graph: &std::collections::HashMap<String, Vec<String>>) -> Option<String> {
+            // recursion with no handler call: a LAMBDA whose body calls — or
+            // hands to map / filter / find / … — a function value that could
+            // be itself (`g => g(g)`, `g => [g] |> map(g)`, an alias
+            // `let k = [g][0]  k(k)`), or a handler calling its own
+            // function-valued parameter (`_ap(f) { f(f) }`). A lambda bound by
+            // a handler-level `let` cannot refer to itself, so calling one
+            // (`let dbl = x => inc(x)`) is fine.
+            {
+                let handler_names: std::collections::HashSet<&str> = graph.keys().map(|s| s.as_str()).collect();
+                let builtins = crate::checker::names::builtin_names();
+                fn top_lets(stmts: &[Spanned<Statement>], out: &mut std::collections::HashSet<String>) {
+                    for st in stmts {
+                        match &st.node {
+                            Statement::Let { name, .. } => { out.insert(name.clone()); }
+                            Statement::If { then_body, else_body, .. } => { top_lets(then_body, out); top_lets(else_body, out); }
+                            Statement::For { body, .. } | Statement::While { body, .. } => top_lets(body, out),
+                            _ => {}
+                        }
+                    }
+                }
+                let mut safe: std::collections::HashSet<String> = std::collections::HashSet::new();
+                top_lets(body, &mut safe);
+                // a memory slot holds data, never a function value (`history |>
+                // filter(…)` inside a nested lambda was "calls the function value")
+                for sec in &cell.sections {
+                    if let Section::Memory(m) = &sec.node { for sl in &m.slots { safe.insert(sl.node.name.clone()); } }
+                }
+                // (a parameter shadowing a slot may be a function value —
+                // unless its declared type is data: `month: String`)
+                for p in params {
+                    let data = matches!(&p.ty.node, crate::ast::TypeExpr::Simple(t) if matches!(t.as_str(), "String" | "Int" | "Float" | "Bool" | "Map" | "List"))
+                        || matches!(&p.ty.node, crate::ast::TypeExpr::Generic { name, .. } if name == "Map" || name == "List");
+                    if data { safe.insert(p.name.clone()); } else { safe.remove(&p.name); }
+                }
+                // every name the body binds (lambda / loop / match binders,
+                // lets inside lambdas): a call of one is a function value,
+                // even when it is capitalized (`let K = g  K(K)`) or named
+                // like a builtin (`abs => abs(abs)`)
+                let mut locals: std::collections::HashSet<String> = params.iter().map(|p| p.name.clone()).collect();
+                crate::checker::dispatch::bind_all(body, &mut locals);
+                let risky = |n: &str| !safe.contains(n)
+                    && (locals.contains(n) || (!handler_names.contains(n) && !builtins.contains(n) && !n.starts_with(|c: char| c.is_uppercase())));
+                const HIGHER: &[&str] = &["map", "filter", "find", "reduce", "any", "all", "count", "sort_by", "each", "flat_map", "fold", "group_by", "min_by", "max_by"];
+                let mut hit: Option<String> = None;
+                let scan = |x: &Expr, hit: &mut Option<String>| {
+                    crate::checker::literals::for_each_in_expr(x, &mut |y| {
+                        if hit.is_some() { return; }
+                        if let Expr::FnCall { name, args } = y {
+                            if risky(name) { *hit = Some(name.clone()); return; }
+                            // `map("k", v)` builds a Map: no function argument
+                            let constructor = name == "map" && matches!(args.first().map(|a| &a.node), Some(Expr::Literal(_)));
+                            if HIGHER.contains(&name.as_str()) && !constructor {
+                                for a in args {
+                                    if let Expr::Ident(v) = &a.node { if risky(v) { *hit = Some(v.clone()); return; } }
+                                }
+                            }
+                        }
+                    });
+                };
+                crate::checker::literals::for_each_expr(body, &mut |e| {
+                    if hit.is_some() { return; }
+                    match e {
+                        Expr::Lambda { body, .. } => scan(&body.node, &mut hit),
+                        Expr::LambdaBlock { stmts, result, .. } => {
+                            crate::checker::literals::for_each_expr(stmts, &mut |x| scan(x, &mut hit));
+                            scan(&result.node, &mut hit);
+                        }
+                        _ => {}
+                    }
+                });
+                if hit.is_none() {
+                    crate::checker::literals::for_each_expr(body, &mut |e| if let Expr::FnCall { name, .. } = e {
+                        if hit.is_none() && params.iter().any(|p| &p.name == name) && !safe.contains(name) { hit = Some(name.clone()); }
+                    });
+                }
+                hit
+            }
 }

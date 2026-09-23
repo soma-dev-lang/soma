@@ -86,6 +86,10 @@ pub fn check_program(program: &Program) -> Vec<GuardIssue> {
                     .chain(ticks.iter()).chain(foreign.into_iter()).chain(foreign_ticks.iter()).collect();
                 for on in handlers_and_ticks {
                     let mut takes = false;
+                    // a LOCAL named like a state is a computed target
+                    // (`let Rejected = "Approved"  transition(id, Rejected)`)
+                    let mut locals: HashSet<String> = on.params.iter().map(|p| p.name.clone()).collect();
+                    super::dispatch::bind_all(&on.body, &mut locals);
                     for stmt in &on.body {
                         super::termination::walk_stmt(&stmt.node, &mut |e| {
                             if let Expr::FnCall { name, args } = e {
@@ -100,7 +104,7 @@ pub fn check_program(program: &Program) -> Vec<GuardIssue> {
                                             }
                                         }
                                         // a Variant name used as the target
-                                        Expr::Ident(v) if v == &tr.node.to => takes = true,
+                                        Expr::Ident(v) if v == &tr.node.to || locals.contains(v) => takes = true,
                                         // a Variant name that is ANOTHER state: this
                                         // handler does not take this edge (it was read
                                         // as a computed target, so every handler of a

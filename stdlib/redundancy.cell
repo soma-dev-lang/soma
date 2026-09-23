@@ -12,7 +12,7 @@ cell property replicated {
 
 cell property encrypted {
     face {
-        promise "data encrypted at rest"
+        promise "marks the slot as sensitive; values are NOT encrypted at rest by this runtime — use an encrypted volume"
     }
     rules {}
 }

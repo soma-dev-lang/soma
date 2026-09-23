@@ -132,6 +132,55 @@ pub fn check_program(program: &Program) -> (Vec<DispatchFinding>, Vec<DispatchFi
                 calls.push(name.to_string());
                 call_shapes.push((name.to_string(), argc, has_lambda, sp));
             });
+            // a local FUNCTION named like a builtin or a handler: the call
+            // runs the local, but every prover read `abs(x)` as the builtin
+            // (`let abs = v => v` then `vals.set(k, abs(x))` was "proven" ≥ 0)
+            {
+                let mut callable: HashSet<String> = params.iter()
+                    .filter(|p| !matches!(&p.ty.node, crate::ast::TypeExpr::Simple(t)
+                        if matches!(t.as_str(), "Int" | "Float" | "String" | "Bool" | "BigInt" | "List" | "Map")))
+                    .map(|p| p.name.clone()).collect();
+                let let_pos = bind_callable(body, &mut callable);
+                let mut reported: HashSet<&str> = HashSet::new();
+                for (name, _, _, sp) in &call_shapes {
+                    let local = callable.contains(name) || let_pos.get(name).is_some_and(|from| sp.start >= *from);
+                    if !local || reported.contains(name.as_str()) { continue; }
+                    let what = if super::names::builtin_names().contains(name.as_str()) {
+                        format!("the builtin {name}()")
+                    } else if let Some(d) = index.handler_map.get(name) {
+                        format!("the handler {}.{name}", d[0])
+                    } else { continue };
+                    reported.insert(name.as_str());
+                    errors.push(DispatchFinding {
+                        message: format!("`{name}` here is a local function hiding {what} — the call runs the local, and a reader (or the prover) takes it for {what}; rename it"),
+                        span: *sp,
+                    });
+                }
+            }
+            // a local named like a state of this cell's machine or a variant:
+            // `transition(id, Rejected)` reads the LOCAL (`let Rejected =
+            // "Approved"`) while every prover took the literal state Rejected
+            {
+                let mut states: HashSet<&str> = HashSet::new();
+                for s in &cell.sections {
+                    if let Section::State(sm) = &s.node {
+                        states.insert(sm.initial.as_str());
+                        for t in &sm.transitions { states.insert(t.node.from.as_str()); states.insert(t.node.to.as_str()); }
+                    }
+                }
+                let mut names: Vec<&String> = bound.iter()
+                    .filter(|n| n.chars().next().is_some_and(|c| c.is_ascii_uppercase())
+                        && (states.contains(n.as_str()) || index.variants.contains(*n)))
+                    .collect();
+                names.sort();
+                for n in names {
+                    let what = if states.contains(n.as_str()) { "state" } else { "variant" };
+                    errors.push(DispatchFinding {
+                        message: format!("`{n}` is bound here as a local, but {n} is a {what} name — `transition(id, {n})` and every `{n}` after it read the local, not the {what}; rename the local"),
+                        span: section.span,
+                    });
+                }
+            }
             let caller_native = match &section.node {
                 Section::OnSignal(on) => on.properties.iter().any(|p| p == "native"),
                 _ => false,
@@ -560,17 +609,58 @@ fn builtin_accepts(name: &str, argc: usize, has_lambda: bool) -> bool {
 /// Collect every name a handler body can bind, including nested blocks,
 /// lambda params and match patterns.
 pub(super) fn bind_all(stmts: &[Spanned<Statement>], bound: &mut HashSet<String>) {
+    bind_all_opt(stmts, bound, false)
+}
+
+/// Can this bound value be a function? A literal, arithmetic, a comparison,
+/// a list or a record never is (`let count = 0` then `count(xs)` still runs
+/// the builtin: only a function value in scope replaces it).
+fn may_be_function(e: &Expr) -> bool {
+    !matches!(e, Expr::Literal(_) | Expr::BinaryOp { .. } | Expr::CmpOp { .. } | Expr::Not(_)
+        | Expr::ListLiteral(_) | Expr::Record { .. })
+}
+
+/// The names a handler body binds to a value that may be a function: the
+/// lambda / loop / match binders (bound anywhere), and — with the source
+/// offset they are bound from — the `let`s of a lambda or a call's result.
+pub(super) fn bind_callable(stmts: &[Spanned<Statement>], bound: &mut HashSet<String>) -> std::collections::HashMap<String, usize> {
+    LET_POS.with(|m| m.borrow_mut().clear());
+    bind_all_opt(stmts, bound, true);
+    LET_POS.with(|m| std::mem::take(&mut *m.borrow_mut()))
+}
+
+fn bind_all_opt(stmts: &[Spanned<Statement>], bound: &mut HashSet<String>, fn_only: bool) {
+    FN_ONLY.with(|f| {
+        let prev = f.replace(fn_only);
+        bind_all_inner(stmts, bound);
+        f.set(prev);
+    })
+}
+
+thread_local! {
+    static FN_ONLY: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+    static LET_POS: std::cell::RefCell<std::collections::HashMap<String, usize>> = std::cell::RefCell::new(std::collections::HashMap::new());
+}
+
+fn bind_all_inner(stmts: &[Spanned<Statement>], bound: &mut HashSet<String>) {
+    let fn_only = FN_ONLY.with(|f| f.get());
+    let bind_all = bind_all_inner;
     for stmt in stmts {
         match &stmt.node {
             Statement::Let { name, value } | Statement::Assign { name, value } => {
-                bound.insert(name.clone());
+                if !fn_only { bound.insert(name.clone()); }
+                else if may_be_function(&value.node) {
+                    // bound from the END of its value on: `let pot = pot()`
+                    // calls the handler, the local does not exist yet
+                    LET_POS.with(|m| { let mut m = m.borrow_mut(); let e = m.entry(name.clone()).or_insert(usize::MAX); *e = (*e).min(value.span.end); });
+                }
                 bind_all_expr(&value.node, bound);
             }
             Statement::Return { value } | Statement::Ensure { condition: value } => {
                 bind_all_expr(&value.node, bound);
             }
             Statement::ExprStmt { expr } => bind_all_expr(&expr.node, bound),
-            Statement::IndexSet { name, index, value } => { bound.insert(name.clone()); bind_all_expr(&index.node, bound); bind_all_expr(&value.node, bound); }
+            Statement::IndexSet { name, index, value } => { if !fn_only { bound.insert(name.clone()); } bind_all_expr(&index.node, bound); bind_all_expr(&value.node, bound); }
             Statement::If { condition, then_body, else_body } => {
                 bind_all_expr(&condition.node, bound);
                 bind_all(then_body, bound);
@@ -603,22 +693,22 @@ fn bind_all_expr(expr: &Expr, bound: &mut HashSet<String>) {
         }
         Expr::LambdaBlock { param, stmts, result } => {
             bound.insert(param.clone());
-            bind_all(stmts, bound);
+            bind_all_inner(stmts, bound);
             bind_all_expr(&result.node, bound);
         }
         Expr::Match { subject, arms } => {
             bind_all_expr(&subject.node, bound);
             for arm in arms {
                 bind_pattern(&arm.pattern, bound);
-                bind_all(&arm.body, bound);
+                bind_all_inner(&arm.body, bound);
                 bind_all_expr(&arm.result.node, bound);
             }
         }
         Expr::IfExpr { condition, then_body, then_result, else_body, else_result } => {
             bind_all_expr(&condition.node, bound);
-            bind_all(then_body, bound);
+            bind_all_inner(then_body, bound);
             bind_all_expr(&then_result.node, bound);
-            bind_all(else_body, bound);
+            bind_all_inner(else_body, bound);
             bind_all_expr(&else_result.node, bound);
         }
         Expr::FnCall { args, .. } => {

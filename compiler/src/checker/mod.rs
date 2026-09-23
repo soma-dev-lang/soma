@@ -397,7 +397,7 @@ impl std::fmt::Display for CheckWarning {
                 };
                 write!(
                     f,
-                    "advisory: cell '{cell}' declares budget {budget}; bounded portion is {bounded_portion}, but the following handlers call unbounded builtins so the proof is incomplete:{reasons}{more}"
+                    "advisory: cell '{cell}' declares budget {budget}; bounded portion is {bounded_portion}, but these handler allocations have no bound, so the proof is incomplete:{reasons}{more}"
                 )
             }
             Self::BudgetOk { cell, proven, budget, breakdown } => {
@@ -1578,14 +1578,7 @@ impl<'a> Checker<'a> {
         for section in &cell.sections {
             if let Section::OnSignal(ref handler) = section.node {
                 if handler.properties.iter().any(|p| p == "deterministic") {
-                    let slots: std::collections::HashSet<String> = cell.sections.iter()
-                        .filter_map(|s| if let Section::Memory(m) = &s.node { Some(m) } else { None })
-                        .flat_map(|m| m.slots.iter().map(|sl| sl.node.name.clone()))
-                        .filter(|n| !handler.params.iter().any(|p| &p.name == n))
-                        .collect();
-                    let errs = determinism::check_deterministic_handler(
-                        &handler.signal_name, &handler.body, &slots,
-                    );
+                    let errs = determinism::check_deterministic_handler(handler, cell, &self.analysis_cells);
                     for e in errs {
                         self.errors.push(CheckError::DeterminismViolation {
                             message: e.to_string(),
@@ -2065,6 +2058,15 @@ impl<'a> Checker<'a> {
                                 });
                             }
                             _ => {
+                                // `[encrypted]` is a MARK: this runtime stores
+                                // those slots in plaintext, so the promise
+                                // checks the marks, not the storage
+                                if crate::commands::describe::format_constraint_pub(&p.constraint.node).contains("all_encrypted") {
+                                    self.warnings.push(CheckWarning::HabitWarning {
+                                        message: format!("cell '{}' promises all_encrypted, which is NOT enforced: it only checks that every slot is marked [encrypted], and this runtime stores [encrypted] slots in plaintext — keep .soma_data on an encrypted volume", cell.name),
+                                        span: p.constraint.span,
+                                    });
+                                }
                                 // `promise all_persistent && has_auth` and
                                 // `promise balance >= 0` were accepted and
                                 // checked by nothing: a compound of structural

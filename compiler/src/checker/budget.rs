@@ -663,6 +663,7 @@ pub fn stmt_cost(s: &Statement) -> Cost {
             let n = bound
                 .or_else(|| literal_range_bound(&iter.node))
                 .unwrap_or(DEFAULT_CAPACITY);
+            if let Some(x) = loop_self_growth(body) { return iter_c.plus(Cost::unbounded(self_growth_reason(&x))); }
             iter_c.plus(body_c.times(n))
         }
         Statement::While { condition, body, bound } => {
@@ -670,6 +671,7 @@ pub fn stmt_cost(s: &Statement) -> Cost {
             let mut body_c = Cost::zero();
             for st in body { body_c = body_c.plus(stmt_cost(&st.node)); }
             let n = bound.unwrap_or(DEFAULT_CAPACITY);
+            if let Some(x) = loop_self_growth(body) { return cond_c.plus(Cost::unbounded(self_growth_reason(&x))); }
             cond_c.plus(body_c.times(n))
         }
         Statement::Emit { args, .. } => {
@@ -686,6 +688,38 @@ pub fn stmt_cost(s: &Statement) -> Cost {
         Statement::Ensure { condition } => expr_cost(&condition.node),
         Statement::ExprStmt { expr } => expr_cost(&expr.node),
     }
+}
+
+fn self_growth_reason(x: &str) -> String {
+    format!("`{x}` is rebuilt from itself more than once per loop round (`{x} = concat({x}, {x})` doubles it every round) — its size is not bounded by the round count")
+}
+
+/// A loop whose body reassigns an outer name from TWO or more copies of
+/// itself (`xs = concat(xs, xs)`, `s = s + s`, `let ys = xs  xs = xs + ys`):
+/// the value grows geometrically, so no per-round allocation × round count
+/// bounds it (24 doublings of a one-element list charged 8 MiB and took 6 GB).
+fn loop_self_growth(body: &[Spanned<Statement>]) -> Option<String> {
+    let mut assigns: Vec<(&str, &Expr)> = Vec::new();
+    let mut copies: Vec<(&str, &str)> = Vec::new();
+    crate::checker::literals::for_each_stmt_deep(body, &mut |st| match st {
+        Statement::Assign { name, value } if !name.contains('.') && !name.contains('[') => assigns.push((name.as_str(), &value.node)),
+        Statement::Let { name, value } => if let Expr::Ident(src) = &value.node { copies.push((name.as_str(), src.as_str())) },
+        _ => {}
+    });
+    for (x, value) in assigns {
+        // x and the plain copies of it made in the loop (`let ys = xs`)
+        let mut names: std::collections::HashSet<&str> = std::collections::HashSet::new();
+        names.insert(x);
+        loop {
+            let before = names.len();
+            for (a, src) in &copies { if names.contains(src) { names.insert(a); } }
+            if names.len() == before { break; }
+        }
+        let mut uses = 0;
+        crate::checker::literals::for_each_in_expr(value, &mut |e| if let Expr::Ident(n) = e { if names.contains(n.as_str()) { uses += 1; } });
+        if uses >= 2 { return Some(x.to_string()); }
+    }
+    None
 }
 
 // ── Handler cost ───────────────────────────────────────────────────
