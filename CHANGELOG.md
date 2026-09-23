@@ -2,6 +2,16 @@
 
 ## Unreleased
 
+### A parameter bound by name keeps its position
+
+- `soma serve` compacted the parameters a query bound by name before the
+  body was bound: `POST /two?b=B` with `{"a":"A"}` bound "B" to `a` and the
+  whole body to `b`; `POST /pay?amount=5` with `{"to": …, "memo": …}` put 5
+  into `to`. The query's names, then the body's names, then the unnamed
+  values fill their own parameters; a missing parameter before a bound one
+  is reported by name (`GET /two?b=B`: "parameter 'a' expects String")
+  instead of "expected 2 arguments, got 1".
+
 ### Second pass: `verify` and `check` no longer prove what a run violates
 
 - An invariant was proven for a write inside a loop from one `require`

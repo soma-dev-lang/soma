@@ -4257,3 +4257,17 @@ fn verify_second_pass_false_proofs() {
     assert_eq!(code, 0, "{out}");
     let _ = std::fs::remove_dir_all(dir);
 }
+
+#[test]
+fn a_parameter_bound_by_name_keeps_its_position() {
+    // `POST /two?b=B` with {"a":"A"} bound B to `a` and the body to `b`
+    let dir = scratch("query_named_position");
+    std::fs::write(dir.join("app.cell"), "cell App {\n on two(a: String, b: String) { return a + \"|\" + b }\n on pay(to: String, amount: Int, memo: String) { return to + \"|\" + to_string(amount) + \"|\" + memo }\n}\n").unwrap();
+    let (_server, port) = serve_dir(&dir);
+    let post = |path: &str, body: &str| raw_request(port, &format!("POST {path} HTTP/1.0\r\nHost: localhost\r\nContent-Type: application/json\r\nContent-Length: {}\r\n\r\n{body}", body.len()));
+    assert!(post("/two?b=B", r#"{"a":"A"}"#).ends_with(r#"{"result":"A|B"}"#));
+    assert!(post("/pay?amount=5", r#"{"to":"bob","memo":"rent"}"#).ends_with(r#"{"result":"bob|5|rent"}"#));
+    let out = get(port, "/two?b=B");
+    assert!(out.contains("parameter 'a'"), "{out}");
+    let _ = std::fs::remove_dir_all(dir);
+}

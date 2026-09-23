@@ -1711,15 +1711,11 @@ pub fn cmd_serve(path: &PathBuf, port: u16, host: &str, verbose: bool, join: Opt
                 return;
             }
             let mut args: Vec<interpreter::Value> = Vec::new();
-            if !query.is_empty() {
-                fill_from_query(&mut args, query,
-                    &handler_params.get(sig_name).cloned().unwrap_or_default(),
-                    handler_types.get(sig_name).map(|t| t.as_slice()).unwrap_or(&[]));
-            }
             // a `/signal/` POST carries its body too (it was dropped)
-            if body_method && !body.is_empty() {
-                bind_body(&mut args, body_value.as_ref(), &body, handler_params.get(sig_name));
-            }
+            bind_open_params(&mut args, query,
+                (body_method && !body.is_empty()).then_some((body_value.as_ref(), body.as_str())),
+                &handler_params.get(sig_name).cloned().unwrap_or_default(),
+                handler_types.get(sig_name).map(|t| t.as_slice()).unwrap_or(&[]));
             (sig_name.to_string(), args)
         } else {
             let (url_path, query_string) = url.split_once('?').unwrap_or((&url, ""));
@@ -1750,17 +1746,13 @@ pub fn cmd_serve(path: &PathBuf, port: u16, host: &str, verbose: bool, join: Opt
                         })
                         .collect()
                 };
-                if !query_string.is_empty() {
-                    fill_from_query(&mut args, query_string,
-                        &handler_params.get(sig).cloned().unwrap_or_default(),
-                        handler_types.get(sig).map(|t| t.as_slice()).unwrap_or(&[]));
-                }
                 // PUT / PATCH / DELETE carry a body as POST does (the write
                 // gate accepts them, and their body was dropped: `on save(data:
                 // Map)` stored {})
-                if body_method && !body.is_empty() {
-                    bind_body(&mut args, body_value.as_ref(), &body, handler_params.get(sig));
-                }
+                bind_open_params(&mut args, query_string,
+                    (body_method && !body.is_empty()).then_some((body_value.as_ref(), body.as_str())),
+                    &handler_params.get(sig).cloned().unwrap_or_default(),
+                    handler_types.get(sig).map(|t| t.as_slice()).unwrap_or(&[]));
                 (sig.to_string(), args)
             } else if handler_names.contains(&"request".to_string()) {
                 let (req_path, req_query) = url.split_once('?').unwrap_or((&url, ""));
@@ -2278,48 +2270,73 @@ pub(crate) fn coerce_to_type(ty: &str, v: interpreter::Value) -> interpreter::Va
 /// the key is one, else in order. Shared by `/handler?…` and
 /// `/signal/handler?…` — the latter filled them in order only, so
 /// `?v=1&k=2` bound k to "1" and v to "2".
-fn fill_from_query(args: &mut Vec<interpreter::Value>, query_string: &str, param_names: &[String], handler_types: &[String]) {
-    // query values fill the parameters the path left open —
-    // by name when the key is one, else in order; a key the
-    // handler has no room for (?utm_source=…) is ignored
-    // rather than a "expected 1 argument, got 2"
-    // a trailing `opts: Map` the path did not fill collects the
-    // query keys that name no parameter (`/add/1?step=7` →
-    // opts.step == 7; it used to be fed positionally)
+/// Bind the parameters the path left open: by NAME from the query, then
+/// by name from a JSON body, then the query's unnamed values in order, then
+/// the body whole. A parameter set by name keeps its position (the slots
+/// were compacted, so `POST /two?b=B {"a":"A"}` bound B to `a`); a gap
+/// before a bound parameter is `()`, which the parameter check names.
+fn bind_open_params(args: &mut Vec<interpreter::Value>, query_string: &str, body: Option<(Option<&interpreter::Value>, &str)>, param_names: &[String], handler_types: &[String]) {
+    // a trailing `opts: Map` the path did not fill collects the query keys
+    // that name no parameter (`/add/1?step=7` → opts.step == 7)
     let opts_idx = handler_types.len().checked_sub(1)
         .filter(|&last| handler_types[last] == "Map" && last >= args.len());
+    let base = args.len();
+    let mut slots: Vec<Option<interpreter::Value>> = vec![None; param_names.len().saturating_sub(base)];
     let mut opts_map: Vec<(String, interpreter::Value)> = Vec::new();
-    let mut by_name: Vec<(usize, interpreter::Value)> = Vec::new();
     let mut positional: Vec<interpreter::Value> = Vec::new();
     for pair in query_string.split('&').filter(|pair| !pair.is_empty()) {
         let (k, v) = pair.split_once('=').unwrap_or((pair, ""));
         let decoded = urlencoding_decode(v);
         let key = urlencoding_decode(k);
         match param_names.iter().position(|p| *p == key) {
-            Some(i) if i >= args.len() => by_name.push((i, coerce_query_value(&decoded))),
+            Some(i) if i >= base => slots[i - base] = Some(coerce_query_value(&decoded)),
             Some(_) => {}
             None if opts_idx.is_some() => opts_map.push((key, coerce_query_value(&decoded))),
+            // a key the handler has no room for (?utm_source=…) is dropped
+            // below rather than a "expected 1 argument, got 2"
             None => positional.push(coerce_query_value(&decoded)),
         }
     }
     if let Some(oi) = opts_idx {
-        if !opts_map.is_empty() && !by_name.iter().any(|(i, _)| *i == oi) {
-            by_name.push((oi, interpreter::map_from_pairs(opts_map)));
+        if !opts_map.is_empty() && slots[oi - base].is_none() {
+            slots[oi - base] = Some(interpreter::map_from_pairs(opts_map));
         }
     }
-    let mut slots: Vec<Option<interpreter::Value>> = vec![None; param_names.len().saturating_sub(args.len())];
-    for (i, v) in by_name {
-        if let Some(slot) = slots.get_mut(i - args.len()) { *slot = Some(v); }
+    // the body: a JSON object by parameter name — or whole, for the one
+    // open parameter it names no key of (`on deploy(data: Map)`)
+    let mut whole_body: Option<interpreter::Value> = None;
+    if let Some((body_value, raw)) = body {
+        match body_value {
+            Some(bv @ interpreter::Value::Map(entries)) => {
+                let open: Vec<usize> = (0..slots.len()).filter(|i| slots[*i].is_none()).collect();
+                if open.len() == 1 && !entries.contains_key(&param_names[base + open[0]]) {
+                    slots[open[0]] = Some(bv.clone());
+                } else if open.is_empty() && slots.is_empty() {
+                    whole_body = Some(bv.clone());
+                } else {
+                    for i in open {
+                        slots[i] = Some(entries.get(&param_names[base + i]).cloned().unwrap_or(interpreter::Value::Unit));
+                    }
+                }
+            }
+            Some(other) => whole_body = Some(other.clone()),
+            None => whole_body = Some(interpreter::Value::String(raw.to_string())),
+        }
     }
-    let mut positional = positional.into_iter();
+    let mut rest = positional.into_iter().chain(whole_body);
     for slot in slots.iter_mut() {
         if slot.is_none() {
-            if let Some(v) = positional.next() { *slot = Some(v); }
+            if let Some(v) = rest.next() { *slot = Some(v); }
         }
     }
-    for slot in slots.into_iter().flatten() {
-        args.push(slot);
+    // a handler of unknown parameters (or none open) still gets the body
+    let extra: Vec<interpreter::Value> = if slots.is_empty() { rest.filter(|v| !matches!(v, interpreter::Value::Unit)).take(1).collect() } else { Vec::new() };
+    if let Some(last) = slots.iter().rposition(|s| s.is_some()) {
+        for slot in slots.into_iter().take(last + 1) {
+            args.push(slot.unwrap_or(interpreter::Value::Unit));
+        }
     }
+    args.extend(extra);
 }
 
 fn coerce_query_value(decoded: &str) -> interpreter::Value {
@@ -2499,28 +2516,3 @@ fn header_value_ok(v: &str) -> bool {
     v.bytes().all(|b| b == b'\t' || (0x20..0x7f).contains(&b))
 }
 
-/// The request body bound to the parameters the path and query left open:
-/// a JSON object by parameter name (or whole, for a single Map parameter
-/// it names no key of), any other JSON value or form as the next argument,
-/// else the raw text.
-fn bind_body(args: &mut Vec<interpreter::Value>, body_value: Option<&interpreter::Value>, body: &str, param_names: Option<&Vec<String>>) {
-    let Some(bv) = body_value else {
-        args.push(interpreter::Value::String(body.to_string()));
-        return;
-    };
-    match (param_names, bv) {
-        (Some(param_names), interpreter::Value::Map(entries)) => {
-            let remaining_params = &param_names[args.len().min(param_names.len())..];
-            // exactly one remaining parameter that names no key of the body:
-            // the whole Map (`on deploy(data: Map)` with {"name": "x", …})
-            if remaining_params.len() == 1 && !entries.contains_key(&remaining_params[0]) {
-                args.push(bv.clone());
-            } else {
-                for pname in remaining_params {
-                    args.push(entries.get(pname).cloned().unwrap_or(interpreter::Value::Unit));
-                }
-            }
-        }
-        _ => args.push(bv.clone()),
-    }
-}
