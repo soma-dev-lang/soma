@@ -7,6 +7,7 @@
 //!   - `rows.push(x)` statement  pure result discarded   → WARNING
 //!   - `[x] + rest`              `+` adds numeric lists  → WARNING (concat)
 
+use crate::ast::{MatchPattern};
 use crate::ast::*;
 use std::collections::HashSet;
 
@@ -137,6 +138,29 @@ impl Walk<'_> {
     }
 
     fn stmt(&mut self, stmt: &Spanned<Statement>, is_last: bool) {
+        // `let g = match n { x if x >= 90 -> "A"  x if x >= 80 -> "B" }`: a
+        // value match with no catch-all answers () for every other value
+        let valued = match &stmt.node {
+            Statement::Let { value, .. } | Statement::Assign { value, .. } | Statement::Return { value } => Some(value),
+            _ => None,
+        };
+        if let Some(Spanned { node: Expr::Match { arms, .. }, span }) = valued {
+            fn catch_all(p: &MatchPattern) -> bool {
+                match p {
+                    MatchPattern::Wildcard | MatchPattern::Variable(_) => true,
+                    MatchPattern::Or(ps) => ps.iter().any(catch_all),
+                    _ => false,
+                }
+            }
+            let any_all = arms.iter().any(|a| a.guard.is_none() && catch_all(&a.pattern));
+            let variants = arms.iter().any(|a| matches!(a.pattern, MatchPattern::Variant { .. }));
+            if !arms.is_empty() && !any_all && !variants {
+                self.warnings.push(HabitFinding {
+                    message: "this match has no catch-all arm: a value no arm matches gives () — add `_ -> …` (or `_ -> fail(\"kind\", \"…\")`)".to_string(),
+                    span: *span,
+                });
+            }
+        }
         match &stmt.node {
             Statement::ExprStmt { expr } => {
                 if !is_last {

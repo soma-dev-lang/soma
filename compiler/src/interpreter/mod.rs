@@ -880,6 +880,15 @@ pub fn is_http_response(v: &Value) -> bool {
     matches!(v, Value::Map(m) if matches!(m.get("_response"), Some(Value::Lambda { param, .. }) if param == HTTP_MARK))
 }
 
+/// A Map key's text: a whole Float is its Int (`m[3.0]` and `m[3]` were two
+/// entries though `3 == 3.0`; `round(x, 0)` buckets missed `counts[3]`).
+pub fn key_text(v: &Value) -> String {
+    if let Value::Float(f) = v {
+        if f.is_finite() && f.fract() == 0.0 && f.abs() < 9007199254740992.0 { return format!("{}", *f as i64); }
+    }
+    format!("{}", v)
+}
+
 /// A response's `_status` changed after response()/html(): checked where it
 /// is written, before the handler's writes commit (`with(r, "_status", 700)`
 /// answered 500 after them, a String status was ignored: 200).
@@ -1778,7 +1787,7 @@ impl Interpreter {
                             return Err(ExecError::Runtime(RuntimeError::Domain { kind: "type".to_string(), message: format!(
                                 "{}[()] = …: the key is () — an absent value (a mistyped field?) cannot be a key", name) }));
                         }
-                        let key = format!("{}", idx_val);
+                        let key = key_text(&idx_val);
                         if key == "_status" && matches!(entries.get("_response"), Some(Value::Lambda { param, .. }) if param == HTTP_MARK) {
                             let mut probe = IndexMap::new();
                             probe.insert("_status".to_string(), new_val.clone());
@@ -2384,6 +2393,11 @@ impl Interpreter {
                     self.last_span = Some(left.span.merge(right.span));
                     return Err(ExecError::Runtime(RuntimeError::TypeError(format!("cannot negate {}", what))));
                 }
+                // `-z` of a Float is its negation, -0.0 for 0.0 (`0 - z` gave
+                // +0.0: atan2(-z, -1.0) was π, 1.0 / -z was inf)
+                if let (BinOp::Sub, true, Value::Float(f)) = (*op, left.span.start == left.span.end && matches!(left.node, Expr::Literal(Literal::Int(0))), &r) {
+                    return Ok(Value::Float(-f));
+                }
                 // at this operation, not the first line of a multi-line
                 // statement around it (`sum([\n xs[0],\n xs[1] / z ])`)
                 self.eval_binop(&l, *op, &r).map_err(|e| { self.last_span = Some(left.span.merge(right.span)); ExecError::Runtime(e) })
@@ -2461,7 +2475,7 @@ impl Interpreter {
                     if i == 0 { if let Some(r) = &handler_ref { arg_vals.push(Value::String(r.clone())); continue; } }
                     arg_vals.push(self.eval_expr(&arg.node, env, cell_name, signal_name)?);
                 }
-                if let Some(v) = args.first().and_then(|a| self.int_slot_foreign_key(&a.node, name, &arg_vals, env, cell_name)) { return Ok(v); }
+                if let Some(v) = args.first().and_then(|a| self.int_slot_foreign_key(&a.node, name, &arg_vals, env, cell_name)) { return v; }
 
                 self.eval_named_call(name, arg_vals, env, cell_name, signal_name)
             }
@@ -2760,7 +2774,7 @@ impl Interpreter {
                             && matches!(all_args[1], Value::Lambda { .. } | Value::LambdaBlock { .. }) {
                             return Err(ExecError::Runtime(RuntimeError::TypeError("map(list, f) needs a List, got String".to_string())));
                         }
-                        if let Some(v) = self.int_slot_foreign_key(&left.node, name, &all_args, env, cell_name) { return Ok(v); }
+                        if let Some(v) = self.int_slot_foreign_key(&left.node, name, &all_args, env, cell_name) { return v; }
                         self.eval_named_call(name, all_args, env, cell_name, signal_name)
                     }
                     Expr::Ident(name) => {
@@ -2918,7 +2932,7 @@ impl Interpreter {
                         Some(Value::Map(entries)) => {
                             // `()` is no key: it read the entry "null"
                             if matches!(idx_val, Value::Unit) { return Ok(Value::Unit); }
-                            let key = format!("{}", idx_val);
+                            let key = key_text(&idx_val);
                             return Ok(entries.get(&key).cloned().unwrap_or(Value::Unit));
                         }
                         _ => {}
@@ -2939,7 +2953,7 @@ impl Interpreter {
                     }
                     Value::Map(ref entries) => {
                         if matches!(idx_val, Value::Unit) { return Ok(Value::Unit); }
-                        let key = format!("{}", idx_val);
+                        let key = key_text(&idx_val);
                         Ok(entries.get(&key).cloned().unwrap_or(Value::Unit))
                     }
                     Value::String(ref s) => {
@@ -3009,7 +3023,7 @@ impl Interpreter {
                     (Value::Map(entries), "get") if arg_vals.len() <= 2 => {
                         let dflt = arg_vals.get(1).cloned().unwrap_or(Value::Unit);
                         if let Some(key) = arg_vals.first().filter(|k| !matches!(k, Value::Unit)) {
-                            let key_str = format!("{}", key);
+                            let key_str = key_text(key);
                             Ok(entries.get(&key_str).cloned().unwrap_or(dflt))
                         } else {
                             Ok(dflt)
@@ -3023,7 +3037,7 @@ impl Interpreter {
                     }
                     (Value::Map(entries), "has") => {
                         if let Some(key) = arg_vals.first().filter(|k| !matches!(k, Value::Unit)) {
-                            let key_str = format!("{}", key);
+                            let key_str = key_text(key);
                             Ok(Value::Bool(entries.contains_key(&key_str)))
                         } else {
                             Ok(Value::Bool(false))
@@ -3306,8 +3320,13 @@ impl Interpreter {
                 // `()` is no key (set refuses it): it read the "null" entry;
                 // nor is "1" a key of a Map<Int, V> (it read the Int key 1)
                 if matches!(key, Value::Unit) { return Ok(Value::Unit); }
-                if !matches!(key, Value::Int(_)) && self.slot_int_keys(cell_name, slot_name) { return Ok(Value::Unit); }
-                let key_str = format!("{}", key);
+                // a text key on a `Map<Int, V>` is refused as set refuses it:
+                // `lookup(id: String)` answered "not found" for an existing row
+                if !matches!(key, Value::Int(_)) && self.slot_int_keys(cell_name, slot_name) {
+                    return Err(ExecError::Runtime(RuntimeError::Domain { kind: "type".to_string(), message: format!(
+                        "{}.get({}): the slot is declared Map<Int, …> — its keys are Ints, got {} (to_int(k) for a text id)", slot_name, key, value_type_name(key)) }));
+                }
+                let key_str = key_text(key);
 
                 match backend.get(&key_str) {
                     Some(stored) => Ok(self.from_slot(cell_name, slot_name, stored_to_value(stored))),
@@ -3340,7 +3359,7 @@ impl Interpreter {
                     return Err(ExecError::Runtime(RuntimeError::Domain { kind: "type".to_string(), message: format!(
                         "{}.set((), …): the key is () — an absent value (a mistyped field?) cannot be a key", slot_name) }));
                 }
-                let key_str = format!("{}", key);
+                let key_str = key_text(key);
 
                 if self.slot_immutable(cell_name, slot_name) && backend.get(&key_str).is_some() {
                     return Err(Self::immutable_refusal(slot_name, &format!("rewriting key \"{}\"", key_str)));
@@ -3391,7 +3410,7 @@ impl Interpreter {
                     return Err(ExecError::Runtime(RuntimeError::Domain { kind: "type".to_string(), message: format!(
                         "{}.delete({}): the slot is declared Map<Int, …> — its keys are Ints, got {}", slot_name, key, value_type_name(key)) }));
                 }
-                let key_str = format!("{}", key);
+                let key_str = key_text(key);
                 if self.slot_immutable(cell_name, slot_name) && backend.get(&key_str).is_some() {
                     return Err(Self::immutable_refusal(slot_name, &format!("deleting key \"{}\"", key_str)));
                 }
@@ -3512,8 +3531,11 @@ impl Interpreter {
                         "has() requires a key argument".to_string()
                     )))?;
                 if matches!(key, Value::Unit) { return Ok(Value::Bool(false)); }
-                if !matches!(key, Value::Int(_)) && self.slot_int_keys(cell_name, slot_name) { return Ok(Value::Bool(false)); }
-                let key_str = format!("{}", key);
+                if !matches!(key, Value::Int(_) | Value::Unit) && self.slot_int_keys(cell_name, slot_name) {
+                    return Err(ExecError::Runtime(RuntimeError::Domain { kind: "type".to_string(), message: format!(
+                        "{}.has({}): the slot is declared Map<Int, …> — its keys are Ints, got {} (to_int(k) for a text id)", slot_name, key, value_type_name(key)) }));
+                }
+                let key_str = key_text(key);
                 Ok(Value::Bool(backend.has(&key_str)))
             }
             "backend" => {
@@ -4698,6 +4720,17 @@ impl Interpreter {
             },
             (Value::List(a), Value::List(b)) => match op {
                 BinOp::Add => {
+                    // numbers on either side mean the elementwise sum, which did
+                    // not apply here (a () element, a matrix and a vector):
+                    // joining them instead gave [10, 20, 1, null] for
+                    // [10, 20] + [1, ()] — say so rather than change the operation
+                    let numeric = |v: &Value| matches!(v, Value::Int(_) | Value::Float(_))
+                        || matches!(v, Value::List(r) if !r.is_empty() && r.iter().all(|x| matches!(x, Value::Int(_) | Value::Float(_))));
+                    if !a.is_empty() && !b.is_empty() && a.iter().chain(b.iter()).any(numeric) {
+                        return Err(RuntimeError::TypeError(format!(
+                            "cannot add these lists elementwise: {} — numeric vectors (or matrices) of the same shape add; to join two lists write concat(a, b)",
+                            if a.iter().chain(b.iter()).any(|v| matches!(v, Value::Unit)) { "an element is () (a missing value?)" } else { "their elements or shapes differ" })));
+                    }
                     let mut result = a.clone();
                     result.extend(b.clone());
                     Ok(Value::List(result))
@@ -5865,12 +5898,14 @@ impl Interpreter {
     /// `contains(seats, "1")` / `without(seats, "1")` over a `Map<Int, V>`
     /// slot: its keys are Ints, so a text key is absent (as `seats.has("1")`
     /// answers) — the stored digits matched it and said true / removed 1.
-    fn int_slot_foreign_key(&self, target: &Expr, name: &str, vals: &[Value], env: &Env, cell_name: &str) -> Option<Value> {
+    fn int_slot_foreign_key(&self, target: &Expr, name: &str, vals: &[Value], env: &Env, cell_name: &str) -> Option<Result<Value, ExecError>> {
         let Expr::Ident(n) = target else { return None };
         if vals.len() != 2 || !matches!(name, "contains" | "has" | "without") || env.contains_key(n) || env.contains_key(name) { return None; }
         if matches!(vals[1], Value::Int(_) | Value::Unit) || !matches!(vals[0], Value::Map(_)) { return None; }
         if self.handler_shadows_builtin(name, 2, cell_name) || self.slot_kind(cell_name, n) != Some("Map") || !self.slot_int_keys(cell_name, n) { return None; }
-        Some(if name == "without" { vals[0].clone() } else { Value::Bool(false) })
+        // refused, as `seats.has("1")` and `seats.set("1", …)` are
+        Some(Err(ExecError::Runtime(RuntimeError::Domain { kind: "type".to_string(), message: format!(
+            "{}({}, {}): the slot is declared Map<Int, …> — its keys are Ints, got {} (to_int(k) for a text id)", name, n, vals[1], value_type_name(&vals[1])) })))
     }
 
     /// The key `key_str` as slot `slot` takes it: an Int for a `Map<Int, V>`

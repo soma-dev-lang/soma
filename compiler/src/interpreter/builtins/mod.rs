@@ -279,6 +279,7 @@ pub fn call_lambda_builtin(interp: &mut super::Interpreter, name: &str, args: &[
                     Err(e) => return Some(Err(crate::interpreter::lambda_error(e))),
                 }
             }
+            if let Err(e) = collection::sort_keys_ok("sort_by", &keyed.iter().map(|(k, _)| k).collect::<Vec<_>>()) { return Some(Err(e)); }
             // NaN stays last in "desc" too (reversing put it first)
             let nan = |v: &Value| matches!(v, Value::Float(f) if f.is_nan());
             keyed.sort_by(|a, b| {

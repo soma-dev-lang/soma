@@ -106,7 +106,12 @@ pub fn cmd_run(path: &PathBuf, args: &[String], use_jit: bool, signal_flag: Opti
         c.sections.iter().any(|s| matches!(s.node, ast::Section::Runtime(_)))
     });
 
-    if has_interior || has_runtime {
+    // a named handler runs as in any program (with an `interior` section
+    // `soma run app.cell main` dumped the runtime state and never ran main,
+    // and `total 2 3` went to the first child's first handler); the legacy
+    // runtime answers only a bare `soma run app.cell`
+    let handler_named = signal_flag.is_some() || signal_owned.is_some();
+    if (has_interior || has_runtime) && !handler_named {
         run_with_runtime(program, &arg_values);
     } else {
         // The deprecated flag is a compatibility no-op, as the warning

@@ -146,6 +146,18 @@ pub fn call_builtin(name: &str, args: &[Value]) -> Option<Result<Value, RuntimeE
                 let field_of = |row: &Value| -> Value {
                     row_fields(row).and_then(|e| e.get(&field)).cloned().unwrap_or(Value::Unit)
                 };
+                // every item a row; a field no row has is a typo (`"scroe"`
+                // returned the rows unsorted)
+                if let Some((i, bad)) = items.iter().enumerate().find(|(_, r)| row_fields(r).is_none()) {
+                    return Some(Err(RuntimeError::Domain { kind: "type".to_string(), message: format!(
+                        "sort_by(rows, \"{}\"): item {} is {} {}, not a Map or record — sort a plain list with sort(), or sort_by(xs, x => …)", field, i, crate::interpreter::value_type_name(bad), bad) }));
+                }
+                if !items.is_empty() && items.iter().all(|r| row_fields(r).map_or(true, |m| !m.contains_key(&field))) {
+                    return Some(Err(RuntimeError::Domain { kind: "type".to_string(), message: format!(
+                        "sort_by(rows, \"{}\"): no row has the field '{}'", field, field) }));
+                }
+                let keys: Vec<Value> = items.iter().map(|r| field_of(r)).collect();
+                if let Err(e) = super::collection::sort_keys_ok("sort_by", &keys.iter().collect::<Vec<_>>()) { return Some(Err(e)); }
                 let mut sorted = items.clone();
                 let nan = |v: &Value| matches!(v, Value::Float(f) if f.is_nan());
                 sorted.sort_by(|a, b| {
@@ -321,7 +333,13 @@ pub fn call_builtin(name: &str, args: &[Value]) -> Option<Result<Value, RuntimeE
                     let target = format!("{}", args[2]);
                     let count = items.iter().filter(|item| {
                         if let Some(entries) = row_fields(item) {
-                            entries.get(&field).map(|v| format!("{}", v) == target).unwrap_or(false)
+                            // two numbers compare as numbers (1.0 counted apart from
+                            // 1 while filter_by and == say equal); else as text
+                            entries.get(&field).map(|v| match (v, &args[2]) {
+                                (Value::Int(_) | Value::Float(_), Value::Int(_) | Value::Float(_)) =>
+                                    crate::interpreter::numeric_cmp(v, &args[2]) == Some(std::cmp::Ordering::Equal),
+                                _ => format!("{}", v) == target,
+                            }).unwrap_or(false)
                         } else { false }
                     }).count() as i64;
                     Some(Ok(Value::Int(SomaInt::from_i64(count))))

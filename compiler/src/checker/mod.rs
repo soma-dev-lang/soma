@@ -770,6 +770,24 @@ impl<'a> Checker<'a> {
                             }
                         }
                     });
+                    // the method form too: `n.max(1, 9)` is max(n, 1, 9), and
+                    // `"a,b".split(",", 1)` ran with the extra argument dropped
+                    // (not on a slot or a cell, whose methods are their own; not
+                    // the methods a List / Map / String answers itself)
+                    let slots: std::collections::HashSet<&str> = cell.sections.iter().flat_map(|s| match &s.node {
+                        Section::Memory(m) => m.slots.iter().map(|sl| sl.node.name.as_str()).collect::<Vec<_>>(), _ => vec![] }).collect();
+                    literals::for_each_expr(body, &mut |e| if let Expr::MethodCall { target, method, args } = e {
+                        if let Expr::Ident(t) = &target.node {
+                            if slots.contains(t.as_str()) || program.cells.iter().any(|c| &c.node.name == t) { return; }
+                        }
+                        if handler_names.contains(method) || matches!(method.as_str(), "get" | "has" | "keys" | "values" | "len" | "length") { return; }
+                        let n = args.len() + 1;
+                        if let Some(max) = crate::interpreter::builtins::registry::max_arity(method) {
+                            if n > max && reported.insert(format!("{}:{}:{}", method, n, target.span.start)) {
+                                bad.push((format!("{}() takes at most {} argument{} ({} given, the value before the dot counts) — the extra ones were silently ignored", method, max, if max == 1 { "" } else { "s" }, n), target.span));
+                            }
+                        }
+                    });
                     for (m, span) in bad {
                         self.errors.push(CheckError::Static { kind: "builtin_arity", message: m, span });
                     }

@@ -106,7 +106,8 @@ pub fn call_builtin(name: &str, args: &[Value]) -> Option<Result<Value, RuntimeE
             let detail = match args.get(1) { Some(Value::String(d)) => d.clone(), Some(other) => format!("{}", other), None => kind.clone() };
             let status = crate::commands::serve::status_for_kind(&kind) as i64;
             let body = crate::interpreter::map_from_pairs(vec![
-                ("error".to_string(), Value::String(format!("{}: {}", kind, detail))),
+                // as raising it answers: `fail("k")` is "k", not "k: k"
+                ("error".to_string(), Value::String(if args.len() == 1 { kind.clone() } else { format!("{}: {}", kind, detail) })),
                 ("kind".to_string(), Value::String(kind)),
                 ("detail".to_string(), Value::String(detail)),
             ]);

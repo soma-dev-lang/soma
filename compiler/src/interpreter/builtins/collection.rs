@@ -244,7 +244,7 @@ pub fn call_builtin(name: &str, args: &[Value]) -> Option<Result<Value, RuntimeE
                             return Some(Err(RuntimeError::Domain { kind: "type".to_string(), message:
                                 "with(map, (), …): the key is () — an absent value (a mistyped field?) cannot be a key".to_string() }));
                         }
-                        let key = format!("{}", args[i]);
+                        let key = crate::interpreter::key_text(&args[i]);
                         let val = args[i + 1].clone();
                         result.insert(key, val);
                         i += 2;
@@ -561,4 +561,18 @@ fn not_a_list(call: &str, got: Option<&Value>) -> Option<Result<Value, RuntimeEr
     Some(Err(RuntimeError::Domain { kind: "type".to_string(), message: format!(
         "{} takes a List, got {}", call,
         got.map(|v| format!("{} {}", crate::interpreter::value_type_name(v), super::string::to_json_string(v))).unwrap_or_else(|| "nothing".to_string())) }))
+}
+
+/// The keys sort_by orders: numbers, texts, Bools, Lists of them, and ()
+/// (the documented rank: () < Bool < number < text < List). A Map or record
+/// key compared "equal" to every other and the rows came back unsorted
+/// without a word — sort() refuses them.
+pub(crate) fn sort_keys_ok(name: &str, keys: &[&Value]) -> Result<(), RuntimeError> {
+    for k in keys {
+        if matches!(k, Value::Map(_) | Value::Variant { .. } | Value::Lambda { .. } | Value::LambdaBlock { .. }) {
+            return Err(RuntimeError::Domain { kind: "type".to_string(), message: format!(
+                "{}: a key is {} — keys are numbers, texts, Bools or Lists of them (order by one of its fields)", name, crate::interpreter::value_type_name(k)) });
+        }
+    }
+    Ok(())
 }

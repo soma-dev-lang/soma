@@ -4740,6 +4740,14 @@ impl FnGenerator {
                 }
                 self.coerce_direct(name.clone(), var_ty, target_ty)
             }
+            // a unary minus of a Float (its `0` is zero-width): the negation,
+            // -0.0 for 0.0 as interpreted (`0.0 - z` gave +0.0)
+            Expr::BinaryOp { left, op: BinOp::Sub, right }
+                if left.span.start == left.span.end && matches!(left.node, Expr::Literal(Literal::Int(0)))
+                    && target_ty == NativeType::Float && self.infer_expr_type(&right.node) == NativeType::Float
+                    && !self.is_int_rational(&right.node, &self.rational_locals) => {
+                format!("(-({}))", self.gen_expr_direct(&right.node, NativeType::Float))
+            }
             Expr::BinaryOp { left, op, right } => {
                 let rational = self.is_int_rational(expr, &self.rational_locals);
                 // a Float operation: its operands are Float operands

@@ -1260,6 +1260,9 @@ impl<'a> Walker<'a> {
                         match &st.node {
                             Statement::Let { name, .. } => { own.insert(name.clone()); }
                             Statement::Assign { name, .. } if !own.contains(name) => return Some(name.clone()),
+                            // `counts[w] = …`, `rows[0].v = x` on an outer local:
+                            // the same copy (a slot write is filtered below)
+                            Statement::IndexSet { name, .. } if !own.contains(name) && !name.contains('.') => return Some(name.clone()),
                             Statement::If { then_body, else_body, .. } => {
                                 if let Some(n) = outer_assign(then_body, &mut own.clone()).or_else(|| outer_assign(else_body, &mut own.clone())) { return Some(n); }
                             }
@@ -1272,7 +1275,7 @@ impl<'a> Walker<'a> {
                 }
                 let mut own: HashSet<String> = HashSet::new();
                 own.insert(param.clone());
-                if let Some(n) = outer_assign(stmts, &mut own) {
+                if let Some(n) = outer_assign(stmts, &mut own).filter(|n| self.scope.contains(n) || !self.index.slots.contains(n)) {
                     self.issues.push(InterpolationIssue {
                         message: format!("`{n} = …` inside a lambda changes a copy — the outer `{n}` is unchanged after it; accumulate with a `for` loop, or `reduce`/`sum` over the list"),
                         span,

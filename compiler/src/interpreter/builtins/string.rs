@@ -3,6 +3,13 @@ use super::json_to_value;
 use crate::interpreter::soma_int::SomaInt;
 
 pub fn call_builtin(name: &str, args: &[Value]) -> Option<Result<Value, RuntimeError>> {
+    // an absent value is not text: `lowercase(user.email)` on a map with no
+    // email gave "null" (a real-looking key), `pad_left(r.id, 8, "0")`
+    // "0000null" — as trim, split, replace already refuse ()
+    if matches!(name, "lowercase" | "uppercase" | "pad_left" | "pad_right") && matches!(args.first(), Some(Value::Unit)) {
+        return Some(Err(RuntimeError::Domain { kind: "type".to_string(), message: format!(
+            "{}(): the value is () — an absent value (a missing field or key?) is not text; default it first (`x ?? \"\"`)", name) }));
+    }
     match name {
         "concat" => {
             if args.len() >= 2 {

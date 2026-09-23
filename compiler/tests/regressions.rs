@@ -4488,7 +4488,7 @@ cell App {
     }
     on with_unit(body: Map) { let m = map()  m = with(m, body.userid, 1)  return m }
     on without_unit(body: Map) { let m = map("null", 1)  return [contains(m, body.userid), try { without(m, body.userid) }.kind] }
-    on int_keys() { seats.set(1, "a")  return [seats.get("1"), seats.has("1"), try { seats.delete("1") }.kind, seats.len] }
+    on int_keys() { seats.set(1, "a")  return [try { seats.get("1") }.kind, try { seats.has("1") }.kind, try { seats.delete("1") }.kind, seats.len] }
 }
 cell test T { rules {
     assert arm() == 5
@@ -4497,7 +4497,7 @@ cell test T { rules {
     assert interp_key() == [map("k0", 11, "k1", 20), 1]
     assert_fails with_unit(map("user_id", "u")) matching "the key is ()"
     assert without_unit(map("user_id", "u")) == [false, "type"]
-    assert int_keys() == [(), false, "type", 1]
+    assert int_keys() == ["type", "type", "type", 1]
 } }
 "#);
 }
@@ -4657,8 +4657,10 @@ cell P {
     on seat_probe() {
         seats.set(1, "a")
         seats.set(10, "b")
-        return [contains(seats, "1"), seats |> contains("1"), contains(seats, 1), len(without(seats, "10"))]
+        return [contains(seats, 1), len(without(seats, 10))]
     }
+    on seat_text() { seats.set(1, "a")  return contains(seats, "1") }
+    on seat_pipe() { seats.set(1, "a")  return seats |> contains("1") }
     on lambda_group() { return group_by([map("g", "x")], r => r.g) }
 }
 cell test T { rules {
@@ -4666,7 +4668,9 @@ cell test T { rules {
     assert rx_native("x1") == "x${{5}}|${{USD}}|1"
     assert csv() == ["+0612345678", "-007", "+5", -0.5, -3]
     assert_fails absent_key() matching "cannot be a key"
-    assert seat_probe() == [false, false, true, 2]
+    assert seat_probe() == [true, 1]
+    assert_fails seat_text() matching "keys are Ints"
+    assert_fails seat_pipe() matching "keys are Ints"
     assert_fails lambda_group() matching "String name"
 } }
 "#);
@@ -5213,7 +5217,10 @@ cell test T { rules {
     let (code, out) = soma(&dir, &["check", "app.cell"]);
     assert_ne!(code, 0, "{out}");
     assert!(out.contains("read_file"), "{out}");
+    let _ = std::fs::remove_dir_all(dir);
+}
 
+#[test]
 fn core_fifth_pass_runtime() {
     passes("core_fifth_pass_runtime", r##"
 cell type Person { variants { Person { name: String, tags: List<String> } } }
@@ -5403,4 +5410,54 @@ cell A {
 "#).unwrap();
     let (_, out) = soma(&dir, &["run", "app.cell"]);
     assert!(out.contains("division by zero") && out.contains("app.cell:8:13"), "{out}");
+}
+
+#[test]
+fn core_sixth_pass() {
+    passes("core_sixth_pass", r#"
+cell type Money { variants { Money { amt: Int } } }
+cell P {
+    memory { qty: Map<Int, Int> [ephemeral] }
+    face { signal unit_price(total: Int, n: Int) -> Float }
+    on unit_price(total: Int, n: Int) { return total / n }
+    on text_key() { qty.set(42, 7)  return qty.get("42") }
+    on low() { return lowercase(map("a", 1).email) }
+    on typo() { return sort_by([map("score", 1)], "scroe") }
+    on scalars() { return sort_by([3, 1, 2], "score") }
+    on by_money() { return sort_by([map("p", Money { amt: 2 }), map("p", Money { amt: 1 })], "p") }
+    on multi() { return sort_by([map("a", 1, "b", 2), map("a", 1, "b", 1)], r => [r.a, r.b]) |> pluck("b") }
+    on plus_unit() { return [10, 20] + [1, ()] }
+    on acc() { return [] + [1] }
+    on neg() { let z = 0.0  return atan2(-z, -1.0) }
+    on buckets() { let m = map()  m[round(3.2, 0)] = 1  return m[3] }
+    on cnt() { return count_by([map("s", 1.0), map("s", 1)], "s", 1) }
+    on refuse() { return refusal("out_of_stock")._body.error }
+}
+cell test T { rules {
+    assert unit_price(10, 4) == 2.5
+    assert_fails text_key() matching "keys are Ints"
+    assert_fails low() matching "absent value"
+    assert_fails typo() matching "no row has the field"
+    assert_fails scalars() matching "not a Map or record"
+    assert_fails by_money() matching "a key is"
+    assert multi() == [1, 2]
+    assert_fails plus_unit() matching "elementwise"
+    assert acc() == [1]
+    assert neg() < 0.0
+    assert buckets() == 1
+    assert cnt() == 2
+    assert refuse() == "out_of_stock"
+} }
+"#);
+    // soma run names a handler of a program with an interior
+    let dir = scratch("core_sixth_interior");
+    std::fs::write(dir.join("app.cell"), "cell Shop {\n  interior {\n    cell Audit {\n      face { signal note(msg: String) }\n      on note(msg: String) { print(\"AUDIT {msg}\") }\n    }\n  }\n  on total(a: Int, b: Int) { return a + b }\n}\n").unwrap();
+    let (_, out) = soma(&dir, &["run", "app.cell", "total", "2", "3"]);
+    assert!(out.contains('5') && !out.contains("AUDIT"), "{out}");
+    // check: an indexed write in a lambda, a value match with no catch-all,
+    // a builtin method with too many arguments
+    std::fs::write(dir.join("c.cell"), "cell C {\n    on a() { let counts = map()\n        let ws = [\"a\"] |> map(w => { counts[w] = 1  w })\n        return counts }\n    on g(n: Int) { let r = match n { 1 -> \"one\"  2 -> \"two\" }\n        return r }\n    on m(n: Int) { return n.max(1, 9) }\n}\n").unwrap();
+    let (_, out) = soma(&dir, &["check", "c.cell"]);
+    assert!(out.contains("changes a copy") && out.contains("catch-all") && out.contains("max() takes at most"), "{out}");
+    let _ = std::fs::remove_dir_all(dir);
 }
