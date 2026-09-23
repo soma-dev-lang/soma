@@ -196,7 +196,9 @@ impl Drop for Server {
 /// loop, so a bare `connect()` succeeded while startup was still running and
 /// the request that followed could be reset.
 fn wait_http(port: u16) {
-    for _ in 0..200 {
+    // up to 20 s: under a full parallel test run a server can take more
+    // than the 5 s this allowed (an intermittent "did not answer")
+    for _ in 0..800 {
         if http_probe(port) {
             return;
         }
@@ -4145,5 +4147,39 @@ cell test T { rules {
     let (code, out) = soma(&dir, &["run", "app.cell"]);
     assert_eq!(code, 0, "{out}");
     assert!(out.contains("bet 10"), "{out}");
+    let _ = std::fs::remove_dir_all(dir);
+}
+
+#[test]
+fn a_handler_passed_as_a_value_is_a_callee() {
+    // horde(worker, xs) / vote(worker, q, 1) ran a writing handler on GET,
+    // and a handler request owned only through horde() was reachable
+    // directly, around request's auth
+    let dir = scratch("handler_as_value");
+    std::fs::write(dir.join("app.cell"), r#"
+cell App {
+    memory { bal: Map<String, Int> [persistent] }
+    on worker(k: String) [task] { bal.set(k, 0)  return k }
+    on wipe_all(ks: String) { return horde(worker, split(ks, ",")) }
+    on vt(k: String) { return vote(worker, k, 1) }
+    on reset_one(k: String) [task] { bal.set(k, 0)  return k }
+    on request(method: String, path: String, body: List, headers: Map) {
+        if headers.authorization != "Bearer s3cret" { return response(401, map("error", "auth")) }
+        return match path {
+            "/admin/reset/" + k -> horde(reset_one, [k])
+            "/count" -> len(body)
+            _ -> response(404, "nf")
+        }
+    }
+}
+"#).unwrap();
+    let (_server, port) = serve_dir(&dir);
+    assert!(get(port, "/wipe_all/a,b").starts_with("HTTP/1.0 405"));
+    assert!(get(port, "/vt/a").starts_with("HTTP/1.0 405"));
+    let out = raw_request(port, "POST /reset_one/a HTTP/1.0\r\nHost: localhost\r\nContent-Length: 0\r\n\r\n");
+    assert!(out.starts_with("HTTP/1.0 401"), "{out}");
+    // an empty body is an empty List for `body: List`
+    let out = raw_request(port, "GET /count HTTP/1.0\r\nHost: localhost\r\nAuthorization: Bearer s3cret\r\n\r\n");
+    assert!(out.starts_with("HTTP/1.0 200"), "{out}");
     let _ = std::fs::remove_dir_all(dir);
 }

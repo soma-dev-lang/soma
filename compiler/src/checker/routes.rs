@@ -217,7 +217,16 @@ pub fn explicit_routes_in(program: &Program, cell: &CellDef) -> ExplicitRoutes {
     let mut todo: Vec<(String, &OnSection)> = vec![(cell.name.clone(), req)];
     while let Some((cur, h)) = todo.pop() {
         let mut edges: Vec<(Option<String>, String)> = Vec::new();
-        super::literals::for_each_call(&h.body, &mut |n, _, _| edges.push((None, n.to_string())));
+        super::literals::for_each_call(&h.body, &mut |n, args, _| {
+            edges.push((None, n.to_string()));
+            // a handler passed as a value (`horde(worker, xs)`, `vote(worker,
+            // q, 3)`) runs too: POST /worker/a skipped request's auth
+            for a in args {
+                if let Expr::Ident(v) = &a.node {
+                    if defs.contains_key(&(cur.clone(), v.clone())) { edges.push((None, v.clone())); }
+                }
+            }
+        });
         super::literals::for_each_expr(&h.body, &mut |e| if let Expr::MethodCall { target, method, .. } = e {
             if let Expr::Ident(t) = &target.node { if cells.contains(t) { edges.push((Some(t.clone()), method.clone())); } }
         });

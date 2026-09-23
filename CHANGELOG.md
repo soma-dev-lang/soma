@@ -2,6 +2,20 @@
 
 ## Unreleased
 
+### Second pass: a handler passed as a value is a callee
+
+- `horde(worker, xs)` and `vote(worker, q, k)` run the handler they are
+  given, but only a called name counted: `GET /wipe_all/a,b` ran a writing
+  `worker` (the GET gate answers 405 for a writer), and a handler that
+  `request` reached only through `horde(reset_one, [k])` was callable
+  directly at `POST /reset_one/a`, around `request`'s auth check. A handler
+  name passed as an argument is now a callee for both, and `horde` / `vote`
+  count as effects (a guard or an invariant may not call them).
+- A `request` declaring `body: List` answered every body-less request (every
+  GET) with a 400: an empty body is `[]` for a List.
+- The CORS preflight and the 405 `Allow` header left out PATCH (and PUT,
+  DELETE for `Allow`), the methods that carry a body.
+
 ### Second pass: core evaluation
 
 - An index expression that calls something was evaluated two or three

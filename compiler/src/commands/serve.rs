@@ -1555,7 +1555,7 @@ pub fn cmd_serve(path: &PathBuf, port: u16, host: &str, verbose: bool, join: Opt
             let resp = tiny_http::Response::from_string("")
                 .with_status_code(204)
                 .with_header(tiny_http::Header::from_bytes(&b"Access-Control-Allow-Origin"[..], &b"*"[..]).unwrap())
-                .with_header(tiny_http::Header::from_bytes(&b"Access-Control-Allow-Methods"[..], &b"GET, POST, PUT, DELETE, OPTIONS"[..]).unwrap())
+                .with_header(tiny_http::Header::from_bytes(&b"Access-Control-Allow-Methods"[..], &b"GET, POST, PUT, PATCH, DELETE, OPTIONS"[..]).unwrap())
                 .with_header(tiny_http::Header::from_bytes(&b"Access-Control-Allow-Headers"[..], &b"Content-Type, Authorization"[..]).unwrap())
                 .with_header(tiny_http::Header::from_bytes(&b"Access-Control-Max-Age"[..], &b"86400"[..]).unwrap());
             let _ = request.respond(cors(resp));
@@ -1684,7 +1684,7 @@ pub fn cmd_serve(path: &PathBuf, port: u16, host: &str, verbose: bool, join: Opt
                 let msg = format!("{}() changes state: call it with POST (a {} must not write)", sig, method);
                 let resp = tiny_http::Response::from_string(error_body(&msg, "method_not_allowed"))
                     .with_status_code(405)
-                    .with_header(tiny_http::Header::from_bytes(&b"Allow"[..], &b"POST"[..]).unwrap())
+                    .with_header(tiny_http::Header::from_bytes(&b"Allow"[..], &b"POST, PUT, PATCH, DELETE"[..]).unwrap())
                     .with_header(tiny_http::Header::from_bytes(&b"Content-Type"[..], &b"application/json"[..]).unwrap());
                 eprintln!("{} {} → 405 0ms {}", method, log_safe(&url), log_safe(&msg));
                 let _ = request.respond(cors(resp));
@@ -1781,7 +1781,9 @@ pub fn cmd_serve(path: &PathBuf, port: u16, host: &str, verbose: bool, join: Opt
                     "String" => interpreter::Value::String(body.clone()),
                     "Map" | "List" => match body_value.clone() {
                         Some(v) if matches!(v, interpreter::Value::Map(_) | interpreter::Value::List(_)) => v,
-                        _ if body.trim().is_empty() => interpreter::Value::Map(Default::default()),
+                        // an empty body is the empty value of the declared type
+                        // (`body: List` answered every GET with a 400)
+                        _ if body.trim().is_empty() => if request_body_type.as_str() == "List" { interpreter::Value::List(vec![]) } else { interpreter::Value::Map(Default::default()) },
                         _ => {
                             let msg = if request_body_type.as_str() == "Map" && body.trim_start().starts_with('{') {
                                 "request body is not a JSON object Soma reads: malformed, or nested deeper than the limit (the `request` handler declares body: Map)".to_string()
@@ -2438,11 +2440,18 @@ pub(crate) fn mutating_handlers(cell: &ast::CellDef, foreign: &std::collections:
         let mut writes = false;
         let mut callees = Vec::new();
         crate::checker::literals::for_each_expr(&on.body, &mut |e| match e {
-            Expr::FnCall { name, .. } => {
+            Expr::FnCall { name, args } => {
                 if name != "http_get" && name != "sleep" && crate::checker::names::EFFECT_BUILTINS.contains(&name.as_str()) { writes = true; }
                 let own = cell.sections.iter().any(|s| matches!(&s.node, Section::OnSignal(o) if o.signal_name == *name));
                 if !own && foreign.contains(name) { writes = true; }
                 callees.push(name.clone());
+                // a handler passed as a value runs too (`horde(worker, xs)`:
+                // GET /wipe_all/a,b zeroed every balance)
+                for a in args {
+                    if let Expr::Ident(v) = &a.node {
+                        if cell.sections.iter().any(|s| matches!(&s.node, Section::OnSignal(o) if o.signal_name == *v)) { callees.push(v.clone()); }
+                    }
+                }
             }
             Expr::MethodCall { target, method, .. } => {
                 if let Expr::Ident(t) = &target.node {

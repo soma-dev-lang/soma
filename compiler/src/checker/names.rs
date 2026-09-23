@@ -28,6 +28,8 @@ pub const EFFECT_BUILTINS: &[&str] = &[
     "think", "think_json", "transition", "publish", "remember", "delegate", "next_id",
     "write_file", "write_csv", "write_str", "http_get", "http_post", "http_put", "http_patch", "http_delete",
     "set_budget", "sleep", "link", "subscribe", "ws_connect", "ws_send", "approve", "clear_context", "clear_trace",
+    // they run the handler they are given
+    "horde", "vote",
 ];
 
 /// Every builtin callable by bare name at runtime, DERIVED from the
