@@ -1959,8 +1959,12 @@ impl Parser {
         if self.check(&Token::Arrow) {
             let arrow_span = self.peek_span();
             self.advance();
+            // the WHOLE type (`-> Map<String, List<Int>>` said `-> Map`)
             let ret_ty = match self.peek() {
-                Token::TypeIdent(t) | Token::Ident(t) => t.clone(),
+                Token::TypeIdent(_) | Token::Ident(_) => match self.parse_type_expr() {
+                    Ok(t) => type_expr_source(&t.node),
+                    Err(_) => "T".to_string(),
+                },
                 _ => "T".to_string(),
             };
             let params_str = params.iter()

@@ -52,9 +52,55 @@ pub fn cmd_run(path: &PathBuf, args: &[String], use_jit: bool, signal_flag: Opti
         ast::Section::OnSignal(on) => Some((c.node.name.clone(), on.signal_name.clone())),
         _ => None,
     })).collect();
-    let mut signal_owned: Option<String> = None;
+    // the handlers of INTERIOR cells, as (parent, cell, handler): `soma run
+    // app.cell booked 5` for a child's `booked` ran the first child's first
+    // handler with "booked" as its argument
+    fn interior_rec(parent: &ast::CellDef, out: &mut Vec<(String, String, String)>) {
+        for s in &parent.sections {
+            if let ast::Section::Interior(ref interior) = s.node {
+                for child in &interior.cells {
+                    if !matches!(child.node.kind, ast::CellKind::Cell | ast::CellKind::Agent) { continue; }
+                    for cs in &child.node.sections {
+                        if let ast::Section::OnSignal(ref on) = cs.node {
+                            out.push((parent.name.clone(), child.node.name.clone(), on.signal_name.clone()));
+                        }
+                    }
+                    interior_rec(&child.node, out);
+                }
+            }
+        }
+    }
+    let mut interior_handlers: Vec<(String, String, String)> = Vec::new();
+    for c in &program.cells {
+        if matches!(c.node.kind, ast::CellKind::Cell | ast::CellKind::Agent) { interior_rec(&c.node, &mut interior_handlers); }
+    }
     let mut args: &[String] = args;
-    if signal_flag.is_none() {
+    let mut interior_target: Option<(String, String, String)> = None;
+    if !interior_handlers.is_empty() {
+        let (requested, positional) = match signal_flag {
+            Some(sf) => (Some(sf.to_string()), false),
+            None => (args.first().cloned(), true),
+        };
+        if let Some(req) = requested {
+            let (want_cell, want_h) = match req.split_once('.') { Some((c, h)) => (Some(c), h), None => (None, req.as_str()) };
+            let inner: Vec<&(String, String, String)> = interior_handlers.iter()
+                .filter(|(_, c, h)| h == want_h && want_cell.map_or(true, |w| w == c)).collect();
+            if !inner.is_empty() {
+                let top: Vec<&(String, String)> = all_handlers.iter()
+                    .filter(|(c, h)| h == want_h && want_cell.map_or(true, |w| w == c)).collect();
+                if inner.len() + top.len() > 1 {
+                    let mut names: Vec<String> = top.iter().map(|(c, h)| format!("{}.{}", c, h)).collect();
+                    names.extend(inner.iter().map(|(_, c, h)| format!("{}.{}", c, h)));
+                    eprintln!("error: several cells declare a handler '{}' — name the one to run as Cell.handler: [{}]", req, names.join(", "));
+                    process::exit(1);
+                }
+                interior_target = Some(inner[0].clone());
+                if positional { args = &args[1..]; }
+            }
+        }
+    }
+    let mut signal_owned: Option<String> = None;
+    if signal_flag.is_none() && interior_target.is_none() {
         if let Some(first) = args.first() {
             let named = if all_handlers.iter().any(|(_, h)| h == first) {
                 Some(first.clone())
@@ -111,7 +157,26 @@ pub fn cmd_run(path: &PathBuf, args: &[String], use_jit: bool, signal_flag: Opti
     // and `total 2 3` went to the first child's first handler); the legacy
     // runtime answers only a bare `soma run app.cell`
     let handler_named = signal_flag.is_some() || signal_owned.is_some();
-    if (has_interior || has_runtime) && !handler_named {
+    if let Some((parent, child, handler)) = interior_target {
+        run_interior_handler(program, &parent, &child, &handler, arg_values);
+    } else if (has_interior || has_runtime) && !handler_named {
+        // a first token that is not plainly data names a handler, and there
+        // is none by that name: an error, as for any program (`soma run
+        // r3.cell nosuch` ran the first child's first handler with "nosuch")
+        if let Some(first) = args.first() {
+            let t = first.trim();
+            let data_like = t.parse::<f64>().is_ok() || t.starts_with(['[', '{', '"']) || t == "true" || t == "false";
+            if !data_like {
+                let mut names: Vec<String> = all_handlers.iter().filter(|(_, h)| !h.starts_with('_')).map(|(_, h)| h.clone()).collect();
+                names.extend(interior_handlers.iter().filter(|(_, _, h)| !h.starts_with('_')).map(|(_, c, h)| format!("{}.{}", c, h)));
+                let near = crate::checker::names::suggest(first, names.iter())
+                    .map(|h| format!(" (did you mean '{}'?)", h))
+                    .unwrap_or_default();
+                eprintln!("error: no handler named '{}'{} — handlers: [{}]; usage: soma run app.cell <handler> [args…]",
+                    first, near, names.join(", "));
+                process::exit(1);
+            }
+        }
         run_with_runtime(program, &arg_values);
     } else {
         // The deprecated flag is a compatibility no-op, as the warning
@@ -629,6 +694,45 @@ fn coerce_cli_args(cell: &ast::CellDef, signal_name: &str, args: Vec<interpreter
         }
     }
     coerced
+}
+
+/// `soma run app.cell Child.handler args…`: one handler of an interior
+/// cell, run by the runtime with its siblings registered (their slots and
+/// handlers, so its `signal`s reach them) — the `runtime` section does not
+/// run, as a named top-level handler skips it too.
+fn run_interior_handler(program: ast::Program, parent: &str, child: &str, handler: &str, args: Vec<interpreter::Value>) {
+    fn find<'a>(cells: &'a [ast::Spanned<ast::CellDef>], name: &str) -> Option<&'a ast::CellDef> {
+        for c in cells {
+            if c.node.name == name { return Some(&c.node); }
+            for s in &c.node.sections {
+                if let ast::Section::Interior(ref i) = s.node {
+                    if let Some(f) = find(&i.cells, name) { return Some(f); }
+                }
+            }
+        }
+        None
+    }
+    let args = match find(&program.cells, parent).and_then(|p| p.sections.iter().find_map(|s| match &s.node {
+        ast::Section::Interior(i) => i.cells.iter().find(|c| c.node.name == child).map(|c| c.node.clone()),
+        _ => None,
+    })) {
+        Some(def) => coerce_cli_args(&def, handler, args),
+        None => args,
+    };
+    let mut rt = runtime::Runtime::new(program);
+    let result = rt.call_child_handler(parent, child, handler, args);
+    if let Some(conn) = crate::runtime::storage::shared_connection() {
+        let c = conn.lock().unwrap_or_else(|e| e.into_inner());
+        let _ = c.execute_batch("PRAGMA wal_checkpoint(TRUNCATE)");
+    }
+    match result {
+        Ok(interpreter::Value::Unit) => {}
+        Ok(val) => println!("{}", run_output(&val)),
+        Err(e) => {
+            eprintln!("runtime error: {}", e);
+            process::exit(1);
+        }
+    }
 }
 
 fn run_with_runtime(program: ast::Program, args: &[interpreter::Value]) {

@@ -50,6 +50,12 @@ where
         };
 
         match self.reader.read(buf) {
+            // soma patch: EOF before Content-Length bytes is an error, not
+            // the end of a (truncated) body
+            Ok(0) if !buf.is_empty() => Err(std::io::Error::new(
+                std::io::ErrorKind::UnexpectedEof,
+                "the body ended before its Content-Length",
+            )),
             Ok(len) => {
                 self.size -= len;
                 Ok(len)

@@ -5,3 +5,10 @@ src/client.rs, src/request.rs, src/util/refined_tcp_stream.rs — Request::respo
 sends the response then shuts the socket down in both directions: a refused
 framing (oversized / malformed body) closes the connection instead of
 reading the bytes after it as a next request.
+src/util/chunked.rs (used by src/request.rs) — a strict chunked decoder replaces
+chunked_transfer::Decoder: trailers after the last chunk are read and discarded
+(they were left on the socket as the next request), an EOF inside a chunk is an
+error (a truncated body read as complete), chunk sizes are plain hex digits,
+bare CR/LF are errors, and an error is sticky. soma serve answers any body read
+error with 400 and closes the connection.
+src/util/equal_reader.rs — an EOF before Content-Length bytes is an UnexpectedEof error.

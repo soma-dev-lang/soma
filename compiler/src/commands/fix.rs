@@ -306,7 +306,20 @@ fn move_return_type_to_face(source: &mut String, arrow: usize) -> Result<String,
     let indent: String = source[line_start..arrow].chars().take_while(|c| *c == ' ' || *c == '\t').collect();
     let name = caps[1].to_string();
     let params = caps[2].trim().to_string();
-    if !params.is_empty() && params.split(',').any(|p| !p.contains(':')) {
+    // split at the commas OUTSIDE brackets: `m: Map<String, List<Int>>`
+    // is one parameter (its inner comma made a "parameter" without a type)
+    let mut parts: Vec<String> = vec![String::new()];
+    let mut depth = 0i64;
+    for ch in params.chars() {
+        match ch {
+            '<' | '(' | '[' => depth += 1,
+            '>' | ')' | ']' => depth -= 1,
+            ',' if depth == 0 => { parts.push(String::new()); continue; }
+            _ => {}
+        }
+        parts.last_mut().unwrap().push(ch);
+    }
+    if !params.is_empty() && parts.iter().any(|p| !p.contains(':')) {
         return Err("a parameter has no type (a face signal needs them)".to_string());
     }
     let masked = mask_comments_and_strings(source);
@@ -414,14 +427,10 @@ pub fn cmd_fix(path: &PathBuf, json: bool, registry: &mut Registry) {
         // written (the fixes were applied, and the report said nothing)
         if json {
             if let Some(err) = parse_error(&src) {
-                println!("{}", serde_json::to_string_pretty(&serde_json::json!({
-                    "fixes": fixes.iter().map(|f| serde_json::json!({"description": f.description})).collect::<Vec<_>>(),
-                    "fix_count": fixes.len(),
-                    "passed": false,
-                    "remaining_errors": 1,
-                    "skipped": skipped,
-                    "parse_error": err,
-                })).unwrap());
+                let mut doc = super::fix_json(serde_json::json!(fixes.iter().map(|f| serde_json::json!({"description": f.description})).collect::<Vec<_>>()), false, 1, serde_json::json!(skipped));
+                doc["parse_error"] = serde_json::json!(err);
+                doc["error"] = serde_json::json!(err);
+                println!("{}", serde_json::to_string_pretty(&doc).unwrap());
                 std::process::exit(1);
             }
         }
@@ -431,13 +440,7 @@ pub fn cmd_fix(path: &PathBuf, json: bool, registry: &mut Registry) {
 
     if errors.is_empty() {
         if json {
-            println!("{}", serde_json::json!({
-                "fixes": fixes.iter().map(|f| serde_json::json!({"description": f.description})).collect::<Vec<_>>(),
-                "fix_count": fixes.len(),
-                "passed": true,
-                "remaining_errors": 0,
-                "skipped": skipped,
-            }));
+            println!("{}", super::fix_json(serde_json::json!(fixes.iter().map(|f| serde_json::json!({"description": f.description})).collect::<Vec<_>>()), true, 0, serde_json::json!(skipped)));
         } else {
             if fixes.is_empty() { println!("  \u{2713} All checks passed — nothing to fix."); }
             else { println!("  \u{2713} {} fix(es) applied. All checks passed.", fixes.len()); }
@@ -639,14 +642,9 @@ pub fn cmd_fix(path: &PathBuf, json: bool, registry: &mut Registry) {
 
     if fixes.is_empty() {
         if json {
-            println!("{}", serde_json::json!({
-                "fixes": [],
-                "fix_count": 0,
-                "passed": false,
-                "remaining_errors": errors.len(),
-                "skipped": skipped,
-                "note": "errors found but none are auto-fixable",
-            }));
+            let mut doc = super::fix_json(serde_json::json!([]), false, errors.len(), serde_json::json!(skipped));
+            doc["note"] = serde_json::json!("errors found but none are auto-fixable");
+            println!("{}", doc);
         } else {
             println!("  \u{2717} No auto-fixable errors found.");
         }
@@ -675,13 +673,7 @@ pub fn cmd_fix(path: &PathBuf, json: bool, registry: &mut Registry) {
         let fix_list: Vec<serde_json::Value> = fixes.iter()
             .map(|f| serde_json::json!({ "description": f.description }))
             .collect();
-        println!("{}", serde_json::to_string_pretty(&serde_json::json!({
-            "fixes": fix_list,
-            "fix_count": fixes.len(),
-            "passed": recheck_errors.is_empty(),
-            "remaining_errors": recheck_errors.len(),
-            "skipped": skipped,
-        })).unwrap());
+        println!("{}", serde_json::to_string_pretty(&super::fix_json(serde_json::json!(fix_list), recheck_errors.is_empty(), recheck_errors.len(), serde_json::json!(skipped))).unwrap());
     } else {
         if recheck_errors.is_empty() {
             println!("  \u{2713} All checks passed.");

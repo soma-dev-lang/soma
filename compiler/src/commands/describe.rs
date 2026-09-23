@@ -52,6 +52,9 @@ pub fn cmd_describe(path: &PathBuf) {
         "imports": imports,
         "types": types,
         "cells": cells,
+        // a load failure prints this schema with the error (JSON_SCHEMA)
+        "error": null,
+        "errors": [],
     });
 
     println!("{}", serde_json::to_string_pretty(&output).unwrap());

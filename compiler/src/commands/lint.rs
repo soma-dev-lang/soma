@@ -921,7 +921,7 @@ fn print_json(warnings: &[LintWarning]) {
         })
     }).collect();
 
-    let output = serde_json::json!({ "lints": lints });
+    let output = super::lint_json(serde_json::json!(lints), None);
     println!("{}", serde_json::to_string_pretty(&output).unwrap());
 }
 

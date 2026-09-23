@@ -911,8 +911,29 @@ pub fn request_extra_roles(names: &[&str]) -> Result<Vec<RequestExtra>, String> 
     }
 }
 
-/// `request_extra_roles` over a handler's parameters.
+/// `request_extra_roles` over a handler's parameters — and their TYPES: the
+/// query and the headers arrive as a Map, so a `query` / `headers`
+/// parameter is typed `Map` (any `Map<…>`) or `Any`. `query: String` or
+/// `headers: String` passed check and start-up, then every request failed
+/// its binding (and the 400 quoted the client's headers, cookies included).
 pub fn request_param_roles(params: &[Param]) -> Result<Vec<RequestExtra>, String> {
     let names: Vec<&str> = params.iter().map(|p| p.name.as_str()).collect();
-    request_extra_roles(&names)
+    let roles = request_extra_roles(&names)?;
+    for (i, role) in roles.iter().enumerate() {
+        let p = &params[3 + i];
+        let head = match &p.ty.node {
+            TypeExpr::Simple(t) => t.as_str(),
+            TypeExpr::Generic { name, .. } => name.as_str(),
+            TypeExpr::CellRef { .. } => "",
+        };
+        if head != "Map" && head != "Any" {
+            let what = if *role == RequestExtra::Query { "the URL query" } else { "the request headers" };
+            let shown = match &p.ty.node {
+                TypeExpr::CellRef { cell, member } => format!("{}.{}", cell, member),
+                _ => head.to_string(),
+            };
+            return Err(format!("`request`'s parameter `{}` receives {} as a Map: declare it `{}: Map` (it declares `{}`)", p.name, what, p.name, shown));
+        }
+    }
+    Ok(roles)
 }

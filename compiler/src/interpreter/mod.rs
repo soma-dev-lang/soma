@@ -2625,12 +2625,13 @@ impl Interpreter {
                     // error: the message; kind: what to branch on
                     // ("not_found", "invalid_transition", "invariant", …);
                     // detail: the message without its kind. `fail(r)` re-raises.
-                    Err(ExecError::Runtime(e)) => Ok(map_from_pairs(vec![
+                    // under `soma serve` the client-safe texts (see try_texts)
+                    Err(ExecError::Runtime(e)) => { let (error, detail) = builtins::collection::try_texts(&e); Ok(map_from_pairs(vec![
                         ("value".to_string(), Value::Unit),
-                        ("error".to_string(), Value::String(format!("{}", e))),
+                        ("error".to_string(), Value::String(error)),
                         ("kind".to_string(), Value::String(e.kind())),
-                        ("detail".to_string(), Value::String(e.detail())),
-                    ])),
+                        ("detail".to_string(), Value::String(detail)),
+                    ])) }
                     Err(ExecError::Return(val)) => Err(ExecError::Return(val)),
                     Err(ExecError::Break) => Err(ExecError::Break),
                     Err(ExecError::Continue) => Err(ExecError::Continue),

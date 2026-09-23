@@ -137,13 +137,49 @@ pub static TEST_FILE: std::sync::Mutex<String> = std::sync::Mutex::new(String::n
 /// `{"ok": Bool, "passed": Bool (== ok), "verdict": String,
 ///   "state_machines": [..], "temporal": [..], "hordes": [..],
 ///   "check_errors": [String], "errors": [{"level", "kind", "message"}],
-///   "cells": [String], "note"?: String}`.
+///   "cells": [String], "note": String | null}`.
 /// A caller fills in what it has; the keys are always there.
 pub fn verify_json(ok: bool, verdict: &str) -> serde_json::Value {
     serde_json::json!({
         "ok": ok, "passed": ok, "verdict": verdict,
         "state_machines": [], "temporal": [], "hordes": [],
-        "check_errors": [], "errors": [], "cells": [],
+        "check_errors": [], "errors": [], "cells": [], "note": null,
+    })
+}
+
+/// `soma test --json` for ONE file: the same keys for every outcome (a
+/// pass, a failure, a check failure, no test cells, a load failure) —
+/// `{"file", "total", "passed" (a count), "failed", "ok", "results",
+///   "error": String | null, "errors": [{level, kind, message}],
+///   "check_errors": [String]}`.
+pub fn test_json(file: &str, total: usize, passed: usize, failed: usize, ok: bool, results: serde_json::Value, error: Option<&str>) -> serde_json::Value {
+    serde_json::json!({
+        "file": file, "total": total, "passed": passed, "failed": failed, "ok": ok,
+        "results": results, "error": error, "errors": [], "check_errors": [],
+    })
+}
+
+/// Which command's schema a `--json` load failure is printed in, for the
+/// commands with their own (`lint`, `describe`, `fix`); "" = check's.
+pub static JSON_SCHEMA: std::sync::Mutex<&'static str> = std::sync::Mutex::new("");
+/// The file the command was given (for `describe`'s `file` key).
+pub static JSON_FILE: std::sync::Mutex<String> = std::sync::Mutex::new(String::new());
+
+/// `soma lint --json`: `{"lints": [..], "error": String | null, "errors":
+/// [{level, kind, message}]}` (the load error, when the file does not load).
+pub fn lint_json(lints: serde_json::Value, error: Option<&str>) -> serde_json::Value {
+    serde_json::json!({ "lints": lints, "error": error, "errors": [] })
+}
+
+/// `soma fix --json`: `{"fixes": [{description}], "fix_count", "passed",
+/// "remaining_errors", "skipped": [String], "note": String | null,
+/// "parse_error": String | null, "error": String | null}` — every key,
+/// every outcome.
+pub fn fix_json(fixes: serde_json::Value, passed: bool, remaining_errors: usize, skipped: serde_json::Value) -> serde_json::Value {
+    let n = fixes.as_array().map_or(0, |a| a.len());
+    serde_json::json!({
+        "fixes": fixes, "fix_count": n, "passed": passed, "remaining_errors": remaining_errors,
+        "skipped": skipped, "note": null, "parse_error": null, "error": null,
     })
 }
 
@@ -157,12 +193,25 @@ fn load_failure_json(kind: &str, message: &str, fix: Option<&str>) -> serde_json
         doc["errors"] = serde_json::json!([err]);
         doc
     } else if TEST_MODE.load(std::sync::atomic::Ordering::Relaxed) {
-        // `soma test --json`: {file, total, passed, failed, ok, results, error?, …}
+        // `soma test --json`: the report's one schema (test_json)
         let file = TEST_FILE.lock().map(|f| f.clone()).unwrap_or_default();
+        let mut doc = test_json(&file, 0, 0, 0, false, serde_json::json!([]), Some(message));
+        doc["errors"] = serde_json::json!([err]);
+        doc
+    } else if *JSON_SCHEMA.lock().unwrap_or_else(|e| e.into_inner()) == "lint" {
+        let mut doc = lint_json(serde_json::json!([]), Some(message));
+        doc["errors"] = serde_json::json!([err]);
+        doc
+    } else if *JSON_SCHEMA.lock().unwrap_or_else(|e| e.into_inner()) == "describe" {
+        let file = JSON_FILE.lock().map(|f| f.clone()).unwrap_or_default();
         serde_json::json!({
-            "file": file, "total": 0, "passed": 0, "failed": 0, "ok": false,
-            "error": message, "errors": [err], "results": [],
+            "file": file, "imports": [], "types": [], "cells": [],
+            "error": message, "errors": [err],
         })
+    } else if *JSON_SCHEMA.lock().unwrap_or_else(|e| e.into_inner()) == "fix" {
+        let mut doc = fix_json(serde_json::json!([]), false, 1, serde_json::json!([]));
+        doc["error"] = serde_json::json!(message);
+        doc
     } else {
         serde_json::json!({
             "errors": [err],

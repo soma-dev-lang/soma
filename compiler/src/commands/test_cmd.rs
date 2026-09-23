@@ -69,12 +69,9 @@ pub fn cmd_test(path: &PathBuf, json: bool, registry: &mut Registry) {
             for line in &lines { eprintln!("  {}", line); }
             if json {
                 // stdout stays machine-readable even when nothing ran
-                println!("{}", serde_json::to_string_pretty(&serde_json::json!({
-                    "file": file_str, "total": 0, "passed": 0, "failed": 0, "ok": false,
-                    "error": "the program fails `soma check`",
-                    "check_errors": lines.iter().filter(|l| l.starts_with("error")).collect::<Vec<_>>(),
-                    "results": [],
-                })).unwrap());
+                let mut doc = super::test_json(&file_str, 0, 0, 0, false, serde_json::json!([]), Some("the program fails `soma check`"));
+                doc["check_errors"] = serde_json::json!(lines.iter().filter(|l| l.starts_with("error")).collect::<Vec<_>>());
+                println!("{}", serde_json::to_string_pretty(&doc).unwrap());
             }
             process::exit(1);
         }
@@ -88,10 +85,7 @@ pub fn cmd_test(path: &PathBuf, json: bool, registry: &mut Registry) {
     if test_cells.is_empty() {
         eprintln!("no test cells found (use `cell test MyTests {{ ... }}`)");
         if json {
-            println!("{}", serde_json::to_string_pretty(&serde_json::json!({
-                "file": file_str, "total": 0, "passed": 0, "failed": 0, "ok": false,
-                "error": "no test cells found", "results": [],
-            })).unwrap());
+            println!("{}", serde_json::to_string_pretty(&super::test_json(&file_str, 0, 0, 0, false, serde_json::json!([]), Some("no test cells found"))).unwrap());
         }
         process::exit(1);
     }
@@ -494,10 +488,7 @@ pub fn cmd_test(path: &PathBuf, json: bool, registry: &mut Registry) {
                 records.push(serde_json::json!({"cell": cell, "status": "note", "rule": rest}));
             }
         }
-        println!("{}", serde_json::to_string_pretty(&serde_json::json!({
-            "file": file_name, "total": total, "passed": passed, "failed": failed,
-            "ok": failed == 0 && !empty, "results": records,
-        })).unwrap());
+        println!("{}", serde_json::to_string_pretty(&super::test_json(&file_name, total, passed, failed, failed == 0 && !empty, serde_json::json!(records), None)).unwrap());
     }
 
     if failed > 0 || empty {

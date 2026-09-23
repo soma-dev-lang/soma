@@ -108,6 +108,39 @@ pub fn is_authored_failure(kind: &str, message: &str) -> bool {
     AUTHORED_FAILURES.get().map_or(false, |cell| cell.lock().unwrap_or_else(|e| e.into_inner()).0.contains(&failure_hash(kind, message)))
 }
 
+/// The `error` / `detail` texts a `try` result carries for a caught error.
+///
+/// `soma run` / `soma test` / the REPL: the runtime's full text (asserts and
+/// local debugging read it). `soma serve` installs a filter
+/// (`set_try_text_filter`) that returns the CLIENT-SAFE text instead — the
+/// same text a client would get had the error not been caught — and logs
+/// the full text to the server log. A try result is a plain value: once
+/// the program holds it, every path (`return r`, `fail(r.error)`,
+/// `fail(r.kind, r.detail)`, `response(410, map("error", r.detail))`,
+/// interpolation) can send it to a client, and no later check can tell
+/// runtime text from program text. So the runtime text never enters a
+/// served program's values at all. Trade-off: under `soma serve` a program
+/// that branches on the TEXT of `r.error` (rather than `r.kind`) sees the
+/// safe sentence, not the local one.
+pub type TryTextFilter = fn(&RuntimeError) -> Option<(String, String)>;
+static TRY_TEXT_FILTER: std::sync::OnceLock<TryTextFilter> = std::sync::OnceLock::new();
+
+pub fn set_try_text_filter(f: TryTextFilter) {
+    let _ = TRY_TEXT_FILTER.set(f);
+}
+
+/// (error, detail) for a caught error — see `TryTextFilter`.
+pub fn try_texts(e: &RuntimeError) -> (String, String) {
+    if let Some(f) = TRY_TEXT_FILTER.get() {
+        if let Some((error, detail)) = f(e) {
+            // the safe text is re-raisable verbatim (`fail(r)`)
+            note_authored_failure(&e.kind(), &error);
+            return (error, detail);
+        }
+    }
+    (format!("{}", e), e.detail())
+}
+
 pub fn call_builtin(name: &str, args: &[Value]) -> Option<Result<Value, RuntimeError>> {
     match name {
         // fail("kind", "detail") raises a domain error; fail(r) re-raises a

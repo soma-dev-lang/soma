@@ -582,14 +582,15 @@ impl Interpreter {
     /// stop the record) and the task marked failed.
     fn horde_fail(&mut self, spec: &Spec, idx: usize, input: &Value, e: &RuntimeError, attempts: u32) {
         if self.horde_task_done(spec, idx) { return; }
-        let msg = format!("{}", e);
+        // what `try` gives (the client-safe text under `soma serve`)
+        let (msg, detail) = crate::interpreter::builtins::collection::try_texts(e);
         if let Some(h) = spec.on_error.clone() {
             let mark = self.journal.as_ref().map_or(0, |j| j.len());
             // what `try` gives: {error, kind, detail}
             let err_v = map_from_pairs(vec![
                 ("error".to_string(), Value::String(msg.clone())),
                 ("kind".to_string(), Value::String(e.kind())),
-                ("detail".to_string(), Value::String(e.detail())),
+                ("detail".to_string(), Value::String(detail)),
             ]);
             if let Err(err) = self.call_signal(&spec.owner, &h, vec![input.clone(), err_v]) {
                 self.rollback_to(mark);

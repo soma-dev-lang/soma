@@ -6603,3 +6603,269 @@ cell test T { rules {
     assert!(out.contains("reads persistent storage"), "{out}");
     let _ = std::fs::remove_dir_all(dir);
 }
+
+/// Send raw bytes, half-close the write side, read the whole answer.
+fn raw_half_closed(port: u16, request: &str) -> String {
+    let mut stream = std::net::TcpStream::connect(("127.0.0.1", port)).unwrap();
+    stream.set_read_timeout(Some(std::time::Duration::from_secs(5))).unwrap();
+    stream.write_all(request.as_bytes()).unwrap();
+    let _ = stream.shutdown(std::net::Shutdown::Write);
+    let mut out = Vec::new();
+    let _ = stream.read_to_end(&mut out);
+    String::from_utf8_lossy(&out).into_owned()
+}
+
+#[test]
+fn serve_eighth_pass_malformed_chunked_bodies_are_refused() {
+    // a malformed / truncated chunked body ran the handler on what was read
+    // and left the connection open (the rest parsed as the next request)
+    let dir = scratch("serve8_chunked");
+    std::fs::write(dir.join("app.cell"), "cell App {\n    memory { hits: Map<String, Int> [persistent] }\n    on request(method: String, path: String, body: String) {\n        hits.set(path, (hits.get(path) ?? 0) + 1)\n        return map(\"p\", path, \"b\", body, \"n\", hits.get(path))\n    }\n}\n").unwrap();
+    let (_server, port) = serve_dir(&dir);
+    // a chunk longer than its size, a smuggled request after it
+    let out = raw_request(port, "POST /a HTTP/1.1\r\nHost: localhost\r\nTransfer-Encoding: chunked\r\n\r\n3\r\nabcZZ\r\nGET /smug HTTP/1.1\r\nHost: localhost\r\n\r\n");
+    assert!(out.contains(" 400 ") && out.contains("malformed or incomplete"), "{out}");
+    assert!(!out.contains("/smug") && !out.contains("\"p\""), "{out}");
+    // a truncated chunked body (EOF inside a chunk)
+    let out = raw_half_closed(port, "POST /a HTTP/1.1\r\nHost: localhost\r\nTransfer-Encoding: chunked\r\n\r\n5\r\nab");
+    assert!(out.contains(" 400 ") && !out.contains("\"p\""), "{out}");
+    // a truncated Content-Length body (past the 1 KiB buffered path)
+    let out = raw_half_closed(port, "POST /a HTTP/1.1\r\nHost: localhost\r\nContent-Length: 3000\r\n\r\nab");
+    assert!(out.contains(" 400 ") && !out.contains("\"p\""), "{out}");
+    // the handler never ran for /a nor for the smuggled /smug
+    let out = raw_request(port, "POST /a HTTP/1.1\r\nHost: localhost\r\nContent-Length: 0\r\nConnection: close\r\n\r\n");
+    assert!(out.contains("\"n\":1"), "/a ran before: {out}");
+    let out = raw_request(port, "POST /smug HTTP/1.1\r\nHost: localhost\r\nContent-Length: 0\r\nConnection: close\r\n\r\n");
+    assert!(out.contains("\"n\":1"), "/smug ran before: {out}");
+    // trailers are read and ignored: the pipelined request after them is served
+    let out = raw_request(port, "POST /tr HTTP/1.1\r\nHost: localhost\r\nTransfer-Encoding: chunked\r\n\r\n3\r\nabc\r\n0\r\nX-T: 1\r\n\r\nPOST /next HTTP/1.1\r\nHost: localhost\r\nContent-Length: 0\r\nConnection: close\r\n\r\n");
+    assert!(out.contains("\"b\":\"abc\"") && out.contains("\"p\":\"/next\"") && !out.contains(" 400 "), "{out}");
+    let _ = std::fs::remove_dir_all(dir);
+}
+
+#[test]
+fn serve_eighth_pass_try_results_carry_client_safe_text_when_served() {
+    // `fail(map("error", r.error, …))`, `fail(r.kind, r.detail)`, `return r`
+    // and `fail(r.error)` sent the runtime's text (quoting a stored value)
+    let dir = scratch("serve8_try_text");
+    let src = r#"
+cell App {
+    memory { users: Map<String, Map> [persistent] }
+    on start() { users.set("alice", map("pw_hash", "SECRETHASH123")) }
+    on request(method: String, path: String, body: String) {
+        let r = try { users.get("alice") * 2 }
+        if path == "/b" { fail(map("error", r.error, "kind", r.kind)) }
+        if path == "/c" { fail(r.kind, r.detail) }
+        if path == "/d" { return r }
+        if path == "/e" { fail(r.error) }
+        if path == "/f" { return response(410, map("error", r.detail)) }
+        if path == "/g" { fail(r) }
+        let mine = try { fail("forbidden", "not yours") }
+        if path == "/h" { return mine }
+        return 1
+    }
+    on probe() {
+        users.set("alice", map("pw_hash", "SECRETHASH123"))
+        let r = try { users.get("alice") * 2 }
+        return r.error
+    }
+}
+cell test T {
+    rules {
+        assert contains(App.probe(), "SECRETHASH123")
+    }
+}
+"#;
+    std::fs::write(dir.join("app.cell"), src).unwrap();
+    // soma test / soma run keep the full text
+    let (code, out) = soma(&dir, &["test", "app.cell"]);
+    assert_eq!(code, 0, "{out}");
+    let (code, out) = soma(&dir, &["run", "app.cell", "probe"]);
+    assert_eq!(code, 0, "{out}");
+    assert!(out.contains("SECRETHASH123"), "soma run keeps the full text: {out}");
+    let (_server, port) = serve_dir(&dir);
+    for p in ["/b", "/c", "/d", "/e", "/f", "/g"] {
+        let out = get(port, p);
+        assert!(!out.contains("SECRETHASH123") && !out.contains("pw_hash"), "{p}: {out}");
+        assert!(out.contains("cannot multiply Map and Int"), "{p}: {out}");
+    }
+    let out = get(port, "/f");
+    assert!(out.starts_with("HTTP/1.0 410"), "{out}");
+    // the program's own words stay as written
+    let out = get(port, "/h");
+    assert!(out.contains("forbidden: not yours"), "{out}");
+    let _ = std::fs::remove_dir_all(dir);
+}
+
+#[test]
+fn serve_eighth_pass_query_and_headers_parameters_are_maps() {
+    // `headers: String` passed check and start-up, then every request failed
+    // (its 400 echoing the client's headers, cookies included)
+    for (name, sig, word) in [
+        ("serve8_hdr_string", "headers: String", "`headers`"),
+        ("serve8_q_list", "query: List<Int>", "`query`"),
+        ("serve8_q_int", "query: Map, headers: Int", "`headers`"),
+    ] {
+        let dir = scratch(name);
+        std::fs::write(dir.join("app.cell"), format!("cell App {{\n    on request(method: String, path: String, body: String, {sig}) {{ return 1 }}\n}}\n")).unwrap();
+        let (code, out) = soma(&dir, &["check", "app.cell"]);
+        assert_ne!(code, 0, "{out}");
+        assert!(out.contains(word) && out.contains("as a Map"), "{out}");
+        let out = serve_refused(&dir);
+        assert!(out.contains("as a Map"), "{out}");
+        let _ = std::fs::remove_dir_all(dir);
+    }
+    let dir = scratch("serve8_q_ok");
+    std::fs::write(dir.join("app.cell"), "cell App {\n    on request(method: String, path: String, body: String, query: Map<String, String>, headers: Any) { return 1 }\n}\n").unwrap();
+    let (code, out) = soma(&dir, &["check", "app.cell"]);
+    assert_eq!(code, 0, "{out}");
+    let _ = std::fs::remove_dir_all(dir);
+}
+
+#[test]
+fn run_eighth_pass_interior_handlers_are_named() {
+    // `soma run app.cell booked bob 5` ran the FIRST child's handler with
+    // "booked" as its first argument; an unknown name ran it with the name
+    let dir = scratch("run8_interior");
+    std::fs::write(dir.join("app.cell"), r#"
+cell Bank {
+  interior {
+    cell Teller {
+      face { signal withdraw(who: String, amt: Int) signal ping() }
+      on withdraw(who: String, amt: Int) { print("WITHDRAW {who} {amt}") signal booked(who, amt) }
+      on ping() { return "teller" }
+    }
+    cell Ledger {
+      face { await withdraw(who: String, amt: Int) signal booked(who: String, amt: Int) signal ping() }
+      on booked(who: String, amt: Int) { print("BOOKED {who} {amt}") return amt * 2 }
+      on ping() { return "ledger" }
+    }
+  }
+  runtime { }
+}
+"#).unwrap();
+    let (code, out) = soma(&dir, &["run", "app.cell", "booked", "bob", "5"]);
+    assert_eq!(code, 0, "{out}");
+    assert!(out.contains("BOOKED bob 5") && out.contains("10") && !out.contains("WITHDRAW"), "{out}");
+    let (code, out) = soma(&dir, &["run", "app.cell", "withdraw", "bob", "5"]);
+    assert_eq!(code, 0, "{out}");
+    assert!(out.contains("WITHDRAW bob 5") && out.contains("BOOKED bob 5"), "{out}");
+    let (code, out) = soma(&dir, &["run", "app.cell", "Ledger.booked", "al", "1"]);
+    assert_eq!(code, 0, "{out}");
+    assert!(out.contains("BOOKED al 1"), "{out}");
+    let (code, out) = soma(&dir, &["run", "app.cell", "nosuch"]);
+    assert_eq!(code, 1, "{out}");
+    assert!(out.contains("error: no handler named 'nosuch'") && !out.contains("WITHDRAW"), "{out}");
+    let (code, out) = soma(&dir, &["run", "app.cell", "ping"]);
+    assert_eq!(code, 1, "{out}");
+    assert!(out.contains("Teller.ping") && out.contains("Ledger.ping") && out.contains("Cell.handler"), "{out}");
+    let (code, out) = soma(&dir, &["run", "app.cell", "Ledger.ping"]);
+    assert_eq!(code, 0, "{out}");
+    assert!(out.contains("ledger"), "{out}");
+    let _ = std::fs::remove_dir_all(dir);
+}
+
+#[test]
+fn fix_eighth_pass_moves_a_generic_return_type_with_commas() {
+    let dir = scratch("fix8_generic");
+    std::fs::write(dir.join("app.cell"), "cell App {\n    on pair(m: Map<String, List<Int>>, k: String) -> Map<String, List<Int>> { return m }\n}\n").unwrap();
+    let (code, out) = soma(&dir, &["check", "app.cell"]);
+    assert_ne!(code, 0, "{out}");
+    assert!(out.contains("put '-> Map<String, List<Int>>' on the signal"), "{out}");
+    let (code, out) = soma(&dir, &["fix", "app.cell"]);
+    assert_eq!(code, 0, "{out}");
+    let src = std::fs::read_to_string(dir.join("app.cell")).unwrap();
+    assert!(src.contains("signal pair(m: Map<String, List<Int>>, k: String) -> Map<String, List<Int>>"), "{src}");
+    assert!(src.contains("on pair(m: Map<String, List<Int>>, k: String) { return m }"), "{src}");
+    let _ = std::fs::remove_dir_all(dir);
+}
+
+#[test]
+fn run_eighth_pass_fresh_keeps_a_slot_table_a_sibling_declares() {
+    let dir = scratch("fresh8_sibling_slot");
+    std::fs::write(dir.join("a.cell"), "cell App {\n    memory { items: Map<String, Int> [persistent] }\n    on add() { let id = next_id()  items.set(\"a{id}\", id)  return len(items) }\n}\n").unwrap();
+    std::fs::write(dir.join("b.cell"), "cell App {\n    memory { items: Map<String, Int> [persistent] }\n    on add() { let id = next_id()  items.set(\"b{id}\", id)  return len(items) }\n}\n").unwrap();
+    let (code, out) = soma(&dir, &["run", "a.cell", "add"]);
+    assert_eq!(code, 0, "{out}");
+    let (_, out) = soma(&dir, &["run", "b.cell", "add"]);
+    assert!(out.lines().any(|l| l.trim() == "2"), "{out}");
+    let (_, out) = soma(&dir, &["run", "--fresh", "a.cell", "add"]);
+    assert!(out.contains("kept") && out.lines().any(|l| l.trim() == "3"), "b.cell's rows survive: {out}");
+    let _ = std::fs::remove_dir_all(&dir);
+
+    // `cell App {` inside a multi-line string of another file is no cell
+    let dir = scratch("fresh8_string_cell");
+    std::fs::write(dir.join("a.cell"), "cell App {\n    memory { items: Map<String, Int> [persistent] }\n    on add() { let id = next_id()  items.set(\"a{id}\", id)  return id }\n}\n").unwrap();
+    std::fs::write(dir.join("doc.cell"), "cell Doc {\n    on text() {\n        return \"hello\ncell App {\n\"\n    }\n}\n").unwrap();
+    soma(&dir, &["run", "a.cell", "add"]);
+    soma(&dir, &["run", "a.cell", "add"]);
+    let (_, out) = soma(&dir, &["run", "--fresh", "a.cell", "add"]);
+    assert!(out.lines().any(|l| l.trim() == "1"), "the counter is reset: {out}");
+    let _ = std::fs::remove_dir_all(&dir);
+
+    // a sibling cell `App_x` does not make `App`'s counters shared
+    let dir = scratch("fresh8_prefix");
+    std::fs::write(dir.join("a.cell"), "cell App {\n    memory { items: Map<String, Int> [persistent] }\n    on add() { let id = next_id()  items.set(\"a{id}\", id)  return id }\n}\n").unwrap();
+    std::fs::write(dir.join("x.cell"), "cell App_x {\n    memory { items: Map<String, Int> [persistent] }\n    on add() { items.set(\"k\", 1)  return len(items) }\n}\n").unwrap();
+    soma(&dir, &["run", "a.cell", "add"]);
+    soma(&dir, &["run", "a.cell", "add"]);
+    soma(&dir, &["run", "x.cell", "add"]);
+    let (_, out) = soma(&dir, &["run", "--fresh", "a.cell", "add"]);
+    assert!(out.lines().any(|l| l.trim() == "1"), "App's counter is reset: {out}");
+    let (_, out) = soma(&dir, &["run", "x.cell", "add"]);
+    assert!(out.lines().any(|l| l.trim() == "1"), "App_x's rows kept: {out}");
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn cli_eighth_pass_json_schemas_are_stable() {
+    let dir = scratch("json8_schemas");
+    std::fs::write(dir.join("ok.cell"), "cell App {\n    on add(k: String) { return 1 }\n}\ncell test T {\n    rules { assert App.add(\"a\") == 1 }\n}\n").unwrap();
+    std::fs::write(dir.join("failtest.cell"), "cell App {\n    on add(k: String) { return 1 }\n}\ncell test T {\n    rules { assert App.add(\"a\") == 2 }\n}\n").unwrap();
+    std::fs::write(dir.join("checkerr.cell"), "cell App {\n    on add(k: String) { return undefined_thing }\n}\n").unwrap();
+    std::fs::write(dir.join("parseerr.cell"), "cell App {\n    on add(k: String) { return ( }\n}\n").unwrap();
+    std::fs::write(dir.join("lexerr.cell"), "cell App {\n    on add(k: String) { return 1 \u{a7} }\n}\n").unwrap();
+    std::fs::create_dir_all(dir.join("adir")).unwrap();
+    let keys = |cmd: &str, f: &str| -> Vec<String> {
+        let out = Command::new(env!("CARGO_BIN_EXE_soma")).args([cmd, f, "--json"]).current_dir(&dir).output().unwrap();
+        let text = String::from_utf8_lossy(&out.stdout).to_string();
+        let v: serde_json::Value = serde_json::from_str(&text).unwrap_or_else(|e| panic!("{cmd} {f}: not JSON ({e}): {text}"));
+        let mut k: Vec<String> = v.as_object().unwrap_or_else(|| panic!("{cmd} {f}: {text}")).keys().cloned().collect();
+        k.sort();
+        k
+    };
+    let files = ["ok.cell", "failtest.cell", "checkerr.cell", "parseerr.cell", "lexerr.cell", "missing.cell", "adir"];
+    for cmd in ["test", "verify", "lint", "describe"] {
+        let first = keys(cmd, files[0]);
+        for f in &files[1..] {
+            // a directory is a project run for test / verify (its own schema)
+            if *f == "adir" && (cmd == "test" || cmd == "verify") { continue; }
+            assert_eq!(keys(cmd, f), first, "{cmd} {f}");
+        }
+    }
+    assert!(keys("verify", "checkerr.cell").contains(&"note".to_string()));
+    assert!(keys("lint", "parseerr.cell").contains(&"lints".to_string()));
+    assert!(keys("describe", "missing.cell").contains(&"cells".to_string()));
+    let fix_keys: Vec<Vec<String>> = ["ok.cell", "checkerr.cell", "parseerr.cell", "missing.cell", "adir"].iter().map(|f| keys("fix", f)).collect();
+    for k in &fix_keys[1..] { assert_eq!(k, &fix_keys[0]); }
+    assert!(fix_keys[0].contains(&"fix_count".to_string()) && fix_keys[0].contains(&"error".to_string()));
+    let _ = std::fs::remove_dir_all(dir);
+}
+
+#[test]
+fn serve_eighth_pass_form_flags_and_static_paths() {
+    let dir = scratch("serve8_form_static");
+    std::fs::create_dir_all(dir.join("static/sub")).unwrap();
+    std::fs::write(dir.join("static/sub/x.txt"), "hi").unwrap();
+    std::fs::write(dir.join("app.cell"), "cell App {\n    on request(method: String, path: String, body: Map) { return map(\"b\", body) }\n}\n").unwrap();
+    let (_server, port) = serve_dir(&dir);
+    // a form key without `=` is present with "" (it was dropped)
+    let out = raw_request(port, "POST /f HTTP/1.0\r\nHost: localhost\r\nContent-Type: application/x-www-form-urlencoded\r\nContent-Length: 11\r\n\r\na=1&flag&&b");
+    assert!(out.contains(r#""flag":"""#) && out.contains(r#""a":"1""#) && out.contains(r#""b":"""#), "{out}");
+    assert!(get(port, "/static/sub/x.txt").starts_with("HTTP/1.0 200"));
+    for p in ["/static/sub/x.txt/", "/static/sub%2fx.txt", "/static/sub%2Fx.txt", "/static/sub/X.TXT"] {
+        let out = get(port, p);
+        assert!(out.starts_with("HTTP/1.0 404"), "{p}: {out}");
+    }
+    let _ = std::fs::remove_dir_all(dir);
+}

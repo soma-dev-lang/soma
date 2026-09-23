@@ -344,8 +344,12 @@ fn main_inner() {
             if file.is_dir() { run_over_dir("check", &file, json, &[]); }
             commands::check::cmd_check(&file, json, &mut registry)
         }
-        Commands::Lint { file, json } => commands::lint::cmd_lint(&file, json),
+        Commands::Lint { file, json } => {
+            *commands::JSON_SCHEMA.lock().unwrap_or_else(|e| e.into_inner()) = "lint";
+            commands::lint::cmd_lint(&file, json)
+        }
         Commands::Fix { file, json, native_idiv } => {
+            *commands::JSON_SCHEMA.lock().unwrap_or_else(|e| e.into_inner()) = "fix";
             if native_idiv {
                 commands::fix::cmd_fix_native_idiv(&file, json);
             } else {
@@ -400,7 +404,7 @@ fn main_inner() {
                                     own.len(), data.display(), foreign.join(", "));
                             }
                             if !kept.is_empty() {
-                                eprintln!("fresh: kept {} too — next_id() counters / remember() memory of a cell another program here also uses",
+                                eprintln!("fresh: kept {} too — data of a cell another program here also declares (its shared slots, next_id() counters, remember() memory)",
                                     kept.join(", "));
                             }
                             return;
@@ -458,6 +462,8 @@ fn main_inner() {
                 if faces {
                     commands::describe::cmd_describe_faces(file, json);
                 } else {
+                    *commands::JSON_SCHEMA.lock().unwrap_or_else(|e| e.into_inner()) = "describe";
+                    *commands::JSON_FILE.lock().unwrap_or_else(|e| e.into_inner()) = file.display().to_string();
                     commands::describe::cmd_describe(file);
                 }
             } else {
@@ -961,29 +967,37 @@ fn cmd_tokens(path: &PathBuf) {
 /// The tables of `db` owned by the cells of `file` (and of its lib/ and
 /// installed packages), and the cell prefixes of the other tables.
 fn cells_in_db(file: &std::path::Path, db: &std::path::Path) -> (Vec<String>, Vec<String>, Vec<String>) {
-    // the EXACT tables this program owns (a name prefix took cell `A_b`'s
-    // tables for cell `A`'s and reset another program's data)
-    let mut names: Vec<String> = Vec::new();
-    let add_file = |p: &std::path::Path, names: &mut Vec<String>| {
-        if let Ok(src) = std::fs::read_to_string(p) {
-            let program = commands::parse(commands::lex(&src));
-            for c in &program.cells {
-                let cell = &c.node.name;
-                names.push(format!("{}__counters", cell).to_ascii_lowercase());
-                names.push(format!("{}__agent_memory", cell).to_ascii_lowercase());
-                names.push(format!("{}__horde-meta", cell).to_ascii_lowercase());
-                names.push(format!("{}__horde-tasks", cell).to_ascii_lowercase());
-                for sec in &c.node.sections {
-                    match &sec.node {
-                        ast::Section::Memory(m) => for slot in &m.slots { names.push(format!("{}_{}", cell, slot.node.name).to_ascii_lowercase()); },
-                        ast::Section::State(sm) => names.push(format!("{}__sm_{}", cell, sm.name).to_ascii_lowercase()),
-                        _ => {}
-                    }
+    // the EXACT tables a program owns (a name prefix took cell `A_b`'s
+    // tables for cell `A`'s and reset another program's data), and its cell
+    // names — parsed, never scanned with a regex (a `cell X` inside a
+    // multi-line string counted as a cell). None: the file does not parse.
+    fn tables_of(p: &std::path::Path) -> Option<(Vec<String>, Vec<String>)> {
+        let src = std::fs::read_to_string(p).ok()?;
+        let tokens = lexer::Lexer::new(&src).tokenize().ok()?;
+        let program = parser::Parser::new(tokens).parse_program().ok()?;
+        fn rec(c: &ast::CellDef, path: &str, names: &mut Vec<String>, cells: &mut Vec<String>) {
+            let cell = if path.is_empty() { c.name.clone() } else { format!("{}.{}", path, c.name) };
+            cells.push(cell.to_ascii_lowercase());
+            names.push(format!("{}__counters", cell).to_ascii_lowercase());
+            names.push(format!("{}__agent_memory", cell).to_ascii_lowercase());
+            names.push(format!("{}__horde-meta", cell).to_ascii_lowercase());
+            names.push(format!("{}__horde-tasks", cell).to_ascii_lowercase());
+            for sec in &c.sections {
+                match &sec.node {
+                    ast::Section::Memory(m) => for slot in &m.slots { names.push(format!("{}_{}", cell, slot.node.name).to_ascii_lowercase()); },
+                    ast::Section::State(sm) => names.push(format!("{}__sm_{}", cell, sm.name).to_ascii_lowercase()),
+                    ast::Section::Interior(i) => for ch in &i.cells { rec(&ch.node, &cell, names, cells); },
+                    _ => {}
                 }
             }
         }
-    };
-    add_file(file, &mut names);
+        let (mut names, mut cells) = (Vec::new(), Vec::new());
+        for c in &program.cells { rec(&c.node, "", &mut names, &mut cells); }
+        Some((names, cells))
+    }
+    let mut names: Vec<String> = Vec::new();
+    let mut my_cells: Vec<String> = Vec::new();
+    if let Some((n, c)) = tables_of(file) { names.extend(n); my_cells.extend(c); }
     let base = file.parent().unwrap_or(std::path::Path::new("."));
     fn walk(d: &std::path::Path, out: &mut Vec<std::path::PathBuf>) {
         if let Ok(es) = std::fs::read_dir(d) {
@@ -997,7 +1011,28 @@ fn cells_in_db(file: &std::path::Path, db: &std::path::Path) -> (Vec<String>, Ve
     walk(&base.join("lib"), &mut deps);
     walk(&base.join(".soma_env").join("packages"), &mut deps);
     walk(&base.join("packages"), &mut deps);
-    for d in deps { add_file(&d, &mut names); }
+    for d in deps { if let Some((n, c)) = tables_of(&d) { names.extend(n); my_cells.extend(c); } }
+    // what the OTHER .cell files beside this one declare: they share this
+    // database. A file that does not parse keeps every table whose name
+    // mentions a cell it seems to declare (the regex fallback: keeping
+    // data is the safe error)
+    let (mut sibling_tables, mut sibling_cells): (Vec<String>, Vec<String>) = (Vec::new(), Vec::new());
+    {
+        let re = regex::Regex::new(r"(?m)^\s*cell\s+(?:[a-z_]+\s+)?([A-Za-z_][A-Za-z0-9_]*)").unwrap();
+        let me = file.canonicalize().unwrap_or_else(|_| file.to_path_buf());
+        if let Ok(es) = std::fs::read_dir(if base.as_os_str().is_empty() { std::path::Path::new(".") } else { base }) {
+            for e in es.flatten() {
+                let p = e.path();
+                if p.extension().map_or(true, |x| x != "cell") || p.canonicalize().map_or(false, |c| c == me) { continue; }
+                match tables_of(&p) {
+                    Some((n, c)) => { sibling_tables.extend(n); sibling_cells.extend(c); }
+                    None => if let Ok(src) = std::fs::read_to_string(&p) {
+                        for c in re.captures_iter(&src) { sibling_cells.push(c[1].to_ascii_lowercase()); }
+                    },
+                }
+            }
+        }
+    }
     let Ok(conn) = rusqlite::Connection::open_with_flags(db, rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY) else { return (Vec::new(), Vec::new(), Vec::new()) };
     let Ok(mut st) = conn.prepare("SELECT name FROM sqlite_master WHERE type = 'table'") else { return (Vec::new(), Vec::new(), Vec::new()) };
     let tables: Vec<String> = st.query_map([], |r| r.get::<_, String>(0)).map(|it| it.flatten().collect()).unwrap_or_default();
@@ -1011,6 +1046,14 @@ fn cells_in_db(file: &std::path::Path, db: &std::path::Path) -> (Vec<String>, Ve
         let name = t.strip_suffix("_log").unwrap_or(&t).to_string();
         if !foreign.contains(&name) { foreign.push(name); }
     }
+    // the cell a foreign table belongs to: the LONGEST known cell name it
+    // starts with (`App_x_items` is cell `App_x`'s when a program here
+    // declares `App_x`, not a slot `x_items` of `App`)
+    let known: Vec<&String> = my_cells.iter().chain(sibling_cells.iter()).collect();
+    let owner_of = |f: &str| -> Option<String> {
+        let lf = f.to_ascii_lowercase();
+        known.iter().filter(|c| lf.starts_with(&format!("{}_", c))).max_by_key(|c| c.len()).map(|c| c.to_string())
+    };
     // a cell's runtime tables (next_id() counters, remember() memory, a
     // horde's queue) are SHARED by every program that names the cell so:
     // when another program here has tables of the same cell, they stay
@@ -1018,27 +1061,15 @@ fn cells_in_db(file: &std::path::Path, db: &std::path::Path) -> (Vec<String>, Ve
     // …and when ANOTHER .cell file beside this one declares the same cell
     // (with no slots of its own there are no tables to tell: `--fresh
     // a.cell` wiped b.cell's remember() memory and next_id() counters)
-    let sibling_cells: Vec<String> = {
-        let re = regex::Regex::new(r"(?m)^\s*cell\s+(?:[a-z_]+\s+)?([A-Za-z_][A-Za-z0-9_]*)").unwrap();
-        let me = file.canonicalize().unwrap_or_else(|_| file.to_path_buf());
-        let mut out = Vec::new();
-        if let Ok(es) = std::fs::read_dir(if base.as_os_str().is_empty() { std::path::Path::new(".") } else { base }) {
-            for e in es.flatten() {
-                let p = e.path();
-                if p.extension().map_or(true, |x| x != "cell") || p.canonicalize().map_or(false, |c| c == me) { continue; }
-                if let Ok(src) = std::fs::read_to_string(&p) {
-                    for c in re.captures_iter(&src) { out.push(c[1].to_ascii_lowercase()); }
-                }
-            }
-        }
-        out
-    };
+    // …and a SLOT table another .cell file here declares too (the same
+    // cell and slot) is that program's data as well: kept
     let mut kept: Vec<String> = Vec::new();
     own.retain(|t| {
         let lt = t.to_ascii_lowercase();
+        let base = lt.strip_suffix("_log").unwrap_or(&lt);
+        if sibling_tables.iter().any(|n| n == &lt || n == base) { kept.push(t.clone()); return false; }
         let Some(cell) = ["__counters", "__agent_memory", "__horde-meta", "__horde-tasks"].iter().find_map(|sfx| lt.strip_suffix(sfx)) else { return true };
-        let prefix = format!("{}_", cell);
-        if foreign.iter().any(|f| f.to_ascii_lowercase().starts_with(&prefix)) || sibling_cells.iter().any(|c| c == cell) { kept.push(t.clone()); false } else { true }
+        if foreign.iter().any(|f| match owner_of(f) { Some(o) => o == cell, None => f.to_ascii_lowercase().starts_with(&format!("{}_", cell)) }) || sibling_cells.iter().any(|c| c == cell) { kept.push(t.clone()); false } else { true }
     });
     (own, foreign, kept)
 }

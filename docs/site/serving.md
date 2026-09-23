@@ -9,7 +9,11 @@ soma run   app.cell request GET /stats ""     # call the router with no server
 
 1. `GET /static/<file>` serves `<project>/static/<file>` — confined to that
    directory (`..` and symlinks cannot escape it; dotfiles such as `.env`
-   are never served; anything outside it is a 404, like a missing file). A
+   are never served; anything outside it is a 404, like a missing file; `%2F`
+   is not a separator and a `/` after a file name is a 404). A malformed or
+   truncated body (a bad chunk, an EOF before the last chunk or before
+   Content-Length bytes) is refused (400) and the connection closed; chunked
+   trailers are read and ignored. A
    request carrying both Content-Length and
    Transfer-Encoding, or a repeated / non-numeric Content-Length, is refused
    (400); a declared body past 256 MB is refused (413) before it is read —
@@ -44,14 +48,15 @@ its own; add a handler to Store that returns the value).
 `headers: Map` when it declares them, bound BY NAME (a 4th parameter named
 `query` or `q` gets the query, `headers` or `hdrs` the headers; with five,
 the 4th is the query and the 5th the headers, named so; any other name is
-refused by `soma check` and at start-up): `on request(method:
+refused by `soma check` and at start-up; both are typed `Map` or `Any`, any
+other type is refused too): `on request(method:
 String, path: String, body: Map, query: Map, headers: Map)`. Header names
 are lower-case (`headers.authorization`); a repeated header is one entry,
 its values joined with ", " (a repeated QUERY key keeps its last value). `OPTIONS`
 requests are answered 204 with permissive CORS headers before any handler. A trailing `Map` parameter may be left out by a
 caller (it is `map()`), so a test still calls `request("GET", "/x", "")`.
 Query keys without `=` are present with an empty String (`?flag` gives
-`query.flag == ""`). In query keys and values, `+` means a space and `%2B`
+`query.flag == ""`; a form body likewise: `a=1&flag` gives `body.flag == ""`). In query keys and values, `+` means a space and `%2B`
 means a literal plus sign. Decoding happens once; empty separators are ignored.
 
 The declared type of `body` decides its shape:
@@ -86,9 +91,18 @@ kind yourself only when you want a different status or body:
 
 ```soma
 let r = try { _hold(id) }
-if r.kind == "invalid_transition" { return response(410, map("error", r.detail)) }
+if r.kind == "invalid_transition" { return response(410, map("error", "this hold has expired", "kind", r.kind)) }
 if r.error != ()                  { fail(r) }      // re-raise: the default mapping answers (under serve; a test sees the raised error)
 ```
+
+Under `soma serve` a caught error's `r.error` / `r.detail` hold the text a
+client would get for it: the program's own words (`fail(kind, detail)`,
+`require … else Tag`) unchanged, a runtime error (a type error quoting a
+stored value, `from_json` on bad text, …) as a value-free sentence — its
+full text goes to the server log. Returning or re-raising a try result
+(`return r`, `fail(r.error)`, `fail(r.kind, r.detail)`) therefore never
+sends stored data to a client. `soma run` / `soma test` keep the full text
+(for asserts and debugging), so branch on `r.kind`, never on the text.
 
 Path segments reach `request` percent-decoded (`/stock/a%20b` → `"/stock/a b"`),
 except an encoded slash: `%2F` stays `%2F`, so a value cannot fake a path

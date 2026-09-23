@@ -103,6 +103,8 @@ pub fn cmd_serve(path: &PathBuf, port: u16, host: &str, verbose: bool, join: Opt
     exit_with_watcher();
     crate::interpreter::PERSIST_MACHINES.store(true, std::sync::atomic::Ordering::Relaxed);
     crate::interpreter::IN_SERVE.store(true, std::sync::atomic::Ordering::Relaxed);
+    // a caught error's texts are the client-safe ones (see try_texts)
+    crate::interpreter::builtins::collection::set_try_text_filter(served_try_texts);
     let source = read_source(path);
     let file_str = path.display().to_string();
     let tokens = lex_with_location(&source, Some(&file_str));
@@ -218,10 +220,13 @@ pub fn cmd_serve(path: &PathBuf, port: u16, host: &str, verbose: bool, join: Opt
     // name before) — `?authorization=…` forged a header. Now the NAME decides and must be unambiguous (`query`/`q`,
     // `headers`/`hdrs`): see `ast::request_extra_roles`, the one rule
     // `soma check` and `soma run … request` apply too.
-    let request_roles: Vec<ast::RequestExtra> = match handler_params.get("request") {
+    let request_on_params: Option<&Vec<ast::Param>> = cell.node.sections.iter().find_map(|s| match &s.node {
+        ast::Section::OnSignal(on) if on.signal_name == "request" => Some(&on.params),
+        _ => None,
+    });
+    let request_roles: Vec<ast::RequestExtra> = match request_on_params {
         Some(ps) => {
-            let names: Vec<&str> = ps.iter().map(String::as_str).collect();
-            match ast::request_extra_roles(&names) {
+            match ast::request_param_roles(ps) {
                 Ok(r) => r,
                 Err(msg) => {
                     eprintln!("error: {}", msg);
@@ -1483,7 +1488,20 @@ pub fn cmd_serve(path: &PathBuf, port: u16, host: &str, verbose: bool, join: Opt
         // past the limit, 413 and the connection is poisoned (its unread
         // chunks would be parsed as the next request)
         let mut body_bytes: Vec<u8> = Vec::new();
-        let _ = std::io::Read::read_to_end(&mut std::io::Read::take(request.as_reader(), max_body() + 1), &mut body_bytes);
+        let read = std::io::Read::read_to_end(&mut std::io::Read::take(request.as_reader(), max_body() + 1), &mut body_bytes);
+        // a malformed or truncated body (a bad chunk size, a missing CRLF,
+        // an EOF before the last chunk or before Content-Length bytes): the
+        // handler used to run on what was read and the connection stayed
+        // open, its unread bytes parsed as the next request (smuggling) —
+        // 400, and the connection is closed and poisoned
+        if read.is_err() && body_bytes.len() as u64 <= max_body() {
+            drop(body_bytes);
+            if let Some(addr) = request.remote_addr().copied() {
+                poisoned_connections().lock().unwrap_or_else(|e| e.into_inner()).insert(addr, std::time::Instant::now());
+            }
+            refuse_early(request, 400, "the request body is malformed or incomplete", "bad_request", true);
+            return;
+        }
         if body_bytes.len() as u64 > max_body() {
             drop(body_bytes);
             if let Some(addr) = request.remote_addr().copied() {
@@ -1550,13 +1568,14 @@ pub fn cmd_serve(path: &PathBuf, port: u16, host: &str, verbose: bool, join: Opt
         {
             // Parse as form-encoded: key=value&key2=value2
             let mut form_data = Vec::new();
-            for pair in body_raw.split('&') {
-                if let Some((key, val)) = pair.split_once('=') {
-                    if !url_escapes_are_utf8(key) || !url_escapes_are_utf8(val) { form_not_utf8 = true; }
-                    let key = urlencoding_decode(key);
-                    let val = urlencoding_decode(val);
-                    form_data.push((key, interpreter::Value::String(val)));
-                }
+            // a key without `=` (`a=1&flag`) is present with "", as in
+            // the query (it used to be dropped)
+            for pair in body_raw.split('&').filter(|pair| !pair.is_empty()) {
+                let (key, val) = pair.split_once('=').unwrap_or((pair, ""));
+                if !url_escapes_are_utf8(key) || !url_escapes_are_utf8(val) { form_not_utf8 = true; }
+                let key = urlencoding_decode(key);
+                let val = urlencoding_decode(val);
+                form_data.push((key, interpreter::Value::String(val)));
             }
             Some(interpreter::map_from_pairs(form_data))
         } else {
@@ -1642,14 +1661,19 @@ pub fn cmd_serve(path: &PathBuf, port: u16, host: &str, verbose: bool, join: Opt
             // drop any ?query (cache-busting `a.css?v=2`) before hitting disk
             // `/static/my%20file.css` names `my file.css` (it was looked up
             // with the escapes in, a 404); a path's `+` is a plus
-            let url_path = urlencoding_decode(&url.split('?').next().unwrap_or(&url).replace('+', "%2B"));
-            let url_path = url_path.as_str();
+            // each SEGMENT is decoded on its own: `%2F` stays inside its
+            // segment, as for `request` (`/static/sub%2fx.txt` was served as
+            // `sub/x.txt`), and a segment holding a `/` or `\` names no file
+            let raw_path = url.split('?').next().unwrap_or(&url).to_string();
+            let decoded: Vec<String> = raw_path.split('/').map(|seg| urlencoding_decode(&seg.replace('+', "%2B"))).collect();
             // a dotfile (`.env`, `.git/…`) dropped in static/ is not served;
             // `.` is the current directory (`/static/sub/./x.txt`), and `..`
             // is refused before any disk access: 404 like a missing file —
-            // a 403 for "exists outside static/" was an existence oracle
-            let segs: Vec<&str> = url_path.split('/').filter(|seg| !seg.is_empty() && *seg != ".").collect();
-            if segs.iter().any(|seg| seg.starts_with('.')) {
+            // a 403 for "exists outside static/" was an existence oracle.
+            // A trailing `/` names a directory: a file under it is 404
+            // (`/static/sub/x.txt/` was served)
+            let segs: Vec<&str> = decoded.iter().map(|s| s.as_str()).filter(|seg| !seg.is_empty() && *seg != ".").collect();
+            if segs.iter().any(|seg| seg.starts_with('.') || seg.contains(['/', '\\'])) || raw_path.ends_with('/') {
                 let resp = tiny_http::Response::from_string("not found").with_status_code(404);
                 let _ = request.respond(cors(resp));
                 return;
@@ -1673,7 +1697,17 @@ pub fn cmd_serve(path: &PathBuf, port: u16, host: &str, verbose: bool, join: Opt
             let base_canonical = static_root.canonicalize().unwrap_or(static_root);
             // outside static/ (a symlink out): 404, the same answer as a
             // missing file
-            if canonical.starts_with(&base_canonical) && canonical.is_file() {
+            // the name as written on disk: a case-insensitive filesystem
+            // served `/static/A.TXT` for `a.txt`
+            let exact_case = {
+                let mut dir = if base_dir.as_os_str().is_empty() { std::path::PathBuf::from(".") } else { base_dir.to_path_buf() };
+                segs.iter().all(|seg| {
+                    let found = std::fs::read_dir(&dir).map_or(false, |es| es.flatten().any(|e| e.file_name().to_str() == Some(*seg)));
+                    dir.push(seg);
+                    found
+                })
+            };
+            if canonical.starts_with(&base_canonical) && canonical.is_file() && exact_case {
                 let content = std::fs::read(&canonical).unwrap_or_default();
                 let mime = match file_path.extension().and_then(|e| e.to_str()) {
                     Some("css") => "text/css",
@@ -2393,6 +2427,33 @@ fn client_refusal_text(text: &str, kind: &str) -> String {
         }
     }
     format!("{}{}", head, generic_error_sentence(kind))
+}
+
+/// `try` under `soma serve`: a try result's `error` / `detail` are the text
+/// a client would get for the error (`client_error_text`), never the
+/// runtime's own text, which quotes stored values. Once a program holds a
+/// try result it can send it anywhere (`return r`, `fail(r.error)`,
+/// `fail(r.kind, r.detail)`, `response(410, map("error", r.detail))`), so
+/// the only sound place to cut is where the text enters the program. The
+/// full text goes to the server log (once per distinct text). The program's
+/// own words (`fail(kind, detail)`, `require … else Tag`) are unchanged.
+/// `soma run` / `soma test` keep the full text for local debugging.
+fn served_try_texts(e: &interpreter::RuntimeError) -> Option<(String, String)> {
+    let full = format!("{}", e);
+    let safe = client_error_text(e);
+    if safe == full {
+        return None;
+    }
+    static SEEN: std::sync::OnceLock<std::sync::Mutex<std::collections::HashSet<String>>> = std::sync::OnceLock::new();
+    let seen = SEEN.get_or_init(Default::default);
+    let mut g = seen.lock().unwrap_or_else(|e| e.into_inner());
+    if g.len() > 4096 { g.clear(); }
+    if g.insert(full.clone()) {
+        eprintln!("try caught ({}): {} — the try result holds: {}", e.kind(), log_safe(&full), log_safe(&safe));
+    }
+    drop(g);
+    let detail = safe[handler_prefix_len(&safe)..].to_string();
+    Some((safe, detail))
 }
 
 /// Length of the leading `name(): ` / `Cell.name(): ` segments of an error

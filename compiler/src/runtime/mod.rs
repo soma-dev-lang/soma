@@ -229,6 +229,20 @@ impl Runtime {
         Ok(result)
     }
 
+    /// Run one handler of the child `child_name` of `parent_cell` (`soma run
+    /// app.cell Child.handler …`), its siblings registered as for a signal.
+    pub fn call_child_handler(&mut self, parent_cell: &str, child_name: &str, handler: &str, args: Vec<Value>) -> Result<Value, String> {
+        let parent = self.find_cell(parent_cell)
+            .ok_or_else(|| format!("cell '{}' not found", parent_cell))?;
+        let on = parent.children.get(child_name)
+            .and_then(|c| c.def.sections.iter().find_map(|s| match &s.node {
+                Section::OnSignal(on) if on.signal_name == handler => Some(on.clone()),
+                _ => None,
+            }))
+            .ok_or_else(|| format!("cell '{}' has no handler '{}'", child_name, handler))?;
+        self.execute_handler(parent_cell, child_name, &on, args)
+    }
+
     /// Run a top-level cell's runtime section
     pub fn run_cell(&mut self, cell_name: &str) -> Result<(), String> {
         let cell = self.find_cell(cell_name)
