@@ -3688,3 +3688,24 @@ cell test T { rules {
 } }
 "#);
 }
+
+#[test]
+fn a_unit_key_is_no_key_for_reads_and_deletes() {
+    // set((), v) is refused, but get/has/[] read the "null" entry and
+    // `users.delete(body.userid)` (a mistyped field) deleted it
+    passes("unit_key_reads", r#"
+cell Users {
+    memory { users: Map<String, Int> [persistent] }
+    on seed() { users.set("null", 7) }
+    on read(body: Map) { return [users.get(body.user_id), users.has(body.user_id), users[body.user_id]] }
+    on remove(body: Map) { return users.delete(body.user_id) }
+    on count() { return users.len }
+}
+cell test T { rules {
+    let s = seed()
+    assert read(map("userid", "u1")) == [(), false, ()]
+    assert_fails remove(map("userid", "u1")) matching "the key is ()"
+    assert count() == 1
+} }
+"#);
+}

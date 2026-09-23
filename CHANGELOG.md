@@ -2,6 +2,13 @@
 
 ## Unreleased
 
+### A `()` key reads nothing and deletes nothing
+
+- `set((), v)` is refused (an absent value, often a mistyped field, is no
+  key), but `get(())`, `has(())` and `slot[()]` read the entry `"null"`, and
+  `users.delete(body.userid)` deleted it. A `()` key now reads as absent
+  (`()`, `false`) and `delete(())` is refused like `set((), v)`.
+
 ### Native BigInt mode: a product of two small locals promotes
 
 - `let x = 3037000500  return x * x` failed natively with "an Int past 64

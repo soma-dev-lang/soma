@@ -3184,6 +3184,8 @@ impl Interpreter {
                     .ok_or_else(|| ExecError::Runtime(RuntimeError::TypeError(
                         "get() requires a key argument".to_string()
                     )))?;
+                // `()` is no key (set refuses it): it read the "null" entry
+                if matches!(key, Value::Unit) { return Ok(Value::Unit); }
                 let key_str = format!("{}", key);
 
                 match backend.get(&key_str) {
@@ -3253,6 +3255,12 @@ impl Interpreter {
                     .ok_or_else(|| ExecError::Runtime(RuntimeError::TypeError(
                         "delete() requires a key argument".to_string()
                     )))?;
+                // a mistyped field (`users.delete(body.userid)`) deleted the
+                // "null" entry: refused, as set((), …) is
+                if matches!(key, Value::Unit) {
+                    return Err(ExecError::Runtime(RuntimeError::Domain { kind: "type".to_string(), message: format!(
+                        "{}.delete(()): the key is () — an absent value (a mistyped field?) cannot be a key", slot_name) }));
+                }
                 let key_str = format!("{}", key);
                 if self.slot_immutable(cell_name, slot_name) && backend.get(&key_str).is_some() {
                     return Err(Self::immutable_refusal(slot_name, &format!("deleting key \"{}\"", key_str)));
@@ -3357,6 +3365,7 @@ impl Interpreter {
                     .ok_or_else(|| ExecError::Runtime(RuntimeError::TypeError(
                         "has() requires a key argument".to_string()
                     )))?;
+                if matches!(key, Value::Unit) { return Ok(Value::Bool(false)); }
                 let key_str = format!("{}", key);
                 Ok(Value::Bool(backend.has(&key_str)))
             }
