@@ -2958,12 +2958,14 @@ impl Interpreter {
                     (Value::List(items), "len" | "length") => {
                         Ok(Value::Int(SomaInt::from_i64(items.len() as i64)))
                     }
-                    (Value::Map(entries), "get") => {
+                    // `m.get(k, default)` as a slot's get answers it
+                    (Value::Map(entries), "get") if arg_vals.len() <= 2 => {
+                        let dflt = arg_vals.get(1).cloned().unwrap_or(Value::Unit);
                         if let Some(key) = arg_vals.first().filter(|k| !matches!(k, Value::Unit)) {
                             let key_str = format!("{}", key);
-                            Ok(entries.get(&key_str).cloned().unwrap_or(Value::Unit))
+                            Ok(entries.get(&key_str).cloned().unwrap_or(dflt))
                         } else {
-                            Ok(Value::Unit)
+                            Ok(dflt)
                         }
                     }
                     (Value::Map(entries), "keys") => {
@@ -3076,6 +3078,34 @@ impl Interpreter {
             }
         };
 
+        // the slot methods' arities: an extra argument was dropped silently
+        // (`rows.push(1, 2)` pushed 1, `m.set("a", 1, "b", 2)` set a)
+        let want: Option<(usize, usize, &str)> = match method {
+            "push" | "append" => Some((1, 1, "push(x) — push one element per call")),
+            "set" | "put" => Some((2, 2, "set(key, value)")),
+            "delete" | "remove" => Some((1, 1, "delete(key)")),
+            "has" | "contains" => Some((1, 1, "has(key)")),
+            "get" | "at" | "nth" => Some((1, 2, "get(key) or get(key, default)")),
+            _ => None,
+        };
+        if let Some((lo, hi, form)) = want {
+            if args.len() < lo || args.len() > hi {
+                return Err(ExecError::Runtime(RuntimeError::TypeError(format!(
+                    "{}.{}: takes {} argument{}, got {} — {}.{}", slot_name, method, if lo == hi { lo.to_string() } else { format!("{}–{}", lo, hi) }, if hi == 1 { "" } else { "s" }, args.len(), slot_name, form))));
+            }
+        }
+        // `m.get(k, default)`: the default for a missing key (it was ignored)
+        if matches!(method, "get" | "at" | "nth") && args.len() == 2 {
+            let got = self.call_storage_method_inner(cell_name, slot_name, method, &args[..1])?;
+            return Ok(if matches!(got, Value::Unit) { args[1].clone() } else { got });
+        }
+        // a List slot is indexed by Int: `names.delete("x")` fell through to
+        // the keyed table underneath and answered false
+        if matches!(method, "delete" | "remove") && self.slot_kind(cell_name, slot_name) == Some("List") && !matches!(args[0], Value::Int(_)) {
+            return Err(ExecError::Runtime(RuntimeError::TypeError(format!(
+                "{}.{}(i): a List slot deletes by Int index, got {} {} — find the index first (`index_of({}, x)`)", slot_name, method, value_type_name(&args[0]), args[0], slot_name))));
+        }
+
         // Is this slot sharded across the cluster?
         let is_sharded = self.cluster.is_some()
             && self.sharded_slots.contains_key(&prefixed);
@@ -3163,7 +3193,11 @@ impl Interpreter {
                 "delete" | "remove" if matches!(args.first(), Some(Value::Int(_))) => {
                     // the whole list only when an invariant needs the
                     // shifted elements (each delete read and rewrote every row)
-                    let needs_all = self.slot_invariants_use_key(cell_name, slot_name);
+                    // a rule between slots pairs elements BY INDEX too: every
+                    // shifted element meets a new partner (`a.delete(0)` kept
+                    // a = [1] against b = [0, 1] under `b <= a`)
+                    let cross = self.slot_invariants_cross(cell_name, slot_name);
+                    let needs_all = cross || self.slot_invariants_use_key(cell_name, slot_name);
                     let xs = if needs_all { items() } else { Vec::new() };
                     let len = if needs_all { xs.len() } else { backend.list_len() };
                     self.check_storage_write()?;
@@ -3188,8 +3222,9 @@ impl Interpreter {
                     // only a `size` clause can flip on a delete — as for a Map slot,
                     // and as verify says (every value invariant refused the
                     // delete here while verify proved the writer safe)
-                    if self.slot_invariants_cross(cell_name, slot_name) {
-                        self.check_invariants(cell_name, slot_name, &idx.to_string(), &Value::Unit, len as i64 - 1, "delete_cross")?;
+                    if cross {
+                        // the last index is left empty on this side
+                        self.check_invariants(cell_name, slot_name, &(len - 1).to_string(), &Value::Unit, len as i64 - 1, "delete_cross")?;
                     }
                     if self.slot_invariants_use_size(cell_name, slot_name) {
                         self.check_invariants(cell_name, slot_name, &idx.to_string(), &old, len as i64 - 1, "delete")?;
@@ -3443,7 +3478,11 @@ impl Interpreter {
             }
             // A bare `slot.field` (field access, no args) reads the key —
             // symmetric with `slot.field = v` and with map field access.
-            _ if args.is_empty() => {
+            // `m.alice` reads a key of a Map slot; a List slot has no keys,
+            // and a missing key that names a builtin is that builtin
+            // (`rows.sum()`, `rows.max` answered ())
+            _ if args.is_empty() && self.slot_kind(cell_name, slot_name) != Some("List")
+                && (backend.get(method).is_some() || builtins::registry::lookup(method).is_none()) => {
                 match backend.get(method) {
                     Some(stored) => Ok(self.from_slot(cell_name, slot_name, stored_to_value(stored))),
                     None => Ok(Value::Unit),
@@ -4446,7 +4485,7 @@ impl Interpreter {
                     .filter(|n| n != slot_name && self.slot_kind(cell_name, n).is_some())
                     .collect();
                 for other in &others {
-                    let v = self.call_storage_method(cell_name, other, "get", &[env.get("key").cloned().unwrap_or(Value::Unit)])
+                    let v = self.call_storage_method(cell_name, other, "get", &[self.key_for_slot(cell_name, other, key_str)])
                         .unwrap_or(Value::Unit);
                     env.insert(other.clone(), v);
                     // `other.size` / `len(other)`: that slot's entry count
@@ -5443,7 +5482,10 @@ impl Interpreter {
             env.insert("_from".to_string(), Value::String(current.clone()));
             env.insert("_to".to_string(), Value::String(target.to_string()));
             env.insert("_id".to_string(), Value::String(id.to_string()));
-            let result = self.eval_expr(&guard_expr, &mut env, cell_name, "")
+            // the machine's cell: its slots are what the guard reads (from
+            // another cell, "'frozen' is not a memory slot")
+            let mcell = self.machine_cell(cell_name);
+            let result = self.eval_expr(&guard_expr, &mut env, &mcell, "")
                 .map_err(|e| match e {
                     ExecError::Runtime(r) => r,
                     ExecError::Return(v) => RuntimeError::TypeError(format!("guard returned {:?}", v)),
@@ -5471,13 +5513,17 @@ impl Interpreter {
         // slots of this cell keyed by the instance id are re-checked with the
         // TARGET state before the move (a `released` escrow with its balance
         // still full was invisible to every rule)
-        let status_slots = self.slots_reading_status(cell_name);
+        // (of the machine's cell: a transition() from another cell or a
+        // test skipped them; an Int id reads a Map<Int, V> slot at the Int)
+        let mcell = self.machine_cell(cell_name);
+        let status_slots = self.slots_reading_status(&mcell);
         if !status_slots.is_empty() {
             self.pending_status = Some((id.to_string(), target.to_string()));
             for slot in &status_slots {
-                let val = self.call_storage_method(cell_name, slot, "get", &[Value::String(id.to_string())]).unwrap_or(Value::Unit);
-                let size = self.storage.get(&format!("{}.{}", cell_name, slot)).map(|b| b.len()).unwrap_or(0) as i64;
-                let checked = self.check_invariants(cell_name, slot, id, &val, size, "transition");
+                let key = self.key_for_slot(&mcell, slot, id);
+                let val = self.call_storage_method(&mcell, slot, "get", &[key]).unwrap_or(Value::Unit);
+                let size = self.storage.get(&format!("{}.{}", mcell, slot)).map(|b| b.len()).unwrap_or(0) as i64;
+                let checked = self.check_invariants(&mcell, slot, id, &val, size, "transition");
                 if let Err(e) = checked {
                     self.pending_status = None;
                     return Err(match e {
@@ -5776,6 +5822,18 @@ impl Interpreter {
         Some(if name == "without" { vals[0].clone() } else { Value::Bool(false) })
     }
 
+    /// The key `key_str` as slot `slot` takes it: an Int for a `Map<Int, V>`
+    /// or a List (a rule between a String-keyed slot, or a machine id, and a
+    /// `Map<Int, V>` read () there — the text key is absent — and passed).
+    fn key_for_slot(&self, cell_name: &str, slot: &str, key_str: &str) -> Value {
+        let k = key_str.trim_start_matches('#');
+        let int_keyed = self.slot_kind(cell_name, slot) == Some("List") || self.slot_int_keys(cell_name, slot);
+        if int_keyed && crate::interpreter::builtins::string::is_int_text(k) {
+            return Value::Int(SomaInt::from_decimal_str(k));
+        }
+        Value::String(key_str.to_string())
+    }
+
     /// A stored key read back: an Int for a `Map<Int, V>` slot.
     fn slot_key_value(&self, int_keys: bool, k: String) -> Value {
         if int_keys && crate::interpreter::builtins::string::is_int_text(&k) {
@@ -5950,6 +6008,14 @@ impl Interpreter {
     /// Find the first state machine and its backing storage slot
     pub(crate) fn find_state_machine(&self) -> Option<(&StateMachineSection, &Arc<dyn StorageBackend>)> {
         self.find_state_machine_for("")
+    }
+
+    /// The cell whose machine `transition()` from `cell_name` moves: its own,
+    /// or the program's one machine (the fallback find_state_machine_for takes).
+    fn machine_cell(&self, cell_name: &str) -> String {
+        if self.state_machines.keys().any(|(cn, _)| cn == cell_name) { return cell_name.to_string(); }
+        let owners: Vec<&String> = self.state_machines.keys().map(|(cn, _)| cn).collect();
+        if owners.len() == 1 { owners[0].clone() } else { cell_name.to_string() }
     }
 
     pub(crate) fn find_state_machine_for(&self, cell_name: &str) -> Option<(&StateMachineSection, &Arc<dyn StorageBackend>)> {

@@ -2,6 +2,10 @@
 
 ## Unreleased
 
+### Invariants on List deletes and transitions, slot method arities, agent memory keys
+
+A delete from a List slot re-checks a rule between slots at every shifted index (`a.delete(0)` kept `b <= a` broken). A `status` invariant is checked when transition() comes from another cell or a test, and on a `Map<Int, V>` slot keyed by the instance id; a guard reads the machine's own slots. Slot methods check their arity (`rows.push(1, 2)`, `m.set("a", 1, "b", 2)` dropped the extras), `m.get(k, default)` answers the default (slots and local maps), and `names.delete("x")` on a List slot is a type error. `rows.sum()`, `rows.max`, `rows.sort()` on a List slot call the builtin instead of answering (). check warns when `push` & co. are called on an element (`li[0].push(2)`), whose result is lost. Horde instances' memory keys no longer collide (`a` + `b/c` vs `a/b` + `c`); remember(()) is refused and recall(1) finds remember(1, v).
+
 ### NaN, big Ints, records and incomplete arguments in builtins
 
 min/max and quantile (so var_historical and expected_shortfall_historical) answer NaN for a NaN input instead of an infinity or a misplaced percentile. pow keeps an Int exponent's parity (`pow(-1, 2^53 + 1)` is -1.0) and refuses an Int base past the Float range; `round(Int, digits)` keeps the Int exact. render_each, word_count and par_word_count read records; to_csv/write_csv refuse a row that is neither a Map nor a record with fields (it was dropped). agg refuses a group field named like an output column. `s.split(d)` and `xs.get(i)` behave as split(s, d) and nth (negative index from the end, non-Int refused). type_of of a function is "Function", as documented. render/load_template and response/html refuse a key or header with no value; render takes one Map. concat refuses a List, Map or () mixed with another type; join needs a String separator. impact_sqrt refuses a volume ≤ 0, a negative σ or Y and a NaN quantity. to_json refuses a function; from_json passes a number or Bool through.

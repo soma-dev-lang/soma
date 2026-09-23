@@ -4975,3 +4975,53 @@ cell test T { rules {
 } }
 "#);
 }
+
+#[test]
+fn storage_fifth_pass() {
+    passes("storage_fifth_pass", r#"
+cell Pair {
+    memory {
+        a: List<Int> [ephemeral]
+        b: List<Int> [ephemeral]
+        invariant (b ?? 0) <= (a ?? 0)
+    }
+    on seed() { a.push(5)  a.push(1)  b.push(0)  b.push(1)  return 1 }
+    on del() { a.delete(0)  return a }
+}
+cell Acct {
+    memory {
+        bal: Map<Int, Int> [ephemeral]
+        frozen: Map<String, Bool> [ephemeral]
+        rows: List<Int> [ephemeral]
+        m: Map<String, Int> [ephemeral]
+        invariant status != "closed" || (bal ?? 0) == 0
+    }
+    state life {
+        initial: open
+        open -> closed
+    }
+    on fund(id: Int, n: Int) { bal.set(id, n)  return n }
+    on close(id: Int) { transition("{id}", "closed")  return get_status("{id}") }
+    on fill() { rows.push(3)  rows.push(1)  rows.push(2)  return rows.sum() }
+    on mx() { return rows.max() }
+    on push2() { rows.push(1, 2)  return rows }
+    on del_text() { rows.push(1)  return rows.delete("1") }
+    on dflt() { return [m.get("zz", 0), map("a", 1).get("zz", 7)] }
+}
+cell Admin {
+    on force_close(id: Int) { transition("{id}", "closed")  return get_status("{id}") }
+}
+cell test T { rules {
+    assert seed() == 1
+    assert_fails del() matching "invariant violated"
+    assert fund(7, 5) == 5
+    assert_fails close(7) matching "invariant violated"
+    assert_fails Admin.force_close(7) matching "invariant violated"
+    assert fill() == 6
+    assert mx() == 3
+    assert_fails push2() matching "takes 1 argument"
+    assert_fails del_text() matching "Int index"
+    assert dflt() == [0, 7]
+} }
+"#);
+}

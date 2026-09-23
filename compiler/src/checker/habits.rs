@@ -184,10 +184,20 @@ impl Walk<'_> {
                 }
             }
             Expr::MethodCall { target, method, .. } if PURE.contains(&method.as_str()) => {
-                if let Expr::Ident(n) = &target.node {
-                    if !self.index.slots.contains(n) {
-                        self.warn_discarded(method, Some(n), span);
+                match &target.node {
+                    Expr::Ident(n) => {
+                        if !self.index.slots.contains(n) {
+                            self.warn_discarded(method, Some(n), span);
+                        }
                     }
+                    // `li[0].push(2)`, `m.get("k").push(3)`: a copy of the
+                    // element, slot or local alike — the write is lost
+                    // (`Other.rows.push(x)` is another cell's slot: not this)
+                    Expr::FieldAccess { target: t, .. } if matches!(&t.node, Expr::Ident(c) if self.cells.contains(c)) => {}
+                    Expr::Index { .. } | Expr::MethodCall { .. } | Expr::FnCall { .. } | Expr::FieldAccess { .. } => {
+                        self.warn_discarded(method, None, span);
+                    }
+                    _ => {}
                 }
             }
             _ => {}

@@ -99,7 +99,11 @@ pub fn call_builtin(interp: &mut Interpreter, name: &str, args: &[Value], cell_n
         "remember" => {
             if args.len() >= 2 {
                 // a horde task running as an agent instance: its own keys
-                let key = match &interp.horde_instance { Some(i) => format!("{}/{}", i, args[0]), None => format!("{}", args[0]) };
+                // () is no key (a slot refuses it): it wrote the entry "null"
+                if matches!(args[0], Value::Unit) {
+                    return Some(Err(RuntimeError::TypeError("remember(key, value): the key is () — an absent value (a mistyped field?) cannot be a key".to_string())));
+                }
+                let key = match &interp.horde_instance { Some(i) => instance_key(i, &format!("{}", args[0])), None => format!("{}", args[0]) };
                 let val = &args[1];
                 if let Err(message) = super::super::validate_storable(val) {
                     return Some(Err(RuntimeError::TypeError(format!("remember(): {}", message))));
@@ -119,8 +123,10 @@ pub fn call_builtin(interp: &mut Interpreter, name: &str, args: &[Value], cell_n
             }
         }
         "recall" => {
-            if let Some(Value::String(key)) = args.first() {
-                let scoped = interp.horde_instance.as_ref().map(|i| format!("{}/{}", i, key));
+            // any key remember() takes (recall(1) after remember(1, v) raised)
+            let text_key = match args.first() { Some(Value::Unit) | None => None, Some(Value::String(k)) => Some(k.clone()), Some(other) => Some(format!("{}", other)) };
+            if let Some(key) = text_key.as_ref() {
+                let scoped = interp.horde_instance.as_ref().map(|i| instance_key(i, key));
                 let key = scoped.as_ref().unwrap_or(key);
                 // opened here too: a recall in a new process (or another
                 // serve thread) found no table and answered null
@@ -1144,4 +1150,10 @@ mod memory_tests {
         let own = call_builtin(&mut interp, "recall", &key, "A").unwrap().unwrap();
         assert!(matches!(own, Value::Map(ref m) if m.get("value").and_then(|v| v.as_int().ok()) == Some(42)), "{own}");
     }
+}
+
+/// A horde instance's own memory key. The instance id is escaped: instance
+/// "a" with key "b/c" and instance "a/b" with key "c" were one entry.
+pub(crate) fn instance_key(instance: &str, key: &str) -> String {
+    format!("{}/{}", instance.replace('%', "%25").replace('/', "%2F"), key)
 }

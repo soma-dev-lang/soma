@@ -532,7 +532,7 @@ impl Interpreter {
         self.horde_instance = spec.instance.as_ref().and_then(|f| field(input, f)).map(|v| format!("{}:{}", spec.owner, match v { Value::String(x) => x.clone(), other => format!("{}", other) }));
         if let Some(inst) = self.horde_instance.clone() {
             let mem = super::builtins::storage::agent_memory(self, &spec.target_cell);
-            if let Some(Value::List(msgs)) = mem.get(&format!("{}/__conversation", inst)).map(stored_to_value) {
+            if let Some(Value::List(msgs)) = mem.get(&crate::interpreter::builtins::storage::instance_key(&inst, "__conversation")).map(stored_to_value) {
                 let conv: Vec<serde_json::Value> = msgs.iter().filter_map(|m| match m { Value::String(j) => serde_json::from_str(j).ok(), _ => None }).collect();
                 self.agent_conversations.insert(spec.target_cell.clone(), conv);
             }
@@ -565,7 +565,7 @@ impl Interpreter {
         if let Some(inst) = self.horde_instance.clone() {
             let conv: Vec<Value> = self.agent_conversations.get(&spec.target_cell).map(|c| c.iter().map(|m| Value::String(m.to_string())).collect()).unwrap_or_default();
             let mem = super::builtins::storage::agent_memory(self, &spec.target_cell);
-            self.horde_set(&mem, &format!("{}/__conversation", inst), &Value::List(conv));
+            self.horde_set(&mem, &crate::interpreter::builtins::storage::instance_key(&inst, "__conversation"), &Value::List(conv));
         }
         let rec = map_from_pairs(vec![
             ("input".to_string(), input.clone()), ("state".to_string(), s("done")),
