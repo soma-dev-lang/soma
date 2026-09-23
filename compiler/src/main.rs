@@ -388,13 +388,17 @@ fn main_inner() {
                     // the app's data beside it — when other programs' cells have
                     // tables there, only THIS program's tables are reset
                     if data.join("soma.db").exists() {
-                        let (own, foreign) = cells_in_db(&file, &data.join("soma.db"));
+                        let (own, foreign, kept) = cells_in_db(&file, &data.join("soma.db"));
                         if !foreign.is_empty() {
                             if let Ok(conn) = rusqlite::Connection::open(data.join("soma.db")) {
                                 for t in &own { let _ = conn.execute_batch(&format!("DROP TABLE IF EXISTS \"{}\"", t.replace('"', "\"\""))); }
                             }
                             eprintln!("fresh: reset {} table(s) of this program — {} also holds tables {} (other programs in this directory), kept",
                                 own.len(), data.display(), foreign.join(", "));
+                            if !kept.is_empty() {
+                                eprintln!("fresh: kept {} too — next_id() counters / remember() memory of a cell another program here also uses",
+                                    kept.join(", "));
+                            }
                             return;
                         }
                     }
@@ -941,7 +945,7 @@ fn cmd_tokens(path: &PathBuf) {
 
 /// The tables of `db` owned by the cells of `file` (and of its lib/ and
 /// installed packages), and the cell prefixes of the other tables.
-fn cells_in_db(file: &std::path::Path, db: &std::path::Path) -> (Vec<String>, Vec<String>) {
+fn cells_in_db(file: &std::path::Path, db: &std::path::Path) -> (Vec<String>, Vec<String>, Vec<String>) {
     // the EXACT tables this program owns (a name prefix took cell `A_b`'s
     // tables for cell `A`'s and reset another program's data)
     let mut names: Vec<String> = Vec::new();
@@ -979,8 +983,8 @@ fn cells_in_db(file: &std::path::Path, db: &std::path::Path) -> (Vec<String>, Ve
     walk(&base.join(".soma_env").join("packages"), &mut deps);
     walk(&base.join("packages"), &mut deps);
     for d in deps { add_file(&d, &mut names); }
-    let Ok(conn) = rusqlite::Connection::open_with_flags(db, rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY) else { return (Vec::new(), Vec::new()) };
-    let Ok(mut st) = conn.prepare("SELECT name FROM sqlite_master WHERE type = 'table'") else { return (Vec::new(), Vec::new()) };
+    let Ok(conn) = rusqlite::Connection::open_with_flags(db, rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY) else { return (Vec::new(), Vec::new(), Vec::new()) };
+    let Ok(mut st) = conn.prepare("SELECT name FROM sqlite_master WHERE type = 'table'") else { return (Vec::new(), Vec::new(), Vec::new()) };
     let tables: Vec<String> = st.query_map([], |r| r.get::<_, String>(0)).map(|it| it.flatten().collect()).unwrap_or_default();
     let mut foreign: Vec<String> = Vec::new();
     let mut own: Vec<String> = Vec::new();
@@ -992,7 +996,18 @@ fn cells_in_db(file: &std::path::Path, db: &std::path::Path) -> (Vec<String>, Ve
         let name = t.strip_suffix("_log").unwrap_or(&t).to_string();
         if !foreign.contains(&name) { foreign.push(name); }
     }
-    (own, foreign)
+    // a cell's runtime tables (next_id() counters, remember() memory, a
+    // horde's queue) are SHARED by every program that names the cell so:
+    // when another program here has tables of the same cell, they stay
+    // (`--fresh a2.cell` restarted `App`'s ids under a.cell's records)
+    let mut kept: Vec<String> = Vec::new();
+    own.retain(|t| {
+        let lt = t.to_ascii_lowercase();
+        let Some(cell) = ["__counters", "__agent_memory", "__horde-meta", "__horde-tasks"].iter().find_map(|sfx| lt.strip_suffix(sfx)) else { return true };
+        let prefix = format!("{}_", cell);
+        if foreign.iter().any(|f| f.to_ascii_lowercase().starts_with(&prefix)) { kept.push(t.clone()); false } else { true }
+    });
+    (own, foreign, kept)
 }
 
 

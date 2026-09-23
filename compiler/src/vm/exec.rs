@@ -815,6 +815,8 @@ fn value_to_stored(val: &Value) -> StoredValue {
         Value::Bool(b) => StoredValue::Bool(*b),
         Value::Unit => StoredValue::Null,
         Value::List(items) => StoredValue::List(items.iter().map(value_to_stored).collect()),
+        // a response map keeps its mark, as the interpreter stores it
+        Value::Map(_) if crate::interpreter::is_http_response(val) => crate::interpreter::value_to_stored(val),
         Value::Map(entries) => StoredValue::Map(entries.iter().map(|(k, v)| (k.clone(), value_to_stored(v))).collect()),
         Value::Lambda { .. } | Value::LambdaBlock { .. } => StoredValue::String("<lambda>".to_string()),
         Value::Variant { type_name, variant, fields } => {
@@ -850,6 +852,7 @@ fn stored_to_value(stored: StoredValue) -> Value {
         StoredValue::Null => Value::Unit,
         StoredValue::List(items) => Value::List(items.into_iter().map(stored_to_value).collect()),
         StoredValue::Map(map) => Value::Map(map.into_iter().map(|(k, v)| (k, stored_to_value(v))).collect()),
+        StoredValue::Variant { ref type_name, .. } if type_name == crate::interpreter::HTTP_MARK => crate::interpreter::stored_to_value(stored),
         StoredValue::Variant { type_name, variant, fields } => {
             let v_fields = match fields {
                 StoredVariantFields::Unit => VariantValue::Unit,

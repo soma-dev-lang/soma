@@ -75,6 +75,39 @@ fn clamp_index(i: i64, len: usize) -> usize {
     i.clamp(0, len) as usize
 }
 
+/// The (kind, message) pairs recently raised by `fail(kind, detail)`: text
+/// the PROGRAM wrote, which `soma serve` may send to a client verbatim. Every
+/// other runtime error is the runtime's own text, which can quote stored
+/// values, and a client sees only a generic sentence for it. Hashes only,
+/// the most recent 4096 (a `RuntimeError::Domain` from a builtin carries no
+/// other mark, and the error type is shared by the whole interpreter).
+static AUTHORED_FAILURES: std::sync::OnceLock<std::sync::Mutex<(std::collections::HashSet<u64>, std::collections::VecDeque<u64>)>> = std::sync::OnceLock::new();
+
+fn failure_hash(kind: &str, message: &str) -> u64 {
+    use std::hash::{Hash, Hasher};
+    let mut h = std::collections::hash_map::DefaultHasher::new();
+    kind.hash(&mut h);
+    message.hash(&mut h);
+    h.finish()
+}
+
+fn note_authored_failure(kind: &str, message: &str) {
+    let cell = AUTHORED_FAILURES.get_or_init(Default::default);
+    let mut g = cell.lock().unwrap_or_else(|e| e.into_inner());
+    let h = failure_hash(kind, message);
+    if g.0.insert(h) {
+        g.1.push_back(h);
+        if g.1.len() > 4096 {
+            if let Some(old) = g.1.pop_front() { g.0.remove(&old); }
+        }
+    }
+}
+
+/// Was this (kind, message) raised by the program's own `fail(kind, detail)`?
+pub fn is_authored_failure(kind: &str, message: &str) -> bool {
+    AUTHORED_FAILURES.get().map_or(false, |cell| cell.lock().unwrap_or_else(|e| e.into_inner()).0.contains(&failure_hash(kind, message)))
+}
+
 pub fn call_builtin(name: &str, args: &[Value]) -> Option<Result<Value, RuntimeError>> {
     match name {
         // fail("kind", "detail") raises a domain error; fail(r) re-raises a
@@ -92,6 +125,7 @@ pub fn call_builtin(name: &str, args: &[Value]) -> Option<Result<Value, RuntimeE
                         Some(d) => format!("{}: {}", kind, d),
                         None => kind.clone(),
                     };
+                    note_authored_failure(&kind, &message);
                     Some(Err(RuntimeError::Domain { kind, message }))
                 }
                 None => Some(Err(RuntimeError::Domain { kind: "error".to_string(), message: "fail()".to_string() })),

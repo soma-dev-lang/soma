@@ -6249,6 +6249,17 @@ pub(crate) fn value_to_stored(val: &Value) -> StoredValue {
         Value::String(s) => StoredValue::String(s.clone()),
         Value::Bool(b) => StoredValue::Bool(*b),
         Value::List(items) => StoredValue::List(items.iter().map(value_to_stored).collect()),
+        // a response()/html()/redirect() map keeps its provenance mark in
+        // storage as a variant of a type no program or client can name (a
+        // cached idempotent reply came back as plain JSON: `_status` lost);
+        // `_response` stays in place, as null, to keep the key order
+        Value::Map(entries) if is_http_response(val) => StoredValue::Variant {
+            type_name: HTTP_MARK.to_string(),
+            variant: "response".to_string(),
+            fields: crate::runtime::storage::StoredVariantFields::Struct(
+                entries.iter().map(|(k, v)| (k.clone(), if k == "_response" { StoredValue::Null } else { value_to_stored(v) })).collect()
+            ),
+        },
         Value::Map(entries) => StoredValue::Map(
             entries.iter()
                 .filter(|(k, v)| !(k.as_str() == "_response" && matches!(v, Value::Lambda { param, .. } if param == HTTP_MARK)))
@@ -6460,6 +6471,14 @@ pub(crate) fn stored_to_value(stored: StoredValue) -> Value {
         StoredValue::Map(map) => Value::Map(
             map.into_iter().map(|(k, v)| (k, stored_to_value(v))).collect()
         ),
+        // a stored response()/html()/redirect() map (see value_to_stored)
+        StoredValue::Variant { type_name, fields: StoredVariantFields::Struct(entries), .. } if type_name == HTTP_MARK => {
+            let mut m: IndexMap<String, Value> = entries.into_iter()
+                .map(|(k, v)| { let v = if k == "_response" { http_marker() } else { stored_to_value(v) }; (k, v) })
+                .collect();
+            if !m.contains_key("_response") { m.insert("_response".to_string(), http_marker()); }
+            Value::Map(m)
+        }
         StoredValue::Variant { type_name, variant, fields } => {
             let v_fields = match fields {
                 StoredVariantFields::Unit => VariantValue::Unit,

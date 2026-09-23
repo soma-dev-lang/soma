@@ -177,10 +177,10 @@ pub fn check_program(program: &Program) -> Vec<(String, Span)> {
             }
             out.push((
                 format!(
-                    "handler `{name}` and a route of `request` share the path /{name}: `soma serve` also exposes every \
-                     public handler of this cell at /{name}/<args>. The route written in `request` wins for the paths \
-                     it matches, but any other /{name}/… still calls the handler directly. Prefix handlers that are \
-                     not meant to be HTTP endpoints with `_` (`on _{name}(…)`)"
+                    "handler `{name}` and a route of `request` share the path /{name}: `soma serve` sends every \
+                     /{name} and /{name}/… request to `request`, so handler `{name}` is not an HTTP endpoint at \
+                     /{name}/<args> (the route owns the path). Call it from the route (`\"/{name}\" -> {name}(…)`), \
+                     or prefix it with `_` (`on _{name}(…)`) if it is internal"
                 ),
                 section.span,
             ));

@@ -359,7 +359,7 @@ fn run_single_cell(program: ast::Program, arg_values: Vec<interpreter::Value>, r
         eprintln!("error: .soma_data/soma.db is damaged ({}) — restore it from a backup; nothing was run", why);
         process::exit(1);
     }
-    for line in interp.audit_stored_data() {
+    for line in interp.audit_stored_data().into_iter().chain(crate::commands::serve::audit_slot_keys(&program, &interp)) {
         eprintln!("warning: stored data: {}", line);
     }
     // hordes: workers over the same storage; `soma run` waits for them
@@ -516,8 +516,10 @@ fn coerce_cli_args(cell: &ast::CellDef, signal_name: &str, args: Vec<interpreter
     // path as `soma serve` does (the route got "/a?x=1" and an empty query)
     let mut args = args;
     if signal_name == "request" {
-        let pi = params.iter().position(|p| p.name == "path");
-        let qi = params.iter().position(|p| p.name == "query");
+        // by POSITION, as `soma serve` binds them: path 2nd, query 4th
+        // (unless it is a lone 4th parameter called `headers`)
+        let pi = if params.len() >= 2 { Some(1) } else { None };
+        let qi = if params.len() >= 4 && !(params.len() == 4 && params[3].name == "headers") { Some(3) } else { None };
         if let Some(pi) = pi {
             if let Some(interpreter::Value::String(full)) = args.get(pi).cloned() {
                 // path segments reach request percent-decoded, as under serve
@@ -543,7 +545,8 @@ fn coerce_cli_args(cell: &ast::CellDef, signal_name: &str, args: Vec<interpreter
     let coerced: Vec<interpreter::Value> = args.into_iter().enumerate().map(|(i, arg)| {
         let Some(param) = params.get(i) else { return arg };
         // `request`'s headers map: lower-case names, as `soma serve` gives them
-        if signal_name == "request" && param.name == "headers" {
+        let headers_at = if params.len() >= 5 { Some(4) } else if params.len() == 4 && params[3].name == "headers" { Some(3) } else { None };
+        if signal_name == "request" && headers_at == Some(i) {
             if let interpreter::Value::Map(m) = &arg {
                 return interpreter::Value::Map(m.iter().map(|(k, v)| (k.to_ascii_lowercase(), v.clone())).collect());
             }

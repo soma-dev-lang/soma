@@ -39,8 +39,10 @@ its own; add a handler to Store that returns the value).
 ## Requests and responses
 
 `request` receives `(method, path, body)` — plus `query: Map` and
-`headers: Map` when it declares them, bound BY NAME (a 4th parameter called
-`headers` gets the headers, anything else the query): `on request(method:
+`headers: Map` when it declares them, bound BY POSITION (the 4th is the query,
+the 5th the headers, whatever their names; a lone 4th parameter called
+`headers` gets the headers, and `headers` 4th of 5 or `query` 5th is refused at
+start-up): `on request(method:
 String, path: String, body: Map, query: Map, headers: Map)`. Header names
 are lower-case (`headers.authorization`); a repeated header is one entry,
 its values joined with ", " (a repeated QUERY key keeps its last value). `OPTIONS`
@@ -105,9 +107,11 @@ to `"GET"` if clients send it), so match on `method` for the ones that write: wi
 origin, a GET that writes is writable by any web page (`<img src=…>`). A JSON
 body (or a Map-typed path/query argument) carrying `_type`, `_variant` or
 `_values` anywhere is refused (400), whatever the type of `body` — also for
-`body: String`: a client cannot forge a record or a sum-type variant.
-`from_json` on other text that names a declared variant checks its shape
-(a missing or mistyped field raises kind `type`).
+`body: String`: a value serve binds never holds a record or a sum-type
+variant a client wrote. `from_json` on other client text (a query value, a
+header, a path segment, a String inside the body) CAN build any declared
+variant it names — it checks the shape only (a missing or mistyped field
+raises kind `type`): validate which variant you got before trusting it.
 
 ## Realtime: WebSocket, SSE, events
 

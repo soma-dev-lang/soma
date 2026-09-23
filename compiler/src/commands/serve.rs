@@ -213,6 +213,25 @@ pub fn cmd_serve(path: &PathBuf, port: u16, host: &str, verbose: bool, join: Opt
             }
         })
         .collect();
+    // `request`'s optional 4th and 5th parameters are bound by POSITION —
+    // the 4th is the query, the 5th the headers, whatever their names (a
+    // 5th called `hdrs` used to get the QUERY: `?authorization=…` forged a
+    // header). The one exception, kept from earlier releases: a 4-parameter
+    // `request(…, headers: Map)` gets the headers. Names that contradict
+    // their position (`query` 5th, `headers` 4th of 5) are refused here.
+    if let Some(ps) = handler_params.get("request") {
+        let bad = match ps.len() {
+            5 if ps[3] == "headers" || ps[4] == "query" => Some(format!(
+                "`request`'s 4th parameter is the query and its 5th the headers: write `on request(method, path, body, query: Map, headers: Map)` (it declares `{}: Map, {}: Map`)",
+                ps[3], ps[4])),
+            n if n > 5 => Some(format!("`request` takes at most 5 parameters (method, path, body, query: Map, headers: Map), it declares {}", n)),
+            _ => None,
+        };
+        if let Some(msg) = bad {
+            eprintln!("error: {}", msg);
+            std::process::exit(1);
+        }
+    }
     // The declared type of `request`'s body parameter decides its shape:
     // `body: String` gets the raw text (parse it with from_json), a Map /
     // List / Any / untyped parameter gets the parsed JSON. Before, JSON
@@ -741,7 +760,7 @@ pub fn cmd_serve(path: &PathBuf, port: u16, host: &str, verbose: bool, join: Opt
         let mut interp = interpreter::Interpreter::new(&program);
         interp.set_storage_raw(&storage_slots);
         interp.ensure_state_machine_storage();
-        for line in interp.audit_stored_data() {
+        for line in interp.audit_stored_data().into_iter().chain(audit_slot_keys(&program, &interp)) {
             eprintln!("warning: stored data: {}", line);
         }
     }
@@ -1378,8 +1397,7 @@ pub fn cmd_serve(path: &PathBuf, port: u16, host: &str, verbose: bool, join: Opt
             // a connection that sent a malformed framing is poisoned: the
             // bytes tiny_http reads after it are a smuggled request (the
             // server drops `Connection: close`, so the socket stays open)
-            static POISONED: std::sync::OnceLock<std::sync::Mutex<std::collections::HashMap<std::net::SocketAddr, std::time::Instant>>> = std::sync::OnceLock::new();
-            let poisoned = POISONED.get_or_init(|| std::sync::Mutex::new(std::collections::HashMap::new()));
+            let poisoned = poisoned_connections();
             if let Some(addr) = request.remote_addr().copied() {
                 let mut p = poisoned.lock().unwrap_or_else(|e| e.into_inner());
                 p.retain(|_, t| t.elapsed() < std::time::Duration::from_secs(60));
@@ -1402,11 +1420,10 @@ pub fn cmd_serve(path: &PathBuf, port: u16, host: &str, verbose: bool, join: Opt
             // a declared length past 256 MB is refused before any read: the
             // body reader allocated the DECLARED size (`Content-Length:
             // 1000000000000000` aborted the process on a 3-byte body)
-            const MAX_BODY: u64 = 256 * 1024 * 1024;
             if cls.len() == 1 && cls[0].bytes().all(|b| b.is_ascii_digit()) && !cls[0].is_empty()
-                && cls[0].parse::<u64>().map_or(true, |n| n > MAX_BODY) {
+                && cls[0].parse::<u64>().map_or(true, |n| n > max_body()) {
                 poison(&request);
-                let resp = tiny_http::Response::from_string(error_body("the request body is larger than 256 MB (put the limit you need on the proxy)", "payload_too_large"))
+                let resp = tiny_http::Response::from_string(error_body(&too_large_message(), "payload_too_large"))
                     .with_status_code(413);
                 let _ = request.respond(cors(resp));
                 continue;
@@ -1473,8 +1490,24 @@ pub fn cmd_serve(path: &PathBuf, port: u16, host: &str, verbose: bool, join: Opt
 
         // bytes first: a body that is not UTF-8 used to read as "" (a
         // `body: Map` handler then saw map() — the data silently lost)
+        // at most MAX_BODY bytes: a `Transfer-Encoding: chunked` body has no
+        // declared length, and read_to_end took all of it (gigabytes) —
+        // past the limit, 413 and the connection is poisoned (its unread
+        // chunks would be parsed as the next request)
         let mut body_bytes: Vec<u8> = Vec::new();
-        let _ = request.as_reader().read_to_end(&mut body_bytes);
+        let _ = std::io::Read::read_to_end(&mut std::io::Read::take(request.as_reader(), max_body() + 1), &mut body_bytes);
+        if body_bytes.len() as u64 > max_body() {
+            drop(body_bytes);
+            if let Some(addr) = request.remote_addr().copied() {
+                poisoned_connections().lock().unwrap_or_else(|e| e.into_inner()).insert(addr, std::time::Instant::now());
+            }
+            let resp = tiny_http::Response::from_string(error_body(&too_large_message(), "payload_too_large"))
+                .with_status_code(413)
+                .with_header(tiny_http::Header::from_bytes(&b"Connection"[..], &b"close"[..]).unwrap());
+            eprintln!("{} {} → 413 0ms {}", method, log_safe(&url), too_large_message());
+            let _ = request.respond(cors(resp));
+            return;
+        }
         let body_raw = match String::from_utf8(body_bytes) {
             Ok(t) => t,
             Err(_) => {
@@ -1859,13 +1892,14 @@ pub fn cmd_serve(path: &PathBuf, port: u16, host: &str, verbose: bool, join: Opt
                 // Passing it to a 3-parameter handler made ANY url with a
                 // query string (?utm_source=…, a cache-buster) a 500:
                 // "request() expected 3 arguments, got 4".
-                // parameters 4 and 5 are bound BY NAME: one called `headers`
-                // gets the headers, any other the query (a 4-parameter
-                // `request(…, headers: Map)` used to receive the query — a
-                // `?authorization=` could forge a header)
+                // parameters 4 and 5 are bound BY POSITION (query, then
+                // headers — whatever their names; a 5th `hdrs: Map` used to
+                // receive the query, so `?authorization=` forged a header).
+                // A lone 4th parameter called `headers` gets the headers.
                 let extra: Vec<String> = handler_params.get("request").map(|p| p.iter().skip(3).take(2).cloned().collect()).unwrap_or_default();
-                for name in &extra {
-                    if name == "headers" {
+                for (i, name) in extra.iter().enumerate() {
+                    let headers_here = i == 1 || (extra.len() == 1 && name == "headers");
+                    if headers_here {
                         req_args.push(interpreter::map_from_pairs(req_headers.clone()));
                     } else {
                         req_args.push(interpreter::map_from_pairs(query_map.clone()));
@@ -1936,6 +1970,27 @@ pub fn cmd_serve(path: &PathBuf, port: u16, host: &str, verbose: bool, join: Opt
         }
 
         let start_time = std::time::Instant::now();
+
+        // the entry handler's parameter types, checked HERE: the message
+        // quotes only this client's own input, so it is sent as is (the
+        // same failure raised inside the program — a stored value passed to
+        // a typed handler — reaches a client only as a generic sentence)
+        let binding_error: Option<String> = interp.cells.get(cell_name.as_str())
+            .and_then(|c| c.sections.iter().find_map(|s| match &s.node {
+                ast::Section::OnSignal(on) if on.signal_name == signal_name => Some(on.params.clone()),
+                _ => None,
+            }))
+            .and_then(|params| params.iter().zip(args.iter())
+                .find_map(|(p, a)| interpreter::check_param_type(p, a.clone()).err()));
+        if let Some(m) = binding_error {
+            let msg = hide_private_names(&format!("{}(): {}", signal_name, m));
+            let resp = tiny_http::Response::from_string(error_body(&msg, "type"))
+                .with_status_code(400)
+                .with_header(tiny_http::Header::from_bytes(&b"Content-Type"[..], &b"application/json"[..]).unwrap());
+            eprintln!("{} {} → 400 0ms {}", method, log_safe(&url), log_safe(&msg));
+            let _ = request.respond(cors(resp));
+            return;
+        }
 
         let outcome = interp.call_signal(&cell_name, &signal_name, args);
         // the trace outlives the request (one interpreter per request):
@@ -2222,26 +2277,46 @@ fn cors<R: std::io::Read>(mut r: tiny_http::Response<R>) -> tiny_http::Response<
     r
 }
 
-/// A client's error body does not name the program's private handlers
-/// (`_book(): parameter 'time' expects String` → `parameter 'time' …`);
-/// the server log keeps the full text.
-/// The text of a handler error as a CLIENT sees it: no private handler
-/// names, and a failed guard without its source (`role == "owner"` told
-/// every API client the rule); the server log keeps everything.
+/// The text of a handler error as a CLIENT sees it. The server log keeps
+/// the full text; a client gets only what the PROGRAM wrote or a sentence
+/// that quotes nothing:
+///
+/// - `require … else Tag`, a failed guard / invariant / ensure: the
+///   program's own refusal (a guard loses its source, an invariant its
+///   rule);
+/// - `fail(kind, detail)`: the program's own words, verbatim (the fail
+///   builtin marks them — see `is_authored_failure`);
+/// - a parameter of the ENTRY handler that does not fit: answered before
+///   the call, it quotes only the client's own input;
+/// - EVERY OTHER runtime error — the runtime's own text — becomes the
+///   public handler prefix (`add(): `) plus one fixed sentence per kind.
+///   Those texts quote the values they failed on (`cannot multiply Map
+///   and Int: {"pw_hash": …}`, `not valid JSON: <text>`, `got String
+///   sk-live-…`), and a list of patterns to redact always missed one: a
+///   whitelist cannot leak what it never copies.
+///
+/// Private handler names (`_book(): …`) never reach a client.
 fn client_error_text(e: &interpreter::RuntimeError) -> String {
-    let mut text = hide_private_names(&format!("{}", e));
-    // the values a runtime error quotes stay in the log: `cannot multiply
-    // Map and Int: {"pw_hash": …} * 2` sent another user's record, and
-    // `got String sk-live-…` a secret, to any client
-    if !matches!(e, interpreter::RuntimeError::RequireFailed(_)) {
-        text = redact_values(&text);
+    let text = hide_private_names(&format!("{}", e));
+    let kind = e.kind();
+    match e {
+        interpreter::RuntimeError::RequireFailed(_) => {}
+        interpreter::RuntimeError::Domain { kind, message } if interpreter::builtins::collection::is_authored_failure(kind, message) => return text,
+        _ => {
+            let prefix_len = handler_prefix_len(&text);
+            let rest = &text[prefix_len..];
+            return match safe_summary(rest) {
+                Some(summary) => format!("{}{} (the server log has the details)", &text[..prefix_len], summary),
+                None => format!("{}{}", &text[..prefix_len], generic_error_sentence(&kind)),
+            };
+        }
     }
-    if e.kind() == "guard_failed" {
+    if kind == "guard_failed" {
         if let Some(i) = text.find(": `") { return text[..i].to_string(); }
     }
     // `memory invariant violated on 'bal': bal >= 0 && bal != 31337 — …`:
     // the rule stays in the log
-    if e.kind() == "invariant" || text.contains("memory invariant violated on '") {
+    if kind == "invariant" || text.contains("memory invariant violated on '") {
         if let Some(start) = text.find("memory invariant violated on '") {
             let rest = &text[start + 30..];
             if let Some(q) = rest.find("':") {
@@ -2257,13 +2332,99 @@ fn client_error_text(e: &interpreter::RuntimeError) -> String {
     text
 }
 
-fn redact_values(text: &str) -> String {
-    static OP: std::sync::OnceLock<regex::Regex> = std::sync::OnceLock::new();
-    static GOT: std::sync::OnceLock<regex::Regex> = std::sync::OnceLock::new();
-    let op = OP.get_or_init(|| regex::Regex::new(r"(?s)(cannot [a-z]+ [A-Za-z]+ and [A-Za-z]+): .*?( — one side is \(\).*)?$").unwrap());
-    let got = GOT.get_or_init(|| regex::Regex::new(r"(?s)\b(got|found) (Int|Float|String|Bool|List|Map|Variant|Function|Unit|Lambda) .*?( — .*)?$").unwrap());
-    let text = op.replace(text, "$1$2");
-    got.replace(&text, "$1 $2$3").into_owned()
+/// Length of the leading `name(): ` / `Cell.name(): ` segments of an error
+/// text (the handlers it went through).
+fn handler_prefix_len(text: &str) -> usize {
+    static PREFIX: std::sync::OnceLock<regex::Regex> = std::sync::OnceLock::new();
+    let re = PREFIX.get_or_init(|| regex::Regex::new(r"^(?:[A-Za-z_][A-Za-z0-9_]*(?:\.[A-Za-z_][A-Za-z0-9_]*)*\(\): )+").unwrap());
+    re.find(text).map_or(0, |m| m.end())
+}
+
+/// A value-free summary of a runtime error text, when it has a known
+/// shape: every pattern here is built from a CLOSED vocabulary (type names,
+/// verbs, digits, fixed words) — nothing it copies can be a stored value.
+/// `cannot add Map and Int: {"pw_hash": …}` → `cannot add Map and Int`.
+fn safe_summary(text: &str) -> Option<String> {
+    static SAFE: std::sync::OnceLock<Vec<regex::Regex>> = std::sync::OnceLock::new();
+    let pats = SAFE.get_or_init(|| {
+        const T: &str = "(?:Int|Float|String|Bool|List|Map|Variant|Function|Unit)";
+        [
+            format!(r"^cannot [a-z]+ {T} and {T}"),
+            format!(r"^cannot [a-z]+ (?:a |an )?{T}"),
+            r"^_status: the status must be an HTTP status Int 200–599".to_string(),
+            r"^cluster update exceeds the 16 MiB bus line limit$".to_string(),
+            r"^(?:division|modulo) by zero$".to_string(),
+            r"^[A-Za-z_][A-Za-z0-9_]*\(\) expected \d+ arguments?, got \d+$".to_string(),
+            r"^stack overflow \(recursion depth exceeded\)$".to_string(),
+        ].iter().map(|p| regex::Regex::new(p).unwrap()).collect()
+    });
+    pats.iter().find_map(|re| re.find(text).map(|m| m.as_str().to_string()))
+}
+
+/// The sentence a client reads for a runtime error of this kind (the
+/// runtime's own text, which may quote stored values, stays in the log).
+fn generic_error_sentence(kind: &str) -> String {
+    let s = match kind {
+        "division_by_zero" => "division by zero",
+        "index" => "an index is out of bounds",
+        "range" => "a value is out of range",
+        "type" => "a value does not have the type the operation expects",
+        "json" => "a text is not valid JSON",
+        "date" => "a date or time is not valid",
+        "storage" => "the database refused the operation",
+        "stack_overflow" => "stack overflow (recursion depth exceeded)",
+        "llm" => "the language-model call failed",
+        "budget" => "the token budget is spent",
+        "undefined_variable" | "undefined_function" | "no_handler" => "the program called something it does not define",
+        _ => "the handler failed",
+    };
+    format!("{} (kind `{}`; the server log has the details)", s, kind)
+}
+
+/// Keys of a `Map<Int, …>` slot that are not Ints: the slot was re-typed
+/// from `Map<String, …>` and its old String keys stayed, unaudited (an Int
+/// key can neither read nor delete them). One line per slot.
+pub(crate) fn audit_slot_keys(program: &ast::Program, interp: &interpreter::Interpreter) -> Vec<String> {
+    let mut out = Vec::new();
+    for cell in &program.cells {
+        if !matches!(cell.node.kind, ast::CellKind::Cell | ast::CellKind::Agent) { continue; }
+        for section in &cell.node.sections {
+            let ast::Section::Memory(ref mem) = section.node else { continue };
+            for slot in &mem.slots {
+                let ast::TypeExpr::Generic { name, args } = &slot.node.ty.node else { continue };
+                if name != "Map" || args.len() != 2 || !matches!(&args[0].node, ast::TypeExpr::Simple(k) if k == "Int") { continue; }
+                let key = format!("{}.{}", cell.node.name, slot.node.name);
+                let Some(backend) = interp.storage.get(&key) else { continue };
+                let is_int = |k: &str| { let d = k.strip_prefix('-').unwrap_or(k); !d.is_empty() && d.bytes().all(|b| b.is_ascii_digit()) };
+                let bad: Vec<String> = backend.keys().into_iter().take(10_000).filter(|k| !is_int(k)).collect();
+                if let Some(first) = bad.first() {
+                    let shown: String = first.chars().take(40).collect();
+                    out.push(format!("slot '{}' holds {} key(s) that are not Ints (e.g. \"{}\"): its key type is Int now, and an Int key can neither read nor delete them — move them with a one-shot program that still declares the old key type, or rename the slot", slot.node.name, bad.len(), shown));
+                }
+            }
+        }
+    }
+    out
+}
+
+/// The largest request body read (256 MB), declared or chunked.
+/// `SOMA_MAX_BODY_BYTES` lowers it (tests; a small deployment).
+fn max_body() -> u64 {
+    static MAX: std::sync::OnceLock<u64> = std::sync::OnceLock::new();
+    *MAX.get_or_init(|| std::env::var("SOMA_MAX_BODY_BYTES").ok().and_then(|v| v.parse().ok()).filter(|n: &u64| *n > 0 && *n <= 256 * 1024 * 1024).unwrap_or(256 * 1024 * 1024))
+}
+
+fn too_large_message() -> String {
+    let n = max_body();
+    let limit = if n % (1024 * 1024) == 0 { format!("{} MB", n / (1024 * 1024)) } else { format!("{} bytes", n) };
+    format!("the request body is larger than {} (put the limit you need on the proxy)", limit)
+}
+
+/// Connections that sent a malformed (or oversized) framing: the bytes
+/// tiny_http reads after it are a smuggled request, refused for 60 s.
+fn poisoned_connections() -> &'static std::sync::Mutex<std::collections::HashMap<std::net::SocketAddr, std::time::Instant>> {
+    static POISONED: std::sync::OnceLock<std::sync::Mutex<std::collections::HashMap<std::net::SocketAddr, std::time::Instant>>> = std::sync::OnceLock::new();
+    POISONED.get_or_init(|| std::sync::Mutex::new(std::collections::HashMap::new()))
 }
 
 fn hide_private_names(message: &str) -> String {
@@ -2304,7 +2465,8 @@ pub(crate) fn status_for_kind(kind: &str) -> u16 {
         "invalid_transition" | "conflict" => 409,
         "invariant" | "ensure" => 422,
         "json" | "division_by_zero" | "type" => 400,
-        "stack_overflow" | "llm" | "budget" | "undefined_variable" | "undefined_function" | "no_handler" | "response" => 500,
+        // the database failed (read-only file, disk full): not the client's fault
+        "stack_overflow" | "llm" | "budget" | "undefined_variable" | "undefined_function" | "no_handler" | "response" | "storage" => 500,
         _ => 400, // `require … else Tag`, fail("tag") — the program refused the request
     }
 }

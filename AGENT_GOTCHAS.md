@@ -388,6 +388,7 @@ state s { initial: a   a -> paid   * -> failed except [paid] }  // paid stays fi
 ## 26. A route in `request` and a handler of the same name
 
 `soma serve` exposes every public handler at `/<name>/<args>`. With
-`on hold(id, qty)` and a route `"/hold/" + id`, the explicit route wins — but
-other `/hold/…` shapes still reach the handler. Prefix internal handlers with
-`_`. `soma check` warns.
+`on hold(id, qty)` and a route `"/hold/" + id` (or `"/hold"`), EVERY `/hold`
+and `/hold/…` request goes to `request` — the handler is no longer an HTTP
+endpoint. Call it from the route, or prefix an internal handler with `_`.
+`soma check` warns.

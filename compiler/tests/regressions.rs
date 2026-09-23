@@ -5682,3 +5682,216 @@ cell Vault {
     assert_eq!(code, 0, "{out}");
     assert!(out.contains("promises all_encrypted, which is NOT enforced"), "{out}");
 }
+
+/// `serve_dir` with extra environment variables.
+fn serve_dir_env(dir: &Path, env: &[(&str, &str)]) -> (Server, u16) {
+    let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+    let port = listener.local_addr().unwrap().port();
+    drop(listener);
+    let mut cmd = Command::new(env!("CARGO_BIN_EXE_soma"));
+    cmd.args(["serve", "app.cell", "--no-schedule", "-p", &port.to_string()])
+        .current_dir(dir)
+        .stdout(Stdio::null())
+        .stderr(Stdio::null());
+    for (k, v) in env { cmd.env(k, v); }
+    let server = Server(cmd.spawn().unwrap());
+    wait_http(port);
+    (server, port)
+}
+
+#[test]
+fn serve_sixth_pass_chunked_body_is_capped() {
+    // a chunked body had no limit (only Content-Length was checked)
+    let dir = scratch("serve6_chunked");
+    std::fs::write(dir.join("app.cell"), "cell App {\n    on request(method: String, path: String, body: String) { return len(body) }\n}\n").unwrap();
+    let (_server, port) = serve_dir_env(&dir, &[("SOMA_MAX_BODY_BYTES", "1000")]);
+    let chunked = |n: usize| {
+        let body = "x".repeat(n);
+        raw_request(port, &format!("POST /len HTTP/1.1\r\nHost: localhost\r\nTransfer-Encoding: chunked\r\nConnection: close\r\n\r\n{:x}\r\n{}\r\n0\r\n\r\n", n, body))
+    };
+    let out = chunked(500);
+    assert!(out.contains(" 200 ") && out.contains("500"), "{out}");
+    let out = chunked(2000);
+    assert!(out.contains(" 413 ") && out.contains("payload_too_large"), "{out}");
+    let _ = std::fs::remove_dir_all(dir);
+}
+
+#[test]
+fn serve_sixth_pass_request_headers_bound_by_position() {
+    // a 5th parameter not literally named `headers` received the QUERY map
+    let dir = scratch("serve6_headers");
+    std::fs::write(dir.join("app.cell"), r#"
+cell App {
+    on request(method: String, path: String, body: String, query: Map, hdrs: Map) {
+        require hdrs.authorization == "Bearer tok" else unauthorized
+        return "admin ok"
+    }
+}
+"#).unwrap();
+    let (server, port) = serve_dir(&dir);
+    let out = get(port, "/x?authorization=Bearer%20tok");
+    assert!(out.contains(" 401 "), "{out}");
+    let out = raw_request(port, "GET /x HTTP/1.0\r\nHost: localhost\r\nAuthorization: Bearer tok\r\n\r\n");
+    assert!(out.contains(" 200 ") && out.contains("admin ok"), "{out}");
+    drop(server);
+    // `soma run` binds the same way
+    let (_, out) = soma(&dir, &["run", "app.cell", "request", "GET", "/x?authorization=Bearer%20tok", ""]);
+    assert!(!out.contains("admin ok"), "{out}");
+    // names that contradict their position are refused at start-up
+    std::fs::write(dir.join("app.cell"), "cell App {\n    on request(method: String, path: String, body: String, headers: Map, query: Map) { return 1 }\n}\n").unwrap();
+    let mut child = Command::new(env!("CARGO_BIN_EXE_soma"))
+        .args(["serve", "app.cell", "--no-schedule", "-p", "0"])
+        .current_dir(&dir).stdout(Stdio::piped()).stderr(Stdio::piped()).spawn().unwrap();
+    let mut done = None;
+    for _ in 0..400 {
+        if let Some(st) = child.try_wait().unwrap() { done = Some(st); break; }
+        std::thread::sleep(std::time::Duration::from_millis(25));
+    }
+    if done.is_none() { let _ = child.kill(); }
+    let out = child.wait_with_output().unwrap();
+    let text = String::from_utf8_lossy(&out.stderr).to_string();
+    assert!(done.is_some() && !out.status.success(), "{text}");
+    assert!(text.contains("4th parameter is the query and its 5th the headers"), "{text}");
+    let _ = std::fs::remove_dir_all(dir);
+}
+
+#[test]
+fn serve_sixth_pass_runtime_errors_never_quote_stored_values() {
+    let dir = scratch("serve6_redact");
+    std::fs::write(dir.join("app.cell"), r#"
+cell App {
+    memory { users: Map<String, Map> [persistent] }
+    on seed() { users.set("bob", map("pw", "sk-live-SECRET1", "n", 3, "l", [1, 2]))  return "ok" }
+    on e1() { let u = users.get("bob")  return from_json(u.pw) }
+    on e2() { let u = users.get("bob")  let p = u.pw  return p.nope }
+    on e3() { let u = users.get("bob")  return parse_date("2026-02-" + u.pw) }
+    on e4() { let u = users.get("bob")  return -u.pw }
+    on e5() { let u = users.get("bob")  return regex_replace("x", u.pw + "(", "") }
+    on e6() { let u = users.get("bob")  return _lst([u.pw]) }
+    on _lst(x: List<Int>) { return x }
+    on e7() { let u = users.get("bob")  return to_fixed(1.0, u.pw) }
+    on e8() { let u = users.get("bob")  return http_get("http://x", map(u.pw, 1)) }
+    on e9() { let u = users.get("bob")  return u.pw + 1 }
+    on mine(id: String) { fail("not_found", "no user {id}") }
+    on typed(n: Int) { return n }
+}
+"#).unwrap();
+    let (_server, port) = serve_dir(&dir);
+    let post = |p: &str| raw_request(port, &format!("POST {p} HTTP/1.0\r\nHost: localhost\r\nContent-Length: 0\r\n\r\n"));
+    assert!(post("/seed").contains(" 200 "));
+    for h in ["/e1", "/e2", "/e3", "/e4", "/e5", "/e6", "/e7", "/e8", "/e9"] {
+        let out = post(h);
+        assert!(out.contains("\"error\"") && !out.contains("SECRET"), "{h}: {out}");
+    }
+    assert!(post("/e9").contains("cannot add String and Int"));
+    // the program's own words, and a parameter that does not fit, stay
+    let out = post("/mine/zed");
+    assert!(out.contains(" 404 ") && out.contains("no user zed"), "{out}");
+    let out = post("/typed/abc");
+    assert!(out.contains(" 400 ") && out.contains("expects Int") && out.contains("abc"), "{out}");
+    let _ = std::fs::remove_dir_all(dir);
+}
+
+#[test]
+fn serve_sixth_pass_stored_responses_stay_responses() {
+    let dir = scratch("serve6_idem");
+    std::fs::write(dir.join("app.cell"), r#"
+cell App {
+    memory { cache: Map<String, Any> [persistent] }
+    on pay(key: String) {
+        let hit = cache.get(key)
+        if hit != () { return hit }
+        let r = response(201, map("ok", true), "Location", "/p/1")
+        cache.set(key, r)
+        return r
+    }
+    on go(k: String) {
+        let hit = cache.get("r" + k)
+        if hit != () { return hit }
+        let r = redirect("/done")
+        cache.set("r" + k, r)
+        return r
+    }
+}
+cell test T { rules {
+    assert pay("k9")._status == 201
+    assert pay("k9")._status == 201
+} }
+"#).unwrap();
+    let (code, out) = soma(&dir, &["test", "app.cell"]);
+    assert_eq!(code, 0, "{out}");
+    let post = |port: u16, p: &str| raw_request(port, &format!("POST {p} HTTP/1.0\r\nHost: localhost\r\nContent-Length: 0\r\n\r\n"));
+    {
+        let (_server, port) = serve_dir(&dir);
+        for _ in 0..2 {
+            let out = post(port, "/pay/k1");
+            assert!(out.contains(" 201 ") && out.contains("Location: /p/1") && !out.contains("_status"), "{out}");
+            let out = post(port, "/go/a");
+            assert!(out.contains(" 302 ") && out.contains("Location: /done"), "{out}");
+        }
+    }
+    // after a restart, read back from the database
+    let (_server, port) = serve_dir(&dir);
+    let out = post(port, "/pay/k1");
+    assert!(out.contains(" 201 ") && out.contains("Location: /p/1"), "{out}");
+    let _ = std::fs::remove_dir_all(dir);
+}
+
+#[test]
+fn serve_sixth_pass_storage_failure_is_a_500() {
+    let dir = scratch("serve6_ro");
+    std::fs::write(dir.join("app.cell"), "cell App {\n    memory { m: Map<String, Int> [persistent] }\n    on inc(k: String) { m.set(k, (m.get(k) ?? 0) + 1)  return m.get(k) }\n}\n").unwrap();
+    let (code, out) = soma(&dir, &["run", "app.cell", "inc", "a"]);
+    assert_eq!(code, 0, "{out}");
+    let db = dir.join(".soma_data").join("soma.db");
+    let mut perm = std::fs::metadata(&db).unwrap().permissions();
+    perm.set_readonly(true);
+    std::fs::set_permissions(&db, perm.clone()).unwrap();
+    {
+        let (_server, port) = serve_dir(&dir);
+        let out = raw_request(port, "POST /inc/a HTTP/1.0\r\nHost: localhost\r\nContent-Length: 0\r\n\r\n");
+        assert!(out.contains(" 500 ") && out.contains("storage"), "{out}");
+    }
+    #[allow(clippy::permissions_set_readonly_false)]
+    perm.set_readonly(false);
+    let _ = std::fs::set_permissions(&db, perm);
+    let _ = std::fs::remove_dir_all(dir);
+}
+
+#[test]
+fn serve_sixth_pass_int_keyed_slot_audit_fresh_counters_and_route_warning() {
+    // String keys left in a slot re-typed Map<Int, …> are reported
+    let dir = scratch("serve6_mig");
+    std::fs::write(dir.join("v1.cell"), "cell App {\n    memory { a: Map<String, Int> [persistent] }\n    on w() { a.set(\"abc\", 1)  a.set(\"7\", 2)  return 1 }\n}\n").unwrap();
+    std::fs::write(dir.join("v2.cell"), "cell App {\n    memory { a: Map<Int, Int> [persistent] }\n    on r() { return a.size }\n}\n").unwrap();
+    let (code, out) = soma(&dir, &["run", "v1.cell", "w"]);
+    assert_eq!(code, 0, "{out}");
+    let (_, out) = soma(&dir, &["run", "v2.cell", "r"]);
+    assert!(out.contains("slot 'a' holds 1 key(s) that are not Ints") && out.contains("\"abc\""), "{out}");
+    let _ = std::fs::remove_dir_all(dir);
+
+    // --fresh of a second program with the same cell keeps the shared counters
+    let dir = scratch("serve6_fresh");
+    std::fs::write(dir.join("a.cell"), "cell App {\n    memory { x: Map<String, Int> [persistent] }\n    on w() { x.set(\"k\", 1)  return next_id() }\n}\n").unwrap();
+    std::fs::write(dir.join("a2.cell"), "cell App {\n    memory { y: Map<String, Int> [persistent] }\n    on w() { y.set(\"k\", 1)  return next_id() }\n}\n").unwrap();
+    let (_, out) = soma(&dir, &["run", "a.cell", "w"]);
+    assert!(out.lines().any(|l| l.trim() == "1"), "{out}");
+    let (code, out) = soma(&dir, &["run", "--fresh", "a2.cell", "w"]);
+    assert_eq!(code, 0, "{out}");
+    assert!(out.contains("kept App__counters") && out.lines().any(|l| l.trim() == "2"), "{out}");
+    let _ = std::fs::remove_dir_all(dir);
+
+    // the check warning says what serve does
+    let dir = scratch("serve6_route_warning");
+    std::fs::write(dir.join("app.cell"), r#"
+cell App {
+    on add(k: String) { return k }
+    on request(method: String, path: String, body: String) {
+        match path { "/add" -> { return "router" }  _ -> { return "x" } }
+    }
+}
+"#).unwrap();
+    let (_, out) = soma(&dir, &["check", "app.cell"]);
+    assert!(out.contains("is not an HTTP endpoint") && !out.contains("still calls the handler directly"), "{out}");
+    let _ = std::fs::remove_dir_all(dir);
+}
