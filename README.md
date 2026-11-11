@@ -75,9 +75,9 @@ theorem, not a code review hope:
 
 | App | The theorem | Try it |
 |-----|-------------|--------|
-| [`treasury/`](treasury/) | An adversarial LLM with a checkbook **cannot overdraw the account** — model demands $999,999, ledger pays $200 | `soma test treasury/app.cell` |
-| [`airlock/`](airlock/) | "Both doors open" (vacuum breach) is **unrepresentable** — no command sequence reaches it | `soma verify airlock/app.cell` |
-| [`poker/`](poker/) | A Hold'em server where **chips can't leak** — bots play over HTTP; a cheater's overbet is rejected at the ledger | `python3 poker/bots.py 12` |
+| [`treasury/`](treasury/) | An adversarial LLM with a checkbook **cannot talk a payment up** — the model answers $999,999 on a $200 invoice, the ledger moves $200 | `soma test treasury/app.cell` |
+| [`airlock/`](airlock/) | "Both doors open" (vacuum breach) is **not a state the machine has** — the breach command is refused, never handled | `soma run airlock/app.cell demo` |
+| [`poker/`](poker/) | A Hold'em server where **chips can't leak** — bots play over HTTP; a cheater's overbet is rejected at the ledger | `soma serve poker/app.cell -p 8080`, then `python3 poker/bots.py 12` |
 | [`elevator/`](elevator/) | SCAN scheduling with a **proven door/motion interlock** — the scheduler can be buggy; the safety can't | `soma run elevator/app.cell run_sim 8` |
 | [`hft/`](hft/) | An Avellaneda-Stoikov market maker whose kill switch **provably cannot re-arm** | `soma run hft/app.cell run_stress 5000` |
 | [`delivery/`](delivery/) | A food-delivery platform: typed state machines, sum-type payments, verified lifecycle | `soma serve delivery/app.cell` |
@@ -112,10 +112,14 @@ sales |> filter_by("region", "east") |> agg("product", "qty:sum")
 xs.sort()    xs.sum()    m.transpose()    m.det()
 ```
 
-Three execution backends: a tree-walking interpreter (reference semantics),
-a bytecode VM, and `[native]` Rust codegen — measured at parity with
-`rustc -O` (16.8 ns/op on the same workload; see the benchmark in the repo
-history).
+Two execution backends: a tree-walking interpreter (the reference semantics)
+and `[native]` Rust codegen for hot handlers (a native compile failure aborts
+the run — there is no silent fall-back to the interpreter). `tools/diff_fuzz.py`
+generates handlers and compares the two (108,000 comparisons, no differing
+answer, on 3.0.0). An experimental bytecode VM is in the tree and not reachable
+from the CLI.
+The benchmark harness lives in [`bench/`](bench/), with C and Rust reference
+implementations to measure against.
 
 ## Built for AI agents — in both directions
 
@@ -183,10 +187,11 @@ solve, lstsq, broadcasting helpers) in pure Soma — 43 self-proofs included.
 
 ## Honest status
 
-Soma is an experimental language (release: `soma 2.8.10`; see
-[the changelog](CHANGELOG.md) for fixes and compatibility notes). The verifier
-proves state-machine and invariant properties per cell; cross-cell
-composition is statically *linted*, not yet proven. The interpreter is
+Soma is an experimental language (release: `soma 3.0.0`; see
+[the changelog](CHANGELOG.md) for what it adds and what it leaves out). The
+verifier proves state-machine and invariant properties per cell; a rule
+between two cells is proven when it is stated — a face contract
+(`requires` / `ensures`) or a `[verify.before."Cell.state"]` property. The interpreter is
 an AST walker (use `[native]` for hot paths). One known semantic
 asymmetry: `+` on non-numeric lists concatenates, on numeric vectors it
 adds elementwise — `concat(a, b)` is always explicit concatenation.

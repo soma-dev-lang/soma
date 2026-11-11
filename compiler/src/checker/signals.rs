@@ -251,6 +251,8 @@ mod tests {
                     name: sig.to_string(),
                     params: vec![],
                     return_type: None,
+                    requires: vec![],
+                    ensures: vec![],
                 }),
                 Span::new(0, 0),
             ));

@@ -1,0 +1,10 @@
+[package]
+name = "queue"
+version = "0.1.0"
+description = "Durable jobs with claim / acknowledge: a claimed job is invisible for a while and handed out again if its worker dies; after too many deliveries it is parked as dead."
+entry = "queue.cell"
+edition = "2026"
+
+# The package's API is its cell's `face`; its proofs are its `cell test`
+# blocks: `soma test packages/queue/queue.cell` is the contract a consumer
+# can re-run before trusting it.

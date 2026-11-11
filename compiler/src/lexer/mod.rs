@@ -118,6 +118,7 @@ pub enum Token {
     EqEq,     // ==
     Ne,       // !=
     Plus,     // +
+    PlusPlus, // ++ (concatenation)
     Minus,    // -
     Star,     // *
     Slash,    // /
@@ -302,6 +303,10 @@ impl<'a> Lexer<'a> {
                 if self.peek() == Some('=') {
                     self.advance();
                     Token::PlusEq
+                } else if self.peek() == Some('+') {
+                    // `a ++ b`: concatenation (3.0)
+                    self.advance();
+                    Token::PlusPlus
                 } else {
                     Token::Plus
                 }

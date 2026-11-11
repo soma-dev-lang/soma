@@ -88,6 +88,10 @@ fn describe_cell(program: &Program, cell: &CellDef, source: &str) -> serde_json:
 
                 let is_public = !on.signal_name.starts_with('_');
 
+                // (the handler the parser gives a bound tool is not the program's)
+                if matches!(on.body.as_slice(), [st] if matches!(&st.node, Statement::Return { value } if matches!(&value.node, Expr::FnCall { name, .. } if name == "_external_tool"))) {
+                    continue;
+                }
                 let mut handler = serde_json::json!({
                     "name": on.signal_name,
                     "params": params,
@@ -101,6 +105,14 @@ fn describe_cell(program: &Program, cell: &CellDef, source: &str) -> serde_json:
 
                 if !on.properties.is_empty() {
                     handler["properties"] = serde_json::json!(on.properties);
+                }
+                // 3.0: the durable waits a call can stop at (it then answers 202)
+                let waits: Vec<String> = crate::checker::waits::waits(&on.body).iter()
+                    .filter_map(|p| p.last().and_then(|(b, i)| crate::checker::waits::wait_of(&b[*i].node)))
+                    .map(|(what, args, _, _)| format!("await {}({})", what, args.iter().map(|a| format_expr(&a.node)).collect::<Vec<_>>().join(", ")))
+                    .collect();
+                if !waits.is_empty() {
+                    handler["waits"] = serde_json::json!(waits);
                 }
 
                 handlers.push(handler);
@@ -206,6 +218,13 @@ fn describe_cell(program: &Program, cell: &CellDef, source: &str) -> serde_json:
                             if let Some(ref ret) = sig.return_type {
                                 entry["returns"] = serde_json::json!(format_type(&ret.node));
                             }
+                            // 3.0: the contract, as a caller reads it
+                            if !sig.requires.is_empty() {
+                                entry["requires"] = serde_json::json!(sig.requires.iter().map(|c| crate::ast::render_expr(&c.node)).collect::<Vec<_>>());
+                            }
+                            if !sig.ensures.is_empty() {
+                                entry["ensures"] = serde_json::json!(sig.ensures.iter().map(|c| crate::ast::render_expr(&c.node)).collect::<Vec<_>>());
+                            }
                             face_signals.push(entry);
                         }
                         FaceDecl::Promise(p) => {
@@ -231,6 +250,10 @@ fn describe_cell(program: &Program, cell: &CellDef, source: &str) -> serde_json:
                             }
                             if !tool.capabilities.is_empty() {
                                 t["capabilities"] = serde_json::json!(tool.capabilities);
+                            }
+                            // 3.0: the tool runs on a server of soma.toml's [tools.*]
+                            if let Some(b) = &tool.binding {
+                                t["bound_to"] = serde_json::json!({"kind": b.kind, "server": b.server, "name": b.remote});
                             }
                             face_tools.push(t);
                         }
@@ -420,6 +443,8 @@ fn print_cell_face(cell: &CellDef, parent: Option<&str>) {
                             println!("  signal {}({}){}", sig.name,
                                 format_params(&sig.params),
                                 format_return(&sig.return_type));
+                            for c in &sig.requires { println!("      requires {}", crate::ast::render_expr(&c.node)); }
+                            for c in &sig.ensures { println!("      ensures {}", crate::ast::render_expr(&c.node)); }
                         }
                         FaceDecl::Tool(tool) => {
                             let caps = if tool.capabilities.is_empty() {

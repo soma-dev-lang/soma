@@ -15,3 +15,11 @@ model = "claude-sonnet-4-20250514"
 [verify]
 cells = ["Payments"]
 deadlock_free = true
+
+# The headline property, as a theorem: a payment over the limit cannot be
+# paid without the human sign-off. `assuming` leaves out the edges whose
+# guard cannot hold then — here the direct `proposed -> authorized`, guarded
+# by `amount <= 500`.
+[verify.before.paid]
+requires = ["signed_off"]
+assuming = "amount > 500"

@@ -680,11 +680,14 @@ struct Walker<'a> {
     /// the loop: readable in the body (iteration 2+ sees them), but not
     /// yet a declared variable for the assignment check
     prebound: HashSet<String>,
+    /// spans of method calls on the right of `|>` (`x |> Cell.h(a)`
+    /// passes x too)
+    piped: HashSet<(usize, usize)>,
 }
 
 impl<'a> Walker<'a> {
     fn new(index: &'a ProgramIndex) -> Self {
-        Self { index, scope: HashSet::new(), block_lets: HashSet::new(), issues: Vec::new(), try_depth: 0, loop_depth: 0, lambda_depth: 0, blessed: false, cell_slots: HashSet::new(), in_test: false, prebound: HashSet::new() }
+        Self { index, scope: HashSet::new(), block_lets: HashSet::new(), issues: Vec::new(), try_depth: 0, loop_depth: 0, lambda_depth: 0, blessed: false, cell_slots: HashSet::new(), in_test: false, prebound: HashSet::new(), piped: HashSet::new() }
     }
 
     fn known(&self, name: &str) -> bool {
@@ -835,6 +838,13 @@ impl<'a> Walker<'a> {
                     });
                 }
                 self.walk_expr(value);
+            }
+            // 3.0: `m.set(k, v)` / `m.delete(k)` / `xs.push(x)` as a
+            // statement write a local in place, as they write a slot
+            Statement::ExprStmt { expr } if matches!(&expr.node, Expr::MethodCall { target, method, args }
+                if matches!(&target.node, Expr::Ident(n) if self.scope.contains(n) && !self.index.slots.contains(n))
+                    && match method.as_str() { "set" | "put" => args.len() == 2, "delete" | "remove" | "push" => args.len() == 1, _ => false }) => {
+                if let Expr::MethodCall { args, .. } = &expr.node { for a in args { self.walk_expr(a); } }
             }
             Statement::ExprStmt { expr } => self.walk_expr(expr),
             Statement::IndexSet { name, index, value } => {
@@ -1181,9 +1191,10 @@ impl<'a> Walker<'a> {
                         let defined = self.index.handler_map.get(method)
                             .map(|cs| cs.contains(cell)).unwrap_or(false);
                         if let Some((lo, n)) = self.index.arity.get(&(cell.clone(), method.clone())) {
-                            if args.len() < *lo || args.len() > *n {
+                            let given = args.len() + usize::from(self.piped.contains(&(span.start, span.end)));
+                            if given < *lo || given > *n {
                                 self.issues.push(InterpolationIssue {
-                                    message: format!("`{cell}.{method}(…)` passes {} argument(s), but the handler {cell}.{method} takes {}", args.len(), n),
+                                    message: format!("`{cell}.{method}(…)` passes {} argument(s), but the handler {cell}.{method} takes {}", given, n),
                                     span,
                                     warning: false,
                                     habit: false,
@@ -1251,6 +1262,7 @@ impl<'a> Walker<'a> {
                     });
                 }
                 self.walk_expr(left);
+                if matches!(right.node, Expr::MethodCall { .. }) { self.piped.insert((right.span.start, right.span.end)); }
                 // `xs |> len`: a bare function name on the right is a call
                 if !matches!(&right.node, Expr::Ident(n) if self.index.handler_map.contains_key(n) || super::names::builtin_names().contains(n.as_str())) {
                     self.walk_expr(right);
@@ -1954,7 +1966,8 @@ pub(crate) struct Boundary { handlers: HashSet<(String, String)>, signals: HashS
 
 fn direct_boundary(e: &Expr) -> bool {
     match e {
-        Expr::FnCall { name, .. } => matches!(name.as_str(), "think" | "think_json" | "vote"),
+        // (3.0: a durable wait ends the step as well)
+        Expr::FnCall { name, .. } => matches!(name.as_str(), "think" | "think_json" | "vote" | "await_approve" | "await_signal" | "await_sleep"),
         // "{think(…)}" inside a string
         Expr::Literal(Literal::String(t)) => t.contains('{') && (t.contains("think(") || t.contains("think_json(") || t.contains("vote(")),
         _ => false,
@@ -2068,19 +2081,21 @@ fn task_lints(label: &str, body: &[Spanned<Statement>], cell: &str, cell_slots: 
         stale.sort(); stale.dedup();
         for sl in stale {
             issues.push(InterpolationIssue {
-                message: format!("[task] {} reads '{}' before a think() / vote() (or a handler that makes one) and writes it after: other requests may write '{}' while the model runs — read (and re-check) it after", label, sl, sl),
+                message: format!("[task] {} reads '{}' before a think() / vote() / await (or a handler that makes one) and writes it after: other requests may write '{}' while it waits — read (and re-check) it after", label, sl, sl),
                 span, warning: true, habit: true, kind: "task_stale_read",
             });
         }
     } else {
         issues.push(InterpolationIssue {
-            message: format!("[task] on {} makes no think() / vote() (nor calls a handler that does) — it runs as one atomic unit like a plain handler", label),
+            message: format!("[task] on {} makes no think() / vote() / await (nor calls a handler that does) — it runs as one atomic unit like a plain handler", label),
             span, warning: true, habit: true, kind: "task_without_think",
         });
     }
     // a transition() before a think(): a crash replays that step, and the
     // edge it takes is already taken — the task fails for good
-    if let Some(i) = body.iter().position(|st| has_think(std::slice::from_ref(st))) {
+    // (a durable wait is not replayed: its position is stored — entering a
+    // `pending` state before `await approve(…)` is the pattern)
+    if let Some(i) = body.iter().position(|st| super::waits::wait_of(&st.node).is_none() && has_think(std::slice::from_ref(st))) {
         let mut transitions = false;
         super::literals::for_each_expr(&body[..i], &mut |e| if matches!(e, Expr::FnCall { name, .. } if name == "transition") { transitions = true; });
         if transitions {

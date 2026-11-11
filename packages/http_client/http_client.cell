@@ -1,0 +1,233 @@
+// ============================================================================
+// http-client — retries, backoff, pagination
+// ============================================================================
+//
+//   use http_client
+//   let user = fetch_retry("https://api.example.com/users/7", map("attempts", 4))
+//   if failed(user) { return response(502, map("error", user.kind)) }
+//
+//   let rows = fetch_pages("https://api.example.com/orders", map("items", "data", "next", "next_url"))
+//
+// `http_get` answers a failure as a value — {error, kind, status, body} —
+// and so does everything here: nothing raises on the network. A request is
+// tried again on a timeout, a refused or broken connection, 408, 425, 429
+// and 5xx; never on another 4xx. A POST is retried only when you say it is
+// safe (`map("idempotent", true)` — with an idempotency key the server
+// honours).
+//
+// Verify the package itself:  soma test packages/http_client/http_client.cell
+// ============================================================================
+
+cell HttpClient {
+    face {
+        signal failed(result: Any) -> Bool
+        signal should_retry(result: Any) -> Bool
+        signal backoff_ms(attempt: Int, base_ms: Int, cap_ms: Int) -> Int
+        signal encode_component(text: String) -> String
+        signal with_query(url: String, params: Map) -> String
+        signal fetch_retry(url: String, opts: Map) -> Any
+        signal post_retry(url: String, body: Any, opts: Map) -> Any
+        signal fetch_pages(url: String, opts: Map) -> List
+    }
+
+    // Is this what http_get / http_post give for a request that did not succeed?
+    on failed(result: Any) {
+        if type_of(result) != "Map" { return false }
+        return result.error != () && result.kind != () && result.status != ()
+    }
+
+    on should_retry(result: Any) {
+        if !failed(result) { return false }
+        if contains(["timeout", "network", "refused"], result.kind) { return true }
+        let status = result.status
+        return status == 408 || status == 425 || status == 429 || status >= 500
+    }
+
+    // Exponential: base, 2 × base, 4 × base … capped. `attempt` starts at 1.
+    on backoff_ms(attempt: Int, base_ms: Int, cap_ms: Int) {
+        let wait = base_ms
+        let k = 1
+        while k < attempt && wait < cap_ms {
+            wait = wait * 2
+            k = k + 1
+        }
+        return min(wait, cap_ms)
+    }
+
+    // Percent-encoding of one query value or path segment (RFC 3986).
+    on encode_component(text: String) {
+        let keep = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789-_.~"
+        let hex = "0123456789ABCDEF"
+        let out = []
+        let i = 0
+        let n = str_len(text)
+        while i < n {
+            let b = str_at(text, i)
+            if b < 128 && contains(keep, chr(b)) {
+                out = push(out, chr(b))
+            } else {
+                let hi = shr(b, 4)
+                let lo = band(b, 15)
+                out = push(out, "%" + substring(hex, hi, hi + 1) + substring(hex, lo, lo + 1))
+            }
+            i = i + 1
+        }
+        return join(out, "")
+    }
+
+    // `url` with the parameters added to its query, encoded, in the map's order.
+    on with_query(url: String, params: Map) {
+        let pairs = []
+        for k in keys(params) {
+            pairs = push(pairs, encode_component(k) + "=" + encode_component(to_string(params[k])))
+        }
+        if len(pairs) == 0 { return url }
+        let joiner = "?"
+        if contains(url, "?") { joiner = "&" }
+        return url + joiner + join(pairs, "&")
+    }
+
+    on _request_opts(opts: Map) {
+        let out = map("timeout", opts.timeout ?? 30000)
+        if opts.headers != () { out["headers"] = opts.headers }
+        return out
+    }
+
+    // GET with up to `attempts` tries (default 3), waiting `base_ms` (200),
+    // then twice that, … at most `cap_ms` (5000) between two. Options:
+    // attempts, base_ms, cap_ms, timeout, headers. Returns the body, or the
+    // last failure.
+    on fetch_retry(url: String, opts: Map) {
+        let attempts = max(opts.attempts ?? 3, 1)
+        let request = _request_opts(opts)
+        let tried = 1
+        let result = http_get(url, request)
+        while should_retry(result) && tried < attempts {
+            sleep(backoff_ms(tried, opts.base_ms ?? 200, opts.cap_ms ?? 5000))
+            tried = tried + 1
+            result = http_get(url, request)
+        }
+        return result
+    }
+
+    // POST once — or, with `map("idempotent", true)`, with the same retries
+    // as fetch_retry.
+    on post_retry(url: String, body: Any, opts: Map) {
+        let attempts = 1
+        if opts.idempotent == true { attempts = max(opts.attempts ?? 3, 1) }
+        let request = _request_opts(opts)
+        let tried = 1
+        let result = http_post(url, body, request)
+        while should_retry(result) && tried < attempts {
+            sleep(backoff_ms(tried, opts.base_ms ?? 200, opts.cap_ms ?? 5000))
+            tried = tried + 1
+            result = http_post(url, body, request)
+        }
+        return result
+    }
+
+    // Every item of a paginated listing. A page is a List (then it is the
+    // only one) or a Map holding the items under `opts.items` ("items") and
+    // the next page under `opts.next` ("next"): a URL, or — with
+    // `opts.cursor_param` — a cursor sent back as that query parameter.
+    // At most `opts.max_pages` (20) pages. A page that fails raises kind
+    // `http`: half a listing is not returned as if it were whole.
+    on fetch_pages(url: String, opts: Map) {
+        let items_field = opts.items ?? "items"
+        let next_field = opts.next ?? "next"
+        let limit = opts.max_pages ?? 20
+        let chunks = []
+        let next_url = url
+        let pages = 0
+        while next_url != "" && pages < limit {
+            let page = fetch_retry(next_url, opts)
+            if failed(page) { fail("http", "page {pages + 1} failed: {page.kind} (status {page.status})") }
+            pages = pages + 1
+            if type_of(page) == "List" { return flatten(push(chunks, page)) }
+            require type_of(page) == "Map" else BadPage "a page is a List or a Map"
+            let items = page[items_field]
+            require type_of(items) == "List" else BadPage "the page has no list under '{items_field}'"
+            chunks = push(chunks, items)
+            let following = page[next_field]
+            if following == () || type_of(following) == "Bool" || following == "" {
+                next_url = ""
+            } else {
+                if opts.cursor_param != () {
+                    next_url = with_query(url, map(opts.cursor_param, following))
+                } else {
+                    next_url = to_string(following)
+                }
+            }
+        }
+        return flatten(chunks)
+    }
+}
+
+cell test PureTests {
+    rules {
+        assert !failed(map("id", 7))
+        assert !failed([1, 2])
+        assert failed(map("error", "x", "kind", "timeout", "status", 0, "body", ()))
+        assert should_retry(map("error", "x", "kind", "timeout", "status", 0, "body", ()))
+        assert should_retry(map("error", "x", "kind", "http_status", "status", 503, "body", ()))
+        assert should_retry(map("error", "x", "kind", "http_status", "status", 429, "body", ()))
+        assert !should_retry(map("error", "x", "kind", "http_status", "status", 404, "body", ()))
+        assert !should_retry("ok")
+        assert backoff_ms(1, 200, 5000) == 200
+        assert backoff_ms(3, 200, 5000) == 800
+        assert backoff_ms(10, 200, 5000) == 5000
+        assert encode_component("a b&c=d/é") == "a%20b%26c%3Dd%2F%C3%A9"
+        assert encode_component("safe-_.~09Az") == "safe-_.~09Az"
+        assert with_query("https://x.test/a", map("q", "a b", "page", 2)) == "https://x.test/a?q=a%20b&page=2"
+        assert with_query("https://x.test/a?z=1", map("q", "1")) == "https://x.test/a?z=1&q=1"
+        assert with_query("https://x.test/a", map()) == "https://x.test/a"
+    }
+}
+
+cell test RetryTests {
+    rules {
+        // two failures, then the answer
+        mock http_get [map("error", "t", "kind", "timeout", "status", 0, "body", ()), map("error", "s", "kind", "http_status", "status", 503, "body", ()), map("id", 7)]
+        assert fetch_retry("https://x.test/u/7", map("base_ms", 0)) == map("id", 7)
+
+        // a 404 is an answer: no second try
+        mock http_get [map("error", "s", "kind", "http_status", "status", 404, "body", ()), map("id", 8)]
+        assert fetch_retry("https://x.test/u/8", map("base_ms", 0)).status == 404
+        assert fetch_retry("https://x.test/u/8", map("base_ms", 0)) == map("id", 8)
+
+        // it gives up after `attempts`, with the last failure
+        mock http_get [map("error", "t", "kind", "timeout", "status", 0, "body", ()), map("error", "t", "kind", "refused", "status", 0, "body", ()), map("id", 9)]
+        assert fetch_retry("https://x.test/u/9", map("attempts", 2, "base_ms", 0)).kind == "refused"
+        assert fetch_retry("https://x.test/u/9", map("base_ms", 0)) == map("id", 9)
+
+        // a POST is sent once unless it is idempotent
+        mock http_post [map("error", "s", "kind", "http_status", "status", 503, "body", ()), map("ok", true)]
+        assert post_retry("https://x.test/pay", map("n", 1), map("base_ms", 0)).status == 503
+        mock http_post [map("error", "s", "kind", "http_status", "status", 503, "body", ()), map("ok", true)]
+        assert post_retry("https://x.test/pay", map("n", 1), map("idempotent", true, "base_ms", 0)) == map("ok", true)
+    }
+}
+
+cell test PageTests {
+    rules {
+        // the next page as a URL
+        mock http_get [map("items", [1, 2], "next", "https://x.test/o?page=2"), map("items", [3], "next", ())]
+        assert fetch_pages("https://x.test/o", map("base_ms", 0)) == [1, 2, 3]
+
+        // a cursor, other field names
+        mock http_get [map("data", ["a"], "cursor", "c1"), map("data", ["b"], "cursor", "")]
+        assert fetch_pages("https://x.test/o", map("items", "data", "next", "cursor", "cursor_param", "after", "base_ms", 0)) == ["a", "b"]
+
+        // a bare list is the whole listing
+        mock http_get [[1, 2, 3]]
+        assert fetch_pages("https://x.test/o", map()) == [1, 2, 3]
+
+        // no more than max_pages; a failing page is an error, not a short list
+        mock http_get [map("items", [1], "next", "u2"), map("items", [2], "next", "u3")]
+        assert fetch_pages("https://x.test/o", map("max_pages", 2, "base_ms", 0)) == [1, 2]
+        mock http_get [map("items", [1], "next", "u2"), map("error", "s", "kind", "http_status", "status", 404, "body", ())]
+        assert_fails fetch_pages("https://x.test/o", map("base_ms", 0)) matching "http"
+        mock http_get [map("rows", [1])]
+        assert_fails fetch_pages("https://x.test/o", map()) matching "BadPage"
+    }
+}

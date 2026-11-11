@@ -1,0 +1,171 @@
+// ============================================================================
+// queue — durable jobs, claimed and acknowledged
+// ============================================================================
+//
+//   use queue
+//   let id = enqueue("emails", map("to", "a@example.com"))
+//   let job = claim("emails", now(), 30)        // () when there is nothing to do
+//   if job != () { send(job.payload)  ack(job.id) }
+//
+// A claimed job is invisible for `visibility_s` seconds; if it is not
+// acknowledged by then (the worker died), the next `claim` hands it out
+// again. `nack` gives it back at once, and after `max_attempts` deliveries
+// it is parked as `dead` instead. Jobs live in the cell's persistent memory
+// and move through a declared state machine: `soma verify` checks it.
+//
+// `claim` reads the queue's waiting jobs in order: meant for queues of
+// thousands, not millions. The clock is an argument.
+//
+// Verify the package itself:  soma test packages/queue/queue.cell
+// ============================================================================
+
+cell Queue {
+    face {
+        signal enqueue(queue: String, payload: Any) -> String
+        signal claim(queue: String, now_s: Int, visibility_s: Int) -> Any
+        signal ack(id: String) -> Bool
+        signal nack(id: String, max_attempts: Int) -> String
+        signal depth(queue: String) -> Int
+        signal job_state(id: String) -> String
+        signal dead_jobs(queue: String) -> List
+    }
+
+    memory {
+        // id → {queue, payload, attempts, until}: the jobs not yet done
+        jobs: Map<String, Map> [persistent]
+        // per queue, how many are waiting or claimed
+        open: Map<String, Int> [persistent]
+        invariant open >= 0
+    }
+
+    state job {
+        initial: ready
+        ready -> claimed
+        claimed -> ready
+        claimed -> done
+        claimed -> dead
+    }
+
+    on enqueue(queue: String, payload: Any) {
+        require queue != "" else BadQueue "a queue has a name"
+        // zero-padded: ids sort in the order they were given
+        let id = "job-" + pad_left(to_string(next_id()), 12, "0")
+        jobs.set(id, map("queue", queue, "payload", payload, "attempts", 0, "until", 0))
+        open.set(queue, (open.get(queue) ?? 0) + 1)
+        return id
+    }
+
+    // The oldest job of `queue` that is waiting, or whose claim ran out:
+    // {id, payload, attempts}, now claimed until `now_s + visibility_s`.
+    on claim(queue: String, now_s: Int, visibility_s: Int) {
+        require visibility_s > 0 else BadVisibility "a claim lasts at least a second"
+        for id in sort(jobs.keys()) {
+            let j = jobs.get(id)
+            if j.queue == queue {
+                let status = get_status(id)
+                if status == "ready" || (status == "claimed" && j.until <= now_s) {
+                    if status == "claimed" { transition(id, "ready") }
+                    transition(id, "claimed")
+                    let attempts = j.attempts + 1
+                    jobs.set(id, map("queue", queue, "payload", j.payload, "attempts", attempts, "until", now_s + visibility_s))
+                    return map("id", id, "payload", j.payload, "attempts", attempts)
+                }
+            }
+        }
+        return ()
+    }
+
+    // The work is done: the job is gone for good.
+    on ack(id: String) {
+        let j = jobs.get(id)
+        require j != () else UnknownJob "no open job {id}"
+        transition(id, "done")
+        jobs.delete(id)
+        open.set(j.queue, max((open.get(j.queue) ?? 0) - 1, 0))
+        return true
+    }
+
+    // The work failed: back to the queue, or `dead` once it has been
+    // delivered `max_attempts` times. Returns the state it is left in.
+    on nack(id: String, max_attempts: Int) {
+        let j = jobs.get(id)
+        require j != () else UnknownJob "no open job {id}"
+        if j.attempts >= max_attempts {
+            transition(id, "dead")
+            jobs.set(id, map("queue", j.queue, "payload", j.payload, "attempts", j.attempts, "until", 0))
+            open.set(j.queue, max((open.get(j.queue) ?? 0) - 1, 0))
+            return "dead"
+        }
+        transition(id, "ready")
+        jobs.set(id, map("queue", j.queue, "payload", j.payload, "attempts", j.attempts, "until", 0))
+        return "ready"
+    }
+
+    // Jobs waiting or being worked on.
+    on depth(queue: String) { return open.get(queue) ?? 0 }
+
+    on job_state(id: String) {
+        require has_state(id) || jobs.get(id) != () else UnknownJob "no job {id}"
+        return get_status(id)
+    }
+
+    on dead_jobs(queue: String) {
+        let out = []
+        for id in sort(jobs.keys()) {
+            let j = jobs.get(id)
+            if j.queue == queue && get_status(id) == "dead" {
+                out = push(out, map("id", id, "payload", j.payload, "attempts", j.attempts))
+            }
+        }
+        return out
+    }
+}
+
+cell test QueueTests {
+    rules {
+        assert claim("q", 100, 30) == ()
+        let a = enqueue("q", map("n", 1))
+        let b = enqueue("q", "second")
+        let other = enqueue("other", 3)
+        assert depth("q") == 2
+        assert job_state(a) == "ready"
+
+        // first in, first out; a claimed job is not handed out twice
+        let first = claim("q", 100, 30)
+        assert first.id == a
+        assert first.payload == map("n", 1)
+        assert first.attempts == 1
+        let second = claim("q", 100, 30)
+        assert second.id == b
+        assert claim("q", 100, 30) == ()
+        assert job_state(a) == "claimed"
+
+        // acknowledged: gone
+        assert ack(a)
+        assert depth("q") == 1
+        assert job_state(a) == "done"
+        assert_fails ack(a) matching "UnknownJob"
+
+        // the claim runs out: the next worker gets it, with one more attempt
+        assert claim("q", 129, 30) == ()
+        let again = claim("q", 130, 30)
+        assert again.id == b
+        assert again.attempts == 2
+
+        // given back, then parked after too many deliveries
+        assert nack(b, 3) == "ready"
+        let third = claim("q", 131, 30)
+        assert third.attempts == 3
+        assert nack(b, 3) == "dead"
+        assert job_state(b) == "dead"
+        assert depth("q") == 0
+        assert claim("q", 1000, 30) == ()
+        assert dead_jobs("q") == [map("id", b, "payload", "second", "attempts", 3)]
+
+        // queues do not see each other
+        assert depth("other") == 1
+        assert claim("other", 100, 30).id == other
+        assert_fails enqueue("", 1) matching "BadQueue"
+        assert_fails job_state("job-nope") matching "UnknownJob"
+    }
+}

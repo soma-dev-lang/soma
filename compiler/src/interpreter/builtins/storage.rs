@@ -74,6 +74,11 @@ pub fn call_builtin(interp: &mut Interpreter, name: &str, args: &[Value], cell_n
         "get_status" => {
             if let Some(id) = args.first() {
                 let id_str = match instance_id(id, "get_status") { Ok(i) => i, Err(e) => return Some(Err(e)) };
+                // edition 2027: an id that was never transitioned has no status
+                // (it answered the initial state, as a fresh instance does)
+                if crate::interpreter::EDITION_2027.load(std::sync::atomic::Ordering::Relaxed) && !interp.do_has_state_for(cell_name, &id_str) {
+                    return Some(Ok(Value::Unit));
+                }
                 Some(interp.do_get_status_for(cell_name, &id_str))
             } else {
                 Some(Err(RuntimeError::TypeError("get_status(id) requires 1 arg".to_string())))
@@ -284,6 +289,8 @@ pub fn call_builtin(interp: &mut Interpreter, name: &str, args: &[Value], cell_n
             interp.agent_conversations.remove(cell_name);
             Some(Ok(Value::Unit))
         }
+        // ── 3.0 durable waits: answer, list, drop ───────────────────
+        "resume" | "deliver" | "waiting" | "cancel_wait" => Some(interp.wait_builtin(name, args)),
         // ── Agent: approve(action) — human-in-the-loop ─────────────
         "approve" => {
             let Some(Value::String(raw_action)) = args.first() else {
@@ -335,7 +342,7 @@ pub fn call_builtin(interp: &mut Interpreter, name: &str, args: &[Value], cell_n
             let how = if interp.test_auto_mock {
                 "script it in the test: `mock approve true` / `mock approve false` before the call"
             } else if in_serve {
-                "under soma serve the decision must arrive as data (a handler parameter or a route), or set SOMA_APPROVE=always|never for an explicit unattended policy"
+                "under soma serve nobody is at the terminal: in a `[task]` handler write `let ok = await approve(…)` — the call answers 202 and the handler goes on when `POST /_approvals/<id>` (or `resume(id, true|false)`) answers; or set SOMA_APPROVE=always|never for an explicit unattended policy"
             } else {
                 "run interactively at a terminal, or set SOMA_APPROVE=always|never"
             };
@@ -364,7 +371,9 @@ pub fn call_builtin(interp: &mut Interpreter, name: &str, args: &[Value], cell_n
                     }
                 }
                 let allowed = match tools_allowed(args) { Ok(a) => a, Err(e) => return Some(Err(e)) };
-                Some(with_tools_allowed(interp, allowed, |interp| with_cell_conversation(interp, cell_name, |interp| agent_think(interp, cell_name, prompt, system.as_deref(), false, max_tokens, timeout_ms))))
+                let reply = with_tools_allowed(interp, allowed, |interp| with_cell_conversation(interp, cell_name, |interp| agent_think(interp, cell_name, prompt, system.as_deref(), false, max_tokens, timeout_ms)));
+                interp.record_model_reply(cell_name, &reply);
+                Some(reply)
             } else {
                 Some(Err(RuntimeError::TypeError("think(prompt: String) requires a string argument".to_string())))
             }
@@ -373,8 +382,8 @@ pub fn call_builtin(interp: &mut Interpreter, name: &str, args: &[Value], cell_n
             if let Some(Value::String(prompt)) = args.first() {
                 if let Some(Value::Map(m)) = args.last() {
                     // a typo'd option (`max_token`) was ignored: 2048 tokens were sent
-                    if let Some(k) = m.keys().find(|k| !matches!(k.as_str(), "max_tokens" | "timeout" | "timeout_ms" | "max_rounds" | "tools_allowed" | "requires")) {
-                        return Some(Err(RuntimeError::TypeError(format!("think(): unknown option '{}' — the options are max_tokens, timeout (ms), max_rounds, tools_allowed, requires", k))));
+                    if let Some(k) = m.keys().find(|k| !matches!(k.as_str(), "max_tokens" | "timeout" | "timeout_ms" | "max_rounds" | "tools_allowed" | "requires" | "as")) {
+                        return Some(Err(RuntimeError::TypeError(format!("think_json(): unknown option '{}' — the options are as, max_tokens, timeout (ms), max_rounds, tools_allowed, requires", k))));
                     }
                 }
                 let (system, max_tokens, timeout_ms) = extract_think_opts(args);
@@ -387,7 +396,28 @@ pub fn call_builtin(interp: &mut Interpreter, name: &str, args: &[Value], cell_n
                     }
                 }
                 let allowed = match tools_allowed(args) { Ok(a) => a, Err(e) => return Some(Err(e)) };
-                Some(with_tools_allowed(interp, allowed, |interp| with_cell_conversation(interp, cell_name, |interp| agent_think(interp, cell_name, prompt, system.as_deref(), true, max_tokens, timeout_ms))))
+                // 3.0, `map("as", "Decision")`: the answer IS a value of that
+                // declared type — the shape is asked for, then enforced
+                let as_type = match args.last() {
+                    Some(Value::Map(m)) => match m.get("as") {
+                        None => None,
+                        Some(Value::String(t)) if interp.type_variants.contains_key(t) => Some(t.clone()),
+                        Some(other) => return Some(Err(RuntimeError::TypeError(format!("think_json(): `as` names a declared `cell type` (a String, e.g. \"Decision\"), got {}", other)))),
+                    },
+                    _ => None,
+                };
+                let typed_prompt = as_type.as_ref().and_then(|t| interp.think_schema_text(t)).map(|schema| format!("{prompt}\n\n{schema}"));
+                let prompt: &str = typed_prompt.as_deref().unwrap_or(prompt);
+                let reply = with_tools_allowed(interp, allowed, |interp| with_cell_conversation(interp, cell_name, |interp| agent_think(interp, cell_name, prompt, system.as_deref(), true, max_tokens, timeout_ms)));
+                // the answer as the model gave it (before `as` shapes it)
+                interp.record_model_reply(cell_name, &reply);
+                Some(match (reply, as_type) {
+                    (Ok(v), Some(t)) => interp.think_reply_as(&t, v).map_err(|why| RuntimeError::Domain {
+                        kind: "json".to_string(),
+                        message: format!("json: think_json(as \"{t}\"): the model's answer does not fit {t} — {why}; catch it with `try`"),
+                    }),
+                    (reply, _) => reply,
+                })
             } else {
                 Some(Err(RuntimeError::TypeError("think_json(prompt: String) requires a string argument".to_string())))
             }

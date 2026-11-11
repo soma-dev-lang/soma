@@ -2,6 +2,50 @@
   "registry": "soma-lang.dev/repo",
   "description": "The Soma package registry — a sparse HTTP index. soma add <name> resolves GET /<name>.json.",
   "packages": [
-    { "name": "matrix", "latest": "0.2.0", "description": "numpy-style linear algebra: inverse, solve, lstsq, arange, stacking, statistics, elementwise lambdas." }
+    {
+      "name": "matrix",
+      "latest": "0.2.0",
+      "description": "numpy-style linear algebra: inverse, solve, lstsq, arange, stacking, statistics, elementwise lambdas."
+    },
+    {
+      "name": "money",
+      "latest": "0.1.0",
+      "description": "Amounts in minor units with their currency: no Float holds money."
+    },
+    {
+      "name": "time",
+      "latest": "0.1.0",
+      "description": "Unix seconds to a civil date and time in a zone and back, with daylight saving; ISO 8601 in and out."
+    },
+    {
+      "name": "auth",
+      "latest": "0.1.0",
+      "description": "JSON Web Tokens (HS256) and signed webhook payloads, in pure Soma on `hmac_sha256` and `secure_eq`."
+    },
+    {
+      "name": "ratelimit",
+      "latest": "0.1.0",
+      "description": "Fixed windows and token buckets kept in the cell's persistent memory: they survive a restart, and since a handler is atomic two requests never both take the last slot."
+    },
+    {
+      "name": "queue",
+      "latest": "0.1.0",
+      "description": "Durable jobs with claim / acknowledge: a claimed job is invisible for a while and handed out again if its worker dies; after too many deliveries it is parked as dead."
+    },
+    {
+      "name": "text",
+      "latest": "0.1.0",
+      "description": "Words, sentences, n-grams, edit distance, and a line diff."
+    },
+    {
+      "name": "vector",
+      "latest": "0.1.0",
+      "description": "Similarity search over embeddings, and a local embedding that needs no model."
+    },
+    {
+      "name": "http_client",
+      "latest": "0.1.0",
+      "description": "Retries with backoff and pagination over `http_get` / `http_post`."
+    }
   ]
 }

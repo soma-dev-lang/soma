@@ -1,0 +1,10 @@
+[package]
+name = "ratelimit"
+version = "0.1.0"
+description = "Fixed windows and token buckets kept in the cell's persistent memory: they survive a restart, and since a handler is atomic two requests never both take the last slot."
+entry = "ratelimit.cell"
+edition = "2026"
+
+# The package's API is its cell's `face`; its proofs are its `cell test`
+# blocks: `soma test packages/ratelimit/ratelimit.cell` is the contract a consumer
+# can re-run before trusting it.

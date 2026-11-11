@@ -1,0 +1,10 @@
+[package]
+name = "money"
+version = "0.1.0"
+description = "Amounts in minor units with their currency: no Float holds money."
+entry = "money.cell"
+edition = "2026"
+
+# The package's API is its cell's `face`; its proofs are its `cell test`
+# blocks: `soma test packages/money/money.cell` is the contract a consumer
+# can re-run before trusting it.

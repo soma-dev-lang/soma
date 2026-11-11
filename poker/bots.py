@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Two poker bots that play heads-up Texas Hold'em against the FELT server.
 
-    soma serve poker/app.cell -p 8080      # in one terminal
+    soma serve poker/app.cell -p 8080       # in one terminal
     python3 poker/bots.py 8                 # in another — plays 8 hands
 
 Each bot is deliberately simple: raise once with a strong hole, otherwise
@@ -16,8 +16,18 @@ import urllib.request
 BASE = "http://localhost:8080"
 
 
-def call(path):
+def get(path):
+    """Read-only endpoints (the felt as everyone sees it)."""
     with urllib.request.urlopen(BASE + path) as r:
+        return json.load(r)
+
+
+def post(path):
+    """Everything that moves the game. `soma serve` answers 405 to a GET on a
+    handler that writes, so joining, dealing, acting — and reading a seat's
+    private view, which deals its hole cards — all go over POST."""
+    req = urllib.request.Request(BASE + path, method="POST")
+    with urllib.request.urlopen(req) as r:
         return json.load(r)
 
 
@@ -51,24 +61,24 @@ def decide(st):
 
 
 def play_hand(n):
-    d = call("/deal")
+    d = post("/deal")
     if not d.get("ok"):
         print(f"  deal refused: {d.get('reason')}")
         return
     guard = 0
     while guard < 200:
         guard += 1
-        t = call("/table")
+        t = get("/table")
         if t["live"] == 0:
             break
         # whoever is to act
-        seat = call("/state?seat=0")["to_act"]
-        st = call(f"/state?seat={seat}")
+        seat = post("/state?seat=0")["to_act"]
+        st = post(f"/state?seat={seat}")
         move, amt = decide(st)
-        res = call(f"/act?seat={seat}&move={move}&amount={amt}")
+        res = post(f"/act?seat={seat}&move={move}&amount={amt}")
         if not res.get("ok"):
             # illegal (e.g. can't check facing a bet) → just call
-            res = call(f"/act?seat={seat}&move=call&amount=0")
+            res = post(f"/act?seat={seat}&move=call&amount=0")
         if res.get("showdown") or res.get("move") == "fold":
             w = res.get("winner", "?")
             print(f"  hand {n}: winner={w} pot={res.get('pot')}")
@@ -78,14 +88,14 @@ def play_hand(n):
 
 def main():
     hands = int(sys.argv[1]) if len(sys.argv) > 1 else 5
-    print(call("/join?name=alice"))
-    print(call("/join?name=bob"))
-    start = call("/table")
+    print(post("/join?name=alice"))
+    print(post("/join?name=bob"))
+    start = get("/table")
     print(f"start: alice={start['stack0']} bob={start['stack1']} "
           f"total={start['total_chips']}")
     for n in range(1, hands + 1):
         play_hand(n)
-    end = call("/table")
+    end = get("/table")
     print(f"end:   alice={end['stack0']} bob={end['stack1']} "
           f"total={end['total_chips']}  (hands={end['hand_no']})")
     assert end["total_chips"] == start["total_chips"], "CHIPS LEAKED!"

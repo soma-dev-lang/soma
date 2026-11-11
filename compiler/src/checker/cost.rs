@@ -432,6 +432,10 @@ impl<'a> CostWalk<'a> {
                 if name == "approve" {
                     self.latency_sites.push(format!("{}::approve (waits for a person)", handler_name));
                 }
+                // 3.0: a tool bound to a server waits on that server
+                if name == "_external_tool" {
+                    self.latency_sites.push(format!("{} (a tool that runs on another server)", handler_name));
+                }
                 // writes block too (a FIFO blocked forever at "peak 0 ms"), and
                 // a subscription waits on another server's handshake
                 if matches!(name.as_str(), "read_stdin" | "read_file" | "read_csv" | "read_files" | "par_read_files" | "load" | "include" | "load_template"

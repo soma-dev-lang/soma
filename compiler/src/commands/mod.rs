@@ -1,3 +1,5 @@
+pub mod embed;
+pub mod tools;
 pub mod run;
 pub mod serve;
 pub mod check;
@@ -10,6 +12,11 @@ pub mod repl;
 pub mod provider;
 pub mod describe;
 pub mod docs;
+pub mod explain;
+pub mod fmt;
+pub mod attest;
+pub mod lsp;
+pub mod eval;
 pub mod example;
 pub mod deploy;
 pub mod lint;
@@ -120,6 +127,9 @@ pub static VERIFY_MODE: std::sync::atomic::AtomicBool = std::sync::atomic::Atomi
 /// The message of the error that stops a program from loading (for the
 /// `--json` object: a parse error printed nothing on stdout).
 pub static FATAL_MSG: std::sync::Mutex<Option<String>> = std::sync::Mutex::new(None);
+/// Every syntax error of the file, as JSON objects (the `errors` array of
+/// the `--json` document when the program does not parse).
+pub static FATAL_ERRORS: std::sync::Mutex<Vec<serde_json::Value>> = std::sync::Mutex::new(Vec::new());
 static JSON_DONE: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
 
 pub fn set_fatal(msg: String) {
@@ -186,36 +196,40 @@ pub fn fix_json(fixes: serde_json::Value, passed: bool, remaining_errors: usize,
 /// The one JSON document for a program that does not load, in the schema
 /// of the command that was running (`check`'s by default).
 fn load_failure_json(kind: &str, message: &str, fix: Option<&str>) -> serde_json::Value {
-    let mut err = serde_json::json!({"level": "error", "kind": kind, "message": message});
+    let mut err = serde_json::json!({"level": "error", "kind": kind, "code": crate::checker::codes::error_code(kind), "message": message});
     if let Some(f) = fix { err["fix"] = serde_json::json!(f); }
+    // syntax errors come structured, all of them
+    let collected = FATAL_ERRORS.lock().map(|m| m.clone()).unwrap_or_default();
+    let errs = if collected.is_empty() { vec![err] } else { collected };
     if VERIFY_MODE.load(std::sync::atomic::Ordering::Relaxed) {
         let mut doc = verify_json(false, "VERIFY FAILED — the program does not load");
-        doc["errors"] = serde_json::json!([err]);
+        doc["errors"] = serde_json::json!(errs);
         doc
     } else if TEST_MODE.load(std::sync::atomic::Ordering::Relaxed) {
         // `soma test --json`: the report's one schema (test_json)
         let file = TEST_FILE.lock().map(|f| f.clone()).unwrap_or_default();
         let mut doc = test_json(&file, 0, 0, 0, false, serde_json::json!([]), Some(message));
-        doc["errors"] = serde_json::json!([err]);
+        doc["errors"] = serde_json::json!(errs);
         doc
     } else if *JSON_SCHEMA.lock().unwrap_or_else(|e| e.into_inner()) == "lint" {
         let mut doc = lint_json(serde_json::json!([]), Some(message));
-        doc["errors"] = serde_json::json!([err]);
+        doc["errors"] = serde_json::json!(errs);
         doc
     } else if *JSON_SCHEMA.lock().unwrap_or_else(|e| e.into_inner()) == "describe" {
         let file = JSON_FILE.lock().map(|f| f.clone()).unwrap_or_default();
         serde_json::json!({
             "file": file, "imports": [], "types": [], "cells": [],
-            "error": message, "errors": [err],
+            "error": message, "errors": errs,
         })
     } else if *JSON_SCHEMA.lock().unwrap_or_else(|e| e.into_inner()) == "fix" {
         let mut doc = fix_json(serde_json::json!([]), false, 1, serde_json::json!([]));
         doc["error"] = serde_json::json!(message);
         doc
     } else {
+        let n = errs.len();
         serde_json::json!({
-            "errors": [err],
-            "warnings": [], "notes": [], "error_count": 1, "warning_count": 0, "passed": false
+            "errors": errs,
+            "warnings": [], "notes": [], "error_count": n, "warning_count": 0, "passed": false
         })
     }
 }
@@ -287,7 +301,7 @@ fn foreign_syntax_hint(message: &str, source: &str, offset: usize) -> Option<Str
     } else if t.starts_with("def ") || t.starts_with("fn ") || t.starts_with("function ") || t.starts_with("func ") {
         "Soma has no `def` / `fn` / `function` — a function is a handler inside a cell: `on name(x: Int) { return x + 1 }` \
          (its return type goes on `signal name(x: Int) -> Int` in `face { }`)"
-    } else if t.starts_with("const ") || t.starts_with("var ") {
+    } else if (t.starts_with("const ") || t.starts_with("var ")) && !message.contains("a cell has no constants") {
         "bindings are `let x = …`; reassign with `x = …`"
     } else if t.starts_with("elif ") || has("} elif ") || has("} elsif ") {
         "write `else if`"
@@ -297,8 +311,7 @@ fn foreign_syntax_hint(message: &str, source: &str, offset: usize) -> Option<Str
         "no slice syntax — `slice(xs, start, end)` (end exclusive; negative indexes count from the end, \
          `slice(xs, -2)` = last two)"
     } else if message.contains("expected ')'") && at.starts_with(',') && has("=>") {
-        "a lambda takes exactly ONE parameter: `x => …`. To sort: `sort_by(rows, r => [0 - r.total, r.name])`; \
-         to fold: `reduce(xs, 0, p => p.acc + p.val)`"
+        "a lambda's parameters are plain names: `x => …` or `(a, b) => a + b` (no defaults, types or patterns)"
     } else if message.contains("expected expression") && at.starts_with('{') {
         "Soma has no `{k: v}` literal — a map is `map(\"k\", v)` (empty: `map()`), a record is `Name { k: v }`"
     } else if at.starts_with("=>") && has("match") || (message.contains("'=>'") && has("->") == false && has("match")) {
@@ -341,9 +354,20 @@ pub fn lex_with_location(source: &str, file: Option<&str>) -> Vec<lexer::Spanned
                 };
                 let context = crate::interpreter::format_error_context(source, pos);
                 eprintln!("error: {}\n{}\n{}", e, location, context);
-                if let Some(h) = foreign_syntax_hint(&e.to_string(), source, pos) {
+                let hint = foreign_syntax_hint(&e.to_string(), source, pos);
+                if let Some(h) = &hint {
                     eprintln!("{}", h);
                 }
+                let code = crate::checker::codes::lexical_code();
+                eprintln!("  = code: {}", code);
+                // the same fields a syntax error carries
+                let message = e.to_string();
+                let mut v = serde_json::json!({"level": "error", "kind": "syntax", "code": code, "message": message, "line": line, "col": col});
+                if let Some(f) = file { v["file"] = serde_json::json!(f); }
+                if let Some(l) = source.split('\n').nth(line - 1) { v["source_line"] = serde_json::json!(l.trim_end()); }
+                v["fix"] = serde_json::json!(hint.map(|h| h.trim_start().trim_start_matches("hint: ").to_string()).unwrap_or_else(|| message.clone()));
+                set_fatal(format!("{} ({})", message, location.trim_start_matches("  --> ")));
+                if let Ok(mut m) = FATAL_ERRORS.lock() { *m = vec![v]; }
             } else {
                 eprintln!("error: {}", e);
             }
@@ -356,34 +380,83 @@ pub fn parse(tokens: Vec<lexer::SpannedToken>) -> ast::Program {
     parse_with_location(tokens, None, None)
 }
 
-pub fn parse_with_location(tokens: Vec<lexer::SpannedToken>, source: Option<&str>, file: Option<&str>) -> ast::Program {
-    let mut p = parser::Parser::new(tokens);
-    match p.parse_program() {
-        Ok(program) => program,
-        Err(e) => {
-            match (e.span(), source) {
-                (Some(span), Some(src)) => {
-                    let (line, col) = crate::interpreter::span_to_location(src, span.start);
-                    let location = if let Some(f) = file {
-                        format!("  --> {}:{}:{}", f, line, col)
-                    } else {
-                        format!("  --> {}:{}", line, col)
-                    };
-                    let context = crate::interpreter::format_error_context(src, span.start);
-                    eprintln!("error: {}\n{}\n{}", e, location, context);
-                    set_fatal(format!("{} ({})", e, location.trim_start_matches("  --> ")));
-                    if let Some(h) = foreign_syntax_hint(&e.to_string(), src, span.start) {
-                        eprintln!("{}", h);
-                    }
-                }
-                _ => {
-                    eprintln!("error: {}", e);
-                    set_fatal(format!("{}", e));
-                }
+/// One syntax error, ready for both reports: the text block for stderr and
+/// the JSON object (`kind: "syntax"`, file / line / col / source_line / fix —
+/// the fields a semantic error carries).
+fn syntax_error_reports(e: &parser::ParseError, source: Option<&str>, file: Option<&str>) -> (String, String, serde_json::Value) {
+    let message = e.to_string();
+    let mut v = serde_json::json!({"level": "error", "kind": "syntax", "code": crate::checker::codes::syntax_code(&message), "message": message});
+    match (e.span(), source) {
+        (Some(span), Some(src)) => {
+            let (line, col) = crate::interpreter::span_to_location(src, span.start);
+            let location = if let Some(f) = file {
+                format!("{}:{}:{}", f, line, col)
+            } else {
+                format!("{}:{}", line, col)
+            };
+            let context = crate::interpreter::format_error_context(src, span.start);
+            let mut text = format!("error: {}\n  --> {}\n{}", message, location, context);
+            let hint = foreign_syntax_hint(&message, src, span.start);
+            if !text.ends_with('\n') { text.push('\n'); }
+            if let Some(h) = &hint {
+                text.push_str(h);
+                text.push('\n');
             }
-            fatal_exit();
+            text.push_str(&format!("  = code: {}", v["code"].as_str().unwrap_or("")));
+            if let Some(f) = file { v["file"] = serde_json::json!(f); }
+            v["line"] = serde_json::json!(line);
+            v["col"] = serde_json::json!(col);
+            if let Some(l) = src.split('\n').nth(line - 1) { v["source_line"] = serde_json::json!(l.trim_end()); }
+            // the fix: the hint, else the clause after the dash, else the message (it IS the fix)
+            let fix = hint.map(|h| h.trim_start().trim_start_matches("hint: ").to_string())
+                .or_else(|| message.split(" — ").nth(1).map(|f| f.to_string()))
+                .unwrap_or_else(|| message.clone());
+            v["fix"] = serde_json::json!(fix);
+            (text, format!("{} ({})", message, location), v)
         }
+        _ => (format!("error: {}", message), message.clone(), v),
     }
+}
+
+/// Parse reporting EVERY syntax error of the file (the parser resumes at the
+/// next statement / section / cell). `Ok` carries the errors that left the
+/// AST complete (`=>` in a match arm, `-> T` on a handler): `soma check`
+/// reports them beside the semantic ones. Any other error is fatal here.
+pub fn parse_collecting(tokens: Vec<lexer::SpannedToken>, source: Option<&str>, file: Option<&str>) -> (ast::Program, Vec<parser::ParseError>) {
+    let mut p = parser::Parser::new(tokens);
+    let (program, errors, complete) = p.parse_program_recovering();
+    if errors.is_empty() || complete {
+        return (program, errors);
+    }
+    let mut all = Vec::new();
+    for e in &errors {
+        let (text, fatal, json) = syntax_error_reports(e, source, file);
+        eprintln!("{}", text);
+        set_fatal(fatal);
+        all.push(json);
+    }
+    if errors.len() > 1 {
+        eprintln!("✗ {} syntax error(s).", errors.len());
+    }
+    if let Ok(mut m) = FATAL_ERRORS.lock() { *m = all; }
+    fatal_exit();
+}
+
+pub fn parse_with_location(tokens: Vec<lexer::SpannedToken>, source: Option<&str>, file: Option<&str>) -> ast::Program {
+    let (program, errors) = parse_collecting(tokens, source, file);
+    if errors.is_empty() {
+        return program;
+    }
+    // only `soma check` goes on with a program that has syntax errors
+    let mut all = Vec::new();
+    for e in &errors {
+        let (text, fatal, json) = syntax_error_reports(e, source, file);
+        eprintln!("{}", text);
+        set_fatal(fatal);
+        all.push(json);
+    }
+    if let Ok(mut m) = FATAL_ERRORS.lock() { *m = all; }
+    fatal_exit();
 }
 
 thread_local! {

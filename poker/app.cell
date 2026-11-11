@@ -497,11 +497,19 @@ cell agent Felt {
     }
 
     on table() {
+        // An empty seat has no name, and stack() takes a String: without
+        // these guards the dashboard 400s on a felt nobody has joined yet.
+        let n0 = seat_name(0)
+        let n1 = seat_name(1)
+        let k0 = 0
+        if n0 != () { k0 = stack(n0) }
+        let k1 = 0
+        if n1 != () { k1 = stack(n1) }
         return map(
             "seat0", gs.get("seat0"),
             "seat1", gs.get("seat1"),
-            "stack0", stack(seat_name(0)),
-            "stack1", stack(seat_name(1)),
+            "stack0", k0,
+            "stack1", k1,
             "pot", pot(),
             "total_chips", total(),
             "hand_no", gnum("hand_no"),
@@ -511,6 +519,10 @@ cell agent Felt {
 
     on request(method: String, path: String, body: String) {
         let t = table()
+        // /table is the bots' JSON view of the felt; every other path gets
+        // the dashboard. The automatic router does not expose `table`, so
+        // this router answers it.
+        if path == "/table" { return to_json(t) }
         let s0 = t.seat0
         let s1 = t.seat1
         if s0 == () { s0 = "(empty)" }

@@ -1,0 +1,11 @@
+{
+  "name": "http_client",
+  "description": "Retries with backoff and pagination over `http_get` / `http_post`. A failure is a value ({error, kind, status, body}), never a raise.",
+  "latest": "0.1.0",
+  "versions": {
+    "0.1.0": {
+      "git": "https://github.com/soma-dev-lang/soma",
+      "subdir": "packages/http_client"
+    }
+  }
+}

@@ -241,7 +241,7 @@ pub static BUILTINS: &[BuiltinDoc] = &[
         "Join list elements into a string — or, with two lists, an inner data join on `key`."),
 
     // ── pipeline ────────────────────────────────────────────────────
-    doc("filter_by", "pipeline", "filter_by(rows: List<Map>, field, op: \">\"|\">=\"|\"<\"|\"<=\"|\"==\"|\"!=\", value) -> List<Map>",
+    doc("filter_by", "pipeline", "filter_by(rows: List<Map>, field, value) -> List<Map> | filter_by(rows: List<Map>, field, op: \">\"|\">=\"|\"<\"|\"<=\"|\"==\"|\"!=\", value) -> List<Map>",
         "Keep rows whose `field` compares true against `value` (op defaults to == with 3 args)."),
     doc("fail", "types", "fail(kind: String, detail?) -> never | fail(r: TryResult) -> never",
         "Raise a domain error. `try { f() }` yields {value, error, kind, detail}: branch on r.kind (\"not_found\", \"invalid_transition\", \"guard_failed\", \"invariant\", a `require … else Tag` tag, …); fail(r) re-raises a caught error unchanged."),
@@ -400,7 +400,7 @@ pub static BUILTINS: &[BuiltinDoc] = &[
     // ── agent ───────────────────────────────────────────────────────
     doc("think", "agent", "think(prompt: String, system?: String, opts?: {max_tokens, timeout, max_rounds, tools_allowed, requires}) -> String",
         "Call the configured LLM with tool-calling, multi-turn context, and budget enforcement. A think() offers the model every tool of the cell's face, or only those named in map(\"tools_allowed\", [\"lookup\"]) (a call to another is refused and told to the model); `requires` lists model capabilities checked by `soma check`. A timeout is not retried (429/5xx are, up to 3 times)."),
-    doc("think_json", "agent", "think_json(prompt: String, system?: String, opts?: {max_tokens, timeout, max_rounds, tools_allowed, requires}) -> Map",
+    doc("think_json", "agent", "think_json(prompt: String, system?: String, opts?: {as, max_tokens, timeout, max_rounds, tools_allowed, requires}) -> Map | the `cell type` named by `as`",
         "Like think(), but parses the response as JSON into a Map (tools are offered too: pass max_rounds 1 to keep the cost bound at one round). There is no schema option — check the fields yourself."),
     doc("refusal", "http", "refusal(kind: String, detail?: String) -> Map",
         "An HTTP response — status from the kind (`conflict` → 409, `not_found` → 404, `unauthorized` → 401, your own tag → 400) and body {error, kind, detail}, exactly what RAISING that error would answer. Return it when the handler must refuse AND keep what it wrote (an audit row): raising rolls the writes back, returning does not. It is a response envelope like response(): read the fields through `_body` (`r._body.kind`), and return it as the handler's value."),
@@ -430,6 +430,14 @@ pub static BUILTINS: &[BuiltinDoc] = &[
         "Reset the multi-turn LLM conversation history."),
     doc("approve", "agent", "approve(action: String) -> Bool",
         "Human-in-the-loop gate. Answered by `mock approve true|false` in tests, by SOMA_APPROVE=always|never, or by a person at the terminal under `soma run`; otherwise (e.g. under soma serve) it RAISES kind \"approval_required\" — it never approves on its own."),
+    doc("resume", "agent", "resume(wait_id: String, answer) -> Any",
+        "Answer a stored wait (`await approve(…)` takes true/false) and run the rest of its handler; returns what the handler returns. Kind \"not_waiting\" when the id is not pending. Refused inside a tool."),
+    doc("deliver", "agent", "deliver(name: String, key, value) -> Any",
+        "Hand `value` to the handler stopped at `await signal(name, key)` and run the rest of it. Kind \"not_waiting\" when nothing waits for it."),
+    doc("waiting", "agent", "waiting() -> List<Map>",
+        "The stored waits, oldest first: {waiting, kind, message | name, key | until_ms, cell, handler, since_ms}."),
+    doc("cancel_wait", "agent", "cancel_wait(wait_id: String) -> Bool",
+        "Drop a stored wait without running the rest of its handler (what it wrote before the wait stays). Refused inside a tool."),
 
     // ── linalg / risk ───────────────────────────────────────────────
     doc("matrix", "linalg", "matrix(\"1 2; 3 4\") -> List<List<Float>>",
@@ -657,4 +665,60 @@ pub fn max_arity(name: &str) -> Option<usize> {
         rest = &after[end? ..];
     }
     if found { Some(best) } else { None }
+}
+
+/// The fewest arguments any documented form of `name` takes; None when a form
+/// is variadic or the builtin is unknown. A parameter is optional when its
+/// name or its type ends with `?` (`system?: String`, `base: Int?`).
+/// `think()` and `pad_left("x")` passed check and failed at run time.
+pub fn min_arity(name: &str) -> Option<usize> {
+    let sig = lookup(name)?.signature;
+    let pat = format!("{}(", name);
+    let mut rest = sig;
+    let mut best: Option<usize> = None;
+    while let Some(i) = rest.find(&pat) {
+        // a form inside another name (`sort_by(` holds no `by(`) is not ours
+        if i > 0 && rest[..i].chars().last().map_or(false, |c| c.is_alphanumeric() || c == '_') {
+            rest = &rest[i + pat.len()..];
+            continue;
+        }
+        let after = &rest[i + pat.len()..];
+        let mut depth = 0i32;
+        let mut end = None;
+        let mut prev = ' ';
+        for (j, c) in after.char_indices() {
+            match c {
+                '>' if prev == '=' => {}
+                '(' | '<' | '[' | '{' => depth += 1,
+                ')' if depth == 0 => { end = Some(j); break; }
+                ')' | '>' | ']' | '}' => depth -= 1,
+                _ => {}
+            }
+            prev = c;
+        }
+        let inner = &after[..end?];
+        if inner.contains("...") || inner.contains('…') { return None; }
+        let mut params: Vec<String> = Vec::new();
+        let mut d = 0i32;
+        let mut cur = String::new();
+        let mut prev = ' ';
+        for c in inner.chars() {
+            match c {
+                '>' if prev == '=' => cur.push(c),
+                '<' | '(' | '[' | '{' => { d += 1; cur.push(c); }
+                '>' | ')' | ']' | '}' => { d -= 1; cur.push(c); }
+                ',' if d == 0 => { if !cur.trim().is_empty() { params.push(cur.trim().to_string()); } cur.clear(); }
+                _ => cur.push(c),
+            }
+            prev = c;
+        }
+        if !cur.trim().is_empty() { params.push(cur.trim().to_string()); }
+        let required = params.iter().filter(|p| {
+            let (pname, ty) = match p.find(':') { Some(k) => (&p[..k], &p[k + 1..]), None => (p.as_str(), "") };
+            !(pname.trim_end().ends_with('?') || ty.trim_end().ends_with('?'))
+        }).count();
+        best = Some(best.map_or(required, |b: usize| b.min(required)));
+        rest = &after[end?..];
+    }
+    best
 }

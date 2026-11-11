@@ -1,0 +1,10 @@
+[package]
+name = "http_client"
+version = "0.1.0"
+description = "Retries with backoff and pagination over `http_get` / `http_post`."
+entry = "http_client.cell"
+edition = "2026"
+
+# The package's API is its cell's `face`; its proofs are its `cell test`
+# blocks: `soma test packages/http_client/http_client.cell` is the contract a consumer
+# can re-run before trusting it.

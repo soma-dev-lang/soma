@@ -27,8 +27,11 @@ fn temp_cell(name: &str, source: &str) -> String {
 #[test]
 fn test_fixit_handler_return_type_via_check() {
     let path = temp_cell("fixit_a", "cell C { on add(a: Int) -> Int { return a } }");
-    let (_, err, code) = soma(&["check", &path]);
+    let (out, err, code) = soma(&["check", &path]);
     assert_ne!(code, 0);
+    // 3.0: a fix-it that leaves the AST complete is reported with the
+    // semantic errors, in the one check report (stdout)
+    let err = format!("{out}{err}");
     assert!(
         err.contains("handlers do not declare return types — put '-> Int' on the signal declaration inside face { }, then write: on add(a: Int) { ... }"),
         "got: {}", err
@@ -41,8 +44,11 @@ fn test_fixit_match_fat_arrow_via_check() {
         "fixit_b",
         r#"cell C { on f(x: Int) { return match x { 1 => "one" _ -> "many" } } }"#,
     );
-    let (_, err, code) = soma(&["check", &path]);
+    let (out, err, code) = soma(&["check", &path]);
     assert_ne!(code, 0);
+    // 3.0: a fix-it that leaves the AST complete is reported with the
+    // semantic errors, in the one check report (stdout)
+    let err = format!("{out}{err}");
     assert!(err.contains("match arms use '->', not '=>'"), "got: {}", err);
 }
 

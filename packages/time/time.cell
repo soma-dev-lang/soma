@@ -1,0 +1,311 @@
+// ============================================================================
+// time — instants, zones, ISO 8601
+// ============================================================================
+//
+// An instant is Unix seconds (what `now()` gives). This package turns it
+// into a civil date and time in a zone and back, with daylight saving.
+//
+//   use time
+//   format_iso(1774747800, "Europe/Paris")         // "2026-03-29T03:30:00+02:00"
+//   parse_iso("2026-03-29T03:30:00+02:00")         // 1774747800
+//   at_local(2026, 7, 14, 9, 0, "America/New_York")
+//
+// Zones are RULES, not the tz database: each zone below has its standard
+// offset and today's daylight-saving rule (European Union, United States /
+// Canada, south-east Australia, or none). Instants before a zone adopted
+// its present rule (2007 for the US) are converted with the present rule.
+// `zones()` lists what is known; another zone is an error, not a guess.
+//
+// Everything is pure: the clock is an argument.
+// Verify the package itself:  soma test packages/time/time.cell
+// ============================================================================
+
+cell Time {
+    face {
+        signal zones() -> List
+        signal days_from_civil(year: Int, month: Int, day: Int) -> Int
+        signal civil_from_days(days: Int) -> Map
+        signal days_in_month(year: Int, month: Int) -> Int
+        signal utc_parts(ts: Int) -> Map
+        signal zone_offset(zone: String, ts: Int) -> Int
+        signal local_parts(ts: Int, zone: String) -> Map
+        signal at_local(year: Int, month: Int, day: Int, hour: Int, minute: Int, zone: String) -> Int
+        signal format_iso(ts: Int, zone: String) -> String
+        signal parse_iso(text: String) -> Int
+        signal add_duration(ts: Int, days: Int, hours: Int, minutes: Int) -> Int
+    }
+
+    // name → [standard offset in minutes east of UTC, rule]
+    on _table() {
+        return map(
+            "UTC", [0, "none"],
+            "Europe/London", [0, "eu"], "Europe/Lisbon", [0, "eu"], "Europe/Dublin", [0, "eu"],
+            "Europe/Paris", [60, "eu"], "Europe/Berlin", [60, "eu"], "Europe/Madrid", [60, "eu"],
+            "Europe/Rome", [60, "eu"], "Europe/Amsterdam", [60, "eu"], "Europe/Brussels", [60, "eu"],
+            "Europe/Zurich", [60, "eu"], "Europe/Stockholm", [60, "eu"], "Europe/Warsaw", [60, "eu"],
+            "Europe/Athens", [120, "eu"], "Europe/Helsinki", [120, "eu"],
+            "America/New_York", [0 - 300, "us"], "America/Toronto", [0 - 300, "us"],
+            "America/Chicago", [0 - 360, "us"], "America/Denver", [0 - 420, "us"],
+            "America/Los_Angeles", [0 - 480, "us"], "America/Vancouver", [0 - 480, "us"],
+            "America/Phoenix", [0 - 420, "none"], "America/Sao_Paulo", [0 - 180, "none"],
+            "America/Bogota", [0 - 300, "none"], "America/Argentina/Buenos_Aires", [0 - 180, "none"],
+            "Africa/Lagos", [60, "none"], "Africa/Johannesburg", [120, "none"], "Africa/Nairobi", [180, "none"],
+            "Asia/Dubai", [240, "none"], "Asia/Kolkata", [330, "none"], "Asia/Bangkok", [420, "none"],
+            "Asia/Shanghai", [480, "none"], "Asia/Singapore", [480, "none"], "Asia/Hong_Kong", [480, "none"],
+            "Asia/Tokyo", [540, "none"], "Asia/Seoul", [540, "none"],
+            "Australia/Sydney", [600, "au"], "Australia/Melbourne", [600, "au"], "Australia/Brisbane", [600, "none"]
+        )
+    }
+
+    on zones() { return keys(_table()) }
+
+    // Days since 1970-01-01 of a civil date (proleptic Gregorian).
+    on days_from_civil(year: Int, month: Int, day: Int) {
+        let y = year
+        if month <= 2 { y = year - 1 }
+        let era = floor_div(y, 400)
+        let yoe = y - era * 400
+        let mp = mod(month + 9, 12)
+        let doy = floor_div(153 * mp + 2, 5) + day - 1
+        let doe = yoe * 365 + floor_div(yoe, 4) - floor_div(yoe, 100) + doy
+        return era * 146097 + doe - 719468
+    }
+
+    on civil_from_days(days: Int) {
+        let z = days + 719468
+        let era = floor_div(z, 146097)
+        let doe = z - era * 146097
+        let yoe = floor_div(doe - floor_div(doe, 1460) + floor_div(doe, 36524) - floor_div(doe, 146096), 365)
+        let doy = doe - (365 * yoe + floor_div(yoe, 4) - floor_div(yoe, 100))
+        let mp = floor_div(5 * doy + 2, 153)
+        let day = doy - floor_div(153 * mp + 2, 5) + 1
+        let month = mp + 3
+        if mp >= 10 { month = mp - 9 }
+        let year = yoe + era * 400
+        if month <= 2 { year = year + 1 }
+        return map("year", year, "month", month, "day", day)
+    }
+
+    on days_in_month(year: Int, month: Int) {
+        require month >= 1 && month <= 12 else BadDate "a month is 1 to 12"
+        if month == 2 {
+            if mod(year, 4) == 0 && (mod(year, 100) != 0 || mod(year, 400) == 0) { return 29 }
+            return 28
+        }
+        if contains([4, 6, 9, 11], month) { return 30 }
+        return 31
+    }
+
+    // weekday: 1 = Monday … 7 = Sunday
+    on utc_parts(ts: Int) {
+        let days = floor_div(ts, 86400)
+        let rest = mod(ts, 86400)
+        let date = civil_from_days(days)
+        return map("year", date.year, "month", date.month, "day", date.day,
+            "hour", floor_div(rest, 3600), "minute", floor_div(mod(rest, 3600), 60), "second", mod(rest, 60),
+            "weekday", mod(days + 3, 7) + 1)
+    }
+
+    // The n-th Sunday of a month (n = 0: the last one), as days since 1970.
+    on _sunday(year: Int, month: Int, n: Int) {
+        if n == 0 {
+            let last = days_from_civil(year, month, days_in_month(year, month))
+            return last - mod(mod(last + 3, 7) + 1, 7)
+        }
+        let first = days_from_civil(year, month, 1)
+        return first + (6 - mod(first + 3, 7)) + 7 * (n - 1)
+    }
+
+    // Is daylight saving in force at `ts` for a zone of this rule and standard offset?
+    on _daylight(rule: String, standard_s: Int, ts: Int) {
+        if rule == "none" { return false }
+        let year = civil_from_days(floor_div(ts + standard_s, 86400)).year
+        if rule == "eu" {
+            // last Sunday of March 01:00 UTC → last Sunday of October 01:00 UTC
+            let start = _sunday(year, 3, 0) * 86400 + 3600
+            let stop = _sunday(year, 10, 0) * 86400 + 3600
+            return ts >= start && ts < stop
+        }
+        if rule == "us" {
+            // second Sunday of March 02:00 standard → first Sunday of November 02:00 daylight
+            let start = _sunday(year, 3, 2) * 86400 + 7200 - standard_s
+            let stop = _sunday(year, 11, 1) * 86400 + 3600 - standard_s
+            return ts >= start && ts < stop
+        }
+        // "au": first Sunday of October 02:00 standard → first Sunday of April 03:00 daylight
+        let begins = _sunday(year, 10, 1) * 86400 + 7200 - standard_s
+        let ends = _sunday(year, 4, 1) * 86400 + 7200 - standard_s
+        return ts >= begins || ts < ends
+    }
+
+    // Seconds east of UTC in `zone` at the instant `ts`.
+    on zone_offset(zone: String, ts: Int) {
+        let entry = _table()[zone]
+        require entry != () else UnknownZone "'{zone}' is not a zone this package knows — zones() lists them"
+        let standard_s = entry[0] * 60
+        if _daylight(entry[1], standard_s, ts) { return standard_s + 3600 }
+        return standard_s
+    }
+
+    on local_parts(ts: Int, zone: String) {
+        let offset = zone_offset(zone, ts)
+        let parts = utc_parts(ts + offset)
+        parts["offset"] = offset
+        return parts
+    }
+
+    // The instant of a wall-clock time in a zone. An hour that the clock
+    // skips in spring is read with the offset in force before the change;
+    // an hour that happens twice in autumn is the FIRST of the two.
+    on at_local(year: Int, month: Int, day: Int, hour: Int, minute: Int, zone: String) {
+        require month >= 1 && month <= 12 && day >= 1 && day <= days_in_month(year, month) else BadDate "{year}-{month}-{day} is not a date"
+        require hour >= 0 && hour <= 23 && minute >= 0 && minute <= 59 else BadDate "{hour}:{minute} is not a time"
+        let wall = days_from_civil(year, month, day) * 86400 + hour * 3600 + minute * 60
+        let entry = _table()[zone]
+        require entry != () else UnknownZone "'{zone}' is not a zone this package knows — zones() lists them"
+        let standard_s = entry[0] * 60
+        // the earlier candidate (daylight offset) first
+        let early = wall - standard_s - 3600
+        if zone_offset(zone, early) == standard_s + 3600 { return early }
+        return wall - standard_s
+    }
+
+    on _two(n: Int) { return pad_left(to_string(n), 2, "0") }
+
+    on format_iso(ts: Int, zone: String) {
+        let p = local_parts(ts, zone)
+        let year = pad_left(to_string(p.year), 4, "0")
+        let stamp = "{year}-{_two(p.month)}-{_two(p.day)}T{_two(p.hour)}:{_two(p.minute)}:{_two(p.second)}"
+        if zone == "UTC" { return stamp + "Z" }
+        let sign = "+"
+        let off = p.offset
+        if off < 0 {
+            sign = "-"
+            off = 0 - off
+        }
+        return stamp + sign + _two(floor_div(off, 3600)) + ":" + _two(floor_div(mod(off, 3600), 60))
+    }
+
+    // "2026-03-29", "2026-03-29T03:30", "2026-03-29T03:30:00Z",
+    // "2026-03-29T03:30:00+02:00" → Unix seconds. No offset means UTC.
+    on parse_iso(text: String) {
+        let t = trim(text)
+        require regex_match(t, "^\\d{{4}}-\\d{{2}}-\\d{{2}}([T ]\\d{{2}}:\\d{{2}}(:\\d{{2}})?(\\.\\d+)?(Z|[+-]\\d{{2}}:?\\d{{2}})?)?$") == 1 else BadDate "'{text}' is not an ISO 8601 date or date-time"
+        let year = parse_int(substring(t, 0, 4))
+        let month = parse_int(substring(t, 5, 7))
+        let day = parse_int(substring(t, 8, 10))
+        require month >= 1 && month <= 12 && day >= 1 && day <= days_in_month(year, month) else BadDate "'{text}' is not a date"
+        let seconds = days_from_civil(year, month, day) * 86400
+        if len(t) == 10 { return seconds }
+        let hour = parse_int(substring(t, 11, 13))
+        let minute = parse_int(substring(t, 14, 16))
+        require hour <= 23 && minute <= 59 else BadDate "'{text}' is not a time"
+        seconds = seconds + hour * 3600 + minute * 60
+        let rest = substring(t, 16, len(t))
+        if starts_with(rest, ":") {
+            let second = parse_int(substring(rest, 1, 3))
+            require second <= 59 else BadDate "'{text}' is not a time"
+            seconds = seconds + second
+            rest = substring(rest, 3, len(rest))
+        }
+        // a fraction of a second is dropped
+        rest = regex_replace(rest, "^\\.\\d+", "")
+        if rest == "" || rest == "Z" { return seconds }
+        let digits = replace(substring(rest, 1, len(rest)), ":", "")
+        let offset = parse_int(substring(digits, 0, 2)) * 3600 + parse_int(substring(digits, 2, 4)) * 60
+        if starts_with(rest, "-") { return seconds + offset }
+        return seconds - offset
+    }
+
+    on add_duration(ts: Int, days: Int, hours: Int, minutes: Int) {
+        return ts + days * 86400 + hours * 3600 + minutes * 60
+    }
+}
+
+cell test CalendarTests {
+    rules {
+        assert days_from_civil(1970, 1, 1) == 0
+        assert days_from_civil(2000, 3, 1) == 11017
+        assert days_from_civil(1969, 12, 31) == 0 - 1
+        assert civil_from_days(0) == map("year", 1970, "month", 1, "day", 1)
+        assert civil_from_days(19782) == map("year", 2024, "month", 2, "day", 29)
+        assert days_in_month(2024, 2) == 29
+        assert days_in_month(1900, 2) == 28
+        assert days_in_month(2000, 2) == 29
+        assert_fails days_in_month(2024, 13) matching "BadDate"
+        // 2026-03-29 01:30:00 UTC, a Sunday
+        let p = utc_parts(1774747800)
+        assert p.year == 2026
+        assert p.month == 3
+        assert p.day == 29
+        assert p.hour == 1
+        assert p.minute == 30
+        assert p.weekday == 7
+        assert utc_parts(0).weekday == 4
+        assert utc_parts(0 - 1).second == 59
+    }
+}
+
+cell test RoundTrip {
+    rules {
+        property "a date survives the trip through days"
+            forall x: Int in 0..80000 count 80
+            ensures days_from_civil(civil_from_days(x - 40000).year, civil_from_days(x - 40000).month, civil_from_days(x - 40000).day) == x - 40000
+    }
+}
+
+cell test ZoneTests {
+    rules {
+        assert contains(zones(), "Europe/Paris")
+        assert_fails zone_offset("Mars/Olympus", 0) matching "UnknownZone"
+
+        // European Union 2026: the clocks change on 29 March and 25 October at 01:00 UTC
+        assert zone_offset("Europe/Paris", 1774746000 - 1) == 3600
+        assert zone_offset("Europe/Paris", 1774746000) == 7200
+        assert zone_offset("Europe/Paris", 1792890000 - 1) == 7200
+        assert zone_offset("Europe/Paris", 1792890000) == 3600
+        assert zone_offset("Europe/London", 1774746000) == 3600
+        assert zone_offset("Europe/Athens", 1774746000 - 1) == 7200
+
+        // United States 2026: 8 March 02:00 EST (07:00 UTC) and 1 November 02:00 EDT (06:00 UTC)
+        assert zone_offset("America/New_York", 1772953200 - 1) == 0 - 18000
+        assert zone_offset("America/New_York", 1772953200) == 0 - 14400
+        assert zone_offset("America/New_York", 1793512800 - 1) == 0 - 14400
+        assert zone_offset("America/New_York", 1793512800) == 0 - 18000
+        assert zone_offset("America/Los_Angeles", 1772953200) == 0 - 28800
+        assert zone_offset("America/Phoenix", 1785000000) == 0 - 25200
+
+        // no daylight saving, a half-hour zone, the southern hemisphere
+        assert zone_offset("Asia/Tokyo", 1785000000) == 32400
+        assert zone_offset("Asia/Kolkata", 1785000000) == 19800
+        assert zone_offset("Australia/Sydney", 1768000000) == 39600
+        assert zone_offset("Australia/Sydney", 1785000000) == 36000
+
+        assert format_iso(1774747800, "UTC") == "2026-03-29T01:30:00Z"
+        assert format_iso(1774747800, "Europe/Paris") == "2026-03-29T03:30:00+02:00"
+        assert format_iso(1774747800, "America/New_York") == "2026-03-28T21:30:00-04:00"
+        assert format_iso(1774747800, "Asia/Kolkata") == "2026-03-29T07:00:00+05:30"
+        assert local_parts(1774747800, "Asia/Tokyo").hour == 10
+
+        assert parse_iso("2026-03-29T03:30:00+02:00") == 1774747800
+        assert parse_iso("2026-03-29T01:30:00Z") == 1774747800
+        assert parse_iso("2026-03-28T21:30:00-0400") == 1774747800
+        assert parse_iso("2026-03-29 01:30") == 1774747800
+        assert parse_iso("2026-03-29T01:30:00.250Z") == 1774747800
+        assert parse_iso("1970-01-01") == 0
+        assert_fails parse_iso("29/03/2026") matching "BadDate"
+        assert_fails parse_iso("2026-02-30") matching "BadDate"
+        assert_fails parse_iso("2026-03-29T25:00") matching "BadDate"
+
+        // wall clock → instant, around both changes
+        assert at_local(2026, 7, 14, 9, 0, "Europe/Paris") == parse_iso("2026-07-14T09:00:00+02:00")
+        assert at_local(2026, 1, 14, 9, 0, "Europe/Paris") == parse_iso("2026-01-14T09:00:00+01:00")
+        assert at_local(2026, 7, 14, 9, 0, "America/New_York") == parse_iso("2026-07-14T09:00:00-04:00")
+        assert at_local(2026, 10, 25, 2, 30, "Europe/Paris") == parse_iso("2026-10-25T02:30:00+02:00")
+        assert at_local(2026, 3, 29, 2, 30, "Europe/Paris") == parse_iso("2026-03-29T02:30:00+01:00")
+        assert at_local(2026, 6, 1, 12, 0, "Asia/Tokyo") == parse_iso("2026-06-01T12:00:00+09:00")
+        assert_fails at_local(2026, 2, 30, 0, 0, "UTC") matching "BadDate"
+        assert format_iso(at_local(2026, 12, 31, 23, 59, "Australia/Sydney"), "Australia/Sydney") == "2026-12-31T23:59:00+11:00"
+        assert add_duration(0, 1, 2, 3) == 93780
+    }
+}

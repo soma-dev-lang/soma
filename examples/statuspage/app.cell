@@ -148,9 +148,9 @@ cell StatusPage {
 
     on request(method: String, path: String, body: String) {
         if method == "POST" {
-            if path == "/incident" { return create_incident(body) }
-            if path == "/update" { return update_incident(body) }
-            if path == "/resolve" { return resolve_incident(body) }
+            if path == "/incident" { return create_incident(from_json(body)) }
+            if path == "/update" { return update_incident(from_json(body)) }
+            if path == "/resolve" { return resolve_incident(from_json(body)) }
             return response(404, map("error", "not found"))
         } else {
             if path == "/incidents" {

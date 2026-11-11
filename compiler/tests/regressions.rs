@@ -5505,7 +5505,7 @@ cell App {
         let pot = pot()
         require len < max else Full
         rows.push(x + pot)
-        return count([1, 2])
+        return count([1, 2], n => n > 1)
     }
 }
 "#);
@@ -7316,4 +7316,82 @@ cell Sys {
     let (code, out) = soma(&dir, &["run", "app.cell", "A.withdraw", "7"]);
     assert_eq!(code, 0, "{out}");
     assert!(out.contains("WITHDREW 7"), "{out}");
+}
+
+#[test]
+fn a_string_on_the_line_after_require_else_is_its_own_statement() {
+    // `require x > 0 else Tag` then `"hello"` on the next line returned
+    // (): the string was read as the require's detail
+    let dir = scratch("require_detail_newline");
+    std::fs::write(dir.join("app.cell"), r#"
+cell T {
+    on run() {
+        let x = 1
+        require x > 0 else Tag
+        "hello"
+    }
+    on same() {
+        require 1 > 5 else Tag "why"
+        return 3
+    }
+}
+"#).unwrap();
+    let (code, out) = soma(&dir, &["run", "app.cell", "run"]);
+    assert_eq!(code, 0, "{out}");
+    assert!(out.contains("hello"), "{out}");
+    let (code, out) = soma(&dir, &["run", "app.cell", "same"]);
+    assert_ne!(code, 0, "{out}");
+    assert!(out.contains("why"), "{out}");
+}
+
+#[test]
+fn too_few_builtin_arguments_are_refused_at_check() {
+    // `think()` and `pad_left("x")` passed check and failed at run time
+    let dir = scratch("builtin_min_arity");
+    std::fs::write(dir.join("app.cell"), r#"
+cell T {
+    on a() { return pad_left("x") }
+    on b() { return filter_by([map("k", 1)], "k", 1) }
+    on m() { return map("a", 1, "b") }
+    on c() { let r = try { concat("a") }
+             return r.kind }
+}
+cell test U {
+    rules {
+        assert_fails concat("a")
+    }
+}
+"#).unwrap();
+    let (code, out) = soma(&dir, &["check", "app.cell"]);
+    assert_ne!(code, 0, "{out}");
+    assert!(out.contains("pad_left() needs at least 2 arguments (1 given)"), "{out}");
+    // the documented 3-argument filter_by, a caught raise and an expected
+    // one are not refused
+    assert!(!out.contains("filter_by()") && !out.contains("concat()"), "{out}");
+    assert!(out.contains("map() takes key-value pairs (3 arguments given)"), "{out}");
+    assert!(out.contains("2 error(s)"), "{out}");
+}
+
+#[test]
+fn a_pipe_into_a_method_call_passes_the_value_first() {
+    // `x |> obj.m(a)` passed check and raised "right side must be a
+    // function call" at run time; it is obj.m(x, a), as x |> f(a) is f(x, a)
+    let dir = scratch("pipe_method_call");
+    std::fs::write(dir.join("app.cell"), r#"
+cell Other {
+    on h(a: Int, b: Int) { return a * 10 + b }
+}
+cell T {
+    memory { c: Map<String, Int> [persistent] }
+    on run() {
+        let r = "k" |> c.set(99)
+        return [c.get("k"), 4 |> Other.h(2)]
+    }
+}
+"#).unwrap();
+    let (code, out) = soma(&dir, &["check", "app.cell"]);
+    assert_eq!(code, 0, "{out}");
+    let (code, out) = soma(&dir, &["run", "--fresh", "app.cell", "run"]);
+    assert_eq!(code, 0, "{out}");
+    assert!(out.contains("[99, 42]"), "{out}");
 }

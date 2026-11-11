@@ -100,6 +100,7 @@ fn exit_with_watcher() {
 pub static NO_SCHEDULE: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
 
 pub fn cmd_serve(path: &PathBuf, port: u16, host: &str, verbose: bool, join: Option<&str>, no_check: bool, registry: &mut Registry) {
+    crate::interpreter::set_edition_beside(path);
     exit_with_watcher();
     crate::interpreter::PERSIST_MACHINES.store(true, std::sync::atomic::Ordering::Relaxed);
     crate::interpreter::IN_SERVE.store(true, std::sync::atomic::Ordering::Relaxed);
@@ -176,6 +177,15 @@ pub fn cmd_serve(path: &PathBuf, port: u16, host: &str, verbose: bool, join: Opt
             .collect();
         std::sync::Arc::new(mutating_handlers(&acell, &foreign))
     };
+    // 3.0 (C8): the served cell's handlers that write nothing by their text
+    // (SOMA_SERIAL=1 keeps every invocation under the one handler lock)
+    let readers: std::sync::Arc<std::collections::HashSet<String>> = std::sync::Arc::new(
+        if std::env::var("SOMA_SERIAL").map_or(false, |v| v == "1") { Default::default() } else {
+            cell.node.sections.iter().filter_map(|s| match &s.node {
+                ast::Section::OnSignal(on) if !mutating.contains(&on.signal_name) && !on.properties.iter().any(|p| p == "task") => Some(on.signal_name.clone()),
+                _ => None,
+            }).collect()
+        });
     {
         let mut ev: std::collections::HashSet<String> = std::collections::HashSet::new();
         // an emit inside `try { }` / a block lambda / a match arm makes its
@@ -1190,6 +1200,60 @@ pub fn cmd_serve(path: &PathBuf, port: u16, host: &str, verbose: bool, join: Opt
             }
         }
     }
+    // 3.0 durable waits: does any handler wait, and for a sleep?
+    let (has_waits, has_sleeps) = {
+        let (mut any, mut sleep) = (false, false);
+        for cell in crate::checker::names::collect_cells(&program) {
+            for section in &cell.sections {
+                if let ast::Section::OnSignal(on) = &section.node {
+                    crate::checker::literals::for_each_call(&on.body, &mut |name, _, _| {
+                        if matches!(name, "await_approve" | "await_signal" | "await_sleep") { any = true; }
+                        if name == "await_sleep" { sleep = true; }
+                    });
+                }
+            }
+        }
+        (any, sleep)
+    };
+    if has_sleeps && !no_schedule {
+        let prog = program.clone();
+        let slots = storage_slots.clone();
+        let bus = event_bus.clone();
+        let pbus = peer_bus.clone();
+        let natives = natives.clone();
+        let (config, models) = (agent_config.clone(), agent_models.clone());
+        eprintln!("scheduler: await sleep(…) — due sleeps resume here");
+        crate::interpreter::spawn_handler_thread(move || {
+            // a resume that failed is tried again later, not four times a second
+            let mut retry_at: std::collections::HashMap<String, std::time::Instant> = std::collections::HashMap::new();
+            loop {
+                std::thread::sleep(std::time::Duration::from_millis(250));
+                let mut interp = interpreter::Interpreter::new(&prog);
+                interp.native_handlers = (*natives).clone();
+                interp.set_storage_raw(&slots);
+                interp.ensure_state_machine_storage();
+                interp.event_bus = Some(bus.clone());
+                interp.peer_bus = Some(pbus.clone());
+                interp.agent_config = config.clone();
+                interp.agent_models = models.clone();
+                let now = std::time::Instant::now();
+                retry_at.retain(|_, at| *at > now);
+                for id in interp.due_sleeps() {
+                    if retry_at.contains_key(&id) { continue; }
+                    interp.current_depth = 0;
+                    match interp.resume_wait(&id, interpreter::Value::Unit) {
+                        Ok(_) => {}
+                        // another server (or an early `resume`) took it
+                        Err(e) if e.kind() == "not_waiting" => {}
+                        Err(e) => {
+                            eprintln!("[scheduler] wait {} did not resume (its step rolled back; tried again in 30s): {}", id, e);
+                            retry_at.insert(id, now + std::time::Duration::from_secs(30));
+                        }
+                    }
+                }
+            }
+        });
+    }
     let has_timers = program.cells.iter().any(|c| c.node.sections.iter().any(|s| matches!(s.node, ast::Section::Every(_) | ast::Section::After(_))));
     if !no_schedule && has_timers {
         let dir = crate::runtime::storage::data_dir();
@@ -1425,6 +1489,7 @@ pub fn cmd_serve(path: &PathBuf, port: u16, host: &str, verbose: bool, join: Opt
         let storage_slots = storage_slots.clone();
         let handler_names = handler_names.clone();
         let mutating = mutating.clone();
+        let readers = readers.clone();
         let request_routes = request_routes.clone();
         let handler_params = handler_params.clone();
         let request_roles = request_roles.clone();
@@ -1837,6 +1902,9 @@ pub fn cmd_serve(path: &PathBuf, port: u16, host: &str, verbose: bool, join: Opt
         interp.peer_bus = Some(peer_bus.clone());
         interp.agent_config = agent_config.clone();
         interp.agent_models = agent_models.clone();
+        // 3.0 (C8): handlers that write nothing run on a read snapshot,
+        // beside the one that holds the handler lock
+        interp.snapshot_handlers = Some(readers.clone());
         if let Some(ref c) = cluster_for_http { interp.set_cluster(c.clone(), &sharded_for_http); }
         if let Ok(ws_guard) = shared_ws.lock() {
             interp.ws_out = ws_guard.clone();
@@ -1873,7 +1941,66 @@ pub fn cmd_serve(path: &PathBuf, port: u16, host: &str, verbose: bool, join: Opt
         }
 
         let body_method = matches!(method.to_ascii_uppercase().as_str(), "POST" | "PUT" | "PATCH" | "DELETE");
-        let (signal_name, args) = if url.starts_with("/signal/") && !owned_by_request(&url) {
+        // 3.0 durable waits: the answer to a stored wait. `GET /_approvals`
+        // lists what is pending, `POST /_approvals/<id>` {"approved": bool}
+        // answers one, `POST /_signals/<name>/<key>` delivers a signal (its
+        // JSON body is the value). Whoever can post here approves: the
+        // routes answer a loopback server's own machine, or the bearer of
+        // SOMA_WAIT_TOKEN — a program that wants its own rule calls
+        // resume() / deliver() from a route of its own.
+        let wait_route: Option<(&'static str, Vec<interpreter::Value>)> = if !has_waits { None } else {
+            let path = url.split('?').next().unwrap_or(&url);
+            let segs: Vec<String> = path.trim_matches('/').split('/').map(|x| urlencoding_decode(x)).collect();
+            let call = match (body_method, segs.iter().map(|x| x.as_str()).collect::<Vec<_>>().as_slice()) {
+                (false, ["_approvals"]) => Some(Ok(("/waiting", vec![]))),
+                (true, ["_approvals", id]) if method.eq_ignore_ascii_case("POST") => match body_value.as_ref() {
+                    Some(interpreter::Value::Map(m)) if matches!(m.get("approved"), Some(interpreter::Value::Bool(_))) =>
+                        Some(Ok(("/resume", vec![interpreter::Value::String(id.to_string()), m.get("approved").cloned().unwrap()]))),
+                    _ => Some(Err("an approval is answered with a JSON body `{\"approved\": true}` or `{\"approved\": false}`".to_string())),
+                },
+                (true, ["_signals", name, key]) if method.eq_ignore_ascii_case("POST") => Some(Ok(("/deliver", vec![
+                    interpreter::Value::String(name.to_string()), interpreter::Value::String(key.to_string()),
+                    match body_value.clone() {
+                        Some(v) => v,
+                        None if body.trim().is_empty() => interpreter::Value::Unit,
+                        None => serde_json::from_str::<serde_json::Value>(body.trim()).ok()
+                            .map(|j| interpreter::record_log::json_to_value(&j)).unwrap_or(interpreter::Value::String(body.clone())),
+                    },
+                ]))),
+                _ => None,
+            };
+            match call {
+                None => None,
+                Some(call) => {
+                    let token = std::env::var("SOMA_WAIT_TOKEN").ok().filter(|t| !t.is_empty());
+                    let presented = req_headers.iter().find(|(k, _)| k.eq_ignore_ascii_case("authorization")).map(|(_, v)| format!("{}", v));
+                    let allowed = match &token {
+                        Some(t) => presented.as_deref().and_then(|p| p.strip_prefix("Bearer ")).map_or(false, |p| {
+                            // every byte compared: the time taken says nothing of the token
+                            p.len() == t.len() && p.bytes().zip(t.bytes()).fold(0u8, |acc, (a, b)| acc | (a ^ b)) == 0
+                        }),
+                        None => http_loopback,
+                    };
+                    let refusal = if !allowed {
+                        Some((if token.is_some() { 401 } else { 403 }, if token.is_some() { "unauthorized" } else { "forbidden" },
+                            if token.is_some() { "this route answers `Authorization: Bearer <SOMA_WAIT_TOKEN>`".to_string() }
+                            else { "the wait routes answer a server bound to loopback, or the bearer of SOMA_WAIT_TOKEN — or answer through a route of the program that calls resume() / deliver()".to_string() }))
+                    } else { call.as_ref().err().map(|m| (400, "json", m.clone())) };
+                    if let Some((status, kind, msg)) = refusal {
+                        let resp = tiny_http::Response::from_string(error_body(&msg, kind))
+                            .with_status_code(status)
+                            .with_header(tiny_http::Header::from_bytes(&b"Content-Type"[..], &b"application/json"[..]).unwrap());
+                        eprintln!("{} {} → {} 0ms {}", method, log_safe(&url), status, log_safe(&msg));
+                        let _ = request.respond(cors(resp));
+                        return;
+                    }
+                    call.ok()
+                }
+            }
+        };
+        let (signal_name, args) = if let Some((builtin, args)) = wait_route.clone() {
+            (builtin.to_string(), args)
+        } else if url.starts_with("/signal/") && !owned_by_request(&url) {
             let signal = url.trim_start_matches("/signal/");
             let (sig_name, query) = signal.split_once('?').unwrap_or((signal, ""));
             if !handler_names.iter().any(|h| h == sig_name) || !routable(&handler_names, sig_name) || request_routes.first_segments().iter().any(|f| f == sig_name) {
@@ -2081,7 +2208,10 @@ pub fn cmd_serve(path: &PathBuf, port: u16, host: &str, verbose: bool, join: Opt
             return;
         }
 
-        let outcome = interp.call_signal(&cell_name, &signal_name, args);
+        let outcome = match wait_route {
+            Some((builtin, _)) => interp.wait_builtin(&builtin[1..], &args),
+            None => interp.call_signal(&cell_name, &signal_name, args),
+        };
         // the trace outlives the request (one interpreter per request):
         // `trace()` in a later request sees the last 1000 steps
         interpreter::builtins::storage::serve_trace_extend(&interp.agent_trace);
@@ -2586,6 +2716,12 @@ fn generic_error_sentence(kind: &str) -> String {
         "stack_overflow" => "stack overflow (recursion depth exceeded)",
         "llm" => "the language-model call failed",
         "budget" => "the token budget is spent",
+        // 3.0: face contracts — the clause is public (`soma describe`), the values are not copied
+        "requires" => "the call does not meet what the signal's face requires",
+        "not_waiting" => "no such wait is pending: it was answered already, cancelled, or never asked",
+        "wait_stale" => "the wait was taken by a handler that has changed since — it cannot be resumed",
+        "await" => "the handler could not stop at its wait",
+        "ensures" => "the handler broke what its face ensures — nothing was written",
         "undefined_variable" | "undefined_function" | "no_handler" => "the program called something it does not define",
         _ => "the handler failed",
     };
@@ -2679,11 +2815,14 @@ pub(crate) fn status_for_kind(kind: &str) -> u16 {
         "unauthorized" | "unauthenticated" => 401,
         "rate_limited" | "too_many_requests" => 429,
         "guard_failed" | "forbidden" | "approval_required" => 403,
-        "invalid_transition" | "conflict" => 409,
+        // a wait answered twice (or never asked): 404; one whose handler changed: 409
+        "not_waiting" => 404,
+        "invalid_transition" | "conflict" | "wait_stale" => 409,
         "invariant" | "ensure" => 422,
         "json" | "division_by_zero" | "type" => 400,
         // the database failed (read-only file, disk full): not the client's fault
-        "stack_overflow" | "llm" | "budget" | "undefined_variable" | "undefined_function" | "no_handler" | "response" | "storage" => 500,
+        // a broken `ensures` is the handler's fault (a broken `requires` the caller's: 400)
+        "ensures" | "stack_overflow" | "llm" | "budget" | "undefined_variable" | "undefined_function" | "no_handler" | "response" | "storage" => 500,
         _ => 400, // `require … else Tag`, fail("tag") — the program refused the request
     }
 }

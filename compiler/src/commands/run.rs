@@ -11,8 +11,9 @@ use super::{read_source, lex_with_location, parse_with_location, resolve_imports
 pub static FRESH_HOOK: std::sync::Mutex<Option<Box<dyn FnOnce() + Send>>> = std::sync::Mutex::new(None);
 
 pub fn cmd_run(path: &PathBuf, args: &[String], use_jit: bool, signal_flag: Option<&str>, record_all: bool, registry: &mut Registry) {
+    crate::interpreter::set_edition_beside(path);
     if use_jit {
-        eprintln!("warning: --jit is deprecated and ignored. Mark hot numeric handlers [native] instead (see `soma docs agent`, Performance).");
+        eprintln!("warning: --jit is deprecated and ignored. Mark hot numeric handlers [native] instead (see `soma docs native`).");
         eprintln!("  on simulate(n: Int) [native] {{ ... }}");
         eprintln!("  See: https://soma-lang.dev#native");
         eprintln!();

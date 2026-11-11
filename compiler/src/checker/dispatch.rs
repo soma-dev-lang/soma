@@ -96,7 +96,7 @@ pub fn check_program(program: &Program) -> (Vec<DispatchFinding>, Vec<DispatchFi
                         message: format!(
                             "call to '{name}' with {argc} argument(s) in test cell {test} resolves to the BUILTIN \
                              {name}(): the handler {definer}.{name} takes {takes:?}. Pass the handler's argument \
-                             count to call it",
+                             count to call it; for the builtin write `std.{name}(…)`",
                             test = cell.name,
                         ),
                         span: rule.span,
@@ -248,7 +248,8 @@ pub fn check_program(program: &Program) -> (Vec<DispatchFinding>, Vec<DispatchFi
                                     message: format!(
                                         "call to '{name}' with {argc} argument(s) inside {caller}.{handler_label} \
                                          resolves to the BUILTIN {name}(): the handler {definer}.{name} takes \
-                                         {takes:?}. If you meant the handler, pass its argument count",
+                                         {takes:?}. If you meant the handler, pass its argument count; \
+                                         for the builtin write `std.{name}(…)`",
                                         caller = cell.name,
                                     ),
                                     span: call_sp,
@@ -887,4 +888,44 @@ fn index_native(program: &Program, name: &str) -> bool {
             _ => false,
         })
     })
+}
+
+/// 3.0: `std.f(…)` reaches the builtin `f` past any handler of that name.
+/// It names a real builtin, and `std` is not also a local there (a local's
+/// `std.round(2)` used to be a method call on the local).
+pub fn std_calls(program: &Program) -> Vec<DispatchFinding> {
+    let mut out = Vec::new();
+    for cell in super::names::collect_cells(program) {
+        for section in &cell.sections {
+            let (body, params): (&[Spanned<Statement>], &[Param]) = match &section.node {
+                Section::OnSignal(on) => (&on.body, &on.params),
+                Section::Every(e) | Section::After(e) => (&e.body, &[]),
+                _ => continue,
+            };
+            let mut calls: Vec<(String, Span)> = Vec::new();
+            super::literals::for_each_call(body, &mut |name, args, span| {
+                if name != "_std" { return; }
+                if let Some(Expr::Literal(Literal::String(f))) = args.first().map(|a| &a.node) { calls.push((f.clone(), span)); }
+            });
+            if calls.is_empty() { continue; }
+            let mut local = params.iter().any(|p| p.name == "std");
+            super::literals::for_each_stmt_deep(body, &mut |st| match st {
+                Statement::Let { name, .. } | Statement::Assign { name, .. } if name == "std" => local = true,
+                Statement::For { var, .. } if var == "std" => local = true,
+                _ => {}
+            });
+            for (f, span) in calls {
+                if local {
+                    out.push(DispatchFinding { span, message: format!(
+                        "`std.{f}(…)` calls the builtin `{f}`, and `std` is also a local here — rename the local (or write `{f}(std, …)` for a call on its value)") });
+                } else if f.starts_with('_') || !super::names::builtin_names().contains(f.as_str()) {
+                    let all: Vec<String> = super::names::builtin_names().iter().map(|b| b.to_string()).collect();
+                    let hint = super::names::suggest(&f, all.iter()).map(|s| format!(" (did you mean `std.{}`?)", s)).unwrap_or_default();
+                    out.push(DispatchFinding { span, message: format!(
+                        "`std.{f}(…)`: there is no builtin `{f}`{hint} — `std.` reaches builtins only; a handler is called by its own name") });
+                }
+            }
+        }
+    }
+    out
 }

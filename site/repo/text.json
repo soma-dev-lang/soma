@@ -1,0 +1,11 @@
+{
+  "name": "text",
+  "description": "Words, sentences, n-grams, edit distance, and a line diff. Pure.",
+  "latest": "0.1.0",
+  "versions": {
+    "0.1.0": {
+      "git": "https://github.com/soma-dev-lang/soma",
+      "subdir": "packages/text"
+    }
+  }
+}

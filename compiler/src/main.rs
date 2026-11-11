@@ -4,6 +4,7 @@ mod ast;
 mod checker;
 mod codegen;
 mod commands;
+mod external;
 mod interpreter;
 mod lexer;
 mod parser;
@@ -138,6 +139,9 @@ enum Commands {
         /// idiv(a, b) — for code written when native `/` truncated
         #[arg(long)]
         native_idiv: bool,
+        /// Migrate the program to an edition: the mechanical rewrites, soma.toml, then what is left to decide (`--edition 2027`)
+        #[arg(long, value_name = "EDITION")]
+        edition: Option<String>,
     },
     /// Prove state machines, temporal logic, CAP properties, quorum
     Verify {
@@ -149,6 +153,12 @@ enum Commands {
         /// Fail when anything is only runtime-checked or unprovable (every ⚠ is an error) — for CI gates
         #[arg(long)]
         strict: bool,
+        /// Write the proof as an artifact: sources and toolchain hashed, every property with its verdict class, one digest
+        #[arg(long, value_name = "OUT.json")]
+        attest: Option<PathBuf>,
+        /// Re-run the verification an attestation records and compare digests
+        #[arg(long, value_name = "ATTESTATION.json")]
+        check_attestation: Option<PathBuf>,
     },
     /// Run test assertions in a .cell file. Storage is isolated: every
     /// memory slot uses a fresh in-memory backend, so runs never touch
@@ -171,6 +181,9 @@ enum Commands {
         /// Replay only entries up to this timestamp (epoch ms or ISO-8601)
         #[arg(long)]
         at: Option<String>,
+        /// Ask the model again instead of replaying its recorded answers
+        #[arg(long)]
+        live: bool,
     },
 
     // ── Agent ─────────────────────────────────────────────────────
@@ -193,6 +206,48 @@ enum Commands {
         /// agent | reference | gotchas | builtins | agents-md | all (omit to list)
         #[arg(default_value = "")]
         topic: String,
+    },
+    /// Format .cell files to the canonical layout: soma fmt app.cell | soma fmt . --check
+    Fmt {
+        /// Files or directories (every .cell under a directory)
+        paths: Vec<PathBuf>,
+        /// List the files that are not canonical and exit 1 — writes nothing (for CI)
+        #[arg(long)]
+        check: bool,
+        /// Output as JSON (for agents)
+        #[arg(long)]
+        json: bool,
+    },
+    /// Grade a handler on a dataset: soma eval app.cell --handler classify --dataset cases.jsonl
+    Eval {
+        /// Path to the .cell source file
+        file: PathBuf,
+        /// The handler to call with each case's input (`classify`, or `Cell.classify`)
+        #[arg(long)]
+        handler: String,
+        /// JSON lines: {"input": …, "expected": …, "name"?: …} — input is the argument (a list: the arguments)
+        #[arg(long)]
+        dataset: PathBuf,
+        /// exact | contains | handler:Cell.judge (called as judge(input, answer, expected) -> Bool)
+        #[arg(long, default_value = "exact")]
+        grade: String,
+        /// The pass rate the run must reach (0 to 1)
+        #[arg(long, default_value_t = 1.0)]
+        threshold: f64,
+        /// Output as JSON (for agents)
+        #[arg(long)]
+        json: bool,
+    },
+    /// Language server over stdio: diagnostics on open / save, formatting
+    Lsp,
+    /// Explain a diagnostic code: soma explain E0028 (omit the code to list them)
+    Explain {
+        /// A code from a diagnostic (E0028, W0014); omit to list every code
+        #[arg(default_value = "")]
+        code: String,
+        /// Output as JSON (for agents)
+        #[arg(long)]
+        json: bool,
     },
     /// Find a verified example program: soma example invariant state_machine
     Example {
@@ -225,6 +280,18 @@ enum Commands {
         /// Local path
         #[arg(long)]
         path: Option<String>,
+    },
+    /// Serve a program to a host process over stdin / stdout, one JSON object per line (the Python and TypeScript packages use it)
+    Embed {
+        /// The program
+        file: PathBuf,
+    },
+    /// External tools (`tool … [mcp: "server"]` / `[openapi: "server/op"]`): pin their contracts in soma.lock
+    Tools {
+        /// `sync` asks each server and writes soma.lock; `list` shows the bound tools and their pins
+        action: String,
+        /// The program (default: app.cell)
+        file: Option<PathBuf>,
     },
     /// Install all dependencies from soma.toml
     Install,
@@ -348,9 +415,11 @@ fn main_inner() {
             *commands::JSON_SCHEMA.lock().unwrap_or_else(|e| e.into_inner()) = "lint";
             commands::lint::cmd_lint(&file, json)
         }
-        Commands::Fix { file, json, native_idiv } => {
+        Commands::Fix { file, json, native_idiv, edition } => {
             *commands::JSON_SCHEMA.lock().unwrap_or_else(|e| e.into_inner()) = "fix";
-            if native_idiv {
+            if let Some(edition) = edition {
+                commands::fix::cmd_fix_edition(&file, &edition, json, &mut registry);
+            } else if native_idiv {
                 commands::fix::cmd_fix_native_idiv(&file, json);
             } else {
                 commands::fix::cmd_fix(&file, json, &mut registry);
@@ -443,9 +512,21 @@ fn main_inner() {
             if file.is_dir() { run_over_dir("test", &file, json, &[]); }
             commands::test_cmd::cmd_test(&file, json, &mut registry)
         }
-        Commands::Replay { file, log, at } => commands::replay::cmd_replay(&file, log.as_ref(), at.as_deref(), &mut registry),
+        Commands::Replay { file, log, at, live } => commands::replay::cmd_replay(&file, log.as_ref(), at.as_deref(), live, &mut registry),
         Commands::Init { name } => commands::init::cmd_init(name.as_deref()),
         Commands::Add { package, version, git, path } => commands::init::cmd_add(&package, version.as_deref(), git.as_deref(), path.as_deref()),
+        Commands::Embed { file } => {
+            runtime::storage::set_data_dir_beside(&file);
+            commands::embed::cmd_embed(&file, &mut registry)
+        }
+        Commands::Tools { action, file } => {
+            let file = file.unwrap_or_else(|| PathBuf::from("app.cell"));
+            match action.as_str() {
+                "sync" => commands::tools::cmd_sync(&file),
+                "list" => commands::tools::cmd_list(&file),
+                other => { eprintln!("soma tools: `{}` is not an action — `soma tools sync [file]` or `soma tools list [file]`", other); std::process::exit(2); }
+            }
+        }
         Commands::Install => commands::init::cmd_install(),
         Commands::Env => commands::init::cmd_env(),
         Commands::Repl => commands::repl::cmd_repl(&mut registry),
@@ -453,7 +534,17 @@ fn main_inner() {
         Commands::TestProvider { name } => commands::provider::cmd_test_provider(&name),
         Commands::Migrate { from, to } => commands::provider::cmd_migrate(&from, &to),
         Commands::Props => commands::props::cmd_props(&registry),
-        Commands::Verify { files, json, strict } => {
+        Commands::Verify { files, json, strict, attest, check_attestation } => {
+            if let Some(a) = check_attestation {
+                commands::attest::check(&a);
+            }
+            if let Some(out) = attest {
+                if files.is_empty() {
+                    eprintln!("error: `soma verify --attest out.json app.cell` needs the program to verify");
+                    std::process::exit(1);
+                }
+                commands::attest::write(&files, strict, &out);
+            }
             // a directory, as check and test take one (it answered "cannot
             // read '.': Is a directory")
             if files.len() == 1 && files[0].is_dir() {
@@ -479,6 +570,10 @@ fn main_inner() {
             }
         }
         Commands::Docs { topic } => commands::docs::cmd_docs(&topic),
+        Commands::Fmt { paths, check, json } => commands::fmt::cmd_fmt(&paths, check, json),
+        Commands::Eval { file, handler, dataset, grade, threshold, json } => commands::eval::cmd_eval(&file, &handler, &dataset, &grade, threshold, json),
+        Commands::Lsp => commands::lsp::cmd_lsp(),
+        Commands::Explain { code, json } => commands::explain::cmd_explain(&code, json),
         Commands::Example { terms, json, all } => commands::example::cmd_example(&terms, json, all),
     }
 }
@@ -631,6 +726,11 @@ fn cmd_verify(files: &[PathBuf], json: bool, strict: bool) {
 
                         // [verify.before.paid] requires = ["manager_approved"]
                         for (target, before_cfg) in &cfg.before {
+                            // 3.0: `Cell.state` names are a property of the
+                            // PRODUCT of the machines; one under `assuming`
+                            // is checked on this machine without the edges
+                            // the assumption rules out (both below)
+                            if product_property(target, before_cfg) || before_cfg.assuming.is_some() { continue; }
                             // requires = [a, b]: at least ONE of them
                             if !before_cfg.requires.is_empty() {
                                 props.push(Property::Requires(target.clone(), before_cfg.requires.clone()));
@@ -671,6 +771,7 @@ fn cmd_verify(files: &[PathBuf], json: bool, strict: bool) {
                                 named.extend(a.never.iter().map(|s| ("after … never", s)));
                             }
                             for (target, b) in &cfg.before {
+                                if product_property(target, b) { continue; }
                                 named.push(("[verify.before.<state>]", target));
                                 named.extend(b.requires.iter().map(|s| ("before … requires", s)));
                                 named.extend(b.requires_all.iter().map(|s| ("before … requires_all", s)));
@@ -687,14 +788,61 @@ fn cmd_verify(files: &[PathBuf], json: bool, strict: bool) {
                         }
                     }
 
-                    let results: Vec<PropertyResult> = props.iter()
+                    let mut results: Vec<PropertyResult> = props.iter()
                         .map(|p| check_property(&graph, p))
                         .collect();
+                    // 3.0: `assuming = "amount > 500"` — the same precedence,
+                    // on the machine without the edges whose guard cannot
+                    // hold then
+                    if let Some(cfg) = verify_config.filter(|_| applies) {
+                        for (target, b) in &cfg.before {
+                            let Some(text) = b.assuming.as_ref().filter(|_| !product_property(target, b)) else { continue };
+                            if !graph.states.contains(target) { continue; }
+                            match checker::product::parse_assumption(text) {
+                                Err(e) => results.push(PropertyResult { property: format!("before {} assuming {}", target, text), passed: false, message: e, counter_example: None }),
+                                Ok(assumption) => {
+                                    let (narrowed, gone) = checker::product::machine_assuming(sm, &assumption);
+                                    let g2 = StateMachineGraph::from_ast(&narrowed);
+                                    let mut reqs: Vec<Vec<String>> = Vec::new();
+                                    if !b.requires.is_empty() { reqs.push(b.requires.clone()); }
+                                    reqs.extend(b.requires_all.iter().map(|s| vec![s.clone()]));
+                                    for req in reqs {
+                                        let mut r = check_property(&g2, &Property::Requires(target.clone(), req));
+                                        r.property = format!("{}, assuming {}", r.property, text);
+                                        r.message = format!("{} — assuming `{}`: {}", r.message, text,
+                                            if gone.is_empty() { "no guard of this machine is ruled out by it (the property is the unconditional one)".to_string() }
+                                            else { format!("the edge(s) whose guard cannot hold then are left out ({})", gone.join(", ")) });
+                                        results.push(r);
+                                    }
+                                }
+                            }
+                        }
+                    }
 
                     let machine_cells = program.cells.iter().filter(|c| c.node.sections.iter().any(|s| matches!(s.node, ast::Section::State(_)))).count();
                     let label = if machine_cells > 1 { format!("{}.{}", cell.node.name, sm.name) } else { sm.name.clone() };
                     all_temporal.push((label, results));
                 }
+            }
+        }
+    }
+
+    // 3.0 (B2): properties over the product of the machines
+    if let Some(cfg) = verify_config {
+        let specs: Vec<checker::product::Spec> = cfg.before.iter().filter(|(t, b)| product_property(t, b)).flat_map(|(target, b)| {
+            let mut out = Vec::new();
+            if !b.requires.is_empty() { out.push(checker::product::Spec { target: target.clone(), requires: b.requires.clone(), all: false, assuming: b.assuming.clone() }); }
+            if !b.requires_all.is_empty() { out.push(checker::product::Spec { target: target.clone(), requires: b.requires_all.clone(), all: true, assuming: b.assuming.clone() }); }
+            out
+        }).collect();
+        if !specs.is_empty() {
+            for path in files {
+                let source = commands::read_source(path);
+                let file_str = path.display().to_string();
+                let tokens = commands::lex_with_location(&source, Some(&file_str));
+                let mut program = commands::parse_with_location(tokens, Some(&source), Some(&file_str));
+                commands::resolve_imports(&mut program, path);
+                all_results.extend(checker::product::check(&program, &specs));
             }
         }
     }
@@ -869,7 +1017,7 @@ fn cmd_verify(files: &[PathBuf], json: bool, strict: bool) {
         output["cells"] = serde_json::json!(all_cell_names);
         if total_cells > 1 {
             output["note"] = serde_json::json!(
-                "verification is per-cell. Cross-cell signal composition is not yet verified."
+                "state machines are verified per cell. A value crosses a cell boundary by a face contract (`requires` / `ensures` on the signal); a rule between two cells' machines is proven when soma.toml states it — `[verify.before.\"Pay.paid\"] requires = [\"Approval.signed_off\"]` explores the product of the machines."
             );
         }
         println!("{}", serde_json::to_string_pretty(&output).unwrap());
@@ -911,7 +1059,7 @@ fn cmd_verify(files: &[PathBuf], json: bool, strict: bool) {
         eprintln!("Temporal: {} passed, {} failed", passed_temporal, failed_temporal);
 
         if total_cells > 1 {
-            eprintln!("note: verification is per-cell. Cross-cell signal composition is not yet verified.");
+            eprintln!("note: state machines are verified per cell. A value crosses a cell boundary by a face contract (`requires` / `ensures` on the signal); a rule between two cells' machines is proven when soma.toml states it — `[verify.before.\"Pay.paid\"] requires = [\"Approval.signed_off\"]` explores the product of the machines.");
         }
     }
 
@@ -956,10 +1104,18 @@ fn cmd_verify(files: &[PathBuf], json: bool, strict: bool) {
 }
 
 // Small commands kept in main.rs — not worth a separate file
+/// A `[verify.before.…]` entry that names a state as `Cell.state`: it is
+/// about several machines at once (checker/product.rs).
+fn product_property(target: &str, b: &pkg::manifest::BeforeConfig) -> bool {
+    target.contains('.') || b.requires.iter().chain(b.requires_all.iter()).any(|s| s.contains('.'))
+}
+
 fn cmd_ast(path: &PathBuf) {
     let source = commands::read_source(path);
     let tokens = commands::lex(&source);
     let program = commands::parse(tokens);
+    // (SOMA_AST_QUIET: only whether it parses — the grammar tests ask for 1,400 files)
+    if std::env::var("SOMA_AST_QUIET").is_ok() { return; }
     println!("{:#?}", program);
 }
 
@@ -1032,6 +1188,7 @@ fn cells_in_db(file: &std::path::Path, db: &std::path::Path) -> (Vec<String>, Ve
             cells.push(cell.to_ascii_lowercase());
             names.push(format!("{}__counters", cell).to_ascii_lowercase());
             names.push(format!("{}__agent_memory", cell).to_ascii_lowercase());
+            names.push(format!("{}__waits", cell).to_ascii_lowercase());
             names.push(format!("{}__horde-meta", cell).to_ascii_lowercase());
             names.push(format!("{}__horde-tasks", cell).to_ascii_lowercase());
             for sec in &c.sections {
@@ -1133,7 +1290,7 @@ fn cells_in_db(file: &std::path::Path, db: &std::path::Path) -> (Vec<String>, Ve
         let base = lt.strip_suffix("_log").unwrap_or(&lt);
         if sibling_tables.iter().any(|n| n == &lt || n == base) { kept.push(t.clone()); return false; }
         if unparsed_cells.iter().any(|c| lt.starts_with(&format!("{}_", c))) { kept.push(t.clone()); return false; }
-        let Some(cell) = ["__counters", "__agent_memory", "__horde-meta", "__horde-tasks"].iter().find_map(|sfx| lt.strip_suffix(sfx)) else { return true };
+        let Some(cell) = ["__counters", "__agent_memory", "__waits", "__horde-meta", "__horde-tasks"].iter().find_map(|sfx| lt.strip_suffix(sfx)) else { return true };
         if foreign.iter().any(|f| match owner_of(f) { Some(o) => o == cell, None => f.to_ascii_lowercase().starts_with(&format!("{}_", cell)) }) || sibling_cells.iter().any(|c| c == cell) { kept.push(t.clone()); false } else { true }
     });
     if !unparsed.is_empty() && !kept.is_empty() {

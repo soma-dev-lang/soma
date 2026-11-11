@@ -3,6 +3,9 @@ pub mod native_ffi;
 pub mod soma_int;
 pub mod record_log;
 pub mod horde;
+pub mod otel;
+mod waits;
+mod external_call;
 
 use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
@@ -51,6 +54,21 @@ pub(crate) enum UndoOp {
 /// 1000 with 50 parallel calls paid out 122–153 times). Handlers are
 /// serialized: correctness first, the language's claim is that limits hold.
 static HANDLER_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+/// What a `request` call routes on, as far as a snapshot remembers it: the
+/// method and the first segment of the path (`GET /items`). Empty for any
+/// other handler.
+fn snapshot_route(signal_name: &str, args: &[Value]) -> String {
+    match (signal_name, args.first(), args.get(1)) {
+        ("request", Some(Value::String(m)), Some(Value::String(p))) =>
+            format!("{} /{}", m.to_ascii_uppercase(), p.trim_start_matches('/').split(['/', '?']).next().unwrap_or("")),
+        ("request", Some(Value::String(m)), _) => format!("{} /", m.to_ascii_uppercase()),
+        _ => String::new(),
+    }
+}
+
+/// 3.0 (C8): invocations tried on a read snapshot that turned out to write
+/// (`Cell.handler METHOD`): not tried again.
+static SNAPSHOT_WRITERS: std::sync::Mutex<std::collections::BTreeSet<String>> = std::sync::Mutex::new(std::collections::BTreeSet::new());
 
 pub(crate) fn with_committed_storage<T>(f: impl FnOnce() -> T) -> T {
     let _guard = HANDLER_LOCK.lock().unwrap_or_else(|e| e.into_inner());
@@ -62,6 +80,17 @@ pub static IN_SERVE: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBo
 /// `soma test`: storage is in memory — no cross-process lock on disk (a
 /// `.soma_data/` beside the tests made every call open lock.db: 15-60x slower)
 pub static IN_TEST: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+/// 3.0: the program is written in edition 2027 (soma.toml / SOMA_EDITION):
+/// `get_status(id)` of an id that was never transitioned is `()`.
+pub static EDITION_2027: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+
+/// Read the edition of the program at `path` (run, serve, test).
+pub fn set_edition_beside(path: &std::path::Path) {
+    let toml = path.parent().unwrap_or(std::path::Path::new(".")).join("soma.toml");
+    let manifest = crate::pkg::manifest::Manifest::load(&toml).ok();
+    let edition = crate::pkg::manifest::Manifest::edition_of(manifest.as_ref());
+    EDITION_2027.store(edition.as_str() >= "2027", std::sync::atomic::Ordering::Relaxed);
+}
 
 #[derive(Error, Debug)]
 pub enum RuntimeError {
@@ -707,6 +736,9 @@ pub struct Interpreter {
     pub(crate) cell_order: Vec<String>,
     /// Pre-computed handler lookup — avoids scanning sections on every call
     handler_cache: HashMap<HandlerKey, HandlerValue>,
+    /// 3.0: the face contracts (`requires` / `ensures`) of the signals that
+    /// declare one — empty for most programs, so a call pays nothing
+    face_contracts: HashMap<HandlerKey, Arc<FaceContract>>,
     /// handler name → the parameter counts it is defined with (any cell).
     /// Drives call resolution: `f(a, b)` is the user's handler when one
     /// takes 2 arguments, the builtin `f` otherwise. User definitions
@@ -812,6 +844,18 @@ pub struct Interpreter {
     pub(crate) agent_trace: Vec<Value>,
     /// Pending approval gates (for human-in-the-loop)
     pub(crate) agent_pending_approval: Option<String>,
+    /// 3.0: the handler that just returned stopped at an `await`.
+    pub(crate) suspended_now: bool,
+    /// 3.0: the builtin a `std.f(…)` call is dispatching.
+    force_builtin: Option<String>,
+    /// 3.0 (C8): set by `soma serve` on a request's interpreter — the
+    /// handlers of the served cell that write nothing (statically): they
+    /// run on a read snapshot, outside the handler lock.
+    pub snapshot_handlers: Option<Arc<std::collections::HashSet<String>>>,
+    /// this invocation is running on a read snapshot
+    snapshot: bool,
+    /// …and did something a reader does not do: it runs again, under the lock
+    snapshot_violated: bool,
     /// Agent LLM config (from soma.toml [agent] section)
     pub agent_config: Option<crate::pkg::manifest::AgentConfig>,
     /// The budget of the horde this interpreter runs a task of: every
@@ -999,6 +1043,29 @@ fn collect_cell_invariants(cell: &CellDef, invariants: &mut HashMap<String, Vec<
 /// .soma_data/soma.db whatever the slots of the program.
 pub static PERSIST_MACHINES: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
 
+/// 3.0: what a face says of one signal beyond its types.
+pub(crate) struct FaceContract {
+    /// the face's own parameters: the clauses use these names
+    params: Vec<Param>,
+    requires: Vec<Spanned<Expr>>,
+    ensures: Vec<Spanned<Expr>>,
+}
+
+fn collect_face_contracts(cell: &CellDef, out: &mut HashMap<HandlerKey, Arc<FaceContract>>) {
+    for section in &cell.sections {
+        let Section::Face(face) = &section.node else { continue };
+        for d in &face.declarations {
+            let FaceDecl::Signal(sig) = &d.node else { continue };
+            if sig.requires.is_empty() && sig.ensures.is_empty() { continue; }
+            out.insert((cell.name.clone(), sig.name.clone()), Arc::new(FaceContract {
+                params: sig.params.clone(),
+                requires: sig.requires.clone(),
+                ensures: sig.ensures.clone(),
+            }));
+        }
+    }
+}
+
 impl Interpreter {
     pub fn new(program: &Program) -> Self {
         let mut cells = HashMap::new();
@@ -1007,8 +1074,10 @@ impl Interpreter {
         let mut handler_arities: HashMap<String, Vec<usize>> = HashMap::new();
         let mut state_machines = HashMap::new();
         let mut record_handlers: std::collections::HashSet<(String, String)> = std::collections::HashSet::new();
+        let mut face_contracts = HashMap::new();
         for cell in &program.cells {
             cells.insert(cell.node.name.clone(), cell.node.clone());
+            collect_face_contracts(&cell.node, &mut face_contracts);
             for section in &cell.node.sections {
                 if let Section::OnSignal(ref on) = section.node {
                     let key = (cell.node.name.clone(), on.signal_name.clone());
@@ -1074,6 +1143,7 @@ impl Interpreter {
         Self {
             cells,
             handler_cache,
+            face_contracts,
             cell_order,
             handler_arities,
             max_depth: 512,
@@ -1120,6 +1190,11 @@ impl Interpreter {
             agent_conversations: std::collections::HashMap::new(),
             agent_trace: Vec::new(),
             agent_pending_approval: None,
+            suspended_now: false,
+            force_builtin: None,
+            snapshot_handlers: None,
+            snapshot: false,
+            snapshot_violated: false,
             agent_config: DEFAULT_AGENT.get().and_then(|d| d.0.clone()),
             horde_budget: None,
             horde_instance: None,
@@ -1143,6 +1218,7 @@ impl Interpreter {
     /// Register an additional cell definition (used by runtime to inject interior cells)
     pub fn register_cell(&mut self, cell: CellDef) {
         // Update handler cache
+        collect_face_contracts(&cell, &mut self.face_contracts);
         for section in &cell.sections {
             if let Section::OnSignal(ref on) = section.node {
                 let key = (cell.name.clone(), on.signal_name.clone());
@@ -1352,6 +1428,7 @@ impl Interpreter {
             for cell in self.cells.keys() {
                 expected.insert(format!("{}__counters", cell));
                 expected.insert(format!("{}__agent_memory", cell));
+                expected.insert(format!("{}__waits", cell));
             }
             let mut cells: Vec<String> = self.cells.keys().cloned().collect();
             cells.sort_by_key(|c| std::cmp::Reverse(c.len()));   // OrderLine before Order
@@ -1526,9 +1603,20 @@ impl Interpreter {
         // parameter failures and failed commits. Nested calls replay as part
         // of their caller and must not create separate entries.
         let is_recorded = self.current_depth == 0 && self.record_handlers.contains(&(cell_name.to_string(), signal_name.to_string()));
+        // 3.0: SOMA_OTEL_FILE — one span per top-level invocation
+        let otel = if self.current_depth == 0 { std::env::var("SOMA_OTEL_FILE").ok().filter(|p| !p.is_empty()) } else { None };
+        let otel_start = otel.as_ref().map(|_| (otel::now_ns(), self.agent_trace.len()));
         let recorded_args = if is_recorded { Some(args.clone()) } else { None };
         if is_recorded { self.record_nondet_called.clear(); }
-        let r = if self.journal.is_none() && self.task_unit.is_none() && self.handler_is_task(cell_name, signal_name) {
+        // 3.0 (C8): a reader runs on a snapshot of the last commit, beside
+        // whatever holds the handler lock; if it turns out to write, nothing
+        // it did is kept and it runs again as a writer
+        let on_snapshot = if self.snapshot_candidate(cell_name, signal_name, &args) {
+            self.read_snapshot(cell_name, signal_name, &args)
+        } else { None };
+        let r = if let Some(r) = on_snapshot {
+            r
+        } else if self.journal.is_none() && self.task_unit.is_none() && self.handler_is_task(cell_name, signal_name) {
             self.run_task(|me| me.call_signal_inner(cell_name, signal_name, args))
         } else {
             self.atomically(|me| me.call_signal_inner(cell_name, signal_name, args))
@@ -1540,11 +1628,83 @@ impl Interpreter {
                 self.maybe_record(is_recorded, cell_name, signal_name, recorded_args.as_ref(), &marker, Some(e.kind()));
             }
         }
+        if let (Some(path), Some((start, steps_before))) = (&otel, otel_start) {
+            let kind = r.as_ref().err().map(|e| e.kind());
+            // under serve the trace keeps its last 1000 steps: what was dropped is not this call's
+            let from = steps_before.min(self.agent_trace.len());
+            otel::export(path, cell_name, signal_name, start, otel::now_ns(), kind.as_deref(), &self.agent_trace[from..]);
+        }
         if r.is_ok() { self.last_span = caller_span; }
         r
     }
 
+    /// 3.0: the face contract around a call. `requires` is evaluated over
+    /// the arguments before anything runs (kind `requires`: the caller's
+    /// fault, nothing was written); `ensures` over the arguments and `result`
+    /// once the handler returned (kind `ensures`: the handler's fault — the
+    /// invocation fails and rolls back like any other error). Every way into
+    /// a handler passes here — a nested call, a scripted `mock`, `[native]`.
     fn call_signal_inner(
+        &mut self,
+        cell_name: &str,
+        signal_name: &str,
+        args: Vec<Value>,
+    ) -> Result<Value, RuntimeError> {
+        if self.face_contracts.is_empty() {
+            return self.call_signal_body(cell_name, signal_name, args);
+        }
+        let Some(contract) = self.face_contracts.get(&(cell_name.to_string(), signal_name.to_string())).cloned() else {
+            return self.call_signal_body(cell_name, signal_name, args);
+        };
+        // the arguments under the face's names — a left-out trailing Map is
+        // map(), as the handler sees it. A wrong count or a wrong type is the
+        // handler's own error (raised below, with its usual wording).
+        let mut bound = args.clone();
+        if bound.len() < contract.params.len() && crate::ast::accepted_arities(&contract.params).contains(&bound.len()) {
+            while bound.len() < contract.params.len() { bound.push(Value::Map(Default::default())); }
+        }
+        let well_formed = bound.len() == contract.params.len()
+            && contract.params.iter().zip(bound.iter()).all(|(p, a)| check_param_type(p, a.clone()).is_ok());
+        if !well_formed {
+            return self.call_signal_body(cell_name, signal_name, args);
+        }
+        let mut env: Env = FxHashMap::with_capacity_and_hasher(bound.len() + 1, Default::default());
+        for (p, a) in contract.params.iter().zip(bound) {
+            env.insert(p.name.clone(), a);
+        }
+        let shown = |env: &Env, e: &Expr| -> String {
+            let mut names: HashSet<String> = HashSet::new();
+            free_names_expr(e, &mut names);
+            let mut parts: Vec<String> = contract.params.iter().filter(|p| names.contains(&p.name))
+                .filter_map(|p| env.get(&p.name).map(|v| format!("{} = {}", p.name, short_value(v)))).collect();
+            parts.sort();
+            parts.join(", ")
+        };
+        for clause in &contract.requires {
+            let held = self.eval_expr(&clause.node, &mut env, cell_name, signal_name);
+            if !matches!(held, Ok(Value::Bool(true))) {
+                let with = shown(&env, &clause.node);
+                return Err(RuntimeError::Domain { kind: "requires".to_string(), message: format!(
+                    "{}(): the face requires `{}`{}", signal_name, crate::ast::render_expr(&clause.node),
+                    if with.is_empty() { String::new() } else { format!(" — called with {}", with) }) });
+            }
+        }
+        let result = self.call_signal_body(cell_name, signal_name, args)?;
+        if contract.ensures.is_empty() { return Ok(result); }
+        env.insert("result".to_string(), result.clone());
+        for clause in &contract.ensures {
+            let held = self.eval_expr(&clause.node, &mut env, cell_name, signal_name);
+            if !matches!(held, Ok(Value::Bool(true))) {
+                let with = shown(&env, &clause.node);
+                return Err(RuntimeError::Domain { kind: "ensures".to_string(), message: format!(
+                    "{}(): the face ensures `{}` — the handler returned {}{}", signal_name, crate::ast::render_expr(&clause.node),
+                    short_value(&result), if with.is_empty() { String::new() } else { format!(" (called with {})", with) }) });
+            }
+        }
+        Ok(result)
+    }
+
+    fn call_signal_body(
         &mut self,
         cell_name: &str,
         signal_name: &str,
@@ -1656,6 +1816,8 @@ impl Interpreter {
         // same leniency as parameters (Map takes a record/variant/`()`).
         // (`request` is the router: a route answers with whatever the
         // route returns — list, string, response map — so it is exempt)
+        // 3.0: stopped at a wait — the `waiting` response, not the face's type
+        if std::mem::take(&mut self.suspended_now) { return result; }
         let result = match result {
             Ok(val) => self.check_face_return(cell_name, signal_name, val),
             err => err,
@@ -1672,6 +1834,21 @@ impl Interpreter {
             }),
             _ => None,
         })
+    }
+
+    /// 3.0: a model answer, appended beside the .somalog when recording —
+    /// `soma replay` hands it back instead of asking the model again.
+    pub(crate) fn record_model_reply(&mut self, cell_name: &str, reply: &Result<Value, RuntimeError>) {
+        if self.replay_mode { return; }
+        let Some(path) = self.record_log_path.clone() else { return; };
+        let entry = match reply {
+            Ok(Value::String(s)) => Ok(s.clone()),
+            Ok(other) => Ok(record_log::value_to_json(other).to_string()),
+            Err(e) => Err(e.to_string()),
+        };
+        if let Err(e) = record_log::append_reply(&path, cell_name, &entry) {
+            eprintln!("warning: failed to record a model reply beside {}: {}", path.display(), e);
+        }
     }
 
     /// Append a record entry to the .somalog file if recording is active.
@@ -1805,12 +1982,16 @@ impl Interpreter {
         cell_name: &str,
         signal_name: &str,
     ) -> Result<Value, ExecError> {
-        if crate::runtime::storage::has_storage_error() { self.check_storage_write()?; }
+        if crate::runtime::storage::has_storage_error() || self.snapshot { self.check_storage_write()?; }
         self.check_transaction()?;
         match stmt {
             Statement::Let { name, value } => {
                 self.last_span = Some(value.span);
-                let val = self.eval_expr(&value.node, env, cell_name, signal_name)?;
+                // 3.0: `let x = await …` — the answer, or the handler stops here
+                let val = match crate::checker::waits::wait_of(stmt) {
+                    Some((what, args, bind, span)) => self.await_stmt(what, args, bind, span, env, cell_name, signal_name)?,
+                    None => self.eval_expr(&value.node, env, cell_name, signal_name)?,
+                };
                 record_shadow(env, name);
                 env.insert(name.clone(), val);
                 Ok(Value::Unit)
@@ -2255,6 +2436,39 @@ impl Interpreter {
 
             Statement::ExprStmt { expr } => {
                 self.last_span = Some(expr.span);
+                if let Some((what, args, bind, span)) = crate::checker::waits::wait_of(stmt) {
+                    return self.await_stmt(what, args, bind, span, env, cell_name, signal_name);
+                }
+                // 3.0: one vocabulary — `xs.push(x)`, `m.set(k, v)`, `m.delete(k)`
+                // as a statement write a LOCAL list or map in place, as they
+                // write a slot (the list form did nothing; the map forms raised)
+                if let Expr::MethodCall { target, method, args } = &expr.node {
+                    if let Expr::Ident(local) = &target.node {
+                        let arity_ok = match method.as_str() { "push" | "delete" | "remove" => args.len() == 1, "set" | "put" => args.len() == 2, _ => false };
+                        let fits = arity_ok && self.slot_kind(cell_name, local).is_none() && match env.get(local) {
+                            Some(Value::List(_)) => method == "push",
+                            Some(Value::Map(_)) => matches!(method.as_str(), "set" | "put" | "delete" | "remove"),
+                            _ => false,
+                        };
+                        if fits && !self.user_handler_takes(method, args.len() + 1) {
+                            let mut vals = Vec::with_capacity(args.len());
+                            for a in args { vals.push(self.eval_expr(&a.node, env, cell_name, signal_name)?); }
+                            if matches!(method.as_str(), "set" | "put" | "delete" | "remove") && matches!(vals[0], Value::Unit) {
+                                return Err(ExecError::Runtime(RuntimeError::Domain { kind: "type".to_string(), message: format!(
+                                    "{}.{}(()…): the key is () — an absent value (a mistyped field?) cannot be a key", local, method) }));
+                            }
+                            match env.get_mut(local) {
+                                Some(Value::List(items)) => items.push(vals.remove(0)),
+                                Some(Value::Map(entries)) => {
+                                    let key = key_text(&vals[0]);
+                                    if vals.len() == 2 { entries.insert(key, vals.remove(1)); } else { entries.shift_remove(&key); }
+                                }
+                                _ => {}
+                            }
+                            return Ok(Value::Unit);
+                        }
+                    }
+                }
                 self.eval_expr(&expr.node, env, cell_name, signal_name)
             }
 
@@ -2302,6 +2516,8 @@ impl Interpreter {
             }
 
             Statement::Emit { signal_name: sig, args } => {
+                // (C8) an event is an effect: a reader on a snapshot ends here
+                if self.snapshot { return Err(ExecError::Runtime(self.snapshot_abort())); }
                 let mut arg_vals = Vec::new();
                 for arg in args {
                     arg_vals.push(self.eval_expr(&arg.node, env, cell_name, signal_name)?);
@@ -2861,6 +3077,21 @@ impl Interpreter {
                         // expr |> obj.method → method call with pipe value
                         let target_val = self.eval_expr(&target.node, env, cell_name, signal_name)?;
                         self.call_storage_method(cell_name, &format!("{}", target_val), field, &[left_val])
+                    }
+                    Expr::MethodCall { target, method, args } => {
+                        // `x |> obj.m(a)` is obj.m(x, a), as `x |> f(a)` is
+                        // f(x, a) (check accepted it, the run refused it):
+                        // the piped value goes through a hidden local so the
+                        // method call keeps its ordinary dispatch
+                        const LHS: &str = "__pipe_lhs__";
+                        let prev = env.insert(LHS.to_string(), left_val);
+                        let mut all_args = Vec::with_capacity(args.len() + 1);
+                        all_args.push(Spanned::new(Expr::Ident(LHS.to_string()), left.span));
+                        all_args.extend(args.iter().cloned());
+                        let call = Expr::MethodCall { target: target.clone(), method: method.clone(), args: all_args };
+                        let out = self.eval_expr(&call, env, cell_name, signal_name);
+                        match prev { Some(v) => { env.insert(LHS.to_string(), v); } None => { env.remove(LHS); } }
+                        out
                     }
                     _ => Err(ExecError::Runtime(RuntimeError::TypeError(
                         "pipe (|>) right side must be a function call".to_string()
@@ -4446,6 +4677,85 @@ impl Interpreter {
         }
     }
 
+    /// 3.0, `think_json(prompt, map("as", "Decision"))`: the JSON shape the
+    /// model is asked for, derived from the declared type. None: no such type.
+    pub(crate) fn think_schema_text(&self, ty: &str) -> Option<String> {
+        let variants = self.type_variants.get(ty)?;
+        let fmt = crate::commands::describe::format_type;
+        let shape = |variant: &str, tag: bool| -> String {
+            let mut parts: Vec<String> = Vec::new();
+            if tag { parts.push(format!("\"variant\": \"{}\"", variant)); }
+            match self.variant_fields.get(&(ty.to_string(), variant.to_string())) {
+                Some(VariantFields::Struct(fields)) => for (f, t) in fields { parts.push(format!("\"{}\": {}", f, fmt(&t.node))); },
+                Some(VariantFields::Tuple(types)) => parts.push(format!("\"values\": [{}]", types.iter().map(|t| fmt(&t.node)).collect::<Vec<_>>().join(", "))),
+                _ => {}
+            }
+            format!("{{{}}}", parts.join(", "))
+        };
+        let record = variants.len() == 1 && matches!(self.variant_fields.get(&(ty.to_string(), variants[0].clone())), Some(VariantFields::Struct(_)));
+        Some(if record {
+            format!("Answer with ONE JSON object and nothing else, with exactly these fields:\n{}", shape(&variants[0], false))
+        } else {
+            format!("Answer with ONE JSON object and nothing else, in exactly one of these shapes:\n{}",
+                variants.iter().map(|v| shape(v, true)).collect::<Vec<_>>().join("\n"))
+        })
+    }
+
+    /// The model's JSON object as a value of the declared type — or what
+    /// does not fit (a missing, extra or mistyped field, an unknown variant).
+    pub(crate) fn think_reply_as(&self, ty: &str, v: Value) -> Result<Value, String> {
+        let Some(variants) = self.type_variants.get(ty) else { return Err(format!("no `cell type {ty}` is declared")) };
+        let Value::Map(mut m) = v else { return Err("the answer is not a JSON object".to_string()) };
+        let record = variants.len() == 1 && matches!(self.variant_fields.get(&(ty.to_string(), variants[0].clone())), Some(VariantFields::Struct(_)));
+        if record {
+            return match self.coerce_records(&TypeExpr::Simple(ty.to_string()), Value::Map(m))? {
+                v @ Value::Variant { .. } => Ok(v),
+                _ => Err(format!("the answer is not a {ty}")),
+            };
+        }
+        let variant = match m.shift_remove("variant") {
+            Some(Value::String(name)) => name,
+            Some(other) => return Err(format!("\"variant\" must be a String, got {}", value_type_name(&other))),
+            None => return Err(format!("the answer has no \"variant\" field — one of: {}", variants.join(", "))),
+        };
+        if !variants.contains(&variant) {
+            return Err(format!("\"{}\" is not a variant of {} — one of: {}", variant, ty, variants.join(", ")));
+        }
+        let fields = match self.variant_fields.get(&(ty.to_string(), variant.clone())).cloned() {
+            Some(VariantFields::Struct(decl)) => {
+                if let Some(extra) = m.keys().find(|k| !decl.iter().any(|(f, _)| f == *k)) {
+                    return Err(format!("{} has no field '{}' (fields: {})", variant, extra, decl.iter().map(|(f, _)| f.as_str()).collect::<Vec<_>>().join(", ")));
+                }
+                let mut out = IndexMap::new();
+                for (f, fty) in &decl {
+                    let Some(x) = m.get(f).cloned() else { return Err(format!("{}: field '{}' is missing", variant, f)) };
+                    let x = self.coerce_records(&fty.node, x).map_err(|e| format!("{}: field '{}': {}", variant, f, e))?;
+                    self.value_fits(&fty.node, &x).map_err(|e| format!("{}: field '{}': {}", variant, f, e))?;
+                    out.insert(f.clone(), x);
+                }
+                VariantValue::Struct(out)
+            }
+            Some(VariantFields::Tuple(types)) => {
+                let Some(Value::List(values)) = m.shift_remove("values") else { return Err(format!("{}: \"values\" must be a list of {} value(s)", variant, types.len())) };
+                if values.len() != types.len() || !m.is_empty() {
+                    return Err(format!("{} takes {} value(s) in \"values\" and no other field", variant, types.len()));
+                }
+                let mut out = Vec::with_capacity(values.len());
+                for (i, (x, t)) in values.into_iter().zip(&types).enumerate() {
+                    let x = self.coerce_records(&t.node, x).map_err(|e| format!("{} value {}: {}", variant, i, e))?;
+                    self.value_fits(&t.node, &x).map_err(|e| format!("{} value {}: {}", variant, i, e))?;
+                    out.push(x);
+                }
+                VariantValue::Tuple(out)
+            }
+            _ => {
+                if let Some(extra) = m.keys().next() { return Err(format!("{} carries no field, got '{}'", variant, extra)); }
+                VariantValue::Unit
+            }
+        };
+        Ok(Value::Variant { type_name: ty.to_string(), variant, fields })
+    }
+
     fn coerce_records(&self, ty: &TypeExpr, v: Value) -> Result<Value, String> {
         match (ty, v) {
             // an Int where a Float is declared is that Float (`score = 3`
@@ -4748,6 +5058,25 @@ impl Interpreter {
             }
             Value::LambdaBlock { param, stmts, result, env: closed_env } => {
                 let mut env: Env = closed_env.iter().map(|(k, v)| (k.clone(), v.clone())).collect();
+                // `(a, b) => …` handed one composite takes it apart in
+                // order: a pair, {acc, val}, {key, value}
+                let arg = match param.strip_prefix("__args").and_then(|n| n.parse::<usize>().ok()) {
+                    Some(n) => {
+                        let parts: Vec<Value> = match arg {
+                            Value::List(items) => items,
+                            Value::Map(entries) => entries.into_iter().map(|(_, v)| v).collect(),
+                            other => return Err(ExecError::Runtime(RuntimeError::TypeError(format!(
+                                "a lambda of {} parameters was given one {} — it takes {} arguments, or one list / map of {} values to take apart",
+                                n, value_type_name(&other), n, n)))),
+                        };
+                        if parts.len() != n {
+                            return Err(ExecError::Runtime(RuntimeError::TypeError(format!(
+                                "a lambda of {} parameters was given {} values", n, parts.len()))));
+                        }
+                        Value::List(parts)
+                    }
+                    None => arg,
+                };
                 env.insert(param.clone(), arg);
                 let mut last_val = Value::Unit;
                 for stmt in stmts {
@@ -5076,6 +5405,12 @@ impl Interpreter {
     /// Consume backend failures at the operation that caused them, with a
     /// final check at commit for internal writes (replication, for example).
     pub(crate) fn check_storage_write(&mut self) -> Result<(), RuntimeError> {
+        // 3.0 (C8): a reader on a snapshot owns no transaction and takes no
+        // other invocation's error; a write it attempted ends it
+        if self.snapshot {
+            if crate::runtime::storage::snapshot_violated() { return Err(self.snapshot_abort()); }
+            return self.check_transaction();
+        }
         let pending = crate::runtime::storage::take_write_error();
         let lost_transaction = self.journal.is_some() && crate::runtime::storage::shared_connection()
             .is_some_and(|c| c.lock().unwrap_or_else(|e| e.into_inner()).is_autocommit());
@@ -5098,7 +5433,7 @@ impl Interpreter {
         if PERSIST_MACHINES.load(std::sync::atomic::Ordering::Relaxed)
             || self.storage.values().any(|b| b.backend_name() == "sqlite") {
             for cell in self.cells.keys() {
-                for name in ["_counters", "_agent_memory"] {
+                for name in ["_counters", "_agent_memory", "_waits"] {
                     let key = format!("{cell}._{name}");
                     if !self.storage.contains_key(&key) {
                         let backend = crate::runtime::storage::SqliteBackend::try_new(cell, name)
@@ -5194,6 +5529,64 @@ impl Interpreter {
         }
         drop(unit);
         Ok(())
+    }
+
+    /// End the snapshot invocation in progress: every statement after this
+    /// one fails too (a `try` does not catch it), and the caller runs the
+    /// handler again under the lock.
+    fn snapshot_abort(&mut self) -> RuntimeError {
+        self.snapshot_violated = true;
+        self.fail_transaction("this invocation writes: it runs again under the handler lock".to_string())
+    }
+
+    /// Is this top-level call worth trying on a read snapshot? A handler
+    /// that writes nothing by its text, or a GET / HEAD through `request`
+    /// (a route may still write: it is then remembered and not tried again).
+    fn snapshot_candidate(&self, cell_name: &str, signal_name: &str, args: &[Value]) -> bool {
+        let Some(readers) = &self.snapshot_handlers else { return false };
+        // (an empty set: `SOMA_SERIAL=1`)
+        if readers.is_empty() { return false; }
+        if self.current_depth != 0 || self.journal.is_some() || self.task_unit.is_some() || self.cluster.is_some() || self.replay_mode { return false; }
+        let route = snapshot_route(signal_name, args);
+        if !(readers.contains(signal_name) || route.starts_with("GET ") || route.starts_with("HEAD ")) { return false; }
+        if self.handler_is_task(cell_name, signal_name) { return false; }
+        // compiled handlers were only ever entered one at a time
+        if !self.native_handlers.is_empty() { return false; }
+        // every slot and machine in the database: a slot kept in memory has
+        // no snapshot (a writer's uncommitted value would be read)
+        if !self.storage.values().all(|b| b.backend_name() == "sqlite") { return false; }
+        !SNAPSHOT_WRITERS.lock().unwrap_or_else(|e| e.into_inner()).contains(&format!("{}.{} {}", cell_name, signal_name, route))
+    }
+
+    /// Run the handler on a read snapshot. `None`: it did what a reader does
+    /// not (a write, an effect, an event) — nothing was kept, run it as a writer.
+    fn read_snapshot(&mut self, cell_name: &str, signal_name: &str, args: &[Value]) -> Option<Result<Value, RuntimeError>> {
+        self.transaction_failure = None;
+        if crate::runtime::storage::snapshot_begin().is_err() { return None; }
+        let (trace, emitted) = (self.agent_trace.len(), self.emitted_signals.len());
+        self.journal = Some(Vec::new());
+        self.journal_gen = self.journal_gen.wrapping_add(1);
+        self.snapshot = true;
+        self.snapshot_violated = false;
+        let result = self.call_signal_inner(cell_name, signal_name, args.to_vec());
+        self.snapshot = false;
+        let journal = self.journal.take().unwrap_or_default();
+        let violated = crate::runtime::storage::snapshot_end() | self.snapshot_violated | !journal.is_empty();
+        self.snapshot_violated = false;
+        if !violated { return Some(result); }
+        // as if it had not run
+        self.transaction_failure = None;
+        self.agent_trace.truncate(trace);
+        self.emitted_signals.truncate(emitted);
+        self.current_depth = 0;
+        let route = snapshot_route(signal_name, args);
+        let key = format!("{}.{} {}", cell_name, signal_name, route);
+        let mut writers = SNAPSHOT_WRITERS.lock().unwrap_or_else(|e| e.into_inner());
+        if writers.len() < 10_000 && writers.insert(key) {
+            eprintln!("[serve] {}.{}{} writes: it runs under the handler lock from now on (a read-only one runs beside the others)",
+                cell_name, signal_name, if route.is_empty() { String::new() } else { format!(" ({})", route) });
+        }
+        None
     }
 
     /// Nested handlers join the running atomic unit.
@@ -5295,6 +5688,28 @@ impl Interpreter {
             }
         }
 
+        if self.snapshot && !matches!(name.as_str(), "http_get" | "sleep" | "_std") && crate::checker::names::EFFECT_BUILTINS.contains(&name.as_str())
+            && !self.handler_shadows_builtin(name, arg_vals.len(), cell_name) {
+            return Err(ExecError::Runtime(self.snapshot_abort()));
+        }
+        // 3.0: `std.f(args)` — the builtin f, past any handler named f
+        if name == "_std" {
+            let mut arg_vals = arg_vals;
+            let Some(Value::String(builtin)) = (!arg_vals.is_empty()).then(|| arg_vals.remove(0)) else {
+                return Err(ExecError::Runtime(RuntimeError::TypeError("std.f(…) names a builtin".to_string())));
+            };
+            if !crate::checker::names::builtin_names().contains(builtin.as_str()) || builtin.starts_with('_') {
+                return Err(ExecError::Runtime(RuntimeError::UndefinedFn(format!("std.{} — `std.` reaches builtins only, and there is no builtin `{}`", builtin, builtin))));
+            }
+            let outer = self.force_builtin.replace(builtin.clone());
+            let result = self.eval_named_call(&builtin, arg_vals, env, cell_name, signal_name);
+            self.force_builtin = outer;
+            return result;
+        }
+        // 3.0: a tool bound to a server — the body of the handler the parser gave it
+        if name == "_external_tool" {
+            return self.call_external_tool(cell_name, arg_vals).map_err(ExecError::Runtime);
+        }
         // YOUR handler of that name and arity wins over these network
         // builtins too (`on subscribe(a, b, c)` ran the WebSocket
         // subscribe; `link(user_text)` opened a socket)
@@ -5349,9 +5764,20 @@ impl Interpreter {
         // First-class lambdas: a local variable bound to a lambda is callable
         if let Some(lam @ (Value::Lambda { .. } | Value::LambdaBlock { .. })) = env.get(name) {
             let lam = lam.clone();
-            if arg_vals.len() != 1 {
+            // `(a, b) => …` is a lambda over its packed arguments
+            let wanted = multi_param_count(&lam);
+            if let Some(n) = wanted {
+                if arg_vals.len() == n {
+                    return self.apply_lambda(&lam, Value::List(arg_vals), cell_name);
+                }
+                if arg_vals.len() != 1 {
+                    return Err(ExecError::Runtime(RuntimeError::TypeError(format!(
+                        "lambda '{}' takes {} arguments, got {}", name, n, arg_vals.len()
+                    ))));
+                }
+            } else if arg_vals.len() != 1 {
                 return Err(ExecError::Runtime(RuntimeError::TypeError(format!(
-                    "lambda '{}' takes exactly 1 argument, got {}", name, arg_vals.len()
+                    "lambda '{}' takes exactly 1 argument, got {} — a lambda of several parameters is `(a, b) => …`", name, arg_vals.len()
                 ))));
             }
             return self.apply_lambda(&lam, arg_vals.into_iter().next().unwrap(), cell_name);
@@ -5380,8 +5806,12 @@ impl Interpreter {
         // Then check for recursive call to current signal — use cached handler
         else if name == signal_name {
             // Fast path: use cached handler to avoid HashMap lookup + key allocation
+            // (a signal with a face contract goes the long way: its
+            // `requires` / `ensures` hold for a recursive call too)
+            let contracted = !self.face_contracts.is_empty()
+                && self.face_contracts.contains_key(&(cell_name.to_string(), signal_name.to_string()));
             let cached = self.current_handler.as_ref().and_then(|(ch_cell, ch_sig, ch_params, ch_body)| {
-                if ch_cell == cell_name && ch_sig == signal_name {
+                if !contracted && ch_cell == cell_name && ch_sig == signal_name {
                     Some((Arc::clone(ch_params), Arc::clone(ch_body)))
                 } else {
                     None
@@ -5481,6 +5911,8 @@ impl Interpreter {
     }
 
     fn user_handler_takes(&self, name: &str, argc: usize) -> bool {
+        // (`std.f(…)` in progress: f is the builtin)
+        if self.force_builtin.as_deref() == Some(name) { return false; }
         self.handler_arities.get(name).is_some_and(|a| a.contains(&argc))
     }
 
@@ -5488,6 +5920,11 @@ impl Interpreter {
     /// in `cell builtin` definitions. This is the thin kernel — everything
     /// above is Soma. Delegates to sub-modules in builtins/.
     pub fn call_builtin(&mut self, name: &str, args: &[Value], cell_name: &str) -> Option<Result<Value, RuntimeError>> {
+        // 3.0 (C8): on a read snapshot an effect is not made — the invocation
+        // ends here, before it, and runs again under the lock
+        if self.snapshot && !matches!(name, "http_get" | "sleep") && crate::checker::names::EFFECT_BUILTINS.contains(&name) {
+            return Some(Err(self.snapshot_abort()));
+        }
         // `mock http_post map(...)` in a test cell scripts a builtin like a
         // handler (it used to be accepted and ignored — the test then made
         // a real network call)
@@ -7906,5 +8343,13 @@ fn pattern_interpolates(p: &MatchPattern) -> bool {
         MatchPattern::Variant { fields: VariantPatternFields::Tuple(ps), .. } => ps.iter().any(pattern_interpolates),
         MatchPattern::Variant { fields: VariantPatternFields::Struct { fields, .. }, .. } => fields.iter().any(|(_, p)| pattern_interpolates(p)),
         _ => false,
+    }
+}
+
+/// The parameter count of a `(a, b) => …` lambda (None: one parameter).
+fn multi_param_count(lambda: &Value) -> Option<usize> {
+    match lambda {
+        Value::LambdaBlock { param, .. } => param.strip_prefix("__args").and_then(|n| n.parse().ok()),
+        _ => None,
     }
 }

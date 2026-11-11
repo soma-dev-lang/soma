@@ -33,6 +33,7 @@ use crate::runtime;
 use super::{read_source, lex_with_location, parse_with_location, resolve_imports, load_meta_cells_from_program};
 
 pub fn cmd_test(path: &PathBuf, json: bool, registry: &mut Registry) {
+    crate::interpreter::set_edition_beside(path);
     crate::interpreter::IN_TEST.store(true, std::sync::atomic::Ordering::Relaxed);
     // `--json` schema, every outcome (load failure, check failure, no test
     // cell, a run): {"file", "total", "passed" (a COUNT), "failed", "ok"
@@ -197,7 +198,7 @@ pub fn cmd_test(path: &PathBuf, json: bool, registry: &mut Registry) {
         interp.agent_conversation.clear();
         interp.agent_conversations.clear();
         // remember() memory and next_id counters are per test cell too
-        interp.storage.retain(|k, _| !k.ends_with(".__agent_memory") && !k.ends_with(".__counters"));
+        interp.storage.retain(|k, _| !k.ends_with(".__agent_memory") && !k.ends_with(".__counters") && !k.ends_with(".__waits"));
         // …and the hordes the cell before started
         interpreter::horde::reset_for_test_cell();
         if cell_idx > 0 {

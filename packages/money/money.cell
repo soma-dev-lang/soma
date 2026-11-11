@@ -1,0 +1,207 @@
+// ============================================================================
+// money — amounts that add up
+// ============================================================================
+//
+// An amount is an Int of MINOR units (cents) with its currency: no Float
+// ever holds money. Splitting keeps every cent (`allocate`), a percentage
+// rounds half away from zero, and two currencies do not add.
+//
+//   use money
+//   let price = money(1999, "EUR")
+//   let parts = allocate(1000, [1, 1, 1])          // [334, 333, 333]
+//   format_money(price)                            // "19.99 EUR"
+//
+// Verify the package itself:  soma test packages/money/money.cell
+// ============================================================================
+
+cell Money {
+    face {
+        signal money(amount: Int, currency: String) -> Map
+        signal exponent(currency: String) -> Int
+        signal add_money(a: Map, b: Map) -> Map
+        signal sub_money(a: Map, b: Map) -> Map
+        signal scale(a: Map, numerator: Int, denominator: Int) -> Map
+        signal basis_points(a: Map, bps: Int) -> Map
+        signal allocate(total: Int, ratios: List<Int>) -> List
+        signal format_money(a: Map) -> String
+        signal parse_money(text: String, currency: String) -> Map
+        signal compare_money(a: Map, b: Map) -> Int
+    }
+
+    // Minor units per currency (ISO 4217): 2 unless listed.
+    on exponent(currency: String) {
+        if contains(["JPY", "KRW", "VND", "CLP", "ISK", "HUF", "XOF", "XAF"], currency) { return 0 }
+        if contains(["BHD", "KWD", "OMR", "JOD", "TND"], currency) { return 3 }
+        return 2
+    }
+
+    on money(amount: Int, currency: String) {
+        require len(currency) == 3 && uppercase(currency) == currency else BadCurrency "a currency is three capital letters, like EUR"
+        return map("amount", amount, "currency", currency)
+    }
+
+    on add_money(a: Map, b: Map) {
+        require a.currency == b.currency else CurrencyMismatch "{a.currency} and {b.currency} do not add"
+        return map("amount", a.amount + b.amount, "currency", a.currency)
+    }
+
+    on sub_money(a: Map, b: Map) {
+        require a.currency == b.currency else CurrencyMismatch "{a.currency} and {b.currency} do not subtract"
+        return map("amount", a.amount - b.amount, "currency", a.currency)
+    }
+
+    on compare_money(a: Map, b: Map) {
+        require a.currency == b.currency else CurrencyMismatch "{a.currency} and {b.currency} do not compare"
+        if a.amount < b.amount { return 0 - 1 }
+        if a.amount > b.amount { return 1 }
+        return 0
+    }
+
+    // amount * numerator / denominator, rounded half away from zero.
+    on scale(a: Map, numerator: Int, denominator: Int) {
+        require denominator != 0 else BadRatio "the denominator is not zero"
+        return map("amount", div_round(a.amount * numerator, denominator), "currency", a.currency)
+    }
+
+    // 1 basis point = 0.01 %: basis_points(m, 250) is 2.5 % of m.
+    on basis_points(a: Map, bps: Int) {
+        return map("amount", div_round(a.amount * bps, 10000), "currency", a.currency)
+    }
+
+    // Split `total` in proportion to `ratios`; the parts ALWAYS sum to
+    // `total`. What the floor leaves over goes, one unit each, to the parts
+    // with the largest remainders (the first on a tie).
+    on allocate(total: Int, ratios: List<Int>) {
+        require len(ratios) > 0 else BadRatio "there is at least one ratio"
+        let weight = 0
+        for r in ratios {
+            require r >= 0 else BadRatio "a ratio is not negative"
+            weight = weight + r
+        }
+        require weight > 0 else BadRatio "at least one ratio is above zero"
+        require total >= 0 else BadRatio "a negative total is not split: split its absolute value"
+        let parts = []
+        let rests = []
+        let handed = 0
+        for r in ratios {
+            let share = floor_div(total * r, weight)
+            parts = push(parts, share)
+            rests = push(rests, mod(total * r, weight))
+            handed = handed + share
+        }
+        let left = total - handed
+        while left > 0 {
+            let best = 0
+            let i = 0
+            while i < len(rests) {
+                if rests[i] > rests[best] { best = i }
+                i = i + 1
+            }
+            parts[best] = parts[best] + 1
+            rests[best] = 0 - 1
+            left = left - 1
+        }
+        return parts
+    }
+
+    on format_money(a: Map) {
+        let e = exponent(a.currency)
+        let sign = ""
+        let n = a.amount
+        if n < 0 {
+            sign = "-"
+            n = 0 - n
+        }
+        if e == 0 { return "{sign}{n} {a.currency}" }
+        let unit = 1
+        let k = 0
+        while k < e {
+            unit = unit * 10
+            k = k + 1
+        }
+        let whole = floor_div(n, unit)
+        let minor = pad_left(to_string(mod(n, unit)), e, "0")
+        return "{sign}{whole}.{minor} {a.currency}"
+    }
+
+    // "19.99", "-5", "1234.5" → minor units. More decimals than the
+    // currency has is refused, not rounded.
+    on parse_money(text: String, currency: String) {
+        let e = exponent(currency)
+        let t = trim(text)
+        let negative = starts_with(t, "-")
+        if negative { t = substring(t, 1, len(t)) }
+        let pieces = split(t, ".")
+        require len(pieces) <= 2 && len(t) > 0 else BadAmount "an amount is digits with at most one decimal point"
+        let whole = parse_int(pieces[0])
+        require whole != () && whole >= 0 else BadAmount "an amount is digits with at most one decimal point"
+        let frac = ""
+        if len(pieces) == 2 { frac = pieces[1] }
+        require len(frac) <= e else BadAmount "{currency} has {e} decimal(s)"
+        let minor = 0
+        if e > 0 {
+            let padded = pad_right(frac, e, "0")
+            let parsed = parse_int(padded)
+            require parsed != () && parsed >= 0 else BadAmount "an amount is digits with at most one decimal point"
+            minor = parsed
+        }
+        let unit = 1
+        let k = 0
+        while k < e {
+            unit = unit * 10
+            k = k + 1
+        }
+        let amount = whole * unit + minor
+        if negative { amount = 0 - amount }
+        return map("amount", amount, "currency", currency)
+    }
+}
+
+cell test MoneyTests {
+    rules {
+        assert money(1999, "EUR") == map("amount", 1999, "currency", "EUR")
+        assert_fails money(1, "eur") matching "BadCurrency"
+        assert add_money(money(150, "EUR"), money(275, "EUR")).amount == 425
+        assert_fails add_money(money(1, "EUR"), money(1, "USD")) matching "CurrencyMismatch"
+        assert sub_money(money(100, "USD"), money(250, "USD")).amount == 0 - 150
+        assert compare_money(money(1, "USD"), money(2, "USD")) == 0 - 1
+
+        // rounding: half away from zero, both signs
+        assert basis_points(money(1000, "EUR"), 250).amount == 25
+        assert scale(money(5, "EUR"), 1, 2).amount == 3
+        assert scale(money(0 - 5, "EUR"), 1, 2).amount == 0 - 3
+        assert_fails scale(money(5, "EUR"), 1, 0) matching "BadRatio"
+
+        // a split keeps every unit
+        assert allocate(1000, [1, 1, 1]) == [334, 333, 333]
+        assert allocate(100, [70, 20, 10]) == [70, 20, 10]
+        assert allocate(5, [3, 7]) == [2, 3]
+        assert allocate(0, [1, 2]) == [0, 0]
+        assert allocate(7, [0, 1]) == [0, 7]
+        assert_fails allocate(10, []) matching "BadRatio"
+        assert_fails allocate(10, [0, 0]) matching "BadRatio"
+
+        // text
+        assert format_money(money(1999, "EUR")) == "19.99 EUR"
+        assert format_money(money(5, "EUR")) == "0.05 EUR"
+        assert format_money(money(0 - 1250, "USD")) == "-12.50 USD"
+        assert format_money(money(500, "JPY")) == "500 JPY"
+        assert format_money(money(1234, "KWD")) == "1.234 KWD"
+        assert parse_money("19.99", "EUR").amount == 1999
+        assert parse_money("1234.5", "EUR").amount == 123450
+        assert parse_money("-5", "EUR").amount == 0 - 500
+        assert parse_money("500", "JPY").amount == 500
+        assert_fails parse_money("1.999", "EUR") matching "BadAmount"
+        assert_fails parse_money("1.5", "JPY") matching "BadAmount"
+        assert_fails parse_money("12,50", "EUR") matching "BadAmount"
+        assert format_money(parse_money("0.07", "EUR")) == "0.07 EUR"
+    }
+}
+
+cell test AllocationKeepsEveryUnit {
+    rules {
+        property "the parts sum to the total"
+            forall x: Int in 0..100000 count 60
+            ensures sum(allocate(x, [3, 1, 4, 1, 5])) == x
+    }
+}

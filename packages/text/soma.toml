@@ -1,0 +1,10 @@
+[package]
+name = "text"
+version = "0.1.0"
+description = "Words, sentences, n-grams, edit distance, and a line diff."
+entry = "text.cell"
+edition = "2026"
+
+# The package's API is its cell's `face`; its proofs are its `cell test`
+# blocks: `soma test packages/text/text.cell` is the contract a consumer
+# can re-run before trusting it.

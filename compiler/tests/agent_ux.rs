@@ -186,7 +186,7 @@ cell H {
     for needle in [
         "'null' does not exist in Soma",
         "no method 'includes' — in Soma: contains(xs, x)",
-        "the result of `push` is discarded",
+        // (3.0: `rows.push(o)` on a local list appends — no longer a habit to redirect)
         "`+` with a list literal",
         "undefined variable 'lefft'",
         "app.cell:", // diagnostics carry file:line:col
@@ -201,7 +201,8 @@ fn parser_hints_name_the_soma_form() {
     for (body, hint) in [
         ("let t = {}", "no `{k: v}` literal"),
         ("let a = xs[1:3]", "no slice syntax"),
-        ("let s = sort_by(xs, (a, b) => a - b)", "exactly ONE parameter"),
+        // 3.0: `(a, b) => …` is a lambda; a parameter list of anything else still hints
+        ("let s = sort_by(xs, (a, 1) => a)", "plain names"),
         ("for (k, v) in xs { }", "entries(m)"),
         ("let a = 1;", "no semicolons"),
     ] {
@@ -1766,9 +1767,14 @@ cell N { memory { neg: Map<String, Int> [persistent]  invariant neg >= 0 }
     std::fs::write(d.join("u.cell"), "cell U { on f(x) { return x } }\n").unwrap();
     let (out, _) = soma_in(&d, &["check", "u.cell"]);
     assert!(out.contains("`x: Any`"), "{out}");
-    std::fs::write(d.join("c.cell"), "cell C { const LIMIT = 5  on f() { return 1 } }\n").unwrap();
+    // 3.0: a cell-level constant exists (`const LIMIT = 5`); a cell-level
+    // `let` / `var` still names its fix
+    std::fs::write(d.join("c.cell"), "cell C { const LIMIT = 5  on f() { return LIMIT } }\n").unwrap();
+    let (out, code) = soma_in(&d, &["check", "c.cell"]);
+    assert_eq!(code, 0, "{out}");
+    std::fs::write(d.join("c.cell"), "cell C { var LIMIT = 5  on f() { return 1 } }\n").unwrap();
     let (out, _) = soma_in(&d, &["check", "c.cell"]);
-    assert!(out.contains("a cell has no constants"), "{out}");
+    assert!(out.contains("a cell-level constant is `const LIMIT = 500`"), "{out}");
 }
 
 /// Cycle 18 (attack): exact aggregations and Int vectors; malformed
@@ -2021,9 +2027,10 @@ cell A {
   memory { m: Map<String, Any> [persistent]  invariant m >= 0 && m <= 100
            w: Map<String, List<Int>> [persistent] }
   on put(k: String) { m.set(k, [5000]) }
-  on both(xs: List<Int>) { return xs >= 0 && true }
+  on both(xs: List<Int>) { let id = v => v  return id(xs >= 0) && true }
   on post(s: String) {
-    ensure s
+    let id = v => v
+    ensure id(s)
     return 1
   }
   on nullkey() { w.set((), [1]) }
@@ -2031,6 +2038,7 @@ cell A {
 "#).unwrap();
     let (out, _) = soma_in(&d, &["run", "--fresh", "a.cell", "put", "k"]);
     assert!(out.contains("could not be evaluated") || out.contains("needs Bool"), "a mask passed a compound invariant: {out}");
+    // (3.0: check types these expressions; `id` keeps the run-time refusal under test)
     let (out, _) = soma_in(&d, &["run", "a.cell", "both", "[-5]"]);
     assert!(out.contains("&& needs Bool operands"), "{out}");
     let (out, _) = soma_in(&d, &["run", "a.cell", "post", "false"]);
@@ -2464,7 +2472,7 @@ fn cycle30_attack_findings() {
     let (out, _) = soma_in(&d, &["run", "s.cell", "reg", "__b"]);
     assert!(out.contains("reserved by the storage"), "{out}");
 
-    std::fs::write(d.join("e.cell"), "cell A {\n  on go() {\n    let f = x => {\n      emit credit(x)\n    }\n    f(7)\n    return \"done\"\n  }\n  on credit(x: Int) { print(\"credit {x}\") }\n  on cond(s: String) {\n    if s { return 1 }\n    return 0\n  }\n}\n").unwrap();
+    std::fs::write(d.join("e.cell"), "cell A {\n  on go() {\n    let f = x => {\n      emit credit(x)\n    }\n    f(7)\n    return \"done\"\n  }\n  on credit(x: Int) { print(\"credit {x}\") }\n  on cond(s: String) {\n    let id = v => v\n    if id(s) { return 1 }\n    return 0\n  }\n}\n").unwrap();
     let (out, _) = soma_in(&d, &["run", "e.cell", "go"]);
     assert!(out.contains("credit 7"), "an emit as a lambda's last statement never ran: {out}");
     let (out, _) = soma_in(&d, &["run", "e.cell", "cond", "false"]);
@@ -2815,7 +2823,7 @@ fn cycle44_findings() {
     assert_ne!(code, 0, "{out}");
     assert!(out.contains("but the listener T.ev takes 2"), "{out}");
     // a computed Float is not an Int parameter
-    std::fs::write(d.join("f.cell"), "cell F {\n  on ix(n: Int) { return n }\n  on go() { let f = 2.0  return ix(f) }\n}\n").unwrap();
+    std::fs::write(d.join("f.cell"), "cell F {\n  on ix(n: Int) { return n }\n  on go() { let id = v => v  let f = 2.0  return ix(id(f)) }\n}\n").unwrap();
     let (out, code) = soma_in(&d, &["run", "f.cell", "go"]);
     assert_ne!(code, 0, "{out}");
     assert!(out.contains("expects Int, got Float"), "{out}");

@@ -946,3 +946,206 @@ fn unit_variant_of(program: &ast::Program, ty: &str) -> Option<String> {
 fn cell_at(program: &ast::Program, pos: usize) -> Option<String> {
     program.cells.iter().find(|c| c.span.start <= pos && pos <= c.span.end).map(|c| c.node.name.clone())
 }
+
+// ── `soma fix --edition 2027` (3.0) ─────────────────────────────────────
+
+/// The program of ONE file (no imports: edits apply to this text only).
+fn parse_text(source: &str) -> Option<ast::Program> {
+    let tokens = crate::lexer::Lexer::new(source).tokenize().ok()?;
+    crate::parser::Parser::new(tokens).parse_program().ok()
+}
+
+/// Every handler-like body of a program, interior cells included.
+fn bodies(program: &ast::Program) -> Vec<&[ast::Spanned<ast::Statement>]> {
+    fn of_cell<'a>(cell: &'a ast::CellDef, out: &mut Vec<&'a [ast::Spanned<ast::Statement>]>) {
+        for s in &cell.sections {
+            match &s.node {
+                ast::Section::OnSignal(h) => out.push(&h.body),
+                ast::Section::Every(e) | ast::Section::After(e) => out.push(&e.body),
+                ast::Section::Interior(i) => for c in &i.cells { of_cell(&c.node, out); },
+                _ => {}
+            }
+        }
+    }
+    let mut out = Vec::new();
+    for c in &program.cells { of_cell(&c.node, &mut out); }
+    out
+}
+
+/// The AST without positions: two texts with the same one are the same program.
+fn shape_of(program: &ast::Program) -> String {
+    let text = format!("{:?}", program.cells);
+    let mut out = String::with_capacity(text.len());
+    let mut rest = text.as_str();
+    while let Some(i) = rest.find("Span {") {
+        out.push_str(&rest[..i]);
+        rest = match rest[i..].find('}') { Some(j) => &rest[i + j + 1..], None => "" };
+    }
+    out.push_str(rest);
+    out
+}
+
+/// (char position, text to insert, chars to remove) edits that move a file
+/// to edition 2027 without changing what it does:
+///  - `a ?? b + c` reads `a ?? (b + c)`: the parentheses are written;
+///  - `xs + ys` joining two lists of non-numbers becomes `xs ++ ys`.
+fn edition_2027_edits(source: &str, program: &ast::Program) -> (Vec<(usize, String, usize)>, usize, usize) {
+    use ast::{BinOp, Expr};
+    let chars: Vec<char> = source.chars().collect();
+    let mut edits: Vec<(usize, String, usize)> = Vec::new();
+    let (mut parens, mut joins) = (0usize, 0usize);
+    for body in bodies(program) {
+        checker::literals::for_each_call(body, &mut |name, args, _| {
+            if name != "_coalesce" || args.len() != 2 { return; }
+            let r = &args[1];
+            let (rl, rr) = match &r.node {
+                Expr::BinaryOp { left, op, right } if !matches!(op, BinOp::And | BinOp::Or) => (left, right),
+                Expr::CmpOp { left, right, .. } => (left, right),
+                _ => return,
+            };
+            // already parenthesised: its span covers the parentheses
+            if r.span.start != rl.span.start || r.span.end != rr.span.end { return; }
+            if edits.iter().any(|(at, _, _)| *at == r.span.start || *at == r.span.end) { return; }
+            edits.push((r.span.start, "(".to_string(), 0));
+            edits.push((r.span.end, ")".to_string(), 0));
+            parens += 1;
+        });
+    }
+    let types = checker::types::Program2::new(program, true);
+    for cell in &program.cells {
+        for issue in types.check_cell(&cell.node) {
+            let Some((l, r)) = issue.join else { continue };
+            // the one `+` between the operands (closing / opening parentheses aside)
+            let between: Vec<usize> = (l.end..r.start.min(chars.len())).filter(|i| chars[*i] == '+').collect();
+            let clean = (l.end..r.start.min(chars.len())).all(|i| chars[i] == '+' || chars[i].is_whitespace() || chars[i] == '(' || chars[i] == ')');
+            if let ([at], true) = (between.as_slice(), clean) {
+                if !edits.iter().any(|(p, _, _)| p == at) {
+                    edits.push((*at, "++".to_string(), 1));
+                    joins += 1;
+                }
+            }
+        }
+    }
+    (edits, parens, joins)
+}
+
+/// soma.toml beside the program names the edition.
+fn write_edition(dir: &std::path::Path, edition: &str) -> Result<bool, String> {
+    let path = dir.join("soma.toml");
+    let line = format!("edition = \"{}\"", edition);
+    let text = match std::fs::read_to_string(&path) {
+        Ok(t) => t,
+        Err(_) => {
+            std::fs::write(&path, format!("[package]\n{line}\n")).map_err(|e| format!("cannot write '{}': {}", path.display(), e))?;
+            return Ok(true);
+        }
+    };
+    let mut lines: Vec<String> = text.lines().map(|l| l.to_string()).collect();
+    let mut in_package = false;
+    let (mut package_at, mut edition_at) = (None, None);
+    for (i, l) in lines.iter().enumerate() {
+        let t = l.trim();
+        if t.starts_with('[') { in_package = t == "[package]"; if in_package { package_at = Some(i); } continue; }
+        if in_package && t.split('=').next().map_or(false, |k| k.trim() == "edition") { edition_at = Some(i); }
+    }
+    match (edition_at, package_at) {
+        (Some(i), _) => { if lines[i].trim() == line { return Ok(false); } lines[i] = line; }
+        (None, Some(i)) => lines.insert(i + 1, line),
+        (None, None) => { lines.insert(0, String::new()); lines.insert(0, line); lines.insert(0, "[package]".to_string()); }
+    }
+    std::fs::write(&path, lines.join("\n") + "\n").map_err(|e| format!("cannot write '{}': {}", path.display(), e))?;
+    Ok(true)
+}
+
+/// `soma fix --edition 2027 app.cell`: the mechanical part of moving a
+/// program to the edition (what each rewrite does is unchanged), the
+/// edition written to soma.toml, then what is left for a person — a value
+/// that may be absent, a return that contradicts its face — as check
+/// reports it.
+pub fn cmd_fix_edition(path: &PathBuf, edition: &str, json: bool, registry: &mut Registry) {
+    let fail = |msg: String| -> ! {
+        if json { println!("{}", serde_json::json!({"fixes": [], "fix_count": 0, "passed": false, "remaining_errors": 1, "skipped": [], "note": null, "parse_error": null, "error": msg})); }
+        else { eprintln!("error: {}", msg); }
+        std::process::exit(1)
+    };
+    if edition != "2027" {
+        fail(format!("`soma fix --edition` migrates to \"2027\" (got \"{}\"); the editions are {}", edition,
+            crate::pkg::manifest::EDITIONS.iter().map(|e| format!("\"{e}\"")).collect::<Vec<_>>().join(", ")));
+    }
+    let (mut parens, mut joins) = (0usize, 0usize);
+    for _pass in 0..8 {
+        let source = std::fs::read_to_string(path).unwrap_or_else(|e| fail(format!("cannot read '{}': {}", path.display(), e)));
+        let Some(program) = parse_text(&source) else { fail(format!("{} does not parse — `soma check` it first", path.display())) };
+        let (mut edits, p, j) = edition_2027_edits(&source, &program);
+        if edits.is_empty() { break; }
+        // spans count characters; apply from the end of the text
+        edits.sort_by(|a, b| b.0.cmp(&a.0).then(b.1.cmp(&a.1)));
+        let mut chars: Vec<char> = source.chars().collect();
+        for (at, text, remove) in &edits {
+            if *at > chars.len() { continue; }
+            let end = (*at + *remove).min(chars.len());
+            chars.splice(*at..end, text.chars());
+        }
+        let rewritten: String = chars.into_iter().collect();
+        // the rewrite must be the same program: parentheses are not in the
+        // AST at all, and `++` is concat() of the same operands
+        let Some(after) = parse_text(&rewritten) else { fail("internal: the rewritten text does not parse — nothing was written".to_string()) };
+        if j == 0 && shape_of(&after) != shape_of(&program) {
+            fail("internal: the rewritten text is not the same program — nothing was written".to_string());
+        }
+        std::fs::write(path, rewritten).unwrap_or_else(|e| fail(format!("cannot write '{}': {}", path.display(), e)));
+        parens += p;
+        joins += j;
+    }
+    let dir = path.parent().filter(|d| !d.as_os_str().is_empty()).map(|d| d.to_path_buf()).unwrap_or_else(|| PathBuf::from("."));
+    let wrote = write_edition(&dir, edition).unwrap_or_else(|e| fail(e));
+
+    // what is left, under the edition just written
+    let source = read_source(path);
+    let file_str = path.display().to_string();
+    let tokens = lex_with_location(&source, Some(&file_str));
+    let mut program = parse_with_location(tokens, Some(&source), Some(&file_str));
+    resolve_imports(&mut program, path);
+    load_meta_cells_from_program(&program, registry, path);
+    let manifest = crate::pkg::manifest::Manifest::load(&dir.join("soma.toml")).ok();
+    let mut chk = checker::Checker::new(registry);
+    chk.manifest = manifest.as_ref();
+    chk.source = Some((file_str.clone(), source.clone()));
+    chk.check(&program);
+
+    let mut fixes: Vec<String> = Vec::new();
+    if parens > 0 { fixes.push(format!("{parens} `a ?? b op c` written with its parentheses: `a ?? (b op c)`")); }
+    if joins > 0 { fixes.push(format!("{joins} list join(s) `xs + ys` rewritten `xs ++ ys`")); }
+    if wrote { fixes.push(format!("soma.toml: edition = \"{edition}\"")); }
+    if json {
+        let mut doc: serde_json::Value = serde_json::from_str(&chk.report_json()).unwrap_or(serde_json::json!({}));
+        doc["fixes"] = serde_json::json!(fixes.iter().map(|d| serde_json::json!({"description": d})).collect::<Vec<_>>());
+        doc["fix_count"] = serde_json::json!(fixes.len());
+        doc["remaining_errors"] = serde_json::json!(chk.errors.len());
+        doc["edition"] = serde_json::json!(edition);
+        println!("{}", serde_json::to_string_pretty(&doc).unwrap());
+    } else {
+        for f in &fixes { println!("  \u{2713} {}", f); }
+        if fixes.is_empty() { println!("  nothing to rewrite"); }
+        // the one change of 2027 no rewrite can make: it is a run-time answer
+        let mut status_reads = 0usize;
+        for cell in crate::checker::names::collect_cells(&program) {
+            for section in &cell.sections {
+                let body = match &section.node {
+                    ast::Section::OnSignal(on) => &on.body,
+                    ast::Section::Every(e) | ast::Section::After(e) => &e.body,
+                    _ => continue,
+                };
+                crate::checker::literals::for_each_call(body, &mut |name, _, _| if name == "get_status" { status_reads += 1; });
+            }
+        }
+        if edition >= "2027" && status_reads > 0 {
+            println!("  ! {status_reads} call(s) of get_status(id): in edition 2027 an id that was never transitioned answers () — no longer the initial state. Read each one: `get_status(id) == \"<initial>\"` is false for a new id (test `get_status(id) == ()`, or transition first)");
+        }
+        if chk.has_errors() {
+            println!("\nleft for you under edition {edition} ({} error(s)):", chk.errors.len());
+        }
+        print!("{}", chk.report());
+    }
+    if chk.has_errors() { std::process::exit(1); }
+}

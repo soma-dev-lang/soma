@@ -171,8 +171,8 @@ cell JobQueue {
 
     on request(method: String, path: String, body: String) {
         if method == "POST" {
-            if path == "/submit" { return submit(body) }
-            if path == "/cancel" { return cancel(body) }
+            if path == "/submit" { return submit(from_json(body)) }
+            if path == "/cancel" { return cancel(from_json(body)) }
             return response(404, map("error", "not found"))
         } else {
             if path == "/jobs" {

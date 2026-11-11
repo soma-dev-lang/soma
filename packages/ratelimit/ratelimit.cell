@@ -1,0 +1,136 @@
+// ============================================================================
+// ratelimit — fixed windows and token buckets
+// ============================================================================
+//
+//   use ratelimit
+//   if !allow("login:" + ip, 5, 60, now()) { return response(429, map("error", "slow down")) }
+//   if !take("api:" + key, 100, 10, now(), 1) { … }     // 100 burst, 10 per second
+//
+// The counters are the cell's own persistent memory: they survive a restart
+// and, because a handler is atomic, two requests never both take the last
+// slot. The clock is an argument.
+//
+// Verify the package itself:  soma test packages/ratelimit/ratelimit.cell
+// ============================================================================
+
+cell RateLimit {
+    face {
+        signal allow(key: String, limit: Int, window_s: Int, now_s: Int) -> Bool
+        signal remaining(key: String, limit: Int, window_s: Int, now_s: Int) -> Int
+        signal retry_after(key: String, limit: Int, window_s: Int, now_s: Int) -> Int
+        signal take(key: String, capacity: Int, refill_per_s: Int, now_s: Int, cost: Int) -> Bool
+        signal level(key: String, capacity: Int, refill_per_s: Int, now_s: Int) -> Int
+        signal forget(key: String) -> Bool
+    }
+
+    memory {
+        // fixed window: hits in the window `windows[key]`
+        hits: Map<String, Int> [persistent]
+        windows: Map<String, Int> [persistent]
+        // token bucket: tokens left at the instant `stamps[key]`
+        tokens: Map<String, Int> [persistent]
+        stamps: Map<String, Int> [persistent]
+        invariant hits >= 0
+        invariant tokens >= 0
+    }
+
+    on _hits_now(key: String, window_s: Int, now_s: Int) {
+        if windows.get(key) != floor_div(now_s, window_s) { return 0 }
+        return hits.get(key) ?? 0
+    }
+
+    // At most `limit` calls per window of `window_s` seconds (windows start
+    // at multiples of `window_s`). True and counted, or false and not counted.
+    on allow(key: String, limit: Int, window_s: Int, now_s: Int) {
+        require window_s > 0 && limit >= 0 else BadLimit "a window lasts at least a second, a limit is not negative"
+        let used = _hits_now(key, window_s, now_s)
+        if used >= limit { return false }
+        windows.set(key, floor_div(now_s, window_s))
+        hits.set(key, used + 1)
+        return true
+    }
+
+    on remaining(key: String, limit: Int, window_s: Int, now_s: Int) {
+        require window_s > 0 else BadLimit "a window lasts at least a second"
+        return max(limit - _hits_now(key, window_s, now_s), 0)
+    }
+
+    // Seconds until the window turns: what a 429 puts in `Retry-After`.
+    on retry_after(key: String, limit: Int, window_s: Int, now_s: Int) {
+        require window_s > 0 else BadLimit "a window lasts at least a second"
+        if _hits_now(key, window_s, now_s) < limit { return 0 }
+        return window_s - mod(now_s, window_s)
+    }
+
+    on _level_now(key: String, capacity: Int, refill_per_s: Int, now_s: Int) {
+        let last = stamps.get(key)
+        if last == () { return capacity }
+        let stored = tokens.get(key) ?? 0
+        return min(capacity, stored + max(now_s - last, 0) * refill_per_s)
+    }
+
+    // A bucket of `capacity` tokens refilled at `refill_per_s`: take `cost`
+    // of them, or none.
+    on take(key: String, capacity: Int, refill_per_s: Int, now_s: Int, cost: Int) {
+        require capacity > 0 && refill_per_s >= 0 && cost > 0 else BadLimit "capacity and cost are above zero, the refill is not negative"
+        // (`level` is typed `-> Int` on the face: the prover can follow `have`)
+        let have = level(key, capacity, refill_per_s, now_s)
+        if have < cost { return false }
+        tokens.set(key, have - cost)
+        stamps.set(key, now_s)
+        return true
+    }
+
+    on level(key: String, capacity: Int, refill_per_s: Int, now_s: Int) {
+        return _level_now(key, capacity, refill_per_s, now_s)
+    }
+
+    on forget(key: String) {
+        hits.delete(key)
+        windows.delete(key)
+        tokens.delete(key)
+        stamps.delete(key)
+        return true
+    }
+}
+
+cell test WindowTests {
+    rules {
+        assert allow("a", 2, 60, 1000)
+        assert allow("a", 2, 60, 1010)
+        assert !allow("a", 2, 60, 1019)
+        assert remaining("a", 2, 60, 1019) == 0
+        assert retry_after("a", 2, 60, 1019) == 1
+        // the next window (1020 is a multiple of 60)
+        assert remaining("a", 2, 60, 1020) == 2
+        assert allow("a", 2, 60, 1020)
+        assert remaining("a", 2, 60, 1021) == 1
+        // keys are independent; a limit of zero allows nothing
+        assert allow("b", 2, 60, 1019)
+        assert !allow("z", 0, 60, 1000)
+        assert retry_after("b", 2, 60, 1019) == 0
+        assert_fails allow("a", 2, 0, 1000) matching "BadLimit"
+        assert forget("a")
+        assert remaining("a", 2, 60, 1021) == 2
+    }
+}
+
+cell test BucketTests {
+    rules {
+        // a full bucket of 3, one token back per second
+        assert take("k", 3, 1, 100, 1)
+        assert take("k", 3, 1, 100, 2)
+        assert !take("k", 3, 1, 100, 1)
+        assert level("k", 3, 1, 100) == 0
+        assert level("k", 3, 1, 102) == 2
+        assert take("k", 3, 1, 102, 2)
+        // it never holds more than its capacity
+        assert level("k", 3, 1, 1000) == 3
+        assert !take("k", 3, 1, 1000, 4)
+        assert level("k", 3, 1, 1000) == 3
+        // a clock that goes back gives nothing
+        assert take("k", 3, 1, 1000, 3)
+        assert level("k", 3, 1, 990) == 0
+        assert_fails take("k", 0, 1, 1000, 1) matching "BadLimit"
+    }
+}

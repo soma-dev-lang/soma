@@ -301,6 +301,9 @@ fn set_slot_int(cell: &CellDef) {
 }
 
 pub fn verify_program_invariants(program: &Program) -> Vec<VerifyResult> {
+    // 3.0: a face `requires` is a fact for the handler's writes
+    let inlined = super::contracts::inline_requires(program);
+    let program = &inlined;
     let mut results = Vec::new();
 
     // interior cells too: an invariant inside `interior { }` was never
@@ -310,6 +313,7 @@ pub fn verify_program_invariants(program: &Program) -> Vec<VerifyResult> {
             continue;
         }
         set_slot_int(&cell);
+        set_contract_results(program, cell);
 
         // invariant → the slots it guards (same scoping rule as runtime)
         let mut guarded: Vec<(Expr, Vec<String>, String)> = Vec::new();
@@ -889,7 +893,27 @@ pub fn verify_program_invariants(program: &Program) -> Vec<VerifyResult> {
                         if *v == Proof::Holds && size_upper_bound(c, slot).is_none() { *v = Proof::Unknown; nan_open = true; }
                     }
                 }
-                let how = if inductive { "proven by induction" } else { "proven" };
+                // 3.0 (B4): what the intervals leave open, as linear
+                // arithmetic over the facts at the write (`require b >=
+                // amount` proves `b - amount >= 0`). Not for a Float slot,
+                // a [task] that thinks, or a size clause.
+                let mut linear = false;
+                if !float_slot && !task_with_think {
+                    if let Some(on) = handlers.get(handler) {
+                        let int_returns = int_returning(cell);
+                        for (c, v) in parts.iter().zip(verdicts.iter_mut()) {
+                            if *v != Proof::Unknown || size_upper_bound(c, slot).is_some() { continue; }
+                            let Expr::CmpOp { left, op, right } = c else { continue };
+                            // the clause speaks of the stored value only
+                            if !deep_idents(c).iter().all(|n| n == slot) { continue; }
+                            if linear_entails(on, wpath, &left.node, *op, &right.node, Some((slot.as_str(), value_expr)), ctx.hyp, &int_returns) {
+                                *v = Proof::Holds;
+                                linear = true;
+                            }
+                        }
+                    }
+                }
+                let how = if linear { "proven (linear arithmetic over the handler's requires and conditions)" } else if inductive { "proven by induction" } else { "proven" };
 
                 if verdicts.iter().any(|v| *v == Proof::Violated) && *in_try {
                     // Always rejected AND caught: the author is showing that
@@ -1272,13 +1296,20 @@ impl RangeCtx<'_> {
                     _ => Known::Unknown,
                 }
             }
+            // 3.0: `Ledger.balance()` — a call into another cell is known by
+            // what that cell's face ensures of the result, and by nothing else
+            Expr::MethodCall { target, method, .. } => match &target.node {
+                Expr::Ident(t) if !self.vars.contains_key(t) && !self.hyp.contains_key(t) => with_contract(Known::Unknown, &format!("{}.{}", t, method)),
+                _ => Known::Unknown,
+            },
             Expr::FnCall { name, args } => {
             // a handler named like a builtin runs only for an arity it
             // accepts: `max(x, 0)` beside `on max(a, b, c)` is the builtin
             // (the handler's `return 5` was taken for it)
-            let builtin_call = self.handlers.get(name).map_or(false, |on| super::names::builtin_names().contains(name.as_str())
+            let builtin_call = self.handlers.get(name).map_or(super::names::builtin_names().contains(name.as_str()), |on| super::names::builtin_names().contains(name.as_str())
                 && !crate::ast::accepted_arities(&on.params).contains(&args.len()));
-            match (name.as_str(), args.len()) {
+            // 3.0: what the callee's face ensures narrows whatever its body shows
+            let base = (|| -> Known { match (name.as_str(), args.len()) {
                 // a handler of the cell named like a builtin IS what runs
                 // (`on clamp(x, lo, hi) { return x }` was trusted as clamp)
                 (_, _) if !builtin_call && self.depth < 3 && self.handlers.contains_key(name) => match self.handlers.get(name) {
@@ -1364,7 +1395,8 @@ impl RangeCtx<'_> {
                 // or `_drop_hold(id, sku)` returning a slot read — its
                 // parameters are unknown inside, its returns are joined
                 _ => Known::Unknown,
-            }
+            } })();
+            if builtin_call { base } else { with_contract(base, name) }
             }
             _ => Known::Unknown,
         }
@@ -3099,4 +3131,690 @@ pub(crate) fn deep_idents(e: &Expr) -> HashSet<String> {
 /// was itself a check error).
 fn handler_writable(txt: &str) -> bool {
     !txt.split(|c: char| !(c.is_alphanumeric() || c == '_')).any(|w| matches!(w, "size" | "key" | "value"))
+}
+
+// ── 3.0: face contracts (`requires` / `ensures`) ────────────────────
+//
+// The interpreter evaluates a contract around every call, so both halves
+// are facts wherever the call returned: the handler may assume `requires`
+// (it is inlined as a leading `require`, see contracts::inline_requires),
+// and a caller — in this cell or another — may assume `ensures` of the
+// result. What is left to PROVE is that neither check can fail: each
+// `return` against `ensures`, each call site against `requires`.
+
+thread_local! {
+    /// For the cell being analysed: what a call is known to return, from
+    /// the callee's `ensures` — keyed `name` for a bare call (resolved as
+    /// the runtime resolves it) and `Cell.name` for a qualified one.
+    static CONTRACT_RESULTS: std::cell::RefCell<HashMap<String, (f64, f64)>> = std::cell::RefCell::new(HashMap::new());
+}
+
+/// The interval the `ensures` clauses of `sig` give its result.
+fn ensured_interval(sig: &SignalDecl) -> Option<(f64, f64)> {
+    // a parameter named like the subject would be read as the result
+    if sig.params.iter().any(|p| p.name == "result" || p.name == "value") { return None; }
+    let (mut lo, mut hi) = (f64::NEG_INFINITY, f64::INFINITY);
+    for clause in &sig.ensures {
+        for c in conjuncts(&clause.node) {
+            if !deep_idents(c).iter().all(|n| n == "result") { continue; }
+            if let Some((l, h)) = interval_of(c, "result") {
+                lo = lo.max(l);
+                hi = hi.min(h);
+            }
+        }
+    }
+    if lo.is_infinite() && hi.is_infinite() || lo > hi { None } else { Some((lo, hi)) }
+}
+
+/// The contracted signal a call from `cell` reaches: its own handler first,
+/// else the one other cell that handles the name (two would be ambiguous).
+fn callee_of<'p>(program: &'p Program, cell: &CellDef, target: Option<&str>, name: &str) -> Option<(&'p CellDef, &'p SignalDecl)> {
+    let cells = crate::checker::names::collect_cells(program);
+    let handles = |c: &CellDef| c.sections.iter().any(|s| matches!(&s.node, Section::OnSignal(on) if on.signal_name == name));
+    let owner: &CellDef = match target {
+        Some(t) => *cells.iter().find(|c| c.name == t)?,
+        None => match cells.iter().find(|c| c.name == cell.name && handles(c)) {
+            Some(c) => *c,
+            None => {
+                let mut others = cells.iter().filter(|c| matches!(c.kind, CellKind::Cell | CellKind::Agent) && handles(c));
+                let first = *others.next()?;
+                if others.next().is_some() { return None; }
+                first
+            }
+        },
+    };
+    let (_, sig, on) = super::contracts::contracted(owner).into_iter().find(|(_, s, _)| s.name == name)?;
+    on?;
+    Some((owner, sig))
+}
+
+/// Load CONTRACT_RESULTS for `cell` (cleared first: it is per cell).
+fn set_contract_results(program: &Program, cell: &CellDef) {
+    let mut table: HashMap<String, (f64, f64)> = HashMap::new();
+    let refused: HashSet<usize> = super::contracts::check_program(program).iter().map(|i| i.span.start).collect();
+    let cells = crate::checker::names::collect_cells(program);
+    let mut names: HashSet<&str> = HashSet::new();
+    for c in &cells {
+        for (decl, sig, on) in super::contracts::contracted(c) {
+            if on.is_none() || refused.contains(&decl.span.start) || sig.ensures.iter().any(|e| refused.contains(&e.span.start)) { continue; }
+            let Some(iv) = ensured_interval(sig) else { continue };
+            table.insert(format!("{}.{}", c.name, sig.name), iv);
+            names.insert(sig.name.as_str());
+        }
+    }
+    for name in names {
+        // a builtin's name is the builtin for the arities the handler does not take
+        if builtin_names().contains(name) { continue; }
+        if let Some((owner, sig)) = callee_of(program, cell, None, name) {
+            if let Some(iv) = table.get(&format!("{}.{}", owner.name, sig.name)).copied() { table.insert(name.to_string(), iv); }
+        }
+    }
+    CONTRACT_RESULTS.with(|t| *t.borrow_mut() = table);
+}
+
+/// `base`, narrowed by what the callee's face ensures of the result.
+fn with_contract(base: Known, key: &str) -> Known {
+    match CONTRACT_RESULTS.with(|t| t.borrow().get(key).copied()) {
+        Some((lo, hi)) => match bounds(base) {
+            Some((l, h)) if l.max(lo) <= h.min(hi) => mk(l.max(lo), h.min(hi)),
+            _ => mk(lo, hi),
+        },
+        None => base,
+    }
+}
+
+/// The slot bounds of `cell` (the induction hypothesis of the invariant
+/// proof): a value read from a guarded slot satisfied its invariants.
+fn slot_hypotheses(cell: &CellDef) -> HashMap<String, (f64, f64)> {
+    let mut hyp: HashMap<String, (f64, f64)> = HashMap::new();
+    for section in &cell.sections {
+        let Section::Memory(mem) = &section.node else { continue };
+        let slot_names: Vec<String> = mem.slots.iter().map(|s| s.node.name.clone()).collect();
+        for inv in &mem.invariants {
+            let refs = deep_idents(&inv.node);
+            if refs.contains("status") { continue; }
+            let named: Vec<String> = slot_names.iter().filter(|n| refs.contains(*n)).cloned().collect();
+            let targets = if named.is_empty() { slot_names.clone() } else { named };
+            let norm = normalize_invariant(&inv.node, &slot_names);
+            for slot in &targets {
+                let (mut lo, mut hi) = hyp.get(slot).copied().unwrap_or((f64::NEG_INFINITY, f64::INFINITY));
+                for c in conjuncts(&norm) {
+                    if let Some((l, h)) = interval_of(c, slot) {
+                        lo = lo.max(l);
+                        hi = hi.min(h);
+                    }
+                }
+                hyp.insert(slot.clone(), (lo, hi));
+            }
+        }
+    }
+    hyp
+}
+
+/// The values a handler can return, each with the block path it sits on.
+/// `tail`: the block's last expression is the handler's value.
+fn collect_returns_at<'e>(stmts: &'e [Spanned<Statement>], path: &[usize], tail: bool, out: &mut Vec<(&'e Expr, Vec<usize>, bool)>) {
+    let sub = |i: usize, b: usize| -> Vec<usize> { let mut v = path.to_vec(); v.push(block_step(i, b)); v };
+    for (i, st) in stmts.iter().enumerate() {
+        let last = i + 1 == stmts.len();
+        match &st.node {
+            Statement::Return { value } => out.push((&value.node, sub(i, 3), true)),
+            Statement::ExprStmt { expr } if last && tail => out.push((&expr.node, sub(i, 3), false)),
+            Statement::If { then_body, else_body, .. } => {
+                collect_returns_at(then_body, &sub(i, 0), tail && last, out);
+                collect_returns_at(else_body, &sub(i, 1), tail && last, out);
+            }
+            Statement::While { body, .. } | Statement::For { body, .. } => collect_returns_at(body, &sub(i, 2), false, out),
+            _ => {}
+        }
+    }
+}
+
+/// A call found in a handler body: where, to whom, with what, and whether a
+/// `try` holds it (a refusal there is the caller's intent).
+struct CallSite<'e> {
+    target: Option<String>,
+    name: String,
+    args: Vec<&'e Expr>,
+    path: Vec<usize>,
+    in_try: bool,
+}
+
+fn collect_calls_at<'e>(stmts: &'e [Spanned<Statement>], path: &[usize], out: &mut Vec<CallSite<'e>>) {
+    let sub = |i: usize, b: usize| -> Vec<usize> { let mut v = path.to_vec(); v.push(block_step(i, b)); v };
+    fn in_expr<'e>(e: &'e Expr, path: &[usize], out: &mut Vec<CallSite<'e>>) {
+        // the calls a `try { }` holds, by address
+        let mut tried: HashSet<*const Expr> = HashSet::new();
+        crate::checker::literals::for_each_in_expr(e, &mut |x| if let Expr::Try(inner) = x {
+            crate::checker::literals::for_each_in_expr(&inner.node, &mut |y| { tried.insert(y as *const Expr); });
+        });
+        crate::checker::literals::for_each_in_expr(e, &mut |x| match x {
+            Expr::FnCall { name, args } => out.push(CallSite { target: None, name: name.clone(), args: args.iter().map(|a| &a.node).collect(), path: path.to_vec(), in_try: tried.contains(&(x as *const Expr)) }),
+            Expr::MethodCall { target, method, args } => if let Expr::Ident(t) = &target.node {
+                out.push(CallSite { target: Some(t.clone()), name: method.clone(), args: args.iter().map(|a| &a.node).collect(), path: path.to_vec(), in_try: tried.contains(&(x as *const Expr)) });
+            },
+            _ => {}
+        });
+    }
+    for (i, st) in stmts.iter().enumerate() {
+        match &st.node {
+            Statement::Let { value, .. } | Statement::Assign { value, .. } | Statement::Return { value } => in_expr(&value.node, &sub(i, 3), out),
+            Statement::ExprStmt { expr } => in_expr(&expr.node, &sub(i, 3), out),
+            Statement::Ensure { condition } => in_expr(&condition.node, &sub(i, 3), out),
+            Statement::If { condition, then_body, else_body } => {
+                in_expr(&condition.node, &sub(i, 3), out);
+                collect_calls_at(then_body, &sub(i, 0), out);
+                collect_calls_at(else_body, &sub(i, 1), out);
+            }
+            Statement::While { condition, body, .. } => {
+                in_expr(&condition.node, &sub(i, 2), out);
+                collect_calls_at(body, &sub(i, 2), out);
+            }
+            Statement::For { iter, body, .. } => {
+                in_expr(&iter.node, &sub(i, 3), out);
+                collect_calls_at(body, &sub(i, 2), out);
+            }
+            Statement::IndexSet { index, value, .. } => { in_expr(&index.node, &sub(i, 3), out); in_expr(&value.node, &sub(i, 3), out); }
+            Statement::MethodCall { target, method, args } => {
+                out.push(CallSite { target: Some(target.clone()), name: method.clone(), args: args.iter().map(|a| &a.node).collect(), path: sub(i, 3), in_try: false });
+                for a in args { in_expr(&a.node, &sub(i, 3), out); }
+            }
+            Statement::Emit { args, .. } => for a in args { in_expr(&a.node, &sub(i, 3), out); },
+            Statement::Require { constraint, .. } => for (l, _, r) in constraint_comparisons(&constraint.node) { in_expr(l, &sub(i, 3), out); in_expr(r, &sub(i, 3), out); },
+            _ => {}
+        }
+    }
+}
+
+/// Can `e` be `()` where it is returned — a slot read with no default, or a
+/// local bound to one that the handler never compares with `()`?
+fn unit_possible(e: &Expr, on: &OnSection) -> bool {
+    fn direct(e: &Expr) -> bool {
+        match e {
+            Expr::MethodCall { method, args, .. } if method == "get" => args.get(1).map_or(true, |d| direct(&d.node) || matches!(d.node, Expr::Literal(Literal::Unit))),
+            Expr::Index { .. } | Expr::Literal(Literal::Unit) => true,
+            Expr::IfExpr { then_result, else_result, .. } => direct(&then_result.node) || direct(&else_result.node),
+            Expr::Match { arms, .. } => arms.iter().any(|a| direct(&a.result.node)),
+            _ => false,
+        }
+    }
+    if direct(e) { return true; }
+    let Expr::Ident(n) = e else { return false };
+    let mut assigns: Vec<(&str, &Expr)> = Vec::new();
+    collect_assigns(&on.body, &mut assigns);
+    if !assigns.iter().any(|(m, v)| m == n && direct(v)) { return false; }
+    let mut tested = false;
+    crate::checker::literals::for_each_expr(&on.body, &mut |x| if let Expr::CmpOp { left, right, .. } = x {
+        let is = |a: &Expr, b: &Expr| matches!(a, Expr::Ident(m) if m == n) && matches!(b, Expr::Literal(Literal::Unit));
+        if is(&left.node, &right.node) || is(&right.node, &left.node) { tested = true; }
+    });
+    !tested
+}
+
+/// The proof pass: one block per cell whose face carries a contract.
+/// `program` is the source as written; the analysis runs on the copy with
+/// each `requires` inlined, so a handler's own writes and returns see it.
+pub fn verify_contracts(program: &Program) -> Vec<VerifyResult> {
+    let inlined = super::contracts::inline_requires(program);
+    let refused: HashSet<usize> = super::contracts::check_program(program).iter().map(|i| i.span.start).collect();
+    let cells = crate::checker::names::collect_cells(&inlined);
+    if !cells.iter().any(|c| !super::contracts::contracted(c).is_empty()) { return Vec::new(); }
+
+    // every call site of the program that reaches a contracted signal:
+    // (callee cell, callee signal) → (caller, clause text, verdict, detail)
+    let mut sites: HashMap<(String, String), Vec<(String, String, Proof, String)>> = HashMap::new();
+    for cell in &cells {
+        if !matches!(cell.kind, CellKind::Cell | CellKind::Agent) { continue; }
+        set_slot_int(cell);
+        set_contract_results(&inlined, cell);
+        let hyp = slot_hypotheses(cell);
+        let handlers: HashMap<String, &OnSection> = cell.sections.iter()
+            .filter_map(|s| if let Section::OnSignal(on) = &s.node { Some((on.signal_name.clone(), on)) } else { None })
+            .collect();
+        for on in handlers.values() {
+            let mut calls: Vec<CallSite> = Vec::new();
+            collect_calls_at(&on.body, &[], &mut calls);
+            let locals: HashSet<String> = { let mut a = Vec::new(); collect_assigns(&on.body, &mut a); a.iter().map(|(n, _)| n.to_string()).chain(on.params.iter().map(|p| p.name.clone())).collect() };
+            for call in calls {
+                // `m.get(k)` on a local or a slot is no call into a cell
+                if call.target.as_ref().is_some_and(|t| locals.contains(t)) { continue; }
+                if call.target.is_none() && builtin_names().contains(call.name.as_str())
+                    && !handlers.get(&call.name).is_some_and(|h| crate::ast::accepted_arities(&h.params).contains(&call.args.len())) { continue; }
+                let Some((owner, sig)) = callee_of(&inlined, cell, call.target.as_deref(), &call.name) else { continue };
+                if sig.requires.is_empty() || call.args.len() != sig.params.len() { continue; }
+                let hyp_h = hyp_for(on, &hyp);
+                let ctx = RangeCtx { hyp: &hyp_h, vars: local_ranges_at(on, &hyp_h, &handlers, 0, &call.path, None), handlers: &handlers, depth: 0 };
+                let shown = format!("{}({})", call.name, call.args.iter().map(|a| render_expr(a)).collect::<Vec<_>>().join(", "));
+                for clause in &sig.requires {
+                    for c in conjuncts(&clause.node) {
+                        let names = deep_idents(c);
+                        // one parameter against a constant: the interval domain decides it
+                        let verdict = match sig.params.iter().position(|p| names.len() == 1 && names.contains(&p.name)) {
+                            Some(i) if matches!(&sig.params[i].ty.node, TypeExpr::Simple(t) if t == "Int") => prove(c, &sig.params[i].name, ctx.range_of(call.args[i])),
+                            _ => Proof::Unknown,
+                        };
+                        // a `[task]` handler's facts may be stale after a think(): not claimed
+                        let verdict = if verdict == Proof::Holds && on.properties.iter().any(|p| p == "task") { Proof::Unknown } else { verdict };
+                        let verdict = if verdict == Proof::Violated && call.in_try { Proof::Unknown } else { verdict };
+                        sites.entry((owner.name.clone(), sig.name.clone())).or_default()
+                            .push((on.signal_name.clone(), render_expr(c), verdict, shown.clone()));
+                    }
+                }
+            }
+        }
+    }
+
+    let mut results = Vec::new();
+    for cell in &cells {
+        let contracted = super::contracts::contracted(cell);
+        if contracted.is_empty() { continue; }
+        set_slot_int(cell);
+        set_contract_results(&inlined, cell);
+        let hyp = slot_hypotheses(cell);
+        let handlers: HashMap<String, &OnSection> = cell.sections.iter()
+            .filter_map(|s| if let Section::OnSignal(on) = &s.node { Some((on.signal_name.clone(), on)) } else { None })
+            .collect();
+        let mut result = VerifyResult {
+            machine_name: format!("{}/contracts", cell.name),
+            states: vec![],
+            initial: String::new(),
+            terminal_states: vec![],
+            transitions: vec![],
+            checks: vec![],
+        };
+        for (decl, sig, on) in contracted {
+            let Some(on) = on else { continue };
+            if refused.contains(&decl.span.start) || sig.requires.iter().chain(sig.ensures.iter()).any(|c| refused.contains(&c.span.start)) {
+                result.checks.push(VerifyCheck::Warning(format!("{}: the contract is refused by `soma check` — nothing is proven of it", sig.name)));
+                continue;
+            }
+            // ── requires: every call site in the program ──
+            let mut by_clause: Vec<(String, Vec<&(String, String, Proof, String)>)> = Vec::new();
+            let empty = Vec::new();
+            let all = sites.get(&(cell.name.clone(), sig.name.clone())).unwrap_or(&empty);
+            for clause in &sig.requires {
+                for c in conjuncts(&clause.node) {
+                    let text = render_expr(c);
+                    by_clause.push((text.clone(), all.iter().filter(|s| s.1 == text).collect()));
+                }
+            }
+            for (text, found) in by_clause {
+                let failed: Vec<&&(String, String, Proof, String)> = found.iter().filter(|s| s.2 == Proof::Violated).collect();
+                let open: Vec<&&(String, String, Proof, String)> = found.iter().filter(|s| s.2 == Proof::Unknown).collect();
+                if let Some(f) = failed.first() {
+                    result.checks.push(VerifyCheck::Fail(format!(
+                        "{}: requires {} — `{}` calls {}, which can never satisfy it (the call raises kind `requires` every time)", sig.name, text, f.0, f.3), None));
+                } else if found.is_empty() {
+                    result.checks.push(VerifyCheck::Note(format!(
+                        "{}: requires {} — no call site in the program; checked at run time on every call from outside (kind `requires`)", sig.name, text)));
+                } else if open.is_empty() {
+                    result.checks.push(VerifyCheck::Pass(format!(
+                        "{}: requires {} — proven at {} call site{} ({}); a call from outside is checked at run time", sig.name, text, found.len(),
+                        if found.len() == 1 { "" } else { "s" },
+                        { let mut who: Vec<&str> = found.iter().map(|s| s.0.as_str()).collect(); who.sort(); who.dedup(); who.join(", ") })));
+                } else {
+                    let mut list: Vec<String> = open.iter().map(|s| format!("{} → {}", s.0, s.3)).collect();
+                    list.sort();
+                    list.dedup();
+                    result.checks.push(VerifyCheck::Warning(format!(
+                        "{}: requires {} — runtime-checked at {} of {} call site{}: {} (narrow the argument there: `require … else …` before the call)",
+                        sig.name, text, open.len(), found.len(), if found.len() == 1 { "" } else { "s" }, list.join(", "))));
+                }
+            }
+            // ── ensures: every value the handler returns ──
+            if sig.ensures.is_empty() { continue; }
+            // the handler as the prover reads it (its `requires` inlined)
+            let mut returns: Vec<(&Expr, Vec<usize>, bool)> = Vec::new();
+            collect_returns_at(&on.body, &[], true, &mut returns);
+            let mut deep_returns = 0usize;
+            crate::checker::literals::for_each_stmt_deep(&on.body, &mut |st| if matches!(st, Statement::Return { .. }) { deep_returns += 1; });
+            let tracked = returns.iter().filter(|r| r.2).count();
+            let int_result = matches!(sig.return_type.as_ref().map(|t| &t.node), Some(TypeExpr::Simple(t)) if t == "Int");
+            let blocked: Option<String> = if !int_result {
+                Some("only a result the face types `-> Int` is proven".to_string())
+            } else if on.properties.iter().any(|p| p == "task") {
+                Some("a `[task]` handler commits step by step: what it read before a think() may have changed".to_string())
+            } else if deep_returns > tracked {
+                Some("a `return` inside a match arm, a `try` or a lambda is not followed".to_string())
+            } else if may_fall_off(&on.body) {
+                Some("the handler can end without a value, and returns () then".to_string())
+            } else if returns.is_empty() {
+                Some("the handler returns nothing".to_string())
+            } else { None };
+            for clause in &sig.ensures {
+                for c in conjuncts(&clause.node) {
+                    let text = render_expr(c);
+                    if let Some(why) = &blocked {
+                        result.checks.push(VerifyCheck::Warning(format!("{}: ensures {} — runtime-checked: {}", sig.name, text, why)));
+                        continue;
+                    }
+                    let mut open: Vec<String> = Vec::new();
+                    let mut failed: Option<String> = None;
+                    for (value, path, _) in &returns {
+                        let hyp_h = hyp_for(on, &hyp);
+                        let ctx = RangeCtx { hyp: &hyp_h, vars: local_ranges_at(on, &hyp_h, &handlers, 0, path, None), handlers: &handlers, depth: 0 };
+                        let absent = unit_possible(value, on);
+                        let known = if absent { Known::Unknown } else { ctx.range_of(value) };
+                        // only `result` against a constant is decided here
+                        let verdict = if deep_idents(c).iter().all(|n| n == "result") && !sig.params.iter().any(|p| p.name == "result" || p.name == "value") {
+                            prove(c, "result", known)
+                        } else { Proof::Unknown };
+                        set_slot_int(cell);
+                        // 3.0 (B4): a clause the intervals leave open — one
+                        // that relates `result` to a parameter too — as
+                        // linear arithmetic over the facts at the return
+                        let verdict = match (verdict, c) {
+                            (Proof::Unknown, Expr::CmpOp { left, op, right }) if !absent && !sig.params.iter().any(|p| p.name == "result")
+                                && linear_entails(on, path, &left.node, *op, &right.node, Some(("result", *value)), &hyp_h, &int_returning(cell)) => Proof::Holds,
+                            (v, _) => v,
+                        };
+                        match verdict {
+                            Proof::Holds => {}
+                            Proof::Violated => { failed.get_or_insert(render_expr(value)); }
+                            Proof::Unknown => open.push(match bounds(known) {
+                                _ if absent => format!("`{}` (may be () — a missing key)", render_expr(value)),
+                                Some((lo, hi)) => format!("`{}` (known: {} to {})", render_expr(value), fmt_bound(lo), fmt_bound(hi)),
+                                None => format!("`{}` (unbounded)", render_expr(value)),
+                            }),
+                        }
+                    }
+                    if let Some(v) = failed {
+                        result.checks.push(VerifyCheck::Fail(format!(
+                            "{}: ensures {} — the handler returns `{}`, which can never satisfy it (the call raises kind `ensures` on that path)", sig.name, text, v), None));
+                    } else if open.is_empty() {
+                        result.checks.push(VerifyCheck::Pass(format!(
+                            "{}: ensures {} — proven for every returned value ({} return{}); callers in any cell may rely on it",
+                            sig.name, text, returns.len(), if returns.len() == 1 { "" } else { "s" })));
+                    } else {
+                        open.sort();
+                        open.dedup();
+                        result.checks.push(VerifyCheck::Warning(format!(
+                            "{}: ensures {} — runtime-checked: not proven for {} (callers may still rely on it: a result that breaks it is refused, kind `ensures`)",
+                            sig.name, text, open.join(", "))));
+                    }
+                }
+            }
+        }
+        if !result.checks.is_empty() { results.push(result); }
+    }
+    CONTRACT_RESULTS.with(|t| t.borrow_mut().clear());
+    results
+}
+
+fn fmt_bound(v: f64) -> String {
+    if v == f64::INFINITY { "+∞".to_string() } else if v == f64::NEG_INFINITY { "-∞".to_string() } else if v.fract() == 0.0 && v.abs() < 1e15 { format!("{}", v as i64) } else { format!("{}", v) }
+}
+
+// ── 3.0 (B4): linear integer arithmetic behind the intervals ───────────
+//
+// An interval knows `b >= 0` and `amount >= 1`; it does not know
+// `b >= amount`, so `acct.set(id, b - amount)` after `require b >= amount`
+// stayed "runtime-checked". Here the facts that hold at a write — the
+// `require`s before it, the conditions of the `if`s around it, the negation
+// of an early exit — are kept as linear constraints between the handler's
+// Int values, and a clause is proven when the facts together with its
+// NEGATION have no solution (Fourier–Motzkin elimination; exact over the
+// integers' relaxation, so "no solution" is a proof).
+//
+// What is a value here: an `Int` parameter the handler never reassigns; a
+// local bound once to `Slot.get(k) ?? <Int literal>` on an Int slot (it
+// then satisfies the slot's interval invariant, or is the default) or to a
+// call of a handler whose face says `-> Int`; and the sums, differences
+// and constant multiples of those. Anything else — a Float, a division, a
+// reassigned local, a value read inline — is not a value, a fact over it
+// is dropped, and a goal over it is not proven. The search is bounded;
+// past the bound nothing is proven.
+
+/// Σ coef·var + constant
+#[derive(Clone, Debug, Default)]
+struct Linear { coef: std::collections::BTreeMap<String, i128>, constant: i128 }
+
+impl Linear {
+    fn constant(n: i128) -> Self { Linear { coef: Default::default(), constant: n } }
+    fn var(name: &str) -> Self { let mut l = Linear::default(); l.coef.insert(name.to_string(), 1); l }
+    fn scaled(&self, k: i128) -> Option<Self> {
+        let mut out = Linear { coef: Default::default(), constant: self.constant.checked_mul(k)? };
+        for (v, c) in &self.coef { let x = c.checked_mul(k)?; if x != 0 { out.coef.insert(v.clone(), x); } }
+        Some(out)
+    }
+    fn plus(&self, other: &Linear) -> Option<Self> {
+        let mut out = self.clone();
+        out.constant = out.constant.checked_add(other.constant)?;
+        for (v, c) in &other.coef {
+            let x = out.coef.get(v).copied().unwrap_or(0).checked_add(*c)?;
+            if x == 0 { out.coef.remove(v); } else { out.coef.insert(v.clone(), x); }
+        }
+        Some(out)
+    }
+    fn minus(&self, other: &Linear) -> Option<Self> { self.plus(&other.scaled(-1)?) }
+}
+
+struct LinearScope<'e> {
+    /// once-bound locals and what they are bound to
+    single: HashMap<&'e str, &'e Expr>,
+    int_params: HashSet<&'e str>,
+    /// slot → the interval its invariant gives a stored value
+    hyp: &'e HashMap<String, (f64, f64)>,
+    /// handlers of the cell whose face declares `-> Int`
+    int_returns: &'e HashSet<String>,
+    /// a name standing for an expression (`result` → the returned value, the slot → the written one)
+    subst: Option<(&'e str, &'e Expr)>,
+    /// opaque values met, with the bounds assumed of each
+    atoms: std::cell::RefCell<std::collections::BTreeMap<String, (Option<i128>, Option<i128>)>>,
+}
+
+impl<'e> LinearScope<'e> {
+    /// The bounds of a value read as `Slot.get(k) ?? default` / `Slot[k] ?? default`.
+    fn slot_read(&self, e: &Expr) -> Option<(Option<i128>, Option<i128>)> {
+        let Expr::FnCall { name, args } = e else { return None };
+        if name != "_coalesce" || args.len() != 2 { return None; }
+        let Expr::Literal(Literal::Int(default)) = &args[1].node else { return None };
+        let slot = match &args[0].node {
+            Expr::MethodCall { target, method, args } if method == "get" && args.len() == 1 => match &target.node { Expr::Ident(s) => s, _ => return None },
+            Expr::Index { target, .. } => match &target.node { Expr::Ident(s) => s, _ => return None },
+            _ => return None,
+        };
+        if !SLOT_INT.with(|m| m.borrow().get(slot).copied().unwrap_or(false)) { return None; }
+        let d = *default as i128;
+        let (lo, hi) = self.hyp.get(slot).copied().unwrap_or((f64::NEG_INFINITY, f64::INFINITY));
+        let as_int = |x: f64| if x.is_finite() && x.fract() == 0.0 && x.abs() < 9.0e15 { Some(x as i128) } else { None };
+        // the stored value satisfies the invariant; a missing key gives the default
+        let lo = if lo == f64::NEG_INFINITY { None } else { as_int(lo.ceil()).map(|l| l.min(d)) };
+        let hi = if hi == f64::INFINITY { None } else { as_int(hi.floor()).map(|h| h.max(d)) };
+        Some((lo, hi))
+    }
+
+    fn linear(&self, e: &Expr, depth: usize) -> Option<Linear> {
+        if depth > 12 { return None; }
+        match e {
+            Expr::Literal(Literal::Int(n)) => Some(Linear::constant(*n as i128)),
+            Expr::Ident(n) => {
+                if let Some((name, value)) = self.subst { if n == name { return self.linear(value, depth + 1); } }
+                if self.int_params.contains(n.as_str()) { return Some(Linear::var(n)); }
+                let def = *self.single.get(n.as_str())?;
+                if let Some(l) = self.linear(def, depth + 1) { return Some(l); }
+                // an opaque Int: a slot read with its default, or a call of an `-> Int` handler
+                let bounds = match def {
+                    Expr::FnCall { name, .. } if self.int_returns.contains(name) => Some((None, None)),
+                    other => self.slot_read(other),
+                }?;
+                self.atoms.borrow_mut().insert(n.clone(), bounds);
+                Some(Linear::var(n))
+            }
+            Expr::BinaryOp { left, op: BinOp::Add, right } => self.linear(&left.node, depth + 1)?.plus(&self.linear(&right.node, depth + 1)?),
+            Expr::BinaryOp { left, op: BinOp::Sub, right } => self.linear(&left.node, depth + 1)?.minus(&self.linear(&right.node, depth + 1)?),
+            Expr::BinaryOp { left, op: BinOp::Mul, right } => {
+                let (l, r) = (self.linear(&left.node, depth + 1)?, self.linear(&right.node, depth + 1)?);
+                if l.coef.is_empty() { r.scaled(l.constant) } else if r.coef.is_empty() { l.scaled(r.constant) } else { None }
+            }
+            _ => None,
+        }
+    }
+
+    /// `l op r` as constraints `t >= 0` (all values are Ints: `t > 0` is `t - 1 >= 0`).
+    fn constraints(&self, l: &Expr, op: CmpOp, r: &Expr) -> Option<Vec<Linear>> {
+        let d = self.linear(l, 0)?.minus(&self.linear(r, 0)?)?;      // l - r
+        let neg = d.scaled(-1)?;                                       // r - l
+        let minus_one = Linear::constant(-1);
+        Some(match op {
+            CmpOp::Ge => vec![d],
+            CmpOp::Gt => vec![d.plus(&minus_one)?],
+            CmpOp::Le => vec![neg],
+            CmpOp::Lt => vec![neg.plus(&minus_one)?],
+            CmpOp::Eq => vec![d, neg],
+            CmpOp::Ne => return None,
+        })
+    }
+}
+
+/// Have these constraints (each `>= 0`) no solution? Fourier–Motzkin over
+/// the rationals: `true` is a proof; `false` is "not shown" (a solution may
+/// exist, or the bound on the work was reached).
+fn infeasible(mut system: Vec<Linear>) -> bool {
+    let contradiction = |s: &[Linear]| s.iter().any(|c| c.coef.is_empty() && c.constant < 0);
+    for _ in 0..24 {
+        if contradiction(&system) { return true; }
+        system.retain(|c| !c.coef.is_empty());
+        // the variable whose elimination makes the fewest new constraints
+        let mut vars: Vec<String> = system.iter().flat_map(|c| c.coef.keys().cloned()).collect();
+        vars.sort(); vars.dedup();
+        let Some(var) = vars.into_iter().min_by_key(|v| {
+            let pos = system.iter().filter(|c| c.coef.get(v).is_some_and(|k| *k > 0)).count();
+            let neg = system.iter().filter(|c| c.coef.get(v).is_some_and(|k| *k < 0)).count();
+            pos * neg
+        }) else { return false };
+        let (mut lower, mut upper, mut rest) = (Vec::new(), Vec::new(), Vec::new());
+        for c in system {
+            match c.coef.get(&var).copied() {
+                Some(k) if k > 0 => lower.push(c),
+                Some(_) => upper.push(c),
+                None => rest.push(c),
+            }
+        }
+        if lower.len() * upper.len() > 400 { return false; }
+        for lo in &lower {
+            for up in &upper {
+                // a·x + p >= 0 (a > 0) and -b·x + q >= 0 (b > 0)  ⇒  b·p + a·q >= 0
+                let (a, b) = (lo.coef[&var], -up.coef[&var]);
+                let Some(combined) = lo.scaled(b).and_then(|x| up.scaled(a).and_then(|y| x.plus(&y))) else { return false };
+                rest.push(combined);
+            }
+        }
+        if rest.len() > 600 { return false; }
+        system = rest;
+    }
+    contradiction(&system)
+}
+
+/// Is `lhs op rhs` implied, at the statement on `path` of `on`, by the facts
+/// that hold there? `subst` names an expression (`result`, or the slot being
+/// written).
+fn linear_entails(
+    on: &OnSection, path: &[usize], lhs: &Expr, op: CmpOp, rhs: &Expr, subst: Option<(&str, &Expr)>,
+    hyp: &HashMap<String, (f64, f64)>, int_returns: &HashSet<String>,
+) -> bool {
+    let mut assigns: Vec<(&str, &Expr)> = Vec::new();
+    collect_assigns(&on.body, &mut assigns);
+    let params: HashSet<&str> = on.params.iter().map(|p| p.name.as_str()).collect();
+    let mut shadowed: HashSet<String> = HashSet::new();
+    collect_binders_stmts(&on.body, &mut shadowed);
+    // names whose parts are written are no scalars
+    let mut part_written: HashSet<String> = HashSet::new();
+    crate::checker::literals::for_each_stmt_deep(&on.body, &mut |st| match st {
+        Statement::IndexSet { name, .. } => { part_written.insert(name.split('.').next().unwrap_or(name).to_string()); }
+        Statement::Assign { name, .. } if name.contains('.') || name.contains('[') => {
+            part_written.insert(name.split(|c| c == '.' || c == '[').next().unwrap_or(name).to_string());
+        }
+        _ => {}
+    });
+    let once = |n: &str| assigns.iter().filter(|(m, _)| *m == n).count() == 1 && !shadowed.contains(n) && !part_written.contains(n) && !params.contains(n);
+    let single: HashMap<&str, &Expr> = assigns.iter().filter(|(n, v)| once(n) && !std::ptr::eq(*v, &UNKNOWN_EXPR)).map(|(n, v)| (*n, *v)).collect();
+    let int_params: HashSet<&str> = on.params.iter()
+        .filter(|p| matches!(&p.ty.node, TypeExpr::Simple(t) if t == "Int" || t == "BigInt"))
+        .map(|p| p.name.as_str())
+        .filter(|n| !assigns.iter().any(|(m, _)| m == n) && !shadowed.contains(*n) && !part_written.contains(*n))
+        .collect();
+    let scope = LinearScope { single, int_params, hyp, int_returns, subst, atoms: Default::default() };
+
+    // the goal's negation
+    let negated = match op {
+        CmpOp::Ge => vec![(CmpOp::Lt, false)], CmpOp::Gt => vec![(CmpOp::Le, false)],
+        CmpOp::Le => vec![(CmpOp::Gt, false)], CmpOp::Lt => vec![(CmpOp::Ge, false)],
+        // `a == b` fails as `a < b` or as `a > b`: both must be impossible
+        CmpOp::Eq => vec![(CmpOp::Lt, false), (CmpOp::Gt, false)],
+        CmpOp::Ne => return false,
+    };
+    // the facts at this statement — the same ones the interval pass takes
+    // (see `local_ranges_at`): a require BEFORE it in its block or an
+    // enclosing one, the condition of an `if` around it, the negation of an
+    // early exit before it
+    let mut collected: Vec<Fact> = Vec::new();
+    collect_facts(&on.body, &[], &mut collected);
+    let no_subst = LinearScope { single: scope.single.clone(), int_params: scope.int_params.clone(), hyp, int_returns, subst: None, atoms: Default::default() };
+    let mut facts: Vec<Linear> = Vec::new();
+    for f in &collected {
+        if !path.starts_with(&f.path) { continue; }
+        if let Some(ex) = &f.exclude { if path.starts_with(ex) { continue; } }
+        if matches!(f.stmt.node, Statement::Require { .. }) && path.get(f.path.len()).map_or(true, |s| *s / 4 <= f.index) { continue; }
+        if f.exclude.is_some() && path.get(f.path.len()).map_or(true, |s| *s / 4 <= f.index) { continue; }
+        let comparisons: Vec<(&Expr, CmpOp, &Expr)> = match &f.stmt.node {
+            Statement::Require { constraint, .. } => constraint_comparisons(&constraint.node),
+            Statement::If { condition, .. } if f.branch == 1 => positive_comparisons(&condition.node),
+            Statement::If { condition, .. } => negated_comparisons(&condition.node),
+            _ => Vec::new(),
+        };
+        for (l, o, r) in comparisons {
+            // (a fact names the handler's values, never `result` or the slot)
+            if let Some(cs) = no_subst.constraints(l, o, r) { facts.extend(cs); }
+        }
+    }
+    for (o, _) in negated {
+        let Some(goal) = scope.constraints(lhs, o, rhs) else { return false };
+        let mut system = facts.clone();
+        system.extend(goal);
+        // what is assumed of each opaque value
+        let atoms: Vec<(String, (Option<i128>, Option<i128>))> = scope.atoms.borrow().iter().map(|(k, v)| (k.clone(), *v))
+            .chain(no_subst.atoms.borrow().iter().map(|(k, v)| (k.clone(), *v))).collect();
+        for (name, (lo, hi)) in atoms {
+            if let Some(lo) = lo { if let Some(c) = Linear::var(&name).plus(&Linear::constant(-lo)) { system.push(c); } }
+            if let Some(hi) = hi { if let Some(c) = Linear::var(&name).scaled(-1).and_then(|v| v.plus(&Linear::constant(hi))) { system.push(c); } }
+        }
+        if !infeasible(system) { return false; }
+    }
+    true
+}
+
+/// The handlers of `cell` whose face declares `-> Int` (the runtime holds
+/// every value they return to it).
+fn int_returning(cell: &CellDef) -> HashSet<String> {
+    cell.sections.iter().flat_map(|s| match &s.node {
+        Section::Face(f) => f.declarations.iter().filter_map(|d| match &d.node {
+            FaceDecl::Signal(sig) if matches!(sig.return_type.as_ref().map(|t| &t.node), Some(TypeExpr::Simple(t)) if t == "Int") => Some(sig.name.clone()),
+            _ => None,
+        }).collect::<Vec<_>>(),
+        _ => Vec::new(),
+    }).collect()
+}
+
+#[cfg(test)]
+mod linear_tests {
+    use super::*;
+
+    fn c(pairs: &[(&str, i128)], constant: i128) -> Linear {
+        Linear { coef: pairs.iter().map(|(v, k)| (v.to_string(), *k)).collect(), constant }
+    }
+
+    #[test]
+    fn fourier_motzkin_finds_the_contradiction_and_only_it() {
+        // b >= amount, amount >= 1, and (negated goal) b - amount <= -1
+        assert!(infeasible(vec![c(&[("b", 1), ("amount", -1)], 0), c(&[("amount", 1)], -1), c(&[("b", -1), ("amount", 1)], -1)]));
+        // without the first fact there is a solution (b = 0, amount = 1)
+        assert!(!infeasible(vec![c(&[("amount", 1)], -1), c(&[("b", -1), ("amount", 1)], -1)]));
+        // a chain: x <= y, y <= z, z <= 5, x >= 6
+        assert!(infeasible(vec![c(&[("y", 1), ("x", -1)], 0), c(&[("z", 1), ("y", -1)], 0), c(&[("z", -1)], 5), c(&[("x", 1)], -6)]));
+        assert!(!infeasible(vec![c(&[("y", 1), ("x", -1)], 0), c(&[("z", 1), ("y", -1)], 0), c(&[("z", -1)], 5), c(&[("x", 1)], -5)]));
+        // coefficients: 2x + 3y <= 6, x >= 2, y >= 1
+        assert!(infeasible(vec![c(&[("x", -2), ("y", -3)], 6), c(&[("x", 1)], -2), c(&[("y", 1)], -1)]));
+        assert!(!infeasible(vec![]));
+    }
 }

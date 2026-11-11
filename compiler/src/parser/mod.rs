@@ -63,6 +63,7 @@ fn display_token(token: &Token) -> String {
         Token::True => "'true'".to_string(),
         Token::False => "'false'".to_string(),
         Token::In => "'in'".to_string(),
+        Token::PlusPlus => "'++'".to_string(),
         Token::Try => "'try'".to_string(),
         Token::Catch => "'catch'".to_string(),
         Token::Every => "'every'".to_string(),
@@ -136,9 +137,25 @@ pub struct Parser {
     /// statement of a block): there no new statement can start, so a line
     /// starting with `-2` continues the expression (`(a\n -2)`).
     bracket_depth: usize,
+    /// Recovery mode (`parse_program_recovering`): a syntax error is recorded
+    /// and parsing resumes at the next statement / section / cell, so one
+    /// pass reports every error of the file.
+    recover: bool,
+    /// (error, the AST is still complete) — complete: a fix-it whose intent
+    /// was unambiguous (`=>` in a match arm, `-> T` on a handler), parsed as
+    /// if written correctly, so the semantic checks can still run.
+    recovered: Vec<(ParseError, bool)>,
+    /// open `{` before each token (recovery resynchronises on it)
+    depth_at: Vec<u32>,
+    /// `const NAME = literal` of the cell being parsed (3.0): a constant IS
+    /// its literal — every read is replaced here, so an invariant, a
+    /// `require`, a guard and the prover all see the number itself.
+    consts: std::collections::HashMap<String, Literal>,
 }
 
 const MAX_EXPR_DEPTH: usize = 400;
+/// Past this many syntax errors the rest of the file is not worth guessing.
+const MAX_SYNTAX_ERRORS: usize = 25;
 
 /// Keywords that double as field / variable names.
 fn keyword_as_name(t: &Token) -> Option<String> {
@@ -187,7 +204,223 @@ fn reserved_error(t: &Token, span: Span) -> Option<ParseError> {
 
 impl Parser {
     pub fn new(tokens: Vec<SpannedToken>) -> Self {
-        Self { tokens, pos: 0, depth: 0, bracket_depth: 0 }
+        Self { tokens, pos: 0, depth: 0, bracket_depth: 0, recover: false, recovered: Vec::new(), depth_at: Vec::new(), consts: std::collections::HashMap::new() }
+    }
+
+    /// Parse the whole file, reporting EVERY syntax error: `(program, errors,
+    /// complete)`. `complete` is true when each error left its construct in
+    /// the AST as the writer meant it — the program can then be checked.
+    pub fn parse_program_recovering(&mut self) -> (Program, Vec<ParseError>, bool) {
+        self.recover = true;
+        let mut d = 0u32;
+        self.depth_at = self.tokens.iter().map(|t| {
+            let before = d;
+            match t.token {
+                Token::LBrace => d += 1,
+                Token::RBrace => d = d.saturating_sub(1),
+                _ => {}
+            }
+            before
+        }).collect();
+        let program = match self.parse_program() {
+            Ok(p) => p,
+            Err(e) => {
+                self.recovered.push((e, false));
+                Program { imports: Vec::new(), cells: Vec::new(), protocols: Vec::new() }
+            }
+        };
+        let complete = self.recovered.iter().all(|(_, c)| *c);
+        let mut errors: Vec<ParseError> = std::mem::take(&mut self.recovered).into_iter().map(|(e, _)| e).collect();
+        // source order (a section error is recorded after its statements')
+        errors.sort_by_key(|e| e.span().map_or(usize::MAX, |s| s.start));
+        (program, errors, complete)
+    }
+
+    fn can_recover(&self) -> bool {
+        self.recover && self.recovered.len() < MAX_SYNTAX_ERRORS
+    }
+
+    /// The literal after `const NAME =`, starting at token `at`: (literal, tokens used).
+    fn const_literal_at(&self, at: usize) -> Option<(Literal, usize)> {
+        let tok = |i: usize| self.tokens.get(i).map(|t| &t.token);
+        let (neg, at2) = if matches!(tok(at), Some(Token::Minus)) { (true, at + 1) } else { (false, at) };
+        let lit = match tok(at2)? {
+            Token::IntLit(n) => Literal::Int(if neg { n.checked_neg()? } else { *n }),
+            Token::FloatLit(x) => Literal::Float(if neg { -*x } else { *x }),
+            Token::BigIntLit(b) if !neg => Literal::BigInt(b.clone()),
+            Token::StringLit(t) if !neg && !t.contains('{') => Literal::String(t.clone()),
+            Token::True if !neg => Literal::Bool(true),
+            Token::False if !neg => Literal::Bool(false),
+            _ => return None,
+        };
+        Some((lit, at2 + 1 - at))
+    }
+
+    /// The constants a cell declares, read ahead of its sections (a handler
+    /// above the `const` line uses it too).
+    fn prescan_consts(&mut self) {
+        let mut depth = 0i32;
+        let mut i = self.pos;
+        while let Some(t) = self.tokens.get(i) {
+            match &t.token {
+                Token::LBrace => depth += 1,
+                Token::RBrace => { depth -= 1; if depth < 0 { break; } }
+                Token::Eof => break,
+                Token::Ident(w) if depth == 0 && w == "const" => {
+                    if let (Some(Token::Ident(name) | Token::TypeIdent(name)), Some(Token::Eq)) =
+                        (self.tokens.get(i + 1).map(|t| &t.token), self.tokens.get(i + 2).map(|t| &t.token)) {
+                        if let Some((lit, _)) = self.const_literal_at(i + 3) {
+                            self.consts.entry(name.clone()).or_insert(lit);
+                        }
+                    }
+                }
+                _ => {}
+            }
+            i += 1;
+        }
+    }
+
+    /// `const NAME = literal` inside a cell.
+    fn parse_const(&mut self) -> Result<(), ParseError> {
+        let kw = self.peek_span();
+        self.advance(); // const
+        let (name, name_span) = match self.peek().clone() {
+            Token::Ident(n) | Token::TypeIdent(n) => { let sp = self.peek_span(); self.advance(); (n, sp) }
+            other => return Err(ParseError::Expected { expected: "a constant name (`const LIMIT = 500`)".to_string(), found: other, span: self.peek_span() }),
+        };
+        if !self.check(&Token::Eq) {
+            return Err(ParseError::FixIt {
+                message: format!("`const {name}` needs a value — `const {name} = 500` (a number, a String or a Bool literal)"),
+                span: self.peek_span(),
+            });
+        }
+        self.advance();
+        let Some((lit, used)) = self.const_literal_at(self.pos) else {
+            return Err(ParseError::FixIt {
+                message: format!("`const {name}` takes a literal — a number, a String without interpolation, or a Bool (`const {name} = 500`); a computed value belongs in a handler: `on _{}() {{ return … }}`", name.to_lowercase()),
+                span: self.peek_span(),
+            });
+        };
+        for _ in 0..used { self.advance(); }
+        if !self.at_line_start() && matches!(self.peek(), Token::Plus | Token::Minus | Token::Star | Token::Slash | Token::LParen | Token::Dot) {
+            return Err(ParseError::FixIt {
+                message: format!("`const {name}` takes a literal, not an expression — write the value itself (`const {name} = 500`); a computed value belongs in a handler"),
+                span: self.peek_span(),
+            });
+        }
+        // one definition: the first is the one every read was given
+        if self.consts.get(&name).map_or(true, |first| format!("{:?}", first) != format!("{:?}", lit)) {
+            return Err(ParseError::FixIt {
+                message: format!("`const {name}` is declared twice in this cell with different values — keep one"),
+                span: name_span,
+            });
+        }
+        let _ = kw;
+        Ok(())
+    }
+
+    /// A constant's name cannot be bound again: its reads are the literal.
+    fn refuse_const(&self, name: &str, span: Span, what: &str) -> Result<(), ParseError> {
+        if self.consts.contains_key(name) {
+            return Err(ParseError::FixIt {
+                message: format!("`{name}` is a constant of this cell (`const {name} = …`) and cannot name {what} — rename one of them"),
+                span,
+            });
+        }
+        Ok(())
+    }
+
+    /// `"up to {LIMIT} rows"`: a constant read inside an interpolation.
+    fn consts_in_string(&self, text: &str) -> String {
+        if self.consts.is_empty() || !text.contains('{') { return text.to_string(); }
+        let chars: Vec<char> = text.chars().collect();
+        let mut out = String::with_capacity(text.len());
+        let (mut i, mut depth) = (0usize, 0usize);
+        while i < chars.len() {
+            let c = chars[i];
+            // `{{` is a literal brace
+            if depth == 0 && c == '{' && chars.get(i + 1) == Some(&'{') { out.push_str("{{"); i += 2; continue; }
+            if c == '{' { depth += 1; out.push(c); i += 1; continue; }
+            if c == '}' { depth = depth.saturating_sub(1); out.push(c); i += 1; continue; }
+            let word_start = c.is_alphabetic() || c == '_';
+            let prev_ok = i == 0 || !(chars[i - 1].is_alphanumeric() || chars[i - 1] == '_' || chars[i - 1] == '.' || chars[i - 1] == '"');
+            if depth > 0 && word_start && prev_ok {
+                let mut j = i;
+                while j < chars.len() && (chars[j].is_alphanumeric() || chars[j] == '_') { j += 1; }
+                let word: String = chars[i..j].iter().collect();
+                let called = chars.get(j) == Some(&'(');
+                // `{LIMIT}` alone: the text itself replaces the braces too
+                let alone = depth == 1 && i > 0 && chars[i - 1] == '{' && chars.get(j) == Some(&'}') && out.ends_with('{');
+                match self.consts.get(&word) {
+                    Some(lit) if !called => {
+                        let (plain, source) = match lit {
+                            Literal::Int(n) => (n.to_string(), n.to_string()),
+                            Literal::Float(x) => (format!("{:?}", x), format!("{:?}", x)),
+                            Literal::BigInt(b) => (b.clone(), b.clone()),
+                            Literal::Bool(b) => (b.to_string(), b.to_string()),
+                            Literal::String(t) => (t.clone(), format!("\"{}\"", t)),
+                            _ => (word.clone(), word.clone()),
+                        };
+                        if alone {
+                            out.pop();
+                            out.push_str(&plain);
+                            depth -= 1;
+                            i = j + 1;
+                            continue;
+                        }
+                        out.push_str(&source);
+                    }
+                    _ => out.push_str(&word),
+                }
+                i = j;
+                continue;
+            }
+            out.push(c);
+            i += 1;
+        }
+        out
+    }
+
+    fn cur_depth(&self) -> u32 {
+        self.depth_at.get(self.pos).copied().unwrap_or(0)
+    }
+
+    /// Skip to the next place an item of brace depth `d` can start: a token
+    /// `starts` accepts, or the `}` closing the enclosing block. Always moves
+    /// past `item_start` (the failed item's first token).
+    fn resync(&mut self, d: u32, item_start: usize, starts: impl Fn(&SpannedToken) -> bool) {
+        if self.pos == item_start && !self.is_at_end() {
+            self.advance();
+        }
+        while !self.is_at_end() {
+            let dep = self.cur_depth();
+            if dep < d {
+                return;
+            }
+            if dep == d && (self.check(&Token::RBrace) || starts(&self.tokens[self.pos])) {
+                return;
+            }
+            self.advance();
+        }
+    }
+
+    /// The items of a `{ … }` block, one per line (statements, test rules):
+    /// in recovery mode a failed item is recorded and the next line parsed.
+    fn parse_block_items<T>(&mut self, mut item: impl FnMut(&mut Self) -> Result<T, ParseError>) -> Result<Vec<T>, ParseError> {
+        let d = self.cur_depth();
+        let mut out = Vec::new();
+        while !self.check(&Token::RBrace) && !self.is_at_end() {
+            let start = self.pos;
+            match item(self) {
+                Ok(x) => out.push(x),
+                Err(e) if self.can_recover() => {
+                    self.recovered.push((e, false));
+                    self.resync(d, start, |t| t.newline_before);
+                }
+                Err(e) => return Err(e),
+            }
+        }
+        Ok(out)
     }
 
     pub fn parse_program(&mut self) -> Result<Program, ParseError> {
@@ -266,10 +499,21 @@ impl Parser {
 
         let mut protocols = Vec::new();
         while !self.is_at_end() {
-            if self.check(&Token::Protocol) {
-                protocols.push(self.parse_protocol_def()?);
+            let start = self.pos;
+            let r = if self.check(&Token::Protocol) {
+                self.parse_protocol_def().map(|p| protocols.push(p))
             } else {
-                cells.push(self.parse_cell_def()?);
+                self.parse_cell_def().map(|c| cells.push(c))
+            };
+            match r {
+                Ok(()) => {}
+                Err(e) if self.can_recover() => {
+                    self.recovered.push((e, false));
+                    self.resync(0, start, |t| matches!(t.token, Token::Cell | Token::Protocol));
+                    // the `}` of the cell that failed is not an item start
+                    while self.check(&Token::RBrace) { self.advance(); }
+                }
+                Err(e) => return Err(e),
             }
         }
         Ok(Program { imports, cells, protocols })
@@ -597,12 +841,53 @@ impl Parser {
         self.expect(Token::LBrace)?;
 
         let mut sections = Vec::new();
+        let section_depth = self.cur_depth();
+        // an interior cell reads its parent's constants and its own
+        let outer_consts = self.consts.clone();
+        self.prescan_consts();
         while !self.check(&Token::RBrace) && !self.is_at_end() {
-            sections.push(self.parse_section()?);
+            let item_start = self.pos;
+            let is_const = matches!(self.peek(), Token::Ident(w) if w == "const");
+            let parsed = if is_const { self.parse_const().map(|_| None) } else { self.parse_section().map(Some) };
+            match parsed {
+                Ok(Some(sec)) => sections.push(sec),
+                Ok(None) => {}
+                Err(e) if self.can_recover() => {
+                    self.recovered.push((e, false));
+                    self.resync(section_depth, item_start, |t| matches!(&t.token, Token::Ident(w) if w == "const") || matches!(t.token,
+                        Token::On | Token::Face | Token::Memory | Token::State | Token::Every | Token::After
+                        | Token::Cost | Token::Rules | Token::Interior | Token::Scale | Token::Runtime | Token::Variants));
+                }
+                Err(e) => { self.consts = outer_consts; return Err(e); }
+            }
         }
+        self.consts = outer_consts;
 
         let end = self.peek_span();
         self.expect(Token::RBrace)?;
+
+        // 3.0: a tool bound to a server (`[mcp: …]` / `[openapi: …]`) has
+        // no handler in the source; it gets the one that makes the call, so
+        // that a call, a `mock` and every analysis find it like any other
+        let mut bound: Vec<Spanned<Section>> = Vec::new();
+        for section in &sections {
+            let Section::Face(face) = &section.node else { continue };
+            for decl in &face.declarations {
+                let FaceDecl::Tool(tool) = &decl.node else { continue };
+                if tool.binding.is_none() { continue; }
+                if sections.iter().any(|s| matches!(&s.node, Section::OnSignal(on) if on.signal_name == tool.name)) { continue; }
+                let mut args = vec![Spanned::new(Expr::Literal(Literal::String(tool.name.clone())), decl.span)];
+                args.extend(tool.params.iter().map(|p| Spanned::new(Expr::Ident(p.name.clone()), decl.span)));
+                let call = Spanned::new(Expr::FnCall { name: "_external_tool".to_string(), args }, decl.span);
+                bound.push(Spanned::new(Section::OnSignal(OnSection {
+                    signal_name: tool.name.clone(),
+                    params: tool.params.clone(),
+                    body: vec![Spanned::new(Statement::Return { value: call }, decl.span)],
+                    properties: vec![],
+                }), decl.span));
+            }
+        }
+        sections.extend(bound);
 
         Ok(Spanned::new(
             CellDef {
@@ -682,11 +967,11 @@ impl Parser {
             }
             // `const LIMIT = 500` / a cell-level `let`: there are none — say so
             Token::Let => Err(ParseError::FixIt {
-                message: "a cell has no constants or cell-level `let` — write the literal where it is used (a proven bound needs the literal in the invariant AND the require), or return it from a handler: `on _limit() { return 500 }`".to_string(),
+                message: "a cell has no cell-level `let` — a constant is `const LIMIT = 500` (a literal, usable in invariants, guards and `require`); a value that changes lives in a `memory` slot".to_string(),
                 span: self.peek_span(),
             }),
-            Token::Ident(ref w) if w == "const" || w == "val" || w == "var" => Err(ParseError::FixIt {
-                message: format!("`{}`: a cell has no constants — write the literal where it is used (a proven bound needs the literal in the invariant AND the require), or return it from a handler: `on _limit() {{ return 500 }}`", w),
+            Token::Ident(ref w) if w == "val" || w == "var" => Err(ParseError::FixIt {
+                message: format!("`{}`: a cell-level constant is `const LIMIT = 500` (a literal, usable in invariants, guards and `require`); a value that changes lives in a `memory` slot", w),
                 span: self.peek_span(),
             }),
             _ => Err(ParseError::Expected {
@@ -802,10 +1087,28 @@ impl Parser {
             None
         };
 
+        // 3.0: the contract of the signal — `requires amount > 0`,
+        // `ensures result >= 0` (any number of each, in any order)
+        let mut requires = Vec::new();
+        let mut ensures = Vec::new();
+        loop {
+            if self.check(&Token::Requires) {
+                self.advance();
+                requires.push(self.parse_expr()?);
+            } else if matches!(self.peek(), Token::Ident(s) if s == "ensures") {
+                self.advance();
+                ensures.push(self.parse_expr()?);
+            } else {
+                break;
+            }
+        }
+
         Ok(SignalDecl {
             name,
             params,
             return_type,
+            requires,
+            ensures,
         })
     }
 
@@ -827,6 +1130,9 @@ impl Parser {
         //   tool fetch(url) -> String [capability: "net:wikipedia.org"]
         //   tool fetch(url) -> String [capabilities: "net:a.com", "net:b.com"]
         let mut capabilities = Vec::new();
+        // 3.0: `[mcp: "server"]` / `[openapi: "server/operationId"]` — the
+        // tool runs on a server of soma.toml's `[tools.*]`, not in a handler
+        let mut binding: Option<ToolBinding> = None;
         if self.check(&Token::LBracket) {
             self.advance();
             while !self.check(&Token::RBracket) && !self.is_at_end() {
@@ -846,6 +1152,26 @@ impl Parser {
                                 if !matches!(self.peek(), Token::StringLit(_)) { break; }
                             } else { break; }
                         }
+                    } else if key == "mcp" || key == "openapi" {
+                        let at = self.peek_span();
+                        let Token::StringLit(target) = self.peek().clone() else {
+                            return Err(ParseError::FixIt {
+                                message: format!("`{key}:` takes the server's name in soma.toml, as a string: `[{key}: \"docs\"]` (the tool's own name on the server) or `[{key}: \"docs/remote_name\"]`"),
+                                span: at,
+                            });
+                        };
+                        self.advance();
+                        let (server, remote) = match target.split_once('/') {
+                            Some((s, r)) => (s.to_string(), r.to_string()),
+                            None => (target.clone(), name.clone()),
+                        };
+                        if binding.is_some() || server.is_empty() || remote.is_empty() {
+                            return Err(ParseError::FixIt {
+                                message: format!("tool '{name}' is bound once, to one server: `[mcp: \"server\"]` or `[openapi: \"server/operationId\"]`"),
+                                span: at,
+                            });
+                        }
+                        binding = Some(ToolBinding { kind: key.clone(), server, remote });
                     } else {
                         // skip unknown attribute value
                         self.advance();
@@ -873,6 +1199,7 @@ impl Parser {
             params,
             return_type,
             capabilities,
+            binding,
         })
     }
 
@@ -915,7 +1242,8 @@ impl Parser {
     }
 
     fn parse_param(&mut self) -> Result<Param, ParseError> {
-        let (name, _) = self.expect_ident()?;
+        let (name, name_span) = self.expect_ident()?;
+        self.refuse_const(&name, name_span, "a parameter")?;
         if !self.check(&Token::Colon) {
             return Err(ParseError::FixIt {
                 message: format!("parameter '{}' needs a type — `{}: Int` / `String` / `Float` / `Bool` / `Map` / `List`, or `{}: Any` for a value of any kind", name, name, name),
@@ -1033,10 +1361,7 @@ impl Parser {
         self.expect(Token::Rules)?;
         self.expect(Token::LBrace)?;
 
-        let mut rules = Vec::new();
-        while !self.check(&Token::RBrace) && !self.is_at_end() {
-            rules.push(self.parse_rule()?);
-        }
+        let rules = self.parse_block_items(|p| p.parse_rule())?;
 
         self.expect(Token::RBrace)?;
         Ok(RulesSection { rules })
@@ -1684,10 +2009,7 @@ impl Parser {
 
         let task = self.parse_tick_task()?;
         self.expect(Token::LBrace)?;
-        let mut body = Vec::new();
-        while !self.check(&Token::RBrace) && !self.is_at_end() {
-            body.push(self.parse_statement()?);
-        }
+        let body = self.parse_block_items(|p| p.parse_statement())?;
         self.expect(Token::RBrace)?;
 
         Ok(EverySection { interval_ms, body, task })
@@ -1725,10 +2047,7 @@ impl Parser {
 
         let task = self.parse_tick_task()?;
         self.expect(Token::LBrace)?;
-        let mut body = Vec::new();
-        while !self.check(&Token::RBrace) && !self.is_at_end() {
-            body.push(self.parse_statement()?);
-        }
+        let body = self.parse_block_items(|p| p.parse_statement())?;
         self.expect(Token::RBrace)?;
 
         Ok(EverySection { interval_ms, body, task })
@@ -1971,21 +2290,24 @@ impl Parser {
                 .map(|p| format!("{}: {}", p.name, type_expr_source(&p.ty.node)))
                 .collect::<Vec<_>>()
                 .join(", ");
-            return Err(ParseError::FixIt {
+            let err = ParseError::FixIt {
                 message: format!(
                     "handlers do not declare return types — put '-> {}' on the signal declaration inside face {{ }}, then write: on {}({}) {{ ... }}",
                     ret_ty, signal_name, params_str
                 ),
                 span: arrow_span,
-            });
+            };
+            // the handler is read as if the type were not there
+            if self.can_recover() && self.check(&Token::LBrace) {
+                self.recovered.push((err, true));
+            } else {
+                return Err(err);
+            }
         }
 
         self.expect(Token::LBrace)?;
 
-        let mut body = Vec::new();
-        while !self.check(&Token::RBrace) && !self.is_at_end() {
-            body.push(self.parse_statement()?);
-        }
+        let body = self.parse_block_items(|p| p.parse_statement())?;
 
         self.expect(Token::RBrace)?;
         Ok(OnSection {
@@ -2041,6 +2363,7 @@ impl Parser {
                 let (name, name_span) = self.expect_ident()?;
                 // `match` reads fine as a field (`x.match`) but a variable of
                 // that name can never be read back: `match + 1` starts a match
+                self.refuse_const(&name, name_span, "a variable")?;
                 if name == "match" {
                     return Err(ParseError::FixIt {
                         message: "`match` cannot name a variable (it starts a match expression when read) — pick another name, e.g. `m` or `found`".to_string(),
@@ -2146,7 +2469,8 @@ impl Parser {
                     }
                     self.expect(Token::RBracket)?;
                 }
-                let (var, _) = self.expect_ident()?;
+                let (var, var_span) = self.expect_ident()?;
+                self.refuse_const(&var, var_span, "a loop variable")?;
                 self.expect(Token::In)?;
                 let iter = self.parse_expr()?;
                 self.expect(Token::LBrace)?;
@@ -2228,8 +2552,11 @@ impl Parser {
                         let (name, _) = self.expect_ident()?;
                         // `else Tag "why {x}"`: a machine-readable kind AND
                         // a human detail (encoded Tag\u{1f}text; the
-                        // interpreter splits it)
-                        if let Token::StringLit(detail) = self.peek().clone() {
+                        // interpreter splits it). The detail sits on the
+                        // same line: a string on the next line is a
+                        // statement of its own.
+                        if let (Token::StringLit(detail), false) = (self.peek().clone(), self.at_line_start()) {
+                            let detail = self.consts_in_string(&detail);
                             self.advance();
                             format!("{}\u{1f}{}", name, detail)
                         } else {
@@ -2429,7 +2756,7 @@ impl Parser {
                 }
             }
             // Tokens that can start an expression: match, literals, parenthesized, etc.
-            Token::Match | Token::Try |
+            Token::Match | Token::Try | Token::Await |
             Token::IntLit(_) | Token::BigIntLit(_) | Token::FloatLit(_) | Token::StringLit(_) |
             Token::True | Token::False | Token::LParen |
             Token::Bang | Token::Minus | Token::LBracket | Token::PercentLit(_) |
@@ -2666,6 +2993,14 @@ impl Parser {
                     left = Spanned::new(Expr::FnCall { name: name.clone(), args: all }, span);
                     continue;
                 }
+                // `xs |> std.map(f)` is `std.map(xs, f)`: the piped value
+                // goes after the builtin's name
+                if name == "_std" && !args.is_empty() {
+                    let mut all = vec![args[0].clone(), left];
+                    all.extend(args[1..].iter().cloned());
+                    left = Spanned::new(Expr::FnCall { name: name.clone(), args: all }, span);
+                    continue;
+                }
             }
             left = Spanned::new(Expr::Pipe {
                 left: Box::new(left),
@@ -2769,7 +3104,17 @@ impl Parser {
     fn parse_additive(&mut self) -> Result<Spanned<Expr>, ParseError> {
         let mut left = self.parse_multiplicative()?;
         let mut chain = 0usize;
-        while matches!(self.peek(), Token::Plus | Token::Minus) {
+        while matches!(self.peek(), Token::Plus | Token::Minus | Token::PlusPlus) {
+            // `a ++ b` joins two lists or two Strings: concat(a, b)
+            if matches!(self.peek(), Token::PlusPlus) {
+                chain += 1;
+                self.chain_limit(chain)?;
+                self.advance();
+                let right = self.parse_multiplicative()?;
+                let span = left.span.merge(right.span);
+                left = Spanned::new(Expr::FnCall { name: "concat".to_string(), args: vec![left, right] }, span);
+                continue;
+            }
             // a line starting with `-` TOUCHING its operand (`-amount`) is a
             // new expression, the value of a block: `let fee = 2` then
             // `-amount` read as `2 - amount`. `- amount` (spaced) still
@@ -2933,6 +3278,14 @@ impl Parser {
                     let span = expr.span.merge(end);
                     // `"C".delegate("h", x)` is `delegate("C", "h", x)` (the
                     // analyses follow only the call form)
+                    // 3.0: `std.len(x)` is the BUILTIN len, whatever handlers
+                    // the program names `len`
+                    if matches!(&expr.node, Expr::Ident(n) if n == "std") {
+                        let mut all = vec![Spanned::new(Expr::Literal(Literal::String(field.clone())), field_span)];
+                        all.extend(args);
+                        expr = Spanned::new(Expr::FnCall { name: "_std".to_string(), args: all }, span);
+                        continue;
+                    }
                     if field == "delegate" && matches!(expr.node, Expr::Literal(Literal::String(_))) {
                         let mut all = vec![expr];
                         all.extend(args);
@@ -2997,60 +3350,9 @@ impl Parser {
         Ok(expr)
     }
 
-    fn parse_primary_expr(&mut self) -> Result<Spanned<Expr>, ParseError> {
-        let start = self.peek_span();
-        match self.peek().clone() {
-            Token::IntLit(n) => {
-                self.advance();
-                Ok(Spanned::new(Expr::Literal(Literal::Int(n)), start))
-            }
-            Token::BigIntLit(ref s) => {
-                let s = s.clone();
-                self.advance();
-                Ok(Spanned::new(Expr::Literal(Literal::BigInt(s)), start))
-            }
-            Token::FloatLit(n) => {
-                self.advance();
-                Ok(Spanned::new(Expr::Literal(Literal::Float(n)), start))
-            }
-            Token::StringLit(s) => {
-                let s = s.clone();
-                self.advance();
-                Ok(Spanned::new(Expr::Literal(Literal::String(s)), start))
-            }
-            Token::True => {
-                self.advance();
-                Ok(Spanned::new(Expr::Literal(Literal::Bool(true)), start))
-            }
-            Token::False => {
-                self.advance();
-                Ok(Spanned::new(Expr::Literal(Literal::Bool(false)), start))
-            }
-            Token::DurationLit(val, unit, ms) => {
-                self.advance();
-                let du = match unit {
-                    DurationUnitTok::Ms => DurationUnit::Milliseconds,
-                    DurationUnitTok::S => DurationUnit::Seconds,
-                    DurationUnitTok::Min => DurationUnit::Minutes,
-                    DurationUnitTok::H => DurationUnit::Hours,
-                    DurationUnitTok::D => DurationUnit::Days,
-                    DurationUnitTok::Years => DurationUnit::Years,
-                };
-                Ok(Spanned::new(
-                    Expr::Literal(Literal::Duration(Duration { value: val, unit: du, ms })),
-                    start,
-                ))
-            }
-            Token::PercentLit(val) => {
-                self.advance();
-                Ok(Spanned::new(Expr::Literal(Literal::Percentage(val)), start))
-            }
-            Token::Ident(name) => {
-                let name = name.clone();
-                self.advance();
-                // Check for lambda: name => expr  OR  name => { stmts; expr }
-                if self.check(&Token::FatArrow) {
-                    self.advance();
+    /// The body of a lambda, after `=>`: an expression, or a `{ … }` block
+    /// whose last expression is the value.
+    fn finish_lambda(&mut self, name: String, start: Span) -> Result<Spanned<Expr>, ParseError> {
                     if self.check(&Token::LBrace) {
                         // Block lambda: s => { let x = ...; expr }
                         self.advance();
@@ -3116,6 +3418,141 @@ impl Parser {
                             start.merge(self.prev_span()),
                         ));
                     }
+    }
+
+    /// `(a, b) => …` (3.0): a lambda of several parameters. Called with that
+    /// many arguments (`f(1, 2)`), or handed ONE composite by a builtin — a
+    /// pair, `reduce`'s {acc, val}, an entry {key, value} — which it takes
+    /// apart in order. Read as a block lambda over `__argsN`.
+    fn parse_multi_param_lambda(&mut self) -> Result<Spanned<Expr>, ParseError> {
+        let start = self.peek_span();
+        self.advance(); // (
+        let mut params: Vec<(String, Span)> = Vec::new();
+        loop {
+            let (name, sp) = self.expect_ident()?;
+            self.refuse_const(&name, sp, "a lambda parameter")?;
+            if params.iter().any(|(p, _)| *p == name) {
+                return Err(ParseError::FixIt { message: format!("lambda parameter `{name}` is named twice"), span: sp });
+            }
+            params.push((name, sp));
+            if self.check(&Token::Comma) { self.advance(); } else { break; }
+        }
+        self.expect(Token::RParen)?;
+        self.expect(Token::FatArrow)?;
+        let packed = format!("__args{}", params.len());
+        let lets: Vec<Spanned<Statement>> = params.iter().enumerate().map(|(i, (name, sp))| Spanned::new(
+            Statement::Let {
+                name: name.clone(),
+                value: Spanned::new(Expr::Index {
+                    target: Box::new(Spanned::new(Expr::Ident(packed.clone()), *sp)),
+                    index: Box::new(Spanned::new(Expr::Literal(Literal::Int(i as i64)), *sp)),
+                }, *sp),
+            }, *sp)).collect();
+        let lambda = self.finish_lambda(packed, start)?;
+        let span = lambda.span;
+        Ok(Spanned::new(match lambda.node {
+            Expr::Lambda { param, body } => Expr::LambdaBlock { param, stmts: lets, result: body },
+            Expr::LambdaBlock { param, stmts, result } => Expr::LambdaBlock { param, stmts: lets.into_iter().chain(stmts).collect(), result },
+            other => other,
+        }, span))
+    }
+
+    fn parse_primary_expr(&mut self) -> Result<Spanned<Expr>, ParseError> {
+        let start = self.peek_span();
+        match self.peek().clone() {
+            Token::IntLit(n) => {
+                self.advance();
+                Ok(Spanned::new(Expr::Literal(Literal::Int(n)), start))
+            }
+            Token::BigIntLit(ref s) => {
+                let s = s.clone();
+                self.advance();
+                Ok(Spanned::new(Expr::Literal(Literal::BigInt(s)), start))
+            }
+            Token::FloatLit(n) => {
+                self.advance();
+                Ok(Spanned::new(Expr::Literal(Literal::Float(n)), start))
+            }
+            Token::StringLit(s) => {
+                let s = self.consts_in_string(&s);
+                self.advance();
+                Ok(Spanned::new(Expr::Literal(Literal::String(s)), start))
+            }
+            // a constant of this cell IS its literal
+            // (`if amount > LIMIT {` — the brace opens the block: only
+            // `Name { field: …` is a record of that name)
+            Token::Ident(name) | Token::TypeIdent(name) if self.consts.contains_key(&name)
+                && !matches!(self.peek_at(1), Token::LParen)
+                && !(matches!(self.peek_at(1), Token::LBrace) && matches!(self.peek_at(2), Token::Ident(_)) && matches!(self.peek_at(3), Token::Colon)) => {
+                if matches!(self.peek_at(1), Token::FatArrow) {
+                    return Err(ParseError::FixIt {
+                        message: format!("`{name}` is a constant of this cell (`const {name} = …`) and cannot name a lambda parameter — rename one of them"),
+                        span: start,
+                    });
+                }
+                if matches!(self.peek_at(1), Token::Eq | Token::PlusEq | Token::MinusEq | Token::StarEq | Token::SlashEq) {
+                    return Err(ParseError::FixIt {
+                        message: format!("`{name}` is a constant (`const {name} = …`) and cannot be assigned — a value that changes lives in a `memory` slot or a `let`"),
+                        span: start,
+                    });
+                }
+                let lit = self.consts[&name].clone();
+                self.advance();
+                Ok(Spanned::new(Expr::Literal(lit), start))
+            }
+            // 3.0: a durable wait — `await approve(msg)`, `await signal(name,
+            // key)`, `await sleep(duration)`. The call is the builtin
+            // `await_<what>`; where it may stand is `check`'s rule (kind `await`).
+            Token::Await => {
+                self.advance();
+                let what = match self.peek().clone() {
+                    Token::Signal => "signal".to_string(),
+                    Token::Ident(n) if n == "approve" || n == "sleep" => n,
+                    _ => return Err(ParseError::FixIt {
+                        message: "`await` waits for one of three things: `await approve(message)`, `await signal(name, key)`, `await sleep(duration)` — a handler call is awaited already (it returns when it is done)".to_string(),
+                        span: self.peek_span(),
+                    }),
+                };
+                self.advance();
+                self.expect(Token::LParen)?;
+                let args = self.parse_arg_list()?;
+                self.expect(Token::RParen)?;
+                Ok(Spanned::new(Expr::FnCall { name: format!("await_{}", what), args }, start.merge(self.prev_span())))
+            }
+            Token::True => {
+                self.advance();
+                Ok(Spanned::new(Expr::Literal(Literal::Bool(true)), start))
+            }
+            Token::False => {
+                self.advance();
+                Ok(Spanned::new(Expr::Literal(Literal::Bool(false)), start))
+            }
+            Token::DurationLit(val, unit, ms) => {
+                self.advance();
+                let du = match unit {
+                    DurationUnitTok::Ms => DurationUnit::Milliseconds,
+                    DurationUnitTok::S => DurationUnit::Seconds,
+                    DurationUnitTok::Min => DurationUnit::Minutes,
+                    DurationUnitTok::H => DurationUnit::Hours,
+                    DurationUnitTok::D => DurationUnit::Days,
+                    DurationUnitTok::Years => DurationUnit::Years,
+                };
+                Ok(Spanned::new(
+                    Expr::Literal(Literal::Duration(Duration { value: val, unit: du, ms })),
+                    start,
+                ))
+            }
+            Token::PercentLit(val) => {
+                self.advance();
+                Ok(Spanned::new(Expr::Literal(Literal::Percentage(val)), start))
+            }
+            Token::Ident(name) => {
+                let name = name.clone();
+                self.advance();
+                // Check for lambda: name => expr  OR  name => { stmts; expr }
+                if self.check(&Token::FatArrow) {
+                    self.advance();
+                    return self.finish_lambda(name, start);
                 }
                 // Check for function call: name(args) — on the same line
                 if self.check(&Token::LParen) && !self.at_line_start() {
@@ -3273,13 +3710,20 @@ impl Parser {
 
                     // Fix-it: `pattern => expr` is the Rust spelling.
                     if self.check(&Token::FatArrow) {
-                        return Err(ParseError::FixIt {
+                        let err = ParseError::FixIt {
                             message: "match arms use '->', not '=>'".to_string(),
                             span: self.peek_span(),
-                        });
+                        };
+                        // the arm is read as if `->` were written
+                        if self.can_recover() {
+                            self.recovered.push((err, true));
+                            self.advance();
+                        } else {
+                            return Err(err);
+                        }
+                    } else {
+                        self.expect(Token::Arrow)?;
                     }
-
-                    self.expect(Token::Arrow)?;
 
                     // Parse body: either a block { stmts; result_expr } or single expression
                     if self.check(&Token::LBrace) {
@@ -3368,6 +3812,20 @@ impl Parser {
                 self.expect(Token::RBracket)?;
                 Ok(Spanned::new(Expr::ListLiteral(elements), start.merge(self.prev_span())))
             }
+            // `(a, b) => …`: a parameter list, not a parenthesised value
+            Token::LParen if {
+                let mut k = 1;
+                let mut names = 0;
+                loop {
+                    if !matches!(self.peek_at(k), Token::Ident(_) | Token::TypeIdent(_)) { break false; }
+                    names += 1;
+                    match self.peek_at(k + 1) {
+                        Token::Comma => k += 2,
+                        Token::RParen => break names >= 2 && matches!(self.peek_at(k + 2), Token::FatArrow),
+                        _ => break false,
+                    }
+                }
+            } => self.parse_multi_param_lambda(),
             Token::LParen => {
                 self.advance();
                 // Check for Unit literal: ()

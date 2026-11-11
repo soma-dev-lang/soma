@@ -3,10 +3,12 @@ name = "airlock"
 version = "0.1.0"
 description = "Airlock — a safety-critical interlock where 'both doors open' is unreachable by construction"
 
-# The whole point: prove the interlock. No `eventually` goal — a lock is
-# reactive (it cycles forever), so the theorem is structural safety
-# (both-open is not a reachable state) + no deadlock + liveness back to
-# a safe state, all of which the default checks prove.
+# No `eventually` goal — a lock is reactive (it cycles forever). Safety here
+# is STRUCTURAL: "both doors open" is not a state of this machine, so there is
+# nothing for a checker to search for. What the default checks do prove: the
+# reachable set is the 6 safe states, no deadlock, and liveness back to a safe
+# state. `command` transitions to a target taken from its input, so which edge
+# it takes is checked at run time — verify reports that as a warning.
 [verify]
 cells = ["Airlock"]
 deadlock_free = true

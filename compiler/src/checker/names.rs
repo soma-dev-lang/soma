@@ -12,7 +12,7 @@ use std::collections::{HashMap, HashSet};
 /// Names dispatched inline by the interpreter rather than through the
 /// builtins tables: `append` only works through the in-place assignment
 /// fast path (`items = append(items, x)`), and `_coalesce` backs `??`.
-const INLINE_BUILTIN_NAMES: &[&str] = &["append", "_coalesce"];
+const INLINE_BUILTIN_NAMES: &[&str] = &["append", "_coalesce", "_external_tool", "_std", "await_approve", "await_signal", "await_sleep"];
 
 /// Builtins with an effect beyond their value: a state change, an LLM call,
 /// I/O, the network, the bus. A guard or an invariant (a condition) may not
@@ -32,6 +32,12 @@ pub const EFFECT_BUILTINS: &[&str] = &[
     "horde", "vote",
     // it stops a running horde (a GET cancelled one)
     "horde_cancel",
+    // 3.0 durable waits: they end the step, or run a waiting continuation
+    "await_approve", "await_signal", "await_sleep", "resume", "deliver", "cancel_wait",
+    // 3.0: a tool that runs on a server
+    "_external_tool",
+    // `std.f(…)`: any builtin, so every effect a builtin may have
+    "_std",
 ];
 
 /// Builtins whose answer can differ between two calls in one handler run:
@@ -48,6 +54,7 @@ const UNSTABLE_BUILTINS: &[&str] = &[
     "transition", "tokens_used", "tokens_remaining", "trace", "delegate",
     // a process-wide handle registry: to_sampled(A) answered handle 1 then 2
     "to_sampled", "drop_sampled",
+    "await_approve", "await_signal", "await_sleep", "resume", "deliver", "waiting", "cancel_wait", "_external_tool", "_std",
 ];
 
 /// Can two calls of builtin `name` in one handler run answer differently?

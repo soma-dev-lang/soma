@@ -366,6 +366,67 @@ pub fn sqlite_adopting(cell: &str, slot: &str, legacy: &str) -> (SqliteBackend, 
     (backend, copied)
 }
 
+// ── 3.0 (C8): read snapshots ───────────────────────────────────────────
+//
+// A handler that only reads does not need the handler lock: it needs the
+// data as of one commit. In WAL mode a second connection gives exactly
+// that — a read transaction sees the last committed state for as long as
+// it stays open, whatever the writer does meanwhile. While a snapshot is
+// open on this thread, every read of a SQLite slot goes to the thread's
+// read connection; a write is not made and marks the snapshot violated
+// (the interpreter then runs the handler again, under the lock).
+
+thread_local! {
+    static SNAPSHOT: std::cell::RefCell<Option<rusqlite::Connection>> = const { std::cell::RefCell::new(None) };
+    static SNAPSHOT_VIOLATED: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+    /// per table: (first id, contiguous) of its list log, within this snapshot
+    static SNAPSHOT_LISTS: std::cell::RefCell<HashMap<String, (Option<i64>, bool)>> = std::cell::RefCell::new(HashMap::new());
+}
+/// Read connections not in use (one per handler thread at most).
+static READERS: std::sync::Mutex<Vec<rusqlite::Connection>> = std::sync::Mutex::new(Vec::new());
+
+/// Is a read snapshot open on this thread?
+pub fn snapshot_active() -> bool { SNAPSHOT.with(|s| s.borrow().is_some()) }
+
+/// Mark this thread's snapshot as one whose result cannot be used.
+pub fn snapshot_violate() { SNAPSHOT_VIOLATED.with(|v| v.set(true)); }
+pub fn snapshot_violated() -> bool { SNAPSHOT_VIOLATED.with(|v| v.get()) }
+
+/// Open a read snapshot on this thread: the database as of the last commit.
+/// `Ok(false)` when there is no database (nothing persistent to read).
+pub fn snapshot_begin() -> Result<bool, String> {
+    if shared_connection().is_none() { SNAPSHOT_VIOLATED.with(|v| v.set(false)); return Ok(false); }
+    let pooled = READERS.lock().unwrap_or_else(|e| e.into_inner()).pop();
+    let conn = match pooled {
+        Some(c) => c,
+        None => {
+            let c = rusqlite::Connection::open_with_flags(data_dir().join("soma.db"),
+                rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY | rusqlite::OpenFlags::SQLITE_OPEN_NO_MUTEX).map_err(|e| e.to_string())?;
+            c.busy_timeout(std::time::Duration::from_secs(120)).map_err(|e| e.to_string())?;
+            c
+        }
+    };
+    // the first read pins the snapshot
+    conn.execute_batch("BEGIN").map_err(|e| e.to_string())?;
+    conn.query_row("SELECT COUNT(*) FROM sqlite_master", [], |r| r.get::<_, i64>(0)).map_err(|e| e.to_string())?;
+    SNAPSHOT.with(|s| *s.borrow_mut() = Some(conn));
+    SNAPSHOT_VIOLATED.with(|v| v.set(false));
+    SNAPSHOT_LISTS.with(|l| l.borrow_mut().clear());
+    Ok(true)
+}
+
+/// Close this thread's snapshot. True when it was violated (a write was
+/// attempted, or a read failed): what the handler computed is not kept.
+pub fn snapshot_end() -> bool {
+    if let Some(conn) = SNAPSHOT.with(|s| s.borrow_mut().take()) {
+        if conn.execute_batch("ROLLBACK").is_ok() {
+            let mut pool = READERS.lock().unwrap_or_else(|e| e.into_inner());
+            if pool.len() < 64 { pool.push(conn); }
+        }
+    }
+    SNAPSHOT_VIOLATED.with(|v| v.replace(false))
+}
+
 /// The shared connection, if any persistent slot opened the database.
 pub fn shared_connection() -> Option<Arc<std::sync::Mutex<rusqlite::Connection>>> {
     SHARED_CONN.get().cloned()
@@ -373,6 +434,19 @@ pub fn shared_connection() -> Option<Arc<std::sync::Mutex<rusqlite::Connection>>
 
 impl SqliteBackend {
     fn read<T>(&self, what: &str, f: impl FnOnce(&rusqlite::Connection) -> rusqlite::Result<T>) -> Option<T> {
+        // a read snapshot is open on this thread: its own connection, and a
+        // failure there (a table created after the snapshot) is the
+        // snapshot's — the handler runs again under the lock
+        if snapshot_active() {
+            return SNAPSHOT.with(|s| {
+                let guard = s.borrow();
+                match f(guard.as_ref().unwrap()) {
+                    Ok(value) => Some(value),
+                    Err(_) => { snapshot_violate(); None }
+                }
+            });
+        }
+        let _ = what;
         let conn = self.conn.lock().unwrap_or_else(|e| e.into_inner());
         match f(&conn) {
             Ok(value) => Some(value),
@@ -418,6 +492,9 @@ impl SqliteBackend {
     /// policy leaves earlier changes from the statement in place. The
     /// enclosing handler still owns the final commit.
     fn write<T>(&self, what: &str, f: impl FnOnce(&rusqlite::Connection) -> rusqlite::Result<T>) -> Option<T> {
+        // inside a read snapshot nothing is written: the handler was taken
+        // for a reader and is not one
+        if snapshot_active() { snapshot_violate(); return None; }
         let conn = self.conn.lock().unwrap_or_else(|e| e.into_inner());
         if !Self::may_write(&conn) { return None; }
         let result = conn.execute_batch("SAVEPOINT soma_storage_write")
@@ -460,6 +537,12 @@ impl SqliteBackend {
 
     pub fn try_new(cell_name: &str, slot_name: &str) -> Result<Self, String> {
         let shared = Self::open_shared()?;
+        // a reader creates no table (the statement would join whatever
+        // transaction the writer has open on the shared connection): a table
+        // that does not exist yet fails the read, and the handler runs again
+        if snapshot_active() {
+            return Ok(Self { conn: shared.clone(), table: format!("{}_{}", cell_name, slot_name), list_layout: std::sync::Mutex::new(None) });
+        }
         let conn = shared.lock().unwrap_or_else(|e| e.into_inner());
 
         let table = format!("{}_{}", cell_name, slot_name);
@@ -598,6 +681,30 @@ impl StorageBackend for SqliteBackend {
         // Use the primary key only after verifying the entire log has no
         // gaps. A missing earlier row shifts every later list position,
         // even when MIN(id) + i happens to exist.
+        if snapshot_active() {
+            // the layout of this snapshot, computed once per table
+            let known = SNAPSHOT_LISTS.with(|l| l.borrow().get(&self.table).copied());
+            let (first, contiguous) = match known {
+                Some(k) => k,
+                None => {
+                    let k = self.read("list index", |conn| conn.query_row(
+                        &format!("SELECT MIN(id), MAX(id), COUNT(*) FROM \"{}_log\"", self.table), [],
+                        |r| Ok((r.get::<_, Option<i64>>(0)?, r.get::<_, Option<i64>>(1)?, r.get::<_, i64>(2)?))))
+                        .map(|(a, b, n)| (a, a.zip(b).is_some_and(|(a, b)| i128::from(b) - i128::from(a) + 1 == i128::from(n))))?;
+                    SNAPSHOT_LISTS.with(|l| l.borrow_mut().insert(self.table.clone(), k));
+                    k
+                }
+            };
+            let Some(min) = first else { return self.list().into_iter().nth(i); };
+            let index = i64::try_from(i).ok()?;
+            let (query, position) = if contiguous {
+                (format!("SELECT value, type FROM \"{}_log\" WHERE id = ?1", self.table), min.checked_add(index)?)
+            } else {
+                (format!("SELECT value, type FROM \"{}_log\" ORDER BY id LIMIT 1 OFFSET ?1", self.table), index)
+            };
+            use rusqlite::OptionalExtension;
+            return self.read("list index", |conn| conn.query_row(&query, rusqlite::params![position], Self::read_row).optional()).flatten();
+        }
         let conn = self.conn.lock().unwrap();
         let version = conn.query_row("PRAGMA data_version", [], |r| r.get::<_, i64>(0)).map_err(|e| note_read_error("list index", &e)).ok()?;
         let changes = conn.query_row("SELECT total_changes()", [], |r| r.get::<_, i64>(0)).map_err(|e| note_read_error("list index", &e)).ok()?;

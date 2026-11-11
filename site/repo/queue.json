@@ -1,0 +1,11 @@
+{
+  "name": "queue",
+  "description": "Durable jobs with claim / acknowledge: a claimed job is invisible for a while and handed out again if its worker dies; after too many deliveries it is parked as dead. A declared state machine (`ready → claimed → done | dead`), checked by `soma verify`.",
+  "latest": "0.1.0",
+  "versions": {
+    "0.1.0": {
+      "git": "https://github.com/soma-dev-lang/soma",
+      "subdir": "packages/queue"
+    }
+  }
+}

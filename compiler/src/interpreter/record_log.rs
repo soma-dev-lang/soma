@@ -240,3 +240,36 @@ pub fn values_equivalent(a: &Value, b: &Value) -> bool {
         _ => false,
     }
 }
+
+// ── 3.0: recorded model replies ─────────────────────────────────────────
+
+/// Beside `app.somalog`: `app.somalog.replies`, one model answer per line
+/// in the order think() / think_json() returned them.
+pub fn replies_path(log: &Path) -> PathBuf {
+    let mut name = log.as_os_str().to_os_string();
+    name.push(".replies");
+    PathBuf::from(name)
+}
+
+/// One answer: the text the handler was given, or the failure it saw.
+pub fn append_reply(log: &Path, cell: &str, reply: &Result<String, String>) -> std::io::Result<()> {
+    let entry = match reply {
+        Ok(text) => serde_json::json!({"v": 1, "cell": cell, "ok": true, "text": text}),
+        Err(msg) => serde_json::json!({"v": 1, "cell": cell, "ok": false, "text": msg}),
+    };
+    let mut f = OpenOptions::new().create(true).append(true).open(replies_path(log))?;
+    writeln!(f, "{}", entry)
+}
+
+/// The recorded answers, in order. None: no replies file (a log written
+/// before 3.0, or a run that never called a model).
+pub fn read_replies(log: &Path) -> Option<Vec<Result<String, String>>> {
+    let f = std::fs::File::open(replies_path(log)).ok()?;
+    let mut out = Vec::new();
+    for line in BufReader::new(f).lines().map_while(Result::ok) {
+        let Ok(v) = serde_json::from_str::<serde_json::Value>(&line) else { continue };
+        let text = v["text"].as_str().unwrap_or("").to_string();
+        out.push(if v["ok"].as_bool().unwrap_or(true) { Ok(text) } else { Err(text) });
+    }
+    Some(out)
+}

@@ -1,0 +1,148 @@
+# Soma — what each release changed
+
+> Newest first. The language itself: https://soma-lang.dev/llms.txt (`soma docs agent`).
+> Every fix and its compatibility note: https://soma-lang.dev/CHANGELOG.md.
+
+Soma 3.0.0 types expressions at check: a field a record type does not declare
+(`l.quantity` on `Line { sku, qty }`), operands the interpreter would refuse
+(`s * 2` on a String), an argument or a `try` result used as the wrong kind
+are check errors — inferred, no annotation added, and only when every
+execution would raise. `soma check` reports EVERY syntax error of a file in
+one pass, each with file / line / col / fix in `--json`; every diagnostic has a
+stable code (`E0110`; `soma explain E0110`). New in the language: cell
+constants (`const LIMIT = 500`, proven against like the literal), lambdas of
+several parameters (`(a, b) => a + b`), `a ++ b` (join two lists or Strings),
+and a typed model answer (`think_json(prompt, map("as", "Decision"))` returns
+a value of that `cell type`, or raises kind `json`). New commands: `soma fmt`
+(canonical layout, `--check` for CI), `soma verify --attest out.json` (the
+proof as a file a reviewer re-checks with `--check-attestation`). Editions:
+`edition = "2027"` under `[package]` in soma.toml (what `soma init` writes)
+also refuses a value that may be absent where one is required (`counts.get(k)
++ 1` — write `(counts.get(k) ?? 0) + 1`), `a ?? b + c` without parentheses,
+`+` between two non-numeric lists (join with `++`) and a return that
+contradicts the face's type; a program without the key is edition 2026 and
+checks as before (those are warnings or run-time checks there).
+Also in 3.0.0: `soma verify` knows the state a handler established before a
+`transition()` (`require get_status(id) == "held"`, an `if`, a `match`, an
+earlier transition) and refuses a move no such state has an edge for; an
+untrusted value (a model's answer, an HTTP reply) deciding a transition
+target, a URL, a file path or the budget without a check is a warning
+(edition 2027: an error); `soma replay` hands back the model's recorded
+answers (`--live` asks again); `soma eval`, `soma lsp`, `soma fix --edition
+2027`, `SOMA_OTEL_FILE` (OTLP spans); `tools/diff_fuzz.py` compares the
+interpreter with `[native]` on generated handlers (108,000 comparisons, no
+differing answer; 388 cases native code refuses with its own message).
+Compatibility: a program that ran correctly still checks; one that only
+raised on some path now fails `soma check` on that line. Scope: types are
+inferred per handler (a reassigned local, a lambda parameter, most builtin
+results are not tracked); `[native]` keeps its own typing; proofs stay per
+cell. Details: https://soma-lang.dev/CHANGELOG.md.
+
+Soma 2.8.10 corrects native code that diverged from the interpreter: an exact
+Int quotient next to `%` stayed a Float, Int-only builtins given a Float were
+truncated or failed in rustc (they are refused like the interpreter), a huge
+literal times a small local overflowed instead of promoting to BigInt,
+`to_string` of an exact quotient printed "2.0", `str_at` bounds and error
+wording differed, `buffer(-3)` died on "capacity overflow". Storage: Int indices
+past 64 bits acted on element 0 of a List slot, a Map key serde reserves broke
+its round trip, `set_budget` accepted a negative BigInt; `rows[i] = v`,
+`rows.delete(i)` and `m.len` on persistent slots no longer rewrite or scan the
+whole table, joins and self-assigned `with`/`without` are linear. The
+quadratic-concatenation lint ignores numeric accumulators, `(f)(x)` is refused
+like `f(a)(b)`, `"{0x1F}"` interpolates, `check --json` keeps its keys on a load
+failure, and a restarted cluster node no longer reports its own tables as
+orphans. Sixteen new Rust regressions cover these changes; every program of the
+repository keeps its `check`, `verify` and `test` verdicts.
+Scope: native `/` is typed Float, so an exact-quotient division by zero answers
+`inf`/`NaN` natively where the interpreter raises. Details:
+https://soma-lang.dev/CHANGELOG.md.
+
+Soma 2.8.9 distinguishes storage read failures from absent keys and empty
+collections. A failed read aborts the invocation and rolls back earlier local
+writes, including inside `try`. Legacy lists retain their values on append and
+cannot resurrect deleted items or hang during replacement. The JSON backend
+refuses malformed/unreadable files and preserves its old state on write failure.
+The HTTP storage adapter validates responses, propagates failures and preserves
+typed non-finite Floats. Both protocol demos are corrected. Thirty-six new Rust
+regressions cover these changes (including three Python HTTP scenarios).
+Scope: JSON storage has per-file replacement, not SQLite multi-slot transactions;
+HTTP providers have no remote transaction or exactly-once guarantee, and this
+release does not wire HTTP providers into `run`/`serve`.
+Details: https://soma-lang.dev/CHANGELOG.md.
+
+Soma 2.8.8 checks SQLite transaction boundaries and propagates refused writes
+from `remember()`, `next_id()` and transitions. Failed commits withhold queued
+events and replication; failed task boundaries stop execution. Auxiliary tables
+open before the transaction. List writes handle failures atomically, indexed
+reads handle gaps, and normal returns from scheduled ticks commit their writes.
+`next_id()` rejects counter exhaustion/corruption and migrates only its own
+cell's legacy counter. Twenty-nine new regression tests cover these paths.
+Compatibility: a lost transaction aborts the invocation even inside `try`;
+already committed task steps and external effects are not undone.
+Details: https://soma-lang.dev/CHANGELOG.md.
+
+Soma 2.8.7 fixes `if` expression scope, lambda capture inside interpolations
+and error details, and collection evaluation when interpolations assign locals.
+Static analyses now see calls containing quoted colons: recursion, invariant
+writes and token costs cannot disappear from the proof. `recall()` stays within
+its cell and preserves JSON-shaped Strings; `remember()` rejects functions and
+excessive encoded nesting before writing. Twenty-four integration regressions
+reproduce the defects on 2.8.6; a unit test covers legacy memory migration.
+Compatibility: parse remembered JSON text explicitly with `from_json()`; keep
+branch locals inside their branch. Details: https://soma-lang.dev/CHANGELOG.md.
+
+Soma 2.8.6 corrects duplicate/skipped argument evaluation, self-append bindings,
+piped map updates, ignored builtin mocks and inconsistent pipe dispatch.
+Calls and pipes share local-lambda and cell-handler resolution. Constructors
+coerce declared Float and nested record fields and reject incompatible shapes.
+Twenty-four new integration regressions cover these fixes. Compatibility and
+examples: https://soma-lang.dev/CHANGELOG.md.
+
+Soma 2.8.5 fixes typed input and storage boundaries: implicit Int-to-Float
+promotion rejects overflow, typed maps check underscore keys and variant
+payloads, and declared sum/record returns validate their values. Persistent
+writes reject functions hidden in variants and excessive encoded nesting.
+Local nth index limits are consistent; sleep requires an Int. Eighteen new
+integration regressions plus a date-count unit test cover these corrections.
+See https://soma-lang.dev/CHANGELOG.md.
+
+Soma 2.8.4 corrects finite means that overflowed, large or tiny standard
+deviations, mixed Int/Float medians and clamps. Means round after averaging;
+medians preserve the selected Int and propagate NaN. Clamp rejects nonnumeric
+operands and NaN bounds, compares exactly, and preserves the selected operand's
+type. Nine regressions plus 320 independent numeric reference vectors cover
+these fixes. See https://soma-lang.dev/CHANGELOG.md.
+
+Soma 2.8.3 adds 100 regression scenarios for robot-controller use: numeric
+boundaries, mission transitions, rollback, native execution and persistence.
+They do not establish hardware qualification, hard real-time behavior or
+distributed safety. Matrix: https://soma-lang.dev/docs/robotics.md.
+
+Soma 2.8.2 cluster corrections: typed Map updates after commit, qualified
+slot identities, full-mesh reconnect, logical versions, persisted tombstones
+and state resynchronization. Local reads; no consensus, physical sharding,
+exactly-once signals or distributed proof. Unsupported strong/causal
+configurations are refused. See https://soma-lang.dev/docs/cluster.md.
+
+Soma 2.8.1 corrections (2026-09-20): integer while optimization
+preserves outer operands, each assignment and raised errors. Int ratios
+round once without inf/inf; variance retains nearby large-number differences.
+chr rejects invalid Unicode; substring clamps negative ends; index_of uses
+exact structural equality. Numeric builtins reject invalid operand types.
+Huge bit counts cannot become zero; native random bounds cannot overflow.
+Generated native temporaries avoid operand and loop-counter collisions.
+The deprecated --jit flag is now a compatibility no-op; use [native].
+
+Also included in Soma 2.8.1: Int/Float comparisons are
+exact across interpretation, bytecode and native code; numeric sorting and
+filtering do not round Ints through Float. NaN remains unordered. `distinct`
+and `distinct_by` use structural equality, including nested collections.
+`range(a, b, 0)` raises kind `range`; `top`/`bottom` need a nonnegative Int.
+HTTP query `%2B` stays `+`, and `?flag` supplies an empty String. New replay
+logs tag errors separately from returned values. These are source-build
+fixes; consult CHANGELOG.md and version.json for build provenance.
+Cost proofs reject arithmetic overflow and a shadowed `range` needs an
+explicit loop bound. Invalid mock clocks fail tests; `days_in_month` needs
+Int arguments. Native failures are recorded after the transaction completes;
+replay refuses malformed logs and native compilation failures.
+

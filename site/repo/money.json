@@ -1,0 +1,11 @@
+{
+  "name": "money",
+  "description": "Amounts in minor units with their currency: no Float holds money. add / subtract (same currency only), scale and basis points rounded half away from zero, `allocate` that keeps every cent, format and parse.",
+  "latest": "0.1.0",
+  "versions": {
+    "0.1.0": {
+      "git": "https://github.com/soma-dev-lang/soma",
+      "subdir": "packages/money"
+    }
+  }
+}

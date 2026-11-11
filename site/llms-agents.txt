@@ -1,0 +1,222 @@
+# Soma — running LLM agents
+
+> `cell agent`, think(), tools and capabilities, [task] handlers, hordes,
+> budgets, mocks, record / replay. The language itself:
+> https://soma-lang.dev/llms.txt (`soma docs agent`).
+
+## Agents (LLMs inside the cage)
+
+```soma
+cell agent Researcher {
+    face {
+        signal research(topic: String) -> Map
+        tool search(q: String) -> String [capability: "https://api.x.com/*"] "Search"
+    }
+    cost { tokens: 6000 }                             // PROVEN by soma check: 2000 × 3 rounds
+    state job { initial: idle  idle -> working  working -> done  * -> failed except [done] }
+    on search(q: String) { return to_json(http_get("https://api.x.com/search?q={q}")) }
+    on research(topic: String) {
+        set_budget(8000)                              // token cap: a prompt that alone overruns what is left raises kind budget before it is sent; otherwise the provider round that crosses it completes and the NEXT round (a later tool round of the same think() too) raises kind budget
+        transition(topic, "working")                  // one machine instance per topic
+        let r = try { think("Research {topic}", map("max_tokens", 2000, "max_rounds", 3)) }
+        if r.error != () {
+            transition(topic, "failed")
+            return map("error", r.kind)
+        }
+        transition(topic, "done")
+        return map("facts", r.value, "spent", tokens_used())
+    }
+}
+// `on ask(q: String) [task] { … think(…) … }` runs as STEPS: each think() ends
+// the current step (its writes commit) and waits for the model OUTSIDE the
+// handler lock, so concurrent requests overlap their model calls (200 × 2 s
+// waits in ~9 s instead of 400 s); a failure rolls back the current step only
+// (writes before the last think() stay — a `try` cannot undo them either);
+// the prover does not carry a read or `require` across a think (another
+// request may write meanwhile): read, require and write AFTER the last think.
+// Only the ENTRY POINT decides: a [task] handler called from a plain handler
+// (`on request` routing to it, a listener, a tick) runs inside the caller's
+// atomic unit and holds the lock — mark the caller [task] too:
+// `on request(method: String, path: String, body: String) [task]`,
+// `every 1min [task] { … }`, `after 5s [task] { … }`. check warns on each
+// of these. SOMA_LLM_MOCK_LATENCY_MS gives a mock a latency to test it. A
+// plain handler stays one atomic unit. Unknown handler annotations
+// ([tsak]) are errors; known: [native], [task], [deterministic], [record].
+// HORDES — one [task] handler over many inputs with a bounded pool:
+//   let h = horde(Reviewer.review, docs, map("concurrency", 200,
+//       "on_result", "_store", "on_done", "_summarize", "on_error", "_failed",
+//       "max_attempts", 2))                // returns "Audit:h1" at once
+//   on _store(v: Map) { verdicts.set(v.id, v) }       // or _store(input, result)
+//   horde_status(h)  → {state, total, queued, running, done, failed, cancelled, tokens}
+//   horde_results(h) → results in input order (() if not done); horde_cancel(h)
+// The target takes one parameter; mark it [task] (check warns when it
+// thinks: each task would hold the lock). Write the target and the options
+// AT THE CALL (a literal map with literal handler names — check refuses a
+// computed target or options: they decide what runs and what it costs);
+// name callbacks `_…` (a public one is an HTTP endpoint). Only the owner
+// cell (and test rules) can read or cancel a horde. The queue is stored in
+// soma.db under serve / run, even without a [persistent] slot: a restart
+// resumes it; with several servers on one .soma_data each horde runs in one
+// of them (a lease, taken over ~6 s after its server stops). A task's
+// result is recorded — and on_result called — in the same atomic unit as
+// its LAST step, so each result is written once even after kill -9; steps
+// before its last think() may run again. on_error(input, error: Map
+// {error, kind, detail}) after max_attempts (default 1); on_done(id) once,
+// when nothing is left (cancel included). concurrency default 8, max 1000.
+// Without workers (`soma test`) the horde runs right after the calling
+// handler commits — its next statements run first, as under serve — one
+// task per unit. A restart does not resume a horde whose target or
+// callbacks the new code renamed (it says so; the tasks wait).
+// BUDGET: map("budget_tokens", 2000000) is a hard ceiling for the whole horde — every think() of its
+// tasks and callbacks first RESERVES an upper bound (request bytes +
+// max_tokens), waits outside the lock for calls in flight to settle if it
+// does not fit yet, and is refused (kind budget) when it never will; the
+// horde then stops (state "exhausted"; tasks it stopped count as
+// cancelled, no on_error). A horde started inside a task or callback of a
+// budgeted horde runs under that budget too (nested hordes cannot spend
+// past it). on_done's think() also counts: keep headroom for it. A
+// provider that ignores max_tokens raises kind llm, charged what it
+// reported. The ceiling counts SETTLED calls: calls in flight
+// at a kill -9 were sent, then are sent again after the restart. soma verify prints each horde's bound:
+// the literal budget_tokens, else inputs × per-task × max_attempts for a
+// literal list/range (reply tokens), else unbounded — a horde in a cell
+// with `cost { tokens: N }` needs a literal budget_tokens to prove it.
+// ROUNDS (simulations): map("snapshot", world, "apply", "_apply", "seed", 7,
+// "instance", "id") — the target takes (input, snapshot): every agent of
+// the round sees the same world; `apply(result)` / `apply(input, result)`
+// runs at the END, in input order, once per task (not as replies arrive),
+// then on_done — which may start the next round (a horde() in on_done).
+// seed: random() in task i draws the same numbers on every run. instance:
+// the input field naming an agent; its remember()/recall() keys and its
+// conversation are its own and persist across rounds. 10 000 agents × 20
+// rounds: 46 s, identical on every run. After a crash, steps before a
+// task's last think() may run again — write memory in the last step.
+// vote(Cell.handler, input, k) → {winner, count, k, unanimous, errors,
+// votes}: k agents on one input (in a [task] step under serve/run they run
+// at once, outside the lock); the most common answer wins. Provider limits
+// for every think() of
+// the process: soma.toml [agent] rpm = 500, tpm = 200000 (or SOMA_LLM_RPM /
+// SOMA_LLM_TPM): at most rpm requests / tpm tokens in ANY 60 s window; a
+// 429 pauses every caller. Measured: 10 000 tasks with a
+// 2 s mocked model, concurrency 500, in 41 s.
+// soma verify PROVES the lifecycle; `cost { tokens: N }` (also latency:,
+// usd:) is PROVEN when every think() has a literal max_tokens and runs a
+// known number of times — with tools, × the rounds (`max_rounds`, else 10).
+// `latency` counts WAITING: each think()'s `timeout` (a total, retries
+// included — the wait for a rate limit and a mock's latency too) × its
+// rounds, http timeouts, literal sleep()s, vote() × k; approve(), file/stdin
+// reads and computed sleeps make it advisory; CPU time is not in it. `usd`
+// is the REPLY tokens × the price the table knows for the cell's model
+// (prompts are not counted; a model the table does not know makes it
+// advisory) — an estimate of the provider's bill, not the bill.
+// TOOLS FROM OUTSIDE: a tool may run on a server instead of in a handler
+// (it then has NO `on` handler; your code and the model call it the same way):
+//     tool search(query: String, limit: Int) -> String [mcp: "docs", capability: "https://docs.example/*"] "Search the docs"
+//     tool get_pet(petId: Int) -> Map [openapi: "pets/getPetById"] "Fetch a pet"
+//     # soma.toml
+//     [tools.docs]  mcp = "https://docs.example/mcp"   token_env = "DOCS_TOKEN"   # MCP over Streamable HTTP
+//     [tools.pets]  openapi = "petstore.json"          base_url = "https://…"      # OpenAPI 3, JSON
+// `[mcp: "docs"]` is the server's tool of the same name, `[mcp: "docs/other"]`
+// another name; for OpenAPI the name is the operationId. `soma tools sync`
+// asks each server for the contract and pins it in soma.lock (commit it);
+// `soma check` then works offline: a tool not pinned, an argument the server
+// does not take, a wrong type or a required argument left out is an error
+// (kind tool_binding). Parameter NAMES are the server's (path, query, header
+// and JSON-body fields for OpenAPI; a non-object body is one argument `body`).
+// At run time a server whose contract no longer matches the pin is refused
+// before anything is sent (kind tool_schema: sync again, read the CHANGED
+// lines, check). Its capabilities apply to every call, yours too; redirects
+// are not followed; a server-side failure is kind `tool`. A test never reaches
+// the server: `mock search "…"` scripts it. `soma tools list` shows the pins.
+// Not read: MCP over stdio, YAML OpenAPI documents, MCP resources / prompts.
+// The model may call only the face's `tool`s (never a private or other
+// handler), with typed arguments, within their capabilities (URL patterns with
+// `*`: "https://api.x.com/*"; a tool with no capability is unrestricted; a
+// tool that calls think() makes a `cost` bound unprovable, a tool doing I/O a
+// `latency` bound; I/O in a loop or lambda leaves a `tokens` bound provable) — the scope binds
+// MODEL calls only (your own code calling the tool handler is not
+// restricted), and a tool is not an HTTP endpoint; `mock think` scripts text
+// replies only (to test tool calls offline, point [agent] url at a fake
+// OpenAI-chat-compatible server: tools go out as `tools`, results come back
+// as `role: "tool"` messages, think_json sets response_format json_object,
+// usage.total_tokens feeds tokens_used(), usage.completion_tokens is held to
+// max_tokens); a tool call that raises is rolled
+// back. `map("max_rounds", N)` caps the tool-call rounds of one think();
+// `map("tools_allowed", ["lookup"])` offers only those tools to that call
+// (classify with no refund tool in reach); a `*` in a capability stays in
+// its part of the URL (host or path), `..` segments and userinfo are
+// refused, and a tool's scope holds for the tools of any agent it calls;
+// a scoped tool reads/writes no file (read_file, load, include, …) and opens
+// no link/socket. An unknown option, or a tools_allowed name that is not a
+// tool, is an error. A reply longer than its max_tokens (a provider ignoring
+// the cap) raises kind `llm`; a tool that calls back its think() handler is a
+// termination ⚠ (the model drives that recursion). Each agent cell keeps its OWN multi-turn
+// context (clear_context() resets it); every/after ticks use the same
+// [agent] config as requests. `soma test` mocks think() only when no key is
+// configured — set SOMA_LLM_MOCK=echo for offline tests with a soma.toml key;
+// `mock h [[1, 2]]` scripts ONE List answer ([1, 2] is a queue of two).
+// approve(msg) is a gate a PERSON answers: tests script it (mock approve),
+// serve raises approval_required unless SOMA_APPROVE says otherwise (and
+// the handler rolls back). For a web flow use a DURABLE WAIT in a [task]
+// handler:
+//     on refund(id: String, amount: Int) [task] {
+//         transition(id, "pending")
+//         let ok = await approve("refund {amount} for {id}")   // 202 {waiting: "w_…"}
+//         if !ok { transition(id, "refused")  return response(403, map("refused", id)) }
+//         transition(id, "paid")
+//     }
+// Unanswered, the call returns 202 and the step commits; the handler's
+// position and locals are stored with the data and the rest runs when the
+// answer arrives, after a restart too: POST /_approvals/<id> {"approved":
+// true|false} (GET /_approvals lists them), or resume(id, answer) from a
+// route of your own (your auth). The /_approvals and /_signals routes answer
+// only a server bound to loopback, or `Authorization: Bearer $SOMA_WAIT_TOKEN`.
+// resume() / cancel_wait() are refused inside a tool: the model does not
+// answer its own request. `await signal("picked_up", id)` waits for
+// deliver("picked_up", id, value) or POST /_signals/picked_up/<id> (the JSON
+// body is the value); `await sleep(2h)` for the clock (serve's timer resumes
+// it; `soma run` sleeps between two steps; a test does not wait). Each resumed
+// part is a step: if it fails it rolls back and the wait stays, to be answered
+// again. Give a resting state another way out (an `every` sweep, a cancel
+// handler): `soma verify` warns when only the answer leaves it. Scripted
+// answers still win: `mock approve true` makes `await approve` go straight on.
+// think(prompt, map(..)) or think(prompt, system, map(..)): options go LAST.
+// Offline: `mock think …` in tests, SOMA_LLM_MOCK=echo | fixed:TEXT |
+// rules:mocks.json — a list of {"match": "substring of the prompt",
+// "cell": "AgentCell", "reply": "text" or a JSON value}: the first rule whose
+// match / cell fit answers, none: an echo — or
+// [agent] mock = "echo" in soma.toml. Record/replay: `soma run --record` (not serve) logs each top-level
+// call; `soma replay` re-runs them from EMPTY storage with the soma.toml
+// [agent], calls think() again (replies are not recorded) and compares the
+// RESULTS — a state difference shows only in a later result.
+```
+
+## Untrusted values, replay, evals, telemetry (3.0)
+
+- UNTRUSTED VALUES. What think() / think_json() / http_*() / read_stdin()
+  return, and what is computed from it, is untrusted. Reaching the target of
+  `transition()`, the URL of an `http_*` call, a file path or `set_budget`
+  without a test is a check warning (edition 2027: error kind
+  `untrusted_value`). A value is cleared when the handler tests it — it
+  appears in a `require`, an `if` / `while` condition or a `match` subject —
+  or passes it to another handler. `match d { "approved" -> transition(id,
+  "approved")  _ -> fail("bad_state", d) }` is the form; what an arm BINDS out
+  of an untrusted subject (`AutoPay { amount }`) is still untrusted.
+- REPLAY. `soma run --record` writes the model's answers beside the log
+  (`app.somalog.replies`); `soma replay` hands them back in order, so the
+  replay reproduces the run without asking the model (`--live` asks again).
+  A think() that called tools is given its final answer only: the tools do
+  not run again. A mocked reply counts ~4 characters per token, so a handler
+  that returns `tokens_used()` replays with a different number.
+- EVALS. `soma eval app.cell --handler classify --dataset cases.jsonl
+  [--grade exact|contains|handler:Cell.judge] [--threshold 0.9]`: one JSON
+  object per line, `{"input": …, "expected": …, "name"?: …}` (`input` a list:
+  the arguments). The run is stored in `.soma_eval/` and the next run names
+  the cases that passed and now fail. `judge(input, answer, expected)`
+  answers a Bool. think() is the configured model when a key is set, the mock
+  otherwise — as under `soma test`.
+- TELEMETRY. `SOMA_OTEL_FILE=spans.jsonl`: one OTLP/JSON line per top-level
+  handler invocation — a span (`Cell.handler`, error kind as status) with one
+  event per model call (`gen_ai.chat`, `gen_ai.usage.total_tokens`), tool
+  call, approval and transition. Prompts, tool arguments and results are
+  exported as their sizes unless `SOMA_OTEL_CONTENT=1`.

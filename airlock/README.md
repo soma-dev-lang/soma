@@ -2,12 +2,15 @@
 
 A two-door airlock controller (spacecraft / BSL-4) where the one fatal
 mistake — **both doors open at once** — is not guarded against but made
-*unrepresentable*, and the verifier proves it.
+*absent*: it is not a state this machine has, so no command sequence
+reaches it.
 
 ```
-soma verify airlock/app.cell    # proves the reachable state set is the 6 safe states
-soma test   airlock/app.cell    # pins every refused unsafe command
-soma run    airlock/app.cell demo
+soma run    airlock/app.cell demo   # the breach command, refused live
+soma test   airlock/app.cell        # pins every refused unsafe command
+soma verify airlock/app.cell        # the 6 safe states, no deadlock, always
+                                    # back to `sealed` — and 2 warnings that
+                                    # belong in this README, see below
 ```
 
 ## The safety argument
@@ -29,6 +32,20 @@ This is how safety-critical state machines are *supposed* to be built —
    && pressure <= 101` means the seals never see a negative or burst
    pressure, regardless of the command stream — a breach write is
    rejected at the memory and the slot keeps its last safe value.
+
+## What `verify` does not prove here
+
+`soma verify airlock/app.cell` ends on `10 passed, 2 warnings, 0 failures`,
+and the two warnings are the verifier being honest rather than a rough edge:
+`command` calls `transition(id, cmd)` with a target taken from its **input**,
+so which edge it takes is checked at run time (`invalid_transition`), not
+proven statically. That is the premise of this demo — the caller hands the
+machine an arbitrary operator command — and it is why the refusals above are
+runtime refusals. Writing literal targets instead would earn a proven
+refinement check and destroy the thing being demonstrated.
+
+The mutual exclusion of the doors does not rest on that check: no state of
+this machine has both doors open, whatever target a caller asks for.
 
 ## Why this is hard anywhere else
 

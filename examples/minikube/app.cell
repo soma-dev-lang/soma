@@ -191,9 +191,9 @@ cell Cluster {
 
     on request(method: String, path: String, body: String) {
         if method == "POST" {
-            if path == "/deploy" { return deploy(body) }
-            if path == "/scale" { return scale(body) }
-            if path == "/delete" { return delete_deploy(body) }
+            if path == "/deploy" { return deploy(from_json(body)) }
+            if path == "/scale" { return scale(from_json(body)) }
+            if path == "/delete" { return delete_deploy(from_json(body)) }
             return response(404, map("error", "not found"))
         } else {
             match path {

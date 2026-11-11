@@ -1841,3 +1841,17 @@ loops and 1,947 native bit/number-theory assertions against Python integers
 and exact fractions. The published corpus contains 321 passing programs.
 The guide and changelog remain labelled Unreleased; Cloudflare was updated
 after the validated batch. No installer release was published by this audit.
+
+### Parser and check pass — 2026-09-24
+
+Baseline green (Rust suite, 118 CLI fixtures, numeric oracle); open ledger
+items reproduced one by one, most already fixed by earlier passes.
+
+- [x] A string on the line after `require … else Tag` became its detail (listed open twice above): the detail must be on the same line.
+- [x] Too few builtin arguments (`think()`, `pad_left("x")`, odd `map(…)` pairs) passed check (listed open above): refused at check outside `try`/`assert_fails`. A differential sweep of every .cell in the repository (old vs new binary) found one false positive — the undocumented 3-argument `filter_by`, now documented.
+- [x] `"k" |> c.set(99)` passed check and failed at run time (listed open twice above): a piped method call receives the value first.
+
+Validation: full Rust suite (3 new regressions), 118 CLI fixtures, numeric
+oracle, and `soma check` on ~6 900 .cell files with no difference beyond the
+intended one (`tests/edge/t45_err_map_odd_args.cell` now fails at check).
+

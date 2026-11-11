@@ -1,0 +1,70 @@
+// The program the Python and npm packages are tested against.
+cell type Decision {
+    variants {
+        Pay { amount: Int }
+        Hold { reason: String }
+        Skip
+    }
+}
+
+cell Ledger {
+    face {
+        signal seed(opening: Int) -> Int
+        signal debit(amount: Int) -> Int
+            requires amount > 0
+        signal balance() -> Int
+        signal big() -> Int
+        signal echo(x: Any) -> Any
+        signal classify(amount: Int) -> Map
+        signal label(d: Decision) -> String
+        signal find(id: String) -> Map
+        signal shout(text: String) -> String
+    }
+
+    memory {
+        account: Map<String, Int> [persistent]
+        invariant account >= 0
+    }
+
+    on seed(opening: Int) {
+        account.set("balance", opening)
+        return opening
+    }
+
+    on debit(amount: Int) {
+        let now = (account.get("balance") ?? 0) - amount
+        account.set("balance", now)
+        return now
+    }
+
+    on balance() { return account.get("balance") ?? 0 }
+
+    on big() { return 1180591620717411303424 }
+
+    on echo(x: Any) { return x }
+
+    on classify(amount: Int) {
+        if amount <= 0 { return Skip }
+        if amount > 500 { return Hold { reason: "over the limit" } }
+        return Pay { amount: amount }
+    }
+
+    on label(d: Decision) {
+        return match d {
+            Pay { amount } -> "pay {amount}"
+            Hold { reason } -> "hold: {reason}"
+            Skip -> "skip"
+        }
+    }
+
+    on find(id: String) {
+        require id != "" else BadId "an id is not empty"
+        if id == "ghost" { fail("not_found", "no such record: {id}") }
+        return map("id", id, "tags", ["a", "b"])
+    }
+
+    on shout(text: String) {
+        print("the program prints: {text}")
+        return uppercase(text)
+    }
+}

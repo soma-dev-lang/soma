@@ -1,0 +1,10 @@
+[package]
+name = "time"
+version = "0.1.0"
+description = "Unix seconds to a civil date and time in a zone and back, with daylight saving; ISO 8601 in and out."
+entry = "time.cell"
+edition = "2026"
+
+# The package's API is its cell's `face`; its proofs are its `cell test`
+# blocks: `soma test packages/time/time.cell` is the contract a consumer
+# can re-run before trusting it.

@@ -20,6 +20,7 @@ pub fn cmd_replay(
     file: &PathBuf,
     log: Option<&PathBuf>,
     at: Option<&str>,
+    live: bool,
     registry: &mut Registry,
 ) {
     let source = read_source(file);
@@ -75,6 +76,17 @@ pub fn cmd_replay(
     }
     interp.source_file = Some(file.display().to_string());
     interp.source_text = Some(source.clone());
+
+    // 3.0: the model's recorded answers are handed back in order, so the
+    // replay reproduces the run instead of asking the model again
+    match (live, record_log::read_replies(&log_path)) {
+        (true, _) => println!("model: asked again (--live) — its answers may differ from the recorded run"),
+        (false, Some(replies)) => {
+            println!("model: {} recorded answer(s) replayed (a think() that called tools is given its final answer only: the tools do not run again)", replies.len());
+            interp.mock_queue.extend(replies);
+        }
+        (false, None) => println!("model: no recorded answers beside this log — think() asks the model again"),
+    }
 
     // Storage backends (memory only — replay must be hermetic)
     for prog_cell in &program.cells {

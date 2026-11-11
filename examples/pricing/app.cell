@@ -161,8 +161,8 @@ cell PricingEngine {
 
     on request(method: String, path: String, body: String) {
         if method == "POST" {
-            if path == "/book_trade" { return book_trade(body) }
-            if path == "/price" { return price(body) }
+            if path == "/book_trade" { return book_trade(from_json(body)) }
+            if path == "/price" { return price(from_json(body)) }
             return response(404, map("error", "not found"))
         } else {
             match path {

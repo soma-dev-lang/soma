@@ -1,0 +1,242 @@
+// ============================================================================
+// text — words, distances, differences
+// ============================================================================
+//
+//   use text
+//   words_of("Hello, World — hello!")              // ["hello", "world", "hello"]
+//   edit_distance("kitten", "sitting")             // 3
+//   diff_lines("a\nb\nc", "a\nx\nc")               // [{op: "=", line: "a"}, {op: "-", line: "b"}, {op: "+", line: "x"}, …]
+//
+// Everything is pure: the same text gives the same answer.
+// Verify the package itself:  soma test packages/text/text.cell
+// ============================================================================
+
+cell Text {
+    face {
+        signal words_of(s: String) -> List
+        signal sentences_of(s: String) -> List
+        signal ngrams(tokens: List, n: Int) -> List
+        signal term_counts(tokens: List) -> Map
+        signal edit_distance(a: String, b: String) -> Int
+        signal similarity(a: String, b: String) -> Float
+        signal common_lines(a: List, b: List) -> List
+        signal diff_lines(a: String, b: String) -> List
+        signal diff_summary(a: String, b: String) -> Map
+        signal truncate_words(s: String, limit: Int) -> String
+        signal slug(s: String) -> String
+    }
+
+    // Lowercased words: letters and digits (any script), apostrophes kept inside a word.
+    on words_of(s: String) {
+        let cleaned = regex_replace(lowercase(s), "[^\\p{{L}}\\p{{N}}']+", " ")
+        let out = []
+        for w in fields(cleaned) {
+            let t = trim(w, "'")
+            if t != "" { out = push(out, t) }
+        }
+        return out
+    }
+
+    on sentences_of(s: String) {
+        let marked = regex_replace(s, "([.!?])\\s+", "$1\n")
+        let out = []
+        for line in split(marked, "\n") {
+            let t = trim(line)
+            if t != "" { out = push(out, t) }
+        }
+        return out
+    }
+
+    on ngrams(tokens: List, n: Int) {
+        require n >= 1 else BadSize "an n-gram has at least one token"
+        let out = []
+        let i = 0
+        while i + n <= len(tokens) {
+            out = push(out, join(slice(tokens, i, i + n), " "))
+            i = i + 1
+        }
+        return out
+    }
+
+    on term_counts(tokens: List) {
+        let counts = map()
+        for t in tokens {
+            counts[t] = (counts[t] ?? 0) + 1
+        }
+        return counts
+    }
+
+    // Levenshtein distance, by characters: insertions, deletions, substitutions.
+    on edit_distance(a: String, b: String) {
+        let n = len(a)
+        let m = len(b)
+        if n == 0 { return m }
+        if m == 0 { return n }
+        let prev = range(0, m + 1)
+        let i = 1
+        while i <= n {
+            let cur = [i]
+            let ca = substring(a, i - 1, i)
+            let j = 1
+            while j <= m {
+                let cost = 1
+                if ca == substring(b, j - 1, j) { cost = 0 }
+                let best = min(min(prev[j] + 1, cur[j - 1] + 1), prev[j - 1] + cost)
+                cur = push(cur, best)
+                j = j + 1
+            }
+            prev = cur
+            i = i + 1
+        }
+        return prev[m]
+    }
+
+    // 1.0 for equal texts, 0.0 for texts with nothing in common.
+    on similarity(a: String, b: String) {
+        let longest = max(len(a), len(b))
+        if longest == 0 { return 1.0 }
+        return 1.0 - to_float(edit_distance(a, b)) / to_float(longest)
+    }
+
+    // A longest common subsequence of two lists, in order.
+    on common_lines(a: List, b: List) {
+        let n = len(a)
+        let m = len(b)
+        // table[i][j]: length of the LCS of a[i..] and b[j..]
+        let table = []
+        let i = 0
+        while i <= n {
+            let row = []
+            let j = 0
+            while j <= m {
+                row = push(row, 0)
+                j = j + 1
+            }
+            table = push(table, row)
+            i = i + 1
+        }
+        i = n - 1
+        while i >= 0 {
+            let row = table[i]
+            let below = table[i + 1]
+            let j = m - 1
+            while j >= 0 {
+                if a[i] == b[j] {
+                    row[j] = below[j + 1] + 1
+                } else {
+                    row[j] = max(below[j], row[j + 1])
+                }
+                j = j - 1
+            }
+            table[i] = row
+            i = i - 1
+        }
+        let out = []
+        i = 0
+        let j = 0
+        while i < n && j < m {
+            let here = table[i]
+            let below = table[i + 1]
+            if a[i] == b[j] {
+                out = push(out, a[i])
+                i = i + 1
+                j = j + 1
+            } else {
+                if below[j] >= here[j + 1] { i = i + 1 } else { j = j + 1 }
+            }
+        }
+        return out
+    }
+
+    // Line by line: "=" kept, "-" only in `a`, "+" only in `b`. Applying
+    // the "-" and "+" to `a` gives `b`.
+    on diff_lines(a: String, b: String) {
+        let left = split(a, "\n")
+        let right = split(b, "\n")
+        if a == "" { left = [] }
+        if b == "" { right = [] }
+        let kept = common_lines(left, right)
+        let out = []
+        let i = 0
+        let j = 0
+        for line in kept {
+            while left[i] != line {
+                out = push(out, map("op", "-", "line", left[i]))
+                i = i + 1
+            }
+            while right[j] != line {
+                out = push(out, map("op", "+", "line", right[j]))
+                j = j + 1
+            }
+            out = push(out, map("op", "=", "line", line))
+            i = i + 1
+            j = j + 1
+        }
+        while i < len(left) {
+            out = push(out, map("op", "-", "line", left[i]))
+            i = i + 1
+        }
+        while j < len(right) {
+            out = push(out, map("op", "+", "line", right[j]))
+            j = j + 1
+        }
+        return out
+    }
+
+    on diff_summary(a: String, b: String) {
+        let added = 0
+        let removed = 0
+        let same = 0
+        for d in diff_lines(a, b) {
+            if d.op == "+" { added = added + 1 }
+            if d.op == "-" { removed = removed + 1 }
+            if d.op == "=" { same = same + 1 }
+        }
+        return map("added", added, "removed", removed, "unchanged", same)
+    }
+
+    // At most `limit` words, with "…" when something was cut.
+    on truncate_words(s: String, limit: Int) {
+        let parts = fields(s)
+        if len(parts) <= limit { return join(parts, " ") }
+        return join(slice(parts, 0, max(limit, 0)), " ") + "…"
+    }
+
+    // "Hello, World!" → "hello-world"
+    on slug(s: String) {
+        return trim(regex_replace(lowercase(s), "[^\\p{{L}}\\p{{N}}]+", "-"), "-")
+    }
+}
+
+cell test TextTests {
+    rules {
+        assert words_of("Hello, World — hello!") == ["hello", "world", "hello"]
+        assert words_of("L'été, c'est l'heure d'aimer") == ["l'été", "c'est", "l'heure", "d'aimer"]
+        assert words_of("  ") == []
+        assert sentences_of("One. Two!  Three? Four") == ["One.", "Two!", "Three?", "Four"]
+        assert ngrams(["a", "b", "c"], 2) == ["a b", "b c"]
+        assert ngrams(["a"], 2) == []
+        assert_fails ngrams(["a"], 0) matching "BadSize"
+        assert term_counts(["a", "b", "a"]) == map("a", 2, "b", 1)
+
+        assert edit_distance("kitten", "sitting") == 3
+        assert edit_distance("", "abc") == 3
+        assert edit_distance("été", "ete") == 2
+        assert edit_distance("same", "same") == 0
+        assert similarity("abc", "abc") == 1.0
+        assert similarity("abc", "xyz") == 0.0
+        assert similarity("", "") == 1.0
+
+        assert common_lines(["a", "b", "c", "d"], ["b", "x", "d"]) == ["b", "d"]
+        assert common_lines([], ["a"]) == []
+        assert diff_lines("a\nb\nc", "a\nx\nc") == [map("op", "=", "line", "a"), map("op", "-", "line", "b"), map("op", "+", "line", "x"), map("op", "=", "line", "c")]
+        assert diff_lines("", "a") == [map("op", "+", "line", "a")]
+        assert diff_lines("a", "a") == [map("op", "=", "line", "a")]
+        assert diff_summary("a\nb\nc", "a\nc\nd\ne") == map("added", 2, "removed", 1, "unchanged", 2)
+
+        assert truncate_words("one two three four", 2) == "one two…"
+        assert truncate_words("one two", 5) == "one two"
+        assert slug("Hello, World!") == "hello-world"
+        assert slug("  Été 2026 — prix  ") == "été-2026-prix"
+    }
+}

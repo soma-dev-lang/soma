@@ -1,0 +1,72 @@
+# Soma — `[native]` handlers
+
+> The native vocabulary, its limits and costs. The language itself:
+> https://soma-lang.dev/llms.txt (`soma docs agent`).
+
+## Performance
+
+Interpreter is the reference semantics (linear-time `map`/`filter`/indexing;
+a 20k-row CSV aggregation runs in ~0.3 s interpreted). Annotate hot handlers
+`[native]` for Rust-codegen on numeric loops (the harness and its C/Rust
+reference implementations are in `bench/`); a native compile failure aborts
+the run (there is no silent fall-back to the interpreter). It needs `cargo`
+(rustup) on PATH; the first compile takes seconds and is cached in
+`.soma_cache/` beside the program.
+Arguments are type-checked at the call like any handler; `random(n)` /
+`random(lo, hi)` are Ints, `random()` a Float; buffer indexes are Ints from 0
+(no negative indexes); an Int literal beyond 64 bits is refused (build it:
+`shl(1, 64) - 1`); `[loop_bound(N)]` is checked; a `[native]` handler's
+recursion deeper than 20,000 calls raises stack_overflow (interpreted
+handlers: 512 — walk deep structures with an explicit stack). Floats print with the shortest
+round-trip digits; print/to_string never use exponent form (`1e-7` prints `0.0000001`, a Float inside
+a printed map or list too; `format("%.3e", x)` for scientific notation); to_json — HTTP bodies included — uses JSON's shortest form (`1.18e21`).
+An SSE `data:` line and a WebSocket push carry the value as JSON on one line
+(a String payload is quoted, so a client cannot forge another event).
+Native math: sqrt, log, exp, pow, abs, min, max, floor, ceil, round, sin,
+cos, tan, atan, atan2, asin, acos, pi() (asin/acos outside [-1, 1] raise
+kind range, as interpreted). `soma check` verifies the native vocabulary (every handler, every error at
+once). Same semantics as the interpreter: `7 / 2` is 3.5, a division by zero
+is an ordinary `try`-catchable error, an Int overflow promotes to BigInt, and
+an Int slot refuses a non-exact `/` instead of truncating. One difference:
+native code is statically typed: a quotient returned or stored as an Int
+is the exact Int (`return a / b` gives -7 for -7 / 1; an exact quotient past
+2^53 raises natively — use idiv(a, b) there), but inside an
+expression that needs its type — `to_string(a / b)` — it is a Float
+("-7.0") — `soma check` warns; write idiv(a, b) for an integer quotient. A native local keeps the
+type of its `let` (assigning a String to a number local is a check error).
+
+What a `[native]` handler may use — nothing else:
+- parameters and locals: Int, Float, Bool, String (a List cannot cross the
+  boundary in either direction: parse the input into buffers inside the
+  handler, return a String)
+- arithmetic, comparisons, `if`/`while`/`for i in range(a, b)`, `return`,
+  sqrt log exp pow abs min max floor ceil round sin cos random, idiv gcd
+  pow_mod sqrt_int, band bor bxor bnot shl shr bit_len bit_test bit_set
+  bit_clr bit_next, to_int to_float to_string, str_len str_at str_eq,
+  sibling `[native]` handlers
+- arrays: `buffer(n) -> Buf` (n Ints, zeroed), `buf_get(b, i) -> Int`,
+  `buf_set(b, i, v)`; `buffer_f(n)` / `buf_get_f` / `buf_set_f` for Floats
+- maps: `hashmap() -> HMap` (Int → Int), `hm_get(m, k)`, `hm_set(m, k, v)`,
+  `hm_inc(m, k)`, `hm_len(m)`, `hm_has(m, k)`
+- strings: `strbuf() -> SBuf`, `sb_push(b, s)`, `sb_push_int(b, n)`,
+  `sb_push_char(b, c)`, `sb_len(b)`, `sb_finish(b) -> String`;
+  `regex_count / regex_replace / regex_match`; `read_stdin write_str`
+  (write_str flushes, and is written once even when an Int overflow
+  re-runs the handler in BigInt mode); read_file is interpreted only (its
+  failure value is a Map): read in an interpreted handler, pass the text
+- a Buf/HMap/SBuf lives in ONE variable of ONE handler: it cannot be
+  re-bound (`let t = u  u = v` — copy elements instead), returned, or passed
+  to a sibling (pack results into a String with strbuf). A Buf holds 64-bit
+  Ints: a value that overflows i64 while stored into it is a `range` error
+  (scalars promote to BigInt; mask the value or keep it scalar). `for` takes
+  `range(a, b)` only (a step → `while`). A literal `/ 0` does not compile.
+  `soma check` reports all of these.
+- one FFI call costs ~2 µs: make the LOOP native, not just the per-element
+  kernel (10^7 sibling calls inside a native loop: 20 ms; 2·10^6 calls from
+  an interpreted loop: 3.5 s).
+Not available natively: maps/lists/records, think(), memory slots, `try`,
+`match`, string interpolation — call an interpreted handler for those. The
+buffer / hashmap / strbuf primitives exist ONLY in `[native]` handlers
+(`soma check` refuses them elsewhere); everything else in the list, `sin`,
+`regex_*`, `read_stdin` included, works in interpreted handlers too.
+

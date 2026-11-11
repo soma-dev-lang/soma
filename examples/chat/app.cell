@@ -81,7 +81,7 @@ cell Chat {
 
     on request(method: String, path: String, body: String) {
         if method == "POST" {
-            if path == "/send" { return send(body) }
+            if path == "/send" { return send(from_json(body)) }
             return response(404, map("error", "not found"))
         } else {
             if path == "/messages" {

@@ -242,8 +242,10 @@ impl Walk<'_> {
                     self.warn_discarded(name, first, span);
                 }
             }
-            Expr::MethodCall { target, method, .. } if PURE.contains(&method.as_str()) => {
+            Expr::MethodCall { target, method, args } if PURE.contains(&method.as_str()) => {
                 match &target.node {
+                    // (3.0: `xs.push(x)` as a statement appends to the local `xs`)
+                    Expr::Ident(_) if method == "push" && args.len() == 1 => {}
                     Expr::Ident(n) => {
                         if !self.index.slots.contains(n) {
                             self.warn_discarded(method, Some(n), span);

@@ -83,6 +83,17 @@ pub enum RefinementFinding {
         from: String,
         to: String,
     },
+    /// 3.0: the handler tested the instance's state (`require get_status(id)
+    /// == "held"`, an `if`, a `match`, an earlier transition) and then moves
+    /// it to a state the machine has no edge to from there: on that path
+    /// the call always raises `invalid_transition`. **Hard error.**
+    IllegalEdge {
+        handler: String,
+        from: String,
+        to: String,
+        path: Vec<String>,
+        span: Span,
+    },
     /// Per-handler effect summary — informational. Shows the user which
     /// states each handler can transition to and under what path condition.
     HandlerEffect {
@@ -100,6 +111,9 @@ pub struct TransitionCall {
     pub target: String,
     /// `transition(id, from, to)`: the source the handler declares
     pub source: Option<String>,
+    /// 3.0: the states the instance can be in at the call, when the handler
+    /// established them (empty: not known)
+    pub inferred: Vec<String>,
     pub path: Vec<String>,
     pub span: Span,
 }
@@ -111,6 +125,10 @@ pub struct HandlerEffect {
     pub span: Span,
     pub static_transitions: Vec<TransitionCall>,
     pub has_dynamic_target: bool,
+    /// walker state: instance id (as written) → the states it can be in
+    facts: std::collections::HashMap<String, Vec<String>>,
+    /// walker state: `let s = get_status(id)` → the id
+    aliases: std::collections::HashMap<String, String>,
 }
 
 /// Run the refinement check for one (state machine, handlers) pair.
@@ -140,6 +158,18 @@ pub fn check_refinement(
         effects.push(effect);
     }
 
+    let has_edge = |from: &str, to: &str| sm.transitions.iter().any(|t| t.node.to == to
+        && (t.node.from == from || (t.node.from == "*" && sm.wildcard_applies(&t.node, from))));
+    // a source with no edge to the target is a path that raises: the edges
+    // the call can take start from the others
+    for eff in effects.iter_mut() {
+        for call in eff.static_transitions.iter_mut() {
+            if call.inferred.iter().any(|s| has_edge(s, &call.target)) {
+                call.inferred.retain(|s| has_edge(s, &call.target));
+            }
+        }
+    }
+
     // ── Check 1: every static transition() target must be a declared state
     for eff in &effects {
         for call in &eff.static_transitions {
@@ -147,6 +177,25 @@ pub fn check_refinement(
                 findings.push(RefinementFinding::UndeclaredTarget {
                     handler: eff.name.clone(),
                     target: call.target.clone(),
+                    path: call.path.clone(),
+                    span: call.span,
+                });
+            }
+        }
+        // 3.0: a move from a state the handler itself established. The
+        // analysis joins paths without their data conditions (`if a > n {
+        // … "passed" }  if a <= n { … "failed" }` reaches the second call
+        // knowing "voting or passed"), so only a call NO known source has
+        // an edge for is refused: that one raises on every path.
+        for call in &eff.static_transitions {
+            if call.source.is_some() || !valid_states.contains(&call.target) { continue; }
+            let known: Vec<&String> = call.inferred.iter().filter(|s| valid_states.contains(*s)).collect();
+            if known.is_empty() || known.iter().any(|from| has_edge(from, &call.target)) { continue; }
+            for from in known {
+                findings.push(RefinementFinding::IllegalEdge {
+                    handler: eff.name.clone(),
+                    from: from.clone(),
+                    to: call.target.clone(),
                     path: call.path.clone(),
                     span: call.span,
                 });
@@ -164,7 +213,11 @@ pub fn check_refinement(
     // ── Check 2: every declared transition's target must be reached by some handler
     // (a call that declares its source reaches only the edge it names)
     let reached = |from: &str, to: &str| effects.iter().any(|e| e.static_transitions.iter().any(|c|
-        c.target == to && c.source.as_deref().map_or(true, |s| s == from || from == "*")));
+        c.target == to && match (&c.source, c.inferred.is_empty()) {
+            (Some(s), _) => s == from || from == "*",
+            (None, false) => from == "*" || c.inferred.iter().any(|s| s == from),
+            (None, true) => true,
+        }));
     // Some handlers have dynamic targets — if any handler has one, we can't
     // be sure dead-transition warnings are accurate, so suppress them.
     let any_dynamic = effects.iter().any(|e| e.has_dynamic_target);
@@ -202,10 +255,135 @@ fn analyze_handler(on: &OnSection, span: Span) -> HandlerEffect {
         span,
         static_transitions: Vec::new(),
         has_dynamic_target: false,
+        facts: Default::default(),
+        aliases: Default::default(),
     };
     let mut path: Vec<String> = Vec::new();
     walk_stmts(&on.body, &mut path, &mut effect);
     effect
+}
+
+
+// ── 3.0: what the handler knows about an instance's state ────────────────
+
+/// A state written as a literal: `"held"`, or a typed state `Held`.
+fn state_literal(e: &Expr) -> Option<String> {
+    match e {
+        Expr::Literal(Literal::String(s)) if !s.contains('{') => Some(s.clone()),
+        Expr::Ident(name) if name.chars().next().map_or(false, |c| c.is_ascii_uppercase()) => Some(name.clone()),
+        _ => None,
+    }
+}
+
+/// `get_status(id)`, or a local bound to it: the id, as written.
+fn status_subject(e: &Expr, eff: &HandlerEffect) -> Option<String> {
+    match e {
+        Expr::FnCall { name, args } if name == "get_status" && args.len() == 1 => Some(render_expr(&args[0].node)),
+        Expr::Ident(n) => eff.aliases.get(n).cloned(),
+        _ => None,
+    }
+}
+
+/// (id, states) a TRUE condition establishes: `get_status(id) == "a"`,
+/// `… || get_status(id) == "b"`.
+fn fact_when_true(e: &Expr, eff: &HandlerEffect) -> Option<(String, Vec<String>)> {
+    match e {
+        Expr::CmpOp { left, op: CmpOp::Eq, right } => {
+            if let (Some(id), Some(st)) = (status_subject(&left.node, eff), state_literal(&right.node)) { return Some((id, vec![st])); }
+            if let (Some(st), Some(id)) = (state_literal(&left.node), status_subject(&right.node, eff)) { return Some((id, vec![st])); }
+            None
+        }
+        Expr::BinaryOp { left, op: BinOp::Or, right } => {
+            let (a, b) = (fact_when_true(&left.node, eff)?, fact_when_true(&right.node, eff)?);
+            if a.0 != b.0 { return None; }
+            let mut states = a.1;
+            for st in b.1 { if !states.contains(&st) { states.push(st); } }
+            Some((a.0, states))
+        }
+        // either conjunct alone is enough
+        Expr::BinaryOp { left, op: BinOp::And, right } => fact_when_true(&left.node, eff).or_else(|| fact_when_true(&right.node, eff)),
+        Expr::Not(inner) => fact_when_false(&inner.node, eff),
+        _ => None,
+    }
+}
+
+/// (id, states) a FALSE condition establishes: `get_status(id) != "a"`,
+/// `… && get_status(id) != "b"`.
+fn fact_when_false(e: &Expr, eff: &HandlerEffect) -> Option<(String, Vec<String>)> {
+    match e {
+        Expr::CmpOp { left, op: CmpOp::Ne, right } => {
+            if let (Some(id), Some(st)) = (status_subject(&left.node, eff), state_literal(&right.node)) { return Some((id, vec![st])); }
+            if let (Some(st), Some(id)) = (state_literal(&left.node), status_subject(&right.node, eff)) { return Some((id, vec![st])); }
+            None
+        }
+        Expr::BinaryOp { left, op: BinOp::And, right } => {
+            let (a, b) = (fact_when_false(&left.node, eff)?, fact_when_false(&right.node, eff)?);
+            if a.0 != b.0 { return None; }
+            let mut states = a.1;
+            for st in b.1 { if !states.contains(&st) { states.push(st); } }
+            Some((a.0, states))
+        }
+        Expr::BinaryOp { left, op: BinOp::Or, right } => fact_when_false(&left.node, eff).or_else(|| fact_when_false(&right.node, eff)),
+        Expr::Not(inner) => fact_when_true(&inner.node, eff),
+        _ => None,
+    }
+}
+
+type Facts = std::collections::HashMap<String, Vec<String>>;
+
+/// What holds after two paths join: an id both know, in either's states.
+fn join_facts(a: &Facts, b: &Facts) -> Facts {
+    let mut out = Facts::new();
+    for (id, sa) in a {
+        if let Some(sb) = b.get(id) {
+            let mut states = sa.clone();
+            for st in sb { if !states.contains(st) { states.push(st.clone()); } }
+            out.insert(id.clone(), states);
+        }
+    }
+    out
+}
+
+/// Does control never reach the end of this block?
+fn block_diverges(body: &[Spanned<Statement>]) -> bool {
+    match body.last().map(|s| &s.node) {
+        Some(Statement::Return { .. } | Statement::Break | Statement::Continue) => true,
+        Some(Statement::ExprStmt { expr }) => matches!(&expr.node, Expr::FnCall { name, .. } if name == "fail"),
+        Some(Statement::If { then_body, else_body, .. }) => !else_body.is_empty() && block_diverges(then_body) && block_diverges(else_body),
+        _ => false,
+    }
+}
+
+/// A call after which another piece of code may have moved any instance.
+fn forgets_states(name: &str) -> bool {
+    matches!(name, "think" | "think_json" | "vote" | "approve" | "horde" | "sleep" | "delegate")
+        || !crate::checker::names::builtin_names().contains(name)
+}
+
+/// One `if`: each branch under what its condition establishes, then the
+/// join of the branches that fall through.
+fn walk_branches(
+    condition: &Expr,
+    eff: &mut HandlerEffect,
+    then_diverges: bool,
+    else_diverges: bool,
+    mut then_walk: impl FnMut(&mut HandlerEffect),
+    mut else_walk: impl FnMut(&mut HandlerEffect),
+) {
+    let (when_true, when_false) = (fact_when_true(condition, eff), fact_when_false(condition, eff));
+    let before = eff.facts.clone();
+    if let Some((id, states)) = when_true { eff.facts.insert(id, states); }
+    then_walk(eff);
+    let after_then = std::mem::replace(&mut eff.facts, before);
+    if let Some((id, states)) = when_false { eff.facts.insert(id, states); }
+    else_walk(eff);
+    let after_else = eff.facts.clone();
+    eff.facts = match (then_diverges, else_diverges) {
+        (true, true) => Facts::new(),
+        (true, false) => after_else,
+        (false, true) => after_then,
+        (false, false) => join_facts(&after_then, &after_else),
+    };
 }
 
 fn walk_stmts(body: &[Spanned<Statement>], path: &mut Vec<String>, eff: &mut HandlerEffect) {
@@ -226,8 +404,20 @@ fn walk_stmt(stmt: &Statement, span: Span, path: &mut Vec<String>, eff: &mut Han
         Statement::ExprStmt { expr } => {
             walk_expr(&expr.node, span, path, eff);
         }
-        Statement::Let { value, .. } | Statement::Assign { value, .. } => {
+        Statement::Let { name, value } => {
             walk_expr(&value.node, span, path, eff);
+            // `let s = get_status(id)`: s names that instance's state
+            eff.aliases.remove(name);
+            if let Expr::FnCall { name: f, args } = &value.node {
+                if f == "get_status" && args.len() == 1 { eff.aliases.insert(name.clone(), render_expr(&args[0].node)); }
+            }
+        }
+        Statement::Assign { name, value } => {
+            walk_expr(&value.node, span, path, eff);
+            // the name no longer means what a fact was stated about
+            eff.aliases.remove(name);
+            eff.aliases.retain(|_, id| id != name);
+            eff.facts.remove(name);
         }
         Statement::Return { value } => {
             walk_expr(&value.node, span, path, eff);
@@ -244,39 +434,70 @@ fn walk_stmt(stmt: &Statement, span: Span, path: &mut Vec<String>, eff: &mut Han
             walk_expr(&condition.node, span, path, eff);
             // Then-branch: push the condition as text on the path
             let cond_text = render_expr(&condition.node);
-            path.push(format!("if {}", cond_text));
-            walk_stmts(then_body, path, eff);
-            path.pop();
-            // Else-branch: push the negated condition
-            if !else_body.is_empty() {
-                path.push(format!("if not ({})", cond_text));
-                walk_stmts(else_body, path, eff);
-                path.pop();
-            }
+            let (p1, p2) = (path.clone(), path.clone());
+            walk_branches(&condition.node, eff, block_diverges(then_body), !else_body.is_empty() && block_diverges(else_body),
+                |eff| {
+                    let mut path = p1.clone();
+                    path.push(format!("if {}", cond_text));
+                    walk_stmts(then_body, &mut path, eff);
+                },
+                |eff| {
+                    // Else-branch: push the negated condition
+                    if !else_body.is_empty() {
+                        let mut path = p2.clone();
+                        path.push(format!("if not ({})", cond_text));
+                        walk_stmts(else_body, &mut path, eff);
+                    }
+                });
         }
         Statement::For { iter, body, .. } => {
             walk_expr(&iter.node, span, path, eff);
             path.push("(in for loop)".to_string());
+            // a later iteration starts where an earlier one left the instance
+            eff.facts.clear();
             walk_stmts(body, path, eff);
+            eff.facts.clear();
             path.pop();
         }
         Statement::While { condition, body, .. } => {
             walk_expr(&condition.node, span, path, eff);
             path.push(format!("while {}", render_expr(&condition.node)));
+            eff.facts.clear();
             walk_stmts(body, path, eff);
+            eff.facts.clear();
             path.pop();
         }
         Statement::Emit { args, .. } => {
             for a in args {
                 walk_expr(&a.node, span, path, eff);
             }
+            // a listener may move any instance
+            eff.facts.clear();
         }
-        Statement::MethodCall { args, .. } => {
+        Statement::MethodCall { method, args, .. } => {
             for a in args {
                 walk_expr(&a.node, span, path, eff);
             }
+            // a slot method moves nothing; `Cell.handler(…)` may
+            if !matches!(method.as_str(), "set" | "get" | "push" | "delete" | "len" | "size" | "keys" | "values" | "entries") {
+                eff.facts.clear();
+            }
         }
-        Statement::Require { .. } | Statement::Break | Statement::Continue => {}
+        // `require get_status(id) == "held" else …` (parsed as `cond == true`)
+        Statement::Require { constraint, .. } => {
+            if let Constraint::Comparison { left, op: CmpOp::Eq, right } = &constraint.node {
+                let fact = if matches!(right.node, Expr::Literal(Literal::Bool(true))) {
+                    fact_when_true(&left.node, eff)
+                } else {
+                    match (status_subject(&left.node, eff), state_literal(&right.node)) {
+                        (Some(id), Some(st)) => Some((id, vec![st])),
+                        _ => None,
+                    }
+                };
+                if let Some((id, states)) = fact { eff.facts.insert(id, states); }
+            }
+        }
+        Statement::Break | Statement::Continue => {}
     }
 }
 
@@ -304,33 +525,47 @@ fn walk_expr(expr: &Expr, span: Span, path: &mut Vec<String>, eff: &mut HandlerE
             } else {
                 (None, args.get(1))
             };
-            if let Some(target_expr) = target_expr {
-                match &target_expr.node {
-                    Expr::Literal(Literal::String(_)) | Expr::Ident(_) if literal_state(&target_expr.node).is_some() => {
-                        eff.static_transitions.push(TransitionCall {
-                            target: literal_state(&target_expr.node).unwrap(),
-                            source,
-                            path: path.clone(),
-                            span,
-                        });
-                    }
-                    _ => {
-                        // Dynamic target — flag it but don't try to analyze
-                        eff.has_dynamic_target = true;
-                    }
-                }
-            }
             // Also walk the args in case there's a nested transition (unlikely)
             for a in args {
                 walk_expr(&a.node, span, path, eff);
             }
+            let id = args.first().map(|a| render_expr(&a.node));
+            if let Some(target_expr) = target_expr {
+                match &target_expr.node {
+                    Expr::Literal(Literal::String(_)) | Expr::Ident(_) if literal_state(&target_expr.node).is_some() => {
+                        let target = literal_state(&target_expr.node).unwrap();
+                        let inferred = id.as_ref().and_then(|i| eff.facts.get(i)).cloned().unwrap_or_default();
+                        eff.static_transitions.push(TransitionCall {
+                            target: target.clone(),
+                            source,
+                            inferred,
+                            path: path.clone(),
+                            span,
+                        });
+                        // the instance is there now
+                        if let Some(i) = id { eff.facts.insert(i, vec![target]); }
+                    }
+                    _ => {
+                        // Dynamic target — flag it but don't try to analyze
+                        eff.has_dynamic_target = true;
+                        if let Some(i) = id { eff.facts.remove(&i); }
+                    }
+                }
+            }
         }
-        Expr::FnCall { args, .. } => {
+        Expr::FnCall { name, args } => {
             for a in args { walk_expr(&a.node, span, path, eff); }
+            // a handler (or a lambda) may move any instance; a model call
+            // lets other requests run
+            if forgets_states(name) { eff.facts.clear(); }
         }
-        Expr::MethodCall { target, args, .. } => {
+        Expr::MethodCall { target, method, args } => {
             walk_expr(&target.node, span, path, eff);
             for a in args { walk_expr(&a.node, span, path, eff); }
+            if !matches!(method.as_str(), "set" | "get" | "push" | "delete" | "len" | "size" | "keys" | "values" | "entries")
+                && (forgets_states(method) || matches!(&target.node, Expr::Ident(n) if n.chars().next().map_or(false, |c| c.is_ascii_uppercase()))) {
+                eff.facts.clear();
+            }
         }
         Expr::FieldAccess { target, .. } => walk_expr(&target.node, span, path, eff),
         Expr::Index { target, index } => {
@@ -342,7 +577,13 @@ fn walk_expr(expr: &Expr, span: Span, path: &mut Vec<String>, eff: &mut HandlerE
             walk_expr(&right.node, span, path, eff);
         }
         Expr::Not(e) => walk_expr(&e.node, span, path, eff),
-        Expr::Try(e) | Expr::TryPropagate(e) => walk_expr(&e.node, span, path, eff),
+        Expr::Try(e) | Expr::TryPropagate(e) => {
+            // a transition inside `try` may have been refused: the instance
+            // is where it was, or where the call put it
+            let before = eff.facts.clone();
+            walk_expr(&e.node, span, path, eff);
+            eff.facts = join_facts(&before, &eff.facts);
+        }
         Expr::Pipe { left, right } => {
             walk_expr(&left.node, span, path, eff);
             walk_expr(&right.node, span, path, eff);
@@ -350,18 +591,48 @@ fn walk_expr(expr: &Expr, span: Span, path: &mut Vec<String>, eff: &mut HandlerE
         Expr::IfExpr { condition, then_body, then_result, else_body, else_result } => {
             walk_expr(&condition.node, span, path, eff);
             let cond_text = render_expr(&condition.node);
-            path.push(format!("if {}", cond_text));
-            walk_stmts(then_body, path, eff);
-            walk_expr(&then_result.node, span, path, eff);
-            path.pop();
-            path.push(format!("if not ({})", cond_text));
-            walk_stmts(else_body, path, eff);
-            walk_expr(&else_result.node, span, path, eff);
-            path.pop();
+            let (p1, p2) = (path.clone(), path.clone());
+            walk_branches(&condition.node, eff, block_diverges(then_body), block_diverges(else_body),
+                |eff| {
+                    let mut path = p1.clone();
+                    path.push(format!("if {}", cond_text));
+                    walk_stmts(then_body, &mut path, eff);
+                    walk_expr(&then_result.node, span, &mut path, eff);
+                },
+                |eff| {
+                    let mut path = p2.clone();
+                    path.push(format!("if not ({})", cond_text));
+                    walk_stmts(else_body, &mut path, eff);
+                    walk_expr(&else_result.node, span, &mut path, eff);
+                });
         }
         Expr::Match { subject, arms } => {
             walk_expr(&subject.node, span, path, eff);
+            // `match get_status(id) { "held" -> …  "paid" | "void" -> … }`:
+            // each arm knows the state it matched
+            let subject_id = status_subject(&subject.node, eff);
+            fn arm_states(p: &MatchPattern) -> Option<Vec<String>> {
+                match p {
+                    MatchPattern::Literal(Literal::String(s)) if !s.contains('{') => Some(vec![s.clone()]),
+                    MatchPattern::Variant { name, fields: VariantPatternFields::Unit, .. } => Some(vec![name.clone()]),
+                    MatchPattern::Or(ps) => {
+                        let mut all = Vec::new();
+                        for q in ps { for st in arm_states(q)? { if !all.contains(&st) { all.push(st); } } }
+                        Some(all)
+                    }
+                    _ => None,
+                }
+            }
+            let before = eff.facts.clone();
+            let mut joined: Option<Facts> = None;
             for arm in arms {
+                eff.facts = before.clone();
+                if let Some(id) = &subject_id {
+                    match arm_states(&arm.pattern) {
+                        Some(states) => { eff.facts.insert(id.clone(), states); }
+                        _ => { eff.facts.remove(id); }
+                    }
+                }
                 path.push(format!("(match arm {})", render_pattern(&arm.pattern)));
                 if let Some(g) = &arm.guard {
                     walk_expr(&g.node, span, path, eff);
@@ -369,12 +640,24 @@ fn walk_expr(expr: &Expr, span: Span, path: &mut Vec<String>, eff: &mut HandlerE
                 walk_stmts(&arm.body, path, eff);
                 walk_expr(&arm.result.node, span, path, eff);
                 path.pop();
+                let leaves = block_diverges(&arm.body) || matches!(&arm.result.node, Expr::FnCall { name, .. } if name == "fail");
+                if !leaves {
+                    joined = Some(match joined { Some(j) => join_facts(&j, &eff.facts), None => eff.facts.clone() });
+                }
             }
+            eff.facts = joined.unwrap_or_default();
         }
-        Expr::Lambda { body, .. } => walk_expr(&body.node, span, path, eff),
+        // a lambda runs later, from an unknown state; defining it moves nothing
+        Expr::Lambda { body, .. } => {
+            let before = std::mem::take(&mut eff.facts);
+            walk_expr(&body.node, span, path, eff);
+            eff.facts = before;
+        }
         Expr::LambdaBlock { stmts, result, .. } => {
+            let before = std::mem::take(&mut eff.facts);
             walk_stmts(stmts, path, eff);
             walk_expr(&result.node, span, path, eff);
+            eff.facts = before;
         }
         Expr::Record { fields, .. } => {
             for (_, e) in fields { walk_expr(&e.node, span, path, eff); }

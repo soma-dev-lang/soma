@@ -1,0 +1,276 @@
+// ============================================================================
+// auth — signed tokens and signed payloads
+// ============================================================================
+//
+//   use auth
+//   let token = jwt_sign(map("sub", "u1", "exp", now() + 3600), secret)
+//   let claims = jwt_verify(token, secret, now())          // raises BadSignature / Expired / …
+//
+//   let header = sign_payload(secret, body, now())         // "t=1774747800,v1=<hex>"
+//   verify_payload(secret, body, header, now(), 300)       // a webhook, replay-bounded
+//
+// JSON Web Tokens with HMAC-SHA-256 (HS256) only: a token that names another
+// algorithm — `none` included — is refused. Signatures are compared in
+// constant time. The clock is an argument: nothing here reads it.
+//
+// Verify the package itself:  soma test packages/auth/auth.cell
+// ============================================================================
+
+cell Auth {
+    face {
+        signal base64url_encode(text: String) -> String
+        signal base64url_decode(text: String) -> String
+        signal jwt_sign(claims: Map, secret: String) -> String
+        signal jwt_verify(token: String, secret: String, now_s: Int) -> Map
+        signal jwt_claims_unverified(token: String) -> Map
+        signal sign_payload(secret: String, body: String, now_s: Int) -> String
+        signal verify_payload(secret: String, body: String, header: String, now_s: Int, tolerance_s: Int) -> Bool
+    }
+
+    on _alphabet() { return "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789-_" }
+
+    // Bytes (0..255) → base64url without padding.
+    on _encode_bytes(bytes: List) {
+        let alphabet = _alphabet()
+        let out = []
+        let i = 0
+        let n = len(bytes)
+        while i < n {
+            let b0 = bytes[i]
+            let b1 = 0
+            let b2 = 0
+            if i + 1 < n { b1 = bytes[i + 1] }
+            if i + 2 < n { b2 = bytes[i + 2] }
+            let word = b0 * 65536 + b1 * 256 + b2
+            let c0 = band(shr(word, 18), 63)
+            let c1 = band(shr(word, 12), 63)
+            let c2 = band(shr(word, 6), 63)
+            let c3 = band(word, 63)
+            out = push(out, substring(alphabet, c0, c0 + 1) + substring(alphabet, c1, c1 + 1))
+            if i + 1 < n { out = push(out, substring(alphabet, c2, c2 + 1)) }
+            if i + 2 < n { out = push(out, substring(alphabet, c3, c3 + 1)) }
+            i = i + 3
+        }
+        return join(out, "")
+    }
+
+    // base64url (padding optional) → bytes; raises Malformed on anything else.
+    on _decode_bytes(text: String) {
+        let alphabet = _alphabet()
+        let t = replace(text, "=", "")
+        require mod(len(t), 4) != 1 else Malformed "not base64url"
+        let bytes = []
+        let acc = 0
+        let bits = 0
+        let i = 0
+        while i < len(t) {
+            let v = index_of(alphabet, substring(t, i, i + 1))
+            require v >= 0 else Malformed "not base64url"
+            acc = acc * 64 + v
+            bits = bits + 6
+            if bits >= 8 {
+                bits = bits - 8
+                bytes = push(bytes, band(shr(acc, bits), 255))
+                acc = band(acc, shl(1, bits) - 1)
+            }
+            i = i + 1
+        }
+        return bytes
+    }
+
+    on _bytes_of(text: String) {
+        let bytes = []
+        let i = 0
+        let n = str_len(text)
+        while i < n {
+            bytes = push(bytes, str_at(text, i))
+            i = i + 1
+        }
+        return bytes
+    }
+
+    // UTF-8 bytes → text; raises Malformed on bytes that are not UTF-8.
+    on _text_of(bytes: List) {
+        let out = []
+        let i = 0
+        let n = len(bytes)
+        while i < n {
+            let b = bytes[i]
+            let extra = 0
+            let cp = b
+            if b >= 240 {
+                extra = 3
+                cp = band(b, 7)
+            } else {
+                if b >= 224 {
+                    extra = 2
+                    cp = band(b, 15)
+                } else {
+                    if b >= 192 {
+                        extra = 1
+                        cp = band(b, 31)
+                    } else {
+                        require b < 128 else Malformed "not UTF-8"
+                    }
+                }
+            }
+            require i + extra < n else Malformed "not UTF-8"
+            let k = 1
+            while k <= extra {
+                let c = bytes[i + k]
+                require c >= 128 && c < 192 else Malformed "not UTF-8"
+                cp = cp * 64 + band(c, 63)
+                k = k + 1
+            }
+            out = push(out, chr(cp))
+            i = i + extra + 1
+        }
+        return join(out, "")
+    }
+
+    on _hex_bytes(hex: String) {
+        let bytes = []
+        let i = 0
+        while i + 1 < len(hex) {
+            bytes = push(bytes, parse_int(substring(hex, i, i + 2), 16))
+            i = i + 2
+        }
+        return bytes
+    }
+
+    on base64url_encode(text: String) { return _encode_bytes(_bytes_of(text)) }
+
+    on base64url_decode(text: String) { return _text_of(_decode_bytes(text)) }
+
+    on _signature(signing_input: String, secret: String) {
+        return _encode_bytes(_hex_bytes(hmac_sha256(secret, signing_input)))
+    }
+
+    // A compact JWT, HS256. Put `exp` (and `nbf`, `iat`) in the claims as Unix seconds.
+    on jwt_sign(claims: Map, secret: String) {
+        require len(secret) > 0 else BadSecret "a secret is not empty"
+        let header = base64url_encode("{{\"alg\":\"HS256\",\"typ\":\"JWT\"}}")
+        let payload = base64url_encode(to_json(claims))
+        let signing_input = header + "." + payload
+        return signing_input + "." + _signature(signing_input, secret)
+    }
+
+    on _part(text: String) {
+        let decoded = try { from_json(base64url_decode(text)) }
+        require decoded.error == () && type_of(decoded.value) == "Map" else Malformed "a part of the token is not a base64url JSON object"
+        return decoded.value
+    }
+
+    // The claims of a token whose signature, algorithm and dates hold at `now_s`.
+    on jwt_verify(token: String, secret: String, now_s: Int) {
+        let parts = split(token, ".")
+        require len(parts) == 3 else Malformed "a token has three parts"
+        let header = _part(parts[0])
+        // the algorithm is the caller's choice, never the token's
+        require header.alg == "HS256" else BadAlgorithm "only HS256 is accepted"
+        require len(secret) > 0 else BadSecret "a secret is not empty"
+        let expected = _signature(parts[0] + "." + parts[1], secret)
+        require secure_eq(expected, parts[2]) else BadSignature "the signature does not match"
+        let claims = _part(parts[1])
+        if claims.exp != () {
+            require type_of(claims.exp) == "Int" && claims.exp > now_s else Expired "the token expired"
+        }
+        if claims.nbf != () {
+            require type_of(claims.nbf) == "Int" && claims.nbf <= now_s else NotYetValid "the token is not valid yet"
+        }
+        return claims
+    }
+
+    // What a token SAYS, without checking anything: for logs and routing
+    // only — never for a decision.
+    on jwt_claims_unverified(token: String) {
+        let parts = split(token, ".")
+        require len(parts) == 3 else Malformed "a token has three parts"
+        return _part(parts[1])
+    }
+
+    // "t=<seconds>,v1=<hex hmac of "<seconds>.<body>">" — the form webhooks
+    // use: the time is signed with the body, so an old delivery cannot be replayed.
+    on sign_payload(secret: String, body: String, now_s: Int) {
+        require len(secret) > 0 else BadSecret "a secret is not empty"
+        let signed = "{now_s}.{body}"
+        return "t={now_s},v1={hmac_sha256(secret, signed)}"
+    }
+
+    on verify_payload(secret: String, body: String, header: String, now_s: Int, tolerance_s: Int) {
+        let stamp = ""
+        let signature = ""
+        for piece in split(header, ",") {
+            let kv = split(trim(piece), "=")
+            if len(kv) == 2 {
+                if kv[0] == "t" { stamp = kv[1] }
+                if kv[0] == "v1" { signature = kv[1] }
+            }
+        }
+        let sent = parse_int(stamp)
+        require sent != () && signature != "" else Malformed "a signature header is `t=<seconds>,v1=<hex>`"
+        let signed = "{sent}.{body}"
+        require secure_eq(hmac_sha256(secret, signed), signature) else BadSignature "the signature does not match"
+        require abs(now_s - sent) <= tolerance_s else Expired "the payload was signed more than {tolerance_s} s from now"
+        return true
+    }
+}
+
+cell test EncodingTests {
+    rules {
+        // RFC 4648 vectors, without padding
+        assert base64url_encode("") == ""
+        assert base64url_encode("f") == "Zg"
+        assert base64url_encode("fo") == "Zm8"
+        assert base64url_encode("foo") == "Zm9v"
+        assert base64url_encode("foobar") == "Zm9vYmFy"
+        assert base64url_decode("Zm9vYmFy") == "foobar"
+        assert base64url_decode("Zm8=") == "fo"
+        assert base64url_decode(base64url_encode("été — 日本 🙂")) == "été — 日本 🙂"
+        assert base64url_encode("???>>>") == "Pz8_Pj4-"
+        assert_fails base64url_decode("Zm9v!") matching "Malformed"
+    }
+}
+
+cell test JwtTests {
+    rules {
+        // the token of RFC 7519's best-known example (jwt.io)
+        let known = "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJzdWIiOiIxMjM0NTY3ODkwIiwibmFtZSI6IkpvaG4gRG9lIiwiaWF0IjoxNTE2MjM5MDIyfQ.SflKxwRJSMeKKF2QT4fwpMeJf36POk6yJV_adQssw5c"
+        let claims = jwt_verify(known, "your-256-bit-secret", 1700000000)
+        assert claims.sub == "1234567890"
+        assert claims.name == "John Doe"
+        assert claims.iat == 1516239022
+        assert_fails jwt_verify(known, "another-secret", 1700000000) matching "BadSignature"
+
+        let token = jwt_sign(map("sub", "u1", "role", "admin", "exp", 2000), "s3cret")
+        assert len(split(token, ".")) == 3
+        assert jwt_verify(token, "s3cret", 1000).role == "admin"
+        assert jwt_claims_unverified(token).sub == "u1"
+        assert_fails jwt_verify(token, "s3cret", 2000) matching "Expired"
+        assert_fails jwt_verify(token, "S3cret", 1000) matching "BadSignature"
+        assert_fails jwt_verify(jwt_sign(map("nbf", 500), "k"), "k", 499) matching "NotYetValid"
+        assert jwt_verify(jwt_sign(map("nbf", 500), "k"), "k", 500).nbf == 500
+        assert_fails jwt_sign(map("a", 1), "") matching "BadSecret"
+
+        // a changed payload, a missing part, an algorithm the token chose itself
+        let parts = split(token, ".")
+        let forged = parts[0] + "." + base64url_encode("{{\"sub\":\"u1\",\"role\":\"root\",\"exp\":2000}}") + "." + parts[2]
+        assert_fails jwt_verify(forged, "s3cret", 1000) matching "BadSignature"
+        assert_fails jwt_verify(parts[0] + "." + parts[1], "s3cret", 1000) matching "Malformed"
+        let unsigned = base64url_encode("{{\"alg\":\"none\"}}") + "." + parts[1] + "."
+        assert_fails jwt_verify(unsigned, "s3cret", 1000) matching "BadAlgorithm"
+        assert_fails jwt_verify("a.b.c", "s3cret", 1000) matching "Malformed"
+    }
+}
+
+cell test PayloadTests {
+    rules {
+        let header = sign_payload("whsec", "hello", 1000)
+        assert starts_with(header, "t=1000,v1=")
+        assert verify_payload("whsec", "hello", header, 1100, 300)
+        assert_fails verify_payload("whsec", "hello!", header, 1100, 300) matching "BadSignature"
+        assert_fails verify_payload("other", "hello", header, 1100, 300) matching "BadSignature"
+        assert_fails verify_payload("whsec", "hello", header, 1301, 300) matching "Expired"
+        assert_fails verify_payload("whsec", "hello", "v1=abc", 1100, 300) matching "Malformed"
+    }
+}

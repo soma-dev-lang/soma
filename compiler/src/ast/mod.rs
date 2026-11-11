@@ -227,6 +227,21 @@ pub struct ToolDecl {
     /// `db:read`, etc. The runtime refuses any I/O that doesn't match
     /// at least one declared capability. Empty = unrestricted (legacy).
     pub capabilities: Vec<String>,
+    /// 3.0: the tool runs OUTSIDE the program — `[mcp: "server"]` or
+    /// `[openapi: "server/operationId"]`, `server` being a `[tools.<name>]`
+    /// table of soma.toml. Such a tool has no handler.
+    pub binding: Option<ToolBinding>,
+}
+
+/// Where an external tool runs.
+#[derive(Debug, Clone, PartialEq)]
+pub struct ToolBinding {
+    /// "mcp" or "openapi"
+    pub kind: String,
+    /// the `[tools.<server>]` table of soma.toml
+    pub server: String,
+    /// the tool's name on the server / the operationId (default: the tool's own name)
+    pub remote: String,
 }
 
 #[derive(Debug, Clone)]
@@ -246,6 +261,12 @@ pub struct SignalDecl {
     pub name: String,
     pub params: Vec<Param>,
     pub return_type: Option<Spanned<TypeExpr>>,
+    /// 3.0: `requires expr` — what a caller owes, over the parameters.
+    /// Checked before the handler runs (kind `requires`).
+    pub requires: Vec<Spanned<Expr>>,
+    /// 3.0: `ensures expr` — what the handler owes, over the parameters and
+    /// `result`. Checked on the returned value (kind `ensures`).
+    pub ensures: Vec<Spanned<Expr>>,
 }
 
 #[derive(Debug, Clone)]
@@ -814,8 +835,16 @@ pub fn render_expr(expr: &Expr) -> String {
         Expr::FnCall { name, args } if name == "_coalesce" && args.len() == 2 => {
             format!("({} ?? {})", render_expr(&args[0].node), render_expr(&args[1].node))
         }
+        // `std.f(…)` is _std("f", …)
+        Expr::FnCall { name, args } if name == "_std" && matches!(args.first().map(|a| &a.node), Some(Expr::Literal(Literal::String(_)))) => {
+            let Some(Expr::Literal(Literal::String(f))) = args.first().map(|a| &a.node) else { unreachable!() };
+            let a: Vec<String> = args[1..].iter().map(|x| render_expr(&x.node)).collect();
+            format!("std.{}({})", f, a.join(", "))
+        }
         Expr::FnCall { name, args } => {
             let a: Vec<String> = args.iter().map(|x| render_expr(&x.node)).collect();
+            // `await approve(…)` is the builtin await_approve
+            let name = match name.strip_prefix("await_") { Some(w) if matches!(w, "approve" | "signal" | "sleep") => format!("await {}", w), _ => name.clone() };
             format!("{}({})", name, a.join(", "))
         }
         // parentheses where precedence needs them (`0.0 - (0.0 - n)` was

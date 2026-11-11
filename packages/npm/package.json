@@ -1,0 +1,11 @@
+{
+  "name": "soma-lang",
+  "version": "3.0.0",
+  "description": "Call a Soma program from JavaScript / TypeScript: typed values in, typed values out, errors by kind",
+  "main": "index.js",
+  "types": "index.d.ts",
+  "license": "MIT",
+  "engines": { "node": ">=16" },
+  "files": ["index.js", "index.d.ts", "README.md"],
+  "scripts": { "test": "node test.js" }
+}

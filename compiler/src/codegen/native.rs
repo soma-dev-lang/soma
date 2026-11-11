@@ -5260,7 +5260,7 @@ impl FnGenerator {
                 }
             }
             other => {
-                self.err(format!("unsupported expression in a [native] handler: {} — not part of the native vocabulary (see the Performance section of llms.txt)", crate::ast::render_expr(other)));
+                self.err(format!("unsupported expression in a [native] handler: {} — not part of the native vocabulary (see `soma docs native`)", crate::ast::render_expr(other)));
                 "0i64".to_string()
             }
         }

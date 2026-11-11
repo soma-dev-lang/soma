@@ -5,7 +5,25 @@ use std::path::Path;
 /// soma.lock — exact resolved versions and hashes
 #[derive(Debug, Default, Serialize, Deserialize)]
 pub struct LockFile {
+    #[serde(default, skip_serializing_if = "HashMap::is_empty")]
     pub packages: HashMap<String, LockedPackage>,
+    /// 3.0: external tools, pinned by `soma tools sync` — key `server/name`
+    #[serde(default, skip_serializing_if = "std::collections::BTreeMap::is_empty")]
+    pub tools: std::collections::BTreeMap<String, LockedTool>,
+}
+
+/// The contract of one external tool as it was when it was pinned.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct LockedTool {
+    /// "mcp" or "openapi"
+    pub kind: String,
+    /// sha256 of `schema`
+    pub sha256: String,
+    #[serde(default)]
+    pub description: String,
+    /// Canonical JSON: an MCP tool's `inputSchema`, or an OpenAPI
+    /// operation's method, path, parameters and body.
+    pub schema: String,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

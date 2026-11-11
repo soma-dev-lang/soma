@@ -8,6 +8,9 @@ use crate::interpreter::builtins::registry;
 /// network access still has the language, and the text cannot be newer or
 /// older than the binary that prints it.
 const AGENT_SUMMARY: &str = include_str!("../../../site/llms.txt");
+const AGENTS_GUIDE: &str = include_str!("../../../site/llms-agents.txt");
+const NATIVE_GUIDE: &str = include_str!("../../../site/llms-native.txt");
+const RELEASES: &str = include_str!("../../../site/llms-releases.txt");
 const REFERENCE: &str = include_str!("../../../SOMA_REFERENCE.md");
 const GOTCHAS: &str = include_str!("../../../AGENT_GOTCHAS.md");
 const AGENTS_MD: &str = include_str!("../../../site/agent.md");
@@ -19,6 +22,9 @@ const OPERATIONS: &str = include_str!("../../../docs/site/operations.md");
 
 const TOPICS: &[(&str, &str)] = &[
     ("agent", "working summary of the language for a model's context (start here)"),
+    ("agents", "running LLM agents: tools, capabilities, [task], hordes, budgets, mocks, replay"),
+    ("native", "the [native] vocabulary, its limits and costs"),
+    ("releases", "what each release changed, newest first"),
     ("reference", "the full language reference"),
     ("gotchas", "mistakes models make, each with the real diagnostic and the fix"),
     ("builtins", "every builtin with its exact signature, generated from the compiler"),
@@ -28,13 +34,16 @@ const TOPICS: &[(&str, &str)] = &[
     ("operations", "what kills the process and what does not, ports, exit codes, limits, Linux deployment"),
     ("cluster", "experimental replication, recovery, upgrades and distributed guarantees"),
     ("robotics", "100 robotics robustness scenarios, reproduction and coverage limits"),
-    ("all", "agent + robotics + cluster + reference + gotchas + guarantees + serving + operations + builtins, one stream"),
+    ("all", "agent + agents + native + releases + robotics + cluster + reference + gotchas + guarantees + serving + operations + builtins, one stream"),
 ];
 
 pub fn cmd_docs(topic: &str) {
     match topic {
         "builtins" => print_builtins_markdown(),
         "agent" | "llms" => print!("{}", AGENT_SUMMARY),
+        "agents" => print!("{}", AGENTS_GUIDE),
+        "native" | "performance" => print!("{}", NATIVE_GUIDE),
+        "releases" => print!("{}", RELEASES),
         "reference" => print!("{}", REFERENCE),
         "gotchas" => print!("{}", GOTCHAS),
         "agents-md" => print!("{}", AGENTS_MD),
@@ -46,7 +55,8 @@ pub fn cmd_docs(topic: &str) {
         "all" => {
             print!("{}\n\n---\n\n", ROBOTICS);
             print!("{}\n\n---\n\n", CLUSTER);
-            print!("{}\n\n---\n\n{}\n\n---\n\n{}\n\n---\n\n{}\n\n---\n\n{}\n\n---\n\n{}\n\n---\n\n", AGENT_SUMMARY, REFERENCE, GOTCHAS, GUARANTEES, SERVING, OPERATIONS);
+            print!("{}\n\n---\n\n{}\n\n---\n\n{}\n\n---\n\n{}\n\n---\n\n", AGENT_SUMMARY, AGENTS_GUIDE, NATIVE_GUIDE, RELEASES);
+            print!("{}\n\n---\n\n{}\n\n---\n\n{}\n\n---\n\n{}\n\n---\n\n{}\n\n---\n\n", REFERENCE, GOTCHAS, GUARANTEES, SERVING, OPERATIONS);
             print_builtins_markdown();
         }
         "" | "topics" => {

@@ -16,6 +16,9 @@ verified against it. Unknown URLs on this site return 404, never a page.
 
 - [llms-service.txt](https://soma-lang.dev/llms-service.txt): this file + [guarantees](https://soma-lang.dev/docs/guarantees.md) (proven / enforced / not covered) + [serving](https://soma-lang.dev/docs/serving.md) (routing, exposure, atomicity) + [operations](https://soma-lang.dev/docs/operations.md) (what kills the process, ports, exit codes, HTTP statuses, limits, Linux deploy) + every gotcha — what a service needs, ~100 KB
 - [llms-full.txt](https://soma-lang.dev/llms-full.txt): this file + full reference + every gotcha + every builtin, one fetch (~130 KB)
+- [llms-agents.txt](https://soma-lang.dev/llms-agents.txt): running LLM agents — tools, capabilities, [task], hordes, budgets, mocks (`soma docs agents`)
+- [llms-native.txt](https://soma-lang.dev/llms-native.txt): the `[native]` vocabulary, limits and costs (`soma docs native`)
+- [llms-releases.txt](https://soma-lang.dev/llms-releases.txt): what each release changed, newest first (`soma docs releases`)
 - [docs/robotics.md](https://soma-lang.dev/docs/robotics.md): 100 robotics robustness scenarios, reproduction commands and limits; offline with `soma docs robotics`
 - [agent.md](https://soma-lang.dev/agent.md): drop-in AGENTS.md / CLAUDE.md block for a project that uses Soma
 - [skill/SKILL.md](https://soma-lang.dev/skill/SKILL.md): the same knowledge packaged as an agent skill
@@ -29,6 +32,1032 @@ verified against it. Unknown URLs on this site return 404, never a page.
 - Source: https://github.com/soma-dev-lang/soma
 
 ## Pick Soma when / skip it when
+
+Current release: 3.0.0 — expressions are typed at check, every syntax error
+is reported in one pass, diagnostics have stable codes (`soma explain`),
+editions (`edition = "2027"`), `const`, `(a, b) => …`, `++`, typed model
+answers, `soma fmt`, `soma verify --attest`. What each release changed:
+`soma docs releases`.
+
+Pick it when the task has a lifecycle or a limit that must hold: payments,
+approvals, interlocks, quotas, escrow, agent workflows with a budget — and
+you want to hand back evidence (`soma verify` output) instead of "I believe
+this is correct". Also for a small self-contained HTTP service: one file,
+no framework, storage and tests included.
+Skip it when you need a large ecosystem, a mature package set, or raw
+interpreter speed outside numeric `[native]` handlers. Soma is
+experimental: a rule between two cells' machines is proven only when soma.toml states it.
+
+## The agent loop
+
+```
+soma check  app.cell     # static gates FIRST: contracts, undefined
+                         # interpolation vars, unknown/ambiguous calls
+soma verify app.cell     # prove state machines + memory invariants
+soma test   app.cell     # run `cell test` assertions (assert/assert_fails)
+soma run    app.cell sig arg1 arg2
+soma serve  app.cell -p 8080
+soma describe app.cell --faces       # contract summary of every cell
+soma describe --builtins --json      # exact builtin signatures — never guess
+soma fix    app.cell                 # auto-repair common check errors
+soma fix --edition 2027 app.cell     # move a program to edition 2027: the mechanical rewrites, soma.toml, then what is left to decide
+soma eval   app.cell --handler classify --dataset cases.jsonl   # grade a handler on {"input", "expected"} cases; names regressions
+soma lsp                             # language server (stdio): check diagnostics on open / save, formatting
+soma fmt    app.cell                 # canonical layout (indentation, blank lines); `soma fmt . --check` in CI
+soma explain E0110                   # what a diagnostic code means (codes are stable; `soma explain` lists them)
+soma verify --attest out.json app.cell   # the proof as a file: sources + toolchain hashed, each property proven / runtime-checked;
+                                         # a reviewer runs `soma verify --check-attestation out.json`
+soma docs agent                      # this file, offline, from the binary
+soma docs guarantees|serving|operations   # proofs, HTTP rules, what goes wrong — offline too
+soma docs agents|native|releases     # LLM agents in depth, the [native] vocabulary, what each release changed
+soma embed app.cell                  # the program as a library: one JSON call per line; packages/python (`import soma`) and packages/npm use it
+soma example invariant state_machine # verified programs with those features;
+soma example <id>                    #   …and the source of one
+soma init myapp                      # app.cell + soma.toml + AGENTS.md
+```
+Work in that order. `check` is cheap and catches most mistakes before
+anything runs; a `verify` failure is an error, not a warning.
+
+## Cell anatomy
+
+```soma
+cell App {
+    face {                                   // the contract
+        signal add(a: Int, b: Int) -> Int    // return types live HERE
+        //     requires a >= 0 && b >= 0     // owed by every caller: checked before the handler runs (kind `requires`)
+        //     ensures result >= a           // owed by the handler: checked on what it returns (kind `ensures`)
+        // clauses compare the parameters (and `result`) with literals, consts and pure
+        // builtins — no slot, no handler call. verify proves them (below) and reads
+        // `ensures` at call sites in any cell.
+        promise all_persistent
+    }
+    memory {
+        data: Map<String, Int> [persistent, consistent]
+        invariant data >= 0                  // checked BEFORE every write;
+        // between two slots of the cell (a rule no single slot can state):
+        // reserved: Map<String, Int> [persistent]
+        // invariant (reserved ?? 0) <= (data ?? 0)
+        // — checked on every write to EITHER slot; the written slot is its new
+        // value, the other is read AT THE SAME KEY (a key it lacks reads as
+        // (): default both sides with `?? 0`). verify reports it
+        // runtime-checked: a rule between slots is not proven by induction —
+        // by design, so verify prints it as a `·` note and `--strict` passes.
+        // A delete is a write here too (dropping the other side's entry takes
+        // it to ()). `?? 0` means the absent side reads 0: write the
+        // right-hand slot FIRST (or seed both in one handler), else the first
+        // write to the other is refused. `other.size` is that slot's entry
+        // count; `other.get(key)` is refused (it is the value BEFORE the
+        // write, so it would not guard that slot).
+        // Between two CELLS a value is known only by the callee's face
+        // contract (`ensures result >= 0` bounds `Other.read()` here); machines
+        // are verified per cell — a rule BETWEEN two cells' machines is a
+        // `[verify.before."Pay.paid"]` property (below), proven on their product.
+        // To refuse AND keep what you wrote (an audit row), `return
+        // refusal("conflict", "…")` instead of raising: same body and status
+        // a raised error would give, without the rollback.
+    }                                        // violating write rejected, slot unchanged
+    state flow {                             // model-checked by `soma verify`
+        initial: draft
+        draft -> approved { guard { amount < 1000 } }   // guard: reads the CALLING handler's locals
+        draft -> rejected                    // approved/rejected: terminal (no outgoing edge)
+    }
+    on add(a: Int, b: Int) { return a + b }  // NO return type on handlers
+    on approve_request(id: String, amount: Int) { transition(id, "approved") }  // binds the guard's `amount`
+    on reject(id: String) { transition(id, "rejected") }
+    on request(method: String, path: String, body: String) {
+        match map("method", method, "path", path) {
+            {method: "GET", path: "/"} -> html("<h1>hi</h1>")
+            {method: "POST", path: "/approve/" + id} -> approve_request(id, 500)   // ONE variable per pattern, at the end
+            _ -> response(404, map("error", "not found"))
+        }
+    }
+}
+```
+
+## Core syntax (current)
+
+```soma
+let x = 42                  x += 1            // no semicolons; newlines separate
+let v = -1                                    // negative literals work
+let s = "hello {name}"                        // interpolation; UNDEFINED vars are
+                                              // check-time errors; an unescaped " inside {} ends the string
+let xs = [1, 2, 3]          xs[0] = 99        // bracket index read AND write
+let m = map("k", 1)         m["k"] = 2        // maps too; m.k and m["k"] both read
+let g = Game { bet: 10 }    g.bet = 20        // records: literal + dot mutation
+g.board[0] = 7              xs[i][j] = v      // nested lvalues
+let y = m["nope"] ?? 0                        // null-coalescing; () is null
+for i in range(0, 10) { }   range(9, -1, -1)  // stepped/descending ranges
+sum(xs) avg(xs) min(xs) max(xs) product(xs)   // reductions over lists
+contains(xs, x)  index_of(xs, x)  slice(xs, 1, -1)  keys(m) values(m) entries(m)   // membership, slices, map views
+sort_by(rows, "field")   sort_by(rows, r => [0 - r.total, r.name])   // stable; list key = several keys
+xs.push(x)  xs = push(xs, x)  a ++ b          // the STATEMENT xs.push(x) appends to a local or a slot; push() / `++` RETURN a new list; `+` on numeric
+                                              // lists adds element-wise — it does not concatenate
+xs.sort()  xs.reverse()  m2.det()             // UFCS: any builtin as method
+match x { 1 -> "a"  n if n > 5 -> "big"  _ -> "other" }   // arms use ->
+let f = p => p * 2          f(3)              // lambdas use =>; first-class
+let add = (a, b) => a + b   add(1, 2)         // several parameters; given ONE pair / {acc, val} / {key, value} it takes it apart: reduce(xs, 0, (acc, x) => acc + x)
+data |> filter(x => x.ok) |> sort_by("score", "desc") |> top(10)
+let r = try { risky() }     if r.error != () { ... }      // error handling
+```
+
+## Vectorized (numpy/MATLAB style)
+
+```soma
+let M = [1, 0, 0, 1].reshape(2, 2)    // matrices = List<List<Float>>, first-class
+A * B          // matmul        A + B / A - B   elementwise
+A + 10  A / 2  // scalar broadcast (both orders)
+v * v  v + v   // numeric vectors: + * / - elementwise
+A > 2  v >= 1.0                       // comparison masks (0.0/1.0 Floats); Int vectors compare and + - * exactly, [6] / 3 is [2] (the `/` rule per element)
+A.T    A.shape    det(A)    matrix("1 2; 3 4")
+concat(a, b)   // EXPLICIT list concatenation (+ on non-numeric lists concats)
+```
+
+## Sum types (exhaustive — compiler refuses a missing arm)
+
+```soma
+cell type Pay { variants { Charged { tx: String }  Declined { reason: String }  Cash } }
+match r {
+    Charged { tx }      -> "paid {tx}"
+    Declined { reason } -> "no: {reason}"
+    Cash                -> "cash"
+}
+// typed state machines: state order: OrderState { initial: Placed ... }
+// transition(id, Variant) is compile-checked against the type
+// to_json(Charged { tx: "t1" }) == '{"_type":"Pay","_variant":"Charged","tx":"t1"}'
+// (a tuple variant carries "_values"); from_json brings the variant back; HTTP
+// answers a returned variant the same way. Slots store variants as variants.
+// A variant with named fields reads them by name too: `c.tx`.
+// RECORD type = a `cell type` with ONE variant with named fields:
+//   cell type Line { variants { Line { sku: String, qty: Int } } }
+//   on add(lines: List<Line>) { … }   // a JSON object / Map becomes a Line
+// — from HTTP, a tool call or the CLI — field by field; a missing, extra or
+// mistyped field is a `type` error naming it (400). Several variants: the
+// client cannot pick one (`_type`/`_variant` are refused).
+```
+
+## Coming from Python / TypeScript
+
+```soma
+map("k", v)   map()                // no {k: v} literal;   record: Name { k: v }
+m.k   m["size"]                    // a key; m.len / m.size / m.keys: the entry count / keys
+                                   // when the map has no such key (a record: () ) — m["size"] is always the key;
+                                   // a List / String has only .len / .size (.first / .last); any other field raises kind `type`
+[1, 2, 3]     []                   // list literals
+x == ()       x ?? 0               // null is (); no null / None / undefined; `??` only runs its right side on ()
+(m.a ?? 0) + 1                     // `??` binds looser than + - * / and comparisons: m.a ?? 0 + 1 is m.a ?? (0 + 1)
+5 == ""                            // raises kind `type` (Int vs String is a bug); nested values of different types are just unequal
+substring(s, i, i + 1)             // s[i] as a String; str_at(s, i) is a BYTE (Int)
+if c { a } else { b }              // is an expression; no ternary; && || !  (no and/or/not)
+                                   // a condition (if, while, &&, ||, !, require, guards,
+                                   // filter/any/all predicates, invariants) is a Bool — `()`
+                                   // counts as false; a String/Int/List is a type error
+x => x + 1    (a, b) => a + b      // lambdas; no defaults, types or patterns in the parameter list
+for x in xs { }   for k in keys(m) { m[k] }   for e in entries(m) { e.key  e.value }   // for over () runs 0 times, over a String its lines, over a number: type error
+slice(xs, 1, 3)  slice(xs, -2)     // no xs[a:b]
+xs.push(x)  m.set(k, v)  m.delete(k)   // as statements: write a local or a slot. push(xs, x) / concat / sort / with RETURN new values
+on f(n: Int) [native] { … }        // annotations go AFTER the parameter list; no @decorator
+fail("bad_kind", "bad kind: {k}")  // throw new Error(msg); catch: let r = try { … }  r.detail == msg
+parse_int(s) ?? parse_float(s)     // Number(s); to_float("5") prints 5.0; round(x) is an Int, round(x, 2) a Float
+m["k"] = v   m.get("k")            // a LOCAL map has no .set — .set/.delete/.push are slot methods
+f(opts: Map) … opts.x ?? 10        // keyword arguments / defaults: pass a map, read with ??
+Name { k: v }   is_a(r, "Name")    // struct / dataclass / interface: a record literal (no class)
+format("%5.2f|%-8s|%03d", x, s, n) // printf / f-string widths (%d %s %f %.Nf, - and 0 flags)
+7 / 2 == 3.5   idiv(-7, 2) == -3   // `/` is exact; idiv truncates toward zero, % follows the dividend's sign
+floor_div(-7, 2) == -4   mod(-7, 2) == 1   // Python's // and %
+```
+A `class` with private fields is a `cell` with `memory` slots: one instance,
+no `new`, no `this` — `this.hits.get(u)` is `hits.get(u)`; `constructor(a, b)`
+is a `configure(a, b)` handler writing a `config` slot; subclasses are the
+variants of a `cell type`, overridden methods one exhaustive `match` each.
+A script is `on main() { print(…) }` run with `soma run --fresh app.cell main`:
+`soma run` prints the handler's returned value (return nothing from main),
+and slots persist in `.soma_data/` between runs unless `--fresh` (one
+database per DIRECTORY: when other programs' cells have data there,
+`--fresh` resets only this program's tables); `soma test`
+starts empty. `counts[k] += 1` on a missing key is `() + 1` — write
+`(counts.get(k) ?? 0) + 1`; `for r in rows { r.v = 2 }` changes a copy
+(check warns). Number literals: `1_000_000`, `0xFF`, `0b101`; strings:
+`\n \t \r \" \\ \u{1F600}`. `soma check` names the Soma form for each of
+these when you get it wrong.
+
+## Tests
+
+`every` / `after` blocks do not run under `soma test`: call the sweeper
+directly (`assert _sweep(5) == ["o4"]`) with `mock now` for the clock.
+
+```soma
+cell test MyTests {                // a name and a `rules` block are required; it may also
+                                    // hold its own helpers (`on _walk(n: Int) { … }`),
+                                    // private to that test cell (shared ones go in a plain cell)
+    rules {
+        let orders = fixture()                   // shared by the rules below; a bare call
+                                                 // is not a rule: bind it (let _ = f())
+        assert total(orders) == 42               // == is structural on lists/maps
+        assert_fails pay("x")                    // passes when the expression RAISES
+        assert_fails pay("x") matching "invalid transition"   // …for the right reason
+        mock think "billing"                     // next think() reply; or a list to queue
+        mock think error "timeout"               // next think() fails
+        mock approve false                       // next approve() answer (one per call)
+        mock price_check 120                     // next call of the handler of that name (a tool, an
+        mock Notifier.send error "down"          // http wrapper) — Cell.h: THAT cell's only — answers / raises instead;
+                                                 // error "not_found: x" raises kind not_found
+        mock now 1700000000                      // freeze now()/now_ms()/today() until the next mock now (1700000000.25 or `mock now_ms …` for sub-second)
+        property "sum" forall n: Int in 0..100 ensures f(n) >= 0   // 0..100 = 0…99, every value (≤ 20k); ONE Int variable over a range; iterations share the test cell's slots (a writing body sees earlier iterations' writes)
+    }
+}
+```
+`soma test` isolates storage (fresh per run), runs `[native]` handlers natively,
+and — with no LLM key configured — mocks `think()` (echo: reply = prompt).
+A mock answers the NEXT matching call, even one in a later rule (a queue like
+`mock think ["a", "b"]` spans rules); a mock still unused after a rule that
+raised is discarded (with a note). A mock naming no handler, a test helper
+named like a program handler or a builtin, and test cells that assert nothing
+are errors. Each `cell test` starts with fresh slots,
+machines, mocks and trace(). `soma test --json` gives one record per rule.
+`approve()` never answers on its own: unscripted it raises `approval_required`
+(also under serve; SOMA_APPROVE=always|never is the explicit unattended
+policy; `soma run` at a terminal asks). In a `[task]` handler, `let ok = await approve(msg)` (also `await signal(name, key)`,
+`await sleep(2h)`) is a DURABLE WAIT: unanswered, the call returns 202 `{waiting: id}`, the step commits, and the rest
+runs on `resume(id, true|false)` / `POST /_approvals/<id>`, after a restart too (`soma docs agents`). `assert` needs a
+Bool. A test cell calls the handlers of every cell unqualified, or as `Cell.handler(…)`; slot methods (`m.get(k)`,
+`xs.len`) work there too. A failure prints the asserted source, `file:line`, left/right, and the fields a value
+really has when `x.field` came back `()`.
+
+## Things you would otherwise guess
+
+- A fresh id is implicitly in the initial state: `transition(id, "held")` on an
+  id nobody created is legal; `has_state(id)` is true only once the id has
+  TRANSITIONED — a record stored in a slot but never transitioned is "fresh"
+  to it (test the slot for duplicates: `require m.get(id) == () else Dup`).
+- `transition()`'s first argument is an INSTANCE id (an order, a ticket) — a
+  String or an Int (`42` and `"42"` are one instance; `()` is refused), not
+  the machine's name; one cell has one machine, any number of instances. A
+  cell without a machine may call transition() / get_status() when the
+  program has exactly one machine; that machine's guards then read the
+  CALLING handler's locals (a check error if it does not bind them).
+- A slot is a Map or a List (`n: Int` is a check error); a handler parameter
+  may not take a slot's name (reads and writes would mix the two). Read a
+  whole slot by its bare name (`history`, `counts`); write with
+  `counts.set(k, v)` / `counts[k] = v` / `history.push(x)`; `history = …` is
+  an error. An invariant on a Map slot applies to every value written (`value`
+  / `key` name the value and key being written — only inside an invariant;
+  `slot.get(key)` there is the value BEFORE the write: `invariant value >=
+  (versions.get(key) ?? 0)` keeps versions monotone); it is
+  a pure condition (on a List slot `key` is the element's Int index) — no
+  handler call, think(), transition(), I/O or network,
+  even inside a lambda or an interpolation (a check error).
+- `r.kind` of a refused write is `"invariant"`; of a bad `transition()`,
+  `"invalid_transition"`; of `require … else Tag`, `"Tag"`.
+- Every parameter has a type (`x: Any` takes a value of any kind — check it
+  with `type_of(x)`); element types too (`xs: List<Int>`).
+- Declared parameter types are enforced at runtime: `add(points: Int)` given
+  `2.5` raises kind `type` (400) before the body runs — no `is_int` check needed;
+  a missing value `()` is refused for a List parameter (a Map parameter accepts
+  `()`: an absent record, such as an empty tree).
+- Values are copies: `let row = s[k]  row.count += 1` changes `row` only —
+  write it back (`s[k] = row`); a map read from a slot is a copy too
+  (`cards.set(id, c)` after editing `c`). Records keep their field order.
+- In `cell test`, `request(...)` is an ordinary call: an error it does not
+  catch RAISES (assert it with `assert_fails request(...) matching "not_found"`);
+  the kind → HTTP status mapping is applied by `soma serve` only. Return
+  `response(status, …)` yourself when a test must see the status.
+- `"""…"""` is raw for escapes (`\t` stays two characters) but `{x}` IS
+  interpolated; write `{{` for a literal brace.
+- `[1, 2] + [10, 20]` is element-wise (`[11, 22]`; Floats when a value is
+  one); `concat(a, b)` joins lists.
+- Persistent data lives in `.soma_data/` beside the program (serve and run);
+  `soma test` starts empty. A slot gives back exactly what it accepted (an Int
+  beyond 64 bits stays an Int); a value that does not fit the slot's declared
+  value type (`Map<String, Int>` given a String) is refused with kind `type`.
+- On a List slot: `rows.push(x)`, `rows[i] = x`, `rows.delete(i)` (by index),
+  `rows.get(i)`, `rows.len` — all invariant-checked. A Map slot's `.keys` /
+  `.values` / `.entries` come SORTED by key (every backend); a LOCAL map
+  (`keys(m)` on a `let`) and a record's own fields keep insertion order.
+  `keys(record)` / `values(record)` on a record (`Line { … }`) are its
+  declared fields, in order; `r.field = v`, `r.field += 1` and
+  `xs[0].field = v` check the field's declared type.
+- A bare call to a name two cells define (`pack(id)` with `Orders.pack` and
+  `Warehouse.pack`) is a check error from a third cell: qualify it
+  (`Warehouse.pack(id)`). Inside `Warehouse` the bare call runs Warehouse's
+  own `pack` (check warns); write `Orders.pack(id)` for the other.
+- `xs[i]` is the same everywhere (local list, List slot, string): negative
+  from the end, kind `index` out of range, kind `type` for a non-Int;
+  `nth(xs, i)` and `rows.get(i)` answer `()` out of range instead (a
+  negative `i` still counts from the end: `nth(xs, -1)` is the last). A `let`
+  named like a memory slot hides the slot (check warns).
+- `emit ev(data)` inside one process is a synchronous, atomic fan-out to
+  every cell with `on ev(data)`, the emitting cell included (a handler does not
+  receive its OWN event: `on ping` emitting `ping` does not re-enter itself —
+  recurse with a call): a listener that raises fails the emitter,
+  and the emitter's rollback takes the listeners' writes with it. Only across
+  processes (the `[peers]` bus) is an emitted event an effect that is not
+  rolled back. `soma check` warns when nobody handles the event.
+- A bound is proven against LITERALS and cell constants: `const LIMIT = 500`
+  directly inside the cell (a number, a String or a Bool literal — not an
+  expression), then `invariant rows.size <= LIMIT` and `require len(rows) <
+  LIMIT else Full "at most {LIMIT}"`. A constant IS its literal everywhere in
+  the cell (interior cells included); it cannot be rebound (`let LIMIT`, a
+  parameter of that name) or assigned. A handler returning the number is not
+  used by the prover.
+- `invariant rows.size <= 500` (NOT `len(rows)`, which in an invariant
+  measures the value being written; a bare `size <= 500` that names no slot
+  bounds EVERY slot of the memory) is proven when the handler's ONE write that
+  can add an entry (a `push`, or a `set` of a key not known to exist) comes
+  after `require len(rows) < 500 else Full`, is not in a loop or a lambda, and no
+  handler it calls (or event it emits) adds to the slot too; a `set` after
+  `require rows.get(k) != () else Missing` (or in the `else` of `if rows.get(k) == ()`)
+  cannot grow the slot.
+- An invariant is checked AT each write: a `require` proves only the writes
+  that come AFTER it. A `require` counts for the writes of its own block and the blocks nested
+  in it — `if ok { require n < 3 else Full  m.set(k, n + 1) }` is proven; a require
+  inside a loop body narrows that iteration's `let` locals only.
+- A trailing `Map` parameter is optional: `on add(a: Int, opts: Map)` is
+  callable as `add(1)` (`opts` is `map()`) — the keyword-argument idiom,
+  read with `opts.step ?? 1`. HTTP headers reach `request` as a fifth
+  `headers: Map` parameter (lower-case names).
+- HTTP out: `http_get/post/put/patch/delete(url, body?, map("timeout", ms,
+  "headers", map(...)))` never raise on the network (a timeout, a refused
+  connection, a non-2xx answer come back as values); an invalid or unknown
+  option raises kind `type` (a program bug); non-2xx is `{error, kind, status, body}`
+  (kind `http_status` — redirects are followed up to 5 hops; a 3xx left unfollowed (a 307/308 answering a POST) is http_status too, a 6th hop is kind `network` (too many redirects) — | `timeout` —
+  also a body that stalls — | `too_large` over `max_bytes` | `refused` |
+  `network`); default timeout 30 s; invalid option values are refused;
+  a String body is sent as text/plain unless it is JSON; `mock http_post …`
+  in tests.
+- `verify --strict` bounds a write only from numbers it can bound: literals,
+  slots with an interval invariant, and values narrowed by `require`/`if`. A
+  number read out of a record (`a.balance`) is unbounded until a `require`
+  narrows it; the ⚠ line says why (`` `v` = a.balance — not bounded ``, or
+  `` `v` is only known to lie in [0, ∞) — narrow it: `require v <= 100 else …` ``).
+- `ensure cond` at the end of a handler raises kind `ensure` (422) when the
+  postcondition is false — the whole handler is rolled back. In a `[task]`
+  handler it undoes the CURRENT step only: writes made before the last
+  think() are already committed (check warns).
+- Dates: `parse_date("2026-03-01")` → map(year, month, day, weekday, epoch_day),
+  `add_days`, `add_months`, `days_between`, `months_between`, `days_in_month`,
+  `format_date(ts)` (a date argument may also be an Int Unix time in seconds,
+  as now() returns — validate client input as a String); ISO strings compare with `<`. Dates are UTC and there
+  are no time zones or time-of-day builtins: keep a fixed offset per place
+  (`let local_min = floor_div(now_ms(), 60000) + offset_min` — now() is seconds) and parse "HH:MM"
+  yourself (`split(t, ":")`); `every` / `after` run in any top-level cell, `request` or not (not in an interior cell: check refuses them there).
+- Money: Ints in cents (any size, exact); `div_round(n, d)` is HALF_UP
+  division (`div_round(cents * bps, 120000)` = BigDecimal interest at scale 2);
+  `format("%10.2f", …)` only for display, `money = "{idiv(c, 100)}.{…}"` for exact text.
+- Data: `read_csv(path)` → List<Map>: RFC 4180 (quoted `"a, b"`, `""`, multi-line
+  cells); unquoted cells auto-typed (`1.00` → 1.0), quoted cells and `007` stay
+  Strings; `read_csv(path, map("raw", true))` keeps all text (exact money);
+  `map("delimiter", ";")` reads `;` files (other options are refused);
+  `from_csv(text, opts?)` parses CSV text already in memory (an upload);
+  `to_csv(rows)` is the text `write_csv` writes (a download).
+  `write_csv` quotes what a reader would change (a String "12" stays a String;
+  a List cell is its JSON text). One builtin call builds at most 100,000,000
+  characters / matrix cells (`pad_left`, `format` widths, `zeros`…) and a List
+  of at most 10,000,000 (`range`); an Int holds at most 2^24 bits (a product,
+  shl, product(), parse_int / to_int of text past it is refused before it is
+  built); matmul does at most 10^9 multiply-adds, pow_mod bits(exp) × bits(m)
+  ≤ 2^30 — past any of these it raises kind `range`. Map slot keys are text
+  (`m.set(1, …)` and `m.set("1", …)` are one entry).
+  `use helper` imports helper.cell beside the program, `use lib::m`
+  lib/m.cell (a `use` inside an imported file resolves beside THAT file);
+  imported handlers are callable by name; an imported file's
+  test cells run only under `soma test lib/m.cell`. `agg`, `sort_by`,
+  `top`, `median`, `pstdev`; `stdev` / `variance` are SAMPLE (n − 1) like
+  Python's statistics, `pstdev` / `pvariance` population. `|> map`, `|> filter`,
+  `xs[i]`, `len(xs)`, `nth(xs, i)`, `xs.len` and a List slot's `rows[i]` /
+  `rows.len` cost O(1) per call (20k rows in 0.1 s); passing a big list to a
+  handler COPIES it (values are copies) — loop inside the handler, or pass
+  an index.
+- `think_json()` raises kind `json` when the model does not answer a JSON
+  object (catch it with `try`); a ```json fence around the object is fine.
+  `think_json(prompt, map("as", "Decision", "max_tokens", 300))` returns a
+  value of the declared `cell type Decision` — the shape is added to the
+  prompt (a record: its fields; a sum type: `{"variant": "AutoPay", "amount":
+  Int}` per variant, `"values": […]` for a tuple variant) and the answer is
+  enforced: an unknown variant, a missing, extra or mistyped field raise kind
+  `json`. `match` on it is exhaustive and `d.field` is checked like any
+  record; in tests, `mock think "{\"variant\": \"Skip\"}"`.
+  A mocked `think` costs ~4 characters per token, so `set_budget` exhaustion
+  (kind `budget`) is testable offline. Under `soma serve`, `trace()` keeps the
+  last 1000 steps process-wide.
+
+## Scheduled work
+
+```soma
+every 30s { expire_due() }      // under soma serve: runs at start-up, then every 30 s (units: ms s min h d — 500ms, 90min, 24h, 1d);
+                                // a daily job at a time of day: `every 1h` + a "last run" slot compared with today()
+after 10s { warm_cache() }      // once, 10 s after start-up
+```
+A tick is a handler invocation: atomic, serialized with requests (and with
+other processes on the same `.soma_data`), rolled back and logged if it
+raises; the next tick still runs. The interval counts from the end of the
+previous tick. verify checks the `transition()` targets of these blocks too.
+
+## Handlers are atomic
+
+With SQLite or in-memory storage, a top-level handler invocation is
+all-or-nothing: if it raises, its slot writes and transitions are rolled back. A failing `try { }`
+block's slot writes, transitions and pushes are rolled back to where it started (plain locals it assigned keep their new value), and the handler continues. Under
+`soma serve` handlers that WRITE run one at a time (a [task] handler: each step between think()s / awaits), so read-modify-write is safe; one that only reads runs beside them on a snapshot of the last commit (all slots `[persistent]`, no `[native]`; SOMA_SERIAL=1 turns it off)
+(300 parallel payments of 10 against a balance of 1000 pay exactly 100).
+`[immutable]` on a slot makes it append-only: a List slot only grows by
+`push`, a Map slot only gains new keys; overwriting or deleting an entry
+raises kind `invariant` (an audit log that cannot be truncated or rewritten).
+
+With SQLite persistent slots the handler IS one SQLite transaction: a process killed
+mid-handler (`kill -9`) leaves nothing of it on disk. `every` / `after` ticks
+are handler invocations too (same rollback). You do not write compensation
+code. Not rolled back: effects outside the process (http calls, think(),
+emitted events). Storage read failures abort the invocation even inside `try`.
+The legacy JSON backend only replaces individual files; it has no multi-slot
+transaction or cross-process isolation. The HTTP provider adapter has no remote
+transactions, and a failed write may have reached the remote service.
+
+## Errors
+
+```soma
+fail("not_found", "reservation {id}")     // raise: a kind + a detail
+require amount > 0 else InvalidAmount      // raise with kind InvalidAmount (a bare tag)
+require open < 3 else LoanLimit "{member} holds {open} loans"   // kind + interpolated detail
+let r = try { reserve(id) }                // r = {value, error, kind, detail}
+if r.kind == "not_found" { return response(404, map("error", r.detail)) }
+if r.error != () { fail(r) }               // re-raise unchanged
+```
+Kinds raised by the runtime: `invalid_transition`, `guard_failed`, `invariant`,
+`ensure`, `requires` / `ensures` (a face contract: the caller's fault, 400 /
+the handler's, 500), `division_by_zero`, `index`, `llm`, `budget`, `type`, `json` (a body
+that is not JSON), `stack_overflow`, `approval_required` (`approve()` with
+nobody to answer), `not_waiting` (404) / `wait_stale` (409) for a durable wait. Under `soma serve`, `r.error` / `r.detail` of a runtime
+error are the client-safe sentence (the full text is in the server log), so a
+returned or re-raised try result leaks no stored value; `soma run` / `soma test`
+keep the full text. Branch on `r.kind`, never on substrings of `r.error`; in
+tests `assert_fails f() matching "not_found"` matches the kind or the message.
+
+## HTTP
+
+`response(status, body)` is a map `{_status, _body}` (assert `r._status == 404`);
+`html(..)`, `redirect(..)` likewise. A handler may also return a plain map or
+string (200). `soma run app.cell request GET /path ""` calls the router without
+a server; `soma serve app.cell -p 8080` serves it. Static files: `static/`.
+`soma serve` ALSO exposes every public handler of the request-owning cell at
+`/<handler>/<arg>/<arg>` (that is how forms post to `/add`). A path whose
+first segment a `request` route names goes to `request` (a route `"/add"`
+also takes `/add/…`: handler `add` is then not an endpoint); prefix handlers that must not
+be reachable over HTTP with `_` (`on _debit(…)`); `start`/`init` are never
+endpoints. A handler that changes state (a slot write, a transition, an emit,
+a call into another cell) answers GET/HEAD with 405 — POST to it. A request
+body may not carry `_type`/`_variant`/`_values` anywhere in its JSON, even
+for a `body: String` handler (a value `soma serve` binds — body, path, query — never holds a record or a variant a client wrote). Only a map built by `response()` / `html()` / `redirect()`
+is an HTTP response: a returned map with `_status` keys from client data is
+plain JSON. Response header values with CR/LF are dropped. A handler that
+calls `from_json` on other client text (a query value, a header, a path
+segment, a String inside the body, a ws message) builds whatever declared variant it names — shape-checked (a missing or
+mistyped field raises kind `type`), but validate WHICH variant. Realtime: `on ws(msg: String)` (port+1, same-origin browsers
+only), `publish(stream, data)`, `sse(...)` routes — pushes (publish and emit)
+leave AT COMMIT, never from a rolled-back handler; an `emit` target is not an
+HTTP endpoint (`soma docs serving`, Realtime). `NaN`/`inf` in a path
+or query stay Strings. `soma check` warns when a
+handler and a route share a name unless the route delegates to that handler. `body: String` is the raw text
+(`from_json(body)`); `body: Map` is the parsed JSON (a non-JSON body is a 400
+before the handler runs, kind json; `soma run` parses its text argument the
+same way). In a test cell pass the Map itself — `request("POST", "/x",
+map("a", 1))`: a String argument there is a `type` error, not parsed. A raised error
+answers with its kind: not_found → 404, unauthorized → 401, rate_limited → 429, guard_failed → 403, invalid_transition
+→ 409, invariant → 422, your own `fail("tag")` / `require … else Tag` → 400, as
+`{"error": message, "kind": tag}`. A plain return answers 200: a map/list as
+JSON, `()` as `null`, a String or number as `{"result": …}` (a String
+that is JSON object or array text, like `to_json(m)`, is sent as that JSON;
+any JSON text with an explicit `"Content-Type", "application/json"`). Path segments and
+query values are coerced to the parameter's declared type (`/decide/x/true` →
+Bool). Every response carries `Access-Control-Allow-Origin: *`. `request` may
+be declared in `face` or not; its return type is not checked (a route answers
+whatever it returns). `serve` binds 127.0.0.1 (`--host 0.0.0.0`
+to expose), refuses a taken port and a program that fails check, and survives a
+handler's runaway recursion (500 `stack_overflow`; the process stays up).
+
+## Verification properties
+
+`soma verify` proves, for every cell with a state machine: reachability,
+deadlock-freedom, liveness (every state can reach a terminal — or, with no
+terminal state, return to the initial one: a reactive machine passes --strict), refinement (each
+handler's `transition()` targets are declared states — the SOURCE of a
+transition is the instance's runtime state, so a removed edge is caught at
+runtime as `invalid_transition`, not by verify; declare `[verify.before.X]
+requires` for the edges you care about), and termination of every
+handler whose recursion has a decreasing argument — a handler it cannot prove
+(`while true`, `rec(n + 1)`) is a ⚠ warning, not a proof, and the runtime
+depth guard is what stops it. `property … forall n in a..b` in tests walks
+EVERY value when the range has at most 20,000 values; a wider range is only
+sampled (50 values, fixed seed — not a proof). State more in a `soma.toml` beside
+the program (`[package]` is optional; an unknown key is an error). The properties
+apply to every machine of the cells in `cells = [...]` (all cells when absent):
+a property whose TARGET state one machine lacks is vacuously true there (but
+`before.X requires [Y]` with X present and Y absent FAILS: X is reachable
+without Y) — output names each machine `Cell.machine` when there are several; split
+programs, or scope `cells`, when two machines need different properties:
+
+```toml
+[verify]
+cells = ["Expense"]                 # optional: which cells these apply to
+deadlock_free = true                # (always on; the key is accepted)
+eventually = ["paid", "rejected"]   # every path reaches one of these (AF)
+never = ["corrupt"]                 # unreachable states (AG not)
+always = ["a", "b", "c"]            # the machine is only ever in one of these
+
+[verify.after.rejected]
+never = ["paid"]                    # `paid` is unreachable once `rejected` was reached
+eventually = ["archived"]           # after `rejected`, every path reaches `archived`
+
+[verify.before.paid]
+requires = ["manager_approved"]     # precedence: no path reaches `paid` without ONE of these
+requires_all = ["held", "picked"]   # …without EACH of these
+assuming = "amount > 500"           # …on the runs where this holds: edges whose guard cannot hold then are left out
+[verify.before."Pay.paid"]          # "Cell.state": the PRODUCT of the machines, every run of the handlers (one id
+requires = ["Approval.signed_off"]  # followed through all of them; a handler call is one atomic step); refused past 200,000 states
+```
+In the machine, `* -> failed` means from EVERY state — it also adds
+`paid -> failed`, so `paid` is no longer final (verify says so). Keep states
+final with `* -> failed except [paid, denied]`. A property naming a state no
+machine declares is an error, and verify ends with one verdict line
+(`VERIFY OK` / `VERIFY FAILED — …`). `soma verify` and `soma test` refuse a
+program that fails `soma check`. Invariants on computed values are proven by
+induction when interval reasoning suffices (`(counts.get(k) ?? 0) + 1` keeps
+`counts >= 0`; `let open = …  require open < 3 else Full  set(k, open + 1)` keeps
+`<= 3` — an unconditional `require` on a once-bound local counts), and by linear arithmetic between Int values the handler
+cannot change (`let b = acct.get(id) ?? 0  if amount > 1000 - b { return 0 }  acct.set(id, b + amount)` keeps `<= 1000`); the rest is runtime-checked.
+Face contracts get a `Cell/contracts` block: each `ensures` conjunct is proven
+against every returned value (`-> Int` results; rule out `()` first: `if v ==
+() { return 0 }`), each `requires` conjunct at every call site in the program
+(`⚠ … runtime-checked at 1 of 2 call sites: pay → debit(amount)` names the
+caller that must `require` it first). A `requires` is a fact inside its handler
+(a write of the bounded parameter is proven), and `ensures` bounds the result
+for callers in any cell. A call or return that can never satisfy its clause
+fails verify. Relations (`ensures result <= amount`) are enforced, not proven;
+a `[native]` handler takes no contract.
+`soma verify --strict` fails on every ⚠ too (a proof that degraded to
+runtime-checked, an unprovable termination) — the CI gate.
+A failed property prints a counter-example path and is an error. What verify
+does NOT prove: data-dependent rules inside handlers, and invariants on computed
+values (those are runtime-checked — reported as such, never as "proven").
+Guards (`a -> b { guard { cond } }`) are enforced at runtime and read the
+locals of the handler that calls `transition()` — so EVERY handler whose
+`transition()` targets the guarded state must bind those names (check error
+otherwise), even one meant for another edge; the model keeps guarded edges.
+A guard is a pure condition: calling a handler, think(), next_id() or a slot
+write (`.set`/`.delete`/`.push`) inside it is a check error — compute the value
+in the handler before `transition()` and test that local. The calls in a
+`require` condition and in its `else` detail are part of the termination,
+cost and invariant analyses like any other statement.
+A `cost { tokens: N }` bounds the REPLY tokens (the sum of the max_tokens
+caps of the think() calls a handler can make — ×10 provider rounds in an
+agent with tools, or × `map("max_rounds", N)`); prompt tokens are not in it —
+`set_budget` / `tokens_used()` count prompt + reply, per request under serve
+and per rule in a test (return `tokens_used()` from the handler to assert on
+it); `tokens_remaining()` is -1 without a budget, never below 0 with one; a
+`set_budget` reached from a model's tool call (a delegated agent's own)
+only lowers what is left — it never lifts or resets the caller's. A cost bound that cannot
+be proven (a think() without a literal max_tokens) is a check ERROR.
+
+## Agents (LLMs inside the cage)
+
+```soma
+cell agent Researcher {
+    face { signal research(topic: String) -> Map }
+    cost { tokens: 2000 }                             // PROVEN by soma check
+    state job { initial: idle  idle -> working  working -> done  * -> failed except [done] }
+    on research(topic: String) {
+        set_budget(8000)                              // token cap, prompt + reply
+        transition(topic, "working")
+        let r = try { think("Research {topic}", map("max_tokens", 2000)) }
+        if r.error != () { transition(topic, "failed")  return map("error", r.kind) }
+        transition(topic, "done")
+        return map("facts", r.value, "spent", tokens_used())
+    }
+}
+```
+`think_json(prompt, map("as", "Decision"))` answers with a value of a declared
+`cell type`. A model's answer (and an `http_*` reply) is UNTRUSTED: it may be
+stored, shown and computed with, but it may not decide the target of a
+`transition()`, a URL, a file path or `set_budget` until the handler tests it
+(a `require`, an `if`, a `match` on the values you allow) — check warns, and
+refuses in edition 2027. Tools (`tool` in the face, capability-scoped; `[mcp: "srv"]` / `[openapi: "srv/op"]` for one on a server), `[task]` handlers
+(model calls outside the lock), hordes (one handler over thousands of
+inputs under one token ceiling), `vote`, rate limits, mocks and record /
+replay: `soma docs agents` (https://soma-lang.dev/llms-agents.txt).
+
+## Top gotchas (full list: /docs/gotchas.md or /gotchas.json — all verified)
+
+1. `f(args)` calls YOUR handler `f` when one takes that many arguments, the
+   builtin `f` otherwise (`on list() { return list(1, 2) }` reaches the
+   builtin). `soma check` warns when an argument count sends a call to a
+   builtin you probably did not mean. Another cell's handler: `Ledger.post(x)`
+   (or bare `post(x)`); the builtin behind a handler's name: `std.len(x)` (required in edition 2027).
+   `get_status(id)` of an id never transitioned: the initial state (edition 2027: `()`); `has_state(id)` tells.
+2. `match` arms use `->` (`=>` is lambdas). Handlers don't declare return
+   types (face signals do).
+3. An unescaped `"` inside `{...}` ends the string — escape it (`{m[\"k\"]}`) or bind a let first.
+4. `==` is structural on lists, maps and variants (`[] == []`, key order
+   irrelevant). `null`/`None` do not exist: null is `()`, test with `x == ()`
+   or default with `x ?? 0`.
+5. `transition()` returns {id, from, to}; read state with get_status(id).
+   Wrap fallible transitions in try { }.
+6. `m.set(k, v)` / `m.delete(k)` / `xs.push(x)` write slots AND locals (statement form); `m[k] = v` too.
+7. `assert_fails expr` needs an expression that RAISES (not a falsy bool).
+8. serve routes only the cell that owns `request` — put routable signals
+   there, delegating to domain cells.
+9. Adjacent string literals don't concatenate (`return "a" "b"` is a check
+   error). Language keywords (on, given, cell, agent, tool, use, require,
+   promise, let, if, match, return, …) are not names — `soma check` says
+   which one and how to rename it. Reserved HANDLER names (they would replace the
+   builtin): transition, approve, fail, get_status, has_state,
+   valid_transitions, think, think_json, set_budget, tokens_used.
+10. Floats: compare with a tolerance, never ==.
+11. `7 / 2` is `3.5` — everywhere, `[native]` included. `idiv(7, 2)` is the
+    integer quotient (truncates toward zero, BigInt-exact). `pow` is a Float
+    power; `ipow(3, 40)` is the exact Int power (no `**` operator).
+12. One memory invariant names one slot; `size` invariants also guard
+    `delete`. A cost bound is *proven* only when every `think()` runs a
+    known number of times (literal `range`, or an annotated loop: `for [loop_bound(50)] x in xs { … }`, `while [loop_bound(50)] cond { … }` — checked: more iterations raise kind
+    `loop_bound`); a declared
+    bound that cannot be proven is a check ERROR.
+
+## Packages
+
+```toml
+[dependencies]
+matrix = "^0.2"                  # semver; registry at soma-lang.dev/repo — also money, time (zones), auth (JWT), ratelimit, queue, text, vector, http_client
+local = { path = "../pkg" }      # or git = "...", subdir = "packages/x"
+```
+`soma install` → .soma_env/packages/, commit-pinned in soma.lock with a
+sha256 of the files (sub-directories included): a package modified after
+install, or holding a file the lock does not list, is refused at import
+(`soma install` restores it); an imported cell that defines `request` or
+`ws`, or declares `every` / `after`, is a check warning (it would own HTTP routing / the WebSocket port).
+`use matrix` imports it. A package's API = its face; its proofs (cell test)
+re-run on YOUR toolchain: `soma test .soma_env/packages/matrix/matrix.cell`.
+
+## Performance
+
+The interpreter is the reference semantics (a 20k-row CSV aggregation runs in
+~0.3 s). Annotate a hot numeric handler `on f(n: Int) [native] { … }` for
+Rust codegen: Int / Float / Bool / String parameters and locals, arithmetic,
+`if` / `while` / `for i in range(a, b)`, buffers, hashmaps and string
+builders — no lists, maps, slots, `try`, `match` or interpolation. A native
+compile failure aborts the run (no silent fall-back). `tools/diff_fuzz.py`
+compares the two backends on generated arithmetic; the differences that
+remain (the type of `/` inside an expression) are listed with the
+vocabulary, limits and costs in `soma docs native`
+(https://soma-lang.dev/llms-native.txt).
+
+## Learn from working code
+
+- https://soma-lang.dev/corpus/index.json — 300+ programs, all passing
+  check+test (algorithms, web, agents, state machines, finance, games,
+  data, safety interlocks, medical, aerospace…). Before writing a cell,
+  fetch one with the features you need and adapt it.
+- treasury/ airlock/ poker/ elevator/ hft/ delivery/ — complete apps where
+  the safety property is a verified theorem
+- packages/matrix/ — the reference package (numpy-style linalg, 43 proofs)
+
+---
+
+# Soma — running LLM agents
+
+> `cell agent`, think(), tools and capabilities, [task] handlers, hordes,
+> budgets, mocks, record / replay. The language itself:
+> https://soma-lang.dev/llms.txt (`soma docs agent`).
+
+## Agents (LLMs inside the cage)
+
+```soma
+cell agent Researcher {
+    face {
+        signal research(topic: String) -> Map
+        tool search(q: String) -> String [capability: "https://api.x.com/*"] "Search"
+    }
+    cost { tokens: 6000 }                             // PROVEN by soma check: 2000 × 3 rounds
+    state job { initial: idle  idle -> working  working -> done  * -> failed except [done] }
+    on search(q: String) { return to_json(http_get("https://api.x.com/search?q={q}")) }
+    on research(topic: String) {
+        set_budget(8000)                              // token cap: a prompt that alone overruns what is left raises kind budget before it is sent; otherwise the provider round that crosses it completes and the NEXT round (a later tool round of the same think() too) raises kind budget
+        transition(topic, "working")                  // one machine instance per topic
+        let r = try { think("Research {topic}", map("max_tokens", 2000, "max_rounds", 3)) }
+        if r.error != () {
+            transition(topic, "failed")
+            return map("error", r.kind)
+        }
+        transition(topic, "done")
+        return map("facts", r.value, "spent", tokens_used())
+    }
+}
+// `on ask(q: String) [task] { … think(…) … }` runs as STEPS: each think() ends
+// the current step (its writes commit) and waits for the model OUTSIDE the
+// handler lock, so concurrent requests overlap their model calls (200 × 2 s
+// waits in ~9 s instead of 400 s); a failure rolls back the current step only
+// (writes before the last think() stay — a `try` cannot undo them either);
+// the prover does not carry a read or `require` across a think (another
+// request may write meanwhile): read, require and write AFTER the last think.
+// Only the ENTRY POINT decides: a [task] handler called from a plain handler
+// (`on request` routing to it, a listener, a tick) runs inside the caller's
+// atomic unit and holds the lock — mark the caller [task] too:
+// `on request(method: String, path: String, body: String) [task]`,
+// `every 1min [task] { … }`, `after 5s [task] { … }`. check warns on each
+// of these. SOMA_LLM_MOCK_LATENCY_MS gives a mock a latency to test it. A
+// plain handler stays one atomic unit. Unknown handler annotations
+// ([tsak]) are errors; known: [native], [task], [deterministic], [record].
+// HORDES — one [task] handler over many inputs with a bounded pool:
+//   let h = horde(Reviewer.review, docs, map("concurrency", 200,
+//       "on_result", "_store", "on_done", "_summarize", "on_error", "_failed",
+//       "max_attempts", 2))                // returns "Audit:h1" at once
+//   on _store(v: Map) { verdicts.set(v.id, v) }       // or _store(input, result)
+//   horde_status(h)  → {state, total, queued, running, done, failed, cancelled, tokens}
+//   horde_results(h) → results in input order (() if not done); horde_cancel(h)
+// The target takes one parameter; mark it [task] (check warns when it
+// thinks: each task would hold the lock). Write the target and the options
+// AT THE CALL (a literal map with literal handler names — check refuses a
+// computed target or options: they decide what runs and what it costs);
+// name callbacks `_…` (a public one is an HTTP endpoint). Only the owner
+// cell (and test rules) can read or cancel a horde. The queue is stored in
+// soma.db under serve / run, even without a [persistent] slot: a restart
+// resumes it; with several servers on one .soma_data each horde runs in one
+// of them (a lease, taken over ~6 s after its server stops). A task's
+// result is recorded — and on_result called — in the same atomic unit as
+// its LAST step, so each result is written once even after kill -9; steps
+// before its last think() may run again. on_error(input, error: Map
+// {error, kind, detail}) after max_attempts (default 1); on_done(id) once,
+// when nothing is left (cancel included). concurrency default 8, max 1000.
+// Without workers (`soma test`) the horde runs right after the calling
+// handler commits — its next statements run first, as under serve — one
+// task per unit. A restart does not resume a horde whose target or
+// callbacks the new code renamed (it says so; the tasks wait).
+// BUDGET: map("budget_tokens", 2000000) is a hard ceiling for the whole horde — every think() of its
+// tasks and callbacks first RESERVES an upper bound (request bytes +
+// max_tokens), waits outside the lock for calls in flight to settle if it
+// does not fit yet, and is refused (kind budget) when it never will; the
+// horde then stops (state "exhausted"; tasks it stopped count as
+// cancelled, no on_error). A horde started inside a task or callback of a
+// budgeted horde runs under that budget too (nested hordes cannot spend
+// past it). on_done's think() also counts: keep headroom for it. A
+// provider that ignores max_tokens raises kind llm, charged what it
+// reported. The ceiling counts SETTLED calls: calls in flight
+// at a kill -9 were sent, then are sent again after the restart. soma verify prints each horde's bound:
+// the literal budget_tokens, else inputs × per-task × max_attempts for a
+// literal list/range (reply tokens), else unbounded — a horde in a cell
+// with `cost { tokens: N }` needs a literal budget_tokens to prove it.
+// ROUNDS (simulations): map("snapshot", world, "apply", "_apply", "seed", 7,
+// "instance", "id") — the target takes (input, snapshot): every agent of
+// the round sees the same world; `apply(result)` / `apply(input, result)`
+// runs at the END, in input order, once per task (not as replies arrive),
+// then on_done — which may start the next round (a horde() in on_done).
+// seed: random() in task i draws the same numbers on every run. instance:
+// the input field naming an agent; its remember()/recall() keys and its
+// conversation are its own and persist across rounds. 10 000 agents × 20
+// rounds: 46 s, identical on every run. After a crash, steps before a
+// task's last think() may run again — write memory in the last step.
+// vote(Cell.handler, input, k) → {winner, count, k, unanimous, errors,
+// votes}: k agents on one input (in a [task] step under serve/run they run
+// at once, outside the lock); the most common answer wins. Provider limits
+// for every think() of
+// the process: soma.toml [agent] rpm = 500, tpm = 200000 (or SOMA_LLM_RPM /
+// SOMA_LLM_TPM): at most rpm requests / tpm tokens in ANY 60 s window; a
+// 429 pauses every caller. Measured: 10 000 tasks with a
+// 2 s mocked model, concurrency 500, in 41 s.
+// soma verify PROVES the lifecycle; `cost { tokens: N }` (also latency:,
+// usd:) is PROVEN when every think() has a literal max_tokens and runs a
+// known number of times — with tools, × the rounds (`max_rounds`, else 10).
+// `latency` counts WAITING: each think()'s `timeout` (a total, retries
+// included — the wait for a rate limit and a mock's latency too) × its
+// rounds, http timeouts, literal sleep()s, vote() × k; approve(), file/stdin
+// reads and computed sleeps make it advisory; CPU time is not in it. `usd`
+// is the REPLY tokens × the price the table knows for the cell's model
+// (prompts are not counted; a model the table does not know makes it
+// advisory) — an estimate of the provider's bill, not the bill.
+// TOOLS FROM OUTSIDE: a tool may run on a server instead of in a handler
+// (it then has NO `on` handler; your code and the model call it the same way):
+//     tool search(query: String, limit: Int) -> String [mcp: "docs", capability: "https://docs.example/*"] "Search the docs"
+//     tool get_pet(petId: Int) -> Map [openapi: "pets/getPetById"] "Fetch a pet"
+//     # soma.toml
+//     [tools.docs]  mcp = "https://docs.example/mcp"   token_env = "DOCS_TOKEN"   # MCP over Streamable HTTP
+//     [tools.pets]  openapi = "petstore.json"          base_url = "https://…"      # OpenAPI 3, JSON
+// `[mcp: "docs"]` is the server's tool of the same name, `[mcp: "docs/other"]`
+// another name; for OpenAPI the name is the operationId. `soma tools sync`
+// asks each server for the contract and pins it in soma.lock (commit it);
+// `soma check` then works offline: a tool not pinned, an argument the server
+// does not take, a wrong type or a required argument left out is an error
+// (kind tool_binding). Parameter NAMES are the server's (path, query, header
+// and JSON-body fields for OpenAPI; a non-object body is one argument `body`).
+// At run time a server whose contract no longer matches the pin is refused
+// before anything is sent (kind tool_schema: sync again, read the CHANGED
+// lines, check). Its capabilities apply to every call, yours too; redirects
+// are not followed; a server-side failure is kind `tool`. A test never reaches
+// the server: `mock search "…"` scripts it. `soma tools list` shows the pins.
+// Not read: MCP over stdio, YAML OpenAPI documents, MCP resources / prompts.
+// The model may call only the face's `tool`s (never a private or other
+// handler), with typed arguments, within their capabilities (URL patterns with
+// `*`: "https://api.x.com/*"; a tool with no capability is unrestricted; a
+// tool that calls think() makes a `cost` bound unprovable, a tool doing I/O a
+// `latency` bound; I/O in a loop or lambda leaves a `tokens` bound provable) — the scope binds
+// MODEL calls only (your own code calling the tool handler is not
+// restricted), and a tool is not an HTTP endpoint; `mock think` scripts text
+// replies only (to test tool calls offline, point [agent] url at a fake
+// OpenAI-chat-compatible server: tools go out as `tools`, results come back
+// as `role: "tool"` messages, think_json sets response_format json_object,
+// usage.total_tokens feeds tokens_used(), usage.completion_tokens is held to
+// max_tokens); a tool call that raises is rolled
+// back. `map("max_rounds", N)` caps the tool-call rounds of one think();
+// `map("tools_allowed", ["lookup"])` offers only those tools to that call
+// (classify with no refund tool in reach); a `*` in a capability stays in
+// its part of the URL (host or path), `..` segments and userinfo are
+// refused, and a tool's scope holds for the tools of any agent it calls;
+// a scoped tool reads/writes no file (read_file, load, include, …) and opens
+// no link/socket. An unknown option, or a tools_allowed name that is not a
+// tool, is an error. A reply longer than its max_tokens (a provider ignoring
+// the cap) raises kind `llm`; a tool that calls back its think() handler is a
+// termination ⚠ (the model drives that recursion). Each agent cell keeps its OWN multi-turn
+// context (clear_context() resets it); every/after ticks use the same
+// [agent] config as requests. `soma test` mocks think() only when no key is
+// configured — set SOMA_LLM_MOCK=echo for offline tests with a soma.toml key;
+// `mock h [[1, 2]]` scripts ONE List answer ([1, 2] is a queue of two).
+// approve(msg) is a gate a PERSON answers: tests script it (mock approve),
+// serve raises approval_required unless SOMA_APPROVE says otherwise (and
+// the handler rolls back). For a web flow use a DURABLE WAIT in a [task]
+// handler:
+//     on refund(id: String, amount: Int) [task] {
+//         transition(id, "pending")
+//         let ok = await approve("refund {amount} for {id}")   // 202 {waiting: "w_…"}
+//         if !ok { transition(id, "refused")  return response(403, map("refused", id)) }
+//         transition(id, "paid")
+//     }
+// Unanswered, the call returns 202 and the step commits; the handler's
+// position and locals are stored with the data and the rest runs when the
+// answer arrives, after a restart too: POST /_approvals/<id> {"approved":
+// true|false} (GET /_approvals lists them), or resume(id, answer) from a
+// route of your own (your auth). The /_approvals and /_signals routes answer
+// only a server bound to loopback, or `Authorization: Bearer $SOMA_WAIT_TOKEN`.
+// resume() / cancel_wait() are refused inside a tool: the model does not
+// answer its own request. `await signal("picked_up", id)` waits for
+// deliver("picked_up", id, value) or POST /_signals/picked_up/<id> (the JSON
+// body is the value); `await sleep(2h)` for the clock (serve's timer resumes
+// it; `soma run` sleeps between two steps; a test does not wait). Each resumed
+// part is a step: if it fails it rolls back and the wait stays, to be answered
+// again. Give a resting state another way out (an `every` sweep, a cancel
+// handler): `soma verify` warns when only the answer leaves it. Scripted
+// answers still win: `mock approve true` makes `await approve` go straight on.
+// think(prompt, map(..)) or think(prompt, system, map(..)): options go LAST.
+// Offline: `mock think …` in tests, SOMA_LLM_MOCK=echo | fixed:TEXT |
+// rules:mocks.json — a list of {"match": "substring of the prompt",
+// "cell": "AgentCell", "reply": "text" or a JSON value}: the first rule whose
+// match / cell fit answers, none: an echo — or
+// [agent] mock = "echo" in soma.toml. Record/replay: `soma run --record` (not serve) logs each top-level
+// call; `soma replay` re-runs them from EMPTY storage with the soma.toml
+// [agent], calls think() again (replies are not recorded) and compares the
+// RESULTS — a state difference shows only in a later result.
+```
+
+## Untrusted values, replay, evals, telemetry (3.0)
+
+- UNTRUSTED VALUES. What think() / think_json() / http_*() / read_stdin()
+  return, and what is computed from it, is untrusted. Reaching the target of
+  `transition()`, the URL of an `http_*` call, a file path or `set_budget`
+  without a test is a check warning (edition 2027: error kind
+  `untrusted_value`). A value is cleared when the handler tests it — it
+  appears in a `require`, an `if` / `while` condition or a `match` subject —
+  or passes it to another handler. `match d { "approved" -> transition(id,
+  "approved")  _ -> fail("bad_state", d) }` is the form; what an arm BINDS out
+  of an untrusted subject (`AutoPay { amount }`) is still untrusted.
+- REPLAY. `soma run --record` writes the model's answers beside the log
+  (`app.somalog.replies`); `soma replay` hands them back in order, so the
+  replay reproduces the run without asking the model (`--live` asks again).
+  A think() that called tools is given its final answer only: the tools do
+  not run again. A mocked reply counts ~4 characters per token, so a handler
+  that returns `tokens_used()` replays with a different number.
+- EVALS. `soma eval app.cell --handler classify --dataset cases.jsonl
+  [--grade exact|contains|handler:Cell.judge] [--threshold 0.9]`: one JSON
+  object per line, `{"input": …, "expected": …, "name"?: …}` (`input` a list:
+  the arguments). The run is stored in `.soma_eval/` and the next run names
+  the cases that passed and now fail. `judge(input, answer, expected)`
+  answers a Bool. think() is the configured model when a key is set, the mock
+  otherwise — as under `soma test`.
+- TELEMETRY. `SOMA_OTEL_FILE=spans.jsonl`: one OTLP/JSON line per top-level
+  handler invocation — a span (`Cell.handler`, error kind as status) with one
+  event per model call (`gen_ai.chat`, `gen_ai.usage.total_tokens`), tool
+  call, approval and transition. Prompts, tool arguments and results are
+  exported as their sizes unless `SOMA_OTEL_CONTENT=1`.
+
+---
+
+# Soma — `[native]` handlers
+
+> The native vocabulary, its limits and costs. The language itself:
+> https://soma-lang.dev/llms.txt (`soma docs agent`).
+
+## Performance
+
+Interpreter is the reference semantics (linear-time `map`/`filter`/indexing;
+a 20k-row CSV aggregation runs in ~0.3 s interpreted). Annotate hot handlers
+`[native]` for Rust-codegen on numeric loops (the harness and its C/Rust
+reference implementations are in `bench/`); a native compile failure aborts
+the run (there is no silent fall-back to the interpreter). It needs `cargo`
+(rustup) on PATH; the first compile takes seconds and is cached in
+`.soma_cache/` beside the program.
+Arguments are type-checked at the call like any handler; `random(n)` /
+`random(lo, hi)` are Ints, `random()` a Float; buffer indexes are Ints from 0
+(no negative indexes); an Int literal beyond 64 bits is refused (build it:
+`shl(1, 64) - 1`); `[loop_bound(N)]` is checked; a `[native]` handler's
+recursion deeper than 20,000 calls raises stack_overflow (interpreted
+handlers: 512 — walk deep structures with an explicit stack). Floats print with the shortest
+round-trip digits; print/to_string never use exponent form (`1e-7` prints `0.0000001`, a Float inside
+a printed map or list too; `format("%.3e", x)` for scientific notation); to_json — HTTP bodies included — uses JSON's shortest form (`1.18e21`).
+An SSE `data:` line and a WebSocket push carry the value as JSON on one line
+(a String payload is quoted, so a client cannot forge another event).
+Native math: sqrt, log, exp, pow, abs, min, max, floor, ceil, round, sin,
+cos, tan, atan, atan2, asin, acos, pi() (asin/acos outside [-1, 1] raise
+kind range, as interpreted). `soma check` verifies the native vocabulary (every handler, every error at
+once). Same semantics as the interpreter: `7 / 2` is 3.5, a division by zero
+is an ordinary `try`-catchable error, an Int overflow promotes to BigInt, and
+an Int slot refuses a non-exact `/` instead of truncating. One difference:
+native code is statically typed: a quotient returned or stored as an Int
+is the exact Int (`return a / b` gives -7 for -7 / 1; an exact quotient past
+2^53 raises natively — use idiv(a, b) there), but inside an
+expression that needs its type — `to_string(a / b)` — it is a Float
+("-7.0") — `soma check` warns; write idiv(a, b) for an integer quotient. A native local keeps the
+type of its `let` (assigning a String to a number local is a check error).
+
+What a `[native]` handler may use — nothing else:
+- parameters and locals: Int, Float, Bool, String (a List cannot cross the
+  boundary in either direction: parse the input into buffers inside the
+  handler, return a String)
+- arithmetic, comparisons, `if`/`while`/`for i in range(a, b)`, `return`,
+  sqrt log exp pow abs min max floor ceil round sin cos random, idiv gcd
+  pow_mod sqrt_int, band bor bxor bnot shl shr bit_len bit_test bit_set
+  bit_clr bit_next, to_int to_float to_string, str_len str_at str_eq,
+  sibling `[native]` handlers
+- arrays: `buffer(n) -> Buf` (n Ints, zeroed), `buf_get(b, i) -> Int`,
+  `buf_set(b, i, v)`; `buffer_f(n)` / `buf_get_f` / `buf_set_f` for Floats
+- maps: `hashmap() -> HMap` (Int → Int), `hm_get(m, k)`, `hm_set(m, k, v)`,
+  `hm_inc(m, k)`, `hm_len(m)`, `hm_has(m, k)`
+- strings: `strbuf() -> SBuf`, `sb_push(b, s)`, `sb_push_int(b, n)`,
+  `sb_push_char(b, c)`, `sb_len(b)`, `sb_finish(b) -> String`;
+  `regex_count / regex_replace / regex_match`; `read_stdin write_str`
+  (write_str flushes, and is written once even when an Int overflow
+  re-runs the handler in BigInt mode); read_file is interpreted only (its
+  failure value is a Map): read in an interpreted handler, pass the text
+- a Buf/HMap/SBuf lives in ONE variable of ONE handler: it cannot be
+  re-bound (`let t = u  u = v` — copy elements instead), returned, or passed
+  to a sibling (pack results into a String with strbuf). A Buf holds 64-bit
+  Ints: a value that overflows i64 while stored into it is a `range` error
+  (scalars promote to BigInt; mask the value or keep it scalar). `for` takes
+  `range(a, b)` only (a step → `while`). A literal `/ 0` does not compile.
+  `soma check` reports all of these.
+- one FFI call costs ~2 µs: make the LOOP native, not just the per-element
+  kernel (10^7 sibling calls inside a native loop: 20 ms; 2·10^6 calls from
+  an interpreted loop: 3.5 s).
+Not available natively: maps/lists/records, think(), memory slots, `try`,
+`match`, string interpolation — call an interpreted handler for those. The
+buffer / hashmap / strbuf primitives exist ONLY in `[native]` handlers
+(`soma check` refuses them elsewhere); everything else in the list, `sin`,
+`regex_*`, `read_stdin` included, works in interpreted handlers too.
+
+---
+
+# Soma — what each release changed
+
+> Newest first. The language itself: https://soma-lang.dev/llms.txt (`soma docs agent`).
+> Every fix and its compatibility note: https://soma-lang.dev/CHANGELOG.md.
+
+Soma 3.0.0 types expressions at check: a field a record type does not declare
+(`l.quantity` on `Line { sku, qty }`), operands the interpreter would refuse
+(`s * 2` on a String), an argument or a `try` result used as the wrong kind
+are check errors — inferred, no annotation added, and only when every
+execution would raise. `soma check` reports EVERY syntax error of a file in
+one pass, each with file / line / col / fix in `--json`; every diagnostic has a
+stable code (`E0110`; `soma explain E0110`). New in the language: cell
+constants (`const LIMIT = 500`, proven against like the literal), lambdas of
+several parameters (`(a, b) => a + b`), `a ++ b` (join two lists or Strings),
+and a typed model answer (`think_json(prompt, map("as", "Decision"))` returns
+a value of that `cell type`, or raises kind `json`). New commands: `soma fmt`
+(canonical layout, `--check` for CI), `soma verify --attest out.json` (the
+proof as a file a reviewer re-checks with `--check-attestation`). Editions:
+`edition = "2027"` under `[package]` in soma.toml (what `soma init` writes)
+also refuses a value that may be absent where one is required (`counts.get(k)
++ 1` — write `(counts.get(k) ?? 0) + 1`), `a ?? b + c` without parentheses,
+`+` between two non-numeric lists (join with `++`) and a return that
+contradicts the face's type; a program without the key is edition 2026 and
+checks as before (those are warnings or run-time checks there).
+Also in 3.0.0: `soma verify` knows the state a handler established before a
+`transition()` (`require get_status(id) == "held"`, an `if`, a `match`, an
+earlier transition) and refuses a move no such state has an edge for; an
+untrusted value (a model's answer, an HTTP reply) deciding a transition
+target, a URL, a file path or the budget without a check is a warning
+(edition 2027: an error); `soma replay` hands back the model's recorded
+answers (`--live` asks again); `soma eval`, `soma lsp`, `soma fix --edition
+2027`, `SOMA_OTEL_FILE` (OTLP spans); `tools/diff_fuzz.py` compares the
+interpreter with `[native]` on generated handlers (108,000 comparisons, no
+differing answer; 388 cases native code refuses with its own message).
+Compatibility: a program that ran correctly still checks; one that only
+raised on some path now fails `soma check` on that line. Scope: types are
+inferred per handler (a reassigned local, a lambda parameter, most builtin
+results are not tracked); `[native]` keeps its own typing; proofs stay per
+cell. Details: https://soma-lang.dev/CHANGELOG.md.
 
 Soma 2.8.10 corrects native code that diverged from the interpreter: an exact
 Int quotient next to `%` stayed a Float, Int-only builtins given a Float were
@@ -137,811 +1166,6 @@ Cost proofs reject arithmetic overflow and a shadowed `range` needs an
 explicit loop bound. Invalid mock clocks fail tests; `days_in_month` needs
 Int arguments. Native failures are recorded after the transaction completes;
 replay refuses malformed logs and native compilation failures.
-
-Pick it when the task has a lifecycle or a limit that must hold: payments,
-approvals, interlocks, quotas, escrow, agent workflows with a budget — and
-you want to hand back evidence (`soma verify` output) instead of "I believe
-this is correct". Also for a small self-contained HTTP service: one file,
-no framework, storage and tests included.
-Skip it when you need a large ecosystem, a mature package set, or raw
-interpreter speed outside numeric `[native]` handlers. Soma is
-experimental: verification is per cell; cross-cell composition is linted,
-not proven.
-
-## The agent loop
-
-```
-soma check  app.cell     # static gates FIRST: contracts, undefined
-                         # interpolation vars, unknown/ambiguous calls
-soma verify app.cell     # prove state machines + memory invariants
-soma test   app.cell     # run `cell test` assertions (assert/assert_fails)
-soma run    app.cell sig arg1 arg2
-soma serve  app.cell -p 8080
-soma describe app.cell --faces       # contract summary of every cell
-soma describe --builtins --json      # exact builtin signatures — never guess
-soma fix    app.cell                 # auto-repair common check errors
-soma docs agent                      # this file, offline, from the binary
-soma docs guarantees|serving|operations   # proofs, HTTP rules, what goes wrong — offline too
-soma example invariant state_machine # verified programs with those features;
-soma example <id>                    #   …and the source of one
-soma init myapp                      # app.cell + soma.toml + AGENTS.md
-```
-Work in that order. `check` is cheap and catches most mistakes before
-anything runs; a `verify` failure is an error, not a warning.
-
-## Cell anatomy
-
-```soma
-cell App {
-    face {                                   // the contract
-        signal add(a: Int, b: Int) -> Int    // return types live HERE
-        promise all_persistent
-    }
-    memory {
-        data: Map<String, Int> [persistent, consistent]
-        invariant data >= 0                  // checked BEFORE every write;
-        // between two slots of the cell (a rule no single slot can state):
-        // reserved: Map<String, Int> [persistent]
-        // invariant (reserved ?? 0) <= (data ?? 0)
-        // — checked on every write to EITHER slot; the written slot is its new
-        // value, the other is read AT THE SAME KEY (a key it lacks reads as
-        // (): default both sides with `?? 0`). verify reports it
-        // runtime-checked: a rule between slots is not proven by induction —
-        // by design, so verify prints it as a `·` note and `--strict` passes.
-        // A delete is a write here too (dropping the other side's entry takes
-        // it to ()). `?? 0` means the absent side reads 0: write the
-        // right-hand slot FIRST (or seed both in one handler), else the first
-        // write to the other is refused. `other.size` is that slot's entry
-        // count; `other.get(key)` is refused (it is the value BEFORE the
-        // write, so it would not guard that slot).
-        // Between two CELLS nothing is proven (verify is per cell): it lists
-        // `note: cross-cell: …` for each handler that transitions its machine
-        // while acting on another cell's — enforce those with a `require`.
-        // To refuse AND keep what you wrote (an audit row), `return
-        // refusal("conflict", "…")` instead of raising: same body and status
-        // a raised error would give, without the rollback.
-    }                                        // violating write rejected, slot unchanged
-    state flow {                             // model-checked by `soma verify`
-        initial: draft
-        draft -> approved { guard { amount < 1000 } }   // guard: reads the CALLING handler's locals
-        draft -> rejected                    // approved/rejected: terminal (no outgoing edge)
-    }
-    on add(a: Int, b: Int) { return a + b }  // NO return type on handlers
-    on approve_request(id: String, amount: Int) { transition(id, "approved") }  // binds the guard's `amount`
-    on reject(id: String) { transition(id, "rejected") }
-    on request(method: String, path: String, body: String) {
-        match map("method", method, "path", path) {
-            {method: "GET", path: "/"} -> html("<h1>hi</h1>")
-            {method: "POST", path: "/approve/" + id} -> approve_request(id, 500)   // ONE variable per pattern, at the end
-            _ -> response(404, map("error", "not found"))
-        }
-    }
-}
-```
-
-## Core syntax (current)
-
-```soma
-let x = 42                  x += 1            // no semicolons; newlines separate
-let v = -1                                    // negative literals work
-let s = "hello {name}"                        // interpolation; UNDEFINED vars are
-                                              // check-time errors; an unescaped " inside {} ends the string
-let xs = [1, 2, 3]          xs[0] = 99        // bracket index read AND write
-let m = map("k", 1)         m["k"] = 2        // maps too; m.k and m["k"] both read
-let g = Game { bet: 10 }    g.bet = 20        // records: literal + dot mutation
-g.board[0] = 7              xs[i][j] = v      // nested lvalues
-let y = m["nope"] ?? 0                        // null-coalescing; () is null
-for i in range(0, 10) { }   range(9, -1, -1)  // stepped/descending ranges
-sum(xs) avg(xs) min(xs) max(xs) product(xs)   // reductions over lists
-contains(xs, x)  index_of(xs, x)  slice(xs, 1, -1)  keys(m) values(m) entries(m)   // membership, slices, map views
-sort_by(rows, "field")   sort_by(rows, r => [0 - r.total, r.name])   // stable; list key = several keys
-xs = push(xs, x)            concat(a, b)      // push/concat RETURN a new list; `+` on numeric
-                                              // lists adds element-wise — it does not concatenate
-xs.sort()  xs.reverse()  m2.det()             // UFCS: any builtin as method
-match x { 1 -> "a"  n if n > 5 -> "big"  _ -> "other" }   // arms use ->
-let f = p => p * 2          f(3)              // lambdas use =>; first-class
-data |> filter(x => x.ok) |> sort_by("score", "desc") |> top(10)
-let r = try { risky() }     if r.error != () { ... }      // error handling
-```
-
-## Vectorized (numpy/MATLAB style)
-
-```soma
-let M = [1, 0, 0, 1].reshape(2, 2)    // matrices = List<List<Float>>, first-class
-A * B          // matmul        A + B / A - B   elementwise
-A + 10  A / 2  // scalar broadcast (both orders)
-v * v  v + v   // numeric vectors: + * / - elementwise
-A > 2  v >= 1.0                       // comparison masks (0.0/1.0 Floats); Int vectors compare and + - * exactly, [6] / 3 is [2] (the `/` rule per element)
-A.T    A.shape    det(A)    matrix("1 2; 3 4")
-concat(a, b)   // EXPLICIT list concatenation (+ on non-numeric lists concats)
-```
-
-## Sum types (exhaustive — compiler refuses a missing arm)
-
-```soma
-cell type Pay { variants { Charged { tx: String }  Declined { reason: String }  Cash } }
-match r {
-    Charged { tx }      -> "paid {tx}"
-    Declined { reason } -> "no: {reason}"
-    Cash                -> "cash"
-}
-// typed state machines: state order: OrderState { initial: Placed ... }
-// transition(id, Variant) is compile-checked against the type
-// to_json(Charged { tx: "t1" }) == '{"_type":"Pay","_variant":"Charged","tx":"t1"}'
-// (a tuple variant carries "_values"); from_json brings the variant back; HTTP
-// answers a returned variant the same way. Slots store variants as variants.
-// A variant with named fields reads them by name too: `c.tx`.
-// RECORD type = a `cell type` with ONE variant with named fields:
-//   cell type Line { variants { Line { sku: String, qty: Int } } }
-//   on add(lines: List<Line>) { … }   // a JSON object / Map becomes a Line
-// — from HTTP, a tool call or the CLI — field by field; a missing, extra or
-// mistyped field is a `type` error naming it (400). Several variants: the
-// client cannot pick one (`_type`/`_variant` are refused).
-```
-
-## Coming from Python / TypeScript
-
-```soma
-map("k", v)   map()                // no {k: v} literal;   record: Name { k: v }
-m.k   m["size"]                    // a key; m.len / m.size / m.keys: the entry count / keys
-                                   // when the map has no such key (a record: () ) — m["size"] is always the key;
-                                   // a List / String has only .len / .size (.first / .last); any other field raises kind `type`
-[1, 2, 3]     []                   // list literals
-x == ()       x ?? 0               // null is (); no null / None / undefined; `??` only runs its right side on ()
-5 == ""                            // raises kind `type` (Int vs String is a bug); nested values of different types are just unequal
-substring(s, i, i + 1)             // s[i] as a String; str_at(s, i) is a BYTE (Int)
-if c { a } else { b }              // is an expression; no ternary; && || !  (no and/or/not)
-                                   // a condition (if, while, &&, ||, !, require, guards,
-                                   // filter/any/all predicates, invariants) is a Bool — `()`
-                                   // counts as false; a String/Int/List is a type error
-x => x + 1                         // lambdas take ONE parameter
-for x in xs { }   for k in keys(m) { m[k] }   for e in entries(m) { e.key  e.value }   // for over () runs 0 times, over a String its lines, over a number: type error
-slice(xs, 1, 3)  slice(xs, -2)     // no xs[a:b]
-xs = push(xs, x)                   // push / concat / sort / with RETURN new values
-on f(n: Int) [native] { … }        // annotations go AFTER the parameter list; no @decorator
-fail("bad_kind", "bad kind: {k}")  // throw new Error(msg); catch: let r = try { … }  r.detail == msg
-parse_int(s) ?? parse_float(s)     // Number(s); to_float("5") prints 5.0; round(x) is an Int, round(x, 2) a Float
-m["k"] = v   m.get("k")            // a LOCAL map has no .set — .set/.delete/.push are slot methods
-f(opts: Map) … opts.x ?? 10        // keyword arguments / defaults: pass a map, read with ??
-Name { k: v }   is_a(r, "Name")    // struct / dataclass / interface: a record literal (no class)
-format("%5.2f|%-8s|%03d", x, s, n) // printf / f-string widths (%d %s %f %.Nf, - and 0 flags)
-7 / 2 == 3.5   idiv(-7, 2) == -3   // `/` is exact; idiv truncates toward zero, % follows the dividend's sign
-floor_div(-7, 2) == -4   mod(-7, 2) == 1   // Python's // and %
-```
-A `class` with private fields is a `cell` with `memory` slots: one instance,
-no `new`, no `this` — `this.hits.get(u)` is `hits.get(u)`; `constructor(a, b)`
-is a `configure(a, b)` handler writing a `config` slot; subclasses are the
-variants of a `cell type`, overridden methods one exhaustive `match` each.
-A script is `on main() { print(…) }` run with `soma run --fresh app.cell main`:
-`soma run` prints the handler's returned value (return nothing from main),
-and slots persist in `.soma_data/` between runs unless `--fresh` (one
-database per DIRECTORY: when other programs' cells have data there,
-`--fresh` resets only this program's tables); `soma test`
-starts empty. `counts[k] += 1` on a missing key is `() + 1` — write
-`(counts.get(k) ?? 0) + 1`; `for r in rows { r.v = 2 }` changes a copy
-(check warns). Number literals: `1_000_000`, `0xFF`, `0b101`; strings:
-`\n \t \r \" \\ \u{1F600}`. `soma check` names the Soma form for each of
-these when you get it wrong.
-
-## Tests
-
-`every` / `after` blocks do not run under `soma test`: call the sweeper
-directly (`assert _sweep(5) == ["o4"]`) with `mock now` for the clock.
-
-```soma
-cell test MyTests {                // a name and a `rules` block are required; it may also
-                                    // hold its own helpers (`on _walk(n: Int) { … }`),
-                                    // private to that test cell (shared ones go in a plain cell)
-    rules {
-        let orders = fixture()                   // shared by the rules below; a bare call
-                                                 // is not a rule: bind it (let _ = f())
-        assert total(orders) == 42               // == is structural on lists/maps
-        assert_fails pay("x")                    // passes when the expression RAISES
-        assert_fails pay("x") matching "invalid transition"   // …for the right reason
-        mock think "billing"                     // next think() reply; or a list to queue
-        mock think error "timeout"               // next think() fails
-        mock approve false                       // next approve() answer (one per call)
-        mock price_check 120                     // next call of the handler of that name (a tool, an
-        mock Notifier.send error "down"          // http wrapper) — Cell.h: THAT cell's only — answers / raises instead;
-                                                 // error "not_found: x" raises kind not_found
-        mock now 1700000000                      // freeze now()/now_ms()/today() until the next mock now (1700000000.25 or `mock now_ms …` for sub-second)
-        property "sum" forall n: Int in 0..100 ensures f(n) >= 0   // 0..100 = 0…99, every value (≤ 20k); ONE Int variable over a range; iterations share the test cell's slots (a writing body sees earlier iterations' writes)
-    }
-}
-```
-`soma test` isolates storage (fresh per run), runs `[native]` handlers natively,
-and — with no LLM key configured — mocks `think()` (echo: reply = prompt).
-A mock answers the NEXT matching call, even one in a later rule (a queue like
-`mock think ["a", "b"]` spans rules); a mock still unused after a rule that
-raised is discarded (with a note). A mock naming no handler, a test helper
-named like a program handler or a builtin, and test cells that assert nothing
-are errors. Each `cell test` starts with fresh slots,
-machines, mocks and trace(). `soma test --json` gives one record per rule.
-`approve()` never answers on its own: unscripted it raises `approval_required`
-(also under serve; SOMA_APPROVE=always|never is the explicit unattended
-policy; `soma run` at a terminal asks). `assert` needs a Bool. A test cell
-calls the handlers of every cell unqualified, or as `Cell.handler(…)`; slot
-methods (`m.get(k)`, `xs.len`) work there too. A failure prints the asserted
-source, `file:line`, left/right, and the fields a value really has when
-`x.field` came back `()`.
-
-## Things you would otherwise guess
-
-- A fresh id is implicitly in the initial state: `transition(id, "held")` on an
-  id nobody created is legal; `has_state(id)` is true only once the id has
-  TRANSITIONED — a record stored in a slot but never transitioned is "fresh"
-  to it (test the slot for duplicates: `require m.get(id) == () else Dup`).
-- `transition()`'s first argument is an INSTANCE id (an order, a ticket) — a
-  String or an Int (`42` and `"42"` are one instance; `()` is refused), not
-  the machine's name; one cell has one machine, any number of instances. A
-  cell without a machine may call transition() / get_status() when the
-  program has exactly one machine; that machine's guards then read the
-  CALLING handler's locals (a check error if it does not bind them).
-- A slot is a Map or a List (`n: Int` is a check error); a handler parameter
-  may not take a slot's name (reads and writes would mix the two). Read a
-  whole slot by its bare name (`history`, `counts`); write with
-  `counts.set(k, v)` / `counts[k] = v` / `history.push(x)`; `history = …` is
-  an error. An invariant on a Map slot applies to every value written (`value`
-  / `key` name the value and key being written — only inside an invariant;
-  `slot.get(key)` there is the value BEFORE the write: `invariant value >=
-  (versions.get(key) ?? 0)` keeps versions monotone); it is
-  a pure condition (on a List slot `key` is the element's Int index) — no
-  handler call, think(), transition(), I/O or network,
-  even inside a lambda or an interpolation (a check error).
-- `r.kind` of a refused write is `"invariant"`; of a bad `transition()`,
-  `"invalid_transition"`; of `require … else Tag`, `"Tag"`.
-- Every parameter has a type (`x: Any` takes a value of any kind — check it
-  with `type_of(x)`); element types too (`xs: List<Int>`).
-- Declared parameter types are enforced at runtime: `add(points: Int)` given
-  `2.5` raises kind `type` (400) before the body runs — no `is_int` check needed;
-  a missing value `()` is refused for a List parameter (a Map parameter accepts
-  `()`: an absent record, such as an empty tree).
-- Values are copies: `let row = s[k]  row.count += 1` changes `row` only —
-  write it back (`s[k] = row`); a map read from a slot is a copy too
-  (`cards.set(id, c)` after editing `c`). Records keep their field order.
-- In `cell test`, `request(...)` is an ordinary call: an error it does not
-  catch RAISES (assert it with `assert_fails request(...) matching "not_found"`);
-  the kind → HTTP status mapping is applied by `soma serve` only. Return
-  `response(status, …)` yourself when a test must see the status.
-- `"""…"""` is raw for escapes (`\t` stays two characters) but `{x}` IS
-  interpolated; write `{{` for a literal brace.
-- `[1, 2] + [10, 20]` is element-wise (`[11, 22]`; Floats when a value is
-  one); `concat(a, b)` joins lists.
-- Persistent data lives in `.soma_data/` beside the program (serve and run);
-  `soma test` starts empty. A slot gives back exactly what it accepted (an Int
-  beyond 64 bits stays an Int); a value that does not fit the slot's declared
-  value type (`Map<String, Int>` given a String) is refused with kind `type`.
-- On a List slot: `rows.push(x)`, `rows[i] = x`, `rows.delete(i)` (by index),
-  `rows.get(i)`, `rows.len` — all invariant-checked. A Map slot's `.keys` /
-  `.values` / `.entries` come SORTED by key (every backend); a LOCAL map
-  (`keys(m)` on a `let`) and a record's own fields keep insertion order.
-  `keys(record)` / `values(record)` on a record (`Line { … }`) are its
-  declared fields, in order; `r.field = v`, `r.field += 1` and
-  `xs[0].field = v` check the field's declared type.
-- A bare call to a name two cells define (`pack(id)` with `Orders.pack` and
-  `Warehouse.pack`) is a check error from a third cell: qualify it
-  (`Warehouse.pack(id)`). Inside `Warehouse` the bare call runs Warehouse's
-  own `pack` (check warns); write `Orders.pack(id)` for the other.
-- `xs[i]` is the same everywhere (local list, List slot, string): negative
-  from the end, kind `index` out of range, kind `type` for a non-Int;
-  `nth(xs, i)` and `rows.get(i)` answer `()` out of range instead (a
-  negative `i` still counts from the end: `nth(xs, -1)` is the last). A `let`
-  named like a memory slot hides the slot (check warns).
-- `emit ev(data)` inside one process is a synchronous, atomic fan-out to
-  every cell with `on ev(data)`, the emitting cell included (a handler does not
-  receive its OWN event: `on ping` emitting `ping` does not re-enter itself —
-  recurse with a call): a listener that raises fails the emitter,
-  and the emitter's rollback takes the listeners' writes with it. Only across
-  processes (the `[peers]` bus) is an emitted event an effect that is not
-  rolled back. `soma check` warns when nobody handles the event.
-- A bound is proven only against LITERALS: repeat the number in the
-  invariant and in the `require` (there are no constants; a handler returning
-  it is not used by the prover).
-- `invariant rows.size <= 500` (NOT `len(rows)`, which in an invariant
-  measures the value being written; a bare `size <= 500` that names no slot
-  bounds EVERY slot of the memory) is proven when the handler's ONE write that
-  can add an entry (a `push`, or a `set` of a key not known to exist) comes
-  after `require len(rows) < 500 else Full`, is not in a loop or a lambda, and no
-  handler it calls (or event it emits) adds to the slot too; a `set` after
-  `require rows.get(k) != () else Missing` (or in the `else` of `if rows.get(k) == ()`)
-  cannot grow the slot.
-- An invariant is checked AT each write: a `require` proves only the writes
-  that come AFTER it. A `require` counts for the writes of its own block and the blocks nested
-  in it — `if ok { require n < 3 else Full  m.set(k, n + 1) }` is proven; a require
-  inside a loop body narrows that iteration's `let` locals only.
-- A trailing `Map` parameter is optional: `on add(a: Int, opts: Map)` is
-  callable as `add(1)` (`opts` is `map()`) — the keyword-argument idiom,
-  read with `opts.step ?? 1`. HTTP headers reach `request` as a fifth
-  `headers: Map` parameter (lower-case names).
-- HTTP out: `http_get/post/put/patch/delete(url, body?, map("timeout", ms,
-  "headers", map(...)))` never raise on the network (a timeout, a refused
-  connection, a non-2xx answer come back as values); an invalid or unknown
-  option raises kind `type` (a program bug); non-2xx is `{error, kind, status, body}`
-  (kind `http_status` — redirects are followed up to 5 hops; a 3xx left unfollowed (a 307/308 answering a POST) is http_status too, a 6th hop is kind `network` (too many redirects) — | `timeout` —
-  also a body that stalls — | `too_large` over `max_bytes` | `refused` |
-  `network`); default timeout 30 s; invalid option values are refused;
-  a String body is sent as text/plain unless it is JSON; `mock http_post …`
-  in tests.
-- `verify --strict` bounds a write only from numbers it can bound: literals,
-  slots with an interval invariant, and values narrowed by `require`/`if`. A
-  number read out of a record (`a.balance`) is unbounded until a `require`
-  narrows it; the ⚠ line says why (`` `v` = a.balance — not bounded ``, or
-  `` `v` is only known to lie in [0, ∞) — narrow it: `require v <= 100 else …` ``).
-- `ensure cond` at the end of a handler raises kind `ensure` (422) when the
-  postcondition is false — the whole handler is rolled back. In a `[task]`
-  handler it undoes the CURRENT step only: writes made before the last
-  think() are already committed (check warns).
-- Dates: `parse_date("2026-03-01")` → map(year, month, day, weekday, epoch_day),
-  `add_days`, `add_months`, `days_between`, `months_between`, `days_in_month`,
-  `format_date(ts)` (a date argument may also be an Int Unix time in seconds,
-  as now() returns — validate client input as a String); ISO strings compare with `<`. Dates are UTC and there
-  are no time zones or time-of-day builtins: keep a fixed offset per place
-  (`let local_min = floor_div(now_ms(), 60000) + offset_min` — now() is seconds) and parse "HH:MM"
-  yourself (`split(t, ":")`); `every` / `after` run in any cell, `request` or not.
-- Money: Ints in cents (any size, exact); `div_round(n, d)` is HALF_UP
-  division (`div_round(cents * bps, 120000)` = BigDecimal interest at scale 2);
-  `format("%10.2f", …)` only for display, `money = "{idiv(c, 100)}.{…}"` for exact text.
-- Data: `read_csv(path)` → List<Map>: RFC 4180 (quoted `"a, b"`, `""`, multi-line
-  cells); unquoted cells auto-typed (`1.00` → 1.0), quoted cells and `007` stay
-  Strings; `read_csv(path, map("raw", true))` keeps all text (exact money);
-  `map("delimiter", ";")` reads `;` files (other options are refused);
-  `from_csv(text, opts?)` parses CSV text already in memory (an upload);
-  `to_csv(rows)` is the text `write_csv` writes (a download).
-  `write_csv` quotes what a reader would change (a String "12" stays a String;
-  a List cell is its JSON text). One builtin call builds at most 100,000,000
-  characters / matrix cells (`pad_left`, `format` widths, `zeros`…) and a List
-  of at most 10,000,000 (`range`); an Int holds at most 2^24 bits (a product,
-  shl, product(), parse_int / to_int of text past it is refused before it is
-  built); matmul does at most 10^9 multiply-adds, pow_mod bits(exp) × bits(m)
-  ≤ 2^30 — past any of these it raises kind `range`. Map slot keys are text
-  (`m.set(1, …)` and `m.set("1", …)` are one entry).
-  `use helper` imports helper.cell beside the program, `use lib::m`
-  lib/m.cell (a `use` inside an imported file resolves beside THAT file);
-  imported handlers are callable by name; an imported file's
-  test cells run only under `soma test lib/m.cell`. `agg`, `sort_by`,
-  `top`, `median`, `pstdev`; `stdev` / `variance` are SAMPLE (n − 1) like
-  Python's statistics, `pstdev` / `pvariance` population. `|> map`, `|> filter`,
-  `xs[i]`, `len(xs)`, `nth(xs, i)`, `xs.len` and a List slot's `rows[i]` /
-  `rows.len` cost O(1) per call (20k rows in 0.1 s); passing a big list to a
-  handler COPIES it (values are copies) — loop inside the handler, or pass
-  an index.
-- `think_json()` raises kind `json` when the model does not answer a JSON
-  object (catch it with `try`); a ```json fence around the object is fine.
-  A mocked `think` costs ~4 characters per token, so `set_budget` exhaustion
-  (kind `budget`) is testable offline. Under `soma serve`, `trace()` keeps the
-  last 1000 steps process-wide.
-
-## Scheduled work
-
-```soma
-every 30s { expire_due() }      // under soma serve: runs at start-up, then every 30 s (units: ms s min h d — 500ms, 90min, 24h, 1d);
-                                // a daily job at a time of day: `every 1h` + a "last run" slot compared with today()
-after 10s { warm_cache() }      // once, 10 s after start-up
-```
-A tick is a handler invocation: atomic, serialized with requests (and with
-other processes on the same `.soma_data`), rolled back and logged if it
-raises; the next tick still runs. The interval counts from the end of the
-previous tick. verify checks the `transition()` targets of these blocks too.
-
-## Handlers are atomic
-
-With SQLite or in-memory storage, a top-level handler invocation is
-all-or-nothing: if it raises, its slot writes and transitions are rolled back. A failing `try { }`
-block's slot writes, transitions and pushes are rolled back to where it started (plain locals it assigned keep their new value), and the handler continues. Under
-`soma serve` handlers run one at a time (a [task] handler: each step between think()s), so read-modify-write is safe
-(300 parallel payments of 10 against a balance of 1000 pay exactly 100).
-`[immutable]` on a slot makes it append-only: a List slot only grows by
-`push`, a Map slot only gains new keys; overwriting or deleting an entry
-raises kind `invariant` (an audit log that cannot be truncated or rewritten).
-
-With SQLite persistent slots the handler IS one SQLite transaction: a process killed
-mid-handler (`kill -9`) leaves nothing of it on disk. `every` / `after` ticks
-are handler invocations too (same rollback). You do not write compensation
-code. Not rolled back: effects outside the process (http calls, think(),
-emitted events). Storage read failures abort the invocation even inside `try`.
-The legacy JSON backend only replaces individual files; it has no multi-slot
-transaction or cross-process isolation. The HTTP provider adapter has no remote
-transactions, and a failed write may have reached the remote service.
-
-## Errors
-
-```soma
-fail("not_found", "reservation {id}")     // raise: a kind + a detail
-require amount > 0 else InvalidAmount      // raise with kind InvalidAmount (a bare tag)
-require open < 3 else LoanLimit "{member} holds {open} loans"   // kind + interpolated detail
-let r = try { reserve(id) }                // r = {value, error, kind, detail}
-if r.kind == "not_found" { return response(404, map("error", r.detail)) }
-if r.error != () { fail(r) }               // re-raise unchanged
-```
-Kinds raised by the runtime: `invalid_transition`, `guard_failed`, `invariant`,
-`ensure`, `division_by_zero`, `index`, `llm`, `budget`, `type`, `json` (a body
-that is not JSON), `stack_overflow`, `approval_required` (`approve()` with
-nobody to answer). Branch on `r.kind`, never on substrings of `r.error`; in
-tests `assert_fails f() matching "not_found"` matches the kind or the message.
-
-## HTTP
-
-`response(status, body)` is a map `{_status, _body}` (assert `r._status == 404`);
-`html(..)`, `redirect(..)` likewise. A handler may also return a plain map or
-string (200). `soma run app.cell request GET /path ""` calls the router without
-a server; `soma serve app.cell -p 8080` serves it. Static files: `static/`.
-`soma serve` ALSO exposes every public handler of the request-owning cell at
-`/<handler>/<arg>/<arg>` (that is how forms post to `/add`). A path that
-`request` matches explicitly goes to `request`; prefix handlers that must not
-be reachable over HTTP with `_` (`on _debit(…)`); `start`/`init` are never
-endpoints. A handler that changes state (a slot write, a transition, an emit,
-a call into another cell) answers GET/HEAD with 405 — POST to it. A request
-body may not carry `_type`/`_variant`/`_values` anywhere in its JSON, even
-for a `body: String` handler (a client cannot forge a record or a variant). Only a map built by `response()` / `html()` / `redirect()`
-is an HTTP response: a returned map with `_status` keys from client data is
-plain JSON. Response header values with CR/LF are dropped. A handler that
-calls `from_json` on other client text (a ws message, a decoded field)
-builds whatever declared variant it names — shape-checked (a missing or
-mistyped field raises kind `type`), but validate WHICH variant. Realtime: `on ws(msg: String)` (port+1, same-origin browsers
-only), `publish(stream, data)`, `sse(...)` routes — pushes (publish and emit)
-leave AT COMMIT, never from a rolled-back handler; an `emit` target is not an
-HTTP endpoint (`soma docs serving`, Realtime). `NaN`/`inf` in a path
-or query stay Strings. `soma check` warns when a
-handler and a route share a name unless the route delegates to that handler. `body: String` is the raw text
-(`from_json(body)`); `body: Map` is the parsed JSON (a non-JSON body is a 400
-before the handler runs, kind json; `soma run` parses its text argument the
-same way). In a test cell pass the Map itself — `request("POST", "/x",
-map("a", 1))`: a String argument there is a `type` error, not parsed. A raised error
-answers with its kind: not_found → 404, unauthorized → 401, rate_limited → 429, guard_failed → 403, invalid_transition
-→ 409, invariant → 422, your own `fail("tag")` / `require … else Tag` → 400, as
-`{"error": message, "kind": tag}`. A plain return answers 200: a map/list as
-JSON, `()` as `null`, a String or number as `{"result": …}` (a String
-that is valid JSON text, like `to_json(x)`, is sent as that JSON). Path segments and
-query values are coerced to the parameter's declared type (`/decide/x/true` →
-Bool). Every response carries `Access-Control-Allow-Origin: *`. `request` may
-be declared in `face` or not; its return type is not checked (a route answers
-whatever it returns). `serve` binds 127.0.0.1 (`--host 0.0.0.0`
-to expose), refuses a taken port and a program that fails check, and survives a
-handler's runaway recursion (500 `stack_overflow`; the process stays up).
-
-## Verification properties
-
-`soma verify` proves, for every cell with a state machine: reachability,
-deadlock-freedom, liveness (every state can reach a terminal — or, with no
-terminal state, return to the initial one: a reactive machine passes --strict), refinement (each
-handler's `transition()` targets are declared states — the SOURCE of a
-transition is the instance's runtime state, so a removed edge is caught at
-runtime as `invalid_transition`, not by verify; declare `[verify.before.X]
-requires` for the edges you care about), and termination of every
-handler whose recursion has a decreasing argument — a handler it cannot prove
-(`while true`, `rec(n + 1)`) is a ⚠ warning, not a proof, and the runtime
-depth guard is what stops it. `property … forall n in a..b` in tests walks
-EVERY value when the range has at most 20,000 values; a wider range is only
-sampled (50 values, fixed seed — not a proof). State more in a `soma.toml` beside
-the program (`[package]` is optional; an unknown key is an error). The properties
-apply to every machine of the cells in `cells = [...]` (all cells when absent):
-a property whose TARGET state one machine lacks is vacuously true there (but
-`before.X requires [Y]` with X present and Y absent FAILS: X is reachable
-without Y) — output names each machine `Cell.machine` when there are several; split
-programs, or scope `cells`, when two machines need different properties:
-
-```toml
-[verify]
-cells = ["Expense"]                 # optional: which cells these apply to
-deadlock_free = true                # (always on; the key is accepted)
-eventually = ["paid", "rejected"]   # every path reaches one of these (AF)
-never = ["corrupt"]                 # unreachable states (AG not)
-always = ["a", "b", "c"]            # the machine is only ever in one of these
-
-[verify.after.rejected]
-never = ["paid"]                    # `paid` is unreachable once `rejected` was reached
-eventually = ["archived"]           # after `rejected`, every path reaches `archived`
-
-[verify.before.paid]
-requires = ["manager_approved"]     # precedence: no path reaches `paid` without ONE of these
-requires_all = ["held", "picked"]   # …without EACH of these
-```
-In the machine, `* -> failed` means from EVERY state — it also adds
-`paid -> failed`, so `paid` is no longer final (verify says so). Keep states
-final with `* -> failed except [paid, denied]`. A property naming a state no
-machine declares is an error, and verify ends with one verdict line
-(`VERIFY OK` / `VERIFY FAILED — …`). `soma verify` and `soma test` refuse a
-program that fails `soma check`. Invariants on computed values are proven by
-induction when interval reasoning suffices (`(counts.get(k) ?? 0) + 1` keeps
-`counts >= 0`; `let open = …  require open < 3 else Full  set(k, open + 1)` keeps
-`<= 3` — an unconditional `require` on a once-bound local counts); the rest
-is reported per conjunct as runtime-checked.
-`soma verify --strict` fails on every ⚠ too (a proof that degraded to
-runtime-checked, an unprovable termination) — the CI gate.
-A failed property prints a counter-example path and is an error. What verify
-does NOT prove: data-dependent rules inside handlers, and invariants on computed
-values (those are runtime-checked — reported as such, never as "proven").
-Guards (`a -> b { guard { cond } }`) are enforced at runtime and read the
-locals of the handler that calls `transition()` — so EVERY handler whose
-`transition()` targets the guarded state must bind those names (check error
-otherwise), even one meant for another edge; the model keeps guarded edges.
-A guard is a pure condition: calling a handler, think(), next_id() or a slot
-write (`.set`/`.delete`/`.push`) inside it is a check error — compute the value
-in the handler before `transition()` and test that local. The calls in a
-`require` condition and in its `else` detail are part of the termination,
-cost and invariant analyses like any other statement.
-A `cost { tokens: N }` bounds the REPLY tokens (the sum of the max_tokens
-caps of the think() calls a handler can make — ×10 provider rounds in an
-agent with tools, or × `map("max_rounds", N)`); prompt tokens are not in it —
-`set_budget` / `tokens_used()` count prompt + reply, per request under serve
-and per rule in a test (return `tokens_used()` from the handler to assert on
-it); `tokens_remaining()` is -1 without a budget, never below 0 with one; a
-`set_budget` reached from a model's tool call (a delegated agent's own)
-only lowers what is left — it never lifts or resets the caller's. A cost bound that cannot
-be proven (a think() without a literal max_tokens) is a check ERROR.
-
-## Agents (LLMs inside the cage)
-
-```soma
-cell agent Researcher {
-    face {
-        signal research(topic: String) -> Map
-        tool search(q: String) -> String [capability: "https://api.x.com/*"] "Search"
-    }
-    cost { tokens: 6000 }                             // PROVEN by soma check: 2000 × 3 rounds
-    state job { initial: idle  idle -> working  working -> done  * -> failed except [done] }
-    on search(q: String) { return to_json(http_get("https://api.x.com/search?q={q}")) }
-    on research(topic: String) {
-        set_budget(8000)                              // token cap: a prompt that alone overruns what is left raises kind budget before it is sent; otherwise the provider round that crosses it completes and the NEXT round (a later tool round of the same think() too) raises kind budget
-        transition(topic, "working")                  // one machine instance per topic
-        let r = try { think("Research {topic}", map("max_tokens", 2000, "max_rounds", 3)) }
-        if r.error != () {
-            transition(topic, "failed")
-            return map("error", r.kind)
-        }
-        transition(topic, "done")
-        return map("facts", r.value, "spent", tokens_used())
-    }
-}
-// `on ask(q: String) [task] { … think(…) … }` runs as STEPS: each think() ends
-// the current step (its writes commit) and waits for the model OUTSIDE the
-// handler lock, so concurrent requests overlap their model calls (200 × 2 s
-// waits in ~9 s instead of 400 s); a failure rolls back the current step only
-// (writes before the last think() stay — a `try` cannot undo them either);
-// the prover does not carry a read or `require` across a think (another
-// request may write meanwhile): read, require and write AFTER the last think.
-// Only the ENTRY POINT decides: a [task] handler called from a plain handler
-// (`on request` routing to it, a listener, a tick) runs inside the caller's
-// atomic unit and holds the lock — mark the caller [task] too:
-// `on request(method: String, path: String, body: String) [task]`,
-// `every 1min [task] { … }`, `after 5s [task] { … }`. check warns on each
-// of these. SOMA_LLM_MOCK_LATENCY_MS gives a mock a latency to test it. A
-// plain handler stays one atomic unit. Unknown handler annotations
-// ([tsak]) are errors; known: [native], [task], [deterministic], [record].
-// HORDES — one [task] handler over many inputs with a bounded pool:
-//   let h = horde(Reviewer.review, docs, map("concurrency", 200,
-//       "on_result", "_store", "on_done", "_summarize", "on_error", "_failed",
-//       "max_attempts", 2))                // returns "Audit:h1" at once
-//   on _store(v: Map) { verdicts.set(v.id, v) }       // or _store(input, result)
-//   horde_status(h)  → {state, total, queued, running, done, failed, cancelled, tokens}
-//   horde_results(h) → results in input order (() if not done); horde_cancel(h)
-// The target takes one parameter; mark it [task] (check warns when it
-// thinks: each task would hold the lock). Write the target and the options
-// AT THE CALL (a literal map with literal handler names — check refuses a
-// computed target or options: they decide what runs and what it costs);
-// name callbacks `_…` (a public one is an HTTP endpoint). Only the owner
-// cell (and test rules) can read or cancel a horde. The queue is stored in
-// soma.db under serve / run, even without a [persistent] slot: a restart
-// resumes it; with several servers on one .soma_data each horde runs in one
-// of them (a lease, taken over ~6 s after its server stops). A task's
-// result is recorded — and on_result called — in the same atomic unit as
-// its LAST step, so each result is written once even after kill -9; steps
-// before its last think() may run again. on_error(input, error: Map
-// {error, kind, detail}) after max_attempts (default 1); on_done(id) once,
-// when nothing is left (cancel included). concurrency default 8, max 1000.
-// Without workers (`soma test`) the horde runs right after the calling
-// handler commits — its next statements run first, as under serve — one
-// task per unit. A restart does not resume a horde whose target or
-// callbacks the new code renamed (it says so; the tasks wait).
-// BUDGET: map("budget_tokens", 2000000) is a hard ceiling for the whole horde — every think() of its
-// tasks and callbacks first RESERVES an upper bound (request bytes +
-// max_tokens), waits outside the lock for calls in flight to settle if it
-// does not fit yet, and is refused (kind budget) when it never will; the
-// horde then stops (state "exhausted"; tasks it stopped count as
-// cancelled, no on_error). A horde started inside a task or callback of a
-// budgeted horde runs under that budget too (nested hordes cannot spend
-// past it). on_done's think() also counts: keep headroom for it. A
-// provider that ignores max_tokens raises kind llm, charged what it
-// reported. The ceiling counts SETTLED calls: calls in flight
-// at a kill -9 were sent, then are sent again after the restart. soma verify prints each horde's bound:
-// the literal budget_tokens, else inputs × per-task × max_attempts for a
-// literal list/range (reply tokens), else unbounded — a horde in a cell
-// with `cost { tokens: N }` needs a literal budget_tokens to prove it.
-// ROUNDS (simulations): map("snapshot", world, "apply", "_apply", "seed", 7,
-// "instance", "id") — the target takes (input, snapshot): every agent of
-// the round sees the same world; `apply(result)` / `apply(input, result)`
-// runs at the END, in input order, once per task (not as replies arrive),
-// then on_done — which may start the next round (a horde() in on_done).
-// seed: random() in task i draws the same numbers on every run. instance:
-// the input field naming an agent; its remember()/recall() keys and its
-// conversation are its own and persist across rounds. 10 000 agents × 20
-// rounds: 46 s, identical on every run. After a crash, steps before a
-// task's last think() may run again — write memory in the last step.
-// vote(Cell.handler, input, k) → {winner, count, k, unanimous, errors,
-// votes}: k agents on one input (in a [task] step under serve/run they run
-// at once, outside the lock); the most common answer wins. Provider limits
-// for every think() of
-// the process: soma.toml [agent] rpm = 500, tpm = 200000 (or SOMA_LLM_RPM /
-// SOMA_LLM_TPM): at most rpm requests / tpm tokens in ANY 60 s window; a
-// 429 pauses every caller. Measured: 10 000 tasks with a
-// 2 s mocked model, concurrency 500, in 41 s.
-// soma verify PROVES the lifecycle; `cost { tokens: N }` (also latency:,
-// usd:) is PROVEN when every think() has a literal max_tokens and runs a
-// known number of times — with tools, × the rounds (`max_rounds`, else 10).
-// `latency` counts WAITING: each think()'s `timeout` (a total, retries
-// included — the wait for a rate limit and a mock's latency too) × its
-// rounds, http timeouts, literal sleep()s, vote() × k; approve(), file/stdin
-// reads and computed sleeps make it advisory; CPU time is not in it. `usd`
-// is the REPLY tokens × the price the table knows for the cell's model
-// (prompts are not counted; a model the table does not know makes it
-// advisory) — an estimate of the provider's bill, not the bill.
-// The model may call only the face's `tool`s (never a private or other
-// handler), with typed arguments, within their capabilities (URL patterns with
-// `*`: "https://api.x.com/*"; a tool with no capability is unrestricted; a
-// tool that calls think() makes a `cost` bound unprovable, a tool doing I/O a
-// `latency` bound; I/O in a loop or lambda leaves a `tokens` bound provable) — the scope binds
-// MODEL calls only (your own code calling the tool handler is not
-// restricted), and a tool is not an HTTP endpoint; `mock think` scripts text
-// replies only (to test tool calls offline, point [agent] url at a fake
-// OpenAI-chat-compatible server: tools go out as `tools`, results come back
-// as `role: "tool"` messages, think_json sets response_format json_object,
-// usage.total_tokens feeds tokens_used(), usage.completion_tokens is held to
-// max_tokens); a tool call that raises is rolled
-// back. `map("max_rounds", N)` caps the tool-call rounds of one think();
-// `map("tools_allowed", ["lookup"])` offers only those tools to that call
-// (classify with no refund tool in reach); a `*` in a capability stays in
-// its part of the URL (host or path), `..` segments and userinfo are
-// refused, and a tool's scope holds for the tools of any agent it calls;
-// a scoped tool reads/writes no file (read_file, load, include, …) and opens
-// no link/socket. An unknown option, or a tools_allowed name that is not a
-// tool, is an error. A reply longer than its max_tokens (a provider ignoring
-// the cap) raises kind `llm`; a tool that calls back its think() handler is a
-// termination ⚠ (the model drives that recursion). Each agent cell keeps its OWN multi-turn
-// context (clear_context() resets it); every/after ticks use the same
-// [agent] config as requests. `soma test` mocks think() only when no key is
-// configured — set SOMA_LLM_MOCK=echo for offline tests with a soma.toml key;
-// `mock h [[1, 2]]` scripts ONE List answer ([1, 2] is a queue of two).
-// approve(msg) is a gate a PERSON answers: tests script it (mock approve),
-// serve raises approval_required unless SOMA_APPROVE says otherwise (and
-// the handler rolls back) — for a web flow, commit a pending state in one
-// request and decide in another (POST /decide/…); approve() is for run/test.
-// think(prompt, map(..)) or think(prompt, system, map(..)): options go LAST.
-// Offline: `mock think …` in tests, SOMA_LLM_MOCK=echo | fixed:TEXT |
-// rules:mocks.json — a list of {"match": "substring of the prompt",
-// "cell": "AgentCell", "reply": "text" or a JSON value}: the first rule whose
-// match / cell fit answers, none: an echo — or
-// [agent] mock = "echo" in soma.toml. Record/replay: `soma run --record` (not serve) logs each top-level
-// call; `soma replay` re-runs them from EMPTY storage with the soma.toml
-// [agent], calls think() again (replies are not recorded) and compares the
-// RESULTS — a state difference shows only in a later result.
-```
-
-## Top gotchas (full list: /docs/gotchas.md or /gotchas.json — all verified)
-
-1. `f(args)` calls YOUR handler `f` when one takes that many arguments, the
-   builtin `f` otherwise (`on list() { return list(1, 2) }` reaches the
-   builtin). `soma check` warns when an argument count sends a call to a
-   builtin you probably did not mean. Another cell's handler: `Ledger.post(x)`
-   (or bare `post(x)` when the name is unique); `get_status(id)` answers the
-   initial state for an unknown id — `has_state(id)` tells them apart.
-2. `match` arms use `->` (`=>` is lambdas). Handlers don't declare return
-   types (face signals do).
-3. An unescaped `"` inside `{...}` ends the string — escape it (`{m[\"k\"]}`) or bind a let first.
-4. `==` is structural on lists, maps and variants (`[] == []`, key order
-   irrelevant). `null`/`None` do not exist: null is `()`, test with `x == ()`
-   or default with `x ?? 0`.
-5. `transition()` returns {id, from, to}; read state with get_status(id).
-   Wrap fallible transitions in try { }.
-6. Slot methods (.set/.get) are for `memory` slots; local maps use m[k].
-7. `assert_fails expr` needs an expression that RAISES (not a falsy bool).
-8. serve routes only the cell that owns `request` — put routable signals
-   there, delegating to domain cells.
-9. Adjacent string literals don't concatenate (`return "a" "b"` is a check
-   error). Language keywords (on, given, cell, agent, tool, use, require,
-   promise, let, if, match, return, …) are not names — `soma check` says
-   which one and how to rename it. Reserved HANDLER names (they would replace the
-   builtin): transition, approve, fail, get_status, has_state,
-   valid_transitions, think, think_json, set_budget, tokens_used.
-10. Floats: compare with a tolerance, never ==.
-11. `7 / 2` is `3.5` — everywhere, `[native]` included. `idiv(7, 2)` is the
-    integer quotient (truncates toward zero, BigInt-exact). `pow` is a Float
-    power; `ipow(3, 40)` is the exact Int power (no `**` operator).
-12. One memory invariant names one slot; `size` invariants also guard
-    `delete`. A cost bound is *proven* only when every `think()` runs a
-    known number of times (literal `range`, or an annotated loop: `for [loop_bound(50)] x in xs { … }`, `while [loop_bound(50)] cond { … }` — checked: more iterations raise kind
-    `loop_bound`); a declared
-    bound that cannot be proven is a check ERROR.
-
-## Packages
-
-```toml
-[dependencies]
-matrix = "^0.2"                  # semver; registry at soma-lang.dev/repo
-local = { path = "../pkg" }      # or git = "...", subdir = "packages/x"
-```
-`soma install` → .soma_env/packages/, commit-pinned in soma.lock with a
-sha256 of the files (sub-directories included): a package modified after
-install, or holding a file the lock does not list, is refused at import
-(`soma install` restores it); an imported cell that defines `request` or
-`ws`, or declares `every` / `after`, is a check warning (it would own HTTP routing / the WebSocket port).
-`use matrix` imports it. A package's API = its face; its proofs (cell test)
-re-run on YOUR toolchain: `soma test .soma_env/packages/matrix/matrix.cell`.
-
-## Performance
-
-Interpreter is the reference semantics (linear-time `map`/`filter`/indexing;
-a 20k-row CSV aggregation runs in ~0.3 s interpreted). Annotate hot handlers
-`[native]` for Rust-codegen: measured at rustc -O parity (16.8 ns/op) on
-numeric loops; a native compile failure aborts the run (there is no silent
-fall-back to the interpreter). It needs `cargo` (rustup) on PATH; the first
-compile takes seconds and is cached in `.soma_cache/` beside the program.
-Arguments are type-checked at the call like any handler; `random(n)` /
-`random(lo, hi)` are Ints, `random()` a Float; buffer indexes are Ints from 0
-(no negative indexes); an Int literal beyond 64 bits is refused (build it:
-`shl(1, 64) - 1`); `[loop_bound(N)]` is checked; a `[native]` handler's
-recursion deeper than 20,000 calls raises stack_overflow (interpreted
-handlers: 512 — walk deep structures with an explicit stack). Floats print with the shortest
-round-trip digits; print/to_string never use exponent form (`1e-7` prints `0.0000001`, a Float inside
-a printed map or list too; `format("%.3e", x)` for scientific notation); to_json — HTTP bodies included — uses JSON's shortest form (`1.18e21`).
-An SSE `data:` line and a WebSocket push carry the value as JSON on one line
-(a String payload is quoted, so a client cannot forge another event).
-Native math: sqrt, log, exp, pow, abs, min, max, floor, ceil, round, sin,
-cos, tan, atan, atan2, asin, acos, pi() (asin/acos outside [-1, 1] raise
-kind range, as interpreted). `soma check` verifies the native vocabulary (every handler, every error at
-once). Same semantics as the interpreter: `7 / 2` is 3.5, a division by zero
-is an ordinary `try`-catchable error, an Int overflow promotes to BigInt, and
-an Int slot refuses a non-exact `/` instead of truncating. One difference:
-native code is statically typed: a quotient returned or stored as an Int
-is the exact Int (`return a / b` gives -7 for -7 / 1; an exact quotient past
-2^53 raises natively — use idiv(a, b) there), but inside an
-expression that needs its type — `to_string(a / b)` — it is a Float
-("-7.0") — `soma check` warns; write idiv(a, b) for an integer quotient. A native local keeps the
-type of its `let` (assigning a String to a number local is a check error).
-
-What a `[native]` handler may use — nothing else:
-- parameters and locals: Int, Float, Bool, String (a List cannot cross the
-  boundary in either direction: parse the input into buffers inside the
-  handler, return a String)
-- arithmetic, comparisons, `if`/`while`/`for i in range(a, b)`, `return`,
-  sqrt log exp pow abs min max floor ceil round sin cos random, idiv gcd
-  pow_mod sqrt_int, band bor bxor bnot shl shr bit_len bit_test bit_set
-  bit_clr bit_next, to_int to_float to_string, str_len str_at str_eq,
-  sibling `[native]` handlers
-- arrays: `buffer(n) -> Buf` (n Ints, zeroed), `buf_get(b, i) -> Int`,
-  `buf_set(b, i, v)`; `buffer_f(n)` / `buf_get_f` / `buf_set_f` for Floats
-- maps: `hashmap() -> HMap` (Int → Int), `hm_get(m, k)`, `hm_set(m, k, v)`,
-  `hm_inc(m, k)`, `hm_len(m)`, `hm_has(m, k)`
-- strings: `strbuf() -> SBuf`, `sb_push(b, s)`, `sb_push_int(b, n)`,
-  `sb_push_char(b, c)`, `sb_len(b)`, `sb_finish(b) -> String`;
-  `regex_count / regex_replace / regex_match`; `read_file read_stdin
-  write_str` (write_str flushes; an Int overflow re-runs the handler in
-  BigInt mode, so text written BEFORE the overflow is repeated — keep
-  write_str away from overflow-prone arithmetic, or return the text)
-- a Buf/HMap/SBuf lives in ONE variable of ONE handler: it cannot be
-  re-bound (`let t = u  u = v` — copy elements instead), returned, or passed
-  to a sibling (pack results into a String with strbuf). A Buf holds 64-bit
-  Ints: a value that overflows i64 while stored into it is a `range` error
-  (scalars promote to BigInt; mask the value or keep it scalar). `for` takes
-  `range(a, b)` only (a step → `while`). A literal `/ 0` does not compile.
-  `soma check` reports all of these.
-- one FFI call costs ~2 µs: make the LOOP native, not just the per-element
-  kernel (10^7 sibling calls inside a native loop: 20 ms; 2·10^6 calls from
-  an interpreted loop: 3.5 s).
-Not available natively: maps/lists/records, think(), memory slots, `try`,
-`match`, string interpolation — call an interpreted handler for those. The
-buffer / hashmap / strbuf primitives exist ONLY in `[native]` handlers
-(`soma check` refuses them elsewhere); everything else in the list, `sin`,
-`regex_*`, `read_stdin` included, works in interpreted handlers too.
-
-## Learn from working code
-
-- https://soma-lang.dev/corpus/index.json — 300+ programs, all passing
-  check+test (algorithms, web, agents, state machines, finance, games,
-  data, safety interlocks, medical, aerospace…). Before writing a cell,
-  fetch one with the features you need and adapt it.
-- treasury/ airlock/ poker/ elevator/ hft/ delivery/ — complete apps where
-  the safety property is a verified theorem
-- packages/matrix/ — the reference package (numpy-style linalg, 43 proofs)
 
 ---
 
@@ -1340,9 +1564,25 @@ soma run   app.cell request GET /stats ""     # call the router with no server
 
 1. `GET /static/<file>` serves `<project>/static/<file>` — confined to that
    directory (`..` and symlinks cannot escape it; dotfiles such as `.env`
-   are never served). A request carrying both Content-Length and
+   are never served; anything outside it is a 404, like a missing file; `%2F`
+   is not a separator and a `/` after a file name is a 404). A malformed or
+   truncated body (a bad chunk, an EOF before the last chunk or before
+   Content-Length bytes) is refused (400) and the connection closed; chunked
+   trailers are read and ignored. A
+   request carrying both Content-Length and
    Transfer-Encoding, or a repeated / non-numeric Content-Length, is refused
-   (400); a declared body past 256 MB is refused (413) before it is read.
+   (400); a declared body past 256 MB is refused (413) before it is read —
+   and the connection is closed. Header lines are strict: an obs-fold line
+   (starting with a space or tab), a bare CR / LF or a NUL in the request
+   line or a header, or junk after the HTTP version is a 400; a line past
+   16 KiB, a header section past 64 KiB or more than 200 headers is a 431 —
+   the connection closed each time. Any answer given before the body was
+   read (a 403 Host / Origin refusal) closes the connection too. A request
+   target that is not `/…` (or `*` for OPTIONS), an HTTP/1.1 request without
+   Host and Transfer-Encoding in an HTTP/1.0 request are 400; a version other
+   than HTTP/1.0 / 1.1 is 505 — the connection closed each time.
+   `Connection: Upgrade` changes nothing on the HTTP port (WebSockets have
+   their own port).
 2. A path that the cell's `request(method, path, body)` handler **matches
    explicitly** — a literal (`"/stats"`) or a prefix pattern (`"/hold/" + id`)
    in one of its `match` arms, or a path it tests (`path == "/reset"`,
@@ -1370,15 +1610,20 @@ its own; add a handler to Store that returns the value).
 ## Requests and responses
 
 `request` receives `(method, path, body)` — plus `query: Map` and
-`headers: Map` when it declares them, bound BY NAME (a 4th parameter called
-`headers` gets the headers, anything else the query): `on request(method:
+`headers: Map` when it declares them, bound BY NAME (a 4th parameter named
+`query` or `q` gets the query, `headers` or `hdrs` the headers; with five,
+the 4th is the query and the 5th the headers, named so; any other name is
+refused by `soma check` and at start-up; both are typed `Map`,
+`Map<String, String>` or `Any`, any other type is refused too): `on request(method:
 String, path: String, body: Map, query: Map, headers: Map)`. Header names
 are lower-case (`headers.authorization`); a repeated header is one entry,
 its values joined with ", " (a repeated QUERY key keeps its last value). `OPTIONS`
 requests are answered 204 with permissive CORS headers before any handler. A trailing `Map` parameter may be left out by a
-caller (it is `map()`), so a test still calls `request("GET", "/x", "")`.
+caller (it is `map()`) — the query / headers parameter too, whatever its
+allowed type — so a test still calls `request("GET", "/x", "")`.
 Query keys without `=` are present with an empty String (`?flag` gives
-`query.flag == ""`). In query keys and values, `+` means a space and `%2B`
+`query.flag == ""`; a form body likewise: `a=1&flag` gives `body.flag == ""`, and a body
+declared `application/x-www-form-urlencoded` is a form even with no `=`). In query keys and values, `+` means a space and `%2B`
 means a literal plus sign. Decoding happens once; empty separators are ignored.
 
 The declared type of `body` decides its shape:
@@ -1413,9 +1658,21 @@ kind yourself only when you want a different status or body:
 
 ```soma
 let r = try { _hold(id) }
-if r.kind == "invalid_transition" { return response(410, map("error", r.detail)) }
+if r.kind == "invalid_transition" { return response(410, map("error", "this hold has expired", "kind", r.kind)) }
 if r.error != ()                  { fail(r) }      // re-raise: the default mapping answers (under serve; a test sees the raised error)
 ```
+
+Under `soma serve` a caught error's `r.error` / `r.detail` hold the text a
+client would get for it: the program's own words (`fail(kind, detail)`,
+`require … else Tag`) unchanged, a runtime error (a type error quoting a
+stored value, `from_json` on bad text, …) as a value-free sentence — its
+full text goes to the server log. Returning or re-raising a try result
+(`return r`, `fail(r.error)`, `fail(r.kind, r.detail)`) therefore never
+sends stored data to a client. `soma run` / `soma test` keep the full text
+(for asserts and debugging), so branch on `r.kind`, never on the text.
+Likewise the `error` text of an `http_*` failure map names its URL without
+userinfo, query string or fragment under `soma serve` (`?api_key=…` and
+`user:pw@` never reach a client); `soma run` / `soma test` keep the full URL.
 
 Path segments reach `request` percent-decoded (`/stock/a%20b` → `"/stock/a b"`),
 except an encoded slash: `%2F` stays `%2F`, so a value cannot fake a path
@@ -1436,9 +1693,11 @@ to `"GET"` if clients send it), so match on `method` for the ones that write: wi
 origin, a GET that writes is writable by any web page (`<img src=…>`). A JSON
 body (or a Map-typed path/query argument) carrying `_type`, `_variant` or
 `_values` anywhere is refused (400), whatever the type of `body` — also for
-`body: String`: a client cannot forge a record or a sum-type variant.
-`from_json` on other text that names a declared variant checks its shape
-(a missing or mistyped field raises kind `type`).
+`body: String`: a value serve binds never holds a record or a sum-type
+variant a client wrote. `from_json` on other client text (a query value, a
+header, a path segment, a String inside the body) CAN build any declared
+variant it names — it checks the shape only (a missing or mistyped field
+raises kind `type`): validate which variant you got before trusting it.
 
 ## Realtime: WebSocket, SSE, events
 
@@ -1464,7 +1723,8 @@ body (or a Map-typed path/query argument) carrying `_type`, `_variant` or
   have no per-client routing: EVERY one receives every `publish`, so do not
   publish one user's or tenant's data where others hold a WebSocket — give
   each an SSE stream of its own.
-- SSE: a `request` route returns `sse("stream1", "ev")`; the client receives
+- SSE: a `request` route returns `sse("stream1", "ev")` (a HEAD gets the
+  headers only); the client receives
   only the named streams (`sse()` with no name: every `publish` stream) — so per-tenant
   streams (`sse("t_" + tenant)`) behind your own auth check in `request` keep
   tenants apart. The first event is `connected`. There is no replay — after
@@ -1625,16 +1885,20 @@ on busy links); `start()` runs BEFORE the links to `[peers]` are up, so an
 `[peers]` link is re-established when it drops (a peer that restarted, was
 down at start-up, or was cut off for reading too slowly); events emitted
 meanwhile are logged NOT delivered, not queued; `PORT +
-1` only when a cell declares `on ws`. Every response, static files, the
-dashboard and the pre-handler 400s included, carries
+1` only when a cell declares `on ws`. Every response, static files
+and the pre-handler 400s included, carries
 `Access-Control-Allow-Origin: *` (browsers on any origin may call it; put a
-proxy in front to restrict). `--no-schedule` starts the HTTP side without the
+proxy in front to restrict). The dashboard is the exception: `/__soma/` and
+its `/__soma/hordes` data carry no such header, so a page on another origin
+cannot read the program's cells, invariants and machines.
+`--no-schedule` starts the HTTP side without the
 `every` / `after` threads (tests, debugging). Run it behind a reverse proxy
 and firewall the bus port.
 
 ## Security notes for handlers
 
-- **Loopback servers** (the default bind) refuse a request whose `Host` names
+- **Loopback servers** (the default bind, or any loopback `--host`:
+  `localhost`, `127.0.0.x`, `::1` / `[::1]`) refuse a request whose `Host` names
   another site (DNS rebinding) and a state-changing request whose `Origin`
   is another site (a cross-site form POST) — 403. With `--host` the server is
   public: authenticate every writing route.
@@ -1945,22 +2209,26 @@ let r = try { transition(id, "next") }
 if r.error != () { return map("error", r.error) }
 ```
 
-## 8. `is_a` does not recognize sum-type VARIANTS — match them
+## 8. `is_a` recognizes sum-type variants; `match` is how you branch on them
 
 ```soma
-let b = Box { w: 3 }         // Box is a `variants` constructor
-return is_a(b, "Box")        // false — variants aren't tagged records
+let b = Box { w: 3 }         // Box is a `variants` constructor of Shape
+is_a(b, "Box")               // true — the variant's name
+is_a(b, "Shape")             // true — its sum type's name
+type_of(b)                   // "Variant" (a record literal is a "Map")
+b.w                          // 3 — a struct variant's field reads with `.`
 ```
 ```soma
-// extract the kind with an exhaustive match handler
+// branch on the kind with an exhaustive match (a missing variant is a check error;
+// a tuple variant's fields, `Pair(a, b)`, are only reachable this way)
 on kind(s: Map) {
     return match s {
-        Box { w } -> "Box"
-        // ... every variant
+        Box { w } -> "Box of {w}"
+        Dot -> "Dot"
     }
 }
 ```
-(`is_a` / `is_type` DO work on record literals: `is_a(Game { x: 1 }, "Game")` is `true`.)
+(`is_a` / `is_type` also work on record literals: `is_a(Game { x: 1 }, "Game")` is `true`.)
 
 ## 9. There is no `cell type X { fields { ... } }`
 
@@ -2229,6 +2497,7 @@ state s { initial: a   a -> paid   * -> failed except [paid] }  // paid stays fi
 ## 26. A route in `request` and a handler of the same name
 
 `soma serve` exposes every public handler at `/<name>/<args>`. With
-`on hold(id, qty)` and a route `"/hold/" + id`, the explicit route wins — but
-other `/hold/…` shapes still reach the handler. Prefix internal handlers with
-`_`. `soma check` warns.
+`on hold(id, qty)` and a route `"/hold/" + id` (or `"/hold"`), EVERY `/hold`
+and `/hold/…` request goes to `request` — the handler is no longer an HTTP
+endpoint. Call it from the route, or prefix an internal handler with `_`.
+`soma check` warns.

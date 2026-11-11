@@ -181,7 +181,8 @@ pub fn verify_program(program: &Program) -> Vec<VerifyResult> {
 
                 // a handler with an undeclared target gets its ✗, not also a ✓
                 let refused: std::collections::HashSet<String> = findings.iter().filter_map(|f| match f {
-                    super::refinement::RefinementFinding::UndeclaredTarget { handler, .. } => Some(handler.clone()),
+                    super::refinement::RefinementFinding::UndeclaredTarget { handler, .. }
+                    | super::refinement::RefinementFinding::IllegalEdge { handler, .. } => Some(handler.clone()),
                     _ => None,
                 }).collect();
                 for f in findings.clone() {
@@ -197,6 +198,19 @@ pub fn verify_program(program: &Program) -> Vec<VerifyResult> {
                                 format!(
                                     "{}: handler `{}` calls transition(_, \"{}\") but \"{}\" is not in state machine `{}`{}",
                                     refinement_label, handler, target, target, sm.name, path_text
+                                ),
+                                { let _ = span; None },
+                            ));
+                        }
+                        IllegalEdge { handler, from, to, path, span } => {
+                            let path_text = if path.is_empty() { String::new() } else { format!("  [{}]", path.join(" ∧ ")) };
+                            let leaving: Vec<String> = sm.transitions.iter()
+                                .filter(|t| t.node.from == from || (t.node.from == "*" && sm.wildcard_applies(&t.node, &from)))
+                                .map(|t| t.node.to.clone()).collect();
+                            result.checks.push(VerifyCheck::Fail(
+                                format!(
+                                    "{}: handler `{}` moves an instance it knows is `{}` to `{}`, and `state {}` declares no edge {} → {} (from `{}`: [{}]) — that call always raises invalid_transition; declare the edge or fix the handler{}",
+                                    refinement_label, handler, from, to, sm.name, from, to, from, leaving.join(", "), path_text
                                 ),
                                 { let _ = span; None },
                             ));
@@ -221,7 +235,12 @@ pub fn verify_program(program: &Program) -> Vec<VerifyResult> {
                             if targets.is_empty() && !has_dynamic { continue; }
                             if refused.contains(&handler) { continue; }
                             let target_strs: Vec<String> = targets.iter().map(|c| {
-                                let edge = match &c.source { Some(s) => format!("{} → {}", s, c.target), None => c.target.clone() };
+                                let edge = match (&c.source, c.inferred.is_empty()) {
+                                    (Some(s), _) => format!("{} → {}", s, c.target),
+                                    // the source the handler established itself
+                                    (None, false) => format!("{} → {}", c.inferred.join("|"), c.target),
+                                    (None, true) => c.target.clone(),
+                                };
                                 if c.path.is_empty() {
                                     edge
                                 } else {
@@ -251,7 +270,7 @@ pub fn verify_program(program: &Program) -> Vec<VerifyResult> {
                     let mut blind: Vec<String> = Vec::new();
                     for f in &findings {
                         if let super::refinement::RefinementFinding::HandlerEffect { handler, targets, .. } = f {
-                            if targets.iter().any(|c| c.source.is_none()) && !blind.contains(handler) { blind.push(handler.clone()); }
+                            if targets.iter().any(|c| c.source.is_none() && c.inferred.is_empty()) && !blind.contains(handler) { blind.push(handler.clone()); }
                         }
                     }
                     if !blind.is_empty() {
@@ -371,6 +390,11 @@ pub fn verify_program(program: &Program) -> Vec<VerifyResult> {
     // proven (or failed) against constant bounds; computed writes are
     // reported as runtime-checked.
     results.extend(super::invariants::verify_program_invariants(program));
+    // 3.0: face contracts — each `requires` at its call sites, each
+    // `ensures` at the handler's returns
+    results.extend(super::invariants::verify_contracts(program));
+    // 3.0: durable waits — where a handler rests, and what else moves it on
+    results.extend(super::waits::verify_waits(program));
 
     // termination in cells WITHOUT a state machine (it was only analysed
     // next to one: `while true` in a plain cell passed `--strict` silently)

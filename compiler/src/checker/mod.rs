@@ -26,6 +26,12 @@ pub mod habits;
 pub mod routes;
 pub mod cross_machine;
 pub mod runtime_section;
+pub mod codes;
+pub mod types;
+pub mod taint;
+pub mod contracts;
+pub mod waits;
+pub mod product;
 
 pub use properties::PropertyChecker;
 pub use signals::SignalChecker;
@@ -323,6 +329,11 @@ pub enum CheckWarning {
         message: String,
         span: Span,
     },
+    /// 3.0: a type the next edition refuses (checker/types.rs).
+    TypeAdvisory {
+        message: String,
+        span: Span,
+    },
     /// A habit from another language that silently does the wrong thing.
     HabitWarning {
         message: String,
@@ -412,6 +423,7 @@ impl std::fmt::Display for CheckWarning {
             Self::DispatchShadow { message, .. } => write!(f, "warning: {message}"),
             Self::Unreachable { message, .. } => write!(f, "warning: {message}"),
             Self::HabitWarning { message, .. } => write!(f, "warning: {message}"),
+            Self::TypeAdvisory { message, .. } => write!(f, "warning: {message}"),
             Self::NativeSemantics { message, .. } => write!(f, "warning: {message}"),
             Self::InterpolationRecoverable { message, .. } => {
                 write!(f, "warning: {message} (recoverable here — inside try {{ }}, or in a handler a test expects to fail — so not an error)")
@@ -472,6 +484,7 @@ impl CheckWarning {
             | Self::NativeSemantics { span, .. }
             | Self::Unreachable { span, .. }
             | Self::HabitWarning { span, .. }
+            | Self::TypeAdvisory { span, .. }
             | Self::InterpolationRecoverable { span, .. } => Some(*span),
             Self::BudgetAdvisory { .. }
             | Self::BudgetOk { .. } => None,
@@ -654,6 +667,17 @@ impl<'a> Checker<'a> {
         // V1.7: static dispatch resolution — unknown and ambiguous
         // bare-name calls, plus the recursive-shadowing trap.
         let (dispatch_errors, dispatch_warnings) = dispatch::check_program(program);
+        for e in dispatch::std_calls(program) {
+            self.errors.push(CheckError::DispatchIssue { message: e.message, span: e.span });
+        }
+        // edition 2027: a name the program gives a handler is that handler —
+        // the builtin of the same name is `std.name(…)`, not an arity away
+        let (dispatch_errors, dispatch_warnings) = if self.edition().as_str() >= "2027" {
+            let (to_error, rest): (Vec<_>, Vec<_>) = dispatch_warnings.into_iter().partition(|w| w.message.contains("resolves to the BUILTIN"));
+            let mut errors = dispatch_errors;
+            errors.extend(to_error.into_iter().map(|mut w| { w.message = format!("{} (edition 2027: a bare call of a name the program defines is its handler)", w.message); w }));
+            (errors, rest)
+        } else { (dispatch_errors, dispatch_warnings) };
         for e in dispatch_errors {
             self.errors.push(CheckError::DispatchIssue {
                 message: e.message,
@@ -669,6 +693,23 @@ impl<'a> Checker<'a> {
                 span: issue.span,
             });
         }
+        // 3.0: face contracts — what a `requires` / `ensures` may say
+        for issue in contracts::check_program(program) {
+            self.errors.push(CheckError::Static { kind: "contract", message: issue.message, span: issue.span });
+        }
+        // 3.0: tools bound to a server — soma.toml names it, soma.lock pins it
+        {
+            let dir = self.source.as_ref().and_then(|(file, _)| std::path::Path::new(file).parent().map(|p| p.to_path_buf()))
+                .filter(|p| !p.as_os_str().is_empty()).unwrap_or_else(|| std::path::PathBuf::from("."));
+            let manifest = crate::pkg::manifest::Manifest::load(&dir.join("soma.toml")).ok();
+            for issue in crate::external::check_program(program, manifest.as_ref(), &dir) {
+                self.errors.push(CheckError::Static { kind: "tool_binding", message: issue.message, span: issue.span });
+            }
+        }
+        // 3.0: durable waits — where an `await` may stand
+        for issue in waits::check_program(program) {
+            self.errors.push(CheckError::Static { kind: "await", message: issue.message, span: issue.span });
+        }
         for (message, span) in native::int_division_warnings(program) {
             self.warnings.push(CheckWarning::NativeSemantics { message, span });
         }
@@ -682,7 +723,19 @@ impl<'a> Checker<'a> {
         for e in habit_errors {
             self.errors.push(CheckError::Habit { message: e.message, span: e.span });
         }
+        // edition 2027: the two readings of `a ?? b + c` are not left to a
+        // precedence rule — the expression must say which it means
+        let edition_2027 = self.edition().as_str() >= "2027";
         for w in habit_warnings {
+            // …and a statement that computes a value and drops it is an error
+            if edition_2027 && w.message.contains("is discarded — ") {
+                self.errors.push(CheckError::Habit { message: format!("{} (edition 2027: an error)", w.message), span: w.span });
+                continue;
+            }
+            if edition_2027 && w.message.contains("`??` binds looser") {
+                self.errors.push(CheckError::Habit { message: format!("{} (edition 2027: parentheses are required here)", w.message), span: w.span });
+                continue;
+            }
             self.warnings.push(CheckWarning::HabitWarning { message: w.message, span: w.span });
         }
         // on the desugared program: a transition in `"{…}"`, a UFCS
@@ -794,6 +847,14 @@ impl<'a> Checker<'a> {
                 for sec in &cell.sections {
                     // a test cell's rules too (`assert split("a,b", ",", 1) == …` passed)
                     let rule_body: Vec<Spanned<Statement>>;
+                    // `assert_fails len()` expects the raise: too few
+                    // arguments there is the point of the test
+                    let mut expects_raise: Vec<crate::ast::Span> = Vec::new();
+                    if let Section::Rules(r) = &sec.node {
+                        for ru in &r.rules {
+                            if let Rule::AssertFails(e) | Rule::AssertFailsMatching(e, _) = &ru.node { expects_raise.push(e.span); }
+                        }
+                    }
                     let body = match &sec.node {
                         Section::OnSignal(on) => &on.body,
                         Section::Every(e) | Section::After(e) => &e.body,
@@ -815,6 +876,8 @@ impl<'a> Checker<'a> {
                     });
                     // every call site, at its own line (they were reported
                     // at the handler's header, once per program)
+                    // and so does `try { concat("a") }`, which catches it
+                    literals::for_each_expr(body, &mut |e| if let Expr::Try(inner) | Expr::TryPropagate(inner) = e { expects_raise.push(inner.span); });
                     let mut bad: Vec<(String, crate::ast::Span)> = Vec::new();
                     literals::for_each_call(body, &mut |name, args, span| {
                         if handler_names.contains(name) { return; }
@@ -822,6 +885,21 @@ impl<'a> Checker<'a> {
                         if let Some(max) = crate::interpreter::builtins::registry::max_arity(name) {
                             if n > max && reported.insert(format!("{}:{}:{}", name, n, span.start)) {
                                 bad.push((format!("{}() takes at most {} argument{} ({} given) — the extra ones were silently ignored", name, max, if max == 1 { "" } else { "s" }, n), span));
+                            }
+                        }
+                        let in_assert_fails_or_try = || expects_raise.iter().any(|r| r.start <= span.start && span.end <= r.end);
+                        // `map("a")` / `map("a", 1, "b")`: key-value pairs
+                        // (a piped `xs |> map(f)` is the list form)
+                        if name == "map" && n % 2 == 1 && !piped.contains(&(span.start, span.end)) && !in_assert_fails_or_try()
+                            && reported.insert(format!("map:{}:{}", n, span.start)) {
+                            bad.push((format!("map() takes key-value pairs ({} argument{} given) — map(\"k1\", v1, \"k2\", v2)", n, if n == 1 { "" } else { "s" }), span));
+                        }
+                        // too few: `think()`, `pad_left("x")` failed only at run time
+                        if let Some(min) = crate::interpreter::builtins::registry::min_arity(name) {
+                            let in_assert_fails = expects_raise.iter().any(|r| r.start <= span.start && span.end <= r.end);
+                            if n < min && !in_assert_fails && reported.insert(format!("{}:{}:{}", name, n, span.start)) {
+                                let sig = crate::interpreter::builtins::registry::lookup(name).map(|b| b.signature).unwrap_or("");
+                                bad.push((format!("{}() needs at least {} argument{} ({} given) — {}", name, min, if min == 1 { "" } else { "s" }, n, sig), span));
                             }
                         }
                     });
@@ -1016,6 +1094,7 @@ impl<'a> Checker<'a> {
                 let mut names: Vec<(String, String)> = vec![
                     (format!("{}__agent_memory", c), format!("{}'s agent memory", c)),
                     (format!("{}__counters", c), format!("{}'s next_id counter", c)),
+                    (format!("{}__waits", c), format!("{}'s stored waits", c)),
                 ];
                 for sec in &cell.node.sections {
                     match &sec.node {
@@ -1271,7 +1350,9 @@ impl<'a> Checker<'a> {
                                     for k in kv.iter().step_by(2) {
                                         let ksp = k.span;
                                         if let Expr::Literal(Literal::String(k)) = &k.node {
-                                            if !matches!(k.as_str(), "max_tokens" | "timeout" | "timeout_ms" | "max_rounds" | "tools_allowed" | "requires") && !bad.iter().any(|(b, _)| b == k) { bad.push((k.clone(), ksp)); }
+                                            // `as`: think_json's typed answer (3.0)
+                                            let known = matches!(k.as_str(), "max_tokens" | "timeout" | "timeout_ms" | "max_rounds" | "tools_allowed" | "requires") || (k == "as" && name == "think_json");
+                                            if !known && !bad.iter().any(|(b, _)| b == k) { bad.push((k.clone(), ksp)); }
                                         }
                                     }
                                     // `tools_allowed: ["admin"]` naming a handler that is
@@ -1298,7 +1379,7 @@ impl<'a> Checker<'a> {
                     self.errors.push(CheckError::Static { kind: "think_option", message: format!("tools_allowed names \"{}\", which is not a tool of {} — declare it in the face (`tool {}(…) -> … \"what it does\"`) or drop it", t, cell.node.name, t), span });
                 }
                 for (k, span) in bad {
-                    self.errors.push(CheckError::Static { kind: "think_option", message: format!("\"{}\" is not a think() option — the options are max_tokens, max_rounds, timeout (ms), tools_allowed and requires; a JSON shape is checked by your own code after think_json()", k), span });
+                    self.errors.push(CheckError::Static { kind: "think_option", message: format!("\"{}\" is not a think() option — the options are max_tokens, max_rounds, timeout (ms), tools_allowed and requires; a typed answer is think_json(prompt, map(\"as\", \"TypeName\"))", k), span });
                 }
             }
         }
@@ -1583,6 +1664,44 @@ impl<'a> Checker<'a> {
                 continue;
             }
             self.check_cell(&cell.node);
+        }
+        self.check_types(program);
+    }
+
+    /// 3.0: static types for expressions (checker/types.rs). An issue at a
+    /// position another check already reported is not repeated.
+    fn check_types(&mut self, program: &Program) {
+        let edition = self.edition();
+        if let Some(e) = self.manifest.and_then(|m| m.package.edition.as_ref()) {
+            if !crate::pkg::manifest::EDITIONS.contains(&e.as_str()) {
+                self.errors.push(CheckError::Static {
+                    kind: "edition",
+                    message: format!("soma.toml: edition = \"{}\" is not an edition this toolchain knows — the editions are {}", e,
+                        crate::pkg::manifest::EDITIONS.iter().map(|x| format!("\"{x}\"")).collect::<Vec<_>>().join(", ")),
+                    span: Span { start: 0, end: 0 },
+                });
+            }
+        }
+        // 3.0: an untrusted value (a model's answer, an HTTP reply) that
+        // decides a state, a URL, a file or a budget without a check
+        for issue in taint::check_program(program) {
+            if edition.as_str() >= "2027" {
+                self.errors.push(CheckError::Static { kind: "untrusted_value", message: issue.message, span: issue.span });
+            } else {
+                self.warnings.push(CheckWarning::TypeAdvisory { message: format!("{} (an error in edition 2027)", issue.message), span: issue.span });
+            }
+        }
+        let types = types::Program2::new(program, edition.as_str() >= "2027");
+        for cell in &program.cells {
+            for issue in types.check_cell(&cell.node) {
+                let seen = self.errors.iter().any(|e| e.span().map_or(false, |s| s.start == issue.span.start));
+                if seen { continue; }
+                if issue.advisory {
+                    self.warnings.push(CheckWarning::TypeAdvisory { message: issue.message, span: issue.span });
+                } else {
+                    self.errors.push(CheckError::Static { kind: issue.kind, message: issue.message, span: issue.span });
+                }
+            }
         }
     }
 
@@ -2394,7 +2513,7 @@ impl<'a> Checker<'a> {
                 }).unwrap_or(Span { start: 0, end: 0 });
                 self.errors.push(CheckError::Static {
                     kind: "native_vocabulary",
-                    message: format!("handler '{}' is marked [native] but {} — the native vocabulary is numbers, buffer/hashmap/strbuf primitives and sibling [native] handlers (see `soma docs agent`, Performance); drop [native] or move the rest out", h.signal_name, e.reason),
+                    message: format!("handler '{}' is marked [native] but {} — the native vocabulary is numbers, buffer/hashmap/strbuf primitives and sibling [native] handlers (see `soma docs native`); drop [native] or move the rest out", h.signal_name, e.reason),
                     span,
                 });
             }
@@ -2652,6 +2771,15 @@ impl<'a> Checker<'a> {
         }
     }
 
+    /// The program's edition: the manifest the command loaded, else the
+    /// soma.toml beside the source (run, serve and test give only the source).
+    pub fn edition(&self) -> String {
+        if self.manifest.is_some() { return crate::pkg::manifest::Manifest::edition_of(self.manifest); }
+        let beside = self.source.as_ref().and_then(|(file, _)| std::path::Path::new(file).parent().map(|d| d.join("soma.toml")))
+            .and_then(|toml| crate::pkg::manifest::Manifest::load(&toml).ok());
+        crate::pkg::manifest::Manifest::edition_of(beside.as_ref())
+    }
+
     pub fn has_errors(&self) -> bool {
         !self.errors.is_empty()
     }
@@ -2665,8 +2793,11 @@ impl<'a> Checker<'a> {
         }
 
         for error in &self.errors {
+            let (_, _, kind) = Self::error_with_fix(error);
             output.push_str(&format!("error: {}\n", error));
             output.push_str(&self.location_block(error.span()));
+            let code = if kind == "syntax" { codes::syntax_code(&error.to_string()) } else { codes::error_code(kind) };
+            output.push_str(&format!("  = code: {}\n", code));
         }
 
         // Tally only real warnings, not informational notes (BudgetOk).
@@ -2745,6 +2876,7 @@ impl<'a> Checker<'a> {
             let mut v = serde_json::json!({
                 "level": "error",
                 "kind": kind,
+                "code": if kind == "syntax" { codes::syntax_code(&msg) } else { codes::error_code(kind) },
                 "message": msg,
                 "fix": fix,
             });
@@ -2758,6 +2890,8 @@ impl<'a> Checker<'a> {
             let (msg, fix) = Self::warning_with_fix(w);
             let mut v = serde_json::json!({
                 "level": "warning",
+                "kind": Self::warning_kind(w),
+                "code": codes::warning_code(&Self::warning_kind(w)),
                 "message": msg,
                 "fix": fix,
             });
@@ -2861,6 +2995,16 @@ impl<'a> Checker<'a> {
                 (format!("{}", err), format!("{}", err), Box::leak(snake.into_boxed_str()))
             }
         }
+    }
+
+    /// The warning's class: its variant name in snake_case.
+    fn warning_kind(warn: &CheckWarning) -> String {
+        let name = format!("{:?}", warn);
+        let variant = name.split(|c: char| !c.is_alphanumeric()).next().unwrap_or("warning");
+        variant.chars().fold(String::new(), |mut acc, c| {
+            if c.is_uppercase() && !acc.is_empty() { acc.push('_'); }
+            acc.push(c.to_ascii_lowercase()); acc
+        })
     }
 
     /// Generate warning message + suggestion

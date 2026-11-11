@@ -8,17 +8,16 @@ marked 👤 need your identity; 🤖 are done or automatable.
 - README.md — rewritten; every claim is a runnable command
 - site/llms.txt — current language summary, the LLM-context entry point
   (deploys with the site to soma-lang.dev/llms.txt)
-- examples/corpus/ — 168 verified programs (the training-data play)
+- examples/corpus/ — 321 verified programs (the training-data play)
 - AGENT_GOTCHAS.md — the self-correction corpus
 - soma-lang.dev/repo — the package registry
 
 ## High leverage, needs you 👤
-1. **GitHub repo metadata** (2 min): Settings → add description
-   "A language where programs carry their proofs — verified state
-   machines, memory invariants, contained LLM agents" and topics:
-   `programming-language` `formal-verification` `model-checking`
-   `ai-agents` `llm` `state-machines` `rust`. Topics drive GitHub search
-   + trending discovery.
+1. ~~**GitHub repo metadata**~~ — DONE 2026-09-21. Description, homepage
+   (soma-lang.dev), Discussions enabled, and topics `programming-language`
+   `formal-verification` `model-checking` `ai-agents` `llm` `state-machines`
+   `rust`. Topics are the only passive discovery GitHub has; before this the
+   repo had none, and 14 days of traffic showed 0 page views.
 2. **Show HN** — draft in SHOW_HN.md. Single highest-variance channel.
 3. **X thread** — draft in X_THREAD.md. Post the same week as HN.
 4. **Lobste.rs** (needs an invite) — same content as HN, smaller but
@@ -42,7 +41,7 @@ marked 👤 need your identity; 🤖 are done or automatable.
   first — the adversarial-LLM story is the hook).
 - The benchmark post: "interpreter vs [native] vs rustc -O, measured" —
   PL crowd respects numbers with methodology.
-- The corpus post: "we generated 168 programs and every one compiles —
+- The corpus post: "we generated 321 programs and every one compiles —
   why training data for new languages must be verified."
 
 ## What NOT to do

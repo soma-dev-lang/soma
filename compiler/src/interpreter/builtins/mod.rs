@@ -157,7 +157,7 @@ fn split_url(u: &str) -> Option<(&str, &str, String)> {
     Some((scheme, authority, rest.to_string()))
 }
 
-fn url_matches_any(url: &str, caps: &[String]) -> bool {
+pub(crate) fn url_matches_any(url: &str, caps: &[String]) -> bool {
     // spaces in the QUERY are sent encoded (%20), as outside a tool: a
     // multi-word `?q={topic}` was "capability denied" only inside the scope
     let encoded: String;

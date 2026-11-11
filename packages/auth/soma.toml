@@ -1,0 +1,10 @@
+[package]
+name = "auth"
+version = "0.1.0"
+description = "JSON Web Tokens (HS256) and signed webhook payloads, in pure Soma on `hmac_sha256` and `secure_eq`."
+entry = "auth.cell"
+edition = "2026"
+
+# The package's API is its cell's `face`; its proofs are its `cell test`
+# blocks: `soma test packages/auth/auth.cell` is the contract a consumer
+# can re-run before trusting it.

@@ -140,6 +140,7 @@ impl Runtime {
         let mut wanted: Vec<(String, String, &'static str)> = vec![
             (format!("{}.__counters", child.name), "_counters".to_string(), "next_id() counter"),
             (format!("{}.__agent_memory", child.name), "_agent_memory".to_string(), "remember() memory"),
+            (format!("{}.__waits", child.name), "_waits".to_string(), "stored waits"),
         ];
         for s in &child.def.sections {
             if let Section::State(sm) = &s.node {

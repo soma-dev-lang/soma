@@ -1,0 +1,10 @@
+[package]
+name = "vector"
+version = "0.1.0"
+description = "Similarity search over embeddings, and a local embedding that needs no model."
+entry = "vector.cell"
+edition = "2026"
+
+# The package's API is its cell's `face`; its proofs are its `cell test`
+# blocks: `soma test packages/vector/vector.cell` is the contract a consumer
+# can re-run before trusting it.

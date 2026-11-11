@@ -36,6 +36,30 @@ pub struct Manifest {
     /// (besides the events this program emits itself)
     #[serde(default)]
     pub bus: BusConfig,
+    /// 3.0: `[tools.<name>]` — servers an external `tool` is bound to
+    #[serde(default, skip_serializing_if = "HashMap::is_empty")]
+    pub tools: HashMap<String, ToolServer>,
+}
+
+/// `[tools.docs] mcp = "https://docs.example/mcp"` or
+/// `[tools.pets] openapi = "petstore.json"`.
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct ToolServer {
+    /// A Model Context Protocol server (Streamable HTTP endpoint).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub mcp: Option<String>,
+    /// An OpenAPI 3 document (JSON): a file beside soma.toml, or a URL.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub openapi: Option<String>,
+    /// OpenAPI: where the operations are served (default: the document's first server).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub base_url: Option<String>,
+    /// The environment variable holding a bearer token for the server.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub token_env: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub timeout_ms: Option<u64>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -222,6 +246,11 @@ pub struct BeforeConfig {
     /// EACH of these states precedes the target
     #[serde(default)]
     pub requires_all: Vec<String>,
+    /// 3.0: the property is about the runs where this holds —
+    /// `assuming = "amount > 500"` leaves out the edges whose guard cannot
+    /// hold then
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub assuming: Option<String>,
 }
 
 #[derive(Debug, Default, Serialize, Deserialize)]
@@ -246,6 +275,29 @@ pub struct PackageInfo {
     pub author: String,
     #[serde(default = "default_entry")]
     pub entry: String,
+    /// The language edition the program is written in ("2026", "2027").
+    /// Absent: "2026", the edition every program before 3.0 was written in.
+    /// Breaking changes land only in a new edition.
+    #[serde(default)]
+    pub edition: Option<String>,
+}
+
+/// The editions this toolchain compiles, oldest first.
+pub const EDITIONS: &[&str] = &["2026", "2027"];
+/// The edition of a program whose soma.toml names none.
+pub const DEFAULT_EDITION: &str = "2026";
+/// The edition `soma init` writes.
+pub const CURRENT_EDITION: &str = "2027";
+
+impl Manifest {
+    /// The program's edition (SOMA_EDITION overrides soma.toml, for trying
+    /// a program under the next edition without editing it).
+    pub fn edition_of(manifest: Option<&Manifest>) -> String {
+        if let Ok(e) = std::env::var("SOMA_EDITION") {
+            if EDITIONS.contains(&e.as_str()) { return e; }
+        }
+        manifest.and_then(|m| m.package.edition.clone()).unwrap_or_else(|| DEFAULT_EDITION.to_string())
+    }
 }
 
 impl Default for PackageInfo {
@@ -256,6 +308,7 @@ impl Default for PackageInfo {
             description: String::new(),
             author: String::new(),
             entry: default_entry(),
+            edition: None,
         }
     }
 }
@@ -363,8 +416,11 @@ impl Manifest {
                 // new projects: app.cell, the name the docs use. A manifest
                 // without `entry` still defaults to main.cell (default_entry).
                 entry: "app.cell".to_string(),
+                // a new project is written in the current edition
+                edition: Some(CURRENT_EDITION.to_string()),
             },
             dependencies: HashMap::new(),
+            tools: HashMap::new(),
             peers: HashMap::new(),
             verify: VerifyConfig::default(),
             compute: ComputeConfig::default(),

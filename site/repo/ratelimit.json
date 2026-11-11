@@ -1,0 +1,11 @@
+{
+  "name": "ratelimit",
+  "description": "Fixed windows and token buckets kept in the cell's persistent memory: they survive a restart, and since a handler is atomic two requests never both take the last slot.",
+  "latest": "0.1.0",
+  "versions": {
+    "0.1.0": {
+      "git": "https://github.com/soma-dev-lang/soma",
+      "subdir": "packages/ratelimit"
+    }
+  }
+}
