@@ -53,10 +53,14 @@ jobs:
         working-directory: compiler
         run: |
           test "$(./target/release/soma --version)" = "soma ${TAG#v}"
-          ./target/release/soma init /tmp/demo >/dev/null
-          ./target/release/soma check /tmp/demo/app.cell
-          ./target/release/soma verify --strict /tmp/demo/app.cell
-          ./target/release/soma test /tmp/demo/app.cell
+          # `soma init` takes a project NAME (a relative path of plain
+          # directories), not an absolute path: run it inside a scratch directory
+          SOMA="$PWD/target/release/soma"
+          cd "$(mktemp -d)"
+          "$SOMA" init demo >/dev/null
+          "$SOMA" check demo/app.cell
+          "$SOMA" verify --strict demo/app.cell
+          "$SOMA" test demo/app.cell
       - name: attach to the release
         env:
           GH_TOKEN: ${{ github.token }}
