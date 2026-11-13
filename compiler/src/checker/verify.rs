@@ -379,7 +379,7 @@ pub fn verify_program(program: &Program) -> Vec<VerifyResult> {
                         }
                         for (emitter, sig) in &comp.undelivered {
                             comp_result.checks.push(VerifyCheck::Warning(
-                                format!("composition: cell '{}' emits signal '{}' but no sibling handles it",
+                                format!("composition: cell '{}' emits signal '{}' but no sibling cell takes it (none handles it, or not with that number of arguments — a `cell type` hears no event)",
                                     emitter, sig)
                             ));
                         }

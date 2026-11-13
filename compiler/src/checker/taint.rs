@@ -21,7 +21,15 @@ pub struct TaintIssue {
     pub span: Span,
 }
 
-const SOURCES: &[&str] = &["think", "think_json", "http_get", "http_post", "http_put", "http_patch", "http_delete", "read_stdin"];
+const SOURCES: &[&str] = &["think", "think_json", "http_get", "http_post", "http_put", "http_patch", "http_delete", "read_stdin",
+    // the winner of a vote among model answers is a model's answer
+    "vote"];
+
+/// Builtins that apply a lambda to the elements of their first argument.
+const APPLIES: &[&str] = &["map", "filter", "find", "any", "all", "count", "reduce", "sort_by", "group_by", "min_by", "max_by", "sum_by", "each", "flat_map"];
+
+/// Methods that put their argument into the value they are called on.
+const STORES: &[&str] = &["push", "append", "set", "put", "insert", "extend"];
 
 /// (builtin, argument index, what the argument decides)
 const SINKS: &[(&str, usize, &str)] = &[
@@ -108,8 +116,40 @@ impl<'a> Cx<'a> {
         }
     }
 
+    /// `xs.map(x => …)` / `map(xs, x => …)` over an untrusted `xs`: `x` is
+    /// the outsider's too, inside the lambda.
+    fn applied(&mut self, collection: &Expr, lambda: &Spanned<Expr>) -> bool {
+        let Some(src) = self.source(collection) else { return false };
+        let param = match &lambda.node { Expr::Lambda { param, .. } | Expr::LambdaBlock { param, .. } => param.clone(), _ => return false };
+        let before = self.tainted.clone();
+        for p in param.split(|c: char| !(c.is_alphanumeric() || c == '_')).filter(|p| !p.is_empty()) { self.tainted.insert(p.to_string(), src.clone()); }
+        self.expr(lambda);
+        self.tainted = before;
+        true
+    }
+
+    /// `xs.push(v)`, `m.set(k, v)` with an untrusted `v`: the local `xs` /
+    /// `m` holds the outsider's value from here on.
+    fn stored(&mut self, target: &str, method: &str, args: &[Spanned<Expr>]) {
+        if !STORES.contains(&method) || self.handlers.contains(method) { return; }
+        if let Some(src) = args.iter().find_map(|a| self.source(&a.node)) { self.tainted.insert(target.to_string(), src); }
+    }
+
     fn expr(&mut self, e: &Spanned<Expr>) {
         match &e.node {
+            Expr::FnCall { name, args } if APPLIES.contains(&name.as_str()) && !self.handlers.contains(name) && args.len() >= 2
+                && matches!(args.last().map(|a| &a.node), Some(Expr::Lambda { .. } | Expr::LambdaBlock { .. })) => {
+                for a in &args[..args.len() - 1] { self.expr(a); }
+                let last = &args[args.len() - 1];
+                if !self.applied(&args[0].node, last) { self.expr(last); }
+            }
+            Expr::MethodCall { target, method, args } if APPLIES.contains(&method.as_str()) && !self.handlers.contains(method)
+                && matches!(args.last().map(|a| &a.node), Some(Expr::Lambda { .. } | Expr::LambdaBlock { .. })) => {
+                self.expr(target);
+                for a in &args[..args.len() - 1] { self.expr(a); }
+                let last = &args[args.len() - 1];
+                if !self.applied(&target.node, last) { self.expr(last); }
+            }
             Expr::FnCall { name, args } => {
                 for a in args { self.expr(a); }
                 if name == "transition" && !self.handlers.contains("transition") {
@@ -129,7 +169,11 @@ impl<'a> Cx<'a> {
                     }
                 }
             }
-            Expr::MethodCall { target, args, .. } => { self.expr(target); for a in args { self.expr(a); } }
+            Expr::MethodCall { target, method, args } => {
+                self.expr(target);
+                for a in args { self.expr(a); }
+                if let Expr::Ident(t) = &target.node { self.stored(t, method, args); }
+            }
             Expr::FieldAccess { target, .. } | Expr::Not(target) | Expr::Try(target) | Expr::TryPropagate(target) => self.expr(target),
             Expr::Index { target, index } => { self.expr(target); self.expr(index); }
             Expr::BinaryOp { left, right, .. } | Expr::CmpOp { left, right, .. } | Expr::Pipe { left, right } => { self.expr(left); self.expr(right); }
@@ -199,9 +243,20 @@ impl<'a> Cx<'a> {
                 self.clear(&condition.node);
                 self.block(body);
             }
-            Statement::Emit { args, .. } | Statement::MethodCall { args, .. } => for a in args { self.expr(a); },
+            Statement::Emit { args, .. } => for a in args { self.expr(a); },
+            Statement::MethodCall { target, method, args } => {
+                for a in args { self.expr(a); }
+                self.stored(target, method, args);
+            }
             Statement::Require { constraint, .. } => self.constraint(&constraint.node),
-            Statement::IndexSet { index, value, .. } => { self.expr(index); self.expr(value); }
+            Statement::IndexSet { name, index, value } => {
+                self.expr(index); self.expr(value);
+                // `m["a"] = think(q)`: `m` holds the outsider's value
+                if let Some(src) = self.source(&value.node) {
+                    let root = name.split(|c| c == '.' || c == '[').next().unwrap_or(name).to_string();
+                    self.tainted.insert(root, src);
+                }
+            }
             Statement::Ensure { condition } => { self.expr(condition); self.clear(&condition.node); }
             Statement::Break | Statement::Continue => {}
         }

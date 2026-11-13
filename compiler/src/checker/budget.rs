@@ -319,6 +319,9 @@ pub fn expr_cost(e: &Expr) -> Cost {
             }
             // Method on a storage slot: `.set`, `.get`, `.keys`, `.values`, `.len`
             // These don't themselves allocate beyond their arguments.
+            if matches!(method.as_str(), "map" | "filter" | "flat_map" | "sort_by" | "group_by") {
+                if let Some(l) = args.last() { return c.plus(applied_cost(&target.node, &l.node, method)); }
+            }
             match method.as_str() {
                 "set" | "get" | "delete" | "contains" | "len" | "has" => c,
                 "keys" => {
@@ -371,6 +374,12 @@ pub fn expr_cost(e: &Expr) -> Cost {
                 }
                 let site = format!("{} at call site — {}", name, _reason);
                 return arg_cost.plus(Cost::unbounded(site));
+            }
+            // a handler of this cell: its frame is held while it runs
+            if let Some(callee) = callee_peak(name) { return arg_cost.plus(callee); }
+            if matches!(name.as_str(), "map" | "filter" | "flat_map" | "sort_by" | "group_by") && args.len() == 2
+                && matches!(args[1].node, Expr::Lambda { .. } | Expr::LambdaBlock { .. }) {
+                return arg_cost.plus(applied_cost(&args[0].node, &args[1].node, name));
             }
             // Specific allocation-bearing builtins with closed-form cost.
             match name.as_str() {
@@ -791,10 +800,13 @@ fn loop_self_growth(body: &[Spanned<Statement>]) -> Option<String> {
 // ── Handler cost ───────────────────────────────────────────────────
 
 pub fn handler_peak(on: &OnSection) -> Cost {
+    CALLEE_MAX.with(|m| m.borrow_mut().push(Cost::zero()));
     let mut c = Cost::zero();
     for st in &on.body {
         c = c.plus(stmt_cost(&st.node));
     }
+    let callee = CALLEE_MAX.with(|m| m.borrow_mut().pop()).unwrap_or_else(Cost::zero);
+    let c = c.plus(callee);
     // Add the stack overhead for one active handler invocation.
     c.plus(Cost::bytes(HANDLER_STACK_OVERHEAD))
 }
@@ -884,7 +896,65 @@ pub enum BudgetVerdict {
     NoBudgetDeclared,
 }
 
+thread_local! {
+    /// The handlers of the cell under analysis, and the calls being followed
+    /// (a handler calling another holds both frames at once: their transient
+    /// allocations add up — a call counted for 0 bytes made `main() { return
+    /// big() }` as light as an empty handler).
+    static CELL_HANDLERS: std::cell::RefCell<(std::collections::HashMap<String, OnSection>, Vec<String>)> = std::cell::RefCell::new(Default::default());
+    /// Per handler being costed: the largest frame of a handler it calls.
+    /// Calls made one after another release their frames: what adds to the
+    /// caller's peak is the largest of them, not their sum.
+    static CALLEE_MAX: std::cell::RefCell<Vec<Cost>> = const { std::cell::RefCell::new(Vec::new()) };
+}
+
+/// The peak of a handler of this cell called from another, or None when it is not one.
+fn callee_peak(name: &str) -> Option<Cost> {
+    let on = CELL_HANDLERS.with(|h| {
+        let h = h.borrow();
+        if h.1.iter().any(|n| n == name) { return Some(None); }
+        h.0.get(name).cloned().map(Some)
+    })?;
+    let Some(on) = on else { return Some(Cost::unbounded(format!("{} calls itself (directly or through others): each nested frame holds its allocations", name))) };
+    CELL_HANDLERS.with(|h| h.borrow_mut().1.push(name.to_string()));
+    let c = handler_peak(&on);
+    CELL_HANDLERS.with(|h| { h.borrow_mut().1.pop(); });
+    // (held while it runs: the caller's peak takes the largest such frame —
+    // on the same thread stack, already charged once for the caller)
+    let c = match c { Cost::Bounded(b) => Cost::Bounded(b.saturating_sub(HANDLER_STACK_OVERHEAD)), u => u };
+    CALLEE_MAX.with(|m| if let Some(top) = m.borrow_mut().last_mut() { *top = top.clone().max(c); });
+    Some(Cost::zero())
+}
+
+/// How many elements a collection expression holds, when that is written in it.
+fn element_count(e: &Expr) -> Option<u64> {
+    match e {
+        Expr::ListLiteral(items) => Some(items.len() as u64),
+        Expr::FnCall { .. } => literal_range_bound(e),
+        _ => None,
+    }
+}
+
+/// `xs.map(f)` / `map(xs, f)`, `filter`, `flat_map`…: a new list of the
+/// lambda's results, one per element — its cost is that, not 0.
+fn applied_cost(collection: &Expr, lambda: &Expr, what: &str) -> Cost {
+    let per = match lambda {
+        Expr::Lambda { body, .. } => expr_cost(&body.node),
+        Expr::LambdaBlock { stmts, result, .. } => stmts.iter().fold(expr_cost(&result.node), |c, s| c.plus(stmt_cost(&s.node))),
+        _ => Cost::bytes(64),
+    };
+    match element_count(collection) {
+        Some(n) => match per {
+            Cost::Bounded(b) => Cost::bytes(n.saturating_mul(b.saturating_add(16)).saturating_add(64)),
+            u => u,
+        },
+        None => Cost::unbounded(format!("{}(…) over a list of unknown length builds one value per element", what)),
+    }
+}
+
 pub fn check_cell(cell: &CellDef) -> BudgetReport {
+    let handlers: std::collections::HashMap<String, OnSection> = crate::checker::bodies::entries(cell).into_iter().map(|on| (on.signal_name.clone(), on)).collect();
+    CELL_HANDLERS.with(|h| *h.borrow_mut() = (handlers, Vec::new()));
     // 1. Sum of slot bounds.
     let mut slot_sum = Cost::zero();
     for section in &cell.sections {

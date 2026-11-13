@@ -144,9 +144,21 @@ pub fn check_composition(
     let mut cell_emits: Vec<(String, Vec<String>)> = Vec::new();
     let mut cell_handles: Vec<(String, Vec<String>)> = Vec::new();
 
+    // (only a `cell` / `cell agent` hears an event: a `cell type`'s handler never runs)
+    let mut arities: Vec<(String, String, Vec<usize>)> = Vec::new();   // (cell, signal, argument counts it takes)
+    let mut emitted_with: Vec<(String, String, usize)> = Vec::new();   // (cell, signal, argument count)
     for child in children {
         let name = child.node.name.clone();
         cell_emits.push((name.clone(), collect_emits(&child.node)));
+        for body in super::bodies::entries(&child.node) {
+            super::literals::for_each_stmt_deep(&body.body, &mut |st| if let Statement::Emit { signal_name, args } = st {
+                emitted_with.push((name.clone(), signal_name.clone(), args.len()));
+            });
+        }
+        if !matches!(child.node.kind, CellKind::Cell | CellKind::Agent) { continue; }
+        for section in &child.node.sections {
+            if let Section::OnSignal(on) = &section.node { arities.push((name.clone(), on.signal_name.clone(), crate::ast::accepted_arities(&on.params))); }
+        }
         cell_handles.push((name, collect_handlers(&child.node)));
     }
 
@@ -188,8 +200,15 @@ pub fn check_composition(
     let mut pairs = Vec::new();
     let mut undelivered = Vec::new();
 
+    // a pair is a listener that TAKES the event: its name, and the number of
+    // arguments the emit passes (`emit ev(id, 2)` to `on ev(id)` raised
+    // "expected 1 argument, got 2" at run time)
+    let takes = |emitter: &str, signal: &str| -> bool {
+        let counts: Vec<usize> = emitted_with.iter().filter(|(c, s, _)| c == emitter && s == signal).map(|(_, _, n)| *n).collect();
+        counts.is_empty() || arities.iter().filter(|(_, s, _)| s == signal).all(|(_, _, ok)| counts.iter().all(|n| ok.contains(n)))
+    };
     for (emitter, signal) in &all_emitted {
-        let has_handler = all_handled.iter().any(|(_, s)| s == signal);
+        let has_handler = all_handled.iter().any(|(_, s)| s == signal) && takes(emitter, signal);
         if has_handler {
             let handler_cell = all_handled.iter()
                 .find(|(_, s)| s == signal)

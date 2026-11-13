@@ -2318,3 +2318,24 @@ fn s4_one_rule_for_who_hears_an_event_and_one_store_per_slot() {
     assert_eq!(run(&["count", "k"]), "1", "the interior's event reached its parent, in the store `count` reads");
     assert_eq!(run(&["Log.n", "log"]), "1", "a top-level event reached the top-level cells under `soma run app.cell` too");
 }
+
+#[test]
+fn s3_the_older_analyses_follow_values_and_calls() {
+    let root = concat!(env!("CARGO_MANIFEST_DIR"), "/tests/fixtures/skeleton_review/round12");
+    // taint: through a list, an index write, a lambda parameter, a vote
+    let (out, code) = soma(&["check", &format!("{root}/a4_taint_local_mutation_lambda_param_vote/app.cell")]);
+    assert!(code != 0, "{out}");
+    for needle in ["`x` in transition()", "`xs[0]` in transition()", "`m[\"a\"]` in transition()", "`v.winner` in transition()"] {
+        assert!(out.contains(needle), "{needle}: {out}");
+    }
+    // composition: a listener takes the event (its arity), and is a cell of the program
+    let (out, _) = soma(&["verify", &format!("{root}/b2_composition_pairs_matched_by_name_only/app.cell")]);
+    assert!(!out.contains("✓ composition") && out.contains("emits signal 'ev' but no sibling cell takes it"), "{out}");
+    // budget: a list built by map over a list of unknown length is no bound
+    let (out, _) = soma(&["check", &format!("{root}/b2_budget_handler_transient_unbounded/app.cell")]);
+    assert!(!out.contains("✓ budget holds"), "{out}");
+    // …and a handler called by another is held with it, once
+    let src = "cell B {\n    scale { memory: \"64Mi\" }\n    on inner() { let xs = range(0, 400000)  return len(xs) }\n    on outer() { return inner() + inner() }\n}\n";
+    let (out, _) = soma(&["check", &program("s3_budget_callee", src)]);
+    assert!(out.contains("budget"), "{out}");
+}
