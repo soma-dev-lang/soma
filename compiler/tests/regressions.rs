@@ -7158,8 +7158,10 @@ fn interior_runtime_tables_are_qualified_by_the_cell_path() {
     // Sys1.Worker shared its machine instances, next_id() counter and
     // remember() memory with the top-level Worker (`Worker__sm_flow`)
     let dir = scratch("interior_tables");
+    // (a top-level cell may no longer bear an interior cell's name: the
+    // tables of a top-level cell whose name the interior's tables once took)
     std::fs::write(dir.join("app.cell"), r#"
-cell Worker {
+cell Sys1_Worker {
     memory { cnt: Map<String, Int> [persistent] }
     state flow { initial: idle  idle -> busy  busy -> idle }
     on peek() { return [get_status("job"), next_id(), recall("who")] }
@@ -7183,7 +7185,7 @@ cell Sys1 {
     let (code, out) = soma(&dir, &["run", "app.cell"]);
     assert_eq!(code, 0, "{out}");
     assert!(out.contains("interior busy 1"), "{out}");
-    let (code, out) = soma(&dir, &["run", "app.cell", "Worker.peek"]);
+    let (code, out) = soma(&dir, &["run", "app.cell", "Sys1_Worker.peek"]);
     assert_eq!(code, 0, "{out}");
     assert!(out.contains(r#"["idle", 1, null]"#), "{out}");
     // a second interior run sees its own state (busy → busy is refused)

@@ -20,6 +20,23 @@ pub struct HandlerEffects {
     pub think_sites: usize,
 }
 
+thread_local! {
+    /// handler name → its body, over the program's cells (`set_program`)
+    static PROGRAM_BODIES: std::cell::RefCell<std::collections::HashMap<String, Vec<Spanned<Statement>>>> = std::cell::RefCell::new(Default::default());
+}
+
+/// The program `check_cell` resolves bare calls in.
+pub fn set_program(program: &Program) {
+    let mut m = std::collections::HashMap::new();
+    for c in crate::checker::names::collect_cells(program) {
+        if !matches!(c.kind, CellKind::Cell | CellKind::Agent) { continue; }
+        for s in &c.sections {
+            if let Section::OnSignal(o) = &s.node { m.entry(o.signal_name.clone()).or_insert_with(|| o.body.clone()); }
+        }
+    }
+    PROGRAM_BODIES.with(|p| *p.borrow_mut() = m);
+}
+
 pub fn check_cell(cell: &CellDef) -> Vec<HandlerEffects> {
     // Collect the cell's declared tools.
     let mut all_tools: BTreeSet<String> = BTreeSet::new();
@@ -47,7 +64,11 @@ pub fn check_cell(cell: &CellDef) -> Vec<HandlerEffects> {
             // listener hears, another cell that may call back: its own think()
             // offers every tool again, so this handler's options narrow nothing
             if think_sites > 0 {
-                let body_of = |h: &str| cell.sections.iter().find_map(|s| match &s.node { Section::OnSignal(o) if o.signal_name == h => Some(&o.body), _ => None });
+                // a bare call runs this cell's handler, else the program's (the
+                // interpreter's rule): `deep(k)` in a tool ran `B.deep`, which thinks
+                let program_body = |h: &str| PROGRAM_BODIES.with(|p| p.borrow().get(h).cloned());
+                let body_of = |h: &str| cell.sections.iter().find_map(|s| match &s.node { Section::OnSignal(o) if o.signal_name == h => Some(o.body.clone()), _ => None })
+                    .or_else(|| if crate::checker::names::builtin_names().contains(h) { None } else { program_body(h) });
                 let mut open = false;
                 let mut seen: Vec<String> = vec![handler.signal_name.clone()];
                 let mut work: Vec<String> = Vec::new();
@@ -74,7 +95,7 @@ pub fn check_cell(cell: &CellDef) -> Vec<HandlerEffects> {
                     if open { break; }
                     if seen.contains(&h) { continue; }
                     seen.push(h.clone());
-                    if let Some(body) = body_of(&h) { scan(body, false, &mut work, &mut open); }
+                    if let Some(body) = body_of(&h) { scan(&body, false, &mut work, &mut open); }
                 }
                 if open { narrowed.get_or_insert_with(BTreeSet::new).insert(OPEN_SITE.to_string()); }
             }

@@ -1024,7 +1024,15 @@ impl<'a> Engine<'a> {
                     let listeners: Vec<(&'a CellDef, &'a OnSection)> = self.cells.iter().copied()
                         .filter(|c| hears(*c as *const CellDef as usize))
                         .filter_map(|c| self.handler(c, signal_name).map(|on| (c, on))).collect();
-                    for (cell, on) in listeners { s = self.call(cell, on, args, &local, st.span, s, entry); }
+                    let _ = &parent;
+                    for (cell, on) in listeners {
+                        // a listener in the emitter's own interior runs only when that
+                        // interior was started (`soma run app.cell`, for the cell that
+                        // drives the program): it may run, or not
+                        let inside = self.parent_of.get(&(cell as *const CellDef as usize)).copied() == Some(me);
+                        let after = self.call(cell, on, args, &local, st.span, s.clone(), entry);
+                        if inside { s.extend(after); } else { s = after; }
+                    }
                     flow.normal = s;
                 }
             }
@@ -1192,6 +1200,18 @@ fn link_written_once(cells: &[&CellDef], cell: &str, slot: &str) -> Result<(), S
                 found.push((method.clone(), args.first().map(|a| render_expr(&a.node)).unwrap_or_default()));
             }
         });
+        // …and inside a string's `{…}` (`"{consult_of.set(id, c)}"`)
+        super::literals::for_each_expr(&on.body, &mut |e| if let Expr::Literal(Literal::String(t)) = e {
+            for seg in super::desugar::segments(t) {
+                if let Some(x) = super::desugar::parse_segment(&seg) {
+                    super::literals::for_each_in_expr(&x, &mut |y| if let Expr::MethodCall { target, method, args } = y {
+                        if matches!(&target.node, Expr::Ident(t) if t == slot) && writes(method) {
+                            found.push((format!("{} (in a string)", method), args.first().map(|a| render_expr(&a.node)).unwrap_or_default()));
+                        }
+                    });
+                }
+            }
+        });
         if !found.is_empty() { writers.push((on.signal_name.clone(), found)); }
     }
     // a writer that is still a hole: written once is judged on its body
@@ -1204,8 +1224,30 @@ fn link_written_once(cells: &[&CellDef], cell: &str, slot: &str) -> Result<(), S
     };
     let [(method, key)] = ws.as_slice() else { return Err(format!("{} — `{}` writes it {} times", rule, handler, ws.len())) };
     if !matches!(method.as_str(), "set" | "put") { return Err(format!("{} — `{}` calls `{}.{}`", rule, handler, slot, method)); }
-    // the creation guard, at the top level of the writer, before the write
     let on = c.sections.iter().find_map(|s| match &s.node { Section::OnSignal(o) if &o.signal_name == handler => Some(o), _ => None });
+    // the key is a VALUE that does not change between the guard and the write:
+    // a parameter the handler never rebinds (`let id = k` between them made
+    // the guard about one key and the write about another)
+    let rebound = on.is_some_and(|o| {
+        let mut names: HashSet<String> = HashSet::new();
+        super::invariants::collect_binders_stmts(&o.body, &mut names);
+        super::literals::for_each_stmt_deep(&o.body, &mut |st| match st {
+            Statement::Let { name, .. } | Statement::Assign { name, .. } => { names.insert(name.clone()); }
+            Statement::For { var, .. } => { names.insert(var.clone()); }
+            _ => {}
+        });
+        names.contains(key)
+    });
+    if !on.is_some_and(|o| o.params.iter().any(|p| &p.name == key)) || rebound {
+        return Err(format!("{} — `{}` writes it at the key `{}`, which is not one of its parameters left as it came", rule, handler, key));
+    }
+    // nothing between the guard and the write lets another run in: not a
+    // `[task]` (an `await`, a `think()` end its step and let a second task
+    // pass the same guard)
+    if on.is_some_and(|o| o.properties.iter().any(|p| p == "task")) {
+        return Err(format!("{} — `{}` is a `[task]`: another run may pass the guard while it waits, and write the link again", rule, handler));
+    }
+    // the creation guard, at the top level of the writer, before the write
     let guarded = on.is_some_and(|o| o.body.iter().take_while(|st| !matches!(&st.node, Statement::MethodCall { target, .. } if target == slot)).any(|st| {
         let Statement::Require { constraint, .. } = &st.node else { return false };
         let Constraint::Comparison { left, op: CmpOp::Eq, right } = &constraint.node else { return false };

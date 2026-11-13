@@ -381,7 +381,16 @@ impl Runtime {
                             .map_err(|e| format!("runtime section, `signal {}`: {}", signal_name, exec_error_text(e)))?;
                         values.push(v);
                     }
-                    self.emit_signal(cell_name, signal_name, values)?;
+                    self.emit_signal(cell_name, signal_name, values.clone())?;
+                    // …and the top-level cells, the cell itself included: an event a
+                    // top-level cell raises reaches them too (`Interpreter::hears`)
+                    let tops: Vec<String> = self.program.cells.iter().filter(|c| matches!(c.node.kind, CellKind::Cell | CellKind::Agent)
+                        && c.node.sections.iter().any(|s| matches!(&s.node, Section::OnSignal(on) if on.signal_name == *signal_name)))
+                        .map(|c| c.node.name.clone()).collect();
+                    for top in tops {
+                        interp.call_signal(&top, signal_name, values.clone())
+                            .map_err(|e| format!("runtime section, `signal {}` in {}: {}", signal_name, top, e))?;
+                    }
                 }
                 RuntimeEntry::Start { cell_name: child } => {
                     // every interior cell is live from the start

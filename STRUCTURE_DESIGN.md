@@ -143,3 +143,14 @@ swapped, a `??` default, a hole) give the expected verdict; test `s5_*`.
 - DONE: the frame clause `moves s -> t when Other.s [|| …] [via slot]`
   (decision 10) — a rule between machines stated in the skeleton, judged on
   the holes and on the bodies (tests `s6_*`).
+
+## 7. Round 13: the single answers, attacked
+
+14 disagreements, all where a single answer was only half shared — fixed by
+sharing it: `names::hears` (the interpreter's rule, by name) is now what
+`check` uses; the runtime section's `signal` follows it; a listener in an
+interior is "may run" for the proofs (the interior starts only under `soma
+run app.cell`, for the driving cell); a cell name names one cell (an
+interior cell may not take a top-level cell's name). `project::root` follows
+the loader's order. The write-once condition of `via` reads values and
+time (a key left as it came, no `[task]`), not only text.

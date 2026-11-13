@@ -363,6 +363,7 @@ fn call_graph(program: &Program) -> HashMap<String, Vec<String>> {
     // think() hands control to the model, which may call any tool it can
     // dispatch there: a tool that calls back the handler is a recursion the
     // MODEL drives (5 250 LLM calls from one `soma run`, "✓ terminates")
+    crate::checker::effects::set_program(program);
     for cell in all_cells.iter().copied() {
         if !matches!(cell.kind, CellKind::Cell | CellKind::Agent) { continue; }
         for fx in crate::checker::effects::check_cell(cell) {

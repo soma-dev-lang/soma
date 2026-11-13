@@ -381,6 +381,14 @@ pub fn expr_cost(e: &Expr) -> Cost {
                 && matches!(args[1].node, Expr::Lambda { .. } | Expr::LambdaBlock { .. }) {
                 return arg_cost.plus(applied_cost(&args[0].node, &args[1].node, name));
             }
+            // `range(…)` builds the whole list: 16 bytes an element, known
+            // only when its bounds are written (it cost 0: 1.15 GB for "≤ 24 MiB")
+            if name == "range" && !CELL_HANDLERS.with(|h| h.borrow().0.contains_key("range")) {
+                return match literal_range_bound(e) {
+                    Some(n) => arg_cost.plus(Cost::bytes(n.saturating_mul(16).saturating_add(64))),
+                    None => arg_cost.plus(Cost::unbounded("range(…) with bounds computed at run time builds a list of unknown length")),
+                };
+            }
             // Specific allocation-bearing builtins with closed-form cost.
             match name.as_str() {
                 // Quantum-inspired linalg (Tang et al.).

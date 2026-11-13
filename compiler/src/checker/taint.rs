@@ -184,19 +184,24 @@ impl<'a> Cx<'a> {
                 let from = self.source(&subject.node);
                 // matching IS the test of the subject…
                 self.clear(&subject.node);
+                let before = self.tainted.clone();
+                let mut after: HashMap<String, String> = HashMap::new();
                 for arm in arms {
-                    let before = self.tainted.clone();
+                    self.tainted = before.clone();
                     // …but what an arm binds out of it is still the outsider's
+                    let mut bound = Vec::new();
+                    pattern_bindings(&arm.pattern, &mut bound);
                     if let Some(src) = &from {
-                        let mut bound = Vec::new();
-                        pattern_bindings(&arm.pattern, &mut bound);
-                        for b in bound { self.tainted.insert(b, src.clone()); }
+                        for b in &bound { self.tainted.insert(b.clone(), src.clone()); }
                     }
                     if let Some(g) = &arm.guard { self.expr(g); self.clear(&g.node); }
                     self.block(&arm.body);
                     self.expr(&arm.result);
-                    self.tainted = before;
+                    // what an arm sets outside its own bindings outlives it (joined over the arms)
+                    for (k, v) in std::mem::take(&mut self.tainted) { if !bound.contains(&k) { after.entry(k).or_insert(v); } }
                 }
+                self.tainted = before;
+                self.join(after);
             }
             Expr::IfExpr { condition, then_body, then_result, else_body, else_result } => {
                 self.expr(condition);
@@ -214,6 +219,23 @@ impl<'a> Cx<'a> {
         for s in body { self.stmt(&s.node); }
     }
 
+    /// Two paths join: a name is the outsider's if it is on EITHER (the
+    /// `else` of an `if` cleared what its `then` had set).
+    fn join(&mut self, other: HashMap<String, String>) {
+        for (k, v) in other { self.tainted.entry(k).or_insert(v); }
+    }
+
+    /// A loop body: what one turn sets is there at the next turn's start
+    /// (`for … { transition(id, s)  s = think(q) }`) — read twice.
+    fn looped(&mut self, body: &[Spanned<Statement>]) {
+        let before = self.tainted.clone();
+        self.block(body);
+        let once = self.tainted.clone();
+        self.tainted = before;
+        self.join(once);
+        self.block(body);
+    }
+
     fn stmt(&mut self, s: &Statement) {
         match s {
             Statement::Let { name, value } | Statement::Assign { name, value } => {
@@ -227,8 +249,11 @@ impl<'a> Cx<'a> {
             Statement::If { condition, then_body, else_body } => {
                 self.expr(condition);
                 self.clear(&condition.node);
+                let before = self.tainted.clone();
                 self.block(then_body);
+                let then_side = std::mem::replace(&mut self.tainted, before);
                 self.block(else_body);
+                self.join(then_side);
             }
             Statement::For { var, iter, body, .. } => {
                 self.expr(iter);
@@ -236,12 +261,12 @@ impl<'a> Cx<'a> {
                     Some(src) => { self.tainted.insert(var.clone(), src); }
                     None => { self.tainted.remove(var); }
                 }
-                self.block(body);
+                self.looped(body);
             }
             Statement::While { condition, body, .. } => {
                 self.expr(condition);
                 self.clear(&condition.node);
-                self.block(body);
+                self.looped(body);
             }
             Statement::Emit { args, .. } => for a in args { self.expr(a); },
             Statement::MethodCall { target, method, args } => {

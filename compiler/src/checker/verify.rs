@@ -42,6 +42,7 @@ pub fn verify_program(program: &Program) -> Vec<VerifyResult> {
     PROGRAM_CELLS.with(|c| *c.borrow_mut() = super::desugar::program_names(program).1);
     PROGRAM_HANDLERS.with(|c| *c.borrow_mut() = super::desugar::program_names(program).0);
     super::refinement::set_program_names(super::desugar::program_names(program));
+    super::effects::set_program(program);
 
     // interior cells too: a machine, an invariant or a loop inside
     // `interior { }` was never proven — verify said OK on a statically

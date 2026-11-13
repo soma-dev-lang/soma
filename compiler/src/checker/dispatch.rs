@@ -106,6 +106,7 @@ pub fn check_program(program: &Program) -> (Vec<DispatchFinding>, Vec<DispatchFi
         }
     }
 
+    let parents = super::names::interior_parents(program);
     for cell in super::names::collect_cells(program) {
         if !matches!(cell.kind, CellKind::Cell | CellKind::Agent) {
             continue;
@@ -375,7 +376,9 @@ pub fn check_program(program: &Program) -> (Vec<DispatchFinding>, Vec<DispatchFi
             let mut emits: Vec<(String, Span)> = Vec::new();
             visit_emits(body, &mut emits);
             for (ev, emit_span) in emits {
-                if !index.handler_map.contains_key(&ev) && !index.known.contains(&ev)
+                // (heard by a cell the event reaches: `names::hears`)
+                let heard = index.handler_map.get(&ev).is_some_and(|ds| ds.iter().any(|d| super::names::hears(&parents, &cell.name, d)));
+                if !heard && (index.handler_map.contains_key(&ev) || !index.known.contains(&ev))
                     && !crate::commands::HAS_PEERS.load(std::sync::atomic::Ordering::Relaxed) {
                     warnings.push(DispatchFinding {
                         message: format!(

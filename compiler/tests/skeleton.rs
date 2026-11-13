@@ -823,8 +823,12 @@ fn a_local_that_is_certainly_bound_is_not_the_slot() {
 fn an_interior_cell_cannot_take_the_name_of_another_cell() {
     // the frames of `skeleton Bank` were read off the interior `cell Bank`
     refused("r_interior", &bank("    on pure(id) { acct.set(id, 99) return 1 }", "", "cell Outer {\n    interior {\n        cell Bank {\n            face { signal pure(id: String) -> Int }\n            on pure(id: String) { return 1 }\n        }\n    }\n    on run() { return 1 }\n}\n"), "interior cell 'Bank' shares its name with a skeleton");
-    // two plain interior cells of one name stay legal (their tables are qualified by the path)
+    // an interior cell may not bear a top-level cell's name either: a running cell
+    // is found by its name (round 13: the two were taken for each other)
     let (out, code) = soma(&["check", &program("r_interior_plain", "cell W { on peek() { return 1 } }\ncell Sys {\n    interior {\n        cell W {\n            face { signal go(n: Int) }\n            on go(n: Int) { print(n) }\n        }\n    }\n    runtime { signal go(1) }\n}\n")]);
+    assert!(code != 0 && out.contains("has the name of a top-level cell"), "{out}");
+    // two interior cells of one name, in two parents, stay legal (their tables are qualified by the path)
+    let (out, code) = soma(&["check", &program("r_interior_two_parents", "cell Sys {\n    interior {\n        cell W {\n            face { signal go(n: Int) }\n            on go(n: Int) { print(n) }\n        }\n    }\n    runtime { signal go(1) }\n}\ncell Sys2 {\n    interior {\n        cell W {\n            face { signal go(n: Int) }\n            on go(n: Int) { print(n) }\n        }\n    }\n}\n")]);
     assert_eq!(code, 0, "{out}");
 }
 
@@ -2427,4 +2431,43 @@ fn s6_what_a_hole_may_still_do_against_a_when_clause_is_an_open_obligation() {
     std::fs::write(&path, WHEN_SK.replace(" when Consult.done", "")).unwrap();
     let (out, code) = soma(&["check", &path]);
     assert!(code != 0 && out.contains("differs from skeleton.lock"), "{out}");
+}
+
+#[test]
+fn r13_the_new_single_answers_hold_against_their_round() {
+    let root = concat!(env!("CARGO_MANIFEST_DIR"), "/tests/fixtures/skeleton_review/round13");
+    // `via`: the link is written once — a key left as it came, no [task], no write in a string
+    for dir in ["via_guard_key_rebound", "via_task_guard_before_await", "via_write_in_interpolation"] {
+        let (out, _) = soma(&["verify", &format!("{root}/{dir}/app.cell")]);
+        assert!(!out.contains("✓ before Ordo.delivered") && !out.contains("✓ entering Ordo"), "{dir}: {out}");
+    }
+    // events: an interior listener may not have been started — not proven from it
+    let (out, _) = soma(&["verify", &format!("{root}/while_interior_listener_not_started/app.cell")]);
+    assert!(!out.contains("✓ entering Hub.done"), "{out}");
+    // a cell name names one cell
+    let (out, code) = soma(&["check", &format!("{root}/rule_homonym_interior_by_name/app.cell")]);
+    assert!(code != 0 && out.contains("has the name of a top-level cell"), "{out}");
+    // check decides by the same rule: an interior's event heard by nobody it reaches; an interior's interior
+    let (out, _) = soma(&["check", &format!("{root}/check_unheard_emit_by_name/app.cell")]);
+    assert!(out.contains("goes nowhere"), "{out}");
+    let (out, _) = soma(&["check", &format!("{root}/check_interior_two_levels/app.cell")]);
+    assert!(out.contains("never runs"), "{out}");
+    // the project: the folder that holds the imports and a soma.toml
+    for f in ["sub/deep/t.cell", "other/deep/t.cell"] {
+        let (out, _) = soma(&["verify", &format!("{root}/project_root_stops_at_nested_manifest/{f}")]);
+        assert!(out.contains("before Pay.paid requires Appr.ok"), "{f}: {out}");
+    }
+    let (out, _) = soma(&["verify", &format!("{root}/project_root_shadowed_import/tools/t.cell")]);
+    assert!(!out.contains("Pay.paid"), "{out}");
+    // taint across turns and branches
+    for dir in ["taint_loop_carried", "taint_branch_merge"] {
+        let (out, code) = soma(&["check", &format!("{root}/{dir}/app.cell")]);
+        assert!(code != 0 && out.contains("think()"), "{dir}: {out}");
+    }
+    // effects: a bare call reaches another cell's handler, which thinks
+    let (out, _) = soma(&["verify", &format!("{root}/effects_bare_call_other_cell/app.cell")]);
+    assert!(!out.contains("can dispatch [lookup]\n"), "{out}");
+    // budget: range builds its list
+    let (out, _) = soma(&["check", &format!("{root}/budget_range_still_zero/app.cell")]);
+    assert!(!out.contains("✓ budget holds"), "{out}");
 }

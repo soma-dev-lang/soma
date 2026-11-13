@@ -307,3 +307,30 @@ pub fn set_program_cells(cells: HashSet<String>) {
 pub fn cellish(name: &str) -> bool {
     name.chars().next().is_some_and(|c| c.is_ascii_uppercase()) || PROGRAM_CELLS.with(|c| c.borrow().contains(name))
 }
+
+/// Interior cell → its parent, by name (a cell name names one cell: an
+/// interior cell may not bear the name of another cell of the program).
+pub fn interior_parents(program: &Program) -> HashMap<String, String> {
+    fn walk(c: &CellDef, out: &mut HashMap<String, String>) {
+        for s in &c.sections {
+            if let Section::Interior(i) = &s.node {
+                for x in &i.cells { out.insert(x.node.name.clone(), c.name.clone()); walk(&x.node, out); }
+            }
+        }
+    }
+    let mut out = HashMap::new();
+    for c in &program.cells { walk(&c.node, &mut out); }
+    out
+}
+
+/// Who hears an event — the interpreter's rule (`Interpreter::hears`):
+/// raised by an interior cell, its siblings and its parent; raised by a
+/// top-level cell, the top-level cells and its own interior.
+pub fn hears(parents: &HashMap<String, String>, emitter: &str, listener: &str) -> bool {
+    match (parents.get(emitter), parents.get(listener)) {
+        (Some(p), Some(q)) => p == q,
+        (Some(p), None) => p == listener,
+        (None, Some(q)) => q == emitter,
+        (None, None) => true,
+    }
+}

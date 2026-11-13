@@ -24,24 +24,26 @@ pub fn root(entry: &Path) -> PathBuf {
     let here = beside(entry);
     if here.join("soma.toml").is_file() { return here; }
     let start = std::fs::canonicalize(&here).unwrap_or_else(|_| here.clone());
-    let Some(above) = start.ancestors().skip(1).take(6).find(|d| d.join("soma.toml").is_file()).map(|d| d.to_path_buf()) else { return here };
-    // the entry belongs to it when one of its imports is found there and not beside it
     let Ok(text) = std::fs::read_to_string(entry) else { return here };
     let Ok(tokens) = crate::lexer::Lexer::new(&text).tokenize() else { return here };
     let Ok(program) = crate::parser::Parser::new(tokens).parse_program() else { return here };
-    // …that is: an import resolves to a file outside the entry's folder and
-    // within the folder above (`use "../../app.cell"`, `use lib::x` found at
-    // the project root)
     let canon = |p: PathBuf| std::fs::canonicalize(&p).ok();
-    let found_above = program.imports.iter().any(|u| {
-        if u.starts_with("std:") { return false; }
+    // where the loader finds each import: beside the importer first, then
+    // the folders above (as `commands::import_roots` looks them up)
+    let found: Vec<PathBuf> = program.imports.iter().filter(|u| !u.starts_with("std:")).filter_map(|u| {
         let rel = match (u.strip_prefix("lib:"), u.strip_prefix("pkg:")) { (Some(r), _) => format!("lib/{}", r), (_, Some(r)) => r.to_string(), _ => u.clone() };
         let file = if rel.ends_with(".cell") { rel.clone() } else { format!("{}.cell", rel) };
         let bare = rel.strip_suffix(".cell").unwrap_or(&rel).to_string();
-        [start.join(&file), start.join(&bare), above.join(&file), above.join(&bare)].into_iter().filter_map(canon)
-            .any(|f| f.starts_with(&above) && !f.starts_with(&start))
-    });
-    if found_above { above } else { here }
+        std::iter::once(start.clone()).chain(start.ancestors().skip(1).take(6).map(|d| d.to_path_buf()))
+            .find_map(|d| canon(d.join(&file)).or_else(|| canon(d.join(&bare))))
+    }).collect();
+    // the project: the nearest folder above holding a soma.toml AND an
+    // import the loader resolves there (a nested soma.toml of a sub-folder
+    // that holds none of them is not the project)
+    for above in start.ancestors().skip(1).take(6).filter(|d| d.join("soma.toml").is_file()) {
+        if found.iter().any(|f| f.starts_with(above) && !f.starts_with(&start)) { return above.to_path_buf(); }
+    }
+    here
 }
 
 /// The manifest of `entry`'s project (it may not exist).

@@ -510,6 +510,8 @@ impl CheckWarning {
 pub struct Checker<'a> {
     /// (file name, source text) — lets reports point at file:line:col.
     pub source: Option<(String, String)>,
+    /// how deep in interiors the cell being checked is
+    pub interior_depth: usize,
     pub registry: &'a Registry,
     pub manifest: Option<&'a crate::pkg::manifest::Manifest>,
     pub errors: Vec<CheckError>,
@@ -554,6 +556,7 @@ impl<'a> Checker<'a> {
     pub fn new(registry: &'a Registry) -> Self {
         Self {
             source: None,
+            interior_depth: 0,
             registry,
             manifest: None,
             errors: Vec::new(),
@@ -644,13 +647,25 @@ impl<'a> Checker<'a> {
             let mut inner = Vec::new();
             interior_cells(&cell.node, &mut inner);
             for (child, span) in inner {
-                let clash_top = program.cells.iter().any(|c| c.node.kind != CellKind::Flesh && c.node.name == child.name && (c.node.skeleton || child.skeleton));
+                let clash_skeleton_top = program.cells.iter().any(|c| c.node.kind != CellKind::Flesh && c.node.name == child.name && (c.node.skeleton || child.skeleton));
                 let clash_inner = seen_interior.iter().any(|(n, sk)| n == &child.name && (*sk || child.skeleton));
-                if clash_top || clash_inner {
+                // …and a top-level cell of the same name: a cell is reached by its
+                // name when it runs (`Log.ev`, an event's listeners) — the
+                // interior one replaced the top-level one under `soma run`, while
+                // `verify` kept them apart
+                let clash_top = program.cells.iter().any(|c| matches!(c.node.kind, CellKind::Cell | CellKind::Agent) && c.node.name == child.name
+                    && matches!(child.kind, CellKind::Cell | CellKind::Agent));
+                if clash_skeleton_top || clash_inner {
                     self.errors.push(CheckError::Static {
                         kind: "duplicate_cell",
                         message: format!("interior cell '{}' shares its name with {} — rename one: a skeleton is found by its name alone (its frames, its flesh, its lock)", child.name,
                             if child.skeleton { "another cell, and it is a skeleton" } else { "a skeleton" }),
+                        span,
+                    });
+                } else if clash_top {
+                    self.errors.push(CheckError::Static {
+                        kind: "duplicate_cell",
+                        message: format!("interior cell '{}' has the name of a top-level cell — rename one: a running cell is found by its name (its events, its calls), so the two would be taken for each other", child.name),
                         span,
                     });
                 }
@@ -1866,16 +1881,26 @@ impl<'a> Checker<'a> {
         for section in &cell.sections {
             if let Section::Interior(ref interior) = section.node {
                 let mut sig_checker = SignalChecker::new();
-                sig_checker.check_interior(Some(cell), &interior.cells);
+                // (the interior of an interior cell is never started: its parent's
+                // events reach nothing there — `soma run` starts the interior of
+                // a top-level cell only)
+                if self.interior_depth > 0 {
+                    self.warnings.push(CheckWarning::FrameWarning { message: format!("the interior of `{}`, itself an interior cell, never runs — `soma run` starts the interior of a top-level cell only: move these cells up a level", cell.name), span: section.span });
+                    sig_checker.check_interior(None, &interior.cells);
+                } else {
+                    sig_checker.check_interior(Some(cell), &interior.cells);
+                }
                 self.errors.extend(sig_checker.errors);
                 self.warnings.extend(sig_checker.warnings);
 
                 // 4. Recurse into children
+                self.interior_depth += 1;
                 for child in &interior.cells {
                     if child.node.kind == CellKind::Cell {
                         self.check_cell(&child.node);
                     }
                 }
+                self.interior_depth -= 1;
             }
         }
 
