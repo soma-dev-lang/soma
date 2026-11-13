@@ -294,6 +294,27 @@ pub struct FrameDecl {
     /// (machine, from, to): machine is "" for the cell's own, a machine
     /// name, or `Cell.machine`
     pub moves: Vec<(String, String, String)>,
+    /// `moves a -> b when Other.s || Other.t [via slot]`: the edge is taken
+    /// only while the other machine is in one of those states
+    pub conditions: Vec<EdgeCondition>,
+}
+
+/// A rule between machines stated on an edge of a frame (see `FrameDecl`).
+#[derive(Debug, Clone, Default, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub struct EdgeCondition {
+    pub machine: String,
+    pub from: String,
+    pub to: String,
+    /// `Cell.state`, one of which the other instance must be in
+    pub states: Vec<String>,
+    /// the slot of this cell that names the other instance (else: the same id)
+    pub via: Option<String>,
+}
+
+impl EdgeCondition {
+    pub fn text(&self) -> String {
+        format!("when {}{}", self.states.join(" || "), self.via.as_ref().map(|v| format!(" via {}", v)).unwrap_or_default())
+    }
 }
 
 /// The type of a flesh parameter written without one (`on pay(id)`): the

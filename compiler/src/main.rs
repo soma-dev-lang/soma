@@ -957,22 +957,28 @@ fn cmd_verify(files: &[PathBuf], json: bool, strict: bool) {
         }
     }
 
-    // 3.0 (B2): properties over the product of the machines
-    if let Some(cfg) = verify_config {
-        let specs: Vec<checker::product::Spec> = cfg.before.iter().filter(|(t, b)| product_property(t, b)).flat_map(|(target, b)| {
+    // 3.0 (B2): properties over the product of the machines — those of
+    // soma.toml, and those the skeletons state on their edges (`when`)
+    {
+        let empty = pkg::manifest::VerifyConfig::default();
+        let cfg = verify_config.unwrap_or(&empty);
+        let cfg_specs: Vec<checker::product::Spec> = cfg.before.iter().filter(|(t, b)| product_property(t, b)).flat_map(|(target, b)| {
             let mut out = Vec::new();
-            if !b.requires.is_empty() { out.push(checker::product::Spec { target: target.clone(), requires: b.requires.clone(), all: false, assuming: b.assuming.clone(), via: b.via.clone(), now: false }); }
-            if !b.requires_all.is_empty() { out.push(checker::product::Spec { target: target.clone(), requires: b.requires_all.clone(), all: true, assuming: b.assuming.clone(), via: b.via.clone(), now: false }); }
-            if !b.while_in.is_empty() { out.push(checker::product::Spec { target: target.clone(), requires: b.while_in.clone(), all: false, assuming: b.assuming.clone(), via: b.via.clone(), now: true }); }
+            if !b.requires.is_empty() { out.push(checker::product::Spec { target: target.clone(), requires: b.requires.clone(), all: false, assuming: b.assuming.clone(), via: b.via.clone(), now: false, from: None }); }
+            if !b.requires_all.is_empty() { out.push(checker::product::Spec { target: target.clone(), requires: b.requires_all.clone(), all: true, assuming: b.assuming.clone(), via: b.via.clone(), now: false, from: None }); }
+            if !b.while_in.is_empty() { out.push(checker::product::Spec { target: target.clone(), requires: b.while_in.clone(), all: false, assuming: b.assuming.clone(), via: b.via.clone(), now: true, from: None }); }
             out
         }).collect();
-        if !specs.is_empty() {
+        {
             for path in files {
                 let source = commands::read_source(path);
                 let file_str = path.display().to_string();
                 let tokens = commands::lex_with_location(&source, Some(&file_str));
                 let mut program = commands::parse_with_location(tokens, Some(&source), Some(&file_str));
                 commands::resolve_imports(&mut program, path);
+                let mut specs: Vec<checker::product::Spec> = checker::product::frame_specs(&program);
+                specs.extend(cfg_specs.iter().cloned());
+                if specs.is_empty() { continue; }
                 // a hole is read as its frame. A property a hole's frame can
                 // break, and the bodies written so far do not, is an open
                 // obligation: neither proven nor refuted until the hole is filled

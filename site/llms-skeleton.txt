@@ -131,6 +131,13 @@ The frame, clause by clause (after the return type and any `requires` /
   `consult_of.set(id, consult)`), and never deleted — `verify` refuses the
   rule otherwise. A body proves it by checking the consultation it READS
   from that slot (`let c = consult_of.get(id)  require Consult.is_done(c)`).
+- **A rule on an edge, in the frame**: `moves drafted -> delivered when
+  Consult.done` (alternatives with `||`, another instance with
+  `via consult_of`) says the edge is taken only while the other machine is
+  in that state. It is a rule between machines `verify` judges — on the
+  bodies (each must `require` it before the transition), and on the holes,
+  read as taking the edge only under it; a hole that takes the same edge
+  without the clause is an open obligation. The brief prints it.
 - **A comment changed after the freeze** is a warning of `soma check`:
   the brief changed, the structure did not. `--amend` records it.
 - **Say what each signal is for.** A `//` comment above a signal (or at

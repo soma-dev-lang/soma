@@ -2377,3 +2377,54 @@ fn s5_a_rule_between_machines_follows_the_id_an_instance_names() {
     let (out, _) = soma(&["verify", &path]);
     assert!(!out.contains("✓ before Ordo.delivered"), "{out}");
 }
+
+const WHEN_SK: &str = "skeleton Consult {\n    state c {\n        initial: open\n        open -> done\n        done -> open\n    }\n    face {\n        signal close(id: String) -> String  moves open -> done\n        signal reopen(id: String) -> String  moves done -> open\n        signal is_done(id: String) -> Bool  reads c\n    }\n}\nskeleton Ordo {\n    state o {\n        initial: drafted\n        drafted -> delivered\n    }\n    face {\n        // delivered only while the consultation of the same id is done\n        signal deliver(id: String) -> String  moves drafted -> delivered when Consult.done  calls Consult.is_done\n    }\n}\nflesh Consult {\n    on close(id) { transition(id, \"open\", \"done\")  return \"done\" }\n    on reopen(id) { transition(id, \"done\", \"open\")  return \"open\" }\n    on is_done(id) { return (get_status(id) ?? \"open\") == \"done\" }\n}\n";
+
+#[test]
+fn s6_a_frame_states_a_rule_between_machines_judged_on_holes_and_on_bodies() {
+    // on the skeleton: the hole is read as taking the edge only under its clause
+    let path = program("s6_when_hole", WHEN_SK);
+    let (out, code) = soma(&["check", &path]);
+    assert_eq!(code, 0, "{out}");
+    let (out, _) = soma(&["verify", &path]);
+    assert!(out.contains("✓ entering Ordo.delivered from drafted while Consult.done"), "{out}");
+    // the map and the brief show the clause
+    let (out, _) = soma(&["skeleton", &path, "Ordo.deliver"]);
+    assert!(out.contains("drafted -> delivered when Consult.done"), "{out}");
+    // a body that keeps it: proven
+    let keeps = format!("{WHEN_SK}flesh Ordo {{\n    on deliver(id) {{ require Consult.is_done(id) else NotDone  transition(id, \"drafted\", \"delivered\")  return \"d\" }}\n}}\n");
+    let (out, _) = soma(&["verify", &program("s6_when_kept", &keeps)]);
+    assert!(out.contains("✓ entering Ordo.delivered from drafted while Consult.done"), "{out}");
+    // a body that does not: refuted
+    let breaks = format!("{WHEN_SK}flesh Ordo {{\n    on deliver(id) {{ transition(id, \"drafted\", \"delivered\")  return \"d\" }}\n}}\n");
+    let (out, code) = soma(&["verify", &program("s6_when_broken", &breaks)]);
+    assert!(code != 0 && out.contains("✗ entering Ordo.delivered from drafted while Consult.done"), "{out}");
+    // a state no machine has: refused at check
+    let bad = WHEN_SK.replace("when Consult.done", "when Consult.closed");
+    let (out, code) = soma(&["check", &program("s6_when_bad", &bad)]);
+    assert!(code != 0 && out.contains("Consult.closed"), "{out}");
+    // `when` and `via` stay ordinary names elsewhere
+    let plain = "cell A {\n    on f(when: Int, via: Int) { let when2 = when + via  return when2 }\n}\ncell test T { rules { assert A.f(1, 2) == 3 } }\n";
+    let (out, _) = soma(&["test", &program("s6_when_name", plain)]);
+    assert!(out.contains("1 passed"), "{out}");
+}
+
+#[test]
+fn s6_what_a_hole_may_still_do_against_a_when_clause_is_an_open_obligation() {
+    // another signal, still a hole, takes the same edge without the clause
+    let other = WHEN_SK.replace("calls Consult.is_done\n", "calls Consult.is_done\n        signal force(id: String) -> String  moves drafted -> delivered\n");
+    let (out, code) = soma(&["verify", &program("s6_when_other_hole", &other)]);
+    assert!(code == 0 && out.contains("⚠ open obligation — entering Ordo.delivered from drafted while Consult.done") && !out.contains("✓ entering"), "{out}");
+    // the link a `via` reads is written by a hole: written once is judged on its body
+    let via = WHEN_SK.replace("skeleton Ordo {\n", "skeleton Ordo {\n    memory { consult_of: Map<String, String> }\n")
+        .replace("moves drafted -> delivered when Consult.done  calls Consult.is_done", "reads consult_of  moves drafted -> delivered when Consult.done via consult_of  calls Consult.is_done\n        signal draft(id: String, c: String) -> String  writes consult_of");
+    let (out, code) = soma(&["verify", &program("s6_when_via_hole", &via)]);
+    assert!(code == 0 && out.contains("open obligation — before Ordo.delivered via Ordo.consult_of: consult_of is written by the hole `draft`"), "{out}");
+    // the frozen structure holds the clause: removing it is a change of structure
+    let path = program("s6_when_lock", WHEN_SK);
+    let (out, code) = soma(&["skeleton", &path, "--freeze"]);
+    assert_eq!(code, 0, "{out}");
+    std::fs::write(&path, WHEN_SK.replace(" when Consult.done", "")).unwrap();
+    let (out, code) = soma(&["check", &path]);
+    assert!(code != 0 && out.contains("differs from skeleton.lock"), "{out}");
+}

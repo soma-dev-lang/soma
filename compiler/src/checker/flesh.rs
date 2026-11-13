@@ -250,6 +250,10 @@ const UNKNOWN: &str = "?";
 
 /// Replace the body of every hole by the model of its frame. For
 /// `soma verify` only: the result is not a program to run or to check.
+/// In a hole's model: `__status_in(id, "Cell.s", …)` — the instance `id` of
+/// `Cell`'s machine is in one of those states. Read by `checker::product`.
+pub const STATUS_IN: &str = "\u{1f}status_in";
+
 pub fn model_holes(program: &mut Program) {
     if holes(program).is_empty() { return; }
     let snapshot = program.clone();
@@ -314,7 +318,22 @@ fn model_body(cell: &CellDef, frame: &FrameDecl, span: Span, all: &[&CellDef], m
             for t in states.iter().copied().filter(|t| to == "*" || t == to) {
                 if !has_edge(f, t) { continue; }
                 let lit = |x: &str| sp(Expr::Literal(Literal::String(x.to_string())));
-                body.push(maybe(Statement::ExprStmt { expr: sp(Expr::FnCall { name: "transition".to_string(), args: vec![unknown(), lit(f), lit(t)] }) }));
+                let take = Statement::ExprStmt { expr: sp(Expr::FnCall { name: "transition".to_string(), args: vec![unknown(), lit(f), lit(t)] }) };
+                // `when Other.s`: the edge is taken only under its condition — what the
+                // frame promises, and what `verify` holds every body to
+                let cond = frame.conditions.iter().find(|c| &c.machine == label && (c.from == f || c.from == "*") && (c.to == t || c.to == "*"));
+                match cond {
+                    Some(c) => {
+                        let id = match &c.via {
+                            Some(v) => sp(Expr::MethodCall { target: Box::new(sp(Expr::Ident(v.clone()))), method: "get".to_string(), args: vec![unknown()] }),
+                            None => unknown(),
+                        };
+                        let mut args = vec![id];
+                        args.extend(c.states.iter().map(|s| lit(s)));
+                        body.push(maybe(Statement::If { condition: sp(Expr::FnCall { name: STATUS_IN.to_string(), args }), then_body: vec![Spanned::new(take, span)], else_body: vec![] }));
+                    }
+                    None => body.push(maybe(take)),
+                }
             }
         }
     }

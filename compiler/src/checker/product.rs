@@ -63,6 +63,8 @@ struct Property {
     /// `while`: (machine, state) pairs — each machine named must BE in one
     /// of its states when the target is entered. Empty for a `requires`.
     now: Vec<(usize, usize)>,
+    /// only the entries into the target from this state (a frame's edge)
+    from: Option<usize>,
 }
 
 struct Frame<'a> {
@@ -443,7 +445,7 @@ impl<'a> Engine<'a> {
                 next.st.cur[m] = t as u8;
                 if let Some(bit) = self.watched.get(&(m, t)) { next.st.seen |= 1 << bit; }
                 for (i, p) in self.props.iter().enumerate() {
-                    if p.target != (m, t) || self.broken.contains_key(&i) { continue; }
+                    if p.target != (m, t) || self.broken.contains_key(&i) || p.from.is_some_and(|f| f != cur) { continue; }
                     let met = if !p.now.is_empty() {
                         p.now.iter().all(|(om, _)| p.now.iter().any(|(mm, st)| mm == om && next.st.cur[*mm] as usize == *st))
                     } else if p.all { p.needs.iter().all(|b| next.st.seen & (1 << b) != 0) } else { p.needs.iter().any(|b| next.st.seen & (1 << b) != 0) };
@@ -778,6 +780,20 @@ impl<'a> Engine<'a> {
     fn branch(&self, cond: &Expr, frame: &Frame<'a>, states: Set) -> (Set, Set) {
         match cond {
             Expr::Not(inner) => { let (yes, no) = self.branch(&inner.node, frame, states); (no, yes) }
+            // a hole's model: the instance `id` of a cell's machine is in one of these states
+            Expr::FnCall { name, args } if name == super::flesh::STATUS_IN && args.len() >= 2 => {
+                let wanted: Vec<(String, String)> = args[1..].iter().filter_map(|a| match &a.node {
+                    Expr::Literal(Literal::String(t)) => t.split_once('.').map(|(c, s)| (c.to_string(), s.to_string())),
+                    _ => None,
+                }).collect();
+                let Some(m) = wanted.first().and_then(|(c, _)| self.machines.iter().position(|x| &x.cell == c)) else { return (states.clone(), states) };
+                let ok: Vec<usize> = wanted.iter().filter_map(|(_, s)| self.machines[m].states.iter().position(|x| x == s)).collect();
+                let key = self.key_of(&args[0].node, args[0].span, frame);
+                let (hit, other) = self.split_on(&states, &key, m);
+                let (mut yes, mut no) = (other.clone(), other);
+                for s in hit { if ok.contains(&(s.st.cur[m] as usize)) { yes.insert(s); } else { no.insert(s); } }
+                (yes, no)
+            }
             Expr::BinaryOp { left, op: BinOp::And, right } => {
                 let (ya, na) = self.branch(&left.node, frame, states);
                 let (yb, mut nb) = self.branch(&right.node, frame, ya);
@@ -1110,6 +1126,7 @@ pub fn parse_assumption(text: &str) -> Result<Expr, String> {
 }
 
 /// One `[verify.before."Cell.state"]` entry.
+#[derive(Clone)]
 pub struct Spec {
     pub target: String,
     pub requires: Vec<String>,
@@ -1121,7 +1138,36 @@ pub struct Spec {
     /// `via = "Cell.slot"`: the required states are those of the instance the
     /// target's instance names in that slot
     pub via: Option<String>,
+    /// a rule stated on an edge of a frame (`moves a -> b when …`): only the
+    /// entries into the target FROM this state
+    pub from: Option<String>,
 }
+
+/// The rules the skeletons state on their edges (`moves a -> b when Other.s
+/// [via slot]`), as rules between machines: `verify` judges them like those
+/// of soma.toml — on the bodies, and on the holes, whose model takes the
+/// edge only under its condition.
+pub fn frame_specs(program: &Program) -> Vec<Spec> {
+    let mut out: Vec<Spec> = Vec::new();
+    for cell in super::names::collect_cells(program) {
+        if !cell.skeleton { continue; }
+        for s in &cell.sections {
+            let Section::Face(f) = &s.node else { continue };
+            for d in &f.declarations {
+                let frame = match &d.node { FaceDecl::Signal(sig) => sig.frame.as_ref(), FaceDecl::Tool(t) => t.frame.as_ref(), _ => None };
+                for c in frame.map(|f| f.conditions.as_slice()).unwrap_or(&[]) {
+                    if !c.machine.is_empty() || c.to == "*" { continue; }
+                    let spec = Spec { target: format!("{}.{}", cell.name, c.to), requires: c.states.clone(), all: false, assuming: None, now: true,
+                        via: c.via.as_ref().map(|v| format!("{}.{}", cell.name, v)), from: (c.from != "*").then(|| c.from.clone()) };
+                    if !out.iter().any(|o| o.target == spec.target && o.requires == spec.requires && o.via == spec.via && o.from == spec.from) { out.push(spec); }
+                }
+            }
+        }
+    }
+    out
+}
+
+const OPEN_MARK: &str = "\u{1f}open:";
 
 /// `via` is sound only if the link of an entry never changes: the slot is
 /// written by ONE handler, once, when the entry is created (after a
@@ -1147,6 +1193,10 @@ fn link_written_once(cells: &[&CellDef], cell: &str, slot: &str) -> Result<(), S
             }
         });
         if !found.is_empty() { writers.push((on.signal_name.clone(), found)); }
+    }
+    // a writer that is still a hole: written once is judged on its body
+    if let Some((h, _)) = writers.iter().find(|(h, _)| c.sections.iter().any(|s| matches!(&s.node, Section::OnSignal(o) if &o.signal_name == h && o.properties.iter().any(|p| p == HOLE)))) {
+        return Err(format!("{}{} is written by the hole `{}` — that it is written once (one `set`, after `require {}.get(id) == () else …`, never deleted) is judged when it has a body", OPEN_MARK, slot, h, slot));
     }
     let rule = format!("`via = \"{}.{}\"` needs the link written once — by ONE signal, once, when the entry is created (`require {}.get(id) == () else Exists` before `{}.set(id, …)`), never rewritten nor deleted: keep the link in a slot of its own", cell, slot, slot, slot);
     let [(handler, ws)] = writers.as_slice() else {
@@ -1195,6 +1245,7 @@ pub fn check(program: &Program, specs: &[Spec]) -> Vec<super::verify::VerifyResu
             Some(v) => match v.split_once('.') {
                 Some((c, sl)) => match link_written_once(&cells, c, sl) {
                     Ok(()) => Some((c.to_string(), sl.to_string())),
+                    Err(e) if e.starts_with(OPEN_MARK) => { for s in &group { result.checks.push(VerifyCheck::Warning(format!("open obligation — before {} via {}: {}", s.target, v, e.trim_start_matches(OPEN_MARK)))); } continue; }
                     Err(e) => { for s in &group { result.checks.push(VerifyCheck::Fail(format!("before {}: not proven — {}", s.target, e), None)); } continue; }
                 },
                 None => { for s in &group { result.checks.push(VerifyCheck::Fail(format!("before {}: `via = \"{}\"` names a slot as `Cell.slot`", s.target, v), None)); } continue; }
@@ -1246,7 +1297,7 @@ pub fn check(program: &Program, specs: &[Spec]) -> Vec<super::verify::VerifyResu
         let mut props: Vec<Property> = Vec::new();
         for s in &group {
             let said = format!("{}{}", via.as_ref().map(|v| format!(" via {}", v)).unwrap_or_default(), assuming.as_ref().map(|a| format!(", assuming {}", a)).unwrap_or_default());
-            let label = if s.now { format!("entering {} while {}{}", s.target, s.requires.join(" | "), said) }
+            let label = if s.now { format!("entering {}{} while {}{}", s.target, s.from.as_ref().map(|f| format!(" from {}", f)).unwrap_or_default(), s.requires.join(" | "), said) }
                 else { format!("before {} requires {}{}{}", s.target, if s.all { "each of " } else { "" }, s.requires.join(if s.all { ", " } else { " | " }), said) };
             let parts: Result<Vec<(usize, usize)>, String> = s.requires.iter().map(|r| resolve(r)).collect();
             match (resolve(&s.target), parts) {
@@ -1260,12 +1311,14 @@ pub fn check(program: &Program, specs: &[Spec]) -> Vec<super::verify::VerifyResu
                     if parts.iter().any(|(m, _)| *m == target.0) {
                         result.checks.push(VerifyCheck::Fail(format!("{}: `while` names a state of the target's own machine — its edges already say where it comes from", label), None));
                     } else {
-                        props.push(Property { label, target, needs: Vec::new(), all: false, now: parts });
+                        let from = s.from.as_ref().and_then(|f| machines[target.0].states.iter().position(|x| x == f));
+                        props.push(Property { label, target, needs: Vec::new(), all: false, now: parts, from });
                     }
                 }
                 (Ok(target), Ok(parts)) => {
                     let needs = parts.into_iter().map(|p| { let n = watched.len() as u32; *watched.entry(p).or_insert(n) }).collect();
-                    props.push(Property { label, target, needs, all: s.all, now: Vec::new() });
+                    let from = s.from.as_ref().and_then(|f| machines[target.0].states.iter().position(|x| x == f));
+                    props.push(Property { label, target, needs, all: s.all, now: Vec::new(), from });
                 }
                 (Err(e), _) | (_, Err(e)) => result.checks.push(VerifyCheck::Fail(format!("{}: {}", label, e), None)),
             }

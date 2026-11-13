@@ -284,6 +284,25 @@ fn well_formed(
         .map(|s| format!(" — did you mean `{}`?", s)).unwrap_or_default();
     let foreign_slot = |name: &str| skeletons.iter().find(|o| o.cell.name != cell.name && frame::slots_of(o.cell).contains(name)).map(|o| o.cell.name.clone());
 
+    // `moves a -> b when Other.state [via slot]`: a state of another cell's
+    // machine, and a slot of this cell that the frame reads
+    for c in &b.frame.conditions {
+        for st in &c.states {
+            let known = st.split_once('.').is_some_and(|(oc, s)| oc != cell.name && skeletons.iter().any(|o| o.cell.name == oc
+                && frame::machines_of(o.cell).iter().any(|sm| sm.initial == s || sm.transitions.iter().any(|t| t.node.to == s || t.node.from == s))));
+            if !known {
+                err(format!("`{who}`: `moves {} -> {} {}` — `{}` is not a state of another cell's machine (write `Cell.state`)", c.from, c.to, c.text(), st));
+            }
+        }
+        if let Some(v) = &c.via {
+            if !slots.contains(v) {
+                err(format!("`{who}`: `{}` — `{}` is not a memory slot of `{}`: `via` names the slot where this cell's instance names the other", c.text(), v, cell.name));
+            } else if !b.frame.reads.contains(v) && !b.frame.writes.contains(v) {
+                err(format!("`{who}`: `{}` — the frame must read `{}` (add `reads {}`): the body reads the instance it names there", c.text(), v, v));
+            }
+        }
+    }
+
     for w in &b.frame.writes {
         if slots.contains(w) { continue; }
         if own_machines.iter().any(|sm| &sm.name == w) {

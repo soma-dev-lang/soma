@@ -1338,6 +1338,24 @@ impl Parser {
                 self.advance();
                 // `moves * -> *`: any edge (a target computed at run time)
                 let to = if self.check(&Token::Star) { self.advance(); "*".to_string() } else { self.expect_any_name()?.0 };
+                // `when Consult.done || Consult.closed [via consult_of]`: a rule
+                // between machines stated on the edge
+                if self.at_word("when") {
+                    self.advance();
+                    let mut states = Vec::new();
+                    loop {
+                        let (c, _) = self.expect_any_name()?;
+                        if !self.check(&Token::Dot) {
+                            return Err(ParseError::FixIt { message: format!("`when` names a state of another cell's machine: `when {}.state`", c), span: self.peek_span() });
+                        }
+                        self.advance();
+                        let (st, _) = self.expect_any_name()?;
+                        states.push(format!("{}.{}", c, st));
+                        if self.check(&Token::OrOr) { self.advance(); } else { break; }
+                    }
+                    let via = if self.at_word("via") { self.advance(); Some(self.expect_any_name()?.0) } else { None };
+                    f.conditions.push(EdgeCondition { machine: machine.clone(), from: from.clone(), to: to.clone(), states, via });
+                }
                 f.moves.push((machine.clone(), from, to));
                 if self.check(&Token::Comma) { self.advance(); } else { break; }
             }

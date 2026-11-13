@@ -63,6 +63,8 @@ pub struct Frame {
     pub escaping_lambda: bool,
     /// …and one of them is the argument of `map(a, f)` written as a plain call.
     pub plain_map_lambda: bool,
+    /// `moves a -> b when Other.s`: declared frames only
+    pub conditions: BTreeSet<EdgeCondition>,
 }
 
 impl Frame {
@@ -74,6 +76,7 @@ impl Frame {
     /// The frame a signal declares.
     pub fn from_decl(d: &FrameDecl) -> Frame {
         Frame {
+            conditions: d.conditions.iter().cloned().collect(),
             reads: d.reads.iter().filter(|r| !d.writes.contains(r)).cloned().collect(),
             writes: d.writes.iter().cloned().collect(),
             calls: d.calls.iter().cloned().collect(),
@@ -84,6 +87,7 @@ impl Frame {
     }
 
     fn merge(&mut self, other: &Frame) {
+        self.conditions.extend(other.conditions.iter().cloned());
         self.reads.extend(other.reads.iter().cloned());
         self.writes.extend(other.writes.iter().cloned());
         self.calls.extend(other.calls.iter().cloned());
@@ -105,7 +109,8 @@ impl Frame {
         if !self.writes.is_empty() { out.push(("writes", self.writes.iter().cloned().collect())); }
         let mut by_machine: BTreeMap<&str, Vec<String>> = BTreeMap::new();
         for (m, from, to) in &self.moves {
-            by_machine.entry(m.as_str()).or_default().push(format!("{} -> {}", from, to));
+            let when = self.conditions.iter().find(|c| &c.machine == m && &c.from == from && &c.to == to).map(|c| format!(" {}", c.text())).unwrap_or_default();
+            by_machine.entry(m.as_str()).or_default().push(format!("{} -> {}{}", from, to, when));
         }
         for (m, edges) in by_machine {
             let mut edges = edges;

@@ -140,5 +140,6 @@ swapped, a `??` default, a hole) give the expected verdict; test `s5_*`.
 - `frame`, `invariants`, `product`, `termination`, `waits` on
   `bodies::entries` (they agree today, by test);
 - one `names::SLOT_WRITES`, one "is an Int" predicate;
-- the frame clause `moves s -> t when Other.machine in [states]` (decision
-  10): a rule between machines stated in the skeleton, judged on a hole.
+- DONE: the frame clause `moves s -> t when Other.s [|| …] [via slot]`
+  (decision 10) — a rule between machines stated in the skeleton, judged on
+  the holes and on the bodies (tests `s6_*`).

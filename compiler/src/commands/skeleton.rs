@@ -722,7 +722,10 @@ pub fn render_brief(program: &Program, source: &str, skeletons: &[CellSkeleton],
                 .and_then(|t| t.node.guard.as_ref())
                 .map(|g| format!("   guard {}", render_expr(&g.node))).unwrap_or_default();
             let prefix = if label.is_empty() { String::new() } else { format!("{}: ", label) };
-            lines.push(format!("{}{} -> {}{}", prefix, from, to, guard));
+            // `when Other.s`: a rule between machines the body must keep
+            let when = b.frame.conditions.iter().find(|c| &c.machine == label && &c.from == from && &c.to == to)
+                .map(|c| format!(" {}   (take it only then: `require` it — verify checks)", c.text())).unwrap_or_default();
+            lines.push(format!("{}{} -> {}{}{}", prefix, from, to, when, guard));
         }
         if b.frame.dynamic_moves { lines.push("?   (a transition whose target is computed at run time)".to_string()); }
         section("moves", lines);
@@ -817,7 +820,16 @@ fn callers_of(skeletons: &[CellSkeleton], sk: &CellSkeleton, b: &Bone) -> Vec<St
 fn frame_json(f: &Frame) -> serde_json::Value {
     serde_json::json!({
         "reads": f.reads, "writes": f.writes, "calls": f.calls, "emits": f.emits,
-        "moves": f.moves.iter().map(|(m, from, to)| serde_json::json!({ "machine": m, "from": from, "to": to })).collect::<Vec<_>>(),
+        "moves": f.moves.iter().map(|(m, from, to)| {
+            let when = f.conditions.iter().find(|c| &c.machine == m && &c.from == from && &c.to == to);
+            // (the clause only when there is one: the shape of a plain edge is unchanged)
+            let mut e = serde_json::json!({ "machine": m, "from": from, "to": to });
+            if let Some(c) = when {
+                e["when"] = serde_json::json!(c.states);
+                if let Some(v) = &c.via { e["via"] = serde_json::json!(v); }
+            }
+            e
+        }).collect::<Vec<_>>(),
         "dynamic_moves": f.dynamic_moves,
         "pure": f.is_pure(),
     })
