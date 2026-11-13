@@ -2339,3 +2339,41 @@ fn s3_the_older_analyses_follow_values_and_calls() {
     let (out, _) = soma(&["check", &program("s3_budget_callee", src)]);
     assert!(out.contains("budget"), "{out}");
 }
+
+const VIA_APP: &str = "skeleton Consult {\n    state c {\n        initial: open\n        open -> done\n    }\n    face {\n        signal close(id: String) -> String  moves open -> done\n        signal is_done(id: String) -> Bool  reads c\n    }\n}\nskeleton Ordo {\n    memory { consult_of: Map<String, String> }\n    state o {\n        initial: drafted\n        drafted -> delivered\n    }\n    face {\n        signal draft(id: String, consult: String) -> String  writes consult_of\n        signal deliver(id: String) -> String  reads consult_of  moves drafted -> delivered  calls Consult.is_done\n    }\n}\nflesh Consult {\n    on close(id) { transition(id, \"open\", \"done\")  return \"done\" }\n    on is_done(id) { return (get_status(id) ?? \"open\") == \"done\" }\n}\n";
+
+fn via_program(name: &str, draft: &str, deliver: &str, rule: &str) -> String {
+    let src = format!("{VIA_APP}flesh Ordo {{\n    on draft(id, consult) {{ {draft}  return id }}\n    on deliver(id) {{ {deliver}  transition(id, \"drafted\", \"delivered\")  return \"delivered\" }}\n}}\n");
+    project(&format!("s5_via_{name}"), &[("app.cell", &src), ("soma.toml", rule)])
+}
+
+#[test]
+fn s5_a_rule_between_machines_follows_the_id_an_instance_names() {
+    let created_once = "require consult_of.get(id) == () else Exists  consult_of.set(id, consult)";
+    let checks_linked = "let c = consult_of.get(id)  require c != () else NoConsult  require Consult.is_done(c) else NotDone";
+    let via = "[verify.before.\"Ordo.delivered\"]\nrequires = [\"Consult.done\"]\nvia = \"Ordo.consult_of\"\n";
+    // the prescription names its consultation; delivery requires THAT consultation done
+    let path = via_program("ok", created_once, checks_linked, via);
+    let (out, _) = soma(&["check", &path]);
+    assert!(!out.contains("error"), "{out}");
+    let (out, _) = soma(&["verify", &path]);
+    assert!(out.contains("✓ before Ordo.delivered requires Consult.done via Ordo.consult_of"), "{out}");
+    // the present, too
+    let path = via_program("while", created_once, checks_linked, &via.replace("requires = ", "while = "));
+    let (out, _) = soma(&["verify", &path]);
+    assert!(out.contains("✓ entering Ordo.delivered while Consult.done via Ordo.consult_of"), "{out}");
+    // the wrong consultation checked: refuted
+    let path = via_program("wrong_id", created_once, "require Consult.is_done(id) else NotDone", via);
+    let (out, _) = soma(&["verify", &path]);
+    assert!(out.contains("✗ before Ordo.delivered") && !out.contains("✓ before Ordo.delivered"), "{out}");
+    // the link must be written once: by one signal, when the entry is created, never deleted
+    for (name, draft) in [("rewritten", "consult_of.set(id, consult)"), ("twice", "require consult_of.get(id) == () else Exists  consult_of.set(id, consult)  consult_of.set(id, \"other\")")] {
+        let path = via_program(name, draft, checks_linked, via);
+        let (out, _) = soma(&["verify", &path]);
+        assert!(!out.contains("✓ before Ordo.delivered") && out.contains("written once"), "{name}: {out}");
+    }
+    // without `via`, one id through both machines: not proven by checking the linked one (the old rule)
+    let path = via_program("no_via", created_once, checks_linked, "[verify.before.\"Ordo.delivered\"]\nrequires = [\"Consult.done\"]\n");
+    let (out, _) = soma(&["verify", &path]);
+    assert!(!out.contains("✓ before Ordo.delivered"), "{out}");
+}

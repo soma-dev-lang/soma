@@ -256,6 +256,12 @@ pub struct BeforeConfig {
     /// the past). Several machines may be named: each must be in one of its own.
     #[serde(default, rename = "while", skip_serializing_if = "Vec::is_empty")]
     pub while_in: Vec<String>,
+    /// `via = "Ordo.consult_of"`: the states required are those of the
+    /// instance the target's instance NAMES in that slot (the consultation a
+    /// prescription names), not of an instance with the same id. The slot
+    /// must be written once per entry.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub via: Option<String>,
 }
 
 #[derive(Debug, Default, Serialize, Deserialize)]

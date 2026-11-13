@@ -961,9 +961,9 @@ fn cmd_verify(files: &[PathBuf], json: bool, strict: bool) {
     if let Some(cfg) = verify_config {
         let specs: Vec<checker::product::Spec> = cfg.before.iter().filter(|(t, b)| product_property(t, b)).flat_map(|(target, b)| {
             let mut out = Vec::new();
-            if !b.requires.is_empty() { out.push(checker::product::Spec { target: target.clone(), requires: b.requires.clone(), all: false, assuming: b.assuming.clone(), now: false }); }
-            if !b.requires_all.is_empty() { out.push(checker::product::Spec { target: target.clone(), requires: b.requires_all.clone(), all: true, assuming: b.assuming.clone(), now: false }); }
-            if !b.while_in.is_empty() { out.push(checker::product::Spec { target: target.clone(), requires: b.while_in.clone(), all: false, assuming: b.assuming.clone(), now: true }); }
+            if !b.requires.is_empty() { out.push(checker::product::Spec { target: target.clone(), requires: b.requires.clone(), all: false, assuming: b.assuming.clone(), via: b.via.clone(), now: false }); }
+            if !b.requires_all.is_empty() { out.push(checker::product::Spec { target: target.clone(), requires: b.requires_all.clone(), all: true, assuming: b.assuming.clone(), via: b.via.clone(), now: false }); }
+            if !b.while_in.is_empty() { out.push(checker::product::Spec { target: target.clone(), requires: b.while_in.clone(), all: false, assuming: b.assuming.clone(), via: b.via.clone(), now: true }); }
             out
         }).collect();
         if !specs.is_empty() {
@@ -1267,7 +1267,7 @@ fn cmd_verify(files: &[PathBuf], json: bool, strict: bool) {
 /// A `[verify.before.…]` entry that names a state as `Cell.state`: it is
 /// about several machines at once (checker/product.rs).
 fn product_property(target: &str, b: &pkg::manifest::BeforeConfig) -> bool {
-    target.contains('.') || !b.while_in.is_empty() || b.requires.iter().chain(b.requires_all.iter()).any(|s| s.contains('.'))
+    target.contains('.') || !b.while_in.is_empty() || b.via.is_some() || b.requires.iter().chain(b.requires_all.iter()).any(|s| s.contains('.'))
 }
 
 fn cmd_ast(path: &PathBuf) {

@@ -592,7 +592,7 @@ requires_all = ["held", "picked"]   # …without EACH of these
 assuming = "amount > 500"           # …on the runs where this holds: edges whose guard cannot hold then are left out
 [verify.before."Pay.paid"]          # "Cell.state": the PRODUCT of the machines, every run of the handlers (one id
 requires = ["Approval.signed_off"]  # followed through all of them; a handler call is one atomic step); refused past 200,000 states
-while = ["Approval.signed_off"]     # …and the other machine IS there when `paid` is entered (`requires` is the past, `while` the present)
+while = ["Approval.signed_off"]     # …and IS there now (`requires`: once). `via = "Pay.approval_of"`: the instance that slot names (soma docs skeleton)
 ```
 In the machine, `* -> failed` means from EVERY state — it also adds
 `paid -> failed`, so `paid` is no longer final (verify says so). Keep states

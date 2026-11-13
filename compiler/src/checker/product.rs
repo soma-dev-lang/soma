@@ -162,6 +162,10 @@ struct Engine<'a> {
     unsupported: Option<String>,
     /// (handler names, cell names) of the program: what a string's `{…}` is read with
     names: (HashSet<String>, HashSet<String>),
+    /// `via`: the slot (cell, slot) an instance names the other instance in,
+    /// and the machines that follow that other instance
+    link: Option<(String, String)>,
+    secondary: HashSet<usize>,
     /// edges taken so far by the search, and that count where the condition
     /// under `narrow` began
     moves: usize,
@@ -216,6 +220,10 @@ impl<'a> Engine<'a> {
             // (`"{x}"` is computed: its text is not its value)
             Expr::Literal(Literal::String(s)) if super::desugar::segments(s).is_empty() => key_text(s),
             Expr::Literal(Literal::Int(n)) => key_text(&n.to_string()),
+            // the link slot read in its cell: the instance that entry names
+            Expr::MethodCall { target, method, args } if method == "get" && args.len() == 1 && self.is_link(&target.node, frame) =>
+                format!("link:{}", self.key_of(&args[0].node, args[0].span, frame)),
+            Expr::Index { target, index } if self.is_link(&target.node, frame) => format!("link:{}", self.key_of(&index.node, index.span, frame)),
             // a computed id: its own value at each place it is written
             _ => format!("x:{}:{}", frame.uid, at.start),
         }
@@ -333,10 +341,65 @@ impl<'a> Engine<'a> {
         }
     }
 
+    /// `split`, for machine `m`: with a link, the machines that follow the
+    /// instance the target's instance names answer under their own binding
+    /// (`§key`), and `link:k` IS that instance when `k` is the followed one.
+    fn split_on(&self, states: &Set, key: &str, m: usize) -> (Set, Set) {
+        if !self.secondary.contains(&m) { return self.split(states, key); }
+        let skey = format!("§{}", key);
+        let names = key.strip_prefix("link:");
+        let (mut yes, mut no) = (Set::new(), Set::new());
+        for s in states {
+            if let Some(k) = names {
+                match s.bind.get(k) {
+                    // the followed instance names the followed other: it IS it
+                    Some(true) => { yes.insert(s.clone()); continue; }
+                    Some(false) => {}
+                    // undecided: decide `k` too, or a later "`k` is the followed one" would
+                    // contradict a "this is not the instance it names" made here
+                    None => {
+                        let mut a = s.clone(); a.bind.insert(k.to_string(), true); yes.insert(a);
+                        let mut rest = s.clone(); rest.bind.insert(k.to_string(), false);
+                        match rest.bind.get(&skey) {
+                            Some(true) => { yes.insert(rest); }
+                            Some(false) => { no.insert(rest); }
+                            None => {
+                                let mut b = rest.clone(); b.bind.insert(skey.clone(), true); yes.insert(b);
+                                let mut c = rest; c.bind.insert(skey.clone(), false); no.insert(c);
+                            }
+                        }
+                        continue;
+                    }
+                }
+            }
+            match s.bind.get(&skey) {
+                Some(true) => { yes.insert(s.clone()); }
+                Some(false) => { no.insert(s.clone()); }
+                None => {
+                    let mut a = s.clone(); a.bind.insert(skey.clone(), true); yes.insert(a);
+                    let mut b = s.clone(); b.bind.insert(skey.clone(), false); no.insert(b);
+                }
+            }
+        }
+        (yes, no)
+    }
+
+    /// `slot.get(k)` / `slot[k]` of the link slot, read in its cell.
+    fn is_link(&self, target: &Expr, frame: &Frame) -> bool {
+        matches!((&self.link, target), (Some((c, sl)), Expr::Ident(t)) if t == sl && frame.cell.name == *c && !frame.env.contains_key(t))
+    }
+
     /// Split `states` on whether `key` is the followed id.
     fn split(&self, states: &Set, key: &str) -> (Set, Set) {
         let (mut yes, mut no) = (Set::new(), Set::new());
+        // (with a link: "the instance `key` names is not the followed other"
+        // was decided — `key` cannot be the followed one then)
+        let named = format!("§link:{}", key);
         for s in states {
+            if !s.bind.contains_key(key) && s.bind.get(&named) == Some(&false) {
+                let mut b = s.clone(); b.bind.insert(key.to_string(), false); no.insert(b);
+                continue;
+            }
             match s.bind.get(key) {
                 Some(true) => { yes.insert(s.clone()); }
                 Some(false) => { no.insert(s.clone()); }
@@ -353,7 +416,7 @@ impl<'a> Engine<'a> {
     fn transition(&mut self, states: Set, id: &Spanned<Expr>, source: Option<&Expr>, target: &Expr, frame: &Frame<'a>, entry: &str) -> Set {
         let Some(m) = self.machine_of(frame.cell) else { return states };
         let key = self.key_of(&id.node, id.span, frame);
-        let (hit, mut out) = self.split(&states, &key);
+        let (hit, mut out) = self.split_on(&states, &key, m);
         let named = |e: &Expr| match e {
             Expr::Literal(Literal::String(s)) if super::desugar::segments(s).is_empty() => Some(s.clone()),
             // (a bare name is a state when it IS one: any other is a variable —
@@ -394,7 +457,7 @@ impl<'a> Engine<'a> {
             }
         }
         // (a computed id is read once: its choice is not kept)
-        if key.starts_with("x:") { out = out.into_iter().map(|mut s| { s.bind.remove(&key); s }).collect(); }
+        if key.starts_with("x:") { out = out.into_iter().map(|mut s| { s.bind.remove(&key); s.bind.remove(&format!("§{}", key)); s }).collect(); }
         out
     }
 
@@ -429,7 +492,7 @@ impl<'a> Engine<'a> {
         out.extend(flow.continued);
         // the callee's own choices end with it
         let local = format!(":{}", uid);
-        out.into_iter().map(|mut s| { s.bind.retain(|k, _| !(k.starts_with("l:") || k.starts_with("x:")) || !k.contains(&local)); s }).collect()
+        out.into_iter().map(|mut s| { s.bind.retain(|k, _| { let k = k.trim_start_matches('§'); !(k.starts_with("l:") || k.starts_with("x:")) || !k.contains(&local) }); s }).collect()
     }
 
     /// `frame` with `names` bound to values nothing is known of (a loop
@@ -451,7 +514,7 @@ impl<'a> Engine<'a> {
     /// its variable, and whatever the body assigns, hold other values then.
     fn forget(states: Set, keys: &[String], frame: &Frame) -> Set {
         let computed = format!("x:{}:", frame.uid);
-        states.into_iter().map(|mut s| { s.bind.retain(|k, _| !keys.contains(k) && !k.starts_with(&computed)); s }).collect()
+        states.into_iter().map(|mut s| { s.bind.retain(|k, _| { let k = k.trim_start_matches('§'); !keys.iter().any(|x| x == k) && !k.starts_with(&computed) }); s }).collect()
     }
 
     /// Any number of runs of `step`, from `states`.
@@ -755,7 +818,7 @@ impl<'a> Engine<'a> {
                         },
                     }
                 };
-                let (hit, other) = self.split(&states, &key);
+                let (hit, other) = self.split_on(&states, &key, m);
                 let (mut yes, mut no) = (other.clone(), other);
                 for s in hit {
                     let cur = s.st.cur[m] as usize;
@@ -857,10 +920,12 @@ impl<'a> Engine<'a> {
                     let key = match &value.node {
                         Expr::Ident(v) if local.env.contains_key(v) => local.env[v].clone(),
                         Expr::Literal(Literal::String(_) | Literal::Int(_)) => self.key_of(&value.node, value.span, &local),
+                        // `let c = consult_of.get(id)`: the instance `id` names
+                        _ if self.key_of(&value.node, value.span, &local).starts_with("link:") => self.key_of(&value.node, value.span, &local),
                         _ => {
                             // a new value: the choice made for the old one ends here
                             let key = format!("l:{}:{}:{}", name, local.uid, st.span.start);
-                            s = s.into_iter().map(|mut x| { x.bind.remove(&key); x }).collect();
+                            s = s.into_iter().map(|mut x| { x.bind.remove(&key); x.bind.remove(&format!("§{}", key)); x }).collect();
                             key
                         }
                     };
@@ -1053,6 +1118,55 @@ pub struct Spec {
     /// `while = [...]`: the states in `requires` are where the other
     /// machines must be NOW, when the target is entered
     pub now: bool,
+    /// `via = "Cell.slot"`: the required states are those of the instance the
+    /// target's instance names in that slot
+    pub via: Option<String>,
+}
+
+/// `via` is sound only if the link of an entry never changes: the slot is
+/// written by ONE handler, once, when the entry is created (after a
+/// `require slot.get(k) == ()` on the same key), and never deleted.
+fn link_written_once(cells: &[&CellDef], cell: &str, slot: &str) -> Result<(), String> {
+    let Some(c) = cells.iter().find(|c| c.name == cell) else { return Err(format!("there is no cell `{}`", cell)) };
+    let declared = c.sections.iter().any(|s| matches!(&s.node, Section::Memory(m) if m.slots.iter().any(|sl| sl.node.name == slot)));
+    if !declared { return Err(format!("`{}` has no memory slot `{}`", cell, slot)); }
+    let writes = |m: &str| matches!(m, "set" | "put" | "delete" | "remove" | "push" | "append");
+    let mut writers: Vec<(String, Vec<(String, String)>)> = Vec::new();   // handler → (method, key text)
+    for on in super::bodies::entries(c) {
+        let mut found: Vec<(String, String)> = Vec::new();
+        super::literals::for_each_stmt_deep(&on.body, &mut |st| match st {
+            Statement::MethodCall { target, method, args } if target == slot && writes(method) =>
+                found.push((method.clone(), args.first().map(|a| render_expr(&a.node)).unwrap_or_default())),
+            Statement::IndexSet { name, index, .. } if name.split(|ch| ch == '.' || ch == '[').next() == Some(slot) =>
+                found.push(("set".to_string(), render_expr(&index.node))),
+            _ => {}
+        });
+        super::literals::for_each_expr(&on.body, &mut |e| if let Expr::MethodCall { target, method, args } = e {
+            if matches!(&target.node, Expr::Ident(t) if t == slot) && writes(method) {
+                found.push((method.clone(), args.first().map(|a| render_expr(&a.node)).unwrap_or_default()));
+            }
+        });
+        if !found.is_empty() { writers.push((on.signal_name.clone(), found)); }
+    }
+    let rule = format!("`via = \"{}.{}\"` needs the link written once — by ONE signal, once, when the entry is created (`require {}.get(id) == () else Exists` before `{}.set(id, …)`), never rewritten nor deleted: keep the link in a slot of its own", cell, slot, slot, slot);
+    let [(handler, ws)] = writers.as_slice() else {
+        return Err(format!("{} — `{}` is written by {}", rule, slot, if writers.is_empty() { "no signal".to_string() } else { writers.iter().map(|(h, _)| format!("`{}`", h)).collect::<Vec<_>>().join(", ") }));
+    };
+    let [(method, key)] = ws.as_slice() else { return Err(format!("{} — `{}` writes it {} times", rule, handler, ws.len())) };
+    if !matches!(method.as_str(), "set" | "put") { return Err(format!("{} — `{}` calls `{}.{}`", rule, handler, slot, method)); }
+    // the creation guard, at the top level of the writer, before the write
+    let on = c.sections.iter().find_map(|s| match &s.node { Section::OnSignal(o) if &o.signal_name == handler => Some(o), _ => None });
+    let guarded = on.is_some_and(|o| o.body.iter().take_while(|st| !matches!(&st.node, Statement::MethodCall { target, .. } if target == slot)).any(|st| {
+        let Statement::Require { constraint, .. } = &st.node else { return false };
+        let Constraint::Comparison { left, op: CmpOp::Eq, right } = &constraint.node else { return false };
+        let reads_key = |e: &Expr| matches!(e, Expr::MethodCall { target, method, args } if method == "get" && args.len() == 1
+            && matches!(&target.node, Expr::Ident(t) if t == slot) && render_expr(&args[0].node) == *key);
+        let absent = |l: &Expr, r: &Expr| (reads_key(l) && matches!(r, Expr::Literal(Literal::Unit))) || (reads_key(r) && matches!(l, Expr::Literal(Literal::Unit)));
+        // `require slot.get(k) == () else …` is the comparison `(slot.get(k) == ()) == true`
+        absent(&left.node, &right.node) || matches!((&left.node, &right.node), (Expr::CmpOp { left: l, op: CmpOp::Eq, right: r }, Expr::Literal(Literal::Bool(true))) if absent(&l.node, &r.node))
+    }));
+    if !guarded { return Err(format!("{} — `{}` writes it without refusing an existing entry first", rule, handler)); }
+    Ok(())
 }
 
 /// Check the cross-machine properties. Empty when there is none.
@@ -1069,11 +1183,23 @@ pub fn check(program: &Program, specs: &[Spec]) -> Vec<super::verify::VerifyResu
         machine_name: "product".to_string(), states: vec![], initial: String::new(), terminal_states: vec![], transitions: vec![], checks: vec![],
     };
     // properties that share an assumption share a search
-    let mut groups: Vec<(Option<String>, Vec<&Spec>)> = Vec::new();
+    // (…and a link: `via` changes which instance of the other machines is followed)
+    let mut groups: Vec<((Option<String>, Option<String>), Vec<&Spec>)> = Vec::new();
     for s in specs {
-        match groups.iter_mut().find(|g| g.0 == s.assuming) { Some(g) => g.1.push(s), None => groups.push((s.assuming.clone(), vec![s])) }
+        let k = (s.assuming.clone(), s.via.clone());
+        match groups.iter_mut().find(|g| g.0 == k) { Some(g) => g.1.push(s), None => groups.push((k, vec![s])) }
     }
-    for (assuming, group) in groups {
+    for ((assuming, via), group) in groups {
+        let link: Option<(String, String)> = match via.as_deref() {
+            None => None,
+            Some(v) => match v.split_once('.') {
+                Some((c, sl)) => match link_written_once(&cells, c, sl) {
+                    Ok(()) => Some((c.to_string(), sl.to_string())),
+                    Err(e) => { for s in &group { result.checks.push(VerifyCheck::Fail(format!("before {}: not proven — {}", s.target, e), None)); } continue; }
+                },
+                None => { for s in &group { result.checks.push(VerifyCheck::Fail(format!("before {}: `via = \"{}\"` names a slot as `Cell.slot`", s.target, v), None)); } continue; }
+            },
+        };
         let assumption = match assuming.as_deref().map(parse_assumption) {
             Some(Err(e)) => { for s in &group { result.checks.push(VerifyCheck::Fail(format!("before {}: {}", s.target, e), None)); } continue; }
             Some(Ok(e)) => Some(e),
@@ -1119,7 +1245,7 @@ pub fn check(program: &Program, specs: &[Spec]) -> Vec<super::verify::VerifyResu
         let mut watched: HashMap<(usize, usize), u32> = HashMap::new();
         let mut props: Vec<Property> = Vec::new();
         for s in &group {
-            let said = assuming.as_ref().map(|a| format!(", assuming {}", a)).unwrap_or_default();
+            let said = format!("{}{}", via.as_ref().map(|v| format!(" via {}", v)).unwrap_or_default(), assuming.as_ref().map(|a| format!(", assuming {}", a)).unwrap_or_default());
             let label = if s.now { format!("entering {} while {}{}", s.target, s.requires.join(" | "), said) }
                 else { format!("before {} requires {}{}{}", s.target, if s.all { "each of " } else { "" }, s.requires.join(if s.all { ", " } else { " | " }), said) };
             let parts: Result<Vec<(usize, usize)>, String> = s.requires.iter().map(|r| resolve(r)).collect();
@@ -1145,6 +1271,22 @@ pub fn check(program: &Program, specs: &[Spec]) -> Vec<super::verify::VerifyResu
             }
         }
         if props.is_empty() { continue; }
+        // with a link, the machines a rule requires states of follow the instance
+        // the target's instance names; the target's own machine, the target's
+        let mut secondary: HashSet<usize> = HashSet::new();
+        if let Some((lc, _)) = &link {
+            for p in &props {
+                if machines[p.target.0].cell != *lc {
+                    for s in &group { result.checks.push(VerifyCheck::Fail(format!("before {}: `via` names a slot of `{}`, and the target is a state of `{}` — the link is read from the target's cell", s.target, lc, machines[p.target.0].cell), None)); }
+                    continue;
+                }
+                let required: Vec<usize> = if p.now.is_empty() { watched.iter().filter(|(_, b)| p.needs.contains(b)).map(|((m, _), _)| *m).collect() } else { p.now.iter().map(|(m, _)| *m).collect() };
+                for m in required {
+                    if machines[m].cell == *lc { continue; }
+                    secondary.insert(m);
+                }
+            }
+        }
         if machines.len() > 12 || machines.iter().any(|m| m.states.len() > 250) || watched.len() > 60 {
             for p in &props { result.checks.push(VerifyCheck::Fail(format!("{}: not explored — more than 12 machines, 250 states in one machine or 60 required states", p.label), None)); }
             continue;
@@ -1163,7 +1305,7 @@ pub fn check(program: &Program, specs: &[Spec]) -> Vec<super::verify::VerifyResu
                 }
             }
         }
-        let mut engine = Engine { cells: cells.clone(), machines, watched, props, broken: BTreeMap::new(), unsupported: None, names: super::desugar::program_names(&exposed), moves: 0, forced: false, variants: variant_names(&exposed), top: exposed.cells.iter().map(|c| &c.node as *const CellDef as usize).collect(), parent_of: {
+        let mut engine = Engine { cells: cells.clone(), machines, watched, props, broken: BTreeMap::new(), unsupported: None, names: super::desugar::program_names(&exposed), link: link.clone(), secondary: secondary.clone(), moves: 0, forced: false, variants: variant_names(&exposed), top: exposed.cells.iter().map(|c| &c.node as *const CellDef as usize).collect(), parent_of: {
             fn walk(c: &CellDef, out: &mut HashMap<usize, usize>) {
                 for s in &c.sections { if let Section::Interior(i) = &s.node { for x in &i.cells { out.insert(&x.node as *const CellDef as usize, c as *const CellDef as usize); walk(&x.node, out); } } }
             }

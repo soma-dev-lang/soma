@@ -117,6 +117,22 @@ The frame, clause by clause (after the return type and any `requires` /
   `⚠ runtime-checked` (an invariant on a slot it may write), never `✓`;
   termination and think-isolation are judged when the bodies exist. The
   verdict is `VERIFY OK (skeleton — the holes above are open obligations)`.
+- **Rules between machines** (`[verify.before."Ordo.delivered"]` in
+  soma.toml) follow ONE id through every machine. When an instance names
+  another of a different id — a prescription names its consultation — keep
+  that link in a slot of its own, written once, and say so:
+  ```toml
+  [verify.before."Ordo.delivered"]
+  requires = ["Consult.done"]        # or `while = […]`: the state it is in NOW
+  via = "Ordo.consult_of"            # Map<String, String>: prescription → consultation
+  ```
+  The link must be written by ONE signal, once, when the entry is created
+  (`require consult_of.get(id) == () else Exists` then
+  `consult_of.set(id, consult)`), and never deleted — `verify` refuses the
+  rule otherwise. A body proves it by checking the consultation it READS
+  from that slot (`let c = consult_of.get(id)  require Consult.is_done(c)`).
+- **A comment changed after the freeze** is a warning of `soma check`:
+  the brief changed, the structure did not. `--amend` records it.
 - **Say what each signal is for.** A `//` comment above a signal (or at
   the end of its line), on a slot, on an edge, above the skeleton: the
   brief carries them, and they are the only place the design says what a

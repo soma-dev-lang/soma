@@ -35,7 +35,7 @@ be done one analysis at a time, each behind the verdict harness.
 | "is this value an Int?" | `-> Int` now answers an Int at run time; `BigInt` is no Int for the prover. Five lists remain in `invariants.rs` (`known_int`, `SLOT_INT`, `int_params`, `int_returning`, `may_be_float`). **To do**: one predicate over the declared type. |
 | "where is the project?" | the loader (beside the importer, then the root), the manifest (beside the entry only), the lock (every folder up to the root), the tools (`refs::survey`: nearest soma.toml above). **To do**: one `project::root(entry)` used by the four; a test file in a sub-folder then runs with the project's edition and `[verify]` tables. |
 
-## 3. Analyses that do not follow calls — TO DO
+## 3. Analyses that do not follow calls — DONE for taint, composition, budget
 
 `taint`, `effects`, `capabilities`, `composition` and `budget` are
 syntactic and per handler. `effects` now refuses to narrow when anything
@@ -45,10 +45,13 @@ The product search and the frames have a shared call resolution
 (`frame::resolve_call`, the interpreter's rule since round 10): these five
 should use it instead of matching names.
 
-Known reproducers, kept as fixtures (`round12/`): `a4_taint_*`,
-`b2_budget_*`, `b2_composition_*`.
+Done (test `s3_*`): taint follows a value into a list, an index write, a
+lambda parameter and a `vote`; composition pairs an emit with a listener of
+the program that takes its arity; budget charges the largest callee frame
+(one thread stack) and a `map` over an unknown length as no bound. Left:
+`capabilities` and `effects` still match names rather than resolving calls.
 
-## 4. One executor for interior cells — NEEDS A DECISION
+## 4. One executor for interior cells — DONE (the rule), 2026-11-13
 
 What exists: `runtime/mod.rs` (422 lines) is not a second interpreter. It
 builds an `Interpreter` per handler run, registers one parent and its
@@ -81,22 +84,29 @@ qualified storage `runtime/mod.rs` builds today; `emit_scope` becomes that
 rule; `Runtime` keeps only the driving of `runtime { }` and the CLI entry
 for `Child.h`. The analyses read the same function (`scope::listeners`).
 
-Cost: a program whose top-level cell emits an event that one of its own
-interior cells also handles gets that listener under `serve` and `test`,
-where it was silent. The 1,097 programs of the repository are the check.
+Done, in a narrower form than "one executor": the scope runtime stays (it
+drives `runtime { }` and the CLI entry `Child.h`), but every path answers
+the same three questions the same way — `Interpreter::hears` for events
+(also used by `check`'s signal matching and the product search), the
+registry for slot back-ends (one store per slot), and the start-up audit
+over interior cells. Under `serve` and `test` interior cells are still not
+started (they never were): an event a top-level cell raises reaches its
+interior only under `soma run`. Test `s4_*`.
 
-## 5. Rules between machines over different ids — NEEDS A DECISION
+## 5. Rules between machines over different ids — DONE (`via`), 2026-11-13
 
 Today a rule follows ONE id through every machine. The clinic had to key
 the appointment, the consultation, the prescription and the invoice by one
 visit id.
 
-**Proposed**: a `via` on the rule, naming where the other id is read:
+**Done** with a slot of its own rather than a field (a field of a record
+is rewritten with the record): a `via` on the rule, naming the slot where
+the other id is read:
 
 ```toml
 [verify.before."Ordonnances.delivree"]
 requires = ["Consultations.terminee"]
-via = "Ordonnances.ordonnances.consult"     # the consultation this prescription names
+via = "Ordonnances.consult_of"     # Map<String, String>: prescription → consultation
 ```
 
 Meaning: for the prescription `o` that is delivered, the consultation
@@ -114,3 +124,21 @@ Alternative, cheaper: the same clause in the frame —
 — which `verify` can judge on a hole (decision 10). Both need the pair of
 ids; the frame form also answers "state an inter-machine rule before the
 bodies exist".
+
+Implementation (`checker/product.rs`): the machines whose states the rule
+requires follow a second instance; `consult_of.get(o)` / `consult_of[o]`
+read in the target's cell is the key `link:o`, which IS that instance when
+`o` is the followed one; the two decisions are kept consistent. The write-
+once condition is checked on the bodies (`link_written_once`): one writer,
+one `set`, after `require consult_of.get(id) == () else …`, no delete.
+Eight probes (other id, reopen under `while`, index form, a helper, an id
+swapped, a `??` default, a hole) give the expected verdict; test `s5_*`.
+
+## 6. Next
+
+- `capabilities` and `effects` on the shared call resolution;
+- `frame`, `invariants`, `product`, `termination`, `waits` on
+  `bodies::entries` (they agree today, by test);
+- one `names::SLOT_WRITES`, one "is an Int" predicate;
+- the frame clause `moves s -> t when Other.machine in [states]` (decision
+  10): a rule between machines stated in the skeleton, judged on a hole.
