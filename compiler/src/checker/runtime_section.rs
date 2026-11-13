@@ -151,7 +151,7 @@ pub fn check_cell(cell: &CellDef) -> Vec<Issue> {
 pub fn as_handler(program: &mut Program) {
     for cell in program.cells.iter_mut() {
         // (once: the program may be prepared for analysis more than once)
-        if cell.node.sections.iter().any(|s| matches!(&s.node, Section::OnSignal(on) if on.signal_name == "runtime { }")) { continue; }
+        if cell.node.sections.iter().any(|s| matches!(&s.node, Section::OnSignal(on) if on.signal_name == super::bodies::RUNTIME_ENTRY)) { continue; }
         let mut body: Vec<Spanned<Statement>> = Vec::new();
         let mut span = None;
         for s in &cell.node.sections {
@@ -159,7 +159,7 @@ pub fn as_handler(program: &mut Program) {
         }
         if let (false, Some(span)) = (body.is_empty(), span) {
             cell.node.sections.push(Spanned::new(Section::OnSignal(OnSection {
-                signal_name: "runtime { }".to_string(), params: Vec::new(), body, properties: Vec::new(),
+                signal_name: super::bodies::RUNTIME_ENTRY.to_string(), params: Vec::new(), body, properties: Vec::new(),
             }), span));
         }
     }

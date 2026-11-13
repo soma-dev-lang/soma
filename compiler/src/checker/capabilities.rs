@@ -100,8 +100,9 @@ pub fn check_cell(cell: &CellDef, manifest: Option<&Manifest>) -> Vec<Capability
         model_capabilities(cell.agent_model.as_deref(), manifest);
 
     let mut errs = Vec::new();
-    for section in &cell.sections {
-        if let Section::OnSignal(ref handler) = section.node {
+    // (every body that runs: handlers, timers, `runtime { }`)
+    for handler in &crate::checker::bodies::entries(cell) {
+        {
             let mut visitor = ThinkVisitor::default();
             for stmt in &handler.body {
                 visitor.visit_stmt(&stmt.node);

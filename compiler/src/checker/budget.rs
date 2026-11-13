@@ -898,8 +898,9 @@ pub fn check_cell(cell: &CellDef) -> BudgetReport {
     // 2. Max over handlers.
     let mut handler_max = Cost::zero();
     let mut breakdown = Vec::new();
-    for section in &cell.sections {
-        if let Section::OnSignal(ref on) = section.node {
+    // (every body that runs: a timer's allocations are the cell's too)
+    for on in &crate::checker::bodies::entries(cell) {
+        {
             let c = handler_peak(on);
             breakdown.push((on.signal_name.clone(), c.clone()));
             handler_max = handler_max.max(c);

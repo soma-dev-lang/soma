@@ -484,7 +484,7 @@ fn leans_on_neighbour(comment: &str) -> bool {
 /// The comments written for a declaration: the `//` lines right above it
 /// and the ones that trail its own lines. They are the only place a
 /// skeleton says what a signal is FOR and what its answer means.
-fn intent_of(span: Span, main: &str, trailing: bool) -> Vec<String> {
+pub(crate) fn intent_of(span: Span, main: &str, trailing: bool) -> Vec<String> {
     let Some((chars, start, end)) = file_of(span, main) else { return Vec::new() };
     let line_start = |i: usize| chars[..i].iter().rposition(|c| *c == '\n').map_or(0, |p| p + 1);
     let line_end = |i: usize| chars[i..].iter().position(|c| *c == '\n').map_or(chars.len(), |p| i + p);
@@ -976,7 +976,10 @@ pub fn cmd_freeze(path: &PathBuf, amend: bool) {
         (Err(why), true) => println!("replacing {}, which {}", lock_path.display(), why),
         (Ok(Some(old)), true) => {
             let diff = lock::compare(old, &now, true);
-            if diff.is_empty() && old.file == file_name { println!("nothing to amend: the structure is the one {} holds", lock_path.display()); return; }
+            // (the comments the lock recorded may have changed with the structure intact)
+            let notes = lock::notes_changed(&program, path, &source);
+            if diff.is_empty() && old.file == file_name && notes.is_empty() { println!("nothing to amend: the structure is the one {} holds", lock_path.display()); return; }
+            for who in &notes { println!("the comment of `{}` changed: recorded", who); }
             if old.file != file_name { println!("{} was the lock of {}: it becomes the lock of {}", lock_path.display(), old.file, file_name); }
             for d in &diff { println!("{}", d); }
         }

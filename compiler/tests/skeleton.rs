@@ -2282,3 +2282,23 @@ fn r12_one_answer_where_there_were_several() {
     let (out, code) = soma(&["check", &format!("{root}/b7_dir_import_depth")]);
     assert!(code != 0, "{out}");
 }
+
+#[test]
+fn a_comment_changed_after_the_freeze_is_said_not_refused() {
+    // the comment of a signal is its brief: changing it changes what a body must do
+    let src = "skeleton L {\n    memory { cash: Map<String, Int> }\n    face {\n        // Pays `amount` in cash. Returns the amount left due.\n        signal pay(folio: String, amount: Int) -> Int  writes cash\n        signal due(folio: String) -> Int  reads cash\n    }\n}\n";
+    let path = program("lock_comment", src);
+    let (out, code) = soma(&["skeleton", &path, "--freeze"]);
+    assert_eq!(code, 0, "{out}");
+    let (out, code) = soma(&["check", &path]);
+    assert!(code == 0 && !out.contains("changed since the freeze"), "{out}");
+    std::fs::write(&path, src.replace("Returns the amount left due.", "More than is due: error kind `Overpaid`.")).unwrap();
+    let (out, code) = soma(&["check", &path]);
+    assert!(code == 0 && out.contains("warning") && out.contains("the comment of `L.pay` changed since the freeze"), "{out}");
+    assert!(!out.contains("comment of `L.due`"), "{out}");
+    // amending records it
+    let (out, code) = soma(&["skeleton", &path, "--amend"]);
+    assert_eq!(code, 0, "{out}");
+    let (out, code) = soma(&["check", &path]);
+    assert!(code == 0 && !out.contains("changed since the freeze"), "{out}");
+}

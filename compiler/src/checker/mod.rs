@@ -1,6 +1,7 @@
 mod properties;
 mod signals;
 pub mod verify;
+pub mod bodies;
 pub mod desugar;
 pub mod temporal;
 pub mod native;
@@ -600,6 +601,13 @@ impl<'a> Checker<'a> {
         if let Some((file, text)) = &self.source {
             for message in lock::check(program, std::path::Path::new(file), text) {
                 self.errors.push(CheckError::Static { kind: "skeleton_lock", message, span: Span { start: 0, end: 0 } });
+            }
+            // a comment is the brief: changed since the freeze, it is said (not refused)
+            for who in lock::notes_changed(program, std::path::Path::new(file), text) {
+                self.warnings.push(CheckWarning::FrameWarning {
+                    message: format!("the comment of `{who}` changed since the freeze — it is the brief a body is written from: check the body still does what it says, and record the change with `soma skeleton {file} --amend`"),
+                    span: Span { start: 0, end: 0 },
+                });
             }
         }
         // a flesh does what its frame says, and nothing else

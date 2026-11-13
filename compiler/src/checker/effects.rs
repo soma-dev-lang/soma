@@ -34,8 +34,9 @@ pub fn check_cell(cell: &CellDef) -> Vec<HandlerEffects> {
     }
 
     let mut out = Vec::new();
-    for section in &cell.sections {
-        if let Section::OnSignal(ref handler) = section.node {
+    // (every body that runs: handlers, timers, `runtime { }`)
+    for handler in &super::bodies::entries(cell) {
+        {
             let mut think_sites = 0usize;
             let mut narrowed: Option<BTreeSet<String>> = None;
             for stmt in &handler.body {

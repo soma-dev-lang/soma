@@ -113,6 +113,10 @@ def main():
     args = ap.parse_args()
     files = [os.path.abspath(f) for f in args.files] or [
         os.path.join(ROOT, f) for f in subprocess.run(["git", "ls-files", "*.cell"], cwd=ROOT, capture_output=True, text=True).stdout.split()]
+    # (the reproducers of the review rounds are adversarial programs: each is a test of
+    # compiler/tests/skeleton.rs, not a program these harnesses hold an invariant on)
+    if not args.files:
+        files = [f for f in files if "/tests/fixtures/skeleton_review/" not in f]
     counts, bad = {}, []
     with concurrent.futures.ThreadPoolExecutor(args.jobs) as pool:
         for rel, status, missed in pool.map(lambda f: one(args.soma, f), files):

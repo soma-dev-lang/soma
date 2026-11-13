@@ -31,6 +31,32 @@ use std::path::{Path, PathBuf};
 pub const LOCK_FILE: &str = "skeleton.lock";
 /// The entry that holds soma.toml's `[verify…]` tables.
 pub const VERIFY_ENTRY: &str = "soma.toml [verify]";
+/// In an entry's text: `//~ signal <digest of its comment>`.
+const NOTE_MARK: &str = "//~ ";
+
+/// The signals whose comment is not the one the lock recorded, as
+/// `Cell.signal` — for a warning: a comment is the brief a body is written
+/// from, and it is no part of the frozen structure.
+pub fn notes_changed(program: &Program, file: &Path, main_source: &str) -> Vec<String> {
+    let mut out = Vec::new();
+    let now = fingerprint(program, file, main_source);
+    for lock_path in lock_paths(program, file) {
+        let Ok(Some(lock)) = read(&lock_path) else { continue };
+        for old in &lock.entries {
+            let Some(new) = now.iter().find(|e| e.name == old.name) else { continue };
+            let notes = |t: &str| -> Vec<(String, String)> { t.lines().filter_map(|l| l.trim().strip_prefix(NOTE_MARK))
+                .filter_map(|l| l.split_once(' ').map(|(n, d)| (n.to_string(), d.to_string()))).collect() };
+            let (was, is) = (notes(&old.text), notes(&new.text));
+            for (name, digest) in &was {
+                if is.iter().any(|(n, d)| n == name && d != digest) {
+                    let who = format!("{}.{}", old.name, name);
+                    if !out.contains(&who) { out.push(who); }
+                }
+            }
+        }
+    }
+    out
+}
 
 pub struct Entry {
     pub name: String,
@@ -167,7 +193,26 @@ pub fn fingerprint(program: &Program, program_path: &Path, main_source: &str) ->
             let close = text.trim_end().rfind('}').unwrap_or(text.len());
             text = format!("{}{}{}", &text[..close], types.concat(), &text[close..]);
         }
-        out.push(Entry { name: cell.node.name.clone(), hash: sha(&[&declared, &movers.concat(), &types.concat()]), core: sha(&[&declared, &types.concat()]), text });
+        let hash = sha(&[&declared, &movers.concat(), &types.concat()]);
+        let core = sha(&[&declared, &types.concat()]);
+        // the comment of each signal — its brief — by a digest: not part of
+        // the structure (a retouched sentence is no amendment), but a change
+        // of it is said (`notes_changed`)
+        let mut notes: Vec<String> = Vec::new();
+        for section in &cell.node.sections {
+            let Section::Face(face) = &section.node else { continue };
+            for d in &face.declarations {
+                let name = match &d.node { FaceDecl::Signal(sig) => &sig.name, FaceDecl::Tool(t) => &t.name, _ => continue };
+                let words = crate::commands::skeleton::intent_of(d.span, main_source, true).join(" ");
+                let words: String = words.split_whitespace().collect::<Vec<_>>().join(" ");
+                notes.push(format!("    {}{} {}\n", NOTE_MARK, name, &sha(&[&words])[..16]));
+            }
+        }
+        if !notes.is_empty() {
+            let close = text.trim_end().rfind('}').unwrap_or(text.len());
+            text = format!("{}{}{}", &text[..close], notes.concat(), &text[close..]);
+        }
+        out.push(Entry { name: cell.node.name.clone(), hash, core, text });
     }
     if !out.is_empty() {
         if let Some(tables) = verify_tables(program_path) {
@@ -253,7 +298,7 @@ pub fn compare(lock: &Lock, now: &[Entry], whole: bool) -> Vec<String> {
             None => {}
             // (a program that is not the lock's own: outside movers are not its lock's to judge)
             Some(new) if (whole && new.hash != old.hash) || (!whole && new.core != old.core) => {
-                let outside = |l: &&str| whole || !l.trim_start().starts_with("// moved from outside by");
+                let outside = |l: &&str| (whole || !l.trim_start().starts_with("// moved from outside by")) && !l.trim_start().starts_with(NOTE_MARK);
                 let old_lines: Vec<&str> = old.text.lines().filter(outside).collect();
                 let new_lines: Vec<&str> = new.text.lines().filter(outside).collect();
                 let mut block = format!("{} from {}:", what(&old.name), LOCK_FILE);
