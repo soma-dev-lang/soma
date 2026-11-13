@@ -19,7 +19,7 @@ The language core is implemented; recent audits cover numeric boundaries,
 typed inputs and storage, evaluation order, collections, dispatch, constructors,
 SQLite failures, transaction boundaries, legacy lists, storage providers,
 native/interpreter parity and storage complexity.
-Release validation passed 966 Rust tests, 118 CLI checks, 322 corpus programs
+Release validation passed 1,083 Rust tests, 118 CLI checks, 327 corpus programs
 and 1,280 independent numeric comparisons. Evidence and current status:
 https://soma-lang.dev/status.
 
