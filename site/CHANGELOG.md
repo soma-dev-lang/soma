@@ -1,6 +1,10 @@
 # Changelog
 
-## Unreleased
+## 3.1.0 — 2026-11-13
+
+Skeleton first: a large program is written structure first, proven before its bodies exist, and filled body by body from a brief the compiler enforces. Summary in `soma docs releases`; the course at https://soma-lang.dev/learn (six lessons, every output printed by the binary — `docs/site/learn.md`, built by `tools/build_learn.py`, which fails the site build when a lesson stops behaving as written).
+
+- **A hole is not judged for termination** (found writing the course): the hole model (`while ? { … }`, what a body may do) was read as a loop by the termination analysis in a cell without a machine, and through a call from another cell — `⚠ while-loop without provable termination bound` on every skeleton. Holes are left out, as the docs said. The invariant line of a hole now says why in words (`take → copies because it is a hole …`) instead of "`?` has no known range". Test `a_hole_is_not_judged_for_termination_with_or_without_a_machine`.
 
 ### Skeleton first: `skeleton` / `flesh`, frames, holes, `soma skeleton`, `soma holes`, `skeleton.lock`
 

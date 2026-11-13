@@ -1,19 +1,21 @@
 # Soma Language — for AI Agents
 
-> Soma is a declarative cell language where systems carry their proofs.
+> Soma is a language for programs that agents write and people must trust.
 > One file holds a whole service: contract (`face`), storage with invariants
 > (`memory`), a model-checked lifecycle (`state`), handlers, HTTP routes and
-> tests. `soma verify` proves the state machines; memory invariants reject
-> bad writes before they commit; LLM agents run inside lifecycles the
-> compiler proves terminate, with token budgets. Every compiler error
-> names its own fix, so the write → check → fix loop converges.
+> tests. Every compiler error names its fix, so the write → check → fix loop
+> converges; `soma verify` hands you evidence to quote (proven, or checked at
+> runtime — never "I believe"). Past one file, write the `skeleton` first:
+> the compiler gives you a one-screen brief per body and refuses a body
+> that leaves it, so you never hold the whole program in context.
 
-Everything below is current for the soma binary named in
-https://soma-lang.dev/version.json and generated from the compiler or
-verified against it. Unknown URLs on this site return 404, never a page.
+New here? https://soma-lang.dev/learn — six lessons, every output printed by
+the real binary ([plain text](https://soma-lang.dev/llms-learn.txt)). Everything
+below is current for the binary named in https://soma-lang.dev/version.json.
 
 ## Machine-readable resources
 
+- [llms-learn.txt](https://soma-lang.dev/llms-learn.txt): the course — a cell, errors that name their fix, a proven limit, a checked lifecycle, an agent tested offline, a program written skeleton first
 - [llms-service.txt](https://soma-lang.dev/llms-service.txt): this file + [guarantees](https://soma-lang.dev/docs/guarantees.md) (proven / enforced / not covered) + [serving](https://soma-lang.dev/docs/serving.md) (routing, exposure, atomicity) + [operations](https://soma-lang.dev/docs/operations.md) (what kills the process, ports, exit codes, HTTP statuses, limits, Linux deploy) + every gotcha — what a service needs, ~100 KB
 - [llms-full.txt](https://soma-lang.dev/llms-full.txt): this file + full reference + every gotcha + every builtin, one fetch (~130 KB)
 - [llms-agents.txt](https://soma-lang.dev/llms-agents.txt): running LLM agents — tools, capabilities, [task], hordes, budgets, mocks (`soma docs agents`)
@@ -34,11 +36,9 @@ verified against it. Unknown URLs on this site return 404, never a page.
 
 ## Pick Soma when / skip it when
 
-Current release: 3.0.0 — expressions are typed at check, every syntax error
-is reported in one pass, diagnostics have stable codes (`soma explain`),
-editions (`edition = "2027"`), `const`, `(a, b) => …`, `++`, typed model
-answers, `soma fmt`, `soma verify --attest`. What each release changed:
-`soma docs releases`.
+Current release: 3.1.0 — skeleton first: `skeleton` / `flesh`, frames,
+holes, briefs, `skeleton.lock`, rules between machines on an edge
+(`moves a -> b when Other.s`). What each release changed: `soma docs releases`.
 
 Pick it when the task has a lifecycle or a limit that must hold: payments,
 approvals, interlocks, quotas, escrow, agent workflows with a budget — and
@@ -1354,6 +1354,35 @@ it says "error kind X", raise it with `require … else X "…"` or `fail`.
 
 > Newest first. The language itself: https://soma-lang.dev/llms.txt (`soma docs agent`).
 > Every fix and its compatibility note: https://soma-lang.dev/CHANGELOG.md.
+
+Soma 3.1.0 is the skeleton-first release: a large program is written
+structure first. A `skeleton Name { … }` is a cell without bodies — memory,
+invariants, machines, and a face where each signal carries a closed frame
+(`reads`, `writes`, `moves s -> t`, `calls f, Cell.g, think`, `emits ev`).
+Bodies come later in `flesh Name { on … }` (the same file or one a `use`
+brings in), and `soma check` refuses a body — and the helpers it reaches —
+that does anything its frame does not grant (E0120, naming the clause to add
+if the design means it). A signal no flesh fills is a hole: `check` counts
+it, a call fails with kind `not_implemented`, and `soma verify` reads it as
+its frame, so a ✓ on a skeleton holds for every conforming flesh (`VERIFY OK
+(skeleton — the holes above are open obligations)`). New commands: `soma
+skeleton app.cell` (the map; frames inferred on plain cells), `--index`,
+`soma skeleton app.cell Cell.signal` (the brief for one body), `--split`,
+`--freeze` / `--amend` (`skeleton.lock`; a signal's comment changed after the
+freeze is a warning), `soma holes`, `soma refs`, `soma rename`, `soma init
+--skeleton`, `soma docs skeleton|flesh`. A rule between machines follows one
+id, or another instance through `via = "Cell.slot"` (a link written once);
+an edge of a frame can carry one: `moves a -> b when Other.s [via slot]`.
+Also in 3.1.0: one rule for who hears an event, shared by the runtime and
+every analysis (a top-level cell's emit reaches the top-level cells and its
+own interior; an interior cell's, its siblings and its parent) — an interior
+cell may no longer take the name of a top-level cell; one store per slot
+however the program is started (what `soma run` of an interior cell wrote as
+JSON files is no longer read); the project of a file is the folder holding
+its soma.toml and its imports. Thirteen adversarial review rounds closed
+causes of false ✓ in verify (taint, effects, budget, invariants, guards,
+termination), each with a regression test. The course, six lessons with real
+outputs: https://soma-lang.dev/learn.
 
 Soma 3.0.0 types expressions at check: a field a record type does not declare
 (`l.quantity` on `Line { sku, qty }`), operands the interpreter would refuse

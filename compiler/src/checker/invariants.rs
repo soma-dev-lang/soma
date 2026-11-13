@@ -989,7 +989,11 @@ pub fn verify_program_invariants(program: &Program) -> Vec<VerifyResult> {
                     let mut names: HashSet<String> = HashSet::new();
                     collect_idents(value_expr, &mut names);
                     let on = handlers.get(handler);
-                    let mut why: Vec<String> = names.iter().filter(|n| bounds(ctx.range_of(&Expr::Ident((*n).clone()))).is_none()).map(|n| {
+                    // a hole's model writes `?`: say what that is, not "`?` has no known range"
+                    let hole = on.map(|o| super::flesh::is_hole(o)).unwrap_or(false);
+                    let mut why: Vec<String> = if hole {
+                        vec!["it is a hole (its frame lets a body write any value — judged when the body exists)".to_string()]
+                    } else { names.iter().filter(|n| bounds(ctx.range_of(&Expr::Ident((*n).clone()))).is_none()).map(|n| {
                         let params: Vec<&str> = on.map(|o| o.params.iter().map(|p| p.name.as_str()).collect()).unwrap_or_default();
                         if params.contains(&n.as_str()) {
                             let numeric = on.map(|o| o.params.iter().any(|p| &p.name == n && matches!(&p.ty.node, TypeExpr::Simple(t) if t == "Int" || t == "Float" || t == "BigInt"))).unwrap_or(false);
@@ -1043,7 +1047,7 @@ pub fn verify_program_invariants(program: &Program) -> Vec<VerifyResult> {
                                 _ => format!("`{n}` gets {} values (its binding and its later assignments — a loop accumulator?) — bind it once, or read the slot", bound.len()),
                             }
                         }
-                    }).collect();
+                    }).collect() };
                     why.retain(|w| !w.is_empty());
                     why.sort();
                     // every name has SOME range, just not a tight enough one:

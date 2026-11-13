@@ -11,6 +11,8 @@ Everything an agent fetches is GENERATED here from the repo and from the
     site/corpus/index.json    light catalog of the verified corpus (+ the files)
     site/corpus/full.json     the same with summaries; corpus/<domain>/index.json
     site/corpus/<domain>/*.cell
+    site/llms-learn.txt       the course (docs/site/learn.md), outputs printed by the binary
+    site/learn.html           the same course as a page
     site/skill/SKILL.md       drop-in agent skill
     site/version.json         what this build was generated from
     site/sitemap.xml
@@ -444,6 +446,7 @@ def main():
                 "gotchas": len(gotchas),
                 "resources": {
                     "llms": f"{BASE}/llms.txt",
+                    "learn": f"{BASE}/llms-learn.txt",
                     "llms_full": f"{BASE}/llms-full.txt",
                     "llms_service": f"{BASE}/llms-service.txt",
                     "guarantees": f"{BASE}/docs/guarantees.md",
@@ -470,7 +473,7 @@ def main():
     # sitemap: every page and every machine file (not the 316 sources —
     # corpus/index.json is their sitemap)
     pages = [
-        "", "paper", "agents", "status", "llms.txt", "llms-agents.txt", "llms-native.txt", "llms-skeleton.txt", "llms-flesh.txt", "llms-releases.txt", "llms-service.txt", "llms-full.txt", "agent.md",
+        "", "learn", "paper", "agents", "status", "llms.txt", "llms-learn.txt", "llms-agents.txt", "llms-native.txt", "llms-skeleton.txt", "llms-flesh.txt", "llms-releases.txt", "llms-service.txt", "llms-full.txt", "agent.md",
         "skill/SKILL.md", "docs/guarantees.md", "docs/serving.md", "docs/reference.md", "docs/builtins.md",
         "docs/gotchas.md", "builtins.json", "gotchas.json", "corpus/domains.json", "corpus/index.json",
         "corpus/index.md", "CHANGELOG.md", "LICENSE",
@@ -483,7 +486,12 @@ def main():
     sm.append("</urlset>")
     write("sitemap.xml", "\n".join(sm) + "\n")
 
-    broken = verify_page_examples() if VERIFY else []
+    # the course: every command run, every output pasted from the binary
+    sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+    import build_learn
+    course = build_learn.build(SOMA, version, today)
+
+    broken = (verify_page_examples() if VERIFY else []) + [f"learn: {p}" for p in course]
     for b in broken:
         print(f"  BROKEN {b}")
     print(f"corpus: {len(entries)} published, {len(failing)} withheld")

@@ -58,6 +58,7 @@ footer { margin-top:3rem; color:var(--muted); font-size:.92rem; border-top:1px s
 <nav>
   <div class="brand"><a href="/">soma</a></div>
   <a href="/">Overview</a>
+  <a href="/learn">Learn</a>
   <a href="/agents">For agents</a>
   <a href="/llms.txt">llms.txt</a>
   <a href="/corpus/index.md">Corpus</a>
@@ -69,7 +70,10 @@ footer { margin-top:3rem; color:var(--muted); font-size:.92rem; border-top:1px s
 <h1>If you are an AI agent, read this page.</h1>
 <p class="lede">Soma is a language in which you can hand back a <em>proof</em> instead of a promise. This page says what that buys you, how to get a correct program on the first try, and when to pick something else. Every resource below is plain text or JSON, and every claim is a command.</p>
 
-<pre><code># the whole language, one fetch, ready for your context
+<pre><code># new here: six lessons, every output printed by the real binary (~25 KB)
+curl -s https://soma-lang.dev/llms-learn.txt
+
+# the whole language, one fetch, ready for your context
 curl -s https://soma-lang.dev/llms-full.txt
 
 # a verified example of what you are about to write
@@ -80,6 +84,7 @@ curl -s https://soma-lang.dev/corpus/index.json   # filter on "features", then G
   <div class="card"><h3>A compiler that reviews your work</h3><p>Errors name their fix: <code>invalid transition: Placed → Delivered. Valid targets: [Accepted, Cancelled]</code>. Undefined interpolation variables, unknown calls, a handler shadowed by a builtin, a non-exhaustive <code>match</code> — all caught by <code>soma check</code>, before anything runs. Your write → check → fix loop converges.</p></div>
   <div class="card"><h3>Evidence you can paste</h3><p><code>soma verify</code> model-checks every state machine: reachability, deadlocks, liveness (a terminal state stays reachable — <code>eventually</code> for "every run gets there"), precedence, and that the handler bodies implement the machine drawn next to them. When the user asks "is it safe?", you answer with the verifier's output — and <a href="/docs/guarantees.md">/docs/guarantees.md</a> says in three columns what is proven, what is enforced at runtime, and what is not covered.</p></div>
   <div class="card"><h3>Limits that hold — and handlers that leave no half-written state</h3><p><code>invariant balance &gt;= 0</code> is checked before a write commits — set, bracket write or delete; the rejected write leaves the slot untouched and raises a catchable error (proven by induction when the value can be bounded, runtime-checked otherwise, and verify says which). A handler that fails leaves no slot write and no transition behind; under <code>soma serve</code> handlers run one at a time — no locks, and no compensation code for the program's own state (a <code>[task]</code> handler runs as steps: each <code>think()</code> commits the step before it and waits outside the lock). Effects outside it (an HTTP call, a file, an email, an LLM call) are not undone: send them after the writes that justify them, or keep an outbox the handler writes atomically and a tick delivers.</p></div>
+  <div class="card"><h3>Large programs without the whole program in context</h3><p>Write the <code>skeleton</code> first: memory, machines, and for each signal a frame of what its body may read, write, call and move. <code>soma verify</code> proves the lifecycles before any body exists. <code>soma skeleton app.cell Cell.signal</code> is a one-screen brief for writing one body, and <code>soma check</code> refuses a body that leaves its frame, naming the clause the design would need. That way you work on one function at a time and the design does not drift. <a href="/learn#lesson-6-a-large-program-skeleton-first">Lesson 6</a>.</p></div>
   <div class="card"><h3>One file is a whole service</h3><p>Contract, storage, lifecycle, handlers, HTTP routes and tests live in one cell. Less to keep in context, nothing to wire together, and <code>soma serve app.cell</code> runs it.</p></div>
   <div class="card"><h3>Nothing to guess</h3><p><code>soma describe --builtins --json</code> is the exact signature table, generated from the compiler — also at <a href="/builtins.json">/builtins.json</a>. <code>soma describe app.cell --faces</code> is the contract of every cell in a few tokens.</p></div>
   <div class="card"><h3>Hordes: thousands of agents, one ceiling</h3><p><code>horde(Reviewer.review, docs, map("concurrency", 500, "budget_tokens", 2000000, "on_result", "_store"))</code> runs a <code>[task]</code> agent once per input with a bounded pool: each <code>think()</code> waits outside the lock, every call reserves its worst case against a hard token ceiling, each result is recorded once (also across a <code>kill -9</code>), and <code>soma verify</code> prints the horde's cost bound. Rounds for simulations (<code>snapshot</code>, <code>apply</code> in input order, <code>seed</code>, per-agent memory) replay identically. Measured with a mocked 2 s model: 10 000 tasks at concurrency 500 in 41 s. See <a href="/docs/serving.md">/docs/serving.md</a>.</p></div>
@@ -142,7 +147,9 @@ cell test LedgerTests {
 <h2>Everything, machine-readable</h2>
 <table>
 <tr><th>URL</th><th>What it is</th></tr>
-<tr><td><a href="/llms.txt">/llms.txt</a></td><td>Working summary of the language — start here.</td></tr>
+<tr><td><a href="/llms-learn.txt">/llms-learn.txt</a> · <a href="/learn">/learn</a></td><td>The course: six lessons, each a program, the commands run on it and what they printed. Start here if Soma is new to you.</td></tr>
+<tr><td><a href="/llms.txt">/llms.txt</a></td><td>Working summary of the language, the page to keep in context while you write.</td></tr>
+<tr><td><a href="/llms-skeleton.txt">/llms-skeleton.txt</a></td><td>Large programs: <code>skeleton</code> / <code>flesh</code>, frames, holes, the brief, <code>skeleton.lock</code>.</td></tr>
 <tr><td><a href="/llms-service.txt">/llms-service.txt</a></td><td>Summary + guarantees + serving + gotchas: what you need for a service, without the linear-algebra reference (~100 KB).</td></tr>
 <tr><td><a href="/llms-full.txt">/llms-full.txt</a></td><td>Summary + full reference + every gotcha + every builtin. One fetch (~130 KB; it contains llms.txt).</td></tr>
 <tr><td><a href="/docs/guarantees.md">/docs/guarantees.md</a> · <a href="/docs/serving.md">/docs/serving.md</a> · <a href="/docs/operations.md">/docs/operations.md</a></td><td>Proven / enforced / not covered, in three columns. How <code>soma serve</code> routes, exposes and serializes. What kills the process and what does not, ports, exit codes, HTTP status per error kind, limits, Linux deployment.</td></tr>
@@ -174,7 +181,7 @@ curl -s https://soma-lang.dev/corpus/escrow_finance/&lt;name&gt;.cell</code></pr
 <tr><th class="ok">Pick it when</th><th class="warn">Pick something else when</th></tr>
 <tr>
 <td>The task has a lifecycle or a limit that must hold: payments, approvals, interlocks, quotas, escrow, votes, an agent workflow with a budget.</td>
-<td>You need a large ecosystem. The registry has one package (<code>matrix</code>).</td>
+<td>You need a large ecosystem. The registry holds a handful of standard packages (money, time, auth, queue, …), not thousands.</td>
 </tr>
 <tr>
 <td>The user will ask "how do you know it's correct?" and you want to answer with a verifier's output.</td>
@@ -182,7 +189,7 @@ curl -s https://soma-lang.dev/corpus/escrow_finance/&lt;name&gt;.cell</code></pr
 </tr>
 <tr>
 <td>A small self-contained HTTP service: one file, storage and tests included.</td>
-<td>The guarantee you need spans several cells. Verification is per cell; cross-cell composition is linted, not proven.</td>
+<td>You need a guarantee between cells that you cannot state as a <code>[verify.before."Cell.state"]</code> rule over their machines: verification is per cell otherwise, and composition is linted, not proven.</td>
 </tr>
 </table>
 <p class="note">Soma is experimental. The <a href="/">overview</a> separates what is implemented from what is partial, and the <a href="/paper">paper</a> states what the verifier does and does not prove.</p>

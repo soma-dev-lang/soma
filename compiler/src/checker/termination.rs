@@ -159,6 +159,9 @@ fn check_cell_termination_raw(cell: &CellDef, program: &Program) -> Vec<Terminat
             continue;
         }
         if let Section::OnSignal(ref on) = section.node {
+            // a hole has no body yet: its model (`while ? { … }`) is what a
+            // body MAY do, not a loop — judged when the body exists
+            if super::flesh::is_hole(on) { continue; }
             let mut reasons = Vec::new();
             CURRENT_BODY.with(|b| *b.borrow_mut() = on.body.clone());
             for stmt in &on.body {

@@ -3,6 +3,35 @@
 > Newest first. The language itself: https://soma-lang.dev/llms.txt (`soma docs agent`).
 > Every fix and its compatibility note: https://soma-lang.dev/CHANGELOG.md.
 
+Soma 3.1.0 is the skeleton-first release: a large program is written
+structure first. A `skeleton Name { … }` is a cell without bodies — memory,
+invariants, machines, and a face where each signal carries a closed frame
+(`reads`, `writes`, `moves s -> t`, `calls f, Cell.g, think`, `emits ev`).
+Bodies come later in `flesh Name { on … }` (the same file or one a `use`
+brings in), and `soma check` refuses a body — and the helpers it reaches —
+that does anything its frame does not grant (E0120, naming the clause to add
+if the design means it). A signal no flesh fills is a hole: `check` counts
+it, a call fails with kind `not_implemented`, and `soma verify` reads it as
+its frame, so a ✓ on a skeleton holds for every conforming flesh (`VERIFY OK
+(skeleton — the holes above are open obligations)`). New commands: `soma
+skeleton app.cell` (the map; frames inferred on plain cells), `--index`,
+`soma skeleton app.cell Cell.signal` (the brief for one body), `--split`,
+`--freeze` / `--amend` (`skeleton.lock`; a signal's comment changed after the
+freeze is a warning), `soma holes`, `soma refs`, `soma rename`, `soma init
+--skeleton`, `soma docs skeleton|flesh`. A rule between machines follows one
+id, or another instance through `via = "Cell.slot"` (a link written once);
+an edge of a frame can carry one: `moves a -> b when Other.s [via slot]`.
+Also in 3.1.0: one rule for who hears an event, shared by the runtime and
+every analysis (a top-level cell's emit reaches the top-level cells and its
+own interior; an interior cell's, its siblings and its parent) — an interior
+cell may no longer take the name of a top-level cell; one store per slot
+however the program is started (what `soma run` of an interior cell wrote as
+JSON files is no longer read); the project of a file is the folder holding
+its soma.toml and its imports. Thirteen adversarial review rounds closed
+causes of false ✓ in verify (taint, effects, budget, invariants, guards,
+termination), each with a regression test. The course, six lessons with real
+outputs: https://soma-lang.dev/learn.
+
 Soma 3.0.0 types expressions at check: a field a record type does not declare
 (`l.quantity` on `Line { sku, qty }`), operands the interpreter would refuse
 (`s * 2` on a String), an argument or a `try` result used as the wrong kind

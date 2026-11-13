@@ -1,10 +1,12 @@
 <?xml version="1.0" encoding="UTF-8"?>
 <urlset xmlns="http://www.sitemaps.org/schemas/sitemap/0.9">
   <url><loc>https://soma-lang.dev/</loc><lastmod>2026-11-13</lastmod></url>
+  <url><loc>https://soma-lang.dev/learn</loc><lastmod>2026-11-13</lastmod></url>
   <url><loc>https://soma-lang.dev/paper</loc><lastmod>2026-11-13</lastmod></url>
   <url><loc>https://soma-lang.dev/agents</loc><lastmod>2026-11-13</lastmod></url>
   <url><loc>https://soma-lang.dev/status</loc><lastmod>2026-11-13</lastmod></url>
   <url><loc>https://soma-lang.dev/llms.txt</loc><lastmod>2026-11-13</lastmod></url>
+  <url><loc>https://soma-lang.dev/llms-learn.txt</loc><lastmod>2026-11-13</lastmod></url>
   <url><loc>https://soma-lang.dev/llms-agents.txt</loc><lastmod>2026-11-13</lastmod></url>
   <url><loc>https://soma-lang.dev/llms-native.txt</loc><lastmod>2026-11-13</lastmod></url>
   <url><loc>https://soma-lang.dev/llms-skeleton.txt</loc><lastmod>2026-11-13</lastmod></url>

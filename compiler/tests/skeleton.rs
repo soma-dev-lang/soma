@@ -2471,3 +2471,42 @@ fn r13_the_new_single_answers_hold_against_their_round() {
     let (out, _) = soma(&["check", &format!("{root}/budget_range_still_zero/app.cell")]);
     assert!(!out.contains("✓ budget holds"), "{out}");
 }
+
+#[test]
+fn a_hole_is_not_judged_for_termination_with_or_without_a_machine() {
+    // the hole model (`while ? { … }`) is a model of what a body may do, not a
+    // body: termination is judged when the bodies exist — in a cell without a
+    // machine too, and in a cell whose signal calls a hole of another cell
+    let p = program("hole_termination", r#"
+skeleton Stock {
+    memory {
+        copies: Map<String, Int> [persistent]
+        invariant copies >= 0
+    }
+    face {
+        signal take(book: String) -> Bool   writes copies
+    }
+}
+skeleton Loans {
+    memory { holder: Map<String, String> [persistent] }
+    state loan {
+        initial: requested
+        requested -> out
+        requested -> refused
+    }
+    face {
+        signal lend(id: String, book: String) -> String
+            moves requested -> out, requested -> refused
+            calls Stock.take
+        signal ping(n: Int) -> Int          calls Stock.take
+    }
+}
+flesh Loans {
+    on ping(n) { if Stock.take("b") { return 1 }  return 0 }
+}
+"#);
+    let (out, _) = soma(&["verify", &p]);
+    assert!(!out.contains("while-loop without provable termination bound"), "{out}");
+    // the invariant a hole may break is runtime-checked, and says why in words
+    assert!(out.contains("take → copies because it is a hole") && !out.contains("`?`"), "{out}");
+}

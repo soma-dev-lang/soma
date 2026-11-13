@@ -227,8 +227,8 @@ footer {
   "operatingSystem": "macOS, Linux",
   "description": "Experimental cell-based programming language with state-machine checks, memory properties, agent-oriented tooling, and a Rust implementation.",
   "url": "https://soma-lang.dev",
-  "downloadUrl": "https://github.com/soma-dev-lang/soma/releases/tag/v3.0.0",
-  "softwareVersion": "3.0.0",
+  "downloadUrl": "https://github.com/soma-dev-lang/soma/releases/tag/v3.1.0",
+  "softwareVersion": "3.1.0",
   "license": "https://github.com/soma-dev-lang/soma/blob/main/LICENSE",
   "codeRepository": "https://github.com/soma-dev-lang/soma",
   "programmingLanguage": "Rust",
@@ -240,6 +240,8 @@ footer {
 <nav>
   <div class="brand">soma</div>
   <div class="links">
+    <a href="/learn">Learn</a>
+    <a href="#skeleton">Large programs</a>
     <a href="#status">Implementation</a>
     <a href="#language">Language</a>
     <a href="#verification">Verification</a>
@@ -257,12 +259,13 @@ footer {
 <header>
   <h1>Soma</h1>
   <p class="lede">Soma is a small language for services whose correctness is a lifecycle and a few hard limits — approvals, quotas, escrow, agent workflows. One file holds the data, the state machine, the handlers, the tests and the HTTP routes; <code>soma verify</code> proves the lifecycle and the invariants it can, and says which ones it only checks at runtime. With SQLite or in-memory storage, handlers are atomic and serialized: a request that fails leaves no slot write and no transition behind — effects outside the program (an HTTP call, a file, an LLM call) are not rolled back.</p>
-  <p>Built for programs written by AI agents: every error names its fix, the whole language fits in one context window (<a href="/llms.txt">llms.txt</a>), and the toolchain answers with evidence (<code>VERIFY OK</code>, proven bounds, exact counts) rather than promises. This page is factual: <a href="#status">implementation status</a> separates what is implemented from what is partial.</p>
+  <p>Built for programs written by AI agents: every error names its fix, the whole language fits in one context window (<a href="/llms.txt">llms.txt</a>), and the toolchain answers with evidence (<code>VERIFY OK</code>, proven bounds, exact counts) rather than promises. For a large program, the agent writes the <a href="#skeleton">skeleton</a> first, and then writes each body from a one-screen brief that the compiler enforces. This page is factual: <a href="#status">implementation status</a> separates what is implemented from what is partial.</p>
+  <p><strong>Learn it in six lessons:</strong> <a href="/learn">/learn</a>, also as plain text for models at <a href="/llms-learn.txt">/llms-learn.txt</a>. Each lesson is a program and the commands run on it, and every output shown was printed by the released binary.</p>
   <div class="install">
     <code>curl -fsSL https://soma-lang.dev/install.sh | sh</code>
     <button type="button" onclick="navigator.clipboard.writeText('curl -fsSL https://soma-lang.dev/install.sh | sh')">copy</button>
   </div>
-  <p><strong>Latest release: <a href="https://github.com/soma-dev-lang/soma/releases/tag/v3.0.0">Soma 3.0.0</a></strong> — static types for expressions, every syntax error in one pass with stable diagnostic codes, editions, face contracts and properties proven across cells, durable waits, tools from MCP and OpenAPI servers, readers that no longer wait under <code>soma serve</code>, a grammar for constrained decoding, Python and npm packages, and eight standard packages. Linux and macOS binaries include SHA-256 checksums. <a href="/CHANGELOG.md">Read the release notes.</a></p>
+  <p><strong>Latest release: <a href="https://github.com/soma-dev-lang/soma/releases/tag/v3.1.0">Soma 3.1.0</a></strong> — skeleton first: <code>skeleton</code> / <code>flesh</code>, frames that state what each body may read, write, call and move, holes that <code>soma verify</code> already reasons about, a brief per body, <code>skeleton.lock</code>, rules between machines on an edge, and one rule for who hears an event. Thirteen adversarial review rounds closed, each with a regression test. Linux and macOS binaries include SHA-256 checksums. <a href="/CHANGELOG.md">Read the release notes.</a></p>
   <p><strong>Reading this as an AI agent?</strong> Go to <a href="/agents">/agents</a>, or fetch <a href="/llms-full.txt">/llms-full.txt</a> (the whole language, one request), <a href="/builtins.json">/builtins.json</a> (exact signatures) and <a href="/corpus/index.json">/corpus/index.json</a> (300+ programs passing check+test, verified where they have a state machine, filterable by feature). A project's <code>AGENTS.md</code> block is at <a href="/agent.md">/agent.md</a>.</p>
   <p class="note">Installer note: the shell installer executes code fetched from the project repository. Review <a href="https://github.com/soma-dev-lang/soma/blob/main/site/setup.sh">site/setup.sh</a> before running it in an environment you care about.</p>
 </header>
@@ -283,7 +286,7 @@ footer {
         return 100 - (before + n)
     }
 }</code></pre>
-  <p>What the verifier says, and what the program then does (real output of the 2.6 toolchain):</p>
+  <p>What the verifier says, and what the program then does (output of the current toolchain, abridged; the full transcript is in <a href="/learn#lesson-3-a-rule-next-to-the-data-proven">lesson 3</a>):</p>
 <pre><code>$ soma verify quota.cell
   ✓ invariant used &gt;= 0 &amp;&amp; used &lt;= 100 — writer 'consume' proven by induction (writes before + n)
 VERIFY OK
@@ -299,10 +302,39 @@ $ soma run quota.cell consume ana 40      →  0</code></pre>
 $ soma run q2.cell consume ana 60  →  error: memory invariant violated on 'used': … rejected write of 120; the slot is unchanged</code></pre>
   <table>
     <tr><th>Proven (every input)</th><th>Checked at runtime</th><th>Not covered</th></tr>
-    <tr><td>The bound, when every write is narrowed like above; the lifecycle of every declared state machine; declared token bounds.</td><td>Every invariant on every write — including one BETWEEN two slots of a cell (<code>invariant (reserved ?? 0) &lt;= (stock ?? 0)</code>, checked on writes to either); transitions and guards; typed parameters; token budgets.</td><td>Rules that span two CELLS (verify is per cell — it names each handler where one is at stake); business rules you did not write (the <code>n &gt; 0</code> line is yours: without it a negative amount would <em>give back</em> quota and still satisfy the invariant); external effects; what an LLM answers. <a href="/docs/guarantees.md">Full table</a>.</td></tr>
+    <tr><td>The bound, when every write is narrowed like above; the lifecycle of every declared state machine; declared token bounds.</td><td>Every invariant on every write — including one BETWEEN two slots of a cell (<code>invariant (reserved ?? 0) &lt;= (stock ?? 0)</code>, checked on writes to either); transitions and guards; typed parameters; token budgets.</td><td>A rule between two cells' machines that <code>soma.toml</code> does not state (verify is per cell otherwise — it names each handler where one is at stake); business rules you did not write (the <code>n &gt; 0</code> line is yours: without it a negative amount would <em>give back</em> quota and still satisfy the invariant); external effects; what an LLM answers. <a href="/docs/guarantees.md">Full table</a>.</td></tr>
   </table>
 </section>
 
+<section id="skeleton">
+  <h2>Large Programs: Skeleton First</h2>
+  <p>No model holds a 10,000-line program in context, and most large-program bugs are a wrong <em>shape</em>: a function that writes what it should not, a step taken out of order. So the structure is written first, as a <code>skeleton</code>: memory, invariants, state machines, and for each signal a <strong>frame</strong> that says what its body may read, write, call and which edges it may take. The bodies come later, in <code>flesh</code> blocks, and <code>soma check</code> refuses a body that does anything its frame does not grant.</p>
+<pre><code>skeleton Loans {
+    memory { holder: Map&lt;String, String&gt; [persistent] }   // loan id → member
+    state loan {
+        initial: requested
+        requested -&gt; out
+        requested -&gt; refused
+        out -&gt; returned
+    }
+    face {
+        // Lends `book` to `member` under loan `id`: out when a copy was taken.
+        signal lend(id: String, member: String, book: String) -&gt; String
+            writes holder
+            moves requested -&gt; out, requested -&gt; refused
+            calls Stock.take
+    }
+}</code></pre>
+  <table>
+    <tr><th>Command</th><th>What it gives the agent</th></tr>
+    <tr><td><code>soma verify app.cell</code></td><td>Proves the lifecycle <em>before any body exists</em>: a hole (a signal with no body) is read as anything its frame allows, so a ✓ holds for every body that fits. <code>VERIFY OK (skeleton — the holes above are open obligations)</code>.</td></tr>
+    <tr><td><code>soma holes app.cell</code></td><td>The bodies left to write, numbered so that callees come first.</td></tr>
+    <tr><td><code>soma skeleton app.cell Loans.lend</code></td><td>The brief for one body: its slots, the machine and its edges, the signatures and comments of what it may call, who calls it. That is everything needed to write the body, so the agent never needs the rest of the program in context.</td></tr>
+    <tr><td><code>soma check app.cell</code></td><td>A body that leaves its frame is refused, and the error names the frame clause to add if the design means it: <code>`Stock.take` calls `available`, outside its frame — … add it to `signal take` in `skeleton Stock`: `calls available`</code>.</td></tr>
+    <tr><td><code>soma skeleton app.cell --freeze</code></td><td><code>skeleton.lock</code>: from then on, bodies can only fill the structure. A change to the design is a deliberate <code>--amend</code>, which prints the difference.</td></tr>
+  </table>
+  <p>Measured on a 14-cell, 115-signal clinic written by an agent from the embedded docs alone, then maintained by another agent that never read its sources: <a href="https://github.com/soma-dev-lang/soma/blob/main/SKELETON_DESIGN.md">SKELETON_DESIGN.md</a>. Step by step: <a href="/learn#lesson-6-a-large-program-skeleton-first">lesson 6</a>. The rules: <a href="/llms-skeleton.txt">/llms-skeleton.txt</a>.</p>
+</section>
 
 <section id="language">
   <h2>Language Shape</h2>
@@ -368,7 +400,7 @@ eventually = ["filled", "rejected"]</code></pre>
 
 <section id="status">
   <h2>Implementation Status</h2>
-  <p>Current release: <a href="https://github.com/soma-dev-lang/soma/releases/tag/v3.0.0">Soma 3.0.0</a>. <a href="https://github.com/soma-dev-lang/soma/releases/tag/v3.0.0">Release validation</a>: 966 Rust tests, 118 CLI checks, 322 corpus programs and 1,280 independent numeric comparisons passed.</p>
+  <p>Current release: <a href="https://github.com/soma-dev-lang/soma/releases/tag/v3.1.0">Soma 3.1.0</a>. <a href="https://github.com/soma-dev-lang/soma/releases/tag/v3.1.0">Release validation</a>: 1,083 Rust tests, 118 CLI checks, 327 corpus programs and 1,280 independent numeric comparisons passed.</p>
   <div class="status-grid">
     <div class="card">
       <h3><span class="tag implemented">implemented</span> Language core</h3>
@@ -383,7 +415,7 @@ eventually = ["filled", "rejected"]</code></pre>
     <div class="card">
       <h3><span class="tag partial">scoped</span> Static verification</h3>
       <p><code>soma verify</code> proves properties of each cell’s state graph, supported memory invariants, termination and cost bounds. Unproved checks are reported; <code>--strict</code> rejects warnings.</p>
-      <p>Proofs cover the inputs represented by the analysis. Graph liveness does not ensure handler invocation. Cluster behavior, arbitrary handler semantics, cross-cell rules and LLM answers remain outside these proofs. <a href="/docs/guarantees.md">Exact guarantees and limits</a>.</p>
+      <p>Proofs cover the inputs represented by the analysis. Graph liveness does not ensure handler invocation. Cluster behavior, arbitrary handler semantics, rules between cells that <code>soma.toml</code> does not state, and LLM answers remain outside these proofs. <a href="/docs/guarantees.md">Exact guarantees and limits</a>.</p>
     </div>
   </div>
 </section>
