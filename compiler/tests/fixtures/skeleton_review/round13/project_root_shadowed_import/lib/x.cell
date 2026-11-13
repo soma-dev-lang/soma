@@ -1,0 +1,7 @@
+cell Pay {
+    state p {
+        initial: open
+        open -> paid
+    }
+    on pay(id: String) { transition(id, "open", "paid")  return 1 }
+}

@@ -1,0 +1,2 @@
+[verify.before."Front.opened"]
+requires = ["Key.turned"]

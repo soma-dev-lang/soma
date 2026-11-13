@@ -1,0 +1,54 @@
+cell Key {
+    state k {
+        initial: no
+        no -> turned
+    }
+    on turn(id: String) { transition(id, "no", "turned")  return 1 }
+}
+cell Log {
+    state l {
+        initial: a
+        a -> tmp
+        tmp -> b
+    }
+    on kick(id: String) {
+        transition(id, "a", "tmp")
+        emit ping(id)
+        transition(id, "tmp", "b")
+        return 1
+    }
+    on lstatus(id: String) { return get_status(id) ?? "a" }
+}
+cell Desk {
+    interior {
+        cell Log {
+            state l {
+                initial: a
+                a -> tmp
+                tmp -> b
+            }
+            on lstatus(id: String) { return get_status(id) ?? "a" }
+        }
+        cell Front {
+            state v {
+                initial: shut
+                shut -> opened
+            }
+            on look(id: String) { print("Front {id}: " + (get_status(id) ?? "shut"))  return 1 }
+            on ping(id: String) {
+                if lstatus(id) == "tmp" {
+                    transition(id, "shut", "opened")
+                }
+                return 1
+            }
+        }
+    }
+    on go(id: String) { emit kick(id)  return 1 }
+    on alarm(id: String) { emit ping(id)  return 1 }
+    on seen(id: String) { emit look(id)  return 1 }
+    on q(id: String) { emit lstatus(id)  return 1 }
+    runtime {
+        go("x")
+        seen("x")
+    }
+}

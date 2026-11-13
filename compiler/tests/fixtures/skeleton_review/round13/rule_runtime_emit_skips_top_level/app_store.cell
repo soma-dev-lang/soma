@@ -1,0 +1,20 @@
+cell Log {
+    memory { got: Map<String, Int> [persistent] }
+    on kick(k: String) { got.set(k, (got.get(k) ?? 0) + 1)  return 1 }
+    on n(k: String) { return got.get(k) ?? 0 }
+}
+cell Desk {
+    memory { seen: Map<String, Int> [persistent] }
+    interior {
+        cell Front {
+            on kick(k: String) { emit back(k)  return 1 }
+        }
+    }
+    on back(k: String) { seen.set(k, (seen.get(k) ?? 0) + 1)  return 1 }
+    on count(k: String) { return seen.get(k) ?? 0 }
+    on go(k: String) { emit kick(k)  return 1 }
+    runtime {
+        emit kick("a")
+        go("b")
+    }
+}

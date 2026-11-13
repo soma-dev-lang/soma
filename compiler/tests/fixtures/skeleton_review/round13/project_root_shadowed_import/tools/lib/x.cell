@@ -1,0 +1,3 @@
+cell Util {
+    on twice(n: Int) { return n * 2 }
+}

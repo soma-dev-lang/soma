@@ -1,0 +1,1 @@
+soma verify app.cell → ✓ before Ordo.delivered … via Ordo.consult_of ; soma test app.cell → o1 delivered while its link names c2, never done. draft: `require consult_of.get(id) == ()` then `let id = k` then `consult_of.set(id, …)` — the guard and the write read the same TEXT, not the same value (product.rs link_written_once, render_expr comparison l.1159-1167).

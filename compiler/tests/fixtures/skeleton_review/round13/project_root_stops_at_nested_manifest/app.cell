@@ -1,0 +1,14 @@
+cell Appr {
+    state a {
+        initial: wait
+        wait -> ok
+    }
+    on sign(id: String) { transition(id, "wait", "ok")  return 1 }
+}
+cell Pay {
+    state p {
+        initial: open
+        open -> paid
+    }
+    on pay(id: String) { transition(id, "open", "paid")  return 1 }
+}

@@ -1,0 +1,24 @@
+cell Log {
+    state g {
+        initial: idle
+        idle -> armed
+    }
+    on arm(k: String) { transition(k, "idle", "armed")  return 1 }
+    on gst(k: String) { return get_status(k) ?? "idle" }
+}
+cell Desk {
+    state h {
+        initial: open
+        open -> done
+    }
+    interior {
+        cell Front {
+            on arm(k: String) { return 1 }
+        }
+    }
+    on hst(k: String) { return get_status(k) ?? "open" }
+    runtime {
+        emit arm("x")
+        transition("x", "open", "done")
+    }
+}

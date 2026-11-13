@@ -1,0 +1,47 @@
+cell Consult {
+    state c {
+        initial: open
+        open -> done
+    }
+    on close(id: String) { transition(id, "open", "done")  return "done" }
+    on is_done(id: String) { return (get_status(id) ?? "open") == "done" }
+}
+cell Ordo {
+    memory { consult_of: Map<String, String> }
+    state o {
+        initial: drafted
+        drafted -> checked
+        checked -> delivered
+    }
+    on draft(id: String, consult: String) [task] {
+        require consult_of.get(id) == () else Exists
+        let x = await signal("draft", id)
+        consult_of.set(id, consult)
+        return id
+    }
+    on check(id: String) {
+        let c = consult_of.get(id)
+        require c != () else NoConsult
+        require Consult.is_done(c) else NotDone
+        transition(id, "drafted", "checked")
+        return "checked"
+    }
+    on ship(id: String) { transition(id, "checked", "delivered")  return "delivered" }
+    on link(id: String) { return consult_of.get(id) ?? "none" }
+    on st(id: String) { return get_status(id) ?? "drafted" }
+}
+cell test T {
+    rules {
+        let a = Ordo.draft("o1", "c1")
+        let b = Ordo.draft("o1", "c2")
+        let r = deliver("draft", "o1", 1)
+        assert Ordo.link("o1") == "c2"
+        assert Consult.close("c2") == "done"
+        assert Ordo.check("o1") == "checked"
+        let r2 = deliver("draft", "o1", 1)
+        assert Ordo.link("o1") == "c1"
+        assert Ordo.ship("o1") == "delivered"
+        assert Ordo.st("o1") == "delivered"
+        assert Consult.is_done("c1") == false
+    }
+}

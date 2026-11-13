@@ -1,0 +1,5 @@
+use lib::x
+cell Tool {
+    on go(n: Int) { return Util.twice(n) }
+}
+cell test T { rules { assert Tool.go(2) == 4 } }

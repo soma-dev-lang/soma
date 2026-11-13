@@ -1,0 +1,14 @@
+cell Log {
+    memory { got: Map<String, Int> [persistent] }
+    on ev(k: String) { got.set(k, 1)  return 1 }
+    on n(k: String) { return got.get(k) ?? 0 }
+}
+cell Desk {
+    interior {
+        cell Front {
+            on ping(k: String) { emit ev(k)  return 1 }
+        }
+    }
+    on go(k: String) { emit ping(k)  return 1 }
+    runtime { go("a") }
+}

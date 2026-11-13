@@ -1,0 +1,30 @@
+cell agent Desk {
+    state m { initial: a
+        a -> b
+        b -> c
+        b -> d }
+    on st(id: String) { return get_status(id) ?? "a" }
+    on loop1(id: String, q: String) {
+        let s = "b"
+        for i in [1, 2] {
+            transition(id, s)
+            s = think(q)
+        }
+        return 1
+    }
+    on wh(id: String, q: String) {
+        let s = "b"
+        let n = 0
+        while n < 2 {
+            transition(id, s)
+            s = think(q)
+            n = n + 1
+        }
+        return 1
+    }
+}
+cell test T { rules {
+    assert Desk.loop1("k1", "SAY c") == 1
+    assert Desk.wh("k3", "SAY c") == 1
+    assert [Desk.st("k1"), Desk.st("k3")] == ["b", "b"]
+} }

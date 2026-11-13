@@ -1,0 +1,18 @@
+cell Hub {
+    interior {
+        cell Worker {
+            on flip(k: String) { print("HUB WORKER {k}")  return 1 }
+        }
+    }
+    on go(k: String) { emit flip(k)  return 1 }
+}
+cell Desk {
+    interior {
+        cell Front {
+            on flip(k: String) { print("DESK FRONT {k}")  return 1 }
+        }
+    }
+    on poke(k: String) { emit flip(k)  return 1 }
+    on begin(k: String) { Hub.go(k)  return 1 }
+    runtime { begin("a") }
+}

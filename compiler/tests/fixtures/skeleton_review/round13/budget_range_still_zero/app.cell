@@ -1,0 +1,4 @@
+cell B {
+    scale { memory: "64Mi" }
+    on big() { let xs = range(0, 9000000)  return len(xs) }
+}

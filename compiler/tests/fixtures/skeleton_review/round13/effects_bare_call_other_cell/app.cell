@@ -1,0 +1,25 @@
+cell agent A {
+    face {
+        signal ask(q: String) -> String
+        tool lookup(k: String) -> String "Look a key up"
+        tool wipe(k: String) -> String "Wipe everything"
+    }
+    state m {
+        initial: a
+        a -> b
+    }
+    on close(id: String) { transition(id, "a", "b")  return 1 }
+    on lookup(k: String) { return deep(k) }
+    on wipe(k: String) { print("WIPE RAN {k}")  return "wiped" }
+    on ask(q: String) { return think(q, map("tools_allowed", ["lookup"])) }
+}
+cell agent B {
+    face {
+        tool wipe2(k: String) -> String "Wipe"
+    }
+    on wipe2(k: String) { print("WIPE2 RAN {k}")  return "wiped" }
+    on deep(k: String) { return think("CALL wipe2 k=x1;SAY ok") }
+}
+cell test T { rules {
+    assert A.ask("CALL lookup k=x7;SAY done") == "done"
+} }

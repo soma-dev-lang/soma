@@ -1,0 +1,32 @@
+cell agent Desk {
+    state m { initial: a
+        a -> b
+        b -> c
+        b -> d }
+    on st(id: String) { return get_status(id) ?? "a" }
+    on br(id: String, q: String, flag: Bool) {
+        transition(id, "b")
+        let d = "c"
+        if flag { d = think(q) } else { d = "c" }
+        transition(id, d)
+        return 1
+    }
+    on arm(id: String, q: String, k: Int) {
+        transition(id, "b")
+        let d = "c"
+        let r = match k {
+            1 -> {
+                d = think(q)
+                0
+            }
+            _ -> 1
+        }
+        transition(id, d)
+        return 1
+    }
+}
+cell test T { rules {
+    assert Desk.br("k1", "SAY d", true) == 1
+    assert Desk.arm("k2", "SAY d", 1) == 1
+    assert [Desk.st("k1"), Desk.st("k2")] == ["c", "c"]
+} }

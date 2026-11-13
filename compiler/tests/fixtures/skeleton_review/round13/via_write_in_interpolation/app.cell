@@ -1,0 +1,37 @@
+cell Consult {
+    state c {
+        initial: open
+        open -> done
+    }
+    on close(id: String) { transition(id, "open", "done")  return "done" }
+    on is_done(id: String) { return (get_status(id) ?? "open") == "done" }
+}
+cell Ordo {
+    memory { consult_of: Map<String, String> }
+    state o {
+        initial: drafted
+        drafted -> delivered
+    }
+    on draft(id: String, consult: String) { require consult_of.get(id) == () else Exists  consult_of.set(id, consult)  return id }
+    on relink(id: String, c: String) { let r = "{consult_of.set(id, c)}"  return 1 }
+    on deliver(id: String) {
+        let c = consult_of.get(id)
+        require c != () else NoConsult
+        require Consult.is_done(c) else NotDone
+        relink(id, "c2")
+        transition(id, "drafted", "delivered")
+        return "delivered"
+    }
+    on link(id: String) { return consult_of.get(id) ?? "none" }
+    on st(id: String) { return get_status(id) ?? "drafted" }
+}
+cell test T {
+    rules {
+        assert Ordo.draft("o1", "c1") == "o1"
+        assert Consult.close("c1") == "done"
+        assert Ordo.deliver("o1") == "delivered"
+        assert Ordo.st("o1") == "delivered"
+        assert Ordo.link("o1") == "c2"
+        assert Consult.is_done("c2") == false
+    }
+}

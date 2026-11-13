@@ -1,0 +1,2 @@
+[verify.before."Hub.done"]
+while = ["Worker.armed"]

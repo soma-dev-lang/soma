@@ -1,0 +1,2 @@
+[verify.before."Desk.done"]
+while = ["Log.armed"]

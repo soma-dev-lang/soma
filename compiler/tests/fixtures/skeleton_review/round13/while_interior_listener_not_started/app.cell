@@ -1,0 +1,20 @@
+cell Hub {
+    state h {
+        initial: open
+        open -> done
+    }
+    interior {
+        cell Worker {
+            state w {
+                initial: idle
+                idle -> armed
+            }
+            on flip(k: String) { transition(k, "idle", "armed")  return 1 }
+            on show(k: String) { print("Worker {k}: " + (get_status(k) ?? "idle"))  return 1 }
+        }
+    }
+    on finish(k: String) { emit flip(k)  transition(k, "open", "done")  return 1 }
+    on look(k: String) { emit show(k)  return 1 }
+    on hst(k: String) { return get_status(k) ?? "open" }
+    runtime { look("x") }
+}

@@ -1,0 +1,18 @@
+cell Desk {
+    interior {
+        cell Mid {
+            interior {
+                cell Deep {
+                    state v {
+                        initial: shut
+                        shut -> opened
+                    }
+                    on ping(k: String) { print("DEEP {k}")  transition(k, "shut", "opened")  return 1 }
+                }
+            }
+            on go(k: String) { print("MID {k}")  emit ping(k)  return 1 }
+        }
+    }
+    on begin(k: String) { emit go(k)  return 1 }
+    runtime { begin("a") }
+}

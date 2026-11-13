@@ -1,0 +1,17 @@
+cell A {
+    interior {
+        cell Worker {
+            state w {
+                initial: off
+                off -> lit
+            }
+            on flip(id: String) { transition(id, "off", "lit")  return 1 }
+            on show(id: String) { print("Worker {id}: " + (get_status(id) ?? "off"))  return 1 }
+        }
+    }
+    on go(id: String) { emit flip(id)  return 1 }
+    on look(id: String) { emit show(id)  return 1 }
+    runtime {
+        go("r")
+    }
+}
