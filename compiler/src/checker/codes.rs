@@ -127,6 +127,9 @@ const ERROR_KINDS: &[(&str, &str)] = &[
     ("contract", "a face contract (`requires` / `ensures`) says something a caller could not evaluate, or sits on a handler that cannot carry one"),
     ("await", "an `await` stands where its handler could not be stopped and resumed: outside a `[task]` handler, or not as a whole statement of its body or of an `if` branch there"),
     ("tool_binding", "a `tool` bound to a server (`[mcp: …]` / `[openapi: …]`) that soma.toml does not define, soma.lock does not pin, or whose declaration does not fit the pinned contract"),
+    ("flesh", "a `flesh` body that cannot go into a skeleton: no `skeleton` of that name, a second body for one signal, parameters that differ from the signal's, or a helper with an untyped parameter"),
+    ("frame", "a skeleton's frame that names something the skeleton does not have, or a flesh that does something its signal's frame does not grant (a write, a read, a call, an emit or a machine edge)"),
+    ("skeleton_lock", "a skeleton differs from the one `skeleton.lock` holds (frozen with `soma skeleton --freeze`)"),
 ];
 
 /// Warning classes (the `CheckWarning` variant, snake_case). APPEND ONLY.
@@ -150,6 +153,8 @@ const WARNING_KINDS: &[(&str, &str)] = &[
     ("budget_ok", "a memory budget that holds (a note)"),
     // 3.0.0
     ("type_advisory", "a type the inference could not settle; checked at run time"),
+    // 3.1.0
+    ("frame_warning", "a skeleton that says more than the program does: a frame wider than its body, a machine edge or a slot no frame touches, a helper nothing calls"),
 ];
 
 /// Syntax-error classes, recognised from the parser's message. APPEND ONLY.

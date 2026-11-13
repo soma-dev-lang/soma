@@ -1,0 +1,1 @@
+soma check . -> green, exit 0 (lib/a.cell and lib/b.cell both skipped as "a part", they import each other) ; soma check lib/a.cell -> E0120 frame violation + E0012 on lib/b.cell:3

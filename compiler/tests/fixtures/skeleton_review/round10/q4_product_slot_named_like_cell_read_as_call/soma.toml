@@ -1,0 +1,8 @@
+[package]
+name = "p"
+version = "0.1.0"
+entry = "app.cell"
+edition = "2027"
+
+[verify.before."Desk.requested"]
+requires = ["Visit.open"]

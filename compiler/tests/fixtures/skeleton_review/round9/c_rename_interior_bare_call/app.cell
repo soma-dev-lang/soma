@@ -1,0 +1,11 @@
+cell Outer {
+    interior {
+        skeleton In {
+            memory { m: Map<String, Int> }
+            face { signal tick(n: Int) -> Int  writes m }
+        }
+    }
+    on go(n: Int) { return tick(n) + 1 }
+}
+flesh In { on tick(n) { m.set("k", n) return n } }
+cell test T { rules { assert Outer.go(1) == 2 } }

@@ -1,0 +1,3 @@
+[package]
+name = "c"
+edition = "2027"

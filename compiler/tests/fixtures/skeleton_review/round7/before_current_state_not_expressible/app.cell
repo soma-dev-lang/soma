@@ -1,0 +1,37 @@
+// REPRO : « on ne peut demander (Desk.requested) que si la visite est OUVERTE, pas terminée ».
+// Même id des deux côtés, la demande est une vraie transition. Variante choisie par la ligne let ok = Visit.require_seen(id)   // garde LAXISTE : accepte aussi une visite terminée (done) — verify dit quand même ✓.
+skeleton Visit {
+    state v {
+        initial: waiting
+        waiting -> open
+        open -> done
+    }
+    face {
+        signal open_visit(id: String) -> String     moves waiting -> open
+        signal close_visit(id: String) -> String    moves open -> done
+        signal require_open(id: String) -> Bool     reads v
+        signal require_seen(id: String) -> Bool     reads v
+    }
+}
+flesh Visit {
+    on open_visit(id) { transition(id, "waiting", "open")  return "open" }
+    on close_visit(id) { transition(id, "open", "done")  return "done" }
+    on require_open(id) { require get_status(id) == "open" else NotOpen  return true }
+    on require_seen(id) { require get_status(id) == "open" || get_status(id) == "done" else NotSeen  return true }
+}
+skeleton Desk {
+    state d {
+        initial: none
+        none -> requested
+    }
+    face {
+        signal request_lab(id: String) -> String   moves none -> requested   calls Visit.require_open, Visit.require_seen
+    }
+}
+flesh Desk {
+    on request_lab(id) {
+        let ok = Visit.require_seen(id)   // garde LAXISTE : accepte aussi une visite terminée (done) — verify dit quand même ✓
+        transition(id, "none", "requested")
+        return "requested"
+    }
+}

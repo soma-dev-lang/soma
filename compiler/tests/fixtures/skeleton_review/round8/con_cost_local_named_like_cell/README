@@ -1,0 +1,1 @@
+soma check app.cell -> "✓ cost: tokens bound proven — peak 100 reply tokens ≤ declared 100" ; soma test app.cell: A.run() returns tokens_used() = 162 (two think() of 80 reply tokens). Faulty line: let B = 1 / let z = B.spend()  (UFCS spend(B) at run time, read as a call into cell B)

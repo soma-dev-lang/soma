@@ -1,0 +1,29 @@
+// Praticiens — médecins et leurs spécialités ; un praticien en congé ne prend pas de nouveaux rendez-vous.
+skeleton Praticiens {
+    memory {
+        // id praticien -> { nom: String, specialite: String }
+        praticiens: Map<String, Map> [persistent]
+        // id praticien -> true s'il est en congé (absent du slot = pas en congé)
+        conges: Map<String, Bool> [persistent]
+    }
+    face {
+        // Enregistre un praticien. Erreur `DejaEnregistre` si l'id existe. Renvoie { nom, specialite }.
+        signal enregistrer(id: String, nom: String, specialite: String) -> Map   writes praticiens
+        // { nom, specialite }, ou erreur `PraticienInconnu`.
+        signal praticien(id: String) -> Map                             reads praticiens
+        // true si l'id est enregistré.
+        signal existe_praticien(id: String) -> Bool                     reads praticiens
+        // Met en congé. Erreur `PraticienInconnu`. Renvoie true (idempotent).
+        signal mettre_en_conge(id: String) -> Bool
+            writes conges
+            reads praticiens
+        // Fin de congé. Erreur `PraticienInconnu`. Renvoie true (idempotent).
+        signal reprendre(id: String) -> Bool
+            writes conges
+            reads praticiens
+        // true si le praticien existe et n'est pas en congé ; false sinon (jamais d'erreur).
+        signal est_disponible(id: String) -> Bool                       reads praticiens, conges
+        // Les ids (triés) des praticiens de cette spécialité, congés compris.
+        signal par_specialite(specialite: String) -> List<String>       reads praticiens
+    }
+}

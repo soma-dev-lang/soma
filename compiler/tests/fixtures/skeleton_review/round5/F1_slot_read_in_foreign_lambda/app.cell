@@ -1,0 +1,23 @@
+skeleton B {
+    memory {
+        secret: Map<String, Int> [persistent]
+        lst: List<Int> [persistent]
+    }
+    face {
+        signal seed() -> Int             writes secret, lst
+        signal apply(f: Any) -> Any      // no clause: pure — it may read nothing
+    }
+}
+flesh B {
+    on seed() { secret.set("a", 1)  secret.set("b", 2)  lst.push(41)  return 1 }
+    on apply(f) { return f("j") }
+}
+cell test T {
+    rules {
+        assert B.seed() == 1
+        assert B.apply(x => len(secret)) == 2        // B's slot, counted under the pure B.apply
+        assert B.apply(x => lst[0]) == 41            // B's List slot, read under the pure B.apply
+        assert B.apply(x => len(lst)) == 1
+        assert_fails B.apply(x => secret.size)       // the guarded spelling of the same read (kind lambda)
+    }
+}

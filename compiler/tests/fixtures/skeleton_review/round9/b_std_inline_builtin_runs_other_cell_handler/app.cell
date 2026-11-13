@@ -1,0 +1,20 @@
+cell B {
+    memory { hits: Map<String, Int> }
+    on await_sleep() { hits.set("h", 1) return 7 }
+    on seen() { return hits.get("h") ?? 0 }
+}
+skeleton A {
+    face {
+        signal go() -> Int   calls await_sleep
+    }
+}
+flesh A {
+    on go() { let r = std.await_sleep()
+ return 1 }
+}
+cell test T {
+    rules {
+        let r = try { A.go() }
+        assert B.seen() == 0
+    }
+}

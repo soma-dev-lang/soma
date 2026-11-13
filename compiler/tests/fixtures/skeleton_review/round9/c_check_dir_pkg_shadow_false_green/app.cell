@@ -1,0 +1,2 @@
+use foo
+cell App { on go() { return Foo.f() } }

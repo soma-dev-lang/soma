@@ -1,0 +1,33 @@
+flesh Patients {
+    on inscrire(id, nom, naissance) {
+        require fiches.get(id) == () else DejaInscrit "patient {id}"
+        require nom != "" else NomVide
+        let f = map("nom", nom, "naissance", naissance, "tel", "")
+        fiches.set(id, f)
+        actifs.set(id, true)
+        let n = Audit.consigner("accueil", "patient.inscrire", id)
+        return f
+    }
+    on modifier_contact(id, tel) {
+        let f = fiches.get(id)
+        require f != () else PatientInconnu "patient {id}"
+        f.tel = tel
+        fiches.set(id, f)
+        return f
+    }
+    on fiche(id) {
+        let f = fiches.get(id)
+        require f != () else PatientInconnu "patient {id}"
+        return f
+    }
+    on existe(id) { return fiches.has(id) }
+    on desactiver(id) {
+        require fiches.has(id) else PatientInconnu "patient {id}"
+        if !(actifs.get(id) ?? false) { return false }
+        actifs.set(id, false)
+        let n = Audit.consigner("accueil", "patient.desactiver", id)
+        return true
+    }
+    on est_actif(id) { return actifs.get(id) ?? false }
+    on compter() { return fiches.size }
+}

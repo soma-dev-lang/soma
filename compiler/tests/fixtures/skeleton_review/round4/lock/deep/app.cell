@@ -1,0 +1,2 @@
+use lib::a::b::c::d::e::f::sk
+cell test T { rules { assert Deep.put("k") == 1 } }

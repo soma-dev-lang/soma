@@ -1,0 +1,1 @@
+soma refs app.cell B.tick -> misses tests/deep/er/t.cell:3 (helper `x.tick()`), :5 (`assert 5.tick() == 5`), :14 (`vote(B.tick, 12, 2)`) and every call in target/t2.cell (refs skips `target/`, `soma check .` / `soma test .` do not) ; soma test tests/deep/er/t.cell passes: those calls run B.tick

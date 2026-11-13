@@ -1,0 +1,19 @@
+# skeleton.lock — the structure `soma check` holds app.cell to.
+# Written by `soma skeleton app.cell --freeze`; changed on purpose with `--amend`. Do not edit.
+file app.cell
+
+== A sha256:d9cc57e1712259ac1f929ae10098305a9da2ddc40987c18968f47d644a10670a
+skeleton A {
+    memory {
+        m: Map<String, Int> [persistent]
+    }
+    face {
+        signal f(x: Int) -> Int
+            ensures result >= 0
+            calls g
+        signal g() -> Int  reads m
+        signal h(x: Int) -> Int
+            ensures result >= 0
+            writes m
+    }
+}

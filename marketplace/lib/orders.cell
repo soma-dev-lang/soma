@@ -1,0 +1,70 @@
+// The flesh of `skeleton Orders` (../app.cell).
+
+flesh Orders {
+    on place(id, buyer, listing, n) {
+        require buyers.get(id) == () else Taken "order '{id}' already exists"
+        let price = price_of(listing)
+        require price >= 1 else NotFound "no listing '{listing}'"
+        if !reserve(listing, n) {
+            return map("ok", false, "reason", "out of stock")
+        }
+        if !open_hold(id, buyer, seller_of(listing), price * n) {
+            restock(listing, n)                     // the units go back on the shelf
+            return map("ok", false, "reason", "insufficient funds")
+        }
+        buyers.set(id, buyer)
+        items.set(id, listing)
+        units.set(id, n)
+        transition(id, "draft", "paid")
+        return map("ok", true, "order", id, "total", price * n, "state", "paid")
+    }
+
+    on ship(id, seller) {
+        require _listing_of(id) != "" else NotFound "no order '{id}'"
+        require seller_of(_listing_of(id)) == seller else Forbidden "only the seller ships an order"
+        transition(id, "paid", "shipped")
+        return map("ok", true, "order", id, "state", "shipped")
+    }
+
+    on confirm_delivery(id, buyer) {
+        require buyers.get(id) == buyer else Forbidden "only the buyer confirms a delivery"
+        transition(id, "shipped", "delivered")
+        return map("ok", true, "order", id, "state", "delivered", "seller_balance", release(id))
+    }
+
+    on cancel(id, buyer) {
+        require buyers.get(id) == buyer else Forbidden "only the buyer cancels an order"
+        transition(id, "paid", "cancelled")
+        restock(items.get(id), units.get(id))
+        return map("ok", true, "order", id, "state", "cancelled", "buyer_balance", refund(id))
+    }
+
+    on open_dispute(id, buyer) {
+        require buyers.get(id) == buyer else Forbidden "only the buyer disputes an order"
+        transition(id, "shipped", "disputed")
+        return map("ok", true, "order", id, "state", "disputed")
+    }
+
+    on close_dispute(id, for_buyer) {
+        if for_buyer {
+            transition(id, "disputed", "returned")
+            restock(items.get(id), units.get(id))
+            return "returned"
+        }
+        transition(id, "disputed", "delivered")
+        return "delivered"
+    }
+
+    on order_state(id) {
+        return get_status(id) ?? "draft"
+    }
+
+    on order(id) {
+        require buyers.get(id) != () else NotFound "no order '{id}'"
+        return map("order", id, "buyer", buyers.get(id), "listing", items.get(id), "units", units.get(id), "state", get_status(id))
+    }
+
+    on _listing_of(id: String) {
+        return items.get(id) ?? ""
+    }
+}

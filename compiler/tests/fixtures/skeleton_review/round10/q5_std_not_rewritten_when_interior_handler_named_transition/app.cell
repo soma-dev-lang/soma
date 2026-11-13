@@ -1,0 +1,42 @@
+cell Visit {
+    state v {
+        initial: waiting
+        waiting -> open
+        open -> done
+    }
+    on open_visit(id: String) { std.transition(id, "waiting", "open")  return "open" }
+    on close_visit(id: String) { std.transition(id, "open", "done")  return "done" }
+    on status(id: String) { return get_status(id) ?? "waiting" }
+    on sneak(id: String) { std.transition(id, "open", "done")  return 1 }
+}
+cell Desk {
+    interior {
+        cell Inner {
+            face { signal transition(a: Int) }
+ on transition(a: Int) { return 1 }
+        }
+        cell Src {
+            face { signal transition(a: Int) }
+ on transition(a: Int) { return 1 }
+        }
+    }
+    state d {
+        initial: none
+        none -> requested
+    }
+    on st(id: String) { return get_status(id) ?? "none" }
+    on go(id: String) {
+        require Visit.status(id) == "open" else No
+        Visit.sneak(id)
+        std.transition(id, "none", "requested")
+        return 1
+    }
+}
+cell test T {
+    rules {
+        let a = Visit.open_visit("k")
+        let r = try { Desk.go("k") }
+        assert Desk.st("k") == "requested"
+        assert Visit.status("k") != "open"
+    }
+}

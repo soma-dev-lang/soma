@@ -1,0 +1,6 @@
+[package]
+name = "v"
+edition = "2027"
+
+[verify.before."A.b"]
+requires = ["G.open"]

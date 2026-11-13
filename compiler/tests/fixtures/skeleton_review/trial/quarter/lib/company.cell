@@ -1,0 +1,108 @@
+// flesh: Rng, Finance, Attention
+
+flesh Rng {
+    on reseed(n) {
+        st.set("s", n % 2147483648)
+        return st.get("s") ?? 0
+    }
+    on roll(sides) {
+        let s = ((st.get("s") ?? 1) * 1103515245 + 12345) % 2147483648
+        st.set("s", s)
+        return idiv(s, 65536) % sides
+    }
+    on chance(bps) { return roll(10000) < bps }
+}
+
+flesh Finance {
+    on open(cash) {
+        ledger.set("cash", cash)
+        ledger.set("debt", 0)
+        ledger.set("shares", FOUNDER_SHARES)
+        return cash
+    }
+    on cash() { return ledger.get("cash") ?? 0 }
+    on debt() { return ledger.get("debt") ?? 0 }
+    on earn(amount, kind) {
+        ledger.set("cash", (ledger.get("cash") ?? 0) + amount)
+        ledger.set(kind + "_q", (ledger.get(kind + "_q") ?? 0) + amount)
+        return ledger.get("cash") ?? 0
+    }
+    on spend(amount, kind) {
+        let have = ledger.get("cash") ?? 0
+        if have < amount { return false }
+        ledger.set("cash", have - amount)
+        ledger.set(kind + "_q", (ledger.get(kind + "_q") ?? 0) + amount)
+        return true
+    }
+    on raise_debt(amount) {
+        let d = ledger.get("debt") ?? 0
+        require d + amount <= MAX_DEBT else DebtCeiling "debt would exceed {MAX_DEBT}"
+        ledger.set("debt", d + amount)
+        ledger.set("cash", (ledger.get("cash") ?? 0) + amount)
+        return d + amount
+    }
+    on raise_equity(amount, valuation) {
+        let shares = ledger.get("shares") ?? FOUNDER_SHARES
+        let issued = div_round(shares * amount, valuation)
+        ledger.set("shares", shares + issued)
+        ledger.set("cash", (ledger.get("cash") ?? 0) + amount)
+        return idiv(FOUNDER_SHARES * 10000, shares + issued)
+    }
+    on accrue_interest(rate_bps) {
+        let due = div_round(debt() * rate_bps, 10000)
+        if !spend(due, "interest") {
+            // unpaid interest is capitalised into the debt
+            ledger.set("debt", debt() + due)
+        }
+        return due
+    }
+    on assess(company) {
+        let c = cash()
+        let d = debt()
+        let s = get_status(company) ?? "healthy"
+        let want = if d <= c { 0 } else if d <= 4 * c { 1 } else if c > 0 { 2 } else { 3 }
+        if s == "healthy" && want >= 1 { transition(company, "healthy", "strained") }
+        else if s == "strained" && want == 0 { transition(company, "strained", "healthy") }
+        else if s == "strained" && want >= 2 { transition(company, "strained", "breach") }
+        else if s == "breach" && want <= 1 { transition(company, "breach", "strained") }
+        else if s == "breach" && want == 3 { transition(company, "breach", "bankrupt") }
+        return get_status(company) ?? "healthy"
+    }
+    on _kinds() { return ["rev", "cogs", "opex", "rd", "legal", "capex", "interest", "event"] }
+    on close_books(q) {
+        let snap = map("q", q, "cash", ledger.get("cash") ?? 0, "debt", ledger.get("debt") ?? 0)
+        let out = 0
+        for k in _kinds() {
+            let v = ledger.get(k + "_q") ?? 0
+            snap[k] = v
+            if k != "rev" { out += v }
+            ledger.set(k + "_q", 0)
+        }
+        snap["fcf"] = (snap["rev"] ?? 0) - out
+        history.push(snap)
+        return snap
+    }
+    on runway() {
+        if history.len == 0 { return 99 }
+        let last = history[-1]
+        if last.fcf >= 0 { return 99 }
+        return idiv(ledger.get("cash") ?? 0, 0 - last.fcf)
+    }
+}
+
+flesh Attention {
+    on refill() {
+        left.set("pts", POINTS)
+        for k in focus.keys { focus.set(k, 0) }
+        return POINTS
+    }
+    on remaining() { return left.get("pts") ?? 0 }
+    on attend(area, n) {
+        let cur = left.get("pts") ?? 0
+        if cur < n { return false }
+        left.set("pts", cur - n)
+        focus.set(area, (focus.get(area) ?? 0) + n)
+        return true
+    }
+    on attended(area) { return (focus.get(area) ?? 0) > 0 }
+}

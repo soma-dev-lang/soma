@@ -1,0 +1,4 @@
+use "a.cell"
+flesh Stock {
+    on level(sku) { items.set(sku, 1) return nope(3) }
+}

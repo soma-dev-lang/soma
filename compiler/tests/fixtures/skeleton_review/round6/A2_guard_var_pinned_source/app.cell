@@ -1,0 +1,18 @@
+skeleton Pay {
+    state pay {
+        initial: due
+        due -> paid { guard { amount < 6 } }
+        due -> ready
+        ready -> paid
+    }
+    face {
+        signal fast(id: String, amount: Int) -> Int   moves due -> paid
+        signal open(id: String) -> Int                moves due -> ready
+        signal fin(id: String) -> Int                 moves ready -> paid
+    }
+}
+flesh Pay {
+    on fast(id, amount) { transition(id, "due", "paid")  return 1 }
+    on open(id) { transition(id, "due", "ready")  return 1 }
+    on fin(id) { transition(id, "ready", "paid")  return 1 }     // names its source: cannot take due -> paid
+}

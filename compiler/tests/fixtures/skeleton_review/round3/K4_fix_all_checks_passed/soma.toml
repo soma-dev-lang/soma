@@ -1,0 +1,6 @@
+[package]
+name = "k0"
+
+[verify]
+deadlock_free = true
+eventually = ["void"]

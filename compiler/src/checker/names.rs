@@ -289,3 +289,21 @@ where
         .min_by(|(da, ca), (db, cb)| da.cmp(db).then(ca.cmp(cb)))
         .map(|(_, c)| c.clone())
 }
+
+thread_local! {
+    /// The cell names of the program under analysis (set whenever the
+    /// program is exposed for analysis): "is this name a cell?" has one
+    /// answer — it was decided by a capital letter in a dozen places, so a
+    /// `cell counter` was a local to every one of them.
+    static PROGRAM_CELLS: std::cell::RefCell<HashSet<String>> = std::cell::RefCell::new(HashSet::new());
+}
+
+pub fn set_program_cells(cells: HashSet<String>) {
+    PROGRAM_CELLS.with(|c| *c.borrow_mut() = cells);
+}
+
+/// `name.f(…)` may be a call into a cell: a cell of the program by that
+/// name, or — when the program is not known here — a capitalised name.
+pub fn cellish(name: &str) -> bool {
+    name.chars().next().is_some_and(|c| c.is_ascii_uppercase()) || PROGRAM_CELLS.with(|c| c.borrow().contains(name))
+}

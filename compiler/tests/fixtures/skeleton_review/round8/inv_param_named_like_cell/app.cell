@@ -1,0 +1,14 @@
+// A parameter named like a cell: `L.bal()` is UFCS on the parameter (runs A.bal(L)),
+// but the prover reads it as cell L's contracted signal (ensures result >= 0).
+cell L { face { signal bal(v: Int) -> Int
+   ensures result >= 0 }
+  on bal(v: Int) { return 1 } }
+cell A {
+    memory { c: Map<String, Int>  invariant c >= 0 }
+    on bal(v: Int) { return v }
+    on w(k: String, L: Int) { c.set(k, L.bal()) return 1 }
+    on probe() { let r = try { w("k", 0 - 5) }
+ print(r)
+ return r.kind ?? "ok" }
+}
+cell test T { rules { assert A.probe() == "invariant" } }

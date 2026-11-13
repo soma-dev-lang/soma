@@ -1,0 +1,8 @@
+cell A {
+    state m { initial: a
+        a -> b }
+    on mv(id: String) { transition(id, "a", "b")  return 1 }
+    on go(n: Int) { let s = "{n |> A.go}"
+        return 1 }
+}
+cell test T { rules { assert A.go(1) == 1 } }

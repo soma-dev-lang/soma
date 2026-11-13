@@ -1,0 +1,1 @@
+soma verify app.cell && soma test app.cell — même forme sur `requires`: ✓ before Desk.requested requires Visit.open alors que requested est entré avant open

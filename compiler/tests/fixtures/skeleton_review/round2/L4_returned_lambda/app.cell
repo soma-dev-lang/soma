@@ -1,0 +1,25 @@
+skeleton B {
+    memory { secret: Map<String, Int> [persistent] }
+    face {
+        signal mk(id: String) -> Any       writes secret
+        signal runit(id: String) -> Int    calls mk
+        signal apply(f: Any) -> Int        // no clause: pure
+        signal go(id: String) -> Int       writes secret  calls apply
+        signal peek(id: String) -> Int     reads secret
+    }
+}
+flesh B {
+    on mk(id) { return x => secret.set(x, 7) }             // writes nothing itself
+    on runit(id) { let f = mk(id)  let r = f("k")  return 1 }   // the write happens here: frame is `calls mk` only
+    on apply(f) { let r = f("j")  return 1 }               // …or here: a pure signal
+    on go(id) { return apply(x => secret.set(x, 7)) }
+    on peek(id) { return secret.get(id) ?? 0 }
+}
+cell test T {
+    rules {
+        assert B.runit("k") == 1
+        assert B.peek("k") == 7
+        assert B.go("j") == 1
+        assert B.peek("j") == 7
+    }
+}

@@ -1,0 +1,39 @@
+// The flesh of `skeleton Api` (../app.cell): routes, and nothing they could hide —
+// every cell this router can reach is in its frame.
+
+flesh Api {
+    on request(method, path, body) {
+        let b = if body == "" { map() } else { from_json(body) }
+        let r = try {
+            match map("method", method, "path", path) {
+                {method: "POST", path: "/listings"} -> list_item(b.listing, b.seller, b.price, b.units)
+                {method: "GET", path: "/listings/" + id} -> listing(id)
+                {method: "POST", path: "/wallets/" + owner} -> map("owner", owner, "balance", deposit(owner, b.amount))
+                {method: "GET", path: "/wallets/" + owner} -> map("owner", owner, "balance", balance(owner))
+                {method: "POST", path: "/orders"} -> place(b.order, b.buyer, b.listing, b.units)
+                {method: "GET", path: "/orders/" + id} -> _order_view(id)
+                {method: "POST", path: "/ship/" + id} -> ship(id, b.seller)
+                {method: "POST", path: "/confirm/" + id} -> confirm_delivery(id, b.buyer)
+                {method: "POST", path: "/cancel/" + id} -> cancel(id, b.buyer)
+                {method: "POST", path: "/dispute/" + id} -> file(id, b.buyer, b.reason)
+                {method: "POST", path: "/ruling/" + id} -> resolve(id, b.ruling)
+                _ -> response(404, map("error", "not found"))
+            }
+        }
+        if r.error != () {
+            let status = match r.kind {
+                "NotFound" -> 404
+                "Forbidden" -> 403
+                "Taken" -> 409
+                _ -> 400
+            }
+            return response(status, map("error", r.kind, "detail", r.detail))
+        }
+        return r.value
+    }
+
+    on _order_view(id: String) {
+        let o = order(id)
+        return map("order", o.order, "buyer", o.buyer, "listing", o.listing, "units", o.units, "state", o.state, "hold", hold_state(id))
+    }
+}

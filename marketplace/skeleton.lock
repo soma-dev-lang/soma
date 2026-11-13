@@ -1,0 +1,116 @@
+# skeleton.lock — the structure `soma check` holds app.cell to.
+# Written by `soma skeleton app.cell --freeze`; changed on purpose with `--amend`. Do not edit.
+file app.cell
+
+== Catalog sha256:9766bdbd853447145dc3c680774611a0e2626dab493c296317204ca3ef731225 core:67ced8d9d7723243905b877c6725ae30efd355e68f76e5213706af75feecacd4
+skeleton Catalog {
+    memory {
+        sellers: Map<String, String> [persistent]
+        prices: Map<String, Int> [persistent]
+        stock: Map<String, Int> [persistent]
+        invariant prices >= 1
+        invariant stock >= 0
+    }
+    face {
+        signal list_item(listing: String, seller: String, price: Int, units: Int) -> Map  requires price >= 1  requires units >= 0  writes prices, sellers, stock
+        signal listing(listing: String) -> Map  reads prices, sellers, stock
+        signal seller_of(listing: String) -> String  reads sellers
+        signal price_of(listing: String) -> Int  reads prices
+        signal reserve(listing: String, units: Int) -> Bool  requires units >= 1  writes stock
+        signal restock(listing: String, units: Int) -> Int  requires units >= 1  writes stock
+    }
+}
+
+== Wallets sha256:b31a84ce787352a477599d822c6ad14a04a0e33d17be6568d3ba8d6763a8578c core:af1d0b2a88862f29bc19d19baccf281e6b9f742b939150142c7a19b3339fd4e2
+skeleton Wallets {
+    memory {
+        balances: Map<String, Int> [persistent, consistent]
+        invariant balances >= 0
+    }
+    face {
+        signal deposit(owner: String, amount: Int) -> Int  requires amount >= 1  writes balances
+        signal balance(owner: String) -> Int  reads balances
+        signal debit(owner: String, amount: Int) -> Bool  requires amount >= 1  writes balances
+        signal credit(owner: String, amount: Int) -> Int  requires amount >= 1  writes balances
+    }
+}
+
+== Escrow sha256:d3f165a6dcd928334578d0aef867fa1687f9d537f754c2b75821f8c160e2216c core:1ae496011de6fb5a26dd2c0e6e99ec337deafa1fe4fe0f434783e2a71e2309de
+skeleton Escrow {
+    memory {
+        amounts: Map<String, Int> [persistent, consistent]
+        payers: Map<String, String> [persistent, consistent]
+        payees: Map<String, String> [persistent, consistent]
+        invariant amounts >= 1
+    }
+    state hold {
+        initial: none
+        none -> held
+        held -> released
+        held -> refunded
+    }
+    face {
+        signal open_hold(id: String, payer: String, payee: String, amount: Int) -> Bool  requires amount >= 1  writes amounts, payees, payers  moves none -> held  calls Wallets.debit
+        signal release(id: String) -> Int  reads amounts, payees  moves held -> released  calls Wallets.credit
+        signal refund(id: String) -> Int  reads amounts, payers  moves held -> refunded  calls Wallets.credit
+        signal hold_state(id: String) -> String  reads hold
+        signal held_amount(id: String) -> Int  reads amounts, hold
+    }
+}
+
+== Orders sha256:9200474ad41b530c66175a7c7ae14b39658fdb4f130fbe5e37eaa3794f079266 core:e8a97dbc9425dd5d73f5cb3339499336bdde78ab341d9d062a7904728452e9c5
+skeleton Orders {
+    memory {
+        buyers: Map<String, String> [persistent]
+        items: Map<String, String> [persistent]
+        units: Map<String, Int> [persistent]
+        invariant units >= 1
+    }
+    state order {
+        initial: draft
+        draft -> paid
+        paid -> shipped
+        shipped -> delivered
+        paid -> cancelled
+        shipped -> disputed
+        disputed -> delivered
+        disputed -> returned
+    }
+    face {
+        signal place(id: String, buyer: String, listing: String, n: Int) -> Map  requires n >= 1  writes buyers, items, units  moves draft -> paid  calls Catalog.price_of, Catalog.reserve, Catalog.restock, Catalog.seller_of, Escrow.open_hold
+        signal ship(id: String, seller: String) -> Map  reads items  moves paid -> shipped  calls Catalog.seller_of
+        signal confirm_delivery(id: String, buyer: String) -> Map  reads buyers  moves shipped -> delivered  calls Escrow.release
+        signal cancel(id: String, buyer: String) -> Map  reads buyers, items, units  moves paid -> cancelled  calls Catalog.restock, Escrow.refund
+        signal open_dispute(id: String, buyer: String) -> Map  reads buyers  moves shipped -> disputed
+        signal close_dispute(id: String, for_buyer: Bool) -> String  reads items, units  moves disputed -> delivered, disputed -> returned  calls Catalog.restock
+        signal order_state(id: String) -> String  reads order
+        signal order(id: String) -> Map  reads buyers, items, order, units
+    }
+}
+
+== Disputes sha256:ec63d8e957eea50da50d768d241e82a243c25be4dc7172f3ed25afbea2093980 core:c71c8f7a1cce028364560273417da8d0e5efcf27edfb0f5a5002b839b3b331da
+skeleton Disputes {
+    memory {
+        reasons: Map<String, String> [persistent]
+        rulings: Map<String, String> [persistent]
+    }
+    face {
+        signal file(order_id: String, buyer: String, reason: String) -> Map  writes reasons  calls Orders.open_dispute
+        signal resolve(order_id: String, ruling: String) -> Map  reads reasons  writes rulings  calls Escrow.refund, Escrow.release, Orders.close_dispute
+        signal ruling(order_id: String) -> String  reads rulings
+    }
+}
+
+== Api sha256:73c396a6fc89b7cb649d0ec8969b5a18ea5905e5d9edd2009ed9ffa87e813966 core:5471265c77c0a7e088f451441761b4dde9b5fdcebbb2203bdf4ef6b85c170812
+skeleton Api {
+    face {
+        signal request(method: String, path: String, body: String) -> Map  calls Catalog.list_item, Catalog.listing, Disputes.file, Disputes.resolve, Escrow.hold_state, Orders.cancel, Orders.confirm_delivery, Orders.order, Orders.place, Orders.ship, Wallets.balance, Wallets.deposit
+    }
+}
+
+== soma.toml [verify] sha256:ee72cdea7dc69f3d540fd1c05719670358288fdae50a518476cf402f3f0e2cad core:ee72cdea7dc69f3d540fd1c05719670358288fdae50a518476cf402f3f0e2cad
+verify.cells = ["Orders", "Escrow"]
+verify.deadlock_free = true
+package.edition = "2027"
+
+checksum sha256:4237436ba3ff6d76520c2044de06fc5e14159a5c66c5088e4b32010aaa565335

@@ -1,0 +1,1 @@
+skeleton Z { memory { m: Map<String, Int> } face { signal f() -> Int reads nothing_here calls Q.r } }

@@ -1,0 +1,8 @@
+cell A {
+    memory { s: Map<String, Int> [persistent] }
+    on _each(xs: List, f: Any) { for x in xs { let r = f(x) }  return len(xs) }
+    on go() { return _each(["a", "b"], x => s.set(x, 1)) }
+    on get(k: String) { return s.get(k) ?? 0 }
+}
+cell test T { rules { assert A.go() == 2
+  assert A.get("a") == 1 } }

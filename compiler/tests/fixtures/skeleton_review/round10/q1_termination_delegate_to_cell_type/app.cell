@@ -1,0 +1,11 @@
+cell A {
+    state m { initial: a
+        a -> b }
+    on mv(id: String) { transition(id, "a", "b")  return 1 }
+    on go(n: Int) { let q = delegate("Aux", "back", n)
+        return 1 }
+}
+cell type Aux {
+    on back(n: Int) { return A.go(n) }
+}
+cell test T { rules { assert A.go(1) == 1 } }

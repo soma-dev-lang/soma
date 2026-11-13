@@ -37,8 +37,43 @@ pub fn program_names(program: &Program) -> (HashSet<String>, HashSet<String>) {
     (handlers, cells)
 }
 
+thread_local! {
+    /// The product search reads a string's calls where the string stands,
+    /// and a `require`'s operands once: nothing is hoisted for it.
+    static IN_PLACE: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+}
+
+/// `expose_for_analysis` for an analysis that follows the ORDER of what
+/// runs (the product of the machines): UFCS, pipes and `std.` made
+/// explicit, but no call moved out of the expression that holds it —
+/// `[transition(…), "{Visit.open(id)}"]` opened the visit first, and
+/// `require Visit.bump(id) == 1` bumped twice.
+pub fn expose_in_place(program: &Program) -> Program {
+    IN_PLACE.with(|f| f.set(true));
+    let p = expose_for_analysis(program);
+    IN_PLACE.with(|f| f.set(false));
+    p
+}
+
+/// The expressions a string evaluates in its `{…}`, exposed like the rest.
+pub fn segment_exprs(text: &str, names: &(HashSet<String>, HashSet<String>), cell: &CellDef) -> Vec<Expr> {
+    let ctx = Ctx { handlers: names.0.clone(), cells: names.1.clone(), slots: slots_of(cell) };
+    let was = IN_PLACE.with(|f| f.replace(true));
+    let out = segments(text).iter().filter_map(|seg| parse_segment(seg)).map(|x| {
+        let mut sx = Spanned::new(x, Span::new(0, 0));
+        fix_expr(&mut sx, &ctx, &mut Vec::new());
+        sx.node
+    }).collect();
+    IN_PLACE.with(|f| f.set(was));
+    out
+}
+
 pub fn expose_for_analysis(program: &Program) -> Program {
     let mut p = program.clone();
+    crate::checker::names::set_program_cells(program_names(program).1);
+    // the statements of `runtime { }` run like a handler's (`soma run
+    // app.cell`): one more entry, for every analysis that reads this copy
+    crate::checker::runtime_section::as_handler(&mut p);
     // interior cells too: their handlers are proven (and run) as well
     let (handlers, cells) = program_names(program);
     fn fix_cell(cell: &mut CellDef, handlers: &HashSet<String>, cells: &HashSet<String>) {
@@ -78,6 +113,7 @@ fn fix_stmts(stmts: &mut Vec<Spanned<Statement>>, ctx: &Ctx) {
     let old = std::mem::take(stmts);
     for mut st in old {
         let mut extra: Vec<Spanned<Expr>> = Vec::new();
+        let mut maybe: Vec<Spanned<Statement>> = Vec::new();
         let mut replace: Option<Statement> = None;
         match &mut st.node {
             Statement::Let { value, .. } | Statement::Assign { value, .. } | Statement::Return { value }
@@ -89,7 +125,8 @@ fn fix_stmts(stmts: &mut Vec<Spanned<Statement>>, ctx: &Ctx) {
                 fix_stmts(else_body, ctx);
             }
             Statement::While { condition, body, .. } => {
-                fix_expr(condition, ctx, &mut extra);
+                // (at each turn, not once before the loop)
+                fix_lazy(condition, ctx);
                 fix_stmts(body, ctx);
             }
             Statement::For { iter, body, .. } => {
@@ -120,7 +157,7 @@ fn fix_stmts(stmts: &mut Vec<Spanned<Statement>>, ctx: &Ctx) {
                 for mut o in operands {
                     let mut segs = Vec::new();
                     fix_expr(&mut o, ctx, &mut segs);
-                    if !segs.is_empty() || has_effect(&o.node, ctx) {
+                    if !IN_PLACE.with(|f| f.get()) && (!segs.is_empty() || has_effect(&o.node, ctx)) {
                         extra.extend(segs);
                         extra.push(o);
                     }
@@ -130,9 +167,15 @@ fn fix_stmts(stmts: &mut Vec<Spanned<Statement>>, ctx: &Ctx) {
                     None if !else_signal.chars().all(|c| c.is_alphanumeric() || c == '_') => Some(else_signal.clone()),
                     None => None,
                 };
+                // (built only when the require fails: it may not run)
                 if let Some(d) = detail {
                     let mut lit = Spanned::new(Expr::Literal(Literal::String(d)), st.span);
-                    fix_expr(&mut lit, ctx, &mut extra);
+                    let mut inner = Vec::new();
+                    fix_expr(&mut lit, ctx, &mut inner);
+                    if !inner.is_empty() {
+                        let cond = Spanned::new(Expr::Literal(Literal::Bool(true)), st.span);
+                        maybe.push(Spanned::new(Statement::If { condition: cond, then_body: as_stmts(inner), else_body: Vec::new() }, st.span));
+                    }
                 }
             }
             _ => {}
@@ -142,6 +185,7 @@ fn fix_stmts(stmts: &mut Vec<Spanned<Statement>>, ctx: &Ctx) {
             let span = e.span;
             stmts.push(Spanned::new(Statement::ExprStmt { expr: e }, span));
         }
+        stmts.extend(maybe);
         stmts.push(st);
     }
 }
@@ -156,10 +200,28 @@ fn constraint_operands(c: &Constraint, span: Span, out: &mut Vec<Spanned<Expr>>)
     }
 }
 
+/// The string literals of a match pattern.
+pub(crate) fn pattern_texts(p: &MatchPattern, out: &mut Vec<String>) {
+    match p {
+        MatchPattern::Literal(Literal::String(s)) => out.push(s.clone()),
+        MatchPattern::Or(ps) => for q in ps { pattern_texts(q, out); },
+        MatchPattern::MapDestructure(fields) => for (_, q) in fields { pattern_texts(q, out); },
+        MatchPattern::StringPrefix { prefix, .. } => out.push(prefix.clone()),
+        MatchPattern::Variant { fields, .. } => match fields {
+            VariantPatternFields::Tuple(ps) => for q in ps { pattern_texts(q, out); },
+            VariantPatternFields::Struct { fields, .. } => for (_, q) in fields { pattern_texts(q, out); },
+            VariantPatternFields::Unit => {}
+        },
+        _ => {}
+    }
+}
+
 /// A call an analysis must see: a handler, an effect builtin, a slot write
 /// or a pipe / method form of one.
 fn has_effect(e: &Expr, ctx: &Ctx) -> bool {
     let mut hit = false;
+    // (a statement inside an expression block: `if c { slot[k] = v  true } else { … }`)
+    crate::checker::literals::for_each_stmt_in_expr(e, &mut |_| hit = true);
     crate::checker::literals::for_each_in_expr(e, &mut |x| match x {
         Expr::FnCall { name, .. } if ctx.handlers.contains(name.as_str()) || EFFECT_BUILTINS.contains(&name.as_str()) || name == "next_id" => hit = true,
         Expr::MethodCall { method, .. } if ctx.handlers.contains(method.as_str()) || EFFECT_BUILTINS.contains(&method.as_str())
@@ -174,10 +236,31 @@ fn as_stmts(exprs: Vec<Spanned<Expr>>) -> Vec<Spanned<Statement>> {
     exprs.into_iter().map(|e| { let span = e.span; Spanned::new(Statement::ExprStmt { expr: e }, span) }).collect()
 }
 
+/// `fix_expr` for an expression that may not run (the right of `&&`, a
+/// match guard, …) or runs more than once (a `while` condition): the calls
+/// its strings make are not hoisted before the statement — they would then
+/// have run for sure, once — but kept with it, as `if true { calls… ; e }
+/// else { e }`, which every analysis reads as "may run".
+fn fix_lazy(e: &mut Spanned<Expr>, ctx: &Ctx) {
+    let mut inner = Vec::new();
+    fix_expr(e, ctx, &mut inner);
+    if inner.is_empty() { return; }
+    let span = e.span;
+    let plain = e.clone();
+    e.node = Expr::IfExpr {
+        condition: Box::new(Spanned::new(Expr::Literal(Literal::Bool(true)), span)),
+        then_body: as_stmts(inner),
+        then_result: Box::new(plain.clone()),
+        else_body: Vec::new(),
+        else_result: Box::new(plain),
+    };
+}
+
 fn fix_expr(e: &mut Spanned<Expr>, ctx: &Ctx, extra: &mut Vec<Spanned<Expr>>) {
     let span = e.span;
     let mut replacement: Option<Expr> = None;
     match &mut e.node {
+        Expr::Literal(Literal::String(_)) if IN_PLACE.with(|f| f.get()) => {}
         Expr::Literal(Literal::String(s)) => {
             for seg in segments(s) {
                 if let Some(x) = parse_segment(&seg) {
@@ -187,25 +270,52 @@ fn fix_expr(e: &mut Spanned<Expr>, ctx: &Ctx, extra: &mut Vec<Spanned<Expr>>) {
                 }
             }
         }
+        // `std.transition(…)`, `std.delegate(…)`, `std.think(…)`: the builtin,
+        // under the name every analysis knows it by (as `_std("transition", …)`
+        // it moved a machine, recursed or spent, unseen)
+        Expr::FnCall { name, args } if name == "_std" && matches!(args.first().map(|a| &a.node),
+            Some(Expr::Literal(Literal::String(f))) if !ctx.handlers.contains(f.as_str())
+                && (EFFECT_BUILTINS.contains(&f.as_str()) || crate::checker::names::EFFECT_BUILTINS.contains(&f.as_str()) || crate::checker::names::unstable_builtin(f)
+                    || matches!(f.as_str(), "get_status" | "has_state" | "valid_transitions" | "horde" | "vote" | "next_id"))) => {
+            let Some(Expr::Literal(Literal::String(f))) = args.first().map(|a| a.node.clone()) else { unreachable!() };
+            e.node = Expr::FnCall { name: f, args: args[1..].to_vec() };
+            fix_expr(e, ctx, extra);
+            return;
+        }
+        Expr::FnCall { name, args } if name == "_coalesce" && args.len() == 2 => {
+            fix_expr(&mut args[0], ctx, extra);
+            fix_lazy(&mut args[1], ctx);
+        }
         Expr::FnCall { name, args } => {
             for a in args.iter_mut() { fix_expr(a, ctx, extra); }
             // `delegate("Cell", "h", a…)` with literal names is a call of h(a…)
-            if name == "delegate" && args.len() >= 2 {
-                if let (Expr::Literal(Literal::String(c)), Expr::Literal(Literal::String(h))) = (&args[0].node, &args[1].node) {
+            // (not when a handler is named `delegate`: that handler is what a bare call runs)
+            if name == "delegate" && args.len() >= 2 && !ctx.handlers.contains("delegate") {
+                // (not when this cell has a SLOT of that name: `Cell.h(…)` would be read as the slot)
+                if let (Expr::Literal(Literal::String(c)), Expr::Literal(Literal::String(h))) = (&args[0].node, &args[1].node) { if !ctx.slots.contains(c.as_str()) {
                     let target = Spanned::new(Expr::Ident(c.clone()), span);
                     replacement = Some(Expr::MethodCall { target: Box::new(target), method: h.clone(), args: args[2..].to_vec() });
-                }
+                } }
             }
         }
         Expr::MethodCall { target, method, args } => {
             fix_expr(target, ctx, extra);
             for a in args.iter_mut() { fix_expr(a, ctx, extra); }
             let named = matches!(&target.node, Expr::Ident(t) if ctx.cells.contains(t) || ctx.slots.contains(t));
-            if !named && (ctx.handlers.contains(method.as_str()) || EFFECT_BUILTINS.contains(&method.as_str())) {
+            // (`o.get_status()`, `d.sleep()`, `2.random()`: read by name like the rest)
+            let seen_by_name = EFFECT_BUILTINS.contains(&method.as_str()) || crate::checker::names::EFFECT_BUILTINS.contains(&method.as_str())
+                || matches!(method.as_str(), "get_status" | "has_state" | "valid_transitions") || crate::checker::names::unstable_builtin(method);
+            if !named && (ctx.handlers.contains(method.as_str()) || seen_by_name) {
                 let mut all = vec![(**target).clone()];
                 all.extend(args.iter().cloned());
                 replacement = Some(Expr::FnCall { name: method.clone(), args: all });
             }
+        }
+        // `a && b`, `a || b`, `a ?? b`: `b` runs or not — the calls its
+        // strings make stay with it
+        Expr::BinaryOp { left, op: BinOp::And | BinOp::Or, right } => {
+            fix_expr(left, ctx, extra);
+            fix_lazy(right, ctx);
         }
         Expr::BinaryOp { left, right, .. } | Expr::CmpOp { left, right, .. } => {
             fix_expr(left, ctx, extra);
@@ -219,8 +329,17 @@ fn fix_expr(e: &mut Spanned<Expr>, ctx: &Ctx, extra: &mut Vec<Spanned<Expr>>) {
                 all.extend(args.iter().cloned());
                 replacement = Some(Expr::FnCall { name: name.clone(), args: all });
             }
+            // `k |> c.set(x)` is `c.set(k, x)`, `x |> log.push()` is `log.push(x)`:
+            // a slot write (it was "no handler writes to guarded slots")
+            if let Expr::MethodCall { target, method, args } = &right.node {
+                let mut all = vec![(**left).clone()];
+                all.extend(args.iter().cloned());
+                replacement = Some(Expr::MethodCall { target: target.clone(), method: method.clone(), args: all });
+            }
         }
-        Expr::Not(i) | Expr::Try(i) | Expr::TryPropagate(i) => fix_expr(i, ctx, extra),
+        // (a failed `try` undoes what its strings did with the rest)
+        Expr::Try(i) => fix_lazy(i, ctx),
+        Expr::Not(i) | Expr::TryPropagate(i) => fix_expr(i, ctx, extra),
         Expr::FieldAccess { target, .. } => fix_expr(target, ctx, extra),
         Expr::Index { target, index } => { fix_expr(target, ctx, extra); fix_expr(index, ctx, extra); }
         Expr::ListLiteral(items) => { for it in items.iter_mut() { fix_expr(it, ctx, extra); } }
@@ -242,7 +361,22 @@ fn fix_expr(e: &mut Spanned<Expr>, ctx: &Ctx, extra: &mut Vec<Spanned<Expr>>) {
         Expr::Match { subject, arms } => {
             fix_expr(subject, ctx, extra);
             for arm in arms.iter_mut() {
-                if let Some(g) = arm.guard.as_mut() { fix_expr(g, ctx, extra); }
+                // a pattern's string is built to be compared: the calls in
+                // its `{…}` run with the match (no analysis read them)
+                let mut texts: Vec<String> = Vec::new();
+                pattern_texts(&arm.pattern, &mut texts);
+                // (the analysis that follows the order of what runs reads them in the match)
+                if IN_PLACE.with(|f| f.get()) { texts.clear(); }
+                for t in texts {
+                    for seg in segments(&t) {
+                        if let Some(x) = parse_segment(&seg) {
+                            let mut sx = Spanned::new(x, span);
+                            fix_expr(&mut sx, ctx, extra);
+                            extra.push(sx);
+                        }
+                    }
+                }
+                if let Some(g) = arm.guard.as_mut() { fix_lazy(g, ctx); }
                 fix_stmts(&mut arm.body, ctx);
                 let mut inner = Vec::new();
                 fix_expr(&mut arm.result, ctx, &mut inner);

@@ -1,0 +1,4 @@
+cell type Kind { variants { Big  Small } }
+cell type Rec { variants { R { inner: Deep } } }
+cell type Deep { variants { D { v: Int } } }
+cell type Unused { variants { U } }

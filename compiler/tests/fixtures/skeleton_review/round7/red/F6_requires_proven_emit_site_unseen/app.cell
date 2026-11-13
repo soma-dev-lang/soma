@@ -1,0 +1,22 @@
+cell A {
+    memory {
+        c: Map<String, Int>
+    }
+    face {
+        signal f(n: Int) -> Int
+            requires n > 0
+    }
+    on f(n: Int) { return n }
+    on ok() { return f(5) }
+    on bad() { emit f(0 - 5)
+ return 1 }
+    on probe() {
+        let r = try { bad() }
+        return r.kind ?? "ok"
+    }
+}
+cell test T {
+    rules {
+        assert A.probe() == "requires"
+    }
+}

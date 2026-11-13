@@ -1,0 +1,17 @@
+// A [task] handler stops at `await approve(…)` (its step commits, other requests run) and resumes later:
+// the `require len(rows) < 1` before the wait is still taken as a fact for the push after it. Only think()/vote() clear facts.
+cell A {
+    memory { rows: List<Int>  invariant size <= 1 }
+    on add(x: Int) [task] { require len(rows) < 1 else Full
+ let ok = await approve("go {x}")
+ rows.push(x)
+ return len(rows) }
+    on probe() {
+  let a = add(1)
+  let b = add(2)
+  let r1 = try { resume(a.waiting, true) }
+  let r2 = try { resume(b.waiting, true) }
+  print(r2)
+  return r2.kind ?? "ok" }
+}
+cell test T { rules { assert A.probe() == "invariant" } }

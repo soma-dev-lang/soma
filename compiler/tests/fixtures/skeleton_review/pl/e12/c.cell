@@ -1,0 +1,38 @@
+skeleton Ledger {
+    memory { acct: Map<String, Int> }
+    face {
+        signal debit(who: String, n: Int) -> Int   writes acct
+        signal bal(who: String) -> Int   reads acct
+    }
+}
+flesh Ledger {
+    on debit(who, n) { acct.set(who, (acct.get(who) ?? 0) - n)  return n }
+    on bal(who) { return acct.get(who) ?? 0 }
+}
+skeleton Shop {
+    memory { stock: Map<String, Int> }
+    face {
+        signal pure_quote(who: String) -> Int
+        signal pure_quote2(who: String) -> Int
+        signal bump() -> Int   writes stock
+    }
+}
+flesh Shop {
+    on pure_quote(who) {
+        let r = debit(who, 5)
+        return r
+    }
+    on pure_quote2(who) {
+        let r = Ledger.debit(who, 7)
+        return r
+    }
+    on bump() { stock.set("n", (stock.get("n") ?? 0) + 1)  return stock.get("n") }
+}
+cell test T {
+    rules {
+        assert pure_quote("a") == 5
+        assert bal("a") == 0 - 5
+        assert pure_quote2("a") == 7
+        assert bal("a") == 0 - 12
+    }
+}

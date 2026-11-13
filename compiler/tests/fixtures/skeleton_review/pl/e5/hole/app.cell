@@ -1,0 +1,23 @@
+skeleton Approval {
+    state review {
+        initial: pending
+        pending -> signed_off
+    }
+    face {
+        signal sign(id: String) -> String   moves pending -> signed_off
+    }
+}
+skeleton Pay {
+    state payment {
+        initial: due
+        due -> paid
+    }
+    face {
+        signal pay(id: String) -> String   moves due -> paid
+    }
+}
+flesh Approval {
+    on sign(id) { transition(id, "pending", "signed_off")  return "ok" }
+}
+flesh Pay {
+}

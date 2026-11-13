@@ -1,0 +1,1 @@
+variante require de prod_status_var_read_after_call_same_condition: `require Visit.close_visit(id) == "done" && s == "open" else X`

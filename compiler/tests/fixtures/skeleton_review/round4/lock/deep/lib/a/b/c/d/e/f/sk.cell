@@ -1,0 +1,11 @@
+skeleton Deep {
+    memory { s: Map<String, Int> [persistent] }
+    face {
+        signal get(id: String) -> Int    writes s
+        signal put(id: String) -> Int    writes s
+    }
+}
+flesh Deep {
+    on get(id) { s.set(id, 9)  return 9 }
+    on put(id) { s.set(id, 1)  return 1 }
+}

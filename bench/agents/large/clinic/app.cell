@@ -1,0 +1,60 @@
+// Clinique — point d'entrée. La STRUCTURE est dans lib/ (un skeleton par fichier), les corps dans
+// flesh/ (un flesh par fichier), les tests dans tests/.
+//
+//   soma skeleton app.cell                 la carte
+//   soma holes    app.cell                 ce qui reste à écrire
+//   soma skeleton app.cell Cell.signal     le brief d'un corps
+
+use lib::types
+use lib::patients
+use lib::praticiens
+use lib::agenda
+use lib::consultations
+use lib::ordonnances
+use lib::pharmacie
+use lib::laboratoire
+use lib::facturation
+use lib::paiements
+use lib::assurance
+use lib::notifications
+use lib::audit
+use lib::rapports
+
+use flesh::patients
+use flesh::praticiens
+use flesh::audit
+use flesh::notifications
+use flesh::agenda
+use flesh::consultations
+use flesh::pharmacie
+use flesh::assurance
+use flesh::ordonnances
+use flesh::laboratoire
+use flesh::facturation
+use flesh::paiements
+use flesh::rapports
+use flesh::api
+
+// Api — l'unique point d'entrée HTTP. Ne possède aucune mémoire : route vers les autres cellules.
+skeleton Api {
+    face {
+        // Route une requête. `body` est le JSON déjà décodé (map() pour un GET). Routes :
+        //   GET  /sante                       -> sante()
+        //   POST /patients        {id, nom, naissance}        -> Patients.inscrire
+        //   GET  /patients/{id}                               -> Patients.fiche
+        //   POST /rdv             {id, patient, creneau}      -> Agenda.demander
+        //   POST /rdv/confirmer/{id}                          -> { etat: Agenda.confirmer(id) }
+        //   POST /rdv/annuler/{id}                            -> { etat: Agenda.annuler_rdv(id) }
+        //   POST /paiements       {id, facture, montant, moyen} -> { reste_du: Paiements.payer(…) }
+        //   GET  /visites/{id}                                -> Rapports.dossier_visite
+        //   GET  /tableau/{date}                              -> Rapports.tableau_de_bord
+        // Une erreur d'une cellule appelée est attrapée et rendue response(status, { error: kind, detail }) :
+        // 404 si le kind finit par "Inconnu" ou "Inconnue", 409 pour `invalid_transition`, 400 sinon.
+        // Route inconnue : response(404, { error: "route" }).
+        signal request(method: String, path: String, body: Map) -> Map
+            calls sante, Patients.inscrire, Patients.fiche, Agenda.demander, Agenda.confirmer, Agenda.annuler_rdv, Paiements.payer, Rapports.dossier_visite, Rapports.tableau_de_bord
+        // { ok: true, patients: Patients.compter(), audit: Audit.taille() }.
+        signal sante() -> Map
+            calls Patients.compter, Audit.taille
+    }
+}

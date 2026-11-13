@@ -1,0 +1,1 @@
+soma check app.cell -> « ✓ cost: 'latency' bound proven — peak 0 ms ≤ declared 100 ms » ; soma test app.cell : A.run() mesure ~210 ms — ligne fautive : `let s = "{1 |> B.slow}"` (B.slow dort 200 ms) ; cost.rs ne suit pas la droite FieldAccess d'un pipe (desugar.rs:318-333). Variante c_interp_pipe_field (`"{1 |> k.slow}"`)

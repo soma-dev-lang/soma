@@ -1,0 +1,35 @@
+# skeleton.lock — the structure `soma check` holds app.cell to.
+# Written by `soma skeleton app.cell --freeze`; changed on purpose with `--amend`. Do not edit.
+file app.cell
+
+== Desk sha256:40ae9068aff080ac766dccee8b88af1b5c89d4c126fac0dc35c4c9741a15276e
+skeleton Desk {
+    memory {
+        titles: Map<String, String> [persistent]
+        owners: Map<String, String> [persistent]
+        opened: Map<String, Int> [persistent]
+        invariant opened >= 0
+    }
+    state ticket {
+        initial: new
+        new -> assigned
+        assigned -> resolved
+        resolved -> closed
+        resolved -> assigned
+        new -> closed
+    }
+    face {
+        signal open(id: String, title: String) -> Map  writes opened, titles  calls count
+        signal assign(id: String, owner: String) -> String
+            reads titles
+            writes owners
+            moves new -> assigned
+        signal resolve(id: String, by: String) -> String
+            reads owners, titles
+            moves assigned -> resolved
+        signal reopen(id: String) -> String  moves resolved -> assigned
+        signal close(id: String) -> String  reads titles  moves new -> closed, resolved -> closed
+        signal summary(id: String) -> Map  reads owners, ticket, titles
+        signal count() -> Int  writes opened
+    }
+}

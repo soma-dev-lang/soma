@@ -1,0 +1,14 @@
+cell A {
+    memory { c: Map<String, String> }
+    face {
+        signal f(n: Int) -> Int
+            requires n > 0
+    }
+    on f(n: Int) { return n }
+    on seen() { return c.get("seen") ?? "none" }
+    on ok() { return f(5) }
+    on bad() { let v = try { vote(A.f, 0 - 5, 1) }
+ return v.kind ?? "ok" }
+}
+
+cell test T { rules { assert A.bad() == "requires" } }

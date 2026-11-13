@@ -1,0 +1,19 @@
+# skeleton.lock — the structure `soma check` holds app.cell to.
+# Written by `soma skeleton app.cell --freeze`; changed on purpose with `--amend`. Do not edit.
+file app.cell
+
+== Deep sha256:3a61e74d7c68c942a5a82d1be8f9900f32242b5da34a90648c9cf6918abbb0f4
+skeleton Deep {
+    memory {
+        s: Map<String, Int> [persistent]
+    }
+    face {
+        signal get(id: String) -> Int  reads s
+        signal put(id: String) -> Int  writes s
+    }
+}
+
+== soma.toml [verify] sha256:74d5af60569c1e022da0dd0ecb3ac3db2f9ba9782141aa47f241421a004e68ca
+package.edition = "2026"
+
+checksum sha256:ef5bfa75da9542a4324d3ab80eaeb4d72019ced2027ae76a27bca5f646520b67

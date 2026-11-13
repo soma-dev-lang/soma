@@ -1,0 +1,39 @@
+skeleton B {
+    memory { hits: Map<String, Int> }
+    face {
+        signal bump(n: Int) -> Int   writes hits
+        signal seen() -> Int         reads hits
+        signal bump2(a: Any, n: Int) -> Int  writes hits
+    }
+}
+flesh B {
+    on bump(n) { hits.set("h", n)  return 7 }
+    on seen() { return hits.get("h") ?? 0 }
+    on bump2(a, n) { hits.set("h", n)  return 7 }
+}
+skeleton A {
+    memory { own: Map<String, Int> }
+
+    face {
+        signal go(k: String) -> Any   
+        signal mine() -> Int          reads own
+
+    }
+}
+flesh A {
+    on go(k) {
+        let q = "{1 |> k.bump2}"
+        return 1
+    }
+    on mine() { return own.get("h") ?? 0 }
+
+}
+
+cell test T {
+    rules {
+        let r = try { A.go("k") }
+        assert "{r}" == "1"
+        assert B.seen() == 0
+        assert A.mine() == 0
+    }
+}

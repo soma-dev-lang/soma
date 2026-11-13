@@ -1,0 +1,9 @@
+// flesh file
+
+flesh Stock {
+    on level(sku) { return items.get(sku) ?? 0 }
+    on put(sku) {
+        items.set(sku, 1)
+        return 1
+    }
+}

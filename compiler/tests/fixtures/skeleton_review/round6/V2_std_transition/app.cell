@@ -1,0 +1,38 @@
+skeleton Approval {
+    state appr {
+        initial: pending
+        pending -> signed_off
+    }
+    face {
+        signal sign(id: String) -> Int        moves pending -> signed_off
+        signal status(id: String) -> String   reads appr
+    }
+}
+flesh Approval {
+    on sign(id) { transition(id, "pending", "signed_off")  return 1 }
+    on status(id) { return get_status(id) ?? "pending" }
+}
+skeleton Pay {
+    state pay {
+        initial: due
+        due -> paid
+    }
+    face {
+        signal pay(id: String) -> Int        moves * -> *
+        signal pst(id: String) -> String     reads pay
+    }
+}
+flesh Pay {
+    on pay(id) {
+        std.transition(id, "due", "paid")
+        return 1
+    }
+    on pst(id) { return get_status(id) ?? "due" }
+}
+cell test T {
+    rules {
+        assert Pay.pay("k") == 1
+        assert Pay.pst("k") == "paid"                   // paid…
+        assert Approval.status("k") == "pending"        // …never signed off
+    }
+}

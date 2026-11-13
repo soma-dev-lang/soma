@@ -1,0 +1,41 @@
+cell Visit {
+    memory { log: Map<String, String> }
+    state v {
+        initial: waiting
+        waiting -> open
+        open -> done
+        done -> open
+    }
+    on open_visit(id: String) { transition(id, "waiting", "open")  log.set(id, Desk.st(id))  return "open" }
+    on close_visit(id: String) { transition(id, "open", "done")  return "done" }
+    on reopen(id: String) { transition(id, "done", "open")  return "open" }
+    on status(id: String) { return get_status(id) ?? "waiting" }
+    on toggle(id: String) { if (get_status(id) ?? "waiting") == "open" { transition(id, "open", "done") } else { transition(id, "done", "open") }
+ return "t" }
+    on seen(id: String) { return log.get(id) ?? "-" }
+}
+cell Desk {
+
+    state d {
+        initial: none
+        none -> requested
+    }
+    on st(id: String) { return get_status(id) ?? "none" }
+    on dbg(id: String) { let r = try { go(id) }
+        return r }
+    on go(id: String) { return go2(id, false) }
+    on go2(id: String, flag: Bool) {
+        if flag { Visit.toggle(id) }
+        let s = Visit.status(id)
+        if Visit.toggle(id) != "zzz" && s == "open" { transition(id, "none", "requested") }
+        return 1
+    }
+}
+cell test T {
+    rules {
+        let a = Visit.open_visit("k")
+        let r = try { Desk.go("k") }
+        assert Desk.st("k") == "requested"
+        assert Visit.status("k") != "open"
+    }
+}

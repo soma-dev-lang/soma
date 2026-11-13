@@ -1,0 +1,378 @@
+# skeleton.lock — the structure `soma check` holds app.cell to.
+# Written by `soma skeleton app.cell --freeze`; changed on purpose with `--amend`. Do not edit.
+file app.cell
+
+== Quarter sha256:f3f6a1f964cb4df3174733b6f1795a0fd0400ca93ae3f97b46abb96e1fc2e56f
+skeleton Quarter {
+    memory {
+        clock: Map<String, Int> [persistent]
+        reports: Map<String, Map> [persistent]
+        invariant clock >= 0
+    }
+    state turn {
+        initial: planning
+        planning -> resolving
+        resolving -> reported
+    }
+    face {
+        signal new_game(seed: Int) -> Int
+            requires seed >= 0
+            writes clock
+            calls Attention.refill, Finance.open, Market.seed_segments, Rivals.seed_rivals,
+                Rng.reseed
+        signal current() -> Int
+            ensures result >= 0
+            reads clock
+        signal sell_quarter() -> Int
+            ensures result >= 0
+            calls Factory.plant_ids, Factory.produce, Market.demand, Product.offer,
+                Product.product_ids, Product.sell, Product.stock_in, Rivals.player_share
+        signal resolve() -> Map
+            writes clock, reports
+            moves planning -> resolving, resolving -> reported
+            calls Attention.refill, Events.draw, Events.interest_rate, Factory.advance_all,
+                Finance.accrue_interest, Finance.assess, Finance.close_books, Legal.progress_all,
+                Market.tick, Research.work_all, Rivals.act_all, current, sell_quarter
+        signal report(q: Int) -> Map
+            requires q >= 0
+            reads reports
+        signal phase(q: Int) -> String  reads clock, turn
+    }
+}
+
+== Rng sha256:adabdaa95448e9ea50ca24a40914f3f426bc27bb910263bc8442f0fd7ef535a0
+skeleton Rng {
+    memory {
+        st: Map<String, Int> [persistent]
+        invariant st >= 0
+    }
+    face {
+        signal reseed(n: Int) -> Int
+            requires n >= 0
+            writes st
+        signal roll(sides: Int) -> Int
+            requires sides > 0
+            ensures result >= 0 && result < sides
+            writes st
+        signal chance(bps: Int) -> Bool
+            requires bps >= 0 && bps <= 10000
+            calls roll
+    }
+}
+
+== Finance sha256:ce96c0205b2f1978079832a8c248a54d4a5b01b9b436c122daa4fcc0004f9416
+skeleton Finance {
+    memory {
+        ledger: Map<String, Int> [persistent]
+        history: List<Map> [persistent]
+        invariant ledger >= 0
+    }
+    state solvency {
+        initial: healthy
+        healthy -> strained
+        strained -> healthy
+        strained -> breach
+        breach -> strained
+        breach -> bankrupt
+    }
+    face {
+        signal open(cash: Int) -> Int
+            requires cash >= 0
+            writes ledger
+        signal cash() -> Int
+            ensures result >= 0
+            reads ledger
+        signal debt() -> Int
+            ensures result >= 0
+            reads ledger
+        signal earn(amount: Int, kind: String) -> Int
+            requires amount >= 0
+            writes ledger
+        signal spend(amount: Int, kind: String) -> Bool
+            requires amount >= 0
+            writes ledger
+        signal raise_debt(amount: Int) -> Int
+            requires amount > 0
+            writes ledger
+        signal raise_equity(amount: Int, valuation: Int) -> Int
+            requires amount > 0 && valuation > 0
+            ensures result >= 0 && result <= 10000
+            writes ledger
+        signal accrue_interest(rate_bps: Int) -> Int
+            requires rate_bps >= 0
+            ensures result >= 0
+            writes ledger
+            calls debt, spend
+        signal assess(company: String) -> String
+            moves breach -> bankrupt, breach -> strained, healthy -> strained, strained -> breach,
+                strained -> healthy
+            calls cash, debt
+        signal close_books(q: Int) -> Map  writes history, ledger
+        signal runway() -> Int  reads history, ledger
+    }
+}
+
+== Attention sha256:9eda641227b1ebbd39396f6e77b92cde29650f5c6aeb12b7a62dc01be9bfd5ac
+skeleton Attention {
+    memory {
+        left: Map<String, Int> [persistent]
+        focus: Map<String, Int> [persistent]
+        invariant left >= 0 && left <= 10
+        invariant focus >= 0 && focus <= 10
+    }
+    face {
+        signal refill() -> Int  writes focus, left
+        signal remaining() -> Int  reads left
+        signal attend(area: String, n: Int) -> Bool
+            requires n > 0
+            writes focus, left
+        signal attended(area: String) -> Bool  reads focus
+    }
+}
+
+== Factory sha256:3cf66e139f04d2875440c9d8f59ee4ecbb0f7f89041f963fef9d76d085fc2ce4
+skeleton Factory {
+    memory {
+        capacity: Map<String, Int> [persistent]
+        yield_bps: Map<String, Int> [persistent]
+        ramp_left: Map<String, Int> [persistent]
+        wear: Map<String, Int> [persistent]
+        automation: Map<String, Int> [persistent]
+        invariant capacity >= 0
+        invariant capacity.size <= 8
+        invariant yield_bps >= 0 && yield_bps <= 10000
+        invariant ramp_left >= 0
+        invariant wear >= 0 && wear <= 100
+        invariant automation >= 0 && automation <= 5
+    }
+    state plant {
+        initial: planned
+        planned -> building
+        building -> ramping
+        ramping -> running { guard { ramp == 0 } }
+        running -> maintenance
+        maintenance -> running
+        running -> closed
+    }
+    face {
+        signal build(id: String, units: Int) -> Bool
+            requires units > 0
+            writes automation, capacity, ramp_left, wear, yield_bps
+            moves planned -> building
+            calls Finance.spend
+        signal advance(id: String) -> String
+            writes ramp_left, wear
+            moves building -> ramping, maintenance -> running, ramping -> running
+        signal maintain(id: String) -> Bool  moves running -> maintenance  calls Finance.spend
+        signal automate(id: String) -> Bool
+            reads plant
+            writes automation, yield_bps
+            calls Finance.spend
+        signal produce(id: String, wanted: Int) -> Int
+            requires wanted >= 0
+            ensures result >= 0
+            reads capacity, plant, yield_bps
+            writes wear
+            calls Attention.attended, Research.effect
+        signal close(id: String) -> String  moves running -> closed
+        signal plant_ids() -> List<String>  reads capacity
+        signal advance_all() -> Int  calls advance, plant_ids
+    }
+}
+
+== Product sha256:123c67d1b3a27b86c67463b192c133b394c49c60e59a784b75a9b5a3a69bcec7
+skeleton Product {
+    memory {
+        price: Map<String, Int> [persistent]
+        unit_cost: Map<String, Int> [persistent]
+        quality: Map<String, Int> [persistent]
+        segment: Map<String, String> [persistent]
+        stock: Map<String, Int> [persistent]
+        invariant price > 0
+        invariant unit_cost > 0
+        invariant quality >= 0 && quality <= 100
+        invariant stock >= 0
+    }
+    face {
+        signal launch(id: String, seg: String, p: Int, cost: Int, q: Int) -> String
+            requires p > 0 && cost > 0 && q >= 0 && q <= 100
+            writes price, quality, segment, stock, unit_cost
+        signal reprice(id: String, p: Int) -> Int
+            requires p > 0
+            writes price
+        signal stock_in(id: String, units: Int) -> Int
+            requires units >= 0
+            reads unit_cost
+            writes stock
+            calls Finance.spend, Research.effect
+        signal sell(id: String, units: Int) -> Int
+            requires units >= 0
+            ensures result >= 0
+            reads price
+            writes stock
+            calls Finance.earn
+        signal offer(id: String) -> Map  reads price, quality, segment, stock  calls Research.effect
+        signal product_ids() -> List<String>  reads segment
+    }
+}
+
+== Research sha256:930745b0d2ea245685aac1c11f0429b93d819661350a5b3229fbfb62b63f936a
+skeleton Research {
+    memory {
+        trl: Map<String, Int> [persistent]
+        budget: Map<String, Int> [persistent]
+        domain: Map<String, String> [persistent]
+        commercial_left: Map<String, Int> [persistent]
+        effects: Map<String, Int> [persistent]
+        invariant trl >= 1 && trl <= 9
+        invariant trl.size <= 12
+        invariant budget >= 0
+        invariant commercial_left >= 0
+        invariant effects >= 0 && effects <= 5000
+    }
+    state program {
+        initial: proposed
+        proposed -> active
+        active -> paused
+        paused -> active
+        active -> cancelled
+        paused -> cancelled
+        active -> dead_end
+        active -> prototype
+        prototype -> commercializing { guard { cost > 0 } }
+        prototype -> shelved
+        commercializing -> commercialized
+    }
+    face {
+        signal propose(id: String, dom: String, quarterly: Int) -> String
+            requires quarterly > 0
+            writes budget, domain, trl
+            moves proposed -> active
+        signal pause(id: String) -> String  moves active -> paused
+        signal resume(id: String) -> String  moves paused -> active
+        signal cancel(id: String) -> String  moves active -> cancelled, paused -> cancelled
+        signal work(id: String) -> String
+            reads budget
+            writes trl
+            moves active -> dead_end, active -> prototype
+            calls Attention.attended, Finance.spend, Rng.roll
+        signal commercialize(id: String, cost: Int) -> Bool
+            requires cost > 0
+            writes commercial_left
+            moves prototype -> commercializing
+            calls Finance.spend
+        signal shelve(id: String) -> String  moves prototype -> shelved
+        signal ship(id: String) -> String
+            reads domain
+            writes commercial_left, effects
+            moves commercializing -> commercialized
+        signal effect(key: String) -> Int
+            ensures result >= 0 && result <= 5000
+            reads effects
+        signal stage(id: String) -> String  reads program
+        signal program_ids() -> List<String>  reads trl
+        signal work_all() -> List<String>  calls program_ids, ship, stage, work
+    }
+}
+
+== Market sha256:fd284ceba5a780e207f14678300f4240371986b35d095ca29e32071d80aec41b
+skeleton Market {
+    memory {
+        tam: Map<String, Int> [persistent]
+        adoption_bps: Map<String, Int> [persistent]
+        ref_price: Map<String, Int> [persistent]
+        shock_bps: Map<String, Int> [persistent]
+        invariant tam >= 0
+        invariant adoption_bps >= 0 && adoption_bps <= 10000
+        invariant ref_price > 0
+        invariant shock_bps >= -9000 && shock_bps <= 9000
+    }
+    face {
+        signal seed_segments() -> Int  writes adoption_bps, ref_price, tam
+        signal segments() -> List<String>  reads tam
+        signal demand(seg: String, p: Int, q: Int) -> Int
+            requires p > 0 && q >= 0 && q <= 100
+            ensures result >= 0
+            reads adoption_bps, ref_price, shock_bps, tam
+        signal shock(seg: String, bps: Int) -> Int  writes shock_bps
+        signal tick() -> Int  writes adoption_bps, shock_bps  calls segments
+    }
+}
+
+== Rivals sha256:c87529b6e98f7240b7dd3af10d273ca7994bfac1f54f80af56469ccf66f953e5
+skeleton Rivals {
+    memory {
+        strategy: Map<String, String> [persistent]
+        rprice: Map<String, Int> [persistent]
+        rquality: Map<String, Int> [persistent]
+        invariant rprice > 0
+        invariant rquality >= 0 && rquality <= 100
+    }
+    face {
+        signal seed_rivals() -> Int  writes rprice, rquality, strategy
+        signal rival_ids() -> List<String>  reads strategy
+        signal act(id: String) -> String  reads strategy  writes rprice, rquality  calls Rng.roll
+        signal act_all() -> List<String>  calls act, rival_ids
+        signal player_share(p: Int, q: Int) -> Int
+            requires p > 0 && q >= 0 && q <= 100
+            ensures result >= 0 && result <= 10000
+            reads rprice, rquality
+    }
+}
+
+== Events sha256:784f9df9fdc9a1ae81849565bf4d8a8af800f8be7e331d9ddb5878e142459e25
+skeleton Events {
+    memory {
+        rate_bps: Map<String, Int> [persistent]
+        log: List<String> [persistent, immutable]
+        invariant rate_bps >= 0 && rate_bps <= 2000
+    }
+    face {
+        signal interest_rate() -> Int
+            ensures result >= 0 && result <= 2000
+            reads rate_bps
+        signal apply(kind: String) -> String
+            writes log, rate_bps
+            calls Finance.earn, Finance.spend, Market.segments, Market.shock
+        signal draw() -> String  calls Rng.chance, Rng.roll, apply
+        signal history() -> List<String>  reads log
+    }
+}
+
+== Legal sha256:a3470cd46cbf2740376d9c7f795188c7789acf8c5547e34b61d65183d3c308fa
+skeleton Legal {
+    memory {
+        stake: Map<String, Int> [persistent]
+        win_bps: Map<String, Int> [persistent]
+        target: Map<String, String> [persistent]
+        invariant stake >= 0
+        invariant win_bps >= 0 && win_bps <= 10000
+    }
+    state suit {
+        initial: drafted
+        drafted -> filed
+        filed -> discovery
+        filed -> settled
+        discovery -> trial
+        discovery -> settled
+        trial -> won
+        trial -> lost
+    }
+    face {
+        signal file(id: String, rival: String, amount: Int) -> Bool
+            requires amount > 0
+            writes stake, target, win_bps
+            moves drafted -> filed
+            calls Attention.attended, Finance.spend
+        signal progress(id: String) -> String
+            reads stake, win_bps
+            moves discovery -> trial, filed -> discovery, trial -> lost, trial -> won
+            calls Finance.earn, Finance.spend, Rng.chance
+        signal settle(id: String) -> Int
+            reads stake
+            moves discovery -> settled, filed -> settled
+            calls Finance.earn
+        signal open_suits() -> List<String>  reads suit, target
+        signal progress_all() -> List<String>  calls open_suits, progress
+    }
+}

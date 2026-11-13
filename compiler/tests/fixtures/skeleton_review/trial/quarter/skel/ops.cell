@@ -1,0 +1,151 @@
+// Operations skeletons: factories, product lines, R&D programs.
+
+skeleton Factory {
+    const MAX_PLANTS = 8
+    const BUILD_COST_PER_UNIT = 40
+    memory {
+        capacity: Map<String, Int> [persistent]
+        invariant capacity >= 0
+        invariant capacity.size <= MAX_PLANTS
+        yield_bps: Map<String, Int> [persistent]
+        invariant yield_bps >= 0 && yield_bps <= 10000
+        ramp_left: Map<String, Int> [persistent]
+        invariant ramp_left >= 0
+        wear: Map<String, Int> [persistent]
+        invariant wear >= 0 && wear <= 100
+        automation: Map<String, Int> [persistent]
+        invariant automation >= 0 && automation <= 5
+    }
+    state plant {
+        initial: planned
+        planned -> building
+        building -> ramping
+        ramping -> running { guard { ramp == 0 } }
+        running -> maintenance
+        maintenance -> running
+        running -> closed
+    }
+    face {
+        signal build(id: String, units: Int) -> Bool
+            requires units > 0
+            writes capacity, yield_bps, ramp_left, wear, automation
+            moves planned -> building
+            calls Finance.spend
+        signal advance(id: String) -> String
+            writes ramp_left, wear
+            moves building -> ramping, ramping -> running, maintenance -> running
+        signal maintain(id: String) -> Bool
+            moves running -> maintenance
+            calls Finance.spend
+        signal automate(id: String) -> Bool
+            reads plant
+            writes automation, yield_bps
+            calls Finance.spend
+        signal produce(id: String, wanted: Int) -> Int
+            requires wanted >= 0
+            ensures result >= 0
+            reads plant, capacity, yield_bps
+            writes wear
+            calls Research.effect, Attention.attended
+        signal close(id: String) -> String
+            moves running -> closed
+        signal plant_ids() -> List<String>              reads capacity
+        signal advance_all() -> Int                     calls plant_ids, advance
+    }
+}
+
+skeleton Product {
+    memory {
+        price: Map<String, Int> [persistent]
+        invariant price > 0
+        unit_cost: Map<String, Int> [persistent]
+        invariant unit_cost > 0
+        quality: Map<String, Int> [persistent]
+        invariant quality >= 0 && quality <= 100
+        segment: Map<String, String> [persistent]
+        stock: Map<String, Int> [persistent]
+        invariant stock >= 0
+    }
+    face {
+        signal launch(id: String, seg: String, p: Int, cost: Int, q: Int) -> String
+            requires p > 0 && cost > 0 && q >= 0 && q <= 100
+            writes price, unit_cost, quality, segment, stock
+        signal reprice(id: String, p: Int) -> Int
+            requires p > 0
+            writes price
+        signal stock_in(id: String, units: Int) -> Int
+            requires units >= 0
+            writes stock
+            reads unit_cost
+            calls Finance.spend, Research.effect
+        signal sell(id: String, units: Int) -> Int
+            requires units >= 0
+            ensures result >= 0
+            writes stock
+            reads price
+            calls Finance.earn
+        signal offer(id: String) -> Map
+            reads price, quality, segment, stock
+            calls Research.effect
+        signal product_ids() -> List<String>            reads segment
+    }
+}
+
+skeleton Research {
+    const MAX_PROGRAMS = 12
+    memory {
+        trl: Map<String, Int> [persistent]
+        invariant trl >= 1 && trl <= 9
+        invariant trl.size <= MAX_PROGRAMS
+        budget: Map<String, Int> [persistent]
+        invariant budget >= 0
+        domain: Map<String, String> [persistent]
+        commercial_left: Map<String, Int> [persistent]
+        invariant commercial_left >= 0
+        effects: Map<String, Int> [persistent]         // by effect key: bom_bps, yield_bps, quality, demand_bps
+        invariant effects >= 0 && effects <= 5000
+    }
+    state program {
+        initial: proposed
+        proposed -> active
+        active -> paused
+        paused -> active
+        active -> cancelled
+        paused -> cancelled
+        active -> dead_end
+        active -> prototype
+        prototype -> commercializing { guard { cost > 0 } }
+        prototype -> shelved
+        commercializing -> commercialized
+    }
+    face {
+        signal propose(id: String, dom: String, quarterly: Int) -> String
+            requires quarterly > 0
+            writes trl, budget, domain
+            moves proposed -> active
+        signal pause(id: String) -> String              moves active -> paused
+        signal resume(id: String) -> String             moves paused -> active
+        signal cancel(id: String) -> String             moves active -> cancelled, paused -> cancelled
+        signal work(id: String) -> String
+            reads budget
+            writes trl
+            moves active -> dead_end, active -> prototype
+            calls Finance.spend, Rng.roll, Attention.attended
+        signal commercialize(id: String, cost: Int) -> Bool
+            requires cost > 0
+            writes commercial_left
+            moves prototype -> commercializing
+            calls Finance.spend
+        signal shelve(id: String) -> String             moves prototype -> shelved
+        signal ship(id: String) -> String
+            reads domain
+            writes commercial_left, effects
+            moves commercializing -> commercialized
+        signal effect(key: String) -> Int
+            ensures result >= 0 && result <= 5000
+            reads effects
+        signal stage(id: String) -> String              reads program
+        signal program_ids() -> List<String>            reads trl
+        signal work_all() -> List<String>               calls program_ids, stage, work, ship
+    }
+}

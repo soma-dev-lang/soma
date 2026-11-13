@@ -1,0 +1,14 @@
+skeleton B {
+    face {
+        signal apply(f: Any) -> Any      // no clause: pure — no `calls link`
+    }
+}
+flesh B {
+    on apply(f) { return f("j") }
+}
+cell test T {
+    rules {
+        assert B.apply(x => link("127.0.0.1:47392")).status == "connected"     // a socket opened under the pure B.apply
+        assert_fails B.apply(x => http_get("http://127.0.0.1:47392/"))          // the guarded neighbour (kind lambda)
+    }
+}

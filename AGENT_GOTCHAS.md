@@ -392,3 +392,111 @@ state s { initial: a   a -> paid   * -> failed except [paid] }  // paid stays fi
 and `/hold/…` request goes to `request` — the handler is no longer an HTTP
 endpoint. Call it from the route, or prefix an internal handler with `_`.
 `soma check` warns.
+
+## 27. A flesh body does only what its signal's frame says
+
+```soma
+skeleton Orders {
+    memory { log: Map<String, String> }
+    face { signal place(id: String) -> String }
+}
+flesh Orders {
+    on place(id) { log.set(id, "x")  return id }
+}
+// error: `Orders.place` writes `log`, outside its frame (no `writes`) — if the design
+//        means it, add it to `signal place` in `skeleton Orders`: `writes log`
+```
+```soma
+skeleton Orders {
+    memory { log: Map<String, String> }
+    face { signal place(id: String) -> String  writes log }
+}
+flesh Orders {
+    on place(id) { log.set(id, "x")  return id }
+}
+```
+A frame is closed: `reads` / `writes` slots, `moves` machine edges, `calls`
+other signals and effectful builtins (`now`, `random`, `think`, …), `emits`.
+A signal with no clause is pure. `soma skeleton app.cell Orders.place`
+prints what one signal may touch.
+
+## 28. Structure goes in the `skeleton`, bodies in the `flesh`
+
+```soma
+skeleton Counter {
+    face { signal total() -> Int }
+    on total() { return 1 }
+}
+// error: a skeleton has no handler bodies — declare the signal in `face { }` with its
+//        frame, and put the body in `flesh Counter { on … { … } }`
+```
+```soma
+skeleton Counter {
+    face { signal total() -> Int }
+}
+flesh Counter {
+    on total() { return 1 }
+}
+```
+The other way round is refused too: a `flesh` holds `on` handlers only —
+no `memory`, `state` or `face`. A plain `cell` still holds both.
+
+## 29. A helper in a flesh is `_private` and typed
+
+```soma
+skeleton Shop {
+    face { signal quote(n: Int) -> Int }
+}
+flesh Shop {
+    on quote(n) { return triple(n) }
+    on triple(k: Int) { return k * 3 }
+}
+// error: `triple` is not a signal of `skeleton Shop` — a handler the face does not declare
+//        is a private helper, and a private handler is named with a leading underscore
+```
+```soma
+skeleton Shop {
+    face { signal quote(n: Int) -> Int }
+}
+flesh Shop {
+    on quote(n) { return _triple(n) }
+    on _triple(k: Int) { return k * 3 }
+}
+```
+A signal's parameters take their types from the skeleton (`on quote(n)`);
+a helper has no signal, so it declares its own (`k: Int`).
+
+## 30. `transition(id, "x")` needs every edge into `x` in the frame
+
+```soma
+skeleton Desk {
+    state ticket {
+        initial: new
+        new -> resolved
+        resolved -> closed
+        new -> closed
+    }
+    face { signal close(id: String) -> String  moves resolved -> closed }
+}
+flesh Desk {
+    on close(id) { transition(id, "closed")  return "closed" }
+}
+// error: `Desk.close` calls `transition(id, "closed")` without saying from where, so it also
+//        takes `new -> closed` — outside its frame (`moves resolved -> closed`)
+```
+```soma
+skeleton Desk {
+    state ticket {
+        initial: new
+        new -> resolved
+        resolved -> closed
+        new -> closed
+    }
+    face { signal close(id: String) -> String  moves resolved -> closed }
+}
+flesh Desk {
+    on close(id) { transition(id, "resolved", "closed")  return "closed" }
+}
+```
+Name the source (three arguments), or list every edge into the target
+(`moves resolved -> closed, new -> closed`, or `moves * -> closed`).

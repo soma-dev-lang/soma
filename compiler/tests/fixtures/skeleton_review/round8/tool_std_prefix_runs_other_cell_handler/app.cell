@@ -1,0 +1,20 @@
+cell B {
+    memory { hits: Map<String, Int> }
+    on count(v: Int, a: Int, b: Int, c: Int, d: Int) { hits.set("h", 1) return 7 }
+    on seen() { return hits.get("h") ?? 0 }
+}
+skeleton A {
+    face {
+        signal go() -> Int
+    }
+}
+flesh A {
+    on go() { let r = std.count(5, 1, 2, 3, 4)
+ return 1 }
+}
+cell test T {
+    rules {
+        let r = try { A.go() }
+        assert B.seen() == 0
+    }
+}

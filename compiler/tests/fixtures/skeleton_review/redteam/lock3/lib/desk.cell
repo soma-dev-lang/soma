@@ -1,0 +1,37 @@
+skeleton Desk {
+    memory {
+        titles: Map<String, String> [persistent]
+        owners: Map<String, String> [persistent]
+        opened: Map<String, Int> [persistent]         // how many tickets, under "n"
+        invariant opened >= 0
+    }
+
+    state ticket {
+        initial: new
+        new -> assigned
+        assigned -> resolved
+        resolved -> closed
+        resolved -> assigned        // the fix did not hold: back to its owner
+        new -> closed               // not a real ticket
+    }
+
+    face {
+        signal open(id: String, title: String) -> Map
+            writes titles, opened
+            calls count
+        signal assign(id: String, owner: String) -> String
+            reads titles
+            writes owners
+            moves new -> assigned
+        signal resolve(id: String, by: String) -> String
+            reads titles, owners
+            moves assigned -> resolved
+        signal reopen(id: String) -> String             moves resolved -> assigned
+        signal close(id: String) -> String
+            reads titles
+            moves resolved -> closed, new -> closed
+        signal summary(id: String) -> Map               reads titles, owners, ticket
+        signal count() -> Int   writes opened
+    }
+}
+

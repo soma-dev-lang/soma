@@ -1,0 +1,15 @@
+# skeleton.lock — the structure `soma check` holds app.cell to.
+# Written by `soma skeleton app.cell --freeze`; changed on purpose with `--amend`. Do not edit.
+file app.cell
+
+== Pay sha256:811b8dae1f624ab25f41aa76a07c022c96162a3a563a029ab2dc2ae840ab72bd
+skeleton Pay {
+    memory {
+        book: Map<String, Int> [persistent]
+    }
+    face {
+        signal pay(o: Order) -> Verdict  writes book
+    }
+}
+
+checksum sha256:14912ecd4f626b9cb8378773f0a989a4ecf85d43f00dcae5e347277bdb1fb50a

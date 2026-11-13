@@ -1,0 +1,23 @@
+cell agent Desk {
+    memory { c: Map<String, String> }
+    state job { initial: idle  idle -> done }
+    on fin(id: String) { transition(id, "idle", "done") return 1 }
+    on h1(q: String) { let o = map("requires", ["vision"])  return think(q, o) }
+    on h2(q: String) { require think(q, map("requires", ["vision"])) == "hi" else No  return "hi" }
+    on h3(q: String) { c["k"] = think(q, map("requires", ["vision"]))  return c.get("k") }
+    on h4(q: String) { return q |> think(map("requires", ["vision"])) }
+    on h5(q: String) { return q.think(map("requires", ["vision"])) }
+    on h6(q: String) { return std.think(q, map("requires", ["vision"])) }
+    on h7(q: String) { return think(q, map("requires", "vision")) }
+}
+cell test T {
+    rules {
+        assert Desk.h1("SAY hi") == "hi"
+        assert Desk.h2("SAY hi") == "hi"
+        assert Desk.h3("SAY hi") == "hi"
+        assert Desk.h4("SAY hi") == "hi"
+        assert Desk.h5("SAY hi") == "hi"
+        assert Desk.h6("SAY hi") == "hi"
+        assert Desk.h7("SAY hi") == "hi"
+    }
+}

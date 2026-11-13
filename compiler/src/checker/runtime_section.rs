@@ -143,3 +143,24 @@ pub fn check_cell(cell: &CellDef) -> Vec<Issue> {
     }
     out
 }
+
+/// For `soma verify` only: the statements of a cell's `runtime { }` as one
+/// more entry of that cell, named `runtime { }`. They run (`soma run
+/// app.cell`) like a handler's — they write slots, move machines, call
+/// signals with contracts — and no proof read them.
+pub fn as_handler(program: &mut Program) {
+    for cell in program.cells.iter_mut() {
+        // (once: the program may be prepared for analysis more than once)
+        if cell.node.sections.iter().any(|s| matches!(&s.node, Section::OnSignal(on) if on.signal_name == "runtime { }")) { continue; }
+        let mut body: Vec<Spanned<Statement>> = Vec::new();
+        let mut span = None;
+        for s in &cell.node.sections {
+            if let Section::Runtime(rt) = &s.node { body.extend(as_statements(rt)); span.get_or_insert(s.span); }
+        }
+        if let (false, Some(span)) = (body.is_empty(), span) {
+            cell.node.sections.push(Spanned::new(Section::OnSignal(OnSection {
+                signal_name: "runtime { }".to_string(), params: Vec::new(), body, properties: Vec::new(),
+            }), span));
+        }
+    }
+}

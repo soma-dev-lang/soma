@@ -1,0 +1,12 @@
+cell A {
+    state m { initial: a
+        a -> b { guard { (if vip { 1 } else { amount }) > 0 } }
+        b -> a }
+    on go(id: String, amount: Int, vip: Bool) {
+        require (if vip { 1 } else { 1 }) > 0 else X
+        transition(id, "a", "b")
+        return 1 }
+    on probe() { let r = try { go("i", 0 - 5, false) }
+        return r.kind ?? "ok" }
+}
+cell test T { rules { assert A.probe() == "guard_failed" } }

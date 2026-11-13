@@ -1,0 +1,9 @@
+cell A {
+    memory { c: Map<String, Int> [persistent] }
+    on put(k: String, n: Int) { c.set(k, n) return 1 }
+}
+cell B {
+    memory { c: Map<String, Int> [persistent] }
+    on put(k: String, n: Int) { c.set(k, n) return 1 }
+    on bump(k: String) { c.set(k, (c.get(k) ?? 0) + 1) return c.get(k) }
+}

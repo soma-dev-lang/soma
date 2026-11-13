@@ -1,0 +1,1 @@
+soma verify app.cell && soma test app.cell — ligne fautive: `let v = vote(Visit.close_visit, id, 1)` (le produit lit vote comme think: outils de la cellule, pas le handler cible)

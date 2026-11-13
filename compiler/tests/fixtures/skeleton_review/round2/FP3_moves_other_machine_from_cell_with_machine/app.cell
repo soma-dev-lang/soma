@@ -1,0 +1,12 @@
+skeleton Approval {
+    state sign { initial: waiting  waiting -> signed_off }
+    face { signal sign_it(id: String) -> Int  moves waiting -> signed_off }
+}
+skeleton Pay {
+    state pay { initial: due  due -> paid }
+    face {
+        signal both(id: String) -> Int  moves Approval.sign: waiting -> signed_off  moves due -> paid
+    }
+}
+flesh Approval { on sign_it(id) { transition(id, "waiting", "signed_off")  return 1 } }
+flesh Pay { on both(id) { transition(id, "waiting", "signed_off")  transition(id, "due", "paid")  return 1 } }

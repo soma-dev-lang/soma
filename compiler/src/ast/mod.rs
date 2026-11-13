@@ -85,6 +85,10 @@ pub enum CellKind {
     Test,
     /// AI Agent cell: `cell agent Researcher { ... }` — has think() and tool declarations
     Agent,
+    /// `flesh Name { on … }`: handler bodies for `skeleton Name`. The parser
+    /// (and the import resolver) attach them to their skeleton; a flesh cell
+    /// still in the program is one that could not be attached — a check error.
+    Flesh,
 }
 
 #[derive(Debug, Clone)]
@@ -98,6 +102,10 @@ pub struct CellDef {
     pub agent_model: Option<String>,
     /// Agent skill file: [skill: "skills/researcher.md"] → system prompt
     pub agent_skill: Option<String>,
+    /// Declared `skeleton Name { … }`: structure and frames, its handler
+    /// bodies come from `flesh Name { … }`. A face signal without a body is
+    /// a hole: a handler with the property `hole` that fails when called.
+    pub skeleton: bool,
 }
 
 #[derive(Debug, Clone)]
@@ -231,6 +239,8 @@ pub struct ToolDecl {
     /// `[openapi: "server/operationId"]`, `server` being a `[tools.<name>]`
     /// table of soma.toml. Such a tool has no handler.
     pub binding: Option<ToolBinding>,
+    /// The frame the tool declares, like a signal's.
+    pub frame: Option<FrameDecl>,
 }
 
 /// Where an external tool runs.
@@ -267,7 +277,33 @@ pub struct SignalDecl {
     /// 3.0: `ensures expr` — what the handler owes, over the parameters and
     /// `result`. Checked on the returned value (kind `ensures`).
     pub ensures: Vec<Spanned<Expr>>,
+    /// The frame the signal declares (`reads` / `writes` / `moves` /
+    /// `calls` / `emits`). `None`: an open frame (a plain `cell`). In a
+    /// `skeleton` every signal has one, empty when no clause is written.
+    pub frame: Option<FrameDecl>,
 }
+
+/// What a handler may do, as its signal declares it.
+#[derive(Debug, Clone, Default, PartialEq)]
+pub struct FrameDecl {
+    pub reads: Vec<String>,
+    pub writes: Vec<String>,
+    /// `f` (a signal of the same cell, or a builtin) or `Cell.f`
+    pub calls: Vec<String>,
+    pub emits: Vec<String>,
+    /// (machine, from, to): machine is "" for the cell's own, a machine
+    /// name, or `Cell.machine`
+    pub moves: Vec<(String, String, String)>,
+}
+
+/// The type of a flesh parameter written without one (`on pay(id)`): the
+/// skeleton's signal gives it.
+pub const FLESH_PARAM_TYPE: &str = "_";
+
+/// The property of the handler a skeleton gets for a signal no flesh fills.
+/// Not a name a program can write (`[hole]` on a handler is an unknown
+/// annotation): a handler with a body is never taken for a hole.
+pub const HOLE: &str = "<hole>";
 
 #[derive(Debug, Clone)]
 pub struct AwaitDecl {
@@ -808,7 +844,9 @@ pub fn render_expr(expr: &Expr) -> String {
         Expr::Literal(Literal::Int(n)) => n.to_string(),
         Expr::Literal(Literal::BigInt(s)) => s.clone(),
         Expr::Literal(Literal::Float(f)) => format!("{f:?}"),
-        Expr::Literal(Literal::String(s)) => format!("\"{s}\""),
+        // (quotes and backslashes escaped: `c.get("a", "b")` and one key
+        // holding `a", "b` had the same text — and texts are compared)
+        Expr::Literal(Literal::String(s)) => format!("\"{}\"", s.replace('\\', "\\\\").replace('"', "\\\"")),
         Expr::Literal(Literal::Bool(b)) => b.to_string(),
         Expr::Literal(Literal::Unit) => "()".to_string(),
         // as the author wrote them: the catch-all printed Rust's `Debug`

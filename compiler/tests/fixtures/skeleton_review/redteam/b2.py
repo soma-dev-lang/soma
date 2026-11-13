@@ -1,0 +1,20 @@
+from gen import *
+W='    on _w(id: String) { acct.set(id, 99) return 1 }\n'
+OTHER='cell Other {\n    memory { o: Map<String, Int> }\n    on poke(id: String) { o.set(id, 7) return 7 }\n    on seen(id: String) { return o.get(id) ?? 0 }\n}\n'
+case("b01_dead_local_signal", '    on pure(id) { if id == "zzz" { let bump = 1 } return bump(id) }\n', tests=['assert pure("k") == 1','assert peek("k") == 0'])
+case("b02_dead_local_builtin", '    on pure(id) { if id == "zzz" { let write_file = 1 } write_file("out.txt", "pwned") return 1 }\n')
+case("b03_dead_local_cell", '    on pure(id) { if id == "zzz" { let Other = 1 } return Other.poke(id) }\n', extra=OTHER, tests=['assert pure("k") == 7','assert Other.seen("k") == 0'])
+case("b04_hole_transition", '    on pure(id) [hole] { transition(id, "paid") return 1 }\n')
+case("b06_match_arm", '    on pure(id) { let r = match id { "zzz" -> 0\n _ -> transition(id, "paid") } return 1 }\n')
+case("b07_interp_trans", '    on pure(id) { let r = "{transition(id, \\"paid\\")}" return 1 }\n')
+case("b08_emit_declared_helper", '    on pure2(id) { emit _w(id) return 1 }\n    on pure(id) { return 1 }\n'+W, face='        signal pure2(id: String) -> Int  emits _w\n', tests=['assert pure2("k") == 1','assert peek("k") == 0'])
+case("b12_other_cell_ufcs_helper", '    on pure(id) { return 1 }\n    on aux1(id) { return _w(id) }\n'+W, face='        signal aux1(id: String) -> Int  writes acct\n', extra='cell Other {\n    on poke(id: String) { return id._w() }\n}\n', tests=['assert Other.poke("k") == 1','assert peek("k") == 0'])
+case("b13_flesh_every", '    on pure(id) { return 1 }\n    every 1s { acct.set("t", 5) }\n')
+case("b14_flesh_memory", '    on pure(id) { return 1 }\n    memory { extra: Map<String, Int> }\n')
+case("b17_native", '    on pure(id) [native] { acct.set(id, 99) return 1 }\n')
+case("b20_std_transition", '    on pure(id) { std.transition(id, "paid") return 1 }\n')
+case("b20b_pipe_transition", '    on pure(id) { let r = id |> transition("paid") return 1 }\n')
+case("b25_match_binder", '    on pure(id) { let r = match 5 { _w -> 0 } return _w(id) }\n'+W)
+case("b26_dead_local_slot_stmt", '    on pure(id) { if id == "zzz" { let acct = map() } acct.set(id, 99) return 1 }\n')
+case("b27_while_local", '    on pure(id) { let i = 0 while i < 0 { let _w = 0 i = i + 1 } return _w(id) }\n'+W)
+case("b28_later_let", '    on pure(id) { let r = _w(id) let _w = 3 return r }\n'+W)

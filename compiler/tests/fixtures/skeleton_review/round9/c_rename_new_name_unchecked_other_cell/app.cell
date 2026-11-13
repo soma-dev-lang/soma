@@ -1,0 +1,4 @@
+cell B { on tick(n: Int) { return n } }
+cell D { on pulse(n: Int) { return n + 100 }  on d() { return B.tick(1) } }
+cell test T { rules { assert tick(31) == 31
+  assert D.d() == 1 } }

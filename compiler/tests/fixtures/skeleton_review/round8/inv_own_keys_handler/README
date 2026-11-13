@@ -1,0 +1,1 @@
+soma verify app.cell && soma test app.cell -> faulty line: ✓ invariant size <= 1 — writer w proven (writes x) ; `for q in keys(m)` is matched by NAME as "over the slot keys" while the cell own handler keys() runs: the test shows the write of a new key refused (kind invariant)

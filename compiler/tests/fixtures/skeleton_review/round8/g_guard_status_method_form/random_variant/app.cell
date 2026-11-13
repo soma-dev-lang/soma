@@ -1,0 +1,14 @@
+cell A {
+    state m {
+        initial: x
+        x -> y { guard { 2.random() == 0 } }
+    }
+    on go(k: String) { 
+ require 2.random() == 0 else B
+ transition(k, "x", "y") return 1 }
+    on probe() { let n = 0
+        for i in range(0, 60) { let r = try { go("k{i}") }
+           if (r.kind ?? "ok") == "guard_failed" { n += 1 } }
+        return n > 0 }
+}
+cell test T { rules { assert A.probe() } }

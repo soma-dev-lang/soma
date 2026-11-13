@@ -1,0 +1,5 @@
+cell B {
+    memory { w: Map<String, Int> }
+    on tick(x: Int) { w.set("n", (w.get("n") ?? 0) + 1) return x }
+    on n() { return w.get("n") ?? 0 }
+}

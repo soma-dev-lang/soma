@@ -1,0 +1,23 @@
+cell Log {
+    on set(k: String, v: Int) { return 7 }
+}
+skeleton A {
+    memory {
+        Log: Map<String, Int>
+    }
+    face {
+        signal go() -> Int     reads Log  calls Log.set
+        signal seen() -> Int   reads Log
+    }
+}
+flesh A {
+    on go() { Log.set("k", 1)
+ return 1 }
+    on seen() { return Log.size }
+}
+cell test T {
+    rules {
+        let r = try { A.go() }
+        assert A.seen() == 0
+    }
+}

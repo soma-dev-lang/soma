@@ -1,0 +1,3 @@
+	call	Bank.go
+Bank.go	mread	-
+Bank.go	move	paid

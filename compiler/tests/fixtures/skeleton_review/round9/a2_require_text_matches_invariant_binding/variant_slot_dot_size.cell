@@ -1,0 +1,11 @@
+cell A {
+    memory { xs: Map<String, Int>  invariant xs.size <= 1 }
+    on w(k: String, n: Int) { let size = 0
+        require size <= 1 else Full
+        xs.set(k, n)
+        return 1 }
+    on probe() { w("a", 1)
+        let r = try { w("b", 2) }
+        return r.kind ?? "ok" }
+}
+cell test T { rules { assert A.probe() == "invariant" } }

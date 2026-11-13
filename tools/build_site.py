@@ -89,13 +89,14 @@ FEATURES = [
     ("fail", re.compile(r"\bfail\s*\(|\brequire\b")),
     ("cost", re.compile(r"^\s*cost\s*\{", re.M)),
     ("tools", re.compile(r"^\s*tool\s+\w+\(", re.M)),
+    ("skeleton", re.compile(r"^skeleton\s", re.M)),
 ]
 
 
 def structural_features(src):
     """Features that need a count rather than a pattern."""
     out = []
-    cells = re.findall(r"^cell\s+(?!test\b|type\b)(?:agent\s+)?(\w+)", src, re.M)
+    cells = re.findall(r"^(?:cell|skeleton)\s+(?!test\b|type\b)(?:agent\s+)?(\w+)", src, re.M)
     if len(cells) >= 2:
         out.append("multi_cell")
     if re.search(r"\bon\s+request\s*\(", src) and re.search(r"^\s*invariant\s", src, re.M) and re.search(r"^\s*state\s+\w+", src, re.M):
@@ -193,7 +194,7 @@ def build_corpus(version):
             "repo_path": rel,
             "lines": src.count("\n") + 1,
             "features": [k for k, rx in FEATURES if rx.search(src)] + structural_features(src),
-            "cells": re.findall(r"^cell\s+(?:agent\s+|type\s+|test\s+)?(\w+)", src, re.M),
+            "cells": re.findall(r"^(?:cell|skeleton)\s+(?:agent\s+|type\s+|test\s+)?(\w+)", src, re.M),
         }
         if usage:
             entry["usage"] = usage
@@ -388,7 +389,7 @@ def main():
     # the parts of the agent guide that live in their own files (3.0): the
     # one-fetch documents still carry all of it
     parts = "".join("\n\n---\n\n" + read("site", name).strip()
-                    for name in ("llms-agents.txt", "llms-native.txt", "llms-releases.txt"))
+                    for name in ("llms-agents.txt", "llms-native.txt", "llms-skeleton.txt", "llms-flesh.txt", "llms-releases.txt"))
     full = [
         llms.rstrip(),
         parts,
@@ -469,7 +470,7 @@ def main():
     # sitemap: every page and every machine file (not the 316 sources —
     # corpus/index.json is their sitemap)
     pages = [
-        "", "paper", "agents", "status", "llms.txt", "llms-agents.txt", "llms-native.txt", "llms-releases.txt", "llms-service.txt", "llms-full.txt", "agent.md",
+        "", "paper", "agents", "status", "llms.txt", "llms-agents.txt", "llms-native.txt", "llms-skeleton.txt", "llms-flesh.txt", "llms-releases.txt", "llms-service.txt", "llms-full.txt", "agent.md",
         "skill/SKILL.md", "docs/guarantees.md", "docs/serving.md", "docs/reference.md", "docs/builtins.md",
         "docs/gotchas.md", "builtins.json", "gotchas.json", "corpus/domains.json", "corpus/index.json",
         "corpus/index.md", "CHANGELOG.md", "LICENSE",

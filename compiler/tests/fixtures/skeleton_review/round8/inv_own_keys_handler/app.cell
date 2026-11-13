@@ -1,0 +1,14 @@
+cell A {
+    memory { m: Map<String, Int>  invariant size <= 1 }
+    on seed() { require len(m) < 1 else Full
+  m.set("u1", 1) return 1 }
+    on keys(mm: Map) { return ["zz"] }
+    on w(k: String, x: Int) { for q in keys(m) { m.set(q, x) }
+  return 1 }
+    on probe() { seed()
+ let r = try { w("zz", 5) }
+ print(r)
+ print(m)
+ return r.kind ?? "ok" }
+}
+cell test T { rules { assert A.probe() == "invariant" } }

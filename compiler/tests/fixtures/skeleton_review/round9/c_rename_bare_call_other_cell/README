@@ -1,0 +1,1 @@
+soma rename app.cell B.tick pulse -> oublie l'appel nu `tick(21)` dans D (l.5), que soma refs liste : check rouge (E0012). refs.rs:393 (`here || test` seulement). Même cause : appel nu d'un signal de cellule intérieure depuis la cellule englobante (c_rename_interior_bare_call).

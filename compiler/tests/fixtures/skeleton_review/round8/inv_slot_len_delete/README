@@ -1,0 +1,1 @@
+soma verify app.cell && soma test app.cell -> faulty line: ✓ invariant _slot_len >= 1 — writer del only deletes from rows (a value invariant cannot break on a delete) ; the test shows the delete refused (kind invariant): `_slot_len` is the entry count, like `size`

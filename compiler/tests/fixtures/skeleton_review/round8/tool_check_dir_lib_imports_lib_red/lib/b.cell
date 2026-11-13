@@ -1,0 +1,3 @@
+flesh Stock {
+    on level(sku) { return items.get(sku) ?? 0 }
+}

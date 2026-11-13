@@ -1,0 +1,31 @@
+# skeleton.lock — the structure `soma check` holds app.cell to.
+# Written by `soma skeleton app.cell --freeze`; changed on purpose with `--amend`. Do not edit.
+file app.cell
+
+== Counter sha256:94809de2333d2ec4d537479aa65dc4c485241cf62da3fec572376f86025fb771
+skeleton Counter {
+    memory {
+        counts: Map<String, Int> [persistent]
+        invariant counts >= 0 && counts <= 1000000
+    }
+    state session {
+        initial: idle
+        idle -> open
+        open -> closed
+    }
+    face {
+        signal total() -> Int  reads counts
+        signal add(n: Int) -> Int  writes counts  calls total
+        signal reset() -> Int  writes counts
+        signal open_session(id: String) -> String  moves idle -> open
+        signal close_session(id: String) -> String  moves open -> closed
+        signal request(method: String, path: String, body: String) -> Map  calls add, total
+    }
+}
+
+== soma.toml [verify] sha256:9adce7641dfd2dee8574ce83d1c2af751d54b0841a0dcf14f58fc3505c25013e
+verify.cells = []
+verify.deadlock_free = false
+package.edition = "2027"
+
+checksum sha256:0725b6f94932a3d5581c8e82e100eb4a31aaa0fac7abbe395f178ee05eab5d1e

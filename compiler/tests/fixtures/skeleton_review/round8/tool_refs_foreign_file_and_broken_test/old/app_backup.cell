@@ -1,0 +1,6 @@
+cell Stock {
+    face { signal level(sku: String) -> Int }
+    on level(sku: String) { return 99 }
+    on g() { return level("x") }
+}
+cell Zed { on z() { return Stock.level("q") } }

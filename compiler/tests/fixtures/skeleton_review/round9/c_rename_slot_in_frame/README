@@ -1,0 +1,1 @@
+soma rename app.cell B.total grand -> `calls bump reads total` devient `reads grand` (le SLOT homonyme est renommé dans le cadre) : check rouge (E0120). refs.rs:374-385 : clause() remonte à travers tout identifiant jusqu'à `calls`, y compris `reads`/`writes`.

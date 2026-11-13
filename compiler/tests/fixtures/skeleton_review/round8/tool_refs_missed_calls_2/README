@@ -1,0 +1,1 @@
+soma refs app.cell B.tick misses line 9 (nested string in an interpolation), line 14 ("a{5.tick()}"), line 15 (horde(tick,…)), line 19 (delegate(c, "tick", 9) with a computed cell) ; soma refs app.cell B._store -> "called by nothing … or dead" though it is the on_result callback of the horde at line 15 (trace: call B._store)

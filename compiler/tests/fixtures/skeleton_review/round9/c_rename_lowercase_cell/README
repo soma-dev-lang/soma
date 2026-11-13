@@ -1,0 +1,1 @@
+soma rename app.cell b.tick pulse -> seul `b.tick(2)` est renommé, pas `on tick` : check rouge (E0048). refs.rs:339 n'accepte qu'un TypeIdent comme nom de cellule.

@@ -1,0 +1,1 @@
+soma rename app.cell B.tick pulse -> `mock tick 99` (l.8, qui scriptait D.tick) devient `mock pulse 99` : `assert D.run() == 99` passe de vert à rouge (left 2). refs.rs:392 (tout `mock <nom>` nu d'un test est renommé).

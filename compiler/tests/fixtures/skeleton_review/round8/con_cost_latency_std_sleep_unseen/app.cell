@@ -1,0 +1,10 @@
+cell A {
+    memory { c: Map<String, Int> }
+    cost { latency: 100ms }
+    on run() { let t = now_ms()
+ std.sleep(60)
+ std.sleep(60)
+ std.sleep(60)
+ return now_ms() - t }
+}
+cell test T { rules { assert A.run() < 150 } }

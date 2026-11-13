@@ -1,0 +1,58 @@
+skeleton B {
+    memory { w: Map<String, Int> }
+    face {
+        // ticks
+        signal tick(x: Int) -> Int   writes w
+        signal a1() -> Int  calls tick
+        signal a2() -> Int  calls tick
+        signal a3() -> Int  calls tick
+        signal a4() -> String
+        signal a5() -> Int
+        signal a6() -> Int  calls tick
+    }
+}
+flesh B {
+    on tick(x) { w.set("n", (w.get("n") ?? 0) + 1) return x }
+    on a1() { return 5.tick() }
+    on a2() { let v = 6
+ v.tick()
+ return 1 }
+    on a3() { let r = [7].map(z => z.tick())
+ return 1 }
+    on a4() { return "{{tick(8)}}" }
+    on a5() { return 109 }
+    on a6() { return (1 + 9).tick() }
+}
+cell D {
+    on d1() { return 20.tick() }
+    on d2() { return tick(21) }
+    on d3() { let v = try { vote(B.tick, 22, 3) }
+ return 1 }
+    on d4() { let h = horde(B.tick, [23, 24], map("concurrency", 2))
+ return 1 }
+}
+cell Sys {
+    interior {
+        cell In {
+            face { signal go(n: Int) }
+            on go(n: Int) { B.tick(30) }
+        }
+    }
+    runtime { signal go(1) }
+    on s1() { return 1 }
+}
+cell test T {
+    rules {
+        assert 1 == 1
+        assert B.a1() == 5
+        assert B.a2() == 1
+        assert B.a3() == 1
+        assert len(B.a4()) == 9
+        assert B.a5() == 109
+        assert B.a6() == 10
+        assert D.d1() == 20
+        assert D.d2() == 21
+        assert D.d3() == 1
+        assert D.d4() == 1
+    }
+}

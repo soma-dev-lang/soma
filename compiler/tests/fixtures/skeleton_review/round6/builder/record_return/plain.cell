@@ -1,0 +1,5 @@
+cell type Montants { variants { Montants { total: Int, patient: Int } } }
+cell F {
+    face { signal a(t: Int) -> Montants }
+    on a(t: Int) { return Montants { total: t, patient: t } }
+}

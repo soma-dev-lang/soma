@@ -1,0 +1,19 @@
+cell A {
+    memory { lim: Map<String, Int> }
+    state m {
+        initial: a
+        a -> b { guard { (lim.get(id) ?? 0) > 0 } }
+    }
+    on st(id: String) { return get_status(id) ?? "a" }
+    on seed(id: String, n: Int) { lim.set(id, n)  return 1 }
+    on sum(id: String) { lim.set(id, 0)  return 1 }
+    on g1(id: String) {
+        require (lim.get(id) ?? 0) > 0 else No
+        let z = sum(id)
+        transition(id, "a", "b")
+        return 1 }
+    on probe(id: String) { seed(id, 5)
+        let r = try { g1(id) }
+        return r.kind ?? "ok" }
+}
+cell test T { rules { assert A.probe("k") == "guard_failed" } }

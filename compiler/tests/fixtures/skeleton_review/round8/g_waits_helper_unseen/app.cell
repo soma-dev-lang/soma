@@ -1,0 +1,40 @@
+cell A {
+    memory { paid: Map<String, Int> }
+    state m {
+        initial: x
+        x -> a
+        x -> b
+        a -> done
+        b -> done
+    }
+    on _w(k: String) { paid.set(k, 7) return 1 }
+    on _mv(k: String) { transition(k, "x", "b") return 1 }
+    on refund(k: String) [task] {
+        let w = _w(k)
+        let ok = await approve("refund {k}")
+        return 1
+    }
+    on other(k: String) [task] {
+        let w = _mv(k)
+        let ok = await approve("other {k}")
+        return 1
+    }
+    on third(k: String) [task] {
+        if k == "zzz" { transition(k, "x", "a") }
+        let w = _mv(k)
+        let ok = await approve("third {k}")
+        transition(k, "done")
+        return 1
+    }
+    on sweep(k: String) { transition(k, "a", "done") return 1 }
+    on read(k: String) { return paid.get(k) ?? 0 }
+    on st(k: String) { return get_status(k) ?? "x" }
+}
+cell test T { rules {
+ assert A.refund("k").waiting != ()
+ assert A.read("k") == 0
+ assert A.other("o").waiting != ()
+ assert A.st("o") == "x"
+ assert A.third("t").waiting != ()
+ assert A.st("t") == "a"
+ } }

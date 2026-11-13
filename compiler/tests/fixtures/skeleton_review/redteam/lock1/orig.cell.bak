@@ -1,0 +1,121 @@
+// TICKET DESK — one cell written skeleton-first.
+//
+// The skeleton is the whole design: memory, the lifecycle, and for each
+// signal its frame (what its body may read, write, call, which edges it
+// may take). The flesh below holds the bodies; `soma check` refuses a body
+// that does anything its frame does not say. Read the skeleton and you
+// know that only `open` creates a ticket, that `close` cannot reopen one,
+// and that `summary` writes nothing — without reading a body.
+//
+//   soma check    ticket_desk.cell
+//   soma skeleton ticket_desk.cell Desk.assign      the brief for one body
+//   soma verify   ticket_desk.cell
+//   soma test     ticket_desk.cell
+
+skeleton Desk {
+    memory {
+        titles: Map<String, String> [persistent]
+        owners: Map<String, String> [persistent]
+        opened: Map<String, Int> [persistent]         // how many tickets, under "n"
+        invariant opened >= 0
+    }
+
+    state ticket {
+        initial: new
+        new -> assigned
+        assigned -> resolved
+        resolved -> closed
+        resolved -> assigned        // the fix did not hold: back to its owner
+        new -> closed               // not a real ticket
+    }
+
+    face {
+        signal open(id: String, title: String) -> Map
+            writes titles, opened
+            calls count
+        signal assign(id: String, owner: String) -> String
+            reads titles
+            writes owners
+            moves new -> assigned
+        signal resolve(id: String, by: String) -> String
+            reads titles, owners
+            moves assigned -> resolved
+        signal reopen(id: String) -> String             moves resolved -> assigned
+        signal close(id: String) -> String
+            reads titles
+            moves resolved -> closed, new -> closed
+        signal summary(id: String) -> Map               reads titles, owners, ticket
+        signal count() -> Int                           reads opened
+    }
+}
+
+flesh Desk {
+    on open(id, title) {
+        require titles.get(id) == () else Taken "ticket '{id}' exists"
+        titles.set(id, title)
+        opened.set("n", count() + 1)
+        return map("id", id, "title", title, "state", "new")
+    }
+
+    on assign(id, owner) {
+        _must_exist(id)
+        transition(id, "new", "assigned")
+        owners.set(id, owner)
+        return owner
+    }
+
+    on resolve(id, by) {
+        _must_exist(id)
+        require owners.get(id) == by else Forbidden "only its owner resolves a ticket"
+        transition(id, "assigned", "resolved")
+        return "resolved"
+    }
+
+    on reopen(id) {
+        transition(id, "resolved", "assigned")
+        return "assigned"
+    }
+
+    on close(id) {
+        _must_exist(id)
+        transition(id, "closed")
+        return "closed"
+    }
+
+    on summary(id) {
+        _must_exist(id)
+        return map("id", id, "title", titles.get(id), "owner", owners.get(id) ?? "nobody", "state", get_status(id) ?? "new")
+    }
+
+    on count() {
+        return opened.get("n") ?? 0
+    }
+
+    // a private helper: `_name`, typed. What it reads counts against every
+    // signal that calls it: each of them has `titles` in its frame — leave
+    // it out of one and `soma check` names that signal and the clause.
+    on _must_exist(id: String) {
+        require titles.get(id) != () else NotFound "no ticket '{id}'"
+    }
+}
+
+cell test DeskTests {
+    rules {
+        assert open("t1", "printer on fire").state == "new"
+        assert count() == 1
+        assert_fails open("t1", "again") matching "Taken"
+        assert assign("t1", "ines") == "ines"
+        assert_fails resolve("t1", "omar") matching "Forbidden"
+        assert resolve("t1", "ines") == "resolved"
+        assert reopen("t1") == "assigned"
+        assert resolve("t1", "ines") == "resolved"
+        assert close("t1") == "closed"
+        assert_fails reopen("t1")                   // closed is terminal
+        assert summary("t1").owner == "ines"
+        assert_fails summary("nope") matching "NotFound"
+
+        assert open("t2", "spam").state == "new"
+        assert close("t2") == "closed"              // straight from new
+        assert count() == 2
+    }
+}

@@ -1,0 +1,4 @@
+	call	Bank.go
+Bank.go	call	Bank._st
+Bank.go>Bank._st	mread	-
+Bank.go	move	paid

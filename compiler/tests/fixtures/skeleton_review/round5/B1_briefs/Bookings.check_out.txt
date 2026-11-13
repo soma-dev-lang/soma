@@ -1,0 +1,29 @@
+// Bookings: the lifecycle of a stay. An instance is a booking id; its folio in Ledger has the same id.
+signal check_out(id: String, day: Int) -> Map   // Bookings
+    // Check-out on day `day`. Nothing may be due on the folio (error `Unpaid`). checked_in ->
+    // checked_out, the room becomes dirty, the nights from `day` on are freed (an early
+    // departure releases them; no refund), and the guest earns points on the CASH paid on the
+    // folio (Loyalty.earn). Returns map("ok", true, "points", <the guest's points afterwards>).
+reads      depart: Map<String, Int> [persistent]   // booking -> day of departure (arrive < depart)
+           guests: Map<String, String> [persistent]   // booking -> guest
+           rooms: Map<String, String> [persistent]   // booking -> room
+moves      checked_in -> checked_out
+machine    stay — one instance per id (the String or Int you pass); initial `requested`
+               get_status(id) is () until the id's first transition (edition 2026: `requested`) — write `get_status(id) ?? "requested"`
+               requested -> confirmed
+               confirmed -> checked_in
+               checked_in -> checked_out
+               confirmed -> cancelled
+               confirmed -> no_show
+calls      Calendar.free_nights(booking: String, room: String, from: Int, to: Int) -> Int   writes nights
+               // Frees the nights from <= d < to of `room` that `booking` holds (others are left alone). Returns how many were freed.
+               requires from < to
+           Housekeeping.vacate(room: String) -> String            moves occupied -> dirty
+               // occupied -> dirty. Returns "dirty".
+           Ledger.cash_paid(folio: String) -> Int                 reads cash
+               // Total paid in cash on the folio.
+           Ledger.due(folio: String) -> Int                       reads cash, charged, points_paid
+               // charged - cash - points_paid; 0 for an unknown folio.
+           Loyalty.earn(guest: String, cash_amount: Int) -> Int   writes balance
+               // Credits one point per full 100 cents of `cash_amount`. Returns the guest's points afterwards.
+               requires cash_amount >= 0

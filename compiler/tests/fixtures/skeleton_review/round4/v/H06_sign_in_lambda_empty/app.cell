@@ -1,0 +1,38 @@
+skeleton Approval {
+    state appr {
+        initial: pending
+        pending -> signed_off
+        pending -> refused
+    }
+    face {
+        signal sign(id: String) -> Int       moves pending -> signed_off
+        signal refuse(id: String) -> Int     moves pending -> refused
+        signal status(id: String) -> String  reads appr
+    }
+}
+skeleton Pay {
+    memory { log: Map<String, Int> [persistent] }
+    state pay {
+        initial: due
+        due -> paid
+        due -> void
+    }
+    face {
+        signal pay(id: String) -> Int        moves due -> paid   calls Approval.sign
+        signal cancel(id: String) -> Int     moves due -> void
+    }
+}
+flesh Approval {
+    on sign(id) { transition(id, "pending", "signed_off")  return 1 }
+    on refuse(id) { transition(id, "pending", "refused")  return 1 }
+    on status(id) { return get_status(id) ?? "pending" }
+}
+flesh Pay {
+    on pay(id) { let r = [].map(x => Approval.sign(id))  transition(id, "due", "paid")  return 1 }
+    on cancel(id) { transition(id, "due", "void")  return 1 }
+}
+cell test T {
+    rules {
+        assert Pay.pay("k") == 1
+    }
+}

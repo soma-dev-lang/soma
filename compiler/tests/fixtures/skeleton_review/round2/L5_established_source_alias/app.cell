@@ -1,0 +1,28 @@
+skeleton Q {
+    state fl {
+        initial: a
+        a -> b
+        a -> x
+        b -> x
+    }
+    face {
+        signal st(id: String) -> String   reads fl
+        signal mv(id: String) -> Int      moves a -> b, a -> x      // NOT b -> x
+    }
+}
+flesh Q {
+    on st(id) { return get_status(id) ?? "a" }
+    on mv(id) {
+        let j = id
+        if get_status(id) != "a" { return 0 }    // establishes: id is in `a`
+        transition(j, "a", "b")                  // the same instance, under another name
+        transition(id, "x")                      // check: a -> x.  run: b -> x
+        return 1
+    }
+}
+cell test T {
+    rules {
+        assert mv("k") == 1
+        assert st("k") == "x"
+    }
+}

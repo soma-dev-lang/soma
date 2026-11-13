@@ -1,0 +1,14 @@
+// Same shadowing, interval prover: `require b >= x` keeps "b - x >= 0" although `x` is re-bound by a deep `let`.
+cell A {
+    memory { c: Map<String, Int>  invariant c >= 0 }
+    on w(k: String, x: Int, y: Int) { let b = c.get(k) ?? 0
+ require b >= x else B
+ let q = [1].map(z => { if true { let x = y
+    c.set(k, b - x) }
+   0 })
+ return 1 }
+    on probe() { let r = try { w("k", 0, 100) }
+ print(r)
+ return r.kind ?? "ok" }
+}
+cell test T { rules { assert A.probe() == "invariant" } }

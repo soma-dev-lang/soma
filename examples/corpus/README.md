@@ -26,6 +26,7 @@ it makes unrepresentable (Therac-25, Lauda Air 004, Helios 522,
 | math | 17 |
 | medical | 14 |
 | records | 17 |
+| skeleton | 5 |
 | safety_interlocks | 14 |
 | state_machines | 14 |
 | text | 18 |

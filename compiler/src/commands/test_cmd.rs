@@ -125,6 +125,14 @@ pub fn cmd_test(path: &PathBuf, json: bool, registry: &mut Registry) {
     };
     let line_of = |span: ast::Span| -> usize { interpreter::span_to_location(&source, span.start).0 };
     let file_name = path.file_name().and_then(|f| f.to_str()).unwrap_or("").to_string();
+    // where a failure was raised, when not on the rule's own line: the
+    // line, and the file when it is an imported one (a flesh in lib/)
+    let raised_at = |sp: ast::Span, rule_line: usize| -> String {
+        match interpreter::resolve_import_pos(sp.start) {
+            Some((file, text, pos)) => format!(" (raised at {}:{})", file, interpreter::span_to_location(&text, pos).0),
+            None => { let l = line_of(sp); if l == rule_line { String::new() } else { format!(" (raised at line {})", l) } }
+        }
+    };
 
     let mut interp = interpreter::Interpreter::new(&program);
 
@@ -238,8 +246,7 @@ pub fn cmd_test(path: &PathBuf, json: bool, registry: &mut Registry) {
                                 Err(e) => {
                                     total += 1;
                                     failed += 1;
-                                    let at = interp.last_span.map(|sp| line_of(sp)).filter(|l| *l != line_of(rule.span))
-                                        .map(|l| format!(" (raised at line {})", l)).unwrap_or_default();
+                                    let at = interp.last_span.map(|sp| raised_at(sp, line_of(rule.span))).unwrap_or_default();
                                     say!(out_lines, json, "  ✗ {}:{}  let {} = … — ERROR: {}{}", file_name, line_of(rule.span), name, e, at);
                                 }
                             }
@@ -348,8 +355,7 @@ pub fn cmd_test(path: &PathBuf, json: bool, registry: &mut Registry) {
                                 }
                                 Err(e) => {
                                     failed += 1;
-                                    let at = interp.last_span.map(|sp| line_of(sp)).filter(|l| *l != line_of(expr.span))
-                                        .map(|l| format!(" (raised at line {})", l)).unwrap_or_default();
+                                    let at = interp.last_span.map(|sp| raised_at(sp, line_of(expr.span))).unwrap_or_default();
                                     say!(out_lines, json, "  ✗ {}:{}  assert {} — ERROR: {}{}", file_name, line_of(expr.span), shown, e, at);
                                 }
                             }

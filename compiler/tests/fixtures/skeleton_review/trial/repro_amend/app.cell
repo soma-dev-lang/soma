@@ -1,0 +1,13 @@
+skeleton A {
+    memory { m: Map<String, Int> [persistent] }
+    face {
+        signal f(x: Int) -> Int
+            ensures result >= 0
+            writes m
+            calls g
+        signal g() -> Int                reads m
+        signal h(x: Int) -> Int
+            ensures result >= 0
+            writes m
+    }
+}

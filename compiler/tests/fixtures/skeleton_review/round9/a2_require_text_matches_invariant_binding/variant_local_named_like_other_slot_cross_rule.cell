@@ -1,0 +1,11 @@
+cell A {
+    memory { stock: Map<String, Int>  reserved: Map<String, Int>
+             invariant (reserved ?? 0) <= (stock ?? 0) }
+    on w(k: String, n: Int) { let stock = 100
+        require (n ?? 0) <= (stock ?? 0) else Low
+        reserved.set(k, n)
+        return 1 }
+    on probe() { let r = try { w("k", 5) }
+        return r.kind ?? "ok" }
+}
+cell test T { rules { assert A.probe() == "invariant" } }

@@ -1,0 +1,25 @@
+cell A {
+    state m {
+        initial: x
+        x -> a
+        x -> b
+        a -> done
+        b -> done
+    }
+    on refund(k: String) [task] {
+        let a = "b"
+        transition(k, "x", a)
+        let ok = await approve("refund {k}")
+        transition(k, "done")
+        return 1
+    }
+    on sweep(k: String) { transition(k, "a", "done") return 1 }
+    on st(k: String) { return get_status(k) ?? "x" }
+    on try_sweep(k: String) { let r = try { sweep(k) }
+        return r.kind ?? "ok" }
+}
+cell test T { rules {
+ assert A.refund("k").waiting != ()
+ assert A.st("k") == "b"
+ assert A.try_sweep("k") != "ok"
+ } }

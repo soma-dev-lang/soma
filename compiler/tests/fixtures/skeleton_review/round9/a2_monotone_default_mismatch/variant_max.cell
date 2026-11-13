@@ -1,0 +1,8 @@
+cell A {
+    memory { seq: Map<String, Int>  invariant value >= (seq.get(key) ?? 0) }
+    on w(k: String, x: Int) { seq.set(k, max(seq.get(k) ?? (0 - 7), x))
+        return 1 }
+    on probe() { let r = try { w("k", 0 - 9) }
+        return r.kind ?? "ok" }
+}
+cell test T { rules { assert A.probe() == "invariant" } }

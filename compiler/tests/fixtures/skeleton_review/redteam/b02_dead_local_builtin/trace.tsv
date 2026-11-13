@@ -1,0 +1,6 @@
+	call	Bank.pure
+Bank.pure	builtin	write_file
+	call	Bank.peek
+Bank.peek	read	acct
+	call	Bank.status
+Bank.status	mread	-

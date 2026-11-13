@@ -1,0 +1,12 @@
+// `slot[k] = v` as a statement of an if-expression block inside a `require` condition: never seen as a write.
+cell A {
+    memory { c: Map<String, Int>  invariant c >= 0 }
+    on w(k: String, x: Int) {
+ require (if true { c[k] = x
+   1 } else { 0 }) == 1 else B
+ return 1 }
+    on probe() { let r = try { w("k", 0 - 5) }
+ print(r)
+ return r.kind ?? "ok" }
+}
+cell test T { rules { assert A.probe() == "invariant" } }

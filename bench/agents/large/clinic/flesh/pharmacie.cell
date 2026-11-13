@@ -1,0 +1,66 @@
+flesh Pharmacie {
+    on referencer(medicament, seuil) {
+        seuils.set(medicament, seuil)
+        if stock.get(medicament) == () { stock.set(medicament, 0) }
+        return seuil
+    }
+    on recevoir_lot(lot, medicament, quantite, peremption) {
+        require seuils.has(medicament) else MedicamentInconnu "{medicament}"
+        require lots.get(lot) == () else LotExiste "lot {lot}"
+        lots.set(lot, Lot { medicament: medicament, quantite: quantite, peremption: peremption })
+        let niveau = (stock.get(medicament) ?? 0) + quantite
+        stock.set(medicament, niveau)
+        return niveau
+    }
+    on niveau(medicament) { return stock.get(medicament) ?? 0 }
+    on sortir(medicament, quantite) {
+        let dispo = stock.get(medicament) ?? 0
+        require dispo >= quantite else StockInsuffisant "{medicament}: {dispo} < {quantite}"
+        let candidats = lots.entries.filter(e => e.value.medicament == medicament && e.value.quantite > 0)
+        let ordre = sort_by(candidats, e => [e.value.peremption, e.key])
+        let reste = quantite
+        for e in ordre {
+            if reste > 0 {
+                let l = e.value
+                let pris = min(l.quantite, reste)
+                l.quantite = l.quantite - pris
+                lots.set(e.key, l)
+                reste = reste - pris
+            }
+        }
+        let nouveau = dispo - quantite
+        stock.set(medicament, nouveau)
+        let seuil = seuils.get(medicament) ?? 0
+        if nouveau < seuil {
+            emit stock_bas(map("medicament", medicament, "niveau", nouveau, "seuil", seuil))
+        }
+        return nouveau
+    }
+    on lots_perimes(date) {
+        return lots.entries.filter(e => e.value.quantite > 0 && e.value.peremption < date).map(e => e.key)
+    }
+    on retirer_perimes(date) {
+        let retire = 0
+        for k in lots_perimes(date) {
+            let l = lots.get(k)
+            if l != () {
+                retire = retire + l.quantite
+                stock.set(l.medicament, (stock.get(l.medicament) ?? 0) - l.quantite)
+                l.quantite = 0
+                lots.set(k, l)
+            }
+        }
+        if retire > 0 {
+            let n = Audit.consigner("pharmacie", "stock.retirer_perimes", date)
+        }
+        return retire
+    }
+    on sous_seuil() {
+        return seuils.keys.filter(m => (stock.get(m) ?? 0) < (seuils.get(m) ?? 0))
+    }
+    on lot(id) {
+        let l = lots.get(id)
+        require l != () else LotInconnu "lot {id}"
+        return l
+    }
+}

@@ -1,0 +1,15 @@
+use lib::parts
+
+skeleton Stock {
+    memory { items: Map<String, Int>  secret: Map<String, Int> }
+    face {
+        signal level(sku: String) -> Int        reads items
+        signal fill(sku: String, n: Int) -> Int  writes items
+    }
+}
+cell test T {
+    rules {
+        assert Stock.fill("a", 2) == 2
+        assert Stock.level("a") == 2
+    }
+}

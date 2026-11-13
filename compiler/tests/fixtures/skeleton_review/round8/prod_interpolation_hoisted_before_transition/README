@@ -1,0 +1,1 @@
+soma verify app.cell && soma test app.cell — ligne fautive: `let r = [transition(id, "none", "requested"), "{Visit.open_visit(id)}"]` (appel interpolé hissé AVANT la transition de la même instruction ; au run Desk entre requested alors que Visit est waiting)

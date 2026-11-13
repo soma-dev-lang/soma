@@ -1,0 +1,52 @@
+flesh Ordonnances {
+    on _exiger(id: String) {
+        let o = ordonnances.get(id)
+        require o != () else OrdonnanceInconnue "ordonnance {id}"
+        return o
+    }
+    on rediger(id, medicament, quantite) {
+        require ordonnances.get(id) == () else OrdonnanceExiste "ordonnance {id}"
+        let c = Consultations.consultation(id)
+        let o = map("patient", c.patient, "signataire", "")
+        ordonnances.set(id, o)
+        lignes.set(id, [map("medicament", medicament, "quantite", quantite)])
+        return o
+    }
+    on ajouter_ligne(id, medicament, quantite) {
+        let o = _exiger(id)
+        require (get_status(id) ?? "redigee") == "redigee" else OrdonnanceFigee "ordonnance {id}"
+        let ls = push(lignes.get(id) ?? [], map("medicament", medicament, "quantite", quantite))
+        lignes.set(id, ls)
+        return len(ls)
+    }
+    on signer(id, praticien) {
+        let o = _exiger(id)
+        require Praticiens.existe_praticien(praticien) else PraticienInconnu "praticien {praticien}"
+        transition(id, "redigee", "signee")
+        o.signataire = praticien
+        ordonnances.set(id, o)
+        return "signee"
+    }
+    on delivrer(id) {
+        let o = _exiger(id)
+        let ok = Consultations.exiger_terminee(id)
+        let paye = Facturation.exiger_payee(id)
+        for l in lignes.get(id) ?? [] {
+            let niveau = Pharmacie.sortir(l.medicament, l.quantite)
+        }
+        transition(id, "signee", "delivree")
+        let n = Audit.consigner("pharmacie", "ordonnance.delivrer", id)
+        return "delivree"
+    }
+    on annuler_ordonnance(id) {
+        let o = _exiger(id)
+        transition(id, "annulee")
+        return "annulee"
+    }
+    on statut_ordonnance(id) {
+        let o = _exiger(id)
+        return get_status(id) ?? "redigee"
+    }
+    on ordonnance(id) { return _exiger(id) }
+    on lignes_de(id) { return lignes.get(id) ?? [] }
+}

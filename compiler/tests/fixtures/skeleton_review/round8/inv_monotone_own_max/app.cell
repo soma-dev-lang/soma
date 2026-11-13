@@ -1,0 +1,13 @@
+// The monotone-counter rule accepts `max(old, x)` by NAME: a handler `max(a, b)` of the cell is what runs.
+cell A {
+    memory { seq: Map<String, Int>  invariant seq >= (seq.get(key) ?? 0) }
+    on max(a: Int, b: Int) { return 0 }
+    on w(k: String, x: Int) { seq.set(k, max(seq.get(k) ?? 0, x)) return 1 }
+    on w0(k: String, x: Int) { require x >= 0 else B
+  seq.set(k, (seq.get(k) ?? 0) + x) return 1 }
+    on probe() { w0("k", 100)
+ let r = try { w("k", 5) }
+ print(r)
+ return r.kind ?? "ok" }
+}
+cell test T { rules { assert A.probe() == "invariant" } }

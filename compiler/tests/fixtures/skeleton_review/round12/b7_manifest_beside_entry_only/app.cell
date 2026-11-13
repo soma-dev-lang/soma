@@ -1,0 +1,13 @@
+cell Key {
+    state k { initial: idle
+        idle -> turned }
+    on turn(id: String) { transition(id, "idle", "turned") return 1 }
+    // edition 2027: () for an id that never moved — so this refuses a fresh id
+    on is_idle(id: String) { return get_status(id) == "idle" }
+    on main() { return is_idle("fresh") }
+}
+cell Door {
+    state d { initial: shut
+        shut -> open }
+    on open_it(id: String) { transition(id, "shut", "open") return 1 }
+}

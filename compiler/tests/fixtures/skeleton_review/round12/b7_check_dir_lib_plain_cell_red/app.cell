@@ -1,0 +1,9 @@
+use lib::stock
+use lib::report
+
+cell test T {
+    rules {
+        assert Stock.fill("a", 2) == 2
+        assert Report.twice("a") == 4
+    }
+}

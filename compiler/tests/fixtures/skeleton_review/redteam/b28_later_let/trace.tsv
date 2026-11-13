@@ -1,0 +1,7 @@
+	call	Bank.pure
+Bank.pure	call	Bank._w
+Bank.pure>Bank._w	write	acct
+	call	Bank.peek
+Bank.peek	read	acct
+	call	Bank.status
+Bank.status	mread	-

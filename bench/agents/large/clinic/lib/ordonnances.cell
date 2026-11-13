@@ -1,0 +1,56 @@
+// Ordonnances — une ordonnance par visite (même id que la consultation).
+skeleton Ordonnances {
+    memory {
+        // id visite -> { patient, signataire ("" tant que non signée) }
+        ordonnances: Map<String, Map> [persistent]
+        // id visite -> lignes [{ medicament: String, quantite: Int }]
+        lignes: Map<String, List<Map>> [persistent]
+    }
+    state ordo {
+        initial: redigee
+        redigee -> signee
+        signee -> delivree                      // RÈGLE : seulement si la consultation est terminée ET la facture payée
+        redigee -> annulee
+        signee -> annulee
+    }
+    face {
+        // Rédige l'ordonnance de la visite `id` avec une première ligne. Erreurs : `OrdonnanceExiste`,
+        // `ConsultationInconnue` (propagée par Consultations.consultation). Le patient vient de la
+        // consultation. État initial `redigee`, aucune transition. Renvoie { patient, signataire: "" }.
+        signal rediger(id: String, medicament: String, quantite: Int) -> Map
+            requires quantite > 0
+            writes ordonnances, lignes
+            calls Consultations.consultation
+        // Ajoute une ligne. Erreurs : `OrdonnanceInconnue`, `OrdonnanceFigee` si l'état n'est plus `redigee`.
+        // Renvoie le nombre de lignes.
+        signal ajouter_ligne(id: String, medicament: String, quantite: Int) -> Int
+            requires quantite > 0
+            writes lignes
+            reads ordonnances, ordo
+        // redigee -> signee par un praticien. Erreurs : `OrdonnanceInconnue`, `PraticienInconnu`.
+        // Écrit le signataire. Renvoie "signee".
+        signal signer(id: String, praticien: String) -> String
+            writes ordonnances
+            moves redigee -> signee
+            calls Praticiens.existe_praticien
+        // signee -> delivree. Erreur `OrdonnanceInconnue`. Exige la consultation terminée
+        // (Consultations.exiger_terminee(id)) puis la facture de la visite payée
+        // (Facturation.exiger_payee(id)), AVANT tout effet ; sort chaque ligne du stock
+        // (Pharmacie.sortir — `StockInsuffisant` annule tout), consigne ("pharmacie", "ordonnance.delivrer", id).
+        // Renvoie "delivree".
+        signal delivrer(id: String) -> String
+            reads ordonnances, lignes
+            moves signee -> delivree
+            calls Consultations.exiger_terminee, Facturation.exiger_payee, Pharmacie.sortir, Audit.consigner
+        // Annule une ordonnance rédigée ou signée. Erreur `OrdonnanceInconnue`. Renvoie "annulee".
+        signal annuler_ordonnance(id: String) -> String
+            reads ordonnances
+            moves redigee -> annulee, signee -> annulee
+        // L'état ("redigee" tant qu'aucune transition). Erreur `OrdonnanceInconnue`.
+        signal statut_ordonnance(id: String) -> String                  reads ordonnances, ordo
+        // { patient, signataire }, ou erreur `OrdonnanceInconnue`.
+        signal ordonnance(id: String) -> Map                            reads ordonnances
+        // Les lignes [{ medicament, quantite }] ; liste vide pour un id inconnu.
+        signal lignes_de(id: String) -> List<Map>                       reads lignes
+    }
+}

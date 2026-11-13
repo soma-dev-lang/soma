@@ -1,0 +1,1 @@
+soma check app.cell (vert) && SOMA_EFFECT_TRACE=t soma test app.cell — ligne fautive: app.cell:12 `std.await_sleep()` sous `calls await_sleep` ; trace "A.go call B.await_sleep / write hits" ; idem await_signal, await_approve: noms dans INLINE_BUILTIN_NAMES (checker/names.rs) absents du registre BUILTINS que le garde du tour 8 consulte

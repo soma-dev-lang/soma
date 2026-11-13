@@ -2,6 +2,8 @@
 
 **The language for programs you can prove — built for the age of AI agents.**
 
+*The goal: let programming agents design large applications in a solid manner.*
+
 Soma is a declarative language where systems are *cells*: state, contract,
 behavior, and lifecycle in one unit. Its center of gravity is verification —
 not as an add-on, but as the reason the language exists:
@@ -81,6 +83,7 @@ theorem, not a code review hope:
 | [`elevator/`](elevator/) | SCAN scheduling with a **proven door/motion interlock** — the scheduler can be buggy; the safety can't | `soma run elevator/app.cell run_sim 8` |
 | [`hft/`](hft/) | An Avellaneda-Stoikov market maker whose kill switch **provably cannot re-arm** | `soma run hft/app.cell run_stress 5000` |
 | [`delivery/`](delivery/) | A food-delivery platform: typed state machines, sum-type payments, verified lifecycle | `soma serve delivery/app.cell` |
+| [`marketplace/`](marketplace/) | Designed **skeleton-first**: the whole design is one file with no body; only `Wallets` can write money and only `Escrow` can call it — read off the frames, enforced on every body | `soma skeleton marketplace/app.cell` |
 
 ## The language, fast
 
@@ -129,9 +132,24 @@ unknown/ambiguous calls, and invalid invariants *before* runtime; error
 messages contain their own fix (`invalid transition: Placed → Delivered.
 Valid targets: [Accepted, Cancelled]`); `soma describe --builtins --json`
 and `--faces` give exact signatures so nothing is guessed. Start with
-[`AGENT_GOTCHAS.md`](AGENT_GOTCHAS.md) — 20 verified wrong→right pairs —
+[`AGENT_GOTCHAS.md`](AGENT_GOTCHAS.md) — verified wrong→right pairs —
 and [`examples/corpus/`](examples/corpus/): **hundreds of complete programs, every
 one passing `check` and `test`**, generated as LLM training data.
+
+**Large programs, skeleton first.** An agent designs the structure before
+any body exists — a `skeleton` holds memory, lifecycles and, for each
+signal, its *frame* (what its body may read, write, call, and which edges
+it may take); the bodies come later in `flesh` blocks and `soma check`
+refuses one that leaves its frame. So the design fits in a few screens,
+is proven before it is filled, and cannot be changed in passing:
+
+```bash
+soma skeleton app.cell                 # the whole map — 9–20% of the source on the demo apps
+soma holes    app.cell                 # the signals with no body yet, in the order to write them
+soma skeleton app.cell Orders.place    # the brief for one signal: all an agent needs in context
+soma skeleton app.cell --freeze        # from here on, the structure only changes on purpose
+```
+See "Skeleton first" in [`site/llms.txt`](site/llms.txt) and [`SKELETON_DESIGN.md`](SKELETON_DESIGN.md).
 
 Everything an agent needs is one command or one fetch away:
 

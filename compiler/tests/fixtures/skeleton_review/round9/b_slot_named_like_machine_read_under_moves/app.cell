@@ -1,0 +1,24 @@
+skeleton A {
+    memory {
+        flow: Map<String, Int>
+    }
+    state flow {
+        initial: s0
+        s0 -> s1
+    }
+    face {
+        signal go(id: String) -> Int   moves s0 -> s1
+        signal fill() -> Int           writes flow
+    }
+}
+flesh A {
+    on go(id) { transition(id, "s0", "s1")
+ return flow.get("k") ?? 0 }
+    on fill() { flow.set("k", 41) return 1 }
+}
+cell test T {
+    rules {
+        assert A.fill() == 1
+        assert A.go("i") == 0
+    }
+}

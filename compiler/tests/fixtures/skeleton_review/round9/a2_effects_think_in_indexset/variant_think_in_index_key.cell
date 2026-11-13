@@ -1,0 +1,18 @@
+cell agent Desk {
+    face {
+        signal ask(q: String) -> Int
+        tool lookup(id: String) -> String "Look up"
+        tool refund(id: String) -> String "Refund"
+    }
+    state job { initial: idle  idle -> done }
+    on fin(id: String) { transition(id, "idle", "done") return 1 }
+    memory { refunds: Map<String, Int> }
+    on lookup(id: String) { return "found" }
+    on refund(id: String) { refunds.set(id, 1) return "refunded" }
+    on ask(q: String) {
+        let a = think("classify {q}", map("tools_allowed", ["lookup"], "max_tokens", 100))
+        let m = map("a", "b")
+        m[think("answer {q}")] = 1
+        return refunds.get("k") ?? 0
+    }
+}

@@ -1,0 +1,35 @@
+cell Desk {
+    state d {
+        initial: none
+        none -> requested
+    }
+    interior {
+        cell Inner {
+            face { signal step(id: String) }
+            on step(id: String) { return 0 }
+        }
+    }
+    on go(id: String) {
+        require Visit.status(id) == "open" else NotOpen
+        step(id)
+        transition(id, "none", "requested")
+        return 1
+    }
+    on st(id: String) { return get_status(id) ?? "none" }
+}
+cell Visit {
+    state v {
+        initial: waiting
+        waiting -> open
+        open -> done
+    }
+    on open_visit(id: String) { transition(id, "waiting", "open")  return "open" }
+    on step(id: String) { transition(id, "open", "done")  return "done" }
+    on status(id: String) { return get_status(id) ?? "waiting" }
+}
+cell test T { rules {
+    assert Visit.open_visit("k") == "open"
+    assert Desk.go("k") == 1
+    assert Desk.st("k") == "requested"
+    assert Visit.status("k") == "done"
+} }

@@ -1,0 +1,30 @@
+cell M {
+    state m {
+        initial: a
+        a -> b
+        b -> c
+        a -> c
+    }
+    on st(id: String) { return get_status(id) ?? "a" }
+    on adv(id: String) { transition(id, "a", "b")  return 1 }
+    on values(id: String) { transition(id, "a", "b")  return 1 }
+    on go(id: String) {
+        if (get_status(id) ?? "a") == "a" { Other.set(id)
+            transition(id, "c") }
+        return 1 }
+    on go2(id: String) {
+        if (get_status(id) ?? "a") == "a" { let q = values(id)
+            transition(id, "c") }
+        return 1 }
+    on go3(id: String) {
+        if (get_status(id) ?? "a") == "a" { let q = Other.set(id)
+            transition(id, "c") }
+        return 1 }
+}
+cell Other {
+    on set(id: String) { return M.adv(id) }
+}
+cell test T { rules {
+  assert M.go("k") == 1
+  assert M.st("k") == "c"
+ } }

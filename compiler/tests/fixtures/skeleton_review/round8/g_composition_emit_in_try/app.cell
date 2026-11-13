@@ -1,0 +1,17 @@
+cell Outer {
+    interior {
+        cell Driver {
+            face { signal go(id: String) }
+            on go(id: String) { return 1 }
+        }
+        cell Worker {
+            face { await go(id: String) }
+            on go(id: String) { print("worker got {id}")
+               let r = try { emit lost(id) }
+               print("after")
+               return 1 }
+        }
+    }
+    runtime { signal go("k") }
+    on run() { return 1 }
+}

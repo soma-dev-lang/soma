@@ -1,0 +1,14 @@
+cell B {
+    memory { c: Map<String, Int> [capacity(10), max_value_bytes(8)] }
+    scale { memory: "64Mi" }
+    on look() { return c.get("n") ?? 0 }
+    every 1s {
+        let xs = from_json(read_file("big.json"))
+        c.set("n", len(xs))
+        sleep(1500)
+    }
+    after 1s [task] {
+        let s = try { think("x", map("requires", ["nonexistent_cap"])) }
+        c.set("thought", 1)
+    }
+}

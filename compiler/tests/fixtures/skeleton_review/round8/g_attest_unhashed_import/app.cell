@@ -1,0 +1,4 @@
+use side
+cell App {
+    on run() { return Side.s() }
+}

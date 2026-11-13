@@ -1,0 +1,4 @@
+use "../app.cell"
+cell Admin {
+    on main() { return Counter.bump("a") }
+}

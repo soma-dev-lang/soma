@@ -251,6 +251,11 @@ pub struct BeforeConfig {
     /// hold then
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub assuming: Option<String>,
+    /// `while = ["Visit.open"]`: the target is entered only while the other
+    /// machine IS in one of these states (the present, where `requires` is
+    /// the past). Several machines may be named: each must be in one of its own.
+    #[serde(default, rename = "while", skip_serializing_if = "Vec::is_empty")]
+    pub while_in: Vec<String>,
 }
 
 #[derive(Debug, Default, Serialize, Deserialize)]

@@ -1,0 +1,24 @@
+cell Box {
+    face { signal go(id: String)  signal low(id: String)  signal seen(id: String) }
+    interior {
+        cell Src {
+            face { signal go(id: String)
+                   signal low(id: String) }
+            on go(id: String) { emit ev(id, 2)  return "sent" }
+            on low(id: String) { emit deep(id) return "low" }
+        }
+        cell Sink {
+            face { signal ev(id: String)  signal seen(id: String) }
+            memory { got: Map<String, Int> }
+            on ev(id: String) { got.set(id, 1) return 1 }
+            on seen(id: String) { return got.get(id) ?? 0 }
+        }
+        cell type Shape {
+            face { signal deep(id: String) }
+            on deep(id: String) { got.set(id, 7)  return 1 }
+        }
+    }
+    on go(id: String) { return 0 }
+    on low(id: String) { return 0 }
+    on seen(id: String) { return 0 }
+}

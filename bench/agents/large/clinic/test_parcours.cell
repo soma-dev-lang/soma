@@ -1,0 +1,197 @@
+use app
+
+// Scénario de bout en bout : de l'inscription au paiement, à travers toutes les cellules.
+cell test ParcoursComplet {
+    on _decor() {
+        let a = Patients.inscrire("p1", "Ada Martin", "1980-04-02")
+        let b = Praticiens.enregistrer("dr1", "Dr Roux", "generaliste")
+        let c = Assurance.souscrire("p1", "MutuelleX", 70, 5000, 4000)
+        let d = Pharmacie.referencer("amox", 5)
+        let e = Pharmacie.recevoir_lot("l1", "amox", 20, "2027-06-01")
+        return Agenda.ouvrir_creneau("dr1", "2026-12-01", "09:00")
+    }
+    rules {
+        mock now 1800000000
+        let cle = _decor()
+        assert cle == "dr1|2026-12-01|09:00"
+        assert Agenda.creneaux_libres("dr1", "2026-12-01") == [cle]
+
+        // rendez-vous
+        assert Agenda.demander("v1", "p1", cle).praticien == "dr1"
+        assert Agenda.creneau_libre(cle) == false
+        assert_fails Agenda.demander("v2", "p1", cle) matching "CreneauIndisponible"
+        assert Agenda.statut_rdv("v1") == "demande"
+        // règle : pas de consultation avant l'arrivée du patient
+        assert_fails Consultations.ouvrir("v1", "toux") matching "invalid_transition"
+        assert Agenda.confirmer("v1") == "confirme"
+        assert Agenda.enregistrer_arrivee("v1") == "arrive"
+
+        // consultation
+        assert Consultations.ouvrir("v1", "toux").patient == "p1"
+        assert Agenda.statut_rdv("v1") == "en_consultation"
+        assert Consultations.ajouter_note("v1", "fièvre 38.5") == 1
+        assert Consultations.coter_acte("v1", 3000) == 3000
+        assert Consultations.coter_acte("v1", 2000) == 5000
+        assert_fails Consultations.coter_acte("v1", 0) matching "requires"
+        assert Laboratoire.demander_analyse("a1", "v1", "crp").patient == "p1"
+
+        // ordonnance : rédigée et signée pendant la consultation, mais pas délivrable
+        assert Ordonnances.rediger("v1", "amox", 12).patient == "p1"
+        assert Ordonnances.ajouter_ligne("v1", "amox", 4) == 2
+        assert Ordonnances.signer("v1", "dr1") == "signee"
+        assert_fails Ordonnances.ajouter_ligne("v1", "amox", 1) matching "OrdonnanceFigee"
+        assert_fails Ordonnances.delivrer("v1") matching "ConsultationNonTerminee"
+        assert Pharmacie.niveau("amox") == 20
+
+        // facture : préparable, mais pas émettable avant la fin
+        let m = Facturation.preparer("v1")
+        assert m.total == 5000
+        assert m.assurance == 3500
+        assert m.patient == 1500
+        assert_fails Facturation.emettre("v1") matching "ConsultationNonTerminee"
+
+        // fin de consultation
+        assert_fails Consultations.terminer("v1") matching "DiagnosticManquant"
+        assert Consultations.poser_diagnostic("v1", "bronchite").diagnostic == "bronchite"
+        assert Consultations.terminer("v1") == "terminee"
+        assert Agenda.statut_rdv("v1") == "termine"
+        assert_fails Consultations.coter_acte("v1", 100) matching "ConsultationFermee"
+
+        // changement (c) : pas de délivrance tant que la facture n'est pas payée
+        assert_fails Ordonnances.delivrer("v1") matching "FactureNonPayee"
+
+        // facturation et paiement en deux fois
+        assert Facturation.emettre("v1") == "emise"
+        assert Assurance.engagement("v1") == 3500
+        assert_fails Paiements.payer("pay0", "v1", 2000, "carte") matching "TropPercu"
+        assert_fails Paiements.payer("pay0", "v1", 500, "troc") matching "MoyenInconnu"
+        assert Paiements.payer("pay1", "v1", 1000, "carte") == 500
+        assert Facturation.statut_facture("v1") == "emise"
+        assert Paiements.payer("pay2", "v1", 500, "especes") == 0
+        assert Facturation.statut_facture("v1") == "payee"
+        assert Paiements.total_paye("v1") == 1500
+        assert Paiements.statut_paiement("pay2") == "encaisse"
+        assert_fails Paiements.payer("pay3", "v1", 1, "carte") matching "FactureNonEmise"
+
+        // délivrance : sort 16 unités, passe sous le seuil
+        assert Ordonnances.delivrer("v1") == "delivree"
+        assert Pharmacie.niveau("amox") == 4
+        assert Notifications.compter_type("stock") == 1
+
+        // changement (b) : plafond annuel (4000) — 3500 consommés par v1, il reste 500 pour 2027
+        assert Assurance.disponible_annuel("p1", "2027") == 500
+        assert Assurance.disponible_annuel("p1", "2028") == 4000
+        assert Assurance.disponible_annuel("inconnu", "2027") == 0
+        assert_fails Assurance.engager("vx", "p1", 501, "2027") matching "PlafondAnnuelDepasse"
+
+        // lectures agrégées
+        assert Rapports.dossier_visite("v1") == map("rdv", "termine", "consultation", "terminee", "ordonnance", "delivree", "facture", "payee", "reste_du", 0)
+        assert Rapports.finances() == map("facture", 5000, "impaye", 0, "encaisse", 1500, "engage", 3500)
+        let act = Rapports.activite_patient("p1")
+        assert act.rdvs == 1
+        assert act.couvert
+        // notifications du patient : 2 rdv (demande, confirme) + 2 facture (emise, payee)
+        assert Notifications.notifications_de("p1") == ["rdv v1: demande", "rdv v1: confirme", "facture v1: emise", "facture v1: payee"]
+        assert Audit.actions_sur("v1") == ["consultation.ouvrir", "consultation.terminer", "facture.emise", "facture.payee", "ordonnance.delivrer"]
+        let t = Rapports.tableau_de_bord("2026-12-02")
+        assert t.patients == 1
+        assert t.alertes.sous_seuil == ["amox"]
+        assert t.absence == 0
+    }
+}
+
+// Litige, annulation et remboursement ; absences ; atomicité d'une délivrance sans stock.
+cell test LitigesEtAbsences {
+    on _visite(id: String, heure: String, montant: Int) {
+        let cle = Agenda.ouvrir_creneau("dr1", "2026-12-01", heure)
+        let a = Agenda.demander(id, "p1", cle)
+        let b = Agenda.confirmer(id)
+        let c = Agenda.enregistrer_arrivee(id)
+        let d = Consultations.ouvrir(id, "controle")
+        let e = Consultations.coter_acte(id, montant)
+        let f = Consultations.poser_diagnostic(id, "rien")
+        return Consultations.terminer(id)
+    }
+    rules {
+        mock now 1800000000
+        let p = Patients.inscrire("p1", "Ada Martin", "1980-04-02")
+        let d = Praticiens.enregistrer("dr1", "Dr Roux", "generaliste")
+        assert _visite("v1", "09:00", 4000) == "terminee"
+        // changement (b) : contrat 50 % plafonné à 1500 par an ; la 1re facture (4000) prend 1500, pas 2000
+        let ct = Assurance.souscrire("p1", "MutuelleX", 50, 9000, 1500)
+        let m1 = Facturation.preparer("v1")
+        assert m1.assurance == 1500
+        assert m1.patient == 2500
+        assert Facturation.emettre("v1") == "emise"
+        assert Assurance.disponible_annuel("p1", "2027") == 0
+        // une 2e visite la même année n'a plus de prise en charge
+        assert _visite("v7", "15:00", 1000) == "terminee"
+        assert Facturation.preparer("v7").assurance == 0
+        assert Paiements.payer("pay1", "v1", 1000, "cheque") == 1500
+        assert_fails Paiements.rembourser("pay1") matching "FactureNonAnnulee"
+        assert_fails Facturation.contester("v1", "") matching "MotifVide"
+        assert Facturation.contester("v1", "acte non réalisé") == "en_litige"
+        assert_fails Paiements.payer("pay2", "v1", 1000, "carte") matching "FactureNonEmise"
+        assert Facturation.trancher_litige("v1", false) == "emise"
+        assert Facturation.contester("v1", "encore") == "en_litige"
+        assert Facturation.trancher_litige("v1", true) == "annulee"
+        assert Facturation.reste_du("v1") == 0
+        // l'annulation rend le plafond annuel
+        assert Assurance.disponible_annuel("p1", "2027") == 1500
+        assert Assurance.engagement("v1") == 0
+        assert Paiements.rembourser("pay1") == 1000
+        assert Paiements.total_encaisse() == 0
+        assert Paiements.statut_paiement("pay1") == "rembourse"
+        assert_fails Paiements.rembourser("pay1") matching "invalid_transition"
+        assert Rapports.finances().facture == 0
+
+        // absence : le créneau reste perdu ; annulation : il est libéré
+        let c2 = Agenda.ouvrir_creneau("dr1", "2026-12-02", "10:00")
+        assert Agenda.demander("v2", "p1", c2).creneau == c2
+        assert Agenda.confirmer("v2") == "confirme"
+        assert Agenda.marquer_absent("v2") == "absent"
+        assert Agenda.creneau_libre(c2) == false
+        assert Rapports.taux_absence() == 33
+        let c3 = Agenda.ouvrir_creneau("dr1", "2026-12-02", "11:00")
+        assert Agenda.demander("v3", "p1", c3).patient == "p1"
+        assert Agenda.annuler_rdv("v3") == "annule"
+        assert Agenda.creneau_libre(c3)
+        assert_fails Agenda.annuler_rdv("v3") matching "invalid_transition"
+        assert_fails Agenda.confirmer("nope") matching "RdvInconnu"
+        assert Agenda.rdvs_du_patient("p1") == ["v1", "v2", "v3", "v7"]
+        assert Agenda.compter_statut("annule") == 1
+
+        // changement (a) : report d'un rdv
+        let c5 = Agenda.ouvrir_creneau("dr1", "2026-12-05", "09:00")
+        let c6 = Agenda.ouvrir_creneau("dr1", "2026-12-06", "09:00")
+        let d2 = Praticiens.enregistrer("dr2", "Dr Blanc", "cardiologie")
+        let c7 = Agenda.ouvrir_creneau("dr2", "2026-12-06", "09:00")
+        assert Agenda.demander("v5", "p1", c5).creneau == c5
+        assert Agenda.confirmer("v5") == "confirme"
+        assert_fails Agenda.reporter("v5", c7) matching "AutrePraticien"
+        assert_fails Agenda.reporter("v5", c5) matching "CreneauIndisponible"
+        assert Agenda.reporter("v5", c6).creneau == c6
+        assert Agenda.statut_rdv("v5") == "reporte"
+        assert Agenda.creneau_libre(c5)
+        assert Agenda.creneau_libre(c6) == false
+        // un rdv reporté doit être reconfirmé avant l'arrivée
+        assert_fails Agenda.enregistrer_arrivee("v5") matching "invalid_transition"
+        assert_fails Agenda.reporter("v5", c5) matching "invalid_transition"
+        assert Agenda.confirmer("v5") == "confirme"
+        assert Agenda.enregistrer_arrivee("v5") == "arrive"
+        assert_fails Agenda.reporter("v5", c5) matching "invalid_transition"
+        assert Rapports.dossier_visite("v5").rdv == "arrive"
+        assert Agenda.demander("v6", "p1", c5).creneau == c5
+        let c8 = Agenda.ouvrir_creneau("dr1", "2026-12-08", "09:00")
+        assert Agenda.reporter("v6", c8).creneau == c8
+        assert Agenda.annuler_rdv("v6") == "annule"
+        assert Agenda.creneau_libre(c8)
+        assert Notifications.notifications_de("p1").len == 21
+        // praticien en congé, patient désactivé
+        assert Praticiens.mettre_en_conge("dr1")
+        assert_fails Agenda.demander("v4", "p1", c3) matching "PraticienIndisponible"
+        assert Praticiens.reprendre("dr1")
+        assert Patients.desactiver("p1")
+        assert_fails Agenda.demander("v4", "p1", c3) matching "PatientInactif"
+    }
+}

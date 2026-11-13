@@ -1,0 +1,12 @@
+skeleton Counter {
+    memory { n: Map<String, Int> }
+    face {
+        signal bump(k: String) -> Int   writes n
+    }
+}
+flesh Counter {
+    on bump(k) {
+        n.set(k, n.get(k) ?? 0 + 1)
+        return n.get(k) ?? 0
+    }
+}

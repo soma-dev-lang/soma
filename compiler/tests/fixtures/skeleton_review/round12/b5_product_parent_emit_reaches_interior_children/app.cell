@@ -1,0 +1,35 @@
+cell Visit {
+    state v {
+        initial: waiting
+        waiting -> open
+        open -> done
+    }
+    on open_visit(id: String) { transition(id, "waiting", "open")  return "open" }
+    on close_visit(id: String) { transition(id, "open", "done")  return "done" }
+    on status(id: String) { return get_status(id) ?? "waiting" }
+}
+cell Desk {
+    face { signal kick(id: String) }
+    state d {
+        initial: none
+        none -> requested
+    }
+    interior {
+        cell Front {
+            face { signal kick(id: String) }
+            on kick(id: String) { emit up(id)  return "kicked" }
+        }
+        cell Back {
+            face { signal down(id: String) }
+            on down(id: String) { Visit.close_visit(id)  return 1 }
+        }
+    }
+    on kick(id: String) { return 0 }
+    on up(id: String) {
+        require Visit.status(id) == "open" else NotOpen
+        emit down(id)
+        transition(id, "none", "requested")
+        return 1
+    }
+    on st(id: String) { return get_status(id) ?? "none" }
+}

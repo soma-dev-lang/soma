@@ -1,0 +1,4 @@
+	call	Bank.pay
+Bank.pay	move	Paid
+	call	Bank.status
+Bank.status	mread	-

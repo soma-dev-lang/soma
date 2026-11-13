@@ -1,0 +1,32 @@
+skeleton Q {
+    memory { s: Map<String, Int> [persistent]
+             t: Map<String, Int> [persistent] }
+    state fl {
+        initial: a
+        a -> b
+        a -> x
+        b -> x
+        * -> dead except [x]
+    }
+    face {
+        signal st(id: String) -> String   reads fl
+        signal go(id: String) -> Int      
+        signal wr(id: String) -> Int      writes s, t
+        signal ev(id: String)             writes s
+    }
+}
+skeleton W {
+    face {
+        signal go(id: String) -> Int      
+    }
+}
+flesh Q {
+    on st(id) { return get_status(id) ?? "a" }
+    on go(id) { return _h(id) }
+    on wr(id) { s.set(id, 1)  t.set(id, 1)  return 1 }
+    on ev(id) { s.set(id, 2) }
+    on _h(id: String) { s.set(id, 1)  transition(id, "a", "b")  emit ev(id)  return wr(id) + now() }
+}
+flesh W {
+    on go(id) { return 1 }
+}

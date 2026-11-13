@@ -37,6 +37,7 @@ const GENERIC_BINDINGS: &[&str] = &[
 /// Check-time validation: every name an invariant references must be
 /// resolvable when the runtime evaluates it.
 pub fn validate_program(program: &Program) -> Vec<InvariantIssue> {
+    PROGRAM_HANDLERS.with(|h| *h.borrow_mut() = super::desugar::program_names(program).0);
     let mut issues = Vec::new();
     // interior cells too: an invariant naming an unknown slot, or reading
     // `status` without a machine, was unchecked inside `interior { }`
@@ -290,7 +291,7 @@ fn set_slot_int(cell: &CellDef) {
             if let Section::Memory(mem) = &sec.node {
                 for sl in &mem.slots {
                     let int = match &sl.node.ty.node {
-                        TypeExpr::Generic { args, .. } => args.last().map_or(false, |a| matches!(&a.node, TypeExpr::Simple(t) if t == "Int" || t == "BigInt")),
+                        TypeExpr::Generic { args, .. } => args.last().map_or(false, |a| matches!(&a.node, TypeExpr::Simple(t) if t == "Int")),
                         _ => false,
                     };
                     m.insert(sl.node.name.clone(), int);
@@ -301,6 +302,7 @@ fn set_slot_int(cell: &CellDef) {
 }
 
 pub fn verify_program_invariants(program: &Program) -> Vec<VerifyResult> {
+    PROGRAM_HANDLERS.with(|h| *h.borrow_mut() = super::desugar::program_names(program).0);
     // 3.0: a face `requires` is a fact for the handler's writes
     let inlined = super::contracts::inline_requires(program);
     let program = &inlined;
@@ -356,6 +358,10 @@ pub fn verify_program_invariants(program: &Program) -> Vec<VerifyResult> {
         let mut hyp: HashMap<String, (f64, f64)> = HashMap::new();
         for (inv, targets, _) in &guarded {
             for slot in targets {
+                // a slot named like a binding an invariant reads (`size`, `key`…):
+                // `invariant size >= 0` is then about the COUNT, at run time —
+                // it bounds no value read from that slot
+                if matches!(slot.as_str(), "size" | "key" | "status" | "_slot_len") { continue; }
                 let (mut lo, mut hi) = hyp.get(slot).copied().unwrap_or((f64::NEG_INFINITY, f64::INFINITY));
                 for c in conjuncts(inv) {
                     if let Some((l, h)) = interval_of(c, slot) {
@@ -481,7 +487,7 @@ pub fn verify_program_invariants(program: &Program) -> Vec<VerifyResult> {
                         runtime_checked.push(format!("{handler} → {slot} (a List delete shifts the later elements to new indexes; `key` changes without a write — checked at run time)"));
                         continue;
                     }
-                    if !names.contains("size") && !names.contains("len") && !fns.contains("len") && !fns.contains("size") {
+                    if !names.contains("size") && !names.contains("len") && !names.contains("_slot_len") && !fns.contains("len") && !fns.contains("size") {
                         result.checks.push(VerifyCheck::Pass(format!(
                             "invariant {inv_text} — writer '{handler}' only deletes from '{slot}' (a value invariant cannot break on a delete)"
                         )));
@@ -490,7 +496,7 @@ pub fn verify_program_invariants(program: &Program) -> Vec<VerifyResult> {
                     // `size <= K` cannot break on a delete either: it shrinks
                     // (the bounded-queue pop was "may grow past 64")
                     let sized = |c: &Expr| { let mut n = HashSet::new(); collect_idents(c, &mut n); let mut f = HashSet::new(); collect_fn_names(c, &mut f);
-                        n.contains("size") || n.contains("len") || f.contains("len") || f.contains("size") };
+                        n.contains("size") || n.contains("len") || n.contains("_slot_len") || f.contains("len") || f.contains("size") };
                     if conjuncts(inv).iter().all(|c| !sized(c) || size_upper_bound(c, slot).is_some()) {
                         result.checks.push(VerifyCheck::Pass(format!(
                             "invariant {inv_text} — writer '{handler}' only deletes from '{slot}' (a delete cannot grow it)"
@@ -534,15 +540,20 @@ pub fn verify_program_invariants(program: &Program) -> Vec<VerifyResult> {
                 // write — no fact about locals holds across it
                 // …also a think() in a handler it reaches (a helper, delegate,
                 // an emit listener): it ends the step all the same
-                let task_with_think = handlers.get(handler).map_or(false, |on| on.properties.iter().any(|p| p == "task")) && {
+                // …and, in ANY handler, a resume() / deliver(): the rest of a
+                // waiting handler runs inside this one, with its writes
+                let is_task = handlers.get(handler).map_or(false, |on| on.properties.iter().any(|p| p == "task"));
+                let mut resumes = false;
+                let task_with_think = {
                     let me = cell.name.clone();
                     let mut seen: HashSet<(String, String)> = HashSet::new();
                     let mut stack: Vec<(String, String)> = vec![(me.clone(), handler.clone())];
                     let mut t = false;
                     while let Some((c, h)) = stack.pop() {
-                        if t || !seen.insert((c.clone(), h.clone())) { continue; }
+                        if (t && resumes) || !seen.insert((c.clone(), h.clone())) { continue; }
                         let Some((_, on)) = all_handlers.iter().find(|(cn, o)| *cn == c && o.signal_name == h) else { continue };
-                        crate::checker::literals::for_each_expr(&on.body, &mut |e| if matches!(e, Expr::FnCall { name, .. } if name == "think" || name == "think_json" || name == "vote") { t = true; });
+                        crate::checker::literals::for_each_expr(&on.body, &mut |e| if matches!(e, Expr::FnCall { name, .. } if matches!(name.as_str(), "think" | "think_json" | "vote" | "await_approve" | "await_signal" | "await_sleep")) { t = true; });
+                        crate::checker::literals::for_each_expr(&on.body, &mut |e| if matches!(e, Expr::FnCall { name, .. } if name == "resume" || name == "deliver") { resumes = true; });
                         for (target, name) in calls_of(&on.body, &cell_names, cell_tools.get(&c).map(|v| v.as_slice()).unwrap_or(&[]), &cell_handlers) {
                             match target {
                                 None => {
@@ -554,7 +565,7 @@ pub fn verify_program_invariants(program: &Program) -> Vec<VerifyResult> {
                             }
                         }
                     }
-                    t
+                    (is_task && t) || resumes
                 };
                 // …except about the PARAMETERS, which nothing but the handler
                 // rebinds (`require n >= 0 && n <= 100` was cleared too, a
@@ -613,6 +624,9 @@ pub fn verify_program_invariants(program: &Program) -> Vec<VerifyResult> {
                     if !matches!(op, CmpOp::Ge | CmpOp::Gt) { continue; }
                     if !matches!(&left.node, Expr::Ident(n) if n == "value" || n == slot) { continue; }
                     // right side: this slot read at `key` (?? 0 allowed)
+                    // (the default of a `?? d`, as text: the invariant's and the write's must be the same)
+                    let default_of = |e: &Expr| -> String { match e { Expr::FnCall { name, args } if name == "_coalesce" && args.len() == 2 => render_expr(&args[1].node), _ => String::new() } };
+                    let inv_default = default_of(&right.node);
                     let reads_own_key = |e: &Expr| -> bool {
                         let inner = match e { Expr::FnCall { name, args } if name == "_coalesce" && args.len() == 2 => &args[0].node, other => other };
                         match inner {
@@ -628,8 +642,18 @@ pub fn verify_program_invariants(program: &Program) -> Vec<VerifyResult> {
                     // its read and the write: `(seq.get(k) ?? 0) + bump(k)`
                     // wrote old + 1 after bump(k) stored old + 100
                     if value_may_write(value_expr, &handlers) { continue; }
+                    // …nor bind the key's name itself (`if true { let k = "other"  seq.get(k) } …`)
+                    if let Some(wk) = wkey.as_deref() {
+                        let mut inner: HashSet<String> = HashSet::new();
+                        collect_binders_expr(value_expr, &mut inner);
+                        crate::checker::literals::for_each_in_expr(value_expr, &mut |x| collect_binders_expr(x, &mut inner));
+                        let mut reassigned = false;
+                        crate::checker::literals::for_each_stmt_in_expr(value_expr, &mut |st| if matches!(st, Statement::Assign { name, .. } | Statement::Let { name, .. } if name == wk) { reassigned = true; });
+                        if inner.contains(wk) || reassigned { continue; }
+                    }
                     // the written value: old + n (n ≥ 0, and > 0 for a strict >), or max(old, …)
                     let same_key = |e: &Expr| -> bool {
+                        if default_of(e) != inv_default { return false; }
                         let inner = match e { Expr::FnCall { name, args } if name == "_coalesce" && args.len() == 2 => &args[0].node, other => other };
                         let key_expr = match inner {
                             Expr::MethodCall { target, method, args } if method == "get" && args.len() == 1 && matches!(&target.node, Expr::Ident(t) if t == slot) => Some(&args[0].node),
@@ -646,11 +670,12 @@ pub fn verify_program_invariants(program: &Program) -> Vec<VerifyResult> {
                             let (inc, other) = if same_key(&a.node) { (Some(&b.node), true) } else if same_key(&b.node) { (Some(&a.node), true) } else { (None, false) };
                             other && match (inc.map(|e| ctx.range_of(e)).and_then(bounds), op) {
                                 (Some((lo, _)), CmpOp::Ge) => lo >= 0.0,
-                                (Some((lo, _)), CmpOp::Gt) => lo > 0.0,
+                                (Some((lo, _)), CmpOp::Gt) => lo > 0.0 && SLOT_INT.with(|m| m.borrow().get(slot).copied().unwrap_or(false)),
                                 _ => false,
                             }
                         }
-                        Expr::FnCall { name, args } if name == "max" && args.len() == 2 && matches!(op, CmpOp::Ge) =>
+                        // (the builtin: a handler `max` of the cell is what runs otherwise)
+                        Expr::FnCall { name, args } if name == "max" && args.len() == 2 && matches!(op, CmpOp::Ge) && !handlers.contains_key("max") =>
                             args.iter().any(|a| same_key(&a.node)),
                         _ => false,
                     };
@@ -725,6 +750,7 @@ pub fn verify_program_invariants(program: &Program) -> Vec<VerifyResult> {
                             }
                         }
                     }
+                    if k.contains('{') { return false; }
                     let mut mutated: HashSet<String> = HashSet::new();
                     index_sets(&on.body, &mut mutated);
                     if unquoted.split(|c: char| !(c.is_alphanumeric() || c == '_')).any(|w| !w.is_empty() && (rebound(w) || mutated.contains(w) || (shadow.contains(w) && !single_for(w)))) { return false; }
@@ -817,7 +843,12 @@ pub fn verify_program_invariants(program: &Program) -> Vec<VerifyResult> {
                     let pure = pure_here(value_expr, slot) && key_plain;
                     if one_write && !calls_handlers && !looped && pure {
                         for (c, v) in parts.iter().zip(verdicts.iter_mut()) {
-                            if *v != Proof::Holds && pure_here(c, slot) && ctx.vars.contains_key(&format!("__req__{}", subst_render(c, slot, value_expr, wkey.as_deref()))) {
+                            // (by its text: not when a local of the handler bears a name the
+                            // clause reads — `let size = 0  require size <= 1` is no bound on
+                            // the slot's size — nor when the text leaves a body out)
+                            let shadowed = deep_idents(c).iter().any(|n| ctx.vars.contains_key(&format!("__local__{}", n)));
+                            let text = subst_render(c, slot, value_expr, wkey.as_deref());
+                            if *v != Proof::Holds && !shadowed && !text.contains('…') && pure_here(c, slot) && ctx.vars.contains_key(&format!("__req__{}", text)) {
                                 *v = Proof::Holds;
                             }
                         }
@@ -1182,6 +1213,11 @@ fn join(a: Known, b: Known) -> Known {
 }
 
 impl RangeCtx<'_> {
+    /// `e` names a memory slot, and nothing in the handler hides it.
+    fn is_slot(&self, e: &Expr) -> bool {
+        matches!(e, Expr::Ident(n) if self.hyp.contains_key(&format!("{}{}", SLOT_MARK, n)) && !self.vars.contains_key(n))
+    }
+
     /// A read of a guarded slot: `slot.get(k)` or `slot[k]`.
     fn slot_read(&self, expr: &Expr) -> Option<Known> {
         let slot = match expr {
@@ -1216,7 +1252,8 @@ impl RangeCtx<'_> {
         let computed = self.range_of_inner(expr);
         // a `require` on this exact expression narrows it
         if matches!(expr, Expr::BinaryOp { .. } | Expr::FnCall { .. }) {
-            if let Some(fact) = self.vars.get(&format!("__expr__{}", render_expr(expr))).copied().and_then(bounds) {
+            // (a text that leaves a body out — `if c { … } else { … }` — names no one expression)
+            if let Some(fact) = Some(render_expr(expr)).filter(|t| !t.contains('…')).and_then(|t| self.vars.get(&format!("__expr__{}", t)).copied()).and_then(bounds) {
                 return match bounds(computed) {
                     Some((l, h)) => mk(l.max(fact.0), h.min(fact.1)),
                     None => mk(fact.0, fact.1),
@@ -1241,6 +1278,12 @@ impl RangeCtx<'_> {
             Expr::Literal(Literal::Int(n)) => mk(*n as f64, *n as f64),
             Expr::Literal(Literal::Float(f)) => Known::Exact(*f),
             Expr::Ident(n) => self.vars.get(n).copied().unwrap_or(Known::Unknown),
+            // `slot.size`, `slot.len`: a count is never negative
+            Expr::FieldAccess { target, field } if matches!(field.as_str(), "size" | "len") && self.is_slot(&target.node) => mk(0.0, f64::INFINITY),
+            // `slot.count(x => …)`, `slot.keys.count(x => …)`: so many of them
+            Expr::MethodCall { target, method, args } if method == "count" && args.len() == 1 && !self.handlers.contains_key("count")
+                && matches!(args[0].node, Expr::Lambda { .. } | Expr::LambdaBlock { .. })
+                && (self.is_slot(&target.node) || matches!(&target.node, Expr::FieldAccess { target: t, field } if matches!(field.as_str(), "keys" | "values" | "entries") && self.is_slot(&t.node))) => mk(0.0, f64::INFINITY),
             Expr::BinaryOp { left, op, right } => {
                 // `a - b` after `require b <= a`: at least 0, whatever b is
                 // (the bounds of `b` alone are often unknown — a parameter)
@@ -1299,7 +1342,8 @@ impl RangeCtx<'_> {
             // 3.0: `Ledger.balance()` — a call into another cell is known by
             // what that cell's face ensures of the result, and by nothing else
             Expr::MethodCall { target, method, .. } => match &target.node {
-                Expr::Ident(t) if !self.vars.contains_key(t) && !self.hyp.contains_key(t) => with_contract(Known::Unknown, &format!("{}.{}", t, method)),
+                Expr::Ident(t) if !self.vars.contains_key(t) && !self.hyp.contains_key(t) && !self.vars.contains_key(&format!("__local__{}", t))
+                    && !SLOT_INT.with(|m| m.borrow().contains_key(t)) => with_contract(Known::Unknown, &format!("{}.{}", t, method)),
                 _ => Known::Unknown,
             },
             Expr::FnCall { name, args } => {
@@ -1356,6 +1400,15 @@ impl RangeCtx<'_> {
                     };
                     if name == "max" { mk(al.max(bl), ah.max(bh)) } else { mk(al.min(bl), ah.min(bh)) }
                 }
+                ("count", 2) if matches!(args[1].node, Expr::Lambda { .. } | Expr::LambdaBlock { .. }) => mk(0.0, f64::INFINITY),
+                // `sum(slot.values)` of a slot whose values are never negative
+                ("sum", 1) => match &args[0].node {
+                    Expr::FieldAccess { target, field } if field == "values" && self.is_slot(&target.node) => match &target.node {
+                        Expr::Ident(n) if SLOT_INT.with(|m| m.borrow().get(n).copied().unwrap_or(false)) && self.hyp.get(n).is_some_and(|(lo, _)| *lo >= 0.0) => mk(0.0, f64::INFINITY),
+                        _ => Known::Unknown,
+                    },
+                    _ => Known::Unknown,
+                },
                 ("abs", 1) => match bounds(self.range_of(&args[0].node)) {
                     Some((lo, hi)) => {
                         let low = if lo <= 0.0 && hi >= 0.0 { 0.0 } else { lo.abs().min(hi.abs()) };
@@ -1467,8 +1520,18 @@ fn hyp_for(on: &OnSection, hyp: &HashMap<String, (f64, f64)>) -> HashMap<String,
     super::literals::for_each_stmt_deep(&on.body, &mut |st| {
         if let Statement::Let { name, .. } = st { binders.insert(name.clone()); }
     });
-    hyp.iter().filter(|(k, _)| !binders.contains(k.as_str())).map(|(k, v)| (k.clone(), *v)).collect()
+    let mut out: HashMap<String, (f64, f64)> = hyp.iter().filter(|(k, _)| !binders.contains(k.as_str())).map(|(k, v)| (k.clone(), *v)).collect();
+    // the slots this handler reads as slots (no local, no parameter of the
+    // name): `slot.size` is then a count — of a local it may be a field
+    SLOT_INT.with(|m| for slot in m.borrow().keys() {
+        if !binders.contains(slot) && !on.params.iter().any(|p| &p.name == slot) { out.insert(format!("{}{}", SLOT_MARK, slot), (0.0, f64::INFINITY)); }
+    });
+    out
 }
+
+/// In a handler's hypotheses: `SLOT_MARK + name` says `name` is a memory
+/// slot there, hidden by nothing.
+const SLOT_MARK: &str = "\u{1f}slot:";
 
 fn local_ranges(
     on: &OnSection,
@@ -1487,7 +1550,7 @@ fn local_ranges(
 fn expr_stable(e: &Expr, on: &OnSection, handlers: &HashMap<String, &OnSection>, locals: &HashSet<&str>, target: Option<&str>, in_loop: bool) -> bool {
     let params: HashSet<&str> = on.params.iter().map(|p| p.name.as_str()).collect();
     let is_state = |t: &str| !params.contains(t) && !locals.contains(t);
-    let mut ok = true;
+    let mut ok = !interpolates(e);
     let mut reads: Vec<String> = Vec::new();
     let mut calls = false;
     // a call of a LOCAL function is as stable as the lambda's body: `let f =
@@ -1531,7 +1594,7 @@ fn expr_stable(e: &Expr, on: &OnSection, handlers: &HashMap<String, &OnSection>,
         Expr::FnCall { name, .. } if handlers.contains_key(name) => { calls = true; if callee_unstable(name, handlers, 0) { ok = false; } }
         Expr::MethodCall { target: t, .. } | Expr::Index { target: t, .. } | Expr::FieldAccess { target: t, .. } => {
             if let Expr::Ident(n) = &t.node {
-                if n.chars().next().map_or(false, |c| c.is_ascii_uppercase()) { ok = false; }
+                if super::names::cellish(n) { ok = false; }
                 else if is_state(n) { reads.push(n.clone()); }
             }
         }
@@ -1583,7 +1646,7 @@ fn expr_stable(e: &Expr, on: &OnSection, handlers: &HashMap<String, &OnSection>,
         // a bare name that is no builtin and no handler of this cell is
         // another cell's handler (`sabotage(k)` → B.sabotage)
         Expr::FnCall { name, .. } if !handlers.contains_key(name) && !super::names::builtin_names().contains(name.as_str()) && name != "_coalesce" => other_effects = true,
-        Expr::MethodCall { target: t, .. } if matches!(&t.node, Expr::Ident(n) if n.chars().next().map_or(false, |c| c.is_ascii_uppercase())) => other_effects = true,
+        Expr::MethodCall { target: t, .. } if matches!(&t.node, Expr::Ident(n) if super::names::cellish(n)) => other_effects = true,
         _ => {}
     });
     // a called handler (or another cell) may write what is read; and a
@@ -1616,7 +1679,7 @@ fn callee_unstable(name: &str, handlers: &HashMap<String, &OnSection>, depth: us
         Expr::FnCall { name: n, .. } if handlers.contains_key(n) => { if n != name && callee_unstable(n, handlers, depth + 1) { hit = true; } }
         Expr::FnCall { name: n, .. } if super::names::unstable_builtin(n) => hit = true,
         Expr::FnCall { name: n, .. } if !super::names::builtin_names().contains(n.as_str()) && n != "_coalesce" => hit = true,
-        Expr::MethodCall { target, .. } if matches!(&target.node, Expr::Ident(t) if t.chars().next().map_or(false, |c| c.is_ascii_uppercase())) => hit = true,
+        Expr::MethodCall { target, .. } if matches!(&target.node, Expr::Ident(t) if super::names::cellish(t)) => hit = true,
         _ => {}
     });
     hit
@@ -1625,14 +1688,23 @@ fn callee_unstable(name: &str, handlers: &HashMap<String, &OnSection>, depth: us
 /// Can evaluating `e` write state: a slot write in it, a handler that writes
 /// (or one of another cell, or a name the prover cannot follow), an effect
 /// builtin (think() may run a tool that writes)?
-fn value_may_write(e: &Expr, handlers: &HashMap<String, &OnSection>) -> bool {
+/// A string with `{…}` somewhere in `e`: what it calls runs where it
+/// stands, which the rules that reason on the order of reads and writes
+/// do not follow.
+fn interpolates(e: &Expr) -> bool {
     let mut hit = false;
+    super::literals::for_each_in_expr(e, &mut |x| if let Expr::Literal(Literal::String(s)) = x { if !super::desugar::segments(s).is_empty() { hit = true; } });
+    hit
+}
+
+fn value_may_write(e: &Expr, handlers: &HashMap<String, &OnSection>) -> bool {
+    let mut hit = interpolates(e);
     super::literals::for_each_in_expr(e, &mut |x| match x {
         Expr::FnCall { name, .. } if handlers.contains_key(name) => { if callee_writes(name, handlers, 0) { hit = true; } }
         Expr::FnCall { name, .. } if super::names::EFFECT_BUILTINS.contains(&name.as_str()) => hit = true,
         Expr::FnCall { name, .. } if !super::names::builtin_names().contains(name.as_str()) && name != "_coalesce" => hit = true,
         Expr::MethodCall { method, .. } if matches!(method.as_str(), "set" | "put" | "delete" | "remove" | "push" | "append" | "clear") => hit = true,
-        Expr::MethodCall { target, .. } if matches!(&target.node, Expr::Ident(t) if t.chars().next().map_or(false, |c| c.is_ascii_uppercase())) => hit = true,
+        Expr::MethodCall { target, .. } if matches!(&target.node, Expr::Ident(t) if super::names::cellish(t)) => hit = true,
         _ => {}
     });
     super::literals::for_each_stmt_in_expr(e, &mut |st| match st {
@@ -1657,7 +1729,7 @@ fn callee_writes(name: &str, handlers: &HashMap<String, &OnSection>, depth: usiz
         Expr::MethodCall { method, .. } if matches!(method.as_str(), "set" | "put" | "delete" | "remove" | "push" | "append" | "clear") => hit = true,
         Expr::FnCall { name: n, .. } if n == "transition" || n == "remember" || n == "delegate" => hit = true,
         // another cell's handler (`B.h()`), or a bare name that is one
-        Expr::MethodCall { target, .. } if matches!(&target.node, Expr::Ident(t) if t.chars().next().map_or(false, |c| c.is_ascii_uppercase())) => hit = true,
+        Expr::MethodCall { target, .. } if matches!(&target.node, Expr::Ident(t) if super::names::cellish(t)) => hit = true,
         Expr::FnCall { name: n, .. } if !handlers.contains_key(n) && !super::names::builtin_names().contains(n.as_str()) && n != "_coalesce" => hit = true,
         Expr::FnCall { name: n, .. } if handlers.contains_key(n) && n != name => { if callee_writes(n, handlers, depth + 1) { hit = true; } }
         _ => {}
@@ -1692,11 +1764,42 @@ fn local_ranges_at(
         _ => {}
     });
 
-    let mut vars: HashMap<String, Known> = HashMap::new();
-    for round in 0..4 {
-        let mut next: HashMap<String, Known> = HashMap::new();
+    // Known BEFORE any range is computed (a local's range was first worked
+    // out with the outer `v`, then `v` was declared a binder: `let v = 5
+    // let u = match x { v -> v }` kept [5, 5] for u):
+    // — the names a lambda / match / nested block ALSO binds, and the
+    //   `let`s of expression blocks (`if c { let v = x  v }`): unknown;
+    // — the names that may hold a Float (`x % 100` is below 100, not 99).
+    let mut early: HashSet<String> = HashSet::new();
+    collect_binders_stmts(&on.body, &mut early);
+    crate::checker::literals::for_each_expr(&on.body, &mut |e| crate::checker::literals::for_each_stmt_in_expr(e, &mut |st| {
+        if let Statement::Let { name, .. } = st { early.insert(name.clone()); }
+    }));
+    let mut marks: HashMap<String, Known> = HashMap::new();
+    for p in &on.params {
+        if !matches!(&p.ty.node, TypeExpr::Simple(t) if t == "Int") { marks.insert(format!("__float__{}", p.name), Known::Exact(1.0)); }
+    }
+    for b in &early { marks.insert(format!("__float__{}", b), Known::Exact(1.0)); }
+    loop {
+        let before = marks.len();
         for (name, value) in &assigns {
-            if params.contains(name) {
+            if !params.contains(name) && may_be_float(value, &marks) { marks.insert(format!("__float__{}", name), Known::Exact(1.0)); }
+        }
+        if marks.len() == before { break; }
+    }
+
+    // every name the handler binds (`__local__x`): `L.bal()` on a local or
+    // a parameter `L` is a method on that value, not the cell `L`
+    for p in &on.params { marks.insert(format!("__local__{}", p.name), Known::Exact(1.0)); }
+    for (name, _) in &assigns { marks.insert(format!("__local__{}", name), Known::Exact(1.0)); }
+    for b in &early { marks.insert(format!("__local__{}", b), Known::Exact(1.0)); }
+    crate::checker::literals::for_each_stmt_deep(&on.body, &mut |st| if let Statement::For { var, .. } = st { marks.insert(format!("__local__{}", var), Known::Exact(1.0)); });
+
+    let mut vars: HashMap<String, Known> = marks.clone();
+    for round in 0..4 {
+        let mut next: HashMap<String, Known> = marks.clone();
+        for (name, value) in &assigns {
+            if params.contains(name) || early.contains(*name) {
                 next.insert((*name).to_string(), Known::Unknown);
                 continue;
             }
@@ -1726,7 +1829,7 @@ fn local_ranges_at(
     // wanted `open_count <= 3` proven from exactly this shape.
     let mut single: HashMap<&str, &Expr> = HashMap::new();
     for (name, value) in &assigns {
-        if params.contains(name) { continue; }
+        if params.contains(name) || early.contains(*name) { continue; }
         single.insert(*name, value);
     }
     // a name bound more than once — by a second `let`, or by a lambda
@@ -1740,7 +1843,8 @@ fn local_ranges_at(
         .collect();
     // a parameter is bound once too — unless the body reassigns it
     let int_params: HashSet<&str> = on.params.iter()
-        .filter(|p| matches!(&p.ty.node, TypeExpr::Simple(t) if t == "Int" || t == "BigInt"))
+        // (`BigInt` is a name the run does not check: a value of that parameter may be 0.5)
+        .filter(|p| matches!(&p.ty.node, TypeExpr::Simple(t) if t == "Int"))
         .map(|p| p.name.as_str()).collect();
     // this handler's parameters while it is analysed — restored after, as
     // the analysis descends into callees (a callee's `a: Float` made the
@@ -1905,6 +2009,8 @@ fn local_ranges_at(
                                 CmpOp::Ne => continue,
                             };
                             let key = format!("__expr__{}", render_expr(e));
+                            // (a text that leaves a body out is no one expression's)
+                            if key.contains('…') { continue; }
                             let cur = vars.get(&key).copied().unwrap_or(Known::Unknown);
                             let narrowed = match bounds(cur) { Some((cl, ch)) => mk(cl.max(lo), ch.min(hi)), None => mk(lo, hi) };
                             vars.insert(key, narrowed);
@@ -1960,6 +2066,7 @@ fn local_ranges_at(
     // binding at the write (`let v = …  xs |> map(v => c.set(k, v))`)
     let mut binders: HashSet<String> = HashSet::new();
     collect_binders_stmts(&on.body, &mut binders);
+    binders.extend(early.iter().cloned());
     for b in &binders { vars.insert(b.clone(), Known::Unknown); }
     // names that may hold a Float (`__float__x`): `x % 3` is below 3, not
     // below 2, when x is 2.5 — a parameter not typed Int, a binder, and a
@@ -2128,6 +2235,9 @@ thread_local! {
     static SLOT_INT: std::cell::RefCell<HashMap<String, bool>> = std::cell::RefCell::new(HashMap::new());
     /// handlers of the cell being verified (a call of one is no builtin)
     static CELL_HANDLERS: std::cell::RefCell<HashSet<String>> = std::cell::RefCell::new(HashSet::new());
+    /// Every handler name of the program: `x.count()` runs a handler
+    /// `count` of ANY cell (method form), whatever the builtin of that name answers.
+    static PROGRAM_HANDLERS: std::cell::RefCell<HashSet<String>> = std::cell::RefCell::new(HashSet::new());
     /// parameters of the handler being analysed that are NOT Int
     static NON_INT_PARAMS: std::cell::RefCell<HashSet<String>> = std::cell::RefCell::new(HashSet::new());
 }
@@ -2149,11 +2259,13 @@ fn known_int(expr: &Expr, single: &HashMap<&str, &Expr>, int_params: &HashSet<&s
         Expr::Ident(n) if dup.contains(n.as_str()) => false,
         Expr::Ident(n) => int_params.contains(n.as_str()) || single.get(n.as_str()).is_some_and(|v| ki(v)),
         Expr::MethodCall { target, method, args } if method == "get" => slot_int(&target.node) && args.get(1).map_or(true, |d| ki(&d.node)),
-        Expr::MethodCall { method, .. } => matches!(method.as_str(), "len" | "size" | "count"),
+        Expr::MethodCall { method, .. } => matches!(method.as_str(), "len" | "size" | "count")
+            && !PROGRAM_HANDLERS.with(|h| h.borrow().contains(method.as_str())),
         Expr::Index { target, .. } => slot_int(&target.node),
         Expr::BinaryOp { left, op: BinOp::Add | BinOp::Sub | BinOp::Mul | BinOp::Mod, right } => ki(&left.node) && ki(&right.node),
         // a handler of the cell named like a builtin may return anything
         Expr::FnCall { name, .. } if CELL_HANDLERS.with(|h| h.borrow().contains(name.as_str())) => false,
+        Expr::FnCall { name, .. } if PROGRAM_HANDLERS.with(|h| h.borrow().contains(name.as_str())) => false,
         Expr::FnCall { name, args } => match name.as_str() {
             // round(x, digits) is a Float (round(9.95, 1) == 10.0 but
             // round(9.94, 1) == 9.9): only the one-argument form is an Int
@@ -2357,10 +2469,12 @@ fn prove(inv: &Expr, slot: &str, value: Known) -> Proof {
 /// abs(slot|value), Some(false) for a bare slot|value reference.
 fn subject_of(expr: &Expr, slot: &str) -> Option<bool> {
     match expr {
-        Expr::Ident(n) if n == slot || n == "value" => Some(false),
+        // (a slot named like a binding — `key`, `size`, `status` — is that
+        // binding in its invariants at run time: only `value` is the value then)
+        Expr::Ident(n) if (n == slot && !matches!(slot, "key" | "size" | "status" | "_slot_len")) || n == "value" => Some(false),
         Expr::FnCall { name, args } if name == "abs" && args.len() == 1 => {
             match &args[0].node {
-                Expr::Ident(n) if n == slot || n == "value" => Some(true),
+                Expr::Ident(n) if (n == slot && !matches!(slot, "key" | "size" | "status" | "_slot_len")) || n == "value" => Some(true),
                 _ => None,
             }
         }
@@ -2773,6 +2887,10 @@ pub(crate) fn collect_binders_stmts(stmts: &[Spanned<Statement>], out: &mut Hash
             Statement::While { condition, body, .. } => { collect_binders_expr(&condition.node, out); collect_binders_stmts(body, out); }
             Statement::Emit { args, .. } | Statement::MethodCall { args, .. } => { for a in args { collect_binders_expr(&a.node, out); } }
             Statement::IndexSet { index, value, .. } => { collect_binders_expr(&index.node, out); collect_binders_expr(&value.node, out); }
+            // (a `require`'s constraint holds expressions too)
+            Statement::Require { .. } => crate::checker::literals::for_each_expr(std::slice::from_ref(st), &mut |e| {
+                if matches!(e, Expr::LambdaBlock { .. } | Expr::Lambda { .. } | Expr::Match { .. } | Expr::IfExpr { .. }) { collect_binders_expr(e, out); }
+            }),
             _ => {}
         }
     }
@@ -2782,9 +2900,11 @@ pub(crate) fn collect_binders_stmts(stmts: &[Spanned<Statement>], out: &mut Hash
 /// arm, a lambda block): they shadow outer names — a slot included — for
 /// the rest of that block.
 fn nested_lets(stmts: &[Spanned<Statement>], out: &mut HashSet<String>) {
-    for st in stmts {
-        if let Statement::Let { name, .. } = &st.node { out.insert(name.clone()); }
-    }
+    // at any depth: `if c { if d { let x = … } }` inside an expression
+    // block hides the outer `x` as well
+    crate::checker::literals::for_each_stmt_deep(stmts, &mut |st| {
+        if let Statement::Let { name, .. } = st { out.insert(name.clone()); }
+    });
 }
 
 pub(crate) fn collect_binders_expr(e: &Expr, out: &mut HashSet<String>) {
@@ -2923,7 +3043,8 @@ fn existing_key_facts(stmts: &[Spanned<Statement>], path: &[usize], slot: &str, 
                 let over_keys = match &iter.node {
                     Expr::FieldAccess { target, field } => field == "keys" && matches!(&target.node, Expr::Ident(n) if n == slot),
                     Expr::MethodCall { target, method, args } => method == "keys" && args.is_empty() && matches!(&target.node, Expr::Ident(n) if n == slot),
-                    Expr::FnCall { name, args } => name == "keys" && args.len() == 1 && matches!(&args[0].node, Expr::Ident(n) if n == slot),
+                    Expr::FnCall { name, args } => name == "keys" && args.len() == 1 && matches!(&args[0].node, Expr::Ident(n) if n == slot)
+                        && !CELL_HANDLERS.with(|h| h.borrow().contains("keys")),
                     _ => false,
                 };
                 if over_keys { out.push((sub(i, 2), var.clone(), None, None)); }
@@ -2940,6 +3061,20 @@ fn existing_key_facts(stmts: &[Spanned<Statement>], path: &[usize], slot: &str, 
 /// `emit ev(..)` (Some("*")).
 fn calls_of(stmts: &[Spanned<Statement>], cells: &HashSet<String>, tools: &[String], cell_handlers: &HashMap<String, Vec<String>>) -> Vec<(Option<String>, String)> {
     let mut out: Vec<(Option<String>, String)> = Vec::new();
+    // the names these statements bind: one of them where a handler's or a
+    // cell's name is expected is a VALUE (`vote(h, …)` with a local `h`,
+    // `Aux.f` with a local `Aux`) — any handler, then
+    let mut bound: HashSet<String> = HashSet::new();
+    collect_binders_stmts(stmts, &mut bound);
+    crate::checker::literals::for_each_stmt_deep(stmts, &mut |st| match st {
+        Statement::Let { name, .. } | Statement::Assign { name, .. } => { bound.insert(name.clone()); }
+        Statement::For { var, .. } => { bound.insert(var.clone()); }
+        _ => {}
+    });
+    // `x.h()` on such a local is `h(x)`, whatever slot or cell bears the name `x`
+    crate::checker::literals::for_each_expr(stmts, &mut |e| if let Expr::MethodCall { target, method, .. } = e {
+        if matches!(&target.node, Expr::Ident(t) if bound.contains(t)) && cell_handlers.values().any(|hs| hs.contains(method)) { out.push((None, method.clone())); }
+    });
     // `delegate("A", op, x)` with a computed handler may run any handler of
     // A (a computed cell: any handler anywhere) — it "proved" a size bound
     crate::checker::literals::for_each_expr(stmts, &mut |e| if let Expr::FnCall { name, args } = e {
@@ -2956,12 +3091,12 @@ fn calls_of(stmts: &[Spanned<Statement>], cells: &HashSet<String>, tools: &[Stri
         if (name == "vote" && args.len() == 3) || name == "horde" {
             let mut target = |e: &Expr| match e {
                 Expr::FieldAccess { target, field } => match &target.node {
-                    Expr::Ident(c) => out.push((Some(c.clone()), field.clone())),
+                    Expr::Ident(c) if !bound.contains(c) => out.push((Some(c.clone()), field.clone())),
                     _ => for (c, hs) in cell_handlers { for h in hs { out.push((Some(c.clone()), h.clone())); } },
                 },
                 // a bare name that is no handler is a local holding the
                 // target's name: any handler
-                Expr::Ident(h) if cell_handlers.values().any(|hs| hs.contains(h)) => out.push((None, h.clone())),
+                Expr::Ident(h) if !bound.contains(h) && cell_handlers.values().any(|hs| hs.contains(h)) => out.push((None, h.clone())),
                 Expr::Literal(Literal::String(t)) => match t.split_once('.') {
                     Some((c, h)) => out.push((Some(c.to_string()), h.to_string())),
                     None => out.push((None, t.clone())),
@@ -3176,7 +3311,9 @@ fn callee_of<'p>(program: &'p Program, cell: &CellDef, target: Option<&str>, nam
         None => match cells.iter().find(|c| c.name == cell.name && handles(c)) {
             Some(c) => *c,
             None => {
-                let mut others = cells.iter().filter(|c| matches!(c.kind, CellKind::Cell | CellKind::Agent) && handles(c));
+                // (a bare call goes to a top-level cell: an interior cell's homonym is not its target)
+                let top = |c: &CellDef| program.cells.iter().any(|t| std::ptr::eq(&t.node, c));
+                let mut others = cells.iter().filter(|c| matches!(c.kind, CellKind::Cell | CellKind::Agent) && handles(c) && top(c));
                 let first = *others.next()?;
                 if others.next().is_some() { return None; }
                 first
@@ -3355,6 +3492,7 @@ fn unit_possible(e: &Expr, on: &OnSection) -> bool {
 /// `program` is the source as written; the analysis runs on the copy with
 /// each `requires` inlined, so a handler's own writes and returns see it.
 pub fn verify_contracts(program: &Program) -> Vec<VerifyResult> {
+    PROGRAM_HANDLERS.with(|h| *h.borrow_mut() = super::desugar::program_names(program).0);
     let inlined = super::contracts::inline_requires(program);
     let refused: HashSet<usize> = super::contracts::check_program(program).iter().map(|i| i.span.start).collect();
     let cells = crate::checker::names::collect_cells(&inlined);
@@ -3371,17 +3509,92 @@ pub fn verify_contracts(program: &Program) -> Vec<VerifyResult> {
         let handlers: HashMap<String, &OnSection> = cell.sections.iter()
             .filter_map(|s| if let Section::OnSignal(on) = &s.node { Some((on.signal_name.clone(), on)) } else { None })
             .collect();
+        // sites this reading does not judge: an `emit` (every listener of that
+        // name runs with its arguments) and the calls of `every` / `after` blocks
+        let unjudged = |caller: &str, body: &[Spanned<Statement>], sites: &mut HashMap<(String, String), Vec<(String, String, Proof, String)>>, all_calls: bool| {
+            crate::checker::literals::for_each_stmt_deep(body, &mut |st| if let Statement::Emit { signal_name, args } = st {
+                for other in &cells {
+                    for (_, sig, _) in super::contracts::contracted(other) {
+                        if &sig.name != signal_name || sig.requires.is_empty() { continue; }
+                        let shown = format!("emit {}({})", signal_name, args.iter().map(|a| render_expr(&a.node)).collect::<Vec<_>>().join(", "));
+                        for clause in &sig.requires { for c in conjuncts(&clause.node) {
+                            sites.entry((other.name.clone(), sig.name.clone())).or_default().push((caller.to_string(), render_expr(c), Proof::Unknown, shown.clone()));
+                        } }
+                    }
+                }
+            });
+            if all_calls {
+                let mut calls: Vec<CallSite> = Vec::new();
+                collect_calls_at(body, &[], &mut calls);
+                for call in calls {
+                    let Some((owner, sig)) = callee_of(&inlined, cell, call.target.as_deref(), &call.name) else { continue };
+                    if sig.requires.is_empty() { continue; }
+                    let shown = format!("{}({})", call.name, call.args.iter().map(|a| render_expr(a)).collect::<Vec<_>>().join(", "));
+                    for clause in &sig.requires { for c in conjuncts(&clause.node) {
+                        sites.entry((owner.name.clone(), sig.name.clone())).or_default().push((caller.to_string(), render_expr(c), Proof::Unknown, shown.clone()));
+                    } }
+                }
+            }
+        };
+        for section in &cell.sections {
+            if let Section::Every(e) | Section::After(e) = &section.node { unjudged("a schedule", &e.body, &mut sites, true); }
+        }
         for on in handlers.values() {
+            unjudged(&on.signal_name, &on.body, &mut sites, false);
             let mut calls: Vec<CallSite> = Vec::new();
             collect_calls_at(&on.body, &[], &mut calls);
             let locals: HashSet<String> = { let mut a = Vec::new(); collect_assigns(&on.body, &mut a); a.iter().map(|(n, _)| n.to_string()).chain(on.params.iter().map(|p| p.name.clone())).collect() };
             for call in calls {
-                // `m.get(k)` on a local or a slot is no call into a cell
-                if call.target.as_ref().is_some_and(|t| locals.contains(t)) { continue; }
+                // `m.get(k)` on a local or a slot is no call into a cell — but
+                // `x.f()` on a local IS the call `f(x)` when a handler is named f:
+                // a site, not judged
+                if call.target.as_ref().is_some_and(|t| locals.contains(t)) {
+                    for other in &cells {
+                        for (_, sig, _) in super::contracts::contracted(other) {
+                            if sig.name != call.name || sig.requires.is_empty() { continue; }
+                            let shown = format!("{}.{}(…)", call.target.as_deref().unwrap_or(""), call.name);
+                            for clause in &sig.requires { for c in conjuncts(&clause.node) {
+                                sites.entry((other.name.clone(), sig.name.clone())).or_default().push((on.signal_name.clone(), render_expr(c), Proof::Unknown, shown.clone()));
+                            } }
+                        }
+                    }
+                    continue;
+                }
+                // `vote(A.f, …)`, `horde(A.f, …, map("on_result", "f"))`: the handler
+                // they name runs with arguments this reading does not follow
+                if call.target.is_none() && matches!(call.name.as_str(), "vote" | "horde" | "delegate" | "resume" | "deliver") {
+                    let mut named: Vec<String> = Vec::new();
+                    for a in &call.args {
+                        crate::checker::literals::for_each_in_expr(a, &mut |x| match x {
+                            Expr::FieldAccess { field, .. } => named.push(field.clone()),
+                            Expr::Ident(n) => named.push(n.clone()),
+                            Expr::Literal(Literal::String(s)) => named.push(s.clone()),
+                            _ => {}
+                        });
+                    }
+                    for other in &cells {
+                        for (_, sig, _) in super::contracts::contracted(other) {
+                            if sig.requires.is_empty() || !named.contains(&sig.name) { continue; }
+                            let shown = format!("{}(… {} …)", call.name, sig.name);
+                            for clause in &sig.requires { for c in conjuncts(&clause.node) {
+                                sites.entry((other.name.clone(), sig.name.clone())).or_default().push((on.signal_name.clone(), render_expr(c), Proof::Unknown, shown.clone()));
+                            } }
+                        }
+                    }
+                }
                 if call.target.is_none() && builtin_names().contains(call.name.as_str())
                     && !handlers.get(&call.name).is_some_and(|h| crate::ast::accepted_arities(&h.params).contains(&call.args.len())) { continue; }
                 let Some((owner, sig)) = callee_of(&inlined, cell, call.target.as_deref(), &call.name) else { continue };
-                if sig.requires.is_empty() || call.args.len() != sig.params.len() { continue; }
+                if sig.requires.is_empty() { continue; }
+                // a call that leaves trailing parameters out is a call site too:
+                // not judged, so not "proven at every site"
+                if call.args.len() != sig.params.len() {
+                    let shown = format!("{}({})", call.name, call.args.iter().map(|a| render_expr(a)).collect::<Vec<_>>().join(", "));
+                    for clause in &sig.requires { for c in conjuncts(&clause.node) {
+                        sites.entry((owner.name.clone(), sig.name.clone())).or_default().push((on.signal_name.clone(), render_expr(c), Proof::Unknown, shown.clone()));
+                    } }
+                    continue;
+                }
                 let hyp_h = hyp_for(on, &hyp);
                 let ctx = RangeCtx { hyp: &hyp_h, vars: local_ranges_at(on, &hyp_h, &handlers, 0, &call.path, None), handlers: &handlers, depth: 0 };
                 let shown = format!("{}({})", call.name, call.args.iter().map(|a| render_expr(a)).collect::<Vec<_>>().join(", "));
@@ -3730,7 +3943,8 @@ fn linear_entails(
     let once = |n: &str| assigns.iter().filter(|(m, _)| *m == n).count() == 1 && !shadowed.contains(n) && !part_written.contains(n) && !params.contains(n);
     let single: HashMap<&str, &Expr> = assigns.iter().filter(|(n, v)| once(n) && !std::ptr::eq(*v, &UNKNOWN_EXPR)).map(|(n, v)| (*n, *v)).collect();
     let int_params: HashSet<&str> = on.params.iter()
-        .filter(|p| matches!(&p.ty.node, TypeExpr::Simple(t) if t == "Int" || t == "BigInt"))
+        // (`BigInt` is a name the run does not check: a value of that parameter may be 0.5)
+        .filter(|p| matches!(&p.ty.node, TypeExpr::Simple(t) if t == "Int"))
         .map(|p| p.name.as_str())
         .filter(|n| !assigns.iter().any(|(m, _)| m == n) && !shadowed.contains(*n) && !part_written.contains(*n))
         .collect();

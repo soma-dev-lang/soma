@@ -1,0 +1,26 @@
+cell type St { variants { A  B  X } }
+skeleton Q {
+    state fl: St {
+        initial: A
+        A -> B
+        A -> X
+        B -> X
+    }
+    face {
+        signal st(id: String) -> Any   reads fl
+        signal ab(id: String) -> Int      moves A -> B
+        signal mv(id: String) -> Int      moves B -> X
+    }
+}
+flesh Q {
+    on st(id) { return get_status(id) }
+    on ab(id) { transition(id, A, B)  return 1 }
+    on mv(id) {
+        transition(id, "B", "X")  return 1
+    }
+}
+cell test T {
+    rules {
+        assert Q.mv("k") == 1
+    }
+}

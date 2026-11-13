@@ -1,0 +1,68 @@
+// HIDDEN — per-signal tests. Never shown to an agent, never quoted in spec.md.
+
+cell test UnitCatalog {
+    rules {
+        assert list_item("u-pen", "ula", 7, 4).stock == 4
+        assert list_item("u-cap", "ula", 12, 0).price == 12
+        assert_fails list_item("u-pen", "ula", 7, 4) matching "Taken"
+        assert_fails list_item("u-bad", "ula", 0, 1)
+        assert listing("u-pen").seller == "ula"
+        assert_fails listing("u-none") matching "NotFound"
+        assert seller_of("u-none") == ""
+        assert price_of("u-pen") == 7
+        assert price_of("u-none") == 0
+        assert reserve("u-pen", 3) == true
+        assert reserve("u-pen", 2) == false
+        assert listing("u-pen").stock == 1
+        assert restock("u-pen", 5) == 6
+        assert reserve("u-cap", 1) == false
+    }
+}
+
+cell test UnitWallets {
+    rules {
+        assert balance("u-zed") == 0
+        assert deposit("u-zed", 30) == 30
+        assert deposit("u-zed", 12) == 42
+        assert_fails deposit("u-zed", 0)
+        assert debit("u-zed", 43) == false
+        assert balance("u-zed") == 42
+        assert debit("u-zed", 42) == true
+        assert balance("u-zed") == 0
+        assert credit("u-zed", 9) == 9
+    }
+}
+
+cell test UnitEscrow {
+    rules {
+        assert deposit("u-pay", 100) == 100
+        assert hold_state("u-h1") == "none"
+        assert held_amount("u-h1") == 0
+        assert open_hold("u-h1", "u-pay", "u-get", 60) == true
+        assert hold_state("u-h1") == "held"
+        assert held_amount("u-h1") == 60
+        assert balance("u-pay") == 40
+        assert open_hold("u-h2", "u-pay", "u-get", 41) == false
+        assert hold_state("u-h2") == "none"
+        assert balance("u-pay") == 40
+        assert release("u-h1") == 60
+        assert hold_state("u-h1") == "released"
+        assert held_amount("u-h1") == 0
+        assert_fails refund("u-h1")
+        assert_fails release("u-h1")
+        assert open_hold("u-h3", "u-pay", "u-get", 40) == true
+        assert refund("u-h3") == 40
+        assert hold_state("u-h3") == "refunded"
+        assert_fails release("u-h3")
+        assert balance("u-get") == 60
+    }
+}
+
+cell test UnitOrdersReads {
+    rules {
+        assert order_state("u-o-none") == "draft"
+        assert_fails order("u-o-none") matching "NotFound"
+        assert ruling("u-o-none") == "none"
+        assert_fails resolve("u-o-none", "buyer") matching "NotFound"
+    }
+}

@@ -1,0 +1,34 @@
+skeleton B {
+    memory { own: Map<String, Int> }
+    face {
+        signal mine() -> Int   reads own
+    }
+}
+flesh B {
+    on mine() { return own.get("k") ?? 0 }
+    on _h(x: Int) { own.set("k", x) return 1 }
+}
+skeleton A {
+    face {
+        signal start(n: Int) -> Int       calls vote
+        signal start2(n: Int) -> Int       calls horde
+    }
+}
+flesh A {
+    on start(n) {
+        let v = vote("_h", n, 1)
+        return 1
+    }
+    on start2(n) {
+        let v = horde(_h, [n], map("concurrency", 1))
+        return 1
+    }
+}
+cell test T {
+    rules {
+        assert A.start(4) == 1
+        assert B.mine() == 4
+        assert A.start2(7) == 1
+        assert B.mine() == 7
+    }
+}

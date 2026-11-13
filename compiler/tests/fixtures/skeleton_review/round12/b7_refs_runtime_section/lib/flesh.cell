@@ -1,0 +1,4 @@
+flesh Stock {
+    on level(sku) { return items.get(sku) ?? 0 }
+    on fill(sku, n) { items.set(sku, n) return n }
+}

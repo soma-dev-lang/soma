@@ -1,0 +1,169 @@
+// flesh: Market, Rivals, Events, Legal
+
+flesh Market {
+    on _seed_seg(seg: String, units: Int, adopt: Int, ref: Int) {
+        tam.set(seg, units)
+        adoption_bps.set(seg, adopt)
+        ref_price.set(seg, ref)
+    }
+    on seed_segments() {
+        _seed_seg("warehouse", 2000, 1500, 50)
+        _seed_seg("hospital", 600, 800, 120)
+        _seed_seg("home", 5000, 300, 20)
+        _seed_seg("agriculture", 1200, 600, 70)
+        _seed_seg("manufacturing", 1500, 2000, 90)
+        _seed_seg("defense", 300, 1000, 300)
+        return 6
+    }
+    on segments() { return tam.keys }
+    on demand(seg, p, q) {
+        let base = idiv((tam.get(seg) ?? 0) * (adoption_bps.get(seg) ?? 0), 10000)
+        let pf = max([2000, min([20000, idiv(10000 * (ref_price.get(seg) ?? 1), p)])])
+        let priced = idiv(base * pf, 10000)
+        let fit = idiv(priced * (50 + q), 100)
+        return idiv(fit * (10000 + (shock_bps.get(seg) ?? 0)), 10000)
+    }
+    on shock(seg, bps) {
+        let v = max([-9000, min([9000, (shock_bps.get(seg) ?? 0) + bps])])
+        shock_bps.set(seg, v)
+        return v
+    }
+    on tick() {
+        let n = 0
+        for seg in segments() {
+            let a = adoption_bps.get(seg) ?? 0
+            adoption_bps.set(seg, min([10000, a + max([1, idiv(a * 5, 100)])]))
+            shock_bps.set(seg, idiv(shock_bps.get(seg) ?? 0, 2))
+            n += 1
+        }
+        return n
+    }
+}
+
+flesh Rivals {
+    on _seed_rival(id: String, strat: String, p: Int, q: Int) {
+        strategy.set(id, strat)
+        rprice.set(id, p)
+        rquality.set(id, q)
+    }
+    on seed_rivals() {
+        _seed_rival("lowcost", "low_cost", 35, 45)
+        _seed_rival("safety", "premium_safety", 80, 85)
+        _seed_rival("platform", "software_first", 60, 70)
+        _seed_rival("giant", "state_backed", 45, 60)
+        _seed_rival("startup", "aggressive", 50, 55)
+        return 5
+    }
+    on rival_ids() { return strategy.keys }
+    on act(id) {
+        let s = strategy.get(id)
+        require s != () else Missing "no rival {id}"
+        let r = Rng.roll(100)
+        let p = rprice.get(id) ?? 1
+        let q = rquality.get(id) ?? 0
+        if s == "low_cost" && r < 50 {
+            rprice.set(id, max([1, idiv(p * 95, 100)]))
+            return id + ":cut_price"
+        }
+        if s == "aggressive" && r < 30 {
+            rprice.set(id, max([1, idiv(p * 90, 100)]))
+            return id + ":cut_price"
+        }
+        if (s == "premium_safety" && r < 40) || (s == "aggressive" && r < 60) || r < 20 {
+            rquality.set(id, min([100, q + 2]))
+            return id + ":improve"
+        }
+        return id + ":hold"
+    }
+    on act_all() {
+        let out = []
+        for id in rival_ids() { out.push(act(id)) }
+        return out
+    }
+    on player_share(p, q) {
+        let mine = idiv((q + 10) * 1000, p)
+        let total = mine
+        for id in rquality.keys {
+            total += idiv(((rquality.get(id) ?? 0) + 10) * 1000, rprice.get(id) ?? 1)
+        }
+        if total == 0 { return 0 }
+        return idiv(mine * 10000, total)
+    }
+}
+
+flesh Events {
+    on interest_rate() { return rate_bps.get("rate") ?? 200 }
+    on apply(kind) {
+        if kind == "rate_hike" {
+            rate_bps.set("rate", min([2000, (rate_bps.get("rate") ?? 200) + 50]))
+        } else if kind == "recession" {
+            for seg in Market.segments() { Market.shock(seg, -2000) }
+        } else if kind == "chip_shortage" {
+            for seg in Market.segments() { Market.shock(seg, -1000) }
+        } else if kind == "subsidy" {
+            Finance.earn(5000, "rev")
+        } else if kind == "recall" {
+            Finance.spend(3000, "event")
+        } else if kind == "viral_demo" {
+            Market.shock("home", 3000)
+        } else if kind == "tender" {
+            Market.shock("defense", 4000)
+        } else {
+            fail("unknown_event", "unknown event kind: {kind}")
+        }
+        log.push(kind)
+        return kind
+    }
+    on draw() {
+        if !Rng.chance(6000) { return "none" }
+        let kinds = ["rate_hike", "recession", "chip_shortage", "subsidy", "recall", "viral_demo", "tender"]
+        return apply(kinds[Rng.roll(len(kinds))])
+    }
+    on history() { return log }
+}
+
+flesh Legal {
+    on file(id, rival, amount) {
+        require target.get(id) == () else Exists "suit {id} already exists"
+        if !Finance.spend(idiv(amount, 10), "legal") { return false }
+        stake.set(id, amount)
+        win_bps.set(id, if Attention.attended("legal") { 6000 } else { 4500 })
+        target.set(id, rival)
+        transition(id, "drafted", "filed")
+        return true
+    }
+    on progress(id) {
+        let s = get_status(id) ?? "drafted"
+        let amount = stake.get(id) ?? 0
+        if s == "filed" {
+            Finance.spend(idiv(amount, 20), "legal")
+            transition(id, "filed", "discovery")
+        } else if s == "discovery" {
+            Finance.spend(idiv(amount, 20), "legal")
+            transition(id, "discovery", "trial")
+        } else if s == "trial" {
+            if Rng.chance(win_bps.get(id) ?? 0) {
+                Finance.earn(amount, "rev")
+                transition(id, "trial", "won")
+            } else {
+                Finance.spend(idiv(amount, 5), "legal")
+                transition(id, "trial", "lost")
+            }
+        }
+        return get_status(id) ?? "drafted"
+    }
+    on settle(id) {
+        let v = idiv((stake.get(id) ?? 0) * 3, 10)
+        transition(id, "settled")
+        Finance.earn(v, "rev")
+        return v
+    }
+    on open_suits() {
+        return target.keys |> filter(id => contains(["filed", "discovery", "trial"], get_status(id) ?? "drafted"))
+    }
+    on progress_all() {
+        let out = []
+        for id in open_suits() { out.push(id + ":" + progress(id)) }
+        return out
+    }
+}

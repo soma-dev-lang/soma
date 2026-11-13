@@ -1,0 +1,4 @@
+cell type Receipt { variants { Paid { id: String, cents: Int }  Refused(String) } }
+skeleton Bank { face { signal pay(id: String) -> Receipt } }
+flesh Bank { on pay(id) { return Paid { id: id, cents: 5 } } }
+cell test T { rules { assert to_string(Bank.pay("k")) != "zzz" } }

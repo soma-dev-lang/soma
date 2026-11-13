@@ -3,8 +3,10 @@ use std::process;
 
 use crate::pkg;
 
-pub fn cmd_init(name: Option<&str>) {
+pub fn cmd_init(name: Option<&str>, skeleton: bool) {
     let cwd = std::env::current_dir().unwrap();
+    // `soma init .`: here
+    let name = name.filter(|n| *n != "." && *n != "./");
 
     let (project_dir, project_name) = if let Some(n) = name {
         // a new directory named by plain segments: `work/tmp/..` is the
@@ -56,7 +58,13 @@ pub fn cmd_init(name: Option<&str>) {
     // app.cell — the name every doc, the help text and the site use.
     let main_path = project_dir.join("app.cell");
     if !main_path.exists() {
-        fs::write(&main_path, STARTER_APP).ok();
+        fs::write(&main_path, if skeleton { STARTER_SKELETON } else { STARTER_APP }).ok();
+        if skeleton {
+            let lib = project_dir.join("lib");
+            fs::create_dir_all(&lib).ok();
+            let flesh = lib.join("counter.cell");
+            if !flesh.exists() { fs::write(&flesh, STARTER_FLESH).ok(); }
+        }
     }
     // AGENTS.md: any coding agent opening this project learns the loop
     // (check → verify → test) and where the exact references are.
@@ -74,7 +82,12 @@ pub fn cmd_init(name: Option<&str>) {
     println!("initialized soma project: {}", project_name);
     println!("");
     println!("  {}soma.toml        project manifest", rel_prefix);
-    println!("  {}app.cell         entry point — a counter with an invariant, a lifecycle and tests", rel_prefix);
+    if skeleton {
+        println!("  {}app.cell         the skeleton — memory, the lifecycle, and each signal's frame; tests", rel_prefix);
+        println!("  {}lib/counter.cell the flesh — the handler bodies (one signal is left as a hole)", rel_prefix);
+    } else {
+        println!("  {}app.cell         entry point — a counter with an invariant, a lifecycle and tests", rel_prefix);
+    }
     println!("  {}AGENTS.md        instructions for coding agents working in this project", rel_prefix);
     println!("  {}.soma_env/       isolated environment", rel_prefix);
     println!("    stdlib/         {} property definitions", env.all_cell_paths().len());
@@ -86,6 +99,11 @@ pub fn cmd_init(name: Option<&str>) {
         println!("  cd {}", project_name);
     }
     println!("  soma check app.cell && soma verify app.cell && soma test app.cell");
+    if skeleton {
+        println!("  soma holes app.cell              # what is left to write, in order");
+        println!("  soma skeleton app.cell Counter.reset     # the brief for that one signal");
+        println!("  soma skeleton app.cell --freeze  # from then on the structure cannot change in passing");
+    }
     println!("  soma run app.cell add 5");
     println!("  soma serve app.cell              # http://127.0.0.1:8080 — GET /, POST /counter/5");
     println!("  soma example invariant state_machine      # verified programs to start from");
@@ -279,6 +297,101 @@ pub fn cmd_env() {
 /// Drop-in instructions for coding agents — the same text the site serves
 /// at https://soma-lang.dev/agent.md.
 const AGENTS_MD: &str = include_str!("../../../site/agent.md");
+
+/// The starter of `soma init --skeleton`: the same counter, structure first.
+const STARTER_SKELETON: &str = r#"// A counter that cannot go negative, behind a session that must be opened
+// before it is used and cannot be used once closed — written skeleton-first.
+//
+// This file is the STRUCTURE: memory, the lifecycle, and for each signal its
+// frame — what its body may read, write, call and which edges it may take.
+// The bodies are the flesh, in lib/counter.cell. `soma check` refuses a body
+// that does anything its frame does not say.
+//
+//   soma check    app.cell      static gates, and every body against its frame
+//   soma verify   app.cell      proves the `session` state machine
+//   soma holes    app.cell      the signals with no body yet, in the order to write them
+//   soma skeleton app.cell Counter.reset     everything needed to write that one body
+//   soma test     app.cell      runs CounterTests
+
+use lib::counter
+
+skeleton Counter {
+    memory {
+        counts: Map<String, Int> [persistent]
+        invariant counts >= 0 && counts <= 1000000
+    }
+
+    state session {
+        initial: idle
+        idle -> open
+        open -> closed                                  // closed is terminal
+    }
+
+    face {
+        signal total() -> Int                           reads counts
+        signal add(n: Int) -> Int
+            writes counts
+            calls total
+        signal reset() -> Int                           writes counts      // a hole: no body yet
+        signal open_session(id: String) -> String       moves idle -> open
+        signal close_session(id: String) -> String      moves open -> closed
+        signal request(method: String, path: String, body: String) -> Map
+            calls total, add
+    }
+}
+
+cell test CounterTests {
+    rules {
+        assert add(5) == 5
+        assert_fails add(0 - 100) matching "NegativeAmount"   // refused…
+        assert total() == 5                                   // …and the slot is unchanged
+        assert request("POST", "/counter/-1", "")._status == 400
+        assert request("POST", "/counter/2", "").total == 7
+        assert open_session("s1") == "open"
+        assert close_session("s1") == "closed"
+        assert_fails open_session("s1")      // closed is terminal: no way back
+    }
+}
+"#;
+
+const STARTER_FLESH: &str = r#"// The flesh of `skeleton Counter` (app.cell): handler bodies, nothing else.
+// A parameter's type comes from the skeleton's signal. `reset` is not here:
+// it is a hole — `soma skeleton app.cell Counter.reset` prints its brief.
+
+flesh Counter {
+    on total() { return counts.get("n") ?? 0 }
+
+    on add(n) {
+        require n >= 0 else NegativeAmount              // refused before anything is written
+        let cur = counts.get("n") ?? 0
+        require cur + n <= 1000000 else Full "counter would exceed 1000000"
+        counts.set("n", cur + n)
+        return total()
+    }
+
+    on open_session(id) {
+        transition(id, "idle", "open")
+        return get_status(id)
+    }
+
+    on close_session(id) {
+        transition(id, "open", "closed")
+        return get_status(id)
+    }
+
+    on request(method, path, body) {
+        match map("method", method, "path", path) {
+            {method: "GET", path: "/"} -> map("total", total())
+            {method: "POST", path: "/counter/" + n} -> {
+                let r = try { add(to_int(n)) }                     // a refusal becomes a status code, not a 500
+                if r.error != () { return response(400, map("error", r.kind)) }
+                map("total", r.value)
+            }
+            _ -> response(404, map("error", "not found"))
+        }
+    }
+}
+"#;
 
 /// The starter program. It passes check, verify and test as written, and
 /// shows the four things a cell is for: a contract, a limit that holds, a

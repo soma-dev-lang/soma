@@ -1,0 +1,6 @@
+cell A {
+    memory { s: Map<String, Int> [persistent] }
+    on mk() { return x => s.get(x) ?? 0 }
+    on go() { s.set("a", 5)  let f = mk()  return f("a") }
+}
+cell test T { rules { assert A.go() == 5 } }

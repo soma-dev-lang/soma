@@ -1,0 +1,31 @@
+cell A {
+    memory { c: Map<String, Int>  invariant c >= 1 }
+    face {
+        signal scale(n: Int) -> Int
+        signal step(n: Int) -> Int
+            ensures result >= 1
+    }
+    on scale(n: Int) { return pow(2, n) }
+    on step(n: Int) {
+        let a = scale(n)
+        let b = a + 1
+        return b - a
+    }
+    on put(n: Int) {
+        let a = scale(n)
+        let b = a + 1
+        c.set("k", b - a)
+        return 1
+    }
+}
+cell test T {
+    rules {
+        assert A.scale(3) == 8
+        assert A.step(3) == 1
+        let r = try { A.step(60) }
+        assert r.kind == "ensures"
+        let w = try { A.put(60) }
+        assert w.kind == "type"
+        assert A.step(60) >= 1
+    }
+}

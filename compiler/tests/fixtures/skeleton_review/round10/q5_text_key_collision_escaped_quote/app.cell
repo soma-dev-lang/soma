@@ -1,0 +1,18 @@
+cell A {
+    memory { c: Map<String, Int>  invariant c >= 0 }
+    on seed() { c.set("a", 150)  return 1 }
+    on w() {
+        require (c.get("a", "b") ?? 0) >= 100 else Low
+        c.set("a\", \"b", (c.get("a\", \"b") ?? 0) - 100)
+        return 1 }
+    on w2(k: String) {
+        let j = "a"
+        require (c.get("{j}") ?? 0) >= 100 else Low
+        let j2 = k
+        c.set(k, (c.get("{j}") ?? 0) - 100)
+        return 1 }
+    on probe() { seed()
+        let r = try { w() }
+        return r.kind ?? "ok" }
+}
+cell test T { rules { assert A.probe() == "invariant" } }

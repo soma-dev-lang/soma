@@ -1,0 +1,19 @@
+cell A {
+    memory {
+        c: Map<String, Float>
+        invariant c <= 99
+    }
+    on w(k: String, x: Float) { let y = x % 100
+ require y >= 0 else B
+ c.set(k, y) return 1 }
+    on probe() {
+        let r = try { w("k", 99.5) }
+        print(r)
+        return r.kind ?? "ok"
+    }
+}
+cell test T {
+    rules {
+        assert A.probe() == "invariant"
+    }
+}

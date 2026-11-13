@@ -1,0 +1,1 @@
+soma verify --attest out.json app.cell ; modifier side.cell (importe par `use side`) ; soma verify --check-attestation out.json -> "ATTESTATION CONFIRMED" : side.cell absent de "sources" (2 fichiers : app.cell, soma.toml) ; idem pour un `use lib::helpers` dans lib/scoring.cell (resolu a cote du fichier au lieu de la racine) ; commands/attest.rs:25-41 local_imports

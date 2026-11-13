@@ -26,6 +26,8 @@ pub fn format_source(source: &str) -> String {
     let mut state = State::Code;
     let mut depth: usize = 0;
     let mut after_signal = false;
+    // the previous line is a frame clause that ends with `,`: this one continues it
+    let mut clause_open = false;
     for raw in source.split('\n') {
         let raw = raw.strip_suffix('\r').unwrap_or(raw);
         let starts_inside = matches!(state, State::Str | State::RawStr | State::BlockComment);
@@ -89,10 +91,16 @@ pub fn format_source(source: &str) -> String {
         // a face contract clause hangs under its signal:
         //     signal debit(amount: Int) -> Int
         //         requires amount > 0
+        //         writes account  calls balance,
+        //             Audit.record
         let first = text.split_whitespace().next().unwrap_or("");
-        let clause = after_signal && matches!(first, "requires" | "ensures");
-        if !text.starts_with("//") { after_signal = clause || first == "signal"; }
-        let indent = depth_before.saturating_sub(leading_closers) + usize::from(clause);
+        let continued = after_signal && clause_open;
+        let clause = continued || (after_signal && matches!(first, "requires" | "ensures" | "reads" | "writes" | "calls" | "moves" | "emits"));
+        if !text.starts_with("//") {
+            after_signal = clause || matches!(first, "signal" | "tool");
+            clause_open = clause && text.ends_with(',');
+        }
+        let indent = depth_before.saturating_sub(leading_closers) + usize::from(clause) + usize::from(continued);
         // a line that ends inside a multi-line string keeps its trailing spaces
         let body = if matches!(state, State::Str | State::RawStr) { raw.trim_start() } else { text };
         out.push(format!("{}{}", "    ".repeat(indent), body));

@@ -1,0 +1,34 @@
+cell Box {
+    interior {
+        cell W {
+            state w2 { initial: a
+                a -> b }
+        }
+    }
+    on kick(id: String) { return 1 }
+}
+cell W {
+    state w { initial: p
+        p -> q }
+    on mv(id: String) { transition(id, "p", "q") return "q" }
+    on wst(id: String) { return get_status(id) ?? "p" }
+}
+cell Desk {
+    state d {
+        initial: none
+        none -> requested
+    }
+    on st(id: String) { return get_status(id) ?? "none" }
+    on request_lab(id: String) { transition(id, "none", "requested") return "requested" }
+    on push(id: String) { emit mv(id) return 1 }
+    on again(id: String) { let r = try { push(id) }
+ return r.error ?? "ok" }
+}
+cell test T {
+    rules {
+        assert Desk.push("k") == 1
+        assert Desk.request_lab("k") == "requested"
+        assert Desk.st("k") == "requested"
+        assert contains(Desk.again("k"), "'k' is in 'q'")
+    }
+}

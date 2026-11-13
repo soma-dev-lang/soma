@@ -1,0 +1,1 @@
+cell Foo { on f() { return 1 } }

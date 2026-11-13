@@ -1,0 +1,40 @@
+skeleton B {
+    memory { hits: Map<String, Int> }
+    face {
+        signal bump(n: Int) -> Int   writes hits
+        signal seen() -> Int         reads hits
+
+    }
+}
+flesh B {
+    on bump(n) { hits.set("h", n)  return 7 }
+    on seen() { return hits.get("h") ?? 0 }
+
+}
+skeleton A {
+    memory { own: Map<String, Int> }
+
+    face {
+        signal go(k: String) -> Any   calls delegate
+        signal mine() -> Int          reads own
+
+    }
+}
+flesh A {
+    on go(k) {
+        let h = "_h"
+        let q = delegate("A", h, k)
+        return 1
+    }
+    on mine() { return own.get("h") ?? 0 }
+    on _h(k: String) { own.set("h", 5)  return 1 }
+}
+
+cell test T {
+    rules {
+        let r = try { A.go("k") }
+        assert "{r}" == "1"
+        assert B.seen() == 0
+        assert A.mine() == 0
+    }
+}

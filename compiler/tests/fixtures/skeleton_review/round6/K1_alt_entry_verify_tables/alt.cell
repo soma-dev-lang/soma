@@ -1,0 +1,5 @@
+use lib::mid
+cell Audit {
+ memory { log: List<String> [persistent] }
+ on log(s: String) { log.push(s)  return 1 }
+}

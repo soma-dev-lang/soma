@@ -1,0 +1,10 @@
+skeleton Approval {
+    state sign { initial: waiting  waiting -> signed_off }
+    face { signal sign_it(id: String) -> Int  moves waiting -> signed_off }
+}
+skeleton Pay {
+    state pay { initial: due  due -> paid }
+    face {
+        signal both(id: String) -> Int  moves Approval.sign: waiting -> signed_off  moves due -> paid
+    }
+}

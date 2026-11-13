@@ -1,0 +1,12 @@
+cell A {
+    state m { initial: a
+        a -> b { guard { (match kind { "x" -> amount  _ -> 0 }) > 0 } }
+        b -> a }
+    on go(id: String, amount: Int, kind: String) {
+        require (match kind { "x" -> 1  _ -> 1 }) > 0 else X
+        transition(id, "a", "b")
+        return 1 }
+    on probe() { let r = try { go("i", 0 - 5, "x") }
+        return r.kind ?? "ok" }
+}
+cell test T { rules { assert A.probe() == "guard_failed" } }

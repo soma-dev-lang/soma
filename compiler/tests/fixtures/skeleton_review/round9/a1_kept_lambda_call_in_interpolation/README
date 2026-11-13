@@ -1,0 +1,1 @@
+soma check app.cell (vert) ; soma verify app.cell -> « ✓ entering Desk.requested while Visit.open » ; soma test app.cell (vert) montre le contraire — ligne fautive : `let f = x => "{Visit.close_visit(x)}"` … `let q = f(id)` ; scan_lambdas (product.rs:239-246) n'ouvre pas les chaînes interpolées : la lambda gardée n'est pas signalée, son corps est lu à la définition

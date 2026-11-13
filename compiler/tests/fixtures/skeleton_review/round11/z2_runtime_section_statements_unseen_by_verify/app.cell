@@ -1,0 +1,43 @@
+cell G {
+    state g { initial: shut
+        shut -> open }
+    on open_it(id: String) { transition(id, "shut", "open") return 1 }
+    on gs(id: String) { return get_status(id) ?? "shut" }
+}
+cell A {
+    memory { c: Map<String, Int>  invariant c <= 100
+             log: Map<String, String> }
+    state m { initial: a
+        a -> b { guard { amount > 0 } }
+        b -> z
+    }
+    face {
+        signal f(n: Int) -> Int
+            requires n > 0
+    }
+    on f(n: Int) { log.set("f", "{n}") return n }
+    on ok() { return f(5) }
+    on go(id: String, amount: Int) { require amount > 0 else Bad
+        require G.gs(id) == "open" else Shut
+        transition(id, "a", "b")
+        return 1 }
+    on fin(id: String) { transition(id, "b", "z") return 1 }
+    on put(k: String, n: Int) { require n <= 100 else Big
+        c.set(k, n) return 1 }
+    on st(id: String) { return get_status(id) ?? "a" }
+    on main() { return 0 }
+    runtime {
+        let r = try { c.set("k", 500) }
+        print("1 {r.kind}")
+        let r2 = try { f(0 - 5) }
+        print("2 {r2.kind}")
+        let amount = 0 - 1
+        let r3 = try { transition("k", "a", "b") }
+        print("3 {r3.kind}")
+        let amount = 5
+        transition("k", "a", "b")
+        let s4 = get_status("k")
+        let g4 = G.gs("k")
+        print("4 {s4} while G {g4}")
+    }
+}

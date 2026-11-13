@@ -1,0 +1,1 @@
+soma rename app.cell B.tick pulsation -> le TEXTE de la chaîne l.3 (hors { }) "… call tick(3) or B.tick(4)" est réécrit : `assert len(B.help()) == 39` échoue (left 49). refs.rs:406 (forme qualifiée sans tester { }) et :410 (un `{` n'importe où avant suffit).

@@ -1,0 +1,17 @@
+skeleton Stock {
+    memory { items: Map<String, Int> }
+    face {
+        signal level(sku: String) -> Int   reads items
+        signal put(sku: String) -> Int   writes items
+    }
+}
+flesh Stock {
+    on level(sku) { return items.get(sku) ?? 0 }
+    on put(sku) { items.set(sku, 1) return 1 }
+}
+cell test Inline {
+    rules {
+        assert Stock.level("a", 5, 6) == 0
+        assert Stock.nope() == 1
+    }
+}

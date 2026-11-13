@@ -1,0 +1,12 @@
+cell B {
+    memory { hits: Map<String, Int> }
+    on tick(n: Int) { hits.set("h", n) return n }
+}
+cell D { on tick(n: Int) { return n + 1 }
+         on run() { return tick(1) } }
+cell test T { rules {
+    mock tick 99
+    assert D.run() == 99
+    mock B.tick 7
+    assert B.tick(1) == 7
+} }

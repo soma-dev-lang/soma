@@ -1,0 +1,6 @@
+	call	Bank.pure2
+Bank.pure2	emit	_w
+Bank.pure2	call	Bank._w
+Bank.pure2>Bank._w	write	acct
+	call	Bank.peek
+Bank.peek	read	acct

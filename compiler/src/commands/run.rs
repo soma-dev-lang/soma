@@ -45,6 +45,19 @@ pub fn cmd_run(path: &PathBuf, args: &[String], use_jit: bool, signal_flag: Opti
     }
     if let Some(hook) = FRESH_HOOK.lock().unwrap_or_else(|e| e.into_inner()).take() { hook(); }
 
+    // a skeleton's private helper has no frame of its own: it runs under
+    // the signals that reach it, not from the command line
+    if let Some(req) = signal_flag.map(|s| s.to_string()).or_else(|| args.first().cloned()) {
+        let (want_cell, want_h) = match req.split_once('.') { Some((c, h)) => (Some(c), h), None => (None, req.as_str()) };
+        if want_h.starts_with('_') {
+            let owner = crate::checker::names::collect_cells(&program).into_iter().find(|c| c.skeleton && want_cell.map_or(true, |w| w == c.name)
+                && c.sections.iter().any(|s| matches!(&s.node, ast::Section::OnSignal(on) if on.signal_name == want_h)));
+            if let Some(c) = owner {
+                eprintln!("error: `{}.{}` is a private helper of `skeleton {}` — no frame speaks for it. Run a signal of its face (`soma skeleton {}` lists them)", c.name, want_h, c.name, path.display());
+                process::exit(1);
+            }
+        }
+    }
     // the handler name is matched on the RAW first token, before numeric
     // parsing: `soma run z.cell nan` called another handler with NaN, and
     // `soma run app.cell Cell.handler` passed "Cell.handler" as an argument

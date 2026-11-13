@@ -1,0 +1,9 @@
+	call	Bank.alias
+Bank.alias	read	acct
+	call	Bank.peek
+Bank.peek	read	acct
+	call	Bank.pass
+Bank.pass	read	acct
+Bank.pass	call	Bank._w
+	call	Bank.peek
+Bank.peek	read	acct

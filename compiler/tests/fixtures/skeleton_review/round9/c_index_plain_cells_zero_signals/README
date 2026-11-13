@@ -1,0 +1,1 @@
+soma skeleton app.cell --index -> "B  0 signals / D  0 signals" pour des cellules ordinaires de 7 et 4 handlers (soma skeleton app.cell D en liste 4) : skeleton.rs:105 ne compte que les signaux déclarés dans un face.

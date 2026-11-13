@@ -1,0 +1,10 @@
+use "self.cell"
+skeleton Stock {
+    memory { items: Map<String, Int> }
+    face {
+        signal level(sku: String) -> Int
+    }
+}
+flesh Stock {
+    on level(sku) { items.set(sku, 1) return nope(3) }
+}

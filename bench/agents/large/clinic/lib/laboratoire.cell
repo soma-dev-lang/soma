@@ -1,0 +1,64 @@
+// Laboratoire — demandes d'analyses rattachées à une consultation ; chaque demande a son propre id.
+skeleton Laboratoire {
+    memory {
+        // id analyse -> { visite: String, type: String (ex. "glycemie"), patient: String }
+        demandes: Map<String, Map> [persistent]
+        // id analyse -> { valeur: Int (millièmes d'unité), unite: String, valide_par: String ("" avant validation) }
+        resultats: Map<String, Map> [persistent]
+    }
+    state analyse {
+        initial: demandee
+        demandee -> prelevee
+        prelevee -> en_analyse
+        en_analyse -> resultat_saisi
+        resultat_saisi -> validee               // seul un résultat validé est communicable
+        resultat_saisi -> en_analyse            // résultat rejeté : on refait l'analyse
+        demandee -> annulee
+        prelevee -> annulee
+    }
+    face {
+        // Crée une demande pour la visite. Erreurs : `AnalyseExiste`, `ConsultationNonOuverte` si l'état de la
+        // consultation (Consultations.statut_consultation) n'est pas "ouverte". Le patient vient de
+        // Consultations.consultation. État initial `demandee`, aucune transition. Renvoie la demande.
+        signal demander_analyse(id: String, visite: String, type: String) -> Map
+            writes demandes
+            calls Consultations.statut_consultation, Consultations.consultation
+        // demandee -> prelevee. Erreur `AnalyseInconnue`. Renvoie "prelevee".
+        signal prelever(id: String) -> String
+            reads demandes
+            moves demandee -> prelevee
+        // prelevee -> en_analyse. Erreur `AnalyseInconnue`. Renvoie "en_analyse".
+        signal lancer(id: String) -> String
+            reads demandes
+            moves prelevee -> en_analyse
+        // en_analyse -> resultat_saisi ; écrit { valeur, unite, valide_par: "" } (écrase un résultat rejeté).
+        // Erreur `AnalyseInconnue`. Renvoie "resultat_saisi".
+        signal saisir_resultat(id: String, valeur: Int, unite: String) -> String
+            writes resultats
+            reads demandes
+            moves en_analyse -> resultat_saisi
+        // resultat_saisi -> validee par un praticien (`PraticienInconnu` sinon) ; écrit valide_par ;
+        // émet resultat_pret({ id, visite, patient, type }). Renvoie "validee".
+        signal valider_resultat(id: String, praticien: String) -> String
+            writes resultats
+            reads demandes
+            moves resultat_saisi -> validee
+            calls Praticiens.existe_praticien
+            emits resultat_pret
+        // resultat_saisi -> en_analyse : le résultat est rejeté et supprimé. Renvoie "en_analyse".
+        signal rejeter_resultat(id: String) -> String
+            writes resultats
+            moves resultat_saisi -> en_analyse
+        // Annule une demande pas encore analysée. Erreur `AnalyseInconnue`. Renvoie "annulee".
+        signal annuler_analyse(id: String) -> String
+            reads demandes
+            moves demandee -> annulee, prelevee -> annulee
+        // L'état ("demandee" tant qu'aucune transition). Erreur `AnalyseInconnue`.
+        signal statut_analyse(id: String) -> String                     reads demandes, analyse
+        // Le résultat { valeur, unite, valide_par } — seulement si l'état est `validee`, sinon erreur
+        // `ResultatNonValide` (y compris id inconnu).
+        signal resultat(id: String) -> Map                              reads resultats, analyse
+        // Les ids (triés) des analyses demandées pour cette visite.
+        signal analyses_de(visite: String) -> List<String>              reads demandes
+    }
+}

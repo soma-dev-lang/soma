@@ -1,0 +1,1 @@
+soma verify app.cell -> "✓ f: requires n > 0 — proven at 1 call site (ok)" ; soma test app.cell: vote(A.f, 0 - 5, 1) in `bad` raises kind requires. Faulty line: on bad() { let v = try { vote(A.f, 0 - 5, 1) } ... }

@@ -1,0 +1,27 @@
+# skeleton.lock — the structure `soma check` holds app.cell to.
+# Written by `soma skeleton app.cell --freeze`; changed on purpose with `--amend`. Do not edit.
+file app.cell
+
+== Pay sha256:050faededcd8e54d30cee977af9356abc154c12267c0b5d5320b4a05b7e5fd5a
+skeleton Pay {
+    memory {
+        book: Map<String, Int> [persistent]
+        invariant book <= 500
+    }
+    state flow: Flow {
+        initial: Proposed
+        Proposed -> Paid { guard { amount <= 500 } }
+        Proposed -> Rejected
+    }
+    face {
+        signal pay(id: String, amount: Int) -> String  writes book  moves Proposed -> Paid
+        signal reject(id: String) -> String  moves Proposed -> Rejected
+        signal st(id: String) -> String  reads flow
+    }
+}
+
+== soma.toml [verify] sha256:908500014ed1bf2d61eacdb664ff6f24e6956c92431ce16edabb63a690f70544
+[verify.after.Rejected]
+never = ["Paid"]
+
+checksum sha256:ae1a53f4a800232c8969b8872d0d3c975981bb5b96268d79fe759ad08d31af2a

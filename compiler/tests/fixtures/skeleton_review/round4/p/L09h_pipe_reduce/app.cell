@@ -1,0 +1,26 @@
+skeleton A {
+    memory { s: Map<String, Int> [persistent] }
+    face {
+        signal go(id: String) -> Int     writes s  calls B.apply
+    }
+}
+skeleton B {
+    memory { s: Map<String, Int> [persistent] }
+    face {
+        signal apply(f: Any) -> Int      // no clause: pure
+        signal peek(id: String) -> Int   reads s
+    }
+}
+flesh A {
+    on go(id) { let g = [] |> reduce(x => s.set(x, 7), p => p.acc)  return B.apply(g) }
+}
+flesh B {
+    on apply(f) { let r = f("j")  return 1 }
+    on peek(id) { return s.get(id) ?? 0 }
+}
+cell test T {
+    rules {
+        assert A.go("k") == 1
+        assert B.peek("j") == 7      // B's slot was written under a pure signal of B
+    }
+}

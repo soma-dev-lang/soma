@@ -1,0 +1,33 @@
+cell Outer {
+    interior {
+        cell In {
+            face { signal step(k: String) -> Int }
+            on step(k: String) { return 1 }
+        }
+    }
+    state o { initial: todo
+        todo -> done }
+    on finish(k: String) {
+        require G.gs(k) == "open" else NotOpen
+        let n = step(k)
+        transition(k, "todo", "done")
+        return n
+    }
+    on st(k: String) { return get_status(k) ?? "todo" }
+}
+cell G {
+    state g { initial: shut
+        shut -> open
+        open -> shut }
+    on open_it(k: String) { transition(k, "shut", "open") return 1 }
+    on step(k: String) { transition(k, "open", "shut") return 2 }
+    on gs(k: String) { return get_status(k) ?? "shut" }
+}
+cell test T {
+    rules {
+        assert G.open_it("k") == 1
+        assert Outer.finish("k") == 2
+        assert Outer.st("k") == "done"
+        assert G.gs("k") == "shut"
+    }
+}

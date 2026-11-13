@@ -1,0 +1,13 @@
+cell Util {
+    on twice(g: Any, x: Any) { return g(g(x)) }
+    on comb() { return g => g("a") }
+}
+cell A {
+    memory { s: Map<String, Int> [persistent] }
+    on go() {
+        let c = Util.comb()                   // a pure combinator written elsewhere
+        s.set("a", 5)
+        return c(k => s.get(k) ?? 0)          // the callback is written HERE and runs HERE
+    }
+}
+cell test T { rules { assert A.go() == 5 } }

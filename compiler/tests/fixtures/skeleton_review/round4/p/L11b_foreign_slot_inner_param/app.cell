@@ -1,0 +1,24 @@
+skeleton A {
+    face { signal go(id: String) -> Int     calls B.apply }
+}
+skeleton B {
+    memory { secret: Map<String, Int> [persistent] }
+    face {
+        signal apply(f: Any) -> Int      // pure
+        signal peek(id: String) -> Int   reads secret
+    }
+}
+flesh A {
+    on go(id) { let g = x => { let t = [0].map(secret => secret)  secret.set(x, 7)  1 }  return B.apply(g) }
+}
+flesh B {
+    on apply(f) { let r = f("j")  return 1 }
+    on peek(id) { return secret.get(id) ?? 0 }
+    on _h(x: String) { return 2 }
+}
+cell test T {
+    rules {
+        assert A.go("k") == 1
+        assert B.peek("j") == 7
+    }
+}

@@ -1,0 +1,7 @@
+// Loyalty: points per guest. 1 point is worth 1 cent when redeemed.
+signal earn(guest: String, cash_amount: Int) -> Int   // Loyalty
+    // Credits one point per full 100 cents of `cash_amount`. Returns the guest's points afterwards.
+    requires cash_amount >= 0
+writes     balance: Map<String, Int> [persistent]   // guest -> points
+               invariant balance >= 0
+called by  Bookings.check_out

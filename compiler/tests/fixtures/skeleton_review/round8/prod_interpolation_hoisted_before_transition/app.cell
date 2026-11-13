@@ -1,0 +1,28 @@
+cell Visit {
+    state v {
+        initial: waiting
+        waiting -> open
+        open -> done
+    }
+    on open_visit(id: String) { transition(id, "waiting", "open")  return "open" }
+    on close_visit(id: String) { transition(id, "open", "done")  return "done" }
+    on status(id: String) { return get_status(id) ?? "waiting" }
+
+}
+cell Desk {
+    state d {
+        initial: none
+        none -> requested
+    }
+    on st(id: String) { return get_status(id) ?? "none" }
+    on request_lab(id: String) {
+        let r = [transition(id, "none", "requested"), "{Visit.open_visit(id)}"]
+        return "requested"
+    }
+}
+cell test T {
+    rules {
+        assert Desk.request_lab("k") == "requested"
+        assert Desk.st("k") == "requested"
+    }
+}

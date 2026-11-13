@@ -48,6 +48,29 @@ soma test   app.cell     # runs `cell test` assertions
 - When you report the work, paste the `verify` summary line. That is the
   evidence; "should be correct" is not.
 
+## Large programs: skeleton first
+
+When the work spans several cells or files, the structure is written — and
+proven — before the bodies:
+
+```
+soma skeleton app.cell                  # the map: memory, lifecycles, each signal's frame; no bodies
+soma holes    app.cell                  # the signals with no body yet, in the order to write them
+soma skeleton app.cell Orders.place     # the brief for ONE signal: all you need to write its body
+```
+
+- A `skeleton Name { … }` holds memory, state machines and a face whose
+  signals carry a frame (`reads` / `writes` / `moves` / `calls` / `emits`).
+  A `flesh Name { on … }` holds the bodies. A body may only do what its
+  signal's frame says; `soma check` names the clause that is missing.
+- If `skeleton.lock` exists the structure is frozen. Do not edit a
+  `skeleton` to make a body pass: fix the body. A real design change is a
+  separate, explicit act — `soma skeleton app.cell --amend` — and belongs
+  in your report.
+- Private helpers in a flesh are named `_helper` and typed; they are never
+  callable from outside the cell.
+- Work one hole at a time: brief → body → `soma check` → next.
+
 ## Never guess
 
 ```

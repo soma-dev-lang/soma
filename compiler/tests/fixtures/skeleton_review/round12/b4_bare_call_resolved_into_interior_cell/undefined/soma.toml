@@ -1,0 +1,6 @@
+[package]
+name = "i"
+edition = "2027"
+
+[verify.before."Outer.done"]
+requires = ["Inner.b"]

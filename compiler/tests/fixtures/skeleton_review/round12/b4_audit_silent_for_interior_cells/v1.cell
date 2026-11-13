@@ -1,0 +1,22 @@
+cell Outer {
+    interior {
+        cell Driver {
+            face { signal iput(k: String, n: Int) }
+            on iput(k: String, n: Int) { return 0 }
+        }
+        cell Inner {
+            face { await iput(k: String, n: Int) }
+            memory { c: Map<String, Int> [persistent]  }
+            state m { initial: a
+                a -> b
+                b -> old }
+            on iput(k: String, n: Int) {
+                print("stored before: {c.get(k)} status {get_status(k)}")
+                c.set(k, n)
+                if (get_status(k) ?? "a") == "a" { transition(k, "a", "b") } else { transition(k, "b", "old") }
+            }
+        }
+    }
+    runtime { signal iput("k", 500) }
+    on run() { return 1 }
+}

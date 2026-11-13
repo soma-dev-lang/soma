@@ -1,0 +1,53 @@
+flesh Assurance {
+    on souscrire(patient, assureur, taux, plafond, plafond_annuel) {
+        require Patients.existe(patient) else PatientInconnu "patient {patient}"
+        require taux >= 0 && taux <= 100 else TauxInvalide "taux {taux}"
+        let c = map("assureur", assureur, "taux", taux, "plafond", plafond, "plafond_annuel", plafond_annuel)
+        contrats.set(patient, c)
+        return c
+    }
+    on contrat(patient) {
+        let c = contrats.get(patient)
+        require c != () else SansContrat "patient {patient}"
+        return c
+    }
+    on est_couvert(patient) { return contrats.has(patient) }
+    on calculer_prise_en_charge(patient, montant) {
+        let c = contrats.get(patient)
+        if c == () { return 0 }
+        return min(idiv(montant * c.taux, 100), c.plafond)
+    }
+    on disponible_annuel(patient, annee) {
+        let c = contrats.get(patient)
+        if c == () { return 0 }
+        return max(0, c.plafond_annuel - (consommes.get("{patient}|{annee}") ?? 0))
+    }
+    on engager(facture, patient, montant, annee) {
+        require contrats.has(patient) else SansContrat "patient {patient}"
+        require engagements.get(facture) == () else DejaEngage "facture {facture}"
+        let dispo = disponible_annuel(patient, annee)
+        require montant <= dispo else PlafondAnnuelDepasse "{montant} > {dispo}"
+        let cle = "{patient}|{annee}"
+        engagements.set(facture, montant)
+        consommes.set(cle, (consommes.get(cle) ?? 0) + montant)
+        imputations.set(facture, cle)
+        return montant
+    }
+    on liberer(facture) {
+        let m = engagements.get(facture) ?? 0
+        let cle = imputations.get(facture)
+        if cle != () {
+            consommes.set(cle, (consommes.get(cle) ?? 0) - m)
+            imputations.delete(facture)
+        }
+        engagements.delete(facture)
+        return m
+    }
+    on engagement(facture) { return engagements.get(facture) ?? 0 }
+    on total_engage() { return sum(engagements.values) }
+    on resilier(patient) {
+        let avait = contrats.has(patient)
+        contrats.delete(patient)
+        return avait
+    }
+}

@@ -791,6 +791,12 @@ pub fn cmd_lint(path: &PathBuf, json: bool) {
     let tokens = lex_with_location(&source, Some(&file_str));
     let mut program = parse_with_location(tokens, Some(&source), Some(&file_str));
     resolve_imports(&mut program, path);
+    // a frozen structure that was changed is not the program to look at
+    let broken = crate::checker::lock::check(&program, path, &source);
+    if !broken.is_empty() {
+        for e in &broken { eprintln!("error: {}", e); }
+        std::process::exit(1);
+    }
 
     let warnings = collect_lints(&program, &source);
 

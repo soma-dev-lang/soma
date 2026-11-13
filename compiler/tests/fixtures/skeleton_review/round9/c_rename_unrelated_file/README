@@ -1,0 +1,1 @@
+soma rename app.cell B.tick pulse -> modifie other.cell, un autre programme du dossier qu'app.cell n'importe pas (soma refs ne le lit pas) et le casse (`5.tick()` reste) : check . rouge. refs.rs:465-470 (cell_files sans le filtre `related` de collect).

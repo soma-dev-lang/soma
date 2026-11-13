@@ -1,0 +1,1 @@
+soma verify app.cell — règle légitime `while` seule : la ligne ✓ est imprimée puis « error: soma.toml [verify.before.Desk.requested] lists no state » et VERIFY FAILED (exit 1) ; main.rs:1091 ne regarde que requires/requires_all

@@ -33,9 +33,15 @@ impl VerifyResult {
 /// Verify all state machines in a program
 pub fn verify_program(program: &Program) -> Vec<VerifyResult> {
     // interpolation / UFCS / pipe calls made explicit for every proof
-    let analysis = super::desugar::expose_for_analysis(program);
+    // …and the face's `requires` as the leading `require` it is at run
+    // time: a guard the contract already establishes is proven, not
+    // "runtime-checked — put a require before the transition()"
+    let analysis = super::desugar::expose_for_analysis(&super::contracts::inline_requires(program));
     let program = &analysis;
     let mut results = Vec::new();
+    PROGRAM_CELLS.with(|c| *c.borrow_mut() = super::desugar::program_names(program).1);
+    PROGRAM_HANDLERS.with(|c| *c.borrow_mut() = super::desugar::program_names(program).0);
+    super::refinement::set_program_names(super::desugar::program_names(program));
 
     // interior cells too: a machine, an invariant or a loop inside
     // `interior { }` was never proven — verify said OK on a statically
@@ -130,7 +136,16 @@ pub fn verify_program(program: &Program) -> Vec<VerifyResult> {
                 // think() / any LLM builtin returns. See isolation.rs.
                 let isolation = super::isolation::check_isolation(
                     &cell.name, &cell, &findings);
+                // holes anywhere: a body to come may compute its target (its
+                // frame then says `moves * -> *`) — not a fact yet
+                let program_holes = super::flesh::holes(program);
+                let is_hole_name = |h: &str| program_holes.iter().any(|(c, n)| n == h || format!("{}.{}", c, n) == h);
                 match &isolation {
+                    super::isolation::IsolationFinding::ThinkIsolated { .. } if !program_holes.is_empty() => {
+                        result.checks.push(VerifyCheck::Note(format!(
+                            "think-isolated: judged when the {} hole{} of the program {} a body", program_holes.len(),
+                            if program_holes.len() == 1 { "" } else { "s" }, if program_holes.len() == 1 { "has" } else { "have" })));
+                    }
                     super::isolation::IsolationFinding::ThinkIsolated { n_handlers, n_transitions, .. } => {
                         result.checks.push(VerifyCheck::Pass(
                             format!(
@@ -153,7 +168,18 @@ pub fn verify_program(program: &Program) -> Vec<VerifyResult> {
                 }
 
                 // ── V1.4: handler termination check ──────────────
-                let term_findings = super::termination::check_cell_termination(&cell, program);
+                // a hole has no body to judge: it is left out, and said so
+                let n_holes = cell.sections.iter().filter(|s| matches!(&s.node, Section::OnSignal(on) if super::flesh::is_hole(on))).count();
+                let written = if n_holes == 0 { None } else {
+                    let mut c = (*cell).clone();
+                    c.sections.retain(|s| !matches!(&s.node, Section::OnSignal(on) if super::flesh::is_hole(on)));
+                    Some(c)
+                };
+                let term_findings = super::termination::check_cell_termination(written.as_ref().unwrap_or(cell), program);
+                if n_holes > 0 {
+                    result.checks.push(VerifyCheck::Note(format!(
+                        "termination: {} hole{} — judged when {} a body", n_holes, if n_holes == 1 { "" } else { "s" }, if n_holes == 1 { "it has" } else { "they have" })));
+                }
                 let all_terminate = term_findings.iter().all(|f|
                     matches!(f, super::termination::TerminationFinding::Terminates { .. }));
                 if all_terminate && !term_findings.is_empty() {
@@ -224,12 +250,17 @@ pub fn verify_program(program: &Program) -> Vec<VerifyResult> {
                             ));
                         }
                         DeadTransition { from, to } => {
-                            result.checks.push(VerifyCheck::Warning(
-                                format!(
+                            // a skeleton's edge whose signal has no body yet
+                            // is not stale: its hole declares it
+                            let message = match super::flesh::hole_claiming(program, &cell.name, &sm.name, &from, &to) {
+                                Some(hole) => format!(
+                                    "{}: transition `{} → {}` waits for a hole — `{}` declares it and has no body yet",
+                                    refinement_label, from, to, hole),
+                                None => format!(
                                     "{}: declared transition `{} → {}` is never reached by any handler — spec may be aspirational or stale",
-                                    refinement_label, from, to
-                                ),
-                            ));
+                                    refinement_label, from, to),
+                            };
+                            result.checks.push(VerifyCheck::Warning(message));
                         }
                         HandlerEffect { handler, targets, has_dynamic } => {
                             if targets.is_empty() && !has_dynamic { continue; }
@@ -256,9 +287,15 @@ pub fn verify_program(program: &Program) -> Vec<VerifyResult> {
                                 if !summary.is_empty() { summary.push_str(" + "); }
                                 summary.push_str("<dynamic>");
                             }
-                            result.checks.push(VerifyCheck::Pass(
-                                format!("{}: handler `{}` ⟶ {}", refinement_label, handler, summary)
-                            ));
+                            if is_hole_name(&handler) {
+                                // not a proof about a body: what its frame allows
+                                result.checks.push(VerifyCheck::Note(
+                                    format!("{}: `{}` is a hole — its frame allows {}", refinement_label, handler, summary.replace(" [while ? ∧ if ?]", "").replace(" [if ?]", ""))));
+                            } else {
+                                result.checks.push(VerifyCheck::Pass(
+                                    format!("{}: handler `{}` ⟶ {}", refinement_label, handler, summary)
+                                ));
+                            }
                         }
                     }
                 }
@@ -288,6 +325,11 @@ pub fn verify_program(program: &Program) -> Vec<VerifyResult> {
                 }
                 // V1.6: effect summary for think() in each handler.
                 for eff in super::effects::check_cell(&cell) {
+                    // a hole: what its frame allows, not what a body does
+                    if cell.sections.iter().any(|s| matches!(&s.node, Section::OnSignal(on) if on.signal_name == eff.handler && super::flesh::is_hole(on))) {
+                        result.checks.push(VerifyCheck::Note(format!("effects: `{}` is a hole — its frame allows think()", eff.handler)));
+                        continue;
+                    }
                     let tools: Vec<String> = eff.think_tools.iter().cloned().collect();
                     let summary = if tools.is_empty() {
                         "no tools available".to_string()
@@ -992,7 +1034,7 @@ pub fn cross_cell_notes(program: &Program) -> Vec<String> {
             let mut others: Vec<String> = others.into_iter().filter(|k| changes.contains(k)).map(|(c, _)| c).collect();
             others.sort(); others.dedup();
             if transitions && !others.is_empty() {
-                out.push(format!("cross-cell: `{}.{}` transitions its own machine and acts on {} — a rule BETWEEN the two cells' machines (\"not while the subject is withdrawn\") is not verified: state it as a `require` reading the other cell",
+                out.push(format!("cross-cell: `{}.{}` transitions its own machine and acts on {} — a rule BETWEEN the two cells' machines (\"not while the subject is withdrawn\") is not verified unless soma.toml states it (`[verify.before.\"Cell.state\"] requires = [\"Other.state\"]`); enforce it with a `require` reading the other cell",
                     cell.node.name, on.signal_name, others.iter().map(|c| format!("`{}`", c)).collect::<Vec<_>>().join(", ")));
             }
         }
@@ -1058,23 +1100,46 @@ fn fact_kind(e: &Expr) -> (bool, bool) {
     (never, state)
 }
 
+thread_local! {
+    /// The cell names of the program under verification: `helper.poke(k)`
+    /// is a call into a cell whatever the case of its name.
+    static PROGRAM_CELLS: std::cell::RefCell<HashSet<String>> = std::cell::RefCell::new(HashSet::new());
+    /// …and its handler names: `sum(id)` is the cell's own handler `sum`
+    /// when there is one, not the builtin.
+    static PROGRAM_HANDLERS: std::cell::RefCell<HashSet<String>> = std::cell::RefCell::new(HashSet::new());
+}
+
+fn is_handler(name: &str) -> bool {
+    PROGRAM_HANDLERS.with(|c| c.borrow().contains(name))
+}
+
+fn is_cell(name: &str) -> bool {
+    PROGRAM_CELLS.with(|c| c.borrow().contains(name))
+}
+
 /// Does the statement write state, call a handler, emit or pause?
 fn stmt_has_effect(st: &Spanned<Statement>) -> bool {
     let write = |m: &str| matches!(m, "set" | "put" | "delete" | "remove" | "push" | "append" | "clear");
     let mut hit = false;
     super::literals::for_each_stmt_deep(std::slice::from_ref(st), &mut |x| match x {
         Statement::MethodCall { method, .. } if write(method) => hit = true,
-        Statement::MethodCall { target, .. } if target.chars().next().map_or(false, |c| c.is_ascii_uppercase()) => hit = true,
+        Statement::MethodCall { target, .. } if target.chars().next().map_or(false, |c| c.is_ascii_uppercase()) || is_cell(target) => hit = true,
         Statement::IndexSet { .. } | Statement::Emit { .. } => hit = true,
         Statement::Assign { name, .. } if name.contains('.') || name.contains('[') => hit = true,
         _ => {}
     });
     super::literals::for_each_expr(std::slice::from_ref(st), &mut |x| match x {
         Expr::MethodCall { method, .. } if write(method) => hit = true,
-        Expr::MethodCall { target, .. } if matches!(&target.node, Expr::Ident(n) if n.chars().next().map_or(false, |c| c.is_ascii_uppercase())) => hit = true,
+        Expr::MethodCall { target, .. } if matches!(&target.node, Expr::Ident(n) if n.chars().next().map_or(false, |c| c.is_ascii_uppercase()) || is_cell(n)) => hit = true,
+        // a builtin that applies a lambda it is HANDED (`xs.map(f)`, `any(xs, f)`):
+        // what `f` does is not written here
+        Expr::MethodCall { method: name, args, .. } | Expr::FnCall { name, args }
+            if matches!(name.as_str(), "map" | "filter" | "find" | "any" | "all" | "count" | "reduce" | "sort_by" | "group_by" | "min_by" | "max_by" | "sum_by" | "each" | "flat_map")
+                && args.iter().any(|a| matches!(a.node, Expr::Ident(_) | Expr::Index { .. } | Expr::FieldAccess { .. } | Expr::FnCall { .. } | Expr::MethodCall { .. })) => hit = true,
         // a handler of the program, or an effect builtin (sleep, think…)
         Expr::FnCall { name, .. } if name != "transition" && (!super::names::builtin_names().contains(name.as_str())
-            || super::names::EFFECT_BUILTINS.contains(&name.as_str())) => hit = true,
+            || super::names::EFFECT_BUILTINS.contains(&name.as_str()) || is_handler(name)) => hit = true,
+        Expr::MethodCall { method, .. } if is_handler(method) => hit = true,
         _ => {}
     });
     hit
@@ -1089,12 +1154,27 @@ enum Atom {
 }
 
 fn comparison_text(left: &Expr, op: CmpOp, right: &Expr) -> String {
-    format!("{} {} {}", crate::ast::render_expr(left), op, crate::ast::render_expr(right))
+    let text = format!("{} {} {}", crate::ast::render_expr(left), op, crate::ast::render_expr(right));
+    // `if vip { … } else { … } > 0` is the text of every such comparison,
+    // whatever the branches hold: it matches none (a guard "proven" by a
+    // `require` on other branches)
+    let interpolated = |e: &Expr| { let mut hit = false; super::literals::for_each_in_expr(e, &mut |x| if let Expr::Literal(Literal::String(t)) = x { if !super::desugar::segments(t).is_empty() { hit = true; } }); hit };
+    // (…nor one that builds a string from the locals of the moment: `tier == "{want}"`)
+    if text.contains('…') || interpolated(left) || interpolated(right) {
+        static N: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
+        return format!("{} \u{1f}{}", text, N.fetch_add(1, std::sync::atomic::Ordering::Relaxed));
+    }
+    text
 }
 
 fn idents_of(e: &Expr) -> HashSet<String> {
     let mut out = HashSet::new();
-    super::literals::for_each_in_expr(e, &mut |x| if let Expr::Ident(n) = x { out.insert(n.clone()); });
+    // (a function it calls is a name it reads too: `let len = z => 0` after
+    // `require len(k) > 0` is another `len`)
+    super::literals::for_each_in_expr(e, &mut |x| match x {
+        Expr::Ident(n) | Expr::FnCall { name: n, .. } => { out.insert(n.clone()); }
+        _ => {}
+    });
     out
 }
 
@@ -1106,7 +1186,9 @@ fn literal_text(e: &Expr) -> Option<(String, Option<f64>)> {
         Expr::Literal(Literal::Float(f)) => Some((f.to_string(), Some(*f))),
         Expr::Literal(Literal::BigInt(s)) => Some((s.clone(), None)),
         // quoted: `code == "5"` is not `code == 5`
-        Expr::Literal(Literal::String(s)) => Some((format!("{:?}", s), None)),
+        // (`"{want}"` is built from the locals of the moment: no constant)
+        Expr::Literal(Literal::String(s)) if super::desugar::segments(s).is_empty() => Some((format!("{:?}", s), None)),
+        Expr::Literal(Literal::String(_)) => None,
         Expr::Literal(Literal::Bool(b)) => Some((b.to_string(), None)),
         _ => None,
     }
@@ -1351,12 +1433,24 @@ thread_local! {
 /// transition() to the edge, record whether the guard atoms are implied.
 fn walk_guard(stmts: &[Spanned<Statement>], facts: &mut Facts, to: &str, from: &str,
               guard: &[Vec<Atom>], out: &mut Vec<bool>) {
-    for st in stmts {
+    for (at, st) in stmts.iter().enumerate() {
+        // a call hoisted out of a string stands BEFORE the statement that holds
+        // the string, yet runs somewhere inside it: what that statement assigns
+        // or does may come first (`[try { amount = 0 - 5 }, "{transition(…)}"]`)
+        if let (Statement::ExprStmt { .. }, Some(host)) = (&st.node, stmts.get(at + 1)) {
+            if host.span.start <= st.span.start && st.span.end <= host.span.end && host.span != st.span {
+                super::literals::for_each_stmt_deep(std::slice::from_ref(host), &mut |x| if let Statement::Assign { name, .. } = x { facts.forget(name); });
+                super::literals::for_each_expr(std::slice::from_ref(host), &mut |e| super::literals::for_each_stmt_in_expr(e, &mut |x| if let Statement::Assign { name, .. } = x { facts.forget(name); }));
+                if stmt_has_effect(host) { facts.forget_state(); }
+            }
+        }
         // an assignment inside an expression block (`let r = try { amount =
         // 0 - 5 }`) outlives the statement: what follows no longer knows it
         let mut leaked: Vec<&str> = Vec::new();
         if !matches!(st.node, Statement::If { .. } | Statement::While { .. } | Statement::For { .. }) {
             super::literals::for_each_stmt_deep(std::slice::from_ref(st), &mut |x| if let Statement::Assign { name, .. } = x { leaked.push(name); });
+            // (a `require`'s constraint is walked by expressions only)
+            super::literals::for_each_expr(std::slice::from_ref(st), &mut |e| super::literals::for_each_stmt_in_expr(e, &mut |x| if let Statement::Assign { name, .. } = x { leaked.push(name); }));
         }
         // …and one inside an if / while condition or a for iterator
         // (`if len(try { amount = 0 - 5 }) >= 0 { … }`)
@@ -1368,6 +1462,14 @@ fn walk_guard(stmts: &[Spanned<Statement>], facts: &mut Facts, to: &str, from: &
         if let Some(h) = head {
             for n in rebound_within_expr(h) { facts.forget(&n); }
         }
+        // an effect in this very statement (or in the condition that leads
+        // into the block) may run before its transition(): `transition(_zero(id),
+        // "a", "b")` was judged with what the `require` above had said of state
+        let early = match head {
+            Some(h) => stmt_has_effect(&Spanned::new(Statement::ExprStmt { expr: Spanned::new(h.clone(), st.span) }, st.span)),
+            None => stmt_has_effect(st),
+        };
+        if early { facts.forget_state(); }
         match &st.node {
             Statement::Require { constraint, .. } => narrow_constraint(facts, &constraint.node),
             Statement::Let { name, value } | Statement::Assign { name, value } => {
@@ -1395,6 +1497,10 @@ fn walk_guard(stmts: &[Spanned<Statement>], facts: &mut Facts, to: &str, from: &
                 }
                 let mut then_facts = facts.clone();
                 narrow_expr(&mut then_facts, &condition.node);
+                // the condition may undo what it just said: `cap > 0 && zero(k) == 0`,
+                // `amount > 0 && len(try { amount = 0 - 5 }) >= 0`
+                for n in rebound_within_expr(&condition.node) { then_facts.forget(&n); }
+                if early { then_facts.forget_state(); }
                 walk_guard(then_body, &mut then_facts, to, from, guard, out);
                 let mut else_facts = facts.clone();
                 walk_guard(else_body, &mut else_facts, to, from, guard, out);
@@ -1439,7 +1545,22 @@ fn walk_guard(stmts: &[Spanned<Statement>], facts: &mut Facts, to: &str, from: &
         for n in leaked { facts.forget(n); }
         // a slot write, a handler call, an emit or a pause: what a
         // `require` said about state no longer holds after it
-        if stmt_has_effect(st) { facts.forget_state(); }
+        let mut moved = false;
+        super::literals::for_each_expr(std::slice::from_ref(st), &mut |e| if matches!(e, Expr::FnCall { name, .. } if name == "transition") { moved = true; });
+        if stmt_has_effect(st) || moved { facts.forget_state(); }
+        // a slot written here is another value from here on, also where a fact
+        // read it by its bare name (`require len(tags) > 0  tags.push(x)`)
+        let write = |m: &str| matches!(m, "set" | "put" | "delete" | "remove" | "push" | "append");
+        let mut written: Vec<String> = Vec::new();
+        super::literals::for_each_stmt_deep(std::slice::from_ref(st), &mut |x| match x {
+            Statement::MethodCall { target, method, .. } if write(method) => written.push(target.clone()),
+            Statement::IndexSet { name, .. } => written.push(name.clone()),
+            _ => {}
+        });
+        super::literals::for_each_expr(std::slice::from_ref(st), &mut |e| if let Expr::MethodCall { target, method, .. } = e {
+            if let (Expr::Ident(t), true) = (&target.node, write(method)) { written.push(t.clone()); }
+        });
+        for w in written { facts.forget(&w); }
     }
 }
 
@@ -1498,6 +1619,9 @@ fn prove_guards(sm: &StateMachineSection, handlers: &[(&OnSection, Span)], findi
             if open.contains(name) { continue; }
             if reads_state && (name.contains('.') || foreign.contains(name)) { open.push(name.clone()); continue; }
             let Some((on, _)) = handlers.iter().find(|(h, _)| &h.signal_name == name) else { continue };
+            // a hole has no body yet: whatever its contract says on entry, the
+            // body to come may change the variable before its transition()
+            if on.properties.iter().any(|p| p == crate::ast::HOLE) { open.push(name.clone()); continue; }
             let mut facts = Facts::default();
             let mut verdicts: Vec<bool> = Vec::new();
             let mut assigned: HashSet<String> = HashSet::new();

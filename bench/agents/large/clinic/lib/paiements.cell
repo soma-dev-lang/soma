@@ -1,0 +1,45 @@
+// Paiements — encaissements des patients, imputés sur une facture.
+skeleton Paiements {
+    memory {
+        // id paiement -> { facture: String, montant: Int (centimes), moyen: "carte" | "especes" | "cheque" }
+        paiements: Map<String, Map> [persistent]
+        // id facture -> total encaissé net des remboursements (centimes)
+        par_facture: Map<String, Int> [persistent]
+        invariant par_facture >= 0
+    }
+    state paiement {
+        initial: initie
+        initie -> encaisse
+        encaisse -> rembourse
+    }
+    face {
+        // Encaisse un paiement sur une facture. Erreurs : `PaiementExiste`, `MoyenInconnu` (hors carte /
+        // especes / cheque), puis celles de Facturation.enregistrer_paiement (propagées telles quelles).
+        // Écrit le paiement, ajoute au total de la facture, initie -> encaisse, consigne
+        // ("caisse", "paiement.payer", id). Renvoie le reste dû sur la facture.
+        signal payer(id: String, facture: String, montant: Int, moyen: String) -> Int
+            requires montant > 0
+            ensures result >= 0
+            writes paiements, par_facture
+            moves initie -> encaisse
+            calls Facturation.enregistrer_paiement, Audit.consigner
+        // Rembourse un paiement encaissé : encaisse -> rembourse. Erreurs : `PaiementInconnu`, puis
+        // `FactureNonAnnulee` (Facturation.autoriser_remboursement(facture)). Retire le montant du total de
+        // la facture, consigne ("caisse", "paiement.rembourser", id). Renvoie le montant remboursé.
+        signal rembourser(id: String) -> Int
+            writes par_facture
+            reads paiements
+            moves encaisse -> rembourse
+            calls Facturation.autoriser_remboursement, Audit.consigner
+        // Le paiement { facture, montant, moyen }, ou erreur `PaiementInconnu`.
+        signal paiement(id: String) -> Map                              reads paiements
+        // Total encaissé net sur cette facture ; 0 si aucun.
+        signal total_paye(facture: String) -> Int                       reads par_facture
+            ensures result >= 0
+        // Total encaissé net, toutes factures.
+        signal total_encaisse() -> Int                                  reads par_facture
+            ensures result >= 0
+        // L'état du paiement : "initie" pour un id inconnu, sinon "encaisse" / "rembourse".
+        signal statut_paiement(id: String) -> String                    reads paiement
+    }
+}

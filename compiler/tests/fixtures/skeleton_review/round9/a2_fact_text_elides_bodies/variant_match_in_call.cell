@@ -1,0 +1,10 @@
+cell A {
+    memory { c: Map<String, Int>  invariant c >= 0 }
+    on w(k: String, n: Int, p: Int) {
+        require min(match n { _ -> 5 }, 9) >= 0 else X
+        c.set(k, min(match n { _ -> p }, 9))
+        return 1 }
+    on probe() { let r = try { w("k", 1, 0 - 5) }
+        return r.kind ?? "ok" }
+}
+cell test T { rules { assert A.probe() == "invariant" } }

@@ -253,6 +253,7 @@ mod tests {
                     return_type: None,
                     requires: vec![],
                     ensures: vec![],
+                    frame: None,
                 }),
                 Span::new(0, 0),
             ));
@@ -280,6 +281,7 @@ mod tests {
                 )],
                 agent_model: None,
                 agent_skill: None,
+                skeleton: false,
             },
             Span::new(0, 0),
         )

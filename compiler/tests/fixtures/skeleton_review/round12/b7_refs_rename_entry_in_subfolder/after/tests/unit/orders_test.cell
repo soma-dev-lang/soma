@@ -1,0 +1,11 @@
+use "../../app.cell"
+
+cell test OrdersT {
+    rules {
+        assert Stock.fill("a", 2) == 2
+        assert Stock.arm("o1") == "ready"
+        assert Orders.status("zz") == "placed"
+        assert Orders.place("o1", "a") == "packed"
+        assert Orders.status("o1") == "packed"
+    }
+}

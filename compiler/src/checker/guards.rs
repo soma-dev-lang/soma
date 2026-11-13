@@ -96,6 +96,14 @@ pub fn check_program(program: &Program) -> Vec<GuardIssue> {
                                 if name == "transition" && args.len() >= 2 {
                                     // transition(id, from, to): the target is the third argument
                                     let target = if args.len() >= 3 { &args[2] } else { &args[1] };
+                                    // transition(id, "ready", "paid") names its source:
+                                    // it cannot take `due -> paid`
+                                    let other_source = args.len() >= 3 && tr.node.from != "*" && match &args[1].node {
+                                        Expr::Literal(Literal::String(s)) => !s.contains('{') && s != &tr.node.from,
+                                        Expr::Ident(v) => !locals.contains(v) && v.chars().next().map_or(false, |c| c.is_ascii_uppercase()) && v != &tr.node.from,
+                                        _ => false,
+                                    };
+                                    if other_source { return; }
                                     match &target.node {
                                         // an interpolated `"{t}"` may be any state
                                         Expr::Literal(Literal::String(s)) => {
@@ -215,7 +223,9 @@ pub fn check_program(program: &Program) -> Vec<GuardIssue> {
                         }
                     }
                 }
-                if callers == 0 {
+                // a skeleton's edge whose signal is still a hole: the body that
+                // will bind the guard's names is not written yet
+                if callers == 0 && super::flesh::hole_claiming(program, &cell.name, &sm.name, &tr.node.from, &tr.node.to).is_none() {
                     issues.push(GuardIssue {
                         message: format!(
                             "guard on `{} -> {}` reads {} but no handler calls transition() toward `{}`, \

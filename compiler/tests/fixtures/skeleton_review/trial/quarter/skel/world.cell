@@ -1,0 +1,106 @@
+// The outside world: markets, rivals, events, lawsuits.
+
+skeleton Market {
+    memory {
+        tam: Map<String, Int> [persistent]              // units per quarter at full adoption
+        invariant tam >= 0
+        adoption_bps: Map<String, Int> [persistent]
+        invariant adoption_bps >= 0 && adoption_bps <= 10000
+        ref_price: Map<String, Int> [persistent]
+        invariant ref_price > 0
+        shock_bps: Map<String, Int> [persistent]        // demand shock, decays each quarter
+        invariant shock_bps >= -9000 && shock_bps <= 9000
+    }
+    face {
+        signal seed_segments() -> Int                   writes tam, adoption_bps, ref_price
+        signal segments() -> List<String>               reads tam
+        signal demand(seg: String, p: Int, q: Int) -> Int
+            requires p > 0 && q >= 0 && q <= 100
+            ensures result >= 0
+            reads tam, adoption_bps, ref_price, shock_bps
+        signal shock(seg: String, bps: Int) -> Int
+            writes shock_bps
+        signal tick() -> Int
+            writes adoption_bps, shock_bps
+            calls segments
+    }
+}
+
+skeleton Rivals {
+    memory {
+        strategy: Map<String, String> [persistent]
+        rprice: Map<String, Int> [persistent]
+        invariant rprice > 0
+        rquality: Map<String, Int> [persistent]
+        invariant rquality >= 0 && rquality <= 100
+    }
+    face {
+        signal seed_rivals() -> Int                     writes strategy, rprice, rquality
+        signal rival_ids() -> List<String>              reads strategy
+        signal act(id: String) -> String
+            reads strategy
+            writes rprice, rquality
+            calls Rng.roll
+        signal act_all() -> List<String>                calls rival_ids, act
+        signal player_share(p: Int, q: Int) -> Int
+            requires p > 0 && q >= 0 && q <= 100
+            ensures result >= 0 && result <= 10000
+            reads rprice, rquality
+    }
+}
+
+skeleton Events {
+    memory {
+        rate_bps: Map<String, Int> [persistent]         // key "rate": quarterly interest rate
+        invariant rate_bps >= 0 && rate_bps <= 2000
+        log: List<String> [persistent, immutable]
+    }
+    face {
+        signal interest_rate() -> Int
+            ensures result >= 0 && result <= 2000
+            reads rate_bps
+        signal apply(kind: String) -> String
+            writes rate_bps, log
+            calls Market.shock, Market.segments, Finance.spend, Finance.earn
+        signal draw() -> String
+            calls Rng.roll, Rng.chance, apply
+        signal history() -> List<String>                reads log
+    }
+}
+
+skeleton Legal {
+    memory {
+        stake: Map<String, Int> [persistent]
+        invariant stake >= 0
+        win_bps: Map<String, Int> [persistent]
+        invariant win_bps >= 0 && win_bps <= 10000
+        target: Map<String, String> [persistent]
+    }
+    state suit {
+        initial: drafted
+        drafted -> filed
+        filed -> discovery
+        filed -> settled
+        discovery -> trial
+        discovery -> settled
+        trial -> won
+        trial -> lost
+    }
+    face {
+        signal file(id: String, rival: String, amount: Int) -> Bool
+            requires amount > 0
+            writes stake, win_bps, target
+            moves drafted -> filed
+            calls Finance.spend, Attention.attended
+        signal progress(id: String) -> String
+            reads stake, win_bps
+            moves filed -> discovery, discovery -> trial, trial -> won, trial -> lost
+            calls Finance.spend, Finance.earn, Rng.chance
+        signal settle(id: String) -> Int
+            reads stake
+            moves filed -> settled, discovery -> settled
+            calls Finance.earn
+        signal open_suits() -> List<String>             reads target, suit
+        signal progress_all() -> List<String>           calls open_suits, progress
+    }
+}

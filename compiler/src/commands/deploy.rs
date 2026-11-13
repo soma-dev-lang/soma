@@ -39,6 +39,7 @@ pub fn cmd_deploy(path: &PathBuf, target: &str, region: Option<&str>) {
     let tokens = lex_with_location(&source, Some(&file_str));
     let mut program = parse_with_location(tokens, Some(&source), Some(&file_str));
     resolve_imports(&mut program, path);
+    if !crate::checker::lock::structure_holds(&program, path, &source) { std::process::exit(1); }
 
     // Find the main cell
     let cell = program.cells.iter()

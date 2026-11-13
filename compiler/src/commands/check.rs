@@ -38,10 +38,22 @@ pub fn cmd_check(path: &PathBuf, json: bool, registry: &mut Registry) {
         });
     }
 
+    let holes = checker::flesh::holes(&program);
     if json {
-        println!("{}", chk.report_json());
+        let report = chk.report_json();
+        // a skeleton's unfilled signals: not errors, and not nothing
+        match (holes.is_empty(), serde_json::from_str::<serde_json::Value>(&report)) {
+            (false, Ok(mut v)) if v.is_object() => {
+                v["holes"] = serde_json::json!(holes.iter().map(|(c, h)| format!("{}.{}", c, h)).collect::<Vec<_>>());
+                println!("{}", serde_json::to_string_pretty(&v).unwrap_or(report));
+            }
+            _ => println!("{}", report),
+        }
     } else {
         print!("{}", chk.report());
+        if !chk.has_errors() {
+            if let Some(note) = checker::flesh::holes_note(&program, &file_str) { println!("{}", note); }
+        }
     }
 
     if chk.has_errors() {

@@ -1,0 +1,109 @@
+flesh Facturation {
+    on _exiger(id: String) {
+        let f = factures.get(id)
+        require f != () else FactureInconnue "facture {id}"
+        return f
+    }
+    on _annoncer(id: String, etat: String, patient: String) {
+        emit facture_change(map("id", id, "etat", etat, "patient", patient))
+    }
+    on preparer(id) {
+        require factures.get(id) == () else FactureExiste "facture {id}"
+        let c = Consultations.consultation(id)
+        let total = Consultations.total_actes(id)
+        require total > 0 else RienAFacturer "visite {id}"
+        let annee = substring(today(), 0, 4)
+        let assurance = min(Assurance.calculer_prise_en_charge(c.patient, total), Assurance.disponible_annuel(c.patient, annee))
+        factures.set(id, map("patient", c.patient, "total", total, "assurance", assurance, "annee", annee, "motif_litige", ""))
+        soldes.set(id, total - assurance)
+        let m = Montants { total: total, assurance: assurance, patient: total - assurance }
+        return m
+    }
+    on emettre(id) {
+        let f = _exiger(id)
+        let ok = Consultations.exiger_terminee(id)
+        transition(id, "brouillon", "emise")
+        if f.assurance > 0 {
+            let m = Assurance.engager(id, f.patient, f.assurance, f.annee)
+        }
+        let etat = "emise"
+        if (soldes.get(id) ?? 0) == 0 {
+            transition(id, "emise", "payee")
+            etat = "payee"
+        }
+        _annoncer(id, etat, f.patient)
+        return etat
+    }
+    on enregistrer_paiement(id, montant) {
+        let f = _exiger(id)
+        require (get_status(id) ?? "brouillon") == "emise" else FactureNonEmise "facture {id}"
+        let solde = soldes.get(id) ?? 0
+        require montant <= solde else TropPercu "{montant} > {solde}"
+        let reste = solde - montant
+        soldes.set(id, reste)
+        if reste == 0 {
+            transition(id, "emise", "payee")
+            _annoncer(id, "payee", f.patient)
+        }
+        return reste
+    }
+    on autoriser_remboursement(id) {
+        require get_status(id) == "annulee" else FactureNonAnnulee "facture {id}"
+        return true
+    }
+    on contester(id, motif) {
+        let f = _exiger(id)
+        require motif != "" else MotifVide
+        transition(id, "emise", "en_litige")
+        f.motif_litige = motif
+        factures.set(id, f)
+        _annoncer(id, "en_litige", f.patient)
+        return "en_litige"
+    }
+    on trancher_litige(id, fonde) {
+        let f = _exiger(id)
+        let etat = "emise"
+        if fonde {
+            transition(id, "en_litige", "annulee")
+            soldes.set(id, 0)
+            let libere = Assurance.liberer(id)
+            etat = "annulee"
+        } else {
+            transition(id, "en_litige", "emise")
+            f.motif_litige = ""
+            factures.set(id, f)
+        }
+        _annoncer(id, etat, f.patient)
+        return etat
+    }
+    on annuler_facture(id) {
+        let f = _exiger(id)
+        transition(id, "brouillon", "annulee")
+        soldes.set(id, 0)
+        return "annulee"
+    }
+    on exiger_payee(id) {
+        require get_status(id) == "payee" else FactureNonPayee
+        return true
+    }
+    on statut_facture(id) {
+        let f = _exiger(id)
+        return get_status(id) ?? "brouillon"
+    }
+    on montants(id) {
+        let f = _exiger(id)
+        let m = Montants { total: f.total, assurance: f.assurance, patient: f.total - f.assurance }
+        return m
+    }
+    on reste_du(id) { return soldes.get(id) ?? 0 }
+    on totaux() {
+        let facture = 0
+        let impaye = 0
+        for e in factures.entries {
+            let etat = get_status(e.key) ?? "brouillon"
+            if etat == "emise" || etat == "payee" { facture = facture + e.value.total }
+            if etat == "emise" { impaye = impaye + (soldes.get(e.key) ?? 0) }
+        }
+        return map("facture", facture, "impaye", impaye, "nombre", factures.size)
+    }
+}

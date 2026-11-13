@@ -1,0 +1,23 @@
+cell Desk {
+    face { signal kick(id: String) }
+    cost { latency: 100ms }
+    memory { took: Map<String, Int> [persistent] }
+    interior {
+        cell Front {
+            face { signal kick(id: String) }
+            on kick(id: String) { emit up(id)  return "kicked" }
+        }
+        cell Back {
+            face { signal down(id: String) }
+            on down(id: String) { sleep(400)  return 1 }
+        }
+    }
+    on kick(id: String) { return 0 }
+    on up(id: String) {
+        let t = now_ms()
+        emit down(id)
+        took.set(id, now_ms() - t)
+        return 1
+    }
+    on ms(id: String) { return took.get(id) ?? 0 }
+}

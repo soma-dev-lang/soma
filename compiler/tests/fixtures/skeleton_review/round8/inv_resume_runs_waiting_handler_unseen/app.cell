@@ -1,0 +1,18 @@
+// resume(w, …) (same with deliver(name, key, …)) runs the rest of a waiting [task] handler INSIDE the caller:
+// here it writes c[k] between add's require and add's read-modify-write. No analysis counts it as a call.
+cell A {
+    memory { c: Map<String, Int>  invariant c <= 100 }
+    on park(k: String) [task] { let ok = await approve("x")
+ c.set(k, 60)
+ return 1 }
+    on add(k: String, n: Int, w: String) { require (c.get(k) ?? 0) + n <= 100 else Full
+ resume(w, true)
+ c.set(k, (c.get(k) ?? 0) + n)
+ return 1 }
+    on probe() {
+  let a = park("k")
+  let r = try { add("k", 60, a.waiting) }
+  print(r)
+  return r.kind ?? "ok" }
+}
+cell test T { rules { assert A.probe() == "invariant" } }

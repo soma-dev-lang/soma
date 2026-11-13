@@ -1,0 +1,55 @@
+use lib::types
+
+// Pharmacie — stock par médicament, détaillé en lots avec date de péremption.
+// Le stock d'un médicament est toujours la somme des quantités de ses lots.
+skeleton Pharmacie {
+    memory {
+        // médicament -> quantité totale en stock
+        stock: Map<String, Int> [persistent]
+        invariant stock >= 0
+        // id lot -> Lot { medicament, quantite, peremption } ; un lot vidé reste avec quantite 0
+        lots: Map<String, Lot> [persistent]
+        // médicament -> seuil d'alerte (un médicament est « référencé » s'il a un seuil)
+        seuils: Map<String, Int> [persistent]
+        invariant seuils >= 0
+    }
+    face {
+        // Référence un médicament avec son seuil d'alerte ; stock mis à 0 s'il n'existait pas.
+        // Re-référencer change seulement le seuil. Renvoie le seuil.
+        signal referencer(medicament: String, seuil: Int) -> Int
+            requires seuil >= 0
+            writes seuils, stock
+        // Reçoit un lot. Erreurs : `MedicamentInconnu` (non référencé), `LotExiste`. Ajoute au stock.
+        // Renvoie le nouveau niveau du médicament.
+        signal recevoir_lot(lot: String, medicament: String, quantite: Int, peremption: String) -> Int
+            requires quantite > 0
+            writes lots, stock
+            reads seuils
+        // Niveau en stock, 0 pour un médicament inconnu.
+        signal niveau(medicament: String) -> Int                        reads stock
+            ensures result >= 0
+        // Sort `quantite` unités, en vidant d'abord les lots qui périment le plus tôt (FEFO ; à péremption
+        // égale, id de lot croissant). Erreur `StockInsuffisant` si niveau < quantite (rien n'est écrit).
+        // Si le nouveau niveau est < seuil, émet stock_bas({ medicament, niveau, seuil }).
+        // Renvoie le nouveau niveau.
+        signal sortir(medicament: String, quantite: Int) -> Int
+            requires quantite > 0
+            ensures result >= 0
+            writes stock, lots
+            reads seuils
+            emits stock_bas
+        // Les ids (triés) des lots non vides dont la péremption est < `date` (strictement).
+        signal lots_perimes(date: String) -> List<String>               reads lots
+        // Vide tous les lots périmés à `date` (quantite 0) et retire leurs quantités du stock.
+        // Consigne ("pharmacie", "stock.retirer_perimes", date) si au moins une unité retirée.
+        // Renvoie le nombre d'unités retirées.
+        signal retirer_perimes(date: String) -> Int
+            ensures result >= 0
+            writes lots, stock
+            calls lots_perimes, Audit.consigner
+        // Les médicaments (triés) dont le niveau est strictement sous leur seuil.
+        signal sous_seuil() -> List<String>                             reads stock, seuils
+        // Le lot, ou erreur `LotInconnu`.
+        signal lot(id: String) -> Lot                                   reads lots
+    }
+}

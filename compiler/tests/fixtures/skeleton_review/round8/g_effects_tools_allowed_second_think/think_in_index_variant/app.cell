@@ -1,0 +1,19 @@
+cell agent Desk {
+    face {
+        signal ask(q: String) -> Int
+        tool lookup(id: String) -> String "Look up"
+        tool refund(id: String) -> String "Refund"
+    }
+    state job { initial: idle  idle -> done }
+    on fin(id: String) { transition(id, "idle", "done") return 1 }
+    memory { refunds: Map<String, Int> }
+    on lookup(id: String) { return "found" }
+    on refund(id: String) { refunds.set(id, 1) return "refunded" }
+    on _t(q: String) { return think("answer {q}") }
+    on ask(q: String) {
+        let a = think("c {q}", map("tools_allowed", []))
+ let xs = [1]
+ let b = xs[len(think("d {q}")) - len(think("d {q}"))]
+        return refunds.get("k") ?? 0
+    }
+}

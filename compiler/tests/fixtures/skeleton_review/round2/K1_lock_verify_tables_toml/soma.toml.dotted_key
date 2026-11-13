@@ -1,0 +1,3 @@
+verify.cells = ["Nope"]
+[verify.after.Rejected]
+never = ["Paid"]

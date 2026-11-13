@@ -1,0 +1,2 @@
+use "../app.cell"
+cell test T { rules { assert Stock.level("a") == 1 } }

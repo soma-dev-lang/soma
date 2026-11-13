@@ -175,10 +175,28 @@ pub fn verify_waits(program: &Program) -> Vec<super::verify::VerifyResult> {
                 // statements that ran before the wait, and those that run after
                 let mut before: Vec<Spanned<Statement>> = Vec::new();
                 let mut after: Vec<Spanned<Statement>> = Vec::new();
-                for (block, i) in path.iter() {
+                for (level, (block, i)) in path.iter().enumerate() {
                     before.extend(block[..*i].iter().cloned());
                     after.extend(block[*i + 1..].iter().cloned());
+                    // the condition (or iterator) of the block the wait stands in ran too
+                    if level + 1 < path.len() {
+                        if let Statement::If { condition: e, .. } | Statement::While { condition: e, .. } | Statement::For { iter: e, .. } = &block[*i].node {
+                            before.push(Spanned::new(Statement::ExprStmt { expr: e.clone() }, block[*i].span));
+                        }
+                    }
                 }
+                // …and the wait's own arguments
+                for a in args.iter() { before.push(Spanned::new(Statement::ExprStmt { expr: (*a).clone() }, a.span)); }
+                // a transition this report cannot place: in a branch that may not
+                // have run, or toward a target held in a variable
+                let mut unplaced = false;
+                super::literals::for_each_call(&before, &mut |name, a, _| if name == "transition" {
+                    let target = if a.len() >= 3 { a.get(2) } else { a.get(1) };
+                    if !matches!(target.map(|t| &t.node), Some(Expr::Literal(Literal::String(t))) if !t.contains('{')) { unplaced = true; }
+                });
+                let flat = before.iter().filter(|st| matches!(&st.node, Statement::ExprStmt { expr } | Statement::Let { value: expr, .. } | Statement::Assign { value: expr, .. }
+                    if matches!(&expr.node, Expr::FnCall { name, .. } if name == "transition"))).count();
+                if targets_in(&before).len() != flat { unplaced = true; }
                 let mut written: Vec<String> = Vec::new();
                 super::literals::for_each_stmt_deep(&before, &mut |st| match st {
                     Statement::MethodCall { target, .. } if slots.contains(&target.as_str()) => written.push(target.clone()),
@@ -198,6 +216,30 @@ pub fn verify_waits(program: &Program) -> Vec<super::verify::VerifyResult> {
                     (true, Some(s)) => format!("committed before it: the transition to `{}`", s),
                     (false, Some(s)) => format!("committed before it: writes to {} and the transition to `{}`", written.join(", "), s),
                 };
+                // this report reads the handler's own statements: what a handler it
+                // calls before the wait writes or moves is not followed — said, not ticked
+                let mut called: Vec<String> = Vec::new();
+                super::literals::for_each_expr(&before, &mut |e| match e {
+                    Expr::FnCall { name, .. } if name != "_coalesce" && !super::names::builtin_names().contains(name.as_str()) => called.push(format!("{}()", name)),
+                    Expr::MethodCall { target, method, .. } => if let Expr::Ident(t) = &target.node {
+                        if !slots.contains(&t.as_str()) && super::names::cellish(t) { called.push(format!("{}.{}()", t, method)); }
+                    },
+                    _ => {}
+                });
+                super::literals::for_each_stmt_deep(&before, &mut |st| match st {
+                    Statement::Emit { signal_name, .. } => called.push(format!("emit {}", signal_name)),
+                    Statement::MethodCall { target, method, .. } if !slots.contains(&target.as_str()) => called.push(format!("{}.{}()", target, method)),
+                    _ => {}
+                });
+                called.sort(); called.dedup();
+                if unplaced && called.is_empty() {
+                    checks.push(VerifyCheck::Warning(format!("{}: a transition() before the wait stands in a branch, inside another expression, or names its target by a variable — the state the instance rests in is not followed by this report", shown)));
+                    continue;
+                }
+                if !called.is_empty() {
+                    checks.push(VerifyCheck::Warning(format!("{}: {} in its own statements — before the wait it also runs {}, and what those write or move is not followed by this report", shown, committed, called.join(", "))));
+                    continue;
+                }
                 let Some(state) = rests else {
                     checks.push(VerifyCheck::Pass(format!("{}: {} — no machine state is entered for the wait", shown, committed)));
                     continue;
@@ -224,7 +266,13 @@ pub fn verify_waits(program: &Program) -> Vec<super::verify::VerifyResult> {
                         Section::After(e) => (format!("after {}ms", e.interval_ms), &e.body),
                         _ => continue,
                     };
-                    if targets_in(body).iter().any(|t| exits.contains(&t.as_str())) { others.push(label); }
+                    // …from THIS state: `transition(id, "b", "c")` names another source
+                    let mut leaves = false;
+                    super::literals::for_each_call(body, &mut |name, args, _| if let Some(t) = transition_target(name, args) {
+                        let source = if name == "transition" && args.len() >= 3 { match &args[1].node { Expr::Literal(Literal::String(s)) => Some(s.clone()), _ => None } } else { None };
+                        if exits.contains(&t.as_str()) && source.map_or(true, |s| s == state) { leaves = true; }
+                    });
+                    if leaves { others.push(label); }
                 }
                 let by_answer: Vec<String> = { let mut v: Vec<String> = targets_in(&after).into_iter().filter(|t| exits.contains(&t.as_str())).collect(); v.dedup(); v };
                 if others.is_empty() {

@@ -1,0 +1,72 @@
+flesh Bookings {
+    on book(id, guest, room, from, to) {
+        require guests.get(id) == () else Taken "booking '{id}' exists"
+        require Rooms.exists(room) else NotFound "no room '{room}'"
+        let rate = Rooms.rate_of(room)
+        require rate >= 1 else NotFound "no rate for '{room}'"
+        if !Calendar.hold_nights(id, room, from, to) {
+            return map("ok", false, "reason", "not available")
+        }
+        guests.set(id, guest)
+        rooms.set(id, room)
+        arrive.set(id, from)
+        depart.set(id, to)
+        nightly.set(id, rate)
+        ids.push(id)
+        transition(id, "requested", "confirmed")
+        return map("ok", true, "booking", id, "nights", to - from, "total", rate * (to - from))
+    }
+    on cancel(id, guest, day) {
+        require guests.get(id) != () else NotFound "no booking '{id}'"
+        require guests.get(id) == guest else Forbidden "only the guest cancels a booking"
+        transition(id, "confirmed", "cancelled")
+        Calendar.free_nights(id, rooms.get(id), arrive.get(id) ?? 0, depart.get(id) ?? 1)
+        if day <= (arrive.get(id) ?? 0) - 2 { return map("ok", true, "fee", 0) }
+        let fee = nightly.get(id) ?? 1
+        require fee >= 1 else NotFound "no rate"
+        Ledger.charge(id, fee)
+        return map("ok", true, "fee", fee)
+    }
+    on check_in(id, day) {
+        require rooms.get(id) != () else NotFound "no booking '{id}'"
+        require arrive.get(id) == day else WrongDay "booking '{id}' arrives on day {arrive.get(id)}"
+        require Housekeeping.room_status(rooms.get(id)) == "clean" else NotReady "room {rooms.get(id)} is not clean"
+        transition(id, "confirmed", "checked_in")
+        Housekeeping.occupy(rooms.get(id))
+        let total = (nightly.get(id) ?? 1) * ((depart.get(id) ?? 1) - (arrive.get(id) ?? 0))
+        require total >= 1 else NotFound "no rate"
+        return map("ok", true, "due", Ledger.charge(id, total))
+    }
+    on check_out(id, day) {
+        require rooms.get(id) != () else NotFound "no booking '{id}'"
+        require Ledger.due(id) == 0 else Unpaid "{Ledger.due(id)} is due on booking '{id}'"
+        transition(id, "checked_in", "checked_out")
+        Housekeeping.vacate(rooms.get(id))
+        if day < (depart.get(id) ?? 0) {
+            Calendar.free_nights(id, rooms.get(id), day, depart.get(id) ?? 0)
+        }
+        return map("ok", true, "points", Loyalty.earn(guests.get(id), Ledger.cash_paid(id)))
+    }
+    on mark_no_show(id) {
+        require rooms.get(id) != () else NotFound "no booking '{id}'"
+        transition(id, "confirmed", "no_show")
+        Calendar.free_nights(id, rooms.get(id), arrive.get(id) ?? 0, depart.get(id) ?? 1)
+        let fee = nightly.get(id) ?? 1
+        require fee >= 1 else NotFound "no rate"
+        Ledger.charge(id, fee)
+        return fee
+    }
+    on stay_state(id) { return get_status(id) ?? "requested" }
+    on booking(id) {
+        require guests.get(id) != () else NotFound "no booking '{id}'"
+        return map("booking", id, "guest", guests.get(id), "room", rooms.get(id), "from", arrive.get(id), "to", depart.get(id), "nightly", nightly.get(id), "state", get_status(id) ?? "requested")
+    }
+    on guest_of(id) { return guests.get(id) ?? "" }
+    on arriving(day) {
+        let out = []
+        for id in ids {
+            if arrive.get(id) == day && (get_status(id) ?? "requested") == "confirmed" { out.push(id) }
+        }
+        return out
+    }
+}

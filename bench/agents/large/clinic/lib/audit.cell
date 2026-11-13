@@ -1,0 +1,26 @@
+// Audit — journal append-only de qui a fait quoi. Rien n'y est jamais modifié ni supprimé.
+skeleton Audit {
+    memory {
+        // { quand: Int (now(), secondes Unix), acteur: String, action: String, cible: String }
+        journal: List<Map> [persistent, immutable]
+    }
+    face {
+        // Ajoute une entrée datée de now(). Renvoie le nombre d'entrées après l'ajout.
+        signal consigner(acteur: String, action: String, cible: String) -> Int
+            ensures result >= 1
+            writes journal
+            calls now
+        // Écoute les changements de facture : data = { id, etat, patient } ; ajoute l'entrée
+        // { quand: now(), acteur: "facturation", action: "facture.{etat}", cible: id }. Renvoie le nombre d'entrées.
+        signal facture_change(data: Map) -> Int
+            writes journal
+            calls now
+        // Nombre d'entrées.
+        signal taille() -> Int                                          reads journal
+            ensures result >= 0
+        // Les actions (String) consignées pour cette cible, dans l'ordre.
+        signal actions_sur(cible: String) -> List<String>               reads journal
+        // La dernière entrée, ou erreur `JournalVide`.
+        signal derniere() -> Map                                        reads journal
+    }
+}

@@ -1,0 +1,13 @@
+use lib::deep::sk
+flesh Stock {
+    on level(sku) { return items.get(sku) ?? 0 }
+    on take(sku, n) {
+        let have = level(sku)
+        if have < n { return false }
+        items.set(sku, have - n)
+        return true
+    }
+    on pack(id, n) { transition(id, "placed", "packed")  return Kind.Big }
+    on status(id) { return get_status(id) ?? "placed" }
+    on note(sku) { return Audit.log(sku) }
+}

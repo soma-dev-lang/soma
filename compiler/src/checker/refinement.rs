@@ -164,6 +164,9 @@ pub fn check_refinement(
     // the call can take start from the others
     for eff in effects.iter_mut() {
         for call in eff.static_transitions.iter_mut() {
+            // "may be fresh" is "may be in the initial state"
+            for s in call.inferred.iter_mut() { if s == FRESH { *s = sm.initial.clone(); } }
+            call.inferred.dedup();
             if call.inferred.iter().any(|s| has_edge(s, &call.target)) {
                 call.inferred.retain(|s| has_edge(s, &call.target));
             }
@@ -249,7 +252,7 @@ pub fn check_refinement(
 /// Walk a handler body and extract every transition() call along with
 /// its path condition. The path condition is the stack of `if` guards
 /// (rendered as text) leading to the call site.
-fn analyze_handler(on: &OnSection, span: Span) -> HandlerEffect {
+pub(crate) fn analyze_handler(on: &OnSection, span: Span) -> HandlerEffect {
     let mut effect = HandlerEffect {
         name: on.signal_name.clone(),
         span,
@@ -279,18 +282,59 @@ fn state_literal(e: &Expr) -> Option<String> {
 fn status_subject(e: &Expr, eff: &HandlerEffect) -> Option<String> {
     match e {
         Expr::FnCall { name, args } if name == "get_status" && args.len() == 1 => Some(render_expr(&args[0].node)),
-        Expr::Ident(n) => eff.aliases.get(n).cloned(),
+        Expr::Ident(n) => eff.aliases.get(n).map(|a| a.split('\u{1f}').next().unwrap_or(a).to_string()),
+        _ => coalesced(e).map(|(id, _)| id),
+    }
+}
+
+/// `get_status(id) ?? "d"`: (id, d). An id never moved reads `()`, so the
+/// default stands for a FRESH instance — which is in the machine's initial
+/// state, whatever the default says.
+fn coalesced(e: &Expr) -> Option<(String, String)> {
+    match e {
+        Expr::FnCall { name, args } if name == "_coalesce" && args.len() == 2 => match (&args[0].node, state_literal(&args[1].node)) {
+            (Expr::FnCall { name: f, args: a }, Some(d)) if f == "get_status" && a.len() == 1 => Some((render_expr(&a[0].node), d)),
+            _ => None,
+        },
         _ => None,
     }
 }
+
+/// The default a status expression carries (`… ?? "d"`), directly or
+/// through the local it was bound to.
+fn status_default(e: &Expr, eff: &HandlerEffect) -> Option<String> {
+    match e {
+        Expr::Ident(n) => eff.aliases.get(n).and_then(|a| a.split_once('\u{1f}').map(|(_, d)| d.to_string())),
+        _ => coalesced(e).map(|(_, d)| d),
+    }
+}
+
+/// The states `status <op> "st"` establishes when it says the status IS
+/// one of `states`: with a default, a fresh id answers the default — so
+/// when the default is among them the instance may also be fresh, i.e. in
+/// the initial state (`FRESH`, resolved by who knows the machine).
+fn with_fresh(states: Vec<String>, subject: &Expr, eff: &HandlerEffect, is_equal: bool) -> Vec<String> {
+    let mut states = states;
+    match status_default(subject, eff) {
+        // == "st": true for a fresh id iff the default is "st"
+        Some(d) if is_equal => { if states.contains(&d) { states.push(FRESH.to_string()); } }
+        // != "st" was false, so the value is "st": fresh iff the default is "st"
+        Some(d) => { if states.contains(&d) { states.push(FRESH.to_string()); } }
+        None => {}
+    }
+    states
+}
+
+/// In a fact: the instance may never have moved (it is in the initial state).
+pub const FRESH: &str = "\u{1f}fresh";
 
 /// (id, states) a TRUE condition establishes: `get_status(id) == "a"`,
 /// `… || get_status(id) == "b"`.
 fn fact_when_true(e: &Expr, eff: &HandlerEffect) -> Option<(String, Vec<String>)> {
     match e {
         Expr::CmpOp { left, op: CmpOp::Eq, right } => {
-            if let (Some(id), Some(st)) = (status_subject(&left.node, eff), state_literal(&right.node)) { return Some((id, vec![st])); }
-            if let (Some(st), Some(id)) = (state_literal(&left.node), status_subject(&right.node, eff)) { return Some((id, vec![st])); }
+            if let (Some(id), Some(st)) = (status_subject(&left.node, eff), state_literal(&right.node)) { return Some((id, with_fresh(vec![st], &left.node, eff, true))); }
+            if let (Some(st), Some(id)) = (state_literal(&left.node), status_subject(&right.node, eff)) { return Some((id, with_fresh(vec![st], &right.node, eff, true))); }
             None
         }
         Expr::BinaryOp { left, op: BinOp::Or, right } => {
@@ -312,8 +356,8 @@ fn fact_when_true(e: &Expr, eff: &HandlerEffect) -> Option<(String, Vec<String>)
 fn fact_when_false(e: &Expr, eff: &HandlerEffect) -> Option<(String, Vec<String>)> {
     match e {
         Expr::CmpOp { left, op: CmpOp::Ne, right } => {
-            if let (Some(id), Some(st)) = (status_subject(&left.node, eff), state_literal(&right.node)) { return Some((id, vec![st])); }
-            if let (Some(st), Some(id)) = (state_literal(&left.node), status_subject(&right.node, eff)) { return Some((id, vec![st])); }
+            if let (Some(id), Some(st)) = (status_subject(&left.node, eff), state_literal(&right.node)) { return Some((id, with_fresh(vec![st], &left.node, eff, false))); }
+            if let (Some(st), Some(id)) = (state_literal(&left.node), status_subject(&right.node, eff)) { return Some((id, with_fresh(vec![st], &right.node, eff, false))); }
             None
         }
         Expr::BinaryOp { left, op: BinOp::And, right } => {
@@ -356,9 +400,24 @@ fn block_diverges(body: &[Spanned<Statement>]) -> bool {
 
 /// A call after which another piece of code may have moved any instance.
 fn forgets_states(name: &str) -> bool {
-    matches!(name, "think" | "think_json" | "vote" | "approve" | "horde" | "sleep" | "delegate")
+    matches!(name, "think" | "think_json" | "vote" | "approve" | "horde" | "sleep" | "delegate" | "resume" | "deliver")
         || !crate::checker::names::builtin_names().contains(name)
+        // (a handler of the program named like a builtin is that handler)
+        || is_program_handler(name)
 }
+
+thread_local! {
+    /// (handler names, cell names) of the program under verification, when
+    /// `verify` set them: a call is read by what it is, not by its spelling.
+    static PROGRAM: std::cell::RefCell<(std::collections::HashSet<String>, std::collections::HashSet<String>)> = std::cell::RefCell::new(Default::default());
+}
+
+pub(crate) fn set_program_names(names: (std::collections::HashSet<String>, std::collections::HashSet<String>)) {
+    PROGRAM.with(|p| *p.borrow_mut() = names);
+}
+
+fn is_program_handler(name: &str) -> bool { PROGRAM.with(|p| p.borrow().0.contains(name)) }
+fn is_program_cell(name: &str) -> bool { PROGRAM.with(|p| p.borrow().1.contains(name)) }
 
 /// One `if`: each branch under what its condition establishes, then the
 /// join of the branches that fall through.
@@ -411,6 +470,8 @@ fn walk_stmt(stmt: &Statement, span: Span, path: &mut Vec<String>, eff: &mut Han
             if let Expr::FnCall { name: f, args } = &value.node {
                 if f == "get_status" && args.len() == 1 { eff.aliases.insert(name.clone(), render_expr(&args[0].node)); }
             }
+            // `let s = get_status(id) ?? "d"`: the same, with its default
+            if let Some((id, d)) = coalesced(&value.node) { eff.aliases.insert(name.clone(), format!("{}\u{1f}{}", id, d)); }
         }
         Statement::Assign { name, value } => {
             walk_expr(&value.node, span, path, eff);
@@ -542,7 +603,10 @@ fn walk_expr(expr: &Expr, span: Span, path: &mut Vec<String>, eff: &mut HandlerE
                             path: path.clone(),
                             span,
                         });
-                        // the instance is there now
+                        // the instance is there now — and whatever was known
+                        // of an id written another way is forgotten: `let j =
+                        // id … transition(j, "a", "b")` moved `id` too
+                        eff.facts.clear();
                         if let Some(i) = id { eff.facts.insert(i, vec![target]); }
                     }
                     _ => {
@@ -562,8 +626,11 @@ fn walk_expr(expr: &Expr, span: Span, path: &mut Vec<String>, eff: &mut HandlerE
         Expr::MethodCall { target, method, args } => {
             walk_expr(&target.node, span, path, eff);
             for a in args { walk_expr(&a.node, span, path, eff); }
-            if !matches!(method.as_str(), "set" | "get" | "push" | "delete" | "len" | "size" | "keys" | "values" | "entries")
-                && (forgets_states(method) || matches!(&target.node, Expr::Ident(n) if n.chars().next().map_or(false, |c| c.is_ascii_uppercase()))) {
+            // a call into a cell (`Other.set(id)`), or a handler in method form:
+            // whatever the method is called, it may move any instance
+            let into_cell = matches!(&target.node, Expr::Ident(n) if n.chars().next().map_or(false, |c| c.is_ascii_uppercase()) || is_program_cell(n));
+            if into_cell || is_program_handler(method)
+                || (!matches!(method.as_str(), "set" | "get" | "push" | "delete" | "len" | "size" | "keys" | "values" | "entries") && forgets_states(method)) {
                 eff.facts.clear();
             }
         }

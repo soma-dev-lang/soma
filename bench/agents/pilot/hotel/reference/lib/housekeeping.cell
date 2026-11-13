@@ -1,0 +1,17 @@
+flesh Housekeeping {
+    on room_status(room) { return get_status(room) ?? "clean" }
+    on occupy(room) { transition(room, "clean", "occupied")  return "occupied" }
+    on vacate(room) { transition(room, "occupied", "dirty")  return "dirty" }
+    on start_cleaning(room, staff) {
+        transition(room, "dirty", "cleaning")
+        cleaners.set(room, staff)
+        return "cleaning"
+    }
+    on finish_cleaning(room, staff) {
+        require cleaners.get(room) == staff else Forbidden "only {cleaners.get(room)} finishes this room"
+        transition(room, "cleaning", "clean")
+        return "clean"
+    }
+    on block(room) { transition(room, "clean", "out_of_order")  return "out_of_order" }
+    on unblock(room) { transition(room, "out_of_order", "clean")  return "clean" }
+}

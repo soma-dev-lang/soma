@@ -1,0 +1,1 @@
+soma verify app.cell && soma test app.cell — ligne fautive: `let v = deliver("go", id, 1)` (reprend le reste de Visit.wait_close, qui ferme la visite, dans la même invocation ; le produit ne lit pas deliver/resume)

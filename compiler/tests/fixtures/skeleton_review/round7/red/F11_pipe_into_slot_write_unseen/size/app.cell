@@ -1,0 +1,19 @@
+cell A {
+    memory {
+        log: List<Int>
+        invariant log.size <= 2
+    }
+    on w(x: Int) { x |> log.push()
+ return 1 }
+    on probe() {
+        let r = try { w(1)
+ w(1)
+ w(1) }
+        return r.kind ?? "ok"
+    }
+}
+cell test T {
+    rules {
+        assert A.probe() == "invariant"
+    }
+}

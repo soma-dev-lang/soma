@@ -1,0 +1,22 @@
+cell A {
+    on go(n: Int) { emit ping(n) return n }
+}
+cell L1 {
+    memory { got: Map<String, Int> }
+    on ping(n: Int) { got.set("n", n) return n }
+    on seen() { return got.get("n") ?? 0 }
+}
+cell L2 {
+    memory { got: Map<String, Int> }
+    on ping(n: Int) { got.set("n", n + 1) return n }
+    on again() { return ping(7) }
+    on seen() { return got.get("n") ?? 0 }
+}
+cell C { on direct() { return L2.ping(40) } }
+cell test T { rules {
+    assert A.go(3) == 3
+    assert L1.seen() == 3
+    assert L2.seen() == 4
+    assert L2.again() == 7
+    assert C.direct() == 40
+} }

@@ -1,0 +1,1 @@
+soma verify app.cell -> "✓ effects: handler `ask` calls think() at 2 sites … — can dispatch [lookup]" ; python3 fake.py 18765 log.jsonl & soma run app.cell ask hello -> 1 : le 2e think() (sans options) offre [lookup, refund], le modele appelle refund et le slot est ecrit ; effects.rs visit_expr : un think a 1 argument ne remet pas `narrow` a None

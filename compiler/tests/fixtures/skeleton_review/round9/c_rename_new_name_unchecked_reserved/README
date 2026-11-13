@@ -1,0 +1,1 @@
+soma rename app.cell B.tick if (aussi return, on, let, true, cell, require, in) -> exit 0, programme écrit qui ne parse plus. refs.rs:449-452 ne refuse que les builtins.

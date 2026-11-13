@@ -1,0 +1,8 @@
+cell B {
+    memory { hits: Map<String, Int> }
+    on tick(n: Int) { hits.set("h", n) return n }
+    on a4() { let calls = 1
+      let tick = 2
+      return [calls, tick] }
+}
+cell test T { rules { assert B.a4() == [1, 2]  assert B.tick(3) == 3 } }

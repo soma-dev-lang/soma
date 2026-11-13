@@ -1,0 +1,1 @@
+soma check . -> "✓ All checks passed", exit 0 ; soma check lib/stock.cell -> 2 errors (E0041, E0048) in lib/stock.cell:14-15 (test cell of a file skipped as "a part of a program")

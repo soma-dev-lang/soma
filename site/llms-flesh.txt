@@ -1,0 +1,113 @@
+# Soma — writing one body
+
+What you need to write the body of ONE signal from its brief
+(`soma skeleton app.cell Cell.signal`), and nothing more. The whole
+language is `soma docs agent`; the skeleton rules are `soma docs skeleton`.
+
+## The shape of an answer
+
+```soma
+on take(sku, n) {                      // the signal's parameters, WITHOUT types
+    let have = level(sku)
+    if have < n { return false }
+    items.set(sku, have - n)
+    return true
+}
+on _note(id: String, sku: String) {    // a private helper: `_name`, WITH types; optional
+    log.set(id, sku)
+}
+```
+No return type on a handler. A handler is atomic: if it raises, everything
+it wrote and every transition it made is undone.
+
+**You may only touch what the brief lists** — `soma check` refuses the
+rest and names the missing clause:
+`reads` slots you may read · `writes` slots you may read and write ·
+`moves` edges you may take (and you may then read that machine) ·
+`calls` the signals and effectful builtins you may call · `emits`.
+A helper's effects count as the signal's. A lambda that touches memory,
+calls a handler or moves a machine is written only where it runs — as the
+direct argument of a builtin (`xs.map(x => …)`, `xs.filter(…)`): do not
+bind it, store it, pass it to a signal or return it.
+
+## Statements and expressions
+
+```soma
+let x = 1                 x = x + 1                  // `let` binds, `=` reassigns
+if a > b { … } else if c { … } else { … }
+let size = if n > 5 { "L" } else { "S" }             // `if` is an expression; no ternary
+for i in range(0, n) { … }      for x in xs { … }      while w < 2 { … }
+let label = match x {                                // arms use `->`, `||` joins patterns, `_` is the rest
+    0 -> "zero"
+    1 || 2 -> "small"
+    _ -> "big"
+}
+return value
+```
+- Numbers: `+ - *`, `/` is a real division (`7 / 2` is `3.5`): for integers
+  write `idiv(a, b)`; `a % b`; `min(a, b)`, `max(a, b)`, `abs(x)`.
+- Booleans: `&&`, `||`, `!x`. Comparison: `== != < <= > >=`.
+- Strings: `"total {x}"` interpolates; no `"` inside the braces — bind the
+  value to a `let` first. `a + b` joins two strings. `len(s)`,
+  `contains(s, t)`, `split(s, ",")`, `join(parts, ",")`, `lowercase(s)`,
+  `to_string(x)`, `to_int(s)`, `starts_with(s, t)`, `ends_with(s, t)`,
+  `substring(s, from, to)`.
+- Lists: `[1, 2]`, `xs.push(v)` on a local list, `xs ++ ys`, `len(xs)`,
+  `xs[0]`, `xs.map(x => x + 1)`, `xs.filter(x => x > 0)`,
+  `xs.sort_by(x => x.qty)`.
+- Maps: `map("ok", true, "total", t)` — keys and values in turn; read a
+  field with `m.total` or `m["total"]`. This is how a `-> Map` answer is built.
+- A declared type (the brief prints it under `types`): build it with
+  `Lot { sku: sku, qty: 3 }` or `Refused("why")`, read a field with `l.qty`,
+  take variants apart with `match r { Paid { id, cents } -> …  Refused(why) -> … }`.
+  A slot `Map<String, Lot>` stores a `Lot`, not a `map(…)`.
+- Absence is `()`. `a ?? b` is `b` when `a` is `()`. A value that may be
+  absent must be defaulted before arithmetic or comparison:
+  `(counts.get(k) ?? 0) + 1`.
+
+## Memory slots (only those the brief lists)
+
+```soma
+stock.get(sku) ?? 0        stock.set(sku, n)        stock.delete(sku)       stock.has(sku)
+stock.keys                 stock.size               for k in stock.keys { … }
+tags.push(v)               tags.size                for t in tags { … }        // a List slot
+stock.values               stock.entries.filter(e => e.value > 0)             // each entry: `e.key`, `e.value`
+```
+`slot.get(k)` is `()` when the key is absent: test it (`if lot == () { … }`)
+or default it before reading a field — or go through `.entries`, where
+every value is present. A write that breaks an
+invariant of the slot raises (kind `invariant`) and writes nothing.
+
+## State machines (the brief prints every edge)
+
+```soma
+transition(id, "open", "paid")          // take THAT edge; raises if the instance is not in `open`
+get_status(id) ?? "open"                // absent (`()`, edition 2027) until the id's first transition: default it to the initial state
+```
+Always name the source. `transition(id, "paid")` takes whichever edge into
+`paid` the instance is on, so the frame must then list every one of them —
+testing `get_status(id)` first does not change that.
+
+## Calling
+
+```soma
+level(sku)                 // a signal of the same cell (it must be under `calls`)
+Stock.take(sku, 1)         // a signal of another cell, as the brief writes it
+_note(id, sku)             // your own helper
+emit low_stock(sku, n)     // an event (it must be under `emits`): every listener runs, in this same atomic step
+```
+The brief gives each callee's signature, comment, frame and contract; a
+`requires` on a callee is yours to respect at the call.
+
+## Refusing
+
+```soma
+require n >= 1 else BadAmount "n must be at least 1"     // raises kind "BadAmount" with that message
+fail("NotFound", "no order '{id}'")                      // the same, anywhere
+let r = try { Stock.take(sku, n) }                       // r.error is () on success; else r.kind, r.detail
+if r.error != () { return map("ok", false, "reason", r.kind) }
+let value = r.value
+```
+When the brief says "returns false / a map with ok: false", return it; when
+it says "error kind X", raise it with `require … else X "…"` or `fail`.
+`response(status, map(…))` builds an HTTP answer (its status reads as `._status`).

@@ -1,0 +1,1 @@
+soma verify app.cell -> "✓ h: ensures result >= 0 — proven for every returned value" ; soma test app.cell: h(-5) raises kind ensures (returned -5). Faulty line: on hh(B: Int) { return B.g() }  (runs A.g(B) by UFCS, read as cell B.g whose face ensures result >= 0)

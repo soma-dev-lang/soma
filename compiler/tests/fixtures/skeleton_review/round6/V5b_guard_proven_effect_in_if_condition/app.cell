@@ -1,0 +1,26 @@
+skeleton G {
+    memory { cap: Map<String, Int> [persistent] }
+    state m {
+        initial: a
+        a -> b { guard { (cap.get("x") ?? 0) > 0 } }
+    }
+    face {
+        signal open() -> Int             writes cap
+        signal go(id: String) -> Int     writes cap   moves a -> b
+    }
+}
+flesh G {
+    on open() { cap.set("x", 5)  return 1 }
+    on _zero() { cap.set("x", 0)  return 1 }
+    on go(id) {
+        require (cap.get("x") ?? 0) > 0 else Closed "closed"
+        if _zero() == 1 { transition(id, "a", "b") }
+        return 1
+    }
+}
+cell test T {
+    rules {
+        assert G.open() == 1
+        assert (try { G.go("k") }).kind == "guard_failed"
+    }
+}

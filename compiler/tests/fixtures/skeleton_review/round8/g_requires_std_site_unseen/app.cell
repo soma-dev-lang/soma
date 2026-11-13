@@ -1,0 +1,14 @@
+cell B {
+    memory { c: Map<String, Int>
+       invariant c >= 0 }
+    face { signal count(v: Int, a: Int, b: Int, c2: Int, d: Int) -> Int
+              requires v > 0 }
+    on count(v: Int, a: Int, b: Int, c2: Int, d: Int) { c.set("k", v) return v }
+    on ok() { return count(5, 1, 2, 3, 4) }
+    on read() { return c.get("k") ?? 0 }
+}
+cell A {
+    on bad() { let r = try { std.count(0 - 5, 1, 2, 3, 4) }
+       return r.kind ?? "ok" }
+}
+cell test T { rules { assert A.bad() == "requires" } }

@@ -1,0 +1,29 @@
+flesh Paiements {
+    on payer(id, facture, montant, moyen) {
+        require paiements.get(id) == () else PaiementExiste "paiement {id}"
+        require moyen == "carte" || moyen == "especes" || moyen == "cheque" else MoyenInconnu "{moyen}"
+        let reste = Facturation.enregistrer_paiement(facture, montant)
+        paiements.set(id, map("facture", facture, "montant", montant, "moyen", moyen))
+        par_facture.set(facture, (par_facture.get(facture) ?? 0) + montant)
+        transition(id, "initie", "encaisse")
+        let n = Audit.consigner("caisse", "paiement.payer", id)
+        return reste
+    }
+    on rembourser(id) {
+        let p = paiements.get(id)
+        require p != () else PaiementInconnu "paiement {id}"
+        let ok = Facturation.autoriser_remboursement(p.facture)
+        transition(id, "encaisse", "rembourse")
+        par_facture.set(p.facture, (par_facture.get(p.facture) ?? 0) - p.montant)
+        let n = Audit.consigner("caisse", "paiement.rembourser", id)
+        return p.montant
+    }
+    on paiement(id) {
+        let p = paiements.get(id)
+        require p != () else PaiementInconnu "paiement {id}"
+        return p
+    }
+    on total_paye(facture) { return par_facture.get(facture) ?? 0 }
+    on total_encaisse() { return sum(par_facture.values) }
+    on statut_paiement(id) { return get_status(id) ?? "initie" }
+}

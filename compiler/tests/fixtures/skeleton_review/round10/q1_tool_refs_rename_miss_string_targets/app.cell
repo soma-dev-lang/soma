@@ -1,0 +1,21 @@
+cell B {
+    memory { hits: Map<String, Int> }
+    on bump(n: Int) { hits.set("h", n)  return 7 }
+    on seen() { return hits.get("h") ?? 0 }
+}
+cell A {
+    on a08() { let v = vote("B.bump", 1, 1)
+        return B.seen() }
+    on a09() { let h = horde("B.bump", [2])
+        return B.seen() }
+    on a15(k: Int) { return "{1 |> k.bump2}" }
+    on a18() { return std.delegate("B", "bump", 3) }
+    on bump2(k: Int, n: Int) { return k + n }
+}
+cell test T {
+    rules {
+        assert A.a08() == 1
+        assert A.a18() == 7
+        assert A.a15(4) == "5"
+    }
+}

@@ -1,0 +1,16 @@
+cell A {
+    memory { c: Map<String, String> }
+    face {
+        signal f(n: Int) -> Int
+            requires n > 0
+    }
+    on f(n: Int) { return n }
+    on seen() { return c.get("seen") ?? "none" }
+    on ok() { return f(5) }
+    on bad() { let h = horde(A.f, [0 - 5], map("concurrency", 1, "on_error", "_err"))
+ return h }
+ on _err(input: Int, error: Map) { c.set("seen", error.kind) }
+}
+
+cell test T { rules { assert A.bad() != ""
+ assert A.seen() == "requires" } }

@@ -128,6 +128,11 @@ pub fn cmd_serve(path: &PathBuf, port: u16, host: &str, verbose: bool, join: Opt
             }
             process::exit(1);
         }
+    } else if !crate::checker::lock::structure_holds(&program, path, &source) {
+        // --no-check skips the static gates, not the design: a body
+        // outside its frame or a skeleton that left its lock does not serve
+        eprintln!("{} — `--no-check` does not lift the frames or the lock", path.display());
+        process::exit(1);
     }
 
     let cell = program
@@ -3114,7 +3119,7 @@ pub(crate) fn mutating_handlers(cell: &ast::CellDef, foreign: &std::collections:
                 if let Expr::Ident(t) = &target.node {
                     if slots.contains(t) && WRITES.contains(&method.as_str()) { writes = true; }
                     // `Other.h(…)`: another cell may write
-                    if t.chars().next().map_or(false, |c| c.is_uppercase()) && !slots.contains(t) { writes = true; }
+                    if crate::checker::names::cellish(t) && !slots.contains(t) { writes = true; }
                 }
             }
             _ => {}
@@ -3125,7 +3130,7 @@ pub(crate) fn mutating_handlers(cell: &ast::CellDef, foreign: &std::collections:
             let mut hit = false;
             crate::checker::literals::for_each_stmt_deep(stmts, &mut |st| match st {
                 Statement::MethodCall { target, method, .. } => if (slots.contains(target) && WRITES.contains(&method.as_str()))
-                    || target.chars().next().map_or(false, |c| c.is_uppercase()) { hit = true; },
+                    || crate::checker::names::cellish(target) { hit = true; },
                 Statement::IndexSet { name, .. } | Statement::Assign { name, .. } => if slots.contains(name) || slots.contains(name.split('.').next().unwrap_or("")) { hit = true; },
                 Statement::Emit { .. } => hit = true,
                 _ => {}

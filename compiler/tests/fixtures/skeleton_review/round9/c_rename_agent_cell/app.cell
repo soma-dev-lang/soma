@@ -1,0 +1,15 @@
+cell agent R {
+    face {
+        signal ask(q: String) -> String
+        tool lookup(q: String) -> String "Look up"
+    }
+    on lookup(q: String) { return "found {q}" }
+    on ask(q: String) {
+        return think("q {q}", map("tools_allowed", ["lookup"], "max_tokens", 100))
+    }
+}
+cell test T { rules {
+    mock think "hello"
+    assert R.ask("a") == "hello"
+    assert R.lookup("z") == "found z"
+} }

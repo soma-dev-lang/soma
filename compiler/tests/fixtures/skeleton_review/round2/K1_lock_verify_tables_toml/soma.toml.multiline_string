@@ -1,0 +1,6 @@
+[package]
+name = "x"
+description = """
+[verify.after.Rejected]
+never = ["Paid"]
+[x]"""

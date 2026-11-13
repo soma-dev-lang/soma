@@ -1,0 +1,20 @@
+cell A {
+    state m {
+        initial: x
+        x -> y { guard { amount > 0 } }
+        y -> x
+    }
+    on go(k: String, amount: Int) {
+ if amount > 0 && len(try { amount = 0 - 5 }) >= 0 { transition(k, "x", "y") }
+ return 1 }
+    on go2(k: String, amount: Int) {
+ require amount > 0 && len(try { amount = 0 - 5 }) >= 0 else B
+ transition(k, "x", "y")
+ return 1 }
+    on probe() { let r = try { go("k", 5) }
+        return r.kind ?? "ok" }
+    on probe2() { let r = try { go2("k2", 5) }
+        return r.kind ?? "ok" }
+}
+cell test T { rules { assert A.probe() == "guard_failed"
+ assert A.probe2() == "guard_failed" } }

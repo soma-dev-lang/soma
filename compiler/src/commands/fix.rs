@@ -40,6 +40,9 @@ fn run_checker(path: &PathBuf, registry: &mut Registry) -> Vec<CheckError> {
     load_meta_cells_from_program(&program, registry, path);
 
     let mut chk = checker::Checker::new(registry);
+    // (the path: skeleton.lock is found from the program — `fix` said "All
+    // checks passed" on a program `check` refused)
+    chk.source = Some((file_str.clone(), source.clone()));
     chk.check(&program);
     chk.errors
 }
@@ -646,7 +649,8 @@ pub fn cmd_fix(path: &PathBuf, json: bool, registry: &mut Registry) {
             doc["note"] = serde_json::json!("errors found but none are auto-fixable");
             println!("{}", doc);
         } else {
-            println!("  \u{2717} No auto-fixable errors found.");
+            println!("  \u{2717} No auto-fixable errors found. `soma check` refuses the program for:");
+            for e in &errors { println!("    error: {}", e.to_string().lines().next().unwrap_or("")); }
         }
         // errors remain: a failing exit, as `soma check` gives
         std::process::exit(1);

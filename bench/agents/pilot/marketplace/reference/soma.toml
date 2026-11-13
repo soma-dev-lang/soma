@@ -1,0 +1,11 @@
+[package]
+name = "marketplace"
+version = "0.1.0"
+description = "Marketplace — a two-sided market designed skeleton-first: the whole design in one file, the bodies in lib/"
+edition = "2027"
+
+# The two lifecycles. Rules between them are theorems, stated here and
+# proven by `soma verify` on the product of the machines.
+[verify]
+cells = ["Orders", "Escrow"]
+deadlock_free = true

@@ -1,0 +1,15 @@
+// A match PATTERN string is interpolated at run time; no analysis reads its segments.
+// Here the segment reassigns the local `v`, proven as 5.
+cell A {
+    memory { c: Map<String, Int>  invariant c >= 0 }
+    on w(k: String, x: Int) { let v = 5
+ let r = match k { "{(if true { v = x
+  1 } else { 0 })}" -> 1
+   _ -> 0 }
+ c.set(k, v)
+ return 1 }
+    on probe() { let r = try { w("k", 0 - 5) }
+ print(r)
+ return r.kind ?? "ok" }
+}
+cell test T { rules { assert A.probe() == "invariant" } }

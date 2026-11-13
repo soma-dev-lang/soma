@@ -1,0 +1,9 @@
+cell A {
+    memory { seq: Map<String, Int>  invariant value >= seq.get(key) }
+    on w(k: String, n: Int) { require n >= 0 else Neg
+        seq.set(k, (seq.get(k) ?? 0) + n)
+        return 1 }
+    on probe() { let r = try { w("k", 0) }
+        return r.kind ?? "ok" }
+}
+cell test T { rules { assert A.probe() == "invariant" } }

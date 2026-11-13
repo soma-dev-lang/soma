@@ -1,0 +1,41 @@
+flesh Notifications {
+    on _ranger(type: String, cible: String, message: String) {
+        boite.push(map("type", type, "cible", cible, "message", message, "lue", false))
+        compteurs.set(type, (compteurs.get(type) ?? 0) + 1)
+        return boite.len - 1
+    }
+    on rdv_change(data) {
+        let id = data.id
+        let etat = data.etat
+        return _ranger("rdv", data.patient, "rdv {id}: {etat}")
+    }
+    on facture_change(data) {
+        let id = data.id
+        let etat = data.etat
+        return _ranger("facture", data.patient, "facture {id}: {etat}")
+    }
+    on resultat_pret(data) {
+        let id = data.id
+        let type = data.type
+        return _ranger("resultat", data.patient, "resultat {type} disponible ({id})")
+    }
+    on stock_bas(data) {
+        let medicament = data.medicament
+        let niveau = data.niveau
+        let seuil = data.seuil
+        return _ranger("stock", "pharmacie", "stock bas {medicament}: {niveau} < {seuil}")
+    }
+    on notifications_de(cible) {
+        return boite.filter(n => n.cible == cible).map(n => n.message)
+    }
+    on compter_type(type) { return compteurs.get(type) ?? 0 }
+    on marquer_lue(index) {
+        require index >= 0 && index < boite.len else NotificationInconnue "index {index}"
+        let n = boite[index]
+        if n.lue { return false }
+        n.lue = true
+        boite[index] = n
+        return true
+    }
+    on non_lues() { return boite.count(n => !n.lue) }
+}

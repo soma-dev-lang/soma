@@ -1,0 +1,6 @@
+cell B {
+    memory { hits: Map<String, Int> }
+    on tick(n: Int) { hits.set("h", n) return n }
+}
+cell D { on d2() { return tick(21) } }
+cell test T { rules { assert D.d2() == 21 } }

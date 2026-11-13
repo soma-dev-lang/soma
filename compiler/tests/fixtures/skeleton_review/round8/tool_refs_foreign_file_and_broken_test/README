@@ -1,0 +1,1 @@
+soma refs app.cell Stock.level (and soma skeleton app.cell Stock.level) -> lists "declared old/app_backup.cell:2, body old/app_backup.cell:3, called by Stock.g / Zed.z" from a file the program never imports (false positives) ; and omits tests/broken.cell:3 `assert Stock.level("a")` without a word (file with a syntax error is skipped silently)

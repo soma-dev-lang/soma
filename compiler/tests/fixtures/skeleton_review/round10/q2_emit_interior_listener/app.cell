@@ -1,0 +1,48 @@
+cell Visit {
+    state v {
+        initial: waiting
+        waiting -> open
+        open -> done
+        done -> open
+    }
+    on open_visit(id: String) { transition(id, "waiting", "open")  return "open" }
+    on close_visit(id: String) { transition(id, "open", "done")  return "done" }
+    on status(id: String) { return get_status(id) ?? "waiting" }
+}
+cell Desk {
+    memory { seen: Map<String, String> }
+    state d {
+        initial: none
+        none -> requested
+    }
+    on st(id: String) { return get_status(id) ?? "none" }
+    on saw(id: String) { return seen.get(id) ?? "-" }
+
+    on go(id: String) {
+
+        emit ev(id)
+        transition(id, "none", "requested")
+        seen.set(id, Visit.status(id))
+        return 1
+    }
+}
+cell Box {
+    interior {
+        cell Src {
+            face { signal ev(id: String) }
+            on ev(id: String) { return 0 }
+        }
+        cell Gate {
+            face { await ev(id: String) }
+            on ev(id: String) { Visit.open_visit(id)  return 1 }
+        }
+    }
+    on kick(id: String) { return 1 }
+}
+cell test T {
+    rules {
+        let r = try { Desk.go("k") }
+        assert Desk.st("k") == "requested"
+        assert Desk.saw("k") == "waiting"
+    }
+}

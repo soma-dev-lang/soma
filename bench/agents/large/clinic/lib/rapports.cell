@@ -1,0 +1,29 @@
+// Rapports — lectures agrégées inter-cellules. N'écrit rien, ne possède aucune mémoire.
+skeleton Rapports {
+    face {
+        // L'état de la visite dans chaque cellule : { rdv, consultation, ordonnance, facture, reste_du }.
+        // ordonnance / facture valent "aucune" quand la visite n'en a pas (erreur *Inconnue attrapée).
+        // Erreur `RdvInconnu` (propagée) si la visite n'existe pas.
+        signal dossier_visite(id: String) -> Map
+            calls Agenda.statut_rdv, Consultations.statut_consultation, Ordonnances.statut_ordonnance, Facturation.statut_facture, Facturation.reste_du
+        // { nom, actif, rdvs: nombre de rdvs, couvert: Bool, notifications: nombre de messages }.
+        // Erreur `PatientInconnu` (propagée).
+        signal activite_patient(patient: String) -> Map
+            calls Patients.fiche, Patients.est_actif, Agenda.rdvs_du_patient, Assurance.est_couvert, Notifications.notifications_de
+        // { facture, impaye, encaisse, engage } en centimes : Facturation.totaux, Paiements.total_encaisse,
+        // Assurance.total_engage.
+        signal finances() -> Map
+            calls Facturation.totaux, Paiements.total_encaisse, Assurance.total_engage
+        // { sous_seuil: List<String>, perimes: List<String> } à la date donnée.
+        signal alertes_stock(date: String) -> Map
+            calls Pharmacie.sous_seuil, Pharmacie.lots_perimes
+        // Pourcentage entier (idiv) de rdvs `absent` parmi ceux qui sont `absent` ou `termine` ; 0 s'il n'y en a aucun.
+        signal taux_absence() -> Int
+            ensures result >= 0 && result <= 100
+            calls Agenda.compter_statut
+        // { patients, finances: finances(), alertes: alertes_stock(date), absence: taux_absence(),
+        //   audit: Audit.taille(), non_lues: Notifications.non_lues() }.
+        signal tableau_de_bord(date: String) -> Map
+            calls finances, alertes_stock, taux_absence, Patients.compter, Audit.taille, Notifications.non_lues
+    }
+}

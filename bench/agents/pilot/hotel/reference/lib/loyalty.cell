@@ -1,0 +1,14 @@
+flesh Loyalty {
+    on earn(guest, cash_amount) {
+        let now_has = (balance.get(guest) ?? 0) + idiv(cash_amount, 100)
+        balance.set(guest, now_has)
+        return now_has
+    }
+    on redeem(guest, points) {
+        let has = balance.get(guest) ?? 0
+        if has < points { return false }
+        balance.set(guest, has - points)
+        return true
+    }
+    on points_of(guest) { return balance.get(guest) ?? 0 }
+}

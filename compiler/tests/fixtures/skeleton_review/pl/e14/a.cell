@@ -1,0 +1,16 @@
+cell App {
+    interior {
+        skeleton Inner {
+            memory { n: Map<String, Int> }
+            face {
+                signal bump() -> Int  writes n
+                signal peek() -> Int  writes n
+            }
+        }
+    }
+    on go() { return bump() }
+}
+flesh Inner {
+    on bump() { n.set("k", (n.get("k") ?? 0) + 1)  return n.get("k") }
+    on peek() { return n.get("k") ?? 0 }
+}

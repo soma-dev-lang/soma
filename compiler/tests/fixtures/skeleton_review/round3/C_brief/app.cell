@@ -1,0 +1,58 @@
+use lib::stock
+use lib::flesh_orders
+
+cell type Line { variants { Line { sku: String, qty: Qty } } }
+cell type Qty { variants { Qty { n: Int } } }
+cell type Verdict { variants { Ok { tx: String }  Refused { why: String }  Pending } }
+
+// Orders: the life of one order.
+// Second line of the cell comment.
+skeleton Orders {
+    const MAX_LINES = 5
+    memory {
+        log: Map<String, String> [persistent]   // one line per order id
+        // how many lines each order has
+        counts: Map<String, Int> [persistent]
+        invariant counts <= 5
+    }
+    state flow {
+        initial: placed
+        placed -> packed      // stock was taken
+        placed -> cancelled
+        packed -> shipped
+    }
+    face {
+        // Place an order: take the stock, then pack.
+        // Returns Refused { why: "no stock" } when Stock.take says false.
+        signal place(id: String, line: Line) -> Verdict
+            requires len(id) > 0
+            writes log, counts
+            moves placed -> packed
+            calls Stock.take, next_id, _std
+            emits placed_evt
+
+        signal cancel(id: String) -> String     moves placed -> cancelled   // only before packing
+        // Ship it.
+        signal ship(id: String) -> String       moves packed -> shipped  calls place
+        signal status(id: String) -> String     reads flow
+        // tool comment: looks an order up for the model
+        tool lookup(id: String) -> String "Look an order up"   reads log
+        signal tick() -> Int   calls ship
+        signal placed_evt(id: String) -> Int   writes log
+    }
+    every 5s { tick() }
+    interior {
+        // Audit: inner ledger
+        skeleton Audit {
+            memory { seen: List<String> [persistent] }
+            face {
+                // record one id
+                signal record(id: String) -> Int   writes seen
+            }
+        }
+    }
+}
+cell Front {
+    on submit(id: String) { return Orders.place(id, Line { sku: "a", qty: Qty { n: 1 } }) }
+    on drop(id: String) { return Orders.cancel(id) }
+}

@@ -1,0 +1,31 @@
+skeleton A {
+    memory {
+        own: Map<String, Int>
+        lst: List<Int>
+    }
+    face {
+        signal fill() -> Int                 writes own
+        signal size() -> Int                 reads own, lst
+        signal go(slot: String, k: String) -> Int      // no clause: a pure function
+        signal add(n: Int) -> Int                      // no clause: a pure function
+    }
+}
+flesh A {
+    on fill() { own.set("k", 1) return 1 }
+    on size() { return own.size + lst.size }
+    on go(slot, k) { let s = "{k |> slot.delete}"
+ return 1 }
+    on add(n) { let name = "lst"
+ let s = "{n |> name.push}"
+ return 1 }
+}
+cell test T {
+    rules {
+        assert A.fill() == 1
+        assert A.size() == 1
+        assert A.go("own", "k") == 1
+        assert A.size() == 1
+        assert A.add(5) == 1
+        assert A.size() == 1
+    }
+}

@@ -1,0 +1,12 @@
+cell Z {
+    memory { c: Map<String, Int> [persistent]  invariant c >= 0 }
+    on put(k: String, n: Int) { require n >= 0 else Neg
+        c.set(k, n) return 1 }
+}
+cell B {
+    memory { c: Map<String, Int> [persistent]  invariant c <= 100 }
+    on put(k: String, n: Int) { require n <= 100 else Big
+        c.set(k, n) return 1 }
+    on drop1(k: String) { c.set(k, (c.get(k) ?? 0) - 1) return c.get(k) }
+    on look(k: String) { return c.get(k) ?? 0 }
+}

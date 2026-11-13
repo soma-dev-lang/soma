@@ -1,0 +1,177 @@
+// flesh: Factory, Product, Research
+
+flesh Factory {
+    on build(id, units) {
+        require capacity.get(id) == () else Exists "plant {id} already exists"
+        require capacity.size < MAX_PLANTS else Full "at most {MAX_PLANTS} plants"
+        if !Finance.spend(units * BUILD_COST_PER_UNIT, "capex") { return false }
+        capacity.set(id, units)
+        yield_bps.set(id, 7000)
+        ramp_left.set(id, 2)
+        wear.set(id, 0)
+        automation.set(id, 0)
+        transition(id, "planned", "building")
+        return true
+    }
+    on advance(id) {
+        let s = get_status(id) ?? "planned"
+        if s == "building" { transition(id, "building", "ramping") }
+        if s == "ramping" {
+            let ramp = max([0, (ramp_left.get(id) ?? 0) - 1])
+            ramp_left.set(id, ramp)
+            if ramp == 0 { transition(id, "ramping", "running") }
+        }
+        if s == "maintenance" {
+            wear.set(id, 0)
+            transition(id, "maintenance", "running")
+        }
+        return get_status(id) ?? "planned"
+    }
+    on maintain(id) {
+        if !Finance.spend(500, "opex") { return false }
+        transition(id, "running", "maintenance")
+        return true
+    }
+    on automate(id) {
+        require get_status(id) == "running" else NotRunning "plant {id} is not running"
+        let level = automation.get(id) ?? 0
+        if level >= 5 { return false }
+        if !Finance.spend(2000 * (level + 1), "capex") { return false }
+        automation.set(id, level + 1)
+        yield_bps.set(id, min([10000, (yield_bps.get(id) ?? 0) + 400]))
+        return true
+    }
+    on produce(id, wanted) {
+        if get_status(id) != "running" { return 0 }
+        let w = wear.get(id) ?? 0
+        let y = max([0, min([10000, (yield_bps.get(id) ?? 0) + Research.effect("yield_bps")]) - w * 20])
+        let made = min([wanted, capacity.get(id) ?? 0])
+        let drift = if Attention.attended("factory") { 2 } else { 5 }
+        wear.set(id, min([100, w + drift]))
+        return idiv(made * y, 10000)
+    }
+    on close(id) {
+        transition(id, "running", "closed")
+        return "closed"
+    }
+    on plant_ids() { return capacity.keys }
+    on advance_all() {
+        let n = 0
+        for id in plant_ids() {
+            let s = advance(id)
+            n += 1
+        }
+        return n
+    }
+}
+
+flesh Product {
+    on launch(id, seg, p, cost, q) {
+        require segment.get(id) == () else Exists "product {id} already exists"
+        segment.set(id, seg)
+        price.set(id, p)
+        unit_cost.set(id, cost)
+        quality.set(id, q)
+        stock.set(id, 0)
+        return id
+    }
+    on reprice(id, p) {
+        require price.get(id) != () else Missing "no product {id}"
+        price.set(id, p)
+        return p
+    }
+    on stock_in(id, units) {
+        require unit_cost.get(id) != () else Missing "no product {id}"
+        let c = max([1, idiv((unit_cost.get(id) ?? 1) * (10000 - Research.effect("bom_bps")), 10000)])
+        if !Finance.spend(units * c, "cogs") { return 0 }
+        stock.set(id, (stock.get(id) ?? 0) + units)
+        return units
+    }
+    on sell(id, units) {
+        let have = stock.get(id) ?? 0
+        let n = min([units, have])
+        stock.set(id, have - n)
+        let rev = n * (price.get(id) ?? 0)
+        let c = Finance.earn(rev, "rev")
+        return rev
+    }
+    on offer(id) {
+        require segment.get(id) != () else Missing "no product {id}"
+        return map("id", id, "segment", segment.get(id), "price", price.get(id),
+                   "quality", min([100, (quality.get(id) ?? 0) + Research.effect("quality")]),
+                   "stock", stock.get(id) ?? 0)
+    }
+    on product_ids() { return segment.keys }
+}
+
+flesh Research {
+    on propose(id, dom, quarterly) {
+        require trl.get(id) == () else Exists "program {id} already exists"
+        require trl.size < MAX_PROGRAMS else Full "at most {MAX_PROGRAMS} programs"
+        trl.set(id, 1)
+        budget.set(id, quarterly)
+        domain.set(id, dom)
+        transition(id, "proposed", "active")
+        return "active"
+    }
+    on pause(id) { transition(id, "active", "paused")  return "paused" }
+    on resume(id) { transition(id, "paused", "active")  return "active" }
+    on cancel(id) { transition(id, "cancelled")  return "cancelled" }
+    on work(id) {
+        require get_status(id) == "active" else NotActive "program {id} is not active"
+        let b = budget.get(id) ?? 0
+        if !Finance.spend(b, "rd") { return "unfunded" }
+        let r = Rng.roll(100)
+        if r < 5 {
+            transition(id, "active", "dead_end")
+            return "dead_end"
+        }
+        let bonus = if Attention.attended("rd") { 10 } else { 0 }
+        let need = 60 - min([30, idiv(b, 100)])
+        if r + bonus < need { return "stalled" }
+        let t = (trl.get(id) ?? 1) + 1
+        trl.set(id, t)
+        if t >= 6 {
+            transition(id, "active", "prototype")
+            return "prototype"
+        }
+        return "advanced"
+    }
+    on commercialize(id, cost) {
+        if !Finance.spend(cost, "rd") { return false }
+        commercial_left.set(id, 2)
+        transition(id, "prototype", "commercializing")
+        return true
+    }
+    on shelve(id) { transition(id, "prototype", "shelved")  return "shelved" }
+    on _effect_of(dom: String) {
+        if dom == "manufacturing" { return ["yield_bps", 500] }
+        if dom == "materials" { return ["bom_bps", 800] }
+        if dom == "safety" { return ["quality", 10] }
+        return ["demand_bps", 500]
+    }
+    on ship(id) {
+        let left = commercial_left.get(id) ?? 0
+        if left > 1 {
+            commercial_left.set(id, left - 1)
+            return "commercializing"
+        }
+        commercial_left.set(id, 0)
+        let e = _effect_of(domain.get(id) ?? "")
+        effects.set(e[0], min([5000, (effects.get(e[0]) ?? 0) + e[1]]))
+        transition(id, "commercializing", "commercialized")
+        return "commercialized"
+    }
+    on effect(key) { return effects.get(key) ?? 0 }
+    on stage(id) { return get_status(id) ?? "proposed" }
+    on program_ids() { return trl.keys }
+    on work_all() {
+        let out = []
+        for id in program_ids() {
+            let s = stage(id)
+            if s == "active" { out.push(id + ":" + work(id)) }
+            if s == "commercializing" { out.push(id + ":" + ship(id)) }
+        }
+        return out
+    }
+}

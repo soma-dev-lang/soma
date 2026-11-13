@@ -1,0 +1,44 @@
+skeleton A {
+    memory {
+        verdicts: Map<String, Int>
+    }
+    state flow {
+        initial: a
+        a -> b
+    }
+    face {
+        signal start(n: Int) -> Int       calls vote
+        signal start2(n: Int) -> Int      calls vote
+        signal start3(n: Int) -> Int      calls horde
+        signal seen() -> Int              reads verdicts
+        signal st(id: String) -> String   reads flow
+    }
+}
+flesh A {
+    on start(n) {
+        let v = vote("_w", n, 1)
+        return 1
+    }
+    on start2(n) {
+        let v = vote(_w2, n, 1)
+        return 1
+    }
+    on start3(n) {
+        let v = horde("_w3", [n], map("concurrency", 1))
+        return 1
+    }
+    on _w(x: Int) { verdicts.set("k", x) return 1 }
+    on _w2(x: Int) { transition("k", "a", "b") return 1 }
+    on _w3(x: Int) { verdicts.set("h", x) return 1 }
+    on seen() { return (verdicts.get("k") ?? 0) + (verdicts.get("h") ?? 0) }
+    on st(id) { return get_status(id) ?? "a" }
+}
+cell test T {
+    rules {
+        assert A.start(4) == 1
+        assert A.start2(4) == 1
+        assert A.start3(3) == 1
+        assert A.seen() == 7
+        assert A.st("k") == "b"
+    }
+}

@@ -1,0 +1,83 @@
+// TURNSTILE — a signal that may take any edge, and says so.
+//
+// `push` hands the visitor's action straight to transition(): the machine
+// itself refuses what it has no edge for (a coin in an unlocked turnstile,
+// a push on a locked one). The target is computed at run time, so no list
+// of edges can describe the body — the frame says `moves * -> *`: this
+// signal can take ANY edge of the machine. It is one visible line in the
+// skeleton; `count` next to it shows the usual, narrow way.
+//
+//   soma check    turnstile_any_edge.cell
+//   soma verify   turnstile_any_edge.cell
+//   soma test     turnstile_any_edge.cell
+
+skeleton Turnstile {
+    memory {
+        passes: Map<String, Int> [persistent]
+        invariant passes >= 0
+    }
+
+    state gate {
+        initial: locked
+        locked -> unlocked          // a coin
+        unlocked -> locked          // a push: one person goes through
+        * -> broken
+        broken -> locked            // the technician
+    }
+
+    face {
+        signal act(id: String, action: String) -> String
+            writes passes
+            moves * -> *
+        signal repair(id: String) -> String             moves broken -> locked
+        signal count(id: String) -> Int                 reads passes
+        signal state_of(id: String) -> String           reads gate
+    }
+}
+
+flesh Turnstile {
+    on act(id, action) {
+        let target = match action {
+            "coin" -> "unlocked"
+            "push" -> "locked"
+            "kick" -> "broken"
+            _ -> fail("UnknownAction", "'{action}' is not coin, push or kick")
+        }
+        let before = get_status(id) ?? "locked"
+        transition(id, target)                          // the machine decides
+        if before == "unlocked" && target == "locked" {
+            passes.set(id, (passes.get(id) ?? 0) + 1)
+        }
+        return target
+    }
+
+    on repair(id) {
+        transition(id, "broken", "locked")
+        return "locked"
+    }
+
+    on count(id) {
+        return passes.get(id) ?? 0
+    }
+
+    on state_of(id) {
+        return get_status(id) ?? "locked"
+    }
+}
+
+cell test TurnstileTests {
+    rules {
+        assert_fails act("g1", "push")                   // locked: no edge locked -> locked
+        assert act("g1", "coin") == "unlocked"
+        assert_fails act("g1", "coin")                   // already unlocked
+        assert act("g1", "push") == "locked"
+        assert count("g1") == 1
+
+        assert act("g1", "kick") == "broken"
+        assert_fails act("g1", "coin")                   // broken: only the technician
+        assert repair("g1") == "locked"
+        assert state_of("g1") == "locked"
+        assert_fails act("g1", "dance") matching "UnknownAction"
+        assert count("g1") == 1
+    }
+}

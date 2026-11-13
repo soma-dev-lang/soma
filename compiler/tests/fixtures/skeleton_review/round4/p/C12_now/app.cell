@@ -1,0 +1,23 @@
+skeleton A {
+    memory { s: Map<String, Int> [persistent]
+             t: Map<String, Int> [persistent] }
+    state fl { initial: a
+        a -> b
+        b -> c }
+    face {
+        signal go(xs: List<String>) -> Int     
+        signal poke(id: String) -> Int   writes s
+        signal ev(id: String)            writes t
+    }
+}
+flesh A {
+    on go(xs) { let r = xs.map(x => now())  return 1 }
+    on poke(id) { s.set(id, 1)  return 1 }
+    on ev(id) { t.set(id, 7) }
+    on _h(xs: List<String>) { return 1 }
+}
+cell test T {
+    rules {
+        assert A.go(["k"]) == 1
+    }
+}

@@ -1,0 +1,8 @@
+// Rooms: the registry. A room has a kind and a nightly rate, both changeable only here.
+signal add_room(room: String, kind: String, rate: Int) -> Map   // Rooms
+    // Register `room`. Error kind `Taken` if it exists. Returns map("room", room, "kind", kind, "rate", rate).
+    requires rate >= 1
+writes     kinds: Map<String, String> [persistent]   // room -> kind ("single", "double", …)
+           order: List<String> [persistent]   // the rooms, in the order they were added
+           rates: Map<String, Int> [persistent]   // room -> nightly rate in cents, >= 1
+               invariant rates >= 1

@@ -1,0 +1,1 @@
+soma refs app.cell B.tick (aussi rename, et le brief soma skeleton app.cell B.tick) -> "error: tick is a helper of B" alors que le test appelle B.tick(4) directement (handler public d'une cellule ordinaire, appelé par sa cellule et par les tests seulement). checker/frame.rs:774-778 (les tests ne comptent pas dans from_other) + skeleton.rs:404.

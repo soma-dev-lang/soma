@@ -1,0 +1,30 @@
+flesh Praticiens {
+    on enregistrer(id, nom, specialite) {
+        require praticiens.get(id) == () else DejaEnregistre "praticien {id}"
+        let p = map("nom", nom, "specialite", specialite)
+        praticiens.set(id, p)
+        return p
+    }
+    on praticien(id) {
+        let p = praticiens.get(id)
+        require p != () else PraticienInconnu "praticien {id}"
+        return p
+    }
+    on existe_praticien(id) { return praticiens.has(id) }
+    on mettre_en_conge(id) {
+        require praticiens.has(id) else PraticienInconnu "praticien {id}"
+        conges.set(id, true)
+        return true
+    }
+    on reprendre(id) {
+        require praticiens.has(id) else PraticienInconnu "praticien {id}"
+        conges.delete(id)
+        return true
+    }
+    on est_disponible(id) {
+        return praticiens.has(id) && !(conges.get(id) ?? false)
+    }
+    on par_specialite(specialite) {
+        return praticiens.keys.filter(k => praticiens.get(k).specialite == specialite)
+    }
+}

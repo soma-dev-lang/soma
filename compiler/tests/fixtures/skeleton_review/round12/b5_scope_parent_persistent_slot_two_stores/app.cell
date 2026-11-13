@@ -1,0 +1,13 @@
+cell Desk {
+    face { signal kick(id: String) }
+    memory { seen: Map<String, Int> [persistent] }
+    interior {
+        cell Front {
+            face { signal kick(id: String) }
+            on kick(id: String) { emit note(id)  return "kicked" }
+        }
+    }
+    on kick(id: String) { return 0 }
+    on note(id: String) { seen.set(id, (seen.get(id) ?? 0) + 1)  return 1 }
+    on count(id: String) { return seen.get(id) ?? 0 }
+}

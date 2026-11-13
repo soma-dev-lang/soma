@@ -1,0 +1,5 @@
+[package]
+name = "r"
+edition = "2027"
+[verify.after."Ordo.annulee"]
+never = ["Consult.terminee"]

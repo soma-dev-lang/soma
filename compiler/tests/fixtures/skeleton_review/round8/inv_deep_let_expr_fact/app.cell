@@ -1,0 +1,13 @@
+// Same shadowing, interval prover: a `require` over an expression (`x + 1 >= 1`) is kept for `x + 1` written under a deep `let x`.
+cell A {
+    memory { c: Map<String, Int>  invariant c >= 0 }
+    on w(k: String, x: Float, y: Int) { require x + 1 >= 1 else B
+ let q = [1].map(z => { if true { let x = y
+    c.set(k, x + 1) }
+   0 })
+ return 1 }
+    on probe() { let r = try { w("k", 5.0, 0 - 5) }
+ print(r)
+ return r.kind ?? "ok" }
+}
+cell test T { rules { assert A.probe() == "invariant" } }

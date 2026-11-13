@@ -1,0 +1,1 @@
+soma verify app.cell && soma test app.cell -> faulty line:   ✓ invariant c >= 0 — writer 'w' proven (writes v) ; the test shows the write is refused at run time (kind invariant)

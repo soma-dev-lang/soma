@@ -1,0 +1,31 @@
+skeleton Orders {
+    state flow {
+        initial: placed
+        placed -> packed
+        placed -> cancelled
+        packed -> cancelled
+    }
+    face {
+        signal pack(id: String) -> String     moves placed -> packed
+        signal cancel(id: String) -> String   moves placed -> cancelled   // only before packing
+        signal st(id: String) -> String       reads flow
+    }
+}
+flesh Orders {
+    on pack(id) { transition(id, "placed", "packed")  return "ok" }
+    on st(id) { return get_status(id) ?? "placed" }
+    // the form the brief itself recommends: get_status(id) ?? "placed"
+    on cancel(id) {
+        if (get_status(id) ?? "placed") != "placed" { return "too late" }
+        transition(id, "cancelled")
+        return "cancelled"
+    }
+}
+cell test T {
+    rules {
+        assert Orders.cancel("a") == "cancelled"
+        assert Orders.pack("b") == "ok"
+        assert Orders.cancel("b") == "too late"
+        assert Orders.st("b") == "packed"
+    }
+}

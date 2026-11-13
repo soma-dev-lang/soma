@@ -1,0 +1,25 @@
+cell type kk {
+    on bump(v: Int) { return Other.poke(v) }
+}
+cell Other {
+    memory { o: Map<String, Int> }
+    on poke(v: Int) { o.set("h", v) return 3 }
+    on seen() { return o.get("h") ?? 0 }
+}
+cell B {
+    on bump(v: Int) { return 7 }
+}
+skeleton A {
+    face {
+        signal go() -> Int   calls B.bump
+    }
+}
+flesh A {
+    on go() { return bump(1) }
+}
+cell test T {
+    rules {
+        assert A.go() == 7
+        assert Other.seen() == 0
+    }
+}

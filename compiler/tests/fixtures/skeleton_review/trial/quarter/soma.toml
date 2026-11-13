@@ -1,0 +1,45 @@
+[package]
+name = "quarter"
+version = "0.1.0"
+description = ""
+author = ""
+entry = "app.cell"
+edition = "2027"
+
+[dependencies]
+
+[peers]
+
+[verify]
+cells = []
+deadlock_free = false
+
+[verify.after]
+
+[verify.before]
+
+[compute]
+backend = "sequential"
+threads = 0
+
+[compute.parallel]
+handlers = []
+
+[cluster]
+seeds = []
+
+[agent]
+provider = ""
+model = ""
+url = ""
+key = ""
+retries = 3
+mock = ""
+capabilities = []
+rpm = 0
+tpm = 0
+
+[models]
+
+[bus]
+accept = []

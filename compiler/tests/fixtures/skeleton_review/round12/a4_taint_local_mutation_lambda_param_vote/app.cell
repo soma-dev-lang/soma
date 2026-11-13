@@ -1,0 +1,23 @@
+cell agent Desk {
+    face {
+        signal go2(id: String, q: String) -> Int
+        tool lookup(id: String) -> String "Look up"
+    }
+    state m { initial: a
+        a -> b
+        a -> c }
+    on lookup(id: String) { return "found" }
+    on st(id: String) { return get_status(id) ?? "a" }
+    on _judge(q: String) { return think(q) }
+    on go2(id: String, q: String) { let xs = [think(q)]  let r = xs.map(x => transition(id, x))  return 1 }
+    on go3(id: String, q: String) { let xs = []  xs.push(think(q))  transition(id, xs[0])  return 1 }
+    on go4(id: String, q: String) { let m = map()  m["a"] = think(q)  transition(id, m["a"])  return 1 }
+    on go6(id: String, q: String) { let v = vote("_judge", q, 1)  transition(id, v.winner)  return 1 }
+}
+cell test T { rules {
+    assert Desk.go2("k2", "SAY c") == 1
+    assert Desk.go3("k3", "SAY c") == 1
+    assert Desk.go4("k4", "SAY c") == 1
+    assert Desk.go6("k6", "SAY c") == 1
+    assert [Desk.st("k2"), Desk.st("k3"), Desk.st("k4"), Desk.st("k6")] == ["a", "a", "a", "a"]
+} }

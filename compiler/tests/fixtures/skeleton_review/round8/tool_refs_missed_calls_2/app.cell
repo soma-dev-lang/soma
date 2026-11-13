@@ -1,0 +1,57 @@
+cell B {
+    memory { w: Map<String, Int> }
+    face { signal tick(x: Int) -> Int
+           signal go(n: Int) }
+    on tick(x: Int) { w.set("n", (w.get("n") ?? 0) + 1) return x }
+    on go(n: Int) { w.set("go", n) }
+    on _store(v: Int) { w.set("s", v) }
+    on wn() { return w.get("n") ?? 0 }
+    on ws() { return w.get("s") ?? 0 }
+    on wg() { return w.get("go") ?? 0 }
+    on b1() { return "a{to_string(\"{tick(1)}\")}" }
+    on b2() { return "a{[1].map(z => tick(z))}" }
+    on b3() { return "a{if true { tick(3) } else { 0 }}" }
+    on b4() { return "a{match 1 { _ -> tick(4) }}" }
+    on b5() { return "a{4 |> tick()}" }
+    on b6() { return "a{5.tick()}" }
+    on b7() { let h = horde(tick, [1], map("on_result", "_store"))
+ return 1 }
+    on b8() { return delegate("B", "tick", 8) }
+    on b9() { let c = "B"
+ return delegate(c, "tick", 9) }
+    on b10() { for i in range(0, tick(2)) { tick(i) }
+ return 1 }
+    on b11() { while tick(0) > 0 { break }
+ return 1 }
+    on b12() { require tick(1) > 0 else Bad
+ return 1 }
+    on b13() { ensure tick(1) > 0
+ return 1 }
+    on b14() { return try { tick(14) }.value }
+    on b15() { return !(tick(15) > 0) }
+    on b16() { return [tick(16)][0] }
+    on b17() { return map("a", 1)[to_string(tick(17))] }
+    on b18() { return -tick(18) }
+    on b19() { let x = 0
+ x = tick(19)
+ x += tick(19)
+ return x }
+    on b20() { return tick(20)? }
+    on b21() { return w.get(to_string(tick(21))) ?? tick(21) }
+    runtime { signal go(1)
+              emit tick(2) }
+}
+cell test T {
+    rules {
+        assert B.b1() == "a1"
+        assert B.b6() == "a5"
+        assert B.b9() == 9
+        assert B.b7() == 1
+    }
+}
+cell test U {
+    rules {
+        assert B.b7() == 1
+        assert B.ws() == 1
+    }
+}

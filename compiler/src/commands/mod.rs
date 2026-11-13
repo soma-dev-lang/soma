@@ -11,6 +11,8 @@ pub mod props;
 pub mod repl;
 pub mod provider;
 pub mod describe;
+pub mod skeleton;
+pub mod refs;
 pub mod docs;
 pub mod explain;
 pub mod fmt;
@@ -542,6 +544,8 @@ pub fn resolve_imports(program: &mut ast::Program, base_path: &PathBuf) {
             import_file(program, &full_path);
         }
     }
+    // a `flesh` one file declares for a `skeleton` of another
+    crate::checker::flesh::attach(program);
 }
 
 fn resolve_pkg_path(base_dir: &Path, pkg_name: &str) -> PathBuf {
@@ -627,7 +631,7 @@ pub fn load_meta_cells_from_program(program: &ast::Program, registry: &mut Regis
                     eprintln!("warning: failed to register {}: {}", cell.node.name, e);
                 }
             }
-            ast::CellKind::Cell | ast::CellKind::Agent => {}
+            ast::CellKind::Cell | ast::CellKind::Agent | ast::CellKind::Flesh => {}
         }
     }
 }

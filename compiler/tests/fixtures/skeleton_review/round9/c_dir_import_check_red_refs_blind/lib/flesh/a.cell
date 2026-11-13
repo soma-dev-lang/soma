@@ -1,0 +1,1 @@
+flesh A { on go() { return helper() }  on helper() { return 1 } }

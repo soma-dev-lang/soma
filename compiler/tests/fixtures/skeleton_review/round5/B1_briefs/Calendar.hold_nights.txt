@@ -1,0 +1,10 @@
+// Calendar: which booking holds which room on which night. A night is the Int day it starts on.
+signal hold_nights(booking: String, room: String, from: Int, to: Int) -> Bool   // Calendar
+    // Holds every night from <= d < to of `room` for `booking` and returns true — or, if any of
+    // them is held already, returns false and holds nothing.
+    requires from < to
+writes     nights: Map<String, String> [persistent]   // "<room>@<day>" -> booking id holding that night
+calls      is_free(room: String, from: Int, to: Int) -> Bool   reads nights
+               // true when no night d with from <= d < to is held for `room`.
+               requires from < to
+called by  Bookings.book

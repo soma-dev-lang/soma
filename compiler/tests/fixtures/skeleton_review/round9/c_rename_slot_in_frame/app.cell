@@ -1,0 +1,13 @@
+skeleton B {
+    memory { total: Map<String, Int> }
+    face {
+        signal bump(k: String) -> Int   writes total
+        signal total(k: String) -> Int
+            calls bump reads total
+    }
+}
+flesh B {
+    on bump(k) { total.set(k, (total.get(k) ?? 0) + 1) return 1 }
+    on total(k) { bump(k) return total.get(k) ?? 0 }
+}
+cell test T { rules { assert B.total("a") == 1 } }

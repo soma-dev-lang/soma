@@ -1,0 +1,25 @@
+cell helper { on poke(k: String) { return A.zero(k) } }
+cell A {
+    memory {
+        cap: Map<String, Int>
+    }
+    state m {
+        initial: x
+        x -> y { guard { (cap.get(k) ?? 0) > 0 } }
+        y -> x
+    }
+    on zero(k: String) { cap.set(k, 0) return 0 }
+    on go(k: String) { cap.set(k, 5)
+ require (cap.get(k) ?? 0) > 0 else B
+ helper.poke(k)
+ transition(k, "x", "y") return 1 }
+    on probe() {
+        let r = try { go("k") }
+        return r.kind ?? "ok"
+    }
+}
+cell test T {
+    rules {
+        assert A.probe() == "guard_failed"
+    }
+}

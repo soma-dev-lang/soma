@@ -1,0 +1,14 @@
+cell G {
+    face {
+        signal go(id: String, cost: Int) -> String
+            requires cost > 0
+    }
+    state s {
+        initial: a
+        a -> b { guard { cost > 0 } }
+    }
+    on go(id: String, cost: Int) {
+        transition(id, "a", "b")
+        return "b"
+    }
+}

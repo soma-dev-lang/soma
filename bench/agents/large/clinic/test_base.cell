@@ -1,0 +1,63 @@
+use app
+
+// Registres de base : patients, praticiens, audit, notifications, pharmacie, assurance.
+cell test Registres {
+    rules {
+        mock now 1800000000
+        assert Patients.inscrire("p1", "Ada Martin", "1980-04-02").nom == "Ada Martin"
+        assert_fails Patients.inscrire("p1", "Bis", "1990-01-01") matching "DejaInscrit"
+        assert_fails Patients.inscrire("p2", "", "1990-01-01") matching "NomVide"
+        assert Patients.compter() == 1
+        assert Patients.modifier_contact("p1", "0601").tel == "0601"
+        assert Patients.fiche("p1").tel == "0601"
+        assert_fails Patients.fiche("zz") matching "PatientInconnu"
+        assert Patients.est_actif("p1")
+        assert Patients.desactiver("p1")
+        assert Patients.desactiver("p1") == false
+        assert Patients.est_actif("p1") == false
+        assert Patients.existe("p1")
+        assert Audit.taille() == 2
+        assert Audit.actions_sur("p1") == ["patient.inscrire", "patient.desactiver"]
+        assert Audit.derniere().quand == 1800000000
+
+        assert Praticiens.enregistrer("dr1", "Dr Roux", "generaliste").specialite == "generaliste"
+        assert Praticiens.enregistrer("dr2", "Dr Blanc", "cardiologie").nom == "Dr Blanc"
+        assert_fails Praticiens.enregistrer("dr1", "x", "y") matching "DejaEnregistre"
+        assert Praticiens.par_specialite("cardiologie") == ["dr2"]
+        assert Praticiens.mettre_en_conge("dr2")
+        assert Praticiens.est_disponible("dr2") == false
+        assert Praticiens.reprendre("dr2")
+        assert Praticiens.est_disponible("dr2")
+        assert Praticiens.est_disponible("inconnu") == false
+    }
+}
+
+cell test StockEtLots {
+    rules {
+        mock now 1800000000
+        assert Pharmacie.referencer("amox", 10) == 10
+        assert_fails Pharmacie.recevoir_lot("l0", "inconnu", 5, "2027-01-01") matching "MedicamentInconnu"
+        assert Pharmacie.recevoir_lot("l1", "amox", 8, "2027-06-01") == 8
+        assert Pharmacie.recevoir_lot("l2", "amox", 8, "2027-01-01") == 16
+        assert_fails Pharmacie.recevoir_lot("l2", "amox", 1, "2027-01-01") matching "LotExiste"
+        assert_fails Pharmacie.sortir("amox", 0) matching "requires"
+        assert_fails Pharmacie.sortir("amox", 17) matching "StockInsuffisant"
+        // FEFO : l2 (janvier) est vidé avant l1 (juin)
+        assert Pharmacie.sortir("amox", 10) == 6
+        assert Pharmacie.lot("l2").quantite == 0
+        assert Pharmacie.lot("l1").quantite == 6
+        assert Pharmacie.sous_seuil() == ["amox"]
+        assert Notifications.compter_type("stock") == 1
+        assert Notifications.notifications_de("pharmacie") == ["stock bas amox: 6 < 10"]
+        assert Pharmacie.lots_perimes("2027-07-01") == ["l1"]
+        assert Pharmacie.retirer_perimes("2027-07-01") == 6
+        assert Pharmacie.niveau("amox") == 0
+        assert Pharmacie.retirer_perimes("2027-07-01") == 0
+        assert Audit.actions_sur("2027-07-01") == ["stock.retirer_perimes"]
+        assert Notifications.non_lues() == 1
+        assert Notifications.marquer_lue(0)
+        assert Notifications.marquer_lue(0) == false
+        assert_fails Notifications.marquer_lue(7) matching "NotificationInconnue"
+        assert Notifications.non_lues() == 0
+    }
+}

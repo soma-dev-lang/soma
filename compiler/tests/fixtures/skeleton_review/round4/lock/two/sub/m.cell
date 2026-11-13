@@ -1,0 +1,13 @@
+skeleton M {
+    state fl { initial: a
+        a -> b
+        b -> c }
+    face {
+        signal ab(id: String) -> Int    moves a -> b
+        signal st(id: String) -> String reads fl
+    }
+}
+flesh M {
+    on ab(id) { transition(id, "a", "b")  return 1 }
+    on st(id) { return get_status(id) ?? "a" }
+}

@@ -1,0 +1,38 @@
+skeleton Bank {
+    memory {
+        acct: Map<String, Int> [persistent]
+        aux: Map<String, Int> [persistent]
+    }
+    state order {
+        initial: new
+        new -> paid
+        paid -> shipped
+    }
+    face {
+        signal peek(id: String) -> Int      reads acct
+        signal bump(id: String) -> Int      writes acct
+        signal pay(id: String) -> String    moves new -> paid
+        signal status(id: String) -> String reads order
+        signal pure(id: String) -> Int
+        signal rd(id: String) -> Int  reads acct
+
+    }
+}
+
+flesh Bank {
+    on peek(id) { return acct.get(id) ?? 0 }
+    on bump(id) { acct.set(id, (acct.get(id) ?? 0) + 1) return 1 }
+    on pay(id) { transition(id, "new", "paid") return "paid" }
+    on status(id) { return get_status(id) ?? "new" }
+    on pure(id) { return 1 }
+    on rd(id) { let r = set(acct, id, 5) return 1 }
+
+}
+
+cell test T {
+    rules {
+        assert bump("k") == 1
+        assert rd("k") != 12345
+        assert peek("k") == 1
+    }
+}

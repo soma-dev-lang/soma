@@ -1,0 +1,1 @@
+soma check . -> "2 file(s), 0 failed", exit 0, avec foo.cell (squelette faux : soma check foo.cell -> 2 erreurs) sauté comme « part … checked through the file that imports it » : app.cell écrit `use foo`, qui se résout vers packages/foo/ (commands/mod.rs:551-556), pas vers ./foo.cell comme le suppose main.rs:1541.

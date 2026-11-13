@@ -4,6 +4,7 @@ pub mod soma_int;
 pub mod record_log;
 pub mod horde;
 pub mod otel;
+pub mod effect_trace;
 mod waits;
 mod external_call;
 
@@ -767,6 +768,11 @@ pub struct Interpreter {
     pub last_span: Option<crate::ast::Span>,
     /// Cached handler for the current recursive call (avoids repeated HashMap lookups)
     current_handler: Option<(String, String, Arc<Vec<Param>>, Arc<Vec<Spanned<Statement>>>)>,
+    /// The handlers that wrote the lambdas now running, innermost last.
+    lambda_origins: Vec<String>,
+    /// > 0 while a lambda runs outside the handler that wrote it: there it
+    /// may compute, and nothing else (see `in_foreign_lambda`).
+    foreign_lambda: Vec<bool>,
     /// Locals of the handler at its `transition()` call, handed to the
     /// transition's guard: `a -> b { guard { amount < 10000 } }` reads the
     /// caller's `amount`.
@@ -917,6 +923,10 @@ pub enum VariantShape {
 /// / header keys used to become a raw HTTP response (stored XSS, forged
 /// cookies, open redirects).
 pub const HTTP_MARK: &str = "__soma_http_response__";
+
+/// In a lambda's captured environment: the handler that wrote it
+/// (`Cell.handler`, empty outside any handler). Not a name a program can write.
+pub const LAMBDA_ORIGIN: &str = "\u{1f}origin";
 
 pub fn http_marker() -> Value {
     Value::Lambda {
@@ -1158,6 +1168,8 @@ impl Interpreter {
             source_text: None,
             last_span: None,
             current_handler: None,
+            lambda_origins: Vec::new(),
+            foreign_lambda: Vec::new(),
             transition_env: None,
             journal: None,
             mock_queue: std::collections::VecDeque::new(),
@@ -1808,7 +1820,17 @@ impl Interpreter {
             Arc::clone(&body),
         ));
 
+        if let Some(e) = self.in_foreign_lambda(&format!("call the handler `{}.{}`", cell_name, signal_name)) {
+            self.current_handler = prev_handler;
+            return Err(e);
+        }
+        // a handler starts with no lambda running: its own lambdas are at home
+        let (origins, foreign) = (std::mem::take(&mut self.lambda_origins), std::mem::take(&mut self.foreign_lambda));
+        effect_trace::enter(cell_name, signal_name);
         let result = self.call_signal_resolved(cell_name, signal_name, args, &params, &body);
+        self.lambda_origins = origins;
+        self.foreign_lambda = foreign;
+        effect_trace::leave();
 
         self.current_handler = prev_handler;
         // The face is a contract: `signal f() -> Int` returning a String
@@ -2518,6 +2540,8 @@ impl Interpreter {
             Statement::Emit { signal_name: sig, args } => {
                 // (C8) an event is an effect: a reader on a snapshot ends here
                 if self.snapshot { return Err(ExecError::Runtime(self.snapshot_abort())); }
+                if let Some(e) = self.in_foreign_lambda(&format!("emit `{}`", sig)) { return Err(ExecError::Runtime(e)); }
+                effect_trace::log("emit", sig);
                 let mut arg_vals = Vec::new();
                 for arg in args {
                     arg_vals.push(self.eval_expr(&arg.node, env, cell_name, signal_name)?);
@@ -2551,6 +2575,12 @@ impl Interpreter {
                 // in declaration order, so the fan-out is deterministic
                 let mut matching_cells: Vec<String> = self.handler_cache.keys()
                     .filter(|(c, s)| s == sig && !(c == cell_name && signal_name == sig))
+                    // a signal of the program: a `cell` / `cell agent` — and, under
+                    // `soma test`, the test cell that listens to check an event (a
+                    // `cell test` handler heard events under `soma run` too, and no
+                    // analysis counted a `cell type` listener)
+                    .filter(|(c, _)| self.cells.get(c).map_or(true, |d| matches!(d.kind, CellKind::Cell | CellKind::Agent)
+                        || (d.kind == CellKind::Test && IN_TEST.load(std::sync::atomic::Ordering::Relaxed))))
                     .map(|(c, _)| c.clone())
                     .collect();
                 matching_cells.sort_by_key(|c| self.cell_order.iter().position(|o| o == c).unwrap_or(usize::MAX));
@@ -2728,6 +2758,8 @@ impl Interpreter {
                                 // `len(slot)`: counted by the backend — reading
                                 // the bare name materialized every row
                                 None => if let Some(kind) = self.slot_kind(cell_name, local) {
+                                    if let Some(e) = self.in_foreign_lambda(&format!("use the memory slot `{}`", local)) { return Err(ExecError::Runtime(e)); }
+                                    effect_trace::log("read", local);
                                     if let Some(b) = self.storage.get(&format!("{}.{}", cell_name, local)).or_else(|| if cell_name.is_empty() || self.is_test_cell(cell_name) { self.storage.get(local.as_str()) } else { None }) {
                                         let n = if kind == "List" { b.list_len() } else { b.len() };
                                         return Ok(Value::Int(SomaInt::from_i64(n as i64)));
@@ -2912,6 +2944,8 @@ impl Interpreter {
                 let captured: HashMap<String, Value> = env.iter()
                     .filter(|(k, _)| names.contains(k.as_str()))
                     .map(|(k, v)| (k.clone(), v.clone())).collect();
+                let mut captured = captured;
+                captured.insert(LAMBDA_ORIGIN.to_string(), Value::String(self.lambda_home()));
                 Ok(Value::Lambda {
                     param: param.clone(),
                     body: body.clone(),
@@ -2928,6 +2962,8 @@ impl Interpreter {
                 let captured: HashMap<String, Value> = env.iter()
                     .filter(|(k, _)| names.contains(k.as_str()))
                     .map(|(k, v)| (k.clone(), v.clone())).collect();
+                let mut captured = captured;
+                captured.insert(LAMBDA_ORIGIN.to_string(), Value::String(self.lambda_home()));
                 Ok(Value::LambdaBlock {
                     param: param.clone(),
                     stmts: stmts.clone(),
@@ -3075,8 +3111,11 @@ impl Interpreter {
                     }
                     Expr::FieldAccess { target, field } => {
                         // expr |> obj.method → method call with pipe value
-                        let target_val = self.eval_expr(&target.node, env, cell_name, signal_name)?;
-                        self.call_storage_method(cell_name, &format!("{}", target_val), field, &[left_val])
+                        // (`x |> obj.f` without a call: it reached a slot by the VALUE of
+                        // `obj`, or a handler by method form, under no analysis — and
+                        // `soma check` refuses the form wherever it reads it)
+                        let _ = (target, left_val);
+                        Err(ExecError::Runtime(RuntimeError::TypeError(format!("`x |> obj.{}` is not a call: write `x |> obj.{}()` or `obj.{}(x)`", field, field, field))))
                     }
                     Expr::MethodCall { target, method, args } => {
                         // `x |> obj.m(a)` is obj.m(x, a), as `x |> f(a)` is
@@ -3216,6 +3255,8 @@ impl Interpreter {
                         if self.slot_kind(cell_name, slot_name) == Some("List") {
                             let backend = self.storage.get(&format!("{}.{}", cell_name, slot_name)).or_else(|| if cell_name.is_empty() || self.is_test_cell(cell_name) { self.storage.get(slot_name.as_str()) } else { None }).cloned();
                             if let Some(b) = backend {
+                                if let Some(e) = self.in_foreign_lambda(&format!("use the memory slot `{}`", slot_name)) { return Err(ExecError::Runtime(e)); }
+                                effect_trace::log("read", slot_name);
                                 let len = b.list_len();
                                 self.check_storage_write()?;
                                 let i = list_position(&key, len, "list").map_err(ExecError::Runtime)?;
@@ -3303,6 +3344,17 @@ impl Interpreter {
                 }
                 // Evaluate target and call method on the value
                 let target_val = self.eval_expr(&target.node, env, cell_name, signal_name)?;
+                // `x.f(a)` is `f(x, a)`: this cell's own handler `f` first, as for
+                // the bare call (the builtin `f` ran in method form and the handler
+                // in bare form — every analysis read one for the other)
+                if self.user_handler_takes(method, arg_vals.len() + 1) && self.cells.get(cell_name).map_or(false, |c| c.sections.iter().any(|s| {
+                    matches!(&s.node, Section::OnSignal(on) if on.signal_name == *method && crate::ast::accepted_arities(&on.params).contains(&(arg_vals.len() + 1)))
+                })) {
+                    let mut all = Vec::with_capacity(arg_vals.len() + 1);
+                    all.push(target_val);
+                    all.extend(arg_vals);
+                    return self.call_signal(cell_name, method, all).map_err(ExecError::Runtime);
+                }
                 // `"hello".map(f)`: the higher-order map, not the constructor
                 if method == "map" && arg_vals.len() == 1 && matches!(target_val, Value::String(_))
                     && matches!(arg_vals[0], Value::Lambda { .. } | Value::LambdaBlock { .. })
@@ -3383,18 +3435,35 @@ impl Interpreter {
                             let defines = |cn: &str| self.cells.get(cn).map_or(false, |c| c.sections.iter().any(|s| {
                                 matches!(&s.node, Section::OnSignal(on) if on.signal_name == *method)
                             }));
+                            // (a handler of a `cell test`, `cell type`, … is no signal of the
+                            // program: only a `cell` / `cell agent` answers a call from elsewhere)
+                            let program_cell = |cn: &str| self.cells.get(cn).map_or(false, |c| matches!(c.kind, CellKind::Cell | CellKind::Agent));
                             let target_cell = if defines(cell_name) { Some(cell_name.to_string()) } else {
-                                let mut all: Vec<&String> = self.cells.keys().filter(|cn| defines(cn)).collect();
+                                let mut all: Vec<&String> = self.cells.keys().filter(|cn| defines(cn) && program_cell(cn)).collect();
                                 all.sort_by_key(|c| self.cell_order.iter().position(|o| o == *c).unwrap_or(usize::MAX));
                                 all.first().map(|c| (*c).clone())
                             };
+                            // a handler of ANOTHER cell never replaces a builtin (as
+                            // for `count(x)`, which check refuses): `x.count()` ran
+                            // B.count — a call no frame and no proof had seen
+                            if !defines(cell_name) && crate::checker::names::builtin_names().contains(method.as_str()) {
+                                if let Some(tc) = target_cell {
+                                    return Err(ExecError::Runtime(RuntimeError::TypeError(format!(
+                                        "`.{}(…)`: {} is a builtin, and this call does not fit it — a handler of another cell never replaces a builtin: call it as `{}.{}(…)`", method, method, tc, method))));
+                                }
+                            }
                             if let Some(tc) = target_cell {
                                 return self.call_signal(&tc, method, ufcs).map_err(ExecError::Runtime);
                             }
                         }
-                        // Try storage as fallback
+                        // Try storage as fallback — unless a local of that name
+                        // is bound: `let acct = 1  acct.set(k, v)` wrote the SLOT
+                        // `acct` (the statement form and `acct[k] = v` already
+                        // meant the local, and `soma check` says so)
                         if let Expr::Ident(ref name) = target.node {
-                            return self.call_storage_method(cell_name, name, method, &arg_vals);
+                            if !env.contains_key(name) {
+                                return self.call_storage_method(cell_name, name, method, &arg_vals);
+                            }
                         }
                         Err(ExecError::Runtime(RuntimeError::TypeError(
                             format!("no method '{}' on {} {}", method, value_type_name(&target_val), { let t: String = format!("{}", target_val).chars().take(40).collect(); t }),
@@ -3430,6 +3499,11 @@ impl Interpreter {
         method: &str,
         args: &[Value],
     ) -> Result<Value, ExecError> {
+        if let Some(e) = self.in_foreign_lambda(&format!("use the memory slot `{}`", slot_name)) { return Err(ExecError::Runtime(e)); }
+        if effect_trace::on() {
+            let write = matches!(method, "set" | "put" | "delete" | "remove" | "append" | "push" | "clear");
+            effect_trace::log(if write { "write" } else { "read" }, slot_name);
+        }
         let prefixed = format!("{}.{}", cell_name, slot_name);
         let backend = self.storage.get(&prefixed)
             // the bare name only without a cell (a test rule): from a cell it
@@ -4903,6 +4977,7 @@ impl Interpreter {
         size_after: i64,
         op: &str,
     ) -> Result<(), ExecError> {
+        let _quiet = effect_trace::quiet();
         let owner = self.slot_owner(cell_name, slot_name);
         let cell_name = owner.as_str();
         let prefixed = format!("{}.{}", cell_name, slot_name);
@@ -5017,9 +5092,58 @@ impl Interpreter {
             self.current_depth -= 1;
             return Err(ExecError::Runtime(RuntimeError::StackOverflow));
         }
+        let away = self.enter_lambda(lambda);
         let r = self.apply_lambda_inner(lambda, arg, cell_name);
+        self.leave_lambda(away);
         self.current_depth -= 1;
         r
+    }
+
+    /// The cell a lambda written now belongs to: the one running — or,
+    /// inside a lambda, the one THAT lambda belongs to (a lambda made by a
+    /// travelling lambda has travelled too).
+    fn lambda_home(&self) -> String {
+        match self.lambda_origins.last() {
+            Some(o) => o.clone(),
+            None => self.current_handler.as_ref().map(|(c, _, _, _)| c.clone()).unwrap_or_default(),
+        }
+    }
+
+    /// A lambda starts running. True when it runs AWAY from the cell
+    /// that wrote it (passed to a signal, returned, kept past its handler).
+    fn enter_lambda(&mut self, lambda: &Value) -> bool {
+        let origin = match lambda {
+            Value::Lambda { env, .. } | Value::LambdaBlock { env, .. } => match env.get(LAMBDA_ORIGIN) { Some(Value::String(s)) => s.clone(), _ => String::new() },
+            _ => String::new(),
+        };
+        let here = self.current_handler.as_ref().map(|(c, _, _, _)| c.clone()).unwrap_or_default();
+        let away = origin != here;
+        self.lambda_origins.push(origin);
+        self.foreign_lambda.push(away);
+        away
+    }
+
+    fn leave_lambda(&mut self, _away: bool) {
+        self.lambda_origins.pop();
+        self.foreign_lambda.pop();
+    }
+
+    /// Is the lambda running now away from its cell? The innermost one
+    /// decides: a callback written here and applied by a combinator that
+    /// came from elsewhere is at home.
+    fn lambda_is_away(&self) -> bool {
+        self.foreign_lambda.last().copied().unwrap_or(false)
+    }
+
+    /// A lambda running away from its cell asks for an effect: refused.
+    /// It runs in the cell of whoever called it — that cell's slots, its
+    /// helpers, its machine — under a signal whose frame says nothing of it.
+    pub(crate) fn in_foreign_lambda(&self, what: &str) -> Option<RuntimeError> {
+        if !self.lambda_is_away() { return None; }
+        Some(RuntimeError::Domain {
+            kind: "lambda".to_string(),
+            message: format!("a lambda called outside the cell that wrote it may only compute — it tried to {what}. Write the lambda where it runs (`xs.map(x => …)`), or pass data and let a signal do the work"),
+        })
     }
 
     /// The environment of a pure-expression lambda, built ONCE for a whole
@@ -5044,7 +5168,9 @@ impl Interpreter {
             return Err(ExecError::Runtime(RuntimeError::StackOverflow));
         }
         env.insert(param.clone(), arg);
+        let away = self.enter_lambda(lambda);
         let r = self.eval_expr(&body.node, env, cell_name, "");
+        self.leave_lambda(away);
         self.current_depth -= 1;
         r
     }
@@ -5723,6 +5849,11 @@ impl Interpreter {
                 }
             }
         }
+        if !user_net && matches!(name.as_str(), "ws_connect" | "ws_send" | "link" | "subscribe") {
+            // (these never reach call_builtin, where the others are refused and traced)
+            if let Some(e) = self.in_foreign_lambda(&format!("call `{}()`", name)) { return Err(ExecError::Runtime(e)); }
+            effect_trace::log("builtin", name);
+        }
         // WebSocket builtins — need &mut self
         if !user_net && name == "ws_connect" {
             if let Some(Value::String(url)) = arg_vals.first() {
@@ -5837,12 +5968,27 @@ impl Interpreter {
             // a rule of a test cell: that test cell's own helper (a
             // same-named helper of another test cell ran instead)
             let test_cell = if cell_name.is_empty() { self.current_test_cell.clone().filter(|t| defines(t)) } else { None };
-            let found_cell = if defines(cell_name) {
+            // `std.f(…)` is the builtin f and nothing else: not this cell's
+            // own handler `f` either (`std.values(5)` ran `on values`)
+            let forced = self.force_builtin.as_deref() == Some(name.as_str());
+            let program_cell = |cn: &str| self.cells.get(cn).map_or(false, |c| matches!(c.kind, CellKind::Cell | CellKind::Agent));
+            let found_cell = if forced {
+                None
+            } else if defines(cell_name) {
                 Some(cell_name.to_string())
             } else if let Some(t) = test_cell {
                 Some(t)
+            } else if !cell_name.is_empty() && crate::checker::names::builtin_names().contains(name.as_str()) {
+                // a handler of ANOTHER cell never replaces a builtin: a call the
+                // builtin does not take (`std.count(5, 1, 2, 3, 4)`, `count(x)`)
+                // is that builtin's error, not `B.count` run from a frame that
+                // never named it
+                None
             } else {
-                let mut all: Vec<&String> = self.cells.keys().filter(|cn| defines(cn)).collect();
+                // a handler of a `cell test`, `cell type`, `cell property`… is no
+                // signal of the program: a bare call from a cell reached it,
+                // under a frame that could not name it
+                let mut all: Vec<&String> = self.cells.keys().filter(|cn| defines(cn) && program_cell(cn)).collect();
                 all.sort_by_key(|c| self.cell_order.iter().position(|o| o == *c).unwrap_or(usize::MAX));
                 all.first().map(|c| (*c).clone())
             };
@@ -5851,6 +5997,9 @@ impl Interpreter {
                 self.call_signal(&target_cell, name, arg_vals)
                     .map_err(ExecError::Runtime)
             } else {
+                if forced && !builtins::registry::BUILTINS.iter().any(|b| b.name == name && b.category != "reserved") {
+                    return Err(ExecError::Runtime(RuntimeError::TypeError(format!("std.{}(…): the builtin `{}` does not take this call", name, name))));
+                }
                 // A builtin that refused the call (wrong argument
                 // count or kinds) is not "undefined": show its signature.
                 if let Some(b) = builtins::registry::BUILTINS.iter()
@@ -5920,6 +6069,21 @@ impl Interpreter {
     /// in `cell builtin` definitions. This is the thin kernel — everything
     /// above is Soma. Delegates to sub-modules in builtins/.
     pub fn call_builtin(&mut self, name: &str, args: &[Value], cell_name: &str) -> Option<Result<Value, RuntimeError>> {
+        if self.lambda_is_away() && (matches!(name, "transition" | "get_status" | "has_state" | "valid_transitions") || crate::checker::frame::effectful_builtin(name)) {
+            return self.in_foreign_lambda(&format!("call `{}()`", name)).map(Err);
+        }
+        if effect_trace::on() {
+            match name {
+                "transition" => effect_trace::log("move", &args.last().map(|v| match v {
+                    Value::String(s) => s.to_string(),
+                    Value::Variant { variant, .. } => variant.to_string(),
+                    other => format!("{}", other),
+                }).unwrap_or_default()),
+                "get_status" | "has_state" | "valid_transitions" => effect_trace::log("mread", "-"),
+                _ if crate::checker::frame::effectful_builtin(name) => effect_trace::log("builtin", name),
+                _ => {}
+            }
+        }
         // 3.0 (C8): on a read snapshot an effect is not made — the invocation
         // ends here, before it, and runs again under the lock
         if self.snapshot && !matches!(name, "http_get" | "sleep") && crate::checker::names::EFFECT_BUILTINS.contains(&name) {
@@ -6086,6 +6250,9 @@ impl Interpreter {
     /// must be; anywhere else is an invalid transition even when an edge
     /// into `to` exists from the actual state.
     pub(crate) fn do_transition_from_for(&mut self, cell_name: &str, id: &str, expected_from: Option<&str>, target: &str) -> Result<Value, RuntimeError> {
+        // the guard, the invariants tied to the state and the edge's effect
+        // block are the structure's doing (effect trace)
+        let _quiet = effect_trace::quiet();
         // taken first: an invalid move returned early and left the caller's
         // locals behind for the next guard (a method-form call read them)
         let caller_env = self.transition_env.take();
@@ -6130,6 +6297,7 @@ impl Interpreter {
             }
         };
 
+        effect_trace::log_edge(&current, target);
         // Clone guard if present (to release borrow on self before eval_expr)
         let guard_clone = transition.node.guard.as_ref().map(|g| g.node.clone());
 
@@ -6614,6 +6782,9 @@ impl Interpreter {
     /// The whole content of a slot, for a bare-name read.
     fn materialize_slot(&mut self, cell_name: &str, name: &str) -> Option<Value> {
         let kind = self.slot_kind(cell_name, name)?;
+        // (a lambda away from its cell reads no slot: the name is then unknown)
+        if self.lambda_is_away() { return None; }
+        effect_trace::log("read", name);
         let backend = self.storage.get(&format!("{}.{}", cell_name, name))
             .or_else(|| if cell_name.is_empty() || self.is_test_cell(cell_name) { self.storage.get(name) } else { None })?.clone();
         Some(match kind {
@@ -6995,6 +7166,12 @@ pub(crate) fn check_return_type(signal: &str, ret: &Spanned<TypeExpr>, val: Valu
         TypeExpr::Generic { name, .. } => name.as_str(),
         _ => return Ok(val),
     };
+    // `-> Int` answering a whole Float (`pow(2, n)`) gives the Int it promises:
+    // left a Float, `a + 1 - a` over it was 0 past 2^53 while every proof read
+    // the declared Int
+    if let ("Int", Value::Float(f)) = (ty, &val) {
+        if f.fract() == 0.0 && f.abs() < 9.2e18 { return Ok(Value::Int(SomaInt::from_i64(*f as i64))); }
+    }
     let ok = match (ty, &val) {
         ("Any", _) | ("Int", Value::Int(_)) | ("Float", Value::Float(_) | Value::Int(_))
         | ("String", Value::String(_)) | ("Bool", Value::Bool(_)) | ("List", Value::List(_) | Value::Unit)

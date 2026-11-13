@@ -1,0 +1,89 @@
+flesh Agenda {
+    on _exiger_rdv(id: String) {
+        let r = rdvs.get(id)
+        require r != () else RdvInconnu "rdv {id}"
+        return r
+    }
+    on ouvrir_creneau(praticien, date, heure) {
+        require Praticiens.existe_praticien(praticien) else PraticienInconnu "praticien {praticien}"
+        let cle = "{praticien}|{date}|{heure}"
+        require creneaux.get(cle) == () else CreneauExiste "{cle}"
+        creneaux.set(cle, "")
+        return cle
+    }
+    on creneau_libre(cle) { return creneaux.get(cle) == "" }
+    on creneaux_libres(praticien, date) {
+        let prefixe = "{praticien}|{date}|"
+        return creneaux.keys.filter(k => starts_with(k, prefixe) && creneaux.get(k) == "")
+    }
+    on demander(id, patient, cle) {
+        require rdvs.get(id) == () else RdvExiste "rdv {id}"
+        require Patients.est_actif(patient) else PatientInactif "patient {patient}"
+        require creneaux.get(cle) == "" else CreneauIndisponible "{cle}"
+        let praticien = split(cle, "|")[0]
+        require Praticiens.est_disponible(praticien) else PraticienIndisponible "praticien {praticien}"
+        creneaux.set(cle, id)
+        let r = map("patient", patient, "praticien", praticien, "creneau", cle)
+        rdvs.set(id, r)
+        emit rdv_change(map("id", id, "etat", "demande", "patient", patient))
+        return r
+    }
+    on confirmer(id) {
+        let r = _exiger_rdv(id)
+        transition(id, "confirme")
+        emit rdv_change(map("id", id, "etat", "confirme", "patient", r.patient))
+        return "confirme"
+    }
+    on enregistrer_arrivee(id) {
+        let r = _exiger_rdv(id)
+        transition(id, "confirme", "arrive")
+        return "arrive"
+    }
+    on debuter(id) {
+        let r = _exiger_rdv(id)
+        transition(id, "arrive", "en_consultation")
+        return "en_consultation"
+    }
+    on cloturer(id) {
+        let ok = Consultations.exiger_terminee(id)
+        transition(id, "en_consultation", "termine")
+        return "termine"
+    }
+    on annuler_rdv(id) {
+        let r = _exiger_rdv(id)
+        transition(id, "annule")
+        creneaux.set(r.creneau, "")
+        emit rdv_change(map("id", id, "etat", "annule", "patient", r.patient))
+        let n = Audit.consigner("accueil", "rdv.annuler", id)
+        return "annule"
+    }
+    on reporter(id, nouvelle_cle) {
+        let r = _exiger_rdv(id)
+        require creneaux.get(nouvelle_cle) == "" else CreneauIndisponible "{nouvelle_cle}"
+        require split(nouvelle_cle, "|")[0] == r.praticien else AutrePraticien "{nouvelle_cle}"
+        transition(id, "reporte")
+        creneaux.set(r.creneau, "")
+        creneaux.set(nouvelle_cle, id)
+        r.creneau = nouvelle_cle
+        rdvs.set(id, r)
+        emit rdv_change(map("id", id, "etat", "reporte", "patient", r.patient))
+        return r
+    }
+    on marquer_absent(id) {
+        let r = _exiger_rdv(id)
+        transition(id, "confirme", "absent")
+        emit rdv_change(map("id", id, "etat", "absent", "patient", r.patient))
+        return "absent"
+    }
+    on statut_rdv(id) {
+        let r = _exiger_rdv(id)
+        return get_status(id) ?? "demande"
+    }
+    on rdv(id) { return _exiger_rdv(id) }
+    on rdvs_du_patient(patient) {
+        return rdvs.keys.filter(k => rdvs.get(k).patient == patient)
+    }
+    on compter_statut(statut) {
+        return rdvs.keys.count(k => (get_status(k) ?? "demande") == statut)
+    }
+}

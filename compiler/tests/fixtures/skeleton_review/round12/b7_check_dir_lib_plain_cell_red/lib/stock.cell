@@ -1,0 +1,5 @@
+cell Stock {
+    memory { items: Map<String, Int> }
+    on level(sku: String) { return items.get(sku) ?? 0 }
+    on fill(sku: String, n: Int) { items.set(sku, n) return n }
+}

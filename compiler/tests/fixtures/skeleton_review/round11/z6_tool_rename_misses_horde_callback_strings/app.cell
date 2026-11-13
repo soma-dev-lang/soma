@@ -1,0 +1,32 @@
+cell agent A {
+    memory { verdicts: Map<String, Int> }
+    face {
+        signal ask(q: String) -> String
+        tool lookup(id: String) -> String "Look up"
+    }
+    on lookup(id: String) { return "found" }
+    on ask(q: String) {
+        let a = think("classify {q}", map("tools_allowed", ["lookup"], "max_tokens", 100))
+        return a
+    }
+    on review(x: Int) { return x * 2 }
+    on start(n: Int) {
+        let h = horde(A.review, [n], map("concurrency", 1, "on_result", "_store", "on_done", "_fin"))
+        let v = vote("_w", n, 1)
+        let v2 = vote(_w, n, 1)
+        let v3 = vote("A._w", n, 1)
+        return "started"
+    }
+    on _store(input: Int, result: Int) { verdicts.set("k", result) }
+    on _fin(id: String) { verdicts.set("fin", 1) }
+    on _w(x: Int) { return 1 }
+    on seen() { return verdicts.get("k") ?? 0 }
+    every 60s { let z = _w(1) }
+}
+cell test T {
+    rules {
+        mock lookup "x"
+        assert A.start(4) == "started"
+        assert A.seen() == 8
+    }
+}

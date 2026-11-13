@@ -1,0 +1,23 @@
+skeleton Bank {
+    memory { acct: Map<String, Int> [persistent] }
+    face {
+        signal peek(id: String) -> Int   reads acct
+        signal bump(id: String) -> Int   writes acct
+        signal pure(id: String) -> Int   // no clause
+    }
+}
+cell Other { on noop() { return 0 } }
+flesh Bank {
+    on peek(id) { return acct.get(id) ?? 0 }
+    on bump(id) { acct.set(id, (acct.get(id) ?? 0) + 1)  return 1 }
+    on pure(id) {
+        let Other = id                  // a local named like a cell
+        return Other.bump()             // UFCS: bump(Other) — the signal runs, no `calls bump`
+    }
+}
+cell test T {
+    rules {
+        assert pure("k") == 1
+        assert peek("k") == 1
+    }
+}

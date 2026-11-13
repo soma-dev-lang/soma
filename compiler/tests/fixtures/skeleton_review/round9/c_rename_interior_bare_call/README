@@ -1,0 +1,1 @@
+soma rename app.cell In.tick pulse -> oublie l'appel nu `tick(n)` de la cellule englobante Outer (l.8), que soma refs liste : check rouge (E0012). refs.rs:393.

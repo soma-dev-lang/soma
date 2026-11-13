@@ -1,0 +1,11 @@
+cell A {
+    memory { c: Map<String, Int>  invariant c >= 5 }
+    face { signal length(s: String) -> Int
+            ensures result >= 5 }
+    on length(s: String) { return 9 }
+    on w(k: String) { c.set(k, k.length())
+        return 1 }
+    on probe() { let r = try { w("k") }
+        return r.kind ?? "ok" }
+}
+cell test T { rules { assert A.probe() == "invariant" } }

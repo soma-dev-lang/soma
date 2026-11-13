@@ -1,0 +1,19 @@
+cell A {
+    memory { c: Map<String, BigInt>  invariant c >= 1
+             d: Map<String, BigInt>  invariant d >= 0 }
+    on put(k: String, n: BigInt) { require n > 0 else Bad
+        c.set(k, n)
+        return 1 }
+    on put2(k: String, n: BigInt) { d.set(k, abs(n)) return 1 }
+}
+cell test T {
+    rules {
+        assert A.put("a", 5) == 1
+        let r = try { A.put("b", 1 / 2) }
+        assert r.kind == "invariant"
+        let nan = 1.0e308 * 10.0 - 1.0e308 * 10.0
+        let r2 = try { A.put2("n", nan) }
+        assert r2.kind == "invariant"
+        assert A.put("b", 1 / 2) == 1
+    }
+}

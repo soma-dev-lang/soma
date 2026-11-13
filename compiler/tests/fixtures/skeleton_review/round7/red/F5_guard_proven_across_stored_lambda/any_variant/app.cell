@@ -1,0 +1,24 @@
+cell A {
+    memory {
+        cap: Map<String, Int>
+    }
+    state m {
+        initial: x
+        x -> y { guard { (cap.get(k) ?? 0) > 0 } }
+        y -> x
+    }
+    on go(k: String) { cap.set(k, 5)
+ let f = z => cap.set(k, 0)
+ require (cap.get(k) ?? 0) > 0 else B
+ if any([1], f) { }
+ transition(k, "x", "y") return 1 }
+    on probe() {
+        let r = try { go("k") }
+        return r.kind ?? "ok"
+    }
+}
+cell test T {
+    rules {
+        assert A.probe() == "guard_failed"
+    }
+}

@@ -69,30 +69,15 @@ fn collect_emits(cell: &CellDef) -> Vec<String> {
 }
 
 fn collect_emits_from_stmts(stmts: &[Spanned<Statement>], out: &mut Vec<String>) {
-    for stmt in stmts {
-        match &stmt.node {
-            Statement::Emit { signal_name, .. } => {
-                out.push(signal_name.clone());
-            }
-            Statement::If { then_body, else_body, .. } => {
-                collect_emits_from_stmts(then_body, out);
-                collect_emits_from_stmts(else_body, out);
-            }
-            Statement::For { body, .. } | Statement::While { body, .. } => {
-                collect_emits_from_stmts(body, out);
-            }
-            Statement::ExprStmt { expr } => {
-                collect_emits_from_expr(&expr.node, out);
-            }
-            Statement::Let { value, .. } | Statement::Assign { value, .. }
-            | Statement::Return { value } => {
-                collect_emits_from_expr(&value.node, out);
-            }
-            _ => {}
-        }
-    }
+    // at any depth: an emit inside a `try { }`, a lambda, an if-expression
+    // or a match arm is an emit (it was "0 undelivered" while the signal
+    // was lost at run time)
+    crate::checker::literals::for_each_stmt_deep(stmts, &mut |st| {
+        if let Statement::Emit { signal_name, .. } = st { out.push(signal_name.clone()); }
+    });
 }
 
+#[allow(dead_code)]
 fn collect_emits_from_expr(expr: &Expr, out: &mut Vec<String>) {
     match expr {
         Expr::Match { arms, subject } => {

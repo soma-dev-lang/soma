@@ -1,0 +1,87 @@
+// HIDDEN — per-signal tests. Never shown to an agent, never quoted in spec.md.
+
+cell test UnitRooms {
+    rules {
+        assert add_room("u1", "single", 5000).rate == 5000
+        assert add_room("u2", "double", 8000).kind == "double"
+        assert add_room("u3", "single", 5500).room == "u3"
+        assert_fails add_room("u1", "single", 5000) matching "Taken"
+        assert_fails add_room("u9", "single", 0)
+        assert exists("u2") == true
+        assert exists("u-none") == false
+        assert rate_of("u-none") == 0
+        assert room("u2").rate == 8000
+        assert_fails room("u-none") matching "NotFound"
+        assert rooms_of_kind("single") == ["u1", "u3"]
+        assert rooms_of_kind("suite") == []
+        assert set_rate("u1", 5200) == 5200
+        assert rate_of("u1") == 5200
+        assert_fails set_rate("u-none", 100) matching "NotFound"
+    }
+}
+
+cell test UnitHousekeeping {
+    rules {
+        assert room_status("h1") == "clean"
+        assert_fails vacate("h1")
+        assert occupy("h1") == "occupied"
+        assert_fails occupy("h1")
+        assert_fails block("h1")
+        assert vacate("h1") == "dirty"
+        assert_fails occupy("h1")
+        assert start_cleaning("h1", "mia") == "cleaning"
+        assert_fails finish_cleaning("h1", "noa") matching "Forbidden"
+        assert room_status("h1") == "cleaning"
+        assert finish_cleaning("h1", "mia") == "clean"
+        assert block("h1") == "out_of_order"
+        assert_fails occupy("h1")
+        assert unblock("h1") == "clean"
+    }
+}
+
+cell test UnitCalendar {
+    rules {
+        assert is_free("c1", 10, 13) == true
+        assert hold_nights("bk-a", "c1", 10, 13) == true
+        assert held_by("c1", 12) == "bk-a"
+        assert held_by("c1", 13) == ""
+        assert is_free("c1", 13, 15) == true
+        assert is_free("c1", 12, 14) == false
+        assert hold_nights("bk-b", "c1", 12, 14) == false
+        assert held_by("c1", 13) == ""
+        assert hold_nights("bk-b", "c1", 13, 14) == true
+        assert free_nights("bk-b", "c1", 10, 14) == 1
+        assert held_by("c1", 11) == "bk-a"
+        assert free_nights("bk-a", "c1", 11, 13) == 2
+        assert held_by("c1", 10) == "bk-a"
+        assert_fails is_free("c1", 5, 5)
+    }
+}
+
+cell test UnitLedger {
+    rules {
+        assert due("f1") == 0
+        assert charge("f1", 900) == 900
+        assert_fails pay_cash("f1", 901) matching "Overpaid"
+        assert pay_cash("f1", 400) == 500
+        assert pay_points("f1", 200) == 300
+        assert_fails pay_points("f1", 301) matching "Overpaid"
+        assert cash_paid("f1") == 400
+        assert statement("f1").points == 200
+        assert statement("f1").due == 300
+        assert charge("f1", 100) == 400
+        assert_fails charge("f1", 0)
+    }
+}
+
+cell test UnitLoyalty {
+    rules {
+        assert points_of("g1") == 0
+        assert earn("g1", 12345) == 123
+        assert earn("g1", 99) == 123
+        assert redeem("g1", 124) == false
+        assert points_of("g1") == 123
+        assert redeem("g1", 23) == true
+        assert points_of("g1") == 100
+    }
+}

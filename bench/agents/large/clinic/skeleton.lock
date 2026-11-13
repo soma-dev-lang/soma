@@ -1,0 +1,326 @@
+# skeleton.lock — the structure `soma check` holds app.cell to.
+# Written by `soma skeleton app.cell --freeze`; changed on purpose with `--amend`. Do not edit.
+file app.cell
+
+== Api sha256:6213d3b0bace20f89e14933ba815a5f15a29e2b1007e63c8d26add8d50d97781 core:74a0b343392c7b55330ac3daea996a8c8f694dfbe308e5fa43cccbf6d7061758
+skeleton Api {
+    face {
+        signal request(method: String, path: String, body: Map) -> Map  calls Agenda.annuler_rdv, Agenda.confirmer, Agenda.demander, Paiements.payer, Patients.fiche, Patients.inscrire, Rapports.dossier_visite, Rapports.tableau_de_bord, sante
+        signal sante() -> Map  calls Audit.taille, Patients.compter
+    }
+}
+
+== Patients sha256:314927c6b2cbf86764086070c93856115f6ae79eb057e69d15cb5e3cbab6e771 core:bfaa7c5d4366833b409bc53428afea981113a9feee1946c280b615df75eb289e
+skeleton Patients {
+    memory {
+        fiches: Map<String, Map> [persistent]
+        actifs: Map<String, Bool> [persistent]
+    }
+    face {
+        signal inscrire(id: String, nom: String, naissance: String) -> Map  writes actifs, fiches  calls Audit.consigner
+        signal modifier_contact(id: String, tel: String) -> Map  writes fiches
+        signal fiche(id: String) -> Map  reads fiches
+        signal existe(id: String) -> Bool  reads fiches
+        signal desactiver(id: String) -> Bool  reads fiches  writes actifs  calls Audit.consigner
+        signal est_actif(id: String) -> Bool  reads actifs
+        signal compter() -> Int  ensures result >= 0  reads fiches
+    }
+}
+
+== Praticiens sha256:c393ac2291bdb979dde298cb9f0a7996dfb7100f3cfb398bbde02e2de28a19da core:07f6ef44d67855c5533bb9f9dca839172c60e21dbb46277932e104486a4a64a7
+skeleton Praticiens {
+    memory {
+        praticiens: Map<String, Map> [persistent]
+        conges: Map<String, Bool> [persistent]
+    }
+    face {
+        signal enregistrer(id: String, nom: String, specialite: String) -> Map  writes praticiens
+        signal praticien(id: String) -> Map  reads praticiens
+        signal existe_praticien(id: String) -> Bool  reads praticiens
+        signal mettre_en_conge(id: String) -> Bool  reads praticiens  writes conges
+        signal reprendre(id: String) -> Bool  reads praticiens  writes conges
+        signal est_disponible(id: String) -> Bool  reads conges, praticiens
+        signal par_specialite(specialite: String) -> List<String>  reads praticiens
+    }
+}
+
+== Agenda sha256:02d1dfdf8dfcf023ace566519fb1d6caad2b3faea0e3d3a411b0595e0bd586a7 core:179d73d94e8b1d05915fa25c0efd44055792c49bbe28a88203f313ec39e6216e
+skeleton Agenda {
+    memory {
+        creneaux: Map<String, String> [persistent]
+        rdvs: Map<String, Map> [persistent]
+    }
+    state rdv {
+        initial: demande
+        demande -> confirme
+        confirme -> arrive
+        arrive -> en_consultation
+        en_consultation -> termine
+        demande -> annule
+        confirme -> annule
+        confirme -> absent
+        demande -> reporte
+        confirme -> reporte
+        reporte -> confirme
+        reporte -> annule
+    }
+    face {
+        signal ouvrir_creneau(praticien: String, date: String, heure: String) -> String  writes creneaux  calls Praticiens.existe_praticien
+        signal creneau_libre(cle: String) -> Bool  reads creneaux
+        signal creneaux_libres(praticien: String, date: String) -> List<String>  reads creneaux
+        signal demander(id: String, patient: String, cle: String) -> Map  writes creneaux, rdvs  calls Patients.est_actif, Praticiens.est_disponible  emits rdv_change
+        signal confirmer(id: String) -> String  reads rdvs  moves demande -> confirme, reporte -> confirme  emits rdv_change
+        signal enregistrer_arrivee(id: String) -> String  reads rdvs  moves confirme -> arrive
+        signal debuter(id: String) -> String  reads rdvs  moves arrive -> en_consultation
+        signal cloturer(id: String) -> String  moves en_consultation -> termine  calls Consultations.exiger_terminee
+        signal annuler_rdv(id: String) -> String  reads rdvs  writes creneaux  moves confirme -> annule, demande -> annule, reporte -> annule  calls Audit.consigner  emits rdv_change
+        signal reporter(id: String, nouvelle_cle: String) -> Map  writes creneaux, rdvs  moves confirme -> reporte, demande -> reporte  emits rdv_change
+        signal marquer_absent(id: String) -> String  reads rdvs  moves confirme -> absent  emits rdv_change
+        signal statut_rdv(id: String) -> String  reads rdv, rdvs
+        signal rdv(id: String) -> Map  reads rdvs
+        signal rdvs_du_patient(patient: String) -> List<String>  reads rdvs
+        signal compter_statut(statut: String) -> Int  ensures result >= 0  reads rdv, rdvs
+    }
+}
+
+== Consultations sha256:292805b01dff68fcfb8fd09833e7d2bc002d81061c5715e4900f5717dd849ffd core:6561ec9861fed47c691d71f47f439da4cf45202708866846161bd5ec099a2a60
+skeleton Consultations {
+    memory {
+        consultations: Map<String, Map> [persistent]
+        actes: Map<String, Int> [persistent]
+        notes: List<Map> [persistent]
+        invariant actes >= 0
+    }
+    state consult {
+        initial: attente
+        attente -> ouverte
+        ouverte -> terminee
+        ouverte -> abandonnee
+    }
+    face {
+        signal ouvrir(id: String, motif: String) -> Map  writes actes, consultations  moves attente -> ouverte  calls Agenda.debuter, Agenda.rdv, Audit.consigner
+        signal ajouter_note(id: String, texte: String) -> Int  reads consult  writes notes
+        signal coter_acte(id: String, montant: Int) -> Int  requires montant > 0  reads consult  writes actes
+        signal poser_diagnostic(id: String, diagnostic: String) -> Map  reads consult  writes consultations
+        signal terminer(id: String) -> String  reads consultations  moves ouverte -> terminee  calls Agenda.cloturer, Audit.consigner
+        signal abandonner(id: String) -> String  writes actes  moves ouverte -> abandonnee
+        signal statut_consultation(id: String) -> String  reads consult
+        signal consultation(id: String) -> Map  reads consultations
+        signal total_actes(id: String) -> Int  ensures result >= 0  reads actes
+        signal exiger_terminee(id: String) -> Bool  reads consult
+        signal notes_de(id: String) -> List<String>  reads notes
+    }
+}
+
+== Ordonnances sha256:b152a9546b5eede16ddf4f458d11fb329200aaa10f7425ada2275201dd4d6121 core:06027e88cf1819a16f64d10cb8a679be811de20d99e41bb7ac83ee296b133cb1
+skeleton Ordonnances {
+    memory {
+        ordonnances: Map<String, Map> [persistent]
+        lignes: Map<String, List<Map>> [persistent]
+    }
+    state ordo {
+        initial: redigee
+        redigee -> signee
+        signee -> delivree
+        redigee -> annulee
+        signee -> annulee
+    }
+    face {
+        signal rediger(id: String, medicament: String, quantite: Int) -> Map  requires quantite > 0  writes lignes, ordonnances  calls Consultations.consultation
+        signal ajouter_ligne(id: String, medicament: String, quantite: Int) -> Int  requires quantite > 0  reads ordo, ordonnances  writes lignes
+        signal signer(id: String, praticien: String) -> String  writes ordonnances  moves redigee -> signee  calls Praticiens.existe_praticien
+        signal delivrer(id: String) -> String  reads lignes, ordonnances  moves signee -> delivree  calls Audit.consigner, Consultations.exiger_terminee, Facturation.exiger_payee, Pharmacie.sortir
+        signal annuler_ordonnance(id: String) -> String  reads ordonnances  moves redigee -> annulee, signee -> annulee
+        signal statut_ordonnance(id: String) -> String  reads ordo, ordonnances
+        signal ordonnance(id: String) -> Map  reads ordonnances
+        signal lignes_de(id: String) -> List<Map>  reads lignes
+    }
+}
+
+== Pharmacie sha256:3ade3d7c0b3b50dae12675a19af677319130b5b9f041c86ed1c2e0736b887a9f core:909982196900ec8b541802ee11ea281b466a5ab87de71c6ccd7cc8cd38afe140
+skeleton Pharmacie {
+    memory {
+        stock: Map<String, Int> [persistent]
+        lots: Map<String, Lot> [persistent]
+        seuils: Map<String, Int> [persistent]
+        invariant stock >= 0
+        invariant seuils >= 0
+    }
+    face {
+        signal referencer(medicament: String, seuil: Int) -> Int  requires seuil >= 0  writes seuils, stock
+        signal recevoir_lot(lot: String, medicament: String, quantite: Int, peremption: String) -> Int  requires quantite > 0  reads seuils  writes lots, stock
+        signal niveau(medicament: String) -> Int  ensures result >= 0  reads stock
+        signal sortir(medicament: String, quantite: Int) -> Int  requires quantite > 0  ensures result >= 0  reads seuils  writes lots, stock  emits stock_bas
+        signal lots_perimes(date: String) -> List<String>  reads lots
+        signal retirer_perimes(date: String) -> Int  ensures result >= 0  writes lots, stock  calls Audit.consigner, lots_perimes
+        signal sous_seuil() -> List<String>  reads seuils, stock
+        signal lot(id: String) -> Lot  reads lots
+    }
+    // type Lot = Lot { medicament: String, quantite: Int, peremption: String }
+}
+
+== Laboratoire sha256:7310edf5f01e10ab602810bac3cd31a427ab63a3fd8af01172b833e0bc6c53b0 core:1d87b00d00359cd30ce8641a817f47af33ef4c34098e4b4fe3b88b51a8665024
+skeleton Laboratoire {
+    memory {
+        demandes: Map<String, Map> [persistent]
+        resultats: Map<String, Map> [persistent]
+    }
+    state analyse {
+        initial: demandee
+        demandee -> prelevee
+        prelevee -> en_analyse
+        en_analyse -> resultat_saisi
+        resultat_saisi -> validee
+        resultat_saisi -> en_analyse
+        demandee -> annulee
+        prelevee -> annulee
+    }
+    face {
+        signal demander_analyse(id: String, visite: String, type: String) -> Map  writes demandes  calls Consultations.consultation, Consultations.statut_consultation
+        signal prelever(id: String) -> String  reads demandes  moves demandee -> prelevee
+        signal lancer(id: String) -> String  reads demandes  moves prelevee -> en_analyse
+        signal saisir_resultat(id: String, valeur: Int, unite: String) -> String  reads demandes  writes resultats  moves en_analyse -> resultat_saisi
+        signal valider_resultat(id: String, praticien: String) -> String  reads demandes  writes resultats  moves resultat_saisi -> validee  calls Praticiens.existe_praticien  emits resultat_pret
+        signal rejeter_resultat(id: String) -> String  writes resultats  moves resultat_saisi -> en_analyse
+        signal annuler_analyse(id: String) -> String  reads demandes  moves demandee -> annulee, prelevee -> annulee
+        signal statut_analyse(id: String) -> String  reads analyse, demandes
+        signal resultat(id: String) -> Map  reads analyse, resultats
+        signal analyses_de(visite: String) -> List<String>  reads demandes
+    }
+}
+
+== Facturation sha256:9f87d9831b05827d3152e028fec9ba0cbc32172f4ea80d932ae084a27d920bbf core:826dc9962769fa04857eeb9e7493a6aa8699fc69488ce0d02d169674e1823693
+skeleton Facturation {
+    memory {
+        factures: Map<String, Map> [persistent]
+        soldes: Map<String, Int> [persistent]
+        invariant soldes >= 0
+    }
+    state facture {
+        initial: brouillon
+        brouillon -> emise
+        emise -> payee
+        emise -> en_litige
+        en_litige -> emise
+        en_litige -> annulee
+        brouillon -> annulee
+    }
+    face {
+        signal preparer(id: String) -> Montants  writes factures, soldes  calls Assurance.calculer_prise_en_charge, Assurance.disponible_annuel, Consultations.consultation, Consultations.total_actes, today
+        signal emettre(id: String) -> String  reads factures, soldes  moves brouillon -> emise, emise -> payee  calls Assurance.engager, Consultations.exiger_terminee  emits facture_change
+        signal enregistrer_paiement(id: String, montant: Int) -> Int  requires montant > 0  ensures result >= 0  reads factures  writes soldes  moves emise -> payee  emits facture_change
+        signal autoriser_remboursement(id: String) -> Bool  reads facture
+        signal contester(id: String, motif: String) -> String  writes factures  moves emise -> en_litige  emits facture_change
+        signal trancher_litige(id: String, fonde: Bool) -> String  writes factures, soldes  moves en_litige -> annulee, en_litige -> emise  calls Assurance.liberer  emits facture_change
+        signal annuler_facture(id: String) -> String  reads factures  writes soldes  moves brouillon -> annulee
+        signal exiger_payee(id: String) -> Bool  reads facture
+        signal statut_facture(id: String) -> String  reads facture, factures
+        signal montants(id: String) -> Montants  reads factures
+        signal reste_du(id: String) -> Int  ensures result >= 0  reads soldes
+        signal totaux() -> Map  reads facture, factures, soldes
+    }
+    // type Montants = Montants { total: Int, assurance: Int, patient: Int }
+}
+
+== Paiements sha256:5b1a38b032e984d51d2722da623de8912ef02cf013eb0a6ba15048139aceb324 core:f75d6313323cab8a47a5c60a068372ee8f5aa2b9b5c7a757d0fe384060024569
+skeleton Paiements {
+    memory {
+        paiements: Map<String, Map> [persistent]
+        par_facture: Map<String, Int> [persistent]
+        invariant par_facture >= 0
+    }
+    state paiement {
+        initial: initie
+        initie -> encaisse
+        encaisse -> rembourse
+    }
+    face {
+        signal payer(id: String, facture: String, montant: Int, moyen: String) -> Int  requires montant > 0  ensures result >= 0  writes paiements, par_facture  moves initie -> encaisse  calls Audit.consigner, Facturation.enregistrer_paiement
+        signal rembourser(id: String) -> Int  reads paiements  writes par_facture  moves encaisse -> rembourse  calls Audit.consigner, Facturation.autoriser_remboursement
+        signal paiement(id: String) -> Map  reads paiements
+        signal total_paye(facture: String) -> Int  ensures result >= 0  reads par_facture
+        signal total_encaisse() -> Int  ensures result >= 0  reads par_facture
+        signal statut_paiement(id: String) -> String  reads paiement
+    }
+}
+
+== Assurance sha256:152d9db3733cc7fcf63d1720aa3e736a530421561b062a08c0be02ee76f24981 core:7f3ac97816e19dbbab90a02a895e0952f2236d351e95908803c9337353ea6522
+skeleton Assurance {
+    memory {
+        contrats: Map<String, Map> [persistent]
+        consommes: Map<String, Int> [persistent]
+        imputations: Map<String, String> [persistent]
+        engagements: Map<String, Int> [persistent]
+        invariant consommes >= 0
+        invariant engagements >= 0
+    }
+    face {
+        signal souscrire(patient: String, assureur: String, taux: Int, plafond: Int, plafond_annuel: Int) -> Map  requires plafond >= 0 && plafond_annuel >= 0  writes contrats  calls Patients.existe
+        signal contrat(patient: String) -> Map  reads contrats
+        signal est_couvert(patient: String) -> Bool  reads contrats
+        signal calculer_prise_en_charge(patient: String, montant: Int) -> Int  requires montant >= 0  ensures result >= 0  reads contrats
+        signal disponible_annuel(patient: String, annee: String) -> Int  ensures result >= 0  reads consommes, contrats
+        signal engager(facture: String, patient: String, montant: Int, annee: String) -> Int  requires montant > 0  reads contrats  writes consommes, engagements, imputations  calls disponible_annuel
+        signal liberer(facture: String) -> Int  ensures result >= 0  writes consommes, engagements, imputations
+        signal engagement(facture: String) -> Int  ensures result >= 0  reads engagements
+        signal total_engage() -> Int  ensures result >= 0  reads engagements
+        signal resilier(patient: String) -> Bool  writes contrats
+    }
+}
+
+== Notifications sha256:d5849f708fc7f79cdf9c08b7cbe465c3f2a642e5bbbb5ca0cff79d88b12ac299 core:6f006a7d3daf9d0b5255452377eeac1f8852907e03501ec94a8268f26182419c
+skeleton Notifications {
+    memory {
+        boite: List<Map> [persistent]
+        compteurs: Map<String, Int> [persistent]
+        invariant compteurs >= 0
+    }
+    face {
+        signal rdv_change(data: Map) -> Int  writes boite, compteurs
+        signal facture_change(data: Map) -> Int  writes boite, compteurs
+        signal resultat_pret(data: Map) -> Int  writes boite, compteurs
+        signal stock_bas(data: Map) -> Int  writes boite, compteurs
+        signal notifications_de(cible: String) -> List<String>  reads boite
+        signal compter_type(type: String) -> Int  ensures result >= 0  reads compteurs
+        signal marquer_lue(index: Int) -> Bool  writes boite
+        signal non_lues() -> Int  ensures result >= 0  reads boite
+    }
+}
+
+== Audit sha256:77da0b295c9523385d0b88e5adef8e4e3f32bb8ae8465193ea22e42044c65d72 core:0692052a7dc5dd243ecbeb4bebebe6c0108a5670723d457771f6dd0386ad32e2
+skeleton Audit {
+    memory {
+        journal: List<Map> [persistent, immutable]
+    }
+    face {
+        signal consigner(acteur: String, action: String, cible: String) -> Int  ensures result >= 1  writes journal  calls now
+        signal facture_change(data: Map) -> Int  writes journal  calls now
+        signal taille() -> Int  ensures result >= 0  reads journal
+        signal actions_sur(cible: String) -> List<String>  reads journal
+        signal derniere() -> Map  reads journal
+    }
+}
+
+== Rapports sha256:fec68f1064da00bf49b8c4d866166fe4c586ec11716cc00d3ebe18eb9ea6e37e core:ebd3fea8a2e7bfab9652cb0b32ab6b43d5511b5991b1de79791e20f871c3d9d4
+skeleton Rapports {
+    face {
+        signal dossier_visite(id: String) -> Map  calls Agenda.statut_rdv, Consultations.statut_consultation, Facturation.reste_du, Facturation.statut_facture, Ordonnances.statut_ordonnance
+        signal activite_patient(patient: String) -> Map  calls Agenda.rdvs_du_patient, Assurance.est_couvert, Notifications.notifications_de, Patients.est_actif, Patients.fiche
+        signal finances() -> Map  calls Assurance.total_engage, Facturation.totaux, Paiements.total_encaisse
+        signal alertes_stock(date: String) -> Map  calls Pharmacie.lots_perimes, Pharmacie.sous_seuil
+        signal taux_absence() -> Int  ensures result >= 0 && result <= 100  calls Agenda.compter_statut
+        signal tableau_de_bord(date: String) -> Map  calls Audit.taille, Notifications.non_lues, Patients.compter, alertes_stock, finances, taux_absence
+    }
+}
+
+== soma.toml [verify] sha256:8cbf91f78b912977795c2d28e0ede02f1cd51867a636e12787aefd695f117e91 core:8cbf91f78b912977795c2d28e0ede02f1cd51867a636e12787aefd695f117e91
+verify.after.annule.never = ["en_consultation", "termine"]
+verify.before.Agenda.termine.requires = ["Consultations.terminee"]
+verify.before.Consultations.ouverte.requires = ["Agenda.arrive"]
+verify.before.Facturation.emise.requires = ["Consultations.terminee"]
+verify.before.Facturation.payee.requires = ["Facturation.emise"]
+verify.before.Laboratoire.validee.requires_all = ["Laboratoire.prelevee", "Laboratoire.resultat_saisi"]
+verify.before.Ordonnances.delivree.requires_all = ["Consultations.terminee", "Facturation.payee"]
+package.edition = "2027"
+
+checksum sha256:ad41bc6dee9b2fb97f73504c7ee0e2b5368f37f59d78d950cdf0100a360d6973

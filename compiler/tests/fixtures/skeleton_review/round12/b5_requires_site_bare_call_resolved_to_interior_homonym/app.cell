@@ -1,0 +1,20 @@
+cell Desk {
+    interior {
+        cell Inner {
+            face { signal pos(n: Int) -> Int }
+            on pos(n: Int) { return n }
+        }
+    }
+    on neg(k: String) { return pos(0 - 5) }
+    on ok(k: String) { return Zed.pos(5) }
+}
+cell Zed {
+    face { signal pos(n: Int) -> Int
+              requires n > 0 }
+    on pos(n: Int) { return n }
+}
+cell test T { rules {
+    assert Desk.ok("k") == 5
+    let r = try { Desk.neg("k") }
+    assert r.kind == "requires"
+} }

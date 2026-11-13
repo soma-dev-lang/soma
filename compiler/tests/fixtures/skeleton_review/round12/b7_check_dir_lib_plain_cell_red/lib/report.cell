@@ -1,0 +1,3 @@
+cell Report {
+    on twice(sku: String) { return Stock.level(sku) * 2 }
+}

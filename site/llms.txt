@@ -18,6 +18,7 @@ verified against it. Unknown URLs on this site return 404, never a page.
 - [llms-full.txt](https://soma-lang.dev/llms-full.txt): this file + full reference + every gotcha + every builtin, one fetch (~130 KB)
 - [llms-agents.txt](https://soma-lang.dev/llms-agents.txt): running LLM agents — tools, capabilities, [task], hordes, budgets, mocks (`soma docs agents`)
 - [llms-native.txt](https://soma-lang.dev/llms-native.txt): the `[native]` vocabulary, limits and costs (`soma docs native`)
+- [llms-skeleton.txt](https://soma-lang.dev/llms-skeleton.txt): large programs — `skeleton` / `flesh`, frames, holes, the brief, skeleton.lock (`soma docs skeleton`)
 - [llms-releases.txt](https://soma-lang.dev/llms-releases.txt): what each release changed, newest first (`soma docs releases`)
 - [docs/robotics.md](https://soma-lang.dev/docs/robotics.md): 100 robotics robustness scenarios, reproduction commands and limits; offline with `soma docs robotics`
 - [agent.md](https://soma-lang.dev/agent.md): drop-in AGENTS.md / CLAUDE.md block for a project that uses Soma
@@ -69,7 +70,7 @@ soma verify --attest out.json app.cell   # the proof as a file: sources + toolch
                                          # a reviewer runs `soma verify --check-attestation out.json`
 soma docs agent                      # this file, offline, from the binary
 soma docs guarantees|serving|operations   # proofs, HTTP rules, what goes wrong — offline too
-soma docs agents|native|releases     # LLM agents in depth, the [native] vocabulary, what each release changed
+soma docs agents|native|skeleton|releases   # LLM agents, the [native] vocabulary, large programs skeleton-first, what each release changed
 soma embed app.cell                  # the program as a library: one JSON call per line; packages/python (`import soma`) and packages/npm use it
 soma example invariant state_machine # verified programs with those features;
 soma example <id>                    #   …and the source of one
@@ -77,6 +78,24 @@ soma init myapp                      # app.cell + soma.toml + AGENTS.md
 ```
 Work in that order. `check` is cheap and catches most mistakes before
 anything runs; a `verify` failure is an error, not a warning.
+
+## Skeleton first (large programs)
+
+Past one file, write the STRUCTURE before any body. A `skeleton` is a cell
+without bodies: memory, state machines, and a face whose signals each carry
+a frame — `reads a` / `writes a` / `moves s -> t` / `calls f, Cell.g, think`
+/ `emits s`. The bodies come later in `flesh Name { on f(x) { … } }`
+(private helpers: `on _helper(x: Int)`), and `soma check` refuses a body
+that does anything its frame does not say. A signal no flesh fills is a hole.
+```
+soma skeleton app.cell                # the map: structure + frames, no bodies (plain cells too: frames inferred)
+soma holes    app.cell                # signals with no body yet, in the order to write them
+soma skeleton app.cell Cell.signal    # the brief for ONE body: its slots, edges, and what it may call
+soma skeleton app.cell --freeze       # skeleton.lock: the structure then changes only with --amend
+soma init --skeleton myapp            # a starter laid out this way
+```
+The rules, the clauses and an example: `soma docs skeleton`
+(https://soma-lang.dev/llms-skeleton.txt).
 
 ## Cell anatomy
 
@@ -550,7 +569,7 @@ EVERY value when the range has at most 20,000 values; a wider range is only
 sampled (50 values, fixed seed — not a proof). State more in a `soma.toml` beside
 the program (`[package]` is optional; an unknown key is an error). The properties
 apply to every machine of the cells in `cells = [...]` (all cells when absent):
-a property whose TARGET state one machine lacks is vacuously true there (but
+a property whose TARGET state one machine lacks proves nothing there (a `·` note, no ✓; but
 `before.X requires [Y]` with X present and Y absent FAILS: X is reachable
 without Y) — output names each machine `Cell.machine` when there are several; split
 programs, or scope `cells`, when two machines need different properties:
@@ -573,6 +592,7 @@ requires_all = ["held", "picked"]   # …without EACH of these
 assuming = "amount > 500"           # …on the runs where this holds: edges whose guard cannot hold then are left out
 [verify.before."Pay.paid"]          # "Cell.state": the PRODUCT of the machines, every run of the handlers (one id
 requires = ["Approval.signed_off"]  # followed through all of them; a handler call is one atomic step); refused past 200,000 states
+while = ["Approval.signed_off"]     # …and the other machine IS there when `paid` is entered (`requires` is the past, `while` the present)
 ```
 In the machine, `* -> failed` means from EVERY state — it also adds
 `paid -> failed`, so `paid` is no longer final (verify says so). Keep states
@@ -651,7 +671,7 @@ replay: `soma docs agents` (https://soma-lang.dev/llms-agents.txt).
    builtin). `soma check` warns when an argument count sends a call to a
    builtin you probably did not mean. Another cell's handler: `Ledger.post(x)`
    (or bare `post(x)`); the builtin behind a handler's name: `std.len(x)` (required in edition 2027).
-   `get_status(id)` of an id never transitioned: the initial state (edition 2027: `()`); `has_state(id)` tells.
+   `get_status(id)` of an id never transitioned: `()` in edition 2027, the initial state in 2026 — write `get_status(id) ?? "initial"`; `has_state(id)` tells.
 2. `match` arms use `->` (`=>` is lambdas). Handlers don't declare return
    types (face signals do).
 3. An unescaped `"` inside `{...}` ends the string — escape it (`{m[\"k\"]}`) or bind a let first.

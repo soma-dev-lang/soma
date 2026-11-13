@@ -1,0 +1,38 @@
+cell Visit {
+    memory { log: Map<String, String> }
+    state v {
+        initial: waiting
+        waiting -> open
+        open -> done
+        done -> open
+    }
+    on open_visit(id: String) { transition(id, "waiting", "open")  return "open" }
+    on close_visit(id: String) { transition(id, "open", "done")  return "done" }
+    on reopen(id: String) { transition(id, "done", "open")  return "open" }
+    on status(id: String) { return get_status(id) ?? "waiting" }
+
+}
+cell Desk {
+
+    state d {
+        initial: none
+        none -> requested 
+    }
+    on st(id: String) { return get_status(id) ?? "none" }
+    on go(id: String) {
+        require Visit.status(id) == "open" else No
+        emit ping(id)
+        transition(id, "none", "requested")
+        return 1
+    }
+
+}
+cell type Aux { on ping(id: String) { return Visit.close_visit(id) } }
+cell test T {
+    rules {
+        let a = Visit.open_visit("k")
+        let r = try { Desk.go("k") }
+        assert Desk.st("k") == "requested"
+        assert Visit.status("k") != "open"
+    }
+}

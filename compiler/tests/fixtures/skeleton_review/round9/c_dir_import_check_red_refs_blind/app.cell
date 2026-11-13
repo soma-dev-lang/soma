@@ -1,0 +1,5 @@
+use lib::flesh
+skeleton A { face { signal go() -> Int  calls helper
+                    signal helper() -> Int } }
+skeleton B { face { signal run() -> Int  calls A.helper } }
+cell test T { rules { assert A.go() == 1  assert B.run() == 1 } }

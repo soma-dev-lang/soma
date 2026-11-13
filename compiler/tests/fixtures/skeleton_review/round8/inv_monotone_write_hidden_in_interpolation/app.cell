@@ -1,0 +1,11 @@
+// Monotone-counter rule: "the value calls nothing that writes the slot" does not read interpolation:
+// bump(k) stores old + 100 after the read of old, then old + 1 is written.
+cell A {
+    memory { seq: Map<String, Int>  invariant seq >= (seq.get(key) ?? 0) }
+    on bump(k: String) { seq.set(k, (seq.get(k) ?? 0) + 100) return "z" }
+    on w(k: String) { seq.set(k, (seq.get(k) ?? 0) + len("{bump(k)}")) return 1 }
+    on probe() { let r = try { w("k") }
+ print(r)
+ return r.kind ?? "ok" }
+}
+cell test T { rules { assert A.probe() == "invariant" } }

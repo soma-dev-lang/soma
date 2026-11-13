@@ -1,0 +1,10 @@
+skeleton Clock {
+    face {
+        signal stamp(id: String) -> Int   calls now
+        signal size(id: String) -> Int    // pure
+    }
+}
+flesh Clock {
+    on stamp(id) { return std.now() }     // the frame grants `now`
+    on size(id) { return std.len(id) }    // a pure builtin
+}

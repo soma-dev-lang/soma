@@ -1,0 +1,14 @@
+	call	Desk.open
+Desk.open	read	titles
+Desk.open	write	titles
+Desk.open	call	Desk.count
+Desk.open>Desk.count	read	opened
+Desk.open	write	opened
+	call	Back.door
+Back.door	move	closed
+	call	Desk.summary
+Desk.summary	call	Desk._must_exist
+Desk.summary>Desk._must_exist	read	titles
+Desk.summary	read	titles
+Desk.summary	read	owners
+Desk.summary	mread	-

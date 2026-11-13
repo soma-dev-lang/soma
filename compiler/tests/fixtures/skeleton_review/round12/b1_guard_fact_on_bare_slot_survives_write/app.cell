@@ -1,0 +1,18 @@
+cell A {
+    memory { tags: List<String> }
+    state m {
+        initial: a
+        a -> b { guard { tags == [] } }
+    }
+    on go(id: String) {
+        require tags == [] else Busy
+        tags.push(id)
+        transition(id, "a", "b")
+        return "b"
+    }
+}
+cell test T {
+    rules {
+        assert A.go("k") == "b"
+    }
+}

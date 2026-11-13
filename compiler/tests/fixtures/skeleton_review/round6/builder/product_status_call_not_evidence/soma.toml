@@ -1,0 +1,5 @@
+[package]
+name = "e1"
+edition = "2027"
+[verify.before."Ordo.delivree"]
+requires = ["Consult.terminee"]

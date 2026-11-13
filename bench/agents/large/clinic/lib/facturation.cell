@@ -1,0 +1,88 @@
+use lib::types
+
+// Facturation — une facture par visite (même id que la consultation). Montants en centimes.
+skeleton Facturation {
+    memory {
+        // id visite -> { patient: String, total: Int, assurance: Int, annee: String ("AAAA", année de
+        //                préparation), motif_litige: String ("" sinon) }
+        factures: Map<String, Map> [persistent]
+        // id visite -> reste dû par le patient (centimes) ; 0 quand tout est payé
+        soldes: Map<String, Int> [persistent]
+        invariant soldes >= 0
+    }
+    state facture {
+        initial: brouillon
+        brouillon -> emise                      // RÈGLE : seulement si la consultation est terminée
+        emise -> payee
+        emise -> en_litige
+        en_litige -> emise                      // litige rejeté : la facture reste due
+        en_litige -> annulee                    // litige accepté
+        brouillon -> annulee
+    }
+    face {
+        // Prépare le brouillon de la visite `id`. Erreurs : `FactureExiste`, `ConsultationInconnue` (propagée),
+        // `RienAFacturer` si le total des actes est 0. total = Consultations.total_actes(id) ;
+        // annee = les 4 premiers caractères de today() ;
+        // assurance = min(Assurance.calculer_prise_en_charge(patient, total),
+        //                 Assurance.disponible_annuel(patient, annee)) ; solde = total - assurance.
+        // Écrit { patient, total, assurance, annee, motif_litige: "" }. Aucune transition. Renvoie les Montants.
+        signal preparer(id: String) -> Montants
+            writes factures, soldes
+            calls Consultations.consultation, Consultations.total_actes, Assurance.calculer_prise_en_charge, Assurance.disponible_annuel, today
+        // brouillon -> emise. Erreur `FactureInconnue`. Exige la consultation terminée
+        // (Consultations.exiger_terminee(id), AVANT tout effet). Engage la part assurance
+        // (Assurance.engager(id, patient, assurance, annee de la facture)) si elle est > 0. Si le solde patient est 0, enchaîne
+        // emise -> payee. Émet facture_change({ id, etat, patient }) avec l'état final. Renvoie l'état final.
+        signal emettre(id: String) -> String
+            reads factures, soldes
+            moves brouillon -> emise, emise -> payee
+            calls Consultations.exiger_terminee, Assurance.engager
+            emits facture_change
+        // Impute un paiement (appelé par Paiements.payer). Erreurs : `FactureInconnue`, `FactureNonEmise` si
+        // l'état n'est pas `emise`, `TropPercu` si montant > solde. Diminue le solde ; à 0 : emise -> payee et
+        // émet facture_change({ id, etat: "payee", patient }). Renvoie le solde restant.
+        signal enregistrer_paiement(id: String, montant: Int) -> Int
+            requires montant > 0
+            ensures result >= 0
+            writes soldes
+            reads factures
+            moves emise -> payee
+            emits facture_change
+        // Annule l'imputation d'un paiement remboursé (appelé par Paiements.rembourser) : rien à écrire
+        // sur le solde, mais refuse (`FactureNonAnnulee`) si la facture n'est pas `annulee`. Renvoie true.
+        signal autoriser_remboursement(id: String) -> Bool              reads facture
+        // emise -> en_litige ; note le motif. Erreurs : `FactureInconnue`, `MotifVide`. Émet
+        // facture_change({ id, etat: "en_litige", patient }). Renvoie "en_litige".
+        signal contester(id: String, motif: String) -> String
+            writes factures
+            moves emise -> en_litige
+            emits facture_change
+        // Tranche un litige. fonde == true : en_litige -> annulee, solde mis à 0, libère l'engagement
+        // assurance (Assurance.liberer(id)). fonde == false : en_litige -> emise, motif effacé.
+        // Émet facture_change avec l'état final. Renvoie l'état final ("annulee" ou "emise").
+        signal trancher_litige(id: String, fonde: Bool) -> String
+            writes factures, soldes
+            moves en_litige -> annulee, en_litige -> emise
+            calls Assurance.liberer
+            emits facture_change
+        // Abandonne un brouillon : brouillon -> annulee, solde 0. Erreur `FactureInconnue`. Renvoie "annulee".
+        signal annuler_facture(id: String) -> String
+            writes soldes
+            reads factures
+            moves brouillon -> annulee
+        // Garde pour les autres cellules : lève `FactureNonPayee` sauf si l'état est `payee`.
+        // Le corps DOIT être `require get_status(id) == "payee" else FactureNonPayee` (forme reconnue par
+        // `soma verify` dans le produit des machines). Renvoie true.
+        signal exiger_payee(id: String) -> Bool                         reads facture
+        // L'état ("brouillon" tant qu'aucune transition). Erreur `FactureInconnue`.
+        signal statut_facture(id: String) -> String                     reads factures, facture
+        // Les montants de la facture (patient = total - assurance), ou erreur `FactureInconnue`.
+        signal montants(id: String) -> Montants                         reads factures
+        // Reste dû par le patient ; 0 pour un id inconnu.
+        signal reste_du(id: String) -> Int                              reads soldes
+            ensures result >= 0
+        // { facture: somme des totaux des factures émises ou payées, impaye: somme des soldes des factures
+        //   émises, nombre: nombre de factures tous états }.
+        signal totaux() -> Map                                          reads factures, soldes, facture
+    }
+}

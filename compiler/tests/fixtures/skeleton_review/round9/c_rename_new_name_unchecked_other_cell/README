@@ -1,0 +1,1 @@
+soma rename app.cell B.tick pulse -> exit 0 ; D a déjà `pulse` : l'appel nu du test `pulse(31)` devient ambigu, check rouge (E0012). refs.rs:453-455.

@@ -1,0 +1,17 @@
+cell A {
+    memory { c: Map<String, Int>  invariant c <= 100 }
+    on add(k: String, n: Int) [task] { require (c.get(k) ?? 0) + n <= 100 else Full
+ let ok = await signal("go", k)
+ c.set(k, (c.get(k) ?? 0) + n)
+ return 1 }
+    on probe() { 
+  let a = add("k", 60)
+  let b = add("k", 60)
+  print(a) print(b)
+  let r1 = try { deliver("go", "k", true) }
+  let r2 = try { deliver("go", "k", true) }
+  print(r1) print(r2)
+  print(c)
+  return r2.kind ?? "ok" }
+}
+cell test T { rules { assert A.probe() == "invariant" } }

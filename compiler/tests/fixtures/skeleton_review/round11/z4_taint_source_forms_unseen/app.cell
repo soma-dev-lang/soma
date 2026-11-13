@@ -1,0 +1,24 @@
+cell agent Desk {
+    face {
+        signal ask(id: String, q: String) -> Any
+        tool route(id: String, target: String) -> String "Route"
+    }
+    memory { memo: Map<String, String> }
+    state job { initial: a
+        a -> b
+        a -> c }
+    on route(id: String, target: String) { transition(id, target) return "ok" }
+    on _t(q: String) { return think(q) }
+    on st(id: String) { return get_status(id) ?? "a" }
+    on ask(id: String, q: String)  {
+        let d = q.think()
+ transition(id, d)
+        return 1
+    }
+}
+cell test T {
+    rules {
+        assert Desk.ask("k", "SAY c") == 1
+        assert Desk.st("k") == "c"
+    }
+}

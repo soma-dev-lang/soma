@@ -1,0 +1,61 @@
+// Assurance — contrats des patients et prises en charge engagées facture par facture.
+skeleton Assurance {
+    memory {
+        // id patient -> { assureur: String, taux: Int (pourcentage 0..100), plafond: Int (centimes, par facture),
+        //                 plafond_annuel: Int (centimes, par année civile) }
+        contrats: Map<String, Map> [persistent]
+        // clé "patient|AAAA" -> total engagé pour ce patient sur cette année civile (centimes)
+        consommes: Map<String, Int> [persistent]
+        invariant consommes >= 0
+        // id facture -> clé "patient|AAAA" sur laquelle son engagement est imputé
+        imputations: Map<String, String> [persistent]
+        // id facture -> montant engagé par l'assurance (centimes)
+        engagements: Map<String, Int> [persistent]
+        invariant engagements >= 0
+    }
+    face {
+        // Enregistre (ou remplace) le contrat d'un patient. Erreurs : `PatientInconnu` (Patients.existe),
+        // `TauxInvalide` si taux hors 0..100. Renvoie le contrat { assureur, taux, plafond, plafond_annuel }.
+        signal souscrire(patient: String, assureur: String, taux: Int, plafond: Int, plafond_annuel: Int) -> Map
+            requires plafond >= 0 && plafond_annuel >= 0
+            writes contrats
+            calls Patients.existe
+        // Le contrat, ou erreur `SansContrat`.
+        signal contrat(patient: String) -> Map                          reads contrats
+        // true si le patient a un contrat.
+        signal est_couvert(patient: String) -> Bool                     reads contrats
+        // Part prise en charge pour un montant : min(idiv(montant * taux, 100), plafond) ; 0 sans contrat.
+        // Lecture pure : n'engage rien.
+        signal calculer_prise_en_charge(patient: String, montant: Int) -> Int
+            requires montant >= 0
+            ensures result >= 0
+            reads contrats
+        // Ce qui reste du plafond annuel du patient pour l'année `annee` ("AAAA") :
+        // plafond_annuel - consommes["patient|annee"], jamais négatif ; 0 sans contrat. Lecture pure.
+        signal disponible_annuel(patient: String, annee: String) -> Int
+            ensures result >= 0
+            reads contrats, consommes
+        // Engage `montant` pour la facture, imputé sur l'année `annee` ("AAAA"). Erreurs : `SansContrat`,
+        // `DejaEngage` si la facture a déjà un engagement, `PlafondAnnuelDepasse` si montant >
+        // disponible_annuel(patient, annee). Ajoute à consommes["patient|annee"], note l'imputation.
+        // Renvoie le montant engagé.
+        signal engager(facture: String, patient: String, montant: Int, annee: String) -> Int
+            requires montant > 0
+            writes engagements, consommes, imputations
+            reads contrats
+            calls disponible_annuel
+        // Libère l'engagement d'une facture annulée (supprime l'entrée), rend le montant au plafond annuel
+        // (consommes de la clé imputée) et supprime l'imputation. Renvoie le montant libéré, 0 si aucun.
+        signal liberer(facture: String) -> Int
+            ensures result >= 0
+            writes engagements, consommes, imputations
+        // Montant engagé pour cette facture ; 0 si aucun.
+        signal engagement(facture: String) -> Int                       reads engagements
+            ensures result >= 0
+        // Somme de tous les engagements.
+        signal total_engage() -> Int                                    reads engagements
+            ensures result >= 0
+        // Supprime le contrat. Renvoie true s'il existait. Les engagements déjà pris restent.
+        signal resilier(patient: String) -> Bool                        writes contrats
+    }
+}

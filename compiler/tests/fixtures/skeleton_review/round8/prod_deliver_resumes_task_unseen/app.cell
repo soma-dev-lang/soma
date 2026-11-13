@@ -1,0 +1,35 @@
+cell Visit {
+    state v {
+        initial: waiting
+        waiting -> open
+        open -> done
+    }
+    on open_visit(id: String) { transition(id, "waiting", "open")  return "open" }
+    on close_visit(id: String) { transition(id, "open", "done")  return "done" }
+    on status(id: String) { return get_status(id) ?? "waiting" }
+    on wait_close(id: String) [task] { let x = await signal("go", id)
+ transition(id, "open", "done")
+ return "done" }
+}
+cell Desk {
+    state d {
+        initial: none
+        none -> requested
+    }
+    on st(id: String) { return get_status(id) ?? "none" }
+    on request_lab(id: String) {
+        require Visit.status(id) == "open" else NotOpen
+        let v = deliver("go", id, 1)
+        transition(id, "none", "requested")
+        return "requested"
+    }
+}
+cell test T {
+    rules {
+        assert Visit.open_visit("k") == "open"
+        assert Visit.wait_close("k").kind == "signal"
+        assert Desk.request_lab("k") == "requested"
+        assert Desk.st("k") == "requested"
+        assert Visit.status("k") == "done"
+    }
+}

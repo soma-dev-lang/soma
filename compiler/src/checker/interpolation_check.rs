@@ -161,6 +161,17 @@ pub fn check_program(program: &Program) -> Vec<InterpolationIssue> {
                 }
             }
             issues.extend(w.issues);
+            // a test's helpers call the program too: a wrong count there
+            // passed check and turned every assertion after it red
+            for section in &cell.sections {
+                if let Section::OnSignal(on) = &section.node {
+                    let mut h = Walker::new(&index);
+                    h.in_test = true;
+                    for p in &on.params { h.scope.insert(p.name.clone()); }
+                    h.walk_stmts(&on.body);
+                    issues.extend(h.issues.into_iter().filter(|i| matches!(i.kind, "arity" | "unknown_handler")));
+                }
+            }
             continue;
         }
         if !matches!(cell.kind, CellKind::Cell | CellKind::Agent) {
@@ -635,7 +646,8 @@ pub fn check_program(program: &Program) -> Vec<InterpolationIssue> {
             if let Section::OnSignal(on) = &sec.node {
                 for p in &on.properties {
                     const KNOWN: [&str; 4] = ["native", "task", "deterministic", "record"];
-                    if !KNOWN.contains(&p.as_str()) {
+                    // `hole`: the handler a skeleton gives a signal no flesh fills
+                    if !KNOWN.contains(&p.as_str()) && !(c.skeleton && p == HOLE) {
                         let near = KNOWN.iter().find(|k| strsim_close(k, p)).map(|k| format!(" — did you mean [{}]?", k)).unwrap_or_default();
                         issues.push(InterpolationIssue {
                             message: format!("unknown handler annotation [{}] on `{}`{} (known: [native], [task], [deterministic], [record])", p, on.signal_name, near),
@@ -1889,7 +1901,7 @@ fn pattern_strings<'a>(p: &'a MatchPattern, out: &mut Vec<&'a str>) {
     }
 }
 
-pub(super) fn bind_pattern(pattern: &MatchPattern, scope: &mut HashSet<String>) {
+pub(crate) fn bind_pattern(pattern: &MatchPattern, scope: &mut HashSet<String>) {
     match pattern {
         MatchPattern::Variable(name) => {
             scope.insert(name.clone());

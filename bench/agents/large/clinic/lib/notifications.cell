@@ -1,0 +1,35 @@
+// Notifications — reçoit les événements émis par les autres cellules et les range dans une boîte.
+// Chaque signal d'événement ajoute UNE entrée { type, cible, message, lue: false } à `boite` et incrémente
+// `compteurs[type]`. `cible` est le destinataire (un id patient, ou "pharmacie").
+skeleton Notifications {
+    memory {
+        // dans l'ordre d'arrivée : { type: String, cible: String, message: String, lue: Bool }
+        boite: List<Map> [persistent]
+        // type d'événement -> nombre reçu
+        compteurs: Map<String, Int> [persistent]
+        invariant compteurs >= 0
+    }
+    face {
+        // data = { id, etat, patient }. type "rdv", cible = patient, message "rdv {id}: {etat}". Renvoie l'index.
+        signal rdv_change(data: Map) -> Int                             writes boite, compteurs
+        // data = { id, etat, patient }. type "facture", cible = patient, message "facture {id}: {etat}".
+        signal facture_change(data: Map) -> Int                         writes boite, compteurs
+        // data = { id, visite, patient, type }. type "resultat", cible = patient,
+        // message "resultat {type} disponible ({id})".
+        signal resultat_pret(data: Map) -> Int                          writes boite, compteurs
+        // data = { medicament, niveau, seuil }. type "stock", cible "pharmacie",
+        // message "stock bas {medicament}: {niveau} < {seuil}".
+        signal stock_bas(data: Map) -> Int                              writes boite, compteurs
+        // Les messages (String) adressés à cette cible, dans l'ordre d'arrivée.
+        signal notifications_de(cible: String) -> List<String>          reads boite
+        // Nombre d'événements reçus de ce type ("rdv", "facture", "resultat", "stock") ; 0 si aucun.
+        signal compter_type(type: String) -> Int                        reads compteurs
+            ensures result >= 0
+        // Marque lue l'entrée d'index donné. Erreur `NotificationInconnue` si l'index est hors bornes.
+        // Renvoie true si elle était non lue.
+        signal marquer_lue(index: Int) -> Bool                          writes boite
+        // Nombre d'entrées non lues.
+        signal non_lues() -> Int                                        reads boite
+            ensures result >= 0
+    }
+}

@@ -1,0 +1,22 @@
+skeleton Other {
+    memory { o: Map<String, Int> }
+    face { signal g(k: String) -> Int   writes o 
+           signal look(k: String) -> Int  reads o }
+}
+flesh Other {
+    on g(k) { _h(k) return 1 }
+    on _h(k: String) { o.set(k, 7) }
+    on look(k) { return o.get(k) ?? 0 }
+}
+skeleton S {
+    memory { items: Map<String, Int> }
+    face {
+        signal tick() -> Int    writes items
+        signal peek() -> Map    reads items  calls Other.look
+    }
+    every 1s { Other._h("x") }
+}
+flesh S {
+    on tick() { items.set("k", 1) return 1 }
+    on peek() { return map("x", Other.look("x"), "y", Other.look("y")) }
+}

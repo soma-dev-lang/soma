@@ -1,0 +1,18 @@
+flesh Consult {
+    on noter(id, t) { notes.set(id, t)  return id }
+    on terminer(id) { transition(id, "ouverte", "terminee")  return "terminee" }
+    on etat(id) { return get_status(id) }
+    on exiger(id) { require get_status(id) == "terminee" else ConsultationNonTerminee  return true }
+}
+flesh Ordo {
+    on rediger(id, consult_id) { ordos.set(id, map("consult", consult_id))  return id }
+    on signer(id) { transition(id, "redigee", "signee")  return "signee" }
+    on delivrer(id) {
+        let o = ordos.get(id)
+        require o != () else NotFound
+        require Consult.etat(o.consult) == "terminee" else Non
+        transition(id, "signee", "delivree")
+        return "delivree"
+    }
+    on annuler(id) { transition(id, "annulee")  return "annulee" }
+}

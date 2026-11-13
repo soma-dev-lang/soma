@@ -1,0 +1,10 @@
+[package]
+name = "v1"
+edition = "2027"
+[verify]
+eventually = ["paid", "void", "signed_off", "refused"]
+never = ["corrupt"]
+[verify.after.void]
+never = ["paid"]
+[verify.before."Pay.paid"]
+requires = ["Approval.signed_off"]

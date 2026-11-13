@@ -1,0 +1,25 @@
+// The flesh of `skeleton Disputes` (../app.cell).
+
+flesh Disputes {
+    on file(order_id, buyer, reason) {
+        let opened = open_dispute(order_id, buyer)
+        reasons.set(order_id, reason)
+        return opened
+    }
+
+    // the ruling moves the order AND the money, or neither (a handler is atomic)
+    on resolve(order_id, ruling) {
+        require reasons.get(order_id) != () else NotFound "no dispute on order '{order_id}'"
+        require ruling == "buyer" || ruling == "seller" else BadRuling "a ruling is \"buyer\" or \"seller\""
+        rulings.set(order_id, ruling)
+        let state = close_dispute(order_id, ruling == "buyer")
+        if ruling == "buyer" {
+            return map("order", order_id, "ruling", ruling, "state", state, "buyer_balance", refund(order_id))
+        }
+        return map("order", order_id, "ruling", ruling, "state", state, "seller_balance", release(order_id))
+    }
+
+    on ruling(order_id) {
+        return rulings.get(order_id) ?? "none"
+    }
+}

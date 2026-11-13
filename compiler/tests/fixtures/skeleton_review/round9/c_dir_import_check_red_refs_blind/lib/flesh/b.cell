@@ -1,0 +1,1 @@
+flesh B { on run() { return A.helper() } }

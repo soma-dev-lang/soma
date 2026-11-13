@@ -1,0 +1,62 @@
+flesh Laboratoire {
+    on _exiger(id: String) {
+        let d = demandes.get(id)
+        require d != () else AnalyseInconnue "analyse {id}"
+        return d
+    }
+    on demander_analyse(id, visite, type) {
+        require demandes.get(id) == () else AnalyseExiste "analyse {id}"
+        require Consultations.statut_consultation(visite) == "ouverte" else ConsultationNonOuverte "visite {visite}"
+        let c = Consultations.consultation(visite)
+        let d = map("visite", visite, "type", type, "patient", c.patient)
+        demandes.set(id, d)
+        return d
+    }
+    on prelever(id) {
+        let d = _exiger(id)
+        transition(id, "demandee", "prelevee")
+        return "prelevee"
+    }
+    on lancer(id) {
+        let d = _exiger(id)
+        transition(id, "prelevee", "en_analyse")
+        return "en_analyse"
+    }
+    on saisir_resultat(id, valeur, unite) {
+        let d = _exiger(id)
+        transition(id, "en_analyse", "resultat_saisi")
+        resultats.set(id, map("valeur", valeur, "unite", unite, "valide_par", ""))
+        return "resultat_saisi"
+    }
+    on valider_resultat(id, praticien) {
+        let d = _exiger(id)
+        require Praticiens.existe_praticien(praticien) else PraticienInconnu "praticien {praticien}"
+        transition(id, "resultat_saisi", "validee")
+        let r = resultats.get(id) ?? map()
+        r.valide_par = praticien
+        resultats.set(id, r)
+        emit resultat_pret(map("id", id, "visite", d.visite, "patient", d.patient, "type", d.type))
+        return "validee"
+    }
+    on rejeter_resultat(id) {
+        transition(id, "resultat_saisi", "en_analyse")
+        resultats.delete(id)
+        return "en_analyse"
+    }
+    on annuler_analyse(id) {
+        let d = _exiger(id)
+        transition(id, "annulee")
+        return "annulee"
+    }
+    on statut_analyse(id) {
+        let d = _exiger(id)
+        return get_status(id) ?? "demandee"
+    }
+    on resultat(id) {
+        require get_status(id) == "validee" else ResultatNonValide "analyse {id}"
+        return resultats.get(id)
+    }
+    on analyses_de(visite) {
+        return demandes.keys.filter(k => demandes.get(k).visite == visite)
+    }
+}

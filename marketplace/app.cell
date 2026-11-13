@@ -1,0 +1,306 @@
+// ============================================================================
+// MARKETPLACE — a two-sided market, designed skeleton-first
+// ============================================================================
+//
+// Buyers pay into escrow, sellers ship, the money moves when the goods
+// arrive — or goes back when a dispute says so. Six cells, two lifecycles.
+//
+// THIS FILE IS THE WHOLE DESIGN. It has no handler body: memory, the two
+// state machines, and for every signal its frame — what its body may read,
+// write, call, and which edges it may take. The bodies are in lib/, one
+// file per cell; `soma check` refuses a body that leaves its frame, and
+// skeleton.lock refuses a change to this file made in passing.
+//
+// What can be read off this file alone, whatever lib/ contains:
+//
+//   1. Money is only ever written by `Wallets` (no other frame has
+//      `writes balances`), and a balance cannot go negative.
+//   2. Only `Escrow` calls `Wallets.debit` / `Wallets.credit`: an order
+//      cannot move money except through a hold.
+//   3. A hold ends exactly once: `held -> released` or `held -> refunded`,
+//      both terminal (proven by `soma verify`).
+//   4. Only `Orders.confirm_delivery` and `Disputes.resolve` can end a
+//      hold — the seller cannot release their own payment.
+//   5. Stock is taken by `Orders.place` and given back by `Orders.cancel`
+//      and by a refund ruling, nowhere else.
+//
+//   soma skeleton marketplace/app.cell                   this file, compactly
+//   soma skeleton marketplace/app.cell Orders.place      the brief for one body
+//   soma check    marketplace/app.cell
+//   soma verify   marketplace/app.cell
+//   soma test     marketplace/app.cell
+//   soma serve    marketplace/app.cell -p 8080
+// ============================================================================
+
+use lib::catalog
+use lib::wallets
+use lib::escrow
+use lib::orders
+use lib::disputes
+use lib::api
+
+// ── Catalog: what is for sale ───────────────────────────────────────
+
+skeleton Catalog {
+    memory {
+        sellers: Map<String, String> [persistent]      // listing -> seller
+        prices: Map<String, Int> [persistent]          // listing -> unit price
+        stock: Map<String, Int> [persistent]           // listing -> units left
+        invariant prices >= 1
+        invariant stock >= 0
+    }
+
+    face {
+        signal list_item(listing: String, seller: String, price: Int, units: Int) -> Map
+            requires price >= 1
+            requires units >= 0
+            writes sellers, prices, stock
+        signal listing(listing: String) -> Map          reads sellers, prices, stock
+        signal seller_of(listing: String) -> String     reads sellers
+        signal price_of(listing: String) -> Int         reads prices
+        signal reserve(listing: String, units: Int) -> Bool
+            requires units >= 1
+            writes stock
+        signal restock(listing: String, units: Int) -> Int
+            requires units >= 1
+            writes stock
+    }
+}
+
+// ── Wallets: the only cell that writes money ────────────────────────
+
+skeleton Wallets {
+    memory {
+        balances: Map<String, Int> [persistent, consistent]
+        invariant balances >= 0
+    }
+
+    face {
+        signal deposit(owner: String, amount: Int) -> Int
+            requires amount >= 1
+            writes balances
+        signal balance(owner: String) -> Int            reads balances
+        signal debit(owner: String, amount: Int) -> Bool
+            requires amount >= 1
+            writes balances
+        signal credit(owner: String, amount: Int) -> Int
+            requires amount >= 1
+            writes balances
+    }
+}
+
+// ── Escrow: money in flight ─────────────────────────────────────────
+
+skeleton Escrow {
+    memory {
+        amounts: Map<String, Int> [persistent, consistent]     // hold -> amount
+        payers: Map<String, String> [persistent, consistent]   // hold -> buyer
+        payees: Map<String, String> [persistent, consistent]   // hold -> seller
+        invariant amounts >= 1
+    }
+
+    state hold {
+        initial: none
+        none -> held
+        held -> released            // to the seller
+        held -> refunded            // back to the buyer
+    }
+
+    face {
+        signal open_hold(id: String, payer: String, payee: String, amount: Int) -> Bool
+            requires amount >= 1
+            writes amounts, payers, payees
+            moves none -> held
+            calls Wallets.debit
+        signal release(id: String) -> Int
+            reads amounts, payees
+            moves held -> released
+            calls Wallets.credit
+        signal refund(id: String) -> Int
+            reads amounts, payers
+            moves held -> refunded
+            calls Wallets.credit
+        signal hold_state(id: String) -> String         reads hold
+        signal held_amount(id: String) -> Int           reads amounts, hold
+    }
+}
+
+// ── Orders: the lifecycle of a purchase ─────────────────────────────
+
+skeleton Orders {
+    memory {
+        buyers: Map<String, String> [persistent]       // order -> buyer
+        items: Map<String, String> [persistent]        // order -> listing
+        units: Map<String, Int> [persistent]           // order -> units
+        invariant units >= 1
+    }
+
+    state order {
+        initial: draft
+        draft -> paid
+        paid -> shipped
+        shipped -> delivered        // the buyer confirms: the seller is paid
+        paid -> cancelled           // before shipping: the buyer is refunded
+        shipped -> disputed
+        disputed -> delivered       // ruling for the seller
+        disputed -> returned        // ruling for the buyer
+    }
+
+    face {
+        signal place(id: String, buyer: String, listing: String, n: Int) -> Map
+            requires n >= 1
+            writes buyers, items, units
+            moves draft -> paid
+            calls Catalog.reserve, Catalog.restock, Catalog.price_of, Catalog.seller_of, Escrow.open_hold
+        signal ship(id: String, seller: String) -> Map
+            reads items
+            moves paid -> shipped
+            calls Catalog.seller_of
+        signal confirm_delivery(id: String, buyer: String) -> Map
+            reads buyers
+            moves shipped -> delivered
+            calls Escrow.release
+        signal cancel(id: String, buyer: String) -> Map
+            reads buyers, items, units
+            moves paid -> cancelled
+            calls Escrow.refund, Catalog.restock
+        signal open_dispute(id: String, buyer: String) -> Map
+            reads buyers
+            moves shipped -> disputed
+        signal close_dispute(id: String, for_buyer: Bool) -> String
+            reads items, units
+            moves disputed -> delivered, disputed -> returned
+            calls Catalog.restock
+        signal order_state(id: String) -> String        reads order
+        signal order(id: String) -> Map                 reads buyers, items, units, order
+    }
+}
+
+// ── Disputes: who decides when buyer and seller disagree ────────────
+
+skeleton Disputes {
+    memory {
+        reasons: Map<String, String> [persistent]      // order -> the buyer's claim
+        rulings: Map<String, String> [persistent]      // order -> "buyer" | "seller"
+    }
+
+    face {
+        signal file(order_id: String, buyer: String, reason: String) -> Map
+            writes reasons
+            calls Orders.open_dispute
+        signal resolve(order_id: String, ruling: String) -> Map
+            reads reasons
+            writes rulings
+            calls Orders.close_dispute, Escrow.refund, Escrow.release
+        signal ruling(order_id: String) -> String       reads rulings
+    }
+}
+
+// ── Api: the HTTP surface. It owns nothing and moves nothing ─────────
+
+skeleton Api {
+    face {
+        signal request(method: String, path: String, body: String) -> Map
+            calls Catalog.list_item, Catalog.listing, Wallets.deposit, Wallets.balance,
+                Orders.place, Orders.ship, Orders.confirm_delivery, Orders.cancel, Orders.order,
+                Disputes.file, Disputes.resolve, Escrow.hold_state
+    }
+}
+
+// ── Tests: the guarantees, pinned ───────────────────────────────────
+
+cell test HappyPath {
+    rules {
+        assert list_item("lamp", "sara", 40, 3).stock == 3
+        assert deposit("bob", 100) == 100
+
+        // paying moves the money into escrow, not to the seller
+        assert place("o1", "bob", "lamp", 2).state == "paid"
+        assert balance("bob") == 20
+        assert balance("sara") == 0
+        assert held_amount("o1") == 80
+        assert listing("lamp").stock == 1
+
+        // only the seller ships, only the buyer confirms
+        assert_fails ship("o1", "mallory") matching "Forbidden"
+        assert ship("o1", "sara").state == "shipped"
+        assert_fails confirm_delivery("o1", "sara") matching "Forbidden"
+        assert confirm_delivery("o1", "bob").seller_balance == 80
+        assert hold_state("o1") == "released"
+
+        // a hold ends once
+        assert_fails release("o1")
+        assert_fails refund("o1")
+        assert balance("sara") == 80
+    }
+}
+
+cell test RefusalsWriteNothing {
+    rules {
+        assert list_item("desk", "sara", 300, 1).price == 300
+        assert deposit("carl", 100) == 100
+
+        // cannot pay: the unit goes back on the shelf, no hold, no order
+        assert place("o2", "carl", "desk", 1).reason == "insufficient funds"
+        assert listing("desk").stock == 1
+        assert balance("carl") == 100
+        assert hold_state("o2") == "none"
+        assert_fails order("o2") matching "NotFound"
+
+        // out of stock: nothing moves
+        assert deposit("carl", 900) == 1000
+        assert place("o3", "carl", "desk", 2).reason == "out of stock"
+        assert balance("carl") == 1000
+
+        // the wallet's own wall
+        assert debit("carl", 5000) == false
+        assert_fails balances.set("carl", 0 - 1)
+    }
+}
+
+cell test CancelAndDispute {
+    rules {
+        assert list_item("vase", "sara", 50, 2).stock == 2
+        assert deposit("dana", 200) == 200
+
+        // cancelled before shipping: money and stock both come back
+        assert place("o4", "dana", "vase", 1).state == "paid"
+        assert cancel("o4", "dana").buyer_balance == 200
+        assert listing("vase").stock == 2
+        assert_fails ship("o4", "sara")             // cancelled is terminal
+
+        // disputed after shipping, ruled for the buyer
+        assert place("o5", "dana", "vase", 2).total == 100
+        assert ship("o5", "sara").state == "shipped"
+        assert_fails cancel("o5", "dana")           // too late to cancel: dispute instead
+        assert file("o5", "dana", "arrived broken").state == "disputed"
+        assert_fails confirm_delivery("o5", "dana") // frozen while disputed
+        assert_fails resolve("o5", "maybe") matching "BadRuling"
+        assert resolve("o5", "buyer").buyer_balance == 200
+        assert order_state("o5") == "returned"
+        assert hold_state("o5") == "refunded"
+        assert listing("vase").stock == 2
+        assert ruling("o5") == "buyer"
+
+        // …and one ruled for the seller
+        assert place("o6", "dana", "vase", 1).state == "paid"
+        assert ship("o6", "sara").state == "shipped"
+        assert file("o6", "dana", "changed my mind").state == "disputed"
+        assert resolve("o6", "seller").seller_balance == 50
+        assert order_state("o6") == "delivered"
+    }
+}
+
+cell test Http {
+    rules {
+        assert request("POST", "/listings", "{\"listing\": \"rug\", \"seller\": \"sara\", \"price\": 30, \"units\": 5}").stock == 5
+        assert request("POST", "/wallets/eve", "{\"amount\": 100}").balance == 100
+        assert request("POST", "/orders", "{\"order\": \"o7\", \"buyer\": \"eve\", \"listing\": \"rug\", \"units\": 2}").total == 60
+        assert request("GET", "/orders/o7", "").hold == "held"
+        assert request("POST", "/ship/o7", "{\"seller\": \"eve\"}")._status == 403
+        assert request("POST", "/ship/o7", "{\"seller\": \"sara\"}").state == "shipped"
+        assert request("POST", "/confirm/o7", "{\"buyer\": \"eve\"}").seller_balance == 60
+        assert request("GET", "/orders/nope", "")._status == 404
+        assert request("GET", "/nowhere", "")._status == 404
+    }
+}

@@ -1,0 +1,61 @@
+flesh Consultations {
+    on _exiger_ouverte(id: String) {
+        require get_status(id) == "ouverte" else ConsultationFermee "consultation {id}"
+    }
+    on ouvrir(id, motif) {
+        let r = Agenda.rdv(id)
+        let etat = Agenda.debuter(id)
+        transition(id, "attente", "ouverte")
+        let c = map("patient", r.patient, "praticien", r.praticien, "motif", motif, "diagnostic", "")
+        consultations.set(id, c)
+        actes.set(id, 0)
+        let n = Audit.consigner(r.praticien, "consultation.ouvrir", id)
+        return c
+    }
+    on ajouter_note(id, texte) {
+        _exiger_ouverte(id)
+        notes.push(map("visite", id, "texte", texte))
+        return notes.count(n => n.visite == id)
+    }
+    on coter_acte(id, montant) {
+        _exiger_ouverte(id)
+        let total = (actes.get(id) ?? 0) + montant
+        actes.set(id, total)
+        return total
+    }
+    on poser_diagnostic(id, diagnostic) {
+        _exiger_ouverte(id)
+        let c = consultations.get(id)
+        c.diagnostic = diagnostic
+        consultations.set(id, c)
+        return c
+    }
+    on terminer(id) {
+        let c = consultations.get(id)
+        require c != () else ConsultationInconnue "consultation {id}"
+        require c.diagnostic != "" else DiagnosticManquant "consultation {id}"
+        transition(id, "ouverte", "terminee")
+        let etat = Agenda.cloturer(id)
+        let n = Audit.consigner(c.praticien, "consultation.terminer", id)
+        return "terminee"
+    }
+    on abandonner(id) {
+        transition(id, "ouverte", "abandonnee")
+        actes.set(id, 0)
+        return "abandonnee"
+    }
+    on statut_consultation(id) { return get_status(id) ?? "attente" }
+    on consultation(id) {
+        let c = consultations.get(id)
+        require c != () else ConsultationInconnue "consultation {id}"
+        return c
+    }
+    on total_actes(id) { return actes.get(id) ?? 0 }
+    on exiger_terminee(id) {
+        require get_status(id) == "terminee" else ConsultationNonTerminee
+        return true
+    }
+    on notes_de(id) {
+        return notes.filter(n => n.visite == id).map(n => n.texte)
+    }
+}

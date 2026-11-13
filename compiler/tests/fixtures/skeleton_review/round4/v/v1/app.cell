@@ -1,0 +1,36 @@
+skeleton Approval {
+    state appr {
+        initial: pending
+        pending -> signed_off
+        pending -> refused
+    }
+    face {
+        signal sign(id: String) -> Int       moves pending -> signed_off
+        signal refuse(id: String) -> Int     moves pending -> refused
+        signal status(id: String) -> String  reads appr
+    }
+}
+skeleton Pay {
+    memory {
+        paid_total: Map<String, Int> [persistent]
+        invariant paid_total >= 0 && paid_total <= 100
+    }
+    state pay {
+        initial: due
+        due -> paid
+        due -> void
+    }
+    face {
+        signal pay(id: String, amount: Int) -> Int
+            requires amount > 0
+            ensures result >= 0
+            writes paid_total
+            moves due -> paid
+            calls Approval.status
+        signal cancel(id: String) -> Int     moves due -> void
+        signal total(id: String) -> Int      reads paid_total
+            ensures result >= 0
+        signal audit(id: String) -> Int      calls total, think
+    }
+    cost { tokens: 500 }
+}

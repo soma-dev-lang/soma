@@ -1,0 +1,1 @@
+soma rename app.cell R.ask query (ou R.lookup find_it) -> seul l'appel du test est renommé, pas `signal ask`/`on ask` (ni `tool lookup`, ni "tools_allowed", ["lookup"]) : check passe de vert à rouge (E0048). `cell agent R {` n'est pas reconnu comme cellule (refs.rs:336-341, Token::AgentKw) ; idem cellule en minuscule `cell b` (c_rename_lowercase_cell).

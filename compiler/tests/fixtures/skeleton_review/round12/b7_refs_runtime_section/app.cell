@@ -1,0 +1,14 @@
+use lib::flesh
+
+skeleton Stock {
+    memory { items: Map<String, Int> }
+    face {
+        signal level(sku: String) -> Int         reads items
+        signal fill(sku: String, n: Int) -> Int  writes items
+    }
+    runtime {
+        fill("r", 3)
+        let lv = level("r")
+        print("level r = {lv}")
+    }
+}

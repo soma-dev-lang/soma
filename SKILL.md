@@ -812,6 +812,27 @@ use std::builtins       // stdlib
 use pkg::math           // installed package
 ```
 
+## 19b. Large programs — skeleton first
+
+Past one file, write the structure before any body. `skeleton Name { … }`
+is a cell without bodies: memory, state machines, and a face whose signals
+each carry a frame (`reads a` / `writes a` / `moves s -> t` /
+`calls f, Cell.g, think` / `emits s`). `flesh Name { on f(x) { … } }` holds
+the bodies (private helpers: `on _helper(x: Int)`); `soma check` refuses a
+body that does anything its signal's frame does not say, and names the
+clause. A signal no flesh fills is a hole (`not_implemented` when called).
+
+```
+soma skeleton app.cell                # the map: structure + frames, no bodies
+soma holes    app.cell                # the holes, in the order to write them
+soma skeleton app.cell Cell.signal    # the brief for one body
+soma skeleton app.cell --freeze       # skeleton.lock: structure changes only with --amend
+soma skeleton app.cell --split        # existing cells rewritten as skeleton + flesh
+soma init --skeleton myapp
+```
+Full rules: `soma docs skeleton`. Worked example: `marketplace/` (six
+skeletons in `app.cell`, one flesh file per cell in `lib/`).
+
 ## 20. Testing
 
 ```soma
@@ -844,7 +865,9 @@ Run: `soma test file.cell`. The test harness exposes handlers in the same file. 
 | `soma verify file.cell` | CTL model checking |
 | `soma build file.cell [-o out.rs]` | Generate Rust skeleton (native codegen) |
 | `soma test file.cell` | Run test cells |
-| `soma init [name]` | Initialize project: `app.cell` (passes check/verify/test), `soma.toml`, `AGENTS.md` |
+| `soma init [name]` | Initialize project: `app.cell` (passes check/verify/test), `soma.toml`, `AGENTS.md`; `--skeleton` lays it out skeleton-first |
+| `soma skeleton file.cell [Cell.signal]` | The program as structure + frames (or the brief for one signal); `--split`, `--freeze`, `--amend`, `--json` |
+| `soma holes file.cell` | Signals of a skeleton with no body yet, in the order to write them |
 | `soma docs [agent\|reference\|gotchas\|builtins\|all]` | Language docs embedded in the binary (offline) |
 | `soma example [terms…\|id]` | Search the verified corpus by domain/feature/word; an exact id prints the source |
 | `soma add pkg [--git URL] [--path DIR]` | Add dependency |

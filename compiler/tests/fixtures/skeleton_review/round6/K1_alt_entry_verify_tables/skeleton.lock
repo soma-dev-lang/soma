@@ -1,0 +1,33 @@
+# skeleton.lock — the structure `soma check` holds app.cell to.
+# Written by `soma skeleton app.cell --freeze`; changed on purpose with `--amend`. Do not edit.
+file app.cell
+
+== Stock sha256:c228b18b8885755989b7677a42c3af48fd2bc963f63ea9f989e1537a11b872ab core:dc9a35e7e1827a399ddb9bf665fa1b6c6530c45c3a74a07b245bc05082465b3d
+skeleton Stock {
+    memory {
+        items: Map<String, Int> [persistent]
+        meta: Map<String, Rec> [persistent]
+        invariant items >= 0
+    }
+    state flow {
+        initial: placed
+        placed -> packed { guard { n > 0 } }
+        placed -> cancelled
+    }
+    face {
+        signal level(sku: String) -> Int  reads items
+        signal take(sku: String, n: Int) -> Bool  requires n > 0  writes items  calls level
+        signal pack(id: String, n: Int) -> Kind  moves placed -> packed
+        signal status(id: String) -> String  reads flow
+        signal note(sku: String) -> Int  calls Audit.log
+    }
+    // type Deep = D { v: Int }
+    // type Kind = Big | Small
+    // type Rec = R { inner: Deep }
+}
+
+== soma.toml [verify] sha256:c33d4cb884f23144bf4756eeb07a8aeb60c0c72137ed559988903d1dea5c10eb core:c33d4cb884f23144bf4756eeb07a8aeb60c0c72137ed559988903d1dea5c10eb
+verify.deadlock_free = true
+package.edition = "2027"
+
+checksum sha256:c4b99109970758f35c7d22b1207987caff366975dabe161cec767093867ba9dd

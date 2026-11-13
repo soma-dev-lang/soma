@@ -1,0 +1,1 @@
+soma check app.cell (vert) && SOMA_EFFECT_TRACE=t soma test app.cell — ligne fautive: app.cell:16 `flow.get("k")` sous `moves s0 -> s1` seul (slot `flow` homonyme de la machine) ; trace "A.go read flow", go rend 41 ; frame.rs: `moves` accorde la lecture du NOM de la machine, confondu avec le slot

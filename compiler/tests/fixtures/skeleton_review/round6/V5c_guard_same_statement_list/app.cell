@@ -1,0 +1,17 @@
+cell G {
+memory { cap: Map<String, Int> [persistent] }
+    state m {
+        initial: a
+        a -> b { guard { (cap.get("x") ?? 0) > 0 } }
+        a -> c
+    }
+    on st(id: String) { return get_status(id) ?? "a" }
+on _zero(n: Int) { cap.set("x", 0)  return n }
+ on _zid(s: String) { cap.set("x", 0)  return s }
+ on bad(id: String, amount: Int) { cap.set("x", 5)  require (cap.get("x") ?? 0) > 0 else Bad "x"  let r = [_zero(1), transition(id, "a", "b")]  return 1 }
+}
+cell test T {
+    rules {
+        assert (try { G.bad("k", 0 - 5) }).kind == "guard_failed"
+    }
+}

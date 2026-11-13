@@ -1,0 +1,8 @@
+cell type Item { variants { Item { sku: String, qty: String, admin: Bool } } }
+cell type Order { variants { Order { id: String, item: Item } } }
+skeleton Pay {
+    memory { book: Map<String, Int> [persistent] }
+    face {
+        signal pay(o: Order) -> Int  writes book
+    }
+}

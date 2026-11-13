@@ -1,0 +1,23 @@
+flesh Ledger {
+    on charge(folio, amount) {
+        charged.set(folio, (charged.get(folio) ?? 0) + amount)
+        return due(folio)
+    }
+    on pay_cash(folio, amount) {
+        require amount <= due(folio) else Overpaid "only {due(folio)} is due on {folio}"
+        cash.set(folio, (cash.get(folio) ?? 0) + amount)
+        return due(folio)
+    }
+    on pay_points(folio, amount) {
+        require amount <= due(folio) else Overpaid "only {due(folio)} is due on {folio}"
+        points_paid.set(folio, (points_paid.get(folio) ?? 0) + amount)
+        return due(folio)
+    }
+    on due(folio) {
+        return (charged.get(folio) ?? 0) - (cash.get(folio) ?? 0) - (points_paid.get(folio) ?? 0)
+    }
+    on cash_paid(folio) { return cash.get(folio) ?? 0 }
+    on statement(folio) {
+        return map("charged", charged.get(folio) ?? 0, "cash", cash.get(folio) ?? 0, "points", points_paid.get(folio) ?? 0, "due", due(folio))
+    }
+}

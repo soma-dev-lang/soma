@@ -573,7 +573,11 @@ pub fn format_property_results(machine: &str, results: &[PropertyResult]) -> Str
     output.push_str(&format!("\n  Temporal properties for '{}':\n", machine));
 
     for r in results {
-        if r.passed {
+        if r.passed && r.message.contains("(vacuously true)") {
+            // nothing was shown: the state is not one this machine reaches —
+            // a note, not a proof (a ✓ here read as a guarantee)
+            output.push_str(&format!("  · {} — {}: nothing to prove on this machine\n", r.property, r.message));
+        } else if r.passed {
             output.push_str(&format!("  {} {} — {}\n", paint("32", "✓"), r.property, r.message));
         } else {
             output.push_str(&format!("  {} {} — {}\n", paint("31", "✗"), r.property, r.message));

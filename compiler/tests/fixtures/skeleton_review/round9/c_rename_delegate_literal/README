@@ -1,0 +1,1 @@
+soma rename app.cell B.tick pulse -> oublie delegate("B", "tick", 22) (noms littéraux, listé par soma refs) : check rouge (E0051). refs.rs:399-415 ne lit des chaînes que les appels entre { }.

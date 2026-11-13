@@ -14,6 +14,10 @@ pub mod determinism;
 pub mod capabilities;
 pub mod cost;
 pub mod effects;
+pub mod frame;
+pub mod flesh;
+pub mod conform;
+pub mod lock;
 pub mod protocol;
 pub mod names;
 pub mod literals;
@@ -334,6 +338,12 @@ pub enum CheckWarning {
         message: String,
         span: Span,
     },
+    /// A skeleton that says more, or less, than the program does: a frame
+    /// wider than its body, an edge or a slot no frame touches.
+    FrameWarning {
+        message: String,
+        span: Span,
+    },
     /// A habit from another language that silently does the wrong thing.
     HabitWarning {
         message: String,
@@ -423,6 +433,7 @@ impl std::fmt::Display for CheckWarning {
             Self::DispatchShadow { message, .. } => write!(f, "warning: {message}"),
             Self::Unreachable { message, .. } => write!(f, "warning: {message}"),
             Self::HabitWarning { message, .. } => write!(f, "warning: {message}"),
+            Self::FrameWarning { message, .. } => write!(f, "warning: {message}"),
             Self::TypeAdvisory { message, .. } => write!(f, "warning: {message}"),
             Self::NativeSemantics { message, .. } => write!(f, "warning: {message}"),
             Self::InterpolationRecoverable { message, .. } => {
@@ -484,6 +495,7 @@ impl CheckWarning {
             | Self::NativeSemantics { span, .. }
             | Self::Unreachable { span, .. }
             | Self::HabitWarning { span, .. }
+            | Self::FrameWarning { span, .. }
             | Self::TypeAdvisory { span, .. }
             | Self::InterpolationRecoverable { span, .. } => Some(*span),
             Self::BudgetAdvisory { .. }
@@ -508,6 +520,8 @@ pub struct Checker<'a> {
     /// (handler names, cell names) of every cell, interior ones included —
     /// what the desugaring of one handler needs
     analysis_names: (std::collections::HashSet<String>, std::collections::HashSet<String>),
+    /// holes of the program whose frame has a `calls` clause
+    calling_holes: usize,
 }
 
 /// Every predicate name a checker constraint mentions that no structural
@@ -546,6 +560,7 @@ impl<'a> Checker<'a> {
             all_handlers: Default::default(),
             analysis_cells: Default::default(),
             analysis_names: Default::default(),
+            calling_holes: 0,
         }
     }
 
@@ -578,14 +593,60 @@ impl<'a> Checker<'a> {
                 span: Span { start: 0, end: 0 },
             });
         }
+        for (message, span) in flesh::check(program) {
+            self.errors.push(CheckError::Static { kind: "flesh", message, span });
+        }
+        // the skeletons are the ones skeleton.lock holds
+        if let Some((file, text)) = &self.source {
+            for message in lock::check(program, std::path::Path::new(file), text) {
+                self.errors.push(CheckError::Static { kind: "skeleton_lock", message, span: Span { start: 0, end: 0 } });
+            }
+        }
+        // a flesh does what its frame says, and nothing else
+        if program.cells.iter().any(|c| c.node.kind != CellKind::Flesh) {
+            let (frame_errors, frame_warnings) = conform::check(program);
+            for f in frame_errors {
+                self.errors.push(CheckError::Static { kind: "frame", message: f.message, span: f.span });
+            }
+            for f in frame_warnings {
+                self.warnings.push(CheckWarning::FrameWarning { message: f.message, span: f.span });
+            }
+        }
+        let mut seen_interior: Vec<(String, bool)> = Vec::new();
         let mut seen_cells: std::collections::HashSet<&str> = std::collections::HashSet::new();
-        for cell in &program.cells {
+        for cell in program.cells.iter().filter(|c| c.node.kind != CellKind::Flesh) {
             if !seen_cells.insert(cell.node.name.as_str()) {
                 self.errors.push(CheckError::Static {
                     kind: "duplicate_cell",
                     message: format!("cell '{}' is defined twice — rename one; same-named cells are not merged", cell.node.name),
                     span: cell.span,
                 });
+            }
+            // an interior cell named like a skeleton (or an interior skeleton
+            // named like another cell): interior cells may share a name —
+            // their tables are qualified by the path — but a skeleton's
+            // frames, its flesh and its lock are found by its name alone
+            fn interior_cells<'a>(cell: &'a CellDef, out: &mut Vec<(&'a CellDef, Span)>) {
+                for s in &cell.sections {
+                    if let Section::Interior(i) = &s.node {
+                        for child in &i.cells { out.push((&child.node, child.span)); interior_cells(&child.node, out); }
+                    }
+                }
+            }
+            let mut inner = Vec::new();
+            interior_cells(&cell.node, &mut inner);
+            for (child, span) in inner {
+                let clash_top = program.cells.iter().any(|c| c.node.kind != CellKind::Flesh && c.node.name == child.name && (c.node.skeleton || child.skeleton));
+                let clash_inner = seen_interior.iter().any(|(n, sk)| n == &child.name && (*sk || child.skeleton));
+                if clash_top || clash_inner {
+                    self.errors.push(CheckError::Static {
+                        kind: "duplicate_cell",
+                        message: format!("interior cell '{}' shares its name with {} — rename one: a skeleton is found by its name alone (its frames, its flesh, its lock)", child.name,
+                            if child.skeleton { "another cell, and it is a skeleton" } else { "a skeleton" }),
+                        span,
+                    });
+                }
+                seen_interior.push((child.name.clone(), child.skeleton));
             }
             // a slot is a keyed store: `n: Int` was accepted and behaved as a
             // Map, contradicting every doc
@@ -1013,18 +1074,10 @@ impl<'a> Checker<'a> {
         let analysis = desugar::expose_for_analysis(program);
         self.analysis_cells = analysis.cells.iter().map(|c| (c.node.name.clone(), c.node.clone())).collect();
         self.analysis_names = desugar::program_names(program);
-        self.all_handlers = analysis.cells.iter().map(|c| {
-            let mut hs: std::collections::HashMap<String, Vec<Spanned<Statement>>> = c.node.sections.iter().filter_map(|s| match &s.node {
-                Section::OnSignal(h) => Some((h.signal_name.clone(), h.body.clone())),
-                _ => None,
-            }).collect();
-            // marks an agent with tools: its think() makes up to 10 rounds,
-            // also when another cell calls it
-            if c.node.sections.iter().any(|s| matches!(&s.node, Section::Face(f) if f.declarations.iter().any(|d| matches!(d.node, FaceDecl::Tool(_))))) {
-                hs.insert("__has_tools__".to_string(), Vec::new());
-            }
-            (c.node.name.clone(), hs)
-        }).collect();
+        self.calling_holes = names::collect_cells(program).iter().map(|c| flesh::holes_of(c).into_iter()
+            .filter(|h| flesh::declared_frame(c, h).map_or(false, |f| !f.calls.is_empty() || !f.emits.is_empty())).count()).sum();
+        // (interior cells included: an event a parent raises is heard inside it)
+        self.all_handlers = cost::all_handlers_of(&analysis);
         // `request`'s 4th / 5th parameters must say what they receive —
         // the rule `soma serve` refuses at start-up (`ast::request_extra_roles`)
         for c in &program.cells {
@@ -1124,6 +1177,40 @@ impl<'a> Checker<'a> {
                         Some(_) => {}
                         None => { owners.insert(key, (what, cell.span)); }
                     }
+                }
+            }
+        }
+        // …and a machine's instances under the key `__sm_<Cell>_<machine>`
+        // (`__sm_<machine>` for data of an older version): cell `A` with
+        // machine `B_m` and cell `A_B` with machine `m` shared their
+        // instances — each verified alone, each moving the other's
+        {
+            let mut keys: std::collections::HashMap<String, (String, String)> = std::collections::HashMap::new();
+            let mut machines: Vec<(String, String, Span)> = Vec::new();
+            for cell in &program.cells {
+                if !matches!(cell.node.kind, CellKind::Cell | CellKind::Agent) { continue; }
+                for sec in &cell.node.sections {
+                    if let Section::State(sm) = &sec.node { machines.push((cell.node.name.clone(), sm.name.clone(), cell.span)); }
+                }
+            }
+            for (c, m, span) in &machines {
+                let key = format!("__sm_{}_{}", c, m);
+                if let Some((oc, om)) = keys.get(&key) {
+                    self.errors.push(CheckError::Static {
+                        kind: "storage_collision",
+                        message: format!("state machines {}.{} and {}.{} would share their instances (both are kept under \"{}\": `_` joins the cell and the machine) — rename one of them", oc, om, c, m, key),
+                        span: *span,
+                    });
+                } else { keys.insert(key, (c.clone(), m.clone())); }
+            }
+            for (c, m, span) in &machines {
+                let legacy = format!("__sm_{}", m);
+                if let Some((oc, om)) = keys.get(&legacy).filter(|(oc, om)| oc != c || om != m) {
+                    self.errors.push(CheckError::Static {
+                        kind: "storage_collision",
+                        message: format!("state machine {}.{} reads the key \"{}\" for instances of an older version, and that is where {}.{} keeps its own — rename one of them", c, m, legacy, oc, om),
+                        span: *span,
+                    });
                 }
             }
         }
@@ -1390,7 +1477,17 @@ impl<'a> Checker<'a> {
         // (the builtins a proof or a safety gate rests on)
         const RESERVED: &[&str] = &["transition", "approve", "fail", "get_status", "has_state", "valid_transitions",
             "think", "think_json", "set_budget", "tokens_used"];
-        for cell in &program.cells {
+        // (interior cells too: `on transition` in one hid every transition of the program from the proofs)
+        let mut reserved_cells: Vec<(&CellDef, Span)> = Vec::new();
+        fn gather<'p>(cells: &'p [Spanned<CellDef>], out: &mut Vec<(&'p CellDef, Span)>) {
+            for c in cells {
+                out.push((&c.node, c.span));
+                for s in &c.node.sections { if let Section::Interior(i) = &s.node { gather(&i.cells, out); } }
+            }
+        }
+        gather(&program.cells, &mut reserved_cells);
+        for cell in reserved_cells.iter().map(|(c, sp)| Spanned::new((*c).clone(), *sp)) {
+            let cell = &cell;
             for sec in &cell.node.sections {
                 if let Section::OnSignal(on) = &sec.node {
                     if RESERVED.contains(&on.signal_name.as_str()) {
@@ -1684,7 +1781,9 @@ impl<'a> Checker<'a> {
         }
         // 3.0: an untrusted value (a model's answer, an HTTP reply) that
         // decides a state, a URL, a file or a budget without a check
-        for issue in taint::check_program(program) {
+        // (on the program with method / pipe / `std.` forms made explicit:
+        // `q.think()` and `id.transition(d)` are the same source and sink)
+        for issue in taint::check_program(&desugar::expose_for_analysis(program)) {
             if edition.as_str() >= "2027" {
                 self.errors.push(CheckError::Static { kind: "untrusted_value", message: issue.message, span: issue.span });
             } else {
@@ -1811,6 +1910,14 @@ impl<'a> Checker<'a> {
                         span: Span::new(0, 0),
                     });
                 }
+                // …but not over holes that may call something: a body to
+                // come may call think() as its frame allows, any number of times
+                cost::CostFinding::Proven { .. } if self.calling_holes > 0 => {
+                    self.warnings.push(CheckWarning::FrameWarning {
+                        message: format!("cost: the bound of `{}` is not proven yet — {} hole{} of the program may call or emit, and a body to come spends what its frame allows. It is judged when they have bodies", cell.name, self.calling_holes, if self.calling_holes == 1 { "" } else { "s" }),
+                        span: Span::new(0, 0),
+                    });
+                }
                 cost::CostFinding::Proven { .. } => {
                     self.warnings.push(CheckWarning::CostProven {
                         message: finding.to_string(),
@@ -1821,7 +1928,8 @@ impl<'a> Checker<'a> {
         }
 
         // 4c. V1.6: model capability contracts on think(..., map("requires", [...])).
-        for e in capabilities::check_cell(cell, self.manifest) {
+        // (on the cell with its hidden calls and its `runtime { }` made explicit)
+        for e in capabilities::check_cell(&analysis_cell, self.manifest) {
             // Locate the span as the cell's first OnSignal section (best effort).
             let span = cell.sections.iter()
                 .find_map(|s| match &s.node {
@@ -2625,7 +2733,9 @@ impl<'a> Checker<'a> {
                 Expr::Literal(Literal::String(_)) => Some("String"),
                 Expr::Literal(Literal::Bool(_)) => Some("Bool"),
                 Expr::ListLiteral(_) => Some("List"),
-                Expr::Record { .. } => Some("Map"),
+                // `Rec { … }`: a value of a declared type (it was "a Map
+                // literal" where the face names that very type)
+                Expr::Record { .. } => Some("record"),
                 Expr::FnCall { name, .. } if name == "map" => Some("Map"),
                 Expr::FnCall { name, .. } if name == "list" => Some("List"),
                 _ => None,
@@ -2633,6 +2743,7 @@ impl<'a> Checker<'a> {
         }
         fn compatible(declared: &str, got: &str) -> bool {
             declared == got || declared == "Any"
+                || (got == "record" && !matches!(declared, "Int" | "Float" | "String" | "Bool" | "List"))
                 || (declared == "Float" && got == "Int")
                 || (declared == "Map" && got == "Map")
         }

@@ -1,0 +1,13 @@
+cell A {
+    memory { size: Map<String, Int>  invariant size >= 0 }
+    on put(k: String, n: Int) { size.set(k, n)  return 1 }
+    on lit(k: String) { size.set(k, 0 - 5)  return 1 }
+    on rd(k: String) { return size.get(k) ?? 0 }
+}
+cell test T {
+    rules {
+        assert A.put("k", 0 - 5) == 1
+        assert A.lit("j") == 1
+        assert A.rd("k") >= 0
+    }
+}

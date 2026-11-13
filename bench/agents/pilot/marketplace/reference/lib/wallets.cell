@@ -1,0 +1,27 @@
+// The flesh of `skeleton Wallets` (../app.cell): the only bodies that write money.
+
+flesh Wallets {
+    on deposit(owner, amount) {
+        let now_has = (balances.get(owner) ?? 0) + amount
+        balances.set(owner, now_has)
+        return now_has
+    }
+
+    on balance(owner) {
+        return balances.get(owner) ?? 0
+    }
+
+    // false when the owner cannot pay: nothing is written
+    on debit(owner, amount) {
+        let has = balances.get(owner) ?? 0
+        if has < amount { return false }
+        balances.set(owner, has - amount)
+        return true
+    }
+
+    on credit(owner, amount) {
+        let now_has = (balances.get(owner) ?? 0) + amount
+        balances.set(owner, now_has)
+        return now_has
+    }
+}

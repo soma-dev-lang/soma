@@ -1,0 +1,13 @@
+// Housekeeping: what state each room is in right now. An instance is a room.
+signal start_cleaning(room: String, staff: String) -> String   // Housekeeping
+    // dirty -> cleaning, and records `staff` as the room's cleaner. Returns "cleaning".
+writes     cleaners: Map<String, String> [persistent]   // room -> who is (or was last) cleaning it
+moves      dirty -> cleaning
+machine    upkeep — one instance per id (the String or Int you pass); initial `clean`
+               get_status(id) is () until the id's first transition (edition 2026: `clean`) — write `get_status(id) ?? "clean"`
+               clean -> occupied   // a guest checks in
+               occupied -> dirty   // the guest leaves
+               dirty -> cleaning
+               cleaning -> clean
+               clean -> out_of_order   // blocked for repairs
+               out_of_order -> clean

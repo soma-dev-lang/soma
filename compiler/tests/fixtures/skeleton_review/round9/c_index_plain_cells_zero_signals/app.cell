@@ -1,0 +1,34 @@
+cell B {
+    memory { hits: Map<String, Int> }
+    on tick(n: Int) { hits.set("h", n) return n }
+    on seen() { return hits.get("h") ?? 0 }
+    on a1() { return 5.tick() }
+    on a2() { let v = 6
+        return v.tick() }
+    on a3() { return [1, 2].map(z => z.tick()) }
+    on a4() { return 7 |> tick() }
+    on a5() { return "v={tick(8)} w={9.tick()} x={B.tick(1)}" }
+    on a6() { return "tick(3) is text, {seen()} and B.tick(4) too" }
+}
+cell D {
+    on d1() { return 20.tick() }
+    on d2() { return tick(21) }
+    on d3() { return delegate("B", "tick", 22) }
+    on d4() { return B.tick(23) }
+}
+cell test T {
+    rules {
+        assert B.a1() == 5
+        assert B.a2() == 6
+        assert B.a3() == [1, 2]
+        assert B.a4() == 7
+        assert B.a5() == "v=8 w=9 x=1"
+        assert B.a6() == "tick(3) is text, 1 and B.tick(4) too"
+        assert D.d1() == 20
+        assert D.d2() == 21
+        assert D.d3() == 22
+        assert D.d4() == 23
+        assert 30.tick() == 30
+        assert tick(31) == 31
+    }
+}

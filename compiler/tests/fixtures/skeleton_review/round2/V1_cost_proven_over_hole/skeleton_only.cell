@@ -1,0 +1,7 @@
+skeleton agent Boss {
+    cost { tokens: 500 }
+    state job { initial: idle  idle -> done }
+    face {
+        signal run(q: String) -> String  calls think  moves idle -> done
+    }
+}

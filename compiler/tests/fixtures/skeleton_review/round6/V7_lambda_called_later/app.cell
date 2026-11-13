@@ -1,0 +1,32 @@
+cell Approval {
+    state appr {
+        initial: pending
+        pending -> signed_off
+    }
+    on sign(id: String) { transition(id, "pending", "signed_off")  return 1 }
+    on status(id: String) { return get_status(id) ?? "pending" }
+}
+cell Pay {
+    state pay {
+        initial: due
+        due -> ready
+        ready -> paid
+        ready -> due
+    }
+    on pay(id: String) {
+        require (get_status(id) ?? "due") == "due" else Busy "busy"
+        let f = x => transition(id, "ready", "paid")      // written while `due`…
+        transition(id, "due", "ready")
+        f(1)                                              // …called while `ready`
+        if get_status(id) == "ready" { transition(id, "ready", "due") }
+        return 1
+    }
+    on pst(id: String) { return get_status(id) ?? "due" }
+}
+cell test T {
+    rules {
+        assert Pay.pay("k") == 1
+        assert Pay.pst("k") == "paid"                   // paid…
+        assert Approval.status("k") == "pending"        // …never signed off
+    }
+}

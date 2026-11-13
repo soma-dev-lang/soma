@@ -29,6 +29,8 @@ pub fn cmd_replay(
     let mut program = parse_with_location(tokens, Some(&source), Some(&file_str));
     resolve_imports(&mut program, file);
     load_meta_cells_from_program(&program, registry, file);
+    // a replay runs the program: its skeletons are the frozen ones
+    if !crate::checker::lock::structure_holds(&program, file, &source) { std::process::exit(1); }
 
     let log_path: PathBuf = log.cloned().unwrap_or_else(|| record_log::default_log_path(file));
     if !log_path.exists() {

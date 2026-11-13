@@ -1,0 +1,11 @@
+cell A {
+    on _r() { return random() }
+    on g(x: Int) [deterministic] {
+        if x > 100000 { let _r = 1 }
+        return _r()
+    }
+    on plain(x: Int) [deterministic] { return x + 1 }
+}
+cell test T { rules {
+  assert A.g(1) == A.g(1)
+ } }

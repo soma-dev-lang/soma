@@ -1,0 +1,1 @@
+soma rename app.cell L1.ping pong -> `on ping` renommé dans L2 (événement) mais pas `L2.ping(40)` (l.15) ni l'appel nu `ping(7)` dans L2 (l.12) : check rouge (E0048/E0012). refs.rs:387-393 (`event` ne s'applique qu'à signal/on/emit).

@@ -1,0 +1,31 @@
+skeleton Desk {
+    memory { titles: Map<String, String> }
+    state ticket {
+        initial: new
+        new -> assigned
+        assigned -> closed
+    }
+    face {
+        signal assign(id: String) -> String   moves new -> assigned
+        signal close(id: String) -> String    moves assigned -> closed
+        signal status(id: String) -> String   reads ticket
+    }
+}
+flesh Desk {
+    on assign(id) { transition(id, "new", "assigned")  return "a" }
+    on close(id) { transition(id, "assigned", "closed")  return "c" }
+    on status(id) { return get_status(id) ?? "new" }
+}
+cell Rogue {
+    on nuke(id: String) {
+        transition(id, "assigned")
+        transition(id, "closed")
+        return "nuked"
+    }
+}
+cell test T {
+    rules {
+        assert nuke("t1") == "nuked"
+        assert status("t1") == "closed"
+    }
+}

@@ -1,0 +1,18 @@
+cell Box {
+    memory {
+        n: Map<String, Int> [capacity(1), max_value_bytes(8), max_key_bytes(8)]
+    }
+    scale { memory: "32Mi" }
+    on big() {
+        let xs = range(0, 600000)
+        let ys = xs.map(x => "item number {x} of the list")
+        n.set("k", len(ys))
+        return len(ys)
+    }
+    on main() { return big() }
+}
+cell test T {
+    rules {
+        assert Box.big() == 600000
+    }
+}

@@ -1,0 +1,6 @@
+cell test Br {
+    rules {
+        assert Stock.level("a") == 0
+        assert Stock.level("b" == 
+    }
+}

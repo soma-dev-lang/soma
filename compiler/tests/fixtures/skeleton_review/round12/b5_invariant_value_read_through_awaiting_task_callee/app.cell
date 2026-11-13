@@ -1,0 +1,22 @@
+cell A {
+    memory { c: Map<String, Int>  invariant c <= 100
+             d: Map<String, Int>  invariant d >= 0 }
+    on lim(n: Int) [task] {
+        let ok = await approve("limit {n}")
+        return min(n, 100)
+    }
+    on put(k: String, n: Int) { c.set(k, lim(n))  return 1 }
+    on put2(k: String, n: Int) { let v = lim(n)  d.set(k, 100 - v)  return 1 }
+    on raw(n: Int) { return lim(n) }
+    on cg(k: String) { return c.get(k) }
+    on dg(k: String) { return d.get(k) }
+}
+cell test T { rules {
+    let r = try { A.put("k", 5) }
+    assert r.error == ()
+    assert A.cg("k") == 5
+    let r2 = try { A.put2("k", 5) }
+    assert r2.error == ()
+    assert A.dg("k") == 95
+    assert A.raw(7) == 7
+} }

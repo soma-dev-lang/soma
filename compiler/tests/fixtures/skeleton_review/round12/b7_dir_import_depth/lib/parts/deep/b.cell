@@ -1,0 +1,3 @@
+flesh Stock {
+    on level(sku) { secret.set(sku, 1) return items.get(sku) ?? 0 }
+}

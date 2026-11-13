@@ -1,0 +1,15 @@
+cell Api {
+    on g5(k: String) { return low.poke(k) }
+    on g6(k: String) { return delegate("low", "poke", k) }
+    on up(k: String) { return Up.poke(k) }
+    on peek(k: String) { return low.peek(k) }
+}
+cell low {
+    memory { p: Map<String, Int> [persistent] }
+    on poke(k: String) { p.set(k, (p.get(k) ?? 0) + 1)  return p.get(k) }
+    on peek(k: String) { return p.get(k) ?? 0 }
+}
+cell Up {
+    memory { p: Map<String, Int> [persistent] }
+    on poke(k: String) { p.set(k, 1)  return 1 }
+}

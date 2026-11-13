@@ -758,6 +758,168 @@ cell App {
 }
 ```
 
+## Skeleton and flesh
+
+For anything bigger than one file, design the STRUCTURE before writing a
+body. A `skeleton` is a cell without handler bodies: memory, invariants,
+state machines, and a face where each signal carries its **frame** — what
+its body may read, write, call, emit, and which machine edges it may take.
+The bodies come afterwards, in `flesh` blocks, and `soma check` refuses a
+body that does anything its frame does not say.
+
+```soma
+// app.cell — the skeleton
+use lib::orders                       // the flesh lives in lib/orders.cell
+
+skeleton Stock {
+    memory {
+        items: Map<String, Int> [persistent]
+        invariant items >= 0
+    }
+    face {
+        signal level(sku: String) -> Int        reads items
+        signal take(sku: String, n: Int) -> Bool
+            requires n > 0
+            writes items
+            calls level
+    }
+}
+
+skeleton Orders {
+    memory { log: Map<String, String> [persistent] }
+    state flow {
+        initial: placed
+        placed -> packed
+        placed -> cancelled
+        packed -> shipped
+    }
+    face {
+        signal place(id: String, sku: String) -> String
+            writes log
+            moves placed -> packed
+            calls Stock.take
+        signal cancel(id: String) -> String     moves placed -> cancelled
+        signal ship(id: String) -> String       moves packed -> shipped
+        signal status(id: String) -> String     reads flow
+        signal quote(n: Int) -> Int             // no clause: a pure function of n
+    }
+}
+```
+```soma
+// lib/orders.cell — the flesh: `on` handlers and nothing else
+flesh Stock {
+    on level(sku) { return items.get(sku) ?? 0 }       // types come from the signal
+    on take(sku, n) {
+        let have = level(sku)
+        if have < n { return false }
+        items.set(sku, have - n)
+        return true
+    }
+}
+
+flesh Orders {
+    on place(id, sku) {
+        if !take(sku, 1) { return "no stock" }
+        transition(id, "placed", "packed")
+        _note(id, sku)
+        return "packed"
+    }
+    on _note(id: String, sku: String) { log.set(id, sku) }   // a private helper: `_name`, typed
+    on cancel(id) { transition(id, "placed", "cancelled")  return "cancelled" }
+    on status(id) { return get_status(id) }
+    on quote(n) { return n * 3 }
+    // no `on ship`: it is a HOLE
+}
+```
+
+The frame, clause by clause (after the return type and any `requires` /
+`ensures`; several on one line or one per line):
+
+| Clause | Grants |
+|---|---|
+| `reads a, b` | reading memory slots `a`, `b`; a machine name (`reads flow`, `reads Cell.flow`) grants `get_status` / `has_state` / `valid_transitions` |
+| `writes a` | writing — and reading — slot `a` |
+| `moves s -> t, u -> v` | taking those edges (and reading the machine). `moves Cell.machine: s -> t` for another cell's machine; `moves * -> t` any edge into `t`; `moves * -> *` any edge (a `transition(id, target)` whose target is computed). `transition(id, "t")` without a source takes whichever edge into `t` the instance is on: the frame must list them ALL — or the body names the one it means, `transition(id, "s", "t")` |
+| `calls f, Cell.g, think` | calling signal `f` of the same cell, signal `g` of `Cell`, and builtins that have an effect or an answer that varies (`think`, `now`, `random`, `http_get`, `set_budget`, `next_id`, … — the ✗ ones of `soma describe --builtins`, plus the effectful ones) |
+| `emits s` | `emit s(…)`. An emit runs every handler `on s` of the program: a listener that is a signal answers for what it does with its own frame; a private helper cannot listen (emitting `_helper` is refused) |
+
+- **The frame is closed.** No clause grants nothing: a signal without one
+  is a pure function of its parameters. Pure builtins are always free.
+- **Frames are not transitive.** `calls Stock.take` does not need
+  `writes items`: `take` has its own frame.
+- **Only a named source pins an edge.** `transition(id, "s", "t")` is the
+  edge `s -> t`, and the run refuses it from any other state. What a body
+  works out for itself (`if get_status(id) == "s" { transition(id, "t") }`)
+  is not evidence: without the source, every edge into `t` must be in the frame.
+- **An impure lambda is written where it runs**: as the direct argument of
+  a builtin that applies it at once (`xs.map(x => items.set(x, 0))`). Bound
+  to a name, stored, passed to a signal or returned, a lambda must be pure
+  — it would run later, in the cell of whoever calls it. The run holds the
+  same line for every program, checked or not: a lambda called outside the
+  cell that wrote it may only compute (kind `lambda` otherwise).
+- **A helper** is an `on _name(…)` in the flesh that the face does not
+  declare (leading underscore, typed parameters). It is private — never
+  routed, never callable from another cell — and what it does counts
+  against every signal that calls it.
+- **A hole** is a signal no flesh fills yet. `check` passes and counts
+  them; a call of one fails with kind `not_implemented`. `soma verify`
+  reads a hole as its FRAME — the body that may take every edge in
+  `moves`, write anything to `writes`, call everything in `calls` — so a
+  `✓` on a skeleton holds for every flesh that conforms. What a hole's
+  frame could break is `⚠ open obligation` (a `[verify.before]` rule) or
+  `⚠ runtime-checked` (an invariant on a slot it may write), never `✓`;
+  termination and think-isolation are judged when the bodies exist. The
+  verdict is `VERIFY OK (skeleton — the holes above are open obligations)`.
+- **Say what each signal is for.** A `//` comment above a signal (or at
+  the end of its line), on a slot, on an edge, above the skeleton: the
+  brief carries them, and they are the only place the design says what a
+  body must compute and what its answer means. Prefer a `cell type` over
+  `-> Map` for an answer with a shape: the brief prints its variants.
+- A `skeleton` may hold `const`, `scale`, `runtime`, `interior`; an
+  `every` / `after` block in it only calls signals (`every 5s { tick() }`
+  — the work, and its frame, are in `signal tick()`). A flesh reads its
+  skeleton's constants.
+- `cell` is unchanged: a skeleton and its flesh in one, with open frames.
+  A program may mix both.
+
+```
+soma skeleton app.cell                  # the whole map: structure + frames, no bodies (works on plain cells too: frames inferred)
+soma skeleton app.cell --index          # a large program: one line per cell (signals, holes, machine, its comment), then who calls whom
+soma skeleton app.cell Orders           # one cell of the map, with its comments and who calls each signal from outside
+soma skeleton app.cell Orders.place     # the BRIEF for one signal — enough to write its body without opening another file:
+                                        #   the comments written for it, its slots (comments, invariants), the cell's
+                                        #   constants, the types it names, each machine it touches (every edge), the
+                                        #   signature, comment, frame and contract of what it may call, who calls it
+soma refs     app.cell Orders.place [--json]   # where it is declared, where its body is, who calls it — program AND tests — as file:line
+soma rename   app.cell Orders.place submit [--dry-run]   # the declaration, the body, every call, frame clause and test; an event is renamed in every cell that hears it
+soma check .                            # the project gate: the entry file and every test file (parts are checked through the entry)
+soma holes    app.cell [Cell] [--json]  # signals with no body yet, by cell, numbered in the order to write them (callees first)
+soma verify   app.cell --summary        # only the ✗ and ⚠ lines, the count of ✓, the holes, the verdict
+soma skeleton app.cell --split > new.cell    # rewrite existing cells as skeleton + flesh, bodies unchanged
+soma skeleton app.cell --freeze         # write skeleton.lock: every command that loads the program then refuses a change
+                                        #   to a skeleton (interior ones too), a cell added that moves one of their
+                                        #   machines, or a change to soma.toml's [verify] tables — and names the signal.
+                                        #   The lock holds for any file of its directory; one that cannot be read is an error
+soma skeleton app.cell --amend          # accept a structural change on purpose (prints the difference)
+soma init --skeleton myapp              # a starter laid out this way, with one hole
+```
+
+The loop for a large program: write the skeletons → `soma check` (every
+frame names things that exist; an edge no signal moves, a slot no signal
+writes are warnings) → `soma verify` (lifecycles proven before any body
+exists) → `--freeze` → then for each line of `soma holes`: read its brief,
+write that one body, `soma check`. You never need another cell's bodies in
+context: the brief is the whole contract. What `check` says when a body
+leaves its frame:
+
+```
+error: `Orders.place` writes `log`, outside its frame (no `writes`) — if the design means it,
+       add it to `signal place` in `skeleton Orders`: `writes log`
+```
+Fix the body — or, when the design itself is wrong, change the skeleton
+and `--amend`. Do not widen a frame just to make an error go away: a
+frame wider than its body is a warning.
+
 ## Common patterns
 
 ```soma

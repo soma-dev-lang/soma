@@ -1,0 +1,14 @@
+cell other {
+    on rnd() { return random() }
+    on rnd1(a: Int) { return random() }
+}
+cell A {
+    on _r(a: Int) { return random() }
+    on g(x: Int) [deterministic] {
+        for other in [1] { let z = 1 }
+        return other.rnd()
+    }
+}
+cell test T { rules {
+  assert A.g(1) == A.g(1)
+ } }

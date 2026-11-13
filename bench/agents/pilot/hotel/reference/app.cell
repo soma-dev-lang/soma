@@ -1,0 +1,259 @@
+// HOTEL — rooms, nights, stays, folios, points. Designed skeleton-first:
+// this file is the whole design, the bodies are in lib/.
+use lib::rooms
+use lib::housekeeping
+use lib::calendar
+use lib::ledger
+use lib::loyalty
+use lib::bookings
+use lib::desk
+
+// Rooms: the registry. A room has a kind and a nightly rate, both changeable only here.
+skeleton Rooms {
+    memory {
+        kinds: Map<String, String> [persistent]        // room -> kind ("single", "double", …)
+        rates: Map<String, Int> [persistent]           // room -> nightly rate in cents, >= 1
+        order: List<String> [persistent]               // the rooms, in the order they were added
+        invariant rates >= 1
+    }
+    face {
+        // Register `room`. Error kind `Taken` if it exists. Returns map("room", room, "kind", kind, "rate", rate).
+        signal add_room(room: String, kind: String, rate: Int) -> Map
+            requires rate >= 1
+            writes kinds, rates, order
+        // map("room", room, "kind", kind, "rate", rate). Error kind `NotFound` for an unknown room.
+        signal room(room: String) -> Map                reads kinds, rates
+        // true when the room was added.
+        signal exists(room: String) -> Bool             reads kinds
+        // The nightly rate, 0 for an unknown room.
+        signal rate_of(room: String) -> Int             reads rates
+        // Change the rate of an existing room (`NotFound` otherwise). Returns the new rate.
+        signal set_rate(room: String, rate: Int) -> Int
+            requires rate >= 1
+            reads kinds
+            writes rates
+        // The rooms of that kind, in the order they were added.
+        signal rooms_of_kind(kind: String) -> List      reads kinds, order
+    }
+}
+
+// Housekeeping: what state each room is in right now. An instance is a room.
+skeleton Housekeeping {
+    memory {
+        cleaners: Map<String, String> [persistent]     // room -> who is (or was last) cleaning it
+    }
+    state upkeep {
+        initial: clean
+        clean -> occupied           // a guest checks in
+        occupied -> dirty           // the guest leaves
+        dirty -> cleaning
+        cleaning -> clean
+        clean -> out_of_order       // blocked for repairs
+        out_of_order -> clean
+    }
+    face {
+        // "clean" (also for a room never seen), "occupied", "dirty", "cleaning" or "out_of_order".
+        signal room_status(room: String) -> String      reads upkeep
+        // clean -> occupied. Any other state: the machine refuses (error). Returns "occupied".
+        signal occupy(room: String) -> String           moves clean -> occupied
+        // occupied -> dirty. Returns "dirty".
+        signal vacate(room: String) -> String           moves occupied -> dirty
+        // dirty -> cleaning, and records `staff` as the room's cleaner. Returns "cleaning".
+        signal start_cleaning(room: String, staff: String) -> String
+            writes cleaners
+            moves dirty -> cleaning
+        // cleaning -> clean. Only the staff who started it (else error kind `Forbidden`). Returns "clean".
+        signal finish_cleaning(room: String, staff: String) -> String
+            reads cleaners
+            moves cleaning -> clean
+        // clean -> out_of_order. Returns "out_of_order".
+        signal block(room: String) -> String            moves clean -> out_of_order
+        // out_of_order -> clean. Returns "clean".
+        signal unblock(room: String) -> String          moves out_of_order -> clean
+    }
+}
+
+// Calendar: which booking holds which room on which night. A night is the Int day it starts on.
+skeleton Calendar {
+    memory {
+        nights: Map<String, String> [persistent]       // "<room>@<day>" -> booking id holding that night
+    }
+    face {
+        // true when no night d with from <= d < to is held for `room`.
+        signal is_free(room: String, from: Int, to: Int) -> Bool
+            requires from < to
+            reads nights
+        // Holds every night from <= d < to of `room` for `booking` and returns true — or, if any of
+        // them is held already, returns false and holds nothing.
+        signal hold_nights(booking: String, room: String, from: Int, to: Int) -> Bool
+            requires from < to
+            writes nights
+            calls is_free
+        // Frees the nights from <= d < to of `room` that `booking` holds (others are left alone).
+        // Returns how many were freed.
+        signal free_nights(booking: String, room: String, from: Int, to: Int) -> Int
+            requires from < to
+            writes nights
+        // The booking that holds `room` on night `day`, "" if none.
+        signal held_by(room: String, day: Int) -> String    reads nights
+    }
+}
+
+// Ledger: one folio per booking — what was charged, what was paid in cash, what was paid in points.
+skeleton Ledger {
+    memory {
+        charged: Map<String, Int> [persistent]         // folio -> total charged, cents
+        cash: Map<String, Int> [persistent]            // folio -> total paid in cash, cents
+        points_paid: Map<String, Int> [persistent]     // folio -> total paid with points, cents
+        invariant charged >= 0
+        invariant cash >= 0
+        invariant points_paid >= 0
+    }
+    face {
+        // Adds `amount` to what the folio owes. Returns the folio's due amount afterwards.
+        signal charge(folio: String, amount: Int) -> Int
+            requires amount >= 1
+            writes charged
+            calls due
+        // Pays `amount` in cash. More than is due: error kind `Overpaid`, nothing written.
+        // Returns the due amount afterwards.
+        signal pay_cash(folio: String, amount: Int) -> Int
+            requires amount >= 1
+            writes cash
+            calls due
+        // The same, paid with points (the caller has already taken the points).
+        signal pay_points(folio: String, amount: Int) -> Int
+            requires amount >= 1
+            writes points_paid
+            calls due
+        // charged - cash - points_paid; 0 for an unknown folio.
+        signal due(folio: String) -> Int                reads charged, cash, points_paid
+        // Total paid in cash on the folio.
+        signal cash_paid(folio: String) -> Int          reads cash
+        // map("charged", …, "cash", …, "points", …, "due", …).
+        signal statement(folio: String) -> Map
+            reads charged, cash, points_paid
+            calls due
+    }
+}
+
+// Loyalty: points per guest. 1 point is worth 1 cent when redeemed.
+skeleton Loyalty {
+    memory {
+        balance: Map<String, Int> [persistent]         // guest -> points
+        invariant balance >= 0
+    }
+    face {
+        // Credits one point per full 100 cents of `cash_amount`. Returns the guest's points afterwards.
+        signal earn(guest: String, cash_amount: Int) -> Int
+            requires cash_amount >= 0
+            writes balance
+        // Takes `points` from the guest and returns true — or returns false, taking nothing, when
+        // the guest has fewer.
+        signal redeem(guest: String, points: Int) -> Bool
+            requires points >= 1
+            writes balance
+        // The guest's points, 0 if unknown.
+        signal points_of(guest: String) -> Int          reads balance
+    }
+}
+
+// Bookings: the lifecycle of a stay. An instance is a booking id; its folio in Ledger has the same id.
+skeleton Bookings {
+    memory {
+        guests: Map<String, String> [persistent]       // booking -> guest
+        rooms: Map<String, String> [persistent]        // booking -> room
+        arrive: Map<String, Int> [persistent]          // booking -> first night (day)
+        depart: Map<String, Int> [persistent]          // booking -> day of departure (arrive < depart)
+        nightly: Map<String, Int> [persistent]         // booking -> the room's rate WHEN IT WAS BOOKED, cents
+        ids: List<String> [persistent]                 // every booking id, in booking order
+        invariant nightly >= 1
+    }
+    state stay {
+        initial: requested
+        requested -> confirmed
+        confirmed -> checked_in
+        checked_in -> checked_out
+        confirmed -> cancelled
+        confirmed -> no_show
+    }
+    face {
+        // Books `room` for `guest` for the nights from <= d < to.
+        //   error `Taken`: the booking id exists; error `NotFound`: the room does not exist.
+        //   nights not all free: returns map("ok", false, "reason", "not available"), nothing written.
+        //   otherwise: holds the nights (Calendar.hold_nights with this id), remembers the room's
+        //   CURRENT rate as the booking's nightly rate, moves requested -> confirmed and returns
+        //   map("ok", true, "booking", id, "nights", to - from, "total", rate * (to - from)).
+        signal book(id: String, guest: String, room: String, from: Int, to: Int) -> Map
+            requires from < to
+            writes guests, rooms, arrive, depart, nightly, ids
+            moves requested -> confirmed
+            calls Rooms.exists, Rooms.rate_of, Calendar.hold_nights
+        // The guest cancels on day `day`. Only the booking's guest (error `Forbidden`); unknown id: `NotFound`.
+        // confirmed -> cancelled; all its nights are freed. Fee: 0 when day <= arrive - 2, else one
+        // night at the booking's nightly rate, charged to the folio. Returns map("ok", true, "fee", fee).
+        signal cancel(id: String, guest: String, day: Int) -> Map
+            reads guests, rooms, arrive, depart, nightly
+            moves confirmed -> cancelled
+            calls Calendar.free_nights, Ledger.charge
+        // Check-in on day `day`: must be the arrival day (error `WrongDay`) and the room must be
+        // "clean" (error `NotReady`). confirmed -> checked_in, the room becomes occupied, and the whole
+        // stay (nightly rate * nights) is charged to the folio. Returns map("ok", true, "due", <due>).
+        signal check_in(id: String, day: Int) -> Map
+            reads rooms, arrive, depart, nightly
+            moves confirmed -> checked_in
+            calls Housekeeping.room_status, Housekeeping.occupy, Ledger.charge
+        // Check-out on day `day`. Nothing may be due on the folio (error `Unpaid`). checked_in ->
+        // checked_out, the room becomes dirty, the nights from `day` on are freed (an early
+        // departure releases them; no refund), and the guest earns points on the CASH paid on the
+        // folio (Loyalty.earn). Returns map("ok", true, "points", <the guest's points afterwards>).
+        signal check_out(id: String, day: Int) -> Map
+            reads guests, rooms, depart
+            moves checked_in -> checked_out
+            calls Ledger.due, Ledger.cash_paid, Housekeeping.vacate, Calendar.free_nights, Loyalty.earn
+        // The guest did not come: confirmed -> no_show, all its nights are freed, one night at the
+        // booking's nightly rate is charged. Returns the fee.
+        signal mark_no_show(id: String) -> Int
+            reads rooms, arrive, depart, nightly
+            moves confirmed -> no_show
+            calls Calendar.free_nights, Ledger.charge
+        // "requested" (also for an unknown id), "confirmed", "checked_in", "checked_out", "cancelled", "no_show".
+        signal stay_state(id: String) -> String         reads stay
+        // map("booking", id, "guest", …, "room", …, "from", …, "to", …, "nightly", …, "state", …). `NotFound` if unknown.
+        signal booking(id: String) -> Map               reads guests, rooms, arrive, depart, nightly, stay
+        // The guest of a booking, "" if unknown.
+        signal guest_of(id: String) -> String           reads guests
+        // The ids of the bookings that are `confirmed` and arrive on `day`, in booking order.
+        signal arriving(day: Int) -> List               reads ids, arrive, stay
+    }
+}
+
+// Desk: what the front desk does. It owns nothing; everything goes through the other cells.
+skeleton Desk {
+    face {
+        // The price of the nights from <= d < to in `room` at today's rate; error `NotFound` for an unknown room.
+        signal quote(room: String, from: Int, to: Int) -> Int
+            requires from < to
+            calls Rooms.exists, Rooms.rate_of
+        // Cash payment on a booking's folio. Returns map("ok", true, "due", <due afterwards>).
+        signal settle(id: String, amount: Int) -> Map
+            requires amount >= 1
+            calls Ledger.pay_cash
+        // Pays `points` cents of the folio with the booking guest's points. The guest has too few:
+        // returns map("ok", false, "reason", "not enough points"), nothing changes. More than is due:
+        // error `Overpaid`, and the points are NOT taken. Otherwise map("ok", true, "due", <due afterwards>).
+        signal settle_with_points(id: String, points: Int) -> Map
+            requires points >= 1
+            calls Bookings.guest_of, Ledger.due, Loyalty.redeem, Ledger.pay_points
+        // End of day `day`: every booking still `confirmed` that was to arrive on `day` becomes a
+        // no-show. Returns map("no_shows", <how many>, "fees", <sum of their fees>).
+        signal night_audit(day: Int) -> Map
+            calls Bookings.arriving, Bookings.mark_no_show
+        // Moves a confirmed booking to another room for the same nights: only if the new room exists
+        // (`NotFound`) and is free on all of them — else returns map("ok", false, "reason", "not available")
+        // and nothing changes. It is a cancellation without fee followed by a new booking `new_id` at
+        // the new room's current rate. Returns the new booking's answer (see Bookings.book).
+        signal move_room(id: String, new_id: String, room: String) -> Map
+            calls Rooms.exists, Bookings.booking, Bookings.cancel, Bookings.book, Calendar.is_free
+    }
+}

@@ -1,0 +1,22 @@
+use skel::stock
+use lib::orders
+
+// orders of the shop
+skeleton Orders {
+    memory { log: Map<String, String> [persistent] }
+    state flow {
+        initial: placed
+        placed -> packed
+        placed -> cancelled
+        packed -> shipped
+    }
+    face {
+        signal place(id: String, sku: String) -> String
+            writes log
+            moves placed -> packed
+            calls Stock.take, Stock.st
+        signal cancel(id: String) -> String     moves placed -> cancelled
+        signal ship(id: String) -> String       moves packed -> shipped
+        signal status(id: String) -> String     reads flow
+    }
+}

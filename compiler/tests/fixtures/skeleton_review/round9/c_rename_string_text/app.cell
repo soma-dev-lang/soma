@@ -1,0 +1,6 @@
+cell B {
+    on tick(n: Int) { return n }
+    on help() { return "after {1 + 1} tries call tick(3) or B.tick(4)" }
+}
+cell D { on d() { return B.tick(1) } }
+cell test T { rules { assert len(B.help()) == 39  assert D.d() == 1 } }

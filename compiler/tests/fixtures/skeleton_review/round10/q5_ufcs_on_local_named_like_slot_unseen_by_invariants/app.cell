@@ -1,0 +1,15 @@
+cell A {
+    memory { c: Map<String, Int>  invariant c >= 0
+             tmp: Map<String, Int> }
+    on dec(x: Int) { c.set("k", (c.get("k") ?? 0) - 100)  return 1 }
+    on w(k: String, n: Int) {
+        let tmp = n
+        require (c.get(k) ?? 0) >= 100 else Low
+        let z = tmp.dec()
+        c.set(k, (c.get(k) ?? 0) - 100)
+        return 1 }
+    on probe() { c.set("k", 150)
+        let r = try { w("k", 1) }
+        return r.kind ?? "ok" }
+}
+cell test T { rules { assert A.probe() == "invariant" } }

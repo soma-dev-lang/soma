@@ -1,0 +1,18 @@
+cell A {
+    state m {
+        initial: a
+        a -> b { guard { tier == "{want}" } }
+    }
+    on go(id: String, tier: String, w0: String) {
+        let want = w0
+        require tier == "{want}" else Bad
+        want = "other"
+        transition(id, "a", "b")
+        return "b"
+    }
+}
+cell test T {
+    rules {
+        assert A.go("k", "gold", "gold") == "b"
+    }
+}

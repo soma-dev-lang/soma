@@ -65,9 +65,10 @@ fn d1_fix_edition_rewrites_what_is_mechanical_and_names_the_rest() {
 fn d2_the_agent_guide_is_split_and_every_part_ships() {
     let d = project("docs", &[]);
     let (agent, _, _) = soma_in(&d, &["docs", "agent"], &[]);
-    assert!(agent.lines().count() < 720, "the core guide grew back: {} lines", agent.lines().count());
+    // (3.1: +18 lines for the skeleton-first workflow, which points to `soma docs skeleton`)
+    assert!(agent.lines().count() < 740, "the core guide grew back: {} lines", agent.lines().count());
     assert!(!agent.contains("Soma 2.8.4 corrects"), "release notes belong in `soma docs releases`");
-    for (topic, needle) in [("agents", "HORDES"), ("native", "buffer(n) -> Buf"), ("releases", "Soma 2.8.4 corrects")] {
+    for (topic, needle) in [("agents", "HORDES"), ("native", "buffer(n) -> Buf"), ("skeleton", "The frame is closed"), ("releases", "Soma 2.8.4 corrects")] {
         let (out, _, code) = soma_in(&d, &["docs", topic], &[]);
         assert_eq!(code, 0);
         assert!(out.contains(needle), "soma docs {topic} lacks {needle:?}");

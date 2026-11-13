@@ -1,0 +1,1 @@
+soma check app.cell (vert) ; soma verify app.cell -> « ✓ termination: all 2 handlers structurally terminate » ; soma test app.cell -> stack overflow — ligne fautive : `let s = "{n |> A.go}"` (récursion par un pipe vers Cell.h dans une interpolation, desugar.rs:318-333 ne réécrit pas la droite FieldAccess). Même racine que q1_interpolated_pipe_into_cell_field_unseen_by_product

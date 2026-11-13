@@ -1,0 +1,28 @@
+skeleton Desk {
+    memory {
+        titles: Map<String, String> [persistent]
+        owners: Map<String, String> [persistent]
+    }
+    face {
+        signal assign(id: String, owner: String) -> String
+            writes owners
+        signal peek(id: String) -> String
+        signal cnt() -> Int reads titles
+        signal viacall() -> Int
+    }
+}
+flesh Desk {
+    on assign(id, owner) {
+        _must_exist(id)
+        owners.set(id, owner)
+        return owner
+    }
+    on peek(id) {
+        return titles.get(id) ?? "x"
+    }
+    on cnt() { return len(titles) }
+    on viacall() { return cnt() + 1 }
+    on _must_exist(id: String) {
+        require titles.get(id) != () else NotFound "no ticket '{id}'"
+    }
+}

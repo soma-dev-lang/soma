@@ -1,0 +1,32 @@
+// The flesh of `skeleton Escrow` (../app.cell).
+
+flesh Escrow {
+    // the buyer's money leaves their wallet here, or nothing happens
+    on open_hold(id, payer, payee, amount) {
+        if !debit(payer, amount) { return false }
+        amounts.set(id, amount)
+        payers.set(id, payer)
+        payees.set(id, payee)
+        transition(id, "none", "held")
+        return true
+    }
+
+    on release(id) {
+        transition(id, "held", "released")
+        return credit(payees.get(id), amounts.get(id))
+    }
+
+    on refund(id) {
+        transition(id, "held", "refunded")
+        return credit(payers.get(id), amounts.get(id))
+    }
+
+    on hold_state(id) {
+        return get_status(id) ?? "none"             // an id never seen has no status yet
+    }
+
+    on held_amount(id) {
+        if get_status(id) != "held" { return 0 }
+        return amounts.get(id) ?? 0
+    }
+}

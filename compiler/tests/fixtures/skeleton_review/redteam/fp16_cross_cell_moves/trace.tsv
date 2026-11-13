@@ -1,0 +1,6 @@
+	call	Shop.settle
+Shop.settle	move	paid
+	call	Bank.status
+Bank.status	mread	-
+	call	Shop.look
+Shop.look	mread	-

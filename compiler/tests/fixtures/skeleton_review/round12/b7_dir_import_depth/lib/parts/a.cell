@@ -1,0 +1,3 @@
+flesh Stock {
+    on fill(sku, n) { items.set(sku, n) return n }
+}

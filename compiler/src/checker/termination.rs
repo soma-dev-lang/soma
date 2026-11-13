@@ -100,7 +100,7 @@ pub fn check_cell_termination(cell: &CellDef, program: &Program) -> Vec<Terminat
                         walk_stmt(&st.node, &mut |x| {
                             let callee = match x {
                                 Expr::FnCall { name, .. } => Some(name),
-                                Expr::MethodCall { target, method, .. } if matches!(&target.node, Expr::Ident(c) if c.starts_with(|ch: char| ch.is_ascii_uppercase())) => Some(method),
+                                Expr::MethodCall { target, method, .. } if matches!(&target.node, Expr::Ident(c) if super::names::cellish(c)) => Some(method),
                                 _ => None,
                             };
                             if let Some(n) = callee { if graph.contains_key(n.as_str()) { todo.push(n.clone()); } }

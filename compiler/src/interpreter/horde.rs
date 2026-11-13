@@ -314,12 +314,20 @@ impl Interpreter {
     /// the calling cell, else the one cell that defines it.
     fn horde_target(&self, owner: &str, target: &str) -> Result<(String, String), RuntimeError> {
         let defines = |c: &str, h: &str| self.cells.get(c).map_or(false, |cell| cell.sections.iter().any(|s| matches!(&s.node, crate::ast::Section::OnSignal(on) if on.signal_name == h)));
+        // a private helper (`_h`) is its own cell's: no other cell names it
+        let program_cell = |c: &str| self.cells.get(c).map_or(false, |d| matches!(d.kind, crate::ast::CellKind::Cell | crate::ast::CellKind::Agent));
         if let Some((c, h)) = target.split_once('.') {
+            if h.starts_with('_') && c != owner {
+                return Err(RuntimeError::TypeError(format!("horde(): `{}.{}` is a private helper of `{}` — another cell reaches its signals only", c, h, c)));
+            }
             if defines(c, h) { return Ok((c.to_string(), h.to_string())); }
             return Err(RuntimeError::TypeError(format!("horde(): no handler `{}` in cell `{}`", h, c)));
         }
         if defines(owner, target) { return Ok((owner.to_string(), target.to_string())); }
-        let mut found: Vec<String> = self.cells.keys().filter(|c| defines(c, target)).cloned().collect();
+        if target.starts_with('_') {
+            return Err(RuntimeError::TypeError(format!("horde(): no helper `{}` in cell `{}` — a private helper is reached from its own cell only", target, owner)));
+        }
+        let mut found: Vec<String> = self.cells.keys().filter(|c| defines(c, target) && program_cell(c)).cloned().collect();
         found.sort();
         match found.len() {
             1 => Ok((found.remove(0), target.to_string())),

@@ -1,0 +1,20 @@
+skeleton Stock {
+    memory {
+        items: Map<String, Int> [persistent]
+        invariant items >= 0
+    }
+    state s {
+        initial: idle
+        idle -> ready
+    }
+    face {
+        signal level(sku: String) -> Int        reads items
+        signal arm(id: String) -> String        moves idle -> ready
+        signal st(id: String) -> String         reads s
+        signal take(sku: String, n: Int) -> Bool
+            requires n > 0
+            writes items
+            calls level
+        signal fill(sku: String, n: Int) -> Int  writes items
+    }
+}

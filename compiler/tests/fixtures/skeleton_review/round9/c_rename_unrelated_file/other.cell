@@ -1,0 +1,5 @@
+cell B {
+    on tick(n: Int) { return n * 2 }
+    on twice(n: Int) { return tick(n) + 5.tick() }
+}
+cell test T2 { rules { assert B.twice(1) == 12 } }

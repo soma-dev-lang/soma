@@ -1,0 +1,62 @@
+// flesh: Quarter — the orchestrator
+
+flesh Quarter {
+    on new_game(seed) {
+        Rng.reseed(seed)
+        Finance.open(50000)
+        Attention.refill()
+        Market.seed_segments()
+        Rivals.seed_rivals()
+        clock.set("game", (clock.get("game") ?? 0) + 1)
+        clock.set("q", 1)
+        return 1
+    }
+    on _turn(q: Int) {
+        let g = clock.get("game") ?? 0
+        return "{g}:{q}"
+    }
+    on current() { return clock.get("q") ?? 0 }
+    on sell_quarter() {
+        let revenue = 0
+        for pid in Product.product_ids() {
+            let o = Product.offer(pid)
+            let want = idiv(Market.demand(o.segment, o.price, o.quality) * Rivals.player_share(o.price, o.quality), 10000)
+            let need = max([0, want - o.stock])
+            let made = 0
+            for plant in Factory.plant_ids() {
+                if need > 0 {
+                    let got = Factory.produce(plant, need)
+                    made += got
+                    need -= got
+                }
+            }
+            Product.stock_in(pid, made)
+            revenue += Product.sell(pid, want)
+        }
+        return revenue
+    }
+    on resolve() {
+        let q = current()
+        require q > 0 else NoGame "call new_game first"
+        transition(_turn(q), "planning", "resolving")
+        let ev = Events.draw()
+        let rivals = Rivals.act_all()
+        let plants = Factory.advance_all()
+        let revenue = sell_quarter()
+        let rd = Research.work_all()
+        let suits = Legal.progress_all()
+        let interest = Finance.accrue_interest(Events.interest_rate())
+        let segs = Market.tick()
+        let health = Finance.assess("player")
+        let books = Finance.close_books(q)
+        let rep = map("q", q, "event", ev, "rivals", rivals, "revenue", revenue, "rd", rd,
+                      "legal", suits, "interest", interest, "solvency", health, "books", books)
+        reports.set("{q}", rep)
+        Attention.refill()
+        transition(_turn(q), "resolving", "reported")
+        clock.set("q", q + 1)
+        return rep
+    }
+    on phase(q) { return get_status(_turn(q)) ?? "planning" }
+    on report(q) { return reports.get("{q}") ?? map() }
+}

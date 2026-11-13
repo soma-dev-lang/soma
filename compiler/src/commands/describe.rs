@@ -13,6 +13,12 @@ pub fn cmd_describe(path: &PathBuf) {
     let tokens = lex_with_location(&source, Some(&file_str));
     let mut program = parse_with_location(tokens, Some(&source), Some(&file_str));
     resolve_imports(&mut program, path);
+    // a frozen structure that was changed is not the program to look at
+    let broken = crate::checker::lock::check(&program, path, &source);
+    if !broken.is_empty() {
+        for e in &broken { eprintln!("error: {}", e); }
+        std::process::exit(1);
+    }
 
     let mut cells = Vec::new();
 
@@ -369,6 +375,10 @@ pub fn cmd_describe_faces(path: &PathBuf, json: bool) {
     let mut program = parse_with_location(tokens, Some(&source), Some(&file_str));
     resolve_imports(&mut program, path);
 
+    // a `skeleton` declares more than a face: each signal's frame
+    let skeletons = if program.cells.iter().any(|c| c.node.skeleton) { crate::checker::frame::build(&program) } else { Vec::new() };
+    let skeleton_of = |cell: &CellDef| skeletons.iter().find(|sk| cell.skeleton && sk.cell.name == cell.name);
+
     if json {
         let mut out = Vec::new();
         // interior cells are cells: their contracts were missing entirely
@@ -376,6 +386,11 @@ pub fn cmd_describe_faces(path: &PathBuf, json: bool) {
             match cell.kind {
                 CellKind::Cell | CellKind::Agent | CellKind::Type => {
                     let mut v = face_json(cell);
+                    if let (Some(sk), Some(obj)) = (skeleton_of(cell), v.as_object_mut()) {
+                        obj.insert("skeleton".to_string(), serde_json::json!(true));
+                        obj.insert("frames".to_string(), serde_json::Value::Object(sk.bones.iter().filter(|b| b.in_face)
+                            .map(|b| (b.name.clone(), super::skeleton::signal_json(b))).collect()));
+                    }
                     if let (Some(p), Some(obj)) = (parent, v.as_object_mut()) {
                         obj.insert("interior_of".to_string(), serde_json::json!(p));
                     }
@@ -405,7 +420,10 @@ pub fn cmd_describe_faces(path: &PathBuf, json: bool) {
 
     for (cell, parent) in cells_with_parents(&program) {
         if !matches!(cell.kind, CellKind::Cell | CellKind::Agent) { continue; }
-        print_cell_face(cell, parent);
+        match skeleton_of(cell) {
+            Some(sk) => print!("\n{}", super::skeleton::render_one(sk)),
+            None => print_cell_face(cell, parent),
+        }
     }
 }
 
@@ -596,7 +614,7 @@ fn face_json(cell: &CellDef) -> serde_json::Value {
 
 /// Render a promise the way it was written: `promise all_persistent`
 /// is a zero-arg predicate — print it without the empty parens.
-fn format_promise(c: &Constraint) -> String {
+pub(crate) fn format_promise(c: &Constraint) -> String {
     if let Constraint::Predicate { name, args } = c {
         if args.is_empty() {
             return name.clone();
@@ -605,14 +623,14 @@ fn format_promise(c: &Constraint) -> String {
     format_constraint(c)
 }
 
-fn format_params(params: &[Param]) -> String {
+pub(crate) fn format_params(params: &[Param]) -> String {
     params.iter()
         .map(|p| format!("{}: {}", p.name, format_type(&p.ty.node)))
         .collect::<Vec<_>>()
         .join(", ")
 }
 
-fn format_return(ret: &Option<Spanned<TypeExpr>>) -> String {
+pub(crate) fn format_return(ret: &Option<Spanned<TypeExpr>>) -> String {
     ret.as_ref().map(|r| format!(" -> {}", format_type(&r.node))).unwrap_or_default()
 }
 
@@ -623,7 +641,7 @@ fn format_variants(v: &VariantsSection) -> String {
         .join(" | ")
 }
 
-fn format_variant(var: &VariantDecl) -> String {
+pub(crate) fn format_variant(var: &VariantDecl) -> String {
     match &var.fields {
         VariantFields::Unit => var.name.clone(),
         VariantFields::Tuple(tys) => format!("{}({})", var.name,
@@ -683,7 +701,7 @@ fn format_expr(e: &Expr) -> String {
     crate::ast::render_expr(e)
 }
 
-fn format_literal(lit: &Literal) -> String {
+pub(crate) fn format_literal(lit: &Literal) -> String {
     match lit {
         Literal::Int(n) => n.to_string(),
         Literal::BigInt(s) => s.clone(),

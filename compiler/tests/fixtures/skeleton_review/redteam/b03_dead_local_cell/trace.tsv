@@ -1,0 +1,5 @@
+	call	Bank.pure
+Bank.pure	call	Other.poke
+Bank.pure>Other.poke	write	o
+	call	Other.seen
+Other.seen	read	o

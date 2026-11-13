@@ -1,0 +1,17 @@
+cell bb {
+    on roll(n: Int) { return random(1000000) + n }
+}
+cell A {
+    on g(x: Int) [deterministic] {
+        if x > 100000 { let bb = 1 }
+        return bb.roll(x)
+    }
+    on g2(x: Int) [deterministic] {
+        let r = [1].map(bb => bb + 1)
+        return bb.roll(x)
+    }
+}
+cell test T { rules {
+  assert A.g(1) == A.g(1)
+  assert A.g2(1) == A.g2(1)
+ } }

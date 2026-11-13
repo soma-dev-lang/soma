@@ -1,0 +1,19 @@
+skeleton M {
+    memory { seen: Map<String, Int> [persistent]  total: Map<String, Int> [persistent] }
+    state a { initial: s0  s0 -> s1  s1 -> done }
+    face {
+        signal step(id: String) -> String  moves s0 -> s1, s1 -> done  reads a
+        signal mark(id: String) -> Int  writes seen
+        signal sum_up(id: String) -> Int  reads seen  writes total
+    }
+}
+flesh M {
+    on step(id) {
+        if get_status(id) == "s1" { transition(id, "s1", "done")  return "done" }
+        transition(id, "s0", "s1")
+        return "s1"
+    }
+    on mark(id) { if seen.has(id) { return 0 }  seen.set(id, 1)  return 1 }
+    on sum_up(id) { let n = 0  for k in seen.keys() { n += seen.get(k) ?? 0 }  total.set(id, n)  return n }
+}
+cell test T { rules { assert M.step("k") == "s1"  assert M.step("k") == "done"  assert M.mark("a") == 1  assert M.sum_up("z") == 1 } }

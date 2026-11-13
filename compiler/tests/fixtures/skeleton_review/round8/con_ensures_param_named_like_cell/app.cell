@@ -1,0 +1,18 @@
+cell B {
+    face { signal g(x: Int) -> Int
+             ensures result >= 0 }
+    on g(x: Int) { return 5 }
+}
+cell A {
+    face {
+        signal h(v: Int) -> Int
+            ensures result >= 0
+    }
+    on g(x: Int) { return x }
+    on h(v: Int) { return hh(v) }
+ on hh(B: Int) { return B.g() }
+    on probe() { let r = try { h(0 - 5) }
+ print(r)
+ return r.kind ?? "ok" }
+}
+cell test T { rules { assert A.probe() == "ensures" } }

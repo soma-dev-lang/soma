@@ -1,0 +1,9 @@
+use lib::mid
+cell Audit {
+    memory { log: List<String> [persistent] }
+    on log(s: String) { log.push(s)  return 1 }
+}
+cell test T { rules {
+    assert Stock.take("a", 1) == false
+    assert Stock.note("a") == 1
+} }

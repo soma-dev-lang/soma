@@ -1,0 +1,1 @@
+soma verify app.cell -> "✓ f: requires n > 0 — proven at 1 call site (ok)" ; soma test app.cell: horde on_result "f" is called with the result -5, kind requires reaches on_error (2nd assert green; the 1st assert is a probe artefact). Faulty line: horde(A.t, [0 - 5], map(..., "on_result", "f", ...))

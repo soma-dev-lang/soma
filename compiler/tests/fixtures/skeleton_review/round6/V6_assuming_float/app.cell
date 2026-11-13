@@ -1,0 +1,41 @@
+skeleton Approval {
+    state appr {
+        initial: pending
+        pending -> signed_off
+    }
+    face {
+        signal sign(id: String) -> Int        moves pending -> signed_off
+        signal status(id: String) -> String   reads appr
+    }
+}
+flesh Approval {
+    on sign(id) { transition(id, "pending", "signed_off")  return 1 }
+    on status(id) { return get_status(id) ?? "pending" }
+}
+skeleton Pay {
+    state pay {
+        initial: due
+        due -> paid { guard { amount < 6 } }
+        due -> ready
+        ready -> paid
+    }
+    face {
+        signal fast(id: String, amount: Float) -> Int   moves due -> paid
+        signal slow(id: String) -> Int                  moves due -> ready   calls Approval.sign
+        signal fin(id: String, amount: Float) -> Int    moves ready -> paid
+        signal pst(id: String) -> String                reads pay
+    }
+}
+flesh Pay {
+    on fast(id, amount) { transition(id, "due", "paid")  return 1 }
+    on slow(id) { Approval.sign(id)  transition(id, "due", "ready")  return 1 }
+    on fin(id, amount) { transition(id, "ready", "paid")  return 1 }
+    on pst(id) { return get_status(id) ?? "due" }
+}
+cell test T {
+    rules {
+        assert Pay.fast("k", 5.5) == 1                  // 5.5 > 5: the assumption holds
+        assert Pay.pst("k") == "paid"
+        assert Approval.status("k") == "pending"
+    }
+}

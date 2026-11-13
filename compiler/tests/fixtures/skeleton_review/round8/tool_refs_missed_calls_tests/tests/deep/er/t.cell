@@ -1,0 +1,17 @@
+use "../../../app.cell"
+cell test T {
+    on _h(x: Int) { return x.tick() }
+    rules {
+        assert 5.tick() == 5
+        assert (6 |> tick()) == 6
+        assert (7 |> B.tick()) == 7
+        assert _h(8) == 8
+        assert [1, 2].map(z => tick(z)) == [1, 2]
+        assert "{tick(9)}" == "9"
+        assert delegate("B", "tick", 10) == 10
+        mock B.tick error "down"
+        assert_fails B.tick(11) matching "down"
+        let h = vote(B.tick, 12, 2)
+        assert B.n() == 10
+    }
+}

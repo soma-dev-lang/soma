@@ -1,0 +1,11 @@
+cell G {
+    state m {
+        initial: a
+        a -> b
+    }
+    on st(id: String) { return get_status(id) ?? "a" }
+    on go(n: Int) { return std.delegate("G", "go", n) }     // unbounded recursion
+}
+cell test T {
+    rules { assert G.go(1) == 1 }
+}

@@ -1,0 +1,10 @@
+cell A {
+    on f(a: Int, b: Int) { return a + b }
+}
+cell test T {
+    on _decor() { return A.f(1) }          // arité fausse : pas vue par `soma check`
+    rules {
+        let x = _decor()
+        assert x == 2
+    }
+}

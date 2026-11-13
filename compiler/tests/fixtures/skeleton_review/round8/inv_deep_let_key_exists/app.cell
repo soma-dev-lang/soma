@@ -1,0 +1,17 @@
+// "The key exists" proof: the key name is re-bound by a `let` in an if-block inside a lambda block.
+cell A {
+    memory { m: Map<String, Int>  invariant size <= 1 }
+    on seed() { require len(m) < 1 else Full
+  m.set("u1", 1) return 1 }
+    on w(x: Int) { let kk = "u1"
+  require m.get(kk) != () else Missing
+  let q = [1].map(z => { if true { let kk = "zz"
+    m.set(kk, x) }
+   0 })
+  return 1 }
+    on probe() { seed()
+ let r = try { w(5) }
+ print(r)
+ return r.kind ?? "ok" }
+}
+cell test T { rules { assert A.probe() == "invariant" } }

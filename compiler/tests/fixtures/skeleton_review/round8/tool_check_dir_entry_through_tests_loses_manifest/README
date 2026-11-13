@@ -1,0 +1,1 @@
+soma check . -> green, exit 0 (app.cell skipped as "a part", checked through tests/t.cell which has no soma.toml beside it: edition 2026) ; soma check app.cell -> error on app.cell:10 (`?? 0 + 1`, edition 2027: parentheses required), exit 1

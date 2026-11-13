@@ -1,0 +1,24 @@
+flesh Calendar {
+    on is_free(room, from, to) {
+        for d in range(from, to) {
+            if nights.get("{room}@{d}") != () { return false }
+        }
+        return true
+    }
+    on hold_nights(booking, room, from, to) {
+        if !is_free(room, from, to) { return false }
+        for d in range(from, to) { nights.set("{room}@{d}", booking) }
+        return true
+    }
+    on free_nights(booking, room, from, to) {
+        let freed = 0
+        for d in range(from, to) {
+            if nights.get("{room}@{d}") == booking {
+                nights.delete("{room}@{d}")
+                freed = freed + 1
+            }
+        }
+        return freed
+    }
+    on held_by(room, day) { return nights.get("{room}@{day}") ?? "" }
+}

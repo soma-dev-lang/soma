@@ -1,0 +1,13 @@
+skeleton agent Boss {
+    cost { tokens: 500 }
+    state job { initial: idle  idle -> done }
+    face {
+        signal ask(q: String) -> String   calls think
+        signal run(q: String) -> String   emits ask
+        signal fin(q: String) -> String   moves idle -> done
+    }
+}
+flesh Boss {
+    on ask(q) { return think("a {q}", map("max_tokens", 100)) }
+    on fin(q) { transition(q, "idle", "done")  return "ok" }
+}

@@ -1,0 +1,1 @@
+soma verify app.cell && soma test app.cell — lignes fautives: `let s = Visit.status(id)` puis `if Visit.close_visit(id) == "done" && s == "open" {` (s est un instantané au run, relu sur l état courant par le produit)

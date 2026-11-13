@@ -1,0 +1,1 @@
+soma check app.cell -> green (A.go is "pure", empty frame) ; SOMA_EFFECT_TRACE=t soma test app.cell -> "A.go call B.count / A.go>B.count write hits", assert B.seen() == 0 fails (left 1) ; faulty line: app.cell:12 `std.count(5, 1, 2, 3, 4)`

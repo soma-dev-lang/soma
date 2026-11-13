@@ -1,0 +1,44 @@
+skeleton Visit {
+    state v {
+        initial: waiting
+        waiting -> open
+        open -> closing
+        closing -> done
+    }
+    face {
+        signal open_visit(id: String) -> String   moves waiting -> open
+        signal wind_down(id: String) -> String    moves closing -> done, open -> closing
+        signal status(id: String) -> String       reads v
+    }
+}
+flesh Visit {
+    on open_visit(id) { transition(id, "waiting", "open")  return "open" }
+    on status(id) { return get_status(id) ?? "waiting" }
+}
+skeleton Desk {
+    state d {
+        initial: none
+        none -> requested
+    }
+    face {
+        signal st(id: String) -> String            reads d
+        signal request_lab(id: String) -> String   moves none -> requested   calls Visit.status, Visit.wind_down
+    }
+}
+flesh Desk {
+    on st(id) { return get_status(id) ?? "none" }
+    on request_lab(id) {
+        require Visit.status(id) == "open" else NotOpen
+        let n = Visit.wind_down(id)
+        transition(id, "none", "requested")
+        return "requested"
+    }
+}
+cell test T {
+    rules {
+        assert Visit.open_visit("k") == "open"
+        assert Desk.request_lab("k") == "requested"
+        assert Desk.st("k") == "requested"
+        assert Visit.status("k") == "done"
+    }
+}

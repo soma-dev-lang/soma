@@ -1,0 +1,1 @@
+soma check app.cell -> « ✓ All checks passed. » pour `on g(x: Int) [deterministic] { return "{1 |> x.rnd}" }` (rnd(x, 1) appelle random()) ; soma test app.cell -> A.g(1) != A.g(1) ; même racine que q1_leak_interpolated_pipe_into_local_field (desugar.rs:318-333 : droite FieldAccess d'un pipe non réécrite, determinism.rs ne lit que FnCall / MethodCall)

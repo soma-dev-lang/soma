@@ -1,0 +1,37 @@
+cell Approval {
+    state appr {
+        initial: pending
+        pending -> signed_off
+        pending -> refused
+    }
+    on sign(id: String) { transition(id, "pending", "signed_off")  return 1 }
+    on refuse(id: String) { transition(id, "pending", "refused")  return 1 }
+    on status(id: String) { return get_status(id) ?? "pending" }
+    on approved(id: String) { return get_status(id) == "signed_off" }
+
+}
+cell Pay {
+
+    state pay {
+        initial: due
+        due -> ready
+        ready -> paid
+        due -> paid
+        due -> void
+ready -> due
+    }
+    on pst(id: String) { return get_status(id) ?? "due" }
+on _run(f: Any, id: String) { transition(id, "due", "ready")  f(1)  if get_status(id) == "ready" { transition(id, "ready", "due") } }
+ on pay(id: String) {
+    require (get_status(id) ?? "due") == "due" else Bad "x"
+    _run(x => transition(id, "ready", "paid"), id)
+    return 1 }
+}
+
+cell test T {
+    rules {
+        assert Pay.pay("k") == 1
+        assert Pay.pst("k") == "paid"
+        assert Approval.status("k") != "signed_off"
+    }
+}

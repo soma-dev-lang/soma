@@ -1,0 +1,19 @@
+skeleton B {
+    memory { secret: Map<String, Int> [persistent] }
+    face {
+        signal mk(id: String) -> Any       writes secret
+        signal runit(id: String) -> Int    calls mk          // may not write `secret`
+        signal peek(id: String) -> Int     reads secret
+    }
+}
+flesh B {
+    on mk(id) { let fs = [x => secret.set(x, 7)]  return fs }     // round 2 L4, one indirection further
+    on runit(id) { let fs = mk(id)  let f = fs[0]  let r = f("k")  return 1 }   // the write happens here
+    on peek(id) { return secret.get(id) ?? 0 }
+}
+cell test T {
+    rules {
+        assert B.runit("k") == 1
+        assert B.peek("k") == 7
+    }
+}

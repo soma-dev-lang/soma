@@ -1,0 +1,10 @@
+cell A {
+    memory { c: Map<String, Int>  invariant c >= 0 }
+    on w(k: String, flag: Bool, p: Int) {
+        require (if flag { 1 } else { 2 }) + 0 >= 0 else X
+        c.set(k, (if flag { 0 - 5 } else { p }) + 0)
+        return 1 }
+    on probe() { let r = try { w("k", true, 3) }
+        return r.kind ?? "ok" }
+}
+cell test T { rules { assert A.probe() == "invariant" } }

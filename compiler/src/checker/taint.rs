@@ -71,7 +71,7 @@ impl<'a> Cx<'a> {
             Expr::FnCall { name, .. } if self.handlers.contains(name) => None,
             Expr::FnCall { args, .. } | Expr::ListLiteral(args) => args.iter().find_map(|a| self.source(&a.node)),
             Expr::MethodCall { target, method, args } => {
-                if matches!(&target.node, Expr::Ident(n) if n.chars().next().map_or(false, |c| c.is_ascii_uppercase())) || self.handlers.contains(method) {
+                if matches!(&target.node, Expr::Ident(n) if super::names::cellish(n)) || self.handlers.contains(method) {
                     return None;
                 }
                 self.source(&target.node).or_else(|| args.iter().find_map(|a| self.source(&a.node)))

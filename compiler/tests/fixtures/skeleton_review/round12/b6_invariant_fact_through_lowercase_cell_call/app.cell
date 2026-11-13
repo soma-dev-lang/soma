@@ -1,0 +1,17 @@
+cell counter {
+    memory { n: Map<String, Int> }
+    on next() { n.set("n", (n.get("n") ?? 0) + 10)  return n.get("n") ?? 0 }
+}
+cell A {
+    memory { c: Map<String, Int>  invariant c <= 10 }
+    on put(k: String) {
+        require counter.next() + 0 <= 10 else Big
+        c.set(k, counter.next() + 0)
+        return 1
+    }
+}
+cell test T {
+    rules {
+        assert A.put("k") == 1
+    }
+}

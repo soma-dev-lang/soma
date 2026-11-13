@@ -1,0 +1,5 @@
+cell A {
+    on rnd(a: Int, b: Int) { return random() }
+    on g(x: Int) [deterministic] { return "{1 |> x.rnd}" }
+}
+cell test T { rules { assert A.g(1) == A.g(1) } }

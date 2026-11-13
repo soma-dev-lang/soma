@@ -1,0 +1,13 @@
+skeleton Stock {
+    memory { items: Map<String, Int> }
+    face {
+        signal level(sku: String) -> Int   reads items
+        signal put(sku: String) -> Int   writes items
+        signal join(a: List<Int>, b: List<Int>) -> List<Int>
+    }
+}
+flesh Stock {
+    on level(sku) { return items.get(sku) ?? 0 + 1 }
+    on put(sku) { items.set(sku, items.get(sku)) return 1 }
+    on join(a, b) { return a + b }
+}

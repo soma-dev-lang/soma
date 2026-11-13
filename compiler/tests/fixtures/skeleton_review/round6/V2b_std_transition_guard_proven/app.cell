@@ -1,0 +1,17 @@
+skeleton G {
+    state m {
+        initial: a
+        a -> b { guard { amount > 0 } }
+    }
+    face {
+        signal ok(id: String, amount: Int) -> Int    moves a -> b
+        signal bad(id: String, amount: Int) -> Int   moves * -> *
+    }
+}
+flesh G {
+    on ok(id, amount) { require amount > 0 else Bad "x"  transition(id, "a", "b")  return 1 }
+    on bad(id, amount) { std.transition(id, "a", "b")  return 1 }
+}
+cell test T {
+    rules { assert (try { G.bad("k", 0 - 5) }).kind == "guard_failed" }
+}

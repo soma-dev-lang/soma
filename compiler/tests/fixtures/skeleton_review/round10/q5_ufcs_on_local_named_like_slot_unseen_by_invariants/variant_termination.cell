@@ -1,0 +1,14 @@
+cell A {
+    memory { tmp: Map<String, Int> }
+    state m { initial: a
+       a -> b }
+    on st(id: String) { return get_status(id) ?? "a" }
+    on rec(n: Int) { let tmp = n
+        return tmp.rec() }
+    on nap(n: Int) {   return 1 }
+    on slow() { let t = now_ms()
+        let tmp = 1
+        let z = tmp.nap()
+        return now_ms() - t }
+}
+cell test T { rules {   assert A.rec(1) == 1 } }

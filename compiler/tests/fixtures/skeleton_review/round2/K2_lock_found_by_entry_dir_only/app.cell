@@ -1,0 +1,8 @@
+use lib::pay
+flesh Pay {
+    on pay(id) { transition(id, "proposed", "paid")  return "paid" }
+    on reject(id) { transition(id, "proposed", "rejected")  return "no" }
+    on undo(id) { transition(id, "rejected", "paid")  return "undone" }
+    on st(id) { return get_status(id) ?? "" }
+}
+cell test T { rules { assert Pay.reject("a") == "no"  assert Pay.undo("a") == "undone"  assert Pay.st("a") == "paid" } }

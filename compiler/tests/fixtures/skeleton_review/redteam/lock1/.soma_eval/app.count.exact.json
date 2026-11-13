@@ -1,0 +1,19 @@
+{
+  "ok": true,
+  "handler": "count",
+  "dataset": "case.jsonl",
+  "grade": "exact",
+  "cases": [
+    {
+      "name": "case 1",
+      "passed": true,
+      "detail": ""
+    }
+  ],
+  "total": 1,
+  "passed": 1,
+  "pass_rate": 1.0,
+  "threshold": 1.0,
+  "previous_pass_rate": 1.0,
+  "regressions": []
+}

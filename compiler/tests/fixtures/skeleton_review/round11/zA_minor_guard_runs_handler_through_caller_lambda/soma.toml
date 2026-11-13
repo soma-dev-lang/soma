@@ -1,0 +1,6 @@
+[package]
+name = "p"
+edition = "2027"
+
+[verify.before."Desk.requested"]
+while = ["Visit.open"]

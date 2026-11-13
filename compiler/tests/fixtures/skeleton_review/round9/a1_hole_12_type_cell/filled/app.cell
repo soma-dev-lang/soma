@@ -1,0 +1,60 @@
+skeleton Visit {
+    state v {
+        initial: waiting
+        waiting -> open
+        open -> done
+        done -> open
+    }
+    face {
+        signal open_visit(id: String) -> String     moves waiting -> open
+        signal close_visit(id: String) -> String    moves open -> done
+        signal reopen(id: String) -> String         moves done -> open
+        signal status(id: String) -> String         reads v
+
+    }
+}
+flesh Visit {
+    on open_visit(id) { transition(id, "waiting", "open")  return "open" }
+    on close_visit(id) { transition(id, "open", "done")  return "done" }
+    on reopen(id) { transition(id, "done", "open")  return "open" }
+    on status(id) { return get_status(id) ?? "waiting" }
+
+}
+skeleton Desk {
+    state d {
+        initial: none
+        none -> requested
+    }
+    face {
+        signal go(id: String) -> Int   moves none -> requested   calls Visit.status, Aud.note
+        signal st(id: String) -> String            reads d
+    }
+}
+flesh Desk {
+    on st(id) { return get_status(id) ?? "none" }
+    on go(id) { require Visit.status(id) == "open" else N
+ let n = Aud.note(id)
+ transition(id, "none", "requested")
+ return 1 }
+}
+skeleton Aud {
+
+    face {
+        signal note(id: String) -> Int   
+
+    }
+}
+cell type Aux { on xclose(id: String) { return Visit.close_visit(id) } }
+flesh Aud {
+    on note(id) { let v = xclose(id)
+ return 1 }
+
+}
+cell test T {
+    rules {
+        let a = Visit.open_visit("k")
+        let r = try { Desk.go("k") }
+        assert Desk.st("k") == "requested"
+        assert Visit.status("k") != "open"
+    }
+}

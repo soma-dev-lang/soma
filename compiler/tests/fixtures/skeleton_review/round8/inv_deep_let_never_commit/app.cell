@@ -1,0 +1,10 @@
+// Same deep `let` shadowing, other ✓: "can never commit … always rejected" — the write commits 6.
+cell A {
+    memory { c: Map<String, Int>  invariant c >= 0 }
+    on w(k: String, x: Float, y: Int) { require x + 1 <= 0 - 1 else B
+ let q = [1].map(z => { if true { let x = y
+    let r = try { c.set(k, x + 1) } }
+   0 })
+ return c.get(k) ?? 0 }
+}
+cell test T { rules { assert A.w("k", 0.0 - 5.0, 5) == 6 } }

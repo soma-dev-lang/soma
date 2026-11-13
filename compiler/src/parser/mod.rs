@@ -87,6 +87,26 @@ fn display_token(token: &Token) -> String {
 }
 
 /// Render a TypeExpr back to source form (for fix-it messages).
+/// The handler a skeleton signal has until a flesh fills it: it fails,
+/// naming the signal. The property `hole` is how every tool tells it from
+/// a body someone wrote.
+fn hole_handler(cell: &str, signal: &str, params: Vec<Param>, span: Span) -> OnSection {
+    let lit = |t: String| Spanned::new(Expr::Literal(Literal::String(t)), span);
+    let call = Expr::FnCall {
+        name: "fail".to_string(),
+        args: vec![
+            lit("not_implemented".to_string()),
+            lit(format!("{}.{} is a hole of the skeleton: no flesh gives it a body yet", cell, signal)),
+        ],
+    };
+    OnSection {
+        signal_name: signal.to_string(),
+        params,
+        body: vec![Spanned::new(Statement::Return { value: Spanned::new(call, span) }, span)],
+        properties: vec![HOLE.to_string()],
+    }
+}
+
 fn type_expr_source(ty: &TypeExpr) -> String {
     match ty {
         TypeExpr::Simple(name) => name.clone(),
@@ -200,6 +220,14 @@ fn reserved_error(t: &Token, span: Span) -> Option<ParseError> {
         },
         span,
     })
+}
+
+thread_local! {
+    /// The constants of the skeletons parsed so far, by skeleton name: a
+    /// `flesh Name` reads them (`if amount > LIMIT`) — in the same file, in
+    /// any order, or in a file the skeleton's file imports.
+    static SKELETON_CONSTS: std::cell::RefCell<std::collections::HashMap<String, std::collections::HashMap<String, Literal>>> =
+        std::cell::RefCell::new(std::collections::HashMap::new());
 }
 
 impl Parser {
@@ -423,7 +451,41 @@ impl Parser {
         Ok(out)
     }
 
+    /// The constants of each `skeleton` of this file, read ahead: a flesh
+    /// written above its skeleton uses them too.
+    fn prescan_skeleton_consts(&mut self) {
+        let saved = (self.pos, std::mem::take(&mut self.consts));
+        let mut depth = 0i32;
+        let mut i = 0usize;
+        while i < self.tokens.len() {
+            match &self.tokens[i].token {
+                Token::LBrace => depth += 1,
+                Token::RBrace => depth -= 1,
+                Token::Ident(w) if depth == 0 && w == "skeleton" => {
+                    let at = if matches!(self.tokens.get(i + 1).map(|t| &t.token), Some(Token::AgentKw)) { i + 2 } else { i + 1 };
+                    let name = match self.tokens.get(at).map(|t| &t.token) { Some(Token::Ident(n) | Token::TypeIdent(n)) => Some(n.clone()), _ => None };
+                    // the first `{` after the name opens the body
+                    let open = (at..self.tokens.len()).find(|j| matches!(self.tokens[*j].token, Token::LBrace | Token::Eof));
+                    if let (Some(name), Some(open)) = (name, open) {
+                        if matches!(self.tokens[open].token, Token::LBrace) {
+                            self.pos = open + 1;
+                            self.consts.clear();
+                            self.prescan_consts();
+                            let found = std::mem::take(&mut self.consts);
+                            SKELETON_CONSTS.with(|m| { m.borrow_mut().insert(name, found); });
+                        }
+                    }
+                }
+                _ => {}
+            }
+            i += 1;
+        }
+        self.pos = saved.0;
+        self.consts = saved.1;
+    }
+
     pub fn parse_program(&mut self) -> Result<Program, ParseError> {
+        self.prescan_skeleton_consts();
         let mut imports = Vec::new();
         let mut cells = Vec::new();
 
@@ -502,6 +564,8 @@ impl Parser {
             let start = self.pos;
             let r = if self.check(&Token::Protocol) {
                 self.parse_protocol_def().map(|p| protocols.push(p))
+            } else if self.at_word("flesh") {
+                self.parse_flesh_def().map(|c| cells.push(c))
             } else {
                 self.parse_cell_def().map(|c| cells.push(c))
             };
@@ -509,14 +573,72 @@ impl Parser {
                 Ok(()) => {}
                 Err(e) if self.can_recover() => {
                     self.recovered.push((e, false));
-                    self.resync(0, start, |t| matches!(t.token, Token::Cell | Token::Protocol));
+                    self.resync(0, start, |t| matches!(t.token, Token::Cell | Token::Protocol)
+                        || matches!(&t.token, Token::Ident(w) if w == "skeleton" || w == "flesh"));
                     // the `}` of the cell that failed is not an item start
                     while self.check(&Token::RBrace) { self.advance(); }
                 }
                 Err(e) => return Err(e),
             }
         }
-        Ok(Program { imports, cells, protocols })
+        let mut program = Program { imports, cells, protocols };
+        // a flesh in the same file as its skeleton (one in another file is
+        // attached when the import brings it in)
+        crate::checker::flesh::attach(&mut program);
+        Ok(program)
+    }
+
+    /// The next token is the contextual keyword `word` (an identifier
+    /// everywhere else: `skeleton`, `flesh`, `reads`, `writes`, …).
+    fn at_word(&self, word: &str) -> bool {
+        matches!(self.peek(), Token::Ident(w) if w == word)
+    }
+
+    /// `flesh Name { on f(a, b) { … } … }`: handler bodies for `skeleton
+    /// Name`, and nothing else.
+    fn parse_flesh_def(&mut self) -> Result<Spanned<CellDef>, ParseError> {
+        let start = self.peek_span();
+        self.advance(); // flesh
+        let (name, _) = self.expect_ident()?;
+        self.expect(Token::LBrace)?;
+        let mut sections = Vec::new();
+        let section_depth = self.cur_depth();
+        // the skeleton's constants are the flesh's
+        let outer_consts = std::mem::replace(&mut self.consts,
+            SKELETON_CONSTS.with(|m| m.borrow().get(&name).cloned().unwrap_or_default()));
+        let result = self.parse_flesh_sections(&name, section_depth, &mut sections);
+        self.consts = outer_consts;
+        result?;
+        let end = self.peek_span();
+        self.expect(Token::RBrace)?;
+        Ok(Spanned::new(
+            CellDef { kind: CellKind::Flesh, name, type_params: vec![], sections, agent_model: None, agent_skill: None, skeleton: false },
+            start.merge(end),
+        ))
+    }
+
+    fn parse_flesh_sections(&mut self, name: &str, section_depth: u32, sections: &mut Vec<Spanned<Section>>) -> Result<(), ParseError> {
+        while !self.check(&Token::RBrace) && !self.is_at_end() {
+            let item_start = self.pos;
+            let sec_start = self.peek_span();
+            let parsed = if self.check(&Token::On) {
+                self.parse_on_section_in(true).map(|on| Spanned::new(Section::OnSignal(on), sec_start.merge(self.prev_span())))
+            } else {
+                Err(ParseError::FixIt {
+                    message: format!("a flesh holds handler bodies only (`on name(…) {{ … }}`) — memory, state and face are the structure: they belong in `skeleton {}`", name),
+                    span: self.peek_span(),
+                })
+            };
+            match parsed {
+                Ok(sec) => sections.push(sec),
+                Err(e) if self.can_recover() => {
+                    self.recovered.push((e, false));
+                    self.resync(section_depth, item_start, |t| matches!(t.token, Token::On));
+                }
+                Err(e) => return Err(e),
+            }
+        }
+        Ok(())
     }
 
     /// V1.6: protocol Foo {
@@ -746,7 +868,20 @@ impl Parser {
 
     fn parse_cell_def(&mut self) -> Result<Spanned<CellDef>, ParseError> {
         let start = self.peek_span();
-        self.expect(Token::Cell)?;
+        // `skeleton Name { … }` / `skeleton agent Name { … }`: a cell whose
+        // handler bodies live in `flesh Name { … }`
+        let skeleton = self.at_word("skeleton");
+        if skeleton {
+            self.advance();
+            if !matches!(self.peek(), Token::AgentKw | Token::Ident(_) | Token::TypeIdent(_)) {
+                return Err(ParseError::FixIt {
+                    message: "a skeleton is `skeleton Name { … }` or `skeleton agent Name { … }` — the other kinds of cell (type, test, property…) have no flesh".to_string(),
+                    span: self.peek_span(),
+                });
+            }
+        } else {
+            self.expect(Token::Cell)?;
+        }
 
         // Check for meta-cell kind: cell property, cell type, cell checker
         let (kind, name, type_params) = match self.peek() {
@@ -848,7 +983,14 @@ impl Parser {
         while !self.check(&Token::RBrace) && !self.is_at_end() {
             let item_start = self.pos;
             let is_const = matches!(self.peek(), Token::Ident(w) if w == "const");
-            let parsed = if is_const { self.parse_const().map(|_| None) } else { self.parse_section().map(Some) };
+            let parsed = if is_const { self.parse_const().map(|_| None) }
+                else if skeleton && self.check(&Token::On) {
+                    Err(ParseError::FixIt {
+                        message: format!("a skeleton has no handler bodies — declare the signal in `face {{ }}` with its frame, and put the body in `flesh {} {{ on … {{ … }} }}`", name),
+                        span: self.peek_span(),
+                    })
+                }
+                else { self.parse_section().map(Some) };
             match parsed {
                 Ok(Some(sec)) => sections.push(sec),
                 Ok(None) => {}
@@ -889,6 +1031,26 @@ impl Parser {
         }
         sections.extend(bound);
 
+        // a skeleton's frames are closed (no clause: the signal may touch
+        // nothing), and every signal answers: the ones no flesh fills are
+        // holes — handlers that fail by name until a `flesh` replaces them
+        if skeleton {
+            let mut holes: Vec<Spanned<Section>> = Vec::new();
+            for section in sections.iter_mut() {
+                let Section::Face(face) = &mut section.node else { continue };
+                for decl in face.declarations.iter_mut() {
+                    let (sig_name, params) = match &mut decl.node {
+                        FaceDecl::Signal(sig) => { sig.frame.get_or_insert_with(FrameDecl::default); (sig.name.clone(), sig.params.clone()) }
+                        FaceDecl::Tool(tool) if tool.binding.is_none() => { tool.frame.get_or_insert_with(FrameDecl::default); (tool.name.clone(), tool.params.clone()) }
+                        _ => continue,
+                    };
+                    if holes.iter().any(|h| matches!(&h.node, Section::OnSignal(on) if on.signal_name == sig_name)) { continue; }
+                    holes.push(Spanned::new(Section::OnSignal(hole_handler(&name, &sig_name, params, decl.span)), decl.span));
+                }
+            }
+            sections.extend(holes);
+        }
+
         Ok(Spanned::new(
             CellDef {
                 kind,
@@ -897,6 +1059,7 @@ impl Parser {
                 sections,
                 agent_model,
                 agent_skill,
+                skeleton,
             },
             start.merge(end),
         ))
@@ -1091,6 +1254,8 @@ impl Parser {
         // `ensures result >= 0` (any number of each, in any order)
         let mut requires = Vec::new();
         let mut ensures = Vec::new();
+        // the frame clauses (contextual keywords, any order)
+        let mut frame: Option<FrameDecl> = None;
         loop {
             if self.check(&Token::Requires) {
                 self.advance();
@@ -1098,6 +1263,7 @@ impl Parser {
             } else if matches!(self.peek(), Token::Ident(s) if s == "ensures") {
                 self.advance();
                 ensures.push(self.parse_expr()?);
+            } else if self.parse_frame_clause(&mut frame)? {
             } else {
                 break;
             }
@@ -1109,7 +1275,76 @@ impl Parser {
             return_type,
             requires,
             ensures,
+            frame,
         })
+    }
+
+    /// One clause of a frame, if one starts here: `reads a, b` / `writes a`
+    /// / `emits s` / `calls f, Cell.g` / `moves x -> y, …`.
+    fn parse_frame_clause(&mut self, frame: &mut Option<FrameDecl>) -> Result<bool, ParseError> {
+        if self.at_word("reads") || self.at_word("writes") || self.at_word("emits") {
+            let which = match self.peek() { Token::Ident(w) => w.clone(), _ => unreachable!() };
+            self.advance();
+            let f = frame.get_or_insert_with(FrameDecl::default);
+            loop {
+                // `reads Cell.machine`: another cell's machine
+                let (mut n, _) = self.expect_any_name()?;
+                if self.check(&Token::Dot) {
+                    self.advance();
+                    n = format!("{}.{}", n, self.expect_any_name()?.0);
+                }
+                match which.as_str() { "reads" => f.reads.push(n), "writes" => f.writes.push(n), _ => f.emits.push(n) }
+                if self.check(&Token::Comma) { self.advance(); } else { break; }
+            }
+            Ok(true)
+        } else if self.at_word("calls") {
+            self.advance();
+            let f = frame.get_or_insert_with(FrameDecl::default);
+            loop {
+                let (mut n, _) = self.expect_any_name()?;
+                if self.check(&Token::Dot) {
+                    self.advance();
+                    let (h, _) = self.expect_any_name()?;
+                    n = format!("{}.{}", n, h);
+                }
+                f.calls.push(n);
+                if self.check(&Token::Comma) { self.advance(); } else { break; }
+            }
+            Ok(true)
+        } else if self.at_word("moves") {
+            self.advance();
+            let f = frame.get_or_insert_with(FrameDecl::default);
+            // `moves a -> b` (the cell's machine), `moves m: a -> b`,
+            // `moves Cell.m: a -> b`
+            let mut machine = String::new();
+            if matches!(self.peek_at(1), Token::Colon) {
+                machine = self.expect_any_name()?.0;
+                self.advance();
+            } else if matches!(self.peek_at(1), Token::Dot) && matches!(self.peek_at(3), Token::Colon) {
+                let (c, _) = self.expect_any_name()?;
+                self.advance();
+                let (m, _) = self.expect_any_name()?;
+                self.advance();
+                machine = format!("{}.{}", c, m);
+            }
+            loop {
+                let from = if self.check(&Token::Star) { self.advance(); "*".to_string() } else { self.expect_any_name()?.0 };
+                if !self.check(&Token::Arrow) {
+                    return Err(ParseError::FixIt {
+                        message: format!("`moves` lists edges of the state machine: `moves {} -> next_state`", from),
+                        span: self.peek_span(),
+                    });
+                }
+                self.advance();
+                // `moves * -> *`: any edge (a target computed at run time)
+                let to = if self.check(&Token::Star) { self.advance(); "*".to_string() } else { self.expect_any_name()?.0 };
+                f.moves.push((machine.clone(), from, to));
+                if self.check(&Token::Comma) { self.advance(); } else { break; }
+            }
+            Ok(true)
+        } else {
+            Ok(false)
+        }
     }
 
     fn parse_tool_decl(&mut self) -> Result<ToolDecl, ParseError> {
@@ -1193,6 +1428,9 @@ impl Parser {
             None
         };
 
+        let mut frame: Option<FrameDecl> = None;
+        while self.parse_frame_clause(&mut frame)? {}
+
         Ok(ToolDecl {
             name,
             description,
@@ -1200,6 +1438,7 @@ impl Parser {
             return_type,
             capabilities,
             binding,
+            frame,
         })
     }
 
@@ -2247,10 +2486,33 @@ impl Parser {
     // ── On (signal handler) ──────────────────────────────────────────
 
     fn parse_on_section(&mut self) -> Result<OnSection, ParseError> {
+        self.parse_on_section_in(false)
+    }
+
+    /// A flesh parameter: `id` (the skeleton's signal gives the type) or
+    /// `id: String`.
+    fn parse_flesh_params(&mut self) -> Result<Vec<Param>, ParseError> {
+        let mut params = Vec::new();
+        while !self.check(&Token::RParen) {
+            let (name, name_span) = self.expect_ident()?;
+            self.refuse_const(&name, name_span, "a parameter")?;
+            let ty = if self.check(&Token::Colon) {
+                self.advance();
+                self.parse_type_expr()?
+            } else {
+                Spanned::new(TypeExpr::Simple(FLESH_PARAM_TYPE.to_string()), name_span)
+            };
+            params.push(Param { name, ty });
+            if self.check(&Token::Comma) { self.advance(); } else { break; }
+        }
+        Ok(params)
+    }
+
+    fn parse_on_section_in(&mut self, flesh: bool) -> Result<OnSection, ParseError> {
         self.expect(Token::On)?;
         let (signal_name, _) = self.expect_ident()?;
         self.expect(Token::LParen)?;
-        let params = self.parse_param_list()?;
+        let params = if flesh { self.parse_flesh_params()? } else { self.parse_param_list()? };
         self.expect(Token::RParen)?;
 
         // Parse optional handler properties: [native], [native, pure], etc.

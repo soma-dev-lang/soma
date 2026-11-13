@@ -1,0 +1,15 @@
+skeleton Pay {
+    memory { book: Map<String, Int> [persistent] }
+    state flow {
+        initial: proposed
+        proposed -> paid
+        proposed -> rejected
+        rejected -> paid
+    }
+    face {
+        signal pay(id: String) -> String  moves proposed -> paid
+        signal reject(id: String) -> String  moves proposed -> rejected
+        signal undo(id: String) -> String  moves rejected -> paid
+        signal st(id: String) -> String reads flow
+    }
+}

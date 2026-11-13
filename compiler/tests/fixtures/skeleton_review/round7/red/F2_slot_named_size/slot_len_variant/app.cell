@@ -1,0 +1,20 @@
+cell A {
+    memory {
+        c: Map<String, Int>
+        _slot_len: Map<String, Int>
+        invariant c >= 0
+        invariant _slot_len >= 0
+    }
+    on w(k: String, x: Int) { _slot_len.set(k, x)
+ c.set(k, _slot_len.get(k) ?? 0) return 1 }
+    on probe() {
+        let r = try { w("k", 0 - 5) }
+        print(r.error)
+        return r.kind ?? "ok"
+    }
+}
+cell test T {
+    rules {
+        assert A.probe() == "invariant"
+    }
+}

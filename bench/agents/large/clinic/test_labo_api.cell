@@ -1,0 +1,82 @@
+use app
+
+cell test LaboEtApi {
+    on _visite_ouverte(id: String, heure: String) {
+        let cle = Agenda.ouvrir_creneau("dr1", "2026-12-01", heure)
+        let a = Agenda.demander(id, "p1", cle)
+        let b = Agenda.confirmer(id)
+        let c = Agenda.enregistrer_arrivee(id)
+        return Consultations.ouvrir(id, "bilan")
+    }
+    rules {
+        mock now 1800000000
+        // tout passe par l'API quand une route existe
+        assert request("POST", "/patients", map("id", "p1", "nom", "Ada Martin", "naissance", "1980-04-02")).nom == "Ada Martin"
+        assert request("POST", "/patients", map("id", "p1", "nom", "Bis", "naissance", "1980-04-02"))._status == 400
+        assert request("GET", "/patients/p1", map()).naissance == "1980-04-02"
+        assert request("GET", "/patients/zz", map())._status == 404
+        assert request("GET", "/nulle-part", map())._status == 404
+        assert request("GET", "/sante", map()) == map("ok", true, "patients", 1, "audit", 1)
+        let d = Praticiens.enregistrer("dr1", "Dr Roux", "generaliste")
+        let cle = Agenda.ouvrir_creneau("dr1", "2026-12-03", "08:00")
+        assert request("POST", "/rdv", map("id", "v9", "patient", "p1", "creneau", cle)).creneau == cle
+        assert request("POST", "/rdv/confirmer/v9", map()).etat == "confirme"
+        assert request("POST", "/rdv/confirmer/v9", map())._status == 409
+        assert request("POST", "/rdv/annuler/v9", map()).etat == "annule"
+        assert request("GET", "/visites/v9", map()).ordonnance == "aucune"
+        assert request("GET", "/visites/zz", map())._status == 404
+        assert request("POST", "/paiements", map("id", "x", "facture", "v9", "montant", 10, "moyen", "carte"))._status == 404
+
+        // laboratoire
+        assert _visite_ouverte("v1", "09:00").motif == "bilan"
+        assert_fails Laboratoire.demander_analyse("a0", "v9", "crp") matching "ConsultationNonOuverte"
+        assert Laboratoire.demander_analyse("a1", "v1", "glycemie").type == "glycemie"
+        assert Laboratoire.demander_analyse("a2", "v1", "crp").visite == "v1"
+        assert Laboratoire.analyses_de("v1") == ["a1", "a2"]
+        assert Laboratoire.statut_analyse("a1") == "demandee"
+        assert_fails Laboratoire.lancer("a1") matching "invalid_transition"
+        assert Laboratoire.prelever("a1") == "prelevee"
+        assert Laboratoire.lancer("a1") == "en_analyse"
+        assert Laboratoire.saisir_resultat("a1", 9500, "g/L") == "resultat_saisi"
+        assert_fails Laboratoire.resultat("a1") matching "ResultatNonValide"
+        assert Laboratoire.rejeter_resultat("a1") == "en_analyse"
+        assert Laboratoire.saisir_resultat("a1", 950, "mg/L") == "resultat_saisi"
+        assert_fails Laboratoire.valider_resultat("a1", "inconnu") matching "PraticienInconnu"
+        assert Laboratoire.valider_resultat("a1", "dr1") == "validee"
+        assert Laboratoire.resultat("a1") == map("valeur", 950, "unite", "mg/L", "valide_par", "dr1")
+        assert Notifications.notifications_de("p1") == ["rdv v9: demande", "rdv v9: confirme", "rdv v9: annule", "rdv v1: demande", "rdv v1: confirme", "resultat glycemie disponible (a1)"]
+        assert Laboratoire.annuler_analyse("a2") == "annulee"
+        assert_fails Laboratoire.prelever("a2") matching "invalid_transition"
+
+        // atomicité : une délivrance qui manque de stock sur la 2e ligne n'écrit rien
+        let r1 = Pharmacie.referencer("amox", 0)
+        let r2 = Pharmacie.referencer("doli", 0)
+        let l1 = Pharmacie.recevoir_lot("l1", "amox", 5, "2027-01-01")
+        let o = Ordonnances.rediger("v1", "amox", 5)
+        assert Ordonnances.ajouter_ligne("v1", "doli", 2) == 2
+        assert Ordonnances.signer("v1", "dr1") == "signee"
+        let dg = Consultations.poser_diagnostic("v1", "diabète")
+        assert Consultations.coter_acte("v1", 2000) == 2000
+        assert Consultations.terminer("v1") == "terminee"
+        // changement (c) : la facture doit être payée avant la délivrance
+        assert_fails Ordonnances.delivrer("v1") matching "FactureNonPayee"
+        assert Facturation.preparer("v1").patient == 2000
+        assert Facturation.emettre("v1") == "emise"
+        assert_fails Ordonnances.delivrer("v1") matching "FactureNonPayee"
+        assert request("POST", "/paiements", map("id", "pay1", "facture", "v1", "montant", 2000, "moyen", "carte")).reste_du == 0
+        assert_fails Ordonnances.delivrer("v1") matching "StockInsuffisant"
+        assert Pharmacie.niveau("amox") == 5
+        assert Ordonnances.statut_ordonnance("v1") == "signee"
+        let l2 = Pharmacie.recevoir_lot("l2", "doli", 2, "2027-01-01")
+        assert Ordonnances.delivrer("v1") == "delivree"
+        assert Pharmacie.niveau("amox") == 0
+        // consultation sans acte : rien à facturer ; abandon
+        assert _visite_ouverte("v2", "10:00").patient == "p1"
+        assert Consultations.coter_acte("v2", 2500) == 2500
+        assert Consultations.abandonner("v2") == "abandonnee"
+        assert Consultations.total_actes("v2") == 0
+        assert_fails Facturation.preparer("v2") matching "RienAFacturer"
+        assert_fails Ordonnances.rediger("zz", "amox", 1) matching "ConsultationInconnue"
+        assert_fails Ordonnances.annuler_ordonnance("v1") matching "invalid_transition"
+    }
+}

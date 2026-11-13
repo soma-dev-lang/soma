@@ -1,0 +1,1 @@
+soma check app.cell (vert) && SOMA_EFFECT_TRACE=t soma test app.cell — ligne fautive: app.cell:18 `return bump(1)` sous `calls B.bump` ; au run c est kk.bump (cell type déclarée avant) qui tourne: trace "A.go call kk.bump > Other.poke write o", A.go() != 7 ; même cause que b_bare_call_reaches_cell_type_handler

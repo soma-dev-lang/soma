@@ -1,0 +1,1 @@
+soma verify app.cell -> "✓ count: requires v > 0 — proven at 1 call site (ok)" ; soma test app.cell -> `std.count(0 - 5, 1, 2, 3, 4)` depuis la cellule A lance B.count et leve kind requires (meme racine que FOUND/tool_std_prefix_runs_other_cell_handler : interpreter/mod.rs:5807-5953 ; site non compte par invariants.rs collect_calls_at)

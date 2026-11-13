@@ -1,0 +1,7 @@
+use sub::m
+cell Rogue {
+    on kick(id: String) { transition(id, "b", "c")  return 1 }
+}
+cell test T { rules { assert M.ab("k") == 1
+ assert Rogue.kick("k") == 1
+ assert M.st("k") == "c" } }

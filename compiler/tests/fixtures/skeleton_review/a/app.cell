@@ -1,0 +1,42 @@
+skeleton Bank {
+    memory {
+        acct: Map<String, Int> [persistent, consistent]
+        log: Map<String, String> [persistent, consistent]
+    }
+    state flow {
+        initial: open
+        open -> closed
+        closed -> archived
+        open -> archived
+    }
+    face {
+        signal peek() -> Int  reads acct
+        signal alias(x: Int) -> Int  reads acct
+        signal pass(x: Int) -> Int  reads acct
+        signal interp(x: Int) -> String
+        signal viatry(x: Int) -> Int
+        signal src(id: String) -> String  moves open -> closed
+        signal shadow(x: Int) -> Int
+        signal other(x: Int) -> Int
+        signal todo(x: Int) -> Int  writes log
+    }
+}
+skeleton Side {
+    memory { s: Map<String, Int> [persistent, consistent] }
+    face { signal bump() -> Int  writes s }
+}
+flesh Side { on bump() { s.set("n", 1) return 1 } }
+flesh Bank {
+    on peek() { return acct.get("z") ?? 0 }
+    on alias(x) { let m = acct  m.set("z", 41)  return x }
+    on pass(x) { return _w(acct, x) }
+    on _w(m: Map, x: Int) { m.set("z", 42)  return x }
+}
+cell test T {
+    rules {
+        let a = Bank.alias(1)
+        assert Bank.peek() == 0
+        let b = Bank.pass(1)
+        assert Bank.peek() == 0
+    }
+}

@@ -1,0 +1,3 @@
+use lib::stock
+cell Other { on f() { return Stock.level("a") } }
+cell test A { rules { assert Other.f() == 0 } }

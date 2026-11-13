@@ -1,0 +1,1 @@
+soma check app.cell (vert) ; soma verify app.cell -> « ✓ entering Desk.requested while Visit.open » ; soma test app.cell (vert) montre le contraire — handler [task] : `let z = "{transition(id, \"none\", \"requested\")}"` après un await ; transition_sites (product.rs:1108-1156) n'ouvre pas les chaînes : le pas séparé de la tâche n'est pas exploré

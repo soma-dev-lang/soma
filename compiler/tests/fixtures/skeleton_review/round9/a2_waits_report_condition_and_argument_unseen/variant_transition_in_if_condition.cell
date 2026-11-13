@@ -1,0 +1,26 @@
+cell A {
+    memory { paid: Map<String, Int>  acc: Map<String, Map> }
+    state m {
+        initial: x
+        x -> a
+        x -> b
+        a -> done
+        b -> done
+    }
+    on seed(k: String) { acc.set(k, map("cents", 1))  return 1 }
+    on refund(k: String) [task] {
+        if to_string(transition(k, "x", "b")) != "zz" {
+            let ok = await approve("refund {k}")
+        }
+        return 1
+    }
+    on sweep(k: String) { transition(k, "a", "done") return 1 }
+    on sweep2(k: String) { transition(k, "b", "done") return 1 }
+    on read(k: String) { return paid.get(k) ?? 0 }
+    on cents(k: String) { return acc.get(k).cents }
+    on st(k: String) { return get_status(k) ?? "x" }
+}
+cell test T { rules {
+ assert A.refund("k").waiting != ()
+ assert A.st("k") == "b"
+ } }

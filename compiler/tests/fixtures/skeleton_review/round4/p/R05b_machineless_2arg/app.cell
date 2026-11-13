@@ -1,0 +1,31 @@
+skeleton Q {
+    state fl {
+        initial: a
+        a -> b
+        a -> x
+        b -> x
+    }
+    face {
+        signal st(id: String) -> String   reads fl
+        signal ab(id: String) -> Int      moves a -> b
+        signal mv(id: String) -> Int      moves a -> b  calls ab, W.go
+    }
+}
+skeleton W {
+    face { signal go(id: String) -> Int   moves Q.fl: b -> x }
+}
+flesh W {
+    on go(id) { transition(id, "x")  return 1 }
+}
+flesh Q {
+    on st(id) { return get_status(id) ?? "a" }
+    on ab(id) { transition(id, "a", "b")  return 1 }
+    on mv(id) {
+        return W.go(id)
+    }
+}
+cell test T {
+    rules {
+        assert Q.mv("k") == 1
+    }
+}

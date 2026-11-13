@@ -1,0 +1,24 @@
+cell type Flow { variants { Proposed  Paid  Rejected } }
+
+skeleton Pay {
+    const LIMIT = 500
+    memory { book: Map<String, Int> [persistent]  invariant book <= LIMIT }
+    state flow: Flow {
+        initial: Proposed
+        Proposed -> Paid { guard { amount <= LIMIT } }
+        Proposed -> Rejected
+    }
+    face {
+        signal pay(id: String, amount: Int) -> String  writes book  moves Proposed -> Paid
+        signal reject(id: String) -> String  moves Proposed -> Rejected
+        signal st(id: String) -> String reads flow
+    }
+}
+
+flesh Pay {
+    on pay(id, amount) { book.set(id, amount)  transition(id, Proposed, Paid)  return "paid" }
+    on reject(id) { transition(id, Proposed, Rejected)  return "no" }
+    on st(id) { return to_string(get_status(id)) }
+}
+
+cell test T { rules { assert Pay.pay("a", 10) == "paid" } }

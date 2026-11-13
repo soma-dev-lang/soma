@@ -1,0 +1,7 @@
+[package]
+name = "v"
+edition = "2027"
+[verify]
+cells = ["A"]
+[verify.before.c]
+requires = ["a"]

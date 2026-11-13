@@ -1,0 +1,17 @@
+cell A {
+    state m { initial: a
+        a -> b { guard { amount > 0 } }
+        b -> c }
+    on go(id: String, amount: Int) { require amount > 0 else Bad
+        transition(id, "a", "b")
+        return 1 }
+    on st(id: String) { return get_status(id) ?? "a" }
+    on via(id: String) { emit mv(id)
+        return 1 }
+    on probe(id: String) { let r = try { via(id) }
+        return r.kind ?? "ok" }
+}
+cell type Aux { on mv(id: String) { let amount = 0 - 1
+        transition(id, "a", "b")
+        return 1 } }
+cell test T { rules { assert A.probe("k") == "guard_failed" } }

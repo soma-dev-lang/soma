@@ -1,0 +1,11 @@
+cell A {
+    memory { xs: List<Int>  invariant key < 1 }
+    on w(n: Int) { let key = 0
+        require key < 1 else Full
+        xs.push(n)
+        return 1 }
+    on probe() { w(1)
+        let r = try { w(2) }
+        return r.kind ?? "ok" }
+}
+cell test T { rules { assert A.probe() == "invariant" } }

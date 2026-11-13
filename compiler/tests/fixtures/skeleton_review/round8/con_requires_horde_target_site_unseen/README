@@ -1,0 +1,1 @@
+soma verify app.cell -> "✓ f: requires n > 0 — proven at 1 call site (ok)" ; soma test app.cell: horde(A.f, [0 - 5], ...) runs f(-5), on_error receives kind requires. Faulty line: let h = horde(A.f, [0 - 5], map(...))

@@ -1,0 +1,1 @@
+soma check app.cell (vert, avertit même "no signal may write the slot Log") && SOMA_EFFECT_TRACE=t soma test app.cell — ligne fautive: app.cell:14 `Log.set("k", 1)` sous `reads Log  calls Log.set` ; trace "A.go write Log", assert A.seen() == 0 échoue ; frame.rs lit Cell.h (cellule avant slot), l interpréteur lit le slot avant la cellule

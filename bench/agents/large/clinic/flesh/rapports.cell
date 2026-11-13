@@ -1,0 +1,44 @@
+flesh Rapports {
+    on dossier_visite(id) {
+        let rdv = Agenda.statut_rdv(id)
+        let o = try { Ordonnances.statut_ordonnance(id) }
+        let f = try { Facturation.statut_facture(id) }
+        return map(
+            "rdv", rdv,
+            "consultation", Consultations.statut_consultation(id),
+            "ordonnance", if o.error != () { "aucune" } else { o.value },
+            "facture", if f.error != () { "aucune" } else { f.value },
+            "reste_du", Facturation.reste_du(id))
+    }
+    on activite_patient(patient) {
+        let f = Patients.fiche(patient)
+        return map(
+            "nom", f.nom,
+            "actif", Patients.est_actif(patient),
+            "rdvs", len(Agenda.rdvs_du_patient(patient)),
+            "couvert", Assurance.est_couvert(patient),
+            "notifications", len(Notifications.notifications_de(patient)))
+    }
+    on finances() {
+        let t = Facturation.totaux()
+        return map("facture", t.facture, "impaye", t.impaye, "encaisse", Paiements.total_encaisse(), "engage", Assurance.total_engage())
+    }
+    on alertes_stock(date) {
+        return map("sous_seuil", Pharmacie.sous_seuil(), "perimes", Pharmacie.lots_perimes(date))
+    }
+    on taux_absence() {
+        let absents = Agenda.compter_statut("absent")
+        let venus = Agenda.compter_statut("termine")
+        if absents + venus == 0 { return 0 }
+        return idiv(absents * 100, absents + venus)
+    }
+    on tableau_de_bord(date) {
+        return map(
+            "patients", Patients.compter(),
+            "finances", finances(),
+            "alertes", alertes_stock(date),
+            "absence", taux_absence(),
+            "audit", Audit.taille(),
+            "non_lues", Notifications.non_lues())
+    }
+}

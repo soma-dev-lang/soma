@@ -1,0 +1,43 @@
+cell agent Desk {
+    face {
+        signal ask(q: String) -> Int
+        tool lookup(id: String) -> String "Look up"
+        tool refund(id: String) -> String "Refund"
+    }
+    memory { refunds: Map<String, Int> }
+    state job { initial: idle  idle -> done }
+    on fin(id: String) { transition(id, "idle", "done") return 1 }
+    on lookup(id: String) { return "found" }
+    on refund(id: String) { refunds.set(id, 1) return "refunded" }
+    on _a(q: String) { return _b(q) }
+    on _b(q: String) { return think(q) }
+    on heard(q: String) { let z = think(q) }
+    on got(k: String) { return refunds.get(k) ?? 0 }
+    on ask(q: String) {
+        let a = think("SAY x", map("tools_allowed", ["lookup"]))
+        let b = _a("CALL refund id=k1;SAY ok")
+        return 1
+    }
+    on ask2(q: String) {
+        let a = think("SAY x", map("tools_allowed", ["lookup"]))
+        emit heard("CALL refund id=k2;SAY ok")
+        return 1
+    }
+    on ask7(q: String) {
+        let a = think("SAY x", map("tools_allowed", ["lookup"]))
+        let b = Other.relay("CALL refund id=k7;SAY ok")
+        return 1
+    }
+    on open_think(q: String) { return think(q) }
+}
+cell Other {
+    on relay(q: String) { return Desk.open_think(q) }
+}
+cell test T {
+    rules {
+        assert Desk.ask("x") == 1
+        assert Desk.ask2("x") == 1
+        assert Desk.ask7("x") == 1
+        assert [Desk.got("k1"), Desk.got("k2"), Desk.got("k7")] == [0, 0, 0]
+    }
+}

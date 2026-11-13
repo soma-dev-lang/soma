@@ -1,0 +1,1 @@
+soma verify app.cell -> "✓ requires('c' only after one of [a])" (VERIFY OK) ; soma test app.cell -> A.st("k") == "c" sans jamais passer par a : cell A/machine B_m et cell A_B/machine m partagent la cle de stockage __sm_A_B_m (interpreter/mod.rs:1334)

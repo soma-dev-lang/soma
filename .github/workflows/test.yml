@@ -29,5 +29,10 @@ jobs:
         env:
           SOMA: compiler/target/release/soma
         run: python3 tools/build_site.py
+      - name: Skeleton and flesh — every program split and compared, frames against observed effects
+        run: |
+          python3 tools/split_roundtrip.py --soma compiler/target/release/soma
+          python3 tools/frame_oracle.py --soma compiler/target/release/soma
+          python3 tools/skeleton_monotone.py --soma compiler/target/release/soma
       - name: Core CLI fixtures
         run: bash tests/run_all.sh

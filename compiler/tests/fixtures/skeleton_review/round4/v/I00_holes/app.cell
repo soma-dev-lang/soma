@@ -1,0 +1,36 @@
+skeleton Bank {
+    memory {
+        acct: Map<String, Int> [persistent]
+        invariant acct >= 0 && acct <= 1000
+    }
+    state life {
+        initial: open
+        open -> frozen { guard { (acct.get(_id) ?? 0) == 0 } }
+        open -> closed
+        frozen -> closed
+    }
+    face {
+        signal debit(id: String, amount: Int) -> Int
+            requires amount > 0
+            ensures result >= 0
+            writes acct
+        signal bal(id: String) -> Int        reads acct
+            ensures result >= 0
+        signal pay(id: String) -> Int        calls debit
+        signal sweep(id: String) -> Int      calls debit, bal
+        signal freeze(id: String) -> Int     moves open -> frozen
+        signal close(id: String) -> Int      moves open -> closed, frozen -> closed
+        signal ask(id: String) -> String     calls think
+    }
+    cost { tokens: 300 }
+}
+flesh Bank {
+    on debit(id, amount) { let b = acct.get(id) ?? 0  if amount > b { return 0 }  acct.set(id, b - amount)  return b - amount }
+    on bal(id) { return acct.get(id) ?? 0 }
+    on pay(id) { return debit(id, 5) }
+}
+cell test T {
+    rules {
+        assert Bank.pay("k") == 0
+    }
+}

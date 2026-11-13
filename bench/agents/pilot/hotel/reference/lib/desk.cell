@@ -1,0 +1,34 @@
+flesh Desk {
+    on quote(room, from, to) {
+        require Rooms.exists(room) else NotFound "no room '{room}'"
+        return Rooms.rate_of(room) * (to - from)
+    }
+    on settle(id, amount) {
+        return map("ok", true, "due", Ledger.pay_cash(id, amount))
+    }
+    on settle_with_points(id, points) {
+        require points <= Ledger.due(id) else Overpaid "only {Ledger.due(id)} is due on booking '{id}'"
+        if !Loyalty.redeem(Bookings.guest_of(id), points) {
+            return map("ok", false, "reason", "not enough points")
+        }
+        return map("ok", true, "due", Ledger.pay_points(id, points))
+    }
+    on night_audit(day) {
+        let count = 0
+        let fees = 0
+        for id in Bookings.arriving(day) {
+            fees = fees + Bookings.mark_no_show(id)
+            count = count + 1
+        }
+        return map("no_shows", count, "fees", fees)
+    }
+    on move_room(id, new_id, room) {
+        require Rooms.exists(room) else NotFound "no room '{room}'"
+        let b = Bookings.booking(id)
+        if !Calendar.is_free(room, b.from, b.to) {
+            return map("ok", false, "reason", "not available")
+        }
+        Bookings.cancel(id, b.guest, b.from - 2)
+        return Bookings.book(new_id, b.guest, room, b.from, b.to)
+    }
+}

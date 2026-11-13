@@ -1,0 +1,8 @@
+[package]
+name = "v"
+edition = "2027"
+[verify]
+eventually = ["closed"]
+[verify.before.closed]
+requires = ["frozen"]
+assuming = "1 > 2"

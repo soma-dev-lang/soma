@@ -1,0 +1,8 @@
+cell type Order { variants { Order { id: String, amount: String, admin: Bool } } }
+cell type Verdict { variants { Ok { tx: String }  Refused { why: String }  Pending } }
+skeleton Pay {
+    memory { book: Map<String, Int> [persistent] }
+    face {
+        signal pay(o: Order) -> Verdict  writes book
+    }
+}

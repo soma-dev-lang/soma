@@ -1,0 +1,2 @@
+use lib::a
+cell Other { on f() { return Stock.level("a") } }

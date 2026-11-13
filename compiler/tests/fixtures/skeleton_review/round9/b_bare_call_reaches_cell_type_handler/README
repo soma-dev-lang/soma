@@ -1,0 +1,1 @@
+soma check app.cell (vert, cadre vide) && SOMA_EFFECT_TRACE=t soma test app.cell (ou soma run app.cell go) — ligne fautive: app.cell:15 `"{khelp(1)}"` (handler défini dans `cell type kk` ; idem property/checker/backend/builtin ; formes nue, interpolée, pipe, lambda) ; trace "A.go call kk.khelp … write hits", assert B.seen() == 0 échoue

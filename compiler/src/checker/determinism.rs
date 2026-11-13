@@ -126,7 +126,10 @@ fn scan(
             // (`let random = 0  random()`) leaves the builtin to run, and
             // a function local of that name is refused by `soma check`
             if let Some(reason) = forbid_reason(name) { push(name.clone(), reason.to_string()); return; }
-            if locals.contains(name) { return; }
+            // a local of that name hides the handler only where it is bound: one
+            // bound in a branch (`if c { let _r = 1 }  return _r()`) leaves the
+            // handler to run — so a handler of that name is followed all the same
+            if locals.contains(name) && find_handler(cell, name).is_none() && !cells.values().any(|c| find_handler(c, name).is_some()) { return; }
             // a handler of this cell (it wins over a builtin), or a bare
             // call of another cell's handler
             if find_handler(cell, name).is_some() {
@@ -139,11 +142,15 @@ fn scan(
         }
         Expr::MethodCall { target, method, .. } => {
             if let Expr::Ident(t) = &target.node {
-                if !locals.contains(t) && cells.contains_key(t) {
+                if cells.contains_key(t) {
                     callees.push((t.clone(), method.clone()));
-                    return;
+                    // (a local of that name is known as a flat set, not where it is
+                    // in scope: both readings are followed)
+                    if !locals.contains(t) { return; }
                 }
             }
+            // `x.h()` is `h(x)`: this cell's own handler, in method form
+            if find_handler(cell, method).is_some() { callees.push((cell.name.clone(), method.clone())); }
             if mutating_method(method) { push(format!(".{}()", method), "mutates persistent storage".to_string()); }
             // `x.random()` / `ts.now()`: the builtin, called in method form
             else if let Some(reason) = forbid_reason(method) { push(method.clone(), reason.to_string()); }

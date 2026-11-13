@@ -1,0 +1,38 @@
+// The flesh of `skeleton Catalog` (../app.cell).
+
+flesh Catalog {
+    on list_item(listing, seller, price, units) {
+        require sellers.get(listing) == () else Taken "listing '{listing}' already exists"
+        sellers.set(listing, seller)
+        prices.set(listing, price)
+        stock.set(listing, units)
+        return map("listing", listing, "seller", seller, "price", price, "stock", units)
+    }
+
+    on listing(listing) {
+        require sellers.get(listing) != () else NotFound "no listing '{listing}'"
+        return map("listing", listing, "seller", sellers.get(listing), "price", prices.get(listing), "stock", stock.get(listing) ?? 0)
+    }
+
+    on seller_of(listing) {
+        return sellers.get(listing) ?? ""
+    }
+
+    on price_of(listing) {
+        return prices.get(listing) ?? 0
+    }
+
+    // false when there are not that many left: nothing is written
+    on reserve(listing, units) {
+        let left = stock.get(listing) ?? 0
+        if left < units { return false }
+        stock.set(listing, left - units)
+        return true
+    }
+
+    on restock(listing, units) {
+        let left = (stock.get(listing) ?? 0) + units
+        stock.set(listing, left)
+        return left
+    }
+}

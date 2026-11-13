@@ -1,0 +1,12 @@
+skeleton Bank {
+    memory { acct: Map<String, Int> [persistent] }
+    face {
+        signal adder(n: Int) -> Any       // pure: returns a closure over a local
+        signal peek(id: String) -> Int   reads acct
+    }
+}
+flesh Bank {
+    on adder(n) { let acct = n * 2  return x => acct + x }    // `acct` is the local, captured by value
+    on peek(id) { return acct.get(id) ?? 0 }
+}
+cell test T { rules { let f = Bank.adder(2)  assert f(1) == 5 } }

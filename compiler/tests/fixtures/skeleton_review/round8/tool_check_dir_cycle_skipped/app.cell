@@ -1,0 +1,1 @@
+cell Other { on f() { return 1 } }

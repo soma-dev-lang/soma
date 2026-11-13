@@ -182,6 +182,15 @@ pub fn call_builtin(interp: &mut Interpreter, name: &str, args: &[Value], cell_n
                 let target_cell = format!("{}", args[0]);
                 let signal_name = format!("{}", args[1]);
                 let signal_args: Vec<Value> = args[2..].to_vec();
+                // a signal of the program, as a call by name reaches it: not a
+                // private helper (`_h` has no frame of its own), not a handler of
+                // a `cell test` / `cell type`
+                if signal_name.starts_with('_') {
+                    return Some(Err(RuntimeError::TypeError(format!("delegate(\"{}\", \"{}\"): `{}` is a private helper — delegate reaches signals", target_cell, signal_name, signal_name))));
+                }
+                if interp.cells.get(&target_cell).is_some_and(|c| !matches!(c.kind, crate::ast::CellKind::Cell | crate::ast::CellKind::Agent)) {
+                    return Some(Err(RuntimeError::TypeError(format!("delegate(\"{}\", …): `{}` is not a cell of the program (a `cell` or a `cell agent`)", target_cell, target_cell))));
+                }
                 Some(interp.call_signal(&target_cell, &signal_name, signal_args)
                     // the callee's error AS IS: wrapping it made every kind
                     // `type` (a not_found answered 400, invalid_transition

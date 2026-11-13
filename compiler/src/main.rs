@@ -153,6 +153,9 @@ enum Commands {
         /// Fail when anything is only runtime-checked or unprovable (every ⚠ is an error) — for CI gates
         #[arg(long)]
         strict: bool,
+        /// Only what needs attention: every ✗ and ⚠ under its heading, the count of ✓, the holes, the verdict
+        #[arg(long)]
+        summary: bool,
         /// Write the proof as an artifact: sources and toolchain hashed, every property with its verdict class, one digest
         #[arg(long, value_name = "OUT.json")]
         attest: Option<PathBuf>,
@@ -197,6 +200,64 @@ enum Commands {
         /// Print only cell contracts: face signals, tools, memory slots, state machines, sum types
         #[arg(long)]
         faces: bool,
+        /// Output as JSON (for agents)
+        #[arg(long)]
+        json: bool,
+    },
+    /// Print a program as its skeleton: memory, state machines, and each signal's frame
+    /// (reads / writes / moves / calls) — no handler bodies
+    Skeleton {
+        /// Path to the .cell source file
+        file: PathBuf,
+        /// `Cell.signal` (or `signal`): the brief for that one handler. A cell's name
+        /// (`Orders`): that cell alone, with its comments and who calls it
+        signal: Option<String>,
+        /// Output as JSON (for agents)
+        #[arg(long)]
+        json: bool,
+        /// One line per cell (signals, holes, machine, what it is for) and who calls whom:
+        /// the way into a large program
+        #[arg(long)]
+        index: bool,
+        /// Rewrite the file as `skeleton` + `flesh`: the structure with the frames its
+        /// bodies have today, and the bodies unchanged (to stdout)
+        #[arg(long)]
+        split: bool,
+        /// Write the skeletons to skeleton.lock: `soma check` then refuses any change to them
+        #[arg(long)]
+        freeze: bool,
+        /// Accept the current skeletons as the new skeleton.lock, printing what changed
+        #[arg(long)]
+        amend: bool,
+    },
+    /// Where a signal is declared, where its body is, and every call of it — program and tests — as file:line
+    Refs {
+        /// Path to the program's entry file
+        file: PathBuf,
+        /// `Cell.signal` (or `signal`)
+        signal: String,
+        /// Output as JSON (for agents)
+        #[arg(long)]
+        json: bool,
+    },
+    /// Rename a signal everywhere it is written — declaration, body, calls, frames, tests — under the entry's directory
+    Rename {
+        /// Path to the program's entry file
+        file: PathBuf,
+        /// `Cell.signal`
+        signal: String,
+        /// The new name
+        new_name: String,
+        /// Print the lines that would change, write nothing
+        #[arg(long)]
+        dry_run: bool,
+    },
+    /// List the holes of a program's skeletons — signals with no body yet — in the order to fill them
+    Holes {
+        /// Path to the .cell source file
+        file: PathBuf,
+        /// A cell (`Orders`) or one signal (`Orders.place`): only those
+        only: Option<String>,
         /// Output as JSON (for agents)
         #[arg(long)]
         json: bool,
@@ -266,6 +327,9 @@ enum Commands {
     Init {
         /// Project name (default: current directory name)
         name: Option<String>,
+        /// Start skeleton-first: app.cell holds the structure (`skeleton`), lib/ the bodies (`flesh`)
+        #[arg(long)]
+        skeleton: bool,
     },
     /// Add a dependency: soma add pkg --git url
     Add {
@@ -513,7 +577,7 @@ fn main_inner() {
             commands::test_cmd::cmd_test(&file, json, &mut registry)
         }
         Commands::Replay { file, log, at, live } => commands::replay::cmd_replay(&file, log.as_ref(), at.as_deref(), live, &mut registry),
-        Commands::Init { name } => commands::init::cmd_init(name.as_deref()),
+        Commands::Init { name, skeleton } => commands::init::cmd_init(name.as_deref(), skeleton),
         Commands::Add { package, version, git, path } => commands::init::cmd_add(&package, version.as_deref(), git.as_deref(), path.as_deref()),
         Commands::Embed { file } => {
             runtime::storage::set_data_dir_beside(&file);
@@ -534,7 +598,8 @@ fn main_inner() {
         Commands::TestProvider { name } => commands::provider::cmd_test_provider(&name),
         Commands::Migrate { from, to } => commands::provider::cmd_migrate(&from, &to),
         Commands::Props => commands::props::cmd_props(&registry),
-        Commands::Verify { files, json, strict, attest, check_attestation } => {
+        Commands::Verify { files, json, strict, summary, attest, check_attestation } => {
+            if summary && !json { verify_summary(&files, strict); }
             if let Some(a) = check_attestation {
                 commands::attest::check(&a);
             }
@@ -569,6 +634,14 @@ fn main_inner() {
                 std::process::exit(1);
             }
         }
+        Commands::Skeleton { file, signal, json, index, split, freeze, amend } => {
+            if freeze || amend { commands::skeleton::cmd_freeze(&file, amend) }
+            else if index { commands::skeleton::cmd_index(&file) }
+            else { commands::skeleton::cmd_skeleton(&file, signal.as_deref(), json, split) }
+        }
+        Commands::Rename { file, signal, new_name, dry_run } => commands::refs::cmd_rename(&file, &signal, &new_name, dry_run),
+        Commands::Refs { file, signal, json } => commands::refs::cmd_refs(&file, &signal, json),
+        Commands::Holes { file, only, json } => commands::skeleton::cmd_holes(&file, only.as_deref(), json),
         Commands::Docs { topic } => commands::docs::cmd_docs(&topic),
         Commands::Fmt { paths, check, json } => commands::fmt::cmd_fmt(&paths, check, json),
         Commands::Eval { file, handler, dataset, grade, threshold, json } => commands::eval::cmd_eval(&file, &handler, &dataset, &grade, threshold, json),
@@ -578,11 +651,53 @@ fn main_inner() {
     }
 }
 
+/// `soma verify --summary`: the same verification, and of its report only
+/// what a reader must act on. (The full report of a program of a dozen
+/// cells runs to hundreds of lines, nearly all of them `✓`.)
+fn verify_summary(files: &[PathBuf], strict: bool) -> ! {
+    let exe = std::env::current_exe().unwrap_or_else(|e| { eprintln!("error: cannot locate the soma binary: {e}"); std::process::exit(1) });
+    let mut cmd = std::process::Command::new(exe);
+    cmd.arg("verify").args(files);
+    if strict { cmd.arg("--strict"); }
+    let out = cmd.output().unwrap_or_else(|e| { eprintln!("error: cannot run soma verify: {e}"); std::process::exit(1) });
+    let text = format!("{}{}", String::from_utf8_lossy(&out.stderr), String::from_utf8_lossy(&out.stdout));
+    let (mut proven, mut noted, mut waiting) = (0usize, 0usize, 0usize);
+    let mut heading = String::new();
+    let mut printed_heading = String::new();
+    let mut tail: Vec<&str> = Vec::new();
+    for line in text.lines() {
+        let t = line.trim_start();
+        if t.starts_with('✓') { proven += 1; }
+        else if t.starts_with('·') { noted += 1; }
+        // a hole's own contracts: true of every hole, said once
+        else if t.starts_with('⚠') && (t.contains("not proven for `?`") || (t.contains("runtime-checked at") && t.contains("(?"))) { waiting += 1; }
+        else if t.starts_with('✗') || t.starts_with('⚠') {
+            if heading != printed_heading {
+                println!("{}", heading);
+                printed_heading = heading.clone();
+            }
+            println!("{}", line);
+        }
+        else if t.starts_with('○') || t.starts_with("VERIFY") || t.starts_with("error") || t.contains("fails `soma check`") { tail.push(line); }
+        // a counter-example trace under a ✗, a location under an error
+        else if line.starts_with("      ") && !printed_heading.is_empty() && heading == printed_heading { println!("{}", line); }
+        else if !t.is_empty() && !line.starts_with(' ') && (t.starts_with("State machine") || t.ends_with(':')) { heading = line.to_string(); }
+    }
+    println!("{} proven (✓), {} note{} (·) — `soma verify` without --summary prints them", proven, noted, if noted == 1 { "" } else { "s" });
+    if waiting > 0 {
+        println!("○ {} contract{} of holes wait{} for a body (an `ensures` of a hole, a `requires` a hole must meet when it calls) — judged as the holes are filled", waiting, if waiting == 1 { "" } else { "s" }, if waiting == 1 { "s" } else { "" });
+    }
+    for l in tail { println!("{}", l); }
+    std::process::exit(out.status.code().unwrap_or(1));
+}
+
 fn cmd_verify(files: &[PathBuf], json: bool, strict: bool) {
     use checker::temporal::*;
     commands::VERIFY_MODE.store(true, std::sync::atomic::Ordering::Relaxed);
 
     let mut all_results = Vec::new();
+    // a skeleton's unfilled signals, per file: open obligations
+    let mut hole_notes: Vec<String> = Vec::new();
     let mut all_cell_names: Vec<String> = Vec::new();
     // horde cost bounds, printed when no state machine gives verify more to say
     let mut horde_lines: Vec<(bool, String)> = Vec::new();
@@ -605,20 +720,28 @@ fn cmd_verify(files: &[PathBuf], json: bool, strict: bool) {
     let check_failed = false;
 
     for path in files {
+        // (the edition decides what `get_status` answers for an id never moved)
+        interpreter::set_edition_beside(path);
         let source = commands::read_source(path);
         let file_str = path.display().to_string();
         let tokens = commands::lex_with_location(&source, Some(&file_str));
         let mut program = commands::parse_with_location(tokens, Some(&source), Some(&file_str));
         commands::resolve_imports(&mut program, path);
+        hole_notes.extend(checker::flesh::holes_note(&program, &file_str));
+        // from here on a hole is read as its frame: whatever is proven
+        // holds for every flesh that conforms
+        let checked = program.clone();
+        checker::flesh::model_holes(&mut program);
+        checker::runtime_section::as_handler(&mut program);
 
         // A proof about a program that does not pass `soma check` is a proof
         // about nothing: run the static gates first.
         {
             let mut registry = registry::Registry::new();
-            commands::load_meta_cells_from_program(&program, &mut registry, path);
+            commands::load_meta_cells_from_program(&checked, &mut registry, path);
             let mut chk = checker::Checker::new(&registry);
             chk.source = Some((file_str.clone(), source.clone()));
-            chk.check(&program);
+            chk.check(&checked);
             if chk.has_errors() {
                 // the error blocks only (a warning's `-->` / caret lines used
                 // to be printed without the warning), then STOP: a proof
@@ -678,7 +801,11 @@ fn cmd_verify(files: &[PathBuf], json: bool, strict: bool) {
         {
             let all = checker::cost::all_handlers_of(&program);
             for c in &program.cells { horde_lines.extend(checker::cost::horde_bounds(&c.node, &all)); }
-            cross_cell.extend(checker::verify::cross_cell_notes(&program));
+            // (not for a cell whose machine soma.toml already ties to another's:
+            // that rule is stated, and judged under `product:`)
+            let tied: Vec<String> = verify_config.map(|cfg| cfg.before.iter().filter(|(t, b)| product_property(t, b))
+                .filter_map(|(t, _)| t.split_once('.').map(|(c, _)| format!("cross-cell: `{}.", c))).collect()).unwrap_or_default();
+            cross_cell.extend(checker::verify::cross_cell_notes(&program).into_iter().filter(|n| !tied.iter().any(|t| n.starts_with(t))));
         }
 
         // Run temporal property checks on each state machine
@@ -781,7 +908,10 @@ fn cmd_verify(files: &[PathBuf], json: bool, strict: bool) {
                             // the verified files declares it
                             for (what, state) in named {
                                 if !graph.states.contains(state) && !all_states.contains(state.as_str()) {
-                                    unknown_states.push(format!("{} names state '{}', which no verified state machine declares{}", what, state,
+                                    // `Cell.state` is the form of a rule between machines
+                                    let qualified = state.split_once('.').is_some_and(|(_, st)| all_states.contains(st) || graph.states.iter().any(|x| x == st));
+                                    unknown_states.push(format!("{} names state '{}', which no verified state machine declares{}{}", what, state,
+                                        if qualified { " — `Cell.state` is read by `[verify.before.\"Cell.state\"] requires = [...]` only (a rule between two machines); `after`, `never`, `eventually` and `always` are judged per machine: write the bare state name" } else { "" },
                                         if targeted.is_empty() { "" } else { " (cells = [...] in soma.toml limits verification to those cells)" }));
                                 }
                             }
@@ -831,8 +961,9 @@ fn cmd_verify(files: &[PathBuf], json: bool, strict: bool) {
     if let Some(cfg) = verify_config {
         let specs: Vec<checker::product::Spec> = cfg.before.iter().filter(|(t, b)| product_property(t, b)).flat_map(|(target, b)| {
             let mut out = Vec::new();
-            if !b.requires.is_empty() { out.push(checker::product::Spec { target: target.clone(), requires: b.requires.clone(), all: false, assuming: b.assuming.clone() }); }
-            if !b.requires_all.is_empty() { out.push(checker::product::Spec { target: target.clone(), requires: b.requires_all.clone(), all: true, assuming: b.assuming.clone() }); }
+            if !b.requires.is_empty() { out.push(checker::product::Spec { target: target.clone(), requires: b.requires.clone(), all: false, assuming: b.assuming.clone(), now: false }); }
+            if !b.requires_all.is_empty() { out.push(checker::product::Spec { target: target.clone(), requires: b.requires_all.clone(), all: true, assuming: b.assuming.clone(), now: false }); }
+            if !b.while_in.is_empty() { out.push(checker::product::Spec { target: target.clone(), requires: b.while_in.clone(), all: false, assuming: b.assuming.clone(), now: true }); }
             out
         }).collect();
         if !specs.is_empty() {
@@ -842,7 +973,29 @@ fn cmd_verify(files: &[PathBuf], json: bool, strict: bool) {
                 let tokens = commands::lex_with_location(&source, Some(&file_str));
                 let mut program = commands::parse_with_location(tokens, Some(&source), Some(&file_str));
                 commands::resolve_imports(&mut program, path);
-                all_results.extend(checker::product::check(&program, &specs));
+                // a hole is read as its frame. A property a hole's frame can
+                // break, and the bodies written so far do not, is an open
+                // obligation: neither proven nor refuted until the hole is filled
+                let written = program.clone();
+                let has_holes = !checker::flesh::holes(&program).is_empty();
+                checker::flesh::model_holes(&mut program);
+        checker::runtime_section::as_handler(&mut program);
+                let mut modeled = checker::product::check(&program, &specs);
+                if has_holes {
+                    let plain = checker::product::check(&written, &specs);
+                    for (m, p) in modeled.iter_mut().zip(plain.iter()) {
+                        if m.checks.len() != p.checks.len() { continue; }
+                        for (mc, pc) in m.checks.iter_mut().zip(p.checks.iter()) {
+                            if let (checker::verify::VerifyCheck::Fail(msg, steps), checker::verify::VerifyCheck::Pass(_)) = (&*mc, pc) {
+                                // the run, in a line: the last call is the one to write (or to frame) so that it cannot
+                                let run = steps.as_ref().filter(|s| !s.is_empty()).map(|s| format!(" Run: {}.", s.iter().map(|x| x.split("  ←").next().unwrap_or(x).trim().to_string()).collect::<Vec<_>>().join(" → "))).unwrap_or_default();
+                                *mc = checker::verify::VerifyCheck::Warning(format!(
+                                    "open obligation — {} — the bodies written so far respect it; a hole's frame allows this run.{} It is proven when the holes on the run have bodies that rule it out, or when their frames no longer allow it", msg, run));
+                            }
+                        }
+                    }
+                }
+                all_results.extend(modeled);
             }
         }
     }
@@ -887,6 +1040,7 @@ fn cmd_verify(files: &[PathBuf], json: bool, strict: bool) {
             if orphan_props {
                 eprintln!("note: the soma.toml beside this file declares [verify] properties; none applies here (no state machine)");
             }
+            for n in &hole_notes { println!("{}", n); }
             println!("VERIFY OK (vacuous — no state machine)");
         }
         return;
@@ -936,7 +1090,7 @@ fn cmd_verify(files: &[PathBuf], json: bool, strict: bool) {
     // `[verify.before.paid] requires = []` promised nothing and passed
     if let Some(cfg) = verify_config {
         for (st, b) in &cfg.before {
-            if b.requires.is_empty() && b.requires_all.is_empty() {
+            if b.requires.is_empty() && b.requires_all.is_empty() && b.while_in.is_empty() {
                 unknown_states.push(format!("soma.toml [verify.before.{st}] lists no state (`requires = [\"approved\"]` or `requires_all = [...]`) — it checks nothing"));
             }
         }
@@ -1015,6 +1169,7 @@ fn cmd_verify(files: &[PathBuf], json: bool, strict: bool) {
         output["hordes"] = serde_json::json!(horde_lines.iter().map(|(ok, l)| serde_json::json!({"status": if *ok { "pass" } else { "warning" }, "message": format!("cost: {}", l)})).collect::<Vec<_>>());
         output["errors"] = serde_json::json!(unknown_states.iter().map(|u| serde_json::json!({"level": "error", "kind": "verify", "message": u})).collect::<Vec<_>>());
         output["cells"] = serde_json::json!(all_cell_names);
+        if !hole_notes.is_empty() { output["holes"] = serde_json::json!(hole_notes); }
         if total_cells > 1 {
             output["note"] = serde_json::json!(
                 "state machines are verified per cell. A value crosses a cell boundary by a face contract (`requires` / `ensures` on the signal); a rule between two cells' machines is proven when soma.toml states it — `[verify.before.\"Pay.paid\"] requires = [\"Approval.signed_off\"]` explores the product of the machines."
@@ -1092,9 +1247,14 @@ fn cmd_verify(files: &[PathBuf], json: bool, strict: bool) {
                     }
                 }
             }
+            for n in &hole_notes { println!("{}", n); }
             println!("VERIFY FAILED — {}", why.join("; "));
-        } else {
+        } else if hole_notes.is_empty() {
             println!("VERIFY OK");
+        } else {
+            // the structure is proven; the bodies that are missing are not
+            for n in &hole_notes { println!("{}", n); }
+            println!("VERIFY OK (skeleton — the holes above are open obligations)");
         }
     }
 
@@ -1107,7 +1267,7 @@ fn cmd_verify(files: &[PathBuf], json: bool, strict: bool) {
 /// A `[verify.before.…]` entry that names a state as `Cell.state`: it is
 /// about several machines at once (checker/product.rs).
 fn product_property(target: &str, b: &pkg::manifest::BeforeConfig) -> bool {
-    target.contains('.') || b.requires.iter().chain(b.requires_all.iter()).any(|s| s.contains('.'))
+    target.contains('.') || !b.while_in.is_empty() || b.requires.iter().chain(b.requires_all.iter()).any(|s| s.contains('.'))
 }
 
 fn cmd_ast(path: &PathBuf) {
@@ -1360,8 +1520,56 @@ fn run_over_dir(cmd: &str, dir: &std::path::Path, json: bool, extra: &[&str]) ->
         }
         files = with;
     }
+    // `check`: a file that holds a skeleton or a flesh and is imported by
+    // another file of the directory is a PART of that program — alone, a
+    // flesh has no skeleton and a skeleton no bodies. It is checked through
+    // the file that imports it.
+    if cmd == "check" {
+        let parsed: Vec<(std::path::PathBuf, Option<ast::Program>)> = files.iter().map(|f| {
+            let p = std::fs::read_to_string(f).ok().and_then(|t| lexer::Lexer::new(&t).tokenize().ok()).and_then(|toks| parser::Parser::new(toks).parse_program().ok());
+            (f.clone(), p)
+        }).collect();
+        let real = |p: &std::path::Path| std::fs::canonicalize(p).unwrap_or_else(|_| p.to_path_buf());
+        // who imports whom, among the files of the directory (an import is
+        // looked up beside the importer, then from the directory given)
+        let known: std::collections::HashSet<std::path::PathBuf> = files.iter().map(|f| real(f)).collect();
+        let mut imports: std::collections::HashMap<std::path::PathBuf, Vec<std::path::PathBuf>> = std::collections::HashMap::new();
+        for (f, p) in &parsed {
+            let Some(p) = p else { continue };
+            let base = f.parent().unwrap_or(std::path::Path::new("."));
+            for u in &p.imports {
+                for target in commands::refs::import_targets(u, base, dir) { if known.contains(&target) { imports.entry(real(f)).or_default().push(target); } }
+            }
+        }
+        let reaches = |from: &std::path::PathBuf, to: &std::path::PathBuf| -> bool {
+            let mut seen = std::collections::HashSet::new();
+            let mut stack = vec![from.clone()];
+            while let Some(x) = stack.pop() {
+                if !seen.insert(x.clone()) { continue; }
+                for y in imports.get(&x).into_iter().flatten() { if y == to { return true; } stack.push(y.clone()); }
+            }
+            false
+        };
+        let has_tests = |p: &Option<ast::Program>| p.as_ref().is_some_and(|p| p.cells.iter().any(|c| c.node.kind == ast::CellKind::Test));
+        // a part: it holds a skeleton or a flesh, no test of its own, and a
+        // file that is no test file imports it without being imported by it
+        // (a test file may sit elsewhere, away from the project's soma.toml;
+        // two files importing each other are both checked)
+        let part = |f: &std::path::PathBuf, p: &Option<ast::Program>| {
+            let me = real(f);
+            p.as_ref().is_some_and(|p| p.cells.iter().any(|c| c.node.skeleton || c.node.kind == ast::CellKind::Flesh)) && !has_tests(p)
+                && parsed.iter().any(|(g, gp)| { let g = real(g); g != me && !gp.as_ref().is_some_and(|p| !p.cells.is_empty() && p.cells.iter().all(|c| c.node.kind == ast::CellKind::Test)) && gp.is_some() && imports.get(&g).is_some_and(|v| v.contains(&me)) && !reaches(&me, &g) })
+        };
+        let parts: Vec<std::path::PathBuf> = parsed.iter().filter(|(f, p)| part(f, p)).map(|(f, _)| f.clone()).collect();
+        if parts.len() < files.len() {
+            for f in &parts { eprintln!("── {} ── a part of a program (skeleton / flesh): checked through the file that imports it", f.display()); }
+            files.retain(|f| !parts.contains(f));
+        }
+    }
     let exe = std::env::current_exe().unwrap_or_else(|_| std::path::PathBuf::from("soma"));
     let (mut failed, total) = (0usize, files.len());
+    // `test`: the assertions of every file, in one total
+    let (mut passed_all, mut failed_all) = (0usize, 0usize);
     // --json: ONE document holding each file's report (the per-file objects
     // were written back to back, which no JSON reader accepts)
     let mut reports: Vec<serde_json::Value> = Vec::new();
@@ -1380,10 +1588,30 @@ fn run_over_dir(cmd: &str, dir: &std::path::Path, json: bool, extra: &[&str]) ->
                 }
                 Err(_) => false,
             }
+        } else if cmd == "test" {
+            // (its output passes through; its last `N tests: P passed, F failed` is added up)
+            match c.stderr(std::process::Stdio::inherit()).output() {
+                Ok(out) => {
+                    let text = String::from_utf8_lossy(&out.stdout).to_string();
+                    print!("{}", text);
+                    for l in text.lines() {
+                        let w: Vec<&str> = l.split_whitespace().collect();
+                        if w.len() >= 6 && w[1] == "tests:" && w[3] == "passed," && w[5].starts_with("failed") {
+                            passed_all += w[2].parse::<usize>().unwrap_or(0);
+                            failed_all += w[4].parse::<usize>().unwrap_or(0);
+                        }
+                    }
+                    out.status.success()
+                }
+                Err(_) => false,
+            }
         } else {
             c.status().map(|s| s.success()).unwrap_or(false)
         };
         if !ok { failed += 1; }
+    }
+    if cmd == "test" && !json && passed_all + failed_all > 0 {
+        println!("{} assertions: {} passed, {} failed — in {} file(s)", passed_all + failed_all, passed_all, failed_all, total);
     }
     eprintln!("{}: {} file(s), {} failed", cmd, total, failed);
     if json {

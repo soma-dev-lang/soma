@@ -1,0 +1,1 @@
+soma check . -> "flesh `Stock`: there is no `skeleton Stock`" on lib/b.cell, exit 1 ; soma check app.cell green (lib/a.cell says `use lib::b`, resolved from the root by resolve_imports, from lib/ by run_over_dir)

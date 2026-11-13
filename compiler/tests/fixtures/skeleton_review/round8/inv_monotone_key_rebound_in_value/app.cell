@@ -1,0 +1,13 @@
+// Monotone-counter rule: the key is evaluated, then the value rebinds `k` before reading seq.get(k): old value of ANOTHER key.
+cell A {
+    memory { seq: Map<String, Int>  invariant seq >= (seq.get(key) ?? 0) }
+    on w(k: String, x: Int) { seq.set(k, (if true { k = "b"
+   0 } else { 0 }) + (seq.get(k) ?? 0)) return 1 }
+    on w0(k: String, x: Int) { require x >= 0 else B
+  seq.set(k, (seq.get(k) ?? 0) + x) return 1 }
+    on probe() { w0("k", 100)
+ let r = try { w("k", 5) }
+ print(r)
+ return r.kind ?? "ok" }
+}
+cell test T { rules { assert A.probe() == "invariant" } }

@@ -1,0 +1,37 @@
+// The flesh of `skeleton Counter` (app.cell): handler bodies, nothing else.
+// A parameter's type comes from the skeleton's signal. `reset` is not here:
+// it is a hole — `soma skeleton app.cell Counter.reset` prints its brief.
+
+flesh Counter {
+    on total() { return counts.get("n") ?? 0 }
+
+    on add(n) {
+        require n >= 0 else NegativeAmount              // refused before anything is written
+        let cur = counts.get("n") ?? 0
+        require cur + n <= 1000000 else Full "counter would exceed 1000000"
+        counts.set("n", cur + n)
+        return total()
+    }
+
+    on open_session(id) {
+        transition(id, "idle", "open")
+        return get_status(id)
+    }
+
+    on close_session(id) {
+        transition(id, "open", "closed")
+        return get_status(id)
+    }
+
+    on request(method, path, body) {
+        match map("method", method, "path", path) {
+            {method: "GET", path: "/"} -> map("total", total())
+            {method: "POST", path: "/counter/" + n} -> {
+                let r = try { add(to_int(n)) }                     // a refusal becomes a status code, not a 500
+                if r.error != () { return response(400, map("error", r.kind)) }
+                map("total", r.value)
+            }
+            _ -> response(404, map("error", "not found"))
+        }
+    }
+}

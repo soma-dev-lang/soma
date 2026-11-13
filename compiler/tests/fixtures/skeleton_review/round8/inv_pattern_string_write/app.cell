@@ -1,0 +1,12 @@
+// A slot write in the interpolation of a match pattern string (plain or prefix pattern): invisible.
+cell A {
+    memory { c: Map<String, Int>  invariant c >= 0 }
+    on w(k: String, x: Int) {
+ let r = match k { "{c.set(k, x)}" + rest -> 1
+   _ -> 0 }
+ return 1 }
+    on probe() { let r = try { w("k", 0 - 5) }
+ print(r)
+ return r.kind ?? "ok" }
+}
+cell test T { rules { assert A.probe() == "invariant" } }

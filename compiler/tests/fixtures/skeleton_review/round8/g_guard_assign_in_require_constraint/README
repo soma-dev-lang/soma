@@ -1,0 +1,1 @@
+soma verify app.cell -> "✓ guard `amount > 0` on x -> y: proven — … (`go`)" pour `require amount > 0 else B  require len(try { amount = 0 - 5 }) >= 0 else Z  transition(k, "x", "y")` ; soma test app.cell -> guard_failed ; une affectation dans la contrainte d un require n est pas vue (verify.rs:1412-1415 `leaked` / literals::for_each_stmt_deep ne descend pas dans Constraint)

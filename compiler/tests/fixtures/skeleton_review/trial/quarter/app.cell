@@ -1,0 +1,41 @@
+// Quarter — simulation core, skeleton first. Structure only; bodies in lib/.
+use skel::company
+use skel::ops
+use skel::world
+use lib::company
+use lib::ops
+use lib::world
+use lib::quarter
+
+skeleton Quarter {
+    memory {
+        clock: Map<String, Int> [persistent]
+        invariant clock >= 0
+        reports: Map<String, Map> [persistent]
+    }
+    state turn {
+        initial: planning
+        planning -> resolving
+        resolving -> reported
+    }
+    face {
+        signal new_game(seed: Int) -> Int
+            requires seed >= 0
+            writes clock
+            calls Rng.reseed, Finance.open, Attention.refill, Market.seed_segments, Rivals.seed_rivals
+        signal current() -> Int
+            ensures result >= 0
+            reads clock
+        signal sell_quarter() -> Int
+            ensures result >= 0
+            calls Product.product_ids, Product.offer, Product.sell, Product.stock_in, Market.demand, Rivals.player_share, Factory.plant_ids, Factory.produce
+        signal resolve() -> Map
+            writes clock, reports
+            moves planning -> resolving, resolving -> reported
+            calls current, sell_quarter, Events.draw, Events.interest_rate, Rivals.act_all, Research.work_all, Factory.advance_all, Legal.progress_all, Market.tick, Finance.accrue_interest, Finance.assess, Finance.close_books, Attention.refill
+        signal report(q: Int) -> Map
+            requires q >= 0
+            reads reports
+        signal phase(q: Int) -> String                  reads turn, clock
+    }
+}

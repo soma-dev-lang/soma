@@ -1,0 +1,14 @@
+cell other {
+    on rnd() { return random() }
+    on rnd1(a: Int) { return random() }
+}
+cell A {
+    on _r(a: Int) { return random() }
+    on g(x: Int) [deterministic] {
+        let q = match map("a", 1) { {other: 1} -> 1  _ -> 2 }
+        return other.rnd()
+    }
+}
+cell test T { rules {
+  assert A.g(1) == A.g(1)
+ } }

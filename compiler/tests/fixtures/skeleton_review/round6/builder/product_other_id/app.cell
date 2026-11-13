@@ -1,0 +1,35 @@
+use flesh
+skeleton Consult {
+    memory { notes: Map<String, String> [persistent] }
+    state consult {
+        initial: ouverte
+        ouverte -> terminee
+    }
+    face {
+        // ouvre la consultation
+        signal noter(id: String, t: String) -> String   writes notes
+        signal terminer(id: String) -> String   moves ouverte -> terminee
+        signal etat(id: String) -> String   reads consult
+        signal exiger(id: String) -> Bool   reads consult
+    }
+}
+skeleton Ordo {
+    memory { ordos: Map<String, Map> [persistent] }
+    state ordo {
+        initial: redigee
+        redigee -> signee
+        signee -> delivree
+        redigee -> annulee
+        signee -> annulee
+    }
+    face {
+        signal rediger(id: String, consult_id: String) -> String   writes ordos
+        signal signer(id: String) -> String   moves redigee -> signee
+        // seulement si la consultation est terminée
+        signal delivrer(id: String) -> String
+            reads ordos
+            moves signee -> delivree
+            calls Consult.etat
+        signal annuler(id: String) -> String   moves * -> annulee
+    }
+}

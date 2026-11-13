@@ -1,0 +1,6 @@
+	call	Other.poke
+Other.poke	emit	_w
+Other.poke	call	Bank._w
+Other.poke>Bank._w	write	acct
+	call	Bank.peek
+Bank.peek	read	acct

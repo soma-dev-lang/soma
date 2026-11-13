@@ -1,0 +1,18 @@
+// Desk: what the front desk does. It owns nothing; everything goes through the other cells.
+signal move_room(id: String, new_id: String, room: String) -> Map   // Desk
+    // Moves a confirmed booking to another room for the same nights: only if the new room exists
+    // (`NotFound`) and is free on all of them — else returns map("ok", false, "reason", "not available")
+    // and nothing changes. It is a cancellation without fee followed by a new booking `new_id` at
+    // the new room's current rate. Returns the new booking's answer (see Bookings.book).
+calls      Bookings.book(id: String, guest: String, room: String, from: Int, to: Int) -> Map   writes arrive, depart, guests, ids, nightly, rooms  moves requested -> confirmed  calls Calendar.hold_nights, Rooms.exists, Rooms.rate_of
+               // Books `room` for `guest` for the nights from <= d < to. error `Taken`: the booking id exists; error `NotFound`: the room does not exist. nights not all free: returns map("ok", false, "reason", "not available"), nothing written. otherwise: holds the nights (Calendar.hold_nights with this id), remembers the room's CURRENT rate as the booking's nightly rate, moves requested -> confirmed and returns map("ok", true, "booking", id, "nights", to - from, "total", rate * (to - from)).
+               requires from < to
+           Bookings.booking(id: String) -> Map                           reads arrive, depart, guests, nightly, rooms, stay
+               // map("booking", id, "guest", …, "room", …, "from", …, "to", …, "nightly", …, "state", …). `NotFound` if unknown.
+           Bookings.cancel(id: String, guest: String, day: Int) -> Map   reads arrive, depart, guests, nightly, rooms  moves confirmed -> cancelled  calls Calendar.free_nights, Ledger.charge
+               // The guest cancels on day `day`. Only the booking's guest (error `Forbidden`); unknown id: `NotFound`. confirmed -> cancelled; all its nights are freed. Fee: 0 when day <= arrive - 2, else one night at the booking's nightly rate, charged to the folio. Returns map("ok", true, "fee", fee).
+           Calendar.is_free(room: String, from: Int, to: Int) -> Bool    reads nights
+               // true when no night d with from <= d < to is held for `room`.
+               requires from < to
+           Rooms.exists(room: String) -> Bool                            reads kinds
+               // true when the room was added.

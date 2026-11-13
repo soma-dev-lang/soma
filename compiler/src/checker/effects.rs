@@ -41,8 +41,45 @@ pub fn check_cell(cell: &CellDef) -> Vec<HandlerEffects> {
             for stmt in &handler.body {
                 visit_stmt(&stmt.node, &mut think_sites, &mut narrowed);
             }
+            // a think() reached through anything this handler runs — a helper (and
+            // the helpers it calls), a tool the model is allowed, an event some
+            // listener hears, another cell that may call back: its own think()
+            // offers every tool again, so this handler's options narrow nothing
             if think_sites > 0 {
-                let tools = narrowed.unwrap_or_else(|| all_tools.clone());
+                let body_of = |h: &str| cell.sections.iter().find_map(|s| match &s.node { Section::OnSignal(o) if o.signal_name == h => Some(&o.body), _ => None });
+                let mut open = false;
+                let mut seen: Vec<String> = vec![handler.signal_name.clone()];
+                let mut work: Vec<String> = Vec::new();
+                let scan = |body: &[Spanned<Statement>], first: bool, work: &mut Vec<String>, open: &mut bool| {
+                    crate::checker::literals::for_each_expr(body, &mut |e| match e {
+                        Expr::FnCall { name, .. } | Expr::MethodCall { method: name, .. } if matches!(name.as_str(), "think" | "think_json" | "vote" | "horde" | "delegate" | "resume" | "deliver") => { if !first || !matches!(name.as_str(), "think" | "think_json") { *open = true; } }
+                        Expr::MethodCall { target, method, .. } => {
+                            if matches!(&target.node, Expr::Ident(t) if crate::checker::names::cellish(t)) { *open = true; }
+                            work.push(method.clone());
+                        }
+                        Expr::FnCall { name, .. } => work.push(name.clone()),
+                        Expr::Literal(Literal::String(t)) => work.push(t.clone()),
+                        _ => {}
+                    });
+                    crate::checker::literals::for_each_stmt_deep(body, &mut |st| match st {
+                        Statement::Emit { .. } => *open = true,
+                        Statement::MethodCall { target, .. } if crate::checker::names::cellish(target) => *open = true,
+                        _ => {}
+                    });
+                };
+                scan(&handler.body, true, &mut work, &mut open);
+                if let Some(set) = &narrowed { work.extend(set.iter().cloned()); }
+                while let Some(h) = work.pop() {
+                    if open { break; }
+                    if seen.contains(&h) { continue; }
+                    seen.push(h.clone());
+                    if let Some(body) = body_of(&h) { scan(body, false, &mut work, &mut open); }
+                }
+                if open { narrowed.get_or_insert_with(BTreeSet::new).insert(OPEN_SITE.to_string()); }
+            }
+            if think_sites > 0 {
+                // (one site without a readable `tools_allowed` offers every tool)
+                let tools = narrowed.filter(|s| !s.contains(OPEN_SITE)).unwrap_or_else(|| all_tools.clone());
                 out.push(HandlerEffects {
                     handler: handler.signal_name.clone(),
                     think_tools: tools,
@@ -77,6 +114,20 @@ fn visit_stmt(stmt: &Statement, count: &mut usize, narrow: &mut Option<BTreeSet<
         Statement::MethodCall { args, .. } | Statement::Emit { args, .. } => {
             for a in args { visit_expr(&a.node, count, narrow); }
         }
+        // (`m["a"] = think(…)`, `require think(…) == "ok" else …`: a think() all the same)
+        Statement::IndexSet { index, value, .. } => { visit_expr(&index.node, count, narrow); visit_expr(&value.node, count, narrow); }
+        Statement::Require { constraint, .. } => {
+            fn operands(c: &Constraint, count: &mut usize, narrow: &mut Option<BTreeSet<String>>) {
+                match c {
+                    Constraint::Comparison { left, right, .. } => { visit_expr(&left.node, count, narrow); visit_expr(&right.node, count, narrow); }
+                    Constraint::Predicate { args, .. } => for a in args { visit_expr(&a.node, count, narrow); },
+                    Constraint::And(a, b) | Constraint::Or(a, b) => { operands(&a.node, count, narrow); operands(&b.node, count, narrow); }
+                    Constraint::Not(i) => operands(&i.node, count, narrow),
+                    Constraint::Descriptive(_) => {}
+                }
+            }
+            operands(&constraint.node, count, narrow);
+        }
         _ => {}
     }
 }
@@ -86,18 +137,15 @@ fn visit_expr(expr: &Expr, count: &mut usize, narrow: &mut Option<BTreeSet<Strin
         Expr::FnCall { name, args } => {
             if name == "think" || name == "think_json" {
                 *count += 1;
-                if args.len() >= 2 {
-                    if let Some(set) = extract_tools_allowed(&args[1].node) {
-                        // Multiple think() sites union their narrowings;
-                        // an unnarrowed site is permissive (no filter).
-                        match narrow {
-                            Some(existing) => { for s in set { existing.insert(s); } }
-                            None => *narrow = Some(set),
-                        }
-                    } else {
-                        // unnarrowed site → permissive
-                        *narrow = None;
-                    }
+                // Several think() sites union their narrowings; a site with no
+                // options, or options this reading cannot list, offers every
+                // tool — and stays so whatever the other sites say
+                // (the options are the LAST argument, as the run reads them)
+                let set = args.last().filter(|_| args.len() >= 2).and_then(|o| extract_tools_allowed(&o.node))
+                    .unwrap_or_else(|| [OPEN_SITE.to_string()].into_iter().collect());
+                match narrow {
+                    Some(existing) => { for s in set { existing.insert(s); } }
+                    None => *narrow = Some(set),
                 }
             }
             for a in args { visit_expr(&a.node, count, narrow); }
@@ -109,6 +157,7 @@ fn visit_expr(expr: &Expr, count: &mut usize, narrow: &mut Option<BTreeSet<Strin
         }
         Expr::Not(i) | Expr::Try(i) | Expr::TryPropagate(i) => visit_expr(&i.node, count, narrow),
         Expr::FieldAccess { target, .. } => visit_expr(&target.node, count, narrow),
+        Expr::Index { target, index } => { visit_expr(&target.node, count, narrow); visit_expr(&index.node, count, narrow); }
         Expr::MethodCall { target, args, .. } => {
             visit_expr(&target.node, count, narrow);
             for a in args { visit_expr(&a.node, count, narrow); }
@@ -143,9 +192,15 @@ fn visit_expr(expr: &Expr, count: &mut usize, narrow: &mut Option<BTreeSet<Strin
     }
 }
 
+/// In a narrowing: a think() site that offers every tool.
+const OPEN_SITE: &str = "\u{1f}every tool";
+
 fn extract_tools_allowed(opts: &Expr) -> Option<BTreeSet<String>> {
     if let Expr::FnCall { name, args } = opts {
         if name != "map" { return None; }
+        // the key written twice, or under a computed name: not read
+        let keys = args.iter().step_by(2).filter(|a| matches!(&a.node, Expr::Literal(Literal::String(k)) if k == "tools_allowed")).count();
+        if keys != 1 || args.iter().step_by(2).any(|a| !matches!(a.node, Expr::Literal(Literal::String(_)))) { return None; }
         let mut i = 0;
         while i + 1 < args.len() {
             if let Expr::Literal(Literal::String(k)) = &args[i].node {
@@ -158,11 +213,11 @@ fn extract_tools_allowed(opts: &Expr) -> Option<BTreeSet<String>> {
                         _ => None,
                     };
                     if let Some(items) = items {
-                        return Some(items.iter().filter_map(|it| {
-                            if let Expr::Literal(Literal::String(s)) = it {
-                                Some(s.clone())
-                            } else { None }
-                        }).collect());
+                        // (an element that is not a literal name may be any tool)
+                        return items.iter().map(|it| match it {
+                            Expr::Literal(Literal::String(s)) if crate::checker::desugar::segments(s).is_empty() => Some(s.clone()),
+                            _ => None,
+                        }).collect();
                     }
                 }
             }

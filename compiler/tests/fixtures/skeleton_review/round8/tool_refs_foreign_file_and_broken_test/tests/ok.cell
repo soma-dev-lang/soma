@@ -1,0 +1,6 @@
+use "../app.cell"
+cell test Ok {
+    rules {
+        assert Stock.level("a") == 0
+    }
+}

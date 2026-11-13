@@ -1,0 +1,11 @@
+cell type Lot { variants { Lot { medicament: String, quantite: Int } } }
+cell P {
+    memory {
+        typed: Map<String, Lot> [persistent]
+        loose: Map<String, Map> [persistent]
+    }
+    // refusé : E0111 `typed.get(k)` may be absent
+    on a(m: String) { return typed.keys.filter(k => typed.get(k).medicament == m) }
+    // accepté sans un mot, alors que c'est exactement le même risque
+    on b(m: String) { return loose.keys.filter(k => loose.get(k).medicament == m) }
+}

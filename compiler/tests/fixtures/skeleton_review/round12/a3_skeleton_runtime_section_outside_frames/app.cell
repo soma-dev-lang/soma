@@ -1,0 +1,21 @@
+skeleton A {
+    memory { c: Map<String, Int> }
+    state m { initial: a
+        a -> b
+    }
+    face {
+        signal rd(k: String) -> Int   reads c
+        signal st(id: String) -> String reads m
+    }
+    runtime {
+        c.set("k", 5)
+        _h("k")
+        print(rd("k"))
+        print(st("k"))
+    }
+}
+flesh A {
+    on rd(k) { return c.get(k) ?? 0 }
+    on st(id) { return get_status(id) ?? "a" }
+    on _h(id: String) { transition(id, "a", "b")  c.set("z", 1) }
+}

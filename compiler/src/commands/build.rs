@@ -26,6 +26,8 @@ pub fn cmd_build(path: &PathBuf, output: Option<&Path>, registry: &mut Registry)
     load_meta_cells_from_program(&program, registry, path);
 
     let mut chk = checker::Checker::new(registry);
+    // (the path: skeleton.lock is found beside the program)
+    chk.source = Some((file_str.clone(), source.clone()));
     chk.check(&program);
 
     for w in &chk.warnings {

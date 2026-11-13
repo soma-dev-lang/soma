@@ -1,0 +1,21 @@
+skeleton A {
+    state m {
+        initial: x
+        x -> y { guard { amount > 0 } }
+        y -> x
+    }
+    face {
+        signal go(k: String, amount: Int) -> Int   moves x -> y
+        signal go2(k: String, amount: Int) -> Int  moves x -> y
+            requires amount > 0
+        signal back(k: String) -> Int  moves y -> x
+    }
+}
+flesh A {
+    on go(k, amount) { require amount > 0 else B
+      transition(k, "x", "y") return 1 }
+    on go2(k, amount) { amount = 0 - 5
+      transition(k, "x", "y") return 1 }
+    on back(k) { transition(k, "y", "x") return 1 }
+}
+cell test T { rules { assert (try { A.go2("k", 6) }).kind == "guard_failed" } }

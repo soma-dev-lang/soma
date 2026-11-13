@@ -1,0 +1,28 @@
+skeleton Bank {
+    memory {
+        acct: Map<String, Int> [persistent]
+        invariant acct >= 0 && acct <= 1000
+    }
+    face {
+        signal debit(id: String, amount: Int) -> Int
+            requires amount > 0
+            ensures result >= 0
+            writes acct
+        signal bal(id: String) -> Int        reads acct
+            ensures result >= 0
+        signal pay(id: String) -> Int        calls sweep, debit
+            ensures result >= 0
+        signal sweep(id: String) -> Int      calls pay, debit, bal
+        signal top(id: String, n: Int) -> Int   writes acct  calls sweep
+    }
+}
+flesh Bank {
+    on debit(id, amount) { let b = acct.get(id) ?? 0  if amount > b { return 0 }  acct.set(id, b - amount)  return b - amount }
+    on bal(id) { return acct.get(id) ?? 0 }
+    on pay(id) { return sweep(id) }
+}
+cell test T {
+    rules {
+        assert Bank.bal("k") == 0
+    }
+}

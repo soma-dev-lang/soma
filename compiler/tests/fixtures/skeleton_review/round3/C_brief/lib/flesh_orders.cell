@@ -1,0 +1,4 @@
+flesh Orders {
+    on status(id) { return get_status(id) ?? "placed" }
+    on tick() { return 1 }
+}

@@ -1,0 +1,1 @@
+soma check app.cell (vert) ; soma verify app.cell -> « ✓ termination: all 2 handlers structurally terminate » ; soma test app.cell -> stack overflow — ligne fautive : `delegate("Aux", "back", n)` où `cell type Aux { on back(n) { return A.go(n) } }` ; termination.rs:290 ignore les handlers hors Cell|Agent. Même racine que q1_delegate_literal_to_cell_type_handler

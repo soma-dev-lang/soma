@@ -1,0 +1,1 @@
+soma rename app.cell B.tick pulse -> soma.toml garde [compute.parallel] handlers = ["tick"] ; check reste vert mais la liste ne désigne plus aucun handler (rename ne lit que les .cell : refs.rs:465-477).

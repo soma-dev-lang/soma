@@ -1,0 +1,1 @@
+soma check app.cell -> "✓ All checks passed." pour `on g(x: Int) [deterministic] { if x > 100000 { let _r = 1 }  return _r() }` (_r appelle random()) ; soma test app.cell -> A.g(1) != A.g(1) ; determinism.rs scan : `if locals.contains(name) { return; }` avec des locaux collectes dans tous les blocs

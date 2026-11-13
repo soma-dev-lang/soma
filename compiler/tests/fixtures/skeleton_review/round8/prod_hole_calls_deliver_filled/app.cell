@@ -1,0 +1,56 @@
+skeleton Visit {
+    state v {
+        initial: waiting
+        waiting -> open
+        open -> done
+    }
+    face {
+        signal open_visit(id: String) -> String     moves waiting -> open
+        signal close_visit(id: String) -> String    moves open -> done
+        signal status(id: String) -> String         reads v
+        signal wait_close(id: String) -> Any    moves open -> done   calls await_signal
+    }
+}
+flesh Visit {
+    on open_visit(id) { transition(id, "waiting", "open")  return "open" }
+    on status(id) { return get_status(id) ?? "waiting" }
+    on close_visit(id) { transition(id, "open", "done")  return "done" }
+    on wait_close(id) [task] { let x = await signal("go", id)
+ transition(id, "open", "done")
+ return "done" }
+}
+skeleton Desk {
+    state d {
+        initial: none
+        none -> requested
+    }
+    face {
+        signal request_lab(id: String) -> String   moves none -> requested   calls Visit.status, Audit.note
+        signal st(id: String) -> String            reads d
+    }
+}
+flesh Desk {
+    on st(id) { return get_status(id) ?? "none" }
+    on request_lab(id) { require Visit.status(id) == "open" else N
+ Audit.note(id)
+ transition(id, "none", "requested")
+ return "requested" }
+}
+skeleton Audit {
+    face {
+        signal note(id: String) -> Int   calls deliver
+    }
+}
+flesh Audit {
+    on note(id) { let v = deliver("go", id, 1)
+ return 1 }
+}
+cell test T {
+    rules {
+        assert Visit.open_visit("k") == "open"
+        assert Visit.wait_close("k").kind == "signal"
+        assert Desk.request_lab("k") == "requested"
+        assert Desk.st("k") == "requested"
+        assert Visit.status("k") == "done"
+    }
+}

@@ -1,0 +1,27 @@
+flesh Rooms {
+    on add_room(room, kind, rate) {
+        require kinds.get(room) == () else Taken "room '{room}' exists"
+        kinds.set(room, kind)
+        rates.set(room, rate)
+        order.push(room)
+        return map("room", room, "kind", kind, "rate", rate)
+    }
+    on room(room) {
+        require kinds.get(room) != () else NotFound "no room '{room}'"
+        return map("room", room, "kind", kinds.get(room), "rate", rates.get(room))
+    }
+    on exists(room) { return kinds.get(room) != () }
+    on rate_of(room) { return rates.get(room) ?? 0 }
+    on set_rate(room, rate) {
+        require kinds.get(room) != () else NotFound "no room '{room}'"
+        rates.set(room, rate)
+        return rate
+    }
+    on rooms_of_kind(kind) {
+        let out = []
+        for r in order {
+            if kinds.get(r) == kind { out.push(r) }
+        }
+        return out
+    }
+}

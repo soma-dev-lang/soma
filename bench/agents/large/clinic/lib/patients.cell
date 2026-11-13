@@ -1,0 +1,34 @@
+// Patients — le registre des dossiers patients. Aucun dossier n'est jamais supprimé : on le désactive.
+skeleton Patients {
+    memory {
+        // id patient -> { nom: String, naissance: "AAAA-MM-JJ", tel: String ("" si inconnu) }
+        fiches: Map<String, Map> [persistent]
+        // id patient -> true tant que le dossier est actif, false après désactivation
+        actifs: Map<String, Bool> [persistent]
+    }
+    face {
+        // Crée le dossier. Erreur kind `DejaInscrit` si l'id existe, `NomVide` si nom == "".
+        // Écrit la fiche (tel ""), marque actif, consigne dans l'audit ("accueil", "patient.inscrire", id).
+        // Renvoie la fiche.
+        signal inscrire(id: String, nom: String, naissance: String) -> Map
+            writes fiches, actifs
+            calls Audit.consigner
+        // Change le téléphone. Erreur `PatientInconnu` si l'id n'existe pas. Renvoie la fiche mise à jour.
+        signal modifier_contact(id: String, tel: String) -> Map         writes fiches
+        // La fiche, ou erreur `PatientInconnu`.
+        signal fiche(id: String) -> Map                                 reads fiches
+        // true si un dossier existe pour cet id (actif ou non).
+        signal existe(id: String) -> Bool                               reads fiches
+        // Désactive le dossier. Erreur `PatientInconnu`. Renvoie true si le dossier était actif, false s'il
+        // l'était déjà (idempotent). Consigne ("accueil", "patient.desactiver", id) seulement s'il était actif.
+        signal desactiver(id: String) -> Bool
+            writes actifs
+            reads fiches
+            calls Audit.consigner
+        // true seulement si le dossier existe ET est actif (false pour un id inconnu, pas d'erreur).
+        signal est_actif(id: String) -> Bool                            reads actifs
+        // Nombre de dossiers (actifs ou non).
+        signal compter() -> Int                                         reads fiches
+            ensures result >= 0
+    }
+}

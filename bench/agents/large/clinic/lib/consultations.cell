@@ -1,0 +1,66 @@
+// Consultations — l'acte médical lui-même. Même id que le rendez-vous (id de visite).
+skeleton Consultations {
+    memory {
+        // id visite -> { patient, praticien, motif, diagnostic ("" tant que non posé) }
+        consultations: Map<String, Map> [persistent]
+        // id visite -> total des actes cotés, en centimes
+        actes: Map<String, Int> [persistent]
+        invariant actes >= 0
+        // notes cliniques, dans l'ordre : { visite, texte }
+        notes: List<Map> [persistent]
+    }
+    state consult {
+        initial: attente                        // aucune consultation ouverte pour cet id
+        attente -> ouverte
+        ouverte -> terminee
+        ouverte -> abandonnee                   // le patient part avant la fin : rien n'est facturable
+    }
+    face {
+        // Ouvre la consultation du rdv `id` : lit le rdv (Agenda.rdv, erreur `RdvInconnu` propagée), fait
+        // passer le rdv en consultation (Agenda.debuter — échoue si le patient n'est pas `arrive`), puis
+        // attente -> ouverte. Écrit { patient, praticien, motif, diagnostic: "" } et actes = 0.
+        // Consigne (praticien, "consultation.ouvrir", id). Renvoie la consultation.
+        signal ouvrir(id: String, motif: String) -> Map
+            writes consultations, actes
+            moves attente -> ouverte
+            calls Agenda.rdv, Agenda.debuter, Audit.consigner
+        // Ajoute une note { visite: id, texte }. Erreur `ConsultationFermee` si l'état n'est pas `ouverte`.
+        // Renvoie le nombre total de notes de cette visite.
+        signal ajouter_note(id: String, texte: String) -> Int
+            writes notes
+            reads consult
+        // Cote un acte : ajoute `montant` (centimes) au total de la visite. Erreur `ConsultationFermee` si
+        // l'état n'est pas `ouverte`. Renvoie le nouveau total.
+        signal coter_acte(id: String, montant: Int) -> Int
+            requires montant > 0
+            writes actes
+            reads consult
+        // Pose le diagnostic. Erreur `ConsultationFermee` si pas `ouverte`. Renvoie la consultation.
+        signal poser_diagnostic(id: String, diagnostic: String) -> Map
+            writes consultations
+            reads consult
+        // ouverte -> terminee, puis clôt le rdv (Agenda.cloturer). Erreur `DiagnosticManquant` si le
+        // diagnostic est encore "". Consigne (praticien, "consultation.terminer", id). Renvoie "terminee".
+        signal terminer(id: String) -> String
+            reads consultations
+            moves ouverte -> terminee
+            calls Agenda.cloturer, Audit.consigner
+        // ouverte -> abandonnee ; remet le total des actes à 0. Renvoie "abandonnee".
+        signal abandonner(id: String) -> String
+            writes actes
+            moves ouverte -> abandonnee
+        // L'état : "attente" pour un id jamais ouvert (jamais d'erreur).
+        signal statut_consultation(id: String) -> String                reads consult
+        // La consultation, ou erreur `ConsultationInconnue`.
+        signal consultation(id: String) -> Map                          reads consultations
+        // Total des actes cotés (centimes), 0 pour un id inconnu.
+        signal total_actes(id: String) -> Int                           reads actes
+            ensures result >= 0
+        // Garde pour les autres cellules : lève `ConsultationNonTerminee` sauf si l'état est `terminee`.
+        // Le corps DOIT être `require get_status(id) == "terminee" else ConsultationNonTerminee` : c'est
+        // cette forme que `soma verify` reconnaît comme preuve dans le produit des machines. Renvoie true.
+        signal exiger_terminee(id: String) -> Bool                      reads consult
+        // Les textes des notes de cette visite, dans l'ordre d'écriture.
+        signal notes_de(id: String) -> List<String>                     reads notes
+    }
+}

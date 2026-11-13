@@ -1,0 +1,1 @@
+soma check . -> "error: flesh `Stock`: there is no `skeleton Stock`" on fl.cell (exit 1) although app.cell imports it with the documented `use fl`; soma check app.cell is green

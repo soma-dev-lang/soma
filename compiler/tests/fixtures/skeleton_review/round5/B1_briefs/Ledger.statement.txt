@@ -1,0 +1,11 @@
+// Ledger: one folio per booking — what was charged, what was paid in cash, what was paid in points.
+signal statement(folio: String) -> Map   // Ledger
+    // map("charged", …, "cash", …, "points", …, "due", …).
+reads      cash: Map<String, Int> [persistent]   // folio -> total paid in cash, cents
+               invariant cash >= 0
+           charged: Map<String, Int> [persistent]   // folio -> total charged, cents
+               invariant charged >= 0
+           points_paid: Map<String, Int> [persistent]   // folio -> total paid with points, cents
+               invariant points_paid >= 0
+calls      due(folio: String) -> Int   reads cash, charged, points_paid
+               // charged - cash - points_paid; 0 for an unknown folio.

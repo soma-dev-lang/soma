@@ -1,0 +1,96 @@
+// Agenda — créneaux des praticiens et rendez-vous.
+// L'id d'un rendez-vous est l'id de la VISITE : la consultation, l'ordonnance et la facture qui en
+// découlent portent le même id (c'est ce qui permet de prouver les règles entre machines).
+skeleton Agenda {
+    memory {
+        // clé "praticien|date|heure" (ex. "dr1|2026-12-01|09:00") -> id du rdv qui l'occupe, "" si libre
+        creneaux: Map<String, String> [persistent]
+        // id rdv -> { patient: String, praticien: String, creneau: String (la clé) }
+        rdvs: Map<String, Map> [persistent]
+    }
+    state rdv {
+        initial: demande
+        demande -> confirme
+        confirme -> arrive
+        arrive -> en_consultation               // pris par Consultations.ouvrir
+        en_consultation -> termine              // pris par Consultations.terminer
+        demande -> annule
+        confirme -> annule
+        confirme -> absent                      // le patient ne s'est pas présenté
+        demande -> reporte                      // déplacé sur un autre créneau, à reconfirmer
+        confirme -> reporte
+        reporte -> confirme
+        reporte -> annule
+    }
+    face {
+        // Ouvre un créneau libre pour un praticien. Erreurs : `PraticienInconnu`, `CreneauExiste` si la clé
+        // existe déjà. Renvoie la clé "praticien|date|heure".
+        signal ouvrir_creneau(praticien: String, date: String, heure: String) -> String
+            writes creneaux
+            calls Praticiens.existe_praticien
+        // true si le créneau existe et n'est occupé par aucun rdv ; false sinon (y compris clé inconnue).
+        signal creneau_libre(cle: String) -> Bool                       reads creneaux
+        // Les clés (triées) des créneaux libres de ce praticien à cette date.
+        signal creneaux_libres(praticien: String, date: String) -> List<String>   reads creneaux
+        // Demande un rdv sur un créneau. Erreurs, dans cet ordre : `RdvExiste` (id déjà pris),
+        // `PatientInactif` (inconnu ou désactivé), `CreneauIndisponible` (inconnu ou occupé),
+        // `PraticienIndisponible` (en congé). Le praticien est le 1er segment de la clé.
+        // Occupe le créneau, écrit le rdv (état initial `demande`, aucune transition), émet
+        // rdv_change({ id, etat: "demande", patient }). Renvoie le rdv { patient, praticien, creneau }.
+        signal demander(id: String, patient: String, cle: String) -> Map
+            writes rdvs, creneaux
+            calls Patients.est_actif, Praticiens.est_disponible
+            emits rdv_change
+        // Confirme un rdv demandé, ou reconfirme un rdv reporté. Erreur `RdvInconnu` si l'id n'a pas de rdv.
+        // Émet rdv_change({ id, etat: "confirme", patient }). Renvoie "confirme".
+        signal confirmer(id: String) -> String
+            reads rdvs
+            moves demande -> confirme, reporte -> confirme
+            emits rdv_change
+        // confirme -> arrive (le patient est à l'accueil). Erreur `RdvInconnu`. Renvoie "arrive".
+        signal enregistrer_arrivee(id: String) -> String
+            reads rdvs
+            moves confirme -> arrive
+        // arrive -> en_consultation. Erreur `RdvInconnu`. Réservé à Consultations.ouvrir. Renvoie "en_consultation".
+        signal debuter(id: String) -> String
+            reads rdvs
+            moves arrive -> en_consultation
+        // en_consultation -> termine, seulement si la consultation de même id est terminée
+        // (appeler Consultations.exiger_terminee(id) AVANT la transition). Renvoie "termine".
+        signal cloturer(id: String) -> String
+            moves en_consultation -> termine
+            calls Consultations.exiger_terminee
+        // Annule un rdv demandé, confirmé ou reporté, libère son créneau (""), émet rdv_change({ id, etat: "annule",
+        // patient }), consigne ("accueil", "rdv.annuler", id). Erreur `RdvInconnu`. Renvoie "annule".
+        signal annuler_rdv(id: String) -> String
+            writes creneaux
+            reads rdvs
+            moves demande -> annule, confirme -> annule, reporte -> annule
+            calls Audit.consigner
+            emits rdv_change
+        // Reporte un rdv demandé ou confirmé sur un autre créneau du MÊME praticien : libère l'ancien créneau,
+        // occupe le nouveau, met à jour rdv.creneau, passe à `reporte` (à reconfirmer par confirmer).
+        // Erreurs : `RdvInconnu`, `CreneauIndisponible` (inconnu ou occupé), `AutrePraticien` si le 1er segment
+        // de la clé n'est pas le praticien du rdv. Émet rdv_change({ id, etat: "reporte", patient }).
+        // Renvoie le rdv mis à jour.
+        signal reporter(id: String, nouvelle_cle: String) -> Map
+            writes rdvs, creneaux
+            moves demande -> reporte, confirme -> reporte
+            emits rdv_change
+        // confirme -> absent ; le créneau reste occupé (perdu). Émet rdv_change({ id, etat: "absent", patient }).
+        // Erreur `RdvInconnu`. Renvoie "absent".
+        signal marquer_absent(id: String) -> String
+            reads rdvs
+            moves confirme -> absent
+            emits rdv_change
+        // L'état du rdv ("demande" tant qu'aucune transition). Erreur `RdvInconnu` si l'id n'a pas de rdv.
+        signal statut_rdv(id: String) -> String                         reads rdvs, rdv
+        // Le rdv { patient, praticien, creneau }, ou erreur `RdvInconnu`.
+        signal rdv(id: String) -> Map                                   reads rdvs
+        // Les ids (triés) des rdvs de ce patient, tous états confondus.
+        signal rdvs_du_patient(patient: String) -> List<String>         reads rdvs
+        // Nombre de rdvs actuellement dans cet état.
+        signal compter_statut(statut: String) -> Int                    reads rdvs, rdv
+            ensures result >= 0
+    }
+}

@@ -1,0 +1,17 @@
+// An unguarded slot named like a (lower-case) cell: `l.get(k)` reads the SLOT at run time,
+// the prover takes cell l's `ensures result >= 0`.
+cell l { face { signal get(k: String) -> Int
+   ensures result >= 0 }
+  on get(k: String) { return 1 } }
+cell A {
+    memory { c: Map<String, Int>  invariant c >= 0 }
+    memory { l: Map<String, Int> }
+    on put(k: String, v: Int) { l[k] = v
+  return 1 }
+    on w(k: String) { c.set(k, l.get(k) ?? 0) return 1 }
+    on probe() { put("k", 0 - 5)
+ let r = try { w("k") }
+ print(r)
+ return r.kind ?? "ok" }
+}
+cell test T { rules { assert A.probe() == "invariant" } }

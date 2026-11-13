@@ -1,0 +1,10 @@
+cell A {
+    memory { key: Map<String, Int>  invariant key >= 0 }
+    on w(k: String, n: Int) { key.set(k, 5)
+        return 1 }
+    on t(k: String, n: Int) { let r = try { w(k, n) }
+        return r.kind ?? "ok" }
+}
+cell test T { rules {
+  assert A.t("a", 1) == "ok"
+} }

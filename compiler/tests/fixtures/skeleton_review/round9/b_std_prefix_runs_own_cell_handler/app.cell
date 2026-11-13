@@ -1,0 +1,20 @@
+skeleton A {
+    memory { own: Map<String, Int> }
+    face {
+        signal values(a: Int) -> Int   writes own
+        signal seen() -> Int           reads own
+        signal go() -> Int
+    }
+}
+flesh A {
+    on values(a) { own.set("h", a) return 7 }
+    on seen() { return own.get("h") ?? 0 }
+    on go() { let r = std.values(5)
+ return r }
+}
+cell test T {
+    rules {
+        let r = try { A.go() }
+        assert A.seen() == 0
+    }
+}

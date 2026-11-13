@@ -123,7 +123,11 @@ impl<'a> CostWalk<'a> {
             _ => None,
         };
         let label = format!("horde({}, …) in `{}`", target.clone().unwrap_or_else(|| "?".to_string()), handler_name);
-        if target.is_none() {
+        // a name that is no handler of the program is a VARIABLE holding
+        // one (`horde(h, …)`): as computed as any expression — it was
+        // read as a handler with no body, "its tasks call no think()"
+        let known = target.as_ref().map_or(false, |t| self.handlers.contains_key(t.as_str()) || self.handlers.contains_key(t.rsplit('.').next().unwrap_or(t)));
+        if target.is_none() || !known {
             self.unbounded_sites.push(format!("{}::horde with a computed target", handler_name));
             self.horde_notes.borrow_mut().push((false, format!("{label}: the target is computed — its cost cannot be bounded")));
             return;
@@ -497,6 +501,26 @@ impl<'a> CostWalk<'a> {
             Expr::MethodCall { target, method, args } => {
                 self.visit_expr(&target.node, handler_name);
                 for a in args { self.visit_expr(&a.node, handler_name); }
+                // `B.spend()` where `B` is ALSO a local of this handler is the call
+                // `spend(B)` of this cell's own handler: both readings are
+                // counted (an upper bound) when both handlers exist
+                if let Expr::Ident(cell) = &target.node {
+                    let here = self.stack.last().map(|k| k.as_str()).unwrap_or(handler_name).split('.').next().unwrap_or("").to_string();
+                    let own = format!("{}.{}", here, method);
+                    if *cell != here {
+                        if let Some(body) = self.handlers.get(own.as_str()).copied() {
+                            if !self.stack.iter().any(|h| h == &own) {
+                                let mut callee = self.child();
+                                callee.stack.push(own.clone());
+                                callee.visit_seq(body, &own);
+                                self.tokens = self.tokens.saturating_add(callee.tokens);
+                                self.latency_ms = self.latency_ms.saturating_add(callee.latency_ms);
+                                self.unbounded_sites.extend(callee.unbounded_sites);
+                                self.latency_sites.extend(callee.latency_sites);
+                            }
+                        }
+                    }
+                }
                 // `Ledger.settle(x)`: another cell's handler spends too
                 if let Expr::Ident(cell) = &target.node {
                     let key = format!("{}.{}", cell, method);
@@ -868,7 +892,10 @@ fn literal_range_len(iter: &Expr) -> Option<i64> {
 
 /// Every cell's handlers, for the cost walk (as the checker builds them).
 pub fn all_handlers_of(program: &crate::ast::Program) -> AllHandlers {
-    program.cells.iter().map(|c| {
+    // (interior cells too: an event a parent raises is heard by its interior)
+    let all: Vec<crate::ast::Spanned<crate::ast::CellDef>> = crate::checker::names::collect_cells(program).into_iter()
+        .map(|c| crate::ast::Spanned::new(c.clone(), crate::ast::Span::new(0, 0))).collect();
+    all.iter().map(|c| {
         let mut hs: std::collections::HashMap<String, Vec<Spanned<Statement>>> = c.node.sections.iter().filter_map(|s| match &s.node {
             Section::OnSignal(h) => Some((h.signal_name.clone(), h.body.clone())),
             _ => None,

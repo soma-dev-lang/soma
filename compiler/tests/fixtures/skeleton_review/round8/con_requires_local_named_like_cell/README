@@ -1,0 +1,1 @@
+soma verify app.cell -> "✓ f: requires n > 0 — proven at 1 call site (ok)" ; soma test app.cell: in cell B, `let A = 0 - 5` then `A.f()` is UFCS f(-5) at run time -> kind requires. Faulty line: let A = 0 - 5 / let r = try { A.f() }

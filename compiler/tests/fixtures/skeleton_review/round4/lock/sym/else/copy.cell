@@ -1,0 +1,53 @@
+// A counter that cannot go negative, behind a session that must be opened
+// before it is used and cannot be used once closed — written skeleton-first.
+//
+// This file is the STRUCTURE: memory, the lifecycle, and for each signal its
+// frame — what its body may read, write, call and which edges it may take.
+// The bodies are the flesh, in lib/counter.cell. `soma check` refuses a body
+// that does anything its frame does not say.
+//
+//   soma check    app.cell      static gates, and every body against its frame
+//   soma verify   app.cell      proves the `session` state machine
+//   soma holes    app.cell      the signals with no body yet, in the order to write them
+//   soma skeleton app.cell Counter.reset     everything needed to write that one body
+//   soma test     app.cell      runs CounterTests
+
+use lib::counter
+
+skeleton Counter {
+    memory {
+        counts: Map<String, Int> [persistent]
+        invariant counts >= 0 && counts <= 1000000
+    }
+
+    state session {
+        initial: idle
+        idle -> open
+        open -> closed                                  // closed is terminal
+    }
+
+    face {
+        signal total() -> Int                           reads counts
+        signal add(n: Int) -> Int
+            writes counts
+            calls total
+        signal reset() -> Int                           writes counts  moves open -> closed      // a hole: no body yet
+        signal open_session(id: String) -> String       moves idle -> open
+        signal close_session(id: String) -> String      moves open -> closed
+        signal request(method: String, path: String, body: String) -> Map
+            calls total, add
+    }
+}
+
+cell test CounterTests {
+    rules {
+        assert add(5) == 5
+        assert_fails add(0 - 100) matching "NegativeAmount"   // refused…
+        assert total() == 5                                   // …and the slot is unchanged
+        assert request("POST", "/counter/-1", "")._status == 400
+        assert request("POST", "/counter/2", "").total == 7
+        assert open_session("s1") == "open"
+        assert close_session("s1") == "closed"
+        assert_fails open_session("s1")      // closed is terminal: no way back
+    }
+}

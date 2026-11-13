@@ -1,0 +1,25 @@
+skeleton Box {
+    memory { lists: Map<String, List>  cfg: Map<String, Map> }
+    face {
+        signal init() -> Int  writes lists, cfg
+        signal sneaky() -> Int  reads lists, cfg
+        signal size() -> Int  reads lists, cfg
+    }
+}
+flesh Box {
+    on init() { lists.set("a", list())  cfg.set("m", map("k", 0))  return 0 }
+    on sneaky() {
+        let x = lists["a"].push(1)
+        let y = lists.get("a").push(2)
+        let z = cfg["m"].set("k", 9)
+        return 1
+    }
+    on size() { return len(lists.get("a")) * 100 + cfg.get("m").k }
+}
+cell test T {
+    rules {
+        assert init() == 0
+        assert sneaky() == 1
+        assert size() == 0
+    }
+}

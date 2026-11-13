@@ -1,0 +1,11 @@
+cell A {
+    memory { rows: List<Int>  invariant _slot_len >= 1 }
+    on add(x: Int) { rows.push(x) return 1 }
+    on del() { rows.delete(0) return 1 }
+    on probe() { add(1)
+ let r = try { del() }
+ print(r)
+ print(len(rows))
+ return r.kind ?? "ok" }
+}
+cell test T { rules { assert A.probe() == "invariant" } }

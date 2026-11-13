@@ -1,0 +1,1 @@
+soma check app.cell -> "✓ cost: latency bound proven — peak 0 ms ≤ declared 100 ms" ; soma test app.cell: A.run() measures ~200 ms. Faulty line: std.sleep(60) (three times)

@@ -1,0 +1,12 @@
+cell B {
+    face { signal pos(x: Int) -> Int   ensures result >= 0 }
+    on pos(x: Int) { return abs(x) }
+}
+cell A {
+    memory { c: Map<String, Int>  invariant c >= 0 }
+    on delegate(cn: String, h: String, x: Int) { return x }
+    on w(k: String, x: Int) { c.set(k, delegate("B", "pos", x))  return 1 }
+    on probe() { let r = try { w("k", 0 - 5) }
+        return r.kind ?? "ok" }
+}
+cell test T { rules { assert A.probe() == "invariant" } }

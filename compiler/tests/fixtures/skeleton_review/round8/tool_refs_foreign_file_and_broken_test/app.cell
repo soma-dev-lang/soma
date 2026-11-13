@@ -1,0 +1,12 @@
+use lib::stock_flesh
+// The stock.
+skeleton Stock {
+    memory { items: Map<String, Int> }   // counts
+    face {
+        // how many
+        signal level(sku: String) -> Int   reads items
+        signal put(sku: String) -> Int   writes items
+        signal hole(sku: String) -> Int   writes items  calls level
+    }
+}
+cell Other { on f() { return Stock.level("a") } }

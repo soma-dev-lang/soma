@@ -1,0 +1,8 @@
+[package]
+name = "hotel"
+version = "0.1.0"
+edition = "2027"
+
+[verify]
+cells = ["Bookings", "Housekeeping"]
+deadlock_free = true

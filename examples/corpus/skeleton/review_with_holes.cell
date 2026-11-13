@@ -1,0 +1,89 @@
+// REVIEW WITH HOLES — a design that is proven before it is finished.
+//
+// Three of the seven signals have a body; the other four are HOLES: the
+// skeleton declares them, no flesh fills them yet. That is a state the
+// toolchain understands:
+//
+//   soma check   →  passes, and counts the holes
+//   soma verify  →  proves the lifecycle, then
+//                   VERIFY OK (skeleton — the holes above are open obligations)
+//   soma holes   →  lists them in the order to write them (a hole comes
+//                   after the holes it calls): accept and decline before decide
+//   calling one  →  fails with kind "not_implemented", naming the signal
+//
+// The tests below exercise what exists and pin how a hole behaves.
+//
+//   soma holes    review_with_holes.cell
+//   soma skeleton review_with_holes.cell Review.decide
+//   soma test     review_with_holes.cell
+
+skeleton Review {
+    memory {
+        authors: Map<String, String> [persistent]
+        scores: Map<String, Int> [persistent]
+        invariant scores >= 0 && scores <= 10
+    }
+
+    state paper {
+        initial: draft
+        draft -> submitted
+        submitted -> approved
+        submitted -> rejected
+        rejected -> draft           // revise and resubmit
+    }
+
+    face {
+        signal draft(id: String, author: String) -> String
+            writes authors
+        signal submit(id: String, author: String) -> String
+            reads authors
+            moves draft -> submitted
+        signal score(id: String, points: Int) -> Int
+            requires points >= 0
+            requires points <= 10
+            writes scores
+        signal accept(id: String) -> String             moves submitted -> approved          // hole
+        signal decline(id: String) -> String            moves submitted -> rejected          // hole
+        signal decide(id: String) -> String                                                  // hole
+            reads scores
+            calls accept, decline
+        signal revise(id: String, author: String) -> String                                  // hole
+            reads authors
+            moves rejected -> draft
+    }
+}
+
+flesh Review {
+    on draft(id, author) {
+        require authors.get(id) == () else Taken "paper '{id}' exists"
+        authors.set(id, author)
+        return id
+    }
+
+    on submit(id, author) {
+        require authors.get(id) == author else Forbidden "only its author submits a paper"
+        transition(id, "draft", "submitted")
+        return "submitted"
+    }
+
+    on score(id, points) {
+        scores.set(id, points)
+        return points
+    }
+}
+
+cell test ReviewSoFar {
+    rules {
+        assert draft("p1", "ada") == "p1"
+        assert_fails submit("p1", "bob") matching "Forbidden"
+        assert submit("p1", "ada") == "submitted"
+        assert score("p1", 8) == 8
+        assert_fails score("p1", 11)                     // the contract, before the invariant
+        assert_fails scores.set("p1", 0 - 1)             // the invariant itself
+
+        // a hole fails by name; nothing it would have done has happened
+        assert_fails decide("p1") matching "not_implemented"
+        assert_fails accept("p1") matching "Review.accept is a hole"
+        assert get_status("p1") == "submitted"
+    }
+}

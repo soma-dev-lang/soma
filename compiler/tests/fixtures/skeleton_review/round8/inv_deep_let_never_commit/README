@@ -1,0 +1,1 @@
+soma verify app.cell && soma test app.cell -> faulty line: ✓ invariant c >= 0 — writer w can never commit x + 1 to c: the write is always rejected (and the handler catches it) ; the test shows the write committed (c["k"] == 6)

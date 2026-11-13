@@ -1,0 +1,33 @@
+// REPRO : une règle [verify.before] dont la cible est l'état INITIAL d'une machine reçoit un ✓
+// alors qu'aucun corps ne garde quoi que ce soit (`ask` crée la demande sans regarder Visit).
+skeleton Visit {
+    state v {
+        initial: waiting
+        waiting -> open
+        open -> done
+    }
+    face {
+        signal open_visit(id: String) -> String     moves waiting -> open
+        signal close_visit(id: String) -> String    moves open -> done
+    }
+}
+flesh Visit {
+    on open_visit(id) { transition(id, "waiting", "open")  return "open" }
+    on close_visit(id) { transition(id, "open", "done")  return "done" }
+}
+skeleton Lab {
+    memory { asks: Map<String, String> [persistent] }
+    state a {
+        initial: asked
+        asked -> sampled
+    }
+    face {
+        // NO guard at all: an analysis is asked whatever the visit's state.
+        signal ask(id: String, visit: String) -> String   writes asks
+        signal sample(id: String) -> String               moves asked -> sampled
+    }
+}
+flesh Lab {
+    on ask(id, visit) { asks.set(id, visit)  return "asked" }
+    on sample(id) { transition(id, "asked", "sampled")  return "sampled" }
+}

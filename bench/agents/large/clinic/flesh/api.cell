@@ -1,0 +1,27 @@
+flesh Api {
+    on _router(method: String, path: String, body: Map) {
+        match map("method", method, "path", path) {
+            {method: "GET", path: "/sante"} -> sante()
+            {method: "POST", path: "/patients"} -> Patients.inscrire(body.id, body.nom, body.naissance)
+            {method: "GET", path: "/patients/" + id} -> Patients.fiche(id)
+            {method: "POST", path: "/rdv"} -> Agenda.demander(body.id, body.patient, body.creneau)
+            {method: "POST", path: "/rdv/confirmer/" + id} -> map("etat", Agenda.confirmer(id))
+            {method: "POST", path: "/rdv/annuler/" + id} -> map("etat", Agenda.annuler_rdv(id))
+            {method: "POST", path: "/paiements"} -> map("reste_du", Paiements.payer(body.id, body.facture, body.montant, body.moyen))
+            {method: "GET", path: "/visites/" + id} -> Rapports.dossier_visite(id)
+            {method: "GET", path: "/tableau/" + date} -> Rapports.tableau_de_bord(date)
+            _ -> response(404, map("error", "route"))
+        }
+    }
+    on request(method, path, body) {
+        let r = try { _router(method, path, body) }
+        if r.error == () { return r.value }
+        let status = 400
+        if ends_with(r.kind, "Inconnu") || ends_with(r.kind, "Inconnue") { status = 404 }
+        if r.kind == "invalid_transition" { status = 409 }
+        return response(status, map("error", r.kind, "detail", r.detail))
+    }
+    on sante() {
+        return map("ok", true, "patients", Patients.compter(), "audit", Audit.taille())
+    }
+}

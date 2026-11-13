@@ -323,7 +323,9 @@ pub fn check_program(program: &Program) -> (Vec<DispatchFinding>, Vec<DispatchFi
                             }
                         }
                         let caller_defines = definers.contains(&cell.name);
-                        if caller_defines && definers.len() >= 2 {
+                        // (a `_private` handler: the other cell's cannot be meant — it
+                        // is not callable from here — so there is nothing to tell apart)
+                        if caller_defines && definers.len() >= 2 && !name.starts_with('_') {
                             let others: Vec<&String> =
                                 definers.iter().filter(|d| **d != cell.name).collect();
                             let other = others[0];

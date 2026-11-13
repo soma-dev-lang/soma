@@ -1,0 +1,26 @@
+skeleton Q {
+    const B = "a"
+    state fl {
+        initial: a
+        a -> b
+        a -> x
+        B -> x
+    }
+    face {
+        signal st(id: String) -> String   reads fl
+        signal ab(id: String) -> Int      moves a -> b
+        signal mv(id: String) -> Int      moves B -> x  calls ab
+    }
+}
+flesh Q {
+    on st(id) { return get_status(id) ?? "a" }
+    on ab(id) { transition(id, "a", "b")  return 1 }
+    on mv(id) {
+        transition(id, B, "x")  return 1
+    }
+}
+cell test T {
+    rules {
+        assert Q.mv("k") == 1
+    }
+}

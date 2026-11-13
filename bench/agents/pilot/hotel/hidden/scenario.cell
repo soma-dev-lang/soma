@@ -1,0 +1,130 @@
+// HIDDEN — cross-cell scenarios (the primary measure). Never shown to an agent.
+
+cell test ScenarioStay {
+    rules {
+        assert add_room("201", "double", 10000).rate == 10000
+        assert quote("201", 5, 8) == 30000
+        assert_fails quote("999", 5, 8) matching "NotFound"
+        assert book("s1", "ana", "201", 5, 8).total == 30000
+        assert stay_state("s1") == "confirmed"
+        assert held_by("201", 7) == "s1"
+        assert book("s2", "ben", "201", 7, 9).reason == "not available"
+        assert stay_state("s2") == "requested"
+        assert_fails book("s1", "ana", "201", 20, 21) matching "Taken"
+        assert_fails book("s3", "ana", "999", 5, 6) matching "NotFound"
+
+        // the rate at booking time is the booking's rate
+        assert set_rate("201", 12000) == 12000
+        assert booking("s1").nightly == 10000
+
+        assert_fails check_in("s1", 4) matching "WrongDay"
+        assert check_in("s1", 5).due == 30000
+        assert room_status("201") == "occupied"
+        assert_fails check_out("s1", 8) matching "Unpaid"
+        assert settle("s1", 25000).due == 5000
+        assert_fails settle("s1", 5001) matching "Overpaid"
+        assert settle("s1", 5000).due == 0
+        assert check_out("s1", 8).points == 300
+        assert stay_state("s1") == "checked_out"
+        assert room_status("201") == "dirty"
+        assert points_of("ana") == 300
+
+        // the room is not ready for the next guest until it is cleaned
+        assert book("s4", "ben", "201", 8, 9).total == 12000
+        assert_fails check_in("s4", 8) matching "NotReady"
+        assert start_cleaning("201", "mia") == "cleaning"
+        assert finish_cleaning("201", "mia") == "clean"
+        assert check_in("s4", 8).due == 12000
+    }
+}
+
+cell test ScenarioCancelNoShowAudit {
+    rules {
+        assert add_room("301", "single", 6000).rate == 6000
+        assert add_room("302", "single", 7000).rate == 7000
+
+        // free cancellation two days before, a night's fee after
+        assert book("c1", "cy", "301", 10, 13).nights == 3
+        assert_fails cancel("c1", "dee", 5) matching "Forbidden"
+        assert cancel("c1", "cy", 8).fee == 0
+        assert due("c1") == 0
+        assert held_by("301", 11) == ""
+        assert_fails cancel("c1", "cy", 8)
+        assert book("c2", "cy", "301", 10, 13).ok == true
+        assert cancel("c2", "cy", 9).fee == 6000
+        assert due("c2") == 6000
+        assert is_free("301", 10, 13) == true
+        assert_fails check_in("c2", 10)
+
+        // the night audit turns the day's missing arrivals into no-shows
+        assert book("n1", "eli", "301", 20, 22).ok == true
+        assert book("n2", "fay", "302", 20, 23).ok == true
+        assert book("n3", "gus", "301", 22, 23).ok == true
+        assert arriving(20) == ["n1", "n2"]
+        assert check_in("n2", 20).due == 21000
+        assert arriving(20) == ["n1"]
+        assert night_audit(20).no_shows == 1
+        assert stay_state("n1") == "no_show"
+        assert due("n1") == 6000
+        assert held_by("301", 21) == ""
+        assert stay_state("n3") == "confirmed"
+        assert night_audit(20).fees == 0
+        assert_fails mark_no_show("n2")
+    }
+}
+
+cell test ScenarioPointsAndEarlyDeparture {
+    rules {
+        assert add_room("401", "suite", 20000).rate == 20000
+        assert earn("hal", 500000) == 5000
+        assert book("p1", "hal", "401", 30, 33).total == 60000
+        assert check_in("p1", 30).due == 60000
+
+        // points pay part of the folio; they earn nothing
+        assert settle_with_points("p1", 6000).reason == "not enough points"
+        assert points_of("hal") == 5000
+        assert settle_with_points("p1", 5000).due == 55000
+        assert points_of("hal") == 0
+        assert settle("p1", 55000).due == 0
+        assert statement("p1").points == 5000
+
+        // leaving a day early frees the last night, without refund
+        assert check_out("p1", 32).points == 550
+        assert held_by("401", 31) == "p1"
+        assert held_by("401", 32) == ""
+        assert book("p2", "ivy", "401", 32, 33).ok == true
+
+        // paying more points than is due takes no points
+        assert earn("ivy", 3000000) == 30000
+        assert start_cleaning("401", "noa") == "cleaning"
+        assert finish_cleaning("401", "noa") == "clean"
+        assert check_in("p2", 32).due == 20000
+        assert_fails settle_with_points("p2", 20001) matching "Overpaid"
+        assert points_of("ivy") == 30000
+    }
+}
+
+cell test ScenarioMoveRoom {
+    rules {
+        assert add_room("501", "single", 5000).rate == 5000
+        assert add_room("502", "single", 6500).rate == 6500
+        assert book("m1", "jo", "501", 40, 42).total == 10000
+        assert book("m2", "kai", "502", 41, 43).ok == true
+
+        assert move_room("m1", "m1b", "502").reason == "not available"
+        assert stay_state("m1") == "confirmed"
+        assert held_by("501", 40) == "m1"
+        assert_fails move_room("m1", "m1b", "999") matching "NotFound"
+
+        assert cancel("m2", "kai", 30).fee == 0
+        assert move_room("m1", "m1b", "502").total == 13000
+        assert stay_state("m1") == "cancelled"
+        assert due("m1") == 0
+        assert held_by("501", 40) == ""
+        assert held_by("502", 41) == "m1b"
+        assert booking("m1b").guest == "jo"
+        assert booking("m1b").nightly == 6500
+        assert_fails booking("nope") matching "NotFound"
+        assert guest_of("nope") == ""
+    }
+}

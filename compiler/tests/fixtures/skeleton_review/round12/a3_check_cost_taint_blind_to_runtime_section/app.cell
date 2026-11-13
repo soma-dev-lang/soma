@@ -1,0 +1,15 @@
+cell agent R {
+    cost { tokens: 100 }
+    state m { initial: a
+        a -> b
+        a -> c
+    }
+    on ask(q: String) { return think(q, map("max_tokens", 50)) }
+    on st(id: String) { return get_status(id) ?? "a" }
+    runtime {
+        let t = think("b", map("max_tokens", 5000))
+        let u = think("b", map("max_tokens", 5000))
+        transition("k", t)
+        print(get_status("k"))
+    }
+}

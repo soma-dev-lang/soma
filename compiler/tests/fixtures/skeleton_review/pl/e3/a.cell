@@ -1,0 +1,19 @@
+skeleton Bank {
+    memory {
+        balance: Map<String, Int>
+        invariant balance >= 0
+    }
+    face {
+        signal deposit(who: String, n: Int) -> Int
+            requires n > 0
+            ensures result >= 0
+            writes balance
+        signal get(who: String) -> Int reads balance
+    }
+}
+flesh Bank {
+    on get(who) { return balance.get(who) ?? 0 }
+}
+flesh Bank {
+    on deposit(who, n) { balance.set(who, 0 - n)  return 0 - n }
+}

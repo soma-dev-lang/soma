@@ -1,0 +1,13 @@
+[package]
+name = "repro"
+version = "0.1.0"
+entry = "app.cell"
+edition = "2027"
+
+[verify.before."Desk.requested"]
+requires = ["Visit.open"]
+
+# Ce qu'il faudrait pouvoir écrire pour « pas terminée » — refusé (« names state 'Visit.done', which no verified
+# state machine declares »), et verify imprime quand même deux « ✓ … (vacuously true) » avant VERIFY FAILED :
+# [verify.after."Visit.done"]
+# never = ["Desk.requested"]

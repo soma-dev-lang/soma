@@ -1,0 +1,30 @@
+cell Outer {
+    interior {
+        skeleton Inner {
+            state m { initial: a
+                a -> b }
+            face {
+                signal igo(k: String) -> Int            moves a -> b
+                signal ist(k: String) -> String         reads m
+            }
+        }
+    }
+    state o { initial: todo
+        todo -> done }
+    on finish(k: String) {
+        require ist(k) == "b" else NotYet
+        transition(k, "todo", "done")
+        return 1
+    }
+    on go(k: String) { return igo(k) }
+}
+flesh Inner {
+    on igo(k) { transition(k, "a", "b") return 1 }
+    on ist(k) { return get_status(k) ?? "a" }
+}
+cell test T {
+    rules {
+        assert Outer.go("k") == 1
+        assert Outer.finish("k") == 1
+    }
+}

@@ -1,0 +1,13 @@
+cell A {
+    state m {
+        initial: x
+        x -> y { guard { (o.get_status() ?? "x") == "x" } }
+    }
+    on go(k: String, o: String) { 
+ require (o.get_status() ?? "x") == "x" else B
+ transition(o, "x", "y")
+ transition(k, "x", "y") return 1 }
+    on probe() { let r = try { go("k", "o") }
+        return r.kind ?? "ok" }
+}
+cell test T { rules { assert A.probe() == "guard_failed" } }

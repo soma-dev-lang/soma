@@ -1,0 +1,1 @@
+soma verify app.cell -> "✓ composition: 1 signal pairs verified, 0 undelivered, 0 orphans" ; soma run app.cell -> signal log "signal lost (emitted by Worker.go)" sans handler (forme nue : ⚠ "emits signal lost but no sibling handles it") ; composition.rs collect_emits_from_expr ne descend pas dans try / arguments d appel

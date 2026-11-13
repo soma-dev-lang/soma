@@ -1,0 +1,22 @@
+# skeleton.lock — the structure `soma check` holds app.cell to.
+# Written by `soma skeleton app.cell --freeze`; changed on purpose with `--amend`. Do not edit.
+file app.cell
+
+== M sha256:f1657ffb9faf5909b533fb86c6e97f7fa253eb8c4bff34b1b033646bb01e3842
+skeleton M {
+    state fl {
+        initial: a
+        a -> b
+        b -> c
+    }
+    face {
+        signal ab(id: String) -> Int  moves a -> b
+        signal st(id: String) -> String  reads fl
+    }
+    // moved from outside by Rogue.kick — M.fl: b -> c
+}
+
+== soma.toml [verify] sha256:74d5af60569c1e022da0dd0ecb3ac3db2f9ba9782141aa47f241421a004e68ca
+package.edition = "2026"
+
+checksum sha256:1e639b31e7b54204a9a59fa9dd329b1b8cf3f2b639f01ba6d46e1830db66693a

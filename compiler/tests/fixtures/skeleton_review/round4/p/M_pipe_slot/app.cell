@@ -1,0 +1,34 @@
+skeleton A {
+    memory { s: Map<String, Int> [persistent] }
+    state fl { initial: a
+        a -> b
+        b -> c }
+    face {
+        signal go(id: String) -> Int     writes s  moves a -> b  calls B.apply, poke, now  emits ev
+        signal poke(id: String) -> Int   writes s
+    }
+}
+skeleton B {
+    memory { s: Map<String, Int> [persistent] }
+    face {
+        signal apply(f: Any) -> Int      // no clause: pure
+        signal peek(id: String) -> Int   reads s
+        signal poke(id: String) -> Int   writes s
+        signal ev(id: String)            writes s
+    }
+}
+flesh A {
+    on go(id) { let g = x => x |> s.set(7)  return B.apply(g) }
+    on poke(id) { s.set(id, 1)  return 1 }
+}
+flesh B {
+    on apply(f) { let r = f("j")  return 1 }
+    on peek(id) { return s.get(id) ?? 0 }
+    on poke(id) { s.set(id, 7)  return 1 }
+    on ev(id) { s.set(id, 7) }
+}
+cell test T {
+    rules {
+        assert A.go("k") == 1
+    }
+}

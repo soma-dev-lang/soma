@@ -1,0 +1,21 @@
+skeleton Bank {
+    memory { acct: Map<String, Int> [persistent] }
+    face {
+        signal peek(id: String) -> Int   reads acct
+        signal pure(id: String) -> Int   // no clause: a pure function of id
+    }
+}
+flesh Bank {
+    on peek(id) { return acct.get(id) ?? 0 }
+    on pure(id) {
+        let acct = 1                    // a local named like the slot
+        let r = acct.set(id, 5)         // expression form: writes the SLOT
+        return acct.get(id) ?? 0        // …and reads it
+    }
+}
+cell test T {
+    rules {
+        assert pure("k") == 5
+        assert peek("k") == 5
+    }
+}

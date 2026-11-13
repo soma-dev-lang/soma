@@ -1,0 +1,30 @@
+cell Visit {
+    state v {
+        initial: waiting
+        waiting -> open
+        open -> done
+    }
+    on open_visit(id: String) { transition(id, "waiting", "open")  return "open" }
+    on status(id: String) { return get_status(id) ?? "waiting" }
+}
+cell type R { variants { Opener(String)  Nope } }
+cell Desk {
+    state d {
+        initial: none
+        none -> requested
+    }
+    on st(id: String) { return get_status(id) ?? "none" }
+    on go(id: String) {
+        let q = Opener(id)
+        transition(id, "none", "requested")
+        return 1
+    }
+    on Opener(id: String) { Visit.open_visit(id)  return true }
+}
+cell test T {
+    rules {
+        let r = try { Desk.go("k") }
+        assert Desk.st("k") == "requested"
+        assert Visit.status("k") == "waiting"
+    }
+}

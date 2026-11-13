@@ -1,0 +1,1 @@
+soma verify app.cell -> « ✓ f: requires n > 0 — proven at 1 call site (ok) » ; soma test app.cell : `"{(0 - 5) |> A.f}"` dans `bad` lève kind requires — site d'appel non compté (même racine : droite FieldAccess d'un pipe, desugar.rs:318-333)

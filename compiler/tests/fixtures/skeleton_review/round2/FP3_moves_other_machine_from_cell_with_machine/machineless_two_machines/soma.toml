@@ -1,0 +1,2 @@
+[verify.before."Pay.paid"]
+requires = ["Approval.signed_off"]

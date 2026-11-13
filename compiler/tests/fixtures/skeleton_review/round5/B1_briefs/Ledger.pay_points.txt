@@ -1,0 +1,9 @@
+// Ledger: one folio per booking — what was charged, what was paid in cash, what was paid in points.
+signal pay_points(folio: String, amount: Int) -> Int   // Ledger
+    // The same, paid with points (the caller has already taken the points).
+    requires amount >= 1
+writes     points_paid: Map<String, Int> [persistent]   // folio -> total paid with points, cents
+               invariant points_paid >= 0
+calls      due(folio: String) -> Int   reads cash, charged, points_paid
+               // charged - cash - points_paid; 0 for an unknown folio.
+called by  Desk.settle_with_points

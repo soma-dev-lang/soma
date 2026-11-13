@@ -1,0 +1,5 @@
+cell B {
+    on tick(n: Int) { return n }
+}
+cell D { on d() { return B.tick(2) } }
+cell test T { rules { assert D.d() == 2 } }

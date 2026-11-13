@@ -1,0 +1,20 @@
+cell Outer {
+    interior {
+        skeleton Inner {
+            memory { n: Map<String, Int> }
+            face {
+                signal get(k: String) -> Int   writes n
+                signal put(k: String) -> Int   writes n
+            }
+        }
+    }
+    on run() { return 1 }
+}
+flesh Inner {
+    on get(k) { n.set(k, 5) return 5 }
+    on put(k) { n.set(k, 1) return 1 }
+}
+skeleton Top {
+    face { signal one() -> Int }
+}
+flesh Top { on one() { return 1 } }

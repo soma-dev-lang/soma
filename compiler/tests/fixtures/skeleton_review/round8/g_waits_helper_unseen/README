@@ -1,0 +1,1 @@
+soma verify app.cell -> "✓ refund() wait 1 …: nothing is written before it — no machine state is entered for the wait" (idem other(), et third() "rests in `a` … sweep() takes a transition out of it") ; soma test app.cell -> paid("k") == 7 commis, other: statut b, third: repose en b (que personne ne quitte) ; waits.rs:183-194 ne suit pas les appels (helper)

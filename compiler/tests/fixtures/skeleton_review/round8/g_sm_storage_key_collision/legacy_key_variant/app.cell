@@ -1,0 +1,24 @@
+cell X {
+    state A_m {
+        initial: x
+        x -> a
+        a -> b
+        b -> c
+    }
+    on s1(k: String) { transition(k, "x", "a") return 1 }
+    on s2(k: String) { transition(k, "a", "b") return 1 }
+    on s3(k: String) { transition(k, "b", "c") return 1 }
+    on st(k: String) { return get_status(k) ?? "x" }
+}
+cell A {
+    state m {
+        initial: x
+        x -> b
+    }
+    on touch(k: String) { transition(k, "x", "b") return 1 }
+}
+cell test T { rules { assert X.st("k") == "x"
+ assert A.touch("k") == 1
+ assert X.st("k") == "x"
+ assert (try { X.s3("k") }).kind == "invalid_transition"
+ assert X.st("k") != "c" } }

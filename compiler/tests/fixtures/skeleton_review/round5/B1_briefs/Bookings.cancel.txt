@@ -1,0 +1,26 @@
+// Bookings: the lifecycle of a stay. An instance is a booking id; its folio in Ledger has the same id.
+signal cancel(id: String, guest: String, day: Int) -> Map   // Bookings
+    // The guest cancels on day `day`. Only the booking's guest (error `Forbidden`); unknown id: `NotFound`.
+    // confirmed -> cancelled; all its nights are freed. Fee: 0 when day <= arrive - 2, else one
+    // night at the booking's nightly rate, charged to the folio. Returns map("ok", true, "fee", fee).
+reads      arrive: Map<String, Int> [persistent]   // booking -> first night (day)
+           depart: Map<String, Int> [persistent]   // booking -> day of departure (arrive < depart)
+           guests: Map<String, String> [persistent]   // booking -> guest
+           nightly: Map<String, Int> [persistent]   // booking -> the room's rate WHEN IT WAS BOOKED, cents
+               invariant nightly >= 1
+           rooms: Map<String, String> [persistent]   // booking -> room
+moves      confirmed -> cancelled
+machine    stay — one instance per id (the String or Int you pass); initial `requested`
+               get_status(id) is () until the id's first transition (edition 2026: `requested`) — write `get_status(id) ?? "requested"`
+               requested -> confirmed
+               confirmed -> checked_in
+               checked_in -> checked_out
+               confirmed -> cancelled
+               confirmed -> no_show
+calls      Calendar.free_nights(booking: String, room: String, from: Int, to: Int) -> Int   writes nights
+               // Frees the nights from <= d < to of `room` that `booking` holds (others are left alone). Returns how many were freed.
+               requires from < to
+           Ledger.charge(folio: String, amount: Int) -> Int   writes charged  calls due
+               // Adds `amount` to what the folio owes. Returns the folio's due amount afterwards.
+               requires amount >= 1
+called by  Desk.move_room

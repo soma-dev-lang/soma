@@ -1,0 +1,15 @@
+cell type Montants { variants { Montants { total: Int, patient: Int } } }
+skeleton F {
+    face {
+        signal a(t: Int) -> Montants
+        signal b(t: Int) -> Montants
+    }
+}
+flesh F {
+    on a(t) { return Montants { total: t, patient: t } }
+    on b(t) {
+        let m = Montants { total: t, patient: t }
+        return m
+    }
+}
+cell test T { rules { assert b(3).total == 3 } }

@@ -21,24 +21,36 @@ fn file_digest(path: &Path) -> Result<String, String> {
     std::fs::read(path).map(|b| sha256_hex(&b)).map_err(|e| format!("cannot read '{}': {}", path.display(), e))
 }
 
-/// `use` targets of a program, resolved beside it (lib/x.cell, x.cell).
+/// `use` targets of a program that are files of the project: beside the
+/// importing file, or from the entry's directory (`use side` is `side.cell`
+/// when that file is there — a package otherwise, pinned by soma.lock).
 fn local_imports(file: &Path, seen: &mut Vec<PathBuf>) {
-    let Ok(source) = std::fs::read_to_string(file) else { return };
-    let Ok(tokens) = crate::lexer::Lexer::new(&source).tokenize() else { return };
-    let Ok(program) = crate::parser::Parser::new(tokens).parse_program() else { return };
-    let dir = file.parent().map(|d| d.to_path_buf()).unwrap_or_default();
-    for import in &program.imports {
-        let rel = import.strip_prefix("lib:").map(|r| format!("lib/{r}")).unwrap_or_else(|| import.clone());
-        if rel.starts_with("pkg:") || rel.starts_with("std:") {
-            // an installed package is pinned by soma.lock (attested as a file below)
-            continue;
-        }
-        let candidate = if rel.ends_with(".cell") { dir.join(&rel) } else { dir.join(format!("{rel}.cell")) };
-        if candidate.exists() && !seen.contains(&candidate) {
-            seen.push(candidate.clone());
-            local_imports(&candidate, seen);
+    let root = file.parent().map(|d| d.to_path_buf()).unwrap_or_default();
+    fn rec(file: &Path, root: &Path, seen: &mut Vec<PathBuf>) {
+        let Ok(source) = std::fs::read_to_string(file) else { return };
+        let Ok(tokens) = crate::lexer::Lexer::new(&source).tokenize() else { return };
+        let Ok(program) = crate::parser::Parser::new(tokens).parse_program() else { return };
+        let dir = file.parent().map(|d| d.to_path_buf()).unwrap_or_default();
+        for import in &program.imports {
+            if import.starts_with("std:") { continue; }
+            let rel = match (import.strip_prefix("lib:"), import.strip_prefix("pkg:")) {
+                (Some(r), _) => format!("lib/{r}"),
+                (_, Some(r)) => r.to_string(),
+                _ => import.clone(),
+            };
+            let rel = if rel.ends_with(".cell") { rel } else { format!("{rel}.cell") };
+            for candidate in [dir.join(&rel), root.join(&rel)] {
+                if candidate.exists() {
+                    if !seen.contains(&candidate) {
+                        seen.push(candidate.clone());
+                        rec(&candidate, root, seen);
+                    }
+                    break;
+                }
+            }
         }
     }
+    rec(file, &root, seen);
 }
 
 fn class_of(status: &str, message: &str) -> &'static str {

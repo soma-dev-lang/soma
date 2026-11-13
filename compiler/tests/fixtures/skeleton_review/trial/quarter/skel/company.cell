@@ -1,0 +1,92 @@
+// Company-level skeletons: randomness, money, executive attention.
+
+skeleton Rng {
+    memory {
+        st: Map<String, Int> [persistent]
+        invariant st >= 0
+    }
+    face {
+        signal reseed(n: Int) -> Int
+            requires n >= 0
+            writes st
+        signal roll(sides: Int) -> Int
+            requires sides > 0
+            ensures result >= 0 && result < sides
+            writes st
+        signal chance(bps: Int) -> Bool
+            requires bps >= 0 && bps <= 10000
+            calls roll
+    }
+}
+
+skeleton Finance {
+    const MAX_DEBT = 5000000
+    const FOUNDER_SHARES = 1000000
+    memory {
+        ledger: Map<String, Int> [persistent]      // cash, debt, shares, and per-quarter flows: rev_q, cogs_q, opex_q, rd_q, legal_q, capex_q, interest_q
+        invariant ledger >= 0
+        history: List<Map> [persistent]
+    }
+    state solvency {
+        initial: healthy
+        healthy -> strained
+        strained -> healthy
+        strained -> breach
+        breach -> strained
+        breach -> bankrupt
+    }
+    face {
+        signal open(cash: Int) -> Int
+            requires cash >= 0
+            writes ledger
+        signal cash() -> Int
+            ensures result >= 0
+            reads ledger
+        signal debt() -> Int
+            ensures result >= 0
+            reads ledger
+        signal earn(amount: Int, kind: String) -> Int
+            requires amount >= 0
+            writes ledger
+        signal spend(amount: Int, kind: String) -> Bool
+            requires amount >= 0
+            writes ledger
+        signal raise_debt(amount: Int) -> Int
+            requires amount > 0
+            writes ledger
+        signal raise_equity(amount: Int, valuation: Int) -> Int
+            requires amount > 0 && valuation > 0
+            ensures result >= 0 && result <= 10000
+            writes ledger
+        signal accrue_interest(rate_bps: Int) -> Int
+            requires rate_bps >= 0
+            ensures result >= 0
+            writes ledger
+            calls debt, spend
+        signal assess(company: String) -> String
+            calls cash, debt
+            moves healthy -> strained, strained -> healthy, strained -> breach, breach -> strained, breach -> bankrupt
+        signal close_books(q: Int) -> Map
+            writes ledger, history
+        signal runway() -> Int
+            reads ledger, history
+    }
+}
+
+skeleton Attention {
+    const POINTS = 10
+    memory {
+        left: Map<String, Int> [persistent]
+        invariant left >= 0 && left <= POINTS
+        focus: Map<String, Int> [persistent]
+        invariant focus >= 0 && focus <= POINTS
+    }
+    face {
+        signal refill() -> Int                          writes left, focus
+        signal remaining() -> Int                       reads left
+        signal attend(area: String, n: Int) -> Bool
+            requires n > 0
+            writes left, focus
+        signal attended(area: String) -> Bool           reads focus
+    }
+}

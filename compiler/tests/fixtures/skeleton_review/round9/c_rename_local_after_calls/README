@@ -1,0 +1,1 @@
+soma rename app.cell B.tick pulse -> la variable locale `tick` de `[calls, tick]` (l.6) est renommée : check rouge (E0029). Même cause que c_rename_slot_in_frame (refs.rs:374-385, clause() hors d'un cadre).

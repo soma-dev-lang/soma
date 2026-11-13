@@ -1,0 +1,10 @@
+cell A {
+    memory { c: Map<String, Int>  invariant c >= 0 }
+    on w(k: String, xs: List<Int>) {
+        require sum(xs.map(x => 1)) >= 0 else X
+        c.set(k, sum(xs.map(x => x)))
+        return 1 }
+    on probe() { let r = try { w("k", [0 - 5]) }
+        return r.kind ?? "ok" }
+}
+cell test T { rules { assert A.probe() == "invariant" } }

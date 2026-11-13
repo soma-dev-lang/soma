@@ -1,0 +1,40 @@
+skeleton R {
+    face {
+        signal review(x: Int) -> Int
+    }
+}
+flesh R {
+    on review(x) { return x * 2 }
+}
+skeleton A {
+    memory {
+        verdicts: Map<String, Int>
+        secret: Map<String, Int>
+    }
+    state flow {
+        initial: a
+        a -> b
+    }
+    face {
+        signal start(n: Int) -> String    calls horde, R.review
+        signal seen() -> Int              reads verdicts
+        signal st(id: String) -> String   reads flow
+    }
+}
+flesh A {
+    on start(n) {
+        let h = horde(R.review, [n], map("concurrency", 1, "on_result", "_store", "on_done", "_fin"))
+        return "started"
+    }
+    on _store(input: Int, result: Int) { verdicts.set("k", result) }
+    on _fin(id: String) { transition("k", "a", "b") }
+    on seen() { return verdicts.get("k") ?? 0 }
+    on st(id) { return get_status(id) ?? "a" }
+}
+cell test T {
+    rules {
+        assert A.start(4) == "started"
+        assert A.seen() == 8
+        assert A.st("k") == "b"
+    }
+}

@@ -1,0 +1,8 @@
+// Desk: what the front desk does. It owns nothing; everything goes through the other cells.
+signal night_audit(day: Int) -> Map   // Desk
+    // End of day `day`: every booking still `confirmed` that was to arrive on `day` becomes a
+    // no-show. Returns map("no_shows", <how many>, "fees", <sum of their fees>).
+calls      Bookings.arriving(day: Int) -> List        reads arrive, ids, stay
+               // The ids of the bookings that are `confirmed` and arrive on `day`, in booking order.
+           Bookings.mark_no_show(id: String) -> Int   reads arrive, depart, nightly, rooms  moves confirmed -> no_show  calls Calendar.free_nights, Ledger.charge
+               // The guest did not come: confirmed -> no_show, all its nights are freed, one night at the booking's nightly rate is charged. Returns the fee.

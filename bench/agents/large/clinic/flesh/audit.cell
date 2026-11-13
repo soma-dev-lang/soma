@@ -1,0 +1,19 @@
+flesh Audit {
+    on consigner(acteur, action, cible) {
+        journal.push(map("quand", now(), "acteur", acteur, "action", action, "cible", cible))
+        return journal.len
+    }
+    on facture_change(data) {
+        let etat = data.etat
+        journal.push(map("quand", now(), "acteur", "facturation", "action", "facture.{etat}", "cible", data.id))
+        return journal.len
+    }
+    on taille() { return journal.len }
+    on actions_sur(cible) {
+        return journal.filter(e => e.cible == cible).map(e => e.action)
+    }
+    on derniere() {
+        require journal.len > 0 else JournalVide
+        return journal[journal.len - 1]
+    }
+}

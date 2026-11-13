@@ -1,0 +1,1 @@
+soma verify app.cell && soma test app.cell -> faulty line: ✓ invariant c <= 100 — writer add proven by induction (writes (c.get(k) ?? 0) + n) ; the test shows a rejected write of 120 (kind invariant) after `await signal`

@@ -1,0 +1,36 @@
+cell type Ev { variants { Up(Int)  Wait(String) } }
+skeleton stock {
+    memory { items: Map<String, Int> }
+    face {
+        signal take(n: Int) -> Int    writes items
+        signal level() -> Int         reads items
+    }
+}
+flesh stock {
+    on take(n) { items.set("k", n) return 1 }
+    on level() { return items.get("k") ?? 0 }
+}
+skeleton Orders {
+    memory { log: Map<String, Int> }
+    face {
+        signal take(a: Int, b: Int) -> Int   writes log
+        signal seen() -> Int   reads log
+        signal go(e: Ev) -> Int    calls stock.take
+    }
+}
+flesh Orders {
+    on take(a, b) { log.set("k", b) return 2 }
+    on seen() { return log.get("k") ?? 0 }
+    on go(e) {
+        return match e {
+            Up(stock) || Wait(w) -> stock.take(7)
+        }
+    }
+}
+cell test T {
+    rules {
+        let r = Orders.go(Up(5))
+        assert r == 1
+        assert Orders.seen() == 0
+    }
+}

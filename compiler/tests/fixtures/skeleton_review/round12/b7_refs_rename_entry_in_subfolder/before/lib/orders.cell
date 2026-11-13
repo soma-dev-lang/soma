@@ -1,0 +1,24 @@
+flesh Stock {
+    on level(sku) { return items.get(sku) ?? 0 }
+    on arm(id) { transition(id, "idle", "ready") return "ready" }
+    on st(id) { return get_status(id) ?? "idle" }
+    on take(sku, n) {
+        let have = level(sku)
+        if have < n { return false }
+        items.set(sku, have - n)
+        return true
+    }
+    on fill(sku, n) { require n >= 0 else Bad
+        items.set(sku, n) return n }
+}
+flesh Orders {
+    on place(id, sku) {
+        require Stock.st(id) == "ready" else NotReady
+        if !Stock.take(sku, 1) { return "no stock" }
+        transition(id, "placed", "packed")
+        log.set(id, sku)
+        return "packed"
+    }
+    on cancel(id) { transition(id, "placed", "cancelled")  return "cancelled" }
+    on status(id) { return get_status(id) ?? "placed" }
+}

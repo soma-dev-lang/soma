@@ -1,0 +1,29 @@
+skeleton Desk {
+    state ticket {
+        initial: new
+        new -> assigned
+        assigned -> resolved
+        resolved -> closed
+        new -> closed
+    }
+    face {
+        signal assign(id: String) -> String   moves new -> assigned
+        signal close(id: String) -> String    moves resolved -> closed
+        signal spam(id: String) -> String     moves new -> closed
+        signal resolve(id: String) -> String  moves assigned -> resolved
+        signal status(id: String) -> String   reads ticket
+    }
+}
+flesh Desk {
+    on assign(id) { transition(id, "new", "assigned")  return "a" }
+    on resolve(id) { transition(id, "assigned", "resolved")  return "a" }
+    on spam(id) { transition(id, "new", "closed")  return "a" }
+    on close(id) { transition(id, "closed")  return "c" }
+    on status(id) { return get_status(id) ?? "new" }
+}
+cell test T {
+    rules {
+        assert close("fresh") == "c"
+        assert status("fresh") == "closed"
+    }
+}

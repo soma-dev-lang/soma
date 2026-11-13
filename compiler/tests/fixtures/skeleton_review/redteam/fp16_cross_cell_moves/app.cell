@@ -1,0 +1,46 @@
+skeleton Bank {
+    memory {
+        acct: Map<String, Int> [persistent]
+        aux: Map<String, Int> [persistent]
+    }
+    state order {
+        initial: new
+        new -> paid
+        paid -> shipped
+    }
+    face {
+        signal peek(id: String) -> Int      reads acct
+        signal bump(id: String) -> Int      writes acct
+        signal pay(id: String) -> String    moves new -> paid
+        signal status(id: String) -> String reads order
+        signal pure(id: String) -> Int
+
+    }
+}
+
+flesh Bank {
+    on peek(id) { return acct.get(id) ?? 0 }
+    on bump(id) { acct.set(id, (acct.get(id) ?? 0) + 1) return 1 }
+    on pay(id) { transition(id, "new", "paid") return "paid" }
+    on status(id) { return get_status(id) ?? "new" }
+    on pure(id) { return 1 }
+
+}
+skeleton Shop {
+    face {
+        signal settle(id: String) -> Int   moves Bank.order: new -> paid
+        signal look(id: String) -> String  reads Bank.order
+    }
+}
+flesh Shop {
+    on settle(id) { transition(id, "new", "paid") return 1 }
+    on look(id) { return get_status(id) ?? "new" }
+}
+
+cell test T {
+    rules {
+        assert Shop.settle("k") == 1
+        assert status("k") == "paid"
+        assert Shop.look("k") == "paid"
+    }
+}

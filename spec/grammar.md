@@ -12,7 +12,7 @@ What the grammar promises: every program `soma` parses is in it (the test corpus
 
 ```gbnf
 root ::= ws ( top ws )*
-top ::= cell | use-decl | protocol
+top ::= cell | skeleton | flesh | use-decl | protocol
 use-decl ::= "use" [ \t] [^\n]*    # token
 protocol ::= "protocol" ws1 name ws braces
 ```
@@ -25,7 +25,17 @@ cell-kind ::= "agent" | "test" | "type" | "property" | "checker" | "backend" | "
 type-params ::= "<" ws name ( ws "," ws name )* ws ">"
 section ::= face | memory | state | handler | every | after | const | interior | variants | loose-section | test-rule
 const ::= "const" ws1 name ws "=" ws unary
-interior ::= "interior" ws "{" ws ( cell ws )* "}"
+interior ::= "interior" ws "{" ws ( ( cell | skeleton ) ws )* "}"
+```
+
+## Skeleton and flesh
+
+A skeleton is a cell without handler bodies: each signal of its face carries a frame. A flesh holds the bodies, and only them.
+
+```gbnf
+skeleton ::= "skeleton" ws1 ( "agent" ws1 )? name ws brackets? ws "{" ws ( skeleton-section ws )* "}"
+skeleton-section ::= face | memory | state | every | after | const | interior | loose-section
+flesh ::= "flesh" ws1 name ws "{" ws ( handler ws )* "}"
 loose-section ::= ( "rules" | "runtime" | "scale" | "cost" ) ws braces
 ```
 
@@ -34,9 +44,19 @@ loose-section ::= ( "rules" | "runtime" | "scale" | "cost" ) ws braces
 ```gbnf
 face ::= "face" ws "{" ws ( face-decl ws )* "}"
 face-decl ::= signal-decl | tool-decl | await-decl | given-decl | promise-decl
-signal-decl ::= "signal" ws1 name ws "(" params ")" ( ws "->" ws type )? ( ws contract )*
+signal-decl ::= "signal" ws1 name ws "(" params ")" ( ws "->" ws type )? ( ws ( contract | frame-clause ) )*
 contract ::= ( "requires" | "ensures" ) ws1 expr
-tool-decl ::= "tool" ws1 name ws "(" params ")" ( ws "->" ws type )? ( ws brackets )? ( ws string )?
+tool-decl ::= "tool" ws1 name ws "(" params ")" ( ws "->" ws type )? ( ws brackets )? ( ws string )? ( ws frame-clause )*
+```
+
+The frame: what the handler may read, write, call, emit, and which edges it may take.
+
+```gbnf
+frame-clause ::= frame-names | frame-moves
+frame-names ::= ( "reads" | "writes" | "calls" | "emits" ) ws1 frame-path ( ws "," ws frame-path )*
+frame-moves ::= "moves" ws1 ( frame-path ws ":" ws )? frame-edge ( ws "," ws frame-edge )*
+frame-path ::= name ( "." name )?
+frame-edge ::= ( name | "*" ) ws "->" ws ( name | "*" )
 await-decl ::= "await" ws1 name ws "(" params ")" ( ws "->" ws type )?
 given-decl ::= "given" ws1 name ws ":" ws type ( ws "where" ws braces )?
 promise-decl ::= "promise" [ \t] [^\n]*    # token
@@ -121,7 +141,7 @@ compare-op ::= "==" | "!=" | "<=" | ">=" | "<" | ">"
 additive ::= multiplicative ( ws ( "++" | "+" | "-" ) ws multiplicative )*
 multiplicative ::= unary ( ws ( "*" | "/" | "%" ) ws unary )*
 unary ::= ( "!" | "-" ) ws unary | postfix
-postfix ::= primary ( ws "." ws name ( "(" args ")" )? | hws "[" ws expr ws "]" | hws "(" args ")" )*
+postfix ::= primary ( ws "." ws name ( "(" args ")" )? | hws "[" ws expr ws "]" | hws "(" args ")" | "?" )*
 primary ::= lambda | if | match | try | await | record | list | paren | string | number | name
 lambda ::= ( name | "(" ws ( name ( ws "," ws name )* )? ws ")" ) ws "=>" ws ( block | expr )
 match ::= "match" ws1 expr ws "{" ws ( arm ws ","? ws )* "}"

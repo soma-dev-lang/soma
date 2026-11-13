@@ -1,0 +1,1 @@
+soma verify app.cell && soma test app.cell — cellule intérieure `W` (dans Box, avec machine) déclarée avant la cellule `W` de premier niveau: product.rs:153 machine_of() prend la 1re machine de ce nom, les transition() de W échouent dans le modèle → « ✓ entering Desk.requested while W.p » alors que le test met W en q (emit mv) puis entre requested

@@ -1,0 +1,7 @@
+// Types partagés par plusieurs cellules.
+
+// Un lot de médicament en pharmacie. `peremption` est une date ISO "AAAA-MM-JJ" (se compare avec <).
+cell type Lot { variants { Lot { medicament: String, quantite: Int, peremption: String } } }
+
+// Décomposition d'une facture, en centimes : total = assurance + patient.
+cell type Montants { variants { Montants { total: Int, assurance: Int, patient: Int } } }

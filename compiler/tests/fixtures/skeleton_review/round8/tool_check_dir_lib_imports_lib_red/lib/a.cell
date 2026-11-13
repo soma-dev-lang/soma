@@ -1,0 +1,7 @@
+use lib::b
+skeleton Stock {
+    memory { items: Map<String, Int> }
+    face {
+        signal level(sku: String) -> Int   reads items
+    }
+}

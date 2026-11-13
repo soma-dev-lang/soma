@@ -1,0 +1,37 @@
+cell Visit {
+    state v {
+        initial: waiting
+        waiting -> open
+        open -> done
+        done -> open
+    }
+    on open_visit(id: String) { transition(id, "waiting", "open")  return "open" }
+    on close_visit(id: String) { transition(id, "open", "done")  return "done" }
+    on status(id: String) { return get_status(id) ?? "waiting" }
+}
+cell Desk {
+    memory { seen: Map<String, String> }
+    state d {
+        initial: none
+        none -> requested
+    }
+    on st(id: String) { return get_status(id) ?? "none" }
+    on saw(id: String) { return seen.get(id) ?? "-" }
+
+    on go(id: String) {
+        require Visit.status(id) == "open" else No
+        let r = match "x" { "{Visit.close_visit(id)}" -> 0
+            _ -> transition(id, "none", "requested") }
+        seen.set(id, Visit.status(id))
+        return 1
+    }
+}
+
+cell test T {
+    rules {
+        let a = Visit.open_visit("k")
+        let r = try { Desk.go("k") }
+        assert Desk.st("k") == "requested"
+        assert Desk.saw("k") == "done"
+    }
+}

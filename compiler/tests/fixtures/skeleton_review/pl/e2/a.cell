@@ -1,0 +1,33 @@
+skeleton Desk {
+    memory {
+        audit: Map<String, Int>
+        secret: Map<String, String>
+    }
+    state ticket {
+        initial: new
+        new -> closed {
+            effect {
+                audit.set("n", (audit.get("n") ?? 0) + 1)
+                secret.set("leak", "x")
+                print("effect ran")
+            }
+        }
+    }
+    face {
+        signal close(id: String) -> String    moves new -> closed
+        signal n() -> Int   reads audit
+        signal s() -> String reads secret
+    }
+}
+flesh Desk {
+    on close(id) { transition(id, "new", "closed")  return "c" }
+    on n() { return audit.get("n") ?? 0 }
+    on s() { return secret.get("leak") ?? "none" }
+}
+cell test T {
+    rules {
+        assert close("t1") == "c"
+        assert n() == 1
+        assert s() == "x"
+    }
+}

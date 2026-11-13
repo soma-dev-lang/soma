@@ -1,0 +1,20 @@
+# skeleton.lock — the structure `soma check` holds a.cell to.
+# Written by `soma skeleton a.cell --freeze`; changed on purpose with `--amend`. Do not edit.
+file a.cell
+
+== Desk sha256:0fc99e342f2e109cc629b4706e646749ec374775e06cbf6a058eab08147893d9
+skeleton Desk {
+    memory {
+        titles: Map<String, String>
+    }
+    state ticket {
+        initial: new
+        new -> assigned
+        assigned -> closed
+    }
+    face {
+        signal assign(id: String) -> String  moves new -> assigned
+        signal close(id: String) -> String  moves assigned -> closed
+        signal status(id: String) -> String  reads ticket
+    }
+}

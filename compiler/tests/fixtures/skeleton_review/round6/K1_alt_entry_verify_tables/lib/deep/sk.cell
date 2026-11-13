@@ -1,0 +1,25 @@
+use types::shapes
+// stock keeper
+skeleton Stock {
+    const LIMIT = 100
+    memory {
+        items: Map<String, Int> [persistent]
+        meta: Map<String, Rec> [persistent]
+        invariant items >= 0
+    }
+    state flow {
+        initial: placed
+        placed -> packed { guard { n > 0 } }
+        placed -> cancelled
+    }
+    face {
+        signal level(sku: String) -> Int        reads items
+        signal take(sku: String, n: Int) -> Bool
+            requires n > 0
+            writes items
+            calls level
+        signal pack(id: String, n: Int) -> Kind   moves placed -> packed
+        signal status(id: String) -> String   reads flow
+        signal note(sku: String) -> Int       calls Audit.log
+    }
+}

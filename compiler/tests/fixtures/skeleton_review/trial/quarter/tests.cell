@@ -1,0 +1,192 @@
+use app
+
+cell test CompanyTests {
+    rules {
+        assert Rng.reseed(42) == 42
+        let a = Rng.roll(6)
+        assert a >= 0 && a < 6
+        assert Rng.reseed(42) == 42
+        assert Rng.roll(6) == a
+        assert_fails Rng.roll(0) matching "requires"
+        property "roll in range" forall n: Int in 1..200 ensures Rng.roll(n) < n
+
+        assert Finance.open(1000) == 1000
+        assert spend(300, "rd") == true
+        assert spend(5000, "rd") == false
+        assert Finance.cash() == 700
+        assert earn(200, "rev") == 900
+        assert raise_debt(2000) == 2000
+        assert_fails raise_debt(5000000) matching "DebtCeiling"
+        assert accrue_interest(100) == 20
+        assert Finance.cash() == 2880
+        assert raise_equity(1000, 9000) == 9000
+        assert assess("co") == "healthy"
+        let snap = close_books(1)
+        assert snap.rev == 200 && snap.rd == 300 && snap.interest == 20 && snap.fcf == -120
+        assert runway() == idiv(3880, 120)
+        assert spend(3880, "opex")
+        assert assess("co") == "strained"
+        assert assess("co") == "breach"
+        assert assess("co") == "bankrupt"
+
+        assert refill() == 10
+        assert attend("legal", 4)
+        assert !attend("factory", 7)
+        assert attended("legal") && !attended("factory")
+        assert remaining() == 6
+    }
+}
+
+cell test OpsTests {
+    rules {
+        let c0 = Finance.open(100000)
+        let s0 = Rng.reseed(7)
+        assert build("p1", 100)
+        assert Finance.cash() == 100000 - 4000
+        assert_fails build("p1", 50) matching "Exists"
+        assert produce("p1", 80) == 0                 // not running yet
+        assert advance("p1") == "ramping"
+        assert advance("p1") == "ramping"
+        assert advance("p1") == "running"
+        assert_fails maintain("ghost") matching "invalid_transition"
+        assert produce("p1", 80) == 56                // 70% yield
+        assert automate("p1")
+        assert produce("p1", 80) == 58                // 74% yield, wear 5 -> -1%
+        assert maintain("p1")
+        assert produce("p1", 80) == 0
+        assert advance_all() == 1
+        assert produce("p1", 1000) == 74              // capacity 100, wear reset
+        assert_fails build("p2", 0) matching "requires"
+
+        assert launch("bot", "warehouse", 50, 20, 60) == "bot"
+        assert stock_in("bot", 10) == 10
+        assert sell("bot", 25) == 500
+        assert offer("bot").stock == 0
+        assert_fails reprice("bot", 0) matching "requires"
+        assert product_ids() == ["bot"]
+
+        assert propose("mfg", "manufacturing", 1000) == "active"
+        assert pause("mfg") == "paused"
+        assert_fails work("mfg") matching "NotActive"
+        assert resume("mfg") == "active"
+        let outcomes = _grind("mfg", 60)
+        assert contains(["prototype", "dead_end"], stage("mfg"))
+        assert_fails commercialize("mfg", 0) matching "requires"
+        assert effect("yield_bps") == 0
+    }
+    on _grind(id: String, n: Int) {
+        let out = []
+        for i in range(0, n) {
+            if stage(id) == "active" { out.push(work(id)) }
+        }
+        return out
+    }
+}
+
+cell test CommercializeTests {
+    rules {
+        let c0 = Finance.open(1000000)
+        let s0 = Rng.reseed(3)
+        assert propose("mat", "materials", 3000) == "active"
+        let o = work_all()
+        let o2 = _until_done("mat")
+        assert stage("mat") == "prototype"
+        assert trl.get("mat") == 6
+        assert commercialize("mat", 5000)
+        assert work_all() == ["mat:commercializing"]
+        assert work_all() == ["mat:commercialized"]
+        assert effect("bom_bps") == 800
+        assert launch("bot", "warehouse", 50, 100, 60) == "bot"
+        assert stock_in("bot", 1) == 1
+        assert ledger.get("cogs_q") == 92
+        assert_fails ship("mat") matching "invalid_transition"
+    }
+    on _until_done(id: String) {
+        let n = 0
+        while stage(id) == "active" && n < 200 {
+            let r = work(id)
+            n += 1
+        }
+        return n
+    }
+}
+
+cell test WorldTests {
+    rules {
+        let g = new_game(11)
+        assert segments().len == 6
+        assert demand("warehouse", 50, 50) == 300          // 2000 * 15% at reference price, neutral quality
+        assert demand("warehouse", 100, 50) == 150
+        assert demand("nowhere", 10, 50) == 0
+        assert shock("warehouse", -5000) == -5000
+        assert demand("warehouse", 50, 50) == 150
+        assert shock("warehouse", -9000) == -9000          // clamped
+        assert tick() == 6
+        assert shock_bps.get("warehouse") == -4500
+        assert adoption_bps.get("warehouse") == 1575
+        property "demand never negative" forall p: Int in 1..300 ensures demand("home", p, 40) >= 0
+
+        assert rival_ids().len == 5
+        let s1 = player_share(50, 60)
+        assert s1 > 0 && s1 < 10000
+        assert player_share(25, 60) > s1
+        assert act_all().len == 5
+        assert_fails act("nobody") matching "Missing"
+
+        assert interest_rate() == 200
+        assert apply("rate_hike") == "rate_hike"
+        assert interest_rate() == 250
+        assert apply("recession") == "recession"
+        assert shock_bps.get("home") == -2000
+        assert_fails apply("meteor") matching "unknown_event"
+        assert Events.history() == ["rate_hike", "recession"]
+        let cash0 = Finance.cash()
+        assert apply("recall") == "recall"
+        assert Finance.cash() == cash0 - 3000
+
+        assert !attended("legal")
+        assert file("s1", "lowcost", 10000)
+        assert Finance.cash() == cash0 - 4000
+        assert win_bps.get("s1") == 4500
+        assert open_suits() == ["s1"]
+        assert progress("s1") == "discovery"
+        assert progress_all() == ["s1:trial"]
+        assert contains(["won", "lost"], progress("s1"))
+        assert open_suits() == []
+        assert_fails settle("s1") matching "invalid_transition"
+        assert file("s2", "giant", 2000)
+        assert settle("s2") == 600
+    }
+}
+
+cell test QuarterTests {
+    rules {
+        assert_fails resolve() matching "NoGame"
+        assert new_game(2026) == 1
+        assert Finance.cash() == 50000
+        assert build("p1", 200)
+        assert launch("bot", "warehouse", 50, 20, 60) == "bot"
+        assert propose("mfg", "manufacturing", 500) == "active"
+        assert attend("rd", 3)
+        let r1 = resolve()
+        assert r1.q == 1 && r1.revenue == 0               // the plant is still ramping
+        assert current() == 2
+        assert remaining() == 10                          // attention refilled
+        assert r1.books.rd == 500 && r1.books.capex == 8000
+        let r2 = resolve()
+        let r3 = resolve()
+        let r4 = resolve()
+        assert r4.revenue > 0
+        assert r4.books.rev >= r4.revenue
+        assert report(4) == r4
+        assert report(9) == map()
+        assert phase(4) == "reported" && phase(5) == "planning"
+        assert runway() >= 0
+        assert _replay(2026) == _replay(2026)             // deterministic for a seed
+    }
+    on _replay(seed: Int) {
+        let g = new_game(seed)
+        let a = resolve()
+        return [a.event, a.rivals, Events.draw(), act_all(), phase(1), phase(2)]
+    }
+}

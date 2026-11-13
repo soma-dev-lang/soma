@@ -1,0 +1,4 @@
+use "../../app.cell"
+cell test Sub {
+    rules { assert Key.is_idle("fresh") == true }
+}

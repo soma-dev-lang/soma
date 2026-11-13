@@ -1,0 +1,10 @@
+cell A {
+    memory { seq: Map<String, Float>  invariant value > (seq.get(key) ?? 0.0) }
+    on seed(k: String) { seq.set(k, 100000000000000000.0)  return 1 }
+    on w(k: String) { seq.set(k, (seq.get(k) ?? 0.0) + 1.0)
+        return 1 }
+    on probe() { seed("k")
+        let r = try { w("k") }
+        return r.kind ?? "ok" }
+}
+cell test T { rules { assert A.probe() == "invariant" } }

@@ -1,0 +1,16 @@
+// Stock: what is on the shelf.
+skeleton Stock {
+    memory {
+        items: Map<String, Int> [persistent]
+        invariant items >= 0
+    }
+    face {
+        signal level(sku: String) -> Int        reads items
+        /* take n units;
+           false when there is not enough */
+        signal take(sku: String, n: Int) -> Bool
+            requires n > 0
+            writes items
+            calls level
+    }
+}

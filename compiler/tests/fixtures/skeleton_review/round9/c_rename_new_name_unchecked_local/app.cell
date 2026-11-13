@@ -1,0 +1,9 @@
+cell B {
+    memory { hits: Map<String, Int> }
+    on tick(n: Int) { hits.set("h", n) return n }
+}
+cell D { on d() { let pulse = x => x + 100
+   return B.tick(1) + pulse(1) } }
+cell test T { rules { assert D.d() == 102
+  let pulse = 5
+  assert B.tick(pulse) == 5 } }

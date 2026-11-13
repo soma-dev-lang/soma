@@ -1,0 +1,7 @@
+use "b.cell"
+skeleton Stock {
+    memory { items: Map<String, Int> }
+    face {
+        signal level(sku: String) -> Int
+    }
+}

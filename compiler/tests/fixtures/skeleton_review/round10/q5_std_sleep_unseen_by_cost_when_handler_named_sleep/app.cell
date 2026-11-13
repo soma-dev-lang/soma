@@ -1,0 +1,16 @@
+cell Util {
+    on delegate(a: Int) { return a }
+    on sleep(a: Int, b: Int) { return a }
+    on now(a: Int, b: Int) { return a }
+    on random(a: Int, b: Int, c: Int) { return a }
+}
+cell A {
+    memory { c: Map<String, Int>  invariant c >= 0 }
+    cost { latency: 100ms }
+    on rec(n: Int) { return std.delegate("A", "rec", n + 1) }
+    on slow() { let t = now_ms()
+        std.sleep(160)
+        return now_ms() - t }
+}
+cell test T { rules { assert A.slow() < 150
+ assert A.rec(1) == 1 } }

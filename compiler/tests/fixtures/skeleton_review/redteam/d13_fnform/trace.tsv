@@ -1,0 +1,8 @@
+	call	Bank.bump
+Bank.bump	read	acct
+Bank.bump	write	acct
+	call	Bank.rd
+Bank.rd	read	acct
+Bank.rd	read	acct
+	call	Bank.peek
+Bank.peek	read	acct

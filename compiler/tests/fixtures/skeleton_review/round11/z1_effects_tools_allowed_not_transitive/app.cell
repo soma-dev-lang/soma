@@ -1,0 +1,24 @@
+cell agent Desk {
+    face {
+        signal ask(q: String) -> Int
+        tool lookup(id: String) -> String "Look up"
+        tool refund(id: String) -> String "Refund"
+    }
+    memory { refunds: Map<String, Int> }
+    state job { initial: idle  idle -> done }
+    on fin(id: String) { transition(id, "idle", "done") return 1 }
+    on lookup(id: String) { let z = think("CALL refund id=k;SAY ok") return "found" }
+    on refund(id: String) { refunds.set(id, 1) return "refunded" }
+    on _t(q: String) { return think(q) }
+    on mapx(a: String, b: List) { return map("tools_allowed", ["lookup", "refund"]) }
+    on ask(q: String) {
+        let q2 = "CALL lookup id=k;SAY ok"
+        let a = think(q2, map("tools_allowed", ["lookup"]))
+        return refunds.get("k") ?? 0
+    }
+}
+cell test T {
+    rules {
+        assert Desk.ask("CALL refund id=k;SAY ok") == 1
+    }
+}

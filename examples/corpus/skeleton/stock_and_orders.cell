@@ -1,0 +1,132 @@
+// STOCK AND ORDERS — two skeletons, and what one may ask of the other.
+//
+// Frames are not transitive: `Orders.place` says `calls Stock.take`, not
+// `writes items` — the slot belongs to Stock, and `take` has its own frame.
+// So the skeleton answers "who can change the stock?" in one glance: the
+// signals of Stock whose frame says `writes items`, reached only through
+// the calls the other frames list. Writing `items.set(…)` inside an Orders
+// body is refused twice over: another cell's slot, and outside the frame.
+//
+//   soma check    stock_and_orders.cell
+//   soma skeleton stock_and_orders.cell Stock.take     who calls it, what it owes
+//   soma verify   stock_and_orders.cell
+//   soma test     stock_and_orders.cell
+
+skeleton Stock {
+    memory {
+        items: Map<String, Int> [persistent]
+        invariant items >= 0
+    }
+
+    face {
+        signal add(sku: String, n: Int) -> Int
+            requires n >= 1
+            writes items
+            calls level
+        signal level(sku: String) -> Int                reads items
+        signal take(sku: String, n: Int) -> Bool
+            requires n >= 1
+            writes items
+            calls level
+    }
+}
+
+skeleton Orders {
+    memory {
+        lines: Map<String, String> [persistent]       // order -> sku
+        counts: Map<String, Int> [persistent]         // order -> units
+        invariant counts >= 1
+    }
+
+    state order {
+        initial: open
+        open -> packed
+        open -> refused             // not enough stock
+        packed -> shipped
+        packed -> cancelled         // the units go back
+    }
+
+    face {
+        signal place(id: String, sku: String, n: Int) -> String
+            requires n >= 1
+            writes lines, counts
+            moves open -> packed, open -> refused
+            calls Stock.take
+        signal ship(id: String) -> String               moves packed -> shipped
+        signal cancel(id: String) -> String
+            reads lines, counts
+            moves packed -> cancelled
+            calls Stock.add
+        signal state_of(id: String) -> String           reads order
+    }
+}
+
+flesh Stock {
+    on add(sku, n) {
+        let now_has = level(sku) + n
+        items.set(sku, now_has)
+        return now_has
+    }
+
+    on level(sku) {
+        return items.get(sku) ?? 0
+    }
+
+    on take(sku, n) {
+        let have = level(sku)
+        if have < n { return false }
+        items.set(sku, have - n)
+        return true
+    }
+}
+
+flesh Orders {
+    on place(id, sku, n) {
+        require lines.get(id) == () else Taken "order '{id}' exists"
+        if !take(sku, n) {
+            transition(id, "open", "refused")
+            return "refused"
+        }
+        lines.set(id, sku)
+        counts.set(id, n)
+        transition(id, "open", "packed")
+        return "packed"
+    }
+
+    on ship(id) {
+        transition(id, "packed", "shipped")
+        return "shipped"
+    }
+
+    on cancel(id) {
+        transition(id, "packed", "cancelled")
+        add(lines.get(id), counts.get(id))
+        return "cancelled"
+    }
+
+    on state_of(id) {
+        return get_status(id) ?? "open"
+    }
+}
+
+cell test StockAndOrders {
+    rules {
+        assert add("bolt", 10) == 10
+        assert place("o1", "bolt", 4) == "packed"
+        assert level("bolt") == 6
+        assert place("o2", "bolt", 7) == "refused"       // 6 left: nothing is taken
+        assert level("bolt") == 6
+        assert state_of("o2") == "refused"
+        assert_fails ship("o2")                          // refused is terminal
+
+        assert cancel("o1") == "cancelled"               // the 4 units come back
+        assert level("bolt") == 10
+        assert_fails ship("o1")
+
+        assert place("o3", "bolt", 10) == "packed"
+        assert ship("o3") == "shipped"
+        assert_fails cancel("o3")                        // shipped is terminal
+        assert level("bolt") == 0
+        assert_fails take("bolt", 0)                     // the contract: n >= 1
+    }
+}

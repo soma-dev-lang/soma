@@ -1,0 +1,1 @@
+soma rename app.cell B.tick pulse -> exit 0 ; D.d a une lambda locale `pulse` : check rouge (E0012, la locale masque B.pulse). refs.rs:453-455 ne vérifie le nouveau nom que parmi les signaux de la cellule.

@@ -1,0 +1,6 @@
+[package]
+name = "v"
+edition = "2027"
+[verify.before."Pay.paid"]
+requires = ["Approval.signed_off"]
+assuming = "amount >= 4611686018427387904"

@@ -1,0 +1,44 @@
+skeleton Approval {
+    state appr {
+        initial: pending
+        pending -> signed_off
+    }
+    face {
+        signal sign(id: String) -> Int        moves pending -> signed_off
+        signal status(id: String) -> String   reads appr
+    }
+}
+flesh Approval {
+    on sign(id) { transition(id, "pending", "signed_off")  return 1 }
+    on status(id) { return get_status(id) ?? "pending" }
+}
+skeleton Pay {
+    state pay {
+        initial: due
+        due -> ready
+        ready -> paid
+        ready -> due
+    }
+    face {
+        signal pay(id: String) -> Int        moves due -> ready, ready -> paid, ready -> due
+        signal pst(id: String) -> String     reads pay
+    }
+}
+flesh Pay {
+    on pay(id) {
+        for x in [1, 2] {
+            if x == 1 { transition(id, "due", "ready")  continue }
+            transition(id, "ready", "paid")              // second turn: ready -> paid, never signed
+        }
+        if get_status(id) == "ready" { transition(id, "ready", "due") }
+        return 1
+    }
+    on pst(id) { return get_status(id) ?? "due" }
+}
+cell test T {
+    rules {
+        assert Pay.pay("k") == 1
+        assert Pay.pst("k") == "paid"                   // paid…
+        assert Approval.status("k") == "pending"        // …never signed off
+    }
+}

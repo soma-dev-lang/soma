@@ -1,0 +1,17 @@
+skeleton Approval {
+    state sign { initial: waiting  waiting -> signed_off }
+    face { signal st(id: String) -> String reads sign }
+}
+skeleton Pay {
+    state pay { initial: due  due -> paid }
+    face { signal st2(id: String) -> String reads pay }
+}
+skeleton Ctl {
+    face {
+        signal both(id: String) -> Int  moves Approval.sign: waiting -> signed_off  moves Pay.pay: due -> paid
+    }
+}
+flesh Approval { on st(id) { return get_status(id) ?? "" } }
+flesh Pay { on st2(id) { return get_status(id) ?? "" } }
+flesh Ctl { on both(id) { transition(id, "due", "paid")  transition(id, "waiting", "signed_off")  return 1 } }
+cell test T { rules { assert Ctl.both("k") == 1  assert Pay.st2("k") == "paid" assert Approval.st("k") == "signed_off" } }

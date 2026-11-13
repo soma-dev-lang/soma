@@ -1,0 +1,1 @@
+soma rename app.cell B.tick pulsation -> oublie `5.tick()` (l.3) et "{6.tick()}" (l.4) que soma refs liste : check rouge (E0025). refs.rs:387-388 (tout ident après un point non précédé du nom de cellule est ignoré).

@@ -1,0 +1,52 @@
+cell type Receipt { variants { Paid { id: String, cents: Int }  Refused(String) } }
+cell type Phase { variants { New  Paid  Shipped } }
+
+// The bank holds the order lifecycle.
+skeleton Bank {
+    memory {
+        // cents per account
+        acct: Map<String, Int> [persistent]
+        // one row per order: {cents, owner}
+        orders: Map<String, Map> [persistent]
+        hist: List<Map> [persistent]
+        invariant acct >= 0
+        invariant status != "shipped" || (orders ?? 0) != 0
+    }
+    state order {
+        initial: new
+        new -> paid { guard { cents > 0 && cents <= 5000 } }
+        paid -> shipped
+        * -> void
+    }
+    face {
+        // Debit the owner and mark the order paid. Refused when the balance is short.
+        signal pay(id: String, owner: String, cents: Int) -> Receipt
+            requires cents > 0
+            ensures result != ()
+            writes acct, orders
+            moves new -> paid
+            emits paid
+            calls now, Ledger.post
+        signal void_it(id: String) -> Bool    moves * -> void
+        signal settle_all() -> Int            reads orders   moves * -> *
+        signal ask(q: String) -> String       calls think
+        tool lookup(id: String) -> String "find an order"   reads orders
+        signal on_tick() -> Int               writes hist    calls balance
+        signal balance(owner: String) -> Int  reads acct
+    }
+    every 5s { on_tick() }
+}
+// Outside view of orders.
+skeleton Shop {
+    face {
+        // Ship a paid order.
+        signal ship(id: String) -> Int   moves Bank.order: paid -> shipped
+        signal look(id: String) -> String  reads Bank.order
+        signal paid(id: String, cents: Int) -> Int
+    }
+}
+cell Ledger {
+    memory { rows: List<Map> [persistent] }
+    // Append a row; returns the row count. Fails with kind "dup" when the id was already posted.
+    on post(id: String, cents: Int) { rows.push(map("id", id, "cents", cents))  return rows.size }
+}

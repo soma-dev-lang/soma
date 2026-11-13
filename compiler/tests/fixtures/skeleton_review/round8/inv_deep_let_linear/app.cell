@@ -1,0 +1,14 @@
+// A `let` in a statement block (if / for / while) nested in an expression block (lambda block, match arm,
+// if-expression) shadows the parameter; the linear prover still reads `x` as the required parameter.
+cell A {
+    memory { c: Map<String, Int>  invariant c >= 0 }
+    on w(k: String, x: Int, y: Int) { require x >= 0 else B
+ let q = [1].map(z => { if true { let x = y
+    c.set(k, x) }
+   0 })
+ return 1 }
+    on probe() { let r = try { w("k", 5, 0 - 5) }
+ print(r)
+ return r.kind ?? "ok" }
+}
+cell test T { rules { assert A.probe() == "invariant" } }

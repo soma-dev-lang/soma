@@ -1,0 +1,36 @@
+[package]
+name = "clinic"
+version = "0.1.0"
+entry = "app.cell"
+edition = "2027"
+
+# ── Règles entre machines (un même id de visite traverse Agenda, Consultations, Ordonnances, Facturation) ──
+
+# Une ordonnance n'est délivrée que si la consultation est terminée ET sa facture payée (changement c).
+[verify.before."Ordonnances.delivree"]
+requires_all = ["Consultations.terminee", "Facturation.payee"]
+
+# Une facture n'est émise que si la consultation est terminée.
+[verify.before."Facturation.emise"]
+requires = ["Consultations.terminee"]
+
+# Une consultation ne s'ouvre que si le patient est arrivé.
+[verify.before."Consultations.ouverte"]
+requires = ["Agenda.arrive"]
+
+# Un rendez-vous n'est terminé que si sa consultation l'est.
+[verify.before."Agenda.termine"]
+requires = ["Consultations.terminee"]
+
+# Un rendez-vous annulé ne revient jamais en consultation (annule n'existe que dans Agenda.rdv :
+# [verify.after] n'accepte pas "Cellule.etat").
+[verify.after.annule]
+never = ["en_consultation", "termine"]
+
+# Une facture n'est payée qu'après avoir été émise.
+[verify.before."Facturation.payee"]
+requires = ["Facturation.emise"]
+
+# Un résultat n'est validé qu'après prélèvement et saisie.
+[verify.before."Laboratoire.validee"]
+requires_all = ["Laboratoire.prelevee", "Laboratoire.resultat_saisi"]

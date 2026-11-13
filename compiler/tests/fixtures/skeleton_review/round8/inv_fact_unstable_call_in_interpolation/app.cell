@@ -1,0 +1,12 @@
+// A `require` over an expression is a fact for the same expression written later — its stability check
+// does not read the interpolation segments of its strings: next_id() answers 1, then 2.
+cell A {
+    memory { c: Map<String, Int>  invariant c >= 0 }
+    on w(k: String) { require to_int("{3 - next_id() * 2}") >= 0 else B
+ c.set(k, to_int("{3 - next_id() * 2}"))
+ return 1 }
+    on probe() { let r = try { w("k") }
+ print(r)
+ return r.kind ?? "ok" }
+}
+cell test T { rules { assert A.probe() == "invariant" } }
