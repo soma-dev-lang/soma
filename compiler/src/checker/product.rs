@@ -172,6 +172,8 @@ struct Engine<'a> {
     /// addresses of the top-level cells (an `emit` from one of them is not
     /// delivered inside another cell's interior)
     top: HashSet<usize>,
+    /// interior cell → its parent (by address)
+    parent_of: HashMap<usize, usize>,
     /// states that left the handler (`return`) or a loop (`break`) from
     /// inside an expression — a `match` arm, an `if` expression: collected
     /// by the statement that holds the expression
@@ -927,16 +929,19 @@ impl<'a> Engine<'a> {
                 Statement::Emit { signal_name, args } => {
                     let mut s = cur;
                     for a in args { s = self.expr(a, &local, s, entry); }
-                    // (an event raised by a top-level cell is heard by top-level cells)
-                    // …and by the cells of its own interior, which its scope delivers to
-                    let from_top = self.top.contains(&(local.cell as *const CellDef as usize));
-                    let mut inside: HashSet<usize> = HashSet::new();
-                    fn interior(c: &CellDef, out: &mut HashSet<usize>) {
-                        for s in &c.sections { if let Section::Interior(i) = &s.node { for x in &i.cells { out.insert(&x.node as *const CellDef as usize); interior(&x.node, out); } } }
-                    }
-                    interior(local.cell, &mut inside);
+                    // who hears it: the interpreter's one rule (`Interpreter::hears`) —
+                    // raised by an interior cell, its siblings and its parent;
+                    // raised by a top-level cell, the top-level cells and its own interior
+                    let me = local.cell as *const CellDef as usize;
+                    let parent = |c: usize| self.parent_of.get(&c).copied();
+                    let hears = |c: usize| match (parent(me), parent(c)) {
+                        (Some(p), Some(q)) => p == q,
+                        (Some(p), None) => p == c,
+                        (None, Some(q)) => q == me,
+                        (None, None) => true,
+                    };
                     let listeners: Vec<(&'a CellDef, &'a OnSection)> = self.cells.iter().copied()
-                        .filter(|c| !from_top || self.top.contains(&(*c as *const CellDef as usize)) || inside.contains(&(*c as *const CellDef as usize)))
+                        .filter(|c| hears(*c as *const CellDef as usize))
                         .filter_map(|c| self.handler(c, signal_name).map(|on| (c, on))).collect();
                     for (cell, on) in listeners { s = self.call(cell, on, args, &local, st.span, s, entry); }
                     flow.normal = s;
@@ -1158,7 +1163,14 @@ pub fn check(program: &Program, specs: &[Spec]) -> Vec<super::verify::VerifyResu
                 }
             }
         }
-        let mut engine = Engine { cells: cells.clone(), machines, watched, props, broken: BTreeMap::new(), unsupported: None, names: super::desugar::program_names(&exposed), moves: 0, forced: false, variants: variant_names(&exposed), top: exposed.cells.iter().map(|c| &c.node as *const CellDef as usize).collect(), returned: Set::new(), broke: Set::new(), continued: Set::new() };
+        let mut engine = Engine { cells: cells.clone(), machines, watched, props, broken: BTreeMap::new(), unsupported: None, names: super::desugar::program_names(&exposed), moves: 0, forced: false, variants: variant_names(&exposed), top: exposed.cells.iter().map(|c| &c.node as *const CellDef as usize).collect(), parent_of: {
+            fn walk(c: &CellDef, out: &mut HashMap<usize, usize>) {
+                for s in &c.sections { if let Section::Interior(i) = &s.node { for x in &i.cells { out.insert(&x.node as *const CellDef as usize, c as *const CellDef as usize); walk(&x.node, out); } } }
+            }
+            let mut out = HashMap::new();
+            for c in &exposed.cells { walk(&c.node, &mut out); }
+            out
+        }, returned: Set::new(), broke: Set::new(), continued: Set::new() };
         let mut start = Abs { cur: engine.machines.iter().map(|m| m.initial as u8).collect(), seen: 0 };
         for (m, mach) in engine.machines.iter().enumerate() {
             if let Some(bit) = engine.watched.get(&(m, mach.initial)) { start.seen |= 1 << bit; }

@@ -45,8 +45,22 @@ impl SignalChecker {
 
     /// Check that signals, awaits, and handlers among sibling cells are properly matched.
     pub fn check_siblings(&mut self, cells: &[Spanned<CellDef>]) {
+        self.check_interior(None, cells);
+    }
+
+    /// …the interior of `parent`: an event the parent raises (an `emit` in
+    /// one of its bodies, a `signal` of its `runtime { }`) reaches its
+    /// interior cells — the one rule for who hears an event
+    /// (`Interpreter::hears`) — so a child handling it is matched.
+    pub fn check_interior(&mut self, parent: Option<&CellDef>, cells: &[Spanned<CellDef>]) {
         // Collect all signals, awaits, and handlers from sibling cells
         let mut emitted: HashMap<String, Vec<SignalInfo>> = HashMap::new();
+        let mut from_parent: std::collections::HashSet<String> = std::collections::HashSet::new();
+        if let Some(p) = parent {
+            for body in super::bodies::entries(p) {
+                super::literals::for_each_stmt_deep(&body.body, &mut |st| if let Statement::Emit { signal_name, .. } = st { from_parent.insert(signal_name.clone()); });
+            }
+        }
         let mut awaited: HashMap<String, Vec<AwaitInfo>> = HashMap::new();
         let mut handled: HashMap<String, Vec<HandlerInfo>> = HashMap::new();
 
@@ -143,7 +157,7 @@ impl SignalChecker {
 
         // ── Check: every handler has a matching signal ───────────────
         for (signal_name, handlers) in &handled {
-            if !emitted.contains_key(signal_name) {
+            if !emitted.contains_key(signal_name) && !from_parent.contains(signal_name) {
                 for handler in handlers {
                     self.errors.push(CheckError::UnmatchedHandler {
                         cell: handler.cell_name.clone(),
@@ -151,8 +165,7 @@ impl SignalChecker {
                         span: handler.span,
                     });
                 }
-            } else {
-                let emitters = &emitted[signal_name];
+            } else if let Some(emitters) = emitted.get(signal_name) {
                 for handler in handlers {
                     for em in emitters {
                         if em.cell_name == handler.cell_name {

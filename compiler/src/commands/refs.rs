@@ -230,11 +230,7 @@ fn survey(entry: &Path, cell: &str, signal: &str) -> (PathBuf, Vec<(PathBuf, Str
     let beside = entry.parent().filter(|d| !d.as_os_str().is_empty()).unwrap_or(Path::new(".")).to_path_buf();
     // the project: the folder of the entry, or — when the entry sits in a
     // sub-folder — the nearest folder above it that holds a soma.toml
-    let dir = {
-        let start = std::fs::canonicalize(&beside).unwrap_or_else(|_| beside.clone());
-        let above = start.ancestors().skip(1).take(4).find(|d| d.join("soma.toml").is_file()).map(|d| d.to_path_buf());
-        if start.join("soma.toml").is_file() { beside.clone() } else { above.unwrap_or_else(|| beside.clone()) }
-    };
+    let dir = { let _ = &beside; crate::project::root(entry) };
     let real = |p: &Path| std::fs::canonicalize(p).unwrap_or_else(|_| p.to_path_buf());
     let mut files = Vec::new();
     cell_files(&dir, &mut files);

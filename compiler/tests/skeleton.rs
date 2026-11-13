@@ -2302,3 +2302,19 @@ fn a_comment_changed_after_the_freeze_is_said_not_refused() {
     let (out, code) = soma(&["check", &path]);
     assert!(code == 0 && !out.contains("changed since the freeze"), "{out}");
 }
+
+#[test]
+fn s4_one_rule_for_who_hears_an_event_and_one_store_per_slot() {
+    // a top-level cell's event: the top-level cells and its own interior;
+    // an interior cell's: its siblings and its parent — whatever started the program
+    let src = "cell Log {\n    memory { got: Map<String, Int> [persistent] }\n    on ping(k: String) { got.set(\"log\", (got.get(\"log\") ?? 0) + 1)  return 1 }\n    on n(k: String) { return got.get(k) ?? 0 }\n}\ncell Desk {\n    memory { seen: Map<String, Int> [persistent] }\n    interior {\n        cell Front {\n            on ping(k: String) { emit pong(k)  return 1 }\n        }\n    }\n    on go(k: String) { emit ping(k)  return 1 }\n    on pong(k: String) { seen.set(k, (seen.get(k) ?? 0) + 1)  return 1 }\n    on count(k: String) { return seen.get(k) ?? 0 }\n    runtime { go(\"k\") }\n}\n";
+    let path = program("s4_events", src);
+    let dir = std::path::Path::new(&path).parent().unwrap().to_path_buf();
+    let run = |args: &[&str]| { let mut a = vec!["run", path.as_str()]; a.extend_from_slice(args); let o = Command::new(env!("CARGO_BIN_EXE_soma")).args(&a).current_dir(&dir).output().unwrap(); String::from_utf8_lossy(&o.stdout).trim().to_string() };
+    let _ = Command::new(env!("CARGO_BIN_EXE_soma")).args(["run", "--fresh", &path, "count", "k"]).current_dir(&dir).output();
+    // the runtime section: `go` emits `ping` — heard by Log (top level) and by Front (Desk's interior),
+    // whose `pong` is heard by its parent Desk
+    run(&[]);
+    assert_eq!(run(&["count", "k"]), "1", "the interior's event reached its parent, in the store `count` reads");
+    assert_eq!(run(&["Log.n", "log"]), "1", "a top-level event reached the top-level cells under `soma run app.cell` too");
+}

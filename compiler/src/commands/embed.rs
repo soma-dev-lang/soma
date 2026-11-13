@@ -151,7 +151,7 @@ pub fn cmd_embed(path: &PathBuf, registry: &mut Registry) {
     interp.ensure_state_machine_storage();
     interp.source_file = Some(file_str.clone());
     interp.source_text = Some(source.clone());
-    let toml = path.parent().unwrap_or(std::path::Path::new(".")).join("soma.toml");
+    let toml = crate::project::manifest(path);
     if let Ok(manifest) = crate::pkg::manifest::Manifest::load(&toml) {
         interp.agent_config = Some(manifest.agent);
         interp.agent_models = manifest.models;

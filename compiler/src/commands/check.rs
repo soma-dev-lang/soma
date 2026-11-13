@@ -19,7 +19,7 @@ pub fn cmd_check(path: &PathBuf, json: bool, registry: &mut Registry) {
 
     // Load the project manifest, if present alongside the cell file.
     // It's used by V1.6 model-capability checks; ignored when absent.
-    let manifest = path.parent().and_then(|d| {
+    let manifest = Some(crate::project::root(path)).and_then(|d| {
         let toml = d.join("soma.toml");
         if toml.exists() {
             crate::pkg::manifest::Manifest::load(&toml).ok()

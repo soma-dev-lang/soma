@@ -78,7 +78,7 @@ pub fn find_stdlib() -> PathBuf {
 /// `[verify]` properties and `[agent]` settings while `soma verify` went on
 /// printing "passed".
 fn validate_manifest_beside(path: &PathBuf) {
-    let toml_path = path.parent().unwrap_or(std::path::Path::new(".")).join("soma.toml");
+    let toml_path = crate::project::manifest(path);
     // present but unreadable (not UTF-8, a directory, a dangling link):
     // its [verify] properties were dropped and verify said OK — fail closed
     if fs::symlink_metadata(&toml_path).is_err() { return; }

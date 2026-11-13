@@ -68,7 +68,7 @@ pub fn cmd_replay(
     // the [agent] of soma.toml, as for run/serve (replay sent the prompts
     // and the key to api.openai.com instead of the configured provider)
     {
-        let soma_toml = file.parent().unwrap_or(std::path::Path::new(".")).join("soma.toml");
+        let soma_toml = crate::project::manifest(file);
         if let Ok(content) = std::fs::read_to_string(&soma_toml) {
             if let Ok(manifest) = toml::from_str::<crate::pkg::manifest::Manifest>(&content) {
                 interp.agent_config = Some(manifest.agent);

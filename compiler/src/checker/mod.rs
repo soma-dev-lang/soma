@@ -768,8 +768,8 @@ impl<'a> Checker<'a> {
         }
         // 3.0: tools bound to a server — soma.toml names it, soma.lock pins it
         {
-            let dir = self.source.as_ref().and_then(|(file, _)| std::path::Path::new(file).parent().map(|p| p.to_path_buf()))
-                .filter(|p| !p.as_os_str().is_empty()).unwrap_or_else(|| std::path::PathBuf::from("."));
+            let dir = self.source.as_ref().map(|(file, _)| crate::project::root(std::path::Path::new(file)))
+                .unwrap_or_else(|| std::path::PathBuf::from("."));
             let manifest = crate::pkg::manifest::Manifest::load(&dir.join("soma.toml")).ok();
             for issue in crate::external::check_program(program, manifest.as_ref(), &dir) {
                 self.errors.push(CheckError::Static { kind: "tool_binding", message: issue.message, span: issue.span });
@@ -1866,7 +1866,7 @@ impl<'a> Checker<'a> {
         for section in &cell.sections {
             if let Section::Interior(ref interior) = section.node {
                 let mut sig_checker = SignalChecker::new();
-                sig_checker.check_siblings(&interior.cells);
+                sig_checker.check_interior(Some(cell), &interior.cells);
                 self.errors.extend(sig_checker.errors);
                 self.warnings.extend(sig_checker.warnings);
 
@@ -2894,7 +2894,7 @@ impl<'a> Checker<'a> {
     /// soma.toml beside the source (run, serve and test give only the source).
     pub fn edition(&self) -> String {
         if self.manifest.is_some() { return crate::pkg::manifest::Manifest::edition_of(self.manifest); }
-        let beside = self.source.as_ref().and_then(|(file, _)| std::path::Path::new(file).parent().map(|d| d.join("soma.toml")))
+        let beside = self.source.as_ref().map(|(file, _)| crate::project::manifest(std::path::Path::new(file)))
             .and_then(|toml| crate::pkg::manifest::Manifest::load(&toml).ok());
         crate::pkg::manifest::Manifest::edition_of(beside.as_ref())
     }

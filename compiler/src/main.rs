@@ -9,6 +9,7 @@ mod interpreter;
 mod lexer;
 mod parser;
 mod pkg;
+mod project;
 mod provider;
 mod registry;
 mod runtime;
@@ -708,8 +709,7 @@ fn cmd_verify(files: &[PathBuf], json: bool, strict: bool) {
 
     // Try to read soma.toml for user-defined properties
     let manifest = files.first()
-        .and_then(|f| f.parent())
-        .map(|dir| dir.join("soma.toml"))
+        .map(|f| project::manifest(f))
         .filter(|p| p.exists())
         .and_then(|p| std::fs::read_to_string(&p).ok())
         .and_then(|content| toml::from_str::<pkg::manifest::Manifest>(&content).ok());

@@ -793,6 +793,11 @@ pub fn cmd_serve(path: &PathBuf, port: u16, host: &str, verbose: bool, join: Opt
         for line in interp.audit_stored_data().into_iter().chain(audit_slot_keys(&program, &interp)) {
             eprintln!("warning: stored data: {}", line);
         }
+        // the interior cells' data, which `soma run app.cell` writes
+        if program.cells.iter().any(|c| c.node.sections.iter().any(|s| matches!(s.node, ast::Section::Interior(_)))) {
+            let mut rt = crate::runtime::Runtime::with_registry((*program).clone(), Some(registry));
+            for line in rt.audit_interior() { eprintln!("warning: stored data: {}", line); }
+        }
     }
 
     // Run init() handler if it exists (may call connect/ws_connect)

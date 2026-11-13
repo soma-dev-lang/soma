@@ -171,7 +171,7 @@ pub fn cmd_run(path: &PathBuf, args: &[String], use_jit: bool, signal_flag: Opti
     // runtime answers only a bare `soma run app.cell`
     let handler_named = signal_flag.is_some() || signal_owned.is_some();
     if let Some((parent, child, handler)) = interior_target {
-        run_interior_handler(program, &parent, &child, &handler, arg_values);
+        run_interior_handler(program, &parent, &child, &handler, arg_values, registry);
     } else if (has_interior || has_runtime) && !handler_named {
         // a first token that is not plainly data names a handler, and there
         // is none by that name: an error, as for any program (`soma run
@@ -195,7 +195,7 @@ pub fn cmd_run(path: &PathBuf, args: &[String], use_jit: bool, signal_flag: Opti
                 first, args.join(" "), names.join(", "));
             process::exit(1);
         }
-        run_with_runtime(program);
+        run_with_runtime(program, registry);
     } else {
         // The deprecated flag is a compatibility no-op, as the warning
         // promises. The experimental VM cannot preserve language semantics.
@@ -319,7 +319,7 @@ fn run_single_cell(program: ast::Program, arg_values: Vec<interpreter::Value>, r
 
     // Read compute config from soma.toml
     let parallel_config = {
-        let soma_toml = source_path.parent().unwrap_or(std::path::Path::new(".")).join("soma.toml");
+        let soma_toml = crate::project::manifest(source_path);
         if soma_toml.exists() {
             if let Ok(content) = std::fs::read_to_string(&soma_toml) {
                 if let Ok(manifest) = toml::from_str::<crate::pkg::manifest::Manifest>(&content) {
@@ -336,7 +336,7 @@ fn run_single_cell(program: ast::Program, arg_values: Vec<interpreter::Value>, r
 
     // Read agent config from soma.toml [agent] section
     {
-        let soma_toml = source_path.parent().unwrap_or(std::path::Path::new(".")).join("soma.toml");
+        let soma_toml = crate::project::manifest(source_path);
         if soma_toml.exists() {
             if let Ok(content) = std::fs::read_to_string(&soma_toml) {
                 if let Ok(manifest) = toml::from_str::<crate::pkg::manifest::Manifest>(&content) {
@@ -644,7 +644,7 @@ fn coerce_cli_args(cell: &ast::CellDef, signal_name: &str, args: Vec<interpreter
 /// cell, run by the runtime with its siblings registered (their slots and
 /// handlers, so its `signal`s reach them) — the `runtime` section does not
 /// run, as a named top-level handler skips it too.
-fn run_interior_handler(program: ast::Program, parent: &str, child: &str, handler: &str, args: Vec<interpreter::Value>) {
+fn run_interior_handler(program: ast::Program, parent: &str, child: &str, handler: &str, args: Vec<interpreter::Value>, registry: &Registry) {
     fn find<'a>(cells: &'a [ast::Spanned<ast::CellDef>], name: &str) -> Option<&'a ast::CellDef> {
         for c in cells {
             if c.node.name == name { return Some(&c.node); }
@@ -664,7 +664,8 @@ fn run_interior_handler(program: ast::Program, parent: &str, child: &str, handle
         None => args,
     };
     crate::interpreter::PERSIST_MACHINES.store(true, std::sync::atomic::Ordering::Relaxed);
-    let mut rt = runtime::Runtime::new(program);
+    let mut rt = runtime::Runtime::with_registry(program, Some(registry));
+    for line in rt.audit_interior() { eprintln!("warning: stored data: {}", line); }
     let result = rt.call_child_handler(parent, child, handler, args);
     if let Some(conn) = crate::runtime::storage::shared_connection() {
         let c = conn.lock().unwrap_or_else(|e| e.into_inner());
@@ -680,11 +681,12 @@ fn run_interior_handler(program: ast::Program, parent: &str, child: &str, handle
     }
 }
 
-fn run_with_runtime(program: ast::Program) {
+fn run_with_runtime(program: ast::Program, registry: &Registry) {
     // machine instances, next_id() counters and remember() memory persist,
     // as under a named handler
     crate::interpreter::PERSIST_MACHINES.store(true, std::sync::atomic::Ordering::Relaxed);
-    let mut rt = runtime::Runtime::new(program);
+    let mut rt = runtime::Runtime::with_registry(program, Some(registry));
+    for line in rt.audit_interior() { eprintln!("warning: stored data: {}", line); }
 
     eprintln!("soma runtime v0.1.0");
     eprintln!("---");

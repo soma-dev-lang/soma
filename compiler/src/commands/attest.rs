@@ -118,7 +118,7 @@ pub fn build(files: &[PathBuf], strict: bool) -> Result<serde_json::Value, Strin
         add("program".to_string(), "fail", msg, &mut properties);
     }
 
-    let manifest = files.first().and_then(|f| f.parent()).map(|d| d.join("soma.toml"))
+    let manifest = files.first().map(|f| crate::project::manifest(f))
         .filter(|p| p.exists())
         .and_then(|p| crate::pkg::manifest::Manifest::load(&p).ok());
     let mut doc = serde_json::json!({

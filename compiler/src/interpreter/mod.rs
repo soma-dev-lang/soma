@@ -87,7 +87,7 @@ pub static EDITION_2027: std::sync::atomic::AtomicBool = std::sync::atomic::Atom
 
 /// Read the edition of the program at `path` (run, serve, test).
 pub fn set_edition_beside(path: &std::path::Path) {
-    let toml = path.parent().unwrap_or(std::path::Path::new(".")).join("soma.toml");
+    let toml = crate::project::manifest(path);
     let manifest = crate::pkg::manifest::Manifest::load(&toml).ok();
     let edition = crate::pkg::manifest::Manifest::edition_of(manifest.as_ref());
     EDITION_2027.store(edition.as_str() >= "2027", std::sync::atomic::Ordering::Relaxed);
@@ -907,6 +907,8 @@ pub struct Interpreter {
     /// only cells outside the scope (an interior `signal pong` ran the
     /// top-level `on pong` of an unrelated cell, without its storage).
     pub emit_scope: Option<std::collections::HashSet<String>>,
+    /// Interior cells registered here, with their parent (`Child` → `Parent`).
+    pub interior_parent: HashMap<String, String>,
 }
 
 /// What kind of payload a registered variant takes.
@@ -1224,6 +1226,27 @@ impl Interpreter {
             type_variants,
             variant_fields,
             emit_scope: None,
+            interior_parent: HashMap::new(),
+        }
+    }
+
+    /// Register a cell of `parent`'s interior: its definition, and the scope
+    /// its events stay in (see `listeners_of`).
+    pub fn register_interior(&mut self, cell: CellDef, parent: &str) {
+        self.interior_parent.insert(cell.name.clone(), parent.to_string());
+        self.register_cell(cell);
+    }
+
+    /// Who hears an event raised by `emitter` — the ONE rule, for every way
+    /// a program is started and for the analyses (`checker::product`):
+    /// raised by an interior cell, its siblings and its parent; raised by a
+    /// top-level cell, the top-level cells and that cell's own interior.
+    pub fn hears(&self, emitter: &str, listener: &str) -> bool {
+        match (self.interior_parent.get(emitter), self.interior_parent.get(listener)) {
+            (Some(p), Some(q)) => p == q,
+            (Some(p), None) => p == listener,
+            (None, Some(q)) => q == emitter,
+            (None, None) => true,
         }
     }
 
@@ -1379,10 +1402,12 @@ impl Interpreter {
         invs.sort_by(|a, b| a.0.cmp(&b.0));
         let mut seen_slots: std::collections::HashSet<String> = std::collections::HashSet::new();
         for (key, exprs) in invs {
-            let slot_only = key.rsplit('.').next().unwrap_or(&key).to_string();
-            if !seen_slots.insert(slot_only) { continue; }
             let (cell_name, slot_name) = match key.split_once('.') { Some((c, s)) => (c.to_string(), s.to_string()), None => (String::new(), key.clone()) };
             let Some(backend) = self.storage.get(&key).or_else(|| self.storage.get(&slot_name)).cloned() else { continue };
+            // once per STORE: a slot is reachable under `Cell.slot` and its bare
+            // name (it was reported twice), and two cells with a slot of one
+            // name are two stores (the second was skipped)
+            if !seen_slots.insert(format!("{:p}", Arc::as_ptr(&backend) as *const ())) { continue; }
             let mut bad = 0usize;
             let mut sample = String::new();
             // counted ONCE (per key it made the start-up audit quadratic:
@@ -2584,6 +2609,7 @@ impl Interpreter {
                     .map(|(c, _)| c.clone())
                     .collect();
                 matching_cells.sort_by_key(|c| self.cell_order.iter().position(|o| o == c).unwrap_or(usize::MAX));
+                matching_cells.retain(|c| self.hears(cell_name, c));
                 if let Some(scope) = &self.emit_scope {
                     let inside = scope.contains(cell_name);
                     matching_cells.retain(|c| scope.contains(c) == inside);

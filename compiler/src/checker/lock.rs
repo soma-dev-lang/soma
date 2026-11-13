@@ -128,7 +128,7 @@ fn skeleton_cells(program: &Program) -> Vec<&Spanned<CellDef>> {
 /// `[verify…]` line inside a string is not one), in a canonical text.
 fn verify_tables(program_path: &Path) -> Option<String> {
     // no manifest: no theorem, and the default edition
-    let Ok(text) = std::fs::read_to_string(program_path.parent().unwrap_or(Path::new("")).join("soma.toml")) else {
+    let Ok(text) = std::fs::read_to_string(crate::project::manifest(program_path)) else {
         return Some("package.edition = \"2026\"\n".to_string());
     };
     let doc: toml::Value = match text.parse() {

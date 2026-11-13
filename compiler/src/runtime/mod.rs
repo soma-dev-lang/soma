@@ -60,6 +60,15 @@ fn exec_error_text(e: interpreter::ExecError) -> String {
 impl Runtime {
     /// Create a runtime from a parsed program
     pub fn new(program: Program) -> Self {
+        Self::with_registry(program, None)
+    }
+
+    /// …with the registry the other commands resolve slot back-ends with:
+    /// a `[persistent]` slot of a cell is then the same store under `soma
+    /// run app.cell` as under `soma run app.cell Cell.h`, `serve` and `test`
+    /// (it was a JSON file here and a sqlite table there — two stores of
+    /// one slot, neither seeing the other's writes)
+    pub fn with_registry(program: Program, registry: Option<&crate::registry::Registry>) -> Self {
         let mut cells = IndexMap::new();
 
         for cell_spanned in &program.cells {
@@ -67,7 +76,7 @@ impl Runtime {
             if !matches!(cell.kind, CellKind::Cell | CellKind::Agent) {
                 continue;
             }
-            let instance = Self::instantiate_cell(cell, "");
+            let instance = Self::instantiate_cell(cell, "", registry);
             cells.insert(cell.name.clone(), instance);
         }
         let top_names = program.cells.iter().map(|c| c.node.name.clone()).collect();
@@ -84,7 +93,7 @@ impl Runtime {
 
     /// Instantiate a cell: create storage backends for memory slots,
     /// recurse into interior children
-    fn instantiate_cell(def: &CellDef, parent_path: &str) -> CellInstance {
+    fn instantiate_cell(def: &CellDef, parent_path: &str, registry: Option<&crate::registry::Registry>) -> CellInstance {
         let cell_path = if parent_path.is_empty() {
             def.name.clone()
         } else {
@@ -101,14 +110,17 @@ impl Runtime {
                         let props: Vec<String> = slot.node.properties.iter()
                             .map(|p| p.node.name().to_string())
                             .collect();
-                        let backend = resolve_backend(&cell_path, &slot.node.name, &props);
+                        let backend = match registry {
+                            Some(r) => storage::resolve_backend_from_registry(&cell_path, &slot.node.name, &props, r),
+                            None => resolve_backend(&cell_path, &slot.node.name, &props),
+                        };
                         memory.insert(slot.node.name.clone(), backend);
                     }
                 }
                 Section::Interior(interior) => {
                     for child in &interior.cells {
                         if matches!(child.node.kind, CellKind::Cell | CellKind::Agent) {
-                            let child_instance = Self::instantiate_cell(&child.node, &cell_path);
+                            let child_instance = Self::instantiate_cell(&child.node, &cell_path, registry);
                             children.insert(child.node.name.clone(), child_instance);
                         }
                     }
@@ -183,7 +195,7 @@ impl Runtime {
         for section in &parent.def.sections {
             if let Section::Interior(ref interior) = section.node {
                 for child_def in &interior.cells {
-                    interp.register_cell(child_def.node.clone());
+                    interp.register_interior(child_def.node.clone(), &parent.name);
                 }
             }
         }
@@ -200,6 +212,16 @@ impl Runtime {
             interp.set_storage_raw(&tables);
         }
 
+        // every top-level cell's slots, under `Cell.slot`: an event a top-level
+        // cell raises reaches the top-level cells too (`Interpreter::hears`),
+        // and their handlers found no storage ("undefined variable: got")
+        let tops: Vec<(String, HashMap<String, Arc<dyn StorageBackend>>)> = self.cells.iter()
+            .filter(|(n, _)| n.as_str() != parent_cell)
+            .map(|(n, c)| (n.clone(), c.memory.clone())).collect();
+        for (name, memory) in tops {
+            let keyed: HashMap<String, Arc<dyn StorageBackend>> = memory.iter().map(|(slot, b)| (format!("{}.{}", name, slot), b.clone())).collect();
+            interp.set_storage_raw(&keyed);
+        }
         // the parent's storage
         interp.set_storage(parent_cell, &parent.memory);
 
@@ -212,11 +234,9 @@ impl Runtime {
             }
         }
 
-        // an interior `signal` reaches the siblings (and the parent), never
-        // a top-level cell that happens to handle the same name
-        let mut scope: HashSet<String> = parent.children.keys().cloned().collect();
-        scope.insert(parent.name.clone());
-        interp.emit_scope = Some(scope);
+        // who hears an event is the interpreter's one rule (`listeners_of`):
+        // an interior cell's, its siblings and its parent; a top-level cell's,
+        // the top-level cells and its own interior
         Ok(interp)
     }
 
@@ -384,6 +404,28 @@ impl Runtime {
         }
 
         Ok(())
+    }
+
+    /// The start-up audit (`Interpreter::audit_stored_data`) over the data of
+    /// the interior cells: their machine instances, their slots against the
+    /// invariants of the current program. The interpreter's own audit sees
+    /// top-level cells only; an interior cell's stored state, in a state its
+    /// machine no longer declares or past an invariant added since, was read
+    /// back without a word.
+    pub fn audit_interior(&mut self) -> Vec<String> {
+        let parents: Vec<String> = self.cells.iter().filter(|(_, c)| !c.children.is_empty()).map(|(n, _)| n.clone()).collect();
+        let mut out = Vec::new();
+        for parent in parents {
+            let Ok(mut interp) = self.scope_interpreter(&parent) else { continue };
+            let children: Vec<String> = self.cells.get(&parent).map(|c| c.children.keys().cloned().collect()).unwrap_or_default();
+            // (only what is the interior's: the top-level cells have their own audit)
+            interp.state_machines.retain(|(c, _), _| children.contains(c));
+            interp.invariants.retain(|k, _| children.iter().any(|c| k.starts_with(&format!("{}.", c))));
+            let keep: Vec<String> = interp.storage.keys().filter(|k| children.iter().any(|c| k.starts_with(&format!("{}.", c)) || k.starts_with(&format!("__sm_{}_", c)))).cloned().collect();
+            interp.storage.retain(|k, _| keep.contains(k));
+            for line in interp.audit_stored_data() { out.push(format!("(interior of {}) {}", parent, line)); }
+        }
+        out
     }
 
     fn find_cell(&self, name: &str) -> Option<&CellInstance> {
