@@ -113,6 +113,9 @@ pub struct CellDef {
     /// String). Checked by the type pass, then erased to its base
     /// (checker/nominal.rs) before anything else sees the program.
     pub nominal: Option<String>,
+    /// `cell type Lots = Int where value >= 0 && value <= 50`: the bound,
+    /// over `value` (checker/nominal.rs turns it into contracts and invariants)
+    pub nominal_where: Option<Spanned<Expr>>,
 }
 
 /// A finding of the nominal-type pass, kept on the program until `check`.

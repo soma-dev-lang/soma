@@ -633,7 +633,7 @@ impl Parser {
         let end = self.peek_span();
         self.expect(Token::RBrace)?;
         Ok(Spanned::new(
-            CellDef { kind: CellKind::Flesh, name, type_params: vec![], sections, agent_model: None, agent_skill: None, skeleton: false, nominal: None },
+            CellDef { kind: CellKind::Flesh, name, type_params: vec![], sections, agent_model: None, agent_skill: None, skeleton: false, nominal: None, nominal_where: None },
             start.merge(end),
         ))
     }
@@ -977,8 +977,13 @@ impl Parser {
                     span: base_span,
                 });
             }
+            // `where value >= 0 && value <= 50`: the values the type admits
+            let bound = if self.check(&Token::Where) {
+                self.advance();
+                Some(self.parse_expr()?)
+            } else { None };
             return Ok(Spanned::new(
-                CellDef { kind, name, type_params, sections: vec![], agent_model: None, agent_skill: None, skeleton, nominal: Some(base) },
+                CellDef { kind, name, type_params, sections: vec![], agent_model: None, agent_skill: None, skeleton, nominal: Some(base), nominal_where: bound },
                 start.merge(self.prev_span()),
             ));
         }
@@ -1102,6 +1107,7 @@ impl Parser {
                 agent_skill,
                 skeleton,
                 nominal: None,
+                nominal_where: None,
             },
             start.merge(end),
         ))

@@ -4,7 +4,7 @@
 > grandes applications de manière solide.** Cette proposition est jugée sur
 > cette ligne.
 >
-> Statut : **décidé le 2026-11-14** (§6). Phases 0 et 1 faites le 2026-11-14 (`compiler/tests/nominal.rs`, `checker/nominal.rs`) ; restent : le type dans les briefs de squelette et `describe`, le typage des `requires` / `ensures` de face, la phase 2 (`where`).
+> Statut : **décidé le 2026-11-14** (§6). Phases 0, 1 et 2 faites le 2026-11-14 (`compiler/tests/nominal.rs`, `checker/nominal.rs`) ; restent : le type dans les briefs de squelette et `describe`, le typage des `requires` / `ensures` écrits à la main, les bornes sur les champs de records et les paramètres `[native]`.
 > Chaque affirmation sur le comportement actuel a été vérifiée avec
 > `soma 3.1.0` (`compiler/target/release/soma`) ; les programmes cités tiennent
 > dans ce fichier et se rejouent tels quels.

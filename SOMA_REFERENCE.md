@@ -117,6 +117,21 @@ check: meeting a nominal type it is a warning (make it a record field).
 The type is checked, then erased: at run time, in storage, in JSON and in
 `[native]` a Lots is an Int, and `soma verify` proves the same things.
 
+A nominal type can carry a bound, written once:
+
+```soma
+cell type Lots = Int where value >= 0 && value <= 50
+```
+
+It becomes what `soma verify` already proves: a `requires` on each face
+parameter of type Lots (the caller's fault, kind `requires`), an `ensures` on
+each `-> Lots` result (kind `ensures`), a memory invariant on each slot that
+holds Lots (`Map<String, Lots>`, `List<Lots>`), and a `require … else
+OutOfRange` on each Lots parameter of a handler with no face signal. A
+literal outside the bound (`Lots(60)`, `const MAX = Lots(60)`) is refused by
+`soma check`. The bound reads only `value`, literals and constants. A
+`[native]` handler takes no contract.
+
 ## Variables
 
 ```soma

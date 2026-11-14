@@ -20,7 +20,7 @@ protocol ::= "protocol" ws1 name ws braces
 ## Cells
 
 ```gbnf
-nominal ::= "cell" ws1 "type" ws1 name ws "=" ws ( "Int" | "Float" | "String" )
+nominal ::= "cell" ws1 "type" ws1 name ws "=" ws ( "Int" | "Float" | "String" ) ( ws1 "where" ws1 expr )?
 cell ::= "cell" ws1 ( cell-kind ws1 )? name ws type-params? ws brackets? ws "{" ws ( section ws )* "}"
 cell-kind ::= "agent" | "test" | "type" | "property" | "checker" | "backend" | "builtin"
 type-params ::= "<" ws name ( ws "," ws name )* ws ">"

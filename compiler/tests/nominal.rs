@@ -295,3 +295,87 @@ fn a_nominal_parameter_is_a_native_int() {
     let (out, ok) = soma_in(&project("native", src, None), &["check", "app.cell"]);
     assert!(ok, "{out}");
 }
+
+// ── phase 2: `cell type Lots = Int where …` ─────────────────────────
+// The bound is written once, on the type, and becomes what verify already
+// proves: a `requires` on each face parameter of that type, an `ensures` on
+// each result, a memory invariant on each slot that holds it, a `require`
+// on each parameter of a handler with no face signal.
+
+const BOUNDED: &str = r#"
+cell type Lots = Int where value >= 0 && value <= 50
+
+cell Desk {
+    face {
+        signal order(sym: String, q: Lots) -> Lots
+        signal double(q: Lots) -> Lots
+    }
+    memory {
+        pos: Map<String, Lots> [persistent]
+    }
+    on order(sym: String, q: Lots) {
+        let held = pos.get(sym) ?? 0
+        require held + q <= 50 else Full
+        pos.set(sym, held + q)
+        return held + q
+    }
+    on double(q: Lots) {
+        return q * 2
+    }
+    on probe(q: Lots) {
+        return q
+    }
+}
+"#;
+
+#[test]
+fn a_bound_on_a_nominal_type_is_checked_at_every_boundary() {
+    let d = project("bounded", BOUNDED, None);
+    let (out, ok) = soma_in(&d, &["check", "app.cell"]);
+    assert!(ok, "{out}");
+    // a face parameter: the caller's fault (kind requires)
+    let (out, ok) = soma_in(&d, &["run", "app.cell", "order", "ES", "51"]);
+    assert!(!ok && out.contains("requires"), "{out}");
+    let (out, ok) = soma_in(&d, &["run", "app.cell", "order", "ES", "7"]);
+    assert!(ok && out.trim().ends_with('7'), "{out}");
+    // a result: the handler's fault (kind ensures)
+    let (out, ok) = soma_in(&d, &["run", "app.cell", "double", "40"]);
+    assert!(!ok && out.contains("ensures"), "{out}");
+    // a handler with no face signal: a require
+    let (out, ok) = soma_in(&d, &["run", "app.cell", "probe", "-1"]);
+    assert!(!ok && out.contains("Lots"), "{out}");
+}
+
+#[test]
+fn verify_proves_a_bound_where_the_program_narrows_it() {
+    let d = project("bounded_verify", BOUNDED, None);
+    let (out, _) = soma_in(&d, &["verify", "app.cell"]);
+    // the slot's invariant comes from the type, and the require proves it
+    assert!(out.contains("✓ invariant pos >= 0 && pos <= 50"), "{out}");
+    // the parameter's bound is a requires (a fact inside order)
+    assert!(out.contains("requires") || out.contains("contracts"), "{out}");
+    // double can return 100: its ensures is not proven
+    assert!(out.lines().any(|l| l.contains("double") && (l.contains('⚠') || l.contains('✗'))), "{out}");
+}
+
+#[test]
+fn a_literal_outside_the_bound_is_refused_by_check() {
+    for (body, says) in [
+        ("const MAX = Lots(60)\n    on f() { return MAX }", "Lots(60)"),
+        ("on f() { return Lots(-1) }", "Lots(-1)"),
+    ] {
+        let src = format!("cell type Lots = Int where value >= 0 && value <= 50\ncell A {{\n    {body}\n}}\n");
+        let (out, ok) = soma_in(&project("bound_lit", &src, None), &["check", "app.cell"]);
+        assert!(!ok && out.contains("E0122") && out.contains(says) && out.contains("value >= 0 && value <= 50"), "`{body}`:\n{out}");
+    }
+    let src = "cell type Lots = Int where value >= 0 && value <= 50\ncell A {\n    const MAX = Lots(50)\n    on f() { return MAX }\n}\n";
+    let (out, ok) = soma_in(&project("bound_lit_ok", src, None), &["check", "app.cell"]);
+    assert!(ok, "{out}");
+}
+
+#[test]
+fn a_bound_reads_only_value() {
+    let src = "cell type Lots = Int where value <= cap\ncell A { on f(q: Lots) { return q } }\n";
+    let (out, ok) = soma_in(&project("bound_names", src, None), &["check", "app.cell"]);
+    assert!(!ok && out.contains("value") && out.contains("cap"), "{out}");
+}

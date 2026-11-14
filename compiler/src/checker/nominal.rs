@@ -34,6 +34,30 @@ pub fn prepare(program: &mut Program) {
     }
     if decls.is_empty() { return; }
 
+    // 0. a bound (`where …`) becomes what verify already proves
+    let mut bounds: HashMap<String, Spanned<Expr>> = HashMap::new();
+    for c in &program.cells {
+        let (Some(_), Some(b)) = (&c.node.nominal, &c.node.nominal_where) else { continue };
+        let mut names = std::collections::HashSet::new();
+        names_in(&b.node, &mut names);
+        names.remove("value");
+        if names.is_empty() {
+            bounds.insert(c.node.name.clone(), b.clone());
+        } else {
+            let mut names: Vec<String> = names.into_iter().collect();
+            names.sort();
+            issues.push(NominalIssue {
+                advisory: false,
+                message: format!("the bound of `{}` reads {} — a `where` bound reads only `value` (the value of the type), literals and constants: `where value >= 0 && value <= 50`",
+                    c.node.name, names.iter().map(|n| format!("`{n}`")).collect::<Vec<_>>().join(", ")),
+                span: b.span,
+            });
+        }
+    }
+    if !bounds.is_empty() {
+        for c in &mut program.cells { bound_cell(&mut c.node, &bounds); }
+    }
+
     // 1. checked as written
     let types = crate::checker::types::Program2::new_nominal(program, &decls);
     // (check_cell and check_invariants walk the interior cells themselves)
@@ -48,14 +72,18 @@ pub fn prepare(program: &mut Program) {
 
     // 2. erased
     program.cells.retain(|c| c.node.nominal.is_none());
-    let e = Erase { decls: &decls };
+    let e = Erase { decls: &decls, bounds: &bounds, found: std::cell::RefCell::new(Vec::new()) };
     for c in &mut program.cells { e.cell(&mut c.node); }
+    issues.extend(e.found.into_inner());
     issues.sort_by_key(|i| i.span.start);
     program.nominal_issues = issues;
 }
 
 struct Erase<'d> {
     decls: &'d HashMap<String, String>,
+    /// the bounds, to judge a literal wrapped in its type (`Lots(60)`)
+    bounds: &'d HashMap<String, Spanned<Expr>>,
+    found: std::cell::RefCell<Vec<NominalIssue>>,
 }
 
 impl Erase<'_> {
@@ -191,11 +219,155 @@ impl Erase<'_> {
                 self.expr(else_result);
             }
         }
-        // `Lots(x)` is `x`
+        // `Lots(x)` is `x` — and a literal must be inside the bound
         if let Expr::FnCall { name, args } = &mut e.node {
+            if let (Some(b), [arg]) = (self.bounds.get(name.as_str()), args.as_slice()) {
+                if let Some(v) = literal_value(&arg.node) {
+                    if eval(&b.node, &v) == Some(Val::Bool(false)) {
+                        self.found.borrow_mut().push(NominalIssue { advisory: false, span: e.span, message: format!(
+                            "`{name}({})` is outside the bound of {name}: `{}` — use a value it admits, or widen the bound on `cell type {name}`",
+                            render_expr(&arg.node), render_expr(&b.node)) });
+                    }
+                }
+            }
             if args.len() == 1 && self.decls.contains_key(name.as_str()) {
                 e.node = args.remove(0).node;
             }
         }
+    }
+}
+
+// ── bounds ───────────────────────────────────────────────────────────
+
+fn names_in(e: &Expr, out: &mut std::collections::HashSet<String>) {
+    if let Expr::Ident(n) = e { out.insert(n.clone()); }
+    crate::checker::literals::for_each_in_expr(e, &mut |x| if let Expr::Ident(n) = x { out.insert(n.clone()); });
+}
+
+/// The bound with `value` replaced by `by` (a parameter, `result`, a slot).
+fn subst(e: &Spanned<Expr>, by: &str) -> Spanned<Expr> {
+    let mut out = e.clone();
+    fn go(e: &mut Spanned<Expr>, by: &str) {
+        match &mut e.node {
+            Expr::Ident(n) if n == "value" => *n = by.to_string(),
+            Expr::BinaryOp { left, right, .. } | Expr::CmpOp { left, right, .. } => { go(left, by); go(right, by); }
+            Expr::Not(i) => go(i, by),
+            Expr::FnCall { args, .. } => for a in args { go(a, by); },
+            Expr::MethodCall { target, args, .. } => { go(target, by); for a in args { go(a, by); } }
+            Expr::FieldAccess { target, .. } => go(target, by),
+            _ => {}
+        }
+    }
+    go(&mut out, by);
+    out
+}
+
+/// The nominal type a type expression names, when it has a bound.
+fn bounded<'b>(t: &TypeExpr, bounds: &'b HashMap<String, Spanned<Expr>>) -> Option<(&'b String, &'b Spanned<Expr>)> {
+    match t { TypeExpr::Simple(n) => bounds.get_key_value(n.as_str()), _ => None }
+}
+
+/// The element a slot holds: `Map<K, Lots>`, `List<Lots>`.
+fn held<'b>(t: &TypeExpr, bounds: &'b HashMap<String, Spanned<Expr>>) -> Option<(&'b String, &'b Spanned<Expr>)> {
+    match t {
+        TypeExpr::Generic { name, args } if (name == "Map" && args.len() == 2) || (name == "List" && args.len() == 1) =>
+            bounded(&args.last().unwrap().node, bounds),
+        other => bounded(other, bounds),
+    }
+}
+
+/// Put each bound where verify reads it: a face parameter → `requires`, a
+/// face result → `ensures`, a slot → a memory invariant, the parameter of
+/// a handler with no face signal → a `require` at the top of its body.
+fn bound_cell(c: &mut CellDef, bounds: &HashMap<String, Spanned<Expr>>) {
+    let native: std::collections::HashSet<String> = c.sections.iter().filter_map(|s| match &s.node {
+        Section::OnSignal(on) if on.properties.iter().any(|p| p == "native") => Some(on.signal_name.clone()), _ => None }).collect();
+    let mut faced: std::collections::HashSet<String> = std::collections::HashSet::new();
+    for s in &mut c.sections {
+        match &mut s.node {
+            Section::Face(f) => for d in &mut f.declarations {
+                let FaceDecl::Signal(sig) = &mut d.node else { continue };
+                faced.insert(sig.name.clone());
+                if native.contains(&sig.name) { continue; } // a [native] handler takes no contract
+                for p in &sig.params {
+                    if let Some((_, b)) = bounded(&p.ty.node, bounds) { sig.requires.push(subst(b, &p.name)); }
+                }
+                if let Some((_, b)) = sig.return_type.as_ref().and_then(|r| bounded(&r.node, bounds)) {
+                    sig.ensures.push(subst(b, "result"));
+                }
+            },
+            Section::Memory(m) => {
+                let extra: Vec<Spanned<Expr>> = m.slots.iter()
+                    .filter_map(|sl| held(&sl.node.ty.node, bounds).map(|(_, b)| subst(b, &sl.node.name))).collect();
+                m.invariants.extend(extra);
+            }
+            Section::Interior(i) => for ic in &mut i.cells { bound_cell(&mut ic.node, bounds); },
+            _ => {}
+        }
+    }
+    for s in &mut c.sections {
+        let Section::OnSignal(on) = &mut s.node else { continue };
+        if faced.contains(&on.signal_name) || native.contains(&on.signal_name) { continue; }
+        let mut checks = Vec::new();
+        for p in &on.params {
+            let Some((n, b)) = bounded(&p.ty.node, bounds) else { continue };
+            let cond = subst(b, &p.name);
+            let span = cond.span;
+            checks.push(Spanned::new(Statement::Require {
+                constraint: Spanned::new(Constraint::Comparison { left: cond, op: CmpOp::Eq, right: Spanned::new(Expr::Literal(Literal::Bool(true)), span) }, span),
+                else_signal: format!("OutOfRange\u{1f}{}: {n} admits only `{}`", p.name, render_expr(&b.node)),
+            }, span));
+        }
+        if !checks.is_empty() { on.body.splice(0..0, checks); }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq)]
+enum Val { Num(f64), Bool(bool), Str(String) }
+
+fn literal_value(e: &Expr) -> Option<Val> {
+    match e {
+        Expr::Literal(Literal::Int(n)) => Some(Val::Num(*n as f64)),
+        Expr::Literal(Literal::Float(x)) => Some(Val::Num(*x)),
+        Expr::Literal(Literal::String(s)) => Some(Val::Str(s.clone())),
+        Expr::BinaryOp { left, op: BinOp::Sub, right } if matches!(left.node, Expr::Literal(Literal::Int(0))) =>
+            match literal_value(&right.node)? { Val::Num(x) => Some(Val::Num(-x)), _ => None },
+        _ => None,
+    }
+}
+
+/// The bound at a literal value: Some(Bool) when it can be decided here.
+fn eval(e: &Expr, v: &Val) -> Option<Val> {
+    match e {
+        Expr::Ident(n) if n == "value" => Some(v.clone()),
+        Expr::Literal(_) => literal_value(e).or(match e { Expr::Literal(Literal::Bool(b)) => Some(Val::Bool(*b)), _ => None }),
+        Expr::Not(i) => match eval(&i.node, v)? { Val::Bool(b) => Some(Val::Bool(!b)), _ => None },
+        Expr::BinaryOp { left, op, right } => {
+            let (l, r) = (eval(&left.node, v)?, eval(&right.node, v)?);
+            match (l, op, r) {
+                (Val::Bool(a), BinOp::And, Val::Bool(b)) => Some(Val::Bool(a && b)),
+                (Val::Bool(a), BinOp::Or, Val::Bool(b)) => Some(Val::Bool(a || b)),
+                (Val::Num(a), BinOp::Add, Val::Num(b)) => Some(Val::Num(a + b)),
+                (Val::Num(a), BinOp::Sub, Val::Num(b)) => Some(Val::Num(a - b)),
+                (Val::Num(a), BinOp::Mul, Val::Num(b)) => Some(Val::Num(a * b)),
+                _ => None,
+            }
+        }
+        Expr::CmpOp { left, op, right } => {
+            let (l, r) = (eval(&left.node, v)?, eval(&right.node, v)?);
+            let ord = match (&l, &r) {
+                (Val::Num(a), Val::Num(b)) => a.partial_cmp(b)?,
+                (Val::Str(a), Val::Str(b)) => a.cmp(b),
+                _ => return None,
+            };
+            use std::cmp::Ordering::*;
+            Some(Val::Bool(match op {
+                CmpOp::Lt => ord == Less, CmpOp::Le => ord != Greater, CmpOp::Gt => ord == Greater,
+                CmpOp::Ge => ord != Less, CmpOp::Eq => ord == Equal, CmpOp::Ne => ord != Equal,
+            }))
+        }
+        Expr::FnCall { name, args } if name == "str_len" || name == "len" => match eval(&args.first()?.node, v)? {
+            Val::Str(s) => Some(Val::Num(s.chars().count() as f64)), _ => None },
+        _ => None,
     }
 }

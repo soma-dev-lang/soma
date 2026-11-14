@@ -17,7 +17,7 @@ module.exports = grammar({
     top: $ => choice($.nominal, $.cell, $.skeleton, $.flesh, $.use_decl, $.protocol),
     use_decl: $ => token(/use[ \t]([^\n])*/),
     protocol: $ => seq("protocol", $.name, $.braces),
-    nominal: $ => seq("cell", "type", $.name, "=", choice("Int", "Float", "String")),
+    nominal: $ => seq("cell", "type", $.name, "=", choice("Int", "Float", "String"), optional(seq("where", $.expr))),
     cell: $ => seq("cell", optional($.cell_kind), $.name, optional($.type_params), optional($.brackets), "{", repeat($.section), "}"),
     cell_kind: $ => choice("agent", "test", "type", "property", "checker", "backend", "builtin"),
     type_params: $ => seq("<", $.name, repeat(seq(",", $.name)), ">"),
