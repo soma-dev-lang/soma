@@ -754,13 +754,22 @@ pub fn verify_program_invariants(program: &Program) -> Vec<VerifyResult> {
                     let mut mutated: HashSet<String> = HashSet::new();
                     index_sets(&on.body, &mut mutated);
                     if unquoted.split(|c: char| !(c.is_alphanumeric() || c == '_')).any(|w| !w.is_empty() && (rebound(w) || mutated.contains(w) || (shadow.contains(w) && !single_for(w)))) { return false; }
-                    // `let r = rows.get(k)` bound once: `r != ()` says k exists
-                    let aliases: HashMap<String, String> = assigns.iter()
+                    // `let r = rows.get(k)` bound once: `r != ()` says k exists;
+                    // `let r = rows.get(k) ?? ""`: `r != ""` says so too (a
+                    // missing key gives the default)
+                    let aliases: HashMap<String, (String, Option<String>)> = assigns.iter()
                         .filter(|(n, _)| assigns.iter().filter(|(m, _)| m == n).count() == 1 && !shadow.contains(*n))
-                        .filter_map(|(n, e)| match e {
-                            Expr::MethodCall { target, method, args } if method == "get" && args.len() == 1
-                                && matches!(&target.node, Expr::Ident(t) if t == slot) => Some((n.to_string(), render_expr(&args[0].node))),
-                            _ => None,
+                        .filter_map(|(n, e)| {
+                            let (get, default) = match e {
+                                Expr::FnCall { name, args } if name == "_coalesce" && args.len() == 2
+                                    && matches!(args[1].node, Expr::Literal(_)) => (&args[0].node, Some(render_expr(&args[1].node))),
+                                other => (*other, None),
+                            };
+                            match get {
+                                Expr::MethodCall { target, method, args } if method == "get" && args.len() == 1
+                                    && matches!(&target.node, Expr::Ident(t) if t == slot) => Some((n.to_string(), (render_expr(&args[0].node), default))),
+                                _ => None,
+                            }
                         }).collect();
                     existing_key_facts(&on.body, &[], slot, &aliases).iter().any(|(fp, fk, excl, after)| path.starts_with(fp) && fk == k && excl.as_ref().map_or(true, |e| !path.starts_with(e))
                         // a require / early exit covers only the writes AFTER it
@@ -1094,6 +1103,15 @@ pub fn verify_program_invariants(program: &Program) -> Vec<VerifyResult> {
                         why = vec![format!("'{}' is a [task] handler: the prover carries no fact across its think() (other requests may add to '{}' meanwhile), so this write stays checked at run time — keep a `require len({}) < {}` AFTER the last think(), just before the write, so the refusal is a clean error", handler, slot, slot, open_size[0])];
                     } else if all_size {
                         why = vec![format!("the slot may grow past {} — put `require len({}) < {}` before the handler's one write that adds to it (not in a loop), or, to update an entry that exists, `require {}.get(k) != ()` with `k` a plain local (`let k = r.id`, not `r.id`)", open_size[0], slot, open_size[0], slot)];
+                    }
+                    // `invariant len(rows) <= N` reads like a count and is not one
+                    // (an agent wrote it, got a bare ⚠ and no reason)
+                    if why.is_empty() {
+                        let mut lens = Vec::new();
+                        for c in &parts { find_len_of_slot(c, std::slice::from_ref(slot), &mut lens); }
+                        if !lens.is_empty() {
+                            why = vec![format!("`len({slot})` in an invariant measures each VALUE written to '{slot}', not how many entries it holds — for a bound on the entries write `{slot}.size <= N`")];
+                        }
                     }
                     let tag = if why.is_empty() { tag } else { format!("{tag} because {}", why.join("; ")) };
                     if !runtime_checked.contains(&tag) {
@@ -1914,7 +1932,11 @@ fn local_ranges_at(
                             _ => false,
                         }
                     }
-                    let nan_free = |e: &Expr, vars: &HashMap<String, Known>| const_of(e).is_some() || int_expr(e, &single, &int_params, 0) || match e {
+                    // …and a count (`len(rows)`, `rows.size`): an Int, so the
+                    // early exit `if len(rows) >= 50 { return }` narrows it
+                    // for the writes after, as `require len(rows) < 50` does
+                    let nan_free = |e: &Expr, vars: &HashMap<String, Known>| const_of(e).is_some() || int_expr(e, &single, &int_params, 0)
+                        || (is_count(e) && known_int(e, &single, &int_params, &dup, 0)) || match e {
                         Expr::Ident(n) => vars.get(n.as_str()).copied().and_then(bounds).is_some(),
                         _ => false,
                     };
@@ -2106,6 +2128,16 @@ fn may_be_float(e: &Expr, vars: &HashMap<String, Known>) -> bool {
 /// `&&` cannot be split (¬(a ∧ b) is a disjunction) and yields nothing.
 /// The comparisons an `if` condition guarantees inside its branch (the
 /// `&&` spine only).
+/// `len(x)` / `size(x)` / `count(x)` / `x.size` / `x.len` / `x.size()`: a count
+fn is_count(e: &Expr) -> bool {
+    match e {
+        Expr::FnCall { name, args } => matches!(name.as_str(), "len" | "size" | "count") && args.len() == 1,
+        Expr::FieldAccess { field, .. } => matches!(field.as_str(), "size" | "len" | "count" | "length"),
+        Expr::MethodCall { method, args, .. } => matches!(method.as_str(), "size" | "len" | "count") && args.is_empty(),
+        _ => false,
+    }
+}
+
 fn positive_comparisons(c: &Expr) -> Vec<(&Expr, CmpOp, &Expr)> {
     match c {
         Expr::CmpOp { left, op, right } => vec![(&left.node, *op, &right.node)],
@@ -2265,6 +2297,13 @@ fn known_int(expr: &Expr, single: &HashMap<&str, &Expr>, int_params: &HashSet<&s
         Expr::MethodCall { target, method, args } if method == "get" => slot_int(&target.node) && args.get(1).map_or(true, |d| ki(&d.node)),
         Expr::MethodCall { method, .. } => matches!(method.as_str(), "len" | "size" | "count")
             && !PROGRAM_HANDLERS.with(|h| h.borrow().contains(method.as_str())),
+        // `rows.size` / `rows.len` of a memory slot counts its entries, like
+        // `len(rows)` (`require rows.size < 50` gave the bound 49.99…, and
+        // 49.99… + 1 > 50 left the size invariant unproven)
+        Expr::FieldAccess { target, field } if matches!(field.as_str(), "size" | "len" | "count" | "length") => match &target.node {
+            Expr::Ident(n) => SLOT_INT.with(|m| m.borrow().contains_key(n.as_str())) && !single.contains_key(n.as_str()) && !int_params.contains(n.as_str()) && !dup.contains(n.as_str()),
+            _ => false,
+        },
         Expr::Index { target, .. } => slot_int(&target.node),
         Expr::BinaryOp { left, op: BinOp::Add | BinOp::Sub | BinOp::Mul | BinOp::Mod, right } => ki(&left.node) && ki(&right.node),
         // a handler of the cell named like a builtin may return anything
@@ -2988,17 +3027,34 @@ fn size_upper_bound_any(parts: &[&Expr], slot: &str) -> bool {
 }
 
 /// `slot.get(K) != ()` / `slot.get(K) == ()` / `slot.has(K)` → (K, key is present?)
-fn key_presence(e: &Expr, slot: &str, negate: bool, aliases: &HashMap<String, String>) -> Option<(String, bool)> {
+fn key_presence(e: &Expr, slot: &str, negate: bool, aliases: &HashMap<String, (String, Option<String>)>) -> Option<(String, bool)> {
     let get_key = |t: &Expr| -> Option<String> {
         match t {
             Expr::MethodCall { target, method, args } if (method == "get" || method == "has") && args.len() == 1
                 && matches!(&target.node, Expr::Ident(n) if n == slot) => Some(render_expr(&args[0].node)),
             // `let r = rows.get(k)  require r != ()` (r bound once)
-            Expr::Ident(n) => aliases.get(n).cloned(),
+            Expr::Ident(n) => aliases.get(n).filter(|(_, d)| d.is_none()).map(|(k, _)| k.clone()),
             _ => None,
         }
     };
+    // `let r = rows.get(k) ?? d` (d a literal, r bound once): `r != d` means
+    // get gave a value, so k exists. `r == d` does NOT mean k is absent (an
+    // entry may hold d) — but the callers only ever use the PRESENT side:
+    // (k, false) puts the fact on the `else` branch / after an early exit,
+    // where `r == d` is false
+    let coalesced = |l: &Expr, r: &Expr| -> Option<String> {
+        let (Expr::Ident(n), Expr::Literal(_)) = (l, r) else { return None };
+        match aliases.get(n) { Some((k, Some(d))) if *d == render_expr(r) => Some(k.clone()), _ => None }
+    };
     match e {
+        Expr::CmpOp { left, op, right } if coalesced(&left.node, &right.node).or_else(|| coalesced(&right.node, &left.node)).is_some() => {
+            let k = coalesced(&left.node, &right.node).or_else(|| coalesced(&right.node, &left.node))?;
+            match op {
+                CmpOp::Ne => Some((k, !negate)),
+                CmpOp::Eq => Some((k, negate)),
+                _ => None,
+            }
+        }
         Expr::CmpOp { left, op, right } if matches!(&right.node, Expr::Literal(Literal::Unit)) => {
             let k = get_key(&left.node)?;
             let present = match op { CmpOp::Ne => true, CmpOp::Eq => false, _ => return None };
@@ -3012,7 +3068,7 @@ fn key_presence(e: &Expr, slot: &str, negate: bool, aliases: &HashMap<String, St
 
 /// Where a key of `slot` is known to exist: (block path, key rendering,
 /// excluded sub-path).
-fn existing_key_facts(stmts: &[Spanned<Statement>], path: &[usize], slot: &str, aliases: &HashMap<String, String>) -> Vec<(Vec<usize>, String, Option<Vec<usize>>, Option<usize>)> {
+fn existing_key_facts(stmts: &[Spanned<Statement>], path: &[usize], slot: &str, aliases: &HashMap<String, (String, Option<String>)>) -> Vec<(Vec<usize>, String, Option<Vec<usize>>, Option<usize>)> {
     let mut out = Vec::new();
     let sub = |i: usize, b: usize| -> Vec<usize> { let mut v = path.to_vec(); v.push(block_step(i, b)); v };
     for (i, st) in stmts.iter().enumerate() {

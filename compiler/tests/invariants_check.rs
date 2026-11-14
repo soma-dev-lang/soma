@@ -273,3 +273,101 @@ cell M {
     assert_ne!(code, 0, "an invariant no write can satisfy must fail check: {out}");
     assert!(out.contains("invariant between slots (a, b)") && out.contains("?? 0"), "got: {out}");
 }
+
+// ── a size bound is proven whatever form the guard takes ────────────
+// (an agent's report, 2026-11-14: correct code was left "runtime-checked"
+// because of how it was written — `journal.size` where `len(journal)` was
+// recognised, an early `if … { return }` where `require` was, and a local
+// `let cur = notes.get(k) ?? ""` where `notes.get(k) != ()` was)
+
+const SIZE_BASE: &str = r#"
+cell Desk {
+    memory {
+        notes: Map<String, String> [persistent]
+        invariant notes.size <= 50
+    }
+    on add(k: String, v: String) {
+        ADD_GUARD
+        notes.set(k, v)
+        return "ok"
+    }
+    on edit(k: String, v: String) {
+        EDIT_GUARD
+        notes.set(k, v)
+        return "ok"
+    }
+}
+"#;
+
+fn size_verdicts(name: &str, add: &str, edit: &str) -> (bool, bool, String) {
+    let src = SIZE_BASE.replace("ADD_GUARD", add).replace("EDIT_GUARD", edit);
+    let (out, _) = soma(&["verify", &write_probe(name, &src)]);
+    let proven = |h: &str| out.lines().any(|l| l.contains("✓") && l.contains(&format!("writer '{h}'")));
+    (proven("add"), proven("edit"), out)
+}
+
+#[test]
+fn a_size_bound_is_proven_whatever_form_the_guard_takes() {
+    let ok_add = "require len(notes) < 50 else Full";
+    let ok_edit = "require notes.get(k) != () else Missing";
+    // the forms the prover already knew
+    let (a, e, out) = size_verdicts("size_form_known.cell", ok_add, ok_edit);
+    assert!(a && e, "{out}");
+    // `notes.size` / `notes.len` in the require: the same count as len(notes)
+    for g in ["require notes.size < 50 else Full", "require notes.len < 50 else Full", "require 50 > notes.size else Full"] {
+        let (a, _, out) = size_verdicts("size_form_field.cell", g, ok_edit);
+        assert!(a, "`{g}` should prove the size bound:\n{out}");
+    }
+    // an early return is a guard for the writes after it
+    for g in ["if len(notes) >= 50 { return \"full\" }", "if notes.size >= 50 { return \"full\" }", "if 50 <= len(notes) { return \"full\" }"] {
+        let (a, _, out) = size_verdicts("size_form_return.cell", g, ok_edit);
+        assert!(a, "`{g}` should prove the size bound:\n{out}");
+    }
+    // a local holding the slot's value with a default: different from the
+    // default means the key was there (`get` gave () → the default)
+    for g in ["let cur = notes.get(k) ?? \"\"\n        require cur != \"\" else Missing",
+              "let cur = notes.get(k) ?? \"\"\n        if cur == \"\" { return \"missing\" }"] {
+        let (_, e, out) = size_verdicts("size_form_coalesce.cell", ok_add, g);
+        assert!(e, "`{g}` should prove the size bound:\n{out}");
+    }
+}
+
+#[test]
+fn a_size_bound_is_not_proven_by_a_guard_that_does_not_hold() {
+    let ok_add = "require len(notes) < 50 else Full";
+    let ok_edit = "require notes.get(k) != () else Missing";
+    // one too many: 50 entries + 1
+    for g in ["require notes.size <= 50 else Full", "if len(notes) > 50 { return \"full\" }",
+              // the early exit does not exit
+              "if len(notes) >= 50 { print(\"full\") }"] {
+        let (a, _, out) = size_verdicts("size_bad_add.cell", g, ok_edit);
+        assert!(!a, "`{g}` must not prove the size bound:\n{out}");
+    }
+    // the default is what a PRESENT key may hold too: equal to it says nothing
+    for g in ["let cur = notes.get(k) ?? \"\"\n        require cur == \"\" else Missing",
+              // the local is rebound between the test and the write
+              "let cur = notes.get(k) ?? \"\"\n        require cur != \"\" else Missing\n        cur = \"x\"",
+              // another key
+              "let cur = notes.get(\"other\") ?? \"\"\n        require cur != \"\" else Missing"] {
+        let (_, e, out) = size_verdicts("size_bad_edit.cell", ok_add, g);
+        assert!(!e, "`{g}` must not prove the size bound:\n{out}");
+    }
+}
+
+#[test]
+fn verify_says_why_an_invariant_on_len_of_the_slot_is_not_a_count() {
+    let src = r#"
+cell Log {
+    memory {
+        journal: List<String> [persistent]
+        invariant len(journal) <= 100
+    }
+    on add(line: String) {
+        require len(journal) < 100 else Full
+        journal.push(line)
+    }
+}
+"#;
+    let (out, _) = soma(&["verify", &write_probe("len_of_slot.cell", src)]);
+    assert!(out.contains("measures each VALUE written") && out.contains("journal.size <= N"), "{out}");
+}

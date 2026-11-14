@@ -1,5 +1,17 @@
 # Changelog
 
+## Unreleased
+
+### A size bound is proven whatever form its guard takes
+
+An agent that wrote a trading program reported correct code left "runtime-checked" because of how it was written. `soma verify` now proves `invariant rows.size <= N` for all of these, as it did for `require len(rows) < N` and `require rows.get(k) != ()`:
+
+- `require rows.size < N` / `rows.len` (the field form was read as a possible fraction: 49.99… + 1 > 50);
+- an early exit, `if len(rows) >= N { return … }` (a count in a negated condition was dropped as possibly NaN);
+- a local with a default, `let cur = rows.get(k) ?? ""` then `require cur != ""` or `if cur == "" { return … }` (a missing key gives the default, so a different value means the key exists; `cur == ""` alone proves nothing, an entry may hold `""`).
+
+`invariant len(rows) <= N` measures each value written, not the entries; `soma check` already warned, and `soma verify` now says why it stays ⚠. Tests: `a_size_bound_is_proven_whatever_form_the_guard_takes`, `a_size_bound_is_not_proven_by_a_guard_that_does_not_hold`, `verify_says_why_an_invariant_on_len_of_the_slot_is_not_a_count`. No verdict changed on the 2,268 tracked programs.
+
 ## 3.1.0 — 2026-11-13
 
 Skeleton first: a large program is written structure first, proven before its bodies exist, and filled body by body from a brief the compiler enforces. Summary in `soma docs releases`; the course at https://soma-lang.dev/learn (six lessons, every output printed by the binary — `docs/site/learn.md`, built by `tools/build_learn.py`, which fails the site build when a lesson stops behaving as written).
