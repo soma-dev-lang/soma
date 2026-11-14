@@ -1,0 +1,15 @@
+// Frozen by soma 3.2.0, whose skeleton.lock recorded a nominal type erased
+// (`q: Int`): 3.2.1 must accept that lock as it is.
+cell type Lots = Int where value >= 0
+
+skeleton Desk {
+    memory { pos: Map<String, Lots> [persistent] }
+    face {
+        // Buys q lots.
+        signal buy(sym: String, q: Lots) -> Lots
+            writes pos
+    }
+}
+flesh Desk {
+    on buy(sym: String, q: Lots) { pos.set(sym, (pos.get(sym) ?? 0) + q)  return q }
+}

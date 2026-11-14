@@ -1,5 +1,10 @@
 # Changelog
 
+## Unreleased
+
+- A plain variable passed as is to an `Int` parameter: an early `if lots <= 0 || lots > 1000 { return … }` now proves the callee's `requires`, as `require` does, even for a value read from a Map. The call refuses anything but an Int before the clause, so a Float or NaN that got past the guard never reaches it. Only that variable against constants: a bound borrowed from another unchecked value, or an expression passed, still proves nothing.
+- A `skeleton.lock` frozen by 3.2.0 for a program with nominal types is accepted by 3.2.1 as it is: 3.2.0 recorded the erased types (`q: Int`), and that is no change of structure. `--amend` records the types as written. (An agent's project refused its briefs after the upgrade.)
+
 ## 3.2.1 — 2026-11-14
 
 What an agent found when it installed 3.2.0 and ran its three programs on it:

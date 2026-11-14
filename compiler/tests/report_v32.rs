@@ -40,9 +40,20 @@ fn an_early_return_proves_a_call_site_contract_for_an_int_read_from_json() {
     let out = verify("to_int", &GATEWAY.replace("LOTS", "let lots = to_int(o.lots ?? 0)"), None);
     assert!(out.contains("✓ take: requires lots > 0") && out.contains("✓ take: requires lots <= 1000"), "{out}");
     // a raw Map value may be a Float or NaN, which `lots <= 0 || lots > 1000`
-    // does not exclude: still runtime-checked, and the warning says why
+    // lets through — but `take(lots: Int)` refuses anything but an Int
+    // before its requires: what reaches the clause passed the early exit
     let out = verify("raw", &GATEWAY.replace("LOTS", "let lots = o.lots ?? 0"), None);
-    assert!(out.contains("⚠ take: requires lots > 0") && out.contains("NaN"), "{out}");
+    assert!(out.contains("✓ take: requires lots > 0") && out.contains("✓ take: requires lots <= 1000"), "{out}");
+    // …only for that variable against constants: a bound borrowed from
+    // another unchecked value (a NaN cap lets every lots through) proves nothing
+    let borrowed = GATEWAY.replace("LOTS", "let lots = o.lots ?? 0\n        let cap = o.cap ?? 0\n        if cap > 1000 { return _bad(\"cap\") }\n        if lots > cap { return _bad(\"over\") }")
+        .replace("if lots <= 0 || lots > 1000 { return _bad(\"lots\") }", "if lots <= 0 { return _bad(\"lots\") }");
+    let out = verify("borrowed", &borrowed, None);
+    assert!(out.contains("⚠ take: requires lots <= 1000") && out.contains("NaN"), "{out}");
+    // and an expression passed (not the variable): not relaxed
+    let expr = GATEWAY.replace("LOTS", "let lots = o.lots ?? 0").replace("return Target.take(lots)", "return Target.take(lots + 0)");
+    let out = verify("expr", &expr, None);
+    assert!(out.contains("⚠ take: requires lots > 0"), "{out}");
 }
 
 const VIA: &str = r#"

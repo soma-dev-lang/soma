@@ -1,0 +1,20 @@
+# skeleton.lock — the structure `soma check` holds app.cell to.
+# Written by `soma skeleton app.cell --freeze`; changed on purpose with `--amend`. Do not edit.
+file app.cell
+
+== Desk sha256:2a8dd2744384fc47818584b974016306bc7fca763610e9781af0d8cfbc477479 core:5f97f08e50b97efc4f1938680aab199b73eec870092f4a0b752d55cf679b32d9
+skeleton Desk {
+    memory {
+        pos: Map<String, Int> [persistent]
+        invariant pos >= 0
+    }
+    face {
+        signal buy(sym: String, q: Int) -> Int  requires q >= 0  ensures result >= 0  writes pos
+    }
+    //~ buy a960d2f66d8590e0
+}
+
+== soma.toml [verify] sha256:74d5af60569c1e022da0dd0ecb3ac3db2f9ba9782141aa47f241421a004e68ca core:74d5af60569c1e022da0dd0ecb3ac3db2f9ba9782141aa47f241421a004e68ca
+package.edition = "2026"
+
+checksum sha256:0ec214e761ed86dce92025a9415c531db8e7ff107e9d5dafd468d1614117988e

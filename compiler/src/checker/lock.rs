@@ -67,6 +67,10 @@ pub struct Entry {
     /// the business of the lock of the program those cells are in).
     pub core: String,
     pub text: String,
+    /// (hash, core) as 3.2.0 wrote them for the same program: it recorded a
+    /// nominal type erased (`q: Int`) and no line for it, so a lock it froze
+    /// is still this program's (an upgrade is no change of structure)
+    pub legacy: Option<(String, String)>,
 }
 
 pub struct Lock {
@@ -195,6 +199,8 @@ pub fn fingerprint(program: &Program, program_path: &Path, main_source: &str) ->
         }
         let hash = sha(&[&declared, &movers.concat(), &types.concat()]);
         let core = sha(&[&declared, &types.concat()]);
+        let plain: String = types.iter().filter(|t| !t.contains("(nominal:")).cloned().collect();
+        let legacy = (plain != types.concat()).then(|| (sha(&[&declared, &movers.concat(), &plain]), sha(&[&declared, &plain])));
         // the comment of each signal — its brief — by a digest: not part of
         // the structure (a retouched sentence is no amendment), but a change
         // of it is said (`notes_changed`)
@@ -212,11 +218,11 @@ pub fn fingerprint(program: &Program, program_path: &Path, main_source: &str) ->
             let close = text.trim_end().rfind('}').unwrap_or(text.len());
             text = format!("{}{}{}", &text[..close], notes.concat(), &text[close..]);
         }
-        out.push(Entry { name: cell.node.name.clone(), hash, core, text });
+        out.push(Entry { name: cell.node.name.clone(), hash, core, text, legacy });
     }
     if !out.is_empty() {
         if let Some(tables) = verify_tables(program_path) {
-            out.push(Entry { name: VERIFY_ENTRY.to_string(), hash: sha(&[&tables]), core: sha(&[&tables]), text: tables });
+            out.push(Entry { name: VERIFY_ENTRY.to_string(), hash: sha(&[&tables]), core: sha(&[&tables]), text: tables, legacy: None });
         }
     }
     out
@@ -249,7 +255,7 @@ pub fn read(path: &Path) -> Result<Option<Lock>, String> {
         if let Some(rest) = line.strip_prefix("== ") {
             let (name, hashes) = rest.rsplit_once(" sha256:").ok_or_else(|| format!("has a malformed entry line: `{line}`"))?;
             let (hash, core) = hashes.trim().split_once(" core:").ok_or_else(|| format!("has an entry line of an older format: `{line}`"))?;
-            entries.push(Entry { name: name.to_string(), hash: hash.to_string(), core: core.to_string(), text: String::new() });
+            entries.push(Entry { name: name.to_string(), hash: hash.to_string(), core: core.to_string(), text: String::new(), legacy: None });
         } else if let Some(e) = entries.last_mut() {
             e.text.push_str(line);
             e.text.push('\n');
@@ -297,6 +303,8 @@ pub fn compare(lock: &Lock, now: &[Entry], whole: bool) -> Vec<String> {
             None if whole => out.push(format!("skeleton `{}` is in {} and no longer in the program", old.name, LOCK_FILE)),
             None => {}
             // (a program that is not the lock's own: outside movers are not its lock's to judge)
+            // (a lock 3.2.0 froze for this very program: its legacy digests)
+            Some(new) if new.legacy.as_ref().map_or(false, |(h, c)| (whole && *h == old.hash) || (!whole && *c == old.core)) => {}
             Some(new) if (whole && new.hash != old.hash) || (!whole && new.core != old.core) => {
                 let outside = |l: &&str| (whole || !l.trim_start().starts_with("// moved from outside by")) && !l.trim_start().starts_with(NOTE_MARK);
                 let old_lines: Vec<&str> = old.text.lines().filter(outside).collect();
@@ -381,7 +389,7 @@ pub fn check(program: &Program, file: &Path, main_source: &str) -> Vec<String> {
         let same_dir = lock_path.parent() == real_file.parent();
         let mine: Vec<&Entry> = entries.iter().filter(|e| same_dir || e.name != VERIFY_ENTRY).collect();
         let held = Lock { file: lock.file.clone(), entries: lock.entries.into_iter().filter(|e| same_dir || e.name != VERIFY_ENTRY).collect() };
-        let owned: Vec<Entry> = mine.into_iter().map(|e| Entry { name: e.name.clone(), hash: e.hash.clone(), core: e.core.clone(), text: e.text.clone() }).collect();
+        let owned: Vec<Entry> = mine.into_iter().map(|e| Entry { name: e.name.clone(), hash: e.hash.clone(), core: e.core.clone(), text: e.text.clone(), legacy: e.legacy.clone() }).collect();
         let mut diffs = compare(&held, &owned, whole);
         if !whole && held.entries.iter().any(|e| e.name == VERIFY_ENTRY) && !owned.iter().any(|e| e.name == VERIFY_ENTRY) {
             diffs.push(format!("the `[verify]` tables and the edition of soma.toml are in {} and no longer in soma.toml", LOCK_FILE));

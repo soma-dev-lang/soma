@@ -1935,7 +1935,7 @@ fn local_ranges_at(
                     // …and a count (`len(rows)`, `rows.size`): an Int, so the
                     // early exit `if len(rows) >= 50 { return }` narrows it
                     // for the writes after, as `require len(rows) < 50` does
-                    let nan_free = |e: &Expr, vars: &HashMap<String, Known>| const_of(e).is_some() || int_expr(e, &single, &int_params, 0)
+                    let nan_free = |e: &Expr, vars: &HashMap<String, Known>| matches!(e, Expr::Ident(n) if RELAX_NAN.with(|r| r.borrow().as_deref() == Some(n.as_str()))) || const_of(e).is_some() || int_expr(e, &single, &int_params, 0)
                         || ((is_count(e) || matches!(e, Expr::Ident(_) | Expr::FnCall { .. })) && known_int(e, &single, &int_params, &dup, 0)) || match e {
                         Expr::Ident(n) => vars.get(n.as_str()).copied().and_then(bounds).is_some(),
                         _ => false,
@@ -2267,6 +2267,13 @@ fn constraint_comparisons(c: &Constraint) -> Vec<(&Expr, CmpOp, &Expr)> {
 // An expression that cannot produce a fraction: no Float literal, no `/`,
 // no float-producing builtin. Used to tighten strict bounds on integers.
 thread_local! {
+    /// Facts about a value that reaches an `Int` parameter: the call refuses
+    /// anything but an Int there (before its `requires`), so a NaN that got
+    /// past `if x <= 0 || x > 1000 { return }` never reaches the clause —
+    /// the early exit's negation holds of every value the clause sees.
+    /// (only for that one name, against constants: a bound borrowed from
+    /// another unchecked value could itself be NaN)
+    static RELAX_NAN: std::cell::RefCell<Option<String>> = std::cell::RefCell::new(None);
     /// slots of the cell being verified: name → its values are Ints
     static SLOT_INT: std::cell::RefCell<HashMap<String, bool>> = std::cell::RefCell::new(HashMap::new());
     /// handlers of the cell being verified (a call of one is no builtin)
@@ -3663,7 +3670,18 @@ pub fn verify_contracts(program: &Program) -> Vec<VerifyResult> {
                         let names = deep_idents(c);
                         // one parameter against a constant: the interval domain decides it
                         let verdict = match sig.params.iter().position(|p| names.len() == 1 && names.contains(&p.name)) {
-                            Some(i) if matches!(&sig.params[i].ty.node, TypeExpr::Simple(t) if t == "Int") => prove(c, &sig.params[i].name, ctx.range_of(call.args[i])),
+                            Some(i) if matches!(&sig.params[i].ty.node, TypeExpr::Simple(t) if t == "Int") => {
+                                let v = prove(c, &sig.params[i].name, ctx.range_of(call.args[i]));
+                                // a plain local passed to the Int parameter: what arrives is an
+                                // Int, so the early exits that tested it count (RELAX_NAN)
+                                if let (Proof::Unknown, Expr::Ident(arg)) = (v, call.args[i]) {
+                                    RELAX_NAN.with(|r| *r.borrow_mut() = Some(arg.clone()));
+                                    let relaxed = local_ranges_at(on, &hyp_h, &handlers, 0, &call.path, None);
+                                    RELAX_NAN.with(|r| *r.borrow_mut() = None);
+                                    let rctx = RangeCtx { hyp: &hyp_h, vars: relaxed, handlers: &handlers, depth: 0 };
+                                    match prove(c, &sig.params[i].name, rctx.range_of(call.args[i])) { Proof::Holds => Proof::Holds, _ => v }
+                                } else { v }
+                            }
                             _ => Proof::Unknown,
                         };
                         // a `[task]` handler's facts may be stale after a think(): not claimed
@@ -3730,7 +3748,7 @@ pub fn verify_contracts(program: &Program) -> Vec<VerifyResult> {
                     list.sort();
                     list.dedup();
                     result.checks.push(VerifyCheck::Warning(format!(
-                        "{}: requires {} — runtime-checked at {} of {} call site{}: {} (narrow the argument there: `require … else …` before the call; an early `if … {{ return … }}` counts only for an Int — a typed parameter or `to_int(…)` — since a value read from a Map may be a Float or NaN, which no comparison excludes)",
+                        "{}: requires {} — runtime-checked at {} of {} call site{}: {} (narrow the argument there: `require … else …` before the call; an early `if … {{ return … }}` counts for an Int — a typed parameter, `to_int(…)`, or a plain variable passed as is to an Int parameter — since a value read from a Map may be a Float or NaN, which no comparison excludes)",
                         sig.name, text, open.len(), found.len(), if found.len() == 1 { "" } else { "s" }, list.join(", "))));
                 }
             }

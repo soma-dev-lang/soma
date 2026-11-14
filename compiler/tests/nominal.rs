@@ -399,3 +399,24 @@ fn the_brief_and_the_lock_show_the_nominal_type_as_written() {
     let (out, _) = soma_in(&d, &["describe", "app.cell"]);
     assert!(out.contains("\"Lots\""), "{out}");
 }
+
+#[test]
+fn a_lock_frozen_by_3_2_0_with_nominal_types_is_still_accepted() {
+    // 3.2.0 recorded the erased types (`q: Int`); 3.2.1 shows `q: Lots`, and
+    // must not read that as a change of structure (an agent's project
+    // refused its briefs after the upgrade)
+    let src_dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/nominal_lock_320");
+    let d = std::env::temp_dir().join("soma_nominal_lock_320");
+    let _ = std::fs::remove_dir_all(&d);
+    std::fs::create_dir_all(&d).unwrap();
+    for f in ["app.cell", "skeleton.lock"] { std::fs::copy(src_dir.join(f), d.join(f)).unwrap(); }
+    let (out, ok) = soma_in(&d, &["check", "app.cell"]);
+    assert!(ok, "{out}");
+    let (out, ok) = soma_in(&d, &["skeleton", "app.cell", "Desk.buy"]);
+    assert!(ok && out.contains("q: Lots"), "{out}");
+    // a real change of structure is still refused
+    let changed = std::fs::read_to_string(d.join("app.cell")).unwrap().replace("writes pos", "writes pos\n            reads pos");
+    std::fs::write(d.join("app.cell"), changed).unwrap();
+    let (out, ok) = soma_in(&d, &["check", "app.cell"]);
+    assert!(!ok && out.contains("differs from skeleton.lock"), "{out}");
+}
