@@ -390,8 +390,9 @@ fn the_brief_and_the_lock_show_the_nominal_type_as_written() {
     std::fs::write(d.join("app.cell"), typed).unwrap();
     // --amend names the change of type, line by line
     let (out, ok) = soma_in(&d, &["skeleton", "app.cell", "--amend"]);
-    assert!(ok && out.contains("- signal buy(sym: String, q: Int) -> Int") && out.contains("+ signal buy(sym: String, q: Lots) -> Lots")
-        && out.contains("+ pos: Map<String, Lots>"), "{out}");
+    assert!(ok && out.contains("- signal buy(sym: String, q: Int) -> Int") && out.contains("+ signal buy(sym: String, q: Lots) -> Lots"), "{out}");
+    // the slot's type changed too: said, though the line alone could be a 3.2.0 lock's
+    assert!(out.contains("only a nominal type's name differs in: pos"), "{out}");
     // the brief: the signature as written and what Lots is
     let (out, ok) = soma_in(&d, &["skeleton", "app.cell", "Desk.buy"]);
     assert!(ok && out.contains("q: Lots) -> Lots") && out.contains("Lots = Int where value >= 0 (nominal:"), "{out}");
@@ -415,8 +416,17 @@ fn a_lock_frozen_by_3_2_0_with_nominal_types_is_still_accepted() {
     let (out, ok) = soma_in(&d, &["skeleton", "app.cell", "Desk.buy"]);
     assert!(ok && out.contains("q: Lots"), "{out}");
     // a real change of structure is still refused
-    let changed = std::fs::read_to_string(d.join("app.cell")).unwrap().replace("writes pos", "writes pos\n            reads pos");
+    let changed = std::fs::read_to_string(d.join("app.cell")).unwrap()
+        .replace("            writes pos\n    }", "            writes pos\n        // How many symbols.\n        signal count() -> Int\n            reads pos\n    }")
+        .replace("flesh Desk {", "flesh Desk {\n    on count() { return len(pos) }");
     std::fs::write(d.join("app.cell"), changed).unwrap();
     let (out, ok) = soma_in(&d, &["check", "app.cell"]);
     assert!(!ok && out.contains("differs from skeleton.lock"), "{out}");
+    // …and its diff shows that change only: not the lines whose type 3.2.0
+    // merely printed erased (`pos: Map<String, Int>` is no change), and each
+    // signal once in the summary
+    assert!(!out.contains("- pos: Map<String, Int>") && !out.contains("+ pos: Map<String, Lots>"), "{out}");
+    assert!(!out.contains("- signal buy") && !out.contains("+ signal buy"), "{out}");
+    assert!(out.contains("only a nominal type's name differs in: pos, signal buy"), "{out}");
+    assert!(out.contains("+ signal count() -> Int") && out.contains("(in `Desk`: signal count)"), "{out}");
 }

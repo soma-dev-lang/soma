@@ -280,6 +280,26 @@ fn subject(line: &str) -> String {
     String::new()
 }
 
+/// A line of the program with its nominal types as 3.2.0 printed them:
+/// erased to their base (`q: Lots` → `q: Int`).
+fn erase_nominal(line: &str) -> String {
+    let decls = crate::checker::nominal::declared();
+    let mut out = String::new();
+    let mut word = String::new();
+    let flush = |word: &mut String, out: &mut String| {
+        match decls.iter().find(|(n, _, _)| n == word) {
+            Some((_, base, _)) => out.push_str(base),
+            None => out.push_str(word),
+        }
+        word.clear();
+    };
+    for ch in line.chars() {
+        if ch.is_alphanumeric() || ch == '_' { word.push(ch); } else { flush(&mut word, &mut out); out.push(ch); }
+    }
+    flush(&mut word, &mut out);
+    out
+}
+
 /// Lines of `a` that `b` lacks, counting repeats (two signals may carry
 /// the same clause line).
 fn minus<'a>(a: &[&'a str], b: &[&'a str]) -> Vec<&'a str> {
@@ -310,12 +330,41 @@ pub fn compare(lock: &Lock, now: &[Entry], whole: bool) -> Vec<String> {
                 let old_lines: Vec<&str> = old.text.lines().filter(outside).collect();
                 let new_lines: Vec<&str> = new.text.lines().filter(outside).collect();
                 let mut block = format!("{} from {}:", what(&old.name), LOCK_FILE);
-                let gone = minus(&old_lines, &new_lines);
-                let added = minus(&new_lines, &old_lines);
+                // a lock 3.2.0 froze printed nominal types erased (`q: Int`) and
+                // had no line for them: compare the program's lines in that
+                // form, so only what really changed is shown (as written)
+                let legacy_lock = new.legacy.is_some() && !old.text.contains("(nominal:");
+                let erased: Vec<String> = new_lines.iter().map(|l| if legacy_lock { erase_nominal(l) } else { l.to_string() }).collect();
+                let new_cmp: Vec<&str> = erased.iter().map(|l| l.as_str()).collect();
+                let new_shown: Vec<&str> = new_lines.iter().zip(&new_cmp)
+                    .filter(|(l, _)| !(legacy_lock && l.contains("(nominal:"))).map(|(l, _)| *l).collect();
+                let new_cmp: Vec<&str> = new_lines.iter().zip(&new_cmp)
+                    .filter(|(l, _)| !(legacy_lock && l.contains("(nominal:"))).map(|(_, e)| *e).collect();
+                let gone = minus(&old_lines, &new_cmp);
+                let added: Vec<&str> = {
+                    let mut rest: Vec<&str> = old_lines.clone();
+                    new_shown.iter().zip(&new_cmp).filter(|(_, e)| match rest.iter().position(|x| x == *e) {
+                        Some(i) => { rest.remove(i); false }
+                        None => true,
+                    }).map(|(l, _)| *l).collect()
+                };
                 for l in &gone { block.push_str(&format!("\n    - {}", l.trim())); }
                 for l in &added { block.push_str(&format!("\n    + {}", l.trim())); }
-                let mut signals: Vec<String> = gone.iter().chain(added.iter()).map(|l| subject(l)).filter(|s| !s.is_empty()).collect();
-                signals.dedup();
+                // lines equal once erased: a lock frozen by 3.2.0 printed them so —
+                // or the program typed them since the freeze; said apart, not hidden
+                if legacy_lock {
+                    let renamed: Vec<String> = new_shown.iter().zip(&new_cmp)
+                        .filter(|(l, e)| **l != **e && old_lines.contains(e))
+                        .map(|(l, _)| { let sj = subject(l); if sj.is_empty() { l.trim().split(':').next().unwrap_or("").trim().to_string() } else { sj } })
+                        .collect();
+                    if !renamed.is_empty() {
+                        block.push_str(&format!("\n    (only a nominal type's name differs in: {} — a lock frozen by 3.2.0 printed nominal types erased, as their base; if they were typed since the freeze, that is a change too)", renamed.join(", ")));
+                    }
+                }
+                let mut signals: Vec<String> = Vec::new();
+                for sgn in gone.iter().chain(added.iter()).map(|l| subject(l)).filter(|s| !s.is_empty()) {
+                    if !signals.contains(&sgn) { signals.push(sgn); }
+                }
                 if !signals.is_empty() && old.name != VERIFY_ENTRY {
                     block.push_str(&format!("\n    (in `{}`: {})", old.name, signals.join(", ")));
                 }
