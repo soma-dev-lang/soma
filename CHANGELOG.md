@@ -1,6 +1,8 @@
 # Changelog
 
-## Unreleased
+## 3.2.3 — 2026-11-14
+
+Validation: 1,105 Rust tests, 118 CLI checks, 327 corpus programs, 1,280 numeric comparisons; no verdict changed on the 2,271 tracked programs.
 
 - The diff `soma check` prints against a `skeleton.lock` frozen by 3.2.0 for a program with nominal types shows what really changed, as written, and no longer the lines 3.2.0 merely printed erased (`- lots: Int` / `+ lots: Lots` on an unchanged signal). Lines that differ only by a nominal type's name are named apart — a 3.2.0 lock printed them as their base, and a program that typed them since the freeze changed them too. Each signal is named once in the summary. (Reported by an agent with the case reproduced.)
 

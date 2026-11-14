@@ -3,6 +3,10 @@
 > Newest first. The language itself: https://soma-lang.dev/llms.txt (`soma docs agent`).
 > Every fix and its compatibility note: https://soma-lang.dev/CHANGELOG.md.
 
+Soma 3.2.3: against a skeleton.lock frozen by 3.2.0 (nominal types printed
+erased), the diff shows only what really changed; lines that differ only by a
+nominal type's name are named apart.
+
 Soma 3.2.2: an early `if x <= 0 || x > 1000 { return … }` proves an `Int`
 parameter's `requires` when `x` is passed as is (the call refuses anything but
 an Int before the clause); a skeleton.lock frozen by 3.2.0 with nominal types

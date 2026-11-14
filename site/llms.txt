@@ -31,7 +31,7 @@ below is current for the binary named in https://soma-lang.dev/version.json.
 
 ## Pick Soma when / skip it when
 
-Current release: 3.2.2 — nominal types (`cell type Lots = Int where …`), after 3.1.0's
+Current release: 3.2.3 — nominal types (`cell type Lots = Int where …`), after 3.1.0's
 skeleton first. What each release changed: `soma docs releases`.
 
 Pick it when the task has a lifecycle or a limit that must hold: payments,
