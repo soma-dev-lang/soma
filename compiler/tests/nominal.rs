@@ -379,3 +379,23 @@ fn a_bound_reads_only_value() {
     let (out, ok) = soma_in(&project("bound_names", src, None), &["check", "app.cell"]);
     assert!(!ok && out.contains("value") && out.contains("cap"), "{out}");
 }
+
+#[test]
+fn the_brief_and_the_lock_show_the_nominal_type_as_written() {
+    let src = "skeleton Desk {\n    memory { pos: Map<String, Int> [persistent] }\n    face {\n        // Buys q lots.\n        signal buy(sym: String, q: Int) -> Int\n            writes pos\n    }\n}\nflesh Desk {\n    on buy(sym: String, q: Int) { pos.set(sym, (pos.get(sym) ?? 0) + q)  return q }\n}\n";
+    let d = project("brief", src, None);
+    let (out, ok) = soma_in(&d, &["skeleton", "app.cell", "--freeze"]);
+    assert!(ok, "{out}");
+    let typed = format!("cell type Lots = Int where value >= 0\n{}", src.replace("q: Int) -> Int", "q: Lots) -> Lots").replace("q: Int)", "q: Lots)").replace("Map<String, Int>", "Map<String, Lots>"));
+    std::fs::write(d.join("app.cell"), typed).unwrap();
+    // --amend names the change of type, line by line
+    let (out, ok) = soma_in(&d, &["skeleton", "app.cell", "--amend"]);
+    assert!(ok && out.contains("- signal buy(sym: String, q: Int) -> Int") && out.contains("+ signal buy(sym: String, q: Lots) -> Lots")
+        && out.contains("+ pos: Map<String, Lots>"), "{out}");
+    // the brief: the signature as written and what Lots is
+    let (out, ok) = soma_in(&d, &["skeleton", "app.cell", "Desk.buy"]);
+    assert!(ok && out.contains("q: Lots) -> Lots") && out.contains("Lots = Int where value >= 0 (nominal:"), "{out}");
+    // describe too
+    let (out, _) = soma_in(&d, &["describe", "app.cell"]);
+    assert!(out.contains("\"Lots\""), "{out}");
+}

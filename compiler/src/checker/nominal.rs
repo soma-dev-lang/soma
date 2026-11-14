@@ -17,8 +17,31 @@
 use crate::ast::*;
 use std::collections::HashMap;
 
+thread_local! {
+    /// span of a type expression → the type as written, for each one the
+    /// erasure rewrote (`soma skeleton`, `describe` and the lock show it)
+    static SHOWN: std::cell::RefCell<HashMap<(usize, usize), String>> = std::cell::RefCell::new(HashMap::new());
+}
+
+thread_local! {
+    /// the nominal types of the program last prepared: (name, base, bound)
+    static DECLS: std::cell::RefCell<Vec<(String, String, Option<String>)>> = std::cell::RefCell::new(Vec::new());
+}
+
+/// The nominal types of the program, as declared (for the brief).
+pub fn declared() -> Vec<(String, String, Option<String>)> {
+    DECLS.with(|d| d.borrow().clone())
+}
+
+/// The type written at `span`, when the erasure rewrote it.
+pub fn shown(span: Span) -> Option<String> {
+    SHOWN.with(|m| m.borrow().get(&(span.start, span.end)).cloned())
+}
+
 pub fn prepare(program: &mut Program) {
     program.nominal_issues.clear();
+    SHOWN.with(|m| m.borrow_mut().clear());
+    DECLS.with(|d| d.borrow_mut().clear());
     let mut decls: HashMap<String, String> = HashMap::new();
     let mut issues: Vec<NominalIssue> = Vec::new();
     for c in &program.cells {
@@ -32,6 +55,8 @@ pub fn prepare(program: &mut Program) {
             _ => { decls.insert(c.node.name.clone(), base.clone()); }
         }
     }
+    DECLS.with(|d| *d.borrow_mut() = program.cells.iter().filter_map(|c| c.node.nominal.as_ref().map(|b|
+        (c.node.name.clone(), b.clone(), c.node.nominal_where.as_ref().map(|w| render_expr(&w.node))))).collect());
     if decls.is_empty() { return; }
 
     // 0. a bound (`where …`) becomes what verify already proves
@@ -95,8 +120,17 @@ impl Erase<'_> {
         }
     }
 
+    /// A written type: rewritten, and remembered as written.
+    fn sty(&self, t: &mut Spanned<TypeExpr>) {
+        let before = crate::commands::describe::format_type(&t.node);
+        self.ty(&mut t.node);
+        if crate::commands::describe::format_type(&t.node) != before {
+            SHOWN.with(|m| m.borrow_mut().insert((t.span.start, t.span.end), before));
+        }
+    }
+
     fn params(&self, ps: &mut [Param]) {
-        for p in ps { self.ty(&mut p.ty.node); }
+        for p in ps { self.sty(&mut p.ty); }
     }
 
     fn cell(&self, c: &mut CellDef) {
@@ -109,22 +143,22 @@ impl Erase<'_> {
                 match &mut d.node {
                     FaceDecl::Signal(sig) => {
                         self.params(&mut sig.params);
-                        if let Some(r) = &mut sig.return_type { self.ty(&mut r.node); }
+                        if let Some(r) = &mut sig.return_type { self.sty(r); }
                         for e in sig.requires.iter_mut().chain(sig.ensures.iter_mut()) { self.expr(e); }
                     }
                     FaceDecl::Tool(t) => {
                         self.params(&mut t.params);
-                        if let Some(r) = &mut t.return_type { self.ty(&mut r.node); }
+                        if let Some(r) = &mut t.return_type { self.sty(r); }
                     }
                     FaceDecl::Await(a) => {
                         self.params(&mut a.params);
-                        if let Some(r) = &mut a.return_type { self.ty(&mut r.node); }
+                        if let Some(r) = &mut a.return_type { self.sty(r); }
                     }
                     FaceDecl::Given(_) | FaceDecl::Promise(_) => {}
                 }
             },
             Section::Memory(m) => {
-                for sl in &mut m.slots { self.ty(&mut sl.node.ty.node); }
+                for sl in &mut m.slots { self.sty(&mut sl.node.ty); }
                 for e in &mut m.invariants { self.expr(e); }
             }
             Section::Interior(i) => for c in &mut i.cells { self.cell(&mut c.node); },
@@ -152,8 +186,8 @@ impl Erase<'_> {
             Section::Every(e) | Section::After(e) => self.stmts(&mut e.body),
             Section::Variants(v) => for var in &mut v.variants {
                 match &mut var.node.fields {
-                    VariantFields::Tuple(ts) => for t in ts { self.ty(&mut t.node); },
-                    VariantFields::Struct(fs) => for (_, t) in fs { self.ty(&mut t.node); },
+                    VariantFields::Tuple(ts) => for t in ts { self.sty(t); },
+                    VariantFields::Struct(fs) => for (_, t) in fs { self.sty(t); },
                     VariantFields::Unit => {}
                 }
             },

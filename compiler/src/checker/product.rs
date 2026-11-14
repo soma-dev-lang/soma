@@ -226,6 +226,11 @@ impl<'a> Engine<'a> {
             Expr::MethodCall { target, method, args } if method == "get" && args.len() == 1 && self.is_link(&target.node, frame) =>
                 format!("link:{}", self.key_of(&args[0].node, args[0].span, frame)),
             Expr::Index { target, index } if self.is_link(&target.node, frame) => format!("link:{}", self.key_of(&index.node, index.span, frame)),
+            // `desk_de.get(id) ?? ""`: the same instance — the default stands
+            // where the plain read gives `()`, for an id with no link either way
+            Expr::FnCall { name, args } if name == "_coalesce" && args.len() == 2 && matches!(args[1].node, Expr::Literal(_))
+                && matches!(&args[0].node, Expr::MethodCall { target, method, args: a } if method == "get" && a.len() == 1 && self.is_link(&target.node, frame)) =>
+                self.key_of(&args[0].node, args[0].span, frame),
             // a computed id: its own value at each place it is written
             _ => format!("x:{}:{}", frame.uid, at.start),
         }
@@ -1282,6 +1287,24 @@ pub fn check(program: &Program, specs: &[Spec]) -> Vec<super::verify::VerifyResu
         match groups.iter_mut().find(|g| g.0 == k) { Some(g) => g.1.push(s), None => groups.push((k, vec![s])) }
     }
     for ((assuming, via), group) in groups {
+        // soma.toml states its rules for every program of its folder: a rule
+        // that names only cells this program does not have is about another
+        // program (a neighbour file failed on `there is no cell Tir`) — a
+        // note here. A rule naming one of its cells and a missing one is a
+        // typo, and stays an error below.
+        let group: Vec<&Spec> = group.into_iter().filter(|s| {
+            let named: Vec<&str> = std::iter::once(s.target.as_str()).chain(s.requires.iter().map(|r| r.as_str())).chain(via.as_deref())
+                .filter_map(|n| n.split_once('.').map(|(c, _)| c)).collect();
+            if named.is_empty() || named.iter().any(|c| cells.iter().any(|x| x.name == *c)) { return true; }
+            let mut names: Vec<&str> = named.clone();
+            names.sort();
+            names.dedup();
+            result.checks.push(VerifyCheck::Note(format!(
+                "soma.toml: the rule on `{}` names {} — no cell of this program; it applies to another program of this folder, so it is not checked here",
+                s.target, names.iter().map(|n| format!("`{n}`")).collect::<Vec<_>>().join(", "))));
+            false
+        }).collect();
+        if group.is_empty() { continue; }
         let link: Option<(String, String)> = match via.as_deref() {
             None => None,
             Some(v) => match v.split_once('.') {

@@ -43,8 +43,8 @@ pub fn cmd_describe(path: &PathBuf) {
                 for v in &vs.variants {
                     let (kind, fields): (&str, serde_json::Value) = match &v.node.fields {
                         VariantFields::Unit => ("unit", serde_json::json!([])),
-                        VariantFields::Tuple(ts) => ("tuple", serde_json::json!(ts.iter().map(|t| format_type(&t.node)).collect::<Vec<_>>())),
-                        VariantFields::Struct(fs) => ("struct", serde_json::json!(fs.iter().map(|(n, t)| serde_json::json!({"name": n, "type": format_type(&t.node)})).collect::<Vec<_>>())),
+                        VariantFields::Tuple(ts) => ("tuple", serde_json::json!(ts.iter().map(|t| format_spanned(t)).collect::<Vec<_>>())),
+                        VariantFields::Struct(fs) => ("struct", serde_json::json!(fs.iter().map(|(n, t)| serde_json::json!({"name": n, "type": format_spanned(t)})).collect::<Vec<_>>())),
                     };
                     variants.push(serde_json::json!({"name": v.node.name, "kind": kind, "fields": fields}));
                 }
@@ -88,7 +88,7 @@ fn describe_cell(program: &Program, cell: &CellDef, source: &str) -> serde_json:
                 let params: Vec<serde_json::Value> = on.params.iter()
                     .map(|p| serde_json::json!({
                         "name": p.name,
-                        "type": format_type(&p.ty.node),
+                        "type": format_spanned(&p.ty),
                     }))
                     .collect();
 
@@ -138,7 +138,7 @@ fn describe_cell(program: &Program, cell: &CellDef, source: &str) -> serde_json:
 
                     memory_slots.push(serde_json::json!({
                         "name": slot.node.name,
-                        "type": format_type(&slot.node.ty.node),
+                        "type": format_spanned(&slot.node.ty),
                         "properties": props,
                         "invariants": invariants,
                     }));
@@ -215,14 +215,14 @@ fn describe_cell(program: &Program, cell: &CellDef, source: &str) -> serde_json:
                     match &decl.node {
                         FaceDecl::Signal(sig) => {
                             let params: Vec<String> = sig.params.iter()
-                                .map(|p| format!("{}: {}", p.name, format_type(&p.ty.node)))
+                                .map(|p| format!("{}: {}", p.name, format_spanned(&p.ty)))
                                 .collect();
                             let mut entry = serde_json::json!({
                                 "name": sig.name,
                                 "params": params,
                             });
                             if let Some(ref ret) = sig.return_type {
-                                entry["returns"] = serde_json::json!(format_type(&ret.node));
+                                entry["returns"] = serde_json::json!(format_spanned(ret));
                             }
                             // 3.0: the contract, as a caller reads it
                             if !sig.requires.is_empty() {
@@ -242,14 +242,14 @@ fn describe_cell(program: &Program, cell: &CellDef, source: &str) -> serde_json:
                         FaceDecl::Await(_a) => {}
                         FaceDecl::Tool(tool) => {
                             let params: Vec<String> = tool.params.iter()
-                                .map(|p| format!("{}: {}", p.name, format_type(&p.ty.node)))
+                                .map(|p| format!("{}: {}", p.name, format_spanned(&p.ty)))
                                 .collect();
                             let mut t = serde_json::json!({
                                 "name": tool.name,
                                 "params": params,
                             });
                             if let Some(ref ret) = tool.return_type {
-                                t["returns"] = serde_json::json!(format_type(&ret.node));
+                                t["returns"] = serde_json::json!(format_spanned(ret));
                             }
                             if let Some(ref desc) = tool.description {
                                 t["description"] = serde_json::json!(desc);
@@ -490,7 +490,7 @@ fn print_cell_face(cell: &CellDef, parent: Option<&str>) {
                     let props = if props.is_empty() { String::new() }
                         else { format!(" [{}]", props.join(", ")) };
                     println!("  memory {}: {}{}", slot.node.name,
-                        format_type(&slot.node.ty.node), props);
+                        format_spanned(&slot.node.ty), props);
                 }
                 for inv in &mem.invariants {
                     println!("  invariant {}", format_expr(&inv.node));
@@ -569,7 +569,7 @@ fn face_json(cell: &CellDef) -> serde_json::Value {
                         .map(|p| p.node.name().to_string()).collect();
                     memory.push(serde_json::json!({
                         "name": slot.node.name,
-                        "type": format_type(&slot.node.ty.node),
+                        "type": format_spanned(&slot.node.ty),
                         "properties": props,
                     }));
                 }
@@ -625,13 +625,13 @@ pub(crate) fn format_promise(c: &Constraint) -> String {
 
 pub(crate) fn format_params(params: &[Param]) -> String {
     params.iter()
-        .map(|p| format!("{}: {}", p.name, format_type(&p.ty.node)))
+        .map(|p| format!("{}: {}", p.name, format_spanned(&p.ty)))
         .collect::<Vec<_>>()
         .join(", ")
 }
 
 pub(crate) fn format_return(ret: &Option<Spanned<TypeExpr>>) -> String {
-    ret.as_ref().map(|r| format!(" -> {}", format_type(&r.node))).unwrap_or_default()
+    ret.as_ref().map(|r| format!(" -> {}", format_spanned(r))).unwrap_or_default()
 }
 
 fn format_variants(v: &VariantsSection) -> String {
@@ -645,10 +645,10 @@ pub(crate) fn format_variant(var: &VariantDecl) -> String {
     match &var.fields {
         VariantFields::Unit => var.name.clone(),
         VariantFields::Tuple(tys) => format!("{}({})", var.name,
-            tys.iter().map(|t| format_type(&t.node)).collect::<Vec<_>>().join(", ")),
+            tys.iter().map(|t| format_spanned(t)).collect::<Vec<_>>().join(", ")),
         VariantFields::Struct(fields) => format!("{} {{ {} }}", var.name,
             fields.iter()
-                .map(|(n, t)| format!("{}: {}", n, format_type(&t.node)))
+                .map(|(n, t)| format!("{}: {}", n, format_spanned(t)))
                 .collect::<Vec<_>>()
                 .join(", ")),
     }
@@ -658,6 +658,12 @@ pub(crate) fn format_variant(var: &VariantDecl) -> String {
 fn span_to_line(source: &str, offset: usize) -> usize {
     let (line, _col) = crate::interpreter::span_to_location(source, offset);
     line
+}
+
+/// A type as the program wrote it: a nominal type (`Lots`) is shown by
+/// its name, though the program the commands read has it erased to its base.
+pub fn format_spanned(t: &Spanned<TypeExpr>) -> String {
+    crate::checker::nominal::shown(t.span).unwrap_or_else(|| format_type(&t.node))
 }
 
 pub fn format_type(ty: &TypeExpr) -> String {

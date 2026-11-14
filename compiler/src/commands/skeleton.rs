@@ -13,7 +13,7 @@
 use std::path::PathBuf;
 use crate::ast::*;
 use crate::checker::frame::{self, Bone, CellSkeleton, Frame};
-use super::describe::{format_literal, format_params, format_promise, format_return, format_type, format_variant};
+use super::describe::{format_literal, format_params, format_promise, format_return, format_spanned, format_type, format_variant};
 use super::{read_source, lex_with_location, parse_with_location, resolve_imports};
 
 const WIDTH: usize = 100;
@@ -293,7 +293,7 @@ fn slot_line(slot: &MemorySlot) -> String {
             }).collect::<Vec<_>>().join(", ")),
     }).collect();
     let props = if props.is_empty() { String::new() } else { format!(" [{}]", props.join(", ")) };
-    format!("{}: {}{}", slot.name, format_type(&slot.ty.node), props)
+    format!("{}: {}{}", slot.name, format_spanned(&slot.ty), props)
 }
 
 fn edge_line(t: &Transition) -> String {
@@ -312,7 +312,7 @@ fn promise_line(c: &Constraint) -> String {
 }
 
 fn bone_head(b: &Bone) -> String {
-    let ret = b.return_type.map(|r| format!(" -> {}", format_type(&r.node))).unwrap_or_default();
+    let ret = b.return_type.map(|r| format!(" -> {}", format_spanned(r))).unwrap_or_default();
     format!("{} {}({}){}", if b.tool { "tool" } else { "signal" }, b.name, format_params(b.params), ret)
 }
 
@@ -592,7 +592,16 @@ pub fn types_closure(program: &Program, texts: &[String]) -> Vec<String> {
         }
     }
     picked.sort();
-    picked.into_iter().map(|i| format!("{} = {}", all[i].0.name, all[i].1)).collect()
+    let mut out: Vec<String> = picked.into_iter().map(|i| format!("{} = {}", all[i].0.name, all[i].1)).collect();
+    // a nominal type (`cell type Lots = Int where …`): what it is, how to
+    // enter and leave it — erased before the program is read here
+    for (name, base, bound) in crate::checker::nominal::declared() {
+        if !texts.iter().any(|t| names(t, &name)) { continue; }
+        let leave = match base.as_str() { "Float" => "to_float", "String" => "to_string", _ => "to_int" };
+        out.push(format!("{name} = {base}{} (nominal: never mixed with another type; build {name}(x), read {leave}(q); literals take its type)",
+            bound.map(|b| format!(" where {b}")).unwrap_or_default()));
+    }
+    out
 }
 
 fn types_named(program: &Program, texts: &[String]) -> Vec<String> {
@@ -675,7 +684,11 @@ pub fn render_brief(program: &Program, source: &str, skeletons: &[CellSkeleton],
     }
     let mut types = types_named(program, &texts);
     if !types.is_empty() {
-        types.push("    (build one: `Name { field: value }` or `Name(value)`; take one apart: `match v { Name { field } -> … }`)".to_string());
+        // (a record or a sum type: how to build and take one apart; a
+        // nominal type's line says it itself)
+        if types.iter().any(|t| !t.contains("(nominal:")) {
+            types.push("    (build one: `Name { field: value }` or `Name(value)`; take one apart: `match v { Name { field } -> … }`)".to_string());
+        }
         label(&mut out, "types", types);
     }
     if b.frame.is_pure() {
@@ -839,8 +852,8 @@ fn bone_json(b: &Bone) -> serde_json::Value {
     serde_json::json!({
         "name": b.name,
         "kind": if b.tool { "tool" } else { "signal" },
-        "params": b.params.iter().map(|p| serde_json::json!({ "name": p.name, "type": format_type(&p.ty.node) })).collect::<Vec<_>>(),
-        "returns": b.return_type.map(|r| format_type(&r.node)),
+        "params": b.params.iter().map(|p| serde_json::json!({ "name": p.name, "type": format_spanned(&p.ty) })).collect::<Vec<_>>(),
+        "returns": b.return_type.map(|r| format_spanned(r)),
         "requires": b.requires.iter().map(|c| render_expr(&c.node)).collect::<Vec<_>>(),
         "ensures": b.ensures.iter().map(|c| render_expr(&c.node)).collect::<Vec<_>>(),
         "in_face": b.in_face,
@@ -870,7 +883,7 @@ fn map_json(program: &Program, skeletons: &[CellSkeleton], file: &str) -> serde_
                 Section::Memory(mem) => {
                     for slot in &mem.slots {
                         slots.push(serde_json::json!({
-                            "name": slot.node.name, "type": format_type(&slot.node.ty.node),
+                            "name": slot.node.name, "type": format_spanned(&slot.node.ty),
                             "properties": slot.node.properties.iter().map(|p| p.node.name().to_string()).collect::<Vec<_>>(),
                         }));
                     }
@@ -907,7 +920,7 @@ fn brief_json(program: &Program, source: &str, skeletons: &[CellSkeleton], sk: &
     let slots: Vec<serde_json::Value> = b.frame.reads.iter().map(|n| (n, "reads"))
         .chain(b.frame.writes.iter().map(|n| (n, "writes")))
         .filter_map(|(n, access)| slot_of(sk, n).map(|(slot, invariants)| serde_json::json!({
-            "name": n, "access": access, "type": format_type(&slot.ty.node), "invariants": invariants,
+            "name": n, "access": access, "type": format_spanned(&slot.ty), "invariants": invariants,
         }))).collect();
     let mut texts: Vec<String> = vec![bone_head(b)];
     texts.extend(b.frame.calls.iter().filter_map(|c| callee_of(skeletons, sk, c)).map(bone_head));

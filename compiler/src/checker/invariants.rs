@@ -1936,7 +1936,7 @@ fn local_ranges_at(
                     // early exit `if len(rows) >= 50 { return }` narrows it
                     // for the writes after, as `require len(rows) < 50` does
                     let nan_free = |e: &Expr, vars: &HashMap<String, Known>| const_of(e).is_some() || int_expr(e, &single, &int_params, 0)
-                        || (is_count(e) && known_int(e, &single, &int_params, &dup, 0)) || match e {
+                        || ((is_count(e) || matches!(e, Expr::Ident(_) | Expr::FnCall { .. })) && known_int(e, &single, &int_params, &dup, 0)) || match e {
                         Expr::Ident(n) => vars.get(n.as_str()).copied().and_then(bounds).is_some(),
                         _ => false,
                     };
@@ -3730,7 +3730,7 @@ pub fn verify_contracts(program: &Program) -> Vec<VerifyResult> {
                     list.sort();
                     list.dedup();
                     result.checks.push(VerifyCheck::Warning(format!(
-                        "{}: requires {} — runtime-checked at {} of {} call site{}: {} (narrow the argument there: `require … else …` before the call)",
+                        "{}: requires {} — runtime-checked at {} of {} call site{}: {} (narrow the argument there: `require … else …` before the call; an early `if … {{ return … }}` counts only for an Int — a typed parameter or `to_int(…)` — since a value read from a Map may be a Float or NaN, which no comparison excludes)",
                         sig.name, text, open.len(), found.len(), if found.len() == 1 { "" } else { "s" }, list.join(", "))));
                 }
             }
