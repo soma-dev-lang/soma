@@ -1,0 +1,9 @@
+cell Pricing {
+    face {
+        signal unit_price(total_cents: Int, quantity: Int) -> Int
+    }
+    on unit_price(total_cents: Int, quantity: Int) [native] {
+        if quantity <= 0 { return 0 }
+        return total_cents / quantity
+    }
+}

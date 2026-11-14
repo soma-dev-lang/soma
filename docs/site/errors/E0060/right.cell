@@ -1,0 +1,13 @@
+cell Fraud {
+    face {
+        signal risk_score(amount_cents: Int, attempts: Int) -> Int
+    }
+    on risk_score(amount_cents: Int, attempts: Int) [native] {
+        let score = 0
+        if amount_cents > 100000 {
+            score = score + 50
+        }
+        score = score + attempts * 10
+        return score
+    }
+}

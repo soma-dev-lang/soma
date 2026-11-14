@@ -1,0 +1,12 @@
+cell Loans {
+    face {
+        signal monthly_interest(balance_cents: Int, rate_bps: Int, months: Int) -> Int
+    }
+    on monthly_interest(balance_cents: Int, rate_bps: Int, months: Int) [nativ] {
+        let total = 0
+        for m in range(0, months) {
+            total = total + idiv(balance_cents * rate_bps, 120000)
+        }
+        return total
+    }
+}

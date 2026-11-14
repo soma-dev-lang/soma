@@ -1,0 +1,1 @@
+soma check reports this rule (kind nested_quote) as the warning W0014 habit_warning, never as E0076: the checker files every "habit" issue under W0014, usually next to errors such as E0045 for the pieces the split string leaves behind.

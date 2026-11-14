@@ -1,0 +1,1 @@
+`soma check` warns with W0008 when a `cell agent` has no `state` section. An agent's lifecycle is what `soma verify` can check (reachability, deadlock-freedom, every path reaching a terminal state), so an agent without a state machine has none of that verified behavior. Add a `state` machine and move each job through it with `transition(id, "state")` in the handler.

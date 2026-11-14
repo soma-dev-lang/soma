@@ -1,0 +1,20 @@
+cell Bank {
+    interior {
+        cell Teller {
+            face { signal withdraw(account: String, amount: Int) }
+            on withdraw(account: String, amount: Int) {
+                return amount
+            }
+        }
+        cell Ledger {
+            face { await withdraw(account: String, amount: Int) }
+            memory {
+                debits: List<Int> [persistent]
+            }
+            on withdraw(account: String, amount: Int) {
+                debits.push(amount)
+                return len(debits)
+            }
+        }
+    }
+}

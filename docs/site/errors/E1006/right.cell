@@ -1,0 +1,6 @@
+cell Billing {
+    // generated: one fee per line item, 420 line items
+    on total(base: Int, fee: Int) {
+        return base + 420 * fee
+    }
+}

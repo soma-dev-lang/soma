@@ -1,0 +1,13 @@
+cell Inventory {
+    face {
+        signal restock(sku: String, qty: Int) -> Int
+    }
+    memory {
+        stock: Map<String, Int> [persistent]
+    }
+    on restock(sku: String, qty: Int) {
+        let level = (stock.get(sku) ?? 0) + qty
+        stock.set(sku, level)
+        return level
+    }
+}

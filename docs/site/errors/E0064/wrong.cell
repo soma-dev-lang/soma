@@ -1,0 +1,11 @@
+cell Inventory {
+    memory {
+        stock: Map<String, Int> [persistent]
+        invariant stock >= 0
+    }
+    on restock(sku: String, qty: Int) {
+        let current = stock.get(sku) ?? 0
+        stock = map(sku, current + qty)
+        return current + qty
+    }
+}

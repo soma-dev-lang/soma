@@ -1,0 +1,20 @@
+cell Billing {
+    face {
+        signal late_fee(status: String, days_late: Int) -> Int
+    }
+    on late_fee(status: String, days_late: Int) {
+        let fee = 0
+        match status {
+            "paid" -> {
+                fee = 0
+                break
+            }
+            "overdue" -> {
+                fee = 500 + days_late * 25
+                break
+            }
+            _ -> { fee = 0 }
+        }
+        return fee
+    }
+}

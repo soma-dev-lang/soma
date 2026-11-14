@@ -1,0 +1,16 @@
+cell Orders {
+    face {
+        signal cancel(id: String, refunded: Bool) -> String
+    }
+    state order {
+        initial: placed
+        placed -> paid
+        paid -> shipped
+        * -> cancelled except [shipped, paid]
+        paid -> cancelled { guard { refunded } }
+    }
+    on cancel(id: String, refunded: Bool) {
+        transition(id, "cancelled")
+        return get_status(id)
+    }
+}

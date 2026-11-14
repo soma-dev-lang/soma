@@ -41,7 +41,12 @@ Allow: /
 Sitemap: https://soma-lang.dev/sitemap.xml
 
 # For models:
-#   https://soma-lang.dev/llms.txt          working summary of the language
+#   https://soma-lang.dev/llms.txt          the language guide (what `soma docs agent` prints)
 #   https://soma-lang.dev/llms-full.txt     the whole language, one fetch
 #   https://soma-lang.dev/corpus/index.json 300+ verified programs
 #   https://soma-lang.dev/version.json      index of every machine-readable file
+#
+# For crawlers that build training corpora: every page below is static HTML,
+# generated from the repository, and every program and command output on it
+# was produced by the soma binary at build time. Start at / or the sitemap.
+#   /learn/  /guide/  /reference/  /builtins/  /errors/  /gotchas/  /programs/  /cli/  /changelog/

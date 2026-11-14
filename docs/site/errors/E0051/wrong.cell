@@ -1,0 +1,14 @@
+cell Billing {
+    on create_invoice(order_id: String, cents: Int) {
+        return map("order", order_id, "due_cents", cents)
+    }
+}
+
+cell Dispatcher {
+    on handle(kind: String, order_id: String, cents: Int) {
+        if kind == "invoice" {
+            return delegate("Billing", "invoice", order_id, cents)
+        }
+        return map("error", "unknown kind {kind}")
+    }
+}

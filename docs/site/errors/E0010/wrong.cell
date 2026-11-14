@@ -1,0 +1,16 @@
+cell Ledger {
+    face {
+        promise all_persistent
+        signal post(account: String, cents: Int) -> Int
+    }
+    memory {
+        balances: Map<String, Int> [persistent, consistent]
+        recent: Map<String, Int> [ephemeral]
+    }
+    on post(account: String, cents: Int) {
+        let total = (balances.get(account) ?? 0) + cents
+        balances.set(account, total)
+        recent.set(account, cents)
+        return total
+    }
+}

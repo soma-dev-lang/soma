@@ -1,0 +1,26 @@
+# skeleton.lock — the structure `soma check` holds right.cell to.
+# Written by `soma skeleton right.cell --freeze`; changed on purpose with `--amend`. Do not edit.
+file right.cell
+
+== Orders sha256:7f2f11b5679313caaebae5a1419510718cdd380d71b81c63364af5b8f5c00a2c core:d142acbcbfbd3c6045dff091f1f26421a2216f151fb953d2cace75afdcca1195
+skeleton Orders {
+    memory {
+        log: Map<String, String> [persistent]
+    }
+    state flow {
+        initial: placed
+        placed -> paid
+        paid -> shipped
+    }
+    face {
+        signal pay(id: String) -> String  moves placed -> paid
+        signal ship(id: String) -> String  writes log  moves paid -> shipped
+    }
+    //~ pay af5570f5a1810b7a
+    //~ ship af5570f5a1810b7a
+}
+
+== soma.toml [verify] sha256:74d5af60569c1e022da0dd0ecb3ac3db2f9ba9782141aa47f241421a004e68ca core:74d5af60569c1e022da0dd0ecb3ac3db2f9ba9782141aa47f241421a004e68ca
+package.edition = "2026"
+
+checksum sha256:15ca1b924bdd5c5b6b9b05b5ad38eedbde2baddf63ab71d3a8f24362afcc7666

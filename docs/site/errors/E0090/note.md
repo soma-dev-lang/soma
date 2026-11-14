@@ -1,0 +1,1 @@
+A guard is a pure condition over the locals of the handler that calls `transition()`; calling a handler, think(), or writing a slot inside it is refused, because the guard would run on every transition unseen by the termination, cost and invariant analyses. Compute the value in the handler before `transition()` (`let limit = limit_for(customer)`) and test that local in the guard.

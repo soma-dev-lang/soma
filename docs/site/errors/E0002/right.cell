@@ -1,0 +1,11 @@
+cell AuditTrail {
+    memory {
+        entries: Map<String, String> [persistent, retain(365d)]
+    }
+    on record(id: String, event: String) {
+        entries.set(id, event)
+    }
+    on lookup(id: String) {
+        return entries.get(id) ?? ""
+    }
+}

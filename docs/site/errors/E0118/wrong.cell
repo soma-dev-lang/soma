@@ -1,0 +1,12 @@
+cell agent Clerk {
+    face {
+        signal describe_pet(id: Int) -> String
+        tool get_pet(pet_id: Int) -> Map [openapi: "pets/getPetById"] "Fetch a pet by id"
+    }
+    state job { initial: idle  idle -> done }
+    on describe_pet(id: Int) {
+        let pet = get_pet(id)
+        let name = pet.name ?? "unknown"
+        return "pet {id}: {name}"
+    }
+}

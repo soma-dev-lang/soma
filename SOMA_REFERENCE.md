@@ -669,10 +669,18 @@ let counts = par_word_count(files)        // parallel version (threaded)
 
 ## Templates
 
+A template is a string with `{name}` placeholders. In a string literal, `{…}`
+is interpolation, so write the placeholder with doubled braces: the literal
+`"Hello, {{name}}!"` is the text `Hello, {name}!`, which `render` fills.
+
 ```soma
-let s = render(tpl, "name", "Ada")        // replace {name} with "Ada" in template string
-let s = render_each(rows, row_tpl)        // render template once per map in list
+let tpl = "Hello, {{name}}!"              // the text: Hello, {name}!
+let s = render(tpl, "name", "Ada")        // "Hello, Ada!"
+let s = render_each(rows, "<li>{{n}}</li>")   // the template once per map in the list, joined
 ```
+
+Writing `"Hello, {name}!"` instead is error E0011: `name` is read as a
+variable of the handler.
 
 ## Time
 
@@ -976,6 +984,12 @@ cell OrderSystem {
 
     on advance(id: String, target: String) {
         return transition(id, target)
+    }
+
+    on check_stale_orders() {
+        for id in orders.keys() {
+            if get_status(id) == "pending" { transition(id, "cancelled") }
+        }
     }
 }
 ```

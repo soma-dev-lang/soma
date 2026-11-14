@@ -1,0 +1,1 @@
+A memory slot must be a Map or a List; a slot declared as a single value such as `balance: Int` is refused. Slots are keyed stores, and the check makes the declaration match how they behave. Keep a single value as one entry of a Map, for example `balance: Map<String, Int>` read with `balance.get("value")`.

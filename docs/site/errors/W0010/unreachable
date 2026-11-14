@@ -1,0 +1,1 @@
+`soma check` prints a proven cost bound as a note ("✓ cost: 'tokens' bound proven — peak 500 reply tokens …"), and notes carry no code: the human output has no `= code:` line and the `--json` "notes" entries have only "level" and "message". So no output of `soma check` ever shows W0010.

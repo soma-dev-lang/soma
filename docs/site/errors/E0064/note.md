@@ -1,0 +1,1 @@
+A memory slot is a Map or a List that is written one entry at a time, so assigning a whole value to it (`stock = map(...)`) is refused. Writes go through the slot so that its invariants are checked on each entry written. Write the entry with `stock.set(key, value)` or `stock[key] = value`, and read it with `stock.get(key)`.

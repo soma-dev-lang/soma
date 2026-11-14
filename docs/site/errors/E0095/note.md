@@ -1,0 +1,1 @@
+A `cell test` that has no `rules { }` block, only helpers, would run zero assertions and report success, so `soma check` refuses it with E0095. Helpers inside a test cell (`on _totals_add_up()`) never run on their own: only `assert`, `assert_fails` and `property` lines are tests. Add a `rules` block that asserts on the helper's result.

@@ -1,0 +1,15 @@
+cell Wallet {
+    face {
+        signal deposit(owner: String, cents: Int) -> Int
+        promise all_persistent
+    }
+    memory {
+        balances: Map<String, Int> [persistent, consistent]
+        invariant balances >= 0
+    }
+    on deposit(owner: String, cents: Int) {
+        let next = (balances.get(owner) ?? 0) + cents
+        balances.set(owner, next)
+        return next
+    }
+}

@@ -1,0 +1,12 @@
+cell Wallet {
+    face {
+        signal balance(owner: String) -> Int
+    }
+    memory {
+        balances: Map<String, Int> [persistent]
+    }
+    on balance(owner: String) {
+        let cents = balances.get(owner) ?? 0
+        return "{owner} has {cents} cents"
+    }
+}

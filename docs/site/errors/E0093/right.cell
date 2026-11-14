@@ -1,0 +1,18 @@
+cell Sessions {
+    face {
+        signal expire_idle() -> Int
+    }
+    memory {
+        last_seen: Map<String, Int> [persistent]
+    }
+    on expire_idle() {
+        let cutoff = now() - 1800
+        for user in last_seen.keys {
+            if (last_seen.get(user) ?? 0) < cutoff {
+                last_seen.delete(user)
+            }
+        }
+        return last_seen.size
+    }
+    every 1min { expire_idle() }
+}

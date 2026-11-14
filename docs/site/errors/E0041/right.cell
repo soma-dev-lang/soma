@@ -1,0 +1,16 @@
+cell Ledger {
+    memory {
+        entries: Map<String, Int> [persistent]
+    }
+    on post(order_id: String, cents: Int) {
+        entries.set(order_id, cents)
+        return cents
+    }
+}
+
+cell Checkout {
+    on pay(order_id: String, cents: Int) {
+        require cents > 0 else InvalidAmount
+        return Ledger.post(order_id, cents)
+    }
+}

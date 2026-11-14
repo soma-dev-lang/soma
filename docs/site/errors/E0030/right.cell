@@ -1,0 +1,18 @@
+cell Api {
+    on request(method: String, path: String, body: String) {
+        return response(404, map("error", "not found"))
+    }
+    on ws(msg: String) {
+        Chat.post(msg)
+    }
+}
+
+cell Chat {
+    memory {
+        messages: List<String> [persistent]
+    }
+    on post(msg: String) {
+        messages.push(msg)
+        publish("chat", msg)
+    }
+}

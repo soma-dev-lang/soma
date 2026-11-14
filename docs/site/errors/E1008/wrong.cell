@@ -1,0 +1,9 @@
+cell Orders {
+    memory {
+        totals: Map<String, Int> [persistent]
+    }
+    on large_orders(min_total: Int) {
+        let ids = keys(totals)
+        return filter(ids, id => return (totals.get(id) ?? 0) >= min_total)
+    }
+}

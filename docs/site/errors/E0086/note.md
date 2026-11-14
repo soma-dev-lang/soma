@@ -1,0 +1,1 @@
+Soma interpolations take no format spec, so `{total:.2f}` would print literally; check refuses it. Format the value with a builtin: `{to_fixed(total, 2)}`, or `let s = format("%.2f", total)` and then `{s}`.

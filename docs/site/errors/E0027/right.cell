@@ -1,0 +1,14 @@
+cell Orders {
+    state order {
+        initial: placed
+        placed -> paid
+        paid -> shipped
+        placed -> cancelled
+    }
+    on pay(id: String) {
+        transition(id, "paid")
+    }
+    on cancel(id: String) {
+        transition(id, "cancelled")
+    }
+}

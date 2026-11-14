@@ -1,0 +1,6 @@
+cell Invoice {
+    on total_with_tax(prices: List<Float>) {
+        let total = (prices |> sum()) * 1.2
+        return total
+    }
+}

@@ -1,0 +1,23 @@
+cell Shop {
+    interior {
+        cell Checkout {
+            face {
+                signal order_placed(order_id: String, total: Int)
+            }
+            on order_placed(order_id: String, total: Int) {
+                return order_id
+            }
+        }
+        cell Fulfillment {
+            face {
+                await order_paid(order_id: String, total: Int)
+            }
+            memory {
+                queue: List<String> [persistent]
+            }
+            on order_placed(order_id: String, total: Int) {
+                queue.push(order_id)
+            }
+        }
+    }
+}

@@ -1,0 +1,1 @@
+`transition(id, "state")` must name a state the cell's state machine declares; `soma check` refuses a target it does not know and suggests the nearest name ("canceled" → "cancelled"). Without the check the typo would only raise at run time. Fix the name, or declare the state and its edge in the `state` block.

@@ -1,0 +1,5 @@
+cell Receipt {
+    on summary(customer: String, items: List<String>) {
+        return "{customer} bought {len(items} items"
+    }
+}

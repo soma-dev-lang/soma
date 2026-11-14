@@ -1,0 +1,13 @@
+cell Orders {
+    face {
+        signal status(id: String) -> Map
+    }
+    memory {
+        statuses: Map<String, String> [persistent]
+    }
+    on status(id: String) {
+        let current = statuses.get(id) ?? "unknown"
+        let summary = map("id", id, "status", current)
+        return summary
+    }
+}

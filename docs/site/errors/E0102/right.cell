@@ -1,0 +1,12 @@
+cell SessionStore {
+    face {
+        signal remember(token: String, user: String) -> Int
+    }
+    memory {
+        sessions: Map<String, String> [persistent, capacity(50000)]
+    }
+    on remember(token: String, user: String) {
+        sessions.set(token, user)
+        return sessions.size
+    }
+}

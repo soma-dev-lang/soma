@@ -1,0 +1,9 @@
+cell Helpdesk {
+    memory {
+        owners: Map<String, String> [persistent]
+    }
+    on assign(ticket: String, agent: String) {
+        owners.set(ticket, agent)
+        return "{ticket} -> {agent}"
+    }
+}

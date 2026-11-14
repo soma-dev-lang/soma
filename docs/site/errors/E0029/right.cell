@@ -1,0 +1,8 @@
+cell Prices {
+    on with_tax(cents: Int) {
+        return cents + idiv(cents * 20, 100)
+    }
+    on all_with_tax(items: List<Int>) {
+        return items |> map(c => with_tax(c))
+    }
+}

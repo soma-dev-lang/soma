@@ -1,0 +1,14 @@
+cell Cart {
+    face {
+        signal total(prices: List<Int>) -> Int
+    }
+    on total(prices: List<Int>) {
+        return sum(prices)
+    }
+}
+
+cell test CartTests {
+    rules {
+        assert total([250, 100]) == 350
+    }
+}

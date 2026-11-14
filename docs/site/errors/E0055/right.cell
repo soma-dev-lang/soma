@@ -1,0 +1,14 @@
+cell Ledger {
+    on balance(movements: List<Int>) {
+        return sum(movements)
+    }
+}
+
+cell test LedgerTests {
+    on _entries() {
+        return [10000, -4000, 2500]
+    }
+    rules {
+        assert balance(_entries()) == 8500
+    }
+}

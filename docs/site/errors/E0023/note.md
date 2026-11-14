@@ -1,0 +1,1 @@
+Adjacent string literals do not concatenate in Soma: in `return "a " "b"` the second literal is a separate statement after `return` and never runs. `soma check` reports this case as an error (other code after a `return` is only a warning). Write one literal and interpolate the values into it, or join strings with `+`.

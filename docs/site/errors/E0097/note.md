@@ -1,0 +1,1 @@
+A `match` with no arms evaluates to `()` whatever the subject is, so a placeholder left as `match zone { }` would quietly give `()` to everything after it; `soma check` refuses it with E0097. Write the arms (`pattern -> value`), and end with a `_ -> …` arm when the listed patterns do not cover every value.

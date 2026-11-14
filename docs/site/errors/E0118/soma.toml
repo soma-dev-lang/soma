@@ -1,0 +1,6 @@
+[package]
+name = "petshop"
+
+[tools.pets]
+openapi = "petstore.json"
+base_url = "https://petstore.example"

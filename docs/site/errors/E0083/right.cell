@@ -1,0 +1,9 @@
+cell Account {
+    memory {
+        balances: Map<String, Int> [persistent]
+        invariant balances >= 0
+    }
+    on deposit(id: String, amount: Int) {
+        balances.set(id, (balances.get(id) ?? 0) + amount)
+    }
+}

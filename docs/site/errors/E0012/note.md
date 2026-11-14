@@ -1,0 +1,1 @@
+A bare call must resolve to exactly one handler with that argument count. When two cells define `pack`, a third cell's `pack(id)` is ambiguous, and `soma check` asks you to qualify it rather than pick one silently. Write `Warehouse.pack(id)` (or rename one handler); the same code covers a call to a handler with the wrong number of arguments and a call to a name nothing defines.

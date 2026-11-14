@@ -1,0 +1,23 @@
+cell checker durable_storage {
+    face {
+        promise "every cell keeps its data across restarts"
+    }
+    rules {
+        check {
+            require all_persistent else NotPersistent
+        }
+    }
+}
+
+cell Accounts {
+    face {
+        signal open(owner: String) -> String
+    }
+    memory {
+        owners: Map<String, String> [persistent]
+    }
+    on open(owner: String) {
+        owners.set(owner, "open")
+        return owner
+    }
+}

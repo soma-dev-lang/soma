@@ -1,0 +1,11 @@
+cell agent ReceiptReader [model: sonnet] {
+    face {
+        signal read_receipt(image_url: String) -> String
+    }
+    state job { initial: idle  idle -> done }
+    on read_receipt(image_url: String) {
+        let total = think("What is the total on the receipt at {image_url}?", map("requires", ["vision"], "max_tokens", 50))
+        transition(image_url, "done")
+        return total
+    }
+}

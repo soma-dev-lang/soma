@@ -1,0 +1,1 @@
+A `[task]` handler that makes no `think()`, `vote()` or `await` (and calls no handler that does) runs as one atomic unit, exactly like a plain handler, so the annotation has no effect. `soma check` 3.1.0 reports this as the warning W0014 rather than under E0056. Remove `[task]`, or keep it only on handlers that wait on a model or an approval.

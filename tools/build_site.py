@@ -12,13 +12,14 @@ Everything an agent fetches is GENERATED here from the repo and from the
     site/corpus/full.json     the same with summaries; corpus/<domain>/index.json
     site/corpus/<domain>/*.cell
     site/llms-learn.txt       the course (docs/site/learn.md), outputs printed by the binary
-    site/learn.html           the same course as a page
+    site/**/*.html            every page, by tools/build_pages.py (see there)
     site/skill/SKILL.md       drop-in agent skill
     site/version.json         what this build was generated from
     site/sitemap.xml
 
-Hand-written (not touched): index.html, agents.html, paper.html, llms.txt,
-404.html, agent.md, robots.txt, _headers, _redirects, install.sh, setup.sh, repo/.
+Hand-written (not touched): llms.txt and its parts (llms-*.txt), agent.md,
+robots.txt, _headers, _redirects, install.sh, setup.sh, repo/. The sources of
+the hand-written pages are docs/site/pages/*.md and docs/site/paper.html.
 
     python3 tools/build_site.py                 # uses `soma` from PATH
     SOMA=compiler/target/release/soma python3 tools/build_site.py
@@ -126,9 +127,11 @@ def header_comment(src):
     # title: the first line of prose, completed to the end of its sentence
     # when the line break fell mid-sentence
     title = prose[0] if prose else ""
-    if title and title[-1] not in ".!?:" and len(prose) > 1:
+    # (only when the next line continues it: "CHARGEBACK WINDOW — …" on its
+    # own line is a banner, and the next line a new sentence)
+    if title and title[-1] not in ".!?:" and len(prose) > 1 and prose[1][:1].islower():
         m = re.match(r"(.+?[.!?])(\s|$)", text)
-        if m and len(m.group(1)) <= 160:
+        if m and len(m.group(1)) <= 200:
             title = m.group(1)
     title = title.rstrip(" .")
     usage = [l for l in lines if l.startswith("soma ")]
@@ -274,6 +277,8 @@ def build_corpus(version):
         feats = ", ".join(e["features"])
         lines.append(f"- [{e['id']}]({e['url']}): {e['title']} [{feats}]")
     write("corpus/index.md", "\n".join(lines) + "\n")
+    for e in entries:  # for the HTML pages, not the JSON
+        e["_src"] = read(e["repo_path"])
     return entries, failing
 
 
@@ -307,34 +312,6 @@ def build_gotchas():
         ),
     )
     return items
-
-
-# ── page examples ────────────────────────────────────────────────────
-
-def verify_page_examples():
-    """Every complete program shown on an HTML page (a <pre><code> block
-    starting with `cell `) must pass check, and test if it has tests. A
-    page that teaches broken Soma fails the build."""
-    import html as htmllib
-    import tempfile
-
-    broken = []
-    for page in ("index.html", "agents.html"):
-        src = read("site", page)
-        blocks = re.findall(r"<pre><code>(cell .*?)</code></pre>", src, re.S)
-        for i, block in enumerate(blocks):
-            code = htmllib.unescape(re.sub(r"<[^>]+>", "", block)) + "\n"
-            with tempfile.TemporaryDirectory() as d:
-                f = os.path.join(d, "page.cell")
-                open(f, "w", encoding="utf-8").write(code)
-                for cmd in ("check", "test"):
-                    if cmd == "test" and "cell test " not in code:
-                        continue
-                    r = soma(cmd, f, cwd=d)
-                    if r.returncode != 0:
-                        first = (r.stdout + r.stderr).strip().splitlines()
-                        broken.append(f"{page} example #{i + 1}: soma {cmd} failed — {first[0] if first else ''}")
-    return broken
 
 
 # ── main ─────────────────────────────────────────────────────────────
@@ -472,13 +449,19 @@ def main():
 
     # sitemap: every page and every machine file (not the 316 sources —
     # corpus/index.json is their sitemap)
-    pages = [
-        "", "learn", "paper", "agents", "status", "llms.txt", "llms-learn.txt", "llms-agents.txt", "llms-native.txt", "llms-skeleton.txt", "llms-flesh.txt", "llms-releases.txt", "llms-service.txt", "llms-full.txt", "agent.md",
-        "skill/SKILL.md", "docs/guarantees.md", "docs/serving.md", "docs/reference.md", "docs/builtins.md",
-        "docs/gotchas.md", "builtins.json", "gotchas.json", "corpus/domains.json", "corpus/index.json",
-        "corpus/index.md", "CHANGELOG.md", "LICENSE",
-        "repo/index.json", "version.json", "docs/cluster.md", "docs/operations.md", "docs/robotics.md",
+    machine = [
+        "llms.txt", "llms-learn.txt", "llms-agents.txt", "llms-native.txt", "llms-skeleton.txt", "llms-flesh.txt",
+        "llms-releases.txt", "llms-service.txt", "llms-full.txt", "agent.md", "skill/SKILL.md",
+        "docs/guarantees.md", "docs/serving.md", "docs/reference.md", "docs/builtins.md", "docs/gotchas.md",
+        "docs/cluster.md", "docs/operations.md", "docs/robotics.md", "builtins.json", "gotchas.json",
+        "corpus/domains.json", "corpus/index.json", "corpus/index.md", "CHANGELOG.md", "LICENSE",
+        "repo/index.json", "version.json",
     ]
+    sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+    import build_pages
+    commit = subprocess.check_output(["git", "rev-parse", "HEAD"], cwd=ROOT, text=True).strip()
+    urls, page_problems = build_pages.build(SOMA, version, today, commit, builtins, gotchas, entries)
+    pages = [u.lstrip("/") for u in urls] + machine
     sm = ['<?xml version="1.0" encoding="UTF-8"?>',
           '<urlset xmlns="http://www.sitemaps.org/schemas/sitemap/0.9">']
     for p in pages:
@@ -486,18 +469,18 @@ def main():
     sm.append("</urlset>")
     write("sitemap.xml", "\n".join(sm) + "\n")
 
-    # the course: every command run, every output pasted from the binary
-    sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+    # the course as one text file (its pages are built with the others)
     import build_learn
     course = build_learn.build(SOMA, version, today)
 
-    broken = (verify_page_examples() if VERIFY else []) + [f"learn: {p}" for p in course]
+    broken = [f"learn: {p}" for p in course] + page_problems
     for b in broken:
         print(f"  BROKEN {b}")
     print(f"corpus: {len(entries)} published, {len(failing)} withheld")
     for rel, v in failing:
         print(f"  WITHHELD {rel}: {v}")
-    print(f"builtins: {len(builtins)}  gotchas: {len(gotchas)}")
+    print(f"builtins: {len(builtins)}  gotchas: {len(gotchas)}  html pages: {len(urls)}")
+    print(f"code blocks judged by soma check: {build_pages.LAST['judged']}")
     size = sum(
         os.path.getsize(os.path.join(d, f))
         for d, _, fs in os.walk(SITE)

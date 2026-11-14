@@ -1,0 +1,16 @@
+cell Shop {
+    interior {
+        cell Orders {
+            face {
+                signal order_placed(order_id: String, cents: Int)
+            }
+            on order_placed(order_id: String, cents: Int) {
+                print("order {order_id}: {cents} cents")
+            }
+        }
+    }
+    runtime {
+        start Order
+        signal order_placed("ord-1", 4999)
+    }
+}

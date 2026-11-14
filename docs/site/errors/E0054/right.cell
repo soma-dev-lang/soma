@@ -1,0 +1,23 @@
+cell Orders {
+    state order {
+        initial: placed
+        placed -> shipped
+    }
+    on ship(id: String) { transition(id, "shipped") }
+    on order_status(id: String) { return get_status(id) }
+}
+
+cell Payments {
+    state payment {
+        initial: pending
+        pending -> settled
+    }
+    on settle(id: String) { transition(id, "settled") }
+}
+
+cell test ShippingTests {
+    rules {
+        let _ = ship("o1")
+        assert order_status("o1") == "shipped"
+    }
+}

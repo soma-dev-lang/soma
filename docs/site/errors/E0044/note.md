@@ -1,0 +1,1 @@
+A record or variant literal must give exactly the fields its `cell type` declares; here one field is missing. Soma refuses it at check time because a missing field would otherwise read as `()` later in the program. Add the missing field (or remove the extra one) so the literal matches the declaration.

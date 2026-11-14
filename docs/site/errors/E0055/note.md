@@ -1,0 +1,1 @@
+A handler defined inside a `cell test` has the name of a program handler or of a builtin, so the test's calls would run the helper instead of the code or builtin it means to use. Soma refuses this because the assertions would then test the wrong thing. Rename the helper, conventionally with a leading underscore (`_entries`).

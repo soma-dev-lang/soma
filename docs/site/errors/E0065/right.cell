@@ -1,0 +1,13 @@
+cell Sessions {
+    memory {
+        sessions: Map<String, String> [persistent]
+    }
+    scale {
+        replicas: 3
+        memory: "512Mi"
+    }
+    on open(token: String, user: String) {
+        sessions.set(token, user)
+        return token
+    }
+}

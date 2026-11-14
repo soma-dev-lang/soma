@@ -1,0 +1,1 @@
+The checker raises this rule with its habit flag set, so `soma check` 3.1.0 always reports it as the warning W0014 (habit_warning), never as E0043 — in edition 2026 and in edition 2027 alike. No program makes `soma check` print E0043.

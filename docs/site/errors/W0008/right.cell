@@ -1,0 +1,12 @@
+cell agent Summarizer {
+    cost { tokens: 400 }
+    state job {
+        initial: queued
+        queued -> done
+    }
+    on summarize(doc_id: String, text: String) {
+        let summary = think("Summarize in three lines: {text}", map("max_tokens", 400))
+        transition(doc_id, "done")
+        return map("doc", doc_id, "summary", summary)
+    }
+}

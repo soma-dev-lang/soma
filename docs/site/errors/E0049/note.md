@@ -1,0 +1,1 @@
+A handler annotation in brackets after the parameter list must be one of `[native]`, `[task]`, `[deterministic]` or `[record]`. A misspelt annotation such as `[nativ]` is refused rather than ignored, because the handler would otherwise silently run without it. Fix the spelling; the message suggests the closest known annotation.

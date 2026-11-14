@@ -1,0 +1,14 @@
+cell Orders {
+    memory {
+        orders: Map<String, Int> [persistent, consistent]
+    }
+    on place(id: String, total: Int) {
+        orders.set(id, total)
+        return orders.get(id)
+    }
+    scale {
+        replicas: 3
+        shard: orders
+        consistency: eventual
+    }
+}

@@ -1,0 +1,5 @@
+cell Receipt {
+    on summary(customer: String, total: Int, fee: Int) {
+        return "{customer} owes {total - fee cents}"
+    }
+}

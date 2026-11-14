@@ -1,0 +1,11 @@
+cell Shipment {
+    memory {
+        parcels: Map<String, String> [persistent]
+    }
+    state delivery {
+    }
+    on register(id: String, address: String) {
+        parcels.set(id, address)
+        return id
+    }
+}

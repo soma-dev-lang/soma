@@ -1,0 +1,11 @@
+cell Wallet {
+    memory {
+        balances: Map<String, Int> [persistent]
+    }
+    on withdraw(owner: String, amount: Int) {
+        let current = balances.get(owner) ?? 0
+        require amount <= current
+        balances.set(owner, current - amount)
+        return current - amount
+    }
+}

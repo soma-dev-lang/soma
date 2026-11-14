@@ -25,3 +25,14 @@ site/llms-full.txt
 site/builtins.json
 site/gotchas.json
 site/version.json
+# the HTML pages (tools/build_pages.py; sources in docs/site/)
+site/*.html
+site/learn/
+site/guide/
+site/reference/
+site/builtins/
+site/errors/
+site/gotchas/
+site/programs/
+site/cli/
+site/changelog/

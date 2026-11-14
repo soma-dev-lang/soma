@@ -1,0 +1,10 @@
+cell Wallet {
+    memory {
+        balance: Map<String, Int> [persistent]
+    }
+    on deposit(amount: Int) {
+        let current = balance.get("value") ?? 0
+        balance.set("value", current + amount)
+        return current + amount
+    }
+}

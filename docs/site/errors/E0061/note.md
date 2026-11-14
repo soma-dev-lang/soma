@@ -1,0 +1,1 @@
+In a `[task]` handler a failing `ensure` undoes only the current step: slot writes made before the last think() are already committed. `soma check` warns about this, under the code W0014 (habit_warning), when an `ensure` follows a think() that comes after a slot write. Move those writes after the last think(), or check the condition before them.

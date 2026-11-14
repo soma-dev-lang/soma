@@ -1,0 +1,21 @@
+cell Refunds {
+    face {
+        signal refund(id: String, amount: Int) -> Map
+    }
+    state flow {
+        initial: requested
+        requested -> pending
+        pending -> paid
+        pending -> refused
+    }
+    on refund(id: String, amount: Int) {
+        transition(id, "pending")
+        let ok = await approve("refund {amount} for {id}")
+        if !ok {
+            transition(id, "refused")
+            return map("refused", id)
+        }
+        transition(id, "paid")
+        return map("paid", id)
+    }
+}

@@ -1,0 +1,14 @@
+cell Orders {
+    face {
+        signal ship(order_id: String) -> String
+    }
+    state order {
+        initial: placed
+        placed -> paid
+        paid -> shipped
+    }
+    on ship(order_id: String) {
+        transition("shipped")
+        return get_status(order_id)
+    }
+}

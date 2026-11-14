@@ -1,0 +1,16 @@
+cell Orders {
+    memory {
+        orders: Map<String, String> [persistent]
+    }
+    state order [max_instance(1000)] {
+        initial: placed
+        placed -> shipped
+        shipped -> delivered
+    }
+    on place(id: String, item: String) {
+        orders.set(id, item)
+        return id
+    }
+    on ship(id: String) { transition(id, "shipped") }
+    on deliver(id: String) { transition(id, "delivered") }
+}

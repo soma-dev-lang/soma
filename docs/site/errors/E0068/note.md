@@ -1,0 +1,1 @@
+A lambda is an expression: the value of a block lambda is its last expression, and `return` inside it is refused because it cannot leave the enclosing handler. Write the branch as an `if ... { a } else { b }` expression that is the last expression of the lambda, or use a `for` loop in the handler when you need an early return.

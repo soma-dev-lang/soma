@@ -1,0 +1,24 @@
+cell Orders {
+    memory {
+        packed: Map<String, Bool> [persistent]
+    }
+    on pack(id: String) {
+        packed.set(id, true)
+    }
+}
+
+cell Warehouse {
+    memory {
+        shelves: Map<String, String> [persistent]
+    }
+    on pack(id: String) {
+        shelves.set(id, "packing")
+    }
+}
+
+cell Shipping {
+    on ship(id: String) {
+        Warehouse.pack(id)
+        return "shipped {id}"
+    }
+}

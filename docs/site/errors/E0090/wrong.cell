@@ -1,0 +1,17 @@
+cell Loans {
+    memory {
+        limits: Map<String, Int> [persistent]
+    }
+    state loan {
+        initial: requested
+        requested -> approved { guard { amount <= limit_for(customer) } }
+        requested -> rejected
+    }
+    on limit_for(customer: String) {
+        return limits.get(customer) ?? 0
+    }
+    on approve_loan(id: String, customer: String, amount: Int) {
+        transition(id, "approved")
+    }
+    on reject_loan(id: String) { transition(id, "rejected") }
+}

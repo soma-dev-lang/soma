@@ -1,0 +1,1 @@
+An expression that stands alone on its own line, and is not the last statement of its block, is computed and thrown away. This usually means a missing operator: a newline ends a statement, so `let total = a + b` followed by `tax` on the next line is two statements. Put the operator at the end of the first line (`a + b +`) so the expression continues, or bind or use the value.

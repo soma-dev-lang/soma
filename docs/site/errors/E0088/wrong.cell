@@ -1,0 +1,21 @@
+cell Warehouse {
+    interior {
+        cell Picker {
+            face { signal pick(sku: String) }
+            memory {
+                queue: List<String> [persistent]
+            }
+            on pick(sku: String) {
+                queue.push(sku)
+            }
+        }
+    }
+    runtime { signal pick("sku-42") }
+}
+
+cell Orders {
+    on place(sku: String) {
+        Picker.pick(sku)
+        return sku
+    }
+}

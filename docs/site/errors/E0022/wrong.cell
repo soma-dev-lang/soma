@@ -1,0 +1,14 @@
+cell Accounts {
+    face {
+        signal credit(id: String, cents: Int) -> Int
+    }
+    memory {
+        balances: Map<String, Int> [persistent]
+        invariant balance >= 0
+    }
+    on credit(id: String, cents: Int) {
+        let total = (balances.get(id) ?? 0) + cents
+        balances.set(id, total)
+        return total
+    }
+}

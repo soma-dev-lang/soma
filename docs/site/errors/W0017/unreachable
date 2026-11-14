@@ -1,0 +1,1 @@
+`soma check` prints a memory budget that holds as a note ("✓ budget holds for cell '…' while its slots stay within their assumed sizes: peak ≤ … ≤ declared …"), and notes carry no code: the human output has no `= code:` line and the `--json` "notes" entries have only "level" and "message". So no output of `soma check` ever shows W0017.

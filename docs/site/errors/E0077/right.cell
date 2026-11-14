@@ -1,0 +1,13 @@
+cell Histogram {
+    on bump_bin(bins: Map<String, Int>, key: String) {
+        bins[key] = (bins[key] ?? 0) + 1
+        return bins
+    }
+    on count_mod(n: Int, m: Int) [native] {
+        let h = hashmap()
+        for i in range(0, n) {
+            hm_inc(h, i % m)
+        }
+        return hm_len(h)
+    }
+}

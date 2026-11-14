@@ -1,0 +1,1 @@
+An interpolation that starts like code but does not parse, such as `{len(items}`, is refused; otherwise it would print literally. Fix the expression (here the missing `)`), or write `{{...}}` when you want literal braces.

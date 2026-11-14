@@ -1,0 +1,12 @@
+cell Cart {
+    memory {
+        items: Map<String, Int> [persistent]
+    }
+    on add(sku: String, qty: Int) {
+        items.set(sku, (items.get(sku) ?? 0) + qty)
+        return items.get(sku)
+    }
+    rules {
+        assert add("apple", 2) == 2
+    }
+}

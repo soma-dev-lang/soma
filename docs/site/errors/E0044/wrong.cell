@@ -1,0 +1,11 @@
+cell type Shipment { variants { Shipment { order_id: String, carrier: String, weight_grams: Int } } }
+
+cell Dispatch {
+    face {
+        signal label(order_id: String, weight_grams: Int) -> String
+    }
+    on label(order_id: String, weight_grams: Int) {
+        let s = Shipment { order_id: order_id, weight_grams: weight_grams }
+        return "{s.order_id} via {s.carrier}"
+    }
+}

@@ -1,0 +1,1 @@
+Assigning an outer local inside a lambda (`sum_total = sum_total + p`) changes a copy: the outer variable is unchanged afterwards. `soma check` warns about this under the code W0014 (habit_warning). Accumulate with a `for` loop, or with `reduce` / `sum` over the list.

@@ -1,0 +1,1 @@
+`soma check` prints this diagnostic as a note ("note: 'immutable' on 'entries' implies 'consistent' (added automatically)"), and notes carry no code: the human output has no `= code:` line and the `--json` "notes" entries have only "level" and "message". So no output of `soma check` ever shows W0002.

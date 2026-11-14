@@ -1,0 +1,10 @@
+cell ReportBuilder {
+    scale {
+        replicas: 1
+        memory: "64Mi"
+    }
+    on daily_ids() {
+        let ids = range(0, 9000000)
+        return len(ids)
+    }
+}

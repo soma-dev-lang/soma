@@ -1,0 +1,12 @@
+cell Orders {
+    face {
+        signal units_by_sku(lines: List<Map>) -> Map
+    }
+    on units_by_sku(lines: List<Map>) {
+        let counts = map()
+        for line in lines {
+            counts[line.sku] = (counts[line.sku] ?? 0) + line.qty
+        }
+        return counts
+    }
+}

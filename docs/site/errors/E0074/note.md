@@ -1,0 +1,1 @@
+A handler parameter may not have the name of a memory slot of its cell, because reads and writes of that name inside the handler would mix the parameter and the slot. Rename the parameter (here `borrower`) and keep the slot name for the slot.

@@ -1,0 +1,6 @@
+cell Pricing {
+    on quote(base_cents: Int, qty: Int) [deterministic] {
+        let jitter = round(random() * 5)
+        return base_cents * qty + jitter
+    }
+}

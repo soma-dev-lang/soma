@@ -1,0 +1,1 @@
+A String or List grown with `out = out + piece` inside a loop copies the whole value at each step, so the loop is quadratic. `soma check` warns about this under the code W0014 (habit_warning). Push the pieces to a List and `join(parts, "")` once (in a `[native]` handler, use `strbuf` / `sb_push` / `sb_finish`).

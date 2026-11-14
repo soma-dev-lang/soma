@@ -1,0 +1,16 @@
+cell Wallet {
+    face {
+        signal withdraw(owner: String, cents: Int) -> Int
+            requires cents > 0
+    }
+    memory {
+        balances: Map<String, Int> [persistent]
+    }
+    on withdraw(owner: String, cents: Int) {
+        let balance = balances.get(owner) ?? 0
+        require cents <= balance else InsufficientFunds "{owner} has {balance}"
+        let left = balance - cents
+        balances.set(owner, left)
+        return left
+    }
+}

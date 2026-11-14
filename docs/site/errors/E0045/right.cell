@@ -1,0 +1,10 @@
+cell Invoice {
+    face {
+        signal total(subtotal_cents: Int, shipping_cents: Int, tax_cents: Int) -> Int
+    }
+    on total(subtotal_cents: Int, shipping_cents: Int, tax_cents: Int) {
+        let total = subtotal_cents + shipping_cents +
+            tax_cents
+        return total
+    }
+}

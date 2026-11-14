@@ -1,0 +1,13 @@
+cell Orders {
+    state lifecycle {
+        initial: placed
+        placed -> paid
+        paid -> shipped
+        shipped -> delivered
+        * -> cancelled except [shiped, delivered]
+    }
+    on pay(id: String) { transition(id, "paid") }
+    on ship(id: String) { transition(id, "shipped") }
+    on deliver(id: String) { transition(id, "delivered") }
+    on cancel(id: String) { transition(id, "cancelled") }
+}

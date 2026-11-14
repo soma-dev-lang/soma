@@ -1,0 +1,5 @@
+cell Notifications {
+    on shipping_notice(order_id: String, carrier: String) {
+        return "Order {order_id} has shipped with {carrier}."
+    }
+}

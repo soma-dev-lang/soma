@@ -1,0 +1,16 @@
+cell type Payment {
+    variants {
+        Charged { tx: String }
+        Declined { reason: String }
+        Refunded { tx: String }
+    }
+}
+
+cell Receipts {
+    on describe(p: Payment) {
+        return match p {
+            Charged { tx } -> "paid ({tx})"
+            Declined { reason } -> "declined: {reason}"
+        }
+    }
+}

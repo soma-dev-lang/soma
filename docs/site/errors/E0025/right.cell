@@ -1,0 +1,6 @@
+cell Coupons {
+    on is_valid(code: String) {
+        let active = ["SPRING10", "WELCOME5", "VIP20"]
+        return contains(active, code)
+    }
+}

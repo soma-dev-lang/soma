@@ -1,0 +1,14 @@
+cell Inventory {
+    face {
+        signal add_stock(sku: String, qty: Int) -> Int
+        signal stock_of(sku: String) -> Int
+    }
+    memory {
+        stock: Map<String, Int> [persistent]
+    }
+    on add_stock(sku: String, qty: Int) {
+        let total = (stock.get(sku) ?? 0) + qty
+        stock.set(sku, total)
+        return total
+    }
+}

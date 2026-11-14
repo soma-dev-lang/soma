@@ -1,0 +1,1 @@
+Every `signal` declared in a cell's `face` needs an `on` handler with the same name in that cell. The face is the contract other cells and HTTP clients rely on, so a declared signal that nothing answers is an error, not a warning. Add the handler with the same parameters as the signal, or remove the signal from the face.

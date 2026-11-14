@@ -1,0 +1,8 @@
+cell Pricing {
+    face {
+        signal with_vat(cents: Int) -> Int
+    }
+    on with_vat(cents: Int) {
+        return div_round(cents * 120, 100)
+    }
+}

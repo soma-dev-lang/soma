@@ -1,0 +1,11 @@
+cell Sessions {
+    memory {
+        tokens: Map<String, String> [ephemeral]
+    }
+    on login(user: String, token: String) {
+        tokens.set(user, token)
+    }
+    on token_of(user: String) {
+        return tokens.get(user) ?? ""
+    }
+}

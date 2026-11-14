@@ -1,0 +1,6 @@
+cell Countdown {
+    on total_steps(n: Int) {
+        let walk = k => if k <= 0 { 0 } else { k + walk(k - 1) }
+        return walk(n)
+    }
+}

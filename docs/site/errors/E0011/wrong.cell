@@ -1,0 +1,9 @@
+cell Invoices {
+    memory {
+        totals: Map<String, Int> [persistent]
+    }
+    on issue(customer: String, cents: Int) {
+        totals.set(customer, cents)
+        return "Invoice for {custmer}: {cents} cents"
+    }
+}

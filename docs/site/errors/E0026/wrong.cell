@@ -1,0 +1,14 @@
+cell Inventory {
+    memory {
+        stock: Map<String, Int> [persistent]
+    }
+    on restock(sku: String, qty: Int) {
+        stock.set(sku, (stock.get(sku) ?? 0) + qty)
+    }
+}
+
+cell Storefront {
+    on available(sku: String) {
+        return (Inventory.stock.get(sku) ?? 0) > 0
+    }
+}

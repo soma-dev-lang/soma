@@ -1,0 +1,1 @@
+In a `[task]` handler, a `transition()` that runs before a `think()` is replayed if the process crashes during the wait, and the edge is then already taken, so the task fails with an invalid transition. `soma check` 3.1.0 reports this as the warning W0014 rather than under E0058. Transition after the last `think()`, or guard it with `if get_status(id) != "…" { transition(…) }`.

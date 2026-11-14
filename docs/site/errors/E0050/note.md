@@ -1,0 +1,1 @@
+A `require` in a `cell checker` rule must name one of the structural predicates: all_persistent, all_encrypted, all_consistent, has_memory, has_face, has_signals, has_auth. An unknown predicate would make the rule hold for every cell (or fail every cell under `!`), so the checker would enforce nothing. Fix the predicate name; the message suggests the closest one.

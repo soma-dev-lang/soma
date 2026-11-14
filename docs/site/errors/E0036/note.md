@@ -1,0 +1,1 @@
+A `start` or `connect` line in a cell's `runtime { }` section names an interior cell that the enclosing cell does not declare; the error lists the interior cells that exist. Soma checks these names because the runtime section is run by `soma run` and a wrong name would otherwise go unnoticed. Use the exact name of a cell declared in the `interior { }` block.

@@ -1,0 +1,1 @@
+A handler (`on name(...)`) does not declare a return type; the return type of a signal belongs on its declaration in the `face` block (`signal total(price: Int, qty: Int) -> Int`). Keeping it in one place means the face is the single contract that callers and `soma describe` read. Remove `-> Int` from the `on` line and keep it on the face signal.

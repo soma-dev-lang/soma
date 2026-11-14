@@ -1,0 +1,15 @@
+cell Checkout {
+    on price_of(sku: String) {
+        return 100
+    }
+    on total(sku: String, qty: Int) {
+        return price_of(sku) * qty
+    }
+}
+
+cell test CheckoutTests {
+    rules {
+        mock price 250
+        assert total("book", 2) == 500
+    }
+}

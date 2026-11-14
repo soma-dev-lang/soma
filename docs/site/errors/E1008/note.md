@@ -1,0 +1,1 @@
+A statement keyword such as `return`, `let`, `require`, `for` or `while` cannot stand where a value is expected: in a lambda body, as an operand or as an argument. A lambda's value is its expression, so `id => return x` is refused. Drop the `return` (`id => (totals.get(id) ?? 0) >= min_total`), or use a block lambda whose last expression is the value.

@@ -1,0 +1,14 @@
+cell RateFeed {
+    memory {
+        fetched: Map<String, Int> [persistent, capacity(200)]
+    }
+    on refresh(currency: String) {
+        let reply = http_get("https://api.example.com/rates/{currency}")
+        fetched.set(currency, now())
+        return reply
+    }
+    scale {
+        replicas: 1
+        memory: "128Mi"
+    }
+}

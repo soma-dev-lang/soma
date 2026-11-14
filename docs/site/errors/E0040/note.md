@@ -1,0 +1,1 @@
+A handler returns a literal whose type differs from the return type its face signal declares, for example a String where the face says `-> Int`. The face is the cell's contract with its callers, so Soma refuses a body that contradicts it. Return a value of the declared type, or change the declared type in the face if the contract was wrong.

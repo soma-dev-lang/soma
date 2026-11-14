@@ -1,0 +1,9 @@
+cell Library {
+    memory {
+        loans: Map<String, String> [persistent]
+    }
+    on lend(book: String, loans: String) {
+        loans.set(book, loans)
+        return book
+    }
+}

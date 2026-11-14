@@ -1,0 +1,14 @@
+cell Orders {
+    memory {
+        shipped_count: Map<String, Int> [persistent]
+    }
+    state order {
+        initial: paid
+        paid -> shipped
+    }
+    on ship(id: String) {
+        transition(id, "shipped")
+        shipped_count.set("all", (shipped_count.get("all") ?? 0) + 1)
+        return id
+    }
+}

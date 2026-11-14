@@ -1,0 +1,8 @@
+cell Order {
+    face {
+        signal total(price: Int, qty: Int) -> Int
+    }
+    on total(price: Int, qty: Int) -> Int {
+        return price * qty
+    }
+}

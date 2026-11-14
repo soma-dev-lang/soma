@@ -1,0 +1,17 @@
+// Inventory service
+//
+// stock:   sku -> units on hand
+// restock: add units to a sku, return the new count
+cell Inventory {
+    face {
+        signal restock(sku: String, qty: Int) -> Int
+    }
+    memory {
+        stock: Map<String, Int> [persistent]
+    }
+    on restock(sku: String, qty: Int) {
+        let n = (stock.get(sku) ?? 0) + qty
+        stock.set(sku, n)
+        return n
+    }
+}

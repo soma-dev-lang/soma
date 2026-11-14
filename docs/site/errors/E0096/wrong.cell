@@ -1,0 +1,10 @@
+// Inventory service
+//
+// stock:   sku -> units on hand
+// restock: add units to a sku, return the new count
+//
+// on restock(sku: String, qty: Int) {
+//     let n = (stock.get(sku) ?? 0) + qty
+//     stock.set(sku, n)
+//     return n
+// }

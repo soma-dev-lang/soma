@@ -1,0 +1,5 @@
+cell Api {
+    on request(method: String, path: String, body: String, query: Map, headers: String) {
+        return map("path", path, "agent", headers)
+    }
+}

@@ -1,0 +1,10 @@
+cell Pricing {
+    face {
+        signal quote(sku: String, qty: Int) -> Map
+    }
+    on quote(sku: String, qty: Int) {
+        let line = map("sku", sku, "qty", qty)
+        let priced = line.set("total", qty * 499)
+        return priced
+    }
+}

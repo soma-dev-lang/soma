@@ -1,0 +1,13 @@
+cell Tickets {
+    memory {
+        log: List<String> [persistent]
+    }
+    state ticket {
+        initial: open
+        open -> closed
+    }
+    on transition(id: String, to: String) {
+        log.push("ticket {id} -> {to}")
+    }
+    on close(id: String) { transition(id, "closed") }
+}

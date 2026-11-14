@@ -1,0 +1,11 @@
+cell Picker {
+    memory {
+        queue: List<String> [persistent]
+    }
+    on pick(sku: String) {
+        queue.push(sku)
+    }
+    every 5min {
+        print("queue length {queue.len}")
+    }
+}

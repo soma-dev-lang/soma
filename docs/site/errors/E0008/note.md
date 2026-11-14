@@ -1,0 +1,1 @@
+The `shard:` line of a cell's `scale` section must name one of the cell's memory slots. `soma check` refuses a shard target that no slot declares (here the typo `job` for the slot `jobs`), since there would be nothing to partition. Correct the name to an existing slot, or add the slot.

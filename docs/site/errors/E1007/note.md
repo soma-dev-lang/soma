@@ -1,0 +1,1 @@
+A cell has no cell-level `let`: a value written directly inside a cell must be a constant, `const MAX_BALANCE = 100000`, and its value must be a literal (a number, a String without interpolation, or a Bool). A value that changes belongs in a `memory` slot. This compiler reports a cell-level `let` under E1009, not E1007; replace `let` with `const`.

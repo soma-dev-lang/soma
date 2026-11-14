@@ -1,0 +1,24 @@
+cell Orders {
+    face { signal place(id: String, cents: Int) -> Int }
+    memory { totals: Map<String, Int> [persistent] }
+    on place(id: String, cents: Int) {
+        totals.set(id, cents)
+        return totals.size
+    }
+}
+
+cell Refunds {
+    face { signal refund(id: String, cents: Int) -> Int }
+    memory { totals: Map<String, Int> [persistent] }
+    on refund(id: String, cents: Int) {
+        totals.set(id, cents)
+        return totals.size
+    }
+}
+
+cell test OrderTests {
+    rules {
+        let n = place("o1", 2500)
+        assert totals.get("o1") == 2500
+    }
+}

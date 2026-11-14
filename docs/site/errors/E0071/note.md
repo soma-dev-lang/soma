@@ -1,0 +1,1 @@
+A handler that can answer with `refusal(...)` returns that value instead of raising, and a refusal does not roll the caller back. Calling it as a bare statement throws the refusal away; `soma check` warns about this under the code W0014 (habit_warning). Bind the result (`let r = book(a, guest)`) and return it, or check `r._status`.

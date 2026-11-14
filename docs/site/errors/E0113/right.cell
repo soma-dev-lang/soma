@@ -1,0 +1,16 @@
+cell Support {
+    face {
+        signal triage(ticket_id: String, text: String) -> String
+    }
+    state ticket {
+        initial: open
+        open -> escalated
+        open -> closed
+    }
+    on triage(ticket_id: String, text: String) {
+        let verdict = think("Answer escalated or closed for this ticket: {text}", map("max_tokens", 5))
+        require contains(["escalated", "closed"], verdict) else BadVerdict "model answered {verdict}"
+        transition(ticket_id, verdict)
+        return verdict
+    }
+}

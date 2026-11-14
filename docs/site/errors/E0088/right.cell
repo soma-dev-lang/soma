@@ -1,0 +1,15 @@
+cell Picker {
+    memory {
+        queue: List<String> [persistent]
+    }
+    on pick(sku: String) {
+        queue.push(sku)
+    }
+}
+
+cell Orders {
+    on place(sku: String) {
+        Picker.pick(sku)
+        return sku
+    }
+}

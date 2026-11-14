@@ -1,0 +1,11 @@
+cell Ledger {
+    face {
+        signal parse_entry(line: String) -> Map
+    }
+    on parse_entry(line: String) {
+        let parts = split(line, ",")
+        require len(parts) == 2 else BadLine "expected account,cents: {line}"
+        let cents = parse_int(trim(parts[1])) ?? 0
+        return map("account", trim(parts[0]), "cents", cents)
+    }
+}

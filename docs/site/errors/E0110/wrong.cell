@@ -1,0 +1,14 @@
+cell type Line { variants { Line { sku: String, qty: Int, unit_cents: Int } } }
+
+cell Order {
+    face {
+        signal total(lines: List<Line>) -> Int
+    }
+    on total(lines: List<Line>) {
+        let cents = 0
+        for l in lines {
+            cents += l.quantity * l.unit_cents
+        }
+        return cents
+    }
+}

@@ -1,0 +1,13 @@
+// Menu prices for the Café du Port, in cents
+cell Menu {
+    face {
+        signal price(item: String) -> Int
+    }
+    on price(item: String) {
+        return match item {
+            "crème brûlée" -> 750
+            "café" -> 250
+            _ -> 0
+        }
+    }
+}

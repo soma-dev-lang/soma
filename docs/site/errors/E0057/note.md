@@ -1,0 +1,1 @@
+In a `[task]` handler each `think()` ends a step and commits what was written before it. A `try` that writes a slot (or transitions) and then reaches a `think()` therefore does not undo those writes if it fails. `soma check` 3.1.0 reports this as the warning W0014 rather than under E0057; move the writes after the `try`.

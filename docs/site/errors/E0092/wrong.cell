@@ -1,0 +1,13 @@
+cell Wallet {
+    face {
+        signal deposit(owner: String, cents: Int) -> Int
+    }
+    memory {
+        balances: Map<String, Int> [persistent]
+    }
+    on deposit(owner: String, cents: Float) {
+        let total = (balances.get(owner) ?? 0) + cents
+        balances.set(owner, total)
+        return total
+    }
+}

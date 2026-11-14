@@ -1,0 +1,11 @@
+cell Shipping {
+    face {
+        signal fee(zone: String, weight_kg: Int) -> Int
+    }
+    on fee(zone: String, weight_kg: Int) {
+        let base = match zone {
+            // TODO: domestic, eu, world
+        }
+        return base + weight_kg * 50
+    }
+}

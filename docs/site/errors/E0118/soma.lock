@@ -1,0 +1,5 @@
+[tools."pets/getPetById"]
+kind = "openapi"
+sha256 = "4f190b3a8bd08dfc06e63d9b2c8eed993c7a008c2a4a1c97ad453f996ee3893f"
+description = ""
+schema = '{"body":"none","in":{"petId":"path"},"method":"GET","path":"/pets/{petId}","properties":{"petId":{"type":"integer"}},"required":["petId"],"type":"object"}'

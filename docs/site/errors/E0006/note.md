@@ -1,0 +1,1 @@
+Within one cell's `memory`, every slot needs its own name. Two slots named `loans` would share one name for two stores (here with two value types), so reads and writes could not say which one they mean. Give each slot a distinct name that says what it holds.

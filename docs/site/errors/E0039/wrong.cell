@@ -1,0 +1,13 @@
+cell Signup {
+    face {
+        signal register(email: String) -> String
+    }
+    memory {
+        accounts: Map<String, String> [persistent]
+    }
+    on register(email: String) {
+        require regex_match(email, "^[^@ ]+@[^@ ]+$") else InvalidEmail "not an email: {email}"
+        accounts.set(email, "active")
+        return email
+    }
+}

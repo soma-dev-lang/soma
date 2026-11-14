@@ -1,0 +1,11 @@
+cell Wallet {
+    memory {
+        balances: Map<String, Int> [persistent]
+    }
+    on balance(owner: String) {
+        return balances.get(owner) ?? 0
+    }
+    on balance(owner: String) {
+        return (balances.get(owner) ?? 0) / 100
+    }
+}

@@ -1,0 +1,9 @@
+cell Countdown {
+    on walk(k: Int) {
+        if k <= 0 { return 0 }
+        return k + walk(k - 1)
+    }
+    on total_steps(n: Int) {
+        return walk(n)
+    }
+}

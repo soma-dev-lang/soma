@@ -1,0 +1,1 @@
+`soma check` warns with W0013 when statements can never run, such as statements after a `return` (or a `break`) in the same block. In this example the audit entry is never written, although the handler looks as if it records every order. Move the statements before the `return`, or delete them if they are not needed.

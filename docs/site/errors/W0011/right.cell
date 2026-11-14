@@ -1,0 +1,15 @@
+cell Orders {
+    on pack(order_id: String) {
+        return "order {order_id} ready"
+    }
+}
+
+cell Warehouse {
+    on pack(order_id: String) {
+        return "box for {order_id}"
+    }
+    on ship(order_id: String) {
+        let label = Orders.pack(order_id)
+        return "shipping: {label}"
+    }
+}

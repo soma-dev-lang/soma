@@ -1,0 +1,1 @@
+A cell has one lifecycle, so it may declare only one `state` machine; a second one is refused. In this binary the second machine's states are also not known to `transition()` in that cell, which is why check additionally reports `"shipped"` as an undeclared state. Put the second machine in its own cell.

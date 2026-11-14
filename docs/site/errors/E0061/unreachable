@@ -1,0 +1,1 @@
+soma check reports this rule (kind task_ensure) as the warning W0014 habit_warning, never as E0061: the checker files every "habit" issue under W0014 (compiler/src/checker/mod.rs, check_program).

@@ -1,0 +1,13 @@
+cell Summarizer {
+    face {
+        signal summarize(tickets: List<String>) -> List<String>
+    }
+    cost { tokens: 5000 }
+    on summarize(tickets: List<String>) {
+        let out = []
+        for t in tickets {
+            out.push(think("Summarize this support ticket in one line: {t}", map("max_tokens", 100)))
+        }
+        return out
+    }
+}

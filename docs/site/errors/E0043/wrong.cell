@@ -1,0 +1,11 @@
+cell Orders {
+    face {
+        signal apply_discount(lines: List<Map>, percent: Int) -> List<Map>
+    }
+    on apply_discount(lines: List<Map>, percent: Int) {
+        for line in lines {
+            line.price = line.price * (100 - percent) / 100
+        }
+        return lines
+    }
+}

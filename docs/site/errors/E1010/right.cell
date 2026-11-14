@@ -1,0 +1,6 @@
+cell Invoice {
+    on total(amount: Int, tax: Int) {
+        let sum = amount + tax
+        return sum
+    }
+}

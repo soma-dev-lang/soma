@@ -1,0 +1,11 @@
+cell agent Summarizer {
+    face {
+        signal summarize(ticket: String) -> String
+    }
+    cost { tokens: 500 }
+    on summarize(ticket: String) {
+        let gist = think("Summarize this support ticket: {ticket}", map("max_tokens", 400))
+        let tone = think("Classify the tone of: {ticket}", map("max_tokens", 200))
+        return "{gist} [{tone}]"
+    }
+}

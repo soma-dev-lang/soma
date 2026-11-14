@@ -1,0 +1,1 @@
+A state machine needs a start state. Check reports this code for a machine with no `initial:` line and no transitions; when `initial:` is missing but the first edge has an ordinary source state, the binary takes that state as the start instead of reporting this code. Add `initial: <state>` as the first line of the machine.

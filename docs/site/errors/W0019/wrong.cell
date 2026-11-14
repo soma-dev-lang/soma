@@ -1,0 +1,19 @@
+skeleton Inventory {
+    memory {
+        stock: Map<String, Int> [persistent]
+        invariant stock >= 0
+    }
+    face {
+        signal level(sku: String) -> Int                writes stock
+        signal restock(sku: String, qty: Int) -> Int    writes stock
+    }
+}
+
+flesh Inventory {
+    on level(sku) { return stock.get(sku) ?? 0 }
+    on restock(sku, qty) {
+        let next = (stock.get(sku) ?? 0) + qty
+        stock.set(sku, next)
+        return next
+    }
+}

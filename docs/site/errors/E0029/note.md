@@ -1,0 +1,1 @@
+A handler or builtin name is not a value in Soma: `map(with_tax)` passes a bare name where a function value is needed, and `soma check` refuses it. Functions passed as arguments are lambdas. Wrap the call in a lambda, `map(c => with_tax(c))`.

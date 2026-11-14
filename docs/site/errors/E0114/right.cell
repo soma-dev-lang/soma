@@ -1,0 +1,12 @@
+use pricing
+
+cell Checkout {
+    face {
+        signal total(cents: List<Int>) -> Int
+    }
+    on total(cents: List<Int>) {
+        let net = 0
+        for c in cents { net += c }
+        return with_vat(net)
+    }
+}

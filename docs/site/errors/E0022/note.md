@@ -1,0 +1,1 @@
+A memory `invariant` may only read the section's slot names, `value`, `key`, `size` and builtins. `invariant balance >= 0` names nothing (the slot is `balances`), so `soma check` refuses it and suggests the slot name instead of letting a rule that could never be evaluated through. Fix the name so the invariant reads an existing slot.

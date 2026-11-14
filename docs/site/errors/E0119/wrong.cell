@@ -1,0 +1,19 @@
+skeleton Wallet {
+    memory {
+        balances: Map<String, Int> [persistent]
+        invariant balances >= 0
+    }
+    face {
+        signal balance(owner: String) -> Int               reads balances
+        signal deposit(owner: String, cents: Int) -> Int   writes balances
+    }
+}
+
+flesh Wallet {
+    on balance(owner) { return balances.get(owner) ?? 0 }
+    on deposit(owner, amount) {
+        let total = (balances.get(owner) ?? 0) + amount
+        balances.set(owner, total)
+        return total
+    }
+}

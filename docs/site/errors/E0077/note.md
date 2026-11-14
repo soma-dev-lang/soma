@@ -1,0 +1,1 @@
+Inside a `[native]` handler, a call to a native-only primitive (such as `hm_inc`, `buffer` or `sb_push`) reaches the primitive even when the program defines a handler with the same name, while the same call in an interpreted handler reaches the handler. Check refuses the program so that one name does not mean two things. Rename your handler (here `bump_bin`).

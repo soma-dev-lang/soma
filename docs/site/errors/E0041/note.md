@@ -1,0 +1,1 @@
+A qualified call `Cell.handler(…)` passes a number of arguments that the handler does not accept. Soma checks the count at compile time instead of letting the call fail when it runs. Pass every parameter the handler declares (a trailing `Map` parameter may be left out). The same mistake written as a bare call (`post(x)`) is reported as E0012.

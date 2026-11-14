@@ -1,0 +1,1 @@
+The right side of `|>` must be a call: `x |> f(a)` means `f(x, a)`. In `prices |> sum() * 1.2` the right side is the product `sum() * 1.2`, not a call, so check refuses it (and also reports `sum()` called with no argument). Parenthesise the pipe before combining its result: `(prices |> sum()) * 1.2`.

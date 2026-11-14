@@ -1,0 +1,1 @@
+A cell's memory slots are private to it: `Inventory.stock` read from another cell is refused, and the message says it would raise "undefined variable: Inventory" at run time. This keeps every read and write of a slot inside the cell that owns its invariants. Add a handler to the owning cell that returns what you need, and call that handler (`Inventory.level(sku)`).

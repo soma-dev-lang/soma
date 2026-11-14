@@ -1,0 +1,1 @@
+The compiler declares the CostAdvisory warning but never constructs it (`grep -rn CostAdvisory compiler/src` finds only its definition and display code). Since a cost bound that cannot be proven became a check error (E0100 cost_unprovable), `soma check` has no path that reports W0009.

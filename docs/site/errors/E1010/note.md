@@ -1,0 +1,1 @@
+E1010 is a lexer error: a character, string or number that Soma cannot read at all, such as a `;`, a single-quoted string or a backtick. Soma has no semicolons; statements are separated by newlines, and `soma check` adds that hint for `;`. Delete the semicolon.

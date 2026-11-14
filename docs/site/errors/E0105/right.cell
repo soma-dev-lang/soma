@@ -1,0 +1,17 @@
+cell Checkout {
+    face {
+        signal charge(order_id: String, cents: Int) -> Int
+        signal add_shipping(order_id: String) -> Int
+    }
+    memory {
+        totals: Map<String, Int> [persistent]
+    }
+    on charge(order_id: String, cents: Int) {
+        let total = (totals.get(order_id) ?? 0) + cents
+        totals.set(order_id, total)
+        return total
+    }
+    on add_shipping(order_id: String) {
+        return charge(order_id, 499)
+    }
+}

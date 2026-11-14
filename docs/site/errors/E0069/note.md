@@ -1,0 +1,1 @@
+A handler may not take the name of a builtin the proofs and safety gates rest on: transition, approve, fail, get_status, has_state, valid_transitions, think, think_json, set_budget, tokens_used. Such a handler would replace the builtin for every bare call in the program, state machines included. Rename the handler (for example `record_move`) and call it next to the builtin.

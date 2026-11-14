@@ -1,0 +1,8 @@
+cell Grades {
+    on label_scores(scores: List<Int>) {
+        let labels = map(scores, s => {
+            if s < 50 { "fail" } else { "pass" }
+        })
+        return labels
+    }
+}

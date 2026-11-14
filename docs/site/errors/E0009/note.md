@@ -1,0 +1,1 @@
+A slot used as the `shard:` of a `scale` section must agree with its `consistency:`. An `[ephemeral]` slot sharded under `consistency: strong` is refused as contradictory. Change one side: declare `consistency: eventual` (as here, for a rate limiter's throwaway counters), or drop `[ephemeral]` from the slot.

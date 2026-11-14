@@ -1,0 +1,1 @@
+An `every` or `after` block inside an interior cell never runs: interior cells run only through the runtime section of `soma run`, and `soma serve` does not schedule their timers. Timers run in top-level cells, so move the timer to a top-level cell; here the cell that owns the queue is made top-level together with its `every` block.

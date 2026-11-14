@@ -1,0 +1,1 @@
+A `cell checker` holds project rules that `soma check` runs against every other cell; a `require <predicate> else Tag` that is false for a cell is reported with the checker name, the cell and the tag. Here `has_auth` holds only for a cell whose face declares a `given auth` (or `given token`). Fix the cell so the predicate holds — or change the rule if it is wrong.

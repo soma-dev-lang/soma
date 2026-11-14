@@ -1,0 +1,5 @@
+cell Receipt {
+    on summary(customer: String, total: Float) {
+        return "{customer} owes {to_fixed(total, 2)} EUR"
+    }
+}

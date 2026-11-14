@@ -1,0 +1,1 @@
+A lambda captures only the locals bound before it, so a lambda that calls itself (or a lambda bound later in the block) cannot see that name; check refuses it rather than letting it fail at run time. For recursion write a handler, `on walk(k: Int) { ... }`, which can call itself.

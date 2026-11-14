@@ -1,0 +1,13 @@
+cell Tickets {
+    memory {
+        titles: Map<String, String> [persistent]
+    }
+    on open_ticket(id: String, title: String) {
+        titles.set(id, title)
+        return id
+    }
+    on resolve(id: String) {
+        transition(id, "resolved")
+        return get_status(id)
+    }
+}

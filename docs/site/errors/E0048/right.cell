@@ -1,0 +1,17 @@
+cell Ledger {
+    memory {
+        balances: Map<String, Int> [persistent]
+    }
+    on credit(account: String, cents: Int) {
+        let next = (balances.get(account) ?? 0) + cents
+        balances.set(account, next)
+        return next
+    }
+}
+
+cell Refunds {
+    on refund(account: String, cents: Int) {
+        require cents > 0 else InvalidAmount
+        return Ledger.credit(account, cents)
+    }
+}

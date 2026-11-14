@@ -1,0 +1,27 @@
+skeleton Orders {
+    memory {
+        log: Map<String, String> [persistent]
+    }
+    state flow {
+        initial: placed
+        placed -> paid
+        paid -> shipped
+    }
+    face {
+        signal pay(id: String) -> String     moves placed -> paid
+        signal ship(id: String) -> String    moves paid -> shipped   writes log
+    }
+}
+
+flesh Orders {
+    on pay(id) {
+        transition(id, "placed", "paid")
+        log.set(id, "paid")
+        return "paid"
+    }
+    on ship(id) {
+        transition(id, "paid", "shipped")
+        log.set(id, "shipped")
+        return "shipped"
+    }
+}

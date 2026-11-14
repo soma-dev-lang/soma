@@ -1,0 +1,1 @@
+`break` and `continue` only mean something inside a `for` or `while` loop, and `soma check` reports E0103 anywhere else, here in `match` arms written like the cases of a C `switch`. A Soma `match` runs exactly one arm and never falls through to the next, so the arm needs no `break`. Delete it; to leave a handler early, use `return`.

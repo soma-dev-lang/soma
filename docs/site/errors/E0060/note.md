@@ -1,0 +1,1 @@
+A handler cannot be both `[task]` and `[native]`: a native handler is compiled code that cannot call `think()`, and a task exists to wait on such calls. `soma check` refuses the combination. Drop one annotation; a numeric scoring function that never calls a model should keep only `[native]`.

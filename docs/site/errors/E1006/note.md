@@ -1,0 +1,1 @@
+The parser refuses expressions and blocks nested more than 400 levels deep, counting expressions and blocks together. The limit keeps the compiler from exhausting its stack on generated code. Flatten the expression, compute it differently, or split it into `let` bindings or a helper handler; here 420 nested `(... + fee)` become `base + 420 * fee`.

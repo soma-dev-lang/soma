@@ -1,0 +1,17 @@
+cell Shop {
+    interior {
+        cell Orders {
+            face {
+                signal place(id: String, total: Int)
+                signal cancel(id: String)
+            }
+            memory {
+                orders: Map<String, Int> [persistent]
+            }
+            on place(id: String, total: Int) {
+                orders.set(id, total)
+                return id
+            }
+        }
+    }
+}

@@ -1,0 +1,1 @@
+A `cost { tokens: N }` bound in a cell is checked against the sum of the `max_tokens` caps of every `think()` a handler can make. Here two calls capped at 400 and 200 can spend 600 reply tokens, more than the declared 500, so `soma check` fails. Raise the bound to at least the computed peak, or lower the `max_tokens` caps; prompt tokens are not counted in this bound.

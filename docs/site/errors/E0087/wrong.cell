@@ -1,0 +1,17 @@
+cell Warehouse {
+    interior {
+        cell Picker {
+            face { signal pick(sku: String) }
+            memory {
+                queue: List<String> [persistent]
+            }
+            on pick(sku: String) {
+                queue.push(sku)
+            }
+            every 5min {
+                print("queue length {queue.len}")
+            }
+        }
+    }
+    runtime { signal pick("sku-42") }
+}

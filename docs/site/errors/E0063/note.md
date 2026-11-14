@@ -1,0 +1,1 @@
+A state machine accepts exactly one annotation, `max_instances(N)`; any other name in the brackets is reported as read by nothing, with a suggestion when it is close to `max_instances`. Without this check a misspelled `[max_instance(1000)]` would sit there silently while the machine kept its default bound. Fix the spelling to `max_instances(N)` or remove the annotation.

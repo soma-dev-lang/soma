@@ -1,0 +1,1 @@
+`soma serve` routes WebSocket frames only to the cell that owns `on request`, so an `on ws` in any other cell would never run; `soma check` reports it. Put `on ws(msg: String)` in the request-owning cell and delegate to the domain cell from there. The same code is used when `on ws` takes something other than a String: a frame arrives as text, parsed with `from_json(msg)`.

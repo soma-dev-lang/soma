@@ -1,0 +1,12 @@
+cell Risk {
+    face {
+        signal total_exposure(n: Int) -> Int
+    }
+    on total_exposure(n: Int) [native] {
+        let positions = []
+        for i in range(0, n) {
+            positions.push(i * 100)
+        }
+        return sum(positions)
+    }
+}

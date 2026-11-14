@@ -1,0 +1,1 @@
+An interpolation `{...}` must hold exactly one expression. In `{total - fee cents}` the word `cents` is a second expression, and the message says that part would be dropped. Close the brace after the expression and keep the text outside it, or bind the value with a `let` first.

@@ -1,0 +1,1 @@
+A cell may not have two `on` handlers with the same name, even when their parameters are identical; Soma does not overload handlers. A call `balance(owner)` must resolve to exactly one body. Give the second handler its own name (here `balance_in_units`), or merge the two bodies into one.

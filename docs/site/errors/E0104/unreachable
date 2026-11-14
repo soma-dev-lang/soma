@@ -1,0 +1,1 @@
+`soma check` never prints E0104: the checker creates this diagnostic as a habit warning, and every habit warning is reported under the warning code W0014 (habit_warning), in edition 2026 and 2027 alike. An assignment to a name that is also a builtin (`sum = 0`) gets no diagnostic at all, because the check skips names it already knows.

@@ -1,0 +1,1 @@
+A `[task]` handler that reads a slot before a `think()`, `vote()` or `await` and writes it after may write a stale value, because other requests can change the slot while the task waits. `soma check` 3.1.0 reports this as the warning W0014 rather than under E0059. Read the slot again (and re-check it) after the wait, before writing.

@@ -1,0 +1,1 @@
+An indexed or field write such as `counts[k] = v` changes an existing List, Map or record, so the name must already be bound. Writing to a name that was never declared would fail at run time with "undefined variable", so `soma check` refuses it. Declare the value first, for example `let counts = map()` or `let rows = []`, or fix the name if it is a typo.

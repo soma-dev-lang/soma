@@ -1,0 +1,13 @@
+cell RateLimiter {
+    memory {
+        hits: Map<String, Int> [ephemeral]
+    }
+    scale {
+        replicas: 4
+        shard: hits
+        consistency: strong
+    }
+    on hit(client: String) {
+        hits.set(client, (hits.get(client) ?? 0) + 1)
+    }
+}

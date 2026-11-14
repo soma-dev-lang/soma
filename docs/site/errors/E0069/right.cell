@@ -1,0 +1,16 @@
+cell Tickets {
+    memory {
+        log: List<String> [persistent]
+    }
+    state ticket {
+        initial: open
+        open -> closed
+    }
+    on record_move(id: String, to: String) {
+        log.push("ticket {id} -> {to}")
+    }
+    on close(id: String) {
+        transition(id, "closed")
+        record_move(id, "closed")
+    }
+}

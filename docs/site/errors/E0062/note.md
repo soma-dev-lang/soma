@@ -1,0 +1,1 @@
+A `[task]` handler called from a plain handler runs inside the caller's atomic unit, so its think() holds the lock and concurrent requests wait. `soma check` warns about this under the code W0014 (habit_warning), not E0062. Mark the caller as a task too: `on handle(q: String) [task] { ... }`.

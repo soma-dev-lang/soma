@@ -1,0 +1,1 @@
+A cell declared inside another cell's `interior { }` is not registered by name: it is driven by its siblings' signals, and `Picker.pick(...)` from outside would raise `undefined variable: Picker` at run time. Check refuses the call. Make the cell top-level if other cells must call it, as in the fix, or drive it with a signal from inside its parent.

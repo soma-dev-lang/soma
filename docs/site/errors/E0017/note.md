@@ -1,0 +1,1 @@
+A `match` over a value of a `cell type` with variants must have an arm for every variant (or a `_` arm), and may not name a variant the type does not have. `soma check` names the missing variant, so adding `Refunded` to the type cannot leave a `match` that silently falls through. Add the missing arm.

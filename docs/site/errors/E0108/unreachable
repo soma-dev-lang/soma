@@ -1,0 +1,1 @@
+`soma check` never prints E0108: every syntax error is reported with one of the codes E1001 to E1010, chosen from its message (E1001 expected token, E1003 return type on a handler, E1010 lexical, and so on), both in the plain output and in `--json`. E0108 is the code the `syntax` kind would have in the table of check errors, but no output path uses it.

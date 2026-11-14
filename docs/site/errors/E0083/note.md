@@ -1,0 +1,1 @@
+A memory invariant must be a condition. A bare slot name or an arithmetic expression such as `invariant balances` is refused, because it would be judged by truthiness rather than by a comparison. Compare it: `invariant balances >= 0` (on a Map slot it applies to every value written).

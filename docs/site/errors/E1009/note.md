@@ -1,0 +1,1 @@
+E1009 covers near-misses for which the parser knows the exact correction, and the message states it. Here a `require` has no `else Tag`: Soma needs the tag because it becomes the error kind the caller sees when the condition is false. Add `else` and a tag name, for example `require amount <= current else InsufficientFunds`.

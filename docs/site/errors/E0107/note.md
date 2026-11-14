@@ -1,0 +1,1 @@
+A test cell may read a memory slot by its bare name, but when two cells declare a slot of that name (`Orders.totals` and `Refunds.totals`), the name does not say which one is meant, and `soma check` reports E0107 at the read. Read the value through a handler of the cell you mean, here a `total_of(id)` signal on `Orders`.

@@ -1,0 +1,5 @@
+cell Pricing {
+    on quote(base_cents: Int, qty: Int, jitter: Int) [deterministic] {
+        return base_cents * qty + jitter
+    }
+}

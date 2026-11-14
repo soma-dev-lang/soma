@@ -1,0 +1,13 @@
+cell Expenses {
+    state claim {
+        initial: submitted
+        submitted -> approved { guard { amount <= 1000 } }
+        submitted -> rejected
+    }
+    on approve_claim(id: String, amount: Int) {
+        transition(id, "approved")
+    }
+    on reject(id: String) {
+        transition(id, "rejected")
+    }
+}

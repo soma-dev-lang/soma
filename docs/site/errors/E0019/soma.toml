@@ -1,0 +1,7 @@
+[agent]
+provider = "ollama"
+model = "gemma3:12b"
+
+[models.sonnet]
+provider = "anthropic"
+model = "claude-sonnet-4-5"

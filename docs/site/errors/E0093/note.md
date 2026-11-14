@@ -1,0 +1,1 @@
+An `every` block needs a positive interval: `every 0s` (or `0ms`, `0min`) would run its body back to back for as long as the server is up, so `soma check` refuses it with E0093. The message names the interval in milliseconds whatever unit you wrote. Give the block the period you actually mean, such as `every 1min`, with a unit among `ms`, `s`, `min`, `h`, `d`.

@@ -1,0 +1,1 @@
+In an `interior` block, a cell's `on` handler is expected to answer a signal that a sibling declares (or that the parent emits). A handler for `order_created` when the only sibling signal is `order_placed` would never be called, so `soma check` reports it as an unmatched handler. Rename the handler to the signal a sibling sends, or add the signal to the sibling's face.

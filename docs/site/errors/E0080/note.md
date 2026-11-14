@@ -1,0 +1,1 @@
+A `let` named like a memory slot hides the slot for the rest of the block: reads, indexes and writes of that name then mean the local. `soma check` warns about this under the code W0014 (habit_warning). Rename the local (for example `stock_count`).

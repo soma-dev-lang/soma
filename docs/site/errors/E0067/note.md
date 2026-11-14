@@ -1,0 +1,1 @@
+Test rules (`assert`, `property`) belong inside a `cell test` with a `rules` block; a `rules` block in an ordinary cell is refused because those rules would never run. Move them to their own test cell, `cell test CartTests { rules { ... } }`, which can call the program's handlers unqualified.

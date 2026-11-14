@@ -1,0 +1,1 @@
+Some method names come from other languages and do not exist in Soma; `active.includes(code)` is JavaScript. `soma check` refuses an unknown method and, for common ones, names the Soma form — here `contains(xs, x)`. Any builtin can be called as a function or as a method, and `soma describe --builtins` lists them.

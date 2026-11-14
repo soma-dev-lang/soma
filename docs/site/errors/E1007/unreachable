@@ -1,0 +1,1 @@
+E1007 is assigned only to a parser message containing "a cell has no constants", and no message says that any more. A `let` directly inside a cell is still refused, but under E1009 with the message "a cell has no cell-level `let` — a constant is `const LIMIT = 500` …".

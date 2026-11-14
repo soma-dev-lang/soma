@@ -1,0 +1,13 @@
+cell JobQueue {
+    memory {
+        jobs: Map<String, String> [persistent, consistent]
+    }
+    scale {
+        replicas: 3
+        shard: job
+        consistency: strong
+    }
+    on enqueue(id: String, payload: String) {
+        jobs.set(id, payload)
+    }
+}

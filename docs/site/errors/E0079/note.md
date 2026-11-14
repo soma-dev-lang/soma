@@ -1,0 +1,1 @@
+A `mock` line in a test must name a handler or a builtin that the program can call; a mock naming nothing would never fire, and the test would pass without the mock ever being used. Fix the name so that it matches the handler (here `mock price_of 250`).

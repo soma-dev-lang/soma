@@ -1,0 +1,15 @@
+cell property audited {
+    rules {
+        implies [persistant, immutable]
+    }
+}
+
+cell Ledger {
+    memory {
+        entries: List<String> [audited]
+    }
+    on record(line: String) {
+        entries.push(line)
+        return len(entries)
+    }
+}

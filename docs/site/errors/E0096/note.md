@@ -1,0 +1,1 @@
+A Soma program is made of cells, and `soma check` refuses a file that holds no `cell` at all (only comments, or a cell left commented out) with E0096 instead of passing a file that defines nothing. The diagnostic has no line number, since there is nothing to point at. Put the code in a cell: memory, a face that declares each signal, and an `on` handler per signal.

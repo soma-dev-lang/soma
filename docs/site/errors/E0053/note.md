@@ -1,0 +1,1 @@
+A transition in a `state` section carries an `effect { … }` block. The 3.1.0 runtime parses that block but never runs it, so its writes would silently not happen; `soma check` refuses any such block. Move the work into the handler, right after its `transition()` call.

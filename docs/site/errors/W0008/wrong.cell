@@ -1,0 +1,7 @@
+cell agent Summarizer {
+    cost { tokens: 400 }
+    on summarize(doc_id: String, text: String) {
+        let summary = think("Summarize in three lines: {text}", map("max_tokens", 400))
+        return map("doc", doc_id, "summary", summary)
+    }
+}

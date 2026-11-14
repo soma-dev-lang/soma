@@ -1,0 +1,15 @@
+cell Order {
+    state payment {
+        initial: unpaid
+        unpaid -> paid
+    }
+    on pay(id: String) { transition(id, "paid") }
+}
+
+cell Shipping {
+    state shipping {
+        initial: waiting
+        waiting -> shipped
+    }
+    on ship(id: String) { transition(id, "shipped") }
+}

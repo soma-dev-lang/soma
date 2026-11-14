@@ -1,0 +1,9 @@
+cell Shipping {
+    on rate(zone: String) {
+        return match zone {
+            "domestic" -> 500
+            "europe" -> 1200
+            _ -> 2500
+        }
+    }
+}

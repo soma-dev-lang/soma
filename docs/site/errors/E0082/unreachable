@@ -1,0 +1,1 @@
+soma check reports this rule (kind lambda_assign) as the warning W0014 habit_warning, never as E0082: the checker files every "habit" issue under W0014.

@@ -1,0 +1,15 @@
+cell agent SupportTriage {
+    face {
+        signal classify(ticket: String) -> String
+    }
+    state triage {
+        initial: open
+        open -> classified
+    }
+    on classify(ticket: String) {
+        let label = think("Label this support ticket as billing, bug or other: {ticket}",
+            map("max_tokens", 20))
+        transition(ticket, "classified")
+        return label
+    }
+}

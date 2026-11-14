@@ -1,0 +1,1 @@
+soma check reports this rule (kind refusal_discarded) as the warning W0014 habit_warning, never as E0071: the checker files every "habit" issue under W0014.

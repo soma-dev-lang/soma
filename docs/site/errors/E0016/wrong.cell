@@ -1,0 +1,19 @@
+cell checker every_api_authenticated {
+    face {
+        promise "every cell with signals takes an auth token"
+    }
+    rules {
+        check {
+            require has_auth else MissingAuth
+        }
+    }
+}
+
+cell OrdersApi {
+    face {
+        signal cancel(order_id: String) -> String
+    }
+    on cancel(order_id: String) {
+        return "cancelled {order_id}"
+    }
+}

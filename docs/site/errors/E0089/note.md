@@ -1,0 +1,1 @@
+An `[immutable]` slot is append-only: an entry never changes once written, so `.delete` (or an overwrite) on it can only fail at run time, with kind `invariant`. `soma check` warns about a delete on such a slot under the code W0014 (habit_warning). Record a correction as a new entry instead, or drop `[immutable]` if entries must change.

@@ -1,0 +1,1 @@
+A qualified call `Cell.handler(…)` names a handler that the target cell does not define. Soma resolves calls into other cells at check time, because the runtime looks the handler up by name and would fail on the call. Call a handler the cell actually defines, or add the missing `on` handler to that cell.

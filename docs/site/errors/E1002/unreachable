@@ -1,0 +1,1 @@
+The parser never builds its "unexpected end of input" error (ParseError::UnexpectedEof is declared but not constructed in compiler/src/parser), so `soma check` never reports E1002. A file that ends inside a construct is reported as E1001, for example `expected '}', found end of file`; an unterminated string or block comment is E1010.

@@ -1,0 +1,10 @@
+cell Library {
+    memory {
+        loans: Map<String, String> [persistent]
+        loan_counts: Map<String, Int> [persistent]
+    }
+    on lend(book: String, member: String) {
+        loans.set(book, member)
+        loan_counts.set(member, (loan_counts.get(member) ?? 0) + 1)
+    }
+}

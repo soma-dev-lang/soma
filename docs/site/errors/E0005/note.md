@@ -1,0 +1,1 @@
+Two cells in one program may not have the same name; `soma check` reports "defined twice — rename one; same-named cells are not merged". A second `cell Orders { … }` is not a continuation of the first, and a call like `Orders.place(…)` would be ambiguous. Rename one of the cells, or move its handlers into the other.
