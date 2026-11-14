@@ -1,6 +1,8 @@
 # Changelog
 
-## Unreleased
+## 3.2.2 — 2026-11-14
+
+Validation: 1,105 Rust tests, 118 CLI checks, 327 corpus programs, 1,280 numeric comparisons; no verdict changed on the 2,270 tracked programs.
 
 - A plain variable passed as is to an `Int` parameter: an early `if lots <= 0 || lots > 1000 { return … }` now proves the callee's `requires`, as `require` does, even for a value read from a Map. The call refuses anything but an Int before the clause, so a Float or NaN that got past the guard never reaches it. Only that variable against constants: a bound borrowed from another unchecked value, or an expression passed, still proves nothing.
 - A `skeleton.lock` frozen by 3.2.0 for a program with nominal types is accepted by 3.2.1 as it is: 3.2.0 recorded the erased types (`q: Int`), and that is no change of structure. `--amend` records the types as written. (An agent's project refused its briefs after the upgrade.)

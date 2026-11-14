@@ -1,6 +1,6 @@
 {
   "name": "soma-lang",
-  "version": "3.2.1",
+  "version": "3.2.2",
   "description": "Call a Soma program from JavaScript / TypeScript: typed values in, typed values out, errors by kind",
   "main": "index.js",
   "types": "index.d.ts",

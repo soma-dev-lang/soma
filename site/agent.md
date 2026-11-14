@@ -11,13 +11,13 @@ carries the rest.
 (`state`), handlers (`on`), HTTP routes and tests. New to it: six lessons
 with real outputs at https://soma-lang.dev/llms-learn.txt.
 
-## Implementation scope — Soma 3.2.1
+## Implementation scope — Soma 3.2.2
 
 The language core is implemented; recent audits cover numeric boundaries,
 typed inputs and storage, evaluation order, collections, dispatch, constructors,
 SQLite failures, transaction boundaries, legacy lists, storage providers,
 native/interpreter parity and storage complexity.
-Release validation passed 1,104 Rust tests, 118 CLI checks, 327 corpus programs
+Release validation passed 1,105 Rust tests, 118 CLI checks, 327 corpus programs
 and 1,280 independent numeric comparisons. Evidence and current status:
 https://soma-lang.dev/status.
 
@@ -220,7 +220,7 @@ actuation. Eventual cluster replication does not establish distributed safety.
 
 ## Cluster corrections in Soma 2.8.2 (2026-09-20)
 
-Use [Soma 3.2.1](https://github.com/soma-dev-lang/soma/releases/tag/v3.2.1) or later, which includes these corrections.
+Use [Soma 3.2.2](https://github.com/soma-dev-lang/soma/releases/tag/v3.2.2) or later, which includes these corrections.
 `scale.shard` supports mutable Map slots with explicit `consistency: eventual`.
 Updates preserve types and are published after commit. Reconnect and periodic
 state exchange carry per-key logical versions and deletion markers. Use a
