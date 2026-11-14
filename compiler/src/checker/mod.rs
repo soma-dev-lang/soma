@@ -828,14 +828,32 @@ impl<'a> Checker<'a> {
         // an unknown record type — Any — and every value passed
         {
             const BASE: &[&str] = &["Int", "Float", "String", "Bool", "List", "Map", "Any", "BigInt"];
-            let declared: std::collections::HashSet<String> = program.cells.iter().map(|c| c.node.name.clone()).collect();
-            fn names_in(t: &TypeExpr, out: &mut Vec<String>) {
+            const SCALAR: &[&str] = &["Int", "Float", "String", "Bool", "BigInt"];
+            let mut declared: std::collections::HashSet<String> = program.cells.iter().map(|c| c.node.name.clone()).collect();
+            for c in crate::checker::names::collect_cells(program) {
+                declared.insert(c.name.clone());
+                // `cell type Ledger<T>`: T is a parameter, not a type to declare
+                for t in &c.type_params { declared.insert(t.clone()); }
+            }
+            // the slot collections the runtime stores as a List
+            for t in ["Log", "Ledger"] { declared.insert(t.to_string()); }
+            // (names, and the `Int<lots>`s: a scalar takes no parameter)
+            fn names_in(t: &TypeExpr, out: &mut Vec<String>, scalars: &mut Vec<String>) {
                 match t {
+                    // a flesh body's untyped parameter takes its signal's type
+                    TypeExpr::Simple(n) if n == crate::ast::FLESH_PARAM_TYPE => {}
                     TypeExpr::Simple(n) => out.push(n.clone()),
-                    TypeExpr::Generic { name, args } => { out.push(name.clone()); for a in args { names_in(&a.node, out); } }
+                    TypeExpr::Generic { name, args } if SCALAR.contains(&name.as_str()) && !args.is_empty() => {
+                        let shown: Vec<String> = args.iter().map(|a| match &a.node { TypeExpr::Simple(n) => n.clone(), TypeExpr::Generic { name, .. } => format!("{name}<…>"), _ => "…".to_string() }).collect();
+                        scalars.push(format!("{}<{}>", name, shown.join(", ")));
+                    }
+                    TypeExpr::Generic { name, args } => { out.push(name.clone()); for a in args { names_in(&a.node, out, scalars); } }
                     _ => {}
                 }
             }
+            // edition 2027 refuses what 2026 only warns about: a type that
+            // checks nothing (docs/NOMINAL_TYPES_DESIGN.md, phase 0)
+            let refuse = self.edition().as_str() >= "2027";
             let mut seen: std::collections::HashSet<String> = std::collections::HashSet::new();
             for cell in &program.cells {
                 let mut types: Vec<(&TypeExpr, Span)> = Vec::new();
@@ -854,7 +872,16 @@ impl<'a> Checker<'a> {
                 }
                 for (t, span) in types {
                     let mut ns = Vec::new();
-                    names_in(t, &mut ns);
+                    let mut scalars = Vec::new();
+                    names_in(t, &mut ns, &mut scalars);
+                    for sc in scalars {
+                        if !seen.insert(sc.clone()) { continue; }
+                        let base = sc.split('<').next().unwrap_or("Int").to_string();
+                        let message = format!("`{sc}` — {base} takes no parameter, so this checks nothing and turns the {base} checks off: write `{base}`{}",
+                            if refuse { "" } else { " (an error in edition 2027)" });
+                        if refuse { self.errors.push(CheckError::Static { kind: "unknown_type", message, span }); }
+                        else { self.warnings.push(CheckWarning::TypeAdvisory { message, span }); }
+                    }
                     for n in ns {
                         if BASE.contains(&n.as_str()) || declared.contains(&n) || !seen.insert(n.clone()) { continue; }
                         let lower = n.to_lowercase();
@@ -875,6 +902,13 @@ impl<'a> Checker<'a> {
                                 message: format!("unknown type `{}` — did you mean `{}`? (an undeclared type name would accept any value)", n, fix),
                                 span,
                             });
+                        } else {
+                            // `q: Lots` with no `cell type Lots`: read as Any,
+                            // so `"hello"` passed where lots were meant
+                            let message = format!("type `{n}` is declared nowhere, so it accepts any value (Any) — write the type it stands for (`Int`, `String`, …) or declare it: `cell type {n} {{ variants {{ … }} }}`{}",
+                                if refuse { "" } else { " (an error in edition 2027)" });
+                            if refuse { self.errors.push(CheckError::Static { kind: "unknown_type", message, span }); }
+                            else { self.warnings.push(CheckWarning::TypeAdvisory { message, span }); }
                         }
                     }
                 }

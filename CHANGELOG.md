@@ -12,6 +12,10 @@ An agent that wrote a trading program reported correct code left "runtime-checke
 
 `invariant len(rows) <= N` measures each value written, not the entries; `soma check` already warned, and `soma verify` now says why it stays ⚠. Tests: `a_size_bound_is_proven_whatever_form_the_guard_takes`, `a_size_bound_is_not_proven_by_a_guard_that_does_not_hold`, `verify_says_why_an_invariant_on_len_of_the_slot_is_not_a_count`. No verdict changed on the 2,268 tracked programs.
 
+### Types that check nothing are reported (nominal types, phase 0)
+
+`q: Lots` with no `cell type Lots` was read as Any and accepted `"hello"`; `q: Int<lots>` parsed, and turned the Int checks off (`label(q)` into `label(x: String)` passed where it failed for `q: Int`). Both are now warning W0018 in edition 2026 and error E0046 in edition 2027, with the fix in the message. Type parameters (`cell type Book<T>`), `Log` / `Ledger` slots and a flesh body's untyped parameters are not reported. Phase 0 of `docs/NOMINAL_TYPES_DESIGN.md`. Tests: `compiler/tests/nominal.rs`. No verdict changed on the 2,268 tracked programs, and none of them gets the warning.
+
 ## 3.1.0 — 2026-11-13
 
 Skeleton first: a large program is written structure first, proven before its bodies exist, and filled body by body from a brief the compiler enforces. Summary in `soma docs releases`; the course at https://soma-lang.dev/learn (six lessons, every output printed by the binary — `docs/site/learn.md`, built by `tools/build_learn.py`, which fails the site build when a lesson stops behaving as written).
