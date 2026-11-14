@@ -31,7 +31,7 @@ below is current for the binary named in https://soma-lang.dev/version.json.
 
 ## Pick Soma when / skip it when
 
-Current release: 3.2.0 — nominal types (`cell type Lots = Int where …`), after 3.1.0's
+Current release: 3.2.1 — nominal types (`cell type Lots = Int where …`), after 3.1.0's
 skeleton first. What each release changed: `soma docs releases`.
 
 Pick it when the task has a lifecycle or a limit that must hold: payments,
@@ -1354,6 +1354,12 @@ it says "error kind X", raise it with `require … else X "…"` or `fail`.
 
 > Newest first. The language itself: https://soma-lang.dev/llms.txt (`soma docs agent`).
 > Every fix and its compatibility note: https://soma-lang.dev/CHANGELOG.md.
+
+Soma 3.2.1: an early `if … { return }` on a value passed through `to_int(…)`
+proves a call-site `requires`; `desk_of.get(id) ?? ""` names the linked
+instance in a `via` rule; a soma.toml rule naming only cells a program does
+not have is a note there, not a failure; `--amend`, the brief and `describe`
+show a nominal type as written.
 
 Soma 3.2.0 adds nominal types: `cell type Lots = Int` (or Float, String)
 says what a number counts, and `soma check` refuses (E0122) what mixes two of

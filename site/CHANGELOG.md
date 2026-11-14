@@ -1,5 +1,16 @@
 # Changelog
 
+## 3.2.1 — 2026-11-14
+
+What an agent found when it installed 3.2.0 and ran its three programs on it:
+
+- An early `if … { return }` on a value passed through `to_int(…)` proves a call-site `requires` (an Int cannot be NaN). On a raw value read from a Map it stays runtime-checked — it may be a Float or NaN, which no comparison excludes — and the warning now says so.
+- `let desk = desk_of.get(id) ?? ""` names the linked instance in a rule between machines (`via`), as `desk_of.get(id)` did.
+- A soma.toml rule that names only cells a program does not have is a note for that program (it is about another program of the folder), not a failure; one naming one of its cells and a missing one stays an error.
+- `soma skeleton --amend`, the brief and `describe` show a nominal type as written (`q: Lots`, not the erased Int); the brief says what it is and how to enter and leave it.
+
+Tests: `compiler/tests/report_v32.rs`, `compiler/tests/nominal.rs`. Validation: 1,104 Rust tests, 118 CLI checks, 327 corpus programs, 1,280 numeric comparisons; no verdict worse on the 2,270 tracked programs.
+
 ## 3.2.0 — 2026-11-14
 
 Nominal types: `cell type Lots = Int where …` says what a number counts, `soma check` refuses what mixes two of them (E0122), and the bound becomes contracts and invariants `soma verify` proves; then the type is erased, so nothing proven about an Int is lost. Also: size bounds proven whatever form the guard takes, and types that check nothing (an undeclared name, `Int<lots>`) reported. Validation: 1,100 Rust tests, 118 CLI checks, 327 corpus programs, 1,280 numeric comparisons; no verdict worse on the 2,270 tracked programs.

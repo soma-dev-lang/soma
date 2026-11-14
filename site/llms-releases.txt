@@ -3,6 +3,12 @@
 > Newest first. The language itself: https://soma-lang.dev/llms.txt (`soma docs agent`).
 > Every fix and its compatibility note: https://soma-lang.dev/CHANGELOG.md.
 
+Soma 3.2.1: an early `if … { return }` on a value passed through `to_int(…)`
+proves a call-site `requires`; `desk_of.get(id) ?? ""` names the linked
+instance in a `via` rule; a soma.toml rule naming only cells a program does
+not have is a note there, not a failure; `--amend`, the brief and `describe`
+show a nominal type as written.
+
 Soma 3.2.0 adds nominal types: `cell type Lots = Int` (or Float, String)
 says what a number counts, and `soma check` refuses (E0122) what mixes two of
 them — `lots + price`, a cap in Cents compared with Lots (in a `require`, a
