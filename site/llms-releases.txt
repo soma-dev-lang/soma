@@ -3,6 +3,22 @@
 > Newest first. The language itself: https://soma-lang.dev/llms.txt (`soma docs agent`).
 > Every fix and its compatibility note: https://soma-lang.dev/CHANGELOG.md.
 
+Soma 3.2.0 adds nominal types: `cell type Lots = Int` (or Float, String)
+says what a number counts, and `soma check` refuses (E0122) what mixes two of
+them — `lots + price`, a cap in Cents compared with Lots (in a `require`, a
+guard or a memory invariant), `lots * price`, a Cents passed or stored where
+Lots is declared — and a plain Int variable where a Lots stands. Literals
+take the other side's type; `Lots(n)` enters, `to_int(q)` leaves; `const MAX
+= Lots(50)` keeps its type. `where value >= 0 && value <= 50` on the type
+becomes a `requires` on each parameter, an `ensures` on each result and an
+invariant on each slot of it, which `soma verify` proves or names. The type
+is erased after `check`: run time, storage, JSON, `[native]` and `verify`
+see an Int. Also in 3.2.0: `soma verify` proves a size bound after `require
+rows.size < N`, an early `if len(rows) >= N { return … }`, or `let cur =
+rows.get(k) ?? ""` then `require cur != ""`; an undeclared type name (`q:
+Lots` with no declaration) and `Int<lots>` are warnings (errors in edition
+2027).
+
 Soma 3.1.0 is the skeleton-first release: a large program is written
 structure first. A `skeleton Name { … }` is a cell without bodies — memory,
 invariants, machines, and a face where each signal carries a closed frame

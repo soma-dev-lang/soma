@@ -1,5 +1,31 @@
 # Changelog
 
+## 3.2.0 — 2026-11-14
+
+Nominal types: `cell type Lots = Int where …` says what a number counts, `soma check` refuses what mixes two of them (E0122), and the bound becomes contracts and invariants `soma verify` proves; then the type is erased, so nothing proven about an Int is lost. Also: size bounds proven whatever form the guard takes, and types that check nothing (an undeclared name, `Int<lots>`) reported. Validation: 1,100 Rust tests, 118 CLI checks, 327 corpus programs, 1,280 numeric comparisons; no verdict worse on the 2,270 tracked programs.
+
+### A size bound is proven whatever form its guard takes
+
+An agent that wrote a trading program reported correct code left "runtime-checked" because of how it was written. `soma verify` now proves `invariant rows.size <= N` for all of these, as it did for `require len(rows) < N` and `require rows.get(k) != ()`:
+
+- `require rows.size < N` / `rows.len` (the field form was read as a possible fraction: 49.99… + 1 > 50);
+- an early exit, `if len(rows) >= N { return … }` (a count in a negated condition was dropped as possibly NaN);
+- a local with a default, `let cur = rows.get(k) ?? ""` then `require cur != ""` or `if cur == "" { return … }` (a missing key gives the default, so a different value means the key exists; `cur == ""` alone proves nothing, an entry may hold `""`).
+
+`invariant len(rows) <= N` measures each value written, not the entries; `soma check` already warned, and `soma verify` now says why it stays ⚠. Tests: `a_size_bound_is_proven_whatever_form_the_guard_takes`, `a_size_bound_is_not_proven_by_a_guard_that_does_not_hold`, `verify_says_why_an_invariant_on_len_of_the_slot_is_not_a_count`. No verdict changed on the 2,268 tracked programs.
+
+### Bounds on nominal types: `cell type Lots = Int where value >= 0 && value <= 50` (phase 2)
+
+The bound is written once, on the type, and compiled into what `soma verify` already proves: a `requires` on each face parameter of the type, an `ensures` on each result, a memory invariant on each slot holding it, and a `require … else OutOfRange` on the parameters of a handler with no face signal. `verify` then proves the slot's invariant and the results where the program narrows them, and names the ones it leaves to run time (`⚠ double: ensures result <= 50 — not proven for q * 2 (known: 0 to 100)`). A literal outside the bound (`Lots(60)`) is E0122. The bound reads only `value`, literals and constants. Not yet: record fields of a bounded type, a [native] handler's parameters.
+
+### Nominal types: `cell type Lots = Int` (phase 1)
+
+A trading agent wrote a cap in cents and applied it to a position in lots; with `Int` everywhere `soma check` passed and `soma verify --strict` proved the bound, on the wrong quantity. Now `cell type Lots = Int` (over Int, Float or String) declares what a number counts, and `soma check` refuses, as E0122 `nominal_mismatch`, what mixes two of them: Lots + Cents, a Lots compared with a Cents (in a `require`, a guard or a memory invariant), Lots × Cents or Lots × Lots, a Cents argument where Lots is declared, a Cents written into a slot of Lots, and a plain `Int` variable where a Lots stands. Literals take the type of the other side (`q <= 50`, `?? 0`); `Lots(x)` enters the type, `to_int(q)` leaves it; `const MAX_LOTS = Lots(50)` keeps its type at every read. A value read from a Map meeting a nominal type is a warning. The type is then erased (`checker/nominal.rs`): run time, storage, JSON, `[native]` and `soma verify` see an `Int`, and a program with Lots proves what the same program with Int proves. Opt-in: no verdict changed on the 2,268 tracked programs. Tests first: `compiler/tests/nominal.rs`. Not yet: the type in `soma skeleton` briefs and `describe` (they show the base), face `requires` / `ensures` typing, `where` bounds (phase 2).
+
+### Types that check nothing are reported (nominal types, phase 0)
+
+`q: Lots` with no `cell type Lots` was read as Any and accepted `"hello"`; `q: Int<lots>` parsed, and turned the Int checks off (`label(q)` into `label(x: String)` passed where it failed for `q: Int`). Both are now warning W0018 in edition 2026 and error E0046 in edition 2027, with the fix in the message. Type parameters (`cell type Book<T>`), `Log` / `Ledger` slots and a flesh body's untyped parameters are not reported. Phase 0 of `docs/NOMINAL_TYPES_DESIGN.md`. Tests: `compiler/tests/nominal.rs`. No verdict changed on the 2,268 tracked programs, and none of them gets the warning.
+
 ## 3.1.0 — 2026-11-13
 
 Skeleton first: a large program is written structure first, proven before its bodies exist, and filled body by body from a brief the compiler enforces. Summary in `soma docs releases`; the course at https://soma-lang.dev/learn (six lessons, every output printed by the binary — `docs/site/learn.md`, built by `tools/build_learn.py`, which fails the site build when a lesson stops behaving as written).

@@ -1,6 +1,8 @@
 # Changelog
 
-## Unreleased
+## 3.2.0 — 2026-11-14
+
+Nominal types: `cell type Lots = Int where …` says what a number counts, `soma check` refuses what mixes two of them (E0122), and the bound becomes contracts and invariants `soma verify` proves; then the type is erased, so nothing proven about an Int is lost. Also: size bounds proven whatever form the guard takes, and types that check nothing (an undeclared name, `Int<lots>`) reported. Validation: 1,100 Rust tests, 118 CLI checks, 327 corpus programs, 1,280 numeric comparisons; no verdict worse on the 2,270 tracked programs.
 
 ### A size bound is proven whatever form its guard takes
 

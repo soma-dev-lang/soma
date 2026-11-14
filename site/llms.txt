@@ -18,27 +18,21 @@ below is current for the binary named in https://soma-lang.dev/version.json.
 - [llms-learn.txt](https://soma-lang.dev/llms-learn.txt): the course — a cell, errors that name their fix, a proven limit, a checked lifecycle, an agent tested offline, a program written skeleton first
 - [llms-service.txt](https://soma-lang.dev/llms-service.txt): this file + [guarantees](https://soma-lang.dev/docs/guarantees.md) (proven / enforced / not covered) + [serving](https://soma-lang.dev/docs/serving.md) (routing, exposure, atomicity) + [operations](https://soma-lang.dev/docs/operations.md) (what kills the process, ports, exit codes, HTTP statuses, limits, Linux deploy) + every gotcha — what a service needs, ~100 KB
 - [llms-full.txt](https://soma-lang.dev/llms-full.txt): this file + full reference + every gotcha + every builtin, one fetch (~130 KB)
-- [llms-agents.txt](https://soma-lang.dev/llms-agents.txt): running LLM agents — tools, capabilities, [task], hordes, budgets, mocks (`soma docs agents`)
-- [llms-native.txt](https://soma-lang.dev/llms-native.txt): the `[native]` vocabulary, limits and costs (`soma docs native`)
+- [llms-agents.txt](https://soma-lang.dev/llms-agents.txt): LLM agents — tools, capabilities, [task], hordes, budgets, mocks (`soma docs agents`); [llms-native.txt](https://soma-lang.dev/llms-native.txt): the `[native]` vocabulary, limits and costs (`soma docs native`)
 - [llms-skeleton.txt](https://soma-lang.dev/llms-skeleton.txt): large programs — `skeleton` / `flesh`, frames, holes, the brief, skeleton.lock (`soma docs skeleton`)
 - [llms-releases.txt](https://soma-lang.dev/llms-releases.txt): what each release changed, newest first (`soma docs releases`)
 - [docs/robotics.md](https://soma-lang.dev/docs/robotics.md): 100 robotics robustness scenarios, reproduction commands and limits; offline with `soma docs robotics`
-- [agent.md](https://soma-lang.dev/agent.md): drop-in AGENTS.md / CLAUDE.md block for a project that uses Soma
-- [skill/SKILL.md](https://soma-lang.dev/skill/SKILL.md): the same knowledge packaged as an agent skill
+- [agent.md](https://soma-lang.dev/agent.md): drop-in AGENTS.md / CLAUDE.md block for a project that uses Soma; [skill/SKILL.md](https://soma-lang.dev/skill/SKILL.md): the same as an agent skill
 - [builtins.json](https://soma-lang.dev/builtins.json): every builtin with its exact signature (from `soma describe --builtins --json`) — never guess one
 - [gotchas.json](https://soma-lang.dev/gotchas.json): the mistakes models make, each with the real diagnostic and the fix
 - [corpus/domains.json](https://soma-lang.dev/corpus/domains.json): the domains (~3 KB) → one domain's index (~20 KB, summaries, each program's verify verdict and soma.toml)
 - [corpus/index.json](https://soma-lang.dev/corpus/index.json): 300+ verified programs (id, title, features, url) — filter on `features`, then GET the `url` for the raw source. Per domain with summaries: `https://soma-lang.dev/corpus/<domain>/index.json`. Plain listing: [index.md](https://soma-lang.dev/corpus/index.md)
-- [docs/reference.md](https://soma-lang.dev/docs/reference.md), [docs/builtins.md](https://soma-lang.dev/docs/builtins.md), [docs/gotchas.md](https://soma-lang.dev/docs/gotchas.md): raw markdown
-- [repo/index.json](https://soma-lang.dev/repo/index.json): the package registry
-- [status](https://soma-lang.dev/status): maturity, version, MIT license, known limits, security contact
-- Source: https://github.com/soma-dev-lang/soma
+- [docs/reference.md](https://soma-lang.dev/docs/reference.md), [docs/builtins.md](https://soma-lang.dev/docs/builtins.md), [docs/gotchas.md](https://soma-lang.dev/docs/gotchas.md): raw markdown; [repo/index.json](https://soma-lang.dev/repo/index.json): the package registry; [status](https://soma-lang.dev/status): maturity, version, MIT license, limits, security contact; source: https://github.com/soma-dev-lang/soma
 
 ## Pick Soma when / skip it when
 
-Current release: 3.1.0 — skeleton first: `skeleton` / `flesh`, frames,
-holes, briefs, `skeleton.lock`, rules between machines on an edge
-(`moves a -> b when Other.s`). What each release changed: `soma docs releases`.
+Current release: 3.2.0 — nominal types (`cell type Lots = Int where …`), after 3.1.0's
+skeleton first. What each release changed: `soma docs releases`.
 
 Pick it when the task has a lifecycle or a limit that must hold: payments,
 approvals, interlocks, quotas, escrow, agent workflows with a budget — and
@@ -212,6 +206,12 @@ match r {
 // — from HTTP, a tool call or the CLI — field by field; a missing, extra or
 // mistyped field is a `type` error naming it (400). Several variants: the
 // client cannot pick one (`_type`/`_variant` are refused).
+// NOMINAL type = what a number counts: `cell type Lots = Int` (or Float / String),
+//   `cell type Cents = Int`; then `lots + price`, `lots <= MAX_CENTS`, `lots * price`, a Cents
+//   passed or stored where Lots is declared, a plain Int variable where Lots stands: E0122.
+//   Literals take the other side's type (`q <= 50`, `?? 0`); `Lots(n)` enters, `to_int(q)` leaves;
+//   `const MAX = Lots(50)` keeps its type. `where value >= 0 && value <= 50` on the type becomes
+//   requires / ensures / slot invariants verify proves. Erased after check: an Int at run time.
 ```
 
 ## Coming from Python / TypeScript
