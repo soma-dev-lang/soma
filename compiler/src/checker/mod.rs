@@ -37,6 +37,7 @@ pub mod taint;
 pub mod contracts;
 pub mod waits;
 pub mod product;
+pub mod nominal;
 
 pub use properties::PropertyChecker;
 pub use signals::SignalChecker;
@@ -1845,6 +1846,14 @@ impl<'a> Checker<'a> {
                 self.errors.push(CheckError::Static { kind: "untrusted_value", message: issue.message, span: issue.span });
             } else {
                 self.warnings.push(CheckWarning::TypeAdvisory { message: format!("{} (an error in edition 2027)", issue.message), span: issue.span });
+            }
+        }
+        // what the nominal pass found before the program was erased
+        for i in &program.nominal_issues {
+            if i.advisory {
+                self.warnings.push(CheckWarning::TypeAdvisory { message: i.message.clone(), span: i.span });
+            } else {
+                self.errors.push(CheckError::Static { kind: "nominal_mismatch", message: i.message.clone(), span: i.span });
             }
         }
         let types = types::Program2::new(program, edition.as_str() >= "2027");

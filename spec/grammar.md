@@ -12,7 +12,7 @@ What the grammar promises: every program `soma` parses is in it (the test corpus
 
 ```gbnf
 root ::= ws ( top ws )*
-top ::= cell | skeleton | flesh | use-decl | protocol
+top ::= nominal | cell | skeleton | flesh | use-decl | protocol
 use-decl ::= "use" [ \t] [^\n]*    # token
 protocol ::= "protocol" ws1 name ws braces
 ```
@@ -20,6 +20,7 @@ protocol ::= "protocol" ws1 name ws braces
 ## Cells
 
 ```gbnf
+nominal ::= "cell" ws1 "type" ws1 name ws "=" ws ( "Int" | "Float" | "String" )
 cell ::= "cell" ws1 ( cell-kind ws1 )? name ws type-params? ws brackets? ws "{" ws ( section ws )* "}"
 cell-kind ::= "agent" | "test" | "type" | "property" | "checker" | "backend" | "builtin"
 type-params ::= "<" ws name ( ws "," ws name )* ws ">"

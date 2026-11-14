@@ -130,6 +130,8 @@ const ERROR_KINDS: &[(&str, &str)] = &[
     ("flesh", "a `flesh` body that cannot go into a skeleton: no `skeleton` of that name, a second body for one signal, parameters that differ from the signal's, or a helper with an untyped parameter"),
     ("frame", "a skeleton's frame that names something the skeleton does not have, or a flesh that does something its signal's frame does not grant (a write, a read, a call, an emit or a machine edge)"),
     ("skeleton_lock", "a skeleton differs from the one `skeleton.lock` holds (frozen with `soma skeleton --freeze`)"),
+    // 3.2
+    ("nominal_mismatch", "two nominal types mixed (`cell type Lots = Int` with `Cents`), or a plain value where a nominal one is declared"),
 ];
 
 /// Warning classes (the `CheckWarning` variant, snake_case). APPEND ONLY.

@@ -14,9 +14,10 @@ module.exports = grammar({
 
   rules: {
     root: $ => repeat($.top),
-    top: $ => choice($.cell, $.skeleton, $.flesh, $.use_decl, $.protocol),
+    top: $ => choice($.nominal, $.cell, $.skeleton, $.flesh, $.use_decl, $.protocol),
     use_decl: $ => token(/use[ \t]([^\n])*/),
     protocol: $ => seq("protocol", $.name, $.braces),
+    nominal: $ => seq("cell", "type", $.name, "=", choice("Int", "Float", "String")),
     cell: $ => seq("cell", optional($.cell_kind), $.name, optional($.type_params), optional($.brackets), "{", repeat($.section), "}"),
     cell_kind: $ => choice("agent", "test", "type", "property", "checker", "backend", "builtin"),
     type_params: $ => seq("<", $.name, repeat(seq(",", $.name)), ">"),

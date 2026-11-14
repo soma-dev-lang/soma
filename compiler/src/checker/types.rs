@@ -54,6 +54,19 @@ pub enum Ty {
     Fn,
     /// `T?` — a T, or `()`
     Opt(Box<Ty>),
+    /// `cell type Lots = Int`: a value of a nominal type and its base. Only
+    /// the nominal pass (before erasure, checker/nominal.rs) sees one.
+    Nominal(String, Box<Ty>),
+}
+
+thread_local! {
+    /// The nominal types of the program the nominal pass is checking (name
+    /// → base): empty for the ordinary pass, which runs on the erased program.
+    static NOMINALS: std::cell::RefCell<HashMap<String, Ty>> = std::cell::RefCell::new(HashMap::new());
+}
+
+fn nominal_named(n: &str) -> Option<Ty> {
+    NOMINALS.with(|m| m.borrow().get(n).cloned()).map(|base| Ty::Nominal(n.to_string(), Box::new(base)))
 }
 
 #[derive(Clone, Copy, PartialEq)]
@@ -81,6 +94,7 @@ impl Ty {
             Ty::List(_) => Class::List,
             Ty::Map(_) | Ty::Record(_) | Ty::Variant(_) | Ty::Try(_) => Class::MapLike,
             Ty::Fn => Class::Fn,
+            Ty::Nominal(_, base) => return base.class(),
             Ty::Unknown | Ty::Unit | Ty::Opt(_) => return None,
         })
     }
@@ -103,6 +117,7 @@ impl Ty {
             Ty::Try(_) => "try result".to_string(),
             Ty::Fn => "function".to_string(),
             Ty::Opt(inner) => format!("{}?", inner.name()),
+            Ty::Nominal(n, _) => n.clone(),
         }
     }
 }
@@ -189,8 +204,27 @@ fn type_expr_text(t: &TypeExpr) -> String {
 }
 
 impl<'a> Program2<'a> {
+    /// The nominal pass: the program BEFORE erasure, with its `cell type
+    /// Lots = Int` declarations (name → base type name). Only its
+    /// `nominal_mismatch` findings are kept (checker/nominal.rs).
+    pub fn new_nominal(program: &Program, decls: &HashMap<String, String>) -> Self {
+        let bases: HashMap<String, Ty> = decls.iter().map(|(n, b)| (n.clone(), match b.as_str() {
+            "Float" => Ty::Float, "String" => Ty::Str, _ => Ty::Int,
+        })).collect();
+        NOMINALS.with(|m| *m.borrow_mut() = bases);
+        Self::build(program, false)
+    }
+
     /// `strict_absence`: edition 2027 — a `T?` where a value is required is an error.
     pub fn new(program: &Program, strict_absence: bool) -> Self {
+        NOMINALS.with(|m| m.borrow_mut().clear());
+        Self::build(program, strict_absence)
+    }
+
+    /// The nominal pass is over: the ordinary one sees no nominal type.
+    pub fn end_nominal() { NOMINALS.with(|m| m.borrow_mut().clear()); }
+
+    fn build(program: &Program, strict_absence: bool) -> Self {
         let mut p = Program2 {
             records: HashMap::new(), sums: HashMap::new(), variant_of: HashMap::new(),
             handlers: HashMap::new(), cells: HashSet::new(), expected_to_fail: HashSet::new(), strict_absence, _p: std::marker::PhantomData,
@@ -290,6 +324,45 @@ impl<'a> Program2<'a> {
         ty_of(t, &rn, &sn)
     }
 
+    /// The nominal pass types the memory invariants too: a cap in Cents
+    /// over a slot of Lots is where the reported bug was. Each slot named in
+    /// an invariant stands for the value written (its element type).
+    pub fn check_invariants(&self, cell: &CellDef) -> Vec<TypeIssue> {
+        let mut out = Vec::new();
+        let mut slots: HashMap<String, Ty> = HashMap::new();
+        for s in &cell.sections {
+            if let Section::Memory(m) = &s.node {
+                for slot in &m.slots { slots.insert(slot.node.name.clone(), self.ty(&slot.node.ty.node)); }
+            }
+        }
+        let elem = |t: &Ty| match t { Ty::Map(e) | Ty::List(e) => (**e).clone(), other => other.clone() };
+        for s in &cell.sections {
+            match &s.node {
+                Section::Memory(m) => for inv in &m.invariants {
+                    let empty = HashMap::new();
+                    let mut cx = Cx {
+                        p: self, cell: &cell.name, slots: &empty, scopes: vec![HashMap::new()],
+                        reassigned: HashSet::new(), index_set: HashSet::new(), in_try: 0, out: &mut out,
+                        handler: "", ret: None,
+                    };
+                    let mut idents: HashSet<String> = HashSet::new();
+                    if let Expr::Ident(n) = &inv.node { idents.insert(n.clone()); }
+                    crate::checker::literals::for_each_in_expr(&inv.node, &mut |e| if let Expr::Ident(n) = e { idents.insert(n.clone()); });
+                    let named: Vec<&String> = slots.keys().filter(|n| idents.contains(*n)).collect();
+                    for n in &named { cx.bind(n, elem(&slots[*n])); }
+                    if named.len() == 1 { cx.bind("value", elem(&slots[named[0]])); }
+                    let before = cx.out.len();
+                    cx.infer(inv);
+                    let text = render_expr(&inv.node);
+                    for i in &mut out[before..] { i.message = format!("invariant `{text}`: {}", i.message); }
+                },
+                Section::Interior(i) => for c in &i.cells { out.extend(self.check_invariants(&c.node)); },
+                _ => {}
+            }
+        }
+        out
+    }
+
     pub fn check_cell(&self, cell: &CellDef) -> Vec<TypeIssue> {
         let mut out = Vec::new();
         if !matches!(cell.kind, CellKind::Cell | CellKind::Agent) { return out; }
@@ -336,6 +409,7 @@ impl<'a> Program2<'a> {
 }
 
 fn ty_of(t: &TypeExpr, records: &HashSet<String>, sums: &HashSet<String>) -> Ty {
+    if let TypeExpr::Simple(n) = t { if let Some(nt) = nominal_named(n) { return nt; } }
     match t {
         TypeExpr::Simple(n) => match n.as_str() {
             "Int" => Ty::Int, "Float" => Ty::Float, "String" => Ty::Str, "Bool" => Ty::Bool,
@@ -499,7 +573,162 @@ fn diverges(body: &[Spanned<Statement>]) -> bool {
     }
 }
 
+// ── nominal types (`cell type Lots = Int`) ─────────────────────────────
+
+/// The nominal type of a value, if it has one.
+fn nominal(t: &Ty) -> Option<&str> {
+    match t.present() { Ty::Nominal(n, _) => Some(n.as_str()), _ => None }
+}
+
+/// The builtin that leaves a nominal type for its base.
+fn leave(t: &Ty) -> &'static str {
+    match t.present() { Ty::Nominal(_, b) if **b == Ty::Float => "to_float", Ty::Nominal(_, b) if **b == Ty::Str => "to_string", _ => "to_int" }
+}
+
+/// A literal (`50`, `-5`, `2.5`): it takes the type of the other side.
+fn is_literal(e: &Expr) -> bool {
+    match e {
+        Expr::Literal(_) => true,
+        Expr::BinaryOp { left, op: BinOp::Sub, right } => matches!(left.node, Expr::Literal(Literal::Int(0))) && is_literal(&right.node),
+        _ => false,
+    }
+}
+
+/// A value whose type is lost on the way in: a Map field, an index, a get.
+fn read_from_map(e: &Expr) -> bool {
+    match e {
+        Expr::FieldAccess { .. } | Expr::Index { .. } => true,
+        Expr::MethodCall { method, .. } => method == "get",
+        Expr::FnCall { name, args } if name == "_coalesce" => args.first().map_or(false, |a| read_from_map(&a.node)),
+        _ => false,
+    }
+}
+
+/// "a plain Int" / "an Int" for messages about the other side.
+fn plain(t: &Ty) -> String { a(t.present()) }
+
 impl<'a, 'b> Cx<'a, 'b> {
+    fn nominal_issue(&mut self, span: Span, message: String) {
+        self.issue("nominal_mismatch", span, message);
+    }
+
+    /// A value of unknown type meeting a nominal one: a warning (the
+    /// program from the report read its cap from a Map).
+    fn nominal_unknown(&mut self, other: &Spanned<Expr>, n: &str) {
+        if self.in_try > 0 || self.out.iter().any(|i| i.span.start == other.span.start && i.kind == "nominal_mismatch") { return; }
+        let src = render_expr(&other.node);
+        self.out.push(TypeIssue { join: None, advisory: true, kind: "nominal_mismatch", span: other.span, message: format!(
+            "`{src}` has no known type (it is read from a Map or an untyped value), so it cannot be checked against {n} — make it a record field or a typed parameter (`qty: {n}`) to have it checked") });
+    }
+
+    /// `L op x`: the nominal rules, or None when neither side is nominal.
+    fn nominal_arith(&mut self, left: &Spanned<Expr>, l: &Ty, op: BinOp, right: &Spanned<Expr>, r: &Ty, span: Span) -> Option<Ty> {
+        let (ln, rn) = (nominal(l).map(str::to_string), nominal(r).map(str::to_string));
+        if ln.is_none() && rn.is_none() { return None; }
+        let (ls, rs) = (render_expr(&left.node), render_expr(&right.node));
+        let ratio = || Ty::Num;
+        match (ln, rn) {
+            (Some(a), Some(b)) => {
+                if op == BinOp::Div { return Some(ratio()); }
+                if a == b && matches!(op, BinOp::Add | BinOp::Sub | BinOp::Mod) { return Some(l.present().clone()); }
+                let (lf, rf) = (leave(l), leave(r));
+                let msg = match op {
+                    BinOp::Mul if a == b => format!("`{ls} * {rs}` multiplies {a} by {a}, which is not {a} — scale by a plain number (`{ls} * 2`), or leave the type: `{lf}({ls}) * {rf}({rs})`"),
+                    BinOp::Mul => format!("`{ls} * {rs}` multiplies {a} by {b} — leave the types and say what the product counts: `X({lf}({ls}) * {rf}({rs}))` with X the type of the result"),
+                    BinOp::Add => format!("`{ls} + {rs}` adds {b} to {a} — two nominal types never mix: convert one side if that is meant (`{a}({rf}({rs}))`)"),
+                    BinOp::Sub => format!("`{ls} - {rs}` subtracts {b} from {a} — two nominal types never mix: convert one side if that is meant (`{a}({rf}({rs}))`)"),
+                    _ => format!("`{ls} {op} {rs}` mixes {a} and {b} — two nominal types never mix: convert one side if that is meant (`{a}({rf}({rs}))`)"),
+                };
+                self.nominal_issue(span, msg);
+                Some(Ty::Unknown)
+            }
+            (Some(n), None) | (None, Some(n)) => {
+                let (nt, other, ot) = if nominal(l).is_some() { (l, right, r) } else { (r, left, l) };
+                let (ns, os) = if nominal(l).is_some() { (&ls, &rs) } else { (&rs, &ls) };
+                if op == BinOp::Div { return Some(ratio()); }
+                if is_literal(&other.node) { return Some(nt.present().clone()); }
+                if matches!(ot, Ty::Unknown) || ot.is_opt() && matches!(ot.present(), Ty::Unknown) {
+                    if read_from_map(&other.node) { self.nominal_unknown(other, &n); }
+                    return Some(nt.present().clone());
+                }
+                if ot.class() != Some(Class::Num) { return None; } // a String with a Lots: the base rules say it
+                let f = leave(nt);
+                let what = plain(ot);
+                let msg = match op {
+                    BinOp::Mul => format!("`{ls} * {rs}` multiplies {n} by {what} — if `{os}` is a plain multiplier write `{n}({f}({ns}) * {os})`; a literal (`{ns} * 2`) keeps {n}"),
+                    BinOp::Add => format!("`{ls} + {rs}` adds {what} to {n} — say what `{os}` counts: `{n}({os})` if it is {n}, or `{f}({ns}) + {os}` to leave the type"),
+                    BinOp::Sub => format!("`{ls} - {rs}` subtracts {what} from {n} — say what `{os}` counts: `{n}({os})` if it is {n}, or `{f}({ns}) - {os}` to leave the type"),
+                    _ => format!("`{ls} {op} {rs}` mixes {n} and {what} — say what `{os}` counts: `{n}({os})`, or leave the type: `{f}({ns})`"),
+                };
+                self.nominal_issue(span, msg);
+                Some(Ty::Unknown)
+            }
+            (None, None) => None,
+        }
+    }
+
+    /// `L cmp x`: the nominal rules, or None when neither side is nominal.
+    fn nominal_compare(&mut self, left: &Spanned<Expr>, l: &Ty, op: CmpOp, right: &Spanned<Expr>, r: &Ty, span: Span) -> Option<Ty> {
+        let (ln, rn) = (nominal(l).map(str::to_string), nominal(r).map(str::to_string));
+        if ln.is_none() && rn.is_none() { return None; }
+        let (ls, rs) = (render_expr(&left.node), render_expr(&right.node));
+        match (ln, rn) {
+            (Some(a), Some(b)) if a == b => Some(Ty::Bool),
+            (Some(a), Some(b)) => {
+                let (lf, rf) = (leave(l), leave(r));
+                self.nominal_issue(span, format!(
+                    "`{ls} {op} {rs}` compares {a} with {b} — two nominal types never compare: if both sides count {a}, declare the {b} side as {a} (`{a}(…)`, `const … = {a}(…)`); if a conversion is meant, write it (`{lf}({ls})`, `{rf}({rs})`)"));
+                Some(Ty::Bool)
+            }
+            (Some(n), None) | (None, Some(n)) => {
+                let (nt, other, ot) = if nominal(l).is_some() { (l, right, r) } else { (r, left, l) };
+                let (ns, os) = if nominal(l).is_some() { (&ls, &rs) } else { (&rs, &ls) };
+                if is_literal(&other.node) || matches!(other.node, Expr::Literal(Literal::Unit)) { return Some(Ty::Bool); }
+                if matches!(ot.present(), Ty::Unknown) {
+                    if read_from_map(&other.node) { self.nominal_unknown(other, &n); }
+                    return Some(Ty::Bool);
+                }
+                if ot.class() != nt.class() { return None; }
+                let f = leave(nt);
+                self.nominal_issue(span, format!(
+                    "`{ls} {op} {rs}` compares {n} with {} — say what `{os}` counts: `{n}({os})` if it is {n}, or leave the type: `{f}({ns})`", plain(ot)));
+                Some(Ty::Bool)
+            }
+            (None, None) => None,
+        }
+    }
+
+    /// Can a value of type `actual` stand where `declared` is required, as
+    /// far as nominal types go? Some((what the value is, the fix)) when not.
+    fn nominal_fit(&self, value: &Spanned<Expr>, actual: &Ty, declared: &Ty) -> Option<(String, String)> {
+        let (an, dn) = (nominal(actual), nominal(declared));
+        if an.is_none() && dn.is_none() { return None; }
+        if is_literal(&value.node) || matches!(actual.present(), Ty::Unknown) || matches!(actual, Ty::Unit) { return None; }
+        let src = render_expr(&value.node);
+        match (an, dn) {
+            (Some(a), Some(d)) if a == d => None,
+            (Some(a), Some(d)) => Some((a.to_string(), format!("two nominal types never convert silently: `{d}({}({src}))` if that is meant", leave(actual)))),
+            (Some(a), None) => Some((a.to_string(), format!("leave the type: `{}({src})`", leave(actual)))),
+            (None, Some(d)) if actual.class() == declared.class() => Some((plain(actual), format!("say what it counts: `{d}({src})`"))),
+            (None, Some(_)) => None, // a String for a Lots: the base rules say it
+            (None, None) => None,
+        }
+    }
+
+    /// A write into a slot of a nominal type (or of a plain one).
+    fn slot_write(&mut self, target: &str, method: &str, args: &[Spanned<Expr>], arg_tys: &[Ty]) {
+        if self.lookup(target).is_some() { return; }
+        let (Some(slot), Some((v, vt))) = (self.slots.get(target).cloned(), args.last().zip(arg_tys.last())) else { return };
+        let elem = match (&slot, method, args.len()) {
+            (Ty::Map(e), "set" | "put", 2) | (Ty::List(e), "push", 1) | (Ty::List(e), "set", 2) => (**e).clone(),
+            _ => return,
+        };
+        if let Some((is, fix)) = self.nominal_fit(v, vt, &elem) {
+            let msg = format!("`{target}.{method}(…, {})` writes {is} into `{target}`, a slot of {} — {fix}", render_expr(&v.node), elem.name());
+            self.nominal_issue(v.span, msg);
+        }
+    }
+
     fn bind(&mut self, name: &str, ty: Ty) {
         let ty = if self.reassigned.contains(name) {
             Ty::Unknown
@@ -572,7 +801,10 @@ impl<'a, 'b> Cx<'a, 'b> {
                 let t = self.infer(value);
                 // `request` answers whatever a route returns: its face type is not a contract
                 if let (Some((declared, text)), true) = (self.ret.clone(), self.handler != "request") {
-                    if !assignable(&t, &declared) && !matches!(value.node, Expr::Literal(_)) {
+                    if let Some((is, fix)) = self.nominal_fit(value, &t, &declared) {
+                        let msg = format!("handler '{}' returns {is} (`{}`) but its face declares `-> {}` — {fix}", self.handler, render_expr(&value.node), text);
+                        self.nominal_issue(value.span, msg);
+                    } else if !assignable(&t, &declared) && !matches!(value.node, Expr::Literal(_)) {
                         // the runtime validates only record / sum returns today
                         self.issue_next_edition("type_mismatch", value.span, format!(
                             "handler '{}' returns {} (`{}`) but its face declares `-> {}` — fix the value or the face",
@@ -621,6 +853,7 @@ impl<'a, 'b> Cx<'a, 'b> {
             }
             Statement::MethodCall { target, method, args } => {
                 let arg_tys: Vec<Ty> = args.iter().map(|a| self.infer(a)).collect();
+                self.slot_write(target, method, args, &arg_tys);
                 if self.lookup(target).is_none() && !self.slots.contains_key(target) && self.p.cells.contains(target) {
                     self.call_handler(method, Some(target), args, &arg_tys, s.span);
                 }
@@ -664,6 +897,9 @@ impl<'a, 'b> Cx<'a, 'b> {
         if !unit {
             self.require_present(left, l, &format!("in `{op}`"));
             self.require_present(right, r, &format!("in `{op}`"));
+        }
+        if !unit {
+            if let Some(t) = self.nominal_arith(left, l, op, right, r, span) { return t; }
         }
         let (lc, rc) = (l.class(), r.class());
         let ok = match (lc, rc) {
@@ -725,6 +961,7 @@ impl<'a, 'b> Cx<'a, 'b> {
             self.require_present(left, l, &format!("in `{op}`"));
             self.require_present(right, r, &format!("in `{op}`"));
         }
+        if let Some(t) = self.nominal_compare(left, l, op, right, r, span) { return t; }
         let (Some(lc), Some(rc)) = (l.class(), r.class()) else {
             // an ordering against the literal `()` always raises
             if !equality && (matches!(l, Ty::Unit) && r.class().is_some() || matches!(r, Ty::Unit) && l.class().is_some()) {
@@ -845,15 +1082,23 @@ impl<'a, 'b> Cx<'a, 'b> {
             return if cell.is_some() || !crate::checker::names::builtin_names().contains(name) { Some(Ty::Unknown) } else { None };
         }
         let mut issues = Vec::new();
+        let mut nominal_args: Vec<Span> = Vec::new();
         for (i, ((pname, pty, ptext), (arg, aty))) in sig.params.iter().zip(args.iter().zip(arg_tys)).enumerate() {
             if matches!(arg.node, Expr::Literal(_)) { continue; } // literals: checker/literals.rs
+            if let Some((is, fix)) = self.nominal_fit(arg, aty, pty) {
+                issues.push((arg.span, format!("{name}(): argument {} (`{}`) is {is} but the handler declares `{pname}: {ptext}` — {fix}", i + 1, render_expr(&arg.node))));
+                nominal_args.push(arg.span);
+                continue;
+            }
             if !assignable(aty, pty) {
                 issues.push((arg.span, format!(
                     "{name}(): argument {} (`{}`) is {} but the handler declares `{pname}: {ptext}` — fix the value or the parameter type",
                     i + 1, render_expr(&arg.node), a(aty))));
             }
         }
-        for (span, message) in issues { self.issue("argument_type", span, message); }
+        for (span, message) in issues {
+            if nominal_args.contains(&span) { self.nominal_issue(span, message); } else { self.issue("argument_type", span, message); }
+        }
         Some(sig.ret.as_ref().map(|(t, _)| t.clone()).unwrap_or(Ty::Unknown))
     }
 
@@ -910,8 +1155,9 @@ impl<'a, 'b> Cx<'a, 'b> {
                 let arg_tys: Vec<Ty> = args.iter().map(|a| self.infer(a)).collect();
                 if let Expr::Ident(n) = &target.node {
                     if self.lookup(n).is_none() {
-                        if let Some(slot) = self.slots.get(n) {
-                            return match (method.as_str(), slot) {
+                        if let Some(slot) = self.slots.get(n).cloned() {
+                            self.slot_write(n, method, args, &arg_tys);
+                            return match (method.as_str(), &slot) {
                                 ("get", Ty::Map(v)) | ("get", Ty::List(v)) => Ty::opt((**v).clone()),
                                 ("len" | "size", _) => Ty::Int,
                                 _ => Ty::Unknown,
@@ -939,6 +1185,10 @@ impl<'a, 'b> Cx<'a, 'b> {
                 if name == "await_sleep" { return Ty::Unit; }
                 // `a ?? b`: a, or b when a is `()`
                 if name == "_coalesce" && arg_tys.len() == 2 {
+                    // `pos.get(k) ?? 0` on a slot of Lots: the default takes the type
+                    if nominal(&arg_tys[0]).is_some() && (is_literal(&args[1].node) || nominal(&arg_tys[1]) == nominal(&arg_tys[0])) {
+                        return arg_tys[0].present().clone();
+                    }
                     return match (&arg_tys[0], &arg_tys[1]) {
                         (Ty::Unknown, _) => Ty::Unknown,
                         (Ty::Unit, r) => r.clone(),
@@ -966,6 +1216,46 @@ impl<'a, 'b> Cx<'a, 'b> {
                         }
                     }
                     return Ty::Map(Box::new(Ty::Unknown));
+                }
+                // `Lots(x)`: the explicit way into a nominal type
+                if let Some(nt) = nominal_named(name) {
+                    if let (Some(arg), Some(at)) = (args.first(), arg_tys.first()) {
+                        let src = render_expr(&arg.node);
+                        let Ty::Nominal(_, base) = &nt else { unreachable!() };
+                        if let Some(other) = nominal(at) {
+                            if other != name.as_str() {
+                                self.nominal_issue(e.span, format!(
+                                    "`{name}({src})`: `{src}` is {other} — two nominal types never convert silently: `{name}({}({src}))` if that is meant", leave(at)));
+                            }
+                        } else if !assignable(at, base) || (matches!(**base, Ty::Int) && matches!(at.present(), Ty::Float)) {
+                            self.nominal_issue(e.span, format!(
+                                "`{name}({src})`: {name} is {}, and `{src}` is {} — fix the value", a(base), a(at)));
+                        }
+                    }
+                    return nt;
+                }
+                // leaving a nominal type
+                if matches!(name.as_str(), "to_int" | "to_float" | "to_string") && arg_tys.len() == 1 && nominal(&arg_tys[0]).is_some() {
+                    return match name.as_str() { "to_int" => Ty::Int, "to_float" => Ty::Float, _ => Ty::Str };
+                }
+                if let Some(n) = arg_tys.first().and_then(|t| nominal(t)).map(str::to_string) {
+                    let same = |t: &Ty, e: &Spanned<Expr>| nominal(t) == Some(n.as_str()) || is_literal(&e.node);
+                    match name.as_str() {
+                        "abs" if arg_tys.len() == 1 => return arg_tys[0].present().clone(),
+                        "min" | "max" if args.iter().zip(&arg_tys).all(|(e, t)| same(t, e)) => return arg_tys[0].present().clone(),
+                        "idiv" | "mod" if arg_tys.len() == 2 => {
+                            if is_literal(&args[1].node) || matches!(arg_tys[1].present(), Ty::Unknown) { return arg_tys[0].present().clone(); }
+                            let (ns, os) = (render_expr(&args[0].node), render_expr(&args[1].node));
+                            self.nominal_issue(e.span, format!(
+                                "`{name}({ns}, {os})` divides {n} by {} — if `{os}` is a plain divisor write `{n}({name}({}({ns}), {os}))`; a literal (`{name}({ns}, 2)`) keeps {n}",
+                                plain(&arg_tys[1]), leave(&arg_tys[0])));
+                            return Ty::Unknown;
+                        }
+                        _ => {}
+                    }
+                }
+                if name == "sum" && arg_tys.len() == 1 {
+                    if let Ty::List(el) = arg_tys[0].present() { if nominal(el).is_some() { return (**el).clone(); } }
                 }
                 // a local holding a lambda
                 if self.lookup(name).is_some() { return Ty::Unknown; }
@@ -1008,7 +1298,10 @@ impl<'a, 'b> Cx<'a, 'b> {
                     for ((fname, value), vt) in fields.iter().zip(&tys) {
                         if matches!(value.node, Expr::Literal(_)) { continue; }
                         if let Some((_, ft)) = decl.iter().find(|(f, _)| f == fname) {
-                            if !assignable(vt, ft) {
+                            if let Some((is, fix)) = self.nominal_fit(value, vt, ft) {
+                                let msg = format!("{type_name} {{ {fname}: … }}: `{}` is {is} but the field is declared {} — {fix}", render_expr(&value.node), ft.name());
+                                self.nominal_issue(value.span, msg);
+                            } else if !assignable(vt, ft) {
                                 self.issue("type_mismatch", value.span, format!(
                                     "{type_name} {{ {fname}: … }}: `{}` is {} but the field is declared {} — fix the value or the type",
                                     render_expr(&value.node), a(vt), ft.name()));

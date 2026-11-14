@@ -82,6 +82,41 @@ Mixed Int/Float comparisons preserve the exact integer value: an Int beyond
 numbers in ascending order. Structural equality applies inside lists/maps;
 `distinct` and `distinct_by` use it and retain values containing NaN.
 
+### Nominal types: what a number counts
+
+```soma
+cell type Lots = Int            // a nominal type over Int, Float or String
+cell type Cents = Int
+
+cell Risk {
+    const MAX_LOTS = Lots(50)
+    memory {
+        position: Map<String, Lots> [persistent]
+        invariant position >= 0 && position <= MAX_LOTS
+    }
+    on order(sym: String, lots: Lots, price: Cents) {
+        require lots > 0 else BadQty
+        let held = position.get(sym) ?? 0               // Lots: a literal takes the other side's type
+        require held + lots <= MAX_LOTS else OverCap    // Lots with Lots
+        position.set(sym, held + lots)
+        return Cents(to_int(held + lots) * to_int(price))   // a conversion, written out
+    }
+}
+```
+
+`soma check` refuses (E0122) what mixes two nominal types — `lots + price`,
+`lots <= MAX_EXPOSURE` with a cap in Cents, `lots * price`, a Cents passed
+where Lots is declared, a Cents written into a slot of Lots — and a plain
+`Int` variable where a Lots stands (`lots + n`: write `Lots(n)` if `n` counts
+lots, or `to_int(lots) + n`). Lots with Lots gives Lots (`+ - %`, `abs`,
+`min`, `max`, `idiv(q, 2)`); scaling by a literal keeps it (`q * 2`); `/`
+gives a plain number. `Lots(x)` enters the type, `to_int` / `to_float` /
+`to_string` leave it. A value read from a Map or an `Any` has no type to
+check: meeting a nominal type it is a warning (make it a record field).
+
+The type is checked, then erased: at run time, in storage, in JSON and in
+`[native]` a Lots is an Int, and `soma verify` proves the same things.
+
 ## Variables
 
 ```soma

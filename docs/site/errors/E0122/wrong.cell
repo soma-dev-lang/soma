@@ -1,0 +1,15 @@
+cell type Lots = Int
+cell type Cents = Int
+
+cell Risk {
+    const MAX_EXPOSURE = Cents(5000000)
+    memory {
+        position: Map<String, Lots> [persistent]
+    }
+    on order(sym: String, lots: Lots) {
+        let held = position.get(sym) ?? 0
+        require held + lots <= MAX_EXPOSURE else OverCap
+        position.set(sym, held + lots)
+        return held + lots
+    }
+}

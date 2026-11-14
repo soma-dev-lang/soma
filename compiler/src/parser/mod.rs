@@ -171,6 +171,8 @@ pub struct Parser {
     /// its literal — every read is replaced here, so an invariant, a
     /// `require`, a guard and the prover all see the number itself.
     consts: std::collections::HashMap<String, Literal>,
+    /// constants declared through a nominal type: `const MAX = Lots(50)`
+    const_nominal: std::collections::HashMap<String, String>,
 }
 
 const MAX_EXPR_DEPTH: usize = 400;
@@ -232,7 +234,7 @@ thread_local! {
 
 impl Parser {
     pub fn new(tokens: Vec<SpannedToken>) -> Self {
-        Self { tokens, pos: 0, depth: 0, bracket_depth: 0, recover: false, recovered: Vec::new(), depth_at: Vec::new(), consts: std::collections::HashMap::new() }
+        Self { tokens, pos: 0, depth: 0, bracket_depth: 0, recover: false, recovered: Vec::new(), depth_at: Vec::new(), consts: std::collections::HashMap::new(), const_nominal: std::collections::HashMap::new() }
     }
 
     /// Parse the whole file, reporting EVERY syntax error: `(program, errors,
@@ -254,7 +256,7 @@ impl Parser {
             Ok(p) => p,
             Err(e) => {
                 self.recovered.push((e, false));
-                Program { imports: Vec::new(), cells: Vec::new(), protocols: Vec::new() }
+                Program { nominal_issues: Vec::new(), imports: Vec::new(), cells: Vec::new(), protocols: Vec::new() }
             }
         };
         let complete = self.recovered.iter().all(|(_, c)| *c);
@@ -266,6 +268,20 @@ impl Parser {
 
     fn can_recover(&self) -> bool {
         self.recover && self.recovered.len() < MAX_SYNTAX_ERRORS
+    }
+
+    /// The value after `const NAME =`: a literal, or a nominal type around
+    /// one (`Lots(50)`) — (the nominal type, the literal, tokens used).
+    fn const_value_at(&self, at: usize) -> Option<(Option<String>, Literal, usize)> {
+        if let (Some(Token::Ident(n) | Token::TypeIdent(n)), Some(Token::LParen)) =
+            (self.tokens.get(at).map(|t| &t.token), self.tokens.get(at + 1).map(|t| &t.token)) {
+            // a type's name (`Lots(50)`), not a call (`len("a")` stays refused)
+            if !n.starts_with(|c: char| c.is_ascii_uppercase()) { return None; }
+            let (lit, used) = self.const_literal_at(at + 2)?;
+            if !matches!(self.tokens.get(at + 2 + used).map(|t| &t.token), Some(Token::RParen)) { return None; }
+            return Some((Some(n.clone()), lit, used + 3));
+        }
+        self.const_literal_at(at).map(|(l, u)| (None, l, u))
     }
 
     /// The literal after `const NAME =`, starting at token `at`: (literal, tokens used).
@@ -297,8 +313,13 @@ impl Parser {
                 Token::Ident(w) if depth == 0 && w == "const" => {
                     if let (Some(Token::Ident(name) | Token::TypeIdent(name)), Some(Token::Eq)) =
                         (self.tokens.get(i + 1).map(|t| &t.token), self.tokens.get(i + 2).map(|t| &t.token)) {
-                        if let Some((lit, _)) = self.const_literal_at(i + 3) {
+                        if let Some((nominal, lit, _)) = self.const_value_at(i + 3) {
                             self.consts.entry(name.clone()).or_insert(lit);
+                            match nominal {
+                                Some(n) => { self.const_nominal.entry(name.clone()).or_insert(n); }
+                                // an interior cell's plain constant of the same name
+                                None => { self.const_nominal.remove(name); }
+                            }
                         }
                     }
                 }
@@ -323,7 +344,7 @@ impl Parser {
             });
         }
         self.advance();
-        let Some((lit, used)) = self.const_literal_at(self.pos) else {
+        let Some((_, lit, used)) = self.const_value_at(self.pos) else {
             return Err(ParseError::FixIt {
                 message: format!("`const {name}` takes a literal — a number, a String without interpolation, or a Bool (`const {name} = 500`); a computed value belongs in a handler: `on _{}() {{ return … }}`", name.to_lowercase()),
                 span: self.peek_span(),
@@ -581,7 +602,7 @@ impl Parser {
                 Err(e) => return Err(e),
             }
         }
-        let mut program = Program { imports, cells, protocols };
+        let mut program = Program { nominal_issues: Vec::new(), imports, cells, protocols };
         // a flesh in the same file as its skeleton (one in another file is
         // attached when the import brings it in)
         crate::checker::flesh::attach(&mut program);
@@ -612,7 +633,7 @@ impl Parser {
         let end = self.peek_span();
         self.expect(Token::RBrace)?;
         Ok(Spanned::new(
-            CellDef { kind: CellKind::Flesh, name, type_params: vec![], sections, agent_model: None, agent_skill: None, skeleton: false },
+            CellDef { kind: CellKind::Flesh, name, type_params: vec![], sections, agent_model: None, agent_skill: None, skeleton: false, nominal: None },
             start.merge(end),
         ))
     }
@@ -942,6 +963,26 @@ impl Parser {
             }
         };
 
+        // `cell type Lots = Int`: a nominal type over a base — no body
+        if kind == CellKind::Type && self.check(&Token::Eq) {
+            self.advance();
+            let base_span = self.peek_span();
+            let base = match self.peek().clone() {
+                Token::Ident(b) | Token::TypeIdent(b) => { self.advance(); b }
+                other => return Err(ParseError::Expected { expected: format!("the type `{name}` stands for (`cell type {name} = Int`)"), found: other, span: base_span }),
+            };
+            if !matches!(base.as_str(), "Int" | "Float" | "String") || !type_params.is_empty() {
+                return Err(ParseError::FixIt {
+                    message: format!("`cell type {name} = {base}` — a nominal type stands for Int, Float or String (`cell type {name} = Int`); a record or a sum type is `cell type {name} {{ variants {{ … }} }}`"),
+                    span: base_span,
+                });
+            }
+            return Ok(Spanned::new(
+                CellDef { kind, name, type_params, sections: vec![], agent_model: None, agent_skill: None, skeleton, nominal: Some(base) },
+                start.merge(self.prev_span()),
+            ));
+        }
+
         // Parse agent annotations: [model: name, skill: "path"]
         let mut agent_model = None;
         let mut agent_skill = None;
@@ -1060,6 +1101,7 @@ impl Parser {
                 agent_model,
                 agent_skill,
                 skeleton,
+                nominal: None,
             },
             start.merge(end),
         ))
@@ -3778,6 +3820,11 @@ impl Parser {
                 }
                 let lit = self.consts[&name].clone();
                 self.advance();
+                // `const MAX = Lots(50)`: each read is `Lots(50)`, so the
+                // type pass sees what the cap counts (erased to 50 after it)
+                if let Some(n) = self.const_nominal.get(&name) {
+                    return Ok(Spanned::new(Expr::FnCall { name: n.clone(), args: vec![Spanned::new(Expr::Literal(lit), start)] }, start));
+                }
                 Ok(Spanned::new(Expr::Literal(lit), start))
             }
             // 3.0: a durable wait — `await approve(msg)`, `await signal(name,

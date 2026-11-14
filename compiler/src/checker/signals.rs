@@ -295,6 +295,7 @@ mod tests {
                 agent_model: None,
                 agent_skill: None,
                 skeleton: false,
+                nominal: None,
             },
             Span::new(0, 0),
         )

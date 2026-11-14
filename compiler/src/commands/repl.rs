@@ -8,6 +8,7 @@ pub fn cmd_repl(_registry: &mut Registry) {
     eprintln!("soma repl v{} — type expressions to evaluate, :quit to exit", env!("CARGO_PKG_VERSION"));
 
     let empty_program = ast::Program {
+        nominal_issues: vec![],
         imports: vec![],
         cells: vec![],
         protocols: vec![],

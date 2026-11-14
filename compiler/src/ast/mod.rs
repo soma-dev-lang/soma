@@ -37,6 +37,9 @@ impl<T> Spanned<T> {
 
 #[derive(Debug, Clone)]
 pub struct Program {
+    /// What the nominal-type pass found before the program was erased
+    /// (checker/nominal.rs): `soma check` reports these.
+    pub nominal_issues: Vec<NominalIssue>,
     pub imports: Vec<String>,
     pub cells: Vec<Spanned<CellDef>>,
     /// V1.6: top-level `protocol Name { Client -> Server: msg(args) ... }` definitions.
@@ -106,6 +109,19 @@ pub struct CellDef {
     /// bodies come from `flesh Name { … }`. A face signal without a body is
     /// a hole: a handler with the property `hole` that fails when called.
     pub skeleton: bool,
+    /// `cell type Lots = Int`: a nominal type over this base (Int, Float or
+    /// String). Checked by the type pass, then erased to its base
+    /// (checker/nominal.rs) before anything else sees the program.
+    pub nominal: Option<String>,
+}
+
+/// A finding of the nominal-type pass, kept on the program until `check`.
+#[derive(Debug, Clone)]
+pub struct NominalIssue {
+    /// a warning (a value of unknown type meeting a nominal one), not an error
+    pub advisory: bool,
+    pub message: String,
+    pub span: Span,
 }
 
 #[derive(Debug, Clone)]

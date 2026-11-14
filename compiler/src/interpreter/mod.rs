@@ -4538,7 +4538,7 @@ impl Interpreter {
                         };
 
                         // Dispatch to on event_name(data) handler
-                        let prog = Program { protocols: vec![], imports: vec![], cells: cells.values().map(|c| {
+                        let prog = Program { nominal_issues: vec![], protocols: vec![], imports: vec![], cells: cells.values().map(|c| {
                             Spanned::new(c.clone(), Span::new(0, 0))
                         }).collect() };
                         let mut interp = Interpreter::new(&prog);
@@ -4633,7 +4633,7 @@ impl Interpreter {
                 match ws.read() {
                     Ok(tungstenite::Message::Text(text)) => {
                         // Parse {"event":"trade","data":{...}} format
-                        let prog = Program { protocols: vec![], imports: vec![], cells: cells.values().map(|c| {
+                        let prog = Program { nominal_issues: vec![], protocols: vec![], imports: vec![], cells: cells.values().map(|c| {
                             Spanned::new(c.clone(), Span::new(0, 0))
                         }).collect() };
                         let mut interp = Interpreter::new(&prog);

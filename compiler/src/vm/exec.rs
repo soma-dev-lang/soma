@@ -167,7 +167,7 @@ impl VM {
                             // Fall back to the interpreter for try expressions
                             // so that runtime errors are properly caught.
                             let inner = inner_expr.clone();
-                            let dummy_prog = crate::ast::Program { imports: vec![], cells: vec![], protocols: vec![] };
+                            let dummy_prog = crate::ast::Program { nominal_issues: vec![], imports: vec![], cells: vec![], protocols: vec![] };
                             let mut interp = crate::interpreter::Interpreter::new(&dummy_prog);
                             // Build an env from the current locals
                             let frame_ref = self.frames.last().unwrap();
@@ -644,7 +644,7 @@ impl VM {
             }
             // Delegate all other builtins to the interpreter's dispatch
             _ => {
-                let dummy_prog = crate::ast::Program { imports: vec![], cells: vec![], protocols: vec![] };
+                let dummy_prog = crate::ast::Program { nominal_issues: vec![], imports: vec![], cells: vec![], protocols: vec![] };
                 let mut interp = crate::interpreter::Interpreter::new(&dummy_prog);
                 if let Some(result) = interp.call_builtin(name, &args, "") {
                     result.unwrap_or(Value::Unit)
@@ -696,7 +696,7 @@ impl VM {
 
     /// Apply a lambda builtin (map, filter, find, any) by falling back to the interpreter
     fn apply_lambda_builtin(&self, op: &str, items: &[Value], lambda: &Value) -> Value {
-        let dummy_prog = crate::ast::Program { imports: vec![], cells: vec![], protocols: vec![] };
+        let dummy_prog = crate::ast::Program { nominal_issues: vec![], imports: vec![], cells: vec![], protocols: vec![] };
         let mut interp = crate::interpreter::Interpreter::new(&dummy_prog);
         match op {
             "map" | "each" => {

@@ -546,6 +546,10 @@ pub fn resolve_imports(program: &mut ast::Program, base_path: &PathBuf) {
     }
     // a `flesh` one file declares for a `skeleton` of another
     crate::checker::flesh::attach(program);
+    // the whole program is here: check its nominal types, then erase them
+    if IMPORT_DEPTH.with(|d| d.get()) == 0 {
+        crate::checker::nominal::prepare(program);
+    }
 }
 
 fn resolve_pkg_path(base_dir: &Path, pkg_name: &str) -> PathBuf {
