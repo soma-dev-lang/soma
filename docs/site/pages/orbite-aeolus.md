@@ -23,17 +23,17 @@ The accounts differ on how hard each side tried to reach the other once the thre
 
 ## What Orbite would have done
 
-The replay is a test, [`test_aeolus.cell`](/cases/orbite/src/test_aeolus.cell): 99 assertions on Orbite's real bodies, no test doubles, driven by Orbite's own clock. Only the four facts above are historical. Everything else — Orbite itself (nothing like it existed in 2019), its fictional States, people, rules of the road and thresholds, the exact hours (alert on 28 August at 10:02, rise on 30 August at 14:02, closest approach on 2 September at 12:00 UTC), distances and Δv — is simulated. Aeolus has impulsive propulsion; Starlink has low-thrust electric propulsion, which needs days of notice to manoeuvre.
+The replay is a test, [`test_aeolus.cell`](/cases/orbite/src/test_aeolus.cell): 101 assertions on Orbite's real bodies, no test doubles, driven by Orbite's own clock. Only the four facts above are historical. Everything else — Orbite itself (nothing like it existed in 2019), its fictional States, people, rules of the road and thresholds, the exact hours (alert on 28 August at 10:02, rise on 30 August at 14:02, closest approach on 2 September at 12:00 UTC), distances and Δv — is simulated. Aeolus has impulsive propulsion; Starlink has low-thrust electric propulsion, which needs days of notice to manoeuvre.
 
 | When (UTC) | What Orbite does |
 |---|---|
 | 28 Aug, 10:02 | Conjunction opened at 1 in 50,000: level 1. No coordination, no designation. |
-| 30 Aug, 14:02 | Probability up to 1 in 1,000: level 3. Coordination opened. The rules of the road propose **Aeolus**, as the only one able to act: Starlink's electric propulsion needs 72 h of notice, and the closest approach is 70 h away. Answers are due by 14:32. |
+| 30 Aug, 14:02 | Probability up to 1 in 1,000: level 3. Coordination opened. The rules of the road propose **Aeolus**: as at sea, the more manoeuvrable vessel gives way (rule 18) — impulsive propulsion before Starlink's electric thrusters, which in any case need 72 h of notice with 70 h left. Answers are due by 14:32. |
 | 30 Aug, 14:10 | ESA accepts. |
-| 30 Aug, 15:00 | SpaceX has not answered, and has not refused. **Tacit agreement**: the operator who has to move said yes, the one who does not said nothing — the designation of Aeolus is settled (decision DS-CJ-1-1, one lock), 69 hours before the closest approach, and notified to both operators. SpaceX's silence is recorded as a breach (late answer, severity 3). |
-| 30 Aug, 15:20 | Aeolus' avoidance plan declared, its trajectory screened against the catalogue (no new conjunction), approved — with more than two and a half days of margin. A plan for Starlink 44 would be refused: the lock is taken. |
+| 30 Aug, 15:00 | SpaceX has not answered, and has not refused. **Tacit agreement**: the operator who has to move said yes, the one who does not said nothing — the designation of Aeolus is settled (decision DS-CJ-1-1, one lock), 69 hours before the closest approach, and notified to both operators. Starlink 44 becomes the stand-on vessel: it keeps its course — any manoeuvre plan of its own is now refused. SpaceX's silence is recorded as a breach (late answer, severity 3). |
+| 30 Aug, 15:20 | Aeolus' first plan, a 0.5 m/s burn, is **refused as timid**: screened, it leaves a probability of about 1 in 730,000, and a manoeuvre must be franc — below 1 in a million (rule 8). A 0.7 m/s plan passes: screened against the catalogue, approved with more than two and a half days of margin, and announced to SpaceX and its State — "manoeuvre at 11:15, Δv 0.7 m/s, acknowledgement expected" (rule 34). |
 | 15:30 · 16:00 · 31 Aug, 01:00 | The escalation still climbs — mission lead, the focal point of SpaceX's State, then Orbite's direction and both States — but only to inform: it no longer holds the decision back. |
-| 2 Sep, 11:15 | Burn, 45 minutes — about half an orbit — before the closest approach (re-screened every ~8 h until then). |
+| 2 Sep, 11:15 | Burn of 0.7 m/s, 45 minutes — about half an orbit — before the closest approach (re-screened every ~8 h until then). |
 | 2 Sep, 11:50 | Orbit observed and found conforming; the conjunction is resolved, the coordination closed, the lock retired. |
 
 The full trace, one line per event of Orbite's journal, is in [AEOLUS_TRACE.md](/cases/orbite/src/AEOLUS_TRACE.md) (in French, like the code).
@@ -43,6 +43,7 @@ The full trace, one line per event of Orbite's journal, is in [AEOLUS_TRACE.md](
 In 2019 no decision was ever taken: ESA decided alone and burned on 2 September, without knowing whether Starlink 44 would move too. In Orbite the designation stands on 30 August at 15:00, three days earlier; ESA's plan is approved twenty minutes later; and the manoeuvre is no longer unilateral but a recorded decision, notified to both sides, that the other operator cannot contradict inside the protocol.
 
 - **One decision, recorded.** Exactly one object designated, at a known time, on known data; a second designation or a plan for the other object is refused.
+- **Rules every captain would recognise.** The more manoeuvrable gives way; the stand-on keeps its course; the manoeuvre is early, substantial and announced; and had ESA gone silent too after accepting, the stand-on would have been called to act in its place — though Starlink's 72-hour notice would not have allowed it here.
 - **Silence did not block — and did not delay.** The first replay made ESA wait until Orbite's take-over deadline, 8 hours before the closest approach, though ESA had agreed within eight minutes. The rule we added, the **tacit agreement**: when the operator who must manoeuvre accepts and the others are only silent, with no refusal, the decision stands at the answer deadline. The escalation goes on, to inform.
 - **The manoeuvre was checked twice**: its trajectory screened before approval (and again until the burn), the orbit observed after it.
 - **The silence left a trace** — a severity-3 breach on the operator's compliance record — instead of an argument in the press.

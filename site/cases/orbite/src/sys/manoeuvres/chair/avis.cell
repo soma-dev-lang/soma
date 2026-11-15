@@ -4,9 +4,14 @@ flesh ManAvis {
         let f = ManPlan.fiche(plan)
         let evit = f.motif == "evitement"
         let dests = []
+        let priv = ""
+        if evit && sujet == "approbation" {
+            let r_pv = try { ApiCoordination.privilegie(f.r, "systeme") }
+            if r_pv.error == () { priv = to_string(r_pv.value) }
+        }
         if evit {
             for o in ApiConjonctions.objets(f.r) {
-                if o != to_string(f.objet) {
+                if o != to_string(f.objet) && (priv == "" || o == priv) {
                     let r_p = try { ApiRef.proprietaire(Objet(o)) }
                     if r_p.error == () {
                         let org_p = to_string(r_p.value)
@@ -47,7 +52,15 @@ flesh ManAvis {
                     require len(lst_av) < MAX_AVIS_PAR_PLAN else Plein "trop d'avis pour {plan}"
                     require plan_de.size < MAX_AVIS else Plein "registre des avis plein"
                     let trace = ApiDonnees.tracer(h, Org(org), f.objet, f.r, "avis_manoeuvre")
-                    let msg = ApiPasserelle.notifier(h, Org(org), f.r, "manoeuvre_" + to_string(sujet), "Plan {plan} ({f.motif}) de {f.objet} : {sujet}, fenêtre {f.debut}-{f.fin}.", Niveau(urgence))
+                    let texte = if evit && sujet == "approbation" {
+                        "Avis d'intention (règle 34) : {f.objet} manœuvre à {f.debut} (fenêtre {f.debut}-{f.fin}), Δv {f.dv} mm/s, plan {plan} ; accusé attendu avant {ech}."
+                    } else {
+                        "Plan {plan} ({f.motif}) de {f.objet} : {sujet}, fenêtre {f.debut}-{f.fin}."
+                    }
+                    let msg = ApiPasserelle.notifier(h, Org(org), f.r, "manoeuvre_" + to_string(sujet), texte, Niveau(urgence))
+                    if evit && sujet == "approbation" {
+                        Journal.noter(h, "manoeuvres", "systeme", "{f.r} : avis d'intention à {org} — {texte}")
+                    }
                     plan_de.set(id_a, plan)
                     destinataire_de.set(id_a, Org(org))
                     message_de.set(id_a, msg)

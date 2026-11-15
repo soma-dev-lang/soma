@@ -311,6 +311,29 @@ flesh ConjRapprochement {
         return res_f
     }
 
+    on preciser_geometrie(h, r, vitesse_relative_mps, par) {
+        require ApiAcces.a_le_role(par, "systeme") || ApiAcces.a_le_role(par, "analyste") else Habilitation "préciser la géométrie : systeme ou analyste d'ORBITE"
+        require objet_a_de.get(r) != () else Inconnu "rapprochement inconnu : {r}"
+        let st = get_status(r) ?? "detecte"
+        require st == "detecte" || st == "suivi" || st == "alerte" || st == "en_coordination" else Ferme "rapprochement {r} clos ({st})"
+        require vitesse_relative_mps >= 1 && vitesse_relative_mps <= VREL_MAX_MPS else HorsBornes "vitesse relative {vitesse_relative_mps} m/s hors de 1..{VREL_MAX_MPS}"
+        vrel_de.set(r, vitesse_relative_mps)
+        let rat = if vitesse_relative_mps < SEUIL_RATTRAPAGE_MPS { " : rattrapage" } else { "" }
+        let _ = Journal.noter(h, "conjonctions", par, "géométrie de {r} : vitesse relative {vitesse_relative_mps} m/s au TCA{rat}")
+        return vitesse_relative_mps
+    }
+
+    on vitesse_relative(r) {
+        require objet_a_de.get(r) != () else Inconnu "rapprochement inconnu : {r}"
+        return vrel_de.get(r) ?? 0
+    }
+
+    on en_rattrapage(r) {
+        require objet_a_de.get(r) != () else Inconnu "rapprochement inconnu : {r}"
+        let v = vrel_de.get(r) ?? 0
+        return v >= 1 && v < SEUIL_RATTRAPAGE_MPS
+    }
+
     on fiche(r) {
         let a = objet_a_de.get(r)
         require a != () else Inconnu "rapprochement inconnu : {r}"

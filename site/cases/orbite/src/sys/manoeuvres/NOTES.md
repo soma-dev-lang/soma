@@ -61,3 +61,10 @@ Verify (1 seul passage) : aucun ✗ et aucun « not explored » sur mes cells ; 
 - **Défauts trouvés** : ManNonAnnoncee.constater ne teste la couverture qu'à deux instants (`depuis` et `h`) faute d'un `plan_couvrant` sur intervalle — une fenêtre strictement intérieure échappe ; plan_couvrant compte aussi un plan en anomalie sans poussée (echec_execution) ; ManAnomalie.lever ne distingue pas Inconnu d'EtatInvalide (pas de `reads nature_de`) ; la veille compte un verrou déjà soldé comme changement si clos_entre le rend deux fois.
 - **Trous** : aucun.
 - **Soma** : types nominaux stricts (Horodatage + Duree refusé : `to_int`), constantes d'une autre cell recopiées (21 600 000, 2 000 — piège 3), retrait d'un List slot par `index_of` + `delete(i)`, pas de `take` (→ `slice`), appels nus homonymes (rejeter, annuler, solder) seulement avertis.
+## Règles de barre (COLREG, 15/11/2026)
+Règle 8 à l'approbation d'un évitement : pc résiduelle (`ApiConjonctions.pc_apres_plan`) < PC_FRANC (1 000 milliardièmes =
+1/1 000 000), sinon rejet "manoeuvre_timide" ; approbation au plus tard à TCA − préavis, sinon "hors_delai" ; poussée incluse
+(avec_manoeuvres, déjà exigé). Règle 17a : objet privilégié d'un rapprochement ouvert au TCA non échu ⇒ déclaration refusée
+Conflit (tout motif), approbation rejetée "privilegie", plan hors évitement approuvé avant la pose annulé au réexamen (cause
+"privilegie"). Règle 34 : l'avis « approbation » d'un évitement va au propriétaire du privilégié (+ État), texte d'intention
+(heure, Δv, échéance d'accusé), journalisé. Seul le sujet "approbation" relit la coordination (retrait sans réentrance).

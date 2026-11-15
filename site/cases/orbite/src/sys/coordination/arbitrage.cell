@@ -6,7 +6,9 @@
 // escalade à la direction d'ORBITE et aux points focaux des États (échelon 4).
 
 // Raison de la saisine.
-cell type CoordRaison = String where value == "silence" || value == "desaccord" || value == "verrou_refuse" || value == "sans_designation" || value == "rouverture_tardive" || value == "urgence" || value == "crise" || value == "grappe"
+// "releve_17b" : relève du désigné sans plan approuvé par le privilégié (CoordDossier.relever),
+// saisie et rendue dans le même geste.
+cell type CoordRaison = String where value == "silence" || value == "desaccord" || value == "verrou_refuse" || value == "sans_designation" || value == "rouverture_tardive" || value == "urgence" || value == "crise" || value == "grappe" || value == "releve_17b"
 // État d'une saisine ; "inconnue" si jamais saisie.
 cell type CoordEtatSaisine = String where value == "saisie" || value == "prise_en_charge" || value == "rendue" || value == "hors_delai" || value == "abandonnee" || value == "inconnue"
 

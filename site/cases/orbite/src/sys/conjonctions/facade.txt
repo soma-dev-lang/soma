@@ -18,3 +18,7 @@ ApiConjonctions.constater_collision: calls ConjAnalyseTca.confirmer, ConjRapproc
 ApiConjonctions.exempter: calls ConjExemption.accorder
 ApiConjonctions.renforcer: calls ConjRenforcement.renforcer
 ApiConjonctions.balayer: calls ConjRonde.balayer
+ApiConjonctions.preciser_geometrie: calls ConjRapprochement.preciser_geometrie
+ApiConjonctions.vitesse_relative: calls ConjRapprochement.vitesse_relative
+ApiConjonctions.en_rattrapage: calls ConjRapprochement.en_rattrapage
+ApiConjonctions.pc_apres_plan: calls ConjCriblagePlan.pc_apres

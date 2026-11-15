@@ -87,14 +87,15 @@ cell Monde {
         return DonAdhesions.contresigner(h(20788, 37000), a, "conf1")
     }
 
-    // 1d. Règles de priorité PRIO-2027 : table, consultation, vote des trois États, publication,
-    // entrée en vigueur le 01/01/2027.
+    // 1d. Règles de priorité PRIO-2027 : table (1 dérogation exempte ; 2 dernier arrivé désigné ;
+    // 3 masse moindre désignée), consultation, vote des trois États, publication, entrée en
+    // vigueur le 01/01/2027.
     on priorites() {
         let t = t0()
         let v = "PRIO-2027"
         let _ = PrioVersion.rediger(t, v, "Règles de priorité 2027", "", h(20819, 0), "ana1")
         let _ = PrioTable.poser_regle(t, v, 1, "derogation", "exempte", "ana1")
-        let _ = PrioTable.poser_regle(t, v, 2, "propulsion_faible", "exempte", "ana1")
+        let _ = PrioTable.poser_regle(t, v, 2, "arrivee_recente", "designe", "ana1")
         let _ = PrioTable.poser_regle(t, v, 3, "masse_moindre", "designe", "ana1")
         let _ = PrioTable.fixer_preavis(t, v, "impulsionnelle", Duree(21600000), "ana1")
         let _ = PrioTable.fixer_preavis(t, v, "faible", Duree(259200000), "ana1")

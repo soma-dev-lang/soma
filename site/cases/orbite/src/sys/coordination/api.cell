@@ -19,6 +19,13 @@ skeleton ApiCoordination {
         // (ApiDonnees.peut_recevoir). Refus : Inconnu, Confidentiel.
         signal designe(r: Rapprochement, par: String) -> Objet
             calls CoordVerrou.designe
+        // Objet privilégié (« stand-on ») de la désignation arrêtée : l'autre objet du
+        // rapprochement, qui garde son cap jusqu'au TCA ou à la clôture (règle 17a du COLREG :
+        // tout plan de manœuvre de cet objet est refusé, sauf relève) ; "" si aucune désignation
+        // arrêtée ou décision de ne pas manœuvrer. Même contrôle de diffusion que `designe`
+        // (propriété 6). Refus : Inconnu, Confidentiel.
+        signal privilegie(r: Rapprochement, par: String) -> Objet
+            calls CoordVerrou.privilegie
         // Vrai si la coordination a abouti (accord ou arbitrage) sur une désignation d'objet.
         signal arretee(r: Rapprochement) -> Bool
             calls CoordVerrou.arretee

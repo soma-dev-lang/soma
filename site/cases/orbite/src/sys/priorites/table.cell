@@ -3,14 +3,21 @@
 // reste lisible pour toujours (rejouer une décision passée sous la version qui l'a fondée).
 //
 // Ce que la table NE PEUT PAS changer (garde-fous câblés dans PrioDesignation.designer,
-// propriétés 2 et 3 d'ORBITE) : un objet sans propulsion, hors service, en anomalie, d'un
-// opérateur inactif ou sans préavis suffisant n'est jamais désigné ; un objet habité ne l'est
-// que s'il est seul capable. La table ordonne seulement le choix entre deux objets capables.
+// propriétés 2 et 3 d'ORBITE, et règles de barre du COLREG 1972) : un objet sans propulsion,
+// hors service, en anomalie, d'un opérateur inactif ou sans préavis suffisant n'est jamais
+// désigné ; un objet habité ne l'est que s'il est seul capable ; entre une propulsion faible et
+// une impulsionnelle, l'impulsionnelle s'écarte (règle 18) ; en rattrapage, l'objet le plus bas
+// s'écarte (règle 13). La table ordonne seulement le choix entre deux objets capables de MÊME
+// capacité (même propulsion, même statut habité) hors rattrapage.
 
 // Critère d'une ligne de la table, évalué sur chacun des deux objets capables.
 // - "derogation"         : l'objet bénéficie d'une dérogation en cours (PrioDerogation.en_cours) ;
-// - "propulsion_faible"  : sa propulsion actuelle est "faible" (ApiRef.propulsion) ;
-// - "arrivee_recente"    : il a été injecté après l'autre (ApiLancements.injecte_le) ;
+// - "propulsion_faible"  : sa propulsion actuelle est "faible" (ApiRef.propulsion) — sans effet
+//                          depuis la règle 18 (la table ne compare que deux objets de même
+//                          propulsion) ; gardé pour rejouer les décisions antérieures ;
+// - "arrivee_recente"    : il a été injecté après l'autre (ApiLancements.injecte_le) — avec
+//                          l'effet "designe", c'est la règle « le dernier arrivé s'écarte »
+//                          entre objets de même capacité ;
 // - "essaim_autonome"    : il appartient à un essaim reconnu doté d'un évitement autonome ;
 // - "operateur_surveille": son opérateur est sous surveillance renforcée (ApiConformite) ;
 // - "masse_moindre"      : sa masse est strictement inférieure à celle de l'autre (ApiRef.masse).

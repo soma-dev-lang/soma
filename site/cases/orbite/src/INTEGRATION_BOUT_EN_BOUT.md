@@ -252,3 +252,71 @@ Constaté, non corrigé : l'accord tacite ne vaut qu'information « notifiée »
 décision sur son webhook mais ne l'acquitte jamais ; ORBITE ne peut garantir qu'il ne manœuvrera pas de son
 côté (risque résiduel de 2019). La décision est prise sans quatre yeux d'ORBITE (mode accord, valideur ''),
 alors que l'arbitrage d'un silence en exigeait : choix de conception à confirmer.
+
+## Règles de barre (COLREG) — 15/11/2026
+
+Le protocole d'ORBITE suit désormais les règles de barre en mer (COLREG 1972) validées par Antoine. Binaire
+`soma-v3.2.4`. Test : `test_colreg.cell` (racine, `use prod`, aucune doublure), **9 cellules, 159 assertions**, un test
+par règle avec un cas où elle s'applique et un où elle ne s'applique pas.
+
+| Point | Règle | Où | Ce qui change |
+|---|---|---|---|
+| 1 | deux rôles | coordination | `CoordVerrou.privilegie_de` (stand-on) écrit avec `designe_de` (give-way) par `poser`, effacé par `lever` ; getter `CoordVerrou.privilegie` et façade **`ApiCoordination.privilegie(r, par) -> Objet`** (même contrôle de diffusion que `designe`, helper commun `_controler_lecture`) ; journal du verrou : `…, privilégié '<o>'` |
+| 2 | 18 (manœuvrabilité) | priorites | `PrioDesignation.designer` / `_trancher` : sans propulsion jamais ; habité seulement seul capable ; puis, entre « faible » et « impulsionnelle » (même statut habité), l'impulsionnelle s'écarte dès qu'elle est capable (motif **`manoeuvrabilite`**) ; si elle ne l'est pas, la faible si elle tient (`seul_capable`) ; aucune : `""`. Dérogation conservée : si les deux sont capables et que seule l'impulsionnelle a une dérogation (manœuvrabilité restreinte), la faible s'écarte. Commentaires de `ApiPriorites.qui_manoeuvre`, `PrioDesignation`, `PrioTable`, `PrioCritere` mis à jour |
+| 3 | dernier arrivé | priorites | critère existant `arrivee_recente` (effet `designe`), rang 2 des tables des suites de bout en bout (Aeolus, bout en bout, COLREG) à la place de `propulsion_faible`, devenu inerte (documenté, gardé pour rejouer) : la table n'est atteinte qu'entre deux capables de même capacité, hors rattrapage |
+| 4 | 13 (rattrapage) | conjonctions, priorites | `ApiConjonctions.preciser_geometrie(h, r, vitesse_relative_mps, par)` ("systeme"/"analyste", 1..20 000 m/s), `vitesse_relative(r)` (0 sans géométrie), `en_rattrapage(r)` (< `SEUIL_RATTRAPAGE_MPS` = 100 m/s : orbites voisines quasi coplanaires ; un croisement LEO se fait à plusieurs km/s). Dans `_trancher`, après la règle 18, avant la table : le plus bas (altitude moyenne (périgée + apogée)/2 d'`ApiObservation`) s'écarte, motif **`rattrapage`** ; sans géométrie ou sans orbite observée des deux, ne s'applique pas. Instantané de décision à 15 champs (+ altitude, vitesse relative, rattrapage) ; un instantané à 12 champs se rejoue sous l'ordre d'avant (propriété 6) |
+| 5 | 8 (franche, à temps, visible) | conjonctions, manoeuvres | `ConjCriblagePlan.cribler` mémorise la pc résiduelle de chaque rapprochement recalculé (`pc_apres_de`), façade `ApiConjonctions.pc_apres_plan(plan, r)`. `ManPlan.approuver` (évitement) : pc résiduelle < `PC_FRANC` = 1 000 milliardièmes (1/1 000 000), sinon rejet **`manoeuvre_timide`** ; h + préavis ≤ TCA, sinon rejet `hors_delai` ; `avec_manoeuvres` déjà exigé (visible) |
+| 6 | 17a (cap gardé) | manoeuvres | `ManPlan._cap_garde` : objet privilégié d'un rapprochement ouvert au TCA non échu ⇒ `declarer` refuse **Conflit** (tout motif), `approuver` rejette `privilegie`, `reexaminer` annule (cause `privilegie`) un plan hors évitement approuvé avant la pose dont la fenêtre s'ouvre avant le TCA |
+| 7 | 17b (relève) | coordination | `CoordDossier.relever(h, r, par)`, tenté à chaque balayage des dossiers arrêtés : désigné sans plan approuvé/exécuté, h ≥ TCA − préavis(privilégié) − `MARGE_RELEVE` (2 h), préavis du privilégié tenu, décision posée AVANT l'ouverture de la fenêtre, privilégié capable (habité seulement si le désigné ne l'est plus), opérateur actif, grappe compatible. Alors : plan non approuvé retiré, `arretee -> liberee` (règle `ManEvitement.libre‖solde`), suivi `-> releve`, verrou `tenu -> leve`, `liberee -> rouverte -> arbitrage` (saisine `releve_17b`), verrou `leve -> tenu` sur le privilégié (mode `releve`), `arbitrage -> arretee`, saisine rendue ; fil + notification aux parties, manquement `designation_ignoree` (g3 au niveau 3) contre l'ancien désigné, journal |
+| 34 | avis d'intention | manoeuvres | existait (`ManAvis.emettre`, sujet `approbation`, accusé attendu, escalade à défaut) : la cible est désormais le propriétaire de `ApiCoordination.privilegie(r)` (l'autre objet si le verrou est levé), le texte est formalisé (« <objet> manœuvre à <début> (fenêtre), Δv <dv> mm/s, plan ; accusé attendu avant <échéance> ») et journalisé ; seul ce sujet relit la coordination (un retrait pendant une rouverture ne la relit pas : pas de réentrance) |
+
+**Règles d'arête ajoutées** : `CoordSuivi attente_plan -> releve when CoordDossier.liberee via rapprochement_de` et
+`plan_depose -> releve when CoordDossier.liberee via rapprochement_de` (lien écrit une fois par `CoordSuivi.ouvrir`). La relève
+emprunte les arêtes gardées existantes (`arretee -> liberee when ManEvitement.libre || solde`, `liberee -> rouverte when
+CoordVerrou.leve`, `arbitrage -> arretee when CoordVerrou.tenu`, verrou `leve -> tenu when CoordDossier.accord || arbitrage`) :
+la propriété 1 tient par la même structure (une seule pose tenue à la fois). Écartées : 17a (condition négative « n'est
+pas privilégié », sans état positif à viser) ; règle 8 (seuil numérique, pas un état).
+
+**Squelettes amendés** (`skeleton app.cell --amend` après chaque changement) : ConjRapprochement, ConjCriblagePlan,
+ApiConjonctions (+4 signaux), PrioDesignation, PrioTable (commentaires), ApiPriorites (commentaire), CoordVerrou, CoordDossier,
+CoordSuivi, CoordDecision (`CoordMode` + "releve"), CoordArbitrage (`CoordRaison` + "releve_17b"), ApiCoordination
+(+1 signal), ManPlan (`ManCauseRejet` + manoeuvre_timide, privilegie ; `ManCauseAnnulation` + privilegie ; `PC_FRANC`),
+ManAvis. Aucune signature de façade existante modifiée. `facade.txt` de conjonctions et coordination complétés ; NOTES.md
+des quatre sous-systèmes.
+
+**Tests** : `test_colreg.cell` 159/159 (nouveau) ; `test_priorites.cell` 319 (301 + cellule `PrioColreg`, 5 assertions
+réécrites : la faible ne manœuvre plus devant l'impulsionnelle) ; `test_coordination.cell` 251 (227 + privilégié + cellule
+`Releve17b`) ; `test_manoeuvres.cell` 242 (231 + cellule `ManColreg`) ; `test_aeolus.cell` 101 (99 + 2) ;
+`test_bout_en_bout.cell` 182 (table : rang 2 `arrivee_recente`, aucune assertion changée) ; doublures `priorites` (géométrie,
+orbites) et `manoeuvres` (pc résiduelle, privilégié). Les 23 suites : **6 482 assertions, toutes vertes**. `check prod.cell` :
+0 erreur ; `outils/cycles.py` : aucune composante, profondeur 23 (inchangée).
+
+**Aeolus** : AEOLUS (impulsionnelle) s'écarte devant STARLINK44 (faible) par la règle 18 (motif `manoeuvrabilite`, plus
+`seul_capable`) ; STARLINK44 est le privilégié. La règle 8 a révélé que le Δv simulé (0,5 m/s à TCA − 45 min) laissait une
+pc de 1 369 milliardièmes (≈ 1/730 000) : refusé `manoeuvre_timide` (PL-AEOLUS-05) ; l'ESA porte le Δv à 0,7 m/s (pc 699)
+— assertions, chronologie et `AEOLUS_TRACE.md` mis à jour (avis d'intention à SpaceX et à BRV ajoutés).
+
+**Limites et choix** :
+- Relève : seulement si la décision a été posée avant l'ouverture de la fenêtre — un arbitrage rendu dans la fenêtre (bout en
+  bout E7 : à TCA − 8 h) n'est pas aussitôt défait, et la relève ne revient pas en arrière (pas de ping-pong). Avec des préavis
+  égaux, la fenêtre (TCA − 8 h) s'ouvre AVANT la limite du désigné (TCA − 6 h) : c'est le sens de 17b (le privilégié agit tant
+  qu'il le peut encore) ; si le privilégié est plus agile que le désigné, la défaillance à la limite du désigné (existante) passe
+  d'abord et rouvre selon les règles.
+- 17a strict : un objet désigné dans r2 mais privilégié dans r1 ne peut pas déposer son évitement pour r2 tant que le TCA de r1
+  n'est pas passé (la grappe multi-objets, la relève ou l'arbitrage doivent trancher) ; `reexaminer` n'annule pas un évitement
+  approuvé pour cette raison.
+- `hors_delai` à l'approbation n'est atteignable que par une approbation différée (analyste) : `declarer` refuse déjà Delai
+  après la limite d'action.
+- La pc résiduelle vient du modèle de criblage de plan (dérive tangentielle 3·Δv·Δt) ; le seuil franc (1/1 000 000) est une
+  constante documentée, à voter si besoin dans les versions de règles.
+- Le rattrapage exige des orbites observées pour les deux objets : sans observation (catalogue sans OD), la règle 13 ne
+  s'applique pas.
+- L'avis d'intention part aussi à l'État d'immatriculation du désigné (journalisé deux fois) ; le contenu du message n'a pas
+  de getter chez passerelle : le test le lit au journal.
+
+**Verify** (`$S verify app.cell`, ≈ 8 min) : **VERIFY OK, 0 ✗, 0 « not explored »**, 156 propriétés temporelles, **97 règles
+prouvées** sur le produit des machines (inchangé). Les deux règles d'arête ajoutées passent par un lien `via`
+(`CoordSuivi.rapprochement_de`) : verify ne les explore pas sur le produit, il les rend en « open obligation » d'écriture unique
+du lien (152 au lieu de 150), tenue par le corps (`CoordSuivi.ouvrir` : `require rapprochement_de.get(d) == () else Existe`,
+jamais effacé), comme les autres règles `via` du programme. La relève réutilise des arêtes déjà gardées, sans nouvelle règle
+même-id.

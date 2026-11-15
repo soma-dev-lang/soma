@@ -4,14 +4,23 @@
 // rejouable, communiquée aux seules organisations autorisées). Instance = id de décision
 // ("PD-<n>").
 
-// Ce qui a tranché une décision (valeurs de PrioDesignation.motif).
-// - "aucun_capable"  : aucun des deux objets ne peut manœuvrer à temps → "" (arbitrage) ;
-// - "seul_capable"   : un seul objet capable, désigné même s'il est habité (propriété 3) ;
-// - "habite_exempte" : deux capables dont un habité : l'autre manœuvre ;
-// - "regle"          : une ligne de la table a départagé (rang dans PrioDesignation.regle) ;
-// - "arrivee"        : aucune ligne n'a départagé : le dernier injecté manœuvre ;
-// - "catalogue"      : injections égales ou inconnues : le plus grand numéro de catalogue.
-cell type PrioMotifDesignation = String where value == "aucun_capable" || value == "seul_capable" || value == "habite_exempte" || value == "regle" || value == "arrivee" || value == "catalogue"
+// Ce qui a tranché une décision (valeurs de PrioDesignation.motif). Les règles de barre en mer
+// (COLREG 1972) inspirent l'ordre : le moins manœuvrant a priorité (règle 18), le rattrapant
+// s'écarte (règle 13), puis la table votée, puis le dernier arrivé.
+// - "aucun_capable"   : aucun des deux objets ne peut manœuvrer à temps → "" (arbitrage) ;
+// - "seul_capable"    : un seul objet capable, désigné même s'il est habité (propriété 3) ;
+// - "habite_exempte"  : deux capables dont un habité : l'autre manœuvre ;
+// - "manoeuvrabilite" : règle 18 — entre une propulsion "faible" et une "impulsionnelle",
+//                       l'impulsionnelle (la plus manœuvrante) s'écarte si son préavis tient ;
+//                       si les deux tiennent et que seule l'impulsionnelle a une dérogation en
+//                       cours (manœuvrabilité restreinte), la faible s'écarte ;
+// - "rattrapage"      : règle 13 — même capacité, rapprochement en rattrapage
+//                       (ApiConjonctions.en_rattrapage) : l'objet de l'orbite la plus basse
+//                       (altitude moyenne (périgée + apogée) / 2, le plus rapide) s'écarte ;
+// - "regle"           : une ligne de la table a départagé (rang dans PrioDesignation.regle) ;
+// - "arrivee"         : aucune ligne n'a départagé : le dernier injecté manœuvre ;
+// - "catalogue"       : injections égales ou inconnues : le plus grand numéro de catalogue.
+cell type PrioMotifDesignation = String where value == "aucun_capable" || value == "seul_capable" || value == "habite_exempte" || value == "manoeuvrabilite" || value == "rattrapage" || value == "regle" || value == "arrivee" || value == "catalogue"
 
 skeleton PrioDesignation {
     const MAX_DECISIONS = 10000000
@@ -35,7 +44,11 @@ skeleton PrioDesignation {
         calculee_le: Map<String, Horodatage> [persistent]
         // Instantané des entrées, par objet : "objet | etat_objet | propulsion | habite |
         // peut_manoeuvrer | operateur_actif | preavis_ms | injecte_le | masse | derogation |
-        // essaim_autonome | operateur_surveille" — effacé seulement à la purge.
+        // essaim_autonome | operateur_surveille | altitude_moyenne_m | vitesse_relative_mps |
+        // rattrapage" (altitude 0 : aucune orbite observée ; vitesse 0 : géométrie non remise ;
+        // les deux derniers champs, propres au rapprochement, sont recopiés sur les deux lignes)
+        // — effacé seulement à la purge. Une ligne de 12 champs (décision antérieure aux règles
+        // de barre) se rejoue sous l'ordre d'avant (table puis arrivée, sans règles 18 et 13).
         entrees_de: Map<String, String> [persistent]
         par_rapprochement: Map<String, List<String>> [persistent] // rapprochement -> décisions, dans l'ordre
         contestation_de: Map<String, String> [persistent]   // décision -> "par | motif" de la contestation
@@ -63,29 +76,42 @@ skeleton PrioDesignation {
         // Désigne l'objet qui doit manœuvrer entre `a` et `b`, objets du rapprochement `r`, à
         // l'instant `h` et enregistre la décision (lue ensuite par decision_de). Traitement automatique (identité "systeme"), sans habilitation : il
         // n'engage personne, la coordination arrête ensuite la désignation.
-        // Algorithme, dans l'ordre :
+        // Algorithme, dans l'ordre (règles de barre du COLREG 1972) :
         // 1. version = PrioVersion.en_vigueur_a(h) ; "" → refus Ferme.
         // 2. ApiConjonctions.objets(r) doit valoir {a, b} (sinon Incoherent) ; TCA =
         //    ApiConjonctions.tca(r) (un TCA passé rend les deux objets incapables : "").
         // 3. Un objet est CAPABLE s'il peut manœuvrer (ApiRef.peut_manoeuvrer : en service,
         //    propulsion ≠ "aucune", ni en anomalie ni passivé), son opérateur est actif
         //    (ApiOperateurs.est_actif) et h + préavis ≤ TCA, préavis = max(PrioTable.preavis_de_version(version,
-        //    propulsion), PrioPreparation.delai(objet)).
-        // 4. Aucun capable → "" ("aucun_capable") ; un seul → lui ("seul_capable", habité compris).
-        // 5. Deux capables dont un habité → l'autre ("habite_exempte").
-        // 6. Lignes de la table de `version` dans l'ordre des rangs (voir PrioCritere,
-        //    PrioEffet) : la première qui départage tranche ("regle").
-        // 7. Sinon le dernier injecté (ApiLancements.injecte_le, 0 = inconnu = le plus ancien)
+        //    propulsion), PrioPreparation.delai(objet)). Un objet sans propulsion n'est jamais
+        //    capable (propriété 2).
+        // 4. Aucun capable → "" ("aucun_capable").
+        // 5. Deux capables dont un habité → l'autre ("habite_exempte") ; un habité n'est désigné
+        //    que seul capable (propriété 3).
+        // 6. Règle 18 (le moins manœuvrant a priorité), objets de même statut habité : entre une
+        //    propulsion "faible" et une "impulsionnelle", l'impulsionnelle s'écarte si elle est
+        //    capable ("manoeuvrabilite"), même quand la faible ne tient pas son préavis — sauf si
+        //    les deux sont capables et que seule l'impulsionnelle a une dérogation en cours
+        //    (PrioDerogation.en_cours : manœuvrabilité restreinte) : la faible s'écarte
+        //    ("manoeuvrabilite"). Impulsionnelle incapable : la faible si elle tient ("seul_capable").
+        // 7. Un seul capable → lui ("seul_capable", habité compris).
+        // 8. Règle 13 (rattrapage), deux capables de même capacité : si
+        //    ApiConjonctions.en_rattrapage(r) et que les altitudes moyennes
+        //    ((ApiObservation.perigee + apogee) / 2) sont connues et différentes, l'objet le plus
+        //    bas s'écarte ("rattrapage") ; sans géométrie ni orbites observées, la règle ne
+        //    s'applique pas.
+        // 9. Lignes de la table de `version` dans l'ordre des rangs (voir PrioCritere,
+        //    PrioEffet) : la première qui départage tranche ("regle"). Elles ne départagent
+        //    que deux objets de même capacité (même propulsion, même statut habité).
+        // 10. Sinon le dernier injecté (ApiLancements.injecte_le, 0 = inconnu = le plus ancien)
         //    ("arrivee") ; à égalité le plus grand numéro de catalogue ("catalogue").
-        // Ainsi une propulsion faible manœuvre si son préavis tient avant le TCA, sinon elle
-        // est incapable et l'impulsionnelle manœuvre (lecture confirmée du contrat).
         // Renvoie l'objet désigné, "" si aucun. Refus : Inconnu (objet ou rapprochement),
         // Incoherent (a == b, ou a/b ne sont pas les objets de r), Ferme (aucune version en vigueur), Plein.
         signal designer(h: Horodatage, r: Rapprochement, a: Objet, b: Objet) -> Objet
             writes a_de, b_de, resultat_de, motif_de, regle_de, version_de, rapprochement_de, tca_de, calculee_le, entrees_de, par_rapprochement, compte_motif
-            calls next_id, PrioEcheancier.planifier, PrioVersion.en_vigueur_a, PrioTable.regles, PrioTable.preavis_de_version, PrioPreparation.delai, PrioDerogation.en_cours, PrioEssaim.autonome, ApiRef.etat_objet, ApiRef.peut_manoeuvrer, ApiRef.propulsion, ApiRef.habite, ApiRef.proprietaire, ApiRef.masse, ApiOperateurs.est_actif, ApiConformite.sous_surveillance, ApiLancements.injecte_le, ApiConjonctions.objets, ApiConjonctions.tca, Journal.noter
+            calls next_id, PrioEcheancier.planifier, PrioVersion.en_vigueur_a, PrioTable.regles, PrioTable.preavis_de_version, PrioPreparation.delai, PrioDerogation.en_cours, PrioEssaim.autonome, ApiRef.etat_objet, ApiRef.peut_manoeuvrer, ApiRef.propulsion, ApiRef.habite, ApiRef.proprietaire, ApiRef.masse, ApiOperateurs.est_actif, ApiConformite.sous_surveillance, ApiLancements.injecte_le, ApiConjonctions.objets, ApiConjonctions.tca, ApiConjonctions.vitesse_relative, ApiConjonctions.en_rattrapage, ApiObservation.perigee, ApiObservation.apogee, Journal.noter
         // Recalcule une décision à partir de son instantané et de la table de SA version
-        // (étapes 3 à 7, sans relire les autres sous-systèmes) : doit redonner le résultat
+        // (étapes 3 à 10, sans relire les autres sous-systèmes) : doit redonner le résultat
         // enregistré. Renvoie l'objet recalculé. Refus : Inconnu, EtatInvalide (purgée).
         signal rejouer(decision: String) -> Objet
             reads decision, entrees_de, version_de, tca_de, calculee_le

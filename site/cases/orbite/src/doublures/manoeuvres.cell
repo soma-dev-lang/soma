@@ -12,11 +12,13 @@
 //   propulsion faible ; "HAB" habité ; "PERIME" éphéméride non fraîche ; "SANSMAN" dernier dépôt
 //   sans la poussée ; "NONVU" aucune poussée observée ; "INEXPL" manœuvre non annoncée détectée ; "NONSUIVI" pas d'orbite indépendante ;
 //   "ECART" écart observé 5 km ; "GEO" orbite géostationnaire observée ; "GEL" sous gel ;
-//   "RAPP" impliqué dans un rapprochement ouvert ; "RISQUESOL" rentrée à risque, "CTRL" contrôlée.
+//   "RAPP" impliqué dans un rapprochement ouvert ; "RISQUESOL" rentrée à risque, "CTRL" contrôlée ;
+//   "PRIV" privilégié du rapprochement ouvert "CJ-PRIV~OBJ-B-AUTRE~<objet>" (règle 17a).
 // - rapprochement "CJ-<s>~<a>~<b>" : objets a et b, désigné a (b si "PREFB") ; "N3" niveau 3 ;
 //   "CLOS" résolu ; "OUVERTE" coordination non arrêtée ; "SECRET" ORG-BETA ne reçoit pas.
 // - plans : "RISQUE" criblage à risque ; "CATPERIME" catalogue périmé ; "TARDRISQUE" risque au
-//   recriblage (h > H0 + 4 h).
+//   recriblage (h > H0 + 4 h) ; "TIMIDE" pc résiduelle 5 000 milliardièmes après manœuvre (100
+//   sinon : manœuvre franche).
 // - messages : acquittés par les États ("ORG-ETAT-…"), jamais par les opérateurs.
 
 flesh ApiAcces {
@@ -186,7 +188,12 @@ flesh ApiConjonctions {
     on ouverts_de(objet) {
         let o = to_string(objet)
         if contains(o, "RAPP") { return ["CJ-OUV~{o}~OBJ-B-AUTRE"] }
+        if contains(o, "PRIV") { return ["CJ-PRIV~OBJ-B-AUTRE~{o}"] }
         return []
+    }
+    on pc_apres_plan(plan, r) {
+        if contains(plan, "TIMIDE") { return Probabilite(5000) }
+        return Probabilite(100)
     }
     on clos_entre(debut, fin) {
         if to_int(debut) == 0 { return ["CJ-CLOS~OBJ-C1~OBJ-C2"] }
@@ -204,6 +211,13 @@ flesh ApiCoordination {
         if contains(to_string(r), "OUVERTE") { return Objet("") }
         if contains(to_string(r), "PREFB") { return Objet(parts[2]) }
         return Objet(parts[1])
+    }
+    on privilegie(r, par) {
+        let parts = split(to_string(r), "~")
+        require len(parts) == 3 else Inconnu "rapprochement {r} inconnu"
+        if contains(to_string(r), "OUVERTE") { return Objet("") }
+        if contains(to_string(r), "PREFB") { return Objet(parts[1]) }
+        return Objet(parts[2])
     }
     on rouvrir(h, r, motif, par) {
         require motif != "" else MotifRequis "motif requis"

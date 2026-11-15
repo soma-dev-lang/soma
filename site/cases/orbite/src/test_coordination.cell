@@ -33,6 +33,8 @@ cell test ScenarioAccordPlan {
         assert ApiCoordination.arretee("CJ-1PLAN")
         assert ApiCoordination.decidee("CJ-1PLAN")
         assert ApiCoordination.designe("CJ-1PLAN", "systeme") == "OBJ-A-1PLAN"
+        // deux rôles : le désigné s'écarte, l'autre objet est le privilégié (stand-on)
+        assert ApiCoordination.privilegie("CJ-1PLAN", "systeme") == "OBJ-B-1PLAN"
         assert ApiCoordination.decision("CJ-1PLAN") == "DS-CJ-1PLAN-1|OBJ-A-1PLAN|systeme||1000000002000|accord des parties"
         assert ApiCoordination.en_attente_de("ORG-ALPHA") == []
         assert CoordDecision.etat("DS-CJ-1PLAN-1") == "en_vigueur"
@@ -295,6 +297,11 @@ cell test Confidentialite {
         assert_fails ApiCoordination.designe("CJ-SECRET1", "dyn-beta") matching "Confidentiel"
         assert_fails ApiCoordination.designe("CJ-SECRET1", "intrus1") matching "Confidentiel"
         assert_fails ApiCoordination.designe("CJ-404", "systeme") matching "Inconnu"
+        // le privilégié se lit sous le même contrôle de diffusion
+        assert ApiCoordination.privilegie("CJ-SECRET1", "dyn-alpha") == "OBJ-B-SECRET1"
+        assert ApiCoordination.privilegie("CJ-SECRET1", "analyste1") == "OBJ-B-SECRET1"
+        assert_fails ApiCoordination.privilegie("CJ-SECRET1", "dyn-beta") matching "Confidentiel"
+        assert_fails ApiCoordination.privilegie("CJ-404", "systeme") matching "Inconnu"
         assert_fails CoordDecision.consulter(1000000003000, "DS-CJ-SECRET1-1", "dyn-beta") matching "Confidentiel"
         assert_fails CoordDecision.consulter(1000000003000, "DS-CJ-SECRET1-1", "intrus1") matching "Habilitation"
         assert CoordDecision.consulter(1000000003000, "DS-CJ-SECRET1-1", "dyn-alpha").objet == "OBJ-A-SECRET1"
@@ -390,5 +397,35 @@ cell test Recalage {
         assert CoordDossier.recaler(1000000001000, "CJ-TARD2", "systeme") == 1000000000000
         assert ApiCoordination.etat("CJ-TARD2") == "arbitrage"
         assert_fails CoordDossier.recaler(1000000002000, "CJ-TARD2", "systeme") matching "EtatInvalide"
+    }
+}
+
+// Relève (règle 17b) : le désigné accepte et ne dépose aucun plan ; dans la fenêtre de relève
+// (TCA − préavis du privilégié − 2 h), le balayage désigne le privilégié — une décision à la fois.
+cell test Releve17b {
+    rules {
+        let _ = ApiCoordination.ouvrir(1000000000000, "CJ-REL1", "systeme")
+        let _ = ApiCoordination.repondre(1000000001000, "CJ-REL1", "accepte", "", "", "dyn-alpha")
+        assert ApiCoordination.repondre(1000000002000, "CJ-REL1", "accepte", "", "", "dyn-beta") == "arretee"
+        assert ApiCoordination.designe("CJ-REL1", "systeme") == "OBJ-A-REL1"
+        assert ApiCoordination.privilegie("CJ-REL1", "systeme") == "OBJ-B-REL1"
+        // trop tôt : la fenêtre s'ouvre à TCA − 1 h − 2 h
+        assert_fails CoordDossier.relever(1000853100000, "CJ-REL1", "systeme") matching "Delai"
+        assert_fails CoordDossier.relever(1000853200000, "CJ-REL1", "intrus1") matching "Habilitation"
+        assert ApiCoordination.balayer(1000853100000, "systeme") == 0
+        assert ApiCoordination.designe("CJ-REL1", "systeme") == "OBJ-A-REL1"
+        assert ApiCoordination.balayer(1000853200000, "systeme") == 0
+        assert ApiCoordination.designe("CJ-REL1", "systeme") == "OBJ-B-REL1"
+        assert ApiCoordination.privilegie("CJ-REL1", "systeme") == "OBJ-A-REL1"
+        assert ApiCoordination.etat("CJ-REL1") == "arretee"
+        assert ApiCoordination.decision("CJ-REL1") == "DS-CJ-REL1-2|OBJ-B-REL1|systeme||1000853200000|releve_17b : OBJ-A-REL1 sans plan approuvé"
+        assert CoordSuivi.etat("DS-CJ-REL1-1") == "releve"
+        assert CoordDecision.etat("DS-CJ-REL1-1") == "levee"
+        assert CoordDecision.historique("CJ-REL1") == ["DS-CJ-REL1-1", "DS-CJ-REL1-2"]
+        assert CoordSuivi.etat("DS-CJ-REL1-2") == "attente_plan"
+        // pas de relève en retour : la nouvelle décision est née dans la fenêtre
+        assert_fails CoordDossier.relever(1000853300000, "CJ-REL1", "systeme") matching "Delai"
+        assert ApiCoordination.designe("CJ-REL1", "systeme") == "OBJ-B-REL1"
+        assert len(Journal.chercher("CJ-REL1 : relève (règle 17b) — OBJ-A-REL1 sans plan approuvé, OBJ-B-REL1 manœuvre", 5)) == 1
     }
 }

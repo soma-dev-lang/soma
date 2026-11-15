@@ -26,13 +26,15 @@ flesh CoordVerrou {
         let n = (poses_de.get(r) ?? 0) + 1
         let d = "DS-{r}-{n}"
         if st == "leve" { transition(r, "leve", "tenu") } else { transition(r, "libre", "tenu") }
+        let privilegie_o = if objet == "" { Objet("") } else if objet == a { b } else { a }
         designe_de.set(r, objet)
+        privilegie_de.set(r, privilegie_o)
         decision_de.set(r, d)
         pose_le.set(r, h)
         poses_de.set(r, n)
         let _ = CoordDecision.prendre(h, d, r, objet, mode, motif, par, valideur)
         let _ = CoordSuivi.ouvrir(h, d, r, objet)
-        let _ = Journal.noter(h, "coordination", par, "verrou {r} posé : décision {d}, désigné '{objet}', mode {mode}, valideur '{valideur}'")
+        let _ = Journal.noter(h, "coordination", par, "verrou {r} posé : décision {d}, désigné '{objet}', mode {mode}, valideur '{valideur}', privilégié '{privilegie_o}'")
         return d
     }
     on lever(h, r, motif) {
@@ -46,6 +48,7 @@ flesh CoordVerrou {
         let d = decision_de.get(r) ?? ""
         transition(r, "tenu", "leve")
         designe_de.delete(r)
+        privilegie_de.delete(r)
         decision_de.delete(r)
         let _ = CoordDecision.lever(h, d, motif)
         let _ = CoordSuivi.rendre_caduc(h, d)
@@ -71,6 +74,16 @@ flesh CoordVerrou {
         return "clos"
     }
     on designe(r, par) {
+        _controler_lecture(r, par)
+        return designe_de.get(r) ?? ""
+    }
+    on privilegie(r, par) {
+        _controler_lecture(r, par)
+        return privilegie_de.get(r) ?? ""
+    }
+    // Contrôle de diffusion commun à designe et privilegie (propriété 6) : "systeme", ORBITE,
+    // ou une organisation qui peut recevoir les données des deux objets à l'instant de la pose.
+    on _controler_lecture(r: Rapprochement, par: String) {
         let objets_v = CoordDossier.objets(r)
         if par != "systeme" {
             let emp = try { ApiAcces.employeur(par) }
@@ -83,7 +96,6 @@ flesh CoordVerrou {
                 }
             }
         }
-        return designe_de.get(r) ?? ""
     }
     on arretee(r) {
         return (get_status(r) ?? "libre") == "tenu" && (designe_de.get(r) ?? "") != ""

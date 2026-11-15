@@ -57,6 +57,24 @@ skeleton ApiConjonctions {
         // Vrai si le catalogue du régime a été criblé tout-contre-tout depuis moins de 8 h à `h`.
         signal campagne_fraiche(regime: Regime, h: Horodatage) -> Bool
             calls ConjCampagne.fraiche
+        // Précise la géométrie d'un rapprochement ouvert (moteur de criblage) : vitesse relative
+        // des deux objets au TCA, m/s (1 à 20 000). Sert la règle de rattrapage des priorités
+        // (règle 13 du COLREG). Renvoie la vitesse retenue. Refus : Inconnu, Ferme (clos),
+        // HorsBornes, Habilitation ("systeme" ou "analyste" d'ORBITE).
+        signal preciser_geometrie(h: Horodatage, r: Rapprochement, vitesse_relative_mps: Int, par: String) -> Int
+            calls ConjRapprochement.preciser_geometrie
+        // Vitesse relative au TCA (m/s) ; 0 si aucune géométrie n'a été remise. Refus : Inconnu.
+        signal vitesse_relative(r: Rapprochement) -> Int
+            calls ConjRapprochement.vitesse_relative
+        // Vrai si le rapprochement est un rattrapage : géométrie remise et vitesse relative
+        // inférieure à 100 m/s (orbites voisines quasi coplanaires). Faux sans géométrie.
+        // Refus : Inconnu.
+        signal en_rattrapage(r: Rapprochement) -> Bool
+            calls ConjRapprochement.en_rattrapage
+        // Pc résiduelle (milliardièmes) de `r` après la manœuvre du plan, calculée par son
+        // criblage (cribler_plan). Refus : Inconnu (plan jamais criblé, ou r hors de son horizon).
+        signal pc_apres_plan(plan: String, r: Rapprochement) -> Probabilite
+            calls ConjCriblagePlan.pc_apres
         // Constate une collision (évènement confirmé par evenements) : le rapprochement passe
         // "collision" sur le verdict de l'analyse après TCA. Renvoie l'état. Refus : Inconnu,
         // EtatInvalide, Habilitation ("analyste" ou "systeme").

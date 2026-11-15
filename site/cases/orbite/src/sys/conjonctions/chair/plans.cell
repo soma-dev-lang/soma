@@ -34,6 +34,7 @@ flesh ConjCriblagePlan {
         let t1 = t0 + HORIZON
         let v = to_int(dv)
         let nb = 0
+        let pcs_apres = []
         for r in ConjRapprochement.ouverts_de(objet) {
             let f = ConjRapprochement.fiche(Rapprochement(r))
             let tca = to_int(f.tca)
@@ -43,6 +44,7 @@ flesh ConjCriblagePlan {
                 let d2 = d * d + derive * derive
                 let nouvelle = floor(sqrt(d2))
                 let pc2 = idiv(to_int(f.pc) * (d * d + 1), d2 + 1)
+                pcs_apres.push([r, pc2])
                 let restant = Duree(max(0, tca - to_int(h)))
                 let n = ConjSeuils.niveau(Probabilite(pc2), Distance(nouvelle), restant, facteur)
                 if to_int(n) >= 2 { nb = nb + 1 }
@@ -56,6 +58,9 @@ flesh ConjCriblagePlan {
         facteur_de.set(plan, facteur)
         crible_le.set(plan, h)
         resultat_de.set(plan, nb)
+        for x in pcs_apres {
+            pc_apres_de.set("{plan}|{x[0]}", Probabilite(x[1]))
+        }
         transition(plan, "demande", "fonde")
         if nb == 0 {
             require ApiManoeuvres.etat(plan) == "declare" else EtatInvalide "plan plus « declare »"
@@ -92,6 +97,13 @@ flesh ConjCriblagePlan {
             let _ = Journal.noter(h, "conjonctions", par, "{nb} plans de {so} périmés par {r}")
         }
         return nb
+    }
+
+    on pc_apres(plan, r) {
+        require objet_de.get(plan) != () else Inconnu "plan jamais criblé : {plan}"
+        let p = pc_apres_de.get("{plan}|{r}")
+        require p != () else Inconnu "{r} hors de l'horizon du criblage de {plan}"
+        return p
     }
 
     on resultat(plan) {

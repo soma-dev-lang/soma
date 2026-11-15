@@ -4,8 +4,9 @@
 // suite de ses décisions. Chaque décision fige, au moment de l'arrêt, les données qui la
 // fondaient : c'est la preuve en cas de dommage, communiquée aux seules organisations autorisées.
 
-// Voie par laquelle la désignation a été arrêtée.
-cell type CoordMode = String where value == "accord" || value == "arbitrage"
+// Voie par laquelle la désignation a été arrêtée : accord des parties, arbitrage d'ORBITE, ou
+// relève automatique du désigné défaillant par le privilégié (règle 17b du COLREG).
+cell type CoordMode = String where value == "accord" || value == "arbitrage" || value == "releve"
 // État d'une décision ; "inconnue" si jamais prise.
 cell type CoordEtatDecision = String where value == "prise" || value == "designee" || value == "abstention" || value == "en_vigueur" || value == "levee" || value == "soldee" || value == "purgee" || value == "inconnue"
 // Fondement figé d'une décision : ce qu'ORBITE savait à l'instant de l'arrêt.

@@ -23,6 +23,9 @@ skeleton CoordDossier {
     const MAX_TOURS = 50
     // Marge (ms) réservée à l'arbitrage d'ORBITE avant l'heure limite d'action : 2 h.
     const MARGE_ARBITRAGE = 7200000
+    // Relève (règle 17b du COLREG) : elle s'ouvre MARGE_RELEVE avant la dernière heure où le
+    // privilégié peut encore agir (TCA − son préavis) : 2 h, comme l'arbitrage.
+    const MARGE_RELEVE = 7200000
     memory {
         objets_de: Map<String, List<String>> [persistent]     // r -> [a, b], copiés de ApiConjonctions.objets à l'ouverture
         parties_de: Map<String, List<String>> [persistent]    // r -> propriétaires (Org) dont la réponse est attendue (1 ou 2 ; aucun si propriétaire "inconnu")
@@ -172,6 +175,41 @@ skeleton CoordDossier {
             reads objets_de, parties_de
             moves arretee -> liberee when ManEvitement.libre || ManEvitement.solde, liberee -> rouverte when CoordVerrou.leve, rouverte -> proposee, rouverte -> arbitrage
             calls CoordVerrou.lever, CoordVerrou.designe, CoordVerrou.decision, CoordSuivi.etat, CoordSuivi.plan, CoordArbitrage.saisir, ApiManoeuvres.plan_de, ApiManoeuvres.etat, ApiManoeuvres.retirer, ApiPriorites.qui_manoeuvre, ApiPriorites.version_en_vigueur, ApiPriorites.preavis, ApiOperations.arbitrage_centralise, ApiRef.peut_manoeuvrer, ApiRef.propulsion, ApiConjonctions.tca, ApiConjonctions.niveau, ApiOperateurs.delai_reponse, ApiAcces.a_le_role, CoordReponse.attendre, CoordEchange.noter, CoordEchange.notifier, Journal.noter
+        // Relève du désigné par le privilégié (règle 17b du COLREG). Sur une coordination arretee
+        // dont la décision en vigueur (CoordVerrou.decision) désigne un objet et en privilégie un
+        // autre (CoordVerrou.designe / privilegie), relève si TOUT tient, sinon refuse sans rien
+        // changer :
+        // - le désigné n'a pas de plan approuvé : suivi (CoordSuivi.etat) attente_plan ou
+        //   plan_depose, et le plan éventuel (CoordSuivi.plan, sinon ApiManoeuvres.plan_de) ni
+        //   approuve, ni execute, ni verifie — EtatInvalide sinon (pas de relève) ;
+        // - fenêtre : h ≥ TCA − préavis(privilégié) − MARGE_RELEVE et h + préavis(privilégié) ≤ TCA
+        //   (ApiPriorites.preavis(ApiRef.propulsion)) — Delai sinon ;
+        // - le désigné a eu sa chance : décision posée (instant de CoordDecision.resume) AVANT
+        //   l'ouverture de la fenêtre — Delai sinon (un arbitrage rendu dans la fenêtre n'est pas
+        //   aussitôt défait, et la relève ne revient pas en arrière) ;
+        // - le privilégié peut manœuvrer (ApiRef.peut_manoeuvrer) — NonEligible ; habité :
+        //   seulement si le désigné ne le peut plus (propriété 3) — NonEligible ; son
+        //   propriétaire est actif (ApiOperateurs.est_actif) — Suspendu ; la grappe l'admet
+        //   (CoordGrappe.compatible) — Conflit.
+        // Alors : retire le plan non approuvé du désigné (ApiManoeuvres.retirer, par "systeme") ;
+        // arretee -> liberee ; le suivi passe releve (CoordSuivi.relever) ; lève le verrou
+        // (CoordVerrou.lever, motif "releve_17b") ; liberee -> rouverte (tour + 1, proposition =
+        // le privilégié, limite = TCA − son préavis, échéance = h) ; rouverte -> arbitrage
+        // (CoordArbitrage.saisir, raison "releve_17b") ; pose le verrou sur le privilégié
+        // (CoordVerrou.poser, mode "releve", par "systeme" : l'ancien désigné devient le
+        // privilégié) ; arbitrage -> arretee ; rend la saisine (CoordArbitrage.rendre). Une seule
+        // désignation à tout moment (propriété 1 : tenu -> leve -> tenu). Note la relève au fil
+        // (CoordEchange.noter) et la notifie aux parties (CoordEchange.notifier, "decision" :
+        // l'ancien désigné est averti qu'il garde désormais son cap) ; constate un manquement
+        // "designation_ignoree" contre le propriétaire de l'ancien désigné (ApiConformite.constater,
+        // gravité 3 au niveau 3, 2 sinon ; référence = la décision levée) ; journalise.
+        // `par` "systeme" (balayage) ou "analyste". Renvoie "arretee".
+        // Refus : Inconnu, EtatInvalide, Delai, NonEligible, Suspendu, Conflit, Habilitation.
+        signal relever(h: Horodatage, r: Rapprochement, par: String) -> CoordEtat
+            writes propose_de, echeance_de, limite_de, tour_de, en_cours
+            reads objets_de
+            moves arretee -> liberee when ManEvitement.libre || ManEvitement.solde, liberee -> rouverte when CoordVerrou.leve, rouverte -> arbitrage, arbitrage -> arretee when CoordVerrou.tenu
+            calls CoordVerrou.decision, CoordVerrou.designe, CoordVerrou.privilegie, CoordVerrou.lever, CoordVerrou.poser, CoordDecision.resume, CoordSuivi.etat, CoordSuivi.plan, CoordSuivi.relever, CoordArbitrage.saisir, CoordArbitrage.rendre, CoordGrappe.compatible, ApiManoeuvres.plan_de, ApiManoeuvres.etat, ApiManoeuvres.retirer, ApiRef.peut_manoeuvrer, ApiRef.habite, ApiRef.proprietaire, ApiRef.propulsion, ApiOperateurs.est_actif, ApiPriorites.preavis, ApiConjonctions.tca, ApiConjonctions.niveau, ApiConformite.constater, ApiAcces.a_le_role, CoordEchange.noter, CoordEchange.notifier, Journal.noter
         // Recale l'échéance et la limite d'action d'un dossier proposee ou desaccord quand le
         // rapprochement a changé chez conjonctions depuis le dernier recalage
         // (ApiConjonctions.mis_a_jour > recale_le : niveau monté, TCA avancé) ; sinon ne fait rien :
@@ -199,8 +237,9 @@ skeleton CoordDossier {
         // par Horloge.battre chaque minute avec `h`) : sur chaque dossier en cours,
         // recale l'échéance (recaler), relance les parties à mi-délai (CoordReponse.relancer),
         // constate le silence passé l'échéance, surveille la saisine d'arbitrage courante
-        // (CoordArbitrage.surveiller), reverifie la désignation des dossiers arrêtés et fait
-        // avancer le suivi de leur décision (CoordSuivi.suivre), et
+        // (CoordArbitrage.surveiller), reverifie la désignation des dossiers arrêtés, fait
+        // avancer le suivi de leur décision (CoordSuivi.suivre), tente la relève du désigné sans
+        // plan approuvé (relever : ses refus sont ignorés, la relève n'est pas encore due), et
         // clôt ceux dont le rapprochement est clos chez conjonctions (ApiConjonctions.etat
         // "resolu", "passe" ou "collision") ; une grappe encore formée d'un dossier en cours est
         // réglée par les règles (CoordGrappe.regler ; Conflit : laissée à l'analyste, le dossier
@@ -210,7 +249,7 @@ skeleton CoordDossier {
         signal balayer(h: Horodatage, par: String) -> Int
             writes balaye_le
             reads en_cours, echeance_de, coordination
-            calls recaler, constater_silence, reverifier, clore, CoordReponse.relancer, ApiConjonctions.etat, CoordGrappe.grappe_de_r, CoordGrappe.etat, CoordGrappe.regler, CoordArbitrage.courante, CoordArbitrage.surveiller, CoordVerrou.decision, CoordSuivi.suivre, ApiAcces.a_le_role
+            calls recaler, constater_silence, reverifier, relever, clore, CoordReponse.relancer, ApiConjonctions.etat, CoordGrappe.grappe_de_r, CoordGrappe.etat, CoordGrappe.regler, CoordArbitrage.courante, CoordArbitrage.surveiller, CoordVerrou.decision, CoordSuivi.suivre, ApiAcces.a_le_role
         // Dossiers en souffrance à `h`, pour l'analyste de permanence quand le balayage s'arrête :
         // ceux dont l'échéance est passée sans arbitrage saisi, préfixés de l'âge du dernier
         // balayage ("balayage:<ms>"). Au plus `n`. Refus : Habilitation ("analyste",

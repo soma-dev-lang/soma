@@ -23,7 +23,12 @@ skeleton ConjCriblagePlan {
         resultat_de: Map<String, Int> [persistent]          // rapprochements de niveau ≥ 2 que le plan créerait
         cause_de: Map<String, String> [persistent]          // péremption : rapprochement nouveau
         sur_par_objet: Map<String, List<String>> [persistent]  // objet -> plans "sur" (à rendre périmés)
+        // "plan|r" -> pc résiduelle (milliardièmes) du rapprochement ouvert r après la manœuvre,
+        // recalculée par cribler pour chaque rapprochement de l'objet dans l'horizon ; écrit une
+        // fois par cribler (preuve de la manœuvre franche, règle 8 du COLREG).
+        pc_apres_de: Map<String, Probabilite> [persistent]
         invariant objet_de.size <= 5000000
+        invariant pc_apres_de.size <= 500000000
         invariant resultat_de >= 0
         invariant len(sur_par_objet) <= 100
     }
@@ -48,8 +53,10 @@ skeleton ConjCriblagePlan {
         // "declare" : jamais d'avis "sur" sur un plan déjà criblé, approuvé ou annulé), Perime (régime non criblé
         // depuis 8 h, éphéméride de l'objet non fraîche, début du plan déjà passé, ou plan
         // périmé), Habilitation.
+        // Mémorise aussi, pour chaque rapprochement ouvert recalculé, sa pc résiduelle après la
+        // manœuvre (pc_apres_de, lue par pc_apres).
         signal cribler(h: Horodatage, objet: Objet, plan: String, debut: Horodatage, dv: DeltaV, par: String) -> Int
-            writes objet_de, campagne_de, depot_de, debut_de, dv_de, facteur_de, crible_le, resultat_de, sur_par_objet
+            writes objet_de, campagne_de, depot_de, debut_de, dv_de, facteur_de, crible_le, resultat_de, sur_par_objet, pc_apres_de
             moves demande -> fonde when ConjCampagne.terminee via campagne_de, fonde -> sur when ManPlan.declare, fonde -> a_risque
             calls ApiManoeuvres.etat, ApiRef.etat_objet, ApiRef.regime, ApiEphemerides.fraiche, ApiEphemerides.derniere, ConjCampagne.derniere, ConjCampagne.age_crible, ConjCampagne.etat, ApiMeteo.facteur_incertitude, ConjSeuils.niveau, ConjRapprochement.ouverts_de, ConjRapprochement.fiche, ApiAcces.a_le_role, Journal.noter
         // Rend périmés les plans "sur" de l'objet dont le début est postérieur à `h`, après un
@@ -61,6 +68,11 @@ skeleton ConjCriblagePlan {
             writes cause_de, sur_par_objet
             moves sur -> perime
             calls ConjRapprochement.etat, ApiAcces.a_le_role, Journal.noter
+        // Pc résiduelle (milliardièmes) du rapprochement `r` après la manœuvre du plan, telle que
+        // le criblage du plan l'a calculée (règle 8 : manœuvre franche). Refus : Inconnu (plan
+        // jamais criblé, ou r hors de son horizon : TCA avant le début du plan ou après 7 j).
+        signal pc_apres(plan: String, r: Rapprochement) -> Probabilite
+            reads pc_apres_de, objet_de
         // Résultat d'un criblage (rapprochements de niveau ≥ 2 créés). Refus : Inconnu.
         signal resultat(plan: String) -> Int
             reads resultat_de

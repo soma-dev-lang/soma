@@ -270,9 +270,10 @@ cell test PrioDesignationCas {
         assert ApiPriorites.qui_manoeuvre(1817366400000, cj(2, "OBJ-HAB1", "OBJ-MORT1", 1818230400000), "OBJ-HAB1", "OBJ-MORT1") == "OBJ-HAB1"
         // Deux capables dont un habité : l'autre manœuvre.
         assert ApiPriorites.qui_manoeuvre(1817366400000, cj(3, "OBJ-HAB1", "OBJ-A1", 1818230400000), "OBJ-HAB1", "OBJ-A1") == "OBJ-A1"
-        // Propulsion faible trop lente (TCA à 24 h, préavis 72 h) : l'impulsionnelle manœuvre.
+        // Règle 18 : face à une propulsion faible (même trop lente : TCA à 24 h, préavis 72 h),
+        // l'impulsionnelle s'écarte.
         assert ApiPriorites.qui_manoeuvre(1817366400000, cj(4, "OBJ-AFAIB1", "OBJ-B1", 1817452800000), "OBJ-AFAIB1", "OBJ-B1") == "OBJ-B1"
-        assert contains(ApiPriorites.decision_de(cj(4, "OBJ-AFAIB1", "OBJ-B1", 1817452800000)), "|seul_capable|")
+        assert contains(ApiPriorites.decision_de(cj(4, "OBJ-AFAIB1", "OBJ-B1", 1817452800000)), "|manoeuvrabilite|")
         // TCA passé : personne.
         assert ApiPriorites.qui_manoeuvre(1817366400000, cj(5, "OBJ-A1", "OBJ-B1", 1817000000000), "OBJ-A1", "OBJ-B1") == ""
         // Règle 3 (masse moindre désignée) : le plus léger manœuvre.
@@ -310,13 +311,13 @@ cell test PrioPreparationDelai {
         assert_fails PrioPreparation.declarer(1817366400000, "OBJ-AFAIB1", 1036800000, "dynamicien@ORG-OPB") matching "Habilitation"
         assert_fails PrioPreparation.declarer(1817366400000, "OBJ-A1", 1036800000, "dynamicien@ORG-OPA") matching "NonEligible"
         assert_fails PrioPreparation.declarer(1817366400000, "OBJ-AFAIB1", 2000000000, "dynamicien@ORG-OPA") matching "HorsBornes"
-        // TCA à 10 j : le préavis faible (72 h) tient…
-        assert ApiPriorites.qui_manoeuvre(1817366400000, cj(1, "OBJ-AFAIB1", "OBJ-BLOURD1", 1818230400000), "OBJ-AFAIB1", "OBJ-BLOURD1") == "OBJ-AFAIB1"
+        // Face à un objet sans propulsion, TCA à 10 j : le préavis faible (72 h) tient…
+        assert ApiPriorites.qui_manoeuvre(1817366400000, cj(1, "OBJ-AFAIB1", "OBJ-MORT1", 1818230400000), "OBJ-AFAIB1", "OBJ-MORT1") == "OBJ-AFAIB1"
         // … mais pas une préparation déclarée de 12 j.
         assert PrioPreparation.declarer(1817366400000, "OBJ-AFAIB1", 1036800000, "dynamicien@ORG-OPA") == 1036800000
         assert PrioPreparation.delai("OBJ-AFAIB1") == 1036800000
-        assert ApiPriorites.qui_manoeuvre(1817366400000, cj(1, "OBJ-AFAIB1", "OBJ-BLOURD1", 1818230400000), "OBJ-AFAIB1", "OBJ-BLOURD1") == "OBJ-BLOURD1"
-        assert len(PrioDesignation.decisions_de(cj(1, "OBJ-AFAIB1", "OBJ-BLOURD1", 1818230400000))) == 2
+        assert ApiPriorites.qui_manoeuvre(1817366400000, cj(1, "OBJ-AFAIB1", "OBJ-MORT1", 1818230400000), "OBJ-AFAIB1", "OBJ-MORT1") == ""
+        assert len(PrioDesignation.decisions_de(cj(1, "OBJ-AFAIB1", "OBJ-MORT1", 1818230400000))) == 2
     }
 }
 
@@ -516,22 +517,24 @@ cell test PrioScenarioComplet {
         assert PrioEssaim.declarer(1817366400000, "ESM-1", "ORG-OPA", "Constellation A", ["OBJ-A1", "OBJ-A2"], true, "administrateur_operateur@ORG-OPA") == "ESM-1"
         assert PrioEssaim.reconnaitre(1817366400000, "ESM-1", "analyste@ORG-ORBITE", "superviseur@ORG-ORBITE") == "reconnu"
         assert derogation_octroyee("DRG-1", "OBJ-B7", 1817366400000, 2592000000) == "octroyee"
-        // A1 (essaim autonome) contre BFAIB1 (propulsion faible, TCA à 5 j : son préavis de 72 h tient).
+        // A1 (essaim autonome, impulsionnelle) contre BFAIB1 (propulsion faible, TCA à 5 j : son
+        // préavis de 72 h tient) : règle 18, l'impulsionnelle s'écarte, avant la table (essaim).
         let r = cj(42, "OBJ-A1", "OBJ-BFAIB1", 1817798400000)
-        assert ApiPriorites.qui_manoeuvre(1817366400000, r, "OBJ-A1", "OBJ-BFAIB1") == "OBJ-BFAIB1"
+        assert ApiPriorites.qui_manoeuvre(1817366400000, r, "OBJ-A1", "OBJ-BFAIB1") == "OBJ-A1"
         let dec = ApiPriorites.decision_de(r)
-        assert contains(dec, "|OBJ-BFAIB1|PRIO-2027-1|regle:2|1817366400000")
-        // Nouvelle mise à jour du rapprochement, TCA rapproché à 48 h : la faible ne peut plus.
+        assert contains(dec, "|OBJ-A1|PRIO-2027-1|manoeuvrabilite|1817366400000")
+        // Nouvelle mise à jour du rapprochement, TCA rapproché à 48 h : la faible ne pourrait plus ;
+        // la règle 18 désigne toujours A1.
         let r2 = cj(42, "OBJ-A1", "OBJ-BFAIB1", 1817539200000)
         assert ApiPriorites.qui_manoeuvre(1817366400000, r2, "OBJ-A1", "OBJ-BFAIB1") == "OBJ-A1"
-        assert contains(ApiPriorites.decision_de(r2), "|OBJ-A1|PRIO-2027-1|seul_capable|")
+        assert contains(ApiPriorites.decision_de(r2), "|OBJ-A1|PRIO-2027-1|manoeuvrabilite|")
         // Dérogation de B7 face à A2 (essaim) : les deux exemptables, la ligne 1 tranche.
         assert ApiPriorites.qui_manoeuvre(1817366400000, cj(43, "OBJ-A2", "OBJ-B7", 1818230400000), "OBJ-A2", "OBJ-B7") == "OBJ-A2"
         // L'opérateur B conteste la première décision ; ORBITE rejoue et confirme.
         let d1 = PrioDesignation.decisions_de(r)[0]
         assert PrioDesignation.contester(1817452800000, d1, "préavis faible mal lu", "chef_de_mission@ORG-OPB") == "contestee"
         assert PrioDesignation.statuer(1817539200000, d1, false, "décision rejouée identique", "analyste@ORG-ORBITE", "superviseur@ORG-ORBITE") == "confirmee"
-        assert contains(PrioDesignation.communiquer(1817539200000, d1, "ORG-OPB", "chef_de_mission@ORG-OPB"), "OBJ-BFAIB1 | regle | PRIO-2027-1 | 2 |")
+        assert contains(PrioDesignation.communiquer(1817539200000, d1, "ORG-OPB", "chef_de_mission@ORG-OPB"), "OBJ-A1 | manoeuvrabilite | PRIO-2027-1 | 0 |")
         // Trente jours plus tard : les trois décisions archivées, la dérogation expirée.
         assert ApiPriorites.balayer(1819958400000, "systeme") == 4
         assert contains(PrioDesignation.resume(d1), "| archivee |")
@@ -540,7 +543,43 @@ cell test PrioScenarioComplet {
         assert vigueur("PRIO-2028-1", "PRIO-2027-1", 1819958400000) == "en_vigueur"
         assert ApiPriorites.version_en_vigueur(1837238400000) == "PRIO-2028-1"
         assert PrioVersion.etat("PRIO-2027-1") == "remplacee"
-        assert PrioDesignation.statistiques("PRIO-2027-1") == ["aucun_capable | 0", "seul_capable | 1", "habite_exempte | 0", "regle | 2", "arrivee | 0", "catalogue | 0"]
+        assert PrioDesignation.statistiques("PRIO-2027-1") == ["aucun_capable | 0", "seul_capable | 0", "habite_exempte | 0", "manoeuvrabilite | 2", "rattrapage | 0", "regle | 1", "arrivee | 0", "catalogue | 0"]
         assert PrioEcheancier.en_retard(1837238400000) == 0
+    }
+}
+
+// ── Règles de barre (COLREG 1972) : manœuvrabilité (18), rattrapage (13), dernier arrivé.
+cell test PrioColreg {
+    rules {
+        assert vigueur("V1", "", 1800000000000) == "en_vigueur"
+        // 18 : l'impulsionnelle s'écarte devant la faible, toutes deux capables (TCA à 10 j)
+        assert ApiPriorites.qui_manoeuvre(1817366400000, cj(1, "OBJ-AFAIB1", "OBJ-B1", 1818230400000), "OBJ-AFAIB1", "OBJ-B1") == "OBJ-B1"
+        assert contains(ApiPriorites.decision_de(cj(1, "OBJ-AFAIB1", "OBJ-B1", 1818230400000)), "|OBJ-B1|V1|manoeuvrabilite|")
+        // 18 avec un habité : le statut habité prime (l'impulsionnelle habitée est exemptée)
+        assert ApiPriorites.qui_manoeuvre(1817366400000, cj(2, "OBJ-AFAIB1", "OBJ-BHAB1", 1818230400000), "OBJ-AFAIB1", "OBJ-BHAB1") == "OBJ-AFAIB1"
+        assert contains(ApiPriorites.decision_de(cj(2, "OBJ-AFAIB1", "OBJ-BHAB1", 1818230400000)), "|habite_exempte|")
+        // 18 et dérogation : l'impulsionnelle en dérogation (manœuvrabilité restreinte) est exemptée
+        assert derogation_octroyee("DRG-1", "OBJ-B1", 1817366400000, 864000000) == "octroyee"
+        assert ApiPriorites.qui_manoeuvre(1817366400000, cj(3, "OBJ-AFAIB1", "OBJ-B1", 1818230400000), "OBJ-AFAIB1", "OBJ-B1") == "OBJ-AFAIB1"
+        assert contains(ApiPriorites.decision_de(cj(3, "OBJ-AFAIB1", "OBJ-B1", 1818230400000)), "|OBJ-AFAIB1|V1|manoeuvrabilite|")
+        // … mais jamais au point de désigner une faible qui ne tient pas son préavis (TCA à 24 h)
+        assert ApiPriorites.qui_manoeuvre(1817366400000, cj(4, "OBJ-AFAIB1", "OBJ-B1", 1817452800000), "OBJ-AFAIB1", "OBJ-B1") == "OBJ-B1"
+        // 13 : rattrapage entre deux impulsionnelles, le plus bas s'écarte (ici celui qui serait exempté par la masse)
+        assert ApiPriorites.qui_manoeuvre(1817366400000, cj(5, "OBJ-ALOURDBAS1", "OBJ-BHAUT1", 1818230400000), "OBJ-ALOURDBAS1", "OBJ-BHAUT1") == "OBJ-BHAUT1"
+        let rat = "CJ-RAT6~OBJ-ALOURDBAS1~OBJ-BHAUT1~1818230400000"
+        assert ApiPriorites.qui_manoeuvre(1817366400000, rat, "OBJ-ALOURDBAS1", "OBJ-BHAUT1") == "OBJ-ALOURDBAS1"
+        assert contains(ApiPriorites.decision_de(rat), "|OBJ-ALOURDBAS1|V1|rattrapage|")
+        // la décision se rejoue sur son instantané (altitude, vitesse relative, rattrapage)
+        let d6 = PrioDesignation.decisions_de(rat)[0]
+        assert PrioDesignation.rejouer(d6) == "OBJ-ALOURDBAS1"
+        assert contains(PrioDesignation.communiquer(1817366400000, d6, "ORG-OPA", "analyste@ORG-ORBITE"), "| 400000 | 50 | oui")
+        // 13 sans orbite observée de l'un des deux : la règle ne s'applique pas (table : masse)
+        let rat2 = "CJ-RAT7~OBJ-ALOURD1~OBJ-BHAUT1~1818230400000"
+        assert ApiPriorites.qui_manoeuvre(1817366400000, rat2, "OBJ-ALOURD1", "OBJ-BHAUT1") == "OBJ-BHAUT1"
+        assert contains(ApiPriorites.decision_de(rat2), "|regle:3|")
+        // 13 après 18 : en rattrapage, la faible plus basse ne s'écarte pas devant l'impulsionnelle
+        let rat3 = "CJ-RAT8~OBJ-AFAIBBAS1~OBJ-BHAUT1~1818230400000"
+        assert ApiPriorites.qui_manoeuvre(1817366400000, rat3, "OBJ-AFAIBBAS1", "OBJ-BHAUT1") == "OBJ-BHAUT1"
+        assert contains(ApiPriorites.decision_de(rat3), "|manoeuvrabilite|")
     }
 }

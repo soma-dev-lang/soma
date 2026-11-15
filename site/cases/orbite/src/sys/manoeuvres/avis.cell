@@ -37,15 +37,23 @@ skeleton ManAvis {
     }
     face {
         // Avise les parties d'un plan (sujet) : pour un évitement, le propriétaire de l'autre
-        // objet (ApiConjonctions.objets, sauf "inconnu") ; dans tous les cas l'organisation de
-        // l'État d'immatriculation de l'objet (ApiRef.org_de_etat). Pour chaque destinataire :
+        // objet (ApiConjonctions.objets, sauf "inconnu") — pour le sujet "approbation", celui du
+        // PRIVILÉGIÉ arrêté (ApiCoordination.privilegie(r, "systeme"), l'autre objet s'il est "" ;
+        // les autres sujets ne relisent pas la coordination, qui peut être l'appelante : retrait
+        // à la rouverture) ; dans tous les cas l'organisation de
+        // l'État d'immatriculation de l'objet (ApiRef.org_de_etat). Sujet "approbation" d'un
+        // évitement : c'est l'AVIS D'INTENTION de la règle 34 du COLREG, « <objet> manœuvre à
+        // <début> (fenêtre <début>-<fin>), Δv <dv> mm/s ; accusé attendu avant <échéance> », avec
+        // accusé attendu du privilégié (relever l'escalade à défaut), journalisé (Journal.noter) ;
+        // le déclarant, partie lui aussi, a l'approbation en retour de ApiManoeuvres.declarer.
+        // Pour chaque destinataire :
         // ApiDonnees.peut_recevoir(org, objet, r, h) — faux ⇒ noté dans `refuses_de`, rien
         // n'est envoyé — puis ApiDonnees.tracer et ApiPasserelle.notifier (r du plan, "" hors évitement ;
         // urgence = niveau du rapprochement, 1 hors évitement). Appelé par ManPlan (interne). Renvoie le nombre d'avis émis.
         // Refus : Plein.
         signal emettre(h: Horodatage, plan: String, sujet: ManSujetAvis) -> Int
             writes plan_de, destinataire_de, message_de, trace_de, echeance_de, avis_du_plan, refuses_de, en_file
-            calls ManPlan.fiche, ApiConjonctions.objets, ApiConjonctions.niveau, ApiRef.proprietaire, ApiRef.etat_immatriculation, ApiRef.org_de_etat, ApiDonnees.peut_recevoir, ApiDonnees.tracer, ApiPasserelle.notifier
+            calls ManPlan.fiche, ApiConjonctions.objets, ApiConjonctions.niveau, ApiCoordination.privilegie, ApiRef.proprietaire, ApiRef.etat_immatriculation, ApiRef.org_de_etat, ApiDonnees.peut_recevoir, ApiDonnees.tracer, ApiPasserelle.notifier, Journal.noter
         // Relève l'accusé (en_file -> acquitte si ApiPasserelle.acquitte) ou, l'échéance passée,
         // échoit (en_file -> echu) : pour un évitement dont le rapprochement est de niveau 3,
         // ApiEscalade.escalader(r, destinataire) — l'autre opérateur doit savoir que le désigné

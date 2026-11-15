@@ -342,3 +342,27 @@ cell test VerrouCloture {
         assert_fails ManEvitement.engager(1000000000000, "CJ-CLOS~OBJ-C1~OBJ-C2", "PL-3") matching "Ferme"
     }
 }
+
+// ── règles de barre (COLREG) : manœuvre franche (8), privilégié qui garde son cap (17a)
+cell test ManColreg {
+    rules {
+        // règle 8 : la pc résiduelle du rapprochement doit tomber sous 1/1 000 000
+        let r = "CJ-8~OBJ-A8~OBJ-B8"
+        assert ApiManoeuvres.declarer(1000000000000, "PL-TIMIDE", "OBJ-A8", r, "evitement", 1000007200000, 500, "dyn-alpha") == "PL-TIMIDE"
+        assert ApiManoeuvres.etat("PL-TIMIDE") == "rejete"
+        assert len(Journal.chercher("plan PL-TIMIDE rejeté : manoeuvre_timide", 5)) == 1
+        assert ApiManoeuvres.declarer(1000000000000, "PL-FRANC", "OBJ-A8", r, "evitement", 1000007200000, 800, "dyn-alpha") == "PL-FRANC"
+        assert ApiManoeuvres.etat("PL-FRANC") == "approuve"
+        // règle 34 : l'avis d'intention part vers le privilégié (ORG-BETA) et vers l'État
+        assert len(ManAvis.avis_de("PL-FRANC")) == 2
+        assert ManAvis.avis_de("PL-FRANC").contains("PL-FRANC|ORG-BETA|approbation")
+        // règle 17a : le privilégié d'un rapprochement arrêté ne déclare aucun plan, pas même un maintien
+        assert_fails ApiManoeuvres.declarer(1000000000000, "PL-P1", "OBJ-PRIV1", "", "maintien", 1000007200000, 500, "dyn-alpha") matching "Conflit"
+        assert_fails ApiManoeuvres.declarer(1000000000000, "PL-P2", "OBJ-PRIV1", "", "transfert", 1000007200000, 500, "dyn-alpha") matching "Conflit"
+        // après le TCA du rapprochement (H0 + 10 j), il retrouve sa liberté
+        assert ApiManoeuvres.declarer(1000900000000, "PL-P3", "OBJ-PRIV1", "", "maintien", 1000907200000, 500, "dyn-alpha") == "PL-P3"
+        // le désigné, lui, manœuvre
+        assert ApiManoeuvres.declarer(1000000000000, "PL-RAPP", "OBJ-ARAPP1", "", "maintien", 1000007200000, 500, "dyn-alpha") == "PL-RAPP"
+    }
+}
+

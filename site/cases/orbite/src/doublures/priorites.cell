@@ -11,7 +11,10 @@
 //   faible, MORT (OBJ-MORT…) sans propulsion, ANOM en anomalie, HS hors service, INCONNU non
 //   catalogué, NEUF injecté à 2000 (sinon 1000), LOURD 5 000 kg (sinon 100), ALERTE engagé dans
 //   un rapprochement de niveau 3, GEL sous gel d'un dossier de preuve.
-// - rapprochement "CJ-<n>~<a>~<b>~<tca>" ; "N3" dans l'id : niveau 3.
+// - rapprochement "CJ-<n>~<a>~<b>~<tca>" ; "N3" dans l'id : niveau 3 ; "RAT" dans l'id : vitesse
+//   relative 50 m/s, en rattrapage (sinon aucune géométrie remise : 0, faux).
+// - orbite observée : objet contenant "BAS" à 400 km d'altitude, "HAUT" à 500 km ; aucune sinon
+//   (perigee / apogee refusent Inconnu).
 // - changement_autorise(h) faux quand h se termine par 7 ms (gel) ; destinataire contenant
 //   "PLEIN" : file pleine ; organisation contenant "TIERS" : non autorisée à recevoir.
 
@@ -115,6 +118,23 @@ flesh ApiConjonctions {
     on ouverts_de(objet) {
         if contains(to_string(objet), "ALERTE") { return ["CJ-N3"] }
         return []
+    }
+    on vitesse_relative(r) {
+        if contains(to_string(r), "RAT") { return 50 }
+        return 0
+    }
+    on en_rattrapage(r) {
+        return contains(to_string(r), "RAT")
+    }
+}
+
+flesh ApiObservation {
+    on perigee(objet) { return _altitude(objet) }
+    on apogee(objet) { return _altitude(objet) }
+    on _altitude(o: Objet) {
+        if contains(to_string(o), "BAS") { return Distance(400000) }
+        require contains(to_string(o), "HAUT") else Inconnu "aucune orbite observée pour {o}"
+        return Distance(500000)
     }
 }
 

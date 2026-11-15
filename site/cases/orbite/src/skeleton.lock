@@ -101,7 +101,7 @@ skeleton ApiConformite {
     //~ balayer 1d71d5851483a230
 }
 
-== ApiConjonctions sha256:1a77199f8bf3d74df84448b3078fab7308e652dccf49ff2c473137698cd0e9df core:abc96624119654e612b7f10b998fa9b9b9afce4ffcdcfc2c025846769ed9f176
+== ApiConjonctions sha256:11ceec07f56cec150d98dabae5a6de7dd0b7f9e0715a79345ac838ec388de103 core:e7c4aef1ef9759108485ff5eaccebb74f16f9b13943ab7fc7af7c9265b238e8e
 skeleton ApiConjonctions {
     face {
         signal signaler(h: Horodatage, objet_a: Objet, objet_b: Objet, tca: Horodatage, distance: Distance, pc: Probabilite, par: String) -> Rapprochement  requires h >= 0  requires tca >= 0  requires distance >= 0  requires pc >= 0 && pc <= 1000000000  calls ConjCriblagePlan.rendre_caducs, ConjMessage.diffuser, ConjRapprochement.demander_mesures, ConjRapprochement.engager, ConjRapprochement.fiche, ConjRapprochement.signaler
@@ -120,6 +120,10 @@ skeleton ApiConjonctions {
         signal clos_entre(debut: Horodatage, fin: Horodatage) -> List<String>  requires debut >= 0  requires fin >= 0  calls ConjRapprochement.clos_entre
         signal criblage_plan(plan: String) -> String  calls ConjCriblagePlan.etat
         signal campagne_fraiche(regime: Regime, h: Horodatage) -> Bool  requires regime == "leo" || regime == "meo" || regime == "geo" || regime == "heo"  requires h >= 0  calls ConjCampagne.fraiche
+        signal preciser_geometrie(h: Horodatage, r: Rapprochement, vitesse_relative_mps: Int, par: String) -> Int  requires h >= 0  calls ConjRapprochement.preciser_geometrie
+        signal vitesse_relative(r: Rapprochement) -> Int  calls ConjRapprochement.vitesse_relative
+        signal en_rattrapage(r: Rapprochement) -> Bool  calls ConjRapprochement.en_rattrapage
+        signal pc_apres_plan(plan: String, r: Rapprochement) -> Probabilite  ensures result >= 0 && result <= 1000000000  calls ConjCriblagePlan.pc_apres
         signal constater_collision(h: Horodatage, r: Rapprochement, evenement: String, par: String) -> String  requires h >= 0  calls ConjAnalyseTca.confirmer, ConjMessage.clore_de, ConjMessage.diffuser, ConjRapprochement.clore_apres_tca
         signal exempter(h: Horodatage, chasseur: Objet, cible: Objet, debut: Horodatage, fin: Horodatage, par: String, valideur: String) -> String  requires h >= 0  requires debut >= 0  requires fin >= 0  calls ConjExemption.accorder
         signal renforcer(h: Horodatage, regime: Regime, fin: Horodatage, motif: String, par: String) -> String  requires h >= 0  requires regime == "leo" || regime == "meo" || regime == "geo" || regime == "heo"  requires fin >= 0  calls ConjRenforcement.renforcer
@@ -151,18 +155,23 @@ skeleton ApiConjonctions {
     //~ clos_entre 9d3045ea5fa1a310
     //~ criblage_plan f2a98abd7d7ee3f1
     //~ campagne_fraiche 4c6b100816293bbd
+    //~ preciser_geometrie bc8943abe69ded7c
+    //~ vitesse_relative 2998ee46f748ce47
+    //~ en_rattrapage 0d702ca45b924ed6
+    //~ pc_apres_plan 2e7db8096772dec4
     //~ constater_collision c8d79a10fbe8789d
     //~ exempter 0a9e1ac7d40d0cae
     //~ renforcer 757d257779113815
     //~ balayer f3c6d85763d4eef6
 }
 
-== ApiCoordination sha256:b8268c61bf461b7e882e9ef32255fbcd8616fbad4fbc48ece581d86e589d1c67 core:5081e15086e5b9812fe5e2735405e4a8799b8cdac9729aa25a04223b85aea3c6
+== ApiCoordination sha256:142bd22afa912a6a0b8b1e6028cf937021ce36d3c52b3ff13e7725d7c3d0c12d core:93e9cb8ce3504a0be80029bd61975a2eec95fca09526aa52bbdb25356ca7d579
 skeleton ApiCoordination {
     face {
         signal ouvrir(h: Horodatage, r: Rapprochement, par: String) -> String  requires h >= 0  calls CoordDossier.ouvrir
         signal repondre(h: Horodatage, r: Rapprochement, reponse: String, contre: Objet, motif: String, par: String) -> String  requires h >= 0  calls CoordDossier.repondre
         signal designe(r: Rapprochement, par: String) -> Objet  calls CoordVerrou.designe
+        signal privilegie(r: Rapprochement, par: String) -> Objet  calls CoordVerrou.privilegie
         signal arretee(r: Rapprochement) -> Bool  calls CoordVerrou.arretee
         signal arbitrer(h: Horodatage, r: Rapprochement, objet: Objet, motif: String, par: String, valideur: String) -> String  requires h >= 0  calls CoordDossier.arbitrer
         signal rouvrir(h: Horodatage, r: Rapprochement, motif: String, par: String) -> String  requires h >= 0  calls CoordDossier.rouvrir
@@ -182,6 +191,7 @@ skeleton ApiCoordination {
     //~ ouvrir 66781e053ba7e08d
     //~ repondre 8b8622efbe9e68e5
     //~ designe 68424e4aeac5c20b
+    //~ privilegie f351f1ad1e15e991
     //~ arretee 22b33e5716df2019
     //~ arbitrer ecde1fd25b42b0a8
     //~ rouvrir a192325b8141096a
@@ -541,7 +551,7 @@ skeleton ApiPriorites {
     // type Propulsion = String where value == "aucune" || value == "faible" || value == "impulsionnelle" (nominal: never mixed with another type; build Propulsion(x), read to_string(q); literals take its type)
     // type Rapprochement = String (nominal: never mixed with another type; build Rapprochement(x), read to_string(q); literals take its type)
     // type Refus = String where value == "Habilitation" || value == "QuatreYeux" || value == "Existe" || value == "Inconnu" || value == "EtatInvalide" || value == "HorsBornes" || value == "Insuffisant" || value == "Perime" || value == "Suspendu" || value == "Ferme" || value == "Echu" || value == "NonEligible" || value == "Doublon" || value == "Incoherent" || value == "Plein" || value == "MotifRequis" || value == "Delai" || value == "Conflit" || value == "Confidentiel" (nominal: never mixed with another type; build Refus(x), read to_string(q); literals take its type)
-    //~ qui_manoeuvre 5262e40e14fc725e
+    //~ qui_manoeuvre 1d52d515de999ce2
     //~ version_en_vigueur f0b84cf35dccbab7
     //~ derogation 2b19f0d9bfdd1c17
     //~ preavis 6e5586bc64240d84
@@ -2070,7 +2080,7 @@ skeleton ConjAbonnement {
     //~ etat 85fab6890d228013
 }
 
-== ConjCriblagePlan sha256:a59d58086e7f889fe87601fcfb52dc65bdc11def4bd1326be2a50adf2a9b21d3 core:5cc5cd8f18acbbe1293cef06b510348b89048877c26a079991da6a50483e23f8
+== ConjCriblagePlan sha256:d96ac23430bc3bcd2739c88d24a323702d0526426c2a929171fc7424dfbbf3b9 core:6c0cd3429150ece27bc20ea6f04539d253b0db43e0db732aa6afa6ecb28b2c6d
 skeleton ConjCriblagePlan {
     memory {
         objet_de: Map<String, Objet> [persistent]
@@ -2083,13 +2093,16 @@ skeleton ConjCriblagePlan {
         resultat_de: Map<String, Int> [persistent]
         cause_de: Map<String, String> [persistent]
         sur_par_objet: Map<String, List<String>> [persistent]
+        pc_apres_de: Map<String, Probabilite> [persistent]
         invariant objet_de.size <= 5000000
+        invariant pc_apres_de.size <= 500000000
         invariant resultat_de >= 0
         invariant len(sur_par_objet) <= 100
         invariant debut_de >= 0
         invariant dv_de >= 0 && dv_de <= 10000000
         invariant facteur_de >= 0 && facteur_de <= 10000
         invariant crible_le >= 0
+        invariant pc_apres_de >= 0 && pc_apres_de <= 1000000000
     }
     state criblage {
         initial: demande
@@ -2099,8 +2112,9 @@ skeleton ConjCriblagePlan {
         sur -> perime
     }
     face {
-        signal cribler(h: Horodatage, objet: Objet, plan: String, debut: Horodatage, dv: DeltaV, par: String) -> Int  requires h >= 0  requires debut >= 0  requires dv >= 0 && dv <= 10000000  writes campagne_de, crible_le, debut_de, depot_de, dv_de, facteur_de, objet_de, resultat_de, sur_par_objet  moves demande -> fonde when ConjCampagne.terminee via campagne_de, fonde -> a_risque, fonde -> sur when ManPlan.declare  calls ApiAcces.a_le_role, ApiEphemerides.derniere, ApiEphemerides.fraiche, ApiManoeuvres.etat, ApiMeteo.facteur_incertitude, ApiRef.etat_objet, ApiRef.regime, ConjCampagne.age_crible, ConjCampagne.derniere, ConjCampagne.etat, ConjRapprochement.fiche, ConjRapprochement.ouverts_de, ConjSeuils.niveau, Journal.noter
+        signal cribler(h: Horodatage, objet: Objet, plan: String, debut: Horodatage, dv: DeltaV, par: String) -> Int  requires h >= 0  requires debut >= 0  requires dv >= 0 && dv <= 10000000  writes campagne_de, crible_le, debut_de, depot_de, dv_de, facteur_de, objet_de, pc_apres_de, resultat_de, sur_par_objet  moves demande -> fonde when ConjCampagne.terminee via campagne_de, fonde -> a_risque, fonde -> sur when ManPlan.declare  calls ApiAcces.a_le_role, ApiEphemerides.derniere, ApiEphemerides.fraiche, ApiManoeuvres.etat, ApiMeteo.facteur_incertitude, ApiRef.etat_objet, ApiRef.regime, ConjCampagne.age_crible, ConjCampagne.derniere, ConjCampagne.etat, ConjRapprochement.fiche, ConjRapprochement.ouverts_de, ConjSeuils.niveau, Journal.noter
         signal rendre_caducs(h: Horodatage, objet: Objet, r: Rapprochement, par: String) -> Int  requires h >= 0  reads debut_de  writes cause_de, sur_par_objet  moves sur -> perime  calls ApiAcces.a_le_role, ConjRapprochement.etat, Journal.noter
+        signal pc_apres(plan: String, r: Rapprochement) -> Probabilite  ensures result >= 0 && result <= 1000000000  reads objet_de, pc_apres_de
         signal resultat(plan: String) -> Int  reads resultat_de
         signal etat(plan: String) -> String  reads criblage, objet_de
     }
@@ -2108,15 +2122,17 @@ skeleton ConjCriblagePlan {
     // type Horodatage = Int where value >= 0 (nominal: never mixed with another type; build Horodatage(x), read to_int(q); literals take its type)
     // type Objet = String (nominal: never mixed with another type; build Objet(x), read to_string(q); literals take its type)
     // type Pourcent = Int where value >= 0 && value <= 10000 (nominal: never mixed with another type; build Pourcent(x), read to_int(q); literals take its type)
+    // type Probabilite = Int where value >= 0 && value <= 1000000000 (nominal: never mixed with another type; build Probabilite(x), read to_int(q); literals take its type)
     // type Rapprochement = String (nominal: never mixed with another type; build Rapprochement(x), read to_string(q); literals take its type)
     // type Refus = String where value == "Habilitation" || value == "QuatreYeux" || value == "Existe" || value == "Inconnu" || value == "EtatInvalide" || value == "HorsBornes" || value == "Insuffisant" || value == "Perime" || value == "Suspendu" || value == "Ferme" || value == "Echu" || value == "NonEligible" || value == "Doublon" || value == "Incoherent" || value == "Plein" || value == "MotifRequis" || value == "Delai" || value == "Conflit" || value == "Confidentiel" (nominal: never mixed with another type; build Refus(x), read to_string(q); literals take its type)
-    //~ cribler 15e13d3c3af2ffdd
+    //~ cribler efec1a00b3ea7a05
     //~ rendre_caducs a9f83fe3e875c4a8
+    //~ pc_apres 1ae6b5498a8b21c1
     //~ resultat 054b742714a4069a
     //~ etat d0acbe5d125c15ba
 }
 
-== ConjRapprochement sha256:e4267fb696c179022f81fe241aed567144dd3b92600984416e0b5bbdb74e0374 core:d586b50e5557e5b72c7cea34bbab380954e96aed6a1600b49d17c33ac077d7ea
+== ConjRapprochement sha256:78701c86b1095ef5738d636fbb367d953c64765cae330bcb0d4d73d077757050 core:8c24b9cca02f645a234d73614729a5cf66cb19f1ac21c92ba216019330e6b974
 skeleton ConjRapprochement {
     memory {
         objet_a_de: Map<String, Objet> [persistent]
@@ -2140,6 +2156,8 @@ skeleton ConjRapprochement {
         force_de: Map<String, Niveau> [persistent]
         clos_le: Map<String, Horodatage> [persistent]
         plan_de: Map<String, String> [persistent]
+        vrel_de: Map<String, Int> [persistent]
+        invariant vrel_de >= 1 && vrel_de <= 20000
         invariant objet_a_de.size <= 5000000
         invariant nb_maj >= 0
         invariant sous_seuil_de >= 0
@@ -2191,6 +2209,9 @@ skeleton ConjRapprochement {
         signal resoudre(h: Horodatage, r: Rapprochement, motif: ConjMotifResolution, par: String) -> String  requires h >= 0  requires motif == "manoeuvre_verifiee" || motif == "pc_retombee"  reads objet_a_de, objet_b_de, sous_seuil_de  writes clos_le, clos_par_jour, fondements_de, motif_cloture_de, ouverts_par_objet, plan_de  moves alerte -> resolu, detecte -> resolu, en_coordination -> evite when ManPlan.verifie via plan_de, en_coordination -> resolu, evite -> resolu, suivi -> resolu  calls ApiAcces.a_le_role, ApiManoeuvres.etat, ApiManoeuvres.plan_de, Journal.noter
         signal clore_apres_tca(h: Horodatage, r: Rapprochement, par: String) -> String  requires h >= 0  reads objet_a_de, objet_b_de  writes clos_le, clos_par_jour, motif_cloture_de, ouverts_par_objet  moves alerte -> collision when ConjAnalyseTca.confirmee, alerte -> passe when ConjAnalyseTca.sans_suite || ConjAnalyseTca.infirmee, detecte -> collision when ConjAnalyseTca.confirmee, detecte -> passe when ConjAnalyseTca.sans_suite || ConjAnalyseTca.infirmee, en_coordination -> collision when ConjAnalyseTca.confirmee, en_coordination -> passe when ConjAnalyseTca.sans_suite || ConjAnalyseTca.infirmee, suivi -> collision when ConjAnalyseTca.confirmee, suivi -> passe when ConjAnalyseTca.sans_suite || ConjAnalyseTca.infirmee  calls ApiAcces.a_le_role, ConjAnalyseTca.etat, Journal.noter
         signal fondements(h: Horodatage, r: Rapprochement, org: Org, n: Int, par: String) -> List<String>  requires h >= 0  reads fondements_de, objet_a_de, objet_b_de  calls ApiAcces.a_le_role, ApiAcces.agit_pour, ApiDonnees.peut_recevoir, ApiDonnees.tracer, ApiRef.orbite, Journal.noter
+        signal preciser_geometrie(h: Horodatage, r: Rapprochement, vitesse_relative_mps: Int, par: String) -> Int  requires h >= 0  reads objet_a_de, rapprochement  writes vrel_de  calls ApiAcces.a_le_role, Journal.noter
+        signal vitesse_relative(r: Rapprochement) -> Int  reads objet_a_de, vrel_de
+        signal en_rattrapage(r: Rapprochement) -> Bool  reads objet_a_de, vrel_de
         signal fiche(r: Rapprochement) -> ConjFiche  reads distance_de, maj_le, nb_maj, niveau_de, objet_a_de, objet_b_de, pc_de, regime_de, tca_de
         signal etat(r: Rapprochement) -> String  reads objet_a_de, rapprochement
         signal ouverts_de(objet: Objet) -> List<String>  reads ouverts_par_objet
@@ -2220,6 +2241,9 @@ skeleton ConjRapprochement {
     //~ resoudre 413b03b52601cb18
     //~ clore_apres_tca deba869e4936599f
     //~ fondements 395a80bb928622d4
+    //~ preciser_geometrie f674b12b351773fa
+    //~ vitesse_relative 2998ee46f748ce47
+    //~ en_rattrapage 9679d3bc2710da93
     //~ fiche eddd424924eca865
     //~ etat fce049420ca5733e
     //~ ouverts_de 85ca3dc0e9cc2158
@@ -2377,7 +2401,7 @@ skeleton ConjSeuils {
     //~ etat d05b7dcbe8598133
 }
 
-== CoordArbitrage sha256:62d102f4c189e8fc974d53c84bd74194dce698b12f408377a1e3acaec3431ced core:88ac6755b39bc9d2c78fdb91547e6001392668b17553f7236e6ff18b8a99081b
+== CoordArbitrage sha256:0c52acc519fc2e14a9c9952a4ff8a68560ae0c65af4e727d102b91b372040f58 core:5d0bed1d2884cb4e88da620cf55ac8a487ef27e24dc37726312b62792370d05d
 skeleton CoordArbitrage {
     memory {
         dossier_de: Map<String, Rapprochement> [persistent]
@@ -2386,7 +2410,7 @@ skeleton CoordArbitrage {
         analyste_de: Map<String, String> [persistent]
         courante_de: Map<String, String> [persistent]
         invariant dossier_de.size <= 50000000
-        invariant raison_de == "silence" || raison_de == "desaccord" || raison_de == "verrou_refuse" || raison_de == "sans_designation" || raison_de == "rouverture_tardive" || raison_de == "urgence" || raison_de == "crise" || raison_de == "grappe"
+        invariant raison_de == "silence" || raison_de == "desaccord" || raison_de == "verrou_refuse" || raison_de == "sans_designation" || raison_de == "rouverture_tardive" || raison_de == "urgence" || raison_de == "crise" || raison_de == "grappe" || raison_de == "releve_17b"
         invariant saisie_le >= 0
     }
     state saisine {
@@ -2402,7 +2426,7 @@ skeleton CoordArbitrage {
         hors_delai -> abandonnee
     }
     face {
-        signal saisir(h: Horodatage, r: Rapprochement, tour: Int, raison: CoordRaison) -> String  requires tour >= 1  requires h >= 0  requires raison == "silence" || raison == "desaccord" || raison == "verrou_refuse" || raison == "sans_designation" || raison == "rouverture_tardive" || raison == "urgence" || raison == "crise" || raison == "grappe"  writes courante_de, dossier_de, raison_de, saisie_le  calls CoordEchange.notifier, Journal.noter
+        signal saisir(h: Horodatage, r: Rapprochement, tour: Int, raison: CoordRaison) -> String  requires tour >= 1  requires h >= 0  requires raison == "silence" || raison == "desaccord" || raison == "verrou_refuse" || raison == "sans_designation" || raison == "rouverture_tardive" || raison == "urgence" || raison == "crise" || raison == "grappe" || raison == "releve_17b"  writes courante_de, dossier_de, raison_de, saisie_le  calls CoordEchange.notifier, Journal.noter
         signal prendre_en_charge(h: Horodatage, r: Rapprochement, par: String) -> String  requires h >= 0  reads courante_de, dossier_de  writes analyste_de  moves saisie -> prise_en_charge  calls ApiAcces.a_le_role, CoordEchange.noter, Journal.noter
         signal rendre(h: Horodatage, r: Rapprochement) -> String  requires h >= 0  reads dossier_de  writes courante_de  moves hors_delai -> rendue when CoordDossier.arretee via dossier_de, prise_en_charge -> rendue when CoordDossier.arretee via dossier_de, saisie -> rendue when CoordDossier.arretee via dossier_de
         signal surveiller(h: Horodatage, r: Rapprochement, par: String) -> CoordEtatSaisine  requires h >= 0  ensures result == "saisie" || result == "prise_en_charge" || result == "rendue" || result == "hors_delai" || result == "abandonnee" || result == "inconnue"  reads courante_de, dossier_de, saisine  moves prise_en_charge -> hors_delai, saisie -> hors_delai  calls ApiAcces.a_le_role, ApiEscalade.escalader, ApiOperations.declarer_incident, ApiRef.orbite, CoordDossier.limite, Journal.noter
@@ -2411,7 +2435,7 @@ skeleton CoordArbitrage {
         signal en_retard(r: Rapprochement) -> Bool  reads courante_de, saisine
     }
     // type CoordEtatSaisine = String where value == "saisie" || value == "prise_en_charge" || value == "rendue" || value == "hors_delai" || value == "abandonnee" || value == "inconnue" (nominal: never mixed with another type; build CoordEtatSaisine(x), read to_string(q); literals take its type)
-    // type CoordRaison = String where value == "silence" || value == "desaccord" || value == "verrou_refuse" || value == "sans_designation" || value == "rouverture_tardive" || value == "urgence" || value == "crise" || value == "grappe" (nominal: never mixed with another type; build CoordRaison(x), read to_string(q); literals take its type)
+    // type CoordRaison = String where value == "silence" || value == "desaccord" || value == "verrou_refuse" || value == "sans_designation" || value == "rouverture_tardive" || value == "urgence" || value == "crise" || value == "grappe" || value == "releve_17b" (nominal: never mixed with another type; build CoordRaison(x), read to_string(q); literals take its type)
     // type Horodatage = Int where value >= 0 (nominal: never mixed with another type; build Horodatage(x), read to_int(q); literals take its type)
     // type Rapprochement = String (nominal: never mixed with another type; build Rapprochement(x), read to_string(q); literals take its type)
     // type Refus = String where value == "Habilitation" || value == "QuatreYeux" || value == "Existe" || value == "Inconnu" || value == "EtatInvalide" || value == "HorsBornes" || value == "Insuffisant" || value == "Perime" || value == "Suspendu" || value == "Ferme" || value == "Echu" || value == "NonEligible" || value == "Doublon" || value == "Incoherent" || value == "Plein" || value == "MotifRequis" || value == "Delai" || value == "Conflit" || value == "Confidentiel" (nominal: never mixed with another type; build Refus(x), read to_string(q); literals take its type)
@@ -2424,7 +2448,7 @@ skeleton CoordArbitrage {
     //~ en_retard 010529344ac6d886
 }
 
-== CoordDecision sha256:471ad08579947784ceb9b11f1c7847c7e359e8b2fe8c3e5a285557fc6fe049d0 core:a2588416f74b3930f31acdd08ae7bfc07be016bec8aec35d6100979e0a6f8798
+== CoordDecision sha256:bdbf342d80d847dfbe41a7f831b47877431a16bfd2a640ca0f10b2e826296947 core:85db8fef7220324b1139bf9a8201495698608fd36c89a8e42447949897c892f0
 skeleton CoordDecision {
     memory {
         rapprochement_de: Map<String, Rapprochement> [persistent]
@@ -2453,7 +2477,7 @@ skeleton CoordDecision {
         soldee -> purgee
     }
     face {
-        signal prendre(h: Horodatage, d: String, r: Rapprochement, objet: Objet, mode: CoordMode, motif: String, par: String, valideur: String) -> String  requires h >= 0  requires mode == "accord" || mode == "arbitrage"  writes fondement_de, historique_de, objet_de, rapprochement_de  moves designee -> en_vigueur when CoordVerrou.tenu via rapprochement_de, prise -> abstention when CoordVerrou.tenu via rapprochement_de, prise -> designee when RefObjet.en_service via objet_de  calls ApiConjonctions.distance, ApiConjonctions.niveau, ApiConjonctions.pc, ApiConjonctions.tca, ApiEphemerides.age, ApiEphemerides.fondement, ApiPriorites.decision_de, ApiRef.etat_objet, ApiRef.propulsion, CoordDossier.defaut, CoordDossier.objets, CoordReponse.du_tour
+        signal prendre(h: Horodatage, d: String, r: Rapprochement, objet: Objet, mode: CoordMode, motif: String, par: String, valideur: String) -> String  requires h >= 0  requires mode == "accord" || mode == "arbitrage" || mode == "releve"  writes fondement_de, historique_de, objet_de, rapprochement_de  moves designee -> en_vigueur when CoordVerrou.tenu via rapprochement_de, prise -> abstention when CoordVerrou.tenu via rapprochement_de, prise -> designee when RefObjet.en_service via objet_de  calls ApiConjonctions.distance, ApiConjonctions.niveau, ApiConjonctions.pc, ApiConjonctions.tca, ApiEphemerides.age, ApiEphemerides.fondement, ApiPriorites.decision_de, ApiRef.etat_objet, ApiRef.propulsion, CoordDossier.defaut, CoordDossier.objets, CoordReponse.du_tour
         signal lever(h: Horodatage, d: String, motif: String) -> CoordEtatDecision  requires h >= 0  ensures result == "prise" || result == "designee" || result == "abstention" || result == "en_vigueur" || result == "levee" || result == "soldee" || result == "purgee" || result == "inconnue"  reads rapprochement_de  writes fin_le, motif_fin_de  moves abstention -> levee when CoordVerrou.leve via rapprochement_de, en_vigueur -> levee when CoordVerrou.leve via rapprochement_de
         signal solder(h: Horodatage, d: String) -> CoordEtatDecision  requires h >= 0  ensures result == "prise" || result == "designee" || result == "abstention" || result == "en_vigueur" || result == "levee" || result == "soldee" || result == "purgee" || result == "inconnue"  reads rapprochement_de  writes fin_le, motif_fin_de  moves abstention -> soldee when CoordVerrou.clos via rapprochement_de, en_vigueur -> soldee when CoordVerrou.clos via rapprochement_de
         signal purger(h: Horodatage, d: String, purge: String, par: String, valideur: String) -> CoordEtatDecision  requires h >= 0  ensures result == "prise" || result == "designee" || result == "abstention" || result == "en_vigueur" || result == "levee" || result == "soldee" || result == "purgee" || result == "inconnue"  reads fin_le, rapprochement_de  writes fondement_de, purge_de  moves levee -> purgee when RespPurges.autorisee via purge_de, soldee -> purgee when RespPurges.autorisee via purge_de  calls ApiAcces.a_le_role, ApiAcces.quatre_yeux, ApiResponsabilite.purge_autorisee, ApiResponsabilite.sous_gel, Journal.noter
@@ -2465,7 +2489,7 @@ skeleton CoordDecision {
     }
     // type CoordEtatDecision = String where value == "prise" || value == "designee" || value == "abstention" || value == "en_vigueur" || value == "levee" || value == "soldee" || value == "purgee" || value == "inconnue" (nominal: never mixed with another type; build CoordEtatDecision(x), read to_string(q); literals take its type)
     // type CoordFondement = CoordFondement { r: Rapprochement, objet: Objet, mode: CoordMode, h: Horodatage, tca: Horodatage, pc: Probabilite, distance: Distance, niveau: Niveau, version: String, priorite: String, defaut: Objet, objet_a: Objet, objet_b: Objet, propulsion_a: Propulsion, propulsion_b: Propulsion, depot_a: String, depot_b: String, age_a: Int, age_b: Int, reponses: List<String>, motif: String, par: String, valideur: String }
-    // type CoordMode = String where value == "accord" || value == "arbitrage" (nominal: never mixed with another type; build CoordMode(x), read to_string(q); literals take its type)
+    // type CoordMode = String where value == "accord" || value == "arbitrage" || value == "releve" (nominal: never mixed with another type; build CoordMode(x), read to_string(q); literals take its type)
     // type Horodatage = Int where value >= 0 (nominal: never mixed with another type; build Horodatage(x), read to_int(q); literals take its type)
     // type Objet = String (nominal: never mixed with another type; build Objet(x), read to_string(q); literals take its type)
     // type Rapprochement = String (nominal: never mixed with another type; build Rapprochement(x), read to_string(q); literals take its type)
@@ -2481,7 +2505,7 @@ skeleton CoordDecision {
     //~ historique ed787323aaf24b18
 }
 
-== CoordDossier sha256:38fd9e22f6217196f38e5d3c70d694c35e93d3b865025e34cb2c310a8b590585 core:ec83929e04925addc27308c966c594bda8e1c6caa776353c344720a4046db47f
+== CoordDossier sha256:01eecab3fcd8dc44a816fd4766730b1a0fc08b8d77106740d4aa789fa1532719 core:e268ce68595f7db7f77fdb6f803bf3949e009ce543c80fbc731cef9085110795
 skeleton CoordDossier {
     memory {
         objets_de: Map<String, List<String>> [persistent]
@@ -2534,9 +2558,10 @@ skeleton CoordDossier {
         signal constater_silence(h: Horodatage, r: Rapprochement, par: String) -> Int  requires h >= 0  reads echeance_de, limite_de, parties_de, propose_de, tour_de  moves desaccord -> arbitrage, proposee -> accord, proposee -> arbitrage  calls ApiAcces.a_le_role, ApiEscalade.reprise, ApiRef.orbite, ApiRef.peut_manoeuvrer, ApiRef.proprietaire, CoordArbitrage.saisir, CoordEchange.notifier, CoordReponse.constater_muettes, CoordReponse.du_tour, Journal.noter, arreter
         signal arbitrer(h: Horodatage, r: Rapprochement, objet: Objet, motif: String, par: String, valideur: String) -> CoordEtat  requires h >= 0  ensures result == "ouverte" || result == "proposee" || result == "accord" || result == "desaccord" || result == "arbitrage" || result == "arretee" || result == "liberee" || result == "rouverte" || result == "close" || result == "inconnue"  reads echeance_de, objets_de, tour_de  moves arbitrage -> arretee when CoordVerrou.tenu, desaccord -> arbitrage, proposee -> arbitrage  calls ApiAcces.a_le_role, ApiAcces.en_urgence_pour, ApiAcces.quatre_yeux, CoordArbitrage.en_retard, CoordArbitrage.rendre, CoordArbitrage.saisir, CoordEchange.noter, CoordEchange.notifier, CoordVerrou.poser, Journal.noter
         signal rouvrir(h: Horodatage, r: Rapprochement, motif: String, par: String) -> CoordEtat  requires h >= 0  ensures result == "ouverte" || result == "proposee" || result == "accord" || result == "desaccord" || result == "arbitrage" || result == "arretee" || result == "liberee" || result == "rouverte" || result == "close" || result == "inconnue"  reads objets_de, parties_de  writes defaut_de, echeance_de, en_cours, limite_de, propose_de, tour_de, version_de  moves arretee -> liberee when ManEvitement.libre || ManEvitement.solde, liberee -> rouverte when CoordVerrou.leve, rouverte -> arbitrage, rouverte -> proposee  calls ApiAcces.a_le_role, ApiConjonctions.niveau, ApiConjonctions.tca, ApiManoeuvres.etat, ApiManoeuvres.plan_de, ApiManoeuvres.retirer, ApiOperateurs.delai_reponse, ApiOperations.arbitrage_centralise, ApiPriorites.preavis, ApiPriorites.qui_manoeuvre, ApiPriorites.version_en_vigueur, ApiRef.peut_manoeuvrer, ApiRef.propulsion, CoordArbitrage.saisir, CoordEchange.noter, CoordEchange.notifier, CoordReponse.attendre, CoordSuivi.etat, CoordSuivi.plan, CoordVerrou.decision, CoordVerrou.designe, CoordVerrou.lever, Journal.noter
+        signal relever(h: Horodatage, r: Rapprochement, par: String) -> CoordEtat  requires h >= 0  ensures result == "ouverte" || result == "proposee" || result == "accord" || result == "desaccord" || result == "arbitrage" || result == "arretee" || result == "liberee" || result == "rouverte" || result == "close" || result == "inconnue"  reads objets_de  writes echeance_de, en_cours, limite_de, propose_de, tour_de  moves arbitrage -> arretee when CoordVerrou.tenu, arretee -> liberee when ManEvitement.libre || ManEvitement.solde, liberee -> rouverte when CoordVerrou.leve, rouverte -> arbitrage  calls ApiAcces.a_le_role, ApiConformite.constater, ApiConjonctions.niveau, ApiConjonctions.tca, ApiManoeuvres.etat, ApiManoeuvres.plan_de, ApiManoeuvres.retirer, ApiOperateurs.est_actif, ApiPriorites.preavis, ApiRef.habite, ApiRef.peut_manoeuvrer, ApiRef.proprietaire, ApiRef.propulsion, CoordArbitrage.rendre, CoordArbitrage.saisir, CoordDecision.resume, CoordEchange.noter, CoordEchange.notifier, CoordGrappe.compatible, CoordSuivi.etat, CoordSuivi.plan, CoordSuivi.relever, CoordVerrou.decision, CoordVerrou.designe, CoordVerrou.lever, CoordVerrou.poser, CoordVerrou.privilegie, Journal.noter
         signal recaler(h: Horodatage, r: Rapprochement, par: String) -> Horodatage  requires h >= 0  ensures result >= 0  reads parties_de, propose_de, tour_de  writes echeance_de, en_cours, limite_de, recale_le  moves desaccord -> arbitrage, proposee -> arbitrage  calls ApiAcces.a_le_role, ApiConjonctions.mis_a_jour, ApiConjonctions.niveau, ApiConjonctions.tca, ApiOperateurs.delai_reponse, ApiPriorites.preavis, ApiRef.propulsion, CoordArbitrage.saisir, CoordEchange.notifier, Journal.noter
         signal reverifier(h: Horodatage, r: Rapprochement, par: String) -> Bool  requires h >= 0  reads coordination  calls ApiAcces.a_le_role, ApiOperateurs.est_actif, ApiRef.peut_manoeuvrer, ApiRef.proprietaire, CoordVerrou.designe, rouvrir
-        signal balayer(h: Horodatage, par: String) -> Int  requires h >= 0  reads coordination, echeance_de, en_cours  writes balaye_le  calls ApiAcces.a_le_role, ApiConjonctions.etat, CoordArbitrage.courante, CoordArbitrage.surveiller, CoordGrappe.etat, CoordGrappe.grappe_de_r, CoordGrappe.regler, CoordReponse.relancer, CoordSuivi.suivre, CoordVerrou.decision, clore, constater_silence, recaler, reverifier
+        signal balayer(h: Horodatage, par: String) -> Int  requires h >= 0  reads coordination, echeance_de, en_cours  writes balaye_le  calls ApiAcces.a_le_role, ApiConjonctions.etat, CoordArbitrage.courante, CoordArbitrage.surveiller, CoordGrappe.etat, CoordGrappe.grappe_de_r, CoordGrappe.regler, CoordReponse.relancer, CoordSuivi.suivre, CoordVerrou.decision, clore, constater_silence, recaler, relever, reverifier
         signal retards(h: Horodatage, n: Int, par: String) -> List<String>  requires n > 0 && n <= 1000  requires h >= 0  reads balaye_le, coordination, en_cours  calls ApiAcces.a_le_role
         signal clore(h: Horodatage, r: Rapprochement, motif: CoordMotifCloture, par: String) -> CoordEtat  requires h >= 0  requires motif == "resolu" || motif == "passe" || motif == "collision"  ensures result == "ouverte" || result == "proposee" || result == "accord" || result == "desaccord" || result == "arbitrage" || result == "arretee" || result == "liberee" || result == "rouverte" || result == "close" || result == "inconnue"  writes en_cours  moves * -> close when ConjRapprochement.resolu || ConjRapprochement.passe || ConjRapprochement.collision  calls ApiAcces.a_le_role, ApiConjonctions.etat, CoordArbitrage.abandonner, CoordEchange.noter, CoordGrappe.retirer, CoordReponse.rendre_caduques, CoordVerrou.clore, Journal.noter
         signal demander_rouverture(h: Horodatage, r: Rapprochement, motif: String, par: String) -> Int  requires h >= 0  reads coordination, parties_de  calls ApiAcces.a_le_role, ApiAcces.agit_pour, ApiAcces.employeur, CoordEchange.noter, CoordEchange.notifier
@@ -2566,9 +2591,10 @@ skeleton CoordDossier {
     //~ constater_silence ba970e6516d9a0fa
     //~ arbitrer bedb667532df89c6
     //~ rouvrir ce1601099356082e
+    //~ relever 601d27204cf13b6b
     //~ recaler 55141a73dafb47be
     //~ reverifier b6ac737d63ec19fa
-    //~ balayer 9be4b718018e0c93
+    //~ balayer 3e16cca2647f042b
     //~ retards cea1392de85cf25f
     //~ clore 1b92b2bb2a08dda8
     //~ demander_rouverture 4a498d6e1afb1c19
@@ -2718,7 +2744,7 @@ skeleton CoordReponse {
     //~ bilan bcc43f489cfedffe
 }
 
-== CoordSuivi sha256:b83d29bb172db30a02cb0c8f03171a21da8c19d8acea5904cf9b87ba372fe263 core:a4c167b7e9fa51478b1db62d8c3d66a930a138723dd6b8a7e8e5ba33159a4d6e
+== CoordSuivi sha256:6391ca88f2d0e8c8306968f878c088892c50a798bb1517988b79ffd1a42a0865 core:3c9af7fe52677aa2764469f1d2e548eb2d6e95244dd4f7d7c61d4bb41dadefa8
 skeleton CoordSuivi {
     memory {
         rapprochement_de: Map<String, Rapprochement> [persistent]
@@ -2739,17 +2765,20 @@ skeleton CoordSuivi {
         plan_depose -> execute
         plan_depose -> defaillant
         plan_depose -> caduc
+        attente_plan -> releve
+        plan_depose -> releve
         execute -> verifie
         execute -> anomalie
     }
     face {
-        signal ouvrir(h: Horodatage, d: String, r: Rapprochement, objet: Objet) -> CoordEtatSuivi  requires h >= 0  ensures result == "attente_plan" || result == "plan_depose" || result == "execute" || result == "verifie" || result == "anomalie" || result == "defaillant" || result == "sans_objet" || result == "caduc" || result == "inconnu"  writes constate_le, limite_de, objet_de, rapprochement_de  moves attente_plan -> sans_objet  calls CoordDossier.limite
-        signal suivre(h: Horodatage, d: String, par: String) -> CoordEtatSuivi  requires h >= 0  ensures result == "attente_plan" || result == "plan_depose" || result == "execute" || result == "verifie" || result == "anomalie" || result == "defaillant" || result == "sans_objet" || result == "caduc" || result == "inconnu"  reads limite_de, objet_de, rapprochement_de  writes constate_le, plan_de  moves attente_plan -> defaillant, attente_plan -> plan_depose when CoordDecision.en_vigueur, execute -> anomalie, execute -> verifie when ManPlan.verifie via plan_de, plan_depose -> defaillant, plan_depose -> execute  calls ApiAcces.a_le_role, ApiConformite.constater, ApiConjonctions.niveau, ApiConjonctions.tca, ApiEscalade.escalader, ApiManoeuvres.etat, ApiManoeuvres.motif_de, ApiManoeuvres.objet_de, ApiManoeuvres.plan_de, ApiRef.proprietaire, CoordDossier.rouvrir, CoordEchange.notifier, Journal.noter
-        signal rendre_caduc(h: Horodatage, d: String) -> CoordEtatSuivi  requires h >= 0  ensures result == "attente_plan" || result == "plan_depose" || result == "execute" || result == "verifie" || result == "anomalie" || result == "defaillant" || result == "sans_objet" || result == "caduc" || result == "inconnu"  reads rapprochement_de  writes constate_le  moves attente_plan -> caduc when CoordDecision.levee || CoordDecision.soldee, plan_depose -> caduc when CoordDecision.levee || CoordDecision.soldee
+        signal ouvrir(h: Horodatage, d: String, r: Rapprochement, objet: Objet) -> CoordEtatSuivi  requires h >= 0  ensures result == "attente_plan" || result == "plan_depose" || result == "execute" || result == "verifie" || result == "anomalie" || result == "defaillant" || result == "sans_objet" || result == "caduc" || result == "releve" || result == "inconnu"  writes constate_le, limite_de, objet_de, rapprochement_de  moves attente_plan -> sans_objet  calls CoordDossier.limite
+        signal suivre(h: Horodatage, d: String, par: String) -> CoordEtatSuivi  requires h >= 0  ensures result == "attente_plan" || result == "plan_depose" || result == "execute" || result == "verifie" || result == "anomalie" || result == "defaillant" || result == "sans_objet" || result == "caduc" || result == "releve" || result == "inconnu"  reads limite_de, objet_de, rapprochement_de  writes constate_le, plan_de  moves attente_plan -> defaillant, attente_plan -> plan_depose when CoordDecision.en_vigueur, execute -> anomalie, execute -> verifie when ManPlan.verifie via plan_de, plan_depose -> defaillant, plan_depose -> execute  calls ApiAcces.a_le_role, ApiConformite.constater, ApiConjonctions.niveau, ApiConjonctions.tca, ApiEscalade.escalader, ApiManoeuvres.etat, ApiManoeuvres.motif_de, ApiManoeuvres.objet_de, ApiManoeuvres.plan_de, ApiRef.proprietaire, CoordDossier.rouvrir, CoordEchange.notifier, Journal.noter
+        signal rendre_caduc(h: Horodatage, d: String) -> CoordEtatSuivi  requires h >= 0  ensures result == "attente_plan" || result == "plan_depose" || result == "execute" || result == "verifie" || result == "anomalie" || result == "defaillant" || result == "sans_objet" || result == "caduc" || result == "releve" || result == "inconnu"  reads rapprochement_de  writes constate_le  moves attente_plan -> caduc when CoordDecision.levee || CoordDecision.soldee, plan_depose -> caduc when CoordDecision.levee || CoordDecision.soldee
+        signal relever(h: Horodatage, d: String) -> CoordEtatSuivi  requires h >= 0  ensures result == "attente_plan" || result == "plan_depose" || result == "execute" || result == "verifie" || result == "anomalie" || result == "defaillant" || result == "sans_objet" || result == "caduc" || result == "releve" || result == "inconnu"  reads rapprochement_de  writes constate_le  moves attente_plan -> releve when CoordDossier.liberee via rapprochement_de, plan_depose -> releve when CoordDossier.liberee via rapprochement_de  calls CoordDossier.phase
         signal plan(d: String) -> String  reads plan_de
-        signal etat(d: String) -> CoordEtatSuivi  ensures result == "attente_plan" || result == "plan_depose" || result == "execute" || result == "verifie" || result == "anomalie" || result == "defaillant" || result == "sans_objet" || result == "caduc" || result == "inconnu"  reads rapprochement_de, suivi
+        signal etat(d: String) -> CoordEtatSuivi  ensures result == "attente_plan" || result == "plan_depose" || result == "execute" || result == "verifie" || result == "anomalie" || result == "defaillant" || result == "sans_objet" || result == "caduc" || result == "releve" || result == "inconnu"  reads rapprochement_de, suivi
     }
-    // type CoordEtatSuivi = String where value == "attente_plan" || value == "plan_depose" || value == "execute" || value == "verifie" || value == "anomalie" || value == "defaillant" || value == "sans_objet" || value == "caduc" || value == "inconnu" (nominal: never mixed with another type; build CoordEtatSuivi(x), read to_string(q); literals take its type)
+    // type CoordEtatSuivi = String where value == "attente_plan" || value == "plan_depose" || value == "execute" || value == "verifie" || value == "anomalie" || value == "defaillant" || value == "sans_objet" || value == "caduc" || value == "releve" || value == "inconnu" (nominal: never mixed with another type; build CoordEtatSuivi(x), read to_string(q); literals take its type)
     // type Horodatage = Int where value >= 0 (nominal: never mixed with another type; build Horodatage(x), read to_int(q); literals take its type)
     // type Objet = String (nominal: never mixed with another type; build Objet(x), read to_string(q); literals take its type)
     // type Rapprochement = String (nominal: never mixed with another type; build Rapprochement(x), read to_string(q); literals take its type)
@@ -2757,19 +2786,22 @@ skeleton CoordSuivi {
     //~ ouvrir bdf0a80d67d403d9
     //~ suivre f4435805aa4ac749
     //~ rendre_caduc 9e9912f3a2d2f379
+    //~ relever 341a5c4eaf6fa389
     //~ plan 6d613adb89acaeb3
     //~ etat ce745844c8e88475
 }
 
-== CoordVerrou sha256:c02365c0505978b31e3fbdc39ea80b394d930dd738a3ef3f8093fb9570886538 core:289e66a2515d351547470ad1baca4992a7d0ab7222c02dab9f8599c871c71ed5
+== CoordVerrou sha256:fd71dce38f66dce7588e981195e05d959f313008346286c54fb1afbfed6ec4fa core:a856932f0f792d440695ee5780f0c13fd842d27e090fd96430d0d99bba60aa10
 skeleton CoordVerrou {
     memory {
         designe_de: Map<String, Objet> [persistent]
+        privilegie_de: Map<String, Objet> [persistent]
         decision_de: Map<String, String> [persistent]
         pose_le: Map<String, Horodatage> [persistent]
         poses_de: Map<String, Int> [persistent]
         invariant designe_de.size <= 50000000
         invariant decision_de.size <= 50000000
+        invariant privilegie_de.size <= 50000000
         invariant poses_de >= 1
         invariant pose_le >= 0
     }
@@ -2783,23 +2815,25 @@ skeleton CoordVerrou {
         leve -> clos
     }
     face {
-        signal poser(h: Horodatage, r: Rapprochement, objet: Objet, mode: CoordMode, motif: String, par: String, valideur: String) -> String  requires h >= 0  requires mode == "accord" || mode == "arbitrage"  writes decision_de, designe_de, pose_le, poses_de  moves leve -> tenu when CoordDossier.accord || CoordDossier.arbitrage, libre -> tenu when CoordDossier.accord || CoordDossier.arbitrage  calls ApiConjonctions.tca, ApiOperateurs.est_actif, ApiPriorites.preavis, ApiRef.habite, ApiRef.peut_manoeuvrer, ApiRef.proprietaire, ApiRef.propulsion, CoordDecision.prendre, CoordDossier.objets, CoordDossier.phase, CoordGrappe.compatible, CoordSuivi.ouvrir, Journal.noter
-        signal lever(h: Horodatage, r: Rapprochement, motif: String) -> String  requires h >= 0  writes decision_de, designe_de  moves tenu -> leve when CoordDossier.liberee  calls CoordDecision.lever, CoordDossier.phase, CoordSuivi.rendre_caduc, Journal.noter
+        signal poser(h: Horodatage, r: Rapprochement, objet: Objet, mode: CoordMode, motif: String, par: String, valideur: String) -> String  requires h >= 0  requires mode == "accord" || mode == "arbitrage" || mode == "releve"  writes decision_de, designe_de, pose_le, poses_de, privilegie_de  moves leve -> tenu when CoordDossier.accord || CoordDossier.arbitrage, libre -> tenu when CoordDossier.accord || CoordDossier.arbitrage  calls ApiConjonctions.tca, ApiOperateurs.est_actif, ApiPriorites.preavis, ApiRef.habite, ApiRef.peut_manoeuvrer, ApiRef.proprietaire, ApiRef.propulsion, CoordDecision.prendre, CoordDossier.objets, CoordDossier.phase, CoordGrappe.compatible, CoordSuivi.ouvrir, Journal.noter
+        signal lever(h: Horodatage, r: Rapprochement, motif: String) -> String  requires h >= 0  writes decision_de, designe_de, privilegie_de  moves tenu -> leve when CoordDossier.liberee  calls CoordDecision.lever, CoordDossier.phase, CoordSuivi.rendre_caduc, Journal.noter
         signal clore(h: Horodatage, r: Rapprochement) -> String  requires h >= 0  reads decision_de  moves leve -> clos, libre -> clos, tenu -> clos  calls CoordDecision.solder, CoordSuivi.rendre_caduc, Journal.noter
         signal designe(r: Rapprochement, par: String) -> Objet  reads designe_de, pose_le  calls ApiAcces.employeur, ApiDonnees.peut_recevoir, ApiRef.orbite, CoordDossier.objets
+        signal privilegie(r: Rapprochement, par: String) -> Objet  reads pose_le, privilegie_de  calls ApiAcces.employeur, ApiDonnees.peut_recevoir, ApiRef.orbite, CoordDossier.objets
         signal arretee(r: Rapprochement) -> Bool  reads designe_de, verrou
         signal decision(r: Rapprochement) -> String  reads decision_de
         signal decidee(r: Rapprochement) -> Bool  reads decision_de, verrou
     }
-    // type CoordMode = String where value == "accord" || value == "arbitrage" (nominal: never mixed with another type; build CoordMode(x), read to_string(q); literals take its type)
+    // type CoordMode = String where value == "accord" || value == "arbitrage" || value == "releve" (nominal: never mixed with another type; build CoordMode(x), read to_string(q); literals take its type)
     // type Horodatage = Int where value >= 0 (nominal: never mixed with another type; build Horodatage(x), read to_int(q); literals take its type)
     // type Objet = String (nominal: never mixed with another type; build Objet(x), read to_string(q); literals take its type)
     // type Rapprochement = String (nominal: never mixed with another type; build Rapprochement(x), read to_string(q); literals take its type)
     // type Refus = String where value == "Habilitation" || value == "QuatreYeux" || value == "Existe" || value == "Inconnu" || value == "EtatInvalide" || value == "HorsBornes" || value == "Insuffisant" || value == "Perime" || value == "Suspendu" || value == "Ferme" || value == "Echu" || value == "NonEligible" || value == "Doublon" || value == "Incoherent" || value == "Plein" || value == "MotifRequis" || value == "Delai" || value == "Conflit" || value == "Confidentiel" (nominal: never mixed with another type; build Refus(x), read to_string(q); literals take its type)
-    //~ poser ab06376beee59957
-    //~ lever 0335df37530a1bb7
+    //~ poser 2f2236ee11d4aa1e
+    //~ lever 9b95e824ae8c6d42
     //~ clore f060668c95544507
     //~ designe f886631054ccb1c2
+    //~ privilegie e5d118cead766a29
     //~ arretee 6d06c48a1fdbbc78
     //~ decision ec008f75713bde41
     //~ decidee 2b549f558fc2e4d9
@@ -5683,7 +5717,7 @@ skeleton ManNonAnnoncee {
     //~ etat 0c91dd5a9216dacb
 }
 
-== ManAvis sha256:80e571fb1673b025c9928fe1ec90b3b787dcc8fe1e256482e52d3e7eed391523 core:c78483bfdfcbf47b9e1bad0d90eff3683ce8123df748cd918f09e8ebd9cd6336
+== ManAvis sha256:8f99528121229b938b4b5047176f7d912bd00f7ea8e7a799c1ac1f2a683f5603 core:5a4123ca60666ae2490f387d29b0331104b2355de148a65af8c51aa46a49b62a
 skeleton ManAvis {
     memory {
         plan_de: Map<String, String> [persistent]
@@ -5707,7 +5741,7 @@ skeleton ManAvis {
         en_file -> echu
     }
     face {
-        signal emettre(h: Horodatage, plan: String, sujet: ManSujetAvis) -> Int  requires h >= 0  requires sujet == "approbation" || sujet == "execution" || sujet == "annulation" || sujet == "anomalie"  writes avis_du_plan, destinataire_de, echeance_de, en_file, message_de, plan_de, refuses_de, trace_de  calls ApiConjonctions.niveau, ApiConjonctions.objets, ApiDonnees.peut_recevoir, ApiDonnees.tracer, ApiPasserelle.notifier, ApiRef.etat_immatriculation, ApiRef.org_de_etat, ApiRef.proprietaire, ManPlan.fiche
+        signal emettre(h: Horodatage, plan: String, sujet: ManSujetAvis) -> Int  requires h >= 0  requires sujet == "approbation" || sujet == "execution" || sujet == "annulation" || sujet == "anomalie"  writes avis_du_plan, destinataire_de, echeance_de, en_file, message_de, plan_de, refuses_de, trace_de  calls ApiConjonctions.niveau, ApiConjonctions.objets, ApiCoordination.privilegie, ApiDonnees.peut_recevoir, ApiDonnees.tracer, ApiPasserelle.notifier, ApiRef.etat_immatriculation, ApiRef.org_de_etat, ApiRef.proprietaire, Journal.noter, ManPlan.fiche
         signal relever(h: Horodatage, avis: String, par: String) -> String  requires h >= 0  reads destinataire_de, echeance_de, message_de, plan_de  writes en_file  moves en_file -> acquitte, en_file -> echu  calls ApiAcces.a_le_role, ApiConjonctions.niveau, ApiEscalade.escalader, ApiPasserelle.acquitte, Journal.noter, ManIndicateurs.compter, ManPlan.fiche
         signal en_attente(n: Int) -> List<String>  requires n > 0 && n <= 1000  reads en_file
         signal avis_de(plan: String) -> List<String>  reads avis_du_plan
@@ -5717,7 +5751,7 @@ skeleton ManAvis {
     // type ManSujetAvis = String where value == "approbation" || value == "execution" || value == "annulation" || value == "anomalie" (nominal: never mixed with another type; build ManSujetAvis(x), read to_string(q); literals take its type)
     // type Org = String (nominal: never mixed with another type; build Org(x), read to_string(q); literals take its type)
     // type Refus = String where value == "Habilitation" || value == "QuatreYeux" || value == "Existe" || value == "Inconnu" || value == "EtatInvalide" || value == "HorsBornes" || value == "Insuffisant" || value == "Perime" || value == "Suspendu" || value == "Ferme" || value == "Echu" || value == "NonEligible" || value == "Doublon" || value == "Incoherent" || value == "Plein" || value == "MotifRequis" || value == "Delai" || value == "Conflit" || value == "Confidentiel" (nominal: never mixed with another type; build Refus(x), read to_string(q); literals take its type)
-    //~ emettre a9537128dca7c368
+    //~ emettre 89fbcee08bf4fea5
     //~ relever fa59af34ba7e77e8
     //~ en_attente b94cb334d408e908
     //~ avis_de b662d68a2d0a49c2
@@ -5861,7 +5895,7 @@ skeleton ManVerification {
     //~ etat af5570f5a1810b7a
 }
 
-== ManPlan sha256:36b2170484e6f97e6e3ab97c6f1c395d9f35f0d22543612a01124848aa35a577 core:36d990ab27d3783a6a39ce997dc561fdc3997bc9634a9b7c89803f15a72ff16f
+== ManPlan sha256:5370387bfc6cfa53e68848adff654eb5f785e257b2dbd59fbc0fd27446512945 core:ac3670cdbcbc6a680393a3bc204406dc210560af16bab228c12c822c3c7d4c9a
 skeleton ManPlan {
     memory {
         fiche_de: Map<String, ManFichePlan> [persistent]
@@ -5890,8 +5924,8 @@ skeleton ManPlan {
         invariant len(tous_de) <= 5000
         invariant reel_de >= 0
         invariant dv_reel_de >= 0 && dv_reel_de <= 10000000
-        invariant cause_rejet_de == "criblage_risque" || cause_rejet_de == "criblage_impossible" || cause_rejet_de == "criblage_perime" || cause_rejet_de == "ephemeride_perimee" || cause_rejet_de == "operateur_suspendu" || cause_rejet_de == "objet_incapable" || cause_rejet_de == "designation_changee" || cause_rejet_de == "hors_delai" || cause_rejet_de == "refus_analyste"
-        invariant cause_annulation_de == "proprietaire" || cause_annulation_de == "fenetre_echue" || cause_annulation_de == "designation_retiree" || cause_annulation_de == "recriblage" || cause_annulation_de == "objet_incapable" || cause_annulation_de == "operateur_suspendu" || cause_annulation_de == "orbite"
+        invariant cause_rejet_de == "criblage_risque" || cause_rejet_de == "criblage_impossible" || cause_rejet_de == "criblage_perime" || cause_rejet_de == "ephemeride_perimee" || cause_rejet_de == "operateur_suspendu" || cause_rejet_de == "objet_incapable" || cause_rejet_de == "designation_changee" || cause_rejet_de == "hors_delai" || cause_rejet_de == "refus_analyste" || cause_rejet_de == "manoeuvre_timide" || cause_rejet_de == "privilegie"
+        invariant cause_annulation_de == "proprietaire" || cause_annulation_de == "fenetre_echue" || cause_annulation_de == "designation_retiree" || cause_annulation_de == "recriblage" || cause_annulation_de == "objet_incapable" || cause_annulation_de == "operateur_suspendu" || cause_annulation_de == "orbite" || cause_annulation_de == "privilegie"
     }
     state cycle {
         initial: declare
@@ -5914,17 +5948,17 @@ skeleton ManPlan {
         execute -> anomalie
     }
     face {
-        signal declarer(h: Horodatage, plan: String, objet: Objet, r: Rapprochement, motif: ManMotif, debut: Horodatage, dv: DeltaV, par: String) -> String  requires h >= 0  requires motif == "evitement" || motif == "maintien" || motif == "transfert" || motif == "desorbitation"  requires debut >= 0  requires dv >= 0 && dv <= 10000000  writes actifs_de, evitements_de, fiche_de, objet_de, proprietaire_de, tous_de, verrou_de  calls ApiAcces.a_le_role, ApiAcces.agit_pour, ApiConjonctions.etat, ApiConjonctions.objets, ApiConjonctions.tca, ApiCoordination.arretee, ApiCoordination.designe, ApiEphemerides.fraiche, ApiOperateurs.est_actif, ApiPriorites.preavis, ApiRef.habite, ApiRef.peut_manoeuvrer, ApiRef.proprietaire, ApiRef.propulsion, Journal.noter, ManFenetre.chevauche, ManFenetre.reserver, ManIndicateurs.compter, ManProgramme.rattacher
+        signal declarer(h: Horodatage, plan: String, objet: Objet, r: Rapprochement, motif: ManMotif, debut: Horodatage, dv: DeltaV, par: String) -> String  requires h >= 0  requires motif == "evitement" || motif == "maintien" || motif == "transfert" || motif == "desorbitation"  requires debut >= 0  requires dv >= 0 && dv <= 10000000  writes actifs_de, evitements_de, fiche_de, objet_de, proprietaire_de, tous_de, verrou_de  calls ApiAcces.a_le_role, ApiAcces.agit_pour, ApiConjonctions.etat, ApiConjonctions.objets, ApiConjonctions.ouverts_de, ApiConjonctions.tca, ApiCoordination.arretee, ApiCoordination.designe, ApiCoordination.privilegie, ApiEphemerides.fraiche, ApiOperateurs.est_actif, ApiPriorites.preavis, ApiRef.habite, ApiRef.peut_manoeuvrer, ApiRef.proprietaire, ApiRef.propulsion, Journal.noter, ManFenetre.chevauche, ManFenetre.reserver, ManIndicateurs.compter, ManProgramme.rattacher
         signal statuer(h: Horodatage, plan: String, par: String) -> ManEtatPlan  requires h >= 0  ensures result == "declare" || result == "crible" || result == "approuve" || result == "rejete" || result == "execute" || result == "verifie" || result == "anomalie" || result == "annule" || result == "inconnu"  reads fiche_de  writes actifs_de, cause_rejet_de  moves declare -> crible when ManCriblage.sur, declare -> rejete  calls ApiAcces.a_le_role, Journal.noter, ManCriblage.etat, ManFenetre.liberer, ManIndicateurs.compter
-        signal approuver(h: Horodatage, plan: String, par: String) -> ManEtatPlan  requires h >= 0  ensures result == "declare" || result == "crible" || result == "approuve" || result == "rejete" || result == "execute" || result == "verifie" || result == "anomalie" || result == "annule" || result == "inconnu"  reads fiche_de, objet_de, proprietaire_de, verrou_de  writes approuves, fondement_de  moves capable -> approuve when ManEvitement.engage via verrou_de, coordonne -> habilite when OpMembres.actif via proprietaire_de, crible -> recoupe when ConjCriblagePlan.sur, habilite -> localise when EphSuivi.a_jour via objet_de, localise -> capable when RefObjet.en_service via objet_de, recoupe -> coordonne when CoordDossier.arretee via verrou_de, recoupe -> habilite when OpMembres.actif via proprietaire_de  calls ApiAcces.a_le_role, ApiConjonctions.criblage_plan, ApiConjonctions.niveau, ApiConjonctions.pc, ApiCoordination.arretee, ApiCoordination.designe, ApiEphemerides.age, ApiEphemerides.avec_manoeuvres, ApiEphemerides.depot_valide, ApiEphemerides.derniere, ApiEphemerides.fraiche, ApiEphemerides.qualite, ApiOperateurs.est_actif, ApiOperateurs.statut, ApiPriorites.version_en_vigueur, ApiReentrees.a_risque, ApiReentrees.controlee_approuvee, ApiRef.etat_objet, ApiRef.peut_manoeuvrer, Journal.noter, ManAvis.emettre, ManCriblage.fiche, ManEvitement.engager, ManIndicateurs.compter, rejeter
-        signal rejeter(h: Horodatage, plan: String, cause: ManCauseRejet, motif: String, par: String) -> ManEtatPlan  requires h >= 0  requires cause == "criblage_risque" || cause == "criblage_impossible" || cause == "criblage_perime" || cause == "ephemeride_perimee" || cause == "operateur_suspendu" || cause == "objet_incapable" || cause == "designation_changee" || cause == "hors_delai" || cause == "refus_analyste"  ensures result == "declare" || result == "crible" || result == "approuve" || result == "rejete" || result == "execute" || result == "verifie" || result == "anomalie" || result == "annule" || result == "inconnu"  reads fiche_de  writes actifs_de, cause_rejet_de, motif_annulation_de  moves crible -> rejete  calls ApiAcces.a_le_role, Journal.noter, ManFenetre.liberer, ManIndicateurs.compter
+        signal approuver(h: Horodatage, plan: String, par: String) -> ManEtatPlan  requires h >= 0  ensures result == "declare" || result == "crible" || result == "approuve" || result == "rejete" || result == "execute" || result == "verifie" || result == "anomalie" || result == "annule" || result == "inconnu"  reads fiche_de, objet_de, proprietaire_de, verrou_de  writes approuves, fondement_de  moves capable -> approuve when ManEvitement.engage via verrou_de, coordonne -> habilite when OpMembres.actif via proprietaire_de, crible -> recoupe when ConjCriblagePlan.sur, habilite -> localise when EphSuivi.a_jour via objet_de, localise -> capable when RefObjet.en_service via objet_de, recoupe -> coordonne when CoordDossier.arretee via verrou_de, recoupe -> habilite when OpMembres.actif via proprietaire_de  calls ApiAcces.a_le_role, ApiConjonctions.criblage_plan, ApiConjonctions.niveau, ApiConjonctions.ouverts_de, ApiConjonctions.pc, ApiConjonctions.pc_apres_plan, ApiConjonctions.tca, ApiCoordination.arretee, ApiCoordination.designe, ApiCoordination.privilegie, ApiEphemerides.age, ApiEphemerides.avec_manoeuvres, ApiEphemerides.depot_valide, ApiEphemerides.derniere, ApiEphemerides.fraiche, ApiEphemerides.qualite, ApiOperateurs.est_actif, ApiOperateurs.statut, ApiPriorites.preavis, ApiPriorites.version_en_vigueur, ApiReentrees.a_risque, ApiReentrees.controlee_approuvee, ApiRef.etat_objet, ApiRef.peut_manoeuvrer, ApiRef.propulsion, Journal.noter, ManAvis.emettre, ManCriblage.fiche, ManEvitement.engager, ManIndicateurs.compter, rejeter
+        signal rejeter(h: Horodatage, plan: String, cause: ManCauseRejet, motif: String, par: String) -> ManEtatPlan  requires h >= 0  requires cause == "criblage_risque" || cause == "criblage_impossible" || cause == "criblage_perime" || cause == "ephemeride_perimee" || cause == "operateur_suspendu" || cause == "objet_incapable" || cause == "designation_changee" || cause == "hors_delai" || cause == "refus_analyste" || cause == "manoeuvre_timide" || cause == "privilegie"  ensures result == "declare" || result == "crible" || result == "approuve" || result == "rejete" || result == "execute" || result == "verifie" || result == "anomalie" || result == "annule" || result == "inconnu"  reads fiche_de  writes actifs_de, cause_rejet_de, motif_annulation_de  moves crible -> rejete  calls ApiAcces.a_le_role, Journal.noter, ManFenetre.liberer, ManIndicateurs.compter
         signal confirmer(h: Horodatage, plan: String, reel: Horodatage, dv: DeltaV, par: String) -> ManEtatPlan  requires h >= 0  requires reel >= 0  requires dv >= 0 && dv <= 10000000  ensures result == "declare" || result == "crible" || result == "approuve" || result == "rejete" || result == "execute" || result == "verifie" || result == "anomalie" || result == "annule" || result == "inconnu"  reads fiche_de, verrou_de  writes approuves, confirme_par, dv_reel_de, reel_de  moves approuve -> execute when ManFenetre.ouverte  calls ApiAcces.a_le_role, ApiAcces.agit_pour, ApiRef.proprietaire, Journal.noter, ManAvis.emettre, ManEvitement.solder, ManFenetre.consommer, ManFenetre.etat, ManFenetre.ouvrir, ManIndicateurs.compter, ManVerification.programmer
         signal declarer_echec(h: Horodatage, plan: String, propulsion_perdue: Bool, motif: String, par: String) -> ManEtatPlan  requires h >= 0  ensures result == "declare" || result == "crible" || result == "approuve" || result == "rejete" || result == "execute" || result == "verifie" || result == "anomalie" || result == "annule" || result == "inconnu"  reads fiche_de, verrou_de  writes actifs_de, approuves, motif_annulation_de  moves approuve -> anomalie  calls ApiAcces.a_le_role, ApiAcces.agit_pour, ApiRef.declarer_propulsion, ApiRef.proprietaire, Journal.noter, ManAnomalie.ouvrir, ManAvis.emettre, ManEvitement.liberer, ManFenetre.liberer, ManIndicateurs.compter
-        signal annuler(h: Horodatage, plan: String, cause: ManCauseAnnulation, motif: String, par: String) -> ManEtatPlan  requires h >= 0  requires cause == "proprietaire" || cause == "fenetre_echue" || cause == "designation_retiree" || cause == "recriblage" || cause == "objet_incapable" || cause == "operateur_suspendu" || cause == "orbite"  ensures result == "declare" || result == "crible" || result == "approuve" || result == "rejete" || result == "execute" || result == "verifie" || result == "anomalie" || result == "annule" || result == "inconnu"  reads fiche_de, verrou_de  writes actifs_de, approuves, cause_annulation_de, motif_annulation_de  moves approuve -> annule, crible -> annule, declare -> annule  calls ApiAcces.a_le_role, ApiAcces.agit_pour, ApiCoordination.arretee, ApiCoordination.designe, ApiCoordination.rouvrir, ApiRef.proprietaire, Journal.noter, ManAvis.emettre, ManEvitement.liberer, ManFenetre.liberer, ManIndicateurs.compter
+        signal annuler(h: Horodatage, plan: String, cause: ManCauseAnnulation, motif: String, par: String) -> ManEtatPlan  requires h >= 0  requires cause == "proprietaire" || cause == "fenetre_echue" || cause == "designation_retiree" || cause == "recriblage" || cause == "objet_incapable" || cause == "operateur_suspendu" || cause == "orbite" || cause == "privilegie"  ensures result == "declare" || result == "crible" || result == "approuve" || result == "rejete" || result == "execute" || result == "verifie" || result == "anomalie" || result == "annule" || result == "inconnu"  reads fiche_de, verrou_de  writes actifs_de, approuves, cause_annulation_de, motif_annulation_de  moves approuve -> annule, crible -> annule, declare -> annule  calls ApiAcces.a_le_role, ApiAcces.agit_pour, ApiCoordination.arretee, ApiCoordination.designe, ApiCoordination.rouvrir, ApiRef.proprietaire, Journal.noter, ManAvis.emettre, ManEvitement.liberer, ManFenetre.liberer, ManIndicateurs.compter
         signal retirer(h: Horodatage, plan: String, motif: String, par: String) -> ManEtatPlan  requires h >= 0  ensures result == "declare" || result == "crible" || result == "approuve" || result == "rejete" || result == "execute" || result == "verifie" || result == "anomalie" || result == "annule" || result == "inconnu"  reads fiche_de, verrou_de  writes actifs_de, approuves, cause_annulation_de, motif_annulation_de  moves approuve -> annule, crible -> annule, declare -> annule  calls ApiAcces.a_le_role, Journal.noter, ManAvis.emettre, ManEvitement.liberer, ManFenetre.liberer, ManIndicateurs.compter
         signal constater_echeance(h: Horodatage, plan: String, par: String) -> ManEtatPlan  requires h >= 0  ensures result == "declare" || result == "crible" || result == "approuve" || result == "rejete" || result == "execute" || result == "verifie" || result == "anomalie" || result == "annule" || result == "inconnu"  reads fiche_de, verrou_de  writes actifs_de, approuves, cause_annulation_de  moves approuve -> annule, approuve -> anomalie  calls ApiAcces.a_le_role, ApiConformite.constater, ApiConjonctions.niveau, ApiCoordination.arretee, ApiCoordination.rouvrir, ApiObservation.manoeuvre_detectee, Journal.noter, ManAnomalie.ouvrir, ManAvis.emettre, ManEvitement.liberer, ManEvitement.solder, ManFenetre.etat, ManIndicateurs.compter
         signal clore(h: Horodatage, plan: String, par: String) -> ManEtatPlan  requires h >= 0  ensures result == "declare" || result == "crible" || result == "approuve" || result == "rejete" || result == "execute" || result == "verifie" || result == "anomalie" || result == "annule" || result == "inconnu"  reads fiche_de  writes actifs_de  moves execute -> anomalie when ManVerification.ecart || ManVerification.non_observee, execute -> verifie when ManVerification.conforme  calls ApiAcces.a_le_role, ApiConjonctions.resoudre, ApiObservation.apogee, ApiObservation.perigee, ApiRef.changer_regime, Journal.noter, ManAnomalie.ouvrir, ManIndicateurs.compter, ManVerification.etat
-        signal reexaminer(h: Horodatage, plan: String, par: String) -> String  requires h >= 0  reads cycle, fiche_de, fondement_de  calls ApiAcces.a_le_role, ApiCoordination.arretee, ApiCoordination.designe, ApiOperateurs.est_actif, ApiRef.peut_manoeuvrer, ManCriblage.fiche, ManCriblage.recribler, annuler
+        signal reexaminer(h: Horodatage, plan: String, par: String) -> String  requires h >= 0  reads cycle, fiche_de, fondement_de  calls ApiAcces.a_le_role, ApiConjonctions.ouverts_de, ApiConjonctions.tca, ApiCoordination.arretee, ApiCoordination.designe, ApiCoordination.privilegie, ApiOperateurs.est_actif, ApiRef.peut_manoeuvrer, ManCriblage.fiche, ManCriblage.recribler, annuler
         signal etat(plan: String) -> ManEtatPlan  ensures result == "declare" || result == "crible" || result == "approuve" || result == "rejete" || result == "execute" || result == "verifie" || result == "anomalie" || result == "annule" || result == "inconnu"  reads cycle, fiche_de
         signal fiche(plan: String) -> ManFichePlan  reads fiche_de
         signal fondement(plan: String) -> ManFondement  reads fondement_de
@@ -5936,8 +5970,8 @@ skeleton ManPlan {
     }
     // type DeltaV = Int where value >= 0 && value <= 10000000 (nominal: never mixed with another type; build DeltaV(x), read to_int(q); literals take its type)
     // type Horodatage = Int where value >= 0 (nominal: never mixed with another type; build Horodatage(x), read to_int(q); literals take its type)
-    // type ManCauseAnnulation = String where value == "proprietaire" || value == "fenetre_echue" || value == "designation_retiree" || value == "recriblage" || value == "objet_incapable" || value == "operateur_suspendu" || value == "orbite" (nominal: never mixed with another type; build ManCauseAnnulation(x), read to_string(q); literals take its type)
-    // type ManCauseRejet = String where value == "criblage_risque" || value == "criblage_impossible" || value == "criblage_perime" || value == "ephemeride_perimee" || value == "operateur_suspendu" || value == "objet_incapable" || value == "designation_changee" || value == "hors_delai" || value == "refus_analyste" (nominal: never mixed with another type; build ManCauseRejet(x), read to_string(q); literals take its type)
+    // type ManCauseAnnulation = String where value == "proprietaire" || value == "fenetre_echue" || value == "designation_retiree" || value == "recriblage" || value == "objet_incapable" || value == "operateur_suspendu" || value == "orbite" || value == "privilegie" (nominal: never mixed with another type; build ManCauseAnnulation(x), read to_string(q); literals take its type)
+    // type ManCauseRejet = String where value == "criblage_risque" || value == "criblage_impossible" || value == "criblage_perime" || value == "ephemeride_perimee" || value == "operateur_suspendu" || value == "objet_incapable" || value == "designation_changee" || value == "hors_delai" || value == "refus_analyste" || value == "manoeuvre_timide" || value == "privilegie" (nominal: never mixed with another type; build ManCauseRejet(x), read to_string(q); literals take its type)
     // type ManEtatPlan = String where value == "declare" || value == "crible" || value == "approuve" || value == "rejete" || value == "execute" || value == "verifie" || value == "anomalie" || value == "annule" || value == "inconnu" (nominal: never mixed with another type; build ManEtatPlan(x), read to_string(q); literals take its type)
     // type ManFichePlan = ManFichePlan { objet: Objet, r: Rapprochement, motif: ManMotif, debut: Horodatage, fin: Horodatage, dv: DeltaV, proprietaire: Org, declarant: String, declare_le: Horodatage }
     // type ManFondement = ManFondement { approuve_le: Horodatage, approuve_par: String, depot: String, age_ephemeride: Duree, qualite: Qualite, conflits: Int, crible_le: Horodatage, version_regles: String, designe: Objet, pc: Probabilite, niveau: Int, statut_operateur: String }
@@ -5946,9 +5980,9 @@ skeleton ManPlan {
     // type Org = String (nominal: never mixed with another type; build Org(x), read to_string(q); literals take its type)
     // type Rapprochement = String (nominal: never mixed with another type; build Rapprochement(x), read to_string(q); literals take its type)
     // type Refus = String where value == "Habilitation" || value == "QuatreYeux" || value == "Existe" || value == "Inconnu" || value == "EtatInvalide" || value == "HorsBornes" || value == "Insuffisant" || value == "Perime" || value == "Suspendu" || value == "Ferme" || value == "Echu" || value == "NonEligible" || value == "Doublon" || value == "Incoherent" || value == "Plein" || value == "MotifRequis" || value == "Delai" || value == "Conflit" || value == "Confidentiel" (nominal: never mixed with another type; build Refus(x), read to_string(q); literals take its type)
-    //~ declarer 3571ed412028b6da
+    //~ declarer b401ccdb48784a79
     //~ statuer 34b37ab424de240b
-    //~ approuver d7e5a85c33f5fde7
+    //~ approuver aae99f63c61e3532
     //~ rejeter 9cac51d8ca7ec53a
     //~ confirmer 03a5e76bbe1733c6
     //~ declarer_echec 9ff1aca53dad18b1
@@ -5956,7 +5990,7 @@ skeleton ManPlan {
     //~ retirer 13a71f82de9ceff0
     //~ constater_echeance 69f1b061d7697ea5
     //~ clore d190a54a76ad81d8
-    //~ reexaminer 833056fb729db607
+    //~ reexaminer 0100a071eb3e7970
     //~ etat 9354b862382085d0
     //~ fiche 74ae93268e3fa775
     //~ fondement 189329ebb51fdbd7
@@ -8838,7 +8872,7 @@ skeleton PrioDerogation {
     //~ fiche 1f989e9de158d933
 }
 
-== PrioDesignation sha256:71bcd42323b823b7ebdd325dbd0537a82ac2af7807c235abdd9788ae368aacd1 core:3fdbd5fcb943584e4ebf218e9e02b96ca6bb9214d9d5f634dad791db5ae38de9
+== PrioDesignation sha256:b22c13b5886418dfa7b9de5ea5c4117b1aadfbaed66bc2f3a792523f1c7aa651 core:ff4f18310fbfe3356337c836c2c35df1fb0a728dd28f81509419aa780812b998
 skeleton PrioDesignation {
     memory {
         a_de: Map<String, Objet> [persistent]
@@ -8862,7 +8896,7 @@ skeleton PrioDesignation {
         invariant entrees_de.size <= a_de.size
         invariant compte_motif >= 0
         invariant contestation_de.size <= a_de.size
-        invariant motif_de == "aucun_capable" || motif_de == "seul_capable" || motif_de == "habite_exempte" || motif_de == "regle" || motif_de == "arrivee" || motif_de == "catalogue"
+        invariant motif_de == "aucun_capable" || motif_de == "seul_capable" || motif_de == "habite_exempte" || motif_de == "manoeuvrabilite" || motif_de == "rattrapage" || motif_de == "regle" || motif_de == "arrivee" || motif_de == "catalogue"
         invariant tca_de >= 0
         invariant calculee_le >= 0
     }
@@ -8877,7 +8911,7 @@ skeleton PrioDesignation {
         archivee -> purgee
     }
     face {
-        signal designer(h: Horodatage, r: Rapprochement, a: Objet, b: Objet) -> Objet  requires h >= 0  writes a_de, b_de, calculee_le, compte_motif, entrees_de, motif_de, par_rapprochement, rapprochement_de, regle_de, resultat_de, tca_de, version_de  calls ApiConformite.sous_surveillance, ApiConjonctions.objets, ApiConjonctions.tca, ApiLancements.injecte_le, ApiOperateurs.est_actif, ApiRef.etat_objet, ApiRef.habite, ApiRef.masse, ApiRef.peut_manoeuvrer, ApiRef.proprietaire, ApiRef.propulsion, Journal.noter, PrioDerogation.en_cours, PrioEcheancier.planifier, PrioEssaim.autonome, PrioPreparation.delai, PrioTable.preavis_de_version, PrioTable.regles, PrioVersion.en_vigueur_a, next_id
+        signal designer(h: Horodatage, r: Rapprochement, a: Objet, b: Objet) -> Objet  requires h >= 0  writes a_de, b_de, calculee_le, compte_motif, entrees_de, motif_de, par_rapprochement, rapprochement_de, regle_de, resultat_de, tca_de, version_de  calls ApiConformite.sous_surveillance, ApiConjonctions.en_rattrapage, ApiConjonctions.objets, ApiConjonctions.tca, ApiConjonctions.vitesse_relative, ApiLancements.injecte_le, ApiObservation.apogee, ApiObservation.perigee, ApiOperateurs.est_actif, ApiRef.etat_objet, ApiRef.habite, ApiRef.masse, ApiRef.peut_manoeuvrer, ApiRef.proprietaire, ApiRef.propulsion, Journal.noter, PrioDerogation.en_cours, PrioEcheancier.planifier, PrioEssaim.autonome, PrioPreparation.delai, PrioTable.preavis_de_version, PrioTable.regles, PrioVersion.en_vigueur_a, next_id
         signal rejouer(decision: String) -> Objet  reads calculee_le, decision, entrees_de, tca_de, version_de  calls PrioTable.regles
         signal decision_de(r: Rapprochement) -> String  reads calculee_le, motif_de, par_rapprochement, regle_de, resultat_de, version_de
         signal decisions_de(r: Rapprochement) -> List<String>  reads par_rapprochement
@@ -8894,11 +8928,11 @@ skeleton PrioDesignation {
     // type Org = String (nominal: never mixed with another type; build Org(x), read to_string(q); literals take its type)
     // type PrioCritere = String where value == "derogation" || value == "propulsion_faible" || value == "arrivee_recente" || value == "essaim_autonome" || value == "operateur_surveille" || value == "masse_moindre" (nominal: never mixed with another type; build PrioCritere(x), read to_string(q); literals take its type)
     // type PrioEffet = String where value == "exempte" || value == "designe" (nominal: never mixed with another type; build PrioEffet(x), read to_string(q); literals take its type)
-    // type PrioMotifDesignation = String where value == "aucun_capable" || value == "seul_capable" || value == "habite_exempte" || value == "regle" || value == "arrivee" || value == "catalogue" (nominal: never mixed with another type; build PrioMotifDesignation(x), read to_string(q); literals take its type)
+    // type PrioMotifDesignation = String where value == "aucun_capable" || value == "seul_capable" || value == "habite_exempte" || value == "manoeuvrabilite" || value == "rattrapage" || value == "regle" || value == "arrivee" || value == "catalogue" (nominal: never mixed with another type; build PrioMotifDesignation(x), read to_string(q); literals take its type)
     // type Rapprochement = String (nominal: never mixed with another type; build Rapprochement(x), read to_string(q); literals take its type)
     // type Refus = String where value == "Habilitation" || value == "QuatreYeux" || value == "Existe" || value == "Inconnu" || value == "EtatInvalide" || value == "HorsBornes" || value == "Insuffisant" || value == "Perime" || value == "Suspendu" || value == "Ferme" || value == "Echu" || value == "NonEligible" || value == "Doublon" || value == "Incoherent" || value == "Plein" || value == "MotifRequis" || value == "Delai" || value == "Conflit" || value == "Confidentiel" (nominal: never mixed with another type; build Refus(x), read to_string(q); literals take its type)
-    //~ designer cc47ffafc70b23d3
-    //~ rejouer d0a194078ce4e523
+    //~ designer 91040dc5a0ea6bb1
+    //~ rejouer 4399fa30b8d016a0
     //~ decision_de 755f641039e31f2a
     //~ decisions_de 2976573b02197b4e
     //~ communiquer 405edb9878daddcc
@@ -10576,4 +10610,4 @@ verify.before.RespSinistres.declare.requires = ["OpMembres.admis"]
 verify.before.RespSinistres.declare.via = "RespSinistres.op_de"
 package.edition = "2026"
 
-checksum sha256:4137a96fb9ae7e6dd6b69cf4368d96cec58471d2f91a60790190ee797905c85f
+checksum sha256:2a5167753f23b5fc9a4f4fc241bc17ebc69a681768c88f3fc5a78bfa3ef29b63

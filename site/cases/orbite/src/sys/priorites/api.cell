@@ -2,12 +2,15 @@
 skeleton ApiPriorites {
     face {
         // Désignation par défaut selon les règles en vigueur : l'objet qui doit manœuvrer entre
-        // a et b ; "" si aucun ne le peut. Ordre de principe : un objet habité ne manœuvre que
-        // seul ; un objet sans propulsion jamais ; propulsion faible manœuvre si son préavis
-        // (preavis("faible")) tient avant le TCA du rapprochement r, sinon l'impulsionnelle ; à capacité égale, le dernier arrivé sur l'orbite (lancé le plus
-        // récemment). Chaque appel enregistre une décision (version, instantané) :
-        // decision_de(r). Refus : Inconnu (objet), Ferme (aucune version en vigueur), Incoherent
-        // (a == b), Plein.
+        // a et b ; "" si aucun ne le peut. Ordre de principe (règles de barre du COLREG 1972) :
+        // un objet sans propulsion jamais ; un objet habité ne manœuvre que seul capable ; entre
+        // une propulsion faible et une impulsionnelle, l'IMPULSIONNELLE s'écarte si son préavis
+        // (preavis("impulsionnelle")) tient avant le TCA du rapprochement r, sinon la faible si
+        // le sien tient (règle 18) ; à capacité égale, en rattrapage (vitesse relative faible),
+        // l'objet le plus bas s'écarte (règle 13) ; puis la table votée ; enfin le dernier arrivé
+        // sur l'orbite (lancé le plus récemment). Chaque appel enregistre une décision (version,
+        // instantané) : decision_de(r). Refus : Inconnu (objet), Ferme (aucune version en
+        // vigueur), Incoherent (a == b), Plein.
         signal qui_manoeuvre(h: Horodatage, r: Rapprochement, a: Objet, b: Objet) -> Objet
             calls PrioDesignation.designer
         // Version des règles en vigueur à `h` ("" si aucune).

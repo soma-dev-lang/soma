@@ -319,6 +319,70 @@ flesh CoordDossier {
         let _ = Journal.noter(h, "coordination", par, "{r} rouverte (tour {nt}) : {propre} — {get_status(r) ?? \"rouverte\"}")
         return get_status(r) ?? "rouverte"
     }
+    on relever(h, r, par) {
+        require ApiAcces.a_le_role(par, "systeme") || ApiAcces.a_le_role(par, "analyste") else Habilitation "{par} ne relève pas de désigné"
+        require objets_de.get(r) != () else Inconnu "aucune coordination pour {r}"
+        let st = get_status(r) ?? "ouverte"
+        require st == "arretee" else EtatInvalide "coordination {r} : {st}"
+        let d = CoordVerrou.decision(r)
+        let des = CoordVerrou.designe(r, "systeme")
+        let priv = CoordVerrou.privilegie(r, "systeme")
+        require d != "" && des != "" && priv != "" else EtatInvalide "{r} : aucune désignation d'objet à relever"
+        // le désigné n'a pas de plan approuvé (ni exécuté)
+        let se = CoordSuivi.etat(d)
+        require se == "attente_plan" || se == "plan_depose" else EtatInvalide "suivi de {d} : {se}, pas de relève"
+        let plan_r = CoordSuivi.plan(d)
+        if plan_r == "" { plan_r = ApiManoeuvres.plan_de(r) }
+        let ep = if plan_r != "" { ApiManoeuvres.etat(plan_r) } else { "" }
+        require ep != "approuve" && ep != "execute" && ep != "verifie" else EtatInvalide "plan {plan_r} du désigné {ep} : pas de relève"
+        // fenêtre de relève : la dernière heure où le privilégié peut encore agir approche
+        let tca = to_int(ApiConjonctions.tca(r))
+        let pre = to_int(ApiPriorites.preavis(ApiRef.propulsion(priv)))
+        let ouverture = tca - pre - MARGE_RELEVE
+        require to_int(h) >= ouverture else Delai "relève de {r} pas avant {ouverture}"
+        require to_int(h) + pre <= tca else Delai "préavis du privilégié {priv} dépassé : relève impossible"
+        let champs = split(CoordDecision.resume(d), "|")
+        let pose = if len(champs) >= 5 { parse_int(champs[4]) } else { to_int(h) }
+        require pose < ouverture else Delai "décision {d} posée dans la fenêtre de relève : le désigné n'a pas eu sa chance"
+        // le privilégié peut prendre la manœuvre (mêmes contrôles que la pose du verrou)
+        require ApiRef.peut_manoeuvrer(priv) else NonEligible "{priv} ne peut pas manœuvrer"
+        if ApiRef.habite(priv) {
+            require (!ApiRef.peut_manoeuvrer(des)) || ApiRef.habite(des) else NonEligible "{priv} est habité et {des} peut manœuvrer"
+        }
+        let prop_p = ApiRef.proprietaire(priv)
+        require ApiOperateurs.est_actif(prop_p, h) else Suspendu "le propriétaire {prop_p} de {priv} n'est pas actif"
+        require CoordGrappe.compatible(r, priv) else Conflit "la grappe de {r} n'admet pas {priv}"
+        let tour = tour_de.get(r) ?? 1
+        let nt = tour + 1
+        require nt <= MAX_TOURS else EtatInvalide "{r} : plus de {MAX_TOURS} tours"
+        // relève : le plan non approuvé du désigné est retiré, la décision levée, le privilégié désigné
+        if ep == "declare" || ep == "crible" {
+            let _ = ApiManoeuvres.retirer(h, plan_r, "releve_17b", "systeme")
+        }
+        transition(r, "arretee", "liberee")
+        let _ = CoordSuivi.relever(h, d)
+        let _ = CoordVerrou.lever(h, r, "releve_17b")
+        transition(r, "liberee", "rouverte")
+        tour_de.set(r, nt)
+        propose_de.set(r, priv)
+        _fixer(r, to_int(h), tca - pre)
+        en_cours.set(r, h)
+        transition(r, "rouverte", "arbitrage")
+        let _ = CoordArbitrage.saisir(h, r, nt, "releve_17b")
+        let d2 = CoordVerrou.poser(h, r, priv, "releve", "releve_17b : {des} sans plan approuvé", "systeme", "")
+        transition(r, "arbitrage", "arretee")
+        let _ = CoordArbitrage.rendre(h, r)
+        let _ = CoordEchange.noter(h, r, "ORG-ORBITE", "rouverture", "releve (regle 17b) : {des} sans plan approuve, decision {d} levee ; {priv} manoeuvre (decision {d2})", par)
+        let _ = CoordEchange.notifier(h, r, "decision", "releve (regle 17b) : {priv} manoeuvre (decision {d2}) ; {des} devient privilegie et garde son cap jusqu'au TCA")
+        let prop_d = ApiRef.proprietaire(des)
+        if prop_d != "inconnu" {
+            let niv = ApiConjonctions.niveau(r)
+            let grav = if to_int(niv) == 3 { 3 } else { 2 }
+            let _ = try { ApiConformite.constater(h, prop_d, "designation_ignoree", Gravite(grav), d, "systeme") }
+        }
+        let _ = Journal.noter(h, "coordination", par, "{r} : relève (règle 17b) — {des} sans plan approuvé, {priv} manœuvre (décision {d2}, tour {nt}) ; {des} privilégié")
+        return "arretee"
+    }
     on recaler(h, r, par) {
         require ApiAcces.a_le_role(par, "systeme") || ApiAcces.a_le_role(par, "analyste") else Habilitation "{par} ne recale pas"
         require parties_de.get(r) != () else Inconnu "aucune coordination pour {r}"
@@ -407,6 +471,9 @@ flesh CoordDossier {
                     if d != "" {
                         let _ = try { CoordSuivi.suivre(h, d, "systeme") }
                     }
+                }
+                if (get_status(r) ?? "ouverte") == "arretee" {
+                    let _ = try { relever(h, r, "systeme") }
                 }
             }
             if (get_status(r) ?? "ouverte") != avant { n_chg = n_chg + 1 }

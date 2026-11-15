@@ -13,6 +13,13 @@ skeleton ConjRapprochement {
     const MAX_PAR_COUPLE = 1000
     const FENETRE_MEME_TCA = 600000       // ±10 min
     const DELAI_ANALYSE = 3600000         // l'analyse après TCA s'ouvre à TCA + 1 h
+    // Règle 13 du COLREG (rattrapage) : une vitesse relative au TCA inférieure à 100 m/s
+    // signale deux orbites voisines quasi coplanaires (un rapprochement croisé en LEO se fait à
+    // plusieurs km/s ; deux objets qui se rattrapent sur des orbites proches, à quelques dizaines
+    // de m/s) : l'objet le plus bas (le plus rapide) rattrape l'autre.
+    const SEUIL_RATTRAPAGE_MPS = 100
+    // Vitesse relative maximale admise (m/s) : deux orbites terrestres face à face, ≈ 16 km/s.
+    const VREL_MAX_MPS = 20000
     memory {
         objet_a_de: Map<String, Objet> [persistent]         // écrit à la création, jamais modifié
         objet_b_de: Map<String, Objet> [persistent]
@@ -43,6 +50,10 @@ skeleton ConjRapprochement {
         // une fois par resoudre (motif "manoeuvre_verifiee"), jamais effacé (lien de la règle
         // en_coordination -> evite when ManPlan.verifie).
         plan_de: Map<String, String> [persistent]
+        // vitesse relative au TCA (m/s, 1 à VREL_MAX_MPS) précisée par le moteur de criblage ;
+        // absente tant qu'aucune géométrie n'a été remise (la règle 13 ne s'applique pas).
+        vrel_de: Map<String, Int> [persistent]
+        invariant vrel_de >= 1 && vrel_de <= 20000
         invariant objet_a_de.size <= 5000000
         invariant nb_maj >= 0
         invariant sous_seuil_de >= 0
@@ -175,6 +186,23 @@ skeleton ConjRapprochement {
         signal fondements(h: Horodatage, r: Rapprochement, org: Org, n: Int, par: String) -> List<String>
             reads objet_a_de, objet_b_de, fondements_de
             calls ApiDonnees.peut_recevoir, ApiDonnees.tracer, ApiRef.orbite, ApiAcces.a_le_role, ApiAcces.agit_pour, Journal.noter
+        // Précise la géométrie du rapprochement ouvert `r` (résultat du moteur de criblage) :
+        // vitesse relative des deux objets au TCA, en m/s (1 à VREL_MAX_MPS), mémorisée (la
+        // dernière remise prime) et journalisée. Sert la règle de rattrapage des priorités
+        // (en_rattrapage). Renvoie la vitesse retenue. Rôle : "systeme" (moteur de criblage) ou
+        // "analyste" d'ORBITE. Refus : Inconnu, Ferme (clos), HorsBornes (vitesse hors
+        // 1..VREL_MAX_MPS), Habilitation.
+        signal preciser_geometrie(h: Horodatage, r: Rapprochement, vitesse_relative_mps: Int, par: String) -> Int
+            writes vrel_de
+            reads objet_a_de, rapprochement
+            calls ApiAcces.a_le_role, Journal.noter
+        // Vitesse relative au TCA (m/s) ; 0 si aucune géométrie n'a été remise. Refus : Inconnu.
+        signal vitesse_relative(r: Rapprochement) -> Int
+            reads vrel_de, objet_a_de
+        // Vrai si le rapprochement est un RATTRAPAGE (règle 13) : géométrie remise et vitesse
+        // relative < SEUIL_RATTRAPAGE_MPS. Faux sans géométrie. Refus : Inconnu.
+        signal en_rattrapage(r: Rapprochement) -> Bool
+            reads vrel_de, objet_a_de
         // Fiche du rapprochement. Refus : Inconnu.
         signal fiche(r: Rapprochement) -> ConjFiche
             reads objet_a_de, objet_b_de, tca_de, distance_de, pc_de, niveau_de, regime_de, nb_maj, maj_le

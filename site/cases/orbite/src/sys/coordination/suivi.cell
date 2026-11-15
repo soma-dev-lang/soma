@@ -6,7 +6,7 @@
 // silencieux ne bloque pas plus qu'un opérateur qui ne répond pas (propriété 5).
 
 // État du suivi d'une décision ; "inconnu" si aucune décision de ce nom.
-cell type CoordEtatSuivi = String where value == "attente_plan" || value == "plan_depose" || value == "execute" || value == "verifie" || value == "anomalie" || value == "defaillant" || value == "sans_objet" || value == "caduc" || value == "inconnu"
+cell type CoordEtatSuivi = String where value == "attente_plan" || value == "plan_depose" || value == "execute" || value == "verifie" || value == "anomalie" || value == "defaillant" || value == "sans_objet" || value == "caduc" || value == "releve" || value == "inconnu"
 
 skeleton CoordSuivi {
     const MAX_SUIVIS = 100000000
@@ -28,6 +28,8 @@ skeleton CoordSuivi {
         plan_depose -> execute           // exécution confirmée par le propriétaire (ApiManoeuvres.etat "execute")
         plan_depose -> defaillant        // plan rejeté, annulé hors rouverture, ou non approuvé à l'heure limite
         plan_depose -> caduc             // décision levée ou soldée : le plan a été annulé par la rouverture
+        attente_plan -> releve           // relève (règle 17b) : le privilégié prend la manœuvre, coordination libérée
+        plan_depose -> releve            // relève alors que le plan du désigné n'est pas approuvé (il est retiré)
         execute -> verifie               // vérification après manœuvre par observation
         execute -> anomalie              // manœuvre exécutée hors plan (ApiManoeuvres.etat "anomalie") : rouverture
     }
@@ -64,6 +66,15 @@ skeleton CoordSuivi {
             writes constate_le
             reads rapprochement_de
             moves attente_plan -> caduc when CoordDecision.levee || CoordDecision.soldee, plan_depose -> caduc when CoordDecision.levee || CoordDecision.soldee
+        // Relève du désigné (règle 17b) : attente_plan|plan_depose -> releve, seulement pendant la
+        // libération de la coordination (CoordDossier "liberee", lien rapprochement_de) — avant la
+        // levée du verrou, qui ne rend alors pas le suivi caduc. Appelé par CoordDossier.relever
+        // seulement. Renvoie "releve". Refus : Inconnu, EtatInvalide (ni attente_plan ni plan_depose).
+        signal relever(h: Horodatage, d: String) -> CoordEtatSuivi
+            writes constate_le
+            reads rapprochement_de
+            moves attente_plan -> releve when CoordDossier.liberee via rapprochement_de, plan_depose -> releve when CoordDossier.liberee via rapprochement_de
+            calls CoordDossier.phase
         // Plan d'évitement retenu pour la décision ("" si aucun encore) : le seul plan
         // d'évitement que la coordination reconnaisse pour `r` tant que la décision est en vigueur.
         signal plan(d: String) -> String

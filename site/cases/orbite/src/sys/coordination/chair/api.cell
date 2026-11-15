@@ -10,6 +10,9 @@ flesh ApiCoordination {
     on designe(r, par) {
         return CoordVerrou.designe(r, par)
     }
+    on privilegie(r, par) {
+        return CoordVerrou.privilegie(r, par)
+    }
     on arretee(r) {
         return CoordVerrou.arretee(r)
     }

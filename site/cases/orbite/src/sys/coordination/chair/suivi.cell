@@ -90,6 +90,22 @@ flesh CoordSuivi {
         }
         return st
     }
+    on relever(h, d) {
+        let r = rapprochement_de.get(d)
+        require r != () else Inconnu "suivi inconnu : {d}"
+        // règle de l'arête : la coordination est libérée (relève en cours)
+        require CoordDossier.phase(r) == "liberee" else EtatInvalide "coordination {r} non libérée : pas de relève"
+        let st = get_status(d) ?? "attente_plan"
+        if st == "attente_plan" {
+            transition(d, "attente_plan", "releve")
+        } else if st == "plan_depose" {
+            transition(d, "plan_depose", "releve")
+        } else {
+            fail("EtatInvalide", "suivi {d} : {st}, pas de relève")
+        }
+        constate_le.set(d, h)
+        return "releve"
+    }
     on plan(d) {
         return plan_de.get(d) ?? ""
     }

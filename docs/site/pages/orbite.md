@@ -1,7 +1,7 @@
 ---
 title: Orbite: who moves?
 full_title: Orbite — twenty AI agents wrote a space traffic protocol in Soma, and the verifier checked it
-description: When two satellites are about to collide, who moves? Orbite is a 67,758-line protocol written in Soma by twenty coding agents in a day, with its central rules proven by soma verify. Replayed on the 2019 Aeolus–Starlink near-miss, it settles the decision three days before the closest approach. Download it and check it yourself in eight minutes.
+description: When two satellites are about to collide, who moves? Orbite is a 69,150-line protocol written in Soma by twenty coding agents in a day, with its central rules proven by soma verify. Replayed on the 2019 Aeolus–Starlink near-miss, it settles the decision three days before the closest approach. Download it and check it yourself in eight minutes.
 type: TechArticle
 h1: no
 ---
@@ -41,19 +41,19 @@ details{margin:1rem 0}details summary{cursor:pointer;color:var(--accent);font-we
 
 <p class="orb-kicker">Case study · space traffic coordination · simulated</p>
 <h1 class="orb-h1">Who moves? Twenty AI agents wrote the answer in Soma — and the verifier checked it.</h1>
-<p class="lede">When two satellites are about to collide, one of them has to move — exactly one. Today operators settle it by e-mail and phone, case by case; there is no protocol the whole world shares. <strong>Orbite</strong> is that protocol, written as a program: twenty coding agents built it in a day, in parallel, each seeing only its own part. Soma's verifier proves the rules that keep the decision single. Replayed on a real near-miss from 2019, it settles who moves <strong>three days</strong> before the closest approach.</p>
+<p class="lede">When two satellites are about to collide, one of them has to move — exactly one. Today operators settle it by e-mail and phone, case by case; there is no protocol the whole world shares. <strong>Orbite</strong> is that protocol, written as a program: twenty coding agents built it in a day, in parallel, each seeing only its own part. Its rules of the road are borrowed from the sea, and Soma's verifier proves the ones that keep the decision single. Replayed on a real near-miss from 2019, it settles who moves <strong>three days</strong> before the closest approach.</p>
 <div class="orb-stats">
-<div class="orb-stat"><b>67,758</b><span>lines of Soma, written by agents</span></div>
+<div class="orb-stat"><b>69,150</b><span>lines of Soma, written by agents</span></div>
 <div class="orb-stat"><b>20</b><span>agents in parallel, one subsystem each</span></div>
 <div class="orb-stat"><b>156</b><span>state machines across 220 cells</span></div>
 <div class="orb-stat hl"><b>97</b><span>rules between machines proven by <code>soma verify</code></span></div>
-<div class="orb-stat"><b>6,268</b><span>test assertions, all green</span></div>
+<div class="orb-stat"><b>6,482</b><span>test assertions, all green</span></div>
 <div class="orb-stat hl"><b>−69 h</b><span>decision before closest approach in the 2019 replay</span></div>
 </div>
 <div class="orb-cta">
 <a class="main" href="/orbite-aeolus">Replay the 2019 near-miss →</a>
 <a href="#check-it-yourself-in-eight-minutes">Download it and check it</a>
-<a href="#how-do-you-trust-67-000-lines-no-one-reviewed">How it was built</a>
+<a href="#how-do-you-trust-69-000-lines-no-one-reviewed">How it was built</a>
 </div>
 <p class="orb-note">Orbite is a research program: States, operators and objects are fictional and nothing connects to a real system. What is real is the question it answers — can agents build a large, safety-critical system that anyone can trust without reading it all?</p>
 
@@ -101,6 +101,23 @@ We replayed that timeline on Orbite's real code, not on a model. The first run w
 | The burn is checked | — | trajectory screened before approval, orbit observed after |
 
 [The full replay, minute by minute, with what Orbite still does not do →](/orbite-aeolus)
+
+## Rules of the road, borrowed from the sea
+
+Ships have settled "who moves" since 1972 with the international collision regulations, COLREG: every captain knows, without a word exchanged, whether to give way or to stand on. Orbite transposes them to orbit, where the stakes are the same and the ships cannot see each other:
+
+| At sea (COLREG) | In orbit (Orbite) |
+|---|---|
+| A give-way vessel and a stand-on vessel | Each conjunction records both roles: the designated object, and the one that keeps its course |
+| Rule 18 — the less manoeuvrable has right of way | No propulsion › crewed › low-thrust electric › impulsive: **the more manoeuvrable gives way** |
+| Rule 15 — between equals, a fixed convention | Between objects of the same capability, the last one launched gives way |
+| Rule 13 — the overtaking vessel keeps clear | At low relative speed, the lower — faster — object gives way |
+| Rule 8 — action early, substantial, readily apparent | A plan must bring the risk below 1 in a million, be approved before its notice runs out, and publish the burn in its ephemeris |
+| Rule 17(a) — the stand-on keeps course and speed | Every plan of the stand-on object is refused until the closest approach |
+| Rule 17(b) — the stand-on must act if the other does not | **Relief**: if the designated object has no approved plan in time, the lock passes to the stand-on — never two designations at once |
+| Rule 34 — signal your intention | "Manoeuvre at H, Δv so much, acknowledgement expected", to the other operator and its State |
+
+Two rules stay at sea. "Both alter to starboard" (head-on) would mean two manoeuvres without coordination — exactly what property 1 forbids. "The one with the other on its starboard side" has no meaning in orbit. Each rule has a test that applies it and one that does not, in [test_colreg.cell](/cases/orbite/src/test_colreg.cell).
 
 ## One decision, proven
 
@@ -233,18 +250,18 @@ skeleton Coordination {
 
 The verifier names the run that breaks the rule — `Coordination.agree → Coordination.force` — before any code is written. It is an open obligation while `force` has no body (a body could still refuse the edge); `--strict`, the mode for CI, fails at once. In Orbite the same rules tie the real lock to the real coordination, in a program of 156 machines. A reviewer found a way to designate twice in an earlier version; the fix is the `lifted` state above, and their attempt is now a regression test.
 
-## How do you trust 67,000 lines no one reviewed?
+## How do you trust 69,000 lines no one reviewed?
 
-No model holds 67,000 lines in context, and no human read them all. Soma's answer is to write the **structure first**, prove it, and then check each body against the part of the structure it belongs to.
+No model holds 69,000 lines in context, and no human read them all. Soma's answer is to write the **structure first**, prove it, and then check each body against the part of the structure it belongs to.
 
 <div class="orb-steps">
 <div class="orb-step"><h3>Contract</h3><p class="n">530 lines</p><p>Common types — metres, billionths of probability, roles with their scope — and twenty <em>façades</em>: the only signals a subsystem may call in another.</p></div>
-<div class="orb-step"><h3>Skeletons</h3><p class="n">21,189 lines</p><p>Twenty agents in parallel, each writing one subsystem's memory, invariants, state machines and <em>frames</em>: what every signal may read, write, call, and which edges it may take.</p></div>
+<div class="orb-step"><h3>Skeletons</h3><p class="n">21,387 lines</p><p>Twenty agents in parallel, each writing one subsystem's memory, invariants, state machines and <em>frames</em>: what every signal may read, write, call, and which edges it may take.</p></div>
 <div class="orb-step"><h3>Rules, proven</h3><p class="n">97 ✓</p><p>Ten agents turned seventy requirements across subsystems into rules on edges — <em>a coordination opens only on a conjunction in alert</em> — and <code>soma verify</code> proved them.</p></div>
-<div class="orb-step"><h3>Bodies, checked</h3><p class="n">30,028 lines</p><p>Twenty agents filled every signal from a one-screen brief. <code>soma check</code> refuses a body that leaves its frame; 6,268 assertions and an end-to-end scenario run them together.</p></div>
+<div class="orb-step"><h3>Bodies, checked</h3><p class="n">30,262 lines</p><p>Twenty agents filled every signal from a one-screen brief. <code>soma check</code> refuses a body that leaves its frame; 6,482 assertions and an end-to-end scenario run them together.</p></div>
 </div>
 
-That last point is the one agents need: `soma skeleton prod.cell CoordVerrou.poser` prints everything one body is allowed to touch, and nothing else. An agent writes that body without ever seeing the other 67,000 lines — and cannot quietly reach outside it.
+That last point is the one agents need: `soma skeleton prod.cell CoordVerrou.poser` prints everything one body is allowed to touch, and nothing else. An agent writes that body without ever seeing the other 69,000 lines — and cannot quietly reach outside it.
 
 ## What the verifier — and the replays — caught
 
@@ -256,6 +273,7 @@ The point of a verifier is what it finds before anyone relies on the system. The
 <div class="orb-bug"><p class="by">the 2019 replay</p><h3>Escalation 1 → 4 in 30 minutes</h3><p>Every unanswered message — including the escalation's own reminders — climbed one level, waking up two States before anyone had time to answer.</p></div>
 <div class="orb-bug"><p class="by">the 2019 replay</p><h3>1,650 breaches in three days</h3><p>A breach notified to a State without a channel created a new breach, in a loop. Unit tests with test doubles could not see it; the real bodies together did.</p></div>
 <div class="orb-bug"><p class="by">the 2019 replay</p><h3>Deciding later than ESA</h3><p>Orbite waited for the silent operator until its take-over deadline, 8 h before the approach. The tacit agreement now settles it at the answer deadline.</p></div>
+<div class="orb-bug"><p class="by">rule 8, the 2019 replay</p><h3>A burn too timid</h3><p>The 0.5 m/s burn simulated for Aeolus left a risk of 1 in 730,000. Under the rule borrowed from the sea, a manoeuvre must be franc: refused, and replaced by 0.7 m/s.</p></div>
 <div class="orb-bug"><p class="by">soma check</p><h3>No State could ever be declared</h3><p>An invariant between two slots written with <code>?? 0</code> refused the very first write. Five subsystems had it; the agents fixed it from the warning.</p></div>
 </div>
 
@@ -269,7 +287,7 @@ Building Orbite also improved Soma itself: the verifier now searches each rule o
 | 2 | An object without propulsion, out of service or in anomaly is never designated | the lock refuses it; any loss of capability reopens its coordinations | ◐ rules + bodies + tests |
 | 3 | A crewed object manoeuvres only if it is the only one able to | checked where the lock is taken | ◐ bodies + tests |
 | 4 | No manoeuvre approved without screening, on stale data, or for a suspended operator | a chain of six states, one condition from another subsystem per step | **✓ first step proven** ◐ rest open |
-| 5 | Every level-3 alert answered before its deadline or escalated; silence never blocks | one clock, escalation to the States, tacit agreement, take-over | ◐ rules + replay |
+| 5 | Every level-3 alert answered before its deadline or escalated; silence never blocks | one clock, escalation to the States, tacit agreement, relief by the stand-on, take-over | ◐ rules + replay |
 | 6 | Every decision traceable to its data; data only to authorised parties | evidence frozen at the instant of the decision, controlled reads | ◐ rules + end-to-end |
 
 The approval chain behind property 4 is the real frame of `ManPlan.approuver` (Orbite is written in French):
@@ -288,7 +306,7 @@ signal approuver(h: Horodatage, plan: String, par: String) -> ManEtatPlan
 ## What is not proven — yet
 
 - **The 97 rules are proven on the skeleton**: they hold for every body that stays in its frame (`soma check` proves each one does) and takes an edge only under its condition — which `soma verify` judges on the bodies. Running it on all 1,787 bodies together does not yet finish in reasonable time; that is the next work on the verifier.
-- **149 rules through a link** (`via`) stay open obligations until then: each needs the verifier to see, in the body that writes the link, that it is written once.
+- **151 rules through a link** (`via`) stay open obligations until then: each needs the verifier to see, in the body that writes the link, that it is written once.
 - **Notified is not informed**: in the replay, the silent operator receives the decision but never acknowledges it. Orbite reduces the 2019 risk — the other satellite moving too — but cannot remove it.
 - **Simulated**: orbital mechanics are simplified, every actor is fictional. Orbite is a demonstration of method, not a service.
 
@@ -296,14 +314,14 @@ We have not built the same system in another language with the same agents to co
 
 ## Check it yourself in eight minutes
 
-Everything above can be checked with the public release. The whole program is published — 491 files, for people and for agents:
+Everything above can be checked with the public release. The whole program is published — 492 files, for people and for agents:
 
 ```console
 $ curl -fsSL https://soma-lang.dev/install.sh | sh          # soma 3.2.4
 $ curl -fsSL https://soma-lang.dev/cases/orbite/orbite.tar.gz | tar xz && cd orbite
 $ soma check prod.cell                                       # 0 errors, 1,787 signals, all filled
 $ soma verify app.cell                                       # about 8 minutes: VERIFY OK, 97 rules proven
-$ soma test test_aeolus.cell                                 # the 2019 replay: 99 assertions
+$ soma test test_aeolus.cell                                 # the 2019 replay: 101 assertions
 ```
 
 <div class="orb-paths">

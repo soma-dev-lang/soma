@@ -7,12 +7,14 @@
 skeleton CoordVerrou {
     const MAX_VERROUS = 50000000
     memory {
-        designe_de: Map<String, Objet> [persistent]       // r -> objet désigné ("" : décision de ne pas manœuvrer) ; présent seulement verrou tenu
+        designe_de: Map<String, Objet> [persistent]       // r -> objet désigné, le « give-way » qui s'écarte ("" : décision de ne pas manœuvrer) ; présent seulement verrou tenu
+        privilegie_de: Map<String, Objet> [persistent]    // r -> l'autre objet, le « stand-on » privilégié qui garde son cap (règle 17a) ; "" si décision de ne pas manœuvrer ; écrit avec designe_de
         decision_de: Map<String, String> [persistent]     // r -> décision en vigueur (CoordDecision) ; présent seulement verrou tenu
         pose_le: Map<String, Horodatage> [persistent]     // r -> instant de la dernière pose
         poses_de: Map<String, Int> [persistent]           // r -> nombre de poses (numérote les décisions)
         invariant designe_de.size <= 50000000
         invariant decision_de.size <= 50000000
+        invariant privilegie_de.size <= 50000000
         invariant poses_de >= 1
     }
     // Verrou d'un rapprochement : réactif tant que le rapprochement vit, clos avec lui.
@@ -40,22 +42,24 @@ skeleton CoordVerrou {
         // - h + ApiPriorites.preavis(ApiRef.propulsion(objet)) <= ApiConjonctions.tca(r) — Delai ;
         // - grappe : CoordGrappe.compatible(r, objet) — Conflit (la grappe de l'objet pivot n'est
         //   pas arbitrée, ou la désignation contredit son arbitrage).
-        // Écrit designe_de et decision_de, numérote la décision "DS-<r>-<n>" et la prend
+        // Écrit designe_de (le désigné, « give-way », qui s'écarte), privilegie_de (l'autre objet,
+        // « stand-on », qui garde son cap ; "" avec une décision de ne pas manœuvrer) et
+        // decision_de, numérote la décision "DS-<r>-<n>" et la prend
         // (CoordDecision.prendre, qui fige le fondement) et en ouvre le
         // suivi d'exécution (CoordSuivi.ouvrir). Mode CoordMode ; `par`/`valideur`
         // sont ceux du geste (accord : par "systeme", valideur "").
         // Renvoie l'id de la décision. Refus : Incoherent, Conflit, NonEligible, Suspendu, Delai.
         signal poser(h: Horodatage, r: Rapprochement, objet: Objet, mode: CoordMode, motif: String, par: String, valideur: String) -> String
-            writes designe_de, decision_de, pose_le, poses_de
+            writes designe_de, privilegie_de, decision_de, pose_le, poses_de
             moves libre -> tenu when CoordDossier.accord || CoordDossier.arbitrage, leve -> tenu when CoordDossier.accord || CoordDossier.arbitrage
             calls CoordDossier.phase, CoordDossier.objets, ApiRef.peut_manoeuvrer, ApiRef.habite, ApiRef.proprietaire, ApiRef.propulsion, ApiOperateurs.est_actif, ApiPriorites.preavis, ApiConjonctions.tca, CoordGrappe.compatible, CoordDecision.prendre, CoordSuivi.ouvrir, Journal.noter
-        // Lève le verrou (tenu -> leve) : efface designe_de et decision_de, passe la décision en
+        // Lève le verrou (tenu -> leve) : efface designe_de, privilegie_de et decision_de, passe la décision en
         // vigueur à "levee" (CoordDecision.lever, avec `motif`) et son suivi
         // à "caduc" (CoordSuivi.rendre_caduc). Appelé par CoordDossier.rouvrir
         // seulement, avant la rouverture (après arretee -> liberee). Renvoie l'id de la décision levée.
         // Refus : Inconnu, EtatInvalide (verrou non tenu, ou coordination pas "liberee"), MotifRequis.
         signal lever(h: Horodatage, r: Rapprochement, motif: String) -> String
-            writes designe_de, decision_de
+            writes designe_de, privilegie_de, decision_de
             moves tenu -> leve when CoordDossier.liberee
             calls CoordDossier.phase, CoordDecision.lever, CoordSuivi.rendre_caduc, Journal.noter
         // Clôt le verrou avec le rapprochement (libre|tenu -> clos) ; une décision en vigueur est
@@ -75,6 +79,14 @@ skeleton CoordVerrou {
         // façade ne fournissant pas `h`. Refus : Inconnu (rapprochement jamais ouvert), Confidentiel.
         signal designe(r: Rapprochement, par: String) -> Objet
             reads designe_de, pose_le
+            calls CoordDossier.objets, ApiAcces.employeur, ApiRef.orbite, ApiDonnees.peut_recevoir
+        // Objet privilégié (« stand-on ») de la décision arrêtée : l'autre objet du rapprochement,
+        // qui garde son cap jusqu'au TCA (règle 17a : manoeuvres refuse ses plans) ; "" si verrou
+        // libre ou décision de ne pas manœuvrer ; le dernier privilégié si le verrou a été clos
+        // tenu. Même contrôle de diffusion que `designe` (propriété 6).
+        // Refus : Inconnu (rapprochement jamais ouvert), Confidentiel.
+        signal privilegie(r: Rapprochement, par: String) -> Objet
+            reads privilegie_de, pose_le
             calls CoordDossier.objets, ApiAcces.employeur, ApiRef.orbite, ApiDonnees.peut_recevoir
         // Vrai si le verrou est tenu sur un objet (désignation d'objet arrêtée).
         signal arretee(r: Rapprochement) -> Bool

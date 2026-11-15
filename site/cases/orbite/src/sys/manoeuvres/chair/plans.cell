@@ -9,6 +9,8 @@ flesh ManPlan {
         require ApiOperateurs.est_actif(proprio, h) else Suspendu "opérateur {proprio} non actif"
         require ApiEphemerides.fraiche(objet, h) else Perime "éphéméride de {objet} non fraîche"
         require debut >= h + PREAVIS_DECLARATION_MS else Delai "fenêtre trop proche : préavis de {PREAVIS_DECLARATION_MS} ms"
+        let garde = _cap_garde(h, objet)
+        require garde == "" else Conflit "{objet} est le privilégié de {garde} : il garde son cap jusqu'au TCA (règle 17a)"
         let prop = ApiRef.propulsion(objet)
         let fin = if prop == "faible" { debut + FENETRE_FAIBLE_MS } else { debut + FENETRE_IMPULSIONNELLE_MS }
         let evit = motif == "evitement"
@@ -130,6 +132,25 @@ flesh ManPlan {
             if !(ApiCoordination.arretee(Rapprochement(verrou)) && ApiCoordination.designe(f.r, "systeme") == objet) {
                 cause = "designation_changee"
                 detail = "{objet} n'est plus le désigné arrêté de {f.r}"
+            }
+        }
+        if cause == "" {
+            let garde = _cap_garde(h, objet)
+            if garde != "" {
+                cause = "privilegie"
+                detail = "{objet} est le privilégié de {garde} : il garde son cap (règle 17a)"
+            }
+        }
+        // règle 8 : manœuvre franche et à temps
+        if cause == "" && evit {
+            let pc_r = try { ApiConjonctions.pc_apres_plan(plan, f.r) }
+            if pc_r.error != () || to_int(pc_r.value) >= PC_FRANC {
+                let lu = if pc_r.error == () { "{pc_r.value}" } else { "inconnue" }
+                cause = "manoeuvre_timide"
+                detail = "pc résiduelle de {f.r} après manœuvre {lu} milliardièmes, pas sous {PC_FRANC} (règle 8)"
+            } else if to_int(h) + to_int(ApiPriorites.preavis(ApiRef.propulsion(objet))) > to_int(ApiConjonctions.tca(f.r)) {
+                cause = "hors_delai"
+                detail = "approbation après la limite d'action de {f.r} (TCA − préavis)"
             }
         }
         if cause == "" && f.motif == "desorbitation" {
@@ -397,6 +418,11 @@ flesh ManPlan {
             if !(ApiCoordination.arretee(f.r) && ApiCoordination.designe(f.r, "systeme") == f.objet) {
                 cause = "designation_retiree"
             }
+        } else {
+            let garde = _cap_garde(h, f.objet)
+            if garde != "" && to_int(f.debut) < to_int(ApiConjonctions.tca(Rapprochement(garde))) {
+                cause = "privilegie"
+            }
         }
         if cause != "" {
             annuler(h, plan, cause, "réexamen : {cause}", "systeme")
@@ -479,6 +505,18 @@ flesh ManPlan {
 
     on approuves_en_cours() {
         return approuves.filter(p => true)
+    }
+
+    // Règle 17a : premier rapprochement ouvert, au TCA non échu, dont l'objet est le privilégié
+    // arrêté (il garde son cap) ; "" sinon.
+    on _cap_garde(h: Horodatage, objet: Objet) {
+        for r in ApiConjonctions.ouverts_de(objet) {
+            let rr = Rapprochement(r)
+            if ApiCoordination.privilegie(rr, "systeme") == objet && to_int(h) < to_int(ApiConjonctions.tca(rr)) {
+                return r
+            }
+        }
+        return ""
     }
 
     on _oter_actif(objet: Objet, plan: String) {

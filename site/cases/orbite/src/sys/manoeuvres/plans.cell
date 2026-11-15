@@ -9,13 +9,17 @@ cell type ManMotif = String where value == "evitement" || value == "maintien" ||
 // États d'un plan tels que les expose ApiManoeuvres.etat ("inconnu" : jamais déclaré).
 cell type ManEtatPlan = String where value == "declare" || value == "crible" || value == "approuve" || value == "rejete" || value == "execute" || value == "verifie" || value == "anomalie" || value == "annule" || value == "inconnu"
 // Cause d'un rejet (plan jamais approuvé, ou approbation refusée).
-cell type ManCauseRejet = String where value == "criblage_risque" || value == "criblage_impossible" || value == "criblage_perime" || value == "ephemeride_perimee" || value == "operateur_suspendu" || value == "objet_incapable" || value == "designation_changee" || value == "hors_delai" || value == "refus_analyste"
+// "manoeuvre_timide" : évitement dont le criblage ne fait pas tomber la pc du rapprochement sous
+// PC_FRANC (règle 8 du COLREG : manœuvre franche) ; "hors_delai" : évitement approuvé après la
+// limite d'action ; "privilegie" : l'objet est le privilégié d'un rapprochement arrêté (règle 17a).
+cell type ManCauseRejet = String where value == "criblage_risque" || value == "criblage_impossible" || value == "criblage_perime" || value == "ephemeride_perimee" || value == "operateur_suspendu" || value == "objet_incapable" || value == "designation_changee" || value == "hors_delai" || value == "refus_analyste" || value == "manoeuvre_timide" || value == "privilegie"
 // Cause d'une annulation : "proprietaire" (retrait par l'opérateur), "fenetre_echue" (aucune
 // confirmation ni manœuvre observée à la fin de la fenêtre), "designation_retiree" (la
 // coordination a été rouverte ou désigne un autre objet), "recriblage" (nouveau risque créé par
 // la trajectoire après manœuvre), "objet_incapable" (propulsion perdue, hors service, anomalie),
-// "operateur_suspendu", "orbite" (décision d'un analyste d'ORBITE).
-cell type ManCauseAnnulation = String where value == "proprietaire" || value == "fenetre_echue" || value == "designation_retiree" || value == "recriblage" || value == "objet_incapable" || value == "operateur_suspendu" || value == "orbite"
+// "operateur_suspendu", "orbite" (décision d'un analyste d'ORBITE), "privilegie" (l'objet est
+// devenu le privilégié d'un rapprochement arrêté et garde son cap jusqu'au TCA, règle 17a).
+cell type ManCauseAnnulation = String where value == "proprietaire" || value == "fenetre_echue" || value == "designation_retiree" || value == "recriblage" || value == "objet_incapable" || value == "operateur_suspendu" || value == "orbite" || value == "privilegie"
 
 // Fiche d'un plan (lue par les autres cells de manoeuvres). `fin` : fin de la fenêtre d'exécution.
 cell type ManFichePlan { variants { ManFichePlan { objet: Objet, r: Rapprochement, motif: ManMotif, debut: Horodatage, fin: Horodatage, dv: DeltaV, proprietaire: Org, declarant: String, declare_le: Horodatage } } }
@@ -45,6 +49,11 @@ skeleton ManPlan {
     const MAX_PLANS_PAR_OBJET = 5000
     // Plans approuvés non exécutés à un instant donné, tous objets.
     const MAX_APPROUVES = 1000000
+    // Règle 8 du COLREG (manœuvre franche) : un évitement n'est approuvé que si le criblage du
+    // plan ramène la pc de son rapprochement STRICTEMENT sous 1/1 000 000 (1 000 milliardièmes),
+    // deux ordres de grandeur sous le seuil de manœuvre usuel (1/10 000) : une manœuvre qui
+    // laisse le rapprochement ambigu n'en est pas une.
+    const PC_FRANC = 1000
     memory {
         fiche_de: Map<String, ManFichePlan> [persistent]   // plan -> fiche ; écrite à la déclaration, jamais effacée
         verrou_de: Map<String, String> [persistent]        // plan -> verrou ManEvitement : le rapprochement pour un évitement, "P:" + plan sinon ; écrit par `declarer` seul, jamais effacé (lien des règles d'approbation : verrou engagé, coordination arrêtée)
@@ -110,7 +119,11 @@ skeleton ManPlan {
         // court de la décision au TCA, façade des priorités), et début de fenêtre < TCA (sinon
         // Delai ; la poussée peut tomber peu avant le TCA) ; objet habité (ApiRef.habite) :
         // l'autre objet ne peut pas manœuvrer (ApiRef.peut_manoeuvrer faux, sinon NonEligible).
-        // Hors évitement, `r` doit être "" (sinon Incoherent). Maintien : rattaché au programme accepté
+        // Règle 17a (le privilégié garde son cap), TOUT motif : si l'objet est le privilégié
+        // (ApiCoordination.privilegie(r', "systeme") == objet) d'un rapprochement r' ouvert
+        // (ApiConjonctions.ouverts_de(objet)) dont le TCA n'est pas passé, Conflit — entre la pose
+        // du verrou et le TCA ou la clôture ; seule la relève (il devient alors le désigné) lève
+        // l'interdit. Hors évitement, `r` doit être "" (sinon Incoherent). Maintien : rattaché au programme accepté
         // de l'objet s'il en a un (ManProgramme.rattacher, dv ≤ dv_max sinon HorsBornes). Seul écrivain de `verrou_de`
         // (r pour un évitement, "P:" + plan sinon), `objet_de` et `proprietaire_de` (ApiRef.proprietaire
         // à `h`), une fois chacun (`require verrou_de.get(plan) == () else Existe`). `par` : "dynamicien" de l'opérateur
@@ -120,7 +133,7 @@ skeleton ManPlan {
         // Incoherent, EtatInvalide, Conflit, Plein, Habilitation.
         signal declarer(h: Horodatage, plan: String, objet: Objet, r: Rapprochement, motif: ManMotif, debut: Horodatage, dv: DeltaV, par: String) -> String
             writes fiche_de, verrou_de, objet_de, proprietaire_de, actifs_de, evitements_de, tous_de
-            calls ApiRef.peut_manoeuvrer, ApiRef.propulsion, ApiRef.proprietaire, ApiRef.habite, ApiOperateurs.est_actif, ApiEphemerides.fraiche, ApiConjonctions.etat, ApiConjonctions.objets, ApiConjonctions.tca, ApiCoordination.arretee, ApiCoordination.designe, ApiPriorites.preavis, ManFenetre.chevauche, ManFenetre.reserver, ManProgramme.rattacher, ApiAcces.a_le_role, ApiAcces.agit_pour, ManIndicateurs.compter, Journal.noter
+            calls ApiRef.peut_manoeuvrer, ApiRef.propulsion, ApiRef.proprietaire, ApiRef.habite, ApiOperateurs.est_actif, ApiEphemerides.fraiche, ApiConjonctions.etat, ApiConjonctions.objets, ApiConjonctions.tca, ApiConjonctions.ouverts_de, ApiCoordination.arretee, ApiCoordination.designe, ApiCoordination.privilegie, ApiPriorites.preavis, ManFenetre.chevauche, ManFenetre.reserver, ManProgramme.rattacher, ApiAcces.a_le_role, ApiAcces.agit_pour, ManIndicateurs.compter, Journal.noter
         // Statue sur le criblage du plan (ManCriblage.etat) : "sur" -> crible ; "a_risque" ou
         // "impossible" -> rejete (cause criblage_risque / criblage_impossible), fenêtre libérée,
         // verrou non pris. `par` "systeme" (enchaîné par ApiManoeuvres.declarer). Renvoie l'état
@@ -145,7 +158,15 @@ skeleton ManPlan {
         // ApiConjonctions.criblage_plan(plan) == "sur" (sinon Perime) ; évitement :
         // ApiCoordination.arretee(verrou_de) (sinon Conflit) ; ApiOperateurs.est_actif(proprietaire_de, h)
         // (sinon Suspendu) ; ApiEphemerides.fraiche(objet_de, h) (sinon Perime) ;
-        // ApiRef.etat_objet(objet_de) == "en_service" (sinon NonEligible). Prend le verrou (ManEvitement.engager sur
+        // ApiRef.etat_objet(objet_de) == "en_service" (sinon NonEligible). Règle 17a : objet
+        // privilégié d'un rapprochement arrêté non échu (comme declarer) ⇒ rejet "privilegie".
+        // Règle 8 (manœuvre franche, à temps, visible), évitement seulement : pc résiduelle de r
+        // après la manœuvre (ApiConjonctions.pc_apres_plan(plan, r), calculée par le criblage du
+        // plan) < PC_FRANC, sinon rejet "manoeuvre_timide" (Inconnu : pas de pc résiduelle
+        // calculée, rejet aussi) ; approbation au plus tard à la limite d'action,
+        // h + ApiPriorites.preavis(ApiRef.propulsion(objet)) ≤ ApiConjonctions.tca(r), sinon
+        // rejet "hors_delai" ; la trajectoire criblée inclut la poussée (avec_manoeuvres, plus
+        // haut). Prend le verrou (ManEvitement.engager sur
         // verrou_de : un autre plan approuvé pour ce rapprochement ⇒ Conflit). Écrit le fondement
         // (ManFondement : dépôt, âge, ApiEphemerides.qualite, conflits, version
         // ApiPriorites.version_en_vigueur, désignation, ApiConjonctions.pc / niveau, statut),
@@ -157,7 +178,7 @@ skeleton ManPlan {
             writes fondement_de, approuves
             reads fiche_de, verrou_de, objet_de, proprietaire_de
             moves crible -> recoupe when ConjCriblagePlan.sur, recoupe -> coordonne when CoordDossier.arretee via verrou_de, recoupe -> habilite when OpMembres.actif via proprietaire_de, coordonne -> habilite when OpMembres.actif via proprietaire_de, habilite -> localise when EphSuivi.a_jour via objet_de, localise -> capable when RefObjet.en_service via objet_de, capable -> approuve when ManEvitement.engage via verrou_de
-            calls rejeter, ManCriblage.fiche, ManEvitement.engager, ManAvis.emettre, ApiConjonctions.criblage_plan, ApiRef.etat_objet, ApiEphemerides.fraiche, ApiEphemerides.derniere, ApiEphemerides.age, ApiEphemerides.qualite, ApiEphemerides.depot_valide, ApiEphemerides.avec_manoeuvres, ApiOperateurs.est_actif, ApiOperateurs.statut, ApiRef.peut_manoeuvrer, ApiReentrees.a_risque, ApiReentrees.controlee_approuvee, ApiCoordination.arretee, ApiCoordination.designe, ApiConjonctions.pc, ApiConjonctions.niveau, ApiPriorites.version_en_vigueur, ApiAcces.a_le_role, ManIndicateurs.compter, Journal.noter
+            calls rejeter, ManCriblage.fiche, ManEvitement.engager, ManAvis.emettre, ApiConjonctions.criblage_plan, ApiConjonctions.pc_apres_plan, ApiConjonctions.tca, ApiConjonctions.ouverts_de, ApiCoordination.privilegie, ApiPriorites.preavis, ApiRef.propulsion, ApiRef.etat_objet, ApiEphemerides.fraiche, ApiEphemerides.derniere, ApiEphemerides.age, ApiEphemerides.qualite, ApiEphemerides.depot_valide, ApiEphemerides.avec_manoeuvres, ApiOperateurs.est_actif, ApiOperateurs.statut, ApiRef.peut_manoeuvrer, ApiReentrees.a_risque, ApiReentrees.controlee_approuvee, ApiCoordination.arretee, ApiCoordination.designe, ApiConjonctions.pc, ApiConjonctions.niveau, ApiPriorites.version_en_vigueur, ApiAcces.a_le_role, ManIndicateurs.compter, Journal.noter
         // Refuse l'approbation d'un plan criblé (crible -> rejete) avec sa cause : appelé par
         // `approuver` quand un contrôle échoue (le refus est gardé, pas annulé), ou par un analyste.
         // Libère la fenêtre. `par` "systeme" ou "analyste" d'ORBITE. Renvoie "rejete".
@@ -247,13 +268,16 @@ skeleton ManPlan {
         // Réexamine un plan criblé ou approuvé non exécuté face aux changements survenus depuis :
         // objet devenu incapable (ApiRef.peut_manoeuvrer faux : cause objet_incapable), opérateur suspendu
         // (operateur_suspendu), coordination rouverte ou désignant un autre objet
-        // (designation_retiree) ⇒ `annuler` par "systeme". Criblage de plus de
+        // (designation_retiree), objet devenu le privilégié d'un rapprochement arrêté non échu
+        // alors que la fenêtre d'un plan hors évitement s'ouvre avant ce TCA (privilegie, règle
+        // 17a ; un évitement reste à la coordination de son propre rapprochement)
+        // ⇒ `annuler` par "systeme". Criblage de plus de
         // VALIDITE_CRIBLAGE_MS avant l'ouverture de la fenêtre ⇒ ManCriblage.recribler ; un
         // conflit ⇒ annulation (cause recriblage). Renvoie "" si le plan reste, sinon la cause.
         // `par` "systeme" (ManVeille) ou "analyste". Refus : Inconnu, Habilitation.
         signal reexaminer(h: Horodatage, plan: String, par: String) -> String
             reads fiche_de, fondement_de, cycle
-            calls annuler, ManCriblage.fiche, ManCriblage.recribler, ApiRef.peut_manoeuvrer, ApiOperateurs.est_actif, ApiCoordination.arretee, ApiCoordination.designe, ApiAcces.a_le_role
+            calls annuler, ManCriblage.fiche, ManCriblage.recribler, ApiRef.peut_manoeuvrer, ApiOperateurs.est_actif, ApiCoordination.arretee, ApiCoordination.designe, ApiCoordination.privilegie, ApiConjonctions.ouverts_de, ApiConjonctions.tca, ApiAcces.a_le_role
         // État du plan ; "inconnu" s'il n'a jamais été déclaré. Les états transitoires de la chaîne
         // d'approbation (recoupe, coordonne, habilite, localise, capable) ne sont jamais observés.
         signal etat(plan: String) -> ManEtatPlan

@@ -10,8 +10,10 @@ flesh PrioDesignation {
         let liste_r = par_rapprochement.get(r) ?? []
         require len(liste_r) < MAX_PAR_RAPPROCHEMENT else Plein "trop de décisions pour {r}"
         require a_de.size < MAX_DECISIONS else Plein "registre des décisions plein"
-        let la = _entrees(h, version, a)
-        let lb = _entrees(h, version, b)
+        let vrel = ApiConjonctions.vitesse_relative(r)
+        let geo = " | {vrel} | {_b(ApiConjonctions.en_rattrapage(r))}"
+        let la = _entrees(h, version, a) + geo
+        let lb = _entrees(h, version, b) + geo
         let regles_v = PrioTable.regles(version)
         let t = _trancher(regles_v, _lire(la), _lire(lb), to_int(h), to_int(tca))
         let id = "PD-{next_id()}"
@@ -127,7 +129,7 @@ flesh PrioDesignation {
 
     on statistiques(version) {
         let lignes_st = []
-        for m in ["aucun_capable", "seul_capable", "habite_exempte", "regle", "arrivee", "catalogue"] {
+        for m in ["aucun_capable", "seul_capable", "habite_exempte", "manoeuvrabilite", "rattrapage", "regle", "arrivee", "catalogue"] {
             let n = compte_motif.get("{version}|{m}") ?? 0
             lignes_st = lignes_st ++ ["{m} | {n}"]
         }
@@ -192,7 +194,8 @@ flesh PrioDesignation {
 
     // Instantané des entrées d'un objet (lecture des autres sous-systèmes), une ligne :
     // "objet | etat_objet | propulsion | habite | peut_manoeuvrer | operateur_actif | preavis_ms |
-    //  injecte_le | masse | derogation | essaim_autonome | operateur_surveille".
+    //  injecte_le | masse | derogation | essaim_autonome | operateur_surveille | altitude_moyenne_m"
+    // (designer y ajoute " | vitesse_relative_mps | rattrapage", propres au rapprochement).
     on _entrees(h: Horodatage, version: String, o: Objet) {
         let eo = ApiRef.etat_objet(o)
         require eo != "inconnu" else Inconnu "objet {o} inconnu"
@@ -207,7 +210,10 @@ flesh PrioDesignation {
         let derog = _b(PrioDerogation.en_cours(o, h))
         let ess = _b(PrioEssaim.autonome(o))
         let surv = _b(op != "inconnu" && ApiConformite.sous_surveillance(op))
-        return "{o} | {eo} | {prop} | {hab} | {pm} | {actif} | {preavis} | {inj} | {masse} | {derog} | {ess} | {surv}"
+        let per = try { ApiObservation.perigee(o) }
+        let apo = try { ApiObservation.apogee(o) }
+        let alt = if per.error == () && apo.error == () { idiv(to_int(per.value) + to_int(apo.value), 2) } else { 0 }
+        return "{o} | {eo} | {prop} | {hab} | {pm} | {actif} | {preavis} | {inj} | {masse} | {derog} | {ess} | {surv} | {alt}"
     }
 
     on _b(x: Bool) {
@@ -215,22 +221,50 @@ flesh PrioDesignation {
         return "non"
     }
 
-    // Lit une ligne d'instantané en champs nommés.
+    // Lit une ligne d'instantané en champs nommés. 15 champs : règles de barre (colreg) ;
+    // 12 champs : décision antérieure, rejouée sous l'ordre d'avant.
     on _lire(ligne: String) {
         let f = split(ligne, " | ")
-        require len(f) == 12 else EtatInvalide "instantané illisible"
-        return map("objet", f[0], "etat", f[1], "propulsion", f[2], "habite", f[3] == "oui", "pm", f[4] == "oui", "actif", f[5] == "oui", "preavis", to_int(f[6]), "injecte", to_int(f[7]), "masse", to_int(f[8]), "derogation", f[9] == "oui", "essaim", f[10] == "oui", "surveille", f[11] == "oui")
+        require len(f) == 15 || len(f) == 12 else EtatInvalide "instantané illisible"
+        let colreg = len(f) == 15
+        let alt = if colreg { to_int(f[12]) } else { 0 }
+        let rat = colreg && f[14] == "oui"
+        return map("objet", f[0], "etat", f[1], "propulsion", f[2], "habite", f[3] == "oui", "pm", f[4] == "oui", "actif", f[5] == "oui", "preavis", to_int(f[6]), "injecte", to_int(f[7]), "masse", to_int(f[8]), "derogation", f[9] == "oui", "essaim", f[10] == "oui", "surveille", f[11] == "oui", "colreg", colreg, "altitude", alt, "rattrapage", rat)
     }
 
-    // Étapes 3 à 7 de designer, sur deux instantanés lus : résultat, motif, rang.
+    // Étapes 3 à 10 de designer, sur deux instantanés lus : résultat, motif, rang.
     on _trancher(regles_t: List<String>, ea: Map, eb: Map, h: Int, tca: Int) {
         let ca = ea.pm && ea.actif && ea.propulsion != "aucune" && h + ea.preavis <= tca
         let cb = eb.pm && eb.actif && eb.propulsion != "aucune" && h + eb.preavis <= tca
         if !ca && !cb { return map("resultat", "", "motif", "aucun_capable", "rang", 0) }
+        if !ea.colreg {
+            // décision antérieure aux règles de barre : ordre d'avant
+            if ca && !cb { return map("resultat", ea.objet, "motif", "seul_capable", "rang", 0) }
+            if cb && !ca { return map("resultat", eb.objet, "motif", "seul_capable", "rang", 0) }
+        }
+        // propriété 3 : deux capables dont un habité, l'autre manœuvre
+        if ca && cb && ea.habite && !eb.habite { return map("resultat", eb.objet, "motif", "habite_exempte", "rang", 0) }
+        if ca && cb && eb.habite && !ea.habite { return map("resultat", ea.objet, "motif", "habite_exempte", "rang", 0) }
+        // règle 18 : entre une faible et une impulsionnelle, l'impulsionnelle s'écarte
+        let fa = ea.propulsion == "faible" && eb.propulsion == "impulsionnelle"
+        let fb = eb.propulsion == "faible" && ea.propulsion == "impulsionnelle"
+        if ea.colreg && ea.habite == eb.habite && (fa || fb) {
+            let imp = if fa { eb } else { ea }
+            let fai = if fa { ea } else { eb }
+            let ci = if fa { cb } else { ca }
+            let cf = if fa { ca } else { cb }
+            let restreinte = cf && imp.derogation && !fai.derogation
+            if ci && !restreinte { return map("resultat", imp.objet, "motif", "manoeuvrabilite", "rang", 0) }
+            if ci { return map("resultat", fai.objet, "motif", "manoeuvrabilite", "rang", 0) }
+            return map("resultat", fai.objet, "motif", "seul_capable", "rang", 0)
+        }
         if ca && !cb { return map("resultat", ea.objet, "motif", "seul_capable", "rang", 0) }
         if cb && !ca { return map("resultat", eb.objet, "motif", "seul_capable", "rang", 0) }
-        if ea.habite && !eb.habite { return map("resultat", eb.objet, "motif", "habite_exempte", "rang", 0) }
-        if eb.habite && !ea.habite { return map("resultat", ea.objet, "motif", "habite_exempte", "rang", 0) }
+        // règle 13 : en rattrapage, l'objet le plus bas (le plus rapide) s'écarte
+        if ea.rattrapage && ea.altitude > 0 && eb.altitude > 0 && ea.altitude != eb.altitude {
+            let bas = if ea.altitude < eb.altitude { ea.objet } else { eb.objet }
+            return map("resultat", bas, "motif", "rattrapage", "rang", 0)
+        }
         for ligne in regles_t {
             let f = split(ligne, " | ")
             let rang = to_int(f[0])

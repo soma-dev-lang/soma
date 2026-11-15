@@ -75,6 +75,22 @@ flesh ApiConjonctions {
         return ConjRapprochement.clos_entre(debut, fin)
     }
 
+    on preciser_geometrie(h, r, vitesse_relative_mps, par) {
+        return ConjRapprochement.preciser_geometrie(h, r, vitesse_relative_mps, par)
+    }
+
+    on vitesse_relative(r) {
+        return ConjRapprochement.vitesse_relative(r)
+    }
+
+    on en_rattrapage(r) {
+        return ConjRapprochement.en_rattrapage(r)
+    }
+
+    on pc_apres_plan(plan, r) {
+        return ConjCriblagePlan.pc_apres(plan, r)
+    }
+
     on criblage_plan(plan) {
         return ConjCriblagePlan.etat(plan)
     }
