@@ -53,6 +53,7 @@ NAV = [
     ("/errors/", "Errors"),
     ("/programs/", "Programs"),
     ("/agents", "For agents"),
+    ("/orbite", "Orbite"),
 ]
 
 

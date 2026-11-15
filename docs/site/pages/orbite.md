@@ -1,7 +1,7 @@
 ---
 title: Orbite: who moves?
 full_title: Orbite — twenty AI agents wrote a space traffic protocol in Soma, and the verifier checked it
-description: When two satellites are about to collide, who moves? Orbite is a 69,150-line protocol written in Soma by twenty coding agents in a day, with its central rules proven by soma verify. Replayed on the 2019 Aeolus–Starlink near-miss, it settles the decision three days before the closest approach. Download it and check it yourself in eight minutes.
+description: When two satellites are about to collide, who moves? Orbite answers in 1,923 lines of Soma, its 13 safety rules proven by soma verify on the real code in two seconds; twenty coding agents built the 69,000-line institution around it. Replayed on the 2019 Aeolus–Starlink near-miss, it settles the decision three days before the closest approach. Download it and check it yourself in eight minutes.
 type: TechArticle
 h1: no
 ---
@@ -40,19 +40,19 @@ details{margin:1rem 0}details summary{cursor:pointer;color:var(--accent);font-we
 </style>
 
 <p class="orb-kicker">Case study · space traffic coordination · simulated</p>
-<h1 class="orb-h1">Who moves? Twenty AI agents wrote the answer in Soma — and the verifier checked it.</h1>
-<p class="lede">When two satellites are about to collide, one of them has to move — exactly one. Today operators settle it by e-mail and phone, case by case; there is no protocol the whole world shares. <strong>Orbite</strong> is that protocol, written as a program: twenty coding agents built it in a day, in parallel, each seeing only its own part. Its rules of the road are borrowed from the sea, and Soma's verifier proves the ones that keep the decision single. Replayed on a real near-miss from 2019, it settles who moves <strong>three days</strong> before the closest approach.</p>
+<h1 class="orb-h1">Who moves? The protocol fits in 1,923 lines of Soma — its safety rules proven on the real code, in two seconds.</h1>
+<p class="lede">When two satellites are about to collide, one of them has to move — exactly one. Today operators settle it by e-mail and phone, case by case; there is no protocol the whole world shares. <strong>Orbite</strong> is that protocol, with rules of the road borrowed from the sea. Its core is a program a person can read in an evening, and <code>soma verify</code> proves every rule between its state machines on the real code, bodies included. Around it, twenty coding agents built the institution — catalogue, escalation to States, liability, data sharing — in 69,000 lines nobody had to read. Replayed on a real near-miss from 2019, it settles who moves <strong>three days</strong> before the closest approach.</p>
 <div class="orb-stats">
-<div class="orb-stat"><b>69,150</b><span>lines of Soma, written by agents</span></div>
-<div class="orb-stat"><b>20</b><span>agents in parallel, one subsystem each</span></div>
-<div class="orb-stat"><b>156</b><span>state machines across 220 cells</span></div>
-<div class="orb-stat hl"><b>97</b><span>rules between machines proven by <code>soma verify</code></span></div>
-<div class="orb-stat"><b>6,482</b><span>test assertions, all green</span></div>
+<div class="orb-stat hl"><b>1,923</b><span>lines: the protocol, tests included</span></div>
+<div class="orb-stat hl"><b>13 / 13</b><span>rules proven on the full program, bodies included</span></div>
+<div class="orb-stat"><b>1.8 s</b><span>for <code>soma verify --strict</code></span></div>
+<div class="orb-stat"><b>69,150</b><span>lines of the institution, by 20 agents</span></div>
+<div class="orb-stat"><b>97</b><span>rules proven on the institution's skeleton</span></div>
 <div class="orb-stat hl"><b>−69 h</b><span>decision before closest approach in the 2019 replay</span></div>
 </div>
 <div class="orb-cta">
 <a class="main" href="/orbite-aeolus">Replay the 2019 near-miss →</a>
-<a href="#check-it-yourself-in-eight-minutes">Download it and check it</a>
+<a href="#the-protocol-proven-whole">The protocol, proven whole</a>
 <a href="#how-do-you-trust-69-000-lines-no-one-reviewed">How it was built</a>
 </div>
 <p class="orb-note">Orbite is a research program: States, operators and objects are fictional and nothing connects to a real system. What is real is the question it answers — can agents build a large, safety-critical system that anyone can trust without reading it all?</p>
@@ -118,6 +118,19 @@ Ships have settled "who moves" since 1972 with the international collision regul
 | Rule 34 — signal your intention | "Manoeuvre at H, Δv so much, acknowledgement expected", to the other operator and its State |
 
 Two rules stay at sea. "Both alter to starboard" (head-on) would mean two manoeuvres without coordination — exactly what property 1 forbids. "The one with the other on its starboard side" has no meaning in orbit. Each rule has a test that applies it and one that does not, in [test_colreg.cell](/cases/orbite/src/test_colreg.cell).
+
+## The protocol, proven whole
+
+Strip Orbite to the protocol — the catalogue's objects and operators, the conjunctions, the rules of the road, the lock, the coordination with its tacit agreement and its relief, the screened plans, a minimal escalation, one clock — and it fits in one file: **1,318 lines of Soma, plus 592 lines of tests**. Every rule between its state machines is proven by `soma verify` on the complete program, bodies included, in under two seconds:
+
+| | |
+|---|---|
+| Rules between machines | 13, all ✓ — 11 on the edges of frames, 2 in `soma.toml`, each explored on the product of the two machines it ties |
+| `soma verify --strict app.cell` | VERIFY OK — 0 ✗, 0 unexplored, 0 open obligation; 1.8 s |
+| Tests | 244 assertions: every rule of the road both ways, properties 1 to 4 as refusals, tacit agreement, relief, the 2019 replay |
+| Not empty proofs | each of the 8 guards the rules depend on was removed in turn, on a copy: `verify` drops exactly the rule concerned |
+
+What the core leaves to the full version: the HTTP gateway and detailed permissions, ephemerides and observation, space weather, launches, re-entries, end of life, liability, data sharing, compliance, and escalation beyond the operator's State. [Download the core](/cases/orbite-core/README.md) — `curl -fsSL https://soma-lang.dev/cases/orbite-core/orbite-core.tar.gz | tar xz`.
 
 ## One decision, proven
 
@@ -252,7 +265,7 @@ The verifier names the run that breaks the rule — `Coordination.agree → Coor
 
 ## How do you trust 69,000 lines no one reviewed?
 
-No model holds 69,000 lines in context, and no human read them all. Soma's answer is to write the **structure first**, prove it, and then check each body against the part of the structure it belongs to.
+The protocol fits in 1,923 lines. A real deployment needs far more around it — who may act for whom, which State answers for which operator, who may see which data, what is kept as evidence — and that is where agents earn their keep. No model holds 69,000 lines in context, and no human read them all. Soma's answer is to write the **structure first**, prove it, and then check each body against the part of the structure it belongs to.
 
 <div class="orb-steps">
 <div class="orb-step"><h3>Contract</h3><p class="n">530 lines</p><p>Common types — metres, billionths of probability, roles with their scope — and twenty <em>façades</em>: the only signals a subsystem may call in another.</p></div>
@@ -305,19 +318,21 @@ signal approuver(h: Horodatage, plan: String, par: String) -> ManEtatPlan
 
 ## What is not proven — yet
 
-- **The 97 rules are proven on the skeleton**: they hold for every body that stays in its frame (`soma check` proves each one does) and takes an edge only under its condition — which `soma verify` judges on the bodies. Running it on all 1,787 bodies together does not yet finish in reasonable time; that is the next work on the verifier.
-- **151 rules through a link** (`via`) stay open obligations until then: each needs the verifier to see, in the body that writes the link, that it is written once.
+- **The core is proven whole**: its 13 rules hold on the real bodies. What it does not cover, the full version adds.
+- **The full version's 97 rules are proven on its skeleton**: they hold for every body that stays in its frame (`soma check` proves each one does) and takes an edge only under its condition — which `soma verify` judges on the bodies. On its 1,787 bodies together, `verify` does not yet finish in reasonable time; 151 rules through a link stay open obligations until it does.
 - **Notified is not informed**: in the replay, the silent operator receives the decision but never acknowledges it. Orbite reduces the 2019 risk — the other satellite moving too — but cannot remove it.
 - **Simulated**: orbital mechanics are simplified, every actor is fictional. Orbite is a demonstration of method, not a service.
 
 We have not built the same system in another language with the same agents to compare; that experiment is the honest next step, and we will publish its result either way.
 
-## Check it yourself in eight minutes
+## Check it yourself in two seconds
 
-Everything above can be checked with the public release. The whole program is published — 492 files, for people and for agents:
+Everything above can be checked with the public release — the core in two seconds, the full version in eight minutes:
 
 ```console
 $ curl -fsSL https://soma-lang.dev/install.sh | sh          # soma 3.2.4
+$ curl -fsSL https://soma-lang.dev/cases/orbite-core/orbite-core.tar.gz | tar xz
+$ (cd orbite-core && soma verify --strict app.cell)         # 2 seconds: 13 rules proven, bodies included
 $ curl -fsSL https://soma-lang.dev/cases/orbite/orbite.tar.gz | tar xz && cd orbite
 $ soma check prod.cell                                       # 0 errors, 1,787 signals, all filled
 $ soma verify app.cell                                       # about 8 minutes: VERIFY OK, 97 rules proven

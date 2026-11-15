@@ -1,0 +1,1318 @@
+// ORBITE — le NOYAU du protocole de coordination du trafic spatial.
+//
+// Quand deux objets en orbite risquent de se percuter, UN seul doit s'écarter, et tout le monde
+// doit savoir lequel. Ce fichier contient tout le noyau : le squelette (mémoire, machines, cadres,
+// règles entre machines) puis les corps (`flesh`). `soma verify app.cell` prouve les règles sur
+// le programme complet, corps compris.
+//
+// Unités : temps en millisecondes depuis l'époque Unix (UTC) ; distances en mètres ; altitude
+// moyenne en kilomètres ; probabilité de collision (pc) en milliardièmes (1/1 000 = 1 000 000) ;
+// vitesse relative en m/s ; delta-v en mm/s.
+//
+// Identités (`par`) : "systeme" (traitements automatiques), "analyste:<nom>" et
+// "superviseur:<nom>" (ORBITE), "operateur:<org>" (un opérateur, pour ses objets).
+//
+// Les six propriétés (CONSIGNES.md de la version complète) :
+//  1. au plus UNE désignation arrêtée par rapprochement ; jamais deux manœuvres approuvées ;
+//  2. un objet sans propulsion ou hors service n'est jamais désigné pour manœuvrer ;
+//  3. un objet habité ne manœuvre que s'il est le seul capable ;
+//  4. aucune manœuvre approuvée sans criblage, ni pour un opérateur suspendu ;
+//  5. une alerte de niveau 3 reçoit une réponse avant l'échéance, ou elle est escaladée ;
+//     un opérateur muet ne bloque jamais le système ;
+//  6. une décision est traçable (journal en ajout seul).
+
+// Ce que les règles de barre savent d'un objet à l'instant de la décision.
+cell type Profil { variants { Profil { objet: String, propulsion: String, habite: Bool, en_service: Bool, operateur_actif: Bool, lance_le: Int, altitude: Int } } }
+// Qui s'écarte (`objet`, "" si personne ne le peut) et pourquoi (`motif`).
+cell type Verdict { variants { Verdict { objet: String, motif: String } } }
+
+// ════════════════════════════════════════════════════════════════════════════════════════════
+// SQUELETTE
+// ════════════════════════════════════════════════════════════════════════════════════════════
+
+// JOURNAL — la trace de toute décision (propriété 6). Ajout seul : rien ne s'efface ni ne se réécrit.
+skeleton Journal {
+    memory {
+        lignes: List<String> [persistent, immutable]   // "h | qui | quoi"
+    }
+    face {
+        // Ajoute la ligne "h | qui | quoi". Renvoie le nombre de lignes du journal.
+        signal noter(h: Int, qui: String, quoi: String) -> Int
+            writes lignes
+        // Les lignes qui contiennent `motif`, dans l'ordre où elles ont été écrites.
+        signal chercher(motif: String) -> List<String>
+            reads lignes
+    }
+}
+
+// RÔLES — qui agit. Fonctions pures de l'identité `par`.
+skeleton Roles {
+    face {
+        // `par` est le traitement automatique d'ORBITE.
+        signal systeme(par: String) -> Bool
+        // `par` est un analyste d'ORBITE ("analyste:<nom>").
+        signal analyste(par: String) -> Bool
+        // `par` est un superviseur d'ORBITE ("superviseur:<nom>").
+        signal superviseur(par: String) -> Bool
+        // `par` agit pour l'opérateur `org` ("operateur:<org>").
+        signal pour(par: String, org: String) -> Bool
+        // Quatre yeux : `par` analyste, `valideur` superviseur, deux personnes différentes.
+        signal quatre_yeux(par: String, valideur: String) -> Bool
+    }
+}
+
+// OPÉRATEURS — actifs ou suspendus. Instance = id de l'organisation ("ORG-ESA").
+skeleton Operateurs {
+    memory {
+        nom_de: Map<String, String> [persistent]   // org -> nom ; écrit à l'inscription
+    }
+    state operateur {
+        initial: inscrit
+        inscrit -> actif          // admission
+        actif -> suspendu         // suspension (par son État ou par ORBITE)
+        suspendu -> actif         // rétablissement
+        actif -> radie            // retrait définitif
+        suspendu -> radie
+    }
+    face {
+        // Inscrit et admet l'opérateur `org`. `par` superviseur. Renvoie "actif".
+        // Refus : Habilitation, Existe.
+        signal inscrire(h: Int, org: String, nom: String, par: String) -> String
+            writes nom_de
+            moves inscrit -> actif
+            calls Roles.superviseur, Journal.noter
+        // Suspend `org` : ses plans ne sont plus approuvés (propriété 4). `par` superviseur.
+        // Refus : Habilitation, MotifRequis, invalid_transition (pas actif).
+        signal suspendre(h: Int, org: String, motif: String, par: String) -> String
+            moves actif -> suspendu
+            calls Roles.superviseur, Journal.noter
+        // Rétablit `org` suspendu. `par` superviseur. Refus : Habilitation, invalid_transition.
+        signal retablir(h: Int, org: String, par: String) -> String
+            moves suspendu -> actif
+            calls Roles.superviseur, Journal.noter
+        // Retire définitivement `org`. `par` superviseur. Refus : Habilitation, invalid_transition.
+        signal radier(h: Int, org: String, par: String) -> String
+            moves actif -> radie, suspendu -> radie
+            calls Roles.superviseur, Journal.noter
+        // Vrai si `org` est actif.
+        signal est_actif(org: String) -> Bool
+            reads operateur
+        // Vrai si `org` a été inscrit.
+        signal connu(org: String) -> Bool
+            reads nom_de
+    }
+}
+
+// CATALOGUE — les objets. Instance = id de l'objet. « Manœuvrant » = en service AVEC propulsion
+// (faible ou impulsionnelle) ; « inerte » = en service SANS propulsion (débris, satellite mort).
+skeleton Catalogue {
+    const ALTITUDE_MAX = 100000                       // km
+    memory {
+        proprietaire_de: Map<String, String> [persistent]   // objet -> org propriétaire
+        propulsion_de: Map<String, String> [persistent]     // objet -> "aucune" | "faible" | "impulsionnelle"
+        habite_de: Map<String, Bool> [persistent]           // objet -> habité
+        lance_le_de: Map<String, Int> [persistent]          // objet -> date de lancement (ms)
+        altitude_de: Map<String, Int> [persistent]          // objet -> altitude moyenne (km)
+        invariant altitude_de >= 0
+        invariant altitude_de <= 100000
+    }
+    state objet {
+        initial: inscrit
+        inscrit -> manoeuvrant         // catalogué en service, avec propulsion
+        inscrit -> inerte              // catalogué en service, sans propulsion
+        manoeuvrant -> inerte          // propulsion perdue
+        manoeuvrant -> hors_service    // fin de mission
+        inerte -> hors_service
+    }
+    face {
+        // Catalogue `objet` (propriétaire inscrit, propulsion "aucune" | "faible" |
+        // "impulsionnelle", altitude ≤ ALTITUDE_MAX km). `par` systeme ou analyste.
+        // Renvoie l'état atteint. Refus : Habilitation, Existe, Inconnu (propriétaire), HorsBornes.
+        signal cataloguer(h: Int, objet: String, proprietaire: String, propulsion: String, habite: Bool, lance_le: Int, altitude: Int, par: String) -> String
+            writes proprietaire_de, propulsion_de, habite_de, lance_le_de, altitude_de
+            moves inscrit -> manoeuvrant, inscrit -> inerte
+            calls Roles.systeme, Roles.analyste, Operateurs.connu, Journal.noter
+        // La propulsion de `objet` est perdue (déclarée par son opérateur ou constatée par ORBITE) :
+        // il ne peut plus être désigné ni manœuvrer (propriété 2). Refus : Habilitation, invalid_transition.
+        signal perdre_propulsion(h: Int, objet: String, par: String) -> String
+            writes propulsion_de
+            reads proprietaire_de
+            moves manoeuvrant -> inerte
+            calls Roles.systeme, Roles.analyste, Roles.pour, Journal.noter
+        // `objet` quitte le service. `par` : son opérateur ou un analyste.
+        // Refus : Habilitation, invalid_transition.
+        signal retirer(h: Int, objet: String, par: String) -> String
+            reads proprietaire_de
+            moves manoeuvrant -> hors_service, inerte -> hors_service
+            calls Roles.analyste, Roles.pour, Journal.noter
+        // Vrai si `objet` est en service avec propulsion.
+        signal manoeuvrant(objet: String) -> Bool
+            reads objet
+        // Opérateur propriétaire ("" si inconnu).
+        signal proprietaire(objet: String) -> String
+            reads proprietaire_de
+        // Propulsion ("aucune" si inconnu).
+        signal propulsion(objet: String) -> String
+            reads propulsion_de
+        // Ce que les règles de barre savent de `objet` (opérateur actif compris).
+        signal profil(objet: String) -> Profil
+            reads objet, proprietaire_de, propulsion_de, habite_de, lance_le_de, altitude_de
+            calls Operateurs.est_actif
+    }
+}
+
+// PRIORITÉS — les règles de barre d'ORBITE, empruntées au COLREG de 1972. Fonctions pures.
+skeleton Priorites {
+    const PREAVIS_IMPULSIONNELLE = 21600000     // 6 h
+    const PREAVIS_FAIBLE = 259200000            // 72 h
+    const PREAVIS_JAMAIS = 9000000000000000     // sans propulsion : jamais
+    const VITESSE_RATTRAPAGE = 100              // m/s : en dessous, l'un rattrape l'autre
+    face {
+        // Préavis (ms) qu'exige une manœuvre selon la propulsion.
+        signal preavis(propulsion: String) -> Int
+        // Vrai si l'objet peut s'écarter à `h` pour un TCA `tca` : en service, avec propulsion,
+        // opérateur actif, préavis tenu (h + préavis ≤ tca).
+        signal capable(h: Int, tca: Int, p: Profil) -> Bool
+            calls preavis
+        // Qui s'écarte, entre `a` et `b`, pour un TCA `tca` et une vitesse relative `vrel` (m/s) :
+        //  - personne ne peut : "" (motif "aucun_capable") ;
+        //  - un seul peut : lui (motif "seul_capable") — un habité seulement dans ce cas (propriété 3) ;
+        //  - règle 18, le plus manœuvrant s'écarte : sans propulsion › habité › faible ›
+        //    impulsionnelle (motif "habite_exempte" si l'autre est habité, "manoeuvrabilite" sinon) ;
+        //  - règle 13, en rattrapage (vrel < VITESSE_RATTRAPAGE) entre égaux : le plus bas (motif "rattrapage") ;
+        //  - règle 15, entre égaux : le dernier lancé (motif "dernier_lance"), puis l'id le plus grand ("catalogue").
+        signal qui_manoeuvre(h: Int, tca: Int, vrel: Int, a: Profil, b: Profil) -> Verdict
+            calls capable, rang
+        // Rang de manœuvrabilité : 0 aucune propulsion, 1 habité, 2 faible, 3 impulsionnelle.
+        signal rang(p: Profil) -> Int
+    }
+}
+
+// RAPPROCHEMENTS — signalés par le moteur de criblage. Instance = id du rapprochement ("CJ-1"),
+// le même id que sa coordination et son verrou.
+skeleton Rapprochements {
+    const PC_ALERTE = 10000            // 1/100 000 : niveau 2
+    const PC_COORDINATION = 100000     // 1/10 000 : niveau 3, seuil de manœuvre
+    const DISTANCE_ALERTE = 1000       // m : niveau 2
+    const DISTANCE_COORDINATION = 200  // m : niveau 3
+    const PC_MAX = 1000000000
+    memory {
+        objets_de: Map<String, List<String>> [persistent]   // r -> [a, b]
+        tca_de: Map<String, Int> [persistent]               // r -> TCA (ms)
+        distance_de: Map<String, Int> [persistent]          // r -> distance au TCA (m)
+        pc_de: Map<String, Int> [persistent]                // r -> pc (milliardièmes)
+        vrel_de: Map<String, Int> [persistent]              // r -> vitesse relative (m/s)
+        niveau_de: Map<String, Int> [persistent]            // r -> niveau 1..3
+        invariant niveau_de >= 1
+        invariant niveau_de <= 3
+        invariant pc_de >= 0
+        invariant pc_de <= 1000000000
+        invariant distance_de >= 0
+        invariant vrel_de >= 0
+    }
+    state rapprochement {
+        initial: detecte
+        detecte -> alerte                // niveau 2 ou 3 atteint
+        alerte -> en_coordination        // niveau 3 : la coordination s'ouvre
+        detecte -> resolu                // risque écarté (manœuvre vérifiée, nouvelles données)
+        alerte -> resolu
+        en_coordination -> resolu
+        detecte -> passe                 // TCA passé
+        alerte -> passe
+        en_coordination -> passe
+    }
+    face {
+        // Niveau d'un rapprochement : 3 si pc ≥ PC_COORDINATION ou distance < DISTANCE_COORDINATION,
+        // 2 si pc ≥ PC_ALERTE ou distance < DISTANCE_ALERTE, 1 sinon.
+        signal niveau_pour(pc: Int, distance: Int) -> Int
+            ensures result >= 1 && result <= 3
+        // Résultat du moteur de criblage : crée `r` (objets a ≠ b, TCA futur) ou le met à jour
+        // (mêmes objets). Niveau ≥ 2 : detecte -> alerte. `par` systeme. Renvoie le niveau.
+        // Refus : Habilitation, Incoherent, Delai (TCA passé), HorsBornes, EtatInvalide (clos).
+        signal signaler(h: Int, r: String, a: String, b: String, tca: Int, distance: Int, pc: Int, vrel: Int, par: String) -> Int
+            writes objets_de, tca_de, distance_de, pc_de, vrel_de, niveau_de
+            moves detecte -> alerte
+            calls niveau_pour, Roles.systeme, Journal.noter
+        // La coordination de `r` s'ouvre : alerte -> en_coordination, niveau 3 exigé.
+        // Refus : EtatInvalide (niveau < 3), invalid_transition.
+        signal engager(h: Int, r: String) -> String
+            reads niveau_de
+            moves alerte -> en_coordination
+            calls Journal.noter
+        // Risque écarté. Refus : invalid_transition (déjà clos).
+        signal resoudre(h: Int, r: String, motif: String) -> String
+            moves detecte -> resolu, alerte -> resolu, en_coordination -> resolu
+            calls Journal.noter
+        // TCA passé (h > TCA) sans résolution. Refus : Delai (TCA à venir), invalid_transition.
+        signal passer(h: Int, r: String) -> String
+            reads tca_de
+            moves detecte -> passe, alerte -> passe, en_coordination -> passe
+            calls Journal.noter
+        // État de `r` ("detecte" s'il est inconnu).
+        signal etat(r: String) -> String
+            reads rapprochement
+        // Vrai si `r` est en coordination.
+        signal en_coordination(r: String) -> Bool
+            reads rapprochement
+        signal niveau(r: String) -> Int
+            reads niveau_de
+        signal tca(r: String) -> Int
+            reads tca_de
+        signal vrel(r: String) -> Int
+            reads vrel_de
+        // [a, b] ([] si inconnu).
+        signal objets(r: String) -> List<String>
+            reads objets_de
+    }
+}
+
+// VERROU — une désignation par rapprochement (propriété 1). Instance = id du rapprochement.
+// La désignation n'existe que verrou tenu (held) ; elle s'écrit seulement en prenant
+// free -> held ou lifted -> held, donc jamais deux fois sans levée entre les deux.
+skeleton Verrou {
+    memory {
+        designe_de: Map<String, String> [persistent]      // r -> objet qui s'écarte ; présent seulement verrou tenu
+        privilegie_de: Map<String, String> [persistent]   // r -> objet qui garde son cap (règle 17a) ; idem
+        poses_de: Map<String, Int> [persistent]           // r -> nombre de poses (numérote les décisions)
+        pose_le: Map<String, Int> [persistent]            // r -> instant de la dernière pose
+        privileges: Map<String, Int> [persistent]         // objet -> verrous tenus où il est privilégié
+        invariant poses_de >= 0
+        invariant privileges >= 0
+    }
+    state verrou {
+        initial: free
+        free -> held          // pose : une désignation arrêtée
+        held -> lifted        // levée : la coordination est rouverte (jamais vers l'initial)
+        lifted -> held        // nouvelle pose après rouverture
+        free -> closed        // le rapprochement est clos
+        held -> closed
+        lifted -> closed
+    }
+    face {
+        // Désigne `objet` pour `r` (l'autre objet devient le privilégié), seulement pour une
+        // coordination en accord ou en arbitrage. `objet` doit être un objet de `r`, manœuvrant
+        // (propriété 2), d'un opérateur actif, avec un préavis qui tient avant le TCA ; habité,
+        // seulement si l'autre ne peut pas s'écarter (propriété 3). Renvoie l'id de décision
+        // "DS-<r>-<n>". Refus : Incoherent, NonEligible, Suspendu, Delai, Conflit (déjà tenu).
+        signal prendre(h: Int, r: String, objet: String, mode: String) -> String
+            writes designe_de, privilegie_de, poses_de, pose_le, privileges
+            moves free -> held when Coordination.accord || Coordination.arbitrage, lifted -> held when Coordination.accord || Coordination.arbitrage
+            calls Coordination.decidable, Rapprochements.objets, Rapprochements.tca, Catalogue.manoeuvrant, Catalogue.profil, Priorites.capable, Priorites.preavis, Journal.noter
+        // Lève la désignation de `r`, seulement pendant que sa coordination est libérée
+        // (rouverture ou relève). Renvoie l'ancien désigné. Refus : EtatInvalide, invalid_transition.
+        signal lever(h: Int, r: String, motif: String) -> String
+            writes designe_de, privilegie_de, privileges
+            moves held -> lifted when Coordination.liberee
+            calls Coordination.libere, Journal.noter
+        // Le rapprochement est clos : le verrou aussi. Renvoie "closed".
+        signal clore(h: Int, r: String) -> String
+            writes designe_de, privilegie_de, privileges
+            moves free -> closed, held -> closed, lifted -> closed
+            calls Journal.noter
+        // Vrai si une désignation est arrêtée pour `r`.
+        signal tenu(r: String) -> Bool
+            reads verrou
+        // Objet désigné ("" si aucun).
+        signal designe(r: String) -> String
+            reads designe_de
+        // Objet privilégié ("" si aucun).
+        signal privilegie(r: String) -> String
+            reads privilegie_de
+        // Vrai si `objet` est le privilégié d'un verrou tenu (règle 17a : il garde son cap).
+        signal est_privilegie(objet: String) -> Bool
+            reads privileges
+        // Id de la décision en vigueur ("" si aucune).
+        signal decision(r: String) -> String
+            reads poses_de, verrou
+        // Instant de la dernière pose (0 si aucune).
+        signal posee_le(r: String) -> Int
+            reads pose_le
+    }
+}
+
+// COORDINATION — d'un rapprochement de niveau 3. Instance = id du rapprochement.
+skeleton Coordination {
+    const DELAI_REPONSE = 1800000       // 30 min pour répondre à une proposition (niveau 3)
+    const MARGE_REPRISE = 7200000       // 2 h : ORBITE reprend la main avant la limite d'action
+    const MARGE_RELEVE = 7200000        // 2 h : relève avant la limite d'action du privilégié
+    const MAX_EN_COURS = 1000000
+    memory {
+        parties_de: Map<String, List<String>> [persistent]  // r -> opérateurs des deux objets (1 ou 2)
+        propose_de: Map<String, String> [persistent]        // r -> objet proposé au tour en cours
+        motif_de: Map<String, String> [persistent]          // r -> motif de la proposition (Verdict.motif)
+        echeance_de: Map<String, Int> [persistent]          // r -> échéance de réponse (ms)
+        tour_de: Map<String, Int> [persistent]              // r -> tour (1, puis + 1 à chaque rouverture)
+        reponses_de: Map<String, String> [persistent]       // "r|tour|org" -> "accepte" | "refuse" | "muette"
+        en_cours: Map<String, Int> [persistent]             // r -> ouverte le ; retiré à la clôture
+        invariant tour_de >= 1
+        invariant en_cours.size <= MAX_EN_COURS
+    }
+    state coordination {
+        initial: ouverte
+        ouverte -> proposee        // une proposition : qui s'écarte selon les règles
+        ouverte -> arbitrage       // personne à proposer : ORBITE décide
+        proposee -> accord         // toutes les parties acceptent, ou accord tacite
+        proposee -> arbitrage      // refus, ou reprise par ORBITE
+        accord -> arretee          // la désignation est arrêtée (verrou pris)
+        accord -> arbitrage        // le verrou a refusé le proposé
+        arbitrage -> arretee       // arbitrage à quatre yeux, ou relève
+        arretee -> liberee         // rouverture ou relève : la décision va être levée
+        liberee -> rouverte        // le verrou est levé
+        rouverte -> proposee
+        rouverte -> arbitrage
+        ouverte -> close
+        proposee -> close
+        accord -> close
+        arbitrage -> close
+        arretee -> close
+        liberee -> close
+        rouverte -> close
+    }
+    face {
+        // Ouvre la coordination de `r` (rapprochement en alerte, niveau 3) : le rapprochement passe
+        // en coordination, puis proposition des règles (Priorites.qui_manoeuvre) avec échéance
+        // h + DELAI_REPONSE, ou arbitrage si personne ne peut s'écarter. `par` systeme ou analyste.
+        // Renvoie l'état atteint. Refus : Habilitation, Existe, EtatInvalide, Delai.
+        signal ouvrir(h: Int, r: String, par: String) -> String
+            writes parties_de, propose_de, motif_de, echeance_de, tour_de, en_cours
+            moves ouverte -> proposee when Rapprochements.en_coordination, ouverte -> arbitrage when Rapprochements.en_coordination
+            calls proposition, Rapprochements.engager, Rapprochements.objets, Rapprochements.tca, Catalogue.proprietaire, Roles.systeme, Roles.analyste, Journal.noter
+        // Ce que les règles proposent pour `r` à `h`.
+        signal proposition(h: Int, r: String) -> Verdict
+            calls Rapprochements.objets, Rapprochements.tca, Rapprochements.vrel, Catalogue.profil, Priorites.qui_manoeuvre
+        // Réponse de l'opérateur `org` (`par` agit pour lui) à la proposition : "accepte" ou
+        // "refuse" (motif exigé), avant l'échéance. Toutes les parties acceptent : accord, verrou
+        // pris, arrêtée. Un refus : arbitrage. Renvoie l'état atteint.
+        // Refus : Habilitation, Inconnu, EtatInvalide, Delai, MotifRequis, Existe (déjà répondu).
+        signal repondre(h: Int, r: String, org: String, reponse: String, motif: String, par: String) -> String
+            writes reponses_de
+            reads parties_de, echeance_de, propose_de, tour_de
+            moves proposee -> accord, proposee -> arbitrage, accord -> arretee when Verrou.held, accord -> arbitrage
+            calls Verrou.prendre, Roles.pour, Journal.noter
+        // Échéance passée (h > échéance) sur une proposition : les parties muettes sont notées
+        // "muette". ACCORD TACITE : l'opérateur du proposé a accepté, les autres sont muets, aucun
+        // refus ⇒ accord, verrou pris, arrêtée. Renvoie les opérateurs muets (à escalader).
+        // Refus : EtatInvalide, Delai (échéance non atteinte).
+        signal constater_silence(h: Int, r: String) -> List<String>
+            writes reponses_de
+            reads parties_de, echeance_de, propose_de, tour_de
+            moves proposee -> accord, accord -> arretee when Verrou.held, accord -> arbitrage
+            calls Catalogue.proprietaire, Verrou.prendre, Journal.noter
+        // Reprise par ORBITE : toujours pas d'accord à la limite d'action du proposé moins
+        // MARGE_REPRISE ⇒ arbitrage. Refus : EtatInvalide, Delai (trop tôt).
+        signal reprendre(h: Int, r: String) -> String
+            reads propose_de
+            moves proposee -> arbitrage
+            calls Rapprochements.tca, Catalogue.propulsion, Priorites.preavis, Journal.noter
+        // Arbitrage à quatre yeux (`par` analyste, `valideur` superviseur) : désigne `objet`.
+        // Renvoie "arretee". Refus : QuatreYeux, MotifRequis, EtatInvalide, et ceux de Verrou.prendre.
+        signal arbitrer(h: Int, r: String, objet: String, motif: String, par: String, valideur: String) -> String
+            moves arbitrage -> arretee when Verrou.held
+            calls Verrou.prendre, Roles.quatre_yeux, Journal.noter
+        // Rouvre une coordination arrêtée (propulsion perdue, nouvelles données) : la décision est
+        // levée, nouvelle proposition (tour + 1) ou arbitrage. Exige qu'aucun plan ne soit approuvé
+        // ni exécuté (Orbite.rouvrir annule d'abord). `par` systeme ou analyste.
+        // Refus : Habilitation, MotifRequis, EtatInvalide, PlanApprouve.
+        signal rouvrir(h: Int, r: String, motif: String, par: String) -> String
+            writes propose_de, motif_de, echeance_de, tour_de
+            moves arretee -> liberee, liberee -> rouverte when Verrou.lifted, rouverte -> proposee, rouverte -> arbitrage
+            calls proposition, Verrou.lever, Plans.approuve_pour, Roles.systeme, Roles.analyste, Journal.noter
+        // RELÈVE (règle 17b) : arrêtée, aucun plan approuvé du désigné, et h ≥ ouverture = TCA −
+        // préavis du privilégié − MARGE_RELEVE ⇒ le privilégié devient le désigné (lever puis
+        // prendre, tour + 1). Seulement si la décision a été posée avant l'ouverture (le désigné a eu
+        // sa chance) et si le préavis du privilégié tient encore (h + préavis ≤ TCA).
+        // Renvoie le nouveau désigné. Refus : EtatInvalide, PlanApprouve, Delai, et ceux de Verrou.prendre.
+        signal relever(h: Int, r: String) -> String
+            writes propose_de, motif_de, tour_de
+            moves arretee -> liberee, liberee -> rouverte when Verrou.lifted, rouverte -> arbitrage, arbitrage -> arretee when Verrou.held
+            calls Verrou.lever, Verrou.prendre, Verrou.designe, Verrou.privilegie, Verrou.posee_le, Plans.approuve_pour, Rapprochements.tca, Catalogue.propulsion, Priorites.preavis, Journal.noter
+        // Clôt la coordination (rapprochement résolu ou passé) et son verrou.
+        signal clore(h: Int, r: String) -> String
+            writes en_cours
+            moves ouverte -> close, proposee -> close, accord -> close, arbitrage -> close, arretee -> close, liberee -> close, rouverte -> close
+            calls Verrou.clore, Journal.noter
+        // État ("ouverte" si inconnue).
+        signal etat(r: String) -> String
+            reads coordination
+        // Vrai si la coordination est en accord ou en arbitrage (le verrou peut être pris).
+        signal decidable(r: String) -> Bool
+            reads coordination
+        // Vrai si la coordination est libérée (le verrou peut être levé).
+        signal libere(r: String) -> Bool
+            reads coordination
+        signal echeance(r: String) -> Int
+            reads echeance_de
+        signal propose(r: String) -> String
+            reads propose_de
+        // Coordinations non closes.
+        signal ouvertes() -> List<String>
+            reads en_cours
+        // Réponse de `org` au tour en cours ("" si aucune).
+        signal reponse(r: String, org: String) -> String
+            reads reponses_de, tour_de
+    }
+}
+
+// PLANS DE MANŒUVRE — d'évitement. Instance = id du plan (choisi par l'opérateur).
+// L'approbation franchit, dans le même appel, deux états de passage (habilite, capable) : une
+// condition sur une autre machine par arête.
+skeleton Plans {
+    const PC_FRANC = 1000              // règle 8 : pc après manœuvre < 1/1 000 000
+    const TOLERANCE_ECART = 1000       // m : orbite observée conforme au plan
+    memory {
+        objet_de: Map<String, String> [persistent]          // plan -> objet ; lien écrit une fois
+        rapprochement_de: Map<String, String> [persistent]  // plan -> rapprochement ; lien écrit une fois
+        operateur_de: Map<String, String> [persistent]      // plan -> opérateur ; lien écrit une fois
+        debut_de: Map<String, Int> [persistent]             // plan -> instant de la poussée (ms)
+        dv_de: Map<String, Int> [persistent]                // plan -> delta-v (mm/s)
+        pc_apres_de: Map<String, Int> [persistent]          // plan -> pc de r après manœuvre (criblage)
+        approuve_de: Map<String, String> [persistent]       // r -> son plan approuvé ou exécuté (au plus un)
+        reel_de: Map<String, Int> [persistent]              // plan -> instant réel de la poussée
+        invariant dv_de >= 1
+        invariant pc_apres_de >= 0
+    }
+    state plan {
+        initial: declare
+        declare -> crible        // trajectoire après manœuvre criblée
+        crible -> habilite       // passage : opérateur actif (propriété 4)
+        habilite -> capable      // passage : objet manœuvrant (propriété 2)
+        capable -> approuve      // verrou de son rapprochement tenu (propriété 1)
+        approuve -> execute      // poussée confirmée
+        execute -> verifie       // orbite observée conforme
+        declare -> annule
+        crible -> annule
+        approuve -> annule
+    }
+    face {
+        // Déclare un plan d'évitement de `objet` pour `r` : objet de `r`, désigné du verrou de `r`,
+        // poussée avant le TCA, dv > 0. `par` agit pour le propriétaire. Écrit les trois liens une
+        // fois. Renvoie "declare". Refus : Existe, Habilitation, Incoherent, Conflit, Delai, HorsBornes.
+        signal declarer(h: Int, plan: String, objet: String, r: String, debut: Int, dv: Int, par: String) -> String
+            writes objet_de, rapprochement_de, operateur_de, debut_de, dv_de
+            calls Catalogue.proprietaire, Rapprochements.objets, Rapprochements.tca, Verrou.designe, Roles.pour, Journal.noter
+        // Résultat du criblage de la trajectoire après manœuvre : pc de `r` après la poussée.
+        // `par` systeme. Refus : Habilitation, Inconnu, HorsBornes, invalid_transition.
+        signal cribler(h: Int, plan: String, pc_apres: Int, par: String) -> String
+            writes pc_apres_de
+            reads objet_de, rapprochement_de
+            moves declare -> crible
+            calls Roles.systeme, Journal.noter
+        // Approuve un plan criblé (sinon NonCrible) : manœuvre franche (pc après < PC_FRANC, sinon
+        // Timide), objet manœuvrant (NonEligible), à temps (h + préavis ≤ TCA, sinon Delai), objet
+        // toujours désigné et non privilégié ailleurs (règle 17a, sinon Conflit / Privilegie), aucun
+        // autre plan approuvé pour `r` (Conflit), opérateur actif (Suspendu), verrou tenu (Conflit).
+        // `par` systeme ou analyste. Renvoie "approuve".
+        signal approuver(h: Int, plan: String, par: String) -> String
+            writes approuve_de
+            reads objet_de, rapprochement_de, operateur_de, pc_apres_de
+            moves crible -> habilite when Operateurs.actif via operateur_de, habilite -> capable when Catalogue.manoeuvrant via objet_de, capable -> approuve when Verrou.held via rapprochement_de
+            calls Operateurs.est_actif, Catalogue.manoeuvrant, Catalogue.propulsion, Verrou.tenu, Verrou.designe, Verrou.est_privilegie, Rapprochements.tca, Priorites.preavis, Roles.systeme, Roles.analyste, Journal.noter
+        // Poussée faite à `reel` avec `dv` (écart ≤ 20 % du plan). `par` agit pour l'opérateur.
+        // Refus : Habilitation, Incoherent, invalid_transition.
+        signal executer(h: Int, plan: String, reel: Int, dv: Int, par: String) -> String
+            writes reel_de
+            reads operateur_de, dv_de, rapprochement_de
+            moves approuve -> execute
+            calls Roles.pour, Journal.noter
+        // Orbite observée après la poussée, à `ecart` m de l'orbite prévue : conforme si
+        // ≤ TOLERANCE_ECART. `par` systeme ou analyste. Renvoie le rapprochement du plan.
+        // Refus : Habilitation, Ecart, invalid_transition.
+        signal verifier(h: Int, plan: String, ecart: Int, par: String) -> String
+            reads rapprochement_de
+            moves execute -> verifie
+            calls Roles.systeme, Roles.analyste, Journal.noter
+        // Annule un plan non exécuté ; s'il était approuvé, sa place se libère.
+        // `par` : l'opérateur, un analyste ou systeme. Refus : Habilitation, MotifRequis, invalid_transition.
+        signal annuler(h: Int, plan: String, motif: String, par: String) -> String
+            writes approuve_de
+            reads objet_de, operateur_de, rapprochement_de
+            moves declare -> annule, crible -> annule, approuve -> annule
+            calls Roles.pour, Roles.systeme, Roles.analyste, Journal.noter
+        // État du plan ("declare" s'il est inconnu).
+        signal etat(plan: String) -> String
+            reads plan
+        // Plan approuvé ou exécuté pour `r` ("" si aucun).
+        signal approuve_pour(r: String) -> String
+            reads approuve_de
+    }
+}
+
+// ESCALADE — un opérateur muet passé l'échéance : manquement, puis échelons 1 → 3, un toutes les
+// PAS ms, jusqu'à son acquittement. Clé "r|org".
+skeleton Escalade {
+    const PAS = 1800000          // 30 min entre deux échelons
+    const ECHELON_MAX = 3
+    memory {
+        echelon_de: Map<String, Int> [persistent]        // "r|org" -> 1..3
+        monte_le: Map<String, Int> [persistent]          // "r|org" -> instant du dernier échelon
+        acquitte_le: Map<String, Int> [persistent]       // "r|org" -> acquittement
+        manquements: List<String> [persistent, immutable] // "h | org | r | motif"
+        invariant echelon_de >= 1
+        invariant echelon_de <= 3
+    }
+    face {
+        // `org` est resté muet sur `r` : manquement, échelon 1 (une fois par r|org). Renvoie l'échelon.
+        signal constater(h: Int, r: String, org: String, motif: String) -> Int
+            writes echelon_de, monte_le, manquements
+            calls Journal.noter
+        // Échelon suivant si PAS est écoulé, non acquitté et sous ECHELON_MAX. Renvoie l'échelon.
+        signal monter(h: Int, r: String, org: String) -> Int
+            writes echelon_de, monte_le
+            reads acquitte_le
+            calls Journal.noter
+        // L'opérateur `org` (`par` agit pour lui) se manifeste : l'escalade s'arrête.
+        // Refus : Habilitation, Inconnu.
+        signal acquitter(h: Int, r: String, org: String, par: String) -> Int
+            writes acquitte_le
+            reads echelon_de
+            calls Roles.pour, Journal.noter
+        // Échelon de `org` sur `r` (0 : aucun).
+        signal echelon(r: String, org: String) -> Int
+            reads echelon_de
+        // Les escalades non acquittées de `r` : opérateurs.
+        signal ouvertes(r: String) -> List<String>
+            reads echelon_de, acquitte_le
+        // Les manquements de `org`.
+        signal manquements_de(org: String) -> List<String>
+            reads manquements
+    }
+}
+
+// HORLOGE — la seule entrée du temps. `balayer(h)` fait avancer toutes les échéances.
+skeleton Horloge {
+    memory {
+        dernier: Map<String, Int> [persistent]     // "h" -> dernier instant balayé
+        invariant dernier >= 0
+    }
+    face {
+        // Pour chaque coordination ouverte : TCA passé ⇒ rapprochement passé et clos ; proposition
+        // échue ⇒ silence constaté (accord tacite, ou manquement + escalade des muets) ; reprise
+        // par ORBITE ; relève (règle 17b) ; échelons des escalades ouvertes. `h` ne recule jamais.
+        // Renvoie les actions faites ("r:action"). Refus : Delai (h antérieur au dernier balayage).
+        signal balayer(h: Int) -> List<String>
+            writes dernier
+            calls Coordination.ouvertes, Coordination.etat, Coordination.echeance, Coordination.constater_silence, Coordination.reprendre, Coordination.relever, Coordination.clore, Rapprochements.tca, Rapprochements.etat, Rapprochements.passer, Verrou.designe, Plans.approuve_pour, Catalogue.proprietaire, Escalade.constater, Escalade.monter, Escalade.echelon, Escalade.ouvertes
+    }
+}
+
+// ORBITE — les gestes qui traversent plusieurs cells.
+skeleton Orbite {
+    face {
+        // Résultat du moteur de criblage (Rapprochements.signaler) ; niveau 3 sur un rapprochement
+        // en alerte ⇒ la coordination s'ouvre. Renvoie le niveau.
+        signal signaler(h: Int, r: String, a: String, b: String, tca: Int, distance: Int, pc: Int, vrel: Int, par: String) -> Int
+            calls Rapprochements.signaler, Rapprochements.etat, Coordination.ouvrir
+        // Vérifie le plan exécuté ; conforme ⇒ rapprochement résolu, coordination close.
+        signal verifier(h: Int, plan: String, ecart: Int, par: String) -> String
+            calls Plans.verifier, Rapprochements.resoudre, Coordination.clore
+        // Rouvre la coordination de `r` après avoir annulé son plan approuvé non exécuté.
+        signal rouvrir(h: Int, r: String, motif: String, par: String) -> String
+            calls Plans.approuve_pour, Plans.etat, Plans.annuler, Coordination.rouvrir
+    }
+}
+
+// ════════════════════════════════════════════════════════════════════════════════════════════
+// CORPS
+// ════════════════════════════════════════════════════════════════════════════════════════════
+
+flesh Journal {
+    on noter(h, qui, quoi) {
+        lignes.push("{h} | {qui} | {quoi}")
+        return lignes.len
+    }
+    on chercher(motif) {
+        let trouvees = []
+        for l in lignes {
+            if contains(l, motif) { trouvees.push(l) }
+        }
+        return trouvees
+    }
+}
+
+flesh Roles {
+    on systeme(par) { return par == "systeme" }
+    on analyste(par) { return starts_with(par, "analyste:") && len(par) > 9 }
+    on superviseur(par) { return starts_with(par, "superviseur:") && len(par) > 12 }
+    on pour(par, org) { return org != "" && par == "operateur:" + org }
+    on quatre_yeux(par, valideur) {
+        let a = starts_with(par, "analyste:") && len(par) > 9
+        let s = starts_with(valideur, "superviseur:") && len(valideur) > 12
+        if !a || !s { return false }
+        return substring(par, 9, len(par)) != substring(valideur, 12, len(valideur))
+    }
+}
+
+flesh Operateurs {
+    on inscrire(h, org, nom, par) {
+        require Roles.superviseur(par) else Habilitation "{par} n'inscrit pas d'opérateur"
+        require org != "" else Incoherent "opérateur sans identifiant"
+        require nom_de.get(org) == () else Existe "{org} déjà inscrit"
+        nom_de.set(org, nom)
+        transition(org, "inscrit", "actif")
+        Journal.noter(h, par, "opérateur {org} ({nom}) inscrit, actif")
+        return "actif"
+    }
+    on suspendre(h, org, motif, par) {
+        require Roles.superviseur(par) else Habilitation "{par} ne suspend pas d'opérateur"
+        require motif != "" else MotifRequis "suspension sans motif"
+        transition(org, "actif", "suspendu")
+        Journal.noter(h, par, "opérateur {org} suspendu : {motif}")
+        return "suspendu"
+    }
+    on retablir(h, org, par) {
+        require Roles.superviseur(par) else Habilitation "{par} ne rétablit pas d'opérateur"
+        transition(org, "suspendu", "actif")
+        Journal.noter(h, par, "opérateur {org} rétabli")
+        return "actif"
+    }
+    on radier(h, org, par) {
+        require Roles.superviseur(par) else Habilitation "{par} ne radie pas d'opérateur"
+        if get_status(org) == "suspendu" { transition(org, "suspendu", "radie") } else { transition(org, "actif", "radie") }
+        Journal.noter(h, par, "opérateur {org} radié")
+        return "radie"
+    }
+    on est_actif(org) { return get_status(org) == "actif" }
+    on connu(org) { return nom_de.get(org) != () }
+}
+
+flesh Catalogue {
+    on cataloguer(h, objet, proprietaire, propulsion, habite, lance_le, altitude, par) {
+        require Roles.systeme(par) || Roles.analyste(par) else Habilitation "{par} ne catalogue pas"
+        require objet != "" else Incoherent "objet sans identifiant"
+        require proprietaire_de.get(objet) == () else Existe "{objet} déjà catalogué"
+        require Operateurs.connu(proprietaire) else Inconnu "opérateur {proprietaire} inconnu"
+        require propulsion == "aucune" || propulsion == "faible" || propulsion == "impulsionnelle" else HorsBornes "propulsion {propulsion}"
+        require altitude >= 0 && altitude <= ALTITUDE_MAX else HorsBornes "altitude {altitude} km"
+        proprietaire_de.set(objet, proprietaire)
+        propulsion_de.set(objet, propulsion)
+        habite_de.set(objet, habite)
+        lance_le_de.set(objet, lance_le)
+        altitude_de.set(objet, altitude)
+        let etat = if propulsion == "aucune" { "inerte" } else { "manoeuvrant" }
+        if propulsion == "aucune" { transition(objet, "inscrit", "inerte") } else { transition(objet, "inscrit", "manoeuvrant") }
+        Journal.noter(h, par, "objet {objet} catalogué : {proprietaire}, propulsion {propulsion}, habité {habite}, {altitude} km, {etat}")
+        return etat
+    }
+    on perdre_propulsion(h, objet, par) {
+        let prop = proprietaire_de.get(objet) ?? ""
+        require Roles.systeme(par) || Roles.analyste(par) || Roles.pour(par, prop) else Habilitation "{par} ne déclare pas la propulsion de {objet}"
+        transition(objet, "manoeuvrant", "inerte")
+        propulsion_de.set(objet, "aucune")
+        Journal.noter(h, par, "objet {objet} : propulsion perdue, inerte")
+        return "inerte"
+    }
+    on retirer(h, objet, par) {
+        let prop = proprietaire_de.get(objet) ?? ""
+        require Roles.analyste(par) || Roles.pour(par, prop) else Habilitation "{par} ne retire pas {objet} du service"
+        if get_status(objet) == "inerte" { transition(objet, "inerte", "hors_service") } else { transition(objet, "manoeuvrant", "hors_service") }
+        Journal.noter(h, par, "objet {objet} hors service")
+        return "hors_service"
+    }
+    on manoeuvrant(objet) { return get_status(objet) == "manoeuvrant" }
+    on proprietaire(objet) { return proprietaire_de.get(objet) ?? "" }
+    on propulsion(objet) { return propulsion_de.get(objet) ?? "aucune" }
+    on profil(objet) {
+        let st = get_status(objet) ?? "inscrit"
+        let org = proprietaire_de.get(objet) ?? ""
+        return Profil { objet: objet, propulsion: propulsion_de.get(objet) ?? "aucune", habite: habite_de.get(objet) ?? false, en_service: st == "manoeuvrant" || st == "inerte", operateur_actif: Operateurs.est_actif(org), lance_le: lance_le_de.get(objet) ?? 0, altitude: altitude_de.get(objet) ?? 0 }
+    }
+}
+
+flesh Priorites {
+    on preavis(propulsion) {
+        if propulsion == "impulsionnelle" { return PREAVIS_IMPULSIONNELLE }
+        if propulsion == "faible" { return PREAVIS_FAIBLE }
+        return PREAVIS_JAMAIS
+    }
+    on capable(h, tca, p) {
+        if !p.en_service || !p.operateur_actif || p.propulsion == "aucune" { return false }
+        return h + preavis(p.propulsion) <= tca
+    }
+    on rang(p) {
+        if p.propulsion == "aucune" { return 0 }
+        if p.habite { return 1 }
+        if p.propulsion == "faible" { return 2 }
+        return 3
+    }
+    on qui_manoeuvre(h, tca, vrel, a, b) {
+        let ca = capable(h, tca, a)
+        let cb = capable(h, tca, b)
+        if !ca && !cb { return Verdict { objet: "", motif: "aucun_capable" } }
+        if ca && !cb { return Verdict { objet: a.objet, motif: "seul_capable" } }
+        if cb && !ca { return Verdict { objet: b.objet, motif: "seul_capable" } }
+        // règle 18 : le plus manœuvrant s'écarte
+        let ra = rang(a)
+        let rb = rang(b)
+        if ra != rb {
+            let qui = if ra > rb { a } else { b }
+            let autre = if ra > rb { b } else { a }
+            let motif = if autre.habite { "habite_exempte" } else { "manoeuvrabilite" }
+            return Verdict { objet: qui.objet, motif: motif }
+        }
+        // règle 13 : en rattrapage, le plus bas (le plus rapide) s'écarte
+        if vrel < VITESSE_RATTRAPAGE && a.altitude != b.altitude {
+            let bas = if a.altitude < b.altitude { a.objet } else { b.objet }
+            return Verdict { objet: bas, motif: "rattrapage" }
+        }
+        // règle 15 : entre égaux, le dernier lancé
+        if a.lance_le != b.lance_le {
+            let dernier = if a.lance_le > b.lance_le { a.objet } else { b.objet }
+            return Verdict { objet: dernier, motif: "dernier_lance" }
+        }
+        let grand = if a.objet > b.objet { a.objet } else { b.objet }
+        return Verdict { objet: grand, motif: "catalogue" }
+    }
+}
+
+flesh Rapprochements {
+    on niveau_pour(pc, distance) {
+        if pc >= PC_COORDINATION || distance < DISTANCE_COORDINATION { return 3 }
+        if pc >= PC_ALERTE || distance < DISTANCE_ALERTE { return 2 }
+        return 1
+    }
+    on signaler(h, r, a, b, tca, distance, pc, vrel, par) {
+        require Roles.systeme(par) else Habilitation "{par} ne signale pas de rapprochement"
+        require r != "" && a != "" && b != "" && a != b else Incoherent "rapprochement '{r}' : objets '{a}', '{b}'"
+        require h < tca else Delai "TCA {tca} passé à {h}"
+        require pc >= 0 && pc <= PC_MAX else HorsBornes "pc {pc}"
+        require distance >= 0 else HorsBornes "distance {distance}"
+        require vrel >= 0 else HorsBornes "vitesse relative {vrel}"
+        let st = get_status(r) ?? "detecte"
+        require st == "detecte" || st == "alerte" || st == "en_coordination" else EtatInvalide "{r} est clos ({st})"
+        let deja = objets_de.get(r) ?? []
+        if len(deja) == 0 {
+            objets_de.set(r, [a, b])
+        } else {
+            require (deja[0] == a && deja[1] == b) || (deja[0] == b && deja[1] == a) else Incoherent "{r} porte sur d'autres objets"
+        }
+        let niv = niveau_pour(pc, distance)
+        tca_de.set(r, tca)
+        distance_de.set(r, distance)
+        pc_de.set(r, pc)
+        vrel_de.set(r, vrel)
+        niveau_de.set(r, niv)
+        if niv >= 2 && st == "detecte" { transition(r, "detecte", "alerte") }
+        Journal.noter(h, par, "rapprochement {r} ({a}|{b}) : TCA {tca}, {distance} m, pc {pc}, niveau {niv}")
+        return niv
+    }
+    on engager(h, r) {
+        require (niveau_de.get(r) ?? 0) == 3 else EtatInvalide "{r} n'est pas de niveau 3"
+        transition(r, "alerte", "en_coordination")
+        Journal.noter(h, "systeme", "rapprochement {r} en coordination")
+        return "en_coordination"
+    }
+    on resoudre(h, r, motif) {
+        let st = get_status(r) ?? "detecte"
+        if st == "en_coordination" { transition(r, "en_coordination", "resolu") } else if st == "alerte" { transition(r, "alerte", "resolu") } else { transition(r, "detecte", "resolu") }
+        Journal.noter(h, "systeme", "rapprochement {r} résolu ({motif})")
+        return "resolu"
+    }
+    on passer(h, r) {
+        let tca = tca_de.get(r) ?? h
+        require h > tca else Delai "TCA de {r} à venir ({tca})"
+        let st = get_status(r) ?? "detecte"
+        if st == "en_coordination" { transition(r, "en_coordination", "passe") } else if st == "alerte" { transition(r, "alerte", "passe") } else { transition(r, "detecte", "passe") }
+        Journal.noter(h, "systeme", "rapprochement {r} passé (TCA {tca})")
+        return "passe"
+    }
+    on etat(r) { return get_status(r) ?? "detecte" }
+    on en_coordination(r) { return get_status(r) == "en_coordination" }
+    on niveau(r) { return niveau_de.get(r) ?? 0 }
+    on tca(r) { return tca_de.get(r) ?? 0 }
+    on vrel(r) { return vrel_de.get(r) ?? 0 }
+    on objets(r) { return objets_de.get(r) ?? [] }
+}
+
+flesh Verrou {
+    on prendre(h, r, objet, mode) {
+        let st = get_status(r) ?? "free"
+        require st == "free" || st == "lifted" else Conflit "une désignation est déjà arrêtée pour {r} (verrou {st})"
+        require Coordination.decidable(r) else EtatInvalide "la coordination de {r} n'est ni en accord ni en arbitrage"
+        let objs = Rapprochements.objets(r)
+        require len(objs) == 2 else Incoherent "rapprochement {r} inconnu"
+        require objet == objs[0] || objet == objs[1] else Incoherent "{objet} n'est pas un objet de {r}"
+        let autre = if objet == objs[0] { objs[1] } else { objs[0] }
+        // propriété 2 : sans propulsion ou hors service, jamais désigné
+        require Catalogue.manoeuvrant(objet) else NonEligible "{objet} est sans propulsion ou hors service"
+        let p = Catalogue.profil(objet)
+        require p.operateur_actif else Suspendu "l'opérateur de {objet} n'est pas actif"
+        let tca = Rapprochements.tca(r)
+        require h + Priorites.preavis(p.propulsion) <= tca else Delai "le préavis de {objet} ne tient plus avant le TCA {tca}"
+        // propriété 3 : un habité seulement s'il est le seul capable
+        if p.habite {
+            let autre_peut = Priorites.capable(h, tca, Catalogue.profil(autre))
+            require autre_peut == false else NonEligible "{objet} est habité et {autre} peut s'écarter"
+        }
+        let n = (poses_de.get(r) ?? 0) + 1
+        if st == "lifted" { transition(r, "lifted", "held") } else { transition(r, "free", "held") }
+        designe_de.set(r, objet)
+        privilegie_de.set(r, autre)
+        poses_de.set(r, n)
+        pose_le.set(r, h)
+        privileges.set(autre, (privileges.get(autre) ?? 0) + 1)
+        let d = "DS-{r}-{n}"
+        Journal.noter(h, "systeme", "verrou {r} posé : décision {d}, {objet} s'écarte, {autre} privilégié, {mode}")
+        return d
+    }
+    on lever(h, r, motif) {
+        require Coordination.libere(r) else EtatInvalide "la coordination de {r} n'est pas libérée"
+        let ancien = designe_de.get(r) ?? ""
+        let priv = privilegie_de.get(r) ?? ""
+        transition(r, "held", "lifted")
+        designe_de.delete(r)
+        privilegie_de.delete(r)
+        _oublier(priv)
+        Journal.noter(h, "systeme", "verrou {r} levé : {ancien} n'est plus désigné ({motif})")
+        return ancien
+    }
+    on clore(h, r) {
+        let st = get_status(r) ?? "free"
+        let priv = privilegie_de.get(r) ?? ""
+        if st == "held" {
+            transition(r, "held", "closed")
+            _oublier(priv)
+        } else if st == "lifted" {
+            transition(r, "lifted", "closed")
+        } else {
+            transition(r, "free", "closed")
+        }
+        designe_de.delete(r)
+        privilegie_de.delete(r)
+        Journal.noter(h, "systeme", "verrou {r} clos")
+        return "closed"
+    }
+    // Le privilégié d'un verrou qui n'est plus tenu retrouve sa liberté de manœuvre.
+    on _oublier(objet: String) {
+        let n = privileges.get(objet) ?? 0
+        if n > 0 { privileges.set(objet, n - 1) }
+    }
+    on tenu(r) { return get_status(r) == "held" }
+    on designe(r) { return designe_de.get(r) ?? "" }
+    on privilegie(r) { return privilegie_de.get(r) ?? "" }
+    on est_privilegie(objet) { return (privileges.get(objet) ?? 0) > 0 }
+    on posee_le(r) { return pose_le.get(r) ?? 0 }
+    on decision(r) {
+        if get_status(r) != "held" { return "" }
+        return "DS-{r}-{poses_de.get(r) ?? 0}"
+    }
+}
+
+flesh Coordination {
+    on proposition(h, r) {
+        let objs = Rapprochements.objets(r)
+        require len(objs) == 2 else Inconnu "rapprochement {r} inconnu"
+        return Priorites.qui_manoeuvre(h, Rapprochements.tca(r), Rapprochements.vrel(r), Catalogue.profil(objs[0]), Catalogue.profil(objs[1]))
+    }
+    on ouvrir(h, r, par) {
+        require Roles.systeme(par) || Roles.analyste(par) else Habilitation "{par} n'ouvre pas de coordination"
+        require tour_de.get(r) == () else Existe "coordination de {r} déjà ouverte"
+        require h < Rapprochements.tca(r) else Delai "TCA de {r} passé"
+        let objs = Rapprochements.objets(r)
+        require len(objs) == 2 else Inconnu "rapprochement {r} inconnu"
+        let orgs = []
+        for o in objs {
+            let org = Catalogue.proprietaire(o)
+            if org != "" && !contains(orgs, org) { orgs.push(org) }
+        }
+        Rapprochements.engager(h, r)
+        let v = proposition(h, r)
+        parties_de.set(r, orgs)
+        tour_de.set(r, 1)
+        _inscrire(r, h)
+        propose_de.set(r, v.objet)
+        motif_de.set(r, v.motif)
+        if v.objet != "" {
+            let ech = h + DELAI_REPONSE
+            echeance_de.set(r, ech)
+            transition(r, "ouverte", "proposee")
+            Journal.noter(h, par, "coordination {r} ouverte : {v.objet} s'écarte ({v.motif}), réponse attendue avant {ech}")
+            return "proposee"
+        }
+        echeance_de.set(r, h)
+        transition(r, "ouverte", "arbitrage")
+        Journal.noter(h, par, "coordination {r} ouverte : personne ne peut s'écarter ({v.motif}), arbitrage")
+        return "arbitrage"
+    }
+    on repondre(h, r, org, reponse, motif, par) {
+        require Roles.pour(par, org) else Habilitation "{par} n'agit pas pour {org}"
+        let parties_r = parties_de.get(r) ?? []
+        require contains(parties_r, org) else Inconnu "{org} n'est pas partie à la coordination de {r}"
+        require get_status(r) == "proposee" else EtatInvalide "coordination {r} : pas de proposition en cours"
+        let ech = echeance_de.get(r) ?? 0
+        require h <= ech else Delai "échéance de réponse passée ({ech})"
+        let tour = tour_de.get(r) ?? 1
+        let cle = "{r}|{tour}|{org}"
+        require reponses_de.get(cle) == () else Existe "{org} a déjà répondu au tour {tour} de {r}"
+        let propose = propose_de.get(r) ?? ""
+        if reponse == "refuse" {
+            require motif != "" else MotifRequis "refus sans motif"
+            reponses_de.set(cle, "refuse")
+            transition(r, "proposee", "arbitrage")
+            Journal.noter(h, par, "{org} refuse que {propose} s'écarte sur {r} : {motif} — arbitrage")
+            return "arbitrage"
+        }
+        require reponse == "accepte" else Incoherent "réponse '{reponse}' : accepte ou refuse"
+        reponses_de.set(cle, "accepte")
+        Journal.noter(h, par, "{org} accepte que {propose} s'écarte sur {r} (tour {tour})")
+        let toutes = all(parties_r, p => (reponses_de.get("{r}|{tour}|{p}") ?? "") == "accepte")
+        if !toutes { return "proposee" }
+        transition(r, "proposee", "accord")
+        return _arreter(h, r, "accord")
+    }
+    // Accord : le verrou est pris pour le proposé, ou, s'il le refuse, ORBITE arbitre.
+    on _arreter(h: Int, r: String, mode: String) {
+        let objet = propose_de.get(r) ?? ""
+        let p = try { Verrou.prendre(h, r, objet, mode) }
+        if p.error == () {
+            transition(r, "accord", "arretee")
+            Journal.noter(h, "systeme", "{r} arrêtée par {mode} : {objet} s'écarte, décision {p.value}")
+            return "arretee"
+        }
+        transition(r, "accord", "arbitrage")
+        Journal.noter(h, "systeme", "{r} : accord sans verrou ({p.kind}), arbitrage")
+        return "arbitrage"
+    }
+    // Inscrit `r` parmi les coordinations en cours (balayées par l'horloge).
+    on _inscrire(r: String, h: Int) {
+        require len(en_cours) < MAX_EN_COURS else Plein "trop de coordinations en cours"
+        en_cours.set(r, h)
+    }
+    on constater_silence(h, r) {
+        require get_status(r) == "proposee" else EtatInvalide "coordination {r} : pas de proposition en cours"
+        let ech = echeance_de.get(r) ?? 0
+        require h > ech else Delai "échéance {ech} non atteinte"
+        let tour = tour_de.get(r) ?? 1
+        let muettes = []
+        for p in parties_de.get(r) ?? [] {
+            let cle = "{r}|{tour}|{p}"
+            if reponses_de.get(cle) == () {
+                reponses_de.set(cle, "muette")
+                muettes.push(p)
+            }
+        }
+        // accord tacite : le désigné a accepté, les autres se taisent, aucun refus
+        let propose = propose_de.get(r) ?? ""
+        let org_p = Catalogue.proprietaire(propose)
+        if (reponses_de.get("{r}|{tour}|{org_p}") ?? "") == "accepte" {
+            let qui = join(muettes, ", ")
+            Journal.noter(h, "systeme", "{r} : accord tacite — {org_p} accepte que {propose} s'écarte, muet(s) sans refus : {qui}")
+            transition(r, "proposee", "accord")
+            let _ = _arreter(h, r, "accord tacite")
+        }
+        return muettes
+    }
+    on reprendre(h, r) {
+        require get_status(r) == "proposee" else EtatInvalide "coordination {r} : pas de proposition en cours"
+        let propose = propose_de.get(r) ?? ""
+        let limite = Rapprochements.tca(r) - Priorites.preavis(Catalogue.propulsion(propose))
+        require h >= limite - MARGE_REPRISE else Delai "reprise de {r} pas avant {limite - MARGE_REPRISE}"
+        transition(r, "proposee", "arbitrage")
+        Journal.noter(h, "systeme", "{r} : toujours pas d'accord, reprise par ORBITE — arbitrage")
+        return "arbitrage"
+    }
+    on arbitrer(h, r, objet, motif, par, valideur) {
+        require Roles.quatre_yeux(par, valideur) else QuatreYeux "{valideur} ne peut pas contre-signer {par}"
+        require motif != "" else MotifRequis "arbitrage sans motif"
+        require get_status(r) == "arbitrage" else EtatInvalide "coordination {r} : pas en arbitrage"
+        let d = Verrou.prendre(h, r, objet, "arbitrage")
+        transition(r, "arbitrage", "arretee")
+        Journal.noter(h, par, "{r} arbitrée avec {valideur} : {objet} s'écarte, décision {d} — {motif}")
+        return "arretee"
+    }
+    on rouvrir(h, r, motif, par) {
+        require Roles.systeme(par) || Roles.analyste(par) else Habilitation "{par} ne rouvre pas de coordination"
+        require motif != "" else MotifRequis "rouverture sans motif"
+        require get_status(r) == "arretee" else EtatInvalide "coordination {r} : pas arrêtée"
+        let plan = Plans.approuve_pour(r)
+        require plan == "" else PlanApprouve "le plan {plan} est approuvé ou exécuté pour {r}"
+        transition(r, "arretee", "liberee")
+        let ancien = Verrou.lever(h, r, motif)
+        transition(r, "liberee", "rouverte")
+        let tour = (tour_de.get(r) ?? 1) + 1
+        tour_de.set(r, tour)
+        let v = proposition(h, r)
+        propose_de.set(r, v.objet)
+        motif_de.set(r, v.motif)
+        if v.objet != "" {
+            let ech = h + DELAI_REPONSE
+            echeance_de.set(r, ech)
+            transition(r, "rouverte", "proposee")
+            Journal.noter(h, par, "{r} rouverte (tour {tour}, {motif}) : {ancien} n'est plus désigné, {v.objet} s'écarte ({v.motif}), réponse avant {ech}")
+            return "proposee"
+        }
+        echeance_de.set(r, h)
+        transition(r, "rouverte", "arbitrage")
+        Journal.noter(h, par, "{r} rouverte (tour {tour}, {motif}) : {ancien} n'est plus désigné, personne ne peut s'écarter, arbitrage")
+        return "arbitrage"
+    }
+    on relever(h, r) {
+        require get_status(r) == "arretee" else EtatInvalide "coordination {r} : pas arrêtée"
+        let plan = Plans.approuve_pour(r)
+        require plan == "" else PlanApprouve "le désigné a un plan approuvé ({plan})"
+        let des = Verrou.designe(r)
+        let priv = Verrou.privilegie(r)
+        require priv != "" else EtatInvalide "{r} : aucun privilégié"
+        let tca = Rapprochements.tca(r)
+        let preavis = Priorites.preavis(Catalogue.propulsion(priv))
+        let ouverture = tca - preavis - MARGE_RELEVE
+        require h >= ouverture else Delai "relève de {r} pas avant {ouverture}"
+        require Verrou.posee_le(r) < ouverture else Delai "décision posée dans la fenêtre de relève : le désigné n'a pas eu sa chance"
+        require h + preavis <= tca else Delai "le préavis du privilégié {priv} ne tient plus : relève impossible"
+        transition(r, "arretee", "liberee")
+        Verrou.lever(h, r, "relève (règle 17b)")
+        transition(r, "liberee", "rouverte")
+        tour_de.set(r, (tour_de.get(r) ?? 1) + 1)
+        propose_de.set(r, priv)
+        motif_de.set(r, "releve_17b")
+        transition(r, "rouverte", "arbitrage")
+        let d = Verrou.prendre(h, r, priv, "relève (règle 17b)")
+        transition(r, "arbitrage", "arretee")
+        Journal.noter(h, "systeme", "{r} : relève (règle 17b) — {des} sans plan approuvé, {priv} s'écarte, décision {d}")
+        return priv
+    }
+    on clore(h, r) {
+        transition(r, "close")
+        en_cours.delete(r)
+        Journal.noter(h, "systeme", "coordination {r} close")
+        Verrou.clore(h, r)
+        return "close"
+    }
+    on etat(r) { return get_status(r) ?? "ouverte" }
+    on decidable(r) { return get_status(r) == "accord" || get_status(r) == "arbitrage" }
+    on libere(r) { return get_status(r) == "liberee" }
+    on echeance(r) { return echeance_de.get(r) ?? 0 }
+    on propose(r) { return propose_de.get(r) ?? "" }
+    on ouvertes() { return en_cours.keys }
+    on reponse(r, org) {
+        let tour = tour_de.get(r) ?? 1
+        return reponses_de.get("{r}|{tour}|{org}") ?? ""
+    }
+}
+
+flesh Plans {
+    on declarer(h, plan, objet, r, debut, dv, par) {
+        require plan != "" else Incoherent "plan sans identifiant"
+        require objet_de.get(plan) == () else Existe "plan {plan} déjà déclaré"
+        require rapprochement_de.get(plan) == () else Existe "plan {plan} déjà déclaré"
+        require operateur_de.get(plan) == () else Existe "plan {plan} déjà déclaré"
+        let org = Catalogue.proprietaire(objet)
+        require Roles.pour(par, org) else Habilitation "{par} n'agit pas pour le propriétaire de {objet}"
+        require contains(Rapprochements.objets(r), objet) else Incoherent "{objet} n'est pas un objet de {r}"
+        require Verrou.designe(r) == objet else Conflit "{objet} n'est pas le désigné de {r}"
+        require dv >= 1 else HorsBornes "delta-v {dv} mm/s"
+        require h < debut && debut < Rapprochements.tca(r) else Delai "poussée à {debut} hors de l'intervalle (maintenant, TCA)"
+        objet_de.set(plan, objet)
+        rapprochement_de.set(plan, r)
+        operateur_de.set(plan, org)
+        debut_de.set(plan, debut)
+        dv_de.set(plan, dv)
+        Journal.noter(h, par, "plan {plan} déclaré : {objet} s'écarte sur {r}, poussée à {debut}, Δv {dv} mm/s")
+        return "declare"
+    }
+    on cribler(h, plan, pc_apres, par) {
+        require Roles.systeme(par) else Habilitation "{par} ne crible pas"
+        require objet_de.get(plan) != () else Inconnu "plan {plan} inconnu"
+        require pc_apres >= 0 else HorsBornes "pc {pc_apres}"
+        transition(plan, "declare", "crible")
+        pc_apres_de.set(plan, pc_apres)
+        Journal.noter(h, par, "plan {plan} criblé sur {rapprochement_de.get(plan) ?? \"\"} : pc après manœuvre {pc_apres} milliardièmes")
+        return "crible"
+    }
+    on approuver(h, plan, par) {
+        require Roles.systeme(par) || Roles.analyste(par) else Habilitation "{par} n'approuve pas de plan"
+        let o = objet_de.get(plan) ?? ""
+        let r = rapprochement_de.get(plan) ?? ""
+        let op = operateur_de.get(plan) ?? ""
+        require o != "" else Inconnu "plan {plan} inconnu"
+        // propriété 4 : pas d'approbation sans criblage
+        require get_status(plan) == "crible" else NonCrible "plan {plan} : {get_status(plan) ?? \"declare\"}, pas criblé"
+        // règle 8 : une manœuvre franche, à temps
+        let pc = pc_apres_de.get(plan) ?? 1000000000
+        require pc < PC_FRANC else Timide "plan {plan} : pc après manœuvre {pc} milliardièmes, pas sous {PC_FRANC} (règle 8)"
+        // propriété 2 : objet en service avec propulsion
+        require Catalogue.manoeuvrant(o) else NonEligible "{o} est sans propulsion ou hors service"
+        let tca = Rapprochements.tca(r)
+        require h + Priorites.preavis(Catalogue.propulsion(o)) <= tca else Delai "limite d'action de {o} passée (TCA {tca})"
+        require Verrou.designe(r) == o else Conflit "{o} n'est pas le désigné de {r}"
+        // règle 17a : le privilégié garde son cap
+        require Verrou.est_privilegie(o) == false else Privilegie "{o} est privilégié : il garde son cap jusqu'au TCA"
+        // propriété 1 : un seul plan approuvé par rapprochement
+        require approuve_de.get(r) == () else Conflit "un plan est déjà approuvé pour {r}"
+        // propriété 4 : opérateur actif
+        require Operateurs.est_actif(op) else Suspendu "l'opérateur {op} n'est pas actif"
+        // propriété 1 : la désignation est arrêtée
+        require Verrou.tenu(r) else Conflit "aucune désignation arrêtée pour {r}"
+        // la chaîne : une condition sur une autre machine par arête (voir le cadre)
+        transition(plan, "crible", "habilite")
+        transition(plan, "habilite", "capable")
+        transition(plan, "capable", "approuve")
+        approuve_de.set(r, plan)
+        Journal.noter(h, par, "plan {plan} approuvé : {o} s'écarte sur {r}, pc après manœuvre {pc}")
+        return "approuve"
+    }
+    on executer(h, plan, reel, dv, par) {
+        let op = operateur_de.get(plan) ?? ""
+        require Roles.pour(par, op) else Habilitation "{par} n'agit pas pour l'opérateur du plan {plan}"
+        let prevu = dv_de.get(plan) ?? 0
+        require abs(dv - prevu) * 5 <= prevu else Incoherent "Δv {dv} à plus de 20 % du plan ({prevu})"
+        require reel <= h else Incoherent "poussée annoncée dans le futur"
+        transition(plan, "approuve", "execute")
+        reel_de.set(plan, reel)
+        Journal.noter(h, par, "plan {plan} exécuté sur {rapprochement_de.get(plan) ?? \"\"} : poussée à {reel}, Δv {dv} mm/s")
+        return "execute"
+    }
+    on verifier(h, plan, ecart, par) {
+        require Roles.systeme(par) || Roles.analyste(par) else Habilitation "{par} ne vérifie pas"
+        require ecart >= 0 && ecart <= TOLERANCE_ECART else Ecart "orbite observée à {ecart} m du plan {plan}"
+        transition(plan, "execute", "verifie")
+        Journal.noter(h, par, "plan {plan} vérifié : orbite observée à {ecart} m du plan")
+        return rapprochement_de.get(plan) ?? ""
+    }
+    on annuler(h, plan, motif, par) {
+        require objet_de.get(plan) != () else Inconnu "plan {plan} inconnu"
+        let op = operateur_de.get(plan) ?? ""
+        require Roles.pour(par, op) || Roles.systeme(par) || Roles.analyste(par) else Habilitation "{par} n'annule pas le plan {plan}"
+        require motif != "" else MotifRequis "annulation sans motif"
+        let st = get_status(plan) ?? "declare"
+        if st == "approuve" {
+            transition(plan, "approuve", "annule")
+            approuve_de.delete(rapprochement_de.get(plan) ?? "")
+        } else if st == "crible" {
+            transition(plan, "crible", "annule")
+        } else {
+            transition(plan, "declare", "annule")
+        }
+        let r = rapprochement_de.get(plan) ?? ""
+        Journal.noter(h, par, "plan {plan} annulé sur {r} : {motif}")
+        return "annule"
+    }
+    on etat(plan) { return get_status(plan) ?? "declare" }
+    on approuve_pour(r) { return approuve_de.get(r) ?? "" }
+}
+
+flesh Escalade {
+    on constater(h, r, org, motif) {
+        let cle = "{r}|{org}"
+        let deja = echelon_de.get(cle) ?? 0
+        if deja >= 1 { return deja }
+        echelon_de.set(cle, 1)
+        monte_le.set(cle, h)
+        manquements.push("{h} | {org} | {r} | {motif}")
+        Journal.noter(h, "systeme", "manquement : {org} sur {r} ({motif}) — escalade, échelon 1")
+        return 1
+    }
+    on monter(h, r, org) {
+        let cle = "{r}|{org}"
+        let e = echelon_de.get(cle) ?? 0
+        if acquitte_le.get(cle) != () { return e }
+        if h < (monte_le.get(cle) ?? 0) + PAS { return e }
+        if e >= 1 && e < ECHELON_MAX {
+            echelon_de.set(cle, e + 1)
+            monte_le.set(cle, h)
+            Journal.noter(h, "systeme", "escalade {org} sur {r} : échelon {e + 1}")
+            return e + 1
+        }
+        return e
+    }
+    on acquitter(h, r, org, par) {
+        require Roles.pour(par, org) else Habilitation "{par} n'agit pas pour {org}"
+        let cle = "{r}|{org}"
+        let e = echelon_de.get(cle) ?? 0
+        require e >= 1 else Inconnu "aucune escalade de {org} sur {r}"
+        acquitte_le.set(cle, h)
+        Journal.noter(h, par, "escalade {org} sur {r} acquittée à l'échelon {e}")
+        return e
+    }
+    on echelon(r, org) { return echelon_de.get("{r}|{org}") ?? 0 }
+    on ouvertes(r) {
+        let orgs = []
+        for cle in echelon_de.keys {
+            let f = split(cle, "|")
+            if len(f) == 2 && f[0] == r && acquitte_le.get(cle) == () { orgs.push(f[1]) }
+        }
+        return orgs
+    }
+    on manquements_de(org) {
+        let siens = []
+        for m in manquements {
+            if contains(m, " | {org} | ") { siens.push(m) }
+        }
+        return siens
+    }
+}
+
+flesh Horloge {
+    on balayer(h) {
+        let avant = dernier.get("h") ?? 0
+        require h >= 0 && h >= avant else Delai "balayage à {h} antérieur au précédent ({avant})"
+        dernier.set("h", h)
+        let faits = []
+        for r in Coordination.ouvertes() {
+            let res = try { _balayer_un(h, r) }
+            if res.error == () {
+                for x in res.value { faits.push(x) }
+            } else {
+                faits.push("{r}:erreur {res.kind}")
+            }
+        }
+        return faits
+    }
+    // Les échéances d'une coordination ouverte, dans l'ordre où elles tombent.
+    on _balayer_un(h: Int, r: String) {
+        let faits = []
+        if h > Rapprochements.tca(r) {
+            let st_r = Rapprochements.etat(r)
+            if st_r == "detecte" || st_r == "alerte" || st_r == "en_coordination" { Rapprochements.passer(h, r) }
+            Coordination.clore(h, r)
+            return ["{r}:passe"]
+        }
+        if Coordination.etat(r) == "proposee" && h > Coordination.echeance(r) {
+            for org in Coordination.constater_silence(h, r) {
+                Escalade.constater(h, r, org, "silence")
+                faits.push("{r}:manquement {org}")
+            }
+            if Coordination.etat(r) == "arretee" { faits.push("{r}:accord tacite") }
+        }
+        if Coordination.etat(r) == "proposee" {
+            let rep = try { Coordination.reprendre(h, r) }
+            if rep.error == () { faits.push("{r}:reprise") }
+        }
+        if Coordination.etat(r) == "arretee" && Plans.approuve_pour(r) == "" {
+            let des = Verrou.designe(r)
+            let rel = try { Coordination.relever(h, r) }
+            if rel.error == () {
+                let org_des = Catalogue.proprietaire(des)
+                Escalade.constater(h, r, org_des, "designation_ignoree")
+                faits.push("{r}:releve {rel.value}")
+            }
+        }
+        for org in Escalade.ouvertes(r) {
+            let avant = Escalade.echelon(r, org)
+            let apres = Escalade.monter(h, r, org)
+            if apres > avant { faits.push("{r}:echelon {org} {apres}") }
+        }
+        return faits
+    }
+}
+
+flesh Orbite {
+    on signaler(h, r, a, b, tca, distance, pc, vrel, par) {
+        let niv = Rapprochements.signaler(h, r, a, b, tca, distance, pc, vrel, par)
+        if niv == 3 && Rapprochements.etat(r) == "alerte" { Coordination.ouvrir(h, r, par) }
+        return niv
+    }
+    on verifier(h, plan, ecart, par) {
+        let r = Plans.verifier(h, plan, ecart, par)
+        Rapprochements.resoudre(h, r, "manœuvre {plan} vérifiée")
+        Coordination.clore(h, r)
+        return "resolu"
+    }
+    on rouvrir(h, r, motif, par) {
+        let plan = Plans.approuve_pour(r)
+        if plan != "" {
+            require Plans.etat(plan) == "approuve" else EtatInvalide "le plan {plan} est déjà exécuté"
+            Plans.annuler(h, plan, motif, par)
+        }
+        return Coordination.rouvrir(h, r, motif, par)
+    }
+}

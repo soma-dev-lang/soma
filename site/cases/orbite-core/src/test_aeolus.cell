@@ -1,0 +1,166 @@
+// REJEU AEOLUS / STARLINK 44 (septembre 2019) sur le noyau — mêmes faits et mêmes paramètres
+// simulés que la version complète d'ORBITE (test_aeolus.cell, https://soma-lang.dev/cases/orbite/).
+//
+// HISTORIQUE (faits publics, rapportés par l'ESA et SpaceX) :
+//  - 28/08/2019 : alerte de rapprochement, pc ≈ 1/50 000, sous le seuil de manœuvre ;
+//  - les jours suivants : pc jusqu'à ≈ 1/1 000, dix fois le seuil de l'ESA (1/10 000) ; l'ESA
+//    cherche à se coordonner, sans réponse (défaut d'astreinte chez SpaceX) ;
+//  - 02/09/2019 : Aeolus relève seule son orbite, environ une demi-orbite avant le rapprochement ;
+//  - aucune règle ne disait qui devait manœuvrer.
+// SIMULÉ (fictif, cohérent) : ORBITE, les heures (alerte 28/08 10 h 02, montée 30/08 14 h 02,
+// TCA 02/09 12 h 00 UTC), distances, vitesse relative, delta-v (0,5 m/s refusé comme timide :
+// pc résiduelle 1 369 milliardièmes ≈ 1/730 000 ; 0,7 m/s : 699 milliardièmes), poussée le 02/09
+// à 11 h 15 min 10 s (TCA − 45 min), vérification à 11 h 50.
+// Repères (jours depuis l'époque Unix) : 01/05/2019 = 18017 ; 28/08 = 18136 ; 30/08 = 18138 ;
+// 02/09 = 18141.
+use app
+
+cell Monde {
+    on h(j: Int, s: Int) { return j * 86400000 + s * 1000 }
+    on tca_simule() { return h(18141, 43200) }
+    // Le monde au 27/08/2019 : l'ESA et SpaceX opérateurs actifs, Aeolus (impulsionnelle, lancé le
+    // 22/08/2018) et Starlink 44 (propulsion électrique faible, lancé le 24/05/2019) en service.
+    on pret() {
+        let t = h(18017, 36000)
+        let _ = Operateurs.inscrire(t, "ORG-ESA", "ESA (opérateur d'Aeolus)", "superviseur:sup1")
+        let _ = Operateurs.inscrire(t, "ORG-SPACEX", "SpaceX (opérateur de Starlink)", "superviseur:sup1")
+        let _ = Catalogue.cataloguer(t, "AEOLUS", "ORG-ESA", "impulsionnelle", false, h(17765, 77000), 320, "systeme")
+        let _ = Catalogue.cataloguer(t, "STARLINK44", "ORG-SPACEX", "faible", false, h(18040, 9000), 320, "systeme")
+        return 2
+    }
+    // Le moteur de criblage (simulé) remet son résultat : le rapprochement CJ-1 au TCA.
+    on criblage(t: Int, distance: Int, pc: Int) {
+        return Orbite.signaler(t, "CJ-1", "AEOLUS", "STARLINK44", tca_simule(), distance, pc, 11000, "systeme")
+    }
+    // 28/08/2019 10 h 02 : pc 1/50 000 (20 000 milliardièmes), 4 000 m.
+    on alerte_28_aout() { return criblage(h(18136, 36120), 4000, 20000) }
+    // 30/08/2019 14 h 02 : pc 1/1 000 (1 000 000 milliardièmes), 150 m.
+    on montee_30_aout() { return criblage(h(18138, 50520), 150, 1000000) }
+    // L'horloge bat toutes les `pas` ms de `de` à `a` inclus ; renvoie "JJ/MM HHhMM fait" par fait.
+    on veiller(de: Int, a: Int, pas: Int) {
+        let faits_v = []
+        let t = de
+        while [loop_bound(1000)] t <= a {
+            for f in Horloge.balayer(t) { faits_v.push("{lisible(t)} {f}") }
+            t = t + pas
+        }
+        return faits_v
+    }
+    // "JJ/MM HHhMM" d'un instant en ms.
+    on lisible(ms: Int) {
+        let j = floor_div(ms, 86400000)
+        let s = idiv(ms - j * 86400000, 1000)
+        let d = format_date(j * 86400)
+        return "{substring(d, 8, 10)}/{substring(d, 5, 7)} {format(\"%02d\", idiv(s, 3600))}h{format(\"%02d\", idiv(s % 3600, 60))}"
+    }
+    // La chronologie du rapprochement, lisible : "JJ/MM HHhMM | qui | quoi".
+    on chronologie() {
+        let lignes_c = []
+        for l in Journal.chercher("CJ-1") {
+            let f = split(l, " | ")
+            lignes_c.push("{lisible(parse_int(f[0]))} | {substring(l, len(f[0]) + 3, len(l))}")
+        }
+        return lignes_c
+    }
+}
+
+cell test RejeuAeolus {
+    rules {
+        let tca = Monde.tca_simule()
+        assert Monde.lisible(tca) == "02/09 12h00"
+        assert Monde.pret() == 2
+        assert Priorites.preavis(Catalogue.propulsion("STARLINK44")) == 259200000
+        assert Priorites.preavis(Catalogue.propulsion("AEOLUS")) == 21600000
+
+        // ── 28/08 10 h 02 : alerte à 1/50 000 — niveau 2, pas encore de coordination.
+        assert Monde.alerte_28_aout() == 2
+        assert Rapprochements.etat("CJ-1") == "alerte"
+        assert Coordination.etat("CJ-1") == "ouverte"
+        assert Coordination.ouvertes() == []
+
+        // ── 30/08 14 h 02 : la pc monte à 1/1 000 — niveau 3, coordination ouverte. À TCA − 69 h 58,
+        // Starlink 44 (faible) ne tient plus ses 72 h de préavis : Aeolus est le seul capable.
+        assert Monde.montee_30_aout() == 3
+        assert Rapprochements.etat("CJ-1") == "en_coordination"
+        assert Coordination.etat("CJ-1") == "proposee"
+        assert Coordination.propose("CJ-1") == "AEOLUS"
+        assert Coordination.echeance("CJ-1") == Monde.h(18138, 52320)
+        assert len(Journal.chercher("AEOLUS s'écarte (seul_capable)")) == 1
+
+        // ── 30/08 14 h 10 : l'ESA accepte. SpaceX ne voit pas les messages (défaut d'astreinte).
+        assert Coordination.repondre(Monde.h(18138, 51000), "CJ-1", "ORG-ESA", "accepte", "", "operateur:ORG-ESA") == "proposee"
+
+        // ── L'horloge bat toutes les 30 min. 15 h 00 : échéance passée — ACCORD TACITE (l'ESA, dont
+        // l'objet s'écarte, a accepté ; SpaceX se tait sans refuser), manquement de SpaceX, escalade.
+        assert Monde.veiller(Monde.h(18138, 52200), Monde.h(18138, 54000), 1800000) == ["30/08 15h00 CJ-1:manquement ORG-SPACEX", "30/08 15h00 CJ-1:accord tacite"]
+        assert Coordination.etat("CJ-1") == "arretee"
+        assert Verrou.designe("CJ-1") == "AEOLUS"
+        assert Verrou.privilegie("CJ-1") == "STARLINK44"
+        assert Verrou.decision("CJ-1") == "DS-CJ-1-1"
+        assert Coordination.reponse("CJ-1", "ORG-SPACEX") == "muette"
+        assert Escalade.echelon("CJ-1", "ORG-SPACEX") == 1
+        assert len(Escalade.manquements_de("ORG-SPACEX")) == 1
+        assert Escalade.manquements_de("ORG-ESA") == []
+        // la décision est arrêtée : ni second arbitrage, ni plan de Starlink 44
+        assert_fails Coordination.arbitrer(Monde.h(18138, 54300), "CJ-1", "STARLINK44", "SpaceX muet", "analyste:ana1", "superviseur:sup1") matching "EtatInvalide"
+        assert_fails Plans.declarer(Monde.h(18138, 55300), "PL-STARLINK44", "STARLINK44", "CJ-1", Monde.h(18139, 36000), 100, "operateur:ORG-SPACEX") matching "Conflit"
+
+        // ── 30/08 15 h 20 : plan d'Aeolus, poussée le 02/09 à 11 h 15. Règle 8 : à 0,5 m/s la pc
+        // résiduelle reste à 1 369 milliardièmes (≈ 1/730 000) — refusé, timide ; à 0,7 m/s,
+        // 699 milliardièmes — approuvé.
+        let t = Monde.h(18138, 55200)
+        assert Plans.declarer(t, "PL-AEOLUS-05", "AEOLUS", "CJ-1", Monde.h(18141, 40500), 500, "operateur:ORG-ESA") == "declare"
+        assert Plans.cribler(t, "PL-AEOLUS-05", 1369, "systeme") == "crible"
+        assert_fails Plans.approuver(t, "PL-AEOLUS-05", "systeme") matching "Timide"
+        assert Plans.annuler(t, "PL-AEOLUS-05", "manœuvre timide (règle 8)", "operateur:ORG-ESA") == "annule"
+        assert Plans.declarer(t, "PL-AEOLUS", "AEOLUS", "CJ-1", Monde.h(18141, 40500), 700, "operateur:ORG-ESA") == "declare"
+        assert Plans.cribler(t, "PL-AEOLUS", 699, "systeme") == "crible"
+        assert Plans.approuver(t, "PL-AEOLUS", "systeme") == "approuve"
+        assert Plans.approuve_pour("CJ-1") == "PL-AEOLUS"
+        assert Plans.etat("PL-AEOLUS-05") == "annule"
+
+        // ── Jusqu'au 02/09 11 h 00 : SpaceX monte aux échelons 2 et 3 puis y reste ; ni reprise,
+        // ni relève (un plan est approuvé) ; la décision tient.
+        assert Monde.veiller(Monde.h(18138, 55800), Monde.h(18141, 39600), 1800000) == ["30/08 15h30 CJ-1:echelon ORG-SPACEX 2", "30/08 16h00 CJ-1:echelon ORG-SPACEX 3"]
+        assert Escalade.echelon("CJ-1", "ORG-SPACEX") == 3
+        assert Verrou.designe("CJ-1") == "AEOLUS"
+        assert Plans.etat("PL-AEOLUS") == "approuve"
+
+        // ── 02/09 : poussée à 11 h 15 min 10 s (TCA − 45 min), confirmée à 11 h 20 ; orbite
+        // observée conforme à 11 h 50 : le rapprochement est résolu, la coordination close.
+        assert Plans.executer(Monde.h(18141, 40800), "PL-AEOLUS", Monde.h(18141, 40510), 700, "operateur:ORG-ESA") == "execute"
+        assert Orbite.verifier(Monde.h(18141, 42600), "PL-AEOLUS", 0, "systeme") == "resolu"
+        assert Plans.etat("PL-AEOLUS") == "verifie"
+        assert Rapprochements.etat("CJ-1") == "resolu"
+        assert Coordination.etat("CJ-1") == "close"
+        assert !Verrou.tenu("CJ-1")
+        assert !Verrou.est_privilegie("STARLINK44")
+        // une journée d'horloge après le TCA : plus rien à balayer
+        assert Monde.veiller(Monde.h(18141, 43200), Monde.h(18142, 43200), 3600000) == []
+
+        // ── La trace : la chronologie du rapprochement, tirée du journal (ajout seul).
+        assert Monde.chronologie() == [
+            "28/08 10h02 | systeme | rapprochement CJ-1 (AEOLUS|STARLINK44) : TCA 1567425600000, 4000 m, pc 20000, niveau 2",
+            "30/08 14h02 | systeme | rapprochement CJ-1 (AEOLUS|STARLINK44) : TCA 1567425600000, 150 m, pc 1000000, niveau 3",
+            "30/08 14h02 | systeme | rapprochement CJ-1 en coordination",
+            "30/08 14h02 | systeme | coordination CJ-1 ouverte : AEOLUS s'écarte (seul_capable), réponse attendue avant 1567175520000",
+            "30/08 14h10 | operateur:ORG-ESA | ORG-ESA accepte que AEOLUS s'écarte sur CJ-1 (tour 1)",
+            "30/08 15h00 | systeme | CJ-1 : accord tacite — ORG-ESA accepte que AEOLUS s'écarte, muet(s) sans refus : ORG-SPACEX",
+            "30/08 15h00 | systeme | verrou CJ-1 posé : décision DS-CJ-1-1, AEOLUS s'écarte, STARLINK44 privilégié, accord tacite",
+            "30/08 15h00 | systeme | CJ-1 arrêtée par accord tacite : AEOLUS s'écarte, décision DS-CJ-1-1",
+            "30/08 15h00 | systeme | manquement : ORG-SPACEX sur CJ-1 (silence) — escalade, échelon 1",
+            "30/08 15h20 | operateur:ORG-ESA | plan PL-AEOLUS-05 déclaré : AEOLUS s'écarte sur CJ-1, poussée à 1567422900000, Δv 500 mm/s",
+            "30/08 15h20 | systeme | plan PL-AEOLUS-05 criblé sur CJ-1 : pc après manœuvre 1369 milliardièmes",
+            "30/08 15h20 | operateur:ORG-ESA | plan PL-AEOLUS-05 annulé sur CJ-1 : manœuvre timide (règle 8)",
+            "30/08 15h20 | operateur:ORG-ESA | plan PL-AEOLUS déclaré : AEOLUS s'écarte sur CJ-1, poussée à 1567422900000, Δv 700 mm/s",
+            "30/08 15h20 | systeme | plan PL-AEOLUS criblé sur CJ-1 : pc après manœuvre 699 milliardièmes",
+            "30/08 15h20 | systeme | plan PL-AEOLUS approuvé : AEOLUS s'écarte sur CJ-1, pc après manœuvre 699",
+            "30/08 15h30 | systeme | escalade ORG-SPACEX sur CJ-1 : échelon 2",
+            "30/08 16h00 | systeme | escalade ORG-SPACEX sur CJ-1 : échelon 3",
+            "02/09 11h20 | operateur:ORG-ESA | plan PL-AEOLUS exécuté sur CJ-1 : poussée à 1567422910000, Δv 700 mm/s",
+            "02/09 11h50 | systeme | rapprochement CJ-1 résolu (manœuvre PL-AEOLUS vérifiée)",
+            "02/09 11h50 | systeme | coordination CJ-1 close",
+            "02/09 11h50 | systeme | verrou CJ-1 clos"
+        ]
+    }
+}

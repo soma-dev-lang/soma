@@ -1,0 +1,87 @@
+// Les règles de barre d'ORBITE (Priorites.qui_manoeuvre, fonction pure) : pour chaque règle, un
+// cas où elle s'applique et un où elle ne s'applique pas.
+use app
+
+cell test ReglesDeBarre {
+    // Un objet en service, opérateur actif. Altitude en km, lancement en ms.
+    on _p(objet: String, propulsion: String, habite: Bool, lance: Int, alt: Int) {
+        return Profil { objet: objet, propulsion: propulsion, habite: habite, en_service: true, operateur_actif: true, lance_le: lance, altitude: alt }
+    }
+    rules {
+        let H = 1567000000000
+        let HEURE = 3600000
+        let TCA = H + 100 * HEURE          // TCA dans 100 h : tous les préavis tiennent
+        let VITE = 11000                    // m/s : trajectoires qui se croisent
+        let LENT = 50                       // m/s : rattrapage
+
+        // Préavis par propulsion.
+        assert Priorites.preavis("impulsionnelle") == 6 * HEURE
+        assert Priorites.preavis("faible") == 72 * HEURE
+        assert Priorites.preavis("aucune") > 1000000 * HEURE
+
+        // ── Sans propulsion, jamais : l'autre s'écarte, même habité.
+        let debris = _p("DEB-1", "aucune", false, 100, 500)
+        let sat = _p("SAT-1", "impulsionnelle", false, 200, 500)
+        let iss = _p("ISS", "impulsionnelle", true, 50, 420)
+        assert Priorites.qui_manoeuvre(H, TCA, VITE, debris, sat) == Verdict { objet: "SAT-1", motif: "seul_capable" }
+        assert Priorites.qui_manoeuvre(H, TCA, VITE, iss, debris) == Verdict { objet: "ISS", motif: "seul_capable" }
+        //    ne s'applique pas : deux objets propulsés, la décision passe aux règles suivantes
+        assert Priorites.qui_manoeuvre(H, TCA, VITE, sat, _p("SAT-2", "impulsionnelle", false, 300, 500)).motif != "seul_capable"
+        //    deux objets sans propulsion : personne
+        assert Priorites.qui_manoeuvre(H, TCA, VITE, debris, _p("DEB-2", "aucune", false, 1, 500)) == Verdict { objet: "", motif: "aucun_capable" }
+
+        // ── Habité, seulement s'il est le seul capable (propriété 3).
+        let starlink = _p("STARLINK", "faible", false, 300, 420)
+        assert Priorites.qui_manoeuvre(H, TCA, VITE, iss, starlink) == Verdict { objet: "STARLINK", motif: "habite_exempte" }
+        assert Priorites.qui_manoeuvre(H, TCA, VITE, iss, sat) == Verdict { objet: "SAT-1", motif: "habite_exempte" }
+        //    ne s'applique pas : l'autre ne tient pas son préavis (TCA dans 10 h, faible : 72 h) — l'habité s'écarte
+        assert Priorites.qui_manoeuvre(H, H + 10 * HEURE, VITE, iss, starlink) == Verdict { objet: "ISS", motif: "seul_capable" }
+
+        // ── Règle 18 : le plus manœuvrant s'écarte (impulsionnelle avant faible).
+        let aeolus = _p("AEOLUS", "impulsionnelle", false, 100, 320)
+        let sl44 = _p("STARLINK44", "faible", false, 900, 320)
+        assert Priorites.qui_manoeuvre(H, TCA, VITE, sl44, aeolus) == Verdict { objet: "AEOLUS", motif: "manoeuvrabilite" }
+        assert Priorites.rang(aeolus) == 3
+        assert Priorites.rang(sl44) == 2
+        assert Priorites.rang(iss) == 1
+        assert Priorites.rang(debris) == 0
+        //    ne s'applique pas : même propulsion, c'est le dernier lancé qui s'écarte
+        assert Priorites.qui_manoeuvre(H, TCA, VITE, aeolus, _p("SAT-9", "impulsionnelle", false, 900, 320)) == Verdict { objet: "SAT-9", motif: "dernier_lance" }
+
+        // ── Préavis : il doit tenir avant le TCA.
+        //    la faible ne tient pas 72 h (TCA dans 70 h) : l'impulsionnelle, seule capable
+        assert Priorites.qui_manoeuvre(H, H + 70 * HEURE, VITE, sl44, aeolus) == Verdict { objet: "AEOLUS", motif: "seul_capable" }
+        //    TCA dans 5 h : même l'impulsionnelle (6 h) ne tient plus — personne
+        assert Priorites.qui_manoeuvre(H, H + 5 * HEURE, VITE, sl44, aeolus) == Verdict { objet: "", motif: "aucun_capable" }
+        //    ne s'applique pas : TCA dans 7 h, l'impulsionnelle tient son préavis
+        assert Priorites.capable(H, H + 7 * HEURE, aeolus)
+        assert !Priorites.capable(H, H + 5 * HEURE, aeolus)
+        assert Priorites.capable(H, H + 72 * HEURE, sl44)
+        assert !Priorites.capable(H, H + 72 * HEURE - 1, sl44)
+
+        // ── Règle 13 : en rattrapage (vitesse relative < 100 m/s), le plus bas s'écarte.
+        let haut = _p("HAUT", "impulsionnelle", false, 900, 560)
+        let bas = _p("BAS", "impulsionnelle", false, 100, 540)
+        assert Priorites.qui_manoeuvre(H, TCA, LENT, haut, bas) == Verdict { objet: "BAS", motif: "rattrapage" }
+        //    ne s'applique pas : trajectoires qui se croisent (11 km/s), le dernier lancé s'écarte
+        assert Priorites.qui_manoeuvre(H, TCA, VITE, haut, bas) == Verdict { objet: "HAUT", motif: "dernier_lance" }
+        //    ne s'applique pas : à 100 m/s exactement ce n'est plus un rattrapage
+        assert Priorites.qui_manoeuvre(H, TCA, 100, haut, bas).motif == "dernier_lance"
+        //    ne s'applique pas entre capacités différentes : la règle 18 passe avant
+        assert Priorites.qui_manoeuvre(H, TCA, LENT, _p("LENTE", "faible", false, 900, 540), haut) == Verdict { objet: "HAUT", motif: "manoeuvrabilite" }
+
+        // ── Règle 15 : entre égaux, le dernier lancé s'écarte.
+        let vieux = _p("VIEUX", "faible", false, 100, 550)
+        let jeune = _p("JEUNE", "faible", false, 200, 550)
+        assert Priorites.qui_manoeuvre(H, TCA, VITE, jeune, vieux) == Verdict { objet: "JEUNE", motif: "dernier_lance" }
+        assert Priorites.qui_manoeuvre(H, TCA, VITE, vieux, jeune) == Verdict { objet: "JEUNE", motif: "dernier_lance" }
+        //    ne s'applique pas : lancés le même jour, l'identifiant le plus grand départage
+        assert Priorites.qui_manoeuvre(H, TCA, VITE, _p("OBJ-7", "faible", false, 100, 550), _p("OBJ-8", "faible", false, 100, 550)) == Verdict { objet: "OBJ-8", motif: "catalogue" }
+
+        // ── Hors service, ou opérateur suspendu : pas capable.
+        let mort = Profil { objet: "MORT", propulsion: "impulsionnelle", habite: false, en_service: false, operateur_actif: true, lance_le: 900, altitude: 500 }
+        let suspendu = Profil { objet: "SUSP", propulsion: "impulsionnelle", habite: false, en_service: true, operateur_actif: false, lance_le: 900, altitude: 500 }
+        assert Priorites.qui_manoeuvre(H, TCA, VITE, mort, sat) == Verdict { objet: "SAT-1", motif: "seul_capable" }
+        assert Priorites.qui_manoeuvre(H, TCA, VITE, sat, suspendu) == Verdict { objet: "SAT-1", motif: "seul_capable" }
+    }
+}

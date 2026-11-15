@@ -1,0 +1,339 @@
+// Le noyau sur des scénarios fictifs : les propriétés 1 à 4 en refus explicites, l'accord tacite,
+// la reprise par ORBITE, l'arbitrage à quatre yeux, la relève (règle 17b), le TCA passé.
+// Chaque `cell test` part d'une mémoire vide.
+use app
+
+// Le banc : deux opérateurs (ORG-A, ORG-B) et leurs objets, un rapprochement CJ-1.
+cell Banc {
+    on heures(n: Int) { return n * 3600000 }
+    // Lundi 1er janvier 2024, 00 h UTC.
+    on t0() { return 1704067200000 }
+    on operateurs() {
+        let _ = Operateurs.inscrire(t0(), "ORG-A", "Opérateur A", "superviseur:sup1")
+        let _ = Operateurs.inscrire(t0(), "ORG-B", "Opérateur B", "superviseur:sup1")
+        return 2
+    }
+    // SAT-A à ORG-A, SAT-B à ORG-B : propulsion, habité, jour de lancement (depuis t0, négatif).
+    on objets(pa: String, ha: Bool, ja: Int, pb: String, hb: Bool, jb: Int) {
+        let _ = operateurs()
+        let _ = Catalogue.cataloguer(t0(), "SAT-A", "ORG-A", pa, ha, t0() + ja * 86400000, 500, "systeme")
+        let _ = Catalogue.cataloguer(t0(), "SAT-B", "ORG-B", pb, hb, t0() + jb * 86400000, 500, "systeme")
+        return 2
+    }
+    // Le moteur de criblage signale CJ-1 au niveau 3 (pc 1/1 000, 150 m), TCA à t0 + 48 h.
+    on alerte() {
+        return Orbite.signaler(t0(), "CJ-1", "SAT-A", "SAT-B", tca_cj1(), 150, 1000000, 11000, "systeme")
+    }
+    on tca_cj1() { return t0() + heures(48) }
+    // Les deux opérateurs acceptent la proposition : la désignation est arrêtée.
+    on accord() {
+        let _ = Coordination.repondre(t0() + 60000, "CJ-1", "ORG-A", "accepte", "", "operateur:ORG-A")
+        return Coordination.repondre(t0() + 120000, "CJ-1", "ORG-B", "accepte", "", "operateur:ORG-B")
+    }
+    // Un plan d'évitement de `objet` (poussée à TCA − 3 h), criblé avec `pc_apres`.
+    on plan(id: String, objet: String, org: String, pc_apres: Int) {
+        let _ = Plans.declarer(t0() + 600000, id, objet, "CJ-1", tca_cj1() - heures(3), 300, "operateur:{org}")
+        return Plans.cribler(t0() + 700000, id, pc_apres, "systeme")
+    }
+}
+
+// ── Propriété 1 : une seule désignation arrêtée, un seul plan approuvé.
+cell test UneSeuleDesignation {
+    rules {
+        let t = Banc.t0()
+        let _ = Banc.objets("impulsionnelle", false, -900, "impulsionnelle", false, -100)
+        assert Banc.alerte() == 3
+        assert Rapprochements.etat("CJ-1") == "en_coordination"
+        assert Coordination.etat("CJ-1") == "proposee"
+        // entre égaux, le dernier lancé s'écarte
+        assert Coordination.propose("CJ-1") == "SAT-B"
+        assert Coordination.echeance("CJ-1") == t + 1800000
+        assert Coordination.repondre(t + 60000, "CJ-1", "ORG-A", "accepte", "", "operateur:ORG-A") == "proposee"
+        assert_fails Coordination.repondre(t + 60000, "CJ-1", "ORG-A", "accepte", "", "operateur:ORG-A") matching "Existe"
+        assert_fails Coordination.repondre(t + 60000, "CJ-1", "ORG-B", "accepte", "", "operateur:ORG-A") matching "Habilitation"
+        assert Coordination.repondre(t + 120000, "CJ-1", "ORG-B", "accepte", "", "operateur:ORG-B") == "arretee"
+        assert Verrou.tenu("CJ-1")
+        assert Verrou.designe("CJ-1") == "SAT-B"
+        assert Verrou.privilegie("CJ-1") == "SAT-A"
+        assert Verrou.decision("CJ-1") == "DS-CJ-1-1"
+        // une seconde désignation, par tous les chemins, est refusée
+        assert_fails Verrou.prendre(t + 180000, "CJ-1", "SAT-A", "forcer") matching "Conflit"
+        assert_fails Coordination.arbitrer(t + 180000, "CJ-1", "SAT-A", "forcer", "analyste:ana1", "superviseur:sup1") matching "EtatInvalide"
+        assert_fails Coordination.repondre(t + 180000, "CJ-1", "ORG-A", "accepte", "", "operateur:ORG-A") matching "EtatInvalide"
+        assert_fails Verrou.lever(t + 180000, "CJ-1", "forcer") matching "EtatInvalide"
+        assert Verrou.designe("CJ-1") == "SAT-B"
+        // le privilégié ne déclare rien pour ce rapprochement (règle 17a)
+        assert_fails Plans.declarer(t + 600000, "PL-A", "SAT-A", "CJ-1", Banc.tca_cj1() - Banc.heures(3), 300, "operateur:ORG-A") matching "Conflit"
+        // deux plans du désigné : un seul est approuvé
+        assert Banc.plan("PL-B1", "SAT-B", "ORG-B", 500) == "crible"
+        assert Banc.plan("PL-B2", "SAT-B", "ORG-B", 400) == "crible"
+        assert Plans.approuver(t + 800000, "PL-B1", "systeme") == "approuve"
+        assert_fails Plans.approuver(t + 800000, "PL-B2", "systeme") matching "Conflit"
+        assert Plans.etat("PL-B2") == "crible"
+        assert Plans.approuve_pour("CJ-1") == "PL-B1"
+        // la coordination ne se rouvre pas sous un plan approuvé : Orbite.rouvrir l'annule d'abord
+        assert_fails Coordination.rouvrir(t + 900000, "CJ-1", "nouvelles données", "analyste:ana1") matching "PlanApprouve"
+        assert Orbite.rouvrir(t + 900000, "CJ-1", "nouvelles données", "analyste:ana1") == "proposee"
+        assert Plans.etat("PL-B1") == "annule"
+        assert !Verrou.tenu("CJ-1")
+        assert Verrou.designe("CJ-1") == ""
+        assert Coordination.etat("CJ-1") == "proposee"
+        // nouvelle pose après rouverture : décision n° 2
+        assert Banc.accord() == "arretee"
+        assert Verrou.decision("CJ-1") == "DS-CJ-1-2"
+        assert Plans.approuver(t + 1100000, "PL-B2", "systeme") == "approuve"
+    }
+}
+
+// ── Propriété 4 : pas d'approbation sans criblage, sans manœuvre franche, à temps, ni pour un
+// opérateur suspendu.
+cell test CriblageEtOperateur {
+    rules {
+        let t = Banc.t0()
+        let _ = Banc.objets("impulsionnelle", false, -900, "impulsionnelle", false, -100)
+        let _ = Banc.alerte()
+        assert Banc.accord() == "arretee"
+        assert Plans.declarer(t + 600000, "PL-1", "SAT-B", "CJ-1", Banc.tca_cj1() - Banc.heures(3), 300, "operateur:ORG-B") == "declare"
+        // sans criblage
+        assert_fails Plans.approuver(t + 650000, "PL-1", "systeme") matching "NonCrible"
+        // règle 8 : 1/200 000 après manœuvre, pas franc
+        assert Plans.cribler(t + 700000, "PL-1", 5000, "systeme") == "crible"
+        assert_fails Plans.approuver(t + 800000, "PL-1", "systeme") matching "Timide"
+        // exactement 1/1 000 000 : pas strictement sous le seuil
+        assert Banc.plan("PL-2", "SAT-B", "ORG-B", 1000) == "crible"
+        assert_fails Plans.approuver(t + 800000, "PL-2", "systeme") matching "Timide"
+        assert Plans.annuler(t + 810000, "PL-1", "timide", "operateur:ORG-B") == "annule"
+        assert Plans.annuler(t + 810000, "PL-2", "timide", "operateur:ORG-B") == "annule"
+        // opérateur suspendu
+        assert Banc.plan("PL-3", "SAT-B", "ORG-B", 999) == "crible"
+        assert Operateurs.suspendre(t + 900000, "ORG-B", "licence retirée", "superviseur:sup1") == "suspendu"
+        assert_fails Plans.approuver(t + 950000, "PL-3", "systeme") matching "Suspendu"
+        assert_fails Operateurs.suspendre(t + 950000, "ORG-B", "x", "analyste:ana1") matching "Habilitation"
+        assert Operateurs.retablir(t + 1000000, "ORG-B", "superviseur:sup1") == "actif"
+        // trop tard : à TCA − 5 h, le préavis de 6 h ne tient plus
+        assert_fails Plans.approuver(Banc.tca_cj1() - Banc.heures(5), "PL-3", "systeme") matching "Delai"
+        // seul le système ou un analyste approuve
+        assert_fails Plans.approuver(t + 1000000, "PL-3", "operateur:ORG-B") matching "Habilitation"
+        assert Plans.approuver(t + 1000000, "PL-3", "analyste:ana1") == "approuve"
+        assert Plans.etat("PL-3") == "approuve"
+        // exécution : Δv à 20 % près, par l'opérateur
+        assert_fails Plans.executer(Banc.tca_cj1() - Banc.heures(2), "PL-3", Banc.tca_cj1() - Banc.heures(3), 400, "operateur:ORG-B") matching "Incoherent"
+        assert Plans.executer(Banc.tca_cj1() - Banc.heures(2), "PL-3", Banc.tca_cj1() - Banc.heures(3), 310, "operateur:ORG-B") == "execute"
+        assert_fails Orbite.verifier(Banc.tca_cj1() - Banc.heures(1), "PL-3", 5000, "systeme") matching "Ecart"
+        assert Orbite.verifier(Banc.tca_cj1() - Banc.heures(1), "PL-3", 40, "systeme") == "resolu"
+        assert Rapprochements.etat("CJ-1") == "resolu"
+        assert Coordination.etat("CJ-1") == "close"
+        assert !Verrou.tenu("CJ-1")
+        assert Coordination.ouvertes() == []
+    }
+}
+
+// ── Propriété 2 : un objet sans propulsion ou hors service n'est jamais désigné ni approuvé.
+cell test SansPropulsion {
+    rules {
+        let t = Banc.t0()
+        let _ = Banc.objets("aucune", false, -900, "impulsionnelle", false, -100)
+        let _ = Banc.alerte()
+        assert Coordination.propose("CJ-1") == "SAT-B"
+        // ORG-B refuse (motif exigé) : arbitrage
+        assert_fails Coordination.repondre(t + 60000, "CJ-1", "ORG-B", "refuse", "", "operateur:ORG-B") matching "MotifRequis"
+        assert Coordination.repondre(t + 60000, "CJ-1", "ORG-B", "refuse", "pas de carburant à perdre", "operateur:ORG-B") == "arbitrage"
+        // l'objet sans propulsion ne peut pas être désigné, même par arbitrage
+        assert_fails Coordination.arbitrer(t + 120000, "CJ-1", "SAT-A", "SAT-B refuse", "analyste:ana1", "superviseur:sup1") matching "NonEligible"
+        assert Coordination.arbitrer(t + 120000, "CJ-1", "SAT-B", "SAT-A sans propulsion", "analyste:ana1", "superviseur:sup1") == "arretee"
+        assert Verrou.designe("CJ-1") == "SAT-B"
+        // le désigné perd sa propulsion après la décision : son plan n'est plus approuvé
+        assert Banc.plan("PL-B", "SAT-B", "ORG-B", 500) == "crible"
+        assert Catalogue.perdre_propulsion(t + 800000, "SAT-B", "operateur:ORG-B") == "inerte"
+        assert Catalogue.propulsion("SAT-B") == "aucune"
+        assert_fails Plans.approuver(t + 900000, "PL-B", "systeme") matching "NonEligible"
+        // rouverture : personne ne peut s'écarter, ORBITE arbitre — et ne peut désigner personne
+        assert Orbite.rouvrir(t + 1000000, "CJ-1", "propulsion de SAT-B perdue", "systeme") == "arbitrage"
+        assert Verrou.designe("CJ-1") == ""
+        assert_fails Coordination.arbitrer(t + 1100000, "CJ-1", "SAT-B", "forcer", "analyste:ana1", "superviseur:sup1") matching "NonEligible"
+        assert_fails Coordination.arbitrer(t + 1100000, "CJ-1", "SAT-A", "forcer", "analyste:ana1", "superviseur:sup1") matching "NonEligible"
+        assert Coordination.etat("CJ-1") == "arbitrage"
+    }
+}
+
+cell test HorsService {
+    rules {
+        let t = Banc.t0()
+        let _ = Banc.objets("impulsionnelle", false, -900, "impulsionnelle", false, -100)
+        assert Catalogue.retirer(t, "SAT-B", "operateur:ORG-B") == "hors_service"
+        assert_fails Catalogue.retirer(t, "SAT-A", "operateur:ORG-B") matching "Habilitation"
+        let _ = Banc.alerte()
+        // SAT-B hors service : SAT-A est le seul capable
+        assert Coordination.propose("CJ-1") == "SAT-A"
+        assert Coordination.repondre(t + 60000, "CJ-1", "ORG-A", "refuse", "nous préférons ne pas bouger", "operateur:ORG-A") == "arbitrage"
+        assert_fails Coordination.arbitrer(t + 120000, "CJ-1", "SAT-B", "forcer", "analyste:ana1", "superviseur:sup1") matching "NonEligible"
+    }
+}
+
+// ── Propriété 3 : un objet habité ne manœuvre que s'il est le seul capable.
+cell test Habite {
+    rules {
+        let t = Banc.t0()
+        let _ = Banc.objets("impulsionnelle", true, -9000, "impulsionnelle", false, -100)
+        let _ = Banc.alerte()
+        assert Coordination.propose("CJ-1") == "SAT-B"
+        assert Coordination.repondre(t + 60000, "CJ-1", "ORG-B", "refuse", "désaccord", "operateur:ORG-B") == "arbitrage"
+        assert_fails Coordination.arbitrer(t + 120000, "CJ-1", "SAT-A", "SAT-B refuse", "analyste:ana1", "superviseur:sup1") matching "NonEligible"
+        // SAT-B perd sa propulsion : l'habité est désormais le seul capable
+        assert Catalogue.perdre_propulsion(t + 130000, "SAT-B", "systeme") == "inerte"
+        assert Coordination.arbitrer(t + 140000, "CJ-1", "SAT-A", "SAT-B sans propulsion", "analyste:ana1", "superviseur:sup1") == "arretee"
+        assert Verrou.designe("CJ-1") == "SAT-A"
+    }
+}
+
+// ── Propriété 5 : l'accord tacite, le manquement et l'escalade du muet.
+cell test AccordTacite {
+    rules {
+        let t = Banc.t0()
+        let _ = Banc.objets("impulsionnelle", false, -900, "impulsionnelle", false, -100)
+        let _ = Banc.alerte()
+        // ORG-B, dont l'objet doit s'écarter, accepte ; ORG-A se tait
+        assert Coordination.repondre(t + 60000, "CJ-1", "ORG-B", "accepte", "", "operateur:ORG-B") == "proposee"
+        // avant l'échéance (t + 30 min), l'horloge ne fait rien
+        assert Horloge.balayer(t + 1200000) == []
+        assert_fails Coordination.constater_silence(t + 1200000, "CJ-1") matching "Delai"
+        // à t + 31 min : accord tacite, manquement d'ORG-A, escalade échelon 1
+        assert Horloge.balayer(t + 1860000) == ["CJ-1:manquement ORG-A", "CJ-1:accord tacite"]
+        assert Coordination.etat("CJ-1") == "arretee"
+        assert Verrou.designe("CJ-1") == "SAT-B"
+        assert Coordination.reponse("CJ-1", "ORG-A") == "muette"
+        assert Escalade.echelon("CJ-1", "ORG-A") == 1
+        assert Escalade.echelon("CJ-1", "ORG-B") == 0
+        assert len(Escalade.manquements_de("ORG-A")) == 1
+        assert len(Journal.chercher("accord tacite")) == 3
+        // échelons 2 puis 3, un toutes les 30 min, pas au-delà
+        assert Horloge.balayer(t + 2400000) == []
+        assert Horloge.balayer(t + 3660000) == ["CJ-1:echelon ORG-A 2"]
+        assert Horloge.balayer(t + 5460000) == ["CJ-1:echelon ORG-A 3"]
+        assert Horloge.balayer(t + 9000000) == []
+        assert Escalade.echelon("CJ-1", "ORG-A") == 3
+        // le temps ne recule pas
+        assert_fails Horloge.balayer(t) matching "Delai"
+        // ORG-A se manifeste : l'escalade s'arrête
+        assert Escalade.acquitter(t + 9100000, "CJ-1", "ORG-A", "operateur:ORG-A") == 3
+        assert Escalade.ouvertes("CJ-1") == []
+    }
+}
+
+// ── Pas d'accord tacite quand c'est l'opérateur du désigné qui se tait ; reprise par ORBITE,
+// arbitrage à quatre yeux.
+cell test RepriseParOrbite {
+    rules {
+        let t = Banc.t0()
+        let _ = Banc.objets("impulsionnelle", false, -900, "impulsionnelle", false, -100)
+        let _ = Banc.alerte()
+        // ORG-A (le privilégié) accepte, ORG-B (le désigné) se tait : pas d'accord tacite
+        assert Coordination.repondre(t + 60000, "CJ-1", "ORG-A", "accepte", "", "operateur:ORG-A") == "proposee"
+        assert Horloge.balayer(t + 1860000) == ["CJ-1:manquement ORG-B"]
+        assert Coordination.etat("CJ-1") == "proposee"
+        assert_fails Coordination.repondre(t + 1900000, "CJ-1", "ORG-B", "accepte", "", "operateur:ORG-B") matching "Delai"
+        // la reprise tombe à TCA − préavis (6 h) − marge (2 h) = t + 40 h
+        assert_fails Coordination.reprendre(t + Banc.heures(39), "CJ-1") matching "Delai"
+        assert Horloge.balayer(t + Banc.heures(39)) == ["CJ-1:echelon ORG-B 2"]
+        assert Horloge.balayer(t + Banc.heures(40)) == ["CJ-1:reprise", "CJ-1:echelon ORG-B 3"]
+        assert Coordination.etat("CJ-1") == "arbitrage"
+        // quatre yeux : un analyste et un superviseur, deux personnes
+        assert_fails Coordination.arbitrer(t + Banc.heures(40), "CJ-1", "SAT-B", "silence", "analyste:ana1", "analyste:ana2") matching "QuatreYeux"
+        assert_fails Coordination.arbitrer(t + Banc.heures(40), "CJ-1", "SAT-B", "silence", "superviseur:sup1", "superviseur:sup2") matching "QuatreYeux"
+        assert_fails Coordination.arbitrer(t + Banc.heures(40), "CJ-1", "SAT-B", "silence", "analyste:jo", "superviseur:jo") matching "QuatreYeux"
+        assert_fails Coordination.arbitrer(t + Banc.heures(40), "CJ-1", "SAT-B", "", "analyste:ana1", "superviseur:sup1") matching "MotifRequis"
+        assert Coordination.arbitrer(t + Banc.heures(40), "CJ-1", "SAT-B", "ORG-B muet", "analyste:ana1", "superviseur:sup1") == "arretee"
+        assert Verrou.designe("CJ-1") == "SAT-B"
+    }
+}
+
+// ── Relève (règle 17b) : le désigné n'a pas de plan approuvé à TCA − préavis(privilégié) − marge.
+cell test Releve {
+    rules {
+        let t = Banc.t0()
+        let tca = Banc.tca_cj1()
+        let _ = Banc.objets("impulsionnelle", false, -900, "impulsionnelle", false, -100)
+        let _ = Banc.alerte()
+        assert Banc.accord() == "arretee"
+        assert Verrou.designe("CJ-1") == "SAT-B"
+        // SAT-B déclare et fait cribler un plan, mais ne le fait jamais approuver
+        assert Banc.plan("PL-B", "SAT-B", "ORG-B", 500) == "crible"
+        // à TCA − 9 h : pas encore de relève
+        assert_fails Coordination.relever(tca - Banc.heures(9), "CJ-1") matching "Delai"
+        assert Horloge.balayer(tca - Banc.heures(9)) == []
+        // à TCA − 8 h = TCA − 6 h (préavis de SAT-A) − 2 h : relève
+        assert Horloge.balayer(tca - Banc.heures(8)) == ["CJ-1:releve SAT-A"]
+        assert Coordination.etat("CJ-1") == "arretee"
+        assert Verrou.designe("CJ-1") == "SAT-A"
+        assert Verrou.privilegie("CJ-1") == "SAT-B"
+        assert Verrou.decision("CJ-1") == "DS-CJ-1-2"
+        assert Escalade.echelon("CJ-1", "ORG-B") == 1
+        assert len(Journal.chercher("relève (règle 17b) — SAT-B sans plan approuvé, SAT-A s'écarte")) == 1
+        // l'ancien désigné est désormais privilégié : son plan n'est plus approuvé (règle 17a)
+        assert_fails Plans.approuver(tca - Banc.heures(8), "PL-B", "systeme") matching "Conflit"
+        // le nouveau désigné dépose et fait approuver le sien
+        assert Plans.declarer(tca - Banc.heures(8), "PL-A", "SAT-A", "CJ-1", tca - Banc.heures(1), 300, "operateur:ORG-A") == "declare"
+        assert Plans.cribler(tca - Banc.heures(8), "PL-A", 200, "systeme") == "crible"
+        assert Plans.approuver(tca - Banc.heures(8), "PL-A", "systeme") == "approuve"
+        // une seconde relève est refusée : un plan est approuvé
+        assert_fails Coordination.relever(tca - Banc.heures(7), "CJ-1") matching "PlanApprouve"
+    }
+}
+
+// ── Pas de relève quand la décision est posée dans la fenêtre : le désigné n'a pas eu sa chance.
+cell test ReleveTardive {
+    rules {
+        let tca = Banc.tca_cj1()
+        let _ = Banc.objets("impulsionnelle", false, -900, "impulsionnelle", false, -100)
+        let _ = Banc.alerte()
+        // une première décision, puis une rouverture tardive (TCA − 7 h 50) : la nouvelle décision
+        // tombe à TCA − 7 h 45, après l'ouverture de la relève (TCA − 8 h)
+        assert Banc.accord() == "arretee"
+        assert Orbite.rouvrir(tca - Banc.heures(8) + 600000, "CJ-1", "nouvelles données", "analyste:ana1") == "proposee"
+        assert Coordination.repondre(tca - Banc.heures(8) + 900000, "CJ-1", "ORG-A", "accepte", "", "operateur:ORG-A") == "proposee"
+        assert Coordination.repondre(tca - Banc.heures(8) + 900000, "CJ-1", "ORG-B", "accepte", "", "operateur:ORG-B") == "arretee"
+        assert_fails Coordination.relever(tca - Banc.heures(7), "CJ-1") matching "Delai"
+        assert Horloge.balayer(tca - Banc.heures(7)) == []
+        assert Verrou.designe("CJ-1") == "SAT-B"
+    }
+}
+
+// ── TCA passé : le rapprochement passe, la coordination et le verrou se closent.
+cell test TcaPasse {
+    rules {
+        let t = Banc.t0()
+        let _ = Banc.objets("impulsionnelle", false, -900, "impulsionnelle", false, -100)
+        let _ = Banc.alerte()
+        assert_fails Rapprochements.passer(t + 1000, "CJ-1") matching "Delai"
+        assert Horloge.balayer(Banc.tca_cj1() + 1000) == ["CJ-1:passe"]
+        assert Rapprochements.etat("CJ-1") == "passe"
+        assert Coordination.etat("CJ-1") == "close"
+        assert Coordination.ouvertes() == []
+        assert_fails Banc.alerte() matching "EtatInvalide"
+    }
+}
+
+// ── Seuils des niveaux, et ce qu'ils ouvrent.
+cell test Niveaux {
+    rules {
+        let t = Banc.t0()
+        assert Rapprochements.niveau_pour(9999, 5000) == 1
+        assert Rapprochements.niveau_pour(10000, 5000) == 2
+        assert Rapprochements.niveau_pour(0, 999) == 2
+        assert Rapprochements.niveau_pour(100000, 5000) == 3
+        assert Rapprochements.niveau_pour(0, 199) == 3
+        let _ = Banc.objets("impulsionnelle", false, -900, "faible", false, -100)
+        assert Orbite.signaler(t, "CJ-1", "SAT-A", "SAT-B", Banc.tca_cj1(), 5000, 100, 11000, "systeme") == 1
+        assert Rapprochements.etat("CJ-1") == "detecte"
+        assert Orbite.signaler(t + 1000, "CJ-1", "SAT-A", "SAT-B", Banc.tca_cj1(), 900, 100, 11000, "systeme") == 2
+        assert Rapprochements.etat("CJ-1") == "alerte"
+        assert Coordination.etat("CJ-1") == "ouverte"
+        assert_fails Orbite.signaler(t + 2000, "CJ-1", "SAT-A", "SAT-C", Banc.tca_cj1(), 900, 100, 11000, "systeme") matching "Incoherent"
+        assert_fails Orbite.signaler(t + 2000, "CJ-1", "SAT-A", "SAT-B", Banc.tca_cj1(), 900, 100, 11000, "analyste:ana1") matching "Habilitation"
+        assert_fails Coordination.ouvrir(t + 2000, "CJ-1", "systeme") matching "EtatInvalide"
+        assert Orbite.signaler(t + 3000, "CJ-1", "SAT-A", "SAT-B", Banc.tca_cj1(), 150, 200000, 11000, "systeme") == 3
+        assert Coordination.etat("CJ-1") == "proposee"
+        // SAT-B (faible) ne tient pas 72 h de préavis avant un TCA à 48 h : SAT-A, seul capable
+        assert Coordination.propose("CJ-1") == "SAT-A"
+    }
+}

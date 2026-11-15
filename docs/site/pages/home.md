@@ -16,6 +16,19 @@ h1: no
 
 The current release is **Soma 3.2.4** ([release notes](/changelog/3.2.4)). It runs on Linux and macOS. Soma is experimental: [status](/status) says what that means.
 
+<style>
+.feat{display:block;margin:1.8rem 0 .4rem;border:1px solid var(--accent);border-radius:12px;padding:1.2rem 1.3rem;background:var(--panel);color:var(--fg)}
+.feat:hover{text-decoration:none;box-shadow:0 0 0 1px var(--accent)}
+.feat .k{font:600 .75rem var(--mono);letter-spacing:.08em;text-transform:uppercase;color:var(--accent)}
+.feat .t{display:block;font-size:1.45rem;line-height:1.2;font-weight:700;letter-spacing:-.015em;margin:.35rem 0 .5rem}
+.feat .d{display:block;color:var(--muted);font-size:.98rem;margin:0 0 .9rem}
+.feat .n{display:flex;flex-wrap:wrap;gap:.5rem 1.4rem;margin:0 0 .9rem}
+.feat .n span{font-size:.85rem;color:var(--muted)}.feat .n b{display:block;font:700 1.25rem var(--mono);color:var(--fg)}
+.feat .n .a b{color:var(--accent)}
+.feat .go{font-weight:600;color:var(--accent)}
+</style>
+<a class="feat" href="/orbite"><span class="k">Case study · Orbite</span><span class="t">Who moves? The protocol fits in 1,923 lines of Soma — its safety rules proven on the real code, in two seconds.</span><span class="d">When two satellites are about to collide, exactly one must move. Orbite settles it with rules borrowed from the sea; <code>soma verify</code> proves its 13 safety rules on the real code, bodies included. Around it, twenty AI agents built the 69,000-line institution. Replayed on the 2019 Aeolus–Starlink near-miss, it decides three days before the closest approach — where ESA had to act alone.</span><span class="n"><span class="a"><b>1,923</b>lines: the protocol</span><span class="a"><b>13 / 13</b>rules proven, bodies included</span><span><b>1.8 s</b>to verify</span><span><b>69,150</b>lines around it, by 20 agents</span><span class="a"><b>−69 h</b>decision in the 2019 replay</span></span><span class="go">Read the case study, then download it and check it yourself →</span></a>
+
 ## One rule, and the proof that it holds
 
 A quota of 100 units per user. The limit is written once, next to the data, as an `invariant`; the handler states its own preconditions with `require`.
@@ -106,12 +119,12 @@ soma verify loans.cell
 soma holes loans.cell
 ```
 
-The guide: [Large programs, skeleton first](/guide/skeleton). Step by step: [lesson 6](/learn/6-a-large-program-skeleton-first). At scale: [Orbite](/orbite), a 69,000-line space traffic coordination system written by twenty agents in parallel, with 97 rules between state machines proven.
+The guide: [Large programs, skeleton first](/guide/skeleton). Step by step: [lesson 6](/learn/6-a-large-program-skeleton-first). At scale: [Orbite](/orbite), a space traffic protocol whose 1,923-line core is proven whole, and the 69,000-line institution twenty agents built around it.
 
 ## Where to start
 
 <div class="grid">
-<div class="card"><h3><a href="/orbite">Orbite: a case study</a></h3><p>Space traffic coordination, 69,000 lines written by 20 agents, skeleton first. What was proven, what the verifier caught.</p></div>
+<div class="card"><h3><a href="/orbite">Orbite: a case study</a></h3><p>Space traffic coordination: a 1,923-line protocol proven whole, and 69,000 lines written by 20 agents around it.</p></div>
 <div class="card"><h3><a href="/learn/">Learn Soma in six lessons</a></h3><p>Each lesson is a program, the commands run on it, and what they printed.</p></div>
 <div class="card"><h3><a href="/guide/language">The language guide</a></h3><p>The whole core language on one page: what <code>soma docs agent</code> prints.</p></div>
 <div class="card"><h3><a href="/reference/">Reference</a> and <a href="/builtins/">builtins</a></h3><p>Every construct, and every builtin with its exact signature.</p></div>

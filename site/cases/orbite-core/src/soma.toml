@@ -1,0 +1,13 @@
+[package]
+name = "orbite-core"
+
+# Règles de précédence (« jamais X sans Y avant »), en plus des règles d'arête écrites dans les
+# cadres de app.cell (`moves a -> b when Autre.etat [via lien]`).
+
+# Propriété 4 : aucun plan approuvé sans criblage de sa trajectoire après manœuvre.
+[verify.before."Plans.approuve"]
+requires = ["Plans.crible"]
+
+# Propriété 5 : aucune désignation arrêtée sans rapprochement passé en coordination (niveau 3).
+[verify.before."Coordination.arretee"]
+requires = ["Rapprochements.en_coordination"]
