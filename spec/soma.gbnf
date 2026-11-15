@@ -37,7 +37,7 @@ frame-clause ::= frame-names | frame-moves
 frame-names ::= ( "reads" | "writes" | "calls" | "emits" ) ws1 frame-path ( ws "," ws frame-path )*
 frame-moves ::= "moves" ws1 ( frame-path ws ":" ws )? frame-edge ( ws "," ws frame-edge )*
 frame-path ::= name ( "." name )?
-frame-edge ::= ( name | "*" ) ws "->" ws ( name | "*" )
+frame-edge ::= ( name | "*" ) ws "->" ws ( name | "*" ) ( ws1 "when" ws1 frame-path ( ws "||" ws frame-path )* ( ws1 "via" ws1 name )? )?
 await-decl ::= "await" ws1 name ws "(" params ")" ( ws "->" ws type )?
 given-decl ::= "given" ws1 name ws ":" ws type ( ws "where" ws braces )?
 # @lexical

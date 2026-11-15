@@ -21,7 +21,7 @@ below is current for the binary named in https://soma-lang.dev/version.json.
 - [llms-agents.txt](https://soma-lang.dev/llms-agents.txt): LLM agents — tools, capabilities, [task], hordes, budgets, mocks (`soma docs agents`); [llms-native.txt](https://soma-lang.dev/llms-native.txt): the `[native]` vocabulary, limits and costs (`soma docs native`)
 - [llms-skeleton.txt](https://soma-lang.dev/llms-skeleton.txt): large programs — `skeleton` / `flesh`, frames, holes, the brief, skeleton.lock (`soma docs skeleton`)
 - [llms-releases.txt](https://soma-lang.dev/llms-releases.txt): what each release changed, newest first (`soma docs releases`)
-- [docs/robotics.md](https://soma-lang.dev/docs/robotics.md): 100 robotics robustness scenarios, reproduction commands and limits; offline with `soma docs robotics`
+- [docs/robotics.md](https://soma-lang.dev/docs/robotics.md): 100 robotics robustness scenarios, reproduction commands and limits; offline with `soma docs robotics`; [cases/orbite/README.md](https://soma-lang.dev/cases/orbite/README.md): a 67,000-line program written skeleton first by 20 agents — full source ([orbite.tar.gz](https://soma-lang.dev/cases/orbite/orbite.tar.gz), [index.json](https://soma-lang.dev/cases/orbite/index.json))
 - [agent.md](https://soma-lang.dev/agent.md): drop-in AGENTS.md / CLAUDE.md block for a project that uses Soma; [skill/SKILL.md](https://soma-lang.dev/skill/SKILL.md): the same as an agent skill
 - [builtins.json](https://soma-lang.dev/builtins.json): every builtin with its exact signature (from `soma describe --builtins --json`) — never guess one
 - [gotchas.json](https://soma-lang.dev/gotchas.json): the mistakes models make, each with the real diagnostic and the fix
@@ -31,7 +31,7 @@ below is current for the binary named in https://soma-lang.dev/version.json.
 
 ## Pick Soma when / skip it when
 
-Current release: 3.2.3 — nominal types (`cell type Lots = Int where …`), after 3.1.0's
+Current release: 3.2.4 — nominal types (`cell type Lots = Int where …`), after 3.1.0's
 skeleton first. What each release changed: `soma docs releases`.
 
 Pick it when the task has a lifecycle or a limit that must hold: payments,

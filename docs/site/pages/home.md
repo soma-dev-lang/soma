@@ -14,7 +14,7 @@ h1: no
 
 <div class="install">curl -fsSL https://soma-lang.dev/install.sh | sh</div>
 
-The current release is **Soma 3.2.3** ([release notes](/changelog/3.2.3)). It runs on Linux and macOS. Soma is experimental: [status](/status) says what that means.
+The current release is **Soma 3.2.4** ([release notes](/changelog/3.2.4)). It runs on Linux and macOS. Soma is experimental: [status](/status) says what that means.
 
 ## One rule, and the proof that it holds
 
@@ -106,11 +106,12 @@ soma verify loans.cell
 soma holes loans.cell
 ```
 
-The guide: [Large programs, skeleton first](/guide/skeleton). Step by step: [lesson 6](/learn/6-a-large-program-skeleton-first).
+The guide: [Large programs, skeleton first](/guide/skeleton). Step by step: [lesson 6](/learn/6-a-large-program-skeleton-first). At scale: [Orbite](/orbite), a 67,000-line space traffic coordination system written by twenty agents in parallel, with 97 rules between state machines proven.
 
 ## Where to start
 
 <div class="grid">
+<div class="card"><h3><a href="/orbite">Orbite: a case study</a></h3><p>Space traffic coordination, 67,000 lines written by 20 agents, skeleton first. What was proven, what the verifier caught.</p></div>
 <div class="card"><h3><a href="/learn/">Learn Soma in six lessons</a></h3><p>Each lesson is a program, the commands run on it, and what they printed.</p></div>
 <div class="card"><h3><a href="/guide/language">The language guide</a></h3><p>The whole core language on one page: what <code>soma docs agent</code> prints.</p></div>
 <div class="card"><h3><a href="/reference/">Reference</a> and <a href="/builtins/">builtins</a></h3><p>Every construct, and every builtin with its exact signature.</p></div>

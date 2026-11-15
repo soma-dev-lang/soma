@@ -156,6 +156,12 @@ struct Flow { normal: Set, returned: Set, broke: Set, /// left by `continue`: th
 struct Engine<'a> {
     cells: Vec<&'a CellDef>,
     machines: Vec<Machine>,
+    /// owners (cell addresses) of the machines left out of this search (the
+    /// cone of influence): their status is unknown, their transitions succeed
+    sliced: HashSet<usize>,
+    /// in a cone: the handlers ("Cell.handler") that may move a kept machine;
+    /// a call of any other is skipped (it cannot change the state followed)
+    prune: Option<HashSet<String>>,
     /// (machine, state) → bit of `seen`
     watched: HashMap<(usize, usize), u32>,
     props: Vec<Property>,
@@ -201,8 +207,11 @@ impl<'a> Engine<'a> {
     /// own, or the program's only one.
     fn machine_of(&self, cell: &CellDef) -> Option<usize> {
         // by identity: an interior cell may bear the name of a top-level one
-        self.machines.iter().position(|m| m.owner == cell as *const CellDef as usize)
-            .or_else(|| (self.machines.len() == 1).then_some(0))
+        let owner = cell as *const CellDef as usize;
+        if self.sliced.contains(&owner) { return None; }
+        // (the program's only machine — not the only one left by the cone)
+        self.machines.iter().position(|m| m.owner == owner)
+            .or_else(|| (self.machines.len() == 1 && self.sliced.is_empty()).then_some(0))
     }
 
     /// `branch`, unless evaluating the condition moved a machine: a status
@@ -469,6 +478,9 @@ impl<'a> Engine<'a> {
     }
 
     fn call(&mut self, cell: &'a CellDef, on: &'a OnSection, args: &[Spanned<Expr>], frame: &Frame<'a>, at: Span, states: Set, entry: &str) -> Set {
+        // a handler that cannot move a machine of this search leaves the state
+        // followed as it was, whether it succeeds or fails
+        if let Some(p) = &self.prune { if !p.contains(&format!("{}.{}", cell.name, on.signal_name)) { return states; } }
         if frame.depth >= 12 {
             self.unsupported.get_or_insert(format!("handler calls nest deeper than 12 (through {}.{}) — recursion is not explored", cell.name, on.signal_name));
             return states;
@@ -817,6 +829,23 @@ impl<'a> Engine<'a> {
                 let (yes, no) = self.branch(&left.node, frame, states);
                 if b == (*op == CmpOp::Eq) { (yes, no) } else { (no, yes) }
             }
+            // `p.error == ()` / `p.error != ()` of a `let p = try { … }`: whether it succeeded
+            Expr::CmpOp { left, op: op @ (CmpOp::Eq | CmpOp::Ne), right }
+                if matches!(&right.node, Expr::Literal(Literal::Unit))
+                && matches!(&left.node, Expr::FieldAccess { target, field } if field == "error" && matches!(&target.node, Expr::Ident(v) if frame.env.get(v).map_or(false, |k| k.starts_with("l:")))) => {
+                let Expr::FieldAccess { target, .. } = &left.node else { unreachable!() };
+                let Expr::Ident(v) = &target.node else { unreachable!() };
+                let key = format!("ok:{}", frame.env[v]);
+                let (mut yes, mut no) = (Set::new(), Set::new());
+                for x in states {
+                    match x.bind.get(&key) {
+                        Some(true) => { yes.insert(x); }
+                        Some(false) => { no.insert(x); }
+                        None => { yes.insert(x.clone()); no.insert(x); }
+                    }
+                }
+                if *op == CmpOp::Eq { (yes, no) } else { (no, yes) }
+            }
             Expr::CmpOp { left, op: op @ (CmpOp::Eq | CmpOp::Ne), right } => {
                 let (read, lit) = match (&left.node, &right.node) {
                     (l, Expr::Literal(Literal::String(s))) => (self.status_of(l, frame), s),
@@ -937,7 +966,14 @@ impl<'a> Engine<'a> {
             match &st.node {
                 Statement::Let { name, value } | Statement::Assign { name, value } => {
                     self.kept_lambda(&value.node);
-                    let mut s = self.expr(value, &local, cur, entry);
+                    // `let p = try { … }`: the states where it succeeded and those where it
+                    // failed (and undid what it did) are told apart — `p.error == ()` reads it
+                    let try_key = format!("ok:l:{}:{}:{}", name, local.uid, st.span.start);
+                    let mut s = if let Expr::Try(inner) = &value.node {
+                        let ok: Set = self.expr(inner, &local, cur.clone(), entry).into_iter().map(|mut x| { x.bind.insert(try_key.clone(), true); x }).collect();
+                        let failed: Set = cur.into_iter().map(|mut x| { x.bind.insert(try_key.clone(), false); x }).collect();
+                        ok.into_iter().chain(failed).collect()
+                    } else { self.expr(value, &local, cur, entry) };
                     let key = match &value.node {
                         Expr::Ident(v) if local.env.contains_key(v) => local.env[v].clone(),
                         Expr::Literal(Literal::String(_) | Literal::Int(_)) => self.key_of(&value.node, value.span, &local),
@@ -947,6 +983,7 @@ impl<'a> Engine<'a> {
                             // a new value: the choice made for the old one ends here
                             let key = format!("l:{}:{}:{}", name, local.uid, st.span.start);
                             s = s.into_iter().map(|mut x| { x.bind.remove(&key); x.bind.remove(&format!("§{}", key)); x }).collect();
+                            if !matches!(&value.node, Expr::Try(_)) { s = s.into_iter().map(|mut x| { x.bind.remove(&format!("ok:{}", key)); x }).collect(); }
                             key
                         }
                     };
@@ -1180,6 +1217,65 @@ pub fn frame_specs(program: &Program) -> Vec<Spec> {
     out
 }
 
+/// The handlers ("Cell.handler") whose run may move a machine owned by one of
+/// `kept` (cell addresses) — directly, through what they call, or by doing what
+/// this reading cannot follow (an emit, a model, a delegate, a call it cannot
+/// resolve). A cone search skips every other handler: it cannot change the
+/// product state followed, and its failing only leaves that state as it was.
+/// Resolution is by name, so homonyms in other cells only widen the set.
+fn touching(cells: &[&CellDef], kept: &HashSet<usize>) -> HashSet<String> {
+    const OPAQUE: &[&str] = &["think", "think_json", "delegate", "horde", "vote", "horde_cancel", "await_approve", "await_signal",
+        "await_sleep", "resume", "deliver", "cancel_wait", "_external_tool", "_std", "approve"];
+    let handlers: HashMap<String, HashSet<String>> = cells.iter().map(|c| (c.name.clone(), c.sections.iter()
+        .filter_map(|s| match &s.node { Section::OnSignal(on) => Some(on.signal_name.clone()), _ => None }).collect())).collect();
+    let builtins = super::names::builtin_names();
+    let mut touch: HashSet<String> = HashSet::new();
+    let mut edges: Vec<(String, Vec<String>)> = Vec::new();
+    for c in cells {
+        let owns = kept.contains(&(*c as *const CellDef as usize));
+        let own: HashSet<String> = handlers.get(&c.name).cloned().unwrap_or_default();
+        for s in &c.sections {
+            let Section::OnSignal(on) = &s.node else { continue };
+            let me = format!("{}.{}", c.name, on.signal_name);
+            let mut direct = false;
+            let mut callees: Vec<String> = Vec::new();
+            super::literals::for_each_expr(&on.body, &mut |e| match e {
+                Expr::FnCall { name, .. } => {
+                    if name == "transition" { if owns { direct = true; } }
+                    else if OPAQUE.contains(&name.as_str()) { direct = true; }
+                    else if own.contains(name) { callees.push(format!("{}.{}", c.name, name)); }
+                    else {
+                        let mut found = false;
+                        for (cn, hs) in &handlers { if hs.contains(name) { callees.push(format!("{}.{}", cn, name)); found = true; } }
+                        // a function value (it may be a handler); not a type or
+                        // variant constructor, not an internal builtin
+                        let lower = name.chars().next().map_or(false, |ch| ch.is_lowercase());
+                        if !found && lower && !builtins.contains(name.as_str()) { direct = true; }
+                    }
+                }
+                Expr::MethodCall { target, method, .. } => {
+                    if method == "transition" { if owns { direct = true; } }
+                    else if let Expr::Ident(t) = &target.node { if handlers.contains_key(t) { callees.push(format!("{}.{}", t, method)); } }
+                }
+                _ => {}
+            });
+            super::literals::for_each_stmt_deep(&on.body, &mut |st| match st {
+                Statement::Emit { .. } => direct = true,
+                Statement::MethodCall { target, method, .. } if handlers.contains_key(target) => callees.push(format!("{}.{}", target, method)),
+                _ => {}
+            });
+            if direct { touch.insert(me.clone()); }
+            edges.push((me, callees));
+        }
+    }
+    loop {
+        let mut changed = false;
+        for (n, cs) in &edges { if !touch.contains(n) && cs.iter().any(|c| touch.contains(c)) { touch.insert(n.clone()); changed = true; } }
+        if !changed { break; }
+    }
+    touch
+}
+
 const OPEN_MARK: &str = "\u{1f}open:";
 
 /// `via` is sound only if the link of an entry never changes: the slot is
@@ -1243,7 +1339,24 @@ fn link_written_once(cells: &[&CellDef], cell: &str, slot: &str) -> Result<(), S
         });
         names.contains(key)
     });
-    if !on.is_some_and(|o| o.params.iter().any(|p| &p.name == key)) || rebound {
+    // or a local bound ONCE, by a `let` at the top of the body, before the guard
+    // (`let id = "AD-{n}"`, an id the handler makes) and never assigned again:
+    // the guard and the write read the same value
+    let local_once = on.is_some_and(|o| {
+        if o.params.iter().any(|p| &p.name == key) { return false; }
+        let mut binders: HashSet<String> = HashSet::new();
+        super::invariants::collect_binders_stmts(&o.body, &mut binders);
+        if binders.contains(key) { return false; }
+        let mut count = 0usize; let mut assigned = false;
+        super::literals::for_each_stmt_deep(&o.body, &mut |st| match st {
+            Statement::Let { name, .. } if name == key => { count += 1; }
+            Statement::Assign { name, .. } if name == key => { assigned = true; }
+            Statement::For { var, .. } if var == key => { assigned = true; }
+            _ => {}
+        });
+        count == 1 && !assigned && o.body.iter().any(|st| matches!(&st.node, Statement::Let { name, .. } if name == key))
+    });
+    if !local_once && (!on.is_some_and(|o| o.params.iter().any(|p| &p.name == key)) || rebound) {
         return Err(format!("{} — `{}` writes it at the key `{}`, which is not one of its parameters left as it came", rule, handler, key));
     }
     // nothing between the guard and the write lets another run in: not a
@@ -1321,6 +1434,21 @@ pub fn check(program: &Program, specs: &[Spec]) -> Vec<super::verify::VerifyResu
             Some(Ok(e)) => Some(e),
             None => None,
         };
+        // first one cone per rule (each as small as the rule); the rules whose cone
+        // falls short of a ✓ — and only they — are then searched together over
+        // every machine. (Per rule: in a large program one rule left open by a
+        // hole sent every other rule of the group to the full product.)
+        let mut tries: VecDeque<(bool, Vec<&Spec>)> = group.iter().map(|s| (true, vec![*s])).collect();
+        let mut kept: Vec<VerifyCheck> = Vec::new();
+        let mut rest: Vec<&Spec> = Vec::new();
+        // what the cone said of a rule it did not prove: shown in place of a
+        // full search that could not be explored (it may be spurious — the
+        // machines outside the cone read as unknown — but it names the run)
+        let mut cone_said: Vec<VerifyCheck> = Vec::new();
+        while let Some((cone, sub)) = tries.pop_front() {
+        let group: Vec<&Spec> = sub;
+        let mut out: Vec<VerifyCheck> = Vec::new();
+        'attempt: {
         let mut machines: Vec<Machine> = Vec::new();
         let mut dropped: Vec<String> = Vec::new();
         for cell in &cells {
@@ -1344,6 +1472,28 @@ pub fn check(program: &Program, specs: &[Spec]) -> Vec<super::verify::VerifyResu
                 }
                 machines.push(Machine { owner: *cell as *const CellDef as usize, cell: cell.name.clone(), name: sm.name.clone(), initial: index(&sm.initial).unwrap_or(0), states, edges });
             }
+        }
+        // CONE OF INFLUENCE: first, only the machines the rules name (plus any
+        // machine whose edges run effects — those may call handlers). The others
+        // are left out: their status reads as unknown (a condition on it goes
+        // both ways) and their transitions succeed. That is MORE behaviours than
+        // the program has — a failing transition aborts the handler (nothing
+        // moves) and a `try` already keeps the state before it — so a ✓ here
+        // holds for the program. Anything short of a ✓ on every rule of the
+        // group: the search is run again over every machine, as before.
+        let mut sliced: HashSet<usize> = HashSet::new();
+        if cone {
+            let named: HashSet<&str> = group.iter()
+                .flat_map(|s| std::iter::once(s.target.as_str()).chain(s.requires.iter().map(|r| r.as_str())))
+                .filter_map(|n| n.split_once('.').map(|(c, _)| c)).collect();
+            let unqualified = group.iter().any(|s| std::iter::once(&s.target).chain(s.requires.iter()).any(|n| !n.contains('.')));
+            if unqualified { break 'attempt; }
+            machines.retain(|m| {
+                let keep = named.contains(m.cell.as_str()) || m.edges.values().any(|e| !e.is_empty());
+                if !keep { sliced.insert(m.owner); }
+                keep
+            });
+            // (a cone that leaves nothing out is the full search for its rule)
         }
         // `Cell.state` → (machine, state)
         let resolve = |name: &str| -> Result<(usize, usize), String> {
@@ -1369,12 +1519,12 @@ pub fn check(program: &Program, specs: &[Spec]) -> Vec<super::verify::VerifyResu
                 // every instance is in its initial state from the start, by
                 // no transition: nothing can come before it, and a ✓ there
                 // would say nothing
-                (Ok(target), Ok(_)) if machines[target.0].initial == target.1 => result.checks.push(VerifyCheck::Fail(format!(
+                (Ok(target), Ok(_)) if machines[target.0].initial == target.1 => out.push(VerifyCheck::Fail(format!(
                     "{}: `{}` is the initial state of {}.{} — an instance is there from the start, by no transition, so nothing can be required before it. State the rule on the state the guarded signal moves to (give that signal an edge to take)",
                     label, s.target, machines[target.0].cell, machines[target.0].name), None)),
                 (Ok(target), Ok(parts)) if s.now => {
                     if parts.iter().any(|(m, _)| *m == target.0) {
-                        result.checks.push(VerifyCheck::Fail(format!("{}: `while` names a state of the target's own machine — its edges already say where it comes from", label), None));
+                        out.push(VerifyCheck::Fail(format!("{}: `while` names a state of the target's own machine — its edges already say where it comes from", label), None));
                     } else {
                         let from = s.from.as_ref().and_then(|f| machines[target.0].states.iter().position(|x| x == f));
                         props.push(Property { label, target, needs: Vec::new(), all: false, now: parts, from });
@@ -1385,17 +1535,17 @@ pub fn check(program: &Program, specs: &[Spec]) -> Vec<super::verify::VerifyResu
                     let from = s.from.as_ref().and_then(|f| machines[target.0].states.iter().position(|x| x == f));
                     props.push(Property { label, target, needs, all: s.all, now: Vec::new(), from });
                 }
-                (Err(e), _) | (_, Err(e)) => result.checks.push(VerifyCheck::Fail(format!("{}: {}", label, e), None)),
+                (Err(e), _) | (_, Err(e)) => out.push(VerifyCheck::Fail(format!("{}: {}", label, e), None)),
             }
         }
-        if props.is_empty() { continue; }
+        if props.is_empty() { break 'attempt; }
         // with a link, the machines a rule requires states of follow the instance
         // the target's instance names; the target's own machine, the target's
         let mut secondary: HashSet<usize> = HashSet::new();
         if let Some((lc, _)) = &link {
             for p in &props {
                 if machines[p.target.0].cell != *lc {
-                    for s in &group { result.checks.push(VerifyCheck::Fail(format!("before {}: `via` names a slot of `{}`, and the target is a state of `{}` — the link is read from the target's cell", s.target, lc, machines[p.target.0].cell), None)); }
+                    for s in &group { out.push(VerifyCheck::Fail(format!("before {}: `via` names a slot of `{}`, and the target is a state of `{}` — the link is read from the target's cell", s.target, lc, machines[p.target.0].cell), None)); }
                     continue;
                 }
                 let required: Vec<usize> = if p.now.is_empty() { watched.iter().filter(|(_, b)| p.needs.contains(b)).map(|((m, _), _)| *m).collect() } else { p.now.iter().map(|(m, _)| *m).collect() };
@@ -1406,8 +1556,8 @@ pub fn check(program: &Program, specs: &[Spec]) -> Vec<super::verify::VerifyResu
             }
         }
         if machines.len() > 12 || machines.iter().any(|m| m.states.len() > 250) || watched.len() > 60 {
-            for p in &props { result.checks.push(VerifyCheck::Fail(format!("{}: not explored — more than 12 machines, 250 states in one machine or 60 required states", p.label), None)); }
-            continue;
+            for p in &props { out.push(VerifyCheck::Fail(format!("{}: not explored — more than 12 machines in this search (the rule's cone, or the whole program), 250 states in one machine or 60 required states", p.label), None)); }
+            break 'attempt;
         }
 
         // entry points: (label, cell, body, parameters, each transition a step of its own?)
@@ -1423,7 +1573,8 @@ pub fn check(program: &Program, specs: &[Spec]) -> Vec<super::verify::VerifyResu
                 }
             }
         }
-        let mut engine = Engine { cells: cells.clone(), machines, watched, props, broken: BTreeMap::new(), unsupported: None, names: super::desugar::program_names(&exposed), link: link.clone(), secondary: secondary.clone(), moves: 0, forced: false, variants: variant_names(&exposed), top: exposed.cells.iter().map(|c| &c.node as *const CellDef as usize).collect(), parent_of: {
+        let prune = if sliced.is_empty() { None } else { Some(touching(&cells, &machines.iter().map(|m| m.owner).collect())) };
+        let mut engine = Engine { cells: cells.clone(), machines, sliced: sliced.clone(), prune, watched, props, broken: BTreeMap::new(), unsupported: None, names: super::desugar::program_names(&exposed), link: link.clone(), secondary: secondary.clone(), moves: 0, forced: false, variants: variant_names(&exposed), top: exposed.cells.iter().map(|c| &c.node as *const CellDef as usize).collect(), parent_of: {
             fn walk(c: &CellDef, out: &mut HashMap<usize, usize>) {
                 for s in &c.sections { if let Section::Interior(i) = &s.node { for x in &i.cells { out.insert(&x.node as *const CellDef as usize, c as *const CellDef as usize); walk(&x.node, out); } } }
             }
@@ -1445,6 +1596,9 @@ pub fn check(program: &Program, specs: &[Spec]) -> Vec<super::verify::VerifyResu
         let mut witness: BTreeMap<usize, (Abs, String)> = BTreeMap::new();
         'search: while let Some(state) = queue.pop_front() {
             for entry in &entries {
+                if !entry.label.contains(" timer #") {
+                    if let Some(p) = &engine.prune { if !p.contains(&entry.label) { continue; } }
+                }
                 let mut env = HashMap::new();
                 for p in entry.params { env.insert(p.name.clone(), format!("e:{}", p.name)); }
                 let frame = Frame { cell: entry.cell, env, uid: String::new(), depth: 0, status: HashMap::new() };
@@ -1472,7 +1626,7 @@ pub fn check(program: &Program, specs: &[Spec]) -> Vec<super::verify::VerifyResu
         let assumed = if dropped.is_empty() { String::new() } else { format!("; edges whose guard cannot hold then, left out: {}", dropped.join(", ")) };
         for (i, p) in engine.props.iter().enumerate() {
             if let Some(why) = &engine.unsupported {
-                result.checks.push(VerifyCheck::Fail(format!("{}: not proven — {}", p.label, why), None));
+                out.push(VerifyCheck::Fail(format!("{}: not proven — {}", p.label, why), None));
             } else if let Some((at, entry)) = witness.get(&i) {
                 // the invocations that lead there, then the one that breaks it
                 let mut steps = vec![format!("{}  ← enters {} here", entry, engine.machines[p.target.0].states[p.target.1])];
@@ -1480,15 +1634,38 @@ pub fn check(program: &Program, specs: &[Spec]) -> Vec<super::verify::VerifyResu
                 while let Some((prev, by)) = from.get(&cur) { steps.push(by.clone()); cur = prev.clone(); }
                 steps.reverse();
                 let show = |a: &Abs| a.cur.iter().enumerate().map(|(m, s)| format!("{}={}", engine.machines[m].cell, engine.machines[m].states[*s as usize])).collect::<Vec<_>>().join(", ");
-                result.checks.push(VerifyCheck::Fail(
+                out.push(VerifyCheck::Fail(
                     format!("{}: a run of the program's handlers enters `{}` without it (from {}){}", p.label, engine.machines[p.target.0].states[p.target.1], show(at), assumed),
                     Some(steps)));
             } else if refused {
-                result.checks.push(VerifyCheck::Fail(format!("{}: refused — more than {} product states over {} (the search is exhaustive or it is not a proof)", p.label, LIMIT, shape), None));
+                out.push(VerifyCheck::Fail(format!("{}: refused — more than {} product states over {} (the search is exhaustive or it is not a proof)", p.label, LIMIT, shape), None));
             } else {
-                result.checks.push(VerifyCheck::Pass(format!("{} — every run of the handlers, {} product state(s) explored over {}{}", p.label, seen.len(), shape, assumed)));
+                out.push(VerifyCheck::Pass(format!("{} — every run of the handlers, {} product state(s) explored over {}{}", p.label, seen.len(), shape, assumed)));
             }
         }
+        }
+        // a cone that proves its rule keeps its verdict; one that does not sends
+        // its rule to the search over every machine
+        let proved = !out.is_empty() && out.iter().all(|c| matches!(c, VerifyCheck::Pass(_)));
+        if cone {
+            if proved { kept.extend(out); } else { rest.extend(group.iter().copied()); cone_said.extend(out.into_iter().filter(|c| !matches!(c, VerifyCheck::Pass(_)))); }
+            if tries.is_empty() && !rest.is_empty() { tries.push_back((false, std::mem::take(&mut rest))); }
+        } else {
+            for c in out {
+                let unexplored = matches!(&c, VerifyCheck::Fail(m, _) if m.contains(": not explored — more than 12 machines"));
+                let label = match &c { VerifyCheck::Fail(m, _) => m.split(": not explored").next().unwrap_or("").to_string(), _ => String::new() };
+                let said = if unexplored { cone_said.iter().position(|k| matches!(k, VerifyCheck::Fail(m, _) if m.starts_with(&label) && !m.contains(": not explored"))) } else { None };
+                match said {
+                    Some(i) => {
+                        let VerifyCheck::Fail(m, steps) = cone_said.remove(i) else { unreachable!() };
+                        kept.push(VerifyCheck::Fail(format!("{} [in the rule's cone; the search over every machine was not explored — this run may be spurious: machines outside the cone read as unknown]", m), steps));
+                    }
+                    None => kept.push(c),
+                }
+            }
+        }
+        }
+        result.checks.extend(kept);
     }
     vec![result]
 }

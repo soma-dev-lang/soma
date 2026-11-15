@@ -149,10 +149,19 @@ fn b2_the_search_is_exhaustive_or_refused() {
     assert!(out.contains("✗ before A.s59 requires B.s59"), "{out}");
 
     // a property that HOLDS on a space past the limit is refused, not passed
-    let dir = project("limit2", "[verify.before.\"A.s59\"]\nrequires = [\"A.s58\"]\n", &src);
+    // (it names the three machines: its cone is the whole product)
+    let dir = project("limit2", "[verify.before.\"A.s59\"]\nrequires = [\"A.s58\", \"B.s58\", \"C.s58\"]\n", &src);
     let (out, code) = soma_in(&dir, &["verify", "app.cell"]);
     assert_ne!(code, 0, "{out}");
     assert!(out.contains("refused — more than 200000 product states"), "{out}");
+
+    // a rule that names one machine is searched over its cone first: B and C
+    // are left out (their status unknown, their moves free) and the 60 states
+    // of A prove it — the full product was past the limit
+    let dir = project("limit3", "[verify.before.\"A.s59\"]\nrequires = [\"A.s58\"]\n", &src);
+    let (out, code) = soma_in(&dir, &["verify", "app.cell"]);
+    assert_eq!(code, 0, "{out}");
+    assert!(out.contains("✓ before A.s59 requires A.s58 — every run of the handlers, 60 product state(s) explored over A.m (60)"), "{out}");
 }
 
 #[test]
@@ -219,4 +228,258 @@ fn b2_treasury_proves_its_headline_property() {
     assert_eq!(code, 0, "{out}");
     assert!(out.contains("✓ requires('paid' only after one of [signed_off]), assuming amount > 500"), "{out}");
     assert!(out.contains("VERIFY OK"), "{out}");
+}
+
+
+// ── 3.2.4: what Orbite (156 machines) found ────────────────────────────
+
+const TRY_TOML: &str = "[package]\nname = \"r\"\n[verify.before.\"Dossier.arretee\"]\nwhile = [\"Verrou.tenu\"]\n";
+
+#[test]
+fn v324_the_success_of_a_try_is_followed_into_its_branch() {
+    // the lock is taken in a `try`, the transition follows only `p.error == ()`
+    let d = project("try_ok", TRY_TOML, r#"// La règle : on n'entre dans Dossier.arretee qu'avec le verrou tenu. Le corps pose le verrou
+// dans un `try` et ne transitionne que si la pose a réussi.
+cell Verrou {
+    memory { n: Map<String, Int> [persistent] }
+    state verrou {
+        initial: libre
+        libre -> tenu
+        tenu -> libre
+    }
+    on poser(r: String, ok: Bool) {
+        require ok else Conflit "refusé"
+        transition(r, "libre", "tenu")
+        return "tenu"
+    }
+    on lever(r: String) {
+        transition(r, "tenu", "libre")
+        return "libre"
+    }
+}
+cell Dossier {
+    memory { n: Map<String, Int> [persistent] }
+    state dossier {
+        initial: accord
+        accord -> arretee
+        arretee -> accord
+    }
+    on arreter(r: String, ok: Bool) {
+        let p = try { Verrou.poser(r, ok) }
+        if p.error == () {
+            transition(r, "accord", "arretee")
+            return "arretee"
+        }
+        return "refuse"
+    }
+    on rouvrir(r: String) {
+        transition(r, "arretee", "accord")
+        let _ = Verrou.lever(r)
+        return "accord"
+    }
+}
+"#);
+    let (out, _) = soma_in(&d, &["verify", "app.cell"]);
+    assert!(out.contains("✓ entering Dossier.arretee") && out.contains("VERIFY OK"), "{out}");
+    // transitioning on FAILURE still breaks the rule
+    let d = project("try_bad", TRY_TOML, r#"// La règle : on n'entre dans Dossier.arretee qu'avec le verrou tenu. Le corps pose le verrou
+// dans un `try` et ne transitionne que si la pose a réussi.
+cell Verrou {
+    memory { n: Map<String, Int> [persistent] }
+    state verrou {
+        initial: libre
+        libre -> tenu
+        tenu -> libre
+    }
+    on poser(r: String, ok: Bool) {
+        require ok else Conflit "refusé"
+        transition(r, "libre", "tenu")
+        return "tenu"
+    }
+    on lever(r: String) {
+        transition(r, "tenu", "libre")
+        return "libre"
+    }
+}
+cell Dossier {
+    memory { n: Map<String, Int> [persistent] }
+    state dossier {
+        initial: accord
+        accord -> arretee
+        arretee -> accord
+    }
+    on arreter(r: String, ok: Bool) {
+        let p = try { Verrou.poser(r, ok) }
+        if p.error != () {
+            transition(r, "accord", "arretee")
+            return "arretee"
+        }
+        return "refuse"
+    }
+    on rouvrir(r: String) {
+        transition(r, "arretee", "accord")
+        let _ = Verrou.lever(r)
+        return "accord"
+    }
+}
+"#);
+    let (out, _) = soma_in(&d, &["verify", "app.cell"]);
+    assert!(out.contains("✗ entering Dossier.arretee"), "{out}");
+}
+
+const LINK_TOML: &str = "[package]\nname = \"r\"\n[verify.before.\"Ordre.execute\"]\nwhile = [\"Compte.ouvert\"]\nvia = \"Ordre.compte_de\"\n";
+
+#[test]
+fn v324_a_link_key_made_once_by_the_signal_is_accepted() {
+    let d = project("lien_ok", LINK_TOML, r#"// Le lien est écrit une fois, à la création, à une clé que le signal fabrique lui-même.
+cell Compte {
+    memory { n: Map<String, Int> [persistent] }
+    state compte {
+        initial: ouvert
+        ouvert -> ferme
+    }
+    on ouvrir(c: String) { n.set(c, 1)  return "ouvert" }
+    on fermer(c: String) { transition(c, "ouvert", "ferme")  return "ferme" }
+    on etat(c: String) { return get_status(c) ?? "ouvert" }
+}
+cell Ordre {
+    memory {
+        compte_de: Map<String, String> [persistent]
+        compteur: Map<String, Int> [persistent]
+    }
+    state ordre {
+        initial: recu
+        recu -> execute
+    }
+    on creer(c: String) {
+        let k = (compteur.get("n") ?? 0) + 1
+        compteur.set("n", k)
+        let id = "OR-{k}"
+        require compte_de.get(id) == () else Existe "ordre {id}"
+        compte_de.set(id, c)
+        return id
+    }
+    on executer(id: String) {
+        let c = compte_de.get(id) ?? ""
+        require (Compte.etat(c)) == "ouvert" else EtatInvalide "compte fermé"
+        transition(id, "recu", "execute")
+        return "execute"
+    }
+}
+"#);
+    let (out, _) = soma_in(&d, &["verify", "app.cell"]);
+    assert!(out.contains("✓ entering Ordre.execute"), "{out}");
+    for (name, src) in [("lien_double", r#"// Le lien est écrit une fois, à la création, à une clé que le signal fabrique lui-même.
+cell Compte {
+    memory { n: Map<String, Int> [persistent] }
+    state compte {
+        initial: ouvert
+        ouvert -> ferme
+    }
+    on ouvrir(c: String) { n.set(c, 1)  return "ouvert" }
+    on fermer(c: String) { transition(c, "ouvert", "ferme")  return "ferme" }
+    on etat(c: String) { return get_status(c) ?? "ouvert" }
+}
+cell Ordre {
+    memory {
+        compte_de: Map<String, String> [persistent]
+        compteur: Map<String, Int> [persistent]
+    }
+    state ordre {
+        initial: recu
+        recu -> execute
+    }
+    on creer(c: String) {
+        let k = (compteur.get("n") ?? 0) + 1
+        compteur.set("n", k)
+        let id = "OR-{k}"
+        require compte_de.get(id) == () else Existe "ordre {id}"
+        compte_de.set(id, c)
+        compte_de.set(id, "autre")
+        return id
+    }
+    on executer(id: String) {
+        let c = compte_de.get(id) ?? ""
+        require (Compte.etat(c)) == "ouvert" else EtatInvalide "compte fermé"
+        transition(id, "recu", "execute")
+        return "execute"
+    }
+}
+"#), ("lien_reaffecte", r#"// Le lien est écrit une fois, à la création, à une clé que le signal fabrique lui-même.
+cell Compte {
+    memory { n: Map<String, Int> [persistent] }
+    state compte {
+        initial: ouvert
+        ouvert -> ferme
+    }
+    on ouvrir(c: String) { n.set(c, 1)  return "ouvert" }
+    on fermer(c: String) { transition(c, "ouvert", "ferme")  return "ferme" }
+    on etat(c: String) { return get_status(c) ?? "ouvert" }
+}
+cell Ordre {
+    memory {
+        compte_de: Map<String, String> [persistent]
+        compteur: Map<String, Int> [persistent]
+    }
+    state ordre {
+        initial: recu
+        recu -> execute
+    }
+    on creer(c: String) {
+        let k = (compteur.get("n") ?? 0) + 1
+        compteur.set("n", k)
+        let id = "OR-{k}"
+        id = "OR-0"
+        require compte_de.get(id) == () else Existe "ordre {id}"
+        compte_de.set(id, c)
+        return id
+    }
+    on executer(id: String) {
+        let c = compte_de.get(id) ?? ""
+        require (Compte.etat(c)) == "ouvert" else EtatInvalide "compte fermé"
+        transition(id, "recu", "execute")
+        return "execute"
+    }
+}
+"#)] {
+        let d = project(name, LINK_TOML, src);
+        let (out, _) = soma_in(&d, &["verify", "app.cell"]);
+        assert!(out.contains("needs the link written once"), "{name}: {out}");
+    }
+}
+
+#[test]
+fn v324_homonymous_handlers_of_two_cells_are_no_recursion() {
+    let d = project("homonymes", "[package]\nname = \"r\"\n", r#"// NE DEVRAIT PAS être signalé : Alertes.ouvrir appelle Escalades.ouvrir, qui
+// n'appelle rien. Aujourd'hui : « recursive call through … a qualified
+// `Cell.ouvrir(…)` », puis « X calls `ouvrir`, which may not terminate » pour
+// chaque appelant de n'importe quel `ouvrir` du programme (19 avertissements
+// dans Rempart, 22 cells).
+cell Escalades {
+    on ouvrir(id: String) { return "manager" }
+}
+cell Alertes {
+    on ouvrir(id: String) { return Escalades.ouvrir(id) }
+}
+cell Confirmations {
+    on ouvrir(id: String) { return "envoyee" }
+    on recevoir(id: String) { return Alertes.ouvrir(id) }
+}
+"#);
+    let (out, _) = soma_in(&d, &["verify", "app.cell"]);
+    assert!(!out.contains("recursive call") && !out.contains("may not terminate"), "{out}");
+    // a real cycle across cells is named as one
+    let d = project("cycle", "[package]\nname = \"r\"\n", r#"// DOIT être signalé : A.f -> B.f -> A.f ne termine jamais.
+// Aujourd'hui signalé, mais seulement grâce à hidden_self_call qui prend
+// tout `X.f(…)` appelé depuis `on f` pour un auto-appel. call_graph ne voit
+// pas le cycle : il indexe par nom nu et filtre `name != on.signal_name`.
+cell A {
+    on f(n: Int) { return B.f(n) }
+}
+cell B {
+    on f(n: Int) { return A.f(n) }
+}
+"#);
+    let (out, _) = soma_in(&d, &["verify", "app.cell"]);
+    assert!(out.contains("mutual recursion A.f → B.f → A.f"), "{out}");
 }

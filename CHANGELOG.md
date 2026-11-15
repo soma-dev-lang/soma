@@ -1,5 +1,16 @@
 # Changelog
 
+## 3.2.4 — 2026-11-15
+
+What a 67,000-line program written by twenty agents ([Orbite](https://soma-lang.dev/orbite)) found in the verifier, and what its reviewers found next. Validation: 1,108 Rust tests, 118 CLI checks, 327 corpus programs, 1,280 numeric comparisons; no verdict changed on the 2,271 tracked programs, nor on the 327 corpus programs under `soma verify`.
+
+- **Rules between machines scale**: each rule is first searched over the machines it names (its cone of influence), and only the rules a cone cannot conclude are searched again over every machine — rule by rule, not a whole group at once. A cone interprets only the handlers that can move one of its machines. On Orbite (156 machines, call chains 23 deep), 97 rules are proven where 3.2.3 reported every one as "not explored — more than 12 machines".
+- **A search too large to explore shows what the cone found**: its counterexample or the reason it stopped, marked as possibly spurious (the machines outside the cone read as unknown), instead of a bare "not explored". This is what named a call cycle across two subsystems in Orbite.
+- **`let p = try { … }` is followed**: the states where the call succeeded and those where it failed (and undid what it did) are told apart, and `if p.error == ()` takes the first. A body that transitioned only after a successful call no longer gets a false counterexample; one that transitions on failure still fails.
+- **A link key the signal makes itself**: `let id = "OR-{k}"`, bound once by a `let` at the top of the writer and never assigned again, is accepted as the key of a `via` link written once, like a parameter. A second write or a reassignment is still refused.
+- **Termination, homonyms**: the call graph is by `Cell.handler`. `Coordination.close` calling `Lock.close` is no longer a "recursive call through a qualified `Cell.close(…)`", and a real cycle across cells is named as one: "mutual recursion A.f → B.f → A.f". (Reported by a reviewer whose `--strict` run failed on a page example.)
+- **Grammar**: `spec/soma.grammar` (and the generated GBNF, grammar.md, tree-sitter grammar) accepts the rule on an edge of a frame, `moves a -> b when Cell.state [|| …] [via slot]`, which the parser had accepted since 3.0.
+
 ## 3.2.3 — 2026-11-14
 
 Validation: 1,105 Rust tests, 118 CLI checks, 327 corpus programs, 1,280 numeric comparisons; no verdict changed on the 2,271 tracked programs.

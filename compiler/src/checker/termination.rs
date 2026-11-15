@@ -82,7 +82,7 @@ pub fn check_cell_termination(cell: &CellDef, program: &Program) -> Vec<Terminat
     for c in super::names::collect_cells(program) {
         if !matches!(c.kind, CellKind::Cell | CellKind::Agent) { continue; }
         for f in check_cell_termination_raw(c, program) {
-            if let TerminationFinding::MayNotTerminate { handler, .. } = f { bad.insert(handler); }
+            if let TerminationFinding::MayNotTerminate { handler, .. } = f { bad.insert(format!("{}.{}", c.name, handler)); }
         }
     }
     if bad.is_empty() { return findings; }
@@ -90,7 +90,7 @@ pub fn check_cell_termination(cell: &CellDef, program: &Program) -> Vec<Terminat
     for f in findings.iter_mut() {
         if let TerminationFinding::Terminates { handler } = f {
             let mut seen: std::collections::HashSet<String> = std::collections::HashSet::new();
-            let mut todo: Vec<String> = graph.get(handler.as_str()).cloned().unwrap_or_default();
+            let mut todo: Vec<String> = graph.get(&format!("{}.{}", cell.name, handler)).cloned().unwrap_or_default();
             // an `every` / `after` block's callees (`after 10ms { spin() }`)
             for s in &cell.sections {
                 if let Section::Every(e) | Section::After(e) = &s.node {
@@ -99,11 +99,18 @@ pub fn check_cell_termination(cell: &CellDef, program: &Program) -> Vec<Terminat
                     for st in &e.body {
                         walk_stmt(&st.node, &mut |x| {
                             let callee = match x {
-                                Expr::FnCall { name, .. } => Some(name),
-                                Expr::MethodCall { target, method, .. } if matches!(&target.node, Expr::Ident(c) if super::names::cellish(c)) => Some(method),
-                                _ => None,
+                                // a bare call: this cell's handler, else any cell's of that name
+                                Expr::FnCall { name, .. } => {
+                                    let own = format!("{}.{}", cell.name, name);
+                                    if graph.contains_key(&own) { vec![own] } else { graph.keys().filter(|k| k.rsplit('.').next() == Some(name.as_str())).cloned().collect() }
+                                }
+                                Expr::MethodCall { target, method, .. } => match &target.node {
+                                    Expr::Ident(c) if super::names::cellish(c) => vec![format!("{}.{}", c, method)],
+                                    _ => vec![],
+                                },
+                                _ => vec![],
                             };
-                            if let Some(n) = callee { if graph.contains_key(n.as_str()) { todo.push(n.clone()); } }
+                            for n in callee { if graph.contains_key(&n) { todo.push(n); } }
                         });
                     }
                 }
@@ -115,7 +122,8 @@ pub fn check_cell_termination(cell: &CellDef, program: &Program) -> Vec<Terminat
                 hit
             }));
             let elsewhere = super::names::collect_cells(program).into_iter().any(|c| c.name != cell.name && c.sections.iter().any(|s| matches!(&s.node, Section::OnSignal(o) if &o.signal_name == handler)));
-            if own_event && elsewhere && bad.contains(handler.as_str()) {
+            let bad_elsewhere = super::names::collect_cells(program).into_iter().any(|c| c.name != cell.name && bad.contains(&format!("{}.{}", c.name, handler)));
+            if own_event && elsewhere && bad_elsewhere {
                 *f = TerminationFinding::MayNotTerminate { handler: handler.clone(), reasons: vec![format!("emits `{}`, and another cell's `on {}` may not terminate", handler, handler)] };
                 continue;
             }
@@ -215,7 +223,7 @@ fn check_cell_termination_raw(cell: &CellDef, program: &Program) -> Vec<Terminat
             }
             // `(n + 1) |> up()` / `A.up2(n + 1)`: a self-call the
             // decreasing-argument rule does not see — not measured
-            if hidden_self_call(&on.body, &on.signal_name) {
+            if hidden_self_call(&on.body, &on.signal_name, &cell.name) {
                 reasons.push(format!(
                     "handler `{}`: recursive call through a pipe or a qualified `Cell.{}(…)` — write it as a plain `{}(n - 1)` call to have it measured",
                     on.signal_name, on.signal_name, on.signal_name
@@ -258,11 +266,17 @@ fn check_cell_termination_raw(cell: &CellDef, program: &Program) -> Vec<Terminat
                     }
                 }
             }
-            if let Some(cycle) = find_cycle(&graph, &on.signal_name) {
+            if let Some(cycle) = find_cycle(&graph, &format!("{}.{}", cell.name, on.signal_name)) {
                 reasons.push(format!(
                     "handler `{}`: mutual recursion {} without a provable decreasing measure",
                     on.signal_name,
-                    cycle.join(" → ")
+                    {
+                        // within this cell the handlers' names say it; across cells, `Cell.handler`
+                        let prefix = format!("{}.", cell.name);
+                        if cycle.iter().all(|n| n.starts_with(&prefix)) {
+                            cycle.iter().map(|n| n[prefix.len()..].to_string()).collect::<Vec<_>>().join(" → ")
+                        } else { cycle.join(" → ") }
+                    }
                 ));
             }
             if reasons.is_empty() {
@@ -282,86 +296,102 @@ fn check_cell_termination_raw(cell: &CellDef, program: &Program) -> Vec<Terminat
     findings
 }
 
-/// handler name → names of the handlers its body calls (self-edges are
-/// excluded: direct recursion is judged by the decreasing-argument rule).
+/// `Cell.handler` → the `Cell.handler`s its body calls. Qualified: two cells'
+/// handlers of the same name are two nodes (`Alertes.ouvrir` calling
+/// `Escalades.ouvrir` is no recursion; `A.f` → `B.f` → `A.f` is one). The
+/// direct self-edge is left out: direct recursion is judged by the
+/// decreasing-argument rule.
 fn call_graph(program: &Program) -> HashMap<String, Vec<String>> {
     // every cell, interior ones included: the handlers of `interior { }`
     // contributed no edge (A.ping → B.pong → A.ping "✓ terminates")
     let all_cells = super::names::collect_cells(program);
-    let mut handlers: Vec<&OnSection> = Vec::new();
+    let mut handlers: Vec<(&CellDef, &OnSection)> = Vec::new();
     for cell in all_cells.iter().copied() {
         if !matches!(cell.kind, CellKind::Cell | CellKind::Agent) {
             continue;
         }
         for section in &cell.sections {
             if let Section::OnSignal(ref on) = section.node {
-                handlers.push(on);
+                handlers.push((cell, on));
             }
         }
     }
-    let names: HashSet<&str> = handlers.iter().map(|h| h.signal_name.as_str()).collect();
+    // handler name → the cells that define it
+    let mut defs: HashMap<&str, Vec<&str>> = HashMap::new();
+    for (c, on) in &handlers { defs.entry(on.signal_name.as_str()).or_default().push(c.name.as_str()); }
     let cells: HashSet<&str> = all_cells.iter().map(|c| c.name.as_str()).collect();
+    // a bare `f(…)`: the caller's own `f` if it has one, else any cell's `f`
+    let bare = |owner: &str, name: &str| -> Vec<String> {
+        match defs.get(name) {
+            Some(v) if v.contains(&owner) => vec![format!("{}.{}", owner, name)],
+            Some(v) => v.iter().map(|c| format!("{}.{}", c, name)).collect(),
+            None => Vec::new(),
+        }
+    };
+    // `Cell.f(…)`: that cell's `f`
+    let qualified = |cell: &str, name: &str| -> Vec<String> {
+        match defs.get(name) { Some(v) if v.contains(&cell) => vec![format!("{}.{}", cell, name)], _ => Vec::new() }
+    };
+    let every = |name: &str| -> Vec<String> { defs.get(name).map(|v| v.iter().map(|c| format!("{}.{}", c, name)).collect()).unwrap_or_default() };
     let mut graph: HashMap<String, Vec<String>> = HashMap::new();
-    for on in handlers {
-        let mut calls = Vec::new();
+    for (cell, on) in &handlers {
+        let me = format!("{}.{}", cell.name, on.signal_name);
+        let mut calls: Vec<String> = Vec::new();
+        let add = |calls: &mut Vec<String>, ts: Vec<String>| for t in ts { if t != me && !calls.contains(&t) { calls.push(t); } };
+        let mut found: Vec<Vec<String>> = Vec::new();
+        // vote / horde targets: a self-reference there is recursion too
+        let mut via: Vec<Vec<String>> = Vec::new();
         for stmt in &on.body {
-            walk_stmt(&stmt.node, &mut |e| {
-                let callee = match e {
-                    Expr::FnCall { name, .. } => Some(name),
-                    // `Other.o1(n)`: a call into another cell
-                    Expr::MethodCall { target, method, .. } if matches!(&target.node, Expr::Ident(c) if cells.contains(c.as_str())) => Some(method),
-                    _ => None,
-                };
-                if let Some(name) = callee {
-                    if names.contains(name.as_str()) && name != &on.signal_name && !calls.contains(name) {
-                        calls.push(name.clone());
-                    }
-                }
+            walk_stmt(&stmt.node, &mut |e| match e {
+                Expr::FnCall { name, .. } => found.push(bare(&cell.name, name)),
+                // `Other.o1(n)`: a call into another cell
+                Expr::MethodCall { target, method, .. } => if let Expr::Ident(c) = &target.node {
+                    if cells.contains(c.as_str()) { found.push(qualified(c, method)); }
+                },
+                _ => {}
             });
         }
         // `Other.o1(n)` as a statement, and `emit ev(…)` (every `on ev` runs;
         // a handler's own event does not re-enter it)
         // inside `try { }` / block lambdas / match arms too (ping and pong
         // emitting each other in `try` verified "✓ terminates")
-        fn stmt_edges(stmts: &[Spanned<Statement>], cells: &HashSet<&str>, out: &mut Vec<String>) {
-            crate::checker::literals::for_each_stmt_deep(stmts, &mut |st| match st {
-                Statement::MethodCall { target, method, .. } if cells.contains(target.as_str()) => out.push(method.clone()),
-                Statement::Emit { signal_name, .. } => out.push(signal_name.clone()),
-                _ => {}
-            });
-        }
-        let mut extra = Vec::new();
-        stmt_edges(&on.body, &cells, &mut extra);
+        crate::checker::literals::for_each_stmt_deep(&on.body, &mut |st| match st {
+            Statement::MethodCall { target, method, .. } if cells.contains(target.as_str()) => found.push(qualified(target, method)),
+            // (its own event: the echo between cells is judged apart, "emits it back")
+            Statement::Emit { signal_name, .. } if signal_name != &on.signal_name => found.push(every(signal_name)),
+            _ => {}
+        });
         // vote(target, …) runs its target; horde(target, …) runs it and its
         // callbacks (a horde started again from on_done ran 20 821 times,
         // "✓ terminates") — a self-reference here is recursion too
-        let mut via: Vec<String> = Vec::new();
         crate::checker::literals::for_each_expr(&on.body, &mut |e| if let Expr::FnCall { name, args } = e {
             if (name == "vote" && args.len() == 3) || name == "horde" {
                 match args.first().map(|a| &a.node) {
-                    Some(Expr::FieldAccess { field, .. }) => via.push(field.clone()),
-                    Some(Expr::Ident(h)) => via.push(h.clone()),
-                    Some(Expr::Literal(Literal::String(t))) => via.push(t.rsplit('.').next().unwrap_or(t).to_string()),
+                    Some(Expr::FieldAccess { target, field }) => match &target.node {
+                        Expr::Ident(c) if cells.contains(c.as_str()) => via.push(qualified(c, field)),
+                        _ => via.push(bare(&cell.name, field)),
+                    },
+                    Some(Expr::Ident(h)) => via.push(bare(&cell.name, h)),
+                    Some(Expr::Literal(Literal::String(t))) => match t.rsplit_once('.') {
+                        Some((c, h)) => via.push(qualified(c, h)),
+                        None => via.push(bare(&cell.name, t)),
+                    },
                     _ => {}
                 }
                 if name == "horde" {
                     if let Some(Expr::FnCall { name: m, args: kv }) = args.get(2).map(|a| &a.node) {
                         if m == "map" { for c in kv.chunks(2) {
                             if let (Expr::Literal(Literal::String(k)), Some(Expr::Literal(Literal::String(h)))) = (&c[0].node, c.get(1).map(|v| &v.node)) {
-                                if matches!(k.as_str(), "on_result" | "apply" | "on_done" | "on_error") { via.push(h.clone()); }
+                                if matches!(k.as_str(), "on_result" | "apply" | "on_done" | "on_error") { via.push(bare(&cell.name, h)); }
                             }
                         } }
                     }
                 }
             }
         });
-        for name in via {
-            if names.contains(name.as_str()) && !calls.contains(&name) { calls.push(name); }
-        }
-        for name in extra {
-            if names.contains(name.as_str()) && name != on.signal_name && !calls.contains(&name) { calls.push(name); }
-        }
-        graph.entry(on.signal_name.clone()).or_default().extend(calls);
+        for ts in found { add(&mut calls, ts); }
+        for ts in via { for t in ts { if !calls.contains(&t) { calls.push(t); } } }
+        graph.entry(me).or_default().extend(calls);
     }
     // think() hands control to the model, which may call any tool it can
     // dispatch there: a tool that calls back the handler is a recursion the
@@ -370,9 +400,9 @@ fn call_graph(program: &Program) -> HashMap<String, Vec<String>> {
     for cell in all_cells.iter().copied() {
         if !matches!(cell.kind, CellKind::Cell | CellKind::Agent) { continue; }
         for fx in crate::checker::effects::check_cell(cell) {
-            let edges = graph.entry(fx.handler.clone()).or_default();
+            let edges = graph.entry(format!("{}.{}", cell.name, fx.handler)).or_default();
             for t in fx.think_tools {
-                if names.contains(t.as_str()) && !edges.contains(&t) { edges.push(t); }
+                for q in bare(&cell.name, &t) { if !edges.contains(&q) { edges.push(q); } }
             }
         }
     }
@@ -1036,12 +1066,15 @@ fn calls_self(stmts: &[Spanned<Statement>], handler: &str) -> bool {
     hit
 }
 
-fn hidden_self_call(stmts: &[Spanned<Statement>], handler: &str) -> bool {
+fn hidden_self_call(stmts: &[Spanned<Statement>], handler: &str, own: &str) -> bool {
     let mut hit = false;
+    // `X.f(…)` from `on f` is a self-call only when X is this cell: another
+    // cell's `f` is another handler (a cycle through it is found by the
+    // qualified call graph)
     crate::checker::literals::for_each_expr(stmts, &mut |e| match e {
         Expr::Pipe { right, .. } if matches!(&right.node, Expr::FnCall { name, .. } if name == handler) => hit = true,
         Expr::MethodCall { target, method, .. } if method == handler
-            && matches!(&target.node, Expr::Ident(c) if c.chars().next().map_or(false, |ch| ch.is_uppercase())) => hit = true,
+            && matches!(&target.node, Expr::Ident(c) if c == own) => hit = true,
         _ => {}
     });
     hit
@@ -1059,7 +1092,7 @@ fn lambda_self_call(body: &[Spanned<Statement>], params: &[Param], cell: &CellDe
             // a handler-level `let` cannot refer to itself, so calling one
             // (`let dbl = x => inc(x)`) is fine.
             {
-                let handler_names: std::collections::HashSet<&str> = graph.keys().map(|s| s.as_str()).collect();
+                let handler_names: std::collections::HashSet<&str> = graph.keys().map(|s| s.rsplit('.').next().unwrap_or(s.as_str())).collect();
                 let builtins = crate::checker::names::builtin_names();
                 fn top_lets(stmts: &[Spanned<Statement>], out: &mut std::collections::HashSet<String>) {
                     for st in stmts {
