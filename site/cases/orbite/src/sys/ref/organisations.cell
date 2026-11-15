@@ -1,0 +1,147 @@
+// ref — organisations participantes (une instance par Org, id = "ORG-<code>").
+// Une organisation est rattachée à UN État de tutelle. L'État d'INSCRIPTION (tutelle_de) est
+// écrit une fois et jamais changé : c'est le lien de la règle d'activation. L'État de tutelle
+// COURANT (tutelles) change par changer_tutelle (changement de contrôle) ; c'est lui que lit
+// etat_de. Elle n'est « active » que si son État est participant ; elle reste « inscrite » tant
+// qu'il ne l'est pas (candidat). Changer de tutelle ne change pas l'État d'immatriculation de
+// ses objets (Convention de 1975 : transfert d'immatriculation distinct, par RefCession).
+// ORBITE elle-même (ORG-ORBITE, genre "orbite") est créée par amorcer, sous l'État du siège.
+
+// Genre d'une organisation. "orbite" : ORBITE elle-même, une seule.
+cell type RefGenreOrg = String where value == "etat" || value == "operateur" || value == "capteur" || value == "orbite"
+
+// État d'une organisation tel que le lit un appelant : "inconnue" si jamais inscrite.
+cell type RefEtatOrg = String where value == "inscrite" || value == "active" || value == "radiee" || value == "inconnue"
+
+skeleton RefOrg {
+    const MAX_ORGS = 20000
+    const MAX_ORGS_PAR_ETAT = 2000
+    const ORG_ORBITE = "ORG-ORBITE"
+    memory {
+        noms: Map<String, String> [persistent]                  // org → raison sociale
+        genres: Map<String, RefGenreOrg> [persistent, consistent, immutable]
+        // org → code de l'État de tutelle. Lien de la règle d'activation : écrit une fois par
+        // inscrire (ou amorcer), jamais effacé.
+        tutelle_de: Map<String, String> [persistent, consistent, immutable]
+        tutelles: Map<String, String> [persistent]              // org → État de tutelle courant
+        // État → org de son autorité nationale (genre "etat") ; une seule par État.
+        autorite_de: Map<String, String> [persistent, consistent, immutable]
+        // État → organisations sous sa tutelle COURANTE (activation à l'admission, listes).
+        sous_tutelle: Map<String, List<String>> [persistent]
+        inscrites_par: Map<String, String> [persistent, consistent, immutable] // org → personne
+        motifs: Map<String, String> [persistent]                // org → motif de radiation
+        invariant noms.size <= 20000
+        invariant genres.size <= 20000
+        invariant tutelle_de.size <= 20000
+        invariant tutelles.size <= 20000
+        invariant autorite_de.size <= 300
+        invariant sous_tutelle.size <= 300
+        invariant len(sous_tutelle) <= 2000                   // organisations par État
+        invariant inscrites_par.size <= 20000
+        invariant motifs.size <= 20000
+    }
+    // Cycle de vie d'une organisation.
+    state organisation {
+        initial: inscrite
+        inscrite -> active    // inscrire / activer_tutelle : État de tutelle participant
+        inscrite -> radiee    // radier : inscription abandonnée
+        active -> radiee      // radier : plus aucun objet, plus membre
+    }
+    face {
+        // Fondation d'ORBITE : appelle RefEtat.fonder (État du siège, admis d'emblée) puis
+        // inscrire(ORG_ORBITE, genre "orbite", par "systeme") qui l'active aussitôt. Seul
+        // inscrire écrit tutelle_de (lien de règle écrit par UN signal). Une seule fois.
+        // Renvoie ORG_ORBITE. Habilitation : par "systeme".
+        // Refus : Existe (déjà amorcé), Habilitation.
+        signal amorcer(h: Horodatage, etat_siege: Etat, nom_etat: String, par: String) -> Org
+            calls RefEtat.fonder, inscrire, ApiAcces.a_le_role
+        // Inscrit une organisation rattachée à son État de tutelle ; l'active dans le même appel
+        // si l'État est participant, sinon elle reste « inscrite » jusqu'à son admission.
+        // Genre "etat" : l'autorité nationale de l'État (une seule par État). Renvoie l'org.
+        // Habilitation : par "superviseur" (ORBITE), quatre yeux valideur "direction"
+        // (ApiAcces.quatre_yeux ET ApiAcces.a_le_role(valideur, "direction")) ; genre "orbite" :
+        // seulement org = ORG_ORBITE, par = valideur = "systeme", depuis amorcer.
+        // Refus : Existe (org déjà inscrite, ou État ayant déjà son autorité), Inconnu (État non
+        // déclaré), HorsBornes (genre "orbite" hors amorçage), Incoherent (id hors forme "ORG-…", nom vide),
+        // Plein, Habilitation, QuatreYeux.
+        signal inscrire(h: Horodatage, org: Org, nom: String, etat: Etat, genre: RefGenreOrg, par: String, valideur: String) -> Org
+            writes noms, genres, tutelle_de, tutelles, autorite_de, sous_tutelle, inscrites_par
+            moves inscrite -> active when RefEtat.participant via tutelle_de
+            calls RefEtat.connu, RefEtat.participant, ApiAcces.a_le_role, ApiAcces.quatre_yeux, RefHistorique.consigner, Journal.noter
+        // À l'admission d'un État (appelé par RefEtat.admettre) : active toutes ses
+        // organisations encore « inscrites ». Renvoie le nombre d'organisations activées.
+        // Habilitation : par "systeme". Refus : Inconnu, Habilitation.
+        signal activer_tutelle(h: Horodatage, etat: Etat, par: String) -> Int
+            ensures result >= 0
+            reads sous_tutelle, tutelle_de
+            moves inscrite -> active when RefEtat.participant via tutelle_de
+            calls RefEtat.participant, ApiAcces.a_le_role, Journal.noter
+        // Radie une organisation. Exige qu'elle ne possède plus aucun objet catalogué non
+        // rentré (RefObjet.objets_de), qu'elle ne soit partie à aucune cession en cours, et,
+        // pour un opérateur, que son statut d'adhésion soit "retire", "exclu" ou "inconnu"
+        // (ApiOperateurs.statut), et qu'aucune personne active n'y soit employée
+        // (ApiAcces.actifs_de == 0). Jamais ORBITE, jamais l'autorité d'un État participant.
+        // Renvoie "radiee".
+        // Habilitation : par "direction" (ORBITE), quatre yeux (ApiAcces.quatre_yeux).
+        // Refus : Inconnu, EtatInvalide (déjà radiée, ORBITE, autorité d'un État participant,
+        // opérateur encore membre), Conflit (objets encore possédés, cession en cours,
+        // personnes encore actives),
+        // MotifRequis, Habilitation, QuatreYeux.
+        signal radier(h: Horodatage, org: Org, motif: String, par: String, valideur: String) -> String
+            reads genres, tutelles
+            writes motifs
+            moves inscrite -> radiee, active -> radiee
+            calls RefObjet.objets_de, RefObjet.etat, RefCession.en_cours_pour_org, RefEtat.participant, ApiOperateurs.statut, ApiAcces.actifs_de, ApiAcces.a_le_role, ApiAcces.quatre_yeux, RefHistorique.consigner, Journal.noter
+        // Changement de contrôle : l'organisation active passe sous la tutelle d'un autre État
+        // participant (l'accord des deux États est instruit par operateurs avant l'appel).
+        // Met à jour tutelles et sous_tutelle (retire de l'ancien, ajoute au nouveau) ; consigné
+        // dans RefHistorique (champ "tutelle"). Renvoie le nouvel État.
+        // Habilitation : par "superviseur" (ORBITE), quatre yeux valideur "direction"
+        // (ApiAcces.quatre_yeux ET ApiAcces.a_le_role(valideur, "direction")).
+        // Refus : Inconnu (org, État), EtatInvalide (org non active, genre "etat" ou "orbite",
+        // nouvel État non participant), Incoherent (même État), Conflit (cession en cours),
+        // Plein (organisations du nouvel État), Habilitation, QuatreYeux.
+        signal changer_tutelle(h: Horodatage, org: Org, etat: Etat, par: String, valideur: String) -> Etat
+            reads genres, organisation
+            writes tutelles, sous_tutelle
+            calls RefEtat.connu, RefEtat.participant, RefCession.en_cours_pour_org, ApiAcces.a_le_role, ApiAcces.quatre_yeux, RefHistorique.consigner, Journal.noter
+        // Change la raison sociale : seulement par RefModification.appliquer (champ "nom"),
+        // qui a vérifié la demande validée à quatre yeux. Renvoie l'ancien nom.
+        // Habilitation : par "systeme". Refus : Inconnu, EtatInvalide (radiée, ou demande
+        // non « validee » : RefModification.etat), Habilitation.
+        signal renommer(h: Horodatage, org: Org, nom: String, demande: String, par: String) -> String
+            writes noms
+            reads organisation
+            calls RefModification.etat, ApiAcces.a_le_role, Journal.noter
+        // Identifiant d'ORBITE elle-même : ORG_ORBITE. Pur.
+        signal orbite() -> Org
+        // Vrai si l'organisation a été inscrite et n'est pas radiée (inscrite ou active).
+        signal existe(org: Org) -> Bool
+            reads noms, organisation
+        // Vrai si l'organisation est « active ».
+        signal est_active(org: Org) -> Bool
+            reads organisation
+        // État : "inscrite", "active", "radiee" ; "inconnue" si jamais inscrite.
+        signal etat(org: Org) -> RefEtatOrg
+            reads noms, organisation
+        // État de tutelle COURANT. Refus : Inconnu.
+        signal etat_de(org: Org) -> Etat
+            reads tutelles
+        // Organisation de l'autorité nationale de l'État. Refus : Inconnu (aucune inscrite).
+        signal org_de_etat(etat: Etat) -> Org
+            reads autorite_de
+        // Organisations inscrites sous la tutelle de l'État (tous genres, radiées comprises) ;
+        // [] si aucune. Sert à operateurs (suspension par l'État) et à conformite (rapports).
+        signal sous_tutelle_de(etat: Etat) -> List<String>
+            reads sous_tutelle
+        // Organisations ACTIVES du genre donné ("" : tous genres), au plus 10 000, dans l'ordre
+        // des identifiants. Refus : HorsBornes (genre hors RefGenreOrg et non vide).
+        signal organisations(genre: String) -> List<String>
+            reads genres, organisation
+        // Genre et nom. Refus : Inconnu.
+        signal genre(org: Org) -> RefGenreOrg
+            reads genres
+        signal nom(org: Org) -> String
+            reads noms
+    }
+}

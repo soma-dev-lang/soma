@@ -1,0 +1,65 @@
+// Corps de la façade ApiManoeuvres : délégation aux cells internes de manoeuvres.
+flesh ApiManoeuvres {
+    on declarer(h, plan, objet, r, motif, debut, dv, par) {
+        require motif == "evitement" || motif == "maintien" || motif == "transfert" || motif == "desorbitation" else Incoherent "motif '{motif}' : evitement, maintien, transfert ou desorbitation"
+        ManPlan.declarer(h, plan, objet, r, ManMotif(motif), debut, dv, par)
+        ManCriblage.cribler(h, plan, "systeme")
+        let s = ManPlan.statuer(h, plan, "systeme")
+        if s == "crible" {
+            ManPlan.approuver(h, plan, "systeme")
+        }
+        return plan
+    }
+
+    on etat(plan) {
+        return to_string(ManPlan.etat(plan))
+    }
+
+    on plan_actif(objet) {
+        return ManPlan.actif(objet)
+    }
+
+    on confirmer_execution(h, plan, reel, dv, par) {
+        return to_string(ManPlan.confirmer(h, plan, reel, dv, par))
+    }
+
+    on annuler(h, plan, motif, par) {
+        // La façade ne porte pas de cause : retrait du propriétaire d'abord, sinon décision d'ORBITE.
+        let r_p = try { ManPlan.annuler(h, plan, "proprietaire", motif, par) }
+        if r_p.error == () { return to_string(r_p.value) }
+        if r_p.kind != "Habilitation" { fail(r_p) }
+        return to_string(ManPlan.annuler(h, plan, "orbite", motif, par))
+    }
+
+    on retirer(h, plan, motif, par) {
+        return to_string(ManPlan.retirer(h, plan, motif, par))
+    }
+
+    on plan_de(r) {
+        return ManPlan.plan_de(r)
+    }
+
+    on objet_de(plan) {
+        return ManPlan.fiche(plan).objet
+    }
+
+    on motif_de(plan) {
+        return to_string(ManPlan.fiche(plan).motif)
+    }
+
+    on plans_de(objet, depuis) {
+        return ManPlan.plans_de(objet, depuis)
+    }
+
+    on plan_couvrant(objet, instant) {
+        return ManPlan.plan_couvrant(objet, instant)
+    }
+
+    on constater_non_annoncee(h, objet, depuis, par) {
+        return ManNonAnnoncee.constater(h, objet, depuis, par)
+    }
+
+    on balayer(h, par) {
+        return ManVeille.balayer(h, par)
+    }
+}

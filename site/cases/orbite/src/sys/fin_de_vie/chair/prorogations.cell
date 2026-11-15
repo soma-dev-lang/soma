@@ -1,0 +1,155 @@
+// fin_de_vie — corps de FdvProrogation (prorogations d'échéance).
+// en_attente : file tournante (balayer en examine la tête et remet en queue les demandes non échues).
+
+flesh FdvProrogation {
+    on demander(h, demande, objet, cause, duree, empreinte, par) {
+        require objet_de.get(demande) == () else Existe "demande {demande} déjà déposée"
+        let prop = ApiRef.proprietaire(objet)
+        require ApiAcces.a_le_role(par, "chef_de_mission") && ApiAcces.agit_pour(par, prop) else Habilitation "{par} : chef de mission de {prop} requis"
+        let fin = FdvFin.etat(objet)
+        require fin != "en_mission" else Inconnu "fin de mission de {objet} non déclarée"
+        require fin == "en_retrait" || fin == "passive" else EtatInvalide "fin de vie de {objet} : {fin}"
+        require duree > 0 && duree <= REPORT_MAX else HorsBornes "report de {duree} ms hors ]0, 1 an]"
+        require empreinte != "" else MotifRequis "dossier justificatif (empreinte) requis"
+        let ech = FdvFin.echeance(objet)
+        require ech - h > PREAVIS else Delai "échéance de {objet} dans moins de 30 jours"
+        for e in objet_de.entries {
+            if e.value == objet {
+                let st_e = get_status(e.key) ?? "demandee"
+                require st_e != "accordee" else Doublon "échéance de {objet} déjà prorogée ({e.key})"
+                require st_e != "demandee" && st_e != "avis_favorable" else Doublon "demande {e.key} déjà en cours pour {objet}"
+            }
+        }
+        require objet_de.size < MAX_DEMANDES && en_attente.size < MAX_DEMANDES else Plein "registre des prorogations plein"
+        objet_de.set(demande, objet)
+        cause_de.set(demande, cause)
+        duree_de.set(demande, duree)
+        empreinte_de.set(demande, empreinte)
+        demandee_le.set(demande, h)
+        en_attente.push(demande)
+        let etat_imm = to_string(ApiRef.etat_immatriculation(objet))
+        if etat_imm != "" {
+            ApiPasserelle.notifier(h, ApiRef.org_de_etat(Etat(etat_imm)), "", "prorogation demandée pour {objet}", "demande {demande} : report de {duree} ms ({cause}), avis attendu avant {ech}", 1)
+        }
+        Journal.noter(h, "fin_de_vie", par, "prorogation {demande} demandée pour {objet} ({cause}, {duree} ms, empreinte {empreinte})")
+        return "demandee"
+    }
+
+    on donner_avis(h, demande, favorable, motif, par) {
+        let objet = objet_de.get(demande)
+        require objet != () else Inconnu "demande {demande} inconnue"
+        let org_etat = ApiRef.org_de_etat(ApiRef.etat_immatriculation(objet))
+        let habilite = (ApiAcces.a_le_role(par, "autorite") || ApiAcces.a_le_role(par, "point_focal")) && ApiAcces.agit_pour(par, org_etat)
+        require habilite else Habilitation "{par} : autorité ou point focal de {org_etat} requis"
+        let st = get_status(demande) ?? "demandee"
+        require st == "demandee" else EtatInvalide "demande {demande} : {st}"
+        avis_par.set(demande, par)
+        if favorable {
+            transition(demande, "demandee", "avis_favorable")
+            Journal.noter(h, "fin_de_vie", par, "prorogation {demande} : avis favorable de l'État")
+            return "avis_favorable"
+        }
+        require motif != "" else MotifRequis "motif de l'avis défavorable requis"
+        motif_de.set(demande, motif)
+        transition(demande, "demandee", "refusee")
+        Journal.noter(h, "fin_de_vie", par, "prorogation {demande} : avis défavorable de l'État ({motif})")
+        return "refusee"
+    }
+
+    on accorder(h, demande, par, valideur) {
+        require ApiAcces.a_le_role(par, "analyste") else Habilitation "{par} : analyste d'ORBITE requis"
+        require ApiAcces.quatre_yeux(par, valideur) && ApiAcces.a_le_role(valideur, "direction") else QuatreYeux "{valideur} : direction distincte de {par} requise"
+        let objet = objet_de.get(demande)
+        require objet != () else Inconnu "demande {demande} inconnue"
+        let st = get_status(demande) ?? "demandee"
+        require st == "avis_favorable" else EtatInvalide "demande {demande} : {st}"
+        let fin = FdvFin.etat(objet)
+        require fin == "en_retrait" || fin == "passive" else EtatInvalide "fin de vie de {objet} : {fin}"
+        decide_par.set(demande, "{par}|{valideur}")
+        transition(demande, "avis_favorable", "accordee")
+        let r = try { FdvFin.proroger(h, objet, demande, duree_de.get(demande) ?? 0) }
+        if r.error != () {
+            if r.kind == "EtatInvalide" {
+                fail("Delai", "échéance de {objet} dépassée : {r.detail}")
+            }
+            fail(r)
+        }
+        let nouvelle = r.value
+        Journal.noter(h, "fin_de_vie", par, "prorogation {demande} accordée ({par}|{valideur}) : nouvelle échéance {nouvelle}")
+        return nouvelle
+    }
+
+    on refuser(h, demande, motif, par) {
+        require ApiAcces.a_le_role(par, "analyste") else Habilitation "{par} : analyste d'ORBITE requis"
+        let objet = objet_de.get(demande)
+        require objet != () else Inconnu "demande {demande} inconnue"
+        let st = get_status(demande) ?? "demandee"
+        require st == "avis_favorable" else EtatInvalide "demande {demande} : {st}"
+        require motif != "" else MotifRequis "motif du refus requis"
+        motif_de.set(demande, motif)
+        decide_par.set(demande, par)
+        transition(demande, "avis_favorable", "refusee")
+        ApiPasserelle.notifier(h, ApiRef.proprietaire(objet), "", "prorogation {demande} refusée", motif, 1)
+        Journal.noter(h, "fin_de_vie", par, "prorogation {demande} refusée : {motif}")
+        return "refusee"
+    }
+
+    on expirer(h, demande, par) {
+        require ApiAcces.a_le_role(par, "systeme") else Habilitation "{par} : systeme requis"
+        let objet = objet_de.get(demande)
+        require objet != () else Inconnu "demande {demande} inconnue"
+        let st = get_status(demande) ?? "demandee"
+        require st == "demandee" || st == "avis_favorable" else EtatInvalide "demande {demande} : {st}"
+        require h >= FdvFin.echeance(objet) else EtatInvalide "échéance de {objet} non atteinte"
+        if st == "demandee" {
+            transition(demande, "demandee", "echue")
+        } else {
+            transition(demande, "avis_favorable", "echue")
+        }
+        Journal.noter(h, "fin_de_vie", par, "prorogation {demande} échue sans décision")
+        return "echue"
+    }
+
+    on balayer(h, n, par) {
+        require n >= 1 && n <= 1000 else HorsBornes "n = {n} hors 1..1000"
+        require ApiAcces.a_le_role(par, "systeme") else Habilitation "{par} : systeme requis"
+        let k = min(n, en_attente.size)
+        let tete_d = []
+        for i in range(0, k) {
+            tete_d.push(en_attente[i])
+        }
+        for i in range(0, k) {
+            en_attente.delete(0)
+        }
+        let echues = 0
+        let garder_d = []
+        for d in tete_d {
+            let st = get_status(d) ?? "demandee"
+            if st == "demandee" || st == "avis_favorable" {
+                let objet = objet_de.get(d)
+                let r_ech = try { FdvFin.echeance(objet) }
+                if r_ech.error == () && h >= r_ech.value {
+                    let r = try { expirer(h, d, "systeme") }
+                    if r.error == () {
+                        echues = echues + 1
+                    } else {
+                        garder_d.push(d)
+                    }
+                } else {
+                    garder_d.push(d)
+                }
+            }
+        }
+        for d in garder_d {
+            en_attente.push(d)
+        }
+        return echues
+    }
+
+    on etat(demande) {
+        if objet_de.get(demande) == () {
+            return "inconnu"
+        }
+        return get_status(demande) ?? "demandee"
+    }
+}

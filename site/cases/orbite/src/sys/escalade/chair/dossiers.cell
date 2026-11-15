@@ -1,0 +1,345 @@
+// Corps de EscDossiers : dossiers d'escalade, échelons, accusé, reprise par ORBITE, clôture.
+flesh EscDossiers {
+    on ouvrir(h, r, op, motif, par) {
+        require ApiAcces.a_le_role(par, "systeme") || ApiAcces.a_le_role(par, "analyste") else Habilitation "{par} n'ouvre pas d'escalade"
+        require motif != "" else MotifRequis "motif requis"
+        let ecj = ApiConjonctions.etat(r)
+        require ecj != "inconnu" else Inconnu "rapprochement inconnu : {r}"
+        require ecj != "resolu" && ecj != "passe" && ecj != "collision" else Ferme "rapprochement {r} clos ({ecj})"
+        require ApiOperateurs.statut(op) != "inconnu" else Inconnu "opérateur inconnu : {op}"
+        let objs = ApiConjonctions.objets(r)
+        let proprio = false
+        for o in objs {
+            if to_string(ApiRef.proprietaire(Objet(o))) == to_string(op) { proprio = true }
+        }
+        require proprio else Inconnu "{op} n'est propriétaire d'aucun objet de {r}"
+        let coord = ApiCoordination.etat(r)
+        if coord != "inconnue" {
+            require contains(ApiCoordination.muets(r), to_string(op)) else NonEligible "{op} n'est pas muet sur {r}"
+        }
+        let cle = "{r}|{op}"
+        require courant.get(cle) == () else Doublon "dossier actif {courant.get(cle)} pour {cle}"
+        require rapprochement_de.size < MAX_DOSSIERS else Plein "plafond de {MAX_DOSSIERS} dossiers atteint"
+        require historique.size < MAX_HISTORIQUE else Plein "historique plein"
+        let n = next_id()
+        let d = "ESC-{n}"
+        let fin = EscBareme.echeance_finale(r)
+        let ent = EscBareme.echelon_initial(h, fin)
+        let del = EscBareme.delai(h, fin, EscEchelon(ent), op)
+        let ech = min(to_int(h) + to_int(del), to_int(fin))
+        rapprochement_de.set(d, to_string(r))
+        operateur_de.set(d, to_string(op))
+        courant.set(cle, d)
+        let deja = dossiers_de.get(r) ?? ""
+        dossiers_de.set(r, if deja == "" { d } else { "{deja},{d}" })
+        ouvert_a.set(d, h)
+        echelon_atteint.set(d, ent)
+        echeance_finale.set(d, fin)
+        echeance_echelon.set(d, Horodatage(ech))
+        if ent == 1 {
+            transition(d, "nouveau", "e1")
+        } else if ent == 2 {
+            transition(d, "nouveau", "e2")
+        } else if ent == 3 {
+            transition(d, "nouveau", "e3")
+        } else {
+            transition(d, "nouveau", "e4")
+        }
+        historique.push("{h} | {d} | nouveau -> e{ent} | {par} | {motif}")
+        let _ = EscVeille.armer(h, r, "systeme")
+        let _ = EscContacts.prevenir(h, d, r, op, EscEchelon(ent), Horodatage(ech))
+        let _ = EscStatistiques.compter(h, op, d, EscEchelon(ent), true)
+        let _ = Journal.noter(h, "escalade", par, "dossier {d} ouvert contre {op} sur {r} a l'echelon {ent} (echeance finale {fin}) : {motif}")
+        return ent
+    }
+    on monter(h, dossier, motif, par) {
+        require ApiAcces.a_le_role(par, "systeme") || ApiAcces.a_le_role(par, "analyste") else Habilitation "{par} ne fait pas monter d'escalade"
+        require motif != "" else MotifRequis "motif requis"
+        let r = rapprochement_de.get(dossier)
+        require r != () else Inconnu "dossier inconnu : {dossier}"
+        let op = Org(operateur_de.get(dossier) ?? "")
+        let st = get_status(dossier) ?? "nouveau"
+        require st == "e1" || st == "e2" || st == "e3" else EtatInvalide "dossier {dossier} en {st} : ne monte pas"
+        let ne = if st == "e1" { 2 } else if st == "e2" { 3 } else { 4 }
+        let fin = echeance_finale.get(dossier) ?? h
+        let del = EscBareme.delai(h, fin, EscEchelon(ne), op)
+        let ech = min(to_int(h) + to_int(del), to_int(fin))
+        if st == "e1" {
+            transition(dossier, "e1", "e2")
+        } else if st == "e2" {
+            transition(dossier, "e2", "e3")
+        } else {
+            transition(dossier, "e3", "e4")
+        }
+        echelon_atteint.set(dossier, ne)
+        echeance_echelon.set(dossier, Horodatage(ech))
+        historique.push("{h} | {dossier} | {st} -> e{ne} | {par} | {motif}")
+        let _ = EscContacts.prevenir(h, dossier, Rapprochement(r), op, EscEchelon(ne), Horodatage(ech))
+        let _ = EscStatistiques.compter(h, op, dossier, EscEchelon(ne), false)
+        let _ = Journal.noter(h, "escalade", par, "dossier {dossier} monte a l'echelon {ne} : {motif}")
+        return ne
+    }
+    on accuser(h, r, op, par) {
+        let cle = "{r}|{op}"
+        let d = courant.get(cle)
+        require d != () else Inconnu "aucun dossier actif pour {cle}"
+        let pour_op = ApiAcces.agit_pour(par, op)
+        let pour_etat = false
+        if !pour_op && ApiAcces.a_le_role(par, "point_focal") {
+            let org_e = ApiRef.org_de_etat(ApiRef.etat_de(op))
+            pour_etat = ApiAcces.agit_pour(par, org_e)
+        }
+        require pour_op || pour_etat else Habilitation "{par} n'accuse pas pour {op}"
+        let st = get_status(d) ?? "nouveau"
+        require st == "e1" || st == "e2" || st == "e3" || st == "e4" else EtatInvalide "dossier {d} en {st}"
+        let repondu = _a_repondu(to_string(r), to_string(op))
+        if accuse.get(d) == () { accuse.set(d, "{h} | {par}") }
+        let _ = EscRelances.arreter(h, d)
+        let ouv = to_int(ouvert_a.get(d) ?? h)
+        let _ = EscStatistiques.compter_accuse(h, op, Duree(max(0, to_int(h) - ouv)))
+        let cible = if repondu { "close" } else { "accusee" }
+        if repondu {
+            if st == "e1" { transition(d, "e1", "close") } else if st == "e2" { transition(d, "e2", "close") } else if st == "e3" { transition(d, "e3", "close") } else { transition(d, "e4", "close") }
+            courant.delete(cle)
+            cloture.set(d, "{h} | {par} | repondu | accuse apres reponse")
+        } else {
+            if st == "e1" { transition(d, "e1", "accusee") } else if st == "e2" { transition(d, "e2", "accusee") } else if st == "e3" { transition(d, "e3", "accusee") } else { transition(d, "e4", "accusee") }
+        }
+        historique.push("{h} | {d} | {st} -> {cible} | {par} | accuse")
+        let _ = Journal.noter(h, "escalade", par, "dossier {d} accuse : {cible}")
+        return cible
+    }
+    on reprendre(h, dossier, par) {
+        require ApiAcces.a_le_role(par, "systeme") || ApiAcces.a_le_role(par, "analyste") else Habilitation "{par} ne prononce pas de reprise"
+        let r0 = rapprochement_de.get(dossier)
+        require r0 != () else Inconnu "dossier inconnu : {dossier}"
+        let r = Rapprochement(r0)
+        let op = Org(operateur_de.get(dossier) ?? "")
+        let st = get_status(dossier) ?? "nouveau"
+        require st == "e1" || st == "e2" || st == "e3" || st == "e4" || st == "accusee" else EtatInvalide "dossier {dossier} en {st}"
+        let ecj = ApiConjonctions.etat(r)
+        require ecj == "alerte" || ecj == "en_coordination" else EtatInvalide "rapprochement {r} ni en alerte ni en coordination ({ecj})"
+        let fin = echeance_finale.get(dossier) ?? h
+        require to_int(h) >= to_int(fin) else Delai "échéance finale {fin} pas atteinte"
+        if st == "e1" { transition(dossier, "e1", "reprise") } else if st == "e2" { transition(dossier, "e2", "reprise") } else if st == "e3" { transition(dossier, "e3", "reprise") } else if st == "e4" { transition(dossier, "e4", "reprise") } else { transition(dossier, "accusee", "reprise") }
+        historique.push("{h} | {dossier} | {st} -> reprise | {par} | echeance finale {fin} atteinte")
+        let _ = EscRelances.arreter(h, dossier)
+        let notif = try { ApiPasserelle.notifier(h, ApiRef.orbite(), r, "reprise {r}", "arbitrer {r} : {op} silencieux, echeance finale {fin} atteinte (dossier {dossier})", 3) }
+        if notif.error != () {
+            let _ = Journal.noter(h, "escalade", par, "notification de reprise {dossier} refusee : {notif.kind}")
+        }
+        let gel = try { ApiResponsabilite.geler(h, dossier, "reprise de l'escalade {dossier} sur {r}", "systeme") }
+        if gel.error != () {
+            let _ = Journal.noter(h, "escalade", par, "gel de {dossier} refuse : {gel.kind}")
+        }
+        let _ = EscDiplomatie.preparer(h, dossier, op, "systeme")
+        let _ = EscPriseEnCharge.ouvrir_prise(h, dossier, r, fin, "systeme")
+        let _ = EscStatistiques.compter_reprise(h, op, dossier)
+        let _ = Journal.noter(h, "escalade", par, "dossier {dossier} : reprise par ORBITE sur {r}")
+        return "reprise"
+    }
+    on clore(h, dossier, motif_cloture, motif, par) {
+        if motif_cloture == "erreur" {
+            require ApiAcces.a_le_role(par, "superviseur") else Habilitation "{par} : clôture pour erreur réservée au superviseur"
+        } else {
+            require ApiAcces.a_le_role(par, "systeme") || ApiAcces.a_le_role(par, "analyste") else Habilitation "{par} ne clôt pas d'escalade"
+        }
+        require motif != "" else MotifRequis "motif requis"
+        let r0 = rapprochement_de.get(dossier)
+        require r0 != () else Inconnu "dossier inconnu : {dossier}"
+        let r = Rapprochement(r0)
+        let op = operateur_de.get(dossier) ?? ""
+        let st = get_status(dossier) ?? "nouveau"
+        if st == "reprise" {
+            require motif_cloture == "decision_arretee" || motif_cloture == "erreur" else EtatInvalide "dossier en reprise : seule la décision arrêtée le clôt"
+            require EscVeille.couverte(r) else Insuffisant "décision non arrêtée sur {r}"
+            transition(dossier, "reprise", "close")
+        } else {
+            require st == "e1" || st == "e2" || st == "e3" || st == "e4" || st == "accusee" else EtatInvalide "dossier {dossier} en {st}"
+            require motif_cloture == "repondu" || motif_cloture == "decision_arretee" || motif_cloture == "erreur" else EtatInvalide "motif {motif_cloture} : voir caduquer"
+            if motif_cloture != "erreur" {
+                require _a_repondu(to_string(r), op) else Insuffisant "{op} n'a pas répondu sur {r}"
+            }
+            if st == "e1" { transition(dossier, "e1", "close") } else if st == "e2" { transition(dossier, "e2", "close") } else if st == "e3" { transition(dossier, "e3", "close") } else if st == "e4" { transition(dossier, "e4", "close") } else { transition(dossier, "accusee", "close") }
+        }
+        courant.delete("{r}|{op}")
+        cloture.set(dossier, "{h} | {par} | {motif_cloture} | {motif}")
+        historique.push("{h} | {dossier} | {st} -> close | {par} | {motif_cloture} : {motif}")
+        let _ = EscRelances.arreter(h, dossier)
+        let _ = Journal.noter(h, "escalade", par, "dossier {dossier} clos ({motif_cloture}) : {motif}")
+        return "close"
+    }
+    on caduquer(h, dossier, par) {
+        require ApiAcces.a_le_role(par, "systeme") else Habilitation "{par} : caducité réservée au système"
+        let r0 = rapprochement_de.get(dossier)
+        require r0 != () else Inconnu "dossier inconnu : {dossier}"
+        let r = Rapprochement(r0)
+        let op = operateur_de.get(dossier) ?? ""
+        let st = get_status(dossier) ?? "nouveau"
+        require st == "e1" || st == "e2" || st == "e3" || st == "e4" || st == "accusee" || st == "reprise" else EtatInvalide "dossier {dossier} en {st}"
+        let ecj = ApiConjonctions.etat(r)
+        let clos = ecj == "resolu" || ecj == "passe" || ecj == "collision" || ecj == "inconnu"
+        let retombe = ecj == "detecte" || ecj == "suivi"
+        let passe = to_int(h) >= to_int(ApiConjonctions.tca(r))
+        require clos || retombe || passe else Insuffisant "TCA à venir et {r} en {ecj}"
+        let motif_c = if passe && !clos { "tca_passe" } else { "rapprochement_clos" }
+        if st == "reprise" {
+            let c = try { ApiConformite.constater(h, Org(op), "reprise_sans_decision", 3, dossier, "systeme") }
+            if c.error != () {
+                let _ = Journal.noter(h, "escalade", par, "constat de reprise sans decision {dossier} refuse : {c.kind}")
+            }
+        }
+        if st == "e1" { transition(dossier, "e1", "caduque") } else if st == "e2" { transition(dossier, "e2", "caduque") } else if st == "e3" { transition(dossier, "e3", "caduque") } else if st == "e4" { transition(dossier, "e4", "caduque") } else if st == "accusee" { transition(dossier, "accusee", "caduque") } else { transition(dossier, "reprise", "caduque") }
+        courant.delete("{r}|{op}")
+        cloture.set(dossier, "{h} | {par} | {motif_c} | {ecj}")
+        historique.push("{h} | {dossier} | {st} -> caduque | {par} | {motif_c}")
+        let _ = EscRelances.arreter(h, dossier)
+        let _ = Journal.noter(h, "escalade", par, "dossier {dossier} caduc ({motif_c}, {ecj})")
+        return "caduque"
+    }
+    on recaler(h, dossier, par) {
+        require ApiAcces.a_le_role(par, "systeme") || ApiAcces.a_le_role(par, "analyste") else Habilitation "{par} ne recale pas d'escalade"
+        let r0 = rapprochement_de.get(dossier)
+        require r0 != () else Inconnu "dossier inconnu : {dossier}"
+        let st = get_status(dossier) ?? "nouveau"
+        require st == "e1" || st == "e2" || st == "e3" || st == "e4" || st == "accusee" || st == "reprise" else EtatInvalide "dossier {dossier} en {st}"
+        let ancienne = to_int(echeance_finale.get(dossier) ?? 0)
+        let nf = min(ancienne, to_int(EscBareme.echeance_finale(Rapprochement(r0))))
+        if nf < ancienne {
+            let ee = min(to_int(echeance_echelon.get(dossier) ?? 0), nf)
+            echeance_echelon.set(dossier, Horodatage(ee))
+            echeance_finale.set(dossier, Horodatage(nf))
+            historique.push("{h} | {dossier} | {st} -> {st} | {par} | recale : echeance finale {ancienne} -> {nf}")
+            let _ = Journal.noter(h, "escalade", par, "dossier {dossier} recale : echeance finale {nf}")
+        }
+        return Horodatage(nf)
+    }
+    on balayer(h) {
+        let changes = 0
+        let cles = courant.keys
+        for cle in cles {
+            let d = courant.get(cle) ?? ""
+            if d != "" {
+                let morceaux = split(cle, "|")
+                let r = Rapprochement(morceaux[0])
+                let op = morceaux[1]
+                let _ = try { EscDossiers.recaler(h, d, "systeme") }
+                let st = get_status(d) ?? "nouveau"
+                let ecj_t = try { ApiConjonctions.etat(r) }
+                let ecj = if ecj_t.error == () { ecj_t.value } else { "inconnu" }
+                let tca_t = try { ApiConjonctions.tca(r) }
+                let tca = if tca_t.error == () { to_int(tca_t.value) } else { 0 }
+                let fini = ecj != "alerte" && ecj != "en_coordination"
+                let fait = false
+                if fini || to_int(h) >= tca {
+                    let c = try { EscDossiers.caduquer(h, d, "systeme") }
+                    fait = c.error == ()
+                } else if st != "reprise" && to_int(h) >= to_int(echeance_finale.get(d) ?? h) {
+                    let c = try { EscDossiers.reprendre(h, d, "systeme") }
+                    fait = c.error == ()
+                } else if st != "reprise" && _a_repondu(to_string(r), op) {
+                    let c = try { EscDossiers.clore(h, d, "repondu", "reponse constatee au balayage", "systeme") }
+                    fait = c.error == ()
+                } else if (st == "e1" || st == "e2" || st == "e3") && to_int(h) >= to_int(echeance_echelon.get(d) ?? h) {
+                    let c = try { EscDossiers.monter(h, d, "delai de l'echelon ecoule", "systeme") }
+                    fait = c.error == ()
+                } else if st == "reprise" && EscVeille.couverte(r) {
+                    let c = try { EscDossiers.clore(h, d, "decision_arretee", "decision arretee constatee au balayage", "systeme") }
+                    fait = c.error == ()
+                }
+                if fait { changes = changes + 1 }
+            }
+        }
+        let _ = EscRelances.relancer_dues(h)
+        return changes
+    }
+    on echelon(r, op) {
+        let d = courant.get("{r}|{op}")
+        if d == () { return 0 }
+        let st = get_status(d) ?? "nouveau"
+        return match st {
+            "e1" -> 1
+            "e2" -> 2
+            "e3" -> 3
+            "e4" -> 4
+            "accusee" || "reprise" -> to_int(echelon_atteint.get(d) ?? 0)
+            _ -> 0
+        }
+    }
+    on actifs(h, n, par) {
+        require ApiAcces.a_le_role(par, "analyste") || ApiAcces.a_le_role(par, "superviseur") || ApiAcces.a_le_role(par, "direction") else Habilitation "{par} ne lit pas le tableau des escalades"
+        let lignes_a = []
+        for e in courant.entries {
+            let d = e.value
+            let fin = to_int(echeance_finale.get(d) ?? 0)
+            let st = get_status(d) ?? "nouveau"
+            let ee = echeance_echelon.get(d) ?? 0
+            let ech = echelon_atteint.get(d) ?? 0
+            let r = rapprochement_de.get(d) ?? ""
+            let op = operateur_de.get(d) ?? ""
+            let reste = fin - to_int(h)
+            lignes_a.push(map("fin", fin, "l", "{d} | {r} | {op} | {st} | {ech} | {ee} | {fin} | {reste}"))
+        }
+        let tries = lignes_a.sort_by(x => x.fin)
+        let res_a = []
+        for x in tries {
+            if len(res_a) < n { res_a.push(x.l) }
+        }
+        return res_a
+    }
+    on reprise_sur(r) {
+        let liste = dossiers_de.get(r) ?? ""
+        if liste == "" { return false }
+        for d in split(liste, ",") {
+            if (get_status(d) ?? "nouveau") == "reprise" { return true }
+            if contains(cloture.get(d) ?? "", "| decision_arretee |") { return true }
+        }
+        return false
+    }
+    on en_e4(n) {
+        let res_e = []
+        for d in courant.values {
+            if len(res_e) < n && (get_status(d) ?? "nouveau") == "e4" { res_e.push(d) }
+        }
+        return res_e
+    }
+    on dossier_actif(r, op) {
+        return courant.get("{r}|{op}") ?? ""
+    }
+    on rapprochement(dossier) {
+        return Rapprochement(rapprochement_de.get(dossier) ?? "")
+    }
+    on etat(dossier) {
+        return get_status(dossier) ?? "nouveau"
+    }
+    on fiche(dossier, n, par) {
+        let r = rapprochement_de.get(dossier)
+        require r != () else Inconnu "dossier inconnu : {dossier}"
+        let op = operateur_de.get(dossier) ?? ""
+        let orbite_ok = ApiAcces.a_le_role(par, "analyste") || ApiAcces.a_le_role(par, "superviseur") || ApiAcces.a_le_role(par, "direction") || ApiAcces.a_le_role(par, "auditeur") || ApiAcces.a_le_role(par, "conformite")
+        require orbite_ok || ApiAcces.agit_pour(par, Org(op)) else Habilitation "{par} ne lit pas le dossier {dossier}"
+        let ouv = ouvert_a.get(dossier) ?? ""
+        let ech = echelon_atteint.get(dossier) ?? ""
+        let ee = echeance_echelon.get(dossier) ?? ""
+        let fin = echeance_finale.get(dossier) ?? ""
+        let acc = accuse.get(dossier) ?? ""
+        let clo = cloture.get(dossier) ?? ""
+        let res_f = ["rapprochement | {r}", "operateur | {op}", "ouvert | {ouv}", "echelon | {ech}", "echeance echelon | {ee}", "echeance finale | {fin}", "accuse | {acc}", "cloture | {clo}"]
+        let marque = " | {dossier} | "
+        let lignes_h = []
+        for l in historique {
+            if contains(l, marque) { lignes_h.push(l) }
+        }
+        let debut = max(0, len(lignes_h) - n)
+        for i in range(debut, len(lignes_h)) { res_f.push(lignes_h[i]) }
+        return res_f
+    }
+    // L'opérateur a répondu : il n'est plus muet, ou la coordination a statué.
+    on _a_repondu(r: String, op: String) {
+        let dec = try { ApiCoordination.decidee(Rapprochement(r)) }
+        if dec.error == () && dec.value { return true }
+        let m = try { ApiCoordination.muets(Rapprochement(r)) }
+        if m.error != () { return false }
+        return !contains(m.value, op)
+    }
+}

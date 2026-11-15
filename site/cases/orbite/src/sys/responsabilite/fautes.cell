@@ -1,0 +1,131 @@
+// RESPONSABILITÉ — responsabilité pour faute d'un opérateur.
+// Une faute est présumée sur des faits gelés (dossier de preuve), soumise au contradictoire de
+// l'opérateur, puis qualifiée sur dossier SCELLÉ : la qualification ne peut s'appuyer que sur
+// des pièces figées et vérifiées. Retenue, elle fonde la recevabilité d'une réclamation pour
+// un dommage dans l'espace (art. III de la Convention de 1972) et est transmise à la
+// conformité (manquement) et à l'État de tutelle de l'opérateur.
+
+// Nature d'une faute.
+// "designation_ignoree" : objet désigné par une coordination arrêtée, aucun plan d'évitement
+// exécuté avant le TCA ; "manoeuvre_non_annoncee" : manœuvre détectée par l'observation sans
+// plan déclaré ; "manoeuvre_non_conforme" : manœuvre exécutée hors de son plan (anomalie) ;
+// "ephemeride_perimee" : éphéméride non fraîche ou invalidée au moment de la décision ;
+// "silence" : alerte de niveau 3 sans réponse, escalade d'échelon ≥ 3 ; "fin_de_vie" :
+// échéance de retrait dépassée.
+cell type RespNatureFaute = String where value == "designation_ignoree" || value == "manoeuvre_non_annoncee" || value == "manoeuvre_non_conforme" || value == "ephemeride_perimee" || value == "silence" || value == "fin_de_vie"
+
+// Fautes (une instance par id "FT-<n>").
+skeleton RespFautes {
+    const MAX_FAUTES = 500000
+    // Délai de réponse de l'opérateur au contradictoire : 30 jours, ms.
+    const DELAI_CONTRADICTOIRE = 2592000000
+    memory {
+        dossier_de: Map<String, String> [persistent]      // faute -> dossier ; écrit une fois par presumer, jamais supprimé (lien `via`)
+        invariant dossier_de.size <= 500000
+        op_de: Map<String, Org> [persistent]              // opérateur mis en cause (propriétaire de l'objet)
+        objet_de: Map<String, Objet> [persistent]
+        rapprochement_de: Map<String, Rapprochement> [persistent]  // "" si la faute ne vise pas un rapprochement
+        nature_de: Map<String, RespNatureFaute> [persistent]
+        presumee_le: Map<String, Horodatage> [persistent]
+        echeance_reponse: Map<String, Horodatage> [persistent]
+        invariant (presumee_le ?? 0) <= (echeance_reponse ?? 9000000000000000)
+        reponse_de: Map<String, String> [persistent]      // observations de l'opérateur
+        gravite_de: Map<String, Gravite> [persistent]
+        part_de: Map<String, Pourcent> [persistent]       // part de responsabilité retenue, 0 à 100
+        invariant part_de <= 100
+        motif_de: Map<String, String> [persistent]
+        manquement_de: Map<String, String> [persistent]   // id du manquement ApiConformite
+        en_attente: Map<String, Horodatage> [persistent]  // faute en contradictoire -> échéance (retirée à la qualification)
+        fautes_du_dossier: Map<String, List<String>> [persistent]  // dossier -> fautes
+    }
+    state faute {
+        initial: aucune
+        aucune -> presumee          // faits relevés dans le dossier (toute nature sauf designation_ignoree)
+        aucune -> designation_presumee  // "designation_ignoree" : TCA échu (rapprochement passe ou collision)
+                                        // et coordination arrêtée un jour sur r (regles.toml)
+        presumee -> contradictoire  // opérateur notifié, délai de réponse ouvert
+        designation_presumee -> contradictoire
+        presumee -> ecartee         // classement avant contradictoire
+        designation_presumee -> ecartee
+        contradictoire -> retenue   // qualifiée sur dossier scellé (quatre yeux)
+        contradictoire -> ecartee
+        retenue -> transmise        // manquement constaté, État de tutelle notifié
+    }
+    face {
+        // Présume une faute de l'opérateur propriétaire de `objet` sur les faits du dossier
+        // (gelé ou scellé). Le corps vérifie que les façades confirment la nature : par ex.
+        // "designation_ignoree" exige ApiCoordination.arretee(r), designe(r, "systeme") == objet et
+        // aucun plan_de(r) "execute"/"verifie" ; "manoeuvre_non_annoncee" exige
+        // ApiObservation.manoeuvre_detectee. Renvoie l'id "FT-<n>". Par "systeme", "analyste"
+        // ou "conformite". État atteint : "designation_presumee" pour "designation_ignoree"
+        // (exige ApiConjonctions.etat(r) "passe" ou "collision" et une coordination arrêtée sur
+        // r : ApiCoordination.arretee / etat), "presumee" sinon.
+        // Refus : Inconnu (dossier, objet, rapprochement), EtatInvalide
+        // (dossier annulé ou levé ; "designation_ignoree" avant le TCA échu), Insuffisant (faits
+        // non confirmés, coordination jamais arrêtée), Doublon (même nature,
+        // même objet, même rapprochement), MotifRequis, Habilitation, Plein.
+        signal presumer(h: Horodatage, dossier: String, objet: Objet, r: Rapprochement, nature: RespNatureFaute, motif: String, par: String) -> String
+            writes dossier_de, op_de, objet_de, rapprochement_de, nature_de, presumee_le, motif_de, fautes_du_dossier
+            moves aucune -> presumee, aucune -> designation_presumee when ConjRapprochement.passe || ConjRapprochement.collision via rapprochement_de
+            calls ApiAcces.a_le_role, RespDossiers.etat, RespDossiers.cibles, ApiRef.proprietaire, ApiConjonctions.tca, ApiConjonctions.etat, ApiCoordination.arretee, ApiCoordination.etat, ApiCoordination.designe, ApiManoeuvres.plan_de, ApiManoeuvres.etat, ApiObservation.manoeuvre_detectee, ApiEphemerides.fraiche, ApiEscalade.echelon, ApiFinDeVie.en_retard, Journal.noter, next_id
+        // Ouvre le contradictoire : notifie l'opérateur (ApiPasserelle.notifier, r = le
+        // rapprochement de la faute, urgence 2) avec la
+        // liste des pièces. Renvoie l'échéance de réponse (h + DELAI_CONTRADICTOIRE). Par
+        // "conformite". Refus : Inconnu, EtatInvalide, Habilitation.
+        signal ouvrir_contradictoire(h: Horodatage, faute: String, par: String) -> Horodatage
+            reads op_de, rapprochement_de
+            writes echeance_reponse, en_attente
+            moves presumee -> contradictoire, designation_presumee -> contradictoire
+            calls ApiAcces.a_le_role, ApiPasserelle.notifier, Journal.noter
+        // Observations de l'opérateur (la dernière remplace la précédente). Renvoie "recue".
+        // Par "chef_de_mission" ou "administrateur_operateur" de l'opérateur (agit_pour).
+        // Refus : Inconnu, EtatInvalide (pas en contradictoire), Delai (échéance passée),
+        // MotifRequis (réponse vide), Habilitation.
+        signal repondre(h: Horodatage, faute: String, reponse: String, par: String) -> String
+            reads faute, op_de, echeance_reponse
+            writes reponse_de
+            calls ApiAcces.a_le_role, ApiAcces.agit_pour, Journal.noter
+        // Qualifie : retenue (gravité, part de responsabilité en %, ≤ 100) ou écartée. Exige
+        // une réponse de l'opérateur ou l'échéance passée. Renvoie l'état atteint. Par
+        // "conformite", valideur "direction" (quatre yeux). Refus : Inconnu, EtatInvalide,
+        // Insuffisant (dossier non scellé), Delai (contradictoire non épuisé), HorsBornes
+        // (part > 100), MotifRequis, Habilitation, QuatreYeux.
+        signal qualifier(h: Horodatage, faute: String, retenue: Bool, gravite: Gravite, part: Pourcent, motif: String, par: String, valideur: String) -> String
+            reads echeance_reponse, reponse_de, dossier_de
+            writes gravite_de, part_de, motif_de, en_attente
+            moves contradictoire -> retenue when RespDossiers.scelle via dossier_de, contradictoire -> ecartee
+            calls ApiAcces.a_le_role, ApiAcces.quatre_yeux, RespDossiers.etat, Journal.noter
+        // Classe une présomption avant contradictoire. Renvoie "ecartee". Par "conformite".
+        // Refus : Inconnu, EtatInvalide, MotifRequis, Habilitation.
+        signal ecarter(h: Horodatage, faute: String, motif: String, par: String) -> String
+            writes motif_de
+            moves presumee -> ecartee, designation_presumee -> ecartee
+            calls ApiAcces.a_le_role, Journal.noter
+        // Transmet une faute retenue : manquement constaté (ApiConformite.constater, gravité
+        // retenue, référence = id de faute), notification à l'opérateur et au point focal de
+        // son État de tutelle. Renvoie l'id du manquement. Par "conformite" ou "systeme".
+        // Refus : Inconnu, EtatInvalide, Habilitation.
+        signal transmettre(h: Horodatage, faute: String, par: String) -> String
+            reads op_de, nature_de, gravite_de
+            writes manquement_de
+            moves retenue -> transmise
+            calls ApiAcces.a_le_role, ApiConformite.constater, ApiRef.etat_de, ApiRef.org_de_etat, ApiPasserelle.notifier, Journal.noter
+        // État : "aucune", "presumee", "designation_presumee", "contradictoire", "retenue",
+        // "ecartee", "transmise".
+        signal etat(faute: String) -> String
+            reads faute
+        // Fautes retenues ou transmises du dossier, sous la forme "faute|objet|part".
+        signal retenues_de_dossier(dossier: String) -> List<String>
+            reads fautes_du_dossier, faute, objet_de, part_de
+        // Ronde : avise la "conformite" d'ORBITE (Journal + ApiPasserelle vers ApiRef.orbite())
+        // de chaque contradictoire dont l'échéance est passée à `h` (qualification due), une
+        // seule fois. Renvoie le nombre d'avis. Par "systeme". Refus : Habilitation.
+        signal relancer_contradictoires(h: Horodatage, par: String) -> Int
+            reads en_attente, reponse_de
+            writes en_attente
+            calls ApiAcces.a_le_role, ApiRef.orbite, ApiPasserelle.notifier, Journal.noter
+        // Nombre de fautes du dossier présumées (dont designation_presumee), en contradictoire ou retenues non transmises.
+        signal pendantes_de_dossier(dossier: String) -> Int
+            reads fautes_du_dossier, faute
+    }
+}

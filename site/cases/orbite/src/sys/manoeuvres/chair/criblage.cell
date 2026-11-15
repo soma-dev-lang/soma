@@ -1,0 +1,87 @@
+// Corps de manoeuvres : criblage obligatoire de la trajectoire après manœuvre (ManCriblage).
+flesh ManCriblage {
+    on cribler(h, plan, par) {
+        require ApiAcces.a_le_role(par, "systeme") else Habilitation "criblage interne (systeme)"
+        require depot_de.get(plan) == () else EtatInvalide "plan {plan} déjà criblé"
+        let f = ManPlan.fiche(plan)
+        let reg = ApiRef.regime(f.objet)
+        let fraiche = ApiEphemerides.fraiche(f.objet, h)
+        let depot = ""
+        let r_der = try { ApiEphemerides.derniere(f.objet) }
+        if r_der.error == () { depot = r_der.value }
+        let age_d = 0
+        let r_age = try { ApiEphemerides.age(f.objet, h) }
+        if r_age.error == () { age_d = to_int(r_age.value) }
+        let qual = ApiEphemerides.qualite(f.objet)
+        let facteur = ApiMeteo.facteur_incertitude(reg, h)
+        let renforce = ApiMeteo.tempete(h) || ApiEvenements.nuage_actif(reg, h)
+        let avec = false
+        if depot != "" {
+            let r_avec = try { ApiEphemerides.avec_manoeuvres(depot) }
+            avec = r_avec.error == () && r_avec.value
+        }
+        depot_de.set(plan, depot)
+        let conflits = -1
+        let motif_i = ""
+        if !fraiche {
+            motif_i = "éphéméride non fraîche"
+        } else if !avec {
+            motif_i = "dernier dépôt sans la poussée planifiée"
+        } else {
+            let r_c = try { ApiConjonctions.cribler_plan(h, f.objet, plan, f.debut, f.dv) }
+            if r_c.error != () {
+                if r_c.kind != "Perime" { fail(r_c) }
+                motif_i = "catalogue non criblé depuis 8 h"
+            } else if r_c.value > 0 {
+                conflits = r_c.value
+            } else if !ApiEphemerides.depot_valide(depot) {
+                motif_i = "dépôt {depot} non validé"
+            } else {
+                conflits = 0
+            }
+        }
+        fiche_de.set(plan, ManFicheCriblage { depot: depot, age_ephemeride: Duree(age_d), qualite: qual, facteur: facteur, renforce: renforce, conflits: conflits, crible_le: h, recriblages: 0 })
+        if motif_i != "" {
+            transition(plan, "demande", "impossible")
+            motif_impossible_de.set(plan, motif_i)
+            Journal.noter(h, "manoeuvres", par, "criblage du plan {plan} impossible : {motif_i}")
+            return -1
+        }
+        if conflits == 0 {
+            transition(plan, "demande", "sur")
+        } else {
+            transition(plan, "demande", "a_risque")
+        }
+        Journal.noter(h, "manoeuvres", par, "criblage du plan {plan} : {conflits} conflit(s), dépôt {depot}")
+        return conflits
+    }
+
+    on recribler(h, plan, par) {
+        require ApiAcces.a_le_role(par, "systeme") || ApiAcces.a_le_role(par, "analyste") else Habilitation "recriblage par systeme ou analyste"
+        let ancien = fiche_de.get(plan)
+        require ancien != () else Inconnu "plan {plan} jamais criblé"
+        let s = get_status(plan) ?? "demande"
+        require s == "sur" else EtatInvalide "criblage de {plan} {s}"
+        require ancien.recriblages < MAX_RECRIBLAGES else Plein "{MAX_RECRIBLAGES} recriblages atteints"
+        let f = ManPlan.fiche(plan)
+        require ApiEphemerides.fraiche(f.objet, h) else Perime "éphéméride de {f.objet} non fraîche"
+        let depot = ApiEphemerides.derniere(f.objet)
+        require ApiEphemerides.avec_manoeuvres(depot) else Perime "dépôt {depot} sans la poussée planifiée"
+        let reg = ApiRef.regime(f.objet)
+        let c = ApiConjonctions.cribler_plan(h, f.objet, plan, f.debut, f.dv)
+        let renforce = ApiMeteo.tempete(h) || ApiEvenements.nuage_actif(reg, h)
+        fiche_de.set(plan, ManFicheCriblage { depot: depot, age_ephemeride: ApiEphemerides.age(f.objet, h), qualite: ApiEphemerides.qualite(f.objet), facteur: ApiMeteo.facteur_incertitude(reg, h), renforce: renforce, conflits: c, crible_le: h, recriblages: ancien.recriblages + 1 })
+        Journal.noter(h, "manoeuvres", par, "recriblage du plan {plan} : {c} conflit(s)")
+        return c
+    }
+
+    on etat(plan) {
+        return get_status(plan) ?? "demande"
+    }
+
+    on fiche(plan) {
+        let fc = fiche_de.get(plan)
+        require fc != () else Inconnu "plan {plan} jamais criblé"
+        return fc
+    }
+}

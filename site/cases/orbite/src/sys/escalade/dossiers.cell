@@ -1,0 +1,209 @@
+// escalade — DOSSIERS D'ESCALADE. Un dossier par (rapprochement, opérateur silencieux) et par
+// épisode : il monte d'échelon à chaque délai écoulé (barème EscBareme), s'arrête sur l'accusé de
+// l'opérateur ou de son État, et — c'est la propriété 5 — passe en REPRISE par ORBITE à
+// l'échéance finale si l'opérateur n'a pas répondu : l'arbitrage (ApiCoordination.arbitrer)
+// devient alors le seul chemin, et le dossier ne se clôt qu'une fois la décision arrêtée
+// (EscVeille.couverte). Le balayage (EscBalayage, appelé chaque minute par Horloge.battre via
+// ApiEscalade.balayer) rend le temps explicite : aucun dossier actif ne reste sur un délai dépassé
+// plus d'un battement. « L'opérateur a répondu » = op ∉ ApiCoordination.muets(r), ou la
+// coordination a statué (ApiCoordination.decidee(r)).
+
+// Motif de clôture d'un dossier.
+cell type EscMotifCloture = String where value == "repondu" || value == "decision_arretee" || value == "rapprochement_clos" || value == "tca_passe" || value == "erreur"
+
+// Dossiers : id = "ESC-<n>" (next_id). Un seul dossier actif par couple (r, op) : `courant`.
+skeleton EscDossiers {
+    const MAX_DOSSIERS = 1000000
+    const MAX_HISTORIQUE = 5000000
+    memory {
+        rapprochement_de: Map<String, String> [persistent]   // dossier → rapprochement ; écrit une fois par ouvrir, jamais effacé
+        operateur_de: Map<String, String> [persistent]       // dossier → opérateur visé ; écrit une fois par ouvrir, jamais effacé
+        courant: Map<String, String> [persistent]            // "r|op" → dossier actif ; effacé à la clôture (nouvel épisode possible)
+        dossiers_de: Map<String, String> [persistent]        // r → tous ses dossiers, "ESC-1,ESC-9" ; ajout seul, par ouvrir
+        ouvert_a: Map<String, Horodatage> [persistent]       // dossier → ouverture (ms)
+        echelon_atteint: Map<String, Int> [persistent]       // dossier → plus haut échelon atteint (1 à 4)
+        echeance_echelon: Map<String, Horodatage> [persistent] // dossier → fin du délai de l'échelon courant (ms)
+        echeance_finale: Map<String, Horodatage> [persistent]  // dossier → reprise par ORBITE au plus tard (ms) ; ne recule jamais
+        accuse: Map<String, String> [persistent]             // dossier → "h | personne" du premier accusé
+        cloture: Map<String, String> [persistent]            // dossier → "h | par | EscMotifCloture | motif"
+        historique: List<String> [persistent]                // "h | dossier | de -> à | par | motif", ajout seul
+        invariant rapprochement_de.size <= MAX_DOSSIERS
+        invariant courant.size <= MAX_DOSSIERS
+        invariant dossiers_de.size <= MAX_DOSSIERS
+        invariant historique.size <= MAX_HISTORIQUE
+        invariant echelon_atteint >= 1 && echelon_atteint <= 4
+        invariant echelon_atteint >= (echelon_atteint.get(key) ?? 1)
+        invariant (echeance_echelon ?? 0) <= (echeance_finale ?? 0)
+        invariant echeance_finale <= (echeance_finale.get(key) ?? value)
+    }
+    // Cycle de vie d'un dossier (id = dossier). Les échelons sont des états : un dossier actif est
+    // dans e1..e4 ou accusee ; reprise = ORBITE décide à la place de l'opérateur.
+    state escalade {
+        initial: nouveau
+        nouveau -> e1                 // ouvrir : échelon d'entrée 1 (assez de temps)
+        nouveau -> e2                 // ouvrir : entrée directe, moins de SEUIL_E2_MS
+        nouveau -> e3                 // ouvrir : entrée directe, moins de SEUIL_E3_MS
+        nouveau -> e4                 // ouvrir : entrée directe, moins de SEUIL_E4_MS
+        e1 -> e2                      // monter : délai de l'échelon écoulé, ou geste d'analyste
+        e2 -> e3                      // monter
+        e3 -> e4                      // monter
+        e1 -> accusee                 // accuser : accusé reçu, réponse pas encore donnée
+        e2 -> accusee                 // accuser
+        e3 -> accusee                 // accuser
+        e4 -> accusee                 // accuser
+        e1 -> close                   // accuser (l'opérateur a déjà répondu) ou clore
+        e2 -> close                   // accuser ou clore
+        e3 -> close                   // accuser ou clore
+        e4 -> close                   // accuser ou clore
+        accusee -> close              // clore : l'opérateur a répondu à la coordination
+        e1 -> reprise                 // reprendre : échéance finale atteinte sans réponse
+        e2 -> reprise                 // reprendre
+        e3 -> reprise                 // reprendre
+        e4 -> reprise                 // reprendre
+        accusee -> reprise            // reprendre : accusé mais toujours pas de réponse
+        reprise -> close              // clore : décision arrêtée par arbitrage (EscVeille.couverte)
+        e1 -> caduque                 // caduquer : TCA passé ou rapprochement clos
+        e2 -> caduque                 // caduquer
+        e3 -> caduque                 // caduquer
+        e4 -> caduque                 // caduquer
+        accusee -> caduque            // caduquer
+        reprise -> caduque            // caduquer : TCA passé avant toute décision (constat pour la preuve)
+    }
+    face {
+        // Ouvre un dossier visant `op` sur le rapprochement `r` : échéance finale
+        // (EscBareme.echeance_finale), échelon d'entrée (EscBareme.echelon_initial), délai de
+        // l'échelon (EscBareme.delai), arme la veille du rapprochement (EscVeille.armer), émet
+        // les messages de l'échelon (EscContacts.prevenir), compte l'ouverture
+        // (EscStatistiques.compter) ; la concertation d'un e4 est convoquée par le balayage. Si l'échéance finale est déjà passée, le dossier est ouvert
+        // à l'échelon 4 et le balayage suivant le met en reprise. Renvoie l'échelon d'entrée.
+        // Rôle exigé de `par` : "systeme" ou "analyste" d'ORBITE. Refus : Inconnu (rapprochement,
+        // opérateur, ou op propriétaire d'aucun objet en cause), NonEligible (op n'est pas parmi
+        // ApiCoordination.muets(r) alors que la coordination est ouverte), Ferme (rapprochement resolu,
+        // passe ou collision), Doublon (dossier actif pour (r, op) : utiliser monter), MotifRequis,
+        // Habilitation, Plein.
+        signal ouvrir(h: Horodatage, r: Rapprochement, op: Org, motif: String, par: String) -> Int
+            writes rapprochement_de, operateur_de, courant, dossiers_de, ouvert_a, echelon_atteint, echeance_echelon, echeance_finale, historique
+            moves nouveau -> e1, nouveau -> e2, nouveau -> e3, nouveau -> e4
+            calls ApiAcces.a_le_role, ApiConjonctions.etat, ApiConjonctions.objets, ApiRef.proprietaire, ApiOperateurs.statut, ApiCoordination.etat, ApiCoordination.muets, EscBareme.echeance_finale, EscBareme.echelon_initial, EscBareme.delai, EscVeille.armer, EscContacts.prevenir, EscStatistiques.compter, next_id, Journal.noter
+        // Fait monter un dossier actif d'un échelon (e1→e2, e2→e3, e3→e4) : nouveau délai
+        // (EscBareme.delai, borné par l'échéance finale), messages du nouvel échelon
+        // (EscContacts.prevenir), compte (EscStatistiques.compter). Au-delà de e4 il n'y a que la
+        // reprise (reprendre). Renvoie l'échelon atteint. Rôle exigé : "systeme" ou "analyste"
+        // d'ORBITE. Refus : Inconnu, EtatInvalide (accusee, e4, reprise, close, caduque),
+        // MotifRequis, Habilitation.
+        signal monter(h: Horodatage, dossier: String, motif: String, par: String) -> Int
+            writes echelon_atteint, echeance_echelon, historique
+            reads rapprochement_de, operateur_de, echeance_finale
+            moves e1 -> e2, e2 -> e3, e3 -> e4
+            calls ApiAcces.a_le_role, EscBareme.delai, EscContacts.prevenir, EscStatistiques.compter, Journal.noter
+        // Accusé de réception du dossier actif de (r, op). `par` : une personne qui agit pour
+        // l'opérateur (ApiAcces.agit_pour(par, op)), ou le "point_focal" de son État de tutelle
+        // (ApiAcces.agit_pour(par, ApiRef.org_de_etat(ApiRef.etat_de(op)))). Si l'opérateur a
+        // répondu (op ∉ ApiCoordination.muets(r), ou ApiCoordination.decidee(r)) le dossier est
+        // clos "repondu", sinon il passe "accusee" et l'échéance finale continue de courir.
+        // Arrête les relances en cours (EscRelances.arreter). Compte le délai d'accusé.
+        // Renvoie l'état atteint ("accusee" ou "close"). Refus : Inconnu (aucun dossier actif),
+        // EtatInvalide (déjà accusé, reprise), Habilitation.
+        signal accuser(h: Horodatage, r: Rapprochement, op: Org, par: String) -> String
+            writes accuse, courant, cloture, historique
+            reads ouvert_a, rapprochement_de
+            moves e1 -> accusee, e2 -> accusee, e3 -> accusee, e4 -> accusee, e1 -> close, e2 -> close, e3 -> close, e4 -> close
+            calls ApiAcces.agit_pour, ApiAcces.a_le_role, ApiRef.etat_de, ApiRef.org_de_etat, ApiCoordination.muets, ApiCoordination.decidee, EscRelances.arreter, EscStatistiques.compter_accuse, Journal.noter
+        // Reprise par ORBITE : l'échéance finale est atteinte sans réponse de l'opérateur. Notifie
+        // la direction et les superviseurs d'ORBITE (ApiPasserelle.notifier(h, ApiRef.orbite(), r,
+        // « arbitrer r », …, 3)) — c'est le fait que lit ApiEscalade.reprise(r) et qui ouvre
+        // l'arbitrage pour silence de la coordination — gèle les données du dossier (ApiResponsabilite.geler,
+        // évènement = dossier), prépare la démarche auprès de l'État de tutelle
+        // (EscDiplomatie.preparer), ouvre l'attente de prise en charge par un analyste
+        // (EscPriseEnCharge.ouvrir_prise), compte la reprise. Renvoie "reprise". Rôle exigé : "systeme"
+        // ou "analyste". Refus : Inconnu, EtatInvalide (dont rapprochement ni en alerte ni en
+        // coordination : ApiConjonctions.etat, règle de l'arête via rapprochement_de), Delai
+        // (échéance finale pas atteinte à h), Habilitation.
+        signal reprendre(h: Horodatage, dossier: String, par: String) -> String
+            writes historique
+            reads rapprochement_de, operateur_de, echeance_finale
+            moves e1 -> reprise when ConjRapprochement.alerte || ConjRapprochement.en_coordination via rapprochement_de, e2 -> reprise when ConjRapprochement.alerte || ConjRapprochement.en_coordination via rapprochement_de, e3 -> reprise when ConjRapprochement.alerte || ConjRapprochement.en_coordination via rapprochement_de, e4 -> reprise when ConjRapprochement.alerte || ConjRapprochement.en_coordination via rapprochement_de, accusee -> reprise when ConjRapprochement.alerte || ConjRapprochement.en_coordination via rapprochement_de
+            calls ApiAcces.a_le_role, ApiConjonctions.etat, ApiRef.orbite, ApiPasserelle.notifier, ApiResponsabilite.geler, EscRelances.arreter, EscDiplomatie.preparer, EscPriseEnCharge.ouvrir_prise, EscStatistiques.compter_reprise, Journal.noter
+        // Clôt un dossier. Depuis "accusee" ou un échelon : l'opérateur a répondu
+        // (op ∉ ApiCoordination.muets(r), ou ApiCoordination.decidee(r)) ou erreur d'ouverture. Depuis "reprise" :
+        // seulement si la décision est arrêtée (EscVeille.couverte du rapprochement). Efface
+        // `courant`. Renvoie "close". Rôle exigé : "systeme" ou "analyste" ("erreur" : "superviseur").
+        // Refus : Inconnu, EtatInvalide, Insuffisant (opérateur sans réponse, décision non arrêtée),
+        // MotifRequis, Habilitation.
+        signal clore(h: Horodatage, dossier: String, motif_cloture: EscMotifCloture, motif: String, par: String) -> String
+            writes courant, cloture, historique
+            reads rapprochement_de, operateur_de
+            moves e1 -> close, e2 -> close, e3 -> close, e4 -> close, accusee -> close, reprise -> close when EscVeille.couverte via rapprochement_de
+            calls ApiAcces.a_le_role, ApiCoordination.muets, ApiCoordination.decidee, EscVeille.couverte, EscRelances.arreter, Journal.noter
+        // Rend caduc un dossier dont le TCA est passé, dont le rapprochement est clos
+        // (ApiConjonctions.etat ∈ {"resolu", "passe", "collision"}) ou retombé hors alerte avant
+        // toute coordination ("detecte", "suivi" : la reprise n'y est plus permise). Un dossier en reprise devenu
+        // caduc sans décision est signalé à la conformité (ApiConformite.constater, gravité 3,
+        // référence = dossier). Efface `courant`. Renvoie "caduque". Rôle exigé : "systeme".
+        // Refus : Inconnu, EtatInvalide, Insuffisant (TCA à venir et rapprochement en alerte ou en
+        // coordination), Habilitation.
+        signal caduquer(h: Horodatage, dossier: String, par: String) -> String
+            writes courant, cloture, historique
+            reads rapprochement_de, operateur_de
+            moves e1 -> caduque, e2 -> caduque, e3 -> caduque, e4 -> caduque, accusee -> caduque, reprise -> caduque
+            calls ApiAcces.a_le_role, ApiConjonctions.etat, ApiConjonctions.tca, ApiConformite.constater, EscRelances.arreter, Journal.noter
+        // Recale un dossier actif sur le dernier TCA connu (un nouveau message de conjonction peut
+        // l'avancer) : échéance finale = min(ancienne, EscBareme.echeance_finale(r)), échéance de
+        // l'échelon ramenée sous la nouvelle échéance finale. Les échéances n'avancent jamais vers
+        // le futur : un TCA repoussé ne rend pas de temps à l'opérateur silencieux. Renvoie
+        // l'échéance finale. Rôle exigé : "systeme" ou "analyste". Refus : Inconnu, EtatInvalide,
+        // Habilitation.
+        signal recaler(h: Horodatage, dossier: String, par: String) -> Horodatage
+            writes echeance_echelon, echeance_finale, historique
+            reads rapprochement_de, escalade
+            calls ApiAcces.a_le_role, EscBareme.echeance_finale, Journal.noter
+        // Balayage : pour chaque dossier actif, dans l'ordre — recaler ; caduquer si TCA passé ou
+        // rapprochement clos ou retombé hors alerte sans coordination ; reprendre si h ≥ échéance finale ; clore "repondu" si l'opérateur a
+        // répondu ; monter si h ≥ échéance de l'échelon ; clore "decision_arretee" un dossier en
+        // reprise couvert. Puis relances dues (EscRelances.relancer_dues). par = "systeme".
+        // Appelé par EscBalayage.balayer. Renvoie le nombre de dossiers changés d'état.
+        signal balayer(h: Horodatage) -> Int
+            ensures result >= 0
+            reads courant, echeance_echelon, echeance_finale, escalade
+            calls recaler, caduquer, reprendre, clore, monter, EscRelances.relancer_dues, EscVeille.couverte, ApiConjonctions.etat, ApiConjonctions.tca, ApiCoordination.muets, ApiCoordination.decidee
+        // Échelon du dossier actif de (r, op) : 1 à 4 en e1..e4, échelon atteint en "accusee" et
+        // "reprise" ; 0 si aucun dossier actif.
+        signal echelon(r: Rapprochement, op: Org) -> Int
+            reads courant, echelon_atteint, escalade
+            ensures result >= 0 && result <= 4
+        // Dossiers actifs (e1..e4, accusee, reprise), échéance finale la plus proche d'abord, au
+        // plus n : "dossier | r | op | état | échelon | échéance échelon | échéance finale | reste (ms)".
+        // Le tableau de la salle de veille. Rôle exigé : "analyste", "superviseur", "direction"
+        // d'ORBITE. Refus : Habilitation.
+        signal actifs(h: Horodatage, n: Int, par: String) -> List<String>
+            requires n > 0 && n <= 1000
+            reads courant, rapprochement_de, operateur_de, echelon_atteint, echeance_echelon, echeance_finale, escalade
+            calls ApiAcces.a_le_role
+        // Vrai si un dossier du rapprochement est en "reprise" (ORBITE a repris la main, échéance
+        // finale passée) ; reste vrai après la clôture "decision_arretee" d'un dossier repris, pour
+        // que l'arbitrage pour silence reste justifié. Faux si r n'a jamais eu de dossier.
+        signal reprise_sur(r: Rapprochement) -> Bool
+            reads dossiers_de, cloture, escalade
+        // Dossiers en e4 (au plus n), pour la convocation des concertations.
+        signal en_e4(n: Int) -> List<String>
+            requires n > 0 && n <= 10000
+            reads courant, escalade
+        // Dossier actif de (r, op) ; "" si aucun.
+        signal dossier_actif(r: Rapprochement, op: Org) -> String
+            reads courant
+        // Rapprochement d'un dossier ; "" si inconnu.
+        signal rapprochement(dossier: String) -> Rapprochement
+            reads rapprochement_de
+        // État d'un dossier ("nouveau" s'il n'existe pas).
+        signal etat(dossier: String) -> String
+            reads escalade
+        // Fiche d'un dossier pour la preuve (propriété 6) : rapprochement, opérateur, ouverture,
+        // échelons, échéances, accusé, clôture, et ses lignes d'historique (au plus n). Rôle exigé :
+        // "analyste", "superviseur", "direction", "auditeur" d'ORBITE ou "conformite" ; ou une personne
+        // agissant pour l'opérateur visé. Refus : Inconnu, Habilitation.
+        signal fiche(dossier: String, n: Int, par: String) -> List<String>
+            requires n > 0 && n <= 1000
+            reads rapprochement_de, operateur_de, ouvert_a, echelon_atteint, echeance_echelon, echeance_finale, accuse, cloture, historique
+            calls ApiAcces.a_le_role, ApiAcces.agit_pour
+    }
+}

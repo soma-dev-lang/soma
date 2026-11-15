@@ -1,0 +1,72 @@
+// CONJONCTIONS — criblage des plans de manœuvre : la trajectoire APRÈS manœuvre est criblée
+// contre le catalogue avant toute approbation (MANŒUVRES). Jamais sur un catalogue périmé
+// (régime non criblé depuis 8 h) ni sur une éphéméride périmée de l'objet. Un plan jugé sûr
+// devient périmé si un nouveau rapprochement de niveau ≥ 2 touche l'objet avant son début.
+
+// Criblage d'un plan. Instance = l'id du plan (même id que le plan de MANŒUVRES : un plan est
+// criblé une fois ; un plan périmé se redéclare sous un nouvel id).
+skeleton ConjCriblagePlan {
+    const MAX_CRIBLAGES = 5000000
+    const AGE_MAX_CATALOGUE = 28800000        // 8 h
+    const HORIZON = 604800000                 // 7 j après le début du plan
+    const MAX_PAR_OBJET = 100
+    memory {
+        objet_de: Map<String, Objet> [persistent]
+        // campagne sur laquelle repose le criblage : écrit une fois par cribler, jamais effacé
+        // (lien de la règle demande -> fonde)
+        campagne_de: Map<String, String> [persistent]
+        depot_de: Map<String, String> [persistent]          // éphéméride de l'objet utilisée (ApiEphemerides.derniere)
+        debut_de: Map<String, Horodatage> [persistent]
+        dv_de: Map<String, DeltaV> [persistent]             // mm/s
+        facteur_de: Map<String, Pourcent> [persistent]      // facteur d'incertitude appliqué
+        crible_le: Map<String, Horodatage> [persistent]
+        resultat_de: Map<String, Int> [persistent]          // rapprochements de niveau ≥ 2 que le plan créerait
+        cause_de: Map<String, String> [persistent]          // péremption : rapprochement nouveau
+        sur_par_objet: Map<String, List<String>> [persistent]  // objet -> plans "sur" (à rendre périmés)
+        invariant objet_de.size <= 5000000
+        invariant resultat_de >= 0
+        invariant len(sur_par_objet) <= 100
+    }
+    // Cycle d'un criblage.
+    state criblage {
+        initial: demande
+        demande -> fonde             // criblé sur une campagne terminée (lien campagne_de)
+        fonde -> sur                 // 0 rapprochement de niveau ≥ 2 créé dans les 7 jours, plan encore "declare" chez MANŒUVRES
+        fonde -> a_risque            // au moins un : le plan ne peut pas être approuvé
+        sur -> perime                // nouveau rapprochement de niveau ≥ 2 sur l'objet avant le début
+    }
+    face {
+        // Crible la trajectoire après manœuvre d'un plan (début `debut`, delta-v `dv` en mm/s)
+        // contre la dernière campagne terminée du régime de l'objet, distances de seuil élargies
+        // du facteur météo : renvoie le nombre de rapprochements de niveau ≥ 2 qu'elle créerait
+        // dans les 7 jours (demande -> fonde, puis 0 : fonde -> sur ; sinon fonde -> a_risque ;
+        // "fonde" n'existe qu'au sein de cribler). Un plan déjà criblé
+        // renvoie son résultat (idempotent). Le plan doit être "declare" chez MANŒUVRES
+        // (ApiManoeuvres.etat ; règle sur l'arête fonde -> sur when ManPlan.declare, même id).
+        // Rôle : "systeme" (façade) ou "analyste" d'ORBITE.
+        // Refus : Inconnu (plan ou objet ; plan d'un autre objet), EtatInvalide (plan non
+        // "declare" : jamais d'avis "sur" sur un plan déjà criblé, approuvé ou annulé), Perime (régime non criblé
+        // depuis 8 h, éphéméride de l'objet non fraîche, début du plan déjà passé, ou plan
+        // périmé), Habilitation.
+        signal cribler(h: Horodatage, objet: Objet, plan: String, debut: Horodatage, dv: DeltaV, par: String) -> Int
+            writes objet_de, campagne_de, depot_de, debut_de, dv_de, facteur_de, crible_le, resultat_de, sur_par_objet
+            moves demande -> fonde when ConjCampagne.terminee via campagne_de, fonde -> sur when ManPlan.declare, fonde -> a_risque
+            calls ApiManoeuvres.etat, ApiRef.etat_objet, ApiRef.regime, ApiEphemerides.fraiche, ApiEphemerides.derniere, ConjCampagne.derniere, ConjCampagne.age_crible, ConjCampagne.etat, ApiMeteo.facteur_incertitude, ConjSeuils.niveau, ConjRapprochement.ouverts_de, ConjRapprochement.fiche, ApiAcces.a_le_role, Journal.noter
+        // Rend périmés les plans "sur" de l'objet dont le début est postérieur à `h`, après un
+        // nouveau rapprochement `r` de niveau ≥ 2 (sur -> perime) : MANŒUVRES doit les recribler
+        // sous un nouvel id. Renvoie le nombre de plans rendus périmés. Rôle : "systeme".
+        // Refus : Inconnu (rapprochement), Habilitation.
+        signal rendre_caducs(h: Horodatage, objet: Objet, r: Rapprochement, par: String) -> Int
+            reads debut_de
+            writes cause_de, sur_par_objet
+            moves sur -> perime
+            calls ConjRapprochement.etat, ApiAcces.a_le_role, Journal.noter
+        // Résultat d'un criblage (rapprochements de niveau ≥ 2 créés). Refus : Inconnu.
+        signal resultat(plan: String) -> Int
+            reads resultat_de
+        // Verdict : "sur", "a_risque", "perime" ; "" si jamais criblé ("demande" n'existe qu'au
+        // sein de cribler). Sert ApiConjonctions.criblage_plan.
+        signal etat(plan: String) -> String
+            reads criblage, objet_de
+    }
+}

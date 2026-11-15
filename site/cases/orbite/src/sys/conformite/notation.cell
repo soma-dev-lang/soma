@@ -1,0 +1,80 @@
+// CONFORMITÉ — notation glissante des opérateurs : 100 moins les points des manquements
+// qualifiés depuis 365 jours (et non annulés), plancher 0. La note n'est pas une sanction : elle
+// déclenche des PROPOSITIONS de mesures (ConfMesure), décidées à quatre yeux.
+
+skeleton ConfNotation {
+    const MAX_INSCRITS = 2000000
+    const MAX_RELEVES = 5000000
+    const FENETRE_MS = 31536000000       // 365 jours
+    const POINTS_G1 = 5
+    const POINTS_G2 = 15
+    const POINTS_G3 = 40
+    const SEUIL_AVERTISSEMENT = 80       // note < 80 : avertissement proposé
+    const SEUIL_SURVEILLANCE = 60        // note < 60 : surveillance renforcée proposée
+    const SEUIL_SUSPENSION = 30          // note < 30 : demande de suspension à l'État proposée
+    memory {
+        // manquement qualifié → opérateur, points (gravité retenue) et instant de qualification ;
+        // écrits par enregistrer, effacés par retirer (recours accueilli).
+        op_de: Map<String, Org> [persistent]
+        invariant op_de.size <= 2000000
+        points_de: Map<String, Int> [persistent]
+        invariant points_de >= 0
+        invariant points_de <= 40
+        compte_le: Map<String, Horodatage> [persistent]
+        // opérateur → dernière note calculée et son instant (sous_surveillance n'a pas d'horodatage) ;
+        // opérateur → manquement qualifié le plus récent (fondement des mesures proposées).
+        derniere_note: Map<Org, Int> [persistent]
+        invariant derniere_note >= 0
+        invariant derniere_note <= 100
+        calculee_le: Map<Org, Horodatage> [persistent]
+        dernier_fondement: Map<Org, String> [persistent]
+        // "op|jour" → note relevée ce jour (historique, rapports annuels, indicateurs publics).
+        releves: Map<String, Int> [persistent]
+        invariant releves.size <= 5000000
+        invariant releves >= 0
+        invariant releves <= 100
+    }
+    face {
+        // Inscrit un manquement qualifié (gravité retenue → POINTS_G1/G2/G3), recalcule la note de
+        // l'opérateur à `h` et, si la note passe sous un seuil qu'elle ne franchissait pas avant,
+        // propose la mesure correspondante (ConfMesure.proposer, par "systeme", fondement = m).
+        // Appelé par ConfManquement.qualifier seulement. Renvoie la nouvelle note.
+        // Refus : Existe (manquement déjà inscrit), Plein.
+        signal enregistrer(h: Horodatage, m: String, op: Org, gravite: Gravite) -> Int
+            ensures result >= 0 && result <= 100
+            writes op_de, points_de, compte_le, derniere_note, calculee_le, dernier_fondement
+            calls ConfMesure.proposer, Journal.noter
+        // Retire les points d'un manquement annulé sur recours et recalcule la note. Appelé par
+        // ConfManquement.statuer_recours seulement. Renvoie la nouvelle note. Refus : Inconnu.
+        signal retirer(h: Horodatage, m: String) -> Int
+            ensures result >= 0 && result <= 100
+            writes op_de, points_de, compte_le, derniere_note, calculee_le
+        // Note de l'opérateur à `h` sur 100 : 100 − Σ points des manquements qualifiés dans
+        // ]h − FENETRE_MS, h], plancher 0 ; 100 si aucun (ApiConformite.note). Lecture pure.
+        signal note(op: Org, h: Horodatage) -> Int
+            ensures result >= 0 && result <= 100
+            reads op_de, points_de, compte_le
+        // Relève quotidien (balayage, par "systeme") : note à `h` inscrite sous "op|jour",
+        // dernière note mise à jour — c'est ici que les points de plus de 365 jours SORTENT de la
+        // note retenue par sous_surveillance. Propose une mesure si un seuil est franchi.
+        // Renvoie la note. Refus : Plein, Habilitation (par "systeme" ou "conformite" d'ORBITE).
+        signal relever(h: Horodatage, op: Org, par: String) -> Int
+            ensures result >= 0 && result <= 100
+            writes releves, derniere_note, calculee_le
+            reads op_de, points_de, compte_le, dernier_fondement
+            calls ApiAcces.a_le_role, ConfMesure.proposer
+        // Vrai si l'opérateur est sous surveillance renforcée : dernière note < SEUIL_SURVEILLANCE,
+        // ou manquement de gravité 3 non terminal (ConfManquement.g3_non_clos), ou mesure
+        // "surveillance_renforcee" en vigueur (ConfMesure.en_vigueur_pour). ApiConformite.sous_surveillance.
+        signal sous_surveillance(op: Org) -> Bool
+            reads derniere_note
+            calls ConfManquement.g3_non_clos, ConfMesure.en_vigueur_pour
+        // Notes relevées de l'opérateur du jour `de` au jour `a` inclus (jours sans relevé omis).
+        signal releves_de(op: Org, de: Jour, a: Jour) -> List<Int>
+            requires de <= a
+            reads releves
+        // Répartition des opérateurs suivis selon leur dernière note : [≥ 80, 60 à 79, 30 à 59, < 30].
+        signal repartition() -> List<Int>
+            reads derniere_note
+    }
+}

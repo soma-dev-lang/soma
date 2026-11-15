@@ -1,0 +1,5 @@
+ApiDonnees.diffusion: calls DonControle.diffusion_effective
+ApiDonnees.peut_recevoir: calls DonControle.peut_recevoir
+ApiDonnees.adherent: calls DonAdhesions.adherent
+ApiDonnees.tracer: calls DonTraces.tracer
+ApiDonnees.balayer: calls DonBalayage.balayer

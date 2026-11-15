@@ -1,0 +1,305 @@
+// CONFORMITÉ — manquements : constat, contradictoire de l'opérateur, qualification à quatre
+// yeux, contestation, clôture. Un manquement vise UN opérateur, porte UNE référence (la donnée
+// qui le fonde : rapprochement, plan, dépôt, lancement, objet) et n'entre dans la note qu'une
+// fois qualifié. Son contradictoire (ConfContradictoire) porte le MÊME id.
+
+// Nature d'un manquement. ApiConformite.constater reçoit une chaîne libre : une nature hors de
+// cette liste devient "autre" (la chaîne d'origine est gardée dans le détail).
+// "reponse_tardive" : alerte de niveau ≥ 2 sans réponse dans le délai d'engagement ;
+// "designation_ignoree" : l'objet désigné n'a pas manœuvré, ou un autre a manœuvré à sa place ;
+// "refus_escalade" : escalade d'échelon ≥ 3 ou accusé refusé ; "astreinte_absente" : aucun
+// contact d'astreinte en service, ou exercice de joignabilité échoué ; "licence_invalide" :
+// opérateur exploitant sans licence nationale valide ; "diffusion_non_autorisee" : donnée
+// communiquée hors de son niveau de diffusion ; "remediation_non_tenue" : plan de remédiation
+// non déposé, refusé sans nouvelle version ou non réalisé (ConfRemediation).
+cell type ConfNature = String where value == "reponse_tardive" || value == "designation_ignoree" || value == "manoeuvre_non_annoncee" || value == "ephemeride_perimee" || value == "fin_de_vie_non_tenue" || value == "refus_escalade" || value == "astreinte_absente" || value == "lancement_non_notifie" || value == "immatriculation_tardive" || value == "licence_invalide" || value == "diffusion_non_autorisee" || value == "remediation_non_tenue" || value == "autre"
+
+// Motif de classement sans suite. "force_majeure" : tempête, panne de capteur, incident d'ORBITE
+// (ApiOperations.degrade) ; "erreur_orbite" : le constat reposait sur une donnée fausse d'ORBITE ;
+// "doublon" : le même fait est déjà instruit sous un autre id.
+cell type ConfMotifClassement = String where value == "non_fonde" || value == "force_majeure" || value == "erreur_orbite" || value == "doublon"
+
+skeleton ConfManquement {
+    const MAX_MANQUEMENTS = 2000000
+    const MAX_OUVERTS_OP = 10000
+    const DELAI_NOTIFICATION_MS = 259200000   // un constat est notifié (contradictoire ouvert) sous 72 h
+    const DELAI_QUALIFICATION_MS = 1209600000 // un manquement instruit ou forclos est qualifié sous 14 jours
+    const DELAI_CONTESTATION_MS = 2592000000  // l'opérateur conteste une qualification sous 30 jours
+    memory {
+        op_de: Map<String, Org> [persistent]                  // manquement → opérateur visé (écrit à la création)
+        invariant op_de.size <= 2000000
+        nature_de: Map<String, ConfNature> [persistent]
+        detail_de: Map<String, String> [persistent]           // texte du constat (nature d'origine si "autre")
+        reference_de: Map<String, String> [persistent]        // id de la donnée qui fonde le constat (preuve)
+        gravite_constatee: Map<String, Gravite> [persistent]
+        gravite_retenue: Map<String, Gravite> [persistent]    // fixée par la qualification
+        constate_le: Map<String, Horodatage> [persistent]
+        constate_par: Map<String, String> [persistent]
+        qualifie_le: Map<String, Horodatage> [persistent]
+        qualifie_par: Map<String, String> [persistent]
+        motif_de: Map<String, String> [persistent]            // motif de la qualification, du classement ou du recours
+        classement_de: Map<String, ConfMotifClassement> [persistent]
+        conteste_le: Map<String, Horodatage> [persistent]
+        // "op|nature|reference" → manquement non terminal de cette clé (dédoublonnage) ; effacé
+        // quand le manquement atteint classe, clos ou annule.
+        courant: Map<String, String> [persistent]
+        invariant courant.size <= 2000000
+        // opérateur → manquements non terminaux ; opérateur → ceux de gravité (constatée ou
+        // retenue) 3 parmi eux (ApiConformite.sous_surveillance).
+        ouverts_de: Map<Org, Int> [persistent]
+        invariant ouverts_de >= 0
+        invariant ouverts_de <= 10000
+        g3_ouverts_de: Map<Org, Int> [persistent]
+        invariant g3_ouverts_de >= 0
+        invariant g3_ouverts_de <= 10000
+    }
+    // Cycle d'un manquement. Terminaux : classe, clos, annule. Les noms sont ceux que rend etat_manquement.
+    state cycle {
+        initial: constate
+        constate -> contradictoire    // notifier : l'opérateur est informé, son délai de réponse court
+        constate -> classe            // classer : constat manifestement infondé, avant toute notification
+        contradictoire -> instruction // repondre : observations reçues dans le délai
+        contradictoire -> forclos     // forclore : délai échu sans réponse (le silence ne bloque pas)
+        instruction -> qualifie       // qualifier : fondé, gravité retenue, quatre yeux
+        instruction -> classe         // classer : observations convaincantes
+        forclos -> qualifie           // qualifier
+        forclos -> classe             // classer
+        qualifie -> conteste          // contester : recours de l'opérateur sous 30 jours
+        qualifie -> clos              // clore : qualification définitive
+        conteste -> clos              // statuer_recours : recours rejeté
+        conteste -> annule            // statuer_recours : recours accueilli, points retirés
+    }
+    face {
+        // Constate un manquement de l'opérateur `op` : état "constate", compteurs de l'opérateur +1
+        // (et +1 en gravité 3), opérateur inscrit au suivi (ConfVeille.suivre). Si un manquement
+        // non terminal existe déjà sur "op|nature|reference", rien n'est créé et son id est
+        // renvoyé (le détail y est ajouté). Gravité 3 : journalisée et notifiée sans attendre à la
+        // conformité d'ORBITE (ApiPasserelle.notifier vers ApiRef.orbite(), r = référence si
+        // "CJ-…", sinon ""). Renvoie l'id "MQ-<n>".
+        // Refus : Inconnu (opérateur jamais candidat : ApiOperateurs.statut "inconnu"), MotifRequis
+        // (référence vide), Plein (MAX_MANQUEMENTS ou MAX_OUVERTS_OP), Habilitation (par "systeme",
+        // "analyste" ou "conformite" d'ORBITE).
+        signal constater(h: Horodatage, op: Org, nature: ConfNature, gravite: Gravite, reference: String, detail: String, par: String) -> String
+            writes op_de, nature_de, detail_de, reference_de, gravite_constatee, constate_le, constate_par, courant, ouverts_de, g3_ouverts_de
+            calls next_id, ApiAcces.a_le_role, ApiOperateurs.statut, ConfVeille.suivre, ApiPasserelle.notifier, ApiRef.orbite, Journal.noter
+        // Ouvre le contradictoire : constate -> contradictoire. L'opérateur reçoit le constat, sa
+        // référence et l'échéance de ses observations (ConfContradictoire.ouvrir : 48 h en gravité
+        // 3, 7 jours en 2, 15 jours en 1). Renvoie l'échéance (ms).
+        // Refus : Inconnu, EtatInvalide, Habilitation (par "conformite" d'ORBITE, ou "systeme").
+        signal notifier(h: Horodatage, m: String, par: String) -> Horodatage
+            reads op_de, nature_de, reference_de, gravite_constatee
+            moves constate -> contradictoire
+            calls ApiAcces.a_le_role, ConfContradictoire.ouvrir, Journal.noter
+        // Observations de l'opérateur, déposées avant l'échéance : contradictoire -> instruction.
+        // Renvoie "instruction". Refus : Inconnu, EtatInvalide, MotifRequis (observations vides),
+        // Delai (échéance passée : le manquement sera forclos), Habilitation (par "chef_de_mission"
+        // ou "administrateur_operateur" de l'opérateur visé : ApiAcces.a_le_role + ApiAcces.agit_pour).
+        signal repondre(h: Horodatage, m: String, observations: String, par: String) -> String
+            reads op_de
+            moves contradictoire -> instruction when ConfContradictoire.repondu
+            calls ApiAcces.a_le_role, ApiAcces.agit_pour, ConfContradictoire.enregistrer, ConfContradictoire.etat_contradictoire, Journal.noter
+        // Prorogation de l'échéance, une fois, de la durée initiale ; jamais en gravité 3 (le temps
+        // d'un rapprochement n'attend pas). Le manquement reste "contradictoire". Renvoie la
+        // nouvelle échéance (ms). Refus : Inconnu, EtatInvalide (déjà prorogé ou clos), NonEligible
+        // (gravité 3), MotifRequis, Delai (échéance passée), Habilitation (par "chef_de_mission" de
+        // l'opérateur visé).
+        signal proroger(h: Horodatage, m: String, motif: String, par: String) -> Horodatage
+            reads op_de, gravite_constatee
+            calls ApiAcces.a_le_role, ApiAcces.agit_pour, ConfContradictoire.proroger, Journal.noter
+        // Forclusion d'un opérateur silencieux, échéance passée : contradictoire -> forclos, quand
+        // ConfContradictoire.forclore a abouti à "forclos" (notification acquittée) ou "injoignable"
+        // (notification en échec définitif) — règle de l'arête, même id. Le
+        // manquement suit son cours sans ses observations. Appelé par le balayage (ConfContradictoire.echus).
+        // Notification échouée (ApiPasserelle.echoue) : manquement "astreinte_absente" g2 constaté
+        // en plus. Renvoie "forclos". Refus : Inconnu, EtatInvalide, Delai (échéance non atteinte),
+        // Insuffisant (notification encore "en_cours" : ConfContradictoire.notification),
+        // Habilitation (par "systeme" ou "conformite" d'ORBITE).
+        signal forclore(h: Horodatage, m: String, par: String) -> String
+            reads op_de
+            moves contradictoire -> forclos when ConfContradictoire.forclos || ConfContradictoire.injoignable
+            calls ApiAcces.a_le_role, ConfContradictoire.forclore, ConfContradictoire.etat_contradictoire, ConfContradictoire.notification, constater, Journal.noter
+        // Qualifie le manquement fondé : instruction | forclos -> qualifie, gravité retenue
+        // (requalification possible, motivée), points inscrits à la note de l'opérateur
+        // (ConfNotation.enregistrer, qui propose les mesures si un seuil est franchi) ; en gravité
+        // retenue ≥ 2, plan de remédiation demandé (ConfRemediation.demander, par "systeme").
+        // Renvoie la note de l'opérateur après qualification (sur 100).
+        // Refus : Inconnu, EtatInvalide, MotifRequis, Habilitation (par "conformite" d'ORBITE, ≠
+        // auteur du constat), QuatreYeux (ApiAcces.quatre_yeux(par, valideur)).
+        signal qualifier(h: Horodatage, m: String, gravite: Gravite, motif: String, par: String, valideur: String) -> Int
+            writes gravite_retenue, qualifie_le, qualifie_par, motif_de, g3_ouverts_de
+            reads op_de, constate_par, gravite_constatee
+            moves instruction -> qualifie, forclos -> qualifie
+            calls ApiAcces.a_le_role, ApiAcces.quatre_yeux, ConfNotation.enregistrer, ConfRemediation.demander, Journal.noter
+        // Classe sans suite : constate | instruction | forclos -> classe ; compteurs −1. Renvoie "classe".
+        // Refus : Inconnu, EtatInvalide, MotifRequis (commentaire vide), Habilitation (par
+        // "conformite" d'ORBITE), QuatreYeux (valideur : ApiAcces.quatre_yeux).
+        signal classer(h: Horodatage, m: String, motif: ConfMotifClassement, commentaire: String, par: String, valideur: String) -> String
+            writes classement_de, motif_de, courant, ouverts_de, g3_ouverts_de
+            reads op_de, gravite_constatee, nature_de, reference_de
+            moves constate -> classe, instruction -> classe, forclos -> classe
+            calls ApiAcces.a_le_role, ApiAcces.quatre_yeux, Journal.noter
+        // Recours de l'opérateur contre la qualification, sous 30 jours : qualifie -> conteste
+        // (les points restent comptés jusqu'à la décision). Renvoie "conteste".
+        // Refus : Inconnu, EtatInvalide, MotifRequis, Delai (plus de DELAI_CONTESTATION_MS après la
+        // qualification), Habilitation (par "chef_de_mission" ou "administrateur_operateur" de l'opérateur visé).
+        signal contester(h: Horodatage, m: String, motif: String, par: String) -> String
+            writes conteste_le, motif_de
+            reads op_de, qualifie_le
+            moves qualifie -> conteste
+            calls ApiAcces.a_le_role, ApiAcces.agit_pour, Journal.noter
+        // Décision sur le recours : rejeté (conteste -> clos) ou accueilli (conteste -> annule :
+        // points retirés de la note, ConfNotation.retirer). Compteurs −1. Renvoie l'état atteint.
+        // Refus : Inconnu, EtatInvalide, MotifRequis, Habilitation (par "direction" d'ORBITE),
+        // QuatreYeux (par ≠ qualificateur et ≠ valideur de la qualification).
+        signal statuer_recours(h: Horodatage, m: String, accueilli: Bool, motif: String, par: String) -> String
+            writes motif_de, courant, ouverts_de, g3_ouverts_de
+            reads op_de, qualifie_par, gravite_retenue, nature_de, reference_de
+            moves conteste -> clos, conteste -> annule
+            calls ApiAcces.a_le_role, ConfNotation.retirer, Journal.noter
+        // Rend la qualification définitive : qualifie -> clos ; compteurs −1. Avant la fin du délai
+        // de contestation, seulement si la remédiation est réalisée (ConfRemediation.etat_remediation
+        // "realisee") — l'opérateur renonce alors au recours. Renvoie "clos".
+        // Refus : Inconnu, EtatInvalide, Delai (délai de contestation non écoulé, remédiation non
+        // réalisée), Habilitation (par "conformite" d'ORBITE, ou "systeme").
+        signal clore(h: Horodatage, m: String, motif: String, par: String) -> String
+            writes motif_de, courant, ouverts_de, g3_ouverts_de
+            reads op_de, qualifie_le, gravite_retenue, nature_de, reference_de
+            moves qualifie -> clos
+            calls ApiAcces.a_le_role, ConfRemediation.etat_remediation, Journal.noter
+        // État du manquement ; "inconnu" si l'id n'existe pas.
+        signal etat_manquement(m: String) -> String
+            reads cycle, op_de
+        // Opérateur visé. Refus : Inconnu.
+        signal op(m: String) -> Org
+            reads op_de
+        // Gravité retenue si qualifié, sinon constatée. Refus : Inconnu.
+        signal gravite(m: String) -> Gravite
+            reads gravite_retenue, gravite_constatee
+        // Fiche complète (nature, référence, gravités, dates, motifs, état) pour `par` : la
+        // conformité, la direction et l'auditeur d'ORBITE, le personnel de l'opérateur visé, ou le
+        // "point_focal" / "autorite" de son État de tutelle. Chaque lecture est journalisée.
+        // Refus : Inconnu, Confidentiel (aucun de ces titres).
+        signal fiche(h: Horodatage, m: String, par: String) -> String
+            reads op_de, nature_de, detail_de, reference_de, gravite_constatee, gravite_retenue, constate_le, qualifie_le, motif_de, classement_de, cycle
+            calls ApiAcces.a_le_role, ApiAcces.agit_pour, ApiRef.etat_de, ApiRef.org_de_etat, Journal.noter
+        // Manquements de gravité 3 non terminaux de l'opérateur.
+        signal g3_non_clos(op: Org) -> Int
+            reads g3_ouverts_de
+        // Manquements non terminaux de l'opérateur.
+        signal ouverts(op: Org) -> Int
+            reads ouverts_de
+        // Manquements de l'opérateur qualifiés entre `de` et `a` (ms) et non annulés, par gravité
+        // retenue : [g1, g2, g3]. Pour les rapports annuels.
+        signal compter(op: Org, de: Horodatage, a: Horodatage) -> List<Int>
+            requires de <= a
+            reads op_de, qualifie_le, gravite_retenue, cycle
+        // Manquements en souffrance à `h`, les plus anciens d'abord : constatés et non notifiés
+        // depuis DELAI_NOTIFICATION_MS, instruits ou forclos et non qualifiés depuis
+        // DELAI_QUALIFICATION_MS, qualifiés et non clos après le délai de contestation. Un retard
+        // de gravité 3 est journalisé à chaque appel.
+        signal en_souffrance(h: Horodatage) -> List<String>
+            reads constate_le, qualifie_le, gravite_constatee, cycle
+            calls Journal.noter
+    }
+}
+
+// Nature d'un manquement d'ÉTAT (ApiConformite.constater_etat ; hors liste ⇒ "autre", texte
+// d'origine gardé). "immatriculation_tardive" : registre de 1975 non tenu dans le délai ;
+// "point_focal_injoignable" : escalade d'échelon 3 sans accusé ; "demande_sans_reponse" :
+// demande de suspension restée 30 jours sans réponse (ConfDemande.constater_silence) ;
+// "rapport_sans_accuse" : rapport annuel non accusé (ConfRapport.constater_silence).
+cell type ConfNatureEtat = String where value == "immatriculation_tardive" || value == "point_focal_injoignable" || value == "demande_sans_reponse" || value == "rapport_sans_accuse" || value == "autre"
+
+// Manquement d'un État participant. Pas de note ni de mesure (ORBITE ne sanctionne pas un
+// État) : l'État est notifié, peut répondre, et le manquement figure au rapport annuel qui lui est
+// adressé et, agrégé, aux indicateurs publics. Dédoublonné sur "etat|nature|reference".
+skeleton ConfManquementEtat {
+    const MAX_MANQUEMENTS_ETAT = 200000
+    const DELAI_REPONSE_ETAT_MS = 2592000000   // 30 jours pour les observations de l'État
+    memory {
+        etat_de: Map<String, Etat> [persistent]                // écrit par constater
+        invariant etat_de.size <= 200000
+        nature_de: Map<String, ConfNatureEtat> [persistent]
+        detail_de: Map<String, String> [persistent]
+        reference_de: Map<String, String> [persistent]
+        gravite_de: Map<String, Gravite> [persistent]
+        constate_le: Map<String, Horodatage> [persistent]
+        echeance_de: Map<String, Horodatage> [persistent]
+        message_de: Map<String, String> [persistent]            // notification au point focal
+        observations_de: Map<String, String> [persistent]
+        motif_de: Map<String, String> [persistent]
+        // "etat|nature|reference" → manquement non terminal (dédoublonnage), effacé en clos / classe.
+        courant: Map<String, String> [persistent]
+        invariant courant.size <= 200000
+    }
+    // Cycle d'un manquement d'État. Terminaux : clos, classe.
+    state cycle {
+        initial: constate
+        constate -> notifie         // notifier : point focal de l'État informé, échéance fixée
+        constate -> classe          // classer : constat infondé
+        notifie -> repondu          // repondre : observations de l'État
+        notifie -> sans_reponse     // constater_silence : échéance passée
+        repondu -> clos             // clore : retenu au rapport annuel
+        repondu -> classe           // classer : observations convaincantes
+        sans_reponse -> clos        // clore
+    }
+    face {
+        // Constate un manquement de l'État `etat` (participant, ou suspendu : ApiRef.etat_participant
+        // ne suffit pas, l'État doit exister — ApiRef.org_de_etat). Idempotent sur la clé de
+        // dédoublonnage. Renvoie l'id "ME-<n>". ApiConformite.constater_etat.
+        // Refus : Inconnu (État), MotifRequis (référence vide), Plein, Habilitation (par "systeme",
+        // "analyste" ou "conformite" d'ORBITE).
+        signal constater(h: Horodatage, etat: Etat, nature: ConfNatureEtat, gravite: Gravite, reference: String, detail: String, par: String) -> String
+            writes etat_de, nature_de, detail_de, reference_de, gravite_de, constate_le, courant
+            calls next_id, ApiAcces.a_le_role, ApiRef.org_de_etat, Journal.noter
+        // Notifie le point focal (ApiPasserelle.notifier, r "", urgence = gravité) : constate ->
+        // notifie, échéance h + DELAI_REPONSE_ETAT_MS. Renvoie l'échéance (ms).
+        // Refus : Inconnu, EtatInvalide, Habilitation (par "conformite" d'ORBITE, ou "systeme").
+        signal notifier(h: Horodatage, m: String, par: String) -> Horodatage
+            writes echeance_de, message_de
+            reads etat_de, nature_de, reference_de, gravite_de
+            moves constate -> notifie
+            calls ApiAcces.a_le_role, ApiRef.org_de_etat, ApiPasserelle.notifier, Journal.noter
+        // Observations de l'État avant l'échéance : notifie -> repondu. Renvoie "repondu".
+        // Refus : Inconnu, EtatInvalide, MotifRequis, Delai, Habilitation (par "point_focal" ou
+        // "autorite" de l'État visé : ApiAcces.agit_pour sur ApiRef.org_de_etat(etat)).
+        signal repondre(h: Horodatage, m: String, observations: String, par: String) -> String
+            writes observations_de
+            reads etat_de, echeance_de
+            moves notifie -> repondu
+            calls ApiAcces.a_le_role, ApiAcces.agit_pour, ApiRef.org_de_etat, Journal.noter
+        // Échéance passée sans observations : notifie -> sans_reponse. Renvoie "sans_reponse".
+        // Refus : Inconnu, EtatInvalide, Delai (échéance non atteinte), Habilitation (par "systeme").
+        signal constater_silence(h: Horodatage, m: String, par: String) -> String
+            reads echeance_de, etat_de
+            moves notifie -> sans_reponse
+            calls ApiAcces.a_le_role, Journal.noter
+        // Retient le manquement : repondu | sans_reponse -> clos. Renvoie "clos".
+        // Refus : Inconnu, EtatInvalide, Habilitation (par "conformite" d'ORBITE, ou "systeme").
+        signal clore(h: Horodatage, m: String, par: String) -> String
+            writes courant
+            reads etat_de, nature_de, reference_de
+            moves repondu -> clos, sans_reponse -> clos
+            calls ApiAcces.a_le_role, Journal.noter
+        // Classe sans suite : constate | repondu -> classe. Renvoie "classe".
+        // Refus : Inconnu, EtatInvalide, MotifRequis, Habilitation (par "conformite" d'ORBITE),
+        // QuatreYeux (valideur : ApiAcces.quatre_yeux).
+        signal classer(h: Horodatage, m: String, motif: String, par: String, valideur: String) -> String
+            writes motif_de, courant
+            reads etat_de, nature_de, reference_de
+            moves constate -> classe, repondu -> classe
+            calls ApiAcces.a_le_role, ApiAcces.quatre_yeux, Journal.noter
+        // État ; "inconnu" si l'id n'existe pas.
+        signal etat_manquement(m: String) -> String
+            reads cycle, etat_de
+        // À traiter par le balayage à `h`, au plus `n` : constatés non notifiés, notifiés échus,
+        // sans réponse ou répondus non clos depuis plus de 30 jours.
+        signal a_traiter(h: Horodatage, n: Int) -> List<String>
+            requires n > 0 && n <= 1000
+            reads constate_le, echeance_de, cycle
+        // Manquements de l'État constatés entre `de` et `a` et non classés, par gravité [g1, g2, g3].
+        signal compter(etat: Etat, de: Horodatage, a: Horodatage) -> List<Int>
+            requires de <= a
+            reads etat_de, constate_le, gravite_de, cycle
+    }
+}

@@ -1,0 +1,541 @@
+// Corps de CoordDossier : le cycle de la coordination d'un rapprochement.
+flesh CoordDossier {
+    on ouvrir(h, r, par) {
+        require ApiAcces.a_le_role(par, "systeme") || ApiAcces.a_le_role(par, "analyste") else Habilitation "{par} n'ouvre pas de coordination"
+        let etat_cj = ApiConjonctions.etat(r)
+        require etat_cj != "inconnu" else Inconnu "rapprochement inconnu : {r}"
+        require etat_cj == "alerte" else EtatInvalide "{r} n'est pas en alerte ({etat_cj})"
+        require objets_de.get(r) == () else Existe "coordination de {r} déjà ouverte"
+        require objets_de.size < MAX_DOSSIERS else Plein "plafond de {MAX_DOSSIERS} dossiers atteint"
+        require en_cours.size < MAX_EN_COURS else Plein "plafond de {MAX_EN_COURS} coordinations en cours atteint"
+        let objets_o = ApiConjonctions.objets(r)
+        require len(objets_o) == 2 else Inconnu "{r} n'a pas deux objets"
+        let a = Objet(objets_o[0])
+        let b = Objet(objets_o[1])
+        let tca = ApiConjonctions.tca(r)
+        require h < tca else Delai "TCA de {r} déjà passé"
+        let parties_o = []
+        for o in objets_o {
+            let p = to_string(ApiRef.proprietaire(Objet(o)))
+            if p != "inconnu" && !contains(parties_o, p) { parties_o.push(p) }
+        }
+        let niv = ApiConjonctions.niveau(r)
+        let version = ApiPriorites.version_en_vigueur(h)
+        // Proposition par défaut, ou raison d'un arbitrage direct.
+        let raison = ""
+        let defaut = ""
+        if ApiOperations.arbitrage_centralise() {
+            raison = "crise"
+        } else {
+            let q = try { ApiPriorites.qui_manoeuvre(h, r, a, b) }
+            if q.error != () {
+                if q.kind != "Ferme" { fail(q) }
+                raison = "sans_designation"
+            } else {
+                defaut = to_string(q.value)
+                if defaut == "" || !ApiRef.peut_manoeuvrer(Objet(defaut)) {
+                    raison = "sans_designation"
+                } else if !any(parties_o, p => ApiOperateurs.est_actif(Org(p), h)) {
+                    raison = "sans_designation"
+                }
+            }
+        }
+        let lim = _limite(r, tca, if raison == "" { defaut } else { "" })
+        if raison == "" && to_int(h) > lim - MARGE_ARBITRAGE {
+            raison = "urgence"
+        }
+        if to_int(h) > lim {
+            require ApiAcces.a_le_role(par, "analyste") else Delai "limite d'action de {r} dépassée : arbitrage seul, ouvert par l'analyste"
+        }
+        let ech = to_int(h)
+        if raison == "" {
+            ech = min(to_int(h) + _plus_long_delai(parties_o, niv), lim - MARGE_ARBITRAGE)
+        }
+        let lim_s = max(lim, to_int(h))
+        limite_de.set(r, Horodatage(lim_s))
+        echeance_de.set(r, Horodatage(ech))
+        ouvert_le.set(r, h)
+        objets_de.set(r, objets_o)
+        parties_de.set(r, parties_o)
+        defaut_de.set(r, Objet(defaut))
+        version_de.set(r, version)
+        propose_de.set(r, Objet(if raison == "" { defaut } else { "" }))
+        tour_de.set(r, 1)
+        en_cours.set(r, Horodatage(ech))
+        let _ = CoordGrappe.inscrire(h, r)
+        if raison == "" {
+            transition(r, "ouverte", "proposee")
+            for p in parties_o {
+                let _ = CoordReponse.attendre(h, r, 1, Org(p))
+            }
+            let _ = CoordEchange.notifier(h, r, "proposition", "tour 1 : {defaut} manoeuvre selon les regles {version} ; reponse attendue avant {ech}")
+            for p in parties_o {
+                let ast = try { ApiOperateurs.astreinte(Org(p), h) }
+                if ast.error != () || ast.value == "" {
+                    let _ = try { ApiEscalade.escalader(h, r, Org(p), "astreinte injoignable", "systeme") }
+                }
+            }
+        } else {
+            transition(r, "ouverte", "arbitrage")
+            let _ = CoordArbitrage.saisir(h, r, 1, CoordRaison(raison))
+        }
+        let _ = Journal.noter(h, "coordination", par, "coordination {r} ouverte : {get_status(r) ?? \"ouverte\"}, propose '{defaut}', raison '{raison}'")
+        return "CO-{r}"
+    }
+    on repondre(h, r, reponse, contre, motif, par) {
+        require objets_de.get(r) != () else Inconnu "aucune coordination pour {r}"
+        let st = get_status(r) ?? "ouverte"
+        require st == "proposee" || st == "desaccord" else EtatInvalide "coordination {r} : {st}"
+        require ApiAcces.a_le_role(par, "dynamicien") || ApiAcces.a_le_role(par, "chef_de_mission") else Habilitation "{par} n'est ni dynamicien ni chef de mission"
+        let org = ApiAcces.employeur(par)
+        let parties_r = parties_de.get(r) ?? []
+        require contains(parties_r, to_string(org)) && ApiAcces.agit_pour(par, org) else Habilitation "{par} n'agit pour aucune partie de {r}"
+        let tour = tour_de.get(r) ?? 1
+        let ech = echeance_de.get(r) ?? h
+        require h <= ech else Delai "échéance de réponse dépassée ({ech})"
+        let objets_r = objets_de.get(r) ?? []
+        let propose = propose_de.get(r) ?? ""
+        if reponse == "accepte" {
+            let e = try { CoordReponse.enregistrer(h, r, tour, org, "accepte", "", "", par) }
+            if e.error != () {
+                if e.kind == "Inconnu" { fail("EtatInvalide", "{org} n'est pas attendue au tour {tour} de {r} (déjà répondu)") }
+                fail(e)
+            }
+            let _ = CoordEchange.noter(h, r, org, "reponse", "accepte {propose} (tour {tour})", par)
+            let _ = Journal.noter(h, "coordination", par, "{org} accepte {propose} sur {r} (tour {tour})")
+            if CoordReponse.toutes_acceptees(r, tour) {
+                if st == "proposee" { transition(r, "proposee", "accord") } else { transition(r, "desaccord", "accord") }
+                return arreter(h, r)
+            }
+            return st
+        }
+        // Refus avec contre-proposition.
+        require motif != "" else MotifRequis "refus sans motif"
+        let autre = if to_string(propose) == objets_r[0] { objets_r[1] } else { objets_r[0] }
+        require to_string(contre) == autre && contre != propose else Incoherent "la contre-proposition doit être l'autre objet ({autre})"
+        require ApiRef.peut_manoeuvrer(contre) else Incoherent "{contre} ne peut pas manœuvrer"
+        let e = try { CoordReponse.enregistrer(h, r, tour, org, "refuse", contre, motif, par) }
+        if e.error != () {
+            if e.kind == "Inconnu" { fail("EtatInvalide", "{org} n'est pas attendue au tour {tour} de {r} (déjà répondu)") }
+            fail(e)
+        }
+        let propre = replace(motif, "|", "/")
+        let _ = CoordEchange.noter(h, r, org, "reponse", "refuse {propose}, contre-propose {contre} : {propre}", par)
+        let _ = Journal.noter(h, "coordination", par, "{org} refuse {propose} sur {r}, contre-propose {contre}")
+        if st == "desaccord" {
+            transition(r, "desaccord", "arbitrage")
+            let _ = CoordReponse.rendre_caduques(h, r)
+            let _ = CoordArbitrage.saisir(h, r, tour, "desaccord")
+            return "arbitrage"
+        }
+        // Premier refus : la contre-proposition devient la proposition, tour + 1.
+        transition(r, "proposee", "desaccord")
+        let _ = CoordReponse.rendre_caduques(h, r)
+        let nt = tour + 1
+        require nt <= MAX_TOURS else EtatInvalide "{r} : plus de {MAX_TOURS} tours"
+        let tca = ApiConjonctions.tca(r)
+        let lim = _limite(r, tca, to_string(contre))
+        let autres = parties_r.filter(p => p != to_string(org))
+        let niv = ApiConjonctions.niveau(r)
+        tour_de.set(r, nt)
+        propose_de.set(r, contre)
+        if to_int(h) > lim - MARGE_ARBITRAGE {
+            _fixer(r, to_int(h), max(lim, to_int(h)))
+            en_cours.set(r, h)
+            transition(r, "desaccord", "arbitrage")
+            let _ = CoordArbitrage.saisir(h, r, nt, "urgence")
+            return "arbitrage"
+        }
+        let nech = min(to_int(h) + _plus_long_delai(autres, niv), lim - MARGE_ARBITRAGE)
+        _fixer(r, nech, lim)
+        en_cours.set(r, Horodatage(nech))
+        if len(autres) == 0 {
+            // Les deux objets ont le même propriétaire : sa contre-proposition vaut accord.
+            transition(r, "desaccord", "accord")
+            return arreter(h, r)
+        }
+        for p in autres {
+            let _ = CoordReponse.attendre(h, r, nt, Org(p))
+        }
+        let _ = CoordEchange.notifier(h, r, "proposition", "tour {nt} : contre-proposition de {org}, {contre} manoeuvre ; reponse attendue avant {nech}")
+        return "desaccord"
+    }
+    on arreter(h, r) {
+        require propose_de.get(r) != () else Inconnu "aucune coordination pour {r}"
+        let st = get_status(r) ?? "ouverte"
+        require st == "accord" else EtatInvalide "coordination {r} : {st}"
+        let propose = propose_de.get(r) ?? ""
+        let p = try { CoordVerrou.poser(h, r, propose, "accord", "accord des parties", "systeme", "") }
+        if p.error == () {
+            transition(r, "accord", "arretee")
+            let _ = CoordEchange.notifier(h, r, "decision", "designation arretee par accord : {propose} manoeuvre (decision {p.value})")
+            let _ = Journal.noter(h, "coordination", "systeme", "{r} arrêtée par accord : {propose}, décision {p.value}")
+            return "arretee"
+        }
+        let raison = if p.kind == "Conflit" { "grappe" } else { "verrou_refuse" }
+        transition(r, "accord", "arbitrage")
+        let _ = CoordArbitrage.saisir(h, r, tour_de.get(r) ?? 1, CoordRaison(raison))
+        let _ = Journal.noter(h, "coordination", "systeme", "{r} : accord sans verrou ({p.kind}), arbitrage")
+        return "arbitrage"
+    }
+    on constater_silence(h, r, par) {
+        require ApiAcces.a_le_role(par, "systeme") || ApiAcces.a_le_role(par, "analyste") else Habilitation "{par} ne constate pas les silences"
+        require echeance_de.get(r) != () else Inconnu "aucune coordination pour {r}"
+        let st = get_status(r) ?? "ouverte"
+        require st == "proposee" || st == "desaccord" else EtatInvalide "coordination {r} : {st}"
+        let ech = echeance_de.get(r) ?? h
+        require h > ech else Delai "échéance {ech} non atteinte"
+        let n_m = CoordReponse.constater_muettes(h, r)
+        let lim = to_int(limite_de.get(r) ?? h)
+        if ApiEscalade.reprise(r) || to_int(h) >= lim - MARGE_ARBITRAGE {
+            if st == "proposee" { transition(r, "proposee", "arbitrage") } else { transition(r, "desaccord", "arbitrage") }
+            let _ = CoordArbitrage.saisir(h, r, tour_de.get(r) ?? 1, "silence")
+            let _ = Journal.noter(h, "coordination", par, "{r} : silence de {n_m} partie(s), arbitrage d'ORBITE ({ApiRef.orbite()})")
+        }
+        return n_m
+    }
+    on arbitrer(h, r, objet, motif, par, valideur) {
+        require objets_de.get(r) != () else Inconnu "aucune coordination pour {r}"
+        let urgence = CoordArbitrage.en_retard(r) && valideur == par && (ApiAcces.a_le_role(par, "superviseur") || ApiAcces.a_le_role(par, "direction")) && ApiAcces.en_urgence_pour(par, r, h)
+        if !urgence {
+            require ApiAcces.a_le_role(par, "analyste") else Habilitation "{par} n'est pas analyste d'ORBITE"
+            require ApiAcces.quatre_yeux(par, valideur) && ApiAcces.a_le_role(valideur, "superviseur") else QuatreYeux "{valideur} ne peut pas contre-signer {par}"
+        }
+        require motif != "" else MotifRequis "arbitrage sans motif"
+        let objets_a = objets_de.get(r) ?? []
+        require objet == "" || contains(objets_a, to_string(objet)) else Incoherent "{objet} n'est pas un objet de {r}"
+        let st = get_status(r) ?? "ouverte"
+        if st == "proposee" || st == "desaccord" {
+            let ech = echeance_de.get(r) ?? h
+            require h > ech else EtatInvalide "les parties ont la main jusqu'à {ech}"
+            if st == "proposee" { transition(r, "proposee", "arbitrage") } else { transition(r, "desaccord", "arbitrage") }
+            let rs = if st == "desaccord" { "desaccord" } else { "silence" }
+            let _ = CoordArbitrage.saisir(h, r, tour_de.get(r) ?? 1, CoordRaison(rs))
+        } else {
+            require st == "arbitrage" else EtatInvalide "coordination {r} : {st}"
+        }
+        let d = CoordVerrou.poser(h, r, objet, "arbitrage", motif, par, valideur)
+        transition(r, "arbitrage", "arretee")
+        let _ = CoordArbitrage.rendre(h, r)
+        let propre = replace(motif, "|", "/")
+        let verdict = if objet == "" { "ne pas manoeuvrer" } else { "{objet} manoeuvre" }
+        let _ = CoordEchange.noter(h, r, "ORG-ORBITE", "arbitrage", "arbitrage : {verdict} ({propre})", par)
+        let _ = CoordEchange.notifier(h, r, "decision", "designation arretee par arbitrage : {verdict} (decision {d})")
+        let mode = if urgence { "seul en accès d'urgence — revue a posteriori" } else { "valideur {valideur}" }
+        let _ = Journal.noter(h, "coordination", par, "{r} arbitrée : '{objet}', décision {d}, {mode}")
+        return "arretee"
+    }
+    on rouvrir(h, r, motif, par) {
+        require ApiAcces.a_le_role(par, "analyste") || ApiAcces.a_le_role(par, "systeme") else Habilitation "{par} ne rouvre pas de coordination"
+        require motif != "" else MotifRequis "rouverture sans motif"
+        require objets_de.get(r) != () else Inconnu "aucune coordination pour {r}"
+        let st = get_status(r) ?? "ouverte"
+        require st == "arretee" else EtatInvalide "coordination {r} : {st}"
+        let tour = tour_de.get(r) ?? 1
+        let nt = tour + 1
+        require nt <= MAX_TOURS else EtatInvalide "{r} : plus de {MAX_TOURS} tours"
+        let d = CoordVerrou.decision(r)
+        let ancien = CoordVerrou.designe(r, "systeme")
+        if d != "" {
+            let se = CoordSuivi.etat(d)
+            require se != "execute" else EtatInvalide "plan de {d} exécuté, non encore vérifié : attendre la vérification"
+        }
+        // Retrait du plan non exécuté de l'ancien désigné.
+        let plan_r = if d != "" { CoordSuivi.plan(d) } else { "" }
+        if plan_r == "" { plan_r = ApiManoeuvres.plan_de(r) }
+        if plan_r != "" {
+            let ep = ApiManoeuvres.etat(plan_r)
+            if ep == "declare" || ep == "crible" || ep == "approuve" {
+                let _ = ApiManoeuvres.retirer(h, plan_r, motif, "systeme")
+            }
+            require ApiManoeuvres.etat(plan_r) != "approuve" else EtatInvalide "plan {plan_r} encore approuvé après retrait"
+        }
+        transition(r, "arretee", "liberee")
+        let _ = CoordVerrou.lever(h, r, motif)
+        transition(r, "liberee", "rouverte")
+        let objets_r = objets_de.get(r) ?? []
+        let a = Objet(objets_r[0])
+        let b = Objet(objets_r[1])
+        let parties_r = parties_de.get(r) ?? []
+        let version = ApiPriorites.version_en_vigueur(h)
+        let raison = ""
+        let defaut = ""
+        if ApiOperations.arbitrage_centralise() {
+            raison = "crise"
+        } else {
+            let q = try { ApiPriorites.qui_manoeuvre(h, r, a, b) }
+            if q.error != () {
+                if q.kind != "Ferme" { fail(q) }
+                raison = "sans_designation"
+            } else {
+                defaut = to_string(q.value)
+                if defaut == "" || !ApiRef.peut_manoeuvrer(Objet(defaut)) { raison = "sans_designation" }
+            }
+        }
+        let tca = ApiConjonctions.tca(r)
+        let lim = _limite(r, tca, if raison == "" { defaut } else { "" })
+        let niv = ApiConjonctions.niveau(r)
+        let ech = to_int(h)
+        if raison == "" {
+            ech = to_int(h) + _plus_long_delai(parties_r, niv)
+            if ech > lim - MARGE_ARBITRAGE { raison = "rouverture_tardive" }
+        }
+        if raison != "" { ech = to_int(h) }
+        tour_de.set(r, nt)
+        defaut_de.set(r, Objet(defaut))
+        version_de.set(r, version)
+        propose_de.set(r, Objet(if raison == "" { defaut } else { "" }))
+        _fixer(r, ech, max(lim, ech))
+        en_cours.set(r, Horodatage(ech))
+        let propre = replace(motif, "|", "/")
+        let _ = CoordEchange.noter(h, r, "ORG-ORBITE", "rouverture", "rouverture (ancien designe {ancien}, decision {d} levee) : {propre}", par)
+        if raison == "" {
+            transition(r, "rouverte", "proposee")
+            for p in parties_r {
+                let _ = CoordReponse.attendre(h, r, nt, Org(p))
+            }
+            let _ = CoordEchange.notifier(h, r, "rouverture", "tour {nt} : {defaut} manoeuvre selon les regles {version} ; reponse attendue avant {ech}")
+        } else {
+            transition(r, "rouverte", "arbitrage")
+            let _ = CoordArbitrage.saisir(h, r, nt, CoordRaison(raison))
+            let _ = CoordEchange.notifier(h, r, "rouverture", "tour {nt} : arbitrage d'ORBITE ({raison})")
+        }
+        let _ = Journal.noter(h, "coordination", par, "{r} rouverte (tour {nt}) : {propre} — {get_status(r) ?? \"rouverte\"}")
+        return get_status(r) ?? "rouverte"
+    }
+    on recaler(h, r, par) {
+        require ApiAcces.a_le_role(par, "systeme") || ApiAcces.a_le_role(par, "analyste") else Habilitation "{par} ne recale pas"
+        require parties_de.get(r) != () else Inconnu "aucune coordination pour {r}"
+        let st = get_status(r) ?? "ouverte"
+        require st == "proposee" || st == "desaccord" else EtatInvalide "coordination {r} : {st}"
+        let ancienne = echeance_de.get(r) ?? h
+        let maj = ApiConjonctions.mis_a_jour(r)
+        if maj <= (recale_le.get(r) ?? 0) { return ancienne }
+        recale_le.set(r, maj)
+        let tca = ApiConjonctions.tca(r)
+        let lim = _limite(r, tca, to_string(propose_de.get(r) ?? ""))
+        if to_int(h) > lim - MARGE_ARBITRAGE {
+            let lim_s = max(lim, to_int(h))
+            let nech = min(to_int(ancienne), lim_s)
+            _fixer(r, nech, lim_s)
+            en_cours.set(r, Horodatage(nech))
+            if st == "proposee" { transition(r, "proposee", "arbitrage") } else { transition(r, "desaccord", "arbitrage") }
+            let _ = CoordArbitrage.saisir(h, r, tour_de.get(r) ?? 1, "urgence")
+            let _ = Journal.noter(h, "coordination", par, "{r} recalée : limite d'action trop proche, arbitrage")
+            return Horodatage(nech)
+        }
+        let niv = ApiConjonctions.niveau(r)
+        let nech = min(min(to_int(ancienne), to_int(h) + _plus_long_delai(parties_de.get(r) ?? [], niv)), lim - MARGE_ARBITRAGE)
+        _fixer(r, nech, lim)
+        en_cours.set(r, Horodatage(nech))
+        if nech < to_int(ancienne) {
+            let _ = CoordEchange.notifier(h, r, "relance", "echeance avancee a {nech} (rapprochement mis a jour)")
+            let _ = Journal.noter(h, "coordination", par, "{r} recalée : échéance {ancienne} -> {nech}")
+        }
+        return Horodatage(nech)
+    }
+    on reverifier(h, r, par) {
+        require ApiAcces.a_le_role(par, "systeme") || ApiAcces.a_le_role(par, "analyste") else Habilitation "{par} ne revérifie pas"
+        let st = get_status(r)
+        require st != () else Inconnu "aucune coordination pour {r}"
+        if st != "arretee" { return true }
+        let des = CoordVerrou.designe(r, "systeme")
+        if des == "" { return true }
+        let motif_rv = if !ApiRef.peut_manoeuvrer(des) {
+            "{des} ne peut plus manoeuvrer"
+        } else if !ApiOperateurs.est_actif(ApiRef.proprietaire(des), h) {
+            "proprietaire de {des} inactif"
+        } else {
+            ""
+        }
+        if motif_rv == "" { return true }
+        let _ = try { rouvrir(h, r, motif_rv, "systeme") }
+        return false
+    }
+    on balayer(h, par) {
+        require ApiAcces.a_le_role(par, "systeme") else Habilitation "{par} ne balaie pas"
+        let dernier = balaye_le.get("balayage") ?? 0
+        require h >= dernier else Incoherent "balayage à {h} antérieur au dernier ({dernier})"
+        balaye_le.set("balayage", h)
+        let n_chg = 0
+        let cles = en_cours.keys
+        for r in cles {
+            let avant = get_status(r) ?? "ouverte"
+            let ce = try { ApiConjonctions.etat(r) }
+            let etat_cj = if ce.error == () { ce.value } else { "" }
+            if etat_cj == "resolu" || etat_cj == "passe" || etat_cj == "collision" {
+                let _ = try { clore(h, r, CoordMotifCloture(etat_cj), "systeme") }
+            } else {
+                if avant == "proposee" || avant == "desaccord" {
+                    let _ = try { recaler(h, r, "systeme") }
+                }
+                let st = get_status(r) ?? "ouverte"
+                if st == "proposee" || st == "desaccord" {
+                    let _ = try { CoordReponse.relancer(h, r, "systeme") }
+                    if h > (echeance_de.get(r) ?? h) {
+                        let _ = try { constater_silence(h, r, "systeme") }
+                    }
+                }
+                let g = CoordGrappe.grappe_de_r(r)
+                if g != "" && CoordGrappe.etat(g) == "formee" {
+                    let _ = try { CoordGrappe.regler(h, g, "systeme") }
+                }
+                if CoordArbitrage.courante(r) != "" {
+                    let _ = try { CoordArbitrage.surveiller(h, r, "systeme") }
+                }
+                if (get_status(r) ?? "ouverte") == "arretee" {
+                    let _ = try { reverifier(h, r, "systeme") }
+                }
+                if (get_status(r) ?? "ouverte") == "arretee" {
+                    let d = CoordVerrou.decision(r)
+                    if d != "" {
+                        let _ = try { CoordSuivi.suivre(h, d, "systeme") }
+                    }
+                }
+            }
+            if (get_status(r) ?? "ouverte") != avant { n_chg = n_chg + 1 }
+        }
+        return n_chg
+    }
+    on retards(h, n, par) {
+        require ApiAcces.a_le_role(par, "analyste") || ApiAcces.a_le_role(par, "superviseur") || ApiAcces.a_le_role(par, "exploitant") else Habilitation "{par} ne lit pas les retards"
+        let age = to_int(h) - to_int(balaye_le.get("balayage") ?? 0)
+        let res_t = ["balayage:{age}"]
+        for r in en_cours.keys {
+            let st = get_status(r) ?? "ouverte"
+            if len(res_t) < n && (st == "proposee" || st == "desaccord") && h > (en_cours.get(r) ?? h) {
+                res_t.push(r)
+            }
+        }
+        return res_t
+    }
+    on clore(h, r, motif, par) {
+        require ApiAcces.a_le_role(par, "systeme") || ApiAcces.a_le_role(par, "analyste") else Habilitation "{par} ne clôt pas de coordination"
+        let st = get_status(r)
+        require st != () else Inconnu "aucune coordination pour {r}"
+        require st != "close" else EtatInvalide "coordination {r} déjà close"
+        let etat_cj = ApiConjonctions.etat(r)
+        require etat_cj == to_string(motif) else EtatInvalide "{r} est {etat_cj} chez conjonctions, pas {motif}"
+        transition(r, st, "close")
+        let _ = CoordVerrou.clore(h, r)
+        let _ = CoordReponse.rendre_caduques(h, r)
+        let _ = CoordArbitrage.abandonner(h, r)
+        let _ = CoordGrappe.retirer(h, r)
+        en_cours.delete(r)
+        let _ = CoordEchange.noter(h, r, "ORG-ORBITE", "cloture", "coordination close : rapprochement {motif}", par)
+        let _ = Journal.noter(h, "coordination", par, "{r} close ({motif}, depuis {st})")
+        return "close"
+    }
+    on demander_rouverture(h, r, motif, par) {
+        let parties_r = parties_de.get(r)
+        require parties_r != () else Inconnu "aucune coordination pour {r}"
+        require ApiAcces.a_le_role(par, "dynamicien") || ApiAcces.a_le_role(par, "chef_de_mission") else Habilitation "{par} n'est ni dynamicien ni chef de mission"
+        let org = ApiAcces.employeur(par)
+        require contains(parties_r, to_string(org)) && ApiAcces.agit_pour(par, org) else Habilitation "{par} n'agit pour aucune partie de {r}"
+        let st = get_status(r) ?? "ouverte"
+        require st == "arretee" else EtatInvalide "coordination {r} : {st}"
+        require motif != "" else MotifRequis "demande de rouverture sans motif"
+        let propre = replace(motif, "|", "/")
+        let _ = CoordEchange.notifier(h, r, "rouverture", "demande de rouverture de {org} pour l'analyste de permanence : {propre}")
+        return CoordEchange.noter(h, r, org, "rouverture", "demande de rouverture ({par}) : {propre}", par)
+    }
+    on fiche(h, r, par) {
+        require objets_de.get(r) != () else Inconnu "aucune coordination pour {r}"
+        let emp = try { ApiAcces.employeur(par) }
+        require emp.error == () else Habilitation "personne inconnue : {par}"
+        let org = emp.value
+        let parties_r = parties_de.get(r) ?? []
+        let objets_r = objets_de.get(r) ?? []
+        let voit = true
+        if org == ApiRef.orbite() {
+            let lecteur = ApiAcces.a_le_role(par, "analyste") || ApiAcces.a_le_role(par, "superviseur") || ApiAcces.a_le_role(par, "exploitant") || ApiAcces.a_le_role(par, "conformite") || ApiAcces.a_le_role(par, "direction") || ApiAcces.a_le_role(par, "auditeur")
+            require lecteur else Habilitation "{par} n'est pas un employé actif d'ORBITE"
+        } else {
+            require contains(parties_r, to_string(org)) else Confidentiel "{org} n'est pas partie à {r}"
+            require ApiAcces.agit_pour(par, org) else Habilitation "{par} n'agit pas pour {org}"
+            for o in objets_r {
+                if !ApiDonnees.peut_recevoir(org, Objet(o), r, h) { voit = false }
+            }
+            if voit {
+                for o in objets_r {
+                    let _ = ApiDonnees.tracer(h, org, Objet(o), r, "fiche")
+                }
+            }
+        }
+        let des = if voit { CoordVerrou.designe(r, "systeme") } else { "" }
+        let dec = if voit { CoordVerrou.decision(r) } else { "" }
+        return CoordFiche {
+            r: r, etat: get_status(r) ?? "ouverte", objets: objets_r, parties: parties_r,
+            tour: tour_de.get(r) ?? 1, propose: propose_de.get(r) ?? "",
+            echeance: echeance_de.get(r) ?? 0, limite: limite_de.get(r) ?? 0,
+            designe: des, decision: dec, grappe: CoordGrappe.grappe_de_r(r), saisine: CoordArbitrage.courante(r)
+        }
+    }
+    on phase(r) {
+        return get_status(r) ?? "ouverte"
+    }
+    on etat(r) {
+        if objets_de.get(r) == () { return "inconnue" }
+        return get_status(r) ?? "ouverte"
+    }
+    on echeance(r) {
+        let e = echeance_de.get(r)
+        require e != () else Inconnu "aucune coordination pour {r}"
+        return e
+    }
+    on limite(r) {
+        let l = limite_de.get(r)
+        require l != () else Inconnu "aucune coordination pour {r}"
+        return l
+    }
+    on proposition(r) {
+        let p = propose_de.get(r)
+        require p != () else Inconnu "aucune coordination pour {r}"
+        return p
+    }
+    on defaut(r) {
+        let d = defaut_de.get(r)
+        require d != () else Inconnu "aucune coordination pour {r}"
+        let v = version_de.get(r) ?? ""
+        return "{d}|{v}"
+    }
+    on tour(r) {
+        let t = tour_de.get(r)
+        require t != () else Inconnu "aucune coordination pour {r}"
+        return t
+    }
+    on objets(r) {
+        let o = objets_de.get(r)
+        require o != () else Inconnu "aucune coordination pour {r}"
+        return o
+    }
+    on parties(r) {
+        let p = parties_de.get(r)
+        require p != () else Inconnu "aucune coordination pour {r}"
+        return p
+    }
+    // Limite d'action (ms) : TCA − préavis de la propulsion du proposé (impulsionnelle si aucun proposé).
+    on _limite(r: Rapprochement, tca: Horodatage, propose: String) {
+        let prop = if propose == "" { Propulsion("impulsionnelle") } else { ApiRef.propulsion(Objet(propose)) }
+        return to_int(tca) - to_int(ApiPriorites.preavis(prop))
+    }
+    // Plus long délai de réponse contractuel des parties au niveau `niv` (ms).
+    on _plus_long_delai(parties_l: List<String>, niv: Niveau) {
+        let m = 0
+        for p in parties_l {
+            let dl = try { ApiOperateurs.delai_reponse(Org(p), niv) }
+            if dl.error == () { m = max(m, to_int(dl.value)) }
+        }
+        return m
+    }
+    // Écrit échéance et limite dans l'ordre que leurs invariants exigent (ech <= lim).
+    on _fixer(r: Rapprochement, ech: Int, lim: Int) {
+        if Horodatage(lim) >= (echeance_de.get(r) ?? 0) {
+            limite_de.set(r, Horodatage(lim))
+            echeance_de.set(r, Horodatage(ech))
+        } else {
+            echeance_de.set(r, Horodatage(ech))
+            limite_de.set(r, Horodatage(lim))
+        }
+    }
+}

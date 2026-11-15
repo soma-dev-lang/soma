@@ -1,0 +1,6 @@
+ApiPriorites.qui_manoeuvre: calls PrioDesignation.designer
+ApiPriorites.version_en_vigueur: calls PrioVersion.en_vigueur_a
+ApiPriorites.derogation: calls PrioDerogation.en_cours
+ApiPriorites.preavis: calls PrioTable.preavis_courant
+ApiPriorites.decision_de: calls PrioDesignation.decision_de
+ApiPriorites.balayer: calls PrioEcheancier.balayer

@@ -1,0 +1,145 @@
+// meteo — corps du FACTEUR D'INCERTITUDE et de la RONDE.
+flesh MetIncertitude {
+    on arreter(h, par) {
+        require ApiAcces.a_le_role(par, "systeme") else Habilitation "arrêt des facteurs réservé à systeme"
+        let alerte = MetTempete.courante()
+        let version = MetBareme.en_vigueur_a(h)
+        let kp_r = try { MetMesure.kp_courant(h) }
+        let silence = MetVeille.en_silence("kp")
+        let frais = kp_r.error == () && !silence
+        let b = if frais { MetBareme.bande(to_int(kp_r.value)) } else { MetBareme.bande(70) }
+        let kp_ref = if frais { MetMesure.derniere_de("kp", h) } else { "silence" }
+        let changes = 0
+        for reg in ["leo", "meo", "geo", "heo"] {
+            let f0 = to_int(MetBareme.facteur(Regime(reg), b))
+            let f = if alerte != "" && MetRenforce.renforce(Regime(reg)) {
+                max(f0, to_int(MetRenforce.facteur_de(alerte, Regime(reg))))
+            } else {
+                f0
+            }
+            let fond = "kp={kp_ref};tempete={alerte};bareme={version}"
+            let ancien = to_int(facteur_arrete.get(reg) ?? 100)
+            let st = get_status(reg) ?? "nominal"
+            let cible = if f > 100 { "eleve" } else { "nominal" }
+            if st == "nominal" && cible == "eleve" {
+                transition(reg, "nominal", "eleve")
+            } else if st == "eleve" && cible == "nominal" {
+                transition(reg, "eleve", "nominal")
+            } else if st == "perime" && cible == "eleve" {
+                transition(reg, "perime", "eleve")
+            } else if st == "perime" && cible == "nominal" {
+                transition(reg, "perime", "nominal")
+            }
+            facteur_arrete.set(reg, Pourcent(f))
+            fondement.set(reg, fond)
+            arrete_le.set(reg, h)
+            if f != ancien {
+                require paliers.size < MAX_PALIERS else Plein "journal des paliers plein"
+                paliers.push("{h} | {reg} | {ancien} -> {f} | {fond}")
+                let _ = Journal.noter(h, "meteo", par, "facteur {reg} : {ancien} -> {f} ({fond})")
+                changes = changes + 1
+            }
+        }
+        return changes
+    }
+
+    on constater_retard(h, par) {
+        require ApiAcces.a_le_role(par, "systeme") || ApiAcces.a_le_role(par, "exploitant") else Habilitation "{par} n'est ni systeme ni exploitant d'ORBITE"
+        let t = to_int(h)
+        let n = 0
+        for reg in ["leo", "meo", "geo", "heo"] {
+            let at = arrete_le.get(reg)
+            let st = get_status(reg) ?? "nominal"
+            if at != () && st != "perime" && t - to_int(at) > VALIDITE_ARRET {
+                if st == "nominal" {
+                    transition(reg, "nominal", "perime")
+                } else {
+                    transition(reg, "eleve", "perime")
+                }
+                n = n + 1
+            }
+        }
+        if n > 0 {
+            let inc = try { ApiOperations.declarer_incident(h, "INC-MET-RETARD-{h}", 2, "meteo", "facteurs d'incertitude non arretes depuis plus de 30 min : precaution appliquee", par) }
+            let _ = Journal.noter(h, "meteo", par, "{n} regimes en facteur perime")
+        }
+        return n
+    }
+
+    on facteur(regime, h) {
+        let r = to_string(regime)
+        let st = get_status(r) ?? "nominal"
+        let at = arrete_le.get(r)
+        let f = facteur_arrete.get(r)
+        if at != () && f != () && st != "perime" && to_int(h) - to_int(at) <= VALIDITE_ARRET {
+            return f
+        }
+        return MetBareme.facteur(regime, "tempete")
+    }
+
+    on facteur_a(regime, a) {
+        let r = to_string(regime)
+        let ta = to_int(a)
+        let valeur_a = 100
+        for ligne in paliers {
+            let p = split(ligne, " | ")
+            if len(p) >= 3 && p[1] == r && to_int(p[0]) <= ta {
+                let fl = split(p[2], " -> ")
+                valeur_a = to_int(fl[1])
+            }
+        }
+        return Pourcent(valeur_a)
+    }
+}
+
+flesh MetRonde {
+    on balayer(h, par) {
+        require ApiAcces.a_le_role(par, "systeme") else Habilitation "ronde réservée à systeme"
+        let total = 0
+        let r1 = try { MetSource.balayer(h, "systeme") }
+        total = total + _compte(h, "sources", r1)
+        let r2 = try { MetVeille.surveiller(h, "systeme") }
+        if r2.error != () { let _ = _compte(h, "veille", r2) }
+        for p in MetPrevision.echues(h) {
+            let rv = try { MetPrevision.verifier(h, p, "systeme") }
+            if rv.error == () { total = total + 1 }
+        }
+        let avant = MetTempete.courante()
+        let r4 = try { MetTempete.evaluer(h, "systeme") }
+        if r4.error != () {
+            let _ = _compte(h, "tempete", r4)
+        } else if MetTempete.courante() != avant {
+            total = total + 1
+        }
+        let r5 = try { MetRenforce.prolonger(h, "systeme") }
+        total = total + _compte(h, "prolongation", r5)
+        let r6 = try { MetIncertitude.constater_retard(h, "systeme") }
+        total = total + _compte(h, "retard", r6)
+        let r7 = try { MetIncertitude.arreter(h, "systeme") }
+        total = total + _compte(h, "facteurs", r7)
+        let r8 = try { MetAvis.suivre(h, "systeme") }
+        if r8.error != () { let _ = _compte(h, "avis", r8) }
+        for j in MetJournee.a_clore(h) {
+            let rc = try { MetJournee.clore(h, Jour(to_int(j)), "systeme") }
+            if rc.error == () { total = total + 1 }
+        }
+        for j in MetJournee.a_sceller(h) {
+            let rs = try { MetJournee.sceller(h, Jour(to_int(j)), "systeme") }
+            if rs.error == () {
+                total = total + 1
+                let ra = try { MetMesure.archiver(h, Jour(to_int(j)), "systeme") }
+                total = total + _compte(h, "archivage", ra)
+            }
+        }
+        return total
+    }
+
+    // Compte d'un traitement de la ronde ; un refus est journalisé et vaut 0.
+    on _compte(h: Horodatage, etape: String, r: Map) {
+        if r.error == () {
+            return to_int(r.value)
+        }
+        let _ = Journal.noter(h, "meteo", "systeme", "ronde : {etape} en defaut ({r.kind})")
+        return 0
+    }
+}

@@ -1,0 +1,93 @@
+// operateurs — CHAÎNE DE CONTACTS : derrière l'astreinte, les personnes que l'escalade
+// appelle ensuite chez l'opérateur (échelon 2 : chef de mission ; échelon 4 : direction de
+// l'opérateur). Un contact ne compte que s'il a CONFIRMÉ lui-même (connexion et accusé) depuis
+// moins de RECONFIRMATION_MS : un annuaire jamais vérifié est le trou classique des escalades.
+
+// Place d'un contact dans la chaîne d'escalade de l'opérateur.
+// "point_focal" : contact 24/7 d'un ÉTAT (op = Org de l'État), échelon 3 des opérateurs sous sa tutelle.
+cell type OpPlaceContact = String where value == "chef_de_mission" || value == "direction_operateur" || value == "suppleant" || value == "point_focal"
+
+// Contact d'escalade (id = "CT-<n>", tiré par declarer).
+skeleton OpContacts {
+    const MAX_CONTACTS = 1000000
+    const MAX_PAR_OPERATEUR = 50
+    // Reconfirmation exigée tous les 180 jours.
+    const RECONFIRMATION_MS = 15552000000
+    memory {
+        operateur: Map<String, Org> [persistent]              // contact → opérateur ; écrit une fois par declarer, jamais effacé
+        personne: Map<String, String> [persistent]            // contact → personne (employée par l'opérateur) ; écrit une fois par declarer
+        place: Map<String, OpPlaceContact> [persistent]       // contact → place dans la chaîne
+        rang: Map<String, Int> [persistent]                   // contact → ordre d'appel dans sa place (1 = premier)
+        canal: Map<String, String> [persistent]               // contact → référence du canal hors ligne (numéro chiffré, jamais en clair au journal)
+        confirme_a: Map<String, Horodatage> [persistent]      // contact → dernière confirmation, ms
+        nb_vivants: Map<Org, Int> [persistent]                // opérateur → contacts non retirés
+        invariant operateur.size <= MAX_CONTACTS
+        invariant rang >= 1 && rang <= 50
+        invariant nb_vivants >= 0 && nb_vivants <= MAX_PAR_OPERATEUR
+    }
+    // Cycle de vie d'un contact (id = contact). retire est terminal.
+    state contact {
+        initial: declare
+        declare -> confirme             // confirmer : la personne elle-même
+        confirme -> a_reconfirmer       // balayer : confirmation plus vieille que RECONFIRMATION_MS
+        a_reconfirmer -> confirme       // confirmer
+        declare -> retire               // retirer
+        confirme -> retire              // retirer
+        a_reconfirmer -> retire         // retirer, ou personne partie
+    }
+    face {
+        // Déclare un contact d'escalade. La personne doit être active et employée par op ; sa
+        // place exige le rôle correspondant ("chef_de_mission" pour chef_de_mission,
+        // "administrateur_operateur" ou "chef_de_mission" pour direction_operateur, tout rôle
+        // d'opérateur pour suppleant). Place "point_focal" : op est l'Org d'un État
+        // (ApiRef.genre = "etat") et la personne a le rôle "point_focal" de cet État.
+        // Renvoie l'id. Rôle exigé : "administrateur_operateur" de op (agit_pour) ; pour
+        // "point_focal", "autorite" de l'État.
+        // Refus : Inconnu (op jamais admis, ou État inconnu), Ferme (exclu ou retiré), NonEligible
+        // (personne d'un autre employeur ou sans le rôle, genre de op incompatible avec la place), Doublon (même personne à la même place),
+        // HorsBornes (rang hors [1, 50]), MotifRequis (canal vide), Habilitation, Plein.
+        signal declarer(h: Horodatage, op: Org, pour: String, ou: OpPlaceContact, ordre: Int, canal_ref: String, par: String) -> String
+            writes operateur, personne, place, rang, canal, nb_vivants
+            reads contact
+            calls ApiAcces.a_le_role, ApiAcces.agit_pour, ApiRef.genre, OpMembres.etat, next_id, Journal.noter
+        // La personne confirme qu'elle est joignable à ce titre. Renvoie "confirme".
+        // Rôle exigé : `par` = la personne du contact, active et toujours employée par l'opérateur.
+        // Refus : Inconnu, EtatInvalide, Habilitation.
+        signal confirmer(h: Horodatage, id: String, par: String) -> String
+            writes confirme_a
+            reads operateur, personne
+            moves declare -> confirme, a_reconfirmer -> confirme
+            calls ApiAcces.agit_pour, Journal.noter
+        // Retire un contact (départ, changement de fonction). Renvoie "retire".
+        // Rôle exigé : "administrateur_operateur" de l'opérateur, la personne elle-même, ou
+        // "systeme" (personne partie chez acces). Refus : Inconnu, EtatInvalide, Habilitation.
+        signal retirer(h: Horodatage, id: String, par: String) -> String
+            writes nb_vivants
+            reads operateur, personne
+            moves declare -> retire, confirme -> retire, a_reconfirmer -> retire
+            calls ApiAcces.a_le_role, ApiAcces.agit_pour, Journal.noter
+        // Balayage (par "systeme" ou "exploitant" d'ORBITE) : contacts confirmés depuis plus de
+        // RECONFIRMATION_MS → "a_reconfirmer" (opérateur notifié) ; contacts dont la personne
+        // n'agit plus pour l'opérateur → "retire". Renvoie le nombre de contacts changés
+        // (au plus n). Refus : Habilitation.
+        signal balayer(h: Horodatage, n: Int, par: String) -> Int
+            requires n > 0 && n <= 10000
+            writes nb_vivants
+            reads operateur, personne, confirme_a
+            moves confirme -> a_reconfirmer, declare -> retire, confirme -> retire, a_reconfirmer -> retire
+            calls ApiAcces.a_le_role, ApiAcces.agit_pour, ApiPasserelle.notifier, Journal.noter
+        // Chaîne d'escalade de op à h, dans l'ordre d'appel : contacts "confirme" de la place
+        // demandée par rang croissant. Chaque entrée : "personne | canal_ref". [] si aucun
+        // (l'escalade saute à l'État de tutelle).
+        signal chaine(op: Org, ou: OpPlaceContact, h: Horodatage) -> List<String>
+            reads operateur, personne, place, rang, canal, confirme_a, contact
+        // Personnes à joindre pour op à l'échelon d'escalade `echelon` à h (ApiOperateurs.contacts) :
+        // 1 la personne d'astreinte en service (OpAstreinte.en_service, [] si aucune) ; 2 les
+        // "chef_de_mission" confirmés puis les "suppleant" ; 3 les "point_focal" confirmés de
+        // l'État de tutelle (ApiRef.etat_de puis ApiRef.org_de_etat). Personnes seules, sans canal.
+        // [] : personne à cet échelon, passer au suivant. Refus : Inconnu (op absent du
+        // référentiel), HorsBornes (echelon hors [1, 3]).
+        signal contacts_echelon(op: Org, echelon: Int, h: Horodatage) -> List<String>
+            calls chaine, OpAstreinte.en_service, ApiRef.etat_de, ApiRef.org_de_etat
+    }
+}

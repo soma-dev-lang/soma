@@ -1,0 +1,262 @@
+// RESPONSABILITÉ — réclamations entre États (Convention de 1972 sur la responsabilité
+// internationale pour les dommages causés par des objets spatiaux), ORBITE servant de greffe.
+// Un État demandeur réclame à un État de lancement de l'objet en cause (ApiLancements.etats_de_lancement) : dommage au sol ou à un
+// aéronef, responsabilité absolue (art. II) ; dommage dans l'espace, responsabilité pour faute
+// (art. III : exige une faute retenue, fautes.cell). Délai de dépôt : un an après le dommage
+// ou l'identification de l'État de lancement (art. X). Voie diplomatique ; à défaut de règlement
+// un an après la notification, commission de règlement (art. XIV à XX).
+
+// Montant en euros entiers.
+cell type RespMontant = Int where value >= 0
+// Lieu du dommage, qui fixe le régime de responsabilité.
+cell type RespLieuDommage = String where value == "sol" || value == "aeronef" || value == "espace"
+
+// Réclamations (une instance par id "RC-<n>").
+skeleton RespReclamations {
+    const MAX_RECLAMATIONS = 100000
+    // Délai de dépôt (art. X) et de négociation diplomatique avant commission (art. XIV), ms.
+    const DELAI_DEPOT = 31557600000
+    const DELAI_NEGOCIATION = 31557600000
+    memory {
+        demandeur_de: Map<String, Etat> [persistent]
+        invariant demandeur_de.size <= 100000
+        defendeur_de: Map<String, Etat> [persistent]      // État de lancement mis en cause
+        dossier_de: Map<String, String> [persistent]      // réclamation -> dossier de preuve ; écrit une fois par deposer, jamais supprimé (lien `via`)
+        objet_de: Map<String, Objet> [persistent]         // objet spatial en cause (rattaché au dossier)
+        lieu_de: Map<String, RespLieuDommage> [persistent]
+        dommage_le: Map<String, Horodatage> [persistent]
+        deposee_le: Map<String, Horodatage> [persistent]
+        invariant (dommage_le ?? 0) <= (deposee_le ?? 0)
+        notifiee_le: Map<String, Horodatage> [persistent] // ouverture de la négociation
+        montant_demande: Map<String, RespMontant> [persistent]
+        montant_alloue: Map<String, RespMontant> [persistent]   // règlement amiable ou sentence
+        invariant (montant_alloue ?? 0) <= (montant_demande ?? 0)
+        motif_de: Map<String, String> [persistent]        // exposé du dommage, puis motifs des décisions
+        executee_de: Map<String, Bool> [persistent]       // à la clôture : sentence / accord exécuté
+        reclamations_du_dossier: Map<String, List<String>> [persistent]  // dossier -> réclamations
+    }
+    state reclamation {
+        initial: aucune
+        aucune -> deposee
+        deposee -> recevable       // délais, États, objet et régime de responsabilité contrôlés
+        deposee -> irrecevable
+        deposee -> retiree
+        recevable -> negociation   // notifiée à l'État défendeur par la voie diplomatique
+        recevable -> retiree
+        negociation -> reglee      // accord amiable des deux États
+        negociation -> retiree
+        negociation -> commission  // pas de règlement un an après la notification ; dossier scellé
+        commission -> reglee       // accord amiable pendant l'instance : commission dissoute
+        commission -> retiree
+        commission -> sentence     // sentence rendue par la commission
+        sentence -> close          // exécution (ou inexécution) constatée
+    }
+    face {
+        // Dépose une réclamation de l'État `demandeur` contre `defendeur`, l'un des États de
+        // lancement de l'objet (ApiLancements.etats_de_lancement ; responsabilité solidaire, art. V)
+        // pour le dommage causé par `objet` (rattaché au dossier), au lieu et à l'instant
+        // donnés, montant demandé en euros. Renvoie l'id "RC-<n>". Par "autorite" ou
+        // "point_focal" du demandeur (ApiAcces.agit_pour sur ApiRef.org_de_etat(demandeur)).
+        // Refus : Inconnu (État non participant, dossier, objet hors dossier), NonEligible
+        // (défendeur hors des États de lancement), Incoherent (demandeur = défendeur, dommage
+        // postérieur à h), Delai (plus de DELAI_DEPOT après le
+        // dommage), MotifRequis, Habilitation, Plein.
+        signal deposer(h: Horodatage, demandeur: Etat, defendeur: Etat, dossier: String, objet: Objet, lieu: RespLieuDommage, dommage: Horodatage, montant: RespMontant, motif: String, par: String) -> String
+            writes demandeur_de, defendeur_de, dossier_de, objet_de, lieu_de, dommage_le, deposee_le, montant_demande, motif_de, reclamations_du_dossier
+            moves aucune -> deposee
+            calls ApiAcces.a_le_role, ApiAcces.agit_pour, ApiRef.etat_participant, ApiRef.org_de_etat, ApiLancements.etats_de_lancement, RespDossiers.etat, RespDossiers.cibles, Journal.noter, next_id
+        // Statue sur la recevabilité. Recevable si : le défendeur est toujours parmi
+        // ApiLancements.etats_de_lancement(objet) ; pour un lieu "espace", une faute
+        // retenue du dossier vise l'objet (art. III). Renvoie "recevable" ou "irrecevable".
+        // Par "conformite", valideur "direction" (quatre yeux). Refus : Inconnu, EtatInvalide,
+        // MotifRequis, Habilitation, QuatreYeux.
+        signal statuer(h: Horodatage, rec: String, recevable: Bool, motif: String, par: String, valideur: String) -> String
+            reads objet_de, defendeur_de, lieu_de, dossier_de
+            writes motif_de
+            moves deposee -> recevable, deposee -> irrecevable
+            calls ApiAcces.a_le_role, ApiAcces.quatre_yeux, ApiLancements.etats_de_lancement, RespFautes.retenues_de_dossier, Journal.noter
+        // Notifie la réclamation à l'État défendeur (point focal) et en accuse réception au
+        // demandeur via ApiPasserelle.notifier (r = "", urgence 2) : ouvre la négociation. Renvoie l'instant
+        // à partir duquel une commission peut être demandée (h + DELAI_NEGOCIATION).
+        // Par "conformite" ou "systeme". Refus : Inconnu, EtatInvalide, Habilitation.
+        signal notifier(h: Horodatage, rec: String, par: String) -> Horodatage
+            reads demandeur_de, defendeur_de
+            writes notifiee_le
+            moves recevable -> negociation
+            calls ApiAcces.a_le_role, ApiRef.org_de_etat, ApiPasserelle.notifier, Journal.noter
+        // Enregistre un règlement amiable : montant convenu (≤ montant demandé). `par` est
+        // l'"autorite" du demandeur, `valideur` l'"autorite" du défendeur (chacun via
+        // ApiAcces.agit_pour sur l'Org de son État). Dissout la commission si elle siège.
+        // Renvoie le montant. Refus : Inconnu, EtatInvalide, HorsBornes, Habilitation.
+        signal regler(h: Horodatage, rec: String, montant: RespMontant, par: String, valideur: String) -> RespMontant
+            reads demandeur_de, defendeur_de, montant_demande
+            writes montant_alloue
+            moves negociation -> reglee, commission -> reglee
+            calls ApiAcces.a_le_role, ApiAcces.agit_pour, ApiRef.org_de_etat, RespCommissions.dissoudre, Journal.noter
+        // Demande la constitution d'une commission de règlement (art. XIV) et la saisit.
+        // Renvoie l'échéance de désignation des membres (RespCommissions.saisir). Par
+        // "autorite" de l'un des deux États. Refus : Inconnu, EtatInvalide, Delai (moins de
+        // DELAI_NEGOCIATION depuis la notification), Insuffisant (dossier non scellé),
+        // Habilitation.
+        signal demander_commission(h: Horodatage, rec: String, par: String) -> Horodatage
+            reads demandeur_de, defendeur_de, notifiee_le, dossier_de
+            moves negociation -> commission when RespDossiers.scelle via dossier_de
+            calls ApiAcces.a_le_role, ApiAcces.agit_pour, ApiRef.org_de_etat, RespDossiers.etat, RespCommissions.saisir, Journal.noter
+        // Prend acte de la sentence rendue (montant alloué, force obligatoire ou
+        // recommandation) et la notifie aux deux États. Renvoie le montant alloué.
+        // Par "systeme" ou "conformite". Refus : Inconnu, EtatInvalide (commission sans
+        // sentence), Habilitation.
+        signal prendre_acte(h: Horodatage, rec: String, par: String) -> RespMontant
+            reads demandeur_de, defendeur_de
+            writes montant_alloue
+            moves commission -> sentence when RespCommissions.rendue
+            calls ApiAcces.a_le_role, RespCommissions.etat, RespCommissions.montant, ApiRef.org_de_etat, ApiPasserelle.notifier, Journal.noter
+        // Clôt après sentence : exécutée ou non (une sentence obligatoire inexécutée est
+        // signalée au point focal des deux États). Renvoie "close". Par "conformite", sur
+        // déclaration de l'"autorite" du demandeur. Refus : Inconnu, EtatInvalide, MotifRequis,
+        // Habilitation.
+        signal clore(h: Horodatage, rec: String, executee: Bool, motif: String, par: String) -> String
+            reads demandeur_de, defendeur_de
+            writes executee_de, motif_de
+            moves sentence -> close
+            calls ApiAcces.a_le_role, RespCommissions.obligatoire, ApiRef.org_de_etat, ApiPasserelle.notifier, Journal.noter
+        // Retrait par l'État demandeur ("autorite"), à tout stade avant sentence ; dissout la
+        // commission si elle siège. Renvoie "retiree". Refus : Inconnu, EtatInvalide,
+        // MotifRequis, Habilitation.
+        signal retirer(h: Horodatage, rec: String, motif: String, par: String) -> String
+            reads demandeur_de
+            writes motif_de
+            moves deposee -> retiree, recevable -> retiree, negociation -> retiree, commission -> retiree
+            calls ApiAcces.a_le_role, ApiAcces.agit_pour, ApiRef.org_de_etat, RespCommissions.dissoudre, Journal.noter
+        // État : "aucune", "deposee", "recevable", "irrecevable", "negociation", "commission",
+        // "reglee", "sentence", "close", "retiree".
+        signal etat(rec: String) -> String
+            reads reclamation
+        // [demandeur, défendeur] ; Refus : Inconnu.
+        signal parties(rec: String) -> List<String>
+            reads demandeur_de, defendeur_de
+        // Montant demandé ; Refus : Inconnu.
+        signal demande(rec: String) -> RespMontant
+            reads montant_demande
+        // Montant alloué (accord ou sentence) ; Refus : Inconnu, EtatInvalide (ni réglée ni close).
+        signal alloue(rec: String) -> RespMontant
+            reads montant_alloue, reclamation
+        // Instant du dommage ; Refus : Inconnu.
+        signal dommage(rec: String) -> Horodatage
+            reads dommage_le
+        // Réclamations s'appuyant sur le dossier ([] si aucune).
+        signal de_dossier(dossier: String) -> List<String>
+            reads reclamations_du_dossier
+        // Nombre de réclamations du dossier ni irrecevables, ni réglées, ni closes, ni retirées.
+        signal pendantes_de_dossier(dossier: String) -> Int
+            reads reclamations_du_dossier, reclamation
+    }
+}
+
+// Commissions de règlement (une instance par réclamation : même id). Art. XV : un membre
+// désigné par chaque État dans les 2 mois, un président choisi conjointement ; à défaut sous
+// 4 mois, ORBITE le désigne (rôle dévolu par la Convention au Secrétaire général de l'ONU).
+// Art. XIX : sentence sous un an, obligatoire si les deux États l'ont accepté, sinon
+// recommandation.
+skeleton RespCommissions {
+    const DELAI_MEMBRES = 5259600000      // 2 mois, ms
+    const DELAI_PRESIDENT = 10519200000   // 4 mois, ms
+    const DELAI_SENTENCE = 31557600000    // 1 an après constitution, ms
+    memory {
+        saisie_le: Map<String, Horodatage> [persistent]
+        membre_demandeur: Map<String, String> [persistent]   // personne désignée par l'État demandeur
+        membre_defendeur: Map<String, String> [persistent]
+        president_de: Map<String, String> [persistent]
+        constituee_le: Map<String, Horodatage> [persistent]
+        echeance_sentence: Map<String, Horodatage> [persistent]
+        invariant (constituee_le ?? 0) <= (echeance_sentence ?? 0)
+        acceptations_de: Map<String, List<String>> [persistent]   // États ayant accepté la force obligatoire (≤ 2)
+        montant_de: Map<String, RespMontant> [persistent]
+        motifs_de: Map<String, String> [persistent]               // dispositif et motifs de la sentence (empreinte du texte)
+        rendue_le: Map<String, Horodatage> [persistent]
+        dissoute_motif: Map<String, String> [persistent]
+        siegeantes: Map<String, Horodatage> [persistent]      // commission constituée, sans sentence -> constituée le (retirée à la sentence ou à la dissolution)
+        carence_avisee: Map<String, Horodatage> [persistent]  // commission -> échéance déjà avisée en carence
+    }
+    state commission {
+        initial: aucune
+        aucune -> en_constitution    // saisie après la demande d'un État
+        en_constitution -> constituee  // trois membres désignés
+        en_constitution -> dissoute
+        constituee -> rendue         // sentence enregistrée au greffe d'ORBITE
+        constituee -> dissoute       // règlement amiable ou retrait
+    }
+    face {
+        // Saisit la commission d'une réclamation passée à "commission". Renvoie l'échéance
+        // de désignation des membres (h + DELAI_MEMBRES). Appelé par
+        // RespReclamations.demander_commission seulement. Refus : Existe.
+        signal saisir(h: Horodatage, rec: String) -> Horodatage
+            writes saisie_le
+            moves aucune -> en_constitution when RespReclamations.commission
+            calls Journal.noter
+        // Un État désigne son membre (par son "autorite"). Après DELAI_MEMBRES, le siège vacant
+        // est pourvu par la "direction" d'ORBITE. Renvoie le nombre de sièges de membres pourvus
+        // (0 à 2). Refus : Inconnu, EtatInvalide, Existe (siège déjà pourvu), Delai (direction
+        // avant l'échéance, ou État après), Habilitation.
+        signal designer_membre(h: Horodatage, rec: String, membre: String, etat: Etat, par: String) -> Int
+            reads saisie_le, commission
+            writes membre_demandeur, membre_defendeur
+            calls ApiAcces.a_le_role, ApiAcces.agit_pour, ApiRef.org_de_etat, RespReclamations.parties, Journal.noter
+        // Désigne le président : conjointement (`par` "autorite" du demandeur, `valideur`
+        // "autorite" du défendeur), ou après DELAI_PRESIDENT par la "direction" d'ORBITE avec
+        // quatre yeux. Constitue la commission ; renvoie l'échéance de sentence
+        // (h + DELAI_SENTENCE). Refus : Inconnu, EtatInvalide, Insuffisant (sièges de membres
+        // vacants), Incoherent (président = un membre), Delai, Habilitation, QuatreYeux.
+        signal designer_president(h: Horodatage, rec: String, president: String, par: String, valideur: String) -> Horodatage
+            reads saisie_le, membre_demandeur, membre_defendeur
+            writes president_de, constituee_le, echeance_sentence, siegeantes
+            moves en_constitution -> constituee
+            calls ApiAcces.a_le_role, ApiAcces.agit_pour, ApiAcces.quatre_yeux, ApiRef.org_de_etat, RespReclamations.parties, Journal.noter
+        // Un État accepte d'avance la force obligatoire de la sentence (par son "autorite").
+        // Renvoie le nombre d'États ayant accepté (2 : sentence obligatoire). Refus : Inconnu,
+        // EtatInvalide (sentence rendue), Doublon, Habilitation.
+        signal accepter_force(h: Horodatage, rec: String, etat: Etat, par: String) -> Int
+            reads commission
+            writes acceptations_de
+            calls ApiAcces.a_le_role, ApiAcces.agit_pour, ApiRef.org_de_etat, RespReclamations.parties, Journal.noter
+        // Proroge l'échéance de sentence (art. XIX : la commission peut prolonger). Renvoie la
+        // nouvelle échéance. Par "direction", valideur ≠ par. Refus : Inconnu, EtatInvalide,
+        // Incoherent (nouvelle échéance ≤ actuelle), MotifRequis, Habilitation, QuatreYeux.
+        signal proroger(h: Horodatage, rec: String, echeance: Horodatage, motif: String, par: String, valideur: String) -> Horodatage
+            reads commission
+            writes echeance_sentence
+            calls ApiAcces.a_le_role, ApiAcces.quatre_yeux, Journal.noter
+        // Enregistre la sentence transmise par le président : montant alloué (≤ montant
+        // demandé), motifs. Renvoie le montant. Par "direction" (greffe), valideur "conformite".
+        // Refus : Inconnu, EtatInvalide, HorsBornes, MotifRequis, Echu (échéance de sentence
+        // passée : proroger d'abord), Habilitation, QuatreYeux.
+        signal rendre(h: Horodatage, rec: String, montant: RespMontant, motifs: String, par: String, valideur: String) -> RespMontant
+            reads echeance_sentence
+            writes montant_de, motifs_de, rendue_le, siegeantes
+            moves constituee -> rendue
+            calls ApiAcces.a_le_role, ApiAcces.quatre_yeux, RespReclamations.demande, Journal.noter
+        // Dissout la commission (règlement amiable, retrait). Renvoie "dissoute", ou "" si
+        // aucune commission ne siège. Appelé par RespReclamations seulement.
+        signal dissoudre(h: Horodatage, rec: String, motif: String) -> String
+            writes dissoute_motif, siegeantes
+            moves en_constitution -> dissoute, constituee -> dissoute
+            calls Journal.noter
+        // État : "aucune", "en_constitution", "constituee", "rendue", "dissoute".
+        signal etat(rec: String) -> String
+            reads commission
+        // Montant alloué par la sentence ; Refus : Inconnu (pas de sentence).
+        signal montant(rec: String) -> RespMontant
+            reads montant_de
+        // Vrai si les deux États ont accepté la force obligatoire.
+        signal obligatoire(rec: String) -> Bool
+            reads acceptations_de
+        // Ronde : pour chaque commission constituée dont l'échéance de sentence est passée à `h`,
+        // avise la "direction" d'ORBITE et les points focaux des deux États (ApiPasserelle,
+        // r = "", urgence 2) une fois par échéance : proroger ou rendre. Renvoie le nombre
+        // d'avis. Par "systeme". Refus : Habilitation.
+        signal relancer_carences(h: Horodatage, par: String) -> Int
+            reads siegeantes, echeance_sentence
+            writes carence_avisee
+            calls ApiAcces.a_le_role, RespReclamations.parties, ApiRef.org_de_etat, ApiRef.orbite, ApiPasserelle.notifier, Journal.noter
+    }
+}

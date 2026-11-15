@@ -1,0 +1,85 @@
+// PASSERELLE — aiguillage des routes métier vers les façades. Règles communes à tous les
+// signaux de PasMetier :
+//  - `appelant` vient du jeton (ApiAcces.authentifier, dans PasEntree) ; `par` transmis aux
+//    façades = appelant.personne, jamais un champ du corps ; `valideur` = personne d'un second
+//    jeton (X-Jeton-Valideur), "" si l'en-tête est absent ; l'habilitation fine est jugée par la
+//    façade appelée (son refus Habilitation / QuatreYeux devient 403) ;
+//  - `param` = le {id} du chemin ; `corps` = le JSON décodé ; un champ manquant ou mal typé :
+//    400 (kind "HorsBornes") sans appel ;
+//  - toute LECTURE de données d'objet exige ApiDonnees.peut_recevoir(appelant.org, objet, r, h)
+//    pour chaque objet rendu (sinon 403 Confidentiel) et est tracée (ApiDonnees.tracer) ;
+//  - réponse 201 pour une création, 200 sinon ; refus d'une façade : 422 {error, kind}.
+skeleton PasMetier {
+    face {
+        // Objets, registre et lancements :
+        //  "objet.lire"          GET  /v1/objets/{id} : état, nature, propriétaire, État
+        //                        d'immatriculation, immatriculé, régime, propulsion, habité,
+        //                        peut manœuvrer, éphéméride fraîche, anomalie, passivé, plan de fin
+        //                        de vie conforme, rapprochements ouverts.
+        //  "objet.propulsion"    POST /v1/objets/{id}/propulsion {p, motif} -> ApiRef.declarer_propulsion
+        //                        ("dynamicien" du propriétaire ou "analyste" ; ref rouvre les
+        //                        coordinations où l'objet est désigné).
+        //  "objet.anomalie"      POST /v1/objets/{id}/anomalie {genre, description} -> ApiEvenements.anomalie.
+        //  "objet.fin_de_mission" POST /v1/objets/{id}/fin-de-mission -> ApiFinDeVie.fin_de_mission
+        //                        ("chef_de_mission" du propriétaire).
+        //  "registre.immatriculer" POST /v1/objets/{id}/immatriculation {numero}
+        //                        -> ApiRef.immatriculer ("autorite" de l'État d'immatriculation).
+        //  "lancement.notifier"  POST /v1/lancements {lancement, etat, debut, fin, regime, nb_objets}
+        //                        -> ApiLancements.notifier avec op = appelant.org.
+        //  "lancement.lire"      GET  /v1/lancements/{id} : état et objets catalogués (chaque objet
+        //                        rendu passe le contrôle de diffusion).
+        // Refus : HorsBornes, Confidentiel, et ceux des façades appelées.
+        signal objets(h: Horodatage, appelant: PasAppelant, cible: PasCible, param: String, corps: Map) -> PasReponse
+            calls ApiRef.etat_objet, ApiRef.nature, ApiRef.proprietaire, ApiRef.etat_immatriculation, ApiRef.immatricule, ApiRef.regime, ApiRef.propulsion, ApiRef.habite, ApiRef.peut_manoeuvrer, ApiRef.declarer_propulsion, ApiRef.immatriculer, ApiEphemerides.fraiche, ApiEvenements.en_anomalie, ApiEvenements.anomalie, ApiFinDeVie.plan_conforme, ApiFinDeVie.passive, ApiFinDeVie.fin_de_mission, ApiConjonctions.ouverts_de, ApiLancements.notifier, ApiLancements.etat, ApiLancements.objets, ApiDonnees.peut_recevoir, ApiDonnees.tracer, Journal.noter
+        // Éphémérides et mesures :
+        //  "ephemeride.deposer"  POST /v1/objets/{id}/ephemerides, corps = OEM KVN brut :
+        //                        PasFormats.lire_oem ; OBJECT_ID == {id} (sinon 422 Incoherent) ;
+        //                        ApiEphemerides.deposer(depot = "OEM-" + empreinte[0..16], …,
+        //                        position = premier point de l'OEM) ; renvoie l'id et l'issue
+        //                        ("validee" / "rejetee" : ephemerides compare à l'orbite observée).
+        //  "ephemeride.lire"     GET  /v1/objets/{id}/ephemerides : dernier dépôt, âge (ms),
+        //                        qualité, fraîcheur à h.
+        //  "mesure.deposer"      POST /v1/capteurs/{id}/mesures {objet, instant, mesure}
+        //                        -> ApiObservation.deposer_mesure ("capteur" du fournisseur) ;
+        //                        `corps` est le JSON brut, décodé ici.
+        // Refus : HorsBornes, Incoherent, Confidentiel, et ceux des façades appelées.
+        signal orbites(h: Horodatage, appelant: PasAppelant, cible: PasCible, param: String, corps: String) -> PasReponse
+            calls PasFormats.lire_oem, ApiEphemerides.deposer, ApiEphemerides.derniere, ApiEphemerides.age, ApiEphemerides.qualite, ApiEphemerides.fraiche, ApiObservation.deposer_mesure, ApiDonnees.peut_recevoir, ApiDonnees.tracer, Journal.noter
+        // Rapprochements, coordination, escalade (classe "urgence" pour les deux écritures) :
+        //  "rapprochement.lire"  GET  /v1/rapprochements/{id} : PasFormats.cdm pour appelant.org.
+        //  "coordination.lire"   GET  /v1/coordinations/{id} : état, désignation
+        //                        (ApiCoordination.designe(r, appelant.personne) : la façade
+        //                        contrôle la diffusion), échéance de réponse (ms), décidée ou non.
+        //  "coordination.en_attente" GET /v1/coordinations : rapprochements où appelant.org doit
+        //                        répondre (ApiCoordination.en_attente_de), échéance de chacun.
+        //  "coordination.repondre" POST /v1/coordinations/{id}/reponse {reponse, contre, motif}
+        //                        -> ApiCoordination.repondre ; un refus Delai (après l'échéance)
+        //                        rappelle que l'arbitrage d'ORBITE a repris la main.
+        //  "escalade.accuser"    POST /v1/escalades/{id}/accuse {op} -> ApiEscalade.accuser ;
+        //                        op absent = appelant.org.
+        // Refus : HorsBornes, Confidentiel, et ceux des façades appelées.
+        signal rapprochements(h: Horodatage, appelant: PasAppelant, cible: PasCible, param: String, corps: Map) -> PasReponse
+            calls PasFormats.cdm, ApiCoordination.etat, ApiCoordination.decidee, ApiCoordination.designe, ApiCoordination.echeance, ApiCoordination.en_attente_de, ApiCoordination.repondre, ApiEscalade.accuser, Journal.noter
+        // Manœuvres :
+        //  "manoeuvre.declarer"  POST /v1/manoeuvres {plan, objet, r, motif, debut, dv}
+        //                        -> ApiManoeuvres.declarer (criblage et approbation restent à
+        //                        manoeuvres ; la passerelle ne les court-circuite pas).
+        //  "manoeuvre.lire"      GET  /v1/manoeuvres/{id} : état, motif, objet — diffusion jugée
+        //                        sur ApiManoeuvres.objet_de(plan).
+        //  "manoeuvre.confirmer" POST /v1/manoeuvres/{id}/execution {reel, dv}
+        //                        -> ApiManoeuvres.confirmer_execution.
+        //  "manoeuvre.annuler"   DELETE /v1/manoeuvres/{id} {motif} -> ApiManoeuvres.annuler.
+        // Refus : HorsBornes, Confidentiel, et ceux de ApiManoeuvres.
+        signal manoeuvres(h: Horodatage, appelant: PasAppelant, cible: PasCible, param: String, corps: Map) -> PasReponse
+            calls ApiManoeuvres.declarer, ApiManoeuvres.etat, ApiManoeuvres.objet_de, ApiManoeuvres.motif_de, ApiManoeuvres.confirmer_execution, ApiManoeuvres.annuler, ApiDonnees.peut_recevoir, ApiDonnees.tracer, Journal.noter
+        // Gestes des États sur leurs opérateurs (quatre yeux : valideur = "direction" d'ORBITE,
+        // second jeton) :
+        //  "operateur.suspendre" POST /v1/operateurs/{id}/suspension {motif}
+        //                        -> ApiOperateurs.suspendre ("point_focal" / "autorite" de l'État
+        //                        de tutelle, ou "conformite").
+        //  "operateur.retablir"  DELETE /v1/operateurs/{id}/suspension -> ApiOperateurs.retablir.
+        // Refus : HorsBornes, QuatreYeux (valideur ""), et ceux de ApiOperateurs.
+        signal etats(h: Horodatage, appelant: PasAppelant, valideur: String, cible: PasCible, param: String, corps: Map) -> PasReponse
+            calls ApiOperateurs.suspendre, ApiOperateurs.retablir, Journal.noter
+    }
+}

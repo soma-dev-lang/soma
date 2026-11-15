@@ -1,0 +1,63 @@
+// escalade — CONCERTATION D'ÉCHELON 4. À l'échelon 4, la direction d'ORBITE réunit les points
+// focaux des États de tutelle des propriétaires des deux objets à une concertation d'urgence
+// (téléphone ou visioconférence) : l'État de l'opérateur silencieux s'engage à le joindre par ses
+// propres moyens, l'autre État est informé de la reprise possible. La concertation n'attend
+// personne : l'échéance finale du dossier court toujours, et la tenir n'est jamais une condition
+// de la reprise. Son compte rendu est une pièce du dossier (propriété 6). La convocation est
+// enregistrée par le balayage (convoquer) ; les messages qui la portent sont ceux de l'échelon 4
+// (EscContacts.prevenir), déjà adressés à la direction d'ORBITE et aux deux États : convoquer
+// n'émet rien, ce qui garde court le graphe d'appels de l'arête gardée par EscDossiers.e4.
+
+// Engagement pris par l'État de tutelle en concertation.
+cell type EscEngagement = String where value == "joindre_operateur" || value == "operateur_injoignable" || value == "aucun"
+
+// Concertations : id = dossier d'escalade (au plus une par dossier).
+skeleton EscConcertation {
+    const MAX_CONCERTATIONS = 1000000
+    memory {
+        convoquee_a: Map<String, Horodatage> [persistent]  // dossier → convocation (ms) ; écrite une fois par convoquer
+        etats: Map<String, String> [persistent]            // dossier → "Etat de l'opérateur,Etat de l'autre propriétaire"
+        presents: Map<String, String> [persistent]         // dossier → personnes présentes, "p1,p2"
+        engagement: Map<String, String> [persistent]       // dossier → EscEngagement de l'État de l'opérateur
+        compte_rendu: Map<String, String> [persistent]     // dossier → "h | par | texte"
+        invariant convoquee_a.size <= MAX_CONCERTATIONS
+    }
+    // Cycle de vie d'une concertation (id = dossier).
+    state concertation {
+        initial: aucune
+        aucune -> convoquee           // convoquer : le dossier est à l'échelon 4
+        convoquee -> tenue            // tenir : compte rendu déposé
+        convoquee -> manquee          // abandonner : dossier clos, repris ou caduc avant la tenue
+    }
+    face {
+        // Convoque, pour chaque dossier en e4 (EscDossiers.en_e4) sans concertation, la concertation
+        // de ce dossier : enregistre l'instant et les États de tutelle des propriétaires des deux
+        // objets (ApiConjonctions.objets, ApiRef.proprietaire, ApiRef.etat_de). Appelée par
+        // EscBalayage.balayer. Renvoie le nombre de concertations convoquées. Refus : Plein.
+        signal convoquer(h: Horodatage) -> Int
+            ensures result >= 0
+            writes convoquee_a, etats
+            moves aucune -> convoquee when EscDossiers.e4
+            calls EscDossiers.en_e4, EscDossiers.rapprochement, ApiConjonctions.objets, ApiRef.proprietaire, ApiRef.etat_de, Journal.noter
+        // Dépose le compte rendu : présents (personnes, séparées par des virgules), engagement de
+        // l'État de l'opérateur, texte. Renvoie "tenue". Rôle exigé : "direction" ou "superviseur"
+        // d'ORBITE. Refus : Inconnu, EtatInvalide, MotifRequis (texte vide), Habilitation.
+        signal tenir(h: Horodatage, dossier: String, presents_liste: String, engagement_etat: EscEngagement, texte: String, par: String) -> String
+            writes presents, engagement, compte_rendu
+            moves convoquee -> tenue
+            calls ApiAcces.a_le_role, Journal.noter
+        // Marque manquées les concertations convoquées dont le dossier est terminé
+        // (EscDossiers.etat ∈ {"close", "caduque"}) sans compte rendu. Appelée par
+        // EscBalayage.balayer. Renvoie le nombre.
+        signal abandonner(h: Horodatage) -> Int
+            reads convoquee_a
+            moves convoquee -> manquee
+            calls EscDossiers.etat, Journal.noter
+        // Compte rendu d'une concertation, "état | convoquée | États | présents | engagement | texte".
+        // Rôle exigé : "direction", "superviseur", "auditeur" d'ORBITE, ou "point_focal" d'un des
+        // deux États. Refus : Inconnu, Habilitation.
+        signal lire(dossier: String, par: String) -> String
+            reads convoquee_a, etats, presents, engagement, compte_rendu, concertation
+            calls ApiAcces.a_le_role, ApiAcces.agit_pour, ApiRef.org_de_etat
+    }
+}

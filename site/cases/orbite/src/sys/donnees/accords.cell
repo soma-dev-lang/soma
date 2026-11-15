@@ -1,0 +1,237 @@
+// donnees — ACCORD DE PARTAGE. Le texte qui fonde toute communication de données entre
+// participants : versionné, soumis à la consultation des États, adopté à quatre yeux par la
+// direction d'ORBITE, en vigueur à une date. Une seule version est en vigueur à la fois ;
+// l'entrée en vigueur d'une version remplace la précédente. Les organisations y adhèrent
+// (signature de leur représentant, contre-signature d'ORBITE) ; l'adhésion à une version
+// remplacée reste valable DELAI_RESIGNATURE_MS, puis devient caduque faute de nouvelle signature.
+
+// Avis d'un État consulté sur une version.
+cell type DonAvis = String where value == "favorable" || value == "defavorable"
+
+// Versions de l'accord : id = version ("ACC-<n>", choisi par le rédacteur).
+skeleton DonAccords {
+    const MAX_VERSIONS = 1000
+    const MAX_AVIS = 200000
+    const CONSULTATION_MIN_MS = 2592000000      // 30 jours
+    const CONSULTATION_MAX_MS = 15552000000     // 180 jours
+    const PREAVIS_VIGUEUR_MS = 2592000000       // 30 jours entre l'adoption et l'entrée en vigueur
+    memory {
+        empreinte: Map<String, String> [persistent]           // version → empreinte du texte (le texte reste hors ORBITE)
+        resume: Map<String, String> [persistent]              // version → objet des changements
+        fin_consultation: Map<String, Horodatage> [persistent] // version → clôture de la consultation, ms
+        avis: Map<String, String> [persistent]                // "version|etat" → DonAvis (un avis par État, révisable pendant la consultation)
+        favorables: Map<String, Int> [persistent]             // version → nombre d'avis favorables
+        exprimes: Map<String, Int> [persistent]               // version → nombre d'avis exprimés
+        vigueur: Map<String, Horodatage> [persistent]         // version → date d'entrée en vigueur prévue puis effective, ms
+        courante: Map<String, String> [persistent]            // "en_vigueur" → version en vigueur (au plus une)
+        invariant empreinte.size <= MAX_VERSIONS
+        invariant avis.size <= MAX_AVIS
+        invariant favorables >= 0
+        invariant (favorables ?? 0) <= (exprimes ?? 0)
+    }
+    // Cycle de vie d'une version (id = version).
+    state version {
+        initial: redaction
+        redaction -> consultation          // soumettre
+        redaction -> abandonnee            // abandonner
+        consultation -> adoptee            // adopter : consultation close, majorité des 2/3 des avis exprimés
+        consultation -> abandonnee         // abandonner
+        adoptee -> en_vigueur              // entrer_en_vigueur : date atteinte
+        adoptee -> abandonnee              // abandonner avant l'entrée en vigueur
+        en_vigueur -> remplacee            // entrer_en_vigueur de la version suivante
+        en_vigueur -> abrogee              // abroger : plus aucune version en vigueur
+    }
+    face {
+        // Ouvre la rédaction d'une version : empreinte du texte et résumé des changements.
+        // Renvoie la version. Rôle exigé : "direction" d'ORBITE (ApiAcces.a_le_role).
+        // Refus : Existe (version déjà créée), MotifRequis (résumé vide), Plein, Habilitation.
+        signal rediger(h: Horodatage, version: String, empreinte_texte: String, resume_changements: String, par: String) -> String
+            writes empreinte, resume
+            calls ApiAcces.a_le_role, Journal.noter
+        // Soumet la version à la consultation des États participants pendant `duree` ms
+        // (CONSULTATION_MIN_MS à CONSULTATION_MAX_MS) et notifie le point focal de chaque État
+        // (ApiPasserelle.notifier, urgence 1). Renvoie "consultation". Rôle : "direction" d'ORBITE.
+        // Refus : Inconnu, EtatInvalide, HorsBornes (durée), Habilitation.
+        signal soumettre(h: Horodatage, version: String, duree: Duree, etats: List<String>, par: String) -> String
+            writes fin_consultation
+            reads empreinte
+            moves redaction -> consultation
+            calls ApiAcces.a_le_role, ApiRef.org_de_etat, ApiPasserelle.notifier, Journal.noter
+        // Avis d'un État pendant la consultation (le dernier avis de l'État compte). Renvoie le
+        // nombre d'avis exprimés. Rôle : "point_focal" ou "autorite" de l'État (ApiAcces.agit_pour
+        // sur ApiRef.org_de_etat(etat)). Refus : Inconnu, EtatInvalide, Delai (consultation close),
+        // Suspendu (État non participant), Plein, Habilitation.
+        signal donner_avis(h: Horodatage, version: String, etat: Etat, a: DonAvis, par: String) -> Int
+            writes avis, favorables, exprimes
+            reads version, fin_consultation
+            calls ApiAcces.a_le_role, ApiAcces.agit_pour, ApiRef.org_de_etat, ApiRef.etat_participant, Journal.noter
+        // Adopte la version, consultation close, si au moins un avis est exprimé et que les avis
+        // favorables font au moins les 2/3 des exprimés ; fixe l'entrée en vigueur `entree`
+        // (≥ h + PREAVIS_VIGUEUR_MS). Renvoie "adoptee". Rôle : "direction" d'ORBITE ; valideur
+        // "direction" distinct (ApiAcces.quatre_yeux). Refus : Inconnu, EtatInvalide, Delai
+        // (consultation non close), Insuffisant (majorité ou quorum), HorsBornes (entrée trop
+        // proche), Habilitation, QuatreYeux.
+        signal adopter(h: Horodatage, version: String, entree: Horodatage, par: String, valideur: String) -> String
+            writes vigueur
+            reads fin_consultation, favorables, exprimes
+            moves consultation -> adoptee
+            calls ApiAcces.a_le_role, ApiAcces.quatre_yeux, Journal.noter
+        // Appelé par DonBalayage.balayer : met en vigueur la version adoptée dont la date est atteinte à `h`, remplace
+        // la précédente et ouvre le délai de re-signature de ses adhésions
+        // (DonAdhesions.ouvrir_resignature). Renvoie la version en vigueur ("" si aucune).
+        // `par` = "systeme". Refus : Habilitation.
+        signal entrer_en_vigueur(h: Horodatage, par: String) -> String
+            writes courante, vigueur
+            reads version
+            moves adoptee -> en_vigueur, en_vigueur -> remplacee
+            calls ApiAcces.a_le_role, DonAdhesions.ouvrir_resignature, Journal.noter
+        // Abroge la version en vigueur sans la remplacer : plus aucune communication fondée sur
+        // l'adhésion n'est possible (seuls restent propriétaire, État, ORBITE, parties en urgence).
+        // Renvoie "abrogee". Rôle : "direction" d'ORBITE ; valideur "direction" distinct.
+        // Refus : Inconnu, EtatInvalide, MotifRequis, Habilitation, QuatreYeux.
+        signal abroger(h: Horodatage, version: String, motif: String, par: String, valideur: String) -> String
+            writes courante
+            moves en_vigueur -> abrogee
+            calls ApiAcces.a_le_role, ApiAcces.quatre_yeux, Journal.noter
+        // Abandonne une version non encore en vigueur. Renvoie "abandonnee". Rôle : "direction".
+        // Refus : Inconnu, EtatInvalide, MotifRequis, Habilitation.
+        signal abandonner(h: Horodatage, version: String, motif: String, par: String) -> String
+            reads empreinte
+            moves redaction -> abandonnee, consultation -> abandonnee, adoptee -> abandonnee
+            calls ApiAcces.a_le_role, Journal.noter
+        // Résultat public de la consultation, [favorables, exprimes]. Refus : Inconnu.
+        signal resultat_consultation(version: String) -> List<Int>
+            reads favorables, exprimes, empreinte
+        // Version en vigueur ; "" si aucune.
+        signal en_vigueur() -> String
+            reads courante
+        // État de la version ("redaction" … "abrogee") ; "inconnue" si jamais rédigée.
+        signal etat(version: String) -> String
+            reads version, empreinte
+    }
+}
+
+// Adhésions des organisations : id = adhésion ("AD-<n>", tiré par signer). Une organisation a
+// au plus une adhésion non close ; re-signer une nouvelle version crée une nouvelle adhésion
+// et remplace l'ancienne.
+skeleton DonAdhesions {
+    const MAX_ADHESIONS = 200000
+    const DELAI_CONTRESIGNATURE_MS = 2592000000  // 30 jours pour qu'ORBITE contre-signe
+    const DELAI_RESIGNATURE_MS = 7776000000      // 90 jours pour signer la version nouvelle
+    memory {
+        org_de: Map<String, String> [persistent]             // adhésion → organisation ; écrit une fois par signer
+        version_de: Map<String, String> [persistent]         // adhésion → version signée ; écrit une fois par signer, jamais effacé
+        signataire: Map<String, String> [persistent]         // adhésion → personne qui a signé pour l'organisation
+        signee_le: Map<String, Horodatage> [persistent]      // adhésion → signature, ms
+        caduque_le: Map<String, Horodatage> [persistent]     // adhésion → limite de re-signature (version remplacée), ms
+        courante_de: Map<String, String> [persistent]        // organisation → adhésion non close (au plus une)
+        invariant org_de.size <= MAX_ADHESIONS
+        invariant courante_de.size <= MAX_ADHESIONS
+        invariant (signee_le ?? 0) <= (caduque_le ?? 9999999999999)   // caduque_le absent tant qu'aucune version ne remplace la signée
+    }
+    // Cycle de vie d'une adhésion (id = adhésion).
+    state adhesion {
+        initial: signee
+        signee -> active                   // contresigner : version signée encore en vigueur
+        signee -> annulee                  // annuler, ou balayage passé DELAI_CONTRESIGNATURE_MS
+        active -> retiree                  // retirer
+        active -> remplacee                // signer une version plus récente
+        active -> caduque                  // echoir : version remplacée et délai de re-signature passé
+        active -> radiee                   // radier : organisation radiée du référentiel
+        active -> suspendue                // suspendre : violation de l'accord constatée (DonViolations)
+        suspendue -> active                // retablir
+        suspendue -> retiree               // retirer
+        suspendue -> radiee                // radier
+        suspendue -> caduque               // echoir
+    }
+    face {
+        // L'organisation signe la version EN VIGUEUR de l'accord. Renvoie l'id d'adhésion.
+        // Une organisation dont l'adhésion est suspendue ne peut pas re-signer (Suspendu).
+        // Rôle selon ApiRef.genre(org) : "autorite" pour un "etat", "administrateur_operateur" pour
+        // un "operateur" ou un "capteur", de l'organisation (ApiAcces.agit_pour) ; ORBITE ("orbite")
+        // est adhérente de droit et ne signe pas (HorsBornes). Refus : Inconnu (organisation absente de
+        // ApiRef), HorsBornes, Ferme (aucune version en vigueur), Doublon (adhésion non close sur la même
+        // version), Suspendu, Plein, Habilitation.
+        signal signer(h: Horodatage, org: Org, par: String) -> String
+            writes org_de, version_de, signataire, signee_le
+            reads courante_de, adhesion
+            calls ApiAcces.a_le_role, ApiAcces.agit_pour, ApiRef.organisation_existe, ApiRef.genre, DonAccords.en_vigueur, next_id, Journal.noter
+        // ORBITE contre-signe : l'adhésion devient active (la version signée doit être encore en
+        // vigueur) et remplace l'adhésion précédente de l'organisation. Renvoie "active".
+        // Rôle : "conformite" d'ORBITE. Refus : Inconnu, EtatInvalide, Perime (version signée
+        // remplacée entre-temps : re-signer), Suspendu (État de tutelle non participant),
+        // EtatInvalide (organisation radiée du référentiel : ApiRef.organisation_existe(org_de) faux —
+        // règle regles.toml « DonAdhesions.active »), Habilitation.
+        signal contresigner(h: Horodatage, adhesion: String, par: String) -> String
+            writes courante_de
+            reads version_de, org_de
+            moves signee -> active when DonAccords.en_vigueur via version_de, active -> remplacee
+            calls ApiAcces.a_le_role, DonAccords.en_vigueur, ApiRef.organisation_existe, ApiRef.etat_de, ApiRef.etat_participant, Journal.noter
+        // Annule une signature non contre-signée (`par` = signataire, "conformite", ou "systeme"
+        // au balayage). Renvoie "annulee". Refus : Inconnu, EtatInvalide, MotifRequis, Habilitation.
+        signal annuler(h: Horodatage, adhesion: String, motif: String, par: String) -> String
+            reads signataire
+            moves signee -> annulee
+            calls ApiAcces.a_le_role, Journal.noter
+        // L'organisation se retire de l'accord : effet immédiat (plus de communication fondée sur
+        // l'adhésion, demandes d'accès en cours révoquées par DonDemandes.revoquer_de, DonPartages.revoquer_beneficiaire). Les
+        // données déjà reçues restent couvertes par les obligations de l'accord. Renvoie "retiree".
+        // Rôle : comme signer. Refus : Inconnu, EtatInvalide, MotifRequis, Habilitation.
+        signal retirer(h: Horodatage, org: Org, motif: String, par: String) -> String
+            writes courante_de
+            moves active -> retiree, suspendue -> retiree
+            calls ApiAcces.a_le_role, ApiAcces.agit_pour, DonDemandes.revoquer_de, DonPartages.revoquer_beneficiaire, Journal.noter
+        // Radiation : l'organisation n'existe plus au référentiel (ApiRef.organisation_existe faux).
+        // Renvoie "radiee". `par` = "systeme" ou "conformite". Refus : Inconnu, EtatInvalide
+        // (organisation encore inscrite), Habilitation.
+        signal radier(h: Horodatage, org: Org, par: String) -> String
+            writes courante_de
+            moves active -> radiee, suspendue -> radiee
+            calls ApiAcces.a_le_role, ApiRef.organisation_existe, DonDemandes.revoquer_de, DonPartages.revoquer_beneficiaire, Journal.noter
+        // Appelé à l'entrée en vigueur de `nouvelle` : fixe caduque_le = h + DELAI_RESIGNATURE_MS
+        // pour chaque adhésion active sur une autre version et notifie l'organisation.
+        // Renvoie le nombre d'adhésions concernées.
+        signal ouvrir_resignature(h: Horodatage, nouvelle: String) -> Int
+            writes caduque_le
+            reads courante_de, version_de, adhesion
+            calls ApiPasserelle.notifier
+        // Appelé par DonBalayage.balayer : rend caduques les adhésions dont caduque_le ≤ h, annule les signatures non
+        // contre-signées depuis DELAI_CONTRESIGNATURE_MS. Renvoie le nombre de fins prononcées.
+        // `par` = "systeme". Refus : Habilitation.
+        signal echoir(h: Horodatage, par: String) -> Int
+            writes courante_de
+            reads caduque_le, signee_le
+            moves active -> caduque, suspendue -> caduque, signee -> annulee
+            calls ApiAcces.a_le_role, DonDemandes.revoquer_de, DonPartages.revoquer_beneficiaire, Journal.noter
+        // Suspend l'adhésion active de l'organisation à la suite d'une violation constatée : plus
+        // aucune communication fondée sur l'adhésion, une demande ou un partage (révoqués) ; le
+        // fondement "partie"/"urgence" des rapprochements demeure (sécurité). Renvoie "suspendue".
+        // Rôle : "conformite" d'ORBITE ; valideur "direction" distinct (ApiAcces.quatre_yeux).
+        // Refus : Inconnu, EtatInvalide, MotifRequis (référence de la violation), Habilitation, QuatreYeux.
+        signal suspendre(h: Horodatage, org: Org, violation: String, par: String, valideur: String) -> String
+            reads courante_de
+            moves active -> suspendue
+            calls ApiAcces.a_le_role, ApiAcces.quatre_yeux, DonDemandes.revoquer_de, DonPartages.revoquer_beneficiaire, ApiPasserelle.notifier, Journal.noter
+        // Rétablit une adhésion suspendue (mesures correctrices attestées). Renvoie "active".
+        // Rôle et valideur : comme suspendre. Refus : Inconnu, EtatInvalide, MotifRequis,
+        // Perime (version signée remplacée et délai de re-signature passé : caduque au balayage),
+        // EtatInvalide (organisation radiée : ApiRef.organisation_existe faux — la radier),
+        // Habilitation, QuatreYeux.
+        signal retablir(h: Horodatage, org: Org, motif: String, par: String, valideur: String) -> String
+            reads courante_de, caduque_le, org_de
+            moves suspendue -> active
+            calls ApiAcces.a_le_role, ApiAcces.quatre_yeux, ApiRef.organisation_existe, Journal.noter
+        // Vrai si l'organisation a une adhésion active (re-signature éventuellement en cours ;
+        // une adhésion suspendue ne compte pas).
+        // ORBITE elle-même (ApiRef.orbite()) est adhérente de droit.
+        signal adherent(org: Org) -> Bool
+            reads courante_de, adhesion
+            calls ApiRef.orbite
+        // Adhésion active de l'organisation ; "" si aucune (fondement d'une trace).
+        signal adhesion_de(org: Org) -> String
+            reads courante_de, adhesion
+        // État de l'adhésion ; "inconnue" si jamais signée.
+        signal etat(adhesion: String) -> String
+            reads adhesion, org_de
+    }
+}

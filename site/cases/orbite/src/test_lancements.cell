@@ -1,0 +1,579 @@
+use app
+use commun::journal_chair
+use commun::horloge_chair
+use sys::lancements::chair::api
+use sys::lancements::chair::lancement
+use sys::lancements::chair::cola
+use sys::lancements::chair::pieces
+use sys::lancements::chair::echecs
+use sys::lancements::chair::veille
+use sys::lancements::chair::zones
+use doublures::lancements
+
+// Le monde des tests (conventions des personnes et des objets : doublures/lancements.cell).
+// h0 = 1 000 000 000 000 ms ; fenêtre nominale [h0 + 4 j, h0 + 5 j] ; ALD : État du préavis ;
+// ORG-OPA : opérateur du lanceur. COLA nominal : une période interdite [début, début + 10 min].
+cell BancLanc {
+    on j() { return 86400000 }
+    on hh(dt: Int) { return Horodatage(1000000000000 + dt) }
+    on d() { return 1000000000000 + 4 * 86400000 }
+    on f() { return 1000000000000 + 5 * 86400000 }
+    on chef() { return "chef_de_mission#1@ORG-OPA" }
+    on dyn() { return "dynamicien#1@ORG-OPA" }
+    on ana() { return "analyste#1@ORG-ORBITE" }
+    on sup() { return "superviseur#1@ORG-ORBITE" }
+    on aut() { return "autorite#1@ORG-ALD" }
+
+    on notifie(l: String) {
+        return ApiLancements.notifier(hh(0), l, "ORG-OPA", "ALD", hh(4 * j()), hh(5 * j()), "leo", 2, chef())
+    }
+    on zones(l: String) {
+        let a = d()
+        let b = f()
+        return LancZones.declarer(hh(1000), l, ["ALD|{a}|{b}|Z1|premier_etage"], chef())
+    }
+    // COLA conclu sur la fenêtre nominale avec les candidats donnés.
+    on cribler(l: String, candidats: List<String>) {
+        let _ = LancCola.demander(hh(2000), l, "TRAJ-1", dyn())
+        return LancCola.conclure(hh(3000), l, 1, candidats, ["DEP-1"], "systeme")
+    }
+    on crible(l: String) {
+        let _ = notifie(l)
+        let _ = zones(l)
+        let a = d()
+        let b = d() + 600000
+        return cribler(l, ["{a}|{b}|OBJ-77|10000|0"])
+    }
+    on autorise(l: String) {
+        let _ = crible(l)
+        let _ = LancAvis.rediger(hh(4000), l, "favorable", "fenêtre sûre hors des 10 premières minutes", ana())
+        return LancAvis.valider(hh(5000), l, ana(), sup())
+    }
+    on prevoir(l: String, m1: Int, m2: Int) {
+        let _ = LancPiece.prevoir(hh(6000), l, "{l}/1", "charge_utile", "ORG-OPA", "ALD", m1, "impulsionnelle", false, chef())
+        return LancPiece.prevoir(hh(6000), l, "{l}/2", "etage", "ORG-OPA", "ALD", m2, "aucune", false, chef())
+    }
+    on lance(l: String) {
+        let _ = autorise(l)
+        let _ = prevoir(l, 6000, 2500)
+        return LancLancement.confirmer_tir(hh(4 * j() + 3600000), l, hh(4 * j() + 1800000), chef())
+    }
+    on injecte(l: String) {
+        let _ = lance(l)
+        return LancLancement.declarer_injection(hh(4 * j() + 7200000), l, hh(4 * j() + 3600000), "nominale", chef())
+    }
+    on separe(l: String) {
+        let _ = injecte(l)
+        let _ = LancPiece.separer(hh(4 * j() + 7300000), "{l}/1", hh(4 * j() + 3700000), dyn())
+        return LancPiece.separer(hh(4 * j() + 7300000), "{l}/2", hh(4 * j() + 3700000), dyn())
+    }
+    on catalogue(l: String) {
+        let _ = separe(l)
+        let _ = LancPiece.cataloguer(hh(4 * j() + 8000000), "{l}/1", ana())
+        return LancPiece.cataloguer(hh(4 * j() + 8000000), "{l}/2", ana())
+    }
+    // Comme `catalogue`, avec des masses choisies (donc des numéros OBJ-<masse> choisis).
+    on catalogue_m(l: String, m1: Int, m2: Int) {
+        let _ = autorise(l)
+        let _ = prevoir(l, m1, m2)
+        let _ = LancLancement.confirmer_tir(hh(4 * j() + 3600000), l, hh(4 * j() + 1800000), chef())
+        let _ = LancLancement.declarer_injection(hh(4 * j() + 7200000), l, hh(4 * j() + 3600000), "nominale", chef())
+        let _ = LancPiece.separer(hh(4 * j() + 7300000), "{l}/1", hh(4 * j() + 3700000), dyn())
+        let _ = LancPiece.separer(hh(4 * j() + 7300000), "{l}/2", hh(4 * j() + 3700000), dyn())
+        let _ = LancPiece.cataloguer(hh(4 * j() + 8000000), "{l}/1", ana())
+        return LancPiece.cataloguer(hh(4 * j() + 8000000), "{l}/2", ana())
+    }
+    on contient(xs: List<String>, motif: String) {
+        return len(xs.filter(x => contains(x, motif))) > 0
+    }
+}
+
+// ── cycle nominal : préavis → COLA → avis → tir → injection → pièces → identification close
+
+cell test CycleLancementNominal {
+    rules {
+        let _ = BancLanc.notifie("L1")
+        assert ApiLancements.etat("L1") == "notifie"
+        assert LancCola.etat("L1") == "a_cribler"
+        assert LancAvis.etat("L1") == "a_rediger"
+        assert LancZones.etat("L1") == "a_declarer"
+        assert BancLanc.zones("L1") == 1
+        let _ = BancLanc.cribler("L1", ["{BancLanc.d()}|{BancLanc.d() + 600000}|OBJ-77|10000|0"])
+        assert ApiLancements.etat("L1") == "crible"
+        assert LancCola.etat("L1") == "conclu"
+        assert len(LancCola.interdits("L1")) == 1
+        assert LancCola.fondement("L1").version == 1
+        assert LancAvis.rediger(BancLanc.hh(4000), "L1", "favorable", "fenêtre sûre", BancLanc.ana()) == "redige"
+        assert LancAvis.valider(BancLanc.hh(5000), "L1", BancLanc.ana(), BancLanc.sup()) == "favorable"
+        assert ApiLancements.etat("L1") == "autorise"
+        assert len(LancAvis.historique("L1")) == 1
+        assert BancLanc.prevoir("L1", 6000, 2500) == "L1/2"
+        assert LancLancement.confirmer_tir(BancLanc.hh(4 * 86400000 + 3600000), "L1", BancLanc.hh(4 * 86400000 + 1800000), BancLanc.chef()) == "lance"
+        assert LancZones.etat("L1") == "closes"
+        assert LancLancement.declarer_injection(BancLanc.hh(4 * 86400000 + 7200000), "L1", BancLanc.hh(4 * 86400000 + 3600000), "nominale", BancLanc.chef()) == "injecte"
+        assert LancCola.etat("L1") == "archive"
+        assert LancAvis.etat("L1") == "archive"
+        assert LancPiece.separer(BancLanc.hh(4 * 86400000 + 7300000), "L1/1", BancLanc.hh(4 * 86400000 + 3700000), BancLanc.dyn()) == "separee"
+        assert LancPiece.separer(BancLanc.hh(4 * 86400000 + 7300000), "L1/2", BancLanc.hh(4 * 86400000 + 3700000), BancLanc.dyn()) == "separee"
+        assert LancPiece.cataloguer(BancLanc.hh(4 * 86400000 + 8000000), "L1/1", BancLanc.ana()) == "OBJ-6000"
+        assert LancPiece.cataloguer(BancLanc.hh(4 * 86400000 + 8000000), "L1/2", "systeme") == "OBJ-2500"
+        assert ApiLancements.objets("L1") == ["OBJ-6000", "OBJ-2500"]
+        assert ApiLancements.origine("OBJ-6000") == "L1"
+        assert ApiLancements.origine("OBJ-1") == ""
+        assert ApiLancements.injecte_le("OBJ-2500") == BancLanc.hh(4 * 86400000 + 3600000)
+        assert ApiLancements.injecte_le("OBJ-1") == 0
+        assert ApiLancements.etats_de_lancement("OBJ-6000") == ["ALD"]
+        assert LancPiece.restantes("L1") == 2
+        assert LancPiece.identifier(BancLanc.hh(4 * 86400000 + 9000000), "L1/1", BancLanc.dyn()) == "identifiee"
+        assert LancPiece.identifier(BancLanc.hh(4 * 86400000 + 9000000), "L1/2", BancLanc.ana()) == "identifiee"
+        assert LancPiece.restantes("L1") == 0
+        assert LancPiece.immatriculer(BancLanc.hh(4 * 86400000 + 9500000), "L1/1", "ALD-2026-001", BancLanc.aut()) == "immatriculee"
+        assert ApiLancements.balayer(BancLanc.hh(4 * 86400000 + 10000000), "systeme") == 1
+        assert ApiLancements.etat("L1") == "identifie"
+        assert LancLancement.en_cours(10) == []
+        assert BancLanc.contient(LancVeille.bilan(), "clos=1")
+        assert BancLanc.contient(Journal.chercher("L1", 100), "identification de L1 close")
+    }
+}
+
+// ── scénario métier : notification par l'État, report météo, nouvelle fenêtre, recriblage,
+//    avis, tir, injection, catalogage, identification, immatriculation tardive, clôture.
+
+cell test ScenarioReportPuisTir {
+    rules {
+        let _ = BancLanc.autorise("S1")
+        assert ApiLancements.etat("S1") == "autorise"
+        assert LancLancement.reporter(BancLanc.hh(6000), "S1", "meteo_sol", BancLanc.aut()) == "reporte"
+        assert LancCola.etat("S1") == "perime"
+        assert LancAvis.etat("S1") == "caduc"
+        assert BancLanc.contient(LancLancement.reports("S1"), "|1|meteo_sol|")
+        assert LancLancement.nouvelle_fenetre(BancLanc.hh(7000), "S1", BancLanc.hh(10 * 86400000), BancLanc.hh(11 * 86400000), BancLanc.chef()) == 2
+        assert ApiLancements.etat("S1") == "notifie"
+        assert LancLancement.fiche("S1").version == 2
+        assert LancCola.demander(BancLanc.hh(8000), "S1", "TRAJ-2", BancLanc.dyn()) == "en_cours"
+        assert LancCola.conclure(BancLanc.hh(9000), "S1", 2, [], ["DEP-2"], "systeme") == "conclu"
+        assert ApiLancements.etat("S1") == "crible"
+        assert LancAvis.rediger(BancLanc.hh(9500), "S1", "favorable", "aucun rapprochement", BancLanc.ana()) == "redige"
+        assert LancAvis.valider(BancLanc.hh(9600), "S1", BancLanc.ana(), BancLanc.sup()) == "favorable"
+        assert len(LancAvis.historique("S1")) == 3
+        assert LancLancement.confirmer_tir(BancLanc.hh(10 * 86400000 + 1000), "S1", BancLanc.hh(10 * 86400000 + 500), "systeme") == "lance"
+        assert LancLancement.declarer_injection(BancLanc.hh(10 * 86400000 + 5000), "S1", BancLanc.hh(10 * 86400000 + 4000), "degradee", BancLanc.ana()) == "injecte"
+        assert LancPiece.prevoir(BancLanc.hh(10 * 86400000 + 5100), "S1", "S1/e", "element", "ORG-OPA", "ALD", 40, "aucune", false, BancLanc.ana()) == "S1/e"
+        assert LancPiece.separer(BancLanc.hh(10 * 86400000 + 6000), "S1/e", BancLanc.hh(10 * 86400000 + 4500), BancLanc.ana()) == "separee"
+        assert LancPiece.cataloguer(BancLanc.hh(10 * 86400000 + 7000), "S1/e", BancLanc.ana()) == "OBJ-40"
+        assert LancPiece.identifier(BancLanc.hh(10 * 86400000 + 8000), "S1/e", BancLanc.ana()) == "identifiee"
+        // 61 jours après l'injection : retard d'immatriculation de l'État ALD.
+        assert ApiLancements.balayer(BancLanc.hh(71 * 86400000 + 10000), "systeme") == 2
+        assert LancPiece.etat("S1/e") == "en_retard"
+        assert ApiLancements.etat("S1") == "identifie"
+        assert LancPiece.retards_etat("ALD", 10, "conformite#1@ORG-ORBITE") == ["S1/e"]
+        assert LancPiece.retards_etat("ALD", 10, "point_focal#1@ORG-ALD") == ["S1/e"]
+        assert_fails LancPiece.retards_etat("ALD", 10, "point_focal#1@ORG-BRV") matching "Habilitation"
+        // OBJ-40 n'est pas inscrit chez ref (doublure pure : l'écriture ne se retient pas).
+        assert_fails LancPiece.immatriculer(BancLanc.hh(72 * 86400000), "S1/e", "ALD-2026-002", BancLanc.aut()) matching "EtatInvalide"
+    }
+}
+
+// ── refus de la notification
+
+cell test NotifierRefus {
+    rules {
+        assert_fails ApiLancements.notifier(BancLanc.hh(0), "L2", "ORG-OPA", "ALD", BancLanc.hh(4 * 86400000), BancLanc.hh(5 * 86400000), "leo", 2, "intrus@ORG-OPA") matching "Habilitation"
+        assert_fails ApiLancements.notifier(BancLanc.hh(0), "L2", "ORG-OPA", "ALD", BancLanc.hh(4 * 86400000), BancLanc.hh(5 * 86400000), "leo", 2, "chef_de_mission#1@ORG-OPB") matching "Habilitation"
+        assert_fails ApiLancements.notifier(BancLanc.hh(0), "L2", "ORG-OPA", "ALD", BancLanc.hh(4 * 86400000), BancLanc.hh(5 * 86400000), "leo", 2, "autorite#1@ORG-BRV") matching "Habilitation"
+        assert_fails ApiLancements.notifier(BancLanc.hh(0), "L2", "ORG-OPA", "ALD", BancLanc.hh(4 * 86400000), BancLanc.hh(5 * 86400000), "leo", 2, "analyste#1@ORG-ORBITE") matching "Habilitation"
+        assert_fails ApiLancements.notifier(BancLanc.hh(0), "L2", "ORG-OPA", "ALD", BancLanc.hh(2 * 86400000), BancLanc.hh(5 * 86400000), "leo", 2, BancLanc.chef()) matching "Delai"
+        assert_fails ApiLancements.notifier(BancLanc.hh(0), "L2", "ORG-OPA", "ALD", BancLanc.hh(4 * 86400000), BancLanc.hh(40 * 86400000), "leo", 2, BancLanc.chef()) matching "HorsBornes"
+        assert_fails ApiLancements.notifier(BancLanc.hh(0), "L2", "ORG-OPA", "ALD", BancLanc.hh(4 * 86400000), BancLanc.hh(4 * 86400000), "leo", 2, BancLanc.chef()) matching "HorsBornes"
+        assert_fails ApiLancements.notifier(BancLanc.hh(0), "L2", "ORG-OPA", "ALD", BancLanc.hh(4 * 86400000), BancLanc.hh(5 * 86400000), "leo", 201, BancLanc.chef()) matching "HorsBornes"
+        assert_fails ApiLancements.notifier(BancLanc.hh(0), "L2", "ORG-SUSP-1", "ALD", BancLanc.hh(4 * 86400000), BancLanc.hh(5 * 86400000), "leo", 2, "chef_de_mission#1@ORG-SUSP-1") matching "Suspendu"
+        assert_fails ApiLancements.notifier(BancLanc.hh(0), "L2", "ORG-OPA", "NPX", BancLanc.hh(4 * 86400000), BancLanc.hh(5 * 86400000), "leo", 2, BancLanc.chef()) matching "Inconnu"
+        assert ApiLancements.notifier(BancLanc.hh(0), "L2", "ORG-OPA", "ALD", BancLanc.hh(4 * 86400000), BancLanc.hh(5 * 86400000), "leo", 2, BancLanc.aut()) == "L2"
+        assert_fails ApiLancements.notifier(BancLanc.hh(0), "L2", "ORG-OPA", "ALD", BancLanc.hh(4 * 86400000), BancLanc.hh(5 * 86400000), "leo", 2, BancLanc.chef()) matching "Existe"
+        assert ApiLancements.etat("L-JAMAIS") == "inconnu"
+        assert_fails LancLancement.fiche("L-JAMAIS") matching "Inconnu"
+    }
+}
+
+// ── refus des reports, nouvelles fenêtres, révisions du manifeste
+
+cell test ReportRefus {
+    rules {
+        let _ = BancLanc.crible("L3")
+        assert_fails LancLancement.reporter(BancLanc.hh(6000), "L3", "technique", "intrus") matching "Habilitation"
+        assert_fails LancLancement.reporter(BancLanc.hh(6000), "L3", "technique", "chef_de_mission#1@ORG-OPB") matching "Habilitation"
+        assert_fails LancLancement.nouvelle_fenetre(BancLanc.hh(6000), "L3", BancLanc.hh(10 * 86400000), BancLanc.hh(11 * 86400000), BancLanc.chef()) matching "EtatInvalide"
+        assert LancLancement.reporter(BancLanc.hh(6000), "L3", "cola", "systeme") == "reporte"
+        assert_fails LancLancement.reporter(BancLanc.hh(6000), "L3", "cola", "systeme") matching "EtatInvalide"
+        assert_fails LancLancement.nouvelle_fenetre(BancLanc.hh(7000), "L3", BancLanc.hh(7000 + 3600000), BancLanc.hh(86400000), BancLanc.chef()) matching "Delai"
+        assert_fails LancLancement.nouvelle_fenetre(BancLanc.hh(7000), "L3", BancLanc.hh(10 * 86400000), BancLanc.hh(50 * 86400000), BancLanc.chef()) matching "HorsBornes"
+        assert_fails LancLancement.nouvelle_fenetre(BancLanc.hh(7000), "L3", BancLanc.hh(10 * 86400000), BancLanc.hh(11 * 86400000), "systeme") matching "Habilitation"
+        assert LancLancement.nouvelle_fenetre(BancLanc.hh(7000), "L3", BancLanc.hh(2 * 86400000), BancLanc.hh(3 * 86400000), BancLanc.chef()) == 2
+        assert LancLancement.fiche("L3").fin == BancLanc.hh(3 * 86400000)
+        assert_fails LancCola.conclure(BancLanc.hh(8000), "L3", 1, [], [], "systeme") matching "EtatInvalide"
+        assert_fails LancLancement.reviser_manifeste(BancLanc.hh(8000), "L3", 0, BancLanc.chef()) matching "HorsBornes"
+        assert_fails LancLancement.reviser_manifeste(BancLanc.hh(8000), "L3", 3, BancLanc.aut()) matching "Habilitation"
+        assert LancLancement.reviser_manifeste(BancLanc.hh(8000), "L3", 3, BancLanc.chef()) == 3
+    }
+}
+
+// ── avis d'ORBITE : quatre yeux, rédacteur, zones, fenêtre entièrement interdite
+
+cell test AvisRefus {
+    rules {
+        let _ = BancLanc.notifie("L4")
+        assert_fails LancAvis.rediger(BancLanc.hh(1000), "L4", "favorable", "x", BancLanc.ana()) matching "EtatInvalide"
+        let _ = BancLanc.cribler("L4", [])
+        assert ApiLancements.etat("L4") == "crible"
+        // zones non déclarées
+        assert_fails LancAvis.rediger(BancLanc.hh(4000), "L4", "favorable", "x", BancLanc.ana()) matching "EtatInvalide"
+        let _ = BancLanc.zones("L4")
+        assert_fails LancAvis.rediger(BancLanc.hh(4000), "L4", "favorable", "x", "intrus") matching "Habilitation"
+        assert_fails LancAvis.rediger(BancLanc.hh(4000), "L4", "favorable", "", BancLanc.ana()) matching "MotifRequis"
+        assert LancAvis.rediger(BancLanc.hh(4000), "L4", "favorable", "fenêtre libre", BancLanc.ana()) == "redige"
+        assert_fails LancAvis.rediger(BancLanc.hh(4000), "L4", "favorable", "bis", BancLanc.ana()) matching "EtatInvalide"
+        assert_fails LancAvis.valider(BancLanc.hh(5000), "L4", "analyste#2@ORG-ORBITE", BancLanc.sup()) matching "Habilitation"
+        assert_fails LancAvis.valider(BancLanc.hh(5000), "L4", BancLanc.ana(), BancLanc.ana()) matching "QuatreYeux"
+        assert_fails LancAvis.valider(BancLanc.hh(5000), "L4", BancLanc.ana(), "analyste#2@ORG-ORBITE") matching "QuatreYeux"
+        assert_fails LancAvis.valider(BancLanc.hh(5000), "L4", BancLanc.ana(), "chef_de_mission#2@ORG-ORBITE") matching "QuatreYeux"
+        assert ApiLancements.etat("L4") == "crible"
+        // fenêtre entièrement interdite : pas d'avis favorable, un avis défavorable ne l'autorise pas
+        let _ = BancLanc.notifie("L4b")
+        let _ = BancLanc.zones("L4b")
+        let _ = BancLanc.cribler("L4b", ["{BancLanc.d()}|{BancLanc.f()}|OBJ-77|1000|0"])
+        assert_fails LancAvis.rediger(BancLanc.hh(4000), "L4b", "favorable", "x", BancLanc.ana()) matching "Incoherent"
+        assert LancAvis.rediger(BancLanc.hh(4000), "L4b", "defavorable", "fenêtre interdite", BancLanc.ana()) == "redige"
+        assert LancAvis.valider(BancLanc.hh(5000), "L4b", BancLanc.ana(), BancLanc.sup()) == "defavorable"
+        assert ApiLancements.etat("L4b") == "crible"
+        assert !LancAvis.tir_permis("L4b", BancLanc.hh(4 * 86400000 + 1000))
+        assert_fails LancLancement.confirmer_tir(BancLanc.hh(4 * 86400000 + 2000), "L4b", BancLanc.hh(4 * 86400000 + 1000), BancLanc.chef()) matching "EtatInvalide"
+    }
+}
+
+// ── tir : périodes interdites, fenêtre, tir hors avis
+
+cell test TirRefusEtHorsAvis {
+    rules {
+        let _ = BancLanc.autorise("L5")
+        // dans la période interdite [début, début + 10 min]
+        assert_fails LancLancement.confirmer_tir(BancLanc.hh(4 * 86400000 + 120000), "L5", BancLanc.hh(4 * 86400000 + 60000), BancLanc.chef()) matching "HorsBornes"
+        // hors de la fenêtre
+        assert_fails LancLancement.confirmer_tir(BancLanc.hh(6 * 86400000), "L5", BancLanc.hh(6 * 86400000), BancLanc.chef()) matching "HorsBornes"
+        assert_fails LancLancement.confirmer_tir(BancLanc.hh(4 * 86400000), "L5", BancLanc.hh(4 * 86400000 + 900000), BancLanc.chef()) matching "Incoherent"
+        assert_fails LancLancement.confirmer_tir(BancLanc.hh(4 * 86400000 + 1800000), "L5", BancLanc.hh(4 * 86400000 + 900000), "chef_de_mission#1@ORG-OPB") matching "Habilitation"
+        assert LancAvis.tir_permis("L5", BancLanc.hh(4 * 86400000 + 900000))
+        assert_fails LancLancement.constater_tir_hors_avis(BancLanc.hh(4 * 86400000), "L5", BancLanc.hh(4 * 86400000), BancLanc.ana()) matching "EtatInvalide"
+        let _ = BancLanc.notifie("L5b")
+        assert_fails LancLancement.constater_tir_hors_avis(BancLanc.hh(1000), "L5b", BancLanc.hh(2000), BancLanc.ana()) matching "Incoherent"
+        assert_fails LancLancement.constater_tir_hors_avis(BancLanc.hh(4 * 86400000), "L5b", BancLanc.hh(4 * 86400000), "intrus") matching "Habilitation"
+        assert LancLancement.constater_tir_hors_avis(BancLanc.hh(4 * 86400000 + 1000), "L5b", BancLanc.hh(4 * 86400000 + 500), BancLanc.ana()) == "lance"
+        assert LancLancement.tire_hors_avis("L5b")
+        assert !LancLancement.tire_hors_avis("L5")
+        assert LancZones.etat("L5b") == "closes"
+        assert ApiLancements.etat("L5b") == "lance"
+    }
+}
+
+// ── lancement non notifié : quatre yeux, propriétaire inconnu, catalogage au nom d'ORBITE
+
+cell test NonNotifie {
+    rules {
+        assert_fails LancLancement.enregistrer_non_notifie(BancLanc.hh(1000), "L6", "inconnu", "NPX", BancLanc.hh(500), "leo", "découvert par l'observation", BancLanc.ana(), BancLanc.ana()) matching "QuatreYeux"
+        assert_fails LancLancement.enregistrer_non_notifie(BancLanc.hh(1000), "L6", "inconnu", "NPX", BancLanc.hh(500), "leo", "découvert par l'observation", BancLanc.ana(), "chef_de_mission#1@ORG-OPA") matching "QuatreYeux"
+        assert_fails LancLancement.enregistrer_non_notifie(BancLanc.hh(1000), "L6", "inconnu", "NPX", BancLanc.hh(500), "leo", "", BancLanc.ana(), BancLanc.sup()) matching "MotifRequis"
+        assert_fails LancLancement.enregistrer_non_notifie(BancLanc.hh(1000), "L6", "inconnu", "NPX", BancLanc.hh(2000), "leo", "x", BancLanc.ana(), BancLanc.sup()) matching "Incoherent"
+        assert_fails LancLancement.enregistrer_non_notifie(BancLanc.hh(1000), "L6", "inconnu", "NPX", BancLanc.hh(500), "leo", "x", BancLanc.chef(), BancLanc.sup()) matching "Habilitation"
+        assert LancLancement.enregistrer_non_notifie(BancLanc.hh(1000), "L6", "inconnu", "NPX", BancLanc.hh(500), "leo", "découvert par l'observation", BancLanc.ana(), BancLanc.sup()) == "L6"
+        assert ApiLancements.etat("L6") == "lance"
+        assert LancLancement.tire_hors_avis("L6")
+        assert LancLancement.fiche("L6").nb_objets == 0
+        assert_fails LancPiece.prevoir(BancLanc.hh(1100), "L6", "L6/1", "charge_utile", "inconnu", "NPX", 700, "aucune", false, BancLanc.chef()) matching "Habilitation"
+        assert LancPiece.prevoir(BancLanc.hh(1100), "L6", "L6/1", "charge_utile", "inconnu", "NPX", 700, "aucune", false, BancLanc.ana()) == "L6/1"
+        assert LancLancement.declarer_injection(BancLanc.hh(2000), "L6", BancLanc.hh(1500), "degradee", BancLanc.ana()) == "injecte"
+        assert LancPiece.separer(BancLanc.hh(2000), "L6/1", BancLanc.hh(1600), BancLanc.ana()) == "separee"
+        assert LancPiece.cataloguer(BancLanc.hh(3000), "L6/1", "systeme") == "OBJ-700"
+        assert LancPiece.fiche("L6/1").objet == "OBJ-700"
+        assert LancPiece.fiche("L6/1").proprietaire == "inconnu"
+        assert ApiLancements.etats_de_lancement("OBJ-700") == ["NPX"]
+    }
+}
+
+// ── échec à l'injection : enquête, évaluation à quatre yeux, fragmentation, gel, clôture
+
+cell test EchecEtEnquete {
+    rules {
+        let _ = BancLanc.lance("L7")
+        assert_fails LancLancement.declarer_injection(BancLanc.hh(4 * 86400000 + 7200000), "L7", BancLanc.hh(4 * 86400000 + 1000000), "perdue", BancLanc.chef()) matching "Incoherent"
+        assert_fails LancLancement.declarer_injection(BancLanc.hh(4 * 86400000 + 7200000), "L7", BancLanc.hh(4 * 86400000 + 3600000), "perdue", "dynamicien#1@ORG-OPB") matching "Habilitation"
+        assert LancLancement.declarer_injection(BancLanc.hh(4 * 86400000 + 7200000), "L7", BancLanc.hh(4 * 86400000 + 3600000), "perdue", BancLanc.chef()) == "echec"
+        assert LancEnquete.etat("L7") == "ouverte"
+        assert LancEnquete.fiche("L7").phase == "injection"
+        assert LancLancement.en_cours(10) == []
+        assert_fails LancEnquete.ouvrir(BancLanc.hh(4 * 86400000 + 7300000), "L7", "lanceur", "bis", BancLanc.ana()) matching "Existe"
+        assert_fails LancEnquete.evaluer(BancLanc.hh(4 * 86400000 + 8000000), "L7", ["OBJ-X1"], [], BancLanc.ana(), BancLanc.sup()) matching "Inconnu"
+        assert_fails LancEnquete.evaluer(BancLanc.hh(4 * 86400000 + 8000000), "L7", ["OBJ-101"], [], BancLanc.ana(), BancLanc.ana()) matching "QuatreYeux"
+        assert_fails LancEnquete.evaluer(BancLanc.hh(4 * 86400000 + 8000000), "L7", ["OBJ-101"], ["ALD|x"], BancLanc.ana(), BancLanc.sup()) matching "Incoherent"
+        assert_fails LancEnquete.evaluer(BancLanc.hh(4 * 86400000 + 8000000), "L7", ["OBJ-101"], [], BancLanc.chef(), BancLanc.sup()) matching "Habilitation"
+        assert LancEnquete.evaluer(BancLanc.hh(4 * 86400000 + 8000000), "L7", ["OBJ-101", "OBJ-102"], ["BRV|1|2|mer de Bravie", "ALD|1|2|terre"], BancLanc.ana(), BancLanc.sup()) == 2
+        assert LancEnquete.etat("L7") == "debris_evalues"
+        assert LancEnquete.fiche("L7").evenement == "EV-fragmentation-2"
+        assert LancEnquete.fiche("L7").notifies == ["ORG-BRV", "ORG-ALD"]
+        assert LancPiece.etat("L7/1") == "non_separee"
+        assert LancPiece.restantes("L7") == 0
+        assert_fails LancEnquete.clore(BancLanc.hh(4 * 86400000 + 9000000), "L7", "cause", true, BancLanc.ana(), BancLanc.ana()) matching "QuatreYeux"
+        assert_fails LancEnquete.clore(BancLanc.hh(4 * 86400000 + 9000000), "L7", "", true, BancLanc.ana(), BancLanc.sup()) matching "MotifRequis"
+        assert_fails LancEnquete.rouvrir(BancLanc.hh(4 * 86400000 + 9000000), "L7", "", BancLanc.ana()) matching "MotifRequis"
+        assert LancEnquete.rouvrir(BancLanc.hh(4 * 86400000 + 9000000), "L7", "nouveau débris", BancLanc.ana()) == "ouverte"
+        assert LancEnquete.evaluer(BancLanc.hh(4 * 86400000 + 9100000), "L7", ["OBJ-103"], [], BancLanc.ana(), BancLanc.sup()) == 0
+        assert len(LancEnquete.fiche("L7").objets) == 3
+        assert LancEnquete.fiche("L7").evenement == "EV-fragmentation-2"
+        assert len(LancEnquete.zones("L7")) == 2
+        assert LancEnquete.clore(BancLanc.hh(4 * 86400000 + 9200000), "L7", "défaillance du second étage", true, BancLanc.ana(), "direction#1@ORG-ORBITE") == "close"
+        assert_fails LancEnquete.rouvrir(BancLanc.hh(4 * 86400000 + 9300000), "L7", "x", BancLanc.ana()) matching "EtatInvalide"
+        assert ApiLancements.etat("L7") == "echec"
+    }
+}
+
+cell test EchecApresInjection {
+    rules {
+        let _ = BancLanc.injecte("L7b")
+        assert_fails LancLancement.declarer_echec(BancLanc.hh(5 * 86400000), "L7b", "orbite inutilisable", BancLanc.ana(), BancLanc.ana()) matching "QuatreYeux"
+        assert_fails LancLancement.declarer_echec(BancLanc.hh(5 * 86400000), "L7b", "", BancLanc.ana(), BancLanc.sup()) matching "MotifRequis"
+        assert_fails LancLancement.declarer_echec(BancLanc.hh(5 * 86400000), "L7b", "x", BancLanc.chef(), BancLanc.sup()) matching "Habilitation"
+        // enquête de séparation ouverte par l'opérateur, puis l'échec la reprend
+        assert LancEnquete.ouvrir(BancLanc.hh(5 * 86400000), "L7b", "separation", "charge utile restée solidaire", BancLanc.chef()) == "ouverte"
+        assert LancLancement.declarer_echec(BancLanc.hh(5 * 86400000), "L7b", "orbite inutilisable", BancLanc.ana(), BancLanc.sup()) == "echec"
+        assert LancEnquete.fiche("L7b").phase == "separation"
+        assert_fails LancEnquete.ouvrir(BancLanc.hh(5 * 86400000), "L-AUTRE", "lanceur", "x", BancLanc.ana()) matching "Inconnu"
+        let _ = BancLanc.notifie("L7c")
+        assert_fails LancEnquete.ouvrir(BancLanc.hh(5000), "L7c", "lanceur", "x", BancLanc.ana()) matching "EtatInvalide"
+    }
+}
+
+// ── veille : fenêtre échue, 180 jours reporté, horloge qui recule
+
+cell test VeilleFenetreEchue {
+    rules {
+        let _ = BancLanc.notifie("L8")
+        assert_fails ApiLancements.balayer(BancLanc.hh(1000), "intrus") matching "Habilitation"
+        assert ApiLancements.balayer(BancLanc.hh(1000), "exploitant#1@ORG-ORBITE") == 0
+        assert ApiLancements.balayer(BancLanc.hh(6 * 86400000), "systeme") == 1
+        assert ApiLancements.etat("L8") == "reporte"
+        assert BancLanc.contient(LancLancement.reports("L8"), "fenetre_echue|systeme")
+        assert_fails ApiLancements.balayer(BancLanc.hh(1000), "systeme") matching "HorsBornes"
+        assert ApiLancements.balayer(BancLanc.hh(100 * 86400000), "systeme") == 0
+        assert ApiLancements.balayer(BancLanc.hh(187 * 86400000), "systeme") == 1
+        assert ApiLancements.etat("L8") == "annule"
+        assert LancCola.etat("L8") == "archive"
+        assert BancLanc.contient(LancVeille.bilan(), "annules=1")
+        assert BancLanc.contient(LancVeille.bilan(), "reportes=1")
+    }
+}
+
+// ── veille : COLA de plus de 8 h ⇒ périmé, avis caduc, lancement à recribler
+
+cell test VeilleColaPerime {
+    rules {
+        let _ = BancLanc.autorise("L8b")
+        assert ApiLancements.balayer(BancLanc.hh(3000 + 3600000), "systeme") == 0
+        assert ApiLancements.etat("L8b") == "autorise"
+        assert ApiLancements.balayer(BancLanc.hh(3000 + 28800001), "systeme") == 1
+        assert ApiLancements.etat("L8b") == "notifie"
+        assert LancCola.etat("L8b") == "perime"
+        assert LancAvis.etat("L8b") == "caduc"
+        assert BancLanc.contient(LancVeille.bilan(), "recribles=1")
+        // une tempête (h finissant par 777) périme un COLA non renforcé
+        let _ = BancLanc.crible("L8c")
+        assert LancCola.veiller(BancLanc.hh(4777), "L8c", "systeme")
+        assert ApiLancements.etat("L8c") == "notifie"
+        assert_fails LancCola.veiller(BancLanc.hh(4777), "L8c", BancLanc.ana()) matching "Habilitation"
+    }
+}
+
+// ── veille : délais d'identification, perte, retards d'immatriculation
+
+cell test VeillePieces {
+    rules {
+        let _ = BancLanc.catalogue("L9")
+        // 31 jours après l'injection : les deux pièces non identifiées sont en retard
+        assert ApiLancements.balayer(BancLanc.hh(35 * 86400000), "systeme") == 2
+        assert LancPiece.etat("L9/1") == "en_retard"
+        assert LancPiece.restantes("L9") == 2
+        assert LancPiece.identifier(BancLanc.hh(36 * 86400000), "L9/1", BancLanc.dyn()) == "en_retard"
+        assert_fails LancPiece.identifier(BancLanc.hh(36 * 86400000), "L9/1", BancLanc.dyn()) matching "EtatInvalide"
+        assert LancPiece.identifier(BancLanc.hh(36 * 86400000), "L9/2", BancLanc.ana()) == "en_retard"
+        assert LancPiece.restantes("L9") == 0
+        // 65 jours : OBJ-6000 inscrit directement chez ref ⇒ immatriculée ; OBJ-2500 en retard d'État ; clôture
+        assert ApiLancements.balayer(BancLanc.hh(65 * 86400000), "systeme") == 2
+        assert LancPiece.etat("L9/1") == "immatriculee"
+        assert LancPiece.etat("L9/2") == "en_retard"
+        assert LancPiece.retards_etat("ALD", 10, "autorite#1@ORG-ALD") == ["L9/2"]
+        assert_fails LancPiece.retards_etat("ALD", 10, "intrus") matching "Habilitation"
+        assert ApiLancements.etat("L9") == "identifie"
+        assert BancLanc.contient(LancVeille.bilan(), "retards=3")
+    }
+}
+
+cell test VeillePerte {
+    rules {
+        let _ = BancLanc.separe("L10")
+        assert ApiLancements.balayer(BancLanc.hh(20 * 86400000), "systeme") == 0
+        assert ApiLancements.balayer(BancLanc.hh(40 * 86400000), "systeme") == 3
+        assert LancPiece.etat("L10/1") == "perdue"
+        assert LancPiece.etat("L10/2") == "perdue"
+        assert ApiLancements.etat("L10") == "identifie"
+    }
+}
+
+// ── COLA : habilitations, versions, candidat mal formé, impossible, seuils, anonymisation
+
+cell test ColaCriblage {
+    rules {
+        let _ = BancLanc.notifie("L12")
+        assert_fails LancCola.demander(BancLanc.hh(2000), "L12", "TRAJ", "intrus") matching "Habilitation"
+        assert_fails LancCola.demander(BancLanc.hh(2000), "L12", "TRAJ", "dynamicien#1@ORG-OPB") matching "Habilitation"
+        assert_fails LancCola.demander(BancLanc.hh(2000), "L12", "", BancLanc.dyn()) matching "MotifRequis"
+        assert_fails LancCola.conclure(BancLanc.hh(2000), "L12", 1, [], [], "systeme") matching "EtatInvalide"
+        assert LancCola.demander(BancLanc.hh(2000), "L12", "TRAJ", BancLanc.ana()) == "en_cours"
+        assert_fails LancCola.demander(BancLanc.hh(2000), "L12", "TRAJ", BancLanc.ana()) matching "EtatInvalide"
+        assert_fails LancCola.conclure(BancLanc.hh(3000), "L12", 2, [], [], "systeme") matching "Perime"
+        assert_fails LancCola.conclure(BancLanc.hh(3000), "L12", 1, ["1|2|OBJ-1"], [], "systeme") matching "Incoherent"
+        assert_fails LancCola.conclure(BancLanc.hh(3000), "L12", 1, ["1|2|OBJ-1|5|5"], [], "systeme") matching "Incoherent"
+        assert_fails LancCola.conclure(BancLanc.hh(3000), "L12", 1, [], [], BancLanc.chef()) matching "Habilitation"
+        // station habitée sans éphéméride fraîche ni orbite observée : impossible
+        assert LancCola.conclure(BancLanc.hh(3000), "L12", 1, ["{BancLanc.d()}|{BancLanc.d() + 1000}|OBJ-STATION-RASSIS|900000|0"], [], "systeme") == "impossible"
+        assert ApiLancements.etat("L12") == "notifie"
+        assert LancCola.demander(BancLanc.hh(4000), "L12", "TRAJ", BancLanc.ana()) == "en_cours"
+        // station à 100 km (< 200 km) interdite ; débris à 30 km (> 25 km), pc 1e-5 permis ; objet protégé à 1 km interdit
+        assert LancCola.conclure(BancLanc.hh(5000), "L12", 1, ["{BancLanc.d()}|{BancLanc.d() + 1000}|OBJ-STATION1|100000|0", "{BancLanc.d() + 2000}|{BancLanc.d() + 3000}|OBJ-5|30000|10000", "{BancLanc.d() + 4000}|{BancLanc.d() + 5000}|OBJ-SECRET1|1000|0"], ["DEP-1", "DEP-2"], "systeme") == "conclu"
+        assert len(LancCola.interdits("L12")) == 2
+        assert ApiLancements.etat("L12") == "crible"
+        assert LancCola.fondement("L12").depots == ["DEP-1", "DEP-2"]
+        assert LancCola.communiquer(BancLanc.hh(6000), "L12", "ORG-OPA", BancLanc.ana()) == 1
+        assert_fails LancCola.communiquer(BancLanc.hh(6000), "L12", "ORG-OPA", "intrus") matching "Habilitation"
+        assert_fails LancCola.fondement("L-JAMAIS") matching "Inconnu"
+        // catalogue du régime non criblé depuis 8 h
+        let _ = ApiLancements.notifier(BancLanc.hh(0), "L12b", "ORG-OPA", "ALD", BancLanc.hh(4 * 86400000), BancLanc.hh(5 * 86400000), "heo", 1, BancLanc.chef())
+        assert_fails LancCola.demander(BancLanc.hh(2000), "L12b", "TRAJ", BancLanc.ana()) matching "Perime"
+        assert_fails LancCola.fondement("L12b") matching "EtatInvalide"
+    }
+}
+
+// ── pièces : manifeste, États de lancement, identification, rattachement
+
+cell test PiecesManifeste {
+    rules {
+        let _ = BancLanc.notifie("L13")
+        assert BancLanc.prevoir("L13", 1001, 1002) == "L13/2"
+        assert_fails LancPiece.prevoir(BancLanc.hh(6000), "L13", "L13/3", "element", "ORG-OPA", "ALD", 5, "aucune", false, BancLanc.chef()) matching "Plein"
+        assert_fails LancPiece.prevoir(BancLanc.hh(6000), "L13", "L13/1", "element", "ORG-OPA", "ALD", 5, "aucune", false, BancLanc.chef()) matching "Existe"
+        assert LancLancement.reviser_manifeste(BancLanc.hh(6000), "L13", 4, BancLanc.chef()) == 4
+        assert_fails LancLancement.reviser_manifeste(BancLanc.hh(6000), "L13", 1, BancLanc.chef()) matching "Incoherent"
+        assert_fails LancPiece.prevoir(BancLanc.hh(6000), "L13", "L13/3", "charge_utile", "ORG-OPB", "BRV", 5, "faible", false, BancLanc.chef()) matching "NonEligible"
+        assert_fails LancPiece.prevoir(BancLanc.hh(6000), "L13", "L13/3", "charge_utile", "ORG-OPB", "NPX", 5, "faible", false, BancLanc.chef()) matching "NonEligible"
+        assert_fails LancPiece.prevoir(BancLanc.hh(6000), "L13", "L13/3", "etage", "ORG-OPA", "ALD", 5, "aucune", true, BancLanc.chef()) matching "Incoherent"
+        assert_fails LancPiece.prevoir(BancLanc.hh(6000), "L13", "L13/3", "charge_utile", "ORG-OPB", "ALD", 5, "faible", false, "intrus") matching "Habilitation"
+        assert LancZones.ajouter_etat(BancLanc.hh(6000), "L13", "BRV", BancLanc.aut()) == 2
+        // le client de covoiturage (ORG-OPB, immatriculé par BRV) est prévu par son propre chef de mission
+        assert LancPiece.prevoir(BancLanc.hh(6000), "L13", "L13/3", "charge_utile", "ORG-OPB", "BRV", 5, "faible", false, "chef_de_mission#1@ORG-OPB") == "L13/3"
+        assert LancPiece.manifeste("L13") == ["L13/1", "L13/2", "L13/3"]
+        assert_fails LancPiece.separer(BancLanc.hh(7000), "L13/1", BancLanc.hh(7000), BancLanc.dyn()) matching "EtatInvalide"
+        assert LancPiece.declarer_non_separee(BancLanc.hh(7000), "L13/3", "client retiré", "chef_de_mission#1@ORG-OPB") == "non_separee"
+        assert_fails LancPiece.declarer_non_separee(BancLanc.hh(7000), "L13/1", "", BancLanc.chef()) matching "MotifRequis"
+        assert LancPiece.etat("L13/9") == "inconnue"
+        assert_fails LancPiece.fiche("L13/9") matching "Inconnu"
+    }
+}
+
+cell test PiecesIdentification {
+    rules {
+        let _ = BancLanc.catalogue_m("L14", 1088, 1199)
+        assert_fails LancPiece.identifier(BancLanc.hh(5 * 86400000), "L14/1", BancLanc.dyn()) matching "Incoherent"
+        assert_fails LancPiece.identifier(BancLanc.hh(5 * 86400000), "L14/1", BancLanc.ana()) matching "Habilitation"
+        assert_fails LancPiece.identifier(BancLanc.hh(5 * 86400000), "L14/1", "dynamicien#1@ORG-OPB") matching "Habilitation"
+        assert_fails LancPiece.identifier(BancLanc.hh(5 * 86400000), "L14/2", BancLanc.ana()) matching "Perime"
+        assert_fails LancPiece.immatriculer(BancLanc.hh(5 * 86400000), "L14/1", "ALD-1", BancLanc.aut()) matching "EtatInvalide"
+        assert_fails LancPiece.constater_retombee(BancLanc.hh(5 * 86400000), "L14/1", BancLanc.ana()) matching "EtatInvalide"
+        // un étage sans plan de fin de vie conforme est identifié (manquement constaté)
+        let _ = BancLanc.catalogue_m("L15", 6100, 1177)
+        assert LancPiece.identifier(BancLanc.hh(5 * 86400000), "L15/2", BancLanc.ana()) == "identifiee"
+        assert LancPiece.identifier(BancLanc.hh(5 * 86400000), "L15/1", BancLanc.dyn()) == "identifiee"
+        assert_fails LancPiece.immatriculer(BancLanc.hh(5 * 86400000), "L15/1", "", BancLanc.aut()) matching "MotifRequis"
+        assert_fails LancPiece.immatriculer(BancLanc.hh(5 * 86400000), "L15/1", "ALD-9", "autorite#1@ORG-BRV") matching "Habilitation"
+        assert LancPiece.immatriculer(BancLanc.hh(5 * 86400000), "L15/1", "ALD-9", BancLanc.aut()) == "immatriculee"
+        assert LancPiece.fiche("L15/1").objet == "OBJ-6100"
+    }
+}
+
+cell test PiecesRattachement {
+    rules {
+        let _ = BancLanc.separe("L16")
+        assert_fails LancPiece.rattacher(BancLanc.hh(5 * 86400000), "L16/1", "OBJ-555", BancLanc.ana(), BancLanc.ana()) matching "QuatreYeux"
+        assert_fails LancPiece.rattacher(BancLanc.hh(5 * 86400000), "L16/1", "OBJ-555", BancLanc.chef(), BancLanc.sup()) matching "Habilitation"
+        assert_fails LancPiece.rattacher(BancLanc.hh(5 * 86400000), "L16/1", "OBJ-X1", BancLanc.ana(), BancLanc.sup()) matching "Inconnu"
+        assert_fails LancPiece.rattacher(BancLanc.hh(5 * 86400000), "L16/1", "OBJ-SERV1", BancLanc.ana(), BancLanc.sup()) matching "EtatInvalide"
+        assert LancPiece.rattacher(BancLanc.hh(5 * 86400000), "L16/1", "OBJ-555", BancLanc.ana(), BancLanc.sup()) == "OBJ-555"
+        assert LancPiece.etat("L16/1") == "cataloguee"
+        assert_fails LancPiece.rattacher(BancLanc.hh(5 * 86400000), "L16/2", "OBJ-555", BancLanc.ana(), BancLanc.sup()) matching "Doublon"
+        assert_fails LancPiece.rattacher(BancLanc.hh(5 * 86400000), "L16/1", "OBJ-556", BancLanc.ana(), BancLanc.sup()) matching "EtatInvalide"
+        assert ApiLancements.origine("OBJ-555") == "L16"
+        assert ApiLancements.objets("L16") == ["OBJ-555"]
+    }
+}
+
+// ── zones de retombée et États de lancement
+
+cell test ZonesEtEtats {
+    rules {
+        let _ = BancLanc.notifie("L17")
+        assert_fails LancZones.declarer(BancLanc.hh(1000), "L17", ["ALD|1|2|Z|etage"], BancLanc.chef()) matching "Incoherent"
+        assert_fails LancZones.declarer(BancLanc.hh(1000), "L17", ["ALD|Z|etage"], BancLanc.chef()) matching "Incoherent"
+        assert_fails LancZones.declarer(BancLanc.hh(1000), "L17", ["NPX|{BancLanc.d()}|{BancLanc.d()}|Z|etage"], BancLanc.chef()) matching "Inconnu"
+        assert_fails LancZones.declarer(BancLanc.hh(1000), "L17", [], "intrus") matching "Habilitation"
+        assert_fails LancZones.declarer(BancLanc.hh(1000), "L17", [], "autorite#1@ORG-BRV") matching "Habilitation"
+        assert LancZones.declarer(BancLanc.hh(1000), "L17", ["ALD|{BancLanc.d()}|{BancLanc.d()}|Z1|etage", "CAZ|{BancLanc.d()}|{BancLanc.d()}|Z2|coiffe", "CAZ|{BancLanc.d()}|{BancLanc.f()}|Z3|coiffe"], BancLanc.aut()) == 2
+        assert LancZones.relever_acquittements(BancLanc.hh(2000), "L17", "systeme") == 1
+        assert LancZones.etat("L17") == "declarees"
+        assert_fails LancZones.relever_acquittements(BancLanc.hh(2000), "L17", BancLanc.ana()) matching "Habilitation"
+        assert LancZones.declarer(BancLanc.hh(3000), "L17", ["ALD|{BancLanc.d()}|{BancLanc.d()}|Z1|etage"], BancLanc.chef()) == 1
+        assert LancZones.relever_acquittements(BancLanc.hh(4000), "L17", "systeme") == 0
+        assert LancZones.etat("L17") == "acquittees"
+        assert len(LancZones.zones("L17")) == 1
+        assert LancZones.declarer(BancLanc.hh(5000), "L17", [], BancLanc.chef()) == 0
+        assert LancZones.etat("L17") == "declarees"
+        assert_fails LancZones.ajouter_etat(BancLanc.hh(6000), "L17", "BRV", "intrus") matching "Habilitation"
+        assert LancZones.ajouter_etat(BancLanc.hh(6000), "L17", "BRV", BancLanc.ana()) == 2
+        assert_fails LancZones.ajouter_etat(BancLanc.hh(6000), "L17", "BRV", BancLanc.ana()) matching "Doublon"
+        // l'autorité d'un État de lancement inscrit peut en ajouter un autre, même non participant
+        assert LancZones.ajouter_etat(BancLanc.hh(6000), "L17", "NPX", "autorite#1@ORG-BRV") == 3
+        assert LancZones.ajouter_etat(BancLanc.hh(6000), "L17", "CAZ", BancLanc.ana()) == 4
+        assert_fails LancZones.ajouter_etat(BancLanc.hh(6000), "L17", "QQQ", BancLanc.ana()) matching "Plein"
+        assert LancZones.etats_lancement("L17") == ["ALD", "BRV", "NPX", "CAZ"]
+        assert LancZones.est_etat_de_lancement("L17", "NPX")
+        assert LancZones.etat("L-JAMAIS") == "inconnue"
+        let _ = LancLancement.constater_tir_hors_avis(BancLanc.hh(4 * 86400000 + 1000), "L17", BancLanc.hh(4 * 86400000 + 500), "systeme")
+        assert_fails LancZones.ajouter_etat(BancLanc.hh(6000), "L17", "QQQ", BancLanc.ana()) matching "Ferme"
+        assert_fails LancZones.declarer(BancLanc.hh(5000), "L17", [], BancLanc.chef()) matching "EtatInvalide"
+    }
+}
+
+// ── annulation
+
+cell test Annulation {
+    rules {
+        let _ = BancLanc.autorise("L18")
+        let _ = BancLanc.prevoir("L18", 1, 2)
+        assert_fails LancLancement.annuler(BancLanc.hh(7000), "L18", "", BancLanc.chef()) matching "MotifRequis"
+        assert_fails LancLancement.annuler(BancLanc.hh(7000), "L18", "abandon", "intrus") matching "Habilitation"
+        assert LancLancement.annuler(BancLanc.hh(7000), "L18", "abandon commercial", BancLanc.chef()) == "annule"
+        assert LancPiece.etat("L18/1") == "non_separee"
+        assert LancPiece.etat("L18/2") == "non_separee"
+        assert LancCola.etat("L18") == "archive"
+        assert LancAvis.etat("L18") == "archive"
+        assert LancZones.etat("L18") == "closes"
+        assert LancLancement.en_cours(10) == []
+        assert_fails LancLancement.annuler(BancLanc.hh(8000), "L18", "bis", BancLanc.chef()) matching "EtatInvalide"
+        assert_fails LancPiece.prevoir(BancLanc.hh(8000), "L18", "L18/3", "element", "ORG-OPA", "ALD", 3, "aucune", false, BancLanc.ana()) matching "EtatInvalide"
+        assert_fails LancLancement.confirmer_tir(BancLanc.hh(4 * 86400000 + 3600000), "L18", BancLanc.hh(4 * 86400000 + 1800000), BancLanc.chef()) matching "EtatInvalide"
+    }
+}

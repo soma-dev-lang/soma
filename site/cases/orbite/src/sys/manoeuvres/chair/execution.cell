@@ -1,0 +1,176 @@
+// Corps de manoeuvres : fenêtres d'exécution (ManFenetre) et vérification (ManVerification).
+flesh ManFenetre {
+    on reserver(h, plan, objet, debut, fin) {
+        require objet_de.get(plan) == () else Existe "fenêtre de {plan} déjà réservée"
+        require fin > debut else HorsBornes "fin {fin} ≤ début {debut}"
+        let lst_o = par_objet.get(objet) ?? []
+        require len(lst_o) < MAX_PAR_OBJET else Plein "trop de fenêtres pour {objet}"
+        require a_surveiller.size < MAX_FENETRES else Plein "trop de fenêtres surveillées"
+        objet_de.set(plan, objet)
+        fin_de.set(plan, fin)
+        debut_de.set(plan, debut)
+        par_objet.set(objet, lst_o ++ [plan])
+        a_surveiller.push(plan)
+        return len(lst_o) + 1
+    }
+
+    on chevauche(objet, debut, fin) {
+        for p in par_objet.get(objet) ?? [] {
+            let d = debut_de.get(p) ?? 0
+            let f = fin_de.get(p) ?? 0
+            if d <= fin && debut <= f { return p }
+        }
+        return ""
+    }
+
+    on ouvrir(h, plan) {
+        let d = debut_de.get(plan)
+        require d != () else Inconnu "fenêtre de {plan} inconnue"
+        let s = get_status(plan) ?? "reservee"
+        require s == "reservee" else EtatInvalide "fenêtre de {plan} {s}"
+        require h >= d else Delai "fenêtre de {plan} ouvre à {d}"
+        transition(plan, "reservee", "ouverte")
+        return "ouverte"
+    }
+
+    on consommer(h, plan) {
+        let o = objet_de.get(plan)
+        require o != () else Inconnu "fenêtre de {plan} inconnue"
+        let s = get_status(plan) ?? "reservee"
+        require s == "ouverte" else EtatInvalide "fenêtre de {plan} {s}"
+        transition(plan, "ouverte", "consommee")
+        _retirer(o, plan)
+        return "consommee"
+    }
+
+    on echoir(h, plan) {
+        let o = objet_de.get(plan)
+        require o != () else Inconnu "fenêtre de {plan} inconnue"
+        let s = get_status(plan) ?? "reservee"
+        require s == "ouverte" else EtatInvalide "fenêtre de {plan} {s}"
+        let f = fin_de.get(plan) ?? 0
+        require h > f + DELAI_CONFIRMATION_MS else Delai "fenêtre de {plan} pas encore échue"
+        transition(plan, "ouverte", "echue")
+        _retirer(o, plan)
+        return "echue"
+    }
+
+    on liberer(h, plan) {
+        let o = objet_de.get(plan)
+        require o != () else Inconnu "fenêtre de {plan} inconnue"
+        let s = get_status(plan) ?? "reservee"
+        if s != "reservee" && s != "ouverte" { return s }
+        transition(plan, s, "liberee")
+        _retirer(o, plan)
+        return "liberee"
+    }
+
+    on a_traiter(h, n) {
+        let res_f = []
+        for p in a_surveiller {
+            if len(res_f) >= n { break }
+            let s = get_status(p) ?? "reservee"
+            if s == "reservee" && h >= (debut_de.get(p) ?? 0) {
+                res_f.push(p)
+            } else if s == "ouverte" && h > (fin_de.get(p) ?? 0) + DELAI_CONFIRMATION_MS {
+                res_f.push(p)
+            }
+        }
+        return res_f
+    }
+
+    on etat(plan) {
+        return get_status(plan) ?? "reservee"
+    }
+
+    on _retirer(objet: Objet, plan: String) {
+        let lst_o = par_objet.get(objet) ?? []
+        par_objet.set(objet, lst_o.filter(p => p != plan))
+        let i = index_of(a_surveiller, plan)
+        if i >= 0 { a_surveiller.delete(i) }
+    }
+}
+
+flesh ManVerification {
+    on programmer(h, plan, objet, reel, priorite) {
+        require objet_de.get(plan) == () else Existe "vérification de {plan} déjà programmée"
+        let ech = reel + DELAI_VERIFICATION_MS
+        echeance_de.set(plan, ech)
+        reel_de.set(plan, reel)
+        objet_de.set(plan, objet)
+        en_attente.push(plan)
+        let r_s = try { ApiObservation.demander_suivi(h, objet, priorite, DELAI_VERIFICATION_MS, "vérification de la manœuvre {plan}", "systeme") }
+        if r_s.error == () {
+            suivi_de.set(plan, r_s.value)
+        } else {
+            Journal.noter(h, "manoeuvres", "systeme", "plan {plan} : suivi renforcé refusé ({r_s.kind}), vérification attendue")
+        }
+        return ech
+    }
+
+    on verifier(h, plan, par) {
+        require ApiAcces.a_le_role(par, "systeme") || ApiAcces.a_le_role(par, "analyste") else Habilitation "vérification par systeme ou analyste"
+        let objet = objet_de.get(plan)
+        require objet != () else Inconnu "aucune vérification pour {plan}"
+        let s = get_status(plan) ?? "attendue"
+        require s == "attendue" else EtatInvalide "vérification de {plan} {s}"
+        let reel = reel_de.get(plan) ?? 0
+        let r_age = try { ApiEphemerides.age(objet, h) }
+        let nouvelle = r_age.error == () && to_int(r_age.value) < to_int(h) - to_int(reel)
+        let suivi_o = ApiObservation.suivi(objet, h)
+        require nouvelle && suivi_o else Insuffisant "pas encore d'orbite observée ou de nouvelle éphéméride pour {objet}"
+        let depuis = max(0, reel - 3600000)
+        // ApiObservation.manoeuvre_detectee = manœuvre NON annoncée (façade) : la poussée de ce plan,
+        // vue par l'observation, y est « expliquée » et n'y figure pas. Conforme : nouvelle éphéméride
+        // post-poussée (validée contre l'orbite observée), orbite suivie, écart ≤ ECART_MAX_M, et
+        // aucune manœuvre inexpliquée depuis reel − 1 h. (Demande de façade : ApiObservation.manoeuvre_vue.)
+        let vue = !ApiObservation.manoeuvre_detectee(objet, Horodatage(depuis))
+        let r_ec = try { ApiObservation.ecart_declare(objet) }
+        let ecart = if r_ec.error == () { to_int(r_ec.value) } else { -1 }
+        if ecart >= 0 { ecart_de.set(plan, Distance(ecart)) }
+        verifie_par.set(plan, par)
+        let atteint = "ecart"
+        if vue && ecart >= 0 && ecart <= ECART_MAX_M {
+            transition(plan, "attendue", "conforme")
+            atteint = "conforme"
+        } else {
+            transition(plan, "attendue", "ecart")
+        }
+        _oter(plan)
+        Journal.noter(h, "manoeuvres", par, "vérification de {plan} : {atteint} (écart {ecart} m)")
+        ManPlan.clore(h, plan, "systeme")
+        return atteint
+    }
+
+    on expirer(h, plan, par) {
+        require ApiAcces.a_le_role(par, "systeme") else Habilitation "expiration interne"
+        let objet = objet_de.get(plan)
+        require objet != () else Inconnu "aucune vérification pour {plan}"
+        let s = get_status(plan) ?? "attendue"
+        require s == "attendue" else EtatInvalide "vérification de {plan} {s}"
+        let ech = echeance_de.get(plan) ?? 0
+        require h >= ech else Delai "échéance de vérification {ech} non atteinte"
+        transition(plan, "attendue", "non_observee")
+        _oter(plan)
+        let r_inv = try { ApiEphemerides.invalider(h, objet, "manoeuvre_non_verifiee", "systeme") }
+        if r_inv.error != () {
+            Journal.noter(h, "manoeuvres", "systeme", "plan {plan} : invalidation de l'éphéméride refusée ({r_inv.kind})")
+        }
+        Journal.noter(h, "manoeuvres", par, "vérification de {plan} : non observée à l'échéance")
+        ManPlan.clore(h, plan, "systeme")
+        return "non_observee"
+    }
+
+    on attendues(n) {
+        return slice(en_attente, 0, n)
+    }
+
+    on etat(plan) {
+        return get_status(plan) ?? "attendue"
+    }
+
+    on _oter(plan: String) {
+        let i = index_of(en_attente, plan)
+        if i >= 0 { en_attente.delete(i) }
+    }
+}

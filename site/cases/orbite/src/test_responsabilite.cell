@@ -1,0 +1,545 @@
+use app
+use commun::journal_chair
+use commun::horloge_chair
+use sys::responsabilite::chair::api
+use sys::responsabilite::chair::dossiers
+use sys::responsabilite::chair::pieces
+use sys::responsabilite::chair::reclamations
+use sys::responsabilite::chair::fautes
+use sys::responsabilite::chair::assurance
+use sys::responsabilite::chair::conservation
+use doublures::responsabilite
+
+// ── le monde de départ (voir doublures/responsabilite.cell) ─────────────────────────────
+// H0 = 1 000 000 000 000 : instant de l'évènement "EV-<s>" (collision de OBJ-A-<s>, ORG-ALPHA,
+// lancé par ALD, et OBJ-B-<s>, ORG-BETA, lancé par BRV, au rapprochement CJ-<s>).
+cell MondeResp {
+    // Ouvre le dossier de EV-<s> à H0 + 1 000 (par conf1) ; renvoie son id.
+    on ouvrir(s: String) {
+        return ApiResponsabilite.geler(Horodatage(1000000001000), "EV-{s}", "collision confirmée", "conf1")
+    }
+    // Vérifie toutes les pièces du dossier à `h` ; renvoie le nombre de pièces vérifiées.
+    on verifier_tout(dossier: String, h: Int) {
+        let n = 0
+        for p in RespPieces.pieces_de(dossier) {
+            if RespPieces.verifier(Horodatage(h), p, "conf1") == "verifiee" {
+                n = n + 1
+            }
+        }
+        return n
+    }
+    // Dossier de EV-<s> ouvert, pièces vérifiées, scellé à H0 + 5 000 (conf1 / dir1).
+    on scelle(s: String) {
+        let d = ouvrir(s)
+        let _ = verifier_tout(d, 1000000002000)
+        let _ = RespDossiers.sceller(Horodatage(1000000005000), d, "conf1", "dir1")
+        return d
+    }
+    // Faute "designation_ignoree" de OBJ-A-<s> sur CJ-<s>, contradictoire ouvert, réponse de
+    // l'opérateur, dossier scellé ; qualifiée retenue (part 60 %). Renvoie [dossier, faute].
+    on faute_retenue(s: String) {
+        let d = ouvrir(s)
+        let f = RespFautes.presumer(Horodatage(1000000001500), d, "OBJ-A-{s}", "CJ-{s}", "designation_ignoree", "plan non exécuté", "analyste1")
+        let _ = RespFautes.ouvrir_contradictoire(Horodatage(1000000001600), f, "conf1")
+        let _ = RespFautes.repondre(Horodatage(1000000001700), f, "défaillance du segment sol", "cdm-ALPHA")
+        let _ = verifier_tout(d, 1000000002000)
+        let _ = RespDossiers.sceller(Horodatage(1000000005000), d, "conf1", "dir1")
+        let _ = RespFautes.qualifier(Horodatage(1000000006000), f, true, 2, 60, "désignation ignorée", "conf1", "dir1")
+        return [d, f]
+    }
+    // Réclamation de BRV contre ALD pour OBJ-A-<s> (lieu donné), déposée, recevable, notifiée.
+    on reclamation_notifiee(d: String, s: String, lieu: String) {
+        let rc = RespReclamations.deposer(Horodatage(1000000007000), "BRV", "ALD", d, "OBJ-A-{s}", RespLieuDommage(lieu), Horodatage(1000000000000), 5000000, "satellite détruit", "aut-BRV")
+        let _ = RespReclamations.statuer(Horodatage(1000000008000), rc, true, "recevable", "conf1", "dir1")
+        let _ = RespReclamations.notifier(Horodatage(1000000009000), rc, "conf1")
+        return rc
+    }
+    // Police de ORG-ALPHA (plafond 80 M EUR, H0 − 1 an → H0 + 1 an), validée.
+    on police_alpha(police: String) {
+        let _ = RespPolices.declarer(Horodatage(1000000000500), police, "ORG-ALPHA", "Assureur Orbital SA", 80000000, Horodatage(968442400000), Horodatage(1031557600000), "sha256:attestation", "adm-ALPHA")
+        return RespPolices.valider(Horodatage(1000000000600), police, "conf1")
+    }
+}
+
+// Dossier de preuve : ouverture, gels automatiques, pièces, scellement (quatre yeux), levée.
+cell test RespDossierCycle {
+    rules {
+        let d = MondeResp.ouvrir("1")
+        assert RespDossiers.etat(d) == "gele"
+        assert RespDossiers.de_evenement("EV-1") == d
+        assert RespDossiers.cibles(d) == ["CJ-1", "OBJ-A-1", "OBJ-B-1"]
+        assert ApiResponsabilite.sous_gel("EV-1")
+        assert ApiResponsabilite.sous_gel("J:11574")
+        assert ApiResponsabilite.sous_gel("OBJ-A-1")
+        assert ApiResponsabilite.sous_gel("CJ-1")
+        assert ApiResponsabilite.sous_gel("PL-OBJ-A-1")
+        assert !ApiResponsabilite.sous_gel("OBJ-A-2")
+        assert len(RespPieces.pieces_de(d)) == 22
+        assert RespDossiers.instant(d) == 1000000000000
+        assert RespDossiers.empreinte(d) == ""
+        assert_fails ApiResponsabilite.geler(Horodatage(1000000001000), "EV-1", "encore", "conf1") matching "Existe"
+        assert_fails ApiResponsabilite.geler(Horodatage(1000000001000), "EV-INCONNU", "x", "conf1") matching "Inconnu"
+        assert_fails ApiResponsabilite.geler(Horodatage(1000000001000), "EV-9", "x", "analyste1") matching "Habilitation"
+        assert_fails ApiResponsabilite.geler(Horodatage(1000000001000), "EV-9", "", "conf1") matching "MotifRequis"
+        assert_fails RespDossiers.sceller(Horodatage(1000000005000), d, "conf1", "dir1") matching "Insuffisant"
+        assert MondeResp.verifier_tout(d, 1000000002000) == 22
+        assert_fails RespDossiers.sceller(Horodatage(1000000005000), d, "conf1", "conf1") matching "QuatreYeux"
+        assert_fails RespDossiers.sceller(Horodatage(1000000005000), d, "analyste1", "dir1") matching "Habilitation"
+        assert_fails RespDossiers.sceller(Horodatage(1000000005000), d, "conf1", "analyste2") matching "Habilitation"
+        assert_fails RespDossiers.sceller(Horodatage(1000000005000), "DP-999", "conf1", "dir1") matching "Inconnu"
+        let emp = RespDossiers.sceller(Horodatage(1000000005000), d, "conf1", "sup1")
+        assert len(emp) == 64
+        assert RespDossiers.etat(d) == "scelle"
+        assert RespDossiers.empreinte(d) == emp
+        assert_fails RespDossiers.sceller(Horodatage(1000000005001), d, "conf1", "dir1") matching "EtatInvalide"
+        assert_fails RespDossiers.lever(Horodatage(1000000006000), d, "fin", "dir1", "conf1") matching "Delai"
+        assert_fails RespDossiers.lever(Horodatage(1315576006000), d, "fin", "dir1", "dir2") matching "Habilitation"
+        assert_fails RespDossiers.lever(Horodatage(1315576006000), d, "", "dir1", "conf1") matching "MotifRequis"
+        assert RespDossiers.lever(Horodatage(1315576006000), d, "prescription acquise", "dir1", "conf1") == "leve"
+        assert RespDossiers.etat(d) == "leve"
+        assert !ApiResponsabilite.sous_gel("EV-1")
+        assert !ApiResponsabilite.sous_gel("OBJ-A-1")
+        assert !ApiResponsabilite.sous_gel("PL-OBJ-A-1")
+        assert Journal.taille() > 20
+    }
+}
+
+// Compléments d'un dossier scellé ; la levée exige des compléments scellés et les lève.
+cell test RespComplements {
+    rules {
+        let d = MondeResp.scelle("2")
+        let c = RespDossiers.completer(Horodatage(1000000010000), d, "débris catalogué plus tard", "dir1")
+        assert RespDossiers.etat(c) == "gele"
+        assert RespDossiers.complements(d) == [c]
+        assert RespDossiers.cibles(c) == []
+        assert_fails RespDossiers.completer(Horodatage(1000000010000), c, "x", "dir1") matching "EtatInvalide"
+        assert_fails RespDossiers.completer(Horodatage(1000000010000), "DP-999", "x", "dir1") matching "Inconnu"
+        assert_fails RespDossiers.completer(Horodatage(1000000010000), d, "x", "analyste1") matching "Habilitation"
+        assert RespDossiers.rattacher_objet(Horodatage(1000000011000), c, "OBJ-B-2BIS", "analyste1") == 2
+        assert ApiResponsabilite.sous_gel("OBJ-B-2BIS")
+        assert ApiResponsabilite.sous_gel("CJ-2BIS")
+        assert_fails RespDossiers.lever(Horodatage(1315576006000), d, "fin", "dir1", "conf1") matching "EtatInvalide"
+        assert MondeResp.verifier_tout(c, 1000000012000) > 0
+        assert len(RespDossiers.sceller(Horodatage(1000000013000), c, "conf1", "dir1")) == 64
+        assert RespDossiers.lever(Horodatage(1315576013000), d, "prescription", "dir1", "conf1") == "leve"
+        assert RespDossiers.etat(c) == "leve"
+        assert !ApiResponsabilite.sous_gel("OBJ-B-2BIS")
+        assert !ApiResponsabilite.sous_gel("EV-2")
+    }
+}
+
+// Rattachements et annulation d'un dossier ouvert à tort.
+cell test RespRattachementsAnnulation {
+    rules {
+        let d = MondeResp.ouvrir("3")
+        assert_fails RespDossiers.rattacher_rapprochement(Horodatage(1000000002000), d, "CJ-3", "analyste1") matching "Doublon"
+        assert_fails RespDossiers.rattacher_rapprochement(Horodatage(1000000002000), d, "CJ-INCONNU-1", "analyste1") matching "Inconnu"
+        assert_fails RespDossiers.rattacher_rapprochement(Horodatage(1000000002000), d, "CJ-3X", "expl1") matching "Habilitation"
+        assert RespDossiers.rattacher_rapprochement(Horodatage(1000000002000), d, "CJ-3X", "analyste1") == 6
+        assert ApiResponsabilite.sous_gel("OBJ-B-3X")
+        assert_fails RespDossiers.rattacher_objet(Horodatage(1000000002000), d, "OBJ-A-3X", "analyste1") matching "Doublon"
+        assert_fails RespDossiers.rattacher_objet(Horodatage(1000000002000), d, "OBJ-INCONNU-7", "analyste1") matching "Inconnu"
+        assert_fails RespDossiers.annuler(Horodatage(1000000003000), d, "à tort", "dir1", "dir1") matching "QuatreYeux"
+        assert_fails RespDossiers.annuler(Horodatage(1000000003000), d, "à tort", "conf1", "dir1") matching "Habilitation"
+        assert_fails RespDossiers.annuler(Horodatage(1000000003000), d, "", "dir1", "conf1") matching "MotifRequis"
+        assert RespDossiers.annuler(Horodatage(1000000003000), d, "ouvert à tort", "dir1", "conf1") == "annule"
+        assert RespDossiers.etat(d) == "annule"
+        assert !ApiResponsabilite.sous_gel("EV-3")
+        assert !ApiResponsabilite.sous_gel("CJ-3X")
+        assert !ApiResponsabilite.sous_gel("OBJ-A-3")
+        assert_fails RespDossiers.rattacher_objet(Horodatage(1000000004000), d, "OBJ-A-9", "analyste1") matching "EtatInvalide"
+        assert_fails RespDossiers.annuler(Horodatage(1000000004000), d, "x", "dir1", "conf1") matching "EtatInvalide"
+    }
+}
+
+// Pièces : déclaration versée par une partie, fondements (antériorité), chaîne de preuve,
+// fiche, absence prouvée (Kp refusé), ronde de revérification.
+cell test RespPiecesChaine {
+    rules {
+        let d = MondeResp.ouvrir("4")
+        let p = RespPieces.geler_piece(Horodatage(1000000002000), d, "declaration", "OBJ-B-4", "DECL-BRV-1", ["OBJ-B-4"], "responsabilite", Horodatage(999999990000), "rapport d'expertise BRV", "analyste1")
+        assert RespPieces.etat(p) == "gelee"
+        assert RespPieces.objets(p) == ["OBJ-B-4"]
+        assert RespPieces.empreinte(p) == sha256("rapport d'expertise BRV")
+        assert contains(RespPieces.lire(p), "declaration | OBJ-B-4 | responsabilite")
+        assert_fails RespPieces.geler_piece(Horodatage(1000000002000), d, "objet", "OBJ-B-4", "", [], "ref", Horodatage(1000000000000), "x", "analyste1") matching "Habilitation"
+        assert_fails RespPieces.geler_piece(Horodatage(1000000002000), d, "declaration", "OBJ-B-4", "", [], "responsabilite", Horodatage(1000000003000), "x", "analyste1") matching "HorsBornes"
+        assert_fails RespPieces.geler_piece(Horodatage(1000000002000), "DP-999", "declaration", "", "", [], "responsabilite", Horodatage(0), "x", "conf1") matching "Inconnu"
+        let chaine_d = ApiResponsabilite.chaine("D-CJ-4")
+        assert len(chaine_d) == 8
+        assert contains(RespPieces.lire(chaine_d[0]), "decision=D-CJ-4|OBJ-A-4")
+        assert_fails ApiResponsabilite.chaine("D-INCONNUE") matching "Inconnu"
+        assert len(ApiResponsabilite.chaine("PR-CJ-4")) == 1
+        assert RespPieces.fonder(Horodatage(1000000002500), chaine_d[0], p, "analyste1") == 8
+        assert_fails RespPieces.fonder(Horodatage(1000000002500), chaine_d[0], p, "analyste1") matching "Doublon"
+        assert_fails RespPieces.fonder(Horodatage(1000000002500), p, p, "analyste1") matching "Incoherent"
+        assert_fails RespPieces.fonder(Horodatage(1000000002500), chaine_d[0], "PC-999", "analyste1") matching "Inconnu"
+        assert_fails RespPieces.fonder(Horodatage(1000000002500), chaine_d[0], p, "expl1") matching "Habilitation"
+        assert len(ApiResponsabilite.chaine("D-CJ-4")) == 9
+        assert len(RespPieces.pieces_de(d).filter(x => contains(RespPieces.lire(x), "kp=absent=Perime"))) == 1
+        assert RespPieces.ronde(Horodatage(1000000002000), "systeme") == 0
+        assert RespPieces.etat(p) == "gelee"
+        assert RespPieces.ronde(Horodatage(1002592003000), "systeme") == 0
+        assert RespPieces.etat(p) == "verifiee"
+        assert_fails RespPieces.ronde(Horodatage(1002592003000), "conf1") matching "Habilitation"
+        assert_fails RespPieces.verifier(Horodatage(1002592003000), p, "analyste1") matching "Habilitation"
+        assert RespPieces.verifier(Horodatage(1002592004000), p, "conf1") == "verifiee"
+        assert_fails RespPieces.verifier(Horodatage(1002592004000), "PC-999", "conf1") matching "Inconnu"
+        let _ = RespDossiers.sceller(Horodatage(1002592005000), d, "conf1", "dir1")
+        assert_fails RespPieces.geler_piece(Horodatage(1002592006000), d, "declaration", "", "", [], "responsabilite", Horodatage(0), "x", "conf1") matching "EtatInvalide"
+        assert_fails RespPieces.fonder(Horodatage(1002592006000), chaine_d[0], chaine_d[1], "analyste1") matching "EtatInvalide"
+    }
+}
+
+// Durées de conservation (quatre yeux) et cycle d'une purge : demandée, autorisée, annulée par
+// un gel ; exécutée sur une cible libre ; refusée ; conservation obligatoire et gel opposés.
+cell test RespPurgesCycle {
+    rules {
+        assert RespDurees.minimum("journal") == 63115200000
+        assert_fails RespDurees.fixer(Horodatage(1000000000000), "cdm", 70000000000, 60000000000, "dir1", "conf1") matching "Incoherent"
+        assert_fails RespDurees.fixer(Horodatage(1000000000000), "cdm", 1000, 60000000000, "dir1", "conf1") matching "HorsBornes"
+        assert_fails RespDurees.fixer(Horodatage(1000000000000), "cdm", 70000000000, 90000000000, "dir1", "dir1") matching "QuatreYeux"
+        assert_fails RespDurees.fixer(Horodatage(1000000000000), "cdm", 70000000000, 90000000000, "dir1", "sup1") matching "Habilitation"
+        assert RespDurees.fixer(Horodatage(1000000000000), "cdm", 70000000000, 90000000000, "dir1", "conf1") == 70000000000
+        assert RespDurees.fixer(Horodatage(1000000000000), "cdm", 65000000000, 66000000000, "dir1", "conf1") == 65000000000
+        assert RespDurees.minimum("cdm") == 65000000000
+        assert RespDurees.purge_due("cdm", Horodatage(0), Horodatage(66000000001))
+        assert !RespDurees.purge_due("cdm", Horodatage(0), Horodatage(66000000000))
+        assert !RespDurees.purge_due("journal", Horodatage(0), Horodatage(1000000000000))
+        let pg = RespPurges.demander(Horodatage(1000000000000), "OBJ-A-5", "journal", Horodatage(900000000000), "ephemerides", "expl1")
+        assert_fails RespPurges.demander(Horodatage(1000000000000), "OBJ-A-5", "journal", Horodatage(990000000000), "ephemerides", "expl1") matching "Delai"
+        assert_fails RespPurges.demander(Horodatage(1000000000000), "OBJ-A-5", "journal", Horodatage(1000000000001), "ephemerides", "expl1") matching "Incoherent"
+        assert_fails RespPurges.demander(Horodatage(1000000000000), "OBJ-A-5", "journal", Horodatage(900000000000), "ephemerides", "analyste1") matching "Habilitation"
+        assert !ApiResponsabilite.purge_autorisee("OBJ-A-5", Horodatage(1000000000000))
+        assert_fails RespPurges.autoriser(Horodatage(1000000000100), pg, "expl1") matching "Habilitation"
+        assert RespPurges.autoriser(Horodatage(1000000000100), pg, "conf1") == "autorisee"
+        assert ApiResponsabilite.purge_autorisee("OBJ-A-5", Horodatage(1000000000200))
+        assert_fails RespPurges.autoriser(Horodatage(1000000000100), pg, "conf1") matching "EtatInvalide"
+        let d = MondeResp.ouvrir("5")
+        assert ApiResponsabilite.sous_gel("OBJ-A-5")
+        assert !ApiResponsabilite.purge_autorisee("OBJ-A-5", Horodatage(1000000002000))
+        assert_fails RespPurges.constater(Horodatage(1000000002000), pg, 10, "systeme") matching "EtatInvalide"
+        assert_fails RespPurges.demander(Horodatage(1000000002000), "OBJ-A-5", "journal", Horodatage(900000000000), "ephemerides", "systeme") matching "Conflit"
+        let pg2 = RespPurges.demander(Horodatage(1000000002000), "CJ-AUTRE", "cdm", Horodatage(900000000000), "conjonctions", "systeme")
+        let pg3 = RespPurges.demander(Horodatage(1000000002000), "CJ-AUTRE", "cdm", Horodatage(800000000000), "conjonctions", "systeme")
+        assert_fails RespPurges.refuser(Horodatage(1000000002100), pg3, "", "conf1") matching "MotifRequis"
+        assert RespPurges.refuser(Horodatage(1000000002100), pg3, "doublon de {pg2}", "conf1") == "refusee"
+        assert RespPurges.autoriser(Horodatage(1000000002100), pg2, "conf1") == "autorisee"
+        assert_fails RespPurges.constater(Horodatage(1000000002200), pg2, 10, "analyste1") matching "Habilitation"
+        assert RespPurges.constater(Horodatage(1000000002200), pg2, 12, "systeme") == "executee"
+        assert_fails RespPurges.constater(Horodatage(1000000002300), "PG-999", 1, "systeme") matching "Inconnu"
+    }
+}
+
+// Faute pour désignation ignorée : présomption sur rapprochement passé et coordination arrêtée,
+// contradictoire, réponse de l'opérateur, qualification sur dossier scellé, transmission.
+cell test RespFauteCycle {
+    rules {
+        let d = MondeResp.ouvrir("6")
+        let f = RespFautes.presumer(Horodatage(1000000001500), d, "OBJ-A-6", "CJ-6", "designation_ignoree", "plan non exécuté", "analyste1")
+        assert RespFautes.etat(f) == "designation_presumee"
+        assert RespFautes.pendantes_de_dossier(d) == 1
+        assert_fails RespFautes.presumer(Horodatage(1000000001500), d, "OBJ-A-6", "CJ-6", "designation_ignoree", "bis", "analyste1") matching "Doublon"
+        assert_fails RespFautes.presumer(Horodatage(1000000001500), d, "OBJ-B-6", "CJ-6", "designation_ignoree", "x", "analyste1") matching "Insuffisant"
+        assert_fails RespFautes.presumer(Horodatage(1000000001500), d, "OBJ-B-6", "", "manoeuvre_non_annoncee", "x", "analyste1") matching "Insuffisant"
+        assert_fails RespFautes.presumer(Horodatage(1000000001500), d, "OBJ-A-9", "", "fin_de_vie", "x", "analyste1") matching "Inconnu"
+        assert_fails RespFautes.presumer(Horodatage(1000000001500), d, "OBJ-A-6", "", "fin_de_vie", "x", "dir1") matching "Habilitation"
+        assert_fails RespFautes.presumer(Horodatage(1000000001500), d, "OBJ-A-6", "", "fin_de_vie", "", "analyste1") matching "MotifRequis"
+        assert_fails RespDossiers.annuler(Horodatage(1000000001600), d, "à tort", "dir1", "conf1") matching "Conflit"
+        assert_fails RespFautes.repondre(Horodatage(1000000001550), f, "x", "cdm-ALPHA") matching "EtatInvalide"
+        assert_fails RespFautes.ouvrir_contradictoire(Horodatage(1000000001600), f, "analyste1") matching "Habilitation"
+        assert RespFautes.ouvrir_contradictoire(Horodatage(1000000001600), f, "conf1") == 1002592001600
+        assert RespFautes.etat(f) == "contradictoire"
+        assert_fails RespFautes.qualifier(Horodatage(1000000001650), f, true, 2, 60, "trop tôt", "conf1", "dir1") matching "Delai"
+        assert_fails RespFautes.repondre(Horodatage(1000000001700), f, "x", "cdm-BETA") matching "Habilitation"
+        assert_fails RespFautes.repondre(Horodatage(1000000001700), f, "", "cdm-ALPHA") matching "MotifRequis"
+        assert_fails RespFautes.repondre(Horodatage(1002592001601), f, "trop tard", "cdm-ALPHA") matching "Delai"
+        assert RespFautes.repondre(Horodatage(1000000001700), f, "défaillance du segment sol", "cdm-ALPHA") == "recue"
+        assert_fails RespFautes.qualifier(Horodatage(1000000001800), f, true, 2, 60, "retenue", "conf1", "dir1") matching "Insuffisant"
+        assert MondeResp.verifier_tout(d, 1000000002000) == 22
+        let _ = RespDossiers.sceller(Horodatage(1000000005000), d, "conf1", "dir1")
+        assert_fails RespFautes.qualifier(Horodatage(1000000006000), f, true, 2, 160, "retenue", "conf1", "dir1") matching "HorsBornes"
+        assert_fails RespFautes.qualifier(Horodatage(1000000006000), f, true, 2, 60, "retenue", "conf1", "conf1") matching "QuatreYeux"
+        assert_fails RespFautes.qualifier(Horodatage(1000000006000), f, true, 2, 60, "retenue", "conf1", "sup1") matching "Habilitation"
+        assert RespFautes.qualifier(Horodatage(1000000006000), f, true, 2, 60, "désignation ignorée", "conf1", "dir1") == "retenue"
+        assert RespFautes.retenues_de_dossier(d) == ["{f}|OBJ-A-6|60"]
+        assert RespFautes.pendantes_de_dossier(d) == 1
+        assert_fails RespFautes.transmettre(Horodatage(1000000007000), f, "analyste1") matching "Habilitation"
+        assert RespFautes.transmettre(Horodatage(1000000007000), f, "conf1") == "MQ-{f}"
+        assert RespFautes.etat(f) == "transmise"
+        assert RespFautes.pendantes_de_dossier(d) == 0
+        assert_fails RespFautes.transmettre(Horodatage(1000000007000), f, "conf1") matching "EtatInvalide"
+    }
+}
+
+// Autres natures de faute ; contradictoire échu relancé par la ronde ; présomption écartée.
+cell test RespFautesNatures {
+    rules {
+        let d = MondeResp.ouvrir("ALERTE7")
+        assert_fails RespFautes.presumer(Horodatage(1000000001500), d, "OBJ-A-ALERTE7", "CJ-ALERTE7", "designation_ignoree", "x", "analyste1") matching "EtatInvalide"
+        let d2 = MondeResp.ouvrir("NONARR7")
+        assert_fails RespFautes.presumer(Horodatage(1000000001500), d2, "OBJ-A-NONARR7", "CJ-NONARR7", "designation_ignoree", "x", "analyste1") matching "Insuffisant"
+        let d3 = MondeResp.ouvrir("MANO-PERIME-RETARD-SILENCE7")
+        let f1 = RespFautes.presumer(Horodatage(1000000001500), d3, "OBJ-A-MANO-PERIME-RETARD-SILENCE7", "", "manoeuvre_non_annoncee", "détectée", "systeme")
+        let f2 = RespFautes.presumer(Horodatage(1000000001500), d3, "OBJ-A-MANO-PERIME-RETARD-SILENCE7", "CJ-MANO-PERIME-RETARD-SILENCE7", "ephemeride_perimee", "éphéméride périmée", "analyste1")
+        let f3 = RespFautes.presumer(Horodatage(1000000001500), d3, "OBJ-B-MANO-PERIME-RETARD-SILENCE7", "CJ-MANO-PERIME-RETARD-SILENCE7", "silence", "aucune réponse", "analyste1")
+        let f4 = RespFautes.presumer(Horodatage(1000000001500), d3, "OBJ-A-MANO-PERIME-RETARD-SILENCE7", "", "fin_de_vie", "retrait dépassé", "analyste1")
+        assert RespFautes.etat(f1) == "presumee"
+        assert RespFautes.pendantes_de_dossier(d3) == 4
+        assert_fails RespFautes.presumer(Horodatage(1000000001500), d3, "OBJ-A-MANO-PERIME-RETARD-SILENCE7", "CJ-MANO-PERIME-RETARD-SILENCE7", "manoeuvre_non_conforme", "x", "analyste1") matching "Insuffisant"
+        assert_fails RespFautes.ecarter(Horodatage(1000000001600), f4, "x", "analyste1") matching "Habilitation"
+        assert RespFautes.ecarter(Horodatage(1000000001600), f4, "retrait autorisé entre-temps", "conf1") == "ecartee"
+        assert_fails RespFautes.ecarter(Horodatage(1000000001600), f4, "x", "conf1") matching "EtatInvalide"
+        let _ = RespFautes.ouvrir_contradictoire(Horodatage(1000000001700), f2, "conf1")
+        let _ = RespFautes.ouvrir_contradictoire(Horodatage(1000000001700), f3, "conf1")
+        assert RespFautes.relancer_contradictoires(Horodatage(1000000002000), "systeme") == 0
+        assert ApiResponsabilite.balayer(Horodatage(1002592001701), "systeme") >= 2
+        assert RespFautes.relancer_contradictoires(Horodatage(1002592001800), "systeme") == 0
+        assert_fails RespFautes.relancer_contradictoires(Horodatage(1002592001800), "conf1") matching "Habilitation"
+        assert RespFautes.qualifier(Horodatage(1002592001800), f2, false, 1, 0, "éphéméride fraîche selon l'observation", "conf1", "dir1") == "ecartee"
+        assert RespFautes.etat(f3) == "contradictoire"
+        assert RespFautes.retenues_de_dossier(d3) == []
+    }
+}
+
+// Scénario complet (Convention de 1972, dommage dans l'espace) : collision gelée, faute retenue
+// sur dossier scellé, réclamation de BRV contre ALD, recevable, négociation sans accord un an,
+// commission constituée, force obligatoire acceptée, sentence, prise d'acte, clôture ; puis
+// sinistre déclaré sur la police de l'opérateur, instruit et indemnisé dans la limite allouée.
+cell test RespScenarioCommission {
+    rules {
+        let df = MondeResp.faute_retenue("8")
+        let d = df[0]
+        assert RespFautes.etat(df[1]) == "retenue"
+        assert MondeResp.police_alpha("POL-AO-1") == "en_vigueur"
+        let rc = MondeResp.reclamation_notifiee(d, "8", "espace")
+        assert RespReclamations.etat(rc) == "negociation"
+        assert RespReclamations.parties(rc) == ["BRV", "ALD"]
+        assert RespReclamations.pendantes_de_dossier(d) == 1
+        assert_fails RespDossiers.lever(Horodatage(1315576006000), d, "fin", "dir1", "conf1") matching "Conflit"
+        assert_fails RespReclamations.demander_commission(Horodatage(1000000010000), rc, "aut-ALD") matching "Delai"
+        assert_fails RespReclamations.demander_commission(Horodatage(1031557609000), rc, "aut-CAZ") matching "Habilitation"
+        assert RespReclamations.demander_commission(Horodatage(1031557609000), rc, "aut-ALD") == 1036817209000
+        assert RespReclamations.etat(rc) == "commission"
+        assert RespCommissions.etat(rc) == "en_constitution"
+        assert_fails RespCommissions.saisir(Horodatage(1031557609000), rc) matching "Existe"
+        assert_fails RespCommissions.designer_membre(Horodatage(1031557610000), rc, "juge-brv", "BRV", "dir1") matching "Delai"
+        assert_fails RespCommissions.designer_membre(Horodatage(1031557610000), rc, "juge-brv", "BRV", "aut-ALD") matching "Habilitation"
+        assert_fails RespCommissions.designer_membre(Horodatage(1031557610000), rc, "juge-caz", "CAZ", "aut-CAZ") matching "Inconnu"
+        assert RespCommissions.designer_membre(Horodatage(1031557610000), rc, "juge-brv", "BRV", "aut-BRV") == 1
+        assert_fails RespCommissions.designer_membre(Horodatage(1031557610000), rc, "juge-brv2", "BRV", "aut-BRV") matching "Existe"
+        assert_fails RespCommissions.designer_president(Horodatage(1031557610500), rc, "juge-pres", "aut-BRV", "aut-ALD") matching "Insuffisant"
+        assert RespCommissions.designer_membre(Horodatage(1031557610000), rc, "juge-ald", "ALD", "aut-ALD") == 2
+        assert_fails RespCommissions.designer_president(Horodatage(1031557611000), rc, "juge-brv", "aut-BRV", "aut-ALD") matching "Incoherent"
+        assert_fails RespCommissions.designer_president(Horodatage(1031557611000), rc, "juge-pres", "aut-BRV", "aut-BRV") matching "Habilitation"
+        assert_fails RespCommissions.designer_president(Horodatage(1031557611000), rc, "juge-pres", "dir1", "dir2") matching "Delai"
+        assert RespCommissions.designer_president(Horodatage(1031557611000), rc, "juge-pres", "aut-BRV", "aut-ALD") == 1063115211000
+        assert RespCommissions.etat(rc) == "constituee"
+        assert RespCommissions.accepter_force(Horodatage(1031557611500), rc, "BRV", "aut-BRV") == 1
+        assert_fails RespCommissions.accepter_force(Horodatage(1031557611500), rc, "BRV", "aut-BRV") matching "Doublon"
+        assert RespCommissions.accepter_force(Horodatage(1031557611500), rc, "ALD", "aut-ALD") == 2
+        assert RespCommissions.obligatoire(rc)
+        assert_fails RespReclamations.prendre_acte(Horodatage(1031557611600), rc, "conf1") matching "EtatInvalide"
+        assert_fails RespCommissions.rendre(Horodatage(1031557612000), rc, 9000000, "motifs", "dir1", "conf1") matching "HorsBornes"
+        assert_fails RespCommissions.rendre(Horodatage(1031557612000), rc, 3000000, "", "dir1", "conf1") matching "MotifRequis"
+        assert_fails RespCommissions.rendre(Horodatage(1031557612000), rc, 3000000, "motifs", "dir1", "dir2") matching "Habilitation"
+        assert RespCommissions.rendre(Horodatage(1031557612000), rc, 3000000, "faute de l'opérateur ALPHA, part 60 %", "dir1", "conf1") == 3000000
+        assert RespCommissions.montant(rc) == 3000000
+        assert RespReclamations.prendre_acte(Horodatage(1031557613000), rc, "systeme") == 3000000
+        assert RespReclamations.etat(rc) == "sentence"
+        assert_fails RespReclamations.alloue(rc) matching "EtatInvalide"
+        assert_fails RespReclamations.retirer(Horodatage(1031557613500), rc, "trop tard", "aut-BRV") matching "EtatInvalide"
+        assert_fails RespReclamations.clore(Horodatage(1031557614000), rc, true, "", "conf1") matching "MotifRequis"
+        assert RespReclamations.clore(Horodatage(1031557614000), rc, true, "versement constaté par l'autorité BRV", "conf1") == "close"
+        assert RespReclamations.alloue(rc) == 3000000
+        assert RespReclamations.pendantes_de_dossier(d) == 0
+        assert ApiResponsabilite.balayer(Horodatage(1031557615000), "systeme") >= 1
+        assert RespPolices.etat("POL-AO-1") == "echue"
+        let sn = RespSinistres.declarer(Horodatage(1031557616000), "POL-AO-1", rc, 4000000, "adm-ALPHA")
+        assert_fails RespSinistres.declarer(Horodatage(1031557616000), "POL-AO-1", rc, 4000000, "adm-ALPHA") matching "Doublon"
+        assert_fails RespSinistres.declarer(Horodatage(1031557616000), "POL-AO-1", rc, 90000000, "conf1") matching "HorsBornes"
+        assert_fails RespSinistres.declarer(Horodatage(1031557616000), "POL-AO-1", rc, 1, "adm-BETA") matching "Habilitation"
+        assert_fails RespSinistres.indemniser(Horodatage(1031557617000), sn, 3000000, "conf1", "dir1") matching "EtatInvalide"
+        assert_fails RespSinistres.instruire(Horodatage(1031557617000), sn, "dir1") matching "Habilitation"
+        assert RespSinistres.instruire(Horodatage(1031557617000), sn, "conf1") == "instruit"
+        assert_fails RespSinistres.indemniser(Horodatage(1031557618000), sn, 3500000, "conf1", "dir1") matching "HorsBornes"
+        assert_fails RespSinistres.indemniser(Horodatage(1031557618000), sn, 3000000, "conf1", "conf1") matching "QuatreYeux"
+        assert RespSinistres.indemniser(Horodatage(1031557618000), sn, 3000000, "conf1", "dir1") == 3000000
+        assert_fails RespSinistres.refuser(Horodatage(1031557619000), sn, "exclusion", "conf1") matching "EtatInvalide"
+    }
+}
+
+// Règlement amiable (dommage au sol, responsabilité absolue), irrecevabilité, retrait, refus
+// au dépôt.
+cell test RespReclamationsAmiable {
+    rules {
+        let d = MondeResp.scelle("9")
+        let rc = MondeResp.reclamation_notifiee(d, "9", "sol")
+        assert_fails RespReclamations.regler(Horodatage(1000000010000), rc, 6000000, "aut-BRV", "aut-ALD") matching "HorsBornes"
+        assert_fails RespReclamations.regler(Horodatage(1000000010000), rc, 1000000, "aut-BRV", "aut-BRV") matching "Habilitation"
+        assert_fails RespReclamations.regler(Horodatage(1000000010000), rc, 1000000, "aut-ALD", "aut-BRV") matching "Habilitation"
+        assert RespReclamations.regler(Horodatage(1000000010000), rc, 1000000, "aut-BRV", "aut-ALD") == 1000000
+        assert RespReclamations.etat(rc) == "reglee"
+        assert RespReclamations.alloue(rc) == 1000000
+        assert RespReclamations.demande(rc) == 5000000
+        assert RespReclamations.dommage(rc) == 1000000000000
+        assert_fails RespReclamations.notifier(Horodatage(1000000010000), rc, "conf1") matching "EtatInvalide"
+        let rc2 = RespReclamations.deposer(Horodatage(1000000011000), "BRV", "ALD", d, "OBJ-A-9", "espace", Horodatage(1000000000000), 2000000, "dommage en orbite", "pf-BRV")
+        assert_fails RespReclamations.statuer(Horodatage(1000000012000), rc2, true, "x", "conf1", "conf1") matching "QuatreYeux"
+        assert_fails RespReclamations.statuer(Horodatage(1000000012000), rc2, true, "", "conf1", "dir1") matching "MotifRequis"
+        assert RespReclamations.statuer(Horodatage(1000000012000), rc2, true, "examen", "conf1", "dir1") == "irrecevable"
+        let rc3 = RespReclamations.deposer(Horodatage(1000000011000), "BRV", "ALD", d, "OBJ-A-9", "aeronef", Horodatage(1000000000000), 2000000, "aéronef touché", "aut-BRV")
+        assert_fails RespReclamations.retirer(Horodatage(1000000013000), rc3, "x", "aut-ALD") matching "Habilitation"
+        assert_fails RespReclamations.retirer(Horodatage(1000000013000), rc3, "", "aut-BRV") matching "MotifRequis"
+        assert RespReclamations.retirer(Horodatage(1000000013000), rc3, "accord hors convention", "aut-BRV") == "retiree"
+        assert RespReclamations.de_dossier(d) == [rc, rc2, rc3]
+        assert RespReclamations.pendantes_de_dossier(d) == 0
+        assert_fails RespReclamations.deposer(Horodatage(1000000011000), "BRV", "BRV", d, "OBJ-A-9", "sol", Horodatage(1000000000000), 1, "x", "aut-BRV") matching "Incoherent"
+        assert_fails RespReclamations.deposer(Horodatage(1000000011000), "ALD", "BRV", d, "OBJ-A-9", "sol", Horodatage(1000000000000), 1, "x", "aut-ALD") matching "NonEligible"
+        assert_fails RespReclamations.deposer(Horodatage(1000000011000), "BRV", "ALD", d, "OBJ-A-9", "sol", Horodatage(1000000000000), 1, "x", "aut-ALD") matching "Habilitation"
+        assert_fails RespReclamations.deposer(Horodatage(1000000011000), "BRV", "ALD", d, "OBJ-A-9", "sol", Horodatage(1000000000000), 1, "x", "intrus1") matching "Habilitation"
+        assert_fails RespReclamations.deposer(Horodatage(1000000011000), "ZZZ", "ALD", d, "OBJ-A-9", "sol", Horodatage(1000000000000), 1, "x", "aut-ZZZ") matching "Inconnu"
+        assert_fails RespReclamations.deposer(Horodatage(1000000011000), "BRV", "ALD", d, "OBJ-A-99", "sol", Horodatage(1000000000000), 1, "x", "aut-BRV") matching "Inconnu"
+        assert_fails RespReclamations.deposer(Horodatage(1000000011000), "BRV", "ALD", "DP-999", "OBJ-A-9", "sol", Horodatage(1000000000000), 1, "x", "aut-BRV") matching "Inconnu"
+        assert_fails RespReclamations.deposer(Horodatage(1031557601000), "BRV", "ALD", d, "OBJ-A-9", "sol", Horodatage(1000000000000), 1, "x", "aut-BRV") matching "Delai"
+        assert_fails RespReclamations.deposer(Horodatage(1000000011000), "BRV", "ALD", d, "OBJ-A-9", "sol", Horodatage(1000000012000), 1, "x", "aut-BRV") matching "Incoherent"
+        assert_fails RespReclamations.deposer(Horodatage(1000000011000), "BRV", "ALD", d, "OBJ-A-9", "sol", Horodatage(1000000000000), 1, "", "aut-BRV") matching "MotifRequis"
+        assert_fails RespReclamations.parties("RC-999") matching "Inconnu"
+    }
+}
+
+// Commission en carence : siège pourvu par ORBITE après 2 mois, président désigné par la
+// direction après 4 mois (quatre yeux), avis de carence une seule fois, prorogation, sentence ;
+// réclamation retirée pendant l'instance (commission dissoute).
+cell test RespCommissionCarence {
+    rules {
+        let df = MondeResp.faute_retenue("10")
+        let rc = MondeResp.reclamation_notifiee(df[0], "10", "espace")
+        let _ = RespReclamations.demander_commission(Horodatage(1031557609000), rc, "aut-BRV")
+        let _ = RespCommissions.designer_membre(Horodatage(1031557610000), rc, "juge-brv", "BRV", "aut-BRV")
+        assert_fails RespCommissions.designer_membre(Horodatage(1036817210000), rc, "juge-ald", "ALD", "aut-ALD") matching "Delai"
+        assert RespCommissions.designer_membre(Horodatage(1036817210000), rc, "juge-orbite", "ALD", "dir1") == 2
+        assert_fails RespCommissions.designer_president(Horodatage(1036817211000), rc, "juge-pres", "dir1", "dir2") matching "Delai"
+        assert_fails RespCommissions.designer_president(Horodatage(1042076810000), rc, "juge-pres", "dir1", "dir1") matching "QuatreYeux"
+        assert RespCommissions.designer_president(Horodatage(1042076810000), rc, "juge-pres", "dir1", "dir2") == 1073634410000
+        assert_fails RespCommissions.designer_membre(Horodatage(1042076811000), rc, "x", "ALD", "dir1") matching "EtatInvalide"
+        assert RespCommissions.relancer_carences(Horodatage(1073634410000), "systeme") == 0
+        assert RespCommissions.relancer_carences(Horodatage(1073634410001), "systeme") == 1
+        assert RespCommissions.relancer_carences(Horodatage(1073634420000), "systeme") == 0
+        assert_fails RespCommissions.relancer_carences(Horodatage(1073634420000), "dir1") matching "Habilitation"
+        assert_fails RespCommissions.rendre(Horodatage(1073634420000), rc, 1000, "motifs", "dir1", "conf1") matching "Echu"
+        assert_fails RespCommissions.proroger(Horodatage(1073634420000), rc, Horodatage(1073634400000), "x", "dir1", "dir2") matching "Incoherent"
+        assert_fails RespCommissions.proroger(Horodatage(1073634420000), rc, Horodatage(1080000000000), "", "dir1", "dir2") matching "MotifRequis"
+        assert_fails RespCommissions.proroger(Horodatage(1073634420000), rc, Horodatage(1080000000000), "x", "conf1", "dir2") matching "Habilitation"
+        assert RespCommissions.proroger(Horodatage(1073634420000), rc, Horodatage(1080000000000), "expertise complémentaire", "dir1", "dir2") == 1080000000000
+        assert !RespCommissions.obligatoire(rc)
+        assert_fails RespReclamations.retirer(Horodatage(1073634430000), rc, "x", "aut-ALD") matching "Habilitation"
+        assert RespReclamations.retirer(Horodatage(1073634430000), rc, "accord politique", "aut-BRV") == "retiree"
+        assert RespCommissions.etat(rc) == "dissoute"
+        assert RespCommissions.dissoudre(Horodatage(1073634430000), rc, "x") == ""
+        assert RespCommissions.relancer_carences(Horodatage(1090000000000), "systeme") == 0
+        assert_fails RespCommissions.montant(rc) matching "Inconnu"
+    }
+}
+
+// Polices : déclaration, validation, rejet, résiliation, échéance par la ronde ; refus.
+cell test RespPolicesCycle {
+    rules {
+        assert MondeResp.police_alpha("POL-AO-2") == "en_vigueur"
+        assert RespPolices.couvert("ORG-ALPHA", Horodatage(1000000000000))
+        assert !RespPolices.couvert("ORG-BETA", Horodatage(1000000000000))
+        assert RespPolices.couvre_a("POL-AO-2", Horodatage(1000000000000))
+        assert RespPolices.fiche("POL-AO-2") == "ORG-ALPHA|80000000"
+        assert_fails RespPolices.fiche("POL-X") matching "Inconnu"
+        assert_fails RespPolices.declarer(Horodatage(1000000000000), "POL-AO-2", "ORG-ALPHA", "A", 70000000, Horodatage(1000000000000), Horodatage(1100000000000), "e", "adm-ALPHA") matching "Existe"
+        assert_fails RespPolices.declarer(Horodatage(1000000000000), "POL-AO-3", "ORG-ALPHA", "A", 70000000, Horodatage(1000000000000), Horodatage(1100000000000), "e", "adm-BETA") matching "Habilitation"
+        assert_fails RespPolices.declarer(Horodatage(1000000000000), "POL-AO-3", "ORG-ALPHA", "A", 70000000, Horodatage(1100000000000), Horodatage(1000000000000), "e", "adm-ALPHA") matching "Incoherent"
+        assert_fails RespPolices.declarer(Horodatage(1000000000000), "POL-IN-1", "ORG-INCONNU-1", "A", 70000000, Horodatage(1000000000000), Horodatage(1100000000000), "e", "adm-INCONNU-1") matching "Inconnu"
+        let _ = RespPolices.declarer(Horodatage(1000000000000), "POL-BB-1", "ORG-BETA", "B", 1000, Horodatage(1000000000000), Horodatage(1100000000000), "e", "adm-BETA")
+        assert_fails RespPolices.valider(Horodatage(1000000000100), "POL-BB-1", "conf1") matching "Insuffisant"
+        assert_fails RespPolices.valider(Horodatage(1000000000100), "POL-BB-1", "adm-BETA") matching "Habilitation"
+        assert_fails RespPolices.rejeter(Horodatage(1000000000100), "POL-BB-1", "", "conf1") matching "MotifRequis"
+        assert RespPolices.rejeter(Horodatage(1000000000100), "POL-BB-1", "plafond insuffisant", "conf1") == "rejetee"
+        assert_fails RespPolices.valider(Horodatage(1000000000100), "POL-BB-1", "conf1") matching "EtatInvalide"
+        let _ = RespPolices.declarer(Horodatage(1000000000000), "POL-BB-2", "ORG-BETA", "B", 70000000, Horodatage(900000000000), Horodatage(950000000000), "e", "adm-BETA")
+        assert_fails RespPolices.valider(Horodatage(1000000000100), "POL-BB-2", "conf1") matching "Echu"
+        let _ = RespPolices.declarer(Horodatage(1000000000000), "POL-BB-3", "ORG-BETA", "B", 70000000, Horodatage(1000000000000), Horodatage(1100000000000), "e", "adm-BETA")
+        assert RespPolices.valider(Horodatage(1000000000100), "POL-BB-3", "conf1") == "en_vigueur"
+        assert RespPolices.couvert("ORG-BETA", Horodatage(1000000000200))
+        assert_fails RespPolices.resilier(Horodatage(1000000000300), "POL-BB-3", "x", "adm-ALPHA") matching "Habilitation"
+        assert_fails RespPolices.resilier(Horodatage(1000000000300), "POL-BB-3", "", "adm-BETA") matching "MotifRequis"
+        assert RespPolices.resilier(Horodatage(1000000000300), "POL-BB-3", "changement d'assureur", "adm-BETA") == "resiliee"
+        assert !RespPolices.couvert("ORG-BETA", Horodatage(1000000000400))
+        assert !RespPolices.couvre_a("POL-BB-3", Horodatage(1000000000400))
+        assert RespPolices.echoir(Horodatage(1031557600000), "systeme") == 1
+        assert RespPolices.etat("POL-AO-2") == "echue"
+        assert RespPolices.couvre_a("POL-AO-2", Horodatage(1000000000000))
+        assert RespPolices.echoir(Horodatage(1031557600001), "systeme") == 0
+        assert_fails RespPolices.echoir(Horodatage(1031557600001), "conf1") matching "Habilitation"
+        assert_fails ApiResponsabilite.balayer(Horodatage(1031557600001), "intrus1") matching "Habilitation"
+        assert ApiResponsabilite.balayer(Horodatage(1031557600001), "systeme") == 0
+    }
+}
+
+// Sinistres : refus (assuré jamais admis, police non validée, dommage hors période, pas de
+// règlement) et refus de prise en charge.
+cell test RespSinistresRefus {
+    rules {
+        let d = MondeResp.scelle("12")
+        let rc = MondeResp.reclamation_notifiee(d, "12", "sol")
+        let _ = RespPolices.declarer(Horodatage(1000000000000), "POL-CA-1", "ORG-CAND-1", "C", 70000000, Horodatage(900000000000), Horodatage(1100000000000), "e", "adm-CAND-1")
+        assert_fails RespSinistres.declarer(Horodatage(1000000010000), "POL-CA-1", rc, 1000, "conf1") matching "EtatInvalide"
+        let _ = RespPolices.valider(Horodatage(1000000000100), "POL-CA-1", "conf1")
+        assert_fails RespSinistres.declarer(Horodatage(1000000010000), "POL-CA-1", rc, 1000, "adm-CAND-1") matching "NonEligible"
+        let _ = RespPolices.declarer(Horodatage(1000000000000), "POL-AO-9", "ORG-ALPHA", "A", 70000000, Horodatage(1000000005000), Horodatage(1100000000000), "e", "adm-ALPHA")
+        let _ = RespPolices.valider(Horodatage(1000000006000), "POL-AO-9", "conf1")
+        assert_fails RespSinistres.declarer(Horodatage(1000000010000), "POL-AO-9", rc, 1000, "adm-ALPHA") matching "Incoherent"
+        assert_fails RespSinistres.declarer(Horodatage(1000000010000), "POL-X", rc, 1000, "adm-ALPHA") matching "Inconnu"
+        let _ = MondeResp.police_alpha("POL-AO-10")
+        assert_fails RespSinistres.declarer(Horodatage(1000000010000), "POL-AO-10", "RC-999", 1000, "adm-ALPHA") matching "Inconnu"
+        let sn = RespSinistres.declarer(Horodatage(1000000010000), "POL-AO-10", rc, 1000000, "adm-ALPHA")
+        let _ = RespSinistres.instruire(Horodatage(1000000011000), sn, "conf1")
+        assert_fails RespSinistres.indemniser(Horodatage(1000000012000), sn, 1000, "conf1", "dir1") matching "EtatInvalide"
+        assert_fails RespSinistres.refuser(Horodatage(1000000012000), sn, "", "conf1") matching "MotifRequis"
+        assert RespSinistres.refuser(Horodatage(1000000012000), sn, "exclusion de garantie", "conf1") == "refuse"
+        assert_fails RespSinistres.instruire(Horodatage(1000000013000), sn, "conf1") matching "EtatInvalide"
+        assert_fails RespSinistres.instruire(Horodatage(1000000013000), "SN-999", "conf1") matching "Inconnu"
+    }
+}
+
+// Communication de pièces (propriété 6) : dossier scellé, contrôle de diffusion par pièce et
+// par objet, envoi tracé ; refus, révocation, données confidentielles.
+cell test RespCommunicationsCycle {
+    rules {
+        let d0 = MondeResp.ouvrir("13B")
+        let pcs0 = slice(RespPieces.pieces_de(d0), 0, 2)
+        let c0 = RespCommunications.demander(Horodatage(1000000002000), d0, "ORG-ETAT-BRV", pcs0, "réclamation", "pf-BRV")
+        assert_fails RespCommunications.autoriser(Horodatage(1000000002100), c0, "conf1", "sup1") matching "Insuffisant"
+        let d = MondeResp.scelle("13")
+        let pcs = slice(RespPieces.pieces_de(d), 0, 2)
+        assert_fails RespCommunications.demander(Horodatage(1000000006000), d, "ORG-ETAT-BRV", pcs, "réclamation", "pf-ALD") matching "Habilitation"
+        assert_fails RespCommunications.demander(Horodatage(1000000006000), d, "ORG-ETAT-BRV", [], "réclamation", "pf-BRV") matching "HorsBornes"
+        assert_fails RespCommunications.demander(Horodatage(1000000006000), d, "ORG-ETAT-BRV", ["PC-999"], "réclamation", "pf-BRV") matching "Inconnu"
+        assert_fails RespCommunications.demander(Horodatage(1000000006000), d, "ORG-ETAT-BRV", pcs, "", "pf-BRV") matching "MotifRequis"
+        assert_fails RespCommunications.demander(Horodatage(1000000006000), "DP-999", "ORG-ETAT-BRV", pcs, "x", "conf1") matching "Inconnu"
+        let c = RespCommunications.demander(Horodatage(1000000006000), d, "ORG-ETAT-BRV", pcs, "réclamation", "pf-BRV")
+        assert RespCommunications.etat(c) == "demandee"
+        assert_fails RespCommunications.communiquer(Horodatage(1000000006100), c, "systeme") matching "EtatInvalide"
+        assert_fails RespCommunications.autoriser(Horodatage(1000000006100), c, "conf1", "conf1") matching "QuatreYeux"
+        assert_fails RespCommunications.autoriser(Horodatage(1000000006100), c, "conf1", "analyste1") matching "Habilitation"
+        assert RespCommunications.autoriser(Horodatage(1000000006100), c, "conf1", "sup1") == "autorisee"
+        assert_fails RespCommunications.communiquer(Horodatage(1000000006200), c, "conf1") matching "Habilitation"
+        assert RespCommunications.communiquer(Horodatage(1000000006200), c, "systeme") == 2
+        assert RespCommunications.etat(c) == "communiquee"
+        let cs = RespCommunications.demander(Horodatage(1000000006300), d, "ORG-SECRET", pcs, "enquête", "conf1")
+        assert_fails RespCommunications.autoriser(Horodatage(1000000006400), cs, "conf1", "dir1") matching "Confidentiel"
+        assert_fails RespCommunications.refuser(Horodatage(1000000006400), cs, "", "conf1") matching "MotifRequis"
+        assert RespCommunications.refuser(Horodatage(1000000006400), cs, "destinataire non autorisé", "conf1") == "refusee"
+        let c2 = RespCommunications.demander(Horodatage(1000000006500), d, "ORG-ALPHA", pcs, "assurance", "adm-ALPHA")
+        let _ = RespCommunications.autoriser(Horodatage(1000000006600), c2, "conf1", "dir1")
+        assert_fails RespCommunications.revoquer(Horodatage(1000000006700), c2, "x", "analyste1") matching "Habilitation"
+        assert RespCommunications.revoquer(Horodatage(1000000006700), c2, "accord de partage résilié", "systeme") == "revoquee"
+        assert_fails RespCommunications.communiquer(Horodatage(1000000006800), c2, "systeme") matching "EtatInvalide"
+        assert RespCommunications.de_dossier(d) == ["{c}|ORG-ETAT-BRV|communiquee", "{cs}|ORG-SECRET|refusee", "{c2}|ORG-ALPHA|revoquee"]
+    }
+}

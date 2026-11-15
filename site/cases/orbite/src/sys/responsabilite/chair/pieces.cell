@@ -1,0 +1,391 @@
+// Corps de responsabilite : pièces des dossiers de preuve (RespPieces) et collecte (RespCollecte).
+
+flesh RespPieces {
+    on geler_piece(h, dossier, genre, cible, reference, objets, source, instant, contenu, par) {
+        let par_sys = ApiAcces.a_le_role(par, "systeme")
+        let par_dec = genre == "declaration" && (ApiAcces.a_le_role(par, "analyste") || ApiAcces.a_le_role(par, "conformite"))
+        require par_sys || par_dec else Habilitation "{par} ne peut geler une pièce {genre}"
+        let ed = RespDossiers.etat(dossier)
+        require ed != "aucun" else Inconnu "dossier {dossier} inconnu"
+        require ed == "gele" else EtatInvalide "le dossier {dossier} est {ed}"
+        require to_int(instant) <= to_int(h) else HorsBornes "pièce valant à {instant}, postérieure au gel {h}"
+        require len(contenu) <= MAX_CONTENU else HorsBornes "instantané de plus de {MAX_CONTENU} caractères"
+        let deja = pieces_du_dossier.get(dossier) ?? []
+        require dossier_de.size < MAX_PIECES else Plein "registre des pièces plein"
+        require len(deja) < MAX_PIECES_PAR_DOSSIER else Plein "le dossier {dossier} a {MAX_PIECES_PAR_DOSSIER} pièces"
+        let id = "PC-{next_id()}"
+        transition(id, "aucune", "gelee")
+        dossier_de.set(id, dossier)
+        genre_de.set(id, genre)
+        cible_de.set(id, cible)
+        objets_de.set(id, objets)
+        source_de.set(id, source)
+        reference_de.set(id, reference)
+        if reference != "" {
+            piece_de_reference.set(reference, id)
+        }
+        contenu_de.set(id, contenu)
+        empreinte_de.set(id, sha256(contenu))
+        gelee_le.set(id, h)
+        instant_de.set(id, instant)
+        gelee_par.set(id, par)
+        a_verifier.set(id, Horodatage(to_int(h) + PERIODE_VERIFICATION))
+        pieces_du_dossier.set(dossier, deja ++ [id])
+        Journal.noter(h, "responsabilite", par, "pièce {id} ({genre}, {cible}) gelée dans {dossier}")
+        return id
+    }
+
+    on fonder(h, decision, donnee, par) {
+        require ApiAcces.a_le_role(par, "systeme") || ApiAcces.a_le_role(par, "analyste") else Habilitation "{par} n'est ni systeme ni analyste"
+        let dd = dossier_de.get(decision)
+        let dn = dossier_de.get(donnee)
+        require dd != () else Inconnu "pièce {decision} inconnue"
+        require dn != () else Inconnu "pièce {donnee} inconnue"
+        require decision != donnee else Incoherent "une pièce ne se fonde pas sur elle-même"
+        require dd == dn else Incoherent "{decision} et {donnee} sont dans deux dossiers"
+        require to_int(instant_de.get(donnee) ?? 0) <= to_int(instant_de.get(decision) ?? 0) else Incoherent "{donnee} est postérieure à la décision {decision}"
+        require RespDossiers.etat(dd) == "gele" else EtatInvalide "le dossier {dd} n'est pas gelé"
+        let fs = fondements_de.get(decision) ?? []
+        require !contains(fs, donnee) else Doublon "{decision} est déjà fondée sur {donnee}"
+        require len(fs) < MAX_FONDEMENTS else Plein "{decision} a {MAX_FONDEMENTS} fondements"
+        let nfs = fs ++ [donnee]
+        fondements_de.set(decision, nfs)
+        Journal.noter(h, "responsabilite", par, "pièce {decision} fondée sur {donnee}")
+        return len(nfs)
+    }
+
+    on verifier(h, piece, par) {
+        require ApiAcces.a_le_role(par, "systeme") || ApiAcces.a_le_role(par, "conformite") else Habilitation "{par} n'est ni systeme ni conformite"
+        let st = get_status(piece) ?? "aucune"
+        require st != "aucune" else Inconnu "pièce {piece} inconnue"
+        require st != "alteree" else EtatInvalide "la pièce {piece} est déjà altérée"
+        let ok = sha256(contenu_de.get(piece) ?? "") == (empreinte_de.get(piece) ?? "")
+        if ok {
+            transition(piece, st, "verifiee")
+            verifiee_le.set(piece, h)
+            a_verifier.set(piece, Horodatage(to_int(h) + PERIODE_VERIFICATION))
+            Journal.noter(h, "responsabilite", par, "pièce {piece} vérifiée")
+            return "verifiee"
+        }
+        transition(piece, st, "alteree")
+        verifiee_le.set(piece, h)
+        a_verifier.delete(piece)
+        let _ = ApiOperations.declarer_incident(h, "ALT-{piece}", 3, "responsabilite", "empreinte de la pièce {piece} altérée", "systeme")
+        Journal.noter(h, "responsabilite", par, "pièce {piece} ALTÉRÉE : incident de gravité 3")
+        return "alteree"
+    }
+
+    on chaine(piece) {
+        require dossier_de.has(piece) else Inconnu "pièce {piece} inconnue"
+        return _parcourir(piece)
+    }
+
+    on chaine_de(decision) {
+        let p = piece_de_reference.get(decision)
+        require p != () else Inconnu "aucune pièce ne fige la décision {decision}"
+        return _parcourir(p)
+    }
+
+    // Parcours en largeur des fondements, sans doublon, borné à MAX_CHAINE.
+    on _parcourir(depart: String) {
+        let vus = [depart]
+        let i = 0
+        while i < len(vus) && len(vus) < MAX_CHAINE {
+            for f in fondements_de.get(vus[i]) ?? [] {
+                if !contains(vus, f) && len(vus) < MAX_CHAINE {
+                    vus.push(f)
+                }
+            }
+            i = i + 1
+        }
+        return vus
+    }
+
+    on ronde(h, par) {
+        require ApiAcces.a_le_role(par, "systeme") else Habilitation "{par} n'est pas systeme"
+        let dues = a_verifier.entries.filter(e => to_int(e.value) <= to_int(h)).map(e => e.key)
+        let n_alt = 0
+        let k = 0
+        for p in dues {
+            if k < PIECES_PAR_RONDE {
+                if verifier(h, p, "systeme") == "alteree" {
+                    n_alt = n_alt + 1
+                }
+                k = k + 1
+            }
+        }
+        return n_alt
+    }
+
+    on pieces_de(dossier) {
+        return pieces_du_dossier.get(dossier) ?? []
+    }
+
+    on etat(piece) {
+        return get_status(piece) ?? "aucune"
+    }
+
+    on empreinte(piece) {
+        let e = empreinte_de.get(piece)
+        require e != () else Inconnu "pièce {piece} inconnue"
+        return e
+    }
+
+    on objets(piece) {
+        let o = objets_de.get(piece)
+        require o != () else Inconnu "pièce {piece} inconnue"
+        return o
+    }
+
+    on lire(piece) {
+        let c = contenu_de.get(piece)
+        require c != () else Inconnu "pièce {piece} inconnue"
+        let g = genre_de.get(piece) ?? ""
+        let ci = cible_de.get(piece) ?? ""
+        let so = source_de.get(piece) ?? ""
+        let ins = instant_de.get(piece) ?? 0
+        let em = empreinte_de.get(piece) ?? ""
+        return "{g} | {ci} | {so} | {ins} | {em} | {c}"
+    }
+}
+
+flesh RespCollecte {
+    on collecter_rapprochement(h, dossier, r, instant) {
+        let t0 = min(to_int(instant), to_int(h))
+        // décision de coordination : son instant fixe celui des données qui la fondaient
+        let rdec = try { ApiCoordination.decision(r) }
+        let dec = if rdec.error != () { "" } else { rdec.value }
+        let champs_d = if dec != "" { split(dec, "|") } else { [] }
+        let t_dec = t0
+        if len(champs_d) >= 5 {
+            let ti = parse_int(champs_d[4]) ?? t0
+            t_dec = min(ti, to_int(h))
+        }
+        let t_rap = min(t0, t_dec)
+        let n = 0
+        // rapprochement
+        let etat_r = ApiConjonctions.etat(r)
+        let r_niv = try { ApiConjonctions.niveau(r) }
+        let r_tca = try { ApiConjonctions.tca(r) }
+        let r_pc = try { ApiConjonctions.pc(r) }
+        let r_dist = try { ApiConjonctions.distance(r) }
+        let r_maj = try { ApiConjonctions.mis_a_jour(r) }
+        let r_obj = try { ApiConjonctions.objets(r) }
+        let objs_c = if r_obj.error != () { [] } else { r_obj.value }
+        let v_niv = _val(r_niv)
+        let v_tca = _val(r_tca)
+        let v_pc = _val(r_pc)
+        let v_dist = _val(r_dist)
+        let v_maj = _val(r_maj)
+        let v_obj = _val(r_obj)
+        let p_rap = RespPieces.geler_piece(h, dossier, "rapprochement", to_string(r), "", objs_c, "conjonctions", Horodatage(t_rap), "etat={etat_r}; niveau={v_niv}; tca={v_tca}; pc={v_pc}; distance={v_dist}; mis_a_jour={v_maj}; objets={v_obj}", "systeme")
+        n = n + 1
+        // coordination
+        let c_etat = try { ApiCoordination.etat(r) }
+        let c_ech = try { ApiCoordination.echeance(r) }
+        let v_cetat = _val(c_etat)
+        let v_cech = _val(c_ech)
+        let ref_dec = if len(champs_d) >= 1 { champs_d[0] } else { "" }
+        let txt_dec = if dec != "" { "decision={dec}" } else { "absent=aucune_decision" }
+        let p_coord = RespPieces.geler_piece(h, dossier, "coordination", to_string(r), ref_dec, objs_c, "coordination", Horodatage(t_dec), "{txt_dec}; etat={v_cetat}; echeance={v_cech}", "systeme")
+        n = n + 1
+        let fond_c = [p_rap]
+        // priorités
+        let rprio = try { ApiPriorites.decision_de(r) }
+        let prio = if rprio.error != () { "" } else { rprio.value }
+        let champs_p = if prio != "" { split(prio, "|") } else { [] }
+        let t_prio = t_dec
+        if len(champs_p) >= 5 {
+            t_prio = min(parse_int(champs_p[4]) ?? t_dec, to_int(h))
+        }
+        let ref_prio = if len(champs_p) >= 1 { champs_p[0] } else { "" }
+        let txt_prio = if prio != "" { "decision={prio}" } else { _absent(rprio, "aucune_decision") }
+        let p_prio = RespPieces.geler_piece(h, dossier, "priorites", to_string(r), ref_prio, objs_c, "priorites", Horodatage(t_prio), txt_prio, "systeme")
+        n = n + 1
+        if t_prio <= t_dec {
+            fond_c.push(p_prio)
+        }
+        // météo
+        let m_tem = try { ApiMeteo.tempete(Horodatage(t_dec)) }
+        let m_kp = try { ApiMeteo.kp(Horodatage(t_dec)) }
+        let v_tem = _val(m_tem)
+        let v_kp = _val(m_kp)
+        let p_met = RespPieces.geler_piece(h, dossier, "meteo", "", "", [], "meteo", Horodatage(t_dec), "tempete={v_tem}; kp={v_kp}", "systeme")
+        n = n + 1
+        fond_c.push(p_met)
+        // éphémérides et référentiel de chaque objet, à l'instant de la décision
+        let esc_l = []
+        for o in objs_c {
+            let rf = try { ApiEphemerides.fondement(Objet(o), Horodatage(t_dec)) }
+            let dep = if rf.error != () { "" } else { rf.value }
+            let txt_e = _absent(rf, "aucun_depot")
+            if dep != "" {
+                let e_emp = try { ApiEphemerides.empreinte(dep) }
+                let e_man = try { ApiEphemerides.avec_manoeuvres(dep) }
+                let e_val = try { ApiEphemerides.depot_valide(dep) }
+                let v_emp = _val(e_emp)
+                let v_man = _val(e_man)
+                let v_val = _val(e_val)
+                txt_e = "depot={dep}; empreinte={v_emp}; avec_manoeuvres={v_man}; valide={v_val}"
+            }
+            let p_eph = RespPieces.geler_piece(h, dossier, "ephemeride", o, dep, [o], "ephemerides", Horodatage(t_dec), "objet={o}; {txt_e}", "systeme")
+            n = n + 1
+            fond_c.push(p_eph)
+            let o_pro = try { ApiRef.valeur_au(Objet(o), "proprietaire", Horodatage(t_dec)) }
+            let o_prop = try { ApiRef.valeur_au(Objet(o), "propulsion", Horodatage(t_dec)) }
+            let o_eo = try { ApiRef.valeur_au(Objet(o), "etat_objet", Horodatage(t_dec)) }
+            let v_pro = _val(o_pro)
+            let v_prop = _val(o_prop)
+            let v_eo = _val(o_eo)
+            let p_obj = RespPieces.geler_piece(h, dossier, "objet", o, "", [o], "ref", Horodatage(t_dec), "objet={o}; proprietaire={v_pro}; propulsion={v_prop}; etat_objet={v_eo}", "systeme")
+            n = n + 1
+            fond_c.push(p_obj)
+            let rp = try { ApiRef.proprietaire(Objet(o)) }
+            if rp.error == () {
+                let op = rp.value
+                let r_ech = try { ApiEscalade.echelon(r, op) }
+                let v_ech = _val(r_ech)
+                esc_l.push("{op}={v_ech}")
+            } else {
+                esc_l.push("{o}=absent={rp.kind}")
+            }
+        }
+        // escalade
+        let txt_esc = join(esc_l, "; ")
+        let _ = RespPieces.geler_piece(h, dossier, "escalade", to_string(r), "", objs_c, "escalade", Horodatage(t0), "echelons: {txt_esc}", "systeme")
+        n = n + 1
+        // manœuvre d'évitement
+        let rplan = try { ApiManoeuvres.plan_de(r) }
+        let plan = if rplan.error != () { "" } else { rplan.value }
+        let t_man = min(max(t0, t_dec), to_int(h))
+        let p_man = ""
+        if plan != "" {
+            let r_pe = try { ApiManoeuvres.etat(plan) }
+            let v_pe = _val(r_pe)
+            p_man = RespPieces.geler_piece(h, dossier, "manoeuvre", to_string(r), plan, objs_c, "manoeuvres", Horodatage(t_man), "plan={plan}; etat={v_pe}", "systeme")
+        } else {
+            let txt_m = _absent(rplan, "aucun_plan")
+            p_man = RespPieces.geler_piece(h, dossier, "manoeuvre", to_string(r), "", objs_c, "manoeuvres", Horodatage(t_man), txt_m, "systeme")
+        }
+        n = n + 1
+        // journal
+        let lignes_j = Journal.chercher(to_string(r), 1000)
+        let txt_j = join(lignes_j, "\n")
+        if len(txt_j) > 19000 {
+            txt_j = slice(txt_j, -19000)
+        }
+        let _ = RespPieces.geler_piece(h, dossier, "journal", to_string(r), "", objs_c, "responsabilite", Horodatage(to_int(h)), txt_j, "systeme")
+        n = n + 1
+        // traçabilité : décision fondée sur ses données ; manœuvre fondée sur la décision
+        for f in fond_c {
+            let _ = RespPieces.fonder(h, p_coord, f, "systeme")
+        }
+        let _ = RespPieces.fonder(h, p_man, p_coord, "systeme")
+        return n
+    }
+
+    on collecter_objet(h, dossier, objet, instant) {
+        let t0 = min(to_int(instant), to_int(h))
+        let o = to_string(objet)
+        let n = 0
+        // référentiel
+        let champs_o = ["proprietaire", "etat", "regime", "propulsion", "etat_objet", "nature"]
+        let lignes_o = []
+        for c in champs_o {
+            let rv = try { ApiRef.valeur_au(objet, c, Horodatage(t0)) }
+            let v = _val(rv)
+            lignes_o.push("{c}={v}")
+        }
+        let r_el = try { ApiLancements.etats_de_lancement(objet) }
+        let r_pc = try { ApiFinDeVie.plan_conforme(objet) }
+        let r_rt = try { ApiFinDeVie.en_retard(objet, Horodatage(t0)) }
+        let r_an = try { ApiEvenements.en_anomalie(objet) }
+        let v_el = _val(r_el)
+        let v_pc = _val(r_pc)
+        let v_rt = _val(r_rt)
+        let v_an = _val(r_an)
+        lignes_o.push("etats_de_lancement={v_el}; plan_fin_de_vie_conforme={v_pc}; retrait_en_retard={v_rt}; anomalie={v_an}")
+        let _ = RespPieces.geler_piece(h, dossier, "objet", o, "", [o], "ref", Horodatage(t0), join(lignes_o, "; "), "systeme")
+        n = n + 1
+        // éphéméride en vigueur à l'instant
+        let rf = try { ApiEphemerides.fondement(objet, Horodatage(t0)) }
+        let dep = if rf.error != () { "" } else { rf.value }
+        let r_q = try { ApiEphemerides.qualite(objet) }
+        let v_q = _val(r_q)
+        let txt_e = _absent(rf, "aucun_depot")
+        if dep != "" {
+            let r_emp = try { ApiEphemerides.empreinte(dep) }
+            let v_emp = _val(r_emp)
+            txt_e = "depot={dep}; empreinte={v_emp}"
+        }
+        let _ = RespPieces.geler_piece(h, dossier, "ephemeride", o, dep, [o], "ephemerides", Horodatage(t0), "{txt_e}; qualite={v_q}", "systeme")
+        n = n + 1
+        // observation indépendante
+        let r_su = try { ApiObservation.suivi(objet, Horodatage(t0)) }
+        let r_ec = try { ApiObservation.ecart_declare(objet) }
+        let r_md = try { ApiObservation.manoeuvre_detectee(objet, Horodatage(max(0, t0 - 604800000))) }
+        let v_su = _val(r_su)
+        let v_ec = _val(r_ec)
+        let v_md = _val(r_md)
+        let _ = RespPieces.geler_piece(h, dossier, "observation", o, "", [o], "observation", Horodatage(t0), "suivi={v_su}; ecart_declare={v_ec}; manoeuvre_non_annoncee_7j={v_md}", "systeme")
+        n = n + 1
+        // opérateur propriétaire
+        let rp = try { ApiRef.proprietaire(objet) }
+        let txt_op = _absent(rp, "")
+        if rp.error == () {
+            let op = rp.value
+            let r_st = try { ApiOperateurs.statut(op) }
+            let r_jo = try { ApiOperateurs.joignable(op, Horodatage(t0)) }
+            let v_st = _val(r_st)
+            let v_jo = _val(r_jo)
+            txt_op = "operateur={op}; statut={v_st}; joignable={v_jo}"
+        }
+        let _ = RespPieces.geler_piece(h, dossier, "operateur", o, "", [o], "operateurs", Horodatage(t0), txt_op, "systeme")
+        n = n + 1
+        // journal
+        let lignes_j = Journal.chercher(o, 1000)
+        let txt_j = join(lignes_j, "\n")
+        if len(txt_j) > 19000 {
+            txt_j = slice(txt_j, -19000)
+        }
+        let _ = RespPieces.geler_piece(h, dossier, "journal", o, "", [o], "responsabilite", Horodatage(to_int(h)), txt_j, "systeme")
+        n = n + 1
+        return n
+    }
+
+    on collecter_plan(h, dossier, plan, instant) {
+        let t0 = min(to_int(instant), to_int(h))
+        let r_ob = try { ApiManoeuvres.objet_de(plan) }
+        let r_mo = try { ApiManoeuvres.motif_de(plan) }
+        let r_et = try { ApiManoeuvres.etat(plan) }
+        let objs_p = if r_ob.error != () { [] } else { [to_string(r_ob.value)] }
+        let v_ob = _val(r_ob)
+        let v_mo = _val(r_mo)
+        let v_et = _val(r_et)
+        // la décision qui fondait le plan, s'il a déjà été figé (chaîne : plan, décision, …)
+        let prec = try { RespPieces.chaine_de(plan) }
+        let p_pl = RespPieces.geler_piece(h, dossier, "manoeuvre", v_ob, plan, objs_p, "manoeuvres", Horodatage(t0), "plan={plan}; objet={v_ob}; motif={v_mo}; etat={v_et}", "systeme")
+        if prec.error == () && len(prec.value) >= 2 {
+            let _ = try { RespPieces.fonder(h, p_pl, prec.value[1], "systeme") }
+        }
+        return 1
+    }
+
+    // Valeur lue, ou "absent=<tag>" si la façade a refusé.
+    on _val(res: Map) {
+        if res.error != () {
+            return "absent={res.kind}"
+        }
+        return to_string(res.value)
+    }
+
+    on _absent(res: Map, defaut: String) {
+        if res.error != () {
+            return "absent={res.kind}"
+        }
+        if defaut == "" {
+            return ""
+        }
+        return "absent={defaut}"
+    }
+}

@@ -1,0 +1,152 @@
+// meteo — DÉCLENCHEMENT DU CRIBLAGE RENFORCÉ. Toute alerte de tempête ouvre un renforcement
+// (même id que l'alerte) qui fixe les régimes touchés (LEO dès G3, MEO en plus dès G4, tous
+// les régimes à G5), fige le barème et les facteurs d'incertitude appliqués (preuve), et notifie
+// ORBITE et les organisations participantes : éphémérides à redéposer à demi-délai, covariances
+// élargies, criblage renforcé. Le renforcement n'est levé qu'une fois l'alerte terminée — jamais
+// sur la seule foi d'un kp qui retombe — et abandonné si l'alerte est annulée.
+
+// Le criblage renforcé lui-même est demandé à conjonctions (ApiConjonctions.renforcer, un épisode
+// par régime touché, d'horizon 24 h prolongé par la ronde tant que le renforcement n'est pas
+// levé) : rien n'attend qu'on sonde ApiMeteo.
+
+// Renforcements : id = id de l'alerte MetTempete.
+skeleton MetRenforce {
+    const MAX_RENFORCEMENTS = 100000
+    const MAX_DESTINATAIRES = 5000
+    const HORIZON_EPISODE = 86400000     // 24 h demandées à conjonctions par épisode
+    const PROLONGATION = 21600000        // prolonger quand il reste moins de 6 h
+        memory {
+        declenche_le: Map<String, Horodatage> [persistent]    // renforcement → instant de déclenchement
+        regimes: Map<String, String> [persistent]             // renforcement → régimes touchés, "leo" | "leo,meo" | "leo,meo,geo,heo"
+        bareme_de: Map<String, String> [persistent]           // renforcement → version du barème en vigueur au déclenchement ; écrit une fois par declencher
+        facteur_fige: Map<String, Pourcent> [persistent]      // "renforcement|regime" → facteur appliqué au déclenchement ou à l'extension
+        envoyes: Map<String, Int> [persistent]                // renforcement → messages mis en file
+        leve_le: Map<String, Horodatage> [persistent]         // renforcement → instant de levée ou d'abandon
+        episode_de: Map<String, String> [persistent]          // "renforcement|regime" → dernier épisode ApiConjonctions.renforcer
+        episode_fin: Map<String, Horodatage> [persistent]     // "renforcement|regime" → fin de cet épisode
+        invariant declenche_le.size <= MAX_RENFORCEMENTS
+        invariant envoyes >= 0 && envoyes <= MAX_DESTINATAIRES * 10
+        invariant facteur_fige >= 100 && facteur_fige <= 1000
+        invariant (declenche_le ?? 0) <= (leve_le ?? 32503680000000)
+    }
+    // Cycle de vie d'un renforcement (id = alerte).
+    state renfort {
+        initial: declenche
+        declenche -> notifie      // notifier : messages mis en file vers ORBITE et les participants
+        notifie -> leve           // lever : l'alerte est terminée
+        declenche -> leve         // lever : l'alerte est terminée sans qu'aucune notification ait pu partir
+        declenche -> abandonne    // abandonner : l'alerte est annulée avant toute notification
+        notifie -> abandonne      // abandonner : l'alerte est annulée (message de levée envoyé)
+    }
+    face {
+        // Ouvre le renforcement d'une alerte (appelé par MetTempete.emettre) : régimes touchés
+        // selon l'échelle G, barème en vigueur et facteurs figés pour chaque régime touché ;
+        // demande pour chacun un criblage renforcé de 24 h (ApiConjonctions.renforcer, par
+        // "systeme", motif = id de l'alerte). Renvoie les régimes touchés ("leo", "leo,meo" ou "leo,meo,geo,heo").
+        // Refus : Existe, Inconnu (alerte), Plein.
+        signal declencher(h: Horodatage, tempete: String) -> String
+            writes declenche_le, regimes, bareme_de, facteur_fige, episode_de, episode_fin
+            calls MetTempete.echelle_de, MetBareme.en_vigueur_a, MetBareme.facteur, MetBareme.bande, ApiConjonctions.renforcer, Journal.noter
+        // Met en file les notifications du renforcement (urgence 3) vers ORBITE (cellule
+        // d'analyse), chaque opérateur actif (ApiOperateurs.actifs(h)) et l'autorité de chaque
+        // État participant (ApiRef.etats_participants, ApiRef.org_de_etat), r = "" (aucun
+        // rapprochement), et ouvre un avis par destinataire
+        // (MetAvis, qui suit les accusés et relance). Sans effet sur un renforcement déjà
+        // notifié, sauf après `etendre`. Les données sont
+        // publiques : aucun contrôle de diffusion. Renvoie le nombre de messages mis en file.
+        // Rôle exigé : "systeme". Refus : Inconnu, EtatInvalide (leve ou abandonne),
+        // Habilitation, Plein (file de la passerelle).
+        signal notifier(h: Horodatage, tempete: String, par: String) -> Int
+            writes envoyes
+            reads regimes, declenche_le
+            moves declenche -> notifie
+            calls MetAvis.ouvrir, ApiRef.orbite, ApiOperateurs.actifs, ApiRef.etats_participants, ApiRef.org_de_etat, ApiPasserelle.notifier, ApiAcces.a_le_role, Journal.noter
+        // Étend le renforcement quand l'échelle G de l'alerte monte (G3 → G4 → G5) : ajoute les
+        // régimes nouvellement touchés, fige leurs facteurs, y demande un criblage renforcé
+        // (ApiConjonctions.renforcer), renotifie. Ne retire jamais un
+        // régime. Renvoie les régimes touchés. Rôle exigé : "systeme".
+        // Refus : Inconnu, EtatInvalide (leve ou abandonne), Habilitation.
+        signal etendre(h: Horodatage, tempete: String, par: String) -> String
+            writes regimes, facteur_fige, episode_de, episode_fin
+            reads renfort, bareme_de
+            calls MetTempete.echelle_de, MetBareme.facteur, MetBareme.bande, ApiConjonctions.renforcer, notifier, ApiAcces.a_le_role, Journal.noter
+        // Prolonge (nouvel épisode de 24 h, ApiConjonctions.renforcer) chaque régime d'un
+        // renforcement non levé dont l'épisode finit dans moins de 6 h. Appelé chaque minute
+        // par MetRonde.balayer. Renvoie le nombre d'épisodes demandés. Rôle exigé : "systeme".
+        // Refus : Habilitation.
+        signal prolonger(h: Horodatage, par: String) -> Int
+            writes episode_de, episode_fin
+            reads renfort, regimes
+            calls ApiConjonctions.renforcer, ApiAcces.a_le_role, Journal.noter
+        // Lève le renforcement d'une alerte terminée, notifie la levée et journalise les
+        // destinataires restés silencieux (MetAvis.silencieux). Renvoie "leve".
+        // Refus : Inconnu, EtatInvalide.
+        signal lever(h: Horodatage, tempete: String) -> String
+            writes leve_le, envoyes
+            reads declenche_le
+            moves notifie -> leve when MetTempete.terminee, declenche -> leve when MetTempete.terminee
+            calls MetTempete.terminee, MetAvis.silencieux, ApiRef.orbite, ApiPasserelle.notifier, Journal.noter
+        // Abandonne le renforcement d'une alerte annulée ; si des notifications sont parties,
+        // notifie l'annulation. Renvoie "abandonne". Refus : Inconnu, EtatInvalide.
+        signal abandonner(h: Horodatage, tempete: String) -> String
+            writes leve_le, envoyes
+            reads declenche_le
+            moves declenche -> abandonne when MetTempete.annulee, notifie -> abandonne when MetTempete.annulee
+            calls MetTempete.annulee, ApiRef.orbite, ApiPasserelle.notifier, Journal.noter
+        // Vrai si un renforcement non levé touche le régime (déclenché ou notifié) : façade
+        // ApiMeteo.renforce. Le dernier épisode de conjonctions court encore au plus 24 h
+        // après la levée (précaution).
+        signal renforce(regime: Regime) -> Bool
+            reads renfort, regimes
+        // Facteur figé pour le régime dans ce renforcement, 100 si le régime n'est pas touché.
+        // Refus : Inconnu.
+        signal facteur_de(tempete: String, regime: Regime) -> Pourcent
+            reads facteur_fige
+    }
+}
+
+// Avis de tempête adressés à une organisation (id = "alerte|org|<rang>", rang 1 au
+// déclenchement, +1 à chaque extension de régimes). Un avis non acquitté est
+// relancé une fois, puis constaté comme manquement : le silence d'un destinataire ne retient
+// jamais le renforcement, qui s'applique dès son déclenchement.
+skeleton MetAvis {
+    const MAX_AVIS = 5000000
+    const DELAI_ACCUSE = 900000          // 15 min avant relance
+    const DELAI_RELANCE = 3600000        // 1 h après la relance : sans réponse
+    memory {
+        message: Map<String, String> [persistent]         // avis → dernier message ApiPasserelle (premier envoi, puis relance)
+        destinataire: Map<String, Org> [persistent]       // avis → organisation destinataire
+        envoye_le: Map<String, Horodatage> [persistent]   // avis → instant du dernier envoi
+        acquitte_le: Map<String, Horodatage> [persistent] // avis → instant où l'accusé a été constaté
+        manquement: Map<String, String> [persistent]      // avis sans réponse → id du manquement ApiConformite
+        invariant message.size <= MAX_AVIS
+        invariant (envoye_le ?? 0) <= (acquitte_le ?? 32503680000000)
+    }
+    // Cycle de vie d'un avis (id = "alerte|org|<rang>").
+    state avis {
+        initial: envoye
+        envoye -> acquitte        // suivre : ApiPasserelle.acquitte vrai
+        envoye -> relance         // suivre : 15 min sans accusé, message renvoyé
+        relance -> acquitte       // suivre : accusé reçu après relance
+        relance -> sans_reponse   // suivre : 1 h après la relance, manquement constaté
+    }
+    face {
+        // Enregistre un avis mis en file par MetRenforce.notifier (message déjà créé par
+        // ApiPasserelle.notifier). Renvoie l'id de l'avis. Refus : Existe, Plein.
+        signal ouvrir(h: Horodatage, tempete: String, org: Org, msg: String) -> String
+            writes message, destinataire, envoye_le
+        // Suivi des avis (par = "systeme", chaque minute par MetRonde.balayer) des avis non clos : constate les
+        // accusés, relance après 15 min, constate un manquement de gravité 1 (nature
+        // "avis_tempete_sans_reponse") 1 h après la relance. Renvoie le nombre d'avis encore
+        // en attente d'accusé. Refus : Habilitation.
+        signal suivre(h: Horodatage, par: String) -> Int
+            writes message, envoye_le, acquitte_le, manquement
+            reads destinataire
+            moves envoye -> acquitte, envoye -> relance, relance -> acquitte, relance -> sans_reponse
+            calls ApiPasserelle.acquitte, ApiPasserelle.notifier, ApiConformite.constater, ApiAcces.a_le_role, Journal.noter
+        // Organisations destinataires d'une alerte qui n'ont pas acquitté (relance ou sans
+        // réponse), au plus 5 000 ; sert au bilan de l'alerte et à la conformité.
+        signal silencieux(tempete: String) -> List<String>
+            reads avis, destinataire
+    }
+}

@@ -1,0 +1,135 @@
+// evenements — ANOMALIES D'OBJETS.
+// Un objet en anomalie (perte de contrôle d'attitude, propulsion incertaine, chute libre…) n'est
+// JAMAIS désigné pour manœuvrer (propriété 2) : ApiEvenements.en_anomalie le dit au référentiel
+// (ApiRef.peut_manoeuvrer), à la coordination et aux manœuvres ; le balayage de coordination
+// rouvre toute désignation arrêtée sur un objet devenu inéligible. L'anomalie est
+// prise en charge (suivi renforcé, éphéméride invalidée), suivie par des points datés, puis
+// levée à quatre yeux sur preuve (orbite indépendante ET éphéméride fraîche), ou close par la
+// perte définitive de l'objet, ou par sa fragmentation (EvtEvenements.confirmer).
+
+// Nature d'une anomalie.
+cell type EvtGenreAnomalie = String where value == "attitude" || value == "propulsion" || value == "energie" || value == "communication" || value == "chute_libre" || value == "autre"
+
+// Anomalies : id = "AN-<n>", tiré par declarer.
+skeleton EvtAnomalies {
+    const MAX_ANOMALIES = 100000
+    const MAX_POINTS = 500
+    const DELAI_PRISE_MS = 14400000
+    const DELAI_POINT_MS = 86400000
+    const SUIVI_MS = 259200000
+    memory {
+        objet_de: Map<String, Objet> [persistent]             // anomalie → objet ; écrit une fois par declarer, jamais effacé
+        genre_de: Map<String, EvtGenreAnomalie> [persistent]  // anomalie → nature déclarée
+        description: Map<String, String> [persistent]         // anomalie → constat initial
+        declarant: Map<String, String> [persistent]           // anomalie → personne ou "systeme"
+        declaree_le: Map<String, Horodatage> [persistent]     // anomalie → instant de déclaration, ms
+        dernier_point: Map<String, Horodatage> [persistent]   // anomalie → dernier point de suivi (= declaree_le au départ) ; ≥ declaree_le
+        points: Map<String, List<String>> [persistent]        // anomalie → "h | par | constat", au plus MAX_POINTS
+        ouverte_de: Map<String, String> [persistent]          // objet → anomalie non close (au plus une par objet)
+        issue: Map<String, String> [persistent]               // anomalie → "h | par | valideur | motif" de la levée, du rejet ou de la perte
+        evenement_de: Map<String, String> [persistent]        // anomalie → évènement qui l'a close par fragmentation
+        invariant objet_de.size <= MAX_ANOMALIES
+        invariant ouverte_de.size <= MAX_ANOMALIES
+        invariant (declaree_le ?? 0) <= (dernier_point ?? 0)
+    }
+    // Cycle de vie d'une anomalie (id = anomalie).
+    state anomalie {
+        initial: declaree
+        declaree -> en_suivi           // prendre_en_charge
+        declaree -> rejetee            // rejeter : anomalie infondée
+        en_suivi -> levee              // lever : quatre yeux, sur preuve ; éphéméride à jour (règle : EphSuivi.a_jour via objet_de)
+        en_suivi -> perdu              // constater_perte : objet hors service définitivement
+        declaree -> fragmentee         // clore_par_evenement
+        en_suivi -> fragmentee         // clore_par_evenement
+    }
+    face {
+        // Déclare un objet en anomalie : l'objet devient aussitôt inéligible (en_anomalie vrai,
+        // donc ApiRef.peut_manoeuvrer faux : aucune désignation ni approbation de manœuvre).
+        // La réouverture des coordinations où il est désigné n'est PAS appelée d'ici
+        // (ApiCoordination.rouvrir rappelle evenements via priorites et ref) : le balayage de
+        // coordination la fait (CoordDossier.reverifier). Propriétaire et État
+        // d'immatriculation sont notifiés (urgence 2, 3 si un rapprochement est ouvert).
+        // Renvoie l'id "AN-<n>", état "declaree".
+        // Rôle exigé de `par` : "dynamicien" ou "chef_de_mission" du propriétaire
+        // (ApiAcces.agit_pour), "analyste" d'ORBITE, ou "systeme" (manœuvre non expliquée
+        // transmise par manoeuvres, comportement observé).
+        // Refus : Inconnu (objet non catalogué ou rentré), MotifRequis (description vide),
+        // Doublon (anomalie déjà ouverte sur l'objet), Plein, Habilitation.
+        signal declarer(h: Horodatage, objet: Objet, g: EvtGenreAnomalie, motif: String, par: String) -> String
+            writes objet_de, genre_de, description, declarant, declaree_le, dernier_point, points, ouverte_de
+            calls ApiAcces.a_le_role, ApiAcces.agit_pour, ApiRef.etat_objet, ApiRef.proprietaire, ApiConjonctions.ouverts_de, EvtNotifications.preparer, next_id, Journal.noter
+        // Prend l'anomalie en charge : suivi renforcé de l'objet pendant SUIVI_MS
+        // (ApiObservation.demander_suivi, priorité 3 si un rapprochement est ouvert, 2 sinon) et,
+        // pour "propulsion", "attitude" ou "chute_libre", invalidation de la dernière éphéméride
+        // (ApiEphemerides.invalider : elle ne décrit plus la trajectoire). Renvoie "en_suivi".
+        // Rôle exigé de `par` : "analyste" d'ORBITE.
+        // Refus : Inconnu, EtatInvalide, Plein (capacité des capteurs), Habilitation.
+        signal prendre_en_charge(h: Horodatage, anomalie: String, par: String) -> String
+            reads objet_de, genre_de
+            moves declaree -> en_suivi
+            calls ApiAcces.a_le_role, ApiConjonctions.ouverts_de, ApiObservation.demander_suivi, ApiEphemerides.invalider, Journal.noter
+        // Rejette une anomalie infondée (télémétrie mal lue, comportement observé expliqué).
+        // Renvoie "rejetee". Rôle exigé de `par` : "superviseur" d'ORBITE, ou "chef_de_mission"
+        // du propriétaire (ApiAcces.agit_pour) ; jamais le déclarant.
+        // Refus : Inconnu, EtatInvalide, MotifRequis, Habilitation, QuatreYeux (par = déclarant).
+        signal rejeter(h: Horodatage, anomalie: String, motif: String, par: String) -> String
+            writes issue, ouverte_de
+            reads objet_de, declarant
+            moves declaree -> rejetee
+            calls ApiAcces.a_le_role, ApiAcces.agit_pour, ApiRef.proprietaire, Journal.noter
+        // Ajoute un point de suivi daté (télémétrie, essai de reprise, observation). Renvoie le
+        // nombre de points. Rôle exigé de `par` : "dynamicien" ou "chef_de_mission" du
+        // propriétaire, ou "analyste" d'ORBITE.
+        // Refus : Inconnu, EtatInvalide (anomalie close), MotifRequis (constat vide), Plein
+        // (MAX_POINTS), Habilitation.
+        signal noter_suivi(h: Horodatage, anomalie: String, constat: String, par: String) -> Int
+            writes points, dernier_point
+            reads objet_de, anomalie
+            calls ApiAcces.a_le_role, ApiAcces.agit_pour, ApiRef.proprietaire, Journal.noter
+            ensures result >= 1
+        // Lève l'anomalie sur preuve : orbite indépendante de moins de 72 h
+        // (ApiObservation.suivi) ET éphéméride fraîche déposée par le propriétaire
+        // (ApiEphemerides.fraiche). L'objet redevient éligible ; propriétaire et État notifiés
+        // (urgence 1). Renvoie "levee".
+        // Rôle exigé de `par` : "dynamicien" ou "chef_de_mission" du propriétaire, ou "analyste"
+        // d'ORBITE ; `valideur` : "superviseur" d'ORBITE (ApiAcces.quatre_yeux).
+        // Refus : Inconnu, EtatInvalide, Insuffisant (pas d'orbite indépendante), Perime
+        // (éphéméride non fraîche : ApiEphemerides.fraiche(objet, h) faux), MotifRequis,
+        // Habilitation, QuatreYeux.
+        signal lever(h: Horodatage, anomalie: String, motif: String, par: String, valideur: String) -> String
+            writes issue, ouverte_de
+            reads objet_de
+            moves en_suivi -> levee when EphSuivi.a_jour via objet_de
+            calls ApiAcces.a_le_role, ApiAcces.agit_pour, ApiAcces.quatre_yeux, ApiRef.proprietaire, ApiObservation.suivi, ApiEphemerides.fraiche, EvtNotifications.preparer, Journal.noter
+        // Constate la perte définitive de l'objet : propulsion "aucune"
+        // (ApiRef.declarer_propulsion) et objet "hors_service" (ApiRef.changer_etat_objet), par
+        // "systeme" ; propriétaire et État notifiés (urgence 2). L'anomalie est close ; l'objet
+        // reste inéligible par le référentiel. Renvoie "perdu".
+        // Rôle exigé de `par` : "chef_de_mission" du propriétaire, ou "analyste" d'ORBITE avec
+        // `valideur` "superviseur" (ApiAcces.quatre_yeux) — ignoré si par est du propriétaire.
+        // Refus : Inconnu, EtatInvalide, MotifRequis, Habilitation, QuatreYeux.
+        signal constater_perte(h: Horodatage, anomalie: String, motif: String, par: String, valideur: String) -> String
+            writes issue, ouverte_de
+            reads objet_de
+            moves en_suivi -> perdu
+            calls ApiAcces.a_le_role, ApiAcces.agit_pour, ApiAcces.quatre_yeux, ApiRef.proprietaire, ApiRef.declarer_propulsion, ApiRef.changer_etat_objet, EvtNotifications.preparer, Journal.noter
+        // Clôt l'anomalie ouverte de l'objet parce qu'il s'est fragmenté (évènement `ev`
+        // confirmé). Appelé par EvtEvenements.confirmer seul. Renvoie 1 si une anomalie a été
+        // close, 0 sinon.
+        signal clore_par_evenement(h: Horodatage, objet: Objet, ev: String) -> Int
+            writes evenement_de, ouverte_de
+            moves declaree -> fragmentee, en_suivi -> fragmentee
+            calls Journal.noter
+            ensures result >= 0 && result <= 1
+        // Vrai si l'objet a une anomalie "declaree" ou "en_suivi".
+        signal en_anomalie(objet: Objet) -> Bool
+            reads ouverte_de
+        // Anomalies en souffrance à `h`, au plus `n` : "declaree" depuis plus de DELAI_PRISE_MS
+        // (personne ne l'a prise en charge) ou "en_suivi" sans point depuis plus de
+        // DELAI_POINT_MS (l'objet reste inéligible sans que personne ne s'en occupe). Chaque
+        // ligne : "anomalie | objet | motif". Lecture seule, pour la relance des analystes.
+        signal en_souffrance(h: Horodatage, n: Int) -> List<String>
+            requires n > 0 && n <= 1000
+            reads objet_de, declaree_le, dernier_point, anomalie
+    }
+}

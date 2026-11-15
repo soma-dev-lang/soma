@@ -1,0 +1,63 @@
+// Façade de la COORDINATION : qui manœuvre, pour chaque rapprochement — une seule décision.
+skeleton ApiCoordination {
+    face {
+        // Ouvre la coordination d'un rapprochement en alerte entre les propriétaires des deux
+        // objets (ou avec le seul propriétaire manœuvrant face à un débris). Propose la
+        // désignation par défaut des règles de priorité. Renvoie l'id de la coordination.
+        // Refus : Inconnu, EtatInvalide (rapprochement pas en alerte), Existe, Habilitation ("systeme" ou "analyste").
+        signal ouvrir(h: Horodatage, r: Rapprochement, par: String) -> String
+            calls CoordDossier.ouvrir
+        // Un opérateur répond : "accepte" la désignation proposée, ou "refuse" avec une
+        // contre-proposition (l'autre objet). Renvoie l'état de la coordination.
+        // Refus : Inconnu, EtatInvalide, Delai (après l'échéance de réponse), Habilitation
+        // ("dynamicien" ou "chef_de_mission" du propriétaire d'un des deux objets), Incoherent.
+        signal repondre(h: Horodatage, r: Rapprochement, reponse: String, contre: Objet, motif: String, par: String) -> String
+            calls CoordDossier.repondre
+        // Désignation arrêtée : l'objet qui manœuvre ; "" si aucune (en cours, ou décision de ne
+        // pas manœuvrer). Lecture contrôlée (propriété 6) : `par` est "systeme", une personne
+        // d'ORBITE, ou une personne d'une organisation partie au rapprochement
+        // (ApiDonnees.peut_recevoir). Refus : Inconnu, Confidentiel.
+        signal designe(r: Rapprochement, par: String) -> Objet
+            calls CoordVerrou.designe
+        // Vrai si la coordination a abouti (accord ou arbitrage) sur une désignation d'objet.
+        signal arretee(r: Rapprochement) -> Bool
+            calls CoordVerrou.arretee
+        // Arbitrage par ORBITE en cas de désaccord ou de silence passé l'échéance : désigne un
+        // objet (qui doit pouvoir manœuvrer) ou décide de ne pas manœuvrer ("").
+        // Refus : Inconnu, EtatInvalide, NonEligible (objet incapable de manœuvrer), MotifRequis,
+        // Habilitation ("analyste"), QuatreYeux (valideur "superviseur").
+        signal arbitrer(h: Horodatage, r: Rapprochement, objet: Objet, motif: String, par: String, valideur: String) -> String
+            calls CoordDossier.arbitrer
+        // Rouvre une coordination arrêtée quand la situation change (nouvelle pc, manœuvre
+        // annulée, propulsion perdue, anomalie ou passivation de l'objet désigné — ref l'appelle
+        // pour chaque coordination où l'objet est désigné, par "systeme"). Refus : Inconnu, EtatInvalide, MotifRequis, Habilitation.
+        signal rouvrir(h: Horodatage, r: Rapprochement, motif: String, par: String) -> String
+            calls CoordDossier.rouvrir
+        // Échéance de réponse des opérateurs (ms) ; Refus : Inconnu.
+        signal echeance(r: Rapprochement) -> Horodatage
+            calls CoordDossier.echeance
+        // État : "ouverte", "proposee", "accord", "desaccord", "arbitrage", "arretee", "rouverte",
+        // "close" ; "inconnue" si jamais ouverte.
+        signal etat(r: Rapprochement) -> String
+            calls CoordDossier.etat
+        // Vrai si la coordination a statué : désignation d'un objet OU décision de ne pas manœuvrer.
+        signal decidee(r: Rapprochement) -> Bool
+            calls CoordVerrou.decidee
+        // Organisations parties qui n'ont pas répondu au tour courant avant l'échéance (opérateurs
+        // silencieux). Refus : Inconnu.
+        signal muets(r: Rapprochement) -> List<String>
+            calls CoordReponse.muets
+        // Décision en vigueur : "id|designe|auteur|valideur|instant|motif" ; "" si aucune.
+        signal decision(r: Rapprochement) -> String
+            calls CoordVerrou.decision, CoordDecision.resume
+        // Rapprochements où l'organisation doit répondre (au plus 1 000).
+        signal en_attente_de(org: Org) -> List<String>
+            calls CoordReponse.en_attente_de
+        // Balayage des échéances du sous-système à `h` (délais, expirations, rondes), appelé par
+        // l'horloge d'ORBITE (Horloge.battre) — le SEUL point d'entrée du temps : aucun signal de
+        // coordination ne lit l'horloge lui-même. Renvoie le nombre d'objets dont l'état a changé.
+        // Refus : Habilitation (par "systeme").
+        signal balayer(h: Horodatage, par: String) -> Int
+            calls CoordDossier.balayer
+    }
+}

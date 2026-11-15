@@ -1,0 +1,207 @@
+// PRIORITÉS — corps de PrioDerogation.
+flesh PrioDerogation {
+    on demander(h, derogation, objet, motif, justification, debut, fin, par) {
+        require objet_de.get(derogation) == () else Existe "dérogation {derogation} déjà demandée"
+        require objet_de.size < MAX_DEROGATIONS else Plein "registre des dérogations plein"
+        let op = ApiRef.proprietaire(objet)
+        require (ApiAcces.a_le_role(par, "dynamicien") || ApiAcces.a_le_role(par, "chef_de_mission")) && ApiAcces.agit_pour(par, op) else Habilitation "demande réservée au dynamicien ou chef de mission de {op}"
+        require justification != "" else MotifRequis "justification requise"
+        let d0 = to_int(debut)
+        let d1 = to_int(fin)
+        require d0 >= to_int(h) && d1 > d0 && d1 - d0 <= DUREE_MAX else HorsBornes "période hors bornes (90 jours au plus, à venir)"
+        require !ApiRef.habite(objet) else NonEligible "objet habité : déjà exempté"
+        require ApiRef.peut_manoeuvrer(objet) else NonEligible "objet incapable de manœuvrer"
+        require ApiOperateurs.est_actif(op, h) else Suspendu "opérateur {op} inactif"
+        let v = PrioVersion.version_courante()
+        require v != "" else Ferme "aucune version des règles en vigueur"
+        objet_de.set(derogation, objet)
+        op_de.set(derogation, op)
+        version_de.set(derogation, v)
+        motif_de.set(derogation, motif)
+        justification_de.set(derogation, justification)
+        demande_le.set(derogation, h)
+        fin_de.set(derogation, fin)
+        debut_de.set(derogation, debut)
+        demandeur_de.set(derogation, par)
+        PrioEcheancier.planifier(h, "instruction", derogation, Horodatage(to_int(h) + DELAI_INSTRUCTION))
+        Journal.noter(h, "priorites", par, "dérogation {derogation} demandée pour {objet} ({motif}) sous {v}")
+        return derogation
+    }
+
+    on instruire(h, derogation, par) {
+        require ApiAcces.a_le_role(par, "analyste") else Habilitation "instruction réservée à un analyste d'ORBITE"
+        require objet_de.has(derogation) else Inconnu "dérogation {derogation} inconnue"
+        let st = get_status(derogation) ?? "demandee"
+        require st == "demandee" else EtatInvalide "dérogation {derogation} : {st}"
+        transition(derogation, "demandee", "en_instruction")
+        Journal.noter(h, "priorites", par, "dérogation {derogation} en instruction")
+        return "en_instruction"
+    }
+
+    on octroyer(h, derogation, par, valideur) {
+        require ApiAcces.a_le_role(par, "analyste") else Habilitation "octroi réservé à un analyste d'ORBITE"
+        require ApiAcces.a_le_role(valideur, "superviseur") else QuatreYeux "le valideur doit être superviseur d'ORBITE"
+        require ApiAcces.quatre_yeux(par, valideur) else QuatreYeux "contre-signature refusée"
+        require objet_de.has(derogation) else Inconnu "dérogation {derogation} inconnue"
+        let st = get_status(derogation) ?? "demandee"
+        require st == "en_instruction" else EtatInvalide "dérogation {derogation} : {st}, pas en instruction"
+        let fin = fin_de.get(derogation) ?? 0
+        let dem = demande_le.get(derogation) ?? 0
+        require to_int(fin) > to_int(h) else Echu "fin de période passée"
+        require to_int(h) - to_int(dem) <= DELAI_INSTRUCTION else Echu "délai d'instruction dépassé"
+        let v = version_de.get(derogation) ?? ""
+        require PrioVersion.etat(v) == "en_vigueur" else Echu "la version {v} de la demande n'est plus en vigueur"
+        let objet = objet_de.get(derogation) ?? ""
+        let op = op_de.get(derogation) ?? ""
+        require !active_de.has(objet) else Conflit "{objet} a déjà une dérogation active"
+        require ApiOperateurs.est_actif(op, h) else Suspendu "opérateur {op} inactif"
+        require !ApiEvenements.en_anomalie(objet) else NonEligible "{objet} en anomalie"
+        require ApiRef.etat_objet(objet) == "en_service" else NonEligible "{objet} n'est pas en service"
+        for r in ApiConjonctions.ouverts_de(objet) {
+            require ApiConjonctions.niveau(Rapprochement(r)) < 3 else Conflit "{objet} engagé dans le rapprochement de niveau 3 {r}"
+        }
+        transition(derogation, "en_instruction", "recevable")
+        transition(derogation, "recevable", "eligible")
+        transition(derogation, "eligible", "octroyee")
+        active_de.set(objet, derogation)
+        decideur_de.set(derogation, "{par} / {valideur}")
+        PrioEcheancier.annuler("instruction", derogation)
+        PrioEcheancier.planifier(h, "derogation", derogation, fin)
+        Journal.noter(h, "priorites", par, "dérogation {derogation} octroyée à {objet} jusqu'à {fin} (validé par {valideur})")
+        return "octroyee"
+    }
+
+    on refuser(h, derogation, motif, par) {
+        require demande_le.has(derogation) else Inconnu "dérogation {derogation} inconnue"
+        require motif != "" else MotifRequis "motif du refus requis"
+        let st = get_status(derogation) ?? "demandee"
+        if ApiAcces.a_le_role(par, "systeme") {
+            require st == "demandee" || st == "en_instruction" else EtatInvalide "dérogation {derogation} : {st}"
+            let dem = demande_le.get(derogation) ?? 0
+            require to_int(h) - to_int(dem) >= DELAI_INSTRUCTION else Delai "délai d'instruction non écoulé"
+        } else {
+            require ApiAcces.a_le_role(par, "analyste") else Habilitation "refus réservé à un analyste d'ORBITE"
+            require st == "en_instruction" else EtatInvalide "dérogation {derogation} : {st}, pas en instruction"
+        }
+        if st == "demandee" {
+            transition(derogation, "demandee", "refusee")
+        } else {
+            transition(derogation, "en_instruction", "refusee")
+        }
+        decideur_de.set(derogation, par)
+        motif_decision.set(derogation, motif)
+        PrioEcheancier.annuler("instruction", derogation)
+        Journal.noter(h, "priorites", par, "dérogation {derogation} refusée ({motif})")
+        return "refusee"
+    }
+
+    on retirer(h, derogation, par) {
+        let op = op_de.get(derogation)
+        require op != () else Inconnu "dérogation {derogation} inconnue"
+        let role_ok = ApiAcces.a_le_role(par, "dynamicien") || ApiAcces.a_le_role(par, "chef_de_mission") || ApiAcces.a_le_role(par, "administrateur_operateur")
+        require role_ok && ApiAcces.agit_pour(par, op) else Habilitation "retrait réservé à l'opérateur {op}"
+        let st = get_status(derogation) ?? "demandee"
+        if st == "demandee" {
+            transition(derogation, "demandee", "retiree")
+        } else {
+            require st == "en_instruction" else EtatInvalide "dérogation {derogation} : {st}"
+            transition(derogation, "en_instruction", "retiree")
+        }
+        PrioEcheancier.annuler("instruction", derogation)
+        Journal.noter(h, "priorites", par, "dérogation {derogation} retirée par l'opérateur")
+        return "retiree"
+    }
+
+    on revoquer(h, derogation, motif, par, valideur) {
+        require ApiAcces.a_le_role(par, "superviseur") || ApiAcces.a_le_role(par, "conformite") else Habilitation "révocation : superviseur ou conformité d'ORBITE"
+        require ApiAcces.a_le_role(valideur, "direction") else QuatreYeux "le valideur doit être de la direction"
+        require ApiAcces.quatre_yeux(par, valideur) else QuatreYeux "contre-signature refusée"
+        let objet = objet_de.get(derogation)
+        require objet != () else Inconnu "dérogation {derogation} inconnue"
+        require motif != "" else MotifRequis "motif de la révocation requis"
+        let st = get_status(derogation) ?? "demandee"
+        require st == "octroyee" else EtatInvalide "dérogation {derogation} : {st}"
+        transition(derogation, "octroyee", "revoquee")
+        _liberer(objet, derogation)
+        decideur_de.set(derogation, "{par} / {valideur}")
+        motif_decision.set(derogation, motif)
+        PrioEcheancier.annuler("derogation", derogation)
+        Journal.noter(h, "priorites", par, "dérogation {derogation} révoquée ({motif})")
+        return "revoquee"
+    }
+
+    on expirer(h, derogation, par) {
+        require ApiAcces.a_le_role(par, "systeme") else Habilitation "expiration automatique (systeme)"
+        let objet = objet_de.get(derogation)
+        require objet != () else Inconnu "dérogation {derogation} inconnue"
+        let st = get_status(derogation) ?? "demandee"
+        require st == "octroyee" else EtatInvalide "dérogation {derogation} : {st}"
+        let fin = fin_de.get(derogation) ?? 0
+        require to_int(h) >= to_int(fin) else Delai "fin non atteinte"
+        transition(derogation, "octroyee", "expiree")
+        _liberer(objet, derogation)
+        Journal.noter(h, "priorites", par, "dérogation {derogation} expirée")
+        return "expiree"
+    }
+
+    on caduquer(h, derogation, par) {
+        require ApiAcces.a_le_role(par, "systeme") else Habilitation "caducité automatique (systeme)"
+        let objet = objet_de.get(derogation)
+        require objet != () else Inconnu "dérogation {derogation} inconnue"
+        let st = get_status(derogation) ?? "demandee"
+        require st == "octroyee" else EtatInvalide "dérogation {derogation} : {st}"
+        let v = version_de.get(derogation) ?? ""
+        let ev = PrioVersion.etat(v)
+        require ev == "remplacee" || ev == "abrogee" else EtatInvalide "la version {v} est encore {ev}"
+        transition(derogation, "octroyee", "caduque")
+        _liberer(objet, derogation)
+        PrioEcheancier.annuler("derogation", derogation)
+        Journal.noter(h, "priorites", par, "dérogation {derogation} caduque (version {v} {ev})")
+        return "caduque"
+    }
+
+    on actives_de_version(version) {
+        return active_de.values.filter(d => (version_de.get(d) ?? "") == version && (get_status(d) ?? "demandee") == "octroyee").sort()
+    }
+
+    on en_cours(objet, h) {
+        let d = active_de.get(objet)
+        if d == () { return false }
+        if (get_status(d) ?? "demandee") != "octroyee" { return false }
+        let d0 = debut_de.get(d) ?? 0
+        let d1 = fin_de.get(d) ?? 0
+        return to_int(d0) <= to_int(h) && to_int(h) < to_int(d1)
+    }
+
+    on historique(objet) {
+        let cles_h = objet_de.entries.filter(e => e.value == objet).map(e => e.key)
+        return cles_h.sort_by(k => [to_int(demande_le.get(k) ?? 0), k])
+    }
+
+    on etat(derogation) {
+        if !objet_de.has(derogation) { return "inconnue" }
+        return get_status(derogation) ?? "demandee"
+    }
+
+    on fiche(derogation) {
+        let o = objet_de.get(derogation)
+        require o != () else Inconnu "dérogation {derogation} inconnue"
+        let op = op_de.get(derogation) ?? ""
+        let v = version_de.get(derogation) ?? ""
+        let m = motif_de.get(derogation) ?? ""
+        let d0 = debut_de.get(derogation) ?? 0
+        let d1 = fin_de.get(derogation) ?? 0
+        let dem = demandeur_de.get(derogation) ?? ""
+        let dec = decideur_de.get(derogation) ?? ""
+        let md = motif_decision.get(derogation) ?? ""
+        return "{o} | {op} | {v} | {m} | {d0} | {d1} | {dem} | {dec} | {md}"
+    }
+
+    // Libère l'objet si cette dérogation est bien celle qui le couvre.
+    on _liberer(objet: Objet, derogation: String) {
+        if (active_de.get(objet) ?? "") == derogation {
+            active_de.delete(objet)
+        }
+        return true
+    }
+}

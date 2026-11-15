@@ -1,0 +1,164 @@
+// observation — DÉTERMINATION D'ORBITE INDÉPENDANTE. ORBITE ajuste une orbite sur ses propres
+// mesures corrélées (au moins MIN_MESURES de MIN_CAPTEURS capteurs distincts), pour un objet
+// catalogué ou pour une piste non corrélée. Une détermination validée devient l'orbite courante
+// du sujet (la précédente est « remplacee ») et sert de référence indépendante : écart avec
+// l'éphéméride déclarée du propriétaire, détection de manœuvres non annoncées, catalogage des
+// nouveaux objets. Elle cite ses mesures et l'éphéméride comparée : une décision fondée sur elle
+// reste traçable jusqu'aux données brutes.
+
+// Cause du rejet d'une détermination.
+cell type ObsMotifRejetOrbite = String where value == "mesures_insuffisantes" || value == "geometrie" || value == "residus" || value == "divergence" || value == "autre"
+
+skeleton ObsOrbites {
+    const MAX_DETERMINATIONS = 2000000
+    const MAX_SUJETS = 500000
+    const MAX_MESURES = 5000000
+    // Une orbite indépendante vaut suivi pendant 72 h après son époque.
+    const VALIDITE_MS = 259200000
+    const MIN_MESURES = 6
+    const MIN_CAPTEURS = 2
+    // Écart orbite observée / éphéméride déclarée au-delà duquel une manœuvre non annoncée est
+    // suspectée (m).
+    const SEUIL_MANOEUVRE_M = 2000
+    // Écart au-delà duquel l'éphéméride déclarée est invalidée (ApiEphemerides.invalider) (m).
+    const SEUIL_INVALIDATION_M = 10000
+    memory {
+        sujet_de: Map<String, String> [persistent]           // détermination → sujet : Objet "OBJ-<n>" ou piste "PI-<n>" ; écrit une fois
+        epoque_de: Map<String, Horodatage> [persistent]      // détermination → époque de l'orbite, ms
+        calculee_le: Map<String, Horodatage> [persistent]    // détermination → horodatage du calcul, ms
+        mesures_de: Map<String, List<String>> [persistent]   // détermination → mesures ajustées (citées, jamais purgées)
+        nb_capteurs: Map<String, Int> [persistent]           // détermination → capteurs distincts parmi les mesures
+        sigma_de: Map<String, Distance> [persistent]         // détermination → incertitude de position (1 σ), m
+        vecteur_de: Map<String, String> [persistent]         // détermination → vecteur d'état à l'époque "x,y,z,vx,vy,vz" (m, mm/s, repère inertiel commun)
+        perigee_de: Map<String, Distance> [persistent]       // détermination → altitude du périgée, m
+        apogee_de: Map<String, Distance> [persistent]        // détermination → altitude de l'apogée, m
+        qualite_de: Map<String, Qualite> [persistent]        // détermination → qualité
+        eph_comparee: Map<String, String> [persistent]       // détermination → éphéméride déclarée comparée (ApiEphemerides.derniere)
+        ecart_de: Map<String, Distance> [persistent]         // détermination → écart avec cette éphéméride, m
+        valide_par: Map<String, String> [persistent]         // détermination → auteur de la validation
+        rejet_de: Map<String, ObsMotifRejetOrbite> [persistent]  // détermination → motif du rejet
+        courante: Map<String, String> [persistent]           // sujet → détermination validée courante
+        citee_par: Map<String, String> [persistent]          // mesure → dernière détermination qui la cite
+        compteur: Map<String, Int> [persistent]              // "orbites" → dernier numéro attribué
+        curseur: Map<String, Objet> [persistent]             // "catalogue" → dernier objet parcouru par perimer ("" : recommencer)
+        invariant curseur.size <= 1
+        invariant sujet_de.size <= MAX_DETERMINATIONS
+        invariant epoque_de.size <= MAX_DETERMINATIONS
+        invariant calculee_le.size <= MAX_DETERMINATIONS
+        invariant mesures_de.size <= MAX_DETERMINATIONS
+        invariant nb_capteurs.size <= MAX_DETERMINATIONS
+        invariant sigma_de.size <= MAX_DETERMINATIONS
+        invariant vecteur_de.size <= MAX_DETERMINATIONS
+        invariant perigee_de.size <= MAX_DETERMINATIONS
+        invariant apogee_de.size <= MAX_DETERMINATIONS
+        invariant (perigee_de ?? 0) <= (apogee_de ?? 0)
+        invariant qualite_de.size <= MAX_DETERMINATIONS
+        invariant eph_comparee.size <= MAX_DETERMINATIONS
+        invariant ecart_de.size <= MAX_DETERMINATIONS
+        invariant valide_par.size <= MAX_DETERMINATIONS
+        invariant rejet_de.size <= MAX_DETERMINATIONS
+        invariant courante.size <= MAX_SUJETS
+        invariant citee_par.size <= MAX_MESURES
+        invariant nb_capteurs >= 0
+        invariant sigma_de > 0
+        invariant compteur.size <= 1
+        invariant compteur >= 0 && compteur <= MAX_DETERMINATIONS
+        invariant (epoque_de ?? 0) <= (calculee_le ?? 0)
+    }
+    // Cycle d'une détermination (id = "OD-<n>").
+    state determination {
+        initial: calculee
+        calculee -> validee      // valider : critères de mesures et de résidus remplis
+        calculee -> rejetee      // rejeter
+        validee -> remplacee     // valider (une plus récente du même sujet devient courante)
+        validee -> perimee       // perimer : époque plus ancienne que VALIDITE_MS
+    }
+    face {
+        // Enregistre une détermination calculée pour `sujet` (objet catalogué ou piste ouverte) à
+        // l'époque `epoque` (≤ h) sur `mesures` (corrélées à l'objet, ou versées à la piste),
+        // d'incertitude `sigma` (1 σ, m, > 0), de vecteur d'état `vecteur` ("x,y,z,vx,vy,vz" à
+        // l'époque, m et mm/s, repère inertiel commun), d'altitudes `perigee` ≤ `apogee` (m).
+        // Compte les capteurs distincts (ObsMesures.capteur). Renvoie l'id "OD-<n>".
+        // Rôle exigé : "analyste" d'ORBITE ou "systeme".
+        // Refus : Inconnu (sujet, mesure), HorsBornes (epoque > h, sigma nul, mesures vide ou > 10 000),
+        // Incoherent (vecteur mal formé, perigee > apogee), Habilitation, Plein.
+        signal calculer(h: Horodatage, sujet: String, epoque: Horodatage, mesures: List<String>, sigma: Distance, vecteur: String, perigee: Distance, apogee: Distance, par: String) -> String
+            writes sujet_de, epoque_de, calculee_le, mesures_de, nb_capteurs, sigma_de, vecteur_de, perigee_de, apogee_de, compteur
+            calls ObsMesures.etat, ObsMesures.capteur, ApiRef.etat_objet, ObsPistes.etat, ApiAcces.a_le_role, Journal.noter
+        // Valide une détermination : au moins MIN_MESURES mesures de MIN_CAPTEURS capteurs ; qualité
+        // déduite de sigma inflaté par ApiMeteo.facteur_incertitude (régime, h). Pour un objet
+        // catalogué, `ecart` (m) est l'écart, calculé par le moteur d'ajustement, avec l'éphéméride
+        // déclarée courante `eph` (ApiEphemerides.derniere et ApiEphemerides.depot_valide, sinon
+        // Perime) ; au-delà de
+        // SEUIL_MANOEUVRE_M une détection est ouverte (ObsDetections.suspecter) ; au-delà de
+        // SEUIL_INVALIDATION_M l'éphéméride est invalidée (ApiEphemerides.invalider, par "systeme").
+        // Pour une piste, `eph` = "" et `ecart` = 0. La détermination devient courante, la
+        // précédente passe « remplacee ». Renvoie "validee".
+        // Rôle exigé : "analyste" d'ORBITE ou "systeme" ; jamais un fournisseur de mesures.
+        // Refus : Inconnu, EtatInvalide, Insuffisant (mesures ou capteurs), Perime (eph n'est pas la
+        // dernière éphéméride du propriétaire), Habilitation.
+        signal valider(h: Horodatage, od: String, eph: String, ecart: Distance, par: String) -> String
+            reads sujet_de, epoque_de, mesures_de, nb_capteurs, sigma_de
+            writes qualite_de, eph_comparee, ecart_de, valide_par, courante, citee_par
+            moves calculee -> validee, validee -> remplacee
+            calls ApiRef.regime, ApiMeteo.facteur_incertitude, ApiEphemerides.derniere, ApiEphemerides.depot_valide, ApiEphemerides.invalider, ObsDetections.suspecter, ApiAcces.a_le_role, Journal.noter
+        // Rejette une détermination calculée. Renvoie "rejetee". Rôle exigé : "analyste" d'ORBITE ou
+        // "systeme". Refus : Inconnu, EtatInvalide, Habilitation.
+        signal rejeter(h: Horodatage, od: String, motif: ObsMotifRejetOrbite, par: String) -> String
+            reads sujet_de
+            writes rejet_de
+            moves calculee -> rejetee
+            calls ApiAcces.a_le_role, Journal.noter
+        // Ronde (appelée par ObsBalayage.balayer, par = "systeme") : passe « perimee » toute détermination courante dont
+        // l'époque date de plus de VALIDITE_MS, retire-la de `courante`, et demande un suivi de
+        // routine pour l'objet (ObsTaches.demander, priorité 1) s'il n'en a pas déjà un. Parcourt
+        // aussi une page du catalogue (ApiRef.catalogue, 1 000 objets après le dernier vu, curseur
+        // dans `curseur`) et demande un suivi de routine pour tout objet sans orbite courante : un
+        // objet jamais observé ne reste pas hors suivi. Renvoie le nombre de déterminations
+        // périmées. Refus : Habilitation.
+        signal perimer(h: Horodatage, par: String) -> Int
+            reads epoque_de, sujet_de
+            writes courante, curseur
+            moves validee -> perimee
+            calls ApiRef.catalogue, ObsTaches.suivi_actif, ObsTaches.demander, Journal.noter
+        // Vrai si le sujet a une détermination validée courante d'époque > h − VALIDITE_MS.
+        signal suivi(sujet: String, h: Horodatage) -> Bool
+            reads courante, epoque_de, determination
+        // Écart (m) entre l'éphéméride déclarée comparée et l'orbite courante de l'objet.
+        // Refus : Inconnu (pas d'orbite observée).
+        signal ecart_declare(objet: Objet) -> Distance
+            reads courante, ecart_de
+        // Écart (m) entre la position déclarée `position` ("x,y,z", m, repère inertiel commun) à
+        // `epoque` et l'orbite courante de l'objet propagée à cet instant (vecteur_de, sigma inflaté
+        // par la météo). Sert aux éphémérides à la réception d'un dépôt.
+        // Refus : Inconnu (pas d'orbite courante d'époque > epoque − VALIDITE_MS), Incoherent (position mal formée).
+        signal ecart_a(objet: Objet, epoque: Horodatage, position: String) -> Distance
+            reads courante, epoque_de, vecteur_de, determination
+        // Altitude (m) du périgée, de l'apogée, de l'orbite courante de l'objet. Refus : Inconnu.
+        signal perigee(objet: Objet) -> Distance
+            reads courante, perigee_de
+        signal apogee(objet: Objet) -> Distance
+            reads courante, apogee_de
+        // Détermination courante du sujet, ou "" s'il n'en a pas.
+        signal courante_de(sujet: String) -> String
+            reads courante
+        // État de la détermination : "calculee", "validee", "rejetee", "remplacee", "perimee", ou "inconnue".
+        signal etat(od: String) -> String
+            reads determination, sujet_de
+        // Incertitude (1 σ, m) de la détermination, inflatée par le facteur météo du régime à h
+        // (ApiMeteo.facteur_incertitude). Refus : Inconnu.
+        signal sigma_effectif(od: String, h: Horodatage) -> Distance
+            reads sigma_de, sujet_de
+            calls ApiRef.regime, ApiMeteo.facteur_incertitude
+        // Fondement d'une détermination pour un dossier de preuve : "sujet|époque|éphéméride
+        // comparée|écart|auteur|mesures…". Communiqué seulement si le sujet l'est à `org`
+        // (ApiDonnees.peut_recevoir), trace à l'appui (ApiDonnees.tracer, nature "orbite").
+        // Refus : Inconnu, Confidentiel.
+        signal fondement(h: Horodatage, od: String, org: Org) -> String
+            reads sujet_de, epoque_de, mesures_de, eph_comparee, ecart_de, valide_par
+            calls ApiDonnees.peut_recevoir, ApiDonnees.tracer
+        // Vrai si la mesure est citée par une détermination (elle ne peut être purgée).
+        signal citee(mesure: String) -> Bool
+            reads citee_par
+    }
+}

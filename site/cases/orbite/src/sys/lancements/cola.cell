@@ -1,0 +1,225 @@
+// LANCEMENTS — criblage de la fenêtre de tir (COLA, collision on launch assessment) et avis
+// d'ORBITE. Le calcul de trajectoire contre le catalogue tourne hors du squelette (moteur de
+// criblage, identité "systeme") ; ici : ce qui est demandé, ce qui en sort, combien de temps
+// c'est valable, à qui on le dit. Instance = id du lancement (un seul COLA vivant par lancement,
+// recommencé à chaque nouvelle fenêtre).
+
+skeleton LancCola {
+    const MAX_COLA = 1000000
+    // Un COLA vaut 8 h après son calcul (cadence du criblage du catalogue, âge maximal d'une
+    // éphéméride LEO) : au-delà il est périmé par la veille.
+    const VALIDITE = 28800000
+    // Seuils d'interdiction d'une période de tir : distance < 200 km ou pc > 1e-6 face à un
+    // objet habité ; distance < 25 km ou pc > 1e-4 face à tout autre objet catalogué.
+    const DISTANCE_HABITE = 200000
+    const PC_HABITE = 1000
+    const DISTANCE_MIN = 25000
+    const PC_MAX = 100000
+    // Au plus 2 000 rapprochements candidats et 500 périodes interdites par COLA.
+    const MAX_CANDIDATS = 2000
+    const MAX_INTERDITS = 500
+    memory {
+        version_de: Map<String, Int> [persistent]        // version de fenêtre à cribler (LancLancement.version_de)
+        trajectoire_de: Map<String, String> [persistent] // empreinte du fichier de trajectoire nominale + dispersions
+        demande_le: Map<String, Horodatage> [persistent]
+        facteur_de: Map<String, Pourcent> [persistent]   // élargissement des covariances figé à la demande (100 = aucun)
+        renforce_de: Map<String, Bool> [persistent]      // tempête ou nuage de débris actif à la demande
+        calcule_le: Map<String, Horodatage> [persistent] // instant du calcul conclu
+        interdits_de: Map<String, List<String>> [persistent] // "debut|fin|objet" : périodes de tir interdites
+        depots_de: Map<String, List<String>> [persistent]    // dépôts d'éphémérides lus par le calcul (preuve)
+        historique_de: Map<String, List<String>> [persistent] // "h|version|etat|nb_interdits" à chaque conclusion ou péremption
+        invariant version_de.size <= 1000000
+        invariant version_de >= 1
+        invariant facteur_de >= 100
+        invariant calcule_le.size <= demande_le.size
+        invariant len(interdits_de) <= 500
+        invariant len(depots_de) <= 2000
+        invariant len(historique_de) <= 200
+    }
+    // Cycle du COLA d'un lancement.
+    state cola {
+        initial: a_cribler
+        a_cribler -> en_cours            // trajectoire déposée, paramètres figés
+        en_cours -> conclu               // résultat recevable : périodes interdites connues
+        en_cours -> impossible           // objet habité candidat sans éphéméride fraîche ni orbite observée
+        en_cours -> perime               // fenêtre changée pendant le calcul
+        impossible -> en_cours           // nouvelle demande, données rafraîchies
+        conclu -> perime                 // âge > 8 h, tempête ou nuage survenus, fenêtre reportée
+        perime -> en_cours               // nouvelle demande sur la fenêtre en cours
+        a_cribler -> archive             // lancement terminé (tir, échec, annulation)
+        en_cours -> archive
+        conclu -> archive
+        impossible -> archive
+        perime -> archive
+    }
+    face {
+        // Crée le COLA d'un lancement (reste "a_cribler") pour la version 1 de sa fenêtre.
+        // Appelé par LancLancement.notifier et enregistrer_non_notifie, `par` "systeme".
+        // Renvoie la version. Refus : Existe, Habilitation.
+        signal ouvrir(h: Horodatage, lancement: String, par: String) -> Int
+            writes version_de
+            calls ApiAcces.a_le_role
+        // Enregistre la version de la nouvelle fenêtre après un report (le COLA est "perime" ou
+        // "impossible" : une nouvelle `demander` est nécessaire). Appelé par
+        // LancLancement.nouvelle_fenetre, `par` "systeme". Renvoie la version.
+        // Refus : Inconnu, HorsBornes (version non croissante), Habilitation.
+        signal relancer(h: Horodatage, lancement: String, version: Int, par: String) -> Int
+            writes version_de
+            calls ApiAcces.a_le_role
+        // Lance le calcul sur la fenêtre en cours (a_cribler | impossible | perime -> en_cours) :
+        // fige l'empreinte de trajectoire, le facteur d'incertitude du régime visé
+        // (ApiMeteo.facteur_incertitude) et le criblage renforcé (ApiMeteo.tempete ou
+        // ApiEvenements.nuage_actif). Le lancement doit être "notifie" (LancLancement.etat) et le
+        // catalogue du régime visé criblé depuis moins de 8 h (ApiConjonctions.campagne_fraiche,
+        // sinon Perime : un COLA sur un catalogue rassis ne prouve rien).
+        // `par` "dynamicien" ou "chef_de_mission" de l'opérateur du lanceur, ou "analyste".
+        // Renvoie "en_cours". Refus : Inconnu, EtatInvalide, Perime, MotifRequis (empreinte vide), Habilitation.
+        signal demander(h: Horodatage, lancement: String, trajectoire: String, par: String) -> LancEtatCola
+            writes trajectoire_de, demande_le, facteur_de, renforce_de
+            reads version_de
+            moves a_cribler -> en_cours, impossible -> en_cours, perime -> en_cours
+            calls LancLancement.etat, LancLancement.fiche, ApiConjonctions.campagne_fraiche, ApiMeteo.facteur_incertitude, ApiMeteo.tempete, ApiEvenements.nuage_actif, ApiAcces.a_le_role, ApiAcces.agit_pour, Journal.noter
+        // Dépose le résultat du moteur pour la version `version` : `candidats` = rapprochements
+        // trouvés, "debut|fin|objet|distance_m|pc" (pc en milliardièmes), `depots` = dépôts
+        // d'éphémérides lus. Une période devient interdite selon les seuils (habité :
+        // ApiRef.habite). Si un candidat habité n'a ni éphéméride fraîche (ApiEphemerides.fraiche)
+        // ni orbite observée (ApiObservation.suivi), ou si la campagne du régime n'est plus fraîche
+        // (ApiConjonctions.campagne_fraiche) : en_cours -> impossible. Sinon en_cours ->
+        // conclu et LancLancement.prendre_acte_cola. `par` "systeme" ou "analyste". Renvoie l'état
+        // atteint. Refus : Inconnu, EtatInvalide, Perime (version ≠ version en cours), Plein
+        // (plus de 2 000 candidats ou 500 périodes), Incoherent (candidat mal formé ou hors fenêtre),
+        // Habilitation.
+        signal conclure(h: Horodatage, lancement: String, version: Int, candidats: List<String>, depots: List<String>, par: String) -> LancEtatCola
+            writes calcule_le, interdits_de, depots_de, historique_de
+            reads version_de
+            moves en_cours -> conclu, en_cours -> impossible
+            calls LancLancement.prendre_acte_cola, LancLancement.fiche, ApiConjonctions.campagne_fraiche, ApiRef.habite, ApiEphemerides.fraiche, ApiObservation.suivi, ApiAcces.a_le_role, Journal.noter
+        // Périme le COLA (conclu | en_cours -> perime), sans toucher au lancement : appelé par
+        // LancLancement.reporter et par `veiller`, `par` "systeme". Renvoie "perime" (ou l'état
+        // inchangé s'il n'était ni conclu ni en cours). Refus : Inconnu, Habilitation.
+        signal perimer(h: Horodatage, lancement: String, motif: String, par: String) -> LancEtatCola
+            writes historique_de
+            reads version_de
+            moves conclu -> perime, en_cours -> perime
+            calls ApiAcces.a_le_role, Journal.noter
+        // Veille d'un COLA conclu : s'il a plus de 8 h, ou si une tempête (ApiMeteo.tempete) ou un
+        // nuage de débris dans le régime visé (ApiEvenements.nuage_actif) est apparu depuis la
+        // demande alors qu'il n'était pas renforcé, le périme (`perimer`), rend l'avis caduc
+        // (LancAvis.rendre_caduc) et ramène le lancement à "notifie" (LancLancement.recribler).
+        // `par` "systeme". Renvoie vrai si le COLA a été périmé. Refus : Inconnu, Habilitation.
+        signal veiller(h: Horodatage, lancement: String, par: String) -> Bool
+            reads calcule_le, renforce_de, cola
+            calls perimer, LancAvis.rendre_caduc, LancLancement.recribler, LancLancement.etat, LancLancement.fiche, ApiMeteo.tempete, ApiEvenements.nuage_actif, ApiAcces.a_le_role
+        // Archive le COLA d'un lancement terminé (-> archive). Appelé par LancLancement,
+        // `par` "systeme". Renvoie "archive". Refus : Inconnu, Habilitation.
+        signal archiver(h: Horodatage, lancement: String, par: String) -> LancEtatCola
+            moves a_cribler -> archive, en_cours -> archive, conclu -> archive, impossible -> archive, perime -> archive
+            calls ApiAcces.a_le_role
+        // Communique le résultat d'un COLA conclu à une organisation (opérateur du lanceur, État de
+        // lancement) : chaque période interdite dont l'objet ne peut lui être communiqué
+        // (ApiDonnees.peut_recevoir, rapprochement "") est transmise anonymisée ("objet protégé") ;
+        // chaque objet nommé est tracé (ApiDonnees.tracer, nature "cola"). Met en file le message
+        // (ApiPasserelle.notifier, urgence 2). `par` "systeme" ou "analyste". Renvoie le nombre
+        // d'objets nommés. Refus : Inconnu, EtatInvalide (pas conclu), Confidentiel, Habilitation.
+        signal communiquer(h: Horodatage, lancement: String, destinataire: Org, par: String) -> Int
+            reads interdits_de, cola
+            calls ApiDonnees.peut_recevoir, ApiDonnees.tracer, ApiPasserelle.notifier, ApiAcces.a_le_role, Journal.noter
+        // État ("inconnu" si jamais ouvert).
+        signal etat(lancement: String) -> LancEtatCola
+            reads cola, version_de
+        // Périodes interdites du dernier COLA conclu, "debut|fin|objet" (diffusion restreinte :
+        // usage interne, la communication passe par `communiquer`). Refus : Inconnu.
+        signal interdits(lancement: String) -> List<String>
+            reads version_de, interdits_de
+        // Fondement du dernier COLA conclu (preuve). Refus : Inconnu, EtatInvalide (jamais conclu).
+        signal fondement(lancement: String) -> LancFondement
+            reads version_de, calcule_le, trajectoire_de, depots_de, facteur_de, renforce_de, interdits_de
+    }
+}
+
+// Avis d'ORBITE sur la fenêtre de tir : rédigé par un analyste sur un COLA conclu, validé à
+// quatre yeux, notifié à l'opérateur et à l'État de lancement. Il n'autorise pas le tir (c'est
+// l'État qui l'autorise) : il dit si la fenêtre est sûre et quelles périodes sont interdites.
+// Instance = id du lancement.
+skeleton LancAvis {
+    const MAX_AVIS = 1000000
+    memory {
+        sens_de: Map<String, LancSensAvis> [persistent]
+        motif_de: Map<String, String> [persistent]       // justification lisible par l'opérateur
+        redige_par: Map<String, String> [persistent]
+        cola_le_de: Map<String, Horodatage> [persistent] // instant de calcul du COLA sur lequel l'avis repose
+        version_de: Map<String, Int> [persistent]        // version de fenêtre avisée
+        emis_le: Map<String, Horodatage> [persistent]
+        historique_de: Map<String, List<String>> [persistent] // "h|version|sens|par|valideur|etat" : tout avis émis ou devenu caduc
+        invariant sens_de.size <= 1000000
+        invariant version_de >= 1
+        invariant len(historique_de) <= 200
+    }
+    // Cycle de l'avis.
+    state avis {
+        initial: a_rediger
+        a_rediger -> redige              // proposition de l'analyste sur un COLA conclu
+        redige -> favorable              // validé à quatre yeux, COLA toujours conclu
+        redige -> defavorable            // validé à quatre yeux : fenêtre entièrement interdite ou trop risquée
+        redige -> caduc                  // COLA périmé avant validation
+        favorable -> caduc               // COLA périmé, fenêtre reportée
+        defavorable -> caduc             // fenêtre reportée : un nouvel avis sera rédigé
+        caduc -> redige                  // nouvel avis sur un nouveau COLA
+        a_rediger -> archive             // lancement terminé
+        redige -> archive
+        favorable -> archive
+        defavorable -> archive
+        caduc -> archive
+    }
+    face {
+        // Rédige l'avis (a_rediger | caduc -> redige) sur le COLA conclu en cours
+        // (LancCola.etat == "conclu", sinon EtatInvalide) ; retient son instant de calcul et la
+        // version de fenêtre (LancCola.fondement). Un avis "favorable" exige au moins une période
+        // de la fenêtre hors interdits (sinon Incoherent). Les zones de retombée doivent être
+        // déclarées pour cette version de fenêtre (LancZones.etat "declarees" ou "acquittees" :
+        // le silence d'un État survolé ne bloque pas l'avis). `par` "analyste" d'ORBITE.
+        // Renvoie "redige". Refus : Inconnu, EtatInvalide, MotifRequis, Incoherent, Habilitation.
+        signal rediger(h: Horodatage, lancement: String, sens: LancSensAvis, motif: String, par: String) -> LancEtatAvis
+            writes sens_de, motif_de, redige_par, cola_le_de, version_de
+            moves a_rediger -> redige when LancZones.declarees || LancZones.acquittees, caduc -> redige when LancZones.declarees || LancZones.acquittees
+            calls LancZones.etat, LancCola.etat, LancCola.fondement, LancLancement.fiche, ApiAcces.a_le_role, Journal.noter
+        // Valide et émet l'avis (redige -> favorable | defavorable). Le COLA doit être celui de
+        // la rédaction (même instant de calcul, toujours conclu ; sinon Perime). Notifie
+        // l'opérateur et le point focal de l'État (ApiPasserelle.notifier), communique le COLA à
+        // l'opérateur (LancCola.communiquer), et si favorable fait passer le lancement
+        // "autorise" (LancLancement.prendre_acte_avis). `par` le rédacteur, `valideur`
+        // "superviseur" (ApiAcces.quatre_yeux). Renvoie l'état atteint.
+        // Refus : Inconnu, EtatInvalide, Perime, Habilitation, QuatreYeux.
+        signal valider(h: Horodatage, lancement: String, par: String, valideur: String) -> LancEtatAvis
+            writes emis_le, historique_de
+            reads sens_de, redige_par, cola_le_de, version_de
+            moves redige -> favorable when LancCola.conclu, redige -> defavorable
+            calls LancCola.etat, LancCola.fondement, LancCola.communiquer, LancLancement.prendre_acte_avis, LancLancement.fiche, ApiRef.org_de_etat, ApiPasserelle.notifier, ApiAcces.a_le_role, ApiAcces.quatre_yeux, Journal.noter
+        // Rend l'avis caduc (redige | favorable | defavorable -> caduc) : COLA périmé, fenêtre
+        // reportée. Notifie l'opérateur si l'avis avait été émis. Appelé par LancCola.veiller et
+        // LancLancement.reporter, `par` "systeme". Renvoie l'état (inchangé s'il n'y avait rien
+        // à rendre caduc). Refus : Inconnu, Habilitation.
+        signal rendre_caduc(h: Horodatage, lancement: String, motif: String, par: String) -> LancEtatAvis
+            writes historique_de
+            reads version_de, sens_de
+            moves redige -> caduc, favorable -> caduc, defavorable -> caduc
+            calls LancLancement.fiche, ApiPasserelle.notifier, ApiAcces.a_le_role, Journal.noter
+        // Archive l'avis d'un lancement terminé (-> archive). `par` "systeme". Renvoie "archive".
+        // Refus : Inconnu, Habilitation.
+        signal archiver(h: Horodatage, lancement: String, par: String) -> LancEtatAvis
+            moves a_rediger -> archive, redige -> archive, favorable -> archive, defavorable -> archive, caduc -> archive
+            calls ApiAcces.a_le_role
+        // Vrai si un tir à `tir` est couvert par l'avis : avis "favorable", `tir` dans la fenêtre
+        // en cours (LancLancement.fiche) et hors de toute période interdite (LancCola.interdits).
+        signal tir_permis(lancement: String, tir: Horodatage) -> Bool
+            reads avis, version_de
+            calls LancLancement.fiche, LancCola.interdits
+        // État ; "a_rediger" pour un avis jamais rédigé (l’existence du lancement se lit sur
+        // LancLancement.etat).
+        signal etat(lancement: String) -> LancEtatAvis
+            reads avis
+        // Historique des avis "h|version|sens|par|valideur|etat" (preuve). Refus : Inconnu.
+        signal historique(lancement: String) -> List<String>
+            reads historique_de
+    }
+}

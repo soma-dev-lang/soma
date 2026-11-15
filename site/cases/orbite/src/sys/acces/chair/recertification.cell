@@ -1,0 +1,135 @@
+// acces — corps de la recertification périodique (campagnes et attestations).
+flesh AccesCampagnes {
+    on ouvrir(h, org, echeance_ms, par) {
+        require AccesControle.a_le_role(par, "conformite") else Habilitation "{par} : conformite d'ORBITE"
+        require ApiRef.organisation_existe(org) else Inconnu "organisation {org} inconnue ou radiée"
+        require en_cours_de.get(org) == () else Doublon "campagne déjà ouverte pour {org}"
+        let duree = to_int(echeance_ms) - to_int(h)
+        require duree >= DUREE_MIN_MS && duree <= DUREE_MAX_MS else HorsBornes "échéance hors de [h + {DUREE_MIN_MS}, h + {DUREE_MAX_MS}]"
+        require org_de.size < MAX_CAMPAGNES else Plein "registre des campagnes plein"
+        let id = "rc-{next_id()}"
+        org_de.set(id, org)
+        ouverte_par.set(id, par)
+        echeance.set(id, echeance_ms)
+        ouverture.set(id, h)
+        en_cours_de.set(org, id)
+        transition(id, "preparee", "ouverte")
+        let gens = AccesPersonnes.personnes_de(org, 2000)
+        for p in gens { let _ = AccesAttestations.planifier(h, id, p) }
+        let _ = Journal.noter(h, "acces", par, "ouvrir campagne {id} pour {org} : {len(gens)} attestations")
+        return id
+    }
+
+    on cloturer(h, id, par) {
+        let o = org_de.get(id)
+        require o != () else Inconnu "campagne {id} inconnue"
+        let st = get_status(id) ?? "preparee"
+        require st == "ouverte" else EtatInvalide "campagne {id} {st}"
+        require to_int(echeance.get(id) ?? 0) <= to_int(h) else Delai "échéance de {id} non atteinte"
+        require AccesControle.a_le_role(par, "conformite") || AccesControle.a_le_role(par, "systeme") else Habilitation "{par} : conformite ou systeme"
+        let n = AccesAttestations.echoir_campagne(h, id)
+        en_cours_de.delete(o)
+        derniere_close.set(o, h)
+        transition(id, "ouverte", "close")
+        let _ = Journal.noter(h, "acces", par, "cloturer campagne {id} : {n} attestations échues")
+        return n
+    }
+
+    on annuler(h, id, par) {
+        let o = org_de.get(id)
+        require o != () else Inconnu "campagne {id} inconnue"
+        let st = get_status(id) ?? "preparee"
+        require st == "ouverte" else EtatInvalide "campagne {id} {st}"
+        require !ApiRef.organisation_existe(o) else NonEligible "{o} est encore inscrite"
+        require AccesControle.a_le_role(par, "conformite") else Habilitation "{par} : conformite d'ORBITE"
+        en_cours_de.delete(o)
+        transition(id, "ouverte", "annulee")
+        let _ = Journal.noter(h, "acces", par, "annuler campagne {id}")
+        return "annulee"
+    }
+
+    on cloturer_echues(h) {
+        let ids = echeance.entries.filter(e => to_int(e.value) <= to_int(h) && (get_status(e.key) ?? "preparee") == "ouverte").map(e => e.key).sort()
+        for id in ids { let _ = cloturer(h, id, "systeme") }
+        return len(ids)
+    }
+
+    on a_ouvrir(h, n) {
+        let orb = ApiRef.orbite()
+        let res_o = []
+        for e in derniere_close.entries.sort_by(x => to_string(x.key)) {
+            let periode = if e.key == orb { PERIODE_ORBITE_MS } else { PERIODE_MS }
+            if en_cours_de.get(e.key) == () && to_int(h) - to_int(e.value) > periode && len(res_o) < n {
+                res_o.push(to_string(e.key))
+            }
+        }
+        return res_o
+    }
+
+    on organisation(id) {
+        let o = org_de.get(id)
+        require o != () else Inconnu "campagne {id} inconnue"
+        return o
+    }
+
+    on etat(id) {
+        if org_de.get(id) == () { return "inconnue" }
+        return get_status(id) ?? "preparee"
+    }
+}
+
+flesh AccesAttestations {
+    on planifier(h, campagne, personne) {
+        let id = "{campagne}|{personne}"
+        require campagne_de.get(id) == () else Existe "attestation {id} déjà planifiée"
+        require campagne_de.size < MAX_ATTESTATIONS else Plein "registre des attestations plein"
+        campagne_de.set(id, campagne)
+        personne_de.set(id, personne)
+        return id
+    }
+
+    on attester(h, id, d, motif, par) {
+        let c = campagne_de.get(id)
+        require c != () else Inconnu "attestation {id} inconnue"
+        let p = personne_de.get(id) ?? ""
+        let st = get_status(id) ?? "a_revoir"
+        require st == "a_revoir" else EtatInvalide "attestation {id} {st}"
+        require AccesCampagnes.etat(c) == "ouverte" else Ferme "campagne {c} non ouverte"
+        require d == "maintenir" || motif != "" else MotifRequis "retrait sans justification"
+        require par != p else QuatreYeux "{par} ne peut s'attester lui-même"
+        let org = AccesCampagnes.organisation(c)
+        // Chaque rôle ne vaut que chez un genre d'organisation : agit_pour(par, org) fixe le genre.
+        let role_ok = AccesControle.a_le_role(par, "administrateur_operateur") || AccesControle.a_le_role(par, "autorite") || AccesControle.a_le_role(par, "superviseur") || AccesControle.a_le_role(par, "direction")
+        require role_ok && AccesControle.agit_pour(par, org) else Habilitation "{par} ne peut attester pour {org}"
+        attestant.set(id, par)
+        decidee_le.set(id, h)
+        justification.set(id, motif)
+        let cible = if d == "maintenir" { "confirmee" } else { "retiree" }
+        if d == "maintenir" {
+            transition(id, "a_revoir", "confirmee")
+            let _ = AccesPersonnes.certifier(h, p)
+        } else {
+            transition(id, "a_revoir", "retiree")
+            let _ = AccesPersonnes.suspendre_auto(h, p, "recertification_retiree")
+        }
+        let _ = Journal.noter(h, "acces", par, "attester {id} : {d}")
+        return cible
+    }
+
+    on echoir_campagne(h, campagne) {
+        let ids = campagne_de.entries.filter(e => e.value == campagne && (get_status(e.key) ?? "a_revoir") == "a_revoir").map(e => e.key).sort()
+        for id in ids {
+            transition(id, "a_revoir", "echue")
+            let _ = AccesPersonnes.suspendre_auto(h, personne_de.get(id) ?? "", "recertification_echue")
+        }
+        if len(ids) > 0 {
+            let _ = Journal.noter(h, "acces", "systeme", "echoir campagne {campagne} : {len(ids)} attestations")
+        }
+        return len(ids)
+    }
+
+    on a_revoir_de(campagne, n) {
+        let res_a = campagne_de.entries.filter(e => e.value == campagne && (get_status(e.key) ?? "a_revoir") == "a_revoir").map(e => e.key).sort()
+        return slice(res_a, 0, min(n, len(res_a)))
+    }
+}

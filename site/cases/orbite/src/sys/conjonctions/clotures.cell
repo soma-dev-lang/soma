@@ -1,0 +1,79 @@
+// CONJONCTIONS — analyse après le TCA : un rapprochement qui n'a pas été résolu avant son TCA
+// n'est jamais clos « passé » par simple écoulement du temps. Les deux objets sont réacquis par
+// l'observation ; une perte ou des fragments ouvrent une suspicion de collision, infirmée ici
+// ou confirmée par la déclaration de l'évènement aux ÉVÈNEMENTS (quatre yeux chez eux), qui
+// rappelle ApiConjonctions.constater_collision.
+
+// Analyse d'un rapprochement après son TCA. Instance = l'id du rapprochement (même id que
+// ConjRapprochement : la règle passe / collision suit cet id sans lien).
+skeleton ConjAnalyseTca {
+    const MAX_ANALYSES = 5000000
+    const DELAI_REACQUISITION = 172800000     // 48 h après le TCA pour réacquérir les deux objets
+    memory {
+        ouverte_le: Map<String, Horodatage> [persistent]
+        demandes_de: Map<String, List<String>> [persistent] // demandes de suivi renforcé (ApiObservation)
+        constat_de: Map<String, ConjConstat> [persistent]
+        // évènement de collision déclaré aux ÉVÈNEMENTS : écrit une fois par confirmer, jamais effacé
+        evenement_de: Map<String, String> [persistent]
+        motif_de: Map<String, String> [persistent]
+        conclu_par: Map<String, String> [persistent]        // "h|par[|valideur]"
+        invariant ouverte_le.size <= 5000000
+        invariant len(demandes_de) <= 2
+    }
+    // Cycle de l'analyse.
+    state analyse {
+        initial: ouverte
+        ouverte -> sans_suite        // les deux objets réacquis intacts, aucun fragment
+        ouverte -> suspecte          // objet perdu ou fragments non corrélés près du point de rapprochement
+        ouverte -> confirmee         // collision déclarée d'emblée (fragmentation constatée)
+        suspecte -> confirmee        // collision déclarée aux évènements
+        suspecte -> infirmee         // objets réacquis intacts, fragments rattachés à une autre source
+    }
+    face {
+        // Ouvre l'analyse d'un rapprochement non clos dont le TCA + 1 h est passé : demande un
+        // suivi renforcé des deux objets (priorité = niveau, durée DELAI_REACQUISITION).
+        // Renvoie le nombre de demandes de suivi déposées (0 à 2). Rôle : "systeme".
+        // Refus : Inconnu, Existe (analyse déjà ouverte), Ferme (rapprochement clos), Delai
+        // (TCA + 1 h pas encore passé), Plein (capacité des capteurs), Habilitation.
+        signal ouvrir(h: Horodatage, r: Rapprochement, par: String) -> Int
+            writes ouverte_le, demandes_de
+            calls ConjRapprochement.fiche, ConjRapprochement.etat, ApiObservation.demander_suivi, ApiAcces.a_le_role, Journal.noter
+        // Conclut l'examen initial : "intacts" (les deux objets ont une orbite indépendante
+        // postérieure au TCA, ApiObservation.suivi) ⇒ ouverte -> sans_suite ; "objet_perdu" ou
+        // "fragments" ⇒ ouverte -> suspecte (alerte immédiate aux propriétaires par la façade).
+        // Passé DELAI_REACQUISITION sans réacquisition, le constat ne peut être que
+        // "objet_perdu". Renvoie l'état atteint. Rôle : "systeme" ou "analyste" d'ORBITE.
+        // Refus : Inconnu, EtatInvalide, Incoherent ("intacts" alors qu'un objet n'est pas
+        // réacquis, ou "objet_perdu" alors que les deux le sont), Habilitation.
+        signal conclure(h: Horodatage, r: Rapprochement, constat: ConjConstat, par: String) -> String
+            reads ouverte_le
+            writes constat_de, conclu_par
+            moves ouverte -> sans_suite, ouverte -> suspecte
+            calls ConjRapprochement.fiche, ApiObservation.suivi, ApiAcces.a_le_role, Journal.noter
+        // Confirme la collision (ouverte ou suspecte -> confirmee) sur un évènement déjà déclaré
+        // aux ÉVÈNEMENTS : ApiEvenements.existe(evenement), genre "collision", ses objets sont
+        // ceux du rapprochement. Crée l'analyse si elle n'était pas ouverte (collision déclarée
+        // avant TCA + 1 h). Écrit evenement_de (une fois) avant la transition, qui exige
+        // l'évènement "signale" ou "confirme" chez ÉVÈNEMENTS (règle sur l'arête : déclaré et
+        // non infirmé). Renvoie "confirmee". Appelé par ApiConjonctions.constater_collision.
+        // Rôle : "systeme" ou "analyste" d'ORBITE (les quatre yeux sont pris par
+        // ApiEvenements.declarer). Refus : Inconnu (rapprochement ou évènement), Incoherent
+        // (genre ou objets différents), EtatInvalide (analyse sans_suite ou infirmee), Habilitation.
+        signal confirmer(h: Horodatage, r: Rapprochement, evenement: String, par: String) -> String
+            reads evenement_de
+            writes ouverte_le, evenement_de, conclu_par
+            moves ouverte -> confirmee when EvtEvenements.signale || EvtEvenements.confirme via evenement_de, suspecte -> confirmee when EvtEvenements.signale || EvtEvenements.confirme via evenement_de
+            calls ConjRapprochement.fiche, ApiEvenements.existe, ApiEvenements.genre, ApiEvenements.objets, ApiAcces.a_le_role, Journal.noter
+        // Infirme la suspicion (suspecte -> infirmee) : les deux objets sont réacquis
+        // (ApiObservation.suivi). Renvoie "infirmee". Rôle : "analyste" d'ORBITE.
+        // Geste d'administration. Refus : Inconnu, EtatInvalide, Insuffisant (un objet non
+        // réacquis), MotifRequis, Habilitation.
+        signal infirmer(h: Horodatage, r: Rapprochement, motif: String, par: String) -> String
+            writes motif_de, conclu_par
+            moves suspecte -> infirmee
+            calls ConjRapprochement.fiche, ApiObservation.suivi, ApiAcces.a_le_role, Journal.noter
+        // "ouverte", "sans_suite", "suspecte", "confirmee", "infirmee" ; "inconnue".
+        signal etat(r: Rapprochement) -> String
+            reads analyse, ouverte_le
+    }
+}

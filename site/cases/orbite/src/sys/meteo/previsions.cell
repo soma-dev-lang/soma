@@ -1,0 +1,107 @@
+// meteo — PRÉVISIONS. Un centre de prévision qualifié dépose, pour une fenêtre future, le kp
+// maximal attendu et le flux f107 moyen attendu. Une prévision publiée remplace la précédente
+// du même centre ; à l'échéance de sa fenêtre elle est confrontée aux mesures (écart), ce qui
+// donne la fiabilité glissante du centre. Seule une prévision publiée d'un centre fiable peut
+// faire émettre une alerte de tempête (MetTempete).
+
+// Motif du rejet d'une prévision bien formée : "source_inactive" (centre non actif),
+// "nature" (la source n'est pas un centre de prévision), "fenetre_passee" (fin ≤ h).
+cell type MetMotifRejetPrev = String where value == "source_inactive" || value == "nature" || value == "fenetre_passee"
+
+// Prévisions : id fourni par le centre, "P-<source>-<n>".
+skeleton MetPrevision {
+    const MAX_PREVISIONS = 2000000
+    const HORIZON_MAX = 259200000        // 72 h entre h et la fin de fenêtre
+    const FENETRE_MIN = 10800000         // 3 h
+    const ECART_JUSTE = 10               // |kp prévu − kp observé| ≤ 1 : prévision juste
+    const FIABILITE_FENETRE = 7776000000 // 90 j glissants
+    const FIABILITE_MIN = 50             // % en dessous duquel un centre n'émet pas d'alerte seul
+    const FIN_DES_TEMPS = 32503680000000  // an 3000 : borne d'une fin pas encore écrite
+    memory {
+        source_prev: Map<String, String> [persistent]     // prévision → centre ; écrit une fois par deposer (lien des règles)
+        emise_le: Map<String, Horodatage> [persistent]    // prévision → instant de dépôt
+        debut: Map<String, Horodatage> [persistent]       // prévision → début de la fenêtre prévue
+        fin: Map<String, Horodatage> [persistent]         // prévision → fin de la fenêtre prévue
+        kp_prevu: Map<String, Int> [persistent]           // prévision → kp maximal attendu, dixièmes
+        f107_prevu: Map<String, Int> [persistent]         // prévision → f107 moyen attendu, dixièmes de sfu
+        motif_rejet: Map<String, MetMotifRejetPrev> [persistent]  // prévision rejetée → motif
+        remplacee_par: Map<String, String> [persistent]   // prévision remplacée → celle qui la remplace
+        ecart: Map<String, Int> [persistent]              // prévision vérifiée → |kp prévu − kp max observé|, dixièmes
+        courante_de: Map<String, String> [persistent]     // centre → sa prévision publiée en cours
+        invariant source_prev.size <= MAX_PREVISIONS
+        invariant kp_prevu >= 0 && kp_prevu <= 90
+        invariant f107_prevu >= 0 && f107_prevu <= 10000
+        invariant ecart >= 0 && ecart <= 90
+        invariant (debut ?? 0) < (fin ?? FIN_DES_TEMPS)
+    }
+    // Cycle de vie d'une prévision (id = prévision).
+    state prevision {
+        initial: recue
+        recue -> publiee          // deposer : centre actif, fenêtre future
+        recue -> rejetee          // deposer : motif dans motif_rejet
+        publiee -> remplacee      // deposer (une plus récente du même centre)
+        publiee -> verifiee       // verifier : fenêtre échue, écart mesuré
+        publiee -> retiree        // retirer : erreur reconnue par le centre ou un analyste
+    }
+    face {
+        // Dépose une prévision pour la fenêtre [de, a] : kp maximal attendu (dixièmes) et f107
+        // moyen (dixièmes de sfu). Publiée, elle remplace la prévision courante du centre ;
+        // sinon rejetée avec motif (conservée). Renvoie l'état atteint ("publiee" ou "rejetee").
+        // Rôle exigé : "capteur" du fournisseur du centre (ApiAcces.agit_pour) ou "systeme"
+        // (prévision publique ingérée). Refus : Existe, Inconnu (source), HorsBornes (kp > 90,
+        // fenêtre < 3 h, fin à plus de 72 h de h), Incoherent (a ≤ de), Plein, Habilitation.
+        signal deposer(h: Horodatage, prevision: String, source: String, de: Horodatage, a: Horodatage, kp: Int, f107: Int, par: String) -> String
+            requires kp >= 0 && f107 >= 0
+            writes source_prev, emise_le, debut, fin, kp_prevu, f107_prevu, motif_rejet, remplacee_par, courante_de
+            moves recue -> publiee when MetSource.active via source_prev, recue -> rejetee, publiee -> remplacee
+            calls MetSource.active, MetSource.nature, MetSource.fournisseur_de, MetSource.noter_reception, MetSource.mettre_en_ecart, ApiAcces.a_le_role, ApiAcces.agit_pour, Journal.noter
+        // Confronte une prévision publiée dont la fenêtre est échue au kp maximal observé
+        // (MetMesure.kp_max_entre) et enregistre l'écart. Sans mesure dans la fenêtre, l'écart
+        // n'est pas calculable : la prévision reste publiée et le refus est Inconnu. Renvoie
+        // l'écart en dixièmes. Rôle exigé : "systeme". Refus : Inconnu, EtatInvalide (non
+        // publiée, ou fenêtre non échue à h), Habilitation.
+        signal verifier(h: Horodatage, prevision: String, par: String) -> Int
+            writes ecart, courante_de
+            reads debut, fin, kp_prevu
+            moves publiee -> verifiee
+            calls MetMesure.kp_max_entre, ApiAcces.a_le_role, Journal.noter
+        // Retire une prévision publiée erronée ; l'alerte qu'elle a fait émettre n'est pas
+        // annulée d'office (MetTempete.annuler). Renvoie "retiree". Rôle exigé : "capteur" du
+        // fournisseur du centre, ou "analyste" d'ORBITE. Refus : Inconnu, EtatInvalide,
+        // MotifRequis, Habilitation.
+        signal retirer(h: Horodatage, prevision: String, motif: String, par: String) -> String
+            writes courante_de
+            reads source_prev
+            moves publiee -> retiree
+            calls MetSource.fournisseur_de, ApiAcces.a_le_role, ApiAcces.agit_pour, Journal.noter
+        // Vrai si la prévision est "publiee".
+        signal publiee(prevision: String) -> Bool
+            reads prevision
+        // Prévision publiée la plus alarmante dont la fenêtre recoupe [h, h + horizon_ms], parmi
+        // les centres actifs de fiabilité ≥ 50 % ; "" si aucune. Sert à l'émission d'alerte.
+        signal pire_dans(h: Horodatage, horizon_ms: Duree) -> String
+            reads prevision, courante_de, debut, fin, kp_prevu
+            calls MetSource.centres_actifs, fiabilite
+        // Kp maximal attendu (dixièmes) et début de fenêtre d'une prévision. Refus : Inconnu.
+        signal kp_attendu(prevision: String) -> MetKp
+            reads kp_prevu
+        signal debut_de(prevision: String) -> Horodatage
+            reads debut
+        signal fin_de(prevision: String) -> Horodatage
+            reads fin
+        // Flux F10.7 moyen prévu sur [periode_debut, periode_fin], en sfu (dixièmes / 10, arrondi) : moyenne des
+        // f107 des prévisions publiées des centres actifs dont la fenêtre recoupe la période,
+        // pondérée par le recouvrement (façade ApiMeteo.f107_prevu, pour reentrees).
+        // Refus : Incoherent (periode_fin ≤ periode_debut), Perime (aucune prévision publiée ne recoupe la période).
+        signal f107_moyen(periode_debut: Horodatage, periode_fin: Horodatage) -> Int
+            reads prevision, debut, fin, f107_prevu, courante_de
+            calls MetSource.centres_actifs
+        // Prévisions publiées dont la fenêtre est échue à `h` (au plus 1 000) : à vérifier par la ronde.
+        signal echues(h: Horodatage) -> List<String>
+            reads prevision, fin
+        // Part (%) des prévisions vérifiées du centre sur 90 j glissants dont l'écart est ≤ 10
+        // dixièmes ; 100 si moins de 10 prévisions vérifiées (centre neuf présumé fiable).
+        signal fiabilite(source: String, h: Horodatage) -> Pourcent
+            reads prevision, source_prev, emise_le, ecart
+    }
+}

@@ -1,0 +1,115 @@
+// Corps de EscVeille : armement des veilles, ronde (filet de la propriété 5).
+flesh EscVeille {
+    on armer(h, r, par) {
+        require ApiAcces.a_le_role(par, "systeme") || ApiAcces.a_le_role(par, "analyste") else Habilitation "{par} n'arme pas de veille"
+        let ecj = ApiConjonctions.etat(r)
+        require ecj != "inconnu" else Inconnu "rapprochement inconnu : {r}"
+        require ecj != "resolu" && ecj != "passe" && ecj != "collision" else Ferme "rapprochement {r} clos ({ecj})"
+        if armee_a.get(r) != () { return get_status(r) ?? "inactive" }
+        require armee_a.size < MAX_VEILLES else Plein "plafond de {MAX_VEILLES} veilles atteint"
+        derniere_ronde.set(r, h)
+        armee_a.set(r, h)
+        armee_par.set(r, par)
+        transition(r, "inactive", "surveillee")
+        let _ = Journal.noter(h, "escalade", par, "veille armee sur {r}")
+        return "surveillee"
+    }
+    on ronde(h) {
+        let compte = 0
+        // (1) armement d'office des urgents de niveau 3.
+        for u in ApiConjonctions.urgents(h, HORIZON_VEILLE_MS, 3) {
+            if derniere_ronde.get(u) == () {
+                let a = try { EscVeille.armer(h, Rapprochement(u), "systeme") }
+                if a.error == () { compte = compte + 1 }
+            }
+        }
+        // (2) et (3) : chaque veille non close.
+        for r0 in derniere_ronde.keys {
+            let r = Rapprochement(r0)
+            let st = get_status(r0) ?? "inactive"
+            if st == "surveillee" || st == "couverte" {
+                let ecj_t = try { ApiConjonctions.etat(r) }
+                let ecj = if ecj_t.error == () { ecj_t.value } else { "inconnu" }
+                if ecj == "resolu" || ecj == "passe" || ecj == "collision" {
+                    if st == "surveillee" { transition(r0, "surveillee", "close") } else { transition(r0, "couverte", "close") }
+                    compte = compte + 1
+                    let _ = Journal.noter(h, "escalade", "systeme", "veille {r0} close ({ecj})")
+                } else {
+                    let dec_t = try { ApiCoordination.decidee(r) }
+                    let dec = dec_t.error == () && dec_t.value
+                    let st2 = st
+                    if dec && st == "surveillee" {
+                        transition(r0, "surveillee", "couverte")
+                        couverte_a.set(r0, h)
+                        st2 = "couverte"
+                        compte = compte + 1
+                        let _ = Journal.noter(h, "escalade", "systeme", "veille {r0} couverte")
+                    } else if !dec && st == "couverte" {
+                        transition(r0, "couverte", "surveillee")
+                        st2 = "surveillee"
+                        compte = compte + 1
+                        let _ = Journal.noter(h, "escalade", "systeme", "veille {r0} de nouveau surveillee (coordination rouverte)")
+                    }
+                    derniere_ronde.set(r0, h)
+                    if st2 == "surveillee" && (ecj == "alerte" || ecj == "en_coordination") {
+                        compte = compte + _ouvrir_contre_muets(h, r0)
+                    }
+                }
+            }
+        }
+        return compte
+    }
+    on couverte(r) {
+        return (get_status(r) ?? "inactive") == "couverte"
+    }
+    on veilles(par) {
+        require ApiAcces.a_le_role(par, "analyste") || ApiAcces.a_le_role(par, "superviseur") || ApiAcces.a_le_role(par, "direction") else Habilitation "{par} ne lit pas les veilles"
+        let res_v = []
+        for e in armee_a.entries {
+            let st = get_status(e.key) ?? "inactive"
+            if st != "close" {
+                let ap = armee_par.get(e.key) ?? ""
+                let dr = derniere_ronde.get(e.key) ?? ""
+                let cv = couverte_a.get(e.key) ?? ""
+                res_v.push("{e.key} | {st} | {e.value} | {ap} | {dr} | {cv}")
+            }
+        }
+        return res_v
+    }
+    // Ouvre d'office les dossiers d'une veille surveillée : contre les muets si la coordination est
+    // ouverte ; contre les propriétaires capables de manœuvrer si elle ne l'est toujours pas à moins
+    // de SEUIL_SANS_COORDINATION_MS de l'échéance finale. Renvoie le nombre de dossiers ouverts.
+    on _ouvrir_contre_muets(h: Horodatage, r0: String) {
+        let r = Rapprochement(r0)
+        let cibles_v = []
+        let coord = ApiCoordination.etat(r)
+        if coord != "inconnue" {
+            let m = try { ApiCoordination.muets(r) }
+            if m.error == () {
+                for o in m.value { if !contains(cibles_v, o) { cibles_v.push(o) } }
+            }
+        } else {
+            let fin = EscBareme.echeance_finale(r)
+            if to_int(fin) - to_int(h) < SEUIL_SANS_COORDINATION_MS {
+                for ob in ApiConjonctions.objets(r) {
+                    if ApiRef.peut_manoeuvrer(Objet(ob)) {
+                        let p = to_string(ApiRef.proprietaire(Objet(ob)))
+                        if p != "inconnu" && !contains(cibles_v, p) { cibles_v.push(p) }
+                    }
+                }
+            }
+        }
+        let ouverts = 0
+        for c in cibles_v {
+            if EscDossiers.dossier_actif(r, Org(c)) == "" {
+                let o = try { EscDossiers.ouvrir(h, r, Org(c), "silence constate par la veille", "systeme") }
+                if o.error == () {
+                    ouverts = ouverts + 1
+                } else {
+                    let _ = Journal.noter(h, "escalade", "systeme", "ouverture d'office contre {c} sur {r0} refusee : {o.kind}")
+                }
+            }
+        }
+        return ouverts
+    }
+}

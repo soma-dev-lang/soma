@@ -1,0 +1,233 @@
+// Corps de manoeuvres : anomalies de plan (ManAnomalie) et manœuvres non annoncées (ManNonAnnoncee).
+flesh ManAnomalie {
+    on ouvrir(h, plan, nature, description, par) {
+        require nature_de.get(plan) == () else Existe "anomalie de {plan} déjà ouverte"
+        require ouvertes.size < MAX_ANOMALIES else Plein "trop d'anomalies ouvertes"
+        let f = ManPlan.fiche(plan)
+        let ech = h + DELAI_EXPLICATION_MS
+        echeance_de.set(plan, ech)
+        ouverte_le.set(plan, h)
+        nature_de.set(plan, nature)
+        ouvertes.push(plan)
+        let r_inv = try { ApiEphemerides.invalider(h, f.objet, "anomalie de manoeuvre {plan} ({nature})", "systeme") }
+        if r_inv.error != () {
+            Journal.noter(h, "manoeuvres", "systeme", "anomalie {plan} : invalidation refusée ({r_inv.kind})")
+        }
+        let r_suivi = try { ApiObservation.demander_suivi(h, f.objet, 3, DELAI_EXPLICATION_MS, "anomalie de manoeuvre {plan}", "systeme") }
+        if r_suivi.error != () {
+            Journal.noter(h, "manoeuvres", "systeme", "anomalie {plan} : suivi renforcé refusé ({r_suivi.kind})")
+        }
+        for r in ApiConjonctions.ouverts_de(f.objet) {
+            let rr = Rapprochement(r)
+            if ApiCoordination.arretee(rr) {
+                ApiCoordination.rouvrir(h, rr, "anomalie de manoeuvre {plan} sur {f.objet}", "systeme")
+            }
+        }
+        Journal.noter(h, "manoeuvres", par, "anomalie {nature} ouverte sur le plan {plan}, explication attendue avant {ech}")
+        return ech
+    }
+
+    on expliquer(h, plan, explication, depot, par) {
+        let ouv = ouverte_le.get(plan)
+        require ouv != () else Inconnu "aucune anomalie pour {plan}"
+        let f = ManPlan.fiche(plan)
+        let proprio = ApiRef.proprietaire(f.objet)
+        require (ApiAcces.a_le_role(par, "dynamicien") || ApiAcces.a_le_role(par, "chef_de_mission")) && ApiAcces.agit_pour(par, proprio) else Habilitation "{par} n'agit pas pour {proprio}"
+        let s = get_status(plan) ?? "ouverte"
+        require s == "ouverte" else EtatInvalide "anomalie de {plan} {s}"
+        let ech = echeance_de.get(plan) ?? 0
+        require h <= ech else Delai "échéance d'explication {ech} passée"
+        require explication != "" else MotifRequis "explication vide"
+        let r_der = try { ApiEphemerides.derniere(f.objet) }
+        require r_der.error == () && r_der.value == depot else Perime "{depot} n'est pas le dernier dépôt de {f.objet}"
+        require ApiEphemerides.depot_valide(depot) else Perime "dépôt {depot} non validé"
+        require to_int(ApiEphemerides.age(f.objet, h)) < to_int(h) - to_int(ouv) else Perime "dépôt {depot} antérieur à l'anomalie"
+        transition(plan, "ouverte", "en_analyse")
+        explication_de.set(plan, explication)
+        depot_corrige_de.set(plan, depot)
+        Journal.noter(h, "manoeuvres", par, "anomalie {plan} expliquée, dépôt corrigé {depot}")
+        return "en_analyse"
+    }
+
+    on lever(h, plan, conclusion, par, valideur) {
+        require ApiAcces.a_le_role(par, "analyste") else Habilitation "levée par un analyste d'ORBITE"
+        require ApiAcces.quatre_yeux(par, valideur) else QuatreYeux "levée contresignée par un superviseur distinct"
+        let s = get_status(plan) ?? "ouverte"
+        require s == "en_analyse" else EtatInvalide "anomalie de {plan} {s}"
+        require conclusion != "" else MotifRequis "conclusion vide"
+        let f = ManPlan.fiche(plan)
+        let r_ec = try { ApiObservation.ecart_declare(f.objet) }
+        // 2 000 m = ManVerification.ECART_MAX_M (constante d'une autre cell : recopiée).
+        require r_ec.error == () && to_int(r_ec.value) <= 2000 else Incoherent "écart observé hors tolérance ou inconnu"
+        for r in ApiConjonctions.ouverts_de(f.objet) {
+            let rr = Rapprochement(r)
+            let r_niv = try { ApiConjonctions.niveau(rr) }
+            let niv = if r_niv.error == () { to_int(r_niv.value) } else { 1 }
+            require niv < 3 || ApiCoordination.arretee(rr) else Incoherent "rapprochement {r} de niveau 3 sans coordination arrêtée"
+        }
+        transition(plan, "en_analyse", "levee")
+        let dep = depot_corrige_de.get(plan) ?? ""
+        conclusion_de.set(plan, conclusion)
+        _oter(plan)
+        Journal.noter(h, "manoeuvres", par, "anomalie {plan} levée (valideur {valideur}, dépôt {dep}) : {conclusion}")
+        return "levee"
+    }
+
+    on transmettre(h, plan, motif, par) {
+        let ech = echeance_de.get(plan)
+        require ech != () else Inconnu "aucune anomalie pour {plan}"
+        let s = get_status(plan) ?? "ouverte"
+        if par == "systeme" {
+            require ApiAcces.a_le_role(par, "systeme") else Habilitation "systeme"
+            require s == "ouverte" else EtatInvalide "anomalie de {plan} {s}"
+            require h > ech else Delai "échéance d'explication {ech} non atteinte"
+        } else {
+            require ApiAcces.a_le_role(par, "analyste") else Habilitation "transmission par un analyste d'ORBITE"
+            require s == "ouverte" || s == "en_analyse" else EtatInvalide "anomalie de {plan} {s}"
+        }
+        require motif != "" else MotifRequis "transmission sans motif"
+        let f = ManPlan.fiche(plan)
+        transition(plan, s, "transmise")
+        let id_a = ApiEvenements.anomalie(h, f.objet, "manoeuvre", "plan {plan} : {motif}", par)
+        if explication_de.get(plan) == () {
+            let r_p = try { ApiRef.proprietaire(f.objet) }
+            let op = if r_p.error == () { r_p.value } else { f.proprietaire }
+            ApiConformite.constater(h, op, "anomalie_manoeuvre_inexpliquee", 2, plan, "systeme")
+        }
+        conclusion_de.set(plan, id_a)
+        _oter(plan)
+        Journal.noter(h, "manoeuvres", par, "anomalie {plan} transmise en anomalie d'objet {id_a} : {motif}")
+        return id_a
+    }
+
+    on echues(h, n) {
+        let res_a = []
+        for p in ouvertes {
+            if len(res_a) >= n { break }
+            let s = get_status(p) ?? "ouverte"
+            if s == "ouverte" && h > (echeance_de.get(p) ?? 0) { res_a.push(p) }
+        }
+        return res_a
+    }
+
+    on etat(plan) {
+        if nature_de.get(plan) == () { return "" }
+        return get_status(plan) ?? "ouverte"
+    }
+
+    on _oter(plan: String) {
+        let i = index_of(ouvertes, plan)
+        if i >= 0 { ouvertes.delete(i) }
+    }
+}
+
+flesh ManNonAnnoncee {
+    on constater(h, objet, depuis, par) {
+        require ApiAcces.a_le_role(par, "systeme") || ApiAcces.a_le_role(par, "analyste") else Habilitation "constat par systeme ou analyste d'ORBITE"
+        let id_c = "NA:{objet}:{depuis}"
+        require objet_de.get(id_c) == () else Doublon "constat {id_c} déjà fait"
+        let proprio = ApiRef.proprietaire(objet)
+        require depuis <= h else Conflit "intervalle d'observation inversé"
+        let couvrant = ManPlan.plan_couvrant(objet, depuis)
+        let couvrant2 = if couvrant == "" { ManPlan.plan_couvrant(objet, h) } else { couvrant }
+        require couvrant2 == "" else Conflit "poussée couverte par le plan {couvrant2}"
+        require en_cours.size < MAX_CONSTATS else Plein "trop de constats en cours"
+        let r_inv = try { ApiEphemerides.invalider(h, objet, "manoeuvre non annoncée", "systeme") }
+        if r_inv.error != () {
+            Journal.noter(h, "manoeuvres", "systeme", "constat {id_c} : invalidation refusée ({r_inv.kind})")
+        }
+        // Gravité AVANT les rouvertures (la désignation se lit telle qu'elle était).
+        let grav = if ManProgramme.conforme(objet, h) { 1 } else { 2 }
+        let a_rouvrir = []
+        for r in ApiConjonctions.ouverts_de(objet) {
+            let rr = Rapprochement(r)
+            let r_niv = try { ApiConjonctions.niveau(rr) }
+            let niv = if r_niv.error == () { to_int(r_niv.value) } else { 1 }
+            let arr = ApiCoordination.arretee(rr)
+            let des = ""
+            if arr {
+                let r_des = try { ApiCoordination.designe(rr, "systeme") }
+                if r_des.error == () { des = to_string(r_des.value) }
+                a_rouvrir.push(r)
+            }
+            if niv == 3 && des != to_string(objet) { grav = 3 }
+        }
+        for r in a_rouvrir {
+            ApiCoordination.rouvrir(h, Rapprochement(r), "manoeuvre non annoncée de {objet}", "systeme")
+        }
+        echeance_de.set(id_c, h + DELAI_REGULARISATION_MS)
+        constate_le.set(id_c, h)
+        depuis_de.set(id_c, depuis)
+        objet_de.set(id_c, objet)
+        operateur_de.set(id_c, proprio)
+        en_cours.push(id_c)
+        if to_string(proprio) != "inconnu" {
+            let id_m = ApiConformite.constater(h, proprio, "manoeuvre_non_annoncee", Gravite(grav), id_c, "systeme")
+            manquement_de.set(id_c, id_m)
+            let r_n = try { ApiPasserelle.notifier(h, proprio, "", "manoeuvre_non_annoncee", "Manœuvre non annoncée constatée sur {objet} depuis {depuis} : déposez une éphéméride qui l'intègre sous 24 h.", Niveau(grav)) }
+            if r_n.error != () {
+                Journal.noter(h, "manoeuvres", "systeme", "constat {id_c} : avis au propriétaire refusé ({r_n.kind})")
+            }
+            ManIndicateurs.compter(h, proprio, "non_annoncee")
+        }
+        Journal.noter(h, "manoeuvres", par, "manœuvre non annoncée {id_c} constatée, gravité {grav}")
+        return id_c
+    }
+
+    on regulariser(h, constat, depot, par) {
+        let objet = objet_de.get(constat)
+        require objet != () else Inconnu "constat {constat} inconnu"
+        let op = operateur_de.get(constat) ?? ""
+        require ApiAcces.a_le_role(par, "dynamicien") && ApiAcces.agit_pour(par, op) else Habilitation "{par} n'est pas dynamicien de {op}"
+        let s = get_status(constat) ?? "constatee"
+        require s == "constatee" else EtatInvalide "constat {constat} {s}"
+        let ech = echeance_de.get(constat) ?? 0
+        require h <= ech else Delai "échéance de régularisation {ech} passée"
+        let cle = constate_le.get(constat) ?? 0
+        require ApiEphemerides.depot_valide(depot) else Perime "dépôt {depot} non validé"
+        let r_der = try { ApiEphemerides.derniere(objet) }
+        require r_der.error == () && r_der.value == depot else Perime "{depot} n'est pas le dernier dépôt de {objet}"
+        require to_int(ApiEphemerides.age(objet, h)) < to_int(h) - to_int(cle) else Perime "dépôt {depot} antérieur au constat"
+        require ApiEphemerides.avec_manoeuvres(depot) else Perime "dépôt {depot} sans la poussée"
+        transition(constat, "constatee", "regularisee")
+        depot_de.set(constat, depot)
+        _oter(constat)
+        Journal.noter(h, "manoeuvres", par, "constat {constat} régularisé par le dépôt {depot}")
+        return "regularisee"
+    }
+
+    on forclore(h, constat, par) {
+        require ApiAcces.a_le_role(par, "systeme") else Habilitation "forclusion interne"
+        let objet = objet_de.get(constat)
+        require objet != () else Inconnu "constat {constat} inconnu"
+        let s = get_status(constat) ?? "constatee"
+        require s == "constatee" else EtatInvalide "constat {constat} {s}"
+        let ech = echeance_de.get(constat) ?? 0
+        require h > ech else Delai "échéance de régularisation {ech} non atteinte"
+        transition(constat, "constatee", "persistante")
+        _oter(constat)
+        let id_a = ApiEvenements.anomalie(h, objet, "manoeuvres_non_annoncees", "constat {constat} non régularisé", "systeme")
+        Journal.noter(h, "manoeuvres", par, "constat {constat} persistant : anomalie d'objet {id_a}")
+        return id_a
+    }
+
+    on echus(h, n) {
+        let res_c = []
+        for c in en_cours {
+            if len(res_c) >= n { break }
+            let s = get_status(c) ?? "constatee"
+            if s == "constatee" && h > (echeance_de.get(c) ?? 0) { res_c.push(c) }
+        }
+        return res_c
+    }
+
+    on etat(constat) {
+        if objet_de.get(constat) == () { return "inconnu" }
+        return get_status(constat) ?? "constatee"
+    }
+
+    on _oter(constat: String) {
+        let i = index_of(en_cours, constat)
+        if i >= 0 { en_cours.delete(i) }
+    }
+}

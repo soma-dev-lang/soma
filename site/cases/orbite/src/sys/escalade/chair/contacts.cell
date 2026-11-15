@@ -1,0 +1,52 @@
+// Corps de EscContacts : qui prévenir à chaque échelon, et émission des messages.
+flesh EscContacts {
+    on prevenir(h, dossier, r, op, echelon, echeance) {
+        let cibles = _cibles(h, to_string(r), to_string(op), to_int(echelon))
+        let texte = "rapprochement {r}, echelon {echelon}, repondez avant {echeance}"
+        let emis = 0
+        for c in cibles {
+            let _ = EscRelances.emettre(h, dossier, r, Org(c[0]), c[1], echelon, texte)
+            emis = emis + 1
+        }
+        if emis == 0 && to_int(echelon) <= 2 {
+            let _ = ApiConformite.constater(h, op, "escalade_sans_contact", 2, dossier, "systeme")
+        }
+        return emis
+    }
+    on destinataires(h, r, op, echelon, par) {
+        let orbite_ok = ApiAcces.a_le_role(par, "analyste") || ApiAcces.a_le_role(par, "superviseur")
+        require orbite_ok || ApiAcces.agit_pour(par, op) else Habilitation "{par} ne lit pas les contacts de {op}"
+        let res_d = []
+        for c in _cibles(h, to_string(r), to_string(op), to_int(echelon)) {
+            res_d.push("{c[0]} | {c[1]}")
+        }
+        return res_d
+    }
+    // [Org, personne] à joindre à l'échelon `e` du dossier (r, op).
+    on _cibles(h: Horodatage, r: String, op: String, e: Int) {
+        let cibles_c = []
+        if e <= 3 {
+            let defaut = if e == 3 { to_string(ApiRef.org_de_etat(ApiRef.etat_de(Org(op)))) } else { op }
+            for p in ApiOperateurs.contacts(Org(op), e, h) {
+                let emp = try { ApiAcces.employeur(p) }
+                let org_p = if emp.error == () { to_string(emp.value) } else { defaut }
+                cibles_c.push([org_p, p])
+            }
+        } else {
+            let orb = to_string(ApiRef.orbite())
+            cibles_c.push([orb, ""])
+            let deja = [orb]
+            for ob in ApiConjonctions.objets(Rapprochement(r)) {
+                let p = to_string(ApiRef.proprietaire(Objet(ob)))
+                if p != "inconnu" && p != orb {
+                    let oe = try { ApiRef.org_de_etat(ApiRef.etat_de(Org(p))) }
+                    if oe.error == () && !contains(deja, to_string(oe.value)) {
+                        deja.push(to_string(oe.value))
+                        cibles_c.push([to_string(oe.value), ""])
+                    }
+                }
+            }
+        }
+        return cibles_c
+    }
+}

@@ -1,0 +1,162 @@
+// observation — TÂCHES DE SUIVI : une demande d'observation d'un objet (rapprochement, rentrée,
+// fragmentation, vérification de manœuvre, nouvel objet, routine) pendant une durée, avec une
+// priorité (Niveau : 3 passe avant tout). Une tâche est affectée à UN capteur pour toute sa vie :
+// si le capteur tombe, la tâche est « interrompue » et une tâche de relève est créée sur un autre
+// capteur (origine_de garde la filiation). La capacité est bornée par capteur ; une demande de
+// priorité 3 préempte la tâche la moins prioritaire plutôt que d'être refusée.
+
+// Motif d'une tâche de suivi.
+cell type ObsMotifTache = String where value == "rapprochement" || value == "rentree" || value == "fragmentation" || value == "verification_manoeuvre" || value == "nouvel_objet" || value == "lancement" || value == "routine"
+
+skeleton ObsTaches {
+    const MAX_TACHES = 200000
+    // Tâches simultanées (affectées ou en cours) qu'un capteur peut porter.
+    const TACHES_PAR_CAPTEUR = 50
+    // Durée maximale d'une tâche : 14 jours.
+    const DUREE_MAX_MS = 1209600000
+    // Délai d'affectation au-delà duquel une tâche demandée expire : 2 h.
+    const DELAI_AFFECTATION_MS = 7200000
+    memory {
+        objet_de: Map<String, Objet> [persistent]           // tâche → objet suivi ; écrit une fois par creer
+        priorite_de: Map<String, Niveau> [persistent]        // tâche → priorité (3 la plus haute)
+        motif_de: Map<String, ObsMotifTache> [persistent]    // tâche → motif
+        detail_de: Map<String, String> [persistent]          // tâche → justification libre (ex. "CJ-812", "rentrée OBJ-77")
+        demandee_le: Map<String, Horodatage> [persistent]    // tâche → horodatage de la demande, ms
+        fin_de: Map<String, Horodatage> [persistent]         // tâche → fin du suivi demandé, ms (demandee_le + durée)
+        demandeur_de: Map<String, String> [persistent]       // tâche → auteur de la demande ("systeme" pour une relève)
+        capteur_de: Map<String, String> [persistent]         // tâche → capteur ; écrit une fois par affecter, jamais effacé (lien de règle)
+        origine_de: Map<String, String> [persistent]         // tâche de relève → tâche interrompue qu'elle remplace
+        nb_mesures: Map<String, Int> [persistent]            // tâche → mesures validées obtenues
+        charge_de: Map<String, Int> [persistent]             // capteur → tâches affectées ou en cours
+        compteur: Map<String, Int> [persistent]              // "taches" → dernier numéro attribué
+        invariant objet_de.size <= MAX_TACHES
+        invariant priorite_de.size <= MAX_TACHES
+        invariant motif_de.size <= MAX_TACHES
+        invariant detail_de.size <= MAX_TACHES
+        invariant demandee_le.size <= MAX_TACHES
+        invariant fin_de.size <= MAX_TACHES
+        invariant demandeur_de.size <= MAX_TACHES
+        invariant capteur_de.size <= MAX_TACHES
+        invariant origine_de.size <= MAX_TACHES
+        invariant nb_mesures.size <= MAX_TACHES
+        invariant nb_mesures >= 0
+        invariant charge_de >= 0 && charge_de <= TACHES_PAR_CAPTEUR
+        invariant compteur.size <= 1
+        invariant compteur >= 0 && compteur <= MAX_TACHES
+        invariant (demandee_le ?? 0) <= (fin_de ?? 0)
+    }
+    // Cycle d'une tâche (id = "TS-<n>").
+    state tache {
+        initial: demandee
+        demandee -> affectee       // affecter : capteur choisi (fixé pour la vie de la tâche)
+        affectee -> en_cours       // demarrer : première passe, capteur en service
+        en_cours -> terminee       // terminer : fin atteinte ou objectif rempli
+        affectee -> interrompue    // interrompre_capteur, preempter : capteur tombé ou priorité supérieure
+        en_cours -> interrompue    // interrompre_capteur, preempter
+        demandee -> expiree        // expirer : aucun capteur disponible dans DELAI_AFFECTATION_MS
+        affectee -> expiree        // expirer : fin atteinte sans passe
+        demandee -> annulee        // annuler
+        affectee -> annulee        // annuler
+        en_cours -> annulee        // annuler
+    }
+    face {
+        // Demande un suivi de `objet` (catalogué : ApiRef.etat_objet ≠ "inconnu") pendant `duree` ms
+        // (≤ DUREE_MAX_MS) avec la priorité `priorite`, puis tente l'affectation immédiate au capteur
+        // disponible le moins chargé couvrant le régime de l'objet (ObsCapteurs.disponibles).
+        // Sans capteur libre : priorité 3 ⇒ préemption de la tâche affectée de plus basse priorité
+        // (preempter) ; sinon refus Plein (ObsCouverture.peut_servir dit d'avance si le régime est
+        // saturé ou aveugle). Renvoie l'id "TS-<n>". Une tâche active du même objet de priorité
+        // au moins égale sert la demande (prolongée jusqu'à h + duree si besoin) : son id est rendu.
+        // Rôle exigé : "analyste" d'ORBITE ou "systeme" (demandes des autres sous-systèmes).
+        // `detail` : justification libre, non vide (identifiant du rapprochement, de la rentrée…).
+        // Refus : Inconnu (objet), HorsBornes (duree nulle ou > DUREE_MAX_MS), MotifRequis (detail
+        // vide), Habilitation, Plein (capacité des capteurs).
+        signal demander(h: Horodatage, objet: Objet, priorite: Niveau, duree: Duree, motif: ObsMotifTache, detail: String, par: String) -> String
+            reads tache
+            writes objet_de, priorite_de, motif_de, detail_de, demandee_le, fin_de, demandeur_de, compteur
+            calls ApiRef.etat_objet, ApiRef.regime, ApiAcces.a_le_role, ObsCouverture.peut_servir, ObsCapteurs.disponibles, affecter, preempter, Journal.noter
+        // Affecte une tâche demandée à `capteur` (en service, couvrant le régime, charge
+        // < TACHES_PAR_CAPTEUR). Seul écrivain de capteur_de (une fois). Renvoie "affectee".
+        // Rôle exigé : "analyste" d'ORBITE ou "systeme". Refus : Inconnu, EtatInvalide, NonEligible
+        // (capteur hors service ou régime non couvert), Plein (capteur saturé), Habilitation.
+        signal affecter(h: Horodatage, tache: String, capteur: String, par: String) -> String
+            reads objet_de
+            writes capteur_de, charge_de
+            moves demandee -> affectee
+            calls ObsCapteurs.couvre, ApiRef.regime, ApiAcces.a_le_role, Journal.noter
+        // Première passe du capteur sur l'objet (appelé par ObsMesures.valider). Renvoie "en_cours".
+        // Refus : Inconnu, EtatInvalide. Le capteur lié doit être en service.
+        signal demarrer(h: Horodatage, tache: String) -> String
+            reads capteur_de
+            moves affectee -> en_cours when ObsCapteurs.en_service via capteur_de
+            calls ObsCapteurs.etat
+        // Compte une mesure validée pour la tâche (appelé par ObsMesures.valider). Renvoie le total.
+        // Refus : Inconnu.
+        signal compter(tache: String) -> Int
+            reads objet_de
+            writes nb_mesures
+        // Clôt une tâche en cours dont la fin est atteinte (h ≥ fin_de) ou dont l'objectif est rempli
+        // (`suffisant`, jugé par l'analyste). Libère la charge du capteur. Renvoie "terminee".
+        // Rôle exigé : "analyste" d'ORBITE ou "systeme". Refus : Inconnu, EtatInvalide, Delai (fin non
+        // atteinte et pas suffisant), Habilitation.
+        signal terminer(h: Horodatage, tache: String, suffisant: Bool, par: String) -> String
+            reads capteur_de, fin_de
+            writes charge_de
+            moves en_cours -> terminee
+            calls ApiAcces.a_le_role, Journal.noter
+        // Interrompt toutes les tâches affectées ou en cours du capteur tombé (appelé par
+        // ObsCapteurs) et crée pour chacune non échue une tâche de relève (relever). Renvoie le
+        // nombre de tâches interrompues.
+        signal interrompre_capteur(h: Horodatage, capteur: String) -> Int
+            reads capteur_de, fin_de
+            writes charge_de
+            moves affectee -> interrompue, en_cours -> interrompue
+            calls relever, Journal.noter
+        // Interrompt la tâche `tache` (priorité inférieure) au profit d'une demande de priorité 3 et
+        // libère sa place sur son capteur. Renvoie le capteur libéré. Refus : Inconnu, EtatInvalide,
+        // NonEligible (tâche de priorité 3 : jamais préemptée).
+        signal preempter(h: Horodatage, tache: String) -> String
+            reads capteur_de, priorite_de
+            writes charge_de
+            moves affectee -> interrompue, en_cours -> interrompue
+            calls Journal.noter
+        // Crée la tâche de relève d'une tâche interrompue (même objet, priorité, motif, fin), par
+        // "systeme", et tente son affectation sur un autre capteur. Renvoie le nouvel id, ou "" si
+        // aucun capteur n'est libre (la relève reste demandée et expirera, ce qui est journalisé).
+        // Refus : Inconnu, EtatInvalide (tâche non interrompue), Doublon (déjà relevée).
+        signal relever(h: Horodatage, tache: String) -> String
+            reads tache
+            writes objet_de, priorite_de, motif_de, detail_de, demandee_le, fin_de, demandeur_de, origine_de, compteur
+            calls ObsCapteurs.disponibles, ApiRef.regime, affecter, Journal.noter
+        // Ronde (appelée par ObsBalayage.balayer, par = "systeme") : expire les tâches demandées depuis plus de
+        // DELAI_AFFECTATION_MS et les tâches affectées dont la fin est passée ; une tâche de priorité 3
+        // expirée déclare un incident de gravité 3 (ApiOperations.declarer_incident : suivi impossible
+        // d'un objet en urgence). Renvoie le nombre de tâches expirées. Refus : Habilitation.
+        signal expirer(h: Horodatage, par: String) -> Int
+            reads demandee_le, fin_de, priorite_de, capteur_de
+            writes charge_de
+            moves demandee -> expiree, affectee -> expiree
+            calls ApiOperations.declarer_incident, Journal.noter
+        // Annule une tâche. Renvoie "annulee". Rôle exigé : "analyste" d'ORBITE, ou l'auteur de la
+        // demande. Refus : Inconnu, EtatInvalide (close), MotifRequis, Habilitation.
+        signal annuler(h: Horodatage, tache: String, motif: String, par: String) -> String
+            reads demandeur_de, capteur_de
+            writes charge_de
+            moves demandee -> annulee, affectee -> annulee, en_cours -> annulee
+            calls ApiAcces.a_le_role, Journal.noter
+        // État de la tâche : "demandee", "affectee", "en_cours", "terminee", "interrompue",
+        // "expiree", "annulee", ou "inconnue".
+        signal etat(tache: String) -> String
+            reads tache, objet_de
+        // Tâche active (affectée ou en cours) de `capteur` sur `objet`, ou "" : sert à rattacher
+        // une mesure reçue à sa tâche.
+        signal active_sur(capteur: String, objet: Objet) -> String
+            reads tache, capteur_de, objet_de
+        // Vrai si l'objet a une tâche active (demandée, affectée ou en cours) de priorité ≥ `p`.
+        signal suivi_actif(objet: Objet, p: Niveau) -> Bool
+            reads tache, objet_de, priorite_de
+        // Tâches affectées ou en cours sur le capteur.
+        signal charge(capteur: String) -> Int
+            reads charge_de
+    }
+}

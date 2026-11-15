@@ -1,0 +1,134 @@
+// OPÉRATIONS — cellule de crise : convoquée par tout incident de gravité 3 (même id que
+// l'incident), pilotée par la direction d'ORBITE. Elle décide des mesures d'exception (mode
+// dégradé, bascule, arbitrage centralisé) et informe les États participants à intervalle
+// fixe tant qu'elle est active. Une crise ne peut être levée qu'une fois l'incident résolu.
+
+// Décision de la cellule de crise. "arbitrage_centralise" : pendant la crise, toute coordination
+// sans réponse à l'échéance est arbitrée par ORBITE sans relance supplémentaire (propriété 5) ;
+// "suspension_publication" : la publication publique (catalogue ouvert) est suspendue ;
+// "information_etats" : message extraordinaire aux points focaux.
+cell type OpsDecisionCrise = String where value == "mode_degrade" || value == "bascule" || value == "arbitrage_centralise" || value == "suspension_publication" || value == "information_etats" || value == "fin_mesure"
+// État d'une cellule de crise ; "inconnue" si jamais convoquée.
+cell type OpsEtatCrise = String where value == "convoquee" || value == "active" || value == "levee" || value == "debriefee" || value == "annulee" || value == "inconnue"
+
+// Cellule de crise, une par incident majeur (id = incident).
+skeleton OpsCrise {
+    const MAX_CRISES = 100000
+    const MAX_MEMBRES = 30
+    const MAX_DECISIONS = 500
+    const MAX_ETATS = 200
+    // Délai d'activation après convocation (ms) : 30 min.
+    const DELAI_ACTIVATION = 1800000
+    // Intervalle maximal entre deux informations des États pendant une crise active (ms) : 2 h.
+    const INTERVALLE_INFORMATION = 7200000
+    memory {
+        convoquee_a: Map<String, Horodatage> [persistent]
+        pilote: Map<String, String> [persistent]                 // crise → personne "direction" qui la conduit
+        membres: Map<String, List<String>> [persistent]          // personnes d'ORBITE mobilisées
+        // crise → décisions "h | OpsDecisionCrise | motif | par", en ajout seul.
+        decisions: Map<String, List<String>> [persistent]
+        // Mesures en vigueur, clé "orbite" : décisions sans "fin_mesure" correspondante.
+        arbitrage_centralise: Map<String, Bool> [persistent]
+        // crise → États (codes) informés au moins une fois.
+        etats_informes: Map<String, List<String>> [persistent]
+        derniere_info: Map<String, Horodatage> [persistent]      // crise → dernière information des États
+        retex: Map<String, String> [persistent]                  // crise → retour d'expérience (débriefing)
+        invariant convoquee_a.size <= 100000
+        invariant arbitrage_centralise.size <= 1
+        invariant (derniere_info ?? 9000000000000000) >= (convoquee_a ?? 0)
+    }
+    // `debriefee` et `annulee` sont terminaux.
+    state crise {
+        initial: convoquee
+        convoquee -> active                                // activer : le pilote prend la tête
+        convoquee -> annulee                               // annuler : incident requalifié sous 3 ou classé
+        active -> levee                                     // lever : incident du même id résolu
+        levee -> debriefee                                 // debriefer
+    }
+    face {
+        // Convoque la cellule (id = incident de gravité 3). Sans effet si elle est déjà convoquée
+        // ou active (renvoie l'état courant). Prévient l'astreinte de direction par la passerelle
+        // (ApiPasserelle.notifier(h, ApiRef.orbite(), "", …, 3) : hors rapprochement).
+        // Renvoie "convoquee". Appelée par OpsIncident (par = "systeme" ou le déclarant).
+        // Refus : EtatInvalide (crise levée, débriefée ou annulée : une récidive est un nouvel
+        // incident), Plein.
+        signal convoquer(h: Horodatage, incident: String, par: String) -> String
+            writes convoquee_a
+            reads crise
+            calls ApiRef.orbite, ApiPasserelle.notifier, Journal.noter
+        // Le pilote (rôle "direction" d'ORBITE) prend la tête. Renvoie "active".
+        // Refus : Inconnu, EtatInvalide, Habilitation (par "direction").
+        signal activer(h: Horodatage, incident: String, par: String) -> String
+            writes pilote, membres
+            reads convoquee_a
+            moves convoquee -> active
+            calls ApiAcces.a_le_role, Journal.noter
+        // Annule une crise convoquée (incident requalifié ou classé). Renvoie "annulee".
+        // Appelée par OpsIncident. Refus : Inconnu, EtatInvalide.
+        signal annuler(h: Horodatage, incident: String, motif: String) -> String
+            reads convoquee_a
+            moves convoquee -> annulee
+            calls Journal.noter
+        // Mobilise une personne d'ORBITE (tout rôle d'ORBITE sauf "systeme"). Renvoie le nombre de
+        // membres. Refus : Inconnu, EtatInvalide (crise non active), Doublon, Plein (MAX_MEMBRES),
+        // Habilitation (par = pilote ; la personne doit être employée par ApiRef.orbite()).
+        signal mobiliser(h: Horodatage, incident: String, personne: String, par: String) -> Int
+            writes membres
+            reads crise, pilote
+            calls ApiRef.orbite, ApiAcces.agit_pour, ApiAcces.role_de, Journal.noter
+        // Enregistre une décision. "arbitrage_centralise" ouvre la mesure (clé "orbite") ;
+        // "fin_mesure" avec motif "arbitrage_centralise" la ferme. Les décisions "mode_degrade" et
+        // "bascule" ne font que tracer : leur exécution passe par OpsDegradation.decreter et
+        // OpsBascule.demander (qui exigent la crise active). Renvoie le nombre de décisions.
+        // Refus : Inconnu, EtatInvalide, MotifRequis, Plein (MAX_DECISIONS), Habilitation
+        // (par = pilote), QuatreYeux (valideur "superviseur" ou "direction", ≠ par).
+        signal decider(h: Horodatage, incident: String, d: OpsDecisionCrise, motif: String, par: String, valideur: String) -> Int
+            writes decisions, arbitrage_centralise
+            reads crise, pilote
+            calls ApiAcces.quatre_yeux, Journal.noter
+        // Informe le point focal de CHAQUE État participant (ApiRef.etats_participants, au plus
+        // MAX_ETATS) : état du service, mesures en vigueur, prochaine information sous
+        // INTERVALLE_INFORMATION. ApiRef.org_de_etat puis ApiPasserelle.notifier(h, org, "", sujet,
+        // texte, 3) ; un État sans organisation est journalisé, pas sauté en silence. Met à jour
+        // derniere_info. Renvoie le nombre d'États servis. Appelée par le pilote, ou par la ronde
+        // (OpsRonde.balayer, par "systeme") quand l'information est due.
+        // Refus : Inconnu (crise), EtatInvalide (crise ni convoquée ni active), MotifRequis (texte
+        // vide), Plein (plus de MAX_ETATS participants), Habilitation (par = pilote, ou "systeme").
+        signal informer_etats(h: Horodatage, incident: String, texte: String, par: String) -> Int
+            writes etats_informes, derniere_info
+            reads crise, pilote, convoquee_a
+            calls ApiRef.etats_participants, ApiRef.org_de_etat, ApiPasserelle.notifier, ApiAcces.a_le_role, Journal.noter
+        // Lève la crise, l'incident étant résolu ; clôt les mesures encore ouvertes (arbitrage
+        // centralisé) et informe une dernière fois les États déjà informés. Renvoie "levee".
+        // Refus : Inconnu, EtatInvalide (incident non résolu), Habilitation (par = pilote).
+        signal lever(h: Horodatage, incident: String, par: String) -> String
+            writes arbitrage_centralise, decisions, derniere_info
+            reads pilote, etats_informes
+            moves active -> levee when OpsIncident.resolu
+            calls OpsIncident.etat, ApiRef.org_de_etat, ApiPasserelle.notifier, Journal.noter
+        // Retour d'expérience de la cellule (versé au post-mortem). Renvoie "debriefee".
+        // Refus : Inconnu, EtatInvalide, MotifRequis (texte vide), Habilitation (par = pilote).
+        signal debriefer(h: Horodatage, incident: String, texte: String, par: String) -> String
+            writes retex
+            reads pilote
+            moves levee -> debriefee
+            calls Journal.noter
+        // Vrai si la cellule de cet incident est convoquée ou active.
+        signal active_pour(incident: String) -> Bool
+            reads crise, convoquee_a
+        // Vrai si une décision d'arbitrage centralisé est en vigueur (une crise active l'a prise) :
+        // coordination arbitre alors à l'échéance sans tour de relance (ApiOperations.arbitrage_centralise).
+        signal arbitrage_centralise_en_vigueur() -> Bool
+            reads arbitrage_centralise
+        // États informés pendant la crise ; [] si aucun.
+        signal etats_informes_de(incident: String) -> List<String>
+            reads etats_informes
+        // Crises dont l'information des États est due à `h` (active, dernière information plus
+        // ancienne que INTERVALLE_INFORMATION), et crises convoquées non activées au-delà de
+        // DELAI_ACTIVATION, triées : à relancer par l'astreinte de direction.
+        signal en_retard(h: Horodatage) -> List<String>
+            reads crise, convoquee_a, derniere_info
+        signal etat(incident: String) -> OpsEtatCrise
+            reads crise, convoquee_a
+    }
+}

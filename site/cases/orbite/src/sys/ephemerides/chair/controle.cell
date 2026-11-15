@@ -1,0 +1,187 @@
+// ephemerides — corps des CONTRÔLES.
+flesh EphControle {
+    on examiner(h, objet, depot, ep, hz, q, empreinte, pos) {
+        if (!_empreinte_bien_formee(empreinte)) || len(depot) == 0 || len(depot) > 64 {
+            return "format"
+        }
+        let e_obj = ApiRef.etat_objet(objet)
+        if e_obj == "rentre" || e_obj == "fragmente" || e_obj == "retire" {
+            return "objet_clos"
+        }
+        if ep > h {
+            return "epoque_future"
+        }
+        let amax = EphReglage.age_max(ApiRef.regime(objet), ApiMeteo.tempete(h))
+        if to_int(h) - to_int(ep) > to_int(amax) {
+            return "nee_perimee"
+        }
+        let hmin = max(to_int(EphReglage.horizon_minimal()), 259200000)
+        if to_int(hz) < hmin {
+            return "horizon_court"
+        }
+        let mesure = try { ApiObservation.ecart_a(objet, ep, pos) }
+        if mesure.error != () {
+            if mesure.kind == "Incoherent" {
+                return "format"
+            }
+            if mesure.kind == "Inconnu" {
+                return "sans_temoin"
+            }
+            fail(mesure)
+        }
+        if mesure.value > EphReglage.ecart_max(q) {
+            return "incoherence"
+        }
+        return "conforme"
+    }
+
+    on _empreinte_bien_formee(e: String) {
+        if len(e) != 71 || (!starts_with(e, "sha256:")) {
+            return false
+        }
+        let hex = "0123456789abcdef"
+        for i in range(7, 71) {
+            if !contains(hex, substring(e, i, i + 1)) {
+                return false
+            }
+        }
+        return true
+    }
+
+    on qualite_retenue(h, objet, q, hz, omise, temoin) {
+        if (!temoin) || omise {
+            return "faible"
+        }
+        let crans = 0
+        if to_int(hz) < 2 * to_int(EphReglage.horizon_minimal()) {
+            crans = crans + 1
+        }
+        if to_int(ApiMeteo.facteur_incertitude(ApiRef.regime(objet), h)) > 150 {
+            crans = crans + 1
+        }
+        let rang = match q {
+            "haute" -> 0
+            "moyenne" -> 1
+            _ -> 2
+        }
+        let r = min(2, rang + crans)
+        let qr = match r {
+            0 -> "haute"
+            1 -> "moyenne"
+            _ -> "faible"
+        }
+        return Qualite(qr)
+    }
+
+    on confronter(h, objet, par) {
+        require ApiAcces.a_le_role(par, "systeme") || ApiAcces.a_le_role(par, "analyste") else Habilitation "systeme ou analyste d'ORBITE requis"
+        let cur = EphSuivi.derniere(objet)
+        let ecart_m = ApiObservation.ecart_declare(objet)
+        let champs = split(EphDepot.fiche(cur), "|")
+        let op = champs[1]
+        let src = champs[2]
+        let ep = Horodatage(to_int(champs[3]))
+        let qd = Qualite(champs[5])
+        let tol = EphReglage.ecart_max(qd)
+        dernier_ecart.set(objet, ecart_m)
+        confronte_le.set(objet, h)
+        depot_confronte.set(objet, cur)
+        if ecart_m > tol {
+            let n = EphDepot.invalider_depuis(h, objet, ep, "incoherence", "écart {ecart_m} m > {tol} m", par)
+            nb_invalidations.set(objet, (nb_invalidations.get(objet) ?? 0) + n)
+            if src == "proprietaire" {
+                let grave = 2
+                for r in ApiConjonctions.ouverts_de(objet) {
+                    if to_int(ApiConjonctions.niveau(Rapprochement(r))) == 3 {
+                        grave = 3
+                    }
+                }
+                let _ = ApiConformite.constater(h, Org(op), "ephemeride_incoherente", grave, cur, par)
+            }
+            let _ = Journal.noter(h, "ephemerides", par, "confrontation {objet} : ecart {ecart_m} m > {tol} m, depot {cur} invalide")
+        }
+        return ecart_m
+    }
+
+    on controler_objet(h, objet, par) {
+        require ApiAcces.a_le_role(par, "systeme") || ApiAcces.a_le_role(par, "analyste") else Habilitation "systeme ou analyste d'ORBITE requis"
+        let cur = EphSuivi.derniere(objet)
+        let ep = EphDepot.epoque_de(cur)
+        controle_le.set(objet, h)
+        let n = 0
+        let cause = ""
+        if ApiEvenements.en_anomalie(objet) {
+            n = EphDepot.invalider_depuis(h, objet, ep, "anomalie", "objet en anomalie", par)
+            cause = "anomalie"
+        }
+        if cause == "" && ApiObservation.manoeuvre_detectee(objet, ep) && ApiManoeuvres.plan_couvrant(objet, h) == "" {
+            let constat = try { ApiManoeuvres.constater_non_annoncee(h, objet, ep, par) }
+            if constat.error != () && constat.kind != "Doublon" {
+                fail(constat)
+            }
+            if constat.error == () {
+                let reste = try { EphSuivi.derniere(objet) }
+                if reste.error != () {
+                    n = n + 1
+                }
+            }
+            let suivi = try { ApiObservation.demander_suivi(h, objet, 2, 86400000, "manoeuvre non annoncee", par) }
+            cause = "manoeuvre_non_annoncee"
+        }
+        if cause == "" {
+            for p in EphDepot.plans_de(cur) {
+                let e = ApiManoeuvres.etat(p)
+                if cause == "" && (e == "annule" || e == "rejete") {
+                    n = n + EphDepot.invalider_depuis(h, objet, ep, "plan_annule", "plan {p} {e}", par)
+                    cause = "plan_annule"
+                }
+            }
+        }
+        if n > 0 {
+            nb_invalidations.set(objet, (nb_invalidations.get(objet) ?? 0) + n)
+        }
+        if cause != "" {
+            let _ = Journal.noter(h, "ephemerides", par, "controle {objet} : {cause}, {n} depot(s) invalide(s)")
+        }
+        return n
+    }
+
+    on tourner(h, periode, n, par) {
+        require par == "systeme" && ApiAcces.a_le_role(par, "systeme") else Habilitation "ronde réservée à systeme"
+        let vus = []
+        for r in ApiConjonctions.urgents(h, 604800000, 2) {
+            for o in ApiConjonctions.objets(Rapprochement(r)) {
+                if !contains(vus, o) {
+                    vus = vus ++ [o]
+                }
+            }
+        }
+        let a_voir = []
+        for o in vus {
+            let dernier = controle_le.get(Objet(o))
+            let du = try { EphSuivi.derniere(Objet(o)) }
+            if du.error == () && (dernier == () || to_int(h) - to_int(dernier) >= to_int(periode)) {
+                a_voir = a_voir ++ [map("o", o, "t", if dernier == () { 0 } else { to_int(dernier) })]
+            }
+        }
+        let tries = sort_by(a_voir, "t")
+        let faits = 0
+        for ligne in tries {
+            if faits < n {
+                let ob = Objet(ligne.o)
+                let c1 = try { confronter(h, ob, par) }
+                let c2 = try { controler_objet(h, ob, par) }
+                faits = faits + 1
+            }
+        }
+        return faits
+    }
+
+    on ecart(objet) {
+        let e = dernier_ecart.get(objet)
+        require e != () else Inconnu "objet {objet} jamais confronté"
+        let d = depot_confronte.get(objet) ?? ""
+        let t = confronte_le.get(objet) ?? 0
+        return "{e}|{d}|{t}"
+    }
+}

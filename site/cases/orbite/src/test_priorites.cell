@@ -1,0 +1,546 @@
+use app
+use commun::journal_chair
+use commun::horloge_chair
+use sys::priorites::chair::api
+use sys::priorites::chair::versions
+use sys::priorites::chair::adoption
+use sys::priorites::chair::table
+use sys::priorites::chair::derogations
+use sys::priorites::chair::cas
+use sys::priorites::chair::designation
+use sys::priorites::chair::echeancier
+use doublures::priorites
+
+// Temps : T0 = 1 800 000 000 000 ms ; un jour = 86 400 000 ms. Une version rédigée à t0 entre
+// en vigueur à t0 + 200 j (1 817 280 000 000 pour T0).
+// Personnes : voir doublures/priorites.cell ("role@ORG-X").
+cell MondePrio {
+    // Rédige une version : table (dérogation exempte, essaim autonome exempte, masse moindre
+    // désignée) et préavis 6 h / 72 h, ou reprise de `base`.
+    on rediger_complete(v: String, base: String, t0: Int) {
+        let a = "analyste@ORG-ORBITE"
+        let _ = PrioVersion.rediger(Horodatage(t0), v, "Règles {v}", base, Horodatage(t0 + 200 * 86400000), a)
+        if base == "" {
+            let _ = PrioTable.poser_regle(Horodatage(t0), v, 1, "derogation", "exempte", a)
+            let _ = PrioTable.poser_regle(Horodatage(t0), v, 2, "essaim_autonome", "exempte", a)
+            let _ = PrioTable.poser_regle(Horodatage(t0), v, 3, "masse_moindre", "designe", a)
+            let _ = PrioTable.fixer_preavis(Horodatage(t0), v, "impulsionnelle", 21600000, a)
+            let _ = PrioTable.fixer_preavis(Horodatage(t0), v, "faible", 259200000, a)
+        } else {
+            let _ = PrioTable.reprendre(Horodatage(t0), v, base, a)
+        }
+        return v
+    }
+    // Rédaction → consultation (30 j, un avis favorable, une réserve à laquelle ORBITE répond).
+    on consulter_v(v: String, t0: Int) {
+        let _ = PrioVersion.soumettre(Horodatage(t0), v, Horodatage(t0 + 30 * 86400000), "analyste@ORG-ORBITE", "superviseur@ORG-ORBITE")
+        let _ = PrioConsultation.donner_avis(Horodatage(t0 + 86400000), v, "ALD", "favorable", "", "point_focal@ORG-ALD")
+        let _ = PrioConsultation.donner_avis(Horodatage(t0 + 86400000), v, "BRV", "reserves", "préavis faible trop long", "autorite@ORG-BRV")
+        let _ = ApiPriorites.balayer(Horodatage(t0 + 30 * 86400000), "systeme")
+        let _ = PrioConsultation.repondre(Horodatage(t0 + 30 * 86400000), v, "BRV", "préavis maintenu : propulsion électrique", "analyste@ORG-ORBITE")
+        return PrioConsultation.etat(v)
+    }
+    // Consultation close → vote (ALD, BRV, CAZ) → dépouillement au balayage.
+    on voter_tous(v: String, t0: Int, ald: String, brv: String, caz: String) {
+        let _ = PrioVersion.mettre_au_vote(Horodatage(t0 + 31 * 86400000), v, Horodatage(t0 + 45 * 86400000), "superviseur@ORG-ORBITE", "direction@ORG-ORBITE")
+        let _ = PrioScrutin.voter(Horodatage(t0 + 32 * 86400000), v, "ALD", PrioChoix(ald), "point_focal@ORG-ALD")
+        let _ = PrioScrutin.voter(Horodatage(t0 + 32 * 86400000), v, "BRV", PrioChoix(brv), "point_focal@ORG-BRV")
+        let _ = PrioScrutin.voter(Horodatage(t0 + 32 * 86400000), v, "CAZ", PrioChoix(caz), "point_focal@ORG-CAZ")
+        let _ = ApiPriorites.balayer(Horodatage(t0 + 45 * 86400000), "systeme")
+        return PrioVersion.etat(v)
+    }
+    // Cycle complet jusqu'à l'entrée en vigueur à t0 + 200 j. Renvoie l'état atteint.
+    on vigueur(v: String, base: String, t0: Int) {
+        let _ = rediger_complete(v, base, t0)
+        let _ = consulter_v(v, t0)
+        let _ = voter_tous(v, t0, "pour", "pour", "abstention")
+        let _ = PrioVersion.publier(Horodatage(t0 + 46 * 86400000), v, "superviseur@ORG-ORBITE")
+        let _ = ApiPriorites.balayer(Horodatage(t0 + 200 * 86400000), "systeme")
+        return PrioVersion.etat(v)
+    }
+    // Rapprochement synthétique entre a et b, TCA à `tca`.
+    on cj(n: Int, a: String, b: String, tca: Int) {
+        return "CJ-{n}~{a}~{b}~{tca}"
+    }
+    // Dérogation demandée par le dynamicien de ORG-OPB pour `objet`, instruite et octroyée.
+    on derogation_octroyee(d: String, objet: String, h: Int, duree: Int) {
+        let _ = PrioDerogation.demander(Horodatage(h), d, Objet(objet), "phase_critique", "mise à poste", Horodatage(h), Horodatage(h + duree), "dynamicien@ORG-OPB")
+        let _ = PrioDerogation.instruire(Horodatage(h), d, "analyste@ORG-ORBITE")
+        return PrioDerogation.octroyer(Horodatage(h), d, "analyste@ORG-ORBITE", "superviseur@ORG-ORBITE")
+    }
+}
+
+// ── Versions : cycle nominal de bout en bout.
+cell test PrioVersionCycle {
+    rules {
+        assert vigueur("PRIO-2027-1", "", 1800000000000) == "en_vigueur"
+        assert ApiPriorites.version_en_vigueur(1817280000000) == "PRIO-2027-1"
+        assert ApiPriorites.version_en_vigueur(1817279999999) == ""
+        assert PrioVersion.version_courante() == "PRIO-2027-1"
+        assert ApiPriorites.preavis("faible") == 259200000
+        assert ApiPriorites.preavis("impulsionnelle") == 21600000
+        assert ApiPriorites.preavis("aucune") == 3153600000000
+        assert PrioScrutin.resultat("PRIO-2027-1") == "3 | 2 | 0 | 1 | adopte"
+        assert PrioConsultation.etat("PRIO-2027-1") == "close"
+        assert len(PrioConsultation.synthese("PRIO-2027-1")) == 2
+        assert PrioConsultation.synthese("PRIO-2027-1")[1] == "BRV | reserves | préavis faible trop long | préavis maintenu : propulsion électrique"
+        assert PrioTable.regles("PRIO-2027-1") == ["1 | derogation | exempte", "2 | essaim_autonome | exempte", "3 | masse_moindre | designe"]
+        assert starts_with(PrioVersion.fiche("PRIO-2027-1"), "Règles PRIO-2027-1 |  | analyste@ORG-ORBITE")
+        // Figée : ni la table ni la date d'effet ne bougent plus.
+        assert_fails PrioTable.poser_regle(1817280000000, "PRIO-2027-1", 4, "arrivee_recente", "designe", "analyste@ORG-ORBITE") matching "EtatInvalide"
+        assert_fails PrioVersion.reporter(1817280000000, "PRIO-2027-1", 1900000000000, "report", "superviseur@ORG-ORBITE") matching "EtatInvalide"
+        assert PrioEcheancier.en_retard(1817280000000) == 0
+        assert Journal.taille() > 10
+    }
+}
+
+// ── Versions : habilitations, quatre yeux, bornes, état invalide.
+cell test PrioVersionRefus {
+    rules {
+        assert_fails PrioVersion.rediger(1800000000000, "V", "T", "", 1817280000000, "intrus") matching "Habilitation"
+        assert_fails PrioVersion.rediger(1800000000000, "V", "T", "", 1817280000000, "dynamicien@ORG-OPA") matching "Habilitation"
+        assert_fails PrioVersion.rediger(1800000000000, "V", "T", "", 1817280000000, "analyste@ORG-OPA") matching "Habilitation"
+        assert_fails PrioVersion.rediger(1800000000000, "V", "T", "", 1800000000001, "analyste@ORG-ORBITE") matching "HorsBornes"
+        assert_fails PrioVersion.rediger(1800000000000, "V", "", "", 1817280000000, "analyste@ORG-ORBITE") matching "MotifRequis"
+        assert_fails PrioVersion.rediger(1800000000000, "V", "T", "PRIO-ABSENTE", 1817280000000, "analyste@ORG-ORBITE") matching "Inconnu"
+        assert PrioVersion.rediger(1800000000000, "V", "T", "", 1817280000000, "analyste@ORG-ORBITE") == "V"
+        assert_fails PrioVersion.rediger(1800000000000, "V", "T", "", 1817280000000, "analyste@ORG-ORBITE") matching "Existe"
+        assert PrioVersion.etat("V") == "redaction"
+        assert PrioVersion.etat("W") == "inconnue"
+        // Table incomplète : pas de soumission.
+        assert_fails PrioVersion.soumettre(1800000000000, "V", 1802592000000, "analyste@ORG-ORBITE", "superviseur@ORG-ORBITE") matching "Insuffisant"
+        assert PrioTable.poser_regle(1800000000000, "V", 1, "derogation", "exempte", "analyste@ORG-ORBITE") == 1
+        assert_fails PrioTable.poser_regle(1800000000000, "V", 2, "derogation", "designe", "analyste@ORG-ORBITE") matching "Doublon"
+        assert_fails PrioTable.poser_regle(1800000000000, "V", 17, "masse_moindre", "designe", "analyste@ORG-ORBITE") matching "HorsBornes"
+        assert PrioTable.fixer_preavis(1800000000000, "V", "impulsionnelle", 21600000, "analyste@ORG-ORBITE") == 21600000
+        assert_fails PrioTable.fixer_preavis(1800000000000, "V", "faible", 1000, "analyste@ORG-ORBITE") matching "Incoherent"
+        assert_fails PrioTable.fixer_preavis(1800000000000, "V", "aucune", 1000, "analyste@ORG-ORBITE") matching "HorsBornes"
+        assert PrioTable.complete("V") == false
+        assert PrioTable.fixer_preavis(1800000000000, "V", "faible", 259200000, "analyste@ORG-ORBITE") == 259200000
+        assert PrioTable.complete("V")
+        // Quatre yeux : le valideur doit être un autre, superviseur d'ORBITE.
+        assert_fails PrioVersion.soumettre(1800000000000, "V", 1802592000000, "analyste@ORG-ORBITE", "analyste@ORG-ORBITE") matching "QuatreYeux"
+        assert_fails PrioVersion.soumettre(1800000000000, "V", 1802592000000, "analyste@ORG-ORBITE", "superviseur@ORG-OPA") matching "QuatreYeux"
+        assert_fails PrioVersion.soumettre(1800000000000, "V", 1800000000001, "analyste@ORG-ORBITE", "superviseur@ORG-ORBITE") matching "HorsBornes"
+        assert PrioVersion.soumettre(1800000000000, "V", 1802592000000, "analyste@ORG-ORBITE", "superviseur@ORG-ORBITE") == "consultation"
+        assert_fails PrioVersion.soumettre(1800000000000, "V", 1802592000000, "analyste@ORG-ORBITE", "superviseur@ORG-ORBITE") matching "EtatInvalide"
+        // Consultation : table figée, avis contrôlés.
+        assert_fails PrioTable.poser_regle(1800000000000, "V", 2, "masse_moindre", "designe", "analyste@ORG-ORBITE") matching "EtatInvalide"
+        assert_fails PrioConsultation.donner_avis(1800086400000, "V", "ALD", "favorable", "", "point_focal@ORG-BRV") matching "Habilitation"
+        assert_fails PrioConsultation.donner_avis(1800086400000, "V", "ALD", "favorable", "", "dynamicien@ORG-ALD") matching "Habilitation"
+        assert_fails PrioConsultation.donner_avis(1800086400000, "V", "ALD", "defavorable", "", "point_focal@ORG-ALD") matching "MotifRequis"
+        assert_fails PrioConsultation.donner_avis(1800086400000, "V", "DEL", "favorable", "", "point_focal@ORG-DEL") matching "Suspendu"
+        assert PrioConsultation.donner_avis(1800086400000, "V", "ALD", "defavorable", "trop tôt", "point_focal@ORG-ALD") == 1
+        assert_fails PrioConsultation.donner_avis(1800086400000, "V", "ALD", "favorable", "", "point_focal@ORG-ALD") matching "Doublon"
+        assert_fails PrioConsultation.donner_avis(1802592000000, "V", "BRV", "favorable", "", "point_focal@ORG-BRV") matching "Delai"
+        // Mise au vote : consultation non close, puis avis sans réponse.
+        assert_fails PrioVersion.mettre_au_vote(1800086400000, "V", 1801296000000, "superviseur@ORG-ORBITE", "direction@ORG-ORBITE") matching "EtatInvalide"
+        assert ApiPriorites.balayer(1802592000000, "systeme") == 1
+        assert PrioConsultation.sans_reponse("V") == 1
+        assert_fails PrioVersion.mettre_au_vote(1802678400000, "V", 1803888000000, "superviseur@ORG-ORBITE", "direction@ORG-ORBITE") matching "Insuffisant"
+        assert_fails PrioConsultation.repondre(1802592000000, "V", "BRV", "x", "analyste@ORG-ORBITE") matching "Inconnu"
+        assert PrioConsultation.repondre(1802592000000, "V", "ALD", "nous maintenons", "analyste@ORG-ORBITE") == 0
+        assert_fails PrioConsultation.repondre(1802592000000, "V", "ALD", "encore", "analyste@ORG-ORBITE") matching "Doublon"
+        assert_fails PrioVersion.mettre_au_vote(1802678400000, "V", 1803888000000, "superviseur@ORG-ORBITE", "superviseur.2@ORG-ORBITE") matching "QuatreYeux"
+        assert_fails PrioVersion.mettre_au_vote(1802678400000, "V", 1802764800000, "superviseur@ORG-ORBITE", "direction@ORG-ORBITE") matching "HorsBornes"
+        assert PrioVersion.mettre_au_vote(1802678400000, "V", 1803888000000, "superviseur@ORG-ORBITE", "direction@ORG-ORBITE") == "vote"
+        // Vote : portée et unicité du bulletin.
+        assert_fails PrioScrutin.voter(1802764800000, "V", "ALD", "pour", "autorite@ORG-ALD") matching "Habilitation"
+        assert_fails PrioScrutin.voter(1802764800000, "V", "DEL", "pour", "point_focal@ORG-DEL") matching "NonEligible"
+        assert PrioScrutin.voter(1802764800000, "V", "ALD", "pour", "point_focal@ORG-ALD") == 1
+        assert_fails PrioScrutin.voter(1802764800000, "V", "ALD", "contre", "point_focal@ORG-ALD") matching "Doublon"
+        assert_fails PrioScrutin.depouiller(1802764800000, "V", "systeme") matching "Delai"
+        assert_fails PrioScrutin.depouiller(1803888000000, "V", "analyste@ORG-ORBITE") matching "Habilitation"
+        assert_fails PrioVersion.prendre_acte(1802764800000, "V", "systeme") matching "EtatInvalide"
+        assert_fails PrioVersion.publier(1802764800000, "V", "superviseur@ORG-ORBITE") matching "EtatInvalide"
+        assert_fails PrioVersion.retirer(1802764800000, "V", "irrégulier", "superviseur@ORG-ORBITE") matching "EtatInvalide"
+    }
+}
+
+// ── Scrutin : quorum atteint mais majorité qualifiée manquée (2 pour sur 3 exprimés < 67 %).
+cell test PrioScrutinRejet {
+    rules {
+        let _ = rediger_complete("R", "", 1800000000000)
+        assert consulter_v("R", 1800000000000) == "close"
+        assert voter_tous("R", 1800000000000, "pour", "pour", "contre") == "rejetee"
+        assert PrioScrutin.etat("R") == "rejete"
+        assert_fails PrioVersion.publier(1803888000000, "R", "superviseur@ORG-ORBITE") matching "EtatInvalide"
+    }
+}
+
+// ── Scrutin annulé (direction + conformité), puis version retirée.
+cell test PrioScrutinAnnule {
+    rules {
+        let _ = rediger_complete("R", "", 1800000000000)
+        let _ = consulter_v("R", 1800000000000)
+        assert PrioVersion.mettre_au_vote(1802678400000, "R", 1803888000000, "superviseur@ORG-ORBITE", "direction@ORG-ORBITE") == "vote"
+        assert_fails PrioScrutin.annuler(1802764800000, "R", "fraude", "direction@ORG-ORBITE", "direction@ORG-ORBITE") matching "QuatreYeux"
+        assert_fails PrioScrutin.annuler(1802764800000, "R", "fraude", "superviseur@ORG-ORBITE", "conformite@ORG-ORBITE") matching "Habilitation"
+        assert_fails PrioScrutin.annuler(1802764800000, "R", "", "direction@ORG-ORBITE", "conformite@ORG-ORBITE") matching "MotifRequis"
+        assert PrioScrutin.annuler(1802764800000, "R", "bulletins irréguliers", "direction@ORG-ORBITE", "conformite@ORG-ORBITE") == "annule"
+        assert PrioVersion.retirer(1802764800000, "R", "scrutin annulé", "superviseur@ORG-ORBITE") == "retiree"
+        // L'échéance du scrutin a été annulée : rien à balayer.
+        assert ApiPriorites.balayer(1803888000000, "systeme") == 0
+        assert PrioVersion.etat("R") == "retiree"
+    }
+}
+
+// ── Retrait pendant la consultation : la consultation est annulée avec son échéance.
+cell test PrioRetraitConsultation {
+    rules {
+        let _ = rediger_complete("R", "", 1800000000000)
+        assert PrioVersion.soumettre(1800000000000, "R", 1802592000000, "analyste@ORG-ORBITE", "superviseur@ORG-ORBITE") == "consultation"
+        assert_fails PrioVersion.retirer(1800000000000, "R", "", "superviseur@ORG-ORBITE") matching "MotifRequis"
+        assert_fails PrioVersion.retirer(1800000000000, "R", "réécriture", "analyste@ORG-ORBITE") matching "Habilitation"
+        assert PrioVersion.retirer(1800000000000, "R", "réécriture", "superviseur@ORG-ORBITE") == "retiree"
+        assert PrioConsultation.etat("R") == "annulee"
+        assert PrioEcheancier.a_echoir(1802592000000, 10) == []
+    }
+}
+
+// ── Amendement : V2 reprend V1, la remplace ; l'historique sert à rejouer le passé.
+cell test PrioRemplacement {
+    rules {
+        assert vigueur("V1", "", 1800000000000) == "en_vigueur"
+        assert PrioVersion.rediger(1817280000000, "V2", "Amendement", "V1", 1834560000000, "analyste@ORG-ORBITE") == "V2"
+        assert_fails PrioVersion.rediger(1817280000000, "V3", "Amendement", "V2", 1834560000000, "analyste@ORG-ORBITE") matching "Inconnu"
+        assert PrioTable.reprendre(1817280000000, "V2", "V1", "analyste@ORG-ORBITE") == 3
+        assert_fails PrioTable.reprendre(1817280000000, "V2", "V1", "analyste@ORG-ORBITE") matching "Existe"
+        assert PrioTable.retirer_regle(1817280000000, "V2", 2, "analyste@ORG-ORBITE") == 2
+        assert PrioTable.poser_regle(1817280000000, "V2", 2, "arrivee_recente", "designe", "analyste@ORG-ORBITE") == 3
+        assert PrioTable.fixer_preavis(1817280000000, "V2", "faible", 172800000, "analyste@ORG-ORBITE") == 172800000
+        assert PrioTable.differences("V2", "V1") == ["+ 2 | arrivee_recente | designe", "- 2 | essaim_autonome | exempte", "preavis faible : 259200000 -> 172800000"]
+        let _ = consulter_v("V2", 1817280000000)
+        assert voter_tous("V2", 1817280000000, "pour", "pour", "pour") == "adoptee"
+        assert PrioVersion.publier(1821254400000, "V2", "systeme") == 5
+        assert ApiPriorites.balayer(1834560000000, "systeme") >= 1
+        assert PrioVersion.etat("V2") == "en_vigueur"
+        assert PrioVersion.etat("V1") == "remplacee"
+        assert ApiPriorites.version_en_vigueur(1820000000000) == "V1"
+        assert ApiPriorites.version_en_vigueur(1834560000000) == "V2"
+        assert ApiPriorites.preavis("faible") == 172800000
+    }
+}
+
+// ── Gel des changements : la bascule attend le balayage suivant ; publication tardive repousse l'effet.
+cell test PrioGelEtPreavis {
+    rules {
+        let _ = rediger_complete("G", "", 1800000000000)
+        let _ = consulter_v("G", 1800000000000)
+        assert voter_tous("G", 1800000000000, "pour", "pour", "pour") == "adoptee"
+        // Publication à 190 j : l'effet (200 j) est à moins de 30 j, il est repoussé à 220 j.
+        assert PrioVersion.publier(1816416000000, "G", "superviseur@ORG-ORBITE") == 5
+        assert_fails PrioVersion.entrer_en_vigueur(1817280000000, "G", "systeme") matching "Delai"
+        // Gel (h finissant par 7) : reporté, compté.
+        assert ApiPriorites.balayer(1819008000007, "systeme") == 0
+        assert PrioVersion.etat("G") == "publiee"
+        assert PrioEcheancier.a_echoir(1819008000007, 5) == ["effet | G | 1819008000000 | 1"]
+        assert ApiPriorites.balayer(1819008060000, "systeme") == 1
+        assert PrioVersion.etat("G") == "en_vigueur"
+        assert PrioEcheancier.dernier() == 1819008060000
+    }
+}
+
+// ── Abrogation d'urgence : plus aucune règle, qui_manoeuvre refuse Ferme.
+cell test PrioAbrogation {
+    rules {
+        assert vigueur("V1", "", 1800000000000) == "en_vigueur"
+        assert_fails PrioVersion.abroger(1817366400000, "V1", "dangereuse", "direction@ORG-ORBITE", "direction@ORG-ORBITE") matching "QuatreYeux"
+        assert_fails PrioVersion.abroger(1817366400000, "V1", "dangereuse", "superviseur@ORG-ORBITE", "direction@ORG-ORBITE") matching "Habilitation"
+        assert_fails PrioVersion.abroger(1817366400000, "V1", "", "direction@ORG-ORBITE", "superviseur@ORG-ORBITE") matching "MotifRequis"
+        assert PrioVersion.abroger(1817366400000, "V1", "règle dangereuse", "direction@ORG-ORBITE", "superviseur@ORG-ORBITE") == "abrogee"
+        assert PrioVersion.version_courante() == ""
+        assert ApiPriorites.version_en_vigueur(1817366400000) == ""
+        assert ApiPriorites.version_en_vigueur(1817300000000) == "V1"
+        assert_fails ApiPriorites.qui_manoeuvre(1817366400000, cj(1, "OBJ-A1", "OBJ-B1", 1818000000000), "OBJ-A1", "OBJ-B1") matching "Ferme"
+        assert ApiPriorites.preavis("faible") == 259200000
+        assert_fails PrioVersion.abroger(1817366400000, "V1", "encore", "direction@ORG-ORBITE", "superviseur@ORG-ORBITE") matching "EtatInvalide"
+    }
+}
+
+// ── Désignation : les garde-fous (propriétés 2 et 3) et l'ordre de la table.
+// H = 1 817 366 400 000 (V1 en vigueur depuis un jour) ; TCA lointain = H + 10 j.
+cell test PrioDesignationCas {
+    rules {
+        assert vigueur("V1", "", 1800000000000) == "en_vigueur"
+        // Aucun capable : deux objets sans propulsion.
+        assert ApiPriorites.qui_manoeuvre(1817366400000, cj(1, "OBJ-MORT1", "OBJ-MORT2", 1818230400000), "OBJ-MORT1", "OBJ-MORT2") == ""
+        assert contains(ApiPriorites.decision_de(cj(1, "OBJ-MORT1", "OBJ-MORT2", 1818230400000)), "|aucun_capable|")
+        // Seul capable : l'habité manœuvre s'il est seul à le pouvoir.
+        assert ApiPriorites.qui_manoeuvre(1817366400000, cj(2, "OBJ-HAB1", "OBJ-MORT1", 1818230400000), "OBJ-HAB1", "OBJ-MORT1") == "OBJ-HAB1"
+        // Deux capables dont un habité : l'autre manœuvre.
+        assert ApiPriorites.qui_manoeuvre(1817366400000, cj(3, "OBJ-HAB1", "OBJ-A1", 1818230400000), "OBJ-HAB1", "OBJ-A1") == "OBJ-A1"
+        // Propulsion faible trop lente (TCA à 24 h, préavis 72 h) : l'impulsionnelle manœuvre.
+        assert ApiPriorites.qui_manoeuvre(1817366400000, cj(4, "OBJ-AFAIB1", "OBJ-B1", 1817452800000), "OBJ-AFAIB1", "OBJ-B1") == "OBJ-B1"
+        assert contains(ApiPriorites.decision_de(cj(4, "OBJ-AFAIB1", "OBJ-B1", 1817452800000)), "|seul_capable|")
+        // TCA passé : personne.
+        assert ApiPriorites.qui_manoeuvre(1817366400000, cj(5, "OBJ-A1", "OBJ-B1", 1817000000000), "OBJ-A1", "OBJ-B1") == ""
+        // Règle 3 (masse moindre désignée) : le plus léger manœuvre.
+        assert ApiPriorites.qui_manoeuvre(1817366400000, cj(6, "OBJ-ALOURD1", "OBJ-B1", 1818230400000), "OBJ-ALOURD1", "OBJ-B1") == "OBJ-B1"
+        assert contains(ApiPriorites.decision_de(cj(6, "OBJ-ALOURD1", "OBJ-B1", 1818230400000)), "|V1|regle:3|")
+        // Aucune ligne ne départage : le dernier injecté, puis le plus grand numéro.
+        assert ApiPriorites.qui_manoeuvre(1817366400000, cj(7, "OBJ-ANEUF1", "OBJ-B1", 1818230400000), "OBJ-ANEUF1", "OBJ-B1") == "OBJ-ANEUF1"
+        assert ApiPriorites.qui_manoeuvre(1817366400000, cj(8, "OBJ-A1", "OBJ-B12", 1818230400000), "OBJ-A1", "OBJ-B12") == "OBJ-B12"
+        assert contains(ApiPriorites.decision_de(cj(8, "OBJ-A1", "OBJ-B12", 1818230400000)), "|catalogue|")
+        // Opérateur suspendu, objet en anomalie : incapables.
+        assert ApiPriorites.qui_manoeuvre(1817366400000, cj(9, "OBJ-SUSP1", "OBJ-B1", 1818230400000), "OBJ-SUSP1", "OBJ-B1") == "OBJ-B1"
+        assert ApiPriorites.qui_manoeuvre(1817366400000, cj(10, "OBJ-AANOM1", "OBJ-HAB2", 1818230400000), "OBJ-AANOM1", "OBJ-HAB2") == "OBJ-HAB2"
+        // Refus.
+        assert_fails ApiPriorites.qui_manoeuvre(1817366400000, cj(11, "OBJ-A1", "OBJ-A1", 1818230400000), "OBJ-A1", "OBJ-A1") matching "Incoherent"
+        assert_fails ApiPriorites.qui_manoeuvre(1817366400000, cj(12, "OBJ-A1", "OBJ-B1", 1818230400000), "OBJ-A1", "OBJ-C1") matching "Incoherent"
+        assert_fails ApiPriorites.qui_manoeuvre(1817366400000, cj(13, "OBJ-INCONNU", "OBJ-B1", 1818230400000), "OBJ-INCONNU", "OBJ-B1") matching "Inconnu"
+        assert_fails ApiPriorites.qui_manoeuvre(1817366400000, "CJ-ABSENT", "OBJ-A1", "OBJ-B1") matching "Inconnu"
+        assert ApiPriorites.decision_de("CJ-JAMAIS") == ""
+        assert PrioDesignation.statistiques("V1")[0] == "aucun_capable | 2"
+    }
+}
+
+// ── Désignation avant toute version en vigueur : Ferme.
+cell test PrioDesignationSansVersion {
+    rules {
+        assert_fails ApiPriorites.qui_manoeuvre(1800000000000, "CJ-1~OBJ-A1~OBJ-B1~1900000000000", "OBJ-A1", "OBJ-B1") matching "Ferme"
+        assert ApiPriorites.preavis("impulsionnelle") == 21600000
+    }
+}
+
+// ── Délai de préparation propre à une propulsion faible.
+cell test PrioPreparationDelai {
+    rules {
+        assert vigueur("V1", "", 1800000000000) == "en_vigueur"
+        assert_fails PrioPreparation.declarer(1817366400000, "OBJ-AFAIB1", 1036800000, "dynamicien@ORG-OPB") matching "Habilitation"
+        assert_fails PrioPreparation.declarer(1817366400000, "OBJ-A1", 1036800000, "dynamicien@ORG-OPA") matching "NonEligible"
+        assert_fails PrioPreparation.declarer(1817366400000, "OBJ-AFAIB1", 2000000000, "dynamicien@ORG-OPA") matching "HorsBornes"
+        // TCA à 10 j : le préavis faible (72 h) tient…
+        assert ApiPriorites.qui_manoeuvre(1817366400000, cj(1, "OBJ-AFAIB1", "OBJ-BLOURD1", 1818230400000), "OBJ-AFAIB1", "OBJ-BLOURD1") == "OBJ-AFAIB1"
+        // … mais pas une préparation déclarée de 12 j.
+        assert PrioPreparation.declarer(1817366400000, "OBJ-AFAIB1", 1036800000, "dynamicien@ORG-OPA") == 1036800000
+        assert PrioPreparation.delai("OBJ-AFAIB1") == 1036800000
+        assert ApiPriorites.qui_manoeuvre(1817366400000, cj(1, "OBJ-AFAIB1", "OBJ-BLOURD1", 1818230400000), "OBJ-AFAIB1", "OBJ-BLOURD1") == "OBJ-BLOURD1"
+        assert len(PrioDesignation.decisions_de(cj(1, "OBJ-AFAIB1", "OBJ-BLOURD1", 1818230400000))) == 2
+    }
+}
+
+// ── Dérogations : cycle nominal, effet sur la désignation, expiration au balayage.
+cell test PrioDerogationCycle {
+    rules {
+        assert vigueur("V1", "", 1800000000000) == "en_vigueur"
+        assert PrioDerogation.demander(1817366400000, "DRG-1", "OBJ-B1", "phase_critique", "mise à poste", 1817366400000, 1818230400000, "dynamicien@ORG-OPB") == "DRG-1"
+        assert PrioDerogation.etat("DRG-1") == "demandee"
+        assert ApiPriorites.derogation("OBJ-B1", 1817366400000) == false
+        assert PrioDerogation.instruire(1817366400000, "DRG-1", "analyste@ORG-ORBITE") == "en_instruction"
+        assert PrioDerogation.octroyer(1817366400000, "DRG-1", "analyste@ORG-ORBITE", "superviseur@ORG-ORBITE") == "octroyee"
+        assert ApiPriorites.derogation("OBJ-B1", 1817366400000)
+        assert PrioDerogation.actives_de_version("V1") == ["DRG-1"]
+        // Règle 1 : la dérogation exempte B1 face à A1, capable.
+        assert ApiPriorites.qui_manoeuvre(1817366400000, cj(1, "OBJ-A1", "OBJ-B1", 1818230400000), "OBJ-A1", "OBJ-B1") == "OBJ-A1"
+        assert contains(ApiPriorites.decision_de(cj(1, "OBJ-A1", "OBJ-B1", 1818230400000)), "|regle:1|")
+        // Jamais face à un objet incapable : B1 seul capable manœuvre malgré sa dérogation.
+        assert ApiPriorites.qui_manoeuvre(1817366400000, cj(2, "OBJ-MORT1", "OBJ-B1", 1818230400000), "OBJ-MORT1", "OBJ-B1") == "OBJ-B1"
+        // Une seconde dérogation pour le même objet : conflit.
+        assert PrioDerogation.demander(1817366400000, "DRG-2", "OBJ-B1", "carburant", "réserve", 1817366400000, 1818230400000, "dynamicien@ORG-OPB") == "DRG-2"
+        assert PrioDerogation.instruire(1817366400000, "DRG-2", "analyste@ORG-ORBITE") == "en_instruction"
+        assert_fails PrioDerogation.octroyer(1817366400000, "DRG-2", "analyste@ORG-ORBITE", "superviseur@ORG-ORBITE") matching "Conflit"
+        assert PrioDerogation.retirer(1817366400000, "DRG-2", "chef_de_mission@ORG-OPB") == "retiree"
+        // Fin de période : expiration au balayage.
+        assert ApiPriorites.balayer(1818230400000, "systeme") >= 1
+        assert PrioDerogation.etat("DRG-1") == "expiree"
+        assert ApiPriorites.derogation("OBJ-B1", 1818230400000) == false
+        assert PrioDerogation.historique("OBJ-B1") == ["DRG-1", "DRG-2"]
+        assert starts_with(PrioDerogation.fiche("DRG-1"), "OBJ-B1 | ORG-OPB | V1 | phase_critique")
+    }
+}
+
+// ── Dérogations : refus de sécurité (habilitation, portée, quatre yeux, éligibilité, alerte).
+cell test PrioDerogationRefus {
+    rules {
+        assert_fails PrioDerogation.demander(1800000000000, "D0", "OBJ-B1", "phase_critique", "x", 1800000000000, 1800086400000, "dynamicien@ORG-OPB") matching "Ferme"
+        assert vigueur("V1", "", 1800000000000) == "en_vigueur"
+        assert_fails PrioDerogation.demander(1817366400000, "D1", "OBJ-B1", "phase_critique", "x", 1817366400000, 1818230400000, "intrus") matching "Habilitation"
+        assert_fails PrioDerogation.demander(1817366400000, "D1", "OBJ-B1", "phase_critique", "x", 1817366400000, 1818230400000, "dynamicien@ORG-OPA") matching "Habilitation"
+        assert_fails PrioDerogation.demander(1817366400000, "D1", "OBJ-B1", "phase_critique", "", 1817366400000, 1818230400000, "dynamicien@ORG-OPB") matching "MotifRequis"
+        assert_fails PrioDerogation.demander(1817366400000, "D1", "OBJ-B1", "phase_critique", "x", 1817366400000, 1827366400000, "dynamicien@ORG-OPB") matching "HorsBornes"
+        assert_fails PrioDerogation.demander(1817366400000, "D1", "OBJ-BHAB1", "phase_critique", "x", 1817366400000, 1818230400000, "dynamicien@ORG-OPB") matching "NonEligible"
+        assert_fails PrioDerogation.demander(1817366400000, "D1", "OBJ-BANOM1", "phase_critique", "x", 1817366400000, 1818230400000, "dynamicien@ORG-OPB") matching "NonEligible"
+        assert_fails PrioDerogation.demander(1817366400000, "D1", "OBJ-INCONNU", "phase_critique", "x", 1817366400000, 1818230400000, "dynamicien@ORG-OPB") matching "Inconnu"
+        assert PrioDerogation.demander(1817366400000, "D1", "OBJ-BALERTE1", "phase_critique", "x", 1817366400000, 1818230400000, "dynamicien@ORG-OPB") == "D1"
+        assert_fails PrioDerogation.demander(1817366400000, "D1", "OBJ-B1", "phase_critique", "x", 1817366400000, 1818230400000, "dynamicien@ORG-OPB") matching "Existe"
+        assert_fails PrioDerogation.octroyer(1817366400000, "D1", "analyste@ORG-ORBITE", "superviseur@ORG-ORBITE") matching "EtatInvalide"
+        assert_fails PrioDerogation.instruire(1817366400000, "D1", "dynamicien@ORG-OPB") matching "Habilitation"
+        assert_fails PrioDerogation.instruire(1817366400000, "DX", "analyste@ORG-ORBITE") matching "Inconnu"
+        assert PrioDerogation.instruire(1817366400000, "D1", "analyste@ORG-ORBITE") == "en_instruction"
+        assert_fails PrioDerogation.octroyer(1817366400000, "D1", "analyste@ORG-ORBITE", "analyste@ORG-ORBITE") matching "QuatreYeux"
+        assert_fails PrioDerogation.octroyer(1817366400000, "D1", "superviseur@ORG-ORBITE", "superviseur.2@ORG-ORBITE") matching "Habilitation"
+        // En pleine alerte de niveau 3 : pas de dérogation.
+        assert_fails PrioDerogation.octroyer(1817366400000, "D1", "analyste@ORG-ORBITE", "superviseur@ORG-ORBITE") matching "Conflit"
+        assert_fails PrioDerogation.refuser(1817366400000, "D1", "", "analyste@ORG-ORBITE") matching "MotifRequis"
+        assert_fails PrioDerogation.refuser(1817366400000, "D1", "alerte", "systeme") matching "Delai"
+        assert PrioDerogation.refuser(1817366400000, "D1", "alerte de niveau 3", "analyste@ORG-ORBITE") == "refusee"
+        assert_fails PrioDerogation.retirer(1817366400000, "D1", "dynamicien@ORG-OPB") matching "EtatInvalide"
+        // Révocation : par superviseur, contre-signée par la direction.
+        assert derogation_octroyee("D2", "OBJ-B1", 1817366400000, 864000000) == "octroyee"
+        assert_fails PrioDerogation.revoquer(1817366400000, "D2", "abus", "superviseur@ORG-ORBITE", "superviseur.2@ORG-ORBITE") matching "QuatreYeux"
+        assert_fails PrioDerogation.revoquer(1817366400000, "D2", "abus", "analyste@ORG-ORBITE", "direction@ORG-ORBITE") matching "Habilitation"
+        assert PrioDerogation.revoquer(1817366400000, "D2", "abus", "conformite@ORG-ORBITE", "direction@ORG-ORBITE") == "revoquee"
+        assert ApiPriorites.derogation("OBJ-B1", 1817366400000) == false
+        assert_fails PrioDerogation.expirer(1818230400000, "D2", "systeme") matching "EtatInvalide"
+    }
+}
+
+// ── Dérogations : refus d'office au délai d'instruction, caducité au changement de version.
+cell test PrioDerogationEcheances {
+    rules {
+        assert vigueur("V1", "", 1800000000000) == "en_vigueur"
+        assert PrioDerogation.demander(1817366400000, "D1", "OBJ-B1", "mission_science", "campagne", 1817366400000, 1818230400000, "dynamicien@ORG-OPB") == "D1"
+        // 15 jours sans décision : refus d'office.
+        assert ApiPriorites.balayer(1818662400000, "systeme") == 1
+        assert PrioDerogation.etat("D1") == "refusee"
+        // Une dérogation octroyée sous V1 devient caduque quand V2 la remplace (V2 rédigée à
+        // 1 818 662 400 000, publiée à +46 j, en vigueur à +200 j ; D2 octroyée à +150 j pour 60 j).
+        let _ = rediger_complete("V2", "V1", 1818662400000)
+        assert consulter_v("V2", 1818662400000) == "close"
+        assert voter_tous("V2", 1818662400000, "pour", "pour", "pour") == "adoptee"
+        assert PrioVersion.publier(1822636800000, "V2", "systeme") == 5
+        assert derogation_octroyee("D2", "OBJ-B2", 1831622400000, 5184000000) == "octroyee"
+        assert ApiPriorites.balayer(1835942400000, "systeme") == 1
+        assert PrioVersion.etat("V1") == "remplacee"
+        assert PrioDerogation.etat("D2") == "octroyee"
+        // La caducité est due au balayage suivant.
+        assert ApiPriorites.balayer(1835942460000, "systeme") == 1
+        assert PrioDerogation.etat("D2") == "caduque"
+        assert ApiPriorites.derogation("OBJ-B2", 1835942400000) == false
+        assert PrioDerogation.actives_de_version("V1") == []
+    }
+}
+
+// ── Essaims : déclaration, reconnaissance à quatre yeux, critère « essaim autonome ».
+cell test PrioEssaimCycle {
+    rules {
+        assert vigueur("V1", "", 1800000000000) == "en_vigueur"
+        assert_fails PrioEssaim.declarer(1817366400000, "ESM-1", "ORG-OPA", "Grappe", ["OBJ-A1", "OBJ-A2"], true, "chef_de_mission@ORG-OPB") matching "Habilitation"
+        assert_fails PrioEssaim.declarer(1817366400000, "ESM-1", "ORG-OPA", "Grappe", ["OBJ-A1"], true, "chef_de_mission@ORG-OPA") matching "HorsBornes"
+        assert_fails PrioEssaim.declarer(1817366400000, "ESM-1", "ORG-OPA", "Grappe", ["OBJ-A1", "OBJ-B2"], true, "chef_de_mission@ORG-OPA") matching "NonEligible"
+        assert_fails PrioEssaim.declarer(1817366400000, "ESM-1", "ORG-OPA", "Grappe", ["OBJ-A1", "OBJ-A1"], true, "chef_de_mission@ORG-OPA") matching "Conflit"
+        assert_fails PrioEssaim.declarer(1817366400000, "ESM-9", "ORG-SUSP", "Grappe", ["OBJ-SUSP1", "OBJ-SUSP2"], true, "chef_de_mission@ORG-SUSP") matching "Suspendu"
+        assert PrioEssaim.declarer(1817366400000, "ESM-1", "ORG-OPA", "Grappe", ["OBJ-A1", "OBJ-A2"], true, "chef_de_mission@ORG-OPA") == "ESM-1"
+        assert_fails PrioEssaim.declarer(1817366400000, "ESM-2", "ORG-OPA", "Autre", ["OBJ-A2", "OBJ-A3"], false, "chef_de_mission@ORG-OPA") matching "Conflit"
+        assert PrioEssaim.autonome("OBJ-A1") == false
+        assert_fails PrioEssaim.reconnaitre(1817366400000, "ESM-1", "analyste@ORG-ORBITE", "analyste.2@ORG-ORBITE") matching "QuatreYeux"
+        assert PrioEssaim.reconnaitre(1817366400000, "ESM-1", "analyste@ORG-ORBITE", "superviseur@ORG-ORBITE") == "reconnu"
+        assert PrioEssaim.autonome("OBJ-A1")
+        assert PrioEssaim.essaim_reconnu_de("OBJ-A2") == "ESM-1"
+        // Règle 2 : l'essaim autonome est exempté face à un objet extérieur.
+        assert ApiPriorites.qui_manoeuvre(1817366400000, cj(1, "OBJ-A1", "OBJ-B1", 1818230400000), "OBJ-A1", "OBJ-B1") == "OBJ-B1"
+        assert PrioEssaim.ajouter(1817366400000, "ESM-1", "OBJ-A3", "chef_de_mission@ORG-OPA") == 3
+        assert_fails PrioEssaim.ajouter(1817366400000, "ESM-1", "OBJ-B3", "chef_de_mission@ORG-OPA") matching "NonEligible"
+        assert PrioEssaim.membres("ESM-1") == ["OBJ-A1", "OBJ-A2", "OBJ-A3"]
+        assert PrioEssaim.retirer(1817366400000, "OBJ-A3", "analyste@ORG-ORBITE") == 2
+        assert_fails PrioEssaim.dissoudre(1817366400000, "ESM-1", "défaillance", "chef_de_mission@ORG-OPB") matching "Habilitation"
+        assert PrioEssaim.dissoudre(1817366400000, "ESM-1", "évitement défaillant", "superviseur@ORG-ORBITE") == "dissous"
+        assert PrioEssaim.autonome("OBJ-A1") == false
+        assert PrioEssaim.etat("ESM-1") == "dissous"
+        assert PrioEssaim.etat("ESM-X") == "inconnu"
+    }
+}
+
+// ── Décision : contestation, réexamen rejoué, archivage, purge (hors gel).
+cell test PrioDecisionCycle {
+    rules {
+        assert vigueur("V1", "", 1800000000000) == "en_vigueur"
+        assert ApiPriorites.qui_manoeuvre(1817366400000, cj(1, "OBJ-ALOURD1", "OBJ-B1", 1818230400000), "OBJ-ALOURD1", "OBJ-B1") == "OBJ-B1"
+        let d = PrioDesignation.decisions_de(cj(1, "OBJ-ALOURD1", "OBJ-B1", 1818230400000))[0]
+        assert PrioDesignation.rejouer(d) == "OBJ-B1"
+        assert_fails PrioDesignation.contester(1817366400000, d, "masse fausse", "dynamicien@ORG-OPC") matching "Habilitation"
+        assert_fails PrioDesignation.contester(1817366400000, d, "", "dynamicien@ORG-OPB") matching "MotifRequis"
+        assert_fails PrioDesignation.contester(1820000000000, d, "masse fausse", "dynamicien@ORG-OPB") matching "Echu"
+        assert PrioDesignation.contester(1817366400000, d, "masse fausse", "dynamicien@ORG-OPB") == "contestee"
+        assert_fails PrioDesignation.contester(1817366400000, d, "encore", "dynamicien@ORG-OPB") matching "EtatInvalide"
+        // Contestation pendante : l'archivage est reporté.
+        assert ApiPriorites.balayer(1819958400000, "systeme") == 0
+        assert_fails PrioDesignation.statuer(1817452800000, d, false, "conforme", "analyste@ORG-ORBITE", "analyste@ORG-ORBITE") matching "QuatreYeux"
+        assert PrioDesignation.statuer(1817452800000, d, false, "rejouée conforme", "analyste@ORG-ORBITE", "superviseur@ORG-ORBITE") == "confirmee"
+        assert contains(PrioDesignation.resume(d), "| confirmee | dynamicien@ORG-OPB | masse fausse | analyste@ORG-ORBITE / superviseur@ORG-ORBITE")
+        // Communication contrôlée.
+        assert_fails PrioDesignation.communiquer(1817452800000, d, "ORG-TIERS", "analyste@ORG-ORBITE") matching "Confidentiel"
+        assert_fails PrioDesignation.communiquer(1817452800000, d, "ORG-OPB", "intrus") matching "Habilitation"
+        assert starts_with(PrioDesignation.communiquer(1817452800000, d, "ORG-OPB", "dynamicien@ORG-OPB"), "OBJ-B1 | regle | V1 | 3 | 1818230400000 | OBJ-ALOURD1 | en_service")
+        // Archivage au balayage suivant, puis purge sous dix ans.
+        assert ApiPriorites.balayer(1819958460000, "systeme") == 1
+        assert contains(PrioDesignation.resume(d), "| archivee |")
+        assert_fails PrioDesignation.purger(1819958460000, d, "PRG-1", "conformite@ORG-ORBITE") matching "Delai"
+        assert_fails PrioDesignation.purger(2132726400000, d, "PRG-1", "analyste@ORG-ORBITE") matching "Habilitation"
+        assert PrioDesignation.purger(2132726400000, d, "PRG-1", "conformite@ORG-ORBITE") == "purgee"
+        assert_fails PrioDesignation.rejouer(d) matching "EtatInvalide"
+        assert_fails PrioDesignation.communiquer(2132726400000, d, "ORG-OPB", "conformite@ORG-ORBITE") matching "EtatInvalide"
+    }
+}
+
+// ── Purge interdite sous gel d'un dossier de preuve.
+cell test PrioPurgeSousGel {
+    rules {
+        assert vigueur("V1", "", 1800000000000) == "en_vigueur"
+        assert ApiPriorites.qui_manoeuvre(1817366400000, cj(1, "OBJ-AGEL1", "OBJ-B1", 1818230400000), "OBJ-AGEL1", "OBJ-B1") == "OBJ-AGEL1"
+        let d = PrioDesignation.decisions_de(cj(1, "OBJ-AGEL1", "OBJ-B1", 1818230400000))[0]
+        assert ApiPriorites.balayer(1819958400000, "systeme") == 1
+        // Le balayage signale la purge due sans l'exécuter.
+        assert ApiPriorites.balayer(2132726400000, "systeme") == 1
+        assert len(Journal.chercher("purge due de la décision {d}", 5)) == 1
+        assert_fails PrioDesignation.purger(2132726400000, d, "PRG-1", "conformite@ORG-ORBITE") matching "Conflit"
+        assert contains(PrioDesignation.resume(d), "| archivee |")
+    }
+}
+
+// ── Échéancier : retard visible, habilitation du balayage.
+cell test PrioEcheancierRetard {
+    rules {
+        assert_fails ApiPriorites.balayer(1800000000000, "intrus") matching "Habilitation"
+        assert_fails ApiPriorites.balayer(1800000000000, "analyste@ORG-ORBITE") matching "Habilitation"
+        assert PrioEcheancier.planifier(1800000000000, "derogation", "DRG-FANTOME", 1800000000000) == 1800000000000
+        assert PrioEcheancier.en_retard(1800003600001) == 1
+        // L'action échoue (dérogation inconnue) : l'échéance reste, en retard et comptée.
+        assert ApiPriorites.balayer(1800003600001, "systeme") == 0
+        assert PrioEcheancier.a_echoir(1800003600001, 1) == ["derogation | DRG-FANTOME | 1800000000000 | 1"]
+        assert PrioEcheancier.annuler("derogation", "DRG-FANTOME")
+        assert PrioEcheancier.annuler("derogation", "DRG-FANTOME") == false
+        assert PrioEcheancier.en_retard(1800003600001) == 0
+        assert PrioEcheancier.dernier() == 1800003600001
+    }
+}
+
+// ── Scénario métier complet : une version adoptée et en vigueur, un essaim reconnu, une
+// dérogation ; un rapprochement en alerte entre un satellite de l'essaim et un satellite
+// à propulsion faible ; désignation, décision lue par la coordination, contestée, confirmée,
+// communiquée, archivée ; puis l'amendement V2 remplace V1 et la dérogation devient caduque.
+cell test PrioScenarioComplet {
+    rules {
+        assert vigueur("PRIO-2027-1", "", 1800000000000) == "en_vigueur"
+        assert PrioEssaim.declarer(1817366400000, "ESM-1", "ORG-OPA", "Constellation A", ["OBJ-A1", "OBJ-A2"], true, "administrateur_operateur@ORG-OPA") == "ESM-1"
+        assert PrioEssaim.reconnaitre(1817366400000, "ESM-1", "analyste@ORG-ORBITE", "superviseur@ORG-ORBITE") == "reconnu"
+        assert derogation_octroyee("DRG-1", "OBJ-B7", 1817366400000, 2592000000) == "octroyee"
+        // A1 (essaim autonome) contre BFAIB1 (propulsion faible, TCA à 5 j : son préavis de 72 h tient).
+        let r = cj(42, "OBJ-A1", "OBJ-BFAIB1", 1817798400000)
+        assert ApiPriorites.qui_manoeuvre(1817366400000, r, "OBJ-A1", "OBJ-BFAIB1") == "OBJ-BFAIB1"
+        let dec = ApiPriorites.decision_de(r)
+        assert contains(dec, "|OBJ-BFAIB1|PRIO-2027-1|regle:2|1817366400000")
+        // Nouvelle mise à jour du rapprochement, TCA rapproché à 48 h : la faible ne peut plus.
+        let r2 = cj(42, "OBJ-A1", "OBJ-BFAIB1", 1817539200000)
+        assert ApiPriorites.qui_manoeuvre(1817366400000, r2, "OBJ-A1", "OBJ-BFAIB1") == "OBJ-A1"
+        assert contains(ApiPriorites.decision_de(r2), "|OBJ-A1|PRIO-2027-1|seul_capable|")
+        // Dérogation de B7 face à A2 (essaim) : les deux exemptables, la ligne 1 tranche.
+        assert ApiPriorites.qui_manoeuvre(1817366400000, cj(43, "OBJ-A2", "OBJ-B7", 1818230400000), "OBJ-A2", "OBJ-B7") == "OBJ-A2"
+        // L'opérateur B conteste la première décision ; ORBITE rejoue et confirme.
+        let d1 = PrioDesignation.decisions_de(r)[0]
+        assert PrioDesignation.contester(1817452800000, d1, "préavis faible mal lu", "chef_de_mission@ORG-OPB") == "contestee"
+        assert PrioDesignation.statuer(1817539200000, d1, false, "décision rejouée identique", "analyste@ORG-ORBITE", "superviseur@ORG-ORBITE") == "confirmee"
+        assert contains(PrioDesignation.communiquer(1817539200000, d1, "ORG-OPB", "chef_de_mission@ORG-OPB"), "OBJ-BFAIB1 | regle | PRIO-2027-1 | 2 |")
+        // Trente jours plus tard : les trois décisions archivées, la dérogation expirée.
+        assert ApiPriorites.balayer(1819958400000, "systeme") == 4
+        assert contains(PrioDesignation.resume(d1), "| archivee |")
+        assert PrioDerogation.etat("DRG-1") == "expiree"
+        // Amendement : V2 remplace V1 ; les statistiques de V1 restent.
+        assert vigueur("PRIO-2028-1", "PRIO-2027-1", 1819958400000) == "en_vigueur"
+        assert ApiPriorites.version_en_vigueur(1837238400000) == "PRIO-2028-1"
+        assert PrioVersion.etat("PRIO-2027-1") == "remplacee"
+        assert PrioDesignation.statistiques("PRIO-2027-1") == ["aucun_capable | 0", "seul_capable | 1", "habite_exempte | 0", "regle | 2", "arrivee | 0", "catalogue | 0"]
+        assert PrioEcheancier.en_retard(1837238400000) == 0
+    }
+}

@@ -1,0 +1,156 @@
+// Corps des pistes non corrélées.
+flesh ObsPistes {
+    on alimenter(h, mesure, capteur, instant) {
+        // Piste compatible : ouverte, dernière mesure à moins de 24 h de cet instant (la plus récente).
+        let choisie = ""
+        let meilleur = -1
+        for e in derniere_mesure.entries {
+            if (get_status(e.key) ?? "ouverte") == "ouverte" && abs(instant - e.value) <= 86400000 && e.value > meilleur {
+                choisie = e.key
+                meilleur = e.value
+            }
+        }
+        if choisie == "" {
+            let n = (compteur.get("pistes") ?? 0) + 1
+            require n <= MAX_PISTES else Plein "registre des pistes plein"
+            choisie = "PI-{n}"
+            compteur.set("pistes", n)
+            ouverte_le.set(choisie, h)
+            derniere_mesure.set(choisie, instant)
+            nb_mesures.set(choisie, 1)
+            capteurs_de.set(choisie, [capteur])
+            let _ = Journal.noter(h, "observation", "systeme", "piste {choisie} ouverte par {mesure}")
+            return choisie
+        }
+        derniere_mesure.set(choisie, max(meilleur, instant))
+        nb_mesures.set(choisie, (nb_mesures.get(choisie) ?? 0) + 1)
+        let vus = capteurs_de.get(choisie) ?? []
+        if !contains(vus, capteur) { capteurs_de.set(choisie, vus ++ [capteur]) }
+        let _ = Journal.noter(h, "observation", "systeme", "mesure {mesure} versée à {choisie}")
+        return choisie
+    }
+    on confirmer(h, piste, od, regime, par) {
+        require ApiAcces.a_le_role(par, "analyste") else Habilitation "{par} : analyste d'ORBITE requis"
+        require nb_mesures.has(piste) else Inconnu "piste {piste} inconnue"
+        let st = get_status(piste) ?? "ouverte"
+        require st == "ouverte" else EtatInvalide "piste {piste} : {st}"
+        let eo = ObsOrbites.etat(od)
+        require eo != "inconnue" else Inconnu "détermination {od} inconnue"
+        require eo == "validee" && ObsOrbites.courante_de(piste) == od else Incoherent "{od} n'est pas l'orbite validée courante de {piste}"
+        let nm = nb_mesures.get(piste) ?? 0
+        let np = len(capteurs_de.get(piste) ?? [])
+        require nm >= MIN_MESURES && np >= MIN_PASSES else Insuffisant "{nm} mesures, {np} passes : au moins {MIN_MESURES} et {MIN_PASSES}"
+        require orbite_de.get(piste) == () else Existe "piste {piste} déjà confirmée"
+        transition(piste, "ouverte", "confirmee")
+        orbite_de.set(piste, od)
+        regime_de.set(piste, regime)
+        let _ = Journal.noter(h, "observation", par, "piste {piste} confirmée sur {od} ({regime})")
+        return "confirmee"
+    }
+    on cataloguer(h, piste, nature, origine, proprietaire, etat, par, valideur) {
+        require ApiAcces.a_le_role(par, "analyste") else Habilitation "{par} : analyste d'ORBITE requis"
+        require ApiAcces.quatre_yeux(par, valideur) && ApiAcces.a_le_role(valideur, "superviseur") else QuatreYeux "contre-signature d'un superviseur distinct requise"
+        // Sans transition, la piste est ouverte ou inconnue (ouverte_le hors cadre) : EtatInvalide.
+        let st = get_status(piste) ?? "ouverte ou inconnue"
+        require st == "confirmee" else EtatInvalide "piste {piste} : {st}, pas confirmée"
+        require nature == "debris" || nature == "inconnu" else HorsBornes "nature {nature} : debris ou inconnu seulement"
+        require proprietaire == "" || etat != "" else Incoherent "propriétaire {proprietaire} sans État"
+        let od = orbite_de.get(piste) ?? ""
+        // Règle interne : confirmee -> cataloguee when ObsOrbites.validee via orbite_de.
+        require ObsOrbites.etat(od) == "validee" else EtatInvalide "orbite {od} de la piste n'est plus validée"
+        let regime = regime_de.get(piste) ?? "leo"
+        let orb = ApiRef.orbite()
+        let obj = ApiRef.cataloguer(h, nature, orb, ApiRef.etat_de(orb), regime, "aucune", 0, par)
+        if proprietaire != "" {
+            let _ = ApiRef.attribuer(h, obj, proprietaire, etat, par, valideur)
+        }
+        transition(piste, "confirmee", "cataloguee")
+        origine_de.set(piste, origine)
+        objet_de.set(piste, obj)
+        decide_par.set(piste, par)
+        let n = ObsMesures.rattacher(h, piste, obj)
+        let r = try { ObsTaches.demander(h, obj, 2, 604800000, "nouvel_objet", "piste {piste}", "systeme") }
+        let suivi = if r.error == () { r.value } else { "impossible" }
+        let titulaire = if proprietaire == "" { orb } else { proprietaire }
+        let _ = Journal.noter(h, "observation", par, "piste {piste} cataloguée : {obj} ({nature}, origine {origine}, propriétaire {titulaire}, valideur {valideur}) ; {n} mesures ; suivi {suivi}")
+        return obj
+    }
+    on rattacher(h, piste, objet, origine, par) {
+        require ApiAcces.a_le_role(par, "analyste") else Habilitation "{par} : analyste d'ORBITE requis"
+        // Sans transition, la piste est ouverte ou inconnue (ouverte_le hors cadre) : EtatInvalide.
+        let st = get_status(piste) ?? "ouverte ou inconnue"
+        require st == "confirmee" else EtatInvalide "piste {piste} : {st}, pas confirmée"
+        require ApiRef.etat_objet(objet) != "inconnu" else Inconnu "objet {objet} non catalogué"
+        let lancement = ApiLancements.origine(objet)
+        let evenement = ApiEvenements.evenement_de(objet)
+        transition(piste, "confirmee", "rattachee")
+        origine_de.set(piste, origine)
+        objet_de.set(piste, objet)
+        decide_par.set(piste, par)
+        let n = ObsMesures.rattacher(h, piste, objet)
+        let _ = Journal.noter(h, "observation", par, "piste {piste} rattachée à {objet} ({origine} ; lancement {lancement} ; évènement {evenement}) ; {n} mesures")
+        return "rattachee"
+    }
+    on abandonner(h, piste, motif, par) {
+        require ApiAcces.a_le_role(par, "analyste") else Habilitation "{par} : analyste d'ORBITE requis"
+        require ouverte_le.has(piste) else Inconnu "piste {piste} inconnue"
+        require motif != "" else MotifRequis "motif d'abandon requis"
+        let st = get_status(piste) ?? "ouverte"
+        if st == "ouverte" {
+            transition(piste, "ouverte", "abandonnee")
+        } else if st == "confirmee" {
+            transition(piste, "confirmee", "abandonnee")
+        } else {
+            fail("EtatInvalide", "piste {piste} : {st}")
+        }
+        decide_par.set(piste, par)
+        let n = ObsMesures.ecarter(h, piste)
+        let _ = Journal.noter(h, "observation", par, "piste {piste} abandonnée ({motif}) ; {n} mesure(s) écartée(s)")
+        return "abandonnee"
+    }
+    on veiller(h, par) {
+        require par == "systeme" else Habilitation "ronde réservée à systeme"
+        let n = 0
+        let en_suspens = 0
+        let toutes = derniere_mesure.entries
+        for e in toutes {
+            let st = get_status(e.key) ?? "ouverte"
+            if st == "ouverte" && h - e.value > INACTIVITE_MAX_MS {
+                transition(e.key, "ouverte", "abandonnee")
+                decide_par.set(e.key, "systeme")
+                let k = ObsMesures.ecarter(h, e.key)
+                let _ = Journal.noter(h, "observation", "systeme", "piste {e.key} abandonnée (inactive) ; {k} mesure(s) écartée(s)")
+                n = n + 1
+            } else if st == "confirmee" {
+                en_suspens = en_suspens + 1
+            }
+        }
+        if en_suspens > 0 {
+            let _ = Journal.noter(h, "observation", "systeme", "{en_suspens} piste(s) confirmée(s) en attente de catalogage ou de rattachement")
+        }
+        return n
+    }
+    on etat(piste) {
+        if !ouverte_le.has(piste) { return "inconnue" }
+        return get_status(piste) ?? "ouverte"
+    }
+    on objet(piste) {
+        require ouverte_le.has(piste) else Inconnu "piste {piste} inconnue"
+        let o = objet_de.get(piste)
+        require o != () else EtatInvalide "piste {piste} ni cataloguée ni rattachée"
+        return o
+    }
+    on en_attente(n) {
+        let lignes_p = []
+        for e in ouverte_le.entries {
+            let st = get_status(e.key) ?? "ouverte"
+            if st == "ouverte" || st == "confirmee" { lignes_p.push(map("p", e.key, "t", e.value)) }
+        }
+        let triees = sort_by(lignes_p, x => [x.t, x.p])
+        let res_p = []
+        for x in triees {
+            if len(res_p) < n { res_p.push(x.p) }
+        }
+        return res_p
+    }
+}

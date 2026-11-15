@@ -1,0 +1,33 @@
+// Entrée de contrôle du sous-système manoeuvres : le contrat commun, les 20 façades,
+// puis les fichiers internes de manoeuvres (un use sys::manoeuvres::<fichier> par fichier, ci-dessous).
+use commun::types
+use commun::journal
+use commun::horloge
+use sys::acces::api
+use sys::conformite::api
+use sys::conjonctions::api
+use sys::coordination::api
+use sys::donnees::api
+use sys::ephemerides::api
+use sys::escalade::api
+use sys::evenements::api
+use sys::fin_de_vie::api
+use sys::lancements::api
+use sys::manoeuvres::api
+use sys::meteo::api
+use sys::observation::api
+use sys::operateurs::api
+use sys::operations::api
+use sys::passerelle::api
+use sys::priorites::api
+use sys::reentrees::api
+use sys::ref::api
+use sys::responsabilite::api
+use sys::manoeuvres::plans
+use sys::manoeuvres::criblage
+use sys::manoeuvres::verrou
+use sys::manoeuvres::execution
+use sys::manoeuvres::anomalies
+use sys::manoeuvres::avis
+use sys::manoeuvres::preuve
+use sys::manoeuvres::programmes

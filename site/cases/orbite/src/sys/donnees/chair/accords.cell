@@ -1,0 +1,316 @@
+// donnees — corps : accord de partage (versions) et adhésions.
+
+flesh DonAccords {
+    on rediger(h, version, empreinte_texte, resume_changements, par) {
+        require ApiAcces.a_le_role(par, "direction") else Habilitation "rédiger l'accord : direction d'ORBITE"
+        require empreinte.get(version) == () else Existe "version déjà créée : {version}"
+        require len(resume_changements) > 0 else MotifRequis "résumé des changements exigé"
+        require empreinte.size < MAX_VERSIONS else Plein "trop de versions de l'accord"
+        empreinte.set(version, empreinte_texte)
+        resume.set(version, resume_changements)
+        let _ = Journal.noter(h, "donnees", par, "accord {version} en rédaction")
+        return version
+    }
+
+    on soumettre(h, version, duree, etats, par) {
+        require ApiAcces.a_le_role(par, "direction") else Habilitation "soumettre l'accord : direction d'ORBITE"
+        require empreinte.get(version) != () else Inconnu "version inconnue : {version}"
+        require (get_status(version) ?? "redaction") == "redaction" else EtatInvalide "version {version} hors rédaction"
+        let d = to_int(duree)
+        require d >= CONSULTATION_MIN_MS && d <= CONSULTATION_MAX_MS else HorsBornes "consultation de 30 à 180 jours"
+        let fin_c = to_int(h) + d
+        fin_consultation.set(version, Horodatage(fin_c))
+        transition(version, "redaction", "consultation")
+        for e in etats {
+            let pf = ApiRef.org_de_etat(Etat(e))
+            let _ = ApiPasserelle.notifier(h, pf, "", "consultation accord {version}", "avis attendu avant {fin_c}", 1)
+        }
+        let _ = Journal.noter(h, "donnees", par, "accord {version} soumis à consultation jusqu'à {fin_c}")
+        return "consultation"
+    }
+
+    on donner_avis(h, version, etat, a, par) {
+        let org_e = ApiRef.org_de_etat(etat)
+        let role_ok = ApiAcces.a_le_role(par, "point_focal") || ApiAcces.a_le_role(par, "autorite")
+        require role_ok && ApiAcces.agit_pour(par, org_e) else Habilitation "avis : point focal ou autorité de l'État {etat}"
+        let fc = fin_consultation.get(version)
+        require fc != () else Inconnu "version inconnue ou jamais soumise : {version}"
+        require (get_status(version) ?? "redaction") == "consultation" else EtatInvalide "version {version} hors consultation"
+        require to_int(h) < to_int(fc) else Delai "consultation close"
+        require ApiRef.etat_participant(etat) else Suspendu "État {etat} non participant"
+        let cle = "{version}|{etat}"
+        let ancien = avis.get(cle)
+        if ancien == () {
+            require avis.size < MAX_AVIS else Plein "trop d'avis"
+        }
+        let fav = favorables.get(version) ?? 0
+        let ex = exprimes.get(version) ?? 0
+        let nouveau_fav = a == "favorable"
+        if ancien == () {
+            exprimes.set(version, ex + 1)
+            if nouveau_fav { favorables.set(version, fav + 1) } else { favorables.set(version, fav) }
+        } else {
+            let ancien_fav = ancien == "favorable"
+            if ancien_fav && !nouveau_fav { favorables.set(version, fav - 1) }
+            if (!ancien_fav) && nouveau_fav { favorables.set(version, fav + 1) }
+        }
+        avis.set(cle, to_string(a))
+        let _ = Journal.noter(h, "donnees", par, "avis {a} de {etat} sur l'accord {version}")
+        return exprimes.get(version) ?? 0
+    }
+
+    on adopter(h, version, entree, par, valideur) {
+        require ApiAcces.a_le_role(par, "direction") else Habilitation "adopter l'accord : direction d'ORBITE"
+        require valideur != par && ApiAcces.a_le_role(valideur, "direction") && ApiAcces.quatre_yeux(par, valideur) else QuatreYeux "valideur direction distinct exigé"
+        let fc = fin_consultation.get(version)
+        require fc != () else Inconnu "version inconnue ou jamais soumise : {version}"
+        require (get_status(version) ?? "redaction") == "consultation" else EtatInvalide "version {version} hors consultation"
+        require to_int(h) >= to_int(fc) else Delai "consultation non close"
+        let fav = favorables.get(version) ?? 0
+        let ex = exprimes.get(version) ?? 0
+        require ex >= 1 && fav * 3 >= ex * 2 else Insuffisant "majorité des 2/3 des avis exprimés non atteinte ({fav}/{ex})"
+        require to_int(entree) >= to_int(h) + PREAVIS_VIGUEUR_MS else HorsBornes "entrée en vigueur à 30 jours au moins"
+        vigueur.set(version, entree)
+        transition(version, "consultation", "adoptee")
+        let _ = Journal.noter(h, "donnees", par, "accord {version} adopté ({fav}/{ex}), en vigueur le {entree}, valideur {valideur}")
+        return "adoptee"
+    }
+
+    on entrer_en_vigueur(h, par) {
+        require ApiAcces.a_le_role(par, "systeme") else Habilitation "entrée en vigueur : systeme"
+        let prets = vigueur.entries.filter(e => (get_status(e.key) ?? "redaction") == "adoptee" && to_int(e.value) <= to_int(h)).sort_by(e => to_int(e.value))
+        for e in prets {
+            let v = e.key
+            let prec = courante.get("en_vigueur")
+            if prec != () {
+                transition(prec, "en_vigueur", "remplacee")
+            }
+            transition(v, "adoptee", "en_vigueur")
+            courante.set("en_vigueur", v)
+            vigueur.set(v, h)
+            let _ = DonAdhesions.ouvrir_resignature(h, v)
+            let _ = Journal.noter(h, "donnees", par, "accord {v} en vigueur")
+        }
+        return courante.get("en_vigueur") ?? ""
+    }
+
+    on abroger(h, version, motif, par, valideur) {
+        require ApiAcces.a_le_role(par, "direction") else Habilitation "abroger l'accord : direction d'ORBITE"
+        require valideur != par && ApiAcces.a_le_role(valideur, "direction") && ApiAcces.quatre_yeux(par, valideur) else QuatreYeux "valideur direction distinct exigé"
+        let st = get_status(version)
+        require st != () else Inconnu "version inconnue ou en rédaction : {version}"
+        require st == "en_vigueur" else EtatInvalide "version {version} pas en vigueur"
+        require len(motif) > 0 else MotifRequis "motif d'abrogation exigé"
+        if (courante.get("en_vigueur") ?? "") == version {
+            courante.delete("en_vigueur")
+        }
+        transition(version, "en_vigueur", "abrogee")
+        let _ = Journal.noter(h, "donnees", par, "accord {version} abrogé : {motif} (valideur {valideur})")
+        return "abrogee"
+    }
+
+    on abandonner(h, version, motif, par) {
+        require ApiAcces.a_le_role(par, "direction") else Habilitation "abandonner : direction d'ORBITE"
+        require empreinte.get(version) != () else Inconnu "version inconnue : {version}"
+        require len(motif) > 0 else MotifRequis "motif d'abandon exigé"
+        let st = get_status(version) ?? "redaction"
+        require st == "redaction" || st == "consultation" || st == "adoptee" else EtatInvalide "version {version} déjà {st}"
+        transition(version, st, "abandonnee")
+        let _ = Journal.noter(h, "donnees", par, "accord {version} abandonné : {motif}")
+        return "abandonnee"
+    }
+
+    on resultat_consultation(version) {
+        require empreinte.get(version) != () else Inconnu "version inconnue : {version}"
+        return [favorables.get(version) ?? 0, exprimes.get(version) ?? 0]
+    }
+
+    on en_vigueur() {
+        return courante.get("en_vigueur") ?? ""
+    }
+
+    on etat(version) {
+        if empreinte.get(version) == () { return "inconnue" }
+        return get_status(version) ?? "redaction"
+    }
+}
+
+flesh DonAdhesions {
+    on signer(h, org, par) {
+        require ApiRef.organisation_existe(org) else Inconnu "organisation inconnue : {org}"
+        let g = ApiRef.genre(org)
+        require g != "orbite" else HorsBornes "ORBITE est adhérente de droit"
+        let role_req = if g == "etat" { "autorite" } else { "administrateur_operateur" }
+        require ApiAcces.a_le_role(par, Role(role_req)) && ApiAcces.agit_pour(par, org) else Habilitation "signer : {role_req} de {org}"
+        let v = DonAccords.en_vigueur()
+        require v != "" else Ferme "aucune version de l'accord en vigueur"
+        let cur = courante_de.get(org)
+        if cur != () {
+            let st_cur = get_status(cur) ?? "signee"
+            require st_cur != "suspendue" else Suspendu "adhésion de {org} suspendue"
+            require !((st_cur == "active") && (version_de.get(cur) ?? "") == v) else Doublon "{org} adhère déjà à {v}"
+        }
+        let en_attente = org_de.entries.filter(e => e.value == org && (get_status(e.key) ?? "signee") == "signee" && (version_de.get(e.key) ?? "") == v)
+        require len(en_attente) == 0 else Doublon "signature de {org} sur {v} en attente de contre-signature"
+        require org_de.size < MAX_ADHESIONS else Plein "trop d'adhésions"
+        let id = "AD-{next_id()}"
+        require org_de.get(id) == () else Existe "adhésion {id} existe"
+        org_de.set(id, to_string(org))
+        version_de.set(id, v)
+        signataire.set(id, par)
+        signee_le.set(id, h)
+        let _ = Journal.noter(h, "donnees", par, "adhésion {id} : {org} signe l'accord {v}")
+        return id
+    }
+
+    on contresigner(h, adhesion, par) {
+        require ApiAcces.a_le_role(par, "conformite") else Habilitation "contre-signer : conformite d'ORBITE"
+        let org = org_de.get(adhesion)
+        require org != () else Inconnu "adhésion inconnue : {adhesion}"
+        require (get_status(adhesion) ?? "signee") == "signee" else EtatInvalide "adhésion {adhesion} déjà traitée"
+        let v = version_de.get(adhesion) ?? ""
+        require DonAccords.en_vigueur() == v else Perime "version {v} plus en vigueur : re-signer"
+        require ApiRef.organisation_existe(Org(org)) else EtatInvalide "organisation {org} radiée"
+        let tutelle = ApiRef.etat_de(Org(org))
+        require ApiRef.etat_participant(tutelle) else Suspendu "État de tutelle {tutelle} non participant"
+        let prec = courante_de.get(org)
+        if prec != () && prec != adhesion {
+            if (get_status(prec) ?? "signee") == "active" {
+                transition(prec, "active", "remplacee")
+            }
+        }
+        transition(adhesion, "signee", "active")
+        courante_de.set(org, adhesion)
+        let _ = Journal.noter(h, "donnees", par, "adhésion {adhesion} de {org} active")
+        return "active"
+    }
+
+    on annuler(h, adhesion, motif, par) {
+        let sig = signataire.get(adhesion)
+        require sig != () else Inconnu "adhésion inconnue : {adhesion}"
+        require par == sig || ApiAcces.a_le_role(par, "conformite") || ApiAcces.a_le_role(par, "systeme") else Habilitation "annuler : signataire, conformite ou systeme"
+        require len(motif) > 0 else MotifRequis "motif d'annulation exigé"
+        require (get_status(adhesion) ?? "signee") == "signee" else EtatInvalide "adhésion {adhesion} déjà contre-signée ou close"
+        transition(adhesion, "signee", "annulee")
+        let _ = Journal.noter(h, "donnees", par, "adhésion {adhesion} annulée : {motif}")
+        return "annulee"
+    }
+
+    on retirer(h, org, motif, par) {
+        let role_ok = ApiAcces.a_le_role(par, "autorite") || ApiAcces.a_le_role(par, "administrateur_operateur")
+        require role_ok && ApiAcces.agit_pour(par, org) else Habilitation "retirer : représentant de {org}"
+        let cur = courante_de.get(org)
+        require cur != () else Inconnu "{org} n'a pas d'adhésion"
+        require len(motif) > 0 else MotifRequis "motif du retrait exigé"
+        let st = get_status(cur) ?? "signee"
+        require st == "active" || st == "suspendue" else EtatInvalide "adhésion {cur} {st}"
+        transition(cur, st, "retiree")
+        courante_de.delete(org)
+        let nd = DonDemandes.revoquer_de(h, org)
+        let np = DonPartages.revoquer_beneficiaire(h, org)
+        let _ = Journal.noter(h, "donnees", par, "{org} se retire de l'accord ({cur}) : {motif} ; {nd} demandes et {np} partages révoqués")
+        return "retiree"
+    }
+
+    on radier(h, org, par) {
+        require ApiAcces.a_le_role(par, "systeme") || ApiAcces.a_le_role(par, "conformite") else Habilitation "radier : systeme ou conformite"
+        let cur = courante_de.get(org)
+        require cur != () else Inconnu "{org} n'a pas d'adhésion"
+        require !ApiRef.organisation_existe(org) else EtatInvalide "{org} encore inscrite au référentiel"
+        let st = get_status(cur) ?? "signee"
+        require st == "active" || st == "suspendue" else EtatInvalide "adhésion {cur} {st}"
+        transition(cur, st, "radiee")
+        courante_de.delete(org)
+        let _ = DonDemandes.revoquer_de(h, org)
+        let _ = DonPartages.revoquer_beneficiaire(h, org)
+        let _ = Journal.noter(h, "donnees", par, "adhésion {cur} radiée ({org} radiée du référentiel)")
+        return "radiee"
+    }
+
+    on ouvrir_resignature(h, nouvelle) {
+        let lim = to_int(h) + DELAI_RESIGNATURE_MS
+        let n = 0
+        for e in courante_de.entries {
+            let ad = e.value
+            let st = get_status(ad) ?? "signee"
+            if (st == "active" || st == "suspendue") && (version_de.get(ad) ?? "") != nouvelle {
+                caduque_le.set(ad, Horodatage(lim))
+                let _ = ApiPasserelle.notifier(h, e.key, "", "re-signature de l'accord", "signer la version {nouvelle} avant {lim}", 1)
+                n = n + 1
+            }
+        }
+        return n
+    }
+
+    on echoir(h, par) {
+        require ApiAcces.a_le_role(par, "systeme") else Habilitation "échéances des adhésions : systeme"
+        let t = to_int(h)
+        let fins_org = courante_de.entries.filter(e => to_int(caduque_le.get(e.value) ?? Horodatage(t + 1)) <= t && ((get_status(e.value) ?? "signee") == "active" || (get_status(e.value) ?? "signee") == "suspendue"))
+        let n = 0
+        for e in fins_org {
+            let st = get_status(e.value) ?? "signee"
+            transition(e.value, st, "caduque")
+            courante_de.delete(e.key)
+            let _ = DonDemandes.revoquer_de(h, e.key)
+            let _ = DonPartages.revoquer_beneficiaire(h, e.key)
+            let _ = Journal.noter(h, "donnees", par, "adhésion {e.value} de {e.key} caduque")
+            n = n + 1
+        }
+        let vieilles = signee_le.entries.filter(e => (get_status(e.key) ?? "signee") == "signee" && to_int(e.value) + DELAI_CONTRESIGNATURE_MS <= t)
+        for e in vieilles {
+            transition(e.key, "signee", "annulee")
+            let _ = Journal.noter(h, "donnees", par, "adhésion {e.key} annulée faute de contre-signature")
+            n = n + 1
+        }
+        return n
+    }
+
+    on suspendre(h, org, violation, par, valideur) {
+        require ApiAcces.a_le_role(par, "conformite") else Habilitation "suspendre : conformite d'ORBITE"
+        require valideur != par && ApiAcces.a_le_role(valideur, "direction") && ApiAcces.quatre_yeux(par, valideur) else QuatreYeux "valideur direction distinct exigé"
+        let cur = courante_de.get(org)
+        require cur != () else Inconnu "{org} n'a pas d'adhésion"
+        require len(violation) > 0 else MotifRequis "référence de la violation exigée"
+        require (get_status(cur) ?? "signee") == "active" else EtatInvalide "adhésion {cur} non active"
+        transition(cur, "active", "suspendue")
+        let nd = DonDemandes.revoquer_de(h, org)
+        let np = DonPartages.revoquer_beneficiaire(h, org)
+        let _ = ApiPasserelle.notifier(h, org, "", "adhésion suspendue", "violation {violation} : adhésion {cur} suspendue", 2)
+        let _ = Journal.noter(h, "donnees", par, "adhésion {cur} de {org} suspendue (violation {violation}, valideur {valideur}) ; {nd} demandes et {np} partages révoqués")
+        return "suspendue"
+    }
+
+    on retablir(h, org, motif, par, valideur) {
+        require ApiAcces.a_le_role(par, "conformite") else Habilitation "rétablir : conformite d'ORBITE"
+        require valideur != par && ApiAcces.a_le_role(valideur, "direction") && ApiAcces.quatre_yeux(par, valideur) else QuatreYeux "valideur direction distinct exigé"
+        let cur = courante_de.get(org)
+        require cur != () else Inconnu "{org} n'a pas d'adhésion"
+        require len(motif) > 0 else MotifRequis "mesures correctrices à attester"
+        require (get_status(cur) ?? "signee") == "suspendue" else EtatInvalide "adhésion {cur} non suspendue"
+        let lim = caduque_le.get(cur)
+        require lim == () || to_int(lim) > to_int(h) else Perime "version signée remplacée et délai de re-signature passé"
+        require ApiRef.organisation_existe(org_de.get(cur) ?? org) else EtatInvalide "{org} radiée : la radier"
+        transition(cur, "suspendue", "active")
+        let _ = Journal.noter(h, "donnees", par, "adhésion {cur} de {org} rétablie : {motif} (valideur {valideur})")
+        return "active"
+    }
+
+    on adherent(org) {
+        if org == ApiRef.orbite() { return true }
+        let cur = courante_de.get(org)
+        if cur == () { return false }
+        return (get_status(cur) ?? "signee") == "active"
+    }
+
+    on adhesion_de(org) {
+        let cur = courante_de.get(org)
+        if cur == () { return "" }
+        if (get_status(cur) ?? "signee") == "active" { return cur }
+        return ""
+    }
+
+    on etat(adhesion) {
+        if org_de.get(adhesion) == () { return "inconnue" }
+        return get_status(adhesion) ?? "signee"
+    }
+}

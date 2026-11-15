@@ -1,0 +1,371 @@
+// Corps de responsabilite : réclamations entre États (RespReclamations) et commissions de
+// règlement (RespCommissions), Convention de 1972.
+
+flesh RespReclamations {
+    on deposer(h, demandeur, defendeur, dossier, objet, lieu, dommage, montant, motif, par) {
+        require ApiRef.etat_participant(demandeur) else Inconnu "État {demandeur} non participant"
+        let org_dem = ApiRef.org_de_etat(demandeur)
+        require (ApiAcces.a_le_role(par, "autorite") || ApiAcces.a_le_role(par, "point_focal")) && ApiAcces.agit_pour(par, org_dem) else Habilitation "{par} n'est ni autorité ni point focal de {demandeur}"
+        require motif != "" else MotifRequis "réclamation sans exposé du dommage"
+        require demandeur != defendeur else Incoherent "un État ne réclame pas contre lui-même"
+        require to_int(dommage) <= to_int(h) else Incoherent "dommage postérieur au dépôt"
+        require to_int(h) - to_int(dommage) <= DELAI_DEPOT else Delai "plus d'un an après le dommage (art. X)"
+        let ed = RespDossiers.etat(dossier)
+        require ed != "aucun" && ed != "annule" else Inconnu "dossier {dossier} inconnu"
+        require contains(RespDossiers.cibles(dossier), to_string(objet)) else Inconnu "objet {objet} hors du dossier {dossier}"
+        require contains(ApiLancements.etats_de_lancement(objet), to_string(defendeur)) else NonEligible "{defendeur} n'est pas un État de lancement de {objet}"
+        require demandeur_de.size < MAX_RECLAMATIONS else Plein "registre des réclamations plein"
+        let id = "RC-{next_id()}"
+        transition(id, "aucune", "deposee")
+        demandeur_de.set(id, demandeur)
+        defendeur_de.set(id, defendeur)
+        dossier_de.set(id, dossier)
+        objet_de.set(id, objet)
+        lieu_de.set(id, lieu)
+        deposee_le.set(id, h)
+        dommage_le.set(id, dommage)
+        montant_demande.set(id, montant)
+        motif_de.set(id, motif)
+        reclamations_du_dossier.set(dossier, (reclamations_du_dossier.get(dossier) ?? []) ++ [id])
+        Journal.noter(h, "responsabilite", par, "réclamation {id} : {demandeur} contre {defendeur}, {objet}, {lieu}, {montant} EUR")
+        return id
+    }
+
+    on statuer(h, rec, recevable, motif, par, valideur) {
+        require ApiAcces.a_le_role(par, "conformite") else Habilitation "{par} n'est pas conformite"
+        require ApiAcces.quatre_yeux(par, valideur) else QuatreYeux "recevabilité de {rec} : quatre yeux requis"
+        require ApiAcces.a_le_role(valideur, "direction") else Habilitation "le valideur {valideur} n'est pas direction"
+        require motif != "" else MotifRequis "décision de recevabilité sans motif"
+        let st = get_status(rec) ?? "aucune"
+        require st != "aucune" else Inconnu "réclamation {rec} inconnue"
+        require st == "deposee" else EtatInvalide "la réclamation {rec} est {st}"
+        let objet = objet_de.get(rec)
+        let def = defendeur_de.get(rec)
+        let conditions = contains(ApiLancements.etats_de_lancement(objet), to_string(def))
+        let raison = if conditions { "" } else { " (défendeur hors des États de lancement)" }
+        if conditions && lieu_de.get(rec) == "espace" {
+            let ret = RespFautes.retenues_de_dossier(dossier_de.get(rec) ?? "")
+            conditions = len(ret.filter(l => split(l, "|")[1] == to_string(objet))) > 0
+            if !conditions {
+                raison = " (dommage dans l'espace sans faute retenue, art. III)"
+            }
+        }
+        let cible = if recevable && conditions { "recevable" } else { "irrecevable" }
+        if cible == "recevable" {
+            transition(rec, "deposee", "recevable")
+        } else {
+            transition(rec, "deposee", "irrecevable")
+        }
+        motif_de.set(rec, motif + raison)
+        Journal.noter(h, "responsabilite", par, "réclamation {rec} {cible} ({valideur}) — {motif}{raison}")
+        return cible
+    }
+
+    on notifier(h, rec, par) {
+        require ApiAcces.a_le_role(par, "conformite") || ApiAcces.a_le_role(par, "systeme") else Habilitation "{par} n'est ni conformite ni systeme"
+        let st = get_status(rec) ?? "aucune"
+        require st != "aucune" else Inconnu "réclamation {rec} inconnue"
+        require st == "recevable" else EtatInvalide "la réclamation {rec} est {st}"
+        let dem = demandeur_de.get(rec)
+        let def = defendeur_de.get(rec)
+        transition(rec, "recevable", "negociation")
+        notifiee_le.set(rec, h)
+        let _ = ApiPasserelle.notifier(h, ApiRef.org_de_etat(def), "", "reclamation {rec}", "Réclamation de {dem} au titre de la Convention de 1972 : négociation diplomatique ouverte", 2)
+        let _ = ApiPasserelle.notifier(h, ApiRef.org_de_etat(dem), "", "reclamation {rec}", "Accusé de réception : réclamation notifiée à {def}", 2)
+        Journal.noter(h, "responsabilite", par, "réclamation {rec} notifiée à {def}")
+        return Horodatage(to_int(h) + DELAI_NEGOCIATION)
+    }
+
+    on regler(h, rec, montant, par, valideur) {
+        let st = get_status(rec) ?? "aucune"
+        require st != "aucune" else Inconnu "réclamation {rec} inconnue"
+        let dem = demandeur_de.get(rec)
+        let def = defendeur_de.get(rec)
+        require ApiAcces.a_le_role(par, "autorite") && ApiAcces.agit_pour(par, ApiRef.org_de_etat(dem)) else Habilitation "{par} n'est pas l'autorité de {dem}"
+        require ApiAcces.a_le_role(valideur, "autorite") && ApiAcces.agit_pour(valideur, ApiRef.org_de_etat(def)) else Habilitation "{valideur} n'est pas l'autorité de {def}"
+        require st == "negociation" || st == "commission" else EtatInvalide "la réclamation {rec} est {st}"
+        require to_int(montant) <= to_int(montant_demande.get(rec) ?? 0) else HorsBornes "montant convenu supérieur au montant demandé"
+        montant_alloue.set(rec, montant)
+        if st == "commission" {
+            let _ = RespCommissions.dissoudre(h, rec, "règlement amiable")
+            transition(rec, "commission", "reglee")
+        } else {
+            transition(rec, "negociation", "reglee")
+        }
+        Journal.noter(h, "responsabilite", par, "réclamation {rec} réglée à l'amiable : {montant} EUR ({valideur})")
+        return montant
+    }
+
+    on demander_commission(h, rec, par) {
+        let st = get_status(rec) ?? "aucune"
+        require st != "aucune" else Inconnu "réclamation {rec} inconnue"
+        let dem = demandeur_de.get(rec)
+        let def = defendeur_de.get(rec)
+        let pour_dem = ApiAcces.agit_pour(par, ApiRef.org_de_etat(dem))
+        let pour_def = ApiAcces.agit_pour(par, ApiRef.org_de_etat(def))
+        require ApiAcces.a_le_role(par, "autorite") && (pour_dem || pour_def) else Habilitation "{par} n'est l'autorité d'aucun des deux États"
+        require st == "negociation" else EtatInvalide "la réclamation {rec} est {st}"
+        let nl = notifiee_le.get(rec) ?? h
+        require to_int(h) - to_int(nl) >= DELAI_NEGOCIATION else Delai "négociation ouverte depuis moins d'un an (art. XIV)"
+        require RespDossiers.etat(dossier_de.get(rec) ?? "") == "scelle" else Insuffisant "le dossier de {rec} n'est pas scellé"
+        transition(rec, "negociation", "commission")
+        let ech = RespCommissions.saisir(h, rec)
+        Journal.noter(h, "responsabilite", par, "commission de règlement demandée pour {rec}")
+        return ech
+    }
+
+    on prendre_acte(h, rec, par) {
+        require ApiAcces.a_le_role(par, "systeme") || ApiAcces.a_le_role(par, "conformite") else Habilitation "{par} n'est ni systeme ni conformite"
+        let st = get_status(rec) ?? "aucune"
+        require st != "aucune" else Inconnu "réclamation {rec} inconnue"
+        require st == "commission" else EtatInvalide "la réclamation {rec} est {st}"
+        require RespCommissions.etat(rec) == "rendue" else EtatInvalide "la commission de {rec} n'a pas rendu sa sentence"
+        let m = RespCommissions.montant(rec)
+        montant_alloue.set(rec, m)
+        transition(rec, "commission", "sentence")
+        let dem = demandeur_de.get(rec)
+        let def = defendeur_de.get(rec)
+        let _ = ApiPasserelle.notifier(h, ApiRef.org_de_etat(dem), "", "sentence {rec}", "Sentence de la commission : {m} EUR", 2)
+        let _ = ApiPasserelle.notifier(h, ApiRef.org_de_etat(def), "", "sentence {rec}", "Sentence de la commission : {m} EUR", 2)
+        Journal.noter(h, "responsabilite", par, "sentence de {rec} : {m} EUR")
+        return m
+    }
+
+    on clore(h, rec, executee, motif, par) {
+        require ApiAcces.a_le_role(par, "conformite") else Habilitation "{par} n'est pas conformite"
+        require motif != "" else MotifRequis "clôture sans motif"
+        let st = get_status(rec) ?? "aucune"
+        require st != "aucune" else Inconnu "réclamation {rec} inconnue"
+        require st == "sentence" else EtatInvalide "la réclamation {rec} est {st}"
+        executee_de.set(rec, executee)
+        motif_de.set(rec, motif)
+        transition(rec, "sentence", "close")
+        if !executee && RespCommissions.obligatoire(rec) {
+            let dem = demandeur_de.get(rec)
+            let def = defendeur_de.get(rec)
+            let _ = ApiPasserelle.notifier(h, ApiRef.org_de_etat(dem), "", "sentence {rec} inexécutée", "Sentence obligatoire inexécutée — {motif}", 2)
+            let _ = ApiPasserelle.notifier(h, ApiRef.org_de_etat(def), "", "sentence {rec} inexécutée", "Sentence obligatoire inexécutée — {motif}", 2)
+        }
+        Journal.noter(h, "responsabilite", par, "réclamation {rec} close (exécutée : {executee}) — {motif}")
+        return "close"
+    }
+
+    on retirer(h, rec, motif, par) {
+        let st = get_status(rec) ?? "aucune"
+        require st != "aucune" else Inconnu "réclamation {rec} inconnue"
+        let dem = demandeur_de.get(rec)
+        require ApiAcces.a_le_role(par, "autorite") && ApiAcces.agit_pour(par, ApiRef.org_de_etat(dem)) else Habilitation "{par} n'est pas l'autorité de {dem}"
+        require motif != "" else MotifRequis "retrait sans motif"
+        require st == "deposee" || st == "recevable" || st == "negociation" || st == "commission" else EtatInvalide "la réclamation {rec} est {st}"
+        if st == "commission" {
+            let _ = RespCommissions.dissoudre(h, rec, "retrait du demandeur")
+        }
+        transition(rec, st, "retiree")
+        motif_de.set(rec, motif)
+        Journal.noter(h, "responsabilite", par, "réclamation {rec} retirée — {motif}")
+        return "retiree"
+    }
+
+    on etat(rec) {
+        return get_status(rec) ?? "aucune"
+    }
+
+    on parties(rec) {
+        let dem = demandeur_de.get(rec)
+        require dem != () else Inconnu "réclamation {rec} inconnue"
+        return [to_string(dem), to_string(defendeur_de.get(rec) ?? "")]
+    }
+
+    on demande(rec) {
+        let m = montant_demande.get(rec)
+        require m != () else Inconnu "réclamation {rec} inconnue"
+        return m
+    }
+
+    on alloue(rec) {
+        let st = get_status(rec) ?? "aucune"
+        require st != "aucune" else Inconnu "réclamation {rec} inconnue"
+        require st == "reglee" || st == "close" else EtatInvalide "la réclamation {rec} est {st}"
+        return montant_alloue.get(rec) ?? 0
+    }
+
+    on dommage(rec) {
+        let d = dommage_le.get(rec)
+        require d != () else Inconnu "réclamation {rec} inconnue"
+        return d
+    }
+
+    on de_dossier(dossier) {
+        return reclamations_du_dossier.get(dossier) ?? []
+    }
+
+    on pendantes_de_dossier(dossier) {
+        let n = 0
+        for r in reclamations_du_dossier.get(dossier) ?? [] {
+            let st = get_status(r) ?? "aucune"
+            if st != "irrecevable" && st != "reglee" && st != "close" && st != "retiree" {
+                n = n + 1
+            }
+        }
+        return n
+    }
+}
+
+flesh RespCommissions {
+    on saisir(h, rec) {
+        require (get_status(rec) ?? "aucune") == "aucune" else Existe "la commission de {rec} est déjà saisie"
+        transition(rec, "aucune", "en_constitution")
+        saisie_le.set(rec, h)
+        Journal.noter(h, "responsabilite", "systeme", "commission de règlement saisie pour {rec}")
+        return Horodatage(to_int(h) + DELAI_MEMBRES)
+    }
+
+    on designer_membre(h, rec, membre, etat, par) {
+        let sl = saisie_le.get(rec)
+        require sl != () else Inconnu "aucune commission pour {rec}"
+        let st = get_status(rec) ?? "aucune"
+        require st == "en_constitution" else EtatInvalide "la commission de {rec} est {st}"
+        let pts = RespReclamations.parties(rec)
+        require contains(pts, to_string(etat)) else Inconnu "{etat} n'est pas partie à {rec}"
+        let echu = to_int(h) > to_int(sl) + DELAI_MEMBRES
+        if ApiAcces.a_le_role(par, "direction") {
+            require echu else Delai "la direction ne pourvoit un siège qu'après le délai de 2 mois"
+        } else {
+            require ApiAcces.a_le_role(par, "autorite") && ApiAcces.agit_pour(par, ApiRef.org_de_etat(etat)) else Habilitation "{par} n'est pas l'autorité de {etat}"
+            require !echu else Delai "délai de désignation de 2 mois échu (art. XV)"
+        }
+        require membre != "" else Inconnu "membre non désigné"
+        if to_string(etat) == pts[0] {
+            require membre_demandeur.get(rec) == () else Existe "siège du demandeur déjà pourvu"
+            membre_demandeur.set(rec, membre)
+        } else {
+            require membre_defendeur.get(rec) == () else Existe "siège du défendeur déjà pourvu"
+            membre_defendeur.set(rec, membre)
+        }
+        let n = (if membre_demandeur.get(rec) != () { 1 } else { 0 }) + (if membre_defendeur.get(rec) != () { 1 } else { 0 })
+        Journal.noter(h, "responsabilite", par, "commission {rec} : membre {membre} pour {etat}")
+        return n
+    }
+
+    on designer_president(h, rec, president, par, valideur) {
+        let st = get_status(rec) ?? "aucune"
+        require st != "aucune" else Inconnu "aucune commission pour {rec}"
+        require st == "en_constitution" else EtatInvalide "la commission de {rec} est {st}"
+        let md = membre_demandeur.get(rec)
+        let mf = membre_defendeur.get(rec)
+        require md != () && mf != () else Insuffisant "sièges de membres vacants"
+        require president != md && president != mf && president != "" else Incoherent "le président ne peut être un membre"
+        let pts = RespReclamations.parties(rec)
+        let sl = saisie_le.get(rec) ?? h
+        if ApiAcces.a_le_role(par, "direction") {
+            require ApiAcces.quatre_yeux(par, valideur) else QuatreYeux "président désigné par ORBITE : quatre yeux requis"
+            require to_int(h) > to_int(sl) + DELAI_PRESIDENT else Delai "ORBITE ne désigne le président qu'après 4 mois"
+        } else {
+            require ApiAcces.a_le_role(par, "autorite") && ApiAcces.agit_pour(par, ApiRef.org_de_etat(Etat(pts[0]))) else Habilitation "{par} n'est pas l'autorité du demandeur"
+            require ApiAcces.a_le_role(valideur, "autorite") && ApiAcces.agit_pour(valideur, ApiRef.org_de_etat(Etat(pts[1]))) else Habilitation "{valideur} n'est pas l'autorité du défendeur"
+        }
+        let ech = Horodatage(to_int(h) + DELAI_SENTENCE)
+        transition(rec, "en_constitution", "constituee")
+        president_de.set(rec, president)
+        echeance_sentence.set(rec, ech)
+        constituee_le.set(rec, h)
+        siegeantes.set(rec, h)
+        Journal.noter(h, "responsabilite", par, "commission {rec} constituée, président {president}")
+        return ech
+    }
+
+    on accepter_force(h, rec, etat, par) {
+        let st = get_status(rec) ?? "aucune"
+        require st != "aucune" else Inconnu "aucune commission pour {rec}"
+        require st == "en_constitution" || st == "constituee" else EtatInvalide "la commission de {rec} est {st}"
+        require contains(RespReclamations.parties(rec), to_string(etat)) else Inconnu "{etat} n'est pas partie à {rec}"
+        require ApiAcces.a_le_role(par, "autorite") && ApiAcces.agit_pour(par, ApiRef.org_de_etat(etat)) else Habilitation "{par} n'est pas l'autorité de {etat}"
+        let acc = acceptations_de.get(rec) ?? []
+        require !contains(acc, to_string(etat)) else Doublon "{etat} a déjà accepté"
+        let nacc = acc ++ [to_string(etat)]
+        acceptations_de.set(rec, nacc)
+        Journal.noter(h, "responsabilite", par, "commission {rec} : {etat} accepte la force obligatoire")
+        return len(nacc)
+    }
+
+    on proroger(h, rec, echeance, motif, par, valideur) {
+        require ApiAcces.a_le_role(par, "direction") else Habilitation "{par} n'est pas direction"
+        require ApiAcces.quatre_yeux(par, valideur) else QuatreYeux "prorogation : quatre yeux requis"
+        require motif != "" else MotifRequis "prorogation sans motif"
+        let st = get_status(rec) ?? "aucune"
+        require st != "aucune" else Inconnu "aucune commission pour {rec}"
+        require st == "constituee" else EtatInvalide "la commission de {rec} est {st}"
+        require to_int(echeance) > to_int(echeance_sentence.get(rec) ?? 0) else Incoherent "la nouvelle échéance doit suivre l'actuelle"
+        echeance_sentence.set(rec, echeance)
+        Journal.noter(h, "responsabilite", par, "commission {rec} prorogée au {echeance} — {motif}")
+        return echeance
+    }
+
+    on rendre(h, rec, montant, motifs, par, valideur) {
+        require ApiAcces.a_le_role(par, "direction") else Habilitation "{par} n'est pas direction"
+        require ApiAcces.quatre_yeux(par, valideur) else QuatreYeux "enregistrement de la sentence : quatre yeux requis"
+        require ApiAcces.a_le_role(valideur, "conformite") else Habilitation "le valideur {valideur} n'est pas conformite"
+        require motifs != "" else MotifRequis "sentence sans motifs"
+        let st = get_status(rec) ?? "aucune"
+        require st != "aucune" else Inconnu "aucune commission pour {rec}"
+        require st == "constituee" else EtatInvalide "la commission de {rec} est {st}"
+        require to_int(h) <= to_int(echeance_sentence.get(rec) ?? 0) else Echu "échéance de sentence passée : proroger d'abord"
+        require to_int(montant) <= to_int(RespReclamations.demande(rec)) else HorsBornes "montant alloué supérieur au montant demandé"
+        transition(rec, "constituee", "rendue")
+        montant_de.set(rec, montant)
+        motifs_de.set(rec, sha256(motifs))
+        rendue_le.set(rec, h)
+        siegeantes.delete(rec)
+        Journal.noter(h, "responsabilite", par, "sentence de la commission {rec} : {montant} EUR ({valideur})")
+        return montant
+    }
+
+    on dissoudre(h, rec, motif) {
+        let st = get_status(rec) ?? "aucune"
+        if st != "en_constitution" && st != "constituee" {
+            return ""
+        }
+        transition(rec, st, "dissoute")
+        dissoute_motif.set(rec, motif)
+        siegeantes.delete(rec)
+        Journal.noter(h, "responsabilite", "systeme", "commission {rec} dissoute — {motif}")
+        return "dissoute"
+    }
+
+    on etat(rec) {
+        return get_status(rec) ?? "aucune"
+    }
+
+    on montant(rec) {
+        let m = montant_de.get(rec)
+        require m != () else Inconnu "pas de sentence pour {rec}"
+        return m
+    }
+
+    on obligatoire(rec) {
+        return len(acceptations_de.get(rec) ?? []) >= 2
+    }
+
+    on relancer_carences(h, par) {
+        require ApiAcces.a_le_role(par, "systeme") else Habilitation "{par} n'est pas systeme"
+        let n = 0
+        for rec in siegeantes.keys {
+            let ech = echeance_sentence.get(rec) ?? h
+            let deja = carence_avisee.get(rec)
+            if to_int(ech) < to_int(h) && (deja == () || to_int(deja) != to_int(ech)) {
+                let pts = RespReclamations.parties(rec)
+                let txt = "Échéance de sentence {ech} passée : proroger ou rendre"
+                let _ = ApiPasserelle.notifier(h, ApiRef.orbite(), "", "carence commission {rec}", txt, 2)
+                for e in pts {
+                    let _ = ApiPasserelle.notifier(h, ApiRef.org_de_etat(Etat(e)), "", "carence commission {rec}", txt, 2)
+                }
+                carence_avisee.set(rec, ech)
+                n = n + 1
+            }
+        }
+        if n > 0 {
+            Journal.noter(h, "responsabilite", par, "{n} commission(s) en carence avisée(s)")
+        }
+        return n
+    }
+}

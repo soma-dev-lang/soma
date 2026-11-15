@@ -1,0 +1,172 @@
+// operateurs — corps du CHANGEMENT DE CONTRÔLE (OpChangements).
+
+flesh OpChangements {
+    on declarer(h, op, acquereur_decrit, accueil, licence_accueil, fin_licence_accueil, effet, par, valideur) {
+        require ApiAcces.a_le_role(par, "administrateur_operateur") && ApiAcces.agit_pour(par, op) else Habilitation "déclaration réservée à un administrateur_operateur de {op}"
+        require ApiAcces.quatre_yeux(par, valideur) && ApiAcces.a_le_role(valideur, "chef_de_mission") && ApiAcces.agit_pour(valideur, op) else QuatreYeux "valideur chef_de_mission de {op} requis"
+        let st = OpMembres.etat(op)
+        require st != "inconnu" && st != "candidat" else Inconnu "{op} jamais admis"
+        require st != "exclu" && st != "retire" else Ferme "{op} est {st}"
+        require ApiRef.etat_participant(accueil) else NonEligible "État d'accueil {accueil} non participant"
+        require en_cours_de.get(op) == () else Doublon "un changement de contrôle est déjà en cours pour {op}"
+        require to_int(effet) - to_int(h) >= PREAVIS_MS else Delai "préavis de 30 jours non respecté"
+        require acquereur_decrit != "" else MotifRequis "acquéreur non décrit"
+        let depart = ApiRef.etat_de(op)
+        if accueil != depart {
+            require licence_accueil != "" else MotifRequis "licence de l'État d'accueil requise"
+        }
+        require operateur.size < MAX_CHANGEMENTS else Plein "registre des changements plein"
+        let n = next_id()
+        let id = "CC-{n}"
+        operateur.set(id, op)
+        acquereur.set(id, acquereur_decrit)
+        etat_depart.set(id, depart)
+        etat_accueil.set(id, accueil)
+        date_effet.set(id, effet)
+        nouvelle_licence.set(id, if accueil != depart { licence_accueil } else { "" })
+        fin_licence.set(id, fin_licence_accueil)
+        en_cours_de.set(op, id)
+        let _ = Journal.noter(h, "operateurs", par, "changement de contrôle {id} déclaré pour {op} ({depart} → {accueil}, valideur {valideur})")
+        return id
+    }
+    on examiner(h, id, par) {
+        require ApiAcces.a_le_role(par, "analyste") else Habilitation "réservé à un analyste d'ORBITE"
+        let dep = etat_depart.get(id)
+        require dep != () else Inconnu "changement {id} inconnu"
+        let st = get_status(id) ?? "declare"
+        require st == "declare" else EtatInvalide "changement {id} {st}"
+        let acc = etat_accueil.get(id) ?? dep
+        transition(id, "declare", "en_examen")
+        let _ = ApiPasserelle.notifier(h, ApiRef.org_de_etat(dep), "", "changement", "avis demandé sur le changement de contrôle {id}", 1)
+        if acc != dep {
+            let _ = ApiPasserelle.notifier(h, ApiRef.org_de_etat(acc), "", "changement", "avis demandé sur le changement de contrôle {id}", 1)
+        }
+        let _ = Journal.noter(h, "operateurs", par, "changement {id} en examen")
+        return "en_examen"
+    }
+    on aviser(h, id, avis, motif, par) {
+        let op = operateur.get(id)
+        require op != () else Inconnu "changement {id} inconnu"
+        let dep = etat_depart.get(id) ?? ""
+        let acc = etat_accueil.get(id) ?? dep
+        let est_dep = ApiAcces.agit_pour(par, ApiRef.org_de_etat(dep))
+        let est_acc = ApiAcces.agit_pour(par, ApiRef.org_de_etat(acc))
+        require ApiAcces.a_le_role(par, "autorite") && (est_dep || est_acc) else Habilitation "avis réservé à l'autorité de l'État de départ ou d'accueil"
+        let st = get_status(id) ?? "declare"
+        require st == "en_examen" else EtatInvalide "changement {id} {st}"
+        require avis == "favorable" || motif != "" else MotifRequis "avis défavorable sans motif"
+        let ligne = "{h} | {avis} | {par}"
+        let posee = false
+        if est_dep && avis_depart.get(id) == () {
+            avis_depart.set(id, ligne)
+            posee = true
+            if acc == dep { avis_accueil.set(id, ligne) }
+        } else if est_acc && avis_accueil.get(id) == () {
+            avis_accueil.set(id, ligne)
+            posee = true
+        }
+        require posee else Doublon "cet État a déjà donné son avis"
+        if avis == "defavorable" {
+            decision.set(id, "{h} | refuse | avis défavorable : {motif} | {par} | -")
+            if en_cours_de.get(op) == id { en_cours_de.delete(op) }
+            transition(id, "en_examen", "refuse")
+            let _ = ApiPasserelle.notifier(h, op, "", "changement", "changement de contrôle {id} refusé par un État : {motif}", 2)
+            let _ = Journal.noter(h, "operateurs", par, "changement {id} refusé (avis défavorable)")
+            return "refuse"
+        }
+        let _ = Journal.noter(h, "operateurs", par, "changement {id} : avis favorable")
+        return "en_examen"
+    }
+    on approuver(h, id, par, valideur) {
+        require ApiAcces.a_le_role(par, "analyste") else Habilitation "réservé à un analyste d'ORBITE"
+        require ApiAcces.quatre_yeux(par, valideur) && ApiAcces.a_le_role(valideur, "superviseur") else QuatreYeux "valideur superviseur requis"
+        let op = operateur.get(id)
+        require op != () else Inconnu "changement {id} inconnu"
+        let st = get_status(id) ?? "declare"
+        require st == "en_examen" else EtatInvalide "changement {id} {st}"
+        let acc = etat_accueil.get(id) ?? ""
+        require ApiRef.etat_participant(acc) else EtatInvalide "État d'accueil {acc} non participant ou suspendu"
+        let ad = avis_depart.get(id) ?? ""
+        let aa = avis_accueil.get(id) ?? ""
+        require contains(ad, " | favorable | ") && contains(aa, " | favorable | ") else Insuffisant "avis favorable manquant"
+        decision.set(id, "{h} | approuve | - | {par} | {valideur}")
+        transition(id, "en_examen", "approuve")
+        let _ = ApiPasserelle.notifier(h, op, "", "changement", "changement de contrôle {id} approuvé", 1)
+        let _ = Journal.noter(h, "operateurs", par, "changement {id} approuvé (valideur {valideur})")
+        return "approuve"
+    }
+    on refuser(h, id, motif, par) {
+        require ApiAcces.a_le_role(par, "superviseur") else Habilitation "réservé à un superviseur d'ORBITE"
+        let op = operateur.get(id)
+        require op != () else Inconnu "changement {id} inconnu"
+        let st = get_status(id) ?? "declare"
+        require st == "en_examen" else EtatInvalide "changement {id} {st}"
+        require motif != "" else MotifRequis "motif requis"
+        decision.set(id, "{h} | refuse | {motif} | {par} | -")
+        if en_cours_de.get(op) == id { en_cours_de.delete(op) }
+        transition(id, "en_examen", "refuse")
+        let _ = ApiPasserelle.notifier(h, op, "", "changement", "changement de contrôle {id} refusé par ORBITE : {motif}", 2)
+        let _ = Journal.noter(h, "operateurs", par, "changement {id} refusé")
+        return "refuse"
+    }
+    on retirer(h, id, par) {
+        let op = operateur.get(id)
+        require op != () else Inconnu "changement {id} inconnu"
+        require ApiAcces.a_le_role(par, "administrateur_operateur") && ApiAcces.agit_pour(par, op) else Habilitation "réservé à un administrateur_operateur de {op}"
+        let st = get_status(id) ?? "declare"
+        require st == "declare" || st == "en_examen" else EtatInvalide "changement {id} {st}"
+        decision.set(id, "{h} | retire | - | {par} | -")
+        if en_cours_de.get(op) == id { en_cours_de.delete(op) }
+        transition(id, st, "retire")
+        let _ = Journal.noter(h, "operateurs", par, "changement {id} retiré")
+        return "retire"
+    }
+    on rendre_effectif(h, id, par, valideur) {
+        require ApiAcces.a_le_role(par, "superviseur") else Habilitation "réservé à un superviseur d'ORBITE"
+        require ApiAcces.quatre_yeux(par, valideur) && ApiAcces.a_le_role(valideur, "direction") else QuatreYeux "valideur direction requis"
+        let op = operateur.get(id)
+        require op != () else Inconnu "changement {id} inconnu"
+        let st = get_status(id) ?? "declare"
+        require st == "approuve" else EtatInvalide "changement {id} {st}"
+        require to_int(h) >= to_int(date_effet.get(id) ?? h) else Delai "date d'effet non atteinte"
+        let ms = OpMembres.etat(op)
+        require ms == "actif" || ms == "suspendu" else EtatInvalide "{op} est {ms}"
+        let dep = etat_depart.get(id) ?? ""
+        let acc = etat_accueil.get(id) ?? dep
+        if acc != dep {
+            let r = try { ApiRef.changer_tutelle(h, op, acc, par, valideur) }
+            require r.error == () else EtatInvalide "changement de tutelle refusé par le référentiel"
+            let _ = OpLicences.transferer(h, op, acc, nouvelle_licence.get(id) ?? "", fin_licence.get(id) ?? h)
+            let _ = ApiPasserelle.notifier(h, ApiRef.org_de_etat(acc), "", "changement", "{op} passe sous votre tutelle (changement {id}) : confirmer la licence", 2)
+        }
+        let _ = ApiPasserelle.notifier(h, ApiRef.org_de_etat(dep), "", "changement", "changement de contrôle {id} de {op} effectif", 1)
+        decision.set(id, "{h} | effectif | - | {par} | {valideur}")
+        if en_cours_de.get(op) == id { en_cours_de.delete(op) }
+        transition(id, "approuve", "effectif")
+        let _ = Journal.noter(h, "operateurs", par, "changement {id} effectif ({op} : {dep} → {acc})")
+        return "effectif"
+    }
+    on rendre_caducs(h, n, par) {
+        require ApiAcces.a_le_role(par, "systeme") || ApiAcces.a_le_role(par, "exploitant") else Habilitation "balayage réservé au système ou à un exploitant"
+        let compte = 0
+        for e in date_effet.entries {
+            if compte >= n { break }
+            let id = e.key
+            if (get_status(id) ?? "declare") == "approuve" && to_int(h) - to_int(e.value) > CADUCITE_MS {
+                decision.set(id, "{h} | caduc | non réalisé 90 jours après la date d'effet | systeme | -")
+                for c in en_cours_de.entries {
+                    if c.value == id { en_cours_de.delete(c.key) }
+                }
+                transition(id, "approuve", "caduc")
+                compte = compte + 1
+            }
+        }
+        if compte > 0 {
+            let _ = Journal.noter(h, "operateurs", par, "changements de contrôle : {compte} caduc(s)")
+        }
+        return compte
+    }
+    on en_cours(op) {
+        return en_cours_de.get(op) ?? ""
+    }
+}

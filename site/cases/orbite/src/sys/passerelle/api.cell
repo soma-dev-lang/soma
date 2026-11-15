@@ -1,0 +1,31 @@
+// Façade de la PASSERELLE : API externe (opérateurs, États, capteurs) et messages sortants (CDM, alertes).
+skeleton ApiPasserelle {
+    face {
+        // Point d'entrée HTTP JSON (authentification par jeton de session via
+        // ApiAcces.authentifier, identité tirée du jeton — jamais du corps ; seul point d'entrée,
+        // avec l'Horloge, qui lit le temps : il fournit `h` aux façades). 400 JSON invalide / champ manquant, 401 session invalide,
+        // 403 habilitation, 404 route inconnue, 405 mauvaise méthode, 422 refus métier
+        // {error, kind}, 429 débit dépassé.
+        signal request(method: String, path: String, body: String, headers: Map) -> Any
+            calls PasEntree.traiter
+        // Met en file un message vers une organisation (alerte, CDM, accusé, décision) avec un
+        // délai de livraison maximal ; `r` : rapprochement concerné ("" si aucun). Contrôle de
+        // diffusion fait par l'appelant. Un message non acquitté à l'échéance escalade (r ≠ "")
+        // ou est signalé à conformite. Renvoie l'id.
+        // Refus : Inconnu, Plein.
+        signal notifier(h: Horodatage, destinataire: Org, r: Rapprochement, sujet: String, texte: String, urgence: Niveau) -> String
+            calls PasFormats.notifier
+        // Vrai si le message a été acquitté par le destinataire.
+        signal acquitte(message: String) -> Bool
+            calls PasMessages.acquitte
+        // Vrai si le message a échoué définitivement (réessais épuisés).
+        signal echoue(message: String) -> Bool
+            calls PasMessages.echoue
+        // Balayage des échéances du sous-système à `h` (délais, expirations, rondes), appelé par
+        // l'horloge d'ORBITE (Horloge.battre) — le SEUL point d'entrée du temps : aucun signal de
+        // passerelle ne lit l'horloge lui-même. Renvoie le nombre d'objets dont l'état a changé.
+        // Refus : Habilitation (par "systeme").
+        signal balayer(h: Horodatage, par: String) -> Int
+            calls PasRondes.balayer
+    }
+}

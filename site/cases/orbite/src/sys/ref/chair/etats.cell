@@ -1,0 +1,155 @@
+// ref — corps de RefEtat (adhésion des États).
+// L'État du siège est marqué par son instrument d'adhésion "ORBITE:fondation" (écrit par fonder
+// seul ; candidater refuse tout instrument préfixé "ORBITE:").
+
+flesh RefEtat {
+    on fonder(h, etat, nom, par) {
+        require ApiAcces.a_le_role(par, "systeme") else Habilitation "fondation réservée à systeme"
+        require noms.size == 0 else Existe "un État est déjà déclaré : ORBITE est déjà fondée"
+        noms.set(etat, nom)
+        declares_le.set(etat, h)
+        admis_le.set(etat, h)
+        instruments.set(etat, "ORBITE:fondation")
+        transition(etat, "tiers", "candidat")
+        transition(etat, "candidat", "participant")
+        RefHistorique.consigner(h, to_string(etat), "adhesion", "participant", "fondation", par)
+        Journal.noter(h, "ref", par, "État du siège {etat} fondé et admis")
+        return etat
+    }
+
+    on declarer(h, etat, nom, par) {
+        require ApiAcces.a_le_role(par, "analyste") || ApiAcces.a_le_role(par, "superviseur") else Habilitation "{par} : analyste ou superviseur d'ORBITE requis"
+        require noms.get(etat) == () else Existe "État {etat} déjà déclaré"
+        require _code_valide(to_string(etat)) else Incoherent "code d'État {etat} : 3 lettres majuscules"
+        require nom != "" else Incoherent "nom d'État vide"
+        require noms.size < MAX_ETATS else Plein "trop d'États"
+        noms.set(etat, nom)
+        declares_le.set(etat, h)
+        RefHistorique.consigner(h, to_string(etat), "adhesion", "tiers", "declaration", par)
+        Journal.noter(h, "ref", par, "État {etat} déclaré ({nom})")
+        return etat
+    }
+
+    on candidater(h, etat, instrument, par) {
+        require ApiAcces.a_le_role(par, "superviseur") else Habilitation "{par} : superviseur d'ORBITE requis"
+        require noms.get(etat) != () else Inconnu "État {etat} inconnu"
+        let st = get_status(etat) ?? "tiers"
+        require st == "tiers" else EtatInvalide "État {etat} : {st}"
+        require instrument != "" && !starts_with(instrument, "ORBITE:") else MotifRequis "référence de l'instrument d'adhésion requise"
+        instruments.set(etat, instrument)
+        transition(etat, "tiers", "candidat")
+        Journal.noter(h, "ref", par, "État {etat} candidat ({instrument})")
+        return "candidat"
+    }
+
+    on admettre(h, etat, par, valideur) {
+        require ApiAcces.a_le_role(par, "direction") else Habilitation "{par} : direction d'ORBITE requise"
+        let contre = ApiAcces.quatre_yeux(par, valideur) && (ApiAcces.a_le_role(valideur, "direction") || ApiAcces.a_le_role(valideur, "superviseur"))
+        require contre else QuatreYeux "{valideur} ne peut pas contre-signer l'admission"
+        let st = get_status(etat) ?? "tiers"
+        require noms.get(etat) != () else Inconnu "État {etat} inconnu"
+        require st == "candidat" else EtatInvalide "État {etat} : {st}"
+        admis_le.set(etat, h)
+        transition(etat, "candidat", "participant")
+        let n = RefOrg.activer_tutelle(h, etat, "systeme")
+        RefHistorique.consigner(h, to_string(etat), "adhesion", "participant", "admission", par)
+        Journal.noter(h, "ref", par, "État {etat} admis (valideur {valideur}, {n} organisations activées)")
+        return "participant"
+    }
+
+    on rejeter(h, etat, motif, par) {
+        require ApiAcces.a_le_role(par, "direction") else Habilitation "{par} : direction d'ORBITE requise"
+        let st = get_status(etat) ?? "tiers"
+        require noms.get(etat) != () else Inconnu "État {etat} inconnu"
+        require st == "candidat" else EtatInvalide "État {etat} : {st}"
+        require motif != "" else MotifRequis "motif requis"
+        motifs.set(etat, motif)
+        transition(etat, "candidat", "tiers")
+        Journal.noter(h, "ref", par, "candidature de {etat} rejetée : {motif}")
+        return "tiers"
+    }
+
+    on suspendre(h, etat, motif, par, valideur) {
+        require ApiAcces.a_le_role(par, "direction") else Habilitation "{par} : direction d'ORBITE requise"
+        require ApiAcces.quatre_yeux(par, valideur) else QuatreYeux "{valideur} ne peut pas contre-signer la suspension"
+        let st = get_status(etat) ?? "tiers"
+        require st == "participant" else EtatInvalide "État {etat} : {st}"
+        require noms.get(etat) != () else Inconnu "État {etat} inconnu"
+        require (instruments.get(etat) ?? "") != "ORBITE:fondation" else EtatInvalide "{etat} est l'État du siège"
+        require motif != "" else MotifRequis "motif requis"
+        motifs.set(etat, motif)
+        transition(etat, "participant", "suspendu")
+        RefHistorique.consigner(h, to_string(etat), "adhesion", "suspendu", motif, par)
+        Journal.noter(h, "ref", par, "État {etat} suspendu (valideur {valideur}) : {motif}")
+        return "suspendu"
+    }
+
+    on retablir(h, etat, par, valideur) {
+        require ApiAcces.a_le_role(par, "direction") else Habilitation "{par} : direction d'ORBITE requise"
+        require ApiAcces.quatre_yeux(par, valideur) else QuatreYeux "{valideur} ne peut pas contre-signer le rétablissement"
+        require noms.get(etat) != () else Inconnu "État {etat} inconnu"
+        let st = get_status(etat) ?? "tiers"
+        require st == "suspendu" else EtatInvalide "État {etat} : {st}"
+        transition(etat, "suspendu", "participant")
+        RefHistorique.consigner(h, to_string(etat), "adhesion", "participant", "retablissement", par)
+        Journal.noter(h, "ref", par, "État {etat} rétabli (valideur {valideur})")
+        return "participant"
+    }
+
+    on retirer(h, etat, motif, par, valideur) {
+        require noms.get(etat) != () else Inconnu "État {etat} inconnu"
+        let st = get_status(etat) ?? "tiers"
+        require st == "participant" || st == "suspendu" else EtatInvalide "État {etat} : {st}"
+        require (instruments.get(etat) ?? "") != "ORBITE:fondation" else EtatInvalide "{etat} est l'État du siège"
+        require motif != "" else MotifRequis "motif requis"
+        let autorite = try { RefOrg.org_de_etat(etat) }
+        let par_autorite = autorite.error == () && ApiAcces.a_le_role(par, "autorite") && ApiAcces.agit_pour(par, autorite.value)
+        if !par_autorite {
+            require ApiAcces.a_le_role(par, "direction") else Habilitation "{par} : autorité de {etat} ou direction d'ORBITE requise"
+            require ApiAcces.quatre_yeux(par, valideur) else QuatreYeux "{valideur} ne peut pas contre-signer le retrait"
+        }
+        require !RefCession.en_cours_pour_etat(etat) else Conflit "cession en cours visée par {etat}"
+        motifs.set(etat, motif)
+        if st == "participant" {
+            transition(etat, "participant", "tiers")
+        } else {
+            transition(etat, "suspendu", "tiers")
+        }
+        RefHistorique.consigner(h, to_string(etat), "adhesion", "tiers", motif, par)
+        Journal.noter(h, "ref", par, "État {etat} retiré : {motif}")
+        return "tiers"
+    }
+
+    on connu(etat) {
+        return noms.get(etat) != ()
+    }
+
+    on participant(etat) {
+        return (get_status(etat) ?? "tiers") == "participant"
+    }
+
+    on etat(etat) {
+        if noms.get(etat) == () { return "inconnu" }
+        return get_status(etat) ?? "tiers"
+    }
+
+    on participants() {
+        let res_p = noms.keys.filter(k => (get_status(k) ?? "tiers") == "participant")
+        return res_p.sort()
+    }
+
+    on nom(etat) {
+        let n = noms.get(etat)
+        require n != () else Inconnu "État {etat} inconnu"
+        return n
+    }
+
+    on _code_valide(code: String) {
+        if len(code) != 3 { return false }
+        let lettres = "ABCDEFGHIJKLMNOPQRSTUVWXYZ"
+        for i in range(0, 3) {
+            if !contains(lettres, substring(code, i, i + 1)) { return false }
+        }
+        return true
+    }
+}

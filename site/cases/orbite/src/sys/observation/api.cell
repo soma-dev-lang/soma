@@ -1,0 +1,49 @@
+// Façade de l'OBSERVATION : capteurs, mesures, détermination d'orbite indépendante.
+skeleton ApiObservation {
+    face {
+        // Vrai si ORBITE a une orbite indépendante (déterminée sur ses mesures) de moins de
+        // 72 h pour l'objet.
+        signal suivi(objet: Objet, h: Horodatage) -> Bool
+            calls ObsOrbites.suivi
+        // Écart (m) entre la dernière éphéméride validée du propriétaire et l'orbite observée ;
+        // Refus : Inconnu (pas d'orbite observée).
+        signal ecart_declare(objet: Objet) -> Distance
+            calls ObsOrbites.ecart_declare
+        // Demande un suivi renforcé d'un objet (rapprochement, rentrée, fragmentation) : mesures
+        // prioritaires pendant `duree`. Renvoie l'id de la demande. Refus : Inconnu, Habilitation
+        // ("analyste" ou "systeme"), Plein (capacité des capteurs),
+        // HorsBornes (durée), MotifRequis.
+        signal demander_suivi(h: Horodatage, objet: Objet, priorite: Niveau, duree: Duree, motif: String, par: String) -> String
+            calls ObsTaches.demander
+        // Vrai si une manœuvre non annoncée a été détectée sur l'objet depuis `depuis`.
+        signal manoeuvre_detectee(objet: Objet, depuis: Horodatage) -> Bool
+            calls ObsDetections.detectee_depuis
+        // Nombre de capteurs en service (moins de 3 : couverture dégradée).
+        signal capteurs_en_service() -> Int
+            calls ObsCapteurs.en_service_nb
+        // Écart (m) entre une position déclarée ("x,y,z" mètres, repère inertiel commun) à l'instant
+        // `epoque` et l'orbite observée propagée à cet instant. Refus : Inconnu (pas d'orbite
+        // observée de moins de 72 h), Incoherent (position mal formée).
+        signal ecart_a(objet: Objet, epoque: Horodatage, position: String) -> Distance
+            calls ObsOrbites.ecart_a
+        // Dépose une mesure d'un capteur (radar, optique, laser) : instant, mesure brute codée,
+        // objet présumé ("" si inconnu). Renvoie l'id. Refus : Inconnu (capteur), Suspendu (capteur
+        // hors service ou fournisseur non agréé), Doublon, Habilitation ("capteur" du fournisseur).
+        signal deposer_mesure(h: Horodatage, capteur: String, objet: Objet, instant: Horodatage, mesure: String, par: String) -> String
+            calls ObsMesures.recevoir
+        // Périgée / apogée (m d'altitude) de la dernière orbite observée. Refus : Inconnu.
+        signal perigee(objet: Objet) -> Distance
+            calls ObsOrbites.perigee
+        signal apogee(objet: Objet) -> Distance
+            calls ObsOrbites.apogee
+        // Pistes non corrélées en attente (au plus n ≤ 1 000) : candidats nouveaux objets / fragments.
+        signal pistes_non_correlees(n: Int) -> List<String>
+            calls ObsPistes.en_attente
+        // Balayage des échéances du sous-système à `h` (délais, expirations, rondes), appelé par
+        // l'horloge d'ORBITE (Horloge.battre) — le SEUL point d'entrée du temps : aucun signal de
+        // observation ne lit l'horloge lui-même. Renvoie le nombre d'objets dont l'état a changé.
+        // Refus : Habilitation (par "systeme").
+        signal balayer(h: Horodatage, par: String) -> Int
+            calls ObsBalayage.balayer
+    }
+}

@@ -1,0 +1,52 @@
+// Façade des ÉPHÉMÉRIDES : positions prévues publiées par les propriétaires (format OEM).
+skeleton ApiEphemerides {
+    face {
+        // Dépose une éphéméride d'un objet : époque, horizon (ms), qualité de la covariance,
+        // empreinte du fichier (le contenu reste hors ORBITE), position à l'époque ("x,y,z" en
+        // mètres, repère inertiel commun — comparée à l'orbite observée par ApiObservation.ecart_a),
+        // manœuvres incluses ou non.
+        // Renvoie l'id du dépôt ; elle est "validee" ou "rejetee" (écart avec l'orbite observée
+        // trop grand, époque dans le futur, horizon < 72 h). Refus : Inconnu (objet), Habilitation
+        // ("dynamicien" du propriétaire, ou "systeme" pour les orbites issues de l'observation),
+        // Suspendu (opérateur), Doublon (empreinte déjà déposée), Existe (id de dépôt), Plein
+        // (quota), Ferme (aucune version des seuils en vigueur).
+        signal deposer(h: Horodatage, objet: Objet, depot: String, epoque: Horodatage, horizon: Duree, q: Qualite, empreinte: String, position: String, avec_manoeuvres: Bool, par: String) -> String
+            calls EphDepot.deposer
+        // Vrai si l'objet a une éphéméride validée dont l'âge à `h` ne dépasse pas l'âge maximal
+        // de son régime (leo 8 h, meo 24 h, geo et heo 48 h ; divisé par 2 pendant une tempête).
+        signal fraiche(objet: Objet, h: Horodatage) -> Bool
+            calls EphSuivi.fraiche
+        // Dernier dépôt validé de l'objet ; Refus : Inconnu (aucun).
+        signal derniere(objet: Objet) -> String
+            calls EphSuivi.derniere
+        // Qualité du dernier dépôt validé ; "faible" si aucun.
+        signal qualite(objet: Objet) -> Qualite
+            calls EphSuivi.qualite
+        // Âge (ms) du dernier dépôt validé à `h` ; Refus : Inconnu.
+        signal age(objet: Objet, h: Horodatage) -> Duree
+            calls EphSuivi.age
+        // Invalide le dernier dépôt d'un objet (anomalie, manœuvre non annoncée). Renvoie le
+        // nombre de dépôts invalidés. Refus : Inconnu (objet, ou aucun dépôt), MotifRequis, Habilitation ("analyste" ou "systeme").
+        signal invalider(h: Horodatage, objet: Objet, motif: String, par: String) -> Int
+            calls EphSuivi.derniere, EphDepot.epoque_de, EphDepot.invalider_depuis
+        // Dépôt validé en vigueur pour l'objet à l'instant `h` (passé compris) : celui sur lequel une
+        // décision prise à `h` reposait (propriété 6). "" si aucun.
+        signal fondement(objet: Objet, h: Horodatage) -> String
+            calls EphHistorique.fondement
+        // Empreinte d'un dépôt. Refus : Inconnu.
+        signal empreinte(depot: String) -> String
+            calls EphDepot.empreinte_du_depot
+        // Vrai si le dépôt inclut les manœuvres planifiées. Refus : Inconnu.
+        signal avec_manoeuvres(depot: String) -> Bool
+            calls EphDepot.inclut_manoeuvres
+        // Vrai si le dépôt est validé et ni remplacé, ni périmé, ni invalidé.
+        signal depot_valide(depot: String) -> Bool
+            calls EphDepot.est_valide
+        // Balayage des échéances du sous-système à `h` (délais, expirations, rondes), appelé par
+        // l'horloge d'ORBITE (Horloge.battre) — le SEUL point d'entrée du temps : aucun signal de
+        // ephemerides ne lit l'horloge lui-même. Renvoie le nombre d'objets dont l'état a changé.
+        // Refus : Habilitation (par "systeme").
+        signal balayer(h: Horodatage, par: String) -> Int
+            calls EphSuivi.ronde
+    }
+}

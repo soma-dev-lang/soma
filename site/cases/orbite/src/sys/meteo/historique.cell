@@ -1,0 +1,97 @@
+// meteo — HISTORIQUE. Bilan par jour calendaire (UTC) : kp maximal et moyen, f107 moyen,
+// alertes émises, barème en vigueur. Une journée est close 3 h après sa fin (retards de
+// mesure absorbés), rectifiée si une de ses mesures est validée tard ou invalidée, scellée
+// après 90 j : ses mesures passent alors en stockage froid (MetMesure.archiver) mais restent
+// lisibles. Rien n'est jamais purgé ici : `conditions_a` restitue, pour tout instant passé,
+// les données météo qui fondaient une décision (preuve en cas de dommage, propriété 6).
+
+// Conditions météo en vigueur à un instant passé, pour un régime. Champs "" ou 0 : inconnu.
+//   kp_mesure : mesure kp en vigueur ("" : aucune de moins de 3 h — précaution appliquée) ;
+//   kp : sa valeur en dixièmes ; f107_mesure : mesure f107 en vigueur ; tempete : alerte
+//   ouverte ("" : aucune) ; bareme : version du barème ("origine" : barème d'origine) ;
+//   bande : bande appliquée ; facteur : facteur d'incertitude qui s'appliquait au régime.
+cell type MetConditions { variants { MetConditions { kp_mesure: String, kp: Int, f107_mesure: String, tempete: String, bareme: String, bande: MetBande, facteur: Pourcent } } }
+
+// Journées : id = numéro de jour calendaire (Jour) en texte.
+skeleton MetJournee {
+    const MAX_JOURS = 100000
+    const DUREE_JOUR = 86400000
+    const CONSOLIDATION = 10800000       // 3 h après minuit UTC avant de clore
+    const SCELLEMENT = 7776000000        // 90 j après la fin du jour
+    memory {
+        kp_max: Map<String, Int> [persistent]             // jour → kp maximal validé, dixièmes
+        kp_moyen: Map<String, Int> [persistent]           // jour → kp moyen validé, dixièmes
+        f107_moyen: Map<String, Int> [persistent]         // jour → f107 moyen validé, dixièmes de sfu
+        nb_mesures: Map<String, Int> [persistent]         // jour → mesures validées prises dans le bilan
+        alertes: Map<String, Int> [persistent]            // jour → alertes de tempête émises ce jour
+        bareme_du_jour: Map<String, String> [persistent]  // jour → version du barème en vigueur à la clôture du jour
+        close_le: Map<String, Horodatage> [persistent]    // jour → dernière clôture
+        rectifications: Map<String, Int> [persistent]     // jour → nombre de rectifications
+        motif_rectif: Map<String, String> [persistent]    // jour → motif de la dernière rectification
+        invariant kp_max.size <= MAX_JOURS
+        invariant kp_max >= 0 && kp_max <= 90
+        invariant kp_moyen >= 0 && kp_moyen <= 90
+        invariant f107_moyen >= 0 && f107_moyen <= 10000
+        invariant nb_mesures >= 0
+        invariant alertes >= 0
+        invariant rectifications >= 0
+        invariant (kp_moyen ?? 0) <= (kp_max ?? 90)
+    }
+    // Cycle de vie d'une journée (id = jour).
+    state journee {
+        initial: ouverte
+        ouverte -> close              // clore : 3 h après la fin du jour, bilan calculé
+        close -> en_rectification     // rectifier : mesure tardive ou invalidée
+        en_rectification -> close     // clore : bilan recalculé
+        close -> scellee              // sceller : 90 j après la fin du jour
+    }
+    face {
+        // Calcule le bilan du jour à partir des mesures validées (MetMesure.du_jour), des
+        // alertes émises et du barème en vigueur, puis clôt la journée (ouverte ou en
+        // rectification). Renvoie le kp maximal du jour en dixièmes (0 sans mesure).
+        // Rôle exigé : "systeme". Refus : EtatInvalide (close ou scellee), Delai (moins de 3 h
+        // depuis la fin du jour à h), Habilitation.
+        signal clore(h: Horodatage, jour: Jour, par: String) -> Int
+            writes kp_max, kp_moyen, f107_moyen, nb_mesures, alertes, bareme_du_jour, close_le
+            moves ouverte -> close, en_rectification -> close
+            calls MetMesure.du_jour, MetMesure.valeur_de, MetTempete.du_jour, MetBareme.en_vigueur_a, ApiAcces.a_le_role, Journal.noter
+        // Met une journée close en rectification (mesure validée tardivement, mesure invalidée,
+        // demande d'un analyste) ; le prochain `clore` recalcule le bilan. Sans effet sur une
+        // journée ouverte ou déjà en rectification. Renvoie l'état de la journée.
+        // Rôle exigé : "analyste" d'ORBITE, ou "systeme" (appel de MetMesure).
+        // Refus : MotifRequis, Ferme (journée scellée), Habilitation.
+        signal rectifier(h: Horodatage, jour: Jour, motif: String, par: String) -> String
+            writes rectifications, motif_rectif
+            reads journee
+            moves close -> en_rectification
+            calls ApiAcces.a_le_role, Journal.noter
+        // Scelle une journée close depuis 90 j : plus aucune rectification, ses mesures peuvent
+        // être archivées. Renvoie "scellee". Rôle exigé : "systeme".
+        // Refus : Inconnu, EtatInvalide (non close), Delai (moins de 90 j), Habilitation.
+        signal sceller(h: Horodatage, jour: Jour, par: String) -> String
+            reads close_le
+            moves close -> scellee
+            calls ApiAcces.a_le_role, Journal.noter
+        // Journées à clore à `h` (au plus 100) : ouvertes ou en rectification, fin du jour + 3 h
+        // dépassée — la veille dès 03:00 UTC, toute rectification en attente. Pour MetRonde.
+        signal a_clore(h: Horodatage) -> List<String>
+            reads journee, rectifications
+        // Journées closes depuis plus de 90 j à `h` (au plus 100) : à sceller puis archiver.
+        signal a_sceller(h: Horodatage) -> List<String>
+            reads journee, close_le
+        // Vrai si la journée est scellée (règle de MetMesure.archiver).
+        signal scellee(jour: String) -> Bool
+            reads journee
+        // Bilan d'un jour clos : "kp_max=<n>;kp_moyen=<n>;f107=<n>;mesures=<n>;alertes=<n>;bareme=<v>".
+        // Refus : Inconnu (jamais clos).
+        signal bilan(jour: Jour) -> String
+            reads kp_max, kp_moyen, f107_moyen, nb_mesures, alertes, bareme_du_jour
+        // Conditions météo qui s'appliquaient au régime à l'instant passé `a` (≤ h) : mesures en
+        // vigueur, alerte ouverte, barème, bande et facteur — de quoi rejouer un facteur
+        // d'incertitude ou une fraîcheur exigée lors d'une décision contestée. Consultation
+        // réservée : "analyste", "conformite", "auditeur" d'ORBITE, ou appel de la
+        // responsabilité ("systeme"). Refus : HorsBornes (a > h), Habilitation.
+        signal conditions_a(h: Horodatage, a: Horodatage, regime: Regime, par: String) -> MetConditions
+            calls MetMesure.en_vigueur_a, MetMesure.valeur_de, MetTempete.ouverte_a, MetBareme.en_vigueur_a, MetBareme.bande, MetIncertitude.facteur_a, ApiAcces.a_le_role, Journal.noter
+    }
+}

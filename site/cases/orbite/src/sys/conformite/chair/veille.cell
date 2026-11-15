@@ -1,0 +1,263 @@
+// Corps de ConfVeille (registre et balayage des opérateurs) et de ConfRonde (battement de l'horloge).
+flesh ConfVeille {
+    on suivre(h, op, par) {
+        require ApiAcces.a_le_role(par, "conformite") || ApiAcces.a_le_role(par, "systeme") else Habilitation "{par} n'inscrit pas au suivi"
+        let deja = etat_de.get(op)
+        if deja != () { return deja }
+        let e = try { ApiRef.etat_de(op) }
+        require e.error == () else Inconnu "{op} sans Etat de tutelle"
+        require etat_de.size < MAX_SUIVIS else Plein "plafond de {MAX_SUIVIS} operateurs suivis atteint"
+        etat_de.set(op, e.value)
+        suivi_depuis.set(op, h)
+        return e.value
+    }
+    on balayer(h, op, par) {
+        require ApiAcces.a_le_role(par, "systeme") || ApiAcces.a_le_role(par, "conformite") else Habilitation "{par} ne balaye pas"
+        require etat_de.get(op) != () else Inconnu "{op} non suivi"
+        let jour = idiv(to_int(h), 86400000)
+        let depuis = balaye_le.get(op) ?? Horodatage(max(0, to_int(h) - PERIODE_MS))
+        let compte = 0
+        let statut_op = ApiOperateurs.statut(op)
+        if statut_op == "actif" {
+            if !ApiOperateurs.est_actif(op, h) {
+                compte = compte + _constat(h, op, "licence_invalide", 3, "licence|{jour}", "operateur actif sans licence valide")
+            }
+            if !ApiOperateurs.joignable(op, h) {
+                compte = compte + _constat(h, op, "astreinte_absente", 2, "astreinte|{jour}", "aucune astreinte joignable")
+            }
+        }
+        let graves = ApiEscalade.graves(op, h)
+        let vus = graves_vus.get(op) ?? 0
+        if graves > vus {
+            compte = compte + _constat(h, op, "refus_escalade", 3, "escalade|{jour}", "escalades graves : {vus} -> {graves}")
+        }
+        graves_vus.set(op, graves)
+        let objets = ApiRef.objets_de(op)
+        let nb = min(len(objets), MAX_OBJETS_BALAYES)
+        for i in range(0, nb) {
+            let o = Objet(objets[i])
+            if ApiRef.etat_objet(o) == "en_service" {
+                if ApiFinDeVie.en_retard(o, h) {
+                    compte = compte + _constat(h, op, "fin_de_vie_non_tenue", 2, "{o}|{jour}", "objet {o} en retard de retrait")
+                }
+                if ApiRef.propulsion(o) != "aucune" && !ApiEphemerides.fraiche(o, h) {
+                    compte = compte + _constat(h, op, "ephemeride_perimee", 1, "{o}|{jour}", "objet {o} sans ephemeride fraiche")
+                }
+                if ApiObservation.manoeuvre_detectee(o, depuis) && !ApiManoeuvres.plan_actif(o) {
+                    compte = compte + _constat(h, op, "manoeuvre_non_annoncee", 2, "{o}|{jour}", "manoeuvre detectee sur {o} sans plan")
+                }
+            }
+        }
+        balaye_le.set(op, h)
+        if compte > 0 {
+            constates_par_veille.set(op, (constates_par_veille.get(op) ?? 0) + compte)
+            let _ = Journal.noter(h, "conformite", par, "veille de {op} : {compte} manquement(s) constate(s)")
+        }
+        return compte
+    }
+    // Un constat de la veille ; un refus est journalisé et n'arrête pas le balayage. Renvoie 1 ou 0.
+    on _constat(h: Horodatage, op: Org, nat: String, g: Int, ref_c: String, detail: String) {
+        let r = try { ConfManquement.constater(h, op, nat, g, ref_c, detail, "systeme") }
+        if r.error != () {
+            let k = r.kind
+            let _ = Journal.noter(h, "conformite", "systeme", "veille de {op} : constat {nat} refuse ({k})")
+            return 0
+        }
+        return 1
+    }
+    on a_balayer(h, n) {
+        let cand_v = []
+        for e in suivi_depuis.entries {
+            let dernier = balaye_le.get(e.key)
+            let periode = if ConfNotation.sous_surveillance(e.key) { PERIODE_RENFORCEE_MS } else { PERIODE_MS }
+            if dernier == () || to_int(h) - to_int(dernier) >= periode {
+                cand_v.push(map("id", e.key, "t", dernier ?? 0))
+            }
+        }
+        let tries_v = cand_v.sort_by(x => x.t)
+        let res_v = []
+        for c in tries_v {
+            if len(res_v) < n { res_v.push(c.id) }
+        }
+        return res_v
+    }
+    on balayer_silences(h, par) {
+        require ApiAcces.a_le_role(par, "systeme") else Habilitation "{par} ne balaye pas les silences"
+        let compte = 0
+        let urgents = ApiConjonctions.urgents(h, 604800000, 2)
+        for r in urgents {
+            let mu = try { ApiCoordination.muets(r) }
+            if mu.error == () && len(mu.value) > 0 {
+                let nv = try { ApiConjonctions.niveau(r) }
+                let g = if nv.error == () && nv.value == 3 { 3 } else { 2 }
+                for org in mu.value {
+                    let gr = try { ApiRef.genre(org) }
+                    if gr.error == () && gr.value == "operateur" {
+                        let c = try { ConfManquement.constater(h, org, "reponse_tardive", g, r, "silence en coordination sur {r}", "systeme") }
+                        if c.error == () {
+                            compte = compte + 1
+                            constates_par_veille.set(org, (constates_par_veille.get(org) ?? 0) + 1)
+                        }
+                    }
+                }
+            }
+        }
+        return compte
+    }
+    on operateurs_de_etat(etat) {
+        let res_o = []
+        for e in etat_de.entries {
+            if e.value == etat { res_o.push(e.key) }
+        }
+        return res_o
+    }
+    on operateurs_suivis(depuis, n) {
+        let tous = etat_de.keys
+        let debut = min(depuis, len(tous))
+        let fin = min(depuis + n, len(tous))
+        return slice(tous, debut, fin)
+    }
+    on suivi(op) {
+        return etat_de.get(op) != ()
+    }
+}
+
+flesh ConfRonde {
+    on balayer(h, par) {
+        require ApiAcces.a_le_role(par, "systeme") else Habilitation "{par} ne bat pas la ronde de conformite"
+        let total = 0
+        // 1 — échéances, à chaque battement
+        if h >= (derniere.get("echeances") ?? 0) {
+            let n1 = 0
+            for m in ConfContradictoire.echus(h, MAX_PAR_ETAPE) {
+                let r = try { ConfManquement.forclore(h, m, "systeme") }
+                if r.error == () { n1 = n1 + 1 } else if r.kind != "Insuffisant" { _refus(h, "forclore {m}", r.kind) }
+            }
+            let _ = ConfManquement.en_souffrance(h)
+            for ms in ConfMesure.a_expirer(h, MAX_PAR_ETAPE) {
+                let r = try { ConfMesure.expirer(h, ms, "systeme") }
+                if r.error == () { n1 = n1 + 1 } else { _refus(h, "expirer {ms}", r.kind) }
+            }
+            for d in ConfDemande.echues(h, MAX_PAR_ETAPE) {
+                let r = try { ConfDemande.constater_silence(h, d, "systeme") }
+                if r.error == () { n1 = n1 + 1 } else { _refus(h, "silence de la demande {d}", r.kind) }
+            }
+            for rm in ConfRemediation.echues(h, MAX_PAR_ETAPE) {
+                let r = try { ConfRemediation.constater_defaillance(h, rm, "systeme") }
+                if r.error == () { n1 = n1 + 1 } else { _refus(h, "defaillance {rm}", r.kind) }
+            }
+            for me in ConfManquementEtat.a_traiter(h, MAX_PAR_ETAPE) {
+                let st = ConfManquementEtat.etat_manquement(me)
+                let r = if st == "constate" {
+                    try { ConfManquementEtat.notifier(h, me, "systeme") }
+                } else if st == "notifie" {
+                    try { ConfManquementEtat.constater_silence(h, me, "systeme") }
+                } else {
+                    try { ConfManquementEtat.clore(h, me, "systeme") }
+                }
+                if r.error == () { n1 = n1 + 1 } else { _refus(h, "manquement d'Etat {me} ({st})", r.kind) }
+            }
+            for rap in ConfRapport.en_retard(h, MAX_PAR_ETAPE) {
+                let st = ConfRapport.etat_rapport(rap)
+                if st == "transmis" {
+                    let r = try { ConfRapport.constater_silence(h, rap, "systeme") }
+                    if r.error == () { n1 = n1 + 1 } else { _refus(h, "silence du rapport {rap}", r.kind) }
+                } else {
+                    let _ = Journal.noter(h, "conformite", "systeme", "rapport {rap} non transmis apres son echeance ({st})")
+                }
+            }
+            _passe("echeances", h, n1)
+            total = total + n1
+        }
+        // 2 — inscription des opérateurs actifs (toutes les heures)
+        if _due("actifs", h, PERIODE_ACTIFS_MS) {
+            for op in ApiOperateurs.actifs(h) {
+                let r = try { ConfVeille.suivre(h, op, "systeme") }
+                if r.error != () { _refus(h, "suivi de {op}", r.kind) }
+            }
+            _passe("actifs", h, 0)
+        }
+        // 3 — balayage des opérateurs dus
+        if h >= (derniere.get("operateurs") ?? 0) {
+            let n3 = 0
+            for op in ConfVeille.a_balayer(h, MAX_PAR_ETAPE) {
+                let r = try { ConfVeille.balayer(h, op, "systeme") }
+                if r.error == () { n3 = n3 + r.value } else { _refus(h, "balayage de {op}", r.kind) }
+            }
+            _passe("operateurs", h, n3)
+            total = total + n3
+        }
+        // 4 — silences de coordination
+        if h >= (derniere.get("silences") ?? 0) {
+            let r = try { ConfVeille.balayer_silences(h, "systeme") }
+            let n4 = if r.error == () { r.value } else { 0 }
+            if r.error != () { _refus(h, "silences", r.kind) }
+            _passe("silences", h, n4)
+            total = total + n4
+        }
+        // 5 — relevé quotidien des notes
+        if _due("notes", h, PERIODE_NOTES_MS) {
+            let rang = 0
+            let page = ConfVeille.operateurs_suivis(0, 1000)
+            while len(page) > 0 {
+                for op in page {
+                    let r = try { ConfNotation.relever(h, op, "systeme") }
+                    if r.error != () { _refus(h, "releve de {op}", r.kind) }
+                }
+                rang = rang + len(page)
+                page = if len(page) < 1000 { [] } else { ConfVeille.operateurs_suivis(rang, 1000) }
+            }
+            _passe("notes", h, 0)
+        }
+        // 6 — rapports annuels manquants de l'année écoulée
+        if _due("rapports", h, PERIODE_RAPPORTS_MS) {
+            let n6 = 0
+            let annee = _annee(to_int(h)) - 1
+            if annee >= 2020 {
+                for etat in ApiRef.etats_participants() {
+                    let rid = "RAP-{etat}-{annee}"
+                    if ConfRapport.etat_rapport(rid) == "inconnu" {
+                        let r = try { ConfRapport.ouvrir(h, etat, annee, "systeme") }
+                        if r.error == () {
+                            n6 = n6 + 1
+                            let c = try { ConfRapport.compiler(h, rid, "systeme") }
+                            if c.error != () { _refus(h, "compilation de {rid}", c.kind) }
+                        } else {
+                            _refus(h, "ouverture de {rid}", r.kind)
+                        }
+                    }
+                }
+            }
+            _passe("rapports", h, n6)
+            total = total + n6
+        }
+        return total
+    }
+    on _due(t: ConfTache, h: Horodatage, periode: Int) {
+        let d = derniere.get(t)
+        if d == () { return true }
+        return to_int(h) >= to_int(d) && to_int(h) - to_int(d) >= periode
+    }
+    on _passe(t: ConfTache, h: Horodatage, n: Int) {
+        derniere.set(t, h)
+        changements.set(t, (changements.get(t) ?? 0) + n)
+    }
+    on _refus(h: Horodatage, quoi: String, kind: String) {
+        let _ = Journal.noter(h, "conformite", "systeme", "ronde : {quoi} refuse ({kind})")
+    }
+    // Année civile (UTC) d'un instant en ms (jours civils de Hinnant).
+    on _annee(ms: Int) {
+        let z = idiv(ms, 86400000) + 719468
+        let era = idiv(z, 146097)
+        let doe = z - era * 146097
+        let yoe = idiv(doe - idiv(doe, 1460) + idiv(doe, 36524) - idiv(doe, 146096), 365)
+        let doy = doe - (365 * yoe + idiv(yoe, 4) - idiv(yoe, 100))
+        let mp = idiv(5 * doy + 2, 153)
+        let mois = if mp < 10 { mp + 3 } else { mp - 9 }
+        let y = yoe + era * 400
+        return if mois <= 2 { y + 1 } else { y }
+    }
+    on derniere_passe(t) {
+        return derniere.get(t) ?? 0
+    }
+}

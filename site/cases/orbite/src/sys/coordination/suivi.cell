@@ -1,0 +1,75 @@
+// COORDINATION — suivi d'exécution d'une décision arrêtée. Instance = id de décision (même id
+// que CoordDecision). Une désignation acceptée n'évite rien tant que le désigné n'a pas déposé,
+// fait cribler et exécuté son plan d'évitement : le suivi attend le plan (ApiManoeuvres.plan_de),
+// constate l'exécution puis la vérification, et déclare la défaillance du désigné quand l'heure
+// limite d'action passe sans plan approuvé — escalade, manquement, puis rouverture : un désigné
+// silencieux ne bloque pas plus qu'un opérateur qui ne répond pas (propriété 5).
+
+// État du suivi d'une décision ; "inconnu" si aucune décision de ce nom.
+cell type CoordEtatSuivi = String where value == "attente_plan" || value == "plan_depose" || value == "execute" || value == "verifie" || value == "anomalie" || value == "defaillant" || value == "sans_objet" || value == "caduc" || value == "inconnu"
+
+skeleton CoordSuivi {
+    const MAX_SUIVIS = 100000000
+    memory {
+        rapprochement_de: Map<String, Rapprochement> [persistent]  // décision -> r ; écrit une fois par ouvrir
+        objet_de: Map<String, Objet> [persistent]                  // décision -> objet désigné ("" : ne pas manœuvrer)
+        limite_de: Map<String, Horodatage> [persistent]            // décision -> heure limite d'action (CoordDossier.limite à l'arrêt)
+        plan_de: Map<String, String> [persistent]                  // décision -> plan d'évitement retenu (ApiManoeuvres), écrit au constat du dépôt ; écrit une fois par suivre, jamais effacé (lien de la règle avec ManPlan)
+        constate_le: Map<String, Horodatage> [persistent]          // décision -> instant du dernier constat
+        invariant rapprochement_de.size <= 100000000
+    }
+    // Cycle du suivi d'une décision.
+    state suivi {
+        initial: attente_plan
+        attente_plan -> plan_depose      // un plan d'évitement du désigné existe pour r, décision en vigueur
+        attente_plan -> sans_objet       // décision de ne pas manœuvrer : rien à suivre
+        attente_plan -> defaillant       // heure limite passée sans plan approuvé
+        attente_plan -> caduc            // décision levée (rouverture) ou soldée avant tout plan
+        plan_depose -> execute           // exécution confirmée par le propriétaire (ApiManoeuvres.etat "execute")
+        plan_depose -> defaillant        // plan rejeté, annulé hors rouverture, ou non approuvé à l'heure limite
+        plan_depose -> caduc             // décision levée ou soldée : le plan a été annulé par la rouverture
+        execute -> verifie               // vérification après manœuvre par observation
+        execute -> anomalie              // manœuvre exécutée hors plan (ApiManoeuvres.etat "anomalie") : rouverture
+    }
+    face {
+        // Ouvre le suivi de la décision `d` sur `r` (attente_plan) ; seul écrivain de
+        // rapprochement_de et objet_de ; mémorise la limite d'action (CoordDossier.limite).
+        // Une décision de ne pas manœuvrer (objet "") passe aussitôt sans_objet.
+        // Appelé par CoordVerrou.poser après CoordDecision.prendre. Renvoie l'état.
+        // Refus : Existe.
+        signal ouvrir(h: Horodatage, d: String, r: Rapprochement, objet: Objet) -> CoordEtatSuivi
+            writes rapprochement_de, objet_de, limite_de, constate_le
+            moves attente_plan -> sans_objet
+            calls CoordDossier.limite
+        // Fait avancer le suivi d'après manoeuvres : ApiManoeuvres.plan_de(r) non vide, de motif
+        // "evitement" (ApiManoeuvres.motif_de) et d'objet le désigné (ApiManoeuvres.objet_de ; un
+        // plan d'un autre objet est ignoré et journalisé) -> plan_depose (le plan est retenu dans plan_de, décision
+        // en vigueur seulement) ; ApiManoeuvres.etat "execute" -> execute ; "verifie" du plan
+        // retenu (plan_de, jamais réécrit une fois posé) -> verifie ; "anomalie"
+        // après exécution -> anomalie, qui rouvre la coordination (CoordDossier.rouvrir) ;
+        // "rejete", "annule" ou "anomalie", ou h > limite sans état "approuve" -> defaillant, qui
+        // escalade le propriétaire du désigné (ApiEscalade.escalader), constate un manquement
+        // (ApiConformite.constater, gravité 3 au niveau 3) et rouvre la coordination
+        // (CoordDossier.rouvrir, par "systeme") si le TCA n'est pas passé. `par` "systeme".
+        // Renvoie l'état atteint. Refus : Inconnu, Habilitation.
+        signal suivre(h: Horodatage, d: String, par: String) -> CoordEtatSuivi
+            writes plan_de, constate_le
+            reads rapprochement_de, objet_de, limite_de
+            moves attente_plan -> plan_depose when CoordDecision.en_vigueur, attente_plan -> defaillant, plan_depose -> execute, plan_depose -> defaillant, execute -> verifie when ManPlan.verifie via plan_de, execute -> anomalie
+            calls ApiManoeuvres.plan_de, ApiManoeuvres.objet_de, ApiManoeuvres.motif_de, ApiManoeuvres.etat, ApiRef.proprietaire, ApiConjonctions.tca, ApiConjonctions.niveau, ApiEscalade.escalader, ApiConformite.constater, ApiAcces.a_le_role, CoordDossier.rouvrir, CoordEchange.notifier, Journal.noter
+        // Rend le suivi caduc (attente_plan|plan_depose -> caduc) quand sa décision est levée
+        // ou soldée ; un suivi execute continue jusqu'à la vérification. Appelé par
+        // CoordVerrou.lever et CoordVerrou.clore. Renvoie l'état. Refus : Inconnu.
+        signal rendre_caduc(h: Horodatage, d: String) -> CoordEtatSuivi
+            writes constate_le
+            reads rapprochement_de
+            moves attente_plan -> caduc when CoordDecision.levee || CoordDecision.soldee, plan_depose -> caduc when CoordDecision.levee || CoordDecision.soldee
+        // Plan d'évitement retenu pour la décision ("" si aucun encore) : le seul plan
+        // d'évitement que la coordination reconnaisse pour `r` tant que la décision est en vigueur.
+        signal plan(d: String) -> String
+            reads plan_de
+        // État du suivi ; "inconnu" si aucune décision de ce nom.
+        signal etat(d: String) -> CoordEtatSuivi
+            reads suivi, rapprochement_de
+    }
+}

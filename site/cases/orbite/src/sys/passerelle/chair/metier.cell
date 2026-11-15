@@ -1,0 +1,250 @@
+// PASSERELLE — corps de l'aiguillage métier. Les refus des façades remontent tels quels (leur
+// tag) : PasEntree.traiter les traduit en 403 / 422. Un champ manquant ou mal typé lève
+// HorsBornes avec un détail qui commence par "champ " : PasEntree en fait un 400, sans appel.
+
+flesh PasMetier {
+    on objets(h, appelant, cible, param, corps) {
+        let qui = _personne(appelant)
+        let org = _org(appelant)
+        if cible == "objet.lire" {
+            let o = Objet(param)
+            require ApiDonnees.peut_recevoir(org, o, "", h) else Confidentiel "{org} ne peut recevoir les données de {param}"
+            let imm = try { ApiRef.etat_immatriculation(o) }
+            let fiche = map(
+                "objet", param,
+                "etat", ApiRef.etat_objet(o),
+                "nature", ApiRef.nature(o),
+                "proprietaire", ApiRef.proprietaire(o),
+                "etat_immatriculation", if imm.error == () { to_string(imm.value) } else { "" },
+                "immatricule", ApiRef.immatricule(o),
+                "regime", ApiRef.regime(o),
+                "propulsion", ApiRef.propulsion(o),
+                "habite", ApiRef.habite(o),
+                "peut_manoeuvrer", ApiRef.peut_manoeuvrer(o),
+                "ephemeride_fraiche", ApiEphemerides.fraiche(o, h),
+                "anomalie", ApiEvenements.en_anomalie(o),
+                "passive", ApiFinDeVie.passive(o),
+                "plan_fin_de_vie_conforme", ApiFinDeVie.plan_conforme(o),
+                "rapprochements_ouverts", ApiConjonctions.ouverts_de(o)
+            )
+            let _ = ApiDonnees.tracer(h, org, o, "", "lecture API")
+            return _rep(200, fiche)
+        }
+        if cible == "objet.propulsion" {
+            let p = _s(corps, "p")
+            let motif = _s(corps, "motif")
+            require p == "aucune" || p == "faible" || p == "impulsionnelle" else HorsBornes "champ p : aucune, faible ou impulsionnelle"
+            let res = ApiRef.declarer_propulsion(h, Objet(param), Propulsion(p), motif, qui)
+            let _ = Journal.noter(h, "passerelle", qui, "propulsion de {param} déclarée : {p}")
+            return _rep(200, map("objet", param, "propulsion", res))
+        }
+        if cible == "objet.anomalie" {
+            let res = ApiEvenements.anomalie(h, Objet(param), _s(corps, "genre"), _s(corps, "description"), qui)
+            let _ = Journal.noter(h, "passerelle", qui, "anomalie de {param} déclarée : {res}")
+            return _rep(201, map("objet", param, "anomalie", res))
+        }
+        if cible == "objet.fin_de_mission" {
+            let res = ApiFinDeVie.fin_de_mission(h, Objet(param), qui)
+            let _ = Journal.noter(h, "passerelle", qui, "fin de mission de {param} notifiée")
+            return _rep(201, map("objet", param, "echeance", res))
+        }
+        if cible == "registre.immatriculer" {
+            let res = ApiRef.immatriculer(h, Objet(param), _s(corps, "numero"), qui)
+            let _ = Journal.noter(h, "passerelle", qui, "immatriculation de {param} : {res}")
+            return _rep(201, map("objet", param, "immatriculation", res))
+        }
+        if cible == "lancement.notifier" {
+            let reg = _s(corps, "regime")
+            require reg == "leo" || reg == "meo" || reg == "geo" || reg == "heo" else HorsBornes "champ regime : leo, meo, geo ou heo"
+            let debut = _i(corps, "debut")
+            let fin = _i(corps, "fin")
+            require debut >= 0 && fin >= 0 else HorsBornes "champ debut / fin : instants positifs"
+            let res = ApiLancements.notifier(h, _s(corps, "lancement"), org, Etat(_s(corps, "etat")), Horodatage(debut), Horodatage(fin), Regime(reg), _i(corps, "nb_objets"), qui)
+            let _ = Journal.noter(h, "passerelle", qui, "lancement {res} notifié par {org}")
+            return _rep(201, map("lancement", res))
+        }
+        if cible == "lancement.lire" {
+            let etat_l = ApiLancements.etat(param)
+            let rendus = []
+            let masques = 0
+            for o in ApiLancements.objets(param) {
+                if ApiDonnees.peut_recevoir(org, Objet(o), "", h) {
+                    rendus.push(o)
+                    let _ = ApiDonnees.tracer(h, org, Objet(o), "", "lecture API")
+                } else {
+                    masques = masques + 1
+                }
+            }
+            return _rep(200, map("lancement", param, "etat", etat_l, "objets", rendus, "masques", masques))
+        }
+        fail("Inconnu", "cible {cible} hors de PasMetier.objets")
+    }
+
+    on orbites(h, appelant, cible, param, corps) {
+        let qui = _personne(appelant)
+        let org = _org(appelant)
+        if cible == "ephemeride.deposer" {
+            let ent = PasFormats.lire_oem(corps)
+            let o = match ent { PasEnteteOem { objet, epoque, horizon, q, empreinte, position, avec_manoeuvres } -> objet }
+            require to_string(o) == param else Incoherent "OBJECT_ID {o} ≠ {param}"
+            let res = match ent {
+                PasEnteteOem { objet, epoque, horizon, q, empreinte, position, avec_manoeuvres } ->
+                    _deposer(h, objet, epoque, horizon, q, empreinte, position, avec_manoeuvres, qui)
+            }
+            let _ = Journal.noter(h, "passerelle", qui, "OEM déposé pour {param}")
+            return _rep(201, res)
+        }
+        if cible == "ephemeride.lire" {
+            let o = Objet(param)
+            require ApiDonnees.peut_recevoir(org, o, "", h) else Confidentiel "{org} ne peut recevoir les données de {param}"
+            let dep = ApiEphemerides.derniere(o)
+            let fiche = map("objet", param, "depot", dep, "age", ApiEphemerides.age(o, h), "qualite", ApiEphemerides.qualite(o), "fraiche", ApiEphemerides.fraiche(o, h))
+            let _ = ApiDonnees.tracer(h, org, o, "", "lecture API")
+            return _rep(200, fiche)
+        }
+        if cible == "mesure.deposer" {
+            let dec = try { from_json(corps) }
+            require dec.error == () && type_of(dec.value) == "Map" else HorsBornes "champ : corps JSON invalide"
+            let m = dec.value
+            let instant = _i(m, "instant")
+            require instant >= 0 else HorsBornes "champ instant : instant positif"
+            let res = ApiObservation.deposer_mesure(h, param, Objet(_s(m, "objet")), Horodatage(instant), _s(m, "mesure"), qui)
+            let _ = Journal.noter(h, "passerelle", qui, "mesure {res} du capteur {param}")
+            return _rep(201, map("mesure", res))
+        }
+        fail("Inconnu", "cible {cible} hors de PasMetier.orbites")
+    }
+
+    on rapprochements(h, appelant, cible, param, corps) {
+        let qui = _personne(appelant)
+        let org = _org(appelant)
+        if cible == "rapprochement.lire" {
+            let texte = PasFormats.cdm(h, Rapprochement(param), org)
+            return _rep(200, map("rapprochement", param, "cdm", texte))
+        }
+        if cible == "coordination.lire" {
+            let r = Rapprochement(param)
+            let fiche = map(
+                "rapprochement", param,
+                "etat", ApiCoordination.etat(r),
+                "designe", ApiCoordination.designe(r, qui),
+                "echeance", ApiCoordination.echeance(r),
+                "decidee", ApiCoordination.decidee(r)
+            )
+            return _rep(200, fiche)
+        }
+        if cible == "coordination.en_attente" {
+            let attente = []
+            for rr in ApiCoordination.en_attente_de(org) {
+                let e = try { ApiCoordination.echeance(Rapprochement(rr)) }
+                attente.push(map("rapprochement", rr, "echeance", if e.error == () { to_int(e.value) } else { 0 }))
+            }
+            return _rep(200, map("en_attente", attente))
+        }
+        if cible == "coordination.repondre" {
+            let reponse = _s(corps, "reponse")
+            let contre = if corps["contre"] == () { "" } else { _s(corps, "contre") }
+            let motif = if corps["motif"] == () { "" } else { _s(corps, "motif") }
+            let res = try { ApiCoordination.repondre(h, Rapprochement(param), reponse, Objet(contre), motif, qui) }
+            if res.error != () {
+                if res.kind == "Delai" {
+                    let d = res.detail
+                    fail("Delai", "{d} — l'échéance est passée : l'arbitrage d'ORBITE a repris la main")
+                }
+                fail(res)
+            }
+            let _ = Journal.noter(h, "passerelle", qui, "réponse de {org} à la coordination {param} : {reponse}")
+            return _rep(201, map("rapprochement", param, "reponse", res.value))
+        }
+        if cible == "escalade.accuser" {
+            let op = if corps["op"] == () { to_string(org) } else { _s(corps, "op") }
+            let res = ApiEscalade.accuser(h, Rapprochement(param), Org(op), qui)
+            let _ = Journal.noter(h, "passerelle", qui, "accusé d'escalade {param} pour {op}")
+            return _rep(201, map("rapprochement", param, "accuse", res))
+        }
+        fail("Inconnu", "cible {cible} hors de PasMetier.rapprochements")
+    }
+
+    on manoeuvres(h, appelant, cible, param, corps) {
+        let qui = _personne(appelant)
+        let org = _org(appelant)
+        if cible == "manoeuvre.declarer" {
+            let debut = _i(corps, "debut")
+            let dv = _i(corps, "dv")
+            require debut >= 0 else HorsBornes "champ debut : instant positif"
+            require dv >= 0 && dv <= 10000000 else HorsBornes "champ dv : 0 à 10 000 000 mm/s"
+            let r = if corps["r"] == () { "" } else { _s(corps, "r") }
+            let plan = _s(corps, "plan")
+            let res = ApiManoeuvres.declarer(h, plan, Objet(_s(corps, "objet")), Rapprochement(r), _s(corps, "motif"), Horodatage(debut), DeltaV(dv), qui)
+            let _ = Journal.noter(h, "passerelle", qui, "manœuvre {plan} déclarée")
+            return _rep(201, map("plan", plan, "etat", res))
+        }
+        if cible == "manoeuvre.lire" {
+            let o = ApiManoeuvres.objet_de(param)
+            require ApiDonnees.peut_recevoir(org, o, "", h) else Confidentiel "{org} ne peut recevoir les données de {o}"
+            let fiche = map("plan", param, "etat", ApiManoeuvres.etat(param), "motif", ApiManoeuvres.motif_de(param), "objet", o)
+            let _ = ApiDonnees.tracer(h, org, o, "", "lecture API")
+            return _rep(200, fiche)
+        }
+        if cible == "manoeuvre.confirmer" {
+            let reel = _i(corps, "reel")
+            let dv = _i(corps, "dv")
+            require reel >= 0 else HorsBornes "champ reel : instant positif"
+            require dv >= 0 && dv <= 10000000 else HorsBornes "champ dv : 0 à 10 000 000 mm/s"
+            let res = ApiManoeuvres.confirmer_execution(h, param, Horodatage(reel), DeltaV(dv), qui)
+            let _ = Journal.noter(h, "passerelle", qui, "exécution de {param} confirmée")
+            return _rep(200, map("plan", param, "etat", res))
+        }
+        if cible == "manoeuvre.annuler" {
+            let res = ApiManoeuvres.annuler(h, param, _s(corps, "motif"), qui)
+            let _ = Journal.noter(h, "passerelle", qui, "manœuvre {param} annulée")
+            return _rep(200, map("plan", param, "etat", res))
+        }
+        fail("Inconnu", "cible {cible} hors de PasMetier.manoeuvres")
+    }
+
+    on etats(h, appelant, valideur, cible, param, corps) {
+        let qui = _personne(appelant)
+        require valideur != "" else QuatreYeux "geste d'État sur un opérateur : second jeton (X-Jeton-Valideur) requis"
+        if cible == "operateur.suspendre" {
+            let res = ApiOperateurs.suspendre(h, Org(param), _s(corps, "motif"), qui, valideur)
+            let _ = Journal.noter(h, "passerelle", qui, "suspension de l'opérateur {param} (valideur {valideur})")
+            return _rep(200, map("operateur", param, "etat", res))
+        }
+        if cible == "operateur.retablir" {
+            let res = ApiOperateurs.retablir(h, Org(param), qui, valideur)
+            let _ = Journal.noter(h, "passerelle", qui, "rétablissement de l'opérateur {param} (valideur {valideur})")
+            return _rep(200, map("operateur", param, "etat", res))
+        }
+        fail("Inconnu", "cible {cible} hors de PasMetier.etats")
+    }
+
+    // ── aides
+
+    on _personne(a: PasAppelant) {
+        return match a { PasAppelant { personne, org, role } -> personne }
+    }
+    on _org(a: PasAppelant) {
+        return match a { PasAppelant { personne, org, role } -> org }
+    }
+    on _rep(statut: Int, m: Any) {
+        return PasReponse { statut: PasStatut(statut), corps: to_json(m) }
+    }
+    on _s(corps: Map, nom: String) {
+        let v = corps[nom]
+        require v != () && type_of(v) == "String" else HorsBornes "champ {nom} manquant ou non textuel"
+        return v
+    }
+    on _i(corps: Map, nom: String) {
+        let v = corps[nom]
+        require v != () && type_of(v) == "Int" else HorsBornes "champ {nom} manquant ou non entier"
+        return v
+    }
+    on _deposer(h: Horodatage, objet: Objet, epoque: Horodatage, horizon: Duree, q: Qualite, empreinte: PasEmpreinte, position: String, avec: Bool, qui: String) {
+        // empreinte au format d'ephemerides : "sha256:" + 64 hex (EphControle.examiner)
+        let e = to_string(empreinte)
+        let depot = "OEM-" + substring(e, 0, 16)
+        let issue_d = ApiEphemerides.deposer(h, objet, depot, epoque, horizon, q, "sha256:" + e, position, avec, qui)
+        return map("objet", objet, "depot", depot, "issue", issue_d)
+    }
+}

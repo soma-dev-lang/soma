@@ -1,0 +1,19 @@
+// Corps du journal d'audit commun.
+flesh Journal {
+    on noter(h, sous_systeme, acteur, evenement) {
+        require lignes.size < MAX_LIGNES else Plein "journal plein ({MAX_LIGNES} lignes)"
+        lignes.push("{h} | {sous_systeme} | {acteur} | {evenement}")
+        return lignes.size
+    }
+    on taille() {
+        return lignes.size
+    }
+    on chercher(motif, n) {
+        let trouvees = lignes.filter(l => contains(l, motif))
+        let k = len(trouvees)
+        if k <= n { return trouvees }
+        let res = []
+        for i in range(k - n, k) { res.push(trouvees[i]) }
+        return res
+    }
+}

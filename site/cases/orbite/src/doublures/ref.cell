@@ -1,0 +1,112 @@
+// Doublures (corps PROVISOIRES) des façades des autres sous-systèmes que traversent les tests de
+// ref. Pures, sans mémoire : leur comportement se lit sur les identifiants.
+// - Personne "role[#n]@ORG-X" : a le rôle `role` pour l'employeur ORG-X ; un rôle d'ORBITE ne
+//   vaut que si ORG-X = ORG-ORBITE ; "intrus…" n'a aucun rôle ; "systeme" a le rôle "systeme".
+// - quatre_yeux(a, b) : faux si a == b ; vrai si b est superviseur/conformite/direction
+//   d'ORBITE, ou chef_de_mission du même employeur que a.
+// - actifs_de(org) : 2 si l'id commence par "ORG-PEUPLEE", sinon 0.
+// - ApiOperateurs.statut : "actif" si l'id commence par "ORG-MEMBRE", sinon "retire".
+// - Objets "témoins" (numérotés dans l'ordre de catalogage des tests) :
+//   OBJ-3 : rentrée non constatée, retrait non autorisé, en anomalie ;
+//   OBJ-4 : passivé ; OBJ-5 : en retard de fin de vie.
+// - Évènement "EV-<obj>+<obj>…" : existe, et compte ces objets.
+// - ApiConjonctions.ouverts_de(o) = ["CJ-D-<o>", "CJ-X-<o>"] ; l'objet est désigné sur CJ-D-…
+
+flesh ApiAcces {
+    on a_le_role(personne, r) {
+        if personne == "systeme" { return r == "systeme" }
+        if starts_with(personne, "intrus") { return false }
+        let parts = split(personne, "@")
+        if len(parts) != 2 { return false }
+        let role = split(parts[0], "#")[0]
+        if role != to_string(r) || role == "systeme" || role == "aucun" { return false }
+        if contains(["analyste", "superviseur", "exploitant", "conformite", "direction", "auditeur"], role) {
+            return parts[1] == "ORG-ORBITE"
+        }
+        return true
+    }
+    on agit_pour(personne, org) {
+        if starts_with(personne, "intrus") { return false }
+        let parts = split(personne, "@")
+        if len(parts) != 2 { return false }
+        return parts[1] == to_string(org)
+    }
+    on quatre_yeux(demandeur, valideur) {
+        if demandeur == valideur || starts_with(valideur, "intrus") { return false }
+        let pv = split(valideur, "@")
+        let pd = split(demandeur, "@")
+        if len(pv) != 2 || len(pd) != 2 { return false }
+        let rv = split(pv[0], "#")[0]
+        if contains(["superviseur", "conformite", "direction"], rv) && pv[1] == "ORG-ORBITE" { return true }
+        return rv == "chef_de_mission" && pv[1] == pd[1]
+    }
+    on actifs_de(org) {
+        if starts_with(to_string(org), "ORG-PEUPLEE") { return 2 }
+        return 0
+    }
+}
+
+flesh ApiOperateurs {
+    on statut(op) {
+        if starts_with(to_string(op), "ORG-MEMBRE") { return "actif" }
+        return "retire"
+    }
+}
+
+flesh ApiFinDeVie {
+    on passive(objet) {
+        return to_string(objet) == "OBJ-4"
+    }
+    on en_retard(objet, h) {
+        return to_string(objet) == "OBJ-5"
+    }
+    on retrait_autorise(objet) {
+        return to_string(objet) != "OBJ-3"
+    }
+    on mission_capturee(objet) {
+        return to_string(objet) != "OBJ-3"
+    }
+}
+
+flesh ApiReentrees {
+    on constatee(objet) {
+        return to_string(objet) != "OBJ-3"
+    }
+}
+
+flesh ApiEvenements {
+    on existe(evenement) {
+        return starts_with(evenement, "EV-")
+    }
+    on objets(evenement) {
+        require starts_with(evenement, "EV-") else Inconnu "évènement {evenement} inconnu"
+        return split(substring(evenement, 3, len(evenement)), "+")
+    }
+    on en_anomalie(objet) {
+        return to_string(objet) == "OBJ-3"
+    }
+}
+
+flesh ApiConjonctions {
+    on ouverts_de(objet) {
+        return ["CJ-D-{objet}", "CJ-X-{objet}"]
+    }
+}
+
+flesh ApiCoordination {
+    on designe(r, par) {
+        let s = to_string(r)
+        if starts_with(s, "CJ-D-") { return Objet(substring(s, 5, len(s))) }
+        return Objet("")
+    }
+    on rouvrir(h, r, motif, par) {
+        require motif != "" else MotifRequis "motif requis"
+        return "en_cours"
+    }
+}
+
+flesh ApiPasserelle {
+    on notifier(h, destinataire, r, sujet, texte, urgence) {
+        return "MSG-{destinataire}-{h}"
+    }
+}

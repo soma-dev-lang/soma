@@ -1,0 +1,12 @@
+use app
+use commun::journal_chair
+use commun::horloge_chair
+use sys::conformite::chair::api
+use sys::conformite::chair::manquements
+use sys::conformite::chair::contradictoire
+use sys::conformite::chair::notation
+use sys::conformite::chair::mesures
+use sys::conformite::chair::veille
+use sys::conformite::chair::rapports
+use sys::conformite::chair::indicateurs
+use sys::conformite::chair::remediation

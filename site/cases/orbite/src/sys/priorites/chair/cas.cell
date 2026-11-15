@@ -1,0 +1,156 @@
+// PRIORITÉS — corps de PrioEssaim et PrioPreparation (cas particuliers).
+flesh PrioEssaim {
+    on declarer(h, essaim, op, nom, membres, autonome, par) {
+        require !op_de.has(essaim) else Existe "essaim {essaim} déjà déclaré"
+        require op_de.size < MAX_ESSAIMS else Plein "registre des essaims plein"
+        require (ApiAcces.a_le_role(par, "chef_de_mission") || ApiAcces.a_le_role(par, "administrateur_operateur")) && ApiAcces.agit_pour(par, op) else Habilitation "déclaration réservée au chef de mission ou à l'administrateur de {op}"
+        require ApiOperateurs.est_actif(op, h) else Suspendu "opérateur {op} inactif"
+        let n = len(membres)
+        require n >= 2 && n <= MAX_MEMBRES else HorsBornes "un essaim compte de 2 à 50 000 membres"
+        let vus = map()
+        for m in membres {
+            let o = Objet(m)
+            let eo = ApiRef.etat_objet(o)
+            require eo != "inconnu" else Inconnu "objet {m} inconnu"
+            require ApiRef.proprietaire(o) == op else NonEligible "{m} n'appartient pas à {op}"
+            require eo == "en_service" else NonEligible "{m} n'est pas en service"
+            require (!essaim_de.has(m)) && (vus[m] ?? false) == false else Conflit "{m} appartient déjà à un essaim"
+            vus[m] = true
+        }
+        op_de.set(essaim, op)
+        nom_de.set(essaim, nom)
+        autonome_de.set(essaim, autonome)
+        nb_membres.set(essaim, n)
+        for m in membres {
+            essaim_de.set(m, essaim)
+        }
+        Journal.noter(h, "priorites", par, "essaim {essaim} ({nom}) déclaré par {op} : {n} membres, autonome {autonome}")
+        return essaim
+    }
+
+    on reconnaitre(h, essaim, par, valideur) {
+        require ApiAcces.a_le_role(par, "analyste") else Habilitation "reconnaissance réservée à un analyste d'ORBITE"
+        require ApiAcces.a_le_role(valideur, "superviseur") else QuatreYeux "le valideur doit être superviseur d'ORBITE"
+        require ApiAcces.quatre_yeux(par, valideur) else QuatreYeux "contre-signature refusée"
+        let op = op_de.get(essaim)
+        require op != () else Inconnu "essaim {essaim} inconnu"
+        let st = get_status(essaim) ?? "declare"
+        require st == "declare" else EtatInvalide "essaim {essaim} : {st}"
+        require ApiOperateurs.est_actif(op, h) else Suspendu "opérateur {op} devenu inactif"
+        transition(essaim, "declare", "reconnu")
+        decideur_de.set(essaim, "{par} / {valideur}")
+        Journal.noter(h, "priorites", par, "essaim {essaim} reconnu (validé par {valideur})")
+        return "reconnu"
+    }
+
+    on refuser(h, essaim, motif, par) {
+        require ApiAcces.a_le_role(par, "analyste") else Habilitation "refus réservé à un analyste d'ORBITE"
+        require nb_membres.has(essaim) else Inconnu "essaim {essaim} inconnu"
+        require motif != "" else MotifRequis "motif du refus requis"
+        let st = get_status(essaim) ?? "declare"
+        require st == "declare" else EtatInvalide "essaim {essaim} : {st}"
+        transition(essaim, "declare", "refuse")
+        _liberer_tous(essaim)
+        motif_de.set(essaim, motif)
+        decideur_de.set(essaim, par)
+        Journal.noter(h, "priorites", par, "essaim {essaim} refusé ({motif})")
+        return "refuse"
+    }
+
+    on ajouter(h, essaim, objet, par) {
+        let op = op_de.get(essaim)
+        require op != () else Inconnu "essaim {essaim} inconnu"
+        require ApiAcces.a_le_role(par, "chef_de_mission") && ApiAcces.agit_pour(par, op) else Habilitation "ajout réservé au chef de mission de {op}"
+        let st = get_status(essaim) ?? "declare"
+        require st == "reconnu" else EtatInvalide "essaim {essaim} : {st}"
+        require ApiRef.proprietaire(objet) == op else NonEligible "{objet} n'appartient pas à {op}"
+        require !essaim_de.has(objet) else Conflit "{objet} appartient déjà à un essaim"
+        let n = (nb_membres.get(essaim) ?? 0) + 1
+        require n <= MAX_MEMBRES else Plein "essaim plein"
+        essaim_de.set(objet, essaim)
+        nb_membres.set(essaim, n)
+        Journal.noter(h, "priorites", par, "essaim {essaim} : {objet} ajouté")
+        return n
+    }
+
+    on retirer(h, objet, par) {
+        let e = essaim_de.get(objet)
+        require e != () else Inconnu "{objet} n'est membre d'aucun essaim"
+        let op = op_de.get(e) ?? ""
+        let ok = (ApiAcces.a_le_role(par, "chef_de_mission") && ApiAcces.agit_pour(par, op)) || ApiAcces.a_le_role(par, "analyste")
+        require ok else Habilitation "retrait réservé au chef de mission de {op} ou à un analyste"
+        essaim_de.delete(objet)
+        let n = max(0, (nb_membres.get(e) ?? 1) - 1)
+        nb_membres.set(e, n)
+        Journal.noter(h, "priorites", par, "essaim {e} : {objet} retiré")
+        return n
+    }
+
+    on dissoudre(h, essaim, motif, par) {
+        let op = op_de.get(essaim)
+        require op != () else Inconnu "essaim {essaim} inconnu"
+        let ok = (ApiAcces.a_le_role(par, "chef_de_mission") && ApiAcces.agit_pour(par, op)) || ApiAcces.a_le_role(par, "superviseur")
+        require ok else Habilitation "dissolution réservée au chef de mission de {op} ou à un superviseur"
+        require motif != "" else MotifRequis "motif de dissolution requis"
+        let st = get_status(essaim) ?? "declare"
+        require st == "reconnu" else EtatInvalide "essaim {essaim} : {st}"
+        transition(essaim, "reconnu", "dissous")
+        _liberer_tous(essaim)
+        motif_de.set(essaim, motif)
+        decideur_de.set(essaim, par)
+        Journal.noter(h, "priorites", par, "essaim {essaim} dissous ({motif})")
+        return "dissous"
+    }
+
+    on membres(essaim) {
+        require op_de.has(essaim) else Inconnu "essaim {essaim} inconnu"
+        return essaim_de.entries.filter(e => e.value == essaim).map(e => e.key).sort()
+    }
+
+    on essaim_reconnu_de(objet) {
+        let e = essaim_de.get(objet)
+        if e == () { return "" }
+        if (get_status(e) ?? "declare") == "reconnu" { return e }
+        return ""
+    }
+
+    on autonome(objet) {
+        let e = essaim_de.get(objet)
+        if e == () { return false }
+        if (get_status(e) ?? "declare") != "reconnu" { return false }
+        return autonome_de.get(e) ?? false
+    }
+
+    on etat(essaim) {
+        if !op_de.has(essaim) { return "inconnu" }
+        return get_status(essaim) ?? "declare"
+    }
+
+    // Libère tous les membres d'un essaim refusé ou dissous.
+    on _liberer_tous(essaim: String) {
+        let liste_m = essaim_de.entries.filter(e => e.value == essaim).map(e => e.key)
+        for m in liste_m {
+            essaim_de.delete(m)
+        }
+        nb_membres.set(essaim, 0)
+        return len(liste_m)
+    }
+}
+
+flesh PrioPreparation {
+    on declarer(h, objet, delai, par) {
+        let op = ApiRef.proprietaire(objet)
+        require ApiAcces.a_le_role(par, "dynamicien") && ApiAcces.agit_pour(par, op) else Habilitation "déclaration réservée au dynamicien de {op}"
+        require ApiRef.propulsion(objet) == "faible" else NonEligible "{objet} n'a pas de propulsion faible"
+        require to_int(delai) <= MAX_DELAI else HorsBornes "délai de préparation supérieur à 14 jours"
+        delai_de.set(objet, delai)
+        declare_par.set(objet, par)
+        declare_le.set(objet, h)
+        Journal.noter(h, "priorites", par, "préparation de {objet} : {delai} ms")
+        return delai
+    }
+
+    on delai(objet) {
+        return delai_de.get(objet) ?? 0
+    }
+}

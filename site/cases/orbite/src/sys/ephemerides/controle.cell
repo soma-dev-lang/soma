@@ -1,0 +1,93 @@
+// ephemerides — CONTRÔLES : ce qui fait qu'un dépôt est digne de fonder une décision.
+// À la réception (examiner, qualite_retenue) : forme, époque, horizon, état de l'objet,
+// cohérence avec l'orbite qu'ORBITE observe elle-même. Après coup (confronter,
+// controler_objet) : ce qui peut rendre faux un dépôt déjà validé — un écart qui apparaît
+// quand l'observation se précise, une anomalie, une manœuvre non annoncée, un plan inclus
+// puis annulé. Ces contrôles ferment les trous : un dépôt n'est jamais cru sur parole.
+
+// Verdict d'examen d'un dépôt reçu : "conforme" ; "sans_temoin" (conforme, mais l'observation
+// n'a pas d'orbite de moins de 72 h pour en juger : qualité retenue "faible") ; ou le motif de
+// rejet (EphMotifRejet).
+cell type EphVerdict = String where value == "conforme" || value == "sans_temoin" || value == "format" || value == "epoque_future" || value == "nee_perimee" || value == "horizon_court" || value == "incoherence" || value == "objet_clos"
+
+skeleton EphControle {
+    const MAX_OBJETS = 2000000
+    // Objets contrôlés a posteriori : rapprochements ouverts de niveau ≥ 2 dont le TCA tombe
+    // dans cet horizon (ms, 7 jours) — ApiConjonctions.urgents.
+    const HORIZON_CONTROLE = 604800000
+
+    memory {
+        dernier_ecart: Map<Objet, Distance> [persistent]      // objet → dernier écart mesuré entre son dépôt courant et l'orbite observée, m
+        confronte_le: Map<Objet, Horodatage> [persistent]     // objet → instant de la dernière confrontation, ms
+        depot_confronte: Map<Objet, String> [persistent]      // objet → dépôt sur lequel porte dernier_ecart
+        controle_le: Map<Objet, Horodatage> [persistent]      // objet → instant du dernier controler_objet, ms
+        nb_invalidations: Map<Objet, Int> [persistent]        // objet → invalidations décidées par les contrôles a posteriori
+        invariant dernier_ecart.size <= MAX_OBJETS
+        invariant controle_le.size <= MAX_OBJETS
+        invariant nb_invalidations >= 0
+    }
+
+    face {
+        // Examine un dépôt avant enregistrement. Dans l'ordre : forme (empreinte "sha256:" + 64
+        // hexadécimaux, id non vide d'au plus 64 caractères) → "format" ; objet "rentre",
+        // "fragmente" ou "retire" (ApiRef.etat_objet) → "objet_clos" ; époque > h →
+        // "epoque_future" ; h − époque > EphReglage.age_max(régime, ApiMeteo.tempete(h)) →
+        // "nee_perimee" ; horizon < max(EphReglage.horizon_minimal, 72 h) → "horizon_court" ;
+        // position `pos` ("x,y,z" en m à l'époque) mal formée (ApiObservation.ecart_a refuse
+        // Incoherent) → "format" ; écart ApiObservation.ecart_a(objet, ep, pos) >
+        // EphReglage.ecart_max(q) → "incoherence" ; ecart_a refuse Inconnu (pas d'orbite observée
+        // de moins de 72 h) → "sans_temoin". Sinon "conforme". Rien n'est écrit (deposer garde
+        // l'écart mesuré). Refus : Ferme (aucun réglage en vigueur).
+        signal examiner(h: Horodatage, objet: Objet, depot: String, ep: Horodatage, hz: Duree, q: Qualite, empreinte: String, pos: String) -> EphVerdict
+            calls EphReglage.age_max, EphReglage.horizon_minimal, EphReglage.ecart_max, ApiRef.etat_objet, ApiRef.regime, ApiMeteo.tempete, ApiObservation.ecart_a
+
+        // Qualité retenue d'un dépôt conforme : la déclarée, dégradée d'un cran (haute → moyenne
+        // → faible) pour chacune des causes : horizon < 2 × horizon minimal ; facteur
+        // d'incertitude du régime > 150 % (ApiMeteo.facteur_incertitude). "faible" d'office si
+        // `temoin` est faux (verdict "sans_temoin") ou si le dépôt omet les manœuvres d'un plan
+        // actif (`omise`). Jamais meilleure que la déclarée. Refus : Ferme.
+        signal qualite_retenue(h: Horodatage, objet: Objet, q: Qualite, hz: Duree, omise: Bool, temoin: Bool) -> Qualite
+            calls EphReglage.horizon_minimal, ApiRef.regime, ApiMeteo.facteur_incertitude
+
+        // Confronte le dépôt courant de l'objet à l'orbite observée (ApiObservation.ecart_declare)
+        // une fois que l'observation l'a pris en compte : écart > EphReglage.ecart_max(qualité
+        // déclarée) ⇒ invalidation (nature "incoherence") et manquement constaté auprès de la
+        // conformité (gravité 2 ; 3 si l'objet a un rapprochement de niveau 3 ouvert). Par
+        // "systeme" ou "analyste" d'ORBITE. Renvoie l'écart mesuré (m).
+        // Refus : Inconnu (objet sans dépôt courant, ou sans orbite observée), Habilitation.
+        signal confronter(h: Horodatage, objet: Objet, par: String) -> Distance
+            writes dernier_ecart, confronte_le, depot_confronte, nb_invalidations
+            calls EphSuivi.derniere, EphDepot.qualite_de, EphDepot.fiche, EphReglage.ecart_max, EphDepot.invalider_depuis, ApiObservation.ecart_declare, ApiConjonctions.ouverts_de, ApiConjonctions.niveau, ApiConformite.constater, ApiRef.proprietaire, ApiAcces.a_le_role, Journal.noter
+
+        // Contrôle a posteriori du dépôt courant d'un objet, dans l'ordre :
+        // 1. objet en anomalie non levée (ApiEvenements.en_anomalie) ⇒ invalidation "anomalie" ;
+        // 2. manœuvre détectée depuis l'époque du dépôt (ApiObservation.manoeuvre_detectee) que
+        //    n'explique aucun plan (ApiManoeuvres.plan_couvrant == "") ⇒ constat par manoeuvres
+        //    (ApiManoeuvres.constater_non_annoncee : manquement, puis invalidation par
+        //    ApiEphemerides.invalider ; Doublon si l'observation l'a déjà fait = rien à faire), et
+        //    suivi renforcé demandé (ApiObservation.demander_suivi, 24 h) ;
+        // 3. un plan inclus est "annule" ou "rejete" (ApiManoeuvres.etat) ⇒ invalidation
+        //    "plan_annule" : la trajectoire déposée suppose une poussée qui n'aura pas lieu ;
+        // 4. un plan inclus est "execute" ou "verifie" ⇒ rien : le dépôt reste juste.
+        // Par "systeme" ou "analyste" d'ORBITE. Renvoie le nombre de dépôts invalidés.
+        // Refus : Inconnu (objet sans dépôt), Habilitation.
+        signal controler_objet(h: Horodatage, objet: Objet, par: String) -> Int
+            writes controle_le, nb_invalidations
+            calls EphSuivi.derniere, EphDepot.epoque_de, EphDepot.plans_de, EphDepot.invalider_depuis, ApiEvenements.en_anomalie, ApiObservation.manoeuvre_detectee, ApiObservation.demander_suivi, ApiManoeuvres.etat, ApiManoeuvres.plan_couvrant, ApiManoeuvres.constater_non_annoncee, ApiAcces.a_le_role, Journal.noter
+
+        // Ronde a posteriori : objets des rapprochements ApiConjonctions.urgents(h,
+        // HORIZON_CONTROLE, 2) (ApiConjonctions.objets) ayant un dépôt courant et non contrôlés
+        // depuis `periode` ms : confronter puis controler_objet, au plus `n` objets, les plus
+        // anciennement contrôlés d'abord. Par "systeme". Renvoie le nombre d'objets contrôlés.
+        // Refus : Habilitation.
+        signal tourner(h: Horodatage, periode: Duree, n: Int, par: String) -> Int
+            requires n > 0 && n <= 10000
+            reads controle_le
+            calls confronter, controler_objet, EphSuivi.derniere, ApiConjonctions.urgents, ApiConjonctions.objets, ApiAcces.a_le_role
+
+        // Dernier écart mesuré (m) entre le dépôt courant de l'objet et l'orbite observée, et le
+        // dépôt sur lequel il porte : "ecart|depot|h". Refus : Inconnu (jamais confronté).
+        signal ecart(objet: Objet) -> String
+            reads dernier_ecart, depot_confronte, confronte_le
+    }
+}

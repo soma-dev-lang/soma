@@ -1,0 +1,210 @@
+// acces — FACTEURS D'AUTHENTIFICATION, SESSIONS et JETONS.
+// Chaîne de confiance : une personne active prouve son facteur (clé matérielle enrôlée) →
+// une session s'ouvre et émet UN jeton (ApiAcces.ouvrir_session) → la passerelle authentifie
+// chaque requête par ce jeton (ApiAcces.authentifier → AccesJetons.authentifier) et n'en tire
+// que la personne. acces est le seul propriétaire des sessions humaines (contrat v2).
+// Le jeton en clair n'est rendu qu'une fois, à l'émission ; seule son empreinte est stockée.
+
+// Canal d'une session : "console" (poste d'ORBITE), "api" (client d'opérateur ou d'État via la
+// passerelle), "urgence" (session ouverte pendant un accès d'urgence, close avec lui).
+cell type AccesCanal = String where value == "console" || value == "api" || value == "urgence"
+
+// Motif de fin d'une session ou d'un jeton.
+cell type AccesMotifFin = String where value == "deconnexion" || value == "inactivite" || value == "duree_max" || value == "suspension" || value == "depart" || value == "urgence_close" || value == "compromission"
+
+// Facteur d'authentification d'une personne (id = personne : un facteur par personne).
+skeleton AccesFacteurs {
+    const MAX_ECHECS = 5
+    memory {
+        cle_de: Map<String, String> [persistent]          // personne → empreinte de la clé publique enrôlée
+        enrole_par: Map<String, String> [persistent]      // personne → auteur de l'enrôlement ou du dernier remplacement
+        echecs: Map<String, Int> [persistent]             // personne → échecs consécutifs de preuve
+        invariant echecs >= 0 && echecs <= MAX_ECHECS
+    }
+    // Cycle de vie du facteur (id = personne).
+    state facteur {
+        initial: absent
+        absent -> enrole            // enroler
+        enrole -> bloque            // verifier : MAX_ECHECS échecs consécutifs ; compromettre
+        bloque -> enrole            // debloquer (quatre yeux)
+        enrole -> revoque           // revoquer (départ)
+        bloque -> revoque           // revoquer (départ)
+        absent -> revoque           // revoquer (départ d'une personne jamais enrôlée)
+    }
+    face {
+        // Enrôle la clé d'une personne active (empreinte de la clé publique, jamais la clé
+        // privée). Renvoie "enrole". Rôle exigé de `par` : "exploitant" d'ORBITE, ou
+        // "administrateur_operateur" de l'employeur ; par ≠ personne.
+        // Refus : Inconnu, Suspendu (personne non active), EtatInvalide (déjà enrôlé ou
+        // révoqué), Doublon (clé déjà enrôlée pour une autre personne), Habilitation, QuatreYeux.
+        signal enroler(h: Horodatage, personne: String, empreinte_cle: String, par: String) -> String
+            writes cle_de, enrole_par, echecs
+            moves absent -> enrole when AccesPersonnes.active
+            calls AccesPersonnes.est_active, AccesPersonnes.employeur, AccesControle.a_le_role, AccesControle.agit_pour, Journal.noter
+        // Vérifie le second facteur (`facteur` : empreinte de la réponse signée par la clé
+        // enrôlée, comparée à cle_de). Vrai si valide : remet les échecs à 0. Faux sinon : un échec de plus ; au MAX_ECHECS-ième le
+        // facteur passe "bloque". Refus : Inconnu, EtatInvalide (non enrôlé).
+        signal verifier(h: Horodatage, personne: String, facteur: String) -> Bool
+            reads cle_de
+            writes echecs
+            moves enrole -> bloque
+            calls Journal.noter
+        // Clé déclarée perdue ou compromise : bloque le facteur, ferme les sessions de la
+        // personne. Renvoie "bloque". `par` : la personne elle-même, l'"administrateur_operateur"
+        // de l'employeur, ou "exploitant" d'ORBITE. Refus : Inconnu, EtatInvalide, Habilitation.
+        signal compromettre(h: Horodatage, personne: String, par: String) -> String
+            moves enrole -> bloque
+            calls AccesControle.a_le_role, AccesControle.agit_pour, AccesPersonnes.employeur, AccesSessions.fermer_toutes, Journal.noter
+        // Débloque un facteur, avec une nouvelle clé si `empreinte_cle` ≠ "". Renvoie "enrole".
+        // Rôle exigé de `par` : "exploitant" d'ORBITE ou "administrateur_operateur" de
+        // l'employeur ; `valideur` contre-signe (AccesControle.contresigner) ; ni l'un ni l'autre
+        // n'est la personne. Refus : Inconnu, EtatInvalide, Suspendu (personne non active),
+        // Doublon (clé), Habilitation, QuatreYeux.
+        signal debloquer(h: Horodatage, personne: String, empreinte_cle: String, par: String, valideur: String) -> String
+            writes cle_de, enrole_par, echecs
+            moves bloque -> enrole
+            calls AccesPersonnes.est_active, AccesPersonnes.employeur, AccesControle.a_le_role, AccesControle.agit_pour, AccesControle.contresigner, Journal.noter
+        // Révoque le facteur au départ (appelée par AccesDeparts.rendre_effectif). Renvoie "revoque".
+        signal revoquer(h: Horodatage, personne: String) -> String
+            moves enrole -> revoque, bloque -> revoque, absent -> revoque
+            calls Journal.noter
+        // Vrai si le facteur de la personne est enrôlé (ni absent, ni bloqué, ni révoqué).
+        signal utilisable(personne: String) -> Bool
+            reads facteur
+    }
+}
+
+// Sessions d'une personne : id = "s-<n>" tiré par ouvrir.
+skeleton AccesSessions {
+    const MAX_SESSIONS = 200000
+    const MAX_PAR_PERSONNE = 5
+    const INACTIVITE_CONSOLE_MS = 900000
+    const INACTIVITE_API_MS = 3600000
+    const DUREE_MAX_MS = 43200000
+    memory {
+        personne_de_session: Map<String, String> [persistent]   // session → personne ; écrit une fois par ouvrir, jamais effacé (lien de règle)
+        canal: Map<String, AccesCanal> [persistent]              // session → canal
+        ouverte_a: Map<String, Horodatage> [persistent]          // session → ouverture, ms
+        derniere_activite: Map<String, Horodatage> [persistent]  // session → dernière requête authentifiée, ms
+        motif_fin: Map<String, AccesMotifFin> [persistent]       // session → motif de fermeture
+        ouvertes: Map<String, Int> [persistent]                  // personne → sessions ouvertes ou verrouillées
+        invariant personne_de_session.size <= MAX_SESSIONS
+        invariant ouvertes >= 0 && ouvertes <= MAX_PAR_PERSONNE
+        invariant (ouverte_a ?? 0) <= (derniere_activite ?? 0)
+    }
+    // Cycle de vie d'une session (id = session).
+    state session {
+        initial: nouvelle
+        nouvelle -> ouverte         // ouvrir : personne active, facteur prouvé
+        ouverte -> verrouillee      // balayer : inactivité dépassée
+        verrouillee -> ouverte      // deverrouiller : nouvelle preuve de facteur
+        ouverte -> fermee           // fermer, fermer_toutes, balayer (durée max)
+        verrouillee -> fermee       // fermer, fermer_toutes, balayer (durée max)
+    }
+    face {
+        // ApiAcces.ouvrir_session : ouvre une session après vérification du second facteur
+        // (AccesFacteurs.verifier(h, personne, facteur)) et émet son jeton (AccesJetons.emettre).
+        // Canal déduit : "urgence" si AccesUrgences.ouverte_pour(personne), "console" pour un
+        // employé d'ORBITE (ApiRef.orbite()), "api" sinon. Renvoie le jeton EN CLAIR (une fois).
+        // Refus : Inconnu, Suspendu (personne non active), Habilitation (facteur non utilisable
+        // ou invalide), Plein (MAX_PAR_PERSONNE, MAX_SESSIONS, MAX_JETONS).
+        signal ouvrir(h: Horodatage, personne: String, facteur: String) -> String
+            writes personne_de_session, canal, ouverte_a, derniere_activite, ouvertes
+            moves nouvelle -> ouverte when AccesPersonnes.active via personne_de_session
+            calls AccesPersonnes.est_active, AccesPersonnes.employeur, AccesFacteurs.utilisable, AccesFacteurs.verifier, AccesUrgences.ouverte_pour, AccesJetons.emettre, ApiRef.orbite, next_id, Journal.noter
+        // Marque une activité (requête authentifiée) : derniere_activite = h. Renvoie la
+        // personne. Refus : Inconnu, Ferme (session non ouverte), Delai (inactivité ou durée
+        // maximale dépassées à h : la session est laissée au balayage).
+        signal toucher(h: Horodatage, session: String) -> String
+            reads personne_de_session, canal, ouverte_a, session
+            writes derniere_activite
+        // Rouvre une session verrouillée par le second facteur ; le jeton reste le même.
+        // Renvoie "ouverte". Le titulaire se prouve par son facteur (pas de `par`).
+        // Refus : Inconnu, EtatInvalide, Delai (durée maximale dépassée), Habilitation (facteur
+        // invalide), Suspendu (personne non active).
+        signal deverrouiller(h: Horodatage, session: String, facteur: String) -> String
+            reads personne_de_session, ouverte_a
+            writes derniere_activite
+            moves verrouillee -> ouverte
+            calls AccesPersonnes.est_active, AccesFacteurs.verifier
+        // ApiAcces.fermer_session : ferme la session du jeton (AccesJetons.session_de), par son
+        // titulaire, "exploitant" d'ORBITE ou "systeme". Révoque le jeton. Renvoie "fermee".
+        // Refus : Inconnu (jeton), EtatInvalide (session déjà fermée), Habilitation.
+        signal fermer(h: Horodatage, jeton: String, par: String) -> String
+            reads personne_de_session
+            writes motif_fin, ouvertes
+            moves ouverte -> fermee, verrouillee -> fermee
+            calls AccesJetons.session_de, AccesControle.a_le_role, AccesJetons.revoquer_session, Journal.noter
+        // Ferme toutes les sessions non fermées de la personne (suspension, départ,
+        // compromission, fin d'urgence) et révoque leurs jetons. Renvoie leur nombre.
+        signal fermer_toutes(h: Horodatage, personne: String, m: AccesMotifFin) -> Int
+            reads personne_de_session
+            writes motif_fin, ouvertes
+            moves ouverte -> fermee, verrouillee -> fermee
+            calls AccesJetons.revoquer_session, Journal.noter
+        // Balayage : verrouille les sessions ouvertes inactives (INACTIVITE_*_MS selon le canal),
+        // ferme celles ouvertes depuis plus de DUREE_MAX_MS. Renvoie le nombre de sessions touchées.
+        signal balayer(h: Horodatage) -> Int
+            reads personne_de_session, canal, ouverte_a, derniere_activite
+            writes motif_fin, ouvertes
+            moves ouverte -> verrouillee, ouverte -> fermee, verrouillee -> fermee
+            calls AccesJetons.revoquer_session, Journal.noter
+        // Titulaire d'une session ; "" si inconnue.
+        signal titulaire(session: String) -> String
+            reads personne_de_session
+        // Vrai si la session est "ouverte".
+        signal est_ouverte(session: String) -> Bool
+            reads session
+    }
+}
+
+// Jeton porteur d'une session (un par session, durée = durée maximale de la session) :
+// id = "j-<n>" tiré par emettre.
+skeleton AccesJetons {
+    const MAX_JETONS = 2000000
+    const DUREE_MS = 43200000
+    memory {
+        session_du_jeton: Map<String, String> [persistent]   // jeton → session ; écrit une fois par emettre, jamais effacé (lien de règle)
+        jeton_par_empreinte: Map<String, String> [persistent] // empreinte (sha256 du secret) → jeton ; le secret n'est jamais stocké
+        emis_a: Map<String, Horodatage> [persistent]          // jeton → émission, ms
+        expire_a: Map<String, Horodatage> [persistent]        // jeton → expiration, ms ; = emis_a + DUREE_MS
+        invariant session_du_jeton.size <= MAX_JETONS
+        invariant jeton_par_empreinte.size <= MAX_JETONS
+        invariant (emis_a ?? 0) <= (expire_a ?? 0)
+    }
+    // Cycle de vie d'un jeton (id = jeton).
+    state jeton {
+        initial: prepare
+        prepare -> emis             // emettre : session ouverte
+        emis -> revoque             // revoquer_session
+        emis -> expire              // echoir
+    }
+    face {
+        // Émet le jeton d'une session ouverte (appelée par AccesSessions.ouvrir seulement),
+        // valable DUREE_MS. Renvoie le SECRET en clair (random_token), une seule fois ; stocke
+        // son empreinte (sha256). Refus : Inconnu, Ferme (session non ouverte), Plein.
+        signal emettre(h: Horodatage, session: String) -> String
+            writes session_du_jeton, jeton_par_empreinte, emis_a, expire_a
+            moves prepare -> emis when AccesSessions.ouverte via session_du_jeton
+            calls AccesSessions.est_ouverte, random_token, next_id, Journal.noter
+        // ApiAcces.authentifier : renvoie la personne titulaire si le jeton (en clair, haché ici)
+        // est "emis", non expiré à `h`, sa session ouverte (activité marquée par
+        // AccesSessions.toucher) et sa personne active ; "" sinon (la passerelle répond 401).
+        // Ne rend jamais "systeme". Sans refus.
+        signal authentifier(jeton: String, h: Horodatage) -> String
+            reads jeton_par_empreinte, session_du_jeton, expire_a, jeton
+            calls AccesSessions.toucher, AccesPersonnes.est_active
+        // Session d'un jeton en clair ; "" si inconnu.
+        signal session_de(jeton: String) -> String
+            reads jeton_par_empreinte, session_du_jeton
+        // Révoque les jetons émis d'une session (fermeture). Renvoie leur nombre.
+        signal revoquer_session(h: Horodatage, session: String) -> Int
+            reads session_du_jeton
+            moves emis -> revoque
+        // Fait expirer les jetons émis dont expire_a ≤ h ; purge leur empreinte. Renvoie leur nombre.
+        signal echoir(h: Horodatage) -> Int
+            reads expire_a
+            writes jeton_par_empreinte
+            moves emis -> expire
+    }
+}

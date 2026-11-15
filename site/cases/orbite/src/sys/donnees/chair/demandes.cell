@@ -1,0 +1,297 @@
+// donnees — corps : demandes d'accès, consentements des propriétaires, partages bilatéraux.
+
+flesh DonDemandes {
+    on deposer(h, org, objet, f, duree_ms, par) {
+        let role_ok = ApiAcces.a_le_role(par, "chef_de_mission") || ApiAcces.a_le_role(par, "administrateur_operateur") || ApiAcces.a_le_role(par, "capteur") || ApiAcces.a_le_role(par, "autorite")
+        require role_ok && ApiAcces.agit_pour(par, org) else Habilitation "déposer : représentant de {org}"
+        require ApiRef.etat_objet(objet) != "inconnu" else Inconnu "objet non catalogué : {objet}"
+        let ad = DonAdhesions.adhesion_de(org)
+        require ad != "" else NonEligible "{org} n'adhère pas à l'accord en vigueur"
+        require !DonEmbargos.sous_embargo(Objet(objet)) else Confidentiel "{objet} sous embargo"
+        require !DonControle.peut_recevoir(org, objet, "", h) else NonEligible "{org} est déjà fondée à recevoir les données de {objet}"
+        let d = to_int(duree_ms)
+        require d > 0 && d <= DUREE_MAX_MS else HorsBornes "accès de 180 jours au plus"
+        let ouvertes = demandeur.entries.filter(e => e.value == org && (objet_de.get(e.key) ?? "") == to_string(objet) && contains(["deposee", "instruite", "accordee"], get_status(e.key) ?? "deposee"))
+        require len(ouvertes) == 0 else Doublon "demande non close de {org} sur {objet}"
+        require demandeur.size < MAX_DEMANDES else Plein "trop de demandes"
+        let id = "DA-{next_id()}"
+        require adhesion_de.get(id) == () else Existe "demande {id} existe"
+        demandeur.set(id, to_string(org))
+        objet_de.set(id, to_string(objet))
+        adhesion_de.set(id, ad)
+        finalite.set(id, f)
+        duree.set(id, duree_ms)
+        deposee_le.set(id, h)
+        let _ = Journal.noter(h, "donnees", par, "demande {id} de {org} sur {objet} ({f}, {d} ms)")
+        return id
+    }
+
+    on instruire(h, demande, recevable, motif, par) {
+        require ApiAcces.a_le_role(par, "analyste") || ApiAcces.a_le_role(par, "conformite") else Habilitation "instruire : analyste ou conformite d'ORBITE"
+        let objet = objet_de.get(demande)
+        require objet != () else Inconnu "demande inconnue : {demande}"
+        require (get_status(demande) ?? "deposee") == "deposee" else EtatInvalide "demande {demande} déjà instruite"
+        if !recevable {
+            require len(motif) > 0 else MotifRequis "motif d'irrecevabilité exigé"
+            transition(demande, "deposee", "refusee")
+            let _ = Journal.noter(h, "donnees", par, "demande {demande} irrecevable : {motif}")
+            return "refusee"
+        }
+        require !DonEmbargos.sous_embargo(Objet(objet)) else Confidentiel "{objet} passé sous embargo"
+        let ad = adhesion_de.get(demande) ?? ""
+        require DonAdhesions.etat(ad) == "active" else EtatInvalide "adhésion {ad} du demandeur plus active"
+        transition(demande, "deposee", "instruite")
+        let prop = DonConsentements.solliciter(h, demande)
+        let _ = Journal.noter(h, "donnees", par, "demande {demande} instruite, consentement de {prop} sollicité")
+        return "instruite"
+    }
+
+    on conclure(h, demande) {
+        let objet = objet_de.get(demande)
+        require objet != () else Inconnu "demande inconnue : {demande}"
+        require (get_status(demande) ?? "deposee") == "instruite" else EtatInvalide "demande {demande} non instruite"
+        let c = DonConsentements.etat(demande)
+        require c != "sollicite" else EtatInvalide "consentement encore sollicité"
+        let org = demandeur.get(demande) ?? ""
+        if c == "donne" && !DonEmbargos.sous_embargo(Objet(objet)) {
+            let f = to_int(h) + to_int(duree.get(demande) ?? Duree(0))
+            fin.set(demande, Horodatage(f))
+            accordee_de.set("{org}|{objet}", demande)
+            transition(demande, "instruite", "accordee")
+            let _ = ApiPasserelle.notifier(h, Org(org), "", "demande {demande}", "accès aux données de {objet} accordé jusqu'à {f}", 1)
+            let _ = Journal.noter(h, "donnees", "systeme", "demande {demande} accordée jusqu'à {f}")
+            return "accordee"
+        }
+        let pourquoi = if c == "donne" { "objet sous embargo" } else { "consentement {c}" }
+        transition(demande, "instruite", "refusee")
+        let _ = ApiPasserelle.notifier(h, Org(org), "", "demande {demande}", "accès aux données de {objet} refusé : {pourquoi}", 1)
+        let _ = Journal.noter(h, "donnees", "systeme", "demande {demande} refusée : {pourquoi}")
+        return "refusee"
+    }
+
+    on revoquer(h, demande, motif) {
+        let objet = objet_de.get(demande)
+        require objet != () else Inconnu "demande inconnue : {demande}"
+        require (get_status(demande) ?? "deposee") == "accordee" else EtatInvalide "demande {demande} non accordée"
+        let dem = demandeur.get(demande) ?? ""
+        let cle = "{dem}|{objet}"
+        if (accordee_de.get(cle) ?? "") == demande { accordee_de.delete(cle) }
+        transition(demande, "accordee", "revoquee")
+        let _ = Journal.noter(h, "donnees", "systeme", "demande {demande} révoquée : {motif}")
+        return "revoquee"
+    }
+
+    on revoquer_de(h, org) {
+        let cibles = accordee_de.entries.filter(e => (demandeur.get(e.value) ?? "") == to_string(org) && (get_status(e.value) ?? "deposee") == "accordee")
+        for e in cibles {
+            accordee_de.delete(e.key)
+            transition(e.value, "accordee", "revoquee")
+            let _ = Journal.noter(h, "donnees", "systeme", "demande {e.value} révoquée (adhésion de {org} close)")
+        }
+        return len(cibles)
+    }
+
+    on revoquer_objet(h, objet) {
+        let cibles = accordee_de.entries.filter(e => (objet_de.get(e.value) ?? "") == to_string(objet) && (get_status(e.value) ?? "deposee") == "accordee")
+        for e in cibles {
+            accordee_de.delete(e.key)
+            transition(e.value, "accordee", "revoquee")
+            let _ = Journal.noter(h, "donnees", "systeme", "demande {e.value} révoquée (embargo sur {objet})")
+        }
+        return len(cibles)
+    }
+
+    on echoir(h, par) {
+        require ApiAcces.a_le_role(par, "systeme") else Habilitation "échéances des demandes : systeme"
+        let t = to_int(h)
+        let finies = accordee_de.entries.filter(e => (get_status(e.value) ?? "deposee") == "accordee" && to_int(fin.get(e.value) ?? Horodatage(t + 1)) <= t)
+        for e in finies {
+            accordee_de.delete(e.key)
+            transition(e.value, "accordee", "expiree")
+            let _ = Journal.noter(h, "donnees", par, "accès {e.value} expiré")
+        }
+        let oubliees = deposee_le.entries.filter(e => (get_status(e.key) ?? "deposee") == "deposee" && to_int(e.value) + DELAI_INSTRUCTION_MS <= t).map(e => e.key)
+        for id in oubliees {
+            transition(id, "deposee", "refusee")
+            let _ = Journal.noter(h, "donnees", par, "demande {id} refusée faute d'instruction")
+        }
+        return len(finies) + len(oubliees)
+    }
+
+    on accordee_pour(org, objet, h) {
+        let d = accordee_de.get("{org}|{objet}")
+        if d == () { return "" }
+        if (get_status(d) ?? "deposee") != "accordee" { return "" }
+        if to_int(fin.get(d) ?? Horodatage(0)) <= to_int(h) { return "" }
+        return d
+    }
+
+    on parties_de(demande) {
+        let objet = objet_de.get(demande)
+        require objet != () else Inconnu "demande inconnue : {demande}"
+        return [objet, demandeur.get(demande) ?? ""]
+    }
+
+    on etat(demande) {
+        if demandeur.get(demande) == () { return "inconnue" }
+        return get_status(demande) ?? "deposee"
+    }
+}
+
+flesh DonConsentements {
+    on solliciter(h, demande) {
+        require proprietaire_de.get(demande) == () else Existe "consentement déjà sollicité pour {demande}"
+        let pd = DonDemandes.parties_de(demande)
+        let objet = pd[0]
+        let prop = ApiRef.proprietaire(Objet(objet))
+        if prop == "inconnu" || prop == "" { prop = ApiRef.orbite() }
+        require proprietaire_de.size < MAX_CONSENTEMENTS else Plein "trop de consentements"
+        proprietaire_de.set(demande, prop)
+        sollicite_le.set(demande, h)
+        let _ = ApiPasserelle.notifier(h, prop, "", "consentement {demande}", "{pd[1]} demande les données de {objet}", 1)
+        return prop
+    }
+
+    on repondre(h, demande, oui, motif, par) {
+        let prop = proprietaire_de.get(demande)
+        require prop != () else Inconnu "consentement inconnu : {demande}"
+        let role_ok = ApiAcces.a_le_role(par, "chef_de_mission") || ApiAcces.a_le_role(par, "administrateur_operateur") || ApiAcces.a_le_role(par, "conformite")
+        require role_ok && ApiAcces.agit_pour(par, Org(prop)) else Habilitation "répondre : représentant du propriétaire {prop}"
+        require (get_status(demande) ?? "sollicite") == "sollicite" else EtatInvalide "consentement {demande} déjà rendu"
+        require to_int(h) < to_int(sollicite_le.get(demande) ?? h) + DELAI_REPONSE_MS else Delai "délai de réponse passé"
+        if !oui {
+            require len(motif) > 0 else MotifRequis "motif du refus exigé"
+        }
+        require decision.size < MAX_CONSENTEMENTS else Plein "trop de décisions"
+        let quoi = if oui { "donne" } else { "refuse" }
+        decision.set(demande, "{h} | {par} | {quoi} | {motif}")
+        if oui { transition(demande, "sollicite", "donne") } else { transition(demande, "sollicite", "refuse") }
+        let issue = DonDemandes.conclure(h, demande)
+        let _ = Journal.noter(h, "donnees", par, "consentement {demande} {quoi} : demande {issue}")
+        return quoi
+    }
+
+    on retirer(h, demande, motif, par) {
+        let prop = proprietaire_de.get(demande)
+        require prop != () else Inconnu "consentement inconnu : {demande}"
+        let role_ok = ApiAcces.a_le_role(par, "chef_de_mission") || ApiAcces.a_le_role(par, "administrateur_operateur") || ApiAcces.a_le_role(par, "conformite")
+        require role_ok && ApiAcces.agit_pour(par, Org(prop)) else Habilitation "retirer : représentant du propriétaire {prop}"
+        require (get_status(demande) ?? "sollicite") == "donne" else EtatInvalide "consentement {demande} non donné"
+        require len(motif) > 0 else MotifRequis "motif du retrait exigé"
+        decision.set(demande, "{h} | {par} | retire | {motif}")
+        transition(demande, "donne", "retire")
+        let rv = try { DonDemandes.revoquer(h, demande, motif) }
+        let effet = if rv.error == () { "accès révoqué" } else { "accès déjà clos" }
+        let _ = Journal.noter(h, "donnees", par, "consentement {demande} retiré : {effet}")
+        return "retire"
+    }
+
+    on echoir(h, par) {
+        require ApiAcces.a_le_role(par, "systeme") else Habilitation "échéances des consentements : systeme"
+        let t = to_int(h)
+        let muets = sollicite_le.entries.filter(e => (get_status(e.key) ?? "sollicite") == "sollicite" && to_int(e.value) + DELAI_REPONSE_MS <= t).map(e => e.key)
+        for d in muets {
+            transition(d, "sollicite", "expire")
+            let _ = DonDemandes.conclure(h, d)
+            let _ = Journal.noter(h, "donnees", par, "consentement {d} expiré (silence = refus)")
+        }
+        return len(muets)
+    }
+
+    on etat(demande) {
+        if proprietaire_de.get(demande) == () { return "inconnu" }
+        return get_status(demande) ?? "sollicite"
+    }
+}
+
+flesh DonPartages {
+    on proposer(h, cedant_org, beneficiaire_org, jusqua, par) {
+        require ApiAcces.a_le_role(par, "administrateur_operateur") && ApiAcces.agit_pour(par, cedant_org) else Habilitation "proposer : administrateur de {cedant_org}"
+        require ApiRef.organisation_existe(cedant_org) && ApiRef.organisation_existe(beneficiaire_org) else Inconnu "organisation inconnue"
+        require beneficiaire_org != cedant_org else NonEligible "partage avec soi-même"
+        let ad = DonAdhesions.adhesion_de(beneficiaire_org)
+        require ad != "" else NonEligible "{beneficiaire_org} n'adhère pas à l'accord"
+        let t = to_int(h)
+        let f = to_int(jusqua)
+        require f > t && f <= t + DUREE_MAX_MS else HorsBornes "partage de 2 ans au plus"
+        let cle = "{cedant_org}|{beneficiaire_org}"
+        require actif_de.get(cle) == () else Doublon "partage déjà proposé ou actif de {cedant_org} vers {beneficiaire_org}"
+        require cedant.size < MAX_PARTAGES && actif_de.size < MAX_PARTAGES else Plein "trop de partages"
+        let id = "PB-{next_id()}"
+        require adhesion_de.get(id) == () else Existe "partage {id} existe"
+        cedant.set(id, to_string(cedant_org))
+        beneficiaire.set(id, to_string(beneficiaire_org))
+        adhesion_de.set(id, ad)
+        fin.set(id, jusqua)
+        propose_le.set(id, h)
+        actif_de.set(cle, id)
+        let _ = Journal.noter(h, "donnees", par, "partage {id} proposé de {cedant_org} vers {beneficiaire_org} jusqu'à {f}")
+        return id
+    }
+
+    on accepter(h, partage, par) {
+        let ben = beneficiaire.get(partage)
+        require ben != () else Inconnu "partage inconnu : {partage}"
+        let role_ok = ApiAcces.a_le_role(par, "administrateur_operateur") || ApiAcces.a_le_role(par, "autorite")
+        require role_ok && ApiAcces.agit_pour(par, Org(ben)) else Habilitation "accepter : représentant de {ben}"
+        require (get_status(partage) ?? "propose") == "propose" else EtatInvalide "partage {partage} non proposé"
+        require to_int(h) < to_int(propose_le.get(partage) ?? h) + DELAI_ACCEPTATION_MS else Delai "délai d'acceptation passé"
+        let ad = adhesion_de.get(partage) ?? ""
+        require DonAdhesions.etat(ad) == "active" else EtatInvalide "adhésion {ad} du bénéficiaire plus active"
+        transition(partage, "propose", "actif")
+        let _ = Journal.noter(h, "donnees", par, "partage {partage} accepté par {ben}")
+        return "actif"
+    }
+
+    on revoquer(h, partage, motif, par) {
+        let ced = cedant.get(partage)
+        require ced != () else Inconnu "partage inconnu : {partage}"
+        let par_cedant = ApiAcces.a_le_role(par, "administrateur_operateur") && ApiAcces.agit_pour(par, Org(ced))
+        require par_cedant || ApiAcces.a_le_role(par, "systeme") else Habilitation "révoquer : administrateur de {ced} ou systeme"
+        require len(motif) > 0 else MotifRequis "motif de la révocation exigé"
+        require (get_status(partage) ?? "propose") == "actif" else EtatInvalide "partage {partage} non actif"
+        let ben = beneficiaire.get(partage) ?? ""
+        let cle = "{ced}|{ben}"
+        if (actif_de.get(cle) ?? "") == partage { actif_de.delete(cle) }
+        transition(partage, "actif", "revoque")
+        let _ = ApiPasserelle.notifier(h, Org(ben), "", "partage {partage}", "partage révoqué : {motif}", 1)
+        let _ = Journal.noter(h, "donnees", par, "partage {partage} révoqué : {motif}")
+        return "revoque"
+    }
+
+    on revoquer_beneficiaire(h, org) {
+        let cibles = actif_de.entries.filter(e => (beneficiaire.get(e.value) ?? "") == to_string(org) && (get_status(e.value) ?? "propose") == "actif")
+        for e in cibles {
+            actif_de.delete(e.key)
+            transition(e.value, "actif", "revoque")
+            let _ = Journal.noter(h, "donnees", "systeme", "partage {e.value} révoqué (adhésion de {org} close ou suspendue)")
+        }
+        return len(cibles)
+    }
+
+    on echoir(h, par) {
+        require ApiAcces.a_le_role(par, "systeme") else Habilitation "échéances des partages : systeme"
+        let t = to_int(h)
+        let echus = actif_de.entries.filter(e => (get_status(e.value) ?? "propose") == "actif" && to_int(fin.get(e.value) ?? Horodatage(t + 1)) <= t)
+        for e in echus {
+            actif_de.delete(e.key)
+            transition(e.value, "actif", "echu")
+            let _ = Journal.noter(h, "donnees", par, "partage {e.value} échu")
+        }
+        let caducs = actif_de.entries.filter(e => (get_status(e.value) ?? "propose") == "propose" && to_int(propose_le.get(e.value) ?? Horodatage(t)) + DELAI_ACCEPTATION_MS <= t)
+        for e in caducs {
+            actif_de.delete(e.key)
+            transition(e.value, "propose", "caduc")
+            let _ = Journal.noter(h, "donnees", par, "partage {e.value} caduc (non accepté)")
+        }
+        return len(echus) + len(caducs)
+    }
+
+    on actif_pour(cedant_org, beneficiaire_org, h) {
+        let p = actif_de.get("{cedant_org}|{beneficiaire_org}")
+        if p == () { return "" }
+        if (get_status(p) ?? "propose") != "actif" { return "" }
+        if to_int(fin.get(p) ?? Horodatage(0)) <= to_int(h) { return "" }
+        return p
+    }
+}

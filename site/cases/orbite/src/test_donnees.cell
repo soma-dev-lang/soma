@@ -1,0 +1,610 @@
+use app
+use commun::journal_chair
+use commun::horloge_chair
+use sys::donnees::chair::api
+use sys::donnees::chair::accords
+use sys::donnees::chair::diffusion
+use sys::donnees::chair::embargos
+use sys::donnees::chair::demandes
+use sys::donnees::chair::traces
+use sys::donnees::chair::publication
+use sys::donnees::chair::violations
+use sys::donnees::chair::balayage
+use doublures::donnees
+
+// Monde de départ. H0 = 1 800 000 000 000 ms ; un jour = 86 400 000 ms.
+// Personnes et objets : voir doublures/donnees.cell. L'accord ACC-1 est soumis à H0, adopté à
+// H0 + 30 j, en vigueur à H0 + 60 j (= T1, l'heure des scénarios).
+cell Monde {
+    on h0() { return 1800000000000 }
+    on j() { return 86400000 }
+    on t1() { return 1800000000000 + 60 * 86400000 }
+    on dir1() { return "direction.d1@ORG-ORBITE" }
+    on dir2() { return "direction.d2@ORG-ORBITE" }
+    on conf() { return "conformite.c@ORG-ORBITE" }
+
+    // Rédige, soumet (ALD et BRV favorables) et adopte `v` à partir de `debut`, en vigueur à debut + 60 j.
+    on adopter_version(v: String, debut: Int) {
+        let d = DonAccords.rediger(Horodatage(debut), v, "sha256:{v}", "texte {v}", dir1())
+        let _ = DonAccords.soumettre(Horodatage(debut), v, Duree(30 * j()), ["ALD", "BRV"], dir1())
+        let _ = DonAccords.donner_avis(Horodatage(debut + 1), v, "ALD", "favorable", "point_focal.p@ORG-ETAT-ALD")
+        let _ = DonAccords.donner_avis(Horodatage(debut + 2), v, "BRV", "favorable", "autorite.a@ORG-ETAT-BRV")
+        return DonAccords.adopter(Horodatage(debut + 30 * j()), v, Horodatage(debut + 60 * j()), dir1(), dir2())
+    }
+    // ACC-1 en vigueur à T1.
+    on accord() {
+        let _ = adopter_version("ACC-1", h0())
+        return DonBalayage.balayer(Horodatage(t1()), "systeme")
+    }
+    // Signature + contre-signature d'une organisation à `t`.
+    on adherer(org: String, par: String, t: Int) {
+        let ad = DonAdhesions.signer(Horodatage(t), Org(org), par)
+        let _ = DonAdhesions.contresigner(Horodatage(t), ad, conf())
+        return ad
+    }
+    // Accord en vigueur ; OPA, OPB, OPSUSP et l'autorité d'ALD adhérents.
+    on adherents() {
+        let _ = accord()
+        let _ = adherer("ORG-OPA-ALD", "administrateur_operateur.a@ORG-OPA-ALD", t1())
+        let _ = adherer("ORG-OPB-BRV", "administrateur_operateur.b@ORG-OPB-BRV", t1())
+        let _ = adherer("ORG-OPSUSP-ALD", "administrateur_operateur.s@ORG-OPSUSP-ALD", t1())
+        return adherer("ORG-ETAT-ALD", "autorite.a@ORG-ETAT-ALD", t1())
+    }
+    // Adhérents, OBJ-A1 déclaré "parties" par OPA, demande d'OPB déposée et instruite.
+    on demande_instruite() {
+        let _ = adherents()
+        let _ = DonDiffusion.declarer(Horodatage(t1()), "OBJ-A1", "parties", "chef_de_mission.c@ORG-OPA-ALD")
+        let da = DonDemandes.deposer(Horodatage(t1()), "ORG-OPB-BRV", "OBJ-A1", "assurance", Duree(10 * j()), "chef_de_mission.b@ORG-OPB-BRV")
+        let _ = DonDemandes.instruire(Horodatage(t1() + 1000), da, true, "", "analyste.a@ORG-ORBITE")
+        return da
+    }
+    on demande_accordee() {
+        let da = demande_instruite()
+        let _ = DonConsentements.repondre(Horodatage(t1() + 2000), da, true, "", "administrateur_operateur.a@ORG-OPA-ALD")
+        return da
+    }
+    // Embargo demandé par l'autorité d'ALD sur `objet` pour 100 jours, puis accordé.
+    on embargo(objet: String) {
+        let e = DonEmbargos.demander(Horodatage(t1()), Objet(objet), Horodatage(t1() + 100 * j()), "sécurité nationale", "autorite.a@ORG-ETAT-ALD")
+        let _ = DonEmbargos.accorder(Horodatage(t1() + 1000), e, conf(), dir1())
+        return e
+    }
+    on fondement(org: String, objet: String, r: String) {
+        return DonControle.fondement(Org(org), Objet(objet), Rapprochement(r), Horodatage(t1() + 5000))
+    }
+    // Violation signalée par un analyste contre `org`, instruite.
+    on violation_instruite(org: String) {
+        let v = DonViolations.signaler(Horodatage(t1()), Org(org), "rediffusion", "OBJ-A1", "CDM rediffusé sur un forum public", "analyste.a@ORG-ORBITE")
+        let _ = DonViolations.instruire(Horodatage(t1() + 1000), v, true, "", conf())
+        return v
+    }
+    on publication_relue(p: String) {
+        let _ = DonPublications.preparer(Horodatage(t1()), p, "catalogue", "", Horodatage(0), Horodatage(0), "analyste.a1@ORG-ORBITE")
+        return DonPublications.relire(Horodatage(t1() + 1000), p, "analyste.a2@ORG-ORBITE")
+    }
+}
+
+// ── Accord de partage
+
+cell test CycleAccord {
+    rules {
+        assert DonAccords.etat("ACC-1") == "inconnue"
+        assert DonAccords.en_vigueur() == ""
+        assert Monde.adopter_version("ACC-1", Monde.h0()) == "adoptee"
+        assert DonAccords.resultat_consultation("ACC-1") == [2, 2]
+        assert DonAccords.etat("ACC-1") == "adoptee"
+        // date d'entrée en vigueur pas encore atteinte : rien ne change
+        assert DonBalayage.balayer(Horodatage(1800000000000 + 59 * 86400000), "systeme") == 0
+        assert DonBalayage.balayer(Horodatage(1800000000000 + 60 * 86400000), "systeme") == 1
+        assert DonAccords.en_vigueur() == "ACC-1"
+        assert DonAccords.etat("ACC-1") == "en_vigueur"
+        // ACC-2 remplace ACC-1
+        assert Monde.adopter_version("ACC-2", 1800000000000 + 61 * 86400000) == "adoptee"
+        assert DonBalayage.balayer(Horodatage(1800000000000 + 121 * 86400000), "systeme") == 1
+        assert DonAccords.en_vigueur() == "ACC-2"
+        assert DonAccords.etat("ACC-1") == "remplacee"
+        // abrogation à quatre yeux
+        assert_fails DonAccords.abroger(Horodatage(1800000000000 + 122 * 86400000), "ACC-2", "fin", "direction.d1@ORG-ORBITE", "direction.d1@ORG-ORBITE") matching "QuatreYeux"
+        assert_fails DonAccords.abroger(Horodatage(1800000000000 + 122 * 86400000), "ACC-2", "", "direction.d1@ORG-ORBITE", "direction.d2@ORG-ORBITE") matching "MotifRequis"
+        assert DonAccords.abroger(Horodatage(1800000000000 + 122 * 86400000), "ACC-2", "traité dénoncé", "direction.d1@ORG-ORBITE", "direction.d2@ORG-ORBITE") == "abrogee"
+        assert DonAccords.en_vigueur() == ""
+        assert_fails DonAccords.abroger(Horodatage(1800000000000 + 122 * 86400000), "ACC-1", "x", "direction.d1@ORG-ORBITE", "direction.d2@ORG-ORBITE") matching "EtatInvalide"
+    }
+}
+
+cell test RefusAccord {
+    rules {
+        assert_fails DonAccords.rediger(Horodatage(1800000000000), "ACC-1", "sha", "texte", "analyste.a@ORG-ORBITE") matching "Habilitation"
+        assert_fails DonAccords.rediger(Horodatage(1800000000000), "ACC-1", "sha", "", "direction.d1@ORG-ORBITE") matching "MotifRequis"
+        assert DonAccords.rediger(Horodatage(1800000000000), "ACC-1", "sha", "texte", "direction.d1@ORG-ORBITE") == "ACC-1"
+        assert_fails DonAccords.rediger(Horodatage(1800000000000), "ACC-1", "sha", "texte", "direction.d1@ORG-ORBITE") matching "Existe"
+        assert_fails DonAccords.soumettre(Horodatage(1800000000000), "ACC-1", Duree(86400000), ["ALD"], "direction.d1@ORG-ORBITE") matching "HorsBornes"
+        assert_fails DonAccords.soumettre(Horodatage(1800000000000), "ACC-9", Duree(2592000000), ["ALD"], "direction.d1@ORG-ORBITE") matching "Inconnu"
+        assert DonAccords.soumettre(Horodatage(1800000000000), "ACC-1", Duree(2592000000), ["ALD", "BRV"], "direction.d1@ORG-ORBITE") == "consultation"
+        // avis : portée de l'État, État non participant, révision de l'avis
+        assert_fails DonAccords.donner_avis(Horodatage(1800000000001), "ACC-1", "ALD", "favorable", "point_focal.p@ORG-ETAT-BRV") matching "Habilitation"
+        assert_fails DonAccords.donner_avis(Horodatage(1800000000001), "ACC-1", "XZZ", "favorable", "point_focal.p@ORG-ETAT-XZZ") matching "Suspendu"
+        assert DonAccords.donner_avis(Horodatage(1800000000001), "ACC-1", "ALD", "favorable", "point_focal.p@ORG-ETAT-ALD") == 1
+        assert DonAccords.donner_avis(Horodatage(1800000000002), "ACC-1", "BRV", "defavorable", "autorite.a@ORG-ETAT-BRV") == 2
+        assert DonAccords.donner_avis(Horodatage(1800000000003), "ACC-1", "ALD", "defavorable", "point_focal.p@ORG-ETAT-ALD") == 2
+        assert DonAccords.resultat_consultation("ACC-1") == [0, 2]
+        assert DonAccords.donner_avis(Horodatage(1800000000004), "ACC-1", "ALD", "favorable", "point_focal.p@ORG-ETAT-ALD") == 2
+        assert DonAccords.resultat_consultation("ACC-1") == [1, 2]
+        // consultation non close, puis majorité insuffisante (1/2 < 2/3)
+        assert_fails DonAccords.adopter(Horodatage(1800000000005), "ACC-1", Horodatage(1800000000000 + 90 * 86400000), "direction.d1@ORG-ORBITE", "direction.d2@ORG-ORBITE") matching "Delai"
+        assert_fails DonAccords.adopter(Horodatage(1800000000000 + 30 * 86400000), "ACC-1", Horodatage(1800000000000 + 90 * 86400000), "direction.d1@ORG-ORBITE", "direction.d2@ORG-ORBITE") matching "Insuffisant"
+        assert_fails DonAccords.donner_avis(Horodatage(1800000000000 + 30 * 86400000), "ACC-1", "BRV", "favorable", "autorite.a@ORG-ETAT-BRV") matching "Delai"
+        assert_fails DonAccords.adopter(Horodatage(1800000000000 + 30 * 86400000), "ACC-1", Horodatage(1800000000000 + 90 * 86400000), "direction.d1@ORG-ORBITE", "intrus@ORG-ORBITE") matching "QuatreYeux"
+        assert_fails DonAccords.abandonner(Horodatage(1800000000000), "ACC-9", "x", "direction.d1@ORG-ORBITE") matching "Inconnu"
+        assert DonAccords.abandonner(Horodatage(1800000000000 + 31 * 86400000), "ACC-1", "rejet", "direction.d1@ORG-ORBITE") == "abandonnee"
+        assert_fails DonBalayage.balayer(Horodatage(1800000000000), "analyste.a@ORG-ORBITE") matching "Habilitation"
+    }
+}
+
+// ── Adhésions
+
+cell test CycleAdhesion {
+    rules {
+        assert_fails DonAdhesions.signer(Horodatage(1800000000000), "ORG-OPA-ALD", "administrateur_operateur.a@ORG-OPA-ALD") matching "Ferme"
+        assert Monde.accord() == 1
+        assert_fails DonAdhesions.signer(Horodatage(1805184000000), "ORG-ORBITE", "direction.d1@ORG-ORBITE") matching "HorsBornes"
+        assert_fails DonAdhesions.signer(Horodatage(1805184000000), "ORG-INCONNU-1", "administrateur_operateur.a@ORG-INCONNU-1") matching "Inconnu"
+        assert_fails DonAdhesions.signer(Horodatage(1805184000000), "ORG-OPA-ALD", "administrateur_operateur.a@ORG-OPB-BRV") matching "Habilitation"
+        assert_fails DonAdhesions.signer(Horodatage(1805184000000), "ORG-ETAT-ALD", "administrateur_operateur.a@ORG-ETAT-ALD") matching "Habilitation"
+        let ad = DonAdhesions.signer(Horodatage(1805184000000), "ORG-OPA-ALD", "administrateur_operateur.a@ORG-OPA-ALD")
+        assert DonAdhesions.etat(ad) == "signee"
+        assert !DonAdhesions.adherent("ORG-OPA-ALD")
+        assert_fails DonAdhesions.signer(Horodatage(1805184000000), "ORG-OPA-ALD", "administrateur_operateur.a@ORG-OPA-ALD") matching "Doublon"
+        assert_fails DonAdhesions.contresigner(Horodatage(1805184000000), ad, "analyste.a@ORG-ORBITE") matching "Habilitation"
+        assert DonAdhesions.contresigner(Horodatage(1805184000000), ad, "conformite.c@ORG-ORBITE") == "active"
+        assert DonAdhesions.adherent("ORG-OPA-ALD")
+        assert DonAdhesions.adhesion_de("ORG-OPA-ALD") == ad
+        assert ApiDonnees.adherent("ORG-ORBITE")
+        assert_fails DonAdhesions.contresigner(Horodatage(1805184000000), ad, "conformite.c@ORG-ORBITE") matching "EtatInvalide"
+        // suspension à quatre yeux, rétablissement
+        assert_fails DonAdhesions.suspendre(Horodatage(1805184000000), "ORG-OPA-ALD", "VIO-1", "conformite.c@ORG-ORBITE", "conformite.c@ORG-ORBITE") matching "QuatreYeux"
+        assert DonAdhesions.suspendre(Horodatage(1805184000000), "ORG-OPA-ALD", "VIO-1", "conformite.c@ORG-ORBITE", "direction.d1@ORG-ORBITE") == "suspendue"
+        assert !DonAdhesions.adherent("ORG-OPA-ALD")
+        assert_fails DonAdhesions.signer(Horodatage(1805184000000), "ORG-OPA-ALD", "administrateur_operateur.a@ORG-OPA-ALD") matching "Suspendu"
+        assert DonAdhesions.retablir(Horodatage(1805184000000), "ORG-OPA-ALD", "mesures attestées", "conformite.c@ORG-ORBITE", "direction.d1@ORG-ORBITE") == "active"
+        assert DonAdhesions.adherent("ORG-OPA-ALD")
+        // retrait
+        assert_fails DonAdhesions.retirer(Horodatage(1805184000000), "ORG-OPA-ALD", "", "administrateur_operateur.a@ORG-OPA-ALD") matching "MotifRequis"
+        assert DonAdhesions.retirer(Horodatage(1805184000000), "ORG-OPA-ALD", "fin d'activité", "administrateur_operateur.a@ORG-OPA-ALD") == "retiree"
+        assert !DonAdhesions.adherent("ORG-OPA-ALD")
+        assert DonAdhesions.etat(ad) == "retiree"
+        assert DonAdhesions.etat("AD-0") == "inconnue"
+    }
+}
+
+cell test ResignatureEtCaducite {
+    rules {
+        let ad1 = Monde.adherents()
+        // ACC-2 adopté puis en vigueur à T1 + 61 j : re-signature ouverte 90 jours
+        assert Monde.adopter_version("ACC-2", 1805184000000 + 86400000) == "adoptee"
+        let ad_opa = DonAdhesions.adhesion_de("ORG-OPA-ALD")
+        // une signature sur ACC-1 non contre-signée avant le changement devient périmée
+        assert DonBalayage.balayer(Horodatage(1805184000000 + 61 * 86400000), "systeme") == 1
+        assert DonAccords.en_vigueur() == "ACC-2"
+        assert DonAdhesions.adherent("ORG-OPA-ALD")
+        // OPA re-signe ACC-2 : la nouvelle adhésion remplace l'ancienne
+        let ad2 = Monde.adherer("ORG-OPA-ALD", "administrateur_operateur.a@ORG-OPA-ALD", 1805184000000 + 62 * 86400000)
+        assert DonAdhesions.etat(ad_opa) == "remplacee"
+        assert DonAdhesions.etat(ad2) == "active"
+        // 90 jours plus tard, les autres (OPB, OPSUSP, ALD) deviennent caduques
+        assert DonBalayage.balayer(Horodatage(1805184000000 + 152 * 86400000), "systeme") == 3
+        assert !DonAdhesions.adherent("ORG-OPB-BRV")
+        assert DonAdhesions.adherent("ORG-OPA-ALD")
+        assert DonAdhesions.etat(ad1) == "caduque"
+    }
+}
+
+cell test SignatureNonContresignee {
+    rules {
+        assert Monde.accord() == 1
+        let ad = DonAdhesions.signer(Horodatage(1805184000000), "ORG-OPB-BRV", "administrateur_operateur.b@ORG-OPB-BRV")
+        assert_fails DonAdhesions.annuler(Horodatage(1805184000000), ad, "x", "intrus@ORG-OPB-BRV") matching "Habilitation"
+        // 30 jours sans contre-signature : annulée au balayage
+        assert DonBalayage.balayer(Horodatage(1805184000000 + 30 * 86400000), "systeme") == 1
+        assert DonAdhesions.etat(ad) == "annulee"
+        assert_fails DonAdhesions.contresigner(Horodatage(1805184000000 + 30 * 86400000), ad, "conformite.c@ORG-ORBITE") matching "EtatInvalide"
+        // radiation : refusée tant que l'organisation existe
+        let ad3 = Monde.adherer("ORG-OPB-BRV", "administrateur_operateur.b@ORG-OPB-BRV", 1805184000000 + 31 * 86400000)
+        assert_fails DonAdhesions.radier(Horodatage(1805184000000 + 31 * 86400000), "ORG-OPB-BRV", "systeme") matching "EtatInvalide"
+        assert DonAdhesions.etat(ad3) == "active"
+    }
+}
+
+// ── Diffusion et fondement
+
+cell test Diffusion {
+    rules {
+        assert DonDiffusion.declaree("OBJ-A1") == "participants"
+        assert DonDiffusion.declaree("OBJ-D1") == "public"
+        assert DonDiffusion.plafond_de("satellite") == "parties"
+        assert ApiDonnees.diffusion("OBJ-A1") == "participants"
+        assert ApiDonnees.diffusion("OBJ-D1") == "public"
+        assert ApiDonnees.diffusion("OBJ-INCONNU-1") == "restreint"
+        assert DonControle.ouverture("restreint") == 0
+        assert DonControle.ouverture("public") == 3
+        assert_fails DonDiffusion.declarer(Horodatage(1800000000000), "OBJ-A1", "public", "chef_de_mission.c@ORG-OPB-BRV") matching "Habilitation"
+        assert_fails DonDiffusion.declarer(Horodatage(1800000000000), "OBJ-A1", "restreint", "chef_de_mission.c@ORG-OPA-ALD") matching "HorsBornes"
+        assert_fails DonDiffusion.declarer(Horodatage(1800000000000), "OBJ-INCONNU-1", "public", "chef_de_mission.c@ORG-OPA-ALD") matching "Inconnu"
+        assert DonDiffusion.declarer(Horodatage(1800000000000), "OBJ-A1", "public", "chef_de_mission.c@ORG-OPA-ALD") == "public"
+        assert DonDiffusion.declarer(Horodatage(1800000000001), "OBJ-A1", "parties", "chef_de_mission.c@ORG-OPA-ALD") == "parties"
+        // plafond : satellites au moins "participants" ; s'applique aux déclarations existantes
+        assert_fails DonDiffusion.fixer_plafond(Horodatage(1800000000002), "satellite", "participants", "ouverture", "direction.d1@ORG-ORBITE", "direction.d1@ORG-ORBITE") matching "QuatreYeux"
+        assert_fails DonDiffusion.fixer_plafond(Horodatage(1800000000002), "satellite", "restreint", "x", "direction.d1@ORG-ORBITE", "conformite.c@ORG-ORBITE") matching "HorsBornes"
+        assert DonDiffusion.fixer_plafond(Horodatage(1800000000002), "satellite", "participants", "ouverture", "direction.d1@ORG-ORBITE", "conformite.c@ORG-ORBITE") == "participants"
+        assert ApiDonnees.diffusion("OBJ-A1") == "participants"
+        assert_fails DonDiffusion.declarer(Horodatage(1800000000003), "OBJ-A1", "parties", "chef_de_mission.c@ORG-OPA-ALD") matching "HorsBornes"
+        assert len(DonDiffusion.historique_de("OBJ-A1", 10)) == 2
+        assert len(DonDiffusion.historique_de("satellite", 10)) == 1
+        assert len(DonDiffusion.historique_de("OBJ-A1", 1)) == 1
+    }
+}
+
+cell test Fondements {
+    rules {
+        let _ = Monde.adherents()
+        assert Monde.fondement("ORG-OPA-ALD", "OBJ-A1", "") == "proprietaire"
+        assert Monde.fondement("ORG-ETAT-ALD", "OBJ-A1", "") == "etat_immatriculation"
+        assert Monde.fondement("ORG-ORBITE", "OBJ-A1", "") == "orbite"
+        assert Monde.fondement("ORG-ORBITE", "OBJ-D1", "") == "proprietaire"
+        assert Monde.fondement("ORG-INCONNU-9", "OBJ-D1", "") == ""
+        // débris : public ; satellite "participants" : adhésion
+        assert Monde.fondement("ORG-NONADH-ALD", "OBJ-D1", "") == "public"
+        assert starts_with(Monde.fondement("ORG-OPB-BRV", "OBJ-A1", ""), "adhesion:AD-")
+        assert Monde.fondement("ORG-NONADH-ALD", "OBJ-A1", "") == ""
+        // opérateur suspendu chez operateurs : perd l'adhésion, garde la qualité de partie
+        assert Monde.fondement("ORG-OPSUSP-ALD", "OBJ-A1", "") == ""
+        assert Monde.fondement("ORG-OPSUSP-ALD", "OBJ-A1", "CJ-A1-S1") == "partie:CJ-A1-S1"
+        // partie non adhérente : seulement en urgence (niveau 3)
+        assert Monde.fondement("ORG-OPX-XLD", "OBJ-A1", "CJ-A1-X1") == ""
+        assert Monde.fondement("ORG-OPX-XLD", "OBJ-A1", "CJ-A1-X1-U") == "urgence:CJ-A1-X1-U"
+        // rapprochement clos : plus de fondement "partie"
+        assert Monde.fondement("ORG-OPX-XLD", "OBJ-A1", "CJ-A1-X1-U-CLOS") == ""
+        assert ApiDonnees.peut_recevoir("ORG-OPB-BRV", "OBJ-A1", "", Horodatage(1805184005000))
+        assert !ApiDonnees.peut_recevoir("ORG-NONADH-ALD", "OBJ-A1", "", Horodatage(1805184005000))
+        assert DonControle.filtrer(["ORG-OPB-BRV", "ORG-NONADH-ALD", "ORG-OPA-ALD"], "OBJ-A1", "", Horodatage(1805184005000)) == ["ORG-OPB-BRV", "ORG-OPA-ALD"]
+    }
+}
+
+// ── Embargos
+
+cell test CycleEmbargo {
+    rules {
+        let _ = Monde.adherents()
+        assert_fails DonEmbargos.demander(Horodatage(1805184000000), "OBJ-A1", Horodatage(1805184000000 + 86400000), "x", "autorite.a@ORG-ETAT-BRV") matching "Habilitation"
+        assert_fails DonEmbargos.demander(Horodatage(1805184000000), "OBJ-A1", Horodatage(1805184000000 + 400 * 86400000), "x", "autorite.a@ORG-ETAT-ALD") matching "HorsBornes"
+        assert_fails DonEmbargos.demander(Horodatage(1805184000000), "OBJ-A1", Horodatage(1805184000000 + 86400000), "", "autorite.a@ORG-ETAT-ALD") matching "MotifRequis"
+        assert_fails DonEmbargos.demander(Horodatage(1805184000000), "OBJ-X1", Horodatage(1805184000000 + 86400000), "x", "autorite.a@ORG-ETAT-XLD") matching "Suspendu"
+        let e = DonEmbargos.demander(Horodatage(1805184000000), "OBJ-A1", Horodatage(1805184000000 + 100 * 86400000), "sécurité nationale", "autorite.a@ORG-ETAT-ALD")
+        assert DonEmbargos.etat(e) == "demande"
+        assert_fails DonEmbargos.demander(Horodatage(1805184000000), "OBJ-A1", Horodatage(1805184000000 + 86400000), "x", "autorite.a@ORG-ETAT-ALD") matching "Doublon"
+        assert_fails DonEmbargos.accorder(Horodatage(1805184001000), e, "conformite.c@ORG-ORBITE", "conformite.c@ORG-ORBITE") matching "QuatreYeux"
+        assert_fails DonEmbargos.accorder(Horodatage(1805184001000), e, "analyste.a@ORG-ORBITE", "direction.d1@ORG-ORBITE") matching "Habilitation"
+        assert DonEmbargos.accorder(Horodatage(1805184001000), e, "conformite.c@ORG-ORBITE", "direction.d1@ORG-ORBITE") == "actif"
+        assert DonEmbargos.sous_embargo("OBJ-A1")
+        assert ApiDonnees.diffusion("OBJ-A1") == "restreint"
+        // restreint : propriétaire, État, ORBITE ; plus d'adhésion
+        assert Monde.fondement("ORG-OPA-ALD", "OBJ-A1", "") == "proprietaire"
+        assert Monde.fondement("ORG-ETAT-ALD", "OBJ-A1", "") == "etat_immatriculation"
+        assert Monde.fondement("ORG-ORBITE", "OBJ-A1", "") == "orbite"
+        assert Monde.fondement("ORG-OPB-BRV", "OBJ-A1", "") == ""
+        // l'embargo ne cache jamais un rapprochement aux parties
+        assert Monde.fondement("ORG-OPB-BRV", "OBJ-A1", "CJ-A1-B1") == "partie:CJ-A1-B1"
+        // prolonger (État + conformite), lever
+        assert_fails DonEmbargos.prolonger(Horodatage(1805184002000), e, Horodatage(1805184000000 + 200 * 86400000), "x", "autorite.a@ORG-ETAT-ALD", "direction.d1@ORG-ORBITE") matching "QuatreYeux"
+        assert DonEmbargos.prolonger(Horodatage(1805184002000), e, Horodatage(1805184000000 + 200 * 86400000), "menace persistante", "autorite.a@ORG-ETAT-ALD", "conformite.c@ORG-ORBITE") == Horodatage(1805184000000 + 200 * 86400000)
+        assert_fails DonEmbargos.lever(Horodatage(1805184003000), e, "fin", "autorite.a@ORG-ETAT-BRV") matching "Habilitation"
+        assert DonEmbargos.lever(Horodatage(1805184003000), e, "menace levée", "autorite.a@ORG-ETAT-ALD") == "leve"
+        assert !DonEmbargos.sous_embargo("OBJ-A1")
+        assert ApiDonnees.diffusion("OBJ-A1") == "participants"
+        assert_fails DonEmbargos.lever(Horodatage(1805184003000), e, "x", "direction.d1@ORG-ORBITE") matching "EtatInvalide"
+    }
+}
+
+cell test EmbargoPlancherEtEcheances {
+    rules {
+        let _ = Monde.adherents()
+        // objet sous embargo impliqué dans un rapprochement ouvert : au moins "parties"
+        let e1 = Monde.embargo("OBJ-A5V")
+        assert ApiDonnees.diffusion("OBJ-A5V") == "parties"
+        // objet rentré : plus d'embargo accordé
+        let e2 = DonEmbargos.demander(Horodatage(1805184000000), "OBJ-A7RENTRE", Horodatage(1805184000000 + 10 * 86400000), "x", "autorite.a@ORG-ETAT-ALD")
+        assert_fails DonEmbargos.accorder(Horodatage(1805184001000), e2, "conformite.c@ORG-ORBITE", "direction.d1@ORG-ORBITE") matching "EtatInvalide"
+        let e3 = DonEmbargos.demander(Horodatage(1805184000000), "OBJ-A2", Horodatage(1805184000000 + 10 * 86400000), "x", "autorite.a@ORG-ETAT-ALD")
+        assert_fails DonEmbargos.refuser(Horodatage(1805184001000), e3, "", "conformite.c@ORG-ORBITE") matching "MotifRequis"
+        assert DonEmbargos.refuser(Horodatage(1805184001000), e3, "motif insuffisant", "conformite.c@ORG-ORBITE") == "refuse"
+        // 14 jours : la demande non instruite est refusée ; 100 jours : l'embargo expire
+        assert DonBalayage.balayer(Horodatage(1805184000000 + 14 * 86400000), "systeme") == 1
+        assert DonEmbargos.etat(e2) == "refuse"
+        assert DonBalayage.balayer(Horodatage(1805184000000 + 100 * 86400000), "systeme") == 1
+        assert DonEmbargos.etat(e1) == "expire"
+        assert !DonEmbargos.sous_embargo("OBJ-A5V")
+        assert DonEmbargos.etat("EMB-0") == "inconnu"
+    }
+}
+
+// ── Demandes d'accès et consentements (scénario métier)
+
+cell test ScenarioDemandeAcces {
+    rules {
+        let _ = Monde.adherents()
+        // OBJ-A1 en "participants" : OPB est déjà fondée, sa demande est inutile
+        assert_fails DonDemandes.deposer(Horodatage(1805184000000), "ORG-OPB-BRV", "OBJ-A1", "assurance", Duree(864000000), "chef_de_mission.b@ORG-OPB-BRV") matching "NonEligible"
+        assert DonDiffusion.declarer(Horodatage(1805184000000), "OBJ-A1", "parties", "chef_de_mission.c@ORG-OPA-ALD") == "parties"
+        assert Monde.fondement("ORG-OPB-BRV", "OBJ-A1", "") == ""
+        assert_fails DonDemandes.deposer(Horodatage(1805184000000), "ORG-OPB-BRV", "OBJ-A1", "assurance", Duree(864000000), "chef_de_mission.b@ORG-OPA-ALD") matching "Habilitation"
+        assert_fails DonDemandes.deposer(Horodatage(1805184000000), "ORG-NONADH-ALD", "OBJ-A1", "assurance", Duree(864000000), "chef_de_mission.b@ORG-NONADH-ALD") matching "NonEligible"
+        assert_fails DonDemandes.deposer(Horodatage(1805184000000), "ORG-OPB-BRV", "OBJ-A1", "assurance", Duree(0), "chef_de_mission.b@ORG-OPB-BRV") matching "HorsBornes"
+        let da = DonDemandes.deposer(Horodatage(1805184000000), "ORG-OPB-BRV", "OBJ-A1", "assurance", Duree(864000000), "chef_de_mission.b@ORG-OPB-BRV")
+        assert DonDemandes.etat(da) == "deposee"
+        assert_fails DonDemandes.deposer(Horodatage(1805184000000), "ORG-OPB-BRV", "OBJ-A1", "recherche", Duree(864000000), "chef_de_mission.b@ORG-OPB-BRV") matching "Doublon"
+        assert DonDemandes.parties_de(da) == ["OBJ-A1", "ORG-OPB-BRV"]
+        // instruction : consentement sollicité au propriétaire
+        assert_fails DonDemandes.instruire(Horodatage(1805184001000), da, true, "", "chef_de_mission.b@ORG-OPB-BRV") matching "Habilitation"
+        assert DonDemandes.instruire(Horodatage(1805184001000), da, true, "", "analyste.a@ORG-ORBITE") == "instruite"
+        assert DonConsentements.etat(da) == "sollicite"
+        assert_fails DonDemandes.conclure(Horodatage(1805184001000), da) matching "EtatInvalide"
+        // seul le propriétaire répond ; un refus exige un motif
+        assert_fails DonConsentements.repondre(Horodatage(1805184002000), da, true, "", "administrateur_operateur.b@ORG-OPB-BRV") matching "Habilitation"
+        assert_fails DonConsentements.repondre(Horodatage(1805184002000), da, false, "", "administrateur_operateur.a@ORG-OPA-ALD") matching "MotifRequis"
+        assert DonConsentements.repondre(Horodatage(1805184002000), da, true, "", "administrateur_operateur.a@ORG-OPA-ALD") == "donne"
+        assert DonDemandes.etat(da) == "accordee"
+        assert DonDemandes.accordee_pour("ORG-OPB-BRV", "OBJ-A1", Horodatage(1805184003000)) == da
+        assert Monde.fondement("ORG-OPB-BRV", "OBJ-A1", "") == "demande:{da}"
+        // accès tracé, avec son fondement
+        assert ApiDonnees.tracer(Horodatage(1805184004000), "ORG-OPB-BRV", "OBJ-A1", "", "reponse_demande") == 1
+        assert ends_with(DonTraces.lire(1, "auditeur.x@ORG-ORBITE"), "| demande:{da}")
+        // fin de l'accès contrôlée à l'heure exacte, avant le balayage
+        assert DonDemandes.accordee_pour("ORG-OPB-BRV", "OBJ-A1", Horodatage(1805184002000 + 864000000)) == ""
+        // retrait du consentement : accès révoqué
+        assert DonConsentements.retirer(Horodatage(1805184005000), da, "partenariat rompu", "administrateur_operateur.a@ORG-OPA-ALD") == "retire"
+        assert DonDemandes.etat(da) == "revoquee"
+        assert Monde.fondement("ORG-OPB-BRV", "OBJ-A1", "") == ""
+    }
+}
+
+cell test DemandesEcheancesEtRevocations {
+    rules {
+        // silence du propriétaire : refus après 7 jours
+        let da = Monde.demande_instruite()
+        assert DonBalayage.balayer(Horodatage(1805184000000 + 7 * 86400000 + 1000), "systeme") == 1
+        assert DonConsentements.etat(da) == "expire"
+        assert DonDemandes.etat(da) == "refusee"
+        assert_fails DonConsentements.repondre(Horodatage(1805184000000 + 8 * 86400000), da, true, "", "administrateur_operateur.a@ORG-OPA-ALD") matching "EtatInvalide"
+        // nouvelle demande accordée puis expirée au balayage
+        let db = DonDemandes.deposer(Horodatage(1805184000000 + 8 * 86400000), "ORG-OPB-BRV", "OBJ-A1", "etude_debris", Duree(86400000), "capteur.k@ORG-OPB-BRV")
+        assert DonDemandes.instruire(Horodatage(1805184000000 + 8 * 86400000), db, true, "", "conformite.c@ORG-ORBITE") == "instruite"
+        assert DonConsentements.repondre(Horodatage(1805184000000 + 8 * 86400000), db, true, "", "chef_de_mission.c@ORG-OPA-ALD") == "donne"
+        assert DonBalayage.balayer(Horodatage(1805184000000 + 9 * 86400000), "systeme") == 1
+        assert DonDemandes.etat(db) == "expiree"
+        // demande irrecevable, puis demande non instruite refusée après 14 jours
+        let dc = DonDemandes.deposer(Horodatage(1805184000000 + 10 * 86400000), "ORG-OPB-BRV", "OBJ-A1", "recherche", Duree(86400000), "capteur.k@ORG-OPB-BRV")
+        assert_fails DonDemandes.instruire(Horodatage(1805184000000 + 10 * 86400000), dc, false, "", "analyste.a@ORG-ORBITE") matching "MotifRequis"
+        assert DonDemandes.instruire(Horodatage(1805184000000 + 10 * 86400000), dc, false, "finalité vague", "analyste.a@ORG-ORBITE") == "refusee"
+        let dd = DonDemandes.deposer(Horodatage(1805184000000 + 10 * 86400000), "ORG-OPB-BRV", "OBJ-A1", "recherche", Duree(86400000), "capteur.k@ORG-OPB-BRV")
+        assert DonBalayage.balayer(Horodatage(1805184000000 + 24 * 86400000), "systeme") == 1
+        assert DonDemandes.etat(dd) == "refusee"
+        // embargo accordé : les demandes accordées sur l'objet sont révoquées
+        let de = DonDemandes.deposer(Horodatage(1805184000000 + 25 * 86400000), "ORG-OPB-BRV", "OBJ-A1", "rentree", Duree(10 * 86400000), "capteur.k@ORG-OPB-BRV")
+        let _ = DonDemandes.instruire(Horodatage(1805184000000 + 25 * 86400000), de, true, "", "analyste.a@ORG-ORBITE")
+        let _ = DonConsentements.repondre(Horodatage(1805184000000 + 25 * 86400000), de, true, "", "chef_de_mission.c@ORG-OPA-ALD")
+        assert DonDemandes.etat(de) == "accordee"
+        let e = DonEmbargos.demander(Horodatage(1805184000000 + 25 * 86400000), "OBJ-A1", Horodatage(1805184000000 + 50 * 86400000), "sécurité", "autorite.a@ORG-ETAT-ALD")
+        assert DonEmbargos.accorder(Horodatage(1805184000000 + 25 * 86400000 + 1), e, "conformite.c@ORG-ORBITE", "direction.d1@ORG-ORBITE") == "actif"
+        assert DonDemandes.etat(de) == "revoquee"
+        assert_fails DonDemandes.deposer(Horodatage(1805184000000 + 26 * 86400000), "ORG-OPB-BRV", "OBJ-A1", "rentree", Duree(86400000), "capteur.k@ORG-OPB-BRV") matching "Confidentiel"
+    }
+}
+
+cell test SuspensionRevoqueDemandes {
+    rules {
+        let da = Monde.demande_accordee()
+        assert DonDemandes.etat(da) == "accordee"
+        assert DonAdhesions.suspendre(Horodatage(1805184010000), "ORG-OPB-BRV", "VIO-9", "conformite.c@ORG-ORBITE", "direction.d1@ORG-ORBITE") == "suspendue"
+        assert DonDemandes.etat(da) == "revoquee"
+        // suspendue : plus d'adhésion ni de demande, mais toujours partie d'un rapprochement
+        assert Monde.fondement("ORG-OPB-BRV", "OBJ-A1", "") == ""
+        assert Monde.fondement("ORG-OPB-BRV", "OBJ-A1", "CJ-A1-B1-U") == "urgence:CJ-A1-B1-U"
+    }
+}
+
+// ── Partages bilatéraux
+
+cell test CyclePartage {
+    rules {
+        let _ = Monde.adherents()
+        assert DonDiffusion.declarer(Horodatage(1805184000000), "OBJ-A1", "parties", "chef_de_mission.c@ORG-OPA-ALD") == "parties"
+        assert_fails DonPartages.proposer(Horodatage(1805184000000), "ORG-OPA-ALD", "ORG-OPB-BRV", Horodatage(1805184000000 + 86400000), "administrateur_operateur.b@ORG-OPB-BRV") matching "Habilitation"
+        assert_fails DonPartages.proposer(Horodatage(1805184000000), "ORG-OPA-ALD", "ORG-OPA-ALD", Horodatage(1805184000000 + 86400000), "administrateur_operateur.a@ORG-OPA-ALD") matching "NonEligible"
+        assert_fails DonPartages.proposer(Horodatage(1805184000000), "ORG-OPA-ALD", "ORG-NONADH-ALD", Horodatage(1805184000000 + 86400000), "administrateur_operateur.a@ORG-OPA-ALD") matching "NonEligible"
+        assert_fails DonPartages.proposer(Horodatage(1805184000000), "ORG-OPA-ALD", "ORG-OPB-BRV", Horodatage(1805184000000 + 800 * 86400000), "administrateur_operateur.a@ORG-OPA-ALD") matching "HorsBornes"
+        let p = DonPartages.proposer(Horodatage(1805184000000), "ORG-OPA-ALD", "ORG-OPB-BRV", Horodatage(1805184000000 + 365 * 86400000), "administrateur_operateur.a@ORG-OPA-ALD")
+        assert_fails DonPartages.proposer(Horodatage(1805184000000), "ORG-OPA-ALD", "ORG-OPB-BRV", Horodatage(1805184000000 + 86400000), "administrateur_operateur.a@ORG-OPA-ALD") matching "Doublon"
+        assert DonPartages.actif_pour("ORG-OPA-ALD", "ORG-OPB-BRV", Horodatage(1805184000000)) == ""
+        assert_fails DonPartages.accepter(Horodatage(1805184001000), p, "administrateur_operateur.a@ORG-OPA-ALD") matching "Habilitation"
+        assert DonPartages.accepter(Horodatage(1805184001000), p, "administrateur_operateur.b@ORG-OPB-BRV") == "actif"
+        assert Monde.fondement("ORG-OPB-BRV", "OBJ-A1", "") == "bilateral:{p}"
+        assert_fails DonPartages.revoquer(Horodatage(1805184002000), p, "", "administrateur_operateur.a@ORG-OPA-ALD") matching "MotifRequis"
+        assert DonPartages.revoquer(Horodatage(1805184002000), p, "fin de coopération", "administrateur_operateur.a@ORG-OPA-ALD") == "revoque"
+        assert Monde.fondement("ORG-OPB-BRV", "OBJ-A1", "") == ""
+        // nouvelle proposition non acceptée : caduque après 30 jours
+        let p2 = DonPartages.proposer(Horodatage(1805184003000), "ORG-OPA-ALD", "ORG-OPB-BRV", Horodatage(1805184000000 + 365 * 86400000), "administrateur_operateur.a@ORG-OPA-ALD")
+        assert DonBalayage.balayer(Horodatage(1805184003000 + 30 * 86400000), "systeme") == 1
+        assert_fails DonPartages.accepter(Horodatage(1805184003000 + 30 * 86400000), p2, "administrateur_operateur.b@ORG-OPB-BRV") matching "EtatInvalide"
+    }
+}
+
+// ── Traces
+
+cell test Traces {
+    rules {
+        let _ = Monde.adherents()
+        assert DonTraces.taille() == 0
+        assert_fails DonTraces.tracer(Horodatage(1805184000000), "ORG-NONADH-ALD", "OBJ-A1", "", "cdm") matching "Confidentiel"
+        assert_fails DonTraces.tracer(Horodatage(1805184000000), "ORG-OPB-BRV", "OBJ-A1", "", "") matching "Incoherent"
+        assert DonTraces.tracer(Horodatage(1805184000000), "ORG-OPB-BRV", "OBJ-A1", "CJ-A1-B1", "cdm") == 1
+        assert DonTraces.tracer(Horodatage(1805184001000), "ORG-OPB-BRV", "OBJ-A1", "", "ephemeride") == 2
+        assert DonTraces.tracer(Horodatage(1805184002000), "ORG-NONADH-ALD", "OBJ-D1", "", "alerte") == 3
+        assert DonTraces.taille() == 3
+        assert DonTraces.lire(1, "conformite.c@ORG-ORBITE") == "1805184000000 | ORG-OPB-BRV | OBJ-A1 | CJ-A1-B1 | cdm | partie:CJ-A1-B1"
+        assert_fails DonTraces.lire(1, "analyste.a@ORG-ORBITE") matching "Habilitation"
+        assert_fails DonTraces.lire(99, "conformite.c@ORG-ORBITE") matching "Inconnu"
+        assert len(DonTraces.du_rapprochement("CJ-A1-B1", 10, "point_focal.p@ORG-ETAT-BRV")) == 1
+        assert_fails DonTraces.du_rapprochement("CJ-A1-B1", 10, "point_focal.p@ORG-ETAT-XZZ") matching "Habilitation"
+        assert len(DonTraces.de_objet("OBJ-A1", 10, "chef_de_mission.c@ORG-OPA-ALD")) == 2
+        assert len(DonTraces.de_objet("OBJ-A1", 1, "autorite.a@ORG-ETAT-ALD")) == 1
+        assert_fails DonTraces.de_objet("OBJ-A1", 10, "chef_de_mission.c@ORG-OPB-BRV") matching "Habilitation"
+        assert_fails DonTraces.de_objet("OBJ-INCONNU-1", 10, "conformite.c@ORG-ORBITE") matching "Inconnu"
+    }
+}
+
+cell test PurgeDesTraces {
+    rules {
+        let _ = Monde.adherents()
+        assert DonTraces.tracer(Horodatage(1805184000000), "ORG-OPB-BRV", "OBJ-A1", "CJ-A1-B1", "cdm") == 1
+        assert DonTraces.tracer(Horodatage(1805184000000), "ORG-OPB-BRV", "OBJ-A1", "CJ-GEL-B1", "cdm") == 2
+        assert DonTraces.tracer(Horodatage(1805184000000), "ORG-OPB-BRV", "OBJ-A2", "", "ephemeride") == 3
+        // dix ans plus tard
+        assert_fails DonTraces.purger(Horodatage(1805184000000 + 315360000000), Horodatage(1805184000001), 10, "exploitant.e@ORG-ORBITE", "conformite.c@ORG-ORBITE") matching "HorsBornes"
+        assert_fails DonTraces.purger(Horodatage(1805184000001 + 315360000000), Horodatage(1805184000001), 10, "exploitant.e@ORG-ORBITE", "exploitant.e@ORG-ORBITE") matching "QuatreYeux"
+        assert_fails DonTraces.purger(Horodatage(1805184000001 + 315360000000), Horodatage(1805184000001), 10, "analyste.a@ORG-ORBITE", "conformite.c@ORG-ORBITE") matching "Habilitation"
+        // la trace du rapprochement gelé est sautée
+        assert DonTraces.purger(Horodatage(1805184000001 + 315360000000), Horodatage(1805184000001), 10, "exploitant.e@ORG-ORBITE", "conformite.c@ORG-ORBITE") == 2
+        assert DonTraces.taille() == 1
+        assert_fails DonTraces.lire(1, "conformite.c@ORG-ORBITE") matching "Inconnu"
+        assert len(DonTraces.du_rapprochement("CJ-GEL-B1", 10, "auditeur.x@ORG-ORBITE")) == 1
+        assert len(DonTraces.de_objet("OBJ-A2", 10, "auditeur.x@ORG-ORBITE")) == 0
+        // le numéro suivant reste croissant
+        assert DonTraces.tracer(Horodatage(1805184000002 + 315360000000), "ORG-OPB-BRV", "OBJ-A2", "", "cdm") == 4
+    }
+}
+
+// ── Publications
+
+cell test PublicationCatalogue {
+    rules {
+        assert_fails DonPublications.preparer(Horodatage(1805184000000), "PUB-1", "catalogue", "", Horodatage(0), Horodatage(0), "analyste.a1@ORG-ORBITE") matching "Ferme"
+        let _ = Monde.adherents()
+        assert_fails DonPublications.preparer(Horodatage(1805184000000), "PUB-1", "catalogue", "", Horodatage(0), Horodatage(0), "conformite.c@ORG-ORBITE") matching "Habilitation"
+        // OBJ-A2 déclaré public ; OBJ-D1 et OBJ-D2 débris publics ; le reste est "participants"
+        assert DonDiffusion.declarer(Horodatage(1805184000000), "OBJ-A2", "public", "chef_de_mission.c@ORG-OPA-ALD") == "public"
+        assert DonPublications.preparer(Horodatage(1805184000000), "PUB-1", "catalogue", "", Horodatage(0), Horodatage(0), "analyste.a1@ORG-ORBITE") == 3
+        assert_fails DonPublications.preparer(Horodatage(1805184000000), "PUB-1", "catalogue", "", Horodatage(0), Horodatage(0), "analyste.a1@ORG-ORBITE") matching "Existe"
+        assert DonPublications.preparer(Horodatage(1805184000000), "PUB-GEO", "catalogue", "geo", Horodatage(0), Horodatage(0), "analyste.a1@ORG-ORBITE") == 0
+        assert DonPublications.etat("PUB-1") == "preparee"
+        assert_fails DonPublications.publier(Horodatage(1805184000500), "PUB-1", "analyste.a2@ORG-ORBITE") matching "EtatInvalide"
+        assert_fails DonPublications.relire(Horodatage(1805184001000), "PUB-1", "analyste.a1@ORG-ORBITE") matching "QuatreYeux"
+        assert DonPublications.relire(Horodatage(1805184001000), "PUB-1", "superviseur.s@ORG-ORBITE") == "relue"
+        assert_fails DonPublications.contenu("PUB-1") matching "EtatInvalide"
+        assert DonPublications.publier(Horodatage(1805184002000), "PUB-1", "systeme") == "publiee"
+        assert DonPublications.contenu("PUB-1") == ["OBJ-A2 | satellite | leo | ALD", "OBJ-D1 | debris | leo | ", "OBJ-D2 | debris | leo | "]
+        assert DonPublications.derniere_de("catalogue") == "PUB-1"
+        // fuite : retrait à quatre yeux, incident déclaré
+        assert_fails DonPublications.retirer(Horodatage(1805184003000), "PUB-1", "OBJ-A2", "erreur", "conformite.c@ORG-ORBITE", "conformite.c@ORG-ORBITE") matching "QuatreYeux"
+        assert DonPublications.retirer(Horodatage(1805184003000), "PUB-1", "OBJ-A2", "déclaration erronée", "conformite.c@ORG-ORBITE", "direction.d1@ORG-ORBITE") == "retiree"
+        assert DonPublications.derniere_de("catalogue") == ""
+        assert_fails DonPublications.contenu("PUB-1") matching "EtatInvalide"
+        assert DonPublications.annuler(Horodatage(1805184003000), "PUB-GEO", "vide", "analyste.a1@ORG-ORBITE") == "annulee"
+        assert_fails DonPublications.annuler(Horodatage(1805184003000), "PUB-9", "x", "analyste.a1@ORG-ORBITE") matching "Inconnu"
+    }
+}
+
+cell test PublicationReverifieeEtPerimee {
+    rules {
+        let _ = Monde.adherents()
+        assert DonDiffusion.declarer(Horodatage(1805184000000), "OBJ-A2", "public", "chef_de_mission.c@ORG-OPA-ALD") == "public"
+        assert Monde.publication_relue("PUB-1") == "relue"
+        // OBJ-A2 passe sous embargo entre la préparation et la publication
+        let _ = Monde.embargo("OBJ-A2")
+        assert_fails DonPublications.publier(Horodatage(1805184002000), "PUB-1", "analyste.a3@ORG-ORBITE") matching "Confidentiel"
+        // version remplacée entre préparation et publication
+        assert Monde.publication_relue("PUB-2") == "relue"
+        assert Monde.adopter_version("ACC-2", 1805184000000 + 86400000) == "adoptee"
+        assert DonBalayage.balayer(Horodatage(1805184000000 + 61 * 86400000), "systeme") >= 1
+        assert_fails DonPublications.publier(Horodatage(1805184000000 + 61 * 86400000), "PUB-2", "analyste.a3@ORG-ORBITE") matching "Perime"
+    }
+}
+
+cell test PublicationRapprochements {
+    rules {
+        let _ = Monde.adherents()
+        assert_fails DonPublications.preparer(Horodatage(1805184000000), "PUB-R", "rapprochements", "", Horodatage(10), Horodatage(10), "analyste.a1@ORG-ORBITE") matching "Incoherent"
+        // CJ-A1-B1 : satellites non publics, anonymisé ; CJ-D1-D2 : deux débris publics, nommés ;
+        // CJ-A2-D1-CLOS-RECENT : TCA h0 − 1 j, 61 jours de recul à T1 : retenu, anonymisé
+        assert DonPublications.preparer(Horodatage(1805184000000), "PUB-R", "rapprochements", "", Horodatage(0), Horodatage(1805184000000), "analyste.a1@ORG-ORBITE") == 3
+        assert DonPublications.relire(Horodatage(1805184000001), "PUB-R", "analyste.a2@ORG-ORBITE") == "relue"
+        assert DonPublications.publier(Horodatage(1805184000002), "PUB-R", "analyste.a2@ORG-ORBITE") == "publiee"
+        let lignes_pub = DonPublications.contenu("PUB-R")
+        assert lignes_pub[0] == "1797408000000 | leo | niveau 2 | satellite / satellite"
+        assert lignes_pub[1] == "1797408000000 | leo | niveau 2 | debris / debris | OBJ-D1 / OBJ-D2"
+        // à h0 + 3 j, le rapprochement RECENT (TCA h0 − 1 j) n'a pas 7 jours de recul : écarté
+        assert DonPublications.preparer(Horodatage(1800000000000 + 3 * 86400000), "PUB-R2", "rapprochements", "leo", Horodatage(0), Horodatage(1805184000000), "analyste.a1@ORG-ORBITE") == 2
+    }
+}
+
+// ── Violations (scénario : rediffusion → suspension)
+
+cell test ScenarioViolation {
+    rules {
+        let _ = Monde.adherents()
+        assert_fails DonViolations.signaler(Horodatage(1805184000000), "ORG-OPB-BRV", "rediffusion", "OBJ-A1", "x", "chef_de_mission.c@ORG-NONADH-ALD") matching "Habilitation"
+        assert_fails DonViolations.signaler(Horodatage(1805184000000), "ORG-OPB-BRV", "rediffusion", "OBJ-A1", "", "chef_de_mission.c@ORG-OPA-ALD") matching "MotifRequis"
+        assert_fails DonViolations.signaler(Horodatage(1805184000000), "ORG-INCONNU-2", "rediffusion", "OBJ-A1", "x", "chef_de_mission.c@ORG-OPA-ALD") matching "Inconnu"
+        let v = DonViolations.signaler(Horodatage(1805184000000), "ORG-OPB-BRV", "rediffusion", "OBJ-A1", "CDM rediffusé", "chef_de_mission.c@ORG-OPA-ALD")
+        assert DonViolations.etat(v) == "signalee"
+        assert_fails DonViolations.instruire(Horodatage(1805184001000), v, true, "", "analyste.a@ORG-ORBITE") matching "Habilitation"
+        assert DonViolations.instruire(Horodatage(1805184001000), v, true, "", "conformite.c@ORG-ORBITE") == "instruite"
+        // contradictoire en cours sans observations : pas de qualification
+        assert_fails DonViolations.qualifier(Horodatage(1805184002000), v, true, 3, "établie", "conformite.c@ORG-ORBITE", "direction.d1@ORG-ORBITE") matching "Delai"
+        assert_fails DonViolations.observer(Horodatage(1805184002000), v, "erreur d'un stagiaire", "administrateur_operateur.a@ORG-OPA-ALD") matching "Habilitation"
+        assert DonViolations.observer(Horodatage(1805184002000), v, "erreur d'un stagiaire", "administrateur_operateur.b@ORG-OPB-BRV") == "instruite"
+        assert_fails DonViolations.qualifier(Horodatage(1805184003000), v, true, 3, "établie", "conformite.c@ORG-ORBITE", "conformite.c@ORG-ORBITE") matching "QuatreYeux"
+        assert DonViolations.qualifier(Horodatage(1805184003000), v, true, 3, "rediffusion établie", "conformite.c@ORG-ORBITE", "direction.d1@ORG-ORBITE") == "constatee"
+        // gravité 3 : adhésion de OPB suspendue
+        assert !DonAdhesions.adherent("ORG-OPB-BRV")
+        assert DonAdhesions.etat(DonAdhesions.adhesion_de("ORG-OPA-ALD")) == "active"
+        assert_fails DonViolations.clore(Horodatage(1805184004000), v, "", "conformite.c@ORG-ORBITE") matching "MotifRequis"
+        assert DonViolations.clore(Horodatage(1805184004000), v, "adhésion rétablie", "conformite.c@ORG-ORBITE") == "close"
+        assert_fails DonViolations.clore(Horodatage(1805184004000), "VIO-0", "x", "conformite.c@ORG-ORBITE") matching "Inconnu"
+    }
+}
+
+cell test ViolationSilenceEtFuiteOrbite {
+    rules {
+        let _ = Monde.adherents()
+        let v = Monde.violation_instruite("ORG-OPB-BRV")
+        assert DonViolations.a_qualifier(Horodatage(1805184001000), 10) == []
+        // 15 jours de silence : à qualifier, observations refusées
+        assert DonViolations.a_qualifier(Horodatage(1805184001001 + 1296000000), 10) == [v]
+        assert_fails DonViolations.observer(Horodatage(1805184001001 + 1296000000), v, "tard", "administrateur_operateur.b@ORG-OPB-BRV") matching "Delai"
+        assert DonViolations.qualifier(Horodatage(1805184001001 + 1296000000), v, false, 1, "non établie", "conformite.c@ORG-ORBITE", "direction.d1@ORG-ORBITE") == "classee"
+        assert DonAdhesions.adherent("ORG-OPB-BRV")
+        // fuite d'ORBITE : incident, pas de suspension
+        let w = Monde.violation_instruite("ORG-ORBITE")
+        assert DonViolations.qualifier(Horodatage(1805184001001 + 1296000000), w, true, 2, "fuite par publication", "conformite.c@ORG-ORBITE", "direction.d1@ORG-ORBITE") == "constatee"
+        // signalement irrecevable
+        let x = DonViolations.signaler(Horodatage(1805184000000), "ORG-OPA-ALD", "hors_finalite", "", "rumeur", "systeme")
+        assert_fails DonViolations.instruire(Horodatage(1805184000000), x, false, "", "conformite.c@ORG-ORBITE") matching "MotifRequis"
+        assert DonViolations.instruire(Horodatage(1805184000000), x, false, "sans fondement", "conformite.c@ORG-ORBITE") == "classee"
+    }
+}
+
+// ── Façade
+
+cell test Facade {
+    rules {
+        assert_fails ApiDonnees.balayer(Horodatage(1800000000000), "intrus") matching "Habilitation"
+        assert ApiDonnees.balayer(Horodatage(1800000000000), "systeme") == 0
+        let _ = Monde.adherents()
+        assert ApiDonnees.adherent("ORG-OPB-BRV")
+        assert !ApiDonnees.adherent("ORG-NONADH-ALD")
+        assert ApiDonnees.peut_recevoir("ORG-OPB-BRV", "OBJ-A1", "", Horodatage(1805184000000))
+        assert ApiDonnees.tracer(Horodatage(1805184000000), "ORG-OPB-BRV", "OBJ-A1", "", "cdm") == 1
+        assert_fails ApiDonnees.tracer(Horodatage(1805184000000), "ORG-NONADH-ALD", "OBJ-A1", "", "cdm") matching "Confidentiel"
+        assert ApiDonnees.diffusion("OBJ-D2") == "public"
+    }
+}

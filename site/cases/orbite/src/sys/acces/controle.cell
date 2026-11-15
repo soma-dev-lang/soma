@@ -1,0 +1,70 @@
+// acces — POINT DE CONTRÔLE UNIQUE des habilitations et du quatre yeux.
+// La façade ApiAcces (role_de, a_le_role, agit_pour, quatre_yeux) délègue ici ; les cells
+// internes d'acces appellent AccesControle, jamais la façade : une seule règle, aucun cycle
+// façade → interne → façade.
+// Un rôle n'est JAMAIS une habilitation sur une organisation : un rôle d'opérateur ou d'État ne
+// dit rien de l'objet visé ; l'appelant vérifie agit_pour(par, proprietaire) en plus.
+
+// Raison d'un contrôle d'habilitation, pour le journal et les refus motivés.
+cell type AccesVerdict = String where value == "habilite" || value == "inconnue" || value == "inactive" || value == "non_rattachee" || value == "employeur_radie" || value == "hors_portee" || value == "role_absent" || value == "systeme_refuse"
+
+// Décision d'habilitation et registre des contre-signatures.
+skeleton AccesControle {
+    const MAX_CONTRESIGNATURES = 10000000
+    const SEUIL_CONCENTRATION = 50
+    memory {
+        contresignatures: List<String> [persistent]   // "h | geste | demandeur | valideur", en ajout seul
+        paires: Map<String, Int> [persistent]         // "demandeur|valideur" → nombre de contre-signatures
+        invariant contresignatures.size <= MAX_CONTRESIGNATURES
+        invariant paires >= 0
+    }
+    face {
+        // Rôle effectif : le rôle principal si la personne est active, son rattachement confirmé
+        // (AccesRattachements.confirme), son employeur non radié
+        // (ApiRef.organisation_existe) et, pour un rôle d'État, l'État participant
+        // (ApiRef.etat_participant de ApiRef.etat_de(employeur)). "aucun" sinon.
+        // role_de("systeme") = "systeme" ; aucune personne inscrite ne porte cet identifiant.
+        signal role_de(personne: String) -> Role
+            calls AccesPersonnes.est_active, AccesPersonnes.role, AccesPersonnes.employeur, AccesPortees.portee, AccesRattachements.confirme, ApiRef.organisation_existe, ApiRef.etat_de, ApiRef.etat_participant
+        // Vrai si la personne détient `r` dans sa portée : rôle effectif == r, ou r parmi ses
+        // attributions accordées (AccesAttributions.roles_de) si role_de ≠ "aucun". Un rôle de
+        // portée "orbite" exige en plus employeur == ApiRef.orbite() (vérifié à chaque appel,
+        // même conféré par attribution). a_le_role("systeme", "systeme") est vrai ; toute autre
+        // personne avec r = "systeme", et r = "aucun", donnent faux.
+        // L'accès d'urgence ne change PAS a_le_role : l'appelant teste ApiAcces.en_urgence.
+        signal a_le_role(personne: String, r: Role) -> Bool
+            calls role_de, AccesPersonnes.employeur, AccesPortees.portee, AccesAttributions.roles_de, ApiRef.orbite
+        // Le même contrôle, motivé : "habilite" ou la première raison de refus rencontrée.
+        signal verdict(personne: String, r: Role) -> AccesVerdict
+            calls AccesPersonnes.etat, AccesPersonnes.employeur, AccesPortees.portee, AccesRattachements.confirme, ApiRef.organisation_existe, ApiRef.orbite, a_le_role
+        // Vrai si la personne est active, son employeur non radié et employeur == org.
+        // "systeme" n'agit pour aucune organisation (faux) : un traitement automatique qui agit
+        // pour ORBITE se contrôle par a_le_role("systeme", "systeme").
+        signal agit_pour(personne: String, org: Org) -> Bool
+            calls AccesPersonnes.est_active, AccesPersonnes.employeur, ApiRef.organisation_existe
+        // Nombre de personnes non parties de l'organisation dont le rôle effectif ≠ "aucun"
+        // (active, rattachement confirmé, employeur non radié). Opérateurs : astreinte possible.
+        signal actifs_de(org: Org) -> Int
+            calls AccesPersonnes.personnes_de, role_de
+        // Vrai si `valideur` peut contre-signer une action de `demandeur` : personnes distinctes,
+        // aucune n'est "systeme", toutes deux de rôle effectif ≠ "aucun", et
+        // (a) valideur de rôle "superviseur", "conformite" ou "direction" d'ORBITE (principal ou
+        //     attribué), ou
+        // (b) demandeur de portée "operateur" et valideur "chef_de_mission" du même employeur.
+        // Un accès d'urgence ne donne jamais le droit de valider.
+        signal quatre_yeux(demandeur: String, valideur: String) -> Bool
+            calls role_de, a_le_role, AccesPersonnes.employeur, AccesPortees.portee
+        // Enregistre une contre-signature acceptée sur `geste` ("role:<personne>",
+        // "attribution:<id>", "urgence:<id>", "deblocage:<personne>"…). Appelée par chaque geste
+        // à quatre yeux d'acces. Renvoie le nombre de contre-signatures de la paire.
+        // Refus : QuatreYeux (quatre_yeux faux), Plein.
+        signal contresigner(h: Horodatage, geste: String, demandeur: String, valideur: String) -> Int
+            writes contresignatures, paires
+            calls quatre_yeux, Journal.noter
+        // Paires "demandeur|valideur" ayant contre-signé au moins SEUIL_CONCENTRATION fois :
+        // collusion possible, revue à chaque campagne de recertification. Au plus `n`.
+        signal paires_concentrees(n: Int) -> List<String>
+            requires n > 0 && n <= 1000
+            reads paires
+    }
+}

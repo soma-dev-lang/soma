@@ -1,0 +1,28 @@
+// Façade de la CONFORMITÉ : manquements des opérateurs, notations, mesures, rapports aux États.
+skeleton ApiConformite {
+    face {
+        // Enregistre un manquement constaté (réponse tardive, manœuvre non annoncée, éphéméride
+        // périmée, plan de fin de vie non tenu, refus d'escalade…). Renvoie l'id.
+        // Refus : Inconnu (opérateur), MotifRequis, Habilitation ("systeme", "analyste" ou "conformite").
+        signal constater(h: Horodatage, op: Org, nature: String, gravite: Gravite, reference: String, par: String) -> String
+            calls ApiAcces.a_le_role, ConfManquement.constater
+        // Note de l'opérateur sur 100 (glissante, 365 jours) ; 100 si aucun manquement.
+        signal note(op: Org, h: Horodatage) -> Int
+            calls ConfNotation.note
+        // Vrai si l'opérateur est sous surveillance renforcée (note < 60 ou manquement de gravité
+        // 3 non clos).
+        signal sous_surveillance(op: Org) -> Bool
+            calls ConfNotation.sous_surveillance
+        // Enregistre un manquement d'un ÉTAT (retard d'immatriculation, point focal injoignable,
+        // demande de suspension sans réponse). Renvoie l'id. Refus : Inconnu, MotifRequis,
+        // Habilitation ("systeme", "analyste" ou "conformite").
+        signal constater_etat(h: Horodatage, etat: Etat, nature: String, gravite: Gravite, reference: String, par: String) -> String
+            calls ApiAcces.a_le_role, ConfManquementEtat.constater
+        // Balayage des échéances du sous-système à `h` (délais, expirations, rondes), appelé par
+        // l'horloge d'ORBITE (Horloge.battre) — le SEUL point d'entrée du temps : aucun signal de
+        // conformite ne lit l'horloge lui-même. Renvoie le nombre d'objets dont l'état a changé.
+        // Refus : Habilitation (par "systeme").
+        signal balayer(h: Horodatage, par: String) -> Int
+            calls ApiAcces.a_le_role, ConfRonde.balayer
+    }
+}

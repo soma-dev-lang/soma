@@ -1,0 +1,117 @@
+// CONFORMITÉ — veille : registre des opérateurs suivis et balayage des faits que les autres
+// sous-systèmes exposent par leurs façades. Le balayage rattrape ce qu'un sous-système a oublié de
+// constater : un manquement ne dépend pas de la bonne volonté de celui qui l'observe. Le temps
+// n'entre que par ApiConformite.balayer (horloge d'ORBITE) → ConfRonde.balayer, en fin de fichier.
+
+skeleton ConfVeille {
+    const MAX_SUIVIS = 100000
+    const PERIODE_MS = 86400000            // balayage quotidien ; 6 h sous surveillance renforcée
+    const PERIODE_RENFORCEE_MS = 21600000
+    const MAX_OBJETS_BALAYES = 10000
+    memory {
+        // opérateur → État de tutelle au moment de l'inscription (rapports annuels par État).
+        etat_de: Map<Org, Etat> [persistent]
+        invariant etat_de.size <= 100000
+        suivi_depuis: Map<Org, Horodatage> [persistent]
+        balaye_le: Map<Org, Horodatage> [persistent]
+        // opérateur → ApiEscalade.graves vu au dernier balayage (toute hausse est un manquement).
+        graves_vus: Map<Org, Int> [persistent]
+        invariant graves_vus >= 0
+        // opérateur → nombre de manquements constatés par la veille (statistique).
+        constates_par_veille: Map<Org, Int> [persistent]
+        invariant constates_par_veille >= 0
+    }
+    face {
+        // Inscrit l'opérateur au suivi (idempotent : renvoie l'État déjà inscrit). Appelé par
+        // ConfManquement.constater et par ConfRonde pour chaque opérateur de ApiOperateurs.actifs
+        // (aucun opérateur actif n'échappe au balayage). Renvoie son État
+        // de tutelle. Refus : Inconnu (ApiRef.etat_de), Plein, Habilitation (par "conformite"
+        // d'ORBITE ou "systeme").
+        signal suivre(h: Horodatage, op: Org, par: String) -> Etat
+            writes etat_de, suivi_depuis
+            calls ApiAcces.a_le_role, ApiRef.etat_de
+        // Balaye un opérateur suivi à `h` et constate (ConfManquement.constater, par "systeme",
+        // référence datée du jour pour le dédoublonnage) :
+        // - "licence_invalide" g3 : statut actif mais ApiOperateurs.est_actif faux ;
+        // - "astreinte_absente" g2 : ApiOperateurs.joignable faux ;
+        // - "refus_escalade" g3 : ApiEscalade.graves en hausse depuis le dernier balayage ;
+        // - pour chacun de ses objets (ApiRef.objets_de, au plus MAX_OBJETS_BALAYES) en service :
+        //   "fin_de_vie_non_tenue" g2 (ApiFinDeVie.en_retard), "ephemeride_perimee" g1 (propulsé et
+        //   ApiEphemerides.fraiche faux), "manoeuvre_non_annoncee" g2 (ApiObservation.manoeuvre_detectee
+        //   depuis le dernier balayage sans ApiManoeuvres.plan_actif).
+        // Renvoie le nombre de manquements constatés. Refus : Inconnu (opérateur non suivi),
+        // Habilitation (par "systeme" ou "conformite" d'ORBITE).
+        signal balayer(h: Horodatage, op: Org, par: String) -> Int
+            writes balaye_le, graves_vus, constates_par_veille
+            reads etat_de
+            calls ApiAcces.a_le_role, ApiOperateurs.statut, ApiOperateurs.est_actif, ApiOperateurs.joignable, ApiEscalade.graves, ApiRef.objets_de, ApiRef.etat_objet, ApiRef.propulsion, ApiFinDeVie.en_retard, ApiEphemerides.fraiche, ApiObservation.manoeuvre_detectee, ApiManoeuvres.plan_actif, ConfManquement.constater, Journal.noter
+        // Opérateurs suivis à balayer à `h` : jamais balayés, ou depuis plus de PERIODE_MS
+        // (PERIODE_RENFORCEE_MS si ConfNotation.sous_surveillance), les plus en retard d'abord, au plus `n`.
+        signal a_balayer(h: Horodatage, n: Int) -> List<String>
+            requires n > 0 && n <= 1000
+            reads balaye_le, suivi_depuis
+            calls ConfNotation.sous_surveillance
+        // Opérateurs silencieux des rapprochements urgents : pour chaque r de
+        // ApiConjonctions.urgents(h, 7 jours, niveau 2), chaque organisation de ApiCoordination.muets(r)
+        // de genre "operateur" (ApiRef.genre) reçoit un manquement "reponse_tardive", référence r,
+        // gravité 3 si ApiConjonctions.niveau(r) == 3, sinon 2 (dédoublonné par r : un seul par
+        // rapprochement). Renvoie le nombre de constats. Refus : Habilitation (par "systeme").
+        signal balayer_silences(h: Horodatage, par: String) -> Int
+            writes constates_par_veille
+            calls ApiAcces.a_le_role, ApiConjonctions.urgents, ApiConjonctions.niveau, ApiCoordination.muets, ApiRef.genre, ConfManquement.constater
+        // Opérateurs suivis dont l'État de tutelle est `etat` (rapports annuels).
+        signal operateurs_de_etat(etat: Etat) -> List<String>
+            reads etat_de
+        // Opérateurs suivis, au plus `n`, à partir du rang `depuis` (ordre des clés).
+        signal operateurs_suivis(depuis: Int, n: Int) -> List<String>
+            requires depuis >= 0 && n > 0 && n <= 1000
+            reads etat_de
+        // Vrai si l'opérateur est suivi.
+        signal suivi(op: Org) -> Bool
+            reads etat_de
+    }
+}
+
+// Tâche de la ronde (clé de ConfRonde.derniere) : une tâche quotidienne ou annuelle ne repasse
+// pas avant sa période ; les échéances (forclusions, expirations, silences) passent à chaque battement.
+cell type ConfTache = String where value == "echeances" || value == "actifs" || value == "operateurs" || value == "silences" || value == "notes" || value == "rapports"
+
+// La ronde de conformité : SEUL lecteur du temps du sous-système, appelée par
+// ApiConformite.balayer depuis Horloge.battre (toutes les 60 s). Chaque étape traite au plus
+// MAX_PAR_ETAPE éléments : ce qui reste passe au battement suivant.
+skeleton ConfRonde {
+    const MAX_PAR_ETAPE = 200
+    const PERIODE_ACTIFS_MS = 3600000          // inscription des opérateurs actifs : toutes les heures
+    const PERIODE_NOTES_MS = 86400000          // relevé des notes : quotidien
+    const PERIODE_RAPPORTS_MS = 86400000       // ouverture des rapports annuels échus : quotidienne
+    memory {
+        // tâche → dernier passage (ms) ; un battement dont h précède le dernier passage est ignoré.
+        derniere: Map<ConfTache, Horodatage> [persistent]
+        // tâche → nombre d'objets dont l'état a changé à ce jour (exploitation).
+        changements: Map<ConfTache, Int> [persistent]
+        invariant changements >= 0
+    }
+    face {
+        // Un battement à `h` (ApiConformite.balayer). Dans l'ordre :
+        // 1 "echeances" — contradictoires échus → ConfManquement.forclore ; manquements en
+        //   souffrance (journal) ; mesures à expirer → ConfMesure.expirer ; demandes échues →
+        //   ConfDemande.constater_silence ; remédiations échues → ConfRemediation.constater_defaillance ;
+        //   manquements d'État à traiter → ConfManquementEtat.notifier / constater_silence / clore ;
+        //   rapports en retard → ConfRapport.constater_silence (le retard de transmission est journalisé) ;
+        // 2 "actifs" (PERIODE_ACTIFS_MS) — ApiOperateurs.actifs(h) → ConfVeille.suivre ;
+        // 3 "operateurs" — ConfVeille.a_balayer → ConfVeille.balayer ;
+        // 4 "silences" — ConfVeille.balayer_silences ;
+        // 5 "notes" (PERIODE_NOTES_MS) — ConfNotation.relever pour chaque opérateur suivi ;
+        // 6 "rapports" (PERIODE_RAPPORTS_MS) — pour chaque État de ApiRef.etats_participants dont
+        //   le rapport de l'année écoulée n'existe pas : ConfRapport.ouvrir puis ConfRapport.compiler.
+        // Tout appel interne se fait avec par = "systeme" ; un refus d'un élément est journalisé et
+        // n'arrête pas la ronde. Renvoie le nombre d'objets dont l'état a changé.
+        // Refus : Habilitation (par "systeme").
+        signal balayer(h: Horodatage, par: String) -> Int
+            writes derniere, changements
+            calls ApiAcces.a_le_role, ConfContradictoire.echus, ConfManquement.forclore, ConfManquement.en_souffrance, ConfMesure.a_expirer, ConfMesure.expirer, ConfDemande.echues, ConfDemande.constater_silence, ConfRemediation.echues, ConfRemediation.constater_defaillance, ConfManquementEtat.a_traiter, ConfManquementEtat.etat_manquement, ConfManquementEtat.notifier, ConfManquementEtat.constater_silence, ConfManquementEtat.clore, ConfRapport.en_retard, ConfRapport.etat_rapport, ConfRapport.constater_silence, ApiOperateurs.actifs, ConfVeille.suivre, ConfVeille.a_balayer, ConfVeille.balayer, ConfVeille.balayer_silences, ConfVeille.operateurs_suivis, ConfNotation.relever, ApiRef.etats_participants, ConfRapport.ouvrir, ConfRapport.compiler, Journal.noter
+        // Dernier passage de la tâche (0 si jamais).
+        signal derniere_passe(t: ConfTache) -> Horodatage
+            reads derniere
+    }
+}

@@ -1,0 +1,165 @@
+// Corps de ConfIndicateur : indicateurs publics trimestriels, agrégats seuls, K_MIN par case.
+flesh ConfIndicateur {
+    on calculer(h, publication, debut, fin, par) {
+        let habile = ApiAcces.a_le_role(par, "conformite") || ApiAcces.a_le_role(par, "analyste") || ApiAcces.a_le_role(par, "systeme")
+        require habile else Habilitation "{par} ne calcule pas d'indicateurs"
+        require debut_de.get(publication) == () else Existe "publication {publication} deja calculee"
+        require fin > debut && fin <= h else Incoherent "periode [{debut}, {fin}[ incoherente a {h}"
+        require debut_de.size < MAX_PUBLICATIONS else Plein "plafond de {MAX_PUBLICATIONS} publications atteint"
+        let a = Horodatage(to_int(fin) - 1)
+        let masquees = 0
+        let valeurs_i = []
+        // répartition des notes : une case = un nombre d'opérateurs
+        let rep = ConfNotation.repartition()
+        let cases_n = []
+        for c in rep {
+            if c > 0 && c < K_MIN {
+                cases_n.push("masque")
+                masquees = masquees + 1
+            } else {
+                cases_n.push(to_string(c))
+            }
+        }
+        let rep_t = join(cases_n, "/")
+        valeurs_i.push("repartition_notes={rep_t}")
+        // manquements qualifiés (par gravité) et mesures entrées en vigueur (par nature) de la période
+        let mq = [0, 0, 0]
+        let mq_ops = [0, 0, 0]
+        let ms = [0, 0, 0]
+        let ms_ops = [0, 0, 0]
+        let rang = 0
+        let page = ConfVeille.operateurs_suivis(0, 1000)
+        while len(page) > 0 {
+            for op in page {
+                let cm = ConfManquement.compter(Org(op), debut, a)
+                let cs = ConfMesure.compter(Org(op), debut, a)
+                for i in range(0, 3) {
+                    if cm[i] > 0 {
+                        mq[i] = mq[i] + cm[i]
+                        mq_ops[i] = mq_ops[i] + 1
+                    }
+                    if cs[i] > 0 {
+                        ms[i] = ms[i] + cs[i]
+                        ms_ops[i] = ms_ops[i] + 1
+                    }
+                }
+            }
+            rang = rang + len(page)
+            page = if len(page) < 1000 { [] } else { ConfVeille.operateurs_suivis(rang, 1000) }
+        }
+        let cases_m = []
+        let cases_s = []
+        for i in range(0, 3) {
+            if mq_ops[i] > 0 && mq_ops[i] < K_MIN {
+                cases_m.push("masque")
+                masquees = masquees + 1
+            } else {
+                cases_m.push(to_string(mq[i]))
+            }
+            if ms_ops[i] > 0 && ms_ops[i] < K_MIN {
+                cases_s.push("masque")
+                masquees = masquees + 1
+            } else {
+                cases_s.push(to_string(ms[i]))
+            }
+        }
+        let mq_t = join(cases_m, "/")
+        let ms_t = join(cases_s, "/")
+        valeurs_i.push("manquements_par_nature=g1_g2_g3:{mq_t}")
+        valeurs_i.push("mesures={ms_t}")
+        // aucune source n'expose les forclusions : indicateur non disponible
+        valeurs_i.push("taux_forclusion=non_disponible")
+        // demandes de suspension et part des réponses des États dans le délai
+        let tr = 0
+        let rep_e = 0
+        let etats_n = 0
+        for etat in ApiRef.etats_participants() {
+            let d = ConfDemande.compter_etat(Etat(etat), debut, a)
+            if d[0] > 0 {
+                tr = tr + d[0]
+                rep_e = rep_e + d[1] + d[2]
+                etats_n = etats_n + 1
+            }
+        }
+        if etats_n > 0 && etats_n < K_MIN {
+            valeurs_i.push("reponses_etats=masque")
+            masquees = masquees + 1
+        } else {
+            let part = if tr > 0 { idiv(rep_e * 100, tr) } else { 0 }
+            valeurs_i.push("reponses_etats={tr}/{part}")
+        }
+        debut_de.set(publication, debut)
+        fin_de.set(publication, fin)
+        valeurs_de.set(publication, join(valeurs_i, ";"))
+        masquees_de.set(publication, masquees)
+        calcule_par.set(publication, par)
+        return masquees
+    }
+    on verifier(h, publication, par) {
+        require ApiAcces.a_le_role(par, "conformite") else Habilitation "{par} ne verifie pas"
+        let calc = calcule_par.get(publication)
+        require calc != () else Inconnu "publication inconnue : {publication}"
+        let qy = if calc == "systeme" { true } else { ApiAcces.quatre_yeux(calc, par) }
+        require par != calc && qy else QuatreYeux "{par} ne contre-signe pas le calcul de {calc}"
+        let st = get_status(publication) ?? "calculee"
+        require st == "calculee" else EtatInvalide "publication {publication} en {st}"
+        verifie_par.set(publication, par)
+        transition(publication, "calculee", "verifiee")
+        let _ = Journal.noter(h, "conformite", par, "indicateurs {publication} verifies")
+        return "verifiee"
+    }
+    on publier(h, publication, par) {
+        require ApiAcces.a_le_role(par, "direction") else Habilitation "{par} ne publie pas"
+        require debut_de.get(publication) != () else Inconnu "publication inconnue : {publication}"
+        let st = get_status(publication) ?? "calculee"
+        require st == "verifiee" else EtatInvalide "publication {publication} en {st}"
+        publie_le.set(publication, h)
+        transition(publication, "verifiee", "publiee")
+        let _ = Journal.noter(h, "conformite", par, "indicateurs {publication} publies")
+        return "publiee"
+    }
+    on rejeter(h, publication, motif, par) {
+        require ApiAcces.a_le_role(par, "conformite") || ApiAcces.a_le_role(par, "direction") else Habilitation "{par} ne rejette pas"
+        require debut_de.get(publication) != () else Inconnu "publication inconnue : {publication}"
+        let st = get_status(publication) ?? "calculee"
+        require st == "calculee" || st == "verifiee" else EtatInvalide "publication {publication} en {st}"
+        require motif != "" else MotifRequis "motif de rejet requis"
+        motif_de.set(publication, motif)
+        if st == "calculee" {
+            transition(publication, "calculee", "rejetee")
+        } else {
+            transition(publication, "verifiee", "rejetee")
+        }
+        let _ = Journal.noter(h, "conformite", par, "indicateurs {publication} rejetes : {motif}")
+        return "rejetee"
+    }
+    on retirer(h, publication, remplacante, motif, par) {
+        require ApiAcces.a_le_role(par, "direction") else Habilitation "{par} ne retire pas"
+        let d = debut_de.get(publication)
+        require d != () else Inconnu "publication inconnue : {publication}"
+        let st = get_status(publication) ?? "calculee"
+        require st == "publiee" else EtatInvalide "publication {publication} en {st}"
+        require motif != "" else MotifRequis "motif de retrait requis"
+        if remplacante != "" {
+            let st_r = get_status(remplacante) ?? "calculee"
+            let meme = debut_de.get(remplacante) == d && fin_de.get(remplacante) == fin_de.get(publication)
+            require remplacante != publication && st_r == "publiee" && meme else Incoherent "remplacante {remplacante} non publiee ou d'une autre periode"
+        }
+        motif_de.set(publication, motif)
+        remplacee_par.set(publication, remplacante)
+        transition(publication, "publiee", "retiree")
+        let _ = Journal.noter(h, "conformite", par, "indicateurs {publication} retires : {motif}")
+        return "retiree"
+    }
+    on lire(publication) {
+        let v = valeurs_de.get(publication)
+        require v != () else Inconnu "publication inconnue : {publication}"
+        let st = get_status(publication) ?? "calculee"
+        require st == "publiee" else EtatInvalide "publication {publication} en {st}"
+        return v
+    }
+    on etat_publication(publication) {
+        if debut_de.get(publication) == () { return "inconnue" }
+        return get_status(publication) ?? "calculee"
+    }
+}

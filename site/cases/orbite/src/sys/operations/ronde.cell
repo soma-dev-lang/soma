@@ -1,0 +1,53 @@
+// OPÉRATIONS — la ronde : seul point d'entrée du temps dans operations. L'horloge d'ORBITE
+// (Horloge.battre, toutes les 60 s) appelle ApiOperations.balayer(h, "systeme"), qui délègue à
+// OpsRonde.balayer. Aucun signal de operations ne lit l'horloge lui-même : chaque échéance
+// (qualification, information des États, réexamen d'un mode dégradé, gel, post-mortem,
+// vérification d'un changement, test de continuité) est vue ici, ou par le geste qu'elle bloque.
+
+// Relance émise par la ronde vers l'astreinte d'ORBITE.
+cell type OpsRelance = String where value == "qualification" || value == "activation_crise" || value == "reexamen_degrade" || value == "post_mortem" || value == "verification_changement" || value == "test_continuite"
+
+skeleton OpsRonde {
+    // Intervalle minimal entre deux relances d'un même objet pour un même motif (ms) : 30 min.
+    const INTERVALLE_RELANCE = 1800000
+    // Une relance est oubliée après 30 jours (purge par la ronde).
+    const OUBLI = 2592000000
+    const MAX_RELANCES = 100000
+    // Gravité 3 dans les 6 h (ms) : horizon des gels d'urgence (= OpsGelUrgence.HORIZON).
+    const HORIZON_URGENCE = 21600000
+    memory {
+        // "motif|id" → instant de la dernière relance : une échéance manquée est relancée toutes
+        // les INTERVALLE_RELANCE, pas à chaque battement.
+        relances: Map<String, Horodatage> [persistent]
+        // Clé unique "orbite" : instant de la dernière ronde ; ne recule jamais.
+        derniere: Map<String, Horodatage> [persistent]
+        invariant relances.size <= 100000
+        invariant derniere.size <= 1
+        invariant value >= (derniere.get(key) ?? 0)
+    }
+    face {
+        // Fait toute la ronde à `h`, dans cet ordre :
+        // 1. gels programmés : OpsGel.echus → entrer_en_vigueur / lever ;
+        // 2. gels d'urgence : pour chaque r de ApiConjonctions.urgents(h, HORIZON_URGENCE, 3)
+        //    non armé → OpsGelUrgence.armer ; OpsGelUrgence.a_lever → lever ;
+        // 3. couverture des capteurs : OpsDegradation.constater_couverture ;
+        // 4. crises : OpsCrise.en_retard → information périodique des États (informer_etats,
+        //    par "systeme") si la crise est active, relance "activation_crise" sinon ;
+        // 5. relances (ApiPasserelle.notifier(h, ApiRef.orbite(), "", sujet, texte, niveau)) :
+        //    OpsIncident.en_retard_qualification (niveau 3), OpsDegradation.a_reexaminer (2),
+        //    OpsPostMortem.en_retard, OpsChangement.non_verifies, OpsTest.en_retard (1) — chacune
+        //    au plus une fois par INTERVALLE_RELANCE et par objet ;
+        // 6. purge des relances de plus de OUBLI.
+        // Un échec d'une étape (refus d'un sous-signal) est journalisé et n'arrête pas les
+        // suivantes. Renvoie le nombre d'objets dont l'état a changé (gels, crises informées,
+        // modes dégradés décrétés). Refus : Habilitation (par "systeme"), HorsBornes (h antérieur
+        // à la dernière ronde).
+        signal balayer(h: Horodatage, par: String) -> Int
+            writes relances, derniere
+            calls OpsGel.echus, OpsGel.entrer_en_vigueur, OpsGel.lever, ApiConjonctions.urgents, OpsGelUrgence.etat_de, OpsGelUrgence.armer, OpsGelUrgence.a_lever, OpsGelUrgence.lever, OpsDegradation.constater_couverture, OpsDegradation.est_degrade, OpsDegradation.a_reexaminer, OpsCrise.en_retard, OpsCrise.etat, OpsCrise.informer_etats, OpsIncident.en_retard_qualification, OpsPostMortem.en_retard, OpsChangement.non_verifies, OpsTest.en_retard, ApiRef.orbite, ApiPasserelle.notifier, ApiAcces.a_le_role, Journal.noter
+        // Instant de la dernière ronde (0 si jamais) : une ronde en retard de plus de 5 min est
+        // elle-même un incident (déclaré par la supervision externe, hors ORBITE).
+        signal derniere_ronde() -> Horodatage
+            reads derniere
+    }
+}

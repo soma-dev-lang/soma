@@ -1,0 +1,178 @@
+// Corps des mesures et de la corrélation.
+flesh ObsMesures {
+    on recevoir(h, capteur, presume, instant, valeurs, par) {
+        let ec = ObsCapteurs.etat(capteur)
+        require ec != "inconnu" else Inconnu "capteur {capteur} inconnu"
+        let f = ObsCapteurs.fournisseur(capteur)
+        let du_fournisseur = ApiAcces.a_le_role(par, "capteur") && ApiAcces.agit_pour(par, f)
+        require du_fournisseur || ApiAcces.a_le_role(par, "systeme") else Habilitation "{par} : capteur du fournisseur {f} ou systeme requis"
+        require ec == "en_service" else Suspendu "capteur {capteur} : {ec}"
+        require ObsFournisseurs.etat(f) == "agree" else Suspendu "fournisseur {f} non agréé"
+        let empreinte = sha256("{capteur}|{instant}|{valeurs}")
+        require !empreinte_de.has(empreinte) else Doublon "mesure déjà reçue"
+        let n = (compteur.get("mesures") ?? 0) + 1
+        require n <= MAX_MESURES else Plein "registre des mesures plein"
+        let id = "MS-{n}"
+        compteur.set("mesures", n)
+        let g = ObsCapteurs.genre(capteur)
+        let grandeur = if g == "radar" { "distance_vitesse" } else if g == "optique" { "angles" } else { "distance_laser" }
+        capteur_de.set(id, capteur)
+        genre_de.set(id, ObsGenreMesure(grandeur))
+        recue_le.set(id, h)
+        // Un instant futur n'est pas enregistré (invariant instant ≤ réception) : valider le rejette.
+        if instant <= h { instant_de.set(id, instant) }
+        valeurs_de.set(id, valeurs)
+        presume_de.set(id, presume)
+        let tache = if presume != "" { ObsTaches.active_sur(capteur, Objet(presume)) } else { "" }
+        tache_de.set(id, tache)
+        empreinte_de.set(empreinte, id)
+        let _ = ObsCapteurs.noter_mesure(h, capteur)
+        let issue = valider(h, id)
+        let _ = Journal.noter(h, "observation", par, "mesure {id} de {capteur} reçue : {issue}")
+        return id
+    }
+    on valider(h, mesure) {
+        let c = capteur_de.get(mesure)
+        require c != () else Inconnu "mesure {mesure} inconnue"
+        let st = get_status(mesure) ?? "recue"
+        require st == "recue" else EtatInvalide "mesure {mesure} : {st}"
+        let inst = instant_de.get(mesure)
+        let ec = ObsCapteurs.etat(c)
+        let motif = if ec != "en_service" { "capteur_hors_service" } else if inst == () { "instant_futur" } else if h - inst > AGE_MAX_MS { "trop_ancienne" } else { "" }
+        if motif != "" {
+            transition(mesure, "recue", "rejetee")
+            rejet_de.set(mesure, ObsMotifRejet(motif))
+            return "rejetee"
+        }
+        // Règle interne : recue -> validee when ObsCapteurs.en_service via capteur_de.
+        require ObsCapteurs.etat(c) == "en_service" else EtatInvalide "capteur {c} hors service"
+        transition(mesure, "recue", "validee")
+        let t = tache_de.get(mesure) ?? ""
+        if t != "" {
+            let _ = try { ObsTaches.demarrer(h, t) }
+            let _ = ObsTaches.compter(t)
+        }
+        return "validee"
+    }
+    on correler(h, mesure, objet, residu, par) {
+        require ApiAcces.a_le_role(par, "analyste") || ApiAcces.a_le_role(par, "systeme") else Habilitation "{par} : analyste d'ORBITE ou systeme requis"
+        let c = capteur_de.get(mesure)
+        require c != () else Inconnu "mesure {mesure} inconnue"
+        require ApiRef.etat_objet(objet) != "inconnu" else Inconnu "objet {objet} non catalogué"
+        let st = get_status(mesure) ?? "recue"
+        require st == "validee" else EtatInvalide "mesure {mesure} : {st}"
+        let p = ObsCapteurs.precision(c)
+        require residu <= SEUIL_SIGMAS * p else HorsBornes "résidu {residu} m au-delà de {SEUIL_SIGMAS} × {p} m"
+        transition(mesure, "validee", "correlee")
+        objet_de.set(mesure, objet)
+        residu_de.set(mesure, residu)
+        let _ = Journal.noter(h, "observation", par, "mesure {mesure} corrélée à {objet} (résidu {residu} m)")
+        return "correlee"
+    }
+    on non_correler(h, mesure, par) {
+        require ApiAcces.a_le_role(par, "analyste") || ApiAcces.a_le_role(par, "systeme") else Habilitation "{par} : analyste d'ORBITE ou systeme requis"
+        let c = capteur_de.get(mesure)
+        require c != () else Inconnu "mesure {mesure} inconnue"
+        let st = get_status(mesure) ?? "recue"
+        require st == "validee" else EtatInvalide "mesure {mesure} : {st}"
+        let inst = instant_de.get(mesure) ?? 0
+        transition(mesure, "validee", "non_correlee")
+        let piste = ObsPistes.alimenter(h, mesure, c, inst)
+        piste_de.set(mesure, piste)
+        let _ = Journal.noter(h, "observation", par, "mesure {mesure} non corrélée, versée à {piste}")
+        return piste
+    }
+    on rejeter(h, mesure, motif, par) {
+        require ApiAcces.a_le_role(par, "analyste") else Habilitation "{par} : analyste d'ORBITE requis"
+        require motif != "" else MotifRequis "motif de rejet requis"
+        let st = get_status(mesure)
+        require st != () else Inconnu "mesure {mesure} inconnue ou non validée"
+        require st == "validee" else EtatInvalide "mesure {mesure} : {st}"
+        transition(mesure, "validee", "rejetee")
+        rejet_de.set(mesure, "aberrante")
+        let _ = Journal.noter(h, "observation", par, "mesure {mesure} rejetée : {motif}")
+        return "rejetee"
+    }
+    on rattacher(h, piste, objet) {
+        let siennes = piste_de.entries.filter(e => e.value == piste)
+        require len(siennes) > 0 else Inconnu "piste {piste} sans mesure"
+        let n = 0
+        for e in siennes {
+            if (get_status(e.key) ?? "recue") == "non_correlee" {
+                transition(e.key, "non_correlee", "correlee")
+                objet_de.set(e.key, objet)
+                n = n + 1
+            }
+        }
+        let _ = Journal.noter(h, "observation", "systeme", "{n} mesure(s) de {piste} rattachée(s) à {objet}")
+        return n
+    }
+    on ecarter(h, piste) {
+        let siennes = piste_de.entries.filter(e => e.value == piste)
+        let n = 0
+        for e in siennes {
+            if (get_status(e.key) ?? "recue") == "non_correlee" {
+                transition(e.key, "non_correlee", "ecartee")
+                n = n + 1
+            }
+        }
+        let _ = Journal.noter(h, "observation", "systeme", "{n} mesure(s) de {piste} écartée(s)")
+        return n
+    }
+    on purger(h, par) {
+        require ApiAcces.a_le_role(par, "exploitant") || ApiAcces.a_le_role(par, "systeme") else Habilitation "{par} : exploitant d'ORBITE ou systeme requis"
+        let n = 0
+        let vieilles = recue_le.entries.filter(e => h - e.value > CONSERVATION_MS)
+        for e in vieilles {
+            let m = e.key
+            if valeurs_de.has(m) && !ObsOrbites.citee(m) {
+                let objet = objet_de.get(m) ?? ""
+                let gel_objet = if objet != "" { ApiResponsabilite.sous_gel(to_string(objet)) } else { false }
+                let jour = idiv(e.value, 86400000)
+                if !gel_objet && !ApiResponsabilite.sous_gel("J:{jour}") {
+                    valeurs_de.delete(m)
+                    n = n + 1
+                }
+            }
+        }
+        if n > 0 {
+            let _ = Journal.noter(h, "observation", par, "{n} mesure(s) purgée(s) (valeurs brutes)")
+        }
+        return n
+    }
+    on communiquer(h, mesure, org) {
+        let objet = objet_de.get(mesure)
+        if objet == () {
+            require valeurs_de.has(mesure) else Inconnu "mesure {mesure} inconnue"
+            fail("Confidentiel", "mesure {mesure} non corrélée : diffusion réservée à ORBITE")
+        }
+        require ApiDonnees.peut_recevoir(org, objet, "", h) else Confidentiel "{org} ne peut recevoir les données de {objet}"
+        let v = valeurs_de.get(mesure) ?? ""
+        if v == "" { return "" }
+        let _ = ApiDonnees.tracer(h, org, objet, "", "mesure")
+        return v
+    }
+    on etat(mesure) {
+        if !capteur_de.has(mesure) { return "inconnue" }
+        return get_status(mesure) ?? "recue"
+    }
+    on correlees(objet, debut, fin, n) {
+        let lignes_c = []
+        for e in objet_de.entries {
+            if e.value == objet && (get_status(e.key) ?? "recue") == "correlee" {
+                let t = instant_de.get(e.key) ?? -1
+                if t >= debut && t <= fin { lignes_c.push(map("m", e.key, "t", t)) }
+            }
+        }
+        let triees = sort_by(lignes_c, x => [x.t, x.m])
+        let k = len(triees)
+        let res_c = []
+        for i in range(max(k - n, 0), k) { res_c.push(triees[i].m) }
+        return res_c
+    }
+    on capteur(mesure) {
+        let c = capteur_de.get(mesure)
+        require c != () else Inconnu "mesure {mesure} inconnue"
+        return c
+    }
+}

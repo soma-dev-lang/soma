@@ -1,0 +1,251 @@
+// meteo — corps des ALERTES DE TEMPÊTE géomagnétique.
+flesh MetTempete {
+    on emettre(h, tempete, prevision, par) {
+        require ApiAcces.a_le_role(par, "systeme") || ApiAcces.a_le_role(par, "analyste") else Habilitation "{par} n'est ni systeme ni analyste d'ORBITE"
+        require prevision_de.get(tempete) == () else Existe "alerte {tempete} déjà émise"
+        let deja = ouverte.get("courante")
+        require deja == () else Doublon "alerte {deja} déjà ouverte : la mettre à jour"
+        require prevision_de.size < MAX_TEMPETES else Plein "registre des alertes plein"
+        let t = to_int(h)
+        let g = 3
+        let d_prevu = t
+        let f_prevue = t
+        if prevision != "" {
+            let k = to_int(MetPrevision.kp_attendu(prevision))
+            require MetPrevision.publiee(prevision) else EtatInvalide "prévision {prevision} non publiée"
+            require k >= SEUIL_TEMPETE else Insuffisant "kp prévu {k} sous le seuil de tempête"
+            let d = to_int(MetPrevision.debut_de(prevision))
+            require d <= t + HORIZON_ALERTE else Insuffisant "début prévu au-delà de 24 h"
+            g = _echelle(k)
+            d_prevu = max(d, t)
+            f_prevue = to_int(MetPrevision.fin_de(prevision))
+        }
+        prevision_de.set(tempete, prevision)
+        emise_le.set(tempete, h)
+        debut_prevu.set(tempete, Horodatage(d_prevu))
+        fin_prevue.set(tempete, Horodatage(f_prevue))
+        echelle.set(tempete, MetEchelleG(g))
+        ouverte.set("courante", tempete)
+        let regs = MetRenforce.declencher(h, tempete)
+        let _ = Journal.noter(h, "meteo", par, "alerte {tempete} emise (G{g}, prevision '{prevision}', regimes {regs})")
+        // Le silence de la passerelle ne retient pas l'alerte : la ronde relance la notification.
+        let notif = try { MetRenforce.notifier(h, tempete, "systeme") }
+        if notif.error != () {
+            let _ = Journal.noter(h, "meteo", par, "alerte {tempete} : notification differee ({notif.kind})")
+        }
+        return tempete
+    }
+
+    on _echelle(k: Int) {
+        if k >= 90 { return 5 }
+        if k >= 80 { return 4 }
+        return 3
+    }
+
+    on confirmer(h, tempete, mesure, par) {
+        require ApiAcces.a_le_role(par, "systeme") || ApiAcces.a_le_role(par, "analyste") else Habilitation "{par} n'est ni systeme ni analyste d'ORBITE"
+        require echelle.get(tempete) != () else Inconnu "alerte {tempete} inconnue"
+        let st = get_status(tempete) ?? "annoncee"
+        require st == "annoncee" else EtatInvalide "alerte {tempete} : {st}"
+        let g = MetMesure.grandeur(mesure)
+        require to_string(g) == "kp" else Insuffisant "la mesure {mesure} n'est pas un kp"
+        require MetMesure.validee(mesure) else EtatInvalide "mesure {mesure} non validée"
+        let v = MetMesure.valeur_de(mesure)
+        require v >= SEUIL_TEMPETE else Insuffisant "kp {v} sous le seuil de tempête"
+        require confirmee_par.get(tempete) == () else EtatInvalide "alerte {tempete} déjà confirmée"
+        confirmee_par.set(tempete, mesure)
+        debut_le.set(tempete, MetMesure.epoque_de(mesure))
+        kp_pic.set(tempete, max(kp_pic.get(tempete) ?? 0, v))
+        echelle.set(tempete, MetEchelleG(_echelle(kp_pic.get(tempete) ?? v)))
+        derniere_maj.set(tempete, mesure)
+        transition(tempete, "annoncee", "en_cours")
+        let _ = Journal.noter(h, "meteo", par, "alerte {tempete} confirmee par {mesure} (kp {v})")
+        return "en_cours"
+    }
+
+    on mettre_a_jour(h, tempete, mesure, par) {
+        require ApiAcces.a_le_role(par, "systeme") else Habilitation "mise à jour réservée à systeme"
+        require echelle.get(tempete) != () else Inconnu "alerte {tempete} inconnue ou jamais confirmée"
+        let st = get_status(tempete) ?? "annoncee"
+        require st == "en_cours" || st == "declinante" else EtatInvalide "alerte {tempete} : {st}"
+        let g = MetMesure.grandeur(mesure)
+        require to_string(g) == "kp" else Incoherent "la mesure {mesure} n'est pas un kp"
+        require MetMesure.validee(mesure) else EtatInvalide "mesure {mesure} non validée"
+        let ep = to_int(MetMesure.epoque_de(mesure))
+        let prise = derniere_maj.get(tempete) ?? ""
+        if prise != "" {
+            require prise != mesure && ep > to_int(MetMesure.epoque_de(prise)) else EtatInvalide "mesure {mesure} antérieure à la dernière prise"
+        }
+        let v = MetMesure.valeur_de(mesure)
+        let pic = max(kp_pic.get(tempete) ?? 0, v)
+        kp_pic.set(tempete, pic)
+        echelle.set(tempete, MetEchelleG(_echelle(max(pic, SEUIL_TEMPETE))))
+        derniere_maj.set(tempete, mesure)
+        if v < SEUIL_CALME {
+            if calme_depuis.get(tempete) == () {
+                calme_depuis.set(tempete, Horodatage(ep))
+            }
+        } else {
+            calme_depuis.delete(tempete)
+        }
+        let cible = if v >= SEUIL_TEMPETE { "en_cours" } else { "declinante" }
+        if st == "en_cours" && cible == "declinante" {
+            transition(tempete, "en_cours", "declinante")
+        } else if st == "declinante" && cible == "en_cours" {
+            transition(tempete, "declinante", "en_cours")
+        }
+        let _ = Journal.noter(h, "meteo", par, "alerte {tempete} : kp {v} ({mesure}), {cible}")
+        return cible
+    }
+
+    on clore(h, tempete, par) {
+        require ApiAcces.a_le_role(par, "systeme") || ApiAcces.a_le_role(par, "analyste") else Habilitation "{par} n'est ni systeme ni analyste d'ORBITE"
+        require has_state(tempete) else Inconnu "alerte {tempete} inconnue ou jamais confirmée"
+        let st = get_status(tempete) ?? "annoncee"
+        require st == "declinante" else EtatInvalide "alerte {tempete} : {st}"
+        let c = calme_depuis.get(tempete)
+        require c != () && to_int(h) - to_int(c) >= CALME_MIN else Insuffisant "calme de moins de 6 h"
+        transition(tempete, "declinante", "terminee")
+        fin_le.set(tempete, h)
+        if (ouverte.get("courante") ?? "") == tempete {
+            ouverte.delete("courante")
+        }
+        let _ = MetRenforce.lever(h, tempete)
+        let _ = Journal.noter(h, "meteo", par, "alerte {tempete} terminee")
+        return "terminee"
+    }
+
+    on annuler(h, tempete, motif, par, valideur) {
+        let fp = fin_prevue.get(tempete)
+        require fp != () else Inconnu "alerte {tempete} inconnue"
+        if par == "systeme" {
+            require ApiAcces.a_le_role(par, "systeme") else Habilitation "identité systeme refusée"
+        } else {
+            require ApiAcces.a_le_role(par, "analyste") else Habilitation "{par} n'est pas analyste d'ORBITE"
+            require ApiAcces.a_le_role(valideur, "superviseur") && ApiAcces.quatre_yeux(par, valideur) else QuatreYeux "contre-signature d'un superviseur requise"
+        }
+        require motif != "" else MotifRequis "motif d'annulation requis"
+        let st = get_status(tempete) ?? "annoncee"
+        require st == "annoncee" else EtatInvalide "alerte {tempete} : {st}"
+        if par == "systeme" {
+            require to_int(h) >= to_int(fp) + GRACE_ANNULATION else Delai "annulation automatique 6 h après la fin de fenêtre"
+        }
+        transition(tempete, "annoncee", "annulee")
+        fin_le.set(tempete, h)
+        motif_annulation.set(tempete, motif)
+        if (ouverte.get("courante") ?? "") == tempete {
+            ouverte.delete("courante")
+        }
+        let _ = MetRenforce.abandonner(h, tempete)
+        let _ = Journal.noter(h, "meteo", par, "alerte {tempete} annulee : {motif}")
+        return "annulee"
+    }
+
+    on desavouer(h, tempete, motif, par, valideur) {
+        require ApiAcces.a_le_role(par, "analyste") else Habilitation "{par} n'est pas analyste d'ORBITE"
+        require ApiAcces.a_le_role(valideur, "superviseur") && ApiAcces.quatre_yeux(par, valideur) else QuatreYeux "contre-signature d'un superviseur requise"
+        require emise_le.get(tempete) != () else Inconnu "alerte {tempete} inconnue"
+        require motif != "" else MotifRequis "motif requis"
+        let st = get_status(tempete) ?? "annoncee"
+        require st == "en_cours" else EtatInvalide "alerte {tempete} : {st}"
+        let conf = confirmee_par.get(tempete) ?? ""
+        require !MetMesure.validee(conf) else EtatInvalide "la mesure de confirmation {conf} est encore validée"
+        let prise = derniere_maj.get(tempete) ?? conf
+        let pic = kp_pic.get(tempete) ?? 0
+        require prise == conf || !MetMesure.validee(prise) else Incoherent "kp {pic} porté par une autre mesure validée ({prise})"
+        transition(tempete, "en_cours", "annulee")
+        fin_le.set(tempete, h)
+        motif_annulation.set(tempete, motif)
+        if (ouverte.get("courante") ?? "") == tempete {
+            ouverte.delete("courante")
+        }
+        let _ = MetRenforce.abandonner(h, tempete)
+        let _ = Journal.noter(h, "meteo", par, "alerte {tempete} desavouee : {motif} (valideur {valideur})")
+        return "annulee"
+    }
+
+    on evaluer(h, par) {
+        require ApiAcces.a_le_role(par, "systeme") else Habilitation "évaluation réservée à systeme"
+        let t = ouverte.get("courante") ?? ""
+        let kp_r = try { MetMesure.derniere_de("kp", h) }
+        let m = if kp_r.error == () { kp_r.value } else { "" }
+        let kp_v = if m != "" { MetMesure.valeur_de(m) } else { -1 }
+        if t == "" {
+            let id = "T-{h}"
+            let p = MetPrevision.pire_dans(h, HORIZON_ALERTE)
+            if p != "" {
+                let r = try { emettre(h, id, p, "systeme") }
+                if r.error == () { t = id }
+            }
+            if t == "" && kp_v >= SEUIL_TEMPETE {
+                let _ = emettre(h, id, "", "systeme")
+                t = id
+            }
+            if t == "" { return "aucune" }
+        }
+        let st = get_status(t) ?? "annoncee"
+        if st == "annoncee" {
+            if kp_v >= SEUIL_TEMPETE {
+                let _ = confirmer(h, t, m, "systeme")
+            } else if to_int(h) >= to_int(fin_prevue.get(t) ?? h) + GRACE_ANNULATION {
+                let _ = annuler(h, t, "prevision echue sans confirmation", "systeme", "systeme")
+            }
+        } else if m != "" && m != (derniere_maj.get(t) ?? "") {
+            let _ = try { mettre_a_jour(h, t, m, "systeme") }
+        }
+        if (get_status(t) ?? "annoncee") == "declinante" {
+            let _ = try { clore(h, t, "systeme") }
+        }
+        let fin_st = get_status(t) ?? "annoncee"
+        if fin_st == "annoncee" || fin_st == "en_cours" || fin_st == "declinante" {
+            let _ = try { MetRenforce.etendre(h, t, "systeme") }
+            let _ = try { MetRenforce.notifier(h, t, "systeme") }
+            return fin_st
+        }
+        if (ouverte.get("courante") ?? "") == "" { return "aucune" }
+        return get_status(ouverte.get("courante") ?? "") ?? "annoncee"
+    }
+
+    on en_vue(h) {
+        let t = ouverte.get("courante")
+        if t == () { return false }
+        let st = get_status(t) ?? "annoncee"
+        if st == "en_cours" || st == "declinante" { return true }
+        if st == "annoncee" {
+            return to_int(debut_prevu.get(t) ?? h) <= to_int(h) + HORIZON_ALERTE
+        }
+        return false
+    }
+
+    on courante() {
+        return ouverte.get("courante") ?? ""
+    }
+
+    on echelle_de(tempete) {
+        let e = echelle.get(tempete)
+        require e != () else Inconnu "alerte {tempete} inconnue"
+        return e
+    }
+
+    on terminee(tempete) {
+        return (get_status(tempete) ?? "annoncee") == "terminee"
+    }
+
+    on annulee(tempete) {
+        return (get_status(tempete) ?? "annoncee") == "annulee"
+    }
+
+    on ouverte_a(a) {
+        let ta = to_int(a)
+        let trouvees = emise_le.entries.filter(e => to_int(e.value) <= ta && ta < to_int(fin_le.get(e.key) ?? FIN_DES_TEMPS)).map(e => map("t", e.key, "e", to_int(e.value))).sort_by(x => [0 - x.e, x.t])
+        if len(trouvees) == 0 { return "" }
+        return trouvees[0].t
+    }
+
+    on du_jour(j) {
+        let d = to_int(j) * 86400000
+        let f = d + 86400000
+        let ids = emise_le.entries.filter(e => to_int(e.value) >= d && to_int(e.value) < f).map(e => map("t", e.key, "e", to_int(e.value))).sort_by(x => [x.e, x.t])
+        return slice(ids, 0, 10).map(x => x.t)
+    }
+}

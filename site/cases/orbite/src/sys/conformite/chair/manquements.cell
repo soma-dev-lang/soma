@@ -1,0 +1,457 @@
+// Corps de ConfManquement (manquements d'opérateur) et de ConfManquementEtat (manquements d'État).
+flesh ConfManquement {
+    on constater(h, op, nature, gravite, reference, detail, par) {
+        let habile = ApiAcces.a_le_role(par, "systeme") || ApiAcces.a_le_role(par, "analyste") || ApiAcces.a_le_role(par, "conformite")
+        require habile else Habilitation "{par} ne constate pas de manquement"
+        require reference != "" else MotifRequis "référence du constat requise"
+        let statut_op = ApiOperateurs.statut(op)
+        require statut_op != "inconnu" else Inconnu "opérateur inconnu : {op}"
+        let cle = "{op}|{nature}|{reference}"
+        let deja = courant.get(cle)
+        if deja != () {
+            if detail != "" {
+                let ancien = detail_de.get(deja) ?? ""
+                let joint = if ancien == "" { detail } else { "{ancien} ; {detail}" }
+                detail_de.set(deja, joint)
+            }
+            return deja
+        }
+        require op_de.size < MAX_MANQUEMENTS else Plein "plafond de {MAX_MANQUEMENTS} manquements atteint"
+        let nb_ouverts = ouverts_de.get(op) ?? 0
+        require nb_ouverts < MAX_OUVERTS_OP else Plein "{op} a déjà {nb_ouverts} manquements ouverts"
+        let id = "MQ-{next_id()}"
+        op_de.set(id, op)
+        nature_de.set(id, nature)
+        detail_de.set(id, detail)
+        reference_de.set(id, reference)
+        gravite_constatee.set(id, gravite)
+        constate_le.set(id, h)
+        constate_par.set(id, par)
+        courant.set(cle, id)
+        ouverts_de.set(op, nb_ouverts + 1)
+        if gravite == 3 {
+            g3_ouverts_de.set(op, (g3_ouverts_de.get(op) ?? 0) + 1)
+        }
+        let suivi_r = try { ConfVeille.suivre(h, op, "systeme") }
+        if suivi_r.error != () {
+            let k = suivi_r.kind
+            let _ = Journal.noter(h, "conformite", "systeme", "manquement {id} : {op} non inscrit au suivi ({k})")
+        }
+        let _ = Journal.noter(h, "conformite", par, "manquement {id} constate : {op} {nature} g{gravite} reference {reference}")
+        if gravite == 3 {
+            let r = if starts_with(reference, "CJ-") { reference } else { "" }
+            let orbite = ApiRef.orbite()
+            let envoi = try { ApiPasserelle.notifier(h, orbite, r, "manquement grave {id}", "manquement de gravite 3 constate contre {op} : {nature} (reference {reference})", 3) }
+            if envoi.error != () {
+                let k = envoi.kind
+                let _ = Journal.noter(h, "conformite", "systeme", "manquement {id} : notification a la conformite echouee ({k})")
+            } else {
+                let _ = Journal.noter(h, "conformite", "systeme", "manquement {id} grave notifie a la conformite d'ORBITE")
+            }
+        }
+        return id
+    }
+    on notifier(h, m, par) {
+        require ApiAcces.a_le_role(par, "conformite") || ApiAcces.a_le_role(par, "systeme") else Habilitation "{par} ne notifie pas de manquement"
+        let op_m = op_de.get(m)
+        require op_m != () else Inconnu "manquement inconnu : {m}"
+        let st = get_status(m) ?? "constate"
+        require st == "constate" else EtatInvalide "manquement {m} en {st}"
+        let nat = nature_de.get(m) ?? "autre"
+        let ref_m = reference_de.get(m) ?? ""
+        let g = gravite_constatee.get(m) ?? 1
+        // la référence ouvre le résumé : ConfContradictoire.ouvrir en tire le rapprochement "CJ-…"
+        let resume = "{ref_m} : manquement {m} ({nat}, gravite {g})"
+        let ech = ConfContradictoire.ouvrir(h, m, op_m, g, resume)
+        transition(m, "constate", "contradictoire")
+        let _ = Journal.noter(h, "conformite", par, "manquement {m} notifie a {op_m}, observations avant {ech}")
+        return ech
+    }
+    on repondre(h, m, observations, par) {
+        let op_m = op_de.get(m)
+        require op_m != () else Inconnu "manquement inconnu : {m}"
+        let role_ok = ApiAcces.a_le_role(par, "chef_de_mission") || ApiAcces.a_le_role(par, "administrateur_operateur")
+        require role_ok && ApiAcces.agit_pour(par, op_m) else Habilitation "{par} ne répond pas pour {op_m}"
+        let st = get_status(m) ?? "constate"
+        require st == "contradictoire" else EtatInvalide "manquement {m} en {st}"
+        require observations != "" else MotifRequis "observations vides"
+        let _ = ConfContradictoire.enregistrer(h, m, observations, par)
+        let ec = ConfContradictoire.etat_contradictoire(m)
+        require ec == "repondu" else EtatInvalide "contradictoire de {m} en {ec}"
+        transition(m, "contradictoire", "instruction")
+        let _ = Journal.noter(h, "conformite", par, "manquement {m} : observations de {op_m} recues")
+        return "instruction"
+    }
+    on proroger(h, m, motif, par) {
+        let op_m = op_de.get(m)
+        require op_m != () else Inconnu "manquement inconnu : {m}"
+        require ApiAcces.a_le_role(par, "chef_de_mission") && ApiAcces.agit_pour(par, op_m) else Habilitation "{par} ne demande pas de prorogation pour {op_m}"
+        // l'état du contradictoire est contrôlé par ConfContradictoire.proroger (EtatInvalide)
+        let g = gravite_constatee.get(m) ?? 1
+        require g != 3 else NonEligible "pas de prorogation en gravite 3"
+        require motif != "" else MotifRequis "motif de prorogation requis"
+        let ech = ConfContradictoire.proroger(h, m, motif)
+        let _ = Journal.noter(h, "conformite", par, "manquement {m} : contradictoire proroge au {ech}")
+        return ech
+    }
+    on forclore(h, m, par) {
+        require ApiAcces.a_le_role(par, "systeme") || ApiAcces.a_le_role(par, "conformite") else Habilitation "{par} ne prononce pas de forclusion"
+        let op_m = op_de.get(m)
+        require op_m != () else Inconnu "manquement inconnu : {m}"
+        let st = get_status(m) ?? "constate"
+        require st == "contradictoire" else EtatInvalide "manquement {m} en {st}"
+        let notif = ConfContradictoire.notification(m)
+        require notif != "en_cours" else Insuffisant "notification de {m} encore en cours"
+        let issue = ConfContradictoire.forclore(h, m)
+        let ec = ConfContradictoire.etat_contradictoire(m)
+        require ec == "forclos" || ec == "injoignable" else EtatInvalide "contradictoire de {m} en {ec}"
+        transition(m, "contradictoire", "forclos")
+        let _ = Journal.noter(h, "conformite", par, "manquement {m} forclos ({issue})")
+        if notif == "echouee" {
+            let mq = constater(h, op_m, "astreinte_absente", 2, m, "notification du contradictoire {m} en echec", "systeme")
+            let _ = Journal.noter(h, "conformite", "systeme", "manquement {mq} : {op_m} injoignable pour {m}")
+        }
+        return "forclos"
+    }
+    on qualifier(h, m, gravite, motif, par, valideur) {
+        require ApiAcces.a_le_role(par, "conformite") else Habilitation "{par} ne qualifie pas"
+        let op_m = op_de.get(m)
+        require op_m != () else Inconnu "manquement inconnu : {m}"
+        let auteur = constate_par.get(m) ?? ""
+        require par != auteur else Habilitation "{par} a constate {m} : il ne le qualifie pas"
+        require ApiAcces.quatre_yeux(par, valideur) else QuatreYeux "contre-signature de {valideur} refusee"
+        let st = get_status(m) ?? "constate"
+        require st == "instruction" || st == "forclos" else EtatInvalide "manquement {m} en {st}"
+        require motif != "" else MotifRequis "motif de qualification requis"
+        let g_c = gravite_constatee.get(m) ?? 1
+        gravite_retenue.set(m, gravite)
+        qualifie_le.set(m, h)
+        qualifie_par.set(m, "{par}|{valideur}")
+        motif_de.set(m, motif)
+        // après qualification, le compteur g3 suit la gravité retenue
+        if g_c == 3 && gravite != 3 {
+            g3_ouverts_de.set(op_m, max(0, (g3_ouverts_de.get(op_m) ?? 0) - 1))
+        }
+        if g_c != 3 && gravite == 3 {
+            g3_ouverts_de.set(op_m, (g3_ouverts_de.get(op_m) ?? 0) + 1)
+        }
+        if st == "instruction" {
+            transition(m, "instruction", "qualifie")
+        } else {
+            transition(m, "forclos", "qualifie")
+        }
+        let note_op = ConfNotation.enregistrer(h, m, op_m, gravite)
+        if gravite >= 2 {
+            let _ = ConfRemediation.demander(h, m, "systeme")
+        }
+        let _ = Journal.noter(h, "conformite", par, "manquement {m} qualifie g{gravite} (valideur {valideur}), note de {op_m} : {note_op}")
+        return note_op
+    }
+    on classer(h, m, motif, commentaire, par, valideur) {
+        require ApiAcces.a_le_role(par, "conformite") else Habilitation "{par} ne classe pas"
+        require ApiAcces.quatre_yeux(par, valideur) else QuatreYeux "contre-signature de {valideur} refusee"
+        let op_m = op_de.get(m)
+        require op_m != () else Inconnu "manquement inconnu : {m}"
+        require commentaire != "" else MotifRequis "commentaire de classement requis"
+        let st = get_status(m) ?? "constate"
+        require st == "constate" || st == "instruction" || st == "forclos" else EtatInvalide "manquement {m} en {st}"
+        classement_de.set(m, motif)
+        motif_de.set(m, commentaire)
+        if st == "constate" {
+            transition(m, "constate", "classe")
+        } else if st == "instruction" {
+            transition(m, "instruction", "classe")
+        } else {
+            transition(m, "forclos", "classe")
+        }
+        let g3 = (gravite_constatee.get(m) ?? 1) == 3
+        _terminer(m, op_m, g3)
+        let _ = Journal.noter(h, "conformite", par, "manquement {m} classe : {motif} (valideur {valideur})")
+        return "classe"
+    }
+    on contester(h, m, motif, par) {
+        let op_m = op_de.get(m)
+        require op_m != () else Inconnu "manquement inconnu : {m}"
+        let role_ok = ApiAcces.a_le_role(par, "chef_de_mission") || ApiAcces.a_le_role(par, "administrateur_operateur")
+        require role_ok && ApiAcces.agit_pour(par, op_m) else Habilitation "{par} ne conteste pas pour {op_m}"
+        let st = get_status(m) ?? "constate"
+        require st == "qualifie" else EtatInvalide "manquement {m} en {st}"
+        require motif != "" else MotifRequis "motif du recours requis"
+        let ql = qualifie_le.get(m) ?? h
+        require h - ql <= DELAI_CONTESTATION_MS else Delai "delai de contestation de {m} echu"
+        conteste_le.set(m, h)
+        motif_de.set(m, motif)
+        transition(m, "qualifie", "conteste")
+        let _ = Journal.noter(h, "conformite", par, "manquement {m} conteste par {op_m}")
+        return "conteste"
+    }
+    on statuer_recours(h, m, accueilli, motif, par) {
+        require ApiAcces.a_le_role(par, "direction") else Habilitation "{par} ne statue pas sur un recours"
+        let op_m = op_de.get(m)
+        require op_m != () else Inconnu "manquement inconnu : {m}"
+        let st = get_status(m) ?? "constate"
+        require st == "conteste" else EtatInvalide "manquement {m} en {st}"
+        require motif != "" else MotifRequis "motif de la decision requis"
+        let qp = split(qualifie_par.get(m) ?? "|", "|")
+        require par != qp[0] && par != qp[1] else QuatreYeux "{par} a participe a la qualification de {m}"
+        motif_de.set(m, motif)
+        let fin = if accueilli { "annule" } else { "clos" }
+        if accueilli {
+            transition(m, "conteste", "annule")
+            let _ = ConfNotation.retirer(h, m)
+        } else {
+            transition(m, "conteste", "clos")
+        }
+        let g3 = (gravite_retenue.get(m) ?? 1) == 3
+        _terminer(m, op_m, g3)
+        let _ = Journal.noter(h, "conformite", par, "manquement {m} : recours {fin}")
+        return fin
+    }
+    on clore(h, m, motif, par) {
+        require ApiAcces.a_le_role(par, "conformite") || ApiAcces.a_le_role(par, "systeme") else Habilitation "{par} ne clot pas de manquement"
+        let op_m = op_de.get(m)
+        require op_m != () else Inconnu "manquement inconnu : {m}"
+        let st = get_status(m) ?? "constate"
+        require st == "qualifie" else EtatInvalide "manquement {m} en {st}"
+        let ql = qualifie_le.get(m) ?? 0
+        if h - ql < DELAI_CONTESTATION_MS {
+            let er = ConfRemediation.etat_remediation(m)
+            require er == "realisee" else Delai "delai de contestation de {m} non ecoule (remediation {er})"
+        }
+        motif_de.set(m, motif)
+        transition(m, "qualifie", "clos")
+        let g3 = (gravite_retenue.get(m) ?? 1) == 3
+        _terminer(m, op_m, g3)
+        let _ = Journal.noter(h, "conformite", par, "manquement {m} clos")
+        return "clos"
+    }
+    // Sortie d'un état terminal : clé de dédoublonnage effacée, compteurs de l'opérateur −1.
+    on _terminer(m: String, op_m: Org, g3: Bool) {
+        let nat = nature_de.get(m) ?? "autre"
+        let ref_m = reference_de.get(m) ?? ""
+        let cle = "{op_m}|{nat}|{ref_m}"
+        if courant.get(cle) == m { courant.delete(cle) }
+        ouverts_de.set(op_m, max(0, (ouverts_de.get(op_m) ?? 0) - 1))
+        if g3 {
+            g3_ouverts_de.set(op_m, max(0, (g3_ouverts_de.get(op_m) ?? 0) - 1))
+        }
+    }
+    on etat_manquement(m) {
+        if op_de.get(m) == () { return "inconnu" }
+        return get_status(m) ?? "constate"
+    }
+    on op(m) {
+        let o = op_de.get(m)
+        require o != () else Inconnu "manquement inconnu : {m}"
+        return o
+    }
+    on gravite(m) {
+        let g = gravite_retenue.get(m) ?? gravite_constatee.get(m)
+        require g != () else Inconnu "manquement inconnu : {m}"
+        return g
+    }
+    on fiche(h, m, par) {
+        let op_m = op_de.get(m)
+        require op_m != () else Inconnu "manquement inconnu : {m}"
+        let orbite_ok = ApiAcces.a_le_role(par, "conformite") || ApiAcces.a_le_role(par, "direction") || ApiAcces.a_le_role(par, "auditeur")
+        let ok = orbite_ok || ApiAcces.agit_pour(par, op_m)
+        if !ok && (ApiAcces.a_le_role(par, "point_focal") || ApiAcces.a_le_role(par, "autorite")) {
+            let e = try { ApiRef.etat_de(op_m) }
+            if e.error == () {
+                let org_e = ApiRef.org_de_etat(e.value)
+                ok = ApiAcces.agit_pour(par, org_e)
+            }
+        }
+        require ok else Confidentiel "{par} n'a pas acces a la fiche de {m}"
+        let nat = nature_de.get(m) ?? "autre"
+        let det = detail_de.get(m) ?? ""
+        let ref_m = reference_de.get(m) ?? ""
+        let g_c = gravite_constatee.get(m) ?? 1
+        let g_r = gravite_retenue.get(m) ?? 0
+        let cl = constate_le.get(m) ?? 0
+        let ql = qualifie_le.get(m) ?? 0
+        let mot = motif_de.get(m) ?? ""
+        let cls = classement_de.get(m) ?? ""
+        let st = get_status(m) ?? "constate"
+        let _ = Journal.noter(h, "conformite", par, "lecture de la fiche {m}")
+        return "manquement={m};operateur={op_m};nature={nat};detail={det};reference={ref_m};gravite_constatee={g_c};gravite_retenue={g_r};constate_le={cl};qualifie_le={ql};motif={mot};classement={cls};etat={st}"
+    }
+    on g3_non_clos(op) {
+        return g3_ouverts_de.get(op) ?? 0
+    }
+    on ouverts(op) {
+        return ouverts_de.get(op) ?? 0
+    }
+    on compter(op, de, a) {
+        let g1 = 0
+        let g2 = 0
+        let g3 = 0
+        for e in qualifie_le.entries {
+            if op_de.get(e.key) == op && e.value >= de && e.value <= a && (get_status(e.key) ?? "constate") != "annule" {
+                let g = gravite_retenue.get(e.key) ?? 1
+                if g == 1 { g1 = g1 + 1 } else if g == 2 { g2 = g2 + 1 } else { g3 = g3 + 1 }
+            }
+        }
+        return [g1, g2, g3]
+    }
+    on en_souffrance(h) {
+        let cand_s = []
+        for e in constate_le.entries {
+            let st = get_status(e.key) ?? "constate"
+            let ql = qualifie_le.get(e.key) ?? 0
+            // la date d'entrée en instruction n'est pas tenue ici : on compte depuis le constat
+            let tard = (st == "constate" && h - e.value > DELAI_NOTIFICATION_MS) || ((st == "instruction" || st == "forclos") && h - e.value > DELAI_QUALIFICATION_MS) || (st == "qualifie" && h - ql > DELAI_CONTESTATION_MS)
+            if tard { cand_s.push(map("id", e.key, "t", e.value, "st", st)) }
+        }
+        let tries_s = cand_s.sort_by(x => x.t)
+        let res_s = []
+        for c in tries_s {
+            res_s.push(c.id)
+            if (gravite_constatee.get(c.id) ?? 1) == 3 {
+                let cid = c.id
+                let cst = c.st
+                let _ = Journal.noter(h, "conformite", "systeme", "manquement grave {cid} en souffrance ({cst})")
+            }
+        }
+        return res_s
+    }
+}
+
+flesh ConfManquementEtat {
+    on constater(h, etat, nature, gravite, reference, detail, par) {
+        let habile = ApiAcces.a_le_role(par, "systeme") || ApiAcces.a_le_role(par, "analyste") || ApiAcces.a_le_role(par, "conformite")
+        require habile else Habilitation "{par} ne constate pas de manquement d'État"
+        require reference != "" else MotifRequis "référence du constat requise"
+        let org_r = try { ApiRef.org_de_etat(etat) }
+        require org_r.error == () else Inconnu "État inconnu : {etat}"
+        let cle = "{etat}|{nature}|{reference}"
+        let deja = courant.get(cle)
+        if deja != () { return deja }
+        require etat_de.size < MAX_MANQUEMENTS_ETAT else Plein "plafond de {MAX_MANQUEMENTS_ETAT} manquements d'État atteint"
+        let id = "ME-{next_id()}"
+        etat_de.set(id, etat)
+        nature_de.set(id, nature)
+        detail_de.set(id, detail)
+        reference_de.set(id, reference)
+        gravite_de.set(id, gravite)
+        constate_le.set(id, h)
+        courant.set(cle, id)
+        let _ = Journal.noter(h, "conformite", par, "manquement d'Etat {id} constate : {etat} {nature} g{gravite} reference {reference}")
+        return id
+    }
+    on notifier(h, m, par) {
+        require ApiAcces.a_le_role(par, "conformite") || ApiAcces.a_le_role(par, "systeme") else Habilitation "{par} ne notifie pas"
+        let etat_m = etat_de.get(m)
+        require etat_m != () else Inconnu "manquement d'État inconnu : {m}"
+        let st = get_status(m) ?? "constate"
+        require st == "constate" else EtatInvalide "manquement {m} en {st}"
+        let org_e = ApiRef.org_de_etat(etat_m)
+        let nat = nature_de.get(m) ?? "autre"
+        let ref_m = reference_de.get(m) ?? ""
+        let g = gravite_de.get(m) ?? 1
+        let ech = Horodatage(to_int(h) + DELAI_REPONSE_ETAT_MS)
+        let msg = ApiPasserelle.notifier(h, org_e, "", "manquement {m}", "manquement de l'Etat {etat_m} : {nat} (reference {ref_m}) ; observations avant {ech}", Niveau(to_int(g)))
+        echeance_de.set(m, ech)
+        message_de.set(m, msg)
+        transition(m, "constate", "notifie")
+        let _ = Journal.noter(h, "conformite", par, "manquement d'Etat {m} notifie a {org_e} (message {msg})")
+        return ech
+    }
+    on repondre(h, m, observations, par) {
+        let etat_m = etat_de.get(m)
+        require etat_m != () else Inconnu "manquement d'État inconnu : {m}"
+        let org_e = ApiRef.org_de_etat(etat_m)
+        let role_ok = ApiAcces.a_le_role(par, "point_focal") || ApiAcces.a_le_role(par, "autorite")
+        require role_ok && ApiAcces.agit_pour(par, org_e) else Habilitation "{par} ne répond pas pour {etat_m}"
+        let st = get_status(m) ?? "constate"
+        require st == "notifie" else EtatInvalide "manquement {m} en {st}"
+        require observations != "" else MotifRequis "observations vides"
+        let ech = echeance_de.get(m) ?? 0
+        require h <= ech else Delai "echeance des observations de {m} passee"
+        observations_de.set(m, observations)
+        transition(m, "notifie", "repondu")
+        let _ = Journal.noter(h, "conformite", par, "manquement d'Etat {m} : observations de {etat_m}")
+        return "repondu"
+    }
+    on constater_silence(h, m, par) {
+        require ApiAcces.a_le_role(par, "systeme") else Habilitation "{par} ne constate pas de silence"
+        require etat_de.get(m) != () else Inconnu "manquement d'État inconnu : {m}"
+        let st = get_status(m) ?? "constate"
+        require st == "notifie" else EtatInvalide "manquement {m} en {st}"
+        let ech = echeance_de.get(m) ?? 0
+        require h > ech else Delai "echeance de {m} non atteinte"
+        transition(m, "notifie", "sans_reponse")
+        let _ = Journal.noter(h, "conformite", par, "manquement d'Etat {m} sans reponse")
+        return "sans_reponse"
+    }
+    on clore(h, m, par) {
+        require ApiAcces.a_le_role(par, "conformite") || ApiAcces.a_le_role(par, "systeme") else Habilitation "{par} ne clot pas"
+        let etat_m = etat_de.get(m)
+        require etat_m != () else Inconnu "manquement d'État inconnu : {m}"
+        let st = get_status(m) ?? "constate"
+        require st == "repondu" || st == "sans_reponse" else EtatInvalide "manquement {m} en {st}"
+        if st == "repondu" {
+            transition(m, "repondu", "clos")
+        } else {
+            transition(m, "sans_reponse", "clos")
+        }
+        _liberer(m, etat_m)
+        let _ = Journal.noter(h, "conformite", par, "manquement d'Etat {m} clos")
+        return "clos"
+    }
+    on classer(h, m, motif, par, valideur) {
+        require ApiAcces.a_le_role(par, "conformite") else Habilitation "{par} ne classe pas"
+        require ApiAcces.quatre_yeux(par, valideur) else QuatreYeux "contre-signature de {valideur} refusee"
+        let etat_m = etat_de.get(m)
+        require etat_m != () else Inconnu "manquement d'État inconnu : {m}"
+        require motif != "" else MotifRequis "motif de classement requis"
+        let st = get_status(m) ?? "constate"
+        require st == "constate" || st == "repondu" else EtatInvalide "manquement {m} en {st}"
+        motif_de.set(m, motif)
+        if st == "constate" {
+            transition(m, "constate", "classe")
+        } else {
+            transition(m, "repondu", "classe")
+        }
+        _liberer(m, etat_m)
+        let _ = Journal.noter(h, "conformite", par, "manquement d'Etat {m} classe (valideur {valideur})")
+        return "classe"
+    }
+    on _liberer(m: String, etat_m: Etat) {
+        let nat = nature_de.get(m) ?? "autre"
+        let ref_m = reference_de.get(m) ?? ""
+        let cle = "{etat_m}|{nat}|{ref_m}"
+        if courant.get(cle) == m { courant.delete(cle) }
+    }
+    on etat_manquement(m) {
+        if etat_de.get(m) == () { return "inconnu" }
+        return get_status(m) ?? "constate"
+    }
+    on a_traiter(h, n) {
+        let cand_t = []
+        for e in constate_le.entries {
+            let st = get_status(e.key) ?? "constate"
+            let ech = echeance_de.get(e.key) ?? 0
+            let pris = st == "constate" || (st == "notifie" && h > ech) || ((st == "repondu" || st == "sans_reponse") && h > ech + DELAI_REPONSE_ETAT_MS)
+            if pris { cand_t.push(map("id", e.key, "t", e.value)) }
+        }
+        let tries_t = cand_t.sort_by(x => x.t)
+        let res_t = []
+        for c in tries_t {
+            if len(res_t) < n { res_t.push(c.id) }
+        }
+        return res_t
+    }
+    on compter(etat, de, a) {
+        let g1 = 0
+        let g2 = 0
+        let g3 = 0
+        for e in constate_le.entries {
+            if etat_de.get(e.key) == etat && e.value >= de && e.value <= a && (get_status(e.key) ?? "constate") != "classe" {
+                let g = gravite_de.get(e.key) ?? 1
+                if g == 1 { g1 = g1 + 1 } else if g == 2 { g2 = g2 + 1 } else { g3 = g3 + 1 }
+            }
+        }
+        return [g1, g2, g3]
+    }
+}

@@ -1,0 +1,33 @@
+// Corps de la façade ApiOperations.
+
+flesh ApiOperations {
+    on declarer_incident(h, incident, gravite, sous_systeme, description, par) {
+        require ApiAcces.a_le_role(par, "exploitant") || ApiAcces.a_le_role(par, "systeme") else Habilitation "déclarer un incident : exploitant d'ORBITE ou systeme"
+        // effet daté de la déclaration ; OpsIncident.declarer convoque la crise en gravité 3
+        return OpsIncident.declarer(h, incident, gravite, sous_systeme, description, h, par)
+    }
+
+    on incident_majeur() {
+        return OpsIncident.majeur_en_cours()
+    }
+
+    on degrade(sous_systeme) {
+        // une bascule de site en transition dégrade tout ORBITE
+        return OpsIncident.est_degrade(sous_systeme) || OpsDegradation.est_degrade(sous_systeme) || OpsBascule.en_transition()
+    }
+
+    on changement_autorise(h) {
+        if OpsGel.gel_a(h) { return false }
+        if OpsGelUrgence.actif_a(h) { return false }
+        if OpsIncident.majeur_en_cours() { return false }
+        return !OpsBascule.en_transition()
+    }
+
+    on arbitrage_centralise() {
+        return OpsCrise.arbitrage_centralise_en_vigueur()
+    }
+
+    on balayer(h, par) {
+        return OpsRonde.balayer(h, par)
+    }
+}

@@ -1,0 +1,229 @@
+// CONFORMITÉ — mesures : avertissement, surveillance renforcée, demande de suspension adressée
+// à l'État de tutelle. Toute mesure est fondée sur UN manquement qualifié (lien écrit une fois) ;
+// au plus une mesure non terminale par opérateur et par nature. ORBITE ne suspend pas un
+// opérateur de son propre chef : elle le demande à l'État, puis exécute sa décision.
+
+// Nature d'une mesure. "avertissement" : 365 jours ; "surveillance_renforcee" : 180 jours,
+// contrôles quotidiens (ConfVeille) et tout manquement constaté notifié sans délai ;
+// "demande_suspension" : dossier transmis à l'État (ConfDemande).
+cell type ConfNatureMesure = String where value == "avertissement" || value == "surveillance_renforcee" || value == "demande_suspension"
+
+// Réponse d'un État à une demande de suspension.
+cell type ConfReponseEtat = String where value == "accepte" || value == "refuse"
+
+skeleton ConfMesure {
+    const MAX_MESURES = 500000
+    const DUREE_AVERTISSEMENT_MS = 31536000000    // 365 jours
+    const DUREE_SURVEILLANCE_MS = 15552000000     // 180 jours
+    const DUREE_DEMANDE_MS = 7776000000           // 90 jours : une demande sans suite est réexaminée
+    memory {
+        op_de: Map<String, Org> [persistent]
+        invariant op_de.size <= 500000
+        nature_de: Map<String, ConfNatureMesure> [persistent]
+        // mesure → manquement qui la fonde ; écrit une fois, par `proposer`, jamais supprimé.
+        fondement_de: Map<String, String> [persistent]
+        motif_de: Map<String, String> [persistent]
+        propose_par: Map<String, String> [persistent]
+        decide_par: Map<String, String> [persistent]
+        en_vigueur_le: Map<String, Horodatage> [persistent]
+        fin_le: Map<String, Horodatage> [persistent]           // en_vigueur_le + durée de la nature
+        message_de: Map<String, String> [persistent]           // notification à l'opérateur (ApiPasserelle)
+        // "op|nature" → mesure non terminale (au plus une) ; effacée en abandonnee, levee, echue.
+        courante: Map<String, String> [persistent]
+        invariant courante.size <= 500000
+    }
+    // Cycle d'une mesure. Terminaux : abandonnee, levee, echue.
+    state cycle {
+        initial: proposee
+        proposee -> decidee      // decider : quatre yeux "direction", fondement qualifié
+        proposee -> abandonnee   // abandonner
+        decidee -> en_vigueur    // mettre_en_vigueur : opérateur et État notifiés
+        decidee -> abandonnee    // abandonner (remédiation entre décision et notification)
+        en_vigueur -> levee      // lever : remédiation, ou opérateur rétabli
+        en_vigueur -> echue      // expirer : durée de la nature écoulée
+    }
+    face {
+        // Propose une mesure contre `op`, fondée sur le manquement `fondement` (qualifié ou clos,
+        // du même opérateur). Si une mesure non terminale de cette nature existe déjà pour `op`,
+        // rien n'est créé et son id est renvoyé (une proposition automatique ne doit jamais faire
+        // échouer la qualification qui la déclenche). Renvoie l'id "MS-<n>".
+        // Refus : Inconnu (fondement), Incoherent (fondement d'un autre opérateur), EtatInvalide
+        // (fondement ni qualifié ni clos), MotifRequis, Plein, Habilitation (par "conformite"
+        // d'ORBITE, ou "systeme" depuis ConfNotation).
+        signal proposer(h: Horodatage, op: Org, nature: ConfNatureMesure, fondement: String, motif: String, par: String) -> String
+            writes op_de, nature_de, fondement_de, motif_de, propose_par, courante
+            calls next_id, ApiAcces.a_le_role, ConfManquement.op, ConfManquement.etat_manquement, Journal.noter
+        // Décide la mesure : proposee -> decidee, tant que le manquement fondateur est qualifié ou
+        // clos (un recours accueilli l'a annulé : refus). Renvoie "decidee".
+        // Refus : Inconnu, EtatInvalide (mesure non proposée, ou fondement annulé / contesté),
+        // Habilitation (par "direction" d'ORBITE), QuatreYeux (par ≠ proposant ; proposant
+        // "systeme" : quatre yeux avec un "conformite").
+        signal decider(h: Horodatage, mesure: String, par: String, valideur: String) -> String
+            writes decide_par
+            reads propose_par, fondement_de
+            moves proposee -> decidee when ConfManquement.qualifie || ConfManquement.clos via fondement_de
+            calls ApiAcces.a_le_role, ApiAcces.quatre_yeux, ConfManquement.etat_manquement, Journal.noter
+        // Abandonne une mesure non en vigueur : proposee | decidee -> abandonnee. Renvoie "abandonnee".
+        // Refus : Inconnu, EtatInvalide, MotifRequis, Habilitation (par "conformite" ou "direction" d'ORBITE).
+        signal abandonner(h: Horodatage, mesure: String, motif: String, par: String) -> String
+            writes motif_de, courante
+            reads op_de, nature_de
+            moves proposee -> abandonnee, decidee -> abandonnee
+            calls ApiAcces.a_le_role, Journal.noter
+        // Met en vigueur : decidee -> en_vigueur, fin_le = h + durée de la nature, notification à
+        // l'opérateur et au point focal de son État (ApiPasserelle.notifier). Une
+        // "demande_suspension" n'entre en vigueur que transmise (ConfDemande.etat_demande
+        // "transmise" : c'est ConfDemande.transmettre qui l'appelle). Renvoie fin_le (ms).
+        // Refus : Inconnu, EtatInvalide (non décidée, ou demande non transmise), Habilitation (par
+        // "conformite" d'ORBITE, ou "systeme").
+        signal mettre_en_vigueur(h: Horodatage, mesure: String, par: String) -> Horodatage
+            writes en_vigueur_le, fin_le, message_de
+            reads op_de, nature_de
+            moves decidee -> en_vigueur
+            calls ApiAcces.a_le_role, ApiPasserelle.notifier, ApiRef.etat_de, ApiRef.org_de_etat, ConfDemande.etat_demande, Journal.noter
+        // Lève la mesure avant son terme, une fois la remédiation du manquement fondateur réalisée
+        // (ConfRemediation "realisee", même id que le fondement) : en_vigueur -> levee, opérateur
+        // notifié. Une demande de suspension levée ne rétablit pas l'opérateur (geste de
+        // operateurs : ApiOperateurs.retablir). Renvoie "levee".
+        // Refus : Inconnu, EtatInvalide (dont remédiation non réalisée), MotifRequis, Habilitation
+        // (par "conformite" d'ORBITE), QuatreYeux (valideur "direction").
+        signal lever(h: Horodatage, mesure: String, motif: String, par: String, valideur: String) -> String
+            writes motif_de, courante
+            reads op_de, nature_de, fondement_de
+            moves en_vigueur -> levee when ConfRemediation.realisee via fondement_de
+            calls ApiAcces.a_le_role, ApiAcces.quatre_yeux, ApiPasserelle.notifier, ConfRemediation.etat_remediation, Journal.noter
+        // Échéance atteinte (h ≥ fin_le) : en_vigueur -> echue. Une "demande_suspension" échue
+        // sans réponse de l'État reste citée au rapport annuel. Renvoie "echue".
+        // Refus : Inconnu, EtatInvalide, Delai (fin_le non atteinte), Habilitation (par "systeme").
+        signal expirer(h: Horodatage, mesure: String, par: String) -> String
+            writes courante
+            reads fin_le, op_de, nature_de
+            moves en_vigueur -> echue
+            calls ApiAcces.a_le_role, Journal.noter
+        // État de la mesure ; "inconnue" si l'id n'existe pas.
+        signal etat_mesure(mesure: String) -> String
+            reads cycle, op_de
+        // Opérateur, nature, fondement de la mesure (pour ConfDemande). Refus : Inconnu.
+        signal op(mesure: String) -> Org
+            reads op_de
+        signal nature(mesure: String) -> ConfNatureMesure
+            reads nature_de
+        // Vrai si une mesure de cette nature est en vigueur pour l'opérateur.
+        signal en_vigueur_pour(op: Org, nature: ConfNatureMesure) -> Bool
+            reads courante, cycle
+        // Mesures en vigueur dont fin_le est atteinte à `h` (à expirer), au plus `n`.
+        signal a_expirer(h: Horodatage, n: Int) -> List<String>
+            requires n > 0 && n <= 1000
+            reads fin_le, cycle
+        // Mesures décidées ou en vigueur contre l'opérateur entre `de` et `a`, par nature :
+        // [avertissement, surveillance_renforcee, demande_suspension]. Pour les rapports.
+        signal compter(op: Org, de: Horodatage, a: Horodatage) -> List<Int>
+            requires de <= a
+            reads op_de, nature_de, en_vigueur_le, cycle
+    }
+}
+
+// Demande de suspension adressée à l'État de tutelle d'un opérateur. Une par mesure
+// "demande_suspension", SOUS LE MÊME ID que la mesure. L'État répond ; s'il accepte, ORBITE
+// suspend l'opérateur (ApiOperateurs.suspendre). Un État silencieux ne bloque rien : la demande
+// est constatée "sans_reponse", la direction d'ORBITE est avertie et le silence figure au rapport.
+skeleton ConfDemande {
+    const MAX_DEMANDES = 100000
+    const DELAI_ETAT_MS = 2592000000      // 30 jours pour répondre
+    memory {
+        op_de: Map<String, Org> [persistent]                 // écrit une fois par preparer, jamais effacé (lien de acceptee -> executee)
+        invariant op_de.size <= 100000
+        etat_de: Map<String, Etat> [persistent]              // État de tutelle au jour de la demande ; écrit une fois par preparer, jamais effacé (lien de la règle toml sur transmise)
+        dossier_de: Map<String, String> [persistent]         // empreinte du dossier (manquements, notes, observations)
+        prepare_par: Map<String, String> [persistent]
+        transmise_le: Map<String, Horodatage> [persistent]
+        echeance_de: Map<String, Horodatage> [persistent]
+        message_de: Map<String, String> [persistent]
+        reponse_de: Map<String, ConfReponseEtat> [persistent]
+        repondu_par: Map<String, String> [persistent]
+        motif_de: Map<String, String> [persistent]
+        executee_le: Map<String, Horodatage> [persistent]
+    }
+    // Cycle d'une demande. Terminaux : refusee, sans_reponse, executee, retiree.
+    state cycle {
+        initial: preparee
+        preparee -> transmise      // transmettre : mesure décidée, dossier envoyé au point focal
+        preparee -> retiree        // retirer
+        transmise -> acceptee      // repondre "accepte" (point focal ou autorité de l'État)
+        transmise -> refusee       // repondre "refuse"
+        transmise -> sans_reponse  // constater_silence : 30 jours sans réponse
+        transmise -> retiree       // retirer : remédiation avant la réponse
+        acceptee -> executee       // executer : ApiOperateurs.suspendre ; opérateur constaté suspendu (ou exclu entre-temps)
+    }
+    face {
+        // Prépare le dossier de la mesure `mesure` (nature "demande_suspension", décidée) : État de
+        // tutelle de l'opérateur figé. Renvoie l'id (= celui de la mesure).
+        // Refus : Existe, Inconnu (mesure, ou opérateur sans État), NonEligible (autre nature),
+        // EtatInvalide (mesure non décidée), Incoherent (État non participant : ApiRef.etat_participant),
+        // MotifRequis (dossier vide), Plein, Habilitation (par "conformite" d'ORBITE).
+        signal preparer(h: Horodatage, mesure: String, dossier: String, par: String) -> String
+            writes op_de, etat_de, dossier_de, prepare_par
+            calls ApiAcces.a_le_role, ConfMesure.op, ConfMesure.nature, ConfMesure.etat_mesure, ApiRef.etat_de, ApiRef.etat_participant, Journal.noter
+        // Transmet au point focal de l'État (ApiPasserelle.notifier, urgence 2) : preparee ->
+        // transmise, échéance h + DELAI_ETAT_MS, puis met la mesure en vigueur
+        // (ConfMesure.mettre_en_vigueur, par "systeme"). Renvoie l'échéance (ms).
+        // Refus : Inconnu, EtatInvalide (demande non préparée, mesure non décidée, ou État de la
+        // demande plus participant : ApiRef.etat_participant, règle while RefEtat.participant via
+        // etat_de dans regles.toml), Habilitation (par "direction" d'ORBITE), QuatreYeux (par ≠ préparateur).
+        signal transmettre(h: Horodatage, demande: String, par: String) -> Horodatage
+            writes transmise_le, echeance_de, message_de
+            reads op_de, etat_de, dossier_de, prepare_par
+            moves preparee -> transmise when ConfMesure.decidee
+            calls ApiAcces.a_le_role, ApiAcces.quatre_yeux, ApiRef.etat_participant, ApiRef.org_de_etat, ApiPasserelle.notifier, ConfMesure.etat_mesure, ConfMesure.mettre_en_vigueur, Journal.noter
+        // Réponse de l'État avant l'échéance : transmise -> acceptee | refusee. Renvoie l'état atteint.
+        // Refus : Inconnu, EtatInvalide, MotifRequis, Delai (échéance passée), Habilitation (par
+        // "point_focal" ou "autorite" de l'État de la demande : ApiAcces.agit_pour sur
+        // ApiRef.org_de_etat(etat)).
+        signal repondre(h: Horodatage, demande: String, reponse: ConfReponseEtat, motif: String, par: String) -> String
+            writes reponse_de, repondu_par, motif_de
+            reads etat_de, echeance_de
+            moves transmise -> acceptee, transmise -> refusee
+            calls ApiAcces.a_le_role, ApiAcces.agit_pour, ApiRef.org_de_etat, Journal.noter
+        // Exécute la décision de l'État : ApiOperateurs.suspendre(op, motif, par, valideur), puis
+        // acceptee -> executee seulement si ApiOperateurs.statut(op) est "suspendu" (déjà suspendu
+        // par l'État lui-même : exécutée aussi) ou "exclu" (exclusion survenue entre-temps) — règle
+        // de l'arête via op_de. Renvoie "executee". Refus : Inconnu, EtatInvalide (dont opérateur
+        // ni suspendu ni exclu après l'appel), relayés d'ApiOperateurs.suspendre
+        // (Habilitation : par "conformite" ; QuatreYeux : valideur "direction").
+        signal executer(h: Horodatage, demande: String, par: String, valideur: String) -> String
+            writes executee_le
+            reads op_de, motif_de
+            moves acceptee -> executee when OpMembres.suspendu || OpMembres.exclu via op_de
+            calls ApiAcces.a_le_role, ApiAcces.quatre_yeux, ApiOperateurs.suspendre, ApiOperateurs.statut, Journal.noter
+        // Silence de l'État, échéance passée : transmise -> sans_reponse ; la direction d'ORBITE
+        // est avertie (ApiPasserelle.notifier vers ApiRef.orbite(), r "", urgence 2) et un manquement
+        // d'État "demande_sans_reponse" g2 est constaté (ConfManquementEtat.constater, référence =
+        // demande). Renvoie "sans_reponse".
+        // Refus : Inconnu, EtatInvalide, Delai (échéance non atteinte), Habilitation (par "systeme").
+        signal constater_silence(h: Horodatage, demande: String, par: String) -> String
+            reads echeance_de, op_de, etat_de
+            moves transmise -> sans_reponse
+            calls ApiAcces.a_le_role, ApiRef.orbite, ApiPasserelle.notifier, ConfManquementEtat.constater, Journal.noter
+        // Retire la demande (remédiation) : preparee | transmise -> retiree ; l'État est informé
+        // si elle était transmise. Renvoie "retiree".
+        // Refus : Inconnu, EtatInvalide, MotifRequis, Habilitation (par "direction" d'ORBITE).
+        signal retirer(h: Horodatage, demande: String, motif: String, par: String) -> String
+            writes motif_de
+            reads etat_de
+            moves preparee -> retiree, transmise -> retiree
+            calls ApiAcces.a_le_role, ApiRef.org_de_etat, ApiPasserelle.notifier, Journal.noter
+        // État : "preparee", "transmise", "acceptee", "refusee", "sans_reponse", "executee",
+        // "retiree" ; "inconnue" si jamais préparée.
+        signal etat_demande(demande: String) -> String
+            reads cycle, op_de
+        // Demandes transmises dont l'échéance est passée à `h` (à constater_silence), au plus `n`.
+        signal echues(h: Horodatage, n: Int) -> List<String>
+            requires n > 0 && n <= 1000
+            reads echeance_de, cycle
+        // Demandes adressées à l'État et transmises entre `de` et `a`, par issue :
+        // [transmises, acceptees ou executees, refusees, sans_reponse]. Pour les rapports.
+        signal compter_etat(etat: Etat, de: Horodatage, a: Horodatage) -> List<Int>
+            requires de <= a
+            reads etat_de, transmise_le, cycle
+    }
+}

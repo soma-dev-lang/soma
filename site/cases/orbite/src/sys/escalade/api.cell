@@ -1,0 +1,31 @@
+// Façade de l'ESCALADE : quand un opérateur ne répond pas, on monte jusqu'aux États.
+skeleton ApiEscalade {
+    face {
+        // Ouvre (ou fait monter d'un échelon) l'escalade d'un rapprochement visant un opérateur
+        // silencieux. Échelons : 1 relance de l'astreinte, 2 chef de mission, 3 point focal de
+        // l'État de tutelle, 4 direction d'ORBITE et points focaux des deux États. Renvoie
+        // l'échelon atteint. Refus : Inconnu, MotifRequis, Habilitation ("systeme" ou "analyste").
+        signal escalader(h: Horodatage, r: Rapprochement, op: Org, motif: String, par: String) -> Int
+            calls EscDossiers.dossier_actif, EscDossiers.ouvrir, EscDossiers.monter
+        // Accusé de réception de l'escalade par l'opérateur ou son État : clôt l'escalade si
+        // l'opérateur a répondu. Renvoie l'état. Refus : Inconnu, EtatInvalide, Habilitation
+        // (personne de l'opérateur ou "point_focal" de son État).
+        signal accuser(h: Horodatage, r: Rapprochement, op: Org, par: String) -> String
+            calls EscDossiers.accuser
+        // Échelon courant ; 0 si aucune escalade ouverte.
+        signal echelon(r: Rapprochement, op: Org) -> Int
+            calls EscDossiers.echelon
+        // Nombre d'escalades d'échelon ≥ 3 visant l'opérateur sur les 365 derniers jours.
+        signal graves(op: Org, h: Horodatage) -> Int
+            calls EscStatistiques.graves
+        // Vrai si ORBITE a repris la main sur le rapprochement (échéance finale passée).
+        signal reprise(r: Rapprochement) -> Bool
+            calls EscDossiers.reprise_sur
+        // Balayage des échéances du sous-système à `h` (délais, expirations, rondes), appelé par
+        // l'horloge d'ORBITE (Horloge.battre) — le SEUL point d'entrée du temps : aucun signal de
+        // escalade ne lit l'horloge lui-même. Renvoie le nombre d'objets dont l'état a changé.
+        // Refus : Habilitation (par "systeme").
+        signal balayer(h: Horodatage, par: String) -> Int
+            calls EscBalayage.balayer
+    }
+}

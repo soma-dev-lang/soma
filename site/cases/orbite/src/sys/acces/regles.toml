@@ -1,0 +1,13 @@
+# acces — règles entre sous-systèmes (phase 2), forme toml : l'arête porte déjà un `when`.
+# À fusionner dans soma.toml par l'intégrateur.
+
+# Rattachement confirmé ⇐ employeur ni radié ni inconnu chez ref (lien écrit une fois par ouvrir).
+[verify.before."AccesRattachements.confirme"]
+while = ["RefOrg.inscrite", "RefOrg.active"]
+via = "AccesRattachements.employeur_du"
+
+# Accès d'urgence ouvert ⇐ rapprochement en alerte (niveau ≥ 2 ; niveau 3 contrôlé au corps)
+# ou en coordination (lien écrit une fois par ouvrir).
+[verify.before."AccesUrgences.ouverte"]
+while = ["ConjRapprochement.alerte", "ConjRapprochement.en_coordination"]
+via = "AccesUrgences.rapprochement_de"

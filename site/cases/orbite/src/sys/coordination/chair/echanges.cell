@@ -1,0 +1,76 @@
+// Corps de CoordEchange : le fil des échanges d'une coordination et la notification des parties.
+flesh CoordEchange {
+    on noter(h, r, org, nature, texte, par) {
+        require len(texte) <= MAX_TEXTE else HorsBornes "texte de {len(texte)} caractères (au plus {MAX_TEXTE})"
+        require !contains(texte, "|") else Incoherent "un texte d'échange ne contient pas de « | »"
+        return _ajouter(h, r, org, nature, texte, par)
+    }
+    on notifier(h, r, nature, texte) {
+        let parties_n = CoordDossier.parties(r)
+        let objets_n = CoordDossier.objets(r)
+        let urgence = ApiConjonctions.niveau(r)
+        let orbite = ApiRef.orbite()
+        let propre = _propre(texte)
+        let envoyes = messages_de.get(r) ?? []
+        require len(envoyes) + len(parties_n) + 1 <= MAX_ECHANGES else Plein "messages de {r} : plafond {MAX_ECHANGES} atteint"
+        let ids_n = []
+        for p in parties_n {
+            let complet = true
+            for o in objets_n {
+                if !ApiDonnees.peut_recevoir(Org(p), Objet(o), r, h) { complet = false }
+            }
+            let corps = "décision vous concernant sur {r}"
+            if complet {
+                corps = propre
+                for o in objets_n {
+                    let _ = ApiDonnees.tracer(h, Org(p), Objet(o), r, to_string(nature))
+                }
+            }
+            let m = ApiPasserelle.notifier(h, Org(p), r, to_string(nature), corps, urgence)
+            ids_n.push(m)
+        }
+        let mo = ApiPasserelle.notifier(h, orbite, r, to_string(nature), propre, urgence)
+        ids_n.push(mo)
+        messages_de.set(r, envoyes ++ ids_n)
+        let _ = _ajouter(h, r, orbite, nature, propre, "systeme")
+        return len(ids_n)
+    }
+    on fil(h, r, n, par) {
+        let parties_f = CoordDossier.parties(r)
+        let objets_f = CoordDossier.objets(r)
+        let emp = try { ApiAcces.employeur(par) }
+        require emp.error == () else Habilitation "personne inconnue : {par}"
+        let org = emp.value
+        if org == ApiRef.orbite() {
+            let lecteur = ApiAcces.a_le_role(par, "analyste") || ApiAcces.a_le_role(par, "superviseur") || ApiAcces.a_le_role(par, "conformite") || ApiAcces.a_le_role(par, "direction") || ApiAcces.a_le_role(par, "auditeur")
+            require lecteur else Habilitation "{par} n'a aucun rôle de lecture d'ORBITE"
+        } else {
+            require contains(parties_f, org) else Habilitation "{org} n'est pas partie à {r}"
+            let op_ok = ApiAcces.a_le_role(par, "dynamicien") || ApiAcces.a_le_role(par, "chef_de_mission") || ApiAcces.a_le_role(par, "administrateur_operateur")
+            require op_ok else Habilitation "{par} n'a aucun rôle d'opérateur actif"
+            for o in objets_f {
+                require ApiDonnees.peut_recevoir(org, Objet(o), r, h) else Confidentiel "{org} ne peut pas recevoir les données de {o}"
+            }
+            for o in objets_f {
+                let _ = ApiDonnees.tracer(h, org, Objet(o), r, "fil")
+            }
+        }
+        let tout = fil_de.get(r) ?? []
+        let k = len(tout)
+        if k <= n { return tout }
+        return slice(tout, k - n, k)
+    }
+    on _ajouter(h: Horodatage, r: Rapprochement, org: Org, nature: CoordNature, texte: String, par: String) {
+        let lignes_e = fil_de.get(r) ?? []
+        require len(lignes_e) < MAX_ECHANGES else Plein "fil de {r} : plafond {MAX_ECHANGES} atteint"
+        require fil_de.has(r) || fil_de.size < MAX_FILS else Plein "plafond de {MAX_FILS} fils atteint"
+        let t = if len(texte) > MAX_TEXTE { substring(texte, 0, MAX_TEXTE) } else { texte }
+        fil_de.set(r, lignes_e ++ ["{h} | {org} | {par} | {nature} | {t}"])
+        return len(lignes_e) + 1
+    }
+    on _propre(texte: String) {
+        let t = replace(texte, "|", "/")
+        if len(t) > MAX_TEXTE { return substring(t, 0, MAX_TEXTE) }
+        return t
+    }
+}

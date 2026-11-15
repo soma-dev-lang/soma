@@ -1,0 +1,215 @@
+// FIN DE VIE — plans de fin de vie : dépôt par le propriétaire, revue par ORBITE (quatre
+// yeux), approbation, reconfirmation annuelle, remplacement, caducité, clôture quand l'objet
+// est retiré. Instance = id de plan "PFV-<n>" choisi par le déposant. Un objet a au plus UN
+// plan approuvé à la fois (plan_approuve_de) ; l'historique de ses plans reste lisible.
+
+// Mode de retrait prévu par le plan.
+// "desorbitation_naturelle" : abaissement du périgée puis décroissance atmosphérique ;
+// "desorbitation_controlee" : rentrée dirigée vers une zone océanique (obligatoire pour un
+// objet habité) ; "cimetiere" : rehausse hors des orbites utiles (GEO : au-dessus de l'anneau) ;
+// "retrait_actif" : capture prévue par un tiers (objet sans moyen propre de retrait).
+cell type FdvMode = String where value == "desorbitation_naturelle" || value == "desorbitation_controlee" || value == "cimetiere" || value == "retrait_actif"
+
+// Fiche d'un plan : ce qui fonde la décision d'approbation (traçable, gelable par responsabilite).
+// delai : durée maximale (ms) entre la fin de mission et le retrait achevé ; dv_requis /
+// dv_reserve : delta-v (mm/s) nécessaire au retrait / réserve d'ergols déclarée ; rehausse :
+// altitude (m) visée au-dessus de l'orbite utile (cimetière, 0 sinon) ; succes : probabilité
+// de succès annoncée (%) ; empreinte : condensat du dossier technique (le contenu reste hors ORBITE).
+cell type FdvFichePlan { variants { FdvFichePlan { objet: Objet, mode: FdvMode, fin_prevue: Horodatage, delai: Duree, dv_requis: DeltaV, dv_reserve: DeltaV, rehausse: Distance, succes: Pourcent, empreinte: String, conforme: Bool } } }
+
+skeleton FdvPlan {
+    // Délais maximaux entre fin de mission et retrait achevé (ms) : LEO 5 ans, MEO et HEO
+    // 25 ans, GEO 1 an (mise en cimetière).
+    const DELAI_LEO = 157680000000
+    const DELAI_MEO_HEO = 788400000000
+    const DELAI_GEO = 31536000000
+    // Rehausse minimale au-dessus de l'anneau géostationnaire pour un cimetière GEO (m).
+    const REHAUSSE_GEO_MIN = 235000
+    // Probabilité de succès minimale d'un plan conforme (%).
+    const SUCCES_MIN = 90
+    // Un plan approuvé non reconfirmé depuis 400 jours devient caduc (ms).
+    const RECONFIRMATION = 34560000000
+    // Délai laissé au propriétaire pour compléter un plan (90 jours, ms).
+    const DELAI_COMPLEMENT = 7776000000
+    const MAX_PLANS = 1000000
+    const MAX_PLANS_OBJET = 50
+    memory {
+        objet_de: Map<String, Objet> [persistent]           // plan -> objet ; écrit au dépôt, jamais effacé (lien de la règle de clôture)
+        proprietaire_de: Map<String, Org> [persistent]      // propriétaire de l'objet au dépôt
+        mode_de: Map<String, FdvMode> [persistent]
+        fin_prevue_de: Map<String, Horodatage> [persistent] // fin de mission prévue (sert à la fin d'office)
+        delai_de: Map<String, Duree> [persistent]
+        dv_requis_de: Map<String, DeltaV> [persistent]
+        dv_reserve_de: Map<String, DeltaV> [persistent]
+        rehausse_de: Map<String, Distance> [persistent]
+        succes_de: Map<String, Pourcent> [persistent]
+        empreinte_de: Map<String, String> [persistent]      // condensat du dossier technique, remplacé à chaque complément
+        conforme_de: Map<String, Bool> [persistent]         // conformité calculée au dépôt, au complément, à la reconfirmation
+        depose_le: Map<String, Horodatage> [persistent]
+        revu_le: Map<String, Horodatage> [persistent]       // dernière décision de revue (compléments, approbation, rejet)
+        confirme_le: Map<String, Horodatage> [persistent]   // approbation puis chaque reconfirmation
+        decide_par: Map<String, String> [persistent]        // "par|valideur" de l'approbation, ou analyste du rejet
+        motif_de: Map<String, String> [persistent]          // motif du dernier complément demandé, du rejet, du retrait ou de la caducité
+        plan_approuve_de: Map<Objet, String> [persistent]   // objet -> plan approuvé en cours ; effacé à la caducité, remplacé à l'approbation suivante
+        plans_de: Map<Objet, List<String>> [persistent]     // historique des plans d'un objet
+        a_surveiller: List<String> [persistent]             // plans "a_completer" ou "approuve" (balayage : complément échu, reconfirmation)
+        invariant a_surveiller.size <= 1000000
+        invariant objet_de.size <= 1000000
+        invariant succes_de <= 100
+        invariant len(plans_de) <= 50
+        invariant (revu_le ?? 999999999999999) >= (depose_le ?? 0)
+    }
+    // Cycle d'un plan de fin de vie (états exposés par etat).
+    state plan {
+        initial: depose
+        depose -> en_revue                // prise en revue par un analyste d'ORBITE
+        depose -> retire                  // retiré par le propriétaire avant revue
+        en_revue -> a_completer           // compléments demandés au propriétaire
+        a_completer -> en_revue           // complété : nouveau dossier, nouvelle empreinte
+        a_completer -> retire             // retiré par le propriétaire
+        a_completer -> rejete             // complément non fourni dans les 90 jours
+        en_revue -> approuve              // approuvé à quatre yeux (plan conforme seulement)
+        en_revue -> rejete                // rejeté avec motif
+        approuve -> remplace              // un plan plus récent du même objet est approuvé
+        approuve -> caduc                 // non reconfirmé à 400 jours, ou devenu non conforme
+        approuve -> clos   // retrait de l'objet constaté : plan accompli
+    }
+    face {
+        // Dépose un plan de fin de vie pour `objet` (catalogué, ni rentré, ni fragmenté, ni
+        // retiré). Calcule la conformité au dépôt (conforme_de) : LEO — mode ≠ "cimetiere" et
+        // delai ≤ 5 ans ; GEO — mode "cimetiere" (ou "retrait_actif"), rehausse ≥ 235 000 m et
+        // delai ≤ 1 an ; MEO et HEO — delai ≤ 25 ans ; objet habité (ApiRef.habite) — mode
+        // "desorbitation_controlee" ; objet dont la campagne de rentrée est à risque
+        // (ApiReentrees.a_risque, > 100 ppm) — mode "desorbitation_controlee" ; succes ≥ 90 % ;
+        // dv_reserve ≥ dv_requis sauf "retrait_actif".
+        // Un plan non conforme est accepté (la revue le rejettera ou le fera compléter).
+        // fin_prevue : fin de mission prévue (ms) ; delai en ms ; dv en mm/s ; rehausse en m.
+        // Habilitation : "dynamicien" ou "chef_de_mission" du propriétaire (ApiAcces.agit_pour
+        // sur ApiRef.proprietaire). Renvoie "depose".
+        // Refus : Existe (id déjà pris), Inconnu (objet), EtatInvalide (objet rentré, fragmenté,
+        // retiré), Incoherent (fin_prevue < h, ou succes > 100), Suspendu (opérateur non actif,
+        // ApiOperateurs.est_actif), Plein (50 plans pour l'objet), Habilitation.
+        signal deposer(h: Horodatage, plan: String, objet: Objet, mode: FdvMode, fin_prevue: Horodatage, delai: Duree, dv_requis: DeltaV, dv_reserve: DeltaV, rehausse: Distance, succes: Pourcent, empreinte: String, par: String) -> String
+            writes objet_de, proprietaire_de, mode_de, fin_prevue_de, delai_de, dv_requis_de, dv_reserve_de, rehausse_de, succes_de, empreinte_de, conforme_de, depose_le, plans_de
+            calls ApiRef.etat_objet, ApiRef.proprietaire, ApiRef.regime, ApiRef.habite, ApiReentrees.a_risque, ApiOperateurs.est_actif, ApiAcces.a_le_role, ApiAcces.agit_pour, Journal.noter
+        // Prend un plan déposé en revue (depose -> en_revue). Habilitation : "analyste" d'ORBITE.
+        // Renvoie "en_revue". Refus : Inconnu, EtatInvalide, Habilitation.
+        signal prendre_en_revue(h: Horodatage, plan: String, par: String) -> String
+            writes revu_le
+            reads objet_de
+            moves depose -> en_revue
+            calls ApiAcces.a_le_role, Journal.noter
+        // Demande des compléments au propriétaire (en_revue -> a_completer), qui a 90 jours pour
+        // les fournir ; le motif lui est notifié (ApiPasserelle.notifier, r = "", urgence 1).
+        // Habilitation : "analyste" d'ORBITE. Renvoie "a_completer".
+        // Refus : Inconnu, EtatInvalide, MotifRequis, Habilitation.
+        signal demander_complements(h: Horodatage, plan: String, motif: String, par: String) -> String
+            writes revu_le, motif_de, a_surveiller
+            reads proprietaire_de
+            moves en_revue -> a_completer
+            calls ApiPasserelle.notifier, ApiAcces.a_le_role, Journal.noter
+        // Le propriétaire complète son plan (a_completer -> en_revue) : nouveaux délai, réserve,
+        // succès et empreinte du dossier ; la conformité est recalculée comme au dépôt.
+        // Habilitation : "dynamicien" ou "chef_de_mission" du propriétaire. Renvoie "en_revue".
+        // Refus : Inconnu, EtatInvalide, Delai (plus de 90 jours après la demande), Doublon
+        // (empreinte inchangée), Habilitation.
+        signal completer(h: Horodatage, plan: String, delai: Duree, dv_reserve: DeltaV, succes: Pourcent, empreinte: String, par: String) -> String
+            writes delai_de, dv_reserve_de, succes_de, empreinte_de, conforme_de
+            reads objet_de, proprietaire_de, mode_de, dv_requis_de, rehausse_de, revu_le
+            moves a_completer -> en_revue
+            calls ApiRef.regime, ApiRef.habite, ApiReentrees.a_risque, ApiAcces.a_le_role, ApiAcces.agit_pour, Journal.noter
+        // Approuve un plan conforme (en_revue -> approuve) ; le plan approuvé précédent du même
+        // objet passe "remplace". Règle entre sous-systèmes : l'objet est "catalogue" ou
+        // "en_service" au catalogue (ApiRef.etat_objet sur objet_de ; RefObjet, sinon NonEligible).
+        // Trace l'empreinte approuvée et "par|valideur" (preuve en cas de dommage).
+        // Habilitation : "analyste" d'ORBITE ; QuatreYeux : valideur "superviseur"
+        // (ApiAcces.quatre_yeux). Renvoie "approuve".
+        // Refus : Inconnu, EtatInvalide, NonEligible (plan non conforme, objet ni catalogué ni en
+        // service), Habilitation, QuatreYeux.
+        signal approuver(h: Horodatage, plan: String, par: String, valideur: String) -> String
+            writes plan_approuve_de, confirme_le, decide_par, revu_le, a_surveiller
+            reads objet_de, conforme_de, empreinte_de
+            moves en_revue -> approuve when RefObjet.catalogue || RefObjet.en_service via objet_de, approuve -> remplace
+            calls ApiRef.etat_objet, ApiAcces.a_le_role, ApiAcces.quatre_yeux, Journal.noter
+        // Rejette un plan en revue (en_revue -> rejete), ou un plan resté à compléter plus de
+        // 90 jours (a_completer -> rejete, par "systeme"). Notifie le propriétaire.
+        // Habilitation : "analyste" d'ORBITE, ou "systeme" pour le délai échu.
+        // Renvoie "rejete". Refus : Inconnu, EtatInvalide, MotifRequis, Delai (complément encore
+        // dans son délai, par "systeme"), Habilitation.
+        signal rejeter(h: Horodatage, plan: String, motif: String, par: String) -> String
+            writes motif_de, decide_par, revu_le, a_surveiller
+            reads proprietaire_de
+            moves en_revue -> rejete, a_completer -> rejete
+            calls ApiPasserelle.notifier, ApiAcces.a_le_role, Journal.noter
+        // Le propriétaire retire un plan non encore approuvé (depose -> retire, a_completer -> retire).
+        // Habilitation : "chef_de_mission" du propriétaire. Renvoie "retire".
+        // Refus : Inconnu, EtatInvalide, MotifRequis, Habilitation.
+        signal retirer(h: Horodatage, plan: String, motif: String, par: String) -> String
+            writes motif_de
+            reads proprietaire_de
+            moves depose -> retire, a_completer -> retire
+            calls ApiAcces.a_le_role, ApiAcces.agit_pour, Journal.noter
+        // Reconfirmation annuelle d'un plan approuvé : réserve d'ergols et probabilité de succès
+        // actuelles. Si le plan n'est plus conforme (réserve < requis, succès < 90 %), il devient
+        // caduc (approuve -> caduc), l'objet n'a plus de plan approuvé et un manquement de
+        // gravité 2 est constaté (ApiConformite.constater). Habilitation : "chef_de_mission" du
+        // propriétaire. Renvoie l'état du plan ("approuve" ou "caduc").
+        // Refus : Inconnu, EtatInvalide, Habilitation.
+        signal reconfirmer(h: Horodatage, plan: String, dv_reserve: DeltaV, succes: Pourcent, par: String) -> String
+            writes dv_reserve_de, succes_de, conforme_de, confirme_le, motif_de, plan_approuve_de, a_surveiller
+            reads objet_de, proprietaire_de, dv_requis_de, mode_de
+            moves approuve -> caduc
+            calls ApiConformite.constater, ApiAcces.a_le_role, ApiAcces.agit_pour, Journal.noter
+        // Rend caduc un plan approuvé non reconfirmé depuis 400 jours (approuve -> caduc) et
+        // constate un manquement de gravité 2 contre le propriétaire. Traitement périodique.
+        // Habilitation : "systeme". Renvoie "caduc".
+        // Refus : Inconnu, EtatInvalide, Delai (reconfirmation encore valide), Habilitation.
+        signal perimer(h: Horodatage, plan: String, par: String) -> String
+            writes motif_de, plan_approuve_de, a_surveiller
+            reads objet_de, proprietaire_de, confirme_le
+            moves approuve -> caduc
+            calls ApiConformite.constater, ApiAcces.a_le_role, Journal.noter
+        // Clôt le plan approuvé d'un objet dont le retrait est constaté (approuve -> clos), si
+        // FdvFin est "rentre" ou "cimetiere" pour cet objet. Appelé par FdvFin à chaque constat
+        // de sortie. Renvoie le plan clos ("" si l'objet n'avait pas de plan approuvé).
+        signal clore(h: Horodatage, objet: Objet) -> String
+            writes plan_approuve_de, a_surveiller
+            reads objet_de
+            moves approuve -> clos when FdvFin.rentre || FdvFin.cimetiere via objet_de
+            calls FdvFin.etat, Journal.noter
+        // Balayage (appelé par FdvCouverture.balayer) : au plus n plans de a_surveiller —
+        // "a_completer" depuis plus de 90 jours -> rejeter (motif "complément non fourni") ;
+        // "approuve" non reconfirmé depuis 400 jours -> perimer ; retire de la liste les plans
+        // terminaux. Habilitation : "systeme". Renvoie le nombre de plans dont l'état a changé.
+        // Refus : HorsBornes (n hors 1..1000), Habilitation.
+        signal balayer(h: Horodatage, n: Int, par: String) -> Int
+            writes a_surveiller
+            reads revu_le, confirme_le, plan
+            calls rejeter, perimer, ApiAcces.a_le_role
+        // Vrai si l'objet a un plan approuvé, conforme à sa dernière (re)confirmation, et
+        // reconfirmé depuis moins de 400 jours à `h`.
+        signal conforme(objet: Objet, h: Horodatage) -> Bool
+            reads plan_approuve_de, conforme_de, confirme_le
+        // Plan approuvé en cours de l'objet ; "" si aucun.
+        signal plan_de(objet: Objet) -> String
+            reads plan_approuve_de
+        // Fiche d'un plan (lecture interne au sous-système, sans contrôle de diffusion).
+        // Refus : Inconnu.
+        signal fiche(plan: String) -> FdvFichePlan
+            reads objet_de, mode_de, fin_prevue_de, delai_de, dv_requis_de, dv_reserve_de, rehausse_de, succes_de, empreinte_de, conforme_de
+        // Communique la fiche d'un plan à une organisation : diffusion contrôlée par
+        // ApiDonnees.peut_recevoir (hors rapprochement, r = "") et tracée (ApiDonnees.tracer).
+        // Habilitation : toute personne active qui agit pour `org` (ApiAcces.agit_pour), ou
+        // "analyste" / "conformite" d'ORBITE. Refus : Inconnu, Confidentiel, Habilitation.
+        signal consulter(h: Horodatage, plan: String, org: Org, par: String) -> FdvFichePlan
+            reads objet_de, mode_de, fin_prevue_de, delai_de, dv_requis_de, dv_reserve_de, rehausse_de, succes_de, empreinte_de, conforme_de
+            calls ApiDonnees.peut_recevoir, ApiDonnees.tracer, ApiAcces.a_le_role, ApiAcces.agit_pour
+        // Plans de l'objet, du plus ancien au plus récent.
+        signal plans(objet: Objet) -> List<String>
+            reads plans_de
+        // État : "depose", "en_revue", "a_completer", "approuve", "rejete", "retire", "remplace",
+        // "caduc", "clos" ; "inconnu" si jamais déposé.
+        signal etat(plan: String) -> String
+            reads plan, objet_de
+    }
+}

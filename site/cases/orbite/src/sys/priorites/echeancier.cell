@@ -1,0 +1,70 @@
+// PRIORITÉS — échéancier : toutes les échéances du sous-système (fin de consultation,
+// dépouillement, entrée en vigueur, fin et caducité des dérogations, délai d'instruction,
+// archivage et purge des décisions) dans un seul registre, balayé par le traitement
+// automatique. Une échéance est soit traitée, soit visible en retard : jamais oubliée.
+
+// Genre d'une échéance, et l'action que le balayage déclenche à son terme.
+// - "consultation" : PrioConsultation.clore ;
+// - "scrutin"      : PrioScrutin.depouiller puis PrioVersion.prendre_acte ;
+// - "effet"        : PrioVersion.entrer_en_vigueur (reste planifiée pendant un gel) ;
+// - "caducite"     : PrioDerogation.caduquer de chaque dérogation active de la version close ;
+// - "instruction"  : PrioDerogation.refuser d'office une demande restée sans décision ;
+// - "derogation"   : PrioDerogation.expirer ;
+// - "archive"      : PrioDesignation.archiver (reportée tant qu'une contestation est pendante) ;
+// - "purge"        : signale la purge due (Journal.noter) puis solde l'échéance : la purge
+//                    elle-même est le geste PrioDesignation.purger, sous une purge autorisée par
+//                    responsabilite (RespPurges), dont le balayage n'a pas l'id.
+cell type PrioGenreEcheance = String where value == "consultation" || value == "scrutin" || value == "effet" || value == "caducite" || value == "instruction" || value == "derogation" || value == "archive" || value == "purge"
+
+skeleton PrioEcheancier {
+    const MAX_ECHEANCES = 20000000
+    // Au plus 500 échéances traitées par balayage (le balayage tourne chaque minute).
+    const MAX_LOT = 500
+    // Une échéance non traitée 1 h après son terme est en retard : incident d'exploitation.
+    const TOLERANCE = 3600000
+    memory {
+        echeance_de: Map<String, Horodatage> [persistent]   // "genre|id" -> instant (ms) où l'action est due
+        planifiee_le: Map<String, Horodatage> [persistent]
+        reports: Map<String, Int> [persistent]              // "genre|id" -> nombre de reports (gel, contestation, preuve)
+        dernier_balayage: Map<String, Horodatage> [persistent] // clé unique "dernier" -> instant du dernier balayage
+        invariant echeance_de.size <= 20000000
+        invariant reports >= 0 && reports <= 100000
+        invariant dernier_balayage.size <= 1
+    }
+    face {
+        // Planifie (ou replanifie) l'échéance `genre` de l'instance `id` à `echeance` (ms).
+        // Appelé par les cells de priorites qui créent une échéance (ouverture d'une
+        // consultation ou d'un scrutin, publication, remplacement ou abrogation d'une version,
+        // demande et octroi d'une dérogation, calcul et archivage d'une décision). Renvoie
+        // l'échéance retenue. Refus : Plein.
+        signal planifier(h: Horodatage, genre: PrioGenreEcheance, id: String, echeance: Horodatage) -> Horodatage
+            writes echeance_de, planifiee_le
+        // Retire une échéance devenue sans objet (dérogation révoquée ou retirée, version
+        // retirée, consultation annulée). Renvoie vrai si elle existait.
+        signal annuler(genre: PrioGenreEcheance, id: String) -> Bool
+            writes echeance_de, planifiee_le, reports
+        // Balaye (façade ApiPriorites.balayer, appelée par Horloge.battre chaque minute, seul
+        // point d'entrée du temps) : traite au plus MAX_LOT échéances dues à `h`, la plus ancienne
+        // d'abord, par l'action de leur genre (voir PrioGenreEcheance) sous l'identité
+        // "systeme". Une action refusée Delai (gel, contestation pendante, preuve) est
+        // reportée et comptée ; une échéance en retard de plus de TOLERANCE déclare un
+        // incident de gravité 2 (ApiOperations.declarer_incident, une fois par échéance).
+        // `par` "systeme". Renvoie le nombre d'échéances soldées (objets dont l'état a
+        // changé). Refus : Habilitation.
+        signal balayer(h: Horodatage, par: String) -> Int
+            writes echeance_de, planifiee_le, reports, dernier_balayage
+            calls PrioConsultation.clore, PrioScrutin.depouiller, PrioVersion.prendre_acte, PrioVersion.entrer_en_vigueur, PrioDerogation.actives_de_version, PrioDerogation.caduquer, PrioDerogation.refuser, PrioDerogation.expirer, PrioDesignation.archiver, ApiOperations.declarer_incident, ApiAcces.a_le_role, Journal.noter
+        // Échéances dues à `h` : au plus `n` lignes "genre | id | echeance | reports", la plus
+        // ancienne d'abord.
+        signal a_echoir(h: Horodatage, n: Int) -> List<String>
+            requires n > 0 && n <= 1000
+            reads echeance_de, reports
+        // Nombre d'échéances en retard de plus de TOLERANCE à `h` (0 : rien d'oublié).
+        signal en_retard(h: Horodatage) -> Int
+            reads echeance_de
+        // Instant du dernier balayage (0 si jamais) : un balayage absent depuis plus de
+        // TOLERANCE est lui-même un retard que l'exploitation surveille.
+        signal dernier() -> Horodatage
+            reads dernier_balayage
+    }
+}

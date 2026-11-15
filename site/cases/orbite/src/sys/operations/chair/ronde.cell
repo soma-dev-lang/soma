@@ -1,0 +1,121 @@
+// Corps de la ronde (operations) : le seul point d'entrée du temps.
+
+flesh OpsRonde {
+    on balayer(h, par) {
+        require ApiAcces.a_le_role(par, "systeme") else Habilitation "la ronde est réservée à systeme"
+        require h >= (derniere.get("orbite") ?? 0) else HorsBornes "ronde antérieure à la précédente"
+        let changes = 0
+
+        // 1. gels programmés
+        for g in OpsGel.echus(h) {
+            let e = try { OpsGel.entrer_en_vigueur(h, g, "systeme") }
+            if e.error == () {
+                changes = changes + 1
+            } else {
+                let l = try { OpsGel.lever(h, g, "fin du gel", "systeme") }
+                if l.error == () {
+                    changes = changes + 1
+                } else {
+                    let k = l.kind
+                    let _ = Journal.noter(h, "operations", "systeme", "ronde : gel {g} non traité ({k})")
+                }
+            }
+        }
+
+        // 2. gels d'urgence
+        let ur = try { ApiConjonctions.urgents(h, HORIZON_URGENCE, 3) }
+        if ur.error != () {
+            let k = ur.kind
+            let _ = Journal.noter(h, "operations", "systeme", "ronde : rapprochements urgents illisibles ({k})")
+        } else {
+            for r_s in ur.value {
+                let r = Rapprochement(r_s)
+                if OpsGelUrgence.etat_de(r) == "veille" {
+                    let a = try { OpsGelUrgence.armer(h, r, "systeme") }
+                    if a.error == () {
+                        changes = changes + 1
+                    } else {
+                        let k = a.kind
+                        let _ = Journal.noter(h, "operations", "systeme", "ronde : gel d'urgence {r} non armé ({k})")
+                    }
+                }
+            }
+        }
+        let al = try { OpsGelUrgence.a_lever(h) }
+        if al.error == () {
+            for r in al.value {
+                let l = try { OpsGelUrgence.lever(h, Rapprochement(r), "systeme") }
+                if l.error == () {
+                    changes = changes + 1
+                } else {
+                    let k = l.kind
+                    let _ = Journal.noter(h, "operations", "systeme", "ronde : gel d'urgence {r} non levé ({k})")
+                }
+            }
+        }
+
+        // 3. couverture des capteurs
+        let avant = OpsDegradation.est_degrade("observation")
+        let cv = try { OpsDegradation.constater_couverture(h, "systeme") }
+        if cv.error != () {
+            let k = cv.kind
+            let _ = Journal.noter(h, "operations", "systeme", "ronde : sonde de couverture en échec ({k})")
+        } else if !avant && OpsDegradation.est_degrade("observation") {
+            changes = changes + 1
+        }
+
+        // 4. crises : information périodique des États, activation en retard
+        for c in OpsCrise.en_retard(h) {
+            if OpsCrise.etat(c) == "active" {
+                let inf = try { OpsCrise.informer_etats(h, c, "Information périodique : la cellule de crise {c} reste active.", "systeme") }
+                if inf.error == () {
+                    changes = changes + 1
+                } else {
+                    let k = inf.kind
+                    let _ = Journal.noter(h, "operations", "systeme", "ronde : information des États pour {c} en échec ({k})")
+                }
+            } else {
+                _relancer(h, "activation_crise", c, 3)
+            }
+        }
+
+        // 5. relances dédoublonnées
+        for i in OpsIncident.en_retard_qualification(h) { _relancer(h, "qualification", i, 3) }
+        for ss in OpsDegradation.a_reexaminer(h) { _relancer(h, "reexamen_degrade", ss, 2) }
+        for i in OpsPostMortem.en_retard(h) { _relancer(h, "post_mortem", i, 1) }
+        for c in OpsChangement.non_verifies(h) { _relancer(h, "verification_changement", c, 1) }
+        for s in OpsTest.en_retard(h) { _relancer(h, "test_continuite", s, 1) }
+
+        // 6. purge des relances oubliées
+        let vieilles = []
+        for e in relances.entries {
+            if h - e.value > OUBLI { vieilles.push(e.key) }
+        }
+        for k in vieilles { relances.delete(k) }
+
+        derniere.set("orbite", h)
+        return changes
+    }
+
+    on derniere_ronde() {
+        return derniere.get("orbite") ?? 0
+    }
+
+    // Relance l'astreinte d'ORBITE au plus une fois par INTERVALLE_RELANCE et par objet.
+    on _relancer(h: Horodatage, motif_r: String, id: String, niveau: Niveau) {
+        let cle = "{motif_r}|{id}"
+        let der = relances.get(cle)
+        if der != () && h - der < INTERVALLE_RELANCE { return false }
+        if der == () && relances.size >= MAX_RELANCES {
+            let _ = Journal.noter(h, "operations", "systeme", "ronde : registre des relances plein, {cle} non relancé")
+            return false
+        }
+        let n = try { ApiPasserelle.notifier(h, ApiRef.orbite(), "", "Relance {motif_r}", "Échéance manquée : {motif_r} pour {id}.", niveau) }
+        if n.error != () {
+            let k = n.kind
+            let _ = Journal.noter(h, "operations", "systeme", "ronde : relance {cle} non envoyée ({k})")
+        }
+        relances.set(cle, h)
+        return true
+    }
+}

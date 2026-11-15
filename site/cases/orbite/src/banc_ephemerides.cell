@@ -1,0 +1,12 @@
+use app
+use commun::journal_chair
+use commun::horloge_chair
+use sys::ephemerides::chair::api
+use sys::ephemerides::chair::reglage
+use sys::ephemerides::chair::depot
+use sys::ephemerides::chair::controle
+use sys::ephemerides::chair::suivi
+use sys::ephemerides::chair::quota
+use sys::ephemerides::chair::contestation
+use sys::ephemerides::chair::historique
+use sys::ephemerides::chair::tempete

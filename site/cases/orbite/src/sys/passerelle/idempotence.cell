@@ -1,0 +1,63 @@
+// PASSERELLE — idempotence des requêtes qui changent l'état (POST, DELETE) : une même clé
+// Idempotency-Key ne produit qu'un seul effet, et la même réponse à chaque rejeu. Un client
+// qui réessaie une réponse à une alerte de niveau 3 ne crée jamais une seconde décision.
+
+// Issue d'une réservation : "nouvelle" (traiter), "rejeu" (renvoyer la réponse gardée),
+// "incoherent" (même clé, autre corps : 422 Incoherent), "en_cours" (422 Doublon).
+cell type PasIssue = String where value == "nouvelle" || value == "rejeu" || value == "incoherent" || value == "en_cours"
+// Réponse de PasRequetes.reserver : l'issue et, pour un rejeu, la réponse gardée.
+cell type PasReservation { variants { PasReservation { issue: PasIssue, statut: Int, corps: String } } }
+
+// Requête idempotente, instance = "<org>|<Idempotency-Key>" (une clé n'est jamais partagée entre
+// organisations ; deux personnes d'une même organisation qui rejouent la même clé obtiennent la
+// même réponse : c'est l'organisation qui décide, une fois).
+skeleton PasRequetes {
+    const CONSERVATION = 86400000      // 24 h : au-delà, la réponse gardée est purgée
+    const MAX_EN_COURS = 100000
+    memory {
+        personne_de: Map<String, String> [persistent]      // écrit une fois, par reserver : qui a produit l'effet
+        empreinte_de: Map<String, PasEmpreinte> [persistent] // SHA-256 de "méthode|chemin|corps"
+        recue_le: Map<String, Horodatage> [persistent]
+        finie_le: Map<String, Horodatage> [persistent]      // 0 tant que non finie
+        invariant (finie_le ?? 0) == 0 || (recue_le ?? 0) <= (finie_le ?? 0)
+        statut_de: Map<String, Int> [persistent]
+        invariant statut_de >= 200 && statut_de <= 429
+        reponse_de: Map<String, String> [persistent]        // corps rendu ; purgé après CONSERVATION
+        en_cours: List<String> [persistent]
+        invariant en_cours.size <= 100000
+    }
+    state vie {
+        initial: recue
+        recue -> en_cours           // reserver : première vue de la clé
+        en_cours -> terminee        // terminer : réponse gardée pour rejeu
+        en_cours -> abandonnee      // abandonner : erreur imprévue ou 403 faute de valideur ; rejouable
+    }
+    face {
+        // Réserve la clé pour `personne` (déjà authentifiée par PasEntree) : première vue ->
+        // recue -> en_cours, issue "nouvelle". Déjà vue : même empreinte et
+        // terminee -> "rejeu" (statut et corps gardés) ; autre empreinte -> "incoherent" ;
+        // en_cours -> "en_cours" ; abandonnee -> nouvelle tentative sous la clé suffixée "#n".
+        // Ne lève pas : une réservation refusée doit garder sa trace.
+        // Refus : Plein (MAX_EN_COURS).
+        signal reserver(h: Horodatage, requete: String, personne: String, empreinte: String) -> PasReservation
+            writes personne_de, empreinte_de, recue_le, en_cours
+            reads statut_de, reponse_de
+            moves recue -> en_cours
+        // en_cours -> terminee ; garde le statut et le corps. Renvoie "terminee".
+        // Refus : Inconnu, EtatInvalide.
+        signal terminer(h: Horodatage, requete: String, reponse: PasReponse) -> String
+            writes finie_le, statut_de, reponse_de, en_cours
+            moves en_cours -> terminee
+        // en_cours -> abandonnee (aucun effet acquis). Renvoie "abandonnee".
+        // Refus : Inconnu, EtatInvalide.
+        signal abandonner(h: Horodatage, requete: String) -> String
+            writes finie_le, en_cours
+            moves en_cours -> abandonnee
+        // Efface le corps des réponses terminées depuis plus de CONSERVATION (au plus n) ; garde
+        // l'empreinte, le statut et les dates (la trace survit au corps). Renvoie leur nombre.
+        signal purger(h: Horodatage, n: Int) -> Int
+            requires n > 0 && n <= 1000
+            reads finie_le
+            writes reponse_de
+    }
+}

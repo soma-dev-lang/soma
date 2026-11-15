@@ -1,0 +1,180 @@
+// RESPONSABILITÉ — dossiers de preuve et registre des gels.
+// Un dossier fige, dès son ouverture, ce qui fondait les décisions prises autour d'un évènement
+// (collision, fragmentation, rentrée avec dommages au sol) : rapprochements, coordinations,
+// manœuvres, éphémérides, escalades, règles de priorité, lignes de journal (pièces : pieces.cell).
+// Tant qu'un dossier non levé couvre une cible (rapprochement "CJ-…", objet "OBJ-…", évènement,
+// plan de manœuvre, jour "J:<jour>"), aucune donnée la concernant ne peut être purgée (RespGels ;
+// ApiResponsabilite.sous_gel). Un dossier scellé reçoit un fait nouveau par un COMPLÉMENT : un
+// nouveau dossier lié au premier (parent_de), qui suit le même cycle de vie.
+
+// Dossiers de preuve (une instance par id "DP-<n>" : un dossier principal par évènement, plus ses
+// compléments).
+skeleton RespDossiers {
+    const MAX_DOSSIERS = 100000
+    // Rapprochements + objets rattachés à un même dossier.
+    const MAX_CIBLES = 200
+    // Durée minimale entre le scellement et la levée : 10 ans (prescription des réclamations
+    // et des recours), en ms.
+    const CONSERVATION_MIN = 315576000000
+    memory {
+        evenement_de: Map<String, String> [persistent]        // dossier -> évènement (id ApiEvenements, campagne de rentrée…)
+        invariant evenement_de.size <= 100000
+        dossier_de_evenement: Map<String, String> [persistent] // évènement -> dossier : un seul dossier par évènement
+        invariant dossier_de_evenement.size <= 100000
+        parent_de: Map<String, String> [persistent]       // complément -> dossier complété ("" pour un dossier principal)
+        complements_de: Map<String, List<String>> [persistent]  // dossier -> compléments, dans l'ordre
+        instant_de: Map<String, Horodatage> [persistent]  // instant de l'évènement (ApiEvenements.instant) : les pièces valent à cet instant
+        motif_de: Map<String, String> [persistent]
+        ouvert_par: Map<String, String> [persistent]
+        ouvert_le: Map<String, Horodatage> [persistent]
+        rapprochements_de: Map<String, List<String>> [persistent]  // dossier -> rapprochements rattachés (≤ MAX_CIBLES avec les objets)
+        objets_de: Map<String, List<String>> [persistent]          // dossier -> objets rattachés
+        scelle_le: Map<String, Horodatage> [persistent]
+        invariant (ouvert_le ?? 0) <= (scelle_le ?? 9000000000000000)
+        empreinte_de: Map<String, String> [persistent]   // empreinte de scellement : hachage ordonné des empreintes des pièces
+        scelle_par: Map<String, String> [persistent]     // "par/valideur" du scellement
+        clos_le: Map<String, Horodatage> [persistent]    // levée ou annulation
+        invariant (scelle_le ?? 0) <= (clos_le ?? 9000000000000000)
+        motif_cloture: Map<String, String> [persistent]
+        gels_de: Map<String, List<String>> [persistent]  // dossier -> toutes les cibles qu'il gèle (évènement, jour, objets, rapprochements, plans) : ce que annuler / lever retirent
+    }
+    state dossier {
+        initial: aucun
+        aucun -> gele        // ouverture (ou complément d'un dossier scellé) : cibles gelées, pièces collectées
+        gele -> scelle       // pièces vérifiées, empreinte de scellement figée (quatre yeux)
+        gele -> annule       // ouvert à tort, avant scellement (quatre yeux) : gels retirés
+        scelle -> leve       // plus rien de pendant, conservation minimale échue : gels retirés
+    }
+    face {
+        // Ouvre le dossier de preuve d'un évènement et le met à l'état "gele", puis gèle
+        // automatiquement : l'évènement lui-même, son jour "J:<jour>" (instant / 86 400 000),
+        // chacun de ses objets (ApiEvenements.objets, rattacher_objet) avec leurs rapprochements
+        // des 7 jours précédant l'instant (ApiConjonctions.historique) et leurs plans de manœuvre
+        // (ApiManoeuvres.plans_de). Les pièces valent à l'instant de l'évènement. Renvoie l'id
+        // "DP-<n>". Par "conformite" ou "direction" d'ORBITE, ou "systeme" (collision confirmée,
+        // appelé par evenements). Refus : Inconnu (ApiEvenements.existe faux), Existe (l'évènement
+        // a déjà un dossier : compléter), MotifRequis, Habilitation, Plein.
+        signal ouvrir(h: Horodatage, evenement: String, motif: String, par: String) -> String
+            writes evenement_de, dossier_de_evenement, parent_de, instant_de, motif_de, ouvert_par, ouvert_le, objets_de, rapprochements_de, gels_de
+            moves aucun -> gele
+            calls ApiAcces.a_le_role, ApiEvenements.existe, ApiEvenements.objets, ApiEvenements.instant, ApiEvenements.genre, ApiConjonctions.historique, ApiManoeuvres.plans_de, RespGels.poser, RespCollecte.collecter_objet, RespCollecte.collecter_rapprochement, RespCollecte.collecter_plan, Journal.noter, next_id
+        // Ouvre un complément d'un dossier SCELLÉ (fait nouveau : objet, rapprochement ou pièce
+        // découverts après le scellement) : nouveau dossier "gele" lié au premier, même
+        // évènement, mêmes règles ; scellé à son tour, il s'ajoute à la preuve. Renvoie l'id.
+        // Par "conformite" ou "direction". Refus : Inconnu, EtatInvalide (dossier non scellé),
+        // MotifRequis, Habilitation, Plein.
+        signal completer(h: Horodatage, dossier: String, motif: String, par: String) -> String
+            reads dossier, evenement_de, instant_de
+            writes parent_de, complements_de, evenement_de, instant_de, motif_de, ouvert_par, ouvert_le, objets_de, rapprochements_de, gels_de
+            moves aucun -> gele
+            calls ApiAcces.a_le_role, RespGels.poser, Journal.noter, next_id
+        // Rattache un rapprochement (et ses deux objets) au dossier : gel posé sur chacun,
+        // pièces collectées à l'instant de l'évènement (RespCollecte). Renvoie le nombre de cibles du dossier.
+        // Par "analyste", "conformite" ou "systeme" d'ORBITE. Refus : Inconnu (dossier ou
+        // rapprochement jamais signalé), EtatInvalide (dossier non "gele"), Doublon (déjà
+        // rattaché), Plein (MAX_CIBLES), Habilitation.
+        signal rattacher_rapprochement(h: Horodatage, dossier: String, r: Rapprochement, par: String) -> Int
+            reads dossier, instant_de
+            writes rapprochements_de, objets_de, gels_de
+            calls ApiAcces.a_le_role, ApiConjonctions.etat, ApiConjonctions.objets, RespGels.poser, RespCollecte.collecter_rapprochement, RespCollecte.collecter_objet, Journal.noter
+        // Rattache un objet au dossier (objet découvert après l'ouverture : débris catalogué
+        // plus tard, objet rentré), ses rapprochements des 7 jours précédant l'évènement et ses
+        // plans de manœuvre. Gel posé sur chacun, pièces collectées. Renvoie le nombre de cibles. Par "analyste", "conformite" ou
+        // "systeme". Refus : Inconnu (dossier, objet non catalogué), EtatInvalide, Doublon,
+        // Plein, Habilitation.
+        signal rattacher_objet(h: Horodatage, dossier: String, objet: Objet, par: String) -> Int
+            reads dossier, instant_de
+            writes objets_de, rapprochements_de, gels_de
+            calls ApiAcces.a_le_role, ApiRef.etat_objet, ApiConjonctions.historique, ApiManoeuvres.plans_de, RespGels.poser, RespCollecte.collecter_objet, RespCollecte.collecter_rapprochement, RespCollecte.collecter_plan, Journal.noter
+        // Scelle le dossier : toutes ses pièces doivent être "verifiee" ; l'empreinte de
+        // scellement (hachage ordonné de leurs empreintes) est figée et renvoyée. Après
+        // scellement, aucune pièce ne s'ajoute. Par "conformite", valideur "direction" ou
+        // "superviseur" (ApiAcces.quatre_yeux). Refus : Inconnu, EtatInvalide, Insuffisant
+        // (aucune pièce, ou une pièce non vérifiée / altérée), Habilitation, QuatreYeux.
+        signal sceller(h: Horodatage, dossier: String, par: String, valideur: String) -> String
+            writes scelle_le, empreinte_de, scelle_par
+            moves gele -> scelle
+            calls ApiAcces.a_le_role, ApiAcces.quatre_yeux, RespPieces.pieces_de, RespPieces.etat, RespPieces.empreinte, Journal.noter
+        // Annule un dossier ouvert à tort, avant scellement : retire ses gels. Renvoie "annule".
+        // Par "direction", valideur ≠ par (quatre yeux). Refus : Inconnu, EtatInvalide,
+        // MotifRequis, Conflit (une faute ou une réclamation s'appuie sur ce dossier),
+        // Habilitation, QuatreYeux.
+        signal annuler(h: Horodatage, dossier: String, motif: String, par: String, valideur: String) -> String
+            reads gels_de
+            writes clos_le, motif_cloture
+            moves gele -> annule
+            calls ApiAcces.a_le_role, ApiAcces.quatre_yeux, RespFautes.pendantes_de_dossier, RespReclamations.de_dossier, RespGels.retirer, Journal.noter
+        // Lève un dossier scellé et ses compléments : retire leurs gels (les données redeviennent purgeables selon
+        // RespDurees). Renvoie "leve". Par "direction", valideur "conformite" (quatre yeux).
+        // Refus : Inconnu, EtatInvalide, MotifRequis, Conflit (réclamation non close ou faute
+        // non transmise/écartée sur ce dossier), Delai (moins de CONSERVATION_MIN depuis le
+        // scellement), Habilitation, QuatreYeux.
+        signal lever(h: Horodatage, dossier: String, motif: String, par: String, valideur: String) -> String
+            reads scelle_le, complements_de, gels_de
+            writes clos_le, motif_cloture
+            moves scelle -> leve
+            calls ApiAcces.a_le_role, ApiAcces.quatre_yeux, RespFautes.pendantes_de_dossier, RespReclamations.pendantes_de_dossier, RespGels.retirer, Journal.noter
+        // État : "aucun" (inconnu), "gele", "scelle", "annule", "leve".
+        signal etat(dossier: String) -> String
+            reads dossier
+        // Dossier ouvert pour un évènement ; "" si aucun.
+        signal de_evenement(evenement: String) -> String
+            reads dossier_de_evenement
+        // Cibles du dossier : rapprochements puis objets. Refus : Inconnu.
+        signal cibles(dossier: String) -> List<String>
+            reads rapprochements_de, objets_de
+        // Compléments du dossier ([] si aucun).
+        signal complements(dossier: String) -> List<String>
+            reads complements_de
+        // Instant de l'évènement auquel les pièces du dossier valent. Refus : Inconnu.
+        signal instant(dossier: String) -> Horodatage
+            reads instant_de
+        // Empreinte de scellement ; "" si non scellé. Refus : Inconnu.
+        signal empreinte(dossier: String) -> String
+            reads empreinte_de, dossier
+    }
+}
+
+// Registre des gels (une instance par cible : rapprochement "CJ-…", objet "OBJ-…", évènement,
+// plan de manœuvre, jour "J:<jour>").
+// Réactif : une cible revient à "libre" quand le dernier dossier qui la couvrait est clos.
+skeleton RespGels {
+    const MAX_CIBLES_GELEES = 2000000
+    // Dossiers couvrant simultanément une même cible.
+    const MAX_DOSSIERS_PAR_CIBLE = 50
+    memory {
+        nb_dossiers: Map<String, Int> [persistent]            // cible -> dossiers non clos qui la couvrent
+        invariant nb_dossiers >= 0 && nb_dossiers <= 50
+        invariant nb_dossiers.size <= 2000000
+        dossiers_de: Map<String, List<String>> [persistent]   // cible -> ids de ces dossiers
+        gele_depuis: Map<String, Horodatage> [persistent]     // début du gel en cours
+    }
+    state gel {
+        initial: libre
+        libre -> gele        // premier dossier sur la cible : purges autorisées annulées
+        gele -> gele         // dossier supplémentaire, ou retrait d'un dossier parmi plusieurs
+        gele -> libre        // dernier dossier clos
+    }
+    face {
+        // Pose le gel d'un dossier sur une cible et annule les purges autorisées non exécutées
+        // qui la visent (RespPurges.annuler_pour_gel). Renvoie le nombre de dossiers qui la
+        // couvrent. Appelé par RespDossiers seulement. Refus : Doublon (dossier déjà posé),
+        // Plein (MAX_DOSSIERS_PAR_CIBLE).
+        signal poser(h: Horodatage, cible: String, dossier: String) -> Int
+            writes nb_dossiers, dossiers_de, gele_depuis
+            moves libre -> gele, gele -> gele
+            calls RespPurges.annuler_pour_gel, Journal.noter
+        // Retire le gel d'un dossier clos ; libère la cible s'il était le dernier. Renvoie le
+        // nombre de dossiers restants. Refus : Inconnu (dossier non posé sur la cible).
+        signal retirer(h: Horodatage, cible: String, dossier: String) -> Int
+            writes nb_dossiers, dossiers_de
+            moves gele -> gele, gele -> libre
+            calls Journal.noter
+        // Vrai si au moins un dossier non clos couvre la cible.
+        signal est_gele(cible: String) -> Bool
+            reads gel
+        // Dossiers non clos couvrant la cible ([] si libre).
+        signal dossiers(cible: String) -> List<String>
+            reads dossiers_de
+    }
+}

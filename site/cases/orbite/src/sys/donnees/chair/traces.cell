@@ -1,0 +1,124 @@
+// donnees — corps : registre des traces de communication.
+
+flesh DonTraces {
+    on tracer(h, org, objet, r, nature) {
+        // nature : texte libre de l'appelant (contrat de ApiDonnees.tracer) ; les DonNatureComm
+        // en sont les valeurs usuelles, pas une liste fermée (« CDM », « fondement », « avis de rentrée … »).
+        require trim(nature) != "" && len(nature) <= 200 else Incoherent "nature de communication vide ou trop longue"
+        let f = DonControle.fondement(org, objet, r, h)
+        require f != "" else Confidentiel "{org} n'est pas fondée à recevoir les données de {objet}"
+        require traces.size < MAX_TRACES && instant.size < MAX_TRACES else Plein "registre des traces plein"
+        let deja_o = par_objet.get(objet) ?? []
+        require len(deja_o) < MAX_PAR_CLE else Plein "index des traces de {objet} plein"
+        let deja_r = if r != "" { par_rapprochement.get(r) ?? [] } else { [] }
+        require len(deja_r) < MAX_PAR_CLE else Plein "index des traces de {r} plein"
+        let n = (compteur.get("traces") ?? 0) + 1
+        let cle = to_string(n)
+        compteur.set("traces", n)
+        traces.set(cle, "{h} | {org} | {objet} | {r} | {nature} | {f}")
+        instant.set(cle, h)
+        rapprochement_de.set(cle, to_string(r))
+        par_objet.set(objet, deja_o ++ [cle])
+        if r != "" {
+            par_rapprochement.set(r, deja_r ++ [cle])
+        }
+        return n
+    }
+
+    on du_rapprochement(r, n, par) {
+        let orbite_ok = ApiAcces.a_le_role(par, "conformite") || ApiAcces.a_le_role(par, "direction") || ApiAcces.a_le_role(par, "auditeur")
+        let ok = orbite_ok
+        if !ok && (ApiAcces.a_le_role(par, "point_focal") || ApiAcces.a_le_role(par, "autorite")) {
+            for o in ApiConjonctions.objets(r) {
+                let ei = ApiRef.etat_immatriculation(Objet(o))
+                if ei != "" {
+                    if ApiAcces.agit_pour(par, ApiRef.org_de_etat(ei)) { ok = true }
+                }
+            }
+        }
+        require ok else Habilitation "traces d'un rapprochement : conformite, direction, auditeur, ou État partie"
+        let ids = par_rapprochement.get(r) ?? []
+        let res_r = []
+        for id in ids {
+            if len(res_r) < n {
+                let t = traces.get(id)
+                if t != () { res_r.push(t) }
+            }
+        }
+        return res_r
+    }
+
+    on de_objet(objet, n, par) {
+        let prop = ApiRef.proprietaire(objet)
+        let ei = ApiRef.etat_immatriculation(objet)
+        let par_prop = (ApiAcces.a_le_role(par, "chef_de_mission") || ApiAcces.a_le_role(par, "administrateur_operateur")) && ApiAcces.agit_pour(par, prop)
+        let par_etat = false
+        if ei != "" && ApiAcces.a_le_role(par, "autorite") {
+            par_etat = ApiAcces.agit_pour(par, ApiRef.org_de_etat(ei))
+        }
+        let par_orbite = ApiAcces.a_le_role(par, "conformite") || ApiAcces.a_le_role(par, "auditeur")
+        require par_prop || par_etat || par_orbite else Habilitation "traces de {objet} : propriétaire, État d'immatriculation, conformite ou auditeur"
+        let ids = par_objet.get(objet) ?? []
+        let lignes_o = []
+        for id in ids {
+            let t = traces.get(id)
+            if t != () { lignes_o.push(t) }
+        }
+        let k = len(lignes_o)
+        if k <= n { return lignes_o }
+        let res_o = []
+        for i in range(k - n, k) { res_o.push(lignes_o[i]) }
+        return res_o
+    }
+
+    on purger(h, limite, n, par, valideur) {
+        require ApiAcces.a_le_role(par, "exploitant") else Habilitation "purger : exploitant d'ORBITE"
+        require valideur != par && ApiAcces.a_le_role(valideur, "conformite") && ApiAcces.quatre_yeux(par, valideur) else QuatreYeux "valideur conformite distinct exigé"
+        require to_int(limite) <= to_int(h) - RETENTION_MS else HorsBornes "limite plus récente que la rétention de 10 ans"
+        require n >= 1 && n <= 100000 else HorsBornes "n entre 1 et 100 000"
+        let candidates = instant.entries.filter(e => to_int(e.value) < to_int(limite)).map(e => e.key)
+        let purgees = 0
+        let sautees = 0
+        for id in candidates {
+            if purgees < n {
+                let ligne = traces.get(id) ?? ""
+                let champs = split(ligne, " | ")
+                let objet = if len(champs) >= 3 { champs[2] } else { "" }
+                let rid = rapprochement_de.get(id) ?? ""
+                let jour = idiv(to_int(instant.get(id) ?? Horodatage(0)), 86400000)
+                let ok = ApiResponsabilite.purge_autorisee("J:{jour}", h)
+                if ok && objet != "" { ok = ApiResponsabilite.purge_autorisee(objet, h) }
+                if ok && rid != "" { ok = ApiResponsabilite.purge_autorisee(rid, h) }
+                if ok {
+                    traces.delete(id)
+                    instant.delete(id)
+                    rapprochement_de.delete(id)
+                    if objet != "" {
+                        let lo = (par_objet.get(objet) ?? []).filter(x => x != id)
+                        if len(lo) == 0 { par_objet.delete(objet) } else { par_objet.set(objet, lo) }
+                    }
+                    if rid != "" {
+                        let lr = (par_rapprochement.get(rid) ?? []).filter(x => x != id)
+                        if len(lr) == 0 { par_rapprochement.delete(rid) } else { par_rapprochement.set(rid, lr) }
+                    }
+                    purgees = purgees + 1
+                } else {
+                    sautees = sautees + 1
+                }
+            }
+        }
+        let _ = Journal.noter(h, "donnees", par, "purge des traces antérieures à {limite} : {purgees} purgées, {sautees} sautées (valideur {valideur})")
+        return purgees
+    }
+
+    on lire(numero, par) {
+        require ApiAcces.a_le_role(par, "conformite") || ApiAcces.a_le_role(par, "direction") || ApiAcces.a_le_role(par, "auditeur") else Habilitation "lire une trace : conformite, direction ou auditeur"
+        let t = traces.get(to_string(numero))
+        require t != () else Inconnu "trace {numero} inconnue ou purgée"
+        return t
+    }
+
+    on taille() {
+        return traces.size
+    }
+}

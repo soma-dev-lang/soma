@@ -1,0 +1,132 @@
+// meteo — corps du BARÈME D'INCERTITUDE.
+flesh MetBareme {
+    on rediger(h, version, raison, par) {
+        require ApiAcces.a_le_role(par, "analyste") else Habilitation "{par} n'est pas analyste d'ORBITE"
+        require motif.get(version) == () else Existe "version {version} déjà ouverte"
+        require raison != "" else MotifRequis "motif de révision requis"
+        require motif.size < MAX_VERSIONS else Plein "registre des versions plein"
+        motif.set(version, raison)
+        redige_par.set(version, par)
+        let _ = Journal.noter(h, "meteo", par, "bareme {version} en redaction : {raison}")
+        return "redige"
+    }
+
+    on fixer(h, version, regime, b, f, par) {
+        require ApiAcces.a_le_role(par, "analyste") else Habilitation "{par} n'est pas analyste d'ORBITE"
+        require redige_par.get(version) != () else Inconnu "version {version} inconnue"
+        let st = get_status(version) ?? "redige"
+        require st == "redige" else EtatInvalide "version {version} : {st}"
+        require f >= FACTEUR_MIN && f <= FACTEUR_MAX else HorsBornes "facteur {f} hors [100, 1 000]"
+        facteur_case.set("{version}|{regime}|{b}", Pourcent(f))
+        let _ = Journal.noter(h, "meteo", par, "bareme {version} : {regime}/{b} = {f}")
+        return _cases(version)
+    }
+
+    on _cases(version: String) {
+        let n = 0
+        for r in ["leo", "meo", "geo", "heo"] {
+            for bb in ["calme", "agitee", "tempete", "extreme"] {
+                if facteur_case.get("{version}|{r}|{bb}") != () { n = n + 1 }
+            }
+        }
+        return n
+    }
+
+    on adopter(h, version, par, valideur) {
+        require ApiAcces.a_le_role(par, "superviseur") else Habilitation "{par} n'est pas superviseur d'ORBITE"
+        require ApiAcces.a_le_role(valideur, "direction") && ApiAcces.quatre_yeux(par, valideur) else QuatreYeux "contre-signature de la direction requise"
+        let auteur = redige_par.get(version)
+        require auteur != () else Inconnu "version {version} inconnue"
+        require auteur != par && auteur != valideur else QuatreYeux "l'auteur de la version ne peut ni adopter ni valider"
+        let st = get_status(version) ?? "redige"
+        require st == "redige" else EtatInvalide "version {version} : {st}"
+        require _cases(version) >= CASES else Insuffisant "barème incomplet"
+        for r in ["leo", "meo", "geo", "heo"] {
+            let fc = facteur_case.get("{version}|{r}|calme") ?? 0
+            let fa = facteur_case.get("{version}|{r}|agitee") ?? 0
+            let ft = facteur_case.get("{version}|{r}|tempete") ?? 0
+            let fe = facteur_case.get("{version}|{r}|extreme") ?? 0
+            require fc == 100 && fa >= fc && ft >= fa && fe >= ft else Incoherent "facteurs de {r} incohérents ({fc}, {fa}, {ft}, {fe})"
+        }
+        let alerte = MetTempete.courante()
+        require alerte == "" else Conflit "alerte de tempête {alerte} ouverte : barème figé"
+        let prec = courant.get("courant")
+        if prec != () {
+            transition(prec, "en_vigueur", "abroge")
+            vigueur_fin.set(prec, h)
+        }
+        transition(version, "redige", "en_vigueur")
+        vigueur_debut.set(version, h)
+        adopte_par.set(version, "{par}/{valideur}")
+        courant.set("courant", version)
+        let _ = Journal.noter(h, "meteo", par, "bareme {version} en vigueur (valideur {valideur})")
+        return "en_vigueur"
+    }
+
+    on abandonner(h, version, raison, par) {
+        require ApiAcces.a_le_role(par, "analyste") else Habilitation "{par} n'est pas analyste d'ORBITE"
+        require redige_par.get(version) != () else Inconnu "version {version} inconnue"
+        require raison != "" else MotifRequis "motif d'abandon requis"
+        let st = get_status(version) ?? "redige"
+        require st == "redige" else EtatInvalide "version {version} : {st}"
+        transition(version, "redige", "abandonne")
+        let _ = Journal.noter(h, "meteo", par, "bareme {version} abandonne : {raison}")
+        return "abandonne"
+    }
+
+    on bande(kp) {
+        if kp < 50 { return "calme" }
+        if kp < 70 { return "agitee" }
+        if kp < 80 { return "tempete" }
+        return "extreme"
+    }
+
+    on facteur(regime, b) {
+        let v = courant.get("courant")
+        if v != () {
+            let f = facteur_case.get("{v}|{regime}|{b}")
+            if f != () { return f }
+        }
+        return Pourcent(_origine(to_string(regime), to_string(b)))
+    }
+
+    // Barème d'origine (voir l'en-tête de bareme.cell).
+    on _origine(r: String, b: String) {
+        if b == "calme" { return 100 }
+        if r == "leo" {
+            return match b {
+                "agitee" -> 150
+                "tempete" -> 300
+                _ -> 500
+            }
+        }
+        if r == "meo" {
+            return match b {
+                "agitee" -> 100
+                "tempete" -> 150
+                _ -> 200
+            }
+        }
+        return match b {
+            "agitee" -> 100
+            "tempete" -> 120
+            _ -> 150
+        }
+    }
+
+    on en_vigueur_a(a) {
+        let ta = to_int(a)
+        let cands = vigueur_debut.entries.filter(e => to_int(e.value) <= ta && ta < to_int(vigueur_fin.get(e.key) ?? 32503680000000)).map(e => map("v", e.key, "d", to_int(e.value))).sort_by(x => [0 - x.d, x.v])
+        if len(cands) == 0 { return "origine" }
+        return cands[0].v
+    }
+
+    on facteur_a(version, regime, b) {
+        if version == "origine" {
+            return Pourcent(_origine(to_string(regime), to_string(b)))
+        }
+        let f = facteur_case.get("{version}|{regime}|{b}")
+        require f != () else Inconnu "case {regime}/{b} de {version} non fixée"
+        return f
+    }
+}

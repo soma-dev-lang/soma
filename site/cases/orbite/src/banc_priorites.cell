@@ -1,0 +1,11 @@
+use app
+use commun::journal_chair
+use commun::horloge_chair
+use sys::priorites::chair::api
+use sys::priorites::chair::versions
+use sys::priorites::chair::adoption
+use sys::priorites::chair::table
+use sys::priorites::chair::derogations
+use sys::priorites::chair::cas
+use sys::priorites::chair::designation
+use sys::priorites::chair::echeancier

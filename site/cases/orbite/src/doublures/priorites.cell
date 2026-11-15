@@ -1,0 +1,174 @@
+// Doublures (corps PROVISOIRES) des façades que les corps de priorites appellent : pour
+// test_priorites.cell seulement. Conventions, lues dans les identifiants :
+// - personne "role@ORG-X" ou "role.n@ORG-X" (ex. "analyste@ORG-ORBITE", "dynamicien@ORG-OPB",
+//   "point_focal@ORG-ALD") ; "systeme" = traitement automatique ; "intrus…" n'a aucun rôle.
+//   Un rôle d'ORBITE ne vaut que chez "ORG-ORBITE". quatre_yeux(a, b) : a ≠ b, b superviseur /
+//   conformite / direction d'ORBITE, ou chef_de_mission du même employeur.
+// - États participants : ALD, BRV, CAZ (organisation "ORG-<code>") ; "ZZZ" inconnu ; tout autre
+//   code existe mais ne participe pas.
+// - objet "OBJ-<L>…" appartient à "ORG-OP<L>", sauf "…SUSP…" (ORG-SUSP, opérateur suspendu) et
+//   "…SURV…" (ORG-SURV, sous surveillance renforcée). Drapeaux : HAB habité, FAIB propulsion
+//   faible, MORT (OBJ-MORT…) sans propulsion, ANOM en anomalie, HS hors service, INCONNU non
+//   catalogué, NEUF injecté à 2000 (sinon 1000), LOURD 5 000 kg (sinon 100), ALERTE engagé dans
+//   un rapprochement de niveau 3, GEL sous gel d'un dossier de preuve.
+// - rapprochement "CJ-<n>~<a>~<b>~<tca>" ; "N3" dans l'id : niveau 3.
+// - changement_autorise(h) faux quand h se termine par 7 ms (gel) ; destinataire contenant
+//   "PLEIN" : file pleine ; organisation contenant "TIERS" : non autorisée à recevoir.
+
+flesh ApiAcces {
+    on a_le_role(personne, r) {
+        if personne == "systeme" { return r == "systeme" }
+        if r == "systeme" || starts_with(personne, "intrus") || !contains(personne, "@") { return false }
+        if _role(personne) != to_string(r) { return false }
+        let orbite_r = ["analyste", "superviseur", "exploitant", "conformite", "direction", "auditeur"]
+        if contains(orbite_r, to_string(r)) { return _org(personne) == "ORG-ORBITE" }
+        return true
+    }
+    on agit_pour(personne, org) {
+        if starts_with(personne, "intrus") || !contains(personne, "@") { return false }
+        return _org(personne) == to_string(org)
+    }
+    on quatre_yeux(demandeur, valideur) {
+        if demandeur == valideur || starts_with(valideur, "intrus") || starts_with(demandeur, "intrus") { return false }
+        if !contains(valideur, "@") { return false }
+        let rv = _role(valideur)
+        if (rv == "superviseur" || rv == "conformite" || rv == "direction") && _org(valideur) == "ORG-ORBITE" { return true }
+        return rv == "chef_de_mission" && contains(demandeur, "@") && _org(demandeur) == _org(valideur)
+    }
+    on _role(p: String) {
+        return split(split(p, "@")[0], ".")[0]
+    }
+    on _org(p: String) {
+        let parts = split(p, "@")
+        if len(parts) < 2 { return "" }
+        return parts[1]
+    }
+}
+
+flesh ApiRef {
+    on orbite() { return "ORG-ORBITE" }
+    on etat_participant(etat) {
+        return contains(["ALD", "BRV", "CAZ"], to_string(etat))
+    }
+    on org_de_etat(etat) {
+        require etat != "ZZZ" else Inconnu "État {etat} inconnu"
+        return Org("ORG-{etat}")
+    }
+    on etats_participants() { return ["ALD", "BRV", "CAZ"] }
+    on organisations(genre) {
+        return ["ORG-ALD", "ORG-BRV", "ORG-CAZ", "ORG-OPA", "ORG-OPB"]
+    }
+    on etat_objet(objet) {
+        let o = to_string(objet)
+        if contains(o, "INCONNU") { return "inconnu" }
+        if contains(o, "HS") { return "hors_service" }
+        return "en_service"
+    }
+    on proprietaire(objet) {
+        let o = to_string(objet)
+        require !contains(o, "INCONNU") else Inconnu "objet {o} inconnu"
+        if contains(o, "SUSP") { return Org("ORG-SUSP") }
+        if contains(o, "SURV") { return Org("ORG-SURV") }
+        let l = substring(o, 4, 5)
+        return Org("ORG-OP{l}")
+    }
+    on propulsion(objet) {
+        let o = to_string(objet)
+        if starts_with(o, "OBJ-MORT") || contains(o, "HS") { return Propulsion("aucune") }
+        if contains(o, "FAIB") { return Propulsion("faible") }
+        return Propulsion("impulsionnelle")
+    }
+    on peut_manoeuvrer(objet) {
+        let o = to_string(objet)
+        return !starts_with(o, "OBJ-MORT") && !contains(o, "HS") && !contains(o, "ANOM") && !contains(o, "INCONNU")
+    }
+    on habite(objet) {
+        return contains(to_string(objet), "HAB")
+    }
+    on masse(objet) {
+        if contains(to_string(objet), "LOURD") { return Masse(5000) }
+        return Masse(100)
+    }
+}
+
+flesh ApiOperateurs {
+    on est_actif(op, h) {
+        return !starts_with(to_string(op), "ORG-SUSP")
+    }
+}
+
+flesh ApiConjonctions {
+    on objets(r) {
+        let p = split(to_string(r), "~")
+        require len(p) == 4 else Inconnu "rapprochement {r} inconnu"
+        return [p[1], p[2]]
+    }
+    on tca(r) {
+        let p = split(to_string(r), "~")
+        require len(p) == 4 else Inconnu "rapprochement {r} inconnu"
+        return Horodatage(to_int(p[3]))
+    }
+    on niveau(r) {
+        if contains(to_string(r), "N3") { return Niveau(3) }
+        return Niveau(1)
+    }
+    on ouverts_de(objet) {
+        if contains(to_string(objet), "ALERTE") { return ["CJ-N3"] }
+        return []
+    }
+}
+
+flesh ApiEvenements {
+    on en_anomalie(objet) {
+        return contains(to_string(objet), "ANOM")
+    }
+}
+
+flesh ApiConformite {
+    on sous_surveillance(op) {
+        return contains(to_string(op), "SURV")
+    }
+}
+
+flesh ApiLancements {
+    on injecte_le(objet) {
+        if contains(to_string(objet), "NEUF") { return Horodatage(2000) }
+        return Horodatage(1000)
+    }
+}
+
+flesh ApiDonnees {
+    on peut_recevoir(org, objet, r, h) {
+        return !contains(to_string(org), "TIERS")
+    }
+    on tracer(h, org, objet, r, nature) {
+        require !contains(to_string(org), "TIERS") else Confidentiel "destinataire non autorisé"
+        return 1
+    }
+}
+
+flesh ApiResponsabilite {
+    on sous_gel(cible) {
+        return contains(cible, "GEL")
+    }
+    on purge_autorisee(cible, h) {
+        return !contains(cible, "GEL")
+    }
+}
+
+flesh ApiOperations {
+    on changement_autorise(h) {
+        return to_int(h) % 1000 != 7
+    }
+    on declarer_incident(h, incident, gravite, sous_systeme, description, par) {
+        require description != "" else MotifRequis "description requise"
+        return incident
+    }
+}
+
+flesh ApiPasserelle {
+    on notifier(h, destinataire, r, sujet, texte, urgence) {
+        require !contains(to_string(destinataire), "PLEIN") else Plein "file pleine"
+        return "MSG-{destinataire}"
+    }
+}

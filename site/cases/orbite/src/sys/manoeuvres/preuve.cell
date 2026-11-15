@@ -1,0 +1,73 @@
+// MANŒUVRES — preuve et indicateurs : dossier complet d'un plan communiqué aux seules
+// organisations autorisées, avec trace (propriété 6) ; compteurs par opérateur pour la
+// conformité et les rapports aux États.
+
+// Dossier d'un plan, tel qu'il est communiqué : fiche, état, fondement de l'approbation (liste
+// vide si jamais approuvé), dernier criblage (liste vide si jamais criblé), verrou, avis émis et organisations écartées, réel
+// confirmé, état de la vérification et de l'anomalie.
+cell type ManDossierPlan { variants { ManDossierPlan { fiche: ManFichePlan, etat: ManEtatPlan, fondement: List<ManFondement>, criblage: List<ManFicheCriblage>, verrou: String, avis: List<String>, ecartes: List<String>, verification: ManEtatVerification, anomalie: String } } }
+// Évènement compté par opérateur.
+cell type ManIndicateur = String where value == "declare" || value == "rejete" || value == "approuve" || value == "execute" || value == "verifie" || value == "anomalie" || value == "annule" || value == "fenetre_echue" || value == "non_annoncee" || value == "avis_echu"
+
+skeleton ManDossier {
+    // Consultations tracées conservées.
+    const MAX_CONSULTATIONS = 10000000
+    memory {
+        consultations: List<String> [persistent]   // "h|org|plan|par|trace" : qui a reçu quel dossier
+        invariant consultations.size <= MAX_CONSULTATIONS
+    }
+    face {
+        // Communique le dossier d'un plan à l'organisation `org` : ApiDonnees.peut_recevoir(org,
+        // objet, r, h) (sinon Confidentiel), ApiDonnees.tracer (nature "dossier_manoeuvre"),
+        // ligne ajoutée à `consultations`. ORBITE (ApiRef.orbite) et le propriétaire le reçoivent
+        // toujours. `par` : personne qui agit pour `org` (ApiAcces.agit_pour), de rôle
+        // "dynamicien", "chef_de_mission", "point_focal", "autorite" — ou "analyste",
+        // "conformite", "auditeur" d'ORBITE. Renvoie le dossier.
+        // Refus : Inconnu (plan), Confidentiel, Plein, Habilitation.
+        signal consulter(h: Horodatage, plan: String, org: Org, par: String) -> ManDossierPlan
+            writes consultations
+            calls ManPlan.fiche, ManPlan.etat, ManPlan.fondement, ManCriblage.fiche, ManEvitement.etat, ManAvis.avis_de, ManAvis.refuses, ManVerification.etat, ManAnomalie.etat, ApiRef.orbite, ApiDonnees.peut_recevoir, ApiDonnees.tracer, ApiAcces.a_le_role, ApiAcces.agit_pour, Journal.noter
+        // Gèle la preuve d'un plan pour un dossier de responsabilité : exige
+        // ApiResponsabilite.sous_gel(cible) vrai pour le plan, ou pour son rapprochement (évitement),
+        // ou pour son objet (sinon EtatInvalide), journalise
+        // l'empreinte du dossier (fiche + fondement + criblage + avis). `par` "conformite" ou
+        // "direction" d'ORBITE. Renvoie la ligne de journal.
+        // Refus : Inconnu, EtatInvalide, Habilitation.
+        signal sceller(h: Horodatage, plan: String, par: String) -> Int
+            calls ManPlan.fiche, ManPlan.fondement, ManCriblage.fiche, ManAvis.avis_de, ApiResponsabilite.sous_gel, ApiAcces.a_le_role, Journal.noter
+        // Consultations d'un plan (au plus n), les plus récentes en dernier. `par` "conformite"
+        // ou "auditeur" d'ORBITE. Refus : Habilitation.
+        signal consultations_de(plan: String, n: Int, par: String) -> List<String>
+            requires n > 0 && n <= 1000
+            reads consultations
+            calls ApiAcces.a_le_role
+    }
+}
+
+skeleton ManIndicateurs {
+    // Opérateurs suivis (borne des organisations participantes).
+    const MAX_OPERATEURS = 100000
+    // Compteurs : MAX_OPERATEURS × 50 années × 10 indicateurs.
+    const MAX_COMPTEURS = 50000000
+    memory {
+        compteurs: Map<String, Int> [persistent]   // "op|annee|indicateur" -> nombre ; ne décroît jamais
+        operateurs: List<String> [persistent]      // opérateurs ayant au moins un compteur
+        invariant compteurs >= 0
+        invariant value >= (compteurs.get(key) ?? 0)
+        invariant compteurs.size <= MAX_COMPTEURS
+        invariant operateurs.size <= MAX_OPERATEURS
+    }
+    face {
+        // Incrémente le compteur "op|annee|indicateur" (année civile de `h`). Appelé par les
+        // cells de manoeuvres à chaque transition comptée (interne). Renvoie la nouvelle valeur.
+        // Refus : Plein.
+        signal compter(h: Horodatage, op: Org, ind: ManIndicateur) -> Int
+            writes compteurs, operateurs
+        // Compteur d'un opérateur pour une année ; 0 si aucun.
+        signal valeur(op: Org, annee: Int, ind: ManIndicateur) -> Int
+            reads compteurs
+        // Taux de manœuvres vérifiées sur exécutées dans l'année, en % (100 si aucune).
+        signal taux_verifie(op: Org, annee: Int) -> Pourcent
+            reads compteurs
+    }
+}

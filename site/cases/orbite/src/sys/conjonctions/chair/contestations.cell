@@ -1,0 +1,127 @@
+// CONJONCTIONS — corps : contestations d'un rapprochement par un propriétaire.
+
+flesh ConjContestation {
+    on deposer(h, r, objet, motif, par) {
+        let st = ConjRapprochement.etat(r)
+        require st != "inconnu" else Inconnu "rapprochement inconnu : {r}"
+        require st == "detecte" || st == "suivi" || st == "alerte" || st == "en_coordination" else Ferme "rapprochement clos"
+        let f = ConjRapprochement.fiche(r)
+        let so = to_string(objet)
+        require so == to_string(f.objet_a) || so == to_string(f.objet_b) else Incoherent "{so} étranger au rapprochement {r}"
+        require len(motif) > 0 else MotifRequis "motif exigé"
+        let proprio = ApiRef.proprietaire(objet)
+        require (ApiAcces.a_le_role(par, "dynamicien") || ApiAcces.a_le_role(par, "chef_de_mission")) && ApiAcces.agit_pour(par, proprio) else Habilitation "contester : dynamicien ou chef de mission de {proprio}"
+        require ApiOperateurs.est_actif(proprio, h) else Suspendu "opérateur {proprio} non actif"
+        require ApiEphemerides.fraiche(objet, h) else Perime "éphéméride de {so} non fraîche"
+        let depot = ApiEphemerides.derniere(objet)
+        let rid = to_string(r)
+        let en_cours = en_cours_de.get(rid) ?? []
+        for c in en_cours {
+            require to_string(objet_de.get(c) ?? "") != so else Existe "contestation {c} déjà ouverte pour {so}"
+        }
+        require len(en_cours) < MAX_PAR_RAPPROCHEMENT else Plein "trop de contestations sur {rid}"
+        require rapprochement_de.size < MAX_CONTESTATIONS else Plein "trop de contestations"
+        let camp = ConjCampagne.planifier(h, "objet", f.regime, objet, "manuel", "systeme")
+        let c = "CT-{next_id()}"
+        rapprochement_de.set(c, rid)
+        objet_de.set(c, objet)
+        depot_de.set(c, depot)
+        motif_de.set(c, motif)
+        deposee_par.set(c, par)
+        deposee_le.set(c, h)
+        campagne_de.set(c, camp)
+        en_cours_de.set(rid, en_cours ++ [c])
+        let _ = Journal.noter(h, "conjonctions", par, "contestation {c} de {rid} pour {so} (dépôt {depot}, campagne {camp}) : {motif}")
+        return c
+    }
+
+    on instruire(h, contestation, par) {
+        require ApiAcces.a_le_role(par, "systeme") else Habilitation "instruire : systeme"
+        let rid = rapprochement_de.get(contestation)
+        require rid != () else Inconnu "contestation inconnue : {contestation}"
+        let st = get_status(contestation) ?? "deposee"
+        require st == "deposee" || st == "examinee" else Ferme "contestation close"
+        let camp = campagne_de.get(contestation) ?? ""
+        let ce = ConjCampagne.etat(camp)
+        let rst = ConjRapprochement.etat(Rapprochement(rid))
+        let clos = rst == "resolu" || rst == "passe" || rst == "collision"
+        if st == "deposee" {
+            let depot = depot_de.get(contestation) ?? ""
+            if clos || !ApiEphemerides.depot_valide(depot) || ce == "annulee" {
+                let pourquoi = if clos { "rapprochement {rst}" } else if ce == "annulee" { "campagne {camp} annulée" } else { "dépôt {depot} invalidé" }
+                _clore(contestation, rid, "{h}|{par}|{pourquoi}")
+                transition(contestation, "deposee", "rejetee")
+                let _ = Journal.noter(h, "conjonctions", par, "contestation {contestation} rejetée : {pourquoi}")
+                return "rejetee"
+            }
+            if ce == "en_cours" || ce == "terminee" || ce == "echouee" {
+                transition(contestation, "deposee", "examinee")
+                let _ = Journal.noter(h, "conjonctions", par, "contestation {contestation} en examen (campagne {camp})")
+                return "examinee"
+            }
+            return "deposee"
+        }
+        if ce == "terminee" {
+            let f = ConjRapprochement.fiche(Rapprochement(rid))
+            let sans_risque = rst == "resolu" || to_int(f.pc) < to_int(ConjSeuils.seuil_suivi())
+            if sans_risque {
+                _clore(contestation, rid, "{h}|{par}|risque non retrouvé par {camp}")
+                transition(contestation, "examinee", "acceptee")
+                let _ = Journal.noter(h, "conjonctions", par, "contestation {contestation} acceptée : {camp} ne retrouve pas le risque")
+                return "acceptee"
+            }
+            _clore(contestation, rid, "{h}|{par}|risque retrouvé par {camp} (pc {f.pc})")
+            transition(contestation, "examinee", "rejetee")
+            let _ = Journal.noter(h, "conjonctions", par, "contestation {contestation} rejetée : risque retrouvé")
+            return "rejetee"
+        }
+        if ce == "echouee" || ce == "annulee" {
+            _clore(contestation, rid, "{h}|{par}|campagne {camp} {ce}")
+            transition(contestation, "examinee", "rejetee")
+            let _ = Journal.noter(h, "conjonctions", par, "contestation {contestation} rejetée : campagne {ce}")
+            return "rejetee"
+        }
+        return "examinee"
+    }
+
+    on retirer(h, contestation, motif, par) {
+        let rid = rapprochement_de.get(contestation)
+        require rid != () else Inconnu "contestation inconnue : {contestation}"
+        let st = get_status(contestation) ?? "deposee"
+        require st == "deposee" || st == "examinee" else Ferme "contestation close"
+        require len(motif) > 0 else MotifRequis "motif exigé"
+        let objet = objet_de.get(contestation) ?? ""
+        let proprio = ApiRef.proprietaire(objet)
+        require (ApiAcces.a_le_role(par, "dynamicien") || ApiAcces.a_le_role(par, "chef_de_mission")) && ApiAcces.agit_pour(par, proprio) else Habilitation "retirer : dynamicien ou chef de mission de {proprio}"
+        _clore(contestation, rid, "{h}|{par}|retirée : {motif}")
+        if st == "deposee" {
+            transition(contestation, "deposee", "retiree")
+        } else {
+            transition(contestation, "examinee", "retiree")
+        }
+        let _ = Journal.noter(h, "conjonctions", par, "contestation {contestation} retirée : {motif}")
+        return "retiree"
+    }
+
+    on non_closes() {
+        let res_n = []
+        for lst in en_cours_de.values {
+            for c in lst { res_n.push(c) }
+        }
+        return res_n
+    }
+
+    on de(r) {
+        return en_cours_de.get(to_string(r)) ?? []
+    }
+
+    on etat(contestation) {
+        if rapprochement_de.get(contestation) == () { return "inconnue" }
+        return get_status(contestation) ?? "deposee"
+    }
+
+    on _clore(c: String, rid: String, decision: String) {
+        decision_de.set(c, decision)
+        en_cours_de.set(rid, (en_cours_de.get(rid) ?? []).filter(x => x != c))
+    }
+}

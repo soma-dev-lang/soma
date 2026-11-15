@@ -1,0 +1,84 @@
+// PASSERELLE — routes d'ADMINISTRATION : POST /admin/<sous-systeme>/<Cell.signal>.
+//
+// Un geste d'administration est un signal qui prend `par` et qu'aucun autre signal n'appelle ;
+// la passerelle, et elle seule, l'expose, par le routeur de son sous-système. Le cadre de chaque
+// routeur est la liste exhaustive de ses gestes, contrôlée par `soma check` : aujourd'hui les
+// signaux à `par` des façades (contrat v2, hors `balayer`, réservé à l'Horloge) ; les gestes
+// des cells internes s'y ajoutent à l'intégration.
+// Les gestes de la passerelle elle-même sont câblés dans PasEntree.traiter.
+//
+// Contrat commun des routeurs (l'appelant est un client externe ; la fiche du geste appelé
+// suffit à le servir) :
+//  - `geste` = "Cell.signal" ; hors liste du routeur : Inconnu (404 côté HTTP) ;
+//  - `appelant` vient du jeton ; `h` = horloge de la passerelle ; `par` =
+//    appelant.personne ; `valideur` = personne d'un second jeton (en-tête
+//    X-Jeton-Valideur, ApiAcces.authentifier), "" sans en-tête — jamais lus dans `corps` (un `par`, `valideur` ou
+//    `h` présent dans le corps : 400 HorsBornes) ; le rôle "systeme" n'arrive jamais ici ;
+//  - contrôle préalable : appelant.role ≠ "aucun" (ApiAcces.a_le_role pour un rôle d'ORBITE,
+//    ApiAcces.agit_pour pour un rôle d'opérateur ou d'État) ; l'habilitation fine (rôle et
+//    portée exigés) est jugée par le geste lui-même, qui seul connaît son objet ;
+//  - arguments lus dans `corps` par leur nom de paramètre, typés contre la signature du geste ;
+//    manquant ou mal typé : HorsBornes ;
+//  - Journal.noter (sous-système visé, personne, geste, issue) après succès ET après refus.
+// Renvoie la réponse du geste. Refus : Inconnu, HorsBornes, Habilitation, et ceux du geste.
+skeleton PasAdmin {
+    face {
+        // acces : enregistrer, suspendre, retablir, ouvrir_urgence (bris de glace pour un rapprochement de niveau 3), fermer_session.
+        signal router_acces(h: Horodatage, appelant: PasAppelant, valideur: String, geste: String, corps: Map) -> Any
+            calls ApiAcces.a_le_role, ApiAcces.agit_pour, Journal.noter, ApiAcces.enregistrer, ApiAcces.suspendre, ApiAcces.retablir, ApiAcces.ouvrir_urgence, ApiAcces.fermer_session
+        // conformite : constater, constater_etat.
+        signal router_conformite(h: Horodatage, appelant: PasAppelant, valideur: String, geste: String, corps: Map) -> Any
+            calls ApiAcces.a_le_role, ApiAcces.agit_pour, Journal.noter, ApiConformite.constater, ApiConformite.constater_etat
+        // conjonctions : signaler, resoudre, constater_collision, exempter (quatre yeux), renforcer.
+        signal router_conjonctions(h: Horodatage, appelant: PasAppelant, valideur: String, geste: String, corps: Map) -> Any
+            calls ApiAcces.a_le_role, ApiAcces.agit_pour, Journal.noter, ApiConjonctions.signaler, ApiConjonctions.resoudre, ApiConjonctions.constater_collision, ApiConjonctions.exempter, ApiConjonctions.renforcer
+        // coordination : ouvrir, arbitrer (quatre yeux), rouvrir.
+        signal router_coordination(h: Horodatage, appelant: PasAppelant, valideur: String, geste: String, corps: Map) -> Any
+            calls ApiAcces.a_le_role, ApiAcces.agit_pour, Journal.noter, ApiCoordination.ouvrir, ApiCoordination.arbitrer, ApiCoordination.rouvrir
+        // donnees : aucun geste en façade.
+        signal router_donnees(h: Horodatage, appelant: PasAppelant, valideur: String, geste: String, corps: Map) -> Any
+            calls ApiAcces.a_le_role, ApiAcces.agit_pour, Journal.noter
+        // ephemerides : invalider.
+        signal router_ephemerides(h: Horodatage, appelant: PasAppelant, valideur: String, geste: String, corps: Map) -> Any
+            calls ApiAcces.a_le_role, ApiAcces.agit_pour, Journal.noter, ApiEphemerides.invalider
+        // escalade : escalader.
+        signal router_escalade(h: Horodatage, appelant: PasAppelant, valideur: String, geste: String, corps: Map) -> Any
+            calls ApiAcces.a_le_role, ApiAcces.agit_pour, Journal.noter, ApiEscalade.escalader
+        // evenements : declarer (quatre yeux), anomalie.
+        signal router_evenements(h: Horodatage, appelant: PasAppelant, valideur: String, geste: String, corps: Map) -> Any
+            calls ApiAcces.a_le_role, ApiAcces.agit_pour, Journal.noter, ApiEvenements.declarer, ApiEvenements.anomalie
+        // fin_de_vie : fin_de_mission.
+        signal router_fin_de_vie(h: Horodatage, appelant: PasAppelant, valideur: String, geste: String, corps: Map) -> Any
+            calls ApiAcces.a_le_role, ApiAcces.agit_pour, Journal.noter, ApiFinDeVie.fin_de_mission
+        // lancements : notifier.
+        signal router_lancements(h: Horodatage, appelant: PasAppelant, valideur: String, geste: String, corps: Map) -> Any
+            calls ApiAcces.a_le_role, ApiAcces.agit_pour, Journal.noter, ApiLancements.notifier
+        // manoeuvres : annuler, retirer, constater_non_annoncee.
+        signal router_manoeuvres(h: Horodatage, appelant: PasAppelant, valideur: String, geste: String, corps: Map) -> Any
+            calls ApiAcces.a_le_role, ApiAcces.agit_pour, Journal.noter, ApiManoeuvres.annuler, ApiManoeuvres.retirer, ApiManoeuvres.constater_non_annoncee
+        // meteo : aucun geste en façade.
+        signal router_meteo(h: Horodatage, appelant: PasAppelant, valideur: String, geste: String, corps: Map) -> Any
+            calls ApiAcces.a_le_role, ApiAcces.agit_pour, Journal.noter
+        // observation : demander_suivi, deposer_mesure.
+        signal router_observation(h: Horodatage, appelant: PasAppelant, valideur: String, geste: String, corps: Map) -> Any
+            calls ApiAcces.a_le_role, ApiAcces.agit_pour, Journal.noter, ApiObservation.demander_suivi, ApiObservation.deposer_mesure
+        // operateurs : suspendre, retablir (quatre yeux).
+        signal router_operateurs(h: Horodatage, appelant: PasAppelant, valideur: String, geste: String, corps: Map) -> Any
+            calls ApiAcces.a_le_role, ApiAcces.agit_pour, Journal.noter, ApiOperateurs.suspendre, ApiOperateurs.retablir
+        // operations : declarer_incident.
+        signal router_operations(h: Horodatage, appelant: PasAppelant, valideur: String, geste: String, corps: Map) -> Any
+            calls ApiAcces.a_le_role, ApiAcces.agit_pour, Journal.noter, ApiOperations.declarer_incident
+        // priorites : aucun geste en façade.
+        signal router_priorites(h: Horodatage, appelant: PasAppelant, valideur: String, geste: String, corps: Map) -> Any
+            calls ApiAcces.a_le_role, ApiAcces.agit_pour, Journal.noter
+        // reentrees : prevoir, constater (quatre yeux).
+        signal router_reentrees(h: Horodatage, appelant: PasAppelant, valideur: String, geste: String, corps: Map) -> Any
+            calls ApiAcces.a_le_role, ApiAcces.agit_pour, Journal.noter, ApiReentrees.prevoir, ApiReentrees.constater
+        // ref : inscrire_organisation, attribuer, changer_tutelle (quatre yeux), cataloguer, changer_etat_objet, declarer_propulsion, immatriculer, changer_regime.
+        signal router_ref(h: Horodatage, appelant: PasAppelant, valideur: String, geste: String, corps: Map) -> Any
+            calls ApiAcces.a_le_role, ApiAcces.agit_pour, Journal.noter, ApiRef.inscrire_organisation, ApiRef.cataloguer, ApiRef.changer_etat_objet, ApiRef.declarer_propulsion, ApiRef.attribuer, ApiRef.immatriculer, ApiRef.changer_regime, ApiRef.changer_tutelle
+        // responsabilite : geler.
+        signal router_responsabilite(h: Horodatage, appelant: PasAppelant, valideur: String, geste: String, corps: Map) -> Any
+            calls ApiAcces.a_le_role, ApiAcces.agit_pour, Journal.noter, ApiResponsabilite.geler
+    }
+}

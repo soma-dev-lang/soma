@@ -1,0 +1,5 @@
+ApiPasserelle.request: calls PasEntree.traiter
+ApiPasserelle.notifier: calls PasFormats.notifier
+ApiPasserelle.acquitte: calls PasMessages.acquitte
+ApiPasserelle.echoue: calls PasMessages.echoue
+ApiPasserelle.balayer: calls PasRondes.balayer

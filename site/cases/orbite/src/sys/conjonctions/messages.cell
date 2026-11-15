@@ -1,0 +1,164 @@
+// CONJONCTIONS — messages de conjonction (CDM, alertes, clôtures) vers les propriétaires des
+// objets et, au niveau 3, vers le point focal de leur État. Chaque envoi est contrôlé (diffusion
+// des données de l'AUTRE objet), tracé, et suivi jusqu'à l'accusé : une alerte de niveau 3 non
+// acquittée à son échéance est escaladée, un opérateur sans astreinte l'est immédiatement.
+
+// Un message vers une organisation. Instance = "MC-<n>".
+skeleton ConjMessage {
+    const MAX_MESSAGES = 20000000
+    const MAX_PAR_RAPPROCHEMENT = 200
+    const DELAI_DEFAUT_N3 = 3600000           // 1 h si l'opérateur n'a pas d'engagement connu
+    memory {
+        // rapprochement du message : écrit une fois par diffuser, jamais effacé
+        rapprochement_de: Map<String, String> [persistent]
+        destinataire_de: Map<String, Org> [persistent]
+        genre_de: Map<String, ConjGenreMessage> [persistent]
+        niveau_de: Map<String, Niveau> [persistent]
+        prepare_le: Map<String, Horodatage> [persistent]
+        echeance_de: Map<String, Horodatage> [persistent]   // accusé attendu avant (ms) ; alertes seulement
+        passerelle_de: Map<String, String> [persistent]     // id du message dans la file de la passerelle
+        trace_de: Map<String, Int> [persistent]             // numéro de trace ApiDonnees.tracer
+        escalade_de: Map<String, Int> [persistent]          // échelon atteint (ApiEscalade.escalader)
+        cause_de: Map<String, String> [persistent]          // blocage, caducité
+        par_rapprochement: Map<String, List<String>> [persistent]
+        invariant rapprochement_de.size <= 20000000
+        invariant len(par_rapprochement) <= 200
+        invariant escalade_de >= 1
+        invariant escalade_de <= 4
+    }
+    // Cycle d'un message.
+    state message {
+        initial: prepare
+        prepare -> envoye            // diffusion autorisée, mis en file à la passerelle, tracé
+        prepare -> bloque            // destinataire non autorisé à recevoir les données de l'autre objet
+        envoye -> acquitte           // accusé du destinataire (ApiPasserelle.acquitte)
+        envoye -> sans_reponse       // échéance d'une alerte passée sans accusé
+        sans_reponse -> acquitte     // accusé tardif
+        sans_reponse -> escalade     // remis à l'escalade
+        envoye -> caduc              // rapprochement clos avant l'accusé
+        sans_reponse -> caduc
+    }
+    face {
+        // Diffuse l'état courant d'un rapprochement à chaque propriétaire connu de ses deux
+        // objets (genre "cdm" aux niveaux 1-2, "alerte" au niveau 3, "cloture" s'il est clos), à ses
+        // abonnés actifs (ConjAbonnement.destinataires ; sans abonnement : niveau ≥ 2 seulement) et,
+        // au niveau 3, au point focal de l'État de tutelle (ApiRef.etat_de, ApiRef.org_de_etat).
+        // Pour chaque destinataire : ApiDonnees.peut_recevoir sur l'objet de l'AUTRE partie, sinon
+        // le message est bloque ; sinon ApiPasserelle.notifier(h, dest, r, …) (urgence = niveau ;
+        // distance, TCA et pc dans le texte),
+        // ApiDonnees.tracer, prepare -> envoye. Échéance d'une alerte = h +
+        // ApiOperateurs.delai_reponse(op, 3) (DELAI_DEFAUT_N3 si inconnu), bornée par le TCA.
+        // Un opérateur sans astreinte à `h` (ApiOperateurs.astreinte == "") est escaladé
+        // aussitôt. Renvoie les ids des messages préparés. Rôle : "systeme" ou "analyste".
+        // Refus : Inconnu (rapprochement), Plein, Habilitation.
+        signal diffuser(h: Horodatage, r: Rapprochement, par: String) -> List<String>
+            writes rapprochement_de, destinataire_de, genre_de, niveau_de, prepare_le, echeance_de, passerelle_de, trace_de, escalade_de, cause_de, par_rapprochement
+            moves prepare -> envoye, prepare -> bloque
+            calls next_id, ConjRapprochement.fiche, ConjRapprochement.etat, ConjAbonnement.destinataires, ApiRef.proprietaire, ApiRef.etat_de, ApiRef.org_de_etat, ApiDonnees.peut_recevoir, ApiDonnees.tracer, ApiPasserelle.notifier, ApiOperateurs.delai_reponse, ApiOperateurs.astreinte, ApiEscalade.escalader, ApiAcces.a_le_role, Journal.noter
+        // Relève un message envoyé (ConjRonde.balayer) : acquitté à la passerelle ⇒ acquitte ;
+        // alerte dont l'échéance est passée à `h`, ou livraison en échec (ApiPasserelle.echoue)
+        // ⇒ envoye -> sans_reponse ; accusé tardif ⇒
+        // sans_reponse -> acquitte. Renvoie l'état atteint. Rôle : "systeme".
+        // Refus : Inconnu, Ferme (message terminé), Habilitation.
+        signal relever(h: Horodatage, message: String, par: String) -> String
+            reads passerelle_de, genre_de, echeance_de
+            moves envoye -> acquitte, envoye -> sans_reponse, sans_reponse -> acquitte
+            calls ApiPasserelle.acquitte, ApiPasserelle.echoue, ApiAcces.a_le_role, Journal.noter
+        // Remet à l'escalade une alerte sans réponse : ApiEscalade.escalader(h, r, destinataire,
+        // motif, "systeme"), qui arme la veille d'escalade du rapprochement ; puis
+        // sans_reponse -> escalade, seulement si cette veille est "surveillee" ou "couverte"
+        // (règle sur l'arête, via rapprochement_de ; le corps exige un échelon ≥ 1 renvoyé).
+        // Destinataire déjà escaladé au plus haut (escalader refusé, ApiEscalade.echelon ≥ 1) :
+        // escalade à l'échelon courant. Escalade sans objet (refus Inconnu : destinataire qui ne
+        // possède aucun objet en cause, un État ; NonEligible : partie qui a répondu ; Ferme) :
+        // sans_reponse -> caduc (cause notée), renvoie 0 — sinon la ronde réessaierait sans fin.
+        // Renvoie l'échelon. Rôle : "systeme". Refus : Inconnu, EtatInvalide (pas sans_reponse,
+        // ou escalade non ouverte : rapprochement déjà clos), Habilitation.
+        signal escalader(h: Horodatage, message: String, par: String) -> Int
+            reads rapprochement_de, destinataire_de
+            writes escalade_de, cause_de
+            moves sans_reponse -> escalade when EscVeille.surveillee || EscVeille.couverte via rapprochement_de, sans_reponse -> caduc
+            calls ApiEscalade.escalader, ApiEscalade.echelon, ApiAcces.a_le_role, Journal.noter
+        // Rend caducs les messages en attente d'accusé d'un rapprochement clos (envoye ou
+        // sans_reponse -> caduc). Renvoie le nombre de messages rendus caducs. Rôle : "systeme".
+        // Refus : Inconnu, EtatInvalide (rapprochement non clos), Habilitation.
+        signal clore_de(h: Horodatage, r: Rapprochement, par: String) -> Int
+            reads par_rapprochement
+            writes cause_de
+            moves envoye -> caduc, sans_reponse -> caduc
+            calls ConjRapprochement.etat, ApiAcces.a_le_role, Journal.noter
+        // Messages envoye ou sans_reponse (au plus n) à relever ou escalader (ConjRonde.balayer).
+        signal en_attente(h: Horodatage, n: Int) -> List<String>
+            requires n > 0 && n <= 1000
+            reads message, echeance_de, prepare_le
+        // Messages d'un rapprochement, du plus ancien au plus récent.
+        signal de(r: Rapprochement) -> List<String>
+            reads par_rapprochement
+        // "prepare", "envoye", "bloque", "acquitte", "sans_reponse", "escalade", "caduc" ; "inconnu".
+        signal etat(message: String) -> String
+            reads message, rapprochement_de
+    }
+}
+
+// Abonnement d'un opérateur à la réception des messages de ses objets par un autre
+// destinataire (centre de dynamique du vol délégué, second centre de contrôle) et/ou dès le
+// niveau 1. Instance = "AB-<n>". Sans abonnement, seul l'opérateur reçoit, à partir du niveau 2
+// (les alertes de niveau 3 lui parviennent toujours).
+skeleton ConjAbonnement {
+    const MAX_ABONNEMENTS = 200000
+    const MAX_PAR_OPERATEUR = 20
+    memory {
+        operateur_de: Map<String, Org> [persistent]
+        destinataire_de: Map<String, Org> [persistent]      // l'opérateur lui-même ou son délégué
+        niveau_min_de: Map<String, Niveau> [persistent]     // reçoit les messages à partir de ce niveau
+        cree_par: Map<String, String> [persistent]          // "h|par|valideur"
+        cause_de: Map<String, String> [persistent]          // suspension ou révocation
+        par_operateur: Map<String, List<String>> [persistent]
+        invariant operateur_de.size <= 200000
+        invariant len(par_operateur) <= 20
+    }
+    // Cycle d'un abonnement.
+    state abonnement {
+        initial: actif
+        actif -> suspendu            // le destinataire n'adhère plus à l'accord de partage, ou l'opérateur n'est plus actif
+        suspendu -> actif            // adhésion et statut rétablis
+        actif -> revoque
+        suspendu -> revoque
+    }
+    face {
+        // Abonne `destinataire` aux messages des objets de `op` à partir du niveau `niveau_min`.
+        // Le destinataire doit adhérer à l'accord de partage (ApiDonnees.adherent) ; chaque envoi
+        // reste soumis à ApiDonnees.peut_recevoir. Renvoie "AB-<n>". Rôle : `par`
+        // "administrateur_operateur" de `op`, `valideur` "chef_de_mission" de `op`
+        // (ApiAcces.agit_pour, ApiAcces.quatre_yeux). Geste d'administration.
+        // Refus : Inconnu (organisation), Existe (même couple op/destinataire), NonEligible
+        // (destinataire non adhérent), Suspendu (op non actif), Plein, Habilitation, QuatreYeux.
+        signal abonner(h: Horodatage, op: Org, destinataire: Org, niveau_min: Niveau, par: String, valideur: String) -> String
+            writes operateur_de, destinataire_de, niveau_min_de, cree_par, par_operateur
+            calls next_id, ApiRef.organisation_existe, ApiDonnees.adherent, ApiOperateurs.est_actif, ApiAcces.a_le_role, ApiAcces.agit_pour, ApiAcces.quatre_yeux, Journal.noter
+        // Réexamine un abonnement (ConjRonde.balayer) : adhésion perdue ou opérateur inactif ⇒
+        // actif -> suspendu ; rétablis ⇒ suspendu -> actif. Renvoie l'état. Rôle : "systeme".
+        // Refus : Inconnu, Ferme (révoqué), Habilitation.
+        signal verifier(h: Horodatage, abonnement: String, par: String) -> String
+            reads operateur_de, destinataire_de
+            writes cause_de
+            moves actif -> suspendu, suspendu -> actif
+            calls ApiDonnees.adherent, ApiOperateurs.est_actif, ApiAcces.a_le_role, Journal.noter
+        // Révoque un abonnement. Renvoie "revoque". Rôle : "administrateur_operateur" de
+        // l'opérateur, ou "conformite" d'ORBITE. Refus : Inconnu, Ferme, MotifRequis, Habilitation.
+        signal revoquer(h: Horodatage, abonnement: String, motif: String, par: String) -> String
+            reads operateur_de
+            writes cause_de, par_operateur
+            moves actif -> revoque, suspendu -> revoque
+            calls ApiAcces.a_le_role, ApiAcces.agit_pour, Journal.noter
+        // Destinataires abonnés ACTIFS de l'opérateur pour un message de niveau `n`.
+        signal destinataires(op: Org, n: Niveau) -> List<String>
+            reads par_operateur, destinataire_de, niveau_min_de, abonnement
+        // Abonnements non révoqués (pour ConjRonde.balayer).
+        signal non_revoques() -> List<String>
+            reads par_operateur
+        // "actif", "suspendu", "revoque" ; "inconnu".
+        signal etat(abonnement: String) -> String
+            reads abonnement, operateur_de
+    }
+}

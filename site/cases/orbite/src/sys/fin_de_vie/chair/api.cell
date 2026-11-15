@@ -1,0 +1,42 @@
+// fin_de_vie — corps de la façade ApiFinDeVie : chaque signal délègue à la cell interne.
+
+flesh ApiFinDeVie {
+    // La façade ne reçoit pas d'horodatage : la conformité est jugée sans la péremption des
+    // 400 jours (h = 0), que le balayage applique en rendant caducs les plans non reconfirmés
+    // (FdvPlan.perimer). Demande à l'intégrateur : plan_conforme(objet, h).
+    on plan_conforme(objet) {
+        return FdvPlan.conforme(objet, Horodatage(0))
+    }
+
+    on fin_de_mission(h, objet, par) {
+        return FdvFin.declarer_fin(h, objet, par)
+    }
+
+    on en_retard(objet, h) {
+        return FdvFin.en_retard(objet, h)
+    }
+
+    on retrait_autorise(objet) {
+        return FdvRetrait.autorise_sur(objet)
+    }
+
+    on passive(objet) {
+        return FdvPassivation.passive(objet)
+    }
+
+    on mission_capturee(objet) {
+        return FdvRetrait.capturee_sur(objet)
+    }
+
+    on plan(objet) {
+        return FdvPlan.plan_de(objet)
+    }
+
+    on balayer(h, par) {
+        return FdvCouverture.balayer(h, par)
+    }
+
+    on missions_de(objet) {
+        return FdvRetrait.missions(objet)
+    }
+}

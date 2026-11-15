@@ -1,0 +1,11 @@
+ApiObservation.suivi: calls ObsOrbites.suivi
+ApiObservation.ecart_declare: calls ObsOrbites.ecart_declare
+ApiObservation.demander_suivi: calls ObsTaches.demander ; moves ObsTaches.tache: demandee -> affectee, affectee -> interrompue, en_cours -> interrompue
+ApiObservation.manoeuvre_detectee: calls ObsDetections.detectee_depuis
+ApiObservation.capteurs_en_service: calls ObsCapteurs.en_service_nb
+ApiObservation.ecart_a: calls ObsOrbites.ecart_a
+ApiObservation.deposer_mesure: calls ObsMesures.recevoir ; moves ObsMesures.mesure: recue -> validee, recue -> rejetee
+ApiObservation.perigee: calls ObsOrbites.perigee
+ApiObservation.apogee: calls ObsOrbites.apogee
+ApiObservation.pistes_non_correlees: calls ObsPistes.en_attente
+ApiObservation.balayer: calls ObsBalayage.balayer

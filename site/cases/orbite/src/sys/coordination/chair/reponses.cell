@@ -1,0 +1,173 @@
+// Corps de CoordReponse : les réponses attendues des parties, tour par tour.
+flesh CoordReponse {
+    on attendre(h, r, tour, org) {
+        let id_rep = "{r}#{tour}|{org}"
+        require dossier_de.get(id_rep) == () else Existe "réponse déjà attendue : {id_rep}"
+        require dossier_de.size < MAX_REPONSES else Plein "plafond de {MAX_REPONSES} réponses atteint"
+        let cle = "{r}#{tour}"
+        let du_t = du_tour_de.get(cle) ?? []
+        require len(du_t) < MAX_PARTIES else Plein "tour {cle} : au plus {MAX_PARTIES} parties"
+        dossier_de.set(id_rep, r)
+        org_de.set(id_rep, org)
+        // repondu_le d'abord : l'invariant repondu_le >= attendue_le lit l'autre slot à la même clé.
+        repondu_le.set(id_rep, h)
+        attendue_le.set(id_rep, h)
+        du_tour_de.set(cle, du_t ++ [id_rep])
+        let les_siennes = (de_org.get(org) ?? []) ++ [id_rep]
+        let k = len(les_siennes)
+        if k > MAX_PAR_ORG { les_siennes = slice(les_siennes, k - MAX_PAR_ORG, k) }
+        de_org.set(org, les_siennes)
+        if !ApiOperateurs.est_actif(org, h) {
+            transition(id_rep, "attendue", "muette")
+            let _ = try { ApiEscalade.escalader(h, r, org, "operateur inactif : reponse impossible", "systeme") }
+        }
+        return id_rep
+    }
+    on enregistrer(h, r, tour, org, sens, contre, motif, par) {
+        let id_rep = "{r}#{tour}|{org}"
+        let du_t = du_tour_de.get("{r}#{tour}") ?? []
+        require dossier_de.get(id_rep) != () && contains(du_t, id_rep) else Inconnu "{org} n'est pas une partie attendue au tour {tour} de {r}"
+        let st = get_status(id_rep) ?? "attendue"
+        require st == "attendue" else EtatInvalide "réponse {id_rep} : {st}"
+        let ech = CoordDossier.echeance(r)
+        require h <= ech else Delai "échéance de réponse dépassée ({ech})"
+        if sens == "accepte" {
+            transition(id_rep, "attendue", "acceptee")
+        } else {
+            transition(id_rep, "attendue", "refusee")
+            contre_de.set(id_rep, contre)
+            motif_de.set(id_rep, motif)
+        }
+        repondu_le.set(id_rep, h)
+        sens_de.set(id_rep, sens)
+        par_de.set(id_rep, par)
+        if ApiEscalade.echelon(r, org) > 0 {
+            let _ = try { ApiEscalade.accuser(h, r, org, par) }
+        }
+        return get_status(id_rep) ?? "attendue"
+    }
+    on relancer(h, r, par) {
+        require ApiAcces.a_le_role(par, "systeme") || ApiAcces.a_le_role(par, "analyste") else Habilitation "{par} ne relance pas"
+        let tour = CoordDossier.tour(r)
+        let ech = CoordDossier.echeance(r)
+        let n_rel = 0
+        for id_rep in du_tour_de.get("{r}#{tour}") ?? [] {
+            if (get_status(id_rep) ?? "attendue") == "attendue" {
+                let deja = relances_de.get(id_rep) ?? 0
+                let depuis = to_int(attendue_le.get(id_rep) ?? h)
+                let duree = to_int(ech) - depuis
+                // relance k (1..MAX_RELANCES) due à 1/2, 3/4, 7/8 du délai
+                let diviseur = 1
+                for _i in range(0, deja + 1) { diviseur = diviseur * 2 }
+                let seuil = depuis + duree - idiv(duree, diviseur)
+                if deja < MAX_RELANCES && duree > 0 && to_int(h) >= seuil {
+                    let org = org_de.get(id_rep) ?? ""
+                    let ast = try { ApiOperateurs.astreinte(org, h) }
+                    let contact = if ast.error == () { ast.value } else { "" }
+                    let reste = to_int(ech) - to_int(h)
+                    let _ = CoordEchange.notifier(h, r, "relance", "relance {deja + 1} de {org} (astreinte {contact}) : réponse attendue avant {ech}, reste {reste} ms")
+                    relances_de.set(id_rep, deja + 1)
+                    n_rel = n_rel + 1
+                }
+            }
+        }
+        return n_rel
+    }
+    on constater_muettes(h, r) {
+        let tour = CoordDossier.tour(r)
+        let niv = ApiConjonctions.niveau(r)
+        let n_muettes = 0
+        for id_rep in du_tour_de.get("{r}#{tour}") ?? [] {
+            let st = get_status(id_rep) ?? "attendue"
+            if st == "attendue" {
+                repondu_le.set(id_rep, h)
+                transition(id_rep, "attendue", "muette")
+                let org = org_de.get(id_rep) ?? ""
+                let _ = try { ApiEscalade.escalader(h, r, org, "silence coordination", "systeme") }
+                let _ = try { ApiConformite.constater(h, org, "reponse_tardive", Gravite(to_int(niv)), to_string(r), "systeme") }
+                n_muettes = n_muettes + 1
+            } else if st == "muette" {
+                n_muettes = n_muettes + 1
+            }
+        }
+        return n_muettes
+    }
+    on rendre_caduques(h, r) {
+        let t = try { CoordDossier.tour(r) }
+        if t.error != () { return 0 }
+        let n_cad = 0
+        for k in range(1, t.value + 1) {
+            for id_rep in du_tour_de.get("{r}#{k}") ?? [] {
+                if (get_status(id_rep) ?? "attendue") == "attendue" {
+                    repondu_le.set(id_rep, h)
+                    transition(id_rep, "attendue", "caduque")
+                    n_cad = n_cad + 1
+                }
+            }
+        }
+        return n_cad
+    }
+    on toutes_acceptees(r, tour) {
+        let du_t = du_tour_de.get("{r}#{tour}") ?? []
+        if len(du_t) == 0 { return false }
+        return all(du_t, x => (get_status(x) ?? "attendue") == "acceptee")
+    }
+    on du_tour(r) {
+        let t = try { CoordDossier.tour(r) }
+        if t.error != () { return [] }
+        let res_dt = []
+        for id_rep in du_tour_de.get("{r}#{t.value}") ?? [] {
+            let org = org_de.get(id_rep) ?? ""
+            let st = get_status(id_rep) ?? "attendue"
+            res_dt.push("{org}:{st}")
+        }
+        return res_dt
+    }
+    on muets(r) {
+        let t = try { CoordDossier.tour(r) }
+        if t.error != () { return [] }
+        let res_m = []
+        for id_rep in du_tour_de.get("{r}#{t.value}") ?? [] {
+            if (get_status(id_rep) ?? "attendue") == "muette" {
+                res_m.push(to_string(org_de.get(id_rep) ?? ""))
+            }
+        }
+        return sort(res_m)
+    }
+    on en_attente_de(org) {
+        let res_a = []
+        for id_rep in de_org.get(org) ?? [] {
+            if len(res_a) < 1000 && (get_status(id_rep) ?? "attendue") == "attendue" {
+                let rr = to_string(dossier_de.get(id_rep) ?? "")
+                if !contains(res_a, rr) { res_a.push(rr) }
+            }
+        }
+        return res_a
+    }
+    on bilan(h, org, depuis, par) {
+        let orbite_ok = ApiAcces.a_le_role(par, "conformite") || ApiAcces.a_le_role(par, "analyste") || ApiAcces.a_le_role(par, "auditeur")
+        let op_ok = ApiAcces.a_le_role(par, "administrateur_operateur") && ApiAcces.agit_pour(par, org)
+        require orbite_ok || op_ok else Habilitation "{par} ne lit pas le bilan de {org}"
+        let n_att = 0
+        let n_acc = 0
+        let n_ref = 0
+        let n_mue = 0
+        let cumul = 0
+        for id_rep in de_org.get(org) ?? [] {
+            let debut = attendue_le.get(id_rep) ?? 0
+            if debut >= depuis {
+                n_att = n_att + 1
+                let st = get_status(id_rep) ?? "attendue"
+                if st == "acceptee" || st == "refusee" {
+                    if st == "acceptee" { n_acc = n_acc + 1 } else { n_ref = n_ref + 1 }
+                    cumul = cumul + to_int(repondu_le.get(id_rep) ?? debut) - to_int(debut)
+                } else if st == "muette" {
+                    n_mue = n_mue + 1
+                }
+            }
+        }
+        let donnees = n_acc + n_ref
+        let moyen = if donnees > 0 { idiv(cumul, donnees) } else { 0 }
+        return CoordBilan { attendues: n_att, acceptees: n_acc, refusees: n_ref, muettes: n_mue, delai_moyen: Duree(moyen) }
+    }
+}

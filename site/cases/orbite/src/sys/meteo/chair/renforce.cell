@@ -1,0 +1,270 @@
+// meteo — corps du CRIBLAGE RENFORCÉ et des AVIS de tempête.
+flesh MetRenforce {
+    on declencher(h, tempete) {
+        require declenche_le.get(tempete) == () else Existe "renforcement {tempete} déjà déclenché"
+        require declenche_le.size < MAX_RENFORCEMENTS else Plein "registre des renforcements plein"
+        let g = to_int(MetTempete.echelle_de(tempete))
+        let liste = _regimes_pour(g)
+        let version = MetBareme.en_vigueur_a(h)
+        declenche_le.set(tempete, h)
+        bareme_de.set(tempete, version)
+        regimes.set(tempete, join(liste, ","))
+        let b = MetBareme.bande(_kp_de_echelle(g))
+        for reg in liste {
+            facteur_fige.set("{tempete}|{reg}", MetBareme.facteur(Regime(reg), b))
+            _demander_episode(h, tempete, reg)
+        }
+        let txt = join(liste, ",")
+        let _ = Journal.noter(h, "meteo", "systeme", "renforcement {tempete} declenche : G{g}, regimes {txt}, bareme {version}")
+        return txt
+    }
+
+    on _regimes_pour(g: Int) {
+        if g >= 5 { return ["leo", "meo", "geo", "heo"] }
+        if g >= 4 { return ["leo", "meo"] }
+        return ["leo"]
+    }
+
+    on _kp_de_echelle(g: Int) {
+        if g >= 5 { return 90 }
+        if g >= 4 { return 80 }
+        return 70
+    }
+
+    // Demande (ou prolonge) l'épisode de criblage renforcé de conjonctions pour un régime.
+    // Un refus de conjonctions est journalisé : la ronde redemandera (prolonger).
+    on _demander_episode(h: Horodatage, tempete: String, reg: String) {
+        let fin_ep = Horodatage(to_int(h) + HORIZON_EPISODE)
+        let r = try { ApiConjonctions.renforcer(h, Regime(reg), fin_ep, tempete, "systeme") }
+        if r.error == () {
+            episode_de.set("{tempete}|{reg}", r.value)
+            episode_fin.set("{tempete}|{reg}", fin_ep)
+            return true
+        }
+        let _ = Journal.noter(h, "meteo", "systeme", "renforcement {tempete} : criblage {reg} refuse par conjonctions ({r.kind})")
+        return false
+    }
+
+    on notifier(h, tempete, par) {
+        require ApiAcces.a_le_role(par, "systeme") else Habilitation "notification réservée à systeme"
+        require declenche_le.get(tempete) != () else Inconnu "renforcement {tempete} inconnu"
+        let st = get_status(tempete) ?? "declenche"
+        require st == "declenche" || st == "notifie" else EtatInvalide "renforcement {tempete} : {st}"
+        let regs = regimes.get(tempete) ?? "leo"
+        let rang = len(split(regs, ","))
+        // Marqueur "<alerte>#rang" : rang de régimes déjà notifié (sans effet s'il est atteint).
+        let deja = envoyes.get("{tempete}#rang") ?? 0
+        if st == "notifie" && deja >= rang { return 0 }
+        let orbite_org = ApiRef.orbite()
+        let dest = [to_string(orbite_org)]
+        for op in ApiOperateurs.actifs(h) {
+            if !contains(dest, op) { dest = dest ++ [op] }
+        }
+        for e in ApiRef.etats_participants() {
+            let o = try { ApiRef.org_de_etat(Etat(e)) }
+            if o.error == () && !contains(dest, to_string(o.value)) {
+                dest = dest ++ [to_string(o.value)]
+            }
+        }
+        require len(dest) <= MAX_DESTINATAIRES else Plein "trop de destinataires"
+        let sujet = "tempete {tempete} : criblage renforce"
+        let texte = "Tempete geomagnetique {tempete}, regimes {regs} : ephemerides a redeposer a demi-delai, covariances elargies, criblage renforce."
+        let n = 0
+        for d in dest {
+            let msg = ApiPasserelle.notifier(h, Org(d), "", sujet, texte, 3)
+            let _ = MetAvis.ouvrir(h, tempete, Org(d), msg)
+            n = n + 1
+        }
+        if st == "declenche" {
+            transition(tempete, "declenche", "notifie")
+        }
+        envoyes.set(tempete, min((envoyes.get(tempete) ?? 0) + n, MAX_DESTINATAIRES * 10))
+        envoyes.set("{tempete}#rang", rang)
+        let _ = Journal.noter(h, "meteo", par, "renforcement {tempete} notifie : {n} messages (regimes {regs})")
+        return n
+    }
+
+    on etendre(h, tempete, par) {
+        require ApiAcces.a_le_role(par, "systeme") else Habilitation "extension réservée à systeme"
+        require bareme_de.get(tempete) != () else Inconnu "renforcement {tempete} inconnu"
+        let st = get_status(tempete) ?? "declenche"
+        require st == "declenche" || st == "notifie" else EtatInvalide "renforcement {tempete} : {st}"
+        let actuels = split(regimes.get(tempete) ?? "leo", ",")
+        let g = to_int(MetTempete.echelle_de(tempete))
+        let voulus = _regimes_pour(g)
+        let nouveaux = voulus.filter(r => !contains(actuels, r))
+        if len(nouveaux) == 0 { return join(actuels, ",") }
+        let b = MetBareme.bande(_kp_de_echelle(g))
+        for reg in nouveaux {
+            facteur_fige.set("{tempete}|{reg}", MetBareme.facteur(Regime(reg), b))
+            _demander_episode(h, tempete, reg)
+        }
+        let tous = actuels ++ nouveaux
+        let txt = join(tous, ",")
+        regimes.set(tempete, txt)
+        let _ = Journal.noter(h, "meteo", par, "renforcement {tempete} etendu : G{g}, regimes {txt}")
+        let n = try { notifier(h, tempete, "systeme") }
+        if n.error != () {
+            let _ = Journal.noter(h, "meteo", par, "renforcement {tempete} : renotification differee ({n.kind})")
+        }
+        return txt
+    }
+
+    on prolonger(h, par) {
+        require ApiAcces.a_le_role(par, "systeme") else Habilitation "prolongation réservée à systeme"
+        let t = to_int(h)
+        let n = 0
+        for e in regimes.entries {
+            let st = get_status(e.key) ?? "declenche"
+            if st == "declenche" || st == "notifie" {
+                for reg in split(e.value, ",") {
+                    let k = "{e.key}|{reg}"
+                    let ff = episode_fin.get(k)
+                    if ff == () || to_int(ff) - t < PROLONGATION {
+                        if _demander_episode(h, e.key, reg) {
+                            n = n + 1
+                        }
+                    }
+                }
+            }
+        }
+        return n
+    }
+
+    on lever(h, tempete) {
+        require declenche_le.get(tempete) != () else Inconnu "renforcement {tempete} inconnu"
+        let st = get_status(tempete) ?? "declenche"
+        require st == "declenche" || st == "notifie" else EtatInvalide "renforcement {tempete} : {st}"
+        require MetTempete.terminee(tempete) else EtatInvalide "alerte {tempete} non terminée"
+        if st == "notifie" {
+            transition(tempete, "notifie", "leve")
+        } else {
+            transition(tempete, "declenche", "leve")
+        }
+        leve_le.set(tempete, h)
+        if st == "notifie" {
+            let r = try { ApiPasserelle.notifier(h, ApiRef.orbite(), "", "tempete {tempete} : levee", "Fin du criblage renforce de la tempete {tempete}.", 2) }
+            if r.error == () {
+                envoyes.set(tempete, min((envoyes.get(tempete) ?? 0) + 1, MAX_DESTINATAIRES * 10))
+            }
+        }
+        let muets = MetAvis.silencieux(tempete)
+        let nm = len(muets)
+        let liste_m = join(muets, ",")
+        let _ = Journal.noter(h, "meteo", "systeme", "renforcement {tempete} leve ; {nm} destinataires silencieux : {liste_m}")
+        return "leve"
+    }
+
+    on abandonner(h, tempete) {
+        require declenche_le.get(tempete) != () else Inconnu "renforcement {tempete} inconnu"
+        let st = get_status(tempete) ?? "declenche"
+        require st == "declenche" || st == "notifie" else EtatInvalide "renforcement {tempete} : {st}"
+        require MetTempete.annulee(tempete) else EtatInvalide "alerte {tempete} non annulée"
+        if st == "notifie" {
+            transition(tempete, "notifie", "abandonne")
+        } else {
+            transition(tempete, "declenche", "abandonne")
+        }
+        leve_le.set(tempete, h)
+        if st == "notifie" {
+            let r = try { ApiPasserelle.notifier(h, ApiRef.orbite(), "", "tempete {tempete} : annulee", "Alerte {tempete} annulee : fin du criblage renforce.", 2) }
+            if r.error == () {
+                envoyes.set(tempete, min((envoyes.get(tempete) ?? 0) + 1, MAX_DESTINATAIRES * 10))
+            }
+        }
+        let _ = Journal.noter(h, "meteo", "systeme", "renforcement {tempete} abandonne")
+        return "abandonne"
+    }
+
+    on renforce(regime) {
+        let r = to_string(regime)
+        let actifs = regimes.entries.filter(e => contains(split(e.value, ","), r) && _en_cours(e.key))
+        return len(actifs) > 0
+    }
+
+    on _en_cours(t: String) {
+        let st = get_status(t) ?? "declenche"
+        return st == "declenche" || st == "notifie"
+    }
+
+    on facteur_de(tempete, regime) {
+        let f = facteur_fige.get("{tempete}|{regime}")
+        if f != () { return f }
+        let existe_t = len(facteur_fige.keys.filter(k => starts_with(k, "{tempete}|"))) > 0
+        require existe_t else Inconnu "renforcement {tempete} inconnu"
+        return 100
+    }
+}
+
+flesh MetAvis {
+    on ouvrir(h, tempete, org, msg) {
+        require message.size < MAX_AVIS else Plein "registre des avis plein"
+        let rang = 1
+        while message.get("{tempete}|{org}|{rang}") != () {
+            rang = rang + 1
+        }
+        let id = "{tempete}|{org}|{rang}"
+        require message.get(id) == () else Existe "avis {id} déjà ouvert"
+        message.set(id, msg)
+        destinataire.set(id, org)
+        envoye_le.set(id, h)
+        return id
+    }
+
+    on suivre(h, par) {
+        require ApiAcces.a_le_role(par, "systeme") else Habilitation "suivi réservé à systeme"
+        let t = to_int(h)
+        let en_attente = 0
+        for id in message.keys {
+            let st = get_status(id) ?? "envoye"
+            if st == "envoye" || st == "relance" {
+                let msg = message.get(id) ?? ""
+                let dest = destinataire.get(id) ?? Org("")
+                let depuis = t - to_int(envoye_le.get(id) ?? h)
+                let acq = try { ApiPasserelle.acquitte(msg) }
+                if acq.error == () && acq.value {
+                    if st == "envoye" {
+                        transition(id, "envoye", "acquitte")
+                    } else {
+                        transition(id, "relance", "acquitte")
+                    }
+                    acquitte_le.set(id, h)
+                } else if st == "envoye" && depuis >= DELAI_ACCUSE {
+                    let r = try { ApiPasserelle.notifier(h, dest, "", "relance : avis de tempete", "Avis de tempete non acquitte ({id}) : accuser reception.", 3) }
+                    if r.error == () {
+                        message.set(id, r.value)
+                        envoye_le.set(id, h)
+                        transition(id, "envoye", "relance")
+                        let _ = Journal.noter(h, "meteo", par, "avis {id} relance")
+                    }
+                    en_attente = en_attente + 1
+                } else if st == "relance" && depuis >= DELAI_RELANCE {
+                    let c = try { ApiConformite.constater(h, dest, "avis_tempete_sans_reponse", 1, id, "systeme") }
+                    if c.error == () {
+                        manquement.set(id, c.value)
+                    }
+                    transition(id, "relance", "sans_reponse")
+                    let _ = Journal.noter(h, "meteo", par, "avis {id} sans reponse : manquement constate")
+                } else {
+                    en_attente = en_attente + 1
+                }
+            }
+        }
+        return en_attente
+    }
+
+    on silencieux(tempete) {
+        let pref = "{tempete}|"
+        let muets = []
+        for e in destinataire.entries {
+            if starts_with(e.key, pref) {
+                let st = get_status(e.key) ?? "envoye"
+                let o = to_string(e.value)
+                if (st == "relance" || st == "sans_reponse") && !contains(muets, o) && len(muets) < 5000 {
+                    muets = muets ++ [o]
+                }
+            }
+        }
+        return muets
+    }
+}

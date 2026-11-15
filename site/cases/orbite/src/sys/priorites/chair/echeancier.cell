@@ -1,0 +1,117 @@
+// PRIORITÉS — corps de PrioEcheancier (registre unique des échéances, balayé).
+flesh PrioEcheancier {
+    on planifier(h, genre, id, echeance) {
+        let cle = "{genre}|{id}"
+        require echeance_de.has(cle) || echeance_de.size < MAX_ECHEANCES else Plein "échéancier plein"
+        echeance_de.set(cle, echeance)
+        planifiee_le.set(cle, h)
+        return echeance
+    }
+
+    on annuler(genre, id) {
+        let cle = "{genre}|{id}"
+        if !echeance_de.has(cle) { return false }
+        echeance_de.delete(cle)
+        planifiee_le.delete(cle)
+        reports.delete(cle)
+        return true
+    }
+
+    on balayer(h, par) {
+        require ApiAcces.a_le_role(par, "systeme") else Habilitation "balayage réservé au traitement automatique (systeme)"
+        let t = to_int(h)
+        let precedent = to_int(dernier_balayage.get("dernier") ?? 0)
+        let dues = echeance_de.entries.filter(e => to_int(e.value) <= t).sort_by(e => [to_int(e.value), e.key])
+        let soldees = 0
+        let traitees = 0
+        for e in dues {
+            if traitees < MAX_LOT {
+                traitees = traitees + 1
+                let cle = e.key
+                let i = index_of(cle, "|")
+                let genre = substring(cle, 0, i)
+                let id = substring(cle, i + 1, len(cle))
+                let essai = try { _agir(h, genre, id) }
+                if essai.error == () {
+                    soldees = soldees + 1
+                    if echeance_de.has(cle) && to_int(echeance_de.get(cle) ?? 0) == to_int(e.value) {
+                        echeance_de.delete(cle)
+                        planifiee_le.delete(cle)
+                        reports.delete(cle)
+                    }
+                } else {
+                    reports.set(cle, min(100000, (reports.get(cle) ?? 0) + 1))
+                    let k = essai.kind
+                    Journal.noter(h, "priorites", "systeme", "échéance {cle} reportée ({k})")
+                }
+            }
+            // Retard de plus de TOLERANCE encore en souffrance : un incident, une seule fois
+            // (au premier balayage qui le constate).
+            let ech = to_int(e.value)
+            if echeance_de.has(e.key) && t - ech > TOLERANCE && (precedent == 0 || precedent - ech <= TOLERANCE) {
+                let cle_i = e.key
+                let inc = try { ApiOperations.declarer_incident(h, "INC-PRIO-{cle_i}", 2, "priorites", "échéance {cle_i} en retard de plus d'une heure", "systeme") }
+                if inc.error != () {
+                    Journal.noter(h, "priorites", "systeme", "incident de retard non déclaré pour {cle_i}")
+                }
+            }
+        }
+        dernier_balayage.set("dernier", h)
+        if soldees > 0 {
+            Journal.noter(h, "priorites", "systeme", "balayage : {soldees} échéances soldées")
+        }
+        return soldees
+    }
+
+    on a_echoir(h, n) {
+        let t = to_int(h)
+        let dues = echeance_de.entries.filter(e => to_int(e.value) <= t).sort_by(e => [to_int(e.value), e.key])
+        let lignes_e = []
+        for e in slice(dues, 0, min(n, len(dues))) {
+            let cle = e.key
+            let i = index_of(cle, "|")
+            let genre = substring(cle, 0, i)
+            let id = substring(cle, i + 1, len(cle))
+            let v = e.value
+            let rep = reports.get(cle) ?? 0
+            lignes_e = lignes_e ++ ["{genre} | {id} | {v} | {rep}"]
+        }
+        return lignes_e
+    }
+
+    on en_retard(h) {
+        let t = to_int(h)
+        return echeance_de.entries.filter(e => t - to_int(e.value) > TOLERANCE).len()
+    }
+
+    on dernier() {
+        return dernier_balayage.get("dernier") ?? 0
+    }
+
+    // Action d'une échéance due, sous l'identité "systeme" (voir PrioGenreEcheance).
+    on _agir(h: Horodatage, genre: String, id: String) {
+        if genre == "consultation" {
+            PrioConsultation.clore(h, id, "systeme")
+        } else if genre == "scrutin" {
+            PrioScrutin.depouiller(h, id, "systeme")
+            PrioVersion.prendre_acte(h, id, "systeme")
+        } else if genre == "effet" {
+            PrioVersion.entrer_en_vigueur(h, id, "systeme")
+        } else if genre == "caducite" {
+            for d in PrioDerogation.actives_de_version(id) {
+                PrioDerogation.caduquer(h, d, "systeme")
+            }
+        } else if genre == "instruction" {
+            PrioDerogation.refuser(h, id, "délai d'instruction dépassé : refus d'office", "systeme")
+        } else if genre == "derogation" {
+            PrioDerogation.expirer(h, id, "systeme")
+        } else if genre == "archive" {
+            PrioDesignation.archiver(h, id, "systeme")
+        } else if genre == "purge" {
+            Journal.noter(h, "priorites", "systeme", "purge due de la décision {id} (geste de la conformité, PrioDesignation.purger)")
+        } else {
+            fail("Incoherent", "genre d'échéance inconnu : {genre}")
+        }
+        return true
+    }
+}

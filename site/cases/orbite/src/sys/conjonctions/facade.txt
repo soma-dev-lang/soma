@@ -1,0 +1,20 @@
+ApiConjonctions.signaler: calls ConjRapprochement.signaler, ConjRapprochement.fiche, ConjRapprochement.engager, ConjRapprochement.demander_mesures, ConjCriblagePlan.rendre_caducs, ConjMessage.diffuser
+ApiConjonctions.etat: calls ConjRapprochement.etat
+ApiConjonctions.niveau: calls ConjRapprochement.fiche
+ApiConjonctions.objets: calls ConjRapprochement.fiche
+ApiConjonctions.tca: calls ConjRapprochement.fiche
+ApiConjonctions.pc: calls ConjRapprochement.fiche
+ApiConjonctions.cribler_plan: calls ConjCriblagePlan.cribler
+ApiConjonctions.resoudre: calls ConjRapprochement.resoudre, ConjMessage.clore_de, ConjMessage.diffuser
+ApiConjonctions.ouverts_de: calls ConjRapprochement.ouverts_de
+ApiConjonctions.urgents: calls ConjRapprochement.urgents
+ApiConjonctions.distance: calls ConjRapprochement.fiche
+ApiConjonctions.mis_a_jour: calls ConjRapprochement.fiche
+ApiConjonctions.historique: calls ConjRapprochement.historique
+ApiConjonctions.clos_entre: calls ConjRapprochement.clos_entre
+ApiConjonctions.criblage_plan: calls ConjCriblagePlan.etat
+ApiConjonctions.campagne_fraiche: calls ConjCampagne.fraiche
+ApiConjonctions.constater_collision: calls ConjAnalyseTca.confirmer, ConjRapprochement.clore_apres_tca, ConjMessage.clore_de, ConjMessage.diffuser
+ApiConjonctions.exempter: calls ConjExemption.accorder
+ApiConjonctions.renforcer: calls ConjRenforcement.renforcer
+ApiConjonctions.balayer: calls ConjRonde.balayer

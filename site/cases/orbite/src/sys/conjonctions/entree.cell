@@ -1,0 +1,34 @@
+// Entrée de contrôle du sous-système conjonctions : le contrat commun, les 20 façades,
+// puis les fichiers internes de conjonctions (un use sys::conjonctions::<fichier> par fichier, ci-dessous).
+use commun::types
+use commun::journal
+use commun::horloge
+use sys::acces::api
+use sys::conformite::api
+use sys::conjonctions::api
+use sys::coordination::api
+use sys::donnees::api
+use sys::ephemerides::api
+use sys::escalade::api
+use sys::evenements::api
+use sys::fin_de_vie::api
+use sys::lancements::api
+use sys::manoeuvres::api
+use sys::meteo::api
+use sys::observation::api
+use sys::operateurs::api
+use sys::operations::api
+use sys::passerelle::api
+use sys::priorites::api
+use sys::reentrees::api
+use sys::ref::api
+use sys::responsabilite::api
+use sys::conjonctions::vocabulaire
+use sys::conjonctions::seuils
+use sys::conjonctions::campagnes
+use sys::conjonctions::renforce
+use sys::conjonctions::rapprochements
+use sys::conjonctions::clotures
+use sys::conjonctions::messages
+use sys::conjonctions::plans
+use sys::conjonctions::contestations

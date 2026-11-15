@@ -1,0 +1,394 @@
+use app
+use commun::journal_chair
+use commun::horloge_chair
+use sys::coordination::chair::api
+use sys::coordination::chair::dossier
+use sys::coordination::chair::verrou
+use sys::coordination::chair::decision
+use sys::coordination::chair::reponses
+use sys::coordination::chair::echanges
+use sys::coordination::chair::grappes
+use sys::coordination::chair::suivi
+use sys::coordination::chair::arbitrage
+use doublures::coordination
+
+// Instants : H0 = 1 000 000 000 000 ms ; TCA par défaut H0 + 10 j (1000864000000) ; limite d'action
+// (impulsionnelle) TCA − 1 h = 1000860400000 ; échéance d'un tour au niveau 2 : H0 + 4 h = 1000014400000.
+
+// Scénario métier complet : alerte -> proposition -> accord -> désignation arrêtée -> plan -> vérification -> clôture.
+cell test ScenarioAccordPlan {
+    rules {
+        assert ApiCoordination.ouvrir(1000000000000, "CJ-1PLAN", "systeme") == "CO-CJ-1PLAN"
+        assert ApiCoordination.etat("CJ-1PLAN") == "proposee"
+        assert CoordDossier.proposition("CJ-1PLAN") == "OBJ-A-1PLAN"
+        assert ApiCoordination.echeance("CJ-1PLAN") == 1000014400000
+        assert CoordDossier.limite("CJ-1PLAN") == 1000860400000
+        assert ApiCoordination.en_attente_de("ORG-ALPHA") == ["CJ-1PLAN"]
+        assert ApiCoordination.repondre(1000000001000, "CJ-1PLAN", "accepte", "", "", "dyn-alpha") == "proposee"
+        assert !ApiCoordination.decidee("CJ-1PLAN")
+        // un verrou ne se pose que sur une coordination en accord ou en arbitrage
+        assert_fails CoordVerrou.poser(1000000001500, "CJ-1PLAN", "OBJ-B-1PLAN", "accord", "raccourci", "analyste1", "sup1") matching "EtatInvalide"
+        assert ApiCoordination.designe("CJ-1PLAN", "systeme") == ""
+        assert ApiCoordination.repondre(1000000002000, "CJ-1PLAN", "accepte", "", "", "cdm-beta") == "arretee"
+        assert ApiCoordination.arretee("CJ-1PLAN")
+        assert ApiCoordination.decidee("CJ-1PLAN")
+        assert ApiCoordination.designe("CJ-1PLAN", "systeme") == "OBJ-A-1PLAN"
+        assert ApiCoordination.decision("CJ-1PLAN") == "DS-CJ-1PLAN-1|OBJ-A-1PLAN|systeme||1000000002000|accord des parties"
+        assert ApiCoordination.en_attente_de("ORG-ALPHA") == []
+        assert CoordDecision.etat("DS-CJ-1PLAN-1") == "en_vigueur"
+        assert CoordDecision.historique("CJ-1PLAN") == ["DS-CJ-1PLAN-1"]
+        assert CoordSuivi.etat("DS-CJ-1PLAN-1") == "attente_plan"
+        // propriété 1 : aucune seconde désignation tant que le verrou est tenu
+        assert_fails CoordVerrou.poser(1000000003000, "CJ-1PLAN", "OBJ-B-1PLAN", "arbitrage", "autre", "analyste1", "sup1") matching "Conflit"
+        // relecture du 15/11/2026 : la double désignation passait par une levée hors rouverture —
+        // lever le verrou d'une coordination encore arrêtée est refusé, et la désignation tient
+        assert_fails CoordVerrou.lever(1000000003100, "CJ-1PLAN", "contournement") matching "EtatInvalide"
+        assert ApiCoordination.designe("CJ-1PLAN", "systeme") == "OBJ-A-1PLAN"
+        assert_fails CoordVerrou.poser(1000000003200, "CJ-1PLAN", "OBJ-B-1PLAN", "arbitrage", "autre", "analyste1", "sup1")
+        assert ApiCoordination.designe("CJ-1PLAN", "systeme") == "OBJ-A-1PLAN"
+        // le désigné dépose son plan, il est approuvé, exécuté, vérifié
+        assert CoordSuivi.suivre(1000000004000, "DS-CJ-1PLAN-1", "systeme") == "plan_depose"
+        assert CoordSuivi.plan("DS-CJ-1PLAN-1") == "PL-CJ-1PLAN"
+        mock ApiManoeuvres.etat "approuve"
+        assert CoordSuivi.suivre(1000000005000, "DS-CJ-1PLAN-1", "systeme") == "plan_depose"
+        mock ApiManoeuvres.etat "execute"
+        assert CoordSuivi.suivre(1000000006000, "DS-CJ-1PLAN-1", "systeme") == "execute"
+        // un plan exécuté non vérifié interdit la rouverture (jamais deux évitements actifs)
+        assert_fails ApiCoordination.rouvrir(1000000007000, "CJ-1PLAN", "nouvelle pc", "analyste1") matching "EtatInvalide"
+        mock ApiManoeuvres.etat "verifie"
+        assert CoordSuivi.suivre(1000000008000, "DS-CJ-1PLAN-1", "systeme") == "verifie"
+        // clôture du rapprochement : décision soldée, désignation lisible pour la preuve
+        mock ApiConjonctions.etat "resolu"
+        assert CoordDossier.clore(1000000009000, "CJ-1PLAN", "resolu", "systeme") == "close"
+        assert ApiCoordination.etat("CJ-1PLAN") == "close"
+        assert CoordDecision.etat("DS-CJ-1PLAN-1") == "soldee"
+        assert CoordSuivi.etat("DS-CJ-1PLAN-1") == "verifie"
+        assert ApiCoordination.decidee("CJ-1PLAN")
+        assert ApiCoordination.designe("CJ-1PLAN", "systeme") == "OBJ-A-1PLAN"
+        assert Journal.taille() > 0
+    }
+}
+
+// Désaccord, second refus, arbitrage quatre yeux, réserve, rouverture, nouvel accord.
+cell test ScenarioDesaccordArbitrage {
+    rules {
+        let _ = ApiCoordination.ouvrir(1000000000000, "CJ-2", "systeme")
+        assert ApiCoordination.repondre(1000000001000, "CJ-2", "refuse", "OBJ-B-2", "reservoirs bas", "dyn-alpha") == "desaccord"
+        assert CoordDossier.proposition("CJ-2") == "OBJ-B-2"
+        assert CoordDossier.tour("CJ-2") == 2
+        assert CoordReponse.du_tour("CJ-2") == ["ORG-BETA:attendue"]
+        // l'organisation qui a refusé n'est plus attendue à ce tour
+        assert_fails ApiCoordination.repondre(1000000001500, "CJ-2", "accepte", "", "", "dyn-alpha") matching "EtatInvalide"
+        assert ApiCoordination.repondre(1000000002000, "CJ-2", "refuse", "OBJ-A-2", "plan deja charge", "dyn-beta") == "arbitrage"
+        assert CoordArbitrage.courante("CJ-2") == "CJ-2#2"
+        assert CoordArbitrage.prendre_en_charge(1000000002500, "CJ-2", "analyste1") == "CJ-2#2"
+        assert_fails CoordArbitrage.prendre_en_charge(1000000002600, "CJ-2", "analyste2") matching "EtatInvalide"
+        assert ApiCoordination.arbitrer(1000000003000, "CJ-2", "OBJ-A-2", "regle de priorite art. 4", "analyste1", "sup1") == "arretee"
+        assert CoordArbitrage.courante("CJ-2") == ""
+        assert ApiCoordination.designe("CJ-2", "systeme") == "OBJ-A-2"
+        assert ApiCoordination.decision("CJ-2") == "DS-CJ-2-1|OBJ-A-2|analyste1|sup1|1000000003000|regle de priorite art. 4"
+        // une partie inscrit une réserve, sans effet suspensif
+        assert CoordDecision.contester(1000000004000, "DS-CJ-2-1", "la regle 4 ne s'applique pas", "cdm-alpha") == 1
+        assert CoordDecision.etat("DS-CJ-2-1") == "en_vigueur"
+        assert_fails CoordDecision.contester(1000000004000, "DS-CJ-2-1", "", "cdm-alpha") matching "MotifRequis"
+        assert_fails CoordDecision.contester(1000000004000, "DS-CJ-2-1", "non", "cdm-gamma") matching "Habilitation"
+        let f = CoordDecision.consulter(1000000005000, "DS-CJ-2-1", "analyste2")
+        assert f.objet == "OBJ-A-2"
+        assert f.mode == "arbitrage"
+        assert f.reponses == ["ORG-BETA:refusee"]
+        assert f.depot_a == "DEP-OBJ-A-2"
+        assert f.version == "V1"
+        // rouverture : la décision est levée, un nouveau tour s'ouvre
+        assert ApiCoordination.rouvrir(1000000006000, "CJ-2", "nouvelle pc", "analyste1") == "proposee"
+        assert CoordDecision.etat("DS-CJ-2-1") == "levee"
+        assert CoordSuivi.etat("DS-CJ-2-1") == "caduc"
+        assert ApiCoordination.designe("CJ-2", "systeme") == ""
+        assert !ApiCoordination.decidee("CJ-2")
+        assert CoordDossier.tour("CJ-2") == 3
+        assert ApiCoordination.repondre(1000000007000, "CJ-2", "accepte", "", "", "dyn-alpha") == "proposee"
+        assert ApiCoordination.repondre(1000000008000, "CJ-2", "accepte", "", "", "dyn-beta") == "arretee"
+        assert CoordVerrou.decision("CJ-2") == "DS-CJ-2-2"
+        assert CoordDecision.historique("CJ-2") == ["DS-CJ-2-1", "DS-CJ-2-2"]
+        mock ApiConjonctions.etat "passe"
+        assert CoordDossier.clore(1000000009000, "CJ-2", "passe", "analyste1") == "close"
+        assert CoordDecision.etat("DS-CJ-2-2") == "soldee"
+        assert CoordSuivi.etat("DS-CJ-2-2") == "caduc"
+        let lignes = CoordEchange.fil(1000000009500, "CJ-2", 2000, "aud1")
+        assert len(lignes) > 5
+    }
+}
+
+// Habilitations, quatre yeux, portée et états invalides de la coordination.
+cell test RefusCoordination {
+    rules {
+        assert_fails ApiCoordination.ouvrir(1000000000000, "CJ-1", "intrus1") matching "Habilitation"
+        assert_fails ApiCoordination.ouvrir(1000000000000, "CJ-1", "dyn-alpha") matching "Habilitation"
+        assert_fails ApiCoordination.ouvrir(1000000000000, "CJ-SUIVI1", "systeme") matching "EtatInvalide"
+        assert_fails ApiCoordination.ouvrir(1000000000000, "CJ-INCONNU1", "systeme") matching "Inconnu"
+        assert ApiCoordination.etat("CJ-1") == "inconnue"
+        let _ = ApiCoordination.ouvrir(1000000000000, "CJ-1", "analyste1")
+        assert_fails ApiCoordination.ouvrir(1000000000000, "CJ-1", "systeme") matching "Existe"
+        // réponses : portée (seules les parties), rôle, cohérence, motif
+        assert_fails ApiCoordination.repondre(1000000001000, "CJ-1", "accepte", "", "", "dyn-gamma") matching "Habilitation"
+        assert_fails ApiCoordination.repondre(1000000001000, "CJ-1", "accepte", "", "", "analyste1") matching "Habilitation"
+        assert_fails ApiCoordination.repondre(1000000001000, "CJ-1", "accepte", "", "", "intrus-alpha") matching "Habilitation"
+        assert_fails ApiCoordination.repondre(1000000001000, "CJ-1", "peut-etre", "", "", "dyn-alpha") matching "Incoherent"
+        assert_fails ApiCoordination.repondre(1000000001000, "CJ-1", "refuse", "OBJ-B-1", "", "dyn-alpha") matching "MotifRequis"
+        assert_fails ApiCoordination.repondre(1000000001000, "CJ-1", "refuse", "OBJ-A-1", "non", "dyn-alpha") matching "Incoherent"
+        assert_fails ApiCoordination.repondre(1000000001000, "CJ-1", "refuse", "OBJ-X", "non", "dyn-alpha") matching "Incoherent"
+        assert ApiCoordination.repondre(1000000001000, "CJ-1", "accepte", "", "", "dyn-alpha") == "proposee"
+        assert_fails ApiCoordination.repondre(1000000001500, "CJ-1", "accepte", "", "", "cdm-alpha") matching "EtatInvalide"
+        assert_fails ApiCoordination.repondre(1000014400001, "CJ-1", "accepte", "", "", "dyn-beta") matching "Delai"
+        // arbitrage : les parties ont la main avant l'échéance ; habilitation, quatre yeux, motif, cohérence
+        assert_fails ApiCoordination.arbitrer(1000000002000, "CJ-1", "OBJ-A-1", "motif", "analyste1", "sup1") matching "EtatInvalide"
+        assert_fails ApiCoordination.arbitrer(1000014400001, "CJ-1", "OBJ-A-1", "motif", "dyn-alpha", "sup1") matching "Habilitation"
+        assert_fails ApiCoordination.arbitrer(1000014400001, "CJ-1", "OBJ-A-1", "motif", "analyste1", "analyste1") matching "QuatreYeux"
+        assert_fails ApiCoordination.arbitrer(1000014400001, "CJ-1", "OBJ-A-1", "motif", "analyste1", "dyn-beta") matching "QuatreYeux"
+        assert_fails ApiCoordination.arbitrer(1000014400001, "CJ-1", "OBJ-A-1", "motif", "analyste1", "analyste2") matching "QuatreYeux"
+        assert_fails ApiCoordination.arbitrer(1000014400001, "CJ-1", "OBJ-A-1", "", "analyste1", "sup1") matching "MotifRequis"
+        assert_fails ApiCoordination.arbitrer(1000014400001, "CJ-1", "OBJ-Z", "motif", "analyste1", "sup1") matching "Incoherent"
+        // le silence passé l'échéance laisse arbitrer ORBITE
+        assert ApiCoordination.arbitrer(1000014400001, "CJ-1", "OBJ-B-1", "silence de beta", "analyste1", "sup1") == "arretee"
+        assert ApiCoordination.designe("CJ-1", "systeme") == "OBJ-B-1"
+        // rouverture : rôle, motif, état
+        assert_fails ApiCoordination.rouvrir(1000014500000, "CJ-1", "pc", "dyn-alpha") matching "Habilitation"
+        assert_fails ApiCoordination.rouvrir(1000014500000, "CJ-1", "", "analyste1") matching "MotifRequis"
+        assert_fails ApiCoordination.rouvrir(1000014500000, "CJ-9", "pc", "analyste1") matching "Inconnu"
+        assert_fails CoordDossier.demander_rouverture(1000014500000, "CJ-1", "propulsion degradee", "dyn-gamma") matching "Habilitation"
+        assert_fails CoordDossier.demander_rouverture(1000014500000, "CJ-1", "", "cdm-alpha") matching "MotifRequis"
+        assert CoordDossier.demander_rouverture(1000014500000, "CJ-1", "propulsion degradee", "cdm-alpha") > 0
+        // clôture : le motif doit être confirmé par conjonctions (encore en alerte ici)
+        assert_fails CoordDossier.clore(1000014600000, "CJ-1", "resolu", "systeme") matching "EtatInvalide"
+        assert_fails CoordDossier.clore(1000014600000, "CJ-1", "resolu", "dyn-alpha") matching "Habilitation"
+        // le fil : ORBITE ou partie, jamais un tiers
+        assert_fails CoordEchange.fil(1000014700000, "CJ-1", 10, "dyn-gamma") matching "Habilitation"
+        assert_fails CoordEchange.fil(1000014700000, "CJ-1", 10, "intrus1") matching "Habilitation"
+        assert len(CoordEchange.fil(1000014700000, "CJ-1", 3, "dyn-beta")) == 3
+        let fiche_o = CoordDossier.fiche(1000014700000, "CJ-1", "analyste2")
+        assert fiche_o.designe == "OBJ-B-1"
+        assert fiche_o.etat == "arretee"
+        assert_fails CoordDossier.fiche(1000014700000, "CJ-1", "dyn-gamma") matching "Confidentiel"
+    }
+}
+
+// Contrôles du verrou à la pose : capacité, habité, opérateur actif, préavis ; crise et arbitrage direct.
+cell test RefusVerrou {
+    rules {
+        // aucun des deux ne peut manœuvrer : arbitrage direct à l'ouverture, seule décision possible « ne pas manœuvrer »
+        let _ = ApiCoordination.ouvrir(1000000000000, "CJ-D~OBJ-DEB-1~OBJ-MORT-2", "systeme")
+        assert ApiCoordination.etat("CJ-D~OBJ-DEB-1~OBJ-MORT-2") == "arbitrage"
+        assert CoordArbitrage.courante("CJ-D~OBJ-DEB-1~OBJ-MORT-2") == "CJ-D~OBJ-DEB-1~OBJ-MORT-2#1"
+        assert_fails ApiCoordination.arbitrer(1000000001000, "CJ-D~OBJ-DEB-1~OBJ-MORT-2", "OBJ-MORT-2", "motif", "analyste1", "sup1") matching "NonEligible"
+        assert ApiCoordination.arbitrer(1000000001000, "CJ-D~OBJ-DEB-1~OBJ-MORT-2", "", "aucun objet ne peut manoeuvrer", "analyste1", "sup1") == "arretee"
+        assert ApiCoordination.decidee("CJ-D~OBJ-DEB-1~OBJ-MORT-2")
+        assert !ApiCoordination.arretee("CJ-D~OBJ-DEB-1~OBJ-MORT-2")
+        assert CoordDecision.etat("DS-CJ-D~OBJ-DEB-1~OBJ-MORT-2-1") == "abstention"
+        assert CoordSuivi.etat("DS-CJ-D~OBJ-DEB-1~OBJ-MORT-2-1") == "sans_objet"
+        // crise : ORBITE arbitre sans tour ; un habité ne manœuvre pas si l'autre le peut
+        mock ApiOperations.arbitrage_centralise true
+        let _ = ApiCoordination.ouvrir(1000000000000, "CJ-H~OBJ-A-HAB~OBJ-B-H", "systeme")
+        assert ApiCoordination.etat("CJ-H~OBJ-A-HAB~OBJ-B-H") == "arbitrage"
+        assert_fails ApiCoordination.arbitrer(1000000001000, "CJ-H~OBJ-A-HAB~OBJ-B-H", "OBJ-A-HAB", "motif", "analyste1", "sup1") matching "NonEligible"
+        assert ApiCoordination.arbitrer(1000000001000, "CJ-H~OBJ-A-HAB~OBJ-B-H", "OBJ-B-H", "crise", "analyste1", "sup1") == "arretee"
+        // propriétaire suspendu : sa réponse est muette d'office et il ne peut pas être désigné
+        let _ = ApiCoordination.ouvrir(1000000000000, "CJ-S~OBJ-A-S-1~OBJ-B-S", "systeme")
+        assert ApiCoordination.etat("CJ-S~OBJ-A-S-1~OBJ-B-S") == "proposee"
+        assert ApiCoordination.muets("CJ-S~OBJ-A-S-1~OBJ-B-S") == ["ORG-SUSP"]
+        assert_fails ApiCoordination.arbitrer(1000014400001, "CJ-S~OBJ-A-S-1~OBJ-B-S", "OBJ-A-S-1", "motif", "analyste1", "sup1") matching "Suspendu"
+        // préavis : limite d'action dépassée
+        assert_fails ApiCoordination.ouvrir(1000007300000, "CJ-TARD1", "systeme") matching "Delai"
+        assert ApiCoordination.ouvrir(1000007300000, "CJ-TARD1", "analyste1") == "CO-CJ-TARD1"
+        assert ApiCoordination.etat("CJ-TARD1") == "arbitrage"
+        assert_fails ApiCoordination.arbitrer(1000007300000, "CJ-TARD1", "OBJ-A-TARD1", "motif", "analyste1", "sup1") matching "Delai"
+        // règles fermées : arbitrage sans désignation
+        let _ = ApiCoordination.ouvrir(1000000000000, "CJ-FERME1", "systeme")
+        assert ApiCoordination.etat("CJ-FERME1") == "arbitrage"
+        assert CoordDossier.proposition("CJ-FERME1") == ""
+    }
+}
+
+// Silence des opérateurs : relance à mi-délai, constat de muettes, retards, reprise par l'escalade.
+cell test SilenceEtBalayage {
+    rules {
+        let _ = ApiCoordination.ouvrir(1000000000000, "CJ-3", "systeme")
+        let _ = ApiCoordination.ouvrir(1000000000000, "CJ-REPRISE3", "systeme")
+        assert CoordReponse.relancer(1000007100000, "CJ-3", "systeme") == 0
+        assert CoordReponse.relancer(1000007300000, "CJ-3", "systeme") == 2
+        assert CoordReponse.relancer(1000007400000, "CJ-3", "systeme") == 0
+        assert_fails CoordReponse.relancer(1000007400000, "CJ-3", "dyn-alpha") matching "Habilitation"
+        assert_fails CoordDossier.constater_silence(1000007400000, "CJ-3", "systeme") matching "Delai"
+        assert ApiCoordination.balayer(1000014400001, "systeme") == 1
+        assert ApiCoordination.etat("CJ-3") == "proposee"
+        assert ApiCoordination.muets("CJ-3") == ["ORG-ALPHA", "ORG-BETA"]
+        assert ApiCoordination.etat("CJ-REPRISE3") == "arbitrage"
+        assert CoordArbitrage.courante("CJ-REPRISE3") == "CJ-REPRISE3#1"
+        let ret = CoordDossier.retards(1000014500000, 10, "analyste1")
+        assert ret == ["balayage:99999", "CJ-3"]
+        assert_fails CoordDossier.retards(1000014500000, 10, "dyn-alpha") matching "Habilitation"
+        let b = CoordReponse.bilan(1000014500000, "ORG-ALPHA", 0, "conf1")
+        assert b.attendues == 2
+        assert b.muettes == 2
+        assert_fails CoordReponse.bilan(1000014500000, "ORG-ALPHA", 0, "adm-beta") matching "Habilitation"
+        assert CoordReponse.bilan(1000014500000, "ORG-ALPHA", 0, "adm-alpha").attendues == 2
+        // horloge monotone, réservée au système
+        assert_fails ApiCoordination.balayer(1000000000000, "systeme") matching "Incoherent"
+        assert_fails ApiCoordination.balayer(1000014600000, "analyste1") matching "Habilitation"
+        // le filet : à limite − 2 h, ORBITE reprend la main même sans reprise d'escalade
+        let _ = ApiCoordination.balayer(1000853200000, "systeme")
+        assert ApiCoordination.etat("CJ-3") == "arbitrage"
+        // la clôture chez conjonctions clôt la coordination au balayage
+        mock ApiConjonctions.etat ["collision", "collision"]
+        let _ = ApiCoordination.balayer(1000853300000, "systeme")
+        assert ApiCoordination.etat("CJ-3") == "close"
+        assert CoordArbitrage.courante("CJ-3") == ""
+    }
+}
+
+// Désigné défaillant : pas de plan à l'heure limite -> escalade, manquement, rouverture tardive ;
+// puis l'arbitrage hors délai, rendu seul en accès d'urgence.
+cell test DefaillanceEtUrgence {
+    rules {
+        let _ = ApiCoordination.ouvrir(1000000000000, "CJ-9", "systeme")
+        let _ = ApiCoordination.repondre(1000000001000, "CJ-9", "accepte", "", "", "dyn-alpha")
+        assert ApiCoordination.repondre(1000000002000, "CJ-9", "accepte", "", "", "dyn-beta") == "arretee"
+        assert ApiCoordination.balayer(1000000003000, "systeme") == 0
+        assert CoordSuivi.etat("DS-CJ-9-1") == "attente_plan"
+        assert ApiCoordination.balayer(1000860400001, "systeme") == 1
+        assert CoordSuivi.etat("DS-CJ-9-1") == "defaillant"
+        assert CoordDecision.etat("DS-CJ-9-1") == "levee"
+        assert ApiCoordination.etat("CJ-9") == "arbitrage"
+        assert CoordArbitrage.courante("CJ-9") == "CJ-9#2"
+        assert !CoordArbitrage.en_retard("CJ-9")
+        assert CoordArbitrage.surveiller(1000860400002, "CJ-9", "systeme") == "hors_delai"
+        assert CoordArbitrage.en_retard("CJ-9")
+        // sans accès d'urgence, un superviseur seul ne peut pas arbitrer
+        assert_fails ApiCoordination.arbitrer(1000860500000, "CJ-9", "", "plus le temps", "sup1", "sup1") matching "Habilitation"
+        assert ApiCoordination.arbitrer(1000860500000, "CJ-9", "", "plus le temps de manoeuvrer", "sup-urg", "sup-urg") == "arretee"
+        assert ApiCoordination.decidee("CJ-9")
+        assert ApiCoordination.designe("CJ-9", "systeme") == ""
+    }
+}
+
+// Contrôle continu : le désigné perd sa capacité -> rouverture au balayage (reverifier).
+cell test Reverification {
+    rules {
+        let _ = ApiCoordination.ouvrir(1000000000000, "CJ-5", "systeme")
+        let _ = ApiCoordination.repondre(1000000001000, "CJ-5", "accepte", "", "", "dyn-alpha")
+        let _ = ApiCoordination.repondre(1000000002000, "CJ-5", "accepte", "", "", "dyn-beta")
+        assert CoordDossier.reverifier(1000000003000, "CJ-5", "systeme")
+        mock ApiRef.peut_manoeuvrer false
+        assert !CoordDossier.reverifier(1000000004000, "CJ-5", "systeme")
+        assert ApiCoordination.etat("CJ-5") == "proposee"
+        assert CoordDecision.etat("DS-CJ-5-1") == "levee"
+        assert_fails CoordDossier.reverifier(1000000004000, "CJ-5", "intrus1") matching "Habilitation"
+    }
+}
+
+// Lecture contrôlée de la désignation et du fondement (propriété 6).
+cell test Confidentialite {
+    rules {
+        let _ = ApiCoordination.ouvrir(1000000000000, "CJ-SECRET1", "systeme")
+        let _ = ApiCoordination.repondre(1000000001000, "CJ-SECRET1", "accepte", "", "", "dyn-alpha")
+        let _ = ApiCoordination.repondre(1000000002000, "CJ-SECRET1", "accepte", "", "", "dyn-beta")
+        assert ApiCoordination.designe("CJ-SECRET1", "dyn-alpha") == "OBJ-A-SECRET1"
+        assert ApiCoordination.designe("CJ-SECRET1", "analyste1") == "OBJ-A-SECRET1"
+        assert_fails ApiCoordination.designe("CJ-SECRET1", "dyn-beta") matching "Confidentiel"
+        assert_fails ApiCoordination.designe("CJ-SECRET1", "intrus1") matching "Confidentiel"
+        assert_fails ApiCoordination.designe("CJ-404", "systeme") matching "Inconnu"
+        assert_fails CoordDecision.consulter(1000000003000, "DS-CJ-SECRET1-1", "dyn-beta") matching "Confidentiel"
+        assert_fails CoordDecision.consulter(1000000003000, "DS-CJ-SECRET1-1", "intrus1") matching "Habilitation"
+        assert CoordDecision.consulter(1000000003000, "DS-CJ-SECRET1-1", "dyn-alpha").objet == "OBJ-A-SECRET1"
+        assert CoordDossier.fiche(1000000003000, "CJ-SECRET1", "dyn-beta").designe == ""
+        assert CoordDossier.fiche(1000000003000, "CJ-SECRET1", "dyn-alpha").designe == "OBJ-A-SECRET1"
+        assert_fails CoordEchange.fil(1000000003000, "CJ-SECRET1", 5, "dyn-beta") matching "Confidentiel"
+    }
+}
+
+// Purge d'un fondement après la conservation de 10 ans, hors gel, quatre yeux.
+cell test Purge {
+    rules {
+        let _ = ApiCoordination.ouvrir(1000000000000, "CJ-7", "systeme")
+        let _ = ApiCoordination.repondre(1000000001000, "CJ-7", "accepte", "", "", "dyn-alpha")
+        let _ = ApiCoordination.repondre(1000000002000, "CJ-7", "accepte", "", "", "dyn-beta")
+        assert_fails CoordDecision.purger(1000000003000, "DS-CJ-7-1", "PU-1", "conf1", "dir1") matching "EtatInvalide"
+        mock ApiConjonctions.etat "resolu"
+        let _ = CoordDossier.clore(1000000003000, "CJ-7", "resolu", "systeme")
+        assert_fails CoordDecision.purger(1000000004000, "DS-CJ-7-1", "PU-1", "conf1", "dir1") matching "Delai"
+        assert_fails CoordDecision.purger(1315576004000, "DS-CJ-7-1", "PU-1", "analyste1", "dir1") matching "Habilitation"
+        assert_fails CoordDecision.purger(1315576004000, "DS-CJ-7-1", "PU-1", "conf1", "conf1") matching "QuatreYeux"
+        assert_fails CoordDecision.purger(1315576004000, "DS-CJ-7-1", "PU-1", "conf1", "sup1") matching "QuatreYeux"
+        assert CoordDecision.purger(1315576004000, "DS-CJ-7-1", "PU-1", "conf1", "dir1") == "purgee"
+        assert CoordDecision.etat("DS-CJ-7-1") == "purgee"
+        assert ApiCoordination.decision("CJ-7") == "DS-CJ-7-1|||||purgee"
+        assert_fails CoordDecision.consulter(1315576005000, "DS-CJ-7-1", "analyste1") matching "Ferme"
+        // un objet sous gel bloque la purge
+        let _ = ApiCoordination.ouvrir(1000000000000, "CJ-8~OBJ-A-GEL~OBJ-B-8", "systeme")
+        let _ = ApiCoordination.repondre(1000000001000, "CJ-8~OBJ-A-GEL~OBJ-B-8", "accepte", "", "", "dyn-alpha")
+        let _ = ApiCoordination.repondre(1000000002000, "CJ-8~OBJ-A-GEL~OBJ-B-8", "accepte", "", "", "dyn-beta")
+        mock ApiConjonctions.etat "resolu"
+        let _ = CoordDossier.clore(1000000003000, "CJ-8~OBJ-A-GEL~OBJ-B-8", "resolu", "systeme")
+        assert_fails CoordDecision.purger(1315576004000, "DS-CJ-8~OBJ-A-GEL~OBJ-B-8-1", "PU-2", "conf1", "dir1") matching "EtatInvalide"
+    }
+}
+
+// Grappe : un pivot dans deux rapprochements ; l'accord sans grappe réglée part en arbitrage ;
+// les règles règlent la grappe ; la désignation s'y conforme ; la clôture la dissout.
+cell test Grappe {
+    rules {
+        assert ApiCoordination.ouvrir(1000000000000, "CJ-P1", "systeme") == "CO-CJ-P1"
+        assert CoordGrappe.grappe_de_r("CJ-P1") == ""
+        let _ = ApiCoordination.ouvrir(1000000000000, "CJ-P2", "systeme")
+        assert CoordGrappe.grappe_de_r("CJ-P1") == "GR-OBJ-PIVOT-1"
+        assert CoordGrappe.grappe_de_r("CJ-P2") == "GR-OBJ-PIVOT-1"
+        assert CoordGrappe.etat("GR-OBJ-PIVOT-1") == "formee"
+        assert !CoordGrappe.compatible("CJ-P1", "OBJ-PIVOT")
+        let _ = ApiCoordination.repondre(1000000001000, "CJ-P1", "accepte", "", "", "dyn-alpha")
+        assert ApiCoordination.repondre(1000000002000, "CJ-P1", "accepte", "", "", "dyn-beta") == "arbitrage"
+        assert_fails CoordGrappe.arbitrer(1000000003000, "GR-OBJ-PIVOT-1", "OBJ-V-P1", "motif", "analyste1", "sup1") matching "Incoherent"
+        assert_fails CoordGrappe.arbitrer(1000000003000, "GR-OBJ-PIVOT-1", "OBJ-PIVOT", "motif", "analyste1", "analyste1") matching "QuatreYeux"
+        assert_fails CoordGrappe.regler(1000000003000, "GR-OBJ-PIVOT-1", "dyn-alpha") matching "Habilitation"
+        assert CoordGrappe.regler(1000000003000, "GR-OBJ-PIVOT-1", "systeme") == "OBJ-PIVOT"
+        assert CoordGrappe.etat("GR-OBJ-PIVOT-1") == "arbitree"
+        assert CoordGrappe.compatible("CJ-P2", "OBJ-PIVOT")
+        assert !CoordGrappe.compatible("CJ-P2", "OBJ-V-P2")
+        assert_fails ApiCoordination.arbitrer(1000000004000, "CJ-P1", "OBJ-V-P1", "motif", "analyste1", "sup1") matching "Conflit"
+        assert ApiCoordination.arbitrer(1000000004000, "CJ-P1", "OBJ-PIVOT", "le pivot manoeuvre pour tous", "analyste1", "sup1") == "arretee"
+        assert_fails CoordGrappe.former(1000000005000, "OBJ-PIVOT", "lies", "analyste1") matching "Existe"
+        mock ApiConjonctions.etat "resolu"
+        let _ = CoordDossier.clore(1000000006000, "CJ-P2", "resolu", "systeme")
+        assert CoordGrappe.etat("GR-OBJ-PIVOT-1") == "dissoute"
+        assert CoordGrappe.grappe_de_r("CJ-P1") == ""
+        assert_fails CoordGrappe.former(1000000007000, "OBJ-PIVOT", "lies", "analyste1") matching "Insuffisant"
+        assert_fails CoordGrappe.dissoudre(1000000007000, "GR-OBJ-PIVOT-1", "fin", "analyste1") matching "EtatInvalide"
+    }
+}
+
+// Fil des échanges : texte borné, sans séparateur.
+cell test Echanges {
+    rules {
+        let _ = ApiCoordination.ouvrir(1000000000000, "CJ-4", "systeme")
+        let n0 = CoordEchange.noter(1000000001000, "CJ-4", "ORG-ORBITE", "note", "point de situation", "analyste1")
+        assert n0 >= 2
+        assert_fails CoordEchange.noter(1000000001000, "CJ-4", "ORG-ORBITE", "note", "a | b", "analyste1") matching "Incoherent"
+        assert CoordEchange.notifier(1000000002000, "CJ-4", "note", "texte | avec separateur") == 3
+        assert CoordEchange.fil(1000000003000, "CJ-4", 1, "analyste1") == ["1000000002000 | ORG-ORBITE | systeme | note | texte / avec separateur"]
+    }
+}
+
+// Recalage de l'échéance quand le rapprochement change : jamais reculée ; plus le temps -> arbitrage.
+cell test Recalage {
+    rules {
+        let _ = ApiCoordination.ouvrir(1000000000000, "CJ-6", "systeme")
+        mock ApiConjonctions.mis_a_jour 5
+        assert CoordDossier.recaler(1000000001000, "CJ-6", "systeme") == 1000014400000
+        assert CoordDossier.recaler(1000000002000, "CJ-6", "systeme") == 1000014400000
+        assert_fails CoordDossier.recaler(1000000002000, "CJ-6", "dyn-alpha") matching "Habilitation"
+        let _ = ApiCoordination.ouvrir(1000000000000, "CJ-TARD2", "systeme")
+        assert ApiCoordination.etat("CJ-TARD2") == "proposee"
+        assert ApiCoordination.echeance("CJ-TARD2") == 1000000000000
+        mock ApiConjonctions.mis_a_jour 5
+        assert CoordDossier.recaler(1000000001000, "CJ-TARD2", "systeme") == 1000000000000
+        assert ApiCoordination.etat("CJ-TARD2") == "arbitrage"
+        assert_fails CoordDossier.recaler(1000000002000, "CJ-TARD2", "systeme") matching "EtatInvalide"
+    }
+}

@@ -1,0 +1,130 @@
+// Corps de EscRelances : messages d'escalade tracés, réémis, acquittés ou échoués.
+flesh EscRelances {
+    on emettre(h, dossier, r, destinataire, personne, echelon, texte) {
+        let objs = ApiConjonctions.objets(r)
+        require dossier_de.size < MAX_RELANCES else Plein "plafond de {MAX_RELANCES} relances atteint"
+        let complete = len(objs) > 0
+        for o in objs {
+            if !ApiDonnees.peut_recevoir(destinataire, Objet(o), r, h) { complete = false }
+        }
+        let forme = if complete { "complete" } else { "reduite" }
+        let liste_o = join(objs, ", ")
+        let corps = if complete { "{texte} ; objets {liste_o}" } else { texte }
+        let a_qui = if personne == "" { "" } else { " (a l'attention de {personne})" }
+        let texte_f = "{corps}{a_qui}"
+        let n = next_id()
+        let id = "REL-{n}"
+        dossier_de.set(id, dossier)
+        destinataire_de.set(id, to_string(destinataire))
+        attention_de.set(id, personne)
+        echelon_de.set(id, to_int(echelon))
+        forme_de.set(id, forme)
+        rapprochement_de.set(id, to_string(r))
+        texte_de.set(id, texte_f)
+        derniere_a.set(id, h)
+        emise_a.set(id, h)
+        nb_envois.set(id, 1)
+        let m = try { ApiPasserelle.notifier(h, destinataire, r, "escalade {r} echelon {echelon}", texte_f, 3) }
+        if m.error == () {
+            message_de.set(id, to_string(m.value))
+            transition(id, "preparee", "emise")
+            let act = actives_de.get(dossier) ?? ""
+            actives_de.set(dossier, if act == "" { id } else { "{act},{id}" })
+            if complete {
+                for o in objs {
+                    let _ = ApiDonnees.tracer(h, destinataire, Objet(o), r, "escalade")
+                }
+            }
+            let _ = Journal.noter(h, "escalade", "systeme", "relance {id} ({forme}) emise vers {destinataire} pour {dossier}")
+        } else {
+            message_de.set(id, "")
+            transition(id, "preparee", "echouee")
+            let _ = Journal.noter(h, "escalade", "systeme", "relance {id} vers {destinataire} echouee : {m.kind}")
+        }
+        return id
+    }
+    on relancer_dues(h) {
+        let reemis = 0
+        for e in actives_de.entries {
+            let restantes = []
+            for id in split(e.value, ",") {
+                let msg = message_de.get(id) ?? ""
+                if ApiPasserelle.acquitte(msg) {
+                    transition(id, "emise", "acquittee")
+                } else if ApiPasserelle.echoue(msg) {
+                    transition(id, "emise", "echouee")
+                } else {
+                    restantes.push(id)
+                    if to_int(h) >= to_int(derniere_a.get(id) ?? 0) + PERIODE_RELANCE_MS {
+                        let dest = Org(destinataire_de.get(id) ?? "")
+                        let r = Rapprochement(rapprochement_de.get(id) ?? "")
+                        let txt = texte_de.get(id) ?? ""
+                        let m = try { ApiPasserelle.notifier(h, dest, r, "relance escalade {r}", txt, 3) }
+                        if m.error == () {
+                            message_de.set(id, to_string(m.value))
+                            derniere_a.set(id, h)
+                            nb_envois.set(id, (nb_envois.get(id) ?? 1) + 1)
+                            reemis = reemis + 1
+                        }
+                    }
+                }
+            }
+            if len(restantes) != len(split(e.value, ",")) {
+                if len(restantes) == 0 { actives_de.delete(e.key) } else { actives_de.set(e.key, join(restantes, ",")) }
+            }
+        }
+        return reemis
+    }
+    on arreter(h, dossier) {
+        let act = actives_de.get(dossier) ?? ""
+        if act == "" { return 0 }
+        let arretees = 0
+        for id in split(act, ",") {
+            if (get_status(id) ?? "preparee") == "emise" {
+                transition(id, "emise", "arretee")
+                arretees = arretees + 1
+            }
+        }
+        actives_de.delete(dossier)
+        return arretees
+    }
+    on echouees(h, depuis, n, par) {
+        require ApiAcces.a_le_role(par, "systeme") || ApiAcces.a_le_role(par, "exploitant") else Habilitation "{par} ne lit pas les échecs d'escalade"
+        let res_e = []
+        let total = 0
+        for e in dossier_de.entries {
+            let em = to_int(emise_a.get(e.key) ?? 0)
+            if (get_status(e.key) ?? "preparee") == "echouee" && em >= to_int(depuis) {
+                total = total + 1
+                if len(res_e) < n {
+                    let dest = destinataire_de.get(e.key) ?? ""
+                    let ech = echelon_de.get(e.key) ?? 0
+                    res_e.push("{e.key} | {e.value} | {dest} | {ech} | {em}")
+                }
+            }
+        }
+        if total > 10 {
+            let inc = try { ApiOperations.declarer_incident(h, "ESC-ECHECS-{h}", 3, "escalade", "{total} relances d'escalade echouees depuis {depuis}", "systeme") }
+        }
+        return res_e
+    }
+    on relances_de(dossier, par) {
+        require ApiAcces.a_le_role(par, "analyste") || ApiAcces.a_le_role(par, "superviseur") || ApiAcces.a_le_role(par, "auditeur") else Habilitation "{par} ne lit pas les relances"
+        let res_r = []
+        for e in dossier_de.entries {
+            if e.value == dossier {
+                let id = e.key
+                let ech = echelon_de.get(id) ?? 0
+                let dest = destinataire_de.get(id) ?? ""
+                let pers = attention_de.get(id) ?? ""
+                let fo = forme_de.get(id) ?? ""
+                let st = get_status(id) ?? "preparee"
+                let nb = nb_envois.get(id) ?? 0
+                let em = emise_a.get(id) ?? ""
+                let de = derniere_a.get(id) ?? ""
+                res_r.push("{id} | {ech} | {dest} | {pers} | {fo} | {st} | {nb} | {em} | {de}")
+            }
+        }
+        return res_r
+    }
+}

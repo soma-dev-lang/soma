@@ -1,0 +1,35 @@
+// CONJONCTIONS — vocabulaire propre au sous-système : listes fermées et fiche de rapprochement.
+
+// Portée d'une campagne de criblage : tout le catalogue contre lui-même, un seul régime
+// orbital contre le catalogue, ou un seul objet contre le catalogue (nouvel objet catalogué,
+// manœuvre non annoncée détectée, nouvelle éphéméride hors cadence).
+cell type ConjPortee = String where value == "tout_contre_tout" || value == "regime" || value == "objet"
+
+// Pourquoi une campagne est lancée : "cadence" (période du régime échue), "renforce" (épisode de
+// criblage renforcé : tempête ou nuage de débris), "nouvel_objet", "manoeuvre_detectee",
+// "manuel" (analyste).
+cell type ConjMotifCampagne = String where value == "cadence" || value == "renforce" || value == "nouvel_objet" || value == "manoeuvre_detectee" || value == "manuel"
+
+// Cause d'un épisode de criblage renforcé : tempête géomagnétique (ApiMeteo.renforce), nuage de
+// débris en cours de catalogage dans le régime (ApiEvenements.nuage_actif), ou décision d'un
+// analyste.
+cell type ConjCauseRenforce = String where value == "tempete" || value == "nuage" || value == "manuel"
+
+// Genre d'un message de conjonction : "cdm" (Conjunction Data Message, niveau 1 ou 2 : les
+// données du rapprochement), "alerte" (niveau 3 : agir avant le TCA, accusé exigé),
+// "cloture" (résolu, passé ou collision).
+cell type ConjGenreMessage = String where value == "cdm" || value == "alerte" || value == "cloture"
+
+// Motif d'une résolution : manœuvre d'évitement exécutée et vérifiée par observation, ou
+// probabilité de collision retombée sous le seuil de suivi sur deux mises à jour consécutives.
+cell type ConjMotifResolution = String where value == "manoeuvre_verifiee" || value == "pc_retombee"
+
+// Constat de l'analyse après TCA : les deux objets ont été réacquis sur leur orbite attendue
+// ("intacts"), l'un au moins n'a pas été réacquis ("objet_perdu"), ou des fragments non
+// corrélés sont apparus près du point de rapprochement ("fragments").
+cell type ConjConstat = String where value == "intacts" || value == "objet_perdu" || value == "fragments"
+
+// Fiche d'un rapprochement : objets (a < b dans l'ordre du catalogue), instant de rapprochement
+// maximal (ms), distance minimale (m), probabilité de collision (milliardièmes), niveau, régime
+// de l'objet a, nombre de mises à jour reçues, instant de la dernière mise à jour (ms).
+cell type ConjFiche { variants { ConjFiche { objet_a: Objet, objet_b: Objet, tca: Horodatage, distance: Distance, pc: Probabilite, niveau: Niveau, regime: Regime, mises_a_jour: Int, mis_a_jour: Horodatage } } }

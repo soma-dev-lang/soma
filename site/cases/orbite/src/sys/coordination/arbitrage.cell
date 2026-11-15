@@ -1,0 +1,85 @@
+// COORDINATION — la saisine de l'arbitrage d'ORBITE. Instance = "<r>#<tour>" (une saisine par
+// tour au plus). Quand ORBITE reprend la main (silence, désaccord, accord sans verrou,
+// rouverture tardive, ouverture sans désignation possible), il faut qu'elle-même ne se taise
+// pas : la saisine est prise en charge par un analyste, rendue par l'arbitrage quatre yeux, et
+// si l'heure limite d'action approche sans arbitrage, elle passe hors délai — incident majeur et
+// escalade à la direction d'ORBITE et aux points focaux des États (échelon 4).
+
+// Raison de la saisine.
+cell type CoordRaison = String where value == "silence" || value == "desaccord" || value == "verrou_refuse" || value == "sans_designation" || value == "rouverture_tardive" || value == "urgence" || value == "crise" || value == "grappe"
+// État d'une saisine ; "inconnue" si jamais saisie.
+cell type CoordEtatSaisine = String where value == "saisie" || value == "prise_en_charge" || value == "rendue" || value == "hors_delai" || value == "abandonnee" || value == "inconnue"
+
+skeleton CoordArbitrage {
+    const MAX_SAISINES = 50000000
+    // Seuil d'alerte : une saisine non rendue à 1 h de la limite d'action passe hors délai.
+    const ALERTE_LIMITE = 3600000
+    memory {
+        dossier_de: Map<String, Rapprochement> [persistent]  // saisine -> r ; écrit une fois par saisir, jamais effacé (lien des règles avec CoordDossier)
+        raison_de: Map<String, CoordRaison> [persistent]     // saisine -> raison
+        saisie_le: Map<String, Horodatage> [persistent]      // saisine -> instant de la saisine
+        analyste_de: Map<String, String> [persistent]        // saisine -> analyste qui l'a prise en charge
+        courante_de: Map<String, String> [persistent]        // r -> saisine non rendue ("" ou absent : aucune)
+        invariant dossier_de.size <= 50000000
+    }
+    // Cycle d'une saisine.
+    state saisine {
+        initial: saisie
+        saisie -> prise_en_charge        // un analyste prend le dossier
+        saisie -> rendue                 // arbitrage rendu directement
+        prise_en_charge -> rendue        // arbitrage rendu (coordination arrêtée)
+        saisie -> hors_delai             // limite d'action − ALERTE_LIMITE atteinte sans arbitrage
+        prise_en_charge -> hors_delai
+        hors_delai -> rendue             // arbitrage rendu en retard (avant le TCA)
+        saisie -> abandonnee             // rapprochement clos avant arbitrage
+        prise_en_charge -> abandonnee
+        hors_delai -> abandonnee
+    }
+    face {
+        // Saisit l'arbitrage pour le tour courant de `r` (id "<r>#<tour>", seul écrivain de
+        // dossier_de), avec sa raison ; notifie l'analyste de permanence
+        // (CoordEchange.notifier, "arbitrage"). Appelé par CoordDossier à chaque passage en
+        // arbitrage. Renvoie l'id. Refus : Existe (déjà saisi à ce tour).
+        signal saisir(h: Horodatage, r: Rapprochement, tour: Int, raison: CoordRaison) -> String
+            requires tour >= 1
+            writes dossier_de, raison_de, saisie_le, courante_de
+            calls CoordEchange.notifier, Journal.noter
+        // Un analyste d'ORBITE prend en charge la saisine courante de `r` (saisie ->
+        // prise_en_charge). Renvoie l'id de la saisine. Refus : Inconnu (aucune saisine
+        // courante), EtatInvalide (déjà prise), Habilitation ("analyste" d'ORBITE).
+        signal prendre_en_charge(h: Horodatage, r: Rapprochement, par: String) -> String
+            writes analyste_de
+            reads courante_de, dossier_de
+            moves saisie -> prise_en_charge
+            calls ApiAcces.a_le_role, CoordEchange.noter, Journal.noter
+        // Rend la saisine courante de `r` (saisie|prise_en_charge|hors_delai -> rendue) une
+        // fois la coordination arrêtée par l'arbitrage. Appelé par CoordDossier.arbitrer.
+        // Renvoie l'id. Refus : Inconnu, EtatInvalide.
+        signal rendre(h: Horodatage, r: Rapprochement) -> String
+            writes courante_de
+            reads dossier_de
+            moves saisie -> rendue when CoordDossier.arretee via dossier_de, prise_en_charge -> rendue when CoordDossier.arretee via dossier_de, hors_delai -> rendue when CoordDossier.arretee via dossier_de
+        // Surveille la saisine courante de `r` : si h ≥ CoordDossier.limite(r) − ALERTE_LIMITE
+        // sans arbitrage, passe hors_delai, déclare un incident de gravité 3
+        // (ApiOperations.declarer_incident, sous-système "coordination") et escalade à l'échelon
+        // 4 (ApiEscalade.escalader visant ApiRef.orbite()). `par` "systeme". Renvoie l'état.
+        // Refus : Inconnu, Habilitation.
+        signal surveiller(h: Horodatage, r: Rapprochement, par: String) -> CoordEtatSaisine
+            reads courante_de, dossier_de, saisine
+            moves saisie -> hors_delai, prise_en_charge -> hors_delai
+            calls CoordDossier.limite, ApiOperations.declarer_incident, ApiEscalade.escalader, ApiRef.orbite, ApiAcces.a_le_role, Journal.noter
+        // Abandonne la saisine courante de `r` à la clôture du rapprochement
+        // (-> abandonnee). Appelé par CoordDossier.clore. Renvoie le nombre de saisines
+        // abandonnées (0 ou 1). Refus : aucun.
+        signal abandonner(h: Horodatage, r: Rapprochement) -> Int
+            writes courante_de
+            moves saisie -> abandonnee, prise_en_charge -> abandonnee, hors_delai -> abandonnee
+        // Saisine courante de `r` ("" si aucune) : le balayage la surveille.
+        signal courante(r: Rapprochement) -> String
+            reads courante_de
+        // Vrai si la saisine courante de `r` est hors délai : l'arbitrage peut alors être rendu
+        // par une seule personne en accès d'urgence (voir CoordDossier.arbitrer).
+        signal en_retard(r: Rapprochement) -> Bool
+            reads courante_de, saisine
+    }
+}

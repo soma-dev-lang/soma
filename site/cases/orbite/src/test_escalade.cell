@@ -1,0 +1,439 @@
+use app
+use commun::journal_chair
+use commun::horloge_chair
+use sys::escalade::chair::api
+use sys::escalade::chair::bareme
+use sys::escalade::chair::dossiers
+use sys::escalade::chair::veille
+use sys::escalade::chair::contacts
+use sys::escalade::chair::relances
+use sys::escalade::chair::diplomatie
+use sys::escalade::chair::statistiques
+use sys::escalade::chair::prise_en_charge
+use sys::escalade::chair::concertation
+use sys::escalade::chair::balayage
+use doublures::escalade
+
+
+// Monde : voir doublures/escalade.cell. H0 = 1 000 000 000 000 ms. Sur "CJ-<s>" (TCA H0 + 10 j),
+// l'échéance finale vaut TCA − 6 h = 1000842400000 ; e1 et e2 durent 1 h (délai contractuel de
+// niveau 3) ; e3 ouvert à H0 + 2 h dure 150 ‰ du reste = 125 280 000 ms.
+
+// ---- Barème ----
+cell test BaremeCycle {
+    rules {
+        assert EscBareme.rediger(1000000000000, "BAR-1", "analyste-1") == "BAR-1"
+        assert EscBareme.fixer(1000000000000, "BAR-1", 1, 250, 600000, "analyste-1") == 250
+        assert EscBareme.fixer(1000000000000, "BAR-1", 2, 200, 600000, "analyste-1") == 200
+        assert EscBareme.fixer(1000000000000, "BAR-1", 3, 150, 600000, "analyste-1") == 150
+        assert_fails EscBareme.adopter(1000000000000, "BAR-1", "dir-1", "sup-1") matching "Insuffisant"
+        assert EscBareme.fixer(1000000000000, "BAR-1", 4, 100, 600000, "analyste-1") == 100
+        assert EscBareme.simuler("BAR-1", 1000000000000, 1000864000000, 3600000) == "1 | 1000003600000 | 1000007200000 | 1000132480000 | 1000203472000 | 1000842400000"
+        assert EscBareme.version_en_vigueur() == ""
+        assert EscBareme.adopter(1000000000000, "BAR-1", "dir-1", "sup-1") == "en_vigueur"
+        assert EscBareme.version_en_vigueur() == "BAR-1"
+        assert_fails EscBareme.fixer(1000000000000, "BAR-1", 4, 90, 600000, "analyste-1") matching "EtatInvalide"
+        assert EscBareme.rediger(1000000000000, "BAR-2", "analyste-1") == "BAR-2"
+        assert EscBareme.fixer(1000000000000, "BAR-2", 1, 500, 600000, "analyste-1") == 500
+        assert EscBareme.fixer(1000000000000, "BAR-2", 2, 300, 600000, "analyste-1") == 300
+        assert EscBareme.fixer(1000000000000, "BAR-2", 3, 150, 600000, "analyste-1") == 150
+        assert EscBareme.fixer(1000000000000, "BAR-2", 4, 100, 600000, "analyste-1") == 100
+        assert_fails EscBareme.adopter(1000000000000, "BAR-2", "dir-1", "sup-1") matching "Incoherent"
+        assert EscBareme.fixer(1000000000000, "BAR-2", 1, 400, 600000, "analyste-1") == 400
+        assert EscBareme.adopter(1000000000000, "BAR-2", "dir-1", "sup-1") == "en_vigueur"
+        assert EscBareme.version_en_vigueur() == "BAR-2"
+        assert_fails EscBareme.adopter(1000000000000, "BAR-1", "dir-1", "sup-1") matching "EtatInvalide"
+        assert EscBareme.rediger(1000000000000, "BAR-3", "analyste-1") == "BAR-3"
+        assert EscBareme.abandonner(1000000000000, "BAR-3", "doublon", "analyste-1") == "abandonnee"
+        assert_fails EscBareme.abandonner(1000000000000, "BAR-3", "encore", "analyste-1") matching "EtatInvalide"
+    }
+}
+
+cell test BaremeRefus {
+    rules {
+        assert_fails EscBareme.rediger(1000000000000, "BAR-1", "intrus-1") matching "Habilitation"
+        assert_fails EscBareme.rediger(1000000000000, "BAR-1", "dyn-alpha") matching "Habilitation"
+        assert EscBareme.rediger(1000000000000, "BAR-1", "analyste-1") == "BAR-1"
+        assert_fails EscBareme.rediger(1000000000000, "BAR-1", "analyste-2") matching "Existe"
+        assert_fails EscBareme.fixer(1000000000000, "BAR-9", 1, 250, 600000, "analyste-1") matching "Inconnu"
+        assert_fails EscBareme.fixer(1000000000000, "BAR-1", 1, 250, 599999, "analyste-1") matching "HorsBornes"
+        assert EscBareme.fixer(1000000000000, "BAR-1", 1, 250, 600000, "analyste-1") == 250
+        assert EscBareme.fixer(1000000000000, "BAR-1", 2, 200, 600000, "analyste-1") == 200
+        assert EscBareme.fixer(1000000000000, "BAR-1", 3, 150, 600000, "analyste-1") == 150
+        assert EscBareme.fixer(1000000000000, "BAR-1", 4, 100, 600000, "analyste-1") == 100
+        assert_fails EscBareme.adopter(1000000000000, "BAR-1", "analyste-1", "sup-1") matching "Habilitation"
+        assert_fails EscBareme.adopter(1000000000000, "BAR-1", "dir-1", "dir-1") matching "QuatreYeux"
+        assert_fails EscBareme.adopter(1000000000000, "BAR-1", "dir-1", "analyste-2") matching "QuatreYeux"
+        assert_fails EscBareme.adopter(1000000000000, "BAR-9", "dir-1", "sup-1") matching "Inconnu"
+        assert_fails EscBareme.abandonner(1000000000000, "BAR-1", "", "analyste-1") matching "MotifRequis"
+        assert_fails EscBareme.abandonner(1000000000000, "BAR-1", "x", "sup-1") matching "Habilitation"
+        assert_fails EscBareme.simuler("BAR-9", 1000000000000, 1000864000000, 3600000) matching "Inconnu"
+    }
+}
+
+cell test BaremeCalculs {
+    rules {
+        assert EscBareme.echeance_finale("CJ-1") == 1000842400000
+        // propulsion faible (72 h) face à un objet capable plus réactif : la marge suit le plus réactif
+        assert EscBareme.echeance_finale("CJ-X~OBJ-FAIB-1~OBJ-B-1") == 1000842400000
+        assert EscBareme.echelon_initial(1000000000000, 1000842400000) == 1
+        assert EscBareme.echelon_initial(1000000000000, 1000100000000) == 2
+        assert EscBareme.echelon_initial(1000000000000, 1000050000000) == 3
+        assert EscBareme.echelon_initial(1000000000000, 1000043199999) == 4
+        assert EscBareme.echelon_initial(1000000000000, 999000000000) == 4
+        assert EscBareme.delai(1000000000000, 1000842400000, 1, "ORG-ALPHA") == 3600000
+        assert EscBareme.delai(1000000000000, 1000842400000, 3, "ORG-ALPHA") == 126360000
+        assert EscBareme.delai(1000000000000, 1000000001000, 3, "ORG-ALPHA") == 1000
+        assert EscBareme.delai(1000000000000, 999000000000, 2, "ORG-ALPHA") == 0
+        assert_fails EscBareme.delai(1000000000000, 1000842400000, 1, "ORG-INCONNU") matching "Inconnu"
+    }
+}
+
+// ---- Scénario complet : silence de bout en bout, reprise, arbitrage, démarche, concertation ----
+cell test ScenarioSilenceReprise {
+    rules {
+        assert ApiEscalade.escalader(1000000000000, "CJ-1", "ORG-BETA", "astreinte injoignable", "systeme") == 1
+        let d = EscDossiers.dossier_actif("CJ-1", "ORG-BETA")
+        assert EscDossiers.etat(d) == "e1"
+        assert len(EscRelances.relances_de(d, "analyste-1")) == 1
+        assert contains(EscRelances.relances_de(d, "analyste-1")[0], "| complete |")
+        assert ApiEscalade.reprise("CJ-1") == false
+        // e1 → e2 → e3 → e4 par le balayage
+        assert ApiEscalade.balayer(1000003600000, "systeme") == 1
+        assert ApiEscalade.echelon("CJ-1", "ORG-BETA") == 2
+        assert ApiEscalade.balayer(1000007200000, "systeme") == 1
+        assert ApiEscalade.echelon("CJ-1", "ORG-BETA") == 3
+        assert ApiEscalade.graves("ORG-BETA", 1000007200000) == 1
+        assert ApiEscalade.balayer(1000132480000, "systeme") == 2
+        assert ApiEscalade.echelon("CJ-1", "ORG-BETA") == 4
+        assert ApiEscalade.graves("ORG-BETA", 1000132480000) == 1
+        assert starts_with(EscConcertation.lire(d, "dir-1"), "convoquee |")
+        assert EscConcertation.tenir(1000140000000, d, "dir-1,pf-de,pf-fr", "joindre_operateur", "BETA sera joint par DE", "dir-1") == "tenue"
+        // échéance finale : ORBITE reprend la main
+        assert ApiEscalade.balayer(1000842400000, "systeme") == 1
+        assert EscDossiers.etat(d) == "reprise"
+        assert ApiEscalade.reprise("CJ-1") == true
+        assert ApiEscalade.echelon("CJ-1", "ORG-BETA") == 4
+        assert len(EscPriseEnCharge.a_traiter(1000842400000, "analyste-1")) == 1
+        assert EscPriseEnCharge.prendre(1000842400001, d, "analyste-7") == "prise"
+        // la démarche diplomatique est préparée
+        let dip = split(EscDiplomatie.demarches_vers("DE", "dir-1")[0], " | ")[0]
+        assert EscDiplomatie.valider(1000842500000, dip, "dir-1", "sup-1") == "validee"
+        assert EscDiplomatie.transmettre(1000842600000, dip, "dir-1") == "transmise"
+        // l'arbitrage arrête la décision : veille couverte, dossier clos, prise tranchée
+        mock ApiCoordination.decidee true
+        assert ApiEscalade.balayer(1000842700000, "systeme") >= 3
+        assert EscVeille.couverte("CJ-1") == true
+        assert EscDossiers.etat(d) == "close"
+        assert EscDossiers.dossier_actif("CJ-1", "ORG-BETA") == ""
+        assert ApiEscalade.echelon("CJ-1", "ORG-BETA") == 0
+        assert ApiEscalade.reprise("CJ-1") == true
+        assert len(EscPriseEnCharge.a_traiter(1000842700000, "analyste-1")) == 0
+        assert contains(EscDossiers.fiche(d, 20, "aud-1")[7], "decision_arretee")
+        assert len(EscDossiers.fiche(d, 20, "aud-1")) == 14
+        // l'État répond
+        assert EscDiplomatie.repondre(1000900000000, dip, "mesures_annoncees", "licence revue", "pf-de") == "repondue"
+        assert ends_with(EscDiplomatie.demarches_vers("DE", "pf-de")[0], "| repondue | mesures_annoncees")
+        assert ends_with(EscStatistiques.tableau("ORG-BETA", 1000900000000, "dyn-beta"), "| 1 | 1 | normale")
+    }
+}
+
+// ---- Dossiers : accusé, entrée directe, caducité, refus ----
+cell test AccuseEtReprise {
+    rules {
+        assert ApiEscalade.escalader(1000000000000, "CJ-2", "ORG-BETA", "silence", "analyste-1") == 1
+        assert_fails ApiEscalade.accuser(1000000060000, "CJ-2", "ORG-BETA", "intrus-1") matching "Habilitation"
+        assert_fails ApiEscalade.accuser(1000000060000, "CJ-2", "ORG-BETA", "dyn-alpha") matching "Habilitation"
+        assert_fails ApiEscalade.accuser(1000000060000, "CJ-2", "ORG-BETA", "pf-fr") matching "Habilitation"
+        assert_fails ApiEscalade.accuser(1000000060000, "CJ-2", "ORG-ALPHA", "dyn-alpha") matching "Inconnu"
+        assert ApiEscalade.accuser(1000000060000, "CJ-2", "ORG-BETA", "pf-de") == "accusee"
+        assert_fails ApiEscalade.accuser(1000000120000, "CJ-2", "ORG-BETA", "dyn-beta") matching "EtatInvalide"
+        let d = EscDossiers.dossier_actif("CJ-2", "ORG-BETA")
+        assert contains(EscRelances.relances_de(d, "sup-1")[0], "| arretee |")
+        assert ApiEscalade.echelon("CJ-2", "ORG-BETA") == 1
+        // l'accusé ne suspend pas l'échéance finale
+        assert ApiEscalade.balayer(1000003600000, "systeme") == 0
+        assert_fails EscDossiers.reprendre(1000003600000, d, "systeme") matching "Delai"
+        assert ApiEscalade.balayer(1000842400000, "systeme") == 1
+        assert EscDossiers.etat(d) == "reprise"
+        assert_fails EscDossiers.clore(1000842400001, d, "decision_arretee", "x", "analyste-1") matching "Insuffisant"
+        assert_fails EscDossiers.monter(1000842400001, d, "x", "analyste-1") matching "EtatInvalide"
+    }
+}
+
+cell test AccuseApresReponse {
+    rules {
+        assert ApiEscalade.escalader(1000000000000, "CJ-3", "ORG-BETA", "silence", "systeme") == 1
+        mock ApiCoordination.decidee true
+        assert ApiEscalade.accuser(1000000060000, "CJ-3", "ORG-BETA", "adm-beta") == "close"
+        assert ApiEscalade.echelon("CJ-3", "ORG-BETA") == 0
+        assert ApiEscalade.escalader(1000000120000, "CJ-3", "ORG-BETA", "nouvel episode", "systeme") == 1
+    }
+}
+
+cell test EntreeDirecte {
+    rules {
+        assert ApiEscalade.escalader(1000000000000, "CJ-PROCHE-1", "ORG-BETA", "silence", "systeme") == 2
+        assert ApiEscalade.escalader(1000000000000, "CJ-TARD-1", "ORG-BETA", "silence", "systeme") == 4
+        assert_fails ApiEscalade.escalader(1000000000000, "CJ-TARD-1", "ORG-BETA", "encore", "systeme") matching "EtatInvalide"
+        assert ApiEscalade.reprise("CJ-TARD-1") == false
+        assert ApiEscalade.balayer(1000000060000, "systeme") == 1
+        assert ApiEscalade.reprise("CJ-TARD-1") == true
+        assert ApiEscalade.echelon("CJ-TARD-1", "ORG-BETA") == 4
+    }
+}
+
+cell test Caducite {
+    rules {
+        assert ApiEscalade.escalader(1000000000000, "CJ-TARD-2", "ORG-BETA", "silence", "systeme") == 4
+        let d = EscDossiers.dossier_actif("CJ-TARD-2", "ORG-BETA")
+        assert_fails EscDossiers.caduquer(1000000000000, d, "systeme") matching "Insuffisant"
+        assert_fails EscDossiers.caduquer(1000020000000, d, "analyste-1") matching "Habilitation"
+        assert ApiEscalade.balayer(1000000060000, "systeme") == 1
+        assert EscDossiers.etat(d) == "reprise"
+        // TCA passé sans décision : caduc, constat de conformité
+        assert ApiEscalade.balayer(1000010800000, "systeme") >= 1
+        assert EscDossiers.etat(d) == "caduque"
+        assert contains(EscDossiers.fiche(d, 5, "conf-1")[7], "tca_passe")
+        assert ApiEscalade.echelon("CJ-TARD-2", "ORG-BETA") == 0
+        assert_fails EscDossiers.caduquer(1000010800001, d, "systeme") matching "EtatInvalide"
+        assert EscPriseEnCharge.a_traiter(1000010800000, "sup-1") == []
+    }
+}
+
+cell test DossierRefus {
+    rules {
+        assert_fails ApiEscalade.escalader(1000000000000, "CJ-1", "ORG-BETA", "silence", "intrus-1") matching "Habilitation"
+        assert_fails ApiEscalade.escalader(1000000000000, "CJ-1", "ORG-BETA", "silence", "dyn-beta") matching "Habilitation"
+        assert_fails ApiEscalade.escalader(1000000000000, "CJ-1", "ORG-BETA", "", "systeme") matching "MotifRequis"
+        assert_fails ApiEscalade.escalader(1000000000000, "CJ-INCONNU", "ORG-BETA", "silence", "systeme") matching "Inconnu"
+        assert_fails ApiEscalade.escalader(1000000000000, "CJ-RESOLU", "ORG-BETA", "silence", "systeme") matching "Ferme"
+        assert_fails ApiEscalade.escalader(1000000000000, "CJ-1", "ORG-VIDE", "silence", "systeme") matching "Inconnu"
+        assert_fails ApiEscalade.escalader(1000000000000, "CJ-1", "ORG-INCONNU", "silence", "systeme") matching "Inconnu"
+        assert_fails ApiEscalade.escalader(1000000000000, "CJ-1", "ORG-ALPHA", "silence", "systeme") matching "NonEligible"
+        assert ApiEscalade.escalader(1000000000000, "CJ-1", "ORG-BETA", "silence", "systeme") == 1
+        assert_fails EscDossiers.ouvrir(1000000000000, "CJ-1", "ORG-BETA", "silence", "systeme") matching "Doublon"
+        let d = EscDossiers.dossier_actif("CJ-1", "ORG-BETA")
+        assert_fails EscDossiers.clore(1000000000001, d, "repondu", "x", "analyste-1") matching "Insuffisant"
+        assert_fails EscDossiers.clore(1000000000001, d, "erreur", "x", "analyste-1") matching "Habilitation"
+        assert_fails EscDossiers.clore(1000000000001, d, "erreur", "", "sup-1") matching "MotifRequis"
+        assert_fails EscDossiers.clore(1000000000001, d, "tca_passe", "x", "analyste-1") matching "EtatInvalide"
+        assert_fails EscDossiers.monter(1000000000001, d, "x", "intrus-1") matching "Habilitation"
+        assert_fails EscDossiers.monter(1000000000001, "ESC-999", "x", "analyste-1") matching "Inconnu"
+        assert_fails EscDossiers.actifs(1000000000001, 10, "dyn-beta") matching "Habilitation"
+        assert_fails EscDossiers.fiche(d, 10, "dyn-alpha") matching "Habilitation"
+        assert len(EscDossiers.fiche(d, 10, "dyn-beta")) == 9
+        assert ApiEscalade.escalader(1000000000002, "CJ-1", "ORG-BETA", "geste d'analyste", "analyste-1") == 2
+        assert len(EscDossiers.actifs(1000000000002, 10, "sup-1")) == 1
+        assert EscDossiers.clore(1000000000003, d, "erreur", "rapprochement mal attribue", "sup-1") == "close"
+        assert EscDossiers.actifs(1000000000003, 10, "sup-1") == []
+    }
+}
+
+cell test RecalageSurTcaAvance {
+    rules {
+        assert ApiEscalade.escalader(1000000000000, "CJ-1", "ORG-BETA", "silence", "systeme") == 1
+        let d = EscDossiers.dossier_actif("CJ-1", "ORG-BETA")
+        mock ApiConjonctions.tca 1000100000000
+        assert EscDossiers.recaler(1000000060000, d, "analyste-1") == 1000078400000
+        mock ApiConjonctions.tca 1000864000000
+        assert EscDossiers.recaler(1000000120000, d, "systeme") == 1000078400000
+        assert_fails EscDossiers.recaler(1000000120000, d, "intrus-1") matching "Habilitation"
+    }
+}
+
+// ---- Veille ----
+cell test VeilleArmementOffice {
+    rules {
+        assert ApiEscalade.balayer(1000000000007, "systeme") == 2
+        assert EscDossiers.dossier_actif("CJ-URG", "ORG-BETA") != ""
+        assert len(EscVeille.veilles("analyste-1")) == 1
+        assert_fails EscVeille.veilles("dyn-beta") matching "Habilitation"
+        assert_fails EscVeille.armer(1000000000000, "CJ-RESOLU", "analyste-1") matching "Ferme"
+        assert_fails EscVeille.armer(1000000000000, "CJ-INCONNU", "analyste-1") matching "Inconnu"
+        assert_fails EscVeille.armer(1000000000000, "CJ-9", "intrus-1") matching "Habilitation"
+        assert EscVeille.armer(1000000000000, "CJ-URG", "analyste-1") == "surveillee"
+    }
+}
+
+cell test VeilleSansCoordination {
+    rules {
+        assert EscVeille.armer(1000000000000, "CJ-SANSCO-PROCHE", "analyste-1") == "surveillee"
+        assert ApiEscalade.balayer(1000000060000, "systeme") == 2
+        assert EscDossiers.dossier_actif("CJ-SANSCO-PROCHE", "ORG-ALPHA") != ""
+        assert EscDossiers.dossier_actif("CJ-SANSCO-PROCHE", "ORG-BETA") != ""
+        assert EscVeille.armer(1000000000000, "CJ-SANSCO-2", "analyste-1") == "surveillee"
+        assert ApiEscalade.balayer(1000000120000, "systeme") == 0
+        assert EscDossiers.dossier_actif("CJ-SANSCO-2", "ORG-ALPHA") == ""
+    }
+}
+
+// ---- Relances et contacts ----
+cell test RelancesFormesEtReemission {
+    rules {
+        assert ApiEscalade.escalader(1000000000000, "CJ-SECRET-1", "ORG-BETA", "silence", "systeme") == 1
+        let d = EscDossiers.dossier_actif("CJ-SECRET-1", "ORG-BETA")
+        assert contains(EscRelances.relances_de(d, "analyste-1")[0], "| ORG-BETA | dyn-beta | reduite | emise | 1 |")
+        assert ApiEscalade.balayer(1000000900000, "systeme") == 0
+        assert contains(EscRelances.relances_de(d, "aud-1")[0], "| emise | 2 |")
+        assert_fails EscRelances.relances_de(d, "dyn-beta") matching "Habilitation"
+        assert ApiEscalade.escalader(1000000000000, "CJ-ACQ-1", "ORG-BETA", "silence", "systeme") == 1
+        let da = EscDossiers.dossier_actif("CJ-ACQ-1", "ORG-BETA")
+        assert ApiEscalade.balayer(1000000960000, "systeme") == 0
+        assert contains(EscRelances.relances_de(da, "aud-1")[0], "| acquittee |")
+    }
+}
+
+cell test RelancesEchouees {
+    rules {
+        assert ApiEscalade.escalader(1000000000000, "CJ-ECHEC-1", "ORG-BETA", "silence", "systeme") == 1
+        assert ApiEscalade.escalader(1000000000000, "CJ-NOTIFKO-1", "ORG-BETA", "silence", "systeme") == 1
+        assert ApiEscalade.balayer(1000000060000, "systeme") == 0
+        assert len(EscRelances.echouees(1000000060000, 0, 10, "expl-1")) == 2
+        assert len(EscRelances.echouees(1000000060000, 1000000000001, 10, "systeme")) == 0
+        assert_fails EscRelances.echouees(1000000060000, 0, 10, "analyste-1") matching "Habilitation"
+        let dk = EscDossiers.dossier_actif("CJ-NOTIFKO-1", "ORG-BETA")
+        assert EscDossiers.etat(dk) == "e1"
+    }
+}
+
+cell test Contacts {
+    rules {
+        assert EscContacts.destinataires(1000000000000, "CJ-1", "ORG-BETA", 1, "analyste-1") == ["ORG-BETA | dyn-beta"]
+        assert EscContacts.destinataires(1000000000000, "CJ-1", "ORG-BETA", 2, "dyn-beta") == ["ORG-BETA | cdm-beta"]
+        assert EscContacts.destinataires(1000000000000, "CJ-1", "ORG-BETA", 3, "sup-1") == ["ORG-ETAT-DE | pf-de"]
+        assert EscContacts.destinataires(1000000000000, "CJ-1", "ORG-BETA", 4, "sup-1") == ["ORG-ORBITE | ", "ORG-ETAT-FR | ", "ORG-ETAT-DE | "]
+        assert_fails EscContacts.destinataires(1000000000000, "CJ-1", "ORG-BETA", 1, "dyn-alpha") matching "Habilitation"
+        assert_fails EscContacts.destinataires(1000000000000, "CJ-1", "ORG-BETA", 1, "intrus-1") matching "Habilitation"
+        assert EscContacts.destinataires(1000000000000, "CJ-V~OBJ-VIDE-1~OBJ-B-1", "ORG-VIDE", 1, "analyste-1") == []
+        // échelon sans contact : rien n'est émis, le dossier monte au balayage suivant sans attendre
+        assert ApiEscalade.escalader(1000000000000, "CJ-SANSCO~OBJ-VIDE-1~OBJ-B-1", "ORG-VIDE", "silence", "systeme") == 1
+        let d = EscDossiers.dossier_actif("CJ-SANSCO~OBJ-VIDE-1~OBJ-B-1", "ORG-VIDE")
+        assert EscRelances.relances_de(d, "analyste-1") == []
+        assert EscContacts.prevenir(1000000000000, d, "CJ-SANSCO~OBJ-VIDE-1~OBJ-B-1", "ORG-VIDE", 2, 1000003600000) == 0
+        assert EscContacts.prevenir(1000000000000, d, "CJ-SANSCO~OBJ-VIDE-1~OBJ-B-1", "ORG-VIDE", 4, 1000003600000) == 3
+    }
+}
+
+// ---- Statistiques ----
+cell test StatistiquesVigilance {
+    rules {
+        assert EscStatistiques.compter(1000000000000, "ORG-BETA", "D1", 3, true) == 1
+        assert EscStatistiques.compter(1000000000000, "ORG-BETA", "D1", 4, false) == 1
+        assert EscStatistiques.graves("ORG-BETA", 1000000000000) == 1
+        assert EscStatistiques.compter(1000000000000, "ORG-BETA", "D2", 3, true) == 2
+        assert EscStatistiques.en_vigilance(1000000000000, "conf-1") == []
+        assert EscStatistiques.compter(1000000000000, "ORG-BETA", "D3", 4, true) == 2
+        assert EscStatistiques.en_vigilance(1000000000000, "conf-1") == ["ORG-BETA | signalee | 3"]
+        assert EscStatistiques.graves("ORG-BETA", 1031536000000) == 0
+        assert EscStatistiques.evaluer(1031536000000, "ORG-BETA") == "normale"
+        assert EscStatistiques.compter_accuse(1000000000000, "ORG-BETA", 60000) == 1
+        assert_fails EscStatistiques.compter_accuse(1000000000000, "ORG-ALPHA", 60000) matching "Incoherent"
+        assert_fails EscStatistiques.compter_reprise(1000000000000, "ORG-ALPHA", "D9") matching "Incoherent"
+        assert EscStatistiques.tableau("ORG-BETA", 1000000000000, "pf-de") == "3 | 0 | 0 | 2 | 2 | 1 | 60000 | 0 | 3 | normale"
+        assert_fails EscStatistiques.tableau("ORG-BETA", 1000000000000, "dyn-alpha") matching "Habilitation"
+        assert_fails EscStatistiques.tableau("ORG-BETA", 1000000000000, "pf-fr") matching "Habilitation"
+        assert_fails EscStatistiques.en_vigilance(1000000000000, "dyn-beta") matching "Habilitation"
+    }
+}
+
+cell test StatistiquesPurgeSousGel {
+    rules {
+        assert ApiEscalade.escalader(1000000000000, "CJ-TARD-GEL", "ORG-BETA", "silence", "systeme") == 4
+        assert ApiEscalade.escalader(1000000000000, "CJ-TARD-3", "ORG-BETA", "silence", "systeme") == 4
+        assert ApiEscalade.graves("ORG-BETA", 1000000000000) == 2
+        assert_fails EscStatistiques.purger(1094608000001, "analyste-1") matching "Habilitation"
+        assert EscStatistiques.purger(1094608000001, "expl-1") == 1
+        assert EscStatistiques.purger(1094608000001, "systeme") == 0
+    }
+}
+
+// ---- Prise en charge ----
+cell test PriseEnChargeAlerteDirection {
+    rules {
+        assert ApiEscalade.escalader(1000000000000, "CJ-TARD-4", "ORG-BETA", "silence", "systeme") == 4
+        let d = EscDossiers.dossier_actif("CJ-TARD-4", "ORG-BETA")
+        assert ApiEscalade.balayer(1000000060000, "systeme") == 1
+        assert contains(EscPriseEnCharge.a_traiter(1000000060000, "dir-1")[0], "| en_attente | 1000000960000 |")
+        assert ApiEscalade.balayer(1000000959999, "systeme") == 0
+        assert ApiEscalade.balayer(1000000960000, "systeme") == 1
+        assert contains(EscPriseEnCharge.a_traiter(1000000960000, "dir-1")[0], "| alerte_direction |")
+        assert_fails EscPriseEnCharge.a_traiter(1000000120000, "dyn-beta") matching "Habilitation"
+        assert_fails EscPriseEnCharge.prendre(1000000180000, d, "dyn-beta") matching "Habilitation"
+        assert_fails EscPriseEnCharge.prendre(1000000180000, "ESC-999", "analyste-1") matching "Inconnu"
+        assert EscPriseEnCharge.prendre(1000000180000, d, "dir-1") == "prise"
+        assert_fails EscPriseEnCharge.prendre(1000000180000, d, "analyste-1") matching "EtatInvalide"
+        assert_fails EscPriseEnCharge.ouvrir_prise(1000000180000, d, "CJ-TARD-4", 1000000000000, "systeme") matching "Doublon"
+        assert_fails EscPriseEnCharge.ouvrir_prise(1000000180000, "ESC-77", "CJ-TARD-4", 1000000000000, "analyste-1") matching "Habilitation"
+        assert EscPriseEnCharge.trancher(1000000180000, d, "analyste-1") == "prise"
+        assert EscPriseEnCharge.trancher(1000010800000, d, "systeme") == "caduque"
+    }
+}
+
+// ---- Diplomatie ----
+cell test DiplomatieRefusEtEchoir {
+    rules {
+        assert ApiEscalade.escalader(1000000000000, "CJ-TARD-5", "ORG-BETA", "silence", "systeme") == 4
+        let d = EscDossiers.dossier_actif("CJ-TARD-5", "ORG-BETA")
+        assert_fails EscDiplomatie.preparer(1000000000000, d, "ORG-BETA", "analyste-1") matching "Inconnu"
+        assert ApiEscalade.balayer(1000000060000, "systeme") == 1
+        assert_fails EscDiplomatie.preparer(1000000060000, d, "ORG-BETA", "analyste-1") matching "Doublon"
+        let dip = split(EscDiplomatie.demarches_vers("DE", "aud-1")[0], " | ")[0]
+        assert_fails EscDiplomatie.transmettre(1000000060000, dip, "dir-1") matching "EtatInvalide"
+        assert_fails EscDiplomatie.valider(1000000060000, dip, "analyste-1", "sup-1") matching "Habilitation"
+        assert_fails EscDiplomatie.valider(1000000060000, dip, "dir-1", "dir-1") matching "QuatreYeux"
+        assert_fails EscDiplomatie.valider(1000000060000, "DIP-999", "dir-1", "sup-1") matching "Inconnu"
+        assert EscDiplomatie.valider(1000000060000, dip, "dir-1", "conf-1") == "validee"
+        assert_fails EscDiplomatie.transmettre(1000000060000, dip, "sup-1") matching "Habilitation"
+        assert EscDiplomatie.transmettre(1000000060000, dip, "dir-1") == "transmise"
+        assert_fails EscDiplomatie.repondre(1000000070000, dip, "prise_acte", "vu", "pf-fr") matching "Habilitation"
+        assert_fails EscDiplomatie.repondre(1000000070000, dip, "prise_acte", "", "pf-de") matching "MotifRequis"
+        assert_fails EscDiplomatie.demarches_vers("DE", "pf-fr") matching "Habilitation"
+        assert EscDiplomatie.echoir(1002592000000) == 0
+        assert EscDiplomatie.echoir(1002592060000) == 1
+        assert_fails EscDiplomatie.repondre(1002600000000, dip, "prise_acte", "tard", "aut-de") matching "EtatInvalide"
+        assert ends_with(EscDiplomatie.demarches_vers("DE", "aut-de")[0], "| sans_suite | ")
+    }
+}
+
+cell test DiplomatieEtatNonParticipant {
+    rules {
+        assert ApiEscalade.escalader(1000000000000, "CJ-SANSCO-TARD~OBJ-SUSPE-1~OBJ-A-1", "ORG-SUSPE", "silence", "systeme") == 4
+        // la veille ouvre aussi un dossier contre ORG-ALPHA (coordination jamais ouverte) : 1 ouverture + 2 reprises
+        assert ApiEscalade.balayer(1000000060000, "systeme") == 3
+        let dip = split(EscDiplomatie.demarches_vers("SUSP", "dir-1")[0], " | ")[0]
+        assert EscDiplomatie.valider(1000000060000, dip, "dir-1", "sup-1") == "validee"
+        assert_fails EscDiplomatie.transmettre(1000000060000, dip, "dir-1") matching "EtatInvalide"
+        assert_fails EscDiplomatie.classer(1000000060000, dip, "", "dir-1") matching "MotifRequis"
+        assert_fails EscDiplomatie.classer(1000000060000, dip, "Etat suspendu", "analyste-1") matching "Habilitation"
+        assert EscDiplomatie.classer(1000000060000, dip, "Etat suspendu", "dir-1") == "abandonnee"
+        assert_fails EscDiplomatie.classer(1000000060000, dip, "encore", "dir-1") matching "EtatInvalide"
+    }
+}
+
+// ---- Concertation d'échelon 4 ----
+cell test ConcertationManquee {
+    rules {
+        assert ApiEscalade.escalader(999985600000, "CJ-TARD-6", "ORG-BETA", "silence", "systeme") == 4
+        let d = EscDossiers.dossier_actif("CJ-TARD-6", "ORG-BETA")
+        assert ApiEscalade.balayer(999985660000, "systeme") == 1
+        assert EscConcertation.lire(d, "pf-de") == "convoquee | 999985660000 | FR,DE |  |  | "
+        assert_fails EscConcertation.lire(d, "pf-it") matching "Habilitation"
+        assert_fails EscConcertation.lire("ESC-999", "dir-1") matching "Inconnu"
+        assert_fails EscConcertation.tenir(999985700000, d, "dir-1", "aucun", "", "dir-1") matching "MotifRequis"
+        assert_fails EscConcertation.tenir(999985700000, d, "dir-1", "aucun", "x", "analyste-1") matching "Habilitation"
+        assert_fails EscConcertation.tenir(999985700000, "ESC-999", "dir-1", "aucun", "x", "dir-1") matching "Inconnu"
+        // le TCA passe avant la tenue : dossier caduc, concertation manquée
+        assert ApiEscalade.balayer(1000010800000, "systeme") >= 2
+        assert starts_with(EscConcertation.lire(d, "aud-1"), "manquee |")
+        assert_fails EscConcertation.tenir(1000010800001, d, "dir-1", "aucun", "x", "dir-1") matching "EtatInvalide"
+    }
+}
+
+cell test BalayageHabilitation {
+    rules {
+        assert_fails ApiEscalade.balayer(1000000000000, "analyste-1") matching "Habilitation"
+        assert_fails ApiEscalade.balayer(1000000000000, "intrus-1") matching "Habilitation"
+        assert ApiEscalade.balayer(1000000000000, "systeme") == 0
+    }
+}

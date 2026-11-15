@@ -1,0 +1,107 @@
+// CONJONCTIONS — corps : criblage des plans de manœuvre.
+//
+// Modèle de criblage (faute de trajectoires dans le système : aucune façade ne livre une
+// position d'éphéméride) : la manœuvre est vue comme une poussée tangentielle, qui déplace
+// l'objet le long de sa trace de 3·dv·Δt au temps Δt après le début. Chaque rapprochement
+// OUVERT de l'objet dont le TCA tombe dans [debut, debut + 7 j] est recalculé avec la distance
+// sqrt(d² + dérive²) et une pc réduite dans le rapport des carrés des distances ; le résultat
+// compte ceux qui restent de niveau ≥ 2 (ConjSeuils.niveau, facteur météo du régime).
+
+flesh ConjCriblagePlan {
+    on cribler(h, objet, plan, debut, dv, par) {
+        require ApiAcces.a_le_role(par, "systeme") || ApiAcces.a_le_role(par, "analyste") else Habilitation "cribler un plan : systeme ou analyste d'ORBITE"
+        let existant = objet_de.get(plan)
+        if existant != () {
+            require to_string(existant) == to_string(objet) else Inconnu "le plan {plan} vise un autre objet"
+            require (get_status(plan) ?? "demande") != "perime" else Perime "plan périmé : à redéclarer sous un nouvel id"
+            return resultat_de.get(plan) ?? 0
+        }
+        let me = ApiManoeuvres.etat(plan)
+        require me != "inconnu" else Inconnu "plan inconnu : {plan}"
+        require me == "declare" else EtatInvalide "plan {me}, pas « declare »"
+        let eo = ApiRef.etat_objet(objet)
+        require eo != "inconnu" && eo != "rentre" else Inconnu "objet non catalogué : {objet}"
+        require to_int(debut) > to_int(h) else Perime "début du plan déjà passé"
+        let regime = ApiRef.regime(objet)
+        let camp = ConjCampagne.derniere(regime)
+        require camp != "" else Perime "régime {regime} jamais criblé"
+        require to_int(ConjCampagne.age_crible(regime, h)) < AGE_MAX_CATALOGUE else Perime "catalogue {regime} non criblé depuis 8 h"
+        require ConjCampagne.etat(camp) == "terminee" else Perime "campagne {camp} non terminée"
+        require ApiEphemerides.fraiche(objet, h) else Perime "éphéméride de {objet} non fraîche"
+        let depot = ApiEphemerides.derniere(objet)
+        let facteur = ApiMeteo.facteur_incertitude(regime, h)
+        let t0 = to_int(debut)
+        let t1 = t0 + HORIZON
+        let v = to_int(dv)
+        let nb = 0
+        for r in ConjRapprochement.ouverts_de(objet) {
+            let f = ConjRapprochement.fiche(Rapprochement(r))
+            let tca = to_int(f.tca)
+            if tca >= t0 && tca <= t1 {
+                let derive = idiv(3 * v * idiv(tca - t0, 1000), 1000)
+                let d = to_int(f.distance)
+                let d2 = d * d + derive * derive
+                let nouvelle = floor(sqrt(d2))
+                let pc2 = idiv(to_int(f.pc) * (d * d + 1), d2 + 1)
+                let restant = Duree(max(0, tca - to_int(h)))
+                let n = ConjSeuils.niveau(Probabilite(pc2), Distance(nouvelle), restant, facteur)
+                if to_int(n) >= 2 { nb = nb + 1 }
+            }
+        }
+        objet_de.set(plan, objet)
+        campagne_de.set(plan, camp)
+        depot_de.set(plan, depot)
+        debut_de.set(plan, debut)
+        dv_de.set(plan, dv)
+        facteur_de.set(plan, facteur)
+        crible_le.set(plan, h)
+        resultat_de.set(plan, nb)
+        transition(plan, "demande", "fonde")
+        if nb == 0 {
+            require ApiManoeuvres.etat(plan) == "declare" else EtatInvalide "plan plus « declare »"
+            let so = to_string(objet)
+            let surs = (sur_par_objet.get(so) ?? []) ++ [plan]
+            if len(surs) > MAX_PAR_OBJET { surs = slice(surs, len(surs) - MAX_PAR_OBJET) }
+            sur_par_objet.set(so, surs)
+            transition(plan, "fonde", "sur")
+        } else {
+            transition(plan, "fonde", "a_risque")
+        }
+        let verdict = if nb == 0 { "sur" } else { "a_risque" }
+        let _ = Journal.noter(h, "conjonctions", par, "plan {plan} ({objet}, dv {dv} mm/s) criblé sur {camp} : {verdict} ({nb})")
+        return nb
+    }
+
+    on rendre_caducs(h, objet, r, par) {
+        require ApiAcces.a_le_role(par, "systeme") else Habilitation "rendre périmés : systeme"
+        require ConjRapprochement.etat(r) != "inconnu" else Inconnu "rapprochement inconnu : {r}"
+        let so = to_string(objet)
+        let restants = []
+        let nb = 0
+        for p in sur_par_objet.get(so) ?? [] {
+            let encore_a_venir = to_int(debut_de.get(p) ?? Horodatage(0)) > to_int(h)
+            if encore_a_venir && (get_status(p) ?? "demande") == "sur" {
+                cause_de.set(p, "nouveau rapprochement {r}")
+                transition(p, "sur", "perime")
+                nb = nb + 1
+            }
+        }
+        // les plans dont le début est passé ne sont plus à surveiller
+        sur_par_objet.set(so, restants)
+        if nb > 0 {
+            let _ = Journal.noter(h, "conjonctions", par, "{nb} plans de {so} périmés par {r}")
+        }
+        return nb
+    }
+
+    on resultat(plan) {
+        let res = resultat_de.get(plan)
+        require res != () else Inconnu "plan jamais criblé : {plan}"
+        return res
+    }
+
+    on etat(plan) {
+        if objet_de.get(plan) == () { return "" }
+        return get_status(plan) ?? ""
+    }
+}

@@ -1,0 +1,60 @@
+// Doublures PROVISOIRES des façades appelées par les corps d'acces (tests d'acces seulement).
+// Conventions : ORBITE = "ORG-ORBITE" ; une organisation existe si son id commence par "ORG-"
+// sauf "ORG-RADIEE…" ; genre : "ORG-ORBITE" orbite, "ORG-ETAT-<E>" État <E>, "ORG-CAPT…"
+// fournisseur de capteurs, sinon opérateur ; tutelle : "BRV" si l'id contient "BRV", "ZZZ" s'il
+// contient "ZZZ", sinon "ALD" ; l'État "ZZZ" est suspendu.
+// Rapprochements : "CJ-INCONNU…" inconnu, "CJ-RESOLU…" résolu, "CJ-SUIVI…" suivi, sinon en
+// alerte ; niveau 2 si l'id commence par "CJ-N2", 3 sinon.
+flesh ApiRef {
+    on orbite() { return "ORG-ORBITE" }
+    on organisation_existe(org) {
+        let o = to_string(org)
+        return starts_with(o, "ORG-") && !starts_with(o, "ORG-RADIEE")
+    }
+    on genre(org) {
+        let o = to_string(org)
+        require starts_with(o, "ORG-") && !starts_with(o, "ORG-RADIEE") else Inconnu "organisation {o} inconnue"
+        if o == "ORG-ORBITE" { return "orbite" }
+        if starts_with(o, "ORG-ETAT-") { return "etat" }
+        if starts_with(o, "ORG-CAPT") { return "capteur" }
+        return "operateur"
+    }
+    on etat_de(org) {
+        let o = to_string(org)
+        require starts_with(o, "ORG-") else Inconnu "organisation {o} inconnue"
+        if starts_with(o, "ORG-ETAT-") { return Etat(substring(o, 9, len(o))) }
+        if contains(o, "BRV") { return "BRV" }
+        if contains(o, "ZZZ") { return "ZZZ" }
+        return "ALD"
+    }
+    on etat_participant(etat) { return etat != "ZZZ" }
+    on org_de_etat(etat) { return Org("ORG-ETAT-{etat}") }
+}
+
+flesh ApiConjonctions {
+    on etat(r) {
+        if starts_with(r, "CJ-INCONNU") { return "inconnu" }
+        if starts_with(r, "CJ-RESOLU") { return "resolu" }
+        if starts_with(r, "CJ-SUIVI") { return "suivi" }
+        return "alerte"
+    }
+    on niveau(r) {
+        require !starts_with(r, "CJ-INCONNU") else Inconnu "rapprochement {r} inconnu"
+        if starts_with(r, "CJ-N2") { return 2 }
+        return 3
+    }
+}
+
+flesh ApiConformite {
+    on constater(h, op, nature, gravite, reference, par) {
+        require reference != "" && nature != "" else MotifRequis "manquement sans nature ni référence"
+        return "MQ-{reference}"
+    }
+}
+
+flesh ApiOperations {
+    on declarer_incident(h, incident, gravite, sous_systeme, description, par) {
+        require description != "" else MotifRequis "incident sans description"
+        return incident
+    }
+}

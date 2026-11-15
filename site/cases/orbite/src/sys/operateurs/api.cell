@@ -1,0 +1,47 @@
+// Façade des OPÉRATEURS : adhésion, licence nationale, astreinte 24/7, joignabilité.
+skeleton ApiOperateurs {
+    face {
+        // Vrai si l'opérateur est admis, actif (ni suspendu, ni exclu, ni retiré) et sa licence
+        // nationale est en cours de validité à `h`.
+        signal est_actif(op: Org, h: Horodatage) -> Bool
+            calls OpMembres.est_actif
+        // Statut d'adhésion : "candidat", "admis", "actif", "suspendu", "exclu", "retire" ;
+        // "inconnu" si jamais candidat.
+        signal statut(op: Org) -> String
+            calls OpMembres.etat
+        // Contact d'astreinte en service à `h` (personne, "dynamicien" de l'opérateur) ; "" si
+        // aucun : l'opérateur est injoignable (escalade immédiate). Refus : Inconnu.
+        signal astreinte(op: Org, h: Horodatage) -> String
+            calls OpAstreinte.en_service
+        // Vrai si le dernier test de joignabilité (exercice d'alerte) a été réussi depuis moins
+        // de 31 jours et qu'une astreinte est en service.
+        signal joignable(op: Org, h: Horodatage) -> Bool
+            calls OpExercices.joignable
+        // Suspend / rétablit un opérateur (manquements graves, licence retirée par son État).
+        // Renvoie le statut atteint. Refus : Inconnu, EtatInvalide, MotifRequis, Habilitation
+        // (par "conformite", ou "point_focal" / "autorite" de l'État de tutelle), QuatreYeux
+        // (valideur "direction").
+        signal suspendre(h: Horodatage, op: Org, motif: String, par: String, valideur: String) -> String
+            calls OpMembres.suspendre
+        signal retablir(h: Horodatage, op: Org, par: String, valideur: String) -> String
+            calls OpMembres.retablir
+        // Délai de réponse contractuel (ms) de l'opérateur à une alerte de niveau `n`.
+        // Refus : Inconnu.
+        signal delai_reponse(op: Org, n: Niveau) -> Duree
+            calls OpEngagements.delai
+        // Opérateurs actifs à `h` (au plus 10 000).
+        signal actifs(h: Horodatage) -> List<String>
+            calls OpMembres.actifs
+        // Personnes à joindre à l'échelon d'escalade `echelon` à `h` : 1 l'astreinte, 2 les
+        // "chef_de_mission", 3 les "point_focal" de l'État de tutelle (ApiRef.etat_de). Liste vide :
+        // personne à joindre à cet échelon (passer au suivant). Refus : Inconnu, HorsBornes.
+        signal contacts(op: Org, echelon: Int, h: Horodatage) -> List<String>
+            calls OpContacts.contacts_echelon
+        // Balayage des échéances du sous-système à `h` (délais, expirations, rondes), appelé par
+        // l'horloge d'ORBITE (Horloge.battre) — le SEUL point d'entrée du temps : aucun signal de
+        // operateurs ne lit l'horloge lui-même. Renvoie le nombre d'objets dont l'état a changé.
+        // Refus : Habilitation (par "systeme").
+        signal balayer(h: Horodatage, par: String) -> Int
+            calls OpRondes.balayer
+    }
+}

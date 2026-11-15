@@ -1,0 +1,169 @@
+// Corps de la cellule de crise (operations).
+
+flesh OpsCrise {
+    on convoquer(h, incident, par) {
+        if convoquee_a.has(incident) {
+            let st = get_status(incident) ?? "convoquee"
+            require st == "convoquee" || st == "active" else EtatInvalide "crise '{incident}' {st} : une récidive est un nouvel incident"
+            return st
+        }
+        require convoquee_a.size < MAX_CRISES else Plein "registre des crises plein"
+        convoquee_a.set(incident, h)
+        let _ = ApiPasserelle.notifier(h, ApiRef.orbite(), "", "Cellule de crise {incident}", "Incident majeur {incident} : cellule de crise convoquée, activation attendue sous 30 min.", 3)
+        let _ = Journal.noter(h, "operations", par, "cellule de crise {incident} convoquée")
+        return "convoquee"
+    }
+
+    on activer(h, incident, par) {
+        require ApiAcces.a_le_role(par, "direction") else Habilitation "activer : direction d'ORBITE"
+        require convoquee_a.has(incident) else Inconnu "crise '{incident}' inconnue"
+        require (get_status(incident) ?? "convoquee") == "convoquee" else EtatInvalide "crise non convoquée"
+        transition(incident, "convoquee", "active")
+        pilote.set(incident, par)
+        membres.set(incident, [par])
+        let _ = Journal.noter(h, "operations", par, "cellule de crise {incident} active, pilote {par}")
+        return "active"
+    }
+
+    on annuler(h, incident, motif) {
+        require convoquee_a.has(incident) else Inconnu "crise '{incident}' inconnue"
+        require (get_status(incident) ?? "convoquee") == "convoquee" else EtatInvalide "seule une crise convoquée s'annule"
+        transition(incident, "convoquee", "annulee")
+        let _ = Journal.noter(h, "operations", "systeme", "cellule de crise {incident} annulée : {motif}")
+        return "annulee"
+    }
+
+    on mobiliser(h, incident, personne, par) {
+        let p = pilote.get(incident)
+        require p != () else Inconnu "crise '{incident}' inconnue ou non active"
+        require par == p else Habilitation "seul le pilote mobilise"
+        require (get_status(incident) ?? "convoquee") == "active" else EtatInvalide "crise non active"
+        let r = ApiAcces.role_de(personne)
+        require ApiAcces.agit_pour(personne, ApiRef.orbite()) && r != "aucun" && r != "systeme" else Habilitation "seul un employé d'ORBITE actif est mobilisé"
+        let membres_l = membres.get(incident) ?? []
+        require !contains(membres_l, personne) else Doublon "{personne} est déjà mobilisé"
+        require len(membres_l) < MAX_MEMBRES else Plein "cellule complète"
+        let nouveaux = membres_l ++ [personne]
+        membres.set(incident, nouveaux)
+        let _ = Journal.noter(h, "operations", par, "crise {incident} : {personne} mobilisé")
+        return len(nouveaux)
+    }
+
+    on decider(h, incident, d, motif, par, valideur) {
+        let p = pilote.get(incident)
+        require p != () else Inconnu "crise '{incident}' inconnue ou non active"
+        require par == p else Habilitation "seul le pilote décide"
+        require (get_status(incident) ?? "convoquee") == "active" else EtatInvalide "crise non active"
+        require len(motif) > 0 else MotifRequis "motif requis"
+        require valideur != par && ApiAcces.quatre_yeux(par, valideur) else QuatreYeux "décision de crise : contre-signature superviseur ou direction"
+        let decisions_l = decisions.get(incident) ?? []
+        require len(decisions_l) < MAX_DECISIONS else Plein "trop de décisions"
+        let ds = to_string(d)
+        if ds == "arbitrage_centralise" {
+            arbitrage_centralise.set("orbite", true)
+        }
+        if ds == "fin_mesure" && motif == "arbitrage_centralise" {
+            arbitrage_centralise.delete("orbite")
+        }
+        let nouvelles = decisions_l ++ ["{h} | {ds} | {motif} | {par}"]
+        decisions.set(incident, nouvelles)
+        let _ = Journal.noter(h, "operations", par, "crise {incident} : décision {ds} ({motif}), contre-signée par {valideur}")
+        return len(nouvelles)
+    }
+
+    on informer_etats(h, incident, texte, par) {
+        require convoquee_a.has(incident) else Inconnu "crise '{incident}' inconnue"
+        let st = get_status(incident) ?? "convoquee"
+        require st == "convoquee" || st == "active" else EtatInvalide "crise ni convoquée ni active"
+        let p = pilote.get(incident) ?? ""
+        require par == p || ApiAcces.a_le_role(par, "systeme") else Habilitation "informer les États : le pilote ou systeme"
+        require len(texte) > 0 else MotifRequis "texte vide"
+        let participants = ApiRef.etats_participants()
+        require len(participants) <= MAX_ETATS else Plein "plus de 200 États participants"
+        let informes_l = etats_informes.get(incident) ?? []
+        let servis = 0
+        for etat_c in participants {
+            let r = try { ApiRef.org_de_etat(etat_c) }
+            if r.error != () {
+                let _ = Journal.noter(h, "operations", par, "crise {incident} : État {etat_c} sans organisation, non informé")
+            } else {
+                let _ = ApiPasserelle.notifier(h, r.value, "", "ORBITE — crise {incident}", "{texte} Prochaine information sous 2 h.", 3)
+                if !contains(informes_l, etat_c) { informes_l.push(etat_c) }
+                servis = servis + 1
+            }
+        }
+        etats_informes.set(incident, informes_l)
+        derniere_info.set(incident, h)
+        let _ = Journal.noter(h, "operations", par, "crise {incident} : {servis} États informés")
+        return servis
+    }
+
+    on lever(h, incident, par) {
+        let p = pilote.get(incident)
+        require p != () else Inconnu "crise '{incident}' inconnue ou non active"
+        require par == p else Habilitation "seul le pilote lève la crise"
+        require (get_status(incident) ?? "convoquee") == "active" else EtatInvalide "crise non active"
+        require OpsIncident.etat(incident) == "resolu" else EtatInvalide "incident {incident} non résolu"
+        transition(incident, "active", "levee")
+        if arbitrage_centralise.has("orbite") {
+            arbitrage_centralise.delete("orbite")
+            decisions.set(incident, (decisions.get(incident) ?? []) ++ ["{h} | fin_mesure | arbitrage_centralise | {par}"])
+        }
+        for etat_c in etats_informes.get(incident) ?? [] {
+            let r = try { ApiRef.org_de_etat(etat_c) }
+            if r.error != () {
+                let _ = Journal.noter(h, "operations", par, "crise {incident} : État {etat_c} sans organisation, non informé de la levée")
+            } else {
+                let _ = ApiPasserelle.notifier(h, r.value, "", "ORBITE — fin de crise {incident}", "La crise {incident} est levée, le service est rétabli.", 3)
+            }
+        }
+        derniere_info.set(incident, h)
+        let _ = Journal.noter(h, "operations", par, "cellule de crise {incident} levée")
+        return "levee"
+    }
+
+    on debriefer(h, incident, texte, par) {
+        let p = pilote.get(incident)
+        require p != () else Inconnu "crise '{incident}' inconnue"
+        require par == p else Habilitation "seul le pilote débriefe"
+        require len(texte) > 0 else MotifRequis "retour d'expérience vide"
+        require (get_status(incident) ?? "convoquee") == "levee" else EtatInvalide "crise non levée"
+        transition(incident, "levee", "debriefee")
+        retex.set(incident, texte)
+        let _ = Journal.noter(h, "operations", par, "cellule de crise {incident} débriefée")
+        return "debriefee"
+    }
+
+    on active_pour(incident) {
+        if !convoquee_a.has(incident) { return false }
+        let st = get_status(incident) ?? "convoquee"
+        return st == "convoquee" || st == "active"
+    }
+
+    on arbitrage_centralise_en_vigueur() {
+        return arbitrage_centralise.get("orbite") ?? false
+    }
+
+    on etats_informes_de(incident) {
+        return etats_informes.get(incident) ?? []
+    }
+
+    on en_retard(h) {
+        let retard_c = []
+        for e in convoquee_a.entries {
+            let st = get_status(e.key) ?? "convoquee"
+            if st == "active" {
+                let base = derniere_info.get(e.key) ?? e.value
+                if h - base > INTERVALLE_INFORMATION { retard_c.push(e.key) }
+            } else if st == "convoquee" {
+                if h - e.value > DELAI_ACTIVATION { retard_c.push(e.key) }
+            }
+        }
+        return retard_c.sort()
+    }
+
+    on etat(incident) {
+        if !convoquee_a.has(incident) { return "inconnue" }
+        return get_status(incident) ?? "convoquee"
+    }
+}

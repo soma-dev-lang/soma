@@ -1,0 +1,8 @@
+# reentrees — règles entre sous-systèmes en forme toml (phase 2), à fusionner dans soma.toml.
+
+# Rentrée contrôlée approuvée ⇐ plan de désorbitation criblé chez manœuvres (ou déjà approuvé
+# là, pour une ré-approbation après report). L'arête instruit -> approuve porte déjà
+# `when ReeCampagne.ouverte || ReeCampagne.imminente via campagne_de`.
+[verify.before."ReeControlee.approuve"]
+while = ["ManPlan.crible", "ManPlan.approuve"]
+via = "ReeControlee.manoeuvre_de"

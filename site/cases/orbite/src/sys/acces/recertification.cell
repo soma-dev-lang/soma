@@ -1,0 +1,129 @@
+// acces — RECERTIFICATION PÉRIODIQUE. Chaque organisation confirme, au moins tous les
+// PERIODE_MS (365 j ; 180 j pour ORBITE), que chacune de ses personnes doit garder son rôle.
+// Une campagne couvre une organisation ; elle crée une attestation par personne non partie.
+// Attestation retirée ou échue ⇒ personne suspendue (motif "recertification_*"). Le rattrapage
+// (AccesPersonnes.non_certifiees) attrape ce qu'aucune campagne n'a couvert.
+
+// Décision d'un attestant sur une personne.
+cell type AccesDecision = String where value == "maintenir" || value == "retirer"
+
+// Campagne de recertification d'une organisation : id = "rc-<n>" tiré par ouvrir.
+skeleton AccesCampagnes {
+    const MAX_CAMPAGNES = 100000
+    const DUREE_MIN_MS = 604800000
+    const DUREE_MAX_MS = 7776000000
+    const PERIODE_MS = 31536000000
+    const PERIODE_ORBITE_MS = 15552000000
+    memory {
+        org_de: Map<String, Org> [persistent]                    // campagne → organisation couverte ; écrit une fois par ouvrir
+        ouverte_par: Map<String, String> [persistent]            // campagne → auteur
+        ouverture: Map<String, Horodatage> [persistent]          // campagne → ouverture, ms
+        echeance: Map<String, Horodatage> [persistent]           // campagne → échéance, ms ; ouverture + [DUREE_MIN_MS, DUREE_MAX_MS]
+        en_cours_de: Map<Org, String> [persistent]               // organisation → campagne ouverte (au plus une)
+        derniere_close: Map<Org, Horodatage> [persistent]        // organisation → clôture de sa dernière campagne, ms
+        invariant org_de.size <= MAX_CAMPAGNES
+        invariant (ouverture ?? 0) <= (echeance ?? 0)
+    }
+    // Cycle de vie d'une campagne (id = campagne).
+    state campagne {
+        initial: preparee
+        preparee -> ouverte         // ouvrir : organisation inscrite ou active chez ref (règle via org_de), attestations créées
+        ouverte -> close            // cloturer : échéance atteinte, attestations restantes échues
+        ouverte -> annulee          // annuler : organisation radiée (ses personnes partent d'office)
+    }
+    face {
+        // Ouvre la campagne d'une organisation existante : crée une attestation "a_revoir" par
+        // personne non partie (AccesAttestations.planifier). Renvoie l'id. Rôle exigé de `par` :
+        // "conformite" d'ORBITE. Refus : Inconnu (organisation), Doublon (campagne déjà ouverte),
+        // HorsBornes (échéance hors [h + DUREE_MIN_MS, h + DUREE_MAX_MS]), Habilitation, Plein.
+        signal ouvrir(h: Horodatage, org: Org, echeance_ms: Horodatage, par: String) -> String
+            writes org_de, ouverte_par, ouverture, echeance, en_cours_de
+            moves preparee -> ouverte when RefOrg.inscrite || RefOrg.active via org_de
+            calls ApiRef.organisation_existe, AccesControle.a_le_role, AccesPersonnes.personnes_de, AccesAttestations.planifier, next_id, Journal.noter
+        // Clôt une campagne ouverte dont l'échéance est ≤ h : les attestations encore "a_revoir"
+        // échoient (AccesAttestations.echoir_campagne). Par "conformite" d'ORBITE ou "systeme".
+        // Renvoie le nombre d'attestations échues. Refus : Inconnu, EtatInvalide, Delai
+        // (échéance non atteinte), Habilitation.
+        signal cloturer(h: Horodatage, id: String, par: String) -> Int
+            reads org_de, echeance
+            writes en_cours_de, derniere_close
+            moves ouverte -> close
+            calls AccesControle.a_le_role, AccesAttestations.echoir_campagne, Journal.noter
+        // Annule une campagne ouverte dont l'organisation est radiée de ref. Par "conformite"
+        // d'ORBITE. Renvoie "annulee". Refus : Inconnu, EtatInvalide, NonEligible (organisation
+        // encore inscrite), Habilitation.
+        signal annuler(h: Horodatage, id: String, par: String) -> String
+            reads org_de
+            writes en_cours_de
+            moves ouverte -> annulee
+            calls ApiRef.organisation_existe, AccesControle.a_le_role, Journal.noter
+        // Balayage : clôt (par "systeme") les campagnes ouvertes échues à h. Renvoie leur nombre.
+        signal cloturer_echues(h: Horodatage) -> Int
+            reads echeance, campagne
+            calls cloturer
+        // Organisations dont la dernière campagne close date de plus de PERIODE_MS
+        // (PERIODE_ORBITE_MS pour ApiRef.orbite()) à h et sans campagne ouverte : à ouvrir.
+        // Au plus `n`. Les organisations jamais couvertes sont trouvées par
+        // AccesPersonnes.non_certifiees.
+        signal a_ouvrir(h: Horodatage, n: Int) -> List<String>
+            requires n > 0 && n <= 1000
+            reads derniere_close, en_cours_de
+            calls ApiRef.orbite
+        // Organisation couverte ; Refus : Inconnu.
+        signal organisation(id: String) -> Org
+            reads org_de
+        // État : "preparee", "ouverte", "close", "annulee" ; "inconnue" si jamais ouverte.
+        signal etat(id: String) -> String
+            reads org_de, campagne
+    }
+}
+
+// Attestation d'une personne dans une campagne : id = "<campagne>|<personne>".
+skeleton AccesAttestations {
+    const MAX_ATTESTATIONS = 5000000
+    memory {
+        campagne_de: Map<String, String> [persistent]        // attestation → campagne ; écrit une fois par planifier, jamais effacé (lien de règle)
+        personne_de: Map<String, String> [persistent]        // attestation → personne
+        attestant: Map<String, String> [persistent]          // attestation → auteur de la décision
+        decidee_le: Map<String, Horodatage> [persistent]     // attestation → décision, ms
+        justification: Map<String, String> [persistent]      // attestation → justification (exigée pour "retirer")
+        invariant campagne_de.size <= MAX_ATTESTATIONS
+    }
+    // Cycle de vie d'une attestation (id = attestation).
+    state attestation {
+        initial: a_revoir
+        a_revoir -> confirmee       // attester "maintenir" pendant la campagne
+        a_revoir -> retiree         // attester "retirer" : personne suspendue
+        a_revoir -> echue           // echoir_campagne : campagne close sans décision
+    }
+    face {
+        // Crée l'attestation "a_revoir" de `personne` dans la campagne (appelée par
+        // AccesCampagnes.ouvrir seulement). Renvoie l'id. Refus : Existe, Plein.
+        signal planifier(h: Horodatage, campagne: String, personne: String) -> String
+            writes campagne_de, personne_de
+        // Décide sur une attestation à revoir. Rôle exigé de `par` : "administrateur_operateur"
+        // de l'organisation pour une personne d'opérateur ou de fournisseur ; "autorite" de
+        // l'État pour une personne d'État ; "superviseur" ou "direction" d'ORBITE pour une
+        // personne d'ORBITE ; toujours par ≠ personne. "maintenir" note la certification
+        // (AccesPersonnes.certifier) ; "retirer" suspend la personne
+        // (AccesPersonnes.suspendre_auto, "recertification_retiree"). Renvoie l'état atteint.
+        // Refus : Inconnu, EtatInvalide, Ferme (campagne non ouverte), MotifRequis (retirer sans
+        // justification), Habilitation, QuatreYeux.
+        signal attester(h: Horodatage, id: String, d: AccesDecision, motif: String, par: String) -> String
+            reads campagne_de, personne_de
+            writes attestant, decidee_le, justification
+            moves a_revoir -> confirmee when AccesCampagnes.ouverte via campagne_de, a_revoir -> retiree when AccesCampagnes.ouverte via campagne_de
+            calls AccesCampagnes.etat, AccesCampagnes.organisation, AccesControle.a_le_role, AccesControle.agit_pour, AccesPersonnes.certifier, AccesPersonnes.suspendre_auto, Journal.noter
+        // Fait échoir les attestations "a_revoir" de la campagne (appelée par
+        // AccesCampagnes.cloturer) et suspend leurs personnes ("recertification_echue").
+        // Renvoie leur nombre.
+        signal echoir_campagne(h: Horodatage, campagne: String) -> Int
+            reads campagne_de, personne_de
+            moves a_revoir -> echue
+            calls AccesPersonnes.suspendre_auto, Journal.noter
+        // Attestations "a_revoir" d'une campagne, au plus `n` : le travail de l'attestant.
+        signal a_revoir_de(campagne: String, n: Int) -> List<String>
+            requires n > 0 && n <= 2000
+            reads campagne_de, attestation
+    }
+}

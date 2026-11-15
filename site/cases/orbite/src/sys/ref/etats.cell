@@ -1,0 +1,128 @@
+// ref — États (une instance par code d'État, id = "ALD").
+// Un État est d'abord CONNU (« tiers ») : il faut pouvoir attribuer au catalogue les objets
+// d'États non participants (débris, lanceurs étrangers). Il devient candidat, puis participant
+// par décision à quatre yeux de la direction d'ORBITE ; il peut être suspendu, et se retirer.
+// La machine est réactive : un État retiré redevient « tiers », ses objets restent catalogués.
+// Un objet d'origine inconnue n'a pas d'État ("") : il n'est rattaché à aucune instance d'ici.
+
+// État d'adhésion tel que le lit un appelant : "inconnu" si jamais déclaré.
+cell type RefAdhesion = String where value == "tiers" || value == "candidat" || value == "participant" || value == "suspendu" || value == "inconnu"
+
+skeleton RefEtat {
+    const MAX_ETATS = 300
+    memory {
+        noms: Map<String, String> [persistent]                 // code → nom de l'État
+        declares_le: Map<String, Horodatage> [persistent, consistent, immutable] // code → déclaration
+        admis_le: Map<String, Horodatage> [persistent]         // code → dernière admission
+        motifs: Map<String, String> [persistent]               // code → motif de la dernière suspension ou du retrait
+        // code → référence de l'instrument d'adhésion déposé (lettre de l'autorité nationale)
+        instruments: Map<String, String> [persistent]
+        invariant noms.size <= 300
+        invariant declares_le.size <= 300
+        invariant admis_le.size <= 300
+        invariant motifs.size <= 300
+        invariant instruments.size <= 300
+        invariant (admis_le ?? declares_le ?? 0) >= (declares_le ?? 0)  // on n'admet pas avant d'avoir déclaré (un État non admis n'a pas d'admis_le)
+    }
+    // Adhésion (réactive : tout état revient à « tiers »).
+    state adhesion {
+        initial: tiers
+        tiers -> candidat          // candidater : instrument d'adhésion déposé
+        candidat -> participant    // admettre : direction, quatre yeux
+        candidat -> tiers          // rejeter : candidature refusée ou abandonnée
+        participant -> suspendu    // suspendre : manquements graves de l'État, quatre yeux
+        suspendu -> participant    // retablir : quatre yeux
+        participant -> tiers       // retirer : retrait de l'État
+        suspendu -> tiers          // retirer : retrait ou exclusion d'un État suspendu
+    }
+    face {
+        // Fondation d'ORBITE (une seule fois, appelé par RefOrg.amorcer) : déclare l'État du
+        // siège et l'admet d'emblée (tiers -> candidat -> participant), sans quatre yeux
+        // puisqu'aucune personne d'ORBITE n'existe encore.
+        // Renvoie le code de l'État du siège. Habilitation : par "systeme".
+        // Refus : Existe (un État est déjà déclaré), Habilitation.
+        signal fonder(h: Horodatage, etat: Etat, nom: String, par: String) -> Etat
+            writes noms, declares_le, admis_le, instruments
+            moves tiers -> candidat, candidat -> participant
+            calls ApiAcces.a_le_role, RefHistorique.consigner, Journal.noter
+        // Déclare un État connu, non participant (« tiers »), pour pouvoir lui attribuer des
+        // objets. Renvoie le code. Habilitation : par "analyste" ou "superviseur" (rôles d'ORBITE).
+        // Refus : Existe, Incoherent (code hors 3 lettres majuscules, nom vide), Plein, Habilitation.
+        signal declarer(h: Horodatage, etat: Etat, nom: String, par: String) -> Etat
+            writes noms, declares_le
+            calls ApiAcces.a_le_role, RefHistorique.consigner, Journal.noter
+        // Enregistre la candidature : référence de l'instrument d'adhésion. Renvoie "candidat".
+        // Habilitation : par "superviseur" (ORBITE).
+        // Refus : Inconnu, EtatInvalide (pas "tiers"), MotifRequis
+        // (référence vide), Habilitation.
+        signal candidater(h: Horodatage, etat: Etat, instrument: String, par: String) -> String
+            reads noms
+            writes instruments
+            moves tiers -> candidat
+            calls ApiAcces.a_le_role, Journal.noter
+        // Admet l'État. Active dans le même appel les organisations inscrites sous sa tutelle
+        // (RefOrg.activer_tutelle), dont son autorité nationale. Renvoie "participant".
+        // Habilitation : par "direction" (ORBITE), quatre yeux (valideur "direction" ou
+        // "superviseur", ApiAcces.quatre_yeux).
+        // Refus : Inconnu, EtatInvalide (pas "candidat"), Habilitation, QuatreYeux.
+        signal admettre(h: Horodatage, etat: Etat, par: String, valideur: String) -> String
+            reads noms
+            writes admis_le
+            moves candidat -> participant
+            calls ApiAcces.a_le_role, ApiAcces.quatre_yeux, RefOrg.activer_tutelle, RefHistorique.consigner, Journal.noter
+        // Rejette une candidature. Renvoie "tiers".
+        // Habilitation : par "direction" (ORBITE). Refus : Inconnu, EtatInvalide, MotifRequis, Habilitation.
+        signal rejeter(h: Horodatage, etat: Etat, motif: String, par: String) -> String
+            reads noms
+            writes motifs
+            moves candidat -> tiers
+            calls ApiAcces.a_le_role, Journal.noter
+        // Suspend un État participant : etat_participant devient faux (ses organisations ne
+        // peuvent plus être activées, ses visas de cession sont bloqués). La suspension des
+        // opérateurs sous sa tutelle reste une décision d'operateurs. Renvoie "suspendu".
+        // Habilitation : par "direction" (ORBITE), quatre yeux (ApiAcces.quatre_yeux).
+        // Refus : Inconnu, EtatInvalide (pas "participant", ou État du siège), MotifRequis,
+        // Habilitation, QuatreYeux.
+        signal suspendre(h: Horodatage, etat: Etat, motif: String, par: String, valideur: String) -> String
+            reads noms, instruments
+            writes motifs
+            moves participant -> suspendu
+            calls ApiAcces.a_le_role, ApiAcces.quatre_yeux, RefHistorique.consigner, Journal.noter
+        // Rétablit un État suspendu. Renvoie "participant".
+        // Habilitation : par "direction" (ORBITE), quatre yeux. Refus : Inconnu, EtatInvalide,
+        // Habilitation, QuatreYeux.
+        signal retablir(h: Horodatage, etat: Etat, par: String, valideur: String) -> String
+            reads noms
+            moves suspendu -> participant
+            calls ApiAcces.a_le_role, ApiAcces.quatre_yeux, RefHistorique.consigner, Journal.noter
+        // Retrait de l'État (notifié par lui, ou exclusion décidée par ORBITE). Ses objets
+        // restent catalogués et immatriculés chez lui ; il redevient « tiers ». Renvoie "tiers".
+        // Habilitation : "autorite" de l'État lui-même (ApiAcces.agit_pour sur
+        // RefOrg.org_de_etat(etat)), ou "direction" d'ORBITE avec quatre yeux (valideur ;
+        // ignoré pour l'autorité de l'État, qui décide seule).
+        // Refus : Inconnu, EtatInvalide (ni participant ni suspendu, ou État du siège),
+        // MotifRequis, Conflit (cession en cours visée par lui, RefCession.en_cours_pour_etat),
+        // Habilitation, QuatreYeux.
+        signal retirer(h: Horodatage, etat: Etat, motif: String, par: String, valideur: String) -> String
+            reads noms, instruments
+            writes motifs
+            moves participant -> tiers, suspendu -> tiers
+            calls RefOrg.org_de_etat, RefCession.en_cours_pour_etat, ApiAcces.a_le_role, ApiAcces.agit_pour, ApiAcces.quatre_yeux, RefHistorique.consigner, Journal.noter
+        // Vrai si l'État a été déclaré (quel que soit son état d'adhésion).
+        signal connu(etat: Etat) -> Bool
+            reads noms
+        // Vrai si l'État est « participant » (ni tiers, ni candidat, ni suspendu).
+        signal participant(etat: Etat) -> Bool
+            reads adhesion
+        // État d'adhésion ; "inconnu" si jamais déclaré.
+        signal etat(etat: Etat) -> RefAdhesion
+            reads noms, adhesion
+        // États participants non suspendus (au plus MAX_ETATS) : destinataires des notifications générales
+        // (fragmentation, nuage de débris, rapports annuels).
+        signal participants() -> List<String>
+            reads noms, adhesion
+        // Nom de l'État. Refus : Inconnu.
+        signal nom(etat: Etat) -> String
+            reads noms
+    }
+}

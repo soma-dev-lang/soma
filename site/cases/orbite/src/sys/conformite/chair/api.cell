@@ -1,0 +1,33 @@
+// Corps de la façade ApiConformite.
+flesh ApiConformite {
+    on constater(h, op, nature, gravite, reference, par) {
+        let habile = ApiAcces.a_le_role(par, "systeme") || ApiAcces.a_le_role(par, "analyste") || ApiAcces.a_le_role(par, "conformite")
+        require habile else Habilitation "{par} ne constate pas de manquement"
+        require reference != "" else MotifRequis "référence du constat requise"
+        let connues = ["reponse_tardive", "designation_ignoree", "manoeuvre_non_annoncee", "ephemeride_perimee", "fin_de_vie_non_tenue", "refus_escalade", "astreinte_absente", "lancement_non_notifie", "immatriculation_tardive", "licence_invalide", "diffusion_non_autorisee", "remediation_non_tenue", "autre"]
+        let connue = contains(connues, nature)
+        let nat = if connue { nature } else { "autre" }
+        let detail = if connue { "" } else { "nature d'origine : {nature}" }
+        return ConfManquement.constater(h, op, ConfNature(nat), gravite, reference, detail, par)
+    }
+    on note(op, h) {
+        return ConfNotation.note(op, h)
+    }
+    on sous_surveillance(op) {
+        return ConfNotation.sous_surveillance(op)
+    }
+    on constater_etat(h, etat, nature, gravite, reference, par) {
+        let habile = ApiAcces.a_le_role(par, "systeme") || ApiAcces.a_le_role(par, "analyste") || ApiAcces.a_le_role(par, "conformite")
+        require habile else Habilitation "{par} ne constate pas de manquement d'État"
+        require reference != "" else MotifRequis "référence du constat requise"
+        let connues = ["immatriculation_tardive", "point_focal_injoignable", "demande_sans_reponse", "rapport_sans_accuse", "autre"]
+        let connue = contains(connues, nature)
+        let nat = if connue { nature } else { "autre" }
+        let detail = if connue { "" } else { "nature d'origine : {nature}" }
+        return ConfManquementEtat.constater(h, etat, ConfNatureEtat(nat), gravite, reference, detail, par)
+    }
+    on balayer(h, par) {
+        require ApiAcces.a_le_role(par, "systeme") else Habilitation "{par} ne balaye pas la conformite"
+        return ConfRonde.balayer(h, par)
+    }
+}

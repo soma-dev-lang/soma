@@ -1,0 +1,288 @@
+// MANŒUVRES — plans de manœuvre : déclaration, qualification, approbation, exécution confirmée,
+// échec, annulation, réexamen. Instance = id du plan (choisi par le déclarant, unique).
+// Un plan d'évitement est lié à UN rapprochement et ne peut être approuvé que s'il tient le
+// verrou d'évitement de ce rapprochement (ManEvitement) : au plus un plan approuvé par rapprochement.
+
+// Motif d'un plan : "evitement" (lié à un rapprochement dont l'objet est le désigné arrêté),
+// "maintien" (maintien à poste), "transfert" (changement d'orbite), "desorbitation" (fin de vie).
+cell type ManMotif = String where value == "evitement" || value == "maintien" || value == "transfert" || value == "desorbitation"
+// États d'un plan tels que les expose ApiManoeuvres.etat ("inconnu" : jamais déclaré).
+cell type ManEtatPlan = String where value == "declare" || value == "crible" || value == "approuve" || value == "rejete" || value == "execute" || value == "verifie" || value == "anomalie" || value == "annule" || value == "inconnu"
+// Cause d'un rejet (plan jamais approuvé, ou approbation refusée).
+cell type ManCauseRejet = String where value == "criblage_risque" || value == "criblage_impossible" || value == "criblage_perime" || value == "ephemeride_perimee" || value == "operateur_suspendu" || value == "objet_incapable" || value == "designation_changee" || value == "hors_delai" || value == "refus_analyste"
+// Cause d'une annulation : "proprietaire" (retrait par l'opérateur), "fenetre_echue" (aucune
+// confirmation ni manœuvre observée à la fin de la fenêtre), "designation_retiree" (la
+// coordination a été rouverte ou désigne un autre objet), "recriblage" (nouveau risque créé par
+// la trajectoire après manœuvre), "objet_incapable" (propulsion perdue, hors service, anomalie),
+// "operateur_suspendu", "orbite" (décision d'un analyste d'ORBITE).
+cell type ManCauseAnnulation = String where value == "proprietaire" || value == "fenetre_echue" || value == "designation_retiree" || value == "recriblage" || value == "objet_incapable" || value == "operateur_suspendu" || value == "orbite"
+
+// Fiche d'un plan (lue par les autres cells de manoeuvres). `fin` : fin de la fenêtre d'exécution.
+cell type ManFichePlan { variants { ManFichePlan { objet: Objet, r: Rapprochement, motif: ManMotif, debut: Horodatage, fin: Horodatage, dv: DeltaV, proprietaire: Org, declarant: String, declare_le: Horodatage } } }
+
+// Fondement d'une approbation (propriété 6 : la décision est traçable jusqu'aux données qui la
+// fondaient) : dépôt d'éphéméride et son âge, qualité, criblage, version des règles de priorité,
+// désignation de la coordination, pc et niveau du rapprochement à l'instant de l'approbation.
+cell type ManFondement { variants { ManFondement { approuve_le: Horodatage, approuve_par: String, depot: String, age_ephemeride: Duree, qualite: Qualite, conflits: Int, crible_le: Horodatage, version_regles: String, designe: Objet, pc: Probabilite, niveau: Int, statut_operateur: String } } }
+
+skeleton ManPlan {
+    // Borne haute des plans conservés (≈ 30 000 objets manœuvrants × 30 ans × 50 plans/an).
+    const MAX_PLANS = 50000000
+    // Plans non terminés par objet (fenêtres qui se suivent : maintien hebdomadaire + évitements).
+    const MAX_ACTIFS_PAR_OBJET = 16
+    // Plans d'évitement déclarés pour un même rapprochement (retraits et redéclarations compris).
+    const MAX_PLANS_PAR_RAPPROCHEMENT = 20
+    // Durée de la fenêtre d'exécution : propulsion impulsionnelle 1 h, faible 24 h (ms).
+    const FENETRE_IMPULSIONNELLE_MS = 3600000
+    const FENETRE_FAIBLE_MS = 86400000
+    // Délai minimal entre la déclaration et le début de la fenêtre (temps de criblage) : 30 min.
+    const PREAVIS_DECLARATION_MS = 1800000
+    // Validité d'un criblage pour approuver : 8 h (cadence du criblage du catalogue).
+    const VALIDITE_CRIBLAGE_MS = 28800000
+    // Écart toléré entre réalisé et plan : 20 % du delta-v.
+    const ECART_DV_POURCENT = 20
+    // Plans conservés par objet (maintien hebdomadaire sur 30 ans + évitements).
+    const MAX_PLANS_PAR_OBJET = 5000
+    // Plans approuvés non exécutés à un instant donné, tous objets.
+    const MAX_APPROUVES = 1000000
+    memory {
+        fiche_de: Map<String, ManFichePlan> [persistent]   // plan -> fiche ; écrite à la déclaration, jamais effacée
+        verrou_de: Map<String, String> [persistent]        // plan -> verrou ManEvitement : le rapprochement pour un évitement, "P:" + plan sinon ; écrit par `declarer` seul, jamais effacé (lien des règles d'approbation : verrou engagé, coordination arrêtée)
+        objet_de: Map<String, Objet> [persistent]          // plan -> objet ; écrit par `declarer` seul, jamais effacé (lien des règles d'approbation : éphéméride à jour, objet en service)
+        proprietaire_de: Map<String, Org> [persistent]     // plan -> opérateur propriétaire à la déclaration ; écrit par `declarer` seul, jamais effacé (lien de la règle d'approbation : opérateur actif)
+        fondement_de: Map<String, ManFondement> [persistent] // plan -> fondement de l'approbation ; écrit une fois
+        reel_de: Map<String, Horodatage> [persistent]      // heure réelle de la poussée confirmée
+        dv_reel_de: Map<String, DeltaV> [persistent]       // delta-v réalisé confirmé (mm/s)
+        confirme_par: Map<String, String> [persistent]
+        cause_rejet_de: Map<String, ManCauseRejet> [persistent]
+        cause_annulation_de: Map<String, ManCauseAnnulation> [persistent]
+        motif_annulation_de: Map<String, String> [persistent] // texte libre du motif (MotifRequis)
+        actifs_de: Map<Objet, List<String>> [persistent]   // plans non terminés de l'objet (declare, crible, approuve, execute)
+        evitements_de: Map<Rapprochement, List<String>> [persistent] // plans d'évitement déclarés pour le rapprochement, du plus ancien au plus récent
+        approuves: List<String> [persistent]               // plans approuvés non exécutés (réexamen par ManVeille)
+        tous_de: Map<Objet, List<String>> [persistent]     // tous les plans de l'objet, par date de déclaration (historique, plan_couvrant)
+        invariant fiche_de.size <= MAX_PLANS
+        invariant verrou_de.size <= fiche_de.size
+        invariant objet_de.size <= fiche_de.size
+        invariant proprietaire_de.size <= fiche_de.size
+        invariant fondement_de.size <= fiche_de.size
+        invariant len(actifs_de) <= MAX_ACTIFS_PAR_OBJET
+        invariant len(evitements_de) <= MAX_PLANS_PAR_RAPPROCHEMENT
+        invariant approuves.size <= MAX_APPROUVES
+        invariant len(tous_de) <= MAX_PLANS_PAR_OBJET
+    }
+    // Cycle d'un plan (états de ApiManoeuvres.etat).
+    state cycle {
+        initial: declare
+        declare -> crible        // criblage de la trajectoire après manœuvre : aucun rapprochement de niveau ≥ 2 créé
+        declare -> rejete        // criblage à risque ou impossible, objet devenu incapable
+        declare -> annule        // retrait avant criblage
+        // Approbation (phase 2 : règles entre sous-systèmes) : une chaîne d'états TRANSITOIRES, tous
+        // franchis dans le même appel de `approuver` après ses contrôles (jamais observables entre
+        // deux appels ; ApiManoeuvres.etat ne les rend donc jamais), une condition par arête.
+        crible -> recoupe        // le criblage de conjonctions vaut encore (ConjCriblagePlan "sur", même id : propriété 4)
+        recoupe -> coordonne     // évitement : la coordination de son rapprochement est arrêtée (propriété 1)
+        recoupe -> habilite      // hors évitement : le propriétaire est membre actif (propriété 4)
+        coordonne -> habilite    // évitement : le propriétaire est membre actif (propriété 4)
+        habilite -> localise     // l'éphéméride de l'objet est à jour (EphSuivi "a_jour" : propriété 4)
+        localise -> capable      // l'objet est en service au catalogue (propriété 2)
+        capable -> approuve      // verrou d'évitement tenu par CE plan (propriété 1)
+        crible -> rejete         // contrôle d'approbation en échec (éphéméride périmée, opérateur suspendu, criblage trop ancien…)
+        crible -> annule
+        approuve -> execute      // exécution confirmée par le propriétaire dans la fenêtre
+        approuve -> anomalie     // échec d'exécution déclaré, ou manœuvre observée mais jamais confirmée
+        approuve -> annule       // retrait, fenêtre échue sans manœuvre, désignation retirée, recriblage
+        execute -> verifie       // orbite observée conforme au plan
+        execute -> anomalie      // écart à l'orbite observée, ou manœuvre non observée
+    }
+    face {
+        // Déclare un plan (état "declare") et réserve sa fenêtre d'exécution [debut, fin] (fin =
+        // debut + FENETRE_IMPULSIONNELLE_MS ou FENETRE_FAIBLE_MS selon ApiRef.propulsion). Contrôles :
+        // objet catalogué et ApiRef.peut_manoeuvrer (exclut depuis le contrat v2 l'objet en
+        // anomalie ou passivé ; sinon NonEligible) ; propriétaire ApiOperateurs.est_actif (sinon Suspendu) ;
+        // ApiEphemerides.fraiche(objet, h) (sinon Perime) ; debut ≥ h + PREAVIS_DECLARATION_MS
+        // (sinon Delai) ; dv > 0 (sinon HorsBornes) ; aucune autre fenêtre réservée de l'objet ne
+        // chevauche (ManFenetre.chevauche, sinon Conflit). Évitement : `r` non vide, rapprochement
+        // ouvert (ApiConjonctions.etat ni resolu, ni passe, ni collision : sinon EtatInvalide)
+        // impliquant l'objet (sinon Incoherent), coordination arrêtée sur CET objet
+        // (ApiCoordination.arretee et designe(r, "systeme") == objet, sinon Conflit), déclaration
+        // au plus tard à la limite d'action : h + ApiPriorites.preavis(propulsion) ≤ TCA (le préavis
+        // court de la décision au TCA, façade des priorités), et début de fenêtre < TCA (sinon
+        // Delai ; la poussée peut tomber peu avant le TCA) ; objet habité (ApiRef.habite) :
+        // l'autre objet ne peut pas manœuvrer (ApiRef.peut_manoeuvrer faux, sinon NonEligible).
+        // Hors évitement, `r` doit être "" (sinon Incoherent). Maintien : rattaché au programme accepté
+        // de l'objet s'il en a un (ManProgramme.rattacher, dv ≤ dv_max sinon HorsBornes). Seul écrivain de `verrou_de`
+        // (r pour un évitement, "P:" + plan sinon), `objet_de` et `proprietaire_de` (ApiRef.proprietaire
+        // à `h`), une fois chacun (`require verrou_de.get(plan) == () else Existe`). `par` : "dynamicien" de l'opérateur
+        // propriétaire (ApiAcces.a_le_role + ApiAcces.agit_pour sur ApiRef.proprietaire).
+        // Renvoie l'id du plan.
+        // Refus : Existe, Inconnu (objet), NonEligible, Suspendu, Perime, Delai, HorsBornes,
+        // Incoherent, EtatInvalide, Conflit, Plein, Habilitation.
+        signal declarer(h: Horodatage, plan: String, objet: Objet, r: Rapprochement, motif: ManMotif, debut: Horodatage, dv: DeltaV, par: String) -> String
+            writes fiche_de, verrou_de, objet_de, proprietaire_de, actifs_de, evitements_de, tous_de
+            calls ApiRef.peut_manoeuvrer, ApiRef.propulsion, ApiRef.proprietaire, ApiRef.habite, ApiOperateurs.est_actif, ApiEphemerides.fraiche, ApiConjonctions.etat, ApiConjonctions.objets, ApiConjonctions.tca, ApiCoordination.arretee, ApiCoordination.designe, ApiPriorites.preavis, ManFenetre.chevauche, ManFenetre.reserver, ManProgramme.rattacher, ApiAcces.a_le_role, ApiAcces.agit_pour, ManIndicateurs.compter, Journal.noter
+        // Statue sur le criblage du plan (ManCriblage.etat) : "sur" -> crible ; "a_risque" ou
+        // "impossible" -> rejete (cause criblage_risque / criblage_impossible), fenêtre libérée,
+        // verrou non pris. `par` "systeme" (enchaîné par ApiManoeuvres.declarer). Renvoie l'état
+        // atteint ("crible" ou "rejete").
+        // Refus : Inconnu, EtatInvalide (déjà statué, ou criblage encore "demande"), Habilitation.
+        signal statuer(h: Horodatage, plan: String, par: String) -> ManEtatPlan
+            writes cause_rejet_de, actifs_de
+            reads fiche_de
+            moves declare -> crible when ManCriblage.sur, declare -> rejete
+            calls ManCriblage.etat, ManFenetre.liberer, ApiAcces.a_le_role, ManIndicateurs.compter, Journal.noter
+        // Approuve un plan criblé (crible -> approuve) après les contrôles de la propriété 4,
+        // refaits à `h` : criblage "sur" de moins de VALIDITE_CRIBLAGE_MS (sinon Perime) ;
+        // ApiEphemerides.fraiche(objet, h) et dernier dépôt identique à celui du criblage (sinon
+        // Perime) ; dépôt criblé ApiEphemerides.depot_valide et avec_manoeuvres (la trajectoire
+        // criblée INCLUT la poussée ; sinon Perime) ; propriétaire ApiOperateurs.est_actif (sinon
+        // Suspendu) ; objet ApiRef.peut_manoeuvrer (sinon NonEligible) ; évitement : coordination
+        // arrêtée et ApiCoordination.designe(r, "systeme") == objet (sinon Conflit) ;
+        // désorbitation d'un objet à risque au sol (ApiReentrees.a_risque) : rentrée contrôlée
+        // approuvée (ApiReentrees.controlee_approuvee, sinon NonEligible). Règles entre sous-systèmes,
+        // une par arête de la chaîne crible -> recoupe -> [coordonne ->] habilite -> localise ->
+        // capable -> approuve, toutes vérifiées AVANT la première transition (sinon `rejeter`) :
+        // ApiConjonctions.criblage_plan(plan) == "sur" (sinon Perime) ; évitement :
+        // ApiCoordination.arretee(verrou_de) (sinon Conflit) ; ApiOperateurs.est_actif(proprietaire_de, h)
+        // (sinon Suspendu) ; ApiEphemerides.fraiche(objet_de, h) (sinon Perime) ;
+        // ApiRef.etat_objet(objet_de) == "en_service" (sinon NonEligible). Prend le verrou (ManEvitement.engager sur
+        // verrou_de : un autre plan approuvé pour ce rapprochement ⇒ Conflit). Écrit le fondement
+        // (ManFondement : dépôt, âge, ApiEphemerides.qualite, conflits, version
+        // ApiPriorites.version_en_vigueur, désignation, ApiConjonctions.pc / niveau, statut),
+        // puis avise les parties (ManAvis.emettre, sujet "approbation"). `par` "systeme"
+        // (approbation automatique enchaînée par ApiManoeuvres.declarer) ou "analyste" d'ORBITE.
+        // Renvoie "approuve". Refus : Inconnu, EtatInvalide, Perime, Suspendu, NonEligible,
+        // Conflit, Plein, Habilitation.
+        signal approuver(h: Horodatage, plan: String, par: String) -> ManEtatPlan
+            writes fondement_de, approuves
+            reads fiche_de, verrou_de, objet_de, proprietaire_de
+            moves crible -> recoupe when ConjCriblagePlan.sur, recoupe -> coordonne when CoordDossier.arretee via verrou_de, recoupe -> habilite when OpMembres.actif via proprietaire_de, coordonne -> habilite when OpMembres.actif via proprietaire_de, habilite -> localise when EphSuivi.a_jour via objet_de, localise -> capable when RefObjet.en_service via objet_de, capable -> approuve when ManEvitement.engage via verrou_de
+            calls rejeter, ManCriblage.fiche, ManEvitement.engager, ManAvis.emettre, ApiConjonctions.criblage_plan, ApiRef.etat_objet, ApiEphemerides.fraiche, ApiEphemerides.derniere, ApiEphemerides.age, ApiEphemerides.qualite, ApiEphemerides.depot_valide, ApiEphemerides.avec_manoeuvres, ApiOperateurs.est_actif, ApiOperateurs.statut, ApiRef.peut_manoeuvrer, ApiReentrees.a_risque, ApiReentrees.controlee_approuvee, ApiCoordination.arretee, ApiCoordination.designe, ApiConjonctions.pc, ApiConjonctions.niveau, ApiPriorites.version_en_vigueur, ApiAcces.a_le_role, ManIndicateurs.compter, Journal.noter
+        // Refuse l'approbation d'un plan criblé (crible -> rejete) avec sa cause : appelé par
+        // `approuver` quand un contrôle échoue (le refus est gardé, pas annulé), ou par un analyste.
+        // Libère la fenêtre. `par` "systeme" ou "analyste" d'ORBITE. Renvoie "rejete".
+        // Refus : Inconnu, EtatInvalide, MotifRequis (cause refus_analyste sans motif), Habilitation.
+        signal rejeter(h: Horodatage, plan: String, cause: ManCauseRejet, motif: String, par: String) -> ManEtatPlan
+            writes cause_rejet_de, motif_annulation_de, actifs_de
+            reads fiche_de
+            moves crible -> rejete
+            calls ManFenetre.liberer, ApiAcces.a_le_role, ManIndicateurs.compter, Journal.noter
+        // Confirme l'exécution (approuve -> execute) : `reel` dans la fenêtre [debut, fin]
+        // (sinon Incoherent), |dv − dv du plan| ≤ ECART_DV_POURCENT % (sinon Incoherent) ; la
+        // fenêtre doit être ouverte (ManFenetre.ouvrir si encore réservée et h ≥ debut ; sinon
+        // EtatInvalide). Consomme la fenêtre, solde le verrou (ManEvitement.solder), programme la
+        // vérification (ManVerification.programmer), avise les parties (sujet "execution").
+        // `par` "dynamicien" du propriétaire. Renvoie "execute".
+        // Refus : Inconnu, EtatInvalide, Incoherent, Habilitation.
+        signal confirmer(h: Horodatage, plan: String, reel: Horodatage, dv: DeltaV, par: String) -> ManEtatPlan
+            writes reel_de, dv_reel_de, confirme_par, approuves
+            reads fiche_de, verrou_de
+            moves approuve -> execute when ManFenetre.ouverte
+            calls ManFenetre.etat, ManFenetre.ouvrir, ManFenetre.consommer, ManEvitement.solder, ManVerification.programmer, ManAvis.emettre, ApiRef.proprietaire, ApiAcces.a_le_role, ApiAcces.agit_pour, ManIndicateurs.compter, Journal.noter
+        // Échec d'exécution déclaré par le propriétaire (approuve -> anomalie) : poussée non faite
+        // ou avortée. Libère la fenêtre et le verrou (ManEvitement.liberer : aucune manœuvre
+        // faite), ouvre le dossier d'anomalie (ManAnomalie.ouvrir, nature "echec_execution"),
+        // déclare la propulsion perdue (ApiRef.declarer_propulsion "aucune" si `propulsion_perdue` :
+        // ref rouvre alors les coordinations où l'objet est désigné), avise les parties (sujet
+        // "anomalie"). La transition est prise AVANT tout appel sortant : un retrait demandé en
+        // retour par la coordination (ApiManoeuvres.retirer sur plan_de(r)) ne voit plus ce plan.
+        // Ne rouvre PAS la coordination elle-même (ManAnomalie.ouvrir le fait si elle est encore
+        // arrêtée sur l'objet). `par` "dynamicien" ou
+        // "chef_de_mission" du propriétaire. Renvoie "anomalie".
+        // Refus : Inconnu, EtatInvalide, MotifRequis, Habilitation.
+        signal declarer_echec(h: Horodatage, plan: String, propulsion_perdue: Bool, motif: String, par: String) -> ManEtatPlan
+            writes motif_annulation_de, approuves, actifs_de
+            reads fiche_de, verrou_de
+            moves approuve -> anomalie
+            calls ManFenetre.liberer, ManEvitement.liberer, ManAnomalie.ouvrir, ManAvis.emettre, ApiRef.declarer_propulsion, ApiRef.proprietaire, ApiAcces.a_le_role, ApiAcces.agit_pour, ManIndicateurs.compter, Journal.noter
+        // Annule un plan non exécuté (declare, crible ou approuve -> annule) : libère la fenêtre ;
+        // s'il était approuvé, libère le verrou, avise les parties (sujet "annulation") et, pour
+        // un évitement, rouvre la coordination si elle est encore arrêtée sur CET objet (le désigné ne
+        // manœuvre plus : ApiCoordination.arretee et designe(r, "systeme") == objet, puis rouvrir) — transition prise AVANT l'appel, la
+        // coordination ne retrouvant ainsi aucun plan à retirer (pas de réentrance).
+        // `par` : "dynamicien" ou "chef_de_mission" du propriétaire (cause "proprietaire"),
+        // "analyste" d'ORBITE (cause "orbite" ou toute autre), "systeme" (causes automatiques de
+        // ManVeille et de `reexaminer`). Renvoie "annule".
+        // Refus : Inconnu, EtatInvalide (déjà exécuté ou terminé), MotifRequis, Habilitation.
+        signal annuler(h: Horodatage, plan: String, cause: ManCauseAnnulation, motif: String, par: String) -> ManEtatPlan
+            writes cause_annulation_de, motif_annulation_de, approuves, actifs_de
+            reads fiche_de, verrou_de
+            moves declare -> annule, crible -> annule, approuve -> annule
+            calls ManFenetre.liberer, ManEvitement.liberer, ManAvis.emettre, ApiCoordination.arretee, ApiCoordination.designe, ApiCoordination.rouvrir, ApiRef.proprietaire, ApiAcces.a_le_role, ApiAcces.agit_pour, ManIndicateurs.compter, Journal.noter
+        // Retire un plan non exécuté À LA DEMANDE DE LA COORDINATION (rouverture : le désigné a
+        // changé) : comme `annuler` (cause "designation_retiree"), mais n'appelle PAS la
+        // coordination — c'est elle qui l'a demandé (ni rouvrir, ni lecture : pas de réentrance).
+        // Libère la fenêtre et le verrou, avise les parties (sujet "annulation").
+        // `par` : "systeme" (ApiAcces.a_le_role). Renvoie "annule".
+        // Refus : Inconnu, EtatInvalide (déjà exécuté ou terminé), MotifRequis, Habilitation.
+        signal retirer(h: Horodatage, plan: String, motif: String, par: String) -> ManEtatPlan
+            writes cause_annulation_de, motif_annulation_de, approuves, actifs_de
+            reads fiche_de, verrou_de
+            moves declare -> annule, crible -> annule, approuve -> annule
+            calls ManFenetre.liberer, ManEvitement.liberer, ManAvis.emettre, ApiAcces.a_le_role, ManIndicateurs.compter, Journal.noter
+        // Fenêtre échue sans confirmation (appelé par ManVeille quand ManFenetre passe "echue") :
+        // si ApiObservation.manoeuvre_detectee(objet, debut) — poussée faite mais jamais
+        // confirmée — approuve -> anomalie (ManAnomalie.ouvrir nature "non_confirmee", verrou
+        // soldé) ; sinon approuve -> annule (cause fenetre_echue, verrou libéré, coordination
+        // rouverte si encore arrêtée — transition prise avant l'appel). Dans les deux cas, manquement (ApiConformite.constater, gravité 3 pour un
+        // évitement de niveau 3, 2 sinon). `par` "systeme". Renvoie l'état atteint.
+        // Refus : Inconnu, EtatInvalide (plan non approuvé, ou fenêtre non échue), Habilitation.
+        signal constater_echeance(h: Horodatage, plan: String, par: String) -> ManEtatPlan
+            writes cause_annulation_de, approuves, actifs_de
+            reads fiche_de, verrou_de
+            moves approuve -> anomalie, approuve -> annule
+            calls ManFenetre.etat, ManEvitement.solder, ManEvitement.liberer, ManAnomalie.ouvrir, ManAvis.emettre, ApiObservation.manoeuvre_detectee, ApiConjonctions.niveau, ApiCoordination.arretee, ApiCoordination.rouvrir, ApiConformite.constater, ApiAcces.a_le_role, ManIndicateurs.compter, Journal.noter
+        // Clôt la vérification (appelé par ManVerification) : conforme -> execute -> verifie ;
+        // écart ou non observée -> execute -> anomalie (ManAnomalie.ouvrir, nature "ecart" ou
+        // "non_observee"). Un évitement vérifié est résolu côté conjonctions
+        // (ApiConjonctions.resoudre, motif "manoeuvre_verifiee"). Un transfert vérifié met à jour le
+        // régime de l'objet (ApiRef.changer_regime, régime déduit de ApiObservation.perigee / apogee).
+        // Transition prise avant ces appels. `par` "systeme". Renvoie l'état.
+        // Refus : Inconnu, EtatInvalide (vérification encore "attendue"), Habilitation.
+        signal clore(h: Horodatage, plan: String, par: String) -> ManEtatPlan
+            writes actifs_de
+            reads fiche_de
+            moves execute -> verifie when ManVerification.conforme, execute -> anomalie when ManVerification.ecart || ManVerification.non_observee
+            calls ManVerification.etat, ManAnomalie.ouvrir, ApiConjonctions.resoudre, ApiRef.changer_regime, ApiObservation.perigee, ApiObservation.apogee, ApiAcces.a_le_role, ManIndicateurs.compter, Journal.noter
+        // Réexamine un plan criblé ou approuvé non exécuté face aux changements survenus depuis :
+        // objet devenu incapable (ApiRef.peut_manoeuvrer faux : cause objet_incapable), opérateur suspendu
+        // (operateur_suspendu), coordination rouverte ou désignant un autre objet
+        // (designation_retiree) ⇒ `annuler` par "systeme". Criblage de plus de
+        // VALIDITE_CRIBLAGE_MS avant l'ouverture de la fenêtre ⇒ ManCriblage.recribler ; un
+        // conflit ⇒ annulation (cause recriblage). Renvoie "" si le plan reste, sinon la cause.
+        // `par` "systeme" (ManVeille) ou "analyste". Refus : Inconnu, Habilitation.
+        signal reexaminer(h: Horodatage, plan: String, par: String) -> String
+            reads fiche_de, fondement_de, cycle
+            calls annuler, ManCriblage.fiche, ManCriblage.recribler, ApiRef.peut_manoeuvrer, ApiOperateurs.est_actif, ApiCoordination.arretee, ApiCoordination.designe, ApiAcces.a_le_role
+        // État du plan ; "inconnu" s'il n'a jamais été déclaré. Les états transitoires de la chaîne
+        // d'approbation (recoupe, coordonne, habilite, localise, capable) ne sont jamais observés.
+        signal etat(plan: String) -> ManEtatPlan
+            reads fiche_de, cycle
+        // Fiche du plan. Refus : Inconnu.
+        signal fiche(plan: String) -> ManFichePlan
+            reads fiche_de
+        // Fondement de l'approbation (preuve, ApiResponsabilite). Refus : Inconnu (plan jamais approuvé).
+        signal fondement(plan: String) -> ManFondement
+            reads fondement_de
+        // Vrai si l'objet a un plan approuvé, ou exécuté non encore vérifié (ApiManoeuvres.plan_actif).
+        signal actif(objet: Objet) -> Bool
+            reads actifs_de, cycle
+        // Plan d'évitement du rapprochement : le plus récent ni annulé ni rejeté (en cours, ou
+        // verifie / anomalie : conjonctions y lit "verifie" pour résoudre) ; "" si aucun
+        // (ApiManoeuvres.plan_de). La coordination ne retire que s'il est declare, crible ou approuve.
+        signal plan_de(r: Rapprochement) -> String
+            reads evitements_de, cycle
+        // Plans de l'objet déclarés à partir de `depuis` (au plus 1 000, les plus anciens d'abord)
+        // (ApiManoeuvres.plans_de ; pièces de responsabilite).
+        signal plans_de(objet: Objet, depuis: Horodatage) -> List<String>
+            reads tous_de, fiche_de
+        // Plan approuvé, exécuté, vérifié ou en anomalie après poussée de l'objet dont la fenêtre
+        // [debut, fin + ManFenetre.DELAI_CONFIRMATION_MS] couvre `instant` ; "" si aucun
+        // (ApiManoeuvres.plan_couvrant ; ManNonAnnoncee : une poussée couverte est annoncée).
+        signal plan_couvrant(objet: Objet, instant: Horodatage) -> String
+            reads tous_de, fiche_de, cycle
+        // Plans approuvés non exécutés (à réexaminer par ManVeille).
+        signal approuves_en_cours() -> List<String>
+            reads approuves
+    }
+}

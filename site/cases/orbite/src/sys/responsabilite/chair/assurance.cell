@@ -1,0 +1,173 @@
+// Corps de responsabilite : polices d'assurance (RespPolices) et sinistres (RespSinistres).
+
+flesh RespPolices {
+    on declarer(h, police, op, assureur, plafond, debut, fin, attestation, par) {
+        require ApiAcces.a_le_role(par, "administrateur_operateur") && ApiAcces.agit_pour(par, op) else Habilitation "{par} n'administre pas {op}"
+        require ApiOperateurs.statut(op) != "inconnu" else Inconnu "opérateur {op} inconnu"
+        require (get_status(police) ?? "aucune") == "aucune" else Existe "police {police} déjà déclarée"
+        require to_int(fin) > to_int(debut) else Incoherent "fin de période avant le début"
+        require op_de.size < MAX_POLICES else Plein "registre des polices plein"
+        transition(police, "aucune", "declaree")
+        op_de.set(police, op)
+        assureur_de.set(police, assureur)
+        plafond_de.set(police, plafond)
+        debut_de.set(police, debut)
+        fin_de.set(police, fin)
+        attestation_de.set(police, attestation)
+        polices_de_op.set(to_string(op), (polices_de_op.get(to_string(op)) ?? []) ++ [police])
+        Journal.noter(h, "responsabilite", par, "police {police} déclarée pour {op} ({assureur}, plafond {plafond} EUR)")
+        return police
+    }
+
+    on valider(h, police, par) {
+        require ApiAcces.a_le_role(par, "conformite") else Habilitation "{par} n'est pas conformite"
+        let st = get_status(police) ?? "aucune"
+        require st != "aucune" else Inconnu "police {police} inconnue"
+        require st == "declaree" else EtatInvalide "la police {police} est {st}"
+        require to_int(plafond_de.get(police) ?? 0) >= PLAFOND_MIN else Insuffisant "plafond inférieur à {PLAFOND_MIN} EUR"
+        let fin = fin_de.get(police) ?? h
+        require to_int(fin) > to_int(h) else Echu "période de la police {police} échue"
+        transition(police, "declaree", "en_vigueur")
+        en_cours.set(police, fin)
+        Journal.noter(h, "responsabilite", par, "police {police} en vigueur")
+        return "en_vigueur"
+    }
+
+    on rejeter(h, police, motif, par) {
+        require ApiAcces.a_le_role(par, "conformite") else Habilitation "{par} n'est pas conformite"
+        require motif != "" else MotifRequis "rejet sans motif"
+        let st = get_status(police) ?? "aucune"
+        require st != "aucune" else Inconnu "police {police} inconnue"
+        require st == "declaree" else EtatInvalide "la police {police} est {st}"
+        transition(police, "declaree", "rejetee")
+        motif_de.set(police, motif)
+        Journal.noter(h, "responsabilite", par, "police {police} rejetée — {motif}")
+        return "rejetee"
+    }
+
+    on echoir(h, par) {
+        require ApiAcces.a_le_role(par, "systeme") else Habilitation "{par} n'est pas systeme"
+        let echues = en_cours.entries.filter(e => to_int(e.value) <= to_int(h)).map(e => e.key)
+        for p in echues {
+            transition(p, "en_vigueur", "echue")
+            en_cours.delete(p)
+            let op = op_de.get(p)
+            let _ = ApiPasserelle.notifier(h, op, "", "police {p} échue", "La police {p} est échue : déclarer une nouvelle police", 1)
+            Journal.noter(h, "responsabilite", par, "police {p} échue")
+        }
+        return len(echues)
+    }
+
+    on resilier(h, police, motif, par) {
+        let st = get_status(police) ?? "aucune"
+        require st != "aucune" else Inconnu "police {police} inconnue"
+        let op = op_de.get(police)
+        require (ApiAcces.a_le_role(par, "administrateur_operateur") && ApiAcces.agit_pour(par, op)) || ApiAcces.a_le_role(par, "conformite") else Habilitation "{par} ne peut résilier {police}"
+        require motif != "" else MotifRequis "résiliation sans motif"
+        require st == "en_vigueur" else EtatInvalide "la police {police} est {st}"
+        transition(police, "en_vigueur", "resiliee")
+        motif_de.set(police, motif)
+        en_cours.delete(police)
+        Journal.noter(h, "responsabilite", par, "police {police} résiliée — {motif}")
+        return "resiliee"
+    }
+
+    on etat(police) {
+        return get_status(police) ?? "aucune"
+    }
+
+    on couvert(op, h) {
+        for p in polices_de_op.get(to_string(op)) ?? [] {
+            if (get_status(p) ?? "aucune") == "en_vigueur" && to_int(debut_de.get(p) ?? 0) <= to_int(h) && to_int(h) < to_int(fin_de.get(p) ?? 0) {
+                return true
+            }
+        }
+        return false
+    }
+
+    on couvre_a(police, instant) {
+        let st = get_status(police) ?? "aucune"
+        if st != "en_vigueur" && st != "echue" {
+            return false
+        }
+        return to_int(debut_de.get(police) ?? 0) <= to_int(instant) && to_int(instant) <= to_int(fin_de.get(police) ?? 0)
+    }
+
+    on fiche(police) {
+        let op = op_de.get(police)
+        require op != () else Inconnu "police {police} inconnue"
+        let pl = plafond_de.get(police) ?? 0
+        return "{op}|{pl}"
+    }
+}
+
+flesh RespSinistres {
+    on declarer(h, police, rec, montant, par) {
+        let champs_f = split(RespPolices.fiche(police), "|")
+        let op = Org(champs_f[0])
+        let plafond = parse_int(champs_f[1]) ?? 0
+        require (ApiAcces.a_le_role(par, "administrateur_operateur") && ApiAcces.agit_pour(par, op)) || ApiAcces.a_le_role(par, "conformite") else Habilitation "{par} ne déclare pas pour {op}"
+        let ps = RespPolices.etat(police)
+        require ps == "en_vigueur" || ps == "echue" else EtatInvalide "la police {police} est {ps}"
+        let so = ApiOperateurs.statut(op)
+        require so != "candidat" && so != "inconnu" else NonEligible "{op} n'a jamais été admis à ORBITE"
+        let dmg = RespReclamations.dommage(rec)
+        require RespPolices.couvre_a(police, dmg) else Incoherent "dommage hors de la période de {police}"
+        require to_int(montant) <= plafond else HorsBornes "montant supérieur au plafond de {police}"
+        for e in police_de.entries {
+            require !(e.value == police && reclamation_de.get(e.key) == rec) else Doublon "sinistre {e.key} déjà déclaré"
+        }
+        require police_de.size < MAX_SINISTRES else Plein "registre des sinistres plein"
+        let id = "SN-{next_id()}"
+        police_de.set(id, police)
+        reclamation_de.set(id, rec)
+        op_de.set(id, op)
+        transition(id, "aucun", "declare")
+        montant_reclame.set(id, montant)
+        declare_le.set(id, h)
+        Journal.noter(h, "responsabilite", par, "sinistre {id} déclaré sur {police} pour {rec} : {montant} EUR")
+        return id
+    }
+
+    on instruire(h, sinistre, par) {
+        require ApiAcces.a_le_role(par, "conformite") else Habilitation "{par} n'est pas conformite"
+        let st = get_status(sinistre) ?? "aucun"
+        require st != "aucun" else Inconnu "sinistre {sinistre} inconnu"
+        require st == "declare" else EtatInvalide "le sinistre {sinistre} est {st}"
+        transition(sinistre, "declare", "instruit")
+        Journal.noter(h, "responsabilite", par, "sinistre {sinistre} instruit : pièces transmises à l'assureur")
+        return "instruit"
+    }
+
+    on indemniser(h, sinistre, montant, par, valideur) {
+        require ApiAcces.a_le_role(par, "conformite") else Habilitation "{par} n'est pas conformite"
+        require ApiAcces.quatre_yeux(par, valideur) else QuatreYeux "indemnisation : quatre yeux requis"
+        require ApiAcces.a_le_role(valideur, "direction") else Habilitation "le valideur {valideur} n'est pas direction"
+        let st = get_status(sinistre) ?? "aucun"
+        require st != "aucun" else Inconnu "sinistre {sinistre} inconnu"
+        require st == "instruit" else EtatInvalide "le sinistre {sinistre} est {st}"
+        let rec = reclamation_de.get(sinistre) ?? ""
+        let al = RespReclamations.alloue(rec)
+        require to_int(montant) <= to_int(montant_reclame.get(sinistre) ?? 0) && to_int(montant) <= to_int(al) else HorsBornes "indemnité supérieure au montant réclamé ou alloué"
+        montant_indemnise.set(sinistre, montant)
+        transition(sinistre, "instruit", "indemnise")
+        Journal.noter(h, "responsabilite", par, "sinistre {sinistre} indemnisé : {montant} EUR ({valideur})")
+        return montant
+    }
+
+    on refuser(h, sinistre, motif, par) {
+        require ApiAcces.a_le_role(par, "conformite") else Habilitation "{par} n'est pas conformite"
+        require motif != "" else MotifRequis "refus sans motif"
+        let st = get_status(sinistre) ?? "aucun"
+        require st != "aucun" else Inconnu "sinistre {sinistre} inconnu"
+        require st == "declare" || st == "instruit" else EtatInvalide "le sinistre {sinistre} est {st}"
+        if st == "declare" {
+            transition(sinistre, "declare", "refuse")
+        } else {
+            transition(sinistre, "instruit", "refuse")
+        }
+        motif_de.set(sinistre, motif)
+        Journal.noter(h, "responsabilite", par, "sinistre {sinistre} refusé — {motif}")
+        return "refuse"
+    }
+}

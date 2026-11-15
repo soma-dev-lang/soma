@@ -1,0 +1,215 @@
+// PASSERELLE — messages sortants : canaux des organisations (vérifiés avant usage), file par
+// niveau d'urgence, envois, réessais, accusés applicatifs, défauts ⇒ escalade. Un destinataire
+// silencieux ne bloque jamais rien : son message passe en défaut à l'échéance et l'escalade
+// (ou la conformité) prend la suite.
+
+// Genre d'un canal sortant.
+cell type PasCanalGenre = String where value == "webhook" || value == "messagerie_securisee"
+// Format d'un message sortant (fixé par PasFormats.notifier).
+cell type PasFormat = String where value == "CDM" || value == "alerte" || value == "texte"
+
+// Canal sortant d'une organisation, id choisi par l'organisation. Un canal ne sert qu'après
+// vérification : un défi est envoyé à l'adresse et doit être renvoyé par l'organisation.
+skeleton PasCanaux {
+    const MAX_CANAUX_PAR_ORG = 10
+    const ECHECS_SUSPENSION = 5        // défauts de livraison d'affilée avant suspension
+    memory {
+        org_de: Map<String, Org> [persistent]            // écrit une fois, par declarer ; jamais effacé
+        genre_de: Map<String, PasCanalGenre> [persistent]
+        adresse_de: Map<String, String> [persistent]     // URL https:// ou adresse de messagerie sécurisée
+        defi_de: Map<String, String> [persistent]        // SHA-256 du défi envoyé ; effacé à la vérification
+        principal_de: Map<Org, String> [persistent]      // canal actif servant l'organisation ("" : aucun)
+        nb_de: Map<Org, Int> [persistent]                // canaux non retirés
+        invariant nb_de >= 0 && nb_de <= 10
+        echecs_de: Map<String, Int> [persistent]
+        invariant echecs_de >= 0 && echecs_de <= 5
+    }
+    state vie {
+        initial: declare
+        declare -> actif            // verifier : défi renvoyé
+        actif -> suspendu           // suspendre, ou ECHECS_SUSPENSION défauts (noter_issue)
+        suspendu -> declare         // reverifier : nouveau défi exigé avant reprise
+        declare -> retire           // retirer
+        actif -> retire             // retirer
+        suspendu -> retire          // retirer
+    }
+    face {
+        // Déclare un canal de `org` et y envoie un défi (random_token ; seul son SHA-256 est
+        // gardé) hors file. Renvoie "declare". Habilitation : selon ApiRef.genre(org),
+        // "administrateur_operateur" (opérateur, fournisseur de capteurs) ou "autorite" /
+        // "point_focal" (État) employé par `org` (ApiAcces.agit_pour), ou "exploitant" d'ORBITE.
+        // Refus : Existe, Inconnu (organisation, ApiRef.organisation_existe), Plein, Incoherent
+        // (adresse ni https:// ni messagerie), Habilitation.
+        signal declarer(h: Horodatage, canal: String, org: Org, genre: PasCanalGenre, adresse: String, par: String) -> String
+            writes org_de, genre_de, adresse_de, defi_de, nb_de
+            calls random_token, http_post, ApiRef.organisation_existe, ApiRef.genre, ApiAcces.a_le_role, ApiAcces.agit_pour, Journal.noter
+        // declare -> actif si le défi renvoyé est le bon et que l'organisation du canal n'est
+        // pas radiée (ApiRef.organisation_existe) ; devient principal si l'organisation n'en a
+        // pas d'actif. Renvoie "actif". Habilitation : l'appelant agit pour l'organisation
+        // du canal. Refus : Inconnu, EtatInvalide (aussi : organisation radiée), Incoherent
+        // (défi faux), Habilitation.
+        signal verifier(h: Horodatage, canal: String, defi: String, appelant: PasAppelant) -> String
+            reads org_de
+            writes defi_de, principal_de, echecs_de
+            moves declare -> actif when RefOrg.inscrite || RefOrg.active via org_de
+            calls ApiRef.organisation_existe, Journal.noter
+        // actif -> suspendu (par "systeme" après ECHECS_SUSPENSION défauts, ou à la main) ; s'il
+        // était principal, un autre canal actif de l'organisation le devient, ou aucun : dans ce
+        // cas un opérateur est signalé injoignable (ApiConformite.constater, gravité 2).
+        // Renvoie "suspendu". Habilitation : comme declarer, ou "systeme".
+        // Refus : Inconnu, EtatInvalide, MotifRequis, Habilitation.
+        signal suspendre(h: Horodatage, canal: String, motif: String, par: String) -> String
+            reads org_de
+            writes principal_de
+            moves actif -> suspendu
+            calls ApiAcces.a_le_role, ApiAcces.agit_pour, ApiConformite.constater, Journal.noter
+        // suspendu -> declare, nouveau défi envoyé. Renvoie "declare". Habilitation : comme
+        // declarer. Refus : Inconnu, EtatInvalide, Habilitation.
+        signal reverifier(h: Horodatage, canal: String, par: String) -> String
+            reads org_de, adresse_de
+            writes defi_de, echecs_de
+            moves suspendu -> declare
+            calls random_token, http_post, ApiAcces.a_le_role, ApiAcces.agit_pour, Journal.noter
+        // -> retire ; refusé s'il est le dernier canal actif d'un opérateur actif
+        // (ApiOperateurs.est_actif) : un opérateur doit rester joignable. Renvoie "retire".
+        // Habilitation : comme declarer. Refus : Inconnu, EtatInvalide, Insuffisant (dernier
+        // canal actif), Habilitation.
+        signal retirer(h: Horodatage, canal: String, par: String) -> String
+            reads org_de
+            writes principal_de, nb_de
+            moves declare -> retire, actif -> retire, suspendu -> retire
+            calls ApiOperateurs.est_actif, ApiAcces.a_le_role, ApiAcces.agit_pour, Journal.noter
+        // Compte un défaut de livraison (ou remet à 0 sur `reussi`) ; au seuil, appelle
+        // suspendre(par "systeme"). Renvoie le nombre de défauts consécutifs.
+        signal noter_issue(h: Horodatage, canal: String, reussi: Bool) -> Int
+            writes echecs_de
+            calls suspendre
+        // Canal principal actif de l'organisation ; "" si aucun (elle est injoignable).
+        signal principal(org: Org) -> String
+            reads principal_de, vie
+        // Vrai si le canal est dans l'état actif (getter de la règle en_file -> en_envoi when
+        // PasCanaux.actif via canal_de, pour PasMessages.traiter_file).
+        signal est_actif(canal: String) -> Bool
+            reads vie
+        // Genre et adresse d'un canal : [genre, adresse]. Refus : Inconnu.
+        signal adresse(canal: String) -> List<String>
+            reads genre_de, adresse_de
+    }
+}
+
+// Message sortant, id = "MSG-<n>" (next_id). Délais fonction du niveau d'urgence :
+//   livraison max : 3 → 5 min, 2 → 1 h, 1 → 24 h ; accusé max après livraison : 3 → 15 min,
+//   2 → 4 h, 1 → 72 h. Premier envoi dès la mise en file quand le texte est prêt ; réessais à
+//   chaque battement de l'horloge (60 s), au plus MAX_TENTATIVES, jamais au-delà de
+//   l'échéance de livraison. La file sert toujours le niveau 3 d'abord.
+skeleton PasMessages {
+    const MAX_TENTATIVES = 8
+    const MAX_FILE = 100000            // messages en_file, par niveau
+    const MAX_TEXTE = 65536            // octets
+    memory {
+        canal_de: Map<String, String> [persistent]       // écrit une fois, par mettre_en_file ("" : aucun canal actif) ; lien de la règle en_file -> en_envoi
+        destinataire_de: Map<String, Org> [persistent]   // écrit une fois, par mettre_en_file
+        rapprochement_de: Map<String, String> [persistent] // écrit une fois ; "" si hors rapprochement
+        format_de: Map<String, PasFormat> [persistent]
+        sujet_de: Map<String, String> [persistent]
+        urgence_de: Map<String, Niveau> [persistent]
+        texte_de: Map<String, String> [persistent]       // "" pour un CDM / une alerte à composer à l'envoi
+        cree_le: Map<String, Horodatage> [persistent]
+        livrer_avant: Map<String, Horodatage> [persistent]  // cree_le + délai de livraison
+        invariant (cree_le ?? 0) <= (livrer_avant ?? 0)
+        accuser_avant: Map<String, Horodatage> [persistent] // fixé à la livraison
+        tentatives_de: Map<String, Int> [persistent]
+        invariant tentatives_de >= 0 && tentatives_de <= 8
+        file: Map<Int, List<String>> [persistent]          // niveau -> messages en_file, ordre d'arrivée
+        invariant len(file) <= 100000
+        en_attente_de: Map<Org, Int> [persistent]          // messages livrés non acquittés
+        invariant en_attente_de >= 0 && en_attente_de <= 100000
+    }
+    state vie {
+        initial: en_file
+        en_file -> en_envoi         // mettre_en_file, traiter_file : le canal lié est actif (PasCanaux.actif via canal_de)
+        en_envoi -> livre           // remise confirmée (HTTP 2xx, accusé de messagerie)
+        en_envoi -> en_file         // échec transitoire, réessai au battement suivant
+        livre -> acquitte           // acquitter : accusé applicatif du destinataire
+        en_file -> en_defaut        // aucun canal actif, livrer_avant dépassée, tentatives épuisées
+        en_envoi -> en_defaut       // traiter_file : échec définitif (4xx du destinataire)
+        livre -> en_defaut          // traiter_file : accuser_avant dépassée
+        en_defaut -> escalade       // traiter_file : r ≠ "" et destinataire opérateur, ApiEscalade.escalader
+        en_defaut -> signale        // traiter_file : sinon, ApiConformite.constater / constater_etat
+        en_file -> annule           // annuler
+    }
+    face {
+        // Met un message en file vers `destinataire` et lie son canal principal actif
+        // (PasCanaux.principal ; "" s'il n'y en a pas : en_file -> en_defaut aussitôt, l'escalade
+        // ou le signalement suit au battement). Fixe livrer_avant selon `urgence`. Si `texte` est
+        // prêt, tente aussitôt un premier envoi (http_post vers PasCanaux.adresse) : livre, ou
+        // retour en_file (l'échec est compté au battement par traiter_file). Chemin court exprès :
+        // appelé par toute alerte du programme, il n'appelle aucune autre façade.
+        // Renvoie l'id. Refus : Inconnu (destinataire qui n'a pas la forme "ORG-<code>"),
+        // Plein (MAX_FILE, ou texte > MAX_TEXTE).
+        signal mettre_en_file(h: Horodatage, destinataire: Org, r: Rapprochement, format: PasFormat, sujet: String, texte: String, urgence: Niveau) -> String
+            writes canal_de, destinataire_de, rapprochement_de, format_de, sujet_de, urgence_de, texte_de, cree_le, livrer_avant, accuser_avant, tentatives_de, file, en_attente_de
+            moves en_file -> en_envoi when PasCanaux.actif via canal_de, en_envoi -> livre, en_envoi -> en_file, en_file -> en_defaut
+            calls next_id, http_post, PasCanaux.principal, PasCanaux.adresse, Journal.noter
+        // Un passage de file à h (par "systeme", depuis PasRondes.balayer), au plus n messages,
+        // niveau 3 d'abord :
+        //  - en_file au texte vide (CDM, alerte) : composé pour le destinataire (PasFormats.cdm /
+        //    PasFormats.alerte : masquage et trace de diffusion) ;
+        //  - en_file : en_envoi (canal actif), http_post signé vers l'adresse, puis livre
+        //    (accuser_avant fixé) ou en_file (tentatives + 1) ou en_defaut ;
+        //    PasCanaux.noter_issue à chaque issue ;
+        //  - en_file / livre dont l'échéance (livrer_avant / accuser_avant) est passée : en_defaut ;
+        //  - en_defaut : r ≠ "" et destinataire opérateur (ApiRef.genre) -> escalade : versé à
+        //    l'escalade déjà ouverte contre lui sur r (ApiEscalade.echelon > 0), ou déjà conclue par
+        //    la reprise d'ORBITE (ApiEscalade.reprise(r)), SANS la faire monter ni en rouvrir une
+        //    (le barème règle le rythme des échelons), sinon ApiEscalade.escalader (motif
+        //    "message non acquitté", par "systeme") ; une notification de manquement (sujet
+        //    "manquement …" ou "contradictoire …") : signale, défaut seulement journalisé (pas de
+        //    manquement du manquement) ; si l'escalade est refusée, ou sinon
+        //    ApiConformite.constater (opérateur) ou ApiConformite.constater_etat (État), gravité =
+        //    urgence, puis signale ; pour tout autre destinataire (ORBITE, fournisseur de
+        //    capteurs) : signale, défaut seulement journalisé.
+        // Renvoie le nombre de messages dont l'état a changé.
+        signal traiter_file(h: Horodatage, n: Int) -> Int
+            requires n > 0 && n <= 1000
+            reads canal_de, destinataire_de, rapprochement_de, format_de, sujet_de, urgence_de, livrer_avant
+            writes texte_de, accuser_avant, tentatives_de, file, en_attente_de
+            moves en_file -> en_envoi when PasCanaux.actif via canal_de, en_envoi -> livre, en_envoi -> en_file, en_file -> en_defaut, en_envoi -> en_defaut, livre -> en_defaut, en_defaut -> escalade, en_defaut -> signale
+            calls http_post, PasFormats.cdm, PasFormats.alerte, PasCanaux.adresse, PasCanaux.est_actif, PasCanaux.noter_issue, ApiRef.genre, ApiRef.etat_de, ApiEscalade.escalader, ApiEscalade.echelon, ApiEscalade.reprise, ApiConformite.constater, ApiConformite.constater_etat, Journal.noter
+        // Accusé applicatif : livre -> acquitte. Seule une personne de l'organisation
+        // destinataire peut acquitter (appelant.org == destinataire). Après accuser_avant le
+        // message est déjà en_defaut / escalade : refus Echu (l'accusé est journalisé).
+        // Renvoie "acquitte". Refus : Inconnu, EtatInvalide, Echu, Habilitation.
+        signal acquitter(h: Horodatage, message: String, appelant: PasAppelant) -> String
+            reads destinataire_de, accuser_avant
+            writes en_attente_de
+            moves livre -> acquitte
+            calls Journal.noter
+        // Vrai si le message est dans l'état acquitte.
+        signal acquitte(message: String) -> Bool
+            reads vie
+        // Vrai si le message a échoué définitivement : en_defaut, escalade ou signale.
+        signal echoue(message: String) -> Bool
+            reads vie
+        // Messages livrés non acquittés de l'organisation de l'appelant, au plus n, urgence la
+        // plus haute d'abord : "id | format | sujet | r | urgence | accuser_avant" (relève en
+        // tirage quand le webhook du client est en panne).
+        signal en_attente(appelant: PasAppelant, n: Int) -> List<String>
+            requires n > 0 && n <= 500
+            reads destinataire_de, format_de, sujet_de, rapprochement_de, urgence_de, accuser_avant, vie
+        // en_file -> annule (message erroné, jamais un message de niveau 3). Renvoie "annule".
+        // Habilitation : "exploitant" ou "superviseur" d'ORBITE. Refus : Inconnu, EtatInvalide,
+        // NonEligible (urgence 3), MotifRequis, Habilitation.
+        signal annuler(h: Horodatage, message: String, motif: String, par: String) -> String
+            reads urgence_de
+            writes file
+            moves en_file -> annule
+            calls ApiAcces.a_le_role, Journal.noter
+        // Messages d'un rapprochement, tous états : "id | destinataire | format | etat | cree_le"
+        // (preuve en cas de dommage : qui a été averti de quoi, et quand). Habilitation :
+        // "analyste", "conformite" ou "auditeur" d'ORBITE. Refus : Habilitation.
+        signal du_rapprochement(r: Rapprochement, par: String) -> List<String>
+            reads rapprochement_de, destinataire_de, format_de, cree_le, vie
+            calls ApiAcces.a_le_role
+    }
+}

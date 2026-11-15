@@ -1,0 +1,331 @@
+// Corps de responsabilite : dossiers de preuve (RespDossiers) et registre des gels (RespGels).
+
+flesh RespDossiers {
+    on ouvrir(h, evenement, motif, par) {
+        require ApiAcces.a_le_role(par, "conformite") || ApiAcces.a_le_role(par, "direction") || ApiAcces.a_le_role(par, "systeme") else Habilitation "{par} n'est ni conformite, ni direction, ni systeme"
+        require motif != "" else MotifRequis "ouverture d'un dossier sans motif"
+        require ApiEvenements.existe(evenement) else Inconnu "évènement {evenement} inconnu"
+        require (dossier_de_evenement.get(evenement) ?? "") == "" else Existe "l'évènement {evenement} a déjà un dossier : compléter"
+        require evenement_de.size < MAX_DOSSIERS else Plein "registre des dossiers plein"
+        let inst = ApiEvenements.instant(evenement)
+        let genre_e = ApiEvenements.genre(evenement)
+        let id = "DP-{next_id()}"
+        transition(id, "aucun", "gele")
+        evenement_de.set(id, evenement)
+        dossier_de_evenement.set(evenement, id)
+        parent_de.set(id, "")
+        instant_de.set(id, inst)
+        motif_de.set(id, motif)
+        ouvert_par.set(id, par)
+        ouvert_le.set(id, h)
+        let jour = "J:{idiv(to_int(inst), 86400000)}"
+        let gels_o = [evenement, jour]
+        let _ = RespGels.poser(h, evenement, id)
+        let _ = RespGels.poser(h, jour, id)
+        let objs_o = []
+        let raps_o = []
+        let plans_o = []
+        let depuis = Horodatage(max(0, to_int(inst) - 604800000))
+        for o in ApiEvenements.objets(evenement) {
+            if !contains(objs_o, o) {
+                objs_o.push(o)
+            }
+        }
+        for o in objs_o {
+            for r in ApiConjonctions.historique(Objet(o), depuis) {
+                if !contains(raps_o, r) {
+                    raps_o.push(r)
+                }
+            }
+            for pl in ApiManoeuvres.plans_de(Objet(o), depuis) {
+                if !contains(plans_o, pl) {
+                    plans_o.push(pl)
+                }
+            }
+        }
+        require len(objs_o) + len(raps_o) <= MAX_CIBLES else Plein "plus de {MAX_CIBLES} cibles pour {evenement}"
+        for o in objs_o {
+            let _ = RespGels.poser(h, o, id)
+            gels_o.push(o)
+            let _ = RespCollecte.collecter_objet(h, id, Objet(o), inst)
+        }
+        for r in raps_o {
+            let _ = RespGels.poser(h, r, id)
+            gels_o.push(r)
+            let _ = RespCollecte.collecter_rapprochement(h, id, Rapprochement(r), inst)
+        }
+        for pl in plans_o {
+            if !contains(gels_o, pl) {
+                let _ = RespGels.poser(h, pl, id)
+                gels_o.push(pl)
+                let _ = RespCollecte.collecter_plan(h, id, pl, inst)
+            }
+        }
+        objets_de.set(id, objs_o)
+        rapprochements_de.set(id, raps_o)
+        gels_de.set(id, gels_o)
+        let nb_c = len(gels_o)
+        Journal.noter(h, "responsabilite", par, "dossier {id} ouvert sur {evenement} ({genre_e}) : {nb_c} cibles gelées — {motif}")
+        return id
+    }
+
+    on completer(h, dossier, motif, par) {
+        require ApiAcces.a_le_role(par, "conformite") || ApiAcces.a_le_role(par, "direction") else Habilitation "{par} n'est ni conformite ni direction"
+        require motif != "" else MotifRequis "complément sans motif"
+        let ev = evenement_de.get(dossier)
+        require ev != () else Inconnu "dossier {dossier} inconnu"
+        require (get_status(dossier) ?? "aucun") == "scelle" else EtatInvalide "le dossier {dossier} n'est pas scellé"
+        require evenement_de.size < MAX_DOSSIERS else Plein "registre des dossiers plein"
+        let id = "DP-{next_id()}"
+        transition(id, "aucun", "gele")
+        parent_de.set(id, dossier)
+        complements_de.set(dossier, (complements_de.get(dossier) ?? []) ++ [id])
+        evenement_de.set(id, ev)
+        instant_de.set(id, instant_de.get(dossier) ?? Horodatage(0))
+        motif_de.set(id, motif)
+        ouvert_par.set(id, par)
+        ouvert_le.set(id, h)
+        objets_de.set(id, [])
+        rapprochements_de.set(id, [])
+        let _ = RespGels.poser(h, ev, id)
+        gels_de.set(id, [ev])
+        Journal.noter(h, "responsabilite", par, "complément {id} du dossier {dossier} — {motif}")
+        return id
+    }
+
+    on rattacher_rapprochement(h, dossier, r, par) {
+        require ApiAcces.a_le_role(par, "analyste") || ApiAcces.a_le_role(par, "conformite") || ApiAcces.a_le_role(par, "systeme") else Habilitation "{par} n'est ni analyste, ni conformite, ni systeme"
+        let inst = instant_de.get(dossier)
+        require inst != () else Inconnu "dossier {dossier} inconnu"
+        require (get_status(dossier) ?? "aucun") == "gele" else EtatInvalide "le dossier {dossier} n'est pas gelé"
+        require ApiConjonctions.etat(r) != "inconnu" else Inconnu "rapprochement {r} jamais signalé"
+        let raps_r = rapprochements_de.get(dossier) ?? []
+        let objs_r = objets_de.get(dossier) ?? []
+        require !contains(raps_r, to_string(r)) else Doublon "{r} est déjà rattaché à {dossier}"
+        let nouveaux_r = []
+        for o in ApiConjonctions.objets(r) {
+            if !contains(objs_r, o) && !contains(nouveaux_r, o) {
+                nouveaux_r.push(o)
+            }
+        }
+        require len(raps_r) + len(objs_r) + 1 + len(nouveaux_r) <= MAX_CIBLES else Plein "plus de {MAX_CIBLES} cibles dans {dossier}"
+        let gels_r = gels_de.get(dossier) ?? []
+        let _ = RespGels.poser(h, to_string(r), dossier)
+        gels_r.push(to_string(r))
+        let _ = RespCollecte.collecter_rapprochement(h, dossier, r, inst)
+        for o in nouveaux_r {
+            if !contains(gels_r, o) {
+                let _ = RespGels.poser(h, o, dossier)
+                gels_r.push(o)
+            }
+            let _ = RespCollecte.collecter_objet(h, dossier, Objet(o), inst)
+        }
+        let raps_n = raps_r ++ [to_string(r)]
+        let objs_n = objs_r ++ nouveaux_r
+        rapprochements_de.set(dossier, raps_n)
+        objets_de.set(dossier, objs_n)
+        gels_de.set(dossier, gels_r)
+        Journal.noter(h, "responsabilite", par, "rapprochement {r} rattaché au dossier {dossier}")
+        return len(raps_n) + len(objs_n)
+    }
+
+    on rattacher_objet(h, dossier, objet, par) {
+        require ApiAcces.a_le_role(par, "analyste") || ApiAcces.a_le_role(par, "conformite") || ApiAcces.a_le_role(par, "systeme") else Habilitation "{par} n'est ni analyste, ni conformite, ni systeme"
+        let inst = instant_de.get(dossier)
+        require inst != () else Inconnu "dossier {dossier} inconnu"
+        require (get_status(dossier) ?? "aucun") == "gele" else EtatInvalide "le dossier {dossier} n'est pas gelé"
+        let eo = try { ApiRef.etat_objet(objet) }
+        require eo.error == () else Inconnu "objet {objet} non catalogué"
+        let raps_o = rapprochements_de.get(dossier) ?? []
+        let objs_o = objets_de.get(dossier) ?? []
+        require !contains(objs_o, to_string(objet)) else Doublon "{objet} est déjà rattaché à {dossier}"
+        let depuis = Horodatage(max(0, to_int(inst) - 604800000))
+        let nouveaux_o = []
+        for r in ApiConjonctions.historique(objet, depuis) {
+            if !contains(raps_o, r) && !contains(nouveaux_o, r) {
+                nouveaux_o.push(r)
+            }
+        }
+        require len(raps_o) + len(objs_o) + 1 + len(nouveaux_o) <= MAX_CIBLES else Plein "plus de {MAX_CIBLES} cibles dans {dossier}"
+        let gels_o = gels_de.get(dossier) ?? []
+        if !contains(gels_o, to_string(objet)) {
+            let _ = RespGels.poser(h, to_string(objet), dossier)
+            gels_o.push(to_string(objet))
+        }
+        let _ = RespCollecte.collecter_objet(h, dossier, objet, inst)
+        for r in nouveaux_o {
+            let _ = RespGels.poser(h, r, dossier)
+            gels_o.push(r)
+            let _ = RespCollecte.collecter_rapprochement(h, dossier, Rapprochement(r), inst)
+        }
+        for pl in ApiManoeuvres.plans_de(objet, depuis) {
+            if !contains(gels_o, pl) {
+                let _ = RespGels.poser(h, pl, dossier)
+                gels_o.push(pl)
+                let _ = RespCollecte.collecter_plan(h, dossier, pl, inst)
+            }
+        }
+        let raps_n = raps_o ++ nouveaux_o
+        let objs_n = objs_o ++ [to_string(objet)]
+        rapprochements_de.set(dossier, raps_n)
+        objets_de.set(dossier, objs_n)
+        gels_de.set(dossier, gels_o)
+        Journal.noter(h, "responsabilite", par, "objet {objet} rattaché au dossier {dossier}")
+        return len(raps_n) + len(objs_n)
+    }
+
+    on sceller(h, dossier, par, valideur) {
+        require ApiAcces.a_le_role(par, "conformite") else Habilitation "{par} n'est pas conformite"
+        require ApiAcces.quatre_yeux(par, valideur) else QuatreYeux "scellement de {dossier} : quatre yeux requis"
+        require ApiAcces.a_le_role(valideur, "direction") || ApiAcces.a_le_role(valideur, "superviseur") else Habilitation "le valideur {valideur} n'est ni direction ni superviseur"
+        let st = get_status(dossier) ?? "aucun"
+        require st != "aucun" else Inconnu "dossier {dossier} inconnu"
+        require st == "gele" else EtatInvalide "le dossier {dossier} est {st}"
+        let pcs = RespPieces.pieces_de(dossier)
+        require len(pcs) > 0 else Insuffisant "le dossier {dossier} n'a aucune pièce"
+        let emps = []
+        for p in pcs {
+            let ep = RespPieces.etat(p)
+            require ep == "verifiee" else Insuffisant "la pièce {p} est {ep}"
+            emps.push(RespPieces.empreinte(p))
+        }
+        let emp = sha256(join(emps, "|"))
+        transition(dossier, "gele", "scelle")
+        scelle_le.set(dossier, h)
+        empreinte_de.set(dossier, emp)
+        scelle_par.set(dossier, "{par}/{valideur}")
+        Journal.noter(h, "responsabilite", par, "dossier {dossier} scellé ({valideur}) : {emp}")
+        return emp
+    }
+
+    on annuler(h, dossier, motif, par, valideur) {
+        require ApiAcces.a_le_role(par, "direction") else Habilitation "{par} n'est pas direction"
+        require ApiAcces.quatre_yeux(par, valideur) else QuatreYeux "annulation de {dossier} : quatre yeux requis"
+        require motif != "" else MotifRequis "annulation sans motif"
+        let st = get_status(dossier) ?? "aucun"
+        require st != "aucun" else Inconnu "dossier {dossier} inconnu"
+        require st == "gele" else EtatInvalide "le dossier {dossier} est {st}"
+        require RespFautes.pendantes_de_dossier(dossier) == 0 else Conflit "une faute s'appuie sur {dossier}"
+        require len(RespReclamations.de_dossier(dossier)) == 0 else Conflit "une réclamation s'appuie sur {dossier}"
+        for c in gels_de.get(dossier) ?? [] {
+            let _ = RespGels.retirer(h, c, dossier)
+        }
+        transition(dossier, "gele", "annule")
+        clos_le.set(dossier, h)
+        motif_cloture.set(dossier, motif)
+        Journal.noter(h, "responsabilite", par, "dossier {dossier} annulé ({valideur}) — {motif}")
+        return "annule"
+    }
+
+    on lever(h, dossier, motif, par, valideur) {
+        require ApiAcces.a_le_role(par, "direction") else Habilitation "{par} n'est pas direction"
+        require ApiAcces.quatre_yeux(par, valideur) else QuatreYeux "levée de {dossier} : quatre yeux requis"
+        require ApiAcces.a_le_role(valideur, "conformite") else Habilitation "le valideur {valideur} n'est pas conformite"
+        require motif != "" else MotifRequis "levée sans motif"
+        let st = get_status(dossier) ?? "aucun"
+        require st != "aucun" else Inconnu "dossier {dossier} inconnu"
+        require st == "scelle" else EtatInvalide "le dossier {dossier} est {st}"
+        let sl = scelle_le.get(dossier) ?? h
+        require to_int(h) - to_int(sl) >= CONSERVATION_MIN else Delai "conservation minimale non échue pour {dossier}"
+        let a_lever = [dossier]
+        for c in complements_de.get(dossier) ?? [] {
+            let sc = get_status(c) ?? "aucun"
+            require sc != "gele" else EtatInvalide "le complément {c} n'est pas scellé"
+            if sc == "scelle" {
+                a_lever.push(c)
+            }
+        }
+        for d in a_lever {
+            require RespReclamations.pendantes_de_dossier(d) == 0 else Conflit "réclamation non close sur {d}"
+            require RespFautes.pendantes_de_dossier(d) == 0 else Conflit "faute pendante sur {d}"
+        }
+        for d in a_lever {
+            for c in gels_de.get(d) ?? [] {
+                let _ = RespGels.retirer(h, c, d)
+            }
+            transition(d, "scelle", "leve")
+            clos_le.set(d, h)
+            motif_cloture.set(d, motif)
+        }
+        let nb_l = len(a_lever)
+        Journal.noter(h, "responsabilite", par, "dossier {dossier} levé avec {nb_l} dossier(s) ({valideur}) — {motif}")
+        return "leve"
+    }
+
+    on etat(dossier) {
+        return get_status(dossier) ?? "aucun"
+    }
+
+    on de_evenement(evenement) {
+        return dossier_de_evenement.get(evenement) ?? ""
+    }
+
+    on cibles(dossier) {
+        let raps_c = rapprochements_de.get(dossier)
+        let objs_c = objets_de.get(dossier)
+        require raps_c != () || objs_c != () else Inconnu "dossier {dossier} inconnu"
+        return (raps_c ?? []) ++ (objs_c ?? [])
+    }
+
+    on complements(dossier) {
+        return complements_de.get(dossier) ?? []
+    }
+
+    on instant(dossier) {
+        let i = instant_de.get(dossier)
+        require i != () else Inconnu "dossier {dossier} inconnu"
+        return i
+    }
+
+    on empreinte(dossier) {
+        require (get_status(dossier) ?? "aucun") != "aucun" else Inconnu "dossier {dossier} inconnu"
+        return empreinte_de.get(dossier) ?? ""
+    }
+}
+
+flesh RespGels {
+    on poser(h, cible, dossier) {
+        let ds = dossiers_de.get(cible) ?? []
+        require !contains(ds, dossier) else Doublon "{dossier} gèle déjà {cible}"
+        require len(ds) < MAX_DOSSIERS_PAR_CIBLE else Plein "trop de dossiers sur {cible}"
+        let st = get_status(cible) ?? "libre"
+        if st == "libre" {
+            require nb_dossiers.has(cible) || nb_dossiers.size < MAX_CIBLES_GELEES else Plein "registre des gels plein"
+            transition(cible, "libre", "gele")
+            gele_depuis.set(cible, h)
+        } else {
+            transition(cible, "gele", "gele")
+        }
+        let nds = ds ++ [dossier]
+        dossiers_de.set(cible, nds)
+        nb_dossiers.set(cible, len(nds))
+        let annulees = RespPurges.annuler_pour_gel(h, cible)
+        let nb_g = len(nds)
+        Journal.noter(h, "responsabilite", "systeme", "gel de {cible} par {dossier} ({nb_g} dossier(s), {annulees} purge(s) annulée(s))")
+        return nb_g
+    }
+
+    on retirer(h, cible, dossier) {
+        let ds = dossiers_de.get(cible) ?? []
+        require contains(ds, dossier) else Inconnu "{dossier} ne gèle pas {cible}"
+        let nds = ds.filter(d => d != dossier)
+        if len(nds) == 0 {
+            transition(cible, "gele", "libre")
+        } else {
+            transition(cible, "gele", "gele")
+        }
+        dossiers_de.set(cible, nds)
+        nb_dossiers.set(cible, len(nds))
+        let nb_g = len(nds)
+        Journal.noter(h, "responsabilite", "systeme", "gel de {cible} retiré par {dossier} ({nb_g} restant(s))")
+        return nb_g
+    }
+
+    on est_gele(cible) {
+        return (get_status(cible) ?? "libre") == "gele"
+    }
+
+    on dossiers(cible) {
+        return dossiers_de.get(cible) ?? []
+    }
+}

@@ -1,0 +1,216 @@
+// PRIORITÉS — corps de PrioVersion (cycle d'une version des règles).
+flesh PrioVersion {
+    on rediger(h, version, titre, base, effet_prevu, par) {
+        require ApiAcces.a_le_role(par, "analyste") else Habilitation "rédaction réservée à un analyste d'ORBITE"
+        require titre != "" else MotifRequis "titre vide"
+        require !titre_de.has(version) else Existe "version {version} déjà rédigée"
+        require titre_de.size < MAX_VERSIONS else Plein "registre des versions plein"
+        if base != "" {
+            require titre_de.has(base) else Inconnu "version de base {base} inconnue"
+            let eb = get_status(base) ?? "redaction"
+            require eb == "adoptee" || eb == "publiee" || eb == "en_vigueur" else Inconnu "la base {base} n'est ni adoptée ni en vigueur"
+        }
+        require to_int(effet_prevu) >= to_int(h) + DELAI_MIN_EFFET else HorsBornes "date d'effet à moins de 90 jours"
+        titre_de.set(version, titre)
+        redige_par.set(version, par)
+        redige_le.set(version, h)
+        base_de.set(version, base)
+        effet_prevu_de.set(version, effet_prevu)
+        Journal.noter(h, "priorites", par, "version {version} : rédaction ouverte (base '{base}')")
+        return version
+    }
+
+    on reporter(h, version, effet_prevu, motif, par) {
+        require ApiAcces.a_le_role(par, "superviseur") else Habilitation "report réservé à un superviseur d'ORBITE"
+        require effet_prevu_de.has(version) else Inconnu "version {version} inconnue"
+        require motif != "" else MotifRequis "motif du report requis"
+        let st = get_status(version) ?? "redaction"
+        require st == "redaction" || st == "consultation" || st == "vote" else EtatInvalide "version {version} déjà {st}"
+        require to_int(effet_prevu) >= to_int(h) + DELAI_MIN_EFFET else HorsBornes "date d'effet à moins de 90 jours"
+        effet_prevu_de.set(version, effet_prevu)
+        Journal.noter(h, "priorites", par, "version {version} : effet reporté à {effet_prevu} ({motif})")
+        return effet_prevu
+    }
+
+    on soumettre(h, version, echeance, par, valideur) {
+        require ApiAcces.a_le_role(par, "analyste") else Habilitation "soumission réservée à un analyste d'ORBITE"
+        require ApiAcces.a_le_role(valideur, "superviseur") else QuatreYeux "le valideur doit être superviseur d'ORBITE"
+        require ApiAcces.quatre_yeux(par, valideur) else QuatreYeux "contre-signature refusée"
+        require effet_prevu_de.has(version) else Inconnu "version {version} inconnue"
+        let st = get_status(version) ?? "redaction"
+        require st == "redaction" else EtatInvalide "version {version} : {st}, pas en rédaction"
+        require PrioTable.complete(version) else Insuffisant "table de {version} incomplète"
+        require to_int(echeance) >= to_int(h) + 2592000000 else HorsBornes "consultation de moins de 30 jours"
+        PrioConsultation.ouvrir(h, version, echeance, par)
+        transition(version, "redaction", "consultation")
+        Journal.noter(h, "priorites", par, "version {version} : consultation ouverte jusqu'à {echeance} (validé par {valideur})")
+        return "consultation"
+    }
+
+    on mettre_au_vote(h, version, echeance, par, valideur) {
+        require ApiAcces.a_le_role(par, "superviseur") else Habilitation "mise au vote réservée à un superviseur d'ORBITE"
+        require ApiAcces.a_le_role(valideur, "direction") else QuatreYeux "le valideur doit être de la direction d'ORBITE"
+        require ApiAcces.quatre_yeux(par, valideur) else QuatreYeux "contre-signature refusée"
+        require effet_prevu_de.has(version) else Inconnu "version {version} inconnue"
+        let st = get_status(version) ?? "redaction"
+        require st == "consultation" else EtatInvalide "version {version} : {st}, pas en consultation"
+        require PrioConsultation.etat(version) == "close" else EtatInvalide "consultation de {version} non close"
+        require PrioConsultation.sans_reponse(version) == 0 else Insuffisant "avis sans réponse d'ORBITE"
+        let effet = effet_prevu_de.get(version) ?? 0
+        require to_int(echeance) >= to_int(h) + 1209600000 else HorsBornes "scrutin de moins de 14 jours"
+        require to_int(echeance) + PREAVIS_EFFET <= to_int(effet) else HorsBornes "fin du vote à moins de 30 jours de l'effet"
+        PrioScrutin.ouvrir(h, version, echeance, par)
+        transition(version, "consultation", "vote")
+        Journal.noter(h, "priorites", par, "version {version} : vote ouvert jusqu'à {echeance} (validé par {valideur})")
+        return "vote"
+    }
+
+    on prendre_acte(h, version, par) {
+        require ApiAcces.a_le_role(par, "systeme") else Habilitation "prise d'acte automatique (systeme)"
+        require titre_de.has(version) else Inconnu "version {version} inconnue"
+        let st = get_status(version) ?? "redaction"
+        require st == "vote" else EtatInvalide "version {version} : {st}, pas au vote"
+        let sc = PrioScrutin.etat(version)
+        if sc == "adopte" {
+            transition(version, "vote", "adoptee")
+            Journal.noter(h, "priorites", par, "version {version} : adoptée")
+            return "adoptee"
+        }
+        require sc == "rejete" else EtatInvalide "scrutin de {version} non dépouillé ({sc})"
+        transition(version, "vote", "rejetee")
+        Journal.noter(h, "priorites", par, "version {version} : rejetée")
+        return "rejetee"
+    }
+
+    on retirer(h, version, motif, par) {
+        require ApiAcces.a_le_role(par, "superviseur") else Habilitation "retrait réservé à un superviseur d'ORBITE"
+        require titre_de.has(version) else Inconnu "version {version} inconnue"
+        require motif != "" else MotifRequis "motif du retrait requis"
+        let st = get_status(version) ?? "redaction"
+        if st == "redaction" {
+            transition(version, "redaction", "retiree")
+        } else if st == "consultation" {
+            PrioConsultation.annuler(h, version, par)
+            transition(version, "consultation", "retiree")
+        } else if st == "vote" {
+            require PrioScrutin.etat(version) == "annule" else EtatInvalide "scrutin de {version} non annulé"
+            transition(version, "vote", "retiree")
+        } else {
+            fail("EtatInvalide", "version {version} : {st}, ne peut plus être retirée")
+        }
+        motif_fin.set(version, motif)
+        Journal.noter(h, "priorites", par, "version {version} : retirée ({motif})")
+        return "retiree"
+    }
+
+    on publier(h, version, par) {
+        require ApiAcces.a_le_role(par, "systeme") || ApiAcces.a_le_role(par, "superviseur") else Habilitation "publication : systeme ou superviseur d'ORBITE"
+        require titre_de.has(version) else Inconnu "version {version} inconnue"
+        let st = get_status(version) ?? "redaction"
+        require st == "adoptee" else EtatInvalide "version {version} : {st}, pas adoptée"
+        let orgs = ApiRef.organisations("")
+        require len(orgs) > 0 else Insuffisant "aucun destinataire"
+        let titre = titre_de.get(version) ?? ""
+        let lignes_t = PrioTable.regles(version)
+        let texte = "{titre} : " + join(lignes_t, " ; ")
+        let n = 0
+        for o in orgs {
+            ApiPasserelle.notifier(h, Org(o), "", "priorites : version {version} adoptée", texte, 1)
+            n = n + 1
+        }
+        let effet = to_int(effet_prevu_de.get(version) ?? 0)
+        if to_int(h) + PREAVIS_EFFET > effet {
+            effet = to_int(h) + PREAVIS_EFFET
+            effet_prevu_de.set(version, Horodatage(effet))
+        }
+        publiee_le.set(version, h)
+        destinataires_de.set(version, n)
+        transition(version, "adoptee", "publiee")
+        PrioEcheancier.planifier(h, "effet", version, Horodatage(effet))
+        Journal.noter(h, "priorites", par, "version {version} : publiée à {n} organisations, effet {effet}")
+        return n
+    }
+
+    on entrer_en_vigueur(h, version, par) {
+        require ApiAcces.a_le_role(par, "systeme") else Habilitation "entrée en vigueur automatique (systeme)"
+        require effet_prevu_de.has(version) else Inconnu "version {version} inconnue"
+        let st = get_status(version) ?? "redaction"
+        require st == "publiee" else EtatInvalide "version {version} : {st}, pas publiée"
+        let effet = effet_prevu_de.get(version) ?? 0
+        require publiee_le.has(version) else EtatInvalide "version {version} jamais publiée"
+        require to_int(h) >= to_int(effet) else Delai "date d'effet {effet} non atteinte"
+        require ApiOperations.changement_autorise(h) else Delai "gel des changements : bascule reportée"
+        require ordre.size < MAX_VERSIONS else Plein "historique des versions plein"
+        let ancienne = courante.get("courante") ?? ""
+        if ancienne != "" {
+            transition(ancienne, "en_vigueur", "remplacee")
+            fin_vigueur.set(ancienne, h)
+            PrioEcheancier.planifier(h, "caducite", ancienne, h)
+        }
+        transition(version, "publiee", "en_vigueur")
+        debut_vigueur.set(version, h)
+        courante.set("courante", version)
+        ordre.push(version)
+        Journal.noter(h, "priorites", par, "version {version} en vigueur (remplace '{ancienne}')")
+        return version
+    }
+
+    on abroger(h, version, motif, par, valideur) {
+        require ApiAcces.a_le_role(par, "direction") else Habilitation "abrogation réservée à la direction d'ORBITE"
+        require ApiAcces.a_le_role(valideur, "direction") || ApiAcces.a_le_role(valideur, "superviseur") else QuatreYeux "le valideur doit être direction ou superviseur d'ORBITE"
+        require ApiAcces.quatre_yeux(par, valideur) else QuatreYeux "contre-signature refusée"
+        require titre_de.has(version) else Inconnu "version {version} inconnue"
+        require motif != "" else MotifRequis "motif de l'abrogation requis"
+        let st = get_status(version) ?? "redaction"
+        require st == "adoptee" || st == "publiee" || st == "en_vigueur" else EtatInvalide "version {version} : {st}, ne peut être abrogée"
+        if st == "en_vigueur" {
+            fin_vigueur.set(version, h)
+            courante.delete("courante")
+            PrioEcheancier.planifier(h, "caducite", version, h)
+            transition(version, "en_vigueur", "abrogee")
+        } else if st == "publiee" {
+            PrioEcheancier.annuler("effet", version)
+            transition(version, "publiee", "abrogee")
+        } else {
+            transition(version, "adoptee", "abrogee")
+        }
+        motif_fin.set(version, motif)
+        Journal.noter(h, "priorites", par, "version {version} abrogée ({motif}, validé par {valideur})")
+        return "abrogee"
+    }
+
+    on en_vigueur_a(h) {
+        for v in ordre {
+            let d = debut_vigueur.get(v)
+            if d != () {
+                let f = fin_vigueur.get(v)
+                if to_int(d) <= to_int(h) && (f == () || to_int(h) < to_int(f)) {
+                    return v
+                }
+            }
+        }
+        return ""
+    }
+
+    on version_courante() {
+        return courante.get("courante") ?? ""
+    }
+
+    on etat(version) {
+        if !titre_de.has(version) { return "inconnue" }
+        return get_status(version) ?? "redaction"
+    }
+
+    on fiche(version) {
+        require titre_de.has(version) else Inconnu "version {version} inconnue"
+        let t = titre_de.get(version) ?? ""
+        let b = base_de.get(version) ?? ""
+        let rp = redige_par.get(version) ?? ""
+        let e = effet_prevu_de.get(version) ?? 0
+        let p = publiee_le.get(version) ?? 0
+        let d = debut_vigueur.get(version) ?? 0
+        let f = fin_vigueur.get(version) ?? 0
+        let m = motif_fin.get(version) ?? ""
+        return "{t} | {b} | {rp} | {e} | {p} | {d} | {f} | {m}"
+    }
+}

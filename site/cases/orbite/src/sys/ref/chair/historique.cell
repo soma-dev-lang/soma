@@ -1,0 +1,176 @@
+// ref — corps de RefModification (demandes à quatre yeux) et RefHistorique (valeurs datées).
+
+flesh RefModification {
+    on proposer(h, demande, cible, champ, valeur, motif, par) {
+        require cibles.get(demande) == () else Existe "demande {demande} déjà proposée"
+        require motif != "" else MotifRequis "motif requis"
+        if champ == "nom" {
+            let org = Org(cible)
+            let habilite = ApiAcces.a_le_role(par, "superviseur") || (ApiAcces.a_le_role(par, "administrateur_operateur") && ApiAcces.agit_pour(par, org))
+            require habilite else Habilitation "{par} : superviseur d'ORBITE ou administrateur de {cible} requis"
+            require RefOrg.existe(org) else Inconnu "organisation {cible} inconnue ou radiée"
+        } else {
+            let obj = Objet(cible)
+            let e = RefObjet.etat(obj)
+            require e != "inconnu" else Inconnu "objet {cible} inconnu"
+            require e != "rentre" && e != "fragmente" else EtatInvalide "objet {cible} sorti de l'orbite ({e})"
+            let prop = RefObjet.proprietaire(obj)
+            let habilite = ApiAcces.a_le_role(par, "analyste") || (ApiAcces.a_le_role(par, "dynamicien") && ApiAcces.agit_pour(par, prop))
+            require habilite else Habilitation "{par} : analyste d'ORBITE ou dynamicien du propriétaire requis"
+        }
+        let cle = "{cible}|{champ}"
+        require en_cours.get(cle) == () else Conflit "demande déjà en cours sur {cle}"
+        require cibles.size < MAX_DEMANDES else Plein "trop de demandes"
+        cibles.set(demande, cible)
+        champs.set(demande, champ)
+        valeurs.set(demande, valeur)
+        motifs.set(demande, motif)
+        proposants.set(demande, par)
+        echeances.set(demande, h + DELAI_MODIFICATION_MS)
+        en_cours.set(cle, demande)
+        Journal.noter(h, "ref", par, "modification {demande} proposée : {cle} = {valeur}")
+        return demande
+    }
+
+    on valider(h, demande, valideur) {
+        require proposants.get(demande) != () else Inconnu "demande {demande} inconnue"
+        let st = get_status(demande) ?? "proposee"
+        require st == "proposee" else EtatInvalide "demande {demande} : {st}"
+        require h <= (echeances.get(demande) ?? 0) else Echu "demande {demande} échue"
+        let proposant = proposants.get(demande) ?? ""
+        require ApiAcces.quatre_yeux(proposant, valideur) else QuatreYeux "{valideur} ne peut pas valider la demande de {proposant}"
+        valideurs.set(demande, valideur)
+        transition(demande, "proposee", "validee")
+        Journal.noter(h, "ref", valideur, "modification {demande} validée")
+        return "validee"
+    }
+
+    on appliquer(h, demande, par) {
+        let cible = cibles.get(demande)
+        require cible != () else Inconnu "demande {demande} inconnue"
+        let st = get_status(demande) ?? "proposee"
+        require st == "validee" else EtatInvalide "demande {demande} : {st}"
+        require h <= (echeances.get(demande) ?? 0) else Echu "demande {demande} échue"
+        let proposant = proposants.get(demande) ?? ""
+        let valideur = valideurs.get(demande) ?? ""
+        let habilite = par == proposant || par == valideur || ApiAcces.a_le_role(par, "systeme")
+        require habilite else Habilitation "{par} : ni proposant, ni valideur, ni systeme"
+        let champ = champs.get(demande) ?? "nom"
+        let valeur = valeurs.get(demande) ?? ""
+        // le setter revérifie la demande « validee » : la transition vient après lui
+        if champ == "nom" {
+            let _ = RefOrg.renommer(h, Org(cible), valeur, demande, "systeme")
+        } else {
+            let _ = RefObjet.modifier(h, Objet(cible), champ, valeur, demande, "systeme")
+        }
+        transition(demande, "validee", "appliquee")
+        en_cours.delete("{cible}|{champ}")
+        RefHistorique.consigner(h, cible, to_string(champ), valeur, demande, "{proposant}+{valideur}")
+        Journal.noter(h, "ref", par, "modification {demande} appliquée : {cible}|{champ} = {valeur}")
+        return "appliquee"
+    }
+
+    on rejeter(h, demande, motif, par) {
+        let cible = cibles.get(demande)
+        require cible != () else Inconnu "demande {demande} inconnue"
+        let st = get_status(demande) ?? "proposee"
+        require st == "proposee" else EtatInvalide "demande {demande} : {st}"
+        require motif != "" else MotifRequis "motif requis"
+        let proposant = proposants.get(demande) ?? ""
+        require ApiAcces.quatre_yeux(proposant, par) else QuatreYeux "{par} ne peut pas statuer sur la demande de {proposant}"
+        valideurs.set(demande, par)
+        let champ = champs.get(demande) ?? "nom"
+        en_cours.delete("{cible}|{champ}")
+        transition(demande, "proposee", "rejetee")
+        Journal.noter(h, "ref", par, "modification {demande} rejetée : {motif}")
+        return "rejetee"
+    }
+
+    on annuler(h, demande, par) {
+        let cible = cibles.get(demande)
+        require cible != () else Inconnu "demande {demande} inconnue"
+        let st = get_status(demande) ?? "proposee"
+        require st == "proposee" || st == "validee" else EtatInvalide "demande {demande} : {st}"
+        require par == (proposants.get(demande) ?? "") else Habilitation "{par} n'est pas le proposant"
+        let champ = champs.get(demande) ?? "nom"
+        en_cours.delete("{cible}|{champ}")
+        if st == "proposee" {
+            transition(demande, "proposee", "annulee")
+        } else {
+            transition(demande, "validee", "annulee")
+        }
+        Journal.noter(h, "ref", par, "modification {demande} annulée")
+        return "annulee"
+    }
+
+    on expirer(h, demande, par) {
+        require ApiAcces.a_le_role(par, "systeme") else Habilitation "expiration réservée à systeme"
+        let cible = cibles.get(demande)
+        require cible != () else Inconnu "demande {demande} inconnue"
+        let st = get_status(demande) ?? "proposee"
+        require st == "proposee" || st == "validee" else EtatInvalide "demande {demande} : {st}"
+        require (echeances.get(demande) ?? 0) < h else Delai "demande {demande} non échue"
+        let champ = champs.get(demande) ?? "nom"
+        en_cours.delete("{cible}|{champ}")
+        if st == "proposee" {
+            transition(demande, "proposee", "expiree")
+        } else {
+            transition(demande, "validee", "expiree")
+        }
+        Journal.noter(h, "ref", par, "modification {demande} expirée")
+        return "expiree"
+    }
+
+    on balayer(h, par) {
+        require ApiAcces.a_le_role(par, "systeme") else Habilitation "balayage réservé à systeme"
+        let echues_m = en_cours.values.filter(d => (echeances.get(d) ?? 0) < h)
+        let n = 0
+        for d in echues_m {
+            if n < 1000 {
+                let _ = expirer(h, d, "systeme")
+                n = n + 1
+            }
+        }
+        return n
+    }
+
+    on etat(demande) {
+        if cibles.get(demande) == () { return "inconnue" }
+        return get_status(demande) ?? "proposee"
+    }
+}
+
+flesh RefHistorique {
+    on consigner(h, cible, champ, valeur, source, par) {
+        let vs = versions.get(cible) ?? []
+        let n = len(vs)
+        if n > 0 {
+            let derniere = to_int(split(vs[n - 1], "|")[0])
+            require derniere <= h else Incoherent "version de {cible} antérieure à la dernière ({derniere})"
+        }
+        require n < MAX_VERSIONS_PAR_CIBLE else Plein "historique de {cible} plein"
+        let t = total.get("versions") ?? 0
+        require t < MAX_VERSIONS else Plein "historique plein"
+        versions.set(cible, vs ++ ["{h}|{champ}|{valeur}|{source}|{par}"])
+        total.set("versions", t + 1)
+        return n + 1
+    }
+
+    on valeur_au(cible, champ, h) {
+        let res_v = ""
+        for l in versions.get(cible) ?? [] {
+            let parts = split(l, "|")
+            if to_int(parts[0]) <= h && parts[1] == champ {
+                res_v = parts[2]
+            }
+        }
+        return res_v
+    }
+
+    on historique(cible, n) {
+        let vs = versions.get(cible) ?? []
+        let k = len(vs)
+        if k <= n { return vs }
+        return slice(vs, k - n, k)
+    }
+}

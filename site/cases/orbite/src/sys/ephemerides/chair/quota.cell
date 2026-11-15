@@ -1,0 +1,158 @@
+// ephemerides — corps des QUOTAS et du BILAN de discipline.
+flesh EphQuota {
+    on compter(h, op, objet) {
+        let jour = Jour(idiv(to_int(h), JOUR_MS))
+        let st = get_status(op) ?? "libre"
+        if jour_de.get(op) != jour {
+            jour_de.set(op, jour)
+            compte.set(op, 0)
+            nb_urgence.set(op, 0)
+            if st == "sature" {
+                transition(op, "sature", "libre")
+                st = "libre"
+            }
+        }
+        let plafond = plafond_propre.get(op) ?? EphReglage.quota()
+        let c = compte.get(op) ?? 0
+        let urgent = false
+        for r in ApiConjonctions.ouverts_de(objet) {
+            if to_int(ApiConjonctions.niveau(Rapprochement(r))) == 3 {
+                urgent = true
+            }
+        }
+        if urgent {
+            nb_urgence.set(op, (nb_urgence.get(op) ?? 0) + 1)
+            return max(0, plafond - c)
+        }
+        require st != "bride" else Plein "opérateur {op} bridé : dépôts d'urgence seulement"
+        require st != "sature" && c < plafond else Plein "quota du jour atteint pour {op}"
+        let c2 = c + 1
+        compte.set(op, c2)
+        if c2 >= plafond {
+            transition(op, "libre", "sature")
+        }
+        return max(0, plafond - c2)
+    }
+
+    on restant(op, h) {
+        let st = get_status(op) ?? "libre"
+        if st == "bride" {
+            return 0
+        }
+        let plafond = plafond_propre.get(op) ?? EphReglage.quota()
+        let jour = Jour(idiv(to_int(h), JOUR_MS))
+        if jour_de.get(op) != jour {
+            return plafond
+        }
+        return max(0, plafond - (compte.get(op) ?? 0))
+    }
+
+    on relever(h, op, plafond, motif, par) {
+        require ApiAcces.a_le_role(par, "superviseur") else Habilitation "superviseur d'ORBITE requis"
+        require len(motif) > 0 else MotifRequis "motif requis"
+        require ApiOperateurs.statut(op) != "inconnu" else Inconnu "opérateur {op} inconnu"
+        plafond_propre.set(op, plafond)
+        releve_par.set(op, "{par}|{motif}")
+        if (get_status(op) ?? "libre") == "sature" && (compte.get(op) ?? 0) < plafond {
+            transition(op, "sature", "libre")
+        }
+        let _ = Journal.noter(h, "ephemerides", par, "quota de {op} porte a {plafond} : {motif}")
+        return plafond
+    }
+
+    on brider(h, op, motif, par, valideur) {
+        require ApiAcces.a_le_role(par, "conformite") else Habilitation "conformite d'ORBITE requis"
+        require ApiAcces.quatre_yeux(par, valideur) && (ApiAcces.a_le_role(valideur, "superviseur") || ApiAcces.a_le_role(valideur, "direction")) else QuatreYeux "valideur superviseur ou direction distinct requis"
+        require len(motif) > 0 else MotifRequis "motif requis"
+        require ApiOperateurs.statut(op) != "inconnu" else Inconnu "opérateur {op} inconnu"
+        let st = get_status(op) ?? "libre"
+        require st != "bride" else EtatInvalide "opérateur {op} déjà bridé"
+        bride_par.set(op, "{par}|{valideur}|{motif}")
+        if st == "libre" {
+            transition(op, "libre", "bride")
+        } else {
+            transition(op, "sature", "bride")
+        }
+        let _ = ApiConformite.constater(h, op, "depots_abusifs", 1, motif, par)
+        let _ = Journal.noter(h, "ephemerides", par, "operateur {op} bride : {motif}")
+        return "bride"
+    }
+
+    on debrider(h, op, par) {
+        require ApiAcces.a_le_role(par, "conformite") else Habilitation "conformite d'ORBITE requis"
+        let st = get_status(op) ?? "libre"
+        require st == "bride" else EtatInvalide "opérateur {op} non bridé"
+        bride_par.delete(op)
+        transition(op, "bride", "libre")
+        let _ = Journal.noter(h, "ephemerides", par, "operateur {op} debride")
+        return "libre"
+    }
+}
+
+flesh EphBilan {
+    on compter(h, op, ev) {
+        let jour = idiv(to_int(h), 86400000)
+        let plus_vieux = idiv(to_int(h) - FENETRE, 86400000)
+        // Les seaux sortis de la fenêtre sont effacés au passage.
+        for k in seaux.keys {
+            let parts = split(k, "|")
+            if to_int(parts[1]) < plus_vieux {
+                seaux.delete(k)
+            }
+        }
+        let cle = "{op}|{jour}|{ev}"
+        let v = seaux.get(cle)
+        if v == () {
+            require seaux.size < MAX_SEAUX else Plein "bilan plein"
+        }
+        let v2 = (v ?? 0) + 1
+        seaux.set(cle, v2)
+        return v2
+    }
+
+    on bilan(op, h) {
+        let c = _compte(op, h)
+        return "{c.depot}|{c.rejet}|{c.invalidation}|{c.perime_en_rapprochement}|{c.omission}"
+    }
+
+    on taux_rejet(op, h) {
+        let c = _compte(op, h)
+        if c.depot == 0 {
+            return 0
+        }
+        return Pourcent(min(10000, idiv(c.rejet * 100, c.depot)))
+    }
+
+    on _compte(op: Org, h: Horodatage) {
+        let plus_vieux = idiv(to_int(h) - FENETRE, 86400000)
+        let res_b = map("depot", 0, "rejet", 0, "invalidation", 0, "perime_en_rapprochement", 0, "omission", 0)
+        for e in seaux.entries {
+            let parts = split(e.key, "|")
+            if parts[0] == to_string(op) && to_int(parts[1]) > plus_vieux {
+                res_b[parts[2]] = (res_b[parts[2]] ?? 0) + e.value
+            }
+        }
+        return res_b
+    }
+
+    on examiner_operateur(h, op, par) {
+        require ApiAcces.a_le_role(par, "systeme") || ApiAcces.a_le_role(par, "conformite") else Habilitation "systeme ou conformite d'ORBITE requis"
+        require ApiOperateurs.statut(op) != "inconnu" else Inconnu "opérateur {op} inconnu"
+        let dernier = signale_le.get(op)
+        if dernier != () && to_int(h) - to_int(dernier) < FENETRE {
+            return ""
+        }
+        let c = _compte(op, h)
+        let taux = if c.depot == 0 { 0 } else { idiv(c.rejet * 100, c.depot) }
+        let perimes = c.perime_en_rapprochement > 0
+        if taux <= SEUIL_REJET && (!perimes) {
+            return ""
+        }
+        let gravite = if perimes { 2 } else { 1 }
+        let resume = "{c.depot}|{c.rejet}|{c.invalidation}|{c.perime_en_rapprochement}|{c.omission}"
+        let id = ApiConformite.constater(h, op, "discipline_depot", Gravite(gravite), "bilan:{resume}", par)
+        signale_le.set(op, h)
+        let _ = Journal.noter(h, "ephemerides", par, "manquement discipline de depot {op} : {id}")
+        return id
+    }
+}

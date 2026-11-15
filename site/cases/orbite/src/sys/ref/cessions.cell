@@ -1,0 +1,163 @@
+// ref — cession d'un objet en orbite (une instance par cession, id = "CES-<n>" choisi par
+// le demandeur). Le cédant demande, le cessionnaire accepte, l'État d'immatriculation (cédant)
+// puis l'État de tutelle du cessionnaire visent — dans cet ordre, un même État visant deux
+// fois s'il est les deux —, et la cession prend effet à sa date d'effet. Une seule cession en
+// cours par objet. Le propriétaire ne change qu'à la réalisation : jusque-là, c'est le cédant
+// qui répond de l'objet (coordination, manœuvres).
+// Les cinq liens (objet, cédant, cessionnaire, États) sont écrits une fois par demander.
+
+// Statut d'une cession tel que le lit un appelant ; "inconnue" si jamais demandée.
+cell type RefStatutCession = String where value == "demandee" || value == "acceptee" || value == "visee_cedant" || value == "visee_cessionnaire" || value == "realisee" || value == "refusee" || value == "annulee" || value == "expiree" || value == "inconnue"
+
+skeleton RefCession {
+    const MAX_CESSIONS = 100000
+    // 90 jours (ms) : au-delà, une cession non réalisée expire.
+    const DELAI_CESSION_MS = 7776000000
+    memory {
+        objet_de: Map<String, String> [persistent, consistent, immutable]          // cession → objet
+        cedant_de: Map<String, String> [persistent, consistent, immutable]         // cession → Org cédante
+        cessionnaire_de: Map<String, String> [persistent, consistent, immutable]   // cession → Org cessionnaire
+        etat_cedant_de: Map<String, String> [persistent, consistent, immutable]    // cession → État d'immatriculation
+        etat_cessionnaire_de: Map<String, String> [persistent, consistent, immutable] // cession → État du cessionnaire
+        demandees_le: Map<String, Horodatage> [persistent, consistent, immutable]
+        effets: Map<String, Horodatage> [persistent, consistent, immutable]        // date d'effet demandée
+        echeances: Map<String, Horodatage> [persistent, consistent, immutable]     // demande + DELAI_CESSION_MS
+        // cession → nouveau numéro national, fourni au visa de l'État du cessionnaire quand il
+        // diffère de l'État d'immatriculation
+        numeros: Map<String, String> [persistent]
+        demandeurs: Map<String, String> [persistent, consistent, immutable]        // cession → personne
+        motifs: Map<String, String> [persistent]               // cession → motif de demande, puis de refus/annulation
+        // objet → cession en cours (non terminale) ; effacé à la sortie : une seule à la fois
+        en_cours: Map<String, String> [persistent]
+        invariant objet_de.size <= 100000
+        invariant cedant_de.size <= 100000
+        invariant cessionnaire_de.size <= 100000
+        invariant etat_cedant_de.size <= 100000
+        invariant etat_cessionnaire_de.size <= 100000
+        invariant demandees_le.size <= 100000
+        invariant effets.size <= 100000
+        invariant echeances.size <= 100000
+        invariant numeros.size <= 100000
+        invariant demandeurs.size <= 100000
+        invariant motifs.size <= 100000
+        invariant en_cours.size <= 100000
+        invariant (effets ?? 0) >= (demandees_le ?? 0)
+        invariant (echeances ?? 0) >= (effets ?? 0)              // la date d'effet tombe avant l'expiration
+    }
+    // Instruction d'une cession. Terminaux : realisee, refusee, annulee, expiree.
+    state cession {
+        initial: demandee
+        demandee -> acceptee                     // accepter : cessionnaire actif
+        acceptee -> visee_cedant                 // viser : État d'immatriculation participant
+        visee_cedant -> visee_cessionnaire       // viser : État du cessionnaire participant
+        visee_cessionnaire -> realisee           // realiser : date d'effet atteinte, objet en orbite
+        demandee -> refusee                      // refuser : cessionnaire ou un État
+        acceptee -> refusee
+        visee_cedant -> refusee
+        visee_cessionnaire -> refusee
+        demandee -> annulee                      // annuler : cédant
+        acceptee -> annulee
+        visee_cedant -> annulee
+        visee_cessionnaire -> annulee
+        demandee -> expiree                      // expirer : échéance dépassée
+        acceptee -> expiree
+        visee_cedant -> expiree
+        visee_cessionnaire -> expiree
+    }
+    face {
+        // Demande la cession de l'objet au cessionnaire, avec effet à `effet` (h ≤ effet ≤
+        // h + DELAI_CESSION_MS). Lit le propriétaire (RefObjet.proprietaire) et l'État
+        // d'immatriculation (RefRegistre.etat_de) À CET INSTANT et les fige. Renvoie la cession.
+        // Habilitation : "chef_de_mission" ou "administrateur_operateur" du propriétaire actuel
+        // (ApiAcces.agit_pour).
+        // Refus : Existe (id déjà pris), Inconnu (objet, cessionnaire), EtatInvalide (objet ni
+        // en_service, ni hors_service, ni cimetiere ; objet non attribué, propriétaire ORG-ORBITE :
+        // passer par RefObjet.attribuer), Incoherent
+        // (cessionnaire = cédant, ou genre ≠ "operateur"), HorsBornes (effet), Conflit (cession
+        // déjà en cours sur l'objet), MotifRequis, Plein, Habilitation.
+        signal demander(h: Horodatage, cession: String, objet: Objet, cessionnaire: Org, effet: Horodatage, motif: String, par: String) -> String
+            writes objet_de, cedant_de, cessionnaire_de, etat_cedant_de, etat_cessionnaire_de, demandees_le, effets, echeances, demandeurs, motifs, en_cours
+            calls RefObjet.etat, RefObjet.proprietaire, RefRegistre.etat_de, RefOrg.etat_de, RefOrg.genre, ApiAcces.a_le_role, ApiAcces.agit_pour, Journal.noter
+        // Le cessionnaire accepte. Renvoie "acceptee".
+        // Habilitation : "administrateur_operateur" du cessionnaire (ApiAcces.agit_pour).
+        // Refus : Inconnu, EtatInvalide (pas "demandee", ou cessionnaire non actif), Echu,
+        // Habilitation.
+        signal accepter(h: Horodatage, cession: String, par: String) -> String
+            reads cessionnaire_de, echeances
+            moves demandee -> acceptee when RefOrg.active via cessionnaire_de
+            calls RefOrg.est_active, ApiAcces.a_le_role, ApiAcces.agit_pour, Journal.noter
+        // Visa d'un État. Sur une cession « acceptee » : visa de l'État d'immatriculation ;
+        // si l'État du cessionnaire est le même, les deux visas sont pris dans le même appel.
+        // Sur une cession « visee_cedant » : visa de l'État du cessionnaire, qui fournit le
+        // nouveau numéro national s'il diffère de l'État d'immatriculation (sinon "").
+        // Renvoie le statut atteint.
+        // Habilitation : "autorite" de l'État qui vise (ApiAcces.agit_pour sur RefOrg.org_de_etat).
+        // Refus : Inconnu, EtatInvalide (statut, ou État non participant), Echu, MotifRequis
+        // (numéro manquant pour un changement d'État), Habilitation.
+        signal viser(h: Horodatage, cession: String, numero: String, par: String) -> String
+            reads etat_cedant_de, etat_cessionnaire_de, echeances
+            writes numeros
+            moves acceptee -> visee_cedant when RefEtat.participant via etat_cedant_de, visee_cedant -> visee_cessionnaire when RefEtat.participant via etat_cessionnaire_de
+            calls RefEtat.participant, RefOrg.org_de_etat, ApiAcces.a_le_role, ApiAcces.agit_pour, Journal.noter
+        // Réalise la cession à la date d'effet : RefObjet.transferer (propriétaire, parc) puis,
+        // si l'État change, RefRegistre.transferer (État, numéro) ; consigne dans RefHistorique ;
+        // notifie cédant et cessionnaire (ApiPasserelle.notifier, r = ""). Libère en_cours.
+        // Renvoie "realisee". Appelé par balayer à la date d'effet, ou geste d'analyste.
+        // Habilitation : "systeme", ou "analyste" (ORBITE).
+        // Refus : Inconnu, EtatInvalide (pas "visee_cessionnaire", objet sorti de l'orbite),
+        // Delai (h < date d'effet), Echu, Habilitation.
+        signal realiser(h: Horodatage, cession: String, par: String) -> String
+            reads objet_de, cedant_de, cessionnaire_de, etat_cedant_de, etat_cessionnaire_de, effets, echeances, numeros
+            writes en_cours
+            moves visee_cessionnaire -> realisee when RefObjet.en_service || RefObjet.hors_service via objet_de
+            calls RefObjet.etat, RefObjet.transferer, RefRegistre.transferer, ApiPasserelle.notifier, ApiAcces.a_le_role, RefHistorique.consigner, Journal.noter
+        // Refus motivé, par le cessionnaire ou par l'un des deux États. Libère en_cours.
+        // Renvoie "refusee".
+        // Habilitation : "administrateur_operateur" du cessionnaire, ou "autorite" de l'État
+        // d'immatriculation ou de l'État du cessionnaire (ApiAcces.agit_pour).
+        // Refus : Inconnu, EtatInvalide (cession terminée), MotifRequis, Habilitation.
+        signal refuser(h: Horodatage, cession: String, motif: String, par: String) -> String
+            reads cessionnaire_de, etat_cedant_de, etat_cessionnaire_de, objet_de
+            writes motifs, en_cours
+            moves demandee -> refusee, acceptee -> refusee, visee_cedant -> refusee, visee_cessionnaire -> refusee
+            calls RefOrg.org_de_etat, ApiAcces.a_le_role, ApiAcces.agit_pour, Journal.noter
+        // Le cédant renonce. Libère en_cours. Renvoie "annulee".
+        // Habilitation : "chef_de_mission" ou "administrateur_operateur" du cédant.
+        // Refus : Inconnu, EtatInvalide, MotifRequis, Habilitation.
+        signal annuler(h: Horodatage, cession: String, motif: String, par: String) -> String
+            reads cedant_de, objet_de
+            writes motifs, en_cours
+            moves demandee -> annulee, acceptee -> annulee, visee_cedant -> annulee, visee_cessionnaire -> annulee
+            calls ApiAcces.a_le_role, ApiAcces.agit_pour, Journal.noter
+        // Fait expirer une cession dont l'échéance est dépassée à h ; aussi, à la réalisation,
+        // une cession dont l'objet est sorti de l'orbite. Libère en_cours. Renvoie "expiree".
+        // Habilitation : par "systeme". Refus : Inconnu, EtatInvalide, Delai (échéance non
+        // atteinte et objet en orbite), Habilitation.
+        signal expirer(h: Horodatage, cession: String, par: String) -> String
+            reads echeances, objet_de
+            writes en_cours
+            moves demandee -> expiree, acceptee -> expiree, visee_cedant -> expiree, visee_cessionnaire -> expiree
+            calls RefObjet.etat, ApiAcces.a_le_role, Journal.noter
+        // Ronde (appelée par RefBalayage.balayer) sur les cessions en cours (en_cours) : réalise
+        // celles « visee_cessionnaire » dont la date d'effet est ≤ h (realiser), fait expirer
+        // celles dont l'échéance est < h ou dont l'objet est sorti de l'orbite (expirer).
+        // Au plus 1 000 cessions par appel. Renvoie le nombre de cessions terminées.
+        // Habilitation : par "systeme". Refus : Habilitation.
+        signal balayer(h: Horodatage, par: String) -> Int
+            ensures result >= 0 && result <= 1000
+            reads en_cours, effets, echeances, cession
+            calls realiser, expirer, ApiAcces.a_le_role
+        // Statut ; "inconnue" si jamais demandée.
+        signal etat(cession: String) -> RefStatutCession
+            reads objet_de, cession
+        // Cession en cours sur l'objet ; "" si aucune.
+        signal en_cours_sur(objet: Objet) -> String
+            reads en_cours
+        // Vrai si une cession en cours a l'organisation pour cédant ou cessionnaire.
+        signal en_cours_pour_org(org: Org) -> Bool
+            reads en_cours, cedant_de, cessionnaire_de
+        // Vrai si une cession en cours attend ou porte le visa de l'État (cédant ou cessionnaire).
+        signal en_cours_pour_etat(etat: Etat) -> Bool
+            reads en_cours, etat_cedant_de, etat_cessionnaire_de
+    }
+}

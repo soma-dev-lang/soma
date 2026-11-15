@@ -1,0 +1,116 @@
+// evenements — NOTIFICATIONS AUX ÉTATS ET AUX OPÉRATEURS.
+// Chaque fait d'évènement (fragmentation, collision, anomalie, levée, perte) est notifié au
+// propriétaire de l'objet (opérateur) et à l'autorité de son État d'immatriculation, après
+// contrôle de diffusion (ApiDonnees.peut_recevoir) et trace (ApiDonnees.tracer) : une
+// notification refusée par la diffusion est RETENUE, jamais envoyée. L'accusé est attendu
+// avant une échéance : délai contractuel de l'opérateur pour ce niveau
+// (ApiOperateurs.delai_reponse), DELAI_ETAT_MS pour un État. Un opérateur muet sur une
+// notification d'urgence ≥ 2 est constaté en manquement (ApiConformite.constater) : il ne
+// bloque rien, il est enregistré. Une alerte de nuage ou un rapport publié va en plus à tous
+// les États participants et, page par page (ApiRef.catalogue), aux propriétaires de chaque objet
+// du régime touché : la diffusion reprend à chaque ronde jusqu'au bout du catalogue.
+
+// Fait notifié.
+cell type EvtSujet = String where value == "fragmentation" || value == "collision" || value == "anomalie" || value == "levee" || value == "perte" || value == "nuage" || value == "rapport"
+// Qualité du destinataire : "operateur" / "etat" de l'objet en cause, "riverain" (propriétaire
+// d'un objet du régime touché), "participant" (État participant, alerte de nuage ou rapport).
+cell type EvtDestinataire = String where value == "operateur" || value == "etat" || value == "riverain" || value == "participant"
+
+// Notifications : id = "NT-<n>", tirée par preparer.
+skeleton EvtNotifications {
+    const MAX_NOTIFICATIONS = 1000000
+    const DELAI_ETAT_MS = 86400000
+    const PAGE = 1000
+    const MAX_DIFFUSIONS = 10000
+    memory {
+        sujet_de: Map<String, String> [persistent]            // notification → évènement ou anomalie notifié ; écrit une fois
+        fait: Map<String, EvtSujet> [persistent]              // notification → fait notifié
+        destinataire: Map<String, Org> [persistent]           // notification → organisation destinataire
+        qualite: Map<String, EvtDestinataire> [persistent]    // notification → opérateur ou État
+        objet_de: Map<String, Objet> [persistent]             // notification → objet dont les données sont communiquées
+        urgence: Map<String, Niveau> [persistent]             // notification → urgence (délai de livraison de la passerelle)
+        emise_le: Map<String, Horodatage> [persistent]        // notification → instant de préparation, ms
+        echeance: Map<String, Horodatage> [persistent]        // notification → accusé attendu avant, ms ; ≥ emise_le
+        message_de: Map<String, String> [persistent]          // notification → message de la passerelle (ApiPasserelle.notifier)
+        par_cle: Map<String, String> [persistent]             // "sujet | fait | destinataire | objet" → notification (pas de doublon)
+        curseurs: Map<String, Objet> [persistent]             // "sujet | fait | regime | parent" → dernier objet parcouru ("" : début) ; effacé en fin de catalogue
+        invariant curseurs.size <= MAX_DIFFUSIONS
+        invariant sujet_de.size <= MAX_NOTIFICATIONS
+        invariant par_cle.size <= MAX_NOTIFICATIONS
+        invariant (emise_le ?? 0) <= (echeance ?? 0)
+    }
+    // Cycle de vie d'une notification (id = notification).
+    state notification {
+        initial: preparee
+        preparee -> envoyee          // envoyer : diffusion autorisée, message mis en file
+        preparee -> retenue          // envoyer : destinataire non autorisé par la diffusion
+        envoyee -> acquittee         // relever : accusé de la passerelle
+        envoyee -> sans_reponse      // relever : échéance dépassée sans accusé
+    }
+    face {
+        // Prépare et envoie (envoyer) les notifications d'un fait `f` concernant `objet`, au
+        // sujet de `sujet` (évènement ou anomalie) : au propriétaire (ApiRef.proprietaire, sauf
+        // "inconnu") et à l'autorité de l'État d'immatriculation (ApiRef.etat_immatriculation,
+        // ApiRef.org_de_etat). Une clé déjà notifiée n'est pas renvoyée. Appelé par
+        // EvtEvenements.confirmer, EvtAnomalies, EvtCollisions.transmettre et
+        // EvtRapports.publier seuls. Renvoie les ids préparés (0 à 2).
+        // Refus : Inconnu (objet), Plein.
+        signal preparer(h: Horodatage, sujet: String, f: EvtSujet, objet: Objet, n: Niveau) -> List<String>
+            writes sujet_de, fait, destinataire, qualite, objet_de, urgence, emise_le, echeance, par_cle
+            calls ApiRef.proprietaire, ApiRef.etat_immatriculation, ApiRef.org_de_etat, ApiOperateurs.delai_reponse, envoyer, next_id
+        // Ouvre la diffusion du fait `f` ("nuage" : alerte, urgence 2 ; "rapport" : rapport
+        // publié, urgence 1) de l'évènement `sujet`, données de `parent` (l'objet fragmenté) :
+        // notifie aussitôt chaque État participant (ApiRef.etats_participants,
+        // ApiRef.org_de_etat), ouvre un curseur par régime de `touches` puis traite la première
+        // page de chacun (poursuivre). Un destinataire déjà notifié de ce fait ne l'est pas deux
+        // fois ; un régime ajouté par une réestimation n'atteint que les nouveaux. Appelé par
+        // EvtEvenements.confirmer, EvtNuages.estimer et EvtRapports.publier seuls. Renvoie le
+        // nombre de notifications préparées. Refus : HorsBornes (f ni "nuage" ni "rapport"), Plein.
+        signal diffuser(h: Horodatage, sujet: String, f: EvtSujet, parent: Objet, touches: List<String>) -> Int
+            writes sujet_de, fait, destinataire, qualite, objet_de, urgence, emise_le, echeance, par_cle, curseurs
+            calls ApiRef.etats_participants, ApiRef.org_de_etat, poursuivre, envoyer, next_id
+            ensures result >= 0
+        // Avance au plus `n` curseurs de diffusion d'une page de PAGE objets chacun
+        // (ApiRef.catalogue(regime, curseur, PAGE)) : une notification "riverain" par
+        // propriétaire distinct (ApiRef.proprietaire ; ni ORBITE, ni déjà notifié), urgence du
+        // fait, échéance ApiOperateurs.delai_reponse. Un curseur dont la page est incomplète est
+        // effacé (diffusion achevée). Appelé par diffuser et par la ronde. Renvoie le nombre de
+        // notifications préparées. Refus : Plein.
+        signal poursuivre(h: Horodatage, n: Int) -> Int
+            requires n > 0 && n <= 100
+            writes sujet_de, fait, destinataire, qualite, objet_de, urgence, emise_le, echeance, par_cle, curseurs
+            calls ApiRef.catalogue, ApiRef.proprietaire, ApiRef.orbite, ApiOperateurs.delai_reponse, envoyer, next_id
+            ensures result >= 0
+        // Envoie une notification préparée : si ApiDonnees.peut_recevoir(destinataire, objet,
+        // "", h), trace (ApiDonnees.tracer) puis met en file (ApiPasserelle.notifier(h,
+        // destinataire, r, sujet, texte, urgence), r = rapprochement de la collision
+        // (EvtCollisions.rapprochement), "" sinon)
+        // et renvoie "envoyee" ; sinon renvoie "retenue" et journalise le blocage.
+        // Refus : Inconnu, EtatInvalide, Plein (file ou traces saturées).
+        signal envoyer(h: Horodatage, notification: String) -> String
+            writes message_de
+            reads destinataire, objet_de, urgence, fait, sujet_de
+            moves preparee -> envoyee, preparee -> retenue
+            calls ApiDonnees.peut_recevoir, ApiDonnees.tracer, ApiPasserelle.notifier, EvtCollisions.rapprochement, Journal.noter
+        // Relève au plus `n` notifications envoyées : "acquittee" si ApiPasserelle.acquitte,
+        // "sans_reponse" si h > echeance ; pour un opérateur sans réponse à une urgence ≥ 2,
+        // constate un manquement "notification_non_acquittee" (ApiConformite.constater, gravité
+        // = urgence − 1, référence = notification, par "systeme"). Renvoie le nombre de
+        // notifications qui ont changé d'état.
+        // Rôle exigé de `par` : "systeme" ou "exploitant" d'ORBITE. Refus : Habilitation.
+        signal relever(h: Horodatage, n: Int, par: String) -> Int
+            requires n > 0 && n <= 10000
+            reads message_de, echeance, destinataire, qualite, urgence, notification
+            moves envoyee -> acquittee, envoyee -> sans_reponse
+            calls ApiAcces.a_le_role, ApiPasserelle.acquitte, ApiConformite.constater, Journal.noter
+            ensures result >= 0
+        // Notifications d'un sujet, au plus `n`, chacune "notification | destinataire | fait |
+        // état | message" : qui a été informé de quoi, et quand l'a-t-il su (preuve en cas de
+        // dommage). Lecture réservée : "analyste", "conformite" ou "direction" d'ORBITE, ou
+        // "auditeur". Refus : Habilitation.
+        signal de_sujet(sujet: String, n: Int, par: String) -> List<String>
+            requires n > 0 && n <= 1000
+            reads sujet_de, destinataire, fait, message_de, notification
+            calls ApiAcces.a_le_role
+    }
+}

@@ -1,0 +1,92 @@
+// acces — corps du point de contrôle unique des habilitations.
+flesh AccesControle {
+    on role_de(personne) {
+        if personne == "systeme" { return "systeme" }
+        if !AccesPersonnes.est_active(personne) { return "aucun" }
+        if !AccesRattachements.confirme(personne) { return "aucun" }
+        let emp = AccesPersonnes.employeur(personne)
+        if !ApiRef.organisation_existe(emp) { return "aucun" }
+        let r = AccesPersonnes.role(personne)
+        if AccesPortees.portee(r) == "etat" {
+            let e = try { ApiRef.etat_de(emp) }
+            if e.error != () { return "aucun" }
+            if !ApiRef.etat_participant(e.value) { return "aucun" }
+        }
+        return r
+    }
+
+    on a_le_role(personne, r) {
+        if r == "aucun" { return false }
+        if r == "systeme" { return personne == "systeme" }
+        if personne == "systeme" { return false }
+        let eff = role_de(personne)
+        if eff == "aucun" { return false }
+        let detient = eff == r || contains(AccesAttributions.roles_de(personne), to_string(r))
+        if !detient { return false }
+        if AccesPortees.portee(r) == "orbite" {
+            return AccesPersonnes.employeur(personne) == ApiRef.orbite()
+        }
+        return true
+    }
+
+    on verdict(personne, r) {
+        if r == "systeme" {
+            if personne == "systeme" { return "habilite" }
+            return "systeme_refuse"
+        }
+        if personne == "systeme" { return "systeme_refuse" }
+        if r == "aucun" { return "role_absent" }
+        let st = AccesPersonnes.etat(personne)
+        if st == "inconnue" { return "inconnue" }
+        if st != "active" { return "inactive" }
+        if !AccesRattachements.confirme(personne) { return "non_rattachee" }
+        let emp = AccesPersonnes.employeur(personne)
+        if !ApiRef.organisation_existe(emp) { return "employeur_radie" }
+        if AccesPortees.portee(r) == "orbite" && emp != ApiRef.orbite() { return "hors_portee" }
+        if !a_le_role(personne, r) { return "role_absent" }
+        return "habilite"
+    }
+
+    on agit_pour(personne, org) {
+        if personne == "systeme" { return false }
+        if !AccesPersonnes.est_active(personne) { return false }
+        if AccesPersonnes.employeur(personne) != org { return false }
+        return ApiRef.organisation_existe(org)
+    }
+
+    on actifs_de(org) {
+        let gens = AccesPersonnes.personnes_de(org, 2000)
+        return len(gens.filter(p => role_de(p) != "aucun"))
+    }
+
+    on quatre_yeux(demandeur, valideur) {
+        if demandeur == valideur { return false }
+        if demandeur == "systeme" || valideur == "systeme" { return false }
+        let rd = role_de(demandeur)
+        if rd == "aucun" { return false }
+        if role_de(valideur) == "aucun" { return false }
+        if a_le_role(valideur, "superviseur") || a_le_role(valideur, "conformite") || a_le_role(valideur, "direction") {
+            return true
+        }
+        if AccesPortees.portee(rd) == "operateur" && a_le_role(valideur, "chef_de_mission") {
+            return AccesPersonnes.employeur(demandeur) == AccesPersonnes.employeur(valideur)
+        }
+        return false
+    }
+
+    on contresigner(h, geste, demandeur, valideur) {
+        require quatre_yeux(demandeur, valideur) else QuatreYeux "{valideur} ne peut contre-signer {geste} de {demandeur}"
+        require contresignatures.size < MAX_CONTRESIGNATURES else Plein "registre des contre-signatures plein"
+        contresignatures.push("{h} | {geste} | {demandeur} | {valideur}")
+        let cle = "{demandeur}|{valideur}"
+        let n = (paires.get(cle) ?? 0) + 1
+        paires.set(cle, n)
+        let _ = Journal.noter(h, "acces", valideur, "contresigne {geste} pour {demandeur}")
+        return n
+    }
+
+    on paires_concentrees(n) {
+        let res_p = paires.entries.filter(e => e.value >= SEUIL_CONCENTRATION).map(e => e.key).sort()
+        return slice(res_p, 0, min(n, len(res_p)))
+    }
+}

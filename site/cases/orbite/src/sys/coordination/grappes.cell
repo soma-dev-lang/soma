@@ -1,0 +1,116 @@
+// COORDINATION — coordinations multi-objets. Un objet engagé dans plusieurs rapprochements
+// ouverts en même temps (le « pivot ») ne peut pas recevoir des désignations contradictoires :
+// manœuvrer pour l'un et rester immobile pour l'autre, ou deux plans d'évitement dans la même
+// fenêtre (refusés Conflit par manoeuvres). La grappe réunit ces rapprochements et tranche UNE
+// fois si le pivot manœuvre (un plan unique, criblé contre tous) ou si ce sont ses vis-à-vis.
+// Instance = id de grappe "GR-<pivot>-<n>". Index multi-objets : objet -> coordinations ouvertes.
+
+// État d'une grappe ; "inconnue" si jamais formée.
+cell type CoordEtatGrappe = String where value == "formee" || value == "arbitree" || value == "dissoute" || value == "inconnue"
+
+skeleton CoordGrappe {
+    const MAX_GRAPPES = 10000000
+    // Coordinations ouvertes simultanées d'un même objet (au-delà : nuage de débris, criblage
+    // renforcé et arbitrage hors grappe).
+    const MAX_ENGAGEMENTS = 200
+    const MAX_MEMBRES = 200
+    // Grappes successives d'un même pivot.
+    const MAX_GRAPPES_PAR_OBJET = 100000
+    memory {
+        engage_de: Map<String, List<String>> [persistent]   // objet -> coordinations ouvertes où il est en cause
+        active_de: Map<String, String> [persistent]         // objet pivot -> sa grappe non dissoute
+        grappe_de: Map<String, String> [persistent]         // r -> grappe non dissoute qui le contient
+        pivot_de: Map<String, Objet> [persistent]           // grappe -> objet pivot ; écrit une fois à la formation
+        membres_de: Map<String, List<String>> [persistent]  // grappe -> rapprochements réunis (ajout seul tant que formée ou arbitrée)
+        manoeuvrant_de: Map<String, Objet> [persistent]     // grappe arbitrée -> pivot (il manœuvre pour tous) ou "" (ses vis-à-vis manœuvrent)
+        rang_de: Map<String, Int> [persistent]              // objet -> nombre de grappes formées autour de lui (numérotation)
+        invariant pivot_de.size <= 10000000
+        invariant len(engage_de) <= 200
+        invariant len(membres_de) <= 200
+        invariant rang_de >= 1 && rang_de <= 100000
+    }
+    // Cycle d'une grappe.
+    state grappe {
+        initial: formee
+        formee -> arbitree               // le choix du manœuvrant est fait (règles ou arbitrage quatre yeux)
+        formee -> dissoute               // il ne reste qu'un rapprochement ouvert, ou dissolution par l'analyste
+        arbitree -> dissoute             // idem après arbitrage
+    }
+    face {
+        // Inscrit la coordination `r` à l'index de ses objets (CoordDossier.objets). Si un objet
+        // capable de manœuvrer (ApiRef.peut_manoeuvrer) a désormais au moins deux coordinations
+        // ouvertes, `r` rejoint sa grappe active, ou une grappe est formée autour de lui avec
+        // toutes ses coordinations ouvertes (pivot_de écrit ici, une fois). Si les deux objets
+        // sont pivots, `r` rejoint la grappe de l'objet `a`. Rejoindre une grappe arbitrée
+        // n'en change pas le choix : la désignation de `r` devra s'y conformer (compatible).
+        // Appelé par CoordDossier.ouvrir. Renvoie la grappe de `r`, "" si aucune.
+        // Refus : Plein (MAX_ENGAGEMENTS, MAX_MEMBRES).
+        signal inscrire(h: Horodatage, r: Rapprochement) -> String
+            writes engage_de, active_de, grappe_de, pivot_de, membres_de, rang_de
+            calls CoordDossier.objets, ApiRef.peut_manoeuvrer, Journal.noter
+        // Retire `r` de l'index et de sa grappe à la clôture de sa coordination ; une grappe
+        // qui n'a plus qu'un membre ouvert est dissoute (formee|arbitree -> dissoute).
+        // Appelé par CoordDossier.clore. Renvoie l'état de la grappe ("" si aucune).
+        // Refus : aucun.
+        signal retirer(h: Horodatage, r: Rapprochement) -> String
+            writes engage_de, active_de, grappe_de
+            reads membres_de, pivot_de
+            moves formee -> dissoute, arbitree -> dissoute
+            calls CoordDossier.objets, Journal.noter
+        // Règle la grappe par les règles de priorité (formee -> arbitree), sans geste humain :
+        // si ApiPriorites.qui_manoeuvre(h, r, a, b) désigne le pivot dans TOUS les rapprochements membres,
+        // il manœuvre pour tous ; s'il désigne le vis-à-vis dans tous, manoeuvrant = "".
+        // `par` "systeme". Renvoie le manœuvrant retenu. Refus : Inconnu, EtatInvalide,
+        // Conflit (règles partagées : arbitrage humain requis), Ferme (aucune version en vigueur),
+        // Habilitation.
+        signal regler(h: Horodatage, g: String, par: String) -> Objet
+            writes manoeuvrant_de
+            reads membres_de, pivot_de
+            moves formee -> arbitree
+            calls CoordDossier.objets, ApiPriorites.qui_manoeuvre, ApiAcces.a_le_role, CoordEchange.noter, Journal.noter
+        // Arbitre la grappe (formee -> arbitree) : `manoeuvrant` = le pivot (il manœuvre pour
+        // tous ses rapprochements : ApiRef.peut_manoeuvrer, non habité sauf si aucun vis-à-vis ne
+        // peut manœuvrer) ou "" (chaque vis-à-vis manœuvre). Chaque membre en est informé
+        // (CoordEchange.notifier, "arbitrage"). Renvoie le manœuvrant.
+        // Refus : Inconnu, EtatInvalide, Incoherent (ni pivot ni ""), NonEligible, MotifRequis,
+        // Habilitation ("analyste" d'ORBITE), QuatreYeux (valideur "superviseur", ApiAcces.quatre_yeux).
+        signal arbitrer(h: Horodatage, g: String, manoeuvrant: Objet, motif: String, par: String, valideur: String) -> Objet
+            writes manoeuvrant_de
+            reads membres_de, pivot_de
+            moves formee -> arbitree
+            calls ApiRef.peut_manoeuvrer, ApiRef.habite, CoordDossier.objets, ApiAcces.a_le_role, ApiAcces.quatre_yeux, CoordEchange.notifier, Journal.noter
+        // Forme une grappe autour de `objet` à la main (après une dissolution, ou quand l'analyste
+        // juge deux rapprochements liés) avec toutes ses coordinations ouvertes non groupées
+        // (engage_de) ; écrit pivot_de une fois. Les désignations déjà arrêtées des membres ne
+        // sont pas touchées : l'analyste les rouvre si elles contredisent le futur choix.
+        // Geste d'administration. Renvoie l'id "GR-<objet>-<n>". Refus : Inconnu (objet sans
+        // coordination ouverte), Existe (grappe active), Insuffisant (moins de deux coordinations
+        // ouvertes non groupées), Plein, Habilitation ("analyste" d'ORBITE).
+        signal former(h: Horodatage, objet: Objet, motif: String, par: String) -> String
+            writes active_de, grappe_de, pivot_de, membres_de, rang_de
+            reads engage_de
+            calls ApiAcces.a_le_role, Journal.noter
+        // Dissout une grappe (formee|arbitree -> dissoute) quand son choix ne tient plus (pivot
+        // devenu incapable, plan unique impossible) ; ses membres redeviennent indépendants et
+        // leurs désignations arrêtées doivent être réexaminées (CoordDossier.reverifier).
+        // Geste d'administration. Renvoie "dissoute". Refus : Inconnu, EtatInvalide, MotifRequis,
+        // Habilitation ("analyste" d'ORBITE).
+        signal dissoudre(h: Horodatage, g: String, motif: String, par: String) -> CoordEtatGrappe
+            writes active_de, grappe_de
+            reads membres_de, pivot_de
+            moves formee -> dissoute, arbitree -> dissoute
+            calls ApiAcces.a_le_role, Journal.noter
+        // Vrai si désigner `objet` dans `r` respecte la grappe de `r` : `r` hors grappe, ou
+        // `objet` == "" (ne pas manœuvrer), ou grappe arbitrée et (manœuvrant = pivot et
+        // objet = pivot, ou manœuvrant = "" et objet ≠ pivot). Faux tant que la grappe est
+        // formée : ses membres attendent regler ou arbitrer.
+        signal compatible(r: Rapprochement, objet: Objet) -> Bool
+            reads grappe_de, pivot_de, manoeuvrant_de, grappe
+        // Grappe non dissoute de `r` ; "" si aucune.
+        signal grappe_de_r(r: Rapprochement) -> String
+            reads grappe_de
+        // État d'une grappe ; "inconnue" si jamais formée.
+        signal etat(g: String) -> CoordEtatGrappe
+            reads grappe, pivot_de
+    }
+}

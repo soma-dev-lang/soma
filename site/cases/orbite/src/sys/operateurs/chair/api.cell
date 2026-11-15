@@ -1,0 +1,34 @@
+// operateurs — corps de la façade ApiOperateurs : délégation aux cells internes.
+
+flesh ApiOperateurs {
+    on est_actif(op, h) {
+        return OpMembres.est_actif(op, h)
+    }
+    on statut(op) {
+        return to_string(OpMembres.etat(op))
+    }
+    on astreinte(op, h) {
+        return OpAstreinte.en_service(op, h)
+    }
+    on joignable(op, h) {
+        return OpExercices.joignable(op, h)
+    }
+    on suspendre(h, op, motif, par, valideur) {
+        return to_string(OpMembres.suspendre(h, op, motif, par, valideur))
+    }
+    on retablir(h, op, par, valideur) {
+        return to_string(OpMembres.retablir(h, op, par, valideur))
+    }
+    on delai_reponse(op, n) {
+        return OpEngagements.delai(op, n)
+    }
+    on actifs(h) {
+        return OpMembres.actifs(h, 10000)
+    }
+    on contacts(op, echelon, h) {
+        return OpContacts.contacts_echelon(op, echelon, h)
+    }
+    on balayer(h, par) {
+        return OpRondes.balayer(h, par)
+    }
+}

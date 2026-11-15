@@ -1,0 +1,480 @@
+// PASSERELLE — corps des canaux sortants et des messages.
+// Envoi : un webhook reçoit un POST JSON à son adresse https:// ; une messagerie sécurisée est
+// servie par le relais d'ORBITE (POST vers RELAIS, champ "a" = adresse). Le corps envoyé porte
+// l'empreinte SHA-256 du contenu (aucun secret de signature n'est gardé par la passerelle).
+
+flesh PasCanaux {
+    on declarer(h, canal, org, genre, adresse, par) {
+        require ApiRef.organisation_existe(org) else Inconnu "organisation {org} inconnue ou radiée"
+        require ApiAcces.a_le_role(par, "exploitant") || _habilite_genre(org, par) else Habilitation "déclarer un canal de {org} : administrateur de l'opérateur, autorité ou point focal de l'État, ou exploitant d'ORBITE"
+        require canal != "" && !contains(canal, "|") else Incoherent "identifiant de canal vide ou mal formé"
+        require org_de.get(canal) == () else Existe "canal {canal} déjà déclaré"
+        require (nb_de.get(org) ?? 0) < MAX_CANAUX_PAR_ORG else Plein "{org} a déjà {MAX_CANAUX_PAR_ORG} canaux"
+        require _adresse_valide(genre, adresse) else Incoherent "adresse {adresse} : ni https:// (webhook) ni messagerie sécurisée"
+        let defi = random_token(16)
+        org_de.set(canal, org)
+        genre_de.set(canal, genre)
+        adresse_de.set(canal, adresse)
+        defi_de.set(canal, sha256(defi))
+        nb_de.set(org, (nb_de.get(org) ?? 0) + 1)
+        // le défi part hors file : son échec se voit à la vérification, jamais ici
+        let _ = http_post(_url(genre, adresse), map("type", "defi", "canal", canal, "a", adresse, "defi", defi))
+        let _ = Journal.noter(h, "passerelle", par, "canal {canal} déclaré pour {org} ({genre})")
+        return "declare"
+    }
+
+    on verifier(h, canal, defi, appelant) {
+        let org = org_de.get(canal)
+        require org != () else Inconnu "canal {canal} inconnu"
+        let qui = match appelant { PasAppelant { personne, org, role } -> personne }
+        let son_org = match appelant { PasAppelant { personne, org, role } -> org }
+        require son_org == org else Habilitation "seule {org} vérifie ses canaux"
+        let st = get_status(canal) ?? "declare"
+        require st == "declare" else EtatInvalide "canal {canal} : {st}"
+        require ApiRef.organisation_existe(org) else EtatInvalide "organisation {org} radiée"
+        require sha256(defi) == (defi_de.get(canal) ?? "") else Incoherent "défi incorrect"
+        transition(canal, "declare", "actif")
+        defi_de.delete(canal)
+        echecs_de.set(canal, 0)
+        let p = principal_de.get(org) ?? ""
+        if p == "" || (get_status(p) ?? "declare") != "actif" {
+            principal_de.set(org, canal)
+        }
+        let _ = Journal.noter(h, "passerelle", qui, "canal {canal} de {org} vérifié")
+        return "actif"
+    }
+
+    on suspendre(h, canal, motif, par) {
+        let org = org_de.get(canal)
+        require org != () else Inconnu "canal {canal} inconnu"
+        let systeme = par == "systeme" && ApiAcces.a_le_role(par, "systeme")
+        require systeme || _habilite(org, par) else Habilitation "suspendre un canal de {org}"
+        require motif != "" else MotifRequis "suspension sans motif"
+        let st = get_status(canal) ?? "declare"
+        require st == "actif" else EtatInvalide "canal {canal} : {st}"
+        transition(canal, "actif", "suspendu")
+        if (principal_de.get(org) ?? "") == canal {
+            let autre = _autre_actif(org, canal)
+            principal_de.set(org, autre)
+            if autre == "" {
+                // l'organisation devient injoignable : la conformité est saisie
+                let _ = try { ApiConformite.constater(h, org, "organisation injoignable : aucun canal actif", 2, canal, "systeme") }
+            }
+        }
+        let _ = Journal.noter(h, "passerelle", par, "canal {canal} de {org} suspendu : {motif}")
+        return "suspendu"
+    }
+
+    on reverifier(h, canal, par) {
+        let org = org_de.get(canal)
+        require org != () else Inconnu "canal {canal} inconnu"
+        require _habilite(org, par) else Habilitation "revérifier un canal de {org}"
+        let st = get_status(canal) ?? "declare"
+        require st == "suspendu" else EtatInvalide "canal {canal} : {st}"
+        let adr = adresse_de.get(canal) ?? ""
+        let defi = random_token(16)
+        transition(canal, "suspendu", "declare")
+        defi_de.set(canal, sha256(defi))
+        echecs_de.set(canal, 0)
+        let genre_c = if starts_with(adr, "https://") { PasCanalGenre("webhook") } else { PasCanalGenre("messagerie_securisee") }
+        let _ = http_post(_url(genre_c, adr), map("type", "defi", "canal", canal, "a", adr, "defi", defi))
+        let _ = Journal.noter(h, "passerelle", par, "canal {canal} de {org} : nouveau défi")
+        return "declare"
+    }
+
+    on retirer(h, canal, par) {
+        let org = org_de.get(canal)
+        require org != () else Inconnu "canal {canal} inconnu"
+        require _habilite(org, par) else Habilitation "retirer un canal de {org}"
+        let st = get_status(canal) ?? "declare"
+        require st == "declare" || st == "actif" || st == "suspendu" else EtatInvalide "canal {canal} : {st}"
+        let autre = if st == "actif" { _autre_actif(org, canal) } else { "" }
+        if st == "actif" && autre == "" {
+            require !ApiOperateurs.est_actif(org, h) else Insuffisant "dernier canal actif de l'opérateur actif {org}"
+        }
+        if st == "declare" { transition(canal, "declare", "retire") }
+        if st == "actif" { transition(canal, "actif", "retire") }
+        if st == "suspendu" { transition(canal, "suspendu", "retire") }
+        nb_de.set(org, max(0, (nb_de.get(org) ?? 1) - 1))
+        if (principal_de.get(org) ?? "") == canal {
+            principal_de.set(org, autre)
+        }
+        let _ = Journal.noter(h, "passerelle", par, "canal {canal} de {org} retiré")
+        return "retire"
+    }
+
+    on noter_issue(h, canal, reussi) {
+        if reussi {
+            echecs_de.set(canal, 0)
+            return 0
+        }
+        let n = min(ECHECS_SUSPENSION, (echecs_de.get(canal) ?? 0) + 1)
+        echecs_de.set(canal, n)
+        if n >= ECHECS_SUSPENSION {
+            // le canal peut déjà ne plus être actif : la suspension est alors sans objet
+            let _ = try { PasCanaux.suspendre(h, canal, "{ECHECS_SUSPENSION} défauts de livraison consécutifs", "systeme") }
+        }
+        return n
+    }
+
+    on principal(org) {
+        let p = principal_de.get(org) ?? ""
+        if p != "" && (get_status(p) ?? "declare") == "actif" { return p }
+        return ""
+    }
+
+    on est_actif(canal) {
+        return (get_status(canal) ?? "declare") == "actif"
+    }
+
+    on adresse(canal) {
+        let g = genre_de.get(canal)
+        require g != () else Inconnu "canal {canal} inconnu"
+        return [to_string(g), adresse_de.get(canal) ?? ""]
+    }
+
+    // Habilitation commune (suspendre, reverifier, retirer, et declarer) : exploitant d'ORBITE,
+    // ou administrateur d'opérateur / autorité / point focal employé par l'organisation du canal.
+    on _habilite(org: Org, par: String) {
+        if ApiAcces.a_le_role(par, "exploitant") { return true }
+        if !ApiAcces.agit_pour(par, org) { return false }
+        return ApiAcces.a_le_role(par, "administrateur_operateur") || ApiAcces.a_le_role(par, "autorite") || ApiAcces.a_le_role(par, "point_focal")
+    }
+    // declarer : le rôle doit en plus convenir au genre de l'organisation (ApiRef.genre).
+    on _habilite_genre(org: Org, par: String) {
+        if !ApiAcces.agit_pour(par, org) { return false }
+        let g = ApiRef.genre(org)
+        if g == "operateur" || g == "capteur" { return ApiAcces.a_le_role(par, "administrateur_operateur") }
+        if g == "etat" { return ApiAcces.a_le_role(par, "autorite") || ApiAcces.a_le_role(par, "point_focal") }
+        return false
+    }
+    on _adresse_valide(genre: PasCanalGenre, adresse: String) {
+        if contains(adresse, " ") || len(adresse) > 2048 { return false }
+        if genre == "webhook" { return starts_with(adresse, "https://") && len(adresse) > 8 }
+        let p = split(adresse, "@")
+        return len(p) == 2 && p[0] != "" && contains(p[1], ".")
+    }
+    on _url(genre: PasCanalGenre, adresse: String) {
+        if genre == "webhook" { return adresse }
+        return "https://messagerie.orbite.example/v1/envoi"
+    }
+    on _autre_actif(org: Org, sauf: String) {
+        for e in org_de.entries {
+            if e.value == org && e.key != sauf && (get_status(e.key) ?? "declare") == "actif" { return e.key }
+        }
+        return ""
+    }
+}
+
+flesh PasMessages {
+    on mettre_en_file(h, destinataire, r, format, sujet, texte, urgence) {
+        let d = to_string(destinataire)
+        require starts_with(d, "ORG-") && len(d) > 4 else Inconnu "destinataire {d} : pas une organisation"
+        require len(texte) <= MAX_TEXTE else Plein "texte de {len(texte)} octets > {MAX_TEXTE}"
+        let niv = to_int(urgence)
+        let file_n = file.get(niv) ?? []
+        require len(file_n) < MAX_FILE else Plein "file de niveau {niv} pleine"
+        let id = "MSG-{next_id()}"
+        let canal = PasCanaux.principal(destinataire)
+        canal_de.set(id, canal)
+        destinataire_de.set(id, destinataire)
+        rapprochement_de.set(id, to_string(r))
+        format_de.set(id, format)
+        sujet_de.set(id, sujet)
+        urgence_de.set(id, urgence)
+        texte_de.set(id, texte)
+        livrer_avant.set(id, Horodatage(to_int(h) + _delai_livraison(niv)))
+        cree_le.set(id, h)
+        tentatives_de.set(id, 0)
+        if canal == "" {
+            // aucun canal actif : défaut immédiat ; l'escalade ou le signalement suit au battement
+            transition(id, "en_file", "en_defaut")
+            let _ = Journal.noter(h, "passerelle", "systeme", "message {id} vers {d} : aucun canal actif, en défaut")
+            return id
+        }
+        if texte != "" {
+            // canal lié actif (PasCanaux.principal ne rend qu'un canal actif) : premier envoi
+            transition(id, "en_file", "en_envoi")
+            let res = http_post(_url(canal), _charge(id, d, to_string(r), to_string(format), sujet, texte, niv, canal))
+            if _issue(res) == "ok" {
+                transition(id, "en_envoi", "livre")
+                accuser_avant.set(id, Horodatage(to_int(h) + _delai_accuse(niv)))
+                en_attente_de.set(destinataire, (en_attente_de.get(destinataire) ?? 0) + 1)
+                let _ = Journal.noter(h, "passerelle", "systeme", "message {id} livré à {d} ({format}, urgence {niv})")
+                return id
+            }
+            transition(id, "en_envoi", "en_file")
+        }
+        file.set(niv, file_n ++ [id])
+        let _ = Journal.noter(h, "passerelle", "systeme", "message {id} en file vers {d} ({format}, urgence {niv})")
+        return id
+    }
+
+    on traiter_file(h, n) {
+        let changes = 0
+        let traites = 0
+        // 1. la file, niveau 3 d'abord
+        for niv in [3, 2, 1] {
+            let restants = []
+            for id in (file.get(niv) ?? []) {
+                if traites >= n {
+                    restants.push(id)
+                    continue
+                }
+                let st = get_status(id) ?? "en_file"
+                if st != "en_file" { continue }
+                traites = traites + 1
+                let issue_m = _servir(h, id, niv)
+                if issue_m != "inchange" { changes = changes + 1 }
+                if issue_m == "en_file" || issue_m == "inchange" { restants.push(id) }
+            }
+            if file.get(niv) != () || len(restants) > 0 { file.set(niv, restants) }
+        }
+        // 2. accusés échus, puis 3. défauts à escalader ou signaler
+        let a_echoir = []
+        let a_suivre = []
+        for e in livrer_avant.entries {
+            let st = get_status(e.key) ?? "en_file"
+            if st == "livre" && to_int(accuser_avant.get(e.key) ?? 0) < to_int(h) { a_echoir.push(e.key) }
+            if st == "en_defaut" { a_suivre.push(e.key) }
+        }
+        for id in a_echoir {
+            if traites >= n { break }
+            traites = traites + 1
+            transition(id, "livre", "en_defaut")
+            let dest = destinataire_de.get(id) ?? ""
+            en_attente_de.set(dest, max(0, (en_attente_de.get(dest) ?? 1) - 1))
+            let _ = Journal.noter(h, "passerelle", "systeme", "message {id} non acquitté à l'échéance : en défaut")
+            a_suivre.push(id)
+            changes = changes + 1
+        }
+        for id in a_suivre {
+            if traites >= n { break }
+            traites = traites + 1
+            if _suivre_defaut(h, id) { changes = changes + 1 }
+        }
+        return changes
+    }
+
+    on acquitter(h, message, appelant) {
+        let dest = destinataire_de.get(message)
+        require dest != () else Inconnu "message {message} inconnu"
+        let qui = match appelant { PasAppelant { personne, org, role } -> personne }
+        let son_org = match appelant { PasAppelant { personne, org, role } -> org }
+        require son_org == dest else Habilitation "seul le destinataire {dest} acquitte {message}"
+        let st = get_status(message) ?? "en_file"
+        require st != "en_defaut" && st != "escalade" && st != "signale" else Echu "message {message} déjà en défaut ({st}) : l'escalade a pris la suite"
+        require st == "livre" else EtatInvalide "message {message} : {st}"
+        require to_int(h) <= to_int(accuser_avant.get(message) ?? 0) else Echu "accusé de {message} après l'échéance"
+        transition(message, "livre", "acquitte")
+        en_attente_de.set(dest, max(0, (en_attente_de.get(dest) ?? 1) - 1))
+        let _ = Journal.noter(h, "passerelle", qui, "message {message} acquitté par {dest}")
+        return "acquitte"
+    }
+
+    on acquitte(message) {
+        return (get_status(message) ?? "en_file") == "acquitte"
+    }
+
+    on echoue(message) {
+        let st = get_status(message) ?? "en_file"
+        return st == "en_defaut" || st == "escalade" || st == "signale"
+    }
+
+    on en_attente(appelant, n) {
+        let son_org = match appelant { PasAppelant { personne, org, role } -> org }
+        let lignes_m = []
+        for e in destinataire_de.entries {
+            if e.value == son_org && (get_status(e.key) ?? "en_file") == "livre" {
+                lignes_m.push(map("id", e.key, "u", to_int(urgence_de.get(e.key) ?? 1), "a", to_int(accuser_avant.get(e.key) ?? 0)))
+            }
+        }
+        let tries = sort_by(lignes_m, x => [0 - x.u, x.a])
+        let res_m = []
+        for x in tries {
+            if len(res_m) >= n { break }
+            let id = x.id
+            let f = format_de.get(id) ?? ""
+            let s = sujet_de.get(id) ?? ""
+            let rr = rapprochement_de.get(id) ?? ""
+            res_m.push("{id} | {f} | {s} | {rr} | {x.u} | {x.a}")
+        }
+        return res_m
+    }
+
+    on annuler(h, message, motif, par) {
+        require ApiAcces.a_le_role(par, "exploitant") || ApiAcces.a_le_role(par, "superviseur") else Habilitation "annuler un message : exploitant ou superviseur d'ORBITE"
+        let u = urgence_de.get(message)
+        require u != () else Inconnu "message {message} inconnu"
+        require motif != "" else MotifRequis "annulation sans motif"
+        require to_int(u) != 3 else NonEligible "un message de niveau 3 ne s'annule jamais"
+        let st = get_status(message) ?? "en_file"
+        require st == "en_file" else EtatInvalide "message {message} : {st}"
+        transition(message, "en_file", "annule")
+        let niv = to_int(u)
+        let reste = (file.get(niv) ?? []).filter(x => x != message)
+        file.set(niv, reste)
+        let _ = Journal.noter(h, "passerelle", par, "message {message} annulé : {motif}")
+        return "annule"
+    }
+
+    on du_rapprochement(r, par) {
+        require ApiAcces.a_le_role(par, "analyste") || ApiAcces.a_le_role(par, "conformite") || ApiAcces.a_le_role(par, "auditeur") else Habilitation "messages d'un rapprochement : analyste, conformité ou auditeur d'ORBITE"
+        let res_r = []
+        for e in rapprochement_de.entries {
+            if e.value == to_string(r) {
+                let id = e.key
+                let d = destinataire_de.get(id) ?? ""
+                let f = format_de.get(id) ?? ""
+                let st = get_status(id) ?? "en_file"
+                let c = cree_le.get(id) ?? 0
+                res_r.push("{id} | {d} | {f} | {st} | {c}")
+            }
+        }
+        return res_r
+    }
+
+    // ── aides
+
+    on _delai_livraison(niv: Int) {
+        if niv >= 3 { return 300000 }
+        if niv == 2 { return 3600000 }
+        return 86400000
+    }
+    on _delai_accuse(niv: Int) {
+        if niv >= 3 { return 900000 }
+        if niv == 2 { return 14400000 }
+        return 259200000
+    }
+    // "ok" (2xx), "definitif" (4xx du destinataire, hors 408 / 429), "transitoire" (le reste).
+    on _issue(res: Any) {
+        if type_of(res) != "Map" { return "ok" }
+        if res["error"] == () { return "ok" }
+        let st = res["status"] ?? 0
+        if type_of(st) == "Int" && st >= 400 && st < 500 && st != 408 && st != 429 { return "definitif" }
+        return "transitoire"
+    }
+    on _url(canal: String) {
+        let ga = PasCanaux.adresse(canal)
+        if ga[0] == "webhook" { return ga[1] }
+        return "https://messagerie.orbite.example/v1/envoi"
+    }
+    on _charge(id: String, dest: String, r: String, format: String, sujet: String, texte: String, niv: Int, canal: String) {
+        let ga = PasCanaux.adresse(canal)
+        return map("id", id, "a", ga[1], "destinataire", dest, "rapprochement", r, "format", format, "sujet", sujet, "urgence", niv, "texte", texte, "empreinte", sha256(texte), "accuse", "POST /v1/messages/{id}/accuse")
+    }
+    // Sert un message en_file : "en_defaut", "livre", "en_file" (réessai) ou "inchange".
+    on _servir(h: Horodatage, id: String, niv: Int) {
+        let dest = to_string(destinataire_de.get(id) ?? "")
+        let canal = canal_de.get(id) ?? ""
+        let tent = tentatives_de.get(id) ?? 0
+        if to_int(h) > to_int(livrer_avant.get(id) ?? 0) || tent >= MAX_TENTATIVES || canal == "" {
+            transition(id, "en_file", "en_defaut")
+            let _ = Journal.noter(h, "passerelle", "systeme", "message {id} vers {dest} non livré (échéance, tentatives ou canal) : en défaut")
+            return "en_defaut"
+        }
+        // règle en_file -> en_envoi : le canal lié doit être actif ; sinon on attend l'échéance
+        if !PasCanaux.est_actif(canal) { return "inchange" }
+        let r = rapprochement_de.get(id) ?? ""
+        let f = format_de.get(id) ?? "texte"
+        let texte = texte_de.get(id) ?? ""
+        if texte == "" && r != "" {
+            let compose = try { _composer(h, f, Rapprochement(r), Org(dest)) }
+            if compose.error != () {
+                transition(id, "en_file", "en_defaut")
+                let k = compose.kind
+                let _ = Journal.noter(h, "passerelle", "systeme", "message {id} : composition impossible ({k}), en défaut")
+                return "en_defaut"
+            }
+            texte = compose.value
+            texte_de.set(id, texte)
+        }
+        transition(id, "en_file", "en_envoi")
+        let res = http_post(_url(canal), _charge(id, dest, r, to_string(f), sujet_de.get(id) ?? "", texte, niv, canal))
+        let issue_h = _issue(res)
+        if issue_h == "ok" {
+            transition(id, "en_envoi", "livre")
+            accuser_avant.set(id, Horodatage(to_int(h) + _delai_accuse(niv)))
+            en_attente_de.set(dest, (en_attente_de.get(dest) ?? 0) + 1)
+            let _ = PasCanaux.noter_issue(h, canal, true)
+            let _ = Journal.noter(h, "passerelle", "systeme", "message {id} livré à {dest}")
+            return "livre"
+        }
+        let _ = PasCanaux.noter_issue(h, canal, false)
+        if issue_h == "definitif" {
+            transition(id, "en_envoi", "en_defaut")
+            let _ = Journal.noter(h, "passerelle", "systeme", "message {id} refusé par {dest} : en défaut")
+            return "en_defaut"
+        }
+        transition(id, "en_envoi", "en_file")
+        tentatives_de.set(id, min(MAX_TENTATIVES, tent + 1))
+        return "en_file"
+    }
+    on _composer(h: Horodatage, f: PasFormat, r: Rapprochement, dest: Org) {
+        if f == "CDM" {
+            let c = try { PasFormats.cdm(h, r, dest) }
+            if c.error == () { return c.value }
+            // aucun des deux objets diffusable à ce destinataire : l'alerte réduite part quand même
+            if c.kind == "Confidentiel" { return PasFormats.alerte(h, r, dest) }
+            fail(c)
+        }
+        return PasFormats.alerte(h, r, dest)
+    }
+    // en_defaut -> escalade (r ≠ "" et opérateur) ou signale ; faux si la suite a échoué (réessai au battement suivant).
+    on _suivre_defaut(h: Horodatage, id: String) {
+        let dest = to_string(destinataire_de.get(id) ?? "")
+        let r = rapprochement_de.get(id) ?? ""
+        let niv = to_int(urgence_de.get(id) ?? 1)
+        let g = try { ApiRef.genre(dest) }
+        let genre_d = if g.error == () { g.value } else { "inconnu" }
+        if r != "" && genre_d == "operateur" {
+            // Escalade déjà ouverte contre ce destinataire sur r : le défaut y est versé sans la
+            // faire monter (le barème d'escalade règle seul le rythme des échelons ; ses propres
+            // relances non acquittées la feraient sinon monter d'un échelon chacune).
+            // De même après la reprise par ORBITE sur r : ORBITE a déjà la main, un défaut de plus
+            // n'ouvre pas un nouveau dossier (qui entrerait aussitôt à l'échelon 4, en reprise).
+            let en_cours = ApiEscalade.echelon(Rapprochement(r), Org(dest))
+            if en_cours > 0 || ApiEscalade.reprise(Rapprochement(r)) {
+                transition(id, "en_defaut", "escalade")
+                let _ = Journal.noter(h, "passerelle", "systeme", "message {id} non acquitté : versé à l'escalade en cours de {r} contre {dest} (échelon {en_cours})")
+                return true
+            }
+            let e = try { ApiEscalade.escalader(h, r, dest, "message non acquitté", "systeme") }
+            if e.error == () {
+                transition(id, "en_defaut", "escalade")
+                let ech = e.value
+                let _ = Journal.noter(h, "passerelle", "systeme", "message {id} : escalade de {r} contre {dest} (échelon {ech})")
+                return true
+            }
+        }
+        let nature = "message {id} non livré ou non acquitté"
+        let sujet = sujet_de.get(id) ?? ""
+        if starts_with(sujet, "manquement ") || starts_with(sujet, "contradictoire ") {
+            // notification d'un manquement : son défaut n'en crée pas un autre (sinon chaque
+            // notification perdue en engendre une nouvelle, sans fin, pour un État sans canal)
+            transition(id, "en_defaut", "signale")
+            let _ = Journal.noter(h, "passerelle", "systeme", "message {id} ({sujet}) : défaut journalisé, sans nouveau manquement ({dest})")
+            return true
+        }
+        if genre_d != "etat" && genre_d != "operateur" {
+            // ORBITE elle-même, fournisseur de capteurs, organisation radiée : la conformité ne
+            // connaît que les opérateurs et les États (elle refuserait Inconnu à chaque battement).
+            transition(id, "en_defaut", "signale")
+            let _ = Journal.noter(h, "passerelle", "systeme", "message {id} : défaut journalisé, sans manquement ({dest}, genre {genre_d})")
+            return true
+        }
+        let s = if genre_d == "etat" {
+            try { ApiConformite.constater_etat(h, ApiRef.etat_de(dest), nature, Gravite(niv), id, "systeme") }
+        } else {
+            try { ApiConformite.constater(h, dest, nature, Gravite(niv), id, "systeme") }
+        }
+        if s.error != () {
+            let k = s.kind
+            let _ = Journal.noter(h, "passerelle", "systeme", "message {id} : signalement impossible ({k}), réessai")
+            return false
+        }
+        transition(id, "en_defaut", "signale")
+        let _ = Journal.noter(h, "passerelle", "systeme", "message {id} : défaut signalé à la conformité ({dest})")
+        return true
+    }
+}

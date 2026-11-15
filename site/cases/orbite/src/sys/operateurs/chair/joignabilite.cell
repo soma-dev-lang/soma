@@ -1,0 +1,151 @@
+// operateurs — corps des EXERCICES DE JOIGNABILITÉ (OpExercices).
+
+flesh OpExercices {
+    on planifier(h, op, quand, par) {
+        require ApiAcces.a_le_role(par, "analyste") || ApiAcces.a_le_role(par, "systeme") else Habilitation "réservé à un analyste d'ORBITE ou au système"
+        let st = OpMembres.etat(op)
+        require st != "inconnu" && st != "candidat" else Inconnu "{op} jamais admis"
+        require st != "exclu" && st != "retire" else Ferme "{op} est {st}"
+        require prevu_de.get(op) == () else Doublon "un exercice est déjà prévu pour {op}"
+        require to_int(quand) >= to_int(h) else HorsBornes "instant prévu dans le passé"
+        require operateur.size < MAX_EXERCICES else Plein "registre des exercices plein"
+        let n = next_id()
+        let id = "EX-{n}"
+        operateur.set(id, op)
+        prevu_a.set(id, quand)
+        prevu_de.set(op, id)
+        let _ = Journal.noter(h, "operateurs", par, "exercice {id} planifié pour {op}")
+        return id
+    }
+    on lancer(h, id, par) {
+        require ApiAcces.a_le_role(par, "systeme") || ApiAcces.a_le_role(par, "analyste") else Habilitation "réservé au système ou à un analyste d'ORBITE"
+        let op = operateur.get(id)
+        require op != () else Inconnu "exercice {id} inconnu"
+        let st = get_status(id) ?? "planifie"
+        require st == "planifie" else EtatInvalide "exercice {id} {st}"
+        require to_int(prevu_a.get(id) ?? h) <= to_int(h) else Delai "instant prévu non atteint"
+        require OpEngagements.etat(op) == "en_vigueur" else EtatInvalide "engagements de {op} non en vigueur"
+        require message_de.get(id) == () else Existe "exercice {id} déjà lancé"
+        let d3 = OpEngagements.delai(op, 3)
+        echeance.set(id, Horodatage(to_int(h) + to_int(d3)))
+        lance_a.set(id, h)
+        let msg = ApiPasserelle.notifier(h, op, "", "EXERCICE", "EXERCICE — alerte de niveau 3 simulée ({id}) : accuser avant {d3} ms", 3)
+        message_de.set(id, msg)
+        transition(id, "planifie", "lance")
+        let _ = Journal.noter(h, "operateurs", par, "exercice {id} lancé ({op})")
+        return "lance"
+    }
+    on accuser(h, id, par) {
+        let op = operateur.get(id)
+        require op != () else Inconnu "exercice {id} inconnu"
+        let st = get_status(id) ?? "planifie"
+        require st == "lance" else EtatInvalide "exercice {id} {st}"
+        let r = try { OpAstreinte.en_service(op, h) }
+        let qui = if r.error == () { r.value } else { "" }
+        require qui != "" && par == qui else Habilitation "seule la personne d'astreinte en service accuse l'exercice"
+        require to_int(h) <= to_int(echeance.get(id) ?? 0) else Delai "échéance de l'exercice passée"
+        require ApiPasserelle.acquitte(message_de.get(id) ?? "") else EtatInvalide "message d'exercice non acquitté à la passerelle"
+        let delai_ms = to_int(h) - to_int(lance_a.get(id) ?? h)
+        accuse_par.set(id, par)
+        let ds = dernier_succes.get(op)
+        if ds == () || to_int(ds) < to_int(h) { dernier_succes.set(op, h) }
+        echecs_consecutifs.set(op, 0)
+        if prevu_de.get(op) == id { prevu_de.delete(op) }
+        resultats.set(op, _garder_(resultats.get(op) ?? [], "{h} | reussi | {delai_ms}"))
+        transition(id, "lance", "reussi")
+        let _ = Journal.noter(h, "operateurs", par, "exercice {id} réussi ({op}, {delai_ms} ms)")
+        return "reussi"
+    }
+    on annuler(h, id, motif, par) {
+        require ApiAcces.a_le_role(par, "superviseur") else Habilitation "réservé à un superviseur d'ORBITE"
+        let op = operateur.get(id)
+        require op != () else Inconnu "exercice {id} inconnu"
+        require motif != "" else MotifRequis "motif requis"
+        let st = get_status(id) ?? "planifie"
+        require st == "planifie" else EtatInvalide "exercice {id} {st}"
+        if prevu_de.get(op) == id { prevu_de.delete(op) }
+        transition(id, "planifie", "annule")
+        let _ = Journal.noter(h, "operateurs", par, "exercice {id} annulé : {motif}")
+        return "annule"
+    }
+    on echoir(h, n, par) {
+        require ApiAcces.a_le_role(par, "systeme") || ApiAcces.a_le_role(par, "exploitant") else Habilitation "balayage réservé au système ou à un exploitant"
+        let compte = 0
+        for e in echeance.entries {
+            if compte >= n { break }
+            let id = e.key
+            if (get_status(id) ?? "planifie") == "lance" && to_int(h) > to_int(e.value) {
+                let op = operateur.get(id) ?? ""
+                transition(id, "lance", "echoue")
+                let ec = (echecs_consecutifs.get(op) ?? 0) + 1
+                echecs_consecutifs.set(op, min(ec, 1000))
+                if prevu_de.get(op) == id { prevu_de.delete(op) }
+                resultats.set(op, _garder_(resultats.get(op) ?? [], "{h} | echoue | -"))
+                let _ = ApiConformite.constater(h, op, "exercice_echoue", 2, id, "systeme")
+                if ec >= ECHECS_SUSPENSION {
+                    let _ = OpMembres.suspendre_auto(h, op, "joignabilite", "{ec} exercices de joignabilité échoués de suite")
+                }
+                let _ = Journal.noter(h, "operateurs", par, "exercice {id} échoué ({op}, {ec} échec(s) consécutif(s))")
+                compte = compte + 1
+            }
+        }
+        return compte
+    }
+    on dus(h, n) {
+        let res_d = []
+        for e in prevu_a.entries {
+            if len(res_d) >= n { break }
+            if (get_status(e.key) ?? "planifie") == "planifie" && to_int(e.value) <= to_int(h) {
+                res_d.push(e.key)
+            }
+        }
+        return res_d
+    }
+    on a_exercer(h, n) {
+        let res_x = []
+        for op in OpMembres.actifs(h, 100000) {
+            if len(res_x) >= n { break }
+            let o = Org(op)
+            if prevu_de.get(o) == () {
+                let ds = dernier_succes.get(o)
+                if ds == () || to_int(h) - to_int(ds) > RELANCE_MS {
+                    res_x.push(op)
+                }
+            }
+        }
+        return res_x
+    }
+    on bilan(op) {
+        let rs = resultats.get(op)
+        require rs != () else Inconnu "aucun exercice pour {op}"
+        let reussis = 0
+        let echoues = 0
+        let delais = []
+        for l in rs {
+            let parts = split(l, " | ")
+            if parts[1] == "reussi" {
+                reussis = reussis + 1
+                delais.push(to_int(parts[2]))
+            } else {
+                echoues = echoues + 1
+            }
+        }
+        let k = len(delais)
+        let mediane = if k == 0 { 0 } else { delais.sort()[idiv(k, 2)] }
+        return "{reussis} | {echoues} | {mediane}"
+    }
+    on joignable(op, h) {
+        let ds = dernier_succes.get(op)
+        if ds == () { return false }
+        if to_int(h) - to_int(ds) >= VALIDITE_MS { return false }
+        let r = try { OpAstreinte.en_service(op, h) }
+        if r.error != () { return false }
+        return r.value != ""
+    }
+    on _garder_(liste: List<String>, ligne: String) {
+        let tous = liste ++ [ligne]
+        let k = len(tous)
+        if k <= MAX_RESULTATS { return tous }
+        return slice(tous, k - MAX_RESULTATS, k)
+    }
+}

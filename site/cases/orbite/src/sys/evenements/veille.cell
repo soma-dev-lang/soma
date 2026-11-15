@@ -1,0 +1,50 @@
+// evenements — VEILLE (ronde périodique).
+// Le sous-système ne lit jamais l'horloge : la ronde reçoit `h` de l'horloge d'ORBITE
+// (Horloge.battre → ApiEvenements.balayer, par "systeme", toutes les minutes) et refuse un `h`
+// antérieur à la ronde précédente. Elle fait avancer ce qui ne
+// doit dépendre de personne : accusés et silences des destinataires, rentrées des fragments,
+// pistes perdues, dissipation des nuages, diffusion des alertes aux riverains. Ce qui exige un humain
+// (évènement non confirmé, collision sans dossier de preuve, anomalie délaissée) n'est pas
+// tranché par la ronde : il est déclaré en incident du sous-système (ApiOperations), pour
+// qu'un oubli devienne un état visible et non un silence.
+
+// Veille : une seule instance logique ; la clé de `derniere` est "ronde".
+skeleton EvtVeille {
+    const MAX_RONDES = 1000000
+    const LOT = 1000
+    memory {
+        derniere: Map<String, Horodatage> [persistent]        // "ronde" → h de la dernière ronde ; ne décroît jamais (ronde refuse HorsBornes)
+        rondes: List<String> [persistent]                     // "h | notifications | rentrees | perdues | dissipes | diffusees | souffrances"
+        incident_ouvert: Map<String, String> [persistent]     // élément en souffrance → incident déclaré (un seul par élément)
+        invariant derniere >= 0
+        invariant rondes.size <= MAX_RONDES
+        invariant incident_ouvert.size <= MAX_RONDES
+    }
+    face {
+        // Ronde de veille à `h`, chaque étape sur au plus LOT éléments :
+        // 1. EvtNotifications.relever (accusés, silences, manquements) ;
+        // 2. EvtFragments.constater_rentrees ;
+        // 3. EvtFragments.perdus puis EvtFragments.ecarter(…, "perdue", par "systeme") ;
+        // 4. EvtNuages.a_dissiper puis EvtNuages.dissiper(par "systeme") ;
+        // 5. EvtNotifications.poursuivre (pages suivantes des diffusions en cours) ;
+        // 6. EvtEvenements.en_souffrance, EvtAnomalies.en_souffrance et EvtRapports.en_retard
+        //    (rapport non publié à l'échéance) : pour chaque élément
+        //    sans incident ouvert, ApiOperations.declarer_incident(h, id, gravité 2 — 3 pour une
+        //    anomalie d'un objet ayant un rapprochement ouvert —, "evenements", motif, "systeme").
+        // Ajoute la ligne de bilan (les six comptes) à `rondes` et renvoie la somme des cinq
+        // premiers : le nombre d'objets dont l'état a changé (réponse de ApiEvenements.balayer).
+        // Rôle exigé de `par` : "systeme" ou "exploitant" d'ORBITE.
+        // Refus : HorsBornes (h antérieur à la dernière ronde), Plein, Habilitation.
+        signal ronde(h: Horodatage, par: String) -> Int
+            writes derniere, rondes, incident_ouvert
+            calls ApiAcces.a_le_role, EvtNotifications.relever, EvtFragments.constater_rentrees, EvtFragments.perdus, EvtFragments.ecarter, EvtNuages.a_dissiper, EvtNuages.dissiper, EvtNotifications.poursuivre, EvtEvenements.en_souffrance, EvtAnomalies.en_souffrance, EvtRapports.en_retard, ApiConjonctions.ouverts_de, ApiOperations.declarer_incident, Journal.noter
+        // Instant de la dernière ronde (0 si aucune) : un écart de plus de quelques minutes avec
+        // Horloge.dernier_battement signale un balayage de evenements en échec répété.
+        signal derniere_ronde() -> Horodatage
+            reads derniere
+        // Dernières lignes de bilan, au plus `n`, la plus récente en dernier.
+        signal bilans(n: Int) -> List<String>
+            requires n > 0 && n <= 1000
+            reads rondes
+    }
+}

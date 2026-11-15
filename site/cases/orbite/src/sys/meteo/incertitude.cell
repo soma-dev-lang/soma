@@ -1,0 +1,93 @@
+// meteo — FACTEUR D'INCERTITUDE PAR RÉGIME. Le facteur publié par ApiMeteo.facteur_incertitude
+// n'est pas recalculé à chaque lecture : il est arrêté par le traitement périodique, avec son
+// fondement (mesure kp, alerte, version du barème), et chaque changement de palier est
+// journalisé. Ainsi un facteur lu au moment d'une décision est toujours retrouvable, et il ne
+// dépend jamais d'une donnée absente :
+//   - kp frais et aucune alerte ouverte : facteur du barème pour la bande du kp ;
+//   - alerte ouverte touchant le régime : facteur figé par le renforcement, ou celui de la
+//     bande du kp s'il est plus élevé ;
+//   - kp en silence (veille) : bande "tempete" (précaution) ;
+//   - arrêt de plus de 30 min (horloge ou ronde arrêtée) : la lecture applique la
+//     bande "tempete" sans attendre (état "perime", refus jamais opposé au lecteur).
+
+// Paliers : id = régime ("leo", "meo", "geo", "heo").
+skeleton MetIncertitude {
+    const VALIDITE_ARRET = 1800000       // 30 min : au-delà l'arrêt est périmé, précaution
+    const MAX_PALIERS = 1000000
+    memory {
+        facteur_arrete: Map<String, Pourcent> [persistent]    // régime → facteur arrêté (100 = aucun)
+        fondement: Map<String, String> [persistent]           // régime → "kp=<mesure ou silence>;tempete=<alerte ou ''>;bareme=<version>"
+        arrete_le: Map<String, Horodatage> [persistent]       // régime → instant du dernier arrêt
+        paliers: List<String> [persistent]                    // "h | regime | ancien -> nouveau | fondement", ajout seul
+        invariant facteur_arrete >= 100 && facteur_arrete <= 1000
+        invariant paliers.size <= MAX_PALIERS
+    }
+    // Palier d'un régime (id = régime). Réactif : la précaution revient toujours au nominal.
+    state palier {
+        initial: nominal
+        nominal -> eleve          // arreter : facteur > 100 (bande agitee ou plus, alerte, silence)
+        eleve -> nominal          // arreter : facteur revenu à 100
+        nominal -> perime         // constater_retard : aucun arrêt depuis 30 min
+        eleve -> perime           // constater_retard
+        perime -> eleve           // arreter : reprise du traitement (facteur > 100)
+        perime -> nominal         // arreter : reprise du traitement (facteur 100)
+    }
+    face {
+        // Arrête le facteur des quatre régimes à `h` selon les règles d'en-tête, enregistre son
+        // fondement, journalise chaque changement de palier. Appelé chaque minute par
+        // MetRonde.balayer, après MetTempete.evaluer. Renvoie le nombre de régimes dont le
+        // facteur a changé. Rôle exigé : "systeme". Refus : Habilitation.
+        signal arreter(h: Horodatage, par: String) -> Int
+            writes facteur_arrete, fondement, arrete_le, paliers
+            moves nominal -> eleve, eleve -> nominal, perime -> eleve, perime -> nominal
+            calls MetMesure.kp_courant, MetMesure.derniere_de, MetVeille.en_silence, MetTempete.courante, MetRenforce.renforce, MetRenforce.facteur_de, MetBareme.bande, MetBareme.facteur, MetBareme.en_vigueur_a, ApiAcces.a_le_role, Journal.noter
+        // Passe en "perime" tout régime dont le dernier arrêt a plus de 30 min et déclare un
+        // incident de gravité 2 (l'horloge ne fait plus tourner la ronde). Geste
+        // d'administration de l'exploitant ; aussi appelé en tête de MetRonde.balayer pour
+        // constater un arrêt de plus de 30 min avant de réarrêter. Renvoie le nombre de régimes périmés.
+        // Rôle exigé : "systeme" ou "exploitant" d'ORBITE. Refus : Habilitation.
+        signal constater_retard(h: Horodatage, par: String) -> Int
+            reads arrete_le
+            moves nominal -> perime, eleve -> perime
+            calls ApiOperations.declarer_incident, ApiAcces.a_le_role, Journal.noter
+        // Facteur à appliquer au régime à `h` : le facteur arrêté s'il date de moins de 30 min
+        // et que le palier n'est pas "perime", sinon le facteur de la bande "tempete" du barème
+        // en vigueur (précaution). Toujours entre 100 et 1 000.
+        signal facteur(regime: Regime, h: Horodatage) -> Pourcent
+            reads palier, facteur_arrete, arrete_le
+            calls MetBareme.facteur
+            ensures result >= 100 && result <= 1000
+        // Facteur effectivement arrêté pour le régime à l'instant passé `a` (dernier palier
+        // journalisé à ou avant `a`) ; 100 si aucun arrêt antérieur. Sert à la preuve
+        // (MetJournee.conditions_a) : c'est la valeur qu'ApiMeteo a servie, pas une valeur recalculée.
+        signal facteur_a(regime: Regime, a: Horodatage) -> Pourcent
+            reads paliers
+    }
+}
+
+// meteo — RONDE. Seul point d'entrée du temps dans meteo : ApiMeteo.balayer (appelé chaque
+// minute par Horloge.battre) délègue ici. La ronde enchaîne, dans cet ordre, les traitements
+// qui dépendent de l'heure ; chacun est aussi un geste d'administration autonome. Un
+// traitement qui refuse n'interrompt pas les suivants (la ronde le journalise et continue) :
+// une source, une journée ou un avis en défaut ne retarde jamais l'alerte ni le facteur.
+
+// Ronde du sous-système : aucune mémoire propre, tout l'état est dans les cells qu'elle appelle.
+skeleton MetRonde {
+    face {
+        // Balaye meteo à `h` :
+        //   1. MetSource.balayer (sources muettes, étalonnages échus, maintenances dépassées) ;
+        //   2. MetVeille.surveiller (flux kp / f107 en silence → incident) ;
+        //   3. MetPrevision.verifier sur chaque MetPrevision.echues(h) ;
+        //   4. MetTempete.evaluer (émission, confirmation, mise à jour, clôture, annulation) ;
+        //   5. MetRenforce.prolonger (épisodes de criblage renforcé de conjonctions) ;
+        //   6. MetIncertitude.constater_retard puis MetIncertitude.arreter (facteurs par régime) ;
+        //   7. MetAvis.suivre (accusés, relances, manquements) ;
+        //   8. MetJournee.clore sur MetJournee.a_clore(h), puis MetJournee.sceller et
+        //      MetMesure.archiver sur MetJournee.a_sceller(h).
+        // Renvoie le total des objets dont l'état a changé (somme des comptes renvoyés, plus 1
+        // par prévision vérifiée, alerte changée d'état, journée close ou scellée).
+        // Rôle exigé : "systeme" (identité de l'horloge). Refus : Habilitation.
+        signal balayer(h: Horodatage, par: String) -> Int
+            calls MetSource.balayer, MetVeille.surveiller, MetPrevision.echues, MetPrevision.verifier, MetTempete.courante, MetTempete.evaluer, MetRenforce.prolonger, MetIncertitude.constater_retard, MetIncertitude.arreter, MetAvis.suivre, MetJournee.a_clore, MetJournee.clore, MetJournee.a_sceller, MetJournee.sceller, MetMesure.archiver, ApiAcces.a_le_role, Journal.noter
+    }
+}

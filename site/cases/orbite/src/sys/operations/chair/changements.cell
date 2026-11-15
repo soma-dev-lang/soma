@@ -1,0 +1,312 @@
+// Corps des gels et des changements en production (operations).
+
+flesh OpsGel {
+    on programmer(h, g, deb, fi, m, par) {
+        require ApiAcces.a_le_role(par, "direction") else Habilitation "programmer un gel : direction d'ORBITE"
+        require !debut.has(g) else Existe "gel '{g}' déjà programmé"
+        require fi > deb else HorsBornes "fin du gel avant son début"
+        require deb >= h else HorsBornes "début du gel dans le passé"
+        require fi - deb <= DUREE_MAX else HorsBornes "gel de plus de 14 jours"
+        require len(m) > 0 else MotifRequis "motif du gel requis"
+        require debut.size < MAX_GELS else Plein "registre des gels plein"
+        debut.set(g, deb)
+        fin.set(g, fi)
+        motif.set(g, m)
+        let _ = Journal.noter(h, "operations", par, "gel {g} programmé du {deb} au {fi} : {m}")
+        return g
+    }
+
+    on entrer_en_vigueur(h, g, par) {
+        require ApiAcces.a_le_role(par, "systeme") || ApiAcces.a_le_role(par, "exploitant") else Habilitation "mise en vigueur : systeme ou exploitant"
+        let deb = debut.get(g)
+        require deb != () else Inconnu "gel '{g}' inconnu"
+        require (get_status(g) ?? "programme") == "programme" else EtatInvalide "gel non programmé"
+        require h >= deb else Delai "gel pas encore commencé"
+        transition(g, "programme", "en_vigueur")
+        let _ = Journal.noter(h, "operations", par, "gel {g} en vigueur")
+        return "en_vigueur"
+    }
+
+    on annuler(h, g, m, par) {
+        require ApiAcces.a_le_role(par, "direction") else Habilitation "annuler un gel : direction d'ORBITE"
+        require debut.has(g) else Inconnu "gel '{g}' inconnu"
+        require len(m) > 0 else MotifRequis "motif requis"
+        require (get_status(g) ?? "programme") == "programme" else EtatInvalide "seul un gel programmé s'annule"
+        transition(g, "programme", "annule")
+        let _ = Journal.noter(h, "operations", par, "gel {g} annulé : {m}")
+        return "annule"
+    }
+
+    on lever(h, g, m, par) {
+        let fi = fin.get(g)
+        require fi != () else Inconnu "gel '{g}' inconnu"
+        if h >= fi {
+            require ApiAcces.a_le_role(par, "systeme") || ApiAcces.a_le_role(par, "direction") else Habilitation "lever un gel échu : systeme ou direction"
+        } else {
+            require ApiAcces.a_le_role(par, "direction") else Habilitation "lever un gel avant sa fin : direction d'ORBITE"
+            require len(m) > 0 else MotifRequis "levée anticipée : motif requis"
+        }
+        require (get_status(g) ?? "programme") == "en_vigueur" else EtatInvalide "gel non en vigueur"
+        transition(g, "en_vigueur", "leve")
+        let _ = Journal.noter(h, "operations", par, "gel {g} levé {m}")
+        return "leve"
+    }
+
+    on gel_a(h) {
+        for e in debut.entries {
+            let st = get_status(e.key) ?? "programme"
+            if st == "en_vigueur" { return true }
+            if st == "programme" && h >= e.value && h < (fin.get(e.key) ?? 0) { return true }
+        }
+        return false
+    }
+
+    on echus(h) {
+        let echus_l = []
+        for e in debut.entries {
+            let st = get_status(e.key) ?? "programme"
+            if st == "programme" && h >= e.value { echus_l.push(e.key) }
+            if st == "en_vigueur" && h >= (fin.get(e.key) ?? 0) { echus_l.push(e.key) }
+        }
+        return echus_l.sort()
+    }
+}
+
+flesh OpsGelUrgence {
+    on armer(h, r, par) {
+        require ApiAcces.a_le_role(par, "systeme") || ApiAcces.a_le_role(par, "exploitant") else Habilitation "armer un gel d'urgence : systeme ou exploitant"
+        let etat_r = ApiConjonctions.etat(r)
+        require etat_r != "inconnu" else Inconnu "rapprochement '{r}' inconnu"
+        require (get_status(r) ?? "veille") == "veille" else EtatInvalide "gel d'urgence déjà armé ou levé"
+        require etat_r == "alerte" || etat_r == "en_coordination" else EtatInvalide "rapprochement ni en alerte ni en coordination ({etat_r})"
+        require ApiConjonctions.niveau(r) == 3 else NonEligible "rapprochement de niveau inférieur à 3"
+        let t = ApiConjonctions.tca(r)
+        require t >= h else Echu "TCA passé"
+        require t - h <= HORIZON else NonEligible "TCA à plus de 6 h"
+        require en_vigueur.size < MAX_ARMES else Plein "trop de gels d'urgence armés"
+        transition(r, "veille", "arme")
+        tca.set(r, t)
+        arme_a.set(r, h)
+        en_vigueur.set(r, h)
+        let _ = Journal.noter(h, "operations", par, "gel d'urgence armé pour {r} (TCA {t})")
+        return t
+    }
+
+    on lever(h, r, par) {
+        require ApiAcces.a_le_role(par, "systeme") || ApiAcces.a_le_role(par, "superviseur") else Habilitation "lever un gel d'urgence : systeme ou superviseur"
+        let t = tca.get(r)
+        require t != () else Inconnu "aucun gel d'urgence pour '{r}'"
+        require (get_status(r) ?? "veille") == "arme" else EtatInvalide "gel d'urgence non armé"
+        let etat_r = ApiConjonctions.etat(r)
+        let clos = etat_r == "resolu" || etat_r == "passe" || etat_r == "collision"
+        require clos || h > t + 3600000 else EtatInvalide "rapprochement encore ouvert avant TCA + 1 h"
+        transition(r, "arme", "leve")
+        en_vigueur.delete(r)
+        let _ = Journal.noter(h, "operations", par, "gel d'urgence levé pour {r} ({etat_r})")
+        return "leve"
+    }
+
+    on actif_a(h) {
+        if en_vigueur.size > 0 { return true }
+        return len(ApiConjonctions.urgents(h, HORIZON, 3)) > 0
+    }
+
+    on etat_de(r) {
+        return get_status(r) ?? "veille"
+    }
+
+    on a_lever(h) {
+        let dus = []
+        for e in tca.entries {
+            if (get_status(e.key) ?? "veille") == "arme" {
+                if h > e.value + 3600000 {
+                    dus.push(e.key)
+                } else {
+                    let etat_r = ApiConjonctions.etat(Rapprochement(e.key))
+                    if etat_r == "resolu" || etat_r == "passe" || etat_r == "collision" { dus.push(e.key) }
+                }
+            }
+        }
+        return dus.sort()
+    }
+}
+
+flesh OpsChangement {
+    on soumettre(h, c, g, ss, desc, retour, incident, par) {
+        require ApiAcces.a_le_role(par, "exploitant") else Habilitation "soumettre un changement : exploitant d'ORBITE"
+        require !genre.has(c) else Existe "changement '{c}' déjà soumis"
+        require len(desc) > 0 && len(retour) > 0 else MotifRequis "description et plan de retour arrière requis"
+        require len(desc) + len(retour) <= MAX_TEXTE else HorsBornes "texte trop long"
+        let urgent = g == "urgence"
+        require (!urgent) || len(incident) > 0 else Incoherent "un changement d'urgence corrige un incident"
+        require urgent || len(incident) == 0 else Incoherent "un changement normal ne cite pas d'incident"
+        if urgent {
+            let st_i = OpsIncident.etat(incident)
+            require st_i != "inconnu" else Inconnu "incident '{incident}' inconnu"
+            require st_i != "resolu" && st_i != "clos" && st_i != "classe" else Incoherent "incident {incident} déjà résolu"
+            require to_string(OpsIncident.vise_de(incident)) == to_string(ss) else Incoherent "l'incident {incident} vise un autre sous-système"
+        }
+        require genre.size < MAX_CHANGEMENTS else Plein "registre des changements plein"
+        genre.set(c, g)
+        incident_de.set(c, incident)
+        cible.set(c, ss)
+        demandeur.set(c, par)
+        description.set(c, desc)
+        plan_retour.set(c, retour)
+        let _ = Journal.noter(h, "operations", par, "changement {c} ({g}) soumis sur {ss}")
+        return c
+    }
+
+    on evaluer(h, c, r, par) {
+        let dem = demandeur.get(c)
+        require dem != () else Inconnu "changement '{c}' inconnu"
+        require ApiAcces.a_le_role(par, "exploitant") && par != dem else Habilitation "évaluer : un exploitant autre que le demandeur"
+        require (genre.get(c) ?? "normal") == "normal" else EtatInvalide "un changement d'urgence ne s'évalue pas"
+        require (get_status(c) ?? "soumis") == "soumis" else EtatInvalide "changement déjà évalué"
+        transition(c, "soumis", "evalue")
+        risque.set(c, r)
+        let _ = Journal.noter(h, "operations", par, "changement {c} évalué : risque {r}")
+        return "evalue"
+    }
+
+    on approuver(h, c, par, valideur) {
+        let dem = demandeur.get(c)
+        require dem != () else Inconnu "changement '{c}' inconnu"
+        require ApiAcces.a_le_role(par, "superviseur") else Habilitation "approuver : superviseur d'ORBITE"
+        require valideur != par && valideur != dem && ApiAcces.quatre_yeux(par, valideur) else QuatreYeux "contre-signature distincte du demandeur et de l'approbateur"
+        if (risque.get(c) ?? "faible") == "eleve" {
+            require ApiAcces.a_le_role(valideur, "direction") else QuatreYeux "risque élevé : contre-signature de la direction"
+        }
+        require (get_status(c) ?? "soumis") == "evalue" else EtatInvalide "changement non évalué"
+        transition(c, "evalue", "approuve")
+        approbateur.set(c, par)
+        let _ = Journal.noter(h, "operations", par, "changement {c} approuvé, contre-signé par {valideur}")
+        return "approuve"
+    }
+
+    on approuver_urgence(h, c, par, valideur) {
+        let dem = demandeur.get(c)
+        require dem != () else Inconnu "changement '{c}' inconnu"
+        require ApiAcces.a_le_role(par, "superviseur") else Habilitation "approuver : superviseur d'ORBITE"
+        require valideur != par && valideur != dem && ApiAcces.quatre_yeux(par, valideur) && ApiAcces.a_le_role(valideur, "direction") else QuatreYeux "urgence : contre-signature de la direction"
+        require (genre.get(c) ?? "normal") == "urgence" else EtatInvalide "changement normal"
+        require (get_status(c) ?? "soumis") == "soumis" else EtatInvalide "changement non soumis"
+        let incident = incident_de.get(c) ?? ""
+        let st_i = OpsIncident.etat(incident)
+        require st_i == "en_traitement" || st_i == "contourne" else EtatInvalide "incident {incident} ni en traitement ni contourné ({st_i})"
+        transition(c, "soumis", "approuve_urgence")
+        approbateur.set(c, par)
+        let _ = Journal.noter(h, "operations", par, "changement d'urgence {c} approuvé pour l'incident {incident}")
+        return "approuve_urgence"
+    }
+
+    on rejeter(h, c, motif, par) {
+        require ApiAcces.a_le_role(par, "superviseur") else Habilitation "rejeter : superviseur d'ORBITE"
+        require len(motif) > 0 else MotifRequis "motif de rejet requis"
+        require (get_status(c) ?? "soumis") == "evalue" else EtatInvalide "changement inconnu ou non évalué"
+        transition(c, "evalue", "rejete")
+        let _ = Journal.noter(h, "operations", par, "changement {c} rejeté : {motif}")
+        return "rejete"
+    }
+
+    on retirer(h, c, motif, par) {
+        let dem = demandeur.get(c)
+        require dem != () else Inconnu "changement '{c}' inconnu"
+        require par == dem || ApiAcces.a_le_role(par, "superviseur") else Habilitation "retirer : le demandeur ou un superviseur"
+        require len(motif) > 0 else MotifRequis "motif requis"
+        let st = get_status(c) ?? "soumis"
+        if st == "soumis" {
+            transition(c, "soumis", "retire")
+        } else if st == "approuve" {
+            transition(c, "approuve", "retire")
+        } else if st == "approuve_urgence" {
+            transition(c, "approuve_urgence", "retire")
+        } else {
+            fail("EtatInvalide", "changement {c} déjà évalué, déployé ou clos ({st})")
+        }
+        let _ = Journal.noter(h, "operations", par, "changement {c} retiré : {motif}")
+        return "retire"
+    }
+
+    on deployer(h, c, par) {
+        let dem = demandeur.get(c)
+        require dem != () else Inconnu "changement '{c}' inconnu"
+        let normal = (genre.get(c) ?? "normal") == "normal"
+        require ApiAcces.a_le_role(par, "exploitant") else Habilitation "déployer : exploitant d'ORBITE"
+        require (!normal) || par != dem else Habilitation "changement normal : déployé par un autre que le demandeur"
+        let st = get_status(c) ?? "soumis"
+        require st == "approuve" || st == "approuve_urgence" else EtatInvalide "changement non approuvé"
+        require ApiAcces.role_de(dem) != "aucun" else EtatInvalide "demandeur {dem} inactif : retirer et resoumettre"
+        require !OpsBascule.en_transition() else EtatInvalide "bascule de site en transition"
+        if normal {
+            require !OpsGel.gel_a(h) else Suspendu "gel des changements en vigueur"
+            require !OpsGelUrgence.actif_a(h) else Suspendu "gel d'urgence : rapprochement de niveau 3 à moins de 6 h"
+            require !OpsIncident.majeur_en_cours() else Suspendu "incident majeur en cours"
+            transition(c, "approuve", "en_deploiement")
+        } else {
+            transition(c, "approuve_urgence", "en_deploiement")
+        }
+        deploye_par.set(c, par)
+        let _ = Journal.noter(h, "operations", par, "changement {c} en déploiement")
+        return "en_deploiement"
+    }
+
+    on achever(h, c, par) {
+        let dp = deploye_par.get(c)
+        require dp != () else Inconnu "changement '{c}' inconnu ou non déployé"
+        require par == dp else Habilitation "seul celui qui déploie achève"
+        require (get_status(c) ?? "soumis") == "en_deploiement" else EtatInvalide "changement pas en déploiement"
+        transition(c, "en_deploiement", "deploye")
+        deploye_a.set(c, h)
+        let _ = Journal.noter(h, "operations", par, "changement {c} déployé")
+        return "deploye"
+    }
+
+    on revenir_en_arriere(h, c, motif, par) {
+        let plan = plan_retour.get(c)
+        require plan != () else Inconnu "changement '{c}' inconnu"
+        require ApiAcces.a_le_role(par, "exploitant") else Habilitation "retour arrière : exploitant d'ORBITE"
+        require len(motif) > 0 else MotifRequis "motif requis"
+        let st = get_status(c) ?? "soumis"
+        if st == "en_deploiement" {
+            transition(c, "en_deploiement", "retour_arriere")
+        } else if st == "deploye" {
+            transition(c, "deploye", "retour_arriere")
+        } else {
+            fail("EtatInvalide", "changement {c} ni en déploiement ni déployé")
+        }
+        let _ = Journal.noter(h, "operations", par, "changement {c} : retour arrière ({motif}) selon le plan : {plan}")
+        return "retour_arriere"
+    }
+
+    on constater_retour(h, c, par) {
+        require ApiAcces.a_le_role(par, "exploitant") else Habilitation "constater le retour : exploitant d'ORBITE"
+        require (get_status(c) ?? "soumis") == "retour_arriere" else EtatInvalide "changement inconnu ou sans retour arrière"
+        transition(c, "retour_arriere", "clos_echec")
+        let _ = Journal.noter(h, "operations", par, "changement {c} : retour arrière constaté")
+        return "clos_echec"
+    }
+
+    on verifier(h, c, par) {
+        let dp = deploye_par.get(c)
+        require dp != () else Inconnu "changement '{c}' inconnu ou non déployé"
+        require par != dp && ApiAcces.quatre_yeux(dp, par) else QuatreYeux "vérification par un superviseur autre que celui qui déploie"
+        require (get_status(c) ?? "soumis") == "deploye" else EtatInvalide "changement non déployé"
+        transition(c, "deploye", "clos")
+        let _ = Journal.noter(h, "operations", par, "changement {c} vérifié et clos")
+        return "clos"
+    }
+
+    on etat(c) {
+        if !genre.has(c) { return "inconnu" }
+        return get_status(c) ?? "soumis"
+    }
+
+    on non_verifies(h) {
+        let nv = []
+        for e in deploye_a.entries {
+            if (get_status(e.key) ?? "soumis") == "deploye" && h > e.value + DELAI_VERIFICATION { nv.push(e.key) }
+        }
+        return nv.sort()
+    }
+}

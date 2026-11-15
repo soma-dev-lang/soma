@@ -1,0 +1,276 @@
+// PRIORITÉS — corps de PrioDesignation (qui manœuvre, décision enregistrée et rejouable).
+flesh PrioDesignation {
+    on designer(h, r, a, b) {
+        let version = PrioVersion.en_vigueur_a(h)
+        require version != "" else Ferme "aucune version des règles en vigueur"
+        require a != b else Incoherent "a et b sont le même objet"
+        let objs = ApiConjonctions.objets(r)
+        require len(objs) == 2 && ((objs[0] == to_string(a) && objs[1] == to_string(b)) || (objs[0] == to_string(b) && objs[1] == to_string(a))) else Incoherent "{a} et {b} ne sont pas les objets de {r}"
+        let tca = ApiConjonctions.tca(r)
+        let liste_r = par_rapprochement.get(r) ?? []
+        require len(liste_r) < MAX_PAR_RAPPROCHEMENT else Plein "trop de décisions pour {r}"
+        require a_de.size < MAX_DECISIONS else Plein "registre des décisions plein"
+        let la = _entrees(h, version, a)
+        let lb = _entrees(h, version, b)
+        let regles_v = PrioTable.regles(version)
+        let t = _trancher(regles_v, _lire(la), _lire(lb), to_int(h), to_int(tca))
+        let id = "PD-{next_id()}"
+        let res = Objet(t.resultat)
+        let motif = t.motif
+        a_de.set(id, a)
+        b_de.set(id, b)
+        resultat_de.set(id, res)
+        motif_de.set(id, motif)
+        regle_de.set(id, t.rang)
+        version_de.set(id, version)
+        rapprochement_de.set(id, r)
+        tca_de.set(id, tca)
+        calculee_le.set(id, h)
+        entrees_de.set(id, la + " ; " + lb)
+        par_rapprochement.set(r, liste_r ++ [id])
+        let cm = "{version}|{motif}"
+        compte_motif.set(cm, (compte_motif.get(cm) ?? 0) + 1)
+        PrioEcheancier.planifier(h, "archive", id, Horodatage(to_int(h) + DELAI_ARCHIVE))
+        Journal.noter(h, "priorites", "systeme", "décision {id} sur {r} : '{res}' ({motif}) sous {version}")
+        return res
+    }
+
+    on rejouer(decision) {
+        let v = version_de.get(decision)
+        require v != () else Inconnu "décision {decision} inconnue"
+        let st = get_status(decision) ?? "calculee"
+        require st != "purgee" else EtatInvalide "décision {decision} purgée : instantané effacé"
+        let ent = entrees_de.get(decision) ?? ""
+        let parts = split(ent, " ; ")
+        require len(parts) == 2 else EtatInvalide "instantané de {decision} illisible"
+        let t = _trancher(PrioTable.regles(v), _lire(parts[0]), _lire(parts[1]), to_int(calculee_le.get(decision) ?? 0), to_int(tca_de.get(decision) ?? 0))
+        return Objet(t.resultat)
+    }
+
+    on decision_de(r) {
+        let liste = par_rapprochement.get(r) ?? []
+        if len(liste) == 0 { return "" }
+        let id = liste[len(liste) - 1]
+        let res = resultat_de.get(id) ?? ""
+        let v = version_de.get(id) ?? ""
+        let m = motif_de.get(id) ?? ""
+        let rang = regle_de.get(id) ?? 0
+        let appliquee = if m == "regle" { "regle:{rang}" } else { m }
+        let inst = calculee_le.get(id) ?? 0
+        return "{id}|{res}|{v}|{appliquee}|{inst}"
+    }
+
+    on decisions_de(r) {
+        return par_rapprochement.get(r) ?? []
+    }
+
+    on communiquer(h, decision, org, par) {
+        let a = a_de.get(decision)
+        require a != () else Inconnu "décision {decision} inconnue"
+        let ok = ApiAcces.agit_pour(par, org) || ApiAcces.a_le_role(par, "analyste") || ApiAcces.a_le_role(par, "auditeur") || ApiAcces.a_le_role(par, "conformite")
+        require ok else Habilitation "communication réservée à {org} ou à ORBITE"
+        let st = get_status(decision) ?? "calculee"
+        require st != "purgee" else EtatInvalide "décision {decision} purgée"
+        let b = b_de.get(decision) ?? ""
+        let r = rapprochement_de.get(decision) ?? ""
+        require ApiDonnees.peut_recevoir(org, a, r, h) && ApiDonnees.peut_recevoir(org, b, r, h) else Confidentiel "{org} ne peut recevoir les données des deux objets"
+        ApiDonnees.tracer(h, org, a, r, "decision_priorite:{decision}")
+        ApiDonnees.tracer(h, org, b, r, "decision_priorite:{decision}")
+        let res = resultat_de.get(decision) ?? ""
+        let m = motif_de.get(decision) ?? ""
+        let v = version_de.get(decision) ?? ""
+        let rang = regle_de.get(decision) ?? 0
+        let tca = tca_de.get(decision) ?? 0
+        let parts = split(entrees_de.get(decision) ?? "", " ; ")
+        let ea = if len(parts) == 2 { parts[0] } else { "" }
+        let eb = if len(parts) == 2 { parts[1] } else { "" }
+        Journal.noter(h, "priorites", par, "décision {decision} communiquée à {org}")
+        return "{res} | {m} | {v} | {rang} | {tca} | {ea} | {eb}"
+    }
+
+    on contester(h, decision, motif, par) {
+        let a = a_de.get(decision)
+        require a != () else Inconnu "décision {decision} inconnue"
+        let b = b_de.get(decision) ?? ""
+        let role_ok = ApiAcces.a_le_role(par, "dynamicien") || ApiAcces.a_le_role(par, "chef_de_mission")
+        let portee = ApiAcces.agit_pour(par, ApiRef.proprietaire(a)) || ApiAcces.agit_pour(par, ApiRef.proprietaire(Objet(b)))
+        require role_ok && portee else Habilitation "contestation réservée au propriétaire d'un des deux objets"
+        require motif != "" else MotifRequis "motif de la contestation requis"
+        let st = get_status(decision) ?? "calculee"
+        require st == "calculee" else EtatInvalide "décision {decision} : {st}"
+        let c = calculee_le.get(decision) ?? 0
+        require to_int(h) - to_int(c) <= DELAI_ARCHIVE else Echu "contestation hors délai"
+        contestation_de.set(decision, "{par} | {motif}")
+        transition(decision, "calculee", "contestee")
+        Journal.noter(h, "priorites", par, "décision {decision} contestée ({motif})")
+        return "contestee"
+    }
+
+    on statuer(h, decision, fondee, motif, par, valideur) {
+        require ApiAcces.a_le_role(par, "analyste") else Habilitation "réexamen réservé à un analyste d'ORBITE"
+        require ApiAcces.a_le_role(valideur, "superviseur") else QuatreYeux "le valideur doit être superviseur d'ORBITE"
+        require ApiAcces.quatre_yeux(par, valideur) else QuatreYeux "contre-signature refusée"
+        require motif != "" else MotifRequis "motif du réexamen requis"
+        let rejoue = rejouer(decision)
+        let st = get_status(decision) ?? "calculee"
+        require st == "contestee" else EtatInvalide "décision {decision} : {st}, pas contestée"
+        let cible = if fondee { "infirmee" } else { "confirmee" }
+        if fondee {
+            transition(decision, "contestee", "infirmee")
+        } else {
+            transition(decision, "contestee", "confirmee")
+        }
+        verdict_de.set(decision, "{par} / {valideur} | {motif} (rejouée : '{rejoue}')")
+        Journal.noter(h, "priorites", par, "décision {decision} {cible} (validé par {valideur})")
+        return cible
+    }
+
+    on statistiques(version) {
+        let lignes_st = []
+        for m in ["aucun_capable", "seul_capable", "habite_exempte", "regle", "arrivee", "catalogue"] {
+            let n = compte_motif.get("{version}|{m}") ?? 0
+            lignes_st = lignes_st ++ ["{m} | {n}"]
+        }
+        return lignes_st
+    }
+
+    on archiver(h, decision, par) {
+        require ApiAcces.a_le_role(par, "systeme") else Habilitation "archivage automatique (systeme)"
+        let c = calculee_le.get(decision)
+        require c != () else Inconnu "décision {decision} inconnue"
+        let st = get_status(decision) ?? "calculee"
+        require st != "contestee" else Delai "contestation pendante : archivage reporté"
+        require st == "calculee" || st == "confirmee" || st == "infirmee" else EtatInvalide "décision {decision} : {st}"
+        require to_int(h) >= to_int(c) + DELAI_ARCHIVE else Delai "décision de moins de 30 jours"
+        if st == "calculee" {
+            transition(decision, "calculee", "archivee")
+        } else if st == "confirmee" {
+            transition(decision, "confirmee", "archivee")
+        } else {
+            transition(decision, "infirmee", "archivee")
+        }
+        PrioEcheancier.planifier(h, "purge", decision, Horodatage(to_int(c) + CONSERVATION))
+        Journal.noter(h, "priorites", par, "décision {decision} archivée")
+        return "archivee"
+    }
+
+    on purger(h, decision, purge, par) {
+        require ApiAcces.a_le_role(par, "conformite") else Habilitation "purge réservée à la conformité d'ORBITE"
+        let c = calculee_le.get(decision)
+        require c != () else Inconnu "décision {decision} inconnue"
+        let st = get_status(decision) ?? "calculee"
+        require st == "archivee" else EtatInvalide "décision {decision} : {st}, pas archivée"
+        require to_int(h) >= to_int(c) + CONSERVATION else Delai "conservation de 10 ans non échue"
+        let r = rapprochement_de.get(decision) ?? ""
+        let a = a_de.get(decision) ?? ""
+        let b = b_de.get(decision) ?? ""
+        require (!ApiResponsabilite.sous_gel(to_string(r))) && (!ApiResponsabilite.sous_gel(to_string(a))) && (!ApiResponsabilite.sous_gel(to_string(b))) else Conflit "un dossier de preuve gelé couvre {decision}"
+        require purge != "" && ApiResponsabilite.purge_autorisee(to_string(r), h) else Conflit "purge {purge} non autorisée pour {r}"
+        require purge_de.get(decision) == () else Conflit "purge déjà enregistrée"
+        purge_de.set(decision, purge)
+        entrees_de.delete(decision)
+        transition(decision, "archivee", "purgee")
+        Journal.noter(h, "priorites", par, "décision {decision} purgée (purge {purge})")
+        return "purgee"
+    }
+
+    on resume(decision) {
+        let a = a_de.get(decision)
+        require a != () else Inconnu "décision {decision} inconnue"
+        let b = b_de.get(decision) ?? ""
+        let res = resultat_de.get(decision) ?? ""
+        let m = motif_de.get(decision) ?? ""
+        let v = version_de.get(decision) ?? ""
+        let rang = regle_de.get(decision) ?? 0
+        let r = rapprochement_de.get(decision) ?? ""
+        let c = calculee_le.get(decision) ?? 0
+        let st = get_status(decision) ?? "calculee"
+        let co = contestation_de.get(decision) ?? ""
+        let ve = verdict_de.get(decision) ?? ""
+        return "{a} | {b} | {res} | {m} | {v} | {rang} | {r} | {c} | {st} | {co} | {ve}"
+    }
+
+    // Instantané des entrées d'un objet (lecture des autres sous-systèmes), une ligne :
+    // "objet | etat_objet | propulsion | habite | peut_manoeuvrer | operateur_actif | preavis_ms |
+    //  injecte_le | masse | derogation | essaim_autonome | operateur_surveille".
+    on _entrees(h: Horodatage, version: String, o: Objet) {
+        let eo = ApiRef.etat_objet(o)
+        require eo != "inconnu" else Inconnu "objet {o} inconnu"
+        let prop = ApiRef.propulsion(o)
+        let hab = _b(ApiRef.habite(o))
+        let pm = _b(ApiRef.peut_manoeuvrer(o))
+        let op = ApiRef.proprietaire(o)
+        let actif = _b(op != "inconnu" && ApiOperateurs.est_actif(op, h))
+        let preavis = max(to_int(PrioTable.preavis_de_version(version, prop)), to_int(PrioPreparation.delai(o)))
+        let inj = to_int(ApiLancements.injecte_le(o))
+        let masse = to_int(ApiRef.masse(o))
+        let derog = _b(PrioDerogation.en_cours(o, h))
+        let ess = _b(PrioEssaim.autonome(o))
+        let surv = _b(op != "inconnu" && ApiConformite.sous_surveillance(op))
+        return "{o} | {eo} | {prop} | {hab} | {pm} | {actif} | {preavis} | {inj} | {masse} | {derog} | {ess} | {surv}"
+    }
+
+    on _b(x: Bool) {
+        if x { return "oui" }
+        return "non"
+    }
+
+    // Lit une ligne d'instantané en champs nommés.
+    on _lire(ligne: String) {
+        let f = split(ligne, " | ")
+        require len(f) == 12 else EtatInvalide "instantané illisible"
+        return map("objet", f[0], "etat", f[1], "propulsion", f[2], "habite", f[3] == "oui", "pm", f[4] == "oui", "actif", f[5] == "oui", "preavis", to_int(f[6]), "injecte", to_int(f[7]), "masse", to_int(f[8]), "derogation", f[9] == "oui", "essaim", f[10] == "oui", "surveille", f[11] == "oui")
+    }
+
+    // Étapes 3 à 7 de designer, sur deux instantanés lus : résultat, motif, rang.
+    on _trancher(regles_t: List<String>, ea: Map, eb: Map, h: Int, tca: Int) {
+        let ca = ea.pm && ea.actif && ea.propulsion != "aucune" && h + ea.preavis <= tca
+        let cb = eb.pm && eb.actif && eb.propulsion != "aucune" && h + eb.preavis <= tca
+        if !ca && !cb { return map("resultat", "", "motif", "aucun_capable", "rang", 0) }
+        if ca && !cb { return map("resultat", ea.objet, "motif", "seul_capable", "rang", 0) }
+        if cb && !ca { return map("resultat", eb.objet, "motif", "seul_capable", "rang", 0) }
+        if ea.habite && !eb.habite { return map("resultat", eb.objet, "motif", "habite_exempte", "rang", 0) }
+        if eb.habite && !ea.habite { return map("resultat", ea.objet, "motif", "habite_exempte", "rang", 0) }
+        for ligne in regles_t {
+            let f = split(ligne, " | ")
+            let rang = to_int(f[0])
+            let critere = f[1]
+            let effet = f[2]
+            let sa = _critere(critere, ea, eb)
+            let sb = _critere(critere, eb, ea)
+            if sa != sb {
+                let seul = if sa { ea.objet } else { eb.objet }
+                let autre = if sa { eb.objet } else { ea.objet }
+                let res = if effet == "designe" { seul } else { autre }
+                return map("resultat", res, "motif", "regle", "rang", rang)
+            }
+        }
+        if ea.injecte != eb.injecte {
+            let res = if ea.injecte > eb.injecte { ea.objet } else { eb.objet }
+            return map("resultat", res, "motif", "arrivee", "rang", 0)
+        }
+        let res = if _numero_apres(ea.objet, eb.objet) { ea.objet } else { eb.objet }
+        return map("resultat", res, "motif", "catalogue", "rang", 0)
+    }
+
+    // Vrai si l'objet `x` satisfait le critère face à l'autre objet `y`.
+    on _critere(critere: String, x: Map, y: Map) {
+        return match critere {
+            "derogation" -> x.derogation
+            "propulsion_faible" -> x.propulsion == "faible"
+            "arrivee_recente" -> x.injecte > y.injecte
+            "essaim_autonome" -> x.essaim
+            "operateur_surveille" -> x.surveille
+            "masse_moindre" -> x.masse < y.masse
+            _ -> false
+        }
+    }
+
+    // Vrai si le numéro de catalogue de `x` est plus grand que celui de `y` ("OBJ-<n>").
+    on _numero_apres(x: String, y: String) {
+        let nx = if starts_with(x, "OBJ-") { substring(x, 4, len(x)) } else { x }
+        let ny = if starts_with(y, "OBJ-") { substring(y, 4, len(y)) } else { y }
+        if len(nx) != len(ny) { return len(nx) > len(ny) }
+        return nx > ny
+    }
+}

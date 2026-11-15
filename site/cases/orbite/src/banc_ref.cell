@@ -1,0 +1,10 @@
+use app
+use commun::journal_chair
+use commun::horloge_chair
+use sys::ref::chair::api
+use sys::ref::chair::etats
+use sys::ref::chair::organisations
+use sys::ref::chair::catalogue
+use sys::ref::chair::registre
+use sys::ref::chair::cessions
+use sys::ref::chair::historique

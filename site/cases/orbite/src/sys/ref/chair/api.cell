@@ -1,0 +1,133 @@
+// ref — corps de la façade ApiRef : chaque signal délègue à la cell interne qui porte la donnée.
+
+flesh ApiRef {
+    on orbite() {
+        return RefOrg.orbite()
+    }
+
+    on etat_participant(etat) {
+        return RefEtat.participant(etat)
+    }
+
+    on inscrire_organisation(h, org, nom, etat, genre, par, valideur) {
+        require contains(["etat", "operateur", "capteur", "orbite"], genre) else HorsBornes "genre {genre} inconnu"
+        return RefOrg.inscrire(h, org, nom, etat, RefGenreOrg(genre), par, valideur)
+    }
+
+    on organisation_existe(org) {
+        return RefOrg.existe(org)
+    }
+
+    on etat_de(org) {
+        return RefOrg.etat_de(org)
+    }
+
+    on org_de_etat(etat) {
+        return RefOrg.org_de_etat(etat)
+    }
+
+    on cataloguer(h, nature, proprietaire, etat, regime, propulsion, masse, par) {
+        return RefObjet.cataloguer(h, nature, proprietaire, etat, regime, propulsion, masse, par)
+    }
+
+    on etat_objet(objet) {
+        return to_string(RefObjet.etat(objet))
+    }
+
+    on changer_etat_objet(h, objet, cible, reference, motif, par) {
+        if cible == "en_service" { return RefObjet.mettre_en_service(h, objet, motif, par) }
+        if cible == "hors_service" { return RefObjet.mettre_hors_service(h, objet, motif, par) }
+        if cible == "cimetiere" { return RefObjet.placer_cimetiere(h, objet, motif, par) }
+        if cible == "retire" { return RefObjet.constater_retrait(h, objet, reference, par) }
+        if cible == "rentre" { return RefObjet.constater_rentree(h, objet, reference, par) }
+        if cible == "fragmente" { return RefObjet.constater_fragmentation(h, objet, reference, par) }
+        require false else EtatInvalide "état cible {cible} inaccessible par changer_etat_objet"
+        return ""
+    }
+
+    on nature(objet) {
+        return RefObjet.nature(objet)
+    }
+
+    on proprietaire(objet) {
+        return RefObjet.proprietaire(objet)
+    }
+
+    on etat_immatriculation(objet) {
+        return RefRegistre.etat_de(objet)
+    }
+
+    on regime(objet) {
+        return RefObjet.regime(objet)
+    }
+
+    on propulsion(objet) {
+        return RefObjet.propulsion(objet)
+    }
+
+    on peut_manoeuvrer(objet) {
+        return RefObjet.peut_manoeuvrer(objet)
+    }
+
+    on declarer_propulsion(h, objet, p, motif, par) {
+        // RefObjet.declarer_propulsion rouvre lui-même les coordinations (rouvrir_designations)
+        return RefObjet.declarer_propulsion(h, objet, p, motif, par)
+    }
+
+    on habite(objet) {
+        return RefObjet.habite(objet)
+    }
+
+    on objets_de(org) {
+        return RefObjet.objets_de(org)
+    }
+
+    on genre(org) {
+        return to_string(RefOrg.genre(org))
+    }
+
+    on etats_participants() {
+        return RefEtat.participants()
+    }
+
+    on organisations(genre) {
+        return RefOrg.organisations(genre)
+    }
+
+    on catalogue(regime, apres, n) {
+        require n > 0 && n <= 1000 else HorsBornes "n hors de 1..1000"
+        return RefObjet.catalogue(regime, apres, n)
+    }
+
+    on masse(objet) {
+        return RefObjet.masse(objet)
+    }
+
+    on valeur_au(objet, champ, h) {
+        return RefObjet.valeur_au(objet, champ, h)
+    }
+
+    on attribuer(h, objet, proprietaire, etat, par, valideur) {
+        return RefObjet.attribuer(h, objet, proprietaire, etat, par, valideur)
+    }
+
+    on immatriculer(h, objet, numero, par) {
+        return RefRegistre.immatriculer(h, objet, numero, par)
+    }
+
+    on immatricule(objet) {
+        return RefRegistre.est_immatricule(objet)
+    }
+
+    on changer_regime(h, objet, r, par) {
+        return RefObjet.changer_regime(h, objet, r, par)
+    }
+
+    on changer_tutelle(h, org, etat, par, valideur) {
+        return RefOrg.changer_tutelle(h, org, etat, par, valideur)
+    }
+
+    on balayer(h, par) {
+        return RefBalayage.balayer(h, par)
+    }
+}

@@ -1,0 +1,90 @@
+// escalade — STATISTIQUES PAR OPÉRATEUR. Compteurs cumulés et fenêtre glissante de 365 jours des
+// escalades graves (échelon ≥ 3) : c'est la mesure de silence d'un opérateur que lisent la
+// conformité (ApiEscalade.graves) et la diplomatie. Au-delà de SEUIL_VIGILANCE escalades graves sur
+// 365 jours, l'opérateur passe en vigilance ; un constat est posé à la conformité, une fois par
+// passage en vigilance.
+
+// Statistiques : id de la machine = opérateur (Org).
+skeleton EscStatistiques {
+    const MAX_OPERATEURS = 100000
+    const MAX_GRAVES = 10000000
+    // Fenêtre glissante : 365 jours.
+    const FENETRE_MS = 31536000000
+    // Conservation des lignes de `graves` : 3 ans, puis purge.
+    const CONSERVATION_MS = 94608000000
+    // Escalades graves sur 365 jours au-delà desquelles l'opérateur passe en vigilance.
+    const SEUIL_VIGILANCE = 3
+    memory {
+        ouvertures: Map<String, Int> [persistent]          // opérateur → dossiers ouverts (cumul)
+        par_echelon: Map<String, Int> [persistent]         // "opérateur|échelon" → fois où l'échelon a été atteint
+        accuses: Map<String, Int> [persistent]             // opérateur → accusés reçus
+        delai_accuse_cumul: Map<String, Duree> [persistent] // opérateur → somme des délais d'accusé (ms)
+        reprises: Map<String, Int> [persistent]            // opérateur → reprises par ORBITE
+        graves: List<String> [persistent]                  // "op | h | dossier | échelon", ajout seul sauf purge
+        invariant ouvertures.size <= MAX_OPERATEURS
+        invariant par_echelon.size <= 400000
+        invariant graves.size <= MAX_GRAVES
+        invariant ouvertures >= 0
+        invariant par_echelon >= 0
+        invariant accuses >= 0
+        invariant reprises >= 0
+        invariant (accuses ?? 0) <= (ouvertures ?? 0)
+        invariant (reprises ?? 0) <= (ouvertures ?? 0)
+    }
+    // Vigilance d'un opérateur (id = opérateur) : machine réactive, revient à "normale".
+    state vigilance {
+        initial: normale
+        normale -> vigilance          // evaluer : graves(op, h) ≥ SEUIL_VIGILANCE
+        vigilance -> signalee         // evaluer : constat posé à la conformité
+        vigilance -> normale          // evaluer : retombé sous le seuil avant le constat
+        signalee -> normale           // evaluer : retombé sous le seuil
+    }
+    face {
+        // Compte l'atteinte d'un échelon par un dossier (ouverture si `ouverture`) ; un échelon ≥ 3
+        // ajoute une ligne à `graves` puis évalue la vigilance. Renvoie le compteur de l'échelon.
+        // Refus : Plein.
+        signal compter(h: Horodatage, op: Org, dossier: String, echelon: EscEchelon, ouverture: Bool) -> Int
+            writes ouvertures, par_echelon, graves
+            calls evaluer
+        // Compte un accusé et son délai (ms depuis l'ouverture du dossier). Renvoie le nombre
+        // d'accusés de l'opérateur. Refus : Incoherent (plus d'accusés que d'ouvertures).
+        signal compter_accuse(h: Horodatage, op: Org, delai: Duree) -> Int
+            writes accuses, delai_accuse_cumul
+        // Compte une reprise par ORBITE. Renvoie le nombre de reprises de l'opérateur.
+        // Refus : Incoherent.
+        signal compter_reprise(h: Horodatage, op: Org, dossier: String) -> Int
+            writes reprises
+        // Escalades d'échelon ≥ 3 visant l'opérateur dont h − FENETRE_MS < instant ≤ h (un dossier
+        // compte une fois, à son plus haut échelon).
+        signal graves(op: Org, h: Horodatage) -> Int
+            reads graves
+            ensures result >= 0
+        // Fait suivre la machine de vigilance à graves(op, h) ; au passage en vigilance, constate
+        // à la conformité (ApiConformite.constater, nature "silence_escalade", gravité 2, par
+        // "systeme") puis passe "signalee". Renvoie l'état atteint.
+        signal evaluer(h: Horodatage, op: Org) -> String
+            reads graves
+            moves normale -> vigilance, vigilance -> signalee, vigilance -> normale, signalee -> normale
+            calls ApiConformite.constater, Journal.noter
+        // Tableau de l'opérateur : "ouvertures | e1 | e2 | e3 | e4 | accusés | délai moyen d'accusé
+        // (ms) | reprises | graves 365 j | vigilance". Rôle exigé : personne agissant pour
+        // l'opérateur, "point_focal" de son État, ou "analyste", "conformite", "direction",
+        // "auditeur" d'ORBITE. Refus : Habilitation.
+        signal tableau(op: Org, h: Horodatage, par: String) -> String
+            reads ouvertures, par_echelon, accuses, delai_accuse_cumul, reprises, graves, vigilance
+            calls ApiAcces.a_le_role, ApiAcces.agit_pour, ApiRef.etat_de, ApiRef.org_de_etat
+        // Opérateurs en vigilance ou signalés, "op | état | graves 365 j". Rôle exigé : "conformite",
+        // "direction", "analyste" d'ORBITE. Refus : Habilitation.
+        signal en_vigilance(h: Horodatage, par: String) -> List<String>
+            reads graves, vigilance
+            calls ApiAcces.a_le_role
+        // Purge les lignes de `graves` antérieures à h − CONSERVATION_MS, sauf celles d'un dossier
+        // dont le rapprochement (EscDossiers.rapprochement) est sous gel de preuve
+        // (ApiResponsabilite.sous_gel(cible = "CJ-…")). Appelée par EscBalayage.balayer une fois
+        // par jour (premier battement du jour). Renvoie le nombre purgé.
+        // Rôle exigé : "systeme" ou "exploitant" d'ORBITE. Refus : Habilitation.
+        signal purger(h: Horodatage, par: String) -> Int
+            writes graves
+            calls ApiAcces.a_le_role, EscDossiers.rapprochement, ApiResponsabilite.sous_gel, Journal.noter
+    }
+}

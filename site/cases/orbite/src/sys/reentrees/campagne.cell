@@ -1,0 +1,181 @@
+// RENTRÉES — la campagne de rentrée d'un objet : fenêtres successives (rétrécissement à mesure
+// que la rentrée approche), fondement de chaque prévision, passage en phase finale, échéance,
+// constat, clôture. Une campagne par rentrée ; son id ("RE-<n>") est aussi l'id de son
+// évaluation de risque (ReeRisque) et de son constat (ReeConstat) : les règles entre ces
+// machines suivent le même id, sans lien. Les notifications aux États (ReeNotification) et les
+// rentrées contrôlées (ReeControlee) suivent la campagne par un lien `campagne_de`.
+
+// État d'une campagne ; "inconnue" : id jamais ouvert.
+cell type ReeEtatCampagne = String where value == "inconnue" || value == "ouverte" || value == "imminente" || value == "echue" || value == "rentree" || value == "annulee" || value == "close"
+
+skeleton ReeCampagne {
+    const MAX_CAMPAGNES = 100000
+    // Révisions de fenêtre gardées par campagne (au-delà : Plein, la campagne est à revoir).
+    const MAX_REVISIONS = 500
+    // Fin de fenêtre à moins de 24 h de `h` : phase finale (suivi renforcé, notifications urgentes).
+    const IMMINENCE = 86400000
+    // Fin de fenêtre dépassée de plus de 6 h sans constat : la campagne est échue.
+    const MARGE_ECHEANCE = 21600000
+    // Durée du suivi renforcé demandé à l'observation en phase finale : 48 h.
+    const DUREE_SUIVI = 172800000
+    // Plafond d'espérance de victimes (millionièmes) : 10⁹ = mille victimes attendues.
+    const MAX_PPM = 1000000000
+    const MAX_HORODATAGE = 1000000000000000000
+    // Cadence de révision exigée : une prévision au moins toutes les 24 h, toutes les 3 h en
+    // phase finale ; au-delà la prévision est périmée (signalée par `balayer`).
+    const CADENCE = 86400000
+    const CADENCE_FINALE = 10800000
+
+    memory {
+        // campagne → objet. Écrit une fois par `prevoir` à la création, jamais supprimé.
+        objet_de: Map<String, Objet> [persistent]
+        // objet → campagne courante (la dernière ouverte ; ni annulée ni close tant qu'elle court).
+        courante: Map<Objet, String> [persistent]
+        // Fenêtre de rentrée courante (ms) : début et fin de la dernière révision.
+        fenetre_debut: Map<String, Horodatage> [persistent]
+        fenetre_fin: Map<String, Horodatage> [persistent]
+        // Largeur de la toute première fenêtre (ms) : mesure du rétrécissement.
+        largeur_initiale: Map<String, Duree> [persistent]
+        // Espérance de victimes de la dernière révision, en millionièmes.
+        victimes: Map<String, Int> [persistent]
+        // campagne → révisions "h | debut | fin | victimes_ppm | par", la plus récente en dernier.
+        revisions: Map<String, List<String>> [persistent]
+        // campagne → fondement de la dernière révision : "eph=<dépôt> | f107=<prévu> | kp=<dixièmes> | obs=<oui/non>"
+        // (ApiEphemerides.derniere, ApiMeteo.f107_prevu sur la fenêtre — l'activité solaire qui
+        // gouverne la traînée —, ApiMeteo.kp, ApiObservation.suivi) — preuve en cas de dommage.
+        fondement: Map<String, String> [persistent]
+        // campagne → id de la demande de suivi renforcé (ApiObservation.demander_suivi), "" sinon.
+        suivi_demande: Map<String, String> [persistent]
+        ouverte_le: Map<String, Horodatage> [persistent]
+        // campagne → instant de la dernière révision (contrôle de cadence).
+        derniere_revision: Map<String, Horodatage> [persistent]
+        // campagne → "motif / par / valideur" d'une annulation.
+        annulation: Map<String, String> [persistent]
+        invariant objet_de.size <= MAX_CAMPAGNES
+        invariant courante.size <= MAX_CAMPAGNES
+        invariant victimes >= 0 && victimes <= MAX_PPM
+        invariant revisions.size <= MAX_CAMPAGNES
+        // une fenêtre finit après son début
+        invariant (fenetre_fin ?? MAX_HORODATAGE) > (fenetre_debut ?? 0)
+        // une révision est postérieure à l'ouverture
+        invariant (derniere_revision ?? MAX_HORODATAGE) >= (ouverte_le ?? 0)
+    }
+
+    // Cycle d'une campagne (instance = id de campagne). Terminaux : annulee, close.
+    state cycle {
+        initial: ouverte
+        ouverte -> imminente        // prevoir : fin de fenêtre à moins de IMMINENCE
+        ouverte -> echue            // balayer (horloge) : fin + MARGE_ECHEANCE dépassée sans constat
+        imminente -> echue          // balayer : idem
+        imminente -> rentree        // constater
+        echue -> rentree            // constater : rentrée constatée après l'échéance
+        ouverte -> annulee          // annuler : objet remonté, prévision erronée
+        imminente -> annulee        // annuler
+        echue -> annulee            // prevoir (objet toujours en orbite : nouvelle campagne) ou annuler
+        rentree -> close            // balayer : constat terminé (sans suite, ou dossier transmis)
+    }
+
+    face {
+        // Ouvre la campagne de rentrée d'un objet, ou la révise : nouvelle fenêtre [debut, fin]
+        // (ms), espérance de victimes en millionièmes. À l'ouverture : écrit `objet_de`, évalue
+        // le risque (ReeRisque.evaluer), inscrit d'office l'État d'immatriculation et l'État de
+        // tutelle du propriétaire (ReeNotification.inscrire, motif "office"). Rentrée à risque majeur
+        // (ReeRisque.majeur) : tous les ApiRef.etats_participants sont inscrits (motif "majeur").
+        // À chaque révision : garde la fenêtre et son fondement (dépôt d'éphéméride, F10.7 prévu
+        // sur la fenêtre, Kp, suivi indépendant ; un Perime de météo est noté, pas bloquant),
+        // réévalue le risque,
+        // rediffuse aux États inscrits (ReeNotification.diffuser) et avertit le propriétaire
+        // (ApiRef.proprietaire, ApiPasserelle.notifier avec r = "" ; aucun message si "inconnu"). Fin à moins de IMMINENCE de `h` :
+        // passe "imminente" et demande un suivi renforcé (ApiObservation.demander_suivi, priorité 3
+        // si à risque, sinon 2 ; un refus Plein des capteurs est journalisé, pas bloquant). Une
+        // campagne "echue" pour cet objet est annulée (l'objet est toujours en orbite) et une
+        // nouvelle est ouverte. Renvoie l'id de la campagne ("RE-<n>").
+        // Habilitation : par "analyste" ou "systeme" (rôles d'ORBITE, ApiAcces.a_le_role).
+        // Refus : Inconnu (objet non catalogué, ou déjà "rentre"/"retire" pour ApiRef.etat_objet),
+        // Incoherent (fin ≤ debut, ou fin ≤ h), Habilitation, Plein (MAX_CAMPAGNES ou MAX_REVISIONS).
+        signal prevoir(h: Horodatage, objet: Objet, debut: Horodatage, fin: Horodatage, victimes_ppm: Int, par: String) -> String
+            writes objet_de, courante, fenetre_debut, fenetre_fin, largeur_initiale, victimes, revisions, fondement, suivi_demande, ouverte_le, derniere_revision, annulation
+            moves ouverte -> imminente, echue -> annulee
+            calls ApiAcces.a_le_role, ApiRef.etat_objet, ApiRef.proprietaire, ApiRef.etat_immatriculation, ApiRef.etat_de, ApiPasserelle.notifier, ApiEphemerides.derniere, ApiMeteo.f107_prevu, ApiMeteo.kp, ApiRef.etats_participants, ApiObservation.suivi, ApiObservation.demander_suivi, ReeRisque.evaluer, ReeRisque.a_risque, ReeRisque.majeur, ReeRisque.figer, ReeNotification.inscrire, ReeNotification.diffuser, ReeNotification.clore, Journal.noter, next_id
+
+        // Vrai si une campagne de l'objet est "ouverte", "imminente" ou "echue".
+        signal en_campagne(objet: Objet) -> Bool
+            reads courante, cycle
+
+        // Campagne courante (ou dernière) de l'objet ; "" s'il n'en a jamais eu.
+        signal campagne_de(objet: Objet) -> String
+            reads courante
+
+        // Objet d'une campagne. Refus : Inconnu.
+        signal objet(campagne: String) -> Objet
+            reads objet_de
+
+        // État de la campagne ; "inconnue" si l'id n'a jamais été ouvert.
+        signal etat(campagne: String) -> ReeEtatCampagne
+            reads objet_de, cycle
+
+        // Vrai si la dernière campagne de l'objet est "rentree" ou "close" (rentrée constatée).
+        signal constatee(objet: Objet) -> Bool
+            reads courante, cycle
+
+        // Fenêtre courante [debut, fin] en ms. Refus : Inconnu.
+        signal fenetre(campagne: String) -> List<Int>
+            reads fenetre_debut, fenetre_fin
+
+        // Largeur de la fenêtre courante rapportée à la première (%) : 100 à l'ouverture, moins à
+        // mesure qu'elle se resserre, plus si elle s'élargit (tempête). Figure dans chaque avis.
+        // Refus : Inconnu.
+        signal retrecissement(campagne: String) -> Pourcent
+            reads fenetre_debut, fenetre_fin, largeur_initiale
+
+        // Constate la rentrée : instant réel, lieu approximatif ("lat,lon" en degrés ou zone
+        // nommée), débris au sol retrouvés ou non. Enregistre le constat (ReeConstat.enregistrer,
+        // qui note si l'instant tombe dans la dernière fenêtre — mesure de la qualité des
+        // prévisions, jamais un refus), fige le risque, fait passer l'objet "rentre"
+        // (ApiRef.changer_etat_objet, par "systeme"), marque résolus ses rapprochements encore
+        // ouverts (ApiConjonctions.ouverts_de puis resoudre, motif "objet rentré", par "systeme"),
+        // tranche la rentrée contrôlée éventuelle (ReeControlee.constater_rentree) et clôt les
+        // notifications avec un avis final aux États (ReeNotification.clore). Renvoie "rentree".
+        // Habilitation : par "analyste", valideur "superviseur" (rôles d'ORBITE, ApiAcces.quatre_yeux).
+        // Refus : Inconnu (objet sans campagne), EtatInvalide (campagne ni "imminente" ni "echue"),
+        // Incoherent (instant > h, ou objet encore suivi en orbite après l'instant déclaré :
+        // ApiObservation.suivi vrai et pas de mesure contraire — à trancher par l'analyste),
+        // Habilitation, QuatreYeux.
+        signal constater(h: Horodatage, objet: Objet, instant: Horodatage, lieu: String, debris_au_sol: Bool, par: String, valideur: String) -> String
+            reads courante, objet_de, fenetre_debut, fenetre_fin
+            moves imminente -> rentree, echue -> rentree
+            calls ApiAcces.a_le_role, ApiAcces.quatre_yeux, ApiObservation.suivi, ApiRef.changer_etat_objet, ApiConjonctions.ouverts_de, ApiConjonctions.resoudre, ReeConstat.enregistrer, ReeRisque.figer, ReeControlee.zone_de, ReeControlee.constater_rentree, ReeNotification.clore, Journal.noter
+
+        // Annule une campagne : l'objet a été remonté (manœuvre), ou la prévision était erronée
+        // (objet ré-observé en orbite). Fige le risque, clôt les notifications avec un avis
+        // d'annulation. Renvoie "annulee".
+        // Habilitation : par "analyste", valideur "superviseur" (rôles d'ORBITE, ApiAcces.quatre_yeux).
+        // Refus : Inconnu, EtatInvalide (campagne terminée), MotifRequis, Conflit (rentrée
+        // contrôlée approuvée ou exécutée : ReeControlee.actif — l'annuler d'abord), Habilitation, QuatreYeux.
+        signal annuler(h: Horodatage, campagne: String, motif: String, par: String, valideur: String) -> ReeEtatCampagne
+            writes annulation
+            reads objet_de, courante
+            moves ouverte -> annulee, imminente -> annulee, echue -> annulee
+            calls ApiAcces.a_le_role, ApiAcces.quatre_yeux, ReeControlee.actif, ReeRisque.figer, ReeNotification.clore, Journal.noter
+
+        // Balayage complet du sous-système à `h`, appelé par ApiReentrees.balayer (horloge d'ORBITE,
+        // par "systeme") — reentrees ne lit jamais l'heure lui-même. Dans l'ordre :
+        // 1. campagnes "ouverte"/"imminente" dont fin + MARGE_ECHEANCE < h → "echue", message
+        //    d'urgence 2 à ORBITE (ApiRef.orbite, ApiPasserelle.notifier, r = "") qui dit si
+        //    ApiObservation.suivi voit encore l'objet (prévision à reprendre) ;
+        // 2. campagnes en cours dont la dernière révision dépasse CADENCE (CADENCE_FINALE si
+        //    "imminente") : même message, prévision périmée ;
+        // 3. relances d'accusé dues de chaque campagne en cours (ReeNotification.relancer) ;
+        // 4. échéances des constats (ReeConstat.balayer) puis clôture des campagnes "rentree" dont
+        //    le constat est terminé (rentree → close) ;
+        // 5. échéances des débris retrouvés (ReeDebris.balayer).
+        // Renvoie le nombre d'objets (campagnes, notifications, constats, débris) dont l'état a changé.
+        // Habilitation : par "systeme" (rôle d'ORBITE). Refus : Habilitation.
+        signal balayer(h: Horodatage, par: String) -> Int
+            reads objet_de, courante, fenetre_fin, derniere_revision
+            moves ouverte -> echue, imminente -> echue, rentree -> close when ReeConstat.sans_suite || ReeConstat.transmis
+            calls ApiAcces.a_le_role, ApiObservation.suivi, ApiRef.orbite, ApiPasserelle.notifier, ReeNotification.relancer, ReeConstat.balayer, ReeConstat.etat, ReeDebris.balayer, Journal.noter
+            ensures result >= 0
+
+    }
+}

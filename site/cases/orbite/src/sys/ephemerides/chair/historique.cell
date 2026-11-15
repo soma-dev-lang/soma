@@ -1,0 +1,142 @@
+// ephemerides — corps de l'HISTORIQUE, de la PREUVE et de la RÉTENTION.
+flesh EphHistorique {
+    on noter_depot(h, objet, depot) {
+        let hs = historique_de.get(objet) ?? []
+        require len(hs) < MAX_PAR_OBJET else Plein "historique de {objet} plein : purger d'abord"
+        if len(hs) == 0 {
+            require historique_de.size < MAX_OBJETS else Plein "trop d'objets suivis"
+        }
+        let hs2 = hs ++ [depot]
+        historique_de.set(objet, hs2)
+        return len(hs2)
+    }
+
+    on historique(objet, n) {
+        let hs = historique_de.get(objet) ?? []
+        if len(hs) <= n {
+            return hs
+        }
+        return slice(hs, len(hs) - n)
+    }
+
+    on fondement(objet, h) {
+        let hs = historique_de.get(objet) ?? []
+        let i = len(hs) - 1
+        while i >= 0 {
+            let d = hs[i]
+            let v = EphDepot.valide_depuis(d)
+            if v > 0 && v <= h {
+                let f = EphDepot.fin_de(d)
+                if f == 0 || h < f {
+                    return d
+                }
+            }
+            i = i - 1
+        }
+        return ""
+    }
+
+    on consulter(h, depot, org, r, par) {
+        let obj = EphDepot.objet_du_depot(depot)
+        require ApiAcces.agit_pour(par, org) || ApiAcces.a_le_role(par, "analyste") || ApiAcces.a_le_role(par, "conformite") || ApiAcces.a_le_role(par, "auditeur") else Habilitation "{par} n'agit pas pour {org}"
+        require ApiDonnees.peut_recevoir(org, obj, r, h) else Confidentiel "{org} ne peut pas recevoir les données de {obj}"
+        let f = EphDepot.fiche(depot)
+        let _ = ApiDonnees.tracer(h, org, obj, r, "ephemeride")
+        let _ = Journal.noter(h, "ephemerides", par, "fiche {depot} communiquee a {org}")
+        return f
+    }
+
+    on purger(h, n, par) {
+        require ApiAcces.a_le_role(par, "systeme") || ApiAcces.a_le_role(par, "exploitant") else Habilitation "systeme ou exploitant d'ORBITE requis"
+        let cons = to_int(EphReglage.duree_conservation())
+        let archives = 0
+        let objets_h = historique_de.keys
+        for obj in objets_h {
+            if archives < n && len(ApiConjonctions.ouverts_de(obj)) == 0 && (!ApiResponsabilite.sous_gel(obj)) {
+                let hs = historique_de.get(obj) ?? []
+                let force = len(hs) > MAX_PAR_OBJET - 100
+                // Le dépôt courant (dernier validé ou périmé de l'historique) n'est jamais archivé.
+                let protege = ""
+                for d in hs {
+                    let s = EphDepot.etat_de(d)
+                    if s == "validee" || s == "perimee" {
+                        protege = d
+                    }
+                }
+                let gardes = []
+                let ici = 0
+                for d in hs {
+                    let s = EphDepot.etat_de(d)
+                    let clos = s == "rejetee" || s == "remplacee" || s == "perimee" || s == "invalidee"
+                    let fin_t = if s == "rejetee" { to_int(split(EphDepot.fiche(d), "|")[13]) } else { to_int(EphDepot.fin_de(d)) }
+                    let assez_vieux = fin_t > 0 && to_int(h) - fin_t >= cons
+                    if s == "archivee" {
+                        ici = ici + 0
+                    } else if archives < n && clos && d != protege && (force || assez_vieux) && (!EphRetention.est_retenu(d)) && (!ApiResponsabilite.sous_gel(d)) {
+                        let _ = EphDepot.archiver(h, d)
+                        archives = archives + 1
+                        ici = ici + 1
+                    } else {
+                        gardes = gardes ++ [d]
+                    }
+                }
+                if len(gardes) != len(hs) {
+                    historique_de.set(obj, gardes)
+                    purge_le.set(obj, h)
+                    nb_archives.set(obj, (nb_archives.get(obj) ?? 0) + ici)
+                    let _ = Journal.noter(h, "ephemerides", par, "purge {obj} : {ici} depot(s) archive(s)")
+                }
+            }
+        }
+        return archives
+    }
+}
+
+flesh EphRetention {
+    on retenir(h, depot, r, motif, par) {
+        require ApiAcces.a_le_role(par, "conformite") || ApiAcces.a_le_role(par, "analyste") || ApiAcces.a_le_role(par, "systeme") else Habilitation "conformite, analyste ou systeme d'ORBITE requis"
+        require len(motif) > 0 else MotifRequis "motif requis"
+        let e = EphDepot.etat_de(depot)
+        require e != "inconnu" else Inconnu "dépôt {depot} inconnu"
+        require e != "archivee" else EtatInvalide "dépôt {depot} archivé"
+        let ms = motifs.get(depot) ?? []
+        require len(ms) < MAX_MOTIFS else Plein "trop de motifs de rétention"
+        if len(ms) == 0 {
+            require motifs.size < MAX_RETENUS else Plein "trop de dépôts retenus"
+        }
+        let ms2 = ms ++ ["{r}|{motif}|{par}|{h}"]
+        motifs.set(depot, ms2)
+        if retenu_le.get(depot) == () {
+            retenu_le.set(depot, h)
+        }
+        if (get_status(depot) ?? "libre") == "libre" {
+            transition(depot, "libre", "retenu")
+        }
+        let _ = Journal.noter(h, "ephemerides", par, "depot {depot} retenu ({r}) : {motif}")
+        return len(ms2)
+    }
+
+    on liberer(h, depot, r, par, valideur) {
+        require ApiAcces.a_le_role(par, "conformite") else Habilitation "conformite d'ORBITE requis"
+        require ApiAcces.a_le_role(valideur, "direction") && ApiAcces.quatre_yeux(par, valideur) else QuatreYeux "valideur direction distinct requis"
+        let ms = motifs.get(depot)
+        require ms != () else Inconnu "dépôt {depot} sans rétention"
+        require (get_status(depot) ?? "libre") == "retenu" else EtatInvalide "dépôt {depot} non retenu"
+        require !ApiResponsabilite.sous_gel(to_string(r)) else Conflit "rapprochement {r} sous gel"
+        let reste = ms.filter(m => split(m, "|")[0] != to_string(r))
+        require len(reste) < len(ms) else Inconnu "aucun motif {r} sur {depot}"
+        if len(reste) == 0 {
+            motifs.delete(depot)
+            retenu_le.delete(depot)
+            transition(depot, "retenu", "libre")
+        } else {
+            motifs.set(depot, reste)
+        }
+        let _ = Journal.noter(h, "ephemerides", par, "retention {r} levee sur {depot} (valideur {valideur})")
+        return len(reste)
+    }
+
+    on est_retenu(depot) {
+        return (get_status(depot) ?? "libre") == "retenu"
+    }
+}

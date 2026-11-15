@@ -1,0 +1,187 @@
+// Corps de EvtNotifications : notifications aux États et aux opérateurs.
+flesh EvtNotifications {
+    on preparer(h, sujet, f, objet, n) {
+        let prop = to_string(ApiRef.proprietaire(objet))
+        let etat_im = to_string(ApiRef.etat_immatriculation(objet))
+        let ids_p = []
+        if prop != "inconnu" && prop != "" {
+            let cle = "{sujet} | {f} | {prop} | {objet}"
+            if par_cle.get(cle) == () {
+                let d_op = try { ApiOperateurs.delai_reponse(Org(prop), n) }
+                let delai = if d_op.error == () { to_int(d_op.value) } else { DELAI_ETAT_MS }
+                let nt = _creer(h, sujet, f, Org(prop), "operateur", objet, n, Horodatage(to_int(h) + delai), cle)
+                let _ = envoyer(h, nt)
+                ids_p.push(nt)
+            }
+        }
+        if etat_im != "" && etat_im != "inconnu" {
+            let org_e = to_string(ApiRef.org_de_etat(Etat(etat_im)))
+            let cle_e = "{sujet} | {f} | {org_e} | {objet}"
+            if par_cle.get(cle_e) == () {
+                let nt_e = _creer(h, sujet, f, Org(org_e), "etat", objet, n, h + DELAI_ETAT_MS, cle_e)
+                let _ = envoyer(h, nt_e)
+                ids_p.push(nt_e)
+            }
+        }
+        return ids_p
+    }
+
+    on diffuser(h, sujet, f, parent, touches) {
+        require f == "nuage" || f == "rapport" else HorsBornes "diffusion d'un fait {f} : seulement nuage ou rapport"
+        let urg = if f == "nuage" { 2 } else { 1 }
+        let nb = 0
+        for e in ApiRef.etats_participants() {
+            let org_e = to_string(ApiRef.org_de_etat(Etat(e)))
+            let cle = "{sujet} | {f} | {org_e} | {parent}"
+            if par_cle.get(cle) == () {
+                let nt = _creer(h, sujet, f, Org(org_e), "participant", parent, Niveau(urg), h + DELAI_ETAT_MS, cle)
+                let _ = envoyer(h, nt)
+                nb = nb + 1
+            }
+        }
+        let ouverts = 0
+        for reg in touches {
+            let cur = "{sujet} | {f} | {reg} | {parent}"
+            if curseurs.get(cur) == () {
+                require curseurs.size < MAX_DIFFUSIONS else Plein "plafond de {MAX_DIFFUSIONS} diffusions en cours"
+                curseurs.set(cur, "")
+                ouverts = ouverts + 1
+            }
+        }
+        if ouverts > 0 {
+            nb = nb + poursuivre(h, 100)
+        }
+        return nb
+    }
+
+    on poursuivre(h, n) {
+        let nb = 0
+        let orbite_o = to_string(ApiRef.orbite())
+        let cles_c = []
+        for k in curseurs.keys {
+            if len(cles_c) >= n { break }
+            cles_c.push(k)
+        }
+        for k in cles_c {
+            let parts = split(k, " | ")
+            let sujet = parts[0]
+            let f = parts[1]
+            let reg = parts[2]
+            let parent = parts[3]
+            let urg = if f == "nuage" { 2 } else { 1 }
+            let apres = curseurs.get(k) ?? ""
+            let page = ApiRef.catalogue(reg, Objet(apres), PAGE)
+            for o in page {
+                let po = try { ApiRef.proprietaire(Objet(o)) }
+                if po.error == () {
+                    let prop = to_string(po.value)
+                    if prop != "inconnu" && prop != "" && prop != orbite_o {
+                        let cle = "{sujet} | {f} | {prop} | {parent}"
+                        if par_cle.get(cle) == () {
+                            let d_op = try { ApiOperateurs.delai_reponse(Org(prop), Niveau(urg)) }
+                            let delai = if d_op.error == () { to_int(d_op.value) } else { DELAI_ETAT_MS }
+                            let nt = _creer(h, sujet, EvtSujet(f), Org(prop), "riverain", Objet(parent), Niveau(urg), Horodatage(to_int(h) + delai), cle)
+                            let _ = envoyer(h, nt)
+                            nb = nb + 1
+                        }
+                    }
+                }
+            }
+            if len(page) < PAGE {
+                curseurs.delete(k)
+            } else {
+                curseurs.set(k, Objet(page[len(page) - 1]))
+            }
+        }
+        return nb
+    }
+
+    on envoyer(h, notification) {
+        let dest = destinataire.get(notification)
+        require dest != () else Inconnu "notification inconnue : {notification}"
+        let st = get_status(notification) ?? "preparee"
+        require st == "preparee" else EtatInvalide "{notification} {st}"
+        let obj = objet_de.get(notification) ?? ""
+        let f = fait.get(notification) ?? "anomalie"
+        let suj = sujet_de.get(notification) ?? ""
+        if ApiDonnees.peut_recevoir(dest, obj, "", h) {
+            let rap = EvtCollisions.rapprochement(suj)
+            let _ = ApiDonnees.tracer(h, dest, obj, rap, "evenements:{f}")
+            let urg = urgence.get(notification) ?? 1
+            let msg = ApiPasserelle.notifier(h, dest, rap, suj, "{f} {suj} : objet {obj}", urg)
+            message_de.set(notification, msg)
+            transition(notification, "preparee", "envoyee")
+            let _ = Journal.noter(h, "evenements", "systeme", "{notification} ({f} {suj}) envoyée à {dest} : {msg}")
+            return "envoyee"
+        }
+        transition(notification, "preparee", "retenue")
+        let _ = Journal.noter(h, "evenements", "systeme", "{notification} ({f} {suj}) retenue : {dest} ne reçoit pas les données de {obj}")
+        return "retenue"
+    }
+
+    on relever(h, n, par) {
+        require ApiAcces.a_le_role(par, "systeme") || ApiAcces.a_le_role(par, "exploitant") else Habilitation "{par} ne relève pas les notifications"
+        let vues = 0
+        let changees = 0
+        for nt in message_de.keys {
+            if vues >= n { break }
+            let st = get_status(nt) ?? "preparee"
+            if st == "envoyee" {
+                vues = vues + 1
+                let msg = message_de.get(nt) ?? ""
+                if ApiPasserelle.acquitte(msg) {
+                    transition(nt, "envoyee", "acquittee")
+                    changees = changees + 1
+                } else if h > (echeance.get(nt) ?? h) {
+                    transition(nt, "envoyee", "sans_reponse")
+                    changees = changees + 1
+                    let urg = urgence.get(nt) ?? 1
+                    let dest = destinataire.get(nt) ?? ""
+                    let q = qualite.get(nt) ?? ""
+                    if (q == "operateur" || q == "riverain") && urg >= 2 {
+                        let _ = ApiConformite.constater(h, dest, "notification_non_acquittee", Gravite(to_int(urg) - 1), nt, "systeme")
+                    }
+                    let _ = Journal.noter(h, "evenements", "systeme", "{nt} sans réponse de {dest}")
+                }
+            }
+        }
+        if changees > 0 {
+            let _ = Journal.noter(h, "evenements", par, "{changees} notification(s) relevée(s)")
+        }
+        return changees
+    }
+
+    on de_sujet(sujet, n, par) {
+        let habilite = ApiAcces.a_le_role(par, "analyste") || ApiAcces.a_le_role(par, "conformite") || ApiAcces.a_le_role(par, "direction") || ApiAcces.a_le_role(par, "auditeur")
+        require habilite else Habilitation "{par} ne lit pas les notifications"
+        let lignes_n = []
+        for e in sujet_de.entries {
+            if len(lignes_n) >= n { break }
+            if e.value == sujet {
+                let nt = e.key
+                let dest = destinataire.get(nt) ?? ""
+                let f = fait.get(nt) ?? ""
+                let st = get_status(nt) ?? "preparee"
+                let msg = message_de.get(nt) ?? ""
+                lignes_n.push("{nt} | {dest} | {f} | {st} | {msg}")
+            }
+        }
+        return lignes_n
+    }
+
+    on _creer(h: Horodatage, sujet: String, f: EvtSujet, org: Org, q: EvtDestinataire, objet: Objet, n: Niveau, ech: Horodatage, cle: String) {
+        require sujet_de.size < MAX_NOTIFICATIONS else Plein "plafond de {MAX_NOTIFICATIONS} notifications atteint"
+        let n_id = next_id()
+        let nt = "NT-{n_id}"
+        sujet_de.set(nt, sujet)
+        fait.set(nt, f)
+        destinataire.set(nt, org)
+        qualite.set(nt, q)
+        objet_de.set(nt, objet)
+        urgence.set(nt, n)
+        echeance.set(nt, if ech < h { h } else { ech })
+        emise_le.set(nt, h)
+        par_cle.set(cle, nt)
+        return nt
+    }
+}

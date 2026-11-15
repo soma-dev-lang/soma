@@ -1,0 +1,133 @@
+// lancements — corps de LancZones (États de lancement, zones de retombée prévues).
+
+flesh LancZones {
+    on ouvrir(h, lancement, etat, par) {
+        require ApiAcces.a_le_role(par, "systeme") else Habilitation "{par} : systeme requis"
+        require etats_lancement_de.get(lancement) == () else Existe "dossier des zones de {lancement} déjà ouvert"
+        require etats_lancement_de.size < MAX_DOSSIERS else Plein "dossiers des zones pleins"
+        etats_lancement_de.set(lancement, [to_string(etat)])
+        return 1
+    }
+
+    on ajouter_etat(h, lancement, etat, par) {
+        let liste = etats_lancement_de.get(lancement)
+        require liste != () else Inconnu "lancement {lancement} inconnu"
+        let habilite = ApiAcces.a_le_role(par, "analyste") || (ApiAcces.a_le_role(par, "autorite") && _autorite_parmi(par, liste))
+        require habilite else Habilitation "{par} : autorité d'un État de lancement ou analyste requis"
+        let st = LancLancement.etat(lancement)
+        require st == "notifie" || st == "crible" || st == "autorise" || st == "reporte" else Ferme "lancement {lancement} : {st}"
+        let e = to_string(etat)
+        require !contains(liste, e) else Doublon "État {e} déjà État de lancement"
+        require len(liste) < MAX_ETATS_LANCEMENT else Plein "4 États de lancement au plus"
+        let nouvelle = liste ++ [e]
+        etats_lancement_de.set(lancement, nouvelle)
+        Journal.noter(h, "lancements", par, "État de lancement {e} ajouté à {lancement}")
+        return len(nouvelle)
+    }
+
+    on declarer(h, lancement, zones, par) {
+        let liste = etats_lancement_de.get(lancement)
+        require liste != () else Inconnu "lancement {lancement} inconnu"
+        let f = LancLancement.fiche(lancement)
+        let chef = ApiAcces.a_le_role(par, "chef_de_mission") && ApiAcces.agit_pour(par, f.op)
+        let auto = ApiAcces.a_le_role(par, "autorite") && _autorite_de(par, liste[0])
+        require chef || auto else Habilitation "{par} : chef_de_mission de l'opérateur ou autorité de l'État du préavis requis"
+        let lst = LancLancement.etat(lancement)
+        require lst == "notifie" || lst == "crible" || lst == "autorise" else EtatInvalide "lancement {lancement} : {lst}"
+        let st = get_status(lancement) ?? "a_declarer"
+        require st == "a_declarer" || st == "declarees" || st == "acquittees" else EtatInvalide "zones de {lancement} : {st}"
+        require len(zones) <= MAX_ZONES else Plein "50 zones au plus"
+        let etats_survoles = []
+        for z in zones {
+            let p = split(z, "|")
+            require len(p) == 5 else Incoherent "zone mal formée : {z}"
+            let rd = try { to_int(p[1]) }
+            let rf = try { to_int(p[2]) }
+            require rd.error == () && rf.error == () else Incoherent "zone mal formée : {z}"
+            require rd.value <= rf.value && rd.value >= to_int(f.debut) && rf.value <= to_int(f.fin) else Incoherent "zone hors de la fenêtre : {z}"
+            if !contains(etats_survoles, p[0]) { etats_survoles.push(p[0]) }
+        }
+        let msgs_z = []
+        for e in etats_survoles {
+            let ro = try { ApiRef.org_de_etat(e) }
+            require ro.error == () else Inconnu "État survolé {e} sans autorité inscrite"
+            let m = ApiPasserelle.notifier(h, ro.value, "", "zones de retombée {lancement}", "zones de retombée du lancement {lancement}, fenêtre {f.version}", 2)
+            msgs_z.push(m)
+        }
+        zones_de.set(lancement, zones)
+        messages_de.set(lancement, msgs_z)
+        version_de.set(lancement, f.version)
+        declare_le.set(lancement, h)
+        if st == "a_declarer" {
+            transition(lancement, "a_declarer", "declarees")
+        } else if st == "declarees" {
+            transition(lancement, "declarees", "declarees")
+        } else {
+            transition(lancement, "acquittees", "declarees")
+        }
+        let n = len(msgs_z)
+        Journal.noter(h, "lancements", par, "zones de retombée de {lancement} déclarées : {n} État(s) notifié(s)")
+        return n
+    }
+
+    on relever_acquittements(h, lancement, par) {
+        require ApiAcces.a_le_role(par, "systeme") else Habilitation "{par} : systeme requis"
+        let msgs = messages_de.get(lancement)
+        require msgs != () else Inconnu "aucune déclaration de zones pour {lancement}"
+        let reste = 0
+        for m in msgs {
+            if !ApiPasserelle.acquitte(m) { reste = reste + 1 }
+        }
+        let st = get_status(lancement) ?? "a_declarer"
+        if reste == 0 && st == "declarees" {
+            transition(lancement, "declarees", "acquittees")
+        }
+        return reste
+    }
+
+    on clore(h, lancement, par) {
+        require ApiAcces.a_le_role(par, "systeme") else Habilitation "{par} : systeme requis"
+        let st = get_status(lancement) ?? "a_declarer"
+        if st == "a_declarer" {
+            transition(lancement, "a_declarer", "closes")
+        } else if st == "declarees" {
+            transition(lancement, "declarees", "closes")
+        } else if st == "acquittees" {
+            transition(lancement, "acquittees", "closes")
+        }
+        return "closes"
+    }
+
+    on est_etat_de_lancement(lancement, etat) {
+        return contains(etats_lancement_de.get(lancement) ?? [], to_string(etat))
+    }
+
+    on etats_lancement(lancement) {
+        let liste = etats_lancement_de.get(lancement)
+        require liste != () else Inconnu "lancement {lancement} inconnu"
+        return liste
+    }
+
+    on zones(lancement) {
+        require etats_lancement_de.get(lancement) != () else Inconnu "lancement {lancement} inconnu"
+        return zones_de.get(lancement) ?? []
+    }
+
+    on etat(lancement) {
+        if etats_lancement_de.get(lancement) == () { return "inconnue" }
+        return get_status(lancement) ?? "a_declarer"
+    }
+
+    on _autorite_de(par: String, etat: String) {
+        let r = try { ApiRef.org_de_etat(Etat(etat)) }
+        if r.error != () { return false }
+        return ApiAcces.agit_pour(par, r.value)
+    }
+
+    on _autorite_parmi(par: String, liste: List<String>) {
+        for e in liste {
+            if _autorite_de(par, e) { return true }
+        }
+        return false
+    }
+}

@@ -1,0 +1,35 @@
+// Façade des PRIORITÉS : le « code de la route » orbital, versionné et adopté par les États.
+skeleton ApiPriorites {
+    face {
+        // Désignation par défaut selon les règles en vigueur : l'objet qui doit manœuvrer entre
+        // a et b ; "" si aucun ne le peut. Ordre de principe : un objet habité ne manœuvre que
+        // seul ; un objet sans propulsion jamais ; propulsion faible manœuvre si son préavis
+        // (preavis("faible")) tient avant le TCA du rapprochement r, sinon l'impulsionnelle ; à capacité égale, le dernier arrivé sur l'orbite (lancé le plus
+        // récemment). Chaque appel enregistre une décision (version, instantané) :
+        // decision_de(r). Refus : Inconnu (objet), Ferme (aucune version en vigueur), Incoherent
+        // (a == b), Plein.
+        signal qui_manoeuvre(h: Horodatage, r: Rapprochement, a: Objet, b: Objet) -> Objet
+            calls PrioDesignation.designer
+        // Version des règles en vigueur à `h` ("" si aucune).
+        signal version_en_vigueur(h: Horodatage) -> String
+            calls PrioVersion.en_vigueur_a
+        // Vrai si l'opérateur bénéficie d'une dérogation en cours (ex. satellite en phase
+        // critique de mission) pour l'objet.
+        signal derogation(objet: Objet, h: Horodatage) -> Bool
+            calls PrioDerogation.en_cours
+        // Délai minimal (ms) entre la décision et le TCA pour qu'une propulsion de ce type
+        // puisse agir.
+        signal preavis(p: Propulsion) -> Duree
+            calls PrioTable.preavis_courant
+        // Dernière décision de priorité calculée pour le rapprochement :
+        // "id|designe|version|regle_appliquee|instant" ; "" si aucune.
+        signal decision_de(r: Rapprochement) -> String
+            calls PrioDesignation.decision_de
+        // Balayage des échéances du sous-système à `h` (délais, expirations, rondes), appelé par
+        // l'horloge d'ORBITE (Horloge.battre) — le SEUL point d'entrée du temps : aucun signal de
+        // priorites ne lit l'horloge lui-même. Renvoie le nombre d'objets dont l'état a changé.
+        // Refus : Habilitation (par "systeme").
+        signal balayer(h: Horodatage, par: String) -> Int
+            calls PrioEcheancier.balayer
+    }
+}

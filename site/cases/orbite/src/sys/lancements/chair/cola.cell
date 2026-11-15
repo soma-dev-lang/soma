@@ -1,0 +1,357 @@
+// lancements — corps de LancCola (criblage de la fenêtre de tir) et de LancAvis (avis d'ORBITE).
+
+flesh LancCola {
+    on ouvrir(h, lancement, par) {
+        require ApiAcces.a_le_role(par, "systeme") else Habilitation "{par} : systeme requis"
+        require version_de.get(lancement) == () else Existe "COLA de {lancement} déjà ouvert"
+        require version_de.size < MAX_COLA else Plein "registre des COLA plein"
+        version_de.set(lancement, 1)
+        return 1
+    }
+
+    on relancer(h, lancement, version, par) {
+        require ApiAcces.a_le_role(par, "systeme") else Habilitation "{par} : systeme requis"
+        let v = version_de.get(lancement)
+        require v != () else Inconnu "COLA de {lancement} inconnu"
+        require version > v else HorsBornes "version {version} non croissante (en cours : {v})"
+        version_de.set(lancement, version)
+        return version
+    }
+
+    on demander(h, lancement, trajectoire, par) {
+        let v = version_de.get(lancement)
+        require v != () else Inconnu "COLA de {lancement} inconnu"
+        let f = LancLancement.fiche(lancement)
+        let ope = (ApiAcces.a_le_role(par, "dynamicien") || ApiAcces.a_le_role(par, "chef_de_mission")) && ApiAcces.agit_pour(par, f.op)
+        require ope || ApiAcces.a_le_role(par, "analyste") else Habilitation "{par} : dynamicien ou chef_de_mission de l'opérateur, ou analyste requis"
+        let lst = LancLancement.etat(lancement)
+        require lst == "notifie" else EtatInvalide "lancement {lancement} : {lst}"
+        let st = get_status(lancement) ?? "a_cribler"
+        require st == "a_cribler" || st == "impossible" || st == "perime" else EtatInvalide "COLA de {lancement} : {st}"
+        require trajectoire != "" else MotifRequis "empreinte de trajectoire requise"
+        require ApiConjonctions.campagne_fraiche(f.regime, h) else Perime "catalogue du régime {f.regime} non criblé depuis 8 h"
+        let facteur = max(to_int(ApiMeteo.facteur_incertitude(f.regime, h)), 100)
+        let renforce = ApiMeteo.tempete(h) || ApiEvenements.nuage_actif(f.regime, h)
+        trajectoire_de.set(lancement, trajectoire)
+        demande_le.set(lancement, h)
+        facteur_de.set(lancement, facteur)
+        renforce_de.set(lancement, renforce)
+        if st == "a_cribler" {
+            transition(lancement, "a_cribler", "en_cours")
+        } else if st == "impossible" {
+            transition(lancement, "impossible", "en_cours")
+        } else {
+            transition(lancement, "perime", "en_cours")
+        }
+        Journal.noter(h, "lancements", par, "COLA de {lancement} demandé (fenêtre {v}, facteur {facteur}, renforcé {renforce})")
+        return "en_cours"
+    }
+
+    on conclure(h, lancement, version, candidats, depots, par) {
+        let v = version_de.get(lancement)
+        require v != () else Inconnu "COLA de {lancement} inconnu"
+        require ApiAcces.a_le_role(par, "systeme") || ApiAcces.a_le_role(par, "analyste") else Habilitation "{par} : systeme ou analyste requis"
+        let st = get_status(lancement) ?? "a_cribler"
+        require st == "en_cours" else EtatInvalide "COLA de {lancement} : {st}"
+        require version == v else Perime "version {version} ≠ fenêtre en cours {v}"
+        require len(candidats) <= MAX_CANDIDATS && len(depots) <= MAX_CANDIDATS else Plein "plus de 2 000 candidats ou dépôts"
+        let f = LancLancement.fiche(lancement)
+        let interdits_c = []
+        let impossible = !ApiConjonctions.campagne_fraiche(f.regime, h)
+        for c in candidats {
+            let p = split(c, "|")
+            require len(p) == 5 else Incoherent "candidat mal formé : {c}"
+            let rd = try { to_int(p[0]) }
+            let rf = try { to_int(p[1]) }
+            let rdist = try { to_int(p[3]) }
+            let rpc = try { to_int(p[4]) }
+            require rd.error == () && rf.error == () && rdist.error == () && rpc.error == () else Incoherent "candidat mal formé : {c}"
+            require rd.value <= rf.value && rd.value >= to_int(f.debut) && rf.value <= to_int(f.fin) else Incoherent "candidat hors fenêtre : {c}"
+            let obj = Objet(p[2])
+            let hab = ApiRef.habite(obj)
+            let interdit = if hab {
+                rdist.value < DISTANCE_HABITE || rpc.value > PC_HABITE
+            } else {
+                rdist.value < DISTANCE_MIN || rpc.value > PC_MAX
+            }
+            if interdit {
+                interdits_c.push("{p[0]}|{p[1]}|{p[2]}")
+            }
+            if hab && !(ApiEphemerides.fraiche(obj, h) || ApiObservation.suivi(obj, h)) {
+                impossible = true
+            }
+        }
+        require len(interdits_c) <= MAX_INTERDITS else Plein "plus de 500 périodes interdites"
+        let hist = historique_de.get(lancement) ?? []
+        if len(hist) >= 200 { hist = slice(hist, 1) }
+        if impossible {
+            historique_de.set(lancement, hist ++ ["{h}|{v}|impossible|0"])
+            transition(lancement, "en_cours", "impossible")
+            Journal.noter(h, "lancements", par, "COLA de {lancement} impossible (données insuffisantes)")
+            return "impossible"
+        }
+        let ni = len(interdits_c)
+        calcule_le.set(lancement, h)
+        interdits_de.set(lancement, interdits_c)
+        depots_de.set(lancement, depots)
+        historique_de.set(lancement, hist ++ ["{h}|{v}|conclu|{ni}"])
+        transition(lancement, "en_cours", "conclu")
+        let _ = LancLancement.prendre_acte_cola(h, lancement, "systeme")
+        Journal.noter(h, "lancements", par, "COLA de {lancement} conclu (fenêtre {v}, {ni} période(s) interdite(s))")
+        return "conclu"
+    }
+
+    on perimer(h, lancement, motif, par) {
+        require ApiAcces.a_le_role(par, "systeme") else Habilitation "{par} : systeme requis"
+        let v = version_de.get(lancement)
+        require v != () else Inconnu "COLA de {lancement} inconnu"
+        let st = get_status(lancement) ?? "a_cribler"
+        if st != "conclu" && st != "en_cours" { return st }
+        if st == "conclu" {
+            transition(lancement, "conclu", "perime")
+        } else {
+            transition(lancement, "en_cours", "perime")
+        }
+        let hist = historique_de.get(lancement) ?? []
+        if len(hist) >= 200 { hist = slice(hist, 1) }
+        historique_de.set(lancement, hist ++ ["{h}|{v}|perime|0"])
+        Journal.noter(h, "lancements", par, "COLA de {lancement} périmé : {motif}")
+        return "perime"
+    }
+
+    on veiller(h, lancement, par) {
+        require ApiAcces.a_le_role(par, "systeme") else Habilitation "{par} : systeme requis"
+        let f = LancLancement.fiche(lancement)
+        let st = get_status(lancement) ?? "a_cribler"
+        if st != "conclu" { return false }
+        let calc = calcule_le.get(lancement) ?? 0
+        let renforce = renforce_de.get(lancement) ?? false
+        let motif = if to_int(h) - to_int(calc) > VALIDITE {
+            "COLA de plus de 8 h"
+        } else if !renforce && ApiMeteo.tempete(h) {
+            "tempête géomagnétique"
+        } else if !renforce && ApiEvenements.nuage_actif(f.regime, h) {
+            "nuage de débris"
+        } else {
+            ""
+        }
+        if motif == "" { return false }
+        let _ = LancCola.perimer(h, lancement, motif, "systeme")
+        let _ = LancAvis.rendre_caduc(h, lancement, motif, "systeme")
+        let lst = LancLancement.etat(lancement)
+        if lst == "crible" || lst == "autorise" {
+            let _ = LancLancement.recribler(h, lancement, motif, "systeme")
+        }
+        return true
+    }
+
+    on archiver(h, lancement, par) {
+        require ApiAcces.a_le_role(par, "systeme") else Habilitation "{par} : systeme requis"
+        let st = get_status(lancement) ?? "a_cribler"
+        if st == "a_cribler" {
+            transition(lancement, "a_cribler", "archive")
+        } else if st == "en_cours" {
+            transition(lancement, "en_cours", "archive")
+        } else if st == "conclu" {
+            transition(lancement, "conclu", "archive")
+        } else if st == "impossible" {
+            transition(lancement, "impossible", "archive")
+        } else if st == "perime" {
+            transition(lancement, "perime", "archive")
+        }
+        return "archive"
+    }
+
+    on communiquer(h, lancement, destinataire, par) {
+        require ApiAcces.a_le_role(par, "systeme") || ApiAcces.a_le_role(par, "analyste") else Habilitation "{par} : systeme ou analyste requis"
+        let liste = interdits_de.get(lancement)
+        let st = get_status(lancement) ?? "a_cribler"
+        require st == "conclu" else EtatInvalide "COLA de {lancement} : {st}"
+        require liste != () else Inconnu "COLA de {lancement} jamais conclu"
+        let nommes = 0
+        let lignes_c = []
+        for ligne in liste {
+            let p = split(ligne, "|")
+            let obj = Objet(p[2])
+            if ApiDonnees.peut_recevoir(destinataire, obj, "", h) {
+                let _ = ApiDonnees.tracer(h, destinataire, obj, "", "cola")
+                lignes_c.push(ligne)
+                nommes = nommes + 1
+            } else {
+                lignes_c.push("{p[0]}|{p[1]}|objet protégé")
+            }
+        }
+        let texte = join(lignes_c, ";")
+        let _ = ApiPasserelle.notifier(h, destinataire, "", "COLA {lancement}", "périodes interdites : {texte}", 2)
+        Journal.noter(h, "lancements", par, "COLA de {lancement} communiqué à {destinataire} ({nommes} objet(s) nommé(s))")
+        return nommes
+    }
+
+    on etat(lancement) {
+        if version_de.get(lancement) == () { return "inconnu" }
+        return get_status(lancement) ?? "a_cribler"
+    }
+
+    on interdits(lancement) {
+        require version_de.get(lancement) != () else Inconnu "COLA de {lancement} inconnu"
+        return interdits_de.get(lancement) ?? []
+    }
+
+    on fondement(lancement) {
+        let v = version_de.get(lancement)
+        require v != () else Inconnu "COLA de {lancement} inconnu"
+        let calc = calcule_le.get(lancement)
+        require calc != () else EtatInvalide "COLA de {lancement} jamais conclu"
+        return LancFondement {
+            version: v,
+            calcule_le: calc,
+            trajectoire: trajectoire_de.get(lancement) ?? "",
+            depots: depots_de.get(lancement) ?? [],
+            facteur: facteur_de.get(lancement) ?? 100,
+            renforce: renforce_de.get(lancement) ?? false,
+            interdits: interdits_de.get(lancement) ?? []
+        }
+    }
+}
+
+flesh LancAvis {
+    on rediger(h, lancement, sens, motif, par) {
+        require ApiAcces.a_le_role(par, "analyste") else Habilitation "{par} : analyste d'ORBITE requis"
+        let f = LancLancement.fiche(lancement)
+        require motif != "" else MotifRequis "motif requis"
+        let st = get_status(lancement) ?? "a_rediger"
+        require st == "a_rediger" || st == "caduc" else EtatInvalide "avis de {lancement} : {st}"
+        let cst = LancCola.etat(lancement)
+        require cst == "conclu" else EtatInvalide "COLA de {lancement} : {cst}"
+        let zst = LancZones.etat(lancement)
+        require zst == "declarees" || zst == "acquittees" else EtatInvalide "zones de retombée de {lancement} : {zst}"
+        let fo = LancCola.fondement(lancement)
+        require fo.version == f.version else EtatInvalide "COLA sur la fenêtre {fo.version}, fenêtre en cours {f.version}"
+        if sens == "favorable" {
+            require _fenetre_ouverte(to_int(f.debut), to_int(f.fin), fo.interdits) else Incoherent "fenêtre entièrement interdite : avis favorable impossible"
+        }
+        sens_de.set(lancement, sens)
+        motif_de.set(lancement, motif)
+        redige_par.set(lancement, par)
+        cola_le_de.set(lancement, fo.calcule_le)
+        version_de.set(lancement, fo.version)
+        if st == "a_rediger" {
+            transition(lancement, "a_rediger", "redige")
+        } else {
+            transition(lancement, "caduc", "redige")
+        }
+        Journal.noter(h, "lancements", par, "avis {sens} rédigé sur {lancement} (fenêtre {fo.version})")
+        return "redige"
+    }
+
+    on valider(h, lancement, par, valideur) {
+        let sens = sens_de.get(lancement)
+        require sens != () else Inconnu "aucun avis rédigé sur {lancement}"
+        let st = get_status(lancement) ?? "a_rediger"
+        require st == "redige" else EtatInvalide "avis de {lancement} : {st}"
+        require ApiAcces.a_le_role(par, "analyste") && par == (redige_par.get(lancement) ?? "") else Habilitation "{par} : le rédacteur de l'avis valide avec un superviseur"
+        require ApiAcces.a_le_role(valideur, "superviseur") && ApiAcces.quatre_yeux(par, valideur) else QuatreYeux "{valideur} : superviseur distinct requis"
+        let cst = LancCola.etat(lancement)
+        require cst == "conclu" else Perime "COLA de {lancement} : {cst}"
+        let fo = LancCola.fondement(lancement)
+        require fo.calcule_le == (cola_le_de.get(lancement) ?? 0) else Perime "le COLA a changé depuis la rédaction"
+        let f = LancLancement.fiche(lancement)
+        let v = version_de.get(lancement) ?? 1
+        let cible = to_string(sens)
+        if cible == "favorable" {
+            transition(lancement, "redige", "favorable")
+            let _ = LancLancement.prendre_acte_avis(h, lancement, "systeme")
+        } else {
+            transition(lancement, "redige", "defavorable")
+        }
+        emis_le.set(lancement, h)
+        let hist = historique_de.get(lancement) ?? []
+        if len(hist) >= 200 { hist = slice(hist, 1) }
+        historique_de.set(lancement, hist ++ ["{h}|{v}|{cible}|{par}|{valideur}|{cible}"])
+        let _ = ApiPasserelle.notifier(h, f.op, "", "avis d'ORBITE {lancement}", "avis {cible} sur la fenêtre {v}", 2)
+        let ro = try { ApiRef.org_de_etat(f.etat) }
+        if ro.error == () {
+            let _ = ApiPasserelle.notifier(h, ro.value, "", "avis d'ORBITE {lancement}", "avis {cible} sur la fenêtre {v}", 2)
+        }
+        let _ = LancCola.communiquer(h, lancement, f.op, "systeme")
+        Journal.noter(h, "lancements", par, "avis {cible} sur {lancement} validé par {valideur}")
+        return LancEtatAvis(cible)
+    }
+
+    on rendre_caduc(h, lancement, motif, par) {
+        require ApiAcces.a_le_role(par, "systeme") else Habilitation "{par} : systeme requis"
+        let f = LancLancement.fiche(lancement)
+        let st = get_status(lancement) ?? "a_rediger"
+        if st != "redige" && st != "favorable" && st != "defavorable" { return st }
+        if st == "redige" {
+            transition(lancement, "redige", "caduc")
+        } else if st == "favorable" {
+            transition(lancement, "favorable", "caduc")
+        } else {
+            transition(lancement, "defavorable", "caduc")
+        }
+        let v = version_de.get(lancement) ?? 1
+        let sens = to_string(sens_de.get(lancement) ?? "defavorable")
+        let hist = historique_de.get(lancement) ?? []
+        if len(hist) >= 200 { hist = slice(hist, 1) }
+        historique_de.set(lancement, hist ++ ["{h}|{v}|{sens}|{par}||caduc"])
+        if st != "redige" {
+            let _ = ApiPasserelle.notifier(h, f.op, "", "avis d'ORBITE caduc {lancement}", "avis {sens} sur la fenêtre {v} caduc : {motif}", 2)
+        }
+        Journal.noter(h, "lancements", par, "avis sur {lancement} caduc : {motif}")
+        return "caduc"
+    }
+
+    on archiver(h, lancement, par) {
+        require ApiAcces.a_le_role(par, "systeme") else Habilitation "{par} : systeme requis"
+        let st = get_status(lancement) ?? "a_rediger"
+        if st == "a_rediger" {
+            transition(lancement, "a_rediger", "archive")
+        } else if st == "redige" {
+            transition(lancement, "redige", "archive")
+        } else if st == "favorable" {
+            transition(lancement, "favorable", "archive")
+        } else if st == "defavorable" {
+            transition(lancement, "defavorable", "archive")
+        } else if st == "caduc" {
+            transition(lancement, "caduc", "archive")
+        }
+        return "archive"
+    }
+
+    on tir_permis(lancement, tir) {
+        let st = get_status(lancement) ?? "a_rediger"
+        if st != "favorable" { return false }
+        let f = LancLancement.fiche(lancement)
+        if (version_de.get(lancement) ?? 0) != f.version { return false }
+        let t = to_int(tir)
+        if t < to_int(f.debut) || t > to_int(f.fin) { return false }
+        for ligne in LancCola.interdits(lancement) {
+            let p = split(ligne, "|")
+            if t >= to_int(p[0]) && t <= to_int(p[1]) { return false }
+        }
+        return true
+    }
+
+    on etat(lancement) {
+        return get_status(lancement) ?? "a_rediger"
+    }
+
+    on historique(lancement) {
+        let hist = historique_de.get(lancement)
+        require hist != () else Inconnu "aucun avis émis sur {lancement}"
+        return hist
+    }
+
+    // Vrai si un instant de [debut, fin] échappe à toutes les périodes interdites "debut|fin|objet".
+    on _fenetre_ouverte(debut: Int, fin: Int, interdits: List<String>) {
+        let periodes = interdits.map(l => split(l, "|")).map(p => [to_int(p[0]), to_int(p[1])]).sort_by(p => p[0])
+        let curseur = debut
+        for p in periodes {
+            if p[0] > curseur { return true }
+            if p[1] + 1 > curseur { curseur = p[1] + 1 }
+            if curseur > fin { return false }
+        }
+        return curseur <= fin
+    }
+}

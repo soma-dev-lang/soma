@@ -1,0 +1,143 @@
+// ephemerides — corps de RÉGLAGE (versions de seuils).
+flesh EphReglage {
+    on amorcer(h, par) {
+        require ApiAcces.a_le_role(par, "exploitant") else Habilitation "amorcer : exploitant d'ORBITE requis"
+        require age_leo.size == 0 && courante.size == 0 else Existe "une version de réglage existe déjà"
+        let v = "EPR-0"
+        age_leo.set(v, 28800000)
+        age_meo.set(v, 86400000)
+        age_geo.set(v, 172800000)
+        age_heo.set(v, 172800000)
+        diviseur_tempete.set(v, 2)
+        horizon_min.set(v, 259200000)
+        // Ordre imposé par les invariants entre tolérances : de la plus large à la plus serrée.
+        ecart_faible.set(v, 20000)
+        ecart_moyenne.set(v, 5000)
+        ecart_haute.set(v, 1000)
+        quota_jour.set(v, 48)
+        conservation.set(v, 315360000000)
+        redige_par.set(v, par)
+        valide_par.set(v, "{par}|amorcage")
+        en_vigueur_le.set(v, h)
+        transition(v, "brouillon", "en_vigueur")
+        courante.set("courante", v)
+        let _ = Journal.noter(h, "ephemerides", par, "reglage amorce {v}")
+        return v
+    }
+
+    on rediger(h, version, leo, meo, geo, heo, diviseur, horizon, e_haute, e_moyenne, e_faible, quota, conserver, par) {
+        require ApiAcces.a_le_role(par, "superviseur") else Habilitation "rediger : superviseur d'ORBITE requis"
+        require len(version) > 0 else HorsBornes "version vide"
+        let st = get_status(version) ?? "brouillon"
+        require st == "brouillon" else Existe "version {version} déjà {st}"
+        require leo > 0 && leo <= AGE_PLAFOND else HorsBornes "âge LEO hors bornes"
+        require meo > 0 && meo <= AGE_PLAFOND else HorsBornes "âge MEO hors bornes"
+        require geo > 0 && geo <= AGE_PLAFOND else HorsBornes "âge GEO hors bornes"
+        require heo > 0 && heo <= AGE_PLAFOND else HorsBornes "âge HEO hors bornes"
+        require horizon > 0 && horizon <= HORIZON_PLAFOND else HorsBornes "horizon minimal hors bornes"
+        require e_haute > 0 && e_haute <= e_moyenne && e_moyenne <= e_faible else HorsBornes "écarts non croissants de haute à faible"
+        require conserver > 0 else HorsBornes "conservation nulle"
+        if age_leo.get(version) == () {
+            require age_leo.size < MAX_VERSIONS else Plein "trop de versions de réglage"
+        }
+        age_leo.set(version, leo)
+        age_meo.set(version, meo)
+        age_geo.set(version, geo)
+        age_heo.set(version, heo)
+        diviseur_tempete.set(version, diviseur)
+        horizon_min.set(version, horizon)
+        // Correction d'un brouillon : on retire les anciennes tolérances avant d'écrire les
+        // nouvelles, de la plus large à la plus serrée (invariants entre slots).
+        ecart_haute.delete(version)
+        ecart_moyenne.delete(version)
+        ecart_faible.delete(version)
+        ecart_faible.set(version, e_faible)
+        ecart_moyenne.set(version, e_moyenne)
+        ecart_haute.set(version, e_haute)
+        quota_jour.set(version, quota)
+        conservation.set(version, conserver)
+        redige_par.set(version, par)
+        let _ = Journal.noter(h, "ephemerides", par, "reglage redige {version}")
+        return version
+    }
+
+    on mettre_en_vigueur(h, version, par, valideur) {
+        require ApiAcces.a_le_role(par, "superviseur") else Habilitation "mise en vigueur : superviseur d'ORBITE requis"
+        require ApiAcces.a_le_role(valideur, "direction") && ApiAcces.quatre_yeux(par, valideur) else QuatreYeux "valideur de direction distinct requis"
+        let auteur = redige_par.get(version)
+        require auteur != () else Inconnu "version {version} inconnue"
+        require valideur != auteur else QuatreYeux "le valideur a rédigé la version"
+        let st = get_status(version) ?? "brouillon"
+        require st == "brouillon" else EtatInvalide "version {version} : {st}"
+        require ApiOperations.changement_autorise(h) else Delai "changement de production non autorisé (gel ou urgence)"
+        let ancienne = courante.get("courante")
+        if ancienne != () {
+            transition(ancienne, "en_vigueur", "remplace")
+        }
+        transition(version, "brouillon", "en_vigueur")
+        valide_par.set(version, "{par}|{valideur}")
+        en_vigueur_le.set(version, h)
+        courante.set("courante", version)
+        let _ = Journal.noter(h, "ephemerides", par, "reglage en vigueur {version} (valideur {valideur})")
+        return "en_vigueur"
+    }
+
+    on abandonner(h, version, motif, par) {
+        require ApiAcces.a_le_role(par, "superviseur") else Habilitation "abandon : superviseur d'ORBITE requis"
+        require redige_par.get(version) != () else Inconnu "version {version} inconnue"
+        require len(motif) > 0 else MotifRequis "motif requis"
+        let st = get_status(version) ?? "brouillon"
+        require st == "brouillon" else EtatInvalide "version {version} : {st}"
+        transition(version, "brouillon", "abandonne")
+        let _ = Journal.noter(h, "ephemerides", par, "reglage abandonne {version} : {motif}")
+        return "abandonne"
+    }
+
+    on courante_version() {
+        return courante.get("courante") ?? ""
+    }
+
+    on age_max(regime, tempete) {
+        let v = courante.get("courante")
+        require v != () else Ferme "aucun réglage en vigueur"
+        let a = match regime {
+            "leo" -> age_leo.get(v) ?? 0
+            "meo" -> age_meo.get(v) ?? 0
+            "geo" -> age_geo.get(v) ?? 0
+            _ -> age_heo.get(v) ?? 0
+        }
+        if tempete {
+            let d = diviseur_tempete.get(v) ?? 1
+            return Duree(idiv(to_int(a), d))
+        }
+        return a
+    }
+
+    on horizon_minimal() {
+        let v = courante.get("courante")
+        require v != () else Ferme "aucun réglage en vigueur"
+        return horizon_min.get(v) ?? 0
+    }
+
+    on ecart_max(q) {
+        let v = courante.get("courante")
+        require v != () else Ferme "aucun réglage en vigueur"
+        return match q {
+            "haute" -> ecart_haute.get(v) ?? 0
+            "moyenne" -> ecart_moyenne.get(v) ?? 0
+            _ -> ecart_faible.get(v) ?? 0
+        }
+    }
+
+    on quota() {
+        let v = courante.get("courante")
+        require v != () else Ferme "aucun réglage en vigueur"
+        return quota_jour.get(v) ?? 1
+    }
+
+    on duree_conservation() {
+        let v = courante.get("courante")
+        require v != () else Ferme "aucun réglage en vigueur"
+        return conservation.get(v) ?? 0
+    }
+}

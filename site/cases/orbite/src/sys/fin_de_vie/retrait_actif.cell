@@ -1,0 +1,187 @@
+// FIN DE VIE — missions de retrait actif : un opérateur « servicer » capture avec son
+// chasseur un objet d'autrui (débris, satellite mort) pour le désorbiter ou le mettre en
+// cimetière. Consentement du propriétaire ET de l'État d'immatriculation, autorisation
+// d'ORBITE à quatre yeux, approche criblée (plan approuvé chez manoeuvres), capture, constat.
+// Instance = id de mission "RA-<n>" choisi par le servicer.
+
+// Issue prévue d'une mission de retrait actif.
+cell type FdvIssue = String where value == "rentree_controlee" || value == "rentree_naturelle" || value == "cimetiere"
+
+// Dossier d'une mission de retrait actif (preuve : qui a consenti, qui a autorisé, sur quel
+// dossier, avec quel plan d'approche ; gelable par responsabilite).
+cell type FdvDossierRetrait { variants { FdvDossierRetrait { etat: String, cible: Objet, chasseur: Objet, servicer: Org, issue: FdvIssue, debut: Horodatage, fin: Horodatage, empreinte: String, consentement_proprietaire: String, consentement_etat: String, autorise_par: String, approche: String, capture: Horodatage } } }
+
+skeleton FdvRetrait {
+    // Fenêtre d'une mission : au plus 2 ans (ms).
+    const FENETRE_MAX = 63072000000
+    // Consentements à obtenir au plus tard 30 jours avant l'ouverture de la fenêtre (ms).
+    const PREAVIS_CONSENTEMENT = 2592000000
+    const MAX_MISSIONS = 100000
+    const MAX_MISSIONS_OBJET = 20
+    memory {
+        cible_de: Map<String, Objet> [persistent]                      // mission -> cible ; écrit à la proposition, jamais effacé (lien de la règle d'achèvement)
+        chasseur_de: Map<String, Objet> [persistent]                   // objet du servicer qui capture
+        servicer_de: Map<String, Org> [persistent]                     // propriétaire du chasseur à la proposition
+        issue_de: Map<String, FdvIssue> [persistent]
+        debut_de: Map<String, Horodatage> [persistent]                 // fenêtre de la mission (ms)
+        fin_de: Map<String, Horodatage> [persistent]
+        empreinte_de: Map<String, String> [persistent]                 // condensat du dossier de mission (le contenu reste hors ORBITE)
+        consentement_proprietaire_de: Map<String, String> [persistent] // mission -> consentement du propriétaire ; écrit à la proposition, jamais effacé
+        consentement_etat_de: Map<String, String> [persistent]         // mission -> consentement de l'État ; écrit à la proposition, jamais effacé
+        autorise_par: Map<String, String> [persistent]                 // "par|valideur"
+        approche_de: Map<String, String> [persistent]                  // plan d'approche (ApiManoeuvres), écrit au lancement
+        capture_le: Map<String, Horodatage> [persistent]
+        motif_de: Map<String, String> [persistent]                     // motif de l'abandon ou de l'avortement
+        missions_de: Map<Objet, List<String>> [persistent]             // cible -> missions qui la visent
+        exemption_de: Map<String, String> [persistent]                 // exemption de criblage du couple chasseur/cible (ApiConjonctions.exempter)
+        vivantes: List<String> [persistent]                            // missions non terminales (balayage des fenêtres)
+        invariant vivantes.size <= 100000
+        invariant cible_de.size <= 100000
+        invariant len(missions_de) <= 20
+        invariant (fin_de ?? 0) >= (debut_de ?? 0)
+    }
+    // Cycle d'une mission de retrait actif (états exposés par etat).
+    state retrait {
+        initial: proposee
+        proposee -> accord_proprietaire   // le propriétaire a consenti
+        accord_proprietaire -> consentie         // l'État a consenti à son tour
+        consentie -> instruite           // transitoire (dans `autoriser`) : le consentement du propriétaire vaut encore
+        instruite -> autorisee           // ORBITE autorise (quatre yeux) : servicer membre actif (OpMembres)
+        autorisee -> en_approche          // plan d'approche approuvé, dans la fenêtre
+        en_approche -> capturee           // capture confirmée
+        capturee -> achevee   // sortie de la cible constatée
+        proposee -> abandonnee            // consentement refusé, échu ou retiré ; retrait du servicer
+        accord_proprietaire -> abandonnee
+        consentie -> abandonnee
+        autorisee -> abandonnee           // fenêtre échue, servicer suspendu, consentement retiré
+        en_approche -> avortee            // approche interrompue sans capture
+        capturee -> avortee               // capture perdue : cible relâchée
+    }
+    face {
+        // Propose une mission : le chasseur (ApiRef.peut_manoeuvrer) de l'opérateur servicer
+        // capture la cible dans la fenêtre [debut, fin]. La cible ne doit être ni habitée
+        // (ApiRef.habite) ni rentrée, fragmentée ou retirée. Ouvre les deux consentements
+        // (FdvConsentement.demander, échéance debut − 30 jours) : le propriétaire de la cible
+        // (ApiRef.proprietaire ; pour un objet de propriétaire "inconnu", l'État
+        // d'immatriculation consent aussi à ce titre) et l'autorité de l'État d'immatriculation
+        // (ApiRef.org_de_etat ∘ ApiRef.etat_immatriculation). Seul écrivain de cible_de et des
+        // liens de consentement. Habilitation : "chef_de_mission" du servicer (propriétaire du
+        // chasseur). Renvoie "proposee".
+        // Refus : Existe, Inconnu (cible ou chasseur), NonEligible (cible habitée ou sortie,
+        // chasseur incapable de manœuvrer, cible = chasseur), Suspendu (servicer non actif),
+        // Incoherent (fin ≤ debut), HorsBornes (fenêtre > 2 ans), Delai (debut − 30 jours ≤ h),
+        // Plein, Habilitation.
+        signal proposer(h: Horodatage, mission: String, cible: Objet, chasseur: Objet, issue: FdvIssue, debut: Horodatage, fin: Horodatage, empreinte: String, par: String) -> String
+            writes cible_de, chasseur_de, servicer_de, issue_de, debut_de, fin_de, empreinte_de, consentement_proprietaire_de, consentement_etat_de, missions_de, vivantes
+            calls FdvConsentement.demander, ApiRef.etat_objet, ApiRef.habite, ApiRef.peut_manoeuvrer, ApiRef.proprietaire, ApiRef.etat_immatriculation, ApiRef.org_de_etat, ApiOperateurs.est_actif, ApiAcces.a_le_role, ApiAcces.agit_pour, Journal.noter
+        // Fait avancer la mission selon ses consentements : proposee -> accord_proprietaire
+        // (propriétaire accordé), accord_proprietaire -> consentie (État accordé), ou ->
+        // abandonnee si l'un est refusé, échu ou retiré (l'autre est alors classé,
+        // FdvConsentement.classer). Appelé après chaque réponse. Habilitation : "systeme".
+        // Renvoie l'état atteint. Refus : Inconnu, EtatInvalide (mission au-delà de "consentie"), Habilitation.
+        signal constater_consentements(h: Horodatage, mission: String, par: String) -> String
+            writes motif_de
+            reads consentement_proprietaire_de, consentement_etat_de
+            moves proposee -> accord_proprietaire when FdvConsentement.accorde via consentement_proprietaire_de, accord_proprietaire -> consentie when FdvConsentement.accorde via consentement_etat_de, proposee -> abandonnee, accord_proprietaire -> abandonnee, consentie -> abandonnee
+            calls FdvConsentement.vaut, FdvConsentement.etat, FdvConsentement.classer, ApiAcces.a_le_role, Journal.noter
+        // Autorise la mission (consentie -> instruite -> autorisee, les deux arêtes dans le même
+        // appel : "instruite" n'est jamais observé) : les deux consentements valent encore,
+        // le servicer est actif (ApiOperateurs.est_actif sur servicer_de ; règle entre
+        // sous-systèmes OpMembres "actif", sinon Suspendu) et pas sous surveillance renforcée
+        // (ApiConformite.sous_surveillance), il peut recevoir les données de la cible
+        // (ApiDonnees.peut_recevoir, tracé par ApiDonnees.tracer), aucune escalade grave en
+        // cours ne vise le servicer (ApiEscalade.graves = 0 sur 365 jours). Autorisation
+        // tracée : empreinte du dossier, "par|valideur". Une fois "autorisee", exempte le couple
+        // chasseur/cible du criblage pendant la fenêtre (ApiConjonctions.exempter, mêmes `par`
+        // et `valideur` ; il revérifie ApiFinDeVie.retrait_autorise) : le rendez-vous ne lève
+        // pas d'alerte de niveau 3. Habilitation : "analyste" d'ORBITE ; QuatreYeux : valideur
+        // "superviseur". Renvoie "autorisee".
+        // Refus : Inconnu, EtatInvalide (consentement retiré), Suspendu, NonEligible
+        // (surveillance renforcée, escalades graves), Confidentiel, Habilitation, QuatreYeux.
+        signal autoriser(h: Horodatage, mission: String, par: String, valideur: String) -> String
+            writes autorise_par, exemption_de
+            reads cible_de, chasseur_de, servicer_de, debut_de, fin_de, consentement_proprietaire_de, consentement_etat_de, empreinte_de
+            moves consentie -> instruite when FdvConsentement.accorde via consentement_proprietaire_de, instruite -> autorisee when OpMembres.actif via servicer_de
+            calls FdvConsentement.etat, FdvConsentement.vaut, ApiOperateurs.est_actif, ApiConformite.sous_surveillance, ApiEscalade.graves, ApiDonnees.peut_recevoir, ApiDonnees.tracer, ApiConjonctions.exempter, ApiAcces.a_le_role, ApiAcces.quatre_yeux, Journal.noter
+        // Lance l'approche (autorisee -> en_approche) avec un plan de manœuvre du chasseur
+        // approuvé chez manoeuvres (ApiManoeuvres.etat = "approuve" : criblé, éphéméride
+        // fraîche, opérateur actif) et portant sur le chasseur (ApiManoeuvres.objet_de), dans la fenêtre de la mission ; consentements revérifiés ;
+        // demande un suivi renforcé de la cible et du chasseur (ApiObservation.demander_suivi,
+        // priorité 2, jusqu'à la fin de la fenêtre). Habilitation : "dynamicien" du servicer.
+        // Renvoie "en_approche". Refus : Inconnu, EtatInvalide (plan non approuvé, consentement
+        // retiré), Incoherent (plan d'un autre objet), Delai (hors fenêtre), Suspendu, Habilitation.
+        signal lancer_approche(h: Horodatage, mission: String, plan_man: String, par: String) -> String
+            writes approche_de
+            reads cible_de, chasseur_de, servicer_de, debut_de, fin_de, consentement_proprietaire_de, consentement_etat_de
+            moves autorisee -> en_approche
+            calls ApiManoeuvres.etat, ApiManoeuvres.objet_de, FdvConsentement.vaut, ApiOperateurs.est_actif, ApiObservation.demander_suivi, ApiAcces.a_le_role, ApiAcces.agit_pour, Journal.noter
+        // Confirme la capture (en_approche -> capturee) — règle entre sous-systèmes : la cible est
+        // "hors_service" ou "cimetiere" au catalogue (ApiRef.etat_objet sur cible_de ; RefObjet,
+        // sinon NonEligible : ref ne retire que depuis ces états) — et rend les deux consentements
+        // irrévocables (FdvConsentement.engager) ; notifie le propriétaire et l'État de la cible
+        // (ApiPasserelle.notifier, r = "").
+        // Habilitation : "dynamicien" du servicer ; QuatreYeux : valideur "chef_de_mission" du
+        // servicer. Renvoie "capturee".
+        // Refus : Inconnu, EtatInvalide, Delai (hors fenêtre), NonEligible, Habilitation, QuatreYeux.
+        signal capturer(h: Horodatage, mission: String, par: String, valideur: String) -> String
+            writes capture_le
+            reads cible_de, servicer_de, fin_de, consentement_proprietaire_de, consentement_etat_de
+            moves en_approche -> capturee when RefObjet.hors_service || RefObjet.cimetiere via cible_de
+            calls FdvConsentement.engager, ApiRef.etat_objet, ApiRef.proprietaire, ApiRef.etat_immatriculation, ApiRef.org_de_etat, ApiPasserelle.notifier, ApiAcces.a_le_role, ApiAcces.agit_pour, ApiAcces.quatre_yeux, Journal.noter
+        // Abandonne une mission non lancée (proposee, accord_proprietaire, consentie, autorisee
+        // -> abandonnee) : retrait du servicer, fenêtre échue, consentement retiré, servicer
+        // suspendu. Les consentements non engagés sont classés. Habilitation : "chef_de_mission"
+        // du servicer, "analyste" d'ORBITE ou "systeme". Renvoie "abandonnee".
+        // Refus : Inconnu, EtatInvalide, MotifRequis, Habilitation.
+        signal abandonner(h: Horodatage, mission: String, motif: String, par: String) -> String
+            writes motif_de
+            reads servicer_de, consentement_proprietaire_de, consentement_etat_de
+            moves proposee -> abandonnee, accord_proprietaire -> abandonnee, consentie -> abandonnee, autorisee -> abandonnee
+            calls FdvConsentement.classer, ApiAcces.a_le_role, ApiAcces.agit_pour, Journal.noter
+        // Avorte une mission lancée (en_approche -> avortee, capturee -> avortee : cible
+        // relâchée). Avant capture, les consentements sont classés ; après, ils restent
+        // irrévocables (la responsabilité du servicer est engagée). Demande un suivi renforcé
+        // de la cible (priorité 3, 7 jours) ; une collision ou fragmentation se déclare chez
+        // evenements. Habilitation : "dynamicien" du servicer ou "analyste" d'ORBITE.
+        // Renvoie "avortee". Refus : Inconnu, EtatInvalide, MotifRequis, Habilitation.
+        signal avorter(h: Horodatage, mission: String, motif: String, par: String) -> String
+            writes motif_de
+            reads cible_de, servicer_de, consentement_proprietaire_de, consentement_etat_de
+            moves en_approche -> avortee, capturee -> avortee
+            calls FdvConsentement.classer, ApiObservation.demander_suivi, ApiAcces.a_le_role, ApiAcces.agit_pour, Journal.noter
+        // Achève les missions "capturee" visant l'objet (capturee -> achevee) une fois sa
+        // sortie constatée (FdvFin "rentre" ou "cimetiere"). Appelé par FdvFin à chaque constat.
+        // Renvoie le nombre de missions achevées.
+        signal achever_pour(h: Horodatage, objet: Objet) -> Int
+            reads missions_de, cible_de
+            moves capturee -> achevee when FdvFin.rentre || FdvFin.cimetiere via cible_de
+            calls FdvFin.etat, Journal.noter
+        // Vrai si une mission "autorisee", "en_approche" ou "capturee" vise l'objet et que ses
+        // deux consentements valent (FdvConsentement.vaut).
+        signal autorise_sur(objet: Objet) -> Bool
+            reads missions_de, consentement_proprietaire_de, consentement_etat_de, retrait
+            calls FdvConsentement.vaut
+        // Dossier de la mission (lecture interne et responsabilite). Refus : Inconnu.
+        signal dossier(mission: String) -> FdvDossierRetrait
+            reads retrait, cible_de, chasseur_de, servicer_de, issue_de, debut_de, fin_de, empreinte_de, consentement_proprietaire_de, consentement_etat_de, autorise_par, approche_de, capture_le
+        // Vrai si une mission visant l'objet est "capturee" (lu par ApiFinDeVie.mission_capturee).
+        signal capturee_sur(objet: Objet) -> Bool
+            reads missions_de, retrait
+        // Balayage (appelé par FdvCouverture.balayer) : au plus n missions de vivantes —
+        // "proposee", "accord_proprietaire", "consentie" : constater_consentements ; "autorisee"
+        // dont la fenêtre est close à `h`, ou dont le servicer n'est plus actif : abandonner ;
+        // les missions terminales sortent de la liste. Habilitation : "systeme".
+        // Renvoie le nombre de missions dont l'état a changé. Refus : HorsBornes (n hors 1..1000), Habilitation.
+        signal balayer(h: Horodatage, n: Int, par: String) -> Int
+            writes vivantes
+            reads fin_de, servicer_de, retrait
+            calls constater_consentements, abandonner, ApiOperateurs.est_actif, ApiAcces.a_le_role
+        // Missions visant l'objet, de la plus ancienne à la plus récente.
+        signal missions(objet: Objet) -> List<String>
+            reads missions_de
+        // État ("instruite", transitoire, jamais rendu) : "proposee", "accord_proprietaire", "consentie", "autorisee", "en_approche",
+        // "capturee", "achevee", "abandonnee", "avortee" ; "inconnu" si jamais proposée.
+        signal etat(mission: String) -> String
+            reads retrait, cible_de
+    }
+}

@@ -1,0 +1,6 @@
+ApiOperations.declarer_incident: calls OpsIncident.declarer, OpsCrise.convoquer, ApiAcces.a_le_role ; moves OpsIncident.cycle: (création) -> declare, OpsCrise.crise: (création) -> convoquee
+ApiOperations.incident_majeur: calls OpsIncident.majeur_en_cours
+ApiOperations.degrade: calls OpsIncident.est_degrade, OpsDegradation.est_degrade, OpsBascule.en_transition
+ApiOperations.changement_autorise: calls OpsGel.gel_a, OpsGelUrgence.actif_a, OpsIncident.majeur_en_cours, OpsBascule.en_transition
+ApiOperations.arbitrage_centralise: calls OpsCrise.arbitrage_centralise_en_vigueur
+ApiOperations.balayer: calls OpsRonde.balayer

@@ -1,0 +1,182 @@
+// fin_de_vie — corps de FdvCouverture (campagne quotidienne de couverture).
+// La grâce de 90 jours de la fin d'office est celle de FdvFin.GRACE_FIN, recopiée en littéral
+// (une constante d'une autre cell échoue à l'exécution, piège Soma 3.2.x n° 3).
+
+flesh FdvCouverture {
+    on _noter_erreur(h: Horodatage, etape: String, kind: String, detail: String) {
+        Journal.noter(h, "fin_de_vie", "systeme", "balayage : étape {etape} en erreur ({kind} : {detail})")
+    }
+
+    on balayer(h, par) {
+        require ApiAcces.a_le_role(par, "systeme") else Habilitation "{par} : systeme requis"
+        let j = Jour(to_int(idiv(to_int(h), JOUR)))
+        let changes = 0
+        if (get_status(j) ?? "a_ouvrir") == "a_ouvrir" {
+            let r = try { ouvrir(h, j, "systeme") }
+            if r.error != () {
+                _noter_erreur(h, "ouverture", r.kind, r.detail)
+            }
+        }
+        let ops = []
+        let r_ops = try { ApiOperateurs.actifs(h) }
+        if r_ops.error == () {
+            ops = r_ops.value
+        } else {
+            _noter_erreur(h, "opérateurs actifs", r_ops.kind, r_ops.detail)
+        }
+        if (get_status(j) ?? "a_ouvrir") == "ouverte" {
+            let d_office_avant = d_office_de.get(j) ?? 0
+            let examines_j = examines_de.get(j) ?? []
+            let faits = 0
+            for op in ops {
+                if faits < OPERATEURS_PAR_BATTEMENT && !contains(examines_j, op) {
+                    faits = faits + 1
+                    let r = try { examiner(h, j, Org(op), "systeme") }
+                    if r.error != () {
+                        _noter_erreur(h, "examen de {op}", r.kind, r.detail)
+                    }
+                }
+            }
+            changes = changes + (d_office_de.get(j) ?? 0) - d_office_avant
+        }
+        let r_e = try { balayer_echeances(h, j, ELEMENTS_PAR_BATTEMENT, "systeme") }
+        if r_e.error == () {
+            changes = changes + r_e.value
+        } else {
+            _noter_erreur(h, "échéances", r_e.kind, r_e.detail)
+        }
+        let r_p = try { FdvPlan.balayer(h, ELEMENTS_PAR_BATTEMENT, "systeme") }
+        if r_p.error == () {
+            changes = changes + r_p.value
+        } else {
+            _noter_erreur(h, "plans", r_p.kind, r_p.detail)
+        }
+        let r_c = try { FdvConsentement.balayer(h, ELEMENTS_PAR_BATTEMENT, "systeme") }
+        if r_c.error == () {
+            changes = changes + r_c.value
+        } else {
+            _noter_erreur(h, "consentements", r_c.kind, r_c.detail)
+        }
+        let r_pr = try { FdvProrogation.balayer(h, ELEMENTS_PAR_BATTEMENT, "systeme") }
+        if r_pr.error == () {
+            changes = changes + r_pr.value
+        } else {
+            _noter_erreur(h, "prorogations", r_pr.kind, r_pr.detail)
+        }
+        let r_m = try { FdvRetrait.balayer(h, ELEMENTS_PAR_BATTEMENT, "systeme") }
+        if r_m.error == () {
+            changes = changes + r_m.value
+        } else {
+            _noter_erreur(h, "missions", r_m.kind, r_m.detail)
+        }
+        if (get_status(j) ?? "a_ouvrir") == "ouverte" && r_ops.error == () {
+            let vus = examines_de.get(j) ?? []
+            let restants = ops.filter(o => !contains(vus, o))
+            if len(restants) == 0 {
+                let r = try { clore(h, j, "systeme") }
+                if r.error != () {
+                    _noter_erreur(h, "clôture", r.kind, r.detail)
+                }
+            }
+        }
+        return changes
+    }
+
+    on ouvrir(h, j, par) {
+        require ApiAcces.a_le_role(par, "systeme") else Habilitation "{par} : systeme requis"
+        let st = get_status(j) ?? "a_ouvrir"
+        require st == "a_ouvrir" else Existe "campagne du jour {j} déjà ouverte ({st})"
+        ouverte_le.set(j, h)
+        transition(j, "a_ouvrir", "ouverte")
+        Journal.noter(h, "fin_de_vie", par, "campagne de couverture du jour {j} ouverte")
+        return "ouverte"
+    }
+
+    on examiner(h, j, op, par) {
+        require ApiAcces.a_le_role(par, "systeme") else Habilitation "{par} : systeme requis"
+        let st = get_status(j) ?? "a_ouvrir"
+        require st == "ouverte" else EtatInvalide "campagne du jour {j} : {st}"
+        let vus = examines_de.get(j) ?? []
+        let o = to_string(op)
+        require !contains(vus, o) else Doublon "opérateur {o} déjà examiné le jour {j}"
+        require len(vus) < MAX_OPERATEURS else Plein "10 000 opérateurs déjà examinés le jour {j}"
+        let grace = 7776000000
+        let liste_obj = ApiRef.objets_de(op)
+        let sans_plan = 0
+        let d_off = 0
+        for ob in liste_obj {
+            let objet = Objet(ob)
+            let st_obj = ApiRef.etat_objet(objet)
+            if st_obj == "en_service" && !FdvPlan.conforme(objet, h) {
+                sans_plan = sans_plan + 1
+            }
+            if (st_obj == "en_service" || st_obj == "hors_service") && FdvFin.etat(objet) == "en_mission" {
+                let motif = ""
+                if st_obj == "hors_service" {
+                    motif = "objet hors service sans fin de mission déclarée"
+                } else {
+                    let plan = FdvPlan.plan_de(objet)
+                    if plan != "" && to_int(h) > to_int(FdvPlan.fiche(plan).fin_prevue) + grace {
+                        motif = "fin de mission prévue au plan {plan} dépassée de 90 jours"
+                    }
+                }
+                if motif != "" {
+                    let r = try { FdvFin.declarer_fin_d_office(h, objet, motif, "systeme") }
+                    if r.error == () {
+                        d_off = d_off + 1
+                    } else {
+                        Journal.noter(h, "fin_de_vie", "systeme", "fin d'office de {ob} impossible ({r.kind} : {r.detail})")
+                    }
+                }
+            }
+        }
+        objets_de.set(j, (objets_de.get(j) ?? 0) + len(liste_obj))
+        sans_plan_de.set(j, (sans_plan_de.get(j) ?? 0) + sans_plan)
+        d_office_de.set(j, (d_office_de.get(j) ?? 0) + d_off)
+        examines_de.set(j, vus ++ [o])
+        if sans_plan > 0 {
+            ApiConformite.constater(h, op, "{sans_plan} objet(s) en service sans plan de fin de vie conforme", 1, "{j}|{o}", "systeme")
+        }
+        Journal.noter(h, "fin_de_vie", par, "couverture {j} : {o} examiné ({len(liste_obj)} objets, {sans_plan} sans plan conforme, {d_off} fins d'office)")
+        return sans_plan
+    }
+
+    on balayer_echeances(h, j, n, par) {
+        require n >= 1 && n <= 1000 else HorsBornes "n = {n} hors 1..1000"
+        require ApiAcces.a_le_role(par, "systeme") else Habilitation "{par} : systeme requis"
+        let n_ret = 0
+        for o in FdvFin.a_echoir(h, n) {
+            let r = try { FdvFin.constater_retard(h, Objet(o), "systeme") }
+            if r.error == () {
+                n_ret = n_ret + 1
+            }
+        }
+        if n_ret > 0 {
+            retards_de.set(j, (retards_de.get(j) ?? 0) + n_ret)
+        }
+        return n_ret
+    }
+
+    on clore(h, j, par) {
+        require ApiAcces.a_le_role(par, "systeme") else Habilitation "{par} : systeme requis"
+        let st = get_status(j) ?? "a_ouvrir"
+        require st != "a_ouvrir" else Inconnu "campagne du jour {j} jamais ouverte"
+        require st == "ouverte" else EtatInvalide "campagne du jour {j} : {st}"
+        let n_ops = len(examines_de.get(j) ?? [])
+        let n_obj = objets_de.get(j) ?? 0
+        let n_sp = sans_plan_de.get(j) ?? 0
+        let n_do = d_office_de.get(j) ?? 0
+        let n_re = retards_de.get(j) ?? 0
+        transition(j, "ouverte", "close")
+        Journal.noter(h, "fin_de_vie", par, "campagne {j} close : {n_ops} opérateurs, {n_obj} objets, {n_sp} sans plan conforme, {n_do} fins d'office, {n_re} retards")
+        return n_ops
+    }
+
+    on bilan(j) {
+        return FdvBilan { etat: get_status(j) ?? "a_ouvrir", operateurs: len(examines_de.get(j) ?? []), objets: objets_de.get(j) ?? 0, sans_plan: sans_plan_de.get(j) ?? 0, d_office: d_office_de.get(j) ?? 0, retards: retards_de.get(j) ?? 0 }
+    }
+
+    on etat(j) {
+        return get_status(j) ?? "a_ouvrir"
+    }
+}

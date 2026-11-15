@@ -1,0 +1,69 @@
+// MANŒUVRES — verrou d'évitement (propriété 1) : pour un rapprochement, au plus UN plan
+// d'évitement approuvé à la fois, et aucun second après qu'une manœuvre a été exécutée.
+// Instance = id du verrou : le rapprochement pour un évitement ; "P:" + plan pour les autres
+// motifs (chaque plan non lié à un rapprochement tient son propre verrou, toujours libre).
+
+// Issue d'un verrou soldé : "executee" (la manœuvre du titulaire a été faite, confirmée ou
+// observée), "close" (le rapprochement est clos sans manœuvre en cours).
+cell type ManIssueVerrou = String where value == "executee" || value == "close"
+
+skeleton ManEvitement {
+    const MAX_VERROUS = 50000000
+    // Prises successives d'un même verrou (plan annulé puis nouveau plan après réouverture).
+    const MAX_PRISES = 20
+    // Lignes d'historique par verrou (3 par prise).
+    const MAX_HISTORIQUE = 60
+    memory {
+        titulaire_de: Map<String, String> [persistent]   // verrou -> plan approuvé qui le tient ; "" quand libéré
+        prises_de: Map<String, Int> [persistent]         // verrou -> nombre de prises (approbations successives)
+        historique_de: Map<String, List<String>> [persistent] // verrou -> "h|plan|prise" / "h|plan|liberation|cause" / "h|plan|solde|issue"
+        issue_de: Map<String, ManIssueVerrou> [persistent]
+        invariant titulaire_de.size <= MAX_VERROUS
+        invariant prises_de >= 0
+        invariant prises_de <= MAX_PRISES
+        invariant len(historique_de) <= MAX_HISTORIQUE
+    }
+    // Cycle du verrou d'un rapprochement : libre ⇄ engage tant qu'aucune manœuvre n'est faite ;
+    // solde une fois la manœuvre faite ou le rapprochement clos (plus aucune approbation).
+    state cycle {
+        initial: libre
+        libre -> engage          // un plan approuvé le prend (ManPlan.approuver)
+        engage -> libre          // le titulaire est annulé ou a échoué sans pousser
+        engage -> solde          // le titulaire a manœuvré (exécution confirmée ou observée)
+        libre -> solde           // rapprochement clos sans plan approuvé en cours
+    }
+    face {
+        // Prend le verrou pour `plan` (libre -> engage) : le verrou doit être libre (sinon Conflit
+        // si engagé par un autre plan, Ferme s'il est soldé), prises < MAX_PRISES (sinon Plein).
+        // Appelé par ManPlan.approuver seul (interne, sans geste d'administration). Renvoie le
+        // nombre de prises. Refus : Conflit, Ferme, Plein.
+        signal engager(h: Horodatage, verrou: String, plan: String) -> Int
+            writes titulaire_de, prises_de, historique_de
+            moves libre -> engage
+        // Rend le verrou (engage -> libre) : `plan` doit en être le titulaire (sinon Conflit).
+        // Sans effet (renvoie faux) si le plan ne tenait aucun verrou (plan jamais approuvé).
+        // Appelé par ManPlan.annuler / declarer_echec / constater_echeance (interne). Refus : Conflit.
+        signal liberer(h: Horodatage, verrou: String, plan: String, cause: String) -> Bool
+            writes titulaire_de, historique_de
+            moves engage -> libre
+        // Solde le verrou après manœuvre du titulaire (engage -> solde, issue "executee") ou à la
+        // clôture du rapprochement sans titulaire (libre -> solde, issue "close").
+        // `plan` = "" pour une clôture. Refus : Conflit (autre titulaire), EtatInvalide (déjà soldé).
+        signal solder(h: Horodatage, verrou: String, plan: String, issue: ManIssueVerrou) -> String
+            writes titulaire_de, issue_de, historique_de
+            moves engage -> solde, libre -> solde
+        // Constate la clôture d'un rapprochement (ApiConjonctions.etat "resolu", "passe" ou
+        // "collision") et solde son verrou s'il est libre ; un verrou engagé reste au titulaire
+        // jusqu'à l'échéance de sa fenêtre. `par` "systeme" (ManVeille). Renvoie l'état du verrou.
+        // Refus : EtatInvalide (rapprochement non clos), Habilitation.
+        signal constater_cloture(h: Horodatage, r: Rapprochement, par: String) -> String
+            reads cycle
+            calls solder, ApiConjonctions.etat, ApiAcces.a_le_role, Journal.noter
+        // Plan titulaire du verrou ; "" si libre ou soldé.
+        signal titulaire(verrou: String) -> String
+            reads titulaire_de, cycle
+        // État : "libre", "engage", "solde".
+        signal etat(verrou: String) -> String
+            reads cycle
+    }
+}

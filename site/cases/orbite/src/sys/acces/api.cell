@@ -1,0 +1,72 @@
+// Façade des HABILITATIONS : personnes physiques, rôles, portée, quatre yeux, urgence.
+skeleton ApiAcces {
+    face {
+        // Enregistre une personne employée par `employeur` avec un rôle. Renvoie le rôle.
+        // "systeme" n'est jamais attribuable. Refus : Existe, Inconnu (employeur), HorsBornes
+        // (rôle "systeme" ou rôle étranger au genre de l'employeur), Habilitation (par
+        // "administrateur_operateur" de l'employeur, ou "exploitant" ; "direction" pour inscrire un
+        // "superviseur", "conformite", "direction" ou "auditeur"), QuatreYeux (par ≠ personne).
+        // Un rôle n'est EFFECTIF qu'une fois le rattachement confirmé par l'employeur.
+        signal enregistrer(h: Horodatage, personne: String, employeur: Org, r: Role, par: String) -> Role
+            calls AccesPersonnes.enregistrer, AccesRattachements.ouvrir
+        // Rôle actuel ; "aucun" si inconnue, suspendue ou partie. "systeme" → "systeme".
+        signal role_de(personne: String) -> Role
+            calls AccesControle.role_de
+        // Vrai si la personne est active et a le rôle `r`, dans sa PORTÉE (voir Role) : un rôle
+        // d'ORBITE exige un employé de ApiRef.orbite(). a_le_role("systeme", "systeme") est vrai.
+        signal a_le_role(personne: String, r: Role) -> Bool
+            calls AccesControle.a_le_role
+        // Vrai si la personne est active et employée par `org` (rôles d'opérateur et d'État).
+        signal agit_pour(personne: String, org: Org) -> Bool
+            calls AccesControle.agit_pour
+        // Employeur ; Refus : Inconnu.
+        signal employeur(personne: String) -> Org
+            calls AccesPersonnes.employeur
+        // Vrai si `valideur` peut contre-signer une action de `demandeur` : personnes distinctes,
+        // toutes deux actives, valideur de rôle "superviseur", "conformite" ou "direction"
+        // d'ORBITE — ou, pour un geste d'opérateur, "chef_de_mission" du même employeur.
+        signal quatre_yeux(demandeur: String, valideur: String) -> Bool
+            calls AccesControle.quatre_yeux
+        // Suspend / rétablit une personne. Renvoie l'état atteint.
+        // Refus : Inconnu, EtatInvalide, MotifRequis, Habilitation (par "conformite" ou
+        // "direction", ou l'"administrateur_operateur" de l'employeur), QuatreYeux (par ≠ personne).
+        signal suspendre(h: Horodatage, personne: String, motif: String, par: String) -> String
+            calls AccesPersonnes.suspendre
+        signal retablir(h: Horodatage, personne: String, par: String) -> String
+            calls AccesPersonnes.retablir
+        // Accès d'urgence d'au plus 4 heures (bris de glace) pour UN rapprochement de niveau 3 ouvert,
+        // journalisé, revu a posteriori. Renvoie l'id. Refus : Inconnu, MotifRequis, NonEligible
+        // (rapprochement pas en niveau 3), Suspendu (personne), Doublon (urgence déjà ouverte), Plein, Habilitation (par "direction" ou
+        // "superviseur"), QuatreYeux (par ≠ personne).
+        signal ouvrir_urgence(h: Horodatage, personne: String, r: Rapprochement, motif: String, par: String) -> String
+            calls AccesUrgences.ouvrir
+        // Vrai si un accès d'urgence de la personne est ouvert et non expiré à `h`.
+        signal en_urgence(personne: String, h: Horodatage) -> Bool
+            calls AccesUrgences.en_urgence
+        // Vrai si un accès d'urgence de la personne est ouvert, non expiré à `h`, POUR ce rapprochement.
+        signal en_urgence_pour(personne: String, r: Rapprochement, h: Horodatage) -> Bool
+            calls AccesUrgences.en_urgence_pour
+        // Ouvre une session humaine après authentification forte (`facteur` : empreinte du second
+        // facteur). Renvoie le jeton (opaque) ; seule l'empreinte du jeton est conservée.
+        // Refus : Inconnu, Suspendu, Habilitation (facteur invalide), Plein.
+        signal ouvrir_session(h: Horodatage, personne: String, facteur: String) -> String
+            calls AccesSessions.ouvrir, AccesJetons.emettre
+        // Personne titulaire d'un jeton de session valide à `h` ; "" si jeton inconnu, expiré ou
+        // révoqué, ou personne inactive. Seul point d'authentification de la passerelle.
+        signal authentifier(jeton: String, h: Horodatage) -> String
+            calls AccesJetons.authentifier
+        // Ferme une session (par son titulaire, ou "exploitant" / "systeme"). Renvoie "fermee".
+        // Refus : Inconnu, EtatInvalide, Habilitation.
+        signal fermer_session(h: Horodatage, jeton: String, par: String) -> String
+            calls AccesSessions.fermer, AccesJetons.revoquer_session
+        // Nombre de personnes actives (rôle effectif) employées par l'organisation.
+        signal actifs_de(org: Org) -> Int
+            calls AccesControle.actifs_de
+        // Balayage des échéances du sous-système à `h` (délais, expirations, rondes), appelé par
+        // l'horloge d'ORBITE (Horloge.battre) — le SEUL point d'entrée du temps : aucun signal de
+        // acces ne lit l'horloge lui-même. Renvoie le nombre d'objets dont l'état a changé.
+        // Refus : Habilitation (par "systeme").
+        signal balayer(h: Horodatage, par: String) -> Int
+            calls AccesBalayage.balayer
+    }
+}

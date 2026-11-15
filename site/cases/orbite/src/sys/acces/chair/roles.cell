@@ -1,0 +1,198 @@
+// acces — corps du catalogue des rôles (portée, compatibilité, séparation des tâches) et des attributions.
+flesh AccesPortees {
+    on portee(r) {
+        return _portee_de(to_string(r))
+    }
+
+    on genre_de(org) {
+        if !ApiRef.organisation_existe(org) { return "inconnu" }
+        let g = ApiRef.genre(org)
+        if g == "orbite" || g == "etat" || g == "operateur" || g == "capteur" { return AccesGenre(g) }
+        return "inconnu"
+    }
+
+    on compatible(r, g) {
+        let p = _portee_de(to_string(r))
+        if p == "orbite" { return g == "orbite" }
+        if p == "etat" { return g == "etat" }
+        if p == "operateur" {
+            if g == "operateur" { return true }
+            // un fournisseur de capteurs a ses "capteur" et son "administrateur_operateur" (qui signe
+            // l'accord de partage, déclare ses canaux et demande son agrément).
+            return (r == "capteur" || r == "administrateur_operateur") && g == "capteur"
+        }
+        return false
+    }
+
+    on incompatibles(a, b) {
+        if a == b { return false }
+        let pa = _portee_de(to_string(a))
+        let pb = _portee_de(to_string(b))
+        if (a == "auditeur" && pb == "orbite") || (b == "auditeur" && pa == "orbite") { return true }
+        if (a == "conformite" && b == "exploitant") || (a == "exploitant" && b == "conformite") { return true }
+        if (a == "dynamicien" && b == "capteur") || (a == "capteur" && b == "dynamicien") { return true }
+        return false
+    }
+
+    on valideur(r) {
+        return r == "superviseur" || r == "conformite" || r == "direction" || r == "chef_de_mission"
+    }
+
+    on _portee_de(r: String) {
+        if r == "analyste" || r == "superviseur" || r == "exploitant" || r == "conformite" || r == "direction" || r == "auditeur" { return "orbite" }
+        if r == "dynamicien" || r == "chef_de_mission" || r == "administrateur_operateur" || r == "capteur" { return "operateur" }
+        if r == "point_focal" || r == "autorite" { return "etat" }
+        return "interne"
+    }
+}
+
+flesh AccesAttributions {
+    on demander(h, personne, r, echeance_ms, motif_demande, par) {
+        let emp = AccesPersonnes.employeur(personne)
+        require emp != "" else Inconnu "personne {personne} inconnue"
+        require AccesPersonnes.est_active(personne) else EtatInvalide "personne {personne} non active"
+        require r != "systeme" && r != "aucun" else HorsBornes "rôle {r} non attribuable"
+        require AccesPortees.compatible(r, AccesPortees.genre_de(emp)) else HorsBornes "rôle {r} hors de la portée de {emp}"
+        require to_int(echeance_ms) > to_int(h) && to_int(echeance_ms) - to_int(h) <= DUREE_MAX_MS else HorsBornes "échéance hors de ]h, h + {DUREE_MAX_MS}]"
+        require motif_demande != "" else MotifRequis "demande sans motif"
+        require par != personne else QuatreYeux "{par} ne peut se demander un rôle"
+        require _habilite_pour(r, emp, par) else Habilitation "{par} n'est pas habilité à conférer {r}"
+        let principal = AccesPersonnes.role(personne)
+        let detenus = roles_de(personne)
+        require r != principal && !contains(detenus, to_string(r)) else Doublon "{personne} détient déjà {r}"
+        require !AccesPortees.incompatibles(r, principal) else Conflit "{r} incompatible avec le rôle principal {principal}"
+        for d in detenus {
+            require !AccesPortees.incompatibles(r, Role(d)) else Conflit "{r} incompatible avec le rôle attribué {d}"
+        }
+        require titulaire_de.size < MAX_ATTRIBUTIONS else Plein "registre des attributions plein"
+        let n = en_cours.get(personne) ?? 0
+        require n < MAX_PAR_PERSONNE else Plein "{personne} a déjà {n} attributions en cours"
+        let id = "at-{next_id()}"
+        titulaire_de.set(id, personne)
+        role_de.set(id, r)
+        demandeur.set(id, par)
+        motif.set(id, motif_demande)
+        echeance.set(id, echeance_ms)
+        en_cours.set(personne, n + 1)
+        let _ = Journal.noter(h, "acces", par, "demande attribution {id} : {r} pour {personne}")
+        return id
+    }
+
+    on accorder(h, id, valideur) {
+        let tit = titulaire_de.get(id)
+        require tit != () else Inconnu "attribution {id} inconnue"
+        let st = get_status(id) ?? "demandee"
+        require st == "demandee" else EtatInvalide "attribution {id} {st}"
+        let ech = echeance.get(id) ?? 0
+        require to_int(ech) > to_int(h) else Echu "attribution {id} échue avant accord"
+        require AccesPersonnes.est_active(tit) else Suspendu "titulaire {tit} non active"
+        let dem = demandeur.get(id) ?? ""
+        require valideur != tit && valideur != dem else QuatreYeux "le valideur doit être un tiers"
+        let _ = AccesControle.contresigner(h, "attribution:{id}", dem, valideur)
+        valide_par.set(id, valideur)
+        debut.set(id, h)
+        transition(id, "demandee", "accordee")
+        let _ = Journal.noter(h, "acces", valideur, "accorde attribution {id} à {tit}")
+        return "accordee"
+    }
+
+    on refuser(h, id, motif_refus, par) {
+        let tit = titulaire_de.get(id)
+        require tit != () else Inconnu "attribution {id} inconnue"
+        let st = get_status(id) ?? "demandee"
+        require st == "demandee" else EtatInvalide "attribution {id} {st}"
+        require motif_refus != "" else MotifRequis "refus sans motif"
+        let dem = demandeur.get(id) ?? ""
+        require par != dem && par != tit else Habilitation "{par} ne peut refuser sa propre demande"
+        let orbite_ok = AccesControle.a_le_role(par, "superviseur") || AccesControle.a_le_role(par, "conformite") || AccesControle.a_le_role(par, "direction")
+        let chef_ok = AccesControle.a_le_role(par, "chef_de_mission") && AccesControle.agit_pour(par, AccesPersonnes.employeur(tit))
+        require orbite_ok || chef_ok else Habilitation "{par} n'a pas de rôle de valideur"
+        valide_par.set(id, par)
+        motif.set(id, motif_refus)
+        en_cours.set(tit, max(0, (en_cours.get(tit) ?? 0) - 1))
+        transition(id, "demandee", "refusee")
+        let _ = Journal.noter(h, "acces", par, "refuse attribution {id}")
+        return "refusee"
+    }
+
+    on revoquer(h, id, motif_fin, par) {
+        let tit = titulaire_de.get(id)
+        require tit != () else Inconnu "attribution {id} inconnue"
+        let st = get_status(id) ?? "demandee"
+        require st == "accordee" else EtatInvalide "attribution {id} {st}"
+        require motif_fin != "" else MotifRequis "révocation sans motif"
+        let ok = AccesControle.a_le_role(par, "conformite") || AccesControle.a_le_role(par, "direction") || (AccesControle.a_le_role(par, "administrateur_operateur") && AccesControle.agit_pour(par, AccesPersonnes.employeur(tit)))
+        require ok else Habilitation "{par} ne peut révoquer {id}"
+        _revoquer_une(id, tit, motif_fin)
+        let _ = Journal.noter(h, "acces", par, "revoque attribution {id}")
+        return "revoquee"
+    }
+
+    on revoquer_de(h, personne) {
+        let ids = titulaire_de.entries.filter(e => e.value == personne && (get_status(e.key) ?? "demandee") == "accordee").map(e => e.key)
+        for id in ids { _revoquer_une(id, personne, "suspension ou départ") }
+        if len(ids) > 0 {
+            let _ = Journal.noter(h, "acces", "systeme", "revoque {len(ids)} attributions de {personne}")
+        }
+        return len(ids)
+    }
+
+    on revoquer_incompatibles(h, personne, r) {
+        let ids = titulaire_de.entries.filter(e => e.value == personne && (get_status(e.key) ?? "demandee") == "accordee").map(e => e.key)
+        let touchees = 0
+        for id in ids {
+            let ra = role_de.get(id) ?? "aucun"
+            if ra == r || AccesPortees.incompatibles(ra, r) {
+                _revoquer_une(id, personne, "incompatible avec le rôle principal {r}")
+                touchees = touchees + 1
+            }
+        }
+        if touchees > 0 {
+            let _ = Journal.noter(h, "acces", "systeme", "revoque {touchees} attributions incompatibles de {personne}")
+        }
+        return touchees
+    }
+
+    on echoir(h) {
+        let ids = echeance.entries.filter(e => to_int(e.value) <= to_int(h) && (get_status(e.key) ?? "demandee") == "accordee").map(e => e.key).sort()
+        for id in ids {
+            let tit = titulaire_de.get(id) ?? ""
+            en_cours.set(tit, max(0, (en_cours.get(tit) ?? 0) - 1))
+            transition(id, "accordee", "echue")
+        }
+        if len(ids) > 0 {
+            let _ = Journal.noter(h, "acces", "systeme", "echoir : {len(ids)} attributions")
+        }
+        return len(ids)
+    }
+
+    on roles_de(personne) {
+        let ids = titulaire_de.entries.filter(e => e.value == personne && (get_status(e.key) ?? "demandee") == "accordee").map(e => e.key)
+        let res_r = []
+        for id in ids { res_r.push(to_string(role_de.get(id) ?? "aucun")) }
+        return res_r
+    }
+
+    on etat(id) {
+        if titulaire_de.get(id) == () { return "inconnue" }
+        return get_status(id) ?? "demandee"
+    }
+
+    on _revoquer_une(id: String, tit: String, m: String) {
+        motif.set(id, m)
+        en_cours.set(tit, max(0, (en_cours.get(tit) ?? 0) - 1))
+        transition(id, "accordee", "revoquee")
+    }
+
+    on _habilite_pour(r: Role, emp: Org, par: String) {
+        if r == "direction" || r == "conformite" || r == "superviseur" || r == "auditeur" {
+            return AccesControle.a_le_role(par, "direction")
+        }
+        if AccesControle.a_le_role(par, "exploitant") { return true }
+        // La direction inscrit aussi les autres rôles d'ORBITE : sans cela, nul ne peut
+        // inscrire le premier exploitant (seule l'amorce « direction » existe au départ).
+        if AccesPortees.compatible(r, "orbite") && AccesControle.a_le_role(par, "direction") { return true }
+        let r_op = AccesPortees.compatible(r, "operateur") || AccesPortees.compatible(r, "capteur")
+        return r_op && AccesControle.a_le_role(par, "administrateur_operateur") && AccesControle.agit_pour(par, emp)
+    }
+}

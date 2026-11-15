@@ -1,0 +1,36 @@
+// LANCEMENTS — veille : un délai dépassé devient un état. Balayage périodique des lancements
+// non terminés, appelé par ApiLancements.balayer, donc par l'horloge d'ORBITE (Horloge.battre,
+// toutes les 60 s) avec son `h` — aucun signal de lancements ne lit l'horloge : fenêtres échues,
+// reports abandonnés, COLA périmés, acquittements des États survolés, pièces en retard,
+// identifications complètes.
+
+skeleton LancVeille {
+    // Au plus 10 000 lancements traités par passage (le reste au passage suivant).
+    const MAX_PAR_PASSAGE = 10000
+    memory {
+        dernier_de: Map<String, Horodatage> [persistent]  // "balayage" -> h du dernier passage ; un passage plus ancien est refusé (HorsBornes)
+        compteurs_de: Map<String, Int> [persistent]       // "reportes" | "annules" | "recribles" | "retards" | "clos" -> cumul
+        invariant compteurs_de >= 0
+        invariant compteurs_de.size <= 5
+    }
+    face {
+        // Passe sur au plus 10 000 lancements non terminés (LancLancement.en_cours ; le reste au
+        // battement suivant), à `h` (≥ dernier passage, sinon HorsBornes) :
+        // - notifie | crible | autorise dont la fenêtre est finie (fin < h) : LancLancement.reporter,
+        //   motif "fenetre_echue" ;
+        // - reporte depuis plus de 180 jours : LancLancement.annuler ;
+        // - crible | autorise : LancCola.veiller (COLA de plus de 8 h, tempête, nuage) ;
+        // - notifie | crible | autorise : LancZones.relever_acquittements ;
+        // - injecte : LancPiece.relever_retards, puis LancLancement.clore_identification quand
+        //   LancPiece.restantes == 0.
+        // `par` "systeme" (l'horloge) ou "exploitant" d'ORBITE (rattrapage manuel). Renvoie le nombre
+        // de lancements et de pièces dont l'état a changé. Refus : HorsBornes, Habilitation.
+        signal balayer(h: Horodatage, par: String) -> Int
+            writes dernier_de, compteurs_de
+            calls LancLancement.en_cours, LancLancement.etat, LancLancement.fiche, LancLancement.reports, LancLancement.reporter, LancLancement.annuler, LancLancement.clore_identification, LancCola.veiller, LancZones.relever_acquittements, LancPiece.relever_retards, LancPiece.restantes, ApiAcces.a_le_role, Journal.noter
+        // Cumuls des changements faits par la veille depuis l'origine, "nom=valeur", et l'heure
+        // du dernier passage (contrôle d'exploitation : une veille arrêtée se voit).
+        signal bilan() -> List<String>
+            reads dernier_de, compteurs_de
+    }
+}

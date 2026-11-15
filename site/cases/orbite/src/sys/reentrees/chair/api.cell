@@ -1,0 +1,55 @@
+// RENTRÉES — corps de la façade ApiReentrees.
+
+flesh ApiReentrees {
+    on prevoir(h, objet, debut, fin, victimes_ppm, par) {
+        return ReeCampagne.prevoir(h, objet, debut, fin, victimes_ppm, par)
+    }
+
+    on en_campagne(objet) {
+        return ReeCampagne.en_campagne(objet)
+    }
+
+    on constater(h, objet, instant, lieu, debris_au_sol, par, valideur) {
+        let _ = ReeCampagne.constater(h, objet, instant, lieu, debris_au_sol, par, valideur)
+        return "rentre"
+    }
+
+    on a_risque(objet) {
+        let c = ReeCampagne.campagne_de(objet)
+        if c == "" { return false }
+        return ReeRisque.a_risque(c)
+    }
+
+    on fenetre(objet) {
+        let c = ReeCampagne.campagne_de(objet)
+        require c != "" else Inconnu "aucune campagne pour {objet}"
+        let f = ReeCampagne.fenetre(c)
+        let d = f[0]
+        let e = f[1]
+        return "{d},{e}"
+    }
+
+    on victimes_ppm(objet) {
+        let c = ReeCampagne.campagne_de(objet)
+        require c != "" else Inconnu "aucune campagne pour {objet}"
+        return ReeRisque.victimes_de(c)
+    }
+
+    on controlee_approuvee(objet) {
+        let c = ReeCampagne.campagne_de(objet)
+        if c == "" { return false }
+        return ReeControlee.actif(c)
+    }
+
+    on constatee(objet) {
+        return ReeCampagne.constatee(objet)
+    }
+
+    on balayer(h, par) {
+        return ReeCampagne.balayer(h, par)
+    }
+
+    on campagne_de(objet) {
+        return ReeCampagne.campagne_de(objet)
+    }
+}

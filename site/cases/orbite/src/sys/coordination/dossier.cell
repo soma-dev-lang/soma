@@ -1,0 +1,272 @@
+// COORDINATION — le dossier de coordination d'un rapprochement : ouverture, proposition par
+// défaut des règles de priorité, réponses des propriétaires, accord ou désaccord, échéance,
+// arbitrage d'ORBITE, arrêt, rouverture, clôture. Instance = id du rapprochement ("CJ-<n>") :
+// une coordination par rapprochement pour toute sa vie (la rouverture reprend la même).
+// L'arrêt n'existe que verrou tenu (CoordVerrou, même id) : c'est la propriété 1.
+
+// État exposé par ApiCoordination.etat ; "inconnue" si jamais ouverte.
+cell type CoordEtat = String where value == "ouverte" || value == "proposee" || value == "accord" || value == "desaccord" || value == "arbitrage" || value == "arretee" || value == "liberee" || value == "rouverte" || value == "close" || value == "inconnue"
+// Sens d'une réponse d'opérateur à la désignation proposée.
+cell type CoordSens = String where value == "accepte" || value == "refuse"
+// Raison de clôture, reprise de l'état du rapprochement chez conjonctions.
+// Vue d'une coordination pour une partie ou pour ORBITE (ApiCoordination ne donne que l'état,
+// le désigné et l'échéance). echeance / limite en ms ; designe "" tant que rien n'est arrêté ;
+// decision, grappe, saisine : ids ("" si aucun).
+cell type CoordFiche { variants { CoordFiche { r: Rapprochement, etat: CoordEtat, objets: List<String>, parties: List<String>, tour: Int, propose: Objet, echeance: Horodatage, limite: Horodatage, designe: Objet, decision: String, grappe: String, saisine: String } } }
+cell type CoordMotifCloture = String where value == "resolu" || value == "passe" || value == "collision"
+
+skeleton CoordDossier {
+    const MAX_DOSSIERS = 50000000
+    // Coordinations non closes simultanées (tout le catalogue en tempête : borne large).
+    const MAX_EN_COURS = 100000
+    // Tours de proposition d'une coordination (ouverture, contre-propositions, rouvertures).
+    const MAX_TOURS = 50
+    // Marge (ms) réservée à l'arbitrage d'ORBITE avant l'heure limite d'action : 2 h.
+    const MARGE_ARBITRAGE = 7200000
+    memory {
+        objets_de: Map<String, List<String>> [persistent]     // r -> [a, b], copiés de ApiConjonctions.objets à l'ouverture
+        parties_de: Map<String, List<String>> [persistent]    // r -> propriétaires (Org) dont la réponse est attendue (1 ou 2 ; aucun si propriétaire "inconnu")
+        ouvert_le: Map<String, Horodatage> [persistent]       // r -> instant d'ouverture
+        defaut_de: Map<String, Objet> [persistent]            // r -> désignation par défaut des règles au dernier tour ("" : aucun ne peut)
+        version_de: Map<String, String> [persistent]          // r -> version des règles de priorité appliquée au dernier tour
+        propose_de: Map<String, Objet> [persistent]           // r -> désignation sur la table (défaut, ou contre-proposition retenue)
+        echeance_de: Map<String, Horodatage> [persistent]     // r -> échéance de réponse du tour courant (ms)
+        limite_de: Map<String, Horodatage> [persistent]       // r -> heure limite d'action : TCA − préavis de la propulsion proposée
+        tour_de: Map<String, Int> [persistent]                // r -> numéro du tour (1 à l'ouverture, +1 par contre-proposition ou rouverture)
+        en_cours: Map<String, Horodatage> [persistent]        // r -> échéance, pour les dossiers non clos (balayage)
+        balaye_le: Map<String, Horodatage> [persistent]       // "balayage" -> h du dernier balayage (monotone)
+        recale_le: Map<String, Horodatage> [persistent]       // r -> ApiConjonctions.mis_a_jour lu au dernier recalage
+        invariant objets_de.size <= 50000000
+        invariant en_cours.size <= 100000
+        invariant tour_de >= 1 && tour_de <= 50
+        invariant (echeance_de ?? 0) >= (ouvert_le ?? 0)
+        invariant (limite_de ?? 0) >= (echeance_de ?? 0)
+        invariant balaye_le.size <= 1
+    }
+    // Cycle de vie d'une coordination (états de ApiCoordination.etat).
+    state coordination {
+        initial: ouverte
+        ouverte -> proposee              // proposition : désignation par défaut des règles en vigueur
+        ouverte -> arbitrage             // aucune désignation possible par les règles (aucun ne peut, aucune version, aucune partie joignable)
+        proposee -> accord               // toutes les parties attendues acceptent la proposition
+        proposee -> desaccord            // une partie refuse avec contre-proposition
+        proposee -> arbitrage            // silence passé l'échéance : ORBITE reprend la main
+        desaccord -> accord              // l'autre partie accepte la contre-proposition
+        desaccord -> arbitrage           // second refus, ou silence passé l'échéance
+        accord -> arretee                // arrêt : le verrou est posé sur la désignation acceptée
+        accord -> arbitrage              // le verrou est refusé (objet devenu incapable, préavis dépassé, grappe)
+        arbitrage -> arretee             // arrêt par arbitrage (quatre yeux), y compris « ne pas manœuvrer »
+        arretee -> liberee               // la situation change : le plan non exécuté est retiré, le verrou d'évitement de manoeuvres est libre ou soldé
+        liberee -> rouverte              // le verrou de désignation est levé
+        rouverte -> proposee             // nouveau tour de proposition
+        rouverte -> arbitrage            // plus le temps d'un tour : arbitrage direct
+        * -> close except [close]        // le rapprochement est clos (résolu, passé, collision)
+    }
+    face {
+        // Ouvre la coordination du rapprochement `r` (seul écrivain de objets_de, parties_de,
+        // ouvert_le). Exige ApiConjonctions.etat(r) == "alerte". Lit les deux objets, leurs
+        // propriétaires (ApiRef.proprietaire ; "inconnu" n'est pas une partie), inscrit `r` à
+        // l'index multi-objets (CoordGrappe.inscrire), puis lance le tour 1 : proposition
+        // par défaut (ouverte -> proposee ; ApiPriorites.qui_manoeuvre(h, r, a, b), qui enregistre
+        // sa décision de priorité pour r) ou arbitrage direct (ouverte -> arbitrage) : saisine
+        // "crise" si ApiOperations.arbitrage_centralise() (crise : ORBITE arbitre sans tour de
+        // réponse) ; saisine "sans_designation" si qui_manoeuvre renvoie "" ou refuse Ferme, si
+        // le proposé n'est pas ApiRef.peut_manoeuvrer (jamais proposé), ou si aucune partie n'est
+        // active (ApiOperateurs.est_actif). Échéance = min(h + plus long ApiOperateurs.delai_reponse des
+        // parties au ApiConjonctions.niveau(r), limite d'action − MARGE_ARBITRAGE) ; limite
+        // d'action = ApiConjonctions.tca(r) − ApiPriorites.preavis(ApiRef.propulsion(proposé)).
+        // Notifie chaque partie (CoordEchange.notifier, "proposition") ; une partie dont
+        // ApiOperateurs.astreinte est "" est escaladée tout de suite (ApiEscalade.escalader).
+        // Renvoie "CO-<r>". Refus : Inconnu (rapprochement ou objet), EtatInvalide (pas en alerte),
+        // Existe (déjà ouverte), Plein (MAX_EN_COURS), Delai (TCA déjà passé ou limite d'action
+        // dépassée : arbitrage seul possible, ouvert par l'analyste), Habilitation ("systeme" ou
+        // "analyste" d'ORBITE, ApiAcces.a_le_role).
+        signal ouvrir(h: Horodatage, r: Rapprochement, par: String) -> String
+            writes objets_de, parties_de, ouvert_le, defaut_de, version_de, propose_de, echeance_de, limite_de, tour_de, en_cours
+            moves ouverte -> proposee when ConjRapprochement.alerte, ouverte -> arbitrage when ConjRapprochement.alerte
+            calls ApiConjonctions.etat, ApiConjonctions.objets, ApiConjonctions.niveau, ApiConjonctions.tca, ApiRef.proprietaire, ApiRef.propulsion, ApiRef.peut_manoeuvrer, ApiPriorites.qui_manoeuvre, ApiPriorites.version_en_vigueur, ApiPriorites.preavis, ApiOperations.arbitrage_centralise, ApiOperateurs.est_actif, ApiOperateurs.delai_reponse, ApiOperateurs.astreinte, ApiEscalade.escalader, ApiAcces.a_le_role, CoordReponse.attendre, CoordGrappe.inscrire, CoordArbitrage.saisir, CoordEchange.notifier, Journal.noter
+        // Réponse d'une partie au tour courant : l'organisation est l'employeur de `par`
+        // (ApiAcces.employeur), qui doit être une partie attendue. "accepte" : la proposition
+        // tient ; si toutes les parties attendues ont accepté (CoordReponse.toutes_acceptees),
+        // proposee|desaccord -> accord puis arrêt immédiat (arreter). "refuse" : `contre` doit
+        // être l'AUTRE objet du rapprochement (Incoherent sinon, ou si `contre` est l'objet
+        // proposé) et `motif` non vide ; au premier refus proposee -> desaccord, la
+        // contre-proposition devient la proposition (tour + 1, nouvelles réponses attendues des
+        // autres parties) ; un refus en desaccord -> arbitrage (saisine "desaccord"). Si la contre-proposition désigne un
+        // objet incapable (ApiRef.peut_manoeuvrer faux) elle est refusée Incoherent.
+        // Renvoie l'état atteint (CoordEtat). Refus : Inconnu, EtatInvalide (ni proposee ni
+        // desaccord, ou déjà répondu à ce tour), Delai (h > échéance du tour), Habilitation
+        // ("dynamicien" ou "chef_de_mission" d'une partie, ApiAcces.a_le_role + ApiAcces.agit_pour),
+        // Incoherent, MotifRequis (refus sans motif).
+        signal repondre(h: Horodatage, r: Rapprochement, reponse: CoordSens, contre: Objet, motif: String, par: String) -> CoordEtat
+            writes propose_de, echeance_de, limite_de, tour_de, en_cours
+            reads objets_de, parties_de, defaut_de
+            moves proposee -> accord, proposee -> desaccord, desaccord -> accord, desaccord -> arbitrage
+            calls ApiAcces.a_le_role, ApiAcces.agit_pour, ApiAcces.employeur, ApiRef.peut_manoeuvrer, ApiRef.propulsion, ApiPriorites.preavis, ApiConjonctions.tca, ApiOperateurs.delai_reponse, ApiConjonctions.niveau, CoordReponse.enregistrer, CoordReponse.attendre, CoordReponse.toutes_acceptees, CoordReponse.rendre_caduques, CoordArbitrage.saisir, CoordEchange.noter, CoordEchange.notifier, arreter, Journal.noter
+        // Arrêt sur accord (accord -> arretee) : pose le verrou sur la proposition acceptée
+        // (CoordVerrou.poser, mode "accord", par "systeme"). Si le verrou est refusé
+        // (NonEligible, Suspendu, Delai, Conflit de grappe), passe accord -> arbitrage (saisine "verrou_refuse"
+        // ou "grappe") et renvoie "arbitrage" : l'accord ne vaut rien sans verrou. Appelé par repondre seulement.
+        // Renvoie l'état atteint. Refus : Inconnu, EtatInvalide (pas en accord).
+        signal arreter(h: Horodatage, r: Rapprochement) -> CoordEtat
+            reads propose_de, en_cours, tour_de
+            moves accord -> arretee when CoordVerrou.tenu, accord -> arbitrage
+            calls CoordVerrou.poser, CoordArbitrage.saisir, CoordEchange.notifier, Journal.noter
+        // Constate le silence passé l'échéance du tour (h > échéance) : les réponses encore
+        // attendues deviennent muettes et chaque partie muette est escaladée
+        // (CoordReponse.constater_muettes, idempotent). La coordination passe en arbitrage
+        // (proposee|desaccord -> arbitrage, CoordArbitrage.saisir raison "silence") dès que
+        // l'escalade a rendu la main (ApiEscalade.reprise(r)) OU que h ≥ limite −
+        // MARGE_ARBITRAGE (filet : l'escalade ne retient jamais la décision au-delà). Un opérateur
+        // silencieux ne bloque donc jamais (propriété 5). `par` "systeme". Renvoie le nombre de
+        // parties muettes. Refus : Inconnu, EtatInvalide, Delai (échéance non atteinte), Habilitation.
+        signal constater_silence(h: Horodatage, r: Rapprochement, par: String) -> Int
+            reads echeance_de, limite_de, parties_de, tour_de
+            moves proposee -> arbitrage, desaccord -> arbitrage
+            calls CoordReponse.constater_muettes, ApiEscalade.reprise, CoordArbitrage.saisir, CoordEchange.notifier, ApiRef.orbite, ApiAcces.a_le_role, Journal.noter
+        // Arbitrage d'ORBITE (désaccord, silence, accord sans verrou, rouverture tardive, ou
+        // ouverture directe en arbitrage) : désigne `objet` (un des deux objets du rapprochement,
+        // Incoherent sinon) ou "" pour décider de ne pas manœuvrer. proposee|desaccord ->
+        // arbitrage si h > échéance (sinon EtatInvalide : les parties ont encore la main), puis
+        // arbitrage -> arretee en posant le verrou (CoordVerrou.poser, mode "arbitrage", qui
+        // contrôle capacité, habité seul capable, opérateur actif, préavis et grappe).
+        // Rend la saisine (CoordArbitrage.rendre, en la saisissant d'abord si le passage en
+        // arbitrage se fait ici). Renvoie "arretee". Refus : Inconnu, EtatInvalide, Incoherent,
+        // NonEligible (objet incapable de manœuvrer, ou habité alors que l'autre le peut),
+        // Suspendu, Delai,
+        // Conflit (grappe), MotifRequis, Habilitation ("analyste" d'ORBITE), QuatreYeux
+        // (valideur "superviseur" d'ORBITE, ApiAcces.quatre_yeux). Exception d'urgence : si la
+        // saisine est hors délai (CoordArbitrage.en_retard) et que `par` est un "superviseur" ou
+        // la "direction" d'ORBITE en accès d'urgence pour r (ApiAcces.en_urgence_pour), il arbitre seul
+        // (valideur == par) ; le geste est journalisé pour la revue a posteriori d'acces.
+        signal arbitrer(h: Horodatage, r: Rapprochement, objet: Objet, motif: String, par: String, valideur: String) -> CoordEtat
+            reads objets_de, echeance_de, tour_de
+            moves proposee -> arbitrage, desaccord -> arbitrage, arbitrage -> arretee when CoordVerrou.tenu
+            calls CoordVerrou.poser, CoordArbitrage.saisir, CoordArbitrage.rendre, CoordArbitrage.en_retard, ApiAcces.a_le_role, ApiAcces.quatre_yeux, ApiAcces.en_urgence_pour, CoordEchange.noter, CoordEchange.notifier, Journal.noter
+        // Rouvre une coordination arrêtée (nouvelle pc, manœuvre annulée, désigné devenu
+        // incapable ou défaillant, grappe dissoute) : refuse si le suivi de la décision en vigueur
+        // (CoordVerrou.decision, CoordSuivi.etat) est "execute" ; annule le plan d'évitement non
+        // exécuté de l'ancien désigné (CoordSuivi.plan, sinon ApiManoeuvres.plan_de ;
+        // ApiManoeuvres.retirer, par "systeme" : le retrait ne rouvre pas en retour, aucun cycle)
+        // pour qu'aucun plan de l'ancienne désignation ne survive, puis arretee -> liberee
+        // (le verrou d'évitement de manoeuvres, même id r, est libre ou soldé : aucun plan de r
+        // n'est encore "approuve" selon ApiManoeuvres.etat — jamais deux évitements approuvés,
+        // propriété 1) ; lève le verrou (CoordVerrou.lever), puis liberee -> rouverte ; recalcule la proposition (tour + 1,
+        // ApiPriorites.qui_manoeuvre(h, r, a, b)) : rouverte -> proposee, ou rouverte -> arbitrage
+        // si la nouvelle échéance tomberait après limite − MARGE_ARBITRAGE, si les règles ne
+        // désignent personne capable (ApiRef.peut_manoeuvrer), ou en crise
+        // (ApiOperations.arbitrage_centralise) — saisine "rouverture_tardive", "sans_designation"
+        // ou "crise".
+        // Renvoie l'état atteint. Refus : Inconnu, EtatInvalide (pas arretee ; plan exécuté non
+        // encore vérifié : attendre la vérification ; plan encore approuvé après retrait ; MAX_TOURS atteint), MotifRequis,
+        // Habilitation ("analyste" d'ORBITE, ou "systeme").
+        signal rouvrir(h: Horodatage, r: Rapprochement, motif: String, par: String) -> CoordEtat
+            writes defaut_de, version_de, propose_de, echeance_de, limite_de, tour_de, en_cours
+            reads objets_de, parties_de
+            moves arretee -> liberee when ManEvitement.libre || ManEvitement.solde, liberee -> rouverte when CoordVerrou.leve, rouverte -> proposee, rouverte -> arbitrage
+            calls CoordVerrou.lever, CoordVerrou.designe, CoordVerrou.decision, CoordSuivi.etat, CoordSuivi.plan, CoordArbitrage.saisir, ApiManoeuvres.plan_de, ApiManoeuvres.etat, ApiManoeuvres.retirer, ApiPriorites.qui_manoeuvre, ApiPriorites.version_en_vigueur, ApiPriorites.preavis, ApiOperations.arbitrage_centralise, ApiRef.peut_manoeuvrer, ApiRef.propulsion, ApiConjonctions.tca, ApiConjonctions.niveau, ApiOperateurs.delai_reponse, ApiAcces.a_le_role, CoordReponse.attendre, CoordEchange.noter, CoordEchange.notifier, Journal.noter
+        // Recale l'échéance et la limite d'action d'un dossier proposee ou desaccord quand le
+        // rapprochement a changé chez conjonctions depuis le dernier recalage
+        // (ApiConjonctions.mis_a_jour > recale_le : niveau monté, TCA avancé) ; sinon ne fait rien :
+        // nouvelle échéance = min(échéance actuelle, h + plus long délai de réponse au nouveau
+        // niveau, nouvelle limite − MARGE_ARBITRAGE) — une échéance ne recule jamais. Si la
+        // nouvelle limite − MARGE_ARBITRAGE est déjà passée, proposee|desaccord -> arbitrage
+        // (saisine "urgence"). `par` "systeme" ou "analyste". Renvoie l'échéance retenue (ms).
+        // Refus : Inconnu, EtatInvalide (ni proposee ni desaccord), Habilitation.
+        signal recaler(h: Horodatage, r: Rapprochement, par: String) -> Horodatage
+            writes echeance_de, limite_de, en_cours, recale_le
+            reads parties_de, propose_de, tour_de
+            moves proposee -> arbitrage, desaccord -> arbitrage
+            calls ApiConjonctions.mis_a_jour, ApiConjonctions.niveau, ApiConjonctions.tca, ApiOperateurs.delai_reponse, ApiPriorites.preavis, ApiRef.propulsion, ApiAcces.a_le_role, CoordArbitrage.saisir, CoordEchange.notifier, Journal.noter
+        // Contrôle continu de la désignation arrêtée (propriété 2, filet du balayage : ref rouvre
+        // déjà à chaque perte de capacité) : si l'objet désigné ne peut plus manœuvrer
+        // (ApiRef.peut_manoeuvrer faux : propulsion perdue, hors service, anomalie, passivation)
+        // ou si son propriétaire n'est plus actif
+        // (ApiOperateurs.est_actif), rouvre la coordination (rouvrir, par "systeme", motif
+        // explicite). Renvoie vrai si la désignation tient encore. `par` "systeme" ou "analyste".
+        // Refus : Inconnu, Habilitation.
+        signal reverifier(h: Horodatage, r: Rapprochement, par: String) -> Bool
+            reads coordination
+            calls CoordVerrou.designe, ApiRef.peut_manoeuvrer, ApiRef.proprietaire, ApiOperateurs.est_actif, ApiAcces.a_le_role, rouvrir
+        // Balayage des échéances, seul point d'entrée du temps (ApiCoordination.balayer, appelé
+        // par Horloge.battre chaque minute avec `h`) : sur chaque dossier en cours,
+        // recale l'échéance (recaler), relance les parties à mi-délai (CoordReponse.relancer),
+        // constate le silence passé l'échéance, surveille la saisine d'arbitrage courante
+        // (CoordArbitrage.surveiller), reverifie la désignation des dossiers arrêtés et fait
+        // avancer le suivi de leur décision (CoordSuivi.suivre), et
+        // clôt ceux dont le rapprochement est clos chez conjonctions (ApiConjonctions.etat
+        // "resolu", "passe" ou "collision") ; une grappe encore formée d'un dossier en cours est
+        // réglée par les règles (CoordGrappe.regler ; Conflit : laissée à l'analyste, le dossier
+        // passant en arbitrage à son échéance). `par` "systeme". Renvoie le nombre de dossiers
+        // dont l'état a changé. L'horloge des balayages est monotone (balaye_le) : un `h` antérieur au dernier
+        // balayage est refusé Incoherent. Refus : Habilitation, Incoherent.
+        signal balayer(h: Horodatage, par: String) -> Int
+            writes balaye_le
+            reads en_cours, echeance_de, coordination
+            calls recaler, constater_silence, reverifier, clore, CoordReponse.relancer, ApiConjonctions.etat, CoordGrappe.grappe_de_r, CoordGrappe.etat, CoordGrappe.regler, CoordArbitrage.courante, CoordArbitrage.surveiller, CoordVerrou.decision, CoordSuivi.suivre, ApiAcces.a_le_role
+        // Dossiers en souffrance à `h`, pour l'analyste de permanence quand le balayage s'arrête :
+        // ceux dont l'échéance est passée sans arbitrage saisi, préfixés de l'âge du dernier
+        // balayage ("balayage:<ms>"). Au plus `n`. Refus : Habilitation ("analyste",
+        // "superviseur" ou "exploitant" d'ORBITE).
+        signal retards(h: Horodatage, n: Int, par: String) -> List<String>
+            requires n > 0 && n <= 1000
+            reads en_cours, balaye_le, coordination
+            calls ApiAcces.a_le_role
+        // Clôt la coordination (* -> close) quand le rapprochement est clos : `motif` reprend son
+        // état chez conjonctions (EtatInvalide si ApiConjonctions.etat(r) ne le confirme pas).
+        // Clôt le verrou (CoordVerrou.clore : la décision en vigueur est soldée), rend
+        // caduques les réponses attendues, abandonne la saisine d'arbitrage courante, retire `r` de l'index multi-objets
+        // (CoordGrappe.retirer) et de en_cours. Renvoie "close". Refus : Inconnu,
+        // EtatInvalide, Habilitation ("systeme" ou "analyste").
+        signal clore(h: Horodatage, r: Rapprochement, motif: CoordMotifCloture, par: String) -> CoordEtat
+            writes en_cours
+            moves * -> close when ConjRapprochement.resolu || ConjRapprochement.passe || ConjRapprochement.collision
+            calls ApiConjonctions.etat, CoordVerrou.clore, CoordReponse.rendre_caduques, CoordArbitrage.abandonner, CoordGrappe.retirer, CoordEchange.noter, ApiAcces.a_le_role, Journal.noter
+        // Une partie demande la rouverture d'une coordination arrêtée (propulsion dégradée,
+        // nouvelle éphéméride, phase critique) : la demande est notée au fil et notifiée à
+        // l'analyste de permanence (CoordEchange.notifier, "rouverture") ; seul un analyste rouvre
+        // (rouvrir). Renvoie le nombre d'échanges du fil. Refus : Inconnu, EtatInvalide (pas
+        // arretee), MotifRequis, Habilitation ("dynamicien" ou "chef_de_mission" d'une partie,
+        // ApiAcces.a_le_role + ApiAcces.agit_pour), Plein.
+        signal demander_rouverture(h: Horodatage, r: Rapprochement, motif: String, par: String) -> Int
+            reads parties_de, coordination
+            calls ApiAcces.a_le_role, ApiAcces.agit_pour, ApiAcces.employeur, CoordEchange.notifier, CoordEchange.noter
+        // Fiche de la coordination lue par `par` : tout employé d'ORBITE actif, ou une personne
+        // employée par une partie (ApiAcces.agit_pour) ; une partie ne voit le désigné et la
+        // décision que si ApiDonnees.peut_recevoir vaut vrai pour les deux objets (sinon "" à la
+        // place), et la lecture est tracée (ApiDonnees.tracer, nature "fiche").
+        // Refus : Inconnu, Habilitation, Confidentiel (ni ORBITE ni partie).
+        signal fiche(h: Horodatage, r: Rapprochement, par: String) -> CoordFiche
+            reads coordination, objets_de, parties_de, tour_de, propose_de, echeance_de, limite_de
+            calls CoordVerrou.designe, CoordVerrou.decision, CoordGrappe.grappe_de_r, CoordArbitrage.courante, ApiAcces.employeur, ApiAcces.a_le_role, ApiAcces.agit_pour, ApiRef.orbite, ApiDonnees.peut_recevoir, ApiDonnees.tracer
+        // Phase brute de la machine (l'initial "ouverte" pour une coordination jamais ouverte) :
+        // le lecteur que CoordVerrou consulte avant de prendre ses arêtes gardées.
+        signal phase(r: Rapprochement) -> String
+            reads coordination
+        // État de la coordination ; "inconnue" si jamais ouverte.
+        signal etat(r: Rapprochement) -> CoordEtat
+            reads coordination, objets_de
+        // Échéance de réponse du tour courant (ms). Refus : Inconnu.
+        signal echeance(r: Rapprochement) -> Horodatage
+            reads echeance_de
+        // Heure limite d'action (TCA − préavis de la propulsion proposée, ms). Refus : Inconnu.
+        signal limite(r: Rapprochement) -> Horodatage
+            reads limite_de
+        // Désignation sur la table au tour courant ("" : aucune). Refus : Inconnu.
+        signal proposition(r: Rapprochement) -> Objet
+            reads propose_de
+        // Désignation par défaut des règles et version appliquée au dernier tour, "objet|version"
+        // (fondement d'une décision). Refus : Inconnu.
+        signal defaut(r: Rapprochement) -> String
+            reads defaut_de, version_de
+        // Tour courant (≥ 1). Refus : Inconnu.
+        signal tour(r: Rapprochement) -> Int
+            reads tour_de
+        // Objets en cause [a, b] et parties attendues (Org), tels que fixés à l'ouverture.
+        // Refus : Inconnu.
+        signal objets(r: Rapprochement) -> List<String>
+            reads objets_de
+        signal parties(r: Rapprochement) -> List<String>
+            reads parties_de
+    }
+}

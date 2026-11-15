@@ -1,0 +1,83 @@
+// CONJONCTIONS — seuils de niveau : la table qui transforme (pc, distance, temps restant) en
+// niveau 1 / 2 / 3. Versionnée, adoptée sous quatre yeux ; une seule version en vigueur.
+// Tant qu'aucune version n'a été adoptée, les valeurs par défaut (constantes) s'appliquent.
+
+// Une version des seuils. Instance = "SEU-<n>".
+skeleton ConjSeuils {
+    const MAX_VERSIONS = 1000
+    const DEFAUT_PC_SUIVI = 100           // 1e-7 : sous ce seuil, pas de rapprochement à suivre
+    const DEFAUT_PC_ATTENTION = 10000     // 1e-5 : niveau 2
+    const DEFAUT_PC_URGENCE = 100000      // 1e-4 : niveau 3 (dans l'horizon d'urgence)
+    const DEFAUT_DISTANCE_ATTENTION = 1000    // m : niveau 2 au moins sous cette distance
+    const DEFAUT_DISTANCE_URGENCE = 200       // m : niveau 3 sous cette distance (dans l'horizon)
+    const DEFAUT_HORIZON_URGENCE = 259200000  // 72 h : au-delà le niveau est plafonné à 2
+    memory {
+        pc_suivi_de: Map<String, Probabilite> [persistent]
+        pc_attention_de: Map<String, Probabilite> [persistent]
+        pc_urgence_de: Map<String, Probabilite> [persistent]
+        distance_attention_de: Map<String, Distance> [persistent]
+        distance_urgence_de: Map<String, Distance> [persistent]
+        horizon_urgence_de: Map<String, Duree> [persistent]
+        redige_par: Map<String, String> [persistent]
+        motif_de: Map<String, String> [persistent]
+        adopte_le: Map<String, Horodatage> [persistent]
+        valide_par: Map<String, String> [persistent]
+        en_vigueur: Map<String, String> [persistent]       // "courante" -> version en vigueur ; absente avant la première adoption
+        invariant en_vigueur.size <= 1
+        // la table est monotone : écrire les seuils dans l'ordre suivi, attention, urgence
+        invariant (pc_suivi_de ?? 0) <= (pc_attention_de ?? 1000000000)
+        invariant (pc_attention_de ?? 0) <= (pc_urgence_de ?? 1000000000)
+        invariant (distance_urgence_de ?? 0) <= (distance_attention_de ?? 0)
+        invariant horizon_urgence_de >= 3600000
+        invariant horizon_urgence_de <= 604800000
+        invariant redige_par.size <= 1000
+    }
+    // Cycle d'une version.
+    state version {
+        initial: brouillon
+        brouillon -> en_vigueur      // adoption : remplace la version en vigueur
+        brouillon -> rejetee
+        en_vigueur -> remplacee      // par l'adoption de la suivante
+    }
+    face {
+        // Rédige une version : pc en milliardièmes (suivi ≤ attention ≤ urgence), distances en
+        // m (urgence ≤ attention), horizon d'urgence en ms (1 h à 7 j). Renvoie "SEU-<n>".
+        // Rôle : "analyste" d'ORBITE. Geste d'administration.
+        // Refus : HorsBornes (table non monotone, horizon hors bornes), MotifRequis, Plein, Habilitation.
+        signal rediger(h: Horodatage, pc_suivi: Probabilite, pc_attention: Probabilite, pc_urgence: Probabilite, distance_attention: Distance, distance_urgence: Distance, horizon_urgence: Duree, motif: String, par: String) -> String
+            writes pc_suivi_de, pc_attention_de, pc_urgence_de, distance_attention_de, distance_urgence_de, horizon_urgence_de, redige_par, motif_de
+            calls next_id, ApiAcces.a_le_role, Journal.noter
+        // Adopte une version (brouillon -> en_vigueur) ; l'ancienne passe en_vigueur -> remplacee.
+        // Les rapprochements ouverts gardent leur niveau jusqu'à leur prochaine mise à jour ou
+        // réévaluation. Renvoie l'id adopté. Interdit pendant un incident majeur.
+        // Rôle : `par` "superviseur" d'ORBITE, `valideur` "direction" distinct de `par` et du
+        // rédacteur (ApiAcces.quatre_yeux). Geste d'administration.
+        // Refus : Inconnu, EtatInvalide, Suspendu (incident majeur en cours), Habilitation, QuatreYeux.
+        signal adopter(h: Horodatage, version: String, par: String, valideur: String) -> String
+            reads redige_par
+            writes en_vigueur, adopte_le, valide_par
+            moves brouillon -> en_vigueur, en_vigueur -> remplacee
+            calls ApiOperations.incident_majeur, ApiAcces.a_le_role, ApiAcces.quatre_yeux, Journal.noter
+        // Rejette un brouillon. Renvoie "rejetee". Rôle : "superviseur" d'ORBITE.
+        // Refus : Inconnu, EtatInvalide, MotifRequis, Habilitation.
+        signal rejeter(h: Horodatage, version: String, motif: String, par: String) -> String
+            reads redige_par
+            moves brouillon -> rejetee
+            calls ApiAcces.a_le_role, Journal.noter
+        // Niveau d'un rapprochement selon la version en vigueur (défauts sinon) : 3 si
+        // (pc ≥ urgence ou distance < distance d'urgence) et restant ≤ horizon d'urgence ;
+        // 2 si pc ≥ attention ou distance < distance d'attention ; 1 sinon. Les deux distances
+        // de seuil sont multipliées par `facteur` / 100 (incertitude de la météo spatiale).
+        signal niveau(pc: Probabilite, distance: Distance, restant: Duree, facteur: Pourcent) -> Niveau
+            reads en_vigueur, pc_attention_de, pc_urgence_de, distance_attention_de, distance_urgence_de, horizon_urgence_de
+        // Seuil de suivi en vigueur (milliardièmes) : une pc dessous compte pour la résolution.
+        signal seuil_suivi() -> Probabilite
+            reads en_vigueur, pc_suivi_de
+        // Version en vigueur ; "defaut" avant toute adoption (trace des fondements).
+        signal version_en_vigueur() -> String
+            reads en_vigueur
+        // "brouillon", "en_vigueur", "rejetee", "remplacee" ; "inconnue".
+        signal etat(version: String) -> String
+            reads version, redige_par
+    }
+}

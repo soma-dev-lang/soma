@@ -1,0 +1,115 @@
+// RENTRÉES — le risque au sol d'une rentrée : espérance de victimes, masse survivante, fragments.
+// Instance = id de campagne (même id que ReeCampagne et ReeConstat). Règle d'ORBITE : au-delà de
+// SEUIL_PPM millionièmes (1 chance sur 10 000), la rentrée est « à risque » : notifications
+// d'urgence 3, suivi renforcé prioritaire, rentrée contrôlée à rechercher. Le classement ne
+// redescend jamais tout seul : une prévision plus favorable laisse la campagne « à risque »
+// jusqu'à un déclassement à quatre yeux.
+
+// Classe de risque ; "non_evalue" : campagne jamais évaluée.
+cell type ReeClasseRisque = String where value == "non_evalue" || value == "faible" || value == "a_risque" || value == "fige"
+
+skeleton ReeRisque {
+    const MAX_CAMPAGNES = 100000
+    // Seuil de rentrée à risque : 100 millionièmes = 1e-4 victime attendue.
+    const SEUIL_PPM = 100
+    const MAX_PPM = 1000000000
+    // Masse survivante au-delà de laquelle la rentrée est « à risque » quelle que soit
+    // l'espérance de victimes (fragments massifs : réservoirs, structures) : 500 kg.
+    const MASSE_MAJEURE = 500
+    // Rentrée à risque MAJEUR (tous les États participants notifiés) : victimes > 10 000
+    // millionièmes (1 %), ou masse au catalogue > MASSE_CATALOGUE_MAJEURE (5 t).
+    const SEUIL_MAJEUR_PPM = 10000
+    const MASSE_CATALOGUE_MAJEURE = 5000
+    // Fragments survivants estimés, au plus.
+    const MAX_FRAGMENTS = 100000
+
+    memory {
+        // campagne → espérance de victimes retenue (millionièmes) ; la plus haute connue tant que
+        // la campagne est « à risque » et non déclassée.
+        victimes: Map<String, Int> [persistent]
+        // campagne → masse survivante estimée (kg) et nombre de fragments survivants (analyste).
+        masse_survivante: Map<String, Masse> [persistent]
+        fragments: Map<String, Int> [persistent]
+        // campagne → masse de l'objet au catalogue (ApiRef.masse) à la première évaluation.
+        masse_catalogue: Map<String, Masse> [persistent]
+        evalue_le: Map<String, Horodatage> [persistent]
+        // campagne → id du message demandant au propriétaire une rentrée contrôlée (ReeControlee).
+        demande_controlee: Map<String, String> [persistent]
+        // campagne → "h | motif | par | valideur" du déclassement.
+        declassement: Map<String, String> [persistent]
+        invariant victimes.size <= MAX_CAMPAGNES
+        invariant victimes >= 0 && victimes <= MAX_PPM
+        invariant fragments >= 0 && fragments <= MAX_FRAGMENTS
+    }
+
+    // Classement (instance = campagne). Terminal : fige (rentrée constatée ou campagne annulée).
+    state classe {
+        initial: non_evalue
+        non_evalue -> faible        // evaluer : victimes ≤ SEUIL_PPM
+        non_evalue -> a_risque      // evaluer : victimes > SEUIL_PPM
+        faible -> a_risque          // evaluer / detailler : nouvelle estimation au-dessus du seuil
+        a_risque -> faible          // declasser : quatre yeux, estimation retombée sous le seuil
+        faible -> fige              // figer
+        a_risque -> fige            // figer
+    }
+
+    face {
+        // Évalue (ou réévalue) le risque d'une campagne à chaque prévision. Garde le maximum de
+        // `victimes_ppm` et de la valeur courante tant que la campagne est « à risque ». Au premier
+        // passage « à risque » d'un objet encore manœuvrant (ApiRef.peut_manoeuvrer), demande à
+        // son propriétaire (ApiRef.proprietaire) de déposer une rentrée contrôlée (message
+        // d'urgence 3, ApiPasserelle.notifier avec r = "", id gardé dans `demande_controlee`). Garde la
+        // masse au catalogue (ApiRef.masse) : au-delà de MASSE_MAJEURE la campagne est « à risque ».
+        // Renvoie la classe atteinte. Appelé par ReeCampagne.prevoir, qui porte l'habilitation.
+        // Refus : HorsBornes (victimes_ppm < 0 ou > MAX_PPM), EtatInvalide (classe "fige").
+        signal evaluer(h: Horodatage, campagne: String, victimes_ppm: Int) -> ReeClasseRisque
+            writes victimes, evalue_le, demande_controlee, masse_catalogue
+            moves non_evalue -> faible, non_evalue -> a_risque, faible -> a_risque
+            calls ReeCampagne.objet, ApiRef.masse, ApiRef.peut_manoeuvrer, ApiRef.proprietaire, ApiPasserelle.notifier
+
+        // Précise l'estimation par l'analyse de survie des débris : masse survivante (kg), nombre
+        // de fragments survivants, espérance de victimes recalculée (millionièmes). Peut faire
+        // passer la campagne « à risque » (victimes > SEUIL_PPM, ou masse > MASSE_MAJEURE), jamais
+        // l'inverse. Renvoie la classe.
+        // Habilitation : par "analyste" (rôle d'ORBITE).
+        // Refus : Inconnu (campagne non évaluée), EtatInvalide ("fige"), HorsBornes, Habilitation.
+        signal detailler(h: Horodatage, campagne: String, masse: Masse, nb_fragments: Int, victimes_ppm: Int, par: String) -> ReeClasseRisque
+            writes victimes, masse_survivante, fragments, evalue_le
+            moves faible -> a_risque
+            calls ApiAcces.a_le_role, Journal.noter
+
+        // Déclasse une campagne « à risque » dont l'estimation `victimes_ppm` est retombée sous le
+        // seuil (fenêtre resserrée hors des zones peuplées, fragmentation haute confirmée).
+        // Renvoie "faible".
+        // Habilitation : par "analyste", valideur "superviseur" (rôles d'ORBITE, ApiAcces.quatre_yeux).
+        // Refus : Inconnu, EtatInvalide (pas "a_risque", ou masse survivante > MASSE_MAJEURE),
+        // HorsBornes (victimes_ppm > SEUIL_PPM),
+        // MotifRequis, Habilitation, QuatreYeux.
+        signal declasser(h: Horodatage, campagne: String, victimes_ppm: Int, motif: String, par: String, valideur: String) -> ReeClasseRisque
+            writes victimes, declassement
+            reads masse_survivante
+            moves a_risque -> faible
+            calls ApiAcces.a_le_role, ApiAcces.quatre_yeux, Journal.noter
+
+        // Fige le classement à la fin de la campagne (rentrée constatée ou annulation) : il reste
+        // la référence du dossier de preuve. Appelé par ReeCampagne (constater, annuler, prevoir),
+        // qui porte l'habilitation. Renvoie "fige". Refus : Inconnu (jamais évaluée).
+        signal figer(h: Horodatage, campagne: String) -> ReeClasseRisque
+            reads victimes
+            moves faible -> fige when ReeCampagne.rentree || ReeCampagne.annulee, a_risque -> fige when ReeCampagne.rentree || ReeCampagne.annulee
+
+        // Espérance de victimes retenue (millionièmes). Refus : Inconnu (jamais évaluée).
+        signal victimes_de(campagne: String) -> Int
+            reads victimes
+            ensures result >= 0
+
+        // Vrai si la rentrée est à risque majeur (victimes > SEUIL_MAJEUR_PPM ou masse au
+        // catalogue > MASSE_CATALOGUE_MAJEURE) : notification de tous les États participants.
+        signal majeur(campagne: String) -> Bool
+            reads victimes, masse_catalogue
+
+        // Vrai si la campagne est « à risque » (classe "a_risque", ou "fige" avec victimes > SEUIL_PPM).
+        signal a_risque(campagne: String) -> Bool
+            reads victimes, classe
+    }
+}

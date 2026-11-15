@@ -1,0 +1,71 @@
+// lancements — corps de LancVeille : un délai dépassé devient un état, avec le `h` de l'horloge.
+// Chaque geste est isolé (try) : l'échec d'un lancement n'arrête pas le balayage des autres.
+
+flesh LancVeille {
+    on balayer(h, par) {
+        require ApiAcces.a_le_role(par, "systeme") || ApiAcces.a_le_role(par, "exploitant") else Habilitation "{par} : systeme ou exploitant d'ORBITE requis"
+        let avant = dernier_de.get("balayage") ?? 0
+        require to_int(h) >= to_int(avant) else HorsBornes "balayage à {h} antérieur au dernier passage {avant}"
+        dernier_de.set("balayage", h)
+        let t = to_int(h)
+        let reportes = 0
+        let annules = 0
+        let recribles = 0
+        let retards = 0
+        let clos = 0
+        for l in LancLancement.en_cours(MAX_PAR_PASSAGE) {
+            let st = LancLancement.etat(l)
+            if st == "notifie" || st == "crible" || st == "autorise" {
+                let f = LancLancement.fiche(l)
+                if to_int(f.fin) < t {
+                    let r = try { LancLancement.reporter(h, l, "fenetre_echue", "systeme") }
+                    if r.error == () { reportes = reportes + 1 }
+                } else {
+                    if st == "crible" || st == "autorise" {
+                        let r = try { LancCola.veiller(h, l, "systeme") }
+                        if r.error == () && r.value { recribles = recribles + 1 }
+                    }
+                    let _ = try { LancZones.relever_acquittements(h, l, "systeme") }
+                }
+            } else if st == "reporte" {
+                let lignes_r = LancLancement.reports(l)
+                if len(lignes_r) > 0 {
+                    let dernier = to_int(split(lignes_r[len(lignes_r) - 1], "|")[0])
+                    // 180 jours (LancLancement.REPORT_MAX) sans nouvelle fenêtre.
+                    if t - dernier > 15552000000 {
+                        let r = try { LancLancement.annuler(h, l, "180 jours reporté sans nouvelle fenêtre", "systeme") }
+                        if r.error == () { annules = annules + 1 }
+                    }
+                }
+            } else if st == "injecte" {
+                let r = try { LancPiece.relever_retards(h, l, "systeme") }
+                if r.error == () { retards = retards + r.value }
+                if LancPiece.restantes(l) == 0 {
+                    let rc = try { LancLancement.clore_identification(h, l, "systeme") }
+                    if rc.error == () { clos = clos + 1 }
+                }
+            }
+        }
+        let total = reportes + annules + recribles + retards + clos
+        compteurs_de.set("reportes", (compteurs_de.get("reportes") ?? 0) + reportes)
+        compteurs_de.set("annules", (compteurs_de.get("annules") ?? 0) + annules)
+        compteurs_de.set("recribles", (compteurs_de.get("recribles") ?? 0) + recribles)
+        compteurs_de.set("retards", (compteurs_de.get("retards") ?? 0) + retards)
+        compteurs_de.set("clos", (compteurs_de.get("clos") ?? 0) + clos)
+        if total > 0 {
+            Journal.noter(h, "lancements", par, "veille : {reportes} reporté(s), {annules} annulé(s), {recribles} recriblé(s), {retards} pièce(s) en délai, {clos} clos")
+        }
+        return total
+    }
+
+    on bilan() {
+        let res_b = []
+        for k in ["reportes", "annules", "recribles", "retards", "clos"] {
+            let v = compteurs_de.get(k) ?? 0
+            res_b.push("{k}={v}")
+        }
+        let d = dernier_de.get("balayage") ?? 0
+        res_b.push("dernier={d}")
+        return res_b
+    }
+}

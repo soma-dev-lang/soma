@@ -1,0 +1,63 @@
+// ephemerides — corps de la RÉACTION AUX TEMPÊTES.
+flesh EphTempete {
+    on surveiller(h, n, par) {
+        require par == "systeme" && ApiAcces.a_le_role(par, "systeme") else Habilitation "surveillance réservée à systeme"
+        let st = get_status(INSTANCE) ?? "calme"
+        // Météo muette depuis 3 h : prudence, on se comporte comme en tempête.
+        let mesure = try { ApiMeteo.kp(h) }
+        let muette = mesure.error != ()
+        let tempete = muette || ApiMeteo.tempete(h)
+        if tempete && st == "calme" {
+            let ep = "T-{h}"
+            require debut.size < MAX_EPISODES else Plein "trop d'épisodes"
+            transition(INSTANCE, "calme", "renforce")
+            debut.set(ep, h)
+            episode_courant.set(INSTANCE, ep)
+            let p = EphSuivi.balayer(h, 100000, "systeme")
+            perimes.set(ep, p)
+            let appeles = 0
+            let vus = []
+            for r in ApiConjonctions.urgents(h, 259200000, 2) {
+                let nv = ApiConjonctions.niveau(Rapprochement(r))
+                for o in ApiConjonctions.objets(Rapprochement(r)) {
+                    if appeles < n && (!contains(vus, o)) && (!EphSuivi.fraiche(Objet(o), h)) {
+                        vus = vus ++ [o]
+                        let op = try { ApiRef.proprietaire(Objet(o)) }
+                        if op.error == () {
+                            let envoi = try { ApiPasserelle.notifier(h, op.value, Rapprochement(r), "tempete_redeposer", "tempête géomagnétique : éphéméride de {o} trop ancienne, redéposer", nv) }
+                            if envoi.error == () {
+                                appeles = appeles + 1
+                            }
+                        }
+                    }
+                }
+            }
+            appels.set(ep, appeles)
+            let cause = if muette { "meteo muette" } else { "tempete" }
+            let _ = Journal.noter(h, "ephemerides", par, "episode {ep} ouvert ({cause}) : {p} perime(s), {appeles} appel(s)")
+            return "renforce"
+        }
+        if (!tempete) && st == "renforce" {
+            let ep = episode_courant.get(INSTANCE)
+            if ep != () {
+                fin.set(ep, h)
+            }
+            episode_courant.delete(INSTANCE)
+            transition(INSTANCE, "renforce", "calme")
+            let _ = Journal.noter(h, "ephemerides", par, "retour au calme")
+            return "calme"
+        }
+        return st
+    }
+
+    on episode() {
+        let ep = episode_courant.get(INSTANCE)
+        if ep == () {
+            return ""
+        }
+        let d = debut.get(ep) ?? 0
+        let p = perimes.get(ep) ?? 0
+        let a = appels.get(ep) ?? 0
+        return "{ep}|{d}|{p}|{a}"
+    }
+}

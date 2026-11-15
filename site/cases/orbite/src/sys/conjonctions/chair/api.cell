@@ -1,0 +1,105 @@
+// CONJONCTIONS — corps de la façade ApiConjonctions.
+
+flesh ApiConjonctions {
+    on signaler(h, objet_a, objet_b, tca, distance, pc, par) {
+        let r = ConjRapprochement.signaler(h, objet_a, objet_b, tca, distance, pc, par)
+        let f = ConjRapprochement.fiche(r)
+        if to_int(f.niveau) >= 2 {
+            // en alerte : coordination, mesures des objets mal connus ; un NOUVEAU rapprochement
+            // de niveau ≥ 2 rend périmés les plans jugés sûrs des deux objets
+            let g = try { ConjRapprochement.engager(h, r, "systeme") }
+            let m = try { ConjRapprochement.demander_mesures(h, r, "systeme") }
+            if f.mises_a_jour == 1 {
+                let _ = ConjCriblagePlan.rendre_caducs(h, f.objet_a, r, "systeme")
+                let _ = ConjCriblagePlan.rendre_caducs(h, f.objet_b, r, "systeme")
+            }
+        }
+        let d = try { ConjMessage.diffuser(h, r, "systeme") }
+        return r
+    }
+
+    on etat(r) {
+        return ConjRapprochement.etat(r)
+    }
+
+    on niveau(r) {
+        return ConjRapprochement.fiche(r).niveau
+    }
+
+    on objets(r) {
+        let f = ConjRapprochement.fiche(r)
+        return [to_string(f.objet_a), to_string(f.objet_b)]
+    }
+
+    on tca(r) {
+        return ConjRapprochement.fiche(r).tca
+    }
+
+    on pc(r) {
+        return ConjRapprochement.fiche(r).pc
+    }
+
+    on cribler_plan(h, objet, plan, debut, dv) {
+        return ConjCriblagePlan.cribler(h, objet, plan, debut, dv, "systeme")
+    }
+
+    on resoudre(h, r, motif, par) {
+        require motif == "manoeuvre_verifiee" || motif == "pc_retombee" else EtatInvalide "motif de résolution inconnu : {motif}"
+        let res = ConjRapprochement.resoudre(h, r, ConjMotifResolution(motif), par)
+        let k = try { ConjMessage.clore_de(h, r, "systeme") }
+        let d = try { ConjMessage.diffuser(h, r, "systeme") }
+        return res
+    }
+
+    on ouverts_de(objet) {
+        return ConjRapprochement.ouverts_de(objet)
+    }
+
+    on urgents(h, horizon, niveau_min) {
+        return ConjRapprochement.urgents(h, horizon, niveau_min)
+    }
+
+    on distance(r) {
+        return ConjRapprochement.fiche(r).distance
+    }
+
+    on mis_a_jour(r) {
+        return ConjRapprochement.fiche(r).mis_a_jour
+    }
+
+    on historique(objet, depuis) {
+        return ConjRapprochement.historique(objet, depuis)
+    }
+
+    on clos_entre(debut, fin) {
+        return ConjRapprochement.clos_entre(debut, fin)
+    }
+
+    on criblage_plan(plan) {
+        return ConjCriblagePlan.etat(plan)
+    }
+
+    on campagne_fraiche(regime, h) {
+        return ConjCampagne.fraiche(regime, h)
+    }
+
+    on constater_collision(h, r, evenement, par) {
+        let _ = ConjAnalyseTca.confirmer(h, r, evenement, par)
+        let st = ConjRapprochement.clore_apres_tca(h, r, par)
+        let k = try { ConjMessage.clore_de(h, r, "systeme") }
+        let d = try { ConjMessage.diffuser(h, r, "systeme") }
+        return st
+    }
+
+    on exempter(h, chasseur, cible, debut, fin, par, valideur) {
+        return ConjExemption.accorder(h, chasseur, cible, debut, fin, par, valideur)
+    }
+
+    on renforcer(h, regime, fin, motif, par) {
+        return ConjRenforcement.renforcer(h, regime, fin, motif, par)
+    }
+
+    on balayer(h, par) {
+        return ConjRonde.balayer(h, par)
+    }
+}

@@ -1,0 +1,498 @@
+use app
+use commun::journal_chair
+use commun::horloge_chair
+use sys::conformite::chair::api
+use sys::conformite::chair::manquements
+use sys::conformite::chair::contradictoire
+use sys::conformite::chair::notation
+use sys::conformite::chair::mesures
+use sys::conformite::chair::veille
+use sys::conformite::chair::rapports
+use sys::conformite::chair::indicateurs
+use sys::conformite::chair::remediation
+use doublures::conformite
+
+// Monde : voir doublures/conformite.cell. H0 = 1 700 000 000 000 ms (14/11/2023).
+// Jours : +1 j 1700086400000 · +48 h 1700172800000 · +7 j 1700604800000 · +15 j 1701296000000
+// · +16 j 1701382400000 · +30 j 1702592000000 · +31 j 1702678400000 · +60 j 1705184000000
+// · +61 j 1705270400000 · +90 j 1707776000000 · +365 j 1731536000000.
+
+// ---- Manquement : cycle nominal (g2), contradictoire, qualification, recours accueilli ----
+cell test ManquementCycleRecours {
+    rules {
+        let m = ApiConformite.constater(1700000000000, "ORG-ALPHA", "reponse_tardive", 2, "CJ-1", "analyste-1")
+        assert ConfManquement.etat_manquement(m) == "constate"
+        assert ApiConformite.constater(1700000000000, "ORG-ALPHA", "reponse_tardive", 2, "CJ-1", "conf-3") == m
+        assert ConfManquement.ouverts("ORG-ALPHA") == 1
+        assert ConfVeille.suivi("ORG-ALPHA")
+        assert ConfManquement.notifier(1700000000000, m, "conf-1") == 1700604800000
+        assert ConfManquement.etat_manquement(m) == "contradictoire"
+        assert ConfContradictoire.etat_contradictoire(m) == "ouvert"
+        assert ConfContradictoire.notification(m) == "acquittee"
+        assert ConfManquement.repondre(1700000001000, m, "manoeuvre retardee par une panne", "cdm-alpha") == "instruction"
+        assert ConfContradictoire.observations(m) == "manoeuvre retardee par une panne"
+        assert ConfManquement.qualifier(1700000002000, m, 2, "silence avere", "conf-1", "conf-2") == 85
+        assert ConfManquement.etat_manquement(m) == "qualifie"
+        assert ApiConformite.note("ORG-ALPHA", 1700000002000) == 85
+        assert ConfRemediation.etat_remediation(m) == "demandee"
+        assert ConfManquement.compter("ORG-ALPHA", 1700000000000, 1700000009000) == [0, 1, 0]
+        assert ConfManquement.contester(1700000003000, m, "panne de capteur", "adm-alpha") == "conteste"
+        assert ConfManquement.statuer_recours(1700000004000, m, true, "panne averee", "dir-1") == "annule"
+        assert ApiConformite.note("ORG-ALPHA", 1700000004000) == 100
+        assert ConfManquement.ouverts("ORG-ALPHA") == 0
+        assert ConfManquement.compter("ORG-ALPHA", 1700000000000, 1700000009000) == [0, 0, 0]
+        assert ApiConformite.constater(1700000005000, "ORG-ALPHA", "reponse_tardive", 2, "CJ-1", "analyste-1") != m
+    }
+}
+
+// ---- Forclusion d'un opérateur silencieux (g1), qualification, clôture après le délai de recours ----
+cell test ManquementForclusionCloture {
+    rules {
+        let m = ApiConformite.constater(1700000000000, "ORG-ALPHA", "ephemeride_perimee", 1, "OBJ-7", "systeme")
+        assert ConfManquement.notifier(1700000000000, m, "systeme") == 1701296000000
+        assert_fails ConfManquement.forclore(1701296000000, m, "systeme") matching "Delai"
+        assert ConfContradictoire.echus(1701296000001, 10) == [m]
+        assert ConfManquement.forclore(1701296000001, m, "systeme") == "forclos"
+        assert ConfContradictoire.etat_contradictoire(m) == "forclos"
+        assert_fails ConfManquement.repondre(1701296000002, m, "trop tard", "cdm-alpha") matching "EtatInvalide"
+        assert ConfManquement.qualifier(1701296000002, m, 1, "ephemeride perimee", "conf-1", "sup-1") == 95
+        assert ConfRemediation.etat_remediation(m) == "inconnue"
+        assert_fails ConfManquement.clore(1701296000003, m, "definitif", "systeme") matching "Delai"
+        assert ConfManquement.en_souffrance(1703888000003) == [m]
+        assert ConfManquement.clore(1703888000003, m, "definitif", "systeme") == "clos"
+        assert ConfManquement.etat_manquement(m) == "clos"
+        assert ConfManquement.ouverts("ORG-ALPHA") == 0
+        assert ApiConformite.note("ORG-ALPHA", 1703888000003) == 95
+        assert ApiConformite.note("ORG-ALPHA", 1733000000000) == 100
+    }
+}
+
+// ---- Forclusion : notification en cours (refus), en échec (injoignable + astreinte_absente) ----
+cell test ForclusionNotification {
+    rules {
+        let m1 = ApiConformite.constater(1700000000000, "ORG-MUET", "refus_escalade", 3, "CJ-9", "systeme")
+        assert ConfManquement.notifier(1700000000000, m1, "systeme") == 1700172800000
+        assert ConfContradictoire.notification(m1) == "en_cours"
+        assert_fails ConfManquement.forclore(1700172800001, m1, "systeme") matching "Insuffisant"
+        assert_fails ConfManquement.proroger(1700000000001, m1, "besoin de temps", "cdm-alpha") matching "Habilitation"
+        let m2 = ApiConformite.constater(1700000000000, "ORG-ECHEC", "reponse_tardive", 2, "CJ-10", "systeme")
+        assert ConfManquement.notifier(1700000000000, m2, "systeme") == 1700604800000
+        assert ConfContradictoire.notification(m2) == "echouee"
+        assert ConfManquement.forclore(1700604800001, m2, "systeme") == "forclos"
+        assert ConfContradictoire.etat_contradictoire(m2) == "injoignable"
+        assert ConfManquement.ouverts("ORG-ECHEC") == 2
+    }
+}
+
+// ---- Contradictoire : prorogation unique, jamais en gravité 3 ----
+cell test ContradictoireProrogation {
+    rules {
+        let m = ApiConformite.constater(1700000000000, "ORG-ALPHA", "astreinte_absente", 1, "AST-1", "conf-1")
+        assert ConfManquement.notifier(1700000000000, m, "conf-1") == 1701296000000
+        assert_fails ConfManquement.proroger(1700000000001, m, "", "cdm-alpha") matching "MotifRequis"
+        assert_fails ConfManquement.proroger(1700000000001, m, "conge", "adm-alpha") matching "Habilitation"
+        assert ConfManquement.proroger(1700000000001, m, "conge", "cdm-alpha") == 1702592000000
+        assert ConfContradictoire.etat_contradictoire(m) == "proroge"
+        assert_fails ConfManquement.proroger(1700000000002, m, "encore", "cdm-alpha") matching "EtatInvalide"
+        assert ConfManquement.repondre(1702000000000, m, "astreinte retablie", "cdm-alpha") == "instruction"
+        let g = ApiConformite.constater(1700000000000, "ORG-ALPHA", "licence_invalide", 3, "LIC-1", "conf-1")
+        assert ConfManquement.notifier(1700000000000, g, "conf-1") == 1700172800000
+        assert_fails ConfManquement.proroger(1700000000001, g, "conge", "cdm-alpha") matching "NonEligible"
+        assert_fails ConfManquement.repondre(1700172800001, g, "trop tard", "cdm-alpha") matching "Delai"
+    }
+}
+
+// ---- Manquement : refus de sécurité ----
+cell test ManquementRefus {
+    rules {
+        assert_fails ApiConformite.constater(1700000000000, "ORG-ALPHA", "reponse_tardive", 2, "CJ-1", "intrus-1") matching "Habilitation"
+        assert_fails ApiConformite.constater(1700000000000, "ORG-ALPHA", "reponse_tardive", 2, "CJ-1", "cdm-alpha") matching "Habilitation"
+        assert_fails ApiConformite.constater(1700000000000, "ORG-ALPHA", "reponse_tardive", 2, "", "conf-1") matching "MotifRequis"
+        assert_fails ApiConformite.constater(1700000000000, "ORG-INCONNU-1", "reponse_tardive", 2, "CJ-1", "conf-1") matching "Inconnu"
+        let m = ApiConformite.constater(1700000000000, "ORG-ALPHA", "bizarrerie", 2, "X-1", "conf-1")
+        assert contains(ConfManquement.fiche(1700000000000, m, "aud-1"), "nature=autre;detail=nature d'origine : bizarrerie")
+        assert_fails ConfManquement.notifier(1700000000000, m, "analyste-1") matching "Habilitation"
+        assert_fails ConfManquement.notifier(1700000000000, "MQ-INEXISTANT", "conf-1") matching "Inconnu"
+        assert_fails ConfManquement.qualifier(1700000000000, m, 2, "fonde", "conf-2", "sup-1") matching "EtatInvalide"
+        assert ConfManquement.notifier(1700000000000, m, "conf-2") == 1700604800000
+        assert_fails ConfManquement.notifier(1700000000000, m, "conf-2") matching "EtatInvalide"
+        assert_fails ConfManquement.repondre(1700000000001, m, "obs", "cdm-beta") matching "Habilitation"
+        assert_fails ConfManquement.repondre(1700000000001, m, "obs", "dyn-alpha") matching "Habilitation"
+        assert_fails ConfManquement.repondre(1700000000001, m, "", "cdm-alpha") matching "MotifRequis"
+        assert ConfManquement.repondre(1700000000001, m, "obs", "cdm-alpha") == "instruction"
+        assert_fails ConfManquement.qualifier(1700000000002, m, 2, "fonde", "conf-1", "sup-1") matching "Habilitation"
+        assert_fails ConfManquement.qualifier(1700000000002, m, 2, "fonde", "analyste-1", "sup-1") matching "Habilitation"
+        assert_fails ConfManquement.qualifier(1700000000002, m, 2, "fonde", "conf-2", "conf-2") matching "QuatreYeux"
+        assert_fails ConfManquement.qualifier(1700000000002, m, 2, "fonde", "conf-2", "analyste-1") matching "QuatreYeux"
+        assert_fails ConfManquement.qualifier(1700000000002, m, 2, "", "conf-2", "sup-1") matching "MotifRequis"
+        assert ConfManquement.qualifier(1700000000002, m, 2, "fonde", "conf-2", "sup-1") == 85
+        assert_fails ConfManquement.contester(1700000000003, m, "non", "cdm-beta") matching "Habilitation"
+        assert_fails ConfManquement.contester(1702678400003, m, "non", "cdm-alpha") matching "Delai"
+        assert ConfManquement.contester(1700000000003, m, "non", "cdm-alpha") == "conteste"
+        assert_fails ConfManquement.statuer_recours(1700000000004, m, false, "rejete", "conf-1") matching "Habilitation"
+        assert_fails ConfManquement.statuer_recours(1700000000004, m, false, "", "dir-1") matching "MotifRequis"
+        assert ConfManquement.statuer_recours(1700000000004, m, false, "rejete", "dir-1") == "clos"
+        assert_fails ConfManquement.classer(1700000000005, m, "non_fonde", "erreur", "conf-1", "sup-1") matching "EtatInvalide"
+        assert ApiConformite.note("ORG-ALPHA", 1700000000005) == 85
+    }
+}
+
+// ---- Diffusion de la fiche (propriété 6) et classement ----
+cell test ManquementFicheClassement {
+    rules {
+        let m = ApiConformite.constater(1700000000000, "ORG-ALPHA", "diffusion_non_autorisee", 1, "DON-1", "analyste-1")
+        assert contains(ConfManquement.fiche(1700000000000, m, "conf-1"), "reference=DON-1")
+        assert contains(ConfManquement.fiche(1700000000000, m, "dyn-alpha"), "etat=constate")
+        assert contains(ConfManquement.fiche(1700000000000, m, "pf-ald"), "operateur=ORG-ALPHA")
+        assert_fails ConfManquement.fiche(1700000000000, m, "pf-brv") matching "Confidentiel"
+        assert_fails ConfManquement.fiche(1700000000000, m, "cdm-beta") matching "Confidentiel"
+        assert_fails ConfManquement.fiche(1700000000000, m, "analyste-1") matching "Confidentiel"
+        assert_fails ConfManquement.fiche(1700000000000, m, "intrus-1") matching "Confidentiel"
+        assert len(Journal.chercher("lecture de la fiche {m}", 10)) == 3
+        assert_fails ConfManquement.classer(1700000000001, m, "non_fonde", "", "conf-1", "sup-1") matching "MotifRequis"
+        assert_fails ConfManquement.classer(1700000000001, m, "non_fonde", "infonde", "dir-1", "sup-1") matching "Habilitation"
+        assert_fails ConfManquement.classer(1700000000001, m, "non_fonde", "infonde", "conf-1", "conf-1") matching "QuatreYeux"
+        assert ConfManquement.classer(1700000000001, m, "non_fonde", "infonde", "conf-1", "sup-1") == "classe"
+        assert ConfManquement.ouverts("ORG-ALPHA") == 0
+        assert ConfManquement.gravite(m) == 1
+        assert ConfManquement.op(m) == "ORG-ALPHA"
+        assert_fails ConfManquement.op("MQ-INEXISTANT") matching "Inconnu"
+        assert ConfManquement.etat_manquement("MQ-INEXISTANT") == "inconnu"
+    }
+}
+
+// ---- Scénario métier : dérive d'un opérateur → mesures → remédiation → levée ----
+cell test ScenarioMesuresRemediation {
+    rules {
+        let m1 = ApiConformite.constater(1700000000000, "ORG-ALPHA", "licence_invalide", 3, "LIC-1", "analyste-1")
+        assert ApiConformite.sous_surveillance("ORG-ALPHA")
+        assert ConfManquement.g3_non_clos("ORG-ALPHA") == 1
+        assert ConfManquement.notifier(1700000000000, m1, "conf-1") == 1700172800000
+        assert ConfManquement.repondre(1700000001000, m1, "licence en renouvellement", "cdm-alpha") == "instruction"
+        assert ConfManquement.qualifier(1700000002000, m1, 3, "licence expiree", "conf-1", "conf-2") == 60
+        let av = ConfMesure.proposer(1700000002000, "ORG-ALPHA", "avertissement", m1, "doublon", "conf-1")
+        assert ConfMesure.etat_mesure(av) == "proposee"
+        assert ConfMesure.nature(av) == "avertissement"
+        assert_fails ConfMesure.decider(1700000003000, av, "dir-1", "sup-1") matching "QuatreYeux"
+        assert_fails ConfMesure.decider(1700000003000, av, "conf-1", "conf-2") matching "Habilitation"
+        assert ConfMesure.decider(1700000003000, av, "dir-1", "conf-2") == "decidee"
+        assert ConfMesure.mettre_en_vigueur(1700000004000, av, "conf-1") == 1731536004000
+        assert ConfMesure.en_vigueur_pour("ORG-ALPHA", "avertissement")
+        let m2 = ApiConformite.constater(1700000005000, "ORG-ALPHA", "refus_escalade", 3, "CJ-5", "systeme")
+        assert ConfManquement.notifier(1700000005000, m2, "systeme") == 1700172805000
+        assert ConfManquement.repondre(1700000006000, m2, "contact absent", "adm-alpha") == "instruction"
+        assert ConfManquement.qualifier(1700000007000, m2, 3, "escalade refusee", "conf-2", "dir-1") == 20
+        assert ApiConformite.sous_surveillance("ORG-ALPHA")
+        let sr = ConfMesure.proposer(1700000007000, "ORG-ALPHA", "surveillance_renforcee", m2, "doublon", "conf-1")
+        let ds = ConfMesure.proposer(1700000007000, "ORG-ALPHA", "demande_suspension", m2, "doublon", "conf-1")
+        assert sr != ds
+        assert ConfMesure.etat_mesure(ds) == "proposee"
+        assert ConfMesure.abandonner(1700000008000, sr, "pas necessaire", "dir-1") == "abandonnee"
+        assert ConfRemediation.etat_remediation(m1) == "demandee"
+        assert ConfRemediation.deposer(1700000009000, m1, "PLAN-v1", "cdm-alpha") == 1
+        assert ConfRemediation.refuser(1700000010000, m1, "incomplet", "conf-1") == "refusee"
+        assert ConfRemediation.deposer(1700000011000, m1, "PLAN-v2", "cdm-alpha") == 2
+        assert ConfRemediation.accepter(1700000012000, m1, 1702592000000, "conf-1") == "acceptee"
+        assert_fails ConfMesure.lever(1700000013000, av, "remedie", "conf-2", "dir-1") matching "EtatInvalide"
+        assert_fails ConfRemediation.constater_realisation(1700000013000, m1, "licence renouvelee", "conf-2", "conf-1") matching "QuatreYeux"
+        assert ConfRemediation.constater_realisation(1700000013000, m1, "licence renouvelee", "conf-2", "dir-1") == "realisee"
+        assert_fails ConfMesure.lever(1700000014000, av, "remedie", "conf-2", "sup-1") matching "QuatreYeux"
+        assert ConfMesure.lever(1700000014000, av, "remedie", "conf-2", "dir-1") == "levee"
+        assert !ConfMesure.en_vigueur_pour("ORG-ALPHA", "avertissement")
+        assert ConfManquement.clore(1700000015000, m1, "remediation realisee", "conf-1") == "clos"
+        assert ConfManquement.g3_non_clos("ORG-ALPHA") == 1
+        assert ConfMesure.compter("ORG-ALPHA", 1700000000000, 1700000020000) == [1, 0, 0]
+    }
+}
+
+// ---- Demande de suspension à l'État : transmise, acceptée, exécutée ; silence de l'État ----
+cell test DemandeSuspension {
+    rules {
+        let m = ApiConformite.constater(1700000000000, "ORG-SUSP-1", "licence_invalide", 3, "LIC-9", "conf-1")
+        assert ConfManquement.notifier(1700000000000, m, "conf-1") == 1700172800000
+        assert ConfManquement.forclore(1700172800001, m, "systeme") == "forclos"
+        assert ConfManquement.qualifier(1700172800002, m, 3, "exploitation sans licence", "conf-2", "dir-1") == 60
+        let ds = ConfMesure.proposer(1700172800003, "ORG-SUSP-1", "demande_suspension", m, "exploitation illicite", "conf-1")
+        assert_fails ConfDemande.preparer(1700172800004, ds, "dossier", "conf-1") matching "EtatInvalide"
+        assert ConfMesure.decider(1700172800004, ds, "dir-1", "sup-1") == "decidee"
+        assert_fails ConfDemande.preparer(1700172800005, ds, "", "conf-1") matching "MotifRequis"
+        assert_fails ConfDemande.preparer(1700172800005, ds, "dossier", "dir-1") matching "Habilitation"
+        assert ConfDemande.preparer(1700172800005, ds, "dossier MQ + notes", "conf-1") == ds
+        assert_fails ConfDemande.preparer(1700172800005, ds, "dossier", "conf-1") matching "Existe"
+        assert ConfDemande.etat_demande(ds) == "preparee"
+        assert_fails ConfMesure.mettre_en_vigueur(1700172800006, ds, "conf-1") matching "EtatInvalide"
+        assert_fails ConfDemande.transmettre(1700172800006, ds, "conf-2") matching "Habilitation"
+        assert ConfDemande.transmettre(1700172800006, ds, "dir-1") == 1702764800006
+        assert ConfMesure.etat_mesure(ds) == "en_vigueur"
+        assert_fails ConfDemande.repondre(1700172800007, ds, "accepte", "d'accord", "pf-brv") matching "Habilitation"
+        assert_fails ConfDemande.repondre(1700172800007, ds, "accepte", "", "pf-ald") matching "MotifRequis"
+        assert ConfDemande.repondre(1700172800007, ds, "accepte", "licence retiree", "aut-ald") == "acceptee"
+        assert_fails ConfDemande.executer(1700172800008, ds, "dir-1", "dir-2") matching "Habilitation"
+        assert_fails ConfDemande.executer(1700172800008, ds, "conf-1", "conf-2") matching "QuatreYeux"
+        assert ConfDemande.executer(1700172800008, ds, "conf-1", "dir-1") == "executee"
+        assert ConfDemande.compter_etat("ALD", 1700000000000, 1700200000000) == [1, 1, 0, 0]
+    }
+}
+
+cell test DemandeSilenceEtExecutionRefusee {
+    rules {
+        let m = ApiConformite.constater(1700000000000, "ORG-ALPHA", "licence_invalide", 1, "LIC-2", "conf-1")
+        assert ConfManquement.notifier(1700000000000, m, "conf-1") == 1701296000000
+        assert ConfManquement.repondre(1700000000001, m, "obs", "cdm-alpha") == "instruction"
+        assert ConfManquement.qualifier(1700000000002, m, 1, "fonde", "conf-2", "sup-1") == 95
+        let d1 = ConfMesure.proposer(1700000000003, "ORG-ALPHA", "demande_suspension", m, "manuel", "conf-1")
+        assert_fails ConfMesure.proposer(1700000000003, "ORG-BETA", "avertissement", m, "x", "conf-1") matching "Incoherent"
+        assert_fails ConfMesure.proposer(1700000000003, "ORG-ALPHA", "avertissement", "MQ-INEXISTANT", "x", "conf-1") matching "Inconnu"
+        assert ConfMesure.decider(1700000000004, d1, "dir-1", "conf-2") == "decidee"
+        assert ConfDemande.preparer(1700000000005, d1, "dossier", "conf-1") == d1
+        assert ConfDemande.transmettre(1700000000006, d1, "dir-1") == 1702592000006
+        assert ConfDemande.echues(1702592000007, 10) == [d1]
+        assert_fails ConfDemande.constater_silence(1702592000006, d1, "systeme") matching "Delai"
+        assert_fails ConfDemande.repondre(1702592000007, d1, "accepte", "tard", "pf-ald") matching "Delai"
+        assert ConfDemande.constater_silence(1702592000007, d1, "systeme") == "sans_reponse"
+        assert ConfManquementEtat.compter("ALD", 1700000000000, 1703000000000) == [0, 1, 0]
+        assert ConfDemande.compter_etat("ALD", 1700000000000, 1703000000000) == [1, 0, 0, 1]
+    }
+}
+
+cell test DemandeExecutionSansSuspension {
+    rules {
+        let m = ApiConformite.constater(1700000000000, "ORG-ALPHA", "licence_invalide", 1, "LIC-3", "conf-1")
+        assert ConfManquement.notifier(1700000000000, m, "conf-1") == 1701296000000
+        assert ConfManquement.repondre(1700000000001, m, "obs", "cdm-alpha") == "instruction"
+        assert ConfManquement.qualifier(1700000000002, m, 1, "fonde", "conf-2", "sup-1") == 95
+        let d1 = ConfMesure.proposer(1700000000003, "ORG-ALPHA", "demande_suspension", m, "manuel", "conf-1")
+        assert ConfMesure.decider(1700000000004, d1, "dir-1", "conf-2") == "decidee"
+        assert ConfDemande.preparer(1700000000005, d1, "dossier", "conf-1") == d1
+        assert ConfDemande.transmettre(1700000000006, d1, "dir-1") == 1702592000006
+        assert ConfDemande.repondre(1700000000007, d1, "accepte", "ok", "pf-ald") == "acceptee"
+        assert_fails ConfDemande.executer(1700000000008, d1, "conf-1", "dir-1") matching "EtatInvalide"
+        assert ConfDemande.etat_demande(d1) == "acceptee"
+        assert_fails ConfDemande.retirer(1700000000009, d1, "remedie", "dir-1") matching "EtatInvalide"
+    }
+}
+
+// ---- Mesures : expiration ----
+cell test MesureExpiration {
+    rules {
+        let m = ApiConformite.constater(1700000000000, "ORG-ALPHA", "licence_invalide", 1, "LIC-4", "conf-1")
+        assert ConfManquement.notifier(1700000000000, m, "conf-1") == 1701296000000
+        assert ConfManquement.repondre(1700000000001, m, "obs", "cdm-alpha") == "instruction"
+        assert ConfManquement.qualifier(1700000000002, m, 1, "fonde", "conf-2", "sup-1") == 95
+        let sr = ConfMesure.proposer(1700000000003, "ORG-ALPHA", "surveillance_renforcee", m, "manuel", "conf-1")
+        assert_fails ConfMesure.proposer(1700000000003, "ORG-ALPHA", "avertissement", m, "", "conf-1") matching "MotifRequis"
+        assert_fails ConfMesure.proposer(1700000000003, "ORG-ALPHA", "avertissement", m, "x", "analyste-1") matching "Habilitation"
+        assert ConfMesure.decider(1700000000004, sr, "dir-1", "conf-2") == "decidee"
+        assert ConfMesure.mettre_en_vigueur(1700000000005, sr, "systeme") == 1715552000005
+        assert ApiConformite.sous_surveillance("ORG-ALPHA")
+        assert_fails ConfMesure.expirer(1715552000004, sr, "systeme") matching "Delai"
+        assert_fails ConfMesure.expirer(1715552000005, sr, "conf-1") matching "Habilitation"
+        assert ConfMesure.a_expirer(1715552000005, 10) == [sr]
+        assert ConfMesure.expirer(1715552000005, sr, "systeme") == "echue"
+        assert !ApiConformite.sous_surveillance("ORG-ALPHA")
+        assert_fails ConfMesure.abandonner(1715552000006, sr, "x", "dir-1") matching "EtatInvalide"
+    }
+}
+
+// ---- Remédiation : délais, versions, défaillance → nouveau manquement ----
+cell test RemediationDefaillance {
+    rules {
+        let m = ApiConformite.constater(1700000000000, "ORG-ALPHA", "fin_de_vie_non_tenue", 2, "OBJ-3", "conf-1")
+        assert ConfManquement.notifier(1700000000000, m, "conf-1") == 1700604800000
+        assert_fails ConfRemediation.demander(1700000000001, m, "conf-1") matching "EtatInvalide"
+        assert ConfManquement.repondre(1700000000001, m, "obs", "cdm-alpha") == "instruction"
+        assert ConfManquement.qualifier(1700000000002, m, 2, "fonde", "conf-2", "sup-1") == 85
+        assert_fails ConfRemediation.demander(1700000000003, m, "conf-1") matching "Existe"
+        assert_fails ConfRemediation.deposer(1700000000003, m, "PLAN", "cdm-beta") matching "Habilitation"
+        assert_fails ConfRemediation.deposer(1700000000003, m, "", "cdm-alpha") matching "MotifRequis"
+        assert_fails ConfRemediation.deposer(1701209600003, m, "PLAN", "cdm-alpha") matching "Delai"
+        assert ConfRemediation.deposer(1700000000003, m, "PLAN", "cdm-alpha") == 1
+        assert_fails ConfRemediation.accepter(1700000000004, m, 1700000000004, "conf-1") matching "HorsBornes"
+        assert_fails ConfRemediation.accepter(1700000000004, m, 1720000000000, "conf-1") matching "HorsBornes"
+        assert_fails ConfRemediation.accepter(1700000000004, m, 1702592000000, "dir-1") matching "Habilitation"
+        assert ConfRemediation.accepter(1700000000004, m, 1702592000000, "conf-1") == "acceptee"
+        assert_fails ConfRemediation.constater_defaillance(1702592000000, m, "systeme") matching "Delai"
+        assert ConfRemediation.echues(1702592000001, 10) == [m]
+        let n = ConfRemediation.constater_defaillance(1702592000001, m, "systeme")
+        assert ConfRemediation.etat_remediation(m) == "defaillante"
+        assert contains(ConfManquement.fiche(1702592000001, n, "conf-1"), "nature=remediation_non_tenue")
+        assert ConfManquement.gravite(n) == 2
+    }
+}
+
+// ---- Manquement d'un État ----
+cell test ManquementEtatCycle {
+    rules {
+        let e1 = ApiConformite.constater_etat(1700000000000, "ALD", "immatriculation_tardive", 1, "OBJ-12", "analyste-1")
+        assert ApiConformite.constater_etat(1700000000000, "ALD", "immatriculation_tardive", 1, "OBJ-12", "conf-1") == e1
+        assert_fails ApiConformite.constater_etat(1700000000000, "INC", "immatriculation_tardive", 1, "OBJ-12", "conf-1") matching "Inconnu"
+        assert_fails ApiConformite.constater_etat(1700000000000, "ALD", "immatriculation_tardive", 1, "", "conf-1") matching "MotifRequis"
+        assert_fails ApiConformite.constater_etat(1700000000000, "ALD", "immatriculation_tardive", 1, "OBJ-12", "pf-ald") matching "Habilitation"
+        assert ConfManquementEtat.etat_manquement(e1) == "constate"
+        assert ConfManquementEtat.a_traiter(1700000000000, 10) == [e1]
+        assert ConfManquementEtat.notifier(1700000000000, e1, "conf-1") == 1702592000000
+        assert_fails ConfManquementEtat.repondre(1700000000001, e1, "obs", "pf-brv") matching "Habilitation"
+        assert ConfManquementEtat.repondre(1700000000001, e1, "registre a jour", "pf-ald") == "repondu"
+        assert_fails ConfManquementEtat.clore(1700000000002, e1, "analyste-1") matching "Habilitation"
+        assert ConfManquementEtat.clore(1700000000002, e1, "conf-1") == "clos"
+        let e2 = ApiConformite.constater_etat(1700000000000, "BRV", "inconnue", 2, "REF-2", "conf-1")
+        assert ConfManquementEtat.notifier(1700000000000, e2, "systeme") == 1702592000000
+        assert_fails ConfManquementEtat.constater_silence(1702592000000, e2, "systeme") matching "Delai"
+        assert_fails ConfManquementEtat.repondre(1702592000001, e2, "tard", "pf-brv") matching "Delai"
+        assert ConfManquementEtat.constater_silence(1702592000001, e2, "systeme") == "sans_reponse"
+        assert ConfManquementEtat.clore(1702592000002, e2, "systeme") == "clos"
+        let e3 = ApiConformite.constater_etat(1700000000000, "BRV", "point_focal_injoignable", 3, "CJ-4", "conf-1")
+        assert ConfManquementEtat.classer(1700000000001, e3, "doublon", "conf-1", "sup-1") == "classe"
+        assert ConfManquementEtat.compter("BRV", 1700000000000, 1700000000000) == [0, 1, 0]
+        assert ConfManquementEtat.compter("ALD", 1700000000000, 1700000000000) == [1, 0, 0]
+    }
+}
+
+// ---- Rapports annuels aux États ----
+cell test RapportCycle {
+    rules {
+        let m = ApiConformite.constater(1700000000000, "ORG-ALPHA", "ephemeride_perimee", 1, "OBJ-1", "conf-1")
+        assert_fails ConfRapport.ouvrir(1700000000000, "ALD", 2023, "conf-1") matching "HorsBornes"
+        assert_fails ConfRapport.ouvrir(1700000000000, "ALD", 2019, "conf-1") matching "HorsBornes"
+        assert_fails ConfRapport.ouvrir(1700000000000, "XSU", 2022, "conf-1") matching "Inconnu"
+        assert_fails ConfRapport.ouvrir(1700000000000, "ALD", 2022, "analyste-1") matching "Habilitation"
+        assert ConfRapport.ouvrir(1700000000000, "ALD", 2022, "conf-1") == "RAP-ALD-2022"
+        assert_fails ConfRapport.ouvrir(1700000000000, "ALD", 2022, "conf-1") matching "Existe"
+        assert_fails ConfRapport.valider(1700000000001, "RAP-ALD-2022", "dir-1") matching "Insuffisant"
+        assert ConfRapport.compiler(1700000000001, "RAP-ALD-2022", "conf-1") == 1
+        assert_fails ConfRapport.valider(1700000000002, "RAP-ALD-2022", "conf-1") matching "Habilitation"
+        assert ConfRapport.en_retard(1700000000002, 10) == ["RAP-ALD-2022"]
+        assert ConfRapport.valider(1700000000002, "RAP-ALD-2022", "dir-1") == "valide"
+        assert_fails ConfRapport.compiler(1700000000003, "RAP-ALD-2022", "conf-1") matching "EtatInvalide"
+        assert ConfRapport.transmettre(1700000000003, "RAP-ALD-2022", "conf-1") == "transmis"
+        assert len(Journal.chercher("transmis en retard", 10)) == 1
+        assert contains(ConfRapport.lire(1700000000004, "RAP-ALD-2022", "pf-ald"), "operateur=ORG-ALPHA")
+        assert contains(ConfRapport.lire(1700000000004, "RAP-ALD-2022", "aud-1"), "demandes_transmises")
+        assert_fails ConfRapport.lire(1700000000004, "RAP-ALD-2022", "pf-brv") matching "Confidentiel"
+        assert_fails ConfRapport.lire(1700000000004, "RAP-ALD-2022", "cdm-alpha") matching "Confidentiel"
+        assert_fails ConfRapport.accuser(1700000000005, "RAP-ALD-2022", "pf-brv") matching "Habilitation"
+        assert ConfRapport.accuser(1700000000005, "RAP-ALD-2022", "pf-ald") == "accuse"
+        assert ConfRapport.etat_rapport("RAP-ALD-2022") == "accuse"
+        assert ConfRapport.etat_rapport("RAP-BRV-2022") == "inconnu"
+    }
+}
+
+cell test RapportSilenceEtAnnulation {
+    rules {
+        assert ConfRapport.ouvrir(1700000000000, "BRV", 2022, "systeme") == "RAP-BRV-2022"
+        assert ConfRapport.compiler(1700000000000, "RAP-BRV-2022", "systeme") == 0
+        assert ConfRapport.valider(1700000000001, "RAP-BRV-2022", "dir-1") == "valide"
+        assert ConfRapport.transmettre(1700000000002, "RAP-BRV-2022", "systeme") == "transmis"
+        assert_fails ConfRapport.constater_silence(1705184000001, "RAP-BRV-2022", "systeme") matching "Delai"
+        assert ConfRapport.constater_silence(1705184000002, "RAP-BRV-2022", "systeme") == "sans_accuse"
+        assert ConfManquementEtat.compter("BRV", 1705184000000, 1705184000009) == [1, 0, 0]
+        assert ConfRapport.ouvrir(1700000000000, "ALD", 2021, "conf-1") == "RAP-ALD-2021"
+        assert_fails ConfRapport.annuler(1700000000001, "RAP-ALD-2021", "doublon", "conf-1") matching "Habilitation"
+        assert_fails ConfRapport.annuler(1700000000001, "RAP-ALD-2021", "", "dir-1") matching "MotifRequis"
+        assert ConfRapport.annuler(1700000000001, "RAP-ALD-2021", "doublon", "dir-1") == "annule"
+        assert_fails ConfRapport.transmettre(1700000000002, "RAP-ALD-2021", "conf-1") matching "EtatInvalide"
+    }
+}
+
+// ---- Indicateurs publics : agrégats, K_MIN, quatre yeux ----
+cell test IndicateursPublication {
+    rules {
+        let m = ApiConformite.constater(1700000000000, "ORG-ALPHA", "ephemeride_perimee", 1, "OBJ-1", "conf-1")
+        assert ConfManquement.notifier(1700000000000, m, "conf-1") == 1701296000000
+        assert ConfManquement.repondre(1700000000001, m, "obs", "cdm-alpha") == "instruction"
+        assert ConfManquement.qualifier(1700000000002, m, 1, "fonde", "conf-2", "sup-1") == 95
+        assert_fails ConfIndicateur.calculer(1700000000003, "IND-2023-T4", 1700000000003, 1700000000003, "analyste-1") matching "Incoherent"
+        assert_fails ConfIndicateur.calculer(1700000000003, "IND-2023-T4", 1690000000000, 1700000000003, "cdm-alpha") matching "Habilitation"
+        assert ConfIndicateur.calculer(1700000000003, "IND-2023-T4", 1690000000000, 1700000000003, "analyste-1") == 2
+        assert_fails ConfIndicateur.calculer(1700000000003, "IND-2023-T4", 1690000000000, 1700000000003, "analyste-1") matching "Existe"
+        assert ConfIndicateur.etat_publication("IND-2023-T4") == "calculee"
+        assert_fails ConfIndicateur.lire("IND-2023-T4") matching "EtatInvalide"
+        assert_fails ConfIndicateur.verifier(1700000000004, "IND-2023-T4", "analyste-1") matching "Habilitation"
+        assert ConfIndicateur.verifier(1700000000004, "IND-2023-T4", "conf-1") == "verifiee"
+        assert_fails ConfIndicateur.publier(1700000000005, "IND-2023-T4", "conf-1") matching "Habilitation"
+        assert ConfIndicateur.publier(1700000000005, "IND-2023-T4", "dir-1") == "publiee"
+        assert contains(ConfIndicateur.lire("IND-2023-T4"), "repartition_notes=masque/0/0/0")
+        assert contains(ConfIndicateur.lire("IND-2023-T4"), "manquements_par_nature=g1_g2_g3:masque/0/0")
+        assert !contains(ConfIndicateur.lire("IND-2023-T4"), "ORG-ALPHA")
+        assert ConfIndicateur.calculer(1700000000006, "IND-2023-T4b", 1690000000000, 1700000000003, "systeme") == 2
+        assert_fails ConfIndicateur.retirer(1700000000007, "IND-2023-T4", "IND-2023-T4b", "erratum", "dir-1") matching "Incoherent"
+        assert_fails ConfIndicateur.verifier(1700000000007, "IND-2023-T4b", "systeme") matching "Habilitation"
+        assert ConfIndicateur.verifier(1700000000007, "IND-2023-T4b", "conf-2") == "verifiee"
+        assert ConfIndicateur.publier(1700000000008, "IND-2023-T4b", "dir-1") == "publiee"
+        assert_fails ConfIndicateur.retirer(1700000000009, "IND-2023-T4", "IND-2023-T4b", "", "dir-1") matching "MotifRequis"
+        assert ConfIndicateur.retirer(1700000000009, "IND-2023-T4", "IND-2023-T4b", "erratum", "dir-1") == "retiree"
+        assert ConfIndicateur.etat_publication("IND-2023-T4") == "retiree"
+        assert ConfIndicateur.calculer(1700000000010, "IND-X", 1690000000000, 1700000000003, "conf-1") == 2
+        assert_fails ConfIndicateur.verifier(1700000000011, "IND-X", "conf-1") matching "QuatreYeux"
+        assert ConfIndicateur.rejeter(1700000000011, "IND-X", "test", "conf-2") == "rejetee"
+        assert ConfIndicateur.etat_publication("IND-Y") == "inconnue"
+    }
+}
+
+// ---- Veille : balayage d'un opérateur et des silences de coordination ----
+cell test VeilleBalayage {
+    rules {
+        assert_fails ConfVeille.suivre(1700000000000, "ORG-SANSETAT-1", "systeme") matching "Inconnu"
+        assert_fails ConfVeille.suivre(1700000000000, "ORG-VEILLE-NOLIC-INJ-ESC", "analyste-1") matching "Habilitation"
+        assert ConfVeille.suivre(1700000000000, "ORG-VEILLE-NOLIC-INJ-ESC", "systeme") == "ALD"
+        assert_fails ConfVeille.balayer(1700000000000, "ORG-BETA", "systeme") matching "Inconnu"
+        assert ConfVeille.a_balayer(1700000000000, 10) == ["ORG-VEILLE-NOLIC-INJ-ESC"]
+        assert ConfVeille.balayer(1700000000000, "ORG-VEILLE-NOLIC-INJ-ESC", "systeme") == 6
+        assert ConfManquement.ouverts("ORG-VEILLE-NOLIC-INJ-ESC") == 6
+        assert ConfManquement.g3_non_clos("ORG-VEILLE-NOLIC-INJ-ESC") == 2
+        assert ApiConformite.sous_surveillance("ORG-VEILLE-NOLIC-INJ-ESC")
+        assert ConfVeille.balayer(1700000001000, "ORG-VEILLE-NOLIC-INJ-ESC", "systeme") == 5
+        assert ConfManquement.ouverts("ORG-VEILLE-NOLIC-INJ-ESC") == 6
+        assert ConfVeille.a_balayer(1700021600000, 10) == []
+        assert ConfVeille.a_balayer(1700021601000, 10) == ["ORG-VEILLE-NOLIC-INJ-ESC"]
+        assert ConfVeille.operateurs_de_etat("ALD") == ["ORG-VEILLE-NOLIC-INJ-ESC"]
+        assert ConfVeille.operateurs_suivis(0, 10) == ["ORG-VEILLE-NOLIC-INJ-ESC"]
+        assert ConfVeille.operateurs_suivis(1, 10) == []
+        assert_fails ConfVeille.balayer_silences(1700000000007, "conf-1") matching "Habilitation"
+        assert ConfVeille.balayer_silences(1700000000007, "systeme") == 2
+        assert ConfManquement.g3_non_clos("ORG-ALPHA") == 1
+        assert ConfManquement.ouverts("ORG-BETA") == 1
+        assert ConfVeille.balayer_silences(1700000000000, "systeme") == 0
+    }
+}
+
+// ---- Ronde : le battement de l'horloge fait avancer les échéances ----
+cell test RondeBattement {
+    rules {
+        assert_fails ApiConformite.balayer(1700000000000, "conf-1") matching "Habilitation"
+        let m = ApiConformite.constater(1700000000000, "ORG-ALPHA", "ephemeride_perimee", 1, "OBJ-1", "conf-1")
+        assert ConfManquement.notifier(1700000000000, m, "conf-1") == 1701296000000
+        let e1 = ApiConformite.constater_etat(1700000000000, "ALD", "immatriculation_tardive", 1, "OBJ-12", "conf-1")
+        assert ApiConformite.balayer(1701382400000, "systeme") == 4
+        assert ConfManquement.etat_manquement(m) == "forclos"
+        assert ConfManquementEtat.etat_manquement(e1) == "notifie"
+        assert ConfVeille.suivi("ORG-BETA")
+        assert ConfRapport.etat_rapport("RAP-ALD-2022") == "redaction"
+        assert ConfRapport.etat_rapport("RAP-BRV-2022") == "redaction"
+        assert ConfRonde.derniere_passe("notes") == 1701382400000
+        assert ConfNotation.releves_de("ORG-ALPHA", 19691, 19691) == [100]
+        assert ApiConformite.balayer(1701382460000, "systeme") == 0
+        assert ApiConformite.balayer(1704000000000, "systeme") == 1
+        assert ConfManquementEtat.etat_manquement(e1) == "sans_reponse"
+        assert ConfRonde.derniere_passe("rapports") == 1704000000000
+    }
+}
+
+// ---- Notation : fenêtre glissante, relevés, répartition ----
+cell test NotationFenetre {
+    rules {
+        let m = ApiConformite.constater(1700000000000, "ORG-ALPHA", "refus_escalade", 2, "ESC-1", "conf-1")
+        assert ConfManquement.notifier(1700000000000, m, "conf-1") == 1700604800000
+        assert ConfManquement.repondre(1700000000001, m, "obs", "cdm-alpha") == "instruction"
+        assert ConfManquement.qualifier(1700000000002, m, 2, "fonde", "conf-2", "sup-1") == 85
+        assert_fails ConfNotation.enregistrer(1700000000003, m, "ORG-ALPHA", 2) matching "Existe"
+        assert_fails ConfNotation.relever(1700000000003, "ORG-ALPHA", "analyste-1") matching "Habilitation"
+        assert ConfNotation.relever(1700000000003, "ORG-ALPHA", "systeme") == 85
+        assert ConfNotation.repartition() == [1, 0, 0, 0]
+        assert ConfNotation.note("ORG-ALPHA", 1731536000002) == 100
+        assert ConfNotation.note("ORG-ALPHA", 1731536000001) == 85
+        assert ConfNotation.relever(1731536000002, "ORG-ALPHA", "conf-1") == 100
+        assert ConfNotation.releves_de("ORG-ALPHA", 19675, 20041) == [85, 100]
+        assert ConfNotation.note("ORG-BETA", 1700000000000) == 100
+    }
+}

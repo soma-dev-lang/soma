@@ -1,0 +1,83 @@
+// PASSERELLE — corps de l'idempotence des requêtes.
+// Convention : pour l'issue "nouvelle", le champ `corps` de PasReservation porte l'instance
+// effectivement réservée (la clé, ou la clé suffixée "#n" après un abandon) : c'est elle que
+// PasEntree passe ensuite à terminer / abandonner.
+
+flesh PasRequetes {
+    on reserver(h, requete, personne, empreinte) {
+        // une clé abandonnée se rejoue sous "<clé>#n" : on suit la chaîne jusqu'à la tentative vivante
+        let cle = requete
+        let k = 0
+        while (get_status(cle) ?? "recue") == "abandonnee" && k < 1000 {
+            k = k + 1
+            cle = "{requete}#{k}"
+        }
+        if personne_de.get(cle) == () {
+            require en_cours.len < MAX_EN_COURS else Plein "trop de requêtes en cours ({MAX_EN_COURS})"
+            personne_de.set(cle, personne)
+            empreinte_de.set(cle, PasEmpreinte(empreinte))
+            recue_le.set(cle, h)
+            transition(cle, "recue", "en_cours")
+            en_cours.push(cle)
+            return PasReservation { issue: "nouvelle", statut: 0, corps: cle }
+        }
+        if to_string(empreinte_de.get(cle) ?? "") != empreinte {
+            return PasReservation { issue: "incoherent", statut: 422, corps: "" }
+        }
+        let st = get_status(cle) ?? "recue"
+        if st == "terminee" {
+            let statut = statut_de.get(cle) ?? 200
+            let corps = reponse_de.get(cle) ?? to_json(map("rejeu", true, "purge", true))
+            return PasReservation { issue: "rejeu", statut: statut, corps: corps }
+        }
+        return PasReservation { issue: "en_cours", statut: 422, corps: "" }
+    }
+
+    on terminer(h, requete, reponse) {
+        let st = get_status(requete) ?? "recue"
+        require st != "recue" else Inconnu "requête {requete} inconnue"
+        require st == "en_cours" else EtatInvalide "requête {requete} : {st}"
+        let statut = match reponse { PasReponse { statut, corps } -> statut }
+        let corps_r = match reponse { PasReponse { statut, corps } -> corps }
+        transition(requete, "en_cours", "terminee")
+        finie_le.set(requete, h)
+        statut_de.set(requete, statut)
+        reponse_de.set(requete, corps_r)
+        _retirer_en_cours(requete)
+        return "terminee"
+    }
+
+    on abandonner(h, requete) {
+        let st = get_status(requete) ?? "recue"
+        require st != "recue" else Inconnu "requête {requete} inconnue"
+        require st == "en_cours" else EtatInvalide "requête {requete} : {st}"
+        transition(requete, "en_cours", "abandonnee")
+        finie_le.set(requete, h)
+        _retirer_en_cours(requete)
+        return "abandonnee"
+    }
+
+    on purger(h, n) {
+        let faits = 0
+        for e in finie_le.entries {
+            if faits >= n { break }
+            if to_int(e.value) > 0 && to_int(h) - to_int(e.value) > CONSERVATION && reponse_de.has(e.key) {
+                reponse_de.delete(e.key)
+                faits = faits + 1
+            }
+        }
+        return faits
+    }
+
+    on _retirer_en_cours(requete: String) {
+        let i = len(en_cours) - 1
+        while i >= 0 {
+            if en_cours[i] == requete {
+                en_cours.delete(i)
+                return true
+            }
+            i = i - 1
+        }
+        return false
+    }
+}

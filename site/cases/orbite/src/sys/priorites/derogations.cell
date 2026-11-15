@@ -1,0 +1,150 @@
+// PRIORITÉS — dérogations : un opérateur demande qu'un objet soit, pendant une période
+// bornée, exempté d'être désigné pour manœuvrer (critère "derogation" de la table). Demande,
+// instruction par ORBITE, octroi à quatre yeux sous la version en vigueur, expiration,
+// révocation, caducité au changement de version. Instance = id de dérogation ("DRG-<n>").
+//
+// Une dérogation n'exempte JAMAIS un objet seul capable de manœuvrer : elle n'est qu'un
+// critère de la table, appliqué entre deux objets capables (PrioDesignation.designer).
+
+// Motif d'une demande de dérogation.
+// - "phase_critique"   : phase critique de mission (mise à poste, rendez-vous, amarrage) ;
+// - "mission_science"  : campagne d'observation dont l'attitude ne peut être perdue ;
+// - "carburant"        : réserve d'ergols au minimum réglementaire de fin de vie ;
+// - "fin_de_vie"       : désorbitation ou mise en orbite cimetière en cours.
+cell type PrioMotifDerog = String where value == "phase_critique" || value == "mission_science" || value == "carburant" || value == "fin_de_vie"
+// Cycle d'une dérogation (valeurs de PrioDerogation.etat).
+cell type PrioEtatDerog = String where value == "demandee" || value == "en_instruction" || value == "recevable" || value == "eligible" || value == "octroyee" || value == "refusee" || value == "retiree" || value == "expiree" || value == "revoquee" || value == "caduque" || value == "inconnue"
+
+skeleton PrioDerogation {
+    const MAX_DEROGATIONS = 1000000
+    // Durée maximale d'une dérogation : 90 jours (renouvelable par une nouvelle demande).
+    const DUREE_MAX = 7776000000
+    // Une demande s'instruit au plus 15 jours ; au-delà elle est refusable d'office (Echu).
+    const DELAI_INSTRUCTION = 1296000000
+    memory {
+        objet_de: Map<String, Objet> [persistent]           // écrit une fois à la demande, jamais effacé (lien de la règle avec RefObjet)
+        op_de: Map<String, Org> [persistent]                // propriétaire à la demande ; écrit une fois, jamais effacé (lien de la règle avec OpMembres)
+        version_de: Map<String, String> [persistent]        // version en vigueur à la demande ; écrit une fois, jamais effacé (lien des règles)
+        motif_de: Map<String, PrioMotifDerog> [persistent]
+        justification_de: Map<String, String> [persistent]
+        demande_le: Map<String, Horodatage> [persistent]
+        debut_de: Map<String, Horodatage> [persistent]      // début de l'exemption (ms)
+        fin_de: Map<String, Horodatage> [persistent]        // fin de l'exemption (ms), > début, ≤ début + DUREE_MAX
+        demandeur_de: Map<String, String> [persistent]
+        decideur_de: Map<String, String> [persistent]       // "par / valideur" de l'octroi, du refus ou de la révocation
+        motif_decision: Map<String, String> [persistent]
+        active_de: Map<String, String> [persistent]         // objet -> dérogation octroyée non close (au plus une par objet)
+        invariant objet_de.size <= 1000000
+        invariant (debut_de ?? 0) <= (fin_de ?? 0)
+        invariant active_de.size <= objet_de.size
+    }
+    // Cycle d'une dérogation. Terminaux : refusee, retiree, expiree, revoquee, caduque.
+    state derogation {
+        initial: demandee
+        demandee -> en_instruction      // prise en charge par un analyste
+        demandee -> retiree             // retirée par l'opérateur
+        en_instruction -> recevable     // octroi : le propriétaire est un opérateur actif
+        recevable -> eligible           // octroi : l'objet est en service chez ref
+        eligible -> octroyee            // quatre yeux, seulement sous la version de la demande en vigueur
+        en_instruction -> refusee
+        demandee -> refusee             // refus d'office : délai d'instruction dépassé
+        en_instruction -> retiree
+        octroyee -> expiree             // fin de période atteinte
+        octroyee -> revoquee            // abus, anomalie, situation d'urgence
+        octroyee -> caduque             // la version qui la fondait n'est plus en vigueur
+    }
+    face {
+        // Demande une dérogation pour `objet` sur [debut, fin[ (ms ; debut ≥ h, fin > debut,
+        // fin − debut ≤ DUREE_MAX). Inutile et refusée pour un objet habité (déjà exempté
+        // face à tout objet capable) ou incapable de manœuvrer. `par` : "dynamicien" ou
+        // "chef_de_mission" du propriétaire (ApiAcces.agit_pour sur ApiRef.proprietaire).
+        // Renvoie l'id. Refus : Existe, Inconnu (objet), HorsBornes (période), NonEligible
+        // (habité ou incapable), Suspendu (opérateur inactif), Ferme (aucune version en
+        // vigueur), MotifRequis (justification vide), Plein, Habilitation.
+        signal demander(h: Horodatage, derogation: String, objet: Objet, motif: PrioMotifDerog, justification: String, debut: Horodatage, fin: Horodatage, par: String) -> String
+            writes objet_de, op_de, version_de, motif_de, justification_de, demande_le, debut_de, fin_de, demandeur_de
+            calls ApiRef.proprietaire, ApiRef.habite, ApiRef.peut_manoeuvrer, ApiOperateurs.est_actif, ApiAcces.a_le_role, ApiAcces.agit_pour, PrioVersion.version_courante, PrioEcheancier.planifier, Journal.noter
+        // Prend la demande en instruction (demandee -> en_instruction). `par` "analyste"
+        // d'ORBITE. Renvoie "en_instruction". Refus : Inconnu, EtatInvalide, Habilitation.
+        signal instruire(h: Horodatage, derogation: String, par: String) -> String
+            reads objet_de
+            moves demandee -> en_instruction
+            calls ApiAcces.a_le_role, Journal.noter
+        // Octroie (en_instruction -> recevable -> eligible -> octroyee, tous contrôles faits
+        // avant la première transition), seulement tant que la version de la demande est
+        // en vigueur, que l'opérateur op_de est actif (ApiOperateurs.est_actif) et que l'objet
+        // est en service (ApiRef.etat_objet == "en_service"). Refusé si l'objet a déjà une
+        // dérogation active, est en anomalie, n'est pas en service, si son
+        // opérateur est inactif, ou s'il est engagé dans un rapprochement de niveau 3 ouvert
+        // (une dérogation ne s'obtient pas en pleine alerte). `par` "analyste", `valideur`
+        // "superviseur" d'ORBITE (quatre yeux). Renvoie "octroyee". Refus : Inconnu,
+        // EtatInvalide, Echu (fin passée ou instruction > DELAI_INSTRUCTION), Conflit
+        // (dérogation active ou alerte de niveau 3), NonEligible (anomalie, objet pas en service), Suspendu,
+        // Habilitation, QuatreYeux.
+        signal octroyer(h: Horodatage, derogation: String, par: String, valideur: String) -> String
+            writes active_de, decideur_de
+            reads objet_de, op_de, version_de, fin_de, demande_le
+            moves en_instruction -> recevable when OpMembres.actif via op_de, recevable -> eligible when RefObjet.en_service via objet_de, eligible -> octroyee when PrioVersion.en_vigueur via version_de
+            calls PrioVersion.etat, ApiRef.etat_objet, ApiEvenements.en_anomalie, ApiOperateurs.est_actif, ApiConjonctions.ouverts_de, ApiConjonctions.niveau, PrioEcheancier.planifier, PrioEcheancier.annuler, ApiAcces.a_le_role, ApiAcces.quatre_yeux, Journal.noter
+        // Refuse la demande : en_instruction -> refusee par un "analyste" d'ORBITE, ou d'office
+        // (demandee ou en_instruction -> refusee) par "systeme" une fois DELAI_INSTRUCTION
+        // écoulé depuis la demande. Renvoie "refusee". Refus : Inconnu, EtatInvalide,
+        // Delai (refus d'office avant le délai), MotifRequis, Habilitation.
+        signal refuser(h: Horodatage, derogation: String, motif: String, par: String) -> String
+            writes decideur_de, motif_decision
+            reads demande_le
+            moves en_instruction -> refusee, demandee -> refusee
+            calls PrioEcheancier.annuler, ApiAcces.a_le_role, Journal.noter
+        // L'opérateur retire sa demande non encore octroyée. `par` : personne de l'opérateur
+        // demandeur ("dynamicien", "chef_de_mission" ou "administrateur_operateur", via
+        // ApiAcces.agit_pour sur op_de). Renvoie "retiree". Refus : Inconnu, EtatInvalide, Habilitation.
+        signal retirer(h: Horodatage, derogation: String, par: String) -> String
+            reads op_de
+            moves demandee -> retiree, en_instruction -> retiree
+            calls PrioEcheancier.annuler, ApiAcces.a_le_role, ApiAcces.agit_pour, Journal.noter
+        // Révoque une dérogation octroyée (octroyee -> revoquee) : objet en anomalie, abus,
+        // urgence. Libère l'objet (active_de). `par` "superviseur" ou "conformite", `valideur`
+        // "direction" d'ORBITE. Renvoie "revoquee". Refus : Inconnu, EtatInvalide,
+        // MotifRequis, Habilitation, QuatreYeux.
+        signal revoquer(h: Horodatage, derogation: String, motif: String, par: String, valideur: String) -> String
+            writes active_de, decideur_de, motif_decision
+            reads objet_de
+            moves octroyee -> revoquee
+            calls PrioEcheancier.annuler, ApiAcces.a_le_role, ApiAcces.quatre_yeux, Journal.noter
+        // Balayage : clôt une dérogation dont la fin est passée (octroyee -> expiree). `par`
+        // "systeme". Renvoie "expiree". Refus : Inconnu, EtatInvalide, Delai (fin non
+        // atteinte), Habilitation.
+        signal expirer(h: Horodatage, derogation: String, par: String) -> String
+            writes active_de
+            reads objet_de, fin_de
+            moves octroyee -> expiree
+            calls ApiAcces.a_le_role, Journal.noter
+        // Balayage : rend caduque une dérogation dont la version n'est plus en vigueur
+        // (remplacée ou abrogée). L'opérateur doit redemander sous la nouvelle version. `par`
+        // "systeme". Renvoie "caduque". Refus : Inconnu, EtatInvalide, Habilitation.
+        signal caduquer(h: Horodatage, derogation: String, par: String) -> String
+            writes active_de
+            reads objet_de, version_de
+            moves octroyee -> caduque when PrioVersion.remplacee || PrioVersion.abrogee via version_de
+            calls PrioVersion.etat, PrioEcheancier.annuler, ApiAcces.a_le_role, Journal.noter
+        // Dérogations octroyées (non closes) accordées sous `version`, triées : le balayage
+        // de caducité les rend caduques quand la version quitte la vigueur.
+        signal actives_de_version(version: String) -> List<String>
+            reads version_de, active_de, derogation
+        // Vrai si une dérogation octroyée couvre `objet` à `h` (debut ≤ h < fin). Une
+        // dérogation échue non encore balayée ne compte pas.
+        signal en_cours(objet: Objet, h: Horodatage) -> Bool
+            reads active_de, debut_de, fin_de, derogation
+        // Dérogations demandées pour `objet`, toutes issues confondues, de la plus ancienne à la
+        // plus récente (historique d'un objet, pièce de la conformité et des dossiers de preuve).
+        signal historique(objet: Objet) -> List<String>
+            reads objet_de, demande_le
+        // État (PrioEtatDerog) ; "inconnue" si jamais demandée.
+        signal etat(derogation: String) -> PrioEtatDerog
+            reads derogation, objet_de
+        // Fiche : "objet | operateur | version | motif | debut | fin | demandeur | decideur |
+        // motif_decision". Refus : Inconnu.
+        signal fiche(derogation: String) -> String
+            reads objet_de, op_de, version_de, motif_de, debut_de, fin_de, demandeur_de, decideur_de, motif_decision
+    }
+}

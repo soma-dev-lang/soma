@@ -1,0 +1,27 @@
+// Façade des DONNÉES : accords de partage, diffusion, confidentialité, publication.
+skeleton ApiDonnees {
+    face {
+        // Niveau de diffusion des données d'un objet (fixé par son propriétaire, plafonné par
+        // la politique d'ORBITE : un objet impliqué dans un rapprochement est au moins "parties").
+        signal diffusion(objet: Objet) -> Diffusion
+            calls DonControle.diffusion_effective
+        // Vrai si l'organisation peut recevoir les données de l'objet à `h` : selon la diffusion,
+        // son adhésion à l'accord de partage, et sa qualité de partie au rapprochement `r`
+        // ("" si hors rapprochement).
+        signal peut_recevoir(org: Org, objet: Objet, r: Rapprochement, h: Horodatage) -> Bool
+            calls DonControle.peut_recevoir
+        // Vrai si l'organisation a signé l'accord de partage en vigueur.
+        signal adherent(org: Org) -> Bool
+            calls DonAdhesions.adherent
+        // Trace une communication de données (qui, quoi, pourquoi). Renvoie le numéro de trace.
+        // Refus : Confidentiel (destinataire non autorisé), Plein.
+        signal tracer(h: Horodatage, org: Org, objet: Objet, r: Rapprochement, nature: String) -> Int
+            calls DonTraces.tracer
+        // Balayage des échéances du sous-système à `h` (délais, expirations, rondes), appelé par
+        // l'horloge d'ORBITE (Horloge.battre) — le SEUL point d'entrée du temps : aucun signal de
+        // donnees ne lit l'horloge lui-même. Renvoie le nombre d'objets dont l'état a changé.
+        // Refus : Habilitation (par "systeme").
+        signal balayer(h: Horodatage, par: String) -> Int
+            calls DonBalayage.balayer
+    }
+}

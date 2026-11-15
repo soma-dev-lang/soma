@@ -1,0 +1,173 @@
+// meteo — SOURCES DE MÉTÉO SPATIALE. Un magnétomètre (indice Kp), un radiotélescope (flux
+// solaire F10.7) ou un centre de prévision, exploité par un fournisseur (Org de genre
+// fournisseur de capteurs, ou ORBITE). Une source n'alimente ORBITE qu'une fois qualifiée
+// (étalonnage vérifié, quatre yeux) ; une source silencieuse ou dont l'étalonnage a plus d'un an
+// est mise en panne par le balayage, jamais attendue : les autres sources prennent le relais
+// par ordre de priorité. Les données météo sont publiques (Diffusion "public") : aucune
+// restriction de diffusion ne s'applique à ce sous-système.
+
+// Grandeur observée ou prévue. "kp" : indice géomagnétique planétaire, en dixièmes (0 à 90).
+// "f107" : flux radio solaire à 10,7 cm, en dixièmes d'unité de flux solaire (sfu).
+cell type MetGrandeur = String where value == "kp" || value == "f107"
+// Nature d'une source : "magnetometre" (mesure kp), "radio_flux" (mesure f107),
+// "centre_prevision" (dépose des prévisions de kp et de f107, aucune mesure).
+cell type MetGenreSource = String where value == "magnetometre" || value == "radio_flux" || value == "centre_prevision"
+// Motif d'une mise en panne : "declaree" (par le fournisseur ou un exploitant), "silence"
+// (aucune réception depuis 3 cadences), "etalonnage_echu" (dernier étalonnage de plus de 365 j),
+// "ecarts" (mesures rejetées en série).
+cell type MetMotifPanne = String where value == "declaree" || value == "silence" || value == "etalonnage_echu" || value == "ecarts"
+
+// Sources : id = identifiant choisi par l'exploitant, "SRC-<code>".
+skeleton MetSource {
+    const MAX_SOURCES = 200
+    const CADENCE_MIN = 60000            // 1 min
+    const CADENCE_MAX = 86400000         // 24 h
+    const ETALONNAGE_MAX = 31536000000   // 365 j : au-delà la source n'est plus crue
+    const SILENCE_CADENCES = 3           // silence = 3 cadences sans réception
+    const PRIORITE_MAX = 9
+    memory {
+        genre: Map<String, MetGenreSource> [persistent]       // source → nature
+        fournisseur: Map<String, Org> [persistent]            // source → organisation qui l'exploite
+        cadence: Map<String, Duree> [persistent]              // source → intervalle nominal entre deux envois, ms
+        priorite: Map<String, Int> [persistent]               // source → rang (1 = primaire) parmi les sources de sa grandeur
+        etalonnee_le: Map<String, Horodatage> [persistent]    // source → dernier étalonnage attesté
+        derniere_reception: Map<String, Horodatage> [persistent]  // source → dernière mesure ou prévision reçue
+        motif_panne: Map<String, MetMotifPanne> [persistent]  // source → motif de la dernière mise en panne
+        maintenance_fin: Map<String, Horodatage> [persistent] // source en maintenance → fin annoncée
+        maintenance_debut: Map<String, Horodatage> [persistent]   // source → début de la dernière maintenance annoncée
+        en_service_le: Map<String, Horodatage> [persistent]   // source → dernière entrée en service (qualifier, retablir, reprendre_service) : base de l'horloge de silence
+        panne_le: Map<String, Horodatage> [persistent]        // source → instant de la dernière mise en panne
+        invariant genre.size <= MAX_SOURCES
+        invariant cadence >= CADENCE_MIN && cadence <= CADENCE_MAX
+        invariant priorite >= 1 && priorite <= PRIORITE_MAX
+    }
+    // Cycle de vie d'une source (id = source).
+    state source {
+        initial: declaree
+        declaree -> active        // qualifier : étalonnage récent, quatre yeux
+        declaree -> retiree       // retirer : source abandonnée avant qualification
+        active -> en_panne        // declarer_panne, balayer (silence, étalonnage échu, écarts)
+        en_panne -> active        // retablir : nouvel étalonnage, quatre yeux
+        active -> en_maintenance  // annoncer_maintenance : arrêt planifié, pas d'alarme de silence
+        en_maintenance -> active  // reprendre_service : étalonnage postérieur au début de la maintenance
+        en_maintenance -> retiree // retirer
+        en_maintenance -> en_panne    // balayer : maintenance dépassée de 24 h
+        active -> retiree         // retirer
+        en_panne -> retiree       // retirer
+    }
+    face {
+        // Déclare une source exploitée par `fournisseur`, avec sa cadence nominale (ms) et son rang
+        // de priorité (1 = primaire). La source reste "declaree" : elle n'alimente rien avant
+        // `qualifier`. Renvoie "declaree".
+        // Rôle exigé : "exploitant" d'ORBITE. Refus : Existe, Inconnu (fournisseur non inscrit
+        // ou radié), HorsBornes (cadence hors [1 min, 24 h], priorité hors [1, 9]), Plein,
+        // Habilitation.
+        signal declarer(h: Horodatage, source: String, nature: MetGenreSource, fournisseur_org: Org, cadence_ms: Duree, rang: Int, par: String) -> String
+            writes genre, fournisseur, cadence, priorite
+            calls ApiAcces.a_le_role, ApiRef.organisation_existe, Journal.noter
+        // Atteste un étalonnage de la source réalisé à `le` (≤ h). Ne change pas son état :
+        // c'est la condition de `qualifier` et de `retablir`. Renvoie le nombre de jours avant
+        // échéance de l'étalonnage (365 − âge en jours).
+        // Rôle exigé : "capteur" du fournisseur (ApiAcces.agit_pour) ou "exploitant" d'ORBITE.
+        // Refus : Inconnu, Incoherent (le > h), Perime (étalonnage déjà de plus de 365 j),
+        // EtatInvalide (source retiree), Habilitation.
+        signal etalonner(h: Horodatage, source: String, le: Horodatage, par: String) -> Int
+            writes etalonnee_le
+            reads source, fournisseur
+            calls ApiAcces.a_le_role, ApiAcces.agit_pour, Journal.noter
+        // Met en service une source déclarée, seulement si son fournisseur est inscrit ou actif
+        // chez REF (ApiRef.organisation_existe ; règle sur l'arête via fournisseur, écrit une fois
+        // par declarer). Renvoie "active".
+        // Rôle exigé : "exploitant" d'ORBITE, contre-signé par `valideur` (ApiAcces.quatre_yeux).
+        // Refus : Inconnu (source, ou fournisseur radié), EtatInvalide, Perime (aucun étalonnage
+        // de moins de 365 j), Habilitation, QuatreYeux.
+        signal qualifier(h: Horodatage, source: String, par: String, valideur: String) -> String
+            reads etalonnee_le, fournisseur
+            writes en_service_le
+            moves declaree -> active when RefOrg.inscrite || RefOrg.active via fournisseur
+            calls ApiRef.organisation_existe, ApiAcces.a_le_role, ApiAcces.quatre_yeux, Journal.noter
+        // Le fournisseur (ou un exploitant) déclare la source en panne : ses envois suivants sont
+        // rejetés. Renvoie "en_panne". Rôle exigé : "capteur" du fournisseur ou "exploitant"
+        // d'ORBITE. Refus : Inconnu, EtatInvalide, MotifRequis, Habilitation.
+        signal declarer_panne(h: Horodatage, source: String, motif: String, par: String) -> String
+            writes motif_panne, panne_le
+            reads fournisseur
+            moves active -> en_panne
+            calls ApiAcces.a_le_role, ApiAcces.agit_pour, Journal.noter
+        // Remet en service une source en panne après un nouvel étalonnage. Renvoie "active".
+        // Rôle exigé : "exploitant" d'ORBITE, contre-signé par `valideur`.
+        // Refus : Inconnu, EtatInvalide, Perime (étalonnage antérieur à la panne ou de plus de
+        // 365 j), Habilitation, QuatreYeux.
+        signal retablir(h: Horodatage, source: String, par: String, valideur: String) -> String
+            reads etalonnee_le, derniere_reception, panne_le
+            writes en_service_le
+            moves en_panne -> active
+            calls ApiAcces.a_le_role, ApiAcces.quatre_yeux, Journal.noter
+        // Annonce un arrêt planifié de la source jusqu'à `fin` (au plus 7 j) : ses envois sont
+        // rejetés, le balayage ne la met pas en panne, la priorité passe aux autres sources.
+        // Renvoie "en_maintenance". Rôle exigé : "capteur" du fournisseur ou "exploitant"
+        // d'ORBITE. Refus : Inconnu, EtatInvalide, HorsBornes (fin ≤ h ou au-delà de 7 j),
+        // Insuffisant (dernière source active de sa grandeur : la maintenance attendra),
+        // Habilitation.
+        signal annoncer_maintenance(h: Horodatage, source: String, fin: Horodatage, par: String) -> String
+            writes maintenance_fin, maintenance_debut
+            reads genre, fournisseur
+            moves active -> en_maintenance
+            calls actives, centres_actifs, ApiAcces.a_le_role, ApiAcces.agit_pour, Journal.noter
+        // Remet en service une source en maintenance, sur un étalonnage attesté après le début
+        // de la maintenance. Renvoie "active". Rôle exigé : "capteur" du fournisseur ou
+        // "exploitant" d'ORBITE. Refus : Inconnu, EtatInvalide, Perime (aucun étalonnage depuis
+        // le début de la maintenance), Habilitation.
+        signal reprendre_service(h: Horodatage, source: String, par: String) -> String
+            reads etalonnee_le, fournisseur, maintenance_debut
+            writes en_service_le
+            moves en_maintenance -> active
+            calls ApiAcces.a_le_role, ApiAcces.agit_pour, Journal.noter
+        // Retire définitivement une source (contrat échu, instrument démantelé). Renvoie "retiree".
+        // Rôle exigé : "exploitant" d'ORBITE. Refus : Inconnu, EtatInvalide (déjà retiree),
+        // MotifRequis, Habilitation.
+        signal retirer(h: Horodatage, source: String, motif: String, par: String) -> String
+            reads fournisseur
+            moves declaree -> retiree, active -> retiree, en_panne -> retiree, en_maintenance -> retiree
+            calls ApiAcces.a_le_role, Journal.noter
+        // Balayage des sources (par = "systeme", appelé chaque minute par MetRonde.balayer,
+        // c'est-à-dire par l'horloge d'ORBITE) : met en panne chaque source active silencieuse depuis 3 cadences (motif
+        // "silence") ou dont l'étalonnage a plus de 365 j ("etalonnage_echu"), et chaque source
+        // en maintenance dont la fin annoncée est dépassée de 24 h (motif "silence"). Renvoie le nombre
+        // de sources mises en panne. Refus : Habilitation (par ≠ "systeme").
+        signal balayer(h: Horodatage, par: String) -> Int
+            writes motif_panne, panne_le
+            reads cadence, etalonnee_le, derniere_reception, maintenance_fin, en_service_le
+            moves active -> en_panne, en_maintenance -> en_panne
+            calls ApiAcces.a_le_role, Journal.noter
+        // Met en panne une source dont les envois sont rejetés en série (motif "ecarts") ;
+        // appelé par MetMesure et MetPrevision au 5e rejet consécutif. Renvoie "en_panne".
+        // Refus : Inconnu, EtatInvalide.
+        signal mettre_en_ecart(h: Horodatage, source: String) -> String
+            writes motif_panne, panne_le
+            reads fournisseur
+            moves active -> en_panne
+            calls Journal.noter
+        // Enregistre l'instant de réception d'un envoi (mesure ou prévision), quel qu'en soit le
+        // sort ; c'est l'horloge du balayage. Renvoie `h`. Refus : Inconnu.
+        signal noter_reception(h: Horodatage, source: String) -> Horodatage
+            writes derniere_reception
+            reads fournisseur
+        // Vrai si la source est "active".
+        signal active(source: String) -> Bool
+            reads source
+        // Nature de la source. Refus : Inconnu.
+        signal nature(source: String) -> MetGenreSource
+            reads genre
+        // Organisation qui exploite la source. Refus : Inconnu.
+        signal fournisseur_de(source: String) -> Org
+            reads fournisseur
+        // Sources actives qui produisent `g` (magnétomètres pour "kp", radio_flux pour "f107",
+        // centres de prévision exclus), par rang de priorité croissant ; [] si aucune.
+        signal actives(g: MetGrandeur) -> List<String>
+            reads source, genre, priorite
+        // Centres de prévision actifs, par rang de priorité croissant.
+        signal centres_actifs() -> List<String>
+            reads source, genre, priorite
+    }
+}

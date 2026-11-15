@@ -1,0 +1,247 @@
+// Corps des tâches de suivi.
+flesh ObsTaches {
+    on demander(h, objet, priorite, duree, motif, detail, par) {
+        require ApiAcces.a_le_role(par, "analyste") || ApiAcces.a_le_role(par, "systeme") else Habilitation "{par} : analyste d'ORBITE ou systeme requis"
+        require ApiRef.etat_objet(objet) != "inconnu" else Inconnu "objet {objet} non catalogué"
+        require duree > 0 && duree <= DUREE_MAX_MS else HorsBornes "durée {duree} ms hors (0, {DUREE_MAX_MS}]"
+        require detail != "" else MotifRequis "justification requise"
+        // Une tâche active (demandée, affectée, en cours) du même objet, de priorité au moins égale,
+        // sert la demande : prolongée si besoin, son id est rendu (les sous-systèmes redemandent à
+        // chaque balayage ; sans fusion, le réseau sature en une journée).
+        let fin_voulue = h + Horodatage(to_int(duree))
+        for e in objet_de.entries {
+            if e.value == objet && (priorite_de.get(e.key) ?? 1) >= priorite {
+                let st_e = get_status(e.key) ?? "demandee"
+                if st_e == "demandee" || st_e == "affectee" || st_e == "en_cours" {
+                    if (fin_de.get(e.key) ?? h) < fin_voulue { fin_de.set(e.key, fin_voulue) }
+                    let _ = Journal.noter(h, "observation", par, "demande de suivi de {objet} ({detail}) servie par la tâche {e.key}")
+                    return e.key
+                }
+            }
+        }
+        let regime = ApiRef.regime(objet)
+        require ObsCouverture.peut_servir(regime, priorite) else Plein "régime {regime} saturé ou aveugle pour une priorité {priorite}"
+        let n = (compteur.get("taches") ?? 0) + 1
+        require n <= MAX_TACHES else Plein "registre des tâches plein"
+        let id = "TS-{n}"
+        compteur.set("taches", n)
+        objet_de.set(id, objet)
+        priorite_de.set(id, priorite)
+        motif_de.set(id, motif)
+        detail_de.set(id, detail)
+        fin_de.set(id, h + Horodatage(to_int(duree)))
+        demandee_le.set(id, h)
+        demandeur_de.set(id, par)
+        let _ = Journal.noter(h, "observation", par, "tâche {id} demandée : {objet}, priorité {priorite}, {motif} ({detail})")
+        let affectee = false
+        for c in ObsCapteurs.disponibles(regime, 100) {
+            if !affectee {
+                let r = try { affecter(h, id, c, par) }
+                if r.error == () { affectee = true }
+            }
+        }
+        if !affectee && priorite == 3 {
+            // Préemption : la tâche active de plus basse priorité dont le capteur couvre le régime.
+            let victimes = priorite_de.entries.filter(e => e.value < 3).sort_by(e => [e.value, e.key])
+            for v in victimes {
+                if !affectee && v.key != id {
+                    let r = try {
+                        let libere = preempter(h, v.key)
+                        affecter(h, id, libere, par)
+                    }
+                    if r.error == () { affectee = true }
+                }
+            }
+        }
+        require affectee else Plein "aucun capteur disponible dans le régime {regime}"
+        return id
+    }
+    on affecter(h, tache, capteur, par) {
+        require ApiAcces.a_le_role(par, "analyste") || ApiAcces.a_le_role(par, "systeme") else Habilitation "{par} : analyste d'ORBITE ou systeme requis"
+        let objet = objet_de.get(tache)
+        require objet != () else Inconnu "tâche {tache} inconnue"
+        let st = get_status(tache) ?? "demandee"
+        require st == "demandee" else EtatInvalide "tâche {tache} : {st}"
+        require ObsCapteurs.couvre(capteur, ApiRef.regime(objet)) else NonEligible "capteur {capteur} hors service ou ne couvrant pas le régime de {objet}"
+        let ch = charge_de.get(capteur) ?? 0
+        require ch < TACHES_PAR_CAPTEUR else Plein "capteur {capteur} saturé"
+        require capteur_de.get(tache) == () else Existe "tâche {tache} déjà affectée"
+        transition(tache, "demandee", "affectee")
+        capteur_de.set(tache, capteur)
+        charge_de.set(capteur, ch + 1)
+        let _ = Journal.noter(h, "observation", par, "tâche {tache} affectée à {capteur}")
+        return "affectee"
+    }
+    on demarrer(h, tache) {
+        let c = capteur_de.get(tache)
+        require c != () else Inconnu "tâche {tache} inconnue ou non affectée"
+        let st = get_status(tache) ?? "demandee"
+        require st == "affectee" else EtatInvalide "tâche {tache} : {st}"
+        // Règle interne : affectee -> en_cours when ObsCapteurs.en_service via capteur_de.
+        require ObsCapteurs.etat(c) == "en_service" else EtatInvalide "capteur {c} hors service"
+        transition(tache, "affectee", "en_cours")
+        return "en_cours"
+    }
+    on compter(tache) {
+        require objet_de.has(tache) else Inconnu "tâche {tache} inconnue"
+        let n = (nb_mesures.get(tache) ?? 0) + 1
+        nb_mesures.set(tache, n)
+        return n
+    }
+    on terminer(h, tache, suffisant, par) {
+        require ApiAcces.a_le_role(par, "analyste") || ApiAcces.a_le_role(par, "systeme") else Habilitation "{par} : analyste d'ORBITE ou systeme requis"
+        let c = capteur_de.get(tache)
+        require c != () else Inconnu "tâche {tache} inconnue ou jamais affectée"
+        let st = get_status(tache) ?? "demandee"
+        require st == "en_cours" else EtatInvalide "tâche {tache} : {st}"
+        let fin = fin_de.get(tache) ?? 0
+        require h >= fin || suffisant else Delai "fin du suivi non atteinte ({fin})"
+        transition(tache, "en_cours", "terminee")
+        _liberer(c)
+        let _ = Journal.noter(h, "observation", par, "tâche {tache} terminée")
+        return "terminee"
+    }
+    on interrompre_capteur(h, capteur) {
+        let n = 0
+        let a_relever = []
+        let siennes = capteur_de.entries.filter(e => e.value == capteur)
+        for e in siennes {
+            let t = e.key
+            let st = get_status(t) ?? "demandee"
+            if st == "affectee" || st == "en_cours" {
+                transition(t, st, "interrompue")
+                n = n + 1
+                if (fin_de.get(t) ?? 0) > h { a_relever.push(t) }
+            }
+        }
+        if n > 0 { charge_de.set(capteur, 0) }
+        for t in a_relever {
+            let nouvelle = relever(h, t)
+            let _ = Journal.noter(h, "observation", "systeme", "tâche {t} interrompue (capteur {capteur}) ; relève : {nouvelle}")
+        }
+        return n
+    }
+    on preempter(h, tache) {
+        let c = capteur_de.get(tache)
+        require c != () else Inconnu "tâche {tache} inconnue ou non affectée"
+        require (priorite_de.get(tache) ?? 1) < 3 else NonEligible "une tâche de priorité 3 n'est jamais préemptée"
+        let st = get_status(tache) ?? "demandee"
+        require st == "affectee" || st == "en_cours" else EtatInvalide "tâche {tache} : {st}"
+        transition(tache, st, "interrompue")
+        _liberer(c)
+        let _ = Journal.noter(h, "observation", "systeme", "tâche {tache} préemptée sur {c} par une demande de priorité 3")
+        return c
+    }
+    on relever(h, tache) {
+        let objet = objet_de.get(tache)
+        require objet != () else Inconnu "tâche {tache} inconnue"
+        let st = get_status(tache) ?? "demandee"
+        require st == "interrompue" else EtatInvalide "tâche {tache} : {st}, pas interrompue"
+        let deja = origine_de.entries.filter(e => e.value == tache)
+        require len(deja) == 0 else Doublon "tâche {tache} déjà relevée"
+        let fin = fin_de.get(tache) ?? 0
+        if fin <= h {
+            let _ = Journal.noter(h, "observation", "systeme", "tâche {tache} échue : pas de relève")
+            return ""
+        }
+        let n = (compteur.get("taches") ?? 0) + 1
+        require n <= MAX_TACHES else Plein "registre des tâches plein"
+        let id = "TS-{n}"
+        compteur.set("taches", n)
+        objet_de.set(id, objet)
+        priorite_de.set(id, priorite_de.get(tache) ?? 1)
+        motif_de.set(id, motif_de.get(tache) ?? "routine")
+        detail_de.set(id, detail_de.get(tache) ?? "relève de {tache}")
+        fin_de.set(id, fin)
+        demandee_le.set(id, h)
+        demandeur_de.set(id, "systeme")
+        origine_de.set(id, tache)
+        let affectee = false
+        for c in ObsCapteurs.disponibles(ApiRef.regime(objet), 100) {
+            if !affectee {
+                let r = try { affecter(h, id, c, "systeme") }
+                if r.error == () { affectee = true }
+            }
+        }
+        if !affectee {
+            let _ = Journal.noter(h, "observation", "systeme", "relève {id} de {tache} en attente : aucun capteur libre")
+            return ""
+        }
+        let _ = Journal.noter(h, "observation", "systeme", "relève {id} de {tache} créée")
+        return id
+    }
+    on expirer(h, par) {
+        require par == "systeme" else Habilitation "ronde réservée à systeme"
+        let n = 0
+        let toutes = demandee_le.entries
+        for e in toutes {
+            let t = e.key
+            let st = get_status(t) ?? "demandee"
+            let fin = fin_de.get(t) ?? 0
+            let expire = false
+            if st == "demandee" && h - e.value > DELAI_AFFECTATION_MS {
+                transition(t, "demandee", "expiree")
+                expire = true
+            } else if st == "affectee" && h >= fin {
+                transition(t, "affectee", "expiree")
+                let c = capteur_de.get(t) ?? ""
+                if c != "" { _liberer(c) }
+                expire = true
+            }
+            if expire {
+                n = n + 1
+                let _ = Journal.noter(h, "observation", "systeme", "tâche {t} expirée ({st})")
+                if (priorite_de.get(t) ?? 1) == 3 {
+                    let _ = ApiOperations.declarer_incident(h, "OBS-SUIVI-{t}", 3, "observation", "suivi d'urgence impossible : tâche {t} expirée", "systeme")
+                }
+            }
+        }
+        return n
+    }
+    on annuler(h, tache, motif, par) {
+        let auteur = demandeur_de.get(tache)
+        require auteur != () else Inconnu "tâche {tache} inconnue"
+        require ApiAcces.a_le_role(par, "analyste") || par == auteur else Habilitation "{par} : analyste d'ORBITE ou auteur de la demande requis"
+        require motif != "" else MotifRequis "motif d'annulation requis"
+        let st = get_status(tache) ?? "demandee"
+        if st == "demandee" {
+            transition(tache, "demandee", "annulee")
+        } else if st == "affectee" || st == "en_cours" {
+            transition(tache, st, "annulee")
+            let c = capteur_de.get(tache) ?? ""
+            if c != "" { _liberer(c) }
+        } else {
+            fail("EtatInvalide", "tâche {tache} close : {st}")
+        }
+        let _ = Journal.noter(h, "observation", par, "tâche {tache} annulée ({motif})")
+        return "annulee"
+    }
+    on _liberer(c: String) {
+        charge_de.set(c, max((charge_de.get(c) ?? 0) - 1, 0))
+    }
+    on etat(tache) {
+        if !objet_de.has(tache) { return "inconnue" }
+        return get_status(tache) ?? "demandee"
+    }
+    on active_sur(capteur, objet) {
+        for e in capteur_de.entries {
+            if e.value == capteur && objet_de.get(e.key) == objet {
+                let st = get_status(e.key) ?? "demandee"
+                if st == "affectee" || st == "en_cours" { return e.key }
+            }
+        }
+        return ""
+    }
+    on suivi_actif(objet, p) {
+        for e in objet_de.entries {
+            if e.value == objet && (priorite_de.get(e.key) ?? 1) >= p {
+                let st = get_status(e.key) ?? "demandee"
+                if st == "demandee" || st == "affectee" || st == "en_cours" { return true }
+            }
+        }
+        return false
+    }
+    on charge(capteur) {
+        return charge_de.get(capteur) ?? 0
+    }
+}

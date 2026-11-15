@@ -1,0 +1,277 @@
+// ref — catalogue des objets spatiaux (une instance par objet, id = "OBJ-<n>").
+// ORBITE numérote seule ("OBJ-" + compteur monotone) ; un numéro n'est jamais réattribué.
+// La propulsion a deux valeurs : NOMINALE (conception) et ACTUELLE. Une dégradation déclarée
+// s'applique tout de suite (sécurité : on ne désigne pas un objet incapable) ; un retour à une
+// capacité supérieure passe par RefModification (champ "propulsion"), à quatre yeux.
+// L'État d'immatriculation vit dans RefRegistre (registre de 1975), pas ici : une seule source.
+// Toute perte de capacité d'un objet désigné rouvre ses coordinations (rouvrir_designations).
+// Un objet non attribué (piste non corrélée, débris d'origine inconnue) a pour propriétaire
+// PROVISOIRE ORBITE (RefOrg.ORG_ORBITE) et pour État d'immatriculation "" jusqu'à attribuer.
+// Le régime ne change que par changer_regime (transfert vérifié par manoeuvres).
+
+// Cycle de vie tel que le lit un appelant : "inconnu" si jamais catalogué.
+cell type RefEtatObjet = String where value == "catalogue" || value == "en_service" || value == "hors_service" || value == "cimetiere" || value == "retire" || value == "rentre" || value == "fragmente" || value == "inconnu"
+
+// Champ du catalogue modifiable par RefModification (le propriétaire et l'État
+// d'immatriculation ne changent que par RefCession).
+cell type RefChamp = String where value == "nature" || value == "masse" || value == "propulsion" || value == "propulsion_nominale" || value == "nom"
+
+skeleton RefObjet {
+    const MAX_OBJETS = 2000000
+    const MAX_OBJETS_PAR_ORG = 10000
+    memory {
+        compteur: Map<String, Int> [persistent, consistent]    // "objets" → dernier numéro attribué
+        invariant value >= (compteur.get(key) ?? 0)           // monotone : jamais réattribué
+        natures: Map<String, NatureObjet> [persistent]
+        proprietaires: Map<String, String> [persistent]       // objet → Org (ORG-ORBITE : non attribué)
+        regimes: Map<String, Regime> [persistent]
+        propulsions: Map<String, Propulsion> [persistent]     // capacité ACTUELLE
+        nominales: Map<String, Propulsion> [persistent]       // capacité de conception
+        masses: Map<String, Masse> [persistent]               // kg, masse sèche déclarée
+        catalogues_le: Map<String, Horodatage> [persistent, consistent, immutable]
+        catalogues_par: Map<String, String> [persistent, consistent, immutable]
+        // propriétaire → ses objets (y compris rentrés : l'historique de parc compte)
+        parc: Map<String, List<String>> [persistent]
+        motifs: Map<String, String> [persistent]              // objet → motif du dernier changement d'état
+        // Ce qui a fait sortir l'objet de l'orbite : un slot par cause, chacun écrit une fois par
+        // UN seul signal (require x.get(objet) == () else Existe), jamais effacé — liens des
+        // règles d'arêtes vers reentrees, evenements et fin_de_vie (phase 2).
+        rentree_de: Map<String, String> [persistent, consistent, immutable]        // objet → campagne de rentrée "RE-<n>" (constater_rentree)
+        fragmentation_de: Map<String, String> [persistent, consistent, immutable]  // objet → évènement "EV-<n>" (constater_fragmentation)
+        retrait_de: Map<String, String> [persistent, consistent, immutable]        // objet → mission de retrait actif (constater_retrait)
+        invariant natures.size <= 2000000
+        invariant proprietaires.size <= 2000000
+        invariant regimes.size <= 2000000
+        invariant propulsions.size <= 2000000
+        invariant nominales.size <= 2000000
+        invariant masses.size <= 2000000
+        invariant catalogues_le.size <= 2000000
+        invariant catalogues_par.size <= 2000000
+        invariant parc.size <= 20001
+        invariant len(parc) <= 10000
+        invariant motifs.size <= 2000000
+        invariant rentree_de.size <= 2000000
+        invariant fragmentation_de.size <= 2000000
+        invariant retrait_de.size <= 2000000
+    }
+    // Cycle de vie de l'objet. Terminaux : rentre, fragmente.
+    state vie {
+        initial: catalogue
+        // mettre_en_service : immatriculation à jour (ni en retard, ni dispensé = débris)
+        catalogue -> en_service
+        hors_service -> en_service                 // reprise de contrôle
+        catalogue -> hors_service                  // mort à l'injection, étage, débris
+        en_service -> hors_service                 // perte de contrôle, fin de mission
+        en_service -> cimetiere                    // orbite cimetière atteinte (GEO)
+        hors_service -> retire                     // capturé par une mission de retrait actif
+        cimetiere -> retire
+        catalogue -> rentre                        // constat de rentrée atmosphérique
+        en_service -> rentre
+        hors_service -> rentre
+        retire -> rentre
+        catalogue -> fragmente                     // fragmentation ou collision confirmée
+        en_service -> fragmente
+        hors_service -> fragmente
+        cimetiere -> fragmente
+    }
+    face {
+        // Catalogue un objet et ouvre son entrée au registre (RefRegistre.ouvrir : échéance
+        // d'immatriculation, ou dispense pour un débris / objet inconnu). Renvoie "OBJ-<n>".
+        // Cohérence : nature "debris" ou "inconnu" ⇒ propulsion "aucune" ; propriétaire
+        // RefOrg.ORG_ORBITE ⇔ etat "" (non attribué) ⇒ nature "debris" ou "inconnu".
+        // Appelé par lancements, evenements (fragments) et observation (pistes non corrélées).
+        // Consigne dans RefHistorique chaque champ de valeur_au (h = catalogage).
+        // Habilitation : par "analyste" (ORBITE) ou "systeme".
+        // Refus : Inconnu (État ≠ "" non déclaré, RefEtat.connu ; propriétaire non actif,
+        // RefOrg.est_active), Incoherent, Plein, Habilitation.
+        signal cataloguer(h: Horodatage, nature: NatureObjet, proprietaire: Org, etat: Etat, regime: Regime, propulsion: Propulsion, masse: Masse, par: String) -> Objet
+            writes compteur, natures, proprietaires, regimes, propulsions, nominales, masses, catalogues_le, catalogues_par, parc
+            calls RefEtat.connu, RefOrg.est_active, RefRegistre.ouvrir, ApiAcces.a_le_role, RefHistorique.consigner, Journal.noter
+        // Met en service (premier contrôle établi, ou reprise de contrôle). Seulement nature
+        // "satellite" ou "station_habitee" ; propriétaire actif. Renvoie "en_service".
+        // Habilitation : "dynamicien" du propriétaire (ApiAcces.agit_pour), ou "analyste" (ORBITE).
+        // Refus : Inconnu, EtatInvalide (nature, état, objet non attribué, ou immatriculation en
+        // retard / dispensée), Suspendu (propriétaire non actif), MotifRequis, Habilitation.
+        signal mettre_en_service(h: Horodatage, objet: Objet, motif: String, par: String) -> String
+            reads natures, proprietaires
+            writes motifs
+            moves catalogue -> en_service when RefRegistre.immatricule || RefRegistre.a_immatriculer, hors_service -> en_service when RefRegistre.immatricule || RefRegistre.a_immatriculer
+            calls RefRegistre.statut, RefOrg.est_active, ApiAcces.a_le_role, ApiAcces.agit_pour, RefHistorique.consigner, Journal.noter
+        // Met hors service (perte de contrôle, panne, fin de mission) : la propulsion actuelle
+        // devient "aucune" et les coordinations où l'objet est désigné sont rouvertes.
+        // Renvoie "hors_service".
+        // Habilitation : "dynamicien" ou "chef_de_mission" du propriétaire, "analyste" ou "systeme".
+        // Refus : Inconnu, EtatInvalide, MotifRequis, Habilitation.
+        signal mettre_hors_service(h: Horodatage, objet: Objet, motif: String, par: String) -> String
+            reads proprietaires
+            writes propulsions, motifs
+            moves catalogue -> hors_service, en_service -> hors_service
+            calls rouvrir_designations, ApiAcces.a_le_role, ApiAcces.agit_pour, RefHistorique.consigner, Journal.noter
+        // Constate l'arrivée en orbite cimetière (fin de vie GEO réussie) : propulsion actuelle
+        // "aucune", coordinations rouvertes. Renvoie "cimetiere".
+        // Règle (arête, même id) : fin de vie en cours chez fin_de_vie, FdvFin « passive » ou
+        // « en_retard » (lus par ApiFinDeVie.passive, ApiFinDeVie.en_retard) ; un objet
+        // « defaillant » n'est pas admis (3e alternative écartée : coût de verify).
+        // Habilitation : "analyste" (ORBITE) ou "systeme" (fin_de_vie), sur la foi d'une orbite observée.
+        // Refus : Inconnu, EtatInvalide (état, ou FdvFin ni passive ni en_retard), MotifRequis, Habilitation.
+        signal placer_cimetiere(h: Horodatage, objet: Objet, motif: String, par: String) -> String
+            writes propulsions, motifs
+            moves en_service -> cimetiere when FdvFin.passive || FdvFin.en_retard
+            calls rouvrir_designations, ApiFinDeVie.passive, ApiFinDeVie.en_retard, ApiAcces.a_le_role, RefHistorique.consigner, Journal.noter
+        // Constate la capture par une mission de retrait actif autorisée par le propriétaire ET
+        // l'État d'immatriculation (ApiFinDeVie.retrait_autorise) et qui a capturé sa cible
+        // (ApiFinDeVie.mission_capturee). `reference` : id de la mission FdvRetrait, écrit une
+        // fois dans retrait_de (seul écrivain) ; règle : la mission est « capturee ».
+        // Renvoie "retire". Habilitation : "analyste" (ORBITE) ou "systeme".
+        // Refus : Inconnu, EtatInvalide, NonEligible (non autorisé ou non capturé), MotifRequis
+        // (référence vide), Habilitation.
+        signal constater_retrait(h: Horodatage, objet: Objet, reference: String, par: String) -> String
+            writes retrait_de, motifs
+            moves hors_service -> retire when FdvRetrait.capturee via retrait_de, cimetiere -> retire when FdvRetrait.capturee via retrait_de
+            calls ApiFinDeVie.retrait_autorise, ApiFinDeVie.mission_capturee, ApiAcces.a_le_role, RefHistorique.consigner, Journal.noter
+        // Constate la rentrée atmosphérique ; radie l'objet du registre (RefRegistre.radier).
+        // Exige la rentrée constatée par reentrees (ApiReentrees.constatee : reentrees la note
+        // AVANT d'appeler ApiRef.changer_etat_objet). `reference` : id de la campagne ReeCampagne
+        // ("RE-<n>", celle du constat), écrit une fois dans rentree_de (seul écrivain) ; règle :
+        // la campagne est « rentree » ou « close ».
+        // Renvoie "rentre". Habilitation : "analyste" (ORBITE) ou "systeme".
+        // Refus : Inconnu, EtatInvalide (déjà rentré, fragmenté, ou en orbite cimetière),
+        // NonEligible (rentrée non constatée), MotifRequis, Habilitation.
+        signal constater_rentree(h: Horodatage, objet: Objet, reference: String, par: String) -> String
+            writes propulsions, rentree_de, motifs
+            moves catalogue -> rentre when ReeCampagne.rentree || ReeCampagne.close via rentree_de,
+                en_service -> rentre when ReeCampagne.rentree || ReeCampagne.close via rentree_de,
+                hors_service -> rentre when ReeCampagne.rentree || ReeCampagne.close via rentree_de,
+                retire -> rentre when ReeCampagne.rentree || ReeCampagne.close via rentree_de
+            calls rouvrir_designations, RefRegistre.radier, ApiReentrees.constatee, ApiAcces.a_le_role, RefHistorique.consigner, Journal.noter
+        // Constate la fragmentation (ou la collision) : l'objet parent sort du catalogue actif,
+        // ses fragments sont catalogués à part (nature "debris"). `reference` : évènement
+        // d'evenements qui doit exister (ApiEvenements.existe) et compter l'objet parmi ses
+        // objets (ApiEvenements.objets) ; écrit une fois dans fragmentation_de (seul écrivain).
+        // Règle : l'évènement est « confirme » (ou « clos ») — evenements confirme AVANT d'appeler
+        // ApiRef.changer_etat_objet. Radie l'objet du registre.
+        // Renvoie "fragmente". Habilitation : "analyste" (ORBITE) ou "systeme".
+        // Refus : Inconnu (objet, évènement), EtatInvalide (état, ou évènement non confirmé),
+        // Incoherent (objet absent de l'évènement), MotifRequis, Habilitation.
+        signal constater_fragmentation(h: Horodatage, objet: Objet, reference: String, par: String) -> String
+            writes propulsions, fragmentation_de, motifs
+            moves catalogue -> fragmente when EvtEvenements.confirme || EvtEvenements.clos via fragmentation_de,
+                en_service -> fragmente when EvtEvenements.confirme || EvtEvenements.clos via fragmentation_de,
+                hors_service -> fragmente when EvtEvenements.confirme || EvtEvenements.clos via fragmentation_de,
+                cimetiere -> fragmente when EvtEvenements.confirme || EvtEvenements.clos via fragmentation_de
+            calls rouvrir_designations, RefRegistre.radier, ApiEvenements.existe, ApiEvenements.objets, ApiAcces.a_le_role, RefHistorique.consigner, Journal.noter
+        // Déclare une perte ou une dégradation de propulsion : p doit être INFÉRIEURE OU ÉGALE à
+        // la capacité actuelle (ordre aucune < faible < impulsionnelle) ; une hausse passe par
+        // RefModification. Consigné dans RefHistorique (preuve de la capacité à l'instant h) ;
+        // rouvre les coordinations où l'objet est désigné (toujours quand p = "aucune", dont la
+        // passivation déclarée par fin_de_vie). Renvoie la propulsion retenue.
+        // Habilitation : "dynamicien" du propriétaire (ApiAcces.agit_pour), "analyste" (ORBITE)
+        // ou "systeme" (fin_de_vie : passivation vérifiée).
+        // Refus : Inconnu, EtatInvalide (objet rentré ou fragmenté), Incoherent (hausse),
+        // MotifRequis, Habilitation.
+        signal declarer_propulsion(h: Horodatage, objet: Objet, p: Propulsion, motif: String, par: String) -> Propulsion
+            reads proprietaires, vie
+            writes propulsions
+            calls rouvrir_designations, ApiAcces.a_le_role, ApiAcces.agit_pour, RefHistorique.consigner, Journal.noter
+        // Pour chaque rapprochement ouvert de l'objet (ApiConjonctions.ouverts_de) dont il est
+        // l'objet désigné (ApiCoordination.designe(r, "systeme")), rouvre la coordination
+        // (ApiCoordination.rouvrir, par "systeme") : une désignation ne survit pas à la perte
+        // de capacité. Renvoie le nombre de coordinations rouvertes (au plus 1 000 examinées).
+        signal rouvrir_designations(h: Horodatage, objet: Objet, motif: String) -> Int
+            ensures result >= 0
+            calls ApiConjonctions.ouverts_de, ApiCoordination.designe, ApiCoordination.rouvrir
+        // Applique une modification validée (appelé par RefModification.appliquer) : "nature",
+        // "masse" (valeur décimale), "propulsion" (≤ nominale), "propulsion_nominale".
+        // Renvoie l'ancienne valeur, en texte.
+        // Habilitation : par "systeme". Refus : Inconnu, EtatInvalide (objet rentré ou fragmenté,
+        // ou demande non « validee » : RefModification.etat), Incoherent (valeur hors de son
+        // type, propulsion au-dessus de la nominale, débris doté de propulsion), NonEligible
+        // (hausse de "propulsion" d'un objet passivé, ApiFinDeVie.passive), Habilitation.
+        signal modifier(h: Horodatage, objet: Objet, champ: RefChamp, valeur: String, demande: String, par: String) -> String
+            reads vie
+            writes natures, masses, propulsions, nominales
+            calls RefModification.etat, ApiFinDeVie.passive, ApiAcces.a_le_role, Journal.noter
+        // Transfère la propriété (appelé par RefCession.realiser, cession « visee_cessionnaire »,
+        // RefCession.etat) : met à jour proprietaires et parc. Renvoie l'ancien propriétaire.
+        // Habilitation : par "systeme". Refus : Inconnu, EtatInvalide (cession pas au bon état),
+        // Plein (parc du cessionnaire), Habilitation.
+        signal transferer(h: Horodatage, objet: Objet, cessionnaire: Org, cession: String, par: String) -> Org
+            writes proprietaires, parc
+            calls RefCession.etat, ApiAcces.a_le_role, Journal.noter
+        // Attribue un objet non attribué (propriétaire provisoire ORG-ORBITE, État "") une fois
+        // identifié par observation ou par un lancement : propriétaire (retiré du parc
+        // d'ORBITE, ajouté au sien) et État d'immatriculation. Sauf pour un débris, l'entrée du
+        // registre est rouverte (RefRegistre.requalifier : échéance de 60 jours à compter de h) ;
+        // la nature se corrige ensuite par RefModification. Consigné dans RefHistorique
+        // (champs "proprietaire" et "etat"). Renvoie le propriétaire attribué.
+        // Habilitation : "analyste" (ORBITE), quatre yeux valideur "superviseur"
+        // (ApiAcces.quatre_yeux) : une attribution engage la responsabilité d'un État.
+        // Refus : Inconnu (objet, propriétaire non actif, État non déclaré), EtatInvalide (objet
+        // déjà attribué, ou sorti de l'orbite), Incoherent (proprietaire = ORG-ORBITE, etat ""),
+        // Plein (parc), Habilitation, QuatreYeux.
+        signal attribuer(h: Horodatage, objet: Objet, proprietaire: Org, etat: Etat, par: String, valideur: String) -> Org
+            reads vie, natures
+            writes proprietaires, parc
+            calls RefOrg.est_active, RefEtat.connu, RefRegistre.requalifier, ApiAcces.a_le_role, ApiAcces.quatre_yeux, RefHistorique.consigner, Journal.noter
+        // Change le régime orbital après un transfert vérifié (manoeuvres : plan "transfert"
+        // vérifié par observation). Consigné dans RefHistorique (champ "regime"). Renvoie le
+        // régime. Habilitation : "analyste" (ORBITE) ou "systeme".
+        // Refus : Inconnu, EtatInvalide (objet rentré, fragmenté ou retiré), Habilitation.
+        signal changer_regime(h: Horodatage, objet: Objet, r: Regime, par: String) -> Regime
+            reads vie
+            writes regimes
+            calls ApiAcces.a_le_role, RefHistorique.consigner, Journal.noter
+        // Valeur d'un champ de la fiche telle qu'elle était à h (dernière version ≤ h dans
+        // RefHistorique.valeur_au) : "proprietaire", "etat" (d'immatriculation), "regime",
+        // "propulsion" (actuelle), "etat_objet", "nature". Propriété 6 : rejouer une décision.
+        // Refus : Inconnu (objet, champ hors liste, ou objet catalogué après h).
+        signal valeur_au(objet: Objet, champ: String, h: Horodatage) -> String
+            reads catalogues_le
+            calls RefHistorique.valeur_au
+        // Catalogue paginé : au plus n objets de numéro > apres ("" : depuis le début), du
+        // régime donné ("" : tous), dans l'ordre NUMÉRIQUE des numéros (OBJ-9 avant OBJ-10).
+        // Refus : HorsBornes (régime hors Regime et non vide).
+        signal catalogue(regime: String, apres: Objet, n: Int) -> List<String>
+            requires n > 0 && n <= 1000
+            reads compteur, regimes
+        // Vrai si l'objet a été catalogué.
+        signal existe(objet: Objet) -> Bool
+            reads natures
+        // État du cycle de vie ; "inconnu" si jamais catalogué.
+        signal etat(objet: Objet) -> RefEtatObjet
+            reads natures, vie
+        // Nature, propriétaire (ORG-ORBITE si non attribué), régime, masse (kg), propulsion
+        // nominale. Refus : Inconnu.
+        signal nature(objet: Objet) -> NatureObjet
+            reads natures
+        signal proprietaire(objet: Objet) -> Org
+            reads proprietaires
+        signal regime(objet: Objet) -> Regime
+            reads regimes
+        signal masse(objet: Objet) -> Masse
+            reads masses
+        signal nominale(objet: Objet) -> Propulsion
+            reads nominales
+        // Propulsion ACTUELLE : "aucune" hors de l'état en_service, quelle que soit la valeur
+        // stockée. Refus : Inconnu.
+        signal propulsion(objet: Objet) -> Propulsion
+            reads propulsions, vie
+        // Vrai si l'objet peut être désigné pour manœuvrer : en_service, propulsion actuelle
+        // ≠ "aucune", ni en anomalie non levée (ApiEvenements.en_anomalie), ni passivé
+        // (ApiFinDeVie.passive). Faux si inconnu.
+        signal peut_manoeuvrer(objet: Objet) -> Bool
+            reads propulsions, vie
+            calls ApiEvenements.en_anomalie, ApiFinDeVie.passive
+        // Référence de l'évènement qui a sorti l'objet de l'orbite : campagne de rentrée, sinon
+        // évènement de fragmentation, sinon mission de retrait ; "" s'il est encore en orbite. Sert aux dossiers de responsabilite.
+        signal cause(objet: Objet) -> String
+            reads rentree_de, fragmentation_de, retrait_de
+        // Vrai si la nature est "station_habitee".
+        signal habite(objet: Objet) -> Bool
+            reads natures
+        // Objets catalogués d'un propriétaire (au plus MAX_OBJETS_PAR_ORG), dans l'ordre de
+        // catalogage ; [] si aucun.
+        signal objets_de(org: Org) -> List<String>
+            reads parc
+    }
+}

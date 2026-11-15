@@ -1,0 +1,140 @@
+// meteo — ALERTES DE TEMPÊTE GÉOMAGNÉTIQUE. Une alerte est émise dès qu'une prévision publiée
+// annonce Kp ≥ 7 sous 24 h, ou dès qu'une mesure validée l'atteint (prévision ""). Elle passe
+// "en_cours" sur une mesure validée Kp ≥ 7, "declinante" quand le kp redescend sous 7,
+// "terminee" après 6 h sous Kp 5. Au plus UNE alerte est ouverte à la fois (une tempête
+// géomagnétique est planétaire) : une nouvelle prévision ou un regain met à jour l'alerte
+// ouverte au lieu d'en créer une seconde. Pendant toute alerte ouverte, ApiMeteo.tempete est
+// vrai : fraîcheur des éphémérides divisée par 2, criblage renforcé (MetRenforce).
+
+// Échelle G de la NOAA retenue par ORBITE : 3 (Kp 7), 4 (Kp 8), 5 (Kp 9).
+cell type MetEchelleG = Int where value >= 3 && value <= 5
+
+// Alertes : id "T-<n>" attribué par l'émetteur.
+skeleton MetTempete {
+    const MAX_TEMPETES = 100000
+    const SEUIL_TEMPETE = 70             // Kp 7, dixièmes
+    const SEUIL_CALME = 50               // Kp 5
+    const CALME_MIN = 21600000           // 6 h sous Kp 5 avant de terminer
+    const HORIZON_ALERTE = 86400000      // 24 h : une prévision au-delà n'émet pas encore
+    const GRACE_ANNULATION = 21600000    // 6 h après la fin de fenêtre prévue sans mesure ≥ 7 : annulation
+    const FIN_DES_TEMPS = 32503680000000  // an 3000 : borne d'une fin pas encore écrite
+    memory {
+        prevision_de: Map<String, String> [persistent]    // alerte → prévision qui l'a fait émettre ("" : émise sur mesure) ; écrit une fois par emettre
+        confirmee_par: Map<String, String> [persistent]   // alerte → mesure validée Kp ≥ 7 qui l'a confirmée ; écrit une fois par confirmer (lien des règles)
+        emise_le: Map<String, Horodatage> [persistent]    // alerte → instant d'émission
+        debut_prevu: Map<String, Horodatage> [persistent] // alerte → début attendu (= h si émise sur mesure)
+        fin_prevue: Map<String, Horodatage> [persistent]  // alerte → fin de fenêtre de la prévision (base de l'annulation)
+        debut_le: Map<String, Horodatage> [persistent]    // alerte → époque de la mesure de confirmation
+        fin_le: Map<String, Horodatage> [persistent]      // alerte → instant de fin (terminee ou annulee)
+        kp_pic: Map<String, Int> [persistent]             // alerte → kp maximal validé pendant l'alerte, dixièmes
+        echelle: Map<String, MetEchelleG> [persistent]    // alerte → échelle G courante (prévue puis observée)
+        calme_depuis: Map<String, Horodatage> [persistent]    // alerte déclinante → époque de la première mesure < Kp 5 de la série
+        derniere_maj: Map<String, String> [persistent]    // alerte → dernière mesure prise en compte
+        motif_annulation: Map<String, String> [persistent]    // alerte annulée → motif
+        ouverte: Map<String, String> [persistent]         // "courante" → alerte non close ; absent si aucune
+        invariant prevision_de.size <= MAX_TEMPETES
+        invariant kp_pic >= 0 && kp_pic <= 90
+        invariant ouverte.size <= 1
+        invariant (emise_le ?? 0) <= (fin_le ?? FIN_DES_TEMPS)
+    }
+    // Cycle de vie d'une alerte (id = alerte).
+    state tempete {
+        initial: annoncee
+        annoncee -> en_cours      // confirmer : mesure validée Kp ≥ 7
+        annoncee -> annulee       // annuler : prévision échue sans confirmation, ou retirée
+        en_cours -> declinante    // mettre_a_jour : mesure validée sous Kp 7
+        declinante -> en_cours    // mettre_a_jour : regain ≥ Kp 7
+        declinante -> terminee    // clore : 6 h sous Kp 5
+        en_cours -> annulee       // desavouer : la mesure de confirmation est invalidée
+    }
+    face {
+        // Émet une alerte : sur prévision (Kp prévu ≥ 7, début sous 24 h) ou, avec prevision = "",
+        // sur une mesure validée Kp ≥ 7 (alors confirmer suit dans le même traitement). Déclenche
+        // le criblage renforcé et ses notifications (MetRenforce). Renvoie l'id de l'alerte.
+        // Rôle exigé : "systeme" ou "analyste" d'ORBITE. Refus : Existe (id), Doublon (une
+        // alerte est déjà ouverte : la mettre à jour), Inconnu (prévision), EtatInvalide
+        // (prévision non publiée), Insuffisant (kp prévu < 70 ou début au-delà de 24 h),
+        // Plein, Habilitation.
+        signal emettre(h: Horodatage, tempete: String, prevision: String, par: String) -> String
+            writes prevision_de, emise_le, debut_prevu, fin_prevue, echelle, ouverte
+            calls MetPrevision.publiee, MetPrevision.kp_attendu, MetPrevision.debut_de, MetPrevision.fin_de, MetRenforce.declencher, MetRenforce.notifier, ApiAcces.a_le_role, Journal.noter
+        // Confirme l'alerte par une mesure validée Kp ≥ 7 : la tempête est en cours, l'échelle
+        // devient l'observée. Renvoie "en_cours". Rôle exigé : "systeme" ou "analyste".
+        // Refus : Inconnu (alerte ou mesure), EtatInvalide (alerte non annoncee, mesure non
+        // validée), Insuffisant (kp < 70 ou grandeur ≠ kp), Habilitation.
+        signal confirmer(h: Horodatage, tempete: String, mesure: String, par: String) -> String
+            writes confirmee_par, debut_le, kp_pic, echelle, derniere_maj
+            moves annoncee -> en_cours when MetMesure.validee via confirmee_par
+            calls MetMesure.validee, MetMesure.valeur_de, MetMesure.grandeur, MetMesure.epoque_de, ApiAcces.a_le_role, Journal.noter
+        // Prend en compte une mesure kp validée plus récente que la dernière prise : met à jour
+        // pic et échelle ; sous Kp 7 une alerte en cours devient déclinante, au-dessus une
+        // déclinante redevient en cours ; sous Kp 5 la série de calme démarre (sinon elle est
+        // remise à zéro). Renvoie l'état atteint. Rôle exigé : "systeme".
+        // Refus : Inconnu, EtatInvalide (alerte ni en_cours ni declinante, mesure non validée ou
+        // antérieure à la dernière prise), Incoherent (grandeur ≠ kp), Habilitation.
+        signal mettre_a_jour(h: Horodatage, tempete: String, mesure: String, par: String) -> String
+            writes kp_pic, echelle, calme_depuis, derniere_maj
+            moves en_cours -> declinante, declinante -> en_cours
+            calls MetMesure.validee, MetMesure.valeur_de, MetMesure.grandeur, MetMesure.epoque_de, ApiAcces.a_le_role, Journal.noter
+        // Termine une alerte déclinante dont le calme dure depuis 6 h ; lève le criblage renforcé.
+        // Renvoie "terminee". Rôle exigé : "systeme" ou "analyste".
+        // Refus : Inconnu, EtatInvalide, Insuffisant (calme de moins de 6 h à h), Habilitation.
+        signal clore(h: Horodatage, tempete: String, par: String) -> String
+            writes fin_le, ouverte
+            reads calme_depuis
+            moves declinante -> terminee
+            calls MetRenforce.lever, ApiAcces.a_le_role, Journal.noter
+        // Annule une alerte annoncée jamais confirmée. Par "systeme" : seulement 6 h après la fin
+        // de la fenêtre prévue. Par un analyste avant ce terme (prévision retirée, contredite) :
+        // contre-signé par `valideur` ("superviseur" d'ORBITE, ApiAcces.quatre_yeux) — on ne lève
+        // pas une précaution sur l'avis d'une seule personne. Renvoie "annulee".
+        // Refus : Inconnu, EtatInvalide, MotifRequis, Delai (par "systeme" avant le terme),
+        // Habilitation, QuatreYeux.
+        signal annuler(h: Horodatage, tempete: String, motif: String, par: String, valideur: String) -> String
+            writes fin_le, motif_annulation, ouverte
+            reads fin_prevue
+            moves annoncee -> annulee
+            calls MetRenforce.abandonner, ApiAcces.a_le_role, ApiAcces.quatre_yeux, Journal.noter
+        // Désavoue une alerte en cours dont la mesure de confirmation a été invalidée
+        // (MetMesure.invalider) et qu'aucune autre mesure validée n'a portée à Kp ≥ 7 : l'alerte
+        // est annulée (motif obligatoire), le renforcement abandonné. Renvoie "annulee".
+        // Rôle exigé : "analyste" d'ORBITE, contre-signé par `valideur` ("superviseur",
+        // ApiAcces.quatre_yeux). Refus : Inconnu, EtatInvalide (alerte non en_cours, ou mesure
+        // de confirmation encore validée), Incoherent (kp_pic ≥ 70 porté par une autre mesure),
+        // MotifRequis, Habilitation, QuatreYeux.
+        signal desavouer(h: Horodatage, tempete: String, motif: String, par: String, valideur: String) -> String
+            writes fin_le, motif_annulation, ouverte
+            reads confirmee_par, kp_pic, derniere_maj, emise_le
+            moves en_cours -> annulee
+            calls MetMesure.validee, MetRenforce.abandonner, ApiAcces.a_le_role, ApiAcces.quatre_yeux, Journal.noter
+        // Traitement des alertes (par = "systeme", chaque minute par MetRonde.balayer) : sans alerte ouverte, émet sur la pire prévision à 24 h ou sur le dernier kp
+        // ≥ 7 ; avec une alerte ouverte, la confirme, la met à jour, la clôt ou l'annule selon
+        // les règles ci-dessus ; relance les notifications non parties. Renvoie l'état de
+        // l'alerte ouverte après le passage, ou "aucune". Refus : Habilitation.
+        signal evaluer(h: Horodatage, par: String) -> String
+            reads tempete, ouverte, derniere_maj, fin_prevue
+            calls emettre, confirmer, mettre_a_jour, clore, annuler, MetPrevision.pire_dans, MetMesure.derniere_de, MetMesure.valeur_de, MetRenforce.notifier, MetRenforce.etendre, ApiAcces.a_le_role
+        // Vrai si une alerte est ouverte à `h` : en cours, déclinante, ou annoncée avec un début
+        // prévu au plus tard à h + 24 h (façade ApiMeteo.tempete).
+        signal en_vue(h: Horodatage) -> Bool
+            reads tempete, ouverte, debut_prevu
+        // Alerte ouverte, "" si aucune.
+        signal courante() -> String
+            reads ouverte
+        // Échelle G courante de l'alerte (prévue tant qu'annoncée). Refus : Inconnu.
+        signal echelle_de(tempete: String) -> MetEchelleG
+            reads echelle
+        // Vrai si l'alerte est terminee (règle de MetRenforce) ; annulee de même.
+        signal terminee(tempete: String) -> Bool
+            reads tempete
+        signal annulee(tempete: String) -> Bool
+            reads tempete
+        // Alerte qui était ouverte à l'instant passé `a` (émise ≤ a < fin), "" sinon ; sert à
+        // la preuve (MetJournee.conditions_a).
+        signal ouverte_a(a: Horodatage) -> String
+            reads emise_le, fin_le
+        // Alertes émises dont l'émission tombe dans le jour `j` (bilan journalier), au plus 10.
+        signal du_jour(j: Jour) -> List<String>
+            reads emise_le
+    }
+}

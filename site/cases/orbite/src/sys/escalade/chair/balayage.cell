@@ -1,0 +1,30 @@
+// Corps de EscBalayage : le seul point d'entrée du temps de l'escalade.
+flesh EscBalayage {
+    on balayer(h, par) {
+        require ApiAcces.a_le_role(par, "systeme") else Habilitation "{par} : balayage réservé au système"
+        let total = 0
+        let a = try { EscVeille.ronde(h) }
+        if a.error == () { total = total + to_int(a.value) } else { _noter_refus(h, "ronde", a.kind) }
+        let b = try { EscDossiers.balayer(h) }
+        if b.error == () { total = total + to_int(b.value) } else { _noter_refus(h, "dossiers", b.kind) }
+        let c = try { EscConcertation.convoquer(h) }
+        if c.error == () { total = total + to_int(c.value) } else { _noter_refus(h, "convocations", c.kind) }
+        let d = try { EscConcertation.abandonner(h) }
+        if d.error == () { total = total + to_int(d.value) } else { _noter_refus(h, "concertations manquees", d.kind) }
+        let e = try { EscPriseEnCharge.suivre(h) }
+        if e.error == () { total = total + to_int(e.value) } else { _noter_refus(h, "prises en charge", e.kind) }
+        let jour = idiv(to_int(h), JOUR_MS)
+        let dernier = dernier_jour.get("jour")
+        if dernier == () || jour > to_int(dernier) {
+            let f = try { EscDiplomatie.echoir(h) }
+            if f.error == () { total = total + to_int(f.value) } else { _noter_refus(h, "demarches", f.kind) }
+            let g = try { EscStatistiques.purger(h, "systeme") }
+            if g.error != () { _noter_refus(h, "purge", g.kind) }
+            dernier_jour.set("jour", Jour(jour))
+        }
+        return total
+    }
+    on _noter_refus(h: Horodatage, etape: String, kind: String) {
+        let _ = Journal.noter(h, "escalade", "systeme", "balayage : etape {etape} refusee ({kind})")
+    }
+}

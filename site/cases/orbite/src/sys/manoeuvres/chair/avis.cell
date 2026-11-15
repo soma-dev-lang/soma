@@ -1,0 +1,181 @@
+// Corps de manoeuvres : avis aux parties (ManAvis) et veille du sous-système (ManVeille).
+flesh ManAvis {
+    on emettre(h, plan, sujet) {
+        let f = ManPlan.fiche(plan)
+        let evit = f.motif == "evitement"
+        let dests = []
+        if evit {
+            for o in ApiConjonctions.objets(f.r) {
+                if o != to_string(f.objet) {
+                    let r_p = try { ApiRef.proprietaire(Objet(o)) }
+                    if r_p.error == () {
+                        let org_p = to_string(r_p.value)
+                        if org_p != "inconnu" && !contains(dests, org_p) { dests.push(org_p) }
+                    }
+                }
+            }
+        }
+        let r_e = try { ApiRef.etat_immatriculation(f.objet) }
+        if r_e.error == () {
+            let r_o = try { ApiRef.org_de_etat(r_e.value) }
+            if r_o.error == () {
+                let org_e = to_string(r_o.value)
+                if !contains(dests, org_e) { dests.push(org_e) }
+            }
+        }
+        let urgence = 1
+        if evit {
+            let r_niv = try { ApiConjonctions.niveau(f.r) }
+            if r_niv.error == () { urgence = to_int(r_niv.value) }
+        }
+        let ech = h + DELAI_ACCUSE_MS
+        if sujet == "approbation" {
+            ech = f.debut - AVANCE_ACCUSE_MS
+            if ech <= h { ech = Horodatage(to_int(h) + idiv(max(to_int(f.debut) - to_int(h), 0), 2)) }
+        }
+        let n = 0
+        for org in dests {
+            let id_a = "{plan}|{org}|{sujet}"
+            if plan_de.get(id_a) == () {
+                if !ApiDonnees.peut_recevoir(Org(org), f.objet, f.r, h) {
+                    let lst_ref = refuses_de.get(plan) ?? []
+                    if !contains(lst_ref, org) && len(lst_ref) < MAX_REFUS_PAR_PLAN {
+                        refuses_de.set(plan, lst_ref ++ [org])
+                    }
+                } else {
+                    let lst_av = avis_du_plan.get(plan) ?? []
+                    require len(lst_av) < MAX_AVIS_PAR_PLAN else Plein "trop d'avis pour {plan}"
+                    require plan_de.size < MAX_AVIS else Plein "registre des avis plein"
+                    let trace = ApiDonnees.tracer(h, Org(org), f.objet, f.r, "avis_manoeuvre")
+                    let msg = ApiPasserelle.notifier(h, Org(org), f.r, "manoeuvre_" + to_string(sujet), "Plan {plan} ({f.motif}) de {f.objet} : {sujet}, fenêtre {f.debut}-{f.fin}.", Niveau(urgence))
+                    plan_de.set(id_a, plan)
+                    destinataire_de.set(id_a, Org(org))
+                    message_de.set(id_a, msg)
+                    trace_de.set(id_a, trace)
+                    echeance_de.set(id_a, ech)
+                    avis_du_plan.set(plan, lst_av ++ [id_a])
+                    en_file.push(id_a)
+                    n = n + 1
+                }
+            }
+        }
+        return n
+    }
+
+    on relever(h, avis, par) {
+        require ApiAcces.a_le_role(par, "systeme") else Habilitation "relevé interne"
+        let plan = plan_de.get(avis)
+        require plan != () else Inconnu "avis {avis} inconnu"
+        let s = get_status(avis) ?? "en_file"
+        require s == "en_file" else EtatInvalide "avis {avis} {s}"
+        let msg = message_de.get(avis) ?? ""
+        if msg != "" && ApiPasserelle.acquitte(msg) {
+            transition(avis, "en_file", "acquitte")
+            _oter(avis)
+            Journal.noter(h, "manoeuvres", par, "avis {avis} acquitté")
+            return "acquitte"
+        }
+        let ech = echeance_de.get(avis) ?? 0
+        if h <= ech { return "en_file" }
+        transition(avis, "en_file", "echu")
+        _oter(avis)
+        let dest = destinataire_de.get(avis) ?? ""
+        let f = ManPlan.fiche(plan)
+        if f.motif == "evitement" {
+            let r_niv = try { ApiConjonctions.niveau(f.r) }
+            if r_niv.error == () && to_int(r_niv.value) == 3 {
+                let r_esc = try { ApiEscalade.escalader(h, f.r, dest, "avis de manoeuvre {avis} sans accusé", "systeme") }
+                if r_esc.error != () {
+                    Journal.noter(h, "manoeuvres", "systeme", "avis {avis} : escalade refusée ({r_esc.kind})")
+                }
+            }
+        }
+        if dest != "" { ManIndicateurs.compter(h, dest, "avis_echu") }
+        Journal.noter(h, "manoeuvres", par, "avis {avis} échu sans accusé")
+        return "echu"
+    }
+
+    on en_attente(n) {
+        return slice(en_file, 0, n)
+    }
+
+    on avis_de(plan) {
+        return avis_du_plan.get(plan) ?? []
+    }
+
+    on refuses(plan) {
+        return refuses_de.get(plan) ?? []
+    }
+
+    on _oter(avis: String) {
+        let i = index_of(en_file, avis)
+        if i >= 0 { en_file.delete(i) }
+    }
+}
+
+flesh ManVeille {
+    on balayer(h, par) {
+        require ApiAcces.a_le_role(par, "systeme") || ApiAcces.a_le_role(par, "exploitant") else Habilitation "balayage par systeme ou exploitant"
+        let avant = dernier_passage.get("veille") ?? 0
+        if h < avant { return 0 }
+        let changes = 0
+        // Fenêtres à ouvrir, ou échues (puis constat d'échéance du plan, dans le même essai).
+        for p in ManFenetre.a_traiter(h, LOT) {
+            let s = ManFenetre.etat(p)
+            if s == "reservee" {
+                let r_o = try { ManFenetre.ouvrir(h, p) }
+                if r_o.error == () { changes = changes + 1 } else { _erreur(h, "ouverture", p, r_o.kind) }
+            } else if s == "ouverte" {
+                let r_e = try {
+                    ManFenetre.echoir(h, p)
+                    ManPlan.constater_echeance(h, p, "systeme")
+                }
+                if r_e.error == () { changes = changes + 1 } else { _erreur(h, "échéance", p, r_e.kind) }
+            }
+        }
+        // Plans approuvés à réexaminer.
+        let lst_ap = ManPlan.approuves_en_cours()
+        for p in slice(lst_ap, 0, LOT) {
+            let r_x = try { ManPlan.reexaminer(h, p, "systeme") }
+            if r_x.error != () { _erreur(h, "réexamen", p, r_x.kind) } else if r_x.value != "" { changes = changes + 1 }
+        }
+        // Vérifications attendues.
+        for p in ManVerification.attendues(LOT) {
+            let r_v = try { ManVerification.verifier(h, p, "systeme") }
+            if r_v.error == () {
+                changes = changes + 1
+            } else if r_v.kind == "Insuffisant" {
+                let r_x = try { ManVerification.expirer(h, p, "systeme") }
+                if r_x.error == () { changes = changes + 1 } else if r_x.kind != "Delai" { _erreur(h, "expiration", p, r_x.kind) }
+            } else {
+                _erreur(h, "vérification", p, r_v.kind)
+            }
+        }
+        // Anomalies sans explication à l'échéance.
+        for p in ManAnomalie.echues(h, LOT) {
+            let r_t = try { ManAnomalie.transmettre(h, p, "aucune explication à l'échéance", "systeme") }
+            if r_t.error == () { changes = changes + 1 } else { _erreur(h, "transmission", p, r_t.kind) }
+        }
+        // Manœuvres non annoncées non régularisées.
+        for c in ManNonAnnoncee.echus(h, LOT) {
+            let r_f = try { ManNonAnnoncee.forclore(h, c, "systeme") }
+            if r_f.error == () { changes = changes + 1 } else { _erreur(h, "forclusion", c, r_f.kind) }
+        }
+        // Avis sans accusé.
+        for a in ManAvis.en_attente(LOT) {
+            let r_a = try { ManAvis.relever(h, a, "systeme") }
+            if r_a.error != () { _erreur(h, "relevé", a, r_a.kind) } else if r_a.value != "en_file" { changes = changes + 1 }
+        }
+        // Verrous des rapprochements clos depuis le dernier passage.
+        for r in ApiConjonctions.clos_entre(Horodatage(avant), h) {
+            let r_c = try { ManEvitement.constater_cloture(h, Rapprochement(r), "systeme") }
+            if r_c.error != () { _erreur(h, "clôture", r, r_c.kind) } else if r_c.value == "solde" { changes = changes + 1 }
+        }
+        dernier_passage.set("veille", h)
+        return changes
+    }
+
+    on _erreur(h: Horodatage, quoi: String, id: String, kind: String) {
+        Journal.noter(h, "manoeuvres", "systeme", "veille : {quoi} de {id} refusé ({kind})")
+    }
+}

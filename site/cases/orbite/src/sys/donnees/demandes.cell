@@ -1,0 +1,235 @@
+// donnees — DEMANDES D'ACCÈS ET CONSENTEMENTS. Une organisation adhérente peut demander les
+// données d'un objet au-delà de son niveau de diffusion (étude de rentrée, assurance, analyse
+// de capteur…), pour une finalité et une durée déclarées. ORBITE instruit la finalité, puis le
+// propriétaire consent ou non ; le silence du propriétaire vaut refus (aucun risque de sécurité :
+// les données de rapprochement passent par le fondement "partie", jamais par une demande).
+// Un consentement porte l'id de sa demande (une demande, un consentement).
+
+// Finalité déclarée d'une demande d'accès.
+cell type DonFinalite = String where value == "rentree" || value == "assurance" || value == "etude_debris" || value == "etalonnage_capteur" || value == "enquete" || value == "recherche"
+
+// Demandes d'accès : id = demande ("DA-<n>", tiré par deposer).
+skeleton DonDemandes {
+    const MAX_DEMANDES = 500000
+    const DUREE_MAX_MS = 15552000000            // 180 jours d'accès au plus
+    const DELAI_INSTRUCTION_MS = 1209600000     // 14 jours : passé ce délai, refus
+    memory {
+        demandeur: Map<String, String> [persistent]          // demande → organisation demandeuse
+        objet_de: Map<String, String> [persistent]           // demande → objet visé
+        adhesion_de: Map<String, String> [persistent]        // demande → adhésion du demandeur au dépôt ; écrit une fois par deposer, jamais effacé
+        finalite: Map<String, DonFinalite> [persistent]      // demande → finalité déclarée
+        deposee_le: Map<String, Horodatage> [persistent]     // demande → dépôt, ms
+        duree: Map<String, Duree> [persistent]               // demande → durée d'accès demandée, ms
+        fin: Map<String, Horodatage> [persistent]            // demande → fin de l'accès accordé, ms
+        accordee_de: Map<String, String> [persistent]        // "org|objet" → demande accordée (au plus une)
+        invariant demandeur.size <= MAX_DEMANDES
+        invariant accordee_de.size <= MAX_DEMANDES
+        invariant duree <= DUREE_MAX_MS
+        invariant (deposee_le ?? 0) <= (fin ?? 9999999999999)   // fin absente tant que la demande n'est pas accordée
+    }
+    // Cycle de vie d'une demande (id = demande).
+    state demande {
+        initial: deposee
+        deposee -> instruite               // instruire : finalité recevable, consentement sollicité
+        deposee -> refusee                 // instruire (irrecevable), ou balayage
+        instruite -> accordee              // conclure : consentement donné
+        instruite -> refusee               // conclure : consentement refusé ou échu
+        accordee -> expiree                // echoir : fin atteinte
+        accordee -> revoquee               // revoquer_de, revoquer_objet, consentement retiré
+    }
+    face {
+        // Dépose une demande d'accès aux données d'un objet. Renvoie l'id.
+        // Rôle : toute personne de l'organisation demandeuse (ApiAcces.agit_pour) ayant le rôle
+        // "chef_de_mission", "administrateur_operateur", "capteur" ou "autorite".
+        // Refus : Inconnu (objet), NonEligible (demandeur non adhérent, ou déjà fondé à recevoir :
+        // DonControle.peut_recevoir hors demande), Confidentiel (objet sous embargo),
+        // HorsBornes (durée), Doublon (demande non close du même demandeur sur l'objet), Plein, Habilitation.
+        signal deposer(h: Horodatage, org: Org, objet: Objet, f: DonFinalite, duree_ms: Duree, par: String) -> String
+            writes demandeur, objet_de, adhesion_de, finalite, deposee_le, duree
+            reads accordee_de, demande
+            calls ApiAcces.a_le_role, ApiAcces.agit_pour, ApiRef.etat_objet, DonAdhesions.adhesion_de, DonEmbargos.sous_embargo, DonControle.peut_recevoir, next_id, Journal.noter
+        // Instruit la finalité. Recevable : la demande passe "instruite" (l'adhésion du dépôt doit
+        // être encore active) et un consentement est sollicité du propriétaire
+        // (DonConsentements.solliciter). Irrecevable : "refusee". Renvoie l'état atteint.
+        // Rôle : "analyste" ou "conformite" d'ORBITE. Refus : Inconnu, EtatInvalide, MotifRequis
+        // (irrecevable sans motif), Confidentiel (objet passé sous embargo), Habilitation.
+        signal instruire(h: Horodatage, demande: String, recevable: Bool, motif: String, par: String) -> String
+            reads objet_de, adhesion_de
+            moves deposee -> instruite when DonAdhesions.active via adhesion_de, deposee -> refusee
+            calls ApiAcces.a_le_role, DonEmbargos.sous_embargo, DonAdhesions.etat, DonConsentements.solliciter, Journal.noter
+        // Conclut une demande instruite selon son consentement : donné ⇒ "accordee" jusqu'à
+        // h + duree ; refusé ou échu ⇒ "refusee". Appelé par DonConsentements à chaque décision.
+        // Renvoie l'état atteint. Refus : Inconnu, EtatInvalide (consentement encore sollicité),
+        // Confidentiel (objet passé sous embargo : refusée).
+        signal conclure(h: Horodatage, demande: String) -> String
+            writes fin, accordee_de
+            reads demandeur, objet_de, duree
+            moves instruite -> accordee when DonConsentements.donne, instruite -> refusee
+            calls DonConsentements.etat, DonEmbargos.sous_embargo, ApiPasserelle.notifier, Journal.noter
+        // Révoque l'accès accordé de la demande (consentement retiré). Renvoie "revoquee".
+        // Refus : Inconnu, EtatInvalide.
+        signal revoquer(h: Horodatage, demande: String, motif: String) -> String
+            writes accordee_de
+            reads demandeur, objet_de
+            moves accordee -> revoquee
+            calls Journal.noter
+        // Révoque toutes les demandes accordées d'une organisation (retrait, caducité ou radiation
+        // de son adhésion). Renvoie le nombre de demandes révoquées.
+        signal revoquer_de(h: Horodatage, org: Org) -> Int
+            writes accordee_de
+            reads demandeur
+            moves accordee -> revoquee
+            calls Journal.noter
+        // Révoque toutes les demandes accordées sur un objet (embargo accordé). Renvoie leur nombre.
+        signal revoquer_objet(h: Horodatage, objet: Objet) -> Int
+            writes accordee_de
+            reads objet_de
+            moves accordee -> revoquee
+            calls Journal.noter
+        // Appelé par DonBalayage.balayer : expire les accès dont fin ≤ h, refuse les demandes déposées non instruites
+        // depuis DELAI_INSTRUCTION_MS. Renvoie le nombre de fins. `par` = "systeme". Refus : Habilitation.
+        signal echoir(h: Horodatage, par: String) -> Int
+            writes accordee_de
+            reads fin, deposee_le
+            moves accordee -> expiree, deposee -> refusee
+            calls ApiAcces.a_le_role, Journal.noter
+        // Demande accordée à l'organisation sur l'objet et dont la fin est > h ; "" si aucune
+        // (contrôle à l'heure exacte, indépendant du balayage).
+        signal accordee_pour(org: Org, objet: Objet, h: Horodatage) -> String
+            reads accordee_de, fin, demande
+        // Objet et demandeur d'une demande, [objet, org] (lu par DonConsentements).
+        // Refus : Inconnu.
+        signal parties_de(demande: String) -> List<String>
+            reads objet_de, demandeur
+        // État de la demande ; "inconnue" si jamais déposée.
+        signal etat(demande: String) -> String
+            reads demande, demandeur
+    }
+}
+
+// Consentements des propriétaires : id = demande (créé par solliciter, au plus un par demande).
+skeleton DonConsentements {
+    const MAX_CONSENTEMENTS = 500000
+    const DELAI_REPONSE_MS = 604800000           // 7 jours ; silence = refus
+    memory {
+        proprietaire_de: Map<String, String> [persistent]    // demande → propriétaire sollicité (ORBITE pour un objet non attribué)
+        sollicite_le: Map<String, Horodatage> [persistent]   // demande → sollicitation, ms
+        decision: Map<String, String> [persistent]           // demande → "h | par | donne/refuse/retire | motif"
+        invariant proprietaire_de.size <= MAX_CONSENTEMENTS
+        invariant decision.size <= MAX_CONSENTEMENTS
+    }
+    // Cycle de vie d'un consentement (id = demande).
+    state consentement {
+        initial: sollicite
+        sollicite -> donne                 // repondre(true)
+        sollicite -> refuse                // repondre(false)
+        sollicite -> expire                // echoir : silence passé DELAI_REPONSE_MS
+        donne -> retire                    // retirer
+    }
+    face {
+        // Sollicite le consentement du propriétaire de l'objet pour la demande et le notifie
+        // (ApiPasserelle.notifier, r = "", urgence 1). Un objet non attribué a pour propriétaire
+        // provisoire ORBITE (ApiRef.orbite()) : le consentement est alors donné par "conformite". Renvoie le propriétaire sollicité.
+        // Refus : Existe (déjà sollicité), Inconnu (demande), Plein.
+        signal solliciter(h: Horodatage, demande: String) -> Org
+            writes proprietaire_de, sollicite_le
+            calls DonDemandes.parties_de, ApiRef.proprietaire, ApiRef.orbite, ApiPasserelle.notifier
+        // Le propriétaire consent (`oui`) ou refuse ; la demande est aussitôt conclue
+        // (DonDemandes.conclure). Renvoie l'état du consentement. Rôle : "chef_de_mission" ou
+        // "administrateur_operateur" du propriétaire sollicité (ApiAcces.agit_pour) ; pour ORBITE,
+        // "conformite". Refus : Inconnu, EtatInvalide, Delai (après DELAI_REPONSE_MS),
+        // MotifRequis (refus sans motif), Habilitation.
+        signal repondre(h: Horodatage, demande: String, oui: Bool, motif: String, par: String) -> String
+            writes decision
+            reads proprietaire_de, sollicite_le
+            moves sollicite -> donne, sollicite -> refuse
+            calls ApiAcces.a_le_role, ApiAcces.agit_pour, DonDemandes.conclure, Journal.noter
+        // Le propriétaire retire son consentement : l'accès est révoqué (DonDemandes.revoquer).
+        // Renvoie "retire". Rôle : comme repondre. Refus : Inconnu, EtatInvalide, MotifRequis, Habilitation.
+        signal retirer(h: Horodatage, demande: String, motif: String, par: String) -> String
+            writes decision
+            reads proprietaire_de
+            moves donne -> retire
+            calls ApiAcces.a_le_role, ApiAcces.agit_pour, DonDemandes.revoquer, Journal.noter
+        // Appelé par DonBalayage.balayer : expire les consentements sollicités depuis DELAI_REPONSE_MS et conclut leurs
+        // demandes (refusées). Renvoie le nombre d'expirations. `par` = "systeme". Refus : Habilitation.
+        signal echoir(h: Horodatage, par: String) -> Int
+            reads sollicite_le
+            moves sollicite -> expire
+            calls ApiAcces.a_le_role, DonDemandes.conclure, Journal.noter
+        // État du consentement ("sollicite", "donne", "refuse", "expire", "retire") ; "inconnu"
+        // si jamais sollicité.
+        signal etat(demande: String) -> String
+            reads consentement, proprietaire_de
+    }
+}
+
+// Partages bilatéraux : un propriétaire consent durablement à ce qu'une organisation adhérente
+// reçoive les données de TOUS ses objets (ex. deux constellations voisines qui échangent leurs
+// éphémérides fines), sans demande objet par objet. id = partage ("PB-<n>", tiré par proposer).
+// Ne lève jamais un embargo (DonControle.fondement s'arrête avant).
+skeleton DonPartages {
+    const MAX_PARTAGES = 100000
+    const DUREE_MAX_MS = 63072000000            // 2 ans, à renouveler par un nouveau partage
+    const DELAI_ACCEPTATION_MS = 2592000000     // 30 jours
+    memory {
+        cedant: Map<String, String> [persistent]             // partage → propriétaire qui ouvre ses données
+        beneficiaire: Map<String, String> [persistent]       // partage → organisation qui les reçoit
+        adhesion_de: Map<String, String> [persistent]        // partage → adhésion du bénéficiaire à la proposition ; écrit une fois par proposer, jamais effacé
+        propose_le: Map<String, Horodatage> [persistent]     // partage → proposition, ms
+        fin: Map<String, Horodatage> [persistent]            // partage → fin, ms (≤ propose_le + DUREE_MAX_MS)
+        actif_de: Map<String, String> [persistent]           // "cedant|beneficiaire" → partage proposé ou actif (au plus un)
+        invariant cedant.size <= MAX_PARTAGES
+        invariant actif_de.size <= MAX_PARTAGES
+        invariant (propose_le ?? 0) <= (fin ?? 0)
+    }
+    // Cycle de vie d'un partage bilatéral (id = partage).
+    state partage {
+        initial: propose
+        propose -> actif                   // accepter : bénéficiaire encore adhérent
+        propose -> caduc                   // echoir : non accepté dans DELAI_ACCEPTATION_MS
+        actif -> revoque                   // revoquer (cédant), ou retrait / suspension du bénéficiaire
+        actif -> echu                      // echoir : fin atteinte
+    }
+    face {
+        // Le cédant propose d'ouvrir les données de tous ses objets au bénéficiaire jusqu'à
+        // `jusqua`. Renvoie l'id. Rôle : "administrateur_operateur" du cédant (ApiAcces.agit_pour).
+        // Refus : Inconnu (organisation), NonEligible (bénéficiaire non adhérent, ou = cédant),
+        // HorsBornes (durée), Doublon, Plein, Habilitation.
+        signal proposer(h: Horodatage, cedant_org: Org, beneficiaire_org: Org, jusqua: Horodatage, par: String) -> String
+            writes cedant, beneficiaire, adhesion_de, propose_le, fin, actif_de
+            calls ApiAcces.a_le_role, ApiAcces.agit_pour, ApiRef.organisation_existe, DonAdhesions.adhesion_de, next_id, Journal.noter
+        // Le bénéficiaire accepte (il s'engage à l'usage prévu par l'accord). Renvoie "actif".
+        // Rôle : "administrateur_operateur" ou "autorite" du bénéficiaire. Refus : Inconnu,
+        // EtatInvalide, Delai (après DELAI_ACCEPTATION_MS), Habilitation.
+        signal accepter(h: Horodatage, partage: String, par: String) -> String
+            reads beneficiaire, propose_le, adhesion_de
+            moves propose -> actif when DonAdhesions.active via adhesion_de
+            calls ApiAcces.a_le_role, ApiAcces.agit_pour, DonAdhesions.etat, Journal.noter
+        // Révoque un partage actif. `par` : "administrateur_operateur" du cédant ; "systeme" quand
+        // l'adhésion du bénéficiaire prend fin ou est suspendue. Renvoie "revoque".
+        // Refus : Inconnu, EtatInvalide, MotifRequis, Habilitation.
+        signal revoquer(h: Horodatage, partage: String, motif: String, par: String) -> String
+            writes actif_de
+            reads cedant, beneficiaire
+            moves actif -> revoque
+            calls ApiAcces.a_le_role, ApiAcces.agit_pour, ApiPasserelle.notifier, Journal.noter
+        // Révoque tous les partages actifs dont l'organisation est bénéficiaire (fin ou suspension
+        // de son adhésion). Renvoie leur nombre.
+        signal revoquer_beneficiaire(h: Horodatage, org: Org) -> Int
+            writes actif_de
+            reads beneficiaire
+            moves actif -> revoque
+            calls Journal.noter
+        // Appelé par DonBalayage.balayer : partages échus (fin ≤ h) et propositions non acceptées. Renvoie le nombre de
+        // fins. `par` = "systeme". Refus : Habilitation.
+        signal echoir(h: Horodatage, par: String) -> Int
+            writes actif_de
+            reads fin, propose_le
+            moves actif -> echu, propose -> caduc
+            calls ApiAcces.a_le_role, Journal.noter
+        // Partage actif du cédant vers le bénéficiaire dont la fin est > h ; "" si aucun.
+        signal actif_pour(cedant_org: Org, beneficiaire_org: Org, h: Horodatage) -> String
+            reads actif_de, fin, partage
+    }
+}

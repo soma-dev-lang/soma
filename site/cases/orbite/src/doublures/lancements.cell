@@ -1,0 +1,188 @@
+// Doublures (corps PROVISOIRES) des façades des autres sous-systèmes que traversent les tests de
+// lancements. Pures, sans mémoire : leur comportement se lit sur les identifiants.
+// - Personne "role[#n]@ORG-X" : a le rôle `role` pour l'employeur ORG-X ; un rôle d'ORBITE ne
+//   vaut que si ORG-X = ORG-ORBITE ; "intrus…" n'a aucun rôle ; "systeme" a le rôle "systeme".
+// - quatre_yeux(a, b) : faux si a == b ; vrai si b est superviseur/conformite/direction
+//   d'ORBITE, ou chef_de_mission du même employeur que a.
+// - États participants : ALD, BRV, CAZ (autorité "ORG-<code>") ; tout autre : non participant,
+//   sans autorité inscrite (org_de_etat refuse Inconnu).
+// - Organisations : existent si "ORG-…" ; opérateur actif sauf "ORG-SUSP…".
+// - Objets : ApiRef.cataloguer renvoie "OBJ-<masse>" (les tests donnent des masses distinctes) ;
+//   etat_objet : "OBJ-X…" inconnu, "OBJ-RENTRE…" rentre, "OBJ-SERV…" en_service, sinon catalogue ;
+//   immatricule : vrai pour "OBJ-<n>" avec n ≥ 5000 (le registre ne s'écrit pas : une doublure
+//   pure ne retient rien) ; etat_immatriculation : "ALD" ; habite : "OBJ-STATION…".
+// - Éphémérides : fraiche sauf "…RASSIS…" ; derniere refuse Inconnu pour un numéro finissant par 99.
+// - Observation : suit tout sauf "…RASSIS…" ; écart déclaré 50 km pour un numéro finissant par 88.
+// - Données : tout se communique sauf "OBJ-SECRET…". Fin de vie : plan conforme sauf fin en 77.
+// - Conjonctions : campagne fraîche sauf en "heo". Météo : tempête quand h finit par 777 ;
+//   nuage de débris actif en "meo". Passerelle : un message à ORG-CAZ n'est jamais acquitté.
+
+flesh ApiAcces {
+    on a_le_role(personne, r) {
+        if personne == "systeme" { return r == "systeme" }
+        if starts_with(personne, "intrus") { return false }
+        let parts = split(personne, "@")
+        if len(parts) != 2 { return false }
+        let role = split(parts[0], "#")[0]
+        if role != to_string(r) || role == "systeme" || role == "aucun" { return false }
+        if contains(["analyste", "superviseur", "exploitant", "conformite", "direction", "auditeur"], role) {
+            return parts[1] == "ORG-ORBITE"
+        }
+        return true
+    }
+    on agit_pour(personne, org) {
+        if starts_with(personne, "intrus") { return false }
+        let parts = split(personne, "@")
+        if len(parts) != 2 { return false }
+        return parts[1] == to_string(org)
+    }
+    on quatre_yeux(demandeur, valideur) {
+        if demandeur == valideur || starts_with(valideur, "intrus") { return false }
+        let pv = split(valideur, "@")
+        let pd = split(demandeur, "@")
+        if len(pv) != 2 || len(pd) != 2 { return false }
+        let rv = split(pv[0], "#")[0]
+        if contains(["superviseur", "conformite", "direction"], rv) && pv[1] == "ORG-ORBITE" { return true }
+        return rv == "chef_de_mission" && pv[1] == pd[1]
+    }
+}
+
+flesh ApiOperateurs {
+    on est_actif(op, h) {
+        return starts_with(to_string(op), "ORG-") && !starts_with(to_string(op), "ORG-SUSP")
+    }
+}
+
+flesh ApiRef {
+    on etat_participant(etat) {
+        return contains(["ALD", "BRV", "CAZ"], to_string(etat))
+    }
+    on organisation_existe(org) {
+        return starts_with(to_string(org), "ORG-")
+    }
+    on org_de_etat(etat) {
+        let e = to_string(etat)
+        require contains(["ALD", "BRV", "CAZ"], e) else Inconnu "État {e} sans autorité inscrite"
+        return Org("ORG-{e}")
+    }
+    on cataloguer(h, nature, proprietaire, etat, regime, propulsion, masse, par) {
+        return Objet("OBJ-{masse}")
+    }
+    on etat_objet(objet) {
+        let o = to_string(objet)
+        if starts_with(o, "OBJ-X") { return "inconnu" }
+        if starts_with(o, "OBJ-RENTRE") { return "rentre" }
+        if starts_with(o, "OBJ-SERV") { return "en_service" }
+        return "catalogue"
+    }
+    on attribuer(h, objet, proprietaire, etat, par, valideur) {
+        return proprietaire
+    }
+    on immatricule(objet) {
+        let r = try { to_int(substring(to_string(objet), 4, 20)) }
+        if r.error != () { return false }
+        return r.value >= 5000
+    }
+    on immatriculer(h, objet, numero, par) {
+        require numero != "" else MotifRequis "numéro requis"
+        return "a_immatriculer"
+    }
+    on etat_immatriculation(objet) {
+        return Etat("ALD")
+    }
+    on habite(objet) {
+        return starts_with(to_string(objet), "OBJ-STATION")
+    }
+}
+
+flesh ApiPasserelle {
+    on notifier(h, destinataire, r, sujet, texte, urgence) {
+        return "MSG-{destinataire}-{h}"
+    }
+    on acquitte(message) {
+        return !contains(message, "ORG-CAZ")
+    }
+}
+
+flesh ApiConformite {
+    on constater(h, op, nature, gravite, reference, par) {
+        require nature != "" else MotifRequis "nature requise"
+        require starts_with(to_string(op), "ORG-") else Inconnu "opérateur {op}"
+        return "MANQ-{op}-{reference}"
+    }
+    on constater_etat(h, etat, nature, gravite, reference, par) {
+        return "MANQE-{etat}-{reference}"
+    }
+}
+
+flesh ApiConjonctions {
+    on campagne_fraiche(regime, h) {
+        return regime != "heo"
+    }
+}
+
+flesh ApiMeteo {
+    on facteur_incertitude(regime, h) {
+        return Pourcent(100)
+    }
+    on tempete(h) {
+        return to_int(h) % 1000 == 777
+    }
+}
+
+flesh ApiEvenements {
+    on nuage_actif(regime, h) {
+        return regime == "meo"
+    }
+    on declarer(h, genre, objets, r, instant, description, par, valideur) {
+        let n = len(objets)
+        return "EV-{genre}-{n}"
+    }
+}
+
+flesh ApiEphemerides {
+    on fraiche(objet, h) {
+        return !contains(to_string(objet), "RASSIS")
+    }
+    on derniere(objet) {
+        require !ends_with(to_string(objet), "99") else Inconnu "aucun dépôt validé"
+        return "DEP-{objet}"
+    }
+}
+
+flesh ApiObservation {
+    on suivi(objet, h) {
+        return !contains(to_string(objet), "RASSIS")
+    }
+    on ecart_declare(objet) {
+        if ends_with(to_string(objet), "88") { return Distance(50000) }
+        return Distance(100)
+    }
+    on demander_suivi(h, objet, priorite, duree, motif, par) {
+        return "SUIVI-{objet}"
+    }
+}
+
+flesh ApiDonnees {
+    on peut_recevoir(org, objet, r, h) {
+        return !starts_with(to_string(objet), "OBJ-SECRET")
+    }
+    on tracer(h, org, objet, r, nature) {
+        return 1
+    }
+}
+
+flesh ApiFinDeVie {
+    on plan_conforme(objet) {
+        return !ends_with(to_string(objet), "77")
+    }
+}
+
+flesh ApiResponsabilite {
+    on sous_gel(cible) {
+        return false
+    }
+    on geler(h, evenement, motif, par) {
+        return "GEL-{evenement}"
+    }
+}

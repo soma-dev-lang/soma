@@ -1,0 +1,125 @@
+// PRIORITÉS — cas particuliers : essaims (constellations volant en formation sous un seul
+// opérateur, éventuellement dotées d'un évitement autonome) et délais de préparation propres
+// aux objets à propulsion faible. Le cas « habité » n'a pas de registre : ApiRef.habite fait
+// foi et le garde-fou est câblé dans PrioDesignation.designer.
+
+// Cycle d'un essaim (valeurs de PrioEssaim.etat).
+cell type PrioEtatEssaim = String where value == "declare" || value == "reconnu" || value == "refuse" || value == "dissous" || value == "inconnu"
+
+// Essaim : ensemble d'objets d'un même opérateur coordonnés entre eux. Reconnu par ORBITE,
+// il compte pour le critère "essaim_autonome" de la table quand il dispose d'un évitement
+// autonome. Instance = id d'essaim ("ESM-<n>").
+skeleton PrioEssaim {
+    const MAX_ESSAIMS = 10000
+    const MAX_MEMBRES = 50000
+    memory {
+        op_de: Map<String, Org> [persistent]                // opérateur de l'essaim ; écrit une fois à la déclaration, jamais effacé (lien de la règle avec OpMembres)
+        nom_de: Map<String, String> [persistent]
+        autonome_de: Map<String, Bool> [persistent]         // évitement autonome déclaré et vérifié
+        nb_membres: Map<String, Int> [persistent]
+        essaim_de: Map<String, String> [persistent]         // objet -> essaim (un objet appartient à au plus un essaim)
+        decideur_de: Map<String, String> [persistent]
+        motif_de: Map<String, String> [persistent]          // motif de refus ou de dissolution
+        invariant op_de.size <= 10000
+        invariant nb_membres >= 0 && nb_membres <= 50000
+        invariant essaim_de.size <= 10000000
+    }
+    // Cycle d'un essaim. Terminaux : refuse, dissous.
+    state essaim {
+        initial: declare
+        declare -> reconnu              // quatre yeux d'ORBITE
+        declare -> refuse
+        reconnu -> dissous              // par l'opérateur, ou d'office (opérateur inactif, évitement défaillant)
+    }
+    face {
+        // Déclare un essaim de l'opérateur `op` : membres (objets catalogués de `op`, en
+        // service, 2 à MAX_MEMBRES, chacun hors de tout autre essaim) et évitement autonome
+        // (vrai si l'essaim manœuvre seul contre les objets extérieurs). `par` :
+        // "chef_de_mission" ou "administrateur_operateur" de `op` (ApiAcces.agit_pour).
+        // Renvoie l'id. Refus : Existe, Inconnu (op ou objet), HorsBornes (nombre de membres),
+        // NonEligible (objet d'un autre propriétaire), Conflit (objet déjà dans un essaim),
+        // Suspendu (opérateur inactif), Plein, Habilitation.
+        signal declarer(h: Horodatage, essaim: String, op: Org, nom: String, membres: List<String>, autonome: Bool, par: String) -> String
+            writes op_de, nom_de, autonome_de, nb_membres, essaim_de
+            calls ApiRef.proprietaire, ApiRef.etat_objet, ApiOperateurs.est_actif, ApiAcces.a_le_role, ApiAcces.agit_pour, Journal.noter
+        // Reconnaît l'essaim (declare -> reconnu) après examen du dossier d'évitement
+        // autonome. `par` "analyste", `valideur` "superviseur" d'ORBITE. Renvoie "reconnu".
+        // Refus : Inconnu, EtatInvalide, Suspendu (opérateur devenu inactif), Habilitation, QuatreYeux.
+        signal reconnaitre(h: Horodatage, essaim: String, par: String, valideur: String) -> String
+            writes decideur_de
+            reads op_de
+            moves declare -> reconnu when OpMembres.actif via op_de
+            calls ApiOperateurs.est_actif, ApiAcces.a_le_role, ApiAcces.quatre_yeux, Journal.noter
+        // Refuse la reconnaissance (declare -> refuse) et libère les membres. `par`
+        // "analyste". Renvoie "refuse". Refus : Inconnu, EtatInvalide, MotifRequis, Habilitation.
+        signal refuser(h: Horodatage, essaim: String, motif: String, par: String) -> String
+            writes decideur_de, motif_de, essaim_de, nb_membres
+            moves declare -> refuse
+            calls ApiAcces.a_le_role, Journal.noter
+        // Ajoute un objet de l'opérateur à un essaim reconnu (lancement d'un nouveau lot).
+        // `par` "chef_de_mission" de l'opérateur. Renvoie le nombre de membres.
+        // Refus : Inconnu, EtatInvalide, NonEligible (autre propriétaire), Conflit (déjà
+        // membre d'un essaim), Plein, Habilitation.
+        signal ajouter(h: Horodatage, essaim: String, objet: Objet, par: String) -> Int
+            writes essaim_de, nb_membres
+            reads op_de, essaim
+            calls ApiRef.proprietaire, ApiAcces.a_le_role, ApiAcces.agit_pour, Journal.noter
+        // Retire un objet de son essaim (hors service, cession, désorbitation). `par`
+        // "chef_de_mission" de l'opérateur, ou "analyste" d'ORBITE. Renvoie le nombre de
+        // membres restants. Refus : Inconnu (objet non membre), Habilitation.
+        signal retirer(h: Horodatage, objet: Objet, par: String) -> Int
+            writes essaim_de, nb_membres
+            reads op_de
+            calls ApiAcces.a_le_role, ApiAcces.agit_pour, Journal.noter
+        // Dissout un essaim reconnu (reconnu -> dissous) et libère ses membres. `par` :
+        // "chef_de_mission" de l'opérateur, ou "superviseur" d'ORBITE (d'office : opérateur
+        // inactif, évitement autonome défaillant). Renvoie "dissous".
+        // Refus : Inconnu, EtatInvalide, MotifRequis, Habilitation.
+        signal dissoudre(h: Horodatage, essaim: String, motif: String, par: String) -> String
+            writes essaim_de, nb_membres, motif_de, decideur_de
+            reads op_de
+            moves reconnu -> dissous
+            calls ApiAcces.a_le_role, ApiAcces.agit_pour, Journal.noter
+        // Membres de l'essaim, triés (au plus MAX_MEMBRES). Refus : Inconnu.
+        signal membres(essaim: String) -> List<String>
+            reads essaim_de, op_de
+        // Essaim RECONNU de l'objet ; "" s'il n'appartient à aucun essaim reconnu.
+        signal essaim_reconnu_de(objet: Objet) -> String
+            reads essaim_de, essaim
+        // Vrai si l'objet appartient à un essaim reconnu doté d'un évitement autonome
+        // (critère "essaim_autonome").
+        signal autonome(objet: Objet) -> Bool
+            reads essaim_de, autonome_de, essaim
+        // État (PrioEtatEssaim) ; "inconnu" si jamais déclaré.
+        signal etat(essaim: String) -> PrioEtatEssaim
+            reads essaim, op_de
+    }
+}
+
+// Délai de préparation propre à un objet à propulsion faible (propulsion électrique : la
+// manœuvre se planifie des jours à l'avance). Le préavis retenu pour l'objet est le plus grand
+// du préavis "faible" de la table et de ce délai : un objet qui ne peut agir à temps n'est
+// pas désigné. Pas de cycle de vie : une valeur par objet, révisable, journalisée.
+skeleton PrioPreparation {
+    // Délai de préparation maximal déclarable : 14 jours.
+    const MAX_DELAI = 1209600000
+    memory {
+        delai_de: Map<String, Duree> [persistent]           // objet -> délai (ms)
+        declare_par: Map<String, String> [persistent]
+        declare_le: Map<String, Horodatage> [persistent]
+        invariant delai_de <= 1209600000
+        invariant delai_de.size <= 10000000
+    }
+    face {
+        // Déclare (ou révise) le délai de préparation d'un objet à propulsion "faible" (ms,
+        // ≤ MAX_DELAI). `par` : "dynamicien" du propriétaire (ApiAcces.agit_pour sur
+        // ApiRef.proprietaire). Renvoie le délai retenu. Refus : Inconnu, NonEligible
+        // (propulsion autre que "faible"), HorsBornes, Habilitation.
+        signal declarer(h: Horodatage, objet: Objet, delai: Duree, par: String) -> Duree
+            writes delai_de, declare_par, declare_le
+            calls ApiRef.proprietaire, ApiRef.propulsion, ApiAcces.a_le_role, ApiAcces.agit_pour, Journal.noter
+        // Délai de préparation déclaré (ms) ; 0 si aucun.
+        signal delai(objet: Objet) -> Duree
+            reads delai_de
+    }
+}

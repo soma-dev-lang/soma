@@ -1,0 +1,12 @@
+use app
+use commun::journal_chair
+use commun::horloge_chair
+use sys::meteo::chair::api
+use sys::meteo::chair::sources
+use sys::meteo::chair::mesures
+use sys::meteo::chair::previsions
+use sys::meteo::chair::tempetes
+use sys::meteo::chair::renforce
+use sys::meteo::chair::bareme
+use sys::meteo::chair::historique
+use sys::meteo::chair::incertitude

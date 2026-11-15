@@ -1,0 +1,124 @@
+// Corps de EscDiplomatie : démarche formelle auprès de l'État de tutelle après une reprise.
+flesh EscDiplomatie {
+    on preparer(h, dossier, op, par) {
+        require ApiAcces.a_le_role(par, "systeme") || ApiAcces.a_le_role(par, "analyste") else Habilitation "{par} ne prépare pas de démarche"
+        require dossier != "" else Inconnu "dossier vide"
+        require EscDossiers.etat(dossier) == "reprise" else Inconnu "dossier {dossier} n'est pas en reprise"
+        require de_dossier.get(dossier) == () else Doublon "démarche {de_dossier.get(dossier)} déjà préparée pour {dossier}"
+        require dossier_de.size < MAX_DEMARCHES else Plein "plafond de {MAX_DEMARCHES} démarches atteint"
+        let etat = ApiRef.etat_de(op)
+        let g = EscStatistiques.graves(op, h)
+        let n = next_id()
+        let id = "DIP-{n}"
+        dossier_de.set(id, dossier)
+        etat_vise.set(id, to_string(etat))
+        operateur_de.set(id, to_string(op))
+        graves_au_depot.set(id, to_int(g))
+        de_dossier.set(dossier, id)
+        transition(id, "projet", "preparee")
+        let _ = Journal.noter(h, "escalade", par, "demarche {id} preparee vers {etat} pour {op} (dossier {dossier}, {g} escalades graves)")
+        return id
+    }
+    on valider(h, demarche, par, valideur) {
+        require ApiAcces.a_le_role(par, "direction") else Habilitation "{par} ne valide pas de démarche"
+        require ApiAcces.quatre_yeux(par, valideur) else QuatreYeux "contre-signature de {valideur} refusée"
+        let st = get_status(demarche) ?? "projet"
+        require st != "projet" else Inconnu "démarche inconnue : {demarche}"
+        require st == "preparee" else EtatInvalide "démarche {demarche} en {st}"
+        validee_par.set(demarche, "{par} | {valideur}")
+        transition(demarche, "preparee", "validee")
+        let _ = Journal.noter(h, "escalade", par, "demarche {demarche} validee (valideur {valideur})")
+        return "validee"
+    }
+    on transmettre(h, demarche, par) {
+        require ApiAcces.a_le_role(par, "direction") else Habilitation "{par} ne transmet pas de démarche"
+        let ev = etat_vise.get(demarche)
+        require ev != () else Inconnu "démarche inconnue : {demarche}"
+        let st = get_status(demarche) ?? "projet"
+        require st == "validee" else EtatInvalide "démarche {demarche} en {st}"
+        let etat = Etat(ev)
+        require ApiRef.etat_participant(etat) else EtatInvalide "État {ev} non participant : classer la démarche"
+        let org = ApiRef.org_de_etat(etat)
+        let dossier = dossier_de.get(demarche) ?? ""
+        let r = EscDossiers.rapprochement(dossier)
+        let objs = ApiConjonctions.objets(r)
+        let complete = len(objs) > 0
+        for o in objs {
+            if !ApiDonnees.peut_recevoir(org, Objet(o), r, h) { complete = false }
+        }
+        let liste_o = join(objs, ", ")
+        let detail = if complete { " ; objets {liste_o}" } else { "" }
+        let _ = ApiPasserelle.notifier(h, org, r, "demarche {demarche}", "demarche {demarche} : reprise par ORBITE du rapprochement {r} (dossier {dossier}){detail}", 2)
+        if complete {
+            for o in objs {
+                let _ = ApiDonnees.tracer(h, org, Objet(o), r, "escalade")
+            }
+        }
+        transmise_a.set(demarche, h)
+        transition(demarche, "validee", "transmise")
+        let _ = Journal.noter(h, "escalade", par, "demarche {demarche} transmise a {org}")
+        return "transmise"
+    }
+    on repondre(h, demarche, issue, texte, par) {
+        let ev = etat_vise.get(demarche)
+        require ev != () else Inconnu "démarche inconnue : {demarche}"
+        require texte != "" else MotifRequis "texte requis"
+        let org = ApiRef.org_de_etat(Etat(ev))
+        let role_ok = ApiAcces.a_le_role(par, "point_focal") || ApiAcces.a_le_role(par, "autorite")
+        require role_ok && ApiAcces.agit_pour(par, org) else Habilitation "{par} ne répond pas pour {ev}"
+        let st = get_status(demarche) ?? "projet"
+        require st == "transmise" else EtatInvalide "démarche {demarche} en {st}"
+        reponse.set(demarche, "{h} | {par} | {issue} | {texte}")
+        transition(demarche, "transmise", "repondue")
+        let _ = Journal.noter(h, "escalade", par, "demarche {demarche} repondue : {issue}")
+        return "repondue"
+    }
+    on classer(h, demarche, motif, par) {
+        require ApiAcces.a_le_role(par, "direction") else Habilitation "{par} ne classe pas de démarche"
+        require motif != "" else MotifRequis "motif requis"
+        let st = get_status(demarche) ?? "projet"
+        require st != "projet" else Inconnu "démarche inconnue : {demarche}"
+        if st == "preparee" {
+            transition(demarche, "preparee", "abandonnee")
+        } else {
+            require st == "validee" else EtatInvalide "démarche {demarche} en {st}"
+            transition(demarche, "validee", "abandonnee")
+        }
+        let _ = Journal.noter(h, "escalade", par, "demarche {demarche} classee : {motif}")
+        return "abandonnee"
+    }
+    on echoir(h) {
+        let classees = 0
+        for e in transmise_a.entries {
+            if (get_status(e.key) ?? "projet") == "transmise" && to_int(h) - to_int(e.value) >= DELAI_REPONSE_ETAT_MS {
+                transition(e.key, "transmise", "sans_suite")
+                classees = classees + 1
+                let op = Org(operateur_de.get(e.key) ?? "")
+                let c = try { ApiConformite.constater(h, op, "demarche_sans_suite", 2, e.key, "systeme") }
+                let issue_c = if c.error == () { "constat {c.value}" } else { "constat refuse : {c.kind}" }
+                let _ = Journal.noter(h, "escalade", "systeme", "demarche {e.key} sans suite ({issue_c})")
+            }
+        }
+        return classees
+    }
+    on demarches_vers(etat, par) {
+        let orbite_ok = ApiAcces.a_le_role(par, "direction") || ApiAcces.a_le_role(par, "superviseur") || ApiAcces.a_le_role(par, "auditeur")
+        let etat_ok = false
+        if !orbite_ok && (ApiAcces.a_le_role(par, "point_focal") || ApiAcces.a_le_role(par, "autorite")) {
+            etat_ok = ApiAcces.agit_pour(par, ApiRef.org_de_etat(etat))
+        }
+        require orbite_ok || etat_ok else Habilitation "{par} ne lit pas les démarches vers {etat}"
+        let res_d = []
+        for e in etat_vise.entries {
+            if e.value == to_string(etat) {
+                let rep = reponse.get(e.key) ?? ""
+                let issue = if rep == "" { "" } else { split(rep, " | ")[2] }
+                let dos = dossier_de.get(e.key) ?? ""
+                let op = operateur_de.get(e.key) ?? ""
+                let st = get_status(e.key) ?? "projet"
+                res_d.push("{e.key} | {dos} | {op} | {st} | {issue}")
+            }
+        }
+        return res_d
+    }
+}

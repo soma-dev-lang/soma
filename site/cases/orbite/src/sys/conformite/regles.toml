@@ -1,0 +1,6 @@
+# conformite — phase 2 : règle entre sous-systèmes en forme toml (l'arête preparee -> transmise
+# porte déjà `when ConfMesure.decidee`). Une demande de suspension n'est transmise qu'à un État
+# participant (RefEtat, id = code de l'État), lu par le lien ConfDemande.etat_de (écrit une fois par preparer).
+[verify.before."ConfDemande.transmise"]
+while = ["RefEtat.participant"]
+via = "ConfDemande.etat_de"

@@ -1,0 +1,146 @@
+// Corps de EscBareme : versions du barème des échelons, échéance finale, délais.
+flesh EscBareme {
+    on rediger(h, version, par) {
+        require ApiAcces.a_le_role(par, "analyste") else Habilitation "{par} ne rédige pas de barème"
+        require version != "" else Inconnu "version vide"
+        require redacteur.get(version) == () else Existe "version {version} déjà créée"
+        require redacteur.size < MAX_VERSIONS else Plein "plafond de {MAX_VERSIONS} versions atteint"
+        redacteur.set(version, par)
+        let _ = Journal.noter(h, "escalade", par, "bareme {version} redige")
+        return version
+    }
+    on fixer(h, version, echelon, part, plancher, par) {
+        require ApiAcces.a_le_role(par, "analyste") else Habilitation "{par} ne fixe pas de barème"
+        require redacteur.get(version) != () else Inconnu "version inconnue : {version}"
+        let st = get_status(version) ?? "brouillon"
+        require st == "brouillon" else EtatInvalide "version {version} déjà {st}"
+        require to_int(plancher) >= PLANCHER_MIN_MS else HorsBornes "plancher {plancher} < {PLANCHER_MIN_MS} ms"
+        let cle = "{version}|{echelon}"
+        if parts.get(cle) == () {
+            require parts.size < MAX_LIGNES_BAREME else Plein "plafond de lignes du barème atteint"
+        }
+        parts.set(cle, to_int(part))
+        planchers.set(cle, plancher)
+        let _ = Journal.noter(h, "escalade", par, "bareme {version} echelon {echelon} : {part} pour mille, plancher {plancher}")
+        return to_int(part)
+    }
+    on adopter(h, version, par, valideur) {
+        require ApiAcces.a_le_role(par, "direction") else Habilitation "{par} n'adopte pas de barème"
+        require ApiAcces.quatre_yeux(par, valideur) else QuatreYeux "contre-signature de {valideur} refusée"
+        require redacteur.get(version) != () else Inconnu "version inconnue : {version}"
+        let st = get_status(version) ?? "brouillon"
+        require st == "brouillon" else EtatInvalide "version {version} déjà {st}"
+        let somme = 0
+        for e in range(1, 5) {
+            let p = parts.get("{version}|{e}")
+            require p != () && planchers.get("{version}|{e}") != () else Insuffisant "échelon {e} de {version} non fixé"
+            somme = somme + to_int(p)
+        }
+        require somme <= 1000 else Incoherent "somme des parts {somme} > 1000"
+        let prec = en_vigueur.get("courante") ?? ""
+        if prec != "" && prec != version {
+            transition(prec, "en_vigueur", "abrogee")
+        }
+        transition(version, "brouillon", "en_vigueur")
+        adoptee_le.set(version, h)
+        en_vigueur.set("courante", version)
+        let _ = Journal.noter(h, "escalade", par, "bareme {version} adopte (valideur {valideur}, abroge {prec})")
+        return "en_vigueur"
+    }
+    on abandonner(h, version, motif, par) {
+        require ApiAcces.a_le_role(par, "analyste") || ApiAcces.a_le_role(par, "direction") else Habilitation "{par} n'abandonne pas de barème"
+        require motif != "" else MotifRequis "motif requis"
+        require redacteur.get(version) != () else Inconnu "version inconnue : {version}"
+        let st = get_status(version) ?? "brouillon"
+        require st == "brouillon" else EtatInvalide "version {version} déjà {st}"
+        transition(version, "brouillon", "abandonnee")
+        let _ = Journal.noter(h, "escalade", par, "bareme {version} abandonne : {motif}")
+        return "abandonnee"
+    }
+    on echeance_finale(r) {
+        let tca = to_int(ApiConjonctions.tca(r))
+        // Préavis de l'objet le plus réactif parmi ceux qui peuvent manœuvrer (propulsion non
+        // "aucune" ; ApiRef.propulsion rend "aucune" hors service) : l'arbitrage peut toujours le
+        // désigner. Le plus grand préavis (propulsion faible : 72 h ; "aucune" : ≈ 100 ans) rendait
+        // la reprise immédiate dès qu'un débris, un étage ou un satellite électrique était en cause.
+        let pre = -1
+        for o in ApiConjonctions.objets(r) {
+            let p = ApiRef.propulsion(Objet(o))
+            if p != "aucune" {
+                let d = to_int(ApiPriorites.preavis(p))
+                pre = if pre < 0 { d } else { min(pre, d) }
+            }
+        }
+        let marge = if pre < 0 { MARGE_REPRISE_MS } else { max(MARGE_REPRISE_MS, pre + MARGE_ARBITRAGE_MS) }
+        return Horodatage(max(0, tca - marge))
+    }
+    on echelon_initial(h, fin) {
+        return _entree(to_int(h), to_int(fin))
+    }
+    on delai(h, fin, echelon, op) {
+        let hi = to_int(h)
+        let fi = to_int(fin)
+        if fi <= hi { return Duree(0) }
+        let v = en_vigueur.get("courante") ?? ""
+        let part = _defaut(to_int(echelon))
+        let plancher = PLANCHER_MIN_MS
+        if v != "" {
+            part = to_int(parts.get("{v}|{echelon}") ?? part)
+            plancher = to_int(planchers.get("{v}|{echelon}") ?? plancher)
+        }
+        let contractuel = -1
+        if to_int(echelon) <= 2 {
+            contractuel = to_int(ApiOperateurs.delai_reponse(op, 3))
+        }
+        return Duree(_calcul(hi, fi, part, plancher, contractuel))
+    }
+    on simuler(version, h, tca, contractuel) {
+        require redacteur.get(version) != () else Inconnu "version inconnue : {version}"
+        let hi = to_int(h)
+        let fi = max(0, to_int(tca) - MARGE_REPRISE_MS)
+        let entree = _entree(hi, fi)
+        let res_s = ["{entree}"]
+        let t = hi
+        for e in range(1, 5) {
+            let p = parts.get("{version}|{e}")
+            let pl = planchers.get("{version}|{e}")
+            require p != () && pl != () else Insuffisant "échelon {e} de {version} non fixé"
+            if e < entree {
+                res_s.push("-")
+            } else {
+                let c = if e <= 2 { to_int(contractuel) } else { -1 }
+                t = t + _calcul(t, fi, to_int(p), to_int(pl), c)
+                res_s.push("{t}")
+            }
+        }
+        res_s.push("{fi}")
+        return join(res_s, " | ")
+    }
+    on version_en_vigueur() {
+        return en_vigueur.get("courante") ?? ""
+    }
+    // Échelon d'entrée selon le temps restant jusqu'à l'échéance finale.
+    on _entree(hi: Int, fi: Int) {
+        let reste = fi - hi
+        if reste < SEUIL_E4_MS { return 4 }
+        if reste < SEUIL_E3_MS { return 3 }
+        if reste < SEUIL_E2_MS { return 2 }
+        return 1
+    }
+    on _defaut(e: Int) {
+        return match e {
+            1 -> DEFAUT_E1
+            2 -> DEFAUT_E2
+            3 -> DEFAUT_E3
+            _ -> DEFAUT_E4
+        }
+    }
+    // part × reste / 1000, au moins le plancher, au plus le contractuel (si ≥ 0), jamais au-delà de fin.
+    on _calcul(hi: Int, fi: Int, part: Int, plancher: Int, contractuel: Int) {
+        let reste = fi - hi
+        if reste <= 0 { return 0 }
+        let d = max(idiv(part * reste, 1000), plancher)
+        if contractuel >= 0 { d = min(d, contractuel) }
+        return min(d, reste)
+    }
+}

@@ -1,0 +1,75 @@
+// CONJONCTIONS — criblage renforcé : épisodes déclenchés (ApiConjonctions.renforcer) par la MÉTÉO
+// (tempête géomagnétique : traînée imprévisible en LEO), par les ÉVÈNEMENTS (nuage de débris en
+// cours de catalogage) ou par un analyste. Pendant un
+// épisode le régime est criblé à la période renforcée (ConjCadence) et les distances de seuil
+// sont élargies du facteur d'incertitude (ApiMeteo.facteur_incertitude).
+
+// Un épisode de criblage renforcé sur un régime. Instance = "RF-<n>". Au plus un épisode non
+// clos par régime.
+skeleton ConjRenforcement {
+    const MAX_EPISODES = 100000
+    memory {
+        regime_de: Map<String, Regime> [persistent]
+        cause_de: Map<String, ConjCauseRenforce> [persistent]
+        reference_de: Map<String, String> [persistent]      // motifs reçus (alerte météo, évènement, décision), le dernier en tête
+        fin_de: Map<String, Horodatage> [persistent]        // fin prévue (ms), repoussée par un nouveau renforcer
+        // campagne renforcée lancée au déclenchement : écrit une fois par declencher, jamais
+        // effacé (lien de la règle fin_demandee -> leve).
+        campagne_de: Map<String, String> [persistent]
+        ouvert_le: Map<String, Horodatage> [persistent]
+        clos_le: Map<String, Horodatage> [persistent]
+        actif_de: Map<String, String> [persistent]          // régime -> épisode non clos ; effacé à la clôture
+        invariant regime_de.size <= 100000
+        invariant actif_de.size <= 4
+    }
+    // Cycle d'un épisode.
+    state episode {
+        initial: actif
+        actif -> fin_demandee        // la cause a disparu (plus de tempête prévue, nuage catalogué)
+        fin_demandee -> actif        // la cause est revenue avant la levée
+        fin_demandee -> leve         // levée : seulement après la campagne renforcée terminée
+        actif -> abandonne           // abandon décidé sous quatre yeux (épisode manuel injustifié)
+        fin_demandee -> abandonne
+    }
+    face {
+        // Ouvre un épisode sur le régime jusqu'à `fin` (ms) et planifie aussitôt sa campagne
+        // renforcée (portée "regime", motif "renforce"). Cause retenue : "tempete" si
+        // ApiMeteo.renforce(regime, h), sinon "nuage" si ApiEvenements.nuage_actif(regime, h),
+        // sinon "manuel". Si un épisode non clos vise déjà le régime, repousse sa fin (jamais ne
+        // l'avance), ajoute le motif et renvoie SON id (fin_demandee -> actif s'il le faut).
+        // Renvoie l'id "RF-<n>". Rôle : "systeme" (meteo, evenements) ou "analyste" d'ORBITE.
+        // Refus : MotifRequis, Incoherent (fin ≤ h), Habilitation.
+        signal renforcer(h: Horodatage, regime: Regime, fin: Horodatage, motif: String, par: String) -> String
+            writes regime_de, cause_de, reference_de, fin_de, campagne_de, ouvert_le, actif_de
+            moves fin_demandee -> actif
+            calls next_id, ConjCampagne.planifier, ApiMeteo.renforce, ApiEvenements.nuage_actif, ApiAcces.a_le_role, Journal.noter
+        // Réexamine un épisode (ConjRonde.balayer) : fin passée et cause disparue (ni
+        // ApiMeteo.renforce, ni ApiEvenements.nuage_actif) ⇒ actif -> fin_demandee ; cause
+        // revenue ⇒ fin_demandee -> actif ; fin demandée et campagne renforcée terminée ⇒
+        // fin_demandee -> leve (retour à la cadence normale). Renvoie l'état atteint.
+        // Rôle : "systeme". Refus : Inconnu, Ferme (épisode levé ou abandonné), Habilitation.
+        signal surveiller(h: Horodatage, episode: String, par: String) -> String
+            reads regime_de, cause_de, campagne_de, fin_de
+            writes clos_le, actif_de
+            moves actif -> fin_demandee, fin_demandee -> actif, fin_demandee -> leve when ConjCampagne.terminee via campagne_de
+            calls ConjCampagne.etat, ApiMeteo.renforce, ApiEvenements.nuage_actif, ApiAcces.a_le_role, Journal.noter
+        // Abandonne un épisode (sa campagne a échoué, ou déclenchement manuel injustifié).
+        // Renvoie "abandonne". Rôle : `par` "superviseur" d'ORBITE, `valideur` "direction"
+        // distinct (ApiAcces.quatre_yeux). Geste d'administration.
+        // Refus : Inconnu, Ferme, MotifRequis, Habilitation, QuatreYeux.
+        signal abandonner(h: Horodatage, episode: String, motif: String, par: String, valideur: String) -> String
+            reads regime_de
+            writes clos_le, actif_de
+            moves actif -> abandonne, fin_demandee -> abandonne
+            calls ApiAcces.a_le_role, ApiAcces.quatre_yeux, Journal.noter
+        // Vrai si un épisode non clos (actif ou fin_demandee) vise le régime.
+        signal actif_pour(regime: Regime) -> Bool
+            reads actif_de
+        // Épisodes non clos (pour ConjRonde.balayer).
+        signal non_clos() -> List<String>
+            reads actif_de
+        // "actif", "fin_demandee", "leve", "abandonne" ; "inconnu".
+        signal etat(episode: String) -> String
+            reads episode, regime_de
+    }
+}

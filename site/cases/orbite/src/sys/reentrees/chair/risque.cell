@@ -1,0 +1,110 @@
+// RENTRÉES — corps : risque au sol (évaluation, analyse de survie, déclassement, gel).
+
+flesh ReeRisque {
+    on evaluer(h, campagne, victimes_ppm) {
+        require victimes_ppm >= 0 && victimes_ppm <= MAX_PPM else HorsBornes "espérance de victimes hors bornes : {victimes_ppm}"
+        let st = get_status(campagne) ?? "non_evalue"
+        require st != "fige" else EtatInvalide "risque figé : {campagne}"
+        let objet = ReeCampagne.objet(campagne)
+        let premiere = st == "non_evalue"
+        if masse_catalogue.get(campagne) == () {
+            let rm = try { ApiRef.masse(objet) }
+            let m = if rm.error == () { to_int(rm.value) } else { 0 }
+            masse_catalogue.set(campagne, Masse(m))
+        }
+        let retenu = if st == "a_risque" { max(victimes_ppm, victimes.get(campagne) ?? 0) } else { victimes_ppm }
+        victimes.set(campagne, retenu)
+        evalue_le.set(campagne, h)
+        // la masse au catalogue ne classe qu'à la première évaluation : un déclassement à
+        // quatre yeux n'est pas défait par la révision suivante
+        let massif = premiere && to_int(masse_catalogue.get(campagne) ?? Masse(0)) > MASSE_MAJEURE
+        let risque = retenu > SEUIL_PPM || massif
+        let cible = st
+        if st == "non_evalue" {
+            if risque {
+                cible = "a_risque"
+                transition(campagne, "non_evalue", "a_risque")
+            } else {
+                cible = "faible"
+                transition(campagne, "non_evalue", "faible")
+            }
+        } else if st == "faible" && risque {
+            cible = "a_risque"
+            transition(campagne, "faible", "a_risque")
+        }
+        if cible == "a_risque" && st != "a_risque" && demande_controlee.get(campagne) == () && ApiRef.peut_manoeuvrer(objet) {
+            let prop = ApiRef.proprietaire(objet)
+            if to_string(prop) != "inconnu" {
+                let m = ApiPasserelle.notifier(h, prop, Rapprochement(""), "rentrée à risque {campagne} : rentrée contrôlée demandée", "objet {objet} : espérance de victimes {retenu} ppm ; déposez un plan de rentrée contrôlée", 3)
+                demande_controlee.set(campagne, m)
+            }
+        }
+        return ReeClasseRisque(cible)
+    }
+
+    on detailler(h, campagne, masse, nb_fragments, victimes_ppm, par) {
+        require ApiAcces.a_le_role(par, "analyste") else Habilitation "analyse de survie : analyste d'ORBITE"
+        let v0 = victimes.get(campagne)
+        require v0 != () else Inconnu "campagne non évaluée : {campagne}"
+        let st = get_status(campagne) ?? "non_evalue"
+        require st == "faible" || st == "a_risque" else EtatInvalide "risque figé : {campagne}"
+        require victimes_ppm >= 0 && victimes_ppm <= MAX_PPM else HorsBornes "espérance de victimes hors bornes"
+        require nb_fragments >= 0 && nb_fragments <= MAX_FRAGMENTS else HorsBornes "nombre de fragments hors bornes"
+        masse_survivante.set(campagne, masse)
+        fragments.set(campagne, nb_fragments)
+        evalue_le.set(campagne, h)
+        // jamais à la baisse tant que la campagne est à risque
+        let retenu = if st == "a_risque" { max(victimes_ppm, v0) } else { victimes_ppm }
+        victimes.set(campagne, retenu)
+        let cible = st
+        if st == "faible" && (retenu > SEUIL_PPM || to_int(masse) > MASSE_MAJEURE) {
+            transition(campagne, "faible", "a_risque")
+            cible = "a_risque"
+        }
+        let _ = Journal.noter(h, "reentrees", par, "campagne {campagne} : survie {masse} kg, {nb_fragments} fragments, {retenu} ppm, {cible}")
+        return ReeClasseRisque(cible)
+    }
+
+    on declasser(h, campagne, victimes_ppm, motif, par, valideur) {
+        require ApiAcces.a_le_role(par, "analyste") else Habilitation "déclasser : analyste d'ORBITE"
+        require ApiAcces.a_le_role(valideur, "superviseur") && ApiAcces.quatre_yeux(par, valideur) else QuatreYeux "valideur : superviseur d'ORBITE distinct"
+        require victimes.get(campagne) != () else Inconnu "campagne non évaluée : {campagne}"
+        let st = get_status(campagne) ?? "non_evalue"
+        require st == "a_risque" else EtatInvalide "campagne {campagne} {st} : pas à risque"
+        let ms = to_int(masse_survivante.get(campagne) ?? Masse(0))
+        require ms <= MASSE_MAJEURE else EtatInvalide "masse survivante {ms} kg > {MASSE_MAJEURE} kg"
+        require victimes_ppm >= 0 && victimes_ppm <= SEUIL_PPM else HorsBornes "estimation {victimes_ppm} ppm au-dessus du seuil"
+        require len(trim(motif)) > 0 else MotifRequis "motif du déclassement exigé"
+        victimes.set(campagne, victimes_ppm)
+        declassement.set(campagne, "{h} | {motif} | {par} | {valideur}")
+        transition(campagne, "a_risque", "faible")
+        let _ = Journal.noter(h, "reentrees", par, "campagne {campagne} déclassée ({victimes_ppm} ppm) : {motif}, valideur {valideur}")
+        return "faible"
+    }
+
+    on figer(h, campagne) {
+        require victimes.get(campagne) != () else Inconnu "campagne jamais évaluée : {campagne}"
+        let st = get_status(campagne) ?? "non_evalue"
+        if st == "fige" { return "fige" }
+        transition(campagne, st, "fige")
+        return "fige"
+    }
+
+    on victimes_de(campagne) {
+        let v = victimes.get(campagne)
+        require v != () else Inconnu "campagne jamais évaluée : {campagne}"
+        return v
+    }
+
+    on majeur(campagne) {
+        let v = victimes.get(campagne) ?? 0
+        let m = to_int(masse_catalogue.get(campagne) ?? Masse(0))
+        return v > SEUIL_MAJEUR_PPM || m > MASSE_CATALOGUE_MAJEURE
+    }
+
+    on a_risque(campagne) {
+        let st = get_status(campagne) ?? "non_evalue"
+        if st == "a_risque" { return true }
+        return st == "fige" && (victimes.get(campagne) ?? 0) > SEUIL_PPM
+    }
+}

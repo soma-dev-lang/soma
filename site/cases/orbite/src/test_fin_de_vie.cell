@@ -1,0 +1,616 @@
+use app
+use commun::journal_chair
+use commun::horloge_chair
+use sys::fin_de_vie::chair::api
+use sys::fin_de_vie::chair::plans
+use sys::fin_de_vie::chair::mission
+use sys::fin_de_vie::chair::passivation
+use sys::fin_de_vie::chair::consentements
+use sys::fin_de_vie::chair::retrait_actif
+use sys::fin_de_vie::chair::prorogations
+use sys::fin_de_vie::chair::couverture
+use doublures::fin_de_vie
+
+// Le monde des tests : h0 = 1 700 000 000 000 ms ; un jour = 86 400 000 ms.
+// Personnes et objets : conventions de doublures/fin_de_vie.cell.
+cell MondeFdv {
+    on w_j(n: Int) {
+        return 1700000000000 + n * 86400000
+    }
+    on w_empr(n: Int) {
+        return "sha256:" + pad_left(to_string(n), 64, "0")
+    }
+    // Plan déposé par le chef de mission d'ORG-ALPHA : fin prévue à +1 an, dv requis 5 m/s,
+    // réserve 8 m/s, rehausse 300 km.
+    on w_dep(h: Int, plan: String, objet: String, mode: String, delai: Int, succes: Int, n: Int) {
+        return FdvPlan.deposer(Horodatage(h), plan, Objet(objet), FdvMode(mode), Horodatage(h + 31536000000), Duree(delai), DeltaV(5000), DeltaV(8000), Distance(300000), Pourcent(succes), w_empr(n), "chef_de_mission@ORG-ALPHA")
+    }
+    on w_dep_par(h: Int, plan: String, objet: String, par: String) {
+        return FdvPlan.deposer(Horodatage(h), plan, Objet(objet), FdvMode("desorbitation_naturelle"), Horodatage(h + 31536000000), Duree(126144000000), DeltaV(5000), DeltaV(8000), Distance(0), Pourcent(95), w_empr(1), par)
+    }
+    on w_dep_fin(h: Int, plan: String, objet: String, fin_prevue: Int, succes: Int) {
+        return FdvPlan.deposer(Horodatage(h), plan, Objet(objet), FdvMode("desorbitation_naturelle"), Horodatage(fin_prevue), Duree(126144000000), DeltaV(5000), DeltaV(8000), Distance(0), Pourcent(succes), w_empr(1), "chef_de_mission@ORG-ALPHA")
+    }
+    // Plan LEO conforme (4 ans) déposé, revu et approuvé à h.
+    on w_plan_approuve(h: Int, plan: String, objet: String) {
+        w_dep(h, plan, objet, "desorbitation_naturelle", 126144000000, 95, 1)
+        FdvPlan.prendre_en_revue(Horodatage(h), plan, "analyste@ORG-ORBITE")
+        return FdvPlan.approuver(Horodatage(h), plan, "analyste@ORG-ORBITE", "superviseur@ORG-ORBITE")
+    }
+    // Plan GEO conforme (cimetière, rehausse 300 km, 300 jours) approuvé à h.
+    on w_plan_geo(h: Int, plan: String, objet: String) {
+        w_dep(h, plan, objet, "cimetiere", 25920000000, 95, 2)
+        FdvPlan.prendre_en_revue(Horodatage(h), plan, "analyste@ORG-ORBITE")
+        return FdvPlan.approuver(Horodatage(h), plan, "analyste@ORG-ORBITE", "superviseur@ORG-ORBITE")
+    }
+    on w_fin(h: Int, objet: String) {
+        return FdvFin.declarer_fin(Horodatage(h), Objet(objet), "chef_de_mission@ORG-ALPHA")
+    }
+    on w_commencer(h: Int, objet: String, organes: List<String>, par: String) {
+        return FdvPassivation.commencer(Horodatage(h), Objet(objet), organes, par)
+    }
+    on w_organe(h: Int, objet: String, o: String) {
+        return FdvPassivation.declarer_organe(Horodatage(h), Objet(objet), FdvOrgane(o), "dynamicien@ORG-ALPHA")
+    }
+    // Passivation complète (ergols + batteries) déclarée à h, vérifiée à h + 2 jours.
+    on w_passiver(h: Int, objet: String) {
+        w_commencer(h, objet, ["ergols", "batteries"], "dynamicien@ORG-ALPHA")
+        w_organe(h, objet, "ergols")
+        w_organe(h, objet, "batteries")
+        return FdvPassivation.verifier(Horodatage(h + 172800000), Objet(objet), "analyste@ORG-ORBITE", "superviseur@ORG-ORBITE")
+    }
+    // Mission RA : chasseur OBJ-K1-SERV (ORG-SERV) sur `cible`, fenêtre [j60, j120].
+    on w_proposer(h: Int, mission: String, cible: String, debut: Int, par: String) {
+        return FdvRetrait.proposer(Horodatage(h), mission, Objet(cible), Objet("OBJ-K1-SERV"), FdvIssue("rentree_naturelle"), Horodatage(debut), Horodatage(debut + 5184000000), w_empr(9), par)
+    }
+    on w_proposer_chasseur(h: Int, mission: String, cible: String, chasseur: String) {
+        return FdvRetrait.proposer(Horodatage(h), mission, Objet(cible), Objet(chasseur), FdvIssue("rentree_naturelle"), Horodatage(w_j(60)), Horodatage(w_j(120)), w_empr(9), "chef_de_mission@ORG-SERV")
+    }
+    // Mission proposée à j0 puis consentie (propriétaire ORG-ALPHA, État ALD) à j1.
+    on w_mission_consentie(mission: String, cible: String) {
+        w_proposer(w_j(0), mission, cible, w_j(60), "chef_de_mission@ORG-SERV")
+        FdvConsentement.accorder(Horodatage(w_j(1)), "{mission}|proprietaire", "désorbitation sous 6 mois", "chef_de_mission@ORG-ALPHA")
+        FdvRetrait.constater_consentements(Horodatage(w_j(1)), mission, "systeme")
+        FdvConsentement.accorder(Horodatage(w_j(1)), "{mission}|etat", "", "autorite@ORG-ETAT-ALD")
+        return FdvRetrait.constater_consentements(Horodatage(w_j(1)), mission, "systeme")
+    }
+    on w_autoriser(mission: String) {
+        return FdvRetrait.autoriser(Horodatage(w_j(2)), mission, "analyste@ORG-ORBITE", "superviseur@ORG-ORBITE")
+    }
+    on w_proroger(h: Int, demande: String, objet: String, duree: Int) {
+        return FdvProrogation.demander(Horodatage(h), demande, Objet(objet), FdvCause("activite_solaire"), Duree(duree), w_empr(7), "chef_de_mission@ORG-ALPHA")
+    }
+    on w_journal_contient(motif: String) {
+        return len(Journal.chercher(motif, 10)) > 0
+    }
+}
+
+// ── PLANS : dépôt, revue, compléments, approbation à quatre yeux, reconfirmation, caducité.
+cell test FdvPlanCycle {
+    rules {
+        assert FdvPlan.etat("PFV-1") == "inconnu"
+        assert w_dep(w_j(0), "PFV-1", "OBJ-A1", "desorbitation_naturelle", 126144000000, 95, 1) == "depose"
+        assert FdvPlan.etat("PFV-1") == "depose"
+        assert FdvPlan.fiche("PFV-1").conforme
+        assert FdvPlan.plans("OBJ-A1") == ["PFV-1"]
+        assert_fails w_dep(w_j(0), "PFV-1", "OBJ-A1", "desorbitation_naturelle", 126144000000, 95, 1) matching "Existe"
+        assert_fails w_dep(w_j(0), "PFV-2", "OBJ-INCONNU-1", "desorbitation_naturelle", 126144000000, 95, 1) matching "Inconnu"
+        assert_fails w_dep(w_j(0), "PFV-2", "OBJ-A2-RENTRE", "desorbitation_naturelle", 126144000000, 95, 1) matching "EtatInvalide"
+        assert_fails w_dep(w_j(0), "PFV-2", "OBJ-A1", "desorbitation_naturelle", 126144000000, 101, 1) matching "Incoherent"
+        assert_fails w_dep_fin(w_j(10), "PFV-2", "OBJ-A1", w_j(5), 95) matching "Incoherent"
+        // Portée : seul le personnel du propriétaire dépose ; un dynamicien d'un autre opérateur, non.
+        assert_fails w_dep_par(w_j(0), "PFV-2", "OBJ-A1", "intrus") matching "Habilitation"
+        assert_fails w_dep_par(w_j(0), "PFV-2", "OBJ-A1", "dynamicien@ORG-BETA") matching "Habilitation"
+        assert_fails w_dep_par(w_j(0), "PFV-2", "OBJ-A1", "analyste@ORG-ORBITE") matching "Habilitation"
+        assert_fails w_dep_par(w_j(0), "PFV-2", "OBJ-A3-SUSP", "chef_de_mission@ORG-SUSP") matching "Suspendu"
+        // Revue.
+        assert_fails FdvPlan.prendre_en_revue(w_j(1), "PFV-1", "dynamicien@ORG-ALPHA") matching "Habilitation"
+        assert_fails FdvPlan.prendre_en_revue(w_j(1), "PFV-X", "analyste@ORG-ORBITE") matching "Inconnu"
+        assert FdvPlan.etat("PFV-X") == "inconnu"
+        assert FdvPlan.prendre_en_revue(w_j(1), "PFV-1", "analyste@ORG-ORBITE") == "en_revue"
+        assert_fails FdvPlan.prendre_en_revue(w_j(1), "PFV-1", "analyste@ORG-ORBITE") matching "EtatInvalide"
+        assert_fails FdvPlan.demander_complements(w_j(2), "PFV-1", "", "analyste@ORG-ORBITE") matching "MotifRequis"
+        assert FdvPlan.demander_complements(w_j(2), "PFV-1", "analyse de rentrée à détailler", "analyste@ORG-ORBITE") == "a_completer"
+        assert_fails FdvPlan.completer(w_j(3), "PFV-1", 126144000000, 9000, 96, w_empr(1), "chef_de_mission@ORG-ALPHA") matching "Doublon"
+        assert_fails FdvPlan.completer(w_j(3), "PFV-1", 126144000000, 9000, 96, w_empr(2), "chef_de_mission@ORG-BETA") matching "Habilitation"
+        assert_fails FdvPlan.completer(w_j(93), "PFV-1", 126144000000, 9000, 96, w_empr(2), "chef_de_mission@ORG-ALPHA") matching "Delai"
+        assert FdvPlan.completer(w_j(3), "PFV-1", 126144000000, 9000, 96, w_empr(2), "chef_de_mission@ORG-ALPHA") == "en_revue"
+        // Approbation : analyste + superviseur distinct.
+        assert_fails FdvPlan.approuver(w_j(4), "PFV-1", "analyste@ORG-ORBITE", "analyste@ORG-ORBITE") matching "QuatreYeux"
+        assert_fails FdvPlan.approuver(w_j(4), "PFV-1", "analyste@ORG-ORBITE", "chef_de_mission@ORG-ALPHA") matching "QuatreYeux"
+        assert_fails FdvPlan.approuver(w_j(4), "PFV-1", "superviseur@ORG-ORBITE", "direction@ORG-ORBITE") matching "Habilitation"
+        assert FdvPlan.approuver(w_j(4), "PFV-1", "analyste@ORG-ORBITE", "superviseur@ORG-ORBITE") == "approuve"
+        assert FdvPlan.plan_de("OBJ-A1") == "PFV-1"
+        assert FdvPlan.conforme("OBJ-A1", w_j(5))
+        assert !FdvPlan.conforme("OBJ-A1", w_j(500))
+        assert w_journal_contient("analyste@ORG-ORBITE|superviseur@ORG-ORBITE")
+        // Reconfirmation conforme, puis non conforme : caduc.
+        assert_fails FdvPlan.reconfirmer(w_j(300), "PFV-1", 9000, 95, "dynamicien@ORG-ALPHA") matching "Habilitation"
+        assert FdvPlan.reconfirmer(w_j(300), "PFV-1", 9000, 95, "chef_de_mission@ORG-ALPHA") == "approuve"
+        assert FdvPlan.conforme("OBJ-A1", w_j(600))
+        assert FdvPlan.reconfirmer(w_j(310), "PFV-1", 1000, 95, "chef_de_mission@ORG-ALPHA") == "caduc"
+        assert FdvPlan.plan_de("OBJ-A1") == ""
+        assert !FdvPlan.conforme("OBJ-A1", w_j(311))
+        assert_fails FdvPlan.reconfirmer(w_j(311), "PFV-1", 9000, 95, "chef_de_mission@ORG-ALPHA") matching "EtatInvalide"
+    }
+}
+
+// ── PLANS : non-conformités, rejet, retrait, remplacement, consultation.
+cell test FdvPlanDecisions {
+    rules {
+        // Non conformes : LEO délai > 5 ans ; GEO rehausse < 235 km ; habité sans rentrée
+        // contrôlée ; rentrée à risque ; succès < 90 % ; réserve < requis ; MEO 25 ans OK.
+        assert w_dep(w_j(0), "PFV-10", "OBJ-B1", "desorbitation_naturelle", 160000000000, 95, 1) == "depose"
+        assert !FdvPlan.fiche("PFV-10").conforme
+        assert w_dep(w_j(0), "PFV-11", "OBJ-B2-GEO", "cimetiere", 25920000000, 95, 1) == "depose"
+        assert FdvPlan.fiche("PFV-11").conforme
+        assert w_dep(w_j(0), "PFV-12", "OBJ-B3-GEO", "desorbitation_naturelle", 25920000000, 95, 1) == "depose"
+        assert !FdvPlan.fiche("PFV-12").conforme
+        assert w_dep(w_j(0), "PFV-13", "OBJ-B4-HAB", "desorbitation_naturelle", 126144000000, 95, 1) == "depose"
+        assert !FdvPlan.fiche("PFV-13").conforme
+        assert w_dep(w_j(0), "PFV-14", "OBJ-B4-HAB", "desorbitation_controlee", 126144000000, 95, 1) == "depose"
+        assert FdvPlan.fiche("PFV-14").conforme
+        assert w_dep(w_j(0), "PFV-15", "OBJ-B5-RISQ", "desorbitation_naturelle", 126144000000, 95, 1) == "depose"
+        assert !FdvPlan.fiche("PFV-15").conforme
+        assert w_dep(w_j(0), "PFV-16", "OBJ-B6", "desorbitation_naturelle", 126144000000, 80, 1) == "depose"
+        assert !FdvPlan.fiche("PFV-16").conforme
+        assert w_dep(w_j(0), "PFV-17", "OBJ-B7-MEO", "desorbitation_naturelle", 700000000000, 95, 1) == "depose"
+        assert FdvPlan.fiche("PFV-17").conforme
+        // Un plan non conforme n'est jamais approuvé ; il est rejeté avec motif.
+        assert FdvPlan.prendre_en_revue(w_j(1), "PFV-10", "analyste@ORG-ORBITE") == "en_revue"
+        assert_fails FdvPlan.approuver(w_j(1), "PFV-10", "analyste@ORG-ORBITE", "superviseur@ORG-ORBITE") matching "NonEligible"
+        assert_fails FdvPlan.rejeter(w_j(1), "PFV-10", "", "analyste@ORG-ORBITE") matching "MotifRequis"
+        assert_fails FdvPlan.rejeter(w_j(1), "PFV-10", "délai LEO dépassé", "systeme") matching "EtatInvalide"
+        assert FdvPlan.rejeter(w_j(1), "PFV-10", "délai LEO dépassé", "analyste@ORG-ORBITE") == "rejete"
+        // Objet catalogué jamais mis en service : approuvable ; hors service : non.
+        assert w_dep(w_j(0), "PFV-18", "OBJ-B8-CATAL", "desorbitation_naturelle", 126144000000, 95, 1) == "depose"
+        assert FdvPlan.prendre_en_revue(w_j(1), "PFV-18", "analyste@ORG-ORBITE") == "en_revue"
+        assert FdvPlan.approuver(w_j(1), "PFV-18", "analyste@ORG-ORBITE", "superviseur@ORG-ORBITE") == "approuve"
+        assert w_dep(w_j(0), "PFV-19", "OBJ-B9-HS", "desorbitation_naturelle", 126144000000, 95, 1) == "depose"
+        assert FdvPlan.prendre_en_revue(w_j(1), "PFV-19", "analyste@ORG-ORBITE") == "en_revue"
+        assert_fails FdvPlan.approuver(w_j(1), "PFV-19", "analyste@ORG-ORBITE", "superviseur@ORG-ORBITE") matching "NonEligible"
+        // Retrait par le propriétaire avant revue.
+        assert_fails FdvPlan.retirer(w_j(1), "PFV-16", "abandon", "dynamicien@ORG-ALPHA") matching "Habilitation"
+        assert FdvPlan.retirer(w_j(1), "PFV-16", "abandon", "chef_de_mission@ORG-ALPHA") == "retire"
+        assert_fails FdvPlan.retirer(w_j(1), "PFV-16", "abandon", "chef_de_mission@ORG-ALPHA") matching "EtatInvalide"
+        // Remplacement : un second plan approuvé du même objet remplace le premier.
+        assert w_plan_approuve(w_j(2), "PFV-20", "OBJ-B10") == "approuve"
+        assert w_plan_approuve(w_j(3), "PFV-21", "OBJ-B10") == "approuve"
+        assert FdvPlan.etat("PFV-20") == "remplace"
+        assert FdvPlan.plan_de("OBJ-B10") == "PFV-21"
+        assert FdvPlan.plans("OBJ-B10") == ["PFV-20", "PFV-21"]
+        // Consultation : agent de l'organisation ou analyste ; diffusion contrôlée.
+        assert FdvPlan.consulter(w_j(4), "PFV-21", "ORG-ALPHA", "dynamicien@ORG-ALPHA").mode == "desorbitation_naturelle"
+        assert FdvPlan.consulter(w_j(4), "PFV-21", "ORG-BETA", "analyste@ORG-ORBITE").delai == 126144000000
+        assert_fails FdvPlan.consulter(w_j(4), "PFV-21", "ORG-BETA", "dynamicien@ORG-ALPHA") matching "Habilitation"
+        assert_fails FdvPlan.consulter(w_j(4), "PFV-21", "ORG-SECRET-1", "analyste@ORG-ORBITE") matching "Confidentiel"
+        assert_fails FdvPlan.fiche("PFV-404") matching "Inconnu"
+    }
+}
+
+// ── PLANS : balayage (complément échu, non reconfirmé depuis 400 jours).
+cell test FdvPlanBalayage {
+    rules {
+        assert w_dep(w_j(0), "PFV-30", "OBJ-E1", "desorbitation_naturelle", 126144000000, 95, 1) == "depose"
+        assert FdvPlan.prendre_en_revue(w_j(0), "PFV-30", "analyste@ORG-ORBITE") == "en_revue"
+        assert FdvPlan.demander_complements(w_j(0), "PFV-30", "pièces manquantes", "analyste@ORG-ORBITE") == "a_completer"
+        assert w_plan_approuve(w_j(0), "PFV-31", "OBJ-E2") == "approuve"
+        assert_fails FdvPlan.balayer(w_j(10), 0, "systeme") matching "HorsBornes"
+        assert_fails FdvPlan.balayer(w_j(10), 10, "analyste@ORG-ORBITE") matching "Habilitation"
+        assert FdvPlan.balayer(w_j(10), 10, "systeme") == 0
+        assert_fails FdvPlan.rejeter(w_j(10), "PFV-30", "complément non fourni", "systeme") matching "Delai"
+        assert_fails FdvPlan.perimer(w_j(10), "PFV-31", "systeme") matching "Delai"
+        assert_fails FdvPlan.perimer(w_j(500), "PFV-31", "analyste@ORG-ORBITE") matching "Habilitation"
+        assert FdvPlan.balayer(w_j(95), 10, "systeme") == 1
+        assert FdvPlan.etat("PFV-30") == "rejete"
+        assert FdvPlan.etat("PFV-31") == "approuve"
+        assert FdvPlan.balayer(w_j(401), 10, "systeme") == 1
+        assert FdvPlan.etat("PFV-31") == "caduc"
+        assert FdvPlan.plan_de("OBJ-E2") == ""
+        assert FdvPlan.balayer(w_j(402), 10, "systeme") == 0
+    }
+}
+
+// ── FIN DE MISSION : échéance, fin d'office, rattachement, défaillance, retard, dossier.
+cell test FdvFinCycle {
+    rules {
+        assert w_plan_approuve(w_j(0), "PFV-40", "OBJ-F1") == "approuve"
+        assert_fails FdvFin.declarer_fin(w_j(10), "OBJ-F1", "dynamicien@ORG-ALPHA") matching "Habilitation"
+        assert_fails FdvFin.declarer_fin(w_j(10), "OBJ-F1", "chef_de_mission@ORG-BETA") matching "Habilitation"
+        assert_fails FdvFin.declarer_fin(w_j(10), "OBJ-INCONNU-2", "chef_de_mission@ORG-ALPHA") matching "Inconnu"
+        assert_fails w_fin(w_j(10), "OBJ-F9-CATAL") matching "EtatInvalide"
+        // Plan conforme : échéance = fin + délai du plan (4 ans).
+        assert w_fin(w_j(10), "OBJ-F1") == w_j(10) + 126144000000
+        assert FdvFin.etat("OBJ-F1") == "en_retrait"
+        assert_fails w_fin(w_j(11), "OBJ-F1") matching "EtatInvalide"
+        assert FdvFin.echeance("OBJ-F1") == w_j(10) + 126144000000
+        assert FdvFin.dossier("OBJ-F1").plan == "PFV-40"
+        // Sans plan : délai maximal du régime (LEO 5 ans) et manquement.
+        assert w_fin(w_j(10), "OBJ-F2") == w_j(10) + 157680000000
+        assert FdvFin.dossier("OBJ-F2").plan == ""
+        assert w_journal_contient("fin de mission de OBJ-F2 déclarée")
+        assert_fails FdvFin.echeance("OBJ-F3") matching "Inconnu"
+        assert_fails FdvFin.dossier("OBJ-F3") matching "Inconnu"
+        // Fin d'office : objet hors service ; un objet en service à fin prévue non dépassée, non.
+        assert_fails FdvFin.declarer_fin_d_office(w_j(10), "OBJ-F3", "silence", "systeme") matching "NonEligible"
+        assert_fails FdvFin.declarer_fin_d_office(w_j(10), "OBJ-F4-HS", "silence", "dynamicien@ORG-ALPHA") matching "Habilitation"
+        assert_fails FdvFin.declarer_fin_d_office(w_j(10), "OBJ-F4-HS", "", "systeme") matching "MotifRequis"
+        assert FdvFin.declarer_fin_d_office(w_j(10), "OBJ-F4-HS", "objet hors service", "analyste@ORG-ORBITE") == w_j(10) + 157680000000
+        assert FdvFin.dossier("OBJ-F4-HS").d_office
+        // Fin prévue au plan dépassée de plus de 90 jours : fin d'office.
+        assert w_dep_fin(w_j(0), "PFV-41", "OBJ-F5", w_j(10), 95) == "depose"
+        assert FdvPlan.prendre_en_revue(w_j(0), "PFV-41", "analyste@ORG-ORBITE") == "en_revue"
+        assert FdvPlan.approuver(w_j(0), "PFV-41", "analyste@ORG-ORBITE", "superviseur@ORG-ORBITE") == "approuve"
+        assert_fails FdvFin.declarer_fin_d_office(w_j(90), "OBJ-F5", "fin prévue dépassée", "systeme") matching "NonEligible"
+        assert FdvFin.declarer_fin_d_office(w_j(101), "OBJ-F5", "fin prévue dépassée", "systeme") == w_j(101) + 126144000000
+        // Rattachement de manœuvres de retrait.
+        assert_fails FdvFin.rattacher_manoeuvre(w_j(11), "OBJ-F3", "MAN:declare:OBJ-F3:desorbitation", "dynamicien@ORG-ALPHA") matching "EtatInvalide"
+        assert_fails FdvFin.rattacher_manoeuvre(w_j(11), "OBJ-F1", "MAN:declare:OBJ-F1:desorbitation", "chef_de_mission@ORG-ALPHA") matching "Habilitation"
+        assert_fails FdvFin.rattacher_manoeuvre(w_j(11), "OBJ-F1", "PLAN-X", "dynamicien@ORG-ALPHA") matching "Inconnu"
+        assert_fails FdvFin.rattacher_manoeuvre(w_j(11), "OBJ-F1", "MAN:rejete:OBJ-F1:desorbitation", "dynamicien@ORG-ALPHA") matching "EtatInvalide"
+        assert_fails FdvFin.rattacher_manoeuvre(w_j(11), "OBJ-F1", "MAN:declare:OBJ-F2:desorbitation", "dynamicien@ORG-ALPHA") matching "Incoherent"
+        assert_fails FdvFin.rattacher_manoeuvre(w_j(11), "OBJ-F1", "MAN:declare:OBJ-F1:evitement", "dynamicien@ORG-ALPHA") matching "Incoherent"
+        assert FdvFin.rattacher_manoeuvre(w_j(11), "OBJ-F1", "MAN:declare:OBJ-F1:desorbitation", "dynamicien@ORG-ALPHA") == 1
+        assert_fails FdvFin.rattacher_manoeuvre(w_j(11), "OBJ-F1", "MAN:declare:OBJ-F1:desorbitation", "dynamicien@ORG-ALPHA") matching "Doublon"
+        // Passivation non vérifiée : pas de constat.
+        assert_fails FdvFin.constater_passivation(w_j(12), "OBJ-F1", "systeme") matching "EtatInvalide"
+        assert_fails FdvFin.constater_passivation(w_j(12), "OBJ-F3", "systeme") matching "Inconnu"
+        assert_fails FdvPassivation.contester(w_j(12), "OBJ-F3", "émission", "analyste@ORG-ORBITE") matching "Inconnu"
+        // Défaillance : anomalie ou propulsion perdue seulement.
+        assert_fails FdvFin.constater_defaillance(w_j(12), "OBJ-F2", "panne", "systeme") matching "Incoherent"
+        assert_fails FdvFin.constater_defaillance(w_j(12), "OBJ-F6-ANOM", "panne", "dynamicien@ORG-ALPHA") matching "Habilitation"
+        assert FdvFin.constater_defaillance(w_j(12), "OBJ-F6-ANOM", "perte d'attitude", "analyste@ORG-ORBITE") == "defaillant"
+        assert_fails FdvFin.constater_defaillance(w_j(12), "OBJ-F6-ANOM", "perte d'attitude", "analyste@ORG-ORBITE") matching "EtatInvalide"
+        // Retard : seulement après l'échéance, par le systeme ; un manquement par objet.
+        assert !FdvFin.en_retard("OBJ-F2", w_j(100))
+        assert FdvFin.en_retard("OBJ-F2", w_j(10) + 157680000001)
+        assert_fails FdvFin.constater_retard(w_j(100), "OBJ-F2", "systeme") matching "EtatInvalide"
+        assert_fails FdvFin.constater_retard(w_j(10) + 157680000001, "OBJ-F2", "analyste@ORG-ORBITE") matching "Habilitation"
+        assert FdvFin.a_echoir(w_j(10) + 157680000001, 10) == ["OBJ-F1", "OBJ-F2", "OBJ-F4-HS", "OBJ-F5"]
+        assert FdvFin.a_echoir(w_j(10) + 157680000001, 1) == ["OBJ-F1"]
+        assert FdvFin.constater_retard(w_j(10) + 157680000001, "OBJ-F2", "systeme") == "MQ-OBJ-F2"
+        assert FdvFin.etat("OBJ-F2") == "en_retard"
+        assert FdvFin.dossier("OBJ-F2").manquement == "MQ-OBJ-F2"
+        assert FdvFin.a_echoir(w_j(10) + 157680000001, 10) == ["OBJ-F1", "OBJ-F4-HS", "OBJ-F5"]
+        // Consultation du dossier.
+        assert FdvFin.consulter_dossier(w_j(20), "OBJ-F1", "ORG-ALPHA", "dynamicien@ORG-ALPHA").etat == "en_retrait"
+        assert FdvFin.consulter_dossier(w_j(20), "OBJ-F1", "ORG-BETA", "auditeur@ORG-ORBITE").echeance == w_j(10) + 126144000000
+        assert_fails FdvFin.consulter_dossier(w_j(20), "OBJ-F1", "ORG-BETA", "dynamicien@ORG-ALPHA") matching "Habilitation"
+        assert_fails FdvFin.consulter_dossier(w_j(20), "OBJ-F1", "ORG-SECRET-2", "analyste@ORG-ORBITE") matching "Confidentiel"
+    }
+}
+
+// ── PASSIVATION : commencement, organes, vérification à quatre yeux, contestation, échec.
+cell test FdvPassivationCycle {
+    rules {
+        assert FdvPassivation.etat("OBJ-P1") == "a_planifier"
+        assert_fails w_commencer(w_j(0), "OBJ-P1", ["ergols", "batteries"], "dynamicien@ORG-ALPHA") matching "EtatInvalide"
+        assert w_fin(w_j(0), "OBJ-P1") > 0
+        assert_fails w_commencer(w_j(1), "OBJ-P1", ["ergols", "batteries"], "dynamicien@ORG-BETA") matching "Habilitation"
+        assert_fails w_commencer(w_j(1), "OBJ-P1", [], "dynamicien@ORG-ALPHA") matching "HorsBornes"
+        assert_fails w_commencer(w_j(1), "OBJ-P1", ["ergols", "plutonium"], "dynamicien@ORG-ALPHA") matching "HorsBornes"
+        assert_fails w_commencer(w_j(1), "OBJ-P1", ["ergols", "ergols", "batteries"], "dynamicien@ORG-ALPHA") matching "Doublon"
+        assert_fails w_commencer(w_j(1), "OBJ-P1", ["ergols"], "dynamicien@ORG-ALPHA") matching "Insuffisant"
+        assert_fails w_commencer(w_j(1), "OBJ-P1", ["batteries", "roues"], "dynamicien@ORG-ALPHA") matching "Insuffisant"
+        assert w_commencer(w_j(1), "OBJ-P1", ["ergols", "batteries", "emetteurs"], "dynamicien@ORG-ALPHA") == 3
+        assert_fails w_commencer(w_j(1), "OBJ-P1", ["ergols", "batteries"], "dynamicien@ORG-ALPHA") matching "EtatInvalide"
+        assert w_organe(w_j(2), "OBJ-P1", "ergols") == 2
+        assert_fails w_organe(w_j(2), "OBJ-P1", "ergols") matching "Doublon"
+        assert_fails w_organe(w_j(2), "OBJ-P1", "roues") matching "HorsBornes"
+        assert FdvPassivation.restants("OBJ-P1") == ["batteries", "emetteurs"]
+        assert w_organe(w_j(2), "OBJ-P1", "batteries") == 1
+        assert w_organe(w_j(3), "OBJ-P1", "emetteurs") == 0
+        assert FdvPassivation.etat("OBJ-P1") == "declaree"
+        // Vérification : 24 h de recul, analyste + superviseur.
+        assert_fails FdvPassivation.verifier(w_j(3) + 3600000, "OBJ-P1", "analyste@ORG-ORBITE", "superviseur@ORG-ORBITE") matching "Delai"
+        assert_fails FdvPassivation.verifier(w_j(5), "OBJ-P1", "analyste@ORG-ORBITE", "analyste#2@ORG-ORBITE") matching "QuatreYeux"
+        assert_fails FdvPassivation.verifier(w_j(5), "OBJ-P1", "dynamicien@ORG-ALPHA", "superviseur@ORG-ORBITE") matching "Habilitation"
+        // Contestation : organes remis à passiver.
+        assert_fails FdvPassivation.contester(w_j(4), "OBJ-P1", "", "analyste@ORG-ORBITE") matching "MotifRequis"
+        assert FdvPassivation.contester(w_j(4), "OBJ-P1", "émission captée", "analyste@ORG-ORBITE") == "en_cours"
+        assert FdvPassivation.restants("OBJ-P1") == ["ergols", "batteries", "emetteurs"]
+        assert w_organe(w_j(5), "OBJ-P1", "ergols") == 2
+        assert w_organe(w_j(5), "OBJ-P1", "batteries") == 1
+        assert w_organe(w_j(5), "OBJ-P1", "emetteurs") == 0
+        assert !FdvPassivation.passive("OBJ-P1")
+        assert FdvPassivation.verifier(w_j(7), "OBJ-P1", "analyste@ORG-ORBITE", "superviseur@ORG-ORBITE") == "verifiee"
+        assert FdvPassivation.passive("OBJ-P1")
+        assert ApiFinDeVie.passive("OBJ-P1")
+        assert w_journal_contient("propulsion déclarée aucune")
+        // Observation contradictoire, orbite périmée.
+        assert w_fin(w_j(0), "OBJ-P2-BOUGE") > 0
+        assert w_commencer(w_j(1), "OBJ-P2-BOUGE", ["ergols", "batteries"], "dynamicien@ORG-ALPHA") == 2
+        assert w_organe(w_j(1), "OBJ-P2-BOUGE", "ergols") == 1
+        assert w_organe(w_j(1), "OBJ-P2-BOUGE", "batteries") == 0
+        assert_fails FdvPassivation.verifier(w_j(5), "OBJ-P2-BOUGE", "analyste@ORG-ORBITE", "superviseur@ORG-ORBITE") matching "Incoherent"
+        assert w_fin(w_j(0), "OBJ-P3-PERDU") > 0
+        assert_fails w_passiver(w_j(1), "OBJ-P3-PERDU") matching "Perime"
+        // Objet sans propulsion : les ergols ne sont pas exigés. Échec constaté.
+        assert FdvFin.declarer_fin_d_office(w_j(0), "OBJ-P4-HS", "hors service", "systeme") > 0
+        assert w_commencer(w_j(1), "OBJ-P4-HS", ["batteries"], "dynamicien@ORG-ALPHA") == 1
+        assert_fails FdvPassivation.constater_echec(w_j(2), "OBJ-P4-HS", "batterie gonflée", "dynamicien@ORG-BETA") matching "Habilitation"
+        assert FdvPassivation.constater_echec(w_j(2), "OBJ-P4-HS", "batterie gonflée", "dynamicien@ORG-ALPHA") == "echouee"
+        assert_fails FdvPassivation.constater_echec(w_j(2), "OBJ-P4-HS", "batterie gonflée", "analyste@ORG-ORBITE") matching "EtatInvalide"
+    }
+}
+
+// ── SCÉNARIO MÉTIER : un satellite GEO de bout en bout — plan déposé, revu, approuvé à quatre
+// yeux ; fin de mission ; passivation vérifiée ; manœuvre de transfert vérifiée ; passivation
+// constatée ; orbite cimetière constatée à quatre yeux ; plan clos.
+cell test FdvScenarioCimetiere {
+    rules {
+        assert w_plan_geo(w_j(0), "PFV-50", "OBJ-G1-GEO") == "approuve"
+        assert ApiFinDeVie.plan_conforme("OBJ-G1-GEO")
+        assert ApiFinDeVie.plan("OBJ-G1-GEO") == "PFV-50"
+        assert ApiFinDeVie.fin_de_mission(w_j(30), "OBJ-G1-GEO", "chef_de_mission@ORG-ALPHA") == w_j(30) + 25920000000
+        assert FdvFin.rattacher_manoeuvre(w_j(31), "OBJ-G1-GEO", "MAN:approuve:OBJ-G1-GEO:transfert", "dynamicien@ORG-ALPHA") == 1
+        assert w_passiver(w_j(32), "OBJ-G1-GEO") == "verifiee"
+        // La manœuvre rattachée n'est pas vérifiée : le constat attend.
+        assert_fails FdvFin.constater_passivation(w_j(35), "OBJ-G1-GEO", "analyste@ORG-ORBITE") matching "Insuffisant"
+        assert FdvFin.rattacher_manoeuvre(w_j(36), "OBJ-G1-GEO", "MAN:verifie:OBJ-G1-GEO:desorbitation", "dynamicien@ORG-ALPHA") == 2
+        assert_fails FdvFin.constater_cimetiere(w_j(36), "OBJ-G1-GEO", "analyste@ORG-ORBITE", "superviseur@ORG-ORBITE") matching "EtatInvalide"
+        // Le constat exige tous les plans vérifiés ou annulés (le premier n'est qu'approuvé).
+        assert_fails FdvFin.constater_passivation(w_j(36), "OBJ-G1-GEO", "systeme") matching "Insuffisant"
+        assert FdvFin.etat("OBJ-G1-GEO") == "en_retrait"
+    }
+}
+
+// Le même scénario avec des manœuvres vérifiées : jusqu'au cimetière et à la clôture du plan.
+cell test FdvScenarioCimetiereComplet {
+    rules {
+        assert w_plan_geo(w_j(0), "PFV-51", "OBJ-G2-GEO") == "approuve"
+        assert ApiFinDeVie.fin_de_mission(w_j(30), "OBJ-G2-GEO", "chef_de_mission@ORG-ALPHA") == w_j(30) + 25920000000
+        assert FdvFin.rattacher_manoeuvre(w_j(31), "OBJ-G2-GEO", "MAN:verifie:OBJ-G2-GEO:transfert", "dynamicien@ORG-ALPHA") == 1
+        assert FdvFin.rattacher_manoeuvre(w_j(31), "OBJ-G2-GEO", "MAN:verifie:OBJ-G2-GEO:desorbitation", "dynamicien@ORG-ALPHA") == 2
+        assert w_passiver(w_j(32), "OBJ-G2-GEO") == "verifiee"
+        assert_fails FdvFin.constater_passivation(w_j(35), "OBJ-G2-GEO", "chef_de_mission@ORG-ALPHA") matching "Habilitation"
+        assert FdvFin.constater_passivation(w_j(35), "OBJ-G2-GEO", "analyste@ORG-ORBITE") == "passive"
+        assert FdvFin.etat("OBJ-G2-GEO") == "passive"
+        assert_fails FdvFin.constater_cimetiere(w_j(40), "OBJ-G2-GEO", "analyste@ORG-ORBITE", "analyste@ORG-ORBITE") matching "QuatreYeux"
+        assert_fails FdvFin.constater_cimetiere(w_j(40), "OBJ-G2-GEO", "superviseur@ORG-ORBITE", "direction@ORG-ORBITE") matching "Habilitation"
+        assert FdvFin.constater_cimetiere(w_j(40), "OBJ-G2-GEO", "analyste@ORG-ORBITE", "superviseur@ORG-ORBITE") == "cimetiere"
+        assert FdvFin.etat("OBJ-G2-GEO") == "cimetiere"
+        assert FdvPlan.etat("PFV-51") == "clos"
+        assert ApiFinDeVie.plan("OBJ-G2-GEO") == ""
+        assert FdvFin.dossier("OBJ-G2-GEO").sortie == w_j(40)
+        assert FdvFin.a_echoir(w_j(1000), 10) == []
+        assert !ApiFinDeVie.en_retard("OBJ-G2-GEO", w_j(1000))
+        assert w_journal_contient("objet OBJ-G2-GEO en orbite cimetière (analyste@ORG-ORBITE|superviseur@ORG-ORBITE")
+        assert_fails FdvFin.constater_cimetiere(w_j(41), "OBJ-G2-GEO", "analyste@ORG-ORBITE", "superviseur@ORG-ORBITE") matching "EtatInvalide"
+    }
+}
+
+// Cimetière refusé : orbite observée trop basse, ou pas d'orbite observée récente.
+cell test FdvCimetiereRefus {
+    rules {
+        assert w_fin(w_j(0), "OBJ-G3-GEO-BAS") > 0
+        assert w_passiver(w_j(1), "OBJ-G3-GEO-BAS") == "verifiee"
+        assert FdvFin.constater_passivation(w_j(4), "OBJ-G3-GEO-BAS", "systeme") == "passive"
+        assert_fails FdvFin.constater_cimetiere(w_j(5), "OBJ-G3-GEO-BAS", "analyste@ORG-ORBITE", "superviseur@ORG-ORBITE") matching "Incoherent"
+        assert FdvFin.declarer_fin_d_office(w_j(0), "OBJ-G4-HS-PERDU", "hors service", "systeme") > 0
+        assert FdvFin.constater_defaillance(w_j(1), "OBJ-G4-HS-PERDU", "propulsion perdue", "systeme") == "defaillant"
+        assert_fails FdvFin.constater_cimetiere(w_j(5), "OBJ-G4-HS-PERDU", "analyste@ORG-ORBITE", "superviseur@ORG-ORBITE") matching "Perime"
+    }
+}
+
+// ── SORTIE constatée au catalogue (rentrée, fragmentation).
+cell test FdvSortie {
+    rules {
+        assert_fails FdvFin.constater_sortie(w_j(1), "OBJ-S1-RENTRE", "analyste@ORG-ORBITE") matching "Habilitation"
+        assert FdvFin.constater_sortie(w_j(1), "OBJ-S1-RENTRE", "systeme") == "rentre"
+        assert_fails FdvFin.constater_sortie(w_j(2), "OBJ-S1-RENTRE", "systeme") matching "EtatInvalide"
+        assert FdvFin.constater_sortie(w_j(1), "OBJ-S2-FRAG", "systeme") == "fragmente"
+        assert_fails FdvFin.constater_sortie(w_j(1), "OBJ-S3", "systeme") matching "EtatInvalide"
+        assert_fails FdvFin.constater_sortie(w_j(1), "OBJ-INCONNU-S", "systeme") matching "Inconnu"
+        assert FdvFin.etat("OBJ-S1-RENTRE") == "rentre"
+        assert FdvFin.dossier("OBJ-S1-RENTRE").sortie == w_j(1)
+        assert FdvPlan.clore(w_j(1), "OBJ-S3") == ""
+    }
+}
+
+// ── RETRAIT ACTIF : proposition, deux consentements, autorisation à quatre yeux, approche,
+// capture (consentements irrévocables), sortie de la cible, mission achevée.
+cell test FdvRetraitCycle {
+    rules {
+        assert FdvRetrait.etat("RA-1") == "inconnu"
+        assert_fails w_proposer(w_j(0), "RA-1", "OBJ-D1-HS", w_j(60), "chef_de_mission@ORG-ALPHA") matching "Habilitation"
+        assert_fails w_proposer(w_j(0), "RA-1", "OBJ-D1-HS", w_j(20), "chef_de_mission@ORG-SERV") matching "Delai"
+        assert_fails w_proposer(w_j(0), "RA-1", "OBJ-D9-HAB", w_j(60), "chef_de_mission@ORG-SERV") matching "NonEligible"
+        assert_fails w_proposer(w_j(0), "RA-1", "OBJ-D9-FRAG", w_j(60), "chef_de_mission@ORG-SERV") matching "NonEligible"
+        assert_fails w_proposer(w_j(0), "RA-1", "OBJ-INCONNU-D", w_j(60), "chef_de_mission@ORG-SERV") matching "Inconnu"
+        assert_fails w_proposer(w_j(0), "RA-1", "OBJ-K1-SERV", w_j(60), "chef_de_mission@ORG-SERV") matching "NonEligible"
+        assert_fails w_proposer_chasseur(w_j(0), "RA-1", "OBJ-D1-HS", "OBJ-K2-SERV-MORT") matching "NonEligible"
+        assert_fails FdvRetrait.proposer(w_j(0), "RA-1", "OBJ-D1-HS", "OBJ-K1-SERV", "cimetiere", w_j(60), w_j(60) + 63072000001, w_empr(9), "chef_de_mission@ORG-SERV") matching "HorsBornes"
+        assert_fails FdvRetrait.proposer(w_j(0), "RA-1", "OBJ-D1-HS", "OBJ-K1-SERV", "cimetiere", w_j(60), w_j(60), w_empr(9), "chef_de_mission@ORG-SERV") matching "Incoherent"
+        assert w_proposer(w_j(0), "RA-1", "OBJ-D1-HS", w_j(60), "chef_de_mission@ORG-SERV") == "proposee"
+        assert_fails w_proposer(w_j(0), "RA-1", "OBJ-D1-HS", w_j(60), "chef_de_mission@ORG-SERV") matching "Existe"
+        assert FdvConsentement.etat("RA-1|proprietaire") == "demande"
+        assert FdvConsentement.etat("RA-1|etat") == "demande"
+        assert ApiFinDeVie.missions_de("OBJ-D1-HS") == ["RA-1"]
+        // Consentements : le chef de mission du propriétaire, puis l'autorité de l'État.
+        assert_fails FdvConsentement.accorder(w_j(1), "RA-1|proprietaire", "", "chef_de_mission@ORG-SERV") matching "Habilitation"
+        assert_fails FdvConsentement.accorder(w_j(1), "RA-1|etat", "", "chef_de_mission@ORG-ALPHA") matching "Habilitation"
+        assert_fails FdvConsentement.accorder(w_j(31), "RA-1|proprietaire", "", "chef_de_mission@ORG-ALPHA") matching "Delai"
+        assert FdvConsentement.accorder(w_j(1), "RA-1|proprietaire", "désorbitation sous 6 mois", "chef_de_mission@ORG-ALPHA") == "accorde"
+        assert FdvConsentement.conditions("RA-1|proprietaire") == "désorbitation sous 6 mois"
+        assert_fails FdvRetrait.constater_consentements(w_j(1), "RA-1", "analyste@ORG-ORBITE") matching "Habilitation"
+        assert FdvRetrait.constater_consentements(w_j(1), "RA-1", "systeme") == "accord_proprietaire"
+        assert_fails w_autoriser("RA-1") matching "EtatInvalide"
+        assert FdvConsentement.accorder(w_j(1), "RA-1|etat", "", "autorite@ORG-ETAT-ALD") == "accorde"
+        assert FdvRetrait.constater_consentements(w_j(1), "RA-1", "systeme") == "consentie"
+        assert !ApiFinDeVie.retrait_autorise("OBJ-D1-HS")
+        // Autorisation : analyste + superviseur.
+        assert_fails FdvRetrait.autoriser(w_j(2), "RA-1", "analyste@ORG-ORBITE", "analyste@ORG-ORBITE") matching "QuatreYeux"
+        assert_fails FdvRetrait.autoriser(w_j(2), "RA-1", "chef_de_mission@ORG-SERV", "superviseur@ORG-ORBITE") matching "Habilitation"
+        assert w_autoriser("RA-1") == "autorisee"
+        assert FdvRetrait.dossier("RA-1").autorise_par == "analyste@ORG-ORBITE|superviseur@ORG-ORBITE"
+        assert ApiFinDeVie.retrait_autorise("OBJ-D1-HS")
+        // Approche : plan approuvé du chasseur, dans la fenêtre.
+        assert_fails FdvRetrait.lancer_approche(w_j(61), "RA-1", "MAN:approuve:OBJ-K1-SERV:rendez_vous", "dynamicien@ORG-ALPHA") matching "Habilitation"
+        assert_fails FdvRetrait.lancer_approche(w_j(61), "RA-1", "MAN:crible:OBJ-K1-SERV:rendez_vous", "dynamicien@ORG-SERV") matching "EtatInvalide"
+        assert_fails FdvRetrait.lancer_approche(w_j(61), "RA-1", "MAN:approuve:OBJ-D1-HS:rendez_vous", "dynamicien@ORG-SERV") matching "Incoherent"
+        assert_fails FdvRetrait.lancer_approche(w_j(50), "RA-1", "MAN:approuve:OBJ-K1-SERV:rendez_vous", "dynamicien@ORG-SERV") matching "Delai"
+        assert FdvRetrait.lancer_approche(w_j(61), "RA-1", "MAN:approuve:OBJ-K1-SERV:rendez_vous", "dynamicien@ORG-SERV") == "en_approche"
+        // Capture : dynamicien + chef de mission du servicer.
+        assert_fails FdvRetrait.capturer(w_j(62), "RA-1", "dynamicien@ORG-SERV", "dynamicien@ORG-SERV") matching "QuatreYeux"
+        assert_fails FdvRetrait.capturer(w_j(62), "RA-1", "dynamicien@ORG-SERV", "chef_de_mission@ORG-ALPHA") matching "QuatreYeux"
+        assert_fails FdvRetrait.capturer(w_j(121), "RA-1", "dynamicien@ORG-SERV", "chef_de_mission@ORG-SERV") matching "Delai"
+        assert FdvRetrait.capturer(w_j(62), "RA-1", "dynamicien@ORG-SERV", "chef_de_mission@ORG-SERV") == "capturee"
+        assert ApiFinDeVie.mission_capturee("OBJ-D1-HS")
+        assert FdvConsentement.etat("RA-1|proprietaire") == "irrevocable"
+        assert FdvConsentement.etat("RA-1|etat") == "irrevocable"
+        assert_fails FdvConsentement.retirer(w_j(63), "RA-1|proprietaire", "changement d'avis", "chef_de_mission@ORG-ALPHA") matching "EtatInvalide"
+        assert_fails FdvRetrait.abandonner(w_j(63), "RA-1", "trop tard", "analyste@ORG-ORBITE") matching "EtatInvalide"
+        // Sortie de la cible : fin d'office (hors service), défaillance, cimetière, mission achevée.
+        assert FdvRetrait.achever_pour(w_j(63), "OBJ-D1-HS") == 0
+        assert FdvFin.declarer_fin_d_office(w_j(63), "OBJ-D1-HS", "objet hors service", "systeme") > 0
+        assert FdvFin.constater_defaillance(w_j(63), "OBJ-D1-HS", "propulsion perdue", "systeme") == "defaillant"
+        assert FdvFin.constater_cimetiere(w_j(64), "OBJ-D1-HS", "analyste@ORG-ORBITE", "superviseur@ORG-ORBITE") == "cimetiere"
+        assert FdvRetrait.etat("RA-1") == "achevee"
+        assert !ApiFinDeVie.mission_capturee("OBJ-D1-HS")
+        assert FdvRetrait.dossier("RA-1").capture == w_j(62)
+    }
+}
+
+// ── RETRAIT ACTIF : refus, retrait de consentement, échéance, abandon, avortement.
+cell test FdvRetraitAbandons {
+    rules {
+        // Refus du propriétaire : mission abandonnée, l'autre consentement classé.
+        assert w_proposer(w_j(0), "RA-2", "OBJ-D2-HS", w_j(60), "chef_de_mission@ORG-SERV") == "proposee"
+        assert_fails FdvConsentement.refuser(w_j(1), "RA-2|proprietaire", "", "chef_de_mission@ORG-ALPHA") matching "MotifRequis"
+        assert FdvConsentement.refuser(w_j(1), "RA-2|proprietaire", "pas de tiers", "chef_de_mission@ORG-ALPHA") == "refuse"
+        assert FdvRetrait.constater_consentements(w_j(1), "RA-2", "systeme") == "abandonnee"
+        assert FdvConsentement.etat("RA-2|etat") == "sans_objet"
+        assert_fails FdvRetrait.constater_consentements(w_j(1), "RA-2", "systeme") matching "EtatInvalide"
+        // Consentement retiré après autorisation : la mission ne peut plus s'approcher.
+        assert w_mission_consentie("RA-3", "OBJ-D3-HS") == "consentie"
+        assert w_autoriser("RA-3") == "autorisee"
+        assert FdvConsentement.retirer(w_j(3), "RA-3|etat", "réexamen", "autorite@ORG-ETAT-ALD") == "retire"
+        assert !ApiFinDeVie.retrait_autorise("OBJ-D3-HS")
+        assert_fails FdvRetrait.lancer_approche(w_j(61), "RA-3", "MAN:approuve:OBJ-K1-SERV:rendez_vous", "dynamicien@ORG-SERV") matching "EtatInvalide"
+        assert_fails FdvRetrait.abandonner(w_j(4), "RA-3", "réexamen", "dynamicien@ORG-SERV") matching "Habilitation"
+        assert_fails FdvRetrait.abandonner(w_j(4), "RA-3", "", "chef_de_mission@ORG-SERV") matching "MotifRequis"
+        assert FdvRetrait.abandonner(w_j(4), "RA-3", "consentement de l'État retiré", "chef_de_mission@ORG-SERV") == "abandonnee"
+        assert FdvConsentement.etat("RA-3|proprietaire") == "sans_objet"
+        // Échéance des consentements : balayage, puis mission abandonnée au balayage suivant.
+        assert w_proposer(w_j(0), "RA-4", "OBJ-D4-HS", w_j(60), "chef_de_mission@ORG-SERV") == "proposee"
+        assert_fails FdvConsentement.expirer(w_j(10), "RA-4|proprietaire", "systeme") matching "EtatInvalide"
+        assert_fails FdvConsentement.expirer(w_j(31), "RA-4|proprietaire", "analyste@ORG-ORBITE") matching "Habilitation"
+        assert FdvConsentement.balayer(w_j(10), 10, "systeme") == 0
+        assert FdvConsentement.balayer(w_j(31), 10, "systeme") == 2
+        assert FdvConsentement.etat("RA-4|proprietaire") == "echu"
+        assert FdvRetrait.balayer(w_j(31), 10, "systeme") == 1
+        assert FdvRetrait.etat("RA-4") == "abandonnee"
+        // Avortement après capture : les consentements restent irrévocables.
+        assert w_mission_consentie("RA-5", "OBJ-D5-HS") == "consentie"
+        assert w_autoriser("RA-5") == "autorisee"
+        assert FdvRetrait.lancer_approche(w_j(61), "RA-5", "MAN:approuve:OBJ-K1-SERV:rendez_vous", "dynamicien@ORG-SERV") == "en_approche"
+        assert FdvRetrait.capturer(w_j(62), "RA-5", "dynamicien@ORG-SERV", "chef_de_mission@ORG-SERV") == "capturee"
+        assert_fails FdvRetrait.avorter(w_j(63), "RA-5", "cible relâchée", "dynamicien@ORG-ALPHA") matching "Habilitation"
+        assert FdvRetrait.avorter(w_j(63), "RA-5", "cible relâchée", "analyste@ORG-ORBITE") == "avortee"
+        assert FdvConsentement.etat("RA-5|proprietaire") == "irrevocable"
+        // Fenêtre échue d'une mission autorisée : abandon au balayage.
+        assert w_mission_consentie("RA-6", "OBJ-D6-HS") == "consentie"
+        assert w_autoriser("RA-6") == "autorisee"
+        assert FdvRetrait.balayer(w_j(100), 10, "systeme") == 0
+        assert FdvRetrait.balayer(w_j(121), 10, "systeme") == 1
+        assert FdvRetrait.etat("RA-6") == "abandonnee"
+    }
+}
+
+// ── PROROGATIONS : demande, avis de l'État, décision à quatre yeux (direction), échéance.
+cell test FdvProrogationCycle {
+    rules {
+        assert_fails w_proroger(w_j(0), "PRO-1", "OBJ-R1", 31536000000) matching "Inconnu"
+        assert w_fin(w_j(0), "OBJ-R1") == w_j(0) + 157680000000
+        assert_fails FdvProrogation.demander(w_j(1), "PRO-1", "OBJ-R1", "activite_solaire", 1000, w_empr(7), "dynamicien@ORG-ALPHA") matching "Habilitation"
+        assert_fails w_proroger(w_j(1), "PRO-1", "OBJ-R1", 0) matching "HorsBornes"
+        assert_fails w_proroger(w_j(1), "PRO-1", "OBJ-R1", 31536000001) matching "HorsBornes"
+        assert_fails FdvProrogation.demander(w_j(1), "PRO-1", "OBJ-R1", "activite_solaire", 1000, "", "chef_de_mission@ORG-ALPHA") matching "MotifRequis"
+        assert_fails w_proroger(w_j(0) + 157680000000 - 86400000, "PRO-1", "OBJ-R1", 1000) matching "Delai"
+        assert w_proroger(w_j(1), "PRO-1", "OBJ-R1", 31536000000) == "demandee"
+        assert_fails w_proroger(w_j(1), "PRO-1", "OBJ-R1", 1000) matching "Existe"
+        assert_fails w_proroger(w_j(1), "PRO-2", "OBJ-R1", 1000) matching "Doublon"
+        // Avis de l'État d'immatriculation.
+        assert_fails FdvProrogation.donner_avis(w_j(2), "PRO-1", true, "", "autorite@ORG-ETAT-BRV") matching "Habilitation"
+        assert_fails FdvProrogation.donner_avis(w_j(2), "PRO-1", true, "", "chef_de_mission@ORG-ALPHA") matching "Habilitation"
+        assert FdvProrogation.donner_avis(w_j(2), "PRO-1", true, "", "point_focal@ORG-ETAT-ALD") == "avis_favorable"
+        assert_fails FdvProrogation.donner_avis(w_j(2), "PRO-1", true, "", "point_focal@ORG-ETAT-ALD") matching "EtatInvalide"
+        // Décision : analyste + direction.
+        assert_fails FdvProrogation.accorder(w_j(3), "PRO-1", "analyste@ORG-ORBITE", "superviseur@ORG-ORBITE") matching "QuatreYeux"
+        assert_fails FdvProrogation.accorder(w_j(3), "PRO-1", "direction@ORG-ORBITE", "direction#2@ORG-ORBITE") matching "Habilitation"
+        assert FdvProrogation.accorder(w_j(3), "PRO-1", "analyste@ORG-ORBITE", "direction@ORG-ORBITE") == w_j(0) + 157680000000 + 31536000000
+        assert FdvFin.echeance("OBJ-R1") == w_j(0) + 157680000000 + 31536000000
+        assert FdvFin.dossier("OBJ-R1").prorogation == "PRO-1"
+        assert FdvProrogation.etat("PRO-1") == "accordee"
+        assert_fails w_proroger(w_j(4), "PRO-2", "OBJ-R1", 1000) matching "Doublon"
+        assert_fails FdvFin.proroger(w_j(4), "OBJ-R1", "PRO-9", 1000) matching "Doublon"
+        // Avis défavorable ; refus d'ORBITE ; échéance atteinte sans décision.
+        assert w_fin(w_j(0), "OBJ-R2") > 0
+        assert w_proroger(w_j(1), "PRO-3", "OBJ-R2", 1000) == "demandee"
+        assert_fails FdvProrogation.donner_avis(w_j(2), "PRO-3", false, "", "autorite@ORG-ETAT-ALD") matching "MotifRequis"
+        assert FdvProrogation.donner_avis(w_j(2), "PRO-3", false, "pas de justification", "autorite@ORG-ETAT-ALD") == "refusee"
+        assert w_proroger(w_j(3), "PRO-4", "OBJ-R2", 1000) == "demandee"
+        assert FdvProrogation.donner_avis(w_j(4), "PRO-4", true, "", "autorite@ORG-ETAT-ALD") == "avis_favorable"
+        assert_fails FdvProrogation.refuser(w_j(5), "PRO-4", "", "analyste@ORG-ORBITE") matching "MotifRequis"
+        assert FdvProrogation.refuser(w_j(5), "PRO-4", "cause maîtrisable", "analyste@ORG-ORBITE") == "refusee"
+        assert w_proroger(w_j(6), "PRO-5", "OBJ-R2", 1000) == "demandee"
+        assert_fails FdvProrogation.expirer(w_j(7), "PRO-5", "systeme") matching "EtatInvalide"
+        assert FdvProrogation.balayer(w_j(7), 10, "systeme") == 0
+        assert FdvProrogation.balayer(w_j(0) + 157680000000, 10, "systeme") == 1
+        assert FdvProrogation.etat("PRO-5") == "echue"
+        assert FdvProrogation.etat("PRO-404") == "inconnu"
+    }
+}
+
+// ── COUVERTURE : campagne quotidienne par le seul point d'entrée du temps (ApiFinDeVie.balayer).
+cell test FdvCouvertureCampagne {
+    rules {
+        assert w_plan_approuve(w_j(0), "PFV-60", "OBJ-C3") == "approuve"
+        assert_fails ApiFinDeVie.balayer(w_j(1), "analyste@ORG-ORBITE") matching "Habilitation"
+        assert FdvCouverture.etat(19676) == "a_ouvrir"
+        // OBJ-C2-HS (hors service, fin non déclarée) passe en retrait d'office.
+        assert ApiFinDeVie.balayer(w_j(1), "systeme") == 1
+        assert FdvCouverture.etat(19676) == "close"
+        assert FdvCouverture.bilan(19676).operateurs == 2
+        assert FdvCouverture.bilan(19676).objets == 3
+        assert FdvCouverture.bilan(19676).sans_plan == 1
+        assert FdvCouverture.bilan(19676).d_office == 1
+        assert FdvFin.etat("OBJ-C2-HS") == "en_retrait"
+        assert FdvFin.dossier("OBJ-C2-HS").d_office
+        assert ApiFinDeVie.balayer(w_j(1) + 60000, "systeme") == 0
+        assert_fails FdvCouverture.ouvrir(w_j(1), 19676, "systeme") matching "Existe"
+        assert_fails FdvCouverture.examiner(w_j(1), 19676, "ORG-ALPHA", "systeme") matching "EtatInvalide"
+        assert_fails FdvCouverture.clore(w_j(1), 19676, "systeme") matching "EtatInvalide"
+        assert_fails FdvCouverture.clore(w_j(1), 19000, "systeme") matching "Inconnu"
+        assert_fails FdvCouverture.balayer_echeances(w_j(1), 19676, 2000, "systeme") matching "HorsBornes"
+        // Cinq ans plus tard : l'échéance d'OBJ-C2-HS est dépassée, le retard est constaté.
+        assert ApiFinDeVie.en_retard("OBJ-C2-HS", w_j(1900))
+        assert ApiFinDeVie.balayer(w_j(1900), "systeme") >= 1
+        assert FdvFin.etat("OBJ-C2-HS") == "en_retard"
+        assert FdvCouverture.bilan(21575).retards == 1
+        assert FdvCouverture.bilan(18000).etat == "a_ouvrir"
+        // Ouverture et examen manuels, doublon.
+        assert FdvCouverture.ouvrir(w_j(2000), 21675, "systeme") == "ouverte"
+        assert_fails FdvCouverture.examiner(w_j(2000), 21675, "ORG-ALPHA", "analyste@ORG-ORBITE") matching "Habilitation"
+        assert FdvCouverture.examiner(w_j(2000), 21675, "ORG-BETA", "systeme") == 0
+        assert_fails FdvCouverture.examiner(w_j(2000), 21675, "ORG-BETA", "systeme") matching "Doublon"
+        assert FdvCouverture.clore(w_j(2000), 21675, "systeme") == 1
+    }
+}
+
+// ── FAÇADE : délégations et lectures.
+cell test FdvFacade {
+    rules {
+        assert !ApiFinDeVie.plan_conforme("OBJ-Z1")
+        assert ApiFinDeVie.plan("OBJ-Z1") == ""
+        assert !ApiFinDeVie.passive("OBJ-Z1")
+        assert !ApiFinDeVie.retrait_autorise("OBJ-Z1")
+        assert !ApiFinDeVie.mission_capturee("OBJ-Z1")
+        assert ApiFinDeVie.missions_de("OBJ-Z1") == []
+        assert !ApiFinDeVie.en_retard("OBJ-Z1", w_j(10000))
+        assert_fails ApiFinDeVie.fin_de_mission(w_j(1), "OBJ-Z1", "intrus") matching "Habilitation"
+        assert ApiFinDeVie.fin_de_mission(w_j(1), "OBJ-Z1", "chef_de_mission@ORG-ALPHA") == w_j(1) + 157680000000
+        assert ApiFinDeVie.en_retard("OBJ-Z1", w_j(1) + 157680000001)
+    }
+}

@@ -1,0 +1,97 @@
+// Corps de EscPriseEnCharge : la reprise par ORBITE doit être prise en charge par un analyste.
+flesh EscPriseEnCharge {
+    on ouvrir_prise(h, dossier, r, fin, par) {
+        require ApiAcces.a_le_role(par, "systeme") else Habilitation "{par} : ouverture de prise en charge réservée au système"
+        require rapprochement_de.get(dossier) == () else Doublon "prise en charge de {dossier} déjà ouverte"
+        require rapprochement_de.size < MAX_PRISES else Plein "plafond de {MAX_PRISES} prises en charge atteint"
+        let hi = to_int(h)
+        // Une reprise survient à l'échéance finale ou après (fin ≤ h) : l'analyste dispose alors de
+        // DELAI_PRISE_MS entiers ; une échéance encore à venir borne l'attente (voir NOTES, phase 3).
+        let lim = if to_int(fin) > hi { min(hi + DELAI_PRISE_MS, to_int(fin)) } else { hi + DELAI_PRISE_MS }
+        limite.set(dossier, Horodatage(lim))
+        ouverte_a.set(dossier, h)
+        rapprochement_de.set(dossier, to_string(r))
+        transition(dossier, "inexistante", "en_attente")
+        let n = try { ApiPasserelle.notifier(h, ApiRef.orbite(), r, "reprise a prendre en charge", "dossier {dossier} sur {r} : reprise a prendre en charge avant {lim}", 3) }
+        let suite = if n.error == () { "notifiee" } else { "notification refusee : {n.kind}" }
+        let _ = Journal.noter(h, "escalade", par, "prise en charge de {dossier} ouverte, limite {lim} ({suite})")
+        return "en_attente"
+    }
+    on prendre(h, dossier, par) {
+        require ApiAcces.a_le_role(par, "analyste") || ApiAcces.a_le_role(par, "direction") else Habilitation "{par} ne prend pas de reprise en charge"
+        let st = get_status(dossier) ?? "inexistante"
+        require st != "inexistante" else Inconnu "aucune prise en charge pour {dossier}"
+        if st == "en_attente" {
+            transition(dossier, "en_attente", "prise")
+        } else {
+            require st == "alerte_direction" else EtatInvalide "prise en charge de {dossier} en {st}"
+            transition(dossier, "alerte_direction", "prise")
+        }
+        analyste.set(dossier, "{h} | {par}")
+        let _ = Journal.noter(h, "escalade", par, "reprise {dossier} prise en charge")
+        return "prise"
+    }
+    on depasser(h) {
+        let passes = 0
+        for e in limite.entries {
+            if (get_status(e.key) ?? "inexistante") == "en_attente" && to_int(h) >= to_int(e.value) {
+                let d = e.key
+                let r = Rapprochement(rapprochement_de.get(d) ?? "")
+                transition(d, "en_attente", "alerte_direction")
+                let inc = try { ApiOperations.declarer_incident(h, "PEC-{d}", 3, "escalade", "reprise {d} sur {r} sans analyste apres {DELAI_PRISE_MS} ms", "systeme") }
+                incident.set(d, if inc.error == () { to_string(inc.value) } else { "refuse : {inc.kind}" })
+                let n = try { ApiPasserelle.notifier(h, ApiRef.orbite(), r, "alerte de direction", "reprise {d} sur {r} sans prise en charge : direction alertee", 3) }
+                let _ = Journal.noter(h, "escalade", "systeme", "prise en charge de {d} depassee : alerte de direction")
+                passes = passes + 1
+            }
+        }
+        return passes
+    }
+    on trancher(h, dossier, par) {
+        require ApiAcces.a_le_role(par, "systeme") || ApiAcces.a_le_role(par, "analyste") else Habilitation "{par} ne tranche pas de prise en charge"
+        let r0 = rapprochement_de.get(dossier)
+        require r0 != () else Inconnu "aucune prise en charge pour {dossier}"
+        let r = Rapprochement(r0)
+        let st = get_status(dossier) ?? "inexistante"
+        if st != "prise" && st != "en_attente" && st != "alerte_direction" { return st }
+        if EscVeille.couverte(r) {
+            if st == "prise" { transition(dossier, "prise", "tranchee") } else if st == "en_attente" { transition(dossier, "en_attente", "tranchee") } else { transition(dossier, "alerte_direction", "tranchee") }
+            let _ = Journal.noter(h, "escalade", par, "prise en charge de {dossier} tranchee")
+            return "tranchee"
+        }
+        let ecj = ApiConjonctions.etat(r)
+        let clos = ecj == "resolu" || ecj == "passe" || ecj == "collision"
+        if clos || to_int(h) >= to_int(ApiConjonctions.tca(r)) {
+            if st == "prise" { transition(dossier, "prise", "caduque") } else if st == "en_attente" { transition(dossier, "en_attente", "caduque") } else { transition(dossier, "alerte_direction", "caduque") }
+            let _ = Journal.noter(h, "escalade", par, "prise en charge de {dossier} caduque ({ecj})")
+            return "caduque"
+        }
+        return st
+    }
+    on a_traiter(h, par) {
+        require ApiAcces.a_le_role(par, "analyste") || ApiAcces.a_le_role(par, "superviseur") || ApiAcces.a_le_role(par, "direction") else Habilitation "{par} ne lit pas les prises en charge"
+        let res_p = []
+        for e in rapprochement_de.entries {
+            let st = get_status(e.key) ?? "inexistante"
+            if st == "en_attente" || st == "alerte_direction" || st == "prise" {
+                let lim = limite.get(e.key) ?? ""
+                let an = analyste.get(e.key) ?? ""
+                res_p.push("{e.key} | {e.value} | {st} | {lim} | {an}")
+            }
+        }
+        return res_p
+    }
+    on suivre(h) {
+        // trancher AVANT de dépasser : un arbitrage rendu avant la limite (décision arrêtée, veille
+        // couverte) vaut prise en charge, même s'il n'est constaté qu'au battement suivant.
+        let changes = 0
+        for d in rapprochement_de.keys {
+            let st = get_status(d) ?? "inexistante"
+            if st == "en_attente" || st == "alerte_direction" || st == "prise" {
+                let t = try { EscPriseEnCharge.trancher(h, d, "systeme") }
+                if t.error == () && t.value != st { changes = changes + 1 }
+            }
+        }
+        return changes + EscPriseEnCharge.depasser(h)
+    }
+}

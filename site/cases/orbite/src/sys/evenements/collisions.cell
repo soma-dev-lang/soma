@@ -1,0 +1,98 @@
+// evenements — INSTRUCTION DES COLLISIONS.
+// Une collision est l'échec que tout le protocole doit empêcher : il faut pouvoir dire, preuves
+// à l'appui, si la décision de coordination a été suivie (propriété 6). Dès le signalement, la
+// décision en vigueur sur le rapprochement est FIGÉE (objet désigné, état de la coordination,
+// plan d'évitement et son état, dernière pc, TCA) avant que quiconque ne la modifie. Après la
+// confirmation, un analyste instruit (verdict, à quatre yeux), puis la conformité transmet :
+// manquement de gravité 3 à l'opérateur dont l'objet désigné n'a pas manœuvré, dossier de
+// preuve exigé. Id = id de l'évènement de genre "collision".
+
+// Verdict de l'instruction : "decision_suivie" (le désigné a exécuté sa manœuvre, collision
+// malgré tout : erreur d'orbite ou de criblage), "decision_ignoree" (désigné sans exécution, ou
+// plan annulé sans réouverture), "sans_decision" (aucune désignation arrêtée : coordination
+// inachevée ou décision de ne pas manœuvrer), "hors_coordination" (aucun rapprochement connu :
+// impacteur non catalogué ou rapprochement non détecté par le criblage).
+cell type EvtVerdict = String where value == "decision_suivie" || value == "decision_ignoree" || value == "sans_decision" || value == "hors_coordination"
+
+// Instructions de collision : id = évènement.
+skeleton EvtCollisions {
+    const MAX_COLLISIONS = 100000
+    memory {
+        rapprochement_de: Map<String, Rapprochement> [persistent] // collision → rapprochement en cause ("" si aucun) ; écrit une fois par ouvrir
+        designe_alors: Map<String, Objet> [persistent]        // collision → objet désigné au signalement ("" si aucun)
+        decision_alors: Map<String, String> [persistent]      // collision → ApiCoordination.decision au signalement ("" si aucune)
+        coordination_alors: Map<String, String> [persistent]  // collision → état de la coordination au signalement
+        plan_alors: Map<String, String> [persistent]          // collision → plan d'évitement au signalement ("" si aucun)
+        etat_plan_alors: Map<String, String> [persistent]     // collision → état de ce plan au signalement
+        pc_alors: Map<String, Probabilite> [persistent]       // collision → dernière pc connue au signalement
+        tca_alors: Map<String, Horodatage> [persistent]       // collision → TCA du rapprochement
+        verdict: Map<String, EvtVerdict> [persistent]         // collision → verdict de l'instruction
+        instruction: Map<String, String> [persistent]         // collision → "h | par | valideur | motif"
+        manquement_de: Map<String, String> [persistent]       // collision → manquement constaté (ApiConformite.constater) ; écrit une fois
+        invariant rapprochement_de.size <= MAX_COLLISIONS
+        invariant manquement_de.size <= MAX_COLLISIONS
+    }
+    // Cycle de vie d'une instruction (id = évènement).
+    state collision {
+        initial: constatee
+        constatee -> instruite       // instruire : seulement évènement confirmé
+        constatee -> sans_objet      // classer : seulement évènement infirmé
+        instruite -> transmise       // transmettre : dossier de preuve gelé (règle : RespGels.gele, même id)
+    }
+    face {
+        // Ouvre l'instruction d'une collision signalée et fige la décision en vigueur sur `r` :
+        // ApiCoordination.decision (désigné, auteur, valideur, instant, motif) et .etat,
+        // ApiManoeuvres.plan_de et .etat, ApiConjonctions.pc et .tca ; pour r = "", seuls rapprochement_de = "" et designe_alors = "" sont écrits.
+        // Appelé par EvtEvenements.signaler seul. Renvoie l'objet désigné figé ("" si aucun).
+        // Refus : Existe (instruction déjà ouverte), Plein.
+        signal ouvrir(h: Horodatage, ev: String, r: Rapprochement) -> Objet
+            writes rapprochement_de, designe_alors, decision_alors, coordination_alors, plan_alors, etat_plan_alors, pc_alors, tca_alors
+            calls ApiCoordination.decision, ApiCoordination.etat, ApiManoeuvres.plan_de, ApiManoeuvres.etat, ApiConjonctions.pc, ApiConjonctions.tca, Journal.noter
+        // Rend le verdict d'une collision confirmée, au vu du constat figé et des traces
+        // d'exécution (ApiManoeuvres.etat du plan figé aujourd'hui, ApiObservation.manoeuvre_detectee
+        // sur l'objet désigné depuis le signalement de la coordination). Le verdict doit être
+        // cohérent avec le constat : "hors_coordination" exige r = "", "decision_suivie" et
+        // "decision_ignoree" exigent un désigné. Renvoie le verdict.
+        // Rôle exigé de `par` : "analyste" d'ORBITE ; `valideur` "superviseur" (ApiAcces.quatre_yeux).
+        // Refus : Inconnu, EtatInvalide (évènement non confirmé), Incoherent (verdict contraire
+        // au constat), MotifRequis, Habilitation, QuatreYeux.
+        signal instruire(h: Horodatage, ev: String, v: EvtVerdict, motif: String, par: String, valideur: String) -> EvtVerdict
+            writes verdict, instruction
+            reads rapprochement_de, designe_alors, plan_alors, tca_alors
+            moves constatee -> instruite when EvtEvenements.confirme
+            calls ApiAcces.a_le_role, ApiAcces.quatre_yeux, ApiManoeuvres.etat, ApiObservation.manoeuvre_detectee, EvtEvenements.etat, Journal.noter
+        // Classe l'instruction d'une collision infirmée. Appelé par EvtEvenements.infirmer seul.
+        // Renvoie "sans_objet". Refus : EtatInvalide.
+        signal classer(h: Horodatage, ev: String) -> String
+            moves constatee -> sans_objet when EvtEvenements.infirme
+            calls Journal.noter
+        // Transmet l'instruction : exige le dossier de preuve de l'évènement
+        // (EvtEvenements.dossier, gelé à la confirmation) ; pour "decision_ignoree", constate un manquement de gravité 3
+        // "decision_coordination_ignoree" à l'encontre du propriétaire de l'objet désigné
+        // (ApiRef.proprietaire, ApiConformite.constater, référence = évènement). Notifie les
+        // propriétaires et États des objets en cause (EvtNotifications.preparer, fait "collision",
+        // urgence 1). Renvoie "transmise".
+        // Rôle exigé de `par` : "conformite" d'ORBITE.
+        // Refus : Inconnu, EtatInvalide, Insuffisant (pas de dossier de preuve, ou l'évènement
+        // n'est plus sous gel : ApiResponsabilite.sous_gel(ev) faux), Habilitation.
+        signal transmettre(h: Horodatage, ev: String, par: String) -> String
+            writes manquement_de
+            reads verdict, designe_alors
+            moves instruite -> transmise when RespGels.gele
+            calls ApiAcces.a_le_role, ApiResponsabilite.sous_gel, EvtEvenements.dossier, EvtEvenements.objets, ApiRef.proprietaire, ApiConformite.constater, EvtNotifications.preparer, Journal.noter
+        // Rapprochement en cause figé au signalement ; "" si aucun ou pas une collision.
+        signal rapprochement(ev: String) -> Rapprochement
+            reads rapprochement_de
+        // État de l'instruction : "constatee", "instruite", "sans_objet", "transmise" ;
+        // "inconnue" si l'évènement n'est pas une collision.
+        signal etat(ev: String) -> String
+            reads rapprochement_de, collision
+        // Constat figé et verdict, une ligne "r | designe | decision | coordination | plan |
+        // etat_plan | pc | tca | verdict" : la décision qui fondait la situation au moment du choc. Lecture
+        // réservée : "analyste", "conformite", "direction" d'ORBITE ou "auditeur" ; les données
+        // sont communiquées par la responsabilité, pas d'ici. Refus : Inconnu, Habilitation.
+        signal constat(ev: String, par: String) -> String
+            reads rapprochement_de, designe_alors, decision_alors, coordination_alors, plan_alors, etat_plan_alors, pc_alors, tca_alors, verdict
+            calls ApiAcces.a_le_role
+    }
+}

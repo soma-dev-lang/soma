@@ -1,0 +1,35 @@
+// Entrée de contrôle du sous-système escalade : le contrat commun, les 20 façades,
+// puis les fichiers internes de escalade (un use sys::escalade::<fichier> par fichier, ci-dessous).
+use commun::types
+use commun::journal
+use commun::horloge
+use sys::acces::api
+use sys::conformite::api
+use sys::conjonctions::api
+use sys::coordination::api
+use sys::donnees::api
+use sys::ephemerides::api
+use sys::escalade::api
+use sys::evenements::api
+use sys::fin_de_vie::api
+use sys::lancements::api
+use sys::manoeuvres::api
+use sys::meteo::api
+use sys::observation::api
+use sys::operateurs::api
+use sys::operations::api
+use sys::passerelle::api
+use sys::priorites::api
+use sys::reentrees::api
+use sys::ref::api
+use sys::responsabilite::api
+use sys::escalade::bareme
+use sys::escalade::dossiers
+use sys::escalade::veille
+use sys::escalade::contacts
+use sys::escalade::relances
+use sys::escalade::diplomatie
+use sys::escalade::statistiques
+use sys::escalade::prise_en_charge
+use sys::escalade::concertation
+use sys::escalade::balayage

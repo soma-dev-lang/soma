@@ -1,0 +1,152 @@
+// RENTRÉES — notification des États : l'État d'immatriculation et l'État de tutelle du
+// propriétaire d'office, puis chaque État survolé par la fenêtre de rentrée (trace au sol
+// reportée dans ReeSurvol). Une notification par (campagne, État) ; elle suit les
+// révisions de la fenêtre, attend un accusé du point focal, est relancée, et ne bloque jamais
+// rien : un État silencieux passe « sans accusé » et ORBITE en est avertie.
+// Diffusion : un État autorisé par ApiDonnees.peut_recevoir reçoit l'avis complet (orbite,
+// masse, fondement) et chaque envoi est tracé (ApiDonnees.tracer) ; un État survolé non
+// autorisé reçoit l'avis réduit (fenêtre, zone, risque) — la sécurité au sol ne cède pas
+// au secret, les données orbitales si.
+
+// État d'une notification.
+cell type ReeEtatNotif = String where value == "a_envoyer" || value == "envoyee" || value == "accusee" || value == "relancee" || value == "sans_accuse" || value == "close"
+// Contenu envoyé : "complet" (données orbitales, ApiDonnees.peut_recevoir) ou "reduit".
+cell type ReeContenu = String where value == "complet" || value == "reduit"
+// Motif d'inscription : "office" (État d'immatriculation, État de tutelle du propriétaire) ou
+// "survol" (État sous la trace au sol de la fenêtre).
+// "majeur" : rentrée à risque majeur, tous les États participants (ApiRef.etats_participants).
+cell type ReeMotifInscription = String where value == "office" || value == "survol" || value == "majeur"
+
+skeleton ReeNotification {
+    const MAX_NOTIFICATIONS = 1000000
+    // États inscrits par campagne, au plus.
+    const MAX_ETATS = 200
+    // Délai d'accusé avant relance : 24 h, ou 1 h pour une campagne imminente ou à risque.
+    const DELAI_ACCUSE = 86400000
+    const DELAI_ACCUSE_URGENT = 3600000
+    // Révisions rediffusées par notification, au plus.
+    const MAX_VERSIONS = 500
+
+    memory {
+        // notification → campagne. Écrit une fois par `inscrire` à la création, jamais supprimé.
+        campagne_de: Map<String, String> [persistent]
+        // notification → État destinataire (son autorité : ApiRef.org_de_etat).
+        etat_de: Map<String, Etat> [persistent]
+        // "campagne|etat" → notification courante du couple (une seule non close à la fois).
+        cle: Map<String, String> [persistent]
+        // campagne → notifications inscrites.
+        par_campagne: Map<String, List<String>> [persistent]
+        motif: Map<String, ReeMotifInscription> [persistent]
+        // notification → numéro de la dernière révision envoyée (0 : jamais envoyée).
+        version: Map<String, Int> [persistent]
+        contenu: Map<String, ReeContenu> [persistent]
+        // notification → id du dernier message mis en file (ApiPasserelle.notifier).
+        message_de: Map<String, String> [persistent]
+        envoyee_le: Map<String, Horodatage> [persistent]
+        // notification → "h | par | mesures" de l'accusé (mesures de l'État : fermeture d'espace
+        // aérien, avis à la population, mise en alerte de la protection civile ; "" si aucune).
+        accuse: Map<String, String> [persistent]
+        invariant campagne_de.size <= MAX_NOTIFICATIONS
+        invariant cle.size <= MAX_NOTIFICATIONS
+        invariant version >= 0 && version <= MAX_VERSIONS
+    }
+
+    // Vie d'une notification (instance = id "NT-<n>"). Terminal : close.
+    state envoi {
+        initial: a_envoyer
+        a_envoyer -> envoyee        // diffuser : première mise en file vers l'autorité de l'État
+        envoyee -> accusee          // accuser
+        envoyee -> relancee         // relancer : pas d'accusé dans le délai
+        relancee -> accusee         // accuser
+        relancee -> sans_accuse     // relancer : second délai écoulé, ORBITE avertie
+        a_envoyer -> close          // clore, retirer : campagne terminée, ou État sorti de la trace
+        envoyee -> close            // clore (avis final : rentrée, annulation) ; retirer (avis de levée)
+        accusee -> close            // clore, retirer
+        relancee -> close           // clore, retirer
+        sans_accuse -> close        // clore, retirer
+    }
+
+    face {
+        // Inscrit des États à notifier pour une campagne (un par État ; un État dont la notification
+        // courante n'est pas close est ignoré, un État dont elle est close — sorti puis revenu sous
+        // la fenêtre — reçoit une NOUVELLE notification, `cle` pointe alors sur elle) : d'office
+        // l'État d'immatriculation et l'État de tutelle du propriétaire (ReeCampagne.prevoir), ou
+        // les États survolés (ReeSurvol.tracer). Chaque État doit être participant
+        // (ApiRef.etat_participant) ; un État non participant est journalisé et notifié par voie
+        // diplomatique hors ORBITE. Renvoie le nombre de notifications créées.
+        // Habilitation : par "analyste" ou "systeme" (rôles d'ORBITE).
+        // Refus : Inconnu (campagne), EtatInvalide (campagne terminée), Habilitation, Plein (MAX_ETATS
+        // pour la campagne, ou MAX_NOTIFICATIONS).
+        signal inscrire(h: Horodatage, campagne: String, etats: List<String>, motif_inscription: ReeMotifInscription, par: String) -> Int
+            writes campagne_de, etat_de, cle, par_campagne, motif, version
+            reads envoi
+            calls ApiAcces.a_le_role, ApiRef.etat_participant, ReeCampagne.etat, Journal.noter, next_id
+            ensures result >= 0
+
+        // Diffuse la fenêtre courante de la campagne à tous ses États inscrits : première mise en
+        // file pour les "a_envoyer", rediffusion de la révision pour les autres (état inchangé ;
+        // l'accusé porte sur la dernière version). Contenu : "complet" si ApiDonnees.peut_recevoir
+        // (org de l'État, objet, "", h), alors ApiDonnees.tracer ; "reduit" sinon. Messages
+        // ApiPasserelle.notifier avec r = "" (une rentrée n'est pas un rapprochement). Urgence du
+        // message : 3 si ReeRisque.a_risque, campagne "imminente", ou risque propre de l'État
+        // (ReeSurvol.victimes_sur) au-dessus du seuil de ReeRisque ; 2 sinon. Renvoie le nombre
+        // de messages mis en file.
+        // Habilitation : par "analyste" ou "systeme" (rôles d'ORBITE).
+        // Refus : Inconnu, Habilitation, Plein (file de la passerelle pleine, ou MAX_VERSIONS).
+        signal diffuser(h: Horodatage, campagne: String, par: String) -> Int
+            writes version, contenu, message_de, envoyee_le
+            reads par_campagne, campagne_de, etat_de
+            moves a_envoyer -> envoyee when ReeCampagne.ouverte || ReeCampagne.imminente via campagne_de
+            calls ApiAcces.a_le_role, ApiRef.org_de_etat, ApiDonnees.peut_recevoir, ApiDonnees.tracer, ApiPasserelle.notifier, ReeCampagne.etat, ReeCampagne.objet, ReeCampagne.fenetre, ReeCampagne.retrecissement, ReeRisque.a_risque, ReeSurvol.victimes_sur, Journal.noter
+            ensures result >= 0
+
+        // Accusé de réception par l'État destinataire, avec les mesures qu'il prend (`mesures`,
+        // texte libre, "" si aucune) : elles entrent au dossier de preuve. Renvoie "accusee".
+        // Habilitation : par "point_focal" ou "autorite" de l'État destinataire (rôle d'État,
+        // ApiAcces.agit_pour sur ApiRef.org_de_etat).
+        // Refus : Inconnu, EtatInvalide (ni "envoyee" ni "relancee"), Habilitation.
+        signal accuser(h: Horodatage, notification: String, mesures: String, par: String) -> ReeEtatNotif
+            writes accuse
+            reads etat_de
+            moves envoyee -> accusee, relancee -> accusee
+            calls ApiAcces.a_le_role, ApiAcces.agit_pour, ApiRef.org_de_etat, Journal.noter
+
+        // Relance des notifications sans accusé d'une campagne dont le délai (DELAI_ACCUSE, ou
+        // DELAI_ACCUSE_URGENT si imminente ou à risque) depuis le dernier envoi est écoulé :
+        // "envoyee" → "relancee" (nouveau message au point focal) ; "relancee" → "sans_accuse"
+        // (message d'urgence 3 à ORBITE, ApiRef.orbite, et manquement de l'État,
+        // ApiConformite.constater_etat, gravité 2 — 3 si la campagne est à risque — par "systeme" :
+        // la campagne continue sans cet accusé). Messages avec r = "". Appelé par ReeCampagne.balayer.
+        // Renvoie le nombre de notifications relancées ou passées sans accusé.
+        // Habilitation : par "systeme" (rôle d'ORBITE). Refus : Inconnu, Habilitation.
+        signal relancer(h: Horodatage, campagne: String, par: String) -> Int
+            writes message_de, envoyee_le
+            reads par_campagne, etat_de
+            moves envoyee -> relancee, relancee -> sans_accuse
+            calls ApiAcces.a_le_role, ApiRef.org_de_etat, ApiRef.orbite, ApiPasserelle.notifier, ApiConformite.constater_etat, ReeCampagne.etat, ReeRisque.a_risque, Journal.noter
+            ensures result >= 0
+
+        // Clôt toutes les notifications d'une campagne terminée : un avis final ("rentree" ou
+        // "annulee", `issue`) part vers chaque État déjà notifié, puis tout passe "close".
+        // Appelé par ReeCampagne (constater, annuler, prevoir), qui porte l'habilitation.
+        // Renvoie le nombre de notifications closes. Refus : Inconnu, Plein (file de la passerelle).
+        signal clore(h: Horodatage, campagne: String, issue: ReeEtatCampagne) -> Int
+            writes message_de
+            reads par_campagne, etat_de, version
+            moves a_envoyer -> close, envoyee -> close, accusee -> close, relancee -> close, sans_accuse -> close
+            calls ApiRef.org_de_etat, ApiPasserelle.notifier, Journal.noter
+            ensures result >= 0
+
+        // Lève les notifications de motif "survol" de la campagne dont l'État n'est plus dans
+        // `etats` (la fenêtre resserrée ne le survole plus) : avis de levée à l'État s'il avait
+        // été notifié, puis "close". Les notifications d'office ne sont jamais levées ici.
+        // Appelé par ReeSurvol.tracer, qui porte l'habilitation. Renvoie le nombre de levées.
+        // Refus : Inconnu, Plein (file de la passerelle).
+        signal retirer(h: Horodatage, campagne: String, etats: List<String>) -> Int
+            writes message_de
+            reads par_campagne, etat_de, motif, version
+            moves a_envoyer -> close, envoyee -> close, accusee -> close, relancee -> close, sans_accuse -> close
+            calls ApiRef.org_de_etat, ApiPasserelle.notifier, Journal.noter
+            ensures result >= 0
+    }
+}

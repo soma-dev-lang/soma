@@ -1,0 +1,562 @@
+use app
+use commun::journal_chair
+use commun::horloge_chair
+use sys::operations::chair::api
+use sys::operations::chair::incidents
+use sys::operations::chair::crise
+use sys::operations::chair::degrade
+use sys::operations::chair::secours
+use sys::operations::chair::changements
+use sys::operations::chair::continuite
+use sys::operations::chair::ronde
+use doublures::operations
+
+// Repères de temps : H0 = 1 800 000 000 000 ms ; 1 h = 3 600 000 ms ; 1 min = 60 000 ms.
+// T_U = 1 900 000 000 000 : TCA du rapprochement urgent "CJ-U" (voir doublures/operations.cell).
+
+cell Fx {
+    // Incident déclaré, qualifié (responsable exploitant1) et pris en charge à H0.
+    on incident_en_traitement(id: String, g: Gravite, ss: SousSysteme, eff: OpsEffet) {
+        let h = Horodatage(1800000000000)
+        let _ = OpsIncident.declarer(h, id, g, ss, "panne de {ss}", h - 600000, "exploitant1")
+        let _ = OpsIncident.qualifier(h + 300000, id, g, "calcul", eff, "exploitant1", "superviseur1")
+        return OpsIncident.prendre_en_charge(h + 400000, id, "exploitant1")
+    }
+    // Incident majeur avec cellule de crise active pilotée par direction1.
+    on crise_active(id: String) {
+        let _ = incident_en_traitement(id, 3, "conjonctions", "retardees")
+        return OpsCrise.activer(Horodatage(1800000600000), id, "direction1")
+    }
+    // Post-mortem soumis, relu et publié (rédacteur exploitant1).
+    on post_mortem_publie(id: String, h: Horodatage, decisions_pm: List<String>) {
+        let _ = OpsPostMortem.soumettre(h, id, "h | panne", "cause racine", decisions_pm, "exploitant1")
+        let _ = OpsPostMortem.relire(h, id, "superviseur2")
+        return OpsPostMortem.publier(h, id, "direction1")
+    }
+    // Changement normal approuvé (demandeur exploitant1).
+    on changement_approuve(c: String, risque_c: OpsRisque) {
+        let h = Horodatage(1800000000000)
+        let _ = OpsChangement.soumettre(h, c, "normal", "conjonctions", "correctif du criblage", "réinstaller la version n-1", "", "exploitant1")
+        let _ = OpsChangement.evaluer(h, c, risque_c, "exploitant2")
+        return OpsChangement.approuver(h, c, "superviseur1", "direction1")
+    }
+    // Bascule lancée au nom de la crise active de `id`.
+    on bascule_lancee(b: String, id: String) {
+        let h = Horodatage(1800000700000)
+        let _ = crise_active(id)
+        let _ = OpsBascule.demander(h, b, id, "exploitant1")
+        let _ = OpsBascule.autoriser(h, b, "direction1", "superviseur1")
+        return OpsBascule.lancer(h + 60000, b, 120000, "exploitant2")
+    }
+}
+
+// ── incident ordinaire : déclaration → qualification → traitement → repli → résolution →
+//    post-mortem (rédigé, renvoyé, relu, publié) → clôture
+cell test IncidentCycle {
+    rules {
+        let h = 1800000000000
+        assert ApiOperations.declarer_incident(h, "INC-1", 2, "ephemerides", "dépôts rejetés", "exploitant1") == "INC-1"
+        assert OpsIncident.etat("INC-1") == "declare"
+        assert ApiOperations.degrade("ephemerides")
+        assert !ApiOperations.degrade("meteo")
+        assert !ApiOperations.incident_majeur()
+        assert OpsIncident.qualifier(h + 60000, "INC-1", 2, "donnees", "retardees", "exploitant1", "superviseur1") == "qualifie"
+        assert OpsIncident.prendre_en_charge(h + 120000, "INC-1", "exploitant1") == "en_traitement"
+        assert OpsIncident.contourner(h + 180000, "INC-1", "dépôts manuels", "exploitant1") == "contourne"
+        assert OpsIncident.reprendre(h + 240000, "INC-1", "le repli sature", "exploitant1") == "en_traitement"
+        assert OpsIncident.fenetre_suspecte("INC-1", h + 300000) == [h, h + 300000]
+        assert OpsIncident.resoudre(h + 3600000, "INC-1", "exploitant1") == "resolu"
+        assert !ApiOperations.degrade("ephemerides")
+        assert OpsIncident.fenetre_suspecte("INC-1", h + 9000000) == [h, h + 3600000]
+        assert OpsPostMortem.etat("INC-1") == "a_rediger"
+        assert OpsPostMortem.soumettre(h + 7200000, "INC-1", "h | dépôts rejetés", "certificat expiré", [], "exploitant1") == "redige"
+        assert OpsPostMortem.ajouter_action(h + 7200000, "INC-1", "exploitant1", 20900, "surveiller l'expiration des certificats", "exploitant1") == 1
+        assert OpsPostMortem.renvoyer(h + 7300000, "INC-1", "chronologie trop courte", "superviseur1") == "a_rediger"
+        assert OpsPostMortem.soumettre(h + 7400000, "INC-1", "h | dépôts rejetés ; h+1h | certificat renouvelé", "certificat expiré", [], "exploitant1") == "redige"
+        assert OpsPostMortem.relire(h + 7500000, "INC-1", "superviseur1") == "relu"
+        assert_fails OpsPostMortem.ajouter_action(h + 7500000, "INC-1", "exploitant1", 20900, "trop tard", "exploitant1") matching "EtatInvalide"
+        assert_fails OpsIncident.clore(h + 7500000, "INC-1", "superviseur1") matching "EtatInvalide"
+        assert OpsPostMortem.publier(h + 7600000, "INC-1", "direction1") == "publie"
+        assert OpsIncident.clore(h + 7700000, "INC-1", "superviseur1") == "clos"
+        assert OpsIncident.etat("INC-1") == "clos"
+        assert OpsIncident.etat("INC-JAMAIS") == "inconnu"
+    }
+}
+
+// ── refus de sécurité et d'état sur les incidents
+cell test IncidentRefus {
+    rules {
+        let h = 1800000000000
+        assert_fails ApiOperations.declarer_incident(h, "INC-2", 2, "ref", "x", "intrus1") matching "Habilitation"
+        assert_fails ApiOperations.declarer_incident(h, "INC-2", 2, "ref", "x", "analyste1") matching "Habilitation"
+        assert_fails OpsIncident.declarer(h, "INC-2", 2, "ref", "", h, "exploitant1") matching "MotifRequis"
+        assert_fails OpsIncident.declarer(h, "INC-2", 2, "ref", "x", h + 1, "exploitant1") matching "HorsBornes"
+        assert_fails OpsIncident.declarer(h, "INC-2", 2, "ref", "x", h - 2592000001, "exploitant1") matching "HorsBornes"
+        assert OpsIncident.declarer(h, "INC-2", 2, "ref", "x", h, "systeme") == "INC-2"
+        assert_fails OpsIncident.declarer(h, "INC-2", 2, "ref", "x", h, "exploitant1") matching "Existe"
+        // qualification : superviseur seulement, responsable exploitant, dans le délai (1 h en gravité 2)
+        assert_fails OpsIncident.qualifier(h, "INC-2", 2, "panne", "aucune", "exploitant1", "exploitant2") matching "Habilitation"
+        assert_fails OpsIncident.qualifier(h, "INC-2", 2, "panne", "aucune", "analyste1", "superviseur1") matching "Habilitation"
+        assert_fails OpsIncident.qualifier(h + 3600001, "INC-2", 2, "panne", "aucune", "exploitant1", "superviseur1") matching "Delai"
+        assert OpsIncident.en_retard_qualification(h + 3600001) == ["INC-2"]
+        assert_fails OpsIncident.qualifier(h, "INC-X", 2, "panne", "aucune", "exploitant1", "superviseur1") matching "Inconnu"
+        assert OpsIncident.qualifier(h + 60000, "INC-2", 1, "panne", "aucune", "exploitant1", "superviseur1") == "qualifie"
+        assert_fails OpsIncident.qualifier(h + 60000, "INC-2", 1, "panne", "aucune", "exploitant1", "superviseur1") matching "EtatInvalide"
+        assert_fails OpsIncident.classer(h, "INC-2", "fausse alerte", "superviseur1") matching "EtatInvalide"
+        assert_fails OpsIncident.prendre_en_charge(h, "INC-2", "exploitant2") matching "Habilitation"
+        assert_fails OpsIncident.resoudre(h, "INC-2", "exploitant1") matching "EtatInvalide"
+        assert OpsIncident.prendre_en_charge(h, "INC-2", "exploitant1") == "en_traitement"
+        assert_fails OpsIncident.contourner(h, "INC-2", "", "exploitant1") matching "MotifRequis"
+        assert_fails OpsIncident.resoudre(h, "INC-2", "exploitant2") matching "Habilitation"
+        // gravité 1 sans effet : post-mortem dispensé, clôture directe
+        assert OpsIncident.resoudre(h + 60000, "INC-2", "superviseur2") == "resolu"
+        assert OpsPostMortem.etat("INC-2") == "dispense"
+        assert_fails OpsIncident.rouvrir(h, "INC-2", "", "superviseur1") matching "MotifRequis"
+        assert_fails OpsIncident.rouvrir(h, "INC-2", "récidive", "exploitant1") matching "Habilitation"
+        assert OpsIncident.rouvrir(h + 120000, "INC-2", "récidive", "superviseur1") == "en_traitement"
+        assert ApiOperations.degrade("ref")
+        assert OpsIncident.resoudre(h + 180000, "INC-2", "exploitant1") == "resolu"
+        assert_fails OpsIncident.clore(h, "INC-2", "exploitant1") matching "Habilitation"
+        assert OpsIncident.clore(h + 240000, "INC-2", "superviseur1") == "clos"
+        // fausse alerte de sonde : classement
+        assert OpsIncident.declarer(h, "INC-3", 1, "meteo", "sonde", h, "systeme") == "INC-3"
+        assert_fails OpsIncident.classer(h, "INC-3", "", "superviseur1") matching "MotifRequis"
+        assert OpsIncident.classer(h, "INC-3", "fausse alerte", "superviseur1") == "classe"
+        assert !ApiOperations.degrade("meteo")
+    }
+}
+
+// ── post-mortem : refus (rédacteur, quatre yeux, publication par la direction, décisions)
+cell test PostMortemRefus {
+    rules {
+        let h = 1800000000000
+        let _ = Fx.incident_en_traitement("INC-4", 2, "coordination", "faussees")
+        assert OpsIncident.resoudre(h + 3600000, "INC-4", "exploitant1") == "resolu"
+        assert_fails OpsPostMortem.soumettre(h, "INC-4", "c", "cause", ["CJ-1 | revue"], "exploitant2") matching "Habilitation"
+        assert_fails OpsPostMortem.soumettre(h, "INC-4", "c", "", ["CJ-1 | revue"], "exploitant1") matching "MotifRequis"
+        // effet « faussees » : la revue des décisions de la fenêtre suspecte est obligatoire
+        assert_fails OpsPostMortem.soumettre(h, "INC-4", "c", "cause", [], "exploitant1") matching "Insuffisant"
+        assert OpsPostMortem.soumettre(h, "INC-4", "c", "cause", ["CJ-1 | maintenue", "CJ-3 | revue", "CJ-FERME | annulee"], "exploitant1") == "redige"
+        assert_fails OpsPostMortem.relire(h, "INC-4", "exploitant1") matching "QuatreYeux"
+        assert_fails OpsPostMortem.relire(h, "INC-4", "exploitant2") matching "QuatreYeux"
+        assert_fails OpsPostMortem.publier(h, "INC-4", "direction1") matching "EtatInvalide"
+        assert OpsPostMortem.relire(h, "INC-4", "superviseur1") == "relu"
+        assert_fails OpsPostMortem.publier(h, "INC-4", "superviseur1") matching "Habilitation"
+        assert OpsPostMortem.publier(h, "INC-4", "direction1") == "publie"
+        // propriété 6 : sans dossier de preuve, pas de clôture
+        assert_fails OpsIncident.clore(h, "INC-4", "superviseur1") matching "EtatInvalide"
+        assert_fails OpsIncident.geler_preuves(h, "INC-4", "superviseur1") matching "Habilitation"
+        assert OpsIncident.geler_preuves(h, "INC-4", "conformite1") == "DOS-INC-4"
+        assert_fails OpsIncident.geler_preuves(h, "INC-4", "conformite1") matching "Existe"
+        assert OpsIncident.clore(h, "INC-4", "superviseur1") == "clos"
+        assert OpsPostMortem.en_retard(h + 999999999999) == []
+    }
+}
+
+// ── cellule de crise : convocation par un incident majeur, activation, mobilisation, décisions,
+//    information des États, levée, débriefing ; refus
+cell test CriseCycle {
+    rules {
+        let h = 1800000000000
+        assert ApiOperations.declarer_incident(h, "INC-5", 3, "conjonctions", "criblage arrêté", "exploitant1") == "INC-5"
+        assert ApiOperations.incident_majeur()
+        assert !ApiOperations.changement_autorise(h)
+        assert OpsCrise.etat("INC-5") == "convoquee"
+        assert OpsCrise.active_pour("INC-5")
+        assert !OpsCrise.active_pour("INC-AUCUN")
+        assert OpsCrise.etat("INC-AUCUN") == "inconnue"
+        assert OpsCrise.en_retard(h + 1800001) == ["INC-5"]
+        assert_fails OpsCrise.activer(h, "INC-5", "superviseur1") matching "Habilitation"
+        assert_fails OpsCrise.activer(h, "INC-AUCUN", "direction1") matching "Inconnu"
+        assert OpsCrise.activer(h + 60000, "INC-5", "direction1") == "active"
+        assert_fails OpsCrise.mobiliser(h, "INC-5", "analyste1", "direction2") matching "Habilitation"
+        assert_fails OpsCrise.mobiliser(h, "INC-5", "dyn@ORG-ALPHA", "direction1") matching "Habilitation"
+        assert OpsCrise.mobiliser(h, "INC-5", "analyste1", "direction1") == 2
+        assert_fails OpsCrise.mobiliser(h, "INC-5", "analyste1", "direction1") matching "Doublon"
+        assert_fails OpsCrise.decider(h, "INC-5", "arbitrage_centralise", "plus de criblage", "direction1", "direction1") matching "QuatreYeux"
+        assert_fails OpsCrise.decider(h, "INC-5", "arbitrage_centralise", "plus de criblage", "direction1", "exploitant1") matching "QuatreYeux"
+        assert_fails OpsCrise.decider(h, "INC-5", "arbitrage_centralise", "", "direction1", "superviseur1") matching "MotifRequis"
+        assert_fails OpsCrise.decider(h, "INC-5", "arbitrage_centralise", "x", "direction2", "superviseur1") matching "Habilitation"
+        assert !ApiOperations.arbitrage_centralise()
+        assert OpsCrise.decider(h, "INC-5", "arbitrage_centralise", "plus de criblage", "direction1", "superviseur1") == 1
+        assert ApiOperations.arbitrage_centralise()
+        // trois États participants, dont un sans organisation : journalisé, pas servi
+        assert_fails OpsCrise.informer_etats(h, "INC-5", "", "direction1") matching "MotifRequis"
+        assert_fails OpsCrise.informer_etats(h, "INC-5", "point", "exploitant1") matching "Habilitation"
+        assert OpsCrise.informer_etats(h + 120000, "INC-5", "service de criblage arrêté", "direction1") == 2
+        assert OpsCrise.etats_informes_de("INC-5") == ["ALD", "BRV"]
+        // pas de levée tant que l'incident n'est pas résolu
+        assert_fails OpsCrise.lever(h, "INC-5", "direction1") matching "EtatInvalide"
+        let _ = OpsIncident.qualifier(h + 300000, "INC-5", 3, "calcul", "retardees", "exploitant1", "superviseur1")
+        let _ = OpsIncident.prendre_en_charge(h + 300000, "INC-5", "exploitant1")
+        assert OpsIncident.resoudre(h + 7200000, "INC-5", "exploitant1") == "resolu"
+        assert !ApiOperations.incident_majeur()
+        assert_fails OpsIncident.clore(h + 7200000, "INC-5", "direction1") matching "EtatInvalide"
+        assert_fails OpsCrise.lever(h + 7200000, "INC-5", "direction2") matching "Habilitation"
+        assert OpsCrise.lever(h + 7300000, "INC-5", "direction1") == "levee"
+        assert !ApiOperations.arbitrage_centralise()
+        assert_fails OpsCrise.debriefer(h, "INC-5", "", "direction1") matching "MotifRequis"
+        assert OpsCrise.debriefer(h + 7400000, "INC-5", "astreinte trop lente", "direction1") == "debriefee"
+        // une récidive est un nouvel incident
+        assert_fails OpsCrise.convoquer(h, "INC-5", "systeme") matching "EtatInvalide"
+        // gravité 3 : clôture par la direction
+        assert Fx.post_mortem_publie("INC-5", h + 7500000, []) == "publie"
+        assert_fails OpsIncident.clore(h + 7600000, "INC-5", "superviseur1") matching "Habilitation"
+        assert OpsIncident.clore(h + 7600000, "INC-5", "direction1") == "clos"
+    }
+}
+
+// ── requalification : une crise convoquée est annulée quand la gravité baisse
+cell test CriseAnnulee {
+    rules {
+        let h = 1800000000000
+        assert OpsIncident.declarer(h, "INC-6", 3, "passerelle", "file bloquée", h, "exploitant1") == "INC-6"
+        assert OpsIncident.qualifier(h + 60000, "INC-6", 2, "diffusion", "retardees", "exploitant1", "superviseur1") == "qualifie"
+        assert OpsCrise.etat("INC-6") == "annulee"
+        assert !ApiOperations.incident_majeur()
+        assert_fails OpsCrise.activer(h, "INC-6", "direction1") matching "EtatInvalide"
+    }
+}
+
+// ── information périodique des États par la ronde pendant une crise active
+cell test RondeCrise {
+    rules {
+        let h = 1800000000000
+        let _ = Fx.crise_active("INC-7")
+        // la crise n'a jamais informé : due 2 h après sa convocation
+        assert ApiOperations.balayer(h + 3600000, "systeme") == 0
+        assert ApiOperations.balayer(h + 7300000, "systeme") == 1
+        assert OpsCrise.etats_informes_de("INC-7") == ["ALD", "BRV"]
+        assert ApiOperations.balayer(h + 7400000, "systeme") == 0
+        assert OpsRonde.derniere_ronde() == h + 7400000
+        assert_fails ApiOperations.balayer(h + 7300000, "systeme") matching "HorsBornes"
+        assert_fails ApiOperations.balayer(h + 7500000, "exploitant1") matching "Habilitation"
+    }
+}
+
+// ── mode dégradé : décret, refus, prolongation à quatre yeux, réexamen, levée
+cell test Degradation {
+    rules {
+        let h = 1800000000000
+        let _ = Fx.incident_en_traitement("INC-8", 2, "conjonctions", "retardees")
+        assert_fails OpsDegradation.decreter(h, "conjonctions", ["criblage_reduit"], "INC-8", "analyste1") matching "Habilitation"
+        assert_fails OpsDegradation.decreter(h, "conjonctions", [], "INC-8", "exploitant1") matching "Incoherent"
+        assert_fails OpsDegradation.decreter(h, "conjonctions", ["capteurs_partenaires"], "INC-8", "exploitant1") matching "Incoherent"
+        assert_fails OpsDegradation.decreter(h, "conjonctions", ["criblage_reduit"], "INC-X", "exploitant1") matching "Inconnu"
+        assert_fails OpsDegradation.decreter(h, "observation", ["capteurs_partenaires"], "INC-8", "exploitant1") matching "EtatInvalide"
+        // lecture seule : seulement sous crise active
+        assert_fails OpsDegradation.decreter(h, "conjonctions", ["lecture_seule"], "INC-8", "exploitant1") matching "Habilitation"
+        assert OpsDegradation.decreter(h, "conjonctions", ["criblage_reduit"], "INC-8", "exploitant1") == 1
+        assert OpsDegradation.decreter(h + 60000, "conjonctions", ["notification_manuelle", "criblage_reduit"], "INC-8", "superviseur1") == 2
+        assert OpsDegradation.replis_de("conjonctions") == ["criblage_reduit", "notification_manuelle"]
+        assert OpsDegradation.est_degrade("conjonctions")
+        assert OpsDegradation.a_reexaminer(h + 259199999) == []
+        assert OpsDegradation.a_reexaminer(h + 259200000) == ["conjonctions"]
+        assert_fails OpsDegradation.prolonger(h, "conjonctions", "réparation longue", "superviseur1", "superviseur2") matching "QuatreYeux"
+        assert_fails OpsDegradation.prolonger(h, "conjonctions", "", "superviseur1", "direction1") matching "MotifRequis"
+        assert_fails OpsDegradation.prolonger(h, "meteo", "x", "superviseur1", "direction1") matching "EtatInvalide"
+        assert OpsDegradation.prolonger(h + 259200000, "conjonctions", "réparation longue", "superviseur1", "direction1") == h + 518400000
+        assert OpsDegradation.a_reexaminer(h + 259200000) == []
+        // levée : pas tant que l'incident vise encore le sous-système
+        assert_fails OpsDegradation.lever(h, "conjonctions", true, "exploitant1", "superviseur1") matching "EtatInvalide"
+        let _ = OpsIncident.resoudre(h + 3600000, "INC-8", "exploitant1")
+        assert ApiOperations.degrade("conjonctions")
+        assert_fails OpsDegradation.lever(h, "conjonctions", true, "exploitant1", "exploitant2") matching "QuatreYeux"
+        assert_fails OpsDegradation.lever(h, "conjonctions", false, "exploitant1", "superviseur1") matching "Insuffisant"
+        assert OpsDegradation.lever(h + 3700000, "conjonctions", true, "exploitant1", "superviseur1") == "nominal"
+        assert !ApiOperations.degrade("conjonctions")
+        assert OpsDegradation.replis_de("conjonctions") == []
+    }
+}
+
+// ── sonde de couverture des capteurs (moins de 3 en service)
+cell test Couverture {
+    rules {
+        let h = 1800000000000
+        mock ApiObservation.capteurs_en_service 2
+        assert ApiOperations.balayer(h, "systeme") == 1
+        assert OpsDegradation.est_degrade("observation")
+        assert OpsDegradation.replis_de("observation") == ["covariances_elargies", "capteurs_partenaires"]
+        assert OpsIncident.etat("COUV-{h}") == "declare"
+        assert ApiOperations.degrade("observation")
+        // pas de second incident à la ronde suivante
+        assert ApiOperations.balayer(h + 60000, "systeme") == 0
+        assert OpsIncident.etat("COUV-{h + 60000}") == "inconnu"
+        assert_fails OpsDegradation.constater_couverture(h, "exploitant1") matching "Habilitation"
+    }
+}
+
+// ── bascule de secours : demande sous crise active, autorisation à quatre yeux, lancement,
+//    confirmation sur le secours, retour au primaire
+cell test BasculeCycle {
+    rules {
+        let h = 1800000700000
+        let _ = Fx.incident_en_traitement("INC-9", 2, "operations", "aucune")
+        assert_fails OpsBascule.demander(h, "B-0", "INC-9", "exploitant1") matching "Inconnu"
+        let _ = Fx.crise_active("INC-10")
+        assert_fails OpsBascule.demander(h, "B-1", "INC-10", "analyste1") matching "Habilitation"
+        assert OpsBascule.demander(h, "B-1", "INC-10", "exploitant1") == "B-1"
+        assert OpsBascule.etat("B-1") == "demandee"
+        assert_fails OpsBascule.demander(h, "B-1", "INC-10", "exploitant1") matching "Existe"
+        assert_fails OpsBascule.autoriser(h, "B-1", "superviseur1", "superviseur2") matching "Habilitation"
+        assert_fails OpsBascule.autoriser(h, "B-1", "direction1", "direction2") matching "QuatreYeux"
+        assert_fails OpsBascule.autoriser(h, "B-X", "direction1", "superviseur1") matching "Inconnu"
+        assert_fails OpsBascule.lancer(h, "B-1", 1000, "exploitant1") matching "EtatInvalide"
+        assert OpsBascule.autoriser(h, "B-1", "direction1", "superviseur1") == "autorisee"
+        assert_fails OpsBascule.lancer(h, "B-1", 300001, "exploitant1") matching "HorsBornes"
+        assert_fails OpsBascule.lancer(h, "B-1", 1000, "direction1") matching "Habilitation"
+        assert OpsBascule.lancer(h + 60000, "B-1", 120000, "exploitant1") == "en_cours"
+        assert OpsBascule.en_transition()
+        assert ApiOperations.degrade("meteo")
+        assert !ApiOperations.changement_autorise(h + 60000)
+        assert_fails OpsBascule.confirmer(h, "B-1", "exploitant1", "exploitant2") matching "QuatreYeux"
+        assert OpsBascule.confirmer(h + 1860000, "B-1", "exploitant1", "superviseur1") == "sur_secours"
+        assert OpsBascule.actif() == "secours"
+        assert !OpsBascule.en_transition()
+        assert OpsBascule.duree_reprise("B-1") == 1800000
+        assert_fails OpsBascule.rapatrier(h, "B-1", "exploitant1", "superviseur1") matching "Habilitation"
+        assert OpsBascule.rapatrier(h + 3600000, "B-1", "direction1", "superviseur1") == "retour_en_cours"
+        assert OpsBascule.confirmer(h + 4000000, "B-1", "exploitant2", "superviseur2") == "terminee"
+        assert OpsBascule.actif() == "primaire"
+        assert OpsBascule.etat("B-1") == "terminee"
+        assert OpsBascule.etat("B-Z") == "inconnue"
+        assert OpsBascule.duree_reprise("B-Z") == -1
+    }
+}
+
+// ── bascule en échec : le primaire garde la main, un incident majeur est déclaré
+cell test BasculeEchec {
+    rules {
+        let h = 1800000700000
+        assert Fx.bascule_lancee("B-2", "INC-11") == "en_cours"
+        assert_fails OpsBascule.constater_echec(h, "B-2", "", "exploitant1") matching "MotifRequis"
+        assert OpsBascule.constater_echec(h + 600000, "B-2", "réplication corrompue", "exploitant1") == "echouee"
+        assert !OpsBascule.en_transition()
+        assert OpsBascule.actif() == "primaire"
+        assert OpsIncident.etat("BASC-B-2-{h + 600000}") == "declare"
+        assert ApiOperations.degrade("operations")
+        // une bascule annulée avant lancement
+        assert OpsBascule.demander(h + 700000, "B-3", "INC-11", "direction1") == "B-3"
+        assert_fails OpsBascule.annuler(h, "B-3", "inutile", "exploitant2") matching "Habilitation"
+        assert OpsBascule.annuler(h + 800000, "B-3", "inutile", "direction1") == "annulee"
+    }
+}
+
+// ── gels programmés vus par la ronde
+cell test GelProgramme {
+    rules {
+        let h = 1800000000000
+        assert_fails OpsGel.programmer(h, "G-1", h + 3600000, h + 7200000, "rentrée majeure", "superviseur1") matching "Habilitation"
+        assert_fails OpsGel.programmer(h, "G-1", h + 3600000, h + 3600000, "rentrée majeure", "direction1") matching "HorsBornes"
+        assert_fails OpsGel.programmer(h, "G-1", h - 1, h + 7200000, "rentrée majeure", "direction1") matching "HorsBornes"
+        assert_fails OpsGel.programmer(h, "G-1", h, h + 1209600001, "rentrée majeure", "direction1") matching "HorsBornes"
+        assert_fails OpsGel.programmer(h, "G-1", h + 3600000, h + 7200000, "", "direction1") matching "MotifRequis"
+        assert OpsGel.programmer(h, "G-1", h + 3600000, h + 7200000, "rentrée majeure", "direction1") == "G-1"
+        assert ApiOperations.changement_autorise(h)
+        assert !ApiOperations.changement_autorise(h + 3600000)
+        assert_fails OpsGel.entrer_en_vigueur(h, "G-1", "exploitant1") matching "Delai"
+        assert ApiOperations.balayer(h + 3600000, "systeme") == 1
+        assert !ApiOperations.changement_autorise(h + 3700000)
+        assert_fails OpsGel.lever(h + 3700000, "G-1", "fin anticipée", "systeme") matching "Habilitation"
+        assert_fails OpsGel.lever(h + 3700000, "G-1", "", "direction1") matching "MotifRequis"
+        assert ApiOperations.balayer(h + 7200000, "systeme") == 1
+        assert ApiOperations.changement_autorise(h + 7200000)
+        assert OpsGel.programmer(h, "G-2", h + 3600000, h + 7200000, "exercice", "direction1") == "G-2"
+        assert OpsGel.annuler(h, "G-2", "exercice reporté", "direction1") == "annule"
+        assert_fails OpsGel.annuler(h, "G-X", "x", "direction1") matching "Inconnu"
+        assert ApiOperations.changement_autorise(h + 3600000)
+    }
+}
+
+// ── gels d'urgence : rapprochement de niveau 3 à moins de 6 h du TCA
+cell test GelUrgence {
+    rules {
+        let tu = 1900000000000
+        // un rapprochement urgent gèle déjà avant la ronde
+        assert ApiOperations.changement_autorise(tu - 21600001)
+        assert !ApiOperations.changement_autorise(tu - 7200000)
+        assert_fails OpsGelUrgence.armer(tu - 7200000, "CJ-FAIBLE", "systeme") matching "NonEligible"
+        assert_fails OpsGelUrgence.armer(tu - 7200000, "CJ-LOIN", "systeme") matching "NonEligible"
+        assert_fails OpsGelUrgence.armer(tu - 7200000, "CJ-CLOS", "systeme") matching "EtatInvalide"
+        assert_fails OpsGelUrgence.armer(tu - 7200000, "CJ-INCONNU-1", "systeme") matching "Inconnu"
+        assert_fails OpsGelUrgence.armer(tu + 1, "CJ-U", "systeme") matching "Echu"
+        assert_fails OpsGelUrgence.armer(tu - 7200000, "CJ-U", "analyste1") matching "Habilitation"
+        assert ApiOperations.balayer(tu - 7200000, "systeme") == 1
+        assert OpsGelUrgence.etat_de("CJ-U") == "arme"
+        assert_fails OpsGelUrgence.armer(tu - 7100000, "CJ-U", "exploitant1") matching "EtatInvalide"
+        // levée au plus tôt à TCA + 1 h (le rapprochement reste en alerte dans la doublure)
+        assert_fails OpsGelUrgence.lever(tu + 60000, "CJ-U", "superviseur1") matching "EtatInvalide"
+        assert !ApiOperations.changement_autorise(tu + 3600000)
+        assert OpsGelUrgence.a_lever(tu + 3600001) == ["CJ-U"]
+        assert ApiOperations.balayer(tu + 3600001, "systeme") == 1
+        assert OpsGelUrgence.etat_de("CJ-U") == "leve"
+        assert ApiOperations.changement_autorise(tu + 3600001)
+        assert_fails OpsGelUrgence.armer(tu - 7200000, "CJ-1", "exploitant1") matching "NonEligible"
+    }
+}
+
+// ── changement normal : soumission → évaluation → approbation à quatre yeux → déploiement →
+//    vérification ; refus
+cell test ChangementNormal {
+    rules {
+        let h = 1800000000000
+        assert_fails OpsChangement.soumettre(h, "C-1", "normal", "conjonctions", "d", "r", "", "superviseur1") matching "Habilitation"
+        assert_fails OpsChangement.soumettre(h, "C-1", "normal", "conjonctions", "d", "", "", "exploitant1") matching "MotifRequis"
+        assert_fails OpsChangement.soumettre(h, "C-1", "normal", "conjonctions", "d", "r", "INC-1", "exploitant1") matching "Incoherent"
+        assert_fails OpsChangement.soumettre(h, "C-1", "urgence", "conjonctions", "d", "r", "", "exploitant1") matching "Incoherent"
+        assert OpsChangement.soumettre(h, "C-1", "normal", "conjonctions", "nouvelle version", "version n-1", "", "exploitant1") == "C-1"
+        assert_fails OpsChangement.soumettre(h, "C-1", "normal", "conjonctions", "d", "r", "", "exploitant1") matching "Existe"
+        assert_fails OpsChangement.evaluer(h, "C-1", "eleve", "exploitant1") matching "Habilitation"
+        assert OpsChangement.evaluer(h, "C-1", "eleve", "exploitant2") == "evalue"
+        assert_fails OpsChangement.approuver(h, "C-1", "exploitant2", "direction1") matching "Habilitation"
+        assert_fails OpsChangement.approuver(h, "C-1", "superviseur1", "superviseur1") matching "QuatreYeux"
+        // risque élevé : la direction contre-signe
+        assert_fails OpsChangement.approuver(h, "C-1", "superviseur1", "superviseur2") matching "QuatreYeux"
+        assert OpsChangement.approuver(h, "C-1", "superviseur1", "direction1") == "approuve"
+        assert_fails OpsChangement.deployer(h, "C-1", "exploitant1") matching "Habilitation"
+        assert OpsChangement.deployer(h, "C-1", "exploitant2") == "en_deploiement"
+        assert_fails OpsChangement.achever(h, "C-1", "exploitant1") matching "Habilitation"
+        assert OpsChangement.achever(h + 600000, "C-1", "exploitant2") == "deploye"
+        assert OpsChangement.non_verifies(h + 87000000) == []
+        assert OpsChangement.non_verifies(h + 87000001) == ["C-1"]
+        assert_fails OpsChangement.verifier(h, "C-1", "exploitant1") matching "QuatreYeux"
+        assert OpsChangement.verifier(h + 3600000, "C-1", "superviseur1") == "clos"
+        assert OpsChangement.etat("C-1") == "clos"
+        assert OpsChangement.etat("C-X") == "inconnu"
+        // rejet et retrait
+        let _ = OpsChangement.soumettre(h, "C-2", "normal", "meteo", "d", "r", "", "exploitant1")
+        assert_fails OpsChangement.rejeter(h, "C-2", "inutile", "superviseur1") matching "EtatInvalide"
+        assert_fails OpsChangement.retirer(h, "C-2", "inutile", "exploitant2") matching "Habilitation"
+        assert OpsChangement.retirer(h, "C-2", "inutile", "exploitant1") == "retire"
+        let _ = OpsChangement.soumettre(h, "C-3", "normal", "meteo", "d", "r", "", "exploitant1")
+        let _ = OpsChangement.evaluer(h, "C-3", "faible", "exploitant2")
+        assert OpsChangement.rejeter(h, "C-3", "trop risqué", "superviseur1") == "rejete"
+    }
+}
+
+// ── changement normal suspendu par un gel, un gel d'urgence, un incident majeur ; demandeur inactif
+cell test ChangementSuspendu {
+    rules {
+        let h = 1800000000000
+        let _ = Fx.changement_approuve("C-4", "faible")
+        let _ = OpsGel.programmer(h, "G-3", h + 3600000, h + 7200000, "lancement habité", "direction1")
+        assert_fails OpsChangement.deployer(h + 3600000, "C-4", "exploitant2") matching "Suspendu"
+        assert_fails OpsChangement.deployer(1900000000000 - 3600000, "C-4", "exploitant2") matching "Suspendu"
+        let _ = OpsIncident.declarer(h, "INC-12", 3, "ref", "catalogue corrompu", h, "exploitant1")
+        assert_fails OpsChangement.deployer(h, "C-4", "exploitant2") matching "Suspendu"
+    }
+}
+
+cell test ChangementDemandeurInactif {
+    rules {
+        let h = 1800000000000
+        let _ = Fx.changement_approuve("C-5", "faible")
+        mock ApiAcces.role_de "aucun"
+        assert_fails OpsChangement.deployer(h, "C-5", "exploitant2") matching "EtatInvalide"
+    }
+}
+
+// ── changement d'urgence : passe le gel et l'incident majeur, pas une bascule ; retour arrière
+cell test ChangementUrgence {
+    rules {
+        let h = 1800000000000
+        let _ = Fx.incident_en_traitement("INC-13", 3, "conjonctions", "retardees")
+        assert_fails OpsChangement.soumettre(h, "C-6", "urgence", "ref", "correctif", "retour", "INC-13", "exploitant1") matching "Incoherent"
+        assert_fails OpsChangement.soumettre(h, "C-6", "urgence", "conjonctions", "correctif", "retour", "INC-X", "exploitant1") matching "Inconnu"
+        assert OpsChangement.soumettre(h, "C-6", "urgence", "conjonctions", "correctif", "retour", "INC-13", "exploitant1") == "C-6"
+        assert_fails OpsChangement.evaluer(h, "C-6", "faible", "exploitant2") matching "EtatInvalide"
+        assert_fails OpsChangement.approuver_urgence(h, "C-6", "superviseur1", "superviseur2") matching "QuatreYeux"
+        assert OpsChangement.approuver_urgence(h, "C-6", "superviseur1", "direction1") == "approuve_urgence"
+        assert ApiOperations.incident_majeur()
+        // le demandeur peut déployer son correctif d'urgence
+        assert OpsChangement.deployer(h, "C-6", "exploitant1") == "en_deploiement"
+        assert_fails OpsChangement.revenir_en_arriere(h, "C-6", "", "exploitant1") matching "MotifRequis"
+        assert OpsChangement.revenir_en_arriere(h, "C-6", "régression", "exploitant1") == "retour_arriere"
+        assert OpsChangement.constater_retour(h, "C-6", "exploitant1") == "clos_echec"
+        // l'urgence n'est approuvée que si l'incident est en traitement ou contourné
+        let _ = OpsChangement.soumettre(h, "C-7", "urgence", "conjonctions", "correctif 2", "retour", "INC-13", "exploitant1")
+        let _ = OpsIncident.resoudre(h + 3600000, "INC-13", "exploitant1")
+        assert_fails OpsChangement.approuver_urgence(h, "C-7", "superviseur1", "direction1") matching "EtatInvalide"
+        assert OpsChangement.retirer(h, "C-7", "incident résolu sans lui", "superviseur1") == "retire"
+    }
+}
+
+cell test ChangementUrgenceBascule {
+    rules {
+        let h = 1800000000000
+        let _ = Fx.bascule_lancee("B-4", "INC-14")
+        let _ = OpsChangement.soumettre(h, "C-8", "urgence", "conjonctions", "correctif", "retour", "INC-14", "exploitant1")
+        let _ = OpsChangement.approuver_urgence(h, "C-8", "superviseur1", "direction1")
+        assert_fails OpsChangement.deployer(h, "C-8", "exploitant1") matching "EtatInvalide"
+    }
+}
+
+// ── tests de continuité
+cell test Continuite {
+    rules {
+        let h = 1800000000000
+        assert OpsTest.en_retard(h) == ["alerte_bout_en_bout", "bascule_a_blanc", "indisponibilite_equipe", "perte_capteurs", "perte_passerelle", "restauration_sauvegarde"]
+        assert_fails OpsTest.planifier(h, "T-1", "bascule_a_blanc", h + 3600000, "exploitant1", "exploitant2") matching "Habilitation"
+        assert_fails OpsTest.planifier(h, "T-1", "bascule_a_blanc", h - 1, "exploitant1", "superviseur1") matching "HorsBornes"
+        assert OpsTest.planifier(h, "T-1", "bascule_a_blanc", h + 3600000, "exploitant1", "superviseur1") == "T-1"
+        assert OpsTest.etat("T-1") == "planifie"
+        assert OpsTest.etat("T-X") == "inconnu"
+        assert_fails OpsTest.demarrer(h, "T-1", "exploitant1") matching "Delai"
+        assert_fails OpsTest.demarrer(h + 3600000, "T-1", "exploitant2") matching "Habilitation"
+        assert OpsTest.demarrer(h + 3600000, "T-1", "exploitant1") == "en_cours"
+        assert_fails OpsTest.rapporter(h, "T-1", "reussi", 14400001, [], "exploitant1", "superviseur1") matching "Incoherent"
+        assert_fails OpsTest.rapporter(h, "T-1", "reussi", 1000, ["écart"], "exploitant1", "superviseur1") matching "Incoherent"
+        assert_fails OpsTest.rapporter(h, "T-1", "reussi", 1000, [], "exploitant1", "exploitant2") matching "QuatreYeux"
+        assert OpsTest.rapporter(h + 7200000, "T-1", "reussi", 3600000, [], "exploitant1", "superviseur1") == "reussi"
+        assert OpsTest.a_jour("bascule_a_blanc", h + 7200000)
+        assert !OpsTest.a_jour("bascule_a_blanc", h + 7200000 + 31536000000)
+        assert !contains(OpsTest.en_retard(h + 7200000), "bascule_a_blanc")
+        assert OpsTest.etat("T-1") == "termine"
+        // urgence réelle : le test ne démarre pas, ou s'interrompt
+        assert OpsTest.planifier(h, "T-2", "perte_passerelle", h, "exploitant1", "superviseur1") == "T-2"
+        assert OpsTest.demarrer(h, "T-2", "exploitant1") == "en_cours"
+        assert_fails OpsTest.interrompre(h, "T-2", "urgence", "exploitant2") matching "Habilitation"
+        assert OpsTest.interrompre(h, "T-2", "rapprochement de niveau 3", "systeme") == "interrompu"
+        let _ = OpsIncident.declarer(h, "INC-15", 3, "ref", "catalogue corrompu", h, "exploitant1")
+        assert OpsTest.planifier(h, "T-3", "perte_capteurs", h, "exploitant1", "superviseur1") == "T-3"
+        assert_fails OpsTest.demarrer(h, "T-3", "exploitant1") matching "Suspendu"
+        assert_fails OpsTest.annuler(h, "T-3", "", "superviseur1") matching "MotifRequis"
+        assert OpsTest.annuler(h, "T-3", "incident majeur", "superviseur1") == "annule"
+    }
+}
+
+// ── scénario métier complet : incident majeur sur le criblage → cellule de crise → arbitrage
+//    centralisé et mode dégradé → correctif d'urgence pendant l'incident majeur → résolution →
+//    levée de la crise et du mode dégradé → post-mortem des décisions faussées → preuves → clôture
+cell test ScenarioCriblageFaux {
+    rules {
+        let h = 1800000000000
+        assert ApiOperations.declarer_incident(h, "INC-20", 3, "conjonctions", "pc sous-estimées d'un facteur 100", "systeme") == "INC-20"
+        assert OpsIncident.qualifier(h + 300000, "INC-20", 3, "calcul", "faussees", "exploitant1", "superviseur1") == "qualifie"
+        assert OpsIncident.prendre_en_charge(h + 360000, "INC-20", "exploitant1") == "en_traitement"
+        assert OpsCrise.activer(h + 600000, "INC-20", "direction1") == "active"
+        assert OpsCrise.decider(h + 660000, "INC-20", "arbitrage_centralise", "réponses des opérateurs fondées sur des pc fausses", "direction1", "superviseur1") == 1
+        assert OpsCrise.decider(h + 720000, "INC-20", "mode_degrade", "criblage réduit et lecture seule", "direction1", "superviseur1") == 2
+        assert OpsDegradation.decreter(h + 780000, "conjonctions", ["criblage_reduit", "lecture_seule"], "INC-20", "exploitant2") == 2
+        assert OpsIncident.contourner(h + 800000, "INC-20", "criblage réduit", "exploitant1") == "contourne"
+        assert ApiOperations.arbitrage_centralise()
+        assert !ApiOperations.changement_autorise(h + 800000)
+        assert OpsCrise.informer_etats(h + 900000, "INC-20", "criblage faux, arbitrage centralisé", "direction1") == 2
+        assert OpsChangement.soumettre(h + 1000000, "C-20", "urgence", "conjonctions", "correctif du calcul de pc", "version n-1", "INC-20", "exploitant1") == "C-20"
+        assert OpsChangement.approuver_urgence(h + 1100000, "C-20", "superviseur1", "direction1") == "approuve_urgence"
+        assert OpsChangement.deployer(h + 1200000, "C-20", "exploitant1") == "en_deploiement"
+        assert OpsChangement.achever(h + 1800000, "C-20", "exploitant1") == "deploye"
+        assert OpsChangement.verifier(h + 2400000, "C-20", "superviseur2") == "clos"
+        assert OpsIncident.resoudre(h + 3600000, "INC-20", "exploitant1") == "resolu"
+        assert OpsCrise.lever(h + 3700000, "INC-20", "direction1") == "levee"
+        assert !ApiOperations.arbitrage_centralise()
+        assert OpsDegradation.lever(h + 3800000, "conjonctions", true, "exploitant2", "superviseur1") == "nominal"
+        assert ApiOperations.changement_autorise(h + 3800000)
+        assert OpsIncident.fenetre_suspecte("INC-20", h + 9999999) == [h, h + 3600000]
+        assert Fx.post_mortem_publie("INC-20", h + 86400000, ["CJ-1 | revue", "CJ-2 | maintenue"]) == "publie"
+        assert_fails OpsIncident.clore(h + 86400000, "INC-20", "direction1") matching "EtatInvalide"
+        assert OpsIncident.geler_preuves(h + 86400000, "INC-20", "direction1") == "DOS-INC-20"
+        assert OpsCrise.debriefer(h + 90000000, "INC-20", "le criblage n'avait pas de témoin croisé", "direction1") == "debriefee"
+        assert OpsIncident.clore(h + 90000000, "INC-20", "direction1") == "clos"
+    }
+}

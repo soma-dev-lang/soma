@@ -1,0 +1,354 @@
+// lancements — corps de LancLancement (préavis, fenêtre, reports, tir, injection, échec, clôture).
+// Habilitations : un rôle d'opérateur ne vaut que pour l'opérateur du lanceur (agit_pour op) ; un
+// rôle d'État que pour l'autorité de l'État de lancement (agit_pour org_de_etat(etat)).
+
+flesh LancLancement {
+    on creer(h, lancement, op, etat, debut, fin, regime, nb_objets) {
+        require op_de.get(lancement) == () else Existe "lancement {lancement} déjà enregistré"
+        require op_de.size < MAX_LANCEMENTS else Plein "registre des lancements plein"
+        op_de.set(lancement, op)
+        etat_de.set(lancement, etat)
+        fin_de.set(lancement, fin)
+        debut_de.set(lancement, debut)
+        regime_de.set(lancement, regime)
+        // 0 pièce annoncée (lancement non notifié) : aucune entrée (invariant nb_objets_de >= 1).
+        if nb_objets >= 1 { nb_objets_de.set(lancement, nb_objets) }
+        version_de.set(lancement, 1)
+        notifie_le.set(lancement, h)
+        vivants.push(lancement)
+        return lancement
+    }
+
+    on notifier(h, lancement, op, etat, debut, fin, regime, nb_objets, par) {
+        let chef = ApiAcces.a_le_role(par, "chef_de_mission") && ApiAcces.agit_pour(par, op)
+        let auto = ApiAcces.a_le_role(par, "autorite") && _agit_pour_etat(par, etat)
+        require chef || auto else Habilitation "{par} : chef_de_mission de l'opérateur ou autorité de l'État de lancement requis"
+        require ApiRef.etat_participant(etat) else Inconnu "État {etat} non participant"
+        require ApiRef.organisation_existe(op) else Inconnu "opérateur {op} non inscrit"
+        require ApiOperateurs.est_actif(op, h) else Suspendu "opérateur {op} non actif"
+        require to_int(debut) - to_int(h) >= PREAVIS_MIN else Delai "préavis inférieur à 72 h"
+        require to_int(fin) > to_int(debut) && to_int(fin) - to_int(debut) <= FENETRE_MAX else HorsBornes "fenêtre invalide (au plus 30 jours)"
+        require nb_objets >= 1 && nb_objets <= MAX_OBJETS else HorsBornes "1 à 200 pièces annoncées"
+        let _ = LancLancement.creer(h, lancement, op, etat, debut, fin, regime, nb_objets)
+        let _ = LancCola.ouvrir(h, lancement, "systeme")
+        let _ = LancZones.ouvrir(h, lancement, etat, "systeme")
+        let pf = ApiRef.org_de_etat(etat)
+        let _ = ApiPasserelle.notifier(h, pf, "", "préavis de lancement {lancement}", "lancement {lancement} notifié par {op} : fenêtre {debut}–{fin}, régime {regime}, {nb_objets} pièce(s)", 1)
+        Journal.noter(h, "lancements", par, "lancement {lancement} notifié ({op}, État {etat}, fenêtre {debut}–{fin})")
+        return lancement
+    }
+
+    on enregistrer_non_notifie(h, lancement, op, etat, tir, regime, motif, par, valideur) {
+        require ApiAcces.a_le_role(par, "analyste") else Habilitation "{par} : analyste d'ORBITE requis"
+        require ApiAcces.a_le_role(valideur, "superviseur") && ApiAcces.quatre_yeux(par, valideur) else QuatreYeux "{valideur} : superviseur distinct requis"
+        require motif != "" else MotifRequis "motif requis"
+        require to_int(tir) <= to_int(h) else Incoherent "tir dans le futur"
+        let _ = LancLancement.creer(h, lancement, op, etat, tir, tir, regime, 0)
+        let _ = LancCola.ouvrir(h, lancement, "systeme")
+        let _ = LancZones.ouvrir(h, lancement, etat, "systeme")
+        transition(lancement, "notifie", "lance")
+        hors_avis.set(lancement, true)
+        tir_de.set(lancement, tir)
+        let _ = LancZones.clore(h, lancement, "systeme")
+        if op != "inconnu" {
+            let rc = try { ApiConformite.constater(h, op, "lancement non notifié : {motif}", 3, lancement, "systeme") }
+            if rc.error != () { Journal.noter(h, "lancements", "systeme", "manquement non constaté pour {op} : {rc.kind}") }
+        }
+        let _ = ApiPasserelle.notifier(h, "ORG-ORBITE", "", "lancement non notifié {lancement}", "tir {tir} constaté sans préavis ({motif})", 3)
+        let ro = try { ApiRef.org_de_etat(etat) }
+        if ro.error == () {
+            let _ = ApiPasserelle.notifier(h, ro.value, "", "lancement non notifié {lancement}", "tir {tir} constaté sans préavis recevable ({motif})", 3)
+        }
+        Journal.noter(h, "lancements", par, "lancement non notifié {lancement} enregistré ({op}, État {etat}, tir {tir}), validé par {valideur}")
+        return lancement
+    }
+
+    on prendre_acte_cola(h, lancement, par) {
+        let st = get_status(lancement) ?? "notifie"
+        require st == "notifie" else EtatInvalide "lancement {lancement} : {st}"
+        require LancCola.etat(lancement) == "conclu" else EtatInvalide "COLA de {lancement} non conclu"
+        transition(lancement, "notifie", "crible")
+        Journal.noter(h, "lancements", par, "lancement {lancement} criblé")
+        return "crible"
+    }
+
+    on prendre_acte_avis(h, lancement, par) {
+        let op = op_de.get(lancement)
+        require op != () else Inconnu "lancement {lancement} inconnu"
+        let st = get_status(lancement) ?? "notifie"
+        require st == "crible" else EtatInvalide "lancement {lancement} : {st}"
+        require LancAvis.etat(lancement) == "favorable" else EtatInvalide "avis de {lancement} non favorable"
+        require ApiOperateurs.est_actif(op, h) else Suspendu "opérateur {op} non actif"
+        transition(lancement, "crible", "autorise")
+        Journal.noter(h, "lancements", par, "lancement {lancement} sous avis favorable")
+        return "autorise"
+    }
+
+    on recribler(h, lancement, motif, par) {
+        let st = get_status(lancement) ?? "notifie"
+        require st == "crible" || st == "autorise" else EtatInvalide "lancement {lancement} : {st}"
+        if st == "crible" {
+            transition(lancement, "crible", "notifie")
+        } else {
+            transition(lancement, "autorise", "notifie")
+        }
+        Journal.noter(h, "lancements", par, "lancement {lancement} à recribler : {motif}")
+        return "notifie"
+    }
+
+    on reporter(h, lancement, motif, par) {
+        let op = op_de.get(lancement)
+        require op != () else Inconnu "lancement {lancement} inconnu"
+        let etat = etat_de.get(lancement) ?? ""
+        let sys = ApiAcces.a_le_role(par, "systeme")
+        require sys || _operateur_ou_etat(par, op, etat) else Habilitation "{par} : chef_de_mission de l'opérateur, autorité de l'État ou systeme requis"
+        let st = get_status(lancement) ?? "notifie"
+        require st == "notifie" || st == "crible" || st == "autorise" else EtatInvalide "lancement {lancement} : {st}"
+        let anciens = reports_de.get(lancement) ?? []
+        require len(anciens) < MAX_REPORTS else Plein "50 reports atteints"
+        let v = version_de.get(lancement) ?? 1
+        let _ = LancCola.perimer(h, lancement, "report ({motif})", "systeme")
+        let _ = LancAvis.rendre_caduc(h, lancement, "report ({motif})", "systeme")
+        if st == "notifie" {
+            transition(lancement, "notifie", "reporte")
+        } else if st == "crible" {
+            transition(lancement, "crible", "reporte")
+        } else {
+            transition(lancement, "autorise", "reporte")
+        }
+        reports_de.set(lancement, anciens ++ ["{h}|{v}|{motif}|{par}"])
+        reporte_le.set(lancement, h)
+        let ro = try { ApiRef.org_de_etat(etat) }
+        if ro.error == () {
+            let _ = ApiPasserelle.notifier(h, ro.value, "", "report du lancement {lancement}", "fenêtre {v} reportée : {motif}", 2)
+        }
+        Journal.noter(h, "lancements", par, "lancement {lancement} reporté (fenêtre {v}, {motif})")
+        return "reporte"
+    }
+
+    on nouvelle_fenetre(h, lancement, debut, fin, par) {
+        let op = op_de.get(lancement)
+        require op != () else Inconnu "lancement {lancement} inconnu"
+        let etat = etat_de.get(lancement) ?? ""
+        require _operateur_ou_etat(par, op, etat) else Habilitation "{par} : chef_de_mission de l'opérateur ou autorité de l'État requis"
+        let st = get_status(lancement) ?? "notifie"
+        require st == "reporte" else EtatInvalide "lancement {lancement} : {st}"
+        require to_int(debut) - to_int(h) >= PREAVIS_REPORT else Delai "nouvelle fenêtre à moins de 12 h"
+        require to_int(fin) > to_int(debut) && to_int(fin) - to_int(debut) <= FENETRE_MAX else HorsBornes "fenêtre invalide (au plus 30 jours)"
+        require ApiOperateurs.est_actif(op, h) else Suspendu "opérateur {op} non actif"
+        let v = (version_de.get(lancement) ?? 1) + 1
+        let ancienne_fin = fin_de.get(lancement) ?? 0
+        // Invariant debut <= fin à chaque écriture : l'ordre dépend de la nouvelle fenêtre.
+        if to_int(debut) <= to_int(ancienne_fin) {
+            debut_de.set(lancement, debut)
+            fin_de.set(lancement, fin)
+        } else {
+            fin_de.set(lancement, fin)
+            debut_de.set(lancement, debut)
+        }
+        version_de.set(lancement, v)
+        let _ = LancCola.relancer(h, lancement, v, "systeme")
+        transition(lancement, "reporte", "notifie")
+        Journal.noter(h, "lancements", par, "lancement {lancement} : nouvelle fenêtre {v} ({debut}–{fin})")
+        return v
+    }
+
+    on reviser_manifeste(h, lancement, nb_objets, par) {
+        let op = op_de.get(lancement)
+        require op != () else Inconnu "lancement {lancement} inconnu"
+        require ApiAcces.a_le_role(par, "chef_de_mission") && ApiAcces.agit_pour(par, op) else Habilitation "{par} : chef_de_mission de {op} requis"
+        let st = get_status(lancement) ?? "notifie"
+        require st == "notifie" || st == "crible" || st == "autorise" || st == "reporte" else EtatInvalide "lancement {lancement} : {st}"
+        require nb_objets >= 1 && nb_objets <= MAX_OBJETS else HorsBornes "1 à 200 pièces"
+        let deja = len(LancPiece.manifeste(lancement))
+        require nb_objets >= deja else Incoherent "{deja} pièces déjà au manifeste"
+        nb_objets_de.set(lancement, nb_objets)
+        Journal.noter(h, "lancements", par, "manifeste de {lancement} révisé : {nb_objets} pièce(s)")
+        return nb_objets
+    }
+
+    on annuler(h, lancement, motif, par) {
+        let op = op_de.get(lancement)
+        require op != () else Inconnu "lancement {lancement} inconnu"
+        let etat = etat_de.get(lancement) ?? ""
+        let sys = ApiAcces.a_le_role(par, "systeme")
+        require sys || _operateur_ou_etat(par, op, etat) else Habilitation "{par} : chef_de_mission de l'opérateur, autorité de l'État ou systeme requis"
+        require motif != "" else MotifRequis "motif requis"
+        let st = get_status(lancement) ?? "notifie"
+        require st == "notifie" || st == "crible" || st == "autorise" || st == "reporte" else EtatInvalide "lancement {lancement} : {st}"
+        if st == "notifie" {
+            transition(lancement, "notifie", "annule")
+        } else if st == "crible" {
+            transition(lancement, "crible", "annule")
+        } else if st == "autorise" {
+            transition(lancement, "autorise", "annule")
+        } else {
+            transition(lancement, "reporte", "annule")
+        }
+        let _ = LancCola.archiver(h, lancement, "systeme")
+        let _ = LancAvis.archiver(h, lancement, "systeme")
+        let _ = LancZones.clore(h, lancement, "systeme")
+        let n = LancPiece.abandonner_manifeste(h, lancement, "systeme")
+        _retirer_vivant(lancement)
+        Journal.noter(h, "lancements", par, "lancement {lancement} annulé ({motif}) ; {n} pièce(s) abandonnée(s)")
+        return "annule"
+    }
+
+    on confirmer_tir(h, lancement, tir, par) {
+        let op = op_de.get(lancement)
+        require op != () else Inconnu "lancement {lancement} inconnu"
+        let chef = ApiAcces.a_le_role(par, "chef_de_mission") && ApiAcces.agit_pour(par, op)
+        require chef || ApiAcces.a_le_role(par, "systeme") else Habilitation "{par} : chef_de_mission de {op} ou systeme requis"
+        let st = get_status(lancement) ?? "notifie"
+        require st == "autorise" else EtatInvalide "lancement {lancement} : {st}"
+        require to_int(tir) <= to_int(h) else Incoherent "tir dans le futur"
+        let d = debut_de.get(lancement) ?? 0
+        let f = fin_de.get(lancement) ?? 0
+        require to_int(tir) >= to_int(d) && to_int(tir) <= to_int(f) else HorsBornes "tir hors de la fenêtre : constater_tir_hors_avis"
+        // tir_permis n'est vrai que sous avis favorable en vigueur (règle de l'arête).
+        require LancAvis.tir_permis(lancement, tir) else HorsBornes "tir dans une période interdite ou sans avis favorable : constater_tir_hors_avis"
+        tir_de.set(lancement, tir)
+        transition(lancement, "autorise", "lance")
+        let _ = LancZones.clore(h, lancement, "systeme")
+        Journal.noter(h, "lancements", par, "tir de {lancement} confirmé à {tir}")
+        return "lance"
+    }
+
+    on constater_tir_hors_avis(h, lancement, tir, par) {
+        let op = op_de.get(lancement)
+        require op != () else Inconnu "lancement {lancement} inconnu"
+        let etat = etat_de.get(lancement) ?? ""
+        let chef = ApiAcces.a_le_role(par, "chef_de_mission") && ApiAcces.agit_pour(par, op)
+        require chef || ApiAcces.a_le_role(par, "analyste") || ApiAcces.a_le_role(par, "systeme") else Habilitation "{par} : analyste, systeme ou chef_de_mission de {op} requis"
+        let st = get_status(lancement) ?? "notifie"
+        require st == "notifie" || st == "crible" || st == "reporte" else EtatInvalide "lancement {lancement} : {st}"
+        require to_int(tir) <= to_int(h) else Incoherent "tir dans le futur"
+        tir_de.set(lancement, tir)
+        hors_avis.set(lancement, true)
+        if st == "notifie" {
+            transition(lancement, "notifie", "lance")
+        } else if st == "crible" {
+            transition(lancement, "crible", "lance")
+        } else {
+            transition(lancement, "reporte", "lance")
+        }
+        let _ = ApiConformite.constater(h, op, "tir hors avis d'ORBITE", 3, lancement, "systeme")
+        let ro = try { ApiRef.org_de_etat(etat) }
+        if ro.error == () {
+            let _ = ApiPasserelle.notifier(h, ro.value, "", "tir hors avis {lancement}", "tir {tir} de {op} sans avis favorable en vigueur", 3)
+        }
+        let _ = LancZones.clore(h, lancement, "systeme")
+        Journal.noter(h, "lancements", par, "tir hors avis de {lancement} constaté à {tir}")
+        return "lance"
+    }
+
+    on declarer_injection(h, lancement, injection, issue, par) {
+        let op = op_de.get(lancement)
+        require op != () else Inconnu "lancement {lancement} inconnu"
+        let ope = (ApiAcces.a_le_role(par, "chef_de_mission") || ApiAcces.a_le_role(par, "dynamicien")) && ApiAcces.agit_pour(par, op)
+        require ope || ApiAcces.a_le_role(par, "analyste") else Habilitation "{par} : chef_de_mission ou dynamicien de {op}, ou analyste requis"
+        let st = get_status(lancement) ?? "notifie"
+        require st == "lance" else EtatInvalide "lancement {lancement} : {st}"
+        let tir = tir_de.get(lancement) ?? 0
+        require to_int(injection) >= to_int(tir) && to_int(injection) <= to_int(h) else Incoherent "injection avant le tir ou dans le futur"
+        issue_de.set(lancement, issue)
+        let _ = LancCola.archiver(h, lancement, "systeme")
+        let _ = LancAvis.archiver(h, lancement, "systeme")
+        if issue == "perdue" {
+            transition(lancement, "lance", "echec")
+            _retirer_vivant(lancement)
+            let _ = LancEnquete.ouvrir(h, lancement, "injection", "aucune orbite exploitable après le tir", "systeme")
+            Journal.noter(h, "lancements", par, "lancement {lancement} en échec (orbite perdue)")
+            return "echec"
+        }
+        injection_de.set(lancement, injection)
+        transition(lancement, "lance", "injecte")
+        Journal.noter(h, "lancements", par, "injection de {lancement} à {injection} ({issue})")
+        return "injecte"
+    }
+
+    on declarer_echec(h, lancement, motif, par, valideur) {
+        require ApiAcces.a_le_role(par, "analyste") else Habilitation "{par} : analyste d'ORBITE requis"
+        require ApiAcces.a_le_role(valideur, "superviseur") && ApiAcces.quatre_yeux(par, valideur) else QuatreYeux "{valideur} : superviseur distinct requis"
+        require motif != "" else MotifRequis "motif requis"
+        let st = get_status(lancement) ?? "notifie"
+        require st == "injecte" else EtatInvalide "lancement {lancement} : {st}"
+        transition(lancement, "injecte", "echec")
+        _retirer_vivant(lancement)
+        // Une enquête « separation » déjà ouverte couvre l'échec : pas de seconde enquête.
+        let r = try { LancEnquete.ouvrir(h, lancement, "injection", motif, "systeme") }
+        if r.error != () && r.kind != "Existe" { fail(r) }
+        Journal.noter(h, "lancements", par, "lancement {lancement} déclaré en échec ({motif}), validé par {valideur}")
+        return "echec"
+    }
+
+    on clore_identification(h, lancement, par) {
+        require ApiAcces.a_le_role(par, "systeme") || ApiAcces.a_le_role(par, "analyste") else Habilitation "{par} : systeme ou analyste requis"
+        let st = get_status(lancement) ?? "notifie"
+        require st == "injecte" else EtatInvalide "lancement {lancement} : {st}"
+        require len(LancPiece.manifeste(lancement)) >= 1 else Insuffisant "manifeste vide"
+        let reste = LancPiece.restantes(lancement)
+        require reste == 0 else Insuffisant "{reste} pièce(s) restante(s)"
+        transition(lancement, "injecte", "identifie")
+        _retirer_vivant(lancement)
+        Journal.noter(h, "lancements", par, "identification de {lancement} close")
+        return "identifie"
+    }
+
+    on etat(lancement) {
+        if op_de.get(lancement) == () { return "inconnu" }
+        return get_status(lancement) ?? "notifie"
+    }
+
+    on fiche(lancement) {
+        let op = op_de.get(lancement)
+        require op != () else Inconnu "lancement {lancement} inconnu"
+        return LancFiche {
+            op: op,
+            etat: etat_de.get(lancement) ?? "",
+            debut: debut_de.get(lancement) ?? 0,
+            fin: fin_de.get(lancement) ?? 0,
+            regime: regime_de.get(lancement) ?? "leo",
+            nb_objets: nb_objets_de.get(lancement) ?? 0,
+            version: version_de.get(lancement) ?? 1,
+            tir: tir_de.get(lancement) ?? 0,
+            injection: injection_de.get(lancement) ?? 0
+        }
+    }
+
+    on injecte_le(lancement) {
+        require op_de.get(lancement) != () else Inconnu "lancement {lancement} inconnu"
+        return injection_de.get(lancement) ?? 0
+    }
+
+    on tire_hors_avis(lancement) {
+        return hors_avis.get(lancement) ?? false
+    }
+
+    on reports(lancement) {
+        require op_de.get(lancement) != () else Inconnu "lancement {lancement} inconnu"
+        return reports_de.get(lancement) ?? []
+    }
+
+    on en_cours(n) {
+        return slice(vivants, 0, n)
+    }
+
+    // Vrai si `par` agit pour l'autorité de l'État (État sans autorité inscrite : faux).
+    on _agit_pour_etat(par: String, etat: Etat) {
+        let r = try { ApiRef.org_de_etat(etat) }
+        if r.error != () { return false }
+        return ApiAcces.agit_pour(par, r.value)
+    }
+
+    // chef_de_mission de l'opérateur du lanceur, ou autorité de l'État de lancement.
+    on _operateur_ou_etat(par: String, op: Org, etat: Etat) {
+        if ApiAcces.a_le_role(par, "chef_de_mission") && ApiAcces.agit_pour(par, op) { return true }
+        return ApiAcces.a_le_role(par, "autorite") && _agit_pour_etat(par, etat)
+    }
+
+    on _retirer_vivant(lancement: String) {
+        let i = index_of(vivants, lancement)
+        if i >= 0 { vivants.delete(i) }
+    }
+}

@@ -1,0 +1,121 @@
+// Doublures (corps PROVISOIRES, sans mémoire) des façades que traversent les tests de
+// operations. Conventions :
+// - personnes d'ORBITE : "exploitant1", "superviseur2", "direction1", "conformite1"… (rôle = nom
+//   sans chiffre) ; "intrus…" n'a aucun rôle ; "systeme" n'a que le rôle "systeme" ;
+//   "dyn@ORG-X" est un dynamicien d'opérateur. ORBITE est "ORG-ORBITE".
+// - États participants : ALD, BRV, ZZZ ; ZZZ n'a pas d'organisation (org_de_etat refuse).
+// - rapprochements (T_U = 1 900 000 000 000 ms) : "CJ-U" alerte, niveau 3, TCA T_U, seul
+//   rapprochement de ApiConjonctions.urgents(h, horizon, 3) pour h ∈ [T_U − horizon, T_U] ;
+//   "CJ-FAIBLE" alerte niveau 2 (TCA T_U) ; "CJ-LOIN" alerte niveau 3, TCA T_U + 24 h ;
+//   "CJ-CLOS" résolu ; "CJ-INCONNU…" inconnu ; tout autre en coordination, niveau 2, TCA T_U.
+//   Objets : [OBJ-1, OBJ-2] ; "CJ-3" : [OBJ-1, OBJ-3] (OBJ-3 sans propriétaire) ; "CJ-FERME" :
+//   [OBJ-1, OBJ-5] (ORG-FERME ne peut rien recevoir).
+// - capteurs en service : 5 (les tests de couverture le moquent).
+
+flesh ApiAcces {
+    on a_le_role(personne, r) {
+        if personne == "systeme" { return r == "systeme" }
+        return _role(personne) == to_string(r)
+    }
+    on role_de(personne) {
+        if personne == "systeme" { return Role("systeme") }
+        return Role(_role(personne))
+    }
+    on quatre_yeux(demandeur, valideur) {
+        if demandeur == valideur || starts_with(valideur, "intrus") || valideur == "systeme" { return false }
+        let rv = _role(valideur)
+        return rv == "superviseur" || rv == "conformite" || rv == "direction"
+    }
+    on agit_pour(personne, org) {
+        if starts_with(personne, "intrus") || personne == "systeme" { return false }
+        return _employeur(personne) == to_string(org)
+    }
+    on _role(p: String) {
+        if starts_with(p, "intrus") { return "aucun" }
+        if starts_with(p, "dyn@") { return "dynamicien" }
+        for r in ["analyste", "superviseur", "exploitant", "conformite", "direction", "auditeur"] {
+            if starts_with(p, r) { return r }
+        }
+        return "aucun"
+    }
+    on _employeur(p: String) {
+        if contains(p, "@") { return split(p, "@")[1] }
+        return "ORG-ORBITE"
+    }
+}
+
+flesh ApiRef {
+    on orbite() { return Org("ORG-ORBITE") }
+    on etats_participants() { return ["ALD", "BRV", "ZZZ"] }
+    on org_de_etat(etat) {
+        require to_string(etat) != "ZZZ" else Inconnu "État sans organisation"
+        return Org("ORG-ETAT-{etat}")
+    }
+    on proprietaire(objet) {
+        let o = to_string(objet)
+        let org = match o {
+            "OBJ-1" -> "ORG-ALPHA"
+            "OBJ-2" -> "ORG-BETA"
+            "OBJ-5" -> "ORG-FERME"
+            _ -> "inconnu"
+        }
+        return Org(org)
+    }
+}
+
+flesh ApiPasserelle {
+    on notifier(h, destinataire, r, sujet, texte, urgence) { return "PM|{destinataire}|{r}|{h}" }
+}
+
+flesh ApiDonnees {
+    on peut_recevoir(org, objet, r, h) { return !starts_with(to_string(org), "ORG-FERME") }
+    on tracer(h, org, objet, r, nature) {
+        require !starts_with(to_string(org), "ORG-FERME") else Confidentiel "destinataire non autorisé"
+        return 1
+    }
+}
+
+flesh ApiConjonctions {
+    on etat(r) {
+        let s = to_string(r)
+        if starts_with(s, "CJ-INCONNU") { return "inconnu" }
+        if s == "CJ-CLOS" { return "resolu" }
+        if s == "CJ-U" || s == "CJ-FAIBLE" || s == "CJ-LOIN" { return "alerte" }
+        return "en_coordination"
+    }
+    on niveau(r) {
+        let s = to_string(r)
+        require !starts_with(s, "CJ-INCONNU") else Inconnu "rapprochement inconnu"
+        if s == "CJ-U" || s == "CJ-LOIN" || s == "CJ-CLOS" { return Niveau(3) }
+        return Niveau(2)
+    }
+    on tca(r) {
+        let s = to_string(r)
+        require !starts_with(s, "CJ-INCONNU") else Inconnu "rapprochement inconnu"
+        if s == "CJ-LOIN" { return Horodatage(1900086400000) }
+        return Horodatage(1900000000000)
+    }
+    on objets(r) {
+        let s = to_string(r)
+        require !starts_with(s, "CJ-INCONNU") else Inconnu "rapprochement inconnu"
+        if s == "CJ-3" { return ["OBJ-1", "OBJ-3"] }
+        if s == "CJ-FERME" { return ["OBJ-1", "OBJ-5"] }
+        return ["OBJ-1", "OBJ-2"]
+    }
+    on urgents(h, horizon, niveau_min) {
+        let tu = 1900000000000
+        if to_int(niveau_min) <= 3 && to_int(h) <= tu && to_int(h) + to_int(horizon) >= tu { return ["CJ-U"] }
+        return []
+    }
+}
+
+flesh ApiObservation {
+    on capteurs_en_service() { return 5 }
+}
+
+flesh ApiResponsabilite {
+    on geler(h, evenement, motif, par) {
+        require par == "systeme" || starts_with(par, "conformite") || starts_with(par, "direction") else Habilitation "geler : conformite ou direction"
+        return "DOS-{evenement}"
+    }
+}

@@ -1,0 +1,109 @@
+// Corps de EvtRapports : rapports d'évènement aux États.
+flesh EvtRapports {
+    on ouvrir(h, ev) {
+        require du_le.get(ev) == () else Existe "rapport de {ev} déjà ouvert"
+        require du_le.size < MAX_RAPPORTS else Plein "plafond de {MAX_RAPPORTS} rapports atteint"
+        let du = h + DELAI_RAPPORT_MS
+        du_le.set(ev, du)
+        ouvert_le.set(ev, h)
+        return du
+    }
+
+    on rediger(h, ev, e, par) {
+        require du_le.get(ev) != () else Inconnu "aucune obligation de rapport pour {ev}"
+        let st = get_status(ev) ?? "attendu"
+        require st == "attendu" || st == "redige" else EtatInvalide "rapport de {ev} {st}"
+        require len(e) > 0 else MotifRequis "empreinte vide"
+        require ApiAcces.a_le_role(par, "analyste") else Habilitation "{par} n'est pas analyste d'ORBITE"
+        if st == "attendu" {
+            let st_ev = EvtEvenements.etat(ev)
+            require st_ev == "confirme" else EtatInvalide "évènement {ev} {st_ev} : rapport non rédigeable"
+        }
+        empreinte.set(ev, e)
+        let vs = versions.get(ev) ?? []
+        vs.push("{h} | {par} | {e}")
+        versions.set(ev, vs)
+        if st == "attendu" {
+            transition(ev, "attendu", "redige")
+        }
+        let n_v = len(vs)
+        let _ = Journal.noter(h, "evenements", par, "rapport de {ev} : version {n_v} ({e})")
+        return n_v
+    }
+
+    on valider(h, ev, d, par, valideur) {
+        let vs = versions.get(ev)
+        require vs != () else Inconnu "aucun rapport rédigé pour {ev}"
+        let st = get_status(ev) ?? "attendu"
+        require st == "redige" else EtatInvalide "rapport de {ev} {st}"
+        require ApiAcces.a_le_role(par, "analyste") else Habilitation "{par} n'est pas analyste d'ORBITE"
+        require ApiAcces.a_le_role(valideur, "superviseur") else Habilitation "{valideur} n'est pas superviseur d'ORBITE"
+        require ApiAcces.quatre_yeux(par, valideur) else QuatreYeux "{valideur} ne contre-signe pas {par}"
+        for l in vs {
+            let auteur_v = split(l, " | ")[1]
+            require auteur_v != valideur else QuatreYeux "{valideur} a déposé une version du rapport"
+        }
+        require d != "restreint" else Confidentiel "un rapport s'adresse au moins aux parties"
+        let rang_d = _rang(to_string(d))
+        for o in EvtEvenements.objets(ev) {
+            let diff_o = to_string(ApiDonnees.diffusion(Objet(o)))
+            let plafond = max(_rang(diff_o), 1)
+            require rang_d <= plafond else Confidentiel "{o} est diffusé '{diff_o}' : rapport '{d}' trop large"
+        }
+        diffusion_de.set(ev, d)
+        validation.set(ev, "{h} | {par} | {valideur}")
+        transition(ev, "redige", "valide")
+        let _ = Journal.noter(h, "evenements", par, "rapport de {ev} validé ({d}, {valideur})")
+        return "valide"
+    }
+
+    on publier(h, ev, par) {
+        require ApiAcces.a_le_role(par, "superviseur") else Habilitation "{par} n'est pas superviseur d'ORBITE"
+        let d = diffusion_de.get(ev)
+        require d != () else Inconnu "aucun rapport validé pour {ev}"
+        let st = get_status(ev) ?? "attendu"
+        require st == "valide" else EtatInvalide "rapport de {ev} {st}"
+        transition(ev, "valide", "publie")
+        publie_le.set(ev, h)
+        let nb = 0
+        let objs_p = EvtEvenements.objets(ev)
+        for o in objs_p {
+            nb = nb + len(EvtNotifications.preparer(h, ev, "rapport", Objet(o), 1))
+        }
+        if (d == "participants" || d == "public") && len(objs_p) > 0 {
+            nb = nb + EvtNotifications.diffuser(h, ev, "rapport", Objet(objs_p[0]), EvtNuages.regimes_de(ev))
+        }
+        let _ = Journal.noter(h, "evenements", par, "rapport de {ev} publié ({d}) : {nb} notification(s)")
+        return nb
+    }
+
+    on classer(h, ev) {
+        let st = get_status(ev) ?? "attendu"
+        require st == "attendu" else EtatInvalide "rapport de {ev} {st}"
+        transition(ev, "attendu", "sans_objet")
+        let _ = Journal.noter(h, "evenements", "systeme", "rapport de {ev} classé sans objet")
+        return "sans_objet"
+    }
+
+    on en_retard(h, n) {
+        let res_r = []
+        for e in du_le.entries {
+            if len(res_r) >= n { break }
+            let st = get_status(e.key) ?? "attendu"
+            if st != "publie" && st != "sans_objet" && h > (du_le.get(e.key) ?? h) {
+                res_r.push("{e.key} | {st} | {e.value}")
+            }
+        }
+        return res_r
+    }
+
+    // Largeur d'une diffusion : restreint 0 < parties 1 < participants 2 < public 3.
+    on _rang(d: String) {
+        return match d {
+            "public" -> 3
+            "participants" -> 2
+            "parties" -> 1
+            _ -> 0
+        }
+    }
+}

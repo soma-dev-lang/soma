@@ -1,0 +1,141 @@
+// RESPONSABILITÉ — assurance de responsabilité civile des opérateurs et sinistres.
+// L'État de lancement répond envers les autres États ; il se retourne contre son opérateur,
+// dont la police couvre ce recours. ORBITE tient le registre des polices (attestation, plafond,
+// période) et des sinistres déclarés au titre d'une réclamation : le montant indemnisé ne
+// peut être fixé qu'une fois la réclamation réglée ou close (montant alloué connu).
+
+// Polices (une instance par id de police, fourni par l'opérateur : "POL-<assureur>-<n>").
+skeleton RespPolices {
+    const MAX_POLICES = 200000
+    // Plafond minimal de garantie exigé par ORBITE, en euros.
+    const PLAFOND_MIN = 60000000
+    memory {
+        op_de: Map<String, Org> [persistent]
+        invariant op_de.size <= 200000
+        assureur_de: Map<String, String> [persistent]   // raison sociale de l'assureur (hors participants)
+        plafond_de: Map<String, RespMontant> [persistent]
+        debut_de: Map<String, Horodatage> [persistent]
+        fin_de: Map<String, Horodatage> [persistent]
+        invariant (debut_de ?? 0) < (fin_de ?? 9000000000000000)
+        attestation_de: Map<String, String> [persistent] // empreinte de l'attestation de l'assureur
+        motif_de: Map<String, String> [persistent]
+        polices_de_op: Map<String, List<String>> [persistent]  // opérateur -> polices déclarées
+        en_cours: Map<String, Horodatage> [persistent]   // police en vigueur -> fin (retirée à l'échéance ou à la résiliation)
+    }
+    state police {
+        initial: aucune
+        aucune -> declaree
+        declaree -> en_vigueur   // attestation contrôlée, plafond ≥ PLAFOND_MIN
+        declaree -> rejetee
+        en_vigueur -> echue      // fin de période atteinte
+        en_vigueur -> resiliee   // résiliation notifiée par l'assureur ou l'opérateur
+    }
+    face {
+        // Déclare une police de l'opérateur : assureur, plafond (euros), période, empreinte de
+        // l'attestation. Renvoie l'id. Par "administrateur_operateur" de l'opérateur
+        // (agit_pour). Refus : Existe, Inconnu (opérateur), Incoherent (fin ≤ début),
+        // Habilitation, Plein.
+        signal declarer(h: Horodatage, police: String, op: Org, assureur: String, plafond: RespMontant, debut: Horodatage, fin: Horodatage, attestation: String, par: String) -> String
+            writes op_de, assureur_de, plafond_de, debut_de, fin_de, attestation_de, polices_de_op
+            moves aucune -> declaree
+            calls ApiAcces.a_le_role, ApiAcces.agit_pour, ApiOperateurs.statut, Journal.noter
+        // Valide une police déclarée. Renvoie "en_vigueur". Par "conformite". Refus : Inconnu,
+        // EtatInvalide, Insuffisant (plafond < PLAFOND_MIN), Echu (fin ≤ h), Habilitation.
+        signal valider(h: Horodatage, police: String, par: String) -> String
+            reads plafond_de, fin_de
+            writes en_cours
+            moves declaree -> en_vigueur
+            calls ApiAcces.a_le_role, Journal.noter
+        // Rejette une police déclarée. Renvoie "rejetee". Par "conformite". Refus : Inconnu,
+        // EtatInvalide, MotifRequis, Habilitation.
+        signal rejeter(h: Horodatage, police: String, motif: String, par: String) -> String
+            writes motif_de
+            moves declaree -> rejetee
+            calls ApiAcces.a_le_role, Journal.noter
+        // Ronde : passe "echue" chaque police en vigueur dont la fin est ≤ h, et avise son
+        // opérateur (ApiPasserelle, r = "", urgence 1). Renvoie le nombre de polices échues.
+        // Par "systeme". Refus : Habilitation.
+        signal echoir(h: Horodatage, par: String) -> Int
+            reads op_de
+            writes en_cours
+            moves en_vigueur -> echue
+            calls ApiAcces.a_le_role, ApiPasserelle.notifier, Journal.noter
+        // Résilie une police en vigueur. Renvoie "resiliee". Par "administrateur_operateur" de
+        // l'opérateur ou "conformite" (sur avis de l'assureur). Refus : Inconnu, EtatInvalide,
+        // MotifRequis, Habilitation.
+        signal resilier(h: Horodatage, police: String, motif: String, par: String) -> String
+            reads op_de
+            writes motif_de, en_cours
+            moves en_vigueur -> resiliee
+            calls ApiAcces.a_le_role, ApiAcces.agit_pour, Journal.noter
+        // État : "aucune", "declaree", "en_vigueur", "rejetee", "echue", "resiliee".
+        signal etat(police: String) -> String
+            reads police
+        // Vrai si l'opérateur a une police en vigueur dont la période couvre `h`.
+        signal couvert(op: Org, h: Horodatage) -> Bool
+            reads polices_de_op, police, debut_de, fin_de
+        // Vrai si la période de la police couvre l'instant (validée, même échue depuis).
+        signal couvre_a(police: String, instant: Horodatage) -> Bool
+            reads police, debut_de, fin_de
+        // Opérateur et plafond, "op|plafond" ; Refus : Inconnu.
+        signal fiche(police: String) -> String
+            reads op_de, plafond_de
+    }
+}
+
+// Sinistres (une instance par id "SN-<n>").
+skeleton RespSinistres {
+    const MAX_SINISTRES = 200000
+    memory {
+        police_de: Map<String, String> [persistent]        // sinistre -> police ; écrit une fois par declarer, jamais supprimé (lien `via`)
+        invariant police_de.size <= 200000
+        reclamation_de: Map<String, String> [persistent]   // sinistre -> réclamation ; écrit une fois par declarer, jamais supprimé (lien `via`)
+        op_de: Map<String, Org> [persistent]               // sinistre -> assuré (RespPolices.fiche) ; écrit une fois par declarer, jamais supprimé (lien `via`)
+        montant_reclame: Map<String, RespMontant> [persistent]
+        montant_indemnise: Map<String, RespMontant> [persistent]
+        invariant (montant_indemnise ?? 0) <= (montant_reclame ?? 0)
+        declare_le: Map<String, Horodatage> [persistent]
+        motif_de: Map<String, String> [persistent]
+    }
+    state sinistre {
+        initial: aucun
+        aucun -> declare     // police en vigueur ou échue dont la période couvre le dommage ; assuré admis un jour chez operateurs (regles.toml)
+        declare -> instruit  // pièces transmises à l'assureur
+        declare -> refuse
+        instruit -> indemnise  // après règlement amiable ou sentence
+        instruit -> refuse
+    }
+    face {
+        // Déclare un sinistre au titre d'une réclamation sur la police de l'opérateur mis en
+        // cause ; montant réclamé ≤ plafond. Renvoie l'id "SN-<n>". Par
+        // "administrateur_operateur" de l'assuré, ou "conformite". Refus : Inconnu, EtatInvalide
+        // (police ni en vigueur ni échue), NonEligible (assuré jamais admis à ORBITE :
+        // ApiOperateurs.statut "candidat" ou "inconnu"), Incoherent (dommage hors période de la police),
+        // HorsBornes (montant > plafond), Doublon (police et réclamation déjà déclarées),
+        // Habilitation, Plein.
+        signal declarer(h: Horodatage, police: String, rec: String, montant: RespMontant, par: String) -> String
+            writes police_de, reclamation_de, op_de, montant_reclame, declare_le
+            moves aucun -> declare when RespPolices.en_vigueur || RespPolices.echue via police_de
+            calls ApiAcces.a_le_role, ApiAcces.agit_pour, ApiOperateurs.statut, RespPolices.etat, RespPolices.couvre_a, RespPolices.fiche, RespReclamations.dommage, Journal.noter, next_id
+        // Instruit : transmet à l'assureur les pièces du dossier de la réclamation (au titre
+        // de RespCommunications). Renvoie "instruit". Par "conformite". Refus : Inconnu,
+        // EtatInvalide, Habilitation.
+        signal instruire(h: Horodatage, sinistre: String, par: String) -> String
+            moves declare -> instruit
+            calls ApiAcces.a_le_role, Journal.noter
+        // Fixe l'indemnité (≤ montant réclamé et ≤ montant alloué à la réclamation). Renvoie
+        // le montant. Par "conformite", valideur "direction". Refus : Inconnu, EtatInvalide,
+        // HorsBornes, Habilitation, QuatreYeux.
+        signal indemniser(h: Horodatage, sinistre: String, montant: RespMontant, par: String, valideur: String) -> RespMontant
+            reads montant_reclame, reclamation_de
+            writes montant_indemnise
+            moves instruit -> indemnise when RespReclamations.reglee || RespReclamations.close via reclamation_de
+            calls ApiAcces.a_le_role, ApiAcces.quatre_yeux, RespReclamations.alloue, Journal.noter
+        // Refuse la prise en charge (exclusion de garantie). Renvoie "refuse". Par
+        // "conformite". Refus : Inconnu, EtatInvalide, MotifRequis, Habilitation.
+        signal refuser(h: Horodatage, sinistre: String, motif: String, par: String) -> String
+            writes motif_de
+            moves declare -> refuse, instruit -> refuse
+            calls ApiAcces.a_le_role, Journal.noter
+    }
+}

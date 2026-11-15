@@ -1,0 +1,566 @@
+// CONJONCTIONS — corps : rapprochements (création, mises à jour, niveau, coordination,
+// résolution, clôture après TCA, fondements) et exemptions chasseur / cible.
+
+flesh ConjRapprochement {
+    on signaler(h, objet_a, objet_b, tca, distance, pc, par) {
+        require ApiAcces.a_le_role(par, "systeme") || ApiAcces.a_le_role(par, "analyste") else Habilitation "signaler : systeme ou analyste d'ORBITE"
+        require to_string(objet_a) != to_string(objet_b) else Incoherent "un objet ne se rapproche pas de lui-même"
+        require to_int(tca) >= to_int(h) else Incoherent "TCA déjà passé"
+        let ea = ApiRef.etat_objet(objet_a)
+        require ea != "inconnu" && ea != "rentre" else Inconnu "objet non catalogué ou rentré : {objet_a}"
+        let eb = ApiRef.etat_objet(objet_b)
+        require eb != "inconnu" && eb != "rentre" else Inconnu "objet non catalogué ou rentré : {objet_b}"
+        // ordre du catalogue : a < b
+        let a = objet_a
+        let b = objet_b
+        if !_avant(to_string(objet_a), to_string(objet_b)) {
+            a = objet_b
+            b = objet_a
+        }
+        let sa = to_string(a)
+        let sb = to_string(b)
+        let cle = "{sa}|{sb}"
+        let couple = par_couple.get(cle) ?? []
+        let r = ""
+        for x in couple {
+            let stx = get_status(x) ?? "detecte"
+            let ouvert = stx == "detecte" || stx == "suivi" || stx == "alerte" || stx == "en_coordination"
+            if r == "" && ouvert && abs(to_int(tca_de.get(x) ?? 0) - to_int(tca)) <= FENETRE_MEME_TCA {
+                r = x
+            }
+        }
+        let nouveau = r == ""
+        let regime = ApiRef.regime(a)
+        let facteur = ApiMeteo.facteur_incertitude(regime, h)
+        let restant = Duree(max(0, to_int(tca) - to_int(h)))
+        let n = to_int(ConjSeuils.niveau(pc, distance, restant, facteur))
+        if n < 2 && (ApiEphemerides.qualite(a) == "faible" || ApiEphemerides.qualite(b) == "faible") {
+            // covariance faible : au moins 2 sous le seuil de distance d'attention
+            if to_int(ConjSeuils.niveau(Probabilite(0), distance, restant, facteur)) >= 2 {
+                n = 2
+            }
+        }
+        if !nouveau {
+            let force = force_de.get(r)
+            if force != () { n = to_int(force) }
+        }
+        if ConjExemption.couvre(a, b, h) { n = 1 }
+        if nouveau {
+            require objet_a_de.size < MAX_RAPPROCHEMENTS else Plein "trop de rapprochements"
+            require len(couple) < MAX_PAR_COUPLE else Plein "trop de rapprochements pour le couple {cle}"
+            require len(ouverts_par_objet.get(sa) ?? []) < MAX_OUVERTS_PAR_OBJET else Plein "trop de rapprochements ouverts pour {sa}"
+            require len(ouverts_par_objet.get(sb) ?? []) < MAX_OUVERTS_PAR_OBJET else Plein "trop de rapprochements ouverts pour {sb}"
+            r = "CJ-{next_id()}"
+            objet_a_de.set(r, a)
+            objet_b_de.set(r, b)
+            regime_de.set(r, regime)
+            cree_par.set(r, par)
+            maj_le.set(r, h)
+            cree_le.set(r, h)
+            nb_maj.set(r, 1)
+            par_couple.set(cle, couple ++ [r])
+            ouverts_par_objet.set(sa, (ouverts_par_objet.get(sa) ?? []) ++ [r])
+            ouverts_par_objet.set(sb, (ouverts_par_objet.get(sb) ?? []) ++ [r])
+            for o in [sa, sb] {
+                let hist = (par_objet.get(o) ?? []) ++ [r]
+                if len(hist) > 10000 {
+                    hist = slice(hist, len(hist) - 10000)
+                }
+                par_objet.set(o, hist)
+            }
+        } else {
+            let avant = to_int(maj_le.get(r) ?? h)
+            maj_le.set(r, Horodatage(max(avant, to_int(h))))
+            nb_maj.set(r, (nb_maj.get(r) ?? 0) + 1)
+        }
+        tca_de.set(r, tca)
+        distance_de.set(r, distance)
+        pc_de.set(r, pc)
+        niveau_de.set(r, Niveau(n))
+        let seuil = to_int(ConjSeuils.seuil_suivi())
+        if to_int(pc) < seuil {
+            sous_seuil_de.set(r, min(2, (sous_seuil_de.get(r) ?? 0) + 1))
+        } else {
+            sous_seuil_de.set(r, 0)
+        }
+        let da = try { ApiEphemerides.derniere(a) }
+        let db = try { ApiEphemerides.derniere(b) }
+        let depot_a = if da.error == () { da.value } else { "" }
+        let depot_b = if db.error == () { db.value } else { "" }
+        let version = ConjSeuils.version_en_vigueur()
+        let campagne = ConjCampagne.derniere(regime)
+        _fonder(r, "{h}|{par}|{tca}|{distance}|{pc}|{n}|{depot_a}|{depot_b}|{version}|{facteur}|{campagne}")
+        let st = get_status(r) ?? "detecte"
+        if st == "detecte" {
+            if n >= 2 {
+                transition(r, "detecte", "alerte")
+            } else if !nouveau {
+                transition(r, "detecte", "suivi")
+            }
+        } else if st == "suivi" && n >= 2 {
+            transition(r, "suivi", "alerte")
+        } else if st == "alerte" && n == 1 {
+            transition(r, "alerte", "suivi")
+        }
+        let quoi = if nouveau { "ouvert" } else { "mis à jour" }
+        let _ = Journal.noter(h, "conjonctions", par, "rapprochement {r} ({cle}) {quoi} : TCA {tca}, {distance} m, pc {pc}, niveau {n}")
+        return Rapprochement(r)
+    }
+
+    on forcer_niveau(h, r, n, lever, motif, par, valideur) {
+        let regime = regime_de.get(r)
+        require regime != () else Inconnu "rapprochement inconnu : {r}"
+        require ApiAcces.a_le_role(par, "analyste") else Habilitation "forcer un niveau : analyste d'ORBITE"
+        require ApiAcces.a_le_role(valideur, "superviseur") else QuatreYeux "valideur : superviseur d'ORBITE"
+        require valideur != par && ApiAcces.quatre_yeux(par, valideur) else QuatreYeux "valideur distinct exigé"
+        require len(motif) > 0 else MotifRequis "motif du forçage exigé"
+        let st = get_status(r) ?? "detecte"
+        require st == "detecte" || st == "suivi" || st == "alerte" || st == "en_coordination" else Ferme "rapprochement clos"
+        let nv = to_int(n)
+        if lever {
+            force_de.delete(r)
+            let tca = to_int(tca_de.get(r) ?? h)
+            let restant = Duree(max(0, tca - to_int(h)))
+            let facteur = ApiMeteo.facteur_incertitude(regime, h)
+            nv = to_int(ConjSeuils.niveau(pc_de.get(r) ?? Probabilite(0), distance_de.get(r) ?? Distance(0), restant, facteur))
+        } else {
+            force_de.set(r, n)
+        }
+        niveau_de.set(r, Niveau(nv))
+        let avant = to_int(maj_le.get(r) ?? h)
+        maj_le.set(r, Horodatage(max(avant, to_int(h))))
+        _fonder(to_string(r), "force|{h}|{par}|{valideur}|{nv}|{lever}|{motif}")
+        if nv >= 2 && st == "detecte" {
+            transition(r, "detecte", "alerte")
+        } else if nv >= 2 && st == "suivi" {
+            transition(r, "suivi", "alerte")
+        } else if nv == 1 && st == "alerte" {
+            transition(r, "alerte", "suivi")
+        }
+        let quoi = if lever { "forçage levé" } else { "niveau forcé" }
+        let _ = Journal.noter(h, "conjonctions", par, "rapprochement {r} : {quoi}, niveau {nv} (valideur {valideur}) : {motif}")
+        return Niveau(nv)
+    }
+
+    on reevaluer(h, r, par) {
+        require ApiAcces.a_le_role(par, "systeme") else Habilitation "réévaluer : systeme"
+        let a = objet_a_de.get(r)
+        require a != () else Inconnu "rapprochement inconnu : {r}"
+        let b = objet_b_de.get(r) ?? a
+        let st = get_status(r) ?? "detecte"
+        require st == "detecte" || st == "suivi" || st == "alerte" || st == "en_coordination" else Ferme "rapprochement clos"
+        let ancien = to_int(niveau_de.get(r) ?? Niveau(1))
+        let nv = ancien
+        let force = force_de.get(r)
+        if force != () {
+            nv = to_int(force)
+        } else if ConjExemption.couvre(a, b, h) {
+            nv = 1
+        } else {
+            let regime = regime_de.get(r) ?? Regime("leo")
+            let tca = to_int(tca_de.get(r) ?? h)
+            let restant = Duree(max(0, tca - to_int(h)))
+            let facteur = ApiMeteo.facteur_incertitude(regime, h)
+            let calcule = to_int(ConjSeuils.niveau(pc_de.get(r) ?? Probabilite(0), distance_de.get(r) ?? Distance(0), restant, facteur))
+            // sans nouvelle donnée, seul le temps restant change : le niveau ne baisse pas
+            // (une covariance faible a pu le relever à la mise à jour)
+            nv = max(ancien, calcule)
+        }
+        if nv != ancien {
+            niveau_de.set(r, Niveau(nv))
+            let avant = to_int(maj_le.get(r) ?? h)
+            maj_le.set(r, Horodatage(max(avant, to_int(h))))
+            let version = ConjSeuils.version_en_vigueur()
+            _fonder(to_string(r), "reevaluation|{h}|{par}|{ancien}->{nv}|{version}")
+            if nv >= 2 && st == "detecte" {
+                transition(r, "detecte", "alerte")
+            } else if nv >= 2 && st == "suivi" {
+                transition(r, "suivi", "alerte")
+            }
+            let _ = Journal.noter(h, "conjonctions", par, "rapprochement {r} réévalué : niveau {ancien} -> {nv}")
+        }
+        return Niveau(nv)
+    }
+
+    on engager(h, r, par) {
+        require ApiAcces.a_le_role(par, "systeme") || ApiAcces.a_le_role(par, "analyste") else Habilitation "engager : systeme ou analyste d'ORBITE"
+        require objet_a_de.get(r) != () else Inconnu "rapprochement inconnu : {r}"
+        require (get_status(r) ?? "detecte") == "alerte" else EtatInvalide "rapprochement pas en alerte"
+        let coord = to_string(r)
+        if ApiCoordination.etat(r) == "inconnue" {
+            coord = ApiCoordination.ouvrir(h, r, "systeme")
+        }
+        let ce = ApiCoordination.etat(r)
+        require ce == "proposee" || ce == "arbitrage" else EtatInvalide "coordination ni proposée ni en arbitrage : {ce}"
+        transition(r, "alerte", "en_coordination")
+        let _ = Journal.noter(h, "conjonctions", par, "rapprochement {r} en coordination ({coord}, {ce})")
+        return coord
+    }
+
+    on demander_mesures(h, r, par) {
+        require ApiAcces.a_le_role(par, "systeme") || ApiAcces.a_le_role(par, "analyste") else Habilitation "demander des mesures : systeme ou analyste d'ORBITE"
+        let a = objet_a_de.get(r)
+        require a != () else Inconnu "rapprochement inconnu : {r}"
+        let st = get_status(r) ?? "detecte"
+        require st == "detecte" || st == "suivi" || st == "alerte" || st == "en_coordination" else Ferme "rapprochement clos"
+        let nv = niveau_de.get(r) ?? Niveau(1)
+        require to_int(nv) >= 2 else Insuffisant "niveau 1 : pas de suivi renforcé"
+        let b = objet_b_de.get(r) ?? a
+        let fin = to_int(tca_de.get(r) ?? h) + DELAI_ANALYSE
+        let duree = Duree(max(3600000, fin - to_int(h)))
+        let demandes_x = []
+        for o in [a, b] {
+            if !ApiEphemerides.fraiche(o, h) || !ApiObservation.suivi(o, h) {
+                let d = ApiObservation.demander_suivi(h, o, nv, duree, "rapprochement {r} niveau {nv}", "systeme")
+                demandes_x.push(d)
+            }
+        }
+        if len(demandes_x) > 0 {
+            let _ = Journal.noter(h, "conjonctions", par, "rapprochement {r} : suivi renforcé demandé ({demandes_x})")
+        }
+        return demandes_x
+    }
+
+    on resoudre(h, r, motif, par) {
+        require ApiAcces.a_le_role(par, "systeme") || ApiAcces.a_le_role(par, "analyste") else Habilitation "résoudre : systeme ou analyste d'ORBITE"
+        let a = objet_a_de.get(r)
+        require a != () else Inconnu "rapprochement inconnu : {r}"
+        let b = objet_b_de.get(r) ?? a
+        let st = get_status(r) ?? "detecte"
+        require st == "detecte" || st == "suivi" || st == "alerte" || st == "en_coordination" else EtatInvalide "rapprochement déjà clos"
+        if motif == "pc_retombee" {
+            require (sous_seuil_de.get(r) ?? 0) == 2 else EtatInvalide "pc pas sous le seuil de suivi sur deux mises à jour"
+            if st == "detecte" {
+                transition(r, "detecte", "resolu")
+            } else if st == "suivi" {
+                transition(r, "suivi", "resolu")
+            } else if st == "alerte" {
+                transition(r, "alerte", "resolu")
+            } else {
+                transition(r, "en_coordination", "resolu")
+            }
+        } else {
+            require st == "en_coordination" else EtatInvalide "résolution par manœuvre : rapprochement pas en coordination"
+            let plan = ApiManoeuvres.plan_de(r)
+            require plan != "" else EtatInvalide "aucun plan d'évitement"
+            require ApiManoeuvres.etat(plan) == "verifie" else EtatInvalide "plan {plan} pas vérifié"
+            require plan_de.get(r) == () else Existe "plan déjà lié"
+            plan_de.set(r, plan)
+            transition(r, "en_coordination", "evite")
+            transition(r, "evite", "resolu")
+        }
+        _clore(h, to_string(r), to_string(a), to_string(b), to_string(motif))
+        _fonder(to_string(r), "resolu|{h}|{par}|{motif}")
+        let _ = Journal.noter(h, "conjonctions", par, "rapprochement {r} résolu ({motif})")
+        return "resolu"
+    }
+
+    on clore_apres_tca(h, r, par) {
+        require ApiAcces.a_le_role(par, "systeme") || ApiAcces.a_le_role(par, "analyste") else Habilitation "clore : systeme ou analyste d'ORBITE"
+        let a = objet_a_de.get(r)
+        require a != () else Inconnu "rapprochement inconnu : {r}"
+        let b = objet_b_de.get(r) ?? a
+        let st = get_status(r) ?? "detecte"
+        require st == "detecte" || st == "suivi" || st == "alerte" || st == "en_coordination" else Ferme "rapprochement déjà clos"
+        let an = ConjAnalyseTca.etat(r)
+        let cible = if an == "sans_suite" || an == "infirmee" { "passe" } else if an == "confirmee" { "collision" } else { "" }
+        require cible != "" else EtatInvalide "analyse après TCA non conclue ({an})"
+        if cible == "passe" {
+            if st == "detecte" {
+                transition(r, "detecte", "passe")
+            } else if st == "suivi" {
+                transition(r, "suivi", "passe")
+            } else if st == "alerte" {
+                transition(r, "alerte", "passe")
+            } else {
+                transition(r, "en_coordination", "passe")
+            }
+        } else {
+            if st == "detecte" {
+                transition(r, "detecte", "collision")
+            } else if st == "suivi" {
+                transition(r, "suivi", "collision")
+            } else if st == "alerte" {
+                transition(r, "alerte", "collision")
+            } else {
+                transition(r, "en_coordination", "collision")
+            }
+        }
+        _clore(h, to_string(r), to_string(a), to_string(b), "analyse {an}")
+        let _ = Journal.noter(h, "conjonctions", par, "rapprochement {r} clos après TCA : {cible} (analyse {an})")
+        return cible
+    }
+
+    on fondements(h, r, org, n, par) {
+        let a = objet_a_de.get(r)
+        require a != () else Inconnu "rapprochement inconnu : {r}"
+        let b = objet_b_de.get(r) ?? a
+        require n >= 1 && n <= MAX_FONDEMENTS else HorsBornes "n entre 1 et 500"
+        if org == ApiRef.orbite() {
+            require ApiAcces.a_le_role(par, "analyste") || ApiAcces.a_le_role(par, "superviseur") || ApiAcces.a_le_role(par, "conformite") || ApiAcces.a_le_role(par, "auditeur") else Habilitation "fondements pour ORBITE : analyste, superviseur, conformite ou auditeur"
+        } else {
+            require ApiAcces.agit_pour(par, org) else Habilitation "{par} n'agit pas pour {org}"
+        }
+        require ApiDonnees.peut_recevoir(org, a, r, h) && ApiDonnees.peut_recevoir(org, b, r, h) else Confidentiel "{org} ne peut pas recevoir les données des deux objets"
+        let _ = ApiDonnees.tracer(h, org, a, r, "fondements")
+        let _ = ApiDonnees.tracer(h, org, b, r, "fondements")
+        let lignes_f = fondements_de.get(r) ?? []
+        let res_f = if len(lignes_f) > n { slice(lignes_f, len(lignes_f) - n) } else { lignes_f }
+        let nb = len(res_f)
+        let _ = Journal.noter(h, "conjonctions", par, "fondements de {r} communiqués à {org} ({nb} lignes)")
+        return res_f
+    }
+
+    on fiche(r) {
+        let a = objet_a_de.get(r)
+        require a != () else Inconnu "rapprochement inconnu : {r}"
+        return ConjFiche {
+            objet_a: a,
+            objet_b: objet_b_de.get(r) ?? a,
+            tca: tca_de.get(r) ?? Horodatage(0),
+            distance: distance_de.get(r) ?? Distance(0),
+            pc: pc_de.get(r) ?? Probabilite(0),
+            niveau: niveau_de.get(r) ?? Niveau(1),
+            regime: regime_de.get(r) ?? Regime("leo"),
+            mises_a_jour: nb_maj.get(r) ?? 0,
+            mis_a_jour: maj_le.get(r) ?? Horodatage(0)
+        }
+    }
+
+    on etat(r) {
+        if objet_a_de.get(r) == () { return "inconnu" }
+        return get_status(r) ?? "detecte"
+    }
+
+    on ouverts_de(objet) {
+        return ouverts_par_objet.get(to_string(objet)) ?? []
+    }
+
+    on echus(h, n) {
+        let vus = map()
+        let res_e = []
+        for lst in ouverts_par_objet.values {
+            for x in lst {
+                if len(res_e) < n && !(vus[x] ?? false) {
+                    vus[x] = true
+                    if to_int(tca_de.get(x) ?? h) + DELAI_ANALYSE <= to_int(h) {
+                        res_e.push(x)
+                    }
+                }
+            }
+        }
+        return res_e
+    }
+
+    on a_reevaluer(h, n) {
+        let vus = map()
+        let cand = []
+        for lst in ouverts_par_objet.values {
+            for x in lst {
+                if !(vus[x] ?? false) {
+                    vus[x] = true
+                    let t = to_int(tca_de.get(x) ?? h)
+                    if t > to_int(h) && to_int(niveau_de.get(x) ?? Niveau(1)) < 3 {
+                        cand.push(map("id", x, "t", t))
+                    }
+                }
+            }
+        }
+        let tries = cand.sort_by(e => e.t)
+        let res_a = tries.map(e => e.id)
+        if len(res_a) > n { return slice(res_a, 0, n) }
+        return res_a
+    }
+
+    on urgents(h, horizon, niveau_min) {
+        let vus = map()
+        let cand = []
+        let fin = to_int(h) + to_int(horizon)
+        for lst in ouverts_par_objet.values {
+            for x in lst {
+                if !(vus[x] ?? false) {
+                    vus[x] = true
+                    let t = to_int(tca_de.get(x) ?? h)
+                    if t >= to_int(h) && t <= fin && to_int(niveau_de.get(x) ?? Niveau(1)) >= to_int(niveau_min) {
+                        cand.push(map("id", x, "t", t))
+                    }
+                }
+            }
+        }
+        let tries = cand.sort_by(e => e.t)
+        let res_u = tries.map(e => e.id)
+        if len(res_u) > 1000 { return slice(res_u, 0, 1000) }
+        return res_u
+    }
+
+    on historique(objet, depuis) {
+        let tous = par_objet.get(to_string(objet)) ?? []
+        let res_h = tous.filter(x => to_int(maj_le.get(x) ?? Horodatage(0)) >= to_int(depuis))
+        if len(res_h) > 1000 { return slice(res_h, len(res_h) - 1000) }
+        return res_h
+    }
+
+    on clos_entre(debut, fin) {
+        require to_int(fin) >= to_int(debut) else Incoherent "fin avant début"
+        let j0 = idiv(to_int(debut), 86400000)
+        let j1 = idiv(to_int(fin), 86400000)
+        let res_c = []
+        for j in range(j0, j1 + 1) {
+            if len(res_c) < 10000 {
+                for x in clos_par_jour.get(to_string(j)) ?? [] {
+                    let c = to_int(clos_le.get(x) ?? Horodatage(0))
+                    if len(res_c) < 10000 && c >= to_int(debut) && c <= to_int(fin) {
+                        res_c.push(x)
+                    }
+                }
+            }
+        }
+        return res_c
+    }
+
+    // Ordre du catalogue : numéro de "OBJ-<n>" croissant, sinon ordre lexical.
+    on _avant(a: String, b: String) {
+        if starts_with(a, "OBJ-") && starts_with(b, "OBJ-") {
+            let na = try { to_int(substring(a, 4, len(a))) }
+            let nb = try { to_int(substring(b, 4, len(b))) }
+            if na.error == () && nb.error == () && na.value != () && nb.value != () {
+                if na.value != nb.value { return na.value < nb.value }
+            }
+        }
+        return a < b
+    }
+
+    // Ajoute une ligne de fondements (les MAX_FONDEMENTS plus récentes sont gardées).
+    on _fonder(r: String, ligne: String) {
+        let lignes_x = (fondements_de.get(r) ?? []) ++ [ligne]
+        if len(lignes_x) > MAX_FONDEMENTS {
+            lignes_x = slice(lignes_x, len(lignes_x) - MAX_FONDEMENTS)
+        }
+        fondements_de.set(r, lignes_x)
+    }
+
+    // Écritures de clôture : motif, instant, retrait des ouverts, index par jour.
+    on _clore(h: Horodatage, r: String, a: String, b: String, motif: String) {
+        motif_cloture_de.set(r, motif)
+        clos_le.set(r, h)
+        for o in [a, b] {
+            let restants = (ouverts_par_objet.get(o) ?? []).filter(x => x != r)
+            ouverts_par_objet.set(o, restants)
+        }
+        let jour = to_string(idiv(to_int(h), 86400000))
+        let du_jour = clos_par_jour.get(jour) ?? []
+        if len(du_jour) < 100000 {
+            clos_par_jour.set(jour, du_jour ++ [r])
+        }
+    }
+}
+
+flesh ConjExemption {
+    on accorder(h, chasseur, cible, debut, fin, par, valideur) {
+        require ApiAcces.a_le_role(par, "analyste") else Habilitation "exempter : analyste d'ORBITE"
+        require ApiAcces.a_le_role(valideur, "superviseur") else QuatreYeux "valideur : superviseur d'ORBITE"
+        require valideur != par && ApiAcces.quatre_yeux(par, valideur) else QuatreYeux "valideur distinct exigé"
+        require to_string(chasseur) != to_string(cible) else Incoherent "chasseur et cible identiques"
+        require to_int(fin) > to_int(debut) else Incoherent "fin ≤ début"
+        require to_int(fin) - to_int(debut) <= DUREE_MAX else Incoherent "exemption de plus de 30 jours"
+        let ec = ApiRef.etat_objet(chasseur)
+        require ec != "inconnu" && ec != "rentre" else Inconnu "objet non catalogué : {chasseur}"
+        let et = ApiRef.etat_objet(cible)
+        require et != "inconnu" && et != "rentre" else Inconnu "objet non catalogué : {cible}"
+        require ApiFinDeVie.retrait_autorise(cible) else NonEligible "retrait actif de {cible} non autorisé"
+        require chasseur_de.size < MAX_EXEMPTIONS else Plein "trop d'exemptions"
+        let sc = to_string(chasseur)
+        let st = to_string(cible)
+        require len(par_objet.get(sc) ?? []) < 10 && len(par_objet.get(st) ?? []) < 10 else Plein "trop d'exemptions sur l'un des objets"
+        let e = "EX-{next_id()}"
+        chasseur_de.set(e, chasseur)
+        cible_de.set(e, cible)
+        fin_de.set(e, fin)
+        debut_de.set(e, debut)
+        accordee_par.set(e, "{h}|{par}|{valideur}")
+        par_objet.set(sc, (par_objet.get(sc) ?? []) ++ [e])
+        par_objet.set(st, (par_objet.get(st) ?? []) ++ [e])
+        let _ = Journal.noter(h, "conjonctions", par, "exemption {e} : {sc} / {st} du {debut} au {fin} (valideur {valideur})")
+        return e
+    }
+
+    on avancer(h, exemption, par) {
+        require ApiAcces.a_le_role(par, "systeme") else Habilitation "avancer une exemption : systeme"
+        let ch = chasseur_de.get(exemption)
+        require ch != () else Inconnu "exemption inconnue : {exemption}"
+        let ci = cible_de.get(exemption) ?? ch
+        let st = get_status(exemption) ?? "accordee"
+        require st == "accordee" || st == "en_vigueur" else Ferme "exemption close"
+        let fin = to_int(fin_de.get(exemption) ?? h)
+        let debut = to_int(debut_de.get(exemption) ?? h)
+        if !ApiFinDeVie.retrait_autorise(ci) {
+            cause_de.set(exemption, "retrait de {ci} plus autorisé")
+            _retirer(exemption, to_string(ch), to_string(ci))
+            if st == "accordee" {
+                transition(exemption, "accordee", "levee")
+            } else {
+                transition(exemption, "en_vigueur", "levee")
+            }
+            let _ = Journal.noter(h, "conjonctions", par, "exemption {exemption} levée : retrait plus autorisé")
+            return "levee"
+        }
+        let etat_x = st
+        if etat_x == "accordee" && to_int(h) >= debut {
+            transition(exemption, "accordee", "en_vigueur")
+            etat_x = "en_vigueur"
+        }
+        if etat_x == "en_vigueur" && to_int(h) > fin {
+            _retirer(exemption, to_string(ch), to_string(ci))
+            transition(exemption, "en_vigueur", "echue")
+            etat_x = "echue"
+        }
+        if etat_x != st {
+            let _ = Journal.noter(h, "conjonctions", par, "exemption {exemption} : {st} -> {etat_x}")
+        }
+        return etat_x
+    }
+
+    on non_closes() {
+        let vus = map()
+        let res_n = []
+        for lst in par_objet.values {
+            for e in lst {
+                if !(vus[e] ?? false) {
+                    vus[e] = true
+                    res_n.push(e)
+                }
+            }
+        }
+        return res_n
+    }
+
+    on couvre(a, b, h) {
+        let sa = to_string(a)
+        let sb = to_string(b)
+        for e in par_objet.get(sa) ?? [] {
+            if (get_status(e) ?? "accordee") == "en_vigueur" {
+                let ch = to_string(chasseur_de.get(e) ?? "")
+                let ci = to_string(cible_de.get(e) ?? "")
+                let d = to_int(debut_de.get(e) ?? Horodatage(0))
+                let f = to_int(fin_de.get(e) ?? Horodatage(0))
+                let meme = (ch == sa && ci == sb) || (ch == sb && ci == sa)
+                if meme && d <= to_int(h) && to_int(h) <= f {
+                    return true
+                }
+            }
+        }
+        return false
+    }
+
+    on etat(exemption) {
+        if chasseur_de.get(exemption) == () { return "inconnue" }
+        return get_status(exemption) ?? "accordee"
+    }
+
+    on _retirer(e: String, a: String, b: String) {
+        for o in [a, b] {
+            let restants = (par_objet.get(o) ?? []).filter(x => x != e)
+            par_objet.set(o, restants)
+        }
+    }
+}

@@ -1,0 +1,346 @@
+// PASSERELLE — corps des routeurs d'administration (généré depuis les fiches des gestes :
+// sys/passerelle/admin.cell + les façades). Arguments lus dans `corps` par leur nom de paramètre ;
+// `h`, `par`, `valideur` jamais lus dans le corps. Un champ manquant ou mal typé lève HorsBornes
+// ("champ …", 400) ; une valeur hors de son type nominal lève OutOfRange (400 côté PasEntree).
+// Le refus d'un geste est journalisé puis relevé : comme le geste est atomique, la ligne du
+// routeur disparaît avec lui, et c'est la ligne finale de PasEntree.traiter qui garde la trace.
+
+flesh PasAdmin {
+    on router_acces(h, appelant, valideur, geste, corps) {
+        let qui = _prealable(appelant, corps)
+        let r = try {
+            match geste {
+                "ApiAcces.enregistrer" -> ApiAcces.enregistrer(h, _s(corps, "personne"), Org(_s(corps, "employeur")), Role(_s(corps, "r")), qui)
+                "ApiAcces.suspendre" -> ApiAcces.suspendre(h, _s(corps, "personne"), _s(corps, "motif"), qui)
+                "ApiAcces.retablir" -> ApiAcces.retablir(h, _s(corps, "personne"), qui)
+                "ApiAcces.ouvrir_urgence" -> ApiAcces.ouvrir_urgence(h, _s(corps, "personne"), Rapprochement(_s(corps, "r")), _s(corps, "motif"), qui)
+                "ApiAcces.fermer_session" -> ApiAcces.fermer_session(h, _s(corps, "jeton"), qui)
+                _ -> fail("Inconnu", "geste {geste} hors du routeur acces")
+            }
+        }
+        if r.error != () {
+            let k = r.kind
+            let _ = Journal.noter(h, "acces", qui, "admin {geste} : refus {k}")
+            fail(r)
+        }
+        let _ = Journal.noter(h, "acces", qui, "admin {geste} : fait")
+        return r.value
+    }
+    on router_conformite(h, appelant, valideur, geste, corps) {
+        let qui = _prealable(appelant, corps)
+        let r = try {
+            match geste {
+                "ApiConformite.constater" -> ApiConformite.constater(h, Org(_s(corps, "op")), _s(corps, "nature"), Gravite(_i(corps, "gravite")), _s(corps, "reference"), qui)
+                "ApiConformite.constater_etat" -> ApiConformite.constater_etat(h, Etat(_s(corps, "etat")), _s(corps, "nature"), Gravite(_i(corps, "gravite")), _s(corps, "reference"), qui)
+                _ -> fail("Inconnu", "geste {geste} hors du routeur conformite")
+            }
+        }
+        if r.error != () {
+            let k = r.kind
+            let _ = Journal.noter(h, "conformite", qui, "admin {geste} : refus {k}")
+            fail(r)
+        }
+        let _ = Journal.noter(h, "conformite", qui, "admin {geste} : fait")
+        return r.value
+    }
+    on router_conjonctions(h, appelant, valideur, geste, corps) {
+        let qui = _prealable(appelant, corps)
+        let r = try {
+            match geste {
+                "ApiConjonctions.signaler" -> ApiConjonctions.signaler(h, Objet(_s(corps, "objet_a")), Objet(_s(corps, "objet_b")), Horodatage(_i(corps, "tca")), Distance(_i(corps, "distance")), Probabilite(_i(corps, "pc")), qui)
+                "ApiConjonctions.resoudre" -> ApiConjonctions.resoudre(h, Rapprochement(_s(corps, "r")), _s(corps, "motif"), qui)
+                "ApiConjonctions.constater_collision" -> ApiConjonctions.constater_collision(h, Rapprochement(_s(corps, "r")), _s(corps, "evenement"), qui)
+                "ApiConjonctions.exempter" -> ApiConjonctions.exempter(h, Objet(_s(corps, "chasseur")), Objet(_s(corps, "cible")), Horodatage(_i(corps, "debut")), Horodatage(_i(corps, "fin")), qui, valideur)
+                "ApiConjonctions.renforcer" -> ApiConjonctions.renforcer(h, Regime(_s(corps, "regime")), Horodatage(_i(corps, "fin")), _s(corps, "motif"), qui)
+                _ -> fail("Inconnu", "geste {geste} hors du routeur conjonctions")
+            }
+        }
+        if r.error != () {
+            let k = r.kind
+            let _ = Journal.noter(h, "conjonctions", qui, "admin {geste} : refus {k}")
+            fail(r)
+        }
+        let _ = Journal.noter(h, "conjonctions", qui, "admin {geste} : fait")
+        return r.value
+    }
+    on router_coordination(h, appelant, valideur, geste, corps) {
+        let qui = _prealable(appelant, corps)
+        let r = try {
+            match geste {
+                "ApiCoordination.ouvrir" -> ApiCoordination.ouvrir(h, Rapprochement(_s(corps, "r")), qui)
+                "ApiCoordination.arbitrer" -> ApiCoordination.arbitrer(h, Rapprochement(_s(corps, "r")), Objet(_s(corps, "objet")), _s(corps, "motif"), qui, valideur)
+                "ApiCoordination.rouvrir" -> ApiCoordination.rouvrir(h, Rapprochement(_s(corps, "r")), _s(corps, "motif"), qui)
+                _ -> fail("Inconnu", "geste {geste} hors du routeur coordination")
+            }
+        }
+        if r.error != () {
+            let k = r.kind
+            let _ = Journal.noter(h, "coordination", qui, "admin {geste} : refus {k}")
+            fail(r)
+        }
+        let _ = Journal.noter(h, "coordination", qui, "admin {geste} : fait")
+        return r.value
+    }
+    on router_donnees(h, appelant, valideur, geste, corps) {
+        let qui = _prealable(appelant, corps)
+        let _ = Journal.noter(h, "donnees", qui, "admin {geste} : inconnu")
+        fail("Inconnu", "geste {geste} : donnees n'expose aucun geste d'administration")
+    }
+    on router_ephemerides(h, appelant, valideur, geste, corps) {
+        let qui = _prealable(appelant, corps)
+        let r = try {
+            match geste {
+                "ApiEphemerides.invalider" -> ApiEphemerides.invalider(h, Objet(_s(corps, "objet")), _s(corps, "motif"), qui)
+                _ -> fail("Inconnu", "geste {geste} hors du routeur ephemerides")
+            }
+        }
+        if r.error != () {
+            let k = r.kind
+            let _ = Journal.noter(h, "ephemerides", qui, "admin {geste} : refus {k}")
+            fail(r)
+        }
+        let _ = Journal.noter(h, "ephemerides", qui, "admin {geste} : fait")
+        return r.value
+    }
+    on router_escalade(h, appelant, valideur, geste, corps) {
+        let qui = _prealable(appelant, corps)
+        let r = try {
+            match geste {
+                "ApiEscalade.escalader" -> ApiEscalade.escalader(h, Rapprochement(_s(corps, "r")), Org(_s(corps, "op")), _s(corps, "motif"), qui)
+                _ -> fail("Inconnu", "geste {geste} hors du routeur escalade")
+            }
+        }
+        if r.error != () {
+            let k = r.kind
+            let _ = Journal.noter(h, "escalade", qui, "admin {geste} : refus {k}")
+            fail(r)
+        }
+        let _ = Journal.noter(h, "escalade", qui, "admin {geste} : fait")
+        return r.value
+    }
+    on router_evenements(h, appelant, valideur, geste, corps) {
+        let qui = _prealable(appelant, corps)
+        let r = try {
+            match geste {
+                "ApiEvenements.declarer" -> ApiEvenements.declarer(h, _s(corps, "genre"), _l(corps, "objets"), Rapprochement(_s(corps, "r")), Horodatage(_i(corps, "instant")), _s(corps, "description"), qui, valideur)
+                "ApiEvenements.anomalie" -> ApiEvenements.anomalie(h, Objet(_s(corps, "objet")), _s(corps, "genre"), _s(corps, "description"), qui)
+                _ -> fail("Inconnu", "geste {geste} hors du routeur evenements")
+            }
+        }
+        if r.error != () {
+            let k = r.kind
+            let _ = Journal.noter(h, "evenements", qui, "admin {geste} : refus {k}")
+            fail(r)
+        }
+        let _ = Journal.noter(h, "evenements", qui, "admin {geste} : fait")
+        return r.value
+    }
+    on router_fin_de_vie(h, appelant, valideur, geste, corps) {
+        let qui = _prealable(appelant, corps)
+        let r = try {
+            match geste {
+                "ApiFinDeVie.fin_de_mission" -> ApiFinDeVie.fin_de_mission(h, Objet(_s(corps, "objet")), qui)
+                _ -> fail("Inconnu", "geste {geste} hors du routeur fin_de_vie")
+            }
+        }
+        if r.error != () {
+            let k = r.kind
+            let _ = Journal.noter(h, "fin_de_vie", qui, "admin {geste} : refus {k}")
+            fail(r)
+        }
+        let _ = Journal.noter(h, "fin_de_vie", qui, "admin {geste} : fait")
+        return r.value
+    }
+    on router_lancements(h, appelant, valideur, geste, corps) {
+        let qui = _prealable(appelant, corps)
+        let r = try {
+            match geste {
+                "ApiLancements.notifier" -> ApiLancements.notifier(h, _s(corps, "lancement"), Org(_s(corps, "op")), Etat(_s(corps, "etat")), Horodatage(_i(corps, "debut")), Horodatage(_i(corps, "fin")), Regime(_s(corps, "regime")), _i(corps, "nb_objets"), qui)
+                _ -> fail("Inconnu", "geste {geste} hors du routeur lancements")
+            }
+        }
+        if r.error != () {
+            let k = r.kind
+            let _ = Journal.noter(h, "lancements", qui, "admin {geste} : refus {k}")
+            fail(r)
+        }
+        let _ = Journal.noter(h, "lancements", qui, "admin {geste} : fait")
+        return r.value
+    }
+    on router_manoeuvres(h, appelant, valideur, geste, corps) {
+        let qui = _prealable(appelant, corps)
+        let r = try {
+            match geste {
+                "ApiManoeuvres.annuler" -> ApiManoeuvres.annuler(h, _s(corps, "plan"), _s(corps, "motif"), qui)
+                "ApiManoeuvres.retirer" -> ApiManoeuvres.retirer(h, _s(corps, "plan"), _s(corps, "motif"), qui)
+                "ApiManoeuvres.constater_non_annoncee" -> ApiManoeuvres.constater_non_annoncee(h, Objet(_s(corps, "objet")), Horodatage(_i(corps, "depuis")), qui)
+                _ -> fail("Inconnu", "geste {geste} hors du routeur manoeuvres")
+            }
+        }
+        if r.error != () {
+            let k = r.kind
+            let _ = Journal.noter(h, "manoeuvres", qui, "admin {geste} : refus {k}")
+            fail(r)
+        }
+        let _ = Journal.noter(h, "manoeuvres", qui, "admin {geste} : fait")
+        return r.value
+    }
+    on router_meteo(h, appelant, valideur, geste, corps) {
+        let qui = _prealable(appelant, corps)
+        let _ = Journal.noter(h, "meteo", qui, "admin {geste} : inconnu")
+        fail("Inconnu", "geste {geste} : meteo n'expose aucun geste d'administration")
+    }
+    on router_observation(h, appelant, valideur, geste, corps) {
+        let qui = _prealable(appelant, corps)
+        let r = try {
+            match geste {
+                "ApiObservation.demander_suivi" -> ApiObservation.demander_suivi(h, Objet(_s(corps, "objet")), Niveau(_i(corps, "priorite")), Duree(_i(corps, "duree")), _s(corps, "motif"), qui)
+                "ApiObservation.deposer_mesure" -> ApiObservation.deposer_mesure(h, _s(corps, "capteur"), Objet(_s(corps, "objet")), Horodatage(_i(corps, "instant")), _s(corps, "mesure"), qui)
+                _ -> fail("Inconnu", "geste {geste} hors du routeur observation")
+            }
+        }
+        if r.error != () {
+            let k = r.kind
+            let _ = Journal.noter(h, "observation", qui, "admin {geste} : refus {k}")
+            fail(r)
+        }
+        let _ = Journal.noter(h, "observation", qui, "admin {geste} : fait")
+        return r.value
+    }
+    on router_operateurs(h, appelant, valideur, geste, corps) {
+        let qui = _prealable(appelant, corps)
+        let r = try {
+            match geste {
+                "ApiOperateurs.suspendre" -> ApiOperateurs.suspendre(h, Org(_s(corps, "op")), _s(corps, "motif"), qui, valideur)
+                "ApiOperateurs.retablir" -> ApiOperateurs.retablir(h, Org(_s(corps, "op")), qui, valideur)
+                _ -> fail("Inconnu", "geste {geste} hors du routeur operateurs")
+            }
+        }
+        if r.error != () {
+            let k = r.kind
+            let _ = Journal.noter(h, "operateurs", qui, "admin {geste} : refus {k}")
+            fail(r)
+        }
+        let _ = Journal.noter(h, "operateurs", qui, "admin {geste} : fait")
+        return r.value
+    }
+    on router_operations(h, appelant, valideur, geste, corps) {
+        let qui = _prealable(appelant, corps)
+        let r = try {
+            match geste {
+                "ApiOperations.declarer_incident" -> ApiOperations.declarer_incident(h, _s(corps, "incident"), Gravite(_i(corps, "gravite")), SousSysteme(_s(corps, "sous_systeme")), _s(corps, "description"), qui)
+                _ -> fail("Inconnu", "geste {geste} hors du routeur operations")
+            }
+        }
+        if r.error != () {
+            let k = r.kind
+            let _ = Journal.noter(h, "operations", qui, "admin {geste} : refus {k}")
+            fail(r)
+        }
+        let _ = Journal.noter(h, "operations", qui, "admin {geste} : fait")
+        return r.value
+    }
+    on router_priorites(h, appelant, valideur, geste, corps) {
+        let qui = _prealable(appelant, corps)
+        let _ = Journal.noter(h, "priorites", qui, "admin {geste} : inconnu")
+        fail("Inconnu", "geste {geste} : priorites n'expose aucun geste d'administration")
+    }
+    on router_reentrees(h, appelant, valideur, geste, corps) {
+        let qui = _prealable(appelant, corps)
+        let r = try {
+            match geste {
+                "ApiReentrees.prevoir" -> ApiReentrees.prevoir(h, Objet(_s(corps, "objet")), Horodatage(_i(corps, "debut")), Horodatage(_i(corps, "fin")), _i(corps, "victimes_ppm"), qui)
+                "ApiReentrees.constater" -> ApiReentrees.constater(h, Objet(_s(corps, "objet")), Horodatage(_i(corps, "instant")), _s(corps, "lieu"), _b(corps, "debris_au_sol"), qui, valideur)
+                _ -> fail("Inconnu", "geste {geste} hors du routeur reentrees")
+            }
+        }
+        if r.error != () {
+            let k = r.kind
+            let _ = Journal.noter(h, "reentrees", qui, "admin {geste} : refus {k}")
+            fail(r)
+        }
+        let _ = Journal.noter(h, "reentrees", qui, "admin {geste} : fait")
+        return r.value
+    }
+    on router_ref(h, appelant, valideur, geste, corps) {
+        let qui = _prealable(appelant, corps)
+        let r = try {
+            match geste {
+                "ApiRef.inscrire_organisation" -> ApiRef.inscrire_organisation(h, Org(_s(corps, "org")), _s(corps, "nom"), Etat(_s(corps, "etat")), _s(corps, "genre"), qui, valideur)
+                "ApiRef.cataloguer" -> ApiRef.cataloguer(h, NatureObjet(_s(corps, "nature")), Org(_s(corps, "proprietaire")), Etat(_s(corps, "etat")), Regime(_s(corps, "regime")), Propulsion(_s(corps, "propulsion")), Masse(_i(corps, "masse")), qui)
+                "ApiRef.changer_etat_objet" -> ApiRef.changer_etat_objet(h, Objet(_s(corps, "objet")), _s(corps, "cible"), _s(corps, "reference"), _s(corps, "motif"), qui)
+                "ApiRef.declarer_propulsion" -> ApiRef.declarer_propulsion(h, Objet(_s(corps, "objet")), Propulsion(_s(corps, "p")), _s(corps, "motif"), qui)
+                "ApiRef.attribuer" -> ApiRef.attribuer(h, Objet(_s(corps, "objet")), Org(_s(corps, "proprietaire")), Etat(_s(corps, "etat")), qui, valideur)
+                "ApiRef.immatriculer" -> ApiRef.immatriculer(h, Objet(_s(corps, "objet")), _s(corps, "numero"), qui)
+                "ApiRef.changer_regime" -> ApiRef.changer_regime(h, Objet(_s(corps, "objet")), Regime(_s(corps, "r")), qui)
+                "ApiRef.changer_tutelle" -> ApiRef.changer_tutelle(h, Org(_s(corps, "org")), Etat(_s(corps, "etat")), qui, valideur)
+                _ -> fail("Inconnu", "geste {geste} hors du routeur ref")
+            }
+        }
+        if r.error != () {
+            let k = r.kind
+            let _ = Journal.noter(h, "ref", qui, "admin {geste} : refus {k}")
+            fail(r)
+        }
+        let _ = Journal.noter(h, "ref", qui, "admin {geste} : fait")
+        return r.value
+    }
+    on router_responsabilite(h, appelant, valideur, geste, corps) {
+        let qui = _prealable(appelant, corps)
+        let r = try {
+            match geste {
+                "ApiResponsabilite.geler" -> ApiResponsabilite.geler(h, _s(corps, "evenement"), _s(corps, "motif"), qui)
+                _ -> fail("Inconnu", "geste {geste} hors du routeur responsabilite")
+            }
+        }
+        if r.error != () {
+            let k = r.kind
+            let _ = Journal.noter(h, "responsabilite", qui, "admin {geste} : refus {k}")
+            fail(r)
+        }
+        let _ = Journal.noter(h, "responsabilite", qui, "admin {geste} : fait")
+        return r.value
+    }
+
+    // ── aides
+
+    // Contrôle préalable : un rôle effectif (jamais "aucun" ni "systeme"), dans sa portée ; aucun
+    // `h`, `par` ou `valideur` dans le corps. Renvoie la personne (le `par` des gestes).
+    on _prealable(appelant: PasAppelant, corps: Map) {
+        let qui = match appelant { PasAppelant { personne, org, role } -> personne }
+        let son_org = match appelant { PasAppelant { personne, org, role } -> org }
+        let role = match appelant { PasAppelant { personne, org, role } -> role }
+        require corps["par"] == () && corps["valideur"] == () && corps["h"] == () else HorsBornes "champ par / valideur / h interdit dans le corps"
+        require role != "aucun" && role != "systeme" && qui != "systeme" else Habilitation "aucun rôle"
+        let orbite_r = role == "analyste" || role == "superviseur" || role == "exploitant" || role == "conformite" || role == "direction" || role == "auditeur"
+        if orbite_r {
+            require ApiAcces.a_le_role(qui, role) else Habilitation "rôle {role} hors de sa portée"
+        } else {
+            require ApiAcces.agit_pour(qui, son_org) else Habilitation "{qui} n'agit pas pour {son_org}"
+        }
+        return qui
+    }
+    on _s(corps: Map, nom: String) {
+        let v = corps[nom]
+        require v != () && type_of(v) == "String" else HorsBornes "champ {nom} manquant ou non textuel"
+        return v
+    }
+    on _i(corps: Map, nom: String) {
+        let v = corps[nom]
+        require v != () && type_of(v) == "Int" else HorsBornes "champ {nom} manquant ou non entier"
+        return v
+    }
+    on _b(corps: Map, nom: String) {
+        let v = corps[nom]
+        require v != () && type_of(v) == "Bool" else HorsBornes "champ {nom} manquant ou non booléen"
+        return v
+    }
+    on _l(corps: Map, nom: String) {
+        let v = corps[nom]
+        require v != () && type_of(v) == "List" else HorsBornes "champ {nom} manquant ou non liste"
+        for x in v {
+            require type_of(x) == "String" else HorsBornes "champ {nom} : liste de textes attendue"
+        }
+        return v
+    }
+}

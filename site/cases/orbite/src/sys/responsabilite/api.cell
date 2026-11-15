@@ -1,0 +1,28 @@
+// Façade de la RESPONSABILITÉ : dommages et réclamations entre États (Convention de 1972), dossiers de preuve.
+skeleton ApiResponsabilite {
+    face {
+        // Ouvre un dossier de preuve sur un évènement (collision, rentrée avec dommages) : gel
+        // des journaux, des éphémérides et des décisions de coordination concernés. Renvoie l'id.
+        // Refus : Inconnu, Existe, Habilitation ("conformite" ou "direction" ; "systeme" pour une
+        // collision confirmée).
+        signal geler(h: Horodatage, evenement: String, motif: String, par: String) -> String
+            calls RespDossiers.ouvrir
+        // Vrai si un dossier gelé couvre la cible (aucune donnée la concernant ne peut être purgée) :
+        // un rapprochement "CJ-…", un objet "OBJ-…", un évènement, un plan, ou un jour "J:<jour>".
+        signal sous_gel(cible: String) -> Bool
+            calls RespGels.est_gele
+        // Vrai si une purge de la cible est autorisée (durée de conservation échue, aucun gel).
+        signal purge_autorisee(cible: String, h: Horodatage) -> Bool
+            calls RespPurges.autorisee_pour
+        // Chaîne de preuve d'une décision : les pièces qui la fondaient, datées, avec empreinte.
+        // Refus : Inconnu.
+        signal chaine(decision: String) -> List<String>
+            calls RespPieces.chaine_de
+        // Balayage des échéances du sous-système à `h` (délais, expirations, rondes), appelé par
+        // l'horloge d'ORBITE (Horloge.battre) — le SEUL point d'entrée du temps : aucun signal de
+        // responsabilite ne lit l'horloge lui-même. Renvoie le nombre d'objets dont l'état a changé.
+        // Refus : Habilitation (par "systeme").
+        signal balayer(h: Horodatage, par: String) -> Int
+            calls RespRondes.balayer
+    }
+}

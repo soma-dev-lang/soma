@@ -1,0 +1,66 @@
+// observation — COUVERTURE ET CAPACITÉ par régime orbital. Chaque régime (leo, meo, geo, heo)
+// a un niveau de couverture tenu par la ronde : « nominale » (au moins SEUIL_NOMINAL capteurs en
+// service le couvrent), « degradee » (au moins 1), « aveugle » (aucun). Une couverture aveugle
+// déclare un incident critique : les rapprochements du régime reposent alors sur les seules
+// éphémérides déclarées, ce que le criblage doit savoir (ApiObservation.suivi devient faux).
+
+skeleton ObsCouverture {
+    // Capteurs en service couvrant un régime pour une couverture nominale.
+    const SEUIL_NOMINAL = 3
+    memory {
+        nb_capteurs: Map<Regime, Int> [persistent]         // régime → capteurs en service qui le couvrent (dernière ronde)
+        charge_pct: Map<Regime, Pourcent> [persistent]     // régime → charge des capteurs du régime, % de leur capacité
+        evaluee_le: Map<Regime, Horodatage> [persistent]   // régime → dernière évaluation, ms
+        incident_de: Map<Regime, String> [persistent]      // régime → incident ouvert pendant la cécité ("" sinon)
+        invariant nb_capteurs.size <= 4
+        invariant charge_pct.size <= 4
+        invariant evaluee_le.size <= 4
+        invariant incident_de.size <= 4
+        invariant nb_capteurs >= 0
+    }
+    // Niveau de couverture d'un régime (id = le Regime). Machine réactive : revient à « nominale ».
+    state couverture {
+        initial: nominale
+        nominale -> degradee     // evaluer : moins de SEUIL_NOMINAL capteurs
+        degradee -> nominale     // evaluer : couverture rétablie
+        degradee -> aveugle      // evaluer : plus aucun capteur
+        aveugle -> degradee      // evaluer : un capteur au moins rétabli
+    }
+    face {
+        // Ronde (appelée par ObsBalayage.balayer, par = "systeme") : pour chaque régime, compte les capteurs en service
+        // qui le couvrent (ObsCapteurs.disponibles) et leur charge (ObsTaches.charge, en % de
+        // ObsTaches.TACHES_PAR_CAPTEUR), puis fait évoluer la couverture d'un cran. Entrée en
+        // « aveugle » : incident de gravité 3 (ApiOperations.declarer_incident, sous-système
+        // "observation") ; passage en « degradee » : gravité 2. Renvoie le nombre de régimes non
+        // nominaux. Refus : Habilitation (par ≠ "systeme").
+        signal evaluer(h: Horodatage, par: String) -> Int
+            writes nb_capteurs, charge_pct, evaluee_le, incident_de
+            moves nominale -> degradee, degradee -> nominale, degradee -> aveugle, aveugle -> degradee
+            calls ObsCapteurs.disponibles, ObsTaches.charge, ApiOperations.declarer_incident, Journal.noter
+        // Niveau de couverture du régime : "nominale", "degradee" ou "aveugle".
+        signal niveau(regime: Regime) -> String
+            reads couverture
+        // Charge des capteurs du régime à la dernière ronde (%). Au-delà de 90 %, seules les
+        // demandes de priorité 3 sont servies (préemption).
+        signal charge(regime: Regime) -> Pourcent
+            reads charge_pct
+        // Vrai si une demande de suivi de priorité `p` peut être servie dans le régime sans refus
+        // Plein : couverture non aveugle et charge < 90 %, ou p = 3 et couverture non aveugle.
+        signal peut_servir(regime: Regime, p: Niveau) -> Bool
+            reads couverture, charge_pct
+    }
+}
+
+// Point d'entrée unique du temps dans observation : ApiObservation.balayer, appelé par
+// Horloge.battre, délègue ici ; aucune autre cell ne lit l'horloge.
+skeleton ObsBalayage {
+    face {
+        // Balayage à `h` (par = "systeme" seulement) : ObsCapteurs.veiller (silence, étalonnage
+        // échu), ObsTaches.expirer, ObsOrbites.perimer (72 h), ObsPistes.veiller (7 j),
+        // ObsDetections.veiller (12 h), ObsCouverture.evaluer, ObsMesures.purger — dans cet ordre,
+        // pour que la couverture et les relèves voient les pannes du même passage. Renvoie la somme
+        // des objets dont l'état a changé. Refus : Habilitation.
+        signal balayer(h: Horodatage, par: String) -> Int
+            calls ObsCapteurs.veiller, ObsTaches.expirer, ObsOrbites.perimer, ObsPistes.veiller, ObsDetections.veiller, ObsCouverture.evaluer, ObsMesures.purger, Journal.noter
+    }
+}

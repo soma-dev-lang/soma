@@ -1,0 +1,163 @@
+// Corps de CoordDecision : les décisions arrêtées, leur fondement figé, leurs réserves, leur purge.
+flesh CoordDecision {
+    on prendre(h, d, r, objet, mode, motif, par, valideur) {
+        require rapprochement_de.get(d) == () else Existe "décision déjà prise : {d}"
+        require rapprochement_de.size < MAX_DECISIONS else Plein "plafond de {MAX_DECISIONS} décisions atteint"
+        let hist = historique_de.get(r) ?? []
+        require len(hist) < MAX_PAR_RAPPROCHEMENT else Plein "{r} : plus de {MAX_PAR_RAPPROCHEMENT} décisions"
+        if objet != "" {
+            let eo = ApiRef.etat_objet(objet)
+            require eo == "en_service" else NonEligible "{objet} n'est pas en service ({eo})"
+        }
+        let objets_d = CoordDossier.objets(r)
+        let a = Objet(objets_d[0])
+        let b = Objet(objets_d[1])
+        let morceaux = split(CoordDossier.defaut(r), "|")
+        let defaut_obj = Objet(morceaux[0])
+        let version = if len(morceaux) > 1 { morceaux[1] } else { "" }
+        let dep_a = try { ApiEphemerides.fondement(a, h) }
+        let dep_b = try { ApiEphemerides.fondement(b, h) }
+        let age_a = try { ApiEphemerides.age(a, h) }
+        let age_b = try { ApiEphemerides.age(b, h) }
+        let f = CoordFondement {
+            r: r, objet: objet, mode: mode, h: h,
+            tca: ApiConjonctions.tca(r), pc: ApiConjonctions.pc(r), distance: ApiConjonctions.distance(r), niveau: ApiConjonctions.niveau(r),
+            version: version, priorite: ApiPriorites.decision_de(r), defaut: defaut_obj,
+            objet_a: a, objet_b: b, propulsion_a: ApiRef.propulsion(a), propulsion_b: ApiRef.propulsion(b),
+            depot_a: if dep_a.error == () { dep_a.value } else { "" },
+            depot_b: if dep_b.error == () { dep_b.value } else { "" },
+            age_a: if age_a.error == () { to_int(age_a.value) } else { -1 },
+            age_b: if age_b.error == () { to_int(age_b.value) } else { -1 },
+            reponses: CoordReponse.du_tour(r), motif: motif, par: par, valideur: valideur
+        }
+        rapprochement_de.set(d, r)
+        fondement_de.set(d, f)
+        historique_de.set(r, hist ++ [d])
+        if objet != "" {
+            objet_de.set(d, objet)
+            transition(d, "prise", "designee")
+            transition(d, "designee", "en_vigueur")
+        } else {
+            transition(d, "prise", "abstention")
+        }
+        return d
+    }
+    on lever(h, d, motif) {
+        require motif != "" else MotifRequis "levée sans motif"
+        require rapprochement_de.get(d) != () else Inconnu "décision inconnue : {d}"
+        let st = get_status(d) ?? "prise"
+        if st == "en_vigueur" {
+            transition(d, "en_vigueur", "levee")
+        } else if st == "abstention" {
+            transition(d, "abstention", "levee")
+        } else {
+            fail("EtatInvalide", "décision {d} : {st}")
+        }
+        fin_le.set(d, h)
+        motif_fin_de.set(d, motif)
+        return "levee"
+    }
+    on solder(h, d) {
+        require rapprochement_de.get(d) != () else Inconnu "décision inconnue : {d}"
+        let st = get_status(d) ?? "prise"
+        if st == "en_vigueur" {
+            transition(d, "en_vigueur", "soldee")
+        } else if st == "abstention" {
+            transition(d, "abstention", "soldee")
+        } else {
+            fail("EtatInvalide", "décision {d} : {st}")
+        }
+        fin_le.set(d, h)
+        motif_fin_de.set(d, "")
+        return "soldee"
+    }
+    on purger(h, d, purge, par, valideur) {
+        require ApiAcces.a_le_role(par, "conformite") else Habilitation "{par} n'est pas conformité d'ORBITE"
+        require ApiAcces.quatre_yeux(par, valideur) && ApiAcces.a_le_role(valideur, "direction") else QuatreYeux "{valideur} ne peut pas contre-signer {par}"
+        require rapprochement_de.get(d) != () else Inconnu "décision inconnue : {d}"
+        let r = rapprochement_de.get(d) ?? ""
+        let st = get_status(d) ?? "prise"
+        require st == "levee" || st == "soldee" else EtatInvalide "décision {d} : {st}"
+        let fin = to_int(fin_le.get(d) ?? h)
+        require to_int(h) >= fin + CONSERVATION else Delai "conservation de {d} non échue"
+        require purge != "" else EtatInvalide "purge non désignée"
+        require ApiResponsabilite.purge_autorisee(to_string(r), h) else EtatInvalide "purge de {r} non autorisée par responsabilite"
+        require !ApiResponsabilite.sous_gel(to_string(r)) else EtatInvalide "{r} est sous gel"
+        let f = fondement_de.get(d)
+        if f != () {
+            require !ApiResponsabilite.sous_gel(to_string(f.objet_a)) else EtatInvalide "{f.objet_a} est sous gel"
+            require !ApiResponsabilite.sous_gel(to_string(f.objet_b)) else EtatInvalide "{f.objet_b} est sous gel"
+        }
+        if purge_de.get(d) == () { purge_de.set(d, purge) }
+        if st == "levee" {
+            transition(d, "levee", "purgee")
+        } else {
+            transition(d, "soldee", "purgee")
+        }
+        fondement_de.delete(d)
+        let _ = Journal.noter(h, "coordination", par, "décision {d} purgée (purge {purge}, valideur {valideur})")
+        return "purgee"
+    }
+    on contester(h, d, motif, par) {
+        let f = fondement_de.get(d)
+        require f != () else Inconnu "décision inconnue ou purgée : {d}"
+        let st = get_status(d) ?? "prise"
+        let recente = (st == "levee" || st == "soldee") && to_int(h) - to_int(fin_le.get(d) ?? h) < 2592000000
+        require st == "en_vigueur" || st == "abstention" || recente else EtatInvalide "décision {d} : {st}"
+        require f.mode == "arbitrage" else EtatInvalide "décision {d} : une réserve ne vise qu'une décision arbitrée"
+        require motif != "" else MotifRequis "réserve sans motif"
+        let role_ok = ApiAcces.a_le_role(par, "chef_de_mission") || ApiAcces.a_le_role(par, "administrateur_operateur")
+        require role_ok else Habilitation "{par} n'est ni chef de mission ni administrateur d'opérateur"
+        let org = ""
+        for o in [f.objet_a, f.objet_b] {
+            let p = ApiRef.proprietaire(o)
+            if org == "" && p != "inconnu" && ApiAcces.agit_pour(par, p) { org = p }
+        }
+        require org != "" else Habilitation "{par} n'agit pour aucune partie de {d}"
+        let res_r = reserves_de.get(d) ?? []
+        require len(res_r) < MAX_RESERVES else Plein "{d} : plus de {MAX_RESERVES} réserves"
+        let propre = replace(motif, "|", "/")
+        reserves_de.set(d, res_r ++ ["{h} | {org} | {par} | {propre}"])
+        let _ = CoordEchange.noter(h, f.r, Org(org), "note", "réserve sur {d} : {propre}", par)
+        let _ = Journal.noter(h, "coordination", par, "réserve de {org} sur {d}")
+        return len(res_r) + 1
+    }
+    on consulter(h, d, par) {
+        require rapprochement_de.get(d) != () else Inconnu "décision inconnue : {d}"
+        let r = rapprochement_de.get(d) ?? ""
+        require (get_status(d) ?? "prise") != "purgee" else Ferme "fondement de {d} purgé"
+        let f = fondement_de.get(d)
+        require f != () else Ferme "fondement de {d} purgé"
+        let emp = try { ApiAcces.employeur(par) }
+        require emp.error == () else Habilitation "personne inconnue : {par}"
+        let org = emp.value
+        if org == ApiRef.orbite() {
+            let lecteur = ApiAcces.a_le_role(par, "analyste") || ApiAcces.a_le_role(par, "superviseur") || ApiAcces.a_le_role(par, "conformite") || ApiAcces.a_le_role(par, "direction") || ApiAcces.a_le_role(par, "auditeur")
+            require lecteur else Habilitation "{par} n'a aucun rôle de lecture d'ORBITE"
+        } else {
+            let op_ok = ApiAcces.a_le_role(par, "dynamicien") || ApiAcces.a_le_role(par, "chef_de_mission") || ApiAcces.a_le_role(par, "administrateur_operateur") || ApiAcces.a_le_role(par, "point_focal") || ApiAcces.a_le_role(par, "autorite")
+            require op_ok else Habilitation "{par} : personne inactive ou sans rôle"
+            require ApiDonnees.peut_recevoir(org, f.objet_a, r, h) && ApiDonnees.peut_recevoir(org, f.objet_b, r, h) else Confidentiel "{org} ne peut pas recevoir le fondement de {d}"
+            let _ = ApiDonnees.tracer(h, org, f.objet_a, r, "fondement")
+            let _ = ApiDonnees.tracer(h, org, f.objet_b, r, "fondement")
+        }
+        let n_res = len(reserves_de.get(d) ?? [])
+        let _ = Journal.noter(h, "coordination", par, "fondement de {d} communiqué à {org} ({n_res} réserve(s))")
+        return f
+    }
+    on etat(d) {
+        if rapprochement_de.get(d) == () { return "inconnue" }
+        return get_status(d) ?? "prise"
+    }
+    on resume(d) {
+        if d == "" { return "" }
+        let st = get_status(d) ?? ""
+        if st == "purgee" { return "{d}|||||purgee" }
+        let f = fondement_de.get(d)
+        if f == () { return "" }
+        return "{d}|{f.objet}|{f.par}|{f.valideur}|{f.h}|{f.motif}"
+    }
+    on historique(r) {
+        return historique_de.get(r) ?? []
+    }
+}

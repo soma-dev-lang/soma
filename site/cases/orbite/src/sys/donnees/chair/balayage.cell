@@ -1,0 +1,16 @@
+// donnees — corps : ronde des échéances.
+
+flesh DonBalayage {
+    on balayer(h, par) {
+        require ApiAcces.a_le_role(par, "systeme") else Habilitation "balayage de donnees : systeme"
+        let avant = DonAccords.en_vigueur()
+        let apres = DonAccords.entrer_en_vigueur(h, par)
+        let n = if apres != avant { 1 } else { 0 }
+        n = n + DonAdhesions.echoir(h, par)
+        n = n + DonEmbargos.echoir(h, par)
+        n = n + DonConsentements.echoir(h, par)
+        n = n + DonDemandes.echoir(h, par)
+        n = n + DonPartages.echoir(h, par)
+        return n
+    }
+}

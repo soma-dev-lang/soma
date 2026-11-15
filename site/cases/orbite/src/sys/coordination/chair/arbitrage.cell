@@ -1,0 +1,82 @@
+// Corps de CoordArbitrage : la saisine de l'arbitrage d'ORBITE, surveillée jusqu'à son rendu.
+flesh CoordArbitrage {
+    on saisir(h, r, tour, raison) {
+        let id_s = "{r}#{tour}"
+        require dossier_de.get(id_s) == () else Existe "arbitrage déjà saisi pour {id_s}"
+        require dossier_de.size < MAX_SAISINES else Plein "plafond de {MAX_SAISINES} saisines atteint"
+        dossier_de.set(id_s, r)
+        raison_de.set(id_s, raison)
+        saisie_le.set(id_s, h)
+        courante_de.set(r, id_s)
+        let _ = CoordEchange.notifier(h, r, "arbitrage", "arbitrage d'ORBITE saisi (tour {tour}, raison {raison})")
+        let _ = Journal.noter(h, "coordination", "systeme", "saisine {id_s} : {raison}")
+        return id_s
+    }
+    on prendre_en_charge(h, r, par) {
+        require ApiAcces.a_le_role(par, "analyste") else Habilitation "{par} n'est pas analyste d'ORBITE"
+        let id_s = courante_de.get(r) ?? ""
+        require id_s != "" && dossier_de.get(id_s) != () else Inconnu "aucune saisine courante pour {r}"
+        let st = get_status(id_s) ?? "saisie"
+        require st == "saisie" else EtatInvalide "saisine {id_s} : {st}"
+        transition(id_s, "saisie", "prise_en_charge")
+        analyste_de.set(id_s, par)
+        let _ = CoordEchange.noter(h, r, "ORG-ORBITE", "arbitrage", "saisine {id_s} prise en charge", par)
+        let _ = Journal.noter(h, "coordination", par, "saisine {id_s} prise en charge")
+        return id_s
+    }
+    on rendre(h, r) {
+        let id_s = courante_de.get(r) ?? ""
+        require id_s != "" && dossier_de.get(id_s) != () else Inconnu "aucune saisine courante pour {r}"
+        let st = get_status(id_s) ?? "saisie"
+        if st == "saisie" {
+            transition(id_s, "saisie", "rendue")
+        } else if st == "prise_en_charge" {
+            transition(id_s, "prise_en_charge", "rendue")
+        } else if st == "hors_delai" {
+            transition(id_s, "hors_delai", "rendue")
+        } else {
+            fail("EtatInvalide", "saisine {id_s} : {st}")
+        }
+        courante_de.set(r, "")
+        return id_s
+    }
+    on surveiller(h, r, par) {
+        require ApiAcces.a_le_role(par, "systeme") || ApiAcces.a_le_role(par, "analyste") else Habilitation "{par} ne surveille pas les saisines"
+        let id_s = courante_de.get(r) ?? ""
+        require id_s != "" && dossier_de.get(id_s) != () else Inconnu "aucune saisine courante pour {r}"
+        let st = get_status(id_s) ?? "saisie"
+        if st != "saisie" && st != "prise_en_charge" { return st }
+        let lim = CoordDossier.limite(r)
+        if to_int(h) < to_int(lim) - ALERTE_LIMITE { return st }
+        transition(id_s, st, "hors_delai")
+        let _ = ApiOperations.declarer_incident(h, "arbitrage_hors_delai", 3, "coordination", "saisine {id_s} non rendue à moins de 1 h de la limite d'action", "systeme")
+        let _ = ApiEscalade.escalader(h, r, ApiRef.orbite(), "arbitrage d'ORBITE hors délai", "systeme")
+        let _ = Journal.noter(h, "coordination", "systeme", "saisine {id_s} hors délai : incident g3, escalade échelon 4")
+        return "hors_delai"
+    }
+    on abandonner(h, r) {
+        let id_s = courante_de.get(r) ?? ""
+        if id_s == "" { return 0 }
+        let st = get_status(id_s) ?? "saisie"
+        if st == "saisie" {
+            transition(id_s, "saisie", "abandonnee")
+        } else if st == "prise_en_charge" {
+            transition(id_s, "prise_en_charge", "abandonnee")
+        } else if st == "hors_delai" {
+            transition(id_s, "hors_delai", "abandonnee")
+        } else {
+            courante_de.set(r, "")
+            return 0
+        }
+        courante_de.set(r, "")
+        return 1
+    }
+    on courante(r) {
+        return courante_de.get(r) ?? ""
+    }
+    on en_retard(r) {
+        let id_s = courante_de.get(r) ?? ""
+        if id_s == "" { return false }
+        return (get_status(id_s) ?? "saisie") == "hors_delai"
+    }
+}

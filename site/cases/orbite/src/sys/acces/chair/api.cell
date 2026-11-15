@@ -1,0 +1,70 @@
+// acces — corps de la façade ApiAcces : délégation aux cells internes.
+flesh ApiAcces {
+    on enregistrer(h, personne, employeur, r, par) {
+        return AccesPersonnes.enregistrer(h, personne, employeur, r, par)
+    }
+
+    on role_de(personne) {
+        return AccesControle.role_de(personne)
+    }
+
+    on a_le_role(personne, r) {
+        return AccesControle.a_le_role(personne, r)
+    }
+
+    on agit_pour(personne, org) {
+        return AccesControle.agit_pour(personne, org)
+    }
+
+    on employeur(personne) {
+        let e = AccesPersonnes.employeur(personne)
+        require e != "" else Inconnu "personne {personne} inconnue"
+        return e
+    }
+
+    on quatre_yeux(demandeur, valideur) {
+        return AccesControle.quatre_yeux(demandeur, valideur)
+    }
+
+    on suspendre(h, personne, motif, par) {
+        // Le motif libre de la façade devient le détail ; s'il nomme un motif connu, il le type.
+        let m = if motif == "enquete" || motif == "sanction" || motif == "absence_longue" || motif == "facteur_compromis" { motif } else { "autre" }
+        return AccesPersonnes.suspendre(h, personne, AccesMotifSuspension(m), motif, par)
+    }
+
+    on retablir(h, personne, par) {
+        return AccesPersonnes.retablir(h, personne, par)
+    }
+
+    on ouvrir_urgence(h, personne, r, motif, par) {
+        return AccesUrgences.ouvrir(h, personne, r, motif, par)
+    }
+
+    on en_urgence(personne, h) {
+        return AccesUrgences.en_urgence(personne, h)
+    }
+
+    on en_urgence_pour(personne, r, h) {
+        return AccesUrgences.en_urgence_pour(personne, r, h)
+    }
+
+    on ouvrir_session(h, personne, facteur) {
+        return AccesSessions.ouvrir(h, personne, facteur)
+    }
+
+    on authentifier(jeton, h) {
+        return AccesJetons.authentifier(jeton, h)
+    }
+
+    on fermer_session(h, jeton, par) {
+        return AccesSessions.fermer(h, jeton, par)
+    }
+
+    on actifs_de(org) {
+        return AccesControle.actifs_de(org)
+    }
+
+    on balayer(h, par) {
+        return AccesBalayage.balayer(h, par)
+    }
+}

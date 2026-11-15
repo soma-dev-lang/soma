@@ -1,0 +1,169 @@
+// Corps de EvtAnomalies : anomalies d'objets (propriété 2 : un objet en anomalie ne manœuvre pas).
+flesh EvtAnomalies {
+    on declarer(h, objet, g, motif, par) {
+        let st_o = ApiRef.etat_objet(objet)
+        require st_o != "inconnu" && st_o != "rentre" else Inconnu "objet {objet} non catalogué ou rentré ({st_o})"
+        require _peut_agir(par, objet, false) || ApiAcces.a_le_role(par, "systeme") else Habilitation "{par} ne déclare pas d'anomalie sur {objet}"
+        require len(motif) > 0 else MotifRequis "constat de l'anomalie vide"
+        let deja = ouverte_de.get(objet) ?? ""
+        require deja == "" else Doublon "{objet} a déjà l'anomalie ouverte {deja}"
+        require objet_de.size < MAX_ANOMALIES else Plein "plafond de {MAX_ANOMALIES} anomalies atteint"
+        let n_id = next_id()
+        let an = "AN-{n_id}"
+        objet_de.set(an, objet)
+        genre_de.set(an, g)
+        description.set(an, motif)
+        declarant.set(an, par)
+        dernier_point.set(an, h)
+        declaree_le.set(an, h)
+        points.set(an, ["{h} | {par} | {motif}"])
+        ouverte_de.set(objet, an)
+        let urg = if len(ApiConjonctions.ouverts_de(objet)) > 0 { 3 } else { 2 }
+        let _ = EvtNotifications.preparer(h, an, "anomalie", objet, Niveau(urg))
+        let _ = Journal.noter(h, "evenements", par, "{an} : {objet} en anomalie ({g}) : {motif}")
+        return an
+    }
+
+    on prendre_en_charge(h, anomalie, par) {
+        let obj = objet_de.get(anomalie)
+        require obj != () else Inconnu "anomalie inconnue : {anomalie}"
+        let st = get_status(anomalie) ?? "declaree"
+        require st == "declaree" else EtatInvalide "{anomalie} {st}"
+        require ApiAcces.a_le_role(par, "analyste") else Habilitation "{par} n'est pas analyste d'ORBITE"
+        let prio = if len(ApiConjonctions.ouverts_de(obj)) > 0 { 3 } else { 2 }
+        let _ = ApiObservation.demander_suivi(h, obj, Niveau(prio), SUIVI_MS, "anomalie {anomalie}", "systeme")
+        let g = genre_de.get(anomalie) ?? "autre"
+        if g == "propulsion" || g == "attitude" || g == "chute_libre" {
+            let inv = try { ApiEphemerides.invalider(h, obj, "anomalie {anomalie} ({g})", "systeme") }
+            // aucun dépôt à invalider : rien ne décrit encore la trajectoire, rien à faire
+            if inv.error != () && inv.kind != "Inconnu" { fail(inv) }
+        }
+        transition(anomalie, "declaree", "en_suivi")
+        let _ = Journal.noter(h, "evenements", par, "{anomalie} prise en charge (suivi priorité {prio})")
+        return "en_suivi"
+    }
+
+    on rejeter(h, anomalie, motif, par) {
+        let obj = objet_de.get(anomalie)
+        require obj != () else Inconnu "anomalie inconnue : {anomalie}"
+        let st = get_status(anomalie) ?? "declaree"
+        require st == "declaree" else EtatInvalide "{anomalie} {st}"
+        require len(motif) > 0 else MotifRequis "motif du rejet vide"
+        let habilite = ApiAcces.a_le_role(par, "superviseur") || (ApiAcces.a_le_role(par, "chef_de_mission") && ApiAcces.agit_pour(par, ApiRef.proprietaire(obj)))
+        require habilite else Habilitation "{par} ne rejette pas d'anomalie sur {obj}"
+        require par != (declarant.get(anomalie) ?? "") else QuatreYeux "le déclarant ne rejette pas sa propre anomalie"
+        transition(anomalie, "declaree", "rejetee")
+        issue.set(anomalie, "{h} | {par} |  | {motif}")
+        _liberer(obj, anomalie)
+        let _ = Journal.noter(h, "evenements", par, "{anomalie} rejetée : {motif}")
+        return "rejetee"
+    }
+
+    on noter_suivi(h, anomalie, constat, par) {
+        let obj = objet_de.get(anomalie)
+        require obj != () else Inconnu "anomalie inconnue : {anomalie}"
+        let st = get_status(anomalie) ?? "declaree"
+        require st == "declaree" || st == "en_suivi" else EtatInvalide "{anomalie} close ({st})"
+        require len(constat) > 0 else MotifRequis "constat vide"
+        require _peut_agir(par, obj, false) else Habilitation "{par} ne suit pas {obj}"
+        let pts = points.get(anomalie) ?? []
+        require len(pts) < MAX_POINTS else Plein "{anomalie} : {MAX_POINTS} points"
+        pts.push("{h} | {par} | {constat}")
+        points.set(anomalie, pts)
+        let prec = dernier_point.get(anomalie) ?? h
+        dernier_point.set(anomalie, max(h, prec))
+        let _ = Journal.noter(h, "evenements", par, "{anomalie} : point de suivi")
+        return len(pts)
+    }
+
+    on lever(h, anomalie, motif, par, valideur) {
+        let obj = objet_de.get(anomalie)
+        require obj != () else Inconnu "anomalie inconnue : {anomalie}"
+        let st = get_status(anomalie) ?? "declaree"
+        require st == "en_suivi" else EtatInvalide "{anomalie} {st}"
+        require len(motif) > 0 else MotifRequis "motif de la levée vide"
+        require _peut_agir(par, obj, false) else Habilitation "{par} ne lève pas d'anomalie sur {obj}"
+        require ApiAcces.a_le_role(valideur, "superviseur") else Habilitation "{valideur} n'est pas superviseur d'ORBITE"
+        require ApiAcces.quatre_yeux(par, valideur) else QuatreYeux "{valideur} ne contre-signe pas {par}"
+        require ApiObservation.suivi(obj, h) else Insuffisant "pas d'orbite indépendante de moins de 72 h pour {obj}"
+        require ApiEphemerides.fraiche(obj, h) else Perime "éphéméride de {obj} non fraîche"
+        transition(anomalie, "en_suivi", "levee")
+        issue.set(anomalie, "{h} | {par} | {valideur} | {motif}")
+        _liberer(obj, anomalie)
+        let _ = EvtNotifications.preparer(h, anomalie, "levee", obj, 1)
+        let _ = Journal.noter(h, "evenements", par, "{anomalie} levée ({valideur}) : {motif}")
+        return "levee"
+    }
+
+    on constater_perte(h, anomalie, motif, par, valideur) {
+        let obj = objet_de.get(anomalie)
+        require obj != () else Inconnu "anomalie inconnue : {anomalie}"
+        let st = get_status(anomalie) ?? "declaree"
+        require st == "en_suivi" else EtatInvalide "{anomalie} {st}"
+        require len(motif) > 0 else MotifRequis "motif de la perte vide"
+        let du_proprietaire = ApiAcces.a_le_role(par, "chef_de_mission") && ApiAcces.agit_pour(par, ApiRef.proprietaire(obj))
+        let val = ""
+        if !du_proprietaire {
+            require ApiAcces.a_le_role(par, "analyste") else Habilitation "{par} ne constate pas la perte de {obj}"
+            require ApiAcces.a_le_role(valideur, "superviseur") else Habilitation "{valideur} n'est pas superviseur d'ORBITE"
+            require ApiAcces.quatre_yeux(par, valideur) else QuatreYeux "{valideur} ne contre-signe pas {par}"
+            val = valideur
+        }
+        transition(anomalie, "en_suivi", "perdu")
+        issue.set(anomalie, "{h} | {par} | {val} | {motif}")
+        _liberer(obj, anomalie)
+        let _ = ApiRef.declarer_propulsion(h, obj, "aucune", "perte constatée ({anomalie}) : {motif}", "systeme")
+        let _ = ApiRef.changer_etat_objet(h, obj, "hors_service", "", "perte constatée ({anomalie}) : {motif}", "systeme")
+        let _ = EvtNotifications.preparer(h, anomalie, "perte", obj, 2)
+        let _ = Journal.noter(h, "evenements", par, "{anomalie} : perte de {obj} constatée : {motif}")
+        return "perdu"
+    }
+
+    on clore_par_evenement(h, objet, ev) {
+        let an = ouverte_de.get(objet) ?? ""
+        if an == "" { return 0 }
+        let st = get_status(an) ?? "declaree"
+        if st == "declaree" {
+            transition(an, "declaree", "fragmentee")
+        } else if st == "en_suivi" {
+            transition(an, "en_suivi", "fragmentee")
+        } else {
+            return 0
+        }
+        evenement_de.set(an, ev)
+        ouverte_de.delete(objet)
+        let _ = Journal.noter(h, "evenements", "systeme", "{an} close par l'évènement {ev}")
+        return 1
+    }
+
+    on en_anomalie(objet) {
+        return (ouverte_de.get(objet) ?? "") != ""
+    }
+
+    on en_souffrance(h, n) {
+        let lignes_a = []
+        for an in objet_de.keys {
+            if len(lignes_a) >= n { break }
+            let st = get_status(an) ?? "declaree"
+            let obj = objet_de.get(an) ?? ""
+            if st == "declaree" && h - (declaree_le.get(an) ?? h) > DELAI_PRISE_MS {
+                lignes_a.push("{an} | {obj} | anomalie non prise en charge")
+            } else if st == "en_suivi" && h - (dernier_point.get(an) ?? h) > DELAI_POINT_MS {
+                lignes_a.push("{an} | {obj} | anomalie sans point de suivi")
+            }
+        }
+        return lignes_a
+    }
+
+    // "analyste" d'ORBITE, ou "dynamicien" / "chef_de_mission" du propriétaire de l'objet.
+    on _peut_agir(par: String, obj: Objet, cdm_seul: Bool) {
+        if ApiAcces.a_le_role(par, "analyste") { return true }
+        let du_role = ApiAcces.a_le_role(par, "chef_de_mission") || ((!cdm_seul) && ApiAcces.a_le_role(par, "dynamicien"))
+        if !du_role { return false }
+        return ApiAcces.agit_pour(par, ApiRef.proprietaire(obj))
+    }
+
+    on _liberer(obj: Objet, an: String) {
+        if (ouverte_de.get(obj) ?? "") == an { ouverte_de.delete(obj) }
+    }
+}

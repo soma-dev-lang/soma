@@ -1,0 +1,155 @@
+// acces — PERSONNES PHYSIQUES et leur rattachement à une organisation (l'employeur).
+// Une personne est un identifiant opaque ("p-<n>"), rattachée à UNE organisation pour toute
+// sa vie : changer d'employeur = départ (AccesDeparts) puis nouvelle inscription sous un autre
+// identifiant ; l'historique reste lisible et `employeur_de` est un lien sûr pour les règles.
+// L'identifiant "systeme" (identité des traitements automatiques) n'est jamais inscrit.
+
+// Motif d'une suspension de personne.
+cell type AccesMotifSuspension = String where value == "enquete" || value == "sanction" || value == "absence_longue" || value == "recertification_retiree" || value == "recertification_echue" || value == "urgence_non_conforme" || value == "employeur_radie" || value == "facteur_compromis" || value == "rattachement_conteste" || value == "autre"
+
+// Registre des personnes : identité, employeur, rôle principal, cycle de vie.
+skeleton AccesPersonnes {
+    const MAX_PERSONNES = 500000
+    const MAX_PAR_EMPLOYEUR = 2000
+    memory {
+        employeur_de: Map<String, Org> [persistent]                    // personne → employeur ; écrit une fois par enregistrer, jamais effacé (lien de règle)
+        role_principal: Map<String, Role> [persistent]                 // personne → rôle principal (jamais "aucun" ni "systeme")
+        inscrit_par: Map<String, String> [persistent]                  // personne → auteur de l'inscription
+        inscrite_le: Map<String, Horodatage> [persistent]              // personne → horodatage d'inscription, ms
+        certifiee_le: Map<String, Horodatage> [persistent]             // personne → dernière confirmation (inscription, changement de rôle, recertification), ms
+        motif_suspension: Map<String, AccesMotifSuspension> [persistent]   // personne → motif de la suspension en cours
+        suspendu_par: Map<String, String> [persistent]                 // personne → auteur de la suspension en cours ("systeme" si automatique)
+        effectif: Map<Org, Int> [persistent]                           // employeur → nombre de personnes non parties
+        amorce: Map<String, String> [persistent]                       // "direction" → première personne, posée une fois par amorcer
+        invariant amorce.size <= 1
+        invariant employeur_de.size <= MAX_PERSONNES
+        invariant role_principal.size <= MAX_PERSONNES
+        invariant effectif >= 0 && effectif <= MAX_PAR_EMPLOYEUR
+        invariant role_principal != "aucun" && role_principal != "systeme"
+        invariant (inscrite_le ?? 0) <= (certifiee_le ?? 0)
+    }
+    // Cycle de vie d'une personne (id = identifiant de la personne). "inconnue" n'est jamais
+    // durable : enregistrer crée et active dans le même pas.
+    state cycle {
+        initial: inconnue
+        inconnue -> active          // enregistrer : employeur inscrit ou actif chez ref (règle via employeur_de), rôle dans sa portée
+        active -> suspendue         // suspendre, suspendre_auto
+        suspendue -> active         // retablir
+        active -> partie            // sortir, une fois le départ effectif
+        suspendue -> partie         // sortir, départ d'une personne suspendue
+    }
+    face {
+        // Amorçage, registre vide seulement : inscrit `personne` au rôle "direction" chez
+        // ApiRef.orbite() par enregistrer(h, personne, ApiRef.orbite(), "direction", "amorce").
+        // Seul moyen de créer une personne sans auteur habilité. Renvoie "active".
+        // N'écrit pas employeur_de (enregistrer en est l'unique écrivain).
+        // Refus : Existe (registre non vide ou amorce déjà posée).
+        signal amorcer(h: Horodatage, personne: String) -> String
+            writes amorce
+            calls ApiRef.orbite, enregistrer, Journal.noter
+        // Inscrit et active `personne` chez `employeur` au rôle principal `r`. Renvoie `r`.
+        // Seul écrivain de employeur_de (require employeur_de.get(personne) == () else Existe).
+        // Portée (AccesPortees.compatible) : rôle d'ORBITE seulement chez ApiRef.orbite(), rôle
+        // d'opérateur chez un opérateur ("capteur" et "administrateur_operateur" chez un fournisseur de
+        // capteurs), rôle d'État
+        // chez l'organisation d'un État participant ; sinon HorsBornes.
+        // Rôle exigé de `par` : "exploitant" d'ORBITE (tout rôle hors "direction", "conformite",
+        // "superviseur", "auditeur") ; "direction" d'ORBITE pour ces quatre rôles ;
+        // "administrateur_operateur" de l'employeur (AccesControle.agit_pour) pour un rôle
+        // d'opérateur ; par = "amorce" seulement si amorce["direction"] == personne et registre vide.
+        // Refus : Existe (personne, ou identifiant réservé "systeme"/"amorce"), Inconnu (employeur
+        // radié ou inconnu de ref), HorsBornes ("systeme", "aucun", hors portée), Habilitation,
+        // QuatreYeux (par = personne), Plein (MAX_PERSONNES, MAX_PAR_EMPLOYEUR).
+        // Ouvre le rattachement (AccesRattachements.ouvrir) : sans confirmation de l'employeur,
+        // le rôle n'est pas effectif (AccesControle.role_de rend "aucun").
+        signal enregistrer(h: Horodatage, personne: String, employeur: Org, r: Role, par: String) -> Role
+            reads amorce
+            writes employeur_de, role_principal, inscrit_par, inscrite_le, certifiee_le, effectif
+            moves inconnue -> active when RefOrg.inscrite || RefOrg.active via employeur_de
+            calls AccesPortees.compatible, AccesPortees.genre_de, AccesControle.a_le_role, AccesControle.agit_pour, AccesRattachements.ouvrir, ApiRef.organisation_existe, Journal.noter
+        // Change le rôle principal d'une personne active, dans la même portée d'employeur ; les
+        // attributions devenues incompatibles sont révoquées (AccesAttributions.revoquer_incompatibles).
+        // Renvoie le nouveau rôle. Rôle exigé de `par` : celui qu'exige enregistrer pour `r` ;
+        // `valideur` contre-signe (AccesControle.contresigner) ; par ≠ personne, valideur ≠ personne.
+        // Remet certifiee_le à h. Refus : Inconnu, EtatInvalide (non active), HorsBornes,
+        // Habilitation, QuatreYeux.
+        signal changer_role(h: Horodatage, personne: String, r: Role, par: String, valideur: String) -> Role
+            reads cycle, employeur_de
+            writes role_principal, certifiee_le
+            calls AccesPortees.compatible, AccesPortees.genre_de, AccesControle.a_le_role, AccesControle.agit_pour, AccesControle.contresigner, AccesAttributions.revoquer_incompatibles, Journal.noter
+        // Suspend une personne active : sessions fermées, jetons révoqués, accès d'urgence clos,
+        // attributions révoquées. Renvoie "suspendue". Rôle exigé de `par` : "conformite" ou
+        // "direction" d'ORBITE, ou "administrateur_operateur" de l'employeur ; par ≠ personne.
+        // Refus : Inconnu, EtatInvalide (non active), MotifRequis (detail vide), Habilitation,
+        // QuatreYeux.
+        signal suspendre(h: Horodatage, personne: String, motif: AccesMotifSuspension, detail: String, par: String) -> String
+            reads employeur_de
+            writes motif_suspension, suspendu_par
+            moves active -> suspendue
+            calls AccesControle.a_le_role, AccesControle.agit_pour, AccesSessions.fermer_toutes, AccesUrgences.fermer_de, AccesAttributions.revoquer_de, Journal.noter
+        // Suspension décidée par ORBITE elle-même (recertification, revue d'urgence, employeur
+        // radié, facteur compromis). Même effet que suspendre, acteur "systeme". Renvoie
+        // "suspendue", ou l'état courant si la personne n'est pas active (sans effet).
+        // Refus : Inconnu.
+        signal suspendre_auto(h: Horodatage, personne: String, motif: AccesMotifSuspension) -> String
+            writes motif_suspension, suspendu_par
+            moves active -> suspendue
+            calls AccesSessions.fermer_toutes, AccesUrgences.fermer_de, AccesAttributions.revoquer_de, Journal.noter
+        // Rétablit une personne suspendue. Renvoie "active". Rôle exigé de `par` : "conformite"
+        // ou "direction" d'ORBITE ; ni la personne, ni l'auteur de la suspension. Interdit tant
+        // que l'employeur est radié (ApiRef.organisation_existe). Remet certifiee_le à h.
+        // Refus : Inconnu, EtatInvalide (non suspendue), NonEligible (employeur radié),
+        // Habilitation, QuatreYeux.
+        signal retablir(h: Horodatage, personne: String, par: String) -> String
+            reads employeur_de, suspendu_par
+            writes motif_suspension, certifiee_le
+            moves suspendue -> active
+            calls AccesControle.a_le_role, ApiRef.organisation_existe, Journal.noter
+        // Sortie définitive, appelée par AccesDeparts.rendre_effectif seulement (après que le
+        // départ est "effectif") : décrémente l'effectif de l'employeur. Renvoie "partie".
+        // Refus : Inconnu, EtatInvalide (déjà partie).
+        signal sortir(h: Horodatage, personne: String) -> String
+            reads employeur_de
+            writes effectif, motif_suspension, suspendu_par
+            moves active -> partie when AccesDeparts.effectif, suspendue -> partie when AccesDeparts.effectif
+            calls AccesDeparts.etat, Journal.noter
+        // Note la recertification d'une personne (appelée par AccesAttestations.attester) :
+        // certifiee_le = h. Renvoie h. Refus : Inconnu.
+        signal certifier(h: Horodatage, personne: String) -> Horodatage
+            writes certifiee_le
+        // État : "active", "suspendue", "partie", ou "inconnue".
+        signal etat(personne: String) -> String
+            reads cycle
+        // Vrai si la personne est active.
+        signal est_active(personne: String) -> Bool
+            reads cycle
+        // Rôle principal tel qu'inscrit, quel que soit l'état ; "aucun" si inconnue.
+        signal role(personne: String) -> Role
+            reads role_principal
+        // Employeur ; "" si inconnue (la façade ApiAcces.employeur lève Inconnu sur "").
+        signal employeur(personne: String) -> Org
+            reads employeur_de
+        // Motif de la suspension en cours ; "" si la personne n'est pas suspendue.
+        signal motif(personne: String) -> String
+            reads motif_suspension
+        // Dernière certification (ms) ; 0 si inconnue.
+        signal certifiee(personne: String) -> Horodatage
+            reads certifiee_le
+        // Personnes non parties d'un employeur, au plus `n`, triées par identifiant.
+        signal personnes_de(employeur: Org, n: Int) -> List<String>
+            requires n > 0 && n <= 2000
+            reads employeur_de, cycle
+        // Personnes non parties certifiées pour la dernière fois avant `avant` (ms), au plus `n` :
+        // ce qu'aucune campagne n'a couvert (rattrapage de la recertification).
+        signal non_certifiees(avant: Horodatage, n: Int) -> List<String>
+            requires n > 0 && n <= 5000
+            reads certifiee_le, cycle
+        // Balayage : suspend ("employeur_radie") les personnes actives dont l'employeur n'existe
+        // plus dans ref, et demande leur départ d'office (AccesDeparts.depart_d_office).
+        // Renvoie les personnes touchées, au plus `n`.
+        signal balayer_employeurs(h: Horodatage, n: Int) -> List<String>
+            requires n > 0 && n <= 5000
+            reads employeur_de, cycle
+            calls ApiRef.organisation_existe, suspendre_auto, AccesDeparts.depart_d_office
+    }
+}

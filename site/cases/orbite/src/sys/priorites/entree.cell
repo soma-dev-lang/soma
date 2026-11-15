@@ -1,0 +1,32 @@
+// Entrée de contrôle du sous-système priorites : le contrat commun, les 20 façades,
+// puis les fichiers internes de priorites (un use sys::priorites::<fichier> par fichier, ci-dessous).
+use commun::types
+use commun::journal
+use commun::horloge
+use sys::acces::api
+use sys::conformite::api
+use sys::conjonctions::api
+use sys::coordination::api
+use sys::donnees::api
+use sys::ephemerides::api
+use sys::escalade::api
+use sys::evenements::api
+use sys::fin_de_vie::api
+use sys::lancements::api
+use sys::manoeuvres::api
+use sys::meteo::api
+use sys::observation::api
+use sys::operateurs::api
+use sys::operations::api
+use sys::passerelle::api
+use sys::priorites::api
+use sys::reentrees::api
+use sys::ref::api
+use sys::responsabilite::api
+use sys::priorites::versions
+use sys::priorites::adoption
+use sys::priorites::table
+use sys::priorites::derogations
+use sys::priorites::cas
+use sys::priorites::designation
+use sys::priorites::echeancier

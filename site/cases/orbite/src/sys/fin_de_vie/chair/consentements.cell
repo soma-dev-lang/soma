@@ -1,0 +1,161 @@
+// fin_de_vie — corps de FdvConsentement (consentements à une mission de retrait actif).
+// en_attente : file tournante (balayer en examine la tête et remet en queue les demandes non échues).
+
+flesh FdvConsentement {
+    // Habilitation d'une partie : "chef_de_mission" du propriétaire, ou "autorite" de l'État.
+    on _habilite(partie: String, org: Org, par: String) {
+        let r = if partie == "proprietaire" { "chef_de_mission" } else { "autorite" }
+        return ApiAcces.a_le_role(par, Role(r)) && ApiAcces.agit_pour(par, org)
+    }
+
+    on demander(h, consentement, mission, partie, org, echeance) {
+        require mission_de.get(consentement) == () else Existe "consentement {consentement} déjà demandé"
+        require echeance > h else Incoherent "échéance de réponse dans le passé"
+        require mission_de.size < MAX_CONSENTEMENTS && en_attente.size < MAX_CONSENTEMENTS else Plein "registre des consentements plein"
+        echeance_de.set(consentement, echeance)
+        demande_le.set(consentement, h)
+        mission_de.set(consentement, mission)
+        partie_de.set(consentement, partie)
+        org_de.set(consentement, org)
+        en_attente.push(consentement)
+        ApiPasserelle.notifier(h, org, "", "consentement demandé : retrait actif {mission}", "votre consentement ({partie}) est demandé avant {echeance}", 1)
+        Journal.noter(h, "fin_de_vie", "systeme", "consentement {consentement} demandé à {org} ({partie}, échéance {echeance})")
+        return consentement
+    }
+
+    on accorder(h, consentement, conditions, par) {
+        let partie = partie_de.get(consentement)
+        require partie != () else Inconnu "consentement {consentement} inconnu"
+        let org = org_de.get(consentement) ?? ""
+        require _habilite(to_string(partie), org, par) else Habilitation "{par} : non habilité à consentir pour {org} ({partie})"
+        let st = get_status(consentement) ?? "demande"
+        require st == "demande" else EtatInvalide "consentement {consentement} : {st}"
+        require h <= (echeance_de.get(consentement) ?? 0) else Delai "réponse après l'échéance"
+        repondu_le.set(consentement, h)
+        repondu_par.set(consentement, par)
+        conditions_de.set(consentement, conditions)
+        transition(consentement, "demande", "accorde")
+        Journal.noter(h, "fin_de_vie", par, "consentement {consentement} accordé (conditions : {conditions})")
+        return "accorde"
+    }
+
+    on refuser(h, consentement, motif, par) {
+        let partie = partie_de.get(consentement)
+        require partie != () else Inconnu "consentement {consentement} inconnu"
+        let org = org_de.get(consentement) ?? ""
+        require _habilite(to_string(partie), org, par) else Habilitation "{par} : non habilité à répondre pour {org} ({partie})"
+        let st = get_status(consentement) ?? "demande"
+        require st == "demande" else EtatInvalide "consentement {consentement} : {st}"
+        require motif != "" else MotifRequis "motif du refus requis"
+        repondu_le.set(consentement, h)
+        repondu_par.set(consentement, par)
+        motif_de.set(consentement, motif)
+        transition(consentement, "demande", "refuse")
+        Journal.noter(h, "fin_de_vie", par, "consentement {consentement} refusé : {motif}")
+        return "refuse"
+    }
+
+    on retirer(h, consentement, motif, par) {
+        let partie = partie_de.get(consentement)
+        require partie != () else Inconnu "consentement {consentement} inconnu"
+        let org = org_de.get(consentement) ?? ""
+        require _habilite(to_string(partie), org, par) else Habilitation "{par} : non habilité à répondre pour {org} ({partie})"
+        let st = get_status(consentement) ?? "demande"
+        require st == "accorde" else EtatInvalide "consentement {consentement} : {st}"
+        require motif != "" else MotifRequis "motif du retrait requis"
+        motif_de.set(consentement, motif)
+        repondu_par.set(consentement, par)
+        transition(consentement, "accorde", "retire")
+        Journal.noter(h, "fin_de_vie", par, "consentement {consentement} retiré : {motif}")
+        return "retire"
+    }
+
+    on expirer(h, consentement, par) {
+        require ApiAcces.a_le_role(par, "systeme") else Habilitation "{par} : systeme requis"
+        let ech = echeance_de.get(consentement)
+        require ech != () else Inconnu "consentement {consentement} inconnu"
+        let st = get_status(consentement) ?? "demande"
+        require st == "demande" else EtatInvalide "consentement {consentement} : {st}"
+        require h >= ech else EtatInvalide "échéance de {consentement} non atteinte"
+        transition(consentement, "demande", "echu")
+        Journal.noter(h, "fin_de_vie", par, "consentement {consentement} échu sans réponse")
+        return "echu"
+    }
+
+    on engager(h, consentement) {
+        let mission = mission_de.get(consentement)
+        require mission != () else Inconnu "consentement {consentement} inconnu"
+        let st = get_status(consentement) ?? "demande"
+        require st == "accorde" else EtatInvalide "consentement {consentement} : {st}"
+        let st_m = FdvRetrait.etat(mission)
+        require st_m == "capturee" else EtatInvalide "mission {mission} : {st_m} (capture non faite)"
+        transition(consentement, "accorde", "irrevocable")
+        Journal.noter(h, "fin_de_vie", "systeme", "consentement {consentement} irrévocable (capture de {mission})")
+        return "irrevocable"
+    }
+
+    on classer(h, consentement) {
+        require mission_de.get(consentement) != () else Inconnu "consentement {consentement} inconnu"
+        let st = get_status(consentement) ?? "demande"
+        if st == "demande" {
+            transition(consentement, "demande", "sans_objet")
+        } else if st == "accorde" {
+            transition(consentement, "accorde", "sans_objet")
+        } else {
+            return st
+        }
+        Journal.noter(h, "fin_de_vie", "systeme", "consentement {consentement} classé sans objet")
+        return "sans_objet"
+    }
+
+    on balayer(h, n, par) {
+        require n >= 1 && n <= 1000 else HorsBornes "n = {n} hors 1..1000"
+        require ApiAcces.a_le_role(par, "systeme") else Habilitation "{par} : systeme requis"
+        let k = min(n, en_attente.size)
+        let tete_c = []
+        for i in range(0, k) {
+            tete_c.push(en_attente[i])
+        }
+        for i in range(0, k) {
+            en_attente.delete(0)
+        }
+        let echus = 0
+        let garder_c = []
+        for c in tete_c {
+            let st = get_status(c) ?? "demande"
+            if st == "demande" {
+                if h >= (echeance_de.get(c) ?? h) {
+                    let r = try { expirer(h, c, "systeme") }
+                    if r.error == () {
+                        echus = echus + 1
+                    } else {
+                        garder_c.push(c)
+                    }
+                } else {
+                    garder_c.push(c)
+                }
+            }
+        }
+        for c in garder_c {
+            en_attente.push(c)
+        }
+        return echus
+    }
+
+    on vaut(consentement) {
+        let st = get_status(consentement) ?? "demande"
+        return st == "accorde" || st == "irrevocable"
+    }
+
+    on conditions(consentement) {
+        require mission_de.get(consentement) != () else Inconnu "consentement {consentement} inconnu"
+        return conditions_de.get(consentement) ?? ""
+    }
+
+    on etat(consentement) {
+        if mission_de.get(consentement) == () {
+            return "inconnu"
+        }
+        return get_status(consentement) ?? "demande"
+    }
+}

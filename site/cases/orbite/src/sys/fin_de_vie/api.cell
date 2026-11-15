@@ -1,0 +1,39 @@
+// Façade de la FIN DE VIE : plans de retrait (5 ans en LEO), passivation, orbites cimetières, retrait actif.
+skeleton ApiFinDeVie {
+    face {
+        // Vrai si l'objet a un plan de fin de vie approuvé et conforme (désorbitation sous 5 ans
+        // après la fin de mission en LEO, orbite cimetière en GEO).
+        signal plan_conforme(objet: Objet) -> Bool
+            calls FdvPlan.conforme
+        // Déclare la fin de mission d'un objet (déclenche le compte à rebours du plan).
+        // Renvoie l'échéance de retrait. Refus : Inconnu, EtatInvalide, Habilitation ("chef_de_mission" du propriétaire).
+        signal fin_de_mission(h: Horodatage, objet: Objet, par: String) -> Horodatage
+            calls FdvFin.declarer_fin
+        // Vrai si l'objet a dépassé son échéance de retrait sans être retiré (manquement).
+        signal en_retard(objet: Objet, h: Horodatage) -> Bool
+            calls FdvFin.en_retard
+        // Vrai si une mission de retrait actif (capture par un tiers) vise l'objet et est autorisée
+        // par son propriétaire ET son État d'immatriculation.
+        signal retrait_autorise(objet: Objet) -> Bool
+            calls FdvRetrait.autorise_sur
+        // Vrai si l'objet est passivé (énergie résiduelle évacuée) : il ne peut plus manœuvrer.
+        signal passive(objet: Objet) -> Bool
+            calls FdvPassivation.passive
+        // Vrai si la mission de retrait actif visant l'objet a capturé sa cible.
+        signal mission_capturee(objet: Objet) -> Bool
+            calls FdvRetrait.capturee_sur
+        // Plan de fin de vie approuvé de l'objet ; "" si aucun.
+        signal plan(objet: Objet) -> String
+            calls FdvPlan.plan_de
+        // Balayage des échéances du sous-système à `h` (délais, expirations, rondes), appelé par
+        // l'horloge d'ORBITE (Horloge.battre) — le SEUL point d'entrée du temps : aucun signal de
+        // fin_de_vie ne lit l'horloge lui-même. Renvoie le nombre d'objets dont l'état a changé.
+        // Refus : Habilitation (par "systeme").
+        signal balayer(h: Horodatage, par: String) -> Int
+            calls FdvCouverture.balayer
+        // Missions de retrait actif visant l'objet (la dernière en fin de liste) : la référence que ref
+        // exige pour constater un retrait.
+        signal missions_de(objet: Objet) -> List<String>
+            calls FdvRetrait.missions
+    }
+}

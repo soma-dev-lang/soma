@@ -1,0 +1,112 @@
+// observation — MANŒUVRES NON ANNONCÉES. Quand l'orbite observée d'un objet s'écarte de son
+// éphéméride déclarée au-delà de ObsOrbites.SEUIL_MANOEUVRE_M, une détection est ouverte sur
+// la détermination qui le montre. Elle est confirmée (l'orbite après manœuvre est validée),
+// puis expliquée (ApiManoeuvres.plan_couvrant trouve un plan couvrant l'instant) ou signalée :
+// constat de manœuvre non annoncée (ApiManoeuvres.constater_non_annoncee, qui invalide
+// l'éphéméride et ouvre le manquement), propriétaire notifié, suivi renforcé. Une
+// détection jamais jugée ne s'éteint pas : la ronde la confirme au bout de DELAI_JUGEMENT_MS.
+
+skeleton ObsDetections {
+    const MAX_DETECTIONS = 100000
+    // Délai donné aux analystes pour juger une suspicion : 12 h ; au-delà, confirmation automatique.
+    const DELAI_JUGEMENT_MS = 43200000
+    // Suivi renforcé après une manœuvre non annoncée : 3 jours.
+    const SUIVI_RENFORCE_MS = 259200000
+    memory {
+        objet_de: Map<String, Objet> [persistent]             // détection → objet
+        orbite_apres: Map<String, String> [persistent]        // détection → détermination qui montre l'écart ; écrite une fois par suspecter, jamais effacée (lien de règle)
+        ecart_de: Map<String, Distance> [persistent]          // détection → écart constaté, m
+        instant_de: Map<String, Horodatage> [persistent]      // détection → instant estimé de la manœuvre, ms
+        ouverte_le: Map<String, Horodatage> [persistent]      // détection → ouverture, ms
+        plan_de: Map<String, String> [persistent]             // détection expliquée → plan de manœuvre (ApiManoeuvres) qui l'explique
+        constat_de: Map<String, String> [persistent]          // détection signalée → constat (ApiManoeuvres.constater_non_annoncee)
+        juge_par: Map<String, String> [persistent]            // détection → auteur du jugement ("systeme" si automatique)
+        derniere_de: Map<Objet, String> [persistent]          // objet → dernière détection ouverte
+        compteur: Map<String, Int> [persistent]               // "detections" → dernier numéro attribué
+        invariant objet_de.size <= MAX_DETECTIONS
+        invariant orbite_apres.size <= MAX_DETECTIONS
+        invariant ecart_de.size <= MAX_DETECTIONS
+        invariant instant_de.size <= MAX_DETECTIONS
+        invariant ouverte_le.size <= MAX_DETECTIONS
+        invariant plan_de.size <= MAX_DETECTIONS
+        invariant constat_de.size <= MAX_DETECTIONS
+        invariant juge_par.size <= MAX_DETECTIONS
+        invariant derniere_de.size <= MAX_DETECTIONS
+        invariant compteur.size <= 1
+        invariant compteur >= 0 && compteur <= MAX_DETECTIONS
+        invariant (instant_de ?? 0) <= (ouverte_le ?? 0)
+    }
+    // Cycle d'une détection (id = "MD-<n>").
+    state detection {
+        initial: suspectee
+        suspectee -> confirmee    // confirmer, veiller : l'orbite après manœuvre est validée
+        suspectee -> infirmee     // infirmer : écart dû à l'éphéméride, à la météo, à une erreur de mesure
+        confirmee -> expliquee    // expliquer : un plan déclaré couvrait l'instant
+        confirmee -> signalee     // signaler : manœuvre non annoncée constatée
+    }
+    face {
+        // Ouvre une détection (appelé par ObsOrbites.valider) sur `objet`, d'après la détermination
+        // `od` qui montre l'écart `ecart` (m), manœuvre estimée à `instant` (≤ h). Une détection déjà
+        // ouverte (suspectee) sur l'objet est complétée plutôt que doublée. Seul écrivain de
+        // orbite_apres. Demande un suivi "verification_manoeuvre" de priorité 2 pendant
+        // SUIVI_RENFORCE_MS (ObsTaches.demander, par "systeme"). Renvoie l'id "MD-<n>".
+        // Refus : Plein.
+        signal suspecter(h: Horodatage, objet: Objet, od: String, ecart: Distance, instant: Horodatage) -> String
+            reads detection
+            writes objet_de, orbite_apres, ecart_de, instant_de, ouverte_le, derniere_de, compteur
+            calls ObsTaches.demander, Journal.noter
+        // Confirme une suspicion : la détermination liée est validée (ou remplacée par une plus
+        // récente). Enchaîne aussitôt : plan du propriétaire couvrant l'instant estimé
+        // (ApiManoeuvres.plan_couvrant ≠ "") ⇒ expliquer ; sinon signaler. Renvoie l'état final
+        // ("expliquee" ou "signalee"). Rôle exigé : "analyste" d'ORBITE.
+        // Refus : Inconnu, EtatInvalide, Habilitation.
+        signal confirmer(h: Horodatage, detection: String, par: String) -> String
+            reads orbite_apres, objet_de, instant_de
+            writes juge_par
+            moves suspectee -> confirmee when ObsOrbites.validee || ObsOrbites.remplacee via orbite_apres
+            calls ObsOrbites.etat, ApiManoeuvres.plan_couvrant, ApiAcces.a_le_role, expliquer, signaler, Journal.noter
+        // Infirme une suspicion. Renvoie "infirmee". Rôle exigé : "analyste" d'ORBITE, contre-signé
+        // par `valideur` "superviseur" (ApiAcces.quatre_yeux) : infirmer efface une alerte.
+        // Refus : Inconnu, EtatInvalide, MotifRequis, Habilitation, QuatreYeux.
+        signal infirmer(h: Horodatage, detection: String, motif: String, par: String, valideur: String) -> String
+            reads objet_de
+            writes juge_par
+            moves suspectee -> infirmee
+            calls ApiAcces.a_le_role, ApiAcces.quatre_yeux, Journal.noter
+        // Explique une détection confirmée par `plan`, rendu par ApiManoeuvres.plan_couvrant(objet,
+        // instant) (appelé par confirmer et veiller seulement). Renvoie "expliquee".
+        // Refus : Inconnu, EtatInvalide, Incoherent (plan_couvrant ne rend pas ce plan).
+        signal expliquer(h: Horodatage, detection: String, plan: String) -> String
+            reads objet_de, instant_de
+            writes plan_de
+            moves confirmee -> expliquee
+            calls ApiManoeuvres.plan_couvrant, Journal.noter
+        // Signale une manœuvre non annoncée : constat chez manoeuvres
+        // (ApiManoeuvres.constater_non_annoncee(h, objet, instant, "systeme") : invalide l'éphéméride
+        // et ouvre le manquement chez conformite), propriétaire notifié (ApiPasserelle.notifier, r = le
+        // rapprochement ouvert le plus grave de l'objet ou "", urgence 3 si l'objet est habité ou a un
+        // rapprochement ouvert de niveau 3, sinon 2), suivi renforcé de priorité 3 (ObsTaches.demander).
+        // Renvoie l'id du constat. Refus : Inconnu, EtatInvalide.
+        signal signaler(h: Horodatage, detection: String) -> String
+            reads objet_de, ecart_de, instant_de
+            writes constat_de
+            moves confirmee -> signalee
+            calls ApiRef.proprietaire, ApiRef.habite, ApiConjonctions.ouverts_de, ApiConjonctions.niveau, ApiManoeuvres.constater_non_annoncee, ApiPasserelle.notifier, ObsTaches.demander, Journal.noter
+        // Ronde (appelée par ObsBalayage.balayer, par = "systeme") : confirme toute suspicion ouverte
+        // depuis plus de DELAI_JUGEMENT_MS dont la détermination liée est validée ou remplacée, puis
+        // l'explique ou la signale comme confirmer ; les autres sont journalisées pour l'analyste.
+        // Renvoie le nombre de détections confirmées. Refus : Habilitation.
+        signal veiller(h: Horodatage, par: String) -> Int
+            reads ouverte_le, orbite_apres, objet_de, instant_de
+            writes juge_par
+            moves suspectee -> confirmee when ObsOrbites.validee || ObsOrbites.remplacee via orbite_apres
+            calls ObsOrbites.etat, ApiManoeuvres.plan_couvrant, expliquer, signaler, Journal.noter
+        // Vrai si une manœuvre non annoncée (détection confirmée ou signalée, pas expliquée) a été
+        // détectée sur l'objet avec un instant estimé ≥ `depuis`.
+        signal detectee_depuis(objet: Objet, depuis: Horodatage) -> Bool
+            reads detection, objet_de, instant_de
+        // État de la détection : "suspectee", "confirmee", "infirmee", "expliquee", "signalee", ou "inconnue".
+        signal etat(detection: String) -> String
+            reads detection, objet_de
+    }
+}

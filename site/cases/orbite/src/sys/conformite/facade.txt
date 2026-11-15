@@ -1,0 +1,5 @@
+ApiConformite.constater: calls ApiAcces.a_le_role, ConfManquement.constater
+ApiConformite.note: calls ConfNotation.note
+ApiConformite.sous_surveillance: calls ConfNotation.sous_surveillance
+ApiConformite.constater_etat: calls ApiAcces.a_le_role, ConfManquementEtat.constater
+ApiConformite.balayer: calls ApiAcces.a_le_role, ConfRonde.balayer

@@ -1,0 +1,110 @@
+// FIN DE VIE — consentements à une mission de retrait actif : celui du propriétaire de la
+// cible et celui de son État d'immatriculation (traité de 1967, art. VIII : l'État garde
+// juridiction et contrôle sur l'objet). Instance = "<mission>|<partie>", créée par
+// FdvRetrait.proposer ; un consentement devient irrévocable à la capture.
+
+// Partie qui consent : le propriétaire de la cible, ou son État d'immatriculation.
+cell type FdvPartie = String where value == "proprietaire" || value == "etat"
+
+skeleton FdvConsentement {
+    const MAX_CONSENTEMENTS = 2000000
+    memory {
+        mission_de: Map<String, String> [persistent]        // consentement -> mission ; écrit à la demande, jamais effacé (lien de la règle d'irrévocabilité)
+        en_attente: List<String> [persistent]               // consentements "demande" (balayage des échéances)
+        invariant en_attente.size <= 2000000
+        partie_de: Map<String, FdvPartie> [persistent]
+        org_de: Map<String, Org> [persistent]               // organisation qui consent (propriétaire, ou autorité nationale de l'État)
+        demande_le: Map<String, Horodatage> [persistent]
+        echeance_de: Map<String, Horodatage> [persistent]   // réponse attendue avant cette échéance (ms)
+        repondu_le: Map<String, Horodatage> [persistent]
+        repondu_par: Map<String, String> [persistent]
+        conditions_de: Map<String, String> [persistent]     // conditions posées par la partie (texte, opposable au servicer)
+        motif_de: Map<String, String> [persistent]          // motif du refus ou du retrait
+        invariant mission_de.size <= 2000000
+        invariant (echeance_de ?? 0) >= (demande_le ?? 0)
+        invariant (repondu_le ?? 999999999999999) >= (demande_le ?? 0)
+    }
+    // Cycle d'un consentement (états exposés par etat).
+    state consentement {
+        initial: demande
+        demande -> accorde                // la partie consent (avec ses conditions)
+        demande -> refuse                 // la partie refuse
+        demande -> echu                   // pas de réponse avant l'échéance
+        demande -> sans_objet             // mission abandonnée avant la réponse
+        accorde -> retire                 // retiré avant la capture
+        accorde -> sans_objet             // mission abandonnée ou avortée avant la capture
+        accorde -> irrevocable   // capture faite : plus de retrait possible
+    }
+    face {
+        // Ouvre la demande de consentement de `partie` (organisation `org`) pour la mission ;
+        // notifie l'organisation (ApiPasserelle.notifier, r = "", urgence 1). Appelé seulement par
+        // FdvRetrait.proposer, seul écrivain de mission_de. Renvoie l'id du consentement.
+        // Refus : Existe, Incoherent (echeance ≤ h), Plein.
+        signal demander(h: Horodatage, consentement: String, mission: String, partie: FdvPartie, org: Org, echeance: Horodatage) -> String
+            writes mission_de, partie_de, org_de, demande_le, echeance_de, en_attente
+            calls ApiPasserelle.notifier, Journal.noter
+        // La partie consent (demande -> accorde), avec ses conditions. Habilitation : partie
+        // "proprietaire" — "chef_de_mission" de l'organisation propriétaire ; partie "etat" —
+        // "autorite" de l'État d'immatriculation (ApiAcces.agit_pour sur org_de).
+        // Renvoie "accorde". Refus : Inconnu, EtatInvalide, Delai (après l'échéance), Habilitation.
+        signal accorder(h: Horodatage, consentement: String, conditions: String, par: String) -> String
+            writes repondu_le, repondu_par, conditions_de
+            reads partie_de, org_de, echeance_de
+            moves demande -> accorde
+            calls ApiAcces.a_le_role, ApiAcces.agit_pour, Journal.noter
+        // La partie refuse (demande -> refuse). Mêmes habilitations qu'accorder.
+        // Renvoie "refuse". Refus : Inconnu, EtatInvalide, MotifRequis, Habilitation.
+        signal refuser(h: Horodatage, consentement: String, motif: String, par: String) -> String
+            writes repondu_le, repondu_par, motif_de
+            reads partie_de, org_de
+            moves demande -> refuse
+            calls ApiAcces.a_le_role, ApiAcces.agit_pour, Journal.noter
+        // La partie retire un consentement accordé, tant que la cible n'est pas capturée
+        // (accorde -> retire) ; la mission ne peut plus avancer (FdvRetrait.constater_consentements
+        // ou annuler l'abandonne). Mêmes habilitations qu'accorder. Renvoie "retire".
+        // Refus : Inconnu, EtatInvalide (irrévocable : capture faite), MotifRequis, Habilitation.
+        signal retirer(h: Horodatage, consentement: String, motif: String, par: String) -> String
+            writes motif_de, repondu_par
+            reads partie_de, org_de
+            moves accorde -> retire
+            calls ApiAcces.a_le_role, ApiAcces.agit_pour, Journal.noter
+        // Constate l'absence de réponse à l'échéance (demande -> echu). Habilitation : "systeme".
+        // Renvoie "echu". Refus : Inconnu, EtatInvalide (échéance non atteinte ou déjà répondu), Habilitation.
+        signal expirer(h: Horodatage, consentement: String, par: String) -> String
+            reads echeance_de
+            moves demande -> echu
+            calls ApiAcces.a_le_role, Journal.noter
+        // Rend le consentement irrévocable à la capture (accorde -> irrevocable) ; appelé par
+        // FdvRetrait.capturer, une fois la mission "capturee". Renvoie "irrevocable".
+        // Refus : Inconnu, EtatInvalide.
+        signal engager(h: Horodatage, consentement: String) -> String
+            reads mission_de
+            moves accorde -> irrevocable when FdvRetrait.capturee via mission_de
+            calls FdvRetrait.etat, Journal.noter
+        // Classe sans objet un consentement non engagé (demande ou accorde -> sans_objet) quand
+        // la mission est abandonnée ou avortée avant capture ; appelé par FdvRetrait.
+        // Renvoie l'état atteint (inchangé s'il était déjà terminal).
+        signal classer(h: Horodatage, consentement: String) -> String
+            reads mission_de
+            moves demande -> sans_objet, accorde -> sans_objet
+            calls Journal.noter
+        // Balayage (appelé par FdvCouverture.balayer) : au plus n consentements de en_attente
+        // dont l'échéance est atteinte à `h` passent "echu" (expirer) ; les consentements
+        // répondus sortent de la liste. Habilitation : "systeme". Renvoie le nombre d'échus.
+        // Refus : HorsBornes (n hors 1..1000), Habilitation.
+        signal balayer(h: Horodatage, n: Int, par: String) -> Int
+            writes en_attente
+            reads echeance_de, consentement
+            calls expirer, ApiAcces.a_le_role
+        // Vrai si le consentement est "accorde" ou "irrevocable".
+        signal vaut(consentement: String) -> Bool
+            reads consentement
+        // Conditions posées par la partie ("" si aucune). Refus : Inconnu.
+        signal conditions(consentement: String) -> String
+            reads conditions_de, mission_de
+        // État : "demande", "accorde", "refuse", "echu", "retire", "irrevocable", "sans_objet" ;
+        // "inconnu" si jamais demandé.
+        signal etat(consentement: String) -> String
+            reads consentement, mission_de
+    }
+}

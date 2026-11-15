@@ -1,0 +1,344 @@
+// fin_de_vie — corps de FdvPlan (plans de fin de vie).
+// a_surveiller : file tournante (balayer en examine la tête et remet en queue les plans encore à suivre).
+
+flesh FdvPlan {
+    // Conformité d'un plan (dépôt, complément) : voir le commentaire de deposer.
+    on _calculer_conformite(objet: Objet, mode: FdvMode, delai: Duree, dv_requis: DeltaV, dv_reserve: DeltaV, rehausse: Distance, succes: Pourcent) {
+        let reg = to_string(ApiRef.regime(objet))
+        let ok_regime = false
+        if reg == "leo" {
+            ok_regime = mode != "cimetiere" && delai <= DELAI_LEO
+        } else if reg == "geo" {
+            let ok_mode = mode == "retrait_actif" || (mode == "cimetiere" && rehausse >= REHAUSSE_GEO_MIN)
+            ok_regime = ok_mode && delai <= DELAI_GEO
+        } else {
+            ok_regime = delai <= DELAI_MEO_HEO
+        }
+        let controlee = mode == "desorbitation_controlee"
+        let ok_habite = controlee || !ApiRef.habite(objet)
+        let ok_risque = controlee || !ApiReentrees.a_risque(objet)
+        let ok_reserve = mode == "retrait_actif" || dv_reserve >= dv_requis
+        return ok_regime && ok_habite && ok_risque && ok_reserve && succes >= SUCCES_MIN
+    }
+
+    on _oter_surveille(p: String) {
+        let i = a_surveiller.size - 1
+        while i >= 0 {
+            if a_surveiller[i] == p {
+                a_surveiller.delete(i)
+            }
+            i = i - 1
+        }
+    }
+
+    on _ajouter_surveille(p: String) {
+        if !contains(a_surveiller, p) {
+            require a_surveiller.size < MAX_PLANS else Plein "file de surveillance des plans pleine"
+            a_surveiller.push(p)
+        }
+    }
+
+    on _fiche_plan(plan: String) {
+        let o = objet_de.get(plan)
+        require o != () else Inconnu "plan {plan} inconnu"
+        return FdvFichePlan { objet: o, mode: mode_de.get(plan), fin_prevue: fin_prevue_de.get(plan) ?? 0, delai: delai_de.get(plan) ?? 0, dv_requis: dv_requis_de.get(plan) ?? 0, dv_reserve: dv_reserve_de.get(plan) ?? 0, rehausse: rehausse_de.get(plan) ?? 0, succes: succes_de.get(plan) ?? 0, empreinte: empreinte_de.get(plan) ?? "", conforme: conforme_de.get(plan) ?? false }
+    }
+
+    on deposer(h, plan, objet, mode, fin_prevue, delai, dv_requis, dv_reserve, rehausse, succes, empreinte, par) {
+        require objet_de.get(plan) == () else Existe "plan {plan} déjà déposé"
+        let st = ApiRef.etat_objet(objet)
+        require st != "inconnu" else Inconnu "objet {objet} non catalogué"
+        let prop = ApiRef.proprietaire(objet)
+        let du_proprio = (ApiAcces.a_le_role(par, "dynamicien") || ApiAcces.a_le_role(par, "chef_de_mission")) && ApiAcces.agit_pour(par, prop)
+        require du_proprio else Habilitation "{par} : dynamicien ou chef de mission de {prop} requis"
+        require st != "rentre" && st != "fragmente" && st != "retire" else EtatInvalide "objet {objet} : {st}"
+        require fin_prevue >= h else Incoherent "fin de mission prévue dans le passé"
+        require succes <= 100 else Incoherent "probabilité de succès {succes} % > 100"
+        require ApiOperateurs.est_actif(prop, h) else Suspendu "opérateur {prop} non actif"
+        let hist = plans_de.get(objet) ?? []
+        require len(hist) < MAX_PLANS_OBJET else Plein "50 plans déjà déposés pour {objet}"
+        require objet_de.size < MAX_PLANS else Plein "registre des plans plein"
+        require empreinte != "" else Incoherent "empreinte du dossier technique requise"
+        let ok = _calculer_conformite(objet, mode, delai, dv_requis, dv_reserve, rehausse, succes)
+        objet_de.set(plan, objet)
+        proprietaire_de.set(plan, prop)
+        mode_de.set(plan, mode)
+        fin_prevue_de.set(plan, fin_prevue)
+        delai_de.set(plan, delai)
+        dv_requis_de.set(plan, dv_requis)
+        dv_reserve_de.set(plan, dv_reserve)
+        rehausse_de.set(plan, rehausse)
+        succes_de.set(plan, succes)
+        empreinte_de.set(plan, empreinte)
+        conforme_de.set(plan, ok)
+        depose_le.set(plan, h)
+        plans_de.set(objet, hist ++ [plan])
+        Journal.noter(h, "fin_de_vie", par, "plan {plan} déposé pour {objet} ({mode}, conforme {ok}, empreinte {empreinte})")
+        return "depose"
+    }
+
+    on prendre_en_revue(h, plan, par) {
+        require ApiAcces.a_le_role(par, "analyste") else Habilitation "{par} : analyste d'ORBITE requis"
+        require objet_de.get(plan) != () else Inconnu "plan {plan} inconnu"
+        let st = get_status(plan) ?? "depose"
+        require st == "depose" else EtatInvalide "plan {plan} : {st}"
+        revu_le.set(plan, h)
+        transition(plan, "depose", "en_revue")
+        Journal.noter(h, "fin_de_vie", par, "plan {plan} pris en revue")
+        return "en_revue"
+    }
+
+    on demander_complements(h, plan, motif, par) {
+        require ApiAcces.a_le_role(par, "analyste") else Habilitation "{par} : analyste d'ORBITE requis"
+        let prop = proprietaire_de.get(plan)
+        require prop != () else Inconnu "plan {plan} inconnu"
+        let st = get_status(plan) ?? "depose"
+        require st == "en_revue" else EtatInvalide "plan {plan} : {st}"
+        require motif != "" else MotifRequis "motif des compléments requis"
+        revu_le.set(plan, h)
+        motif_de.set(plan, motif)
+        _ajouter_surveille(plan)
+        transition(plan, "en_revue", "a_completer")
+        ApiPasserelle.notifier(h, prop, "", "plan de fin de vie {plan} : compléments demandés", motif, 1)
+        Journal.noter(h, "fin_de_vie", par, "plan {plan} : compléments demandés ({motif})")
+        return "a_completer"
+    }
+
+    on completer(h, plan, delai, dv_reserve, succes, empreinte, par) {
+        let objet = objet_de.get(plan)
+        require objet != () else Inconnu "plan {plan} inconnu"
+        let prop = proprietaire_de.get(plan) ?? ""
+        let du_proprio = (ApiAcces.a_le_role(par, "dynamicien") || ApiAcces.a_le_role(par, "chef_de_mission")) && ApiAcces.agit_pour(par, prop)
+        require du_proprio else Habilitation "{par} : dynamicien ou chef de mission de {prop} requis"
+        let st = get_status(plan) ?? "depose"
+        require st == "a_completer" else EtatInvalide "plan {plan} : {st}"
+        let demande = revu_le.get(plan) ?? 0
+        require h - demande <= DELAI_COMPLEMENT else Delai "compléments fournis plus de 90 jours après la demande"
+        require empreinte != (empreinte_de.get(plan) ?? "") else Doublon "empreinte du dossier inchangée"
+        require succes <= 100 else Incoherent "probabilité de succès {succes} % > 100"
+        let mode = mode_de.get(plan)
+        let ok = _calculer_conformite(objet, mode, delai, dv_requis_de.get(plan) ?? 0, dv_reserve, rehausse_de.get(plan) ?? 0, succes)
+        delai_de.set(plan, delai)
+        dv_reserve_de.set(plan, dv_reserve)
+        succes_de.set(plan, succes)
+        empreinte_de.set(plan, empreinte)
+        conforme_de.set(plan, ok)
+        transition(plan, "a_completer", "en_revue")
+        Journal.noter(h, "fin_de_vie", par, "plan {plan} complété (conforme {ok}, empreinte {empreinte})")
+        return "en_revue"
+    }
+
+    on approuver(h, plan, par, valideur) {
+        require ApiAcces.a_le_role(par, "analyste") else Habilitation "{par} : analyste d'ORBITE requis"
+        require ApiAcces.quatre_yeux(par, valideur) && ApiAcces.a_le_role(valideur, "superviseur") else QuatreYeux "{valideur} : superviseur distinct de {par} requis"
+        let objet = objet_de.get(plan)
+        require objet != () else Inconnu "plan {plan} inconnu"
+        let st = get_status(plan) ?? "depose"
+        require st == "en_revue" else EtatInvalide "plan {plan} : {st}"
+        require conforme_de.get(plan) ?? false else NonEligible "plan {plan} non conforme"
+        let st_obj = ApiRef.etat_objet(objet)
+        require st_obj == "catalogue" || st_obj == "en_service" else NonEligible "objet {objet} : {st_obj} (ni catalogué ni en service)"
+        let ancien = plan_approuve_de.get(objet) ?? ""
+        if ancien != "" && ancien != plan {
+            transition(ancien, "approuve", "remplace")
+            _oter_surveille(ancien)
+        }
+        revu_le.set(plan, h)
+        confirme_le.set(plan, h)
+        decide_par.set(plan, "{par}|{valideur}")
+        plan_approuve_de.set(objet, plan)
+        _ajouter_surveille(plan)
+        transition(plan, "en_revue", "approuve")
+        let emp = empreinte_de.get(plan) ?? ""
+        Journal.noter(h, "fin_de_vie", par, "plan {plan} approuvé pour {objet} ({par}|{valideur}, empreinte {emp}, remplace '{ancien}')")
+        return "approuve"
+    }
+
+    on rejeter(h, plan, motif, par) {
+        let prop = proprietaire_de.get(plan)
+        require prop != () else Inconnu "plan {plan} inconnu"
+        let st = get_status(plan) ?? "depose"
+        let systeme = ApiAcces.a_le_role(par, "systeme")
+        require systeme || ApiAcces.a_le_role(par, "analyste") else Habilitation "{par} : analyste d'ORBITE ou systeme requis"
+        require st == "en_revue" || st == "a_completer" else EtatInvalide "plan {plan} : {st}"
+        require (!systeme) || st == "a_completer" else EtatInvalide "le systeme ne rejette qu'un complément échu"
+        require motif != "" else MotifRequis "motif du rejet requis"
+        if systeme {
+            let demande = revu_le.get(plan) ?? 0
+            require h - demande > DELAI_COMPLEMENT else Delai "complément de {plan} encore dans son délai"
+        }
+        motif_de.set(plan, motif)
+        decide_par.set(plan, par)
+        revu_le.set(plan, h)
+        _oter_surveille(plan)
+        if st == "en_revue" {
+            transition(plan, "en_revue", "rejete")
+        } else {
+            transition(plan, "a_completer", "rejete")
+        }
+        ApiPasserelle.notifier(h, prop, "", "plan de fin de vie {plan} rejeté", motif, 1)
+        Journal.noter(h, "fin_de_vie", par, "plan {plan} rejeté : {motif}")
+        return "rejete"
+    }
+
+    on retirer(h, plan, motif, par) {
+        let prop = proprietaire_de.get(plan)
+        require prop != () else Inconnu "plan {plan} inconnu"
+        require ApiAcces.a_le_role(par, "chef_de_mission") && ApiAcces.agit_pour(par, prop) else Habilitation "{par} : chef de mission de {prop} requis"
+        let st = get_status(plan) ?? "depose"
+        require st == "depose" || st == "a_completer" else EtatInvalide "plan {plan} : {st}"
+        require motif != "" else MotifRequis "motif du retrait requis"
+        motif_de.set(plan, motif)
+        if st == "depose" {
+            transition(plan, "depose", "retire")
+        } else {
+            transition(plan, "a_completer", "retire")
+        }
+        Journal.noter(h, "fin_de_vie", par, "plan {plan} retiré par le propriétaire : {motif}")
+        return "retire"
+    }
+
+    on reconfirmer(h, plan, dv_reserve, succes, par) {
+        let objet = objet_de.get(plan)
+        require objet != () else Inconnu "plan {plan} inconnu"
+        let prop = proprietaire_de.get(plan) ?? ""
+        require ApiAcces.a_le_role(par, "chef_de_mission") && ApiAcces.agit_pour(par, prop) else Habilitation "{par} : chef de mission de {prop} requis"
+        let st = get_status(plan) ?? "depose"
+        require st == "approuve" else EtatInvalide "plan {plan} : {st}"
+        require succes <= 100 else Incoherent "probabilité de succès {succes} % > 100"
+        let mode = mode_de.get(plan)
+        let ok = (mode == "retrait_actif" || dv_reserve >= (dv_requis_de.get(plan) ?? 0)) && succes >= SUCCES_MIN
+        dv_reserve_de.set(plan, dv_reserve)
+        succes_de.set(plan, succes)
+        conforme_de.set(plan, ok)
+        confirme_le.set(plan, h)
+        if ok {
+            Journal.noter(h, "fin_de_vie", par, "plan {plan} reconfirmé (réserve {dv_reserve} mm/s, succès {succes} %)")
+            return "approuve"
+        }
+        motif_de.set(plan, "reconfirmation non conforme (réserve {dv_reserve} mm/s, succès {succes} %)")
+        plan_approuve_de.delete(objet)
+        _oter_surveille(plan)
+        transition(plan, "approuve", "caduc")
+        ApiConformite.constater(h, prop, "plan de fin de vie devenu non conforme", 2, plan, "systeme")
+        Journal.noter(h, "fin_de_vie", par, "plan {plan} caduc : non conforme à la reconfirmation")
+        return "caduc"
+    }
+
+    on perimer(h, plan, par) {
+        require ApiAcces.a_le_role(par, "systeme") else Habilitation "{par} : systeme requis"
+        let objet = objet_de.get(plan)
+        require objet != () else Inconnu "plan {plan} inconnu"
+        let st = get_status(plan) ?? "depose"
+        require st == "approuve" else EtatInvalide "plan {plan} : {st}"
+        let conf = confirme_le.get(plan) ?? 0
+        require h - conf > RECONFIRMATION else Delai "plan {plan} reconfirmé il y a moins de 400 jours"
+        let prop = proprietaire_de.get(plan) ?? ""
+        motif_de.set(plan, "non reconfirmé depuis 400 jours")
+        if (plan_approuve_de.get(objet) ?? "") == plan {
+            plan_approuve_de.delete(objet)
+        }
+        _oter_surveille(plan)
+        transition(plan, "approuve", "caduc")
+        ApiConformite.constater(h, prop, "plan de fin de vie non reconfirmé", 2, plan, "systeme")
+        Journal.noter(h, "fin_de_vie", par, "plan {plan} caduc : non reconfirmé depuis 400 jours")
+        return "caduc"
+    }
+
+    on clore(h, objet) {
+        let plan = plan_approuve_de.get(objet) ?? ""
+        if plan == "" {
+            return ""
+        }
+        let fin = FdvFin.etat(objet)
+        require fin == "rentre" || fin == "cimetiere" else EtatInvalide "fin de vie de {objet} : {fin} (ni rentré ni en cimetière)"
+        require (objet_de.get(plan) ?? "") == objet else Incoherent "plan {plan} d'un autre objet"
+        plan_approuve_de.delete(objet)
+        _oter_surveille(plan)
+        transition(plan, "approuve", "clos")
+        Journal.noter(h, "fin_de_vie", "systeme", "plan {plan} clos : retrait de {objet} constaté ({fin})")
+        return plan
+    }
+
+    on balayer(h, n, par) {
+        require n >= 1 && n <= 1000 else HorsBornes "n = {n} hors 1..1000"
+        require ApiAcces.a_le_role(par, "systeme") else Habilitation "{par} : systeme requis"
+        let k = min(n, a_surveiller.size)
+        let tete_p = []
+        for i in range(0, k) {
+            tete_p.push(a_surveiller[i])
+        }
+        for i in range(0, k) {
+            a_surveiller.delete(0)
+        }
+        let changes = 0
+        let a_garder = []
+        for p in tete_p {
+            let st = get_status(p) ?? "depose"
+            if st == "a_completer" {
+                if h - (revu_le.get(p) ?? 0) > DELAI_COMPLEMENT {
+                    let r = try { rejeter(h, p, "complément non fourni", "systeme") }
+                    if r.error == () {
+                        changes = changes + 1
+                    } else {
+                        a_garder.push(p)
+                    }
+                } else {
+                    a_garder.push(p)
+                }
+            } else if st == "approuve" {
+                if h - (confirme_le.get(p) ?? 0) > RECONFIRMATION {
+                    let r = try { perimer(h, p, "systeme") }
+                    if r.error == () {
+                        changes = changes + 1
+                    } else {
+                        a_garder.push(p)
+                    }
+                } else {
+                    a_garder.push(p)
+                }
+            }
+        }
+        for p in a_garder {
+            a_surveiller.push(p)
+        }
+        return changes
+    }
+
+    on conforme(objet, h) {
+        let plan = plan_approuve_de.get(objet) ?? ""
+        if plan == "" {
+            return false
+        }
+        let conf = confirme_le.get(plan) ?? 0
+        return (conforme_de.get(plan) ?? false) && h - conf < RECONFIRMATION
+    }
+
+    on plan_de(objet) {
+        return plan_approuve_de.get(objet) ?? ""
+    }
+
+    on fiche(plan) {
+        return _fiche_plan(plan)
+    }
+
+    on consulter(h, plan, org, par) {
+        let f = _fiche_plan(plan)
+        let habilite = ApiAcces.agit_pour(par, org) || ApiAcces.a_le_role(par, "analyste") || ApiAcces.a_le_role(par, "conformite")
+        require habilite else Habilitation "{par} : agent de {org}, ou analyste / conformite d'ORBITE requis"
+        require ApiDonnees.peut_recevoir(org, f.objet, "", h) else Confidentiel "{org} ne peut recevoir les données de {f.objet}"
+        ApiDonnees.tracer(h, org, f.objet, "", "plan de fin de vie {plan}")
+        return f
+    }
+
+    on plans(objet) {
+        return plans_de.get(objet) ?? []
+    }
+
+    on etat(plan) {
+        if objet_de.get(plan) == () {
+            return "inconnu"
+        }
+        return get_status(plan) ?? "depose"
+    }
+}

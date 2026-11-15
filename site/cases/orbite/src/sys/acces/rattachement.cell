@@ -1,0 +1,74 @@
+// acces — RATTACHEMENT confirmé par l'employeur. Une personne inscrite par ORBITE
+// ("exploitant") pour le compte d'une autre organisation n'a de rôle effectif qu'une fois que
+// cette organisation l'a reconnue : sinon un exploitant seul pourrait fabriquer le point focal
+// d'un État ou le dynamicien d'un opérateur, et recevoir leurs données (propriété 6).
+// Qui confirme :
+//   - personne d'opérateur ou de fournisseur : un "administrateur_operateur" de l'employeur ;
+//     s'il n'en a pas encore, l'"autorite" de son État de tutelle (ApiRef.etat_de) ;
+//   - personne d'État : une "autorite" de cet État ; pour la première, "direction" d'ORBITE
+//     contre-signée (AccesControle.contresigner) sur pièce diplomatique ;
+//   - personne d'ORBITE, ou inscrite par l'administrateur de son propre employeur : confirmée
+//     d'emblée par ouvrir.
+
+// Rattachement d'une personne : id = personne (un par personne, l'employeur étant immuable).
+skeleton AccesRattachements {
+    const DELAI_CONFIRMATION_MS = 1209600000
+    memory {
+        employeur_du: Map<String, Org> [persistent]          // personne → employeur à confirmer ; écrit une fois par ouvrir
+        ouvert_le: Map<String, Horodatage> [persistent]      // personne → demande de confirmation, ms
+        confirme_par: Map<String, String> [persistent]       // personne → auteur de la confirmation ou de la contestation
+        piece: Map<String, String> [persistent]              // personne → référence de la pièce (note verbale, contrat) ou motif de contestation
+    }
+    // Cycle de vie d'un rattachement (id = personne).
+    state rattachement {
+        initial: a_confirmer
+        a_confirmer -> confirme     // ouvrir (d'emblée), confirmer ; regles.toml : employeur non radié (RefOrg via employeur_du)
+        a_confirmer -> conteste     // contester : l'employeur ne reconnaît pas la personne
+        a_confirmer -> expire       // echoir : DELAI_CONFIRMATION_MS sans réponse
+    }
+    face {
+        // Ouvre le rattachement de `personne` chez `employeur` (appelée par
+        // AccesPersonnes.enregistrer seulement) ; d'emblée "confirme" si `employeur` est
+        // ApiRef.orbite() ou si `par` agit pour `employeur`. Seul écrivain de employeur_du
+        // (lien de la règle « confirme ⇐ employeur inscrit ou actif », ApiRef.organisation_existe).
+        // Renvoie l'état atteint. Refus : Existe, Inconnu (employeur radié ou inconnu).
+        signal ouvrir(h: Horodatage, personne: String, employeur: Org, par: String) -> String
+            writes employeur_du, ouvert_le, confirme_par
+            moves a_confirmer -> confirme when AccesPersonnes.active
+            calls ApiRef.orbite, ApiRef.organisation_existe, AccesControle.agit_pour
+        // Confirme le rattachement (règles d'en-tête). `piece` : référence de la pièce
+        // justificative, exigée. `valideur` : contre-signataire, exigé seulement pour la première
+        // "autorite" d'un État ("" sinon). Renvoie "confirme".
+        // Refus : Inconnu, EtatInvalide, Suspendu (personne non active), NonEligible (employeur
+        // radié, ApiRef.organisation_existe), MotifRequis (pièce vide), Habilitation, QuatreYeux
+        // (par = personne, ou contre-signature refusée).
+        signal confirmer(h: Horodatage, personne: String, piece_ref: String, par: String, valideur: String) -> String
+            reads employeur_du
+            writes confirme_par, piece
+            moves a_confirmer -> confirme when AccesPersonnes.active
+            calls AccesPersonnes.est_active, AccesPersonnes.personnes_de, AccesPortees.genre_de, AccesControle.a_le_role, AccesControle.agit_pour, AccesControle.contresigner, ApiRef.organisation_existe, ApiRef.etat_de, ApiRef.org_de_etat, Journal.noter
+        // L'employeur ne reconnaît pas la personne : rattachement "conteste", personne suspendue
+        // (AccesPersonnes.suspendre_auto, "rattachement_conteste"). Mêmes rôles que confirmer,
+        // sans contre-signature. Renvoie "conteste". Refus : Inconnu, EtatInvalide, MotifRequis,
+        // Habilitation.
+        signal contester(h: Horodatage, personne: String, motif: String, par: String) -> String
+            reads employeur_du
+            writes confirme_par, piece
+            moves a_confirmer -> conteste
+            calls AccesPortees.genre_de, AccesControle.a_le_role, AccesControle.agit_pour, ApiRef.etat_de, ApiRef.org_de_etat, AccesPersonnes.suspendre_auto, Journal.noter
+        // Balayage : les rattachements à confirmer ouverts depuis plus de DELAI_CONFIRMATION_MS
+        // expirent, et leurs personnes sont suspendues ("rattachement_conteste"). Renvoie leur nombre.
+        signal echoir(h: Horodatage) -> Int
+            reads ouvert_le, rattachement
+            moves a_confirmer -> expire
+            calls AccesPersonnes.suspendre_auto, Journal.noter
+        // Vrai si le rattachement de la personne est "confirme".
+        signal confirme(personne: String) -> Bool
+            reads rattachement
+        // Rattachements à confirmer d'un employeur, au plus `n` : la file de travail de son
+        // administrateur (ou de l'autorité de tutelle).
+        signal a_confirmer_de(employeur: Org, n: Int) -> List<String>
+            requires n > 0 && n <= 2000
+            reads employeur_du, rattachement
+    }
+}

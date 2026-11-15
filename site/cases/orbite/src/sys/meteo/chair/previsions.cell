@@ -1,0 +1,178 @@
+// meteo — corps des PRÉVISIONS.
+flesh MetPrevision {
+    on deposer(h, prevision, source, de, a, kp, f107, par) {
+        let f = MetSource.fournisseur_de(source)
+        if par == "systeme" {
+            require ApiAcces.a_le_role(par, "systeme") else Habilitation "identité systeme refusée"
+        } else {
+            require ApiAcces.a_le_role(par, "capteur") && ApiAcces.agit_pour(par, f) else Habilitation "{par} n'est pas capteur de {f}"
+        }
+        require source_prev.get(prevision) == () else Existe "prévision {prevision} déjà déposée"
+        let t = to_int(h)
+        let td = to_int(de)
+        let ta = to_int(a)
+        require ta > td else Incoherent "fin de fenêtre avant son début"
+        require kp <= 90 && f107 <= 10000 else HorsBornes "kp {kp} ou f107 {f107} hors échelle"
+        require ta - td >= FENETRE_MIN else HorsBornes "fenêtre de moins de 3 h"
+        require ta - t <= HORIZON_MAX else HorsBornes "fin de fenêtre à plus de 72 h"
+        require source_prev.size < MAX_PREVISIONS else Plein "registre des prévisions plein"
+        source_prev.set(prevision, source)
+        emise_le.set(prevision, h)
+        debut.set(prevision, de)
+        fin.set(prevision, a)
+        kp_prevu.set(prevision, kp)
+        f107_prevu.set(prevision, f107)
+        let _ = MetSource.noter_reception(h, source)
+        let active = MetSource.active(source)
+        let motif = if to_string(MetSource.nature(source)) != "centre_prevision" {
+            "nature"
+        } else if !active {
+            "source_inactive"
+        } else if ta <= t {
+            "fenetre_passee"
+        } else {
+            ""
+        }
+        if motif != "" {
+            transition(prevision, "recue", "rejetee")
+            motif_rejet.set(prevision, MetMotifRejetPrev(motif))
+            if active && _rejets_en_serie(source) {
+                let _ = MetSource.mettre_en_ecart(h, source)
+            }
+            let _ = Journal.noter(h, "meteo", par, "prevision {prevision} de {source} rejetee : {motif}")
+            return "rejetee"
+        }
+        require MetSource.active(source) else EtatInvalide "centre {source} inactif"
+        transition(prevision, "recue", "publiee")
+        let ancienne = courante_de.get(source)
+        if ancienne != () && (get_status(ancienne) ?? "recue") == "publiee" {
+            transition(ancienne, "publiee", "remplacee")
+            remplacee_par.set(ancienne, prevision)
+        }
+        courante_de.set(source, prevision)
+        let _ = Journal.noter(h, "meteo", par, "prevision {prevision} de {source} publiee : kp {kp}, f107 {f107}")
+        return "publiee"
+    }
+
+    // Vrai si les 5 derniers dépôts du centre (celui-ci compris) sont tous rejetés.
+    on _rejets_en_serie(source: String) {
+        let siens = source_prev.entries.filter(e => e.value == source).map(e => map("p", e.key, "t", to_int(emise_le.get(e.key) ?? 0))).sort_by(x => [0 - x.t, x.p])
+        if len(siens) < 5 { return false }
+        let derniers = slice(siens, 0, 5)
+        return len(derniers.filter(x => (get_status(x.p) ?? "recue") == "rejetee")) == 5
+    }
+
+    on verifier(h, prevision, par) {
+        require ApiAcces.a_le_role(par, "systeme") else Habilitation "vérification réservée à systeme"
+        let ff = fin.get(prevision)
+        require ff != () else Inconnu "prévision {prevision} inconnue"
+        let st = get_status(prevision) ?? "recue"
+        require st == "publiee" else EtatInvalide "prévision {prevision} : {st}"
+        require to_int(ff) <= to_int(h) else EtatInvalide "fenêtre de {prevision} non échue"
+        let dd = debut.get(prevision) ?? ff
+        let observe = MetMesure.kp_max_entre(dd, ff)
+        let e = abs((kp_prevu.get(prevision) ?? 0) - to_int(observe))
+        ecart.set(prevision, min(e, 90))
+        transition(prevision, "publiee", "verifiee")
+        let siennes = courante_de.entries.filter(x => x.value == prevision).map(x => x.key)
+        for c in siennes {
+            courante_de.delete(c)
+        }
+        let _ = Journal.noter(h, "meteo", par, "prevision {prevision} verifiee : ecart {e}")
+        return e
+    }
+
+    on retirer(h, prevision, motif, par) {
+        let src = source_prev.get(prevision)
+        require src != () else Inconnu "prévision {prevision} inconnue"
+        let f = MetSource.fournisseur_de(src)
+        let habilite = ApiAcces.a_le_role(par, "analyste") || (ApiAcces.a_le_role(par, "capteur") && ApiAcces.agit_pour(par, f))
+        require habilite else Habilitation "{par} n'est ni capteur de {f} ni analyste d'ORBITE"
+        require motif != "" else MotifRequis "motif de retrait requis"
+        let st = get_status(prevision) ?? "recue"
+        require st == "publiee" else EtatInvalide "prévision {prevision} : {st}"
+        transition(prevision, "publiee", "retiree")
+        if (courante_de.get(src) ?? "") == prevision {
+            courante_de.delete(src)
+        }
+        let _ = Journal.noter(h, "meteo", par, "prevision {prevision} retiree : {motif}")
+        return "retiree"
+    }
+
+    on publiee(prevision) {
+        return (get_status(prevision) ?? "recue") == "publiee"
+    }
+
+    on pire_dans(h, horizon_ms) {
+        let t = to_int(h)
+        let lim = t + to_int(horizon_ms)
+        let pire = ""
+        let pire_kp = -1
+        for c in MetSource.centres_actifs() {
+            let p = courante_de.get(c)
+            if p != () && (get_status(p) ?? "recue") == "publiee" {
+                let d = to_int(debut.get(p) ?? 0)
+                let ff = to_int(fin.get(p) ?? 0)
+                let k = kp_prevu.get(p) ?? 0
+                if d <= lim && ff >= t && k > pire_kp && to_int(fiabilite(c, h)) >= FIABILITE_MIN {
+                    pire = p
+                    pire_kp = k
+                }
+            }
+        }
+        return pire
+    }
+
+    on kp_attendu(prevision) {
+        let k = kp_prevu.get(prevision)
+        require k != () else Inconnu "prévision {prevision} inconnue"
+        return MetKp(k)
+    }
+
+    on debut_de(prevision) {
+        let d = debut.get(prevision)
+        require d != () else Inconnu "prévision {prevision} inconnue"
+        return d
+    }
+
+    on fin_de(prevision) {
+        let d = fin.get(prevision)
+        require d != () else Inconnu "prévision {prevision} inconnue"
+        return d
+    }
+
+    on f107_moyen(periode_debut, periode_fin) {
+        let pd = to_int(periode_debut)
+        let pf = to_int(periode_fin)
+        require pf > pd else Incoherent "période vide ou inversée"
+        let somme = 0
+        let poids = 0
+        for c in MetSource.centres_actifs() {
+            let p = courante_de.get(c)
+            if p != () && (get_status(p) ?? "recue") == "publiee" {
+                let rec = min(pf, to_int(fin.get(p) ?? 0)) - max(pd, to_int(debut.get(p) ?? 0))
+                if rec > 0 {
+                    somme = somme + (f107_prevu.get(p) ?? 0) * rec
+                    poids = poids + rec
+                }
+            }
+        }
+        require poids > 0 else Perime "aucune prévision publiée ne couvre la période"
+        return div_round(somme, poids * 10)
+    }
+
+    on echues(h) {
+        let t = to_int(h)
+        let ech = fin.entries.filter(e => to_int(e.value) <= t && (get_status(e.key) ?? "recue") == "publiee").map(e => map("p", e.key, "f", to_int(e.value))).sort_by(x => [0 - x.f, x.p])
+        return slice(ech, 0, 1000).map(x => x.p)
+    }
+
+    on fiabilite(source, h) {
+        let depuis = to_int(h) - FIABILITE_FENETRE
+        let verifiees = source_prev.entries.filter(e => e.value == source && (get_status(e.key) ?? "recue") == "verifiee" && to_int(emise_le.get(e.key) ?? 0) >= depuis).map(e => e.key)
+        let n = len(verifiees)
+        if n < 10 { return 100 }
+        let justes = len(verifiees.filter(p => (ecart.get(p) ?? 90) <= ECART_JUSTE))
+        return Pourcent(idiv(justes * 100, n))
+    }
+}

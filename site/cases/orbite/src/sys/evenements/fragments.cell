@@ -1,0 +1,94 @@
+// evenements — CATALOGAGE PROGRESSIF DES FRAGMENTS.
+// Une piste non corrélée de l'observation (ApiObservation.pistes_non_correlees), proche d'un nuage, devient un fragment "detecte" ;
+// l'analyste le rattache au nuage (rétropropagation jusqu'à l'instant de l'évènement), puis le
+// catalogue : ApiRef.cataloguer le crée comme "debris" sans propulsion, attribué au PROPRIÉTAIRE
+// et à l'ÉTAT D'IMMATRICULATION de son objet parent (Convention de 1972 : l'État de lancement
+// répond de ses débris). Un fragment catalogué est suivi jusqu'à sa rentrée.
+
+// Raison d'écarter une piste : "correlee" (c'est un objet déjà catalogué), "erreur" (mesure
+// fausse, reflet), "autre_nuage" (rattachée à un autre évènement), "perdue" (non revue après
+// détection, orbite indéterminable).
+cell type EvtEcart = String where value == "correlee" || value == "erreur" || value == "autre_nuage" || value == "perdue"
+
+// Fragments : id = "FR-<n>", tiré par detecter.
+skeleton EvtFragments {
+    const MAX_FRAGMENTS = 1000000
+    const DELAI_RATTACHEMENT_MS = 604800000
+    memory {
+        nuage_du_fragment: Map<String, String> [persistent]   // fragment → nuage (= évènement) ; écrit une fois par detecter, jamais effacé
+        parent_de: Map<String, Objet> [persistent]            // fragment → objet en cause dont il provient (un des objets de l'évènement)
+        piste_de: Map<String, String> [persistent]            // fragment → piste non corrélée de l'observation
+        fragment_de_piste: Map<String, String> [persistent]   // piste → fragment (une piste ne fait qu'un fragment)
+        detecte_le: Map<String, Horodatage> [persistent]      // fragment → instant de détection, ms
+        regime_du_fragment: Map<String, Regime> [persistent]  // fragment → régime de son orbite
+        masse_estimee: Map<String, Masse> [persistent]        // fragment → masse estimée (surface radar), kg
+        objet_du_fragment: Map<String, Objet> [persistent]    // fragment → numéro "OBJ-<n>" attribué au catalogage ; écrit une fois
+        ecart: Map<String, String> [persistent]               // fragment → "h | EvtEcart | par | motif"
+        invariant nuage_du_fragment.size <= MAX_FRAGMENTS
+        invariant fragment_de_piste.size <= MAX_FRAGMENTS
+        invariant objet_du_fragment.size <= MAX_FRAGMENTS
+    }
+    // Cycle de vie d'un fragment (id = fragment).
+    state fragment {
+        initial: detecte
+        detecte -> rattache   // rattacher
+        rattache -> catalogue                                                     // cataloguer
+        detecte -> ecarte                                                         // ecarter
+        rattache -> ecarte                                                        // ecarter
+        catalogue -> rentre                                                       // constater_rentrees
+    }
+    face {
+        // Enregistre une piste non corrélée attribuée à un nuage — elle doit figurer parmi les
+        // pistes en attente de l'observation (ApiObservation.pistes_non_correlees(1000), sinon
+        // Inconnu) : objet parent présumé (un des objets en cause de l'évènement), régime et
+        // masse estimés. Renvoie l'id "FR-<n>", état "detecte". Rôle exigé de `par` : "analyste" d'ORBITE, ou "systeme" (corrélation
+        // automatique des pistes autour d'un nuage).
+        // Refus : Inconnu (évènement inconnu, piste absente, parent étranger à l'évènement),
+        // EtatInvalide (nuage dissipé ou abandonné), Doublon (piste déjà enregistrée), Plein, Habilitation.
+        signal detecter(h: Horodatage, nuage: String, piste: String, parent: Objet, r: Regime, m: Masse, par: String) -> String
+            writes nuage_du_fragment, parent_de, piste_de, fragment_de_piste, detecte_le, regime_du_fragment, masse_estimee
+            calls ApiAcces.a_le_role, ApiObservation.pistes_non_correlees, EvtEvenements.objets, EvtNuages.etat, next_id, Journal.noter
+        // Rattache le fragment à son nuage après rétropropagation : son orbite recoupe celle du
+        // parent à l'instant de l'évènement. Renvoie "rattache".
+        // Rôle exigé de `par` : "analyste" d'ORBITE.
+        // Refus : Inconnu, EtatInvalide (fragment non "detecte", nuage pas en catalogage), Habilitation.
+        signal rattacher(h: Horodatage, fragment: String, par: String) -> String
+            reads nuage_du_fragment
+            moves detecte -> rattache when EvtNuages.en_catalogage via nuage_du_fragment
+            calls ApiAcces.a_le_role, EvtNuages.etat, Journal.noter
+        // Catalogue un fragment rattaché : ApiRef.cataloguer(h, "debris", propriétaire du parent,
+        // État d'immatriculation du parent, régime, "aucune", masse, "systeme"), puis
+        // EvtNuages.compter_fragment. Renvoie le numéro "OBJ-<n>".
+        // Rôle exigé de `par` : "analyste" d'ORBITE.
+        // Refus : Inconnu, EtatInvalide, Plein (nuage à MAX_FRAGMENTS), Habilitation.
+        signal cataloguer(h: Horodatage, fragment: String, par: String) -> Objet
+            writes objet_du_fragment
+            reads parent_de, regime_du_fragment, masse_estimee, nuage_du_fragment
+            moves rattache -> catalogue
+            calls ApiAcces.a_le_role, ApiRef.proprietaire, ApiRef.etat_immatriculation, ApiRef.cataloguer, EvtNuages.compter_fragment, Journal.noter
+        // Écarte un fragment non catalogué (voir EvtEcart). Renvoie "ecarte".
+        // Rôle exigé de `par` : "analyste" d'ORBITE, ou "systeme" pour "perdue" (piste non revue
+        // DELAI_RATTACHEMENT_MS après sa détection, via perdus).
+        // Refus : Inconnu, EtatInvalide, MotifRequis, Habilitation.
+        signal ecarter(h: Horodatage, fragment: String, e: EvtEcart, motif: String, par: String) -> String
+            writes ecart
+            reads nuage_du_fragment
+            moves detecte -> ecarte, rattache -> ecarte
+            calls ApiAcces.a_le_role, Journal.noter
+        // Pistes "detecte" depuis plus de DELAI_RATTACHEMENT_MS à `h`, au plus `n` : à écarter
+        // comme "perdue" ou à rattacher. Lecture seule.
+        signal perdus(h: Horodatage, n: Int) -> List<String>
+            requires n > 0 && n <= 1000
+            reads detecte_le, fragment
+        // Passe "rentre" les fragments catalogués dont l'objet est "rentre" au référentiel, au
+        // plus `n` par appel, et les compte au nuage (EvtNuages.compter_rentree). Renvoie le
+        // nombre de rentrées constatées. Rôle exigé de `par` : "systeme" ou "analyste" d'ORBITE.
+        // Refus : Habilitation.
+        signal constater_rentrees(h: Horodatage, n: Int, par: String) -> Int
+            requires n > 0 && n <= 10000
+            reads objet_du_fragment, nuage_du_fragment
+            moves catalogue -> rentre
+            calls ApiAcces.a_le_role, ApiRef.etat_objet, EvtNuages.compter_rentree, Journal.noter
+            ensures result >= 0
+    }
+}

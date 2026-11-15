@@ -1,0 +1,112 @@
+// Corps de manoeuvres : programmes de maintien à poste (ManProgramme).
+flesh ManProgramme {
+    on proposer(h, programme, objet, cadence, dv_nominal, dv_max, debut, fin, par) {
+        require fiche_de.get(programme) == () else Existe "programme {programme} déjà proposé"
+        let proprio = ApiRef.proprietaire(objet)
+        require (ApiAcces.a_le_role(par, "dynamicien") || ApiAcces.a_le_role(par, "chef_de_mission")) && ApiAcces.agit_pour(par, proprio) else Habilitation "{par} n'agit pas pour {proprio}"
+        require cadence >= CADENCE_MIN_MS && cadence <= CADENCE_MAX_MS else HorsBornes "cadence hors de [1 j, 90 j]"
+        require dv_nominal > 0 && dv_nominal <= dv_max else HorsBornes "delta-v nominal hors de ]0, dv_max]"
+        require debut < fin && to_int(fin) <= to_int(debut) + VALIDITE_MAX_MS else HorsBornes "validité hors de ]0, 1 an]"
+        require ApiRef.peut_manoeuvrer(objet) else NonEligible "objet {objet} incapable de manœuvrer"
+        require ApiOperateurs.est_actif(proprio, h) else Suspendu "opérateur {proprio} non actif"
+        let en_cours_p = programme_de.get(objet) ?? ""
+        require en_cours_p == "" else Conflit "programme {en_cours_p} déjà en cours pour {objet}"
+        require fiche_de.size < MAX_PROGRAMMES else Plein "registre des programmes plein"
+        fiche_de.set(programme, ManFicheProgramme { objet: objet, proprietaire: proprio, cadence: cadence, dv_nominal: dv_nominal, dv_max: dv_max, debut: debut, fin: fin })
+        Journal.noter(h, "manoeuvres", par, "programme {programme} proposé pour {objet} (cadence {cadence} ms)")
+        return programme
+    }
+
+    on instruire(h, programme, decision, motif, par) {
+        require ApiAcces.a_le_role(par, "analyste") else Habilitation "instruction par un analyste d'ORBITE"
+        let f = fiche_de.get(programme)
+        require f != () else Inconnu "programme {programme} inconnu"
+        let s = get_status(programme) ?? "propose"
+        require s == "propose" else EtatInvalide "programme {programme} {s}"
+        if decision {
+            let autre = programme_de.get(f.objet) ?? ""
+            require autre == "" else Conflit "programme {autre} déjà accepté pour {f.objet}"
+            transition(programme, "propose", "accepte")
+            programme_de.set(f.objet, programme)
+            Journal.noter(h, "manoeuvres", par, "programme {programme} accepté")
+            return "accepte"
+        }
+        require motif != "" else MotifRequis "refus sans motif"
+        transition(programme, "propose", "refuse")
+        motif_de.set(programme, motif)
+        Journal.noter(h, "manoeuvres", par, "programme {programme} refusé : {motif}")
+        return "refuse"
+    }
+
+    on suspendre(h, programme, suspension, motif, par) {
+        require ApiAcces.a_le_role(par, "systeme") || ApiAcces.a_le_role(par, "analyste") else Habilitation "suspension par systeme ou analyste"
+        let f = fiche_de.get(programme)
+        require f != () else Inconnu "programme {programme} inconnu"
+        require motif != "" else MotifRequis "suspension ou reprise sans motif"
+        let s = get_status(programme) ?? "propose"
+        if suspension {
+            require s == "accepte" else EtatInvalide "programme {programme} {s}"
+            transition(programme, "accepte", "suspendu")
+            motif_de.set(programme, motif)
+            Journal.noter(h, "manoeuvres", par, "programme {programme} suspendu : {motif}")
+            return "suspendu"
+        }
+        require s == "suspendu" else EtatInvalide "programme {programme} {s}"
+        require ApiRef.peut_manoeuvrer(f.objet) && ApiOperateurs.est_actif(f.proprietaire, h) else NonEligible "objet ou opérateur toujours inéligible"
+        transition(programme, "suspendu", "accepte")
+        motif_de.set(programme, motif)
+        Journal.noter(h, "manoeuvres", par, "programme {programme} repris : {motif}")
+        return "accepte"
+    }
+
+    on clore(h, programme, motif, par) {
+        let f = fiche_de.get(programme)
+        require f != () else Inconnu "programme {programme} inconnu"
+        let interne = ApiAcces.a_le_role(par, "systeme") || ApiAcces.a_le_role(par, "analyste")
+        if !interne {
+            let r_p = try { ApiRef.proprietaire(f.objet) }
+            let proprio = if r_p.error == () { r_p.value } else { f.proprietaire }
+            require (ApiAcces.a_le_role(par, "dynamicien") || ApiAcces.a_le_role(par, "chef_de_mission")) && ApiAcces.agit_pour(par, proprio) else Habilitation "{par} n'agit pas pour {proprio}"
+        }
+        require motif != "" else MotifRequis "clôture sans motif"
+        let s = get_status(programme) ?? "propose"
+        require s == "accepte" || s == "suspendu" else EtatInvalide "programme {programme} {s}"
+        transition(programme, s, "clos")
+        if (programme_de.get(f.objet) ?? "") == programme {
+            programme_de.delete(f.objet)
+        }
+        motif_de.set(programme, motif)
+        Journal.noter(h, "manoeuvres", par, "programme {programme} clos : {motif}")
+        return "clos"
+    }
+
+    on rattacher(plan, objet, dv) {
+        let p = programme_de.get(objet) ?? ""
+        if p == "" { return "" }
+        let s = get_status(p) ?? "propose"
+        if s != "accepte" { return "" }
+        let f = fiche_de.get(p)
+        if f == () { return "" }
+        require dv <= f.dv_max else HorsBornes "delta-v {dv} au-delà du maximum du programme {p} ({f.dv_max})"
+        let lst_pl = plans_de.get(p) ?? []
+        require len(lst_pl) < MAX_PLANS_PAR_PROGRAMME else Plein "programme {p} : {MAX_PLANS_PAR_PROGRAMME} plans rattachés"
+        plans_de.set(p, lst_pl ++ [plan])
+        return p
+    }
+
+    on conforme(objet, instant) {
+        let p = programme_de.get(objet) ?? ""
+        if p == "" { return false }
+        if (get_status(p) ?? "propose") != "accepte" { return false }
+        let f = fiche_de.get(p)
+        if f == () { return false }
+        let jour = 86400000
+        let t = to_int(instant)
+        let d = to_int(f.debut)
+        if t < d - jour || t > to_int(f.fin) + jour { return false }
+        if t <= d { return true }
+        let c = to_int(f.cadence)
+        let reste = (t - d) % c
+        return reste <= jour || c - reste <= jour
+    }
+}

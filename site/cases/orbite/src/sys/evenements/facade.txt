@@ -1,0 +1,11 @@
+ApiEvenements.declarer: calls EvtEvenements.signaler, EvtEvenements.confirmer; moves EvtEvenements.evenement: signale -> confirme, EvtNuages.nuage: estime -> en_catalogage
+ApiEvenements.anomalie: calls EvtAnomalies.declarer
+ApiEvenements.en_anomalie: calls EvtAnomalies.en_anomalie
+ApiEvenements.nuage_actif: calls EvtNuages.actif
+ApiEvenements.existe: calls EvtEvenements.existe
+ApiEvenements.objets: calls EvtEvenements.objets
+ApiEvenements.genre: calls EvtEvenements.genre
+ApiEvenements.instant: calls EvtEvenements.instant
+ApiEvenements.evenement_de: calls EvtEvenements.evenement_de
+ApiEvenements.balayer: calls EvtVeille.ronde
+ApiEvenements.etat: calls EvtEvenements.etat

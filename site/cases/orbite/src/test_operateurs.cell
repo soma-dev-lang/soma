@@ -1,0 +1,515 @@
+use app
+use commun::journal_chair
+use commun::horloge_chair
+use sys::operateurs::chair::api
+use sys::operateurs::chair::adhesion
+use sys::operateurs::chair::licences
+use sys::operateurs::chair::engagements
+use sys::operateurs::chair::astreinte
+use sys::operateurs::chair::joignabilite
+use sys::operateurs::chair::changements
+use sys::operateurs::chair::contacts
+use doublures::operateurs
+
+// Monde de départ. H0 = 1 800 000 000 000 ms ; un jour = 86 400 000 ms.
+// Personnes : "<role>.<nom>@<ORG>" (voir doublures/operateurs.cell).
+cell Monde {
+    // Dépôt + licence confirmée par l'État + instruction + acceptation : l'opérateur est admis.
+    on admettre(op: String) {
+        let h = Horodatage(1800000000000)
+        let o = Org(op)
+        let adm = "administrateur_operateur.a@{op}"
+        let segs = split(op, "-")
+        let e = segs[len(segs) - 1]
+        let d = OpDossiers.deposer(h, o, "statuts ; licence ; plan d'astreinte", adm)
+        let _ = OpLicences.declarer(h, o, "LIC-{op}", Horodatage(1800000000000 - 86400000), Horodatage(1800000000000 + 365 * 86400000), adm)
+        let _ = OpLicences.repondre_etat(h, o, "confirmee", "autorite.a@ORG-ETAT-{e}")
+        let _ = OpDossiers.instruire(h, d, "analyste.a@ORG-ORBITE")
+        let _ = OpDossiers.accepter(h, d, "analyste.a@ORG-ORBITE", "superviseur.s@ORG-ORBITE")
+        return d
+    }
+    // Admis + engagements en vigueur + 8 jours d'astreinte (d1 en service) + exercice réussi
+    // + un chef de mission confirmé : tout ce qu'exige l'activation.
+    on preparer(op: String) {
+        let h = Horodatage(1800000000000)
+        let o = Org(op)
+        let adm = "administrateur_operateur.a@{op}"
+        let _ = admettre(op)
+        let _ = OpEngagements.proposer(h, o, Duree(86400000), Duree(7200000), Duree(1800000), adm)
+        let _ = OpEngagements.accepter(h, o, "superviseur.s@ORG-ORBITE")
+        let s1 = OpAstreinte.planifier(h, o, "dynamicien.d1@{op}", h, Horodatage(1800000000000 + 4 * 86400000), "chef_de_mission.c@{op}")
+        let _ = OpAstreinte.planifier(h, o, "dynamicien.d2@{op}", Horodatage(1800000000000 + 4 * 86400000), Horodatage(1800000000000 + 8 * 86400000), "chef_de_mission.c@{op}")
+        let _ = OpAstreinte.prendre_service(h, s1, "dynamicien.d1@{op}")
+        let ex = OpExercices.planifier(h, o, h, "analyste.a@ORG-ORBITE")
+        let _ = OpExercices.lancer(h, ex, "analyste.a@ORG-ORBITE")
+        let _ = OpExercices.accuser(Horodatage(1800000060000), ex, "dynamicien.d1@{op}")
+        let ct = OpContacts.declarer(h, o, "chef_de_mission.c@{op}", "chef_de_mission", 1, "TEL-CHIFFRE-1", adm)
+        let _ = OpContacts.confirmer(h, ct, "chef_de_mission.c@{op}")
+        return s1
+    }
+    on activer(op: String) {
+        let _ = preparer(op)
+        return OpMembres.activer(Horodatage(1800000120000), Org(op), "superviseur.s@ORG-ORBITE")
+    }
+    // Opérateur actif suspendu par la conformité.
+    on suspendre(op: String) {
+        let _ = activer(op)
+        return OpMembres.suspendre(Horodatage(1800000200000), Org(op), "manœuvre non annoncée", "conformite.c@ORG-ORBITE", "direction.d@ORG-ORBITE")
+    }
+    // Changement de contrôle ALD → BRV déclaré et mis en examen.
+    on changement_en_examen(op: String) {
+        let _ = activer(op)
+        let id = OpChangements.declarer(Horodatage(1800000300000), Org(op), "Acquéreur SA (ORG-ACQ)", "BRV", "LIC-BRV-7", Horodatage(1800000000000 + 400 * 86400000), Horodatage(1800000300000 + 40 * 86400000), "administrateur_operateur.a@{op}", "chef_de_mission.c@{op}")
+        let _ = OpChangements.examiner(Horodatage(1800000300000), id, "analyste.a@ORG-ORBITE")
+        return id
+    }
+}
+
+// ── Dossier d'adhésion : dépôt → instruction → acceptation (quatre yeux) → admis.
+cell test DossierNominal {
+    rules {
+        let d = OpDossiers.deposer(1800000000000, "ORG-OPA-ALD", "statuts", "administrateur_operateur.a@ORG-OPA-ALD")
+        assert OpDossiers.etat(d) == "depose"
+        assert OpMembres.etat("ORG-OPA-ALD") == "candidat"
+        assert OpDossiers.completer(1800000000000, d, "plan d'astreinte", "administrateur_operateur.a@ORG-OPA-ALD") == "depose"
+        assert OpDossiers.instruire(1800000000000, d, "analyste.a@ORG-ORBITE") == "en_instruction"
+        // Licence non en vigueur : l'arête vers accepte est fermée.
+        assert_fails OpDossiers.accepter(1800000000000, d, "analyste.a@ORG-ORBITE", "superviseur.s@ORG-ORBITE") matching "Insuffisant"
+        assert OpLicences.declarer(1800000000000, "ORG-OPA-ALD", "LIC-1", 1700000000000, 1900000000000, "administrateur_operateur.a@ORG-OPA-ALD") == "declaree"
+        assert OpLicences.repondre_etat(1800000000000, "ORG-OPA-ALD", "confirmee", "autorite.a@ORG-ETAT-ALD") == "en_vigueur"
+        // Quatre yeux : le valideur doit être un autre, et superviseur.
+        assert_fails OpDossiers.accepter(1800000000000, d, "analyste.a@ORG-ORBITE", "analyste.a@ORG-ORBITE") matching "QuatreYeux"
+        // Seul l'analyste instructeur accepte.
+        assert_fails OpDossiers.accepter(1800000000000, d, "analyste.b@ORG-ORBITE", "superviseur.s@ORG-ORBITE") matching "Habilitation"
+        assert OpDossiers.accepter(1800000000000, d, "analyste.a@ORG-ORBITE", "superviseur.s@ORG-ORBITE") == "accepte"
+        assert OpMembres.etat("ORG-OPA-ALD") == "admis"
+        assert ApiOperateurs.statut("ORG-OPA-ALD") == "admis"
+        assert len(OpMembres.historique_de("ORG-OPA-ALD", 10)) == 1
+        // Un admis ne redépose pas.
+        assert_fails OpDossiers.deposer(1800000000000, "ORG-OPA-ALD", "statuts", "administrateur_operateur.a@ORG-OPA-ALD") matching "Existe"
+    }
+}
+
+cell test DossierRefus {
+    rules {
+        assert_fails OpDossiers.deposer(1800000000000, "ORG-OPA-ALD", "statuts", "intrus.z@ORG-OPA-ALD") matching "Habilitation"
+        assert_fails OpDossiers.deposer(1800000000000, "ORG-OPA-ALD", "statuts", "administrateur_operateur.a@ORG-OPB-ALD") matching "Habilitation"
+        assert_fails OpDossiers.deposer(1800000000000, "ORG-ETAT-ALD", "statuts", "administrateur_operateur.a@ORG-ETAT-ALD") matching "NonEligible"
+        assert_fails OpDossiers.deposer(1800000000000, "ORG-OPX-XNP", "statuts", "administrateur_operateur.a@ORG-OPX-XNP") matching "NonEligible"
+        assert_fails OpDossiers.deposer(1800000000000, "ORG-OPA-ALD", "", "administrateur_operateur.a@ORG-OPA-ALD") matching "MotifRequis"
+        let d = OpDossiers.deposer(1800000000000, "ORG-OPA-ALD", "statuts", "administrateur_operateur.a@ORG-OPA-ALD")
+        assert_fails OpDossiers.deposer(1800000000000, "ORG-OPA-ALD", "statuts", "administrateur_operateur.a@ORG-OPA-ALD") matching "Doublon"
+        assert_fails OpDossiers.instruire(1800000000000, d, "chef_de_mission.c@ORG-OPA-ALD") matching "Habilitation"
+        assert_fails OpDossiers.instruire(1800000000000, "DA-999", "analyste.a@ORG-ORBITE") matching "Inconnu"
+        // Rejet motivé, puis nouveau dépôt possible.
+        assert_fails OpDossiers.rejeter(1800000000000, d, "pieces_manquantes", "il manque le plan", "analyste.a@ORG-ORBITE") matching "EtatInvalide"
+        let _ = OpDossiers.instruire(1800000000000, d, "analyste.a@ORG-ORBITE")
+        assert_fails OpDossiers.rejeter(1800000000000, d, "pieces_manquantes", "", "analyste.a@ORG-ORBITE") matching "MotifRequis"
+        assert OpDossiers.rejeter(1800000000000, d, "pieces_manquantes", "il manque le plan", "analyste.a@ORG-ORBITE") == "rejete"
+        assert OpMembres.etat("ORG-OPA-ALD") == "candidat"
+        assert_fails OpDossiers.completer(1800000000000, d, "plan", "administrateur_operateur.a@ORG-OPA-ALD") matching "EtatInvalide"
+        let d2 = OpDossiers.deposer(1800000000000, "ORG-OPA-ALD", "statuts ; plan", "administrateur_operateur.a@ORG-OPA-ALD")
+        assert d2 != d
+        // Retard d'instruction au-delà de 30 jours.
+        assert len(OpDossiers.en_retard(1800000000000 + 31 * 86400000, 10)) == 1
+        assert OpDossiers.abandonner(1800000000000, d2, "administrateur_operateur.a@ORG-OPA-ALD") == "abandonne"
+        assert len(OpDossiers.en_retard(1800000000000 + 31 * 86400000, 10)) == 0
+        // Accord de partage non signé : pas d'acceptation.
+        let d3 = OpDossiers.deposer(1800000000000, "ORG-NONADH-ALD", "statuts", "administrateur_operateur.a@ORG-NONADH-ALD")
+        let _ = OpLicences.declarer(1800000000000, "ORG-NONADH-ALD", "LIC-9", 1700000000000, 1900000000000, "administrateur_operateur.a@ORG-NONADH-ALD")
+        let _ = OpLicences.repondre_etat(1800000000000, "ORG-NONADH-ALD", "confirmee", "autorite.a@ORG-ETAT-ALD")
+        let _ = OpDossiers.instruire(1800000000000, d3, "analyste.a@ORG-ORBITE")
+        assert_fails OpDossiers.accepter(1800000000000, d3, "analyste.a@ORG-ORBITE", "superviseur.s@ORG-ORBITE") matching "Insuffisant"
+    }
+}
+
+// ── Licence nationale : déclarée → en vigueur → suspendue → en vigueur → expirée → redéclarée.
+cell test LicenceCycle {
+    rules {
+        assert OpLicences.etat("ORG-OPA-ALD") == "aucune"
+        assert_fails OpLicences.declarer(1800000000000, "ORG-OPA-ALD", "LIC-1", 1700000000000, 1700000000000, "administrateur_operateur.a@ORG-OPA-ALD") matching "HorsBornes"
+        assert_fails OpLicences.declarer(1800000000000, "ORG-OPA-ALD", "", 1700000000000, 1900000000000, "administrateur_operateur.a@ORG-OPA-ALD") matching "MotifRequis"
+        assert OpLicences.declarer(1800000000000, "ORG-OPA-ALD", "LIC-1", 1700000000000, 1900000000000, "administrateur_operateur.a@ORG-OPA-ALD") == "declaree"
+        // Seule l'autorité de l'État de la licence répond.
+        assert_fails OpLicences.repondre_etat(1800000000000, "ORG-OPA-ALD", "confirmee", "autorite.a@ORG-ETAT-BRV") matching "Habilitation"
+        assert_fails OpLicences.repondre_etat(1800000000000, "ORG-OPA-ALD", "confirmee", "point_focal.p@ORG-ETAT-ALD") matching "Habilitation"
+        assert OpLicences.repondre_etat(1800000000000, "ORG-OPA-ALD", "confirmee", "autorite.a@ORG-ETAT-ALD") == "en_vigueur"
+        assert OpLicences.valide_a("ORG-OPA-ALD", 1800000000000) == true
+        assert OpLicences.valide_a("ORG-OPA-ALD", 1900000000000) == false
+        assert_fails OpLicences.declarer(1800000000000, "ORG-OPA-ALD", "LIC-2", 1700000000000, 1900000000000, "administrateur_operateur.a@ORG-OPA-ALD") matching "EtatInvalide"
+        assert OpLicences.suspendre_par_etat(1800000000000, "ORG-OPA-ALD", "contrôle", "autorite.a@ORG-ETAT-ALD") == "suspendue"
+        assert OpLicences.valide_a("ORG-OPA-ALD", 1800000000000) == false
+        assert OpLicences.lever_suspension(1800000000000, "ORG-OPA-ALD", "autorite.a@ORG-ETAT-ALD") == "en_vigueur"
+        assert len(OpLicences.a_renouveler(1895000000000, 10)) == 1
+        assert len(OpLicences.a_renouveler(1890000000000, 10)) == 0
+        assert OpLicences.echoir(1850000000000, 100, "systeme") == 0
+        assert_fails OpLicences.echoir(1900000000000, 100, "intrus.z") matching "Habilitation"
+        assert OpLicences.echoir(1900000000000, 100, "systeme") == 1
+        assert OpLicences.etat("ORG-OPA-ALD") == "expiree"
+        assert OpLicences.declarer(1900000000000, "ORG-OPA-ALD", "LIC-2", 1900000000000, 2000000000000, "administrateur_operateur.a@ORG-OPA-ALD") == "declaree"
+        // Silence de l'État au-delà de 30 jours : refusée, et répondre est trop tard.
+        assert_fails OpLicences.repondre_etat(1900000000000 + 31 * 86400000, "ORG-OPA-ALD", "confirmee", "autorite.a@ORG-ETAT-ALD") matching "Delai"
+        assert OpLicences.echoir(1900000000000 + 31 * 86400000, 100, "systeme") == 1
+        assert OpLicences.etat("ORG-OPA-ALD") == "refusee"
+        assert len(OpLicences.historique_de("ORG-OPA-ALD", 100)) == 7
+    }
+}
+
+cell test LicenceRetrait {
+    rules {
+        let _ = Monde.activer("ORG-OPA-ALD")
+        assert OpMembres.est_actif("ORG-OPA-ALD", 1800000200000) == true
+        assert_fails OpLicences.retirer_par_etat(1800000200000, "ORG-OPA-ALD", "", "autorite.a@ORG-ETAT-ALD") matching "MotifRequis"
+        assert OpLicences.retirer_par_etat(1800000200000, "ORG-OPA-ALD", "fraude", "autorite.a@ORG-ETAT-ALD") == "retiree"
+        assert OpMembres.etat("ORG-OPA-ALD") == "suspendu"
+        assert ApiOperateurs.est_actif("ORG-OPA-ALD", 1800000200000) == false
+        // Retirée est terminal ; un rétablissement exige une licence valide.
+        assert_fails OpLicences.declarer(1800000200000, "ORG-OPA-ALD", "LIC-3", 1800000000000, 1900000000000, "administrateur_operateur.a@ORG-OPA-ALD") matching "EtatInvalide"
+        assert_fails OpMembres.retablir(1800000300000, "ORG-OPA-ALD", "conformite.c@ORG-ORBITE", "direction.d@ORG-ORBITE") matching "Insuffisant"
+    }
+}
+
+// ── Engagements : bornes, cohérence, acceptation, révision, délais par défaut.
+cell test Engagements {
+    rules {
+        let _ = Monde.admettre("ORG-OPA-ALD")
+        assert ApiOperateurs.delai_reponse("ORG-OPA-ALD", 3) == 3600000
+        assert OpEngagements.etat("ORG-OPA-ALD") == "aucun"
+        assert_fails OpEngagements.proposer(1800000000000, "ORG-OPA-ALD", 86400000, 7200000, 100000, "administrateur_operateur.a@ORG-OPA-ALD") matching "HorsBornes"
+        assert_fails OpEngagements.proposer(1800000000000, "ORG-OPA-ALD", 86400000, 7200000, 3600001, "administrateur_operateur.a@ORG-OPA-ALD") matching "HorsBornes"
+        assert_fails OpEngagements.proposer(1800000000000, "ORG-OPA-ALD", 86400000, 1800000, 3000000, "administrateur_operateur.a@ORG-OPA-ALD") matching "Incoherent"
+        assert_fails OpEngagements.proposer(1800000000000, "ORG-OPA-ALD", 86400000, 7200000, 1800000, "dynamicien.d1@ORG-OPA-ALD") matching "Habilitation"
+        assert_fails OpEngagements.proposer(1800000000000, "ORG-INCONNU-ALD", 86400000, 7200000, 1800000, "administrateur_operateur.a@ORG-INCONNU-ALD") matching "Inconnu"
+        assert OpEngagements.proposer(1800000000000, "ORG-OPA-ALD", 86400000, 7200000, 1800000, "administrateur_operateur.a@ORG-OPA-ALD") == "propose"
+        assert OpEngagements.etat("ORG-OPA-ALD") == "propose"
+        assert_fails OpEngagements.accepter(1800000000000, "ORG-OPA-ALD", "analyste.a@ORG-ORBITE") matching "Habilitation"
+        assert OpEngagements.accepter(1800000000000, "ORG-OPA-ALD", "superviseur.s@ORG-ORBITE") == "en_vigueur"
+        assert OpEngagements.delai("ORG-OPA-ALD", 2) == 7200000
+        // Révision à la baisse de tous les niveaux : l'ordre d'écriture garde n3 ≤ n2 ≤ n1.
+        assert OpEngagements.proposer(1800000000000, "ORG-OPA-ALD", 3600000, 1200000, 600000, "chef_de_mission.c@ORG-OPA-ALD") == "propose"
+        assert OpEngagements.conditions("ORG-OPA-ALD") != ""
+        assert OpEngagements.accepter(1800000001000, "ORG-OPA-ALD", "superviseur.s@ORG-ORBITE") == "en_vigueur"
+        assert OpEngagements.delai("ORG-OPA-ALD", 1) == 3600000
+        assert OpEngagements.delai("ORG-OPA-ALD", 3) == 600000
+        // Révision à la hausse, puis écartée.
+        assert OpEngagements.proposer(1800000000000, "ORG-OPA-ALD", 200000000, 40000000, 3000000, "chef_de_mission.c@ORG-OPA-ALD") == "propose"
+        assert_fails OpEngagements.ecarter(1800000000000, "ORG-OPA-ALD", "", "superviseur.s@ORG-ORBITE") matching "MotifRequis"
+        assert OpEngagements.ecarter(1800000000000, "ORG-OPA-ALD", "trop lent", "superviseur.s@ORG-ORBITE") == "en_vigueur"
+        assert_fails OpEngagements.accepter(1800000000000, "ORG-OPA-ALD", "superviseur.s@ORG-ORBITE") matching "Inconnu"
+        assert OpEngagements.proposer(1800000000000, "ORG-OPA-ALD", 200000000, 40000000, 3000000, "chef_de_mission.c@ORG-OPA-ALD") == "propose"
+        assert OpEngagements.accepter(1800000002000, "ORG-OPA-ALD", "superviseur.s@ORG-ORBITE") == "en_vigueur"
+        assert OpEngagements.delai("ORG-OPA-ALD", 1) == 200000000
+        assert OpEngagements.resilier(1800000003000, "ORG-OPA-ALD") == "resilie"
+        assert OpEngagements.delai("ORG-OPA-ALD", 1) == 259200000
+        assert_fails OpEngagements.proposer(1800000000000, "ORG-OPA-ALD", 86400000, 7200000, 1800000, "administrateur_operateur.a@ORG-OPA-ALD") matching "Ferme"
+    }
+}
+
+// ── Astreinte : planification, conflit, prise de service, relève, interruption, manque.
+cell test Astreinte {
+    rules {
+        let _ = Monde.admettre("ORG-OPA-ALD")
+        let _ = OpEngagements.proposer(1800000000000, "ORG-OPA-ALD", 86400000, 7200000, 1800000, "administrateur_operateur.a@ORG-OPA-ALD")
+        assert_fails OpAstreinte.planifier(1800000000000, "ORG-OPA-ALD", "dynamicien.d1@ORG-OPA-ALD", 1800000000000, 1800036000000, "dynamicien.d1@ORG-OPA-ALD") matching "Habilitation"
+        assert_fails OpAstreinte.planifier(1800000000000, "ORG-OPA-ALD", "chef_de_mission.c@ORG-OPA-ALD", 1800000000000, 1800036000000, "chef_de_mission.c@ORG-OPA-ALD") matching "NonEligible"
+        assert_fails OpAstreinte.planifier(1800000000000, "ORG-OPA-ALD", "dynamicien.d1@ORG-OPB-ALD", 1800000000000, 1800036000000, "chef_de_mission.c@ORG-OPA-ALD") matching "NonEligible"
+        assert_fails OpAstreinte.planifier(1800000000000, "ORG-OPA-ALD", "dynamicien.d1@ORG-OPA-ALD", 1800000000000, 1800001000000, "chef_de_mission.c@ORG-OPA-ALD") matching "HorsBornes"
+        assert_fails OpAstreinte.planifier(1800000000000, "ORG-OPB-ALD", "dynamicien.d1@ORG-OPB-ALD", 1800000000000, 1800036000000, "chef_de_mission.c@ORG-OPB-ALD") matching "Inconnu"
+        let s1 = OpAstreinte.planifier(1800000000000, "ORG-OPA-ALD", "dynamicien.d1@ORG-OPA-ALD", 1800000000000, 1800036000000, "chef_de_mission.c@ORG-OPA-ALD")
+        assert_fails OpAstreinte.planifier(1800000000000, "ORG-OPA-ALD", "dynamicien.d1@ORG-OPA-ALD", 1800030000000, 1800072000000, "chef_de_mission.c@ORG-OPA-ALD") matching "Conflit"
+        let s2 = OpAstreinte.planifier(1800000000000, "ORG-OPA-ALD", "dynamicien.d2@ORG-OPA-ALD", 1800036000000, 1800072000000, "chef_de_mission.c@ORG-OPA-ALD")
+        assert OpAstreinte.trous("ORG-OPA-ALD", 1800000000000, 72000000) == []
+        assert OpAstreinte.trous("ORG-OPA-ALD", 1800000000000, 80000000) == ["1800072000000-1800080000000"]
+        assert len(OpAstreinte.planning("ORG-OPA-ALD", 1800000000000, 86400000)) == 2
+        // Engagements non en vigueur : pas de prise de service.
+        assert_fails OpAstreinte.prendre_service(1800000000000, s1, "dynamicien.d1@ORG-OPA-ALD") matching "EtatInvalide"
+        let _ = OpEngagements.accepter(1800000000000, "ORG-OPA-ALD", "superviseur.s@ORG-ORBITE")
+        assert_fails OpAstreinte.prendre_service(1800000000000, s1, "dynamicien.d2@ORG-OPA-ALD") matching "Habilitation"
+        assert_fails OpAstreinte.prendre_service(1800000000000 + 3600000, s1, "dynamicien.d1@ORG-OPA-ALD") matching "Delai"
+        assert ApiOperateurs.astreinte("ORG-OPA-ALD", 1800000000000) == ""
+        assert OpAstreinte.prendre_service(1800000000000, s1, "dynamicien.d1@ORG-OPA-ALD") == "en_service"
+        assert ApiOperateurs.astreinte("ORG-OPA-ALD", 1800000001000) == "dynamicien.d1@ORG-OPA-ALD"
+        // Relève : d2 prend son service, s1 est terminé.
+        assert OpAstreinte.prendre_service(1800036000000, s2, "dynamicien.d2@ORG-OPA-ALD") == "en_service"
+        assert ApiOperateurs.astreinte("ORG-OPA-ALD", 1800036001000) == "dynamicien.d2@ORG-OPA-ALD"
+        assert len(OpAstreinte.planning("ORG-OPA-ALD", 1800036001000, 86400000)) == 1
+        // Interruption : plus personne, escalade immédiate.
+        assert_fails OpAstreinte.interrompre(1800040000000, s2, "indisponible", "dynamicien.d1@ORG-OPA-ALD") matching "Habilitation"
+        assert OpAstreinte.interrompre(1800040000000, s2, "indisponible", "dynamicien.d2@ORG-OPA-ALD") == "interrompu"
+        assert ApiOperateurs.astreinte("ORG-OPA-ALD", 1800040001000) == ""
+        assert_fails OpAstreinte.interrompre(1800040000000, s2, "indisponible", "dynamicien.d2@ORG-OPA-ALD") matching "EtatInvalide"
+        // Un créneau jamais pris devient un manque au balayage ; un créneau futur s'annule.
+        let s3 = OpAstreinte.planifier(1800040000000, "ORG-OPA-ALD", "dynamicien.d1@ORG-OPA-ALD", 1800050000000, 1800090000000, "chef_de_mission.c@ORG-OPA-ALD")
+        let s4 = OpAstreinte.planifier(1800040000000, "ORG-OPA-ALD", "dynamicien.d2@ORG-OPA-ALD", 1800090000000, 1800130000000, "administrateur_operateur.a@ORG-OPA-ALD")
+        assert OpAstreinte.annuler(1800040000000, s4, "dynamicien.d2@ORG-OPA-ALD") == "annule"
+        assert_fails OpAstreinte.annuler(1800060000000, s3, "chef_de_mission.c@ORG-OPA-ALD") matching "Delai"
+        assert_fails OpAstreinte.balayer(1800060000000, 100, "dynamicien.d1@ORG-OPA-ALD") matching "Habilitation"
+        assert OpAstreinte.balayer(1800060000000, 100, "systeme") == 1
+        assert_fails OpAstreinte.prendre_service(1800050000000, s3, "dynamicien.d1@ORG-OPA-ALD") matching "EtatInvalide"
+    }
+}
+
+// ── Exercices : planifié → lancé → réussi ; échecs répétés → suspension automatique.
+cell test Exercices {
+    rules {
+        let _ = Monde.activer("ORG-OPA-ALD")
+        assert ApiOperateurs.joignable("ORG-OPA-ALD", 1800000200000) == true
+        assert OpExercices.bilan("ORG-OPA-ALD") == "1 | 0 | 60000"
+        assert_fails OpExercices.planifier(1800000200000, "ORG-OPA-ALD", 1800000100000, "analyste.a@ORG-ORBITE") matching "HorsBornes"
+        assert_fails OpExercices.planifier(1800000200000, "ORG-OPA-ALD", 1800000300000, "dynamicien.d1@ORG-OPA-ALD") matching "Habilitation"
+        let ex = OpExercices.planifier(1800000200000, "ORG-OPA-ALD", 1800000300000, "systeme")
+        assert_fails OpExercices.planifier(1800000200000, "ORG-OPA-ALD", 1800000300000, "systeme") matching "Doublon"
+        assert_fails OpExercices.lancer(1800000200000, ex, "systeme") matching "Delai"
+        assert OpExercices.dus(1800000300000, 10) == [ex]
+        assert OpExercices.lancer(1800000300000, ex, "systeme") == "lance"
+        // Un autre employé que la personne en service ne compte pas.
+        assert_fails OpExercices.accuser(1800000310000, ex, "chef_de_mission.c@ORG-OPA-ALD") matching "Habilitation"
+        assert_fails OpExercices.accuser(1800000300000 + 1800001, ex, "dynamicien.d1@ORG-OPA-ALD") matching "Delai"
+        assert OpExercices.echoir(1800000300000 + 1800001, 100, "systeme") == 1
+        assert OpExercices.bilan("ORG-OPA-ALD") == "1 | 1 | 60000"
+        // Deux autres échecs : le troisième suspend l'opérateur actif.
+        let ex2 = OpExercices.planifier(1800002200000, "ORG-OPA-ALD", 1800002200000, "systeme")
+        let _ = OpExercices.lancer(1800002200000, ex2, "analyste.a@ORG-ORBITE")
+        assert OpExercices.echoir(1800004100000, 100, "exploitant.x@ORG-ORBITE") == 1
+        assert OpMembres.etat("ORG-OPA-ALD") == "actif"
+        let ex3 = OpExercices.planifier(1800004200000, "ORG-OPA-ALD", 1800004200000, "systeme")
+        let _ = OpExercices.lancer(1800004200000, ex3, "systeme")
+        assert OpExercices.echoir(1800006100000, 100, "systeme") == 1
+        assert OpMembres.etat("ORG-OPA-ALD") == "suspendu"
+        // Planifié puis annulé.
+        let ex4 = OpExercices.planifier(1800006200000, "ORG-OPA-ALD", 1800009000000, "systeme")
+        assert_fails OpExercices.annuler(1800006200000, ex4, "incident réel", "analyste.a@ORG-ORBITE") matching "Habilitation"
+        assert OpExercices.annuler(1800006200000, ex4, "incident réel", "superviseur.s@ORG-ORBITE") == "annule"
+        // Validité de 31 jours.
+        assert OpExercices.joignable("ORG-OPA-ALD", 1800000200000 + 32 * 86400000) == false
+    }
+}
+
+// Message d'exercice jamais acquitté à la passerelle : l'accusé est refusé.
+cell test ExerciceNonAcquitte {
+    rules {
+        let _ = Monde.admettre("ORG-MUET-ALD")
+        let _ = OpEngagements.proposer(1800000000000, "ORG-MUET-ALD", 86400000, 7200000, 1800000, "administrateur_operateur.a@ORG-MUET-ALD")
+        let _ = OpEngagements.accepter(1800000000000, "ORG-MUET-ALD", "superviseur.s@ORG-ORBITE")
+        let s1 = OpAstreinte.planifier(1800000000000, "ORG-MUET-ALD", "dynamicien.d1@ORG-MUET-ALD", 1800000000000, 1800036000000, "chef_de_mission.c@ORG-MUET-ALD")
+        let _ = OpAstreinte.prendre_service(1800000000000, s1, "dynamicien.d1@ORG-MUET-ALD")
+        let ex = OpExercices.planifier(1800000000000, "ORG-MUET-ALD", 1800000000000, "systeme")
+        let _ = OpExercices.lancer(1800000000000, ex, "systeme")
+        assert_fails OpExercices.accuser(1800000010000, ex, "dynamicien.d1@ORG-MUET-ALD") matching "EtatInvalide"
+        assert OpExercices.joignable("ORG-MUET-ALD", 1800000010000) == false
+    }
+}
+
+// ── Statut d'adhésion : activation, suspension, rétablissement, exclusion, retrait.
+cell test MembresActivation {
+    rules {
+        let _ = Monde.preparer("ORG-OPA-ALD")
+        assert ApiOperateurs.est_actif("ORG-OPA-ALD", 1800000120000) == false
+        assert_fails OpMembres.activer(1800000120000, "ORG-OPA-ALD", "analyste.a@ORG-ORBITE") matching "Habilitation"
+        assert_fails OpMembres.activer(1800000120000, "ORG-INCONNU-ALD", "superviseur.s@ORG-ORBITE") matching "Inconnu"
+        assert_fails OpMembres.activer(1800000120000, "ORG-OPB-ALD", "superviseur.s@ORG-ORBITE") matching "EtatInvalide"
+        // Couverture de 7 jours exigée : à J+2 le planning ne couvre plus que jusqu'à J+8.
+        assert_fails OpMembres.activer(1800000000000 + 2 * 86400000, "ORG-OPA-ALD", "superviseur.s@ORG-ORBITE") matching "Insuffisant"
+        assert OpMembres.activer(1800000120000, "ORG-OPA-ALD", "superviseur.s@ORG-ORBITE") == "actif"
+        assert ApiOperateurs.est_actif("ORG-OPA-ALD", 1800000120000) == true
+        assert ApiOperateurs.actifs(1800000120000) == ["ORG-OPA-ALD"]
+        assert OpMembres.repondant("ORG-OPA-ALD", 1800000120000) == "ORG-OPA-ALD"
+        assert_fails OpMembres.activer(1800000120000, "ORG-OPA-ALD", "superviseur.s@ORG-ORBITE") matching "EtatInvalide"
+        // Licence échue : inactif sans aucun balayage.
+        assert ApiOperateurs.est_actif("ORG-OPA-ALD", 1800000000000 + 366 * 86400000) == false
+    }
+}
+
+cell test MembresSuspension {
+    rules {
+        let _ = Monde.activer("ORG-OPA-ALD")
+        assert_fails ApiOperateurs.suspendre(1800000200000, "ORG-OPA-ALD", "motif", "analyste.a@ORG-ORBITE", "direction.d@ORG-ORBITE") matching "Habilitation"
+        assert_fails ApiOperateurs.suspendre(1800000200000, "ORG-OPA-ALD", "motif", "autorite.a@ORG-ETAT-BRV", "direction.d@ORG-ORBITE") matching "Habilitation"
+        assert_fails ApiOperateurs.suspendre(1800000200000, "ORG-OPA-ALD", "motif", "conformite.c@ORG-ORBITE", "superviseur.s@ORG-ORBITE") matching "QuatreYeux"
+        assert_fails ApiOperateurs.suspendre(1800000200000, "ORG-OPA-ALD", "motif", "direction.d@ORG-ORBITE", "direction.d@ORG-ORBITE") matching "Habilitation"
+        assert_fails ApiOperateurs.suspendre(1800000200000, "ORG-OPA-ALD", "", "conformite.c@ORG-ORBITE", "direction.d@ORG-ORBITE") matching "MotifRequis"
+        // Suspension par l'État de tutelle : seule l'État la lève.
+        assert ApiOperateurs.suspendre(1800000200000, "ORG-OPA-ALD", "enquête nationale", "autorite.a@ORG-ETAT-ALD", "direction.d@ORG-ORBITE") == "suspendu"
+        assert ApiOperateurs.est_actif("ORG-OPA-ALD", 1800000200000) == false
+        assert_fails ApiOperateurs.suspendre(1800000200000, "ORG-OPA-ALD", "bis", "conformite.c@ORG-ORBITE", "direction.d@ORG-ORBITE") matching "EtatInvalide"
+        assert_fails ApiOperateurs.retablir(1800000300000, "ORG-OPA-ALD", "conformite.c@ORG-ORBITE", "direction.d@ORG-ORBITE") matching "Habilitation"
+        assert_fails ApiOperateurs.retablir(1800000300000, "ORG-OPA-ALD", "point_focal.p@ORG-ETAT-ALD", "point_focal.p@ORG-ETAT-ALD") matching "QuatreYeux"
+        assert ApiOperateurs.retablir(1800000300000, "ORG-OPA-ALD", "point_focal.p@ORG-ETAT-ALD", "direction.d@ORG-ORBITE") == "actif"
+        // Suspension de conformité, longue, puis exclusion.
+        assert ApiOperateurs.suspendre(1800000400000, "ORG-OPA-ALD", "manœuvre non annoncée", "conformite.c@ORG-ORBITE", "direction.d@ORG-ORBITE") == "suspendu"
+        assert len(OpMembres.suspensions_longues(1800000400000 + 181 * 86400000, 10)) == 1
+        assert_fails OpMembres.exclure(1800000500000, "ORG-OPA-ALD", "récidive", "conformite.c@ORG-ORBITE", "conformite.c@ORG-ORBITE") matching "QuatreYeux"
+        assert OpMembres.exclure(1800000500000, "ORG-OPA-ALD", "récidive", "conformite.c@ORG-ORBITE", "direction.d@ORG-ORBITE") == "exclu"
+        assert OpEngagements.etat("ORG-OPA-ALD") == "resilie"
+        assert OpMembres.repondant("ORG-OPA-ALD", 1800000500000) == "ORG-ETAT-ALD"
+        assert len(OpMembres.historique_de("ORG-OPA-ALD", 2)) == 2
+        assert len(OpMembres.historique_de("ORG-OPA-ALD", 100)) == 6
+        assert OpMembres.sous_tutelle("ALD", 10) == ["ORG-OPA-ALD | exclu"]
+        // Exclu : terminal, pas de recandidature sous le même identifiant.
+        assert_fails OpDossiers.deposer(1800000600000, "ORG-OPA-ALD", "statuts", "administrateur_operateur.a@ORG-OPA-ALD") matching "Ferme"
+        assert_fails OpMembres.retirer(1800000600000, "ORG-OPA-ALD", "fin", "administrateur_operateur.a@ORG-OPA-ALD", "chef_de_mission.c@ORG-OPA-ALD") matching "EtatInvalide"
+    }
+}
+
+cell test MembresRetrait {
+    rules {
+        let _ = Monde.activer("ORG-OPA-ALD")
+        let _ = Monde.activer("ORG-SATS-ALD")
+        assert_fails OpMembres.retirer(1800000200000, "ORG-OPA-ALD", "fin d'activité", "administrateur_operateur.a@ORG-OPA-ALD", "administrateur_operateur.a@ORG-OPA-ALD") matching "QuatreYeux"
+        assert_fails OpMembres.retirer(1800000200000, "ORG-OPA-ALD", "fin d'activité", "administrateur_operateur.a@ORG-OPA-ALD", "chef_de_mission.c@ORG-OPB-ALD") matching "QuatreYeux"
+        assert_fails OpMembres.retirer(1800000200000, "ORG-OPA-ALD", "fin d'activité", "chef_de_mission.c@ORG-OPA-ALD", "administrateur_operateur.a@ORG-OPA-ALD") matching "Habilitation"
+        assert_fails OpMembres.retirer(1800000200000, "ORG-SATS-ALD", "fin d'activité", "administrateur_operateur.a@ORG-SATS-ALD", "chef_de_mission.c@ORG-SATS-ALD") matching "Insuffisant"
+        assert OpMembres.retirer(1800000200000, "ORG-OPA-ALD", "fin d'activité", "administrateur_operateur.a@ORG-OPA-ALD", "chef_de_mission.c@ORG-OPA-ALD") == "retire"
+        assert OpEngagements.etat("ORG-OPA-ALD") == "resilie"
+        assert_fails OpMembres.retirer(1800000200000, "ORG-OPB-ALD", "x", "administrateur_operateur.a@ORG-OPB-ALD", "chef_de_mission.c@ORG-OPB-ALD") matching "Inconnu"
+        assert ApiOperateurs.actifs(1800000200000) == ["ORG-SATS-ALD"]
+    }
+}
+
+// ── Changement de contrôle : déclaré → en examen → avis → approuvé → effectif (tutelle et licence).
+cell test ChangementNominal {
+    rules {
+        let id = Monde.changement_en_examen("ORG-OPA-ALD")
+        assert OpChangements.en_cours("ORG-OPA-ALD") == id
+        assert_fails OpChangements.aviser(1800000400000, id, "favorable", "", "point_focal.p@ORG-ETAT-ALD") matching "Habilitation"
+        assert_fails OpChangements.aviser(1800000400000, id, "favorable", "", "autorite.a@ORG-ETAT-CAZ") matching "Habilitation"
+        assert OpChangements.aviser(1800000400000, id, "favorable", "", "autorite.a@ORG-ETAT-ALD") == "en_examen"
+        assert_fails OpChangements.aviser(1800000400000, id, "favorable", "", "autorite.b@ORG-ETAT-ALD") matching "Doublon"
+        assert_fails OpChangements.approuver(1800000400000, id, "analyste.a@ORG-ORBITE", "superviseur.s@ORG-ORBITE") matching "Insuffisant"
+        assert OpChangements.aviser(1800000400000, id, "favorable", "", "autorite.a@ORG-ETAT-BRV") == "en_examen"
+        assert_fails OpChangements.approuver(1800000400000, id, "analyste.a@ORG-ORBITE", "analyste.b@ORG-ORBITE") matching "QuatreYeux"
+        assert OpChangements.approuver(1800000400000, id, "analyste.a@ORG-ORBITE", "superviseur.s@ORG-ORBITE") == "approuve"
+        assert_fails OpChangements.rendre_effectif(1800000400000, id, "superviseur.s@ORG-ORBITE", "direction.d@ORG-ORBITE") matching "Delai"
+        assert_fails OpChangements.rendre_effectif(1800000300000 + 40 * 86400000, id, "superviseur.s@ORG-ORBITE", "superviseur.s@ORG-ORBITE") matching "QuatreYeux"
+        assert OpChangements.rendre_effectif(1800000300000 + 40 * 86400000, id, "superviseur.s@ORG-ORBITE", "direction.d@ORG-ORBITE") == "effectif"
+        assert OpChangements.en_cours("ORG-OPA-ALD") == ""
+        // La licence repasse « declaree » sous l'État d'accueil : inactif jusqu'à sa confirmation.
+        assert OpLicences.etat("ORG-OPA-ALD") == "declaree"
+        assert ApiOperateurs.est_actif("ORG-OPA-ALD", 1800000300000 + 40 * 86400000) == false
+        assert_fails OpLicences.repondre_etat(1800000300000 + 40 * 86400000, "ORG-OPA-ALD", "confirmee", "autorite.a@ORG-ETAT-ALD") matching "Habilitation"
+        assert OpLicences.repondre_etat(1800000300000 + 40 * 86400000, "ORG-OPA-ALD", "confirmee", "autorite.a@ORG-ETAT-BRV") == "en_vigueur"
+        assert ApiOperateurs.est_actif("ORG-OPA-ALD", 1800000300000 + 40 * 86400000) == true
+    }
+}
+
+cell test ChangementRefus {
+    rules {
+        let _ = Monde.activer("ORG-OPA-ALD")
+        assert_fails OpChangements.declarer(1800000300000, "ORG-OPA-ALD", "Acq", "BRV", "LIC", 1900000000000, 1800000300000 + 10 * 86400000, "administrateur_operateur.a@ORG-OPA-ALD", "chef_de_mission.c@ORG-OPA-ALD") matching "Delai"
+        assert_fails OpChangements.declarer(1800000300000, "ORG-OPA-ALD", "Acq", "XNP", "LIC", 1900000000000, 1800000300000 + 40 * 86400000, "administrateur_operateur.a@ORG-OPA-ALD", "chef_de_mission.c@ORG-OPA-ALD") matching "NonEligible"
+        assert_fails OpChangements.declarer(1800000300000, "ORG-OPA-ALD", "Acq", "BRV", "", 1900000000000, 1800000300000 + 40 * 86400000, "administrateur_operateur.a@ORG-OPA-ALD", "chef_de_mission.c@ORG-OPA-ALD") matching "MotifRequis"
+        assert_fails OpChangements.declarer(1800000300000, "ORG-OPA-ALD", "Acq", "BRV", "LIC", 1900000000000, 1800000300000 + 40 * 86400000, "administrateur_operateur.a@ORG-OPA-ALD", "administrateur_operateur.a@ORG-OPA-ALD") matching "QuatreYeux"
+        assert_fails OpChangements.declarer(1800000300000, "ORG-OPA-ALD", "Acq", "BRV", "LIC", 1900000000000, 1800000300000 + 40 * 86400000, "chef_de_mission.c@ORG-OPA-ALD", "chef_de_mission.c2@ORG-OPA-ALD") matching "Habilitation"
+        // Même État : pas de licence d'accueil exigée ; avis unique ; un avis défavorable refuse.
+        let id = OpChangements.declarer(1800000300000, "ORG-OPA-ALD", "Acq national", "ALD", "", 1800000000000, 1800000300000 + 40 * 86400000, "administrateur_operateur.a@ORG-OPA-ALD", "chef_de_mission.c@ORG-OPA-ALD")
+        assert_fails OpChangements.declarer(1800000300000, "ORG-OPA-ALD", "Acq", "ALD", "", 1800000000000, 1800000300000 + 40 * 86400000, "administrateur_operateur.a@ORG-OPA-ALD", "chef_de_mission.c@ORG-OPA-ALD") matching "Doublon"
+        assert_fails OpChangements.aviser(1800000400000, id, "defavorable", "x", "autorite.a@ORG-ETAT-ALD") matching "EtatInvalide"
+        let _ = OpChangements.examiner(1800000300000, id, "analyste.a@ORG-ORBITE")
+        assert_fails OpChangements.aviser(1800000400000, id, "defavorable", "", "autorite.a@ORG-ETAT-ALD") matching "MotifRequis"
+        assert OpChangements.aviser(1800000400000, id, "defavorable", "acquéreur sous sanctions", "autorite.a@ORG-ETAT-ALD") == "refuse"
+        assert OpChangements.en_cours("ORG-OPA-ALD") == ""
+        // Retrait par l'opérateur, puis caducité d'un changement approuvé jamais réalisé.
+        let id2 = OpChangements.declarer(1800000500000, "ORG-OPA-ALD", "Acq 2", "ALD", "", 1800000000000, 1800000500000 + 40 * 86400000, "administrateur_operateur.a@ORG-OPA-ALD", "chef_de_mission.c@ORG-OPA-ALD")
+        assert_fails OpChangements.retirer(1800000500000, id2, "chef_de_mission.c@ORG-OPA-ALD") matching "Habilitation"
+        assert OpChangements.retirer(1800000500000, id2, "administrateur_operateur.a@ORG-OPA-ALD") == "retire"
+        let id3 = OpChangements.declarer(1800000600000, "ORG-OPA-ALD", "Acq 3", "ALD", "", 1800000000000, 1800000600000 + 40 * 86400000, "administrateur_operateur.a@ORG-OPA-ALD", "chef_de_mission.c@ORG-OPA-ALD")
+        let _ = OpChangements.examiner(1800000600000, id3, "analyste.a@ORG-ORBITE")
+        let _ = OpChangements.aviser(1800000600000, id3, "favorable", "", "autorite.a@ORG-ETAT-ALD")
+        assert OpChangements.approuver(1800000600000, id3, "analyste.a@ORG-ORBITE", "superviseur.s@ORG-ORBITE") == "approuve"
+        assert OpChangements.rendre_caducs(1800000600000 + 100 * 86400000, 10, "systeme") == 0
+        assert OpChangements.rendre_caducs(1800000600000 + 131 * 86400000, 10, "systeme") == 1
+        assert OpChangements.en_cours("ORG-OPA-ALD") == ""
+        assert_fails OpChangements.rendre_effectif(1800000600000 + 131 * 86400000, id3, "superviseur.s@ORG-ORBITE", "direction.d@ORG-ORBITE") matching "EtatInvalide"
+    }
+}
+
+// ── Contacts : déclaration, confirmation, chaîne, échelons, reconfirmation, retrait.
+cell test Contacts {
+    rules {
+        let _ = Monde.activer("ORG-OPA-ALD")
+        assert_fails OpContacts.declarer(1800000200000, "ORG-OPA-ALD", "dynamicien.d1@ORG-OPA-ALD", "chef_de_mission", 1, "TEL", "administrateur_operateur.a@ORG-OPA-ALD") matching "NonEligible"
+        assert_fails OpContacts.declarer(1800000200000, "ORG-OPA-ALD", "chef_de_mission.c@ORG-OPB-ALD", "chef_de_mission", 1, "TEL", "administrateur_operateur.a@ORG-OPA-ALD") matching "NonEligible"
+        assert_fails OpContacts.declarer(1800000200000, "ORG-OPA-ALD", "chef_de_mission.c@ORG-OPA-ALD", "chef_de_mission", 1, "TEL", "administrateur_operateur.a@ORG-OPA-ALD") matching "Doublon"
+        assert_fails OpContacts.declarer(1800000200000, "ORG-OPA-ALD", "chef_de_mission.c2@ORG-OPA-ALD", "chef_de_mission", 51, "TEL", "administrateur_operateur.a@ORG-OPA-ALD") matching "HorsBornes"
+        assert_fails OpContacts.declarer(1800000200000, "ORG-OPA-ALD", "chef_de_mission.c2@ORG-OPA-ALD", "chef_de_mission", 2, "", "administrateur_operateur.a@ORG-OPA-ALD") matching "MotifRequis"
+        assert_fails OpContacts.declarer(1800000200000, "ORG-OPA-ALD", "chef_de_mission.c2@ORG-OPA-ALD", "chef_de_mission", 2, "TEL", "chef_de_mission.c@ORG-OPA-ALD") matching "Habilitation"
+        let c2 = OpContacts.declarer(1800000200000, "ORG-OPA-ALD", "chef_de_mission.c2@ORG-OPA-ALD", "chef_de_mission", 2, "TEL-2", "administrateur_operateur.a@ORG-OPA-ALD")
+        let sp = OpContacts.declarer(1800000200000, "ORG-OPA-ALD", "dynamicien.d2@ORG-OPA-ALD", "suppleant", 1, "TEL-3", "administrateur_operateur.a@ORG-OPA-ALD")
+        assert_fails OpContacts.confirmer(1800000200000, c2, "chef_de_mission.c@ORG-OPA-ALD") matching "Habilitation"
+        assert OpContacts.confirmer(1800000200000, c2, "chef_de_mission.c2@ORG-OPA-ALD") == "confirme"
+        assert_fails OpContacts.confirmer(1800000200000, c2, "chef_de_mission.c2@ORG-OPA-ALD") matching "EtatInvalide"
+        assert OpContacts.confirmer(1800000200000, sp, "dynamicien.d2@ORG-OPA-ALD") == "confirme"
+        assert OpContacts.chaine("ORG-OPA-ALD", "chef_de_mission", 1800000200000) == ["chef_de_mission.c@ORG-OPA-ALD | TEL-CHIFFRE-1", "chef_de_mission.c2@ORG-OPA-ALD | TEL-2"]
+        // Point focal de l'État : déclaré par l'autorité, échelon 3.
+        assert_fails OpContacts.declarer(1800000200000, "ORG-ETAT-ALD", "point_focal.p@ORG-ETAT-ALD", "point_focal", 1, "TEL-PF", "administrateur_operateur.a@ORG-OPA-ALD") matching "Habilitation"
+        assert_fails OpContacts.declarer(1800000200000, "ORG-OPA-ALD", "point_focal.p@ORG-OPA-ALD", "point_focal", 1, "TEL-PF", "autorite.a@ORG-OPA-ALD") matching "NonEligible"
+        let pf = OpContacts.declarer(1800000200000, "ORG-ETAT-ALD", "point_focal.p@ORG-ETAT-ALD", "point_focal", 1, "TEL-PF", "autorite.a@ORG-ETAT-ALD")
+        let _ = OpContacts.confirmer(1800000200000, pf, "point_focal.p@ORG-ETAT-ALD")
+        assert ApiOperateurs.contacts("ORG-OPA-ALD", 1, 1800000200000) == ["dynamicien.d1@ORG-OPA-ALD"]
+        assert ApiOperateurs.contacts("ORG-OPA-ALD", 2, 1800000200000) == ["chef_de_mission.c@ORG-OPA-ALD", "chef_de_mission.c2@ORG-OPA-ALD", "dynamicien.d2@ORG-OPA-ALD"]
+        assert ApiOperateurs.contacts("ORG-OPA-ALD", 3, 1800000200000) == ["point_focal.p@ORG-ETAT-ALD"]
+        assert_fails ApiOperateurs.contacts("ORG-OPA-ALD", 4, 1800000200000) matching "HorsBornes"
+        assert_fails ApiOperateurs.contacts("ORG-INCONNU-ALD", 1, 1800000200000) matching "Inconnu"
+        // Reconfirmation tous les 180 jours.
+        assert OpContacts.balayer(1800000200000 + 181 * 86400000, 100, "systeme") == 4
+        assert ApiOperateurs.contacts("ORG-OPA-ALD", 2, 1800000200000 + 181 * 86400000) == []
+        assert OpContacts.confirmer(1800000200000 + 181 * 86400000, c2, "chef_de_mission.c2@ORG-OPA-ALD") == "confirme"
+        assert OpContacts.chaine("ORG-OPA-ALD", "chef_de_mission", 1800000200000 + 181 * 86400000) == ["chef_de_mission.c2@ORG-OPA-ALD | TEL-2"]
+        assert_fails OpContacts.retirer(1800000200000, c2, "dynamicien.d1@ORG-OPA-ALD") matching "Habilitation"
+        assert OpContacts.retirer(1800000200000, c2, "chef_de_mission.c2@ORG-OPA-ALD") == "retire"
+        assert_fails OpContacts.retirer(1800000200000, c2, "systeme") matching "EtatInvalide"
+    }
+}
+
+// ── Rondes et façade : habilitation, rondes lentes, idempotence.
+cell test Rondes {
+    rules {
+        let _ = Monde.activer("ORG-OPA-ALD")
+        assert_fails ApiOperateurs.balayer(1800000200000, "intrus.z") matching "Habilitation"
+        assert_fails ApiOperateurs.balayer(1800000200000, "analyste.a@ORG-ORBITE") matching "Habilitation"
+        assert OpRondes.dernier("alerte_trous") == 0
+        assert ApiOperateurs.balayer(1800000200000, "systeme") == 0
+        assert OpRondes.dernier("alerte_trous") == 1800000200000
+        assert OpRondes.dernier("planif_exercices") == 1800000200000
+        assert ApiOperateurs.balayer(1800000260000, "exploitant.x@ORG-ORBITE") == 0
+        assert OpRondes.dernier("alerte_trous") == 1800000200000
+        // 25 jours plus tard : le dernier succès a plus de 24 jours, l'opérateur est à réexercer.
+        assert OpExercices.a_exercer(1800000000000 + 20 * 86400000, 10) == []
+        assert OpExercices.a_exercer(1800000000000 + 25 * 86400000, 10) == ["ORG-OPA-ALD"]
+    }
+}
+
+// ── Scénario métier : un opérateur actif perd son astreinte ; l'escalade le saute, puis la
+// suspension automatique reporte la charge sur son État ; la conformité le rétablit.
+cell test ScenarioInjoignable {
+    rules {
+        let s1 = Monde.activer("ORG-OPA-ALD")
+        let pf = OpContacts.declarer(1800000200000, "ORG-ETAT-ALD", "point_focal.p@ORG-ETAT-ALD", "point_focal", 1, "TEL-PF", "autorite.a@ORG-ETAT-ALD")
+        let _ = OpContacts.confirmer(1800000200000, pf, "point_focal.p@ORG-ETAT-ALD")
+        assert ApiOperateurs.joignable("ORG-OPA-ALD", 1800000200000) == true
+        assert ApiOperateurs.delai_reponse("ORG-OPA-ALD", 3) == 1800000
+        // Fin du créneau de d1 à J+4 : d2 ne prend pas son service.
+        let j4 = 1800000000000 + 4 * 86400000
+        assert ApiOperateurs.balayer(j4 + 1000000, "systeme") == 2
+        assert ApiOperateurs.astreinte("ORG-OPA-ALD", j4 + 1000000) == ""
+        assert ApiOperateurs.joignable("ORG-OPA-ALD", j4 + 1000000) == false
+        assert ApiOperateurs.contacts("ORG-OPA-ALD", 1, j4 + 1000000) == []
+        assert ApiOperateurs.contacts("ORG-OPA-ALD", 2, j4 + 1000000) == ["chef_de_mission.c@ORG-OPA-ALD"]
+        assert OpMembres.repondant("ORG-OPA-ALD", j4 + 1000000) == "ORG-ETAT-ALD"
+        assert ApiOperateurs.est_actif("ORG-OPA-ALD", j4 + 1000000) == true
+        // 24 h sans astreinte : suspension automatique (origine joignabilité).
+        assert ApiOperateurs.balayer(j4 + 86400000 + 2000000, "systeme") >= 1
+        assert ApiOperateurs.statut("ORG-OPA-ALD") == "suspendu"
+        assert ApiOperateurs.est_actif("ORG-OPA-ALD", j4 + 86400000 + 2000000) == false
+        // Rétablissement par la conformité : il faut d'abord un planning couvert.
+        let t = j4 + 2 * 86400000
+        assert_fails ApiOperateurs.retablir(t, "ORG-OPA-ALD", "point_focal.p@ORG-ETAT-ALD", "direction.d@ORG-ORBITE") matching "Habilitation"
+        assert_fails ApiOperateurs.retablir(t, "ORG-OPA-ALD", "conformite.c@ORG-ORBITE", "direction.d@ORG-ORBITE") matching "Insuffisant"
+        let s5 = OpAstreinte.planifier(t, "ORG-OPA-ALD", "dynamicien.d1@ORG-OPA-ALD", t, t + 4 * 86400000, "chef_de_mission.c@ORG-OPA-ALD")
+        let s6 = OpAstreinte.planifier(t, "ORG-OPA-ALD", "dynamicien.d2@ORG-OPA-ALD", t + 4 * 86400000, t + 8 * 86400000, "chef_de_mission.c@ORG-OPA-ALD")
+        assert OpAstreinte.prendre_service(t, s5, "dynamicien.d1@ORG-OPA-ALD") == "en_service"
+        assert ApiOperateurs.retablir(t, "ORG-OPA-ALD", "conformite.c@ORG-ORBITE", "direction.d@ORG-ORBITE") == "actif"
+        assert ApiOperateurs.astreinte("ORG-OPA-ALD", t + 1000) == "dynamicien.d1@ORG-OPA-ALD"
+        assert len(Journal.chercher("suspendu automatiquement", 10)) == 1
+    }
+}

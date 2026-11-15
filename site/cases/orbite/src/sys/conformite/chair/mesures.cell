@@ -1,0 +1,325 @@
+// Corps de ConfMesure (mesures) et de ConfDemande (demandes de suspension à l'État de tutelle).
+flesh ConfMesure {
+    on proposer(h, op, nature, fondement, motif, par) {
+        require ApiAcces.a_le_role(par, "conformite") || ApiAcces.a_le_role(par, "systeme") else Habilitation "{par} ne propose pas de mesure"
+        let f_op = try { ConfManquement.op(fondement) }
+        require f_op.error == () else Inconnu "manquement fondateur inconnu : {fondement}"
+        require f_op.value == op else Incoherent "{fondement} vise un autre operateur"
+        let ef = ConfManquement.etat_manquement(fondement)
+        require ef == "qualifie" || ef == "clos" else EtatInvalide "fondement {fondement} en {ef}"
+        require motif != "" else MotifRequis "motif de la mesure requis"
+        let cle = "{op}|{nature}"
+        let deja = courante.get(cle)
+        if deja != () { return deja }
+        require op_de.size < MAX_MESURES else Plein "plafond de {MAX_MESURES} mesures atteint"
+        let id = "MS-{next_id()}"
+        op_de.set(id, op)
+        nature_de.set(id, nature)
+        fondement_de.set(id, fondement)
+        motif_de.set(id, motif)
+        propose_par.set(id, par)
+        courante.set(cle, id)
+        let _ = Journal.noter(h, "conformite", par, "mesure {id} proposee : {nature} contre {op} (fondement {fondement})")
+        return id
+    }
+    on decider(h, mesure, par, valideur) {
+        require ApiAcces.a_le_role(par, "direction") else Habilitation "{par} ne decide pas de mesure"
+        let prop = propose_par.get(mesure)
+        require prop != () else Inconnu "mesure inconnue : {mesure}"
+        require par != prop else QuatreYeux "{par} a propose {mesure}"
+        require ApiAcces.quatre_yeux(par, valideur) else QuatreYeux "contre-signature de {valideur} refusee"
+        if prop == "systeme" {
+            require ApiAcces.a_le_role(valideur, "conformite") else QuatreYeux "mesure automatique : valideur de la conformite requis"
+        }
+        let st = get_status(mesure) ?? "proposee"
+        require st == "proposee" else EtatInvalide "mesure {mesure} en {st}"
+        let fondement = fondement_de.get(mesure) ?? ""
+        let ef = ConfManquement.etat_manquement(fondement)
+        require ef == "qualifie" || ef == "clos" else EtatInvalide "fondement {fondement} en {ef}"
+        decide_par.set(mesure, "{par}|{valideur}")
+        transition(mesure, "proposee", "decidee")
+        let _ = Journal.noter(h, "conformite", par, "mesure {mesure} decidee (valideur {valideur})")
+        return "decidee"
+    }
+    on abandonner(h, mesure, motif, par) {
+        require ApiAcces.a_le_role(par, "conformite") || ApiAcces.a_le_role(par, "direction") else Habilitation "{par} n'abandonne pas de mesure"
+        let op_m = op_de.get(mesure)
+        require op_m != () else Inconnu "mesure inconnue : {mesure}"
+        let st = get_status(mesure) ?? "proposee"
+        require st == "proposee" || st == "decidee" else EtatInvalide "mesure {mesure} en {st}"
+        require motif != "" else MotifRequis "motif d'abandon requis"
+        motif_de.set(mesure, motif)
+        _liberer(mesure, op_m)
+        if st == "proposee" {
+            transition(mesure, "proposee", "abandonnee")
+        } else {
+            transition(mesure, "decidee", "abandonnee")
+        }
+        let _ = Journal.noter(h, "conformite", par, "mesure {mesure} abandonnee : {motif}")
+        return "abandonnee"
+    }
+    on mettre_en_vigueur(h, mesure, par) {
+        require ApiAcces.a_le_role(par, "conformite") || ApiAcces.a_le_role(par, "systeme") else Habilitation "{par} ne met pas de mesure en vigueur"
+        let op_m = op_de.get(mesure)
+        require op_m != () else Inconnu "mesure inconnue : {mesure}"
+        let st = get_status(mesure) ?? "proposee"
+        require st == "decidee" else EtatInvalide "mesure {mesure} en {st}"
+        let nat = nature_de.get(mesure) ?? "avertissement"
+        if nat == "demande_suspension" {
+            let ed = ConfDemande.etat_demande(mesure)
+            require ed == "transmise" else EtatInvalide "demande {mesure} en {ed} : non transmise"
+        }
+        let duree = if nat == "avertissement" { DUREE_AVERTISSEMENT_MS } else if nat == "surveillance_renforcee" { DUREE_SURVEILLANCE_MS } else { DUREE_DEMANDE_MS }
+        let fin = Horodatage(to_int(h) + duree)
+        let msg = ApiPasserelle.notifier(h, op_m, "", "mesure {mesure}", "mesure {nat} en vigueur jusqu'au {fin}", 2)
+        let e = try { ApiRef.etat_de(op_m) }
+        if e.error == () {
+            let org_e = ApiRef.org_de_etat(e.value)
+            let _ = ApiPasserelle.notifier(h, org_e, "", "mesure {mesure}", "mesure {nat} en vigueur contre {op_m}, operateur sous votre tutelle, jusqu'au {fin}", 2)
+        }
+        en_vigueur_le.set(mesure, h)
+        fin_le.set(mesure, fin)
+        message_de.set(mesure, msg)
+        transition(mesure, "decidee", "en_vigueur")
+        let _ = Journal.noter(h, "conformite", par, "mesure {mesure} en vigueur contre {op_m} jusqu'au {fin}")
+        return fin
+    }
+    on lever(h, mesure, motif, par, valideur) {
+        require ApiAcces.a_le_role(par, "conformite") else Habilitation "{par} ne leve pas de mesure"
+        require ApiAcces.a_le_role(valideur, "direction") && ApiAcces.quatre_yeux(par, valideur) else QuatreYeux "levee contre-signee par la direction requise"
+        let op_m = op_de.get(mesure)
+        require op_m != () else Inconnu "mesure inconnue : {mesure}"
+        let st = get_status(mesure) ?? "proposee"
+        require st == "en_vigueur" else EtatInvalide "mesure {mesure} en {st}"
+        require motif != "" else MotifRequis "motif de levee requis"
+        let fondement = fondement_de.get(mesure) ?? ""
+        let er = ConfRemediation.etat_remediation(fondement)
+        require er == "realisee" else EtatInvalide "remediation de {fondement} en {er}"
+        motif_de.set(mesure, motif)
+        _liberer(mesure, op_m)
+        let _ = ApiPasserelle.notifier(h, op_m, "", "mesure {mesure}", "mesure levee : {motif}", 1)
+        transition(mesure, "en_vigueur", "levee")
+        let _ = Journal.noter(h, "conformite", par, "mesure {mesure} levee (valideur {valideur})")
+        return "levee"
+    }
+    on expirer(h, mesure, par) {
+        require ApiAcces.a_le_role(par, "systeme") else Habilitation "{par} ne fait pas expirer de mesure"
+        let op_m = op_de.get(mesure)
+        require op_m != () else Inconnu "mesure inconnue : {mesure}"
+        let st = get_status(mesure) ?? "proposee"
+        require st == "en_vigueur" else EtatInvalide "mesure {mesure} en {st}"
+        let fin = fin_le.get(mesure) ?? 0
+        require h >= fin else Delai "mesure {mesure} en vigueur jusqu'au {fin}"
+        _liberer(mesure, op_m)
+        transition(mesure, "en_vigueur", "echue")
+        let _ = Journal.noter(h, "conformite", par, "mesure {mesure} echue")
+        return "echue"
+    }
+    on _liberer(mesure: String, op_m: Org) {
+        let nat = nature_de.get(mesure) ?? "avertissement"
+        let cle = "{op_m}|{nat}"
+        if courante.get(cle) == mesure { courante.delete(cle) }
+    }
+    on etat_mesure(mesure) {
+        if op_de.get(mesure) == () { return "inconnue" }
+        return get_status(mesure) ?? "proposee"
+    }
+    on op(mesure) {
+        let o = op_de.get(mesure)
+        require o != () else Inconnu "mesure inconnue : {mesure}"
+        return o
+    }
+    on nature(mesure) {
+        let n = nature_de.get(mesure)
+        require n != () else Inconnu "mesure inconnue : {mesure}"
+        return n
+    }
+    on en_vigueur_pour(op, nature) {
+        let id = courante.get("{op}|{nature}")
+        if id == () { return false }
+        return (get_status(id) ?? "proposee") == "en_vigueur"
+    }
+    on a_expirer(h, n) {
+        let cand_x = []
+        for e in fin_le.entries {
+            if (get_status(e.key) ?? "proposee") == "en_vigueur" && h >= e.value { cand_x.push(map("id", e.key, "t", e.value)) }
+        }
+        let tries_x = cand_x.sort_by(x => x.t)
+        let res_x = []
+        for c in tries_x {
+            if len(res_x) < n { res_x.push(c.id) }
+        }
+        return res_x
+    }
+    on compter(op, de, a) {
+        // mesures entrées en vigueur dans [de, a] (la date de décision n'est pas tenue)
+        let av = 0
+        let sr = 0
+        let ds = 0
+        for e in en_vigueur_le.entries {
+            if op_de.get(e.key) == op && e.value >= de && e.value <= a {
+                let nat = nature_de.get(e.key) ?? "avertissement"
+                if nat == "avertissement" { av = av + 1 } else if nat == "surveillance_renforcee" { sr = sr + 1 } else { ds = ds + 1 }
+            }
+        }
+        return [av, sr, ds]
+    }
+}
+
+flesh ConfDemande {
+    on preparer(h, mesure, dossier, par) {
+        require ApiAcces.a_le_role(par, "conformite") else Habilitation "{par} ne prepare pas de demande"
+        require op_de.get(mesure) == () else Existe "demande {mesure} deja preparee"
+        let o = try { ConfMesure.op(mesure) }
+        require o.error == () else Inconnu "mesure inconnue : {mesure}"
+        let op_m = o.value
+        let nat = ConfMesure.nature(mesure)
+        require nat == "demande_suspension" else NonEligible "mesure {mesure} de nature {nat}"
+        let em = ConfMesure.etat_mesure(mesure)
+        require em == "decidee" else EtatInvalide "mesure {mesure} en {em}"
+        let e = try { ApiRef.etat_de(op_m) }
+        require e.error == () else Inconnu "{op_m} sans Etat de tutelle"
+        let etat_m = e.value
+        require ApiRef.etat_participant(etat_m) else Incoherent "Etat {etat_m} non participant"
+        require dossier != "" else MotifRequis "dossier vide"
+        require op_de.size < MAX_DEMANDES else Plein "plafond de {MAX_DEMANDES} demandes atteint"
+        op_de.set(mesure, op_m)
+        etat_de.set(mesure, etat_m)
+        dossier_de.set(mesure, dossier)
+        prepare_par.set(mesure, par)
+        let _ = Journal.noter(h, "conformite", par, "demande de suspension {mesure} preparee : {op_m} aupres de {etat_m}")
+        return mesure
+    }
+    on transmettre(h, demande, par) {
+        require ApiAcces.a_le_role(par, "direction") else Habilitation "{par} ne transmet pas de demande"
+        let etat_m = etat_de.get(demande)
+        require etat_m != () else Inconnu "demande inconnue : {demande}"
+        let prep = prepare_par.get(demande) ?? ""
+        require par != prep && ApiAcces.quatre_yeux(prep, par) else QuatreYeux "{par} ne contre-signe pas la demande de {prep}"
+        let st = get_status(demande) ?? "preparee"
+        require st == "preparee" else EtatInvalide "demande {demande} en {st}"
+        let em = ConfMesure.etat_mesure(demande)
+        require em == "decidee" else EtatInvalide "mesure {demande} en {em}"
+        require ApiRef.etat_participant(etat_m) else EtatInvalide "Etat {etat_m} plus participant"
+        let org_e = ApiRef.org_de_etat(etat_m)
+        let op_m = op_de.get(demande) ?? ""
+        let dossier = dossier_de.get(demande) ?? ""
+        let ech = Horodatage(to_int(h) + DELAI_ETAT_MS)
+        let msg = ApiPasserelle.notifier(h, org_e, "", "demande de suspension {demande}", "ORBITE demande la suspension de {op_m} ; dossier {dossier} ; reponse attendue avant {ech}", 2)
+        transmise_le.set(demande, h)
+        echeance_de.set(demande, ech)
+        message_de.set(demande, msg)
+        transition(demande, "preparee", "transmise")
+        let _ = ConfMesure.mettre_en_vigueur(h, demande, "systeme")
+        let _ = Journal.noter(h, "conformite", par, "demande {demande} transmise a {org_e} (message {msg})")
+        return ech
+    }
+    on repondre(h, demande, reponse, motif, par) {
+        let etat_m = etat_de.get(demande)
+        require etat_m != () else Inconnu "demande inconnue : {demande}"
+        let org_e = ApiRef.org_de_etat(etat_m)
+        let role_ok = ApiAcces.a_le_role(par, "point_focal") || ApiAcces.a_le_role(par, "autorite")
+        require role_ok && ApiAcces.agit_pour(par, org_e) else Habilitation "{par} ne repond pas pour {etat_m}"
+        let st = get_status(demande) ?? "preparee"
+        require st == "transmise" else EtatInvalide "demande {demande} en {st}"
+        require motif != "" else MotifRequis "motif de la reponse requis"
+        let ech = echeance_de.get(demande) ?? 0
+        require h <= ech else Delai "echeance de la demande {demande} passee"
+        reponse_de.set(demande, reponse)
+        repondu_par.set(demande, par)
+        motif_de.set(demande, motif)
+        let fin = if reponse == "accepte" { "acceptee" } else { "refusee" }
+        if reponse == "accepte" {
+            transition(demande, "transmise", "acceptee")
+        } else {
+            transition(demande, "transmise", "refusee")
+        }
+        let _ = Journal.noter(h, "conformite", par, "demande {demande} : reponse {reponse} de {etat_m}")
+        return fin
+    }
+    on executer(h, demande, par, valideur) {
+        let op_m = op_de.get(demande)
+        require op_m != () else Inconnu "demande inconnue : {demande}"
+        require ApiAcces.a_le_role(par, "conformite") else Habilitation "{par} n'execute pas de suspension"
+        require ApiAcces.a_le_role(valideur, "direction") && ApiAcces.quatre_yeux(par, valideur) else QuatreYeux "execution contre-signee par la direction requise"
+        let st = get_status(demande) ?? "preparee"
+        require st == "acceptee" else EtatInvalide "demande {demande} en {st}"
+        let avant = ApiOperateurs.statut(op_m)
+        if avant != "suspendu" && avant != "exclu" {
+            let motif = motif_de.get(demande) ?? ""
+            let _ = ApiOperateurs.suspendre(h, op_m, "demande {demande} acceptee par l'Etat : {motif}", par, valideur)
+        }
+        let apres = ApiOperateurs.statut(op_m)
+        require apres == "suspendu" || apres == "exclu" else EtatInvalide "{op_m} en {apres} apres suspension"
+        executee_le.set(demande, h)
+        transition(demande, "acceptee", "executee")
+        let _ = Journal.noter(h, "conformite", par, "demande {demande} executee : {op_m} {apres}")
+        return "executee"
+    }
+    on constater_silence(h, demande, par) {
+        require ApiAcces.a_le_role(par, "systeme") else Habilitation "{par} ne constate pas de silence"
+        let etat_m = etat_de.get(demande)
+        require etat_m != () else Inconnu "demande inconnue : {demande}"
+        let st = get_status(demande) ?? "preparee"
+        require st == "transmise" else EtatInvalide "demande {demande} en {st}"
+        let ech = echeance_de.get(demande) ?? 0
+        require h > ech else Delai "echeance de {demande} non atteinte"
+        let op_m = op_de.get(demande) ?? ""
+        transition(demande, "transmise", "sans_reponse")
+        let orbite = ApiRef.orbite()
+        let _ = ApiPasserelle.notifier(h, orbite, "", "demande sans reponse {demande}", "l'Etat {etat_m} n'a pas repondu a la demande de suspension de {op_m}", 2)
+        let me = ConfManquementEtat.constater(h, etat_m, "demande_sans_reponse", 2, demande, "demande de suspension de {op_m} sans reponse", "systeme")
+        let _ = Journal.noter(h, "conformite", par, "demande {demande} sans reponse de {etat_m} : manquement {me}")
+        return "sans_reponse"
+    }
+    on retirer(h, demande, motif, par) {
+        require ApiAcces.a_le_role(par, "direction") else Habilitation "{par} ne retire pas de demande"
+        let etat_m = etat_de.get(demande)
+        require etat_m != () else Inconnu "demande inconnue : {demande}"
+        require motif != "" else MotifRequis "motif de retrait requis"
+        let st = get_status(demande) ?? "preparee"
+        require st == "preparee" || st == "transmise" else EtatInvalide "demande {demande} en {st}"
+        motif_de.set(demande, motif)
+        if st == "preparee" {
+            transition(demande, "preparee", "retiree")
+        } else {
+            let org_e = ApiRef.org_de_etat(etat_m)
+            let _ = ApiPasserelle.notifier(h, org_e, "", "demande de suspension {demande}", "ORBITE retire sa demande : {motif}", 1)
+            transition(demande, "transmise", "retiree")
+        }
+        let _ = Journal.noter(h, "conformite", par, "demande {demande} retiree : {motif}")
+        return "retiree"
+    }
+    on etat_demande(demande) {
+        if op_de.get(demande) == () { return "inconnue" }
+        return get_status(demande) ?? "preparee"
+    }
+    on echues(h, n) {
+        let cand_d = []
+        for e in echeance_de.entries {
+            if (get_status(e.key) ?? "preparee") == "transmise" && h > e.value { cand_d.push(map("id", e.key, "t", e.value)) }
+        }
+        let tries_d = cand_d.sort_by(x => x.t)
+        let res_d = []
+        for c in tries_d {
+            if len(res_d) < n { res_d.push(c.id) }
+        }
+        return res_d
+    }
+    on compter_etat(etat, de, a) {
+        let tr = 0
+        let acc = 0
+        let ref_n = 0
+        let sil = 0
+        for e in transmise_le.entries {
+            if etat_de.get(e.key) == etat && e.value >= de && e.value <= a {
+                tr = tr + 1
+                let st = get_status(e.key) ?? "preparee"
+                if st == "acceptee" || st == "executee" { acc = acc + 1 }
+                if st == "refusee" { ref_n = ref_n + 1 }
+                if st == "sans_reponse" { sil = sil + 1 }
+            }
+        }
+        return [tr, acc, ref_n, sil]
+    }
+}

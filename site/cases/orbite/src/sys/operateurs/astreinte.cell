@@ -1,0 +1,129 @@
+// operateurs — ASTREINTE 24/7 : qui, chez l'opérateur, répond à une alerte à l'instant h.
+// Le planning est fait de créneaux nominatifs ; un créneau ne compte qu'une fois PRIS
+// (la personne se déclare en service). Un créneau prévu et jamais pris est un manque, un
+// créneau échu sans relève laisse un trou : dans les deux cas astreinte(op, h) = "" et
+// l'escalade part immédiatement — l'opérateur silencieux ne bloque rien.
+
+// Motif de fin anticipée d'un créneau en service.
+cell type OpMotifInterruption = String where value == "indisponible" || value == "personne_suspendue" || value == "erreur_planning" || value == "operateur_sorti"
+
+// Créneau d'astreinte (id = "AS-<n>", tiré par planifier).
+skeleton OpAstreinte {
+    const MAX_CRENEAUX = 5000000
+    const MAX_PAR_OPERATEUR = 2000
+    // Durée d'un créneau : 1 h à 7 jours.
+    const DUREE_MIN_MS = 3600000
+    const DUREE_MAX_MS = 604800000
+    // Prise de service acceptée de 30 min avant le début jusqu'à 15 min après (au-delà : manque).
+    const AVANCE_MS = 1800000
+    const TOLERANCE_MS = 900000
+    // Horizon de planification et de recherche de trous : 90 jours.
+    const HORIZON_MS = 7776000000
+    // Trou toléré avant suspension automatique (origine "joignabilite") : 24 h.
+    const TROU_SUSPENSION_MS = 86400000
+    memory {
+        operateur: Map<String, Org> [persistent]              // créneau → opérateur ; écrit une fois par planifier, jamais effacé
+        personne: Map<String, String> [persistent]            // créneau → personne ("dynamicien" de l'opérateur) ; écrit une fois par planifier
+        debut: Map<String, Horodatage> [persistent]           // créneau → début prévu, ms
+        fin: Map<String, Horodatage> [persistent]             // créneau → fin prévue, puis effective (relève, interruption), ms
+        pris_a: Map<String, Horodatage> [persistent]          // créneau → prise de service effective, ms
+        en_service_de: Map<Org, String> [persistent]          // opérateur → créneau en service (au plus un)
+        nb_planifies: Map<Org, Int> [persistent]              // opérateur → créneaux planifie ou en_service
+        sans_astreinte_depuis: Map<Org, Horodatage> [persistent]   // opérateur → début du trou en cours, ms (absent : couvert)
+        invariant operateur.size <= MAX_CRENEAUX
+        invariant en_service_de.size <= MAX_CRENEAUX
+        invariant nb_planifies >= 0 && nb_planifies <= MAX_PAR_OPERATEUR
+        invariant (debut ?? 0) <= (fin ?? 0)
+    }
+    // Cycle de vie d'un créneau (id = créneau).
+    state creneau {
+        initial: planifie
+        planifie -> en_service          // prendre_service : la personne se déclare ; relève le créneau en service
+        planifie -> annule              // annuler : avant le début seulement
+        planifie -> manque              // constater_manques : non pris à debut + TOLERANCE_MS
+        en_service -> termine           // prendre_service (relève par le suivant), cloturer_echus (fin atteinte)
+        en_service -> interrompu        // interrompre : la personne se retire, ou elle est suspendue
+    }
+    face {
+        // Planifie un créneau [debut_prevu, fin_prevue] (ms) pour `pour` (personne active de
+        // rôle "dynamicien" employée par op). Renvoie l'id.
+        // Rôle exigé : "chef_de_mission" ou "administrateur_operateur" de op (agit_pour).
+        // Refus : Inconnu (op jamais admis), Ferme (op exclu ou retiré), HorsBornes (durée hors
+        // [DUREE_MIN_MS, DUREE_MAX_MS], début < h ou au-delà de h + HORIZON_MS), NonEligible
+        // (personne non dynamicien de op), Conflit (la personne a déjà un créneau qui chevauche),
+        // Habilitation, Plein.
+        signal planifier(h: Horodatage, op: Org, pour: String, debut_prevu: Horodatage, fin_prevue: Horodatage, par: String) -> String
+            writes operateur, personne, debut, fin, nb_planifies
+            reads creneau
+            calls ApiAcces.a_le_role, ApiAcces.agit_pour, OpMembres.etat, next_id, Journal.noter
+        // La personne du créneau prend son service (dans [debut - AVANCE_MS, debut +
+        // TOLERANCE_MS]) ; le créneau en service de l'opérateur, s'il y en a un, est relevé
+        // ("termine", fin = h). Engagements de l'opérateur en vigueur ; la personne du créneau
+        // est active chez acces (règle OpAstreinte.en_service ⇐ AccesPersonnes.active via
+        // personne, regles.toml ; ApiAcces.a_le_role la refuse sinon). Renvoie "en_service".
+        // Rôle exigé : `par` = la personne du créneau, toujours "dynamicien" de l'opérateur.
+        // Refus : Inconnu, EtatInvalide, Delai (hors fenêtre de prise), Habilitation (aussi :
+        // personne suspendue ou partie).
+        signal prendre_service(h: Horodatage, id: String, par: String) -> String
+            writes fin, pris_a, en_service_de, nb_planifies, sans_astreinte_depuis
+            reads operateur, personne, debut
+            moves planifie -> en_service when OpEngagements.en_vigueur via operateur, en_service -> termine
+            calls ApiAcces.a_le_role, ApiAcces.agit_pour, OpEngagements.etat, Journal.noter
+        // Annule un créneau non commencé (debut > h). Renvoie "annule".
+        // Rôle exigé : "chef_de_mission" ou "administrateur_operateur" de l'opérateur, ou la
+        // personne du créneau. Refus : Inconnu, EtatInvalide, Delai (début atteint), Habilitation.
+        signal annuler(h: Horodatage, id: String, par: String) -> String
+            writes nb_planifies
+            reads operateur, personne, debut
+            moves planifie -> annule
+            calls ApiAcces.a_le_role, ApiAcces.agit_pour, Journal.noter
+        // Fin anticipée d'un créneau en service : l'opérateur est sans astreinte dès h
+        // (notifié, sans_astreinte_depuis posé). Renvoie "interrompu".
+        // Rôle exigé : la personne du créneau, "chef_de_mission" de l'opérateur, ou "systeme"
+        // (personne suspendue chez acces, opérateur sorti).
+        // Refus : Inconnu, EtatInvalide, Habilitation.
+        signal interrompre(h: Horodatage, id: String, motif: OpMotifInterruption, par: String) -> String
+            writes fin, en_service_de, nb_planifies, sans_astreinte_depuis
+            reads operateur, personne
+            moves en_service -> interrompu
+            calls ApiAcces.a_le_role, ApiAcces.agit_pour, ApiPasserelle.notifier, Journal.noter
+        // Balayage (par "systeme" ou "exploitant" d'ORBITE, chaque minute) : créneaux prévus
+        // non pris à debut + TOLERANCE_MS → "manque" (manquement de gravité 2 à la
+        // conformité) ; créneaux en service dont la fin est atteinte sans relève → "termine".
+        // Pose sans_astreinte_depuis des opérateurs laissés sans astreinte et les notifie.
+        // Renvoie le nombre de créneaux changés (au plus n). Refus : Habilitation.
+        signal balayer(h: Horodatage, n: Int, par: String) -> Int
+            requires n > 0 && n <= 10000
+            writes fin, en_service_de, nb_planifies, sans_astreinte_depuis
+            reads operateur, debut
+            moves planifie -> manque, en_service -> termine
+            calls ApiAcces.a_le_role, ApiPasserelle.notifier, ApiConformite.constater, Journal.noter
+        // Opérateurs actifs sans astreinte depuis plus de TROU_SUSPENSION_MS : suspendus
+        // automatiquement (origine "joignabilite"). Renvoie leur nombre (au plus n).
+        // Rôle exigé : "systeme" ou "superviseur" d'ORBITE. Refus : Habilitation.
+        signal sanctionner_trous(h: Horodatage, n: Int, par: String) -> Int
+            requires n > 0 && n <= 10000
+            reads sans_astreinte_depuis
+            calls ApiAcces.a_le_role, OpMembres.est_actif, OpMembres.suspendre_auto
+        // Personne en service pour op à `h` : créneau "en_service" dont pris_a ≤ h < fin ;
+        // "" si aucune (injoignable : escalade immédiate). Refus : Inconnu (op jamais planifié).
+        signal en_service(op: Org, h: Horodatage) -> String
+            reads en_service_de, personne, pris_a, fin, nb_planifies
+        // Planning de op entre h et h + horizon (horizon ≤ HORIZON_MS) : créneaux planifie ou
+        // en_service, par début croissant, chaque entrée "id | personne | debut | fin | etat".
+        // Refus : HorsBornes.
+        signal planning(op: Org, h: Horodatage, horizon: Duree) -> List<String>
+            reads operateur, personne, debut, fin, creneau
+        // Intervalles NON couverts par un créneau planifie ou en_service entre h et
+        // h + horizon (horizon ≤ HORIZON_MS) : chaque entrée "debut-fin" en ms ; [] si couvert.
+        // Sert à l'activation, au rétablissement et à l'alerte de planning. Refus : HorsBornes.
+        signal trous(op: Org, h: Horodatage, horizon: Duree) -> List<String>
+            reads operateur, debut, fin, creneau
+        // Alerte de planning : notifie chaque opérateur actif dont le planning des 48 h à
+        // venir a un trou. Renvoie le nombre d'opérateurs notifiés (au plus n).
+        // Rôle exigé : "systeme" ou "exploitant" d'ORBITE. Refus : Habilitation.
+        signal alerter_trous(h: Horodatage, n: Int, par: String) -> Int
+            requires n > 0 && n <= 10000
+            calls ApiAcces.a_le_role, OpMembres.actifs, trous, ApiPasserelle.notifier
+    }
+}

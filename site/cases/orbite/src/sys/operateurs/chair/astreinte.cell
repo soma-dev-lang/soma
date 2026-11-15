@@ -1,0 +1,220 @@
+// operateurs — corps de l'ASTREINTE 24/7 (OpAstreinte).
+
+flesh OpAstreinte {
+    on planifier(h, op, pour, debut_prevu, fin_prevue, par) {
+        require (ApiAcces.a_le_role(par, "chef_de_mission") || ApiAcces.a_le_role(par, "administrateur_operateur")) && ApiAcces.agit_pour(par, op) else Habilitation "planification réservée au chef de mission ou à l'administrateur de {op}"
+        let st = OpMembres.etat(op)
+        require st != "inconnu" && st != "candidat" else Inconnu "{op} jamais admis"
+        require st != "exclu" && st != "retire" else Ferme "{op} est {st}"
+        let d = to_int(debut_prevu)
+        let f = to_int(fin_prevue)
+        let hi = to_int(h)
+        require f - d >= DUREE_MIN_MS && f - d <= DUREE_MAX_MS && d >= hi && d <= hi + HORIZON_MS else HorsBornes "créneau [{d}, {f}] hors bornes"
+        require ApiAcces.a_le_role(pour, "dynamicien") && ApiAcces.agit_pour(pour, op) else NonEligible "{pour} n'est pas dynamicien de {op}"
+        for e in personne.entries {
+            if e.value == pour {
+                let c = e.key
+                let sc = get_status(c) ?? "planifie"
+                if sc == "planifie" || sc == "en_service" {
+                    let cd = to_int(debut.get(c) ?? 0)
+                    let cf = to_int(fin.get(c) ?? 0)
+                    require cf <= d || f <= cd else Conflit "{pour} a déjà le créneau {c} sur cette période"
+                }
+            }
+        }
+        let nb = nb_planifies.get(op) ?? 0
+        require nb < MAX_PAR_OPERATEUR && operateur.size < MAX_CRENEAUX else Plein "trop de créneaux planifiés"
+        let n = next_id()
+        let id = "AS-{n}"
+        fin.set(id, fin_prevue)
+        debut.set(id, debut_prevu)
+        operateur.set(id, op)
+        personne.set(id, pour)
+        nb_planifies.set(op, nb + 1)
+        let _ = Journal.noter(h, "operateurs", par, "créneau {id} planifié pour {op} ({pour})")
+        return id
+    }
+    on prendre_service(h, id, par) {
+        let op = operateur.get(id)
+        require op != () else Inconnu "créneau {id} inconnu"
+        let p = personne.get(id) ?? ""
+        require par == p && ApiAcces.a_le_role(par, "dynamicien") && ApiAcces.agit_pour(par, op) else Habilitation "seule la personne du créneau, dynamicien actif de {op}, prend le service"
+        let st = get_status(id) ?? "planifie"
+        require st == "planifie" else EtatInvalide "créneau {id} {st}"
+        let d = to_int(debut.get(id) ?? 0)
+        let hi = to_int(h)
+        require hi >= d - AVANCE_MS && hi <= d + TOLERANCE_MS else Delai "hors de la fenêtre de prise de service"
+        require OpEngagements.etat(op) == "en_vigueur" else EtatInvalide "engagements de {op} non en vigueur"
+        let nb = nb_planifies.get(op) ?? 0
+        let prec = en_service_de.get(op)
+        if prec != () && prec != id {
+            let pd = to_int(debut.get(prec) ?? 0)
+            fin.set(prec, Horodatage(max(hi, pd)))
+            transition(prec, "en_service", "termine")
+            nb = nb - 1
+        }
+        nb_planifies.set(op, max(nb, 0))
+        pris_a.set(id, h)
+        en_service_de.set(op, id)
+        if sans_astreinte_depuis.get(op) != () { sans_astreinte_depuis.delete(op) }
+        transition(id, "planifie", "en_service")
+        let _ = Journal.noter(h, "operateurs", par, "créneau {id} en service pour {op}")
+        return "en_service"
+    }
+    on annuler(h, id, par) {
+        let op = operateur.get(id)
+        require op != () else Inconnu "créneau {id} inconnu"
+        let p = personne.get(id) ?? ""
+        require par == p || ((ApiAcces.a_le_role(par, "chef_de_mission") || ApiAcces.a_le_role(par, "administrateur_operateur")) && ApiAcces.agit_pour(par, op)) else Habilitation "réservé au chef de mission, à l'administrateur de {op} ou à la personne du créneau"
+        let st = get_status(id) ?? "planifie"
+        require st == "planifie" else EtatInvalide "créneau {id} {st}"
+        require to_int(debut.get(id) ?? 0) > to_int(h) else Delai "créneau déjà commencé"
+        nb_planifies.set(op, max((nb_planifies.get(op) ?? 1) - 1, 0))
+        transition(id, "planifie", "annule")
+        let _ = Journal.noter(h, "operateurs", par, "créneau {id} annulé")
+        return "annule"
+    }
+    on interrompre(h, id, motif, par) {
+        let op = operateur.get(id)
+        require op != () else Inconnu "créneau {id} inconnu"
+        let p = personne.get(id) ?? ""
+        require par == p || (ApiAcces.a_le_role(par, "chef_de_mission") && ApiAcces.agit_pour(par, op)) || ApiAcces.a_le_role(par, "systeme") else Habilitation "réservé à la personne du créneau, au chef de mission de {op} ou au système"
+        let st = get_status(id) ?? "planifie"
+        require st == "en_service" else EtatInvalide "créneau {id} {st}"
+        if to_int(h) < to_int(fin.get(id) ?? h) {
+            // fin = h ; si h précède le début prévu (prise anticipée), la fin prévue reste.
+            let _ = try { fin.set(id, h) }
+        }
+        if en_service_de.get(op) == id { en_service_de.delete(op) }
+        nb_planifies.set(op, max((nb_planifies.get(op) ?? 1) - 1, 0))
+        sans_astreinte_depuis.set(op, h)
+        transition(id, "en_service", "interrompu")
+        let _ = ApiPasserelle.notifier(h, op, "", "astreinte", "astreinte interrompue ({motif}) : aucune personne en service", 3)
+        let _ = Journal.noter(h, "operateurs", par, "créneau {id} interrompu ({motif})")
+        return "interrompu"
+    }
+    on balayer(h, n, par) {
+        require ApiAcces.a_le_role(par, "systeme") || ApiAcces.a_le_role(par, "exploitant") else Habilitation "balayage réservé au système ou à un exploitant"
+        let compte = 0
+        let hi = to_int(h)
+        for e in operateur.entries {
+            if compte >= n { break }
+            let id = e.key
+            let op = e.value
+            let st = get_status(id) ?? "planifie"
+            if st == "planifie" && hi > to_int(debut.get(id) ?? h) + TOLERANCE_MS {
+                transition(id, "planifie", "manque")
+                nb_planifies.set(op, max((nb_planifies.get(op) ?? 1) - 1, 0))
+                let _ = ApiConformite.constater(h, op, "astreinte_manquee", 2, id, "systeme")
+                if en_service_de.get(op) == () && sans_astreinte_depuis.get(op) == () {
+                    sans_astreinte_depuis.set(op, h)
+                    let _ = ApiPasserelle.notifier(h, op, "", "astreinte", "créneau {id} non pris : aucune personne en service", 3)
+                }
+                compte = compte + 1
+            } else if st == "en_service" && hi >= to_int(fin.get(id) ?? h) {
+                transition(id, "en_service", "termine")
+                nb_planifies.set(op, max((nb_planifies.get(op) ?? 1) - 1, 0))
+                if en_service_de.get(op) == id {
+                    en_service_de.delete(op)
+                    if sans_astreinte_depuis.get(op) == () {
+                        sans_astreinte_depuis.set(op, fin.get(id) ?? h)
+                    }
+                    let _ = ApiPasserelle.notifier(h, op, "", "astreinte", "créneau {id} échu sans relève : aucune personne en service", 3)
+                }
+                compte = compte + 1
+            }
+        }
+        if compte > 0 {
+            let _ = Journal.noter(h, "operateurs", par, "astreinte : {compte} créneau(x) échu(s) ou manqué(s)")
+        }
+        return compte
+    }
+    on sanctionner_trous(h, n, par) {
+        require ApiAcces.a_le_role(par, "systeme") || ApiAcces.a_le_role(par, "superviseur") else Habilitation "réservé au système ou à un superviseur"
+        let compte = 0
+        for e in sans_astreinte_depuis.entries {
+            if compte >= n { break }
+            if to_int(h) - to_int(e.value) > TROU_SUSPENSION_MS && OpMembres.est_actif(e.key, h) {
+                let _ = OpMembres.suspendre_auto(h, e.key, "joignabilite", "sans astreinte depuis {e.value}")
+                compte = compte + 1
+            }
+        }
+        return compte
+    }
+    on en_service(op, h) {
+        require nb_planifies.get(op) != () else Inconnu "{op} n'a jamais planifié d'astreinte"
+        let c = en_service_de.get(op)
+        if c == () { return "" }
+        let pa = pris_a.get(c)
+        let f = fin.get(c)
+        if pa == () || f == () { return "" }
+        if to_int(pa) <= to_int(h) && to_int(h) < to_int(f) {
+            return personne.get(c) ?? ""
+        }
+        return ""
+    }
+    on planning(op, h, horizon) {
+        require to_int(horizon) <= HORIZON_MS else HorsBornes "horizon au-delà de 90 jours"
+        let hi = to_int(h)
+        let borne = hi + to_int(horizon)
+        let lignes_p = []
+        for e in operateur.entries {
+            if e.value == op {
+                let id = e.key
+                let st = get_status(id) ?? "planifie"
+                let d = to_int(debut.get(id) ?? 0)
+                let f = to_int(fin.get(id) ?? 0)
+                if (st == "planifie" || st == "en_service") && f > hi && d < borne {
+                    let qui = personne.get(id) ?? ""
+                    lignes_p.push(map("d", d, "l", "{id} | {qui} | {d} | {f} | {st}"))
+                }
+            }
+        }
+        return lignes_p.sort_by(x => x.d).map(x => x.l)
+    }
+    on trous(op, h, horizon) {
+        require to_int(horizon) <= HORIZON_MS else HorsBornes "horizon au-delà de 90 jours"
+        let hi = to_int(h)
+        let borne = hi + to_int(horizon)
+        let ivs = []
+        for e in operateur.entries {
+            if e.value == op {
+                let id = e.key
+                let st = get_status(id) ?? "planifie"
+                let d = to_int(debut.get(id) ?? 0)
+                let f = to_int(fin.get(id) ?? 0)
+                if (st == "planifie" || st == "en_service") && f > hi && d < borne {
+                    ivs.push(map("d", d, "f", f))
+                }
+            }
+        }
+        let tries = ivs.sort_by(x => x.d)
+        let res_t = []
+        let cur = hi
+        for iv in tries {
+            if iv.d > cur {
+                let fin_trou = min(iv.d, borne)
+                res_t.push("{cur}-{fin_trou}")
+            }
+            cur = max(cur, iv.f)
+            if cur >= borne { break }
+        }
+        if cur < borne { res_t.push("{cur}-{borne}") }
+        return res_t
+    }
+    on alerter_trous(h, n, par) {
+        require ApiAcces.a_le_role(par, "systeme") || ApiAcces.a_le_role(par, "exploitant") else Habilitation "réservé au système ou à un exploitant"
+        let compte = 0
+        for op in OpMembres.actifs(h, 100000) {
+            if compte >= n { break }
+            let o = Org(op)
+            let tr = trous(o, h, Duree(172800000))
+            if len(tr) > 0 {
+                let premier = tr[0]
+                let _ = ApiPasserelle.notifier(h, o, "", "astreinte", "planning des 48 h à venir incomplet : trou {premier}", 2)
+                compte = compte + 1
+            }
+        }
+        return compte
+    }
+}

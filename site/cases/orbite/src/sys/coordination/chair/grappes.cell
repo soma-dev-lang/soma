@@ -1,0 +1,172 @@
+// Corps de CoordGrappe : index multi-objets et grappes autour d'un objet pivot.
+flesh CoordGrappe {
+    on inscrire(h, r) {
+        let objets_g = CoordDossier.objets(r)
+        for o in objets_g {
+            let eng = engage_de.get(o) ?? []
+            if !contains(eng, r) {
+                require len(eng) < MAX_ENGAGEMENTS else Plein "{o} : plus de {MAX_ENGAGEMENTS} coordinations ouvertes"
+                engage_de.set(o, eng ++ [r])
+            }
+        }
+        // Pivot : le premier objet (a d'abord) capable de manœuvrer engagé dans au moins deux coordinations.
+        let pivot = ""
+        for o in objets_g {
+            if pivot == "" && len(engage_de.get(o) ?? []) >= 2 && ApiRef.peut_manoeuvrer(Objet(o)) { pivot = o }
+        }
+        if pivot == "" { return "" }
+        let g_act = active_de.get(pivot) ?? ""
+        if g_act != "" {
+            let mem = membres_de.get(g_act) ?? []
+            if !contains(mem, r) {
+                require len(mem) < MAX_MEMBRES else Plein "grappe {g_act} : plus de {MAX_MEMBRES} membres"
+                membres_de.set(g_act, mem ++ [r])
+            }
+            grappe_de.set(r, g_act)
+            let _ = Journal.noter(h, "coordination", "systeme", "{r} rejoint la grappe {g_act}")
+            return g_act
+        }
+        let libres = (engage_de.get(pivot) ?? []).filter(x => (grappe_de.get(x) ?? "") == "")
+        let g = _former(pivot, libres)
+        let _ = Journal.noter(h, "coordination", "systeme", "grappe {g} formée autour de {pivot}")
+        return g
+    }
+    on retirer(h, r) {
+        let objets_g = CoordDossier.objets(r)
+        for o in objets_g {
+            let eng = (engage_de.get(o) ?? []).filter(x => x != r)
+            if len(eng) == 0 { engage_de.delete(o) } else { engage_de.set(o, eng) }
+        }
+        let g = grappe_de.get(r) ?? ""
+        if g == "" { return "" }
+        grappe_de.delete(r)
+        let restants = (membres_de.get(g) ?? []).filter(m => (grappe_de.get(m) ?? "") == g)
+        let st = get_status(g) ?? "formee"
+        if len(restants) <= 1 && st != "dissoute" {
+            transition(g, st, "dissoute")
+            let pivot = pivot_de.get(g) ?? ""
+            if (active_de.get(pivot) ?? "") == g { active_de.delete(pivot) }
+            for m in restants { grappe_de.delete(m) }
+            let _ = Journal.noter(h, "coordination", "systeme", "grappe {g} dissoute : un seul membre ouvert")
+            return "dissoute"
+        }
+        return st
+    }
+    on regler(h, g, par) {
+        require ApiAcces.a_le_role(par, "systeme") || ApiAcces.a_le_role(par, "analyste") else Habilitation "{par} ne règle pas les grappes"
+        let pivot = pivot_de.get(g) ?? ""
+        require pivot_de.get(g) != () else Inconnu "grappe inconnue : {g}"
+        let st = get_status(g) ?? "formee"
+        require st == "formee" else EtatInvalide "grappe {g} : {st}"
+        let mem = membres_de.get(g) ?? []
+        let pour_pivot = 0
+        let pour_vis = 0
+        for m in mem {
+            let ob = CoordDossier.objets(m)
+            let d = ApiPriorites.qui_manoeuvre(h, m, Objet(ob[0]), Objet(ob[1]))
+            if d == pivot { pour_pivot = pour_pivot + 1 } else if d != "" { pour_vis = pour_vis + 1 }
+        }
+        let n = len(mem)
+        let man = ""
+        if n > 0 && pour_pivot == n {
+            man = pivot
+        } else if n > 0 && pour_vis == n {
+            man = ""
+        } else {
+            fail("Conflit", "grappe {g} : règles partagées ({pour_pivot} pour le pivot, {pour_vis} pour les vis-à-vis sur {n}) — arbitrage humain requis")
+        }
+        transition(g, "formee", "arbitree")
+        manoeuvrant_de.set(g, Objet(man))
+        for m in mem {
+            let _ = CoordEchange.noter(h, m, "ORG-ORBITE", "arbitrage", "grappe {g} réglée par les règles : manoeuvrant {man}", par)
+        }
+        let _ = Journal.noter(h, "coordination", par, "grappe {g} réglée : manoeuvrant '{man}'")
+        return Objet(man)
+    }
+    on arbitrer(h, g, manoeuvrant, motif, par, valideur) {
+        require ApiAcces.a_le_role(par, "analyste") else Habilitation "{par} n'est pas analyste d'ORBITE"
+        require ApiAcces.quatre_yeux(par, valideur) && ApiAcces.a_le_role(valideur, "superviseur") else QuatreYeux "{valideur} ne peut pas contre-signer {par}"
+        require motif != "" else MotifRequis "arbitrage de grappe sans motif"
+        require pivot_de.get(g) != () else Inconnu "grappe inconnue : {g}"
+        let pivot = pivot_de.get(g) ?? ""
+        let st = get_status(g) ?? "formee"
+        require st == "formee" else EtatInvalide "grappe {g} : {st}"
+        require manoeuvrant == pivot || manoeuvrant == "" else Incoherent "{manoeuvrant} n'est pas le pivot {pivot}"
+        let mem = membres_de.get(g) ?? []
+        if manoeuvrant != "" {
+            require ApiRef.peut_manoeuvrer(manoeuvrant) else NonEligible "{manoeuvrant} ne peut pas manœuvrer"
+            if ApiRef.habite(manoeuvrant) {
+                for m in mem {
+                    for o in CoordDossier.objets(m) {
+                        if Objet(o) != pivot {
+                            require !ApiRef.peut_manoeuvrer(Objet(o)) else NonEligible "{pivot} est habité et {o} peut manœuvrer"
+                        }
+                    }
+                }
+            }
+        }
+        transition(g, "formee", "arbitree")
+        manoeuvrant_de.set(g, manoeuvrant)
+        for m in mem {
+            let _ = CoordEchange.notifier(h, m, "arbitrage", "grappe {g} arbitrée : manoeuvrant {manoeuvrant} ({motif})")
+        }
+        let _ = Journal.noter(h, "coordination", par, "grappe {g} arbitrée : '{manoeuvrant}', valideur {valideur}")
+        return manoeuvrant
+    }
+    on former(h, objet, motif, par) {
+        require ApiAcces.a_le_role(par, "analyste") else Habilitation "{par} n'est pas analyste d'ORBITE"
+        let eng = engage_de.get(objet) ?? []
+        require len(eng) > 0 else Inconnu "{objet} n'a aucune coordination ouverte"
+        require (active_de.get(objet) ?? "") == "" else Existe "{objet} a déjà une grappe active"
+        let libres = eng.filter(x => (grappe_de.get(x) ?? "") == "")
+        require len(libres) >= 2 else Insuffisant "{objet} : moins de deux coordinations ouvertes non groupées"
+        require len(libres) <= MAX_MEMBRES else Plein "plus de {MAX_MEMBRES} membres"
+        let g = _former(to_string(objet), libres)
+        let _ = Journal.noter(h, "coordination", par, "grappe {g} formée à la main autour de {objet} : {motif}")
+        return g
+    }
+    on dissoudre(h, g, motif, par) {
+        require ApiAcces.a_le_role(par, "analyste") else Habilitation "{par} n'est pas analyste d'ORBITE"
+        require motif != "" else MotifRequis "dissolution sans motif"
+        require pivot_de.get(g) != () else Inconnu "grappe inconnue : {g}"
+        let st = get_status(g) ?? "formee"
+        require st == "formee" || st == "arbitree" else EtatInvalide "grappe {g} : {st}"
+        transition(g, st, "dissoute")
+        let pivot = pivot_de.get(g) ?? ""
+        if (active_de.get(pivot) ?? "") == g { active_de.delete(pivot) }
+        for m in membres_de.get(g) ?? [] {
+            if (grappe_de.get(m) ?? "") == g { grappe_de.delete(m) }
+        }
+        let _ = Journal.noter(h, "coordination", par, "grappe {g} dissoute : {motif}")
+        return "dissoute"
+    }
+    on compatible(r, objet) {
+        let g = grappe_de.get(r) ?? ""
+        if g == "" { return true }
+        if objet == "" { return true }
+        if (get_status(g) ?? "formee") != "arbitree" { return false }
+        let pivot = pivot_de.get(g) ?? ""
+        let man = manoeuvrant_de.get(g) ?? ""
+        if man != "" && man == pivot { return objet == pivot }
+        return objet != pivot
+    }
+    on grappe_de_r(r) {
+        return grappe_de.get(r) ?? ""
+    }
+    on etat(g) {
+        if pivot_de.get(g) == () { return "inconnue" }
+        return get_status(g) ?? "formee"
+    }
+    on _former(pivot: String, libres: List<String>) {
+        let n = (rang_de.get(pivot) ?? 0) + 1
+        require n <= MAX_GRAPPES_PAR_OBJET else Plein "{pivot} : plafond de grappes atteint"
+        require pivot_de.size < MAX_GRAPPES else Plein "plafond de {MAX_GRAPPES} grappes atteint"
+        let g = "GR-{pivot}-{n}"
+        pivot_de.set(g, Objet(pivot))
+        membres_de.set(g, libres)
+        rang_de.set(pivot, n)
+        active_de.set(pivot, g)
+        for m in libres { grappe_de.set(m, g) }
+        return g
+    }
+}

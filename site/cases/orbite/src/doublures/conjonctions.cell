@@ -1,0 +1,159 @@
+// Doublures (corps PROVISOIRES, sans mémoire) des façades que traversent les tests de
+// conjonctions. Conventions :
+// - personnes d'ORBITE : "analyste1", "superviseur2", "direction1"… (rôle = nom sans chiffre) ;
+//   d'opérateur : "dyn@ORG-X", "chef@ORG-X", "admin@ORG-X" ; "intrus…" n'a aucun rôle ;
+//   "systeme" n'a que le rôle "systeme". ORBITE est "ORG-ORBITE".
+// - objets : OBJ-1 (ORG-ALPHA), OBJ-2 (ORG-BETA), OBJ-3 (débris sans propriétaire, éphéméride
+//   faible et périmée, jamais suivi), OBJ-4 (ORG-INJOIGNABLE : sans astreinte), OBJ-5
+//   (ORG-FERME : ne peut rien recevoir), OBJ-6 (geo, ORG-ALPHA), OBJ-7 (ORG-BETA, dépôt
+//   invalide), OBJ-9 rentré, "OBJ-INCONNU…" non catalogué. Tout le reste est en leo.
+// - organisations : "ORG-SUSP…" suspendue, "ORG-NONADH…" non adhérente, "ORG-RAPIDE…" acquitte
+//   tout de suite, "ORG-PANNE…" livraison en échec, "ORG-INCONNUE…" n'existe pas.
+// - plans : "PL-DECL…" declare, "PL-APP…" approuve, "PL-VERIF…" verifie ; plan_de(r) = "PL-VERIF-<r>".
+// - évènements : "EV-COL…" collision entre OBJ-1 et OBJ-2 ; "EV-FRAG…" fragmentation ; autre : inconnu.
+// - météo : tempête en meo ; nuage de débris en heo ; facteur 100 partout.
+
+flesh ApiAcces {
+    on a_le_role(personne, r) {
+        if personne == "systeme" { return r == "systeme" }
+        return _role(personne) == to_string(r)
+    }
+    on quatre_yeux(demandeur, valideur) {
+        if demandeur == valideur || starts_with(valideur, "intrus") || valideur == "systeme" { return false }
+        let rv = _role(valideur)
+        if rv == "superviseur" || rv == "conformite" || rv == "direction" { return true }
+        return rv == "chef_de_mission" && _employeur(valideur) == _employeur(demandeur)
+    }
+    on agit_pour(personne, org) {
+        if starts_with(personne, "intrus") || personne == "systeme" { return false }
+        return _employeur(personne) == to_string(org)
+    }
+    on _role(p: String) {
+        if starts_with(p, "intrus") { return "aucun" }
+        if starts_with(p, "dyn@") { return "dynamicien" }
+        if starts_with(p, "chef@") { return "chef_de_mission" }
+        if starts_with(p, "admin@") { return "administrateur_operateur" }
+        for r in ["analyste", "superviseur", "exploitant", "conformite", "direction", "auditeur"] {
+            if starts_with(p, r) { return r }
+        }
+        return "aucun"
+    }
+    on _employeur(p: String) {
+        if contains(p, "@") { return split(p, "@")[1] }
+        return "ORG-ORBITE"
+    }
+}
+
+flesh ApiRef {
+    on orbite() { return Org("ORG-ORBITE") }
+    on etat_objet(objet) {
+        let o = to_string(objet)
+        if starts_with(o, "OBJ-INCONNU") { return "inconnu" }
+        if o == "OBJ-9" { return "rentre" }
+        return "en_service"
+    }
+    on regime(objet) {
+        if to_string(objet) == "OBJ-6" { return Regime("geo") }
+        return Regime("leo")
+    }
+    on proprietaire(objet) {
+        let o = to_string(objet)
+        let org = match o {
+            "OBJ-1" -> "ORG-ALPHA"
+            "OBJ-2" -> "ORG-BETA"
+            "OBJ-4" -> "ORG-INJOIGNABLE"
+            "OBJ-5" -> "ORG-FERME"
+            "OBJ-6" -> "ORG-ALPHA"
+            "OBJ-7" -> "ORG-BETA"
+            _ -> "inconnu"
+        }
+        return Org(org)
+    }
+    on etat_de(org) { return Etat("ALD") }
+    on org_de_etat(etat) { return Org("ORG-ETAT-{etat}") }
+    on organisation_existe(org) { return !starts_with(to_string(org), "ORG-INCONNUE") }
+}
+
+flesh ApiEphemerides {
+    on derniere(objet) { return "DEP-{objet}" }
+    on qualite(objet) {
+        if to_string(objet) == "OBJ-3" { return Qualite("faible") }
+        return Qualite("haute")
+    }
+    on fraiche(objet, h) { return to_string(objet) != "OBJ-3" }
+    on depot_valide(depot) { return !contains(depot, "OBJ-7") }
+}
+
+flesh ApiMeteo {
+    on facteur_incertitude(regime, h) { return Pourcent(100) }
+    on renforce(regime, h) { return to_string(regime) == "meo" }
+}
+
+flesh ApiEvenements {
+    on nuage_actif(regime, h) { return to_string(regime) == "heo" }
+    on existe(evenement) { return starts_with(evenement, "EV-COL") || starts_with(evenement, "EV-FRAG") }
+    on genre(evenement) {
+        require starts_with(evenement, "EV-") else Inconnu "évènement inconnu"
+        if starts_with(evenement, "EV-COL") { return "collision" }
+        return "fragmentation"
+    }
+    on objets(evenement) { return ["OBJ-1", "OBJ-2"] }
+}
+
+flesh ApiObservation {
+    on capteurs_en_service() { return 5 }
+    on suivi(objet, h) { return to_string(objet) != "OBJ-3" }
+    on demander_suivi(h, objet, priorite, duree, motif, par) { return "DS-{objet}-{h}" }
+}
+
+flesh ApiOperations {
+    on incident_majeur() { return false }
+    on declarer_incident(h, incident, gravite, sous_systeme, description, par) { return incident }
+}
+
+flesh ApiConformite {
+    on constater(h, op, nature, gravite, reference, par) { return "MQ-{op}-{reference}" }
+}
+
+flesh ApiCoordination {
+    on etat(r) { return "proposee" }
+}
+
+flesh ApiManoeuvres {
+    on plan_de(r) { return "PL-VERIF-{r}" }
+    on etat(plan) {
+        if starts_with(plan, "PL-VERIF") { return "verifie" }
+        if starts_with(plan, "PL-DECL") { return "declare" }
+        if starts_with(plan, "PL-APP") { return "approuve" }
+        return "inconnu"
+    }
+}
+
+flesh ApiDonnees {
+    on peut_recevoir(org, objet, r, h) { return !starts_with(to_string(org), "ORG-FERME") }
+    on tracer(h, org, objet, r, nature) { return 1 }
+    on adherent(org) { return !starts_with(to_string(org), "ORG-NONADH") }
+}
+
+flesh ApiPasserelle {
+    on notifier(h, destinataire, r, sujet, texte, urgence) { return "PM|{destinataire}|{r}" }
+    on acquitte(message) { return contains(message, "ORG-RAPIDE") }
+    on echoue(message) { return contains(message, "ORG-PANNE") }
+}
+
+flesh ApiOperateurs {
+    on delai_reponse(op, n) { return Duree(1800000) }
+    on astreinte(op, h) {
+        if starts_with(to_string(op), "ORG-INJOIGNABLE") { return "" }
+        return "dyn@{op}"
+    }
+    on est_actif(op, h) { return !starts_with(to_string(op), "ORG-SUSP") }
+}
+
+flesh ApiEscalade {
+    on escalader(h, r, op, motif, par) { return 1 }
+}
+
+flesh ApiFinDeVie {
+    on retrait_autorise(objet) { return to_string(objet) == "OBJ-2" }
+}

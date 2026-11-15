@@ -1,0 +1,28 @@
+// Façade des OPÉRATIONS : incidents du système ORBITE, mode dégradé, secours, changements.
+skeleton ApiOperations {
+    face {
+        // Déclare un incident du système. Gravité 3 : incident majeur (cellule de crise,
+        // information des États). Renvoie l'id. Refus : MotifRequis, Habilitation ("exploitant" ou "systeme").
+        signal declarer_incident(h: Horodatage, incident: String, gravite: Gravite, sous_systeme: SousSysteme, description: String, par: String) -> String
+            calls OpsIncident.declarer, OpsCrise.convoquer, ApiAcces.a_le_role
+        // Vrai si un incident majeur est en cours.
+        signal incident_majeur() -> Bool
+            calls OpsIncident.majeur_en_cours
+        // Vrai si le sous-système est dégradé (incident ouvert le visant).
+        signal degrade(sous_systeme: SousSysteme) -> Bool
+            calls OpsIncident.est_degrade, OpsDegradation.est_degrade, OpsBascule.en_transition
+        // Vrai si un changement en production est autorisé à `h` (pas de gel, pas d'incident
+        // majeur, aucun rapprochement de niveau 3 dans les 6 h).
+        signal changement_autorise(h: Horodatage) -> Bool
+            calls OpsGel.gel_a, OpsGelUrgence.actif_a, OpsIncident.majeur_en_cours, OpsBascule.en_transition
+        // Vrai si une crise est active et qu'ORBITE arbitre directement, sans tour de réponse.
+        signal arbitrage_centralise() -> Bool
+            calls OpsCrise.arbitrage_centralise_en_vigueur
+        // Balayage des échéances du sous-système à `h` (délais, expirations, rondes), appelé par
+        // l'horloge d'ORBITE (Horloge.battre) — le SEUL point d'entrée du temps : aucun signal de
+        // operations ne lit l'horloge lui-même. Renvoie le nombre d'objets dont l'état a changé.
+        // Refus : Habilitation (par "systeme").
+        signal balayer(h: Horodatage, par: String) -> Int
+            calls OpsRonde.balayer
+    }
+}

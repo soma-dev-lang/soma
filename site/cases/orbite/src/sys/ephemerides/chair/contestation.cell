@@ -1,0 +1,103 @@
+// ephemerides — corps des CONTESTATIONS DE REJET.
+flesh EphContestation {
+    on contester(h, depot, motif, par) {
+        let e = EphDepot.etat_de(depot)
+        require e != "inconnu" else Inconnu "dépôt {depot} inconnu"
+        let champs = split(EphDepot.fiche(depot), "|")
+        let op = Org(champs[1])
+        require (ApiAcces.a_le_role(par, "dynamicien") || ApiAcces.a_le_role(par, "chef_de_mission")) && ApiAcces.agit_pour(par, op) else Habilitation "{par} n'agit pas pour {op}"
+        require len(motif) > 0 else MotifRequis "motif requis"
+        require e == "rejetee" else EtatInvalide "dépôt {depot} : {e}"
+        let mr = EphDepot.motif_rejet_de(depot)
+        require mr == "incoherence" || mr == "nee_perimee" else EtatInvalide "rejet {mr} non contestable"
+        require objet_de.get(depot) == () else Existe "dépôt {depot} déjà contesté"
+        let depose = to_int(champs[13])
+        require to_int(h) - depose <= DELAI else Delai "contestation hors délai"
+        require objet_de.size < MAX_CONTESTATIONS else Plein "trop de contestations"
+        // echeance d'abord : invariant ouverte_le ≤ echeance.
+        echeance.set(depot, Horodatage(to_int(h) + DELAI))
+        ouverte_le.set(depot, h)
+        objet_de.set(depot, Objet(champs[0]))
+        conteste_par.set(depot, "{par}|{motif}")
+        let _ = Journal.noter(h, "ephemerides", par, "rejet de {depot} conteste : {motif}")
+        return depot
+    }
+
+    on instruire(h, depot, par) {
+        require ApiAcces.a_le_role(par, "analyste") else Habilitation "analyste d'ORBITE requis"
+        let obj = objet_de.get(depot)
+        require obj != () else Inconnu "contestation {depot} inconnue"
+        let st = get_status(depot) ?? "ouverte"
+        require st == "ouverte" else EtatInvalide "contestation {depot} : {st}"
+        let id = ApiObservation.demander_suivi(h, obj, 2, 43200000, "contestation du rejet {depot}", par)
+        suivi_demande.set(depot, id)
+        let _ = Journal.noter(h, "ephemerides", par, "contestation {depot} instruite : suivi {id}")
+        return id
+    }
+
+    on accepter(h, depot, motif, par, valideur) {
+        require ApiAcces.a_le_role(par, "analyste") else Habilitation "analyste d'ORBITE requis"
+        require ApiAcces.a_le_role(valideur, "superviseur") && ApiAcces.quatre_yeux(par, valideur) else QuatreYeux "valideur superviseur distinct requis"
+        require len(motif) > 0 else MotifRequis "motif requis"
+        let ech = echeance.get(depot)
+        require ech != () else Inconnu "contestation {depot} inconnue"
+        let st = get_status(depot) ?? "ouverte"
+        require st == "ouverte" else EtatInvalide "contestation {depot} : {st}"
+        require h <= ech else Echu "échéance d'instruction passée"
+        require EphDepot.etat_de(depot) == "rejetee" else EtatInvalide "dépôt {depot} n'est plus rejeté"
+        transition(depot, "ouverte", "acceptee")
+        decide_par.set(depot, "{par}|{valideur}|{motif}")
+        let atteint = EphDepot.rehabiliter(h, depot)
+        let _ = Journal.noter(h, "ephemerides", par, "contestation {depot} acceptee (valideur {valideur}) : depot {atteint}")
+        return "acceptee"
+    }
+
+    on refuser(h, depot, motif, par) {
+        require ApiAcces.a_le_role(par, "analyste") else Habilitation "analyste d'ORBITE requis"
+        require len(motif) > 0 else MotifRequis "motif requis"
+        let obj = objet_de.get(depot)
+        require obj != () else Inconnu "contestation {depot} inconnue"
+        let st = get_status(depot) ?? "ouverte"
+        require st == "ouverte" else EtatInvalide "contestation {depot} : {st}"
+        transition(depot, "ouverte", "refusee")
+        decide_par.set(depot, "{par}||{motif}")
+        let op = try { ApiRef.proprietaire(obj) }
+        if op.error == () {
+            let envoi = try { ApiPasserelle.notifier(h, op.value, "", "contestation_refusee", "rejet de {depot} confirmé : {motif} — redéposer", 1) }
+        }
+        let _ = Journal.noter(h, "ephemerides", par, "contestation {depot} refusee : {motif}")
+        return "refusee"
+    }
+
+    on classer(h, n, par) {
+        require par == "systeme" && ApiAcces.a_le_role(par, "systeme") else Habilitation "classement réservé à systeme"
+        let classes = 0
+        for d in objet_de.keys {
+            if classes < n && (get_status(d) ?? "ouverte") == "ouverte" {
+                let caduque = h > (echeance.get(d) ?? 0)
+                if !caduque {
+                    let obj = objet_de.get(d) ?? ""
+                    let cur = try { EphSuivi.derniere(obj) }
+                    if cur.error == () && cur.value != d {
+                        caduque = EphDepot.epoque_de(cur.value) > EphDepot.epoque_de(d)
+                    }
+                }
+                if caduque {
+                    transition(d, "ouverte", "caduque")
+                    classes = classes + 1
+                }
+            }
+        }
+        if classes > 0 {
+            let _ = Journal.noter(h, "ephemerides", par, "{classes} contestation(s) classee(s) caduque(s)")
+        }
+        return classes
+    }
+
+    on etat(depot) {
+        if objet_de.get(depot) == () {
+            return "aucune"
+        }
+        return get_status(depot) ?? "ouverte"
+    }
+}

@@ -1,0 +1,84 @@
+// Façade des CONJONCTIONS : criblage du catalogue, évènements de rapprochement (CDM).
+skeleton ApiConjonctions {
+    face {
+        // Ouvre ou met à jour le rapprochement entre deux objets au TCA donné (résultat d'un
+        // criblage) : distance minimale, probabilité de collision, niveau. Le même couple et le
+        // même TCA à ±10 min désignent le même rapprochement. Renvoie son id.
+        // Refus : Inconnu (objet), Incoherent (objet_a == objet_b), Habilitation ("systeme" ou "analyste").
+        signal signaler(h: Horodatage, objet_a: Objet, objet_b: Objet, tca: Horodatage, distance: Distance, pc: Probabilite, par: String) -> Rapprochement
+            calls ConjRapprochement.signaler, ConjRapprochement.fiche, ConjRapprochement.engager, ConjRapprochement.demander_mesures, ConjCriblagePlan.rendre_caducs, ConjMessage.diffuser
+        // Cycle de vie : "detecte", "suivi", "alerte", "en_coordination", "resolu", "passe",
+        // "collision" ; "inconnu" si jamais signalé.
+        signal etat(r: Rapprochement) -> String
+            calls ConjRapprochement.etat
+        // Niveau courant (1 à 3, fonction de pc, de la distance et du temps restant). Refus : Inconnu.
+        signal niveau(r: Rapprochement) -> Niveau
+            calls ConjRapprochement.fiche
+        // Objets en cause, [a, b]. Refus : Inconnu.
+        signal objets(r: Rapprochement) -> List<String>
+            calls ConjRapprochement.fiche
+        // Instant de rapprochement maximal (TCA). Refus : Inconnu.
+        signal tca(r: Rapprochement) -> Horodatage
+            calls ConjRapprochement.fiche
+        // Dernière probabilité de collision connue. Refus : Inconnu.
+        signal pc(r: Rapprochement) -> Probabilite
+            calls ConjRapprochement.fiche
+        // Crible une trajectoire après manœuvre (plan) contre le catalogue : renvoie le nombre de
+        // rapprochements de niveau ≥ 2 qu'elle CRÉERAIT dans les 7 jours (0 : plan sûr).
+        // Refus : Inconnu (plan ou objet), Perime (catalogue non criblé depuis 8 h).
+        signal cribler_plan(h: Horodatage, objet: Objet, plan: String, debut: Horodatage, dv: DeltaV) -> Int
+            calls ConjCriblagePlan.cribler
+        // Marque le rapprochement résolu (manœuvre vérifiée, ou pc retombée sous le seuil de suivi
+        // sur deux mises à jour). Renvoie "resolu". Refus : Inconnu, EtatInvalide, Habilitation.
+        signal resoudre(h: Horodatage, r: Rapprochement, motif: String, par: String) -> String
+            calls ConjRapprochement.resoudre, ConjMessage.clore_de, ConjMessage.diffuser
+        // Rapprochements non clos (ni resolu, ni passe, ni collision) impliquant l'objet.
+        signal ouverts_de(objet: Objet) -> List<String>
+            calls ConjRapprochement.ouverts_de
+        // Rapprochements non clos de niveau ≥ niveau_min dont le TCA tombe dans [h, h + horizon]
+        // (au plus 1 000) : gel des changements, veille d'escalade, alertes de tempête.
+        signal urgents(h: Horodatage, horizon: Duree, niveau_min: Niveau) -> List<String>
+            calls ConjRapprochement.urgents
+        // Distance minimale (m) au TCA, dernière mise à jour. Refus : Inconnu.
+        signal distance(r: Rapprochement) -> Distance
+            calls ConjRapprochement.fiche
+        // Instant de la dernière mise à jour du rapprochement. Refus : Inconnu.
+        signal mis_a_jour(r: Rapprochement) -> Horodatage
+            calls ConjRapprochement.fiche
+        // Rapprochements (clos compris) impliquant l'objet depuis `depuis` (au plus 1 000).
+        signal historique(objet: Objet, depuis: Horodatage) -> List<String>
+            calls ConjRapprochement.historique
+        // Rapprochements clos (resolu, passe, collision) entre debut et fin (au plus 10 000).
+        signal clos_entre(debut: Horodatage, fin: Horodatage) -> List<String>
+            calls ConjRapprochement.clos_entre
+        // Verdict du dernier criblage d'un plan : "sur", "a_risque", "perime" ; "" si jamais criblé.
+        signal criblage_plan(plan: String) -> String
+            calls ConjCriblagePlan.etat
+        // Vrai si le catalogue du régime a été criblé tout-contre-tout depuis moins de 8 h à `h`.
+        signal campagne_fraiche(regime: Regime, h: Horodatage) -> Bool
+            calls ConjCampagne.fraiche
+        // Constate une collision (évènement confirmé par evenements) : le rapprochement passe
+        // "collision" sur le verdict de l'analyse après TCA. Renvoie l'état. Refus : Inconnu,
+        // EtatInvalide, Habilitation ("analyste" ou "systeme").
+        signal constater_collision(h: Horodatage, r: Rapprochement, evenement: String, par: String) -> String
+            calls ConjAnalyseTca.confirmer, ConjRapprochement.clore_apres_tca, ConjMessage.clore_de, ConjMessage.diffuser
+        // Exempte un couple chasseur / cible d'une mission de retrait actif autorisée
+        // (ApiFinDeVie.retrait_autorise(cible)) pendant [debut, fin] : leur rapprochement reste
+        // suivi (niveau 1) sans alerte ni coordination ; le reste du catalogue est criblé contre
+        // les deux. Renvoie l'id. Refus : Inconnu, NonEligible (retrait non autorisé),
+        // Incoherent (fin ≤ debut), Habilitation ("analyste"), QuatreYeux (valideur "superviseur").
+        signal exempter(h: Horodatage, chasseur: Objet, cible: Objet, debut: Horodatage, fin: Horodatage, par: String, valideur: String) -> String
+            calls ConjExemption.accorder
+        // Déclenche un criblage renforcé d'un régime (tempête, nuage de débris) jusqu'à `fin`.
+        // Renvoie l'id de l'épisode (un épisode ouvert du régime est prolongé). Refus : Incoherent
+        // (fin ≤ h), MotifRequis, Habilitation ("analyste" ou "systeme").
+        signal renforcer(h: Horodatage, regime: Regime, fin: Horodatage, motif: String, par: String) -> String
+            calls ConjRenforcement.renforcer
+        // Balayage des échéances du sous-système à `h` (délais, expirations, rondes), appelé par
+        // l'horloge d'ORBITE (Horloge.battre) — le SEUL point d'entrée du temps : aucun signal de
+        // conjonctions ne lit l'horloge lui-même. Renvoie le nombre d'objets dont l'état a changé.
+        // Refus : Habilitation (par "systeme").
+        signal balayer(h: Horodatage, par: String) -> Int
+            calls ConjRonde.balayer
+    }
+}

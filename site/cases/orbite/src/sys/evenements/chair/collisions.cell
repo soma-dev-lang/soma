@@ -1,0 +1,126 @@
+// Corps de EvtCollisions : instruction des collisions (propriété 6).
+flesh EvtCollisions {
+    on ouvrir(h, ev, r) {
+        require rapprochement_de.get(ev) == () else Existe "instruction de {ev} déjà ouverte"
+        require rapprochement_de.size < MAX_COLLISIONS else Plein "plafond de {MAX_COLLISIONS} instructions atteint"
+        rapprochement_de.set(ev, r)
+        if r == "" {
+            designe_alors.set(ev, "")
+            let _ = Journal.noter(h, "evenements", "systeme", "collision {ev} hors coordination : aucun rapprochement")
+            return ""
+        }
+        let dec = ApiCoordination.decision(r)
+        let des = if dec == "" { "" } else { split(dec, "|")[1] }
+        let st_co = ApiCoordination.etat(r)
+        let plan = ApiManoeuvres.plan_de(r)
+        let st_pl = if plan == "" { "" } else { ApiManoeuvres.etat(plan) }
+        let pc = ApiConjonctions.pc(r)
+        let tca = ApiConjonctions.tca(r)
+        designe_alors.set(ev, Objet(des))
+        decision_alors.set(ev, dec)
+        coordination_alors.set(ev, st_co)
+        plan_alors.set(ev, plan)
+        etat_plan_alors.set(ev, st_pl)
+        pc_alors.set(ev, pc)
+        tca_alors.set(ev, tca)
+        let _ = Journal.noter(h, "evenements", "systeme", "collision {ev} : décision figée sur {r} (désigné '{des}', coordination {st_co}, plan '{plan}' {st_pl}, pc {pc})")
+        return Objet(des)
+    }
+
+    on instruire(h, ev, v, motif, par, valideur) {
+        let r = rapprochement_de.get(ev)
+        require r != () else Inconnu "aucune instruction de collision pour {ev}"
+        let st_ev = EvtEvenements.etat(ev)
+        require st_ev == "confirme" else EtatInvalide "évènement {ev} non confirmé ({st_ev})"
+        let st = get_status(ev) ?? "constatee"
+        require st == "constatee" else EtatInvalide "instruction de {ev} {st}"
+        require len(motif) > 0 else MotifRequis "motif du verdict vide"
+        require ApiAcces.a_le_role(par, "analyste") else Habilitation "{par} n'est pas analyste d'ORBITE"
+        require ApiAcces.a_le_role(valideur, "superviseur") else Habilitation "{valideur} n'est pas superviseur d'ORBITE"
+        require ApiAcces.quatre_yeux(par, valideur) else QuatreYeux "{valideur} ne contre-signe pas {par}"
+        let des = to_string(designe_alors.get(ev) ?? "")
+        if v == "hors_coordination" {
+            require r == "" else Incoherent "{ev} a un rapprochement en cause ({r})"
+        } else {
+            require r != "" else Incoherent "{ev} sans rapprochement : seul hors_coordination convient"
+        }
+        if v == "sans_decision" {
+            require des == "" else Incoherent "{des} était désigné au moment du choc"
+        }
+        if v == "decision_suivie" || v == "decision_ignoree" {
+            require des != "" else Incoherent "aucun objet désigné au moment du choc"
+            // traces d'exécution : plan figé exécuté, ou manœuvre détectée sur le désigné
+            let plan = plan_alors.get(ev) ?? ""
+            let st_pl = if plan == "" { "" } else { ApiManoeuvres.etat(plan) }
+            let tca = to_int(tca_alors.get(ev) ?? h)
+            let depuis = max(0, tca - 604800000)
+            let execute = st_pl == "execute" || st_pl == "verifie" || st_pl == "anomalie" || ApiObservation.manoeuvre_detectee(Objet(des), Horodatage(depuis))
+            if v == "decision_suivie" {
+                require execute else Incoherent "aucune trace d'exécution de {des}"
+            } else {
+                require !execute else Incoherent "{des} a manœuvré : la décision n'a pas été ignorée"
+            }
+        }
+        verdict.set(ev, v)
+        instruction.set(ev, "{h} | {par} | {valideur} | {motif}")
+        transition(ev, "constatee", "instruite")
+        let _ = Journal.noter(h, "evenements", par, "collision {ev} instruite : {v} ({valideur})")
+        return v
+    }
+
+    on classer(h, ev) {
+        let st = get_status(ev) ?? "constatee"
+        require st == "constatee" else EtatInvalide "instruction de {ev} {st}"
+        transition(ev, "constatee", "sans_objet")
+        let _ = Journal.noter(h, "evenements", "systeme", "instruction de {ev} classée sans objet")
+        return "sans_objet"
+    }
+
+    on transmettre(h, ev, par) {
+        require ApiAcces.a_le_role(par, "conformite") else Habilitation "{par} n'est pas conformite d'ORBITE"
+        let v = verdict.get(ev)
+        let st = get_status(ev) ?? "constatee"
+        require v != () || st != "constatee" else EtatInvalide "instruction de {ev} {st} (inconnue ou non instruite)"
+        require st == "instruite" else EtatInvalide "instruction de {ev} {st}"
+        let d = EvtEvenements.dossier(ev)
+        require d != "" else Insuffisant "{ev} sans dossier de preuve"
+        require ApiResponsabilite.sous_gel(ev) else Insuffisant "{ev} n'est plus sous gel"
+        if v == "decision_ignoree" && manquement_de.get(ev) == () {
+            let des = designe_alors.get(ev) ?? ""
+            let op = ApiRef.proprietaire(des)
+            let mq = ApiConformite.constater(h, op, "decision_coordination_ignoree", 3, ev, "systeme")
+            manquement_de.set(ev, mq)
+        }
+        transition(ev, "instruite", "transmise")
+        for o in EvtEvenements.objets(ev) {
+            let _ = EvtNotifications.preparer(h, ev, "collision", Objet(o), 1)
+        }
+        let _ = Journal.noter(h, "evenements", par, "collision {ev} transmise ({v}, dossier {d})")
+        return "transmise"
+    }
+
+    on rapprochement(ev) {
+        return rapprochement_de.get(ev) ?? ""
+    }
+
+    on etat(ev) {
+        if rapprochement_de.get(ev) == () { return "inconnue" }
+        return get_status(ev) ?? "constatee"
+    }
+
+    on constat(ev, par) {
+        let habilite = ApiAcces.a_le_role(par, "analyste") || ApiAcces.a_le_role(par, "conformite") || ApiAcces.a_le_role(par, "direction") || ApiAcces.a_le_role(par, "auditeur")
+        require habilite else Habilitation "{par} ne lit pas le constat"
+        let r = rapprochement_de.get(ev)
+        require r != () else Inconnu "aucune instruction de collision pour {ev}"
+        let des = designe_alors.get(ev) ?? ""
+        let dec = decision_alors.get(ev) ?? ""
+        let co = coordination_alors.get(ev) ?? ""
+        let pl = plan_alors.get(ev) ?? ""
+        let epl = etat_plan_alors.get(ev) ?? ""
+        let pc = pc_alors.get(ev) ?? 0
+        let tca = tca_alors.get(ev) ?? 0
+        let v = verdict.get(ev) ?? ""
+        return "{r} | {des} | {dec} | {co} | {pl} | {epl} | {pc} | {tca} | {v}"
+    }
+}

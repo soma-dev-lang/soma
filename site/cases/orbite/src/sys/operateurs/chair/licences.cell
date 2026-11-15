@@ -1,0 +1,171 @@
+// operateurs — corps de la LICENCE NATIONALE (OpLicences).
+
+flesh OpLicences {
+    on declarer(h, op, numero_national, debut_validite, fin_validite, par) {
+        require ApiAcces.a_le_role(par, "administrateur_operateur") && ApiAcces.agit_pour(par, op) else Habilitation "déclaration réservée à un administrateur_operateur de {op}"
+        require ApiRef.organisation_existe(op) else Inconnu "{op} non inscrit au référentiel"
+        let e = ApiRef.etat_de(op)
+        require ApiRef.etat_participant(e) else NonEligible "État {e} non participant"
+        require numero_national != "" else MotifRequis "numéro de licence vide"
+        let d = to_int(debut_validite)
+        let f = to_int(fin_validite)
+        require f > d && f > to_int(h) && f - d <= DUREE_MAX_MS else HorsBornes "validité [{d}, {f}] invalide"
+        let nouvelle = numero.get(op) == ()
+        let st = if nouvelle { "declaree" } else { get_status(op) ?? "declaree" }
+        require st == "declaree" || st == "refusee" || st == "expiree" else EtatInvalide "licence de {op} {st} : seule un transfert la redéclare"
+        if nouvelle {
+            require numero.size < MAX_LICENCES else Plein "registre des licences plein"
+        }
+        echeance.set(op, fin_validite)
+        debut.set(op, debut_validite)
+        declaree_a.set(op, h)
+        numero.set(op, numero_national)
+        etat_licence.set(op, e)
+        historique.push("{h} | {op} | {numero_national} | declaree | declaration | {par}")
+        if st == "refusee" {
+            transition(op, "refusee", "declaree")
+        } else if st == "expiree" {
+            transition(op, "expiree", "declaree")
+        }
+        let _ = ApiPasserelle.notifier(h, ApiRef.org_de_etat(e), "", "licence", "vérification demandée : licence {numero_national} de {op}", 1)
+        let _ = Journal.noter(h, "operateurs", par, "licence {numero_national} de {op} déclarée")
+        return "declaree"
+    }
+    on repondre_etat(h, op, avis, par) {
+        let e = etat_licence.get(op)
+        require e != () else Inconnu "aucune licence déclarée pour {op}"
+        require ApiAcces.a_le_role(par, "autorite") && ApiAcces.agit_pour(par, ApiRef.org_de_etat(e)) else Habilitation "réservé à l'autorité de l'État {e}"
+        let st = get_status(op) ?? "declaree"
+        require st == "declaree" else EtatInvalide "licence de {op} {st}"
+        let da = to_int(declaree_a.get(op) ?? h)
+        require to_int(h) - da <= DELAI_VERIFICATION_MS else Delai "déclaration trop ancienne : redéclarer"
+        let num = numero.get(op) ?? "-"
+        let cible = if avis == "confirmee" { "en_vigueur" } else { "refusee" }
+        if avis == "confirmee" {
+            verifiee_par.set(op, par)
+            transition(op, "declaree", "en_vigueur")
+        } else {
+            transition(op, "declaree", "refusee")
+            let _ = ApiPasserelle.notifier(h, op, "", "licence", "licence {num} refusée par l'État {e} ({avis})", 2)
+        }
+        historique.push("{h} | {op} | {num} | {cible} | avis {avis} | {par}")
+        let _ = Journal.noter(h, "operateurs", par, "licence {num} de {op} : avis {avis}")
+        return OpEtatLicence(cible)
+    }
+    on suspendre_par_etat(h, op, motif, par) {
+        let e = etat_licence.get(op)
+        require e != () else Inconnu "aucune licence déclarée pour {op}"
+        require ApiAcces.a_le_role(par, "autorite") && ApiAcces.agit_pour(par, ApiRef.org_de_etat(e)) else Habilitation "réservé à l'autorité de l'État {e}"
+        let st = get_status(op) ?? "declaree"
+        require st == "en_vigueur" else EtatInvalide "licence de {op} {st}"
+        require motif != "" else MotifRequis "motif requis"
+        let num = numero.get(op) ?? "-"
+        historique.push("{h} | {op} | {num} | suspendue | {motif} | {par}")
+        transition(op, "en_vigueur", "suspendue")
+        let _ = OpMembres.suspendre_auto(h, op, "licence", "licence suspendue par l'État {e} : {motif}")
+        let _ = Journal.noter(h, "operateurs", par, "licence {num} de {op} suspendue par l'État")
+        return "suspendue"
+    }
+    on lever_suspension(h, op, par) {
+        let e = etat_licence.get(op)
+        require e != () else Inconnu "aucune licence déclarée pour {op}"
+        require ApiAcces.a_le_role(par, "autorite") && ApiAcces.agit_pour(par, ApiRef.org_de_etat(e)) else Habilitation "réservé à l'autorité de l'État {e}"
+        let st = get_status(op) ?? "declaree"
+        require st == "suspendue" else EtatInvalide "licence de {op} {st}"
+        require to_int(h) < to_int(echeance.get(op) ?? 0) else Echu "licence échue : redéclarer"
+        let num = numero.get(op) ?? "-"
+        historique.push("{h} | {op} | {num} | en_vigueur | levée de suspension | {par}")
+        transition(op, "suspendue", "en_vigueur")
+        let _ = Journal.noter(h, "operateurs", par, "licence {num} de {op} : suspension levée")
+        return "en_vigueur"
+    }
+    on retirer_par_etat(h, op, motif, par) {
+        let e = etat_licence.get(op)
+        require e != () else Inconnu "aucune licence déclarée pour {op}"
+        require ApiAcces.a_le_role(par, "autorite") && ApiAcces.agit_pour(par, ApiRef.org_de_etat(e)) else Habilitation "réservé à l'autorité de l'État {e}"
+        let st = get_status(op) ?? "declaree"
+        require st == "en_vigueur" || st == "suspendue" else EtatInvalide "licence de {op} {st}"
+        require motif != "" else MotifRequis "motif requis"
+        let num = numero.get(op) ?? "-"
+        historique.push("{h} | {op} | {num} | retiree | {motif} | {par}")
+        transition(op, st, "retiree")
+        let _ = OpMembres.suspendre_auto(h, op, "licence", "licence retirée par l'État {e} : {motif}")
+        let _ = ApiConformite.constater(h, op, "licence_retiree", 3, "licence {num} : {motif}", "systeme")
+        let _ = Journal.noter(h, "operateurs", par, "licence {num} de {op} retirée par l'État")
+        return "retiree"
+    }
+    on transferer(h, op, etat_accueil, numero_national, fin_validite) {
+        require numero.get(op) != () else Inconnu "aucune licence pour {op}"
+        require numero_national != "" else MotifRequis "numéro de la licence d'accueil vide"
+        let st = get_status(op) ?? "declaree"
+        require st == "en_vigueur" else EtatInvalide "licence de {op} {st}"
+        require to_int(fin_validite) > to_int(h) else HorsBornes "licence d'accueil déjà échue"
+        echeance.set(op, fin_validite)
+        debut.set(op, h)
+        declaree_a.set(op, h)
+        numero.set(op, numero_national)
+        etat_licence.set(op, etat_accueil)
+        historique.push("{h} | {op} | {numero_national} | declaree | transfert vers {etat_accueil} | systeme")
+        transition(op, "en_vigueur", "declaree")
+        let _ = ApiPasserelle.notifier(h, ApiRef.org_de_etat(etat_accueil), "", "licence", "vérification demandée : licence {numero_national} de {op} (changement de contrôle)", 2)
+        let _ = Journal.noter(h, "operateurs", "systeme", "licence de {op} transférée sous l'État {etat_accueil}")
+        return "declaree"
+    }
+    on echoir(h, n, par) {
+        require ApiAcces.a_le_role(par, "systeme") || ApiAcces.a_le_role(par, "exploitant") else Habilitation "balayage réservé au système ou à un exploitant"
+        let compte = 0
+        let hi = to_int(h)
+        for e in echeance.entries {
+            if compte >= n { break }
+            let op = e.key
+            let st = get_status(op) ?? "declaree"
+            if st == "en_vigueur" && hi >= to_int(e.value) {
+                historique.push("{h} | {op} | - | expiree | échéance atteinte | systeme")
+                transition(op, "en_vigueur", "expiree")
+                let _ = ApiPasserelle.notifier(h, op, "", "licence", "licence nationale expirée", 2)
+                if OpMembres.etat(op) == "actif" {
+                    let _ = ApiConformite.constater(h, op, "licence_expiree", 2, "licence expirée à {e.value}", "systeme")
+                }
+                compte = compte + 1
+            } else if st == "declaree" && hi - to_int(declaree_a.get(op) ?? h) > DELAI_VERIFICATION_MS {
+                historique.push("{h} | {op} | - | refusee | silence de l'État | systeme")
+                transition(op, "declaree", "refusee")
+                let _ = ApiPasserelle.notifier(h, op, "", "licence", "licence non confirmée par l'État dans le délai : redéclarer", 2)
+                compte = compte + 1
+            }
+        }
+        if compte > 0 {
+            let _ = Journal.noter(h, "operateurs", par, "licences : {compte} échue(s) ou refusée(s)")
+        }
+        return compte
+    }
+    on a_renouveler(h, n) {
+        let res_l = []
+        let limite = to_int(h) + PREAVIS_MS
+        for e in echeance.entries {
+            if len(res_l) >= n { break }
+            if (get_status(e.key) ?? "declaree") == "en_vigueur" && to_int(e.value) < limite {
+                res_l.push("{e.key} | {e.value}")
+            }
+        }
+        return res_l
+    }
+    on historique_de(op, n) {
+        let motif_h = " | {op} | "
+        let tous = historique.filter(l => contains(l, motif_h))
+        let k = len(tous)
+        if k <= n { return tous }
+        return slice(tous, k - n, k)
+    }
+    on valide_a(op, h) {
+        if (get_status(op) ?? "declaree") != "en_vigueur" { return false }
+        let d = debut.get(op)
+        let f = echeance.get(op)
+        if d == () || f == () { return false }
+        return to_int(d) <= to_int(h) && to_int(h) < to_int(f)
+    }
+    on etat(op) {
+        if numero.get(op) == () { return "aucune" }
+        return OpEtatLicence(get_status(op) ?? "declaree")
+    }
+}

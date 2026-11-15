@@ -1,0 +1,97 @@
+// PRIORITÉS — table de décision et préavis par propulsion, propres à chaque version.
+// La table ne se modifie que pendant la rédaction de sa version ; adoptée, elle est figée et
+// reste lisible pour toujours (rejouer une décision passée sous la version qui l'a fondée).
+//
+// Ce que la table NE PEUT PAS changer (garde-fous câblés dans PrioDesignation.designer,
+// propriétés 2 et 3 d'ORBITE) : un objet sans propulsion, hors service, en anomalie, d'un
+// opérateur inactif ou sans préavis suffisant n'est jamais désigné ; un objet habité ne l'est
+// que s'il est seul capable. La table ordonne seulement le choix entre deux objets capables.
+
+// Critère d'une ligne de la table, évalué sur chacun des deux objets capables.
+// - "derogation"         : l'objet bénéficie d'une dérogation en cours (PrioDerogation.en_cours) ;
+// - "propulsion_faible"  : sa propulsion actuelle est "faible" (ApiRef.propulsion) ;
+// - "arrivee_recente"    : il a été injecté après l'autre (ApiLancements.injecte_le) ;
+// - "essaim_autonome"    : il appartient à un essaim reconnu doté d'un évitement autonome ;
+// - "operateur_surveille": son opérateur est sous surveillance renforcée (ApiConformite) ;
+// - "masse_moindre"      : sa masse est strictement inférieure à celle de l'autre (ApiRef.masse).
+cell type PrioCritere = String where value == "derogation" || value == "propulsion_faible" || value == "arrivee_recente" || value == "essaim_autonome" || value == "operateur_surveille" || value == "masse_moindre"
+// Effet d'une ligne quand UN SEUL des deux objets satisfait le critère : "exempte" (l'autre
+// manœuvre) ou "designe" (celui-là manœuvre). Si les deux ou aucun le satisfont, la ligne
+// suivante s'applique.
+cell type PrioEffet = String where value == "exempte" || value == "designe"
+
+skeleton PrioTable {
+    // Au plus 16 lignes par version (une par critère suffit ; marge pour les versions futures).
+    const MAX_REGLES = 16
+    // Préavis maximal admis dans une table : 30 jours.
+    const MAX_PREAVIS = 2592000000
+    // Préavis appliqués quand aucune version n'est en vigueur (premier démarrage, abrogation) :
+    // 6 h pour une propulsion impulsionnelle, 72 h pour une propulsion faible.
+    const PREAVIS_IMPULSIONNELLE_DEFAUT = 21600000
+    const PREAVIS_FAIBLE_DEFAUT = 259200000
+    // Réponse de `preavis` pour la propulsion "aucune" : jamais assez de temps (≈ 100 ans).
+    const PREAVIS_JAMAIS = 3153600000000
+    memory {
+        critere_de: Map<String, PrioCritere> [persistent]  // "version|rang" -> critère
+        effet_de: Map<String, PrioEffet> [persistent]      // "version|rang" -> effet
+        rang_de: Map<String, Int> [persistent]             // "version|critere" -> rang (un critère au plus une fois)
+        nb_regles: Map<String, Int> [persistent]           // version -> lignes posées
+        preavis_de: Map<String, Duree> [persistent]        // "version|propulsion" -> préavis (ms), "faible" et "impulsionnelle" seulement
+        invariant nb_regles >= 0 && nb_regles <= 16
+        invariant rang_de >= 1 && rang_de <= 16
+        invariant preavis_de <= 2592000000
+        invariant critere_de.size <= 16000
+        invariant preavis_de.size <= 2000
+    }
+    face {
+        // Pose (ou remplace) la ligne de rang `rang` (1 = appliquée en premier) de la table de
+        // `version`, tant que la version est en rédaction. `par` "analyste" d'ORBITE. Renvoie
+        // le nombre de lignes de la table. Refus : Inconnu (version), EtatInvalide (version
+        // hors rédaction), HorsBornes (rang hors 1..MAX_REGLES), Doublon (critère déjà posé à
+        // un autre rang), Plein, Habilitation.
+        signal poser_regle(h: Horodatage, version: String, rang: Int, critere: PrioCritere, effet: PrioEffet, par: String) -> Int
+            writes critere_de, effet_de, rang_de, nb_regles
+            calls PrioVersion.etat, ApiAcces.a_le_role, Journal.noter
+        // Retire la ligne de rang `rang` (version en rédaction) ; les rangs suivants ne sont
+        // pas renumérotés. `par` "analyste". Renvoie le nombre de lignes restantes.
+        // Refus : Inconnu (version ou rang), EtatInvalide, Habilitation.
+        signal retirer_regle(h: Horodatage, version: String, rang: Int, par: String) -> Int
+            writes critere_de, effet_de, rang_de, nb_regles
+            calls PrioVersion.etat, ApiAcces.a_le_role, Journal.noter
+        // Fixe le préavis (ms, ≤ MAX_PREAVIS) d'une propulsion "faible" ou "impulsionnelle"
+        // dans `version` (en rédaction) : délai minimal entre la décision et le TCA pour que
+        // ce type de propulsion puisse agir. Le préavis "faible" doit rester ≥ celui
+        // "impulsionnelle". `par` "analyste". Renvoie le préavis retenu (ms).
+        // Refus : Inconnu, EtatInvalide, HorsBornes (propulsion "aucune", durée),
+        // Incoherent (faible < impulsionnelle), Habilitation.
+        signal fixer_preavis(h: Horodatage, version: String, p: Propulsion, d: Duree, par: String) -> Duree
+            writes preavis_de
+            calls PrioVersion.etat, ApiAcces.a_le_role, Journal.noter
+        // Recopie la table et les préavis de `base` dans `version` (en rédaction, table vide) :
+        // point de départ d'un amendement. `par` "analyste". Renvoie le nombre de lignes
+        // copiées. Refus : Inconnu (base), EtatInvalide, Existe (table déjà entamée), Habilitation.
+        signal reprendre(h: Horodatage, version: String, base: String, par: String) -> Int
+            writes critere_de, effet_de, rang_de, nb_regles, preavis_de
+            calls PrioVersion.etat, ApiAcces.a_le_role, Journal.noter
+        // Vrai si la table de `version` peut être soumise : au moins une ligne, et les deux
+        // préavis ("faible", "impulsionnelle") fixés.
+        signal complete(version: String) -> Bool
+            reads nb_regles, preavis_de
+        // Lignes de la table dans l'ordre d'application : "rang | critere | effet".
+        signal regles(version: String) -> List<String>
+            reads critere_de, effet_de
+        // Différences de la table de `version` avec celle de `base` (pièce de la consultation) :
+        // "+ rang | critere | effet" ajoutée, "- …" retirée, "~ critere : rang a -> b" déplacée,
+        // "preavis p : a -> b" modifié. Refus : Inconnu.
+        signal differences(version: String, base: String) -> List<String>
+            reads critere_de, effet_de, rang_de, preavis_de
+        // Préavis (ms) de la propulsion `p` dans `version` : PREAVIS_JAMAIS pour "aucune" ;
+        // pour une version sans table (ou ""), les préavis par défaut.
+        signal preavis_de_version(version: String, p: Propulsion) -> Duree
+            reads preavis_de
+        // Préavis (ms) de `p` sous la version en vigueur maintenant (défauts si aucune).
+        signal preavis_courant(p: Propulsion) -> Duree
+            reads preavis_de
+            calls PrioVersion.version_courante
+    }
+}

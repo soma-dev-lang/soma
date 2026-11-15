@@ -1,0 +1,358 @@
+// ephemerides — corps des DÉPÔTS.
+flesh EphDepot {
+    on deposer(h, objet, depot, ep, hz, q, empreinte, pos, manoeuvres, par) {
+        let etat_obj = ApiRef.etat_objet(objet)
+        require etat_obj != "inconnu" else Inconnu "objet {objet} non catalogué"
+        let reglage = EphReglage.courante_version()
+        require reglage != "" else Ferme "aucun réglage en vigueur"
+        let proprio = ApiRef.proprietaire(objet)
+        let systeme = par == "systeme"
+        if systeme {
+            require ApiAcces.a_le_role(par, "systeme") else Habilitation "identité systeme refusée"
+        } else {
+            require ApiAcces.a_le_role(par, "dynamicien") && ApiAcces.agit_pour(par, proprio) else Habilitation "{par} n'est pas dynamicien du propriétaire {proprio}"
+            require ApiOperateurs.est_actif(proprio, h) else Suspendu "opérateur {proprio} non actif"
+            let _ = EphQuota.compter(h, proprio, objet)
+            let _ = EphBilan.compter(h, proprio, "depot")
+        }
+        let src = if systeme { "observation" } else { "proprietaire" }
+        let _ = creer(h, depot, objet, proprio, reglage, EphSource(src), ep, hz, q, empreinte, pos, manoeuvres, par)
+        if !systeme {
+            let _ = admettre(h, depot)
+        }
+        let verdict = EphControle.examiner(h, objet, depot, ep, hz, q, empreinte, pos)
+        if verdict != "conforme" && verdict != "sans_temoin" {
+            let _ = rejeter(h, depot, EphMotifRejet(to_string(verdict)))
+            let _ = Journal.noter(h, "ephemerides", par, "depot {depot} de {objet} rejete : {verdict}")
+            return depot
+        }
+        let mesure = try { ApiObservation.ecart_a(objet, ep, pos) }
+        if mesure.error == () {
+            ecart_recu.set(depot, mesure.value)
+        }
+        let omise = (!manoeuvres) && ApiManoeuvres.plan_actif(objet)
+        if omise {
+            manoeuvre_omise.set(depot, true)
+            if !systeme {
+                let _ = EphBilan.compter(h, proprio, "omission")
+            }
+        }
+        let qr = EphControle.qualite_retenue(h, objet, q, hz, omise, verdict == "conforme")
+        let amax = EphReglage.age_max(ApiRef.regime(objet), ApiMeteo.tempete(h))
+        let _ = valider(h, depot, qr, amax)
+        let _ = Journal.noter(h, "ephemerides", par, "depot {depot} de {objet} valide ({verdict}, qualite {qr})")
+        return depot
+    }
+
+    on creer(h, depot, objet, op, reglage, src, ep, hz, q, empreinte, pos, manoeuvres, par) {
+        require objet_de.get(depot) == () else Existe "dépôt {depot} déjà enregistré"
+        require empreintes.get(empreinte) == () else Doublon "empreinte déjà déposée"
+        require objet_de.size < MAX_DEPOTS && empreintes.size < MAX_DEPOTS else Plein "registre des dépôts plein"
+        objet_de.set(depot, objet)
+        reglage_de.set(depot, reglage)
+        operateur_de.set(depot, op)
+        source.set(depot, src)
+        epoque.set(depot, ep)
+        horizon.set(depot, hz)
+        q_declaree.set(depot, q)
+        empreinte_de.set(depot, empreinte)
+        empreintes.set(empreinte, depot)
+        position_de.set(depot, pos)
+        avec_manoeuvres.set(depot, manoeuvres)
+        depose_le.set(depot, h)
+        depose_par.set(depot, par)
+        let _ = EphHistorique.noter_depot(h, objet, depot)
+        return depot
+    }
+
+    on admettre(h, depot) {
+        let op = operateur_de.get(depot)
+        require op != () else Inconnu "dépôt {depot} inconnu"
+        require (source.get(depot) ?? "") == "proprietaire" else EtatInvalide "dépôt d'observation : pas d'admission"
+        let st = get_status(depot) ?? "recu"
+        require st == "recu" else EtatInvalide "dépôt {depot} : {st}"
+        require ApiOperateurs.est_actif(op, h) else Suspendu "opérateur {op} non actif"
+        transition(depot, "recu", "admis")
+        return "admis"
+    }
+
+    on valider(h, depot, q, age_max) {
+        let obj = objet_de.get(depot)
+        require obj != () else Inconnu "dépôt {depot} inconnu"
+        let st = get_status(depot) ?? "recu"
+        let src = source.get(depot) ?? ""
+        require (st == "recu" && src == "observation") || (st == "admis" && src == "proprietaire") else EtatInvalide "dépôt {depot} : {st} ({src})"
+        let v = reglage_de.get(depot) ?? ""
+        require EphReglage.courante_version() == v else EtatInvalide "le réglage {v} du dépôt n'est plus en vigueur"
+        let ep = epoque.get(depot) ?? 0
+        let age = to_int(h) - to_int(ep)
+        require age <= to_int(age_max) else Perime "dépôt né périmé"
+        q_retenue.set(depot, q)
+        age_max_applique.set(depot, age_max)
+        age_au_depot.set(depot, Duree(max(0, age)))
+        let cur = try { EphSuivi.derniere(obj) }
+        if cur.error == () {
+            let c = cur.value
+            let ep_c = epoque.get(c) ?? 0
+            if ep_c > ep {
+                // Dépôt plus ancien que le courant : il complète l'historique sans devenir courant.
+                _valider_depuis(depot, st)
+                transition(depot, "validee", "remplacee")
+                let _ = Journal.noter(h, "ephemerides", "systeme", "depot {depot} valide puis remplace (plus ancien que {c})")
+                return "validee"
+            }
+            if (get_status(c) ?? "recu") == "validee" {
+                transition(c, "validee", "remplacee")
+                fin_le.set(c, h)
+            }
+        }
+        _valider_depuis(depot, st)
+        valide_le.set(depot, h)
+        let _ = EphSuivi.prendre(h, obj, depot)
+        let _ = Journal.noter(h, "ephemerides", "systeme", "depot {depot} courant pour {obj}")
+        return "validee"
+    }
+
+    on _valider_depuis(depot: String, st: String) {
+        if st == "recu" {
+            transition(depot, "recu", "validee")
+        } else {
+            transition(depot, "admis", "validee")
+        }
+    }
+
+    on rejeter(h, depot, motif) {
+        let op = operateur_de.get(depot)
+        require op != () else Inconnu "dépôt {depot} inconnu"
+        let st = get_status(depot) ?? "recu"
+        require st == "recu" || st == "admis" else EtatInvalide "dépôt {depot} : {st}"
+        motif_rejet.set(depot, motif)
+        transition(depot, st, "rejetee")
+        if (source.get(depot) ?? "") == "proprietaire" {
+            let _ = EphBilan.compter(h, op, "rejet")
+        }
+        let _ = Journal.noter(h, "ephemerides", "systeme", "depot {depot} rejete : {motif}")
+        return "rejetee"
+    }
+
+    on inclure_plan(h, depot, plan, par) {
+        let op = operateur_de.get(depot)
+        require op != () else Inconnu "dépôt {depot} inconnu"
+        require ApiAcces.a_le_role(par, "dynamicien") && ApiAcces.agit_pour(par, op) else Habilitation "{par} n'est pas dynamicien de {op}"
+        let st = get_status(depot) ?? "recu"
+        require st == "validee" else EtatInvalide "dépôt {depot} : {st}"
+        require (avec_manoeuvres.get(depot) ?? false) else Incoherent "dépôt déclaré sans manœuvres"
+        let e = ApiManoeuvres.etat(plan)
+        require e != "inconnu" else Inconnu "plan {plan} inconnu"
+        require e == "declare" || e == "crible" || e == "approuve" else EtatInvalide "plan {plan} : {e}"
+        require ApiManoeuvres.objet_de(plan) == (objet_de.get(depot) ?? "") else Incoherent "plan {plan} d'un autre objet"
+        let ps = plans_inclus.get(depot) ?? []
+        if contains(ps, plan) {
+            return len(ps)
+        }
+        require len(ps) < MAX_PLANS_INCLUS else Plein "trop de plans inclus"
+        let ps2 = ps ++ [plan]
+        plans_inclus.set(depot, ps2)
+        let _ = Journal.noter(h, "ephemerides", par, "plan {plan} inclus dans {depot}")
+        return len(ps2)
+    }
+
+    on invalider_depuis(h, objet, depuis, nature, motif, par) {
+        require len(motif) > 0 else MotifRequis "motif requis"
+        let hist = EphHistorique.historique(objet, 5000)
+        require len(hist) > 0 else Inconnu "objet {objet} sans dépôt"
+        // Le dépôt courant : le validé s'il y en a un, sinon le périmé d'époque la plus récente.
+        let courant_d = ""
+        let ep_perime = -1
+        for d in hist {
+            let s = get_status(d) ?? "recu"
+            if s == "validee" {
+                courant_d = d
+            }
+        }
+        if courant_d == "" {
+            for d in hist {
+                let s = get_status(d) ?? "recu"
+                let e = to_int(epoque.get(d) ?? 0)
+                if s == "perimee" && e > ep_perime {
+                    ep_perime = e
+                    courant_d = d
+                }
+            }
+        }
+        let op = operateur_de.get(if courant_d != "" { courant_d } else { hist[len(hist) - 1] }) ?? ""
+        if nature == "retrait_proprietaire" {
+            require ApiAcces.a_le_role(par, "dynamicien") && ApiAcces.agit_pour(par, op) else Habilitation "{par} n'est pas dynamicien de {op}"
+        } else {
+            require ApiAcces.a_le_role(par, "analyste") || ApiAcces.a_le_role(par, "systeme") else Habilitation "analyste ou systeme d'ORBITE requis"
+        }
+        let n = 0
+        let courant_touche = false
+        for d in hist {
+            let s = get_status(d) ?? "recu"
+            let e = epoque.get(d) ?? 0
+            if e >= depuis && (s == "validee" || s == "remplacee" || s == "perimee") {
+                transition(d, s, "invalidee")
+                if s == "validee" {
+                    fin_le.set(d, h)
+                }
+                motif_fin.set(d, "{nature}|{motif}|{par}")
+                n = n + 1
+                if d == courant_d {
+                    courant_touche = true
+                }
+            }
+        }
+        if courant_touche {
+            let p = try { EphSuivi.perdre(h, objet) }
+            let r_haut = ""
+            let nv_haut = 0
+            for r in ApiConjonctions.ouverts_de(objet) {
+                let nv = to_int(ApiConjonctions.niveau(Rapprochement(r)))
+                if nv > nv_haut {
+                    nv_haut = nv
+                    r_haut = r
+                }
+            }
+            let urgence = if nv_haut == 3 { 3 } else { 2 }
+            let note = try { ApiPasserelle.notifier(h, op, r_haut, "ephemeride_invalidee", "objet {objet} : dépôt {courant_d} invalidé ({nature}) — redéposer", urgence) }
+            if nature == "incoherence" || nature == "manoeuvre_non_annoncee" || nature == "plan_annule" || nature == "retrait_proprietaire" {
+                let _ = EphBilan.compter(h, op, "invalidation")
+            }
+        }
+        if n > 0 {
+            let _ = Journal.noter(h, "ephemerides", par, "{n} depot(s) de {objet} invalide(s) : {nature} — {motif}")
+        }
+        return n
+    }
+
+    on perimer(h, depot) {
+        let st = get_status(depot) ?? "recu"
+        require st == "validee" else EtatInvalide "dépôt {depot} : {st}"
+        transition(depot, "validee", "perimee")
+        fin_le.set(depot, h)
+        return "perimee"
+    }
+
+    on rehabiliter(h, depot) {
+        let obj = objet_de.get(depot)
+        require obj != () else Inconnu "dépôt {depot} inconnu"
+        let st = get_status(depot) ?? "recu"
+        require st == "rejetee" else EtatInvalide "dépôt {depot} : {st}"
+        require EphContestation.etat(depot) == "acceptee" else EtatInvalide "contestation de {depot} non acceptée"
+        let qd = q_declaree.get(depot) ?? "faible"
+        q_retenue.set(depot, if qd == "haute" { Qualite("moyenne") } else { qd })
+        let ep = epoque.get(depot) ?? 0
+        let cur = try { EphSuivi.derniere(obj) }
+        if cur.error == () {
+            let c = cur.value
+            if (epoque.get(c) ?? 0) > ep {
+                transition(depot, "rejetee", "remplacee")
+                let _ = Journal.noter(h, "ephemerides", "systeme", "depot {depot} rehabilite, remplace par {c}")
+                return "remplacee"
+            }
+            if (get_status(c) ?? "recu") == "validee" {
+                transition(c, "validee", "remplacee")
+                fin_le.set(c, h)
+            }
+        }
+        transition(depot, "rejetee", "validee")
+        valide_le.set(depot, h)
+        let _ = EphSuivi.prendre(h, obj, depot)
+        let _ = Journal.noter(h, "ephemerides", "systeme", "depot {depot} rehabilite et courant pour {obj}")
+        return "validee"
+    }
+
+    on archiver(h, depot) {
+        let st = get_status(depot) ?? "recu"
+        require st == "rejetee" || st == "remplacee" || st == "perimee" || st == "invalidee" else EtatInvalide "dépôt {depot} : {st}"
+        require !EphRetention.est_retenu(depot) else EtatInvalide "dépôt {depot} retenu comme preuve"
+        transition(depot, st, "archivee")
+        return "archivee"
+    }
+
+    on etat_de(depot) {
+        if objet_de.get(depot) == () {
+            return "inconnu"
+        }
+        return get_status(depot) ?? "recu"
+    }
+
+    on motif_rejet_de(depot) {
+        require objet_de.get(depot) != () else Inconnu "dépôt {depot} inconnu"
+        return to_string(motif_rejet.get(depot) ?? "")
+    }
+
+    on objet_du_depot(depot) {
+        let o = objet_de.get(depot)
+        require o != () else Inconnu "dépôt {depot} inconnu"
+        return o
+    }
+
+    on epoque_de(depot) {
+        let e = epoque.get(depot)
+        require e != () else Inconnu "dépôt {depot} inconnu"
+        return e
+    }
+
+    on qualite_de(depot) {
+        let q = q_retenue.get(depot)
+        require q != () else Inconnu "dépôt {depot} jamais validé"
+        return q
+    }
+
+    on plans_de(depot) {
+        require objet_de.get(depot) != () else Inconnu "dépôt {depot} inconnu"
+        return plans_inclus.get(depot) ?? []
+    }
+
+    on fin_de(depot) {
+        require objet_de.get(depot) != () else Inconnu "dépôt {depot} inconnu"
+        return fin_le.get(depot) ?? 0
+    }
+
+    on valide_depuis(depot) {
+        require objet_de.get(depot) != () else Inconnu "dépôt {depot} inconnu"
+        return valide_le.get(depot) ?? 0
+    }
+
+    on empreinte_du_depot(depot) {
+        let e = empreinte_de.get(depot)
+        require e != () else Inconnu "dépôt {depot} inconnu"
+        return e
+    }
+
+    on inclut_manoeuvres(depot) {
+        let m = avec_manoeuvres.get(depot)
+        require m != () else Inconnu "dépôt {depot} inconnu"
+        return m
+    }
+
+    on est_valide(depot) {
+        if objet_de.get(depot) == () {
+            return false
+        }
+        return (get_status(depot) ?? "recu") == "validee"
+    }
+
+    on fiche(depot) {
+        let o = objet_de.get(depot)
+        require o != () else Inconnu "dépôt {depot} inconnu"
+        let op = operateur_de.get(depot) ?? ""
+        let src = source.get(depot) ?? ""
+        let ep = epoque.get(depot) ?? 0
+        let hz = horizon.get(depot) ?? 0
+        let qd = q_declaree.get(depot) ?? ""
+        let qr = q_retenue.get(depot) ?? ""
+        let emp = empreinte_de.get(depot) ?? ""
+        let pos = position_de.get(depot) ?? ""
+        let ec = if ecart_recu.get(depot) == () { "" } else { to_string(ecart_recu.get(depot)) }
+        let rg = reglage_de.get(depot) ?? ""
+        let am = avec_manoeuvres.get(depot) ?? false
+        let om = manoeuvre_omise.get(depot) ?? false
+        let dl = depose_le.get(depot) ?? 0
+        let dp = depose_par.get(depot) ?? ""
+        let st = get_status(depot) ?? "recu"
+        return "{o}|{op}|{src}|{ep}|{hz}|{qd}|{qr}|{emp}|{pos}|{ec}|{rg}|{am}|{om}|{dl}|{dp}|{st}"
+    }
+}

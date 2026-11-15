@@ -1,0 +1,65 @@
+// RENTRÉES — corps : trace au sol des fenêtres (États survolés).
+
+flesh ReeSurvol {
+    on tracer(h, campagne, etats, parts, victimes, par) {
+        require ApiAcces.a_le_role(par, "analyste") || ApiAcces.a_le_role(par, "systeme") else Habilitation "trace au sol : analyste ou systeme d'ORBITE"
+        let ec = ReeCampagne.etat(campagne)
+        require ec != "inconnue" else Inconnu "campagne inconnue : {campagne}"
+        require ec == "ouverte" || ec == "imminente" else EtatInvalide "campagne {campagne} {ec}"
+        let nb = len(etats)
+        require len(parts) == nb && len(victimes) == nb else Incoherent "listes de longueurs différentes"
+        require nb <= MAX_ETATS else Plein "trop d'États sous la fenêtre"
+        let vus_s = []
+        let somme = 0
+        for i in range(0, nb) {
+            let e = etats[i]
+            require !contains(vus_s, e) else Incoherent "État en double : {e}"
+            vus_s = vus_s ++ [e]
+            let p = parts[i]
+            let v = victimes[i]
+            require p >= 0 && p <= 100 else HorsBornes "part hors bornes pour {e} : {p}"
+            require v >= 0 && v <= MAX_PPM else HorsBornes "victimes hors bornes pour {e} : {v}"
+            somme = somme + p
+        }
+        require somme <= 100 else Incoherent "somme des parts {somme} > 100"
+        let hist = historique.get(campagne) ?? []
+        require len(hist) < MAX_REVISIONS else Plein "trop de traces pour {campagne}"
+        require historique.size < MAX_CAMPAGNES || historique.get(campagne) != () else Plein "trop de campagnes tracées"
+        let fen = ReeCampagne.fenetre(campagne)
+        let deb = fen[0]
+        let fin = fen[1]
+        // les États sortis perdent leur part
+        for e in etats_de.get(campagne) ?? [] {
+            if !contains(etats, e) {
+                part.delete("{campagne}|{e}")
+                victimes_etat.delete("{campagne}|{e}")
+            }
+        }
+        let detail_s = []
+        for i in range(0, nb) {
+            let e = etats[i]
+            let k = "{campagne}|{e}"
+            require part.has(k) || part.size < MAX_TRACES else Plein "trop de traces"
+            part.set(k, Pourcent(parts[i]))
+            victimes_etat.set(k, victimes[i])
+            let p = parts[i]
+            let v = victimes[i]
+            detail_s = detail_s ++ ["{e}:{p}:{v}"]
+        }
+        etats_de.set(campagne, etats)
+        trace.set(campagne, "{h} | {deb}-{fin} | {par}")
+        let det = join(detail_s, ", ")
+        historique.set(campagne, hist ++ ["{h} | {deb}-{fin} | {det}"])
+        let _ = ReeNotification.retirer(h, campagne, etats)
+        let _ = ReeNotification.inscrire(h, campagne, etats, "survol", par)
+        let _ = ReeNotification.diffuser(h, campagne, par)
+        let _ = Journal.noter(h, "reentrees", par, "campagne {campagne} : trace au sol {deb}-{fin}, {nb} État(s) : {det}")
+        return nb
+    }
+
+    on victimes_sur(campagne, etat) {
+        let sous = etats_de.get(campagne) ?? []
+        if !contains(sous, to_string(etat)) { return 0 }
+        return victimes_etat.get("{campagne}|{etat}") ?? 0
+    }
+}

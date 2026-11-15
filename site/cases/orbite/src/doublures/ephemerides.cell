@@ -1,0 +1,226 @@
+// Doublures (corps PROVISOIRES) des façades que les corps d'ephemerides appellent, pour
+// test_ephemerides.cell seulement. Fonctions pures des identifiants :
+// - personnes : "<role>" = employé d'ORBITE ("analyste", "superviseur2"…) ; "<role>_<code>" =
+//   employé de "ORG-<CODE>" ("dynamicien_alpha" → ORG-ALPHA) ; "intrus…" n'a aucun rôle ;
+//   "systeme" a le rôle "systeme".
+// - objets : OBJ-INCONNU… non catalogué ; OBJ-RENTRE… rentré ; OBJ-SUSP… à ORG-SUSP-1 (suspendu) ;
+//   OBJ-B… à ORG-BETA ; sinon ORG-ALPHA ; …GEO… en GEO, sinon LEO ; …SANS… sans orbite
+//   observée ; …ECART… écart déclaré 50 km ; …MANOEUVRE… manœuvre détectée ; …ANOMALIE… en
+//   anomalie ; …PLAN… plan actif ; …N3… / …N2… rapprochement ouvert CJ-3 / CJ-2.
+// - position "x,y,z" : écart à l'orbite observée = |x| + |y| + |z| m.
+// - plans "PLAN-<…>@<objet>" ; PLAN-ANNULE… annulé ; PLAN-INCONNU… inconnu ; sinon approuvé.
+// - temps : tempête sur [1,8e12 ; 1,8001e12[ ; météo muette sur [1,81e12 ; 1,8101e12[ ;
+//   gel des changements sur [1,85e12 ; 1,8501e12[.
+flesh ApiAcces {
+    on a_le_role(personne, r) {
+        if personne == "systeme" {
+            return r == "systeme"
+        }
+        if starts_with(personne, "intrus") || r == "systeme" || r == "aucun" {
+            return false
+        }
+        if !starts_with(personne, r) {
+            return false
+        }
+        let orbite = r == "analyste" || r == "superviseur" || r == "exploitant" || r == "conformite" || r == "direction" || r == "auditeur"
+        if orbite {
+            return !contains(personne, "_")
+        }
+        return contains(personne, "_")
+    }
+    on agit_pour(personne, org) {
+        if starts_with(personne, "intrus") || personne == "systeme" {
+            return false
+        }
+        let parts = split(personne, "_")
+        let emp = if len(parts) < 2 { "ORG-ORBITE" } else { "ORG-" + uppercase(parts[len(parts) - 1]) }
+        return emp == to_string(org)
+    }
+    on quatre_yeux(demandeur, valideur) {
+        if demandeur == valideur || starts_with(valideur, "intrus") {
+            return false
+        }
+        return starts_with(valideur, "superviseur") || starts_with(valideur, "conformite") || starts_with(valideur, "direction") || starts_with(valideur, "chef_de_mission")
+    }
+}
+
+flesh ApiRef {
+    on orbite() {
+        return "ORG-ORBITE"
+    }
+    on etat_objet(objet) {
+        if starts_with(objet, "OBJ-INCONNU") {
+            return "inconnu"
+        }
+        if starts_with(objet, "OBJ-RENTRE") {
+            return "rentre"
+        }
+        return "en_service"
+    }
+    on proprietaire(objet) {
+        require !starts_with(objet, "OBJ-INCONNU") else Inconnu "objet inconnu"
+        if starts_with(objet, "OBJ-SUSP") {
+            return "ORG-SUSP-1"
+        }
+        if starts_with(objet, "OBJ-B") {
+            return "ORG-BETA"
+        }
+        return "ORG-ALPHA"
+    }
+    on regime(objet) {
+        if contains(objet, "GEO") {
+            return "geo"
+        }
+        return "leo"
+    }
+}
+
+flesh ApiOperateurs {
+    on est_actif(op, h) {
+        return !starts_with(op, "ORG-SUSP")
+    }
+    on statut(op) {
+        if starts_with(op, "ORG-INCONNU") {
+            return "inconnu"
+        }
+        if starts_with(op, "ORG-SUSP") {
+            return "suspendu"
+        }
+        return "actif"
+    }
+}
+
+flesh ApiObservation {
+    on ecart_a(objet, epoque, position) {
+        require !contains(objet, "SANS") else Inconnu "pas d'orbite observée"
+        let p = split(position, ",")
+        require len(p) == 3 else Incoherent "position mal formée"
+        let x = to_int(p[0])
+        let y = to_int(p[1])
+        let z = to_int(p[2])
+        require x != () && y != () && z != () else Incoherent "position mal formée"
+        return abs(x) + abs(y) + abs(z)
+    }
+    on ecart_declare(objet) {
+        require !contains(objet, "SANS") else Inconnu "pas d'orbite observée"
+        if contains(objet, "ECART") {
+            return 50000
+        }
+        return 100
+    }
+    on manoeuvre_detectee(objet, depuis) {
+        return contains(objet, "MANOEUVRE")
+    }
+    on demander_suivi(h, objet, priorite, duree, motif, par) {
+        return "SUIVI-{objet}-{h}"
+    }
+}
+
+flesh ApiManoeuvres {
+    on etat(plan) {
+        if starts_with(plan, "PLAN-INCONNU") {
+            return "inconnu"
+        }
+        if starts_with(plan, "PLAN-ANNULE") {
+            return "annule"
+        }
+        return "approuve"
+    }
+    on objet_de(plan) {
+        let p = split(plan, "@")
+        require len(p) == 2 else Inconnu "plan inconnu"
+        return Objet(p[1])
+    }
+    on plan_actif(objet) {
+        return contains(objet, "PLAN")
+    }
+    on plan_couvrant(objet, instant) {
+        return ""
+    }
+    on constater_non_annoncee(h, objet, depuis, par) {
+        return "MNA-{objet}"
+    }
+}
+
+flesh ApiConjonctions {
+    on ouverts_de(objet) {
+        if contains(objet, "N3") {
+            return ["CJ-3"]
+        }
+        if contains(objet, "N2") {
+            return ["CJ-2"]
+        }
+        return []
+    }
+    on niveau(r) {
+        if r == "CJ-3" {
+            return 3
+        }
+        if r == "CJ-2" {
+            return 2
+        }
+        return 1
+    }
+    on urgents(h, horizon, niveau_min) {
+        return ["CJ-3"]
+    }
+    on objets(r) {
+        if r == "CJ-3" {
+            return ["OBJ-A-N3", "OBJ-B-N3"]
+        }
+        return []
+    }
+}
+
+flesh ApiMeteo {
+    on tempete(h) {
+        return h >= 1800000000000 && h < 1800100000000
+    }
+    on kp(h) {
+        require h < 1810000000000 || h >= 1810100000000 else Perime "aucune mesure depuis 3 h"
+        return 30
+    }
+    on facteur_incertitude(regime, h) {
+        return 100
+    }
+}
+
+flesh ApiPasserelle {
+    on notifier(h, destinataire, r, sujet, texte, urgence) {
+        require destinataire != "inconnu" else Inconnu "destinataire inconnu"
+        return "MSG-{destinataire}-{sujet}"
+    }
+}
+
+flesh ApiConformite {
+    on constater(h, op, nature, gravite, reference, par) {
+        return "MQ-{op}-{nature}-{gravite}"
+    }
+}
+
+flesh ApiEvenements {
+    on en_anomalie(objet) {
+        return contains(objet, "ANOMALIE")
+    }
+}
+
+flesh ApiDonnees {
+    on peut_recevoir(org, objet, r, h) {
+        return !starts_with(org, "ORG-TIERS")
+    }
+    on tracer(h, org, objet, r, nature) {
+        return 1
+    }
+}
+
+flesh ApiResponsabilite {
+    on sous_gel(cible) {
+        return contains(cible, "GEL")
+    }
+}
+
+flesh ApiOperations {
+    on changement_autorise(h) {
+        return h < 1850000000000 || h >= 1850100000000
+    }
+}

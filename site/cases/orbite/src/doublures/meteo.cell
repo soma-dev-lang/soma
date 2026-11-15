@@ -1,0 +1,79 @@
+// Doublures PROVISOIRES des façades appelées par les corps de meteo (tests de meteo seulement).
+// Pures, sans mémoire : leur comportement se lit sur les identifiants.
+// - Personne "role[#n]@ORG-X" : a le rôle `role` pour l'employeur ORG-X ; un rôle d'ORBITE ne
+//   vaut que si ORG-X = ORG-ORBITE ; "intrus…" n'a aucun rôle ; "systeme" a le seul rôle "systeme".
+// - quatre_yeux(a, b) : faux si a == b ou si b est un intrus ; vrai sinon.
+// - Organisations : existent si l'id commence par "ORG-" sauf "ORG-RADIEE…".
+// - Opérateurs actifs : ORG-OPA et ORG-MUET-B ; États participants : ALD (ORG-ETAT-ALD) et
+//   ZZZ (sans organisation : org_de_etat refuse Inconnu).
+// - Passerelle : message "PM|<destinataire>|<h>" ; acquitté sauf si le destinataire commence
+//   par "ORG-MUET" ; un destinataire "ORG-PLEIN…" fait refuser Plein.
+// - Conjonctions : épisode "EP-<regime>-<h>" ; refuse Incoherent si fin ≤ h.
+// - Responsabilité : seul le jour 19680 est sous gel ("J:19680").
+flesh ApiAcces {
+    on a_le_role(personne, r) {
+        if personne == "systeme" { return r == "systeme" }
+        if starts_with(personne, "intrus") { return false }
+        let parts = split(personne, "@")
+        if len(parts) != 2 { return false }
+        let role = split(parts[0], "#")[0]
+        if role != to_string(r) || role == "systeme" || role == "aucun" { return false }
+        if contains(["analyste", "superviseur", "exploitant", "conformite", "direction", "auditeur"], role) {
+            return parts[1] == "ORG-ORBITE"
+        }
+        return true
+    }
+    on agit_pour(personne, org) {
+        if starts_with(personne, "intrus") { return false }
+        let parts = split(personne, "@")
+        if len(parts) != 2 { return false }
+        return parts[1] == to_string(org)
+    }
+    on quatre_yeux(demandeur, valideur) {
+        return demandeur != valideur && !starts_with(valideur, "intrus")
+    }
+}
+
+flesh ApiRef {
+    on orbite() { return "ORG-ORBITE" }
+    on organisation_existe(org) {
+        let o = to_string(org)
+        return starts_with(o, "ORG-") && !starts_with(o, "ORG-RADIEE")
+    }
+    on etats_participants() { return ["ALD", "ZZZ"] }
+    on org_de_etat(etat) {
+        require to_string(etat) == "ALD" else Inconnu "État {etat} sans organisation"
+        return "ORG-ETAT-ALD"
+    }
+}
+
+flesh ApiOperateurs {
+    on actifs(h) { return ["ORG-OPA", "ORG-MUET-B"] }
+}
+
+flesh ApiPasserelle {
+    on notifier(h, destinataire, r, sujet, texte, urgence) {
+        require !starts_with(to_string(destinataire), "ORG-PLEIN") else Plein "file pleine"
+        return "PM|{destinataire}|{h}"
+    }
+    on acquitte(message) { return !contains(message, "|ORG-MUET") }
+}
+
+flesh ApiConjonctions {
+    on renforcer(h, regime, fin, motif, par) {
+        require to_int(fin) > to_int(h) else Incoherent "fin avant h"
+        return "EP-{regime}-{h}"
+    }
+}
+
+flesh ApiOperations {
+    on declarer_incident(h, incident, gravite, sous_systeme, description, par) { return incident }
+}
+
+flesh ApiConformite {
+    on constater(h, op, nature, gravite, reference, par) { return "MQ-{reference}" }
+}
+
+flesh ApiResponsabilite {
+    on sous_gel(cible) { return cible == "J:19680" }
+}

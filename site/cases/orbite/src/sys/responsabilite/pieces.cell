@@ -1,0 +1,159 @@
+// RESPONSABILITÉ — pièces d'un dossier de preuve et collecte auprès des façades.
+// Une pièce est un instantané daté d'une donnée d'un autre sous-système (texte "clé=valeur; …"
+// et son empreinte), gelé dans un dossier "gele". La traçabilité d'une décision (propriété 6)
+// est le graphe `fondements_de` : une pièce de décision (coordination, arbitrage, approbation
+// de manœuvre) pointe vers les pièces de données qui la fondaient (rapprochement, éphémérides,
+// règles de priorité, météo), chacune d'un instant antérieur ou égal à la décision. Une pièce
+// porte la `reference` de ce qu'elle fige dans sa source (id de décision de coordination ou de
+// priorité, id de plan, id de dépôt d'éphéméride) : ApiResponsabilite.chaine(decision) part de là.
+// Les valeurs sont celles en vigueur À L'INSTANT DE LA DÉCISION (ApiEphemerides.fondement,
+// ApiRef.valeur_au, ApiCoordination.decision, ApiPriorites.decision_de), pas au gel.
+
+// Nature d'une pièce : sa source et ce qu'elle fige.
+// "rapprochement" (état, niveau, TCA, pc, objets), "coordination" (état, désignation, échéance),
+// "manoeuvre" (plan d'évitement, état), "escalade" (échelon par opérateur), "priorites"
+// (version en vigueur, désignation par défaut), "meteo" (tempête, Kp), "ephemeride" (dernier
+// dépôt validé, âge, qualité, fraîcheur), "observation" (suivi indépendant, écart déclaré,
+// manœuvre détectée), "objet" (référentiel : état, nature, propriétaire, État
+// d'immatriculation, propulsion), "operateur" (statut, joignabilité), "journal" (lignes du
+// Journal commun citant la cible), "declaration" (pièce versée par une partie, empreinte seule).
+cell type RespGenrePiece = String where value == "rapprochement" || value == "coordination" || value == "manoeuvre" || value == "escalade" || value == "priorites" || value == "meteo" || value == "ephemeride" || value == "observation" || value == "objet" || value == "operateur" || value == "journal" || value == "declaration"
+
+// Pièces (une instance par id "PC-<n>").
+skeleton RespPieces {
+    const MAX_PIECES = 5000000
+    // Pièces d'un même dossier.
+    const MAX_PIECES_PAR_DOSSIER = 2000
+    // Fondements directs d'une pièce, et taille maximale d'une chaîne renvoyée.
+    const MAX_FONDEMENTS = 50
+    const MAX_CHAINE = 200
+    // Taille maximale d'un instantané, en caractères.
+    const MAX_CONTENU = 20000
+    // Période de revérification des empreintes : 30 jours, ms ; pièces par ronde.
+    const PERIODE_VERIFICATION = 2592000000
+    const PIECES_PAR_RONDE = 500
+    memory {
+        dossier_de: Map<String, String> [persistent]       // pièce -> dossier ; écrit une fois par geler_piece, jamais supprimé (lien `via`)
+        invariant dossier_de.size <= 5000000
+        genre_de: Map<String, RespGenrePiece> [persistent]
+        cible_de: Map<String, String> [persistent]         // rapprochement ou objet concerné ("" pour une pièce générale : priorités, météo)
+        objets_de: Map<String, List<String>> [persistent]  // objets dont la pièce contient des données (contrôle de diffusion)
+        source_de: Map<String, SousSysteme> [persistent]
+        reference_de: Map<String, String> [persistent]     // id dans la source (décision, plan, dépôt) ; "" si aucun
+        piece_de_reference: Map<String, String> [persistent]  // référence -> dernière pièce qui la fige (index de chaine_de)
+        a_verifier: Map<String, Horodatage> [persistent]   // pièce non altérée -> prochaine vérification d'empreinte
+        contenu_de: Map<String, String> [persistent]       // instantané "clé=valeur; …" (≤ MAX_CONTENU)
+        empreinte_de: Map<String, String> [persistent]     // hachage du contenu au gel ; jamais réécrit
+        instant_de: Map<String, Horodatage> [persistent]   // instant auquel la donnée valait (≤ gel)
+        gelee_le: Map<String, Horodatage> [persistent]
+        invariant (instant_de ?? 0) <= (gelee_le ?? 0)
+        gelee_par: Map<String, String> [persistent]
+        verifiee_le: Map<String, Horodatage> [persistent]  // dernière vérification d'empreinte
+        fondements_de: Map<String, List<String>> [persistent]  // pièce de décision -> pièces qui la fondent (même dossier)
+        pieces_du_dossier: Map<String, List<String>> [persistent]  // dossier -> pièces, dans l'ordre du gel
+    }
+    state piece {
+        initial: aucune
+        aucune -> gelee      // instantané pris dans un dossier "gele"
+        gelee -> verifiee    // empreinte recalculée identique
+        verifiee -> verifiee // revérification périodique
+        gelee -> alteree     // empreinte différente : incident de gravité 3
+        verifiee -> alteree
+    }
+    face {
+        // Gèle une pièce dans un dossier "gele" : contenu, empreinte (calculée par le corps),
+        // référence dans la source, instant de validité de la donnée, objets concernés ;
+        // programme sa première vérification (h + PERIODE_VERIFICATION). Renvoie l'id "PC-<n>". Par
+        // "systeme" (collecte) ou "analyste" / "conformite" d'ORBITE (pièce "declaration"
+        // versée par une partie). Refus : Inconnu (dossier), EtatInvalide (dossier non "gele"),
+        // HorsBornes (instant > h, contenu > MAX_CONTENU), Plein, Habilitation.
+        signal geler_piece(h: Horodatage, dossier: String, genre: RespGenrePiece, cible: String, reference: String, objets: List<String>, source: SousSysteme, instant: Horodatage, contenu: String, par: String) -> String
+            writes dossier_de, genre_de, cible_de, objets_de, source_de, reference_de, piece_de_reference, a_verifier, contenu_de, empreinte_de, instant_de, gelee_le, gelee_par, pieces_du_dossier
+            moves aucune -> gelee when RespDossiers.gele via dossier_de
+            calls ApiAcces.a_le_role, RespDossiers.etat, Journal.noter, next_id
+        // Déclare que la pièce `decision` était fondée sur la pièce `donnee`. Renvoie le nombre
+        // de fondements de la décision. Par "systeme" ou "analyste". Refus : Inconnu,
+        // Incoherent (dossiers différents, décision fondée sur elle-même, ou donnée postérieure
+        // à la décision), Doublon, Plein (MAX_FONDEMENTS), EtatInvalide (dossier non "gele"),
+        // Habilitation.
+        signal fonder(h: Horodatage, decision: String, donnee: String, par: String) -> Int
+            reads dossier_de, instant_de
+            writes fondements_de
+            calls ApiAcces.a_le_role, RespDossiers.etat, Journal.noter
+        // Recalcule l'empreinte du contenu gelé et la compare : "verifiee" si identique,
+        // "alteree" sinon (incident de gravité 3 déclaré via ApiOperations). Renvoie l'état
+        // atteint. Par "systeme" (balayage) ou "conformite". Refus : Inconnu, EtatInvalide
+        // (pièce déjà altérée), Habilitation.
+        signal verifier(h: Horodatage, piece: String, par: String) -> String
+            reads contenu_de, empreinte_de
+            writes verifiee_le, a_verifier
+            moves gelee -> verifiee, verifiee -> verifiee, gelee -> alteree, verifiee -> alteree
+            calls ApiAcces.a_le_role, ApiOperations.declarer_incident, Journal.noter
+        // Chaîne de preuve d'une pièce : elle-même puis, en largeur, toutes les pièces qui la
+        // fondent, sans doublon (≤ MAX_CHAINE). Refus : Inconnu.
+        signal chaine(piece: String) -> List<String>
+            reads fondements_de, dossier_de
+        // Chaîne de preuve d'une décision désignée par sa référence dans sa source (id de
+        // décision de coordination ou de priorité, id de plan) : chaine(pièce qui la fige).
+        // Refus : Inconnu (aucune pièce ne fige cette décision).
+        signal chaine_de(decision: String) -> List<String>
+            reads piece_de_reference, fondements_de
+        // Ronde : vérifie au plus PIECES_PAR_RONDE pièces dont la vérification est échue à `h`
+        // (verifier, par "systeme"). Renvoie le nombre d'altérations détectées. Refus : Habilitation.
+        signal ronde(h: Horodatage, par: String) -> Int
+            reads a_verifier
+            calls ApiAcces.a_le_role, verifier
+        // Pièces d'un dossier dans l'ordre du gel ([] si aucune).
+        signal pieces_de(dossier: String) -> List<String>
+            reads pieces_du_dossier
+        // État : "aucune", "gelee", "verifiee", "alteree".
+        signal etat(piece: String) -> String
+            reads piece
+        // Empreinte au gel ; Refus : Inconnu.
+        signal empreinte(piece: String) -> String
+            reads empreinte_de
+        // Objets dont la pièce contient des données ; Refus : Inconnu.
+        signal objets(piece: String) -> List<String>
+            reads objets_de
+        // Fiche complète "genre | cible | source | instant | empreinte | contenu" — réservée
+        // aux communications autorisées (RespCommunications) et aux commissions. Refus : Inconnu.
+        signal lire(piece: String) -> String
+            reads genre_de, cible_de, source_de, instant_de, empreinte_de, contenu_de
+    }
+}
+
+// Collecte : lit les façades et gèle une pièce par source, à l'instant `h` du rattachement.
+// Pas de mémoire : tout passe par RespPieces.
+skeleton RespCollecte {
+    face {
+        // Gèle les pièces d'un rapprochement : "rapprochement" (état, niveau, TCA, pc, distance,
+        // mise à jour, objets), "coordination" (ApiCoordination.decision : id, désigné, auteur,
+        // valideur, instant, motif — référence = id de décision), "priorites"
+        // (ApiPriorites.decision_de : version, règle appliquée — référence = son id),
+        // "ephemeride" de chaque objet à l'instant de la décision (ApiEphemerides.fondement,
+        // empreinte, avec_manoeuvres, depot_valide — référence = dépôt), "objet" de chaque objet
+        // à cet instant (ApiRef.valeur_au : propriétaire, propulsion, état_objet), "manoeuvre"
+        // (plan d'évitement — référence = plan), "escalade" (échelon pour chaque propriétaire),
+        // "meteo" (tempête, Kp) et "journal" (≤ 1000 lignes citant r). Puis relie : décision de
+        // coordination fondée sur rapprochement, priorités, météo, éphémérides et objets ;
+        // manœuvre fondée sur la décision. Renvoie le nombre de
+        // pièces gelées. Une façade qui refuse (Inconnu, Perime) donne une pièce "absent=<tag>" :
+        // l'absence est elle-même une preuve. Refus : ceux de RespPieces.geler_piece.
+        signal collecter_rapprochement(h: Horodatage, dossier: String, r: Rapprochement, instant: Horodatage) -> Int
+            calls ApiConjonctions.etat, ApiConjonctions.niveau, ApiConjonctions.objets, ApiConjonctions.tca, ApiConjonctions.pc, ApiConjonctions.distance, ApiConjonctions.mis_a_jour, ApiCoordination.etat, ApiCoordination.decision, ApiCoordination.echeance, ApiPriorites.decision_de, ApiManoeuvres.plan_de, ApiManoeuvres.etat, ApiEscalade.echelon, ApiEphemerides.fondement, ApiEphemerides.empreinte, ApiEphemerides.avec_manoeuvres, ApiEphemerides.depot_valide, ApiRef.valeur_au, ApiRef.proprietaire, ApiMeteo.tempete, ApiMeteo.kp, Journal.chercher, RespPieces.geler_piece, RespPieces.fonder
+        // Gèle les pièces d'un objet à l'instant `instant` (celui de l'évènement) : "objet"
+        // (ApiRef.valeur_au pour chaque champ, États de lancement, plan de fin de vie conforme
+        // / en retard, anomalie), "ephemeride" (ApiEphemerides.fondement à l'instant, son
+        // empreinte, qualité), "observation" (suivi indépendant, écart déclaré, manœuvre non
+        // annoncée détectée dans les 7 jours avant), "operateur" (statut et joignabilité du
+        // propriétaire) et "journal". Renvoie le nombre de pièces gelées.
+        // Refus : ceux de RespPieces.geler_piece.
+        signal collecter_objet(h: Horodatage, dossier: String, objet: Objet, instant: Horodatage) -> Int
+            calls ApiRef.valeur_au, ApiRef.proprietaire, ApiLancements.etats_de_lancement, ApiFinDeVie.plan_conforme, ApiFinDeVie.en_retard, ApiEvenements.en_anomalie, ApiEphemerides.fondement, ApiEphemerides.empreinte, ApiEphemerides.qualite, ApiObservation.suivi, ApiObservation.ecart_declare, ApiObservation.manoeuvre_detectee, ApiOperateurs.statut, ApiOperateurs.joignable, Journal.chercher, RespPieces.geler_piece
+        // Gèle la pièce "manoeuvre" d'un plan (objet, motif, état — référence = plan) et le
+        // pose sous gel ; la relie à la pièce de décision du rapprochement qu'il évite, si elle
+        // est déjà gelée. Renvoie 1. Refus : ceux de RespPieces.geler_piece.
+        signal collecter_plan(h: Horodatage, dossier: String, plan: String, instant: Horodatage) -> Int
+            calls ApiManoeuvres.objet_de, ApiManoeuvres.motif_de, ApiManoeuvres.etat, RespPieces.geler_piece, RespPieces.fonder, RespPieces.chaine_de
+    }
+}

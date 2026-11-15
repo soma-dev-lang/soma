@@ -1,0 +1,128 @@
+// PASSERELLE — corps des limites de débit et du bridage.
+
+flesh PasDebit {
+    on fixer(h, org, classe, debit, rafale, par, valideur) {
+        require ApiAcces.a_le_role(par, "exploitant") else Habilitation "fixer un quota : exploitant d'ORBITE"
+        require ApiRef.organisation_existe(org) else Inconnu "organisation {org} inconnue"
+        require classe != "urgence" else Incoherent "la classe urgence n'est jamais limitée"
+        require rafale >= debit else HorsBornes "rafale {rafale} inférieure au débit {debit}"
+        if debit > 10 * DEBIT_DEFAUT {
+            require ApiAcces.quatre_yeux(par, valideur) else QuatreYeux "débit > {10 * DEBIT_DEFAUT} : quatre yeux"
+        }
+        let k = "{org}|{classe}"
+        // l'invariant debit <= rafale est jugé à chaque écriture : écrire d'abord le côté qui le garde vrai
+        let rafale_avant = rafale_de.get(k) ?? 30000
+        if debit <= rafale_avant {
+            debit_de.set(k, debit)
+            rafale_de.set(k, rafale)
+        } else {
+            rafale_de.set(k, rafale)
+            debit_de.set(k, debit)
+        }
+        let _ = Journal.noter(h, "passerelle", par, "quota {k} = {debit}/min, rafale {rafale}")
+        return debit
+    }
+
+    on consommer(h, cle, classe) {
+        if classe == "urgence" { return true }
+        let k = "{cle}|{classe}"
+        let debit = debit_de.get(k) ?? DEBIT_DEFAUT
+        let rafale = rafale_de.get(k) ?? RAFALE_DEFAUT
+        let neuf = jetons_de.get(k) == ()
+        if neuf && jetons_de.size >= MAX_SEAUX { return false }
+        let jetons = jetons_de.get(k) ?? rafale
+        let depuis = to_int(recharge_le.get(k) ?? h)
+        let ecoule = max(0, to_int(h) - depuis)
+        let gain = idiv(ecoule * debit, FENETRE)
+        let dispo = min(rafale, jetons + gain)
+        // la recharge avance du temps effectivement converti en jetons (le reste est gardé) ;
+        // seau plein : l'horloge du seau repart de h
+        let nouvelle = if dispo >= rafale { to_int(h) } else if gain > 0 { depuis + idiv(gain * FENETRE, debit) } else { depuis }
+        recharge_le.set(k, Horodatage(max(depuis, min(to_int(h), nouvelle))))
+        if dispo >= 1 {
+            jetons_de.set(k, dispo - 1)
+            return true
+        }
+        jetons_de.set(k, 0)
+        return false
+    }
+
+    on quota(org, classe) {
+        let k = "{org}|{classe}"
+        return [debit_de.get(k) ?? DEBIT_DEFAUT, rafale_de.get(k) ?? RAFALE_DEFAUT]
+    }
+}
+
+flesh PasBridage {
+    on constater(h, org) {
+        let etat0 = get_status(org) ?? "libre"
+        let debut = to_int(fenetre_de.get(org) ?? -1)
+        let n0 = if debut < 0 || to_int(h) - debut >= FENETRE { 0 } else { depassements_de.get(org) ?? 0 }
+        if n0 == 0 { fenetre_de.set(org, h) }
+        let n = n0 + 1
+        // dernier_cran_le : dernier dépassement constaté (l'apaisement se juge depuis lui)
+        dernier_cran_le.set(org, h)
+        if n < SEUIL {
+            depassements_de.set(org, n)
+            return etat0
+        }
+        depassements_de.set(org, 0)
+        fenetre_de.set(org, h)
+        if etat0 == "libre" {
+            transition(org, "libre", "surveille")
+            let _ = Journal.noter(h, "passerelle", "systeme", "bridage {org} : surveille")
+            return "surveille"
+        }
+        if etat0 == "surveille" {
+            transition(org, "surveille", "bride")
+            let _ = Journal.noter(h, "passerelle", "systeme", "bridage {org} : bride (débit / 4)")
+            return "bride"
+        }
+        if etat0 == "bride" {
+            transition(org, "bride", "bloque")
+            let _ = ApiConformite.constater(h, org, "inondation de l'API de la passerelle", 1, "PASSERELLE-BRIDAGE-{org}-{h}", "systeme")
+            let _ = PasMessages.mettre_en_file(h, org, "", "texte", "Bridage", "Votre organisation est bloquée sur l'API d'ORBITE (dépassements répétés). Les routes d'urgence restent ouvertes.", 2)
+            let _ = Journal.noter(h, "passerelle", "systeme", "bridage {org} : bloque")
+            return "bloque"
+        }
+        return etat0
+    }
+
+    on apaiser(h, n) {
+        let faits = 0
+        for org in dernier_cran_le.keys {
+            if faits >= n { break }
+            let st = get_status(org) ?? "libre"
+            let dernier = to_int(dernier_cran_le.get(org) ?? 0)
+            if st == "surveille" && to_int(h) - dernier >= FENETRE {
+                transition(org, "surveille", "libre")
+                depassements_de.set(org, 0)
+                fenetre_de.set(org, h)
+                faits = faits + 1
+            } else if st == "bride" && to_int(h) - dernier >= 2 * FENETRE {
+                transition(org, "bride", "libre")
+                depassements_de.set(org, 0)
+                fenetre_de.set(org, h)
+                faits = faits + 1
+            }
+        }
+        return faits
+    }
+
+    on lever(h, org, motif, par, valideur) {
+        require ApiAcces.a_le_role(par, "exploitant") else Habilitation "lever un blocage : exploitant d'ORBITE"
+        require ApiAcces.quatre_yeux(par, valideur) else QuatreYeux "lever un blocage : quatre yeux"
+        require motif != "" else MotifRequis "lever un blocage exige un motif"
+        let st = get_status(org) ?? "libre"
+        require st == "bloque" else EtatInvalide "{org} n'est pas bloquée ({st})"
+        transition(org, "bloque", "libre")
+        depassements_de.set(org, 0)
+        fenetre_de.set(org, h)
+        let _ = Journal.noter(h, "passerelle", par, "blocage de {org} levé (valideur {valideur}) : {motif}")
+        return "libre"
+    }
+
+    on etat(org) {
+        return get_status(org) ?? "libre"
+    }
+}

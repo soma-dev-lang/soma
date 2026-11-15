@@ -1,0 +1,90 @@
+// FIN DE VIE — campagne de couverture : chaque jour, ORBITE passe en revue les objets de
+// chaque opérateur pour qu'aucun n'échappe au contrôle de fin de vie : objet en service sans
+// plan conforme (manquement), objet hors service dont le propriétaire n'a pas déclaré la fin
+// de mission, fin de mission prévue dépassée de 90 jours (fin d'office), échéances dépassées
+// (retard), consentements et prorogations échus. Instance = jour j (epoch day).
+// Tout part de balayer, appelé par ApiFinDeVie.balayer à chaque battement de l'horloge
+// d'ORBITE : aucun signal de fin_de_vie ne lit le temps lui-même.
+
+// Bilan d'une campagne (rapports annuels de conformite, indicateurs publics).
+cell type FdvBilan { variants { FdvBilan { etat: String, operateurs: Int, objets: Int, sans_plan: Int, d_office: Int, retards: Int } } }
+
+skeleton FdvCouverture {
+    const MAX_OPERATEURS = 10000
+    // Travail borné par battement : opérateurs examinés, éléments balayés par cell.
+    const OPERATEURS_PAR_BATTEMENT = 20
+    const ELEMENTS_PAR_BATTEMENT = 100
+    const JOUR = 86400000
+    memory {
+        ouverte_le: Map<Jour, Horodatage> [persistent]
+        examines_de: Map<Jour, List<String>> [persistent]   // opérateurs déjà examinés le jour j
+        objets_de: Map<Jour, Int> [persistent]              // objets examinés
+        sans_plan_de: Map<Jour, Int> [persistent]           // objets en service sans plan conforme
+        d_office_de: Map<Jour, Int> [persistent]            // fins de mission déclarées d'office
+        retards_de: Map<Jour, Int> [persistent]             // retards constatés
+        invariant len(examines_de) <= 10000
+        invariant objets_de >= 0
+        invariant (sans_plan_de ?? 0) <= (objets_de ?? 0)
+        invariant (d_office_de ?? 0) <= (objets_de ?? 0)
+        invariant retards_de >= 0
+    }
+    // Cycle d'une campagne quotidienne (états exposés par etat).
+    state campagne {
+        initial: a_ouvrir
+        a_ouvrir -> ouverte               // campagne du jour ouverte
+        ouverte -> close                  // tous les opérateurs examinés, échéances balayées
+    }
+    face {
+        // Battement de fin_de_vie (ApiFinDeVie.balayer) : j = h / JOUR ; ouvre la campagne du
+        // jour si elle est "a_ouvrir" ; examine au plus 20 opérateurs actifs
+        // (ApiOperateurs.actifs) pas encore examinés ; balaye au plus 100 éléments de chaque
+        // file : échéances (balayer_echeances), plans (FdvPlan.balayer), consentements
+        // (FdvConsentement.balayer), prorogations (FdvProrogation.balayer), missions de
+        // retrait actif (FdvRetrait.balayer) ; clôt la campagne quand tous les opérateurs
+        // actifs sont examinés. Une erreur d'une étape est journalisée et n'arrête pas les
+        // suivantes. Habilitation : "systeme". Renvoie le nombre d'objets dont l'état a changé.
+        // Refus : Habilitation.
+        signal balayer(h: Horodatage, par: String) -> Int
+            reads campagne, examines_de, d_office_de
+            calls ouvrir, examiner, balayer_echeances, clore, ApiOperateurs.actifs, FdvPlan.balayer, FdvConsentement.balayer, FdvProrogation.balayer, FdvRetrait.balayer, ApiAcces.a_le_role, Journal.noter
+        // Ouvre la campagne du jour j. Habilitation : "systeme". Renvoie "ouverte".
+        // Refus : Existe (déjà ouverte), Habilitation.
+        signal ouvrir(h: Horodatage, j: Jour, par: String) -> String
+            writes ouverte_le
+            moves a_ouvrir -> ouverte
+            calls ApiAcces.a_le_role, Journal.noter
+        // Examine les objets d'un opérateur (ApiRef.objets_de) : pour chaque objet "en_service"
+        // sans plan conforme à `h` (FdvPlan.conforme), un manquement de gravité 1 par opérateur
+        // et par campagne (référence "j|op", ApiConformite.constater) ; pour chaque objet
+        // "hors_service" encore "en_mission" ici, ou dont la fin prévue au plan approuvé
+        // (FdvPlan.plan_de, FdvPlan.fiche) est dépassée de 90 jours, fin d'office
+        // (FdvFin.declarer_fin_d_office, par "systeme"). Habilitation : "systeme".
+        // Renvoie le nombre d'objets sans plan conforme.
+        // Refus : Inconnu (opérateur), EtatInvalide (campagne non ouverte), Doublon (déjà
+        // examiné ce jour), Plein, Habilitation.
+        signal examiner(h: Horodatage, j: Jour, op: Org, par: String) -> Int
+            writes examines_de, objets_de, sans_plan_de, d_office_de
+            reads campagne
+            calls ApiRef.objets_de, ApiRef.etat_objet, FdvPlan.conforme, FdvPlan.plan_de, FdvPlan.fiche, FdvFin.etat, FdvFin.declarer_fin_d_office, ApiConformite.constater, ApiAcces.a_le_role, Journal.noter
+        // Balaye les échéances : au plus n objets de FdvFin.a_echoir passent "en_retard"
+        // (FdvFin.constater_retard, par "systeme"). Habilitation : "systeme".
+        // Compte les retards du jour j (campagne ouverte ou close). Renvoie le nombre de
+        // retards constatés. Refus : HorsBornes (n hors 1..1000), Habilitation.
+        signal balayer_echeances(h: Horodatage, j: Jour, n: Int, par: String) -> Int
+            writes retards_de
+            calls FdvFin.a_echoir, FdvFin.constater_retard, ApiAcces.a_le_role
+        // Clôt la campagne (ouverte -> close) et en journalise le bilan.
+        // Habilitation : "systeme". Renvoie le nombre d'opérateurs examinés.
+        // Refus : Inconnu, EtatInvalide, Habilitation.
+        signal clore(h: Horodatage, j: Jour, par: String) -> Int
+            reads examines_de, objets_de, sans_plan_de, d_office_de, retards_de
+            moves ouverte -> close
+            calls ApiAcces.a_le_role, Journal.noter
+        // Bilan de la campagne du jour j (compteurs à zéro si jamais ouverte).
+        signal bilan(j: Jour) -> FdvBilan
+            reads campagne, examines_de, objets_de, sans_plan_de, d_office_de, retards_de
+        // État : "a_ouvrir", "ouverte", "close".
+        signal etat(j: Jour) -> String
+            reads campagne
+    }
+}

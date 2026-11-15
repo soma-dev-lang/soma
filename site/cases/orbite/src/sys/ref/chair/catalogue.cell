@@ -1,0 +1,448 @@
+// ref — corps de RefObjet (catalogue des objets spatiaux).
+// Ordre des capacités : aucune (0) < faible (1) < impulsionnelle (2).
+
+flesh RefObjet {
+    on cataloguer(h, nature, proprietaire, etat, regime, propulsion, masse, par) {
+        require ApiAcces.a_le_role(par, "analyste") || ApiAcces.a_le_role(par, "systeme") else Habilitation "{par} : analyste d'ORBITE ou systeme requis"
+        let prop = to_string(proprietaire)
+        let e = to_string(etat)
+        let sans_proprio = prop == "ORG-ORBITE"
+        require (nature != "debris" && nature != "inconnu") || propulsion == "aucune" else Incoherent "un {nature} n'a pas de propulsion"
+        require sans_proprio == (e == "") else Incoherent "objet non attribué : propriétaire ORBITE et État \"\" vont ensemble"
+        require (!sans_proprio) || nature == "debris" || nature == "inconnu" else Incoherent "seul un débris ou un objet inconnu reste non attribué"
+        require e == "" || RefEtat.connu(etat) else Inconnu "État {e} non déclaré"
+        require RefOrg.est_active(proprietaire) else Inconnu "propriétaire {prop} non actif"
+        require natures.size < MAX_OBJETS else Plein "catalogue plein"
+        let parc_p = parc.get(prop) ?? []
+        require len(parc_p) < MAX_OBJETS_PAR_ORG else Plein "parc de {prop} plein"
+        require parc.get(prop) != () || parc.size < 20001 else Plein "trop de propriétaires"
+        let n = (compteur.get("objets") ?? 0) + 1
+        let id = "OBJ-{n}"
+        compteur.set("objets", n)
+        natures.set(id, nature)
+        proprietaires.set(id, prop)
+        regimes.set(id, regime)
+        propulsions.set(id, propulsion)
+        nominales.set(id, propulsion)
+        masses.set(id, masse)
+        catalogues_le.set(id, h)
+        catalogues_par.set(id, par)
+        parc.set(prop, parc_p ++ [id])
+        let statut_reg = RefRegistre.ouvrir(h, Objet(id), etat, nature, "systeme")
+        RefHistorique.consigner(h, id, "proprietaire", prop, "catalogage", par)
+        RefHistorique.consigner(h, id, "etat", e, "catalogage", par)
+        RefHistorique.consigner(h, id, "regime", to_string(regime), "catalogage", par)
+        RefHistorique.consigner(h, id, "propulsion", to_string(propulsion), "catalogage", par)
+        RefHistorique.consigner(h, id, "nature", to_string(nature), "catalogage", par)
+        RefHistorique.consigner(h, id, "etat_objet", "catalogue", "catalogage", par)
+        Journal.noter(h, "ref", par, "objet {id} catalogué ({nature}, {prop}, État {e}, registre {statut_reg})")
+        return Objet(id)
+    }
+
+    on mettre_en_service(h, objet, motif, par) {
+        let o = to_string(objet)
+        let nat = natures.get(o)
+        require nat != () else Inconnu "objet {o} inconnu"
+        let prop = proprietaires.get(o) ?? ""
+        let habilite = ApiAcces.a_le_role(par, "analyste") || (ApiAcces.a_le_role(par, "dynamicien") && ApiAcces.agit_pour(par, Org(prop)))
+        require habilite else Habilitation "{par} : dynamicien du propriétaire ou analyste d'ORBITE requis"
+        require nat == "satellite" || nat == "station_habitee" else EtatInvalide "un {nat} ne se met pas en service"
+        let st = get_status(o) ?? "catalogue"
+        require st == "catalogue" || st == "hors_service" else EtatInvalide "objet {o} : {st}"
+        require prop != "ORG-ORBITE" else EtatInvalide "objet {o} non attribué"
+        let reg = RefRegistre.statut(objet)
+        require reg == "immatricule" || reg == "a_immatriculer" else EtatInvalide "immatriculation de {o} : {reg}"
+        require RefOrg.est_active(Org(prop)) else Suspendu "propriétaire {prop} non actif"
+        require motif != "" else MotifRequis "motif requis"
+        motifs.set(o, motif)
+        if st == "catalogue" {
+            transition(o, "catalogue", "en_service")
+        } else {
+            transition(o, "hors_service", "en_service")
+        }
+        RefHistorique.consigner(h, o, "etat_objet", "en_service", motif, par)
+        Journal.noter(h, "ref", par, "objet {o} en service : {motif}")
+        return "en_service"
+    }
+
+    on mettre_hors_service(h, objet, motif, par) {
+        let o = to_string(objet)
+        let prop = proprietaires.get(o)
+        require prop != () else Inconnu "objet {o} inconnu"
+        let du_proprio = (ApiAcces.a_le_role(par, "dynamicien") || ApiAcces.a_le_role(par, "chef_de_mission")) && ApiAcces.agit_pour(par, Org(prop))
+        let habilite = du_proprio || ApiAcces.a_le_role(par, "analyste") || ApiAcces.a_le_role(par, "systeme")
+        require habilite else Habilitation "{par} : dynamicien ou chef de mission du propriétaire, analyste ou systeme requis"
+        let st = get_status(o) ?? "catalogue"
+        require st == "catalogue" || st == "en_service" else EtatInvalide "objet {o} : {st}"
+        require motif != "" else MotifRequis "motif requis"
+        propulsions.set(o, "aucune")
+        motifs.set(o, motif)
+        if st == "catalogue" {
+            transition(o, "catalogue", "hors_service")
+        } else {
+            transition(o, "en_service", "hors_service")
+        }
+        RefHistorique.consigner(h, o, "etat_objet", "hors_service", motif, par)
+        RefHistorique.consigner(h, o, "propulsion", "aucune", motif, par)
+        let _ = rouvrir_designations(h, objet, "hors service : {motif}")
+        Journal.noter(h, "ref", par, "objet {o} hors service : {motif}")
+        return "hors_service"
+    }
+
+    on placer_cimetiere(h, objet, motif, par) {
+        require ApiAcces.a_le_role(par, "analyste") || ApiAcces.a_le_role(par, "systeme") else Habilitation "{par} : analyste d'ORBITE ou systeme requis"
+        let o = to_string(objet)
+        require (propulsions.get(o) ?? "") != "" else Inconnu "objet {o} inconnu"
+        let st = get_status(o) ?? "catalogue"
+        require st == "en_service" else EtatInvalide "objet {o} : {st}"
+        require ApiFinDeVie.passive(objet) || ApiFinDeVie.en_retard(objet, h) else EtatInvalide "fin de vie de {o} ni passive ni en retard"
+        require motif != "" else MotifRequis "motif requis"
+        propulsions.set(o, "aucune")
+        motifs.set(o, motif)
+        transition(o, "en_service", "cimetiere")
+        RefHistorique.consigner(h, o, "etat_objet", "cimetiere", motif, par)
+        RefHistorique.consigner(h, o, "propulsion", "aucune", motif, par)
+        let _ = rouvrir_designations(h, objet, "orbite cimetière : {motif}")
+        Journal.noter(h, "ref", par, "objet {o} en orbite cimetière : {motif}")
+        return "cimetiere"
+    }
+
+    on constater_retrait(h, objet, reference, par) {
+        require ApiAcces.a_le_role(par, "analyste") || ApiAcces.a_le_role(par, "systeme") else Habilitation "{par} : analyste d'ORBITE ou systeme requis"
+        let o = to_string(objet)
+        let st = get_status(o) ?? "catalogue"
+        require st == "hors_service" || st == "cimetiere" else EtatInvalide "objet {o} : {st}"
+        require reference != "" else MotifRequis "référence de la mission de retrait requise"
+        require ApiFinDeVie.retrait_autorise(objet) && ApiFinDeVie.mission_capturee(objet) else NonEligible "retrait de {o} non autorisé ou non capturé"
+        require retrait_de.get(o) == () else EtatInvalide "retrait de {o} déjà constaté"
+        retrait_de.set(o, reference)
+        motifs.set(o, "retrait actif {reference}")
+        if st == "hors_service" {
+            transition(o, "hors_service", "retire")
+        } else {
+            transition(o, "cimetiere", "retire")
+        }
+        RefHistorique.consigner(h, o, "etat_objet", "retire", reference, par)
+        Journal.noter(h, "ref", par, "objet {o} retiré par la mission {reference}")
+        return "retire"
+    }
+
+    on constater_rentree(h, objet, reference, par) {
+        require ApiAcces.a_le_role(par, "analyste") || ApiAcces.a_le_role(par, "systeme") else Habilitation "{par} : analyste d'ORBITE ou systeme requis"
+        let o = to_string(objet)
+        require propulsions.get(o) != () else Inconnu "objet {o} inconnu"
+        let st = get_status(o) ?? "catalogue"
+        require st == "catalogue" || st == "en_service" || st == "hors_service" || st == "retire" else EtatInvalide "objet {o} : {st}"
+        require reference != "" else MotifRequis "référence de la campagne de rentrée requise"
+        require ApiReentrees.constatee(objet) else NonEligible "rentrée de {o} non constatée"
+        require rentree_de.get(o) == () else EtatInvalide "rentrée de {o} déjà constatée"
+        rentree_de.set(o, reference)
+        propulsions.set(o, "aucune")
+        motifs.set(o, "rentrée {reference}")
+        if st == "catalogue" {
+            transition(o, "catalogue", "rentre")
+        } else if st == "en_service" {
+            transition(o, "en_service", "rentre")
+        } else if st == "hors_service" {
+            transition(o, "hors_service", "rentre")
+        } else {
+            transition(o, "retire", "rentre")
+        }
+        let _ = RefRegistre.radier(h, objet, "systeme")
+        RefHistorique.consigner(h, o, "etat_objet", "rentre", reference, par)
+        RefHistorique.consigner(h, o, "propulsion", "aucune", reference, par)
+        let _ = rouvrir_designations(h, objet, "rentrée atmosphérique ({reference})")
+        Journal.noter(h, "ref", par, "objet {o} rentré (campagne {reference})")
+        return "rentre"
+    }
+
+    on constater_fragmentation(h, objet, reference, par) {
+        require ApiAcces.a_le_role(par, "analyste") || ApiAcces.a_le_role(par, "systeme") else Habilitation "{par} : analyste d'ORBITE ou systeme requis"
+        let o = to_string(objet)
+        require propulsions.get(o) != () else Inconnu "objet {o} inconnu"
+        require reference != "" else MotifRequis "référence de l'évènement requise"
+        require ApiEvenements.existe(reference) else Inconnu "évènement {reference} inconnu"
+        require contains(ApiEvenements.objets(reference), o) else Incoherent "{o} n'est pas un objet de l'évènement {reference}"
+        let st = get_status(o) ?? "catalogue"
+        require st == "catalogue" || st == "en_service" || st == "hors_service" || st == "cimetiere" else EtatInvalide "objet {o} : {st}"
+        require fragmentation_de.get(o) == () else EtatInvalide "fragmentation de {o} déjà constatée"
+        fragmentation_de.set(o, reference)
+        propulsions.set(o, "aucune")
+        motifs.set(o, "fragmentation {reference}")
+        if st == "catalogue" {
+            transition(o, "catalogue", "fragmente")
+        } else if st == "en_service" {
+            transition(o, "en_service", "fragmente")
+        } else if st == "hors_service" {
+            transition(o, "hors_service", "fragmente")
+        } else {
+            transition(o, "cimetiere", "fragmente")
+        }
+        let _ = RefRegistre.radier(h, objet, "systeme")
+        RefHistorique.consigner(h, o, "etat_objet", "fragmente", reference, par)
+        RefHistorique.consigner(h, o, "propulsion", "aucune", reference, par)
+        let _ = rouvrir_designations(h, objet, "fragmentation ({reference})")
+        Journal.noter(h, "ref", par, "objet {o} fragmenté (évènement {reference})")
+        return "fragmente"
+    }
+
+    on declarer_propulsion(h, objet, p, motif, par) {
+        let o = to_string(objet)
+        let prop = proprietaires.get(o)
+        require prop != () else Inconnu "objet {o} inconnu"
+        let habilite = ApiAcces.a_le_role(par, "analyste") || ApiAcces.a_le_role(par, "systeme") || (ApiAcces.a_le_role(par, "dynamicien") && ApiAcces.agit_pour(par, Org(prop)))
+        require habilite else Habilitation "{par} : dynamicien du propriétaire, analyste ou systeme requis"
+        let st = get_status(o) ?? "catalogue"
+        require st != "rentre" && st != "fragmente" else EtatInvalide "objet {o} : {st}"
+        let actuelle = to_string(propulsions.get(o) ?? "aucune")
+        let rang_p = _rang(to_string(p))
+        let rang_a = _rang(actuelle)
+        require rang_p <= rang_a else Incoherent "hausse de propulsion ({actuelle} → {p}) : passer par une demande de modification"
+        require motif != "" else MotifRequis "motif requis"
+        propulsions.set(o, p)
+        RefHistorique.consigner(h, o, "propulsion", to_string(p), motif, par)
+        if p == "aucune" || rang_p < rang_a {
+            let _ = rouvrir_designations(h, objet, "propulsion {p} : {motif}")
+        }
+        Journal.noter(h, "ref", par, "objet {o} : propulsion {actuelle} → {p} ({motif})")
+        return p
+    }
+
+    on rouvrir_designations(h, objet, motif) {
+        let raison = if motif == "" { "perte de capacité de {objet}" } else { motif }
+        let ouverts = ApiConjonctions.ouverts_de(objet)
+        let k = min(len(ouverts), 1000)
+        let n = 0
+        for i in range(0, k) {
+            let r = Rapprochement(ouverts[i])
+            let d = ApiCoordination.designe(r, "systeme")
+            if to_string(d) == to_string(objet) {
+                let res_r = try { ApiCoordination.rouvrir(h, r, raison, "systeme") }
+                if res_r.error == () { n = n + 1 }
+            }
+        }
+        return n
+    }
+
+    on modifier(h, objet, champ, valeur, demande, par) {
+        require ApiAcces.a_le_role(par, "systeme") else Habilitation "modification réservée à systeme"
+        let o = to_string(objet)
+        let nat = natures.get(o)
+        require nat != () else Inconnu "objet {o} inconnu"
+        let st = get_status(o) ?? "catalogue"
+        require st != "rentre" && st != "fragmente" else EtatInvalide "objet {o} : {st}"
+        require RefModification.etat(demande) == "validee" else EtatInvalide "demande {demande} non validée"
+        let actuelle = to_string(propulsions.get(o) ?? "aucune")
+        let nominale_o = to_string(nominales.get(o) ?? "aucune")
+        let ancien = ""
+        if champ == "nature" {
+            require contains(["satellite", "station_habitee", "etage", "debris", "inconnu"], valeur) else Incoherent "nature {valeur} invalide"
+            let sans_moteur = valeur == "debris" || valeur == "inconnu"
+            require (!sans_moteur) || (actuelle == "aucune" && nominale_o == "aucune") else Incoherent "un {valeur} n'a pas de propulsion"
+            ancien = to_string(nat)
+            natures.set(o, NatureObjet(valeur))
+        } else if champ == "masse" {
+            require _entier(valeur) else Incoherent "masse {valeur} invalide"
+            ancien = to_string(masses.get(o) ?? 0)
+            masses.set(o, to_int(valeur))
+        } else if champ == "propulsion" {
+            require contains(["aucune", "faible", "impulsionnelle"], valeur) else Incoherent "propulsion {valeur} invalide"
+            require _rang(valeur) <= _rang(nominale_o) else Incoherent "propulsion {valeur} au-dessus de la nominale {nominale_o}"
+            let nat_s = to_string(nat)
+            require valeur == "aucune" || (nat_s != "debris" && nat_s != "inconnu") else Incoherent "un {nat_s} n'a pas de propulsion"
+            if _rang(valeur) > _rang(actuelle) {
+                require !ApiFinDeVie.passive(objet) else NonEligible "objet {o} passivé"
+            }
+            ancien = actuelle
+            propulsions.set(o, Propulsion(valeur))
+        } else if champ == "propulsion_nominale" {
+            require contains(["aucune", "faible", "impulsionnelle"], valeur) else Incoherent "propulsion {valeur} invalide"
+            let nat_s = to_string(nat)
+            require valeur == "aucune" || (nat_s != "debris" && nat_s != "inconnu") else Incoherent "un {nat_s} n'a pas de propulsion"
+            require _rang(actuelle) <= _rang(valeur) else Incoherent "propulsion actuelle {actuelle} au-dessus de la nominale demandée"
+            ancien = nominale_o
+            nominales.set(o, Propulsion(valeur))
+        } else {
+            require false else Incoherent "le champ {champ} ne s'applique pas à un objet"
+        }
+        Journal.noter(h, "ref", par, "objet {o} : {champ} {ancien} → {valeur} (demande {demande})")
+        return ancien
+    }
+
+    on transferer(h, objet, cessionnaire, cession, par) {
+        require ApiAcces.a_le_role(par, "systeme") else Habilitation "transfert réservé à systeme"
+        let o = to_string(objet)
+        let ancien = proprietaires.get(o)
+        require ancien != () else Inconnu "objet {o} inconnu"
+        require RefCession.etat(cession) == "visee_cessionnaire" else EtatInvalide "cession {cession} non visée"
+        let c = to_string(cessionnaire)
+        let parc_c = parc.get(c) ?? []
+        require len(parc_c) < MAX_OBJETS_PAR_ORG else Plein "parc de {c} plein"
+        require parc.get(c) != () || parc.size < 20001 else Plein "trop de propriétaires"
+        let parc_a = parc.get(ancien) ?? []
+        parc.set(ancien, parc_a.filter(x => x != o))
+        parc.set(c, parc_c ++ [o])
+        proprietaires.set(o, c)
+        Journal.noter(h, "ref", par, "objet {o} : propriétaire {ancien} → {c} (cession {cession})")
+        return Org(ancien)
+    }
+
+    on attribuer(h, objet, proprietaire, etat, par, valideur) {
+        require ApiAcces.a_le_role(par, "analyste") else Habilitation "{par} : analyste d'ORBITE requis"
+        require ApiAcces.quatre_yeux(par, valideur) else QuatreYeux "{valideur} ne peut pas contre-signer l'attribution"
+        let o = to_string(objet)
+        let p = to_string(proprietaire)
+        let e = to_string(etat)
+        let ancien = proprietaires.get(o)
+        require ancien != () else Inconnu "objet {o} inconnu"
+        require p != "ORG-ORBITE" && e != "" else Incoherent "attribuer exige un propriétaire et un État"
+        require RefOrg.est_active(proprietaire) else Inconnu "propriétaire {p} non actif"
+        require RefEtat.connu(etat) else Inconnu "État {e} non déclaré"
+        require ancien == "ORG-ORBITE" else EtatInvalide "objet {o} déjà attribué à {ancien}"
+        let st = get_status(o) ?? "catalogue"
+        require st != "rentre" && st != "fragmente" && st != "retire" else EtatInvalide "objet {o} sorti de l'orbite ({st})"
+        let parc_p = parc.get(p) ?? []
+        require len(parc_p) < MAX_OBJETS_PAR_ORG else Plein "parc de {p} plein"
+        require parc.get(p) != () || parc.size < 20001 else Plein "trop de propriétaires"
+        let parc_o = parc.get(ancien) ?? []
+        parc.set(ancien, parc_o.filter(x => x != o))
+        parc.set(p, parc_p ++ [o])
+        proprietaires.set(o, p)
+        if to_string(natures.get(o) ?? "debris") != "debris" {
+            let _ = RefRegistre.requalifier(h, objet, etat, "systeme")
+        }
+        RefHistorique.consigner(h, o, "proprietaire", p, "attribution", par)
+        RefHistorique.consigner(h, o, "etat", e, "attribution", par)
+        Journal.noter(h, "ref", par, "objet {o} attribué à {p} (État {e}, valideur {valideur})")
+        return proprietaire
+    }
+
+    on changer_regime(h, objet, r, par) {
+        require ApiAcces.a_le_role(par, "analyste") || ApiAcces.a_le_role(par, "systeme") else Habilitation "{par} : analyste d'ORBITE ou systeme requis"
+        let o = to_string(objet)
+        let ancien = regimes.get(o)
+        require ancien != () else Inconnu "objet {o} inconnu"
+        let st = get_status(o) ?? "catalogue"
+        require st != "rentre" && st != "fragmente" && st != "retire" else EtatInvalide "objet {o} : {st}"
+        regimes.set(o, r)
+        RefHistorique.consigner(h, o, "regime", to_string(r), "transfert", par)
+        Journal.noter(h, "ref", par, "objet {o} : régime {ancien} → {r}")
+        return r
+    }
+
+    on valeur_au(objet, champ, h) {
+        let o = to_string(objet)
+        require contains(["proprietaire", "etat", "regime", "propulsion", "etat_objet", "nature"], champ) else Inconnu "champ {champ} inconnu"
+        let depuis = catalogues_le.get(o)
+        require depuis != () else Inconnu "objet {o} inconnu"
+        require depuis <= h else Inconnu "objet {o} catalogué après {h}"
+        return RefHistorique.valeur_au(o, champ, h)
+    }
+
+    on catalogue(regime, apres, n) {
+        require regime == "" || contains(["leo", "meo", "geo", "heo"], regime) else HorsBornes "régime {regime} inconnu"
+        let a = to_string(apres)
+        let debut = 0
+        if a != "" && starts_with(a, "OBJ-") {
+            debut = to_int(substring(a, 4, len(a)))
+        }
+        let dernier = compteur.get("objets") ?? 0
+        let res_c = []
+        let i = debut + 1
+        while i <= dernier && len(res_c) < n {
+            let id = "OBJ-{i}"
+            let r = regimes.get(id)
+            if r != () && (regime == "" || to_string(r) == regime) {
+                res_c.push(id)
+            }
+            i = i + 1
+        }
+        return res_c
+    }
+
+    on existe(objet) {
+        return natures.get(to_string(objet)) != ()
+    }
+
+    on etat(objet) {
+        let o = to_string(objet)
+        if natures.get(o) == () { return "inconnu" }
+        return get_status(o) ?? "catalogue"
+    }
+
+    on nature(objet) {
+        let v = natures.get(to_string(objet))
+        require v != () else Inconnu "objet {objet} inconnu"
+        return v
+    }
+
+    on proprietaire(objet) {
+        let v = proprietaires.get(to_string(objet))
+        require v != () else Inconnu "objet {objet} inconnu"
+        return Org(v)
+    }
+
+    on regime(objet) {
+        let v = regimes.get(to_string(objet))
+        require v != () else Inconnu "objet {objet} inconnu"
+        return v
+    }
+
+    on masse(objet) {
+        let v = masses.get(to_string(objet))
+        require v != () else Inconnu "objet {objet} inconnu"
+        return v
+    }
+
+    on nominale(objet) {
+        let v = nominales.get(to_string(objet))
+        require v != () else Inconnu "objet {objet} inconnu"
+        return v
+    }
+
+    on propulsion(objet) {
+        let o = to_string(objet)
+        let v = propulsions.get(o)
+        require v != () else Inconnu "objet {o} inconnu"
+        if (get_status(o) ?? "catalogue") != "en_service" { return Propulsion("aucune") }
+        return v
+    }
+
+    on peut_manoeuvrer(objet) {
+        let o = to_string(objet)
+        let v = propulsions.get(o)
+        if v == () { return false }
+        if (get_status(o) ?? "catalogue") != "en_service" { return false }
+        if v == "aucune" { return false }
+        if ApiEvenements.en_anomalie(objet) { return false }
+        return !ApiFinDeVie.passive(objet)
+    }
+
+    on cause(objet) {
+        let o = to_string(objet)
+        return rentree_de.get(o) ?? fragmentation_de.get(o) ?? retrait_de.get(o) ?? ""
+    }
+
+    on habite(objet) {
+        return natures.get(to_string(objet)) == "station_habitee"
+    }
+
+    on objets_de(org) {
+        return parc.get(to_string(org)) ?? []
+    }
+
+    on _rang(p: String) {
+        if p == "impulsionnelle" { return 2 }
+        if p == "faible" { return 1 }
+        return 0
+    }
+
+    on _entier(s: String) {
+        if s == "" || len(s) > 15 { return false }
+        let chiffres = "0123456789"
+        for i in range(0, len(s)) {
+            if !contains(chiffres, substring(s, i, i + 1)) { return false }
+        }
+        return true
+    }
+}

@@ -1,0 +1,228 @@
+// meteo — corps des SOURCES de météo spatiale.
+flesh MetSource {
+    on declarer(h, source, nature, fournisseur_org, cadence_ms, rang, par) {
+        require ApiAcces.a_le_role(par, "exploitant") else Habilitation "{par} n'est pas exploitant d'ORBITE"
+        require genre.get(source) == () else Existe "source {source} déjà déclarée"
+        require ApiRef.organisation_existe(fournisseur_org) else Inconnu "fournisseur {fournisseur_org} non inscrit ou radié"
+        let c = to_int(cadence_ms)
+        require c >= CADENCE_MIN && c <= CADENCE_MAX else HorsBornes "cadence {c} ms hors [1 min, 24 h]"
+        require rang >= 1 && rang <= PRIORITE_MAX else HorsBornes "priorité {rang} hors [1, 9]"
+        require genre.size < MAX_SOURCES else Plein "registre des sources plein"
+        genre.set(source, nature)
+        fournisseur.set(source, fournisseur_org)
+        cadence.set(source, cadence_ms)
+        priorite.set(source, rang)
+        let _ = Journal.noter(h, "meteo", par, "source {source} declaree ({nature}, fournisseur {fournisseur_org}, rang {rang})")
+        return "declaree"
+    }
+
+    on etalonner(h, source, le, par) {
+        let f = fournisseur.get(source)
+        require f != () else Inconnu "source {source} inconnue"
+        require _capteur_ou_exploitant(par, f) else Habilitation "{par} n'est ni capteur de {f} ni exploitant d'ORBITE"
+        let st = get_status(source) ?? "declaree"
+        require st != "retiree" else EtatInvalide "source {source} retirée"
+        require to_int(le) <= to_int(h) else Incoherent "étalonnage daté du futur"
+        let age = to_int(h) - to_int(le)
+        require age <= ETALONNAGE_MAX else Perime "étalonnage de plus de 365 j"
+        let prec = etalonnee_le.get(source)
+        if prec == () || to_int(prec) < to_int(le) {
+            etalonnee_le.set(source, le)
+        }
+        let _ = Journal.noter(h, "meteo", par, "source {source} etalonnee le {le}")
+        let le_retenu = to_int(etalonnee_le.get(source) ?? le)
+        return 365 - idiv(to_int(h) - le_retenu, 86400000)
+    }
+
+    on qualifier(h, source, par, valideur) {
+        let f = fournisseur.get(source)
+        require f != () else Inconnu "source {source} inconnue"
+        require ApiAcces.a_le_role(par, "exploitant") else Habilitation "{par} n'est pas exploitant d'ORBITE"
+        require ApiAcces.quatre_yeux(par, valideur) else QuatreYeux "contre-signature de {valideur} refusée"
+        let st = get_status(source) ?? "declaree"
+        require st == "declaree" else EtatInvalide "source {source} : {st}"
+        require _etalonnage_valide(h, source) else Perime "aucun étalonnage de moins de 365 j"
+        require ApiRef.organisation_existe(f) else Inconnu "fournisseur {f} radié"
+        transition(source, "declaree", "active")
+        en_service_le.set(source, h)
+        let _ = Journal.noter(h, "meteo", par, "source {source} qualifiee (valideur {valideur})")
+        return "active"
+    }
+
+    on declarer_panne(h, source, motif, par) {
+        let f = fournisseur.get(source)
+        require f != () else Inconnu "source {source} inconnue"
+        require _capteur_ou_exploitant(par, f) else Habilitation "{par} n'est ni capteur de {f} ni exploitant d'ORBITE"
+        require motif != "" else MotifRequis "motif de panne requis"
+        let st = get_status(source) ?? "declaree"
+        require st == "active" else EtatInvalide "source {source} : {st}"
+        transition(source, "active", "en_panne")
+        motif_panne.set(source, "declaree")
+        panne_le.set(source, h)
+        let _ = Journal.noter(h, "meteo", par, "source {source} en panne declaree : {motif}")
+        return "en_panne"
+    }
+
+    on retablir(h, source, par, valideur) {
+        require ApiAcces.a_le_role(par, "exploitant") else Habilitation "{par} n'est pas exploitant d'ORBITE"
+        require ApiAcces.quatre_yeux(par, valideur) else QuatreYeux "contre-signature de {valideur} refusée"
+        require has_state(source) else Inconnu "source {source} inconnue ou jamais qualifiée"
+        let st = get_status(source) ?? "declaree"
+        require st == "en_panne" else EtatInvalide "source {source} : {st}"
+        require _etalonnage_valide(h, source) else Perime "aucun étalonnage de moins de 365 j"
+        let et = to_int(etalonnee_le.get(source) ?? 0)
+        let panne = to_int(panne_le.get(source) ?? (derniere_reception.get(source) ?? 0))
+        require et >= panne else Perime "étalonnage antérieur à la panne"
+        transition(source, "en_panne", "active")
+        en_service_le.set(source, h)
+        let _ = Journal.noter(h, "meteo", par, "source {source} retablie (valideur {valideur})")
+        return "active"
+    }
+
+    on annoncer_maintenance(h, source, fin, par) {
+        let f = fournisseur.get(source)
+        require f != () else Inconnu "source {source} inconnue"
+        require _capteur_ou_exploitant(par, f) else Habilitation "{par} n'est ni capteur de {f} ni exploitant d'ORBITE"
+        let st = get_status(source) ?? "declaree"
+        require st == "active" else EtatInvalide "source {source} : {st}"
+        let d = to_int(fin) - to_int(h)
+        require d > 0 && d <= 604800000 else HorsBornes "fin de maintenance hors ]h, h + 7 j]"
+        let nat = genre.get(source) ?? "magnetometre"
+        let pairs_actives = if nat == "centre_prevision" { centres_actifs() } else if nat == "magnetometre" { actives("kp") } else { actives("f107") }
+        require len(pairs_actives.filter(x => x != source)) > 0 else Insuffisant "dernière source active de sa grandeur"
+        transition(source, "active", "en_maintenance")
+        maintenance_debut.set(source, h)
+        maintenance_fin.set(source, fin)
+        let _ = Journal.noter(h, "meteo", par, "source {source} en maintenance jusqu'a {fin}")
+        return "en_maintenance"
+    }
+
+    on reprendre_service(h, source, par) {
+        let f = fournisseur.get(source)
+        require f != () else Inconnu "source {source} inconnue"
+        require _capteur_ou_exploitant(par, f) else Habilitation "{par} n'est ni capteur de {f} ni exploitant d'ORBITE"
+        let st = get_status(source) ?? "declaree"
+        require st == "en_maintenance" else EtatInvalide "source {source} : {st}"
+        let debut_m = to_int(maintenance_debut.get(source) ?? 0)
+        let et = etalonnee_le.get(source)
+        require et != () && to_int(et) >= debut_m else Perime "aucun étalonnage depuis le début de la maintenance"
+        transition(source, "en_maintenance", "active")
+        en_service_le.set(source, h)
+        let _ = Journal.noter(h, "meteo", par, "source {source} reprend le service")
+        return "active"
+    }
+
+    on retirer(h, source, motif, par) {
+        require ApiAcces.a_le_role(par, "exploitant") else Habilitation "{par} n'est pas exploitant d'ORBITE"
+        require fournisseur.get(source) != () else Inconnu "source {source} inconnue"
+        require motif != "" else MotifRequis "motif de retrait requis"
+        let st = get_status(source) ?? "declaree"
+        require st != "retiree" else EtatInvalide "source {source} déjà retirée"
+        if st == "declaree" {
+            transition(source, "declaree", "retiree")
+        } else if st == "active" {
+            transition(source, "active", "retiree")
+        } else if st == "en_panne" {
+            transition(source, "en_panne", "retiree")
+        } else {
+            transition(source, "en_maintenance", "retiree")
+        }
+        let _ = Journal.noter(h, "meteo", par, "source {source} retiree : {motif}")
+        return "retiree"
+    }
+
+    on balayer(h, par) {
+        require ApiAcces.a_le_role(par, "systeme") else Habilitation "balayage réservé à systeme"
+        let n = 0
+        let t = to_int(h)
+        for s in cadence.keys {
+            let st = get_status(s) ?? "declaree"
+            if st == "active" {
+                let et = etalonnee_le.get(s)
+                let motif_s = if et == () || t - to_int(et) > ETALONNAGE_MAX {
+                    "etalonnage_echu"
+                } else {
+                    let base = max(to_int(derniere_reception.get(s) ?? 0), to_int(en_service_le.get(s) ?? 0))
+                    if t - base > SILENCE_CADENCES * to_int(cadence.get(s) ?? CADENCE_MAX) { "silence" } else { "" }
+                }
+                if motif_s != "" {
+                    transition(s, "active", "en_panne")
+                    motif_panne.set(s, MetMotifPanne(motif_s))
+                    panne_le.set(s, h)
+                    let _ = Journal.noter(h, "meteo", par, "source {s} en panne : {motif_s}")
+                    n = n + 1
+                }
+            } else if st == "en_maintenance" {
+                let fm = maintenance_fin.get(s)
+                if fm != () && t > to_int(fm) + 86400000 {
+                    transition(s, "en_maintenance", "en_panne")
+                    motif_panne.set(s, "silence")
+                    panne_le.set(s, h)
+                    let _ = Journal.noter(h, "meteo", par, "source {s} en panne : maintenance depassee de 24 h")
+                    n = n + 1
+                }
+            }
+        }
+        return n
+    }
+
+    on mettre_en_ecart(h, source) {
+        require fournisseur.get(source) != () else Inconnu "source {source} inconnue"
+        let st = get_status(source) ?? "declaree"
+        require st == "active" else EtatInvalide "source {source} : {st}"
+        transition(source, "active", "en_panne")
+        motif_panne.set(source, "ecarts")
+        panne_le.set(source, h)
+        let _ = Journal.noter(h, "meteo", "systeme", "source {source} en panne : rejets en serie")
+        return "en_panne"
+    }
+
+    on noter_reception(h, source) {
+        require fournisseur.get(source) != () else Inconnu "source {source} inconnue"
+        let prec = derniere_reception.get(source)
+        if prec == () || to_int(prec) < to_int(h) {
+            derniere_reception.set(source, h)
+        }
+        return h
+    }
+
+    on active(source) {
+        return (get_status(source) ?? "declaree") == "active"
+    }
+
+    on nature(source) {
+        let g = genre.get(source)
+        require g != () else Inconnu "source {source} inconnue"
+        return g
+    }
+
+    on fournisseur_de(source) {
+        let f = fournisseur.get(source)
+        require f != () else Inconnu "source {source} inconnue"
+        return f
+    }
+
+    on actives(g) {
+        let voulu = if g == "kp" { "magnetometre" } else { "radio_flux" }
+        let choisies = genre.entries.filter(e => e.value == voulu && (get_status(e.key) ?? "declaree") == "active")
+        let rangees = choisies.map(e => map("s", e.key, "p", priorite.get(e.key) ?? PRIORITE_MAX)).sort_by(x => [x.p, x.s])
+        return rangees.map(x => x.s)
+    }
+
+    on centres_actifs() {
+        let choisies = genre.entries.filter(e => e.value == "centre_prevision" && (get_status(e.key) ?? "declaree") == "active")
+        let rangees = choisies.map(e => map("s", e.key, "p", priorite.get(e.key) ?? PRIORITE_MAX)).sort_by(x => [x.p, x.s])
+        return rangees.map(x => x.s)
+    }
+
+    on _capteur_ou_exploitant(par: String, f: Org) {
+        if ApiAcces.a_le_role(par, "exploitant") { return true }
+        return ApiAcces.a_le_role(par, "capteur") && ApiAcces.agit_pour(par, f)
+    }
+
+    on _etalonnage_valide(h: Horodatage, source: String) {
+        let et = etalonnee_le.get(source)
+        if et == () { return false }
+        return to_int(h) - to_int(et) <= ETALONNAGE_MAX
+    }
+}

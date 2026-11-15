@@ -1,0 +1,3 @@
+// evenements — fichier retiré en phase 1b : les abonnements (contournement de l'absence de
+// ApiRef.catalogue) sont remplacés par la diffusion aux riverains (EvtNotifications.poursuivre).
+// À supprimer avec sa ligne `use sys::evenements::abonnements` dans app.cell (intégrateur).

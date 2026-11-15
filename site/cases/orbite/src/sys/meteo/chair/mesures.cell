@@ -1,0 +1,294 @@
+// meteo — corps des MESURES et de la VEILLE du flux.
+flesh MetMesure {
+    on recevoir(h, mesure, source, g, at, v, par) {
+        let f = MetSource.fournisseur_de(source)
+        if par == "systeme" {
+            require ApiAcces.a_le_role(par, "systeme") else Habilitation "identité systeme refusée"
+        } else {
+            require ApiAcces.a_le_role(par, "capteur") && ApiAcces.agit_pour(par, f) else Habilitation "{par} n'est pas capteur de {f}"
+        }
+        require source_de.get(mesure) == () else Existe "mesure {mesure} déjà reçue"
+        require v <= VALEUR_MAX && (g != "kp" || v <= 90) else HorsBornes "valeur {v} hors de l'échelle physique de {g}"
+        require source_de.size < MAX_MESURES else Plein "registre des mesures plein"
+        let t = to_int(h)
+        let ta = to_int(at)
+        let jour = idiv(ta, 86400000)
+        source_de.set(mesure, source)
+        jour_de.set(mesure, to_string(jour))
+        gel_de.set(mesure, "J:{jour}")
+        grandeur_de.set(mesure, g)
+        valeur.set(mesure, v)
+        recue_le.set(mesure, h)
+        let _ = MetSource.noter_reception(h, source)
+        let active = MetSource.active(source)
+        let nat = MetSource.nature(source)
+        let attendue = if g == "kp" { "magnetometre" } else { "radio_flux" }
+        // Contrôles, du plus grossier au plus fin ; "" = mesure acceptable.
+        let motif = if to_string(nat) != attendue {
+            "nature"
+        } else if !active {
+            "source_inactive"
+        } else if ta > t + AVANCE_MAX {
+            "epoque_future"
+        } else if ta < t - RETARD_MAX {
+            "trop_ancienne"
+        } else {
+            _saut(to_string(g), source, ta, v)
+        }
+        if motif != "epoque_future" {
+            // Une époque future n'est jamais enregistrée comme époque (invariant de réception).
+            epoque.set(mesure, at)
+        }
+        if motif != "" {
+            transition(mesure, "recue", "rejetee")
+            motif_rejet.set(mesure, MetMotifRejet(motif))
+            if motif == "saut_aberrant" {
+                derniere.set("saut_" + g, mesure)
+            }
+            if active {
+                let n = (rejets_suivis.get(source) ?? 0) + 1
+                if n >= REJETS_EN_SERIE {
+                    rejets_suivis.set(source, 0)
+                    let _ = MetSource.mettre_en_ecart(h, source)
+                } else {
+                    rejets_suivis.set(source, n)
+                }
+            }
+            let _ = Journal.noter(h, "meteo", par, "mesure {mesure} de {source} rejetee : {motif}")
+            return "rejetee"
+        }
+        require MetSource.active(source) else EtatInvalide "source {source} inactive"
+        transition(mesure, "recue", "validee")
+        rejets_suivis.set(source, 0)
+        let d = derniere.get(g)
+        if d == () {
+            precedente.set(mesure, "")
+            derniere.set(g, mesure)
+        } else {
+            precedente.set(mesure, d)
+            if ta >= to_int(epoque.get(d) ?? 0) {
+                derniere.set(g, mesure)
+            }
+        }
+        let _ = MetVeille.reprendre(h, g)
+        let _ = MetJournee.rectifier(h, Jour(jour), "mesure {mesure} validee", "systeme")
+        let _ = Journal.noter(h, "meteo", par, "mesure {mesure} de {source} validee : {g} = {v}")
+        return "validee"
+    }
+
+    // Saut aberrant par rapport à la dernière mesure validée de la grandeur ; un saut est
+    // confirmé (accepté) quand le dernier saut rejeté de la grandeur vient d'une AUTRE source,
+    // date de moins de 3 h et diffère de moins de 10 dixièmes.
+    on _saut(g: String, source: String, ta: Int, v: Int) {
+        let d = derniere.get(g)
+        if d == () { return "" }
+        let pv = valeur.get(d) ?? 0
+        let pa = to_int(epoque.get(d) ?? 0)
+        let aberrant = if g == "kp" {
+            abs(ta - pa) < PEREMPTION_KP && abs(v - pv) > 40
+        } else {
+            abs(ta - pa) <= 2 * 86400000 && abs(v - pv) * 2 > pv
+        }
+        if !aberrant { return "" }
+        let cand = derniere.get("saut_" + g)
+        if cand != () {
+            let cs = source_de.get(cand) ?? source
+            let ca = to_int(epoque.get(cand) ?? 0)
+            let cv = valeur.get(cand) ?? -1000
+            if cs != source && abs(ta - ca) < PEREMPTION_KP && abs(cv - v) <= 10 {
+                return ""
+            }
+        }
+        return "saut_aberrant"
+    }
+
+    on invalider(h, mesure, motif, par) {
+        require ApiAcces.a_le_role(par, "analyste") else Habilitation "{par} n'est pas analyste d'ORBITE"
+        let g = grandeur_de.get(mesure)
+        require g != () else Inconnu "mesure {mesure} inconnue"
+        require motif != "" else MotifRequis "motif d'invalidation requis"
+        let st = get_status(mesure) ?? "recue"
+        require st == "validee" else EtatInvalide "mesure {mesure} : {st}"
+        transition(mesure, "validee", "invalidee")
+        if (derniere.get(g) ?? "") == mesure {
+            // Remonter la chaîne des précédentes jusqu'à une mesure encore valable.
+            let p = precedente.get(mesure) ?? ""
+            let pas_n = 0
+            while p != "" && pas_n < 100 {
+                let sp = get_status(p) ?? "recue"
+                if sp == "validee" || sp == "archivee" {
+                    break
+                }
+                p = precedente.get(p) ?? ""
+                pas_n = pas_n + 1
+            }
+            let sp_final = if p == "" { "" } else { get_status(p) ?? "recue" }
+            if sp_final == "validee" || sp_final == "archivee" {
+                derniere.set(g, p)
+            } else {
+                derniere.delete(g)
+            }
+        }
+        let j = jour_de.get(mesure) ?? "0"
+        let _ = MetJournee.rectifier(h, Jour(to_int(j)), "mesure {mesure} invalidee : {motif}", "systeme")
+        let _ = Journal.noter(h, "meteo", par, "mesure {mesure} invalidee : {motif}")
+        return "invalidee"
+    }
+
+    on archiver(h, jour, par) {
+        require ApiAcces.a_le_role(par, "systeme") else Habilitation "archivage réservé à systeme"
+        let js = to_string(jour)
+        if ApiResponsabilite.sous_gel("J:{js}") {
+            let _ = Journal.noter(h, "meteo", par, "archivage du jour {js} differe : journee sous gel")
+            return 0
+        }
+        if !MetJournee.scellee(js) { return 0 }
+        let a_archiver = jour_de.entries.filter(e => e.value == js && (get_status(e.key) ?? "recue") == "validee").map(e => e.key)
+        let n = 0
+        for m in a_archiver {
+            if n >= 10000 { break }
+            if (gel_de.get(m) ?? "J:{js}") == "J:{js}" {
+                transition(m, "validee", "archivee")
+                n = n + 1
+            }
+        }
+        if n > 0 {
+            let _ = Journal.noter(h, "meteo", par, "{n} mesures du jour {js} archivees")
+        }
+        return n
+    }
+
+    on validee(mesure) {
+        return (get_status(mesure) ?? "recue") == "validee"
+    }
+
+    on valeur_de(mesure) {
+        let v = valeur.get(mesure)
+        require v != () else Inconnu "mesure {mesure} inconnue"
+        return v
+    }
+
+    on grandeur(mesure) {
+        let g = grandeur_de.get(mesure)
+        require g != () else Inconnu "mesure {mesure} inconnue"
+        return g
+    }
+
+    on epoque_de(mesure) {
+        let e = epoque.get(mesure)
+        require e != () else Inconnu "mesure {mesure} inconnue (ou d'époque future)"
+        return e
+    }
+
+    on derniere_de(g, h) {
+        let d = derniere.get(g)
+        require d != () else Inconnu "aucune mesure validée de {g}"
+        let age = to_int(h) - to_int(epoque.get(d) ?? 0)
+        let lim = if g == "kp" { PEREMPTION_KP } else { PEREMPTION_F107 }
+        require age <= lim else Perime "dernière mesure de {g} trop ancienne"
+        return d
+    }
+
+    on kp_courant(h) {
+        let d = derniere.get("kp")
+        require d != () else Inconnu "aucune mesure kp validée"
+        let age = to_int(h) - to_int(epoque.get(d) ?? 0)
+        require age <= PEREMPTION_KP else Perime "aucune mesure kp depuis 3 h"
+        return MetKp(valeur.get(d) ?? 0)
+    }
+
+    on en_vigueur_a(g, a) {
+        let ta = to_int(a)
+        let lim = if g == "kp" { PEREMPTION_KP } else { PEREMPTION_F107 }
+        let meilleure = ""
+        let meilleure_ep = -1
+        for e in grandeur_de.entries {
+            if e.value == g {
+                let st = get_status(e.key) ?? "recue"
+                if st == "validee" || st == "archivee" {
+                    let ep = to_int(epoque.get(e.key) ?? 0)
+                    if ep <= ta && ta - ep <= lim && ep > meilleure_ep {
+                        meilleure = e.key
+                        meilleure_ep = ep
+                    }
+                }
+            }
+        }
+        return meilleure
+    }
+
+    on kp_max_entre(debut, fin) {
+        let d = to_int(debut)
+        let f = to_int(fin)
+        require f >= d && f - d <= 604800000 else HorsBornes "intervalle invalide ou de plus de 7 j"
+        let maxi = -1
+        for e in grandeur_de.entries {
+            if e.value == "kp" {
+                let st = get_status(e.key) ?? "recue"
+                if st == "validee" || st == "archivee" {
+                    let ep = to_int(epoque.get(e.key) ?? 0)
+                    if ep >= d && ep <= f {
+                        maxi = max(maxi, valeur.get(e.key) ?? 0)
+                    }
+                }
+            }
+        }
+        require maxi >= 0 else Inconnu "aucune mesure kp dans l'intervalle"
+        return MetKp(maxi)
+    }
+
+    on du_jour(g, j) {
+        let js = to_string(j)
+        let ids = jour_de.entries.filter(e => e.value == js && (grandeur_de.get(e.key) ?? "") == g && _valable(e.key)).map(e => e.key)
+        return slice(ids, 0, 2000)
+    }
+
+    on _valable(m: String) {
+        let st = get_status(m) ?? "recue"
+        return st == "validee" || st == "archivee"
+    }
+}
+
+flesh MetVeille {
+    on surveiller(h, par) {
+        require ApiAcces.a_le_role(par, "systeme") else Habilitation "surveillance réservée à systeme"
+        let en_silence_n = 0
+        for g in ["kp", "f107"] {
+            let frais = try { MetMesure.derniere_de(MetGrandeur(g), h) }
+            let st = get_status(g) ?? "nominal"
+            if frais.error != () && st == "nominal" {
+                transition(g, "nominal", "silence")
+                silence_depuis.set(g, h)
+                let n = (silences.get(g) ?? 0) + 1
+                silences.set(g, n)
+                let sources_g = MetSource.actives(MetGrandeur(g))
+                let grav = if len(sources_g) == 0 { 3 } else { 2 }
+                let inc = try { ApiOperations.declarer_incident(h, "INC-MET-{g}-{n}", Gravite(grav), "meteo", "flux {g} en silence : aucune mesure validee fraiche", "systeme") }
+                if inc.error == () {
+                    incident_de.set(g, inc.value)
+                }
+                let _ = Journal.noter(h, "meteo", par, "flux {g} en silence (gravite {grav})")
+                en_silence_n = en_silence_n + 1
+            } else if st == "silence" {
+                en_silence_n = en_silence_n + 1
+            }
+        }
+        return en_silence_n
+    }
+
+    on reprendre(h, g) {
+        let st = get_status(g) ?? "nominal"
+        if st == "silence" {
+            transition(g, "silence", "nominal")
+            let depuis = to_int(silence_depuis.get(g) ?? h)
+            let duree = to_int(h) - depuis
+            let _ = Journal.noter(h, "meteo", "systeme", "flux {g} de retour apres {duree} ms de silence")
+            return "nominal"
+        }
+        return st
+    }
+
+    on en_silence(g) {
+        return (get_status(g) ?? "nominal") == "silence"
+    }
+}

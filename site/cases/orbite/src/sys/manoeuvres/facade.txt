@@ -1,0 +1,13 @@
+ApiManoeuvres.declarer: calls ManPlan.declarer, ManCriblage.cribler, ManPlan.statuer, ManPlan.approuver, ManPlan.rejeter; moves ManPlan.cycle: declare -> crible, declare -> rejete, crible -> approuve, crible -> rejete
+ApiManoeuvres.etat: calls ManPlan.etat
+ApiManoeuvres.plan_actif: calls ManPlan.actif
+ApiManoeuvres.confirmer_execution: calls ManPlan.confirmer; moves ManPlan.cycle: approuve -> execute, ManFenetre.cycle: ouverte -> consommee, ManEvitement.cycle: engage -> solde
+ApiManoeuvres.annuler: calls ManPlan.annuler; moves ManPlan.cycle: declare -> annule, crible -> annule, approuve -> annule
+ApiManoeuvres.retirer: calls ManPlan.retirer; moves ManPlan.cycle: declare -> annule, crible -> annule, approuve -> annule
+ApiManoeuvres.plan_de: calls ManPlan.plan_de
+ApiManoeuvres.objet_de: calls ManPlan.fiche
+ApiManoeuvres.motif_de: calls ManPlan.fiche
+ApiManoeuvres.plans_de: calls ManPlan.plans_de
+ApiManoeuvres.plan_couvrant: calls ManPlan.plan_couvrant
+ApiManoeuvres.constater_non_annoncee: calls ManNonAnnoncee.constater
+ApiManoeuvres.balayer: calls ManVeille.balayer

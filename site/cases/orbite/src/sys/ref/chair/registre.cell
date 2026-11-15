@@ -1,0 +1,199 @@
+// ref — corps de RefRegistre (registre de 1975) et RefBalayage (ronde des échéances).
+
+flesh RefRegistre {
+    on ouvrir(h, objet, etat, nature, par) {
+        require ApiAcces.a_le_role(par, "systeme") else Habilitation "ouverture réservée à systeme"
+        let o = to_string(objet)
+        let e = to_string(etat)
+        require ouvertes_le.get(o) == () else Existe "entrée {o} déjà ouverte"
+        require etats.size < MAX_ENTREES else Plein "registre plein"
+        etats.set(o, e)
+        echeances.set(o, h + DELAI_IMMATRICULATION_MS)
+        ouvertes_le.set(o, h)
+        if nature == "debris" || nature == "inconnu" || e == "" {
+            transition(o, "a_immatriculer", "dispense")
+            return "dispense"
+        }
+        return "a_immatriculer"
+    }
+
+    on immatriculer(h, objet, numero, par) {
+        let o = to_string(objet)
+        let e = etats.get(o)
+        require e != () else Inconnu "entrée {o} inconnue"
+        let autorite = try { RefOrg.org_de_etat(Etat(e)) }
+        let par_autorite = autorite.error == () && ApiAcces.a_le_role(par, "autorite") && ApiAcces.agit_pour(par, autorite.value)
+        // un analyste ne recopie la publication ONU que pour un État sans autorité inscrite
+        let par_analyste = autorite.error != () && ApiAcces.a_le_role(par, "analyste")
+        let habilite = par_autorite || par_analyste || ApiAcces.a_le_role(par, "systeme")
+        require habilite else Habilitation "{par} : autorité de l'État {e}, systeme, ou analyste pour un État non participant"
+        let st = get_status(o) ?? "a_immatriculer"
+        require st != "immatricule" else Existe "objet {o} déjà immatriculé"
+        require st == "a_immatriculer" || st == "en_retard" else EtatInvalide "entrée {o} : {st}"
+        require numero != "" else MotifRequis "numéro national requis"
+        let cle = "{e}|{numero}"
+        require numero_de.get(cle) == () else Doublon "numéro {numero} déjà attribué par {e}"
+        numeros.set(o, numero)
+        numero_de.set(cle, o)
+        immatricules_le.set(o, h)
+        if st == "a_immatriculer" {
+            transition(o, "a_immatriculer", "immatricule")
+        } else {
+            transition(o, "en_retard", "immatricule")
+        }
+        RefHistorique.consigner(h, o, "numero", numero, "immatriculation", par)
+        Journal.noter(h, "ref", par, "objet {o} immatriculé par {e} sous {numero}")
+        return "immatricule"
+    }
+
+    on consigner_onu(h, objet, document_onu, par) {
+        let o = to_string(objet)
+        let e = etats.get(o)
+        require e != () else Inconnu "entrée {o} inconnue"
+        let autorite = try { RefOrg.org_de_etat(Etat(e)) }
+        let par_autorite = autorite.error == () && ApiAcces.a_le_role(par, "autorite") && ApiAcces.agit_pour(par, autorite.value)
+        require par_autorite || ApiAcces.a_le_role(par, "analyste") else Habilitation "{par} : autorité de l'État {e} ou analyste d'ORBITE requis"
+        let st = get_status(o) ?? "a_immatriculer"
+        require st != "dispense" else EtatInvalide "entrée {o} dispensée"
+        require document_onu != "" else MotifRequis "cote du document ONU requise"
+        documents_onu.set(o, document_onu)
+        Journal.noter(h, "ref", par, "objet {o} : document ONU {document_onu}")
+        return document_onu
+    }
+
+    on dispenser(h, objet, motif, par, valideur) {
+        require ApiAcces.a_le_role(par, "analyste") else Habilitation "{par} : analyste d'ORBITE requis"
+        require ApiAcces.quatre_yeux(par, valideur) else QuatreYeux "{valideur} ne peut pas contre-signer la dispense"
+        let o = to_string(objet)
+        let nat = to_string(RefObjet.nature(objet))
+        let st = get_status(o) ?? "a_immatriculer"
+        require st == "a_immatriculer" else EtatInvalide "entrée {o} : {st}"
+        require nat == "debris" || nat == "inconnu" else EtatInvalide "un {nat} s'immatricule"
+        require motif != "" else MotifRequis "motif requis"
+        transition(o, "a_immatriculer", "dispense")
+        RefHistorique.consigner(h, o, "registre", "dispense", motif, par)
+        Journal.noter(h, "ref", par, "objet {o} dispensé d'immatriculation (valideur {valideur}) : {motif}")
+        return "dispense"
+    }
+
+    on requalifier(h, objet, etat, par) {
+        require ApiAcces.a_le_role(par, "systeme") else Habilitation "requalification réservée à systeme"
+        let o = to_string(objet)
+        require etats.get(o) != () else Inconnu "entrée {o} inconnue"
+        let st = get_status(o) ?? "a_immatriculer"
+        require st == "dispense" else EtatInvalide "entrée {o} : {st}"
+        etats.set(o, to_string(etat))
+        echeances.set(o, h + DELAI_IMMATRICULATION_MS)
+        transition(o, "dispense", "a_immatriculer")
+        RefHistorique.consigner(h, o, "registre", "a_immatriculer", "requalification", par)
+        Journal.noter(h, "ref", par, "objet {o} à immatriculer par {etat}")
+        return "a_immatriculer"
+    }
+
+    on constater_retards(h, par) {
+        require ApiAcces.a_le_role(par, "systeme") else Habilitation "constat réservé à systeme"
+        let echues_r = echeances.entries.filter(x => x.value < h && (get_status(x.key) ?? "a_immatriculer") == "a_immatriculer")
+        let k = min(len(echues_r), MAX_RETARDS_PAR_PASSE)
+        for i in range(0, k) {
+            let o = echues_r[i].key
+            transition(o, "a_immatriculer", "en_retard")
+            let e = etats.get(o) ?? ""
+            let autorite = try { RefOrg.org_de_etat(Etat(e)) }
+            if autorite.error == () {
+                let _ = try { ApiPasserelle.notifier(h, autorite.value, Rapprochement(""), "immatriculation en retard", "L'objet {o} n'est pas immatriculé à l'échéance.", 1) }
+            }
+        }
+        if k > 0 {
+            Journal.noter(h, "ref", par, "{k} entrée(s) du registre en retard d'immatriculation")
+        }
+        return k
+    }
+
+    on radier(h, objet, par) {
+        require ApiAcces.a_le_role(par, "systeme") else Habilitation "radiation réservée à systeme"
+        let o = to_string(objet)
+        let e = RefObjet.etat(objet)
+        require e != "inconnu" else Inconnu "objet {o} inconnu"
+        require e == "rentre" || e == "fragmente" else EtatInvalide "objet {o} encore en orbite ({e})"
+        let st = get_status(o) ?? "a_immatriculer"
+        if st == "dispense" || st == "radie" { return st }
+        if st == "a_immatriculer" {
+            transition(o, "a_immatriculer", "radie")
+        } else if st == "en_retard" {
+            transition(o, "en_retard", "radie")
+        } else {
+            transition(o, "immatricule", "radie")
+        }
+        Journal.noter(h, "ref", par, "objet {o} radié du registre ({e})")
+        return "radie"
+    }
+
+    on transferer(h, objet, etat, numero, cession, par) {
+        require ApiAcces.a_le_role(par, "systeme") else Habilitation "transfert réservé à systeme"
+        let o = to_string(objet)
+        let ancien = etats.get(o)
+        require ancien != () else Inconnu "entrée {o} inconnue"
+        let st = get_status(o) ?? "a_immatriculer"
+        require st != "dispense" && st != "radie" else EtatInvalide "entrée {o} : {st}"
+        let e = to_string(etat)
+        if st == "immatricule" {
+            let cle = "{e}|{numero}"
+            require numero != "" else Doublon "numéro national requis pour un objet immatriculé"
+            require numero_de.get(cle) == () else Doublon "numéro {numero} déjà attribué par {e}"
+            numeros.set(o, numero)
+            numero_de.set(cle, o)
+        }
+        etats.set(o, e)
+        RefHistorique.consigner(h, o, "etat", e, cession, par)
+        Journal.noter(h, "ref", par, "objet {o} : État d'immatriculation {ancien} → {e} (cession {cession})")
+        return Etat(ancien)
+    }
+
+    on etat_de(objet) {
+        let e = etats.get(to_string(objet))
+        require e != () else Inconnu "entrée {objet} inconnue"
+        return Etat(e)
+    }
+
+    on statut(objet) {
+        let o = to_string(objet)
+        if etats.get(o) == () { return "inconnu" }
+        return get_status(o) ?? "a_immatriculer"
+    }
+
+    on est_immatricule(objet) {
+        return (get_status(to_string(objet)) ?? "a_immatriculer") == "immatricule"
+    }
+
+    on numero(objet) {
+        let o = to_string(objet)
+        require etats.get(o) != () else Inconnu "entrée {o} inconnue"
+        return numeros.get(o) ?? ""
+    }
+
+    on echeance(objet) {
+        let v = echeances.get(to_string(objet))
+        require v != () else Inconnu "entrée {objet} inconnue"
+        return v
+    }
+
+    on retards_de(etat) {
+        let e = to_string(etat)
+        let res_r = etats.entries.filter(x => x.value == e && (get_status(x.key) ?? "a_immatriculer") == "en_retard")
+        return len(res_r)
+    }
+}
+
+flesh RefBalayage {
+    on balayer(h, par) {
+        require ApiAcces.a_le_role(par, "systeme") else Habilitation "balayage réservé à systeme"
+        let a = RefRegistre.constater_retards(h, "systeme")
+        let b = RefCession.balayer(h, "systeme")
+        let c = RefModification.balayer(h, "systeme")
+        let total_b = a + b + c
+        if total_b > 0 {
+            Journal.noter(h, "ref", par, "balayage : {a} retard(s), {b} cession(s), {c} modification(s)")
+        }
+        return total_b
+    }
+}

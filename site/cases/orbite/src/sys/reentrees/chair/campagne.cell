@@ -1,0 +1,270 @@
+// RENTRÉES — corps : campagne de rentrée (prévision, révisions, phase finale, constat,
+// annulation, balayage des échéances).
+
+flesh ReeCampagne {
+    on prevoir(h, objet, debut, fin, victimes_ppm, par) {
+        require ApiAcces.a_le_role(par, "analyste") || ApiAcces.a_le_role(par, "systeme") else Habilitation "prévoir une rentrée : analyste ou systeme d'ORBITE"
+        let eo = ApiRef.etat_objet(objet)
+        require eo != "inconnu" else Inconnu "objet non catalogué : {objet}"
+        require eo != "rentre" && eo != "retire" else Inconnu "objet déjà {eo} : {objet}"
+        require to_int(fin) > to_int(debut) else Incoherent "fenêtre vide : fin ≤ début"
+        require to_int(fin) > to_int(h) else Incoherent "fenêtre déjà close : fin ≤ h"
+        require victimes_ppm >= 0 && victimes_ppm <= MAX_PPM else HorsBornes "espérance de victimes hors bornes : {victimes_ppm}"
+        let c = courante.get(objet) ?? ""
+        let ec = if c == "" { "inconnue" } else { get_status(c) ?? "ouverte" }
+        // une campagne échue alors que l'objet est toujours en orbite : annulée, une nouvelle s'ouvre
+        if ec == "echue" {
+            transition(c, "echue", "annulee")
+            annulation.set(c, "objet toujours en orbite, nouvelle prévision / {par} / ")
+            let _ = ReeRisque.figer(h, c)
+            let _ = ReeNotification.clore(h, c, "annulee")
+            let _ = Journal.noter(h, "reentrees", par, "campagne {c} échue annulée : {objet} toujours en orbite")
+        }
+        let nouvelle = !(ec == "ouverte" || ec == "imminente")
+        if nouvelle {
+            require objet_de.size < MAX_CAMPAGNES else Plein "trop de campagnes de rentrée"
+            c = "RE-{next_id()}"
+            objet_de.set(c, objet)
+            courante.set(objet, c)
+            ouverte_le.set(c, h)
+            largeur_initiale.set(c, Duree(to_int(fin) - to_int(debut)))
+            suivi_demande.set(c, "")
+        }
+        let revs = revisions.get(c) ?? []
+        require len(revs) < MAX_REVISIONS else Plein "trop de révisions pour la campagne {c}"
+        revisions.set(c, revs ++ ["{h} | {debut} | {fin} | {victimes_ppm} | {par}"])
+        // fenêtre : l'ordre d'écriture garde fin > début à chaque instant
+        let ancienne_fin = to_int(fenetre_fin.get(c) ?? Horodatage(MAX_HORODATAGE))
+        if to_int(debut) >= ancienne_fin {
+            fenetre_fin.set(c, fin)
+            fenetre_debut.set(c, debut)
+        } else {
+            fenetre_debut.set(c, debut)
+            fenetre_fin.set(c, fin)
+        }
+        victimes.set(c, victimes_ppm)
+        derniere_revision.set(c, h)
+        // fondement de la révision (preuve en cas de dommage)
+        let r_eph = try { ApiEphemerides.derniere(objet) }
+        let eph = if r_eph.error == () { r_eph.value } else { "aucun" }
+        let r_f107 = try { ApiMeteo.f107_prevu(debut, fin) }
+        let f107 = if r_f107.error == () { to_string(r_f107.value) } else { "perime" }
+        let r_kp = try { ApiMeteo.kp(h) }
+        let kp = if r_kp.error == () { to_string(r_kp.value) } else { "perime" }
+        let obs = if ApiObservation.suivi(objet, h) { "oui" } else { "non" }
+        fondement.set(c, "eph={eph} | f107={f107} | kp={kp} | obs={obs}")
+        if r_f107.error != () || r_kp.error != () {
+            let _ = Journal.noter(h, "reentrees", par, "campagne {c} : météo spatiale périmée (f107={f107}, kp={kp}), prévision maintenue")
+        }
+        // risque
+        let classe = ReeRisque.evaluer(h, c, victimes_ppm)
+        let risque = ReeRisque.a_risque(c)
+        // phase finale
+        let st = get_status(c) ?? "ouverte"
+        if st == "ouverte" && to_int(fin) - to_int(h) < IMMINENCE {
+            transition(c, "ouverte", "imminente")
+            st = "imminente"
+        }
+        if st == "imminente" && (suivi_demande.get(c) ?? "") == "" {
+            let prio = if risque { 3 } else { 2 }
+            let r_suivi = try { ApiObservation.demander_suivi(h, objet, Niveau(prio), Duree(DUREE_SUIVI), "rentrée imminente {c}", "systeme") }
+            if r_suivi.error == () {
+                suivi_demande.set(c, r_suivi.value)
+            } else {
+                let k = r_suivi.kind
+                let _ = Journal.noter(h, "reentrees", par, "campagne {c} : suivi renforcé refusé ({k}), non bloquant")
+            }
+        }
+        // inscriptions d'office à l'ouverture
+        if nouvelle {
+            let office_e = []
+            let ei = to_string(ApiRef.etat_immatriculation(objet))
+            if ei != "" {
+                office_e = office_e ++ [ei]
+            }
+            let prop = ApiRef.proprietaire(objet)
+            if to_string(prop) != "inconnu" {
+                let r_tut = try { ApiRef.etat_de(prop) }
+                if r_tut.error == () {
+                    let et = to_string(r_tut.value)
+                    if et != "" && !contains(office_e, et) {
+                        office_e = office_e ++ [et]
+                    }
+                }
+            }
+            let _ = ReeNotification.inscrire(h, c, office_e, "office", par)
+        }
+        if ReeRisque.majeur(c) {
+            let tous_e = ApiRef.etats_participants()
+            let _ = ReeNotification.inscrire(h, c, tous_e, "majeur", par)
+        }
+        let _ = ReeNotification.diffuser(h, c, par)
+        // avis au propriétaire
+        let proprio = ApiRef.proprietaire(objet)
+        if to_string(proprio) != "inconnu" {
+            let urg = if risque || st == "imminente" { 3 } else { 2 }
+            let _ = ApiPasserelle.notifier(h, proprio, Rapprochement(""), "prévision de rentrée {c}", "objet {objet} : fenêtre {debut}-{fin}, victimes {victimes_ppm} ppm, classe {classe}, état {st}", Niveau(urg))
+        }
+        let quoi = if nouvelle { "ouverte" } else { "révisée" }
+        let _ = Journal.noter(h, "reentrees", par, "campagne {c} ({objet}) {quoi} : fenêtre {debut}-{fin}, {victimes_ppm} ppm, {classe}, {st}")
+        return c
+    }
+
+    on en_campagne(objet) {
+        let c = courante.get(objet)
+        if c == () { return false }
+        let st = get_status(c) ?? "ouverte"
+        return st == "ouverte" || st == "imminente" || st == "echue"
+    }
+
+    on campagne_de(objet) {
+        return courante.get(objet) ?? ""
+    }
+
+    on objet(campagne) {
+        let o = objet_de.get(campagne)
+        require o != () else Inconnu "campagne inconnue : {campagne}"
+        return o
+    }
+
+    on etat(campagne) {
+        if objet_de.get(campagne) == () { return "inconnue" }
+        return ReeEtatCampagne(get_status(campagne) ?? "ouverte")
+    }
+
+    on constatee(objet) {
+        let c = courante.get(objet)
+        if c == () { return false }
+        let st = get_status(c) ?? "ouverte"
+        return st == "rentree" || st == "close"
+    }
+
+    on fenetre(campagne) {
+        let d = fenetre_debut.get(campagne)
+        let f = fenetre_fin.get(campagne)
+        require d != () && f != () else Inconnu "campagne inconnue : {campagne}"
+        return [to_int(d), to_int(f)]
+    }
+
+    on retrecissement(campagne) {
+        let d = fenetre_debut.get(campagne)
+        let f = fenetre_fin.get(campagne)
+        let l0 = largeur_initiale.get(campagne)
+        require d != () && f != () && l0 != () else Inconnu "campagne inconnue : {campagne}"
+        let init = max(1, to_int(l0))
+        let pct = idiv((to_int(f) - to_int(d)) * 100, init)
+        return Pourcent(min(10000, max(0, pct)))
+    }
+
+    on constater(h, objet, instant, lieu, debris_au_sol, par, valideur) {
+        require ApiAcces.a_le_role(par, "analyste") else Habilitation "constater une rentrée : analyste d'ORBITE"
+        require ApiAcces.a_le_role(valideur, "superviseur") && ApiAcces.quatre_yeux(par, valideur) else QuatreYeux "valideur : superviseur d'ORBITE distinct"
+        let c = courante.get(objet) ?? ""
+        require c != "" else Inconnu "aucune campagne pour {objet}"
+        let st = get_status(c) ?? "ouverte"
+        require st == "imminente" || st == "echue" else EtatInvalide "campagne {c} {st} : ni imminente ni échue"
+        require to_int(instant) <= to_int(h) else Incoherent "instant de rentrée dans le futur"
+        // une orbite indépendante de moins de 72 h, alors que l'instant déclaré remonte à plus de
+        // 72 h, a été déterminée APRÈS la rentrée déclarée : l'objet est encore en orbite
+        let ecoule = to_int(h) - to_int(instant)
+        let encore_suivi = ecoule > 259200000 && ApiObservation.suivi(objet, h)
+        require !encore_suivi else Incoherent "objet {objet} encore suivi en orbite après l'instant déclaré"
+        let d = fenetre_debut.get(c) ?? instant
+        let f = fenetre_fin.get(c) ?? instant
+        transition(c, st, "rentree")
+        let _ = ReeConstat.enregistrer(h, c, objet, instant, lieu, debris_au_sol, d, f, par, valideur)
+        let _ = ReeRisque.figer(h, c)
+        let _ = ApiRef.changer_etat_objet(h, objet, "rentre", c, "rentrée constatée", "systeme")
+        for r in ApiConjonctions.ouverts_de(objet) {
+            let rr = try { ApiConjonctions.resoudre(h, r, "objet rentré", "systeme") }
+            if rr.error != () {
+                let k = rr.kind
+                let _ = Journal.noter(h, "reentrees", "systeme", "rapprochement {r} non résolu à la rentrée de {objet} ({k})")
+            }
+        }
+        let zone = ReeControlee.zone_de(c)
+        let dedans = zone != "" && _dans_zone(lieu, zone)
+        let _ = ReeControlee.constater_rentree(h, c, dedans)
+        let _ = ReeNotification.clore(h, c, "rentree")
+        let _ = Journal.noter(h, "reentrees", par, "rentrée de {objet} constatée ({c}) à {instant}, lieu {lieu}, débris {debris_au_sol}, valideur {valideur}")
+        return "rentree"
+    }
+
+    // Lieu "lat,lon" dans une boîte "lat1,lon1,lat2,lon2", ou zone nommée identique.
+    on _dans_zone(lieu: String, zone: String) {
+        if lieu == zone { return true }
+        let b = split(zone, ",")
+        let p = split(lieu, ",")
+        if len(b) != 4 || len(p) != 2 { return false }
+        let lat = to_float(trim(p[0]))
+        let lon = to_float(trim(p[1]))
+        let a1 = to_float(trim(b[0]))
+        let o1 = to_float(trim(b[1]))
+        let a2 = to_float(trim(b[2]))
+        let o2 = to_float(trim(b[3]))
+        if lat == () || lon == () || a1 == () || o1 == () || a2 == () || o2 == () { return false }
+        return lat >= min(a1, a2) && lat <= max(a1, a2) && lon >= min(o1, o2) && lon <= max(o1, o2)
+    }
+
+    on annuler(h, campagne, motif, par, valideur) {
+        require ApiAcces.a_le_role(par, "analyste") else Habilitation "annuler une campagne : analyste d'ORBITE"
+        require ApiAcces.a_le_role(valideur, "superviseur") && ApiAcces.quatre_yeux(par, valideur) else QuatreYeux "valideur : superviseur d'ORBITE distinct"
+        let o = objet_de.get(campagne)
+        require o != () else Inconnu "campagne inconnue : {campagne}"
+        let st = get_status(campagne) ?? "ouverte"
+        require st == "ouverte" || st == "imminente" || st == "echue" else EtatInvalide "campagne {campagne} terminée ({st})"
+        require len(trim(motif)) > 0 else MotifRequis "motif d'annulation exigé"
+        require !ReeControlee.actif(campagne) else Conflit "rentrée contrôlée approuvée ou exécutée : l'annuler d'abord"
+        transition(campagne, st, "annulee")
+        annulation.set(campagne, "{motif} / {par} / {valideur}")
+        let _ = ReeRisque.figer(h, campagne)
+        let _ = ReeNotification.clore(h, campagne, "annulee")
+        let _ = Journal.noter(h, "reentrees", par, "campagne {campagne} ({o}) annulée : {motif}, valideur {valideur}")
+        return "annulee"
+    }
+
+    on balayer(h, par) {
+        require ApiAcces.a_le_role(par, "systeme") else Habilitation "balayage : systeme"
+        let n = 0
+        let orb = ApiRef.orbite()
+        for e in courante.entries {
+            let c = e.value
+            let o = e.key
+            let st = get_status(c) ?? "ouverte"
+            let fin = to_int(fenetre_fin.get(c) ?? h)
+            if (st == "ouverte" || st == "imminente") && fin + MARGE_ECHEANCE < to_int(h) {
+                transition(c, st, "echue")
+                n = n + 1
+                let vu = ApiObservation.suivi(o, h)
+                let suite = if vu { "objet encore suivi en orbite : prévision à reprendre" } else { "objet non suivi : rentrée probable, à constater" }
+                let _ = ApiPasserelle.notifier(h, orb, Rapprochement(""), "campagne de rentrée {c} échue", "{o} : fin de fenêtre {fin} dépassée sans constat ; {suite}", 2)
+                let _ = Journal.noter(h, "reentrees", par, "campagne {c} ({o}) échue ; {suite}")
+            } else if st == "ouverte" || st == "imminente" {
+                let cad = if st == "imminente" { CADENCE_FINALE } else { CADENCE }
+                let dr = to_int(derniere_revision.get(c) ?? h)
+                if to_int(h) - dr > cad {
+                    let _ = ApiPasserelle.notifier(h, orb, Rapprochement(""), "prévision de rentrée {c} périmée", "{o} : dernière révision {dr}, cadence {cad} ms dépassée", 2)
+                    let _ = Journal.noter(h, "reentrees", par, "campagne {c} ({o}) : prévision périmée (dernière révision {dr})")
+                }
+            }
+            let st2 = get_status(c) ?? "ouverte"
+            if st2 == "ouverte" || st2 == "imminente" || st2 == "echue" {
+                n = n + ReeNotification.relancer(h, c, "systeme")
+            }
+        }
+        n = n + ReeConstat.balayer(h, "systeme")
+        for e in courante.entries {
+            let c = e.value
+            if (get_status(c) ?? "ouverte") == "rentree" {
+                let sc = ReeConstat.etat(c)
+                if sc == "sans_suite" || sc == "transmis" {
+                    transition(c, "rentree", "close")
+                    n = n + 1
+                    let _ = Journal.noter(h, "reentrees", par, "campagne {c} close (constat {sc})")
+                }
+            }
+        }
+        n = n + ReeDebris.balayer(h, "systeme")
+        return n
+    }
+}

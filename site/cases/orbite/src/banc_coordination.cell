@@ -1,0 +1,12 @@
+use app
+use commun::journal_chair
+use commun::horloge_chair
+use sys::coordination::chair::api
+use sys::coordination::chair::dossier
+use sys::coordination::chair::verrou
+use sys::coordination::chair::decision
+use sys::coordination::chair::reponses
+use sys::coordination::chair::echanges
+use sys::coordination::chair::grappes
+use sys::coordination::chair::suivi
+use sys::coordination::chair::arbitrage

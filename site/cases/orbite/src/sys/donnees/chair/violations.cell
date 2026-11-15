@@ -1,0 +1,116 @@
+// donnees — corps : violations de l'accord de partage.
+
+flesh DonViolations {
+    on signaler(h, org, n, objet, description, par) {
+        let par_orbite = ApiAcces.a_le_role(par, "analyste") || ApiAcces.a_le_role(par, "systeme")
+        let par_membre = false
+        if !par_orbite && ApiAcces.role_de(par) != "aucun" {
+            par_membre = DonAdhesions.adherent(ApiAcces.employeur(par))
+        }
+        require par_orbite || par_membre else Habilitation "signaler : membre d'une organisation adhérente, analyste ou systeme"
+        require ApiRef.organisation_existe(org) else Inconnu "organisation inconnue : {org}"
+        if objet != "" {
+            require ApiRef.etat_objet(objet) != "inconnu" else Inconnu "objet non catalogué : {objet}"
+        }
+        require len(description) > 0 else MotifRequis "description exigée"
+        require en_cause.size < MAX_VIOLATIONS && signalement.size < MAX_VIOLATIONS else Plein "trop de violations"
+        let id = "VIO-{next_id()}"
+        en_cause.set(id, to_string(org))
+        nature.set(id, n)
+        objet_de.set(id, to_string(objet))
+        signalement.set(id, "{h} | {par} | {description}")
+        if objet != "" {
+            let prop = ApiRef.proprietaire(objet)
+            if prop != "inconnu" && prop != "" {
+                let _ = ApiPasserelle.notifier(h, prop, "", "violation {id}", "signalement {n} concernant {objet}", 1)
+            }
+        }
+        let _ = Journal.noter(h, "donnees", par, "violation {id} ({n}) signalée contre {org}")
+        return id
+    }
+
+    on instruire(h, violation, recevable, motif, par) {
+        require ApiAcces.a_le_role(par, "conformite") else Habilitation "instruire : conformite d'ORBITE"
+        let org = en_cause.get(violation)
+        require org != () else Inconnu "violation inconnue : {violation}"
+        require (get_status(violation) ?? "signalee") == "signalee" else EtatInvalide "violation {violation} déjà instruite"
+        if !recevable {
+            require len(motif) > 0 else MotifRequis "motif de classement exigé"
+            transition(violation, "signalee", "classee")
+            let _ = Journal.noter(h, "donnees", par, "violation {violation} classée : {motif}")
+            return "classee"
+        }
+        let ech = to_int(h) + DELAI_CONTRADICTOIRE_MS
+        echeance.set(violation, Horodatage(ech))
+        transition(violation, "signalee", "instruite")
+        let _ = ApiPasserelle.notifier(h, Org(org), "", "violation {violation}", "observations attendues avant {ech}", 2)
+        let _ = Journal.noter(h, "donnees", par, "violation {violation} instruite, contradictoire jusqu'à {ech}")
+        return "instruite"
+    }
+
+    on observer(h, violation, texte, par) {
+        let org = en_cause.get(violation)
+        require org != () else Inconnu "violation inconnue : {violation}"
+        let role_ok = ApiAcces.a_le_role(par, "administrateur_operateur") || ApiAcces.a_le_role(par, "autorite")
+        require role_ok && ApiAcces.agit_pour(par, Org(org)) else Habilitation "observations : représentant de {org}"
+        require (get_status(violation) ?? "signalee") == "instruite" else EtatInvalide "violation {violation} pas en contradictoire"
+        require to_int(h) <= to_int(echeance.get(violation) ?? Horodatage(0)) else Delai "contradictoire échu"
+        observations.set(violation, texte)
+        let _ = Journal.noter(h, "donnees", par, "observations de {org} sur la violation {violation}")
+        return "instruite"
+    }
+
+    on qualifier(h, violation, etablie, g, motif, par, valideur) {
+        require ApiAcces.a_le_role(par, "conformite") else Habilitation "qualifier : conformite d'ORBITE"
+        require valideur != par && ApiAcces.a_le_role(valideur, "direction") && ApiAcces.quatre_yeux(par, valideur) else QuatreYeux "valideur direction distinct exigé"
+        let org = en_cause.get(violation)
+        require org != () else Inconnu "violation inconnue : {violation}"
+        require (get_status(violation) ?? "signalee") == "instruite" else EtatInvalide "violation {violation} non instruite"
+        let echu = to_int(h) > to_int(echeance.get(violation) ?? Horodatage(0))
+        require observations.get(violation) != () || echu else Delai "contradictoire en cours sans observations"
+        require len(motif) > 0 else MotifRequis "motif de la qualification exigé"
+        if !etablie {
+            transition(violation, "instruite", "classee")
+            let _ = Journal.noter(h, "donnees", par, "violation {violation} non établie : {motif}")
+            return "classee"
+        }
+        let nat = to_string(nature.get(violation) ?? "")
+        if org == to_string(ApiRef.orbite()) {
+            let inc = ApiOperations.declarer_incident(h, "INC-{violation}", g, "donnees", "fuite d'ORBITE {violation} : {motif}", "systeme")
+            manquement.set(violation, inc)
+        } else {
+            let mq = ApiConformite.constater(h, Org(org), "accord_donnees:{nat}", g, violation, par)
+            manquement.set(violation, mq)
+            if g == 3 {
+                let rs = try { DonAdhesions.suspendre(h, org, violation, par, valideur) }
+                if rs.error != () {
+                    let _ = Journal.noter(h, "donnees", par, "violation {violation} : pas d'adhésion active de {org} à suspendre")
+                }
+            }
+        }
+        transition(violation, "instruite", "constatee")
+        let _ = Journal.noter(h, "donnees", par, "violation {violation} constatée (gravité {g}) : {motif} (valideur {valideur})")
+        return "constatee"
+    }
+
+    on clore(h, violation, motif, par) {
+        require ApiAcces.a_le_role(par, "conformite") else Habilitation "clore : conformite d'ORBITE"
+        require en_cause.get(violation) != () else Inconnu "violation inconnue : {violation}"
+        require (get_status(violation) ?? "signalee") == "constatee" else EtatInvalide "violation {violation} non constatée"
+        require len(motif) > 0 else MotifRequis "motif de clôture exigé"
+        transition(violation, "constatee", "close")
+        let _ = Journal.noter(h, "donnees", par, "violation {violation} close : {motif}")
+        return "close"
+    }
+
+    on etat(violation) {
+        if en_cause.get(violation) == () { return "inconnue" }
+        return get_status(violation) ?? "signalee"
+    }
+
+    on a_qualifier(h, n) {
+        let res_v = echeance.entries.filter(e => (get_status(e.key) ?? "signalee") == "instruite" && to_int(e.value) < to_int(h)).map(e => e.key)
+        if len(res_v) <= n { return res_v }
+        return slice(res_v, 0, n)
+    }
+}

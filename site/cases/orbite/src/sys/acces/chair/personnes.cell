@@ -1,0 +1,194 @@
+// acces — corps du registre des personnes physiques.
+flesh AccesPersonnes {
+    on amorcer(h, personne) {
+        require amorce.size == 0 else Existe "amorce déjà posée"
+        amorce.set("direction", personne)
+        let orb = ApiRef.orbite()
+        let _ = enregistrer(h, personne, orb, "direction", "amorce")
+        let _ = Journal.noter(h, "acces", "amorce", "amorcer {personne} direction")
+        return "active"
+    }
+
+    on enregistrer(h, personne, employeur, r, par) {
+        require personne != "systeme" && personne != "amorce" && personne != "" else Existe "identifiant {personne} réservé"
+        require employeur_de.get(personne) == () else Existe "personne {personne} déjà inscrite"
+        require r != "systeme" && r != "aucun" else HorsBornes "rôle {r} non attribuable"
+        require par != personne else QuatreYeux "{par} ne peut s'inscrire lui-même"
+        require ApiRef.organisation_existe(employeur) else Inconnu "organisation {employeur} inconnue ou radiée"
+        require AccesPortees.compatible(r, AccesPortees.genre_de(employeur)) else HorsBornes "rôle {r} hors de la portée de {employeur}"
+        if par == "amorce" {
+            require (amorce.get("direction") ?? "") == personne else Habilitation "amorce réservée à la personne amorcée"
+            require employeur_de.size == 0 else Existe "registre non vide"
+        } else {
+            require _habilite_pour(r, employeur, par) else Habilitation "{par} n'est pas habilité à inscrire un rôle {r}"
+        }
+        require employeur_de.size < MAX_PERSONNES else Plein "registre des personnes plein"
+        let eff = effectif.get(employeur) ?? 0
+        require eff < MAX_PAR_EMPLOYEUR else Plein "{employeur} a déjà {eff} personnes"
+        employeur_de.set(personne, employeur)
+        role_principal.set(personne, r)
+        inscrit_par.set(personne, par)
+        certifiee_le.set(personne, h)
+        inscrite_le.set(personne, h)
+        effectif.set(employeur, eff + 1)
+        transition(personne, "inconnue", "active")
+        let rat = AccesRattachements.ouvrir(h, personne, employeur, par)
+        let _ = Journal.noter(h, "acces", par, "enregistrer {personne} {r} chez {employeur} (rattachement {rat})")
+        return r
+    }
+
+    on changer_role(h, personne, r, par, valideur) {
+        let emp = employeur_de.get(personne)
+        require emp != () else Inconnu "personne {personne} inconnue"
+        let st = get_status(personne) ?? "inconnue"
+        require st == "active" else EtatInvalide "personne {personne} {st}"
+        require r != "systeme" && r != "aucun" else HorsBornes "rôle {r} non attribuable"
+        require AccesPortees.compatible(r, AccesPortees.genre_de(emp)) else HorsBornes "rôle {r} hors de la portée de {emp}"
+        require par != personne && valideur != personne else QuatreYeux "la personne ne peut changer son propre rôle"
+        require _habilite_pour(r, emp, par) else Habilitation "{par} n'est pas habilité à conférer {r}"
+        let _ = AccesControle.contresigner(h, "role:{personne}", par, valideur)
+        role_principal.set(personne, r)
+        certifiee_le.set(personne, h)
+        let n = AccesAttributions.revoquer_incompatibles(h, personne, r)
+        let _ = Journal.noter(h, "acces", par, "changer_role {personne} → {r} ({n} attributions révoquées), validé par {valideur}")
+        return r
+    }
+
+    on suspendre(h, personne, motif, detail, par) {
+        let emp = employeur_de.get(personne)
+        require emp != () else Inconnu "personne {personne} inconnue"
+        let st = get_status(personne) ?? "inconnue"
+        require st == "active" else EtatInvalide "personne {personne} {st}"
+        require detail != "" else MotifRequis "suspension sans motif"
+        let ok = AccesControle.a_le_role(par, "conformite") || AccesControle.a_le_role(par, "direction") || (AccesControle.a_le_role(par, "administrateur_operateur") && AccesControle.agit_pour(par, emp))
+        require ok else Habilitation "{par} ne peut suspendre {personne}"
+        require par != personne else QuatreYeux "{par} ne peut se suspendre lui-même"
+        _suspendre(h, personne, motif, par)
+        let _ = Journal.noter(h, "acces", par, "suspendre {personne} {motif} : {detail}")
+        return "suspendue"
+    }
+
+    on suspendre_auto(h, personne, motif) {
+        let st = get_status(personne) ?? "inconnue"
+        require st != "inconnue" else Inconnu "personne {personne} inconnue"
+        if st != "active" { return st }
+        _suspendre(h, personne, motif, "systeme")
+        let _ = Journal.noter(h, "acces", "systeme", "suspendre {personne} {motif}")
+        return "suspendue"
+    }
+
+    on retablir(h, personne, par) {
+        let emp = employeur_de.get(personne)
+        require emp != () else Inconnu "personne {personne} inconnue"
+        let st = get_status(personne) ?? "inconnue"
+        require st == "suspendue" else EtatInvalide "personne {personne} {st}"
+        require AccesControle.a_le_role(par, "conformite") || AccesControle.a_le_role(par, "direction") else Habilitation "{par} : conformite ou direction"
+        let auteur = suspendu_par.get(personne) ?? ""
+        require par != personne && par != auteur else QuatreYeux "ni la personne ni l'auteur de la suspension"
+        require ApiRef.organisation_existe(emp) else NonEligible "employeur {emp} radié"
+        motif_suspension.delete(personne)
+        certifiee_le.set(personne, h)
+        transition(personne, "suspendue", "active")
+        let _ = Journal.noter(h, "acces", par, "retablir {personne}")
+        return "active"
+    }
+
+    on sortir(h, personne) {
+        let emp = employeur_de.get(personne)
+        require emp != () else Inconnu "personne {personne} inconnue"
+        let st = get_status(personne) ?? "inconnue"
+        require st == "active" || st == "suspendue" else EtatInvalide "personne {personne} {st}"
+        require AccesDeparts.etat(personne) == "effectif" else EtatInvalide "départ de {personne} non effectif"
+        effectif.set(emp, max(0, (effectif.get(emp) ?? 0) - 1))
+        motif_suspension.delete(personne)
+        suspendu_par.delete(personne)
+        if st == "active" {
+            transition(personne, "active", "partie")
+        } else {
+            transition(personne, "suspendue", "partie")
+        }
+        let _ = Journal.noter(h, "acces", "systeme", "sortir {personne}")
+        return "partie"
+    }
+
+    on certifier(h, personne) {
+        require certifiee_le.get(personne) != () else Inconnu "personne {personne} inconnue"
+        certifiee_le.set(personne, h)
+        return h
+    }
+
+    on etat(personne) {
+        return get_status(personne) ?? "inconnue"
+    }
+
+    on est_active(personne) {
+        return (get_status(personne) ?? "inconnue") == "active"
+    }
+
+    on role(personne) {
+        return role_principal.get(personne) ?? "aucun"
+    }
+
+    on employeur(personne) {
+        return employeur_de.get(personne) ?? ""
+    }
+
+    on motif(personne) {
+        let m = motif_suspension.get(personne)
+        if m == () { return "" }
+        return to_string(m)
+    }
+
+    on certifiee(personne) {
+        return certifiee_le.get(personne) ?? 0
+    }
+
+    on personnes_de(employeur, n) {
+        let res_p = employeur_de.entries.filter(e => e.value == employeur && (get_status(e.key) ?? "inconnue") != "partie" && (get_status(e.key) ?? "inconnue") != "inconnue").map(e => e.key).sort()
+        return slice(res_p, 0, min(n, len(res_p)))
+    }
+
+    on non_certifiees(avant, n) {
+        let res_c = certifiee_le.entries.filter(e => to_int(e.value) < to_int(avant) && (get_status(e.key) ?? "inconnue") != "partie").map(e => e.key).sort()
+        return slice(res_c, 0, min(n, len(res_c)))
+    }
+
+    on balayer_employeurs(h, n) {
+        let candidats = employeur_de.entries.filter(e => (get_status(e.key) ?? "inconnue") == "active" || (get_status(e.key) ?? "inconnue") == "suspendue").sort_by(e => e.key)
+        let existe_org = map()
+        let touchees = []
+        for e in candidats {
+            if len(touchees) < n {
+                let org = to_string(e.value)
+                if existe_org[org] == () { existe_org[org] = ApiRef.organisation_existe(e.value) }
+                if !existe_org[org] {
+                    let _ = suspendre_auto(h, e.key, "employeur_radie")
+                    let _ = AccesDeparts.depart_d_office(h, e.key)
+                    touchees.push(e.key)
+                }
+            }
+        }
+        return touchees
+    }
+
+    on _suspendre(h: Horodatage, personne: String, motif: AccesMotifSuspension, par: String) {
+        motif_suspension.set(personne, motif)
+        suspendu_par.set(personne, par)
+        transition(personne, "active", "suspendue")
+        let _ = AccesSessions.fermer_toutes(h, personne, "suspension")
+        let _ = AccesUrgences.fermer_de(h, personne)
+        let _ = AccesAttributions.revoquer_de(h, personne)
+    }
+
+    on _habilite_pour(r: Role, emp: Org, par: String) {
+        if r == "direction" || r == "conformite" || r == "superviseur" || r == "auditeur" {
+            return AccesControle.a_le_role(par, "direction")
+        }
+        if AccesControle.a_le_role(par, "exploitant") { return true }
+        // La direction inscrit aussi les autres rôles d'ORBITE : sans cela, nul ne peut
+        // inscrire le premier exploitant (seule l'amorce « direction » existe au départ).
+        if AccesPortees.compatible(r, "orbite") && AccesControle.a_le_role(par, "direction") { return true }
+        let r_op = AccesPortees.compatible(r, "operateur") || AccesPortees.compatible(r, "capteur")
+        return r_op && AccesControle.a_le_role(par, "administrateur_operateur") && AccesControle.agit_pour(par, emp)
+    }
+}

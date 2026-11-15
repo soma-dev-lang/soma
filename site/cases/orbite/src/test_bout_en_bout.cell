@@ -1,0 +1,791 @@
+// ORBITE COMMUNE — test de bout en bout : les VRAIS corps des 20 sous-systèmes (use prod),
+// sans aucune doublure. Voir INTEGRATION_BOUT_EN_BOUT.md pour les écarts révélés et corrigés.
+use prod
+
+// Repères (jours depuis l'époque Unix, UTC) : 01/10/2026 = 20727 ; 01/01/2027 = 20819.
+// h(j, s) = horodatage en ms du jour j à s secondes après minuit.
+// États : ALD (siège, Aldanie), BRV (Bravie), CAZ (Cazanie) ; autorités ORG-ALD, ORG-BRV, ORG-CAZ.
+// Opérateurs : ORG-OPA (tutelle ALD, actif et joignable), ORG-OPB (tutelle BRV, restera muet).
+// Fournisseur de capteurs : ORG-CAPT (tutelle CAZ).
+// ORBITE : dir1 (amorce), dir2, sup1, sup2, exp1, ana1, ana2, conf1, conf2, aud1.
+// États : aut.ald, pf.ald ; aut.brv, pf.brv ; aut.caz, pf.caz.
+// OPA : adm.a, dyn.a, dyn.a2, chef.a ; OPB : adm.b, dyn.b, dyn.b2, chef.b ; capteur : capt.1.
+cell Monde {
+    on h(j: Int, s: Int) { return Horodatage(j * 86400000 + s * 1000) }
+    on t0() { return h(20727, 36000) }
+
+    // 1a. Référentiel (fondation par "systeme"), personnes d'ORBITE, États, organisations.
+    on fonder() {
+        let t = t0()
+        let _ = RefOrg.amorcer(t, "ALD", "Aldanie", "systeme")
+        let _ = AccesPersonnes.amorcer(t, "dir1")
+        let _ = ApiAcces.enregistrer(t, "dir2", "ORG-ORBITE", "direction", "dir1")
+        let _ = ApiAcces.enregistrer(t, "sup1", "ORG-ORBITE", "superviseur", "dir1")
+        let _ = ApiAcces.enregistrer(t, "sup2", "ORG-ORBITE", "superviseur", "dir1")
+        let _ = ApiAcces.enregistrer(t, "conf1", "ORG-ORBITE", "conformite", "dir1")
+        let _ = ApiAcces.enregistrer(t, "conf2", "ORG-ORBITE", "conformite", "dir1")
+        let _ = ApiAcces.enregistrer(t, "aud1", "ORG-ORBITE", "auditeur", "dir1")
+        let _ = ApiAcces.enregistrer(t, "exp1", "ORG-ORBITE", "exploitant", "dir1")
+        let _ = ApiAcces.enregistrer(t, "ana1", "ORG-ORBITE", "analyste", "exp1")
+        let _ = ApiAcces.enregistrer(t, "ana2", "ORG-ORBITE", "analyste", "exp1")
+        for e in [["BRV", "Bravie"], ["CAZ", "Cazanie"]] {
+            let _ = RefEtat.declarer(t, Etat(e[0]), e[1], "ana1")
+            let _ = RefEtat.candidater(t, Etat(e[0]), "INSTR-{e[0]}-1", "sup1")
+            let _ = RefEtat.admettre(t, Etat(e[0]), "dir1", "dir2")
+        }
+        for e in ["ALD", "BRV", "CAZ"] {
+            let _ = ApiRef.inscrire_organisation(t, "ORG-{e}", "Autorité de {e}", Etat(e), "etat", "sup1", "dir1")
+        }
+        let _ = ApiRef.inscrire_organisation(t, "ORG-OPA", "Opérateur Alpha", "ALD", "operateur", "sup1", "dir1")
+        let _ = ApiRef.inscrire_organisation(t, "ORG-OPB", "Opérateur Bêta", "BRV", "operateur", "sup1", "dir1")
+        let _ = ApiRef.inscrire_organisation(t, "ORG-CAPT", "Capteurs de Cazanie", "CAZ", "capteur", "sup1", "dir1")
+        return "ok"
+    }
+
+    // 1b. Personnes des États et des organisations ; rattachements confirmés.
+    on personnes() {
+        let t = t0()
+        for e in ["ald", "brv", "caz"] {
+            let org = Org("ORG-{uppercase(e)}")
+            let _ = ApiAcces.enregistrer(t, "aut.{e}", org, "autorite", "exp1")
+            let _ = AccesRattachements.confirmer(t, "aut.{e}", "NV-{e}-1", "dir1", "sup1")
+            let _ = ApiAcces.enregistrer(t, "pf.{e}", org, "point_focal", "exp1")
+            let _ = AccesRattachements.confirmer(t, "pf.{e}", "NV-{e}-2", "aut.{e}", "")
+        }
+        for o in [["a", "ORG-OPA", "ald"], ["b", "ORG-OPB", "brv"]] {
+            let adm = "adm.{o[0]}"
+            let _ = ApiAcces.enregistrer(t, adm, Org(o[1]), "administrateur_operateur", "exp1")
+            let _ = AccesRattachements.confirmer(t, adm, "CONTRAT-{o[0]}", "aut.{o[2]}", "")
+            let _ = ApiAcces.enregistrer(t, "dyn.{o[0]}", Org(o[1]), "dynamicien", adm)
+            let _ = ApiAcces.enregistrer(t, "dyn.{o[0]}2", Org(o[1]), "dynamicien", adm)
+            let _ = ApiAcces.enregistrer(t, "chef.{o[0]}", Org(o[1]), "chef_de_mission", adm)
+        }
+        let _ = ApiAcces.enregistrer(t, "adm.capt", "ORG-CAPT", "administrateur_operateur", "exp1")
+        let _ = AccesRattachements.confirmer(t, "adm.capt", "CONTRAT-CAPT", "aut.caz", "")
+        let _ = ApiAcces.enregistrer(t, "capt.1", "ORG-CAPT", "capteur", "adm.capt")
+        return "ok"
+    }
+    // 1c. Accord de partage des données : rédigé, soumis aux trois États (30 j), adopté
+    // (quatre yeux de la direction), en vigueur au 30/11/2026 (balayage), signé et contresigné.
+    on accord() {
+        let t = t0()
+        let _ = DonAccords.rediger(t, "ADP-1", "sha256:adp1", "première version", "dir1")
+        let _ = DonAccords.soumettre(t, "ADP-1", Duree(2592000000), ["ALD", "BRV", "CAZ"], "dir1")
+        for e in ["ald", "brv", "caz"] {
+            let _ = DonAccords.donner_avis(h(20728, 36000), "ADP-1", Etat(uppercase(e)), "favorable", "aut.{e}")
+        }
+        let _ = DonAccords.adopter(h(20757, 36000), "ADP-1", h(20787, 36000), "dir1", "dir2")
+        return DonAccords.etat("ADP-1")
+    }
+    on accord_en_vigueur() {
+        let _ = ApiDonnees.balayer(h(20787, 36000), "systeme")
+        return DonAccords.en_vigueur()
+    }
+    // Adhésion de `org` signée par `par`, contresignée par conf1.
+    on adherer(org: String, par: String) {
+        let a = DonAdhesions.signer(h(20788, 36000), Org(org), par)
+        return DonAdhesions.contresigner(h(20788, 37000), a, "conf1")
+    }
+
+    // 1d. Règles de priorité PRIO-2027 : table, consultation, vote des trois États, publication,
+    // entrée en vigueur le 01/01/2027.
+    on priorites() {
+        let t = t0()
+        let v = "PRIO-2027"
+        let _ = PrioVersion.rediger(t, v, "Règles de priorité 2027", "", h(20819, 0), "ana1")
+        let _ = PrioTable.poser_regle(t, v, 1, "derogation", "exempte", "ana1")
+        let _ = PrioTable.poser_regle(t, v, 2, "propulsion_faible", "exempte", "ana1")
+        let _ = PrioTable.poser_regle(t, v, 3, "masse_moindre", "designe", "ana1")
+        let _ = PrioTable.fixer_preavis(t, v, "impulsionnelle", Duree(21600000), "ana1")
+        let _ = PrioTable.fixer_preavis(t, v, "faible", Duree(259200000), "ana1")
+        let _ = PrioVersion.soumettre(t, v, h(20757, 36000), "ana1", "sup1")
+        for e in ["ald", "brv", "caz"] {
+            let _ = PrioConsultation.donner_avis(h(20728, 36000), v, Etat(uppercase(e)), "favorable", "", "pf.{e}")
+        }
+        let _ = ApiPriorites.balayer(h(20757, 36000), "systeme")
+        let _ = PrioVersion.mettre_au_vote(h(20758, 36000), v, h(20772, 36000), "sup1", "dir1")
+        for e in ["ald", "brv", "caz"] {
+            let _ = PrioScrutin.voter(h(20759, 36000), v, Etat(uppercase(e)), "pour", "pf.{e}")
+        }
+        let _ = ApiPriorites.balayer(h(20772, 36000), "systeme")
+        let _ = PrioVersion.publier(h(20773, 36000), v, "sup1")
+        let _ = ApiPriorites.balayer(h(20819, 60), "systeme")
+        return PrioVersion.etat(v)
+    }
+
+    // 1e. Canal webhook vérifié de `org` (le test mocke random_token "DEFI-<c>" et http_post).
+    on canal(c: String, org: String, adm: String, role: String) {
+        let t = h(20821, 36000)
+        let _ = PasCanaux.declarer(t, c, Org(org), "webhook", "https://{c}.invalid/orbite", adm)
+        return PasCanaux.verifier(t, c, "DEFI-{c}", appelant(adm, org, role))
+    }
+    on appelant(p: String, org: String, role: String) {
+        return PasAppelant { personne: p, org: Org(org), role: Role(role) }
+    }
+
+    // 1f. Opérateur `x` ("a" / "b") d'`org` sous la tutelle de l'État `e` : licence (confirmée
+    // par l'autorité), dossier accepté, engagements, astreinte du 04/01 au 18/01/2027,
+    // exercice de joignabilité réussi, chef de mission confirmé, activation.
+    // Le 04/01/2027 (20822). Le test mocke http_post (message d'exercice livré).
+    on operateur(x: String, org: String, e: String) {
+        let t = h(20822, 28800)
+        let o = Org(org)
+        let adm = "adm.{x}"
+        let _ = OpLicences.declarer(t, o, "LIC-{e}-{x}", h(20454, 0), h(22280, 0), adm)
+        let _ = OpLicences.repondre_etat(t, o, "confirmee", "aut.{e}")
+        let d = OpDossiers.deposer(t, o, "statuts ; licence ; plan d'astreinte", adm)
+        let _ = OpDossiers.instruire(t, d, "ana1")
+        let _ = OpDossiers.accepter(t, d, "ana1", "sup1")
+        let _ = OpEngagements.proposer(t, o, Duree(86400000), Duree(7200000), Duree(1800000), adm)
+        let _ = OpEngagements.accepter(t, o, "sup1")
+        let s1 = OpAstreinte.planifier(t, o, "dyn.{x}", t, h(20829, 28800), "chef.{x}")
+        let _ = OpAstreinte.planifier(t, o, "dyn.{x}2", h(20829, 28800), h(20836, 28800), "chef.{x}")
+        let _ = OpAstreinte.prendre_service(t, s1, "dyn.{x}")
+        let ex = OpExercices.planifier(t, o, t, "ana1")
+        let _ = OpExercices.lancer(t, ex, "ana1")
+        let att = PasMessages.en_attente(appelant("dyn.{x}", org, "dynamicien"), 10)
+        let msg = split(att[0], " | ")[0]
+        let _ = PasMessages.acquitter(h(20822, 29000), msg, appelant("dyn.{x}", org, "dynamicien"))
+        let _ = OpExercices.accuser(h(20822, 29100), ex, "dyn.{x}")
+        let ct = OpContacts.declarer(t, o, "chef.{x}", "chef_de_mission", 1, "TEL-{x}-1", adm)
+        let _ = OpContacts.confirmer(t, ct, "chef.{x}")
+        return OpMembres.activer(h(20822, 29200), o, "sup1")
+    }
+    // Points focaux des États, contacts confirmés de l'échelon 3.
+    on points_focaux() {
+        let t = h(20822, 28800)
+        for e in ["ald", "brv", "caz"] {
+            let ct = OpContacts.declarer(t, Org("ORG-{uppercase(e)}"), "pf.{e}", "point_focal", 1, "TEL-PF-{e}", "aut.{e}")
+            let _ = OpContacts.confirmer(t, ct, "pf.{e}")
+        }
+        return "ok"
+    }
+
+    // 1g. Fournisseur de capteurs agréé (adhérent à l'accord) ; trois capteurs leo étalonnés
+    // le 03/01/2027 : CAP-1 radar, CAP-2 optique, CAP-3 laser (précision 10 m).
+    on capteurs() {
+        let t = h(20821, 28800)
+        let _ = ObsFournisseurs.demander(t, "ORG-CAPT", "adm.capt")
+        let _ = ObsFournisseurs.agreer(t, "ORG-CAPT", "exp1", "sup1")
+        let caps = []
+        for g in ["radar", "optique", "laser"] {
+            let c = ObsCapteurs.declarer(t, "ORG-CAPT", ObsGenreCapteur(g), ["leo"], Distance(10), "capt.1")
+            let _ = ObsCapteurs.etalonner(t, c, "capt.1")
+            let _ = ObsCapteurs.valider_etalonnage(t, c, Distance(5), "ana1")
+            caps.push(c)
+        }
+        return caps
+    }
+
+    // Tout l'amorçage (le test pose avant les mocks de random_token et http_post : voir E1).
+    on amorcer() {
+        let _ = fonder()
+        let _ = personnes()
+        let _ = accord()
+        let _ = accord_en_vigueur()
+        for a in [["ORG-OPA", "adm.a"], ["ORG-OPB", "adm.b"], ["ORG-ALD", "aut.ald"], ["ORG-BRV", "aut.brv"], ["ORG-CAZ", "aut.caz"]] {
+            let _ = adherer(a[0], a[1])
+        }
+        let _ = priorites()
+        let _ = adherer("ORG-CAPT", "adm.capt")
+        let _ = capteurs()
+        let _ = canal("C-OPA", "ORG-OPA", "adm.a", "administrateur_operateur")
+        let _ = canal("C-OPB", "ORG-OPB", "adm.b", "administrateur_operateur")
+        let _ = operateur("a", "ORG-OPA", "ald")
+        let _ = operateur("b", "ORG-OPB", "brv")
+        return points_focaux()
+    }
+
+    // 2a. Campagne de criblage du régime "leo" (manuelle) à `t`, terminée avec ses comptes.
+    on campagne(t: Horodatage, objets: Int, paires: Int, trouves: Int) {
+        let c = ConjCampagne.planifier(t, "regime", "leo", "", "manuel", "ana1")
+        let _ = ConjCampagne.demarrer(t, c, "systeme")
+        return ConjCampagne.terminer(Horodatage(to_int(t) + 60000), c, objets, paires, trouves, "systeme")
+    }
+
+    // 2b. Lancement L-2027-1 d'OPA (État ALD, BRV coéquipier) : préavis le 04/01 12 h pour la
+    // fenêtre du 08/01 10 h-11 h ; zones de retombée ; COLA (aucune période interdite) ; avis
+    // favorable à quatre yeux ; manifeste (A1, A2 d'OPA ; B1, B2 d'OPB ; étage E1 d'OPA).
+    on lancement() {
+        let l = "L-2027-1"
+        let t = h(20822, 43200)
+        let _ = ApiLancements.notifier(t, l, "ORG-OPA", "ALD", h(20826, 36000), h(20826, 39600), "leo", 5, "chef.a")
+        let _ = LancZones.ajouter_etat(t, l, "BRV", "ana1")
+        let _ = LancZones.declarer(t, l, ["CAZ|{to_int(h(20826, 36000))}|{to_int(h(20826, 39600))}|Z1|premier_etage"], "chef.a")
+        let _ = campagne(h(20822, 43300), 0, 0, 0)
+        let _ = LancCola.demander(h(20822, 43500), l, "TRAJ-L1", "dyn.a")
+        let _ = LancCola.conclure(h(20822, 43600), l, 1, [], [], "systeme")
+        let _ = LancAvis.rediger(h(20822, 43700), l, "favorable", "fenêtre entière sûre", "ana1")
+        let _ = LancAvis.valider(h(20822, 43800), l, "ana1", "sup1")
+        for p in [["A1", "charge_utile", "ORG-OPA", "ALD", "400", "impulsionnelle"], ["A2", "charge_utile", "ORG-OPA", "ALD", "1500", "impulsionnelle"], ["B1", "charge_utile", "ORG-OPB", "BRV", "900", "impulsionnelle"], ["B2", "charge_utile", "ORG-OPB", "BRV", "300", "impulsionnelle"], ["E1", "etage", "ORG-OPA", "ALD", "250", "aucune"]] {
+            let _ = LancPiece.prevoir(h(20822, 43900), l, "{l}/{p[0]}", LancGenrePiece(p[1]), Org(p[2]), Etat(p[3]), Masse(to_int(p[4])), Propulsion(p[5]), false, "chef.a")
+        }
+        return ApiLancements.etat(l)
+    }
+    // 2c. Tir le 08/01 10 h 05, injection 10 h 20, séparations 10 h 30, catalogage 12 h.
+    on tir() {
+        let l = "L-2027-1"
+        let _ = LancLancement.confirmer_tir(h(20826, 36600), l, h(20826, 36300), "chef.a")
+        let _ = LancLancement.declarer_injection(h(20826, 37200), l, h(20826, 37200), "nominale", "chef.a")
+        let objs = []
+        for p in ["A1", "A2", "B1", "B2", "E1"] {
+            let _ = LancPiece.separer(h(20826, 37800), "{l}/{p}", h(20826, 37800), "dyn.a")
+            objs.push(LancPiece.cataloguer(h(20826, 43200), "{l}/{p}", "ana1"))
+        }
+        return objs
+    }
+
+    // 3. Géométrie (époque E = 09/01/2027 0 h, repère inertiel commun, mouvement rectiligne) :
+    // A1, A2 filent en +y à 7,5 km/s ; B1 croise A1 à E + 36 h à 150 m ; B2 croise A2 à E + 48 h
+    // à 120 m ; l'étage E1 croise A2 à E + 42 h à 100 m. Autres paires : ≥ 99 km.
+    // Vecteur d'état "x,y,z,vx,vy,vz" en m et m/s.
+    on etat_de(p: String) {
+        if p == "A1" { return [7000000, 0, 0, 0, 7500, 0] }
+        if p == "A2" { return [7100000, 0, 0, 0, 7500, 0] }
+        if p == "B1" { return [7000150, 972000000, -972000000, 0, 0, 7500] }
+        if p == "B2" { return [7100120, 1296000000, -1296000000, 0, 0, 7500] }
+        return [7100100, 1134000000, -1134000000, 0, 0, 7500]
+    }
+    on epoque() { return h(20827, 0) }
+    on pieces() { return ["A1", "A2", "B1", "B2", "E1"] }
+    on objet(p: String) { return LancPiece.fiche("L-2027-1/{p}").objet }
+    on dynamicien(p: String) {
+        if starts_with(p, "B") { return "dyn.b" }
+        return "dyn.a"
+    }
+    // 3a. Éphéméride déposée par le dynamicien du propriétaire (époque E, horizon 72 h), à `t`.
+    on ephemeride(p: String, t: Horodatage, n: Int) {
+        let v = etat_de(p)
+        return ApiEphemerides.deposer(t, objet(p), "EPH-{p}-{n}", epoque(), Duree(259200000), "haute", "sha256:" + sha256("{p}-{n}"), "{v[0]},{v[1]},{v[2]}", false, dynamicien(p))
+    }
+    // 3b. Six mesures de deux capteurs, corrélées ; orbite déterminée et validée contre
+    // l'éphéméride déclarée (écart 0 m).
+    on orbite_observee(p: String) {
+        let o = objet(p)
+        let ms = []
+        for k in range(0, 6) {
+            let c = if k % 2 == 0 { "CAP-1" } else { "CAP-2" }
+            let inst = Horodatage(to_int(epoque()) - 3600000 + k * 60000)
+            let m = ApiObservation.deposer_mesure(h(20827, 1800), c, o, inst, "TDM {c} {p} {k}", "capt.1")
+            let _ = ObsMesures.correler(h(20827, 1900), m, o, Distance(5), "ana1")
+            ms.push(m)
+        }
+        let v = etat_de(p)
+        let od = ObsOrbites.calculer(h(20827, 2000), to_string(o), epoque(), ms, Distance(20), "{v[0]},{v[1]},{v[2]},{v[3] * 1000},{v[4] * 1000},{v[5] * 1000}", Distance(600000), Distance(620000), "ana1")
+        return ObsOrbites.valider(h(20827, 2100), od, ApiEphemerides.derniere(o), Distance(0), "ana1")
+    }
+    // 3c. Identification par le propriétaire (étage : par l'analyste), immatriculation par l'État.
+    on immatriculer(p: String) {
+        let l = "L-2027-1/{p}"
+        let qui = if p == "E1" { "ana1" } else { dynamicien(p) }
+        let _ = LancPiece.identifier(h(20827, 2400), l, qui)
+        let aut = if starts_with(p, "B") { "aut.brv" } else { "aut.ald" }
+        return LancPiece.immatriculer(h(20827, 2500), l, "REG-{p}", aut)
+    }
+    on observer() {
+        let _ = EphReglage.amorcer(h(20826, 50000), "exp1")
+        for p in pieces() {
+            let _ = ephemeride(p, h(20827, 600), 1)
+        }
+        for p in pieces() {
+            let _ = orbite_observee(p)
+        }
+        for p in pieces() {
+            let _ = immatriculer(p)
+        }
+        // mise en service des quatre satellites par le dynamicien de leur propriétaire
+        for p in ["A1", "A2", "B1", "B2"] {
+            let _ = ApiRef.changer_etat_objet(h(20827, 2600), objet(p), "en_service", "", "premier contact", dynamicien(p))
+        }
+        return ApiLancements.etat("L-2027-1")
+    }
+    // 4a. Criblage : le noyau natif de la campagne sur le catalogue des cinq objets (époque E,
+    // horizon 72 h, seuil 5 km) ; renvoie "a,b,tca,distance;…".
+    on catalogue_crible() {
+        let lignes_c = []
+        for p in pieces() {
+            let v = etat_de(p)
+            let n = substring(to_string(objet(p)), 4, len(to_string(objet(p))))
+            lignes_c.push("{n},{v[0]},{v[1]},{v[2]},{v[3]},{v[4]},{v[5]}")
+        }
+        return ConjCampagne.criblage(join(lignes_c, ";"), Duree(259200000), Distance(5000))
+    }
+    // 4b. Campagne de `t` : criblage, puis signalement (moteur, "systeme") des paires trouvées
+    // dont les deux pièces sont dans `retenues` ("A1|B1", …), pc 2e-4. Renvoie les rapprochements.
+    on cribler(t: Horodatage, retenues: List<String>) {
+        let trouves = split(catalogue_crible(), ";")
+        let _ = campagne(t, 5, 10, len(trouves))
+        let rs = []
+        for x in trouves {
+            let f = split(x, ",")
+            let a = Objet("OBJ-{f[0]}")
+            let b = Objet("OBJ-{f[1]}")
+            let cle = "{piece_de(a)}|{piece_de(b)}"
+            if retenues.contains(cle) {
+                let tca = Horodatage(to_int(epoque()) + parse_int(f[2]))
+                rs.push(ApiConjonctions.signaler(Horodatage(to_int(t) + 120000), a, b, tca, Distance(parse_int(f[3])), Probabilite(200000), "systeme"))
+            }
+        }
+        return rs
+    }
+    on piece_de(o: Objet) {
+        for p in pieces() {
+            if objet(p) == o { return p }
+        }
+        return "?"
+    }
+
+    // Nombre de pièces à éphéméride fraîche, orbite observée suivie, immatriculées.
+    on toutes_pretes(t: Horodatage) {
+        let n = 0
+        for p in pieces() {
+            let o = objet(p)
+            if ApiEphemerides.fraiche(o, t) && ApiObservation.suivi(o, t) && ApiRef.immatricule(o) && LancPiece.etat("L-2027-1/{p}") == "immatriculee" { n = n + 1 }
+        }
+        return n
+    }
+
+    // Monde prêt au criblage du 09/01 1 h : amorçage, lancement, objets observés et immatriculés.
+    on pret() {
+        let _ = amorcer()
+        let _ = lancement()
+        let _ = tir()
+        return observer()
+    }
+    // 5a. Mesures (deux capteurs) de `p` à l'époque `ep`, orbite déterminée de vecteur `vec`
+    // (m, mm/s) validée contre la dernière éphéméride déclarée avec l'écart `ecart` (moteur).
+    on orbite_a(p: String, ep: Horodatage, vec: String, ecart: Int, k0: Int) {
+        let o = objet(p)
+        let ms = []
+        for k in range(0, 6) {
+            let c = if k % 2 == 0 { "CAP-1" } else { "CAP-3" }
+            let inst = Horodatage(to_int(ep) - 600000 + k * 60000)
+            let m = ApiObservation.deposer_mesure(Horodatage(to_int(ep) + 60000), c, o, inst, "TDM {c} {p} {k0 + k}", "capt.1")
+            let _ = ObsMesures.correler(Horodatage(to_int(ep) + 70000), m, o, Distance(5), "ana1")
+            ms.push(m)
+        }
+        let od = ObsOrbites.calculer(Horodatage(to_int(ep) + 80000), to_string(o), ep, ms, Distance(20), vec, Distance(600000), Distance(620000), "ana1")
+        return ObsOrbites.valider(Horodatage(to_int(ep) + 90000), od, ApiEphemerides.derniere(o), Distance(ecart), "ana1")
+    }
+    // 5b. Évitement de A1 : plan PL-A1 déclaré le 09/01 1 h 30 (poussée 6 h, 1 m/s).
+    on plan_a1(r: Rapprochement) {
+        // éphéméride à jour incluant la poussée planifiée (le criblage du plan l'exige)
+        let v = etat_de("A1")
+        let _ = ApiEphemerides.deposer(h(20827, 5300), objet("A1"), "EPH-A1-P", epoque(), Duree(259200000), "haute", "sha256:" + sha256("A1-P"), "{v[0]},{v[1]},{v[2]}", true, "dyn.a")
+        return ApiManoeuvres.declarer(h(20827, 5400), "PL-A1", objet("A1"), r, "evitement", h(20827, 21600), DeltaV(1000), "dyn.a")
+    }
+    // 5c. Après la poussée (réelle à 6 h 01 min 40 s) : l'orbite observée à 7 h s'écarte de
+    // 3,5 km de l'éphéméride déclarée (détection, expliquée par PL-A1) ; nouvelle éphéméride
+    // post-poussée ; nouvelle orbite observée à 8 h, conforme à celle-ci.
+    on apres_poussee() {
+        let o = objet("A1")
+        let e2 = h(20827, 25200)
+        let _ = orbite_a("A1", e2, "7003500,189000000,0,1000,7500000,0", 3500, 100)
+        let _ = ObsDetections.confirmer(h(20827, 25500), "MD-1", "ana1")
+        let _ = ApiEphemerides.deposer(h(20827, 25600), o, "EPH-A1-2", e2, Duree(259200000), "haute", "sha256:" + sha256("A1-2"), "7003500,189000000,0", false, "dyn.a")
+        let e3 = h(20827, 28800)
+        return orbite_a("A1", e3, "7007100,216000000,0,1000,7500000,0", 0, 200)
+    }
+    // Éphéméride de A2 à l'époque t (position propagée), poussée incluse ; renvoie son état.
+    on ephemeride_a2(t: Horodatage, n: String) {
+        let dt = (to_int(t) - to_int(epoque())) / 1000
+        let d = ApiEphemerides.deposer(t, objet("A2"), "EPH-A2-{n}", t, Duree(259200000), "haute", "sha256:" + sha256("A2-{n}"), "7100000,{7500 * dt},0", true, "dyn.a")
+        if ApiEphemerides.depot_valide(d) { return "validee" }
+        return "rejetee"
+    }
+    // Battement de l'horloge à `t` : les vingt balayages dans l'ordre de Horloge.battre, par
+    // "systeme" ; renvoie les erreurs ("ApiX: message"), liste vide si aucune.
+    on battre(t: Horodatage) {
+        let erreurs_b = []
+        let r1 = try { ApiRef.balayer(t, "systeme") }
+        if r1.error != () { erreurs_b.push("ApiRef: {r1.error}") }
+        let r2 = try { ApiAcces.balayer(t, "systeme") }
+        if r2.error != () { erreurs_b.push("ApiAcces: {r2.error}") }
+        let r3 = try { ApiOperateurs.balayer(t, "systeme") }
+        if r3.error != () { erreurs_b.push("ApiOperateurs: {r3.error}") }
+        let r4 = try { ApiMeteo.balayer(t, "systeme") }
+        if r4.error != () { erreurs_b.push("ApiMeteo: {r4.error}") }
+        let r5 = try { ApiObservation.balayer(t, "systeme") }
+        if r5.error != () { erreurs_b.push("ApiObservation: {r5.error}") }
+        let r6 = try { ApiEphemerides.balayer(t, "systeme") }
+        if r6.error != () { erreurs_b.push("ApiEphemerides: {r6.error}") }
+        let r7 = try { ApiConjonctions.balayer(t, "systeme") }
+        if r7.error != () { erreurs_b.push("ApiConjonctions: {r7.error}") }
+        let r8 = try { ApiPriorites.balayer(t, "systeme") }
+        if r8.error != () { erreurs_b.push("ApiPriorites: {r8.error}") }
+        let r9 = try { ApiCoordination.balayer(t, "systeme") }
+        if r9.error != () { erreurs_b.push("ApiCoordination: {r9.error}") }
+        let r10 = try { ApiManoeuvres.balayer(t, "systeme") }
+        if r10.error != () { erreurs_b.push("ApiManoeuvres: {r10.error}") }
+        let r11 = try { ApiEscalade.balayer(t, "systeme") }
+        if r11.error != () { erreurs_b.push("ApiEscalade: {r11.error}") }
+        let r12 = try { ApiReentrees.balayer(t, "systeme") }
+        if r12.error != () { erreurs_b.push("ApiReentrees: {r12.error}") }
+        let r13 = try { ApiLancements.balayer(t, "systeme") }
+        if r13.error != () { erreurs_b.push("ApiLancements: {r13.error}") }
+        let r14 = try { ApiFinDeVie.balayer(t, "systeme") }
+        if r14.error != () { erreurs_b.push("ApiFinDeVie: {r14.error}") }
+        let r15 = try { ApiEvenements.balayer(t, "systeme") }
+        if r15.error != () { erreurs_b.push("ApiEvenements: {r15.error}") }
+        let r16 = try { ApiResponsabilite.balayer(t, "systeme") }
+        if r16.error != () { erreurs_b.push("ApiResponsabilite: {r16.error}") }
+        let r17 = try { ApiDonnees.balayer(t, "systeme") }
+        if r17.error != () { erreurs_b.push("ApiDonnees: {r17.error}") }
+        let r18 = try { ApiConformite.balayer(t, "systeme") }
+        if r18.error != () { erreurs_b.push("ApiConformite: {r18.error}") }
+        let r19 = try { ApiPasserelle.balayer(t, "systeme") }
+        if r19.error != () { erreurs_b.push("ApiPasserelle: {r19.error}") }
+        let r20 = try { ApiOperations.balayer(t, "systeme") }
+        if r20.error != () { erreurs_b.push("ApiOperations: {r20.error}") }
+        return erreurs_b
+    }
+    // Battements de `debut` à `fin` tous les `pas` ms ; pour chaque battement où quelque chose
+    // change pour `r` / `op` : "HH:MM échelon=<e> coord=<état> reprise=<b>" ; plus les erreurs.
+    on veiller(r: Rapprochement, op: Org, debut: Horodatage, fin: Horodatage, pas: Int) {
+        let trace_v = []
+        let avant = ""
+        let t = to_int(debut)
+        while t <= to_int(fin) {
+            for e in battre(Horodatage(t)) { trace_v.push("{t}: {e}") }
+            let ici = "echelon={ApiEscalade.echelon(r, op)} coord={ApiCoordination.etat(r)} reprise={ApiEscalade.reprise(r)}"
+            if ici != avant {
+                let m = to_int((t % 86400000) / 60000)
+                trace_v.push("j{to_int(t / 86400000)} {to_int(m / 60)}h{m % 60} {ici}")
+                avant = ici
+            }
+            t = t + pas
+        }
+        return trace_v
+    }
+    // Contenu de la première pièce de la chaîne `ch` qui commence par `prefixe` ; "" sinon.
+    on piece_contenant(ch: List<String>, prefixe: String) {
+        for p in ch {
+            let c = RespPieces.lire(p)
+            if starts_with(c, prefixe) { return c }
+        }
+        return ""
+    }
+    // Battements de `debut` à `fin` tous les `pas` ms ; renvoie toutes les erreurs de balayage.
+    on battre_de(debut: Horodatage, fin: Horodatage, pas: Int) {
+        let erreurs_d = []
+        let t = to_int(debut)
+        while t <= to_int(fin) {
+            for e in battre(Horodatage(t)) { erreurs_d.push("{t}: {e}") }
+            t = t + pas
+        }
+        return erreurs_d
+    }
+} // fin Monde
+
+
+cell test E1Amorcage {
+    rules {
+        assert Monde.fonder() == "ok"
+        assert ApiRef.orbite() == "ORG-ORBITE"
+        assert ApiRef.etat_participant("BRV")
+        assert ApiRef.etat_participant("CAZ")
+        assert ApiRef.genre("ORG-CAPT") == "capteur"
+        assert ApiAcces.a_le_role("dir1", "direction")
+        assert ApiAcces.a_le_role("ana1", "analyste")
+        assert Monde.personnes() == "ok"
+        assert ApiAcces.a_le_role("aut.brv", "autorite")
+        assert ApiAcces.agit_pour("aut.brv", "ORG-BRV")
+        assert ApiAcces.a_le_role("pf.caz", "point_focal")
+        assert ApiAcces.a_le_role("adm.a", "administrateur_operateur")
+        assert ApiAcces.a_le_role("dyn.a", "dynamicien")
+        assert ApiAcces.agit_pour("dyn.b", "ORG-OPB")
+        assert !ApiAcces.agit_pour("dyn.b", "ORG-OPA")
+        assert ApiAcces.a_le_role("chef.a", "chef_de_mission")
+        assert ApiAcces.a_le_role("capt.1", "capteur")
+        assert ApiAcces.a_le_role("adm.capt", "administrateur_operateur")
+        assert ApiAcces.quatre_yeux("dyn.a", "chef.a")
+        assert Monde.accord() == "adoptee"
+        assert Monde.accord_en_vigueur() == "ADP-1"
+        assert Monde.adherer("ORG-OPA", "adm.a") == "active"
+        assert Monde.adherer("ORG-OPB", "adm.b") == "active"
+        assert Monde.adherer("ORG-ALD", "aut.ald") == "active"
+        assert Monde.adherer("ORG-BRV", "aut.brv") == "active"
+        assert Monde.adherer("ORG-CAZ", "aut.caz") == "active"
+        assert ApiDonnees.adherent("ORG-OPA")
+        assert Monde.adherer("ORG-CAPT", "adm.capt") == "active"
+        assert Monde.capteurs() == ["CAP-1", "CAP-2", "CAP-3"]
+        assert ApiObservation.capteurs_en_service() == 3
+        assert Monde.priorites() == "en_vigueur"
+        assert PrioVersion.version_courante() == "PRIO-2027"
+        mock random_token ["DEFI-C-OPA", "DEFI-C-OPB"]
+        mock http_post ["ok", "ok"]
+        assert Monde.canal("C-OPA", "ORG-OPA", "adm.a", "administrateur_operateur") == "actif"
+        assert Monde.canal("C-OPB", "ORG-OPB", "adm.b", "administrateur_operateur") == "actif"
+        mock http_post ["ok", "ok", "ok", "ok", "ok"]
+        assert Monde.operateur("a", "ORG-OPA", "ald") == "actif"
+        mock http_post ["ok", "ok", "ok", "ok", "ok"]
+        assert Monde.operateur("b", "ORG-OPB", "brv") == "actif"
+        assert ApiOperateurs.est_actif("ORG-OPA", Monde.h(20822, 30000))
+        assert ApiOperateurs.joignable("ORG-OPB", Monde.h(20822, 30000))
+        assert ApiOperateurs.astreinte("ORG-OPA", Monde.h(20822, 30000)) == "dyn.a"
+        assert Monde.points_focaux() == "ok"
+        assert ApiOperateurs.contacts("ORG-OPB", 3, Monde.h(20822, 30000)) == ["pf.brv"]
+    }
+}
+
+// ── 2. Lancement notifié, criblé (COLA), autorisé, tiré, injecté ; objets catalogués.
+cell test E2Lancement {
+    rules {
+        mock random_token ["DEFI-C-OPA", "DEFI-C-OPB"]
+        mock http_post ["ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok"]
+        assert Monde.amorcer() == "ok"
+        assert Monde.lancement() == "autorise"
+        let objs = Monde.tir()
+        assert len(objs) == 5
+        assert ApiLancements.etat("L-2027-1") == "injecte"
+        assert ApiRef.nature(objs[4]) == "etage"
+        assert ApiRef.propulsion(objs[4]) == "aucune"
+        assert ApiRef.proprietaire(objs[2]) == "ORG-OPB"
+        assert ApiRef.etat_immatriculation(objs[2]) == "BRV"
+        assert ApiLancements.objets("L-2027-1") == objs
+    }
+}
+
+// ── 3. Éphémérides déposées et validées ; mesures ; orbites observées ; identification.
+cell test E3Observation {
+    rules {
+        mock random_token ["DEFI-C-OPA", "DEFI-C-OPB"]
+        mock http_post ["ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok"]
+        assert Monde.amorcer() == "ok"
+        assert Monde.lancement() == "autorise"
+        let objs = Monde.tir()
+        assert Monde.observer() == "injecte"
+        assert Monde.toutes_pretes(Monde.h(20827, 3000)) == 5
+        assert LancLancement.clore_identification(Monde.h(20827, 3000), "L-2027-1", "ana1") == "identifie"
+        assert ApiObservation.ecart_declare(Monde.objet("A1")) == 0
+    }
+}
+
+// ── 4. Criblage → rapprochement de niveau 3 → coordination ouverte, proposition par défaut.
+cell test E4Criblage {
+    rules {
+        mock random_token ["DEFI-C-OPA", "DEFI-C-OPB"]
+        mock http_post ["ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok"]
+        assert Monde.amorcer() == "ok"
+        assert Monde.lancement() == "autorise"
+        let objs = Monde.tir()
+        assert Monde.observer() == "injecte"
+        assert Monde.catalogue_crible() == "1,3,129600000,150;2,4,172800000,120;2,5,151200000,100"
+        let rs = Monde.cribler(Monde.h(20827, 3600), ["A1|B1"])
+        assert len(rs) == 1
+        let r = rs[0]
+        assert ApiConjonctions.niveau(r) == 3
+        assert ApiConjonctions.etat(r) == "en_coordination"
+        assert ApiRef.peut_manoeuvrer(Monde.objet("A1"))
+        assert ApiPriorites.qui_manoeuvre(Monde.h(20827, 3800), r, Monde.objet("A1"), Monde.objet("B1")) == Monde.objet("A1")
+        assert ApiCoordination.etat(r) == "proposee"
+        assert ApiCoordination.decision(r) == ""
+        assert ApiCoordination.en_attente_de("ORG-OPA") == [r]
+    }
+}
+
+// ── 5. Branche A : OPA accepte, désignation arrêtée, plan d'évitement criblé et approuvé,
+// exécuté, vérifié ; rapprochement résolu. Propriété 1 : un second plan refusé.
+cell test E5BrancheA {
+    rules {
+        mock random_token ["DEFI-C-OPA", "DEFI-C-OPB"]
+        mock http_post ["ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok"]
+        assert Monde.pret() == "injecte"
+        let r = Monde.cribler(Monde.h(20827, 3600), ["A1|B1"])[0]
+        assert ApiCoordination.etat(r) == "proposee"
+        assert ApiCoordination.repondre(Monde.h(20827, 4000), r, "accepte", "", "", "dyn.a") == "proposee"
+        assert ApiCoordination.repondre(Monde.h(20827, 4100), r, "accepte", "", "", "dyn.b") == "arretee"
+        assert ApiCoordination.arretee(r)
+        assert ApiCoordination.designe(r, "dyn.b") == Monde.objet("A1")
+        assert Monde.plan_a1(r) == "PL-A1"
+        assert ApiManoeuvres.etat("PL-A1") == "approuve"
+        assert ApiConjonctions.criblage_plan("PL-A1") == "sur"
+        assert ApiManoeuvres.plan_de(r) == "PL-A1"
+        // propriété 1 : un seul plan d'évitement par rapprochement
+        assert_fails ApiManoeuvres.declarer(Monde.h(20827, 5500), "PL-A1-BIS", Monde.objet("A1"), r, "evitement", Monde.h(20827, 23400), DeltaV(800), "dyn.a") matching "Conflit"
+        assert_fails ApiManoeuvres.declarer(Monde.h(20827, 5500), "PL-B1", Monde.objet("B1"), r, "evitement", Monde.h(20827, 23400), DeltaV(800), "dyn.b") matching "Conflit"
+        assert ApiManoeuvres.etat("PL-A1-BIS") == "inconnu"
+        // exécution confirmée, vérification par l'observation
+        assert ApiManoeuvres.confirmer_execution(Monde.h(20827, 22200), "PL-A1", Monde.h(20827, 21700), DeltaV(1000), "dyn.a") == "execute"
+        assert Monde.apres_poussee() == "validee"
+        assert ObsDetections.etat("MD-1") == "expliquee"
+        assert !ApiObservation.manoeuvre_detectee(Monde.objet("A1"), Monde.h(20827, 0))
+        assert ManVerification.verifier(Monde.h(20827, 29000), "PL-A1", "ana1") == "conforme"
+        assert ApiManoeuvres.etat("PL-A1") == "verifie"
+        // la vérification conforme résout le rapprochement ; le balayage clôt la coordination
+        assert ApiConjonctions.etat(r) == "resolu"
+        assert ApiCoordination.balayer(Monde.h(20827, 29100), "systeme") >= 1
+        assert ApiCoordination.etat(r) == "close"
+        assert !ApiManoeuvres.plan_actif(Monde.objet("A1"))
+        assert Monde.battre_de(Monde.h(20827, 32400), Monde.h(20828, 32400), 3600000) == []
+    }
+}
+
+// ── Propriétés 2 et 4 sur le rapprochement A2 / étage E1 (TCA le 10/01 18 h, deux objets d'OPA).
+cell test E6Proprietes2Et4 {
+    rules {
+        mock random_token ["DEFI-C-OPA", "DEFI-C-OPB"]
+        mock http_post ["ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok"]
+        assert Monde.pret() == "injecte"
+        let r = Monde.cribler(Monde.h(20827, 3600), ["A2|E1"])[0]
+        assert ApiConjonctions.niveau(r) == 3
+        // propriété 2 : l'étage, plus léger (masse moindre ⇒ désigné par la table), n'a pas de
+        // propulsion : jamais désigné ; la proposition par défaut est A2.
+        assert !ApiRef.peut_manoeuvrer(Monde.objet("E1"))
+        assert ApiCoordination.etat(r) == "proposee"
+        let a2 = Monde.objet("A2")
+        assert contains(ApiPriorites.decision_de(r), "|{a2}|")
+        assert ApiCoordination.repondre(Monde.h(20827, 4000), r, "accepte", "", "", "dyn.a") == "arretee"
+        assert ApiCoordination.designe(r, "ana1") == Monde.objet("A2")
+        assert_fails ApiManoeuvres.declarer(Monde.h(20827, 4100), "PL-E1", Monde.objet("E1"), r, "evitement", Monde.h(20827, 43200), DeltaV(500), "dyn.a") matching "NonEligible"
+        // propriété 4 : éphéméride périmée (âge > 8 h en leo) ⇒ refus Perime
+        assert_fails ApiManoeuvres.declarer(Monde.h(20827, 32400), "PL-A2-1", Monde.objet("A2"), r, "evitement", Monde.h(20827, 43200), DeltaV(500), "dyn.a") matching "Perime"
+        // éphéméride fraîche (incluant la poussée) mais catalogue non criblé depuis 8 h :
+        // criblage impossible ⇒ plan rejeté, jamais approuvé
+        assert Monde.ephemeride_a2(Monde.h(20827, 33600), "2") == "validee"
+        assert ApiManoeuvres.declarer(Monde.h(20827, 33700), "PL-A2-2", Monde.objet("A2"), r, "evitement", Monde.h(20827, 43200), DeltaV(500), "dyn.a") == "PL-A2-2"
+        assert ApiManoeuvres.etat("PL-A2-2") == "rejete"
+        assert ApiManoeuvres.plan_de(r) == ""
+        // opérateur suspendu par la conformité (quatre yeux de la direction) ⇒ refus Suspendu
+        assert Monde.campagne(Monde.h(20827, 34000), 5, 10, 3) == "terminee"
+        assert ApiOperateurs.suspendre(Monde.h(20827, 34200), "ORG-OPA", "manquements graves", "conf1", "dir1") == "suspendu"
+        assert_fails ApiManoeuvres.declarer(Monde.h(20827, 34300), "PL-A2-3", Monde.objet("A2"), r, "evitement", Monde.h(20827, 43200), DeltaV(500), "dyn.a") matching "Suspendu"
+        // rétabli : le même plan, criblé sûr, est approuvé
+        assert ApiOperateurs.retablir(Monde.h(20827, 34400), "ORG-OPA", "conf1", "dir1") == "actif"
+        assert ApiManoeuvres.declarer(Monde.h(20827, 34500), "PL-A2-4", Monde.objet("A2"), r, "evitement", Monde.h(20827, 43200), DeltaV(500), "dyn.a") == "PL-A2-4"
+        assert ApiManoeuvres.etat("PL-A2-4") == "approuve"
+    }
+}
+
+// ── 6. Branche B : OPB, désigné (B2 plus léger), reste muet ; l'horloge fait monter l'escalade
+// jusqu'à la reprise par ORBITE ; arbitrage à quatre yeux ; manquement constaté chez conformite.
+cell test E7BrancheB {
+    rules {
+        mock random_token ["DEFI-C-OPA", "DEFI-C-OPB"]
+        mock http_post ["ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok"]
+        assert Monde.pret() == "injecte"
+        let r = Monde.cribler(Monde.h(20827, 3600), ["A2|B2"])[0]
+        assert ApiConjonctions.niveau(r) == 3
+        assert ApiCoordination.etat(r) == "proposee"
+        let b2 = Monde.objet("B2")
+        assert contains(ApiPriorites.decision_de(r), "|{b2}|")
+        assert ApiCoordination.repondre(Monde.h(20827, 4000), r, "accepte", "", "", "dyn.a") == "proposee"
+        // l'horloge : escalade ouverte à l'échelon 2 (échéance finale à moins de 48 h), 3 une
+        // demi-heure plus tard (engagement de niveau 3), 4 au bout de 15 % du temps restant (6 h) —
+        // le barème seul règle le rythme (rejeu Aeolus : les relances non acquittées ne font plus
+        // monter l'escalade) ; reprise par ORBITE à l'échéance finale et arbitrage ouvert ensemble,
+        // à la limite d'action moins 2 h (TCA − 6 h de préavis − 2 h). Aucun balayage en erreur.
+        assert Monde.veiller(r, "ORG-OPB", Monde.h(20827, 5400), Monde.h(20828, 57600), 1800000) == ["j20827 1h30 echelon=0 coord=proposee reprise=false", "j20827 2h0 echelon=2 coord=proposee reprise=false", "j20827 2h30 echelon=3 coord=proposee reprise=false", "j20827 8h30 echelon=4 coord=proposee reprise=false", "j20828 16h0 echelon=4 coord=arbitrage reprise=true"]
+        assert ApiCoordination.muets(r) == ["ORG-OPB"]
+        assert ApiEscalade.reprise(r)
+        assert !ApiCoordination.arretee(r)
+        // arbitrage d'ORBITE à quatre yeux (propriété 5) : A2, d'OPA joignable, manœuvre
+        let a2 = Monde.objet("A2")
+        assert_fails ApiCoordination.arbitrer(Monde.h(20828, 58200), r, a2, "OPB muet", "ana1", "ana1") matching "QuatreYeux"
+        assert_fails ApiCoordination.arbitrer(Monde.h(20828, 58200), r, a2, "OPB muet", "ana1", "ana2") matching "QuatreYeux"
+        assert_fails ApiCoordination.arbitrer(Monde.h(20828, 58200), r, a2, "OPB muet", "sup1", "sup2") matching "Habilitation"
+        assert_fails ApiCoordination.arbitrer(Monde.h(20828, 58200), r, a2, "", "ana1", "sup1") matching "MotifRequis"
+        assert ApiCoordination.arbitrer(Monde.h(20828, 58200), r, a2, "OPB muet malgré l'escalade : A2 manœuvre", "ana1", "sup1") == "arretee"
+        assert ApiCoordination.designe(r, "dyn.a") == a2
+        assert contains(ApiCoordination.decision(r), "|ana1|sup1|")
+        // manquement « reponse_tardive » d'OPB constaté chez conformite au silence (01 h 32) :
+        // le reconstater rend le même manquement, sans en ouvrir un autre
+        let n_b = ConfManquement.ouverts("ORG-OPB")
+        assert n_b >= 1
+        let m = ApiConformite.constater(Monde.h(20828, 58400), "ORG-OPB", "reponse_tardive", 3, r, "systeme")
+        assert ConfManquement.op(m) == "ORG-OPB"
+        assert ConfManquement.gravite(m) == 3
+        assert ConfManquement.ouverts("ORG-OPB") == n_b
+        assert len(Journal.chercher("{m} constate : ORG-OPB reponse_tardive g3 reference {r}", 5)) == 1
+    }
+}
+
+// ── 7. Branche C : A2 désigné ne manœuvre pas ; collision avec l'étage E1 au TCA (10/01 18 h) ;
+// rapprochement en « collision », dossier de preuve gelé, chaîne de preuve de la décision ;
+// propriété 6 : la désignation n'est lue que par les parties.
+cell test E8BrancheC {
+    rules {
+        mock random_token ["DEFI-C-OPA", "DEFI-C-OPB"]
+        mock http_post ["ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok"]
+        assert Monde.pret() == "injecte"
+        let r = Monde.cribler(Monde.h(20827, 3600), ["A2|E1"])[0]
+        assert ApiCoordination.repondre(Monde.h(20827, 4000), r, "accepte", "", "", "dyn.a") == "arretee"
+        let a2 = Monde.objet("A2")
+        let e1 = Monde.objet("E1")
+        // propriété 6 : OPA restreint la diffusion de A2 aux parties ; seules les parties (et
+        // ORBITE) lisent la désignation
+        assert DonDiffusion.declarer(Monde.h(20827, 4100), a2, "parties", "chef.a") == "parties"
+        assert ApiCoordination.designe(r, "dyn.a") == a2
+        assert ApiCoordination.designe(r, "aut.ald") == a2
+        assert ApiCoordination.designe(r, "ana1") == a2
+        assert ApiCoordination.designe(r, "systeme") == a2
+        assert_fails ApiCoordination.designe(r, "dyn.b") matching "Confidentiel"
+        assert_fails ApiCoordination.designe(r, "pf.caz") matching "Confidentiel"
+        assert_fails ApiCoordination.designe(r, "capt.1") matching "Confidentiel"
+        let d = split(ApiCoordination.decision(r), "|")[0]
+        assert d == "DS-{r}-1"
+        // collision constatée après le TCA, à quatre yeux
+        let t = Monde.h(20828, 66600)
+        assert_fails ApiEvenements.declarer(t, "collision", [to_string(a2), to_string(e1)], r, Monde.h(20828, 64800), "perte de contact de A2, nuage de débris", "ana1", "ana2") matching "Habilitation"
+        let ev = ApiEvenements.declarer(t, "collision", [to_string(a2), to_string(e1)], r, Monde.h(20828, 64800), "perte de contact de A2, nuage de débris", "ana1", "sup1")
+        assert ApiEvenements.existe(ev)
+        assert ApiEvenements.genre(ev) == "collision"
+        assert ApiConjonctions.etat(r) == "collision"
+        assert ApiResponsabilite.sous_gel(r)
+        assert ApiResponsabilite.sous_gel(to_string(a2))
+        // la décision n'a pas été effacée par la fragmentation des objets ; le balayage clôt
+        assert ApiCoordination.decision(r) != ""
+        assert ApiCoordination.balayer(Monde.h(20828, 66700), "systeme") >= 1
+        assert ApiCoordination.etat(r) == "close"
+        // chaîne de preuve de la décision : pièce de coordination, rapprochement, priorités, météo,
+        // éphémérides et fiches des deux objets à l'instant de la décision
+        assert len(ApiResponsabilite.chaine(d)) == 8
+        let ch = ApiResponsabilite.chaine(d)
+        assert starts_with(RespPieces.lire(ch[0]), "coordination | {r} | coordination |")
+        assert contains(RespPieces.lire(ch[0]), "decision={d}|{a2}|")
+        assert Monde.piece_contenant(ch, "ephemeride | {a2} |") != ""
+        assert contains(Monde.piece_contenant(ch, "ephemeride | {a2} |"), "depot=EPH-A2-1; empreinte=sha256:")
+        assert contains(Monde.piece_contenant(ch, "objet | {a2} |"), "propulsion=impulsionnelle; etat_objet=en_service")
+        assert Monde.piece_contenant(ch, "priorites | {r} |") != ""
+        assert ApiRef.etat_objet(a2) == "fragmente"
+        // une journée d'horloge après la collision (nuage, notifications, gel) : aucun balayage en erreur
+        assert Monde.battre_de(Monde.h(20828, 68400), Monde.h(20829, 68400), 3600000) == []
+    }
+}
+
+// ── 8. Rentrée de l'étage E1 : prévision (rentrée à risque), notification des États (d'office
+// ALD, État d'immatriculation et de tutelle ; CAZ survolé), accusé, constat à quatre yeux,
+// objet « rentre » au catalogue.
+cell test E9Rentree {
+    rules {
+        mock random_token ["DEFI-C-OPA", "DEFI-C-OPB"]
+        mock http_post ["ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok"]
+        assert Monde.pret() == "injecte"
+        let e1 = Monde.objet("E1")
+        let c = ApiReentrees.prevoir(Monde.h(20830, 21600), e1, Monde.h(20831, 0), Monde.h(20831, 21600), 150, "ana1")
+        assert ApiReentrees.en_campagne(e1)
+        assert ApiReentrees.a_risque(e1)
+        assert ApiReentrees.campagne_de(e1) == c
+        assert ReeNotification.inscrire(Monde.h(20830, 21700), c, ["CAZ"], "survol", "ana1") == 1
+        assert ReeNotification.diffuser(Monde.h(20830, 21800), c, "systeme") == 2
+        assert ReeNotification.accuser(Monde.h(20830, 25200), "NT-1", "avis à la population", "pf.ald") == "accusee"
+        assert_fails ReeNotification.accuser(Monde.h(20830, 25200), "NT-2", "", "pf.ald") matching "Habilitation"
+        assert ReeNotification.accuser(Monde.h(20830, 25300), "NT-2", "", "pf.caz") == "accusee"
+        // révision : fenêtre rétrécie (13/01 2 h - 4 h), campagne imminente, rediffusée
+        assert ApiReentrees.prevoir(Monde.h(20830, 79200), e1, Monde.h(20831, 7200), Monde.h(20831, 14400), 150, "ana1") == c
+        assert ReeCampagne.etat(c) == "imminente"
+        assert ApiReentrees.fenetre(e1) == "{to_int(Monde.h(20831, 7200))},{to_int(Monde.h(20831, 14400))}"
+        // constat à quatre yeux, une fois l'objet perdu par l'observation
+        assert_fails ApiReentrees.constater(Monde.h(20831, 28800), e1, Monde.h(20831, 10800), "océan Austral", false, "ana1", "ana1") matching "QuatreYeux"
+        assert ApiReentrees.constater(Monde.h(20831, 28800), e1, Monde.h(20831, 10800), "océan Austral", false, "ana1", "sup1") == "rentre"
+        assert ApiReentrees.constatee(e1)
+        assert ApiRef.etat_objet(e1) == "rentre"
+        assert !ApiReentrees.en_campagne(e1)
+        assert Monde.battre_de(Monde.h(20831, 32400), Monde.h(20832, 32400), 3600000) == []
+        // et l'horloge elle-même (now_ms simulé) : aucun balayage en erreur
+        mock now_ms 1799920800000
+        assert Horloge.battre() >= 0
+        assert Horloge.dernier_battement() == 1799920800000
+        assert Journal.chercher("en erreur", 5) == []
+    }
+}

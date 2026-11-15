@@ -1,0 +1,98 @@
+// Corps de CoordVerrou : le verrou de désignation unique (propriété 1).
+flesh CoordVerrou {
+    on poser(h, r, objet, mode, motif, par, valideur) {
+        let objets_v = CoordDossier.objets(r)
+        let a = Objet(objets_v[0])
+        let b = Objet(objets_v[1])
+        require objet == a || objet == b || (objet == "" && mode == "arbitrage") else Incoherent "{objet} n'est pas un objet de {r}"
+        let st = get_status(r) ?? "libre"
+        require st == "libre" || st == "leve" else Conflit "une désignation est déjà arrêtée pour {r} (verrou {st})"
+        // règle de l'arête : on ne pose le verrou que sur une coordination en accord ou en arbitrage
+        let ph = CoordDossier.phase(r)
+        require ph == "accord" || ph == "arbitrage" else EtatInvalide "coordination {r} en {ph} : ni accord ni arbitrage"
+        if objet != "" {
+            require ApiRef.peut_manoeuvrer(objet) else NonEligible "{objet} ne peut pas manœuvrer"
+            let autre = if objet == a { b } else { a }
+            if ApiRef.habite(objet) {
+                require (!ApiRef.peut_manoeuvrer(autre)) || ApiRef.habite(autre) else NonEligible "{objet} est habité et {autre} peut manœuvrer"
+            }
+            let prop = ApiRef.proprietaire(objet)
+            require ApiOperateurs.est_actif(prop, h) else Suspendu "le propriétaire {prop} de {objet} n'est pas actif"
+            let pre = ApiPriorites.preavis(ApiRef.propulsion(objet))
+            let tca = ApiConjonctions.tca(r)
+            require to_int(h) + to_int(pre) <= to_int(tca) else Delai "préavis de {objet} ({pre} ms) incompatible avec le TCA {tca}"
+        }
+        require CoordGrappe.compatible(r, objet) else Conflit "la désignation de '{objet}' contredit la grappe de {r} (ou la grappe n'est pas arbitrée)"
+        let n = (poses_de.get(r) ?? 0) + 1
+        let d = "DS-{r}-{n}"
+        if st == "leve" { transition(r, "leve", "tenu") } else { transition(r, "libre", "tenu") }
+        designe_de.set(r, objet)
+        decision_de.set(r, d)
+        pose_le.set(r, h)
+        poses_de.set(r, n)
+        let _ = CoordDecision.prendre(h, d, r, objet, mode, motif, par, valideur)
+        let _ = CoordSuivi.ouvrir(h, d, r, objet)
+        let _ = Journal.noter(h, "coordination", par, "verrou {r} posé : décision {d}, désigné '{objet}', mode {mode}, valideur '{valideur}'")
+        return d
+    }
+    on lever(h, r, motif) {
+        require motif != "" else MotifRequis "levée du verrou sans motif"
+        let st = get_status(r)
+        require st != () else Inconnu "aucun verrou pour {r}"
+        require st == "tenu" else EtatInvalide "verrou {r} : {st}"
+        // règle de l'arête : on ne lève le verrou que d'une coordination libérée (rouverture en cours)
+        let ph = CoordDossier.phase(r)
+        require ph == "liberee" else EtatInvalide "coordination {r} en {ph} : le verrou ne se lève qu'à la rouverture"
+        let d = decision_de.get(r) ?? ""
+        transition(r, "tenu", "leve")
+        designe_de.delete(r)
+        decision_de.delete(r)
+        let _ = CoordDecision.lever(h, d, motif)
+        let _ = CoordSuivi.rendre_caduc(h, d)
+        let _ = Journal.noter(h, "coordination", "systeme", "verrou {r} levé : décision {d} levée ({motif})")
+        return d
+    }
+    on clore(h, r) {
+        let st = get_status(r) ?? "libre"
+        require st != "clos" else EtatInvalide "verrou {r} déjà clos"
+        if st == "tenu" {
+            let d = decision_de.get(r) ?? ""
+            transition(r, "tenu", "clos")
+            let _ = CoordDecision.solder(h, d)
+            let _ = CoordSuivi.rendre_caduc(h, d)
+            let _ = Journal.noter(h, "coordination", "systeme", "verrou {r} clos : décision {d} soldée")
+        } else if st == "leve" {
+            transition(r, "leve", "clos")
+            let _ = Journal.noter(h, "coordination", "systeme", "verrou {r} clos après levée, sans décision en vigueur")
+        } else {
+            transition(r, "libre", "clos")
+            let _ = Journal.noter(h, "coordination", "systeme", "verrou {r} clos sans décision en vigueur")
+        }
+        return "clos"
+    }
+    on designe(r, par) {
+        let objets_v = CoordDossier.objets(r)
+        if par != "systeme" {
+            let emp = try { ApiAcces.employeur(par) }
+            require emp.error == () else Confidentiel "personne inconnue : {par}"
+            let org = emp.value
+            if org != ApiRef.orbite() {
+                let quand = pose_le.get(r) ?? 0
+                for o in objets_v {
+                    require ApiDonnees.peut_recevoir(org, Objet(o), r, quand) else Confidentiel "{org} ne peut pas recevoir la désignation de {r}"
+                }
+            }
+        }
+        return designe_de.get(r) ?? ""
+    }
+    on arretee(r) {
+        return (get_status(r) ?? "libre") == "tenu" && (designe_de.get(r) ?? "") != ""
+    }
+    on decision(r) {
+        return decision_de.get(r) ?? ""
+    }
+    on decidee(r) {
+        let st = get_status(r) ?? "libre"
+        return st == "tenu" || (st == "clos" && (decision_de.get(r) ?? "") != "")
+    }
+}

@@ -1,0 +1,50 @@
+// ephemerides — corps de la FAÇADE.
+flesh ApiEphemerides {
+    on deposer(h, objet, depot, epoque, horizon, q, empreinte, position, avec_manoeuvres, par) {
+        return EphDepot.deposer(h, objet, depot, epoque, horizon, q, empreinte, position, avec_manoeuvres, par)
+    }
+
+    on fraiche(objet, h) {
+        return EphSuivi.fraiche(objet, h)
+    }
+
+    on derniere(objet) {
+        return EphSuivi.derniere(objet)
+    }
+
+    on qualite(objet) {
+        return EphSuivi.qualite(objet)
+    }
+
+    on age(objet, h) {
+        return EphSuivi.age(objet, h)
+    }
+
+    on invalider(h, objet, motif, par) {
+        require len(motif) > 0 else MotifRequis "motif requis"
+        let cur = EphSuivi.derniere(objet)
+        let ep = EphDepot.epoque_de(cur)
+        return EphDepot.invalider_depuis(h, objet, ep, "signalement", motif, par)
+    }
+
+    on fondement(objet, h) {
+        return EphHistorique.fondement(objet, h)
+    }
+
+    on empreinte(depot) {
+        return EphDepot.empreinte_du_depot(depot)
+    }
+
+    on avec_manoeuvres(depot) {
+        return EphDepot.inclut_manoeuvres(depot)
+    }
+
+    on depot_valide(depot) {
+        return EphDepot.est_valide(depot)
+    }
+
+    on balayer(h, par) {
+        // L'habilitation (par "systeme") est vérifiée par EphSuivi.ronde.
+        return EphSuivi.ronde(h, par)
+    }
+}

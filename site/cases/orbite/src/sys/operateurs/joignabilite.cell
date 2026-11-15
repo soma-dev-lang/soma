@@ -1,0 +1,113 @@
+// operateurs — EXERCICES DE JOIGNABILITÉ : une fausse alerte de niveau 3, marquée exercice,
+// envoyée à l'opérateur ; la personne d'astreinte doit l'accuser dans le délai de niveau 3
+// de ses engagements. Un opérateur n'est "joignable" que s'il a réussi un exercice depuis
+// moins de VALIDITE_MS ET qu'une astreinte est en service : ni un vieux succès ni un
+// planning sans personne ne suffisent.
+
+// Exercice d'alerte (id = "EX-<n>", tiré par planifier).
+skeleton OpExercices {
+    const MAX_EXERCICES = 2000000
+    // Validité d'un exercice réussi : 31 jours.
+    const VALIDITE_MS = 2678400000
+    // Relance : un opérateur actif est réexercé quand son dernier succès a plus de 24 jours.
+    const RELANCE_MS = 2073600000
+    // Échecs consécutifs entraînant la suspension automatique (origine "joignabilite").
+    const ECHECS_SUSPENSION = 3
+    // Résultats conservés par opérateur (bilan annuel aux États).
+    const MAX_RESULTATS = 64
+    memory {
+        operateur: Map<String, Org> [persistent]              // exercice → opérateur ; écrit une fois par planifier, jamais effacé
+        prevu_a: Map<String, Horodatage> [persistent]         // exercice → instant de lancement prévu, ms (inconnu de l'opérateur)
+        lance_a: Map<String, Horodatage> [persistent]         // exercice → lancement effectif, ms
+        echeance: Map<String, Horodatage> [persistent]        // exercice → lance_a + délai de niveau 3 de l'opérateur, ms
+        message_de: Map<String, String> [persistent]          // exercice → message de la passerelle ; écrit une fois par lancer
+        accuse_par: Map<String, String> [persistent]          // exercice → personne qui a accusé
+        dernier_succes: Map<Org, Horodatage> [persistent]     // opérateur → dernier exercice réussi, ms ; ne recule jamais
+        echecs_consecutifs: Map<Org, Int> [persistent]        // opérateur → échecs depuis le dernier succès
+        prevu_de: Map<Org, String> [persistent]               // opérateur → exercice planifie ou lance (au plus un)
+        resultats: Map<Org, List<String>> [persistent]        // opérateur → "h | reussi|echoue | délai de réponse ms" des MAX_RESULTATS derniers exercices
+        invariant operateur.size <= MAX_EXERCICES
+        invariant prevu_de.size <= MAX_EXERCICES
+        invariant resultats.size <= MAX_EXERCICES
+        invariant len(resultats) <= 64
+        invariant echecs_consecutifs >= 0 && echecs_consecutifs <= 1000
+        invariant (lance_a ?? 0) <= (echeance ?? 0)
+    }
+    // Cycle de vie d'un exercice (id = exercice).
+    state exercice {
+        initial: planifie
+        planifie -> lance               // lancer : alerte d'exercice envoyée, engagements en vigueur
+        planifie -> annule              // annuler
+        lance -> reussi                 // accuser : la personne en service accuse avant l'échéance
+        lance -> echoue                 // echoir : échéance passée sans accusé
+    }
+    face {
+        // Planifie un exercice pour op à l'instant `quand` (ms, ≥ h, tenu secret de
+        // l'opérateur). Renvoie l'id. Rôle exigé : "analyste" ou "systeme" d'ORBITE.
+        // Refus : Inconnu (op jamais admis), Ferme (op exclu ou retiré), Doublon (exercice
+        // déjà prévu pour op), HorsBornes (quand < h), Habilitation, Plein.
+        signal planifier(h: Horodatage, op: Org, quand: Horodatage, par: String) -> String
+            writes operateur, prevu_a, prevu_de
+            calls ApiAcces.a_le_role, OpMembres.etat, next_id, Journal.noter
+        // Lance un exercice dont l'instant prévu est atteint : alerte de niveau 3 marquée
+        // "EXERCICE" à l'opérateur (ApiPasserelle.notifier, r = "" : hors rapprochement, un
+        // non-acquittement n'escalade pas), échéance = h + délai de niveau 3.
+        // Renvoie "lance". Rôle exigé : "systeme" ou "analyste" d'ORBITE.
+        // Refus : Inconnu, EtatInvalide, Delai (instant prévu non atteint), Habilitation.
+        signal lancer(h: Horodatage, id: String, par: String) -> String
+            writes lance_a, echeance, message_de
+            reads operateur, prevu_a
+            moves planifie -> lance when OpEngagements.en_vigueur via operateur
+            calls ApiAcces.a_le_role, OpEngagements.etat, OpEngagements.delai, ApiPasserelle.notifier, Journal.noter
+        // La personne d'astreinte accuse l'exercice avant l'échéance, son message d'alerte
+        // ayant été acquitté à la passerelle (ApiPasserelle.acquitte(message_de)) : la chaîne
+        // canal → astreinte a fonctionné de bout en bout. Succès, échecs consécutifs remis à
+        // zéro. Renvoie "reussi".
+        // Rôle exigé : `par` = la personne en service pour l'opérateur à h
+        // (OpAstreinte.en_service) — un autre employé ne compte pas.
+        // Refus : Inconnu, EtatInvalide (aussi : message d'exercice non acquitté), Delai
+        // (échéance passée), Habilitation.
+        signal accuser(h: Horodatage, id: String, par: String) -> String
+            writes accuse_par, dernier_succes, echecs_consecutifs, prevu_de, resultats
+            reads operateur, lance_a, echeance, message_de
+            moves lance -> reussi when PasMessages.acquitte via message_de
+            calls OpAstreinte.en_service, ApiPasserelle.acquitte, Journal.noter
+        // Annule un exercice non lancé (incident réel en cours chez l'opérateur, par exemple).
+        // Renvoie "annule". Rôle exigé : "superviseur" d'ORBITE.
+        // Refus : Inconnu, EtatInvalide, MotifRequis, Habilitation.
+        signal annuler(h: Horodatage, id: String, motif: String, par: String) -> String
+            writes prevu_de
+            reads operateur
+            moves planifie -> annule
+            calls ApiAcces.a_le_role, Journal.noter
+        // Balayage (par "systeme" ou "exploitant" d'ORBITE) : exercices lancés dont
+        // l'échéance est passée → "echoue" ; manquement de gravité 2 à la conformité ;
+        // au ECHECS_SUSPENSION-ième échec consécutif, l'opérateur actif est suspendu
+        // automatiquement. Renvoie le nombre d'échecs constatés (au plus n). Refus : Habilitation.
+        signal echoir(h: Horodatage, n: Int, par: String) -> Int
+            requires n > 0 && n <= 10000
+            writes echecs_consecutifs, prevu_de, resultats
+            reads operateur, echeance
+            moves lance -> echoue
+            calls ApiAcces.a_le_role, ApiConformite.constater, OpMembres.suspendre_auto, Journal.noter
+        // Exercices "planifie" dont l'instant prévu est ≤ h (au plus n) : à lancer par la ronde.
+        signal dus(h: Horodatage, n: Int) -> List<String>
+            requires n > 0 && n <= 10000
+            reads prevu_a, exercice
+        // Opérateurs actifs sans exercice prévu et dont le dernier succès a plus de
+        // RELANCE_MS (ou aucun) : à planifier. Au plus n.
+        signal a_exercer(h: Horodatage, n: Int) -> List<String>
+            requires n > 0 && n <= 10000
+            reads dernier_succes, prevu_de
+            calls OpMembres.actifs
+        // Bilan de joignabilité de op sur les exercices conservés : "reussis | echoues | délai
+        // médian de réponse ms" — matière du rapport annuel de conformité. Refus : Inconnu.
+        signal bilan(op: Org) -> String
+            reads resultats
+        // Vrai si op a réussi un exercice depuis moins de VALIDITE_MS à h ET qu'une personne
+        // d'astreinte est en service à h.
+        signal joignable(op: Org, h: Horodatage) -> Bool
+            reads dernier_succes
+            calls OpAstreinte.en_service
+    }
+}

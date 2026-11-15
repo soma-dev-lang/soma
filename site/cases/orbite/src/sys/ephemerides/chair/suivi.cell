@@ -1,0 +1,167 @@
+// ephemerides — corps du SUIVI PAR OBJET.
+flesh EphSuivi {
+    on prendre(h, objet, depot) {
+        let st = get_status(objet) ?? "sans_donnee"
+        require st != "clos" else EtatInvalide "objet {objet} clos"
+        let ep = EphDepot.epoque_de(depot)
+        require ep <= h else Incoherent "époque du dépôt dans le futur"
+        let q = EphDepot.qualite_de(depot)
+        // pris_le d'abord : invariant epoque_courante ≤ pris_le.
+        pris_le.set(objet, h)
+        epoque_courante.set(objet, ep)
+        qualite_courante.set(objet, q)
+        courant.set(objet, depot)
+        nb_relances.set(objet, 0)
+        if st == "sans_donnee" {
+            transition(objet, "sans_donnee", "a_jour")
+        } else if st == "perime" {
+            transition(objet, "perime", "a_jour")
+        } else if st == "invalide" {
+            transition(objet, "invalide", "a_jour")
+        }
+        return "a_jour"
+    }
+
+    on perdre(h, objet) {
+        let st = get_status(objet) ?? "sans_donnee"
+        require st == "a_jour" || st == "perime" else EtatInvalide "objet {objet} : {st}"
+        courant.delete(objet)
+        qualite_courante.delete(objet)
+        if st == "a_jour" {
+            transition(objet, "a_jour", "invalide")
+        } else {
+            transition(objet, "perime", "invalide")
+        }
+        return "invalide"
+    }
+
+    on clore(h, objet, par) {
+        require ApiAcces.a_le_role(par, "systeme") || ApiAcces.a_le_role(par, "analyste") else Habilitation "systeme ou analyste d'ORBITE requis"
+        let e = ApiRef.etat_objet(objet)
+        require e != "inconnu" else Inconnu "objet {objet} non catalogué"
+        require e == "rentre" || e == "fragmente" || e == "retire" else EtatInvalide "objet {objet} encore {e}"
+        let st = get_status(objet) ?? "sans_donnee"
+        require st != "clos" else EtatInvalide "objet {objet} déjà clos"
+        clos_motif.set(objet, e)
+        if st == "sans_donnee" {
+            transition(objet, "sans_donnee", "clos")
+        } else if st == "a_jour" {
+            transition(objet, "a_jour", "clos")
+        } else if st == "perime" {
+            transition(objet, "perime", "clos")
+        } else {
+            transition(objet, "invalide", "clos")
+        }
+        let _ = Journal.noter(h, "ephemerides", par, "suivi de {objet} clos ({e})")
+        return "clos"
+    }
+
+    on balayer(h, n, par) {
+        require ApiAcces.a_le_role(par, "systeme") || ApiAcces.a_le_role(par, "exploitant") else Habilitation "systeme ou exploitant d'ORBITE requis"
+        let passes = 0
+        for o in courant.keys {
+            if passes < n && (get_status(o) ?? "sans_donnee") == "a_jour" && (!fraiche(o, h)) {
+                let d = courant.get(o) ?? ""
+                let _ = EphDepot.perimer(h, d)
+                perime_le.set(o, h)
+                transition(o, "a_jour", "perime")
+                passes = passes + 1
+                let ouv = ApiConjonctions.ouverts_de(o)
+                if len(ouv) > 0 {
+                    let op_b = try { ApiRef.proprietaire(o) }
+                    if op_b.error == () {
+                        let _ = EphBilan.compter(h, op_b.value, "perime_en_rapprochement")
+                    }
+                }
+            }
+        }
+        // Relances : objets périmés ou invalidés ayant un rapprochement ouvert.
+        for o in epoque_courante.keys {
+            let st = get_status(o) ?? "sans_donnee"
+            let dernier = relance_le.get(o)
+            let du = dernier == () || to_int(h) - to_int(dernier) >= RELANCE
+            if (st == "perime" || st == "invalide") && du {
+                let r_haut = ""
+                let nv_haut = 0
+                for r in ApiConjonctions.ouverts_de(o) {
+                    let nv = to_int(ApiConjonctions.niveau(Rapprochement(r)))
+                    if nv > nv_haut {
+                        nv_haut = nv
+                        r_haut = r
+                    }
+                }
+                if nv_haut > 0 {
+                    let op_r = try { ApiRef.proprietaire(o) }
+                    if op_r.error == () {
+                        let op = op_r.value
+                        let envoi = try { ApiPasserelle.notifier(h, op, Rapprochement(r_haut), "ephemeride_a_redeposer", "objet {o} : éphéméride {st}, rapprochement {r_haut} ouvert — redéposer", Niveau(nv_haut)) }
+                        relance_le.set(o, h)
+                        nb_relances.set(o, min(10000, (nb_relances.get(o) ?? 0) + 1))
+                        if nv_haut == 3 {
+                            let cst = try { ApiConformite.constater(h, op, "ephemeride_perimee", 3, r_haut, "systeme") }
+                            let dem = try { ApiObservation.demander_suivi(h, o, 3, 86400000, "ephemeride {st} en rapprochement {r_haut}", "systeme") }
+                        }
+                        let _ = Journal.noter(h, "ephemerides", par, "relance {op} pour {o} ({st}, {r_haut} niveau {nv_haut})")
+                    }
+                }
+            }
+        }
+        if passes > 0 {
+            let _ = Journal.noter(h, "ephemerides", par, "balayage : {passes} objet(s) perime(s)")
+        }
+        return passes
+    }
+
+    on ronde(h, par) {
+        require par == "systeme" && ApiAcces.a_le_role(par, "systeme") else Habilitation "ronde réservée à systeme"
+        let total = 0
+        let t = try { EphTempete.surveiller(h, 1000, "systeme") }
+        let b = try { balayer(h, 10000, "systeme") }
+        if b.error == () {
+            total = total + b.value
+        }
+        let c = try { EphControle.tourner(h, 3600000, 1000, "systeme") }
+        let k = try { EphContestation.classer(h, 1000, "systeme") }
+        let p = try { EphHistorique.purger(h, 10000, "systeme") }
+        return total
+    }
+
+    on fraiche(objet, h) {
+        let st = get_status(objet) ?? "sans_donnee"
+        if st != "a_jour" && st != "perime" {
+            return false
+        }
+        if courant.get(objet) == () {
+            return false
+        }
+        let ep = epoque_courante.get(objet) ?? 0
+        let amax = try { EphReglage.age_max(ApiRef.regime(objet), ApiMeteo.tempete(h)) }
+        if amax.error != () {
+            return false
+        }
+        return to_int(h) - to_int(ep) <= to_int(amax.value)
+    }
+
+    on derniere(objet) {
+        let c = courant.get(objet)
+        require c != () else Inconnu "objet {objet} sans éphéméride validée courante"
+        return c
+    }
+
+    on qualite(objet) {
+        if courant.get(objet) == () {
+            return "faible"
+        }
+        return qualite_courante.get(objet) ?? "faible"
+    }
+
+    on age(objet, h) {
+        require courant.get(objet) != () else Inconnu "objet {objet} sans éphéméride validée courante"
+        let ep = epoque_courante.get(objet) ?? 0
+        return Duree(max(0, to_int(h) - to_int(ep)))
+    }
+
+    on situation(objet) {
+        return get_status(objet) ?? "sans_donnee"
+    }
+}

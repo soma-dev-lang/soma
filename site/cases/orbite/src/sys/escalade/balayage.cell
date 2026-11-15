@@ -1,0 +1,27 @@
+// escalade — BALAYAGE. Le seul point d'entrée du temps du sous-système : ApiEscalade.balayer(h,
+// "systeme"), appelé chaque minute par Horloge.battre, délègue ici. Aucune cell d'escalade ne lit
+// l'horloge ; tous les délais (échelons, échéances finales, prises en charge, réponses des États,
+// conservation) sont jugés contre ce `h`.
+
+// Sans machine. id de mémoire : "jour" (dernier jour calendaire où les travaux quotidiens ont tourné).
+skeleton EscBalayage {
+    // Un jour en ms, pour dériver le numéro de jour de h.
+    const JOUR_MS = 86400000
+    memory {
+        dernier_jour: Map<String, Jour> [persistent]     // "jour" → dernier jour des travaux quotidiens ; ne recule jamais
+        invariant dernier_jour.size <= 1
+        invariant dernier_jour >= (dernier_jour.get(key) ?? 0)
+    }
+    face {
+        // Balayage complet à `h`, dans cet ordre : EscVeille.ronde (armement d'office et dossiers
+        // contre les muets) ; EscDossiers.balayer (recalage, caducité, reprise, clôture, montée,
+        // relances) ; EscConcertation.convoquer puis abandonner ; EscPriseEnCharge.suivre ; une fois
+        // par jour (h / JOUR_MS > dernier_jour) EscDiplomatie.echoir et EscStatistiques.purger(h,
+        // "systeme"). Une étape qui refuse est journalisée et n'arrête pas les suivantes. Renvoie la
+        // somme des changements. Rôle exigé de `par` : "systeme". Refus : Habilitation.
+        signal balayer(h: Horodatage, par: String) -> Int
+            ensures result >= 0
+            writes dernier_jour
+            calls ApiAcces.a_le_role, EscVeille.ronde, EscDossiers.balayer, EscConcertation.convoquer, EscConcertation.abandonner, EscPriseEnCharge.suivre, EscDiplomatie.echoir, EscStatistiques.purger, Journal.noter
+    }
+}

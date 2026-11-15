@@ -1,0 +1,191 @@
+// Doublures PROVISOIRES des façades appelées par les corps d'observation (tests d'observation seulement).
+// Personnes : "systeme" (identité interne) ; "intrus…" sans rôle ; sinon "<rôle><n>" employé d'ORBITE
+// ou "<rôle><n>@<ORG>" employé de <ORG> (ex. "capteur1@ORG-CAPTA"). Un rôle d'ORBITE ne vaut que
+// pour un employé d'ORBITE. quatre_yeux(a, b) : personnes distinctes, b superviseur/conformite/direction
+// d'ORBITE, ou chef_de_mission du même employeur.
+// Organisations : ORBITE = "ORG-ORBITE" ; existe si "ORG-…" sauf "ORG-RADIEE…" ; genre : "ORG-ORBITE"
+// orbite, "ORG-ETAT-…" etat, "ORG-CAPT…" capteur, sinon operateur ; actives : toutes sauf
+// "…INSCRITE…" (inscrite, non active) ; adhérente sauf "ORG-…NONADH…" ; "ORG-TIERS…" ne reçoit rien.
+// Objets : "OBJ-INCONNU…" non catalogué ; régime geo si l'id contient "GEO", sinon leo ;
+// "OBJ-SANSEPH…" sans éphéméride ; "OBJ-PLAN…" a un plan couvrant toute date ; "OBJ-ISS…" habité ;
+// "OBJ-CJ…" a un rapprochement ouvert "CJ-9" de niveau 3 ; "OBJ-ORPHELIN…" propriétaire "inconnu",
+// sinon "ORG-OPX" ; une cible contenant "GEL" est sous gel. Catalogue : OBJ-1, OBJ-2, OBJ-3.
+// Éphémérides : dernière = "EPH-<objet>", valide sauf si l'id contient "PERIME".
+flesh ApiAcces {
+    on a_le_role(personne, r) {
+        if personne == "systeme" { return r == "systeme" }
+        if r == "systeme" || starts_with(personne, "intrus") { return false }
+        let role = _role(personne)
+        if role != r { return false }
+        let orbite = r == "analyste" || r == "superviseur" || r == "exploitant" || r == "conformite" || r == "direction" || r == "auditeur"
+        return (!orbite) || _employeur(personne) == "ORG-ORBITE"
+    }
+    on agit_pour(personne, org) {
+        if personne == "systeme" || starts_with(personne, "intrus") { return false }
+        return _employeur(personne) == org
+    }
+    on quatre_yeux(demandeur, valideur) {
+        if demandeur == valideur || starts_with(valideur, "intrus") || starts_with(demandeur, "intrus") { return false }
+        let rv = _role(valideur)
+        let ev = _employeur(valideur)
+        if (rv == "superviseur" || rv == "conformite" || rv == "direction") && ev == "ORG-ORBITE" { return true }
+        return rv == "chef_de_mission" && ev == _employeur(demandeur)
+    }
+    on _role(p: String) {
+        let tete = split(p, "@")[0]
+        return regex_replace(tete, "[0-9]+$", "")
+    }
+    on _employeur(p: String) {
+        let parts = split(p, "@")
+        if len(parts) < 2 { return "ORG-ORBITE" }
+        return parts[1]
+    }
+}
+
+flesh ApiRef {
+    on orbite() { return "ORG-ORBITE" }
+    on organisation_existe(org) {
+        let o = to_string(org)
+        return starts_with(o, "ORG-") && !starts_with(o, "ORG-RADIEE")
+    }
+    on genre(org) {
+        let o = to_string(org)
+        require starts_with(o, "ORG-") && !starts_with(o, "ORG-RADIEE") else Inconnu "organisation {o} inconnue"
+        if o == "ORG-ORBITE" { return "orbite" }
+        if starts_with(o, "ORG-ETAT-") { return "etat" }
+        if starts_with(o, "ORG-CAPT") { return "capteur" }
+        return "operateur"
+    }
+    on organisations(genre) {
+        let toutes = ["ORG-CAPTA", "ORG-CAPTB", "ORG-CAPT-NONADH", "ORG-OPX", "ORG-ETAT-ALD", "ORG-ORBITE"]
+        let res_o = []
+        for o in toutes {
+            if genre == "" || _genre(o) == genre { res_o.push(o) }
+        }
+        return res_o
+    }
+    on _genre(o: String) {
+        if o == "ORG-ORBITE" { return "orbite" }
+        if starts_with(o, "ORG-ETAT-") { return "etat" }
+        if starts_with(o, "ORG-CAPT") { return "capteur" }
+        return "operateur"
+    }
+    on etat_de(org) {
+        if org == "ORG-ORBITE" { return "ORB" }
+        return "ALD"
+    }
+    on etat_objet(objet) {
+        if starts_with(to_string(objet), "OBJ-INCONNU") { return "inconnu" }
+        return "en_service"
+    }
+    on regime(objet) {
+        let o = to_string(objet)
+        require !starts_with(o, "OBJ-INCONNU") else Inconnu "objet {o} inconnu"
+        if contains(o, "GEO") { return "geo" }
+        return "leo"
+    }
+    on catalogue(regime, apres, n) {
+        let tous = ["OBJ-1", "OBJ-2", "OBJ-3"]
+        let res_k = []
+        let passe = to_string(apres) == ""
+        for o in tous {
+            if passe && len(res_k) < n { res_k.push(o) }
+            if o == to_string(apres) { passe = true }
+        }
+        return res_k
+    }
+    on cataloguer(h, nature, proprietaire, etat, regime, propulsion, masse, par) {
+        return Objet("OBJ-NEUF-{h}")
+    }
+    on attribuer(h, objet, proprietaire, etat, par, valideur) {
+        return proprietaire
+    }
+    on proprietaire(objet) {
+        if starts_with(to_string(objet), "OBJ-ORPHELIN") { return "inconnu" }
+        return "ORG-OPX"
+    }
+    on habite(objet) {
+        return starts_with(to_string(objet), "OBJ-ISS")
+    }
+}
+
+flesh ApiDonnees {
+    on adherent(org) {
+        return !contains(to_string(org), "NONADH")
+    }
+    on peut_recevoir(org, objet, r, h) {
+        return !starts_with(to_string(org), "ORG-TIERS")
+    }
+    on tracer(h, org, objet, r, nature) {
+        return 1
+    }
+}
+
+flesh ApiOperations {
+    on declarer_incident(h, incident, gravite, sous_systeme, description, par) {
+        require description != "" else MotifRequis "description requise"
+        return "INC-{incident}"
+    }
+}
+
+flesh ApiMeteo {
+    on facteur_incertitude(regime, h) {
+        return 100
+    }
+}
+
+flesh ApiEphemerides {
+    on derniere(objet) {
+        let o = to_string(objet)
+        require !starts_with(o, "OBJ-SANSEPH") else Inconnu "aucune éphéméride pour {o}"
+        return "EPH-{o}"
+    }
+    on depot_valide(depot) {
+        return !contains(depot, "PERIME")
+    }
+    on invalider(h, objet, motif, par) {
+        require motif != "" else MotifRequis "motif requis"
+        return 1
+    }
+}
+
+flesh ApiManoeuvres {
+    on plan_couvrant(objet, instant) {
+        let o = to_string(objet)
+        if starts_with(o, "OBJ-PLAN") { return "PLAN-{o}" }
+        return ""
+    }
+    on constater_non_annoncee(h, objet, depuis, par) {
+        return "CNA-{objet}"
+    }
+}
+
+flesh ApiPasserelle {
+    on notifier(h, destinataire, r, sujet, texte, urgence) {
+        return "MSG-{destinataire}-{urgence}"
+    }
+}
+
+flesh ApiConjonctions {
+    on ouverts_de(objet) {
+        if starts_with(to_string(objet), "OBJ-CJ") { return ["CJ-9"] }
+        return []
+    }
+    on niveau(r) {
+        return 3
+    }
+}
+
+flesh ApiEvenements {
+    on evenement_de(objet) { return "" }
+}
+
+flesh ApiLancements {
+    on origine(objet) { return "" }
+}
+
+flesh ApiResponsabilite {
+    on sous_gel(cible) {
+        return contains(cible, "GEL")
+    }
+}

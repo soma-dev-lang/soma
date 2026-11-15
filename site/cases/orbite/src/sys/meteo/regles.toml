@@ -1,0 +1,8 @@
+# meteo — règles entre sous-systèmes en forme toml (phase 2), à fusionner dans soma.toml.
+
+# Mesure archivée (stockage froid) ⇐ sa journée n'est sous aucun gel de RESPONSABILITÉ
+# (cible "J:<jour>", libre). L'arête validee -> archivee porte déjà
+# `when MetJournee.scellee via jour_de`.
+[verify.before."MetMesure.archivee"]
+while = ["RespGels.libre"]
+via = "MetMesure.gel_de"

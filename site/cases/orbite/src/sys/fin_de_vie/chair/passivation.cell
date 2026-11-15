@@ -1,0 +1,119 @@
+// fin_de_vie — corps de FdvPassivation (passivation d'un objet en fin de mission).
+
+flesh FdvPassivation {
+    on commencer(h, objet, organes, par) {
+        let prop = ApiRef.proprietaire(objet)
+        require ApiAcces.a_le_role(par, "dynamicien") && ApiAcces.agit_pour(par, prop) else Habilitation "{par} : dynamicien de {prop} requis"
+        let st = get_status(objet) ?? "a_planifier"
+        require st == "a_planifier" else EtatInvalide "passivation de {objet} : {st}"
+        let fin = FdvFin.etat(objet)
+        require fin == "en_retrait" || fin == "en_retard" else EtatInvalide "fin de vie de {objet} : {fin} (fin de mission non déclarée)"
+        require len(organes) >= 1 && len(organes) <= MAX_ORGANES else HorsBornes "1 à 5 organes requis"
+        let valides = ["ergols", "pressurisants", "batteries", "roues", "emetteurs"]
+        let vus = []
+        for org_x in organes {
+            require contains(valides, org_x) else HorsBornes "organe {org_x} inconnu"
+            require !contains(vus, org_x) else Doublon "organe {org_x} répété"
+            vus.push(org_x)
+        }
+        require contains(vus, "batteries") else Insuffisant "les batteries sont toujours à passiver"
+        let propu = to_string(ApiRef.propulsion(objet))
+        require propu == "aucune" || contains(vus, "ergols") else Insuffisant "propulsion {propu} : les ergols sont à passiver"
+        requis_de.set(objet, vus)
+        commence_le.set(objet, h)
+        transition(objet, "a_planifier", "en_cours")
+        let liste = join(vus, ",")
+        Journal.noter(h, "fin_de_vie", par, "passivation de {objet} commencée (organes {liste})")
+        return len(vus)
+    }
+
+    on declarer_organe(h, objet, organe, par) {
+        let prop = ApiRef.proprietaire(objet)
+        require ApiAcces.a_le_role(par, "dynamicien") && ApiAcces.agit_pour(par, prop) else Habilitation "{par} : dynamicien de {prop} requis"
+        let req = requis_de.get(objet)
+        require req != () else Inconnu "passivation de {objet} non commencée"
+        let st = get_status(objet) ?? "a_planifier"
+        require st == "en_cours" else EtatInvalide "passivation de {objet} : {st}"
+        let o = to_string(organe)
+        require contains(req, o) else HorsBornes "organe {o} non requis"
+        let faits = faits_de.get(objet) ?? []
+        require !contains(faits, o) else Doublon "organe {o} déjà déclaré passivé"
+        let nouveaux = faits ++ [o]
+        faits_de.set(objet, nouveaux)
+        declaree_le.set(objet, h)
+        let restant = len(req) - len(nouveaux)
+        if restant == 0 {
+            transition(objet, "en_cours", "declaree")
+        }
+        Journal.noter(h, "fin_de_vie", par, "organe {o} de {objet} déclaré passivé ({restant} restant)")
+        return restant
+    }
+
+    on verifier(h, objet, par, valideur) {
+        require ApiAcces.a_le_role(par, "analyste") else Habilitation "{par} : analyste d'ORBITE requis"
+        require ApiAcces.quatre_yeux(par, valideur) && ApiAcces.a_le_role(valideur, "superviseur") else QuatreYeux "{valideur} : superviseur distinct de {par} requis"
+        let decl = declaree_le.get(objet)
+        require decl != () else Inconnu "passivation de {objet} jamais déclarée"
+        let st = get_status(objet) ?? "a_planifier"
+        require st == "declaree" else EtatInvalide "passivation de {objet} : {st}"
+        require h - decl >= RECUL_VERIFICATION else Delai "vérification moins de 24 h après la déclaration"
+        require ApiObservation.suivi(objet, h) else Perime "pas d'orbite indépendante récente pour {objet}"
+        require !ApiObservation.manoeuvre_detectee(objet, decl) else Incoherent "manœuvre détectée sur {objet} depuis la déclaration"
+        require !ApiEvenements.en_anomalie(objet) else Incoherent "anomalie ouverte sur {objet}"
+        verifiee_le.set(objet, h)
+        verifiee_par.set(objet, "{par}|{valideur}")
+        transition(objet, "declaree", "verifiee")
+        ApiRef.declarer_propulsion(h, objet, "aucune", "passivation", par)
+        Journal.noter(h, "fin_de_vie", par, "passivation de {objet} vérifiée ({par}|{valideur}) : propulsion déclarée aucune")
+        return "verifiee"
+    }
+
+    on contester(h, objet, motif, par) {
+        require ApiAcces.a_le_role(par, "analyste") else Habilitation "{par} : analyste d'ORBITE requis"
+        let st = get_status(objet) ?? "a_planifier"
+        require st != "a_planifier" else Inconnu "passivation de {objet} jamais commencée"
+        require st == "declaree" else EtatInvalide "passivation de {objet} : {st}"
+        require motif != "" else MotifRequis "motif de la contestation requis"
+        let prop = ApiRef.proprietaire(objet)
+        faits_de.set(objet, [])
+        motif_de.set(objet, motif)
+        transition(objet, "declaree", "en_cours")
+        ApiPasserelle.notifier(h, prop, "", "passivation de {objet} contestée", motif, 1)
+        Journal.noter(h, "fin_de_vie", par, "passivation de {objet} contestée : {motif}")
+        return "en_cours"
+    }
+
+    on constater_echec(h, objet, motif, par) {
+        let prop = ApiRef.proprietaire(objet)
+        let habilite = (ApiAcces.a_le_role(par, "dynamicien") && ApiAcces.agit_pour(par, prop)) || ApiAcces.a_le_role(par, "analyste")
+        require habilite else Habilitation "{par} : dynamicien de {prop} ou analyste d'ORBITE requis"
+        let st = get_status(objet) ?? "a_planifier"
+        require st == "a_planifier" || st == "en_cours" || st == "declaree" else EtatInvalide "passivation de {objet} : {st}"
+        require motif != "" else MotifRequis "motif de l'échec requis"
+        motif_de.set(objet, motif)
+        if st == "a_planifier" {
+            transition(objet, "a_planifier", "echouee")
+        } else if st == "en_cours" {
+            transition(objet, "en_cours", "echouee")
+        } else {
+            transition(objet, "declaree", "echouee")
+        }
+        let mq = ApiConformite.constater(h, prop, "passivation impossible : {motif}", 2, to_string(objet), "systeme")
+        let suivi_id = ApiObservation.demander_suivi(h, objet, 2, 2592000000, "passivation échouée : {motif}", "systeme")
+        Journal.noter(h, "fin_de_vie", par, "passivation de {objet} échouée : {motif} (manquement {mq}, suivi {suivi_id})")
+        return "echouee"
+    }
+
+    on passive(objet) {
+        return (get_status(objet) ?? "a_planifier") == "verifiee"
+    }
+
+    on restants(objet) {
+        let faits = faits_de.get(objet) ?? []
+        return (requis_de.get(objet) ?? []).filter(x => !contains(faits, x))
+    }
+
+    on etat(objet) {
+        return get_status(objet) ?? "a_planifier"
+    }
+}

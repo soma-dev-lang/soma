@@ -1,0 +1,159 @@
+// ref — registre au sens de la Convention de 1975 sur l'immatriculation (une instance par
+// objet, id = son numéro "OBJ-<n>"). L'État d'immatriculation inscrit l'objet dans son registre
+// national et en informe le Secrétaire général des Nations unies (art. II et IV). ORBITE fixe
+// le délai : DELAI_IMMATRICULATION_MS après le catalogage. Passé ce délai l'entrée est
+// « en_retard » : l'objet ne peut plus être mis en service (règle RefObjet) et l'État est notifié.
+// Débris et objets inconnus ne s'immatriculent pas (« dispense ») : ils restent attribués à
+// l'État indiqué au catalogage (responsabilité, Convention de 1972), ou à aucun (État "").
+
+// « dispense » n'est pas terminal : un objet inconnu identifié plus tard (RefObjet.attribuer)
+// redevient à immatriculer, sous un nouveau délai.
+// Statut d'une entrée du registre tel que le lit un appelant ; "inconnu" si aucune entrée.
+cell type RefStatutRegistre = String where value == "a_immatriculer" || value == "en_retard" || value == "immatricule" || value == "dispense" || value == "radie" || value == "inconnu"
+
+skeleton RefRegistre {
+    const MAX_ENTREES = 2000000
+    // 60 jours (ms) entre le catalogage et l'immatriculation exigée.
+    const DELAI_IMMATRICULATION_MS = 5184000000
+    // Au plus tant d'entrées passées en retard par appel de constater_retards.
+    const MAX_RETARDS_PAR_PASSE = 1000
+    memory {
+        etats: Map<String, String> [persistent]                 // objet → État d'immatriculation
+        echeances: Map<String, Horodatage> [persistent]         // objet → date limite d'immatriculation
+        ouvertes_le: Map<String, Horodatage> [persistent, consistent, immutable]
+        numeros: Map<String, String> [persistent]               // objet → numéro au registre national
+        // "État|numéro" → objet : un numéro national ne désigne qu'un objet
+        numero_de: Map<String, String> [persistent, consistent, immutable]
+        documents_onu: Map<String, String> [persistent]         // objet → cote du document ONU (ST/SG/SER.E/…)
+        immatricules_le: Map<String, Horodatage> [persistent]
+        invariant etats.size <= 2000000
+        invariant echeances.size <= 2000000
+        invariant ouvertes_le.size <= 2000000
+        invariant numeros.size <= 2000000
+        invariant numero_de.size <= 2000000
+        invariant documents_onu.size <= 2000000
+        invariant immatricules_le.size <= 2000000
+        invariant (echeances ?? 0) >= (ouvertes_le ?? 0)        // échéance postérieure à l'ouverture
+        invariant (immatricules_le ?? ouvertes_le ?? 0) >= (ouvertes_le ?? 0)   // une entrée non immatriculée n'a pas d'immatricules_le
+    }
+    // Entrée du registre. Terminal : radie (une entrée dispensée reste dispensée après la
+    // sortie de l'orbite de l'objet : rien à notifier).
+    state entree {
+        initial: a_immatriculer
+        a_immatriculer -> immatricule     // immatriculer : numéro national
+        a_immatriculer -> en_retard       // constater_retards : échéance dépassée
+        en_retard -> immatricule          // immatriculer (tardivement)
+        a_immatriculer -> dispense        // ouvrir / dispenser : débris, objet inconnu
+        dispense -> a_immatriculer        // requalifier : objet identifié, à immatriculer
+        a_immatriculer -> radie           // radier : objet sorti de l'orbite avant immatriculation
+        en_retard -> radie
+        immatricule -> radie              // radier : notice de retrait du registre (art. IV.3)
+    }
+    face {
+        // Ouvre l'entrée à la création de l'objet (appelé par RefObjet.cataloguer) : État,
+        // échéance = h + DELAI_IMMATRICULATION_MS ; nature "debris" ou "inconnu", ou État ""
+        // (objet non attribué) ⇒ dispense immédiate. Renvoie le statut ("a_immatriculer" ou "dispense").
+        // Habilitation : par "systeme". Refus : Existe, Plein, Habilitation.
+        signal ouvrir(h: Horodatage, objet: Objet, etat: Etat, nature: NatureObjet, par: String) -> RefStatutRegistre
+            writes etats, echeances, ouvertes_le
+            moves a_immatriculer -> dispense
+            calls ApiAcces.a_le_role
+        // Enregistre l'immatriculation au registre national de l'État d'immatriculation.
+        // Renvoie "immatricule".
+        // Habilitation : "autorite" de l'État d'immatriculation (ApiAcces.agit_pour sur
+        // RefOrg.org_de_etat(etat)), "systeme" (lancements, sur l'avis de l'État), ou "analyste"
+        // d'ORBITE recopiant une publication ONU pour un État non participant.
+        // Refus : Inconnu, Existe (déjà immatriculé), EtatInvalide (dispense, radie), Doublon
+        // (numéro déjà attribué par cet État), MotifRequis (numéro vide), Habilitation.
+        signal immatriculer(h: Horodatage, objet: Objet, numero: String, par: String) -> String
+            reads etats
+            writes numeros, numero_de, immatricules_le
+            moves a_immatriculer -> immatricule, en_retard -> immatricule
+            calls RefOrg.org_de_etat, ApiAcces.a_le_role, ApiAcces.agit_pour, RefHistorique.consigner, Journal.noter
+        // Enregistre la cote du document par lequel l'État a informé le Secrétaire général des
+        // Nations unies (art. IV), avant ou après l'immatriculation. Renvoie la cote.
+        // Habilitation : "autorite" de l'État d'immatriculation, ou "analyste" (ORBITE).
+        // Refus : Inconnu, EtatInvalide (dispense), MotifRequis (cote vide), Habilitation.
+        signal consigner_onu(h: Horodatage, objet: Objet, document_onu: String, par: String) -> String
+            reads etats, entree
+            writes documents_onu
+            calls RefOrg.org_de_etat, ApiAcces.a_le_role, ApiAcces.agit_pour, Journal.noter
+        // Dispense un objet requalifié en débris ou non identifiable. Renvoie "dispense".
+        // Habilitation : "analyste" (ORBITE), quatre yeux valideur "superviseur"
+        // (ApiAcces.quatre_yeux). Refus : Inconnu, EtatInvalide, MotifRequis, Habilitation, QuatreYeux.
+        signal dispenser(h: Horodatage, objet: Objet, motif: String, par: String, valideur: String) -> String
+            moves a_immatriculer -> dispense
+            calls RefObjet.nature, ApiAcces.a_le_role, ApiAcces.quatre_yeux, RefHistorique.consigner, Journal.noter
+        // Rouvre l'entrée d'un objet dispensé qui vient d'être identifié (appelé par
+        // RefObjet.attribuer) : nouvel État d'immatriculation, échéance = h +
+        // DELAI_IMMATRICULATION_MS. Renvoie "a_immatriculer".
+        // Habilitation : par "systeme". Refus : Inconnu, EtatInvalide (pas "dispense"), Habilitation.
+        signal requalifier(h: Horodatage, objet: Objet, etat: Etat, par: String) -> String
+            writes etats, echeances
+            moves dispense -> a_immatriculer
+            calls ApiAcces.a_le_role, RefHistorique.consigner, Journal.noter
+        // Passe en retard les entrées « a_immatriculer » dont l'échéance est < h (au plus
+        // MAX_RETARDS_PAR_PASSE) et notifie l'autorité de l'État (ApiPasserelle.notifier,
+        // r = "", urgence 1). Appelé par RefBalayage.balayer. Renvoie le nombre d'entrées passées en retard.
+        // Habilitation : par "systeme". Refus : Habilitation.
+        signal constater_retards(h: Horodatage, par: String) -> Int
+            ensures result >= 0 && result <= 1000
+            reads echeances, etats
+            moves a_immatriculer -> en_retard
+            calls RefOrg.org_de_etat, ApiPasserelle.notifier, ApiAcces.a_le_role, Journal.noter
+        // Retire l'objet du registre après sa rentrée ou sa fragmentation (appelé par
+        // RefObjet.constater_rentree / constater_fragmentation, après leur transition).
+        // Une entrée dispensée reste « dispense ». Renvoie le statut atteint.
+        // Habilitation : par "systeme". Refus : Inconnu, EtatInvalide (objet encore en orbite),
+        // Habilitation.
+        signal radier(h: Horodatage, objet: Objet, par: String) -> RefStatutRegistre
+            moves a_immatriculer -> radie when RefObjet.rentre || RefObjet.fragmente, en_retard -> radie when RefObjet.rentre || RefObjet.fragmente, immatricule -> radie when RefObjet.rentre || RefObjet.fragmente
+            calls RefObjet.etat, ApiAcces.a_le_role, Journal.noter
+        // Change l'État d'immatriculation après une cession entre États (appelé par
+        // RefCession.realiser) : nouvel État et nouveau numéro national. Une entrée immatriculée
+        // le reste ; une entrée à immatriculer garde son échéance. L'ancien couple est consigné
+        // dans RefHistorique. Renvoie l'ancien État.
+        // Habilitation : par "systeme". Refus : Inconnu, EtatInvalide (dispense ou radie),
+        // Doublon (numéro), Habilitation.
+        signal transferer(h: Horodatage, objet: Objet, etat: Etat, numero: String, cession: String, par: String) -> Etat
+            writes etats, numeros, numero_de
+            reads entree
+            calls ApiAcces.a_le_role, RefHistorique.consigner, Journal.noter
+        // État d'immatriculation (registre de 1975). Refus : Inconnu.
+        signal etat_de(objet: Objet) -> Etat
+            reads etats
+        // Statut de l'entrée ; "inconnu" si aucune.
+        signal statut(objet: Objet) -> RefStatutRegistre
+            reads etats, entree
+        // Vrai si l'entrée est « immatricule ».
+        signal est_immatricule(objet: Objet) -> Bool
+            reads entree
+        // Numéro national ; "" tant que non immatriculé. Refus : Inconnu.
+        signal numero(objet: Objet) -> String
+            reads etats, numeros
+        // Échéance d'immatriculation. Refus : Inconnu.
+        signal echeance(objet: Objet) -> Horodatage
+            reads echeances
+        // Nombre d'entrées « en_retard » de l'État (rapports annuels de conformite).
+        signal retards_de(etat: Etat) -> Int
+            ensures result >= 0
+            reads etats, entree
+    }
+}
+
+// ref — balayage des échéances, appelé par ApiRef.balayer depuis l'horloge d'ORBITE
+// (Horloge.battre). Aucun signal de ref ne lit l'horloge : tout délai de ref (immatriculation,
+// cession, modification) est jugé contre le h fourni ici.
+
+skeleton RefBalayage {
+    face {
+        // Une ronde complète à h : retards d'immatriculation (RefRegistre.constater_retards),
+        // cessions à réaliser ou expirées (RefCession.balayer), demandes de modification
+        // expirées (RefModification.balayer). Journalise le total s'il est non nul.
+        // Renvoie le nombre d'entrées dont l'état a changé.
+        // Habilitation : par "systeme". Refus : Habilitation.
+        signal balayer(h: Horodatage, par: String) -> Int
+            ensures result >= 0 && result <= 3000
+            calls RefRegistre.constater_retards, RefCession.balayer, RefModification.balayer, ApiAcces.a_le_role, Journal.noter
+    }
+}

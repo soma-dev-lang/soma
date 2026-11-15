@@ -1,0 +1,12 @@
+use app
+use commun::journal_chair
+use commun::horloge_chair
+use sys::manoeuvres::chair::api
+use sys::manoeuvres::chair::plans
+use sys::manoeuvres::chair::criblage
+use sys::manoeuvres::chair::verrou
+use sys::manoeuvres::chair::execution
+use sys::manoeuvres::chair::anomalies
+use sys::manoeuvres::chair::avis
+use sys::manoeuvres::chair::preuve
+use sys::manoeuvres::chair::programmes

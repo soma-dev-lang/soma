@@ -1,0 +1,331 @@
+// fin_de_vie — corps de FdvRetrait (missions de retrait actif).
+// Consentements : "<mission>|proprietaire" et "<mission>|etat".
+// vivantes : file tournante (balayer en examine la tête et remet en queue les missions non terminales).
+
+flesh FdvRetrait {
+    on _consentements_valent(mission: String) {
+        let cp = consentement_proprietaire_de.get(mission) ?? ""
+        let ce = consentement_etat_de.get(mission) ?? ""
+        return cp != "" && ce != "" && FdvConsentement.vaut(cp) && FdvConsentement.vaut(ce)
+    }
+
+    on _dossier_retrait(mission: String) {
+        let cible = cible_de.get(mission)
+        require cible != () else Inconnu "mission {mission} inconnue"
+        return FdvDossierRetrait { etat: get_status(mission) ?? "proposee", cible: cible, chasseur: chasseur_de.get(mission), servicer: servicer_de.get(mission), issue: issue_de.get(mission), debut: debut_de.get(mission) ?? 0, fin: fin_de.get(mission) ?? 0, empreinte: empreinte_de.get(mission) ?? "", consentement_proprietaire: consentement_proprietaire_de.get(mission) ?? "", consentement_etat: consentement_etat_de.get(mission) ?? "", autorise_par: autorise_par.get(mission) ?? "", approche: approche_de.get(mission) ?? "", capture: capture_le.get(mission) ?? 0 }
+    }
+
+    on proposer(h, mission, cible, chasseur, issue, debut, fin, empreinte, par) {
+        require cible_de.get(mission) == () else Existe "mission {mission} déjà proposée"
+        let st_cible = ApiRef.etat_objet(cible)
+        require st_cible != "inconnu" else Inconnu "cible {cible} non cataloguée"
+        let st_chasseur = ApiRef.etat_objet(chasseur)
+        require st_chasseur != "inconnu" else Inconnu "chasseur {chasseur} non catalogué"
+        let servicer = ApiRef.proprietaire(chasseur)
+        require ApiAcces.a_le_role(par, "chef_de_mission") && ApiAcces.agit_pour(par, servicer) else Habilitation "{par} : chef de mission de {servicer} requis"
+        require cible != chasseur else NonEligible "la cible est le chasseur"
+        require !ApiRef.habite(cible) else NonEligible "cible {cible} habitée"
+        require st_cible != "rentre" && st_cible != "fragmente" && st_cible != "retire" else NonEligible "cible {cible} : {st_cible}"
+        require ApiRef.peut_manoeuvrer(chasseur) else NonEligible "chasseur {chasseur} incapable de manœuvrer"
+        require ApiOperateurs.est_actif(servicer, h) else Suspendu "servicer {servicer} non actif"
+        require fin > debut else Incoherent "fenêtre vide"
+        require fin - debut <= FENETRE_MAX else HorsBornes "fenêtre de plus de 2 ans"
+        require debut - PREAVIS_CONSENTEMENT > h else Delai "fenêtre ouvrant dans moins de 30 jours"
+        let deja = missions_de.get(cible) ?? []
+        require len(deja) < MAX_MISSIONS_OBJET else Plein "20 missions visent déjà {cible}"
+        require cible_de.size < MAX_MISSIONS && vivantes.size < MAX_MISSIONS else Plein "registre des missions plein"
+        let prop = to_string(ApiRef.proprietaire(cible))
+        let etat_imm = to_string(ApiRef.etat_immatriculation(cible))
+        // Un objet non attribué (État "") n'a pas d'autorité nationale : son propriétaire
+        // provisoire (ORBITE) consent aussi au titre de l'État.
+        let org_etat = if etat_imm != "" { to_string(ApiRef.org_de_etat(Etat(etat_imm))) } else { prop }
+        // Propriétaire "inconnu" : l'État d'immatriculation consent aussi à ce titre.
+        let org_prop = if prop == "inconnu" || prop == "" { org_etat } else { prop }
+        let cp = "{mission}|proprietaire"
+        let ce = "{mission}|etat"
+        let ech = Horodatage(to_int(debut) - PREAVIS_CONSENTEMENT)
+        cible_de.set(mission, cible)
+        chasseur_de.set(mission, chasseur)
+        servicer_de.set(mission, servicer)
+        issue_de.set(mission, issue)
+        fin_de.set(mission, fin)
+        debut_de.set(mission, debut)
+        empreinte_de.set(mission, empreinte)
+        consentement_proprietaire_de.set(mission, cp)
+        consentement_etat_de.set(mission, ce)
+        missions_de.set(cible, deja ++ [mission])
+        vivantes.push(mission)
+        FdvConsentement.demander(h, cp, mission, "proprietaire", Org(org_prop), ech)
+        FdvConsentement.demander(h, ce, mission, "etat", Org(org_etat), ech)
+        Journal.noter(h, "fin_de_vie", par, "mission de retrait actif {mission} proposée : {chasseur} ({servicer}) capture {cible}, issue {issue}, fenêtre [{debut}, {fin}], empreinte {empreinte}")
+        return "proposee"
+    }
+
+    on constater_consentements(h, mission, par) {
+        require ApiAcces.a_le_role(par, "systeme") else Habilitation "{par} : systeme requis"
+        let cp = consentement_proprietaire_de.get(mission)
+        require cp != () else Inconnu "mission {mission} inconnue"
+        let ce = consentement_etat_de.get(mission) ?? ""
+        let st = get_status(mission) ?? "proposee"
+        require st == "proposee" || st == "accord_proprietaire" || st == "consentie" else EtatInvalide "mission {mission} : {st}"
+        let e_p = FdvConsentement.etat(cp)
+        let e_e = FdvConsentement.etat(ce)
+        let morts = ["refuse", "echu", "retire", "sans_objet"]
+        if contains(morts, e_p) || contains(morts, e_e) {
+            FdvConsentement.classer(h, cp)
+            FdvConsentement.classer(h, ce)
+            motif_de.set(mission, "consentement perdu (propriétaire {e_p}, État {e_e})")
+            if st == "proposee" {
+                transition(mission, "proposee", "abandonnee")
+            } else if st == "accord_proprietaire" {
+                transition(mission, "accord_proprietaire", "abandonnee")
+            } else {
+                transition(mission, "consentie", "abandonnee")
+            }
+            Journal.noter(h, "fin_de_vie", par, "mission {mission} abandonnée : consentement perdu (propriétaire {e_p}, État {e_e})")
+            return "abandonnee"
+        }
+        let atteint = st
+        if atteint == "proposee" && e_p == "accorde" && FdvConsentement.vaut(cp) {
+            transition(mission, "proposee", "accord_proprietaire")
+            atteint = "accord_proprietaire"
+        }
+        if atteint == "accord_proprietaire" && e_e == "accorde" && FdvConsentement.vaut(ce) {
+            transition(mission, "accord_proprietaire", "consentie")
+            atteint = "consentie"
+        }
+        if atteint != st {
+            Journal.noter(h, "fin_de_vie", par, "mission {mission} : {st} -> {atteint}")
+        }
+        return atteint
+    }
+
+    on autoriser(h, mission, par, valideur) {
+        require ApiAcces.a_le_role(par, "analyste") else Habilitation "{par} : analyste d'ORBITE requis"
+        require ApiAcces.quatre_yeux(par, valideur) && ApiAcces.a_le_role(valideur, "superviseur") else QuatreYeux "{valideur} : superviseur distinct de {par} requis"
+        let cible = cible_de.get(mission)
+        require cible != () else Inconnu "mission {mission} inconnue"
+        let st = get_status(mission) ?? "proposee"
+        require st == "consentie" else EtatInvalide "mission {mission} : {st}"
+        let cp = consentement_proprietaire_de.get(mission) ?? ""
+        let ce = consentement_etat_de.get(mission) ?? ""
+        require FdvConsentement.etat(cp) == "accorde" && FdvConsentement.vaut(ce) else EtatInvalide "consentement de {mission} retiré"
+        let servicer = servicer_de.get(mission)
+        require ApiOperateurs.est_actif(servicer, h) else Suspendu "servicer {servicer} non actif"
+        require !ApiConformite.sous_surveillance(servicer) else NonEligible "servicer {servicer} sous surveillance renforcée"
+        require ApiEscalade.graves(servicer, h) == 0 else NonEligible "escalades graves visant {servicer} sur 365 jours"
+        require ApiDonnees.peut_recevoir(servicer, cible, "", h) else Confidentiel "{servicer} ne peut recevoir les données de {cible}"
+        ApiDonnees.tracer(h, servicer, cible, "", "retrait actif {mission} : autorisation")
+        let chasseur = chasseur_de.get(mission)
+        transition(mission, "consentie", "instruite")
+        transition(mission, "instruite", "autorisee")
+        autorise_par.set(mission, "{par}|{valideur}")
+        let ex = ApiConjonctions.exempter(h, chasseur, cible, debut_de.get(mission), fin_de.get(mission), par, valideur)
+        exemption_de.set(mission, ex)
+        let emp = empreinte_de.get(mission) ?? ""
+        Journal.noter(h, "fin_de_vie", par, "mission {mission} autorisée ({par}|{valideur}, empreinte {emp}, exemption {ex})")
+        return "autorisee"
+    }
+
+    on lancer_approche(h, mission, plan_man, par) {
+        let servicer = servicer_de.get(mission)
+        require servicer != () else Inconnu "mission {mission} inconnue"
+        require ApiAcces.a_le_role(par, "dynamicien") && ApiAcces.agit_pour(par, servicer) else Habilitation "{par} : dynamicien de {servicer} requis"
+        let st = get_status(mission) ?? "proposee"
+        require st == "autorisee" else EtatInvalide "mission {mission} : {st}"
+        let st_man = ApiManoeuvres.etat(plan_man)
+        require st_man != "inconnu" else Inconnu "plan de manœuvre {plan_man} inconnu"
+        require st_man == "approuve" else EtatInvalide "plan d'approche {plan_man} : {st_man}"
+        let chasseur = chasseur_de.get(mission)
+        require ApiManoeuvres.objet_de(plan_man) == chasseur else Incoherent "plan {plan_man} d'un autre objet que le chasseur {chasseur}"
+        let debut = debut_de.get(mission) ?? 0
+        let fin = fin_de.get(mission) ?? 0
+        require h >= debut && h <= fin else Delai "hors de la fenêtre [{debut}, {fin}]"
+        require _consentements_valent(mission) else EtatInvalide "consentement de {mission} retiré"
+        require ApiOperateurs.est_actif(servicer, h) else Suspendu "servicer {servicer} non actif"
+        let cible = cible_de.get(mission)
+        approche_de.set(mission, plan_man)
+        transition(mission, "autorisee", "en_approche")
+        let duree = Duree(to_int(fin) - to_int(h))
+        ApiObservation.demander_suivi(h, cible, 2, duree, "retrait actif {mission} : approche", "systeme")
+        ApiObservation.demander_suivi(h, chasseur, 2, duree, "retrait actif {mission} : approche", "systeme")
+        Journal.noter(h, "fin_de_vie", par, "mission {mission} : approche lancée (plan {plan_man})")
+        return "en_approche"
+    }
+
+    on capturer(h, mission, par, valideur) {
+        let servicer = servicer_de.get(mission)
+        require servicer != () else Inconnu "mission {mission} inconnue"
+        require ApiAcces.a_le_role(par, "dynamicien") && ApiAcces.agit_pour(par, servicer) else Habilitation "{par} : dynamicien de {servicer} requis"
+        let contre = ApiAcces.quatre_yeux(par, valideur) && ApiAcces.a_le_role(valideur, "chef_de_mission") && ApiAcces.agit_pour(valideur, servicer)
+        require contre else QuatreYeux "{valideur} : chef de mission de {servicer} distinct de {par} requis"
+        let st = get_status(mission) ?? "proposee"
+        require st == "en_approche" else EtatInvalide "mission {mission} : {st}"
+        require h <= (fin_de.get(mission) ?? 0) else Delai "fenêtre de {mission} close"
+        let cible = cible_de.get(mission)
+        let st_cible = ApiRef.etat_objet(cible)
+        require st_cible == "hors_service" || st_cible == "cimetiere" else NonEligible "cible {cible} : {st_cible} (ni hors service ni en cimetière)"
+        capture_le.set(mission, h)
+        transition(mission, "en_approche", "capturee")
+        FdvConsentement.engager(h, consentement_proprietaire_de.get(mission) ?? "")
+        FdvConsentement.engager(h, consentement_etat_de.get(mission) ?? "")
+        let texte = "mission {mission} : {cible} capturée par {servicer} ({par}|{valideur}) ; consentements irrévocables"
+        let prop = to_string(ApiRef.proprietaire(cible))
+        if prop != "" && prop != "inconnu" {
+            ApiPasserelle.notifier(h, Org(prop), "", "capture de {cible}", texte, 1)
+        }
+        let etat_imm = to_string(ApiRef.etat_immatriculation(cible))
+        if etat_imm != "" {
+            ApiPasserelle.notifier(h, ApiRef.org_de_etat(Etat(etat_imm)), "", "capture de {cible}", texte, 1)
+        }
+        Journal.noter(h, "fin_de_vie", par, texte)
+        return "capturee"
+    }
+
+    on abandonner(h, mission, motif, par) {
+        let servicer = servicer_de.get(mission)
+        require servicer != () else Inconnu "mission {mission} inconnue"
+        let habilite = (ApiAcces.a_le_role(par, "chef_de_mission") && ApiAcces.agit_pour(par, servicer)) || ApiAcces.a_le_role(par, "analyste") || ApiAcces.a_le_role(par, "systeme")
+        require habilite else Habilitation "{par} : chef de mission de {servicer}, analyste d'ORBITE ou systeme requis"
+        let st = get_status(mission) ?? "proposee"
+        require st == "proposee" || st == "accord_proprietaire" || st == "consentie" || st == "autorisee" else EtatInvalide "mission {mission} : {st}"
+        require motif != "" else MotifRequis "motif de l'abandon requis"
+        motif_de.set(mission, motif)
+        if st == "proposee" {
+            transition(mission, "proposee", "abandonnee")
+        } else if st == "accord_proprietaire" {
+            transition(mission, "accord_proprietaire", "abandonnee")
+        } else if st == "consentie" {
+            transition(mission, "consentie", "abandonnee")
+        } else {
+            transition(mission, "autorisee", "abandonnee")
+        }
+        FdvConsentement.classer(h, consentement_proprietaire_de.get(mission) ?? "")
+        FdvConsentement.classer(h, consentement_etat_de.get(mission) ?? "")
+        Journal.noter(h, "fin_de_vie", par, "mission {mission} abandonnée : {motif}")
+        return "abandonnee"
+    }
+
+    on avorter(h, mission, motif, par) {
+        let servicer = servicer_de.get(mission)
+        require servicer != () else Inconnu "mission {mission} inconnue"
+        let habilite = (ApiAcces.a_le_role(par, "dynamicien") && ApiAcces.agit_pour(par, servicer)) || ApiAcces.a_le_role(par, "analyste")
+        require habilite else Habilitation "{par} : dynamicien de {servicer} ou analyste d'ORBITE requis"
+        let st = get_status(mission) ?? "proposee"
+        require st == "en_approche" || st == "capturee" else EtatInvalide "mission {mission} : {st}"
+        require motif != "" else MotifRequis "motif de l'avortement requis"
+        motif_de.set(mission, motif)
+        if st == "en_approche" {
+            transition(mission, "en_approche", "avortee")
+            FdvConsentement.classer(h, consentement_proprietaire_de.get(mission) ?? "")
+            FdvConsentement.classer(h, consentement_etat_de.get(mission) ?? "")
+        } else {
+            transition(mission, "capturee", "avortee")
+        }
+        let cible = cible_de.get(mission)
+        ApiObservation.demander_suivi(h, cible, 3, 604800000, "retrait actif {mission} avorté : {motif}", "systeme")
+        Journal.noter(h, "fin_de_vie", par, "mission {mission} avortée ({st}) : {motif}")
+        return "avortee"
+    }
+
+    on achever_pour(h, objet) {
+        let fin = FdvFin.etat(objet)
+        if fin != "rentre" && fin != "cimetiere" {
+            return 0
+        }
+        let n_ach = 0
+        for m in missions_de.get(objet) ?? [] {
+            if (get_status(m) ?? "proposee") == "capturee" && cible_de.get(m) == objet {
+                transition(m, "capturee", "achevee")
+                n_ach = n_ach + 1
+                Journal.noter(h, "fin_de_vie", "systeme", "mission {m} achevée : sortie de {objet} constatée ({fin})")
+            }
+        }
+        return n_ach
+    }
+
+    on autorise_sur(objet) {
+        for m in missions_de.get(objet) ?? [] {
+            let st = get_status(m) ?? "proposee"
+            if st == "autorisee" || st == "en_approche" || st == "capturee" {
+                let cp = consentement_proprietaire_de.get(m) ?? ""
+                let ce = consentement_etat_de.get(m) ?? ""
+                if FdvConsentement.vaut(cp) && FdvConsentement.vaut(ce) {
+                    return true
+                }
+            }
+        }
+        return false
+    }
+
+    on dossier(mission) {
+        return _dossier_retrait(mission)
+    }
+
+    on capturee_sur(objet) {
+        for m in missions_de.get(objet) ?? [] {
+            if (get_status(m) ?? "proposee") == "capturee" {
+                return true
+            }
+        }
+        return false
+    }
+
+    on balayer(h, n, par) {
+        require n >= 1 && n <= 1000 else HorsBornes "n = {n} hors 1..1000"
+        require ApiAcces.a_le_role(par, "systeme") else Habilitation "{par} : systeme requis"
+        let k = min(n, vivantes.size)
+        let tete_m = []
+        for i in range(0, k) {
+            tete_m.push(vivantes[i])
+        }
+        for i in range(0, k) {
+            vivantes.delete(0)
+        }
+        let changes = 0
+        let garder_m = []
+        for m in tete_m {
+            let st = get_status(m) ?? "proposee"
+            let apres = st
+            if st == "proposee" || st == "accord_proprietaire" || st == "consentie" {
+                let r = try { constater_consentements(h, m, "systeme") }
+                if r.error == () {
+                    apres = r.value
+                }
+            } else if st == "autorisee" {
+                let servicer = servicer_de.get(m)
+                let close = h > (fin_de.get(m) ?? h)
+                let r_actif = try { ApiOperateurs.est_actif(servicer, h) }
+                let inactif = r_actif.error == () && !r_actif.value
+                if close || inactif {
+                    let motif = if close { "fenêtre échue" } else { "servicer {servicer} non actif" }
+                    let r = try { abandonner(h, m, motif, "systeme") }
+                    if r.error == () {
+                        apres = r.value
+                    }
+                }
+            }
+            if apres != st {
+                changes = changes + 1
+            }
+            if apres != "achevee" && apres != "abandonnee" && apres != "avortee" {
+                garder_m.push(m)
+            }
+        }
+        for m in garder_m {
+            vivantes.push(m)
+        }
+        return changes
+    }
+
+    on missions(objet) {
+        return missions_de.get(objet) ?? []
+    }
+
+    on etat(mission) {
+        if cible_de.get(mission) == () {
+            return "inconnu"
+        }
+        return get_status(mission) ?? "proposee"
+    }
+}

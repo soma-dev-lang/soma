@@ -1,0 +1,89 @@
+// Corps de manoeuvres : dossier de preuve (ManDossier) et indicateurs (ManIndicateurs).
+flesh ManDossier {
+    on consulter(h, plan, org, par) {
+        let f = ManPlan.fiche(plan)
+        let orbite_o = ApiRef.orbite()
+        let role_orbite = ApiAcces.a_le_role(par, "analyste") || ApiAcces.a_le_role(par, "conformite") || ApiAcces.a_le_role(par, "auditeur")
+        let role_org = (ApiAcces.a_le_role(par, "dynamicien") || ApiAcces.a_le_role(par, "chef_de_mission") || ApiAcces.a_le_role(par, "point_focal") || ApiAcces.a_le_role(par, "autorite")) && ApiAcces.agit_pour(par, org)
+        require role_orbite || role_org else Habilitation "{par} ne peut demander le dossier pour {org}"
+        if org != orbite_o && org != f.proprietaire {
+            require ApiDonnees.peut_recevoir(org, f.objet, f.r, h) else Confidentiel "{org} ne reçoit pas les données de {f.objet}"
+        }
+        require consultations.size < MAX_CONSULTATIONS else Plein "registre des consultations plein"
+        let trace = ApiDonnees.tracer(h, org, f.objet, f.r, "dossier_manoeuvre")
+        consultations.push("{h}|{org}|{plan}|{par}|{trace}")
+        let r_fo = try { ManPlan.fondement(plan) }
+        let fond = if r_fo.error == () { [r_fo.value] } else { [] }
+        let r_cf = try { ManCriblage.fiche(plan) }
+        let crib = if r_cf.error == () { [r_cf.value] } else { [] }
+        let verrou = if f.motif == "evitement" { to_string(f.r) } else { "P:" + plan }
+        Journal.noter(h, "manoeuvres", par, "dossier du plan {plan} communiqué à {org} (trace {trace})")
+        return ManDossierPlan { fiche: f, etat: ManPlan.etat(plan), fondement: fond, criblage: crib, verrou: ManEvitement.etat(verrou), avis: ManAvis.avis_de(plan), ecartes: ManAvis.refuses(plan), verification: ManVerification.etat(plan), anomalie: ManAnomalie.etat(plan) }
+    }
+
+    on sceller(h, plan, par) {
+        require ApiAcces.a_le_role(par, "conformite") || ApiAcces.a_le_role(par, "direction") else Habilitation "scellé par conformite ou direction d'ORBITE"
+        let f = ManPlan.fiche(plan)
+        let gel = ApiResponsabilite.sous_gel(plan) || (f.motif == "evitement" && ApiResponsabilite.sous_gel(to_string(f.r))) || ApiResponsabilite.sous_gel(to_string(f.objet))
+        require gel else EtatInvalide "aucun dossier gelé ne couvre {plan}"
+        let r_fo = try { ManPlan.fondement(plan) }
+        let fond = if r_fo.error == () { to_string(r_fo.value) } else { "" }
+        let r_cf = try { ManCriblage.fiche(plan) }
+        let crib = if r_cf.error == () { to_string(r_cf.value) } else { "" }
+        let avis_l = join(ManAvis.avis_de(plan), ",")
+        let fiche_s = to_string(f)
+        let empreinte = sha256("{fiche_s}#{fond}#{crib}#{avis_l}")
+        return Journal.noter(h, "manoeuvres", par, "preuve du plan {plan} scellée : {empreinte}")
+    }
+
+    on consultations_de(plan, n, par) {
+        require ApiAcces.a_le_role(par, "conformite") || ApiAcces.a_le_role(par, "auditeur") else Habilitation "lecture réservée à conformite ou auditeur"
+        let motif = "|{plan}|"
+        let trouvees = consultations.filter(l => contains(l, motif))
+        let k = len(trouvees)
+        if k <= n { return trouvees }
+        return slice(trouvees, k - n)
+    }
+}
+
+flesh ManIndicateurs {
+    on compter(h, op, ind) {
+        let annee = _annee(to_int(h))
+        let cle = "{op}|{annee}|{ind}"
+        let v = compteurs.get(cle)
+        if v == () {
+            require compteurs.size < MAX_COMPTEURS else Plein "compteurs pleins"
+        }
+        let nv = (v ?? 0) + 1
+        compteurs.set(cle, nv)
+        if index_of(operateurs, to_string(op)) < 0 {
+            require operateurs.size < MAX_OPERATEURS else Plein "trop d'opérateurs suivis"
+            operateurs.push(to_string(op))
+        }
+        return nv
+    }
+
+    on valeur(op, annee, ind) {
+        return compteurs.get("{op}|{annee}|{ind}") ?? 0
+    }
+
+    on taux_verifie(op, annee) {
+        let e = compteurs.get("{op}|{annee}|execute") ?? 0
+        let v = compteurs.get("{op}|{annee}|verifie") ?? 0
+        if e == 0 { return 100 }
+        return min(10000, idiv(v * 100, e))
+    }
+
+    // Année civile (UTC) d'un instant en ms (algorithme des jours civils de Hinnant).
+    on _annee(ms: Int) {
+        let z = idiv(ms, 86400000) + 719468
+        let era = idiv(z, 146097)
+        let doe = z - era * 146097
+        let yoe = idiv(doe - idiv(doe, 1460) + idiv(doe, 36524) - idiv(doe, 146096), 365)
+        let doy = doe - (365 * yoe + idiv(yoe, 4) - idiv(yoe, 100))
+        let mp = idiv(5 * doy + 2, 153)
+        let mois = if mp < 10 { mp + 3 } else { mp - 9 }
+        let y = yoe + era * 400
+        return if mois <= 2 { y + 1 } else { y }
+    }
+}

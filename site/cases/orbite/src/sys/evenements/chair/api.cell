@@ -1,0 +1,50 @@
+// Corps de la façade ApiEvenements : délégation aux cells internes.
+flesh ApiEvenements {
+    on declarer(h, genre, objets, r, instant, description, par, valideur) {
+        let g = if genre == "collision" { "collision" } else { "fragmentation" }
+        require genre == g else Incoherent "genre d'évènement inconnu : {genre}"
+        let ev = EvtEvenements.signaler(h, EvtGenre(g), objets, instant, r, description, par)
+        let _ = EvtEvenements.confirmer(h, ev, valideur)
+        return ev
+    }
+
+    on anomalie(h, objet, genre, description, par) {
+        return EvtAnomalies.declarer(h, objet, EvtGenreAnomalie(genre), description, par)
+    }
+
+    on en_anomalie(objet) {
+        return EvtAnomalies.en_anomalie(objet)
+    }
+
+    on nuage_actif(regime, h) {
+        return EvtNuages.actif(regime, h)
+    }
+
+    on existe(evenement) {
+        return EvtEvenements.existe(evenement)
+    }
+
+    on objets(evenement) {
+        return EvtEvenements.objets(evenement)
+    }
+
+    on genre(evenement) {
+        return to_string(EvtEvenements.genre(evenement))
+    }
+
+    on instant(evenement) {
+        return EvtEvenements.instant(evenement)
+    }
+
+    on evenement_de(objet) {
+        return EvtEvenements.evenement_de(objet)
+    }
+
+    on balayer(h, par) {
+        return EvtVeille.ronde(h, par)
+    }
+
+    on etat(evenement) {
+        return EvtEvenements.etat(evenement)
+    }
+}

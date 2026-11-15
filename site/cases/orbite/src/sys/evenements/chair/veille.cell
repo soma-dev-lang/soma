@@ -1,0 +1,74 @@
+// Corps de EvtVeille : ronde périodique, seul point d'entrée du temps.
+flesh EvtVeille {
+    on ronde(h, par) {
+        require ApiAcces.a_le_role(par, "systeme") || ApiAcces.a_le_role(par, "exploitant") else Habilitation "{par} ne lance pas la ronde"
+        let prec = derniere.get("ronde") ?? 0
+        require h >= prec else HorsBornes "ronde à {h} antérieure à la précédente ({prec})"
+        require rondes.size < MAX_RONDES else Plein "plafond de {MAX_RONDES} rondes atteint"
+        // 1. accusés et silences
+        let n_notif = _compte(try { EvtNotifications.relever(h, LOT, "systeme") })
+        // 2. rentrées des fragments
+        let n_rent = _compte(try { EvtFragments.constater_rentrees(h, LOT, "systeme") })
+        // 3. pistes perdues
+        let n_perd = 0
+        for f in EvtFragments.perdus(h, LOT) {
+            let e = try { EvtFragments.ecarter(h, f, "perdue", "piste non revue dans le délai de rattachement", "systeme") }
+            if e.error == () { n_perd = n_perd + 1 }
+        }
+        // 4. dissipation des nuages
+        let n_diss = 0
+        for nu in EvtNuages.a_dissiper(h, LOT) {
+            let d = try { EvtNuages.dissiper(h, nu, "systeme") }
+            if d.error == () { n_diss = n_diss + 1 }
+        }
+        // 5. pages suivantes des diffusions
+        let n_diff = _compte(try { EvtNotifications.poursuivre(h, min(LOT, 100)) })
+        // 6. souffrances : incident du sous-système, un seul par élément
+        let n_souf = 0
+        let lignes_v = EvtEvenements.en_souffrance(h, LOT) ++ EvtRapports.en_retard(h, LOT)
+        for l in lignes_v {
+            n_souf = n_souf + _incident(h, l, 2)
+        }
+        for l in EvtAnomalies.en_souffrance(h, LOT) {
+            let obj = split(l, " | ")[1]
+            let grav = if len(ApiConjonctions.ouverts_de(Objet(obj))) > 0 { 3 } else { 2 }
+            n_souf = n_souf + _incident(h, l, grav)
+        }
+        derniere.set("ronde", h)
+        rondes.push("{h} | {n_notif} | {n_rent} | {n_perd} | {n_diss} | {n_diff} | {n_souf}")
+        let total = n_notif + n_rent + n_perd + n_diss + n_diff
+        if total > 0 || n_souf > 0 {
+            let _ = Journal.noter(h, "evenements", par, "ronde : {n_notif} notif., {n_rent} rentrées, {n_perd} perdues, {n_diss} dissipés, {n_diff} diffusées, {n_souf} incidents")
+        }
+        return total
+    }
+
+    on derniere_ronde() {
+        return derniere.get("ronde") ?? 0
+    }
+
+    on bilans(n) {
+        let sz = rondes.size
+        let res_b = []
+        for i in range(max(0, sz - n), sz) {
+            res_b.push(rondes[i])
+        }
+        return res_b
+    }
+
+    on _compte(r: Map) {
+        if r.error != () { return 0 }
+        return to_int(r.value)
+    }
+
+    on _incident(h: Horodatage, ligne: String, grav: Int) {
+        let parts = split(ligne, " | ")
+        let id_e = parts[0]
+        if incident_ouvert.get(id_e) != () { return 0 }
+        let motif = parts[len(parts) - 1]
+        let inc = try { ApiOperations.declarer_incident(h, id_e, Gravite(grav), "evenements", "{id_e} : {motif}", "systeme") }
+        if inc.error != () { return 0 }
+        incident_ouvert.set(id_e, to_string(inc.value))
+        return 1
+    }
+}

@@ -1,0 +1,94 @@
+// CONFORMITÉ — remédiation : après un manquement qualifié de gravité ≥ 2, l'opérateur dépose
+// un plan de remédiation (cause, correction, échéance), ORBITE l'accepte puis constate sa
+// réalisation. Une instance par manquement, SOUS LE MÊME ID. Seule une remédiation réalisée
+// permet de lever une mesure avant son terme (ConfMesure.lever) ou de clore avant la fin du délai
+// de contestation (ConfManquement.clore). Un plan non tenu est lui-même un manquement.
+
+skeleton ConfRemediation {
+    const MAX_REMEDIATIONS = 1000000
+    const DELAI_DEPOT_MS = 1209600000      // plan à déposer sous 14 jours
+    const DELAI_MAX_PLAN_MS = 15552000000  // un plan s'achève au plus 180 jours après son acceptation
+    memory {
+        op_de: Map<String, Org> [persistent]                // écrit par demander
+        invariant op_de.size <= 1000000
+        echeance_de: Map<String, Horodatage> [persistent]   // dépôt, puis fin du plan accepté
+        plan_de: Map<String, String> [persistent]           // empreinte du plan déposé (dernière version)
+        versions_de: Map<String, Int> [persistent]          // nombre de dépôts
+        invariant versions_de >= 0
+        invariant versions_de <= 10
+        depose_par: Map<String, String> [persistent]
+        decide_par: Map<String, String> [persistent]
+        motif_de: Map<String, String> [persistent]          // motif de refus ou de défaillance
+        realisee_le: Map<String, Horodatage> [persistent]
+    }
+    // Cycle d'une remédiation. Terminaux : realisee, defaillante.
+    state cycle {
+        initial: demandee
+        demandee -> deposee        // deposer
+        refusee -> deposee         // deposer : nouvelle version après refus
+        deposee -> acceptee        // accepter : échéance de réalisation fixée
+        deposee -> refusee         // refuser : plan insuffisant, motivé
+        acceptee -> realisee       // constater_realisation : quatre yeux
+        demandee -> defaillante    // constater_defaillance : échéance passée sans plan,
+        refusee -> defaillante     //   sans plan acceptable,
+        acceptee -> defaillante    //   ou plan non réalisé à son terme
+    }
+    face {
+        // Demande un plan au propriétaire du manquement `m` (qualifié, gravité retenue ≥ 2) :
+        // échéance de dépôt h + DELAI_DEPOT_MS, opérateur notifié. Renvoie l'échéance (ms).
+        // Refus : Existe, Inconnu (manquement), EtatInvalide (non qualifié), NonEligible (gravité 1),
+        // Plein, Habilitation (par "conformite" d'ORBITE, ou "systeme").
+        signal demander(h: Horodatage, m: String, par: String) -> Horodatage
+            writes op_de, echeance_de
+            calls ApiAcces.a_le_role, ConfManquement.op, ConfManquement.gravite, ConfManquement.etat_manquement, ApiPasserelle.notifier, Journal.noter
+        // Dépose (ou redépose après refus) le plan : demandee | refusee -> deposee. Renvoie le
+        // numéro de version. Refus : Inconnu, EtatInvalide, MotifRequis (empreinte vide), Delai
+        // (échéance de dépôt passée), HorsBornes (plus de 10 versions), Habilitation (par
+        // "chef_de_mission" de l'opérateur : ApiAcces.a_le_role + ApiAcces.agit_pour).
+        signal deposer(h: Horodatage, m: String, empreinte: String, par: String) -> Int
+            writes plan_de, versions_de, depose_par
+            reads op_de, echeance_de
+            moves demandee -> deposee, refusee -> deposee
+            calls ApiAcces.a_le_role, ApiAcces.agit_pour, Journal.noter
+        // Accepte le plan : deposee -> acceptee, échéance = `fin` (≤ h + DELAI_MAX_PLAN_MS).
+        // Renvoie "acceptee". Refus : Inconnu, EtatInvalide, HorsBornes (fin ≤ h ou trop lointaine),
+        // Habilitation (par "conformite" d'ORBITE).
+        signal accepter(h: Horodatage, m: String, fin: Horodatage, par: String) -> String
+            writes echeance_de, decide_par
+            moves deposee -> acceptee
+            calls ApiAcces.a_le_role, Journal.noter
+        // Refuse le plan : deposee -> refusee ; l'opérateur peut redéposer avant l'échéance de
+        // dépôt (inchangée). Renvoie "refusee". Refus : Inconnu, EtatInvalide, MotifRequis,
+        // Habilitation (par "conformite" d'ORBITE).
+        signal refuser(h: Horodatage, m: String, motif: String, par: String) -> String
+            writes motif_de, decide_par
+            reads op_de
+            moves deposee -> refusee
+            calls ApiAcces.a_le_role, ApiPasserelle.notifier, Journal.noter
+        // Constate la réalisation (preuve citée dans `preuve`) : acceptee -> realisee. Renvoie "realisee".
+        // Refus : Inconnu, EtatInvalide, MotifRequis, Habilitation (par "conformite" d'ORBITE),
+        // QuatreYeux (valideur : ApiAcces.quatre_yeux, ≠ auteur de l'acceptation).
+        signal constater_realisation(h: Horodatage, m: String, preuve: String, par: String, valideur: String) -> String
+            writes realisee_le, motif_de
+            reads decide_par, op_de
+            moves acceptee -> realisee
+            calls ApiAcces.a_le_role, ApiAcces.quatre_yeux, Journal.noter
+        // Échéance passée sans plan, sans plan acceptable ou sans réalisation : demandee | refusee |
+        // acceptee -> defaillante, et nouveau manquement "remediation_non_tenue" gravité 2 constaté
+        // (ConfManquement.constater, référence = m). Renvoie l'id de ce manquement.
+        // Refus : Inconnu, EtatInvalide, Delai (échéance non atteinte), Habilitation (par "systeme").
+        signal constater_defaillance(h: Horodatage, m: String, par: String) -> String
+            writes motif_de
+            reads op_de, echeance_de
+            moves demandee -> defaillante, refusee -> defaillante, acceptee -> defaillante
+            calls ApiAcces.a_le_role, ConfManquement.constater, Journal.noter
+        // État : "demandee", "deposee", "refusee", "acceptee", "realisee", "defaillante" ;
+        // "inconnue" si jamais demandée.
+        signal etat_remediation(m: String) -> String
+            reads cycle, op_de
+        // Remédiations non terminales dont l'échéance est passée à `h`, au plus `n`.
+        signal echues(h: Horodatage, n: Int) -> List<String>
+            requires n > 0 && n <= 1000
+            reads echeance_de, cycle
+    }
+}

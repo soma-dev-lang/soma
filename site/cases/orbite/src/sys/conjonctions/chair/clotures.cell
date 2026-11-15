@@ -1,0 +1,101 @@
+// CONJONCTIONS — corps : analyse après le TCA.
+
+flesh ConjAnalyseTca {
+    on ouvrir(h, r, par) {
+        require ApiAcces.a_le_role(par, "systeme") else Habilitation "ouvrir l'analyse : systeme"
+        let st = ConjRapprochement.etat(r)
+        require st != "inconnu" else Inconnu "rapprochement inconnu : {r}"
+        require st == "detecte" || st == "suivi" || st == "alerte" || st == "en_coordination" else Ferme "rapprochement clos"
+        require ouverte_le.get(to_string(r)) == () else Existe "analyse déjà ouverte"
+        require ouverte_le.size < MAX_ANALYSES else Plein "trop d'analyses"
+        let f = ConjRapprochement.fiche(r)
+        require to_int(h) >= to_int(f.tca) + 3600000 else Delai "TCA + 1 h pas encore passé"
+        let demandes_x = []
+        for o in [f.objet_a, f.objet_b] {
+            let d = ApiObservation.demander_suivi(h, o, f.niveau, Duree(DELAI_REACQUISITION), "réacquisition après TCA de {r}", "systeme")
+            demandes_x.push(d)
+        }
+        ouverte_le.set(to_string(r), h)
+        demandes_de.set(to_string(r), demandes_x)
+        let nb = len(demandes_x)
+        let _ = Journal.noter(h, "conjonctions", par, "analyse après TCA de {r} ouverte ({nb} demandes de suivi)")
+        return nb
+    }
+
+    on conclure(h, r, constat, par) {
+        require ApiAcces.a_le_role(par, "systeme") || ApiAcces.a_le_role(par, "analyste") else Habilitation "conclure : systeme ou analyste d'ORBITE"
+        let ouverte = ouverte_le.get(to_string(r))
+        require ouverte != () else Inconnu "aucune analyse pour {r}"
+        require (get_status(to_string(r)) ?? "ouverte") == "ouverte" else EtatInvalide "analyse déjà conclue"
+        let f = ConjRapprochement.fiche(r)
+        let reacquis = ApiObservation.suivi(f.objet_a, h) && ApiObservation.suivi(f.objet_b, h)
+        let delai_passe = to_int(h) > to_int(f.tca) + DELAI_REACQUISITION
+        if constat == "intacts" {
+            require reacquis else Incoherent "« intacts » alors qu'un objet n'est pas réacquis"
+        } else if constat == "objet_perdu" {
+            require !reacquis else Incoherent "« objet_perdu » alors que les deux objets sont réacquis"
+        } else {
+            require reacquis || !delai_passe else Incoherent "délai de réacquisition passé : le constat ne peut être que « objet_perdu »"
+        }
+        constat_de.set(to_string(r), constat)
+        conclu_par.set(to_string(r), "{h}|{par}")
+        let cible = if constat == "intacts" { "sans_suite" } else { "suspecte" }
+        if cible == "sans_suite" {
+            transition(to_string(r), "ouverte", "sans_suite")
+        } else {
+            transition(to_string(r), "ouverte", "suspecte")
+        }
+        let _ = Journal.noter(h, "conjonctions", par, "analyse de {r} conclue : {constat} -> {cible}")
+        return cible
+    }
+
+    on confirmer(h, r, evenement, par) {
+        require ApiAcces.a_le_role(par, "systeme") || ApiAcces.a_le_role(par, "analyste") else Habilitation "confirmer : systeme ou analyste d'ORBITE"
+        let f = ConjRapprochement.fiche(r)
+        require ApiEvenements.existe(evenement) else Inconnu "évènement inconnu : {evenement}"
+        require ApiEvenements.genre(evenement) == "collision" else Incoherent "l'évènement {evenement} n'est pas une collision"
+        let objs = ApiEvenements.objets(evenement)
+        require contains(objs, to_string(f.objet_a)) && contains(objs, to_string(f.objet_b)) else Incoherent "objets de l'évènement différents de ceux du rapprochement"
+        let id = to_string(r)
+        let st = get_status(id) ?? "ouverte"
+        require st == "ouverte" || st == "suspecte" else EtatInvalide "analyse {st} : collision non confirmable"
+        if ouverte_le.get(id) == () {
+            ouverte_le.set(id, h)
+        }
+        let deja = evenement_de.get(id)
+        if deja == () {
+            evenement_de.set(id, evenement)
+        } else {
+            require deja == evenement else Incoherent "analyse déjà liée à l'évènement {deja}"
+        }
+        conclu_par.set(id, "{h}|{par}")
+        if st == "ouverte" {
+            transition(id, "ouverte", "confirmee")
+        } else {
+            transition(id, "suspecte", "confirmee")
+        }
+        let _ = Journal.noter(h, "conjonctions", par, "collision confirmée pour {r} (évènement {evenement})")
+        return "confirmee"
+    }
+
+    on infirmer(h, r, motif, par) {
+        require ApiAcces.a_le_role(par, "analyste") else Habilitation "infirmer : analyste d'ORBITE"
+        let id = to_string(r)
+        require (get_status(id) ?? "") != "" else Inconnu "aucune analyse conclue pour {r}"
+        require (get_status(id) ?? "ouverte") == "suspecte" else EtatInvalide "analyse pas suspecte"
+        require len(motif) > 0 else MotifRequis "motif exigé"
+        let f = ConjRapprochement.fiche(r)
+        require ApiObservation.suivi(f.objet_a, h) && ApiObservation.suivi(f.objet_b, h) else Insuffisant "un objet n'est pas réacquis"
+        motif_de.set(id, motif)
+        conclu_par.set(id, "{h}|{par}")
+        transition(id, "suspecte", "infirmee")
+        let _ = Journal.noter(h, "conjonctions", par, "suspicion de collision infirmée pour {r} : {motif}")
+        return "infirmee"
+    }
+
+    on etat(r) {
+        let id = to_string(r)
+        if ouverte_le.get(id) == () { return "inconnue" }
+        return get_status(id) ?? "ouverte"
+    }
+}

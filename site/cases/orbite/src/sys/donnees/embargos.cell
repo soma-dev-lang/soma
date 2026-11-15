@@ -1,0 +1,90 @@
+// donnees — EMBARGO DES OBJETS SENSIBLES. L'État d'immatriculation d'un objet peut demander que
+// ses données soient "restreint" (propriétaire, État, ORBITE) pour une durée bornée. ORBITE
+// instruit et accorde à quatre yeux. Un embargo n'efface jamais la sécurité : un objet sous
+// embargo impliqué dans un rapprochement non clos reste communiqué aux parties
+// (DonControle.diffusion_effective). Il exclut l'objet de toute publication et suspend les
+// demandes d'accès le visant.
+
+// Embargos : id = embargo ("EMB-<n>", tiré par demander). Au plus un embargo non clos par objet.
+skeleton DonEmbargos {
+    const MAX_EMBARGOS = 100000
+    const DUREE_MAX_MS = 31536000000            // 365 jours, renouvelable par prolonger
+    const DELAI_INSTRUCTION_MS = 1209600000     // 14 jours : passé ce délai, la demande est refusée
+    memory {
+        objet_de: Map<String, String> [persistent]           // embargo → objet ; écrit une fois par demander, jamais effacé
+        etat_demandeur: Map<String, String> [persistent]     // embargo → État d'immatriculation demandeur
+        motif: Map<String, String> [persistent]              // embargo → motif déclaré (sécurité nationale…)
+        demande_le: Map<String, Horodatage> [persistent]     // embargo → dépôt de la demande, ms
+        fin: Map<String, Horodatage> [persistent]            // embargo → fin demandée puis accordée, ms
+        en_cours_de: Map<String, String> [persistent]        // objet → embargo demandé ou actif (au plus un)
+        invariant objet_de.size <= MAX_EMBARGOS
+        invariant en_cours_de.size <= MAX_EMBARGOS
+        invariant (demande_le ?? 0) <= (fin ?? 0)
+    }
+    // Cycle de vie d'un embargo (id = embargo).
+    state embargo {
+        initial: demande
+        demande -> actif                   // accorder
+        demande -> refuse                  // refuser, ou balayage passé DELAI_INSTRUCTION_MS
+        actif -> leve                      // lever
+        actif -> expire                    // echoir : fin atteinte
+    }
+    face {
+        // L'État d'immatriculation demande l'embargo d'un objet jusqu'à `jusqua`
+        // (≤ h + DUREE_MAX_MS). Renvoie l'id. Rôle : "autorite" de l'État d'immatriculation
+        // (ApiAcces.agit_pour sur ApiRef.org_de_etat(ApiRef.etat_immatriculation(objet))).
+        // Refus : Inconnu (objet non catalogué), Doublon (embargo déjà demandé ou actif),
+        // MotifRequis, HorsBornes (durée), Suspendu (État non participant), Plein, Habilitation.
+        signal demander(h: Horodatage, objet: Objet, jusqua: Horodatage, motif_declare: String, par: String) -> String
+            writes objet_de, etat_demandeur, motif, demande_le, fin, en_cours_de
+            calls ApiAcces.a_le_role, ApiAcces.agit_pour, ApiRef.etat_objet, ApiRef.etat_immatriculation, ApiRef.org_de_etat, ApiRef.etat_participant, next_id, Journal.noter
+        // Accorde l'embargo : l'objet passe "restreint" (hors plancher de sécurité), les demandes
+        // d'accès accordées sur l'objet sont révoquées (DonDemandes.revoquer_objet) et le
+        // propriétaire est notifié. Renvoie "actif". Rôle : "conformite" d'ORBITE ; valideur
+        // "direction" distinct (ApiAcces.quatre_yeux). Règle : l'objet (objet_de) est vivant au
+        // référentiel, ApiRef.etat_objet ∈ {catalogue, en_service} : un objet hors service, rentré,
+        // retiré ou fragmenté ne reçoit plus d'embargo (un embargo actif court jusqu'à sa fin).
+        // Refus : Inconnu, EtatInvalide (embargo non demandé, ou objet ni catalogué ni en service),
+        // Delai (instruction échue), Habilitation, QuatreYeux.
+        signal accorder(h: Horodatage, embargo: String, par: String, valideur: String) -> String
+            reads objet_de, demande_le
+            moves demande -> actif when RefObjet.catalogue || RefObjet.en_service via objet_de
+            calls ApiAcces.a_le_role, ApiAcces.quatre_yeux, ApiRef.etat_objet, ApiRef.proprietaire, ApiPasserelle.notifier, DonDemandes.revoquer_objet, Journal.noter
+        // Refuse la demande (motif communiqué à l'État). Renvoie "refuse". Rôle : "conformite"
+        // d'ORBITE, ou "systeme" au balayage. Refus : Inconnu, EtatInvalide, MotifRequis, Habilitation.
+        signal refuser(h: Horodatage, embargo: String, motif_refus: String, par: String) -> String
+            writes en_cours_de
+            reads objet_de
+            moves demande -> refuse
+            calls ApiAcces.a_le_role, Journal.noter
+        // Reporte la fin d'un embargo actif (≤ h + DUREE_MAX_MS). Renvoie la nouvelle fin (ms).
+        // Rôle : "autorite" de l'État demandeur ET valideur "conformite" d'ORBITE.
+        // Refus : Inconnu, EtatInvalide, HorsBornes, MotifRequis, Habilitation, QuatreYeux.
+        signal prolonger(h: Horodatage, embargo: String, jusqua: Horodatage, motif_declare: String, par: String, valideur: String) -> Horodatage
+            writes fin
+            reads etat_demandeur, embargo
+            calls ApiAcces.a_le_role, ApiAcces.agit_pour, ApiAcces.quatre_yeux, ApiRef.org_de_etat, Journal.noter
+        // Lève l'embargo avant son terme. Renvoie "leve". Rôle : "autorite" de l'État demandeur,
+        // ou "direction" d'ORBITE (État suspendu, objet cédé). Refus : Inconnu, EtatInvalide,
+        // MotifRequis, Habilitation.
+        signal lever(h: Horodatage, embargo: String, motif_levee: String, par: String) -> String
+            writes en_cours_de
+            reads objet_de, etat_demandeur
+            moves actif -> leve
+            calls ApiAcces.a_le_role, ApiAcces.agit_pour, ApiRef.org_de_etat, Journal.noter
+        // Appelé par DonBalayage.balayer : expire les embargos dont fin ≤ h, refuse les demandes non instruites depuis
+        // DELAI_INSTRUCTION_MS. Renvoie le nombre de fins. `par` = "systeme". Refus : Habilitation.
+        signal echoir(h: Horodatage, par: String) -> Int
+            writes en_cours_de
+            reads fin, demande_le, objet_de
+            moves actif -> expire, demande -> refuse
+            calls ApiAcces.a_le_role, Journal.noter
+        // Vrai si l'objet a un embargo dans l'état "actif" (sans horloge : un embargo dont la fin
+        // est passée reste en vigueur jusqu'au balayage, du côté de la confidentialité).
+        signal sous_embargo(objet: Objet) -> Bool
+            reads en_cours_de, embargo
+        // État de l'embargo ; "inconnu" si jamais demandé.
+        signal etat(embargo: String) -> String
+            reads embargo, objet_de
+    }
+}

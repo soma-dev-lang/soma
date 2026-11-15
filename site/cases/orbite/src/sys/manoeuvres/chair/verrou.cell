@@ -1,0 +1,76 @@
+// Corps de manoeuvres : verrou d'évitement (ManEvitement).
+flesh ManEvitement {
+    on engager(h, verrou, plan) {
+        let s = get_status(verrou) ?? "libre"
+        require s != "solde" else Ferme "verrou {verrou} soldé : une manœuvre a déjà été faite"
+        let tit = titulaire_de.get(verrou) ?? ""
+        require s == "libre" else Conflit "verrou {verrou} tenu par le plan {tit}"
+        let n = prises_de.get(verrou) ?? 0
+        require n < MAX_PRISES else Plein "{MAX_PRISES} prises du verrou {verrou}"
+        transition(verrou, "libre", "engage")
+        titulaire_de.set(verrou, plan)
+        prises_de.set(verrou, n + 1)
+        _noter(verrou, "{h}|{plan}|prise")
+        return n + 1
+    }
+
+    on liberer(h, verrou, plan, cause) {
+        let s = get_status(verrou) ?? "libre"
+        if s != "engage" { return false }
+        let tit = titulaire_de.get(verrou) ?? ""
+        require tit == plan else Conflit "verrou {verrou} tenu par {tit}, pas par {plan}"
+        transition(verrou, "engage", "libre")
+        titulaire_de.set(verrou, "")
+        _noter(verrou, "{h}|{plan}|liberation|{cause}")
+        return true
+    }
+
+    on solder(h, verrou, plan, issue) {
+        let s = get_status(verrou) ?? "libre"
+        require s != "solde" else EtatInvalide "verrou {verrou} déjà soldé"
+        let tit = titulaire_de.get(verrou) ?? ""
+        if s == "engage" {
+            require tit == plan else Conflit "verrou {verrou} tenu par {tit}, pas par {plan}"
+            transition(verrou, "engage", "solde")
+        } else {
+            require plan == "" else Conflit "verrou {verrou} libre : {plan} ne le tient pas"
+            transition(verrou, "libre", "solde")
+        }
+        titulaire_de.set(verrou, "")
+        issue_de.set(verrou, issue)
+        _noter(verrou, "{h}|{plan}|solde|{issue}")
+        return "solde"
+    }
+
+    on constater_cloture(h, r, par) {
+        require ApiAcces.a_le_role(par, "systeme") else Habilitation "constat de clôture interne"
+        let e = ApiConjonctions.etat(r)
+        require e == "resolu" || e == "passe" || e == "collision" else EtatInvalide "rapprochement {r} non clos ({e})"
+        let v = to_string(r)
+        let s = get_status(v) ?? "libre"
+        if s == "libre" {
+            solder(h, v, "", "close")
+            Journal.noter(h, "manoeuvres", par, "verrou {v} soldé : rapprochement {e}")
+            return "solde"
+        }
+        return s
+    }
+
+    on titulaire(verrou) {
+        let s = get_status(verrou) ?? "libre"
+        if s != "engage" { return "" }
+        return titulaire_de.get(verrou) ?? ""
+    }
+
+    on etat(verrou) {
+        return get_status(verrou) ?? "libre"
+    }
+
+    on _noter(verrou: String, ligne: String) {
+        let lst_h = historique_de.get(verrou) ?? []
+        if len(lst_h) >= MAX_HISTORIQUE {
+            lst_h = slice(lst_h, len(lst_h) - MAX_HISTORIQUE + 1)
+        }
+        historique_de.set(verrou, lst_h ++ [ligne])
+    }
+}

@@ -1,0 +1,688 @@
+// ORBITE COMMUNE — rejeu de l'incident Aeolus / Starlink 44 (septembre 2019) sur les VRAIS corps
+// des 20 sous-systèmes (use prod), sans aucune doublure. Modèle : test_bout_en_bout.cell.
+// Chronologie écrite : AEOLUS_TRACE.md ; écarts révélés : INTEGRATION_BOUT_EN_BOUT.md, « Rejeu Aeolus ».
+use prod
+
+// ── Ce qui est HISTORIQUE (faits publics, rapportés par l'ESA et SpaceX) ──────────────────────────
+//  - 28/08/2019 : alerte de rapprochement, pc ≈ 1/50 000, sous le seuil de manœuvre ; échange de
+//    courriels ; SpaceX indique ne pas prévoir de manœuvrer à ce niveau de risque.
+//  - les jours suivants : pc jusqu'à ≈ 1/1 000, dix fois le seuil de manœuvre de l'ESA (1/10 000) ;
+//    l'ESA cherche à se coordonner, sans réponse (défaut du système d'astreinte — paging — de SpaceX :
+//    l'opérateur n'a pas vu les messages suivants).
+//  - 02/09/2019 : Aeolus relève seule son orbite pour passer au-dessus de Starlink 44, environ une
+//    demi-orbite avant le rapprochement.
+//  - aucune règle internationale ne disait qui devait manœuvrer.
+// ── Ce qui est SIMULÉ (fictif, choisi cohérent) ─────────────────────────────────────────────────────
+//  - ORBITE elle-même, ses États (ALD siège ; BRV tutelle de l'ESA ; CAZ tutelle de SpaceX), ses
+//    personnes, son accord de partage, ses règles PRIO-2019, sa table de seuils, le barème d'escalade ;
+//  - les heures (alerte 28/08 10 h, montée 30/08 14 h, TCA 02/09 12 h UTC), les distances, masses,
+//    vecteurs d'état, delta-v, le capteur ; les numéros de catalogue (OBJ-1 = OBJ-AEOLUS,
+//    OBJ-2 = OBJ-STARLINK44 : ref numérote lui-même le catalogue, "OBJ-<n>").
+//
+// Repères (jours depuis l'époque Unix, UTC) : 01/05/2019 = 18017 ; 01/08 = 18109 ; 26/08 = 18134 ;
+// 27/08 = 18135 ; 28/08 = 18136 ; 30/08 = 18138 ; 02/09 = 18141.
+// ORBITE : dir1 (amorce), dir2, sup1, sup2, exp1, ana1, ana2, conf1, conf2, aud1.
+// États : aut.ald, pf.ald ; aut.brv, pf.brv ; aut.caz, pf.caz.
+// ESA : adm.esa, dyn.esa, dyn.esa2, chef.esa ; SpaceX : adm.sx, dyn.sx, dyn.sx2, chef.sx ;
+// fournisseur de capteurs ORG-CAPT (tutelle ALD) : adm.capt, capt.1.
+cell Monde {
+    on h(j: Int, s: Int) { return Horodatage(j * 86400000 + s * 1000) }
+    on t0() { return h(18017, 36000) }
+    // TCA simulé : 02/09/2019 12 h 00 UTC.
+    on tca() { return h(18141, 43200) }
+
+    // 1a. Référentiel, personnes d'ORBITE, États, organisations.
+    on fonder() {
+        let t = t0()
+        let _ = RefOrg.amorcer(t, "ALD", "Aldanie", "systeme")
+        let _ = AccesPersonnes.amorcer(t, "dir1")
+        let _ = ApiAcces.enregistrer(t, "dir2", "ORG-ORBITE", "direction", "dir1")
+        let _ = ApiAcces.enregistrer(t, "sup1", "ORG-ORBITE", "superviseur", "dir1")
+        let _ = ApiAcces.enregistrer(t, "sup2", "ORG-ORBITE", "superviseur", "dir1")
+        let _ = ApiAcces.enregistrer(t, "conf1", "ORG-ORBITE", "conformite", "dir1")
+        let _ = ApiAcces.enregistrer(t, "conf2", "ORG-ORBITE", "conformite", "dir1")
+        let _ = ApiAcces.enregistrer(t, "aud1", "ORG-ORBITE", "auditeur", "dir1")
+        let _ = ApiAcces.enregistrer(t, "exp1", "ORG-ORBITE", "exploitant", "dir1")
+        let _ = ApiAcces.enregistrer(t, "ana1", "ORG-ORBITE", "analyste", "exp1")
+        let _ = ApiAcces.enregistrer(t, "ana2", "ORG-ORBITE", "analyste", "exp1")
+        for e in [["BRV", "Bravie"], ["CAZ", "Cazanie"]] {
+            let _ = RefEtat.declarer(t, Etat(e[0]), e[1], "ana1")
+            let _ = RefEtat.candidater(t, Etat(e[0]), "INSTR-{e[0]}-1", "sup1")
+            let _ = RefEtat.admettre(t, Etat(e[0]), "dir1", "dir2")
+        }
+        for e in ["ALD", "BRV", "CAZ"] {
+            let _ = ApiRef.inscrire_organisation(t, "ORG-{e}", "Autorité de {e}", Etat(e), "etat", "sup1", "dir1")
+        }
+        let _ = ApiRef.inscrire_organisation(t, "ORG-ESA", "ESA (opérateur d'Aeolus)", "BRV", "operateur", "sup1", "dir1")
+        let _ = ApiRef.inscrire_organisation(t, "ORG-SPACEX", "SpaceX (opérateur de Starlink)", "CAZ", "operateur", "sup1", "dir1")
+        let _ = ApiRef.inscrire_organisation(t, "ORG-CAPT", "Capteurs d'Aldanie", "ALD", "capteur", "sup1", "dir1")
+        return "ok"
+    }
+
+    // 1b. Personnes des États et des organisations ; rattachements confirmés.
+    on personnes() {
+        let t = t0()
+        for e in ["ald", "brv", "caz"] {
+            let org = Org("ORG-{uppercase(e)}")
+            let _ = ApiAcces.enregistrer(t, "aut.{e}", org, "autorite", "exp1")
+            let _ = AccesRattachements.confirmer(t, "aut.{e}", "NV-{e}-1", "dir1", "sup1")
+            let _ = ApiAcces.enregistrer(t, "pf.{e}", org, "point_focal", "exp1")
+            let _ = AccesRattachements.confirmer(t, "pf.{e}", "NV-{e}-2", "aut.{e}", "")
+        }
+        for o in [["esa", "ORG-ESA", "brv"], ["sx", "ORG-SPACEX", "caz"]] {
+            let adm = "adm.{o[0]}"
+            let _ = ApiAcces.enregistrer(t, adm, Org(o[1]), "administrateur_operateur", "exp1")
+            let _ = AccesRattachements.confirmer(t, adm, "CONTRAT-{o[0]}", "aut.{o[2]}", "")
+            let _ = ApiAcces.enregistrer(t, "dyn.{o[0]}", Org(o[1]), "dynamicien", adm)
+            let _ = ApiAcces.enregistrer(t, "dyn.{o[0]}2", Org(o[1]), "dynamicien", adm)
+            let _ = ApiAcces.enregistrer(t, "chef.{o[0]}", Org(o[1]), "chef_de_mission", adm)
+        }
+        let _ = ApiAcces.enregistrer(t, "adm.capt", "ORG-CAPT", "administrateur_operateur", "exp1")
+        let _ = AccesRattachements.confirmer(t, "adm.capt", "CONTRAT-CAPT", "aut.ald", "")
+        let _ = ApiAcces.enregistrer(t, "capt.1", "ORG-CAPT", "capteur", "adm.capt")
+        return "ok"
+    }
+
+    // 1c. Accord de partage ADP-1 : consultation de 30 j, adoption (quatre yeux), vigueur le 30/06/2019.
+    on accord() {
+        let t = t0()
+        let _ = DonAccords.rediger(t, "ADP-1", "sha256:adp1", "première version", "dir1")
+        let _ = DonAccords.soumettre(t, "ADP-1", Duree(2592000000), ["ALD", "BRV", "CAZ"], "dir1")
+        for e in ["ald", "brv", "caz"] {
+            let _ = DonAccords.donner_avis(h(18018, 36000), "ADP-1", Etat(uppercase(e)), "favorable", "aut.{e}")
+        }
+        let _ = DonAccords.adopter(h(18047, 36000), "ADP-1", h(18077, 36000), "dir1", "dir2")
+        return DonAccords.etat("ADP-1")
+    }
+    on accord_en_vigueur() {
+        let _ = ApiDonnees.balayer(h(18077, 36000), "systeme")
+        return DonAccords.en_vigueur()
+    }
+    on adherer(org: String, par: String) {
+        let a = DonAdhesions.signer(h(18078, 36000), Org(org), par)
+        return DonAdhesions.contresigner(h(18078, 37000), a, "conf1")
+    }
+
+    // 1d. Règles de priorité PRIO-2019, en vigueur le 01/08/2019 (mêmes règles que PRIO-2027 du
+    // bout en bout) : 1 dérogation exempte ; 2 propulsion faible exempte ; 3 masse moindre désignée ;
+    // préavis : impulsionnelle 6 h, faible 72 h.
+    on priorites() {
+        let t = t0()
+        let v = "PRIO-2019"
+        let _ = PrioVersion.rediger(t, v, "Règles de priorité 2019", "", h(18109, 0), "ana1")
+        let _ = PrioTable.poser_regle(t, v, 1, "derogation", "exempte", "ana1")
+        let _ = PrioTable.poser_regle(t, v, 2, "propulsion_faible", "exempte", "ana1")
+        let _ = PrioTable.poser_regle(t, v, 3, "masse_moindre", "designe", "ana1")
+        let _ = PrioTable.fixer_preavis(t, v, "impulsionnelle", Duree(21600000), "ana1")
+        let _ = PrioTable.fixer_preavis(t, v, "faible", Duree(259200000), "ana1")
+        let _ = PrioVersion.soumettre(t, v, h(18047, 36000), "ana1", "sup1")
+        for e in ["ald", "brv", "caz"] {
+            let _ = PrioConsultation.donner_avis(h(18018, 36000), v, Etat(uppercase(e)), "favorable", "", "pf.{e}")
+        }
+        let _ = ApiPriorites.balayer(h(18047, 36000), "systeme")
+        let _ = PrioVersion.mettre_au_vote(h(18048, 36000), v, h(18062, 36000), "sup1", "dir1")
+        for e in ["ald", "brv", "caz"] {
+            let _ = PrioScrutin.voter(h(18049, 36000), v, Etat(uppercase(e)), "pour", "pf.{e}")
+        }
+        let _ = ApiPriorites.balayer(h(18062, 36000), "systeme")
+        let _ = PrioVersion.publier(h(18063, 36000), v, "sup1")
+        let _ = ApiPriorites.balayer(h(18109, 60), "systeme")
+        return PrioVersion.etat(v)
+    }
+
+    // 1e. Table de seuils d'ORBITE pour le monde de 2019 (choix du rejeu, voir A2) : le seul seuil
+    // public de l'épisode, 1/10 000 (seuil de manœuvre de l'ESA), sert de seuil d'attention ET
+    // d'urgence ; distances et horizon d'urgence aux valeurs par défaut (1 000 m, 200 m, 72 h).
+    on seuils() {
+        let v = ConjSeuils.rediger(h(18109, 36000), Probabilite(100), Probabilite(100000), Probabilite(100000), Distance(1000), Distance(200), Duree(259200000), "seuil de manœuvre 1/10 000 comme seuil d'attention", "ana1")
+        return ConjSeuils.adopter(h(18109, 37000), v, "sup1", "dir1")
+    }
+
+    // 1f. Canal webhook vérifié des deux opérateurs (le test mocke random_token "DEFI-<c>" et
+    // http_post ; comme au bout en bout, les États et ORBITE n'ont pas de canal : leurs messages
+    // partent en défaut et sont journalisés ou signalés).
+    on canal(c: String, org: String, adm: String, role: String) {
+        let t = h(18134, 36000)
+        let _ = PasCanaux.declarer(t, c, Org(org), "webhook", "https://{c}.invalid/orbite", adm)
+        return PasCanaux.verifier(t, c, "DEFI-{c}", appelant(adm, org, role))
+    }
+    on appelant(p: String, org: String, role: String) {
+        return PasAppelant { personne: p, org: Org(org), role: Role(role) }
+    }
+
+    // 1g. Opérateur `x` ("esa" / "sx") d'`org` sous la tutelle de l'État `e`, le 27/08/2019 8 h :
+    // licence confirmée par l'autorité, dossier accepté, engagements (réponse 24 h au niveau 1,
+    // 2 h au niveau 2, 30 min au niveau 3), astreinte du 27/08 8 h au 03/09 8 h (dyn.<x>), puis
+    // dyn.<x>2 ; exercice de joignabilité réussi ; chef de mission confirmé ; activation.
+    on operateur(x: String, org: String, e: String) {
+        let t = h(18135, 28800)
+        let o = Org(org)
+        let adm = "adm.{x}"
+        let _ = OpLicences.declarer(t, o, "LIC-{e}-{x}", h(17532, 0), h(19358, 0), adm)
+        let _ = OpLicences.repondre_etat(t, o, "confirmee", "aut.{e}")
+        let d = OpDossiers.deposer(t, o, "statuts ; licence ; plan d'astreinte", adm)
+        let _ = OpDossiers.instruire(t, d, "ana1")
+        let _ = OpDossiers.accepter(t, d, "ana1", "sup1")
+        let _ = OpEngagements.proposer(t, o, Duree(86400000), Duree(7200000), Duree(1800000), adm)
+        let _ = OpEngagements.accepter(t, o, "sup1")
+        let s1 = OpAstreinte.planifier(t, o, "dyn.{x}", t, h(18142, 28800), "chef.{x}")
+        let _ = OpAstreinte.planifier(t, o, "dyn.{x}2", h(18142, 28800), h(18149, 28800), "chef.{x}")
+        let _ = OpAstreinte.prendre_service(t, s1, "dyn.{x}")
+        let ex = OpExercices.planifier(t, o, t, "ana1")
+        let _ = OpExercices.lancer(t, ex, "ana1")
+        let att = PasMessages.en_attente(appelant("dyn.{x}", org, "dynamicien"), 10)
+        let msg = split(att[0], " | ")[0]
+        let _ = PasMessages.acquitter(h(18135, 29000), msg, appelant("dyn.{x}", org, "dynamicien"))
+        let _ = OpExercices.accuser(h(18135, 29100), ex, "dyn.{x}")
+        let ct = OpContacts.declarer(t, o, "chef.{x}", "chef_de_mission", 1, "TEL-{x}-1", adm)
+        let _ = OpContacts.confirmer(t, ct, "chef.{x}")
+        return OpMembres.activer(h(18135, 29200), o, "sup1")
+    }
+    on points_focaux() {
+        let t = h(18135, 28800)
+        for e in ["ald", "brv", "caz"] {
+            let ct = OpContacts.declarer(t, Org("ORG-{uppercase(e)}"), "pf.{e}", "point_focal", 1, "TEL-PF-{e}", "aut.{e}")
+            let _ = OpContacts.confirmer(t, ct, "pf.{e}")
+        }
+        return "ok"
+    }
+
+    // 1h. Fournisseur de capteurs agréé ; CAP-1 radar, CAP-2 optique, CAP-3 laser étalonnés.
+    on capteurs() {
+        let t = h(18134, 28800)
+        let _ = ObsFournisseurs.demander(t, "ORG-CAPT", "adm.capt")
+        let _ = ObsFournisseurs.agreer(t, "ORG-CAPT", "exp1", "sup1")
+        let caps = []
+        for g in ["radar", "optique", "laser"] {
+            let c = ObsCapteurs.declarer(t, "ORG-CAPT", ObsGenreCapteur(g), ["leo"], Distance(10), "capt.1")
+            let _ = ObsCapteurs.etalonner(t, c, "capt.1")
+            let _ = ObsCapteurs.valider_etalonnage(t, c, Distance(5), "ana1")
+            caps.push(c)
+        }
+        return caps
+    }
+
+    // Tout l'amorçage du monde de 2019 (le test pose avant les mocks de random_token et http_post).
+    on amorcer() {
+        let _ = fonder()
+        let _ = personnes()
+        let _ = accord()
+        let _ = accord_en_vigueur()
+        for a in [["ORG-ESA", "adm.esa"], ["ORG-SPACEX", "adm.sx"], ["ORG-ALD", "aut.ald"], ["ORG-BRV", "aut.brv"], ["ORG-CAZ", "aut.caz"]] {
+            let _ = adherer(a[0], a[1])
+        }
+        let _ = priorites()
+        let _ = adherer("ORG-CAPT", "adm.capt")
+        let _ = capteurs()
+        let _ = canal("C-ESA", "ORG-ESA", "adm.esa", "administrateur_operateur")
+        let _ = canal("C-SX", "ORG-SPACEX", "adm.sx", "administrateur_operateur")
+        let _ = operateur("esa", "ORG-ESA", "brv")
+        let _ = operateur("sx", "ORG-SPACEX", "caz")
+        return points_focaux()
+    }
+
+    // 2. Les deux satellites, catalogués le 27/08/2019 12 h par l'analyste (objets déjà en orbite à
+    // la création du monde), immatriculés par leur État, mis en service par leur dynamicien.
+    // AEOLUS : ESA, BRV, leo, propulsion impulsionnelle, 1 400 kg ; STARLINK44 : SpaceX, CAZ, leo,
+    // propulsion "faible" (effet Hall), 250 kg.
+    on objet(p: String) {
+        if p == "AEOLUS" { return Objet("OBJ-1") }
+        return Objet("OBJ-2")
+    }
+    on dynamicien(p: String) {
+        if p == "AEOLUS" { return "dyn.esa" }
+        return "dyn.sx"
+    }
+    on etat_de(p: String) {
+        if p == "AEOLUS" { return [6700000, 0, 0, 0, 7700, 0] }
+        return [6700000, 0, 1200, 0, 0, 7700]
+    }
+    on epoque() { return h(18135, 43200) }
+    on cataloguer() {
+        let t = h(18135, 43200)
+        let a = ApiRef.cataloguer(t, "satellite", "ORG-ESA", "BRV", "leo", "impulsionnelle", Masse(1400), "ana1")
+        let s = ApiRef.cataloguer(t, "satellite", "ORG-SPACEX", "CAZ", "leo", "faible", Masse(250), "ana1")
+        let _ = ApiRef.immatriculer(h(18135, 43300), a, "REG-AEOLUS", "aut.brv")
+        let _ = ApiRef.immatriculer(h(18135, 43300), s, "REG-STARLINK44", "aut.caz")
+        let _ = ApiRef.changer_etat_objet(h(18135, 43400), a, "en_service", "", "objet en orbite à la création du monde", "dyn.esa")
+        let _ = ApiRef.changer_etat_objet(h(18135, 43400), s, "en_service", "", "objet en orbite à la création du monde", "dyn.sx")
+        let _ = EphReglage.amorcer(h(18135, 43500), "exp1")
+        for p in ["AEOLUS", "STARLINK44"] {
+            let _ = ephemeride(p, h(18135, 43600), "1", false)
+        }
+        return [a, s]
+    }
+    on ephemeride(p: String, t: Horodatage, n: String, poussee: Bool) {
+        let v = etat_de(p)
+        return ephemeride_en(p, t, t, n, poussee, "{v[0]},{v[1]},{v[2]}")
+    }
+    // Éphéméride d'époque `ep` et de position `pos` ("x,y,z", m), déposée à `t`.
+    on ephemeride_en(p: String, t: Horodatage, ep: Horodatage, n: String, poussee: Bool, pos: String) {
+        let d = ApiEphemerides.deposer(t, objet(p), "EPH-{p}-{n}", ep, Duree(259200000), "haute", "sha256:" + sha256("{p}-{n}"), pos, poussee, dynamicien(p))
+        if ApiEphemerides.depot_valide(d) { return "validee" }
+        return "rejetee"
+    }
+
+    // Campagne de criblage du régime "leo" à `t` (le moteur externe, ici le test), terminée.
+    // Si la ronde d'ORBITE a déjà lancé la campagne de cadence, le moteur termine celle-là.
+    on campagne(t: Horodatage) {
+        let c0 = campagne_en_cours()
+        if c0 != "" { return ConjCampagne.terminer(t, c0, 2, 1, 1, "systeme") }
+        let c = ConjCampagne.planifier(t, "regime", "leo", "", "manuel", "ana1")
+        let _ = ConjCampagne.demarrer(t, c, "systeme")
+        return ConjCampagne.terminer(Horodatage(to_int(t) + 60000), c, 2, 1, 1, "systeme")
+    }
+    // Dernière campagne "leo" planifiée (lue au journal), si elle est en cours ; "" sinon.
+    on campagne_en_cours() { return en_cours_sur("leo") }
+    on en_cours_sur(reg: String) {
+        let l = Journal.chercher("planifiée (regime, {reg}", 1)
+        if len(l) == 0 { return "" }
+        let c = split(split(l[0], "campagne ")[1], " ")[0]
+        if ConjCampagne.etat(c) == "en_cours" { return c }
+        return ""
+    }
+    // Résultat du criblage remis par le moteur : rapprochement AEOLUS / STARLINK44 au TCA simulé.
+    on signaler(t: Horodatage, distance: Int, pc: Int) {
+        let _ = campagne(t)
+        return ApiConjonctions.signaler(Horodatage(to_int(t) + 120000), objet("AEOLUS"), objet("STARLINK44"), tca(), Distance(distance), Probabilite(pc), "systeme")
+    }
+
+    // Le monde au 27/08/2019 : amorcé, table de seuils adoptée, les deux satellites catalogués et
+    // en service.
+    on pret() {
+        let _ = amorcer()
+        let _ = seuils()
+        let objs = cataloguer()
+        return len(objs)
+    }
+    // 28/08/2019 10 h : première alerte, pc 1/50 000 (20 000 milliardièmes), 1 200 m.
+    on alerte_28_aout() { return signaler(h(18136, 36000), 4000, 20000) }
+    // 30/08/2019 14 h : la pc monte à 1/1 000 (1 000 000 milliardièmes), 150 m ; les deux opérateurs
+    // ont déposé à 13 h 50 leurs éphémérides du jour (flux automatique simulé).
+    on montee_30_aout() {
+        let _ = flux(h(18138, 49800))
+        return signaler(h(18138, 50400), 150, 1000000)
+    }
+    // Le moteur de criblage (externe, simulé) termine les campagnes de cadence que la ronde
+    // d'ORBITE vient de lancer (les deux satellites en leo, aucun objet ailleurs).
+    on moteur(t: Horodatage) {
+        let n = 0
+        for reg in ["leo", "meo", "geo", "heo"] {
+            let c = en_cours_sur(reg)
+            if c != "" {
+                let k = if reg == "leo" { 2 } else { 0 }
+                let p = if reg == "leo" { 1 } else { 0 }
+                let _ = ConjCampagne.terminer(t, c, k, p, p, "systeme")
+                n = n + 1
+            }
+        }
+        return n
+    }
+    // L'ESA, opérateur joignable, acquitte à chaque battement les messages qu'ORBITE lui a livrés
+    // (SpaceX, elle, ne voit pas les siens : défaut de son astreinte).
+    on esa_acquitte(t: Horodatage) {
+        let qui = appelant("dyn.esa", "ORG-ESA", "dynamicien")
+        let n = 0
+        for x in PasMessages.en_attente(qui, 100) {
+            let a = try { PasMessages.acquitter(t, split(x, " | ")[0], qui) }
+            if a.error == () { n = n + 1 }
+        }
+        return n
+    }
+    // Flux (simulé) du monde à `t` : éphémérides automatiques des deux opérateurs et une mesure
+    // de chaque capteur (le réseau n'est pas muet).
+    on flux(t: Horodatage) {
+        let n = 0
+        for p in ["AEOLUS", "STARLINK44"] {
+            // une éphéméride déposée après un plan approuvé inclut la poussée planifiée
+            if ephemeride(p, t, "{to_int(t)}", ApiManoeuvres.plan_actif(objet(p))) == "validee" { n = n + 1 }
+        }
+        for c in ["CAP-1", "CAP-2", "CAP-3"] {
+            let o = objet("STARLINK44")
+            let m = ApiObservation.deposer_mesure(t, c, o, Horodatage(to_int(t) - 60000), "TDM {c} veille {to_int(t)}", "capt.1")
+            let _ = ObsMesures.correler(t, m, o, Distance(5), "ana1")
+        }
+        return n
+    }
+
+    // Battement de l'horloge à `t` : les vingt balayages dans l'ordre de Horloge.battre, par
+    // "systeme" ; renvoie les erreurs ("ApiX: message"), liste vide si aucune.
+    on battre(t: Horodatage) {
+        let erreurs_b = []
+        let r1 = try { ApiRef.balayer(t, "systeme") }
+        if r1.error != () { erreurs_b.push("ApiRef: {r1.error}") }
+        let r2 = try { ApiAcces.balayer(t, "systeme") }
+        if r2.error != () { erreurs_b.push("ApiAcces: {r2.error}") }
+        let r3 = try { ApiOperateurs.balayer(t, "systeme") }
+        if r3.error != () { erreurs_b.push("ApiOperateurs: {r3.error}") }
+        let r4 = try { ApiMeteo.balayer(t, "systeme") }
+        if r4.error != () { erreurs_b.push("ApiMeteo: {r4.error}") }
+        let r5 = try { ApiObservation.balayer(t, "systeme") }
+        if r5.error != () { erreurs_b.push("ApiObservation: {r5.error}") }
+        let r6 = try { ApiEphemerides.balayer(t, "systeme") }
+        if r6.error != () { erreurs_b.push("ApiEphemerides: {r6.error}") }
+        let r7 = try { ApiConjonctions.balayer(t, "systeme") }
+        if r7.error != () { erreurs_b.push("ApiConjonctions: {r7.error}") }
+        let r8 = try { ApiPriorites.balayer(t, "systeme") }
+        if r8.error != () { erreurs_b.push("ApiPriorites: {r8.error}") }
+        let r9 = try { ApiCoordination.balayer(t, "systeme") }
+        if r9.error != () { erreurs_b.push("ApiCoordination: {r9.error}") }
+        let r10 = try { ApiManoeuvres.balayer(t, "systeme") }
+        if r10.error != () { erreurs_b.push("ApiManoeuvres: {r10.error}") }
+        let r11 = try { ApiEscalade.balayer(t, "systeme") }
+        if r11.error != () { erreurs_b.push("ApiEscalade: {r11.error}") }
+        let r12 = try { ApiReentrees.balayer(t, "systeme") }
+        if r12.error != () { erreurs_b.push("ApiReentrees: {r12.error}") }
+        let r13 = try { ApiLancements.balayer(t, "systeme") }
+        if r13.error != () { erreurs_b.push("ApiLancements: {r13.error}") }
+        let r14 = try { ApiFinDeVie.balayer(t, "systeme") }
+        if r14.error != () { erreurs_b.push("ApiFinDeVie: {r14.error}") }
+        let r15 = try { ApiEvenements.balayer(t, "systeme") }
+        if r15.error != () { erreurs_b.push("ApiEvenements: {r15.error}") }
+        let r16 = try { ApiResponsabilite.balayer(t, "systeme") }
+        if r16.error != () { erreurs_b.push("ApiResponsabilite: {r16.error}") }
+        let r17 = try { ApiDonnees.balayer(t, "systeme") }
+        if r17.error != () { erreurs_b.push("ApiDonnees: {r17.error}") }
+        let r18 = try { ApiConformite.balayer(t, "systeme") }
+        if r18.error != () { erreurs_b.push("ApiConformite: {r18.error}") }
+        let r19 = try { ApiPasserelle.balayer(t, "systeme") }
+        if r19.error != () { erreurs_b.push("ApiPasserelle: {r19.error}") }
+        let r20 = try { ApiOperations.balayer(t, "systeme") }
+        if r20.error != () { erreurs_b.push("ApiOperations: {r20.error}") }
+        return erreurs_b
+    }
+    // Battements de `debut` à `fin` tous les `pas` ms ; à chaque changement pour `r` / `op` :
+    // "JJ/MM HHhMM échelon=<e> coord=<état> reprise=<b>" ; plus les erreurs de balayage.
+    on veiller(r: Rapprochement, op: Org, debut: Horodatage, fin: Horodatage, pas: Int) {
+        let trace_v = []
+        let avant = ""
+        let t = to_int(debut)
+        while t <= to_int(fin) {
+            if (t - to_int(debut)) % 21600000 == 0 { let _ = flux(Horodatage(t)) }
+            for e in battre(Horodatage(t)) { trace_v.push("{t}: {e}") }
+            let _ = moteur(Horodatage(t))
+            let _ = esa_acquitte(Horodatage(t))
+            let ici = "echelon={ApiEscalade.echelon(r, op)} coord={ApiCoordination.etat(r)} reprise={ApiEscalade.reprise(r)}"
+            if ici != avant {
+                trace_v.push("{lisible(t)} {ici}")
+                avant = ici
+            }
+            t = t + pas
+        }
+        return trace_v
+    }
+    // "JJ/MM HHhMM" (UTC) d'un horodatage d'août-septembre 2019.
+    on lisible(t: Int) {
+        let j = to_int(t / 86400000)
+        let m = to_int((t % 86400000) / 60000)
+        let jour = if j >= 18140 { "{pad_left(to_string(j - 18139), 2, \"0\")}/09" } else { "{j - 18108}/08" }
+        return "{jour} {pad_left(to_string(to_int(m / 60)), 2, \"0\")}h{pad_left(to_string(m % 60), 2, \"0\")}"
+    }
+    on battre_de(debut: Horodatage, fin: Horodatage, pas: Int) {
+        let erreurs_d = []
+        let t = to_int(debut)
+        while t <= to_int(fin) {
+            for e in battre(Horodatage(t)) { erreurs_d.push("{t}: {e}") }
+            let _ = moteur(Horodatage(t))
+            let _ = esa_acquitte(Horodatage(t))
+            t = t + pas
+        }
+        return erreurs_d
+    }
+    // Le monde au 30/08/2019 14 h 10 : alerte du 28/08, montée de la pc, réponse de l'ESA.
+    on jusqu_a_la_montee() {
+        let _ = pret()
+        let _ = alerte_28_aout()
+        let r = montee_30_aout()
+        let _ = ApiCoordination.repondre(h(18138, 51000), r, "accepte", "", "", "dyn.esa")
+        return r
+    }
+    // 5a. Mesures de deux capteurs sur AEOLUS autour de `ep`, orbite déterminée (vecteur `vec`,
+    // m et mm/s) validée contre la dernière éphéméride déclarée avec l'écart `ecart` (moteur).
+    on orbite_a(ep: Horodatage, vec: String, ecart: Int, k0: Int) {
+        let o = objet("AEOLUS")
+        let ms = []
+        for k in range(0, 6) {
+            let c = if k % 2 == 0 { "CAP-1" } else { "CAP-3" }
+            let inst = Horodatage(to_int(ep) - 300000 + k * 30000)
+            let m = ApiObservation.deposer_mesure(Horodatage(to_int(ep) + 30000), c, o, inst, "TDM {c} AEOLUS {k0 + k}", "capt.1")
+            let _ = ObsMesures.correler(Horodatage(to_int(ep) + 40000), m, o, Distance(5), "ana1")
+            ms.push(m)
+        }
+        let od = ObsOrbites.calculer(Horodatage(to_int(ep) + 50000), to_string(o), ep, ms, Distance(20), vec, Distance(310000), Distance(330000), "ana1")
+        return ObsOrbites.valider(Horodatage(to_int(ep) + 60000), od, ApiEphemerides.derniere(o), Distance(ecart), "ana1")
+    }
+    // 5b. Plan d'évitement d'AEOLUS, déclaré le 02/09 4 h 20 après l'arbitrage : campagne du
+    // régime à 4 h 10, éphéméride incluant la poussée planifiée à 4 h 15, poussée à 11 h 15 (TCA
+    // − 45 min, « environ une demi-orbite »), relèvement d'orbite de 0,5 m/s (simulé).
+    on plan_aeolus(r: Rapprochement) {
+        let _ = campagne(h(18141, 15000))
+        let _ = ephemeride("AEOLUS", h(18141, 15300), "P", true)
+        return ApiManoeuvres.declarer(h(18141, 15600), "PL-AEOLUS", objet("AEOLUS"), r, "evitement", h(18141, 40500), DeltaV(500), "dyn.esa")
+    }
+    // 5c. Après la poussée (réelle à 11 h 15 min 10 s) : orbite observée à 11 h 30, à 3 500 m de
+    // l'éphéméride déclarée (détection, expliquée par PL-AEOLUS) ; nouvelle éphéméride à 11 h 35
+    // (époque 11 h 30, sur l'orbite observée) ; orbite observée à 11 h 45, conforme (écart 0 m).
+    on apres_poussee() {
+        let _ = orbite_a(h(18141, 41400), "6703500,0,0,0,7700500,0", 3500, 100)
+        let _ = ObsDetections.confirmer(h(18141, 41500), "MD-1", "ana1")
+        let _ = ephemeride_en("AEOLUS", h(18141, 41700), h(18141, 41400), "2", false, "6703500,0,0")
+        return orbite_a(h(18141, 42300), "6703500,6930450,0,0,7700500,0", 0, 200)
+    }
+    // La chronologie du rapprochement : Journal.chercher(r), sans les lignes répétées de la veille
+    // (relances horaires d'éphémérides, suivis servis, messages versés à l'escalade en cours).
+    on chronologie(r: Rapprochement) {
+        let res_c = []
+        for l in Journal.chercher(to_string(r), 1000) {
+            if !contains(l, "relance ORG-") && !contains(l, "servie par la tâche") && !contains(l, "versé à l'escalade en cours") {
+                res_c.push(l)
+            }
+        }
+        return res_c
+    }
+    // Chronologie lisible : "JJ/MM HHhMM | sous-système | acteur | évènement".
+    on chronologie_lisible(r: Rapprochement) {
+        let res_l = []
+        for l in chronologie(r) {
+            let f = split(l, " | ")
+            res_l.push("{lisible(parse_int(f[0]))} | {substring(l, len(f[0]) + 3, len(l))}")
+        }
+        return res_l
+    }
+} // fin Monde
+
+
+// ── A1. Le monde de 2019 : ORBITE amorcée, ESA et SpaceX opérateurs actifs, satellites en service.
+cell test A1Monde {
+    rules {
+        mock random_token ["DEFI-C-ESA", "DEFI-C-SX"]
+        mock http_post ["ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok"]
+        assert Monde.pret() == 2
+        assert PrioVersion.version_courante() == "PRIO-2019"
+        assert ApiOperateurs.est_actif("ORG-ESA", Monde.h(18136, 0))
+        assert ApiOperateurs.est_actif("ORG-SPACEX", Monde.h(18136, 0))
+        // l'astreinte de SpaceX est tenue (dyn.sx) : le défaut historique est dans la chaîne
+        // d'alerte interne de l'opérateur, pas dans un trou de planning
+        assert ApiOperateurs.astreinte("ORG-SPACEX", Monde.h(18136, 0)) == "dyn.sx"
+        assert ApiOperateurs.contacts("ORG-CAZ", 3, Monde.h(18136, 0)) == ["pf.caz"]
+        assert Monde.objet("AEOLUS") == "OBJ-1"
+        assert Monde.objet("STARLINK44") == "OBJ-2"
+        assert ApiRef.proprietaire(Monde.objet("AEOLUS")) == "ORG-ESA"
+        assert ApiRef.proprietaire(Monde.objet("STARLINK44")) == "ORG-SPACEX"
+        assert ApiRef.propulsion(Monde.objet("AEOLUS")) == "impulsionnelle"
+        assert ApiRef.propulsion(Monde.objet("STARLINK44")) == "faible"
+        assert ApiRef.peut_manoeuvrer(Monde.objet("AEOLUS"))
+        assert ApiRef.peut_manoeuvrer(Monde.objet("STARLINK44"))
+        assert ApiRef.immatricule(Monde.objet("STARLINK44"))
+        assert ApiPriorites.preavis("faible") == 259200000
+        assert ApiPriorites.preavis("impulsionnelle") == 21600000
+    }
+}
+
+// ── A2. 28/08/2019 : alerte à 1/50 000 — niveau 1, pas de coordination (assertion 1).
+cell test A2Alerte28Aout {
+    rules {
+        mock random_token ["DEFI-C-ESA", "DEFI-C-SX"]
+        mock http_post ["ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok"]
+        assert Monde.amorcer() == "ok"
+        assert len(Monde.cataloguer()) == 2
+        // Avec la table de seuils PAR DÉFAUT d'ORBITE (attention 1e-5), 1/50 000 serait déjà de
+        // niveau 2, et tout niveau ≥ 2 ouvre une coordination (ApiConjonctions.signaler →
+        // engager) : ORBITE aurait ouvert la coordination dès le 28/08. Le monde de 2019 adopte
+        // donc une table alignée sur le seul seuil public (1/10 000) : c'est un CHOIX du rejeu.
+        // (facteur 300 : sans donnée de météo spatiale, ORBITE suppose la tempête.)
+        assert ConjSeuils.version_en_vigueur() == "defaut"
+        assert ConjSeuils.niveau(Probabilite(20000), Distance(4000), Duree(441480000), Pourcent(300)) == 2
+        assert Monde.seuils() == "SEU-1"
+        assert ConjSeuils.niveau(Probabilite(20000), Distance(4000), Duree(441480000), Pourcent(300)) == 1
+        let r = Monde.alerte_28_aout()
+        assert r == "CJ-1"
+        assert ApiConjonctions.niveau(r) == 1
+        assert ApiConjonctions.etat(r) == "detecte"
+        assert ApiConjonctions.tca(r) == Monde.tca()
+        // pas de coordination, pas de désignation calculée, pas d'escalade : l'échange de
+        // courriels du 28/08 (SpaceX ne prévoit pas de manœuvrer) reste hors d'ORBITE
+        assert ApiCoordination.etat(r) == "inconnue"
+        assert ApiPriorites.decision_de(r) == ""
+        assert ApiCoordination.en_attente_de("ORG-SPACEX") == []
+        assert ApiEscalade.echelon(r, "ORG-SPACEX") == 0
+    }
+}
+
+// ── A3. 30/08/2019 14 h : la pc monte à 1/1 000 — niveau 3, coordination ouverte, désignation
+// par défaut des règles (assertion 2).
+cell test A3Montee {
+    rules {
+        mock random_token ["DEFI-C-ESA", "DEFI-C-SX"]
+        mock http_post ["ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok"]
+        assert Monde.pret() == 2
+        let r = Monde.alerte_28_aout()
+        assert Monde.montee_30_aout() == r
+        assert ApiConjonctions.niveau(r) == 3
+        assert ApiConjonctions.etat(r) == "en_coordination"
+        assert ApiCoordination.etat(r) == "proposee"
+        // QUI les règles désignent, et pourquoi (rien n'est forcé : ApiPriorites.qui_manoeuvre,
+        // règles PRIO-2019) : AEOLUS. À TCA − 70 h, STARLINK44, propulsion faible (effet Hall),
+        // ne peut plus agir à temps — son préavis est de 72 h — : AEOLUS est le SEUL CAPABLE
+        // (motif "seul_capable", avant même la table). Plus tôt, la règle 2 (propulsion faible
+        // exemptée) l'aurait aussi désigné. Ce que l'ESA a fait seule en 2019, les règles le
+        // lui auraient attribué — mais par une décision tracée, connue des deux parties.
+        let aeolus = Monde.objet("AEOLUS")
+        assert starts_with(ApiPriorites.decision_de(r), "PD-1|{aeolus}|PRIO-2019|seul_capable|")
+        assert ApiCoordination.decision(r) == ""
+        // la même question reposée aux règles rend la même réponse (décision PD-2, rejouable)
+        assert ApiPriorites.qui_manoeuvre(Monde.h(18138, 50600), r, aeolus, Monde.objet("STARLINK44")) == aeolus
+        assert ApiCoordination.decision(r) == ""
+        // réponse attendue des deux parties avant 14 h 32 (engagement de niveau 3 : 30 min)
+        assert ApiCoordination.echeance(r) == Monde.h(18138, 52320)
+        assert ApiCoordination.en_attente_de("ORG-SPACEX") == [r]
+        assert ApiCoordination.en_attente_de("ORG-ESA") == [r]
+        // l'ESA, qui cherche à se coordonner, accepte ; SpaceX ne répond pas
+        assert ApiCoordination.repondre(Monde.h(18138, 51000), r, "accepte", "", "", "dyn.esa") == "proposee"
+        assert ApiCoordination.en_attente_de("ORG-ESA") == []
+        assert ApiCoordination.en_attente_de("ORG-SPACEX") == [r]
+        assert !ApiCoordination.arretee(r)
+    }
+}
+
+// ── A4. Le silence de SpaceX (défaut d'astreinte : messages livrés, jamais vus) : l'horloge fait
+// monter l'escalade échelon par échelon jusqu'à la reprise par ORBITE (assertion 3) ; manquement
+// constaté chez conformite (assertion 6).
+cell test A4Silence {
+    rules {
+        mock random_token ["DEFI-C-ESA", "DEFI-C-SX"]
+        mock http_post ["ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok"]
+        let r = Monde.jusqu_a_la_montee()
+        // webhooks de SpaceX : livrés ("ok"), jamais acquittés
+        mock http_post ["ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok"]
+        // battement toutes les 30 min du 30/08 14 h 30 au 02/09 4 h ; aucun balayage en erreur.
+        // e1 astreinte, e2 chef de mission (30 min chacun, engagement de niveau 3), e3 point focal
+        // de CAZ (15 % du temps restant), e4 direction d'ORBITE et points focaux des deux États ;
+        // échéance finale = TCA − (préavis d'AEOLUS 6 h + 2 h d'arbitrage) = 02/09 4 h.
+        assert Monde.veiller(r, "ORG-SPACEX", Monde.h(18138, 52200), Monde.h(18141, 14400), 1800000) == ["30/08 14h30 echelon=0 coord=proposee reprise=false", "30/08 15h00 echelon=1 coord=proposee reprise=false", "30/08 15h30 echelon=2 coord=proposee reprise=false", "30/08 16h00 echelon=3 coord=proposee reprise=false", "31/08 01h00 echelon=4 coord=proposee reprise=false", "02/09 04h00 echelon=4 coord=arbitrage reprise=true"]
+        assert len(Journal.chercher("dossier ESC-1 ouvert contre ORG-SPACEX sur {r} a l'echelon 1 (echeance finale {Monde.h(18141, 14400)})", 5)) == 1
+        assert len(Journal.chercher("relance REL-1 (complete) emise vers ORG-SPACEX pour ESC-1", 5)) == 1
+        assert len(Journal.chercher("relance REL-2 (complete) emise vers ORG-SPACEX pour ESC-1", 5)) == 1
+        assert len(Journal.chercher("relance REL-3 (complete) emise vers ORG-CAZ pour ESC-1", 5)) == 1
+        assert len(Journal.chercher("dossier ESC-1 monte a l'echelon 4", 5)) == 1
+        assert len(Journal.chercher("dossier ESC-1 : reprise par ORBITE sur {r}", 5)) == 1
+        assert ApiEscalade.reprise(r)
+        assert ApiEscalade.echelon(r, "ORG-SPACEX") == 4
+        assert ApiEscalade.echelon(r, "ORG-ESA") == 0
+        assert ApiCoordination.muets(r) == ["ORG-SPACEX"]
+        assert ApiCoordination.etat(r) == "arbitrage"
+        assert !ApiCoordination.arretee(r)
+        // assertion 6 : manquement « reponse_tardive » de gravité 3 contre SpaceX, constaté au
+        // silence (30/08 15 h) ; aucun contre l'ESA, qui a répondu
+        let ms = Journal.chercher("constate : ORG-SPACEX reponse_tardive g3 reference {r}", 5)
+        assert len(ms) == 1
+        assert starts_with(ms[0], "{Monde.h(18138, 54000)} | conformite | systeme | manquement MQ-")
+        assert ConfManquement.ouverts("ORG-SPACEX") >= 1
+        assert Journal.chercher("constate : ORG-ESA reponse_tardive", 5) == []
+    }
+}
+
+// ── A5. Arbitrage d'ORBITE à quatre yeux, désignation unique, plan d'évitement d'AEOLUS déclaré,
+// criblé, approuvé, exécuté une demi-orbite avant le TCA, vérifié ; rapprochement résolu
+// (assertion 4) ; puis la trace (assertion 5).
+cell test A5Evitement {
+    rules {
+        mock random_token ["DEFI-C-ESA", "DEFI-C-SX"]
+        mock http_post ["ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok"]
+        let r = Monde.jusqu_a_la_montee()
+        mock http_post ["ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok"]
+        assert len(Monde.veiller(r, "ORG-SPACEX", Monde.h(18138, 52200), Monde.h(18141, 14400), 1800000)) == 6
+        let aeolus = Monde.objet("AEOLUS")
+        let starlink = Monde.objet("STARLINK44")
+        let t = Monde.h(18141, 14700)
+        // arbitrage : quatre yeux (analyste + superviseur), motif exigé
+        assert_fails ApiCoordination.arbitrer(t, r, aeolus, "SpaceX muet", "ana1", "ana1") matching "QuatreYeux"
+        assert_fails ApiCoordination.arbitrer(t, r, aeolus, "SpaceX muet", "sup1", "sup2") matching "Habilitation"
+        assert_fails ApiCoordination.arbitrer(t, r, aeolus, "", "ana1", "sup1") matching "MotifRequis"
+        // STARLINK44 ne peut plus être désigné : préavis de 72 h de la propulsion faible
+        assert_fails ApiCoordination.arbitrer(t, r, starlink, "SpaceX muet", "ana1", "sup1") matching "Delai"
+        // (un refus jette les mocks restants : les webhooks sont re-scriptés après chaque refus)
+        mock http_post ["ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok"]
+        assert ApiCoordination.arbitrer(t, r, aeolus, "SpaceX muet malgré l'escalade : AEOLUS, seul capable à temps, manœuvre", "ana1", "sup1") == "arretee"
+        assert ApiCoordination.arretee(r)
+        assert ApiCoordination.designe(r, "dyn.esa") == aeolus
+        assert ApiCoordination.designe(r, "dyn.sx") == aeolus
+        assert contains(ApiCoordination.decision(r), "|ana1|sup1|")
+        // désignation unique (propriété 1) : un second arbitrage est refusé
+        assert_fails ApiCoordination.arbitrer(Monde.h(18141, 14800), r, aeolus, "bis", "ana2", "sup2") matching "EtatInvalide"
+        mock http_post ["ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok"]
+        // plan d'évitement : déclaré 4 h 20, criblé sûr, approuvé ; poussée à 11 h 15
+        assert Monde.plan_aeolus(r) == "PL-AEOLUS"
+        assert ApiConjonctions.criblage_plan("PL-AEOLUS") == "sur"
+        assert ApiManoeuvres.etat("PL-AEOLUS") == "approuve"
+        assert ApiManoeuvres.plan_de(r) == "PL-AEOLUS"
+        // l'horloge continue jusqu'à 11 h : l'arbitrage rendu à 4 h 05 vaut prise en charge de la
+        // reprise (limite 4 h 15) ; l'escalade se clôt sur la décision arrêtée
+        // (à 9 h 30, l'avis d'approbation du plan à SpaceX échoit sans accusé : escalade ESC-2,
+        // aussitôt en reprise — « l'autre opérateur doit savoir que le désigné manœuvre » —,
+        // close à 10 h sur la décision arrêtée)
+        assert Monde.veiller(r, "ORG-SPACEX", Monde.h(18141, 16200), Monde.h(18141, 39600), 1800000) == ["02/09 04h30 echelon=0 coord=arretee reprise=true", "02/09 09h30 echelon=4 coord=arretee reprise=true", "02/09 10h00 echelon=0 coord=arretee reprise=true"]
+        assert len(Journal.chercher("prise en charge de ESC-1 tranchee", 5)) == 1
+        assert Journal.chercher("prise en charge de ESC-1 depassee", 5) == []
+        assert len(Journal.chercher("dossier ESC-1 clos (decision_arretee)", 5)) == 1
+        // jamais deux évitements approuvés pour un rapprochement (propriété 1)
+        assert_fails ApiManoeuvres.declarer(Monde.h(18141, 15700), "PL-STARLINK44", starlink, r, "evitement", Monde.h(18141, 30000), DeltaV(100), "dyn.sx") matching "Conflit"
+        mock http_post ["ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok"]
+        // exécution (11 h 15 min 10 s, TCA − 45 min) puis vérification par l'observation
+        assert ApiManoeuvres.confirmer_execution(Monde.h(18141, 40800), "PL-AEOLUS", Monde.h(18141, 40510), DeltaV(500), "dyn.esa") == "execute"
+        assert Monde.apres_poussee() == "validee"
+        assert ObsDetections.etat("MD-1") == "expliquee"
+        assert ManVerification.verifier(Monde.h(18141, 42600), "PL-AEOLUS", "ana1") == "conforme"
+        assert ApiManoeuvres.etat("PL-AEOLUS") == "verifie"
+        assert ApiConjonctions.etat(r) == "resolu"
+        assert ApiCoordination.balayer(Monde.h(18141, 42700), "systeme") >= 1
+        assert ApiCoordination.etat(r) == "close"
+        // une journée d'horloge après le TCA : aucun balayage en erreur
+        assert Monde.battre_de(Monde.h(18141, 46800), Monde.h(18142, 43200), 3600000) == []
+        // assertion 5 : la trace. Journal.chercher(r) rend la chronologie du rapprochement
+        let ch = Monde.chronologie_lisible(r)
+        assert ch == ["28/08 10h02 | conjonctions | systeme | rapprochement CJ-1 (OBJ-1|OBJ-2) ouvert : TCA 1567425600000, 4000 m, pc 20000, niveau 1", "30/08 14h02 | conjonctions | systeme | rapprochement CJ-1 (OBJ-1|OBJ-2) mis à jour : TCA 1567425600000, 150 m, pc 1000000, niveau 3", "30/08 14h02 | priorites | systeme | décision PD-1 sur CJ-1 : 'OBJ-1' (seul_capable) sous PRIO-2019", "30/08 14h02 | coordination | systeme | coordination CJ-1 ouverte : proposee, propose 'OBJ-1', raison ''", "30/08 14h02 | conjonctions | systeme | rapprochement CJ-1 en coordination (CO-CJ-1, proposee)", "30/08 14h02 | observation | systeme | tâche TS-1 demandée : OBJ-1, priorité 3, rapprochement (rapprochement CJ-1 niveau 3)", "30/08 14h02 | observation | systeme | tâche TS-2 demandée : OBJ-2, priorité 3, rapprochement (rapprochement CJ-1 niveau 3)", "30/08 14h02 | conjonctions | systeme | rapprochement CJ-1 : suivi renforcé demandé ([\"TS-1\", \"TS-2\"])", "30/08 14h02 | conjonctions | systeme | alerte de CJ-1 : 4 messages préparés", "30/08 14h10 | coordination | dyn.esa | ORG-ESA accepte OBJ-1 sur CJ-1 (tour 1)", "30/08 14h30 | escalade | systeme | veille armee sur CJ-1", "30/08 15h00 | escalade | systeme | dossier ESC-1 ouvert contre ORG-SPACEX sur CJ-1 a l'echelon 1 (echeance finale 1567396800000) : silence coordination", "30/08 15h00 | conformite | systeme | manquement MQ-15 constate : ORG-SPACEX reponse_tardive g3 reference CJ-1", "02/09 04h00 | coordination | systeme | saisine CJ-1#1 : silence", "02/09 04h00 | coordination | systeme | CJ-1 : silence de 1 partie(s), arbitrage d'ORBITE (ORG-ORBITE)", "02/09 04h00 | escalade | systeme | dossier ESC-1 : reprise par ORBITE sur CJ-1", "02/09 04h05 | coordination | ana1 | verrou CJ-1 posé : décision DS-CJ-1-1, désigné 'OBJ-1', mode arbitrage, valideur 'sup1'", "02/09 04h05 | coordination | ana1 | CJ-1 arbitrée : 'OBJ-1', décision DS-CJ-1-1, valideur sup1", "02/09 04h20 | manoeuvres | systeme | plan PL-AEOLUS approuvé (verrou CJ-1, dépôt EPH-AEOLUS-P)", "02/09 04h30 | escalade | systeme | veille CJ-1 couverte", "02/09 06h00 | operations | systeme | gel d'urgence armé pour CJ-1 (TCA 1567425600000)", "02/09 09h30 | escalade | systeme | dossier ESC-2 ouvert contre ORG-SPACEX sur CJ-1 a l'echelon 4 (echeance finale 1567396800000) : avis de manoeuvre PL-AEOLUS|ORG-SPACEX|approbation sans accusé", "02/09 09h30 | escalade | systeme | dossier ESC-2 : reprise par ORBITE sur CJ-1", "02/09 11h50 | conjonctions | systeme | rapprochement CJ-1 résolu (manoeuvre_verifiee)", "02/09 11h50 | conjonctions | systeme | cloture de CJ-1 : 2 messages préparés", "02/09 11h51 | coordination | systeme | verrou CJ-1 clos : décision DS-CJ-1-1 soldée", "02/09 11h51 | coordination | systeme | CJ-1 close (resolu, depuis arretee)", "02/09 13h00 | escalade | systeme | veille CJ-1 close (resolu)", "02/09 13h00 | operations | systeme | gel d'urgence levé pour CJ-1 (resolu)"]
+        // la décision est traçable jusqu'à ses données (propriété 6) : fondement figé
+        assert len(Journal.chercher("{r}", 1000)) > len(ch)
+    }
+}

@@ -1,0 +1,225 @@
+// Corps de EvtEvenements : registre des fragmentations et collisions.
+flesh EvtEvenements {
+    on signaler(h, g, en_cause, quand, r, motif, par) {
+        require ApiAcces.a_le_role(par, "analyste") || ApiAcces.a_le_role(par, "systeme") else Habilitation "{par} ne signale pas d'évènement"
+        require len(motif) > 0 else MotifRequis "constat du signalement vide"
+        let n_o = len(en_cause)
+        if g == "fragmentation" {
+            require n_o == 1 else HorsBornes "une fragmentation a exactement un objet en cause ({n_o})"
+            require r == "" else Incoherent "une fragmentation n'est pas l'issue d'un rapprochement ({r})"
+        } else {
+            require n_o >= 1 && n_o <= MAX_OBJETS else HorsBornes "une collision a 1 ou 2 objets en cause ({n_o})"
+        }
+        if n_o == 2 {
+            require en_cause[0] != en_cause[1] else Incoherent "objet en cause répété : {en_cause[0]}"
+        }
+        require quand <= h else Incoherent "instant de l'évènement {quand} postérieur au signalement {h}"
+        let regs_s = []
+        for o in en_cause {
+            let st_o = ApiRef.etat_objet(Objet(o))
+            require st_o != "inconnu" && st_o != "rentre" else Inconnu "objet {o} non catalogué ou rentré ({st_o})"
+            let reg = to_string(ApiRef.regime(Objet(o)))
+            if !contains(regs_s, reg) { regs_s.push(reg) }
+        }
+        if r != "" {
+            let objs_r = ApiConjonctions.objets(r)
+            for o in en_cause {
+                require contains(objs_r, o) else Incoherent "{o} n'est pas un objet du rapprochement {r}"
+            }
+        }
+        // Doublon : un objet déjà en cause d'un évènement non infirmé proche dans le temps.
+        for o in en_cause {
+            let prec = dernier_de.get(o) ?? ""
+            if prec != "" {
+                let st_p = get_status(prec) ?? "signale"
+                let i_p = instant_de.get(prec) ?? 0
+                if st_p != "infirme" {
+                    require abs(i_p - quand) > FENETRE_DOUBLON_MS else Doublon "{o} est déjà en cause de {prec}"
+                }
+            }
+        }
+        require genre_de.size < MAX_EVENEMENTS else Plein "plafond de {MAX_EVENEMENTS} évènements atteint"
+        let n_id = next_id()
+        let ev = "EV-{n_id}"
+        genre_de.set(ev, g)
+        objets_de.set(ev, en_cause)
+        signale_le.set(ev, h)
+        instant_de.set(ev, quand)
+        description.set(ev, motif)
+        auteur.set(ev, par)
+        for o in en_cause {
+            dernier_de.set(o, ev)
+        }
+        let _ = EvtNuages.amorcer(h, ev, regs_s)
+        if g == "collision" {
+            let _ = EvtCollisions.ouvrir(h, ev, r)
+        }
+        let _ = Journal.noter(h, "evenements", par, "{ev} signalé : {g} de {en_cause} ({motif})")
+        return ev
+    }
+
+    on confirmer(h, ev, valideur) {
+        let g = genre_de.get(ev)
+        require g != () else Inconnu "évènement inconnu : {ev}"
+        let st = get_status(ev) ?? "signale"
+        require st == "signale" else EtatInvalide "{ev} n'est pas signalé ({st})"
+        require ApiAcces.a_le_role(valideur, "superviseur") else Habilitation "{valideur} n'est pas superviseur d'ORBITE"
+        let aut = auteur.get(ev) ?? ""
+        if aut != "systeme" {
+            require ApiAcces.quatre_yeux(aut, valideur) else QuatreYeux "{valideur} ne peut contre-signer le signalement de {aut}"
+        }
+        transition(ev, "signale", "confirme")
+        valideur_de.set(ev, valideur)
+        cause.set(ev, "inconnue")
+        let objs_c = objets_de.get(ev) ?? []
+        // Collision : preuves gelées et rapprochement constaté AVANT de fragmenter les objets —
+        // la fragmentation rouvre les désignations des rapprochements encore ouverts
+        // (RefObjet.rouvrir_designations), ce qui effacerait la décision à geler (propriété 6).
+        if g == "collision" {
+            let d = ApiResponsabilite.geler(h, ev, "collision {ev} confirmée", "systeme")
+            dossier_de.set(ev, d)
+            let rap = EvtCollisions.rapprochement(ev)
+            if rap != "" {
+                let _ = ApiConjonctions.constater_collision(h, rap, ev, "systeme")
+            }
+        }
+        for o in objs_c {
+            let _ = ApiRef.changer_etat_objet(h, Objet(o), "fragmente", ev, "évènement {ev} confirmé", "systeme")
+            let _ = ApiObservation.demander_suivi(h, Objet(o), 3, 604800000, "évènement {ev}", "systeme")
+            let _ = EvtAnomalies.clore_par_evenement(h, Objet(o), ev)
+        }
+        let _ = EvtNuages.ouvrir(h, ev)
+        for o in objs_c {
+            let _ = EvtNotifications.preparer(h, ev, EvtSujet(to_string(g)), Objet(o), 3)
+        }
+        let regs_c = EvtNuages.regimes_de(ev)
+        if len(objs_c) > 0 {
+            let _ = EvtNotifications.diffuser(h, ev, "nuage", Objet(objs_c[0]), regs_c)
+        }
+        let _ = EvtRapports.ouvrir(h, ev)
+        let _ = Journal.noter(h, "evenements", valideur, "{ev} confirmé ({g})")
+        return "confirme"
+    }
+
+    on infirmer(h, ev, motif, par) {
+        let g = genre_de.get(ev)
+        require g != () else Inconnu "évènement inconnu : {ev}"
+        let st = get_status(ev) ?? "signale"
+        require st == "signale" else EtatInvalide "{ev} n'est pas signalé ({st})"
+        require len(motif) > 0 else MotifRequis "motif de l'infirmation vide"
+        require ApiAcces.a_le_role(par, "superviseur") else Habilitation "{par} n'est pas superviseur d'ORBITE"
+        let aut = auteur.get(ev) ?? ""
+        require par != aut else QuatreYeux "l'auteur du signalement ne l'infirme pas lui-même"
+        transition(ev, "signale", "infirme")
+        valideur_de.set(ev, par)
+        let _ = EvtNuages.abandonner(h, ev)
+        if g == "collision" {
+            let _ = EvtCollisions.classer(h, ev)
+        }
+        let _ = EvtRapports.classer(h, ev)
+        let _ = Journal.noter(h, "evenements", par, "{ev} infirmé : {motif}")
+        return "infirme"
+    }
+
+    on qualifier(h, ev, c, motif, par) {
+        let g = genre_de.get(ev)
+        require g != () else Inconnu "évènement inconnu : {ev}"
+        let st = get_status(ev) ?? "signale"
+        require st == "confirme" else EtatInvalide "{ev} n'est pas confirmé ou déjà clos ({st})"
+        require len(motif) > 0 else MotifRequis "motif de la qualification vide"
+        require ApiAcces.a_le_role(par, "analyste") else Habilitation "{par} n'est pas analyste d'ORBITE"
+        if g == "fragmentation" {
+            require c != "collision_cataloguee" && c != "collision_non_cataloguee" else Incoherent "cause de collision pour la fragmentation {ev}"
+        } else {
+            require c != "explosion" else Incoherent "explosion retenue pour la collision {ev}"
+        }
+        cause.set(ev, c)
+        let _ = Journal.noter(h, "evenements", par, "{ev} : cause retenue {c} ({motif})")
+        return c
+    }
+
+    on geler_preuves(h, ev, motif, par) {
+        require genre_de.get(ev) != () else Inconnu "évènement inconnu : {ev}"
+        let st = get_status(ev) ?? "signale"
+        require st == "confirme" || st == "clos" else EtatInvalide "{ev} n'est pas confirmé ({st})"
+        require dossier_de.get(ev) == () else Existe "dossier de preuve de {ev} déjà ouvert"
+        require len(motif) > 0 else MotifRequis "motif du gel vide"
+        require ApiAcces.a_le_role(par, "conformite") || ApiAcces.a_le_role(par, "direction") else Habilitation "{par} ne gèle pas de preuves"
+        let d = ApiResponsabilite.geler(h, ev, motif, par)
+        dossier_de.set(ev, d)
+        let _ = Journal.noter(h, "evenements", par, "{ev} : dossier de preuve {d} ({motif})")
+        return d
+    }
+
+    on clore(h, ev, par) {
+        require ApiAcces.a_le_role(par, "analyste") || ApiAcces.a_le_role(par, "systeme") else Habilitation "{par} ne clôt pas d'évènement"
+        let g = genre_de.get(ev)
+        require g != () else Inconnu "évènement inconnu : {ev}"
+        let st = get_status(ev) ?? "signale"
+        require st == "confirme" else EtatInvalide "{ev} n'est pas confirmé ({st})"
+        let st_n = EvtNuages.etat(ev)
+        require st_n == "dissipe" else EtatInvalide "nuage de {ev} non dissipé ({st_n})"
+        if g == "collision" {
+            require (dossier_de.get(ev) ?? "") != "" else Insuffisant "collision {ev} sans dossier de preuve"
+            let st_c = EvtCollisions.etat(ev)
+            require st_c == "transmise" else Insuffisant "instruction de {ev} non transmise ({st_c})"
+        }
+        transition(ev, "confirme", "clos")
+        let _ = Journal.noter(h, "evenements", par, "{ev} clos")
+        return "clos"
+    }
+
+    on dossier(ev) {
+        return dossier_de.get(ev) ?? ""
+    }
+
+    on etat(ev) {
+        if genre_de.get(ev) == () { return "inconnu" }
+        return get_status(ev) ?? "signale"
+    }
+
+    on existe(ev) {
+        return genre_de.get(ev) != ()
+    }
+
+    on objets(ev) {
+        let o = objets_de.get(ev)
+        require o != () else Inconnu "évènement inconnu : {ev}"
+        return o
+    }
+
+    on genre(ev) {
+        let g = genre_de.get(ev)
+        require g != () else Inconnu "évènement inconnu : {ev}"
+        return g
+    }
+
+    on instant(ev) {
+        let i = instant_de.get(ev)
+        require i != () else Inconnu "évènement inconnu : {ev}"
+        return i
+    }
+
+    on evenement_de(objet) {
+        let ev = dernier_de.get(objet) ?? ""
+        if ev == "" { return "" }
+        let st = get_status(ev) ?? "signale"
+        if st == "clos" || st == "infirme" { return "" }
+        return ev
+    }
+
+    on en_souffrance(h, n) {
+        let lignes_s = []
+        for ev in genre_de.keys {
+            if len(lignes_s) >= n { break }
+            let st = get_status(ev) ?? "signale"
+            let sig = signale_le.get(ev) ?? 0
+            if st == "signale" && h - sig > DELAI_CONFIRMATION_MS {
+                lignes_s.push("{ev} | signalé non confirmé depuis {sig}")
+            } else if st == "confirme" && genre_de.get(ev) == "collision" && (dossier_de.get(ev) ?? "") == "" && h - sig > DELAI_GEL_MS {
+                lignes_s.push("{ev} | collision sans dossier de preuve")
+            }
+        }
+        return lignes_s
+    }
+}

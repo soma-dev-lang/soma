@@ -1,0 +1,126 @@
+// Façade du RÉFÉRENTIEL : États participants, organisations, catalogue des objets spatiaux.
+skeleton ApiRef {
+    face {
+        // Identifiant d'ORBITE elle-même ("ORG-ORBITE") : les rôles d'ORBITE ne valent que
+        // pour ses employés.
+        signal orbite() -> Org
+            calls RefOrg.orbite
+        // Vrai si l'État est participant et non suspendu.
+        signal etat_participant(etat: Etat) -> Bool
+            calls RefEtat.participant
+        // Inscrit une organisation (État, opérateur, fournisseur de capteurs) rattachée à son
+        // État de tutelle. Renvoie son id. Refus : Existe, Inconnu (État), Habilitation (par
+        // "superviseur"), QuatreYeux (valideur "direction").
+        signal inscrire_organisation(h: Horodatage, org: Org, nom: String, etat: Etat, genre: String, par: String, valideur: String) -> Org
+            calls RefOrg.inscrire
+        // Vrai si l'organisation existe et n'est pas radiée.
+        signal organisation_existe(org: Org) -> Bool
+            calls RefOrg.existe
+        // État de tutelle d'une organisation (celui qui la licencie et en répond, art. VI du
+        // traité de 1967). Refus : Inconnu.
+        signal etat_de(org: Org) -> Etat
+            calls RefOrg.etat_de
+        // Organisation qui représente un État (son autorité nationale). Refus : Inconnu.
+        signal org_de_etat(etat: Etat) -> Org
+            calls RefOrg.org_de_etat
+        // Catalogue un objet : nature, propriétaire (opérateur), État d'immatriculation, régime,
+        // propulsion. Renvoie son numéro "OBJ-<n>". Appelé par lancements (objets déployés),
+        // evenements (fragments) et observation (objets non corrélés, propriétaire "inconnu").
+        // Refus : Inconnu (propriétaire ou État), Habilitation (par "analyste" ou "systeme"). Un objet non attribué
+        // (débris d'origine inconnue) a pour propriétaire provisoire ORBITE (ApiRef.orbite()) et
+        // pour État d'immatriculation "" — jamais "inconnu".
+        signal cataloguer(h: Horodatage, nature: NatureObjet, proprietaire: Org, etat: Etat, regime: Regime, propulsion: Propulsion, masse: Masse, par: String) -> Objet
+            calls RefObjet.cataloguer, RefRegistre.ouvrir
+        // Cycle de vie d'un objet : "catalogue", "en_service", "hors_service", "rentre",
+        // "fragmente", "cimetiere", "retire" ; "inconnu" s'il n'est pas catalogué.
+        signal etat_objet(objet: Objet) -> String
+            calls RefObjet.etat
+        // Fait avancer le cycle de vie d'un objet (mise en service, perte de contrôle, rentrée,
+        // fragmentation, mise en orbite cimetière, retrait actif). `reference` : la cause constatée —
+        // campagne de rentrée (ApiReentrees.campagne_de), évènement de fragmentation, mission de retrait
+        // (ApiFinDeVie.missions_de) — "" pour une mise en service / hors service. Renvoie l'état atteint.
+        // Refus : Inconnu, EtatInvalide, NonEligible (cause non constatée : rentrée, évènement,
+        // capture), MotifRequis, Habilitation (par "analyste", "systeme" ou le "dynamicien" du
+        // propriétaire pour en_service/hors_service).
+        signal changer_etat_objet(h: Horodatage, objet: Objet, cible: String, reference: String, motif: String, par: String) -> String
+            calls RefObjet.mettre_en_service, RefObjet.mettre_hors_service, RefObjet.placer_cimetiere, RefObjet.constater_retrait, RefObjet.constater_rentree, RefObjet.constater_fragmentation
+        signal nature(objet: Objet) -> NatureObjet
+            calls RefObjet.nature
+        // Propriétaire (opérateur) ; "inconnu" pour un objet non attribué. Refus : Inconnu.
+        signal proprietaire(objet: Objet) -> Org
+            calls RefObjet.proprietaire
+        // État d'immatriculation (registre de la Convention de 1975). Refus : Inconnu.
+        signal etat_immatriculation(objet: Objet) -> Etat
+            calls RefRegistre.etat_de
+        signal regime(objet: Objet) -> Regime
+            calls RefObjet.regime
+        // Capacité de manœuvre ACTUELLE ("aucune" si hors service, débris ou propulsion perdue).
+        signal propulsion(objet: Objet) -> Propulsion
+            calls RefObjet.propulsion
+        // Vrai si l'objet peut être désigné pour manœuvrer : en service, propulsion ≠ "aucune", ni
+        // en anomalie (ApiEvenements.en_anomalie), ni passivé (ApiFinDeVie.passive).
+        signal peut_manoeuvrer(objet: Objet) -> Bool
+            calls RefObjet.peut_manoeuvrer
+        // Déclare la perte (ou la dégradation) de la propulsion d'un objet. Renvoie la
+        // propulsion retenue. Refus : Inconnu, Habilitation (le "dynamicien" du propriétaire, ou
+        // "analyste").
+        signal declarer_propulsion(h: Horodatage, objet: Objet, p: Propulsion, motif: String, par: String) -> Propulsion
+            calls RefObjet.declarer_propulsion, RefObjet.rouvrir_designations
+        // Vrai si l'objet est habité (station) : priorité absolue.
+        signal habite(objet: Objet) -> Bool
+            calls RefObjet.habite
+        // Objets catalogués d'un propriétaire (au plus 10 000).
+        signal objets_de(org: Org) -> List<String>
+            calls RefObjet.objets_de
+        // Genre d'une organisation : "etat", "operateur", "capteur" ou "orbite". Refus : Inconnu.
+        signal genre(org: Org) -> String
+            calls RefOrg.genre
+        // États participants (non suspendus), au plus 300.
+        signal etats_participants() -> List<String>
+            calls RefEtat.participants
+        // Organisations actives d'un genre ("" : tous), au plus 10 000.
+        signal organisations(genre: String) -> List<String>
+            calls RefOrg.organisations
+        // Catalogue paginé : au plus `n` (≤ 1 000) objets de numéro > `apres` ("" : depuis le début),
+        // du régime donné ("" : tous), dans l'ordre des numéros.
+        signal catalogue(regime: String, apres: Objet, n: Int) -> List<String>
+            calls RefObjet.catalogue
+        // Masse de l'objet (kg). Refus : Inconnu.
+        signal masse(objet: Objet) -> Masse
+            calls RefObjet.masse
+        // Valeur d'un champ de la fiche de l'objet ("proprietaire", "etat", "regime", "propulsion",
+        // "etat_objet", "nature") telle qu'elle était à `h` (propriété 6 : rejouer une décision).
+        // Refus : Inconnu (objet ou champ, ou objet pas encore catalogué à h).
+        signal valeur_au(objet: Objet, champ: String, h: Horodatage) -> String
+            calls RefObjet.valeur_au, RefHistorique.valeur_au
+        // Attribue un objet non attribué (propriétaire provisoire ORBITE) à son propriétaire et à
+        // son État d'immatriculation, quand l'observation ou un lancement l'a identifié.
+        // Renvoie le propriétaire. Refus : Inconnu, EtatInvalide (déjà attribué), Incoherent, Plein, Habilitation
+        // ("analyste"), QuatreYeux (valideur "superviseur").
+        signal attribuer(h: Horodatage, objet: Objet, proprietaire: Org, etat: Etat, par: String, valideur: String) -> Org
+            calls RefObjet.attribuer, RefRegistre.requalifier
+        // Inscrit l'objet au registre de l'État d'immatriculation (Convention de 1975) avec son
+        // numéro national. Renvoie l'état de l'entrée. Refus : Inconnu, Existe, Doublon (numéro déjà
+        // attribué), MotifRequis, EtatInvalide, Habilitation ("autorite" de l'État d'immatriculation, ou "systeme").
+        signal immatriculer(h: Horodatage, objet: Objet, numero: String, par: String) -> String
+            calls RefRegistre.immatriculer
+        // Vrai si l'objet est inscrit au registre de son État d'immatriculation.
+        signal immatricule(objet: Objet) -> Bool
+            calls RefRegistre.est_immatricule
+        // Change le régime orbital d'un objet après un transfert vérifié. Renvoie le régime.
+        // Refus : Inconnu, EtatInvalide, Habilitation ("analyste" ou "systeme").
+        signal changer_regime(h: Horodatage, objet: Objet, r: Regime, par: String) -> Regime
+            calls RefObjet.changer_regime
+        // Change l'État de tutelle d'une organisation (changement de contrôle approuvé par les
+        // deux États). Renvoie le nouvel État. Refus : Inconnu, EtatInvalide (État non
+        // participant), Habilitation ("superviseur"), QuatreYeux (valideur "direction").
+        signal changer_tutelle(h: Horodatage, org: Org, etat: Etat, par: String, valideur: String) -> Etat
+            calls RefOrg.changer_tutelle
+        // Balayage des échéances du sous-système à `h` (délais, expirations, rondes), appelé par
+        // l'horloge d'ORBITE (Horloge.battre) — le SEUL point d'entrée du temps : aucun signal de
+        // ref ne lit l'horloge lui-même. Renvoie le nombre d'objets dont l'état a changé.
+        // Refus : Habilitation (par "systeme").
+        signal balayer(h: Horodatage, par: String) -> Int
+            calls RefBalayage.balayer, RefRegistre.constater_retards, RefCession.balayer, RefModification.balayer
+    }
+}

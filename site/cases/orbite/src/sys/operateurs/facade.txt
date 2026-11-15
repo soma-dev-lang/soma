@@ -1,0 +1,10 @@
+ApiOperateurs.est_actif: calls OpMembres.est_actif
+ApiOperateurs.statut: calls OpMembres.etat
+ApiOperateurs.astreinte: calls OpAstreinte.en_service
+ApiOperateurs.joignable: calls OpExercices.joignable
+ApiOperateurs.suspendre: calls OpMembres.suspendre; moves OpMembres.adhesion: actif -> suspendu
+ApiOperateurs.retablir: calls OpMembres.retablir; moves OpMembres.adhesion: suspendu -> actif
+ApiOperateurs.delai_reponse: calls OpEngagements.delai
+ApiOperateurs.actifs: calls OpMembres.actifs
+ApiOperateurs.contacts: calls OpContacts.contacts_echelon
+ApiOperateurs.balayer: calls OpRondes.balayer

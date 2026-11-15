@@ -1,0 +1,220 @@
+// observation — RÉSEAU DE CAPTEURS : fournisseurs agréés et capteurs (radar, optique, laser),
+// étalonnage périodique, pannes, retrait. Un capteur n'alimente la détermination d'orbite que
+// s'il est « en_service » : étalonné depuis moins de VALIDITE_ETALONNAGE_MS et fourni par un
+// fournisseur agréé. Le nombre de capteurs en service mesure la couverture (moins de 3 : dégradée).
+
+// Technique de mesure d'un capteur.
+cell type ObsGenreCapteur = String where value == "radar" || value == "optique" || value == "laser"
+// Cause d'une mise hors service.
+cell type ObsMotifPanne = String where value == "materiel" || value == "silence" || value == "etalonnage_echu" || value == "derive" || value == "meteo_locale" || value == "autre"
+
+// Fournisseurs de mesures : organisations (ApiRef, genre fournisseur de capteurs) agréées par
+// ORBITE pour verser des mesures. L'agrément porte l'accord de partage et la qualité exigée.
+skeleton ObsFournisseurs {
+    const MAX_FOURNISSEURS = 500
+    memory {
+        demande_le: Map<Org, Horodatage> [persistent]     // fournisseur → date de la demande d'agrément, ms (existence)
+        agree_le: Map<Org, Horodatage> [persistent]       // fournisseur → date du dernier agrément, ms
+        agree_par: Map<Org, String> [persistent]          // fournisseur → auteur de l'agrément (preuve quatre yeux)
+        motif_suspension: Map<Org, String> [persistent]   // fournisseur → motif de la suspension en cours
+        invariant demande_le.size <= MAX_FOURNISSEURS
+        invariant agree_le.size <= MAX_FOURNISSEURS
+        invariant agree_par.size <= MAX_FOURNISSEURS
+        invariant motif_suspension.size <= MAX_FOURNISSEURS
+    }
+    // Agrément d'un fournisseur (id = Org du fournisseur).
+    state agrement {
+        initial: demande
+        demande -> agree          // agreer
+        demande -> retire         // retirer : demande abandonnée ou refusée
+        agree -> suspendu         // suspendre : qualité insuffisante, fournisseur suspendu dans ref
+        suspendu -> agree         // retablir
+        agree -> retire           // retirer
+        suspendu -> retire        // retirer
+    }
+    face {
+        // Dépose la demande d'agrément de `fournisseur` (organisation existante de genre "capteur"
+        // ou "operateur" : ApiRef.genre ; adhérente à l'accord de partage : ApiDonnees.adherent).
+        // Renvoie "demande".
+        // Rôle exigé : "administrateur_operateur" du fournisseur (ApiAcces.agit_pour) ou "exploitant"
+        // d'ORBITE. Refus : Inconnu (organisation), NonEligible (genre "etat" ou "orbite", non
+        // adhérent), Existe, Habilitation, Plein.
+        signal demander(h: Horodatage, fournisseur: Org, par: String) -> String
+            writes demande_le
+            calls ApiRef.organisation_existe, ApiRef.genre, ApiDonnees.adherent, ApiAcces.a_le_role, ApiAcces.agit_pour, Journal.noter
+        // Agrée le fournisseur après revue de ses capteurs témoins. Renvoie "agree".
+        // Règle entre sous-systèmes (ref, même id Org) : demande -> agree when RefOrg.active —
+        // le fournisseur est une organisation active du registre (require fournisseur ∈
+        // ApiRef.organisations(ApiRef.genre(fournisseur)) : ni seulement inscrite, ni radiée).
+        // Rôle exigé : "exploitant" d'ORBITE, contre-signé par `valideur` "superviseur" (ApiAcces.quatre_yeux).
+        // Refus : Inconnu, EtatInvalide (pas en demande, ou organisation non active chez ref),
+        // NonEligible (non adhérent), Habilitation, QuatreYeux.
+        signal agreer(h: Horodatage, fournisseur: Org, par: String, valideur: String) -> String
+            reads demande_le
+            writes agree_le, agree_par
+            moves demande -> agree when RefOrg.active
+            calls ApiRef.organisations, ApiRef.genre, ApiDonnees.adherent, ApiAcces.a_le_role, ApiAcces.quatre_yeux, Journal.noter
+        // Suspend l'agrément : les capteurs du fournisseur ne peuvent plus être (re)mis en service
+        // et leurs mesures sont rejetées (ObsMesures.valider lit l'état du capteur, lui-même lié).
+        // Renvoie "suspendu". Rôle exigé : "exploitant" ou "superviseur" d'ORBITE, ou "systeme"
+        // (retrait d'adhésion constaté). Refus : Inconnu, EtatInvalide, MotifRequis, Habilitation.
+        signal suspendre(h: Horodatage, fournisseur: Org, motif: String, par: String) -> String
+            writes motif_suspension
+            moves agree -> suspendu
+            calls ApiAcces.a_le_role, ObsCapteurs.suspendre_de, Journal.noter
+        // Rétablit un agrément suspendu, si le fournisseur est toujours adhérent. Renvoie "agree".
+        // Rôle exigé : "superviseur" d'ORBITE, distinct de l'auteur de la suspension.
+        // Refus : Inconnu, EtatInvalide, NonEligible, Habilitation, QuatreYeux.
+        signal retablir(h: Horodatage, fournisseur: Org, par: String) -> String
+            writes motif_suspension, agree_le
+            moves suspendu -> agree
+            calls ApiDonnees.adherent, ApiAcces.a_le_role, Journal.noter
+        // Retire définitivement le fournisseur ; tous ses capteurs sont retirés (ObsCapteurs.retirer_de).
+        // Renvoie "retire". Rôle exigé : "superviseur" d'ORBITE ou "administrateur_operateur" du
+        // fournisseur (retrait volontaire). Refus : Inconnu, EtatInvalide (déjà retiré), MotifRequis, Habilitation.
+        signal retirer(h: Horodatage, fournisseur: Org, motif: String, par: String) -> String
+            reads demande_le
+            moves demande -> retire, agree -> retire, suspendu -> retire
+            calls ApiAcces.a_le_role, ApiAcces.agit_pour, ObsCapteurs.retirer_de, Journal.noter
+        // État de l'agrément : "demande", "agree", "suspendu", "retire", ou "inconnu".
+        signal etat(fournisseur: Org) -> String
+            reads agrement, demande_le
+    }
+}
+
+// Capteurs du réseau (id "CAP-<n>"), chacun rattaché à UN fournisseur pour toute sa vie.
+skeleton ObsCapteurs {
+    const MAX_CAPTEURS = 2000
+    // Validité d'un étalonnage : 30 jours.
+    const VALIDITE_ETALONNAGE_MS = 2592000000
+    // Silence au-delà duquel un capteur en service est présumé en panne : 6 h.
+    const SILENCE_MAX_MS = 21600000
+    memory {
+        fournisseur_de: Map<String, Org> [persistent]          // capteur → fournisseur ; écrit une fois par declarer, jamais effacé (lien de règle)
+        genre_de: Map<String, ObsGenreCapteur> [persistent]     // capteur → technique
+        regimes_de: Map<String, List<String>> [persistent]      // capteur → régimes couverts (Regime)
+        precision_de: Map<String, Distance> [persistent]        // capteur → précision nominale (1 σ), m
+        etalonne_le: Map<String, Horodatage> [persistent]       // capteur → date du dernier étalonnage validé, ms
+        derniere_mesure: Map<String, Horodatage> [persistent]   // capteur → horodatage de la dernière mesure reçue, ms
+        motif_panne: Map<String, ObsMotifPanne> [persistent]    // capteur → cause de la mise hors service en cours
+        compteur: Map<String, Int> [persistent]                 // "capteurs" → dernier numéro attribué
+        invariant fournisseur_de.size <= MAX_CAPTEURS
+        invariant genre_de.size <= MAX_CAPTEURS
+        invariant regimes_de.size <= MAX_CAPTEURS
+        invariant precision_de.size <= MAX_CAPTEURS
+        invariant etalonne_le.size <= MAX_CAPTEURS
+        invariant derniere_mesure.size <= MAX_CAPTEURS
+        invariant motif_panne.size <= MAX_CAPTEURS
+        invariant compteur.size <= 1
+        invariant compteur >= 0 && compteur <= MAX_CAPTEURS
+        invariant precision_de > 0
+    }
+    // Cycle de vie d'un capteur (id = "CAP-<n>").
+    state cycle {
+        initial: declare
+        declare -> en_etalonnage      // etalonner : campagne d'étalonnage ouverte
+        en_etalonnage -> en_service   // valider_etalonnage, fournisseur agréé
+        en_service -> en_etalonnage   // etalonner : étalonnage périodique ou après dérive
+        en_service -> en_panne        // declarer_panne, veiller (silence, étalonnage échu)
+        en_etalonnage -> en_panne     // declarer_panne : étalonnage impossible
+        en_panne -> en_etalonnage     // etalonner : remise en service après réparation
+        declare -> retire             // retirer
+        en_etalonnage -> retire       // retirer
+        en_service -> retire          // retirer
+        en_panne -> retire            // retirer
+    }
+    face {
+        // Déclare un capteur de `fournisseur` (agrément "agree" ou "demande"). Renvoie "CAP-<n>".
+        // `regimes` : régimes couverts (au moins un) ; `precision` : 1 σ nominal en mètres (> 0).
+        // Rôle exigé : "capteur" ou "administrateur_operateur" du fournisseur (ApiAcces.agit_pour),
+        // ou "exploitant" d'ORBITE. Seul écrivain de fournisseur_de.
+        // Refus : Inconnu (fournisseur), NonEligible (fournisseur retiré ou suspendu), HorsBornes
+        // (regimes vide ou inconnu, precision nulle), Habilitation, Plein.
+        signal declarer(h: Horodatage, fournisseur: Org, genre: ObsGenreCapteur, regimes: List<String>, precision: Distance, par: String) -> String
+            writes fournisseur_de, genre_de, regimes_de, precision_de, compteur
+            calls ObsFournisseurs.etat, ApiAcces.a_le_role, ApiAcces.agit_pour, Journal.noter
+        // Ouvre un étalonnage (passes sur des satellites laser de référence). Renvoie "en_etalonnage".
+        // Rôle exigé : "capteur" du fournisseur ou "exploitant" d'ORBITE.
+        // Refus : Inconnu, EtatInvalide (retiré, déjà en étalonnage), Habilitation.
+        signal etalonner(h: Horodatage, capteur: String, par: String) -> String
+            reads fournisseur_de
+            moves declare -> en_etalonnage, en_service -> en_etalonnage, en_panne -> en_etalonnage
+            calls ApiAcces.a_le_role, ApiAcces.agit_pour, Journal.noter
+        // Valide l'étalonnage : `biais` mesuré (m) sur les références ; au-delà de 3 × precision,
+        // refus Insuffisant (le capteur reste en étalonnage). Met en service. Renvoie "en_service".
+        // Rôle exigé : "analyste" d'ORBITE (jamais le fournisseur lui-même : contrôle indépendant).
+        // Refus : Inconnu, EtatInvalide, Insuffisant, NonEligible (fournisseur non agréé), Habilitation.
+        signal valider_etalonnage(h: Horodatage, capteur: String, biais: Distance, par: String) -> String
+            reads fournisseur_de, precision_de
+            writes etalonne_le, motif_panne
+            moves en_etalonnage -> en_service when ObsFournisseurs.agree via fournisseur_de
+            calls ObsFournisseurs.etat, ApiAcces.a_le_role, Journal.noter
+        // Met un capteur hors service. Ses tâches affectées ou en cours sont interrompues
+        // (ObsTaches.interrompre_capteur) et redemandées sur d'autres capteurs. Renvoie "en_panne".
+        // Rôle exigé : "capteur" du fournisseur, "exploitant" d'ORBITE, ou "systeme".
+        // Refus : Inconnu, EtatInvalide, Habilitation.
+        signal declarer_panne(h: Horodatage, capteur: String, motif: ObsMotifPanne, par: String) -> String
+            reads fournisseur_de
+            writes motif_panne
+            moves en_service -> en_panne, en_etalonnage -> en_panne
+            calls ApiAcces.a_le_role, ApiAcces.agit_pour, ObsTaches.interrompre_capteur, Journal.noter
+        // Ronde (appelée par ObsBalayage.balayer, par = "systeme") : met en panne tout capteur en service dont la dernière
+        // mesure date de plus de SILENCE_MAX_MS ("silence") ou l'étalonnage de plus de
+        // VALIDITE_ETALONNAGE_MS ("etalonnage_echu") ; sous 3 capteurs en service, déclare un incident
+        // de gravité 2 (ApiOperations.declarer_incident). Renvoie le nombre de capteurs mis en panne.
+        // Refus : Habilitation (par ≠ "systeme").
+        signal veiller(h: Horodatage, par: String) -> Int
+            reads etalonne_le, derniere_mesure
+            writes motif_panne
+            moves en_service -> en_panne
+            calls ObsTaches.interrompre_capteur, ApiOperations.declarer_incident, Journal.noter
+        // Note la réception d'une mesure (appelé par ObsMesures.recevoir) : rafraîchit derniere_mesure.
+        // Renvoie h. Refus : Inconnu.
+        signal noter_mesure(h: Horodatage, capteur: String) -> Horodatage
+            reads fournisseur_de
+            writes derniere_mesure
+        // Retire un capteur, définitivement. Renvoie "retire". Rôle exigé : "administrateur_operateur"
+        // du fournisseur ou "superviseur" d'ORBITE. Refus : Inconnu, EtatInvalide (déjà retiré),
+        // MotifRequis, Habilitation.
+        signal retirer(h: Horodatage, capteur: String, motif: String, par: String) -> String
+            reads fournisseur_de
+            moves declare -> retire, en_etalonnage -> retire, en_service -> retire, en_panne -> retire
+            calls ApiAcces.a_le_role, ApiAcces.agit_pour, ObsTaches.interrompre_capteur, Journal.noter
+        // Met en panne (motif "autre") tous les capteurs en service ou en étalonnage du fournisseur
+        // suspendu (appelé par ObsFournisseurs.suspendre). Renvoie leur nombre.
+        signal suspendre_de(h: Horodatage, fournisseur: Org) -> Int
+            reads fournisseur_de
+            writes motif_panne
+            moves en_service -> en_panne, en_etalonnage -> en_panne
+            calls ObsTaches.interrompre_capteur, Journal.noter
+        // Retire tous les capteurs du fournisseur (appelé par ObsFournisseurs.retirer). Renvoie leur nombre.
+        signal retirer_de(h: Horodatage, fournisseur: Org) -> Int
+            reads fournisseur_de
+            moves declare -> retire, en_etalonnage -> retire, en_service -> retire, en_panne -> retire
+            calls ObsTaches.interrompre_capteur, Journal.noter
+        // État du capteur : "declare", "en_etalonnage", "en_service", "en_panne", "retire", ou "inconnu".
+        signal etat(capteur: String) -> String
+            reads cycle, fournisseur_de
+        // Fournisseur du capteur ; Refus : Inconnu.
+        signal fournisseur(capteur: String) -> Org
+            reads fournisseur_de
+        // Technique du capteur ; Refus : Inconnu.
+        signal genre(capteur: String) -> ObsGenreCapteur
+            reads genre_de
+        // Précision nominale du capteur (1 σ, m) ; Refus : Inconnu.
+        signal precision(capteur: String) -> Distance
+            reads precision_de
+        // Vrai si le capteur est en service et couvre `regime`.
+        signal couvre(capteur: String, regime: Regime) -> Bool
+            reads cycle, regimes_de
+        // Nombre de capteurs en service (moins de 3 : couverture dégradée).
+        signal en_service_nb() -> Int
+            reads cycle, fournisseur_de
+        // Capteurs en service couvrant `regime`, au plus `n`, les moins chargés d'abord
+        // (charge lue par ObsTaches.charge).
+        signal disponibles(regime: Regime, n: Int) -> List<String>
+            requires n > 0 && n <= 100
+            reads cycle, regimes_de
+            calls ObsTaches.charge
+    }
+}

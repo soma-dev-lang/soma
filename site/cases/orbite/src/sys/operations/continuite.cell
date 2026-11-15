@@ -1,0 +1,93 @@
+// OPÉRATIONS — tests de continuité : chaque scénario de défaillance est exercé au moins une
+// fois par an, hors urgence, et son résultat mesuré contre le RTO. Un scénario jamais exercé
+// est en retard (pas d'exemption silencieuse). Les bascules de test se font « à blanc » sur le
+// site de secours, sans déplacer la production (une bascule réelle exige une crise).
+
+// Scénario exercé. "alerte_bout_en_bout" : une alerte de niveau 3 simulée part, l'opérateur
+// fictif d'exercice se tait, l'escalade et l'arbitrage reprennent la main avant l'échéance
+// (propriété 5) ; "perte_capteurs" : couverture < 3 capteurs, mode dégradé de l'observation ;
+// "perte_passerelle" : notification manuelle des alertes.
+cell type OpsScenario = String where value == "bascule_a_blanc" || value == "restauration_sauvegarde" || value == "perte_passerelle" || value == "perte_capteurs" || value == "alerte_bout_en_bout" || value == "indisponibilite_equipe"
+// Résultat d'un test : "reussi" (objectif tenu dans le RTO), "partiel" (tenu hors RTO, ou avec
+// un écart mineur), "echoue".
+cell type OpsResultat = String where value == "reussi" || value == "partiel" || value == "echoue"
+
+// Un test de continuité planifié, exécuté et rapporté.
+skeleton OpsTest {
+    const MAX_TESTS = 100000
+    const MAX_ECARTS = 50
+    // Périodicité exigée par scénario (ms) : 365 jours.
+    const PERIODICITE = 31536000000
+    // RTO d'un test (ms) : 4 h entre début et reprise.
+    const RTO = 14400000
+    memory {
+        scenario: Map<String, OpsScenario> [persistent]
+        prevu_a: Map<String, Horodatage> [persistent]
+        debut: Map<String, Horodatage> [persistent]
+        reprise: Map<String, Duree> [persistent]                  // durée de reprise mesurée (ms)
+        resultat: Map<String, OpsResultat> [persistent]
+        ecarts: Map<String, List<String>> [persistent]            // constats, versés au plan d'actions
+        responsable: Map<String, String> [persistent]
+        // Dernier test "reussi" par scénario (clé OpsScenario) : instant de fin.
+        dernier_reussi: Map<String, Horodatage> [persistent]
+        invariant scenario.size <= 100000
+        invariant dernier_reussi.size <= 6
+    }
+    // `termine`, `interrompu` et `annule` sont terminaux.
+    state test {
+        initial: planifie
+        planifie -> en_cours        // demarrer
+        planifie -> annule          // annuler
+        en_cours -> termine         // rapporter
+        en_cours -> interrompu      // interrompre : une urgence réelle survient
+    }
+    face {
+        // Planifie un test. Renvoie l'id. Refus : Existe, HorsBornes (prevu < h), Plein,
+        // Habilitation (par "superviseur" d'ORBITE ; resp "exploitant").
+        signal planifier(h: Horodatage, t: String, s: OpsScenario, prevu: Horodatage, resp: String, par: String) -> String
+            writes scenario, prevu_a, responsable
+            calls ApiAcces.a_le_role, Journal.noter
+        // Démarre le test : seulement hors urgence (aucun gel, gel d'urgence — dont rapprochement
+        // de niveau 3 dans les 6 h —, incident majeur ni bascule en transition) et hors mode dégradé du sous-système exercé. Prévient par la
+        // passerelle les opérateurs d'exercice. Renvoie "en_cours".
+        // Refus : Inconnu, EtatInvalide, Delai (h < prevu_a), Suspendu (urgence ou mode
+        // dégradé en cours : reporter = annuler et replanifier), Habilitation (par = responsable).
+        signal demarrer(h: Horodatage, t: String, par: String) -> String
+            writes debut
+            reads scenario, prevu_a, responsable
+            moves planifie -> en_cours
+            calls OpsGel.gel_a, OpsGelUrgence.actif_a, OpsIncident.majeur_en_cours, OpsBascule.en_transition, OpsDegradation.est_degrade, Journal.noter
+        // Une urgence réelle survient (rapprochement de niveau 3 à moins de 6 h, incident majeur) :
+        // le test s'arrête et la production prime. Renvoie "interrompu".
+        // Refus : Inconnu, EtatInvalide, MotifRequis, Habilitation (par = responsable, ou "systeme").
+        signal interrompre(h: Horodatage, t: String, motif: String, par: String) -> String
+            reads responsable
+            moves en_cours -> interrompu
+            calls Journal.noter
+        // Renonce à un test planifié. Renvoie "annule". Refus : Inconnu, EtatInvalide, MotifRequis,
+        // Habilitation (par "superviseur").
+        signal annuler(h: Horodatage, t: String, motif: String, par: String) -> String
+            reads scenario
+            moves planifie -> annule
+            calls ApiAcces.a_le_role, Journal.noter
+        // Rapporte le résultat : durée de reprise (ms) et écarts. "reussi" exige reprise ≤ RTO et
+        // aucun écart ; il met à jour dernier_reussi[scenario] = h. Renvoie le résultat.
+        // Refus : Inconnu, EtatInvalide, Incoherent (resultat "reussi" avec reprise > RTO ou
+        // des écarts), Plein (> MAX_ECARTS), QuatreYeux (valideur "superviseur", ≠ responsable).
+        signal rapporter(h: Horodatage, t: String, res: OpsResultat, reprise_ms: Duree, constats: List<String>, par: String, valideur: String) -> OpsResultat
+            writes reprise, resultat, ecarts, dernier_reussi
+            reads scenario, debut, responsable
+            moves en_cours -> termine
+            calls ApiAcces.quatre_yeux, Journal.noter
+        // Vrai si le scénario a un test réussi depuis moins de PERIODICITE à `h`.
+        signal a_jour(s: OpsScenario, h: Horodatage) -> Bool
+            reads dernier_reussi
+        // Scénarios sans test réussi depuis PERIODICITE à `h` — y compris ceux jamais exercés —, triés.
+        signal en_retard(h: Horodatage) -> List<String>
+            reads dernier_reussi
+        // État du test ("planifie", "en_cours", "termine", "interrompu", "annule") ; "inconnu"
+        // si jamais planifié.
+        signal etat(t: String) -> String
+            reads test, resultat, scenario
+    }
+}

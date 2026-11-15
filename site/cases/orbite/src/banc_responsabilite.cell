@@ -1,0 +1,10 @@
+use app
+use commun::journal_chair
+use commun::horloge_chair
+use sys::responsabilite::chair::api
+use sys::responsabilite::chair::dossiers
+use sys::responsabilite::chair::pieces
+use sys::responsabilite::chair::reclamations
+use sys::responsabilite::chair::fautes
+use sys::responsabilite::chair::assurance
+use sys::responsabilite::chair::conservation

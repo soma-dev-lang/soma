@@ -1,0 +1,119 @@
+// Corps du mode dégradé (operations).
+
+flesh OpsDegradation {
+    on decreter(h, ss, rep, incident, par) {
+        require ApiAcces.a_le_role(par, "exploitant") || ApiAcces.a_le_role(par, "superviseur") else Habilitation "décréter : exploitant ou superviseur d'ORBITE"
+        let ss_cle = to_string(ss)
+        require len(rep) > 0 else Incoherent "aucune procédure de repli"
+        require len(rep) <= MAX_REPLIS else HorsBornes "trop de procédures de repli"
+        for rp in rep {
+            require _repli_admis(ss_cle, to_string(rp)) else Incoherent "repli {rp} sans objet pour {ss_cle}"
+        }
+        let st_i = OpsIncident.etat(incident)
+        require st_i != "inconnu" else Inconnu "incident '{incident}' inconnu"
+        require st_i != "resolu" && st_i != "clos" && st_i != "classe" else EtatInvalide "incident {incident} déjà résolu"
+        require to_string(OpsIncident.vise_de(incident)) == ss_cle else EtatInvalide "l'incident {incident} vise un autre sous-système"
+        let exige_crise = contains(rep, "lecture_seule") || contains(rep, "coordination_telephonique")
+        if exige_crise {
+            require OpsCrise.etat(incident) == "active" else Habilitation "lecture seule et coordination téléphonique : crise active exigée"
+        }
+        let deja = (get_status(ss_cle) ?? "nominal") == "degrade"
+        let en_vigueur_l = if deja { replis.get(ss_cle) ?? [] } else { [] }
+        for rp in rep {
+            if !contains(en_vigueur_l, rp) { en_vigueur_l.push(rp) }
+        }
+        require len(en_vigueur_l) <= MAX_REPLIS else HorsBornes "trop de procédures de repli"
+        if !deja {
+            transition(ss_cle, "nominal", "degrade")
+            // réexamen d'abord : l'invariant reexamen ≥ depuis tient à chaque écriture
+            reexamen.set(ss_cle, h + DUREE_MAX)
+            depuis.set(ss_cle, h)
+            incident_lie.set(ss_cle, incident)
+            decrete_par.set(ss_cle, par)
+        }
+        replis.set(ss_cle, en_vigueur_l)
+        let texte_r = join(en_vigueur_l.map(x => to_string(x)), ",")
+        historique.push("{h} | {ss_cle} | decrete | {texte_r} | {par}")
+        let _ = Journal.noter(h, "operations", par, "mode dégradé {ss_cle} décrété ({texte_r}) pour l'incident {incident}")
+        return len(en_vigueur_l)
+    }
+
+    on constater_couverture(h, par) {
+        require ApiAcces.a_le_role(par, "systeme") else Habilitation "sonde de couverture : systeme"
+        let n = ApiObservation.capteurs_en_service()
+        if n >= CAPTEURS_MIN { return n }
+        if (get_status("observation") ?? "nominal") == "degrade" { return n }
+        let incident = "COUV-{h}"
+        let _ = OpsIncident.declarer(h, incident, 2, "observation", "couverture des capteurs insuffisante : {n} en service", h, par)
+        transition("observation", "nominal", "degrade")
+        reexamen.set("observation", h + DUREE_MAX)
+        depuis.set("observation", h)
+        incident_lie.set("observation", incident)
+        decrete_par.set("observation", par)
+        replis.set("observation", ["covariances_elargies", "capteurs_partenaires"])
+        historique.push("{h} | observation | decrete | covariances_elargies,capteurs_partenaires | {par}")
+        let _ = Journal.noter(h, "operations", par, "couverture : {n} capteurs, observation dégradée (incident {incident})")
+        return n
+    }
+
+    on prolonger(h, ss, motif, par, valideur) {
+        require ApiAcces.a_le_role(par, "superviseur") else Habilitation "prolonger : superviseur d'ORBITE"
+        let ss_cle = to_string(ss)
+        require (get_status(ss_cle) ?? "nominal") == "degrade" else EtatInvalide "{ss_cle} n'est pas en mode dégradé"
+        require len(motif) > 0 else MotifRequis "motif de prolongation requis"
+        require valideur != par && ApiAcces.quatre_yeux(par, valideur) && ApiAcces.a_le_role(valideur, "direction") else QuatreYeux "prolongation contre-signée par la direction"
+        let echeance = h + DUREE_MAX
+        reexamen.set(ss_cle, echeance)
+        historique.push("{h} | {ss_cle} | prolonge | {motif} | {par}")
+        let _ = Journal.noter(h, "operations", par, "mode dégradé {ss_cle} prolongé jusqu'à {echeance} : {motif}")
+        return echeance
+    }
+
+    on lever(h, ss, reportees, par, valideur) {
+        require ApiAcces.a_le_role(par, "exploitant") else Habilitation "lever : exploitant d'ORBITE"
+        require valideur != par && ApiAcces.quatre_yeux(par, valideur) && ApiAcces.a_le_role(valideur, "superviseur") else QuatreYeux "levée contre-signée par un superviseur"
+        let ss_cle = to_string(ss)
+        require (get_status(ss_cle) ?? "nominal") == "degrade" else EtatInvalide "{ss_cle} n'est pas en mode dégradé"
+        require !OpsIncident.est_degrade(ss) else EtatInvalide "un incident non résolu vise encore {ss_cle}"
+        if ss_cle == "observation" {
+            require ApiObservation.capteurs_en_service() >= CAPTEURS_MIN else EtatInvalide "couverture des capteurs encore insuffisante"
+        }
+        require reportees else Insuffisant "les saisies faites en repli doivent être reportées"
+        transition(ss_cle, "degrade", "nominal")
+        replis.delete(ss_cle)
+        historique.push("{h} | {ss_cle} | leve | - | {par}")
+        let _ = Journal.noter(h, "operations", par, "mode dégradé {ss_cle} levé, contre-signé par {valideur}")
+        return "nominal"
+    }
+
+    on est_degrade(ss) {
+        return (get_status(to_string(ss)) ?? "nominal") == "degrade"
+    }
+
+    on replis_de(ss) {
+        let ss_cle = to_string(ss)
+        if (get_status(ss_cle) ?? "nominal") != "degrade" { return [] }
+        return replis.get(ss_cle) ?? []
+    }
+
+    on a_reexaminer(h) {
+        let dus = []
+        for e in reexamen.entries {
+            if (get_status(e.key) ?? "nominal") == "degrade" && h >= e.value { dus.push(e.key) }
+        }
+        return dus.sort()
+    }
+
+    // Repli « avec objet » pour un sous-système (voir OpsRepli).
+    on _repli_admis(ss: String, rp: String) {
+        return match rp {
+            "criblage_reduit" -> ss == "conjonctions"
+            "covariances_elargies" -> ss == "observation" || ss == "ephemerides" || ss == "conjonctions"
+            "coordination_telephonique" -> ss == "coordination" || ss == "escalade"
+            "notification_manuelle" -> ss == "passerelle" || ss == "escalade" || ss == "conjonctions"
+            "capteurs_partenaires" -> ss == "observation"
+            "lecture_seule" -> true
+            _ -> false
+        }
+    }
+}

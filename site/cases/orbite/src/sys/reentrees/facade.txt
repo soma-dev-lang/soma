@@ -1,0 +1,10 @@
+ApiReentrees.prevoir: calls ReeCampagne.prevoir
+ApiReentrees.en_campagne: calls ReeCampagne.en_campagne
+ApiReentrees.constater: calls ReeCampagne.constater ; moves ReeCampagne.cycle: imminente -> rentree, echue -> rentree
+ApiReentrees.a_risque: calls ReeCampagne.campagne_de, ReeRisque.a_risque
+ApiReentrees.fenetre: calls ReeCampagne.campagne_de, ReeCampagne.fenetre
+ApiReentrees.victimes_ppm: calls ReeCampagne.campagne_de, ReeRisque.victimes_de
+ApiReentrees.controlee_approuvee: calls ReeCampagne.campagne_de, ReeControlee.actif
+ApiReentrees.constatee: calls ReeCampagne.constatee
+ApiReentrees.balayer: calls ReeCampagne.balayer
+ApiReentrees.campagne_de: calls ReeCampagne.campagne_de

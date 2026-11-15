@@ -1,0 +1,85 @@
+// ephemerides — CONTESTATION D'UN REJET : l'orbite observée par ORBITE peut avoir tort
+// (mesures rares, manœuvre réelle et annoncée que l'observation n'a pas encore vue). Le
+// propriétaire conteste un rejet "incoherence" ou "nee_perimee" ; un analyste instruit, en
+// demandant au besoin un suivi renforcé ; l'acceptation (quatre yeux) réhabilite le dépôt.
+// Id de la contestation = id du dépôt contesté : une contestation par dépôt, pas de lien à
+// écrire (la règle EphDepot rejetee -> validee lit EphContestation.acceptee au même id).
+
+skeleton EphContestation {
+    const MAX_CONTESTATIONS = 1000000
+    // 24 h, ms : délai pour contester après le rejet, et délai d'instruction par ORBITE.
+    const DELAI = 86400000
+
+    memory {
+        objet_de: Map<String, Objet> [persistent]        // contestation → objet du dépôt contesté
+        ouverte_le: Map<String, Horodatage> [persistent] // contestation → ouverture, ms
+        echeance: Map<String, Horodatage> [persistent]   // contestation → limite d'instruction, ms
+        conteste_par: Map<String, String> [persistent]   // contestation → "par|motif"
+        suivi_demande: Map<String, String> [persistent]  // contestation → id de la demande de suivi renforcé (ApiObservation)
+        decide_par: Map<String, String> [persistent]     // contestation → "par|valideur|motif" de la décision
+        invariant objet_de.size <= MAX_CONTESTATIONS
+        // L'échéance suit l'ouverture.
+        invariant (ouverte_le ?? 0) <= (echeance ?? 0)
+    }
+
+    // Cycle d'une contestation (id = dépôt contesté).
+    state contestation {
+        initial: ouverte
+        ouverte -> acceptee                         // accepter (le dépôt doit être encore rejeté)
+        ouverte -> refusee                          // refuser
+        ouverte -> caduque                          // classer : échéance passée, ou dépôt plus récent validé
+    }
+
+    face {
+        // Conteste le rejet d'un dépôt pour "incoherence" ou "nee_perimee", au plus DELAI après
+        // le dépôt. Par le "dynamicien" ou le "chef_de_mission" du propriétaire (ApiAcces.agit_pour
+        // EphDepot.operateur_de) — rôle d'opérateur. Échéance d'instruction : h + DELAI.
+        // Renvoie l'id (celui du dépôt).
+        // Refus : Inconnu (dépôt), EtatInvalide (dépôt non rejeté, ou rejeté pour un autre
+        // motif), Existe (déjà contesté), Delai, MotifRequis, Habilitation, Plein.
+        signal contester(h: Horodatage, depot: String, motif: String, par: String) -> String
+            writes objet_de, ouverte_le, echeance, conteste_par
+            calls EphDepot.etat_de, EphDepot.fiche, EphDepot.motif_rejet_de, ApiAcces.a_le_role, ApiAcces.agit_pour, Journal.noter
+
+        // Demande à l'observation un suivi renforcé de l'objet (priorité 2, 12 h) pour trancher.
+        // Par "analyste" d'ORBITE. Renvoie l'id de la demande.
+        // Refus : Inconnu, EtatInvalide (pas ouverte), Habilitation, Plein (capacité des capteurs).
+        signal instruire(h: Horodatage, depot: String, par: String) -> String
+            writes suivi_demande
+            reads objet_de, contestation
+            calls ApiObservation.demander_suivi, ApiAcces.a_le_role, Journal.noter
+
+        // Accepte : l'observation avait tort, le dépôt est réhabilité (EphDepot.rehabiliter).
+        // Par "analyste" d'ORBITE, valideur "superviseur" (ApiAcces.quatre_yeux). Renvoie
+        // "acceptee". Refus : Inconnu, EtatInvalide, Echu (après l'échéance : classer),
+        // MotifRequis, Habilitation, QuatreYeux.
+        signal accepter(h: Horodatage, depot: String, motif: String, par: String, valideur: String) -> String
+            writes decide_par
+            reads echeance
+            moves ouverte -> acceptee when EphDepot.rejetee
+            calls EphDepot.rehabiliter, EphDepot.etat_de, ApiAcces.a_le_role, ApiAcces.quatre_yeux, Journal.noter
+
+        // Refuse : le rejet est confirmé ; le propriétaire est prévenu (ApiPasserelle.notifier,
+        // urgence 1) et doit redéposer. Par "analyste" d'ORBITE. Renvoie "refusee".
+        // Refus : Inconnu, EtatInvalide, MotifRequis, Habilitation.
+        signal refuser(h: Horodatage, depot: String, motif: String, par: String) -> String
+            writes decide_par
+            reads objet_de
+            moves ouverte -> refusee
+            calls ApiRef.proprietaire, ApiPasserelle.notifier, ApiAcces.a_le_role, Journal.noter
+
+        // Classe caduques, au plus `n`, les contestations ouvertes dont l'échéance est passée à
+        // `h` ou dont l'objet a depuis un dépôt courant plus récent (EphSuivi.derniere) : un
+        // silence d'ORBITE ne réhabilite jamais un dépôt. Par "systeme". Renvoie le nombre classé.
+        // Refus : Habilitation.
+        signal classer(h: Horodatage, n: Int, par: String) -> Int
+            requires n > 0 && n <= 10000
+            reads echeance, objet_de
+            moves ouverte -> caduque
+            calls EphSuivi.derniere, EphDepot.epoque_de, ApiAcces.a_le_role, Journal.noter
+
+        // État : "ouverte", "acceptee", "refusee", "caduque" ; "aucune" si jamais contesté.
+        signal etat(depot: String) -> String
+            reads contestation, objet_de
+    }
+}

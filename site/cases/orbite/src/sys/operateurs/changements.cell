@@ -1,0 +1,124 @@
+// operateurs — CHANGEMENT DE CONTRÔLE : l'opérateur passe sous le contrôle d'un acquéreur,
+// éventuellement sous un autre État de tutelle. Les objets restent les siens (une cession
+// d'objet est l'affaire du référentiel) ; ce qui change, c'est l'État qui en répond. D'où la
+// règle : accord de l'État de départ ET de l'État d'accueil, puis licence redéclarée sous
+// l'État d'accueil — l'opérateur est inactif tant qu'il ne l'a pas confirmée.
+
+// Avis d'un État sur un changement de contrôle.
+cell type OpAvisChangement = String where value == "favorable" || value == "defavorable"
+
+// Changement de contrôle (id = "CC-<n>", tiré par declarer).
+skeleton OpChangements {
+    const MAX_CHANGEMENTS = 100000
+    // Préavis minimal entre la déclaration et la date d'effet : 30 jours.
+    const PREAVIS_MS = 2592000000
+    // Un changement approuvé non réalisé 90 jours après sa date d'effet devient caduc.
+    const CADUCITE_MS = 7776000000
+    memory {
+        operateur: Map<String, Org> [persistent]              // changement → opérateur ; écrit une fois par declarer, jamais effacé
+        acquereur: Map<String, String> [persistent]           // changement → raison sociale et identifiant de l'acquéreur
+        etat_depart: Map<String, Etat> [persistent]           // changement → État de tutelle à la déclaration
+        etat_accueil: Map<String, Etat> [persistent]          // changement → État de tutelle après effet ; écrit une fois par declarer
+        date_effet: Map<String, Horodatage> [persistent]      // changement → date d'effet prévue, ms
+        nouvelle_licence: Map<String, String> [persistent]    // changement → numéro de licence de l'État d'accueil ("" si même État)
+        fin_licence: Map<String, Horodatage> [persistent]     // changement → fin de validité de cette licence, ms
+        avis_depart: Map<String, String> [persistent]         // changement → "h | avis | par" de l'État de départ
+        avis_accueil: Map<String, String> [persistent]        // changement → "h | avis | par" de l'État d'accueil
+        decision: Map<String, String> [persistent]            // changement → "h | issue | motif | par | valideur"
+        en_cours_de: Map<Org, String> [persistent]            // opérateur → changement non terminé (au plus un)
+        invariant operateur.size <= MAX_CHANGEMENTS
+        invariant en_cours_de.size <= MAX_CHANGEMENTS
+    }
+    // Cycle de vie d'un changement de contrôle (id = changement).
+    state changement {
+        initial: declare
+        declare -> en_examen            // examiner : un analyste ouvre l'examen, les États sont saisis
+        declare -> retire               // retirer : l'opérateur renonce
+        en_examen -> approuve           // approuver : avis favorables des deux États, quatre yeux
+        en_examen -> refuse             // aviser (avis défavorable d'un État) ou refuser (ORBITE)
+        en_examen -> retire             // retirer
+        approuve -> effectif            // rendre_effectif : date d'effet atteinte, opérateur actif ou suspendu
+        approuve -> caduc               // rendre_caducs : non réalisé CADUCITE_MS après la date d'effet
+    }
+    face {
+        // Déclare un changement de contrôle de op au plus tard PREAVIS_MS avant `effet` (ms).
+        // `accueil` est l'État de tutelle après effet (le même si le contrôle reste national) ;
+        // s'il diffère, `licence_accueil` et `fin_licence_accueil` décrivent la licence qu'il a
+        // délivrée. Renvoie l'id.
+        // Rôle exigé : "administrateur_operateur" de op ; valideur "chef_de_mission" de op
+        // (ApiAcces.quatre_yeux). Refus : Inconnu (op jamais admis), Ferme (exclu ou retiré),
+        // NonEligible (État d'accueil non participant), Doublon (changement déjà en cours),
+        // Delai (préavis non respecté), MotifRequis (acquéreur vide, ou licence d'accueil vide
+        // quand l'État change), Habilitation, QuatreYeux, Plein.
+        signal declarer(h: Horodatage, op: Org, acquereur_decrit: String, accueil: Etat, licence_accueil: String, fin_licence_accueil: Horodatage, effet: Horodatage, par: String, valideur: String) -> String
+            writes operateur, acquereur, etat_depart, etat_accueil, date_effet, nouvelle_licence, fin_licence, en_cours_de
+            calls ApiAcces.a_le_role, ApiAcces.agit_pour, ApiAcces.quatre_yeux, OpMembres.etat, ApiRef.etat_de, ApiRef.etat_participant, next_id, Journal.noter
+        // Ouvre l'examen : les organisations des deux États (une seule si même État) sont
+        // notifiées pour avis. Renvoie "en_examen". Rôle exigé : "analyste" d'ORBITE.
+        // Refus : Inconnu, EtatInvalide, Habilitation.
+        signal examiner(h: Horodatage, id: String, par: String) -> String
+            reads etat_depart, etat_accueil
+            moves declare -> en_examen
+            calls ApiAcces.a_le_role, ApiRef.org_de_etat, ApiPasserelle.notifier, Journal.noter
+        // Avis d'un État (départ ou accueil, selon l'employeur de `par`) ; un avis
+        // "defavorable" refuse le changement. Renvoie l'état du changement.
+        // Rôle exigé : "autorite" de l'État de départ ou d'accueil (agit_pour sur
+        // ApiRef.org_de_etat). Refus : Inconnu, EtatInvalide, Doublon (cet État a déjà donné
+        // son avis), MotifRequis (avis défavorable sans motif), Habilitation.
+        signal aviser(h: Horodatage, id: String, avis: OpAvisChangement, motif: String, par: String) -> String
+            writes avis_depart, avis_accueil, decision, en_cours_de
+            reads operateur, etat_depart, etat_accueil
+            moves en_examen -> refuse
+            calls ApiAcces.a_le_role, ApiAcces.agit_pour, ApiRef.org_de_etat, ApiPasserelle.notifier, Journal.noter
+        // Approuve un changement dont les avis requis sont favorables et dont l'État d'accueil
+        // est participant à h (ApiRef.etat_participant). Renvoie "approuve".
+        // Rôle exigé : "analyste" d'ORBITE ; valideur "superviseur" d'ORBITE.
+        // Refus : Inconnu, EtatInvalide (aussi : État d'accueil non participant ou suspendu),
+        // Insuffisant (avis manquant), Habilitation, QuatreYeux.
+        signal approuver(h: Horodatage, id: String, par: String, valideur: String) -> String
+            writes decision
+            reads operateur, avis_depart, avis_accueil, etat_depart, etat_accueil
+            moves en_examen -> approuve when RefEtat.participant via etat_accueil
+            calls ApiAcces.a_le_role, ApiAcces.quatre_yeux, ApiRef.etat_participant, ApiPasserelle.notifier, Journal.noter
+        // ORBITE refuse (acquéreur exclu, sous sanctions, dossier incomplet). Renvoie "refuse".
+        // Rôle exigé : "superviseur" d'ORBITE. Refus : Inconnu, EtatInvalide, MotifRequis, Habilitation.
+        signal refuser(h: Horodatage, id: String, motif: String, par: String) -> String
+            writes decision, en_cours_de
+            reads operateur
+            moves en_examen -> refuse
+            calls ApiAcces.a_le_role, ApiPasserelle.notifier, Journal.noter
+        // L'opérateur renonce avant la décision. Renvoie "retire".
+        // Rôle exigé : "administrateur_operateur" de l'opérateur. Refus : Inconnu, EtatInvalide, Habilitation.
+        signal retirer(h: Horodatage, id: String, par: String) -> String
+            writes decision, en_cours_de
+            reads operateur
+            moves declare -> retire, en_examen -> retire
+            calls ApiAcces.a_le_role, ApiAcces.agit_pour, Journal.noter
+        // Constate la réalisation à la date d'effet (h ≥ date_effet). Si l'État change : la
+        // tutelle est changée au référentiel (ApiRef.changer_tutelle(h, op, accueil, par,
+        // valideur)), puis la licence passe sous l'État d'accueil (OpLicences.transferer :
+        // "declaree", à confirmer par lui) ; les deux États sont notifiés. Renvoie "effectif".
+        // Rôle exigé : "superviseur" d'ORBITE ; valideur "direction" d'ORBITE (ceux qu'exige
+        // changer_tutelle). Refus : Inconnu, EtatInvalide (aussi : État d'accueil devenu non
+        // participant, refus de changer_tutelle), Delai (date d'effet non atteinte),
+        // Habilitation, QuatreYeux.
+        signal rendre_effectif(h: Horodatage, id: String, par: String, valideur: String) -> String
+            writes decision, en_cours_de
+            reads operateur, date_effet, etat_depart, etat_accueil, nouvelle_licence, fin_licence
+            moves approuve -> effectif when OpMembres.actif || OpMembres.suspendu via operateur
+            calls ApiAcces.a_le_role, ApiAcces.quatre_yeux, OpMembres.etat, ApiRef.changer_tutelle, OpLicences.transferer, ApiRef.org_de_etat, ApiPasserelle.notifier, Journal.noter
+        // Balayage (par "systeme" ou "exploitant" d'ORBITE) : changements approuvés non
+        // réalisés CADUCITE_MS après leur date d'effet → "caduc". Renvoie leur nombre (au plus n).
+        // Refus : Habilitation.
+        signal rendre_caducs(h: Horodatage, n: Int, par: String) -> Int
+            requires n > 0 && n <= 10000
+            writes decision, en_cours_de
+            reads date_effet, changement
+            moves approuve -> caduc
+            calls ApiAcces.a_le_role, Journal.noter
+        // Changement non terminé de op ("" si aucun) : tant qu'il existe, l'État qui répond de
+        // l'opérateur peut changer — utile à l'escalade et à la responsabilité.
+        signal en_cours(op: Org) -> String
+            reads en_cours_de
+    }
+}

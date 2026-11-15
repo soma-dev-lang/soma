@@ -1,0 +1,121 @@
+// observation — PISTES NON CORRÉLÉES (nouveaux objets). Les mesures qu'aucun objet catalogué
+// n'explique s'agrègent en pistes. Une piste est confirmée quand une orbite a été déterminée
+// sur ses mesures, puis cataloguée (nouvel objet dans ApiRef) ou rattachée à un objet existant
+// (objet perdu, charge utile ou étage d'un lancement récent, fragment d'un évènement). Une piste
+// n'est cataloguée que sur une orbite indépendante validée : jamais d'objet fantôme au catalogue.
+
+// Issue proposée pour une piste confirmée : origine présumée de l'objet.
+cell type ObsOriginePiste = String where value == "lancement" || value == "fragmentation" || value == "perdu" || value == "inconnue"
+
+skeleton ObsPistes {
+    const MAX_PISTES = 200000
+    // Piste ouverte sans nouvelle mesure pendant 7 jours : abandonnée.
+    const INACTIVITE_MAX_MS = 604800000
+    // Mesures et passes minimales pour confirmer une piste.
+    const MIN_MESURES = 6
+    const MIN_PASSES = 2
+    memory {
+        ouverte_le: Map<String, Horodatage> [persistent]       // piste → ouverture, ms
+        derniere_mesure: Map<String, Horodatage> [persistent]  // piste → instant de la dernière mesure versée, ms
+        nb_mesures: Map<String, Int> [persistent]              // piste → mesures versées
+        capteurs_de: Map<String, List<String>> [persistent]    // piste → capteurs distincts ayant vu la piste
+        orbite_de: Map<String, String> [persistent]            // piste → détermination qui la confirme ; écrite une fois par confirmer, jamais effacée (lien de règle)
+        regime_de: Map<String, Regime> [persistent]            // piste → régime déduit de l'orbite
+        origine_de: Map<String, ObsOriginePiste> [persistent]  // piste → origine retenue
+        objet_de: Map<String, Objet> [persistent]              // piste → objet catalogué ou rattaché
+        decide_par: Map<String, String> [persistent]           // piste → auteur du catalogage, du rattachement ou de l'abandon
+        compteur: Map<String, Int> [persistent]                // "pistes" → dernier numéro attribué
+        invariant ouverte_le.size <= MAX_PISTES
+        invariant derniere_mesure.size <= MAX_PISTES
+        invariant nb_mesures.size <= MAX_PISTES
+        invariant capteurs_de.size <= MAX_PISTES
+        invariant orbite_de.size <= MAX_PISTES
+        invariant regime_de.size <= MAX_PISTES
+        invariant origine_de.size <= MAX_PISTES
+        invariant objet_de.size <= MAX_PISTES
+        invariant decide_par.size <= MAX_PISTES
+        invariant nb_mesures >= 0
+        invariant compteur.size <= 1
+        invariant compteur >= 0 && compteur <= MAX_PISTES
+    }
+    // Cycle d'une piste (id = "PI-<n>").
+    state piste {
+        initial: ouverte
+        ouverte -> confirmee       // confirmer : orbite validée sur ses mesures
+        confirmee -> cataloguee    // cataloguer : nouvel objet créé dans ref
+        confirmee -> rattachee     // rattacher : objet déjà catalogué
+        ouverte -> abandonnee      // abandonner, veiller : inactive ou artefact
+        confirmee -> abandonnee    // abandonner : artefact reconnu après confirmation
+    }
+    face {
+        // Verse une mesure non corrélée (appelé par ObsMesures.non_correler) à la piste ouverte
+        // compatible (même capteur ou passe cohérente dans les 24 h, jugé par le corps), sinon ouvre
+        // une piste. Met à jour nb_mesures, capteurs_de, derniere_mesure. Renvoie l'id "PI-<n>".
+        // Refus : Plein.
+        signal alimenter(h: Horodatage, mesure: String, capteur: String, instant: Horodatage) -> String
+            writes ouverte_le, derniere_mesure, nb_mesures, capteurs_de, compteur
+            reads piste
+            calls Journal.noter
+        // Confirme une piste ouverte sur la détermination `od` : sujet = piste, état "validee",
+        // au moins MIN_MESURES mesures et MIN_PASSES passes. Seul écrivain de orbite_de (une fois).
+        // Renvoie "confirmee". Rôle exigé : "analyste" d'ORBITE.
+        // Refus : Inconnu (piste, od), EtatInvalide, Incoherent (od d'un autre sujet ou non validée),
+        // Insuffisant (mesures, passes), Habilitation.
+        signal confirmer(h: Horodatage, piste: String, od: String, regime: Regime, par: String) -> String
+            reads nb_mesures, capteurs_de
+            writes orbite_de, regime_de
+            moves ouverte -> confirmee
+            calls ObsOrbites.etat, ObsOrbites.courante_de, ApiAcces.a_le_role, Journal.noter
+        // Catalogue une piste confirmée comme nouvel objet (ApiRef.cataloguer, propulsion "aucune",
+        // masse 0 tant qu'inconnue) : `nature` "debris" ou "inconnu", toujours au nom du propriétaire
+        // provisoire ORBITE (ApiRef.orbite(), État ApiRef.etat_de(ApiRef.orbite())). Si l'origine est
+        // établie (`proprietaire` ≠ "" : évènement d'origine, ApiEvenements.evenement_de d'un objet
+        // voisin, ou lancement), l'objet est aussitôt attribué (ApiRef.attribuer, mêmes par et
+        // valideur) à `proprietaire` et `etat` ; sinon il reste orphelin chez ORBITE. Rattache les
+        // mesures (ObsMesures.rattacher), puis demande un suivi "nouvel_objet" de priorité 2 pendant
+        // 7 jours (ObsTaches.demander). L'orbite de la piste doit être validée. Renvoie le numéro d'objet.
+        // Rôle exigé : "analyste" d'ORBITE, contre-signé par `valideur` "superviseur" (ApiAcces.quatre_yeux).
+        // Refus : Inconnu, EtatInvalide, HorsBornes (nature hors "debris"/"inconnu"), Incoherent
+        // (proprietaire sans etat), Habilitation, QuatreYeux.
+        signal cataloguer(h: Horodatage, piste: String, nature: NatureObjet, origine: ObsOriginePiste, proprietaire: Org, etat: Etat, par: String, valideur: String) -> Objet
+            reads orbite_de, regime_de
+            writes origine_de, objet_de, decide_par
+            moves confirmee -> cataloguee when ObsOrbites.validee via orbite_de
+            calls ObsOrbites.etat, ApiRef.cataloguer, ApiRef.orbite, ApiRef.etat_de, ApiRef.attribuer, ApiEvenements.evenement_de, ObsMesures.rattacher, ObsTaches.demander, ApiAcces.a_le_role, ApiAcces.quatre_yeux, Journal.noter
+        // Rattache une piste confirmée à un objet déjà catalogué (perdu, lancé récemment :
+        // ApiLancements.origine, fragment d'un évènement : ApiEvenements.evenement_de). Rattache les
+        // mesures (ObsMesures.rattacher).
+        // Renvoie "rattachee". Rôle exigé : "analyste" d'ORBITE.
+        // Refus : Inconnu (piste, objet), EtatInvalide, Habilitation.
+        signal rattacher(h: Horodatage, piste: String, objet: Objet, origine: ObsOriginePiste, par: String) -> String
+            writes origine_de, objet_de, decide_par
+            moves confirmee -> rattachee
+            calls ApiRef.etat_objet, ApiLancements.origine, ApiEvenements.evenement_de, ObsMesures.rattacher, ApiAcces.a_le_role, Journal.noter
+        // Abandonne une piste (artefact, reflet, doublon). Ses mesures sont écartées (ObsMesures.ecarter).
+        // Renvoie "abandonnee". Rôle exigé : "analyste" d'ORBITE.
+        // Refus : Inconnu, EtatInvalide, MotifRequis, Habilitation.
+        signal abandonner(h: Horodatage, piste: String, motif: String, par: String) -> String
+            reads ouverte_le
+            writes decide_par
+            moves ouverte -> abandonnee, confirmee -> abandonnee
+            calls ObsMesures.ecarter, ApiAcces.a_le_role, Journal.noter
+        // Ronde (appelée par ObsBalayage.balayer, par = "systeme") : abandonne les pistes ouvertes sans mesure depuis
+        // INACTIVITE_MAX_MS ; signale aux analystes (journal) les pistes confirmées non traitées
+        // depuis 24 h. Renvoie le nombre de pistes abandonnées. Refus : Habilitation.
+        signal veiller(h: Horodatage, par: String) -> Int
+            reads derniere_mesure
+            writes decide_par
+            moves ouverte -> abandonnee
+            calls ObsMesures.ecarter, Journal.noter
+        // État de la piste : "ouverte", "confirmee", "cataloguee", "rattachee", "abandonnee", ou "inconnue".
+        signal etat(piste: String) -> String
+            reads piste, ouverte_le
+        // Objet issu de la piste (catalogué ou rattaché) ; Refus : Inconnu (piste), EtatInvalide (pas encore).
+        signal objet(piste: String) -> Objet
+            reads objet_de, ouverte_le
+        // Pistes ouvertes ou confirmées, au plus `n`, les plus anciennes d'abord : le travail des analystes.
+        signal en_attente(n: Int) -> List<String>
+            requires n > 0 && n <= 1000
+            reads piste, ouverte_le
+    }
+}

@@ -1,0 +1,448 @@
+use app
+use commun::journal_chair
+use commun::horloge_chair
+use sys::evenements::chair::api
+use sys::evenements::chair::evenements
+use sys::evenements::chair::nuages
+use sys::evenements::chair::fragments
+use sys::evenements::chair::anomalies
+use sys::evenements::chair::notifications
+use sys::evenements::chair::veille
+use sys::evenements::chair::collisions
+use sys::evenements::chair::rapports
+use doublures::evenements
+
+// Instants : H0 = 1 000 000 000 000 ms ; fin du criblage renforcé d'un nuage amorcé à H0 :
+// H0 + 30 j = 1002592000000 ; H0 + 31 j = 1002678400000 ; H0 + 8 j = 1000691200000.
+
+// Scénario métier : fragmentation signalée -> nuage estimé -> confirmée à quatre yeux -> notifications
+// et alerte des riverains -> cause retenue -> fragment détecté, rattaché, catalogué -> rentré ->
+// nuage dissipé par la ronde -> évènement clos.
+cell test ScenarioFragmentation {
+    rules {
+        let ev = EvtEvenements.signaler(1000000000000, "fragmentation", ["OBJ-A-1"], 999999990000, "", "gerbe de pistes", "analyste1")
+        assert starts_with(ev, "EV-")
+        assert ApiEvenements.etat(ev) == "signale"
+        assert ApiEvenements.existe(ev)
+        assert !ApiEvenements.existe("EV-999")
+        assert ApiEvenements.etat("EV-999") == "inconnu"
+        assert ApiEvenements.genre(ev) == "fragmentation"
+        assert ApiEvenements.objets(ev) == ["OBJ-A-1"]
+        assert ApiEvenements.instant(ev) == 999999990000
+        assert ApiEvenements.evenement_de("OBJ-A-1") == ev
+        assert EvtNuages.etat(ev) == "estime"
+        assert EvtNuages.regimes_de(ev) == ["leo"]
+        // le criblage renforcé commence avant la confirmation
+        assert ApiEvenements.nuage_actif("leo", 1000000060000)
+        assert !ApiEvenements.nuage_actif("geo", 1000000060000)
+        assert EvtNuages.estimer(1000000060000, ev, 1, 500, 20000, 700000, 900000, ["leo"], "analyste1") == 1
+        assert EvtEvenements.confirmer(1000000120000, ev, "sup1") == "confirme"
+        assert ApiEvenements.etat(ev) == "confirme"
+        assert EvtNuages.etat(ev) == "en_catalogage"
+        // propriétaire + État (2), États participants (3), riverains alpha et beta du régime leo (2)
+        assert len(EvtNotifications.de_sujet(ev, 100, "analyste1")) == 7
+        assert EvtEvenements.qualifier(1000000150000, ev, "explosion", "reservoir non passive", "analyste1") == "explosion"
+        let fr = EvtFragments.detecter(1000000180000, ev, "PI-1", "OBJ-A-1", "leo", 13, "analyste1")
+        assert starts_with(fr, "FR-")
+        assert EvtFragments.rattacher(1000000190000, fr, "analyste1") == "rattache"
+        assert EvtFragments.cataloguer(1000000200000, fr, "analyste1") == "OBJ-RENTRE-FRAG-13"
+        assert_fails EvtNuages.dissiper(1000000300000, ev, "analyste1") matching "Insuffisant"
+        assert_fails EvtEvenements.clore(1000000300000, ev, "analyste1") matching "EtatInvalide"
+        // ronde à H0 + 31 j : 7 notifications relevées, 1 rentrée, 1 nuage dissipé
+        assert ApiEvenements.balayer(1002678400000, "systeme") == 9
+        assert EvtNuages.etat(ev) == "dissipe"
+        assert !ApiEvenements.nuage_actif("leo", 1002678400000)
+        assert EvtEvenements.clore(1002678460000, ev, "analyste1") == "clos"
+        assert ApiEvenements.evenement_de("OBJ-A-1") == ""
+        assert_fails EvtEvenements.qualifier(1002678500000, ev, "degradation", "revision", "analyste1") matching "EtatInvalide"
+        assert Journal.taille() > 0
+    }
+}
+
+// Scénario métier collision (propriété 6) : décision figée au signalement, verdict "ignorée" à
+// quatre yeux, transmission à la conformité, nuage stabilisé par décision puis dissipé, clôture.
+cell test ScenarioCollisionIgnoree {
+    rules {
+        let ev = ApiEvenements.declarer(1000000000000, "collision", ["OBJ-A-DEC2", "OBJ-B-DEC2"], "CJ-DEC2", 999999970000, "choc constate", "analyste1", "sup1")
+        assert ApiEvenements.etat(ev) == "confirme"
+        assert starts_with(EvtEvenements.dossier(ev), "DP-EV-")
+        assert EvtCollisions.etat(ev) == "constatee"
+        assert EvtCollisions.rapprochement(ev) == "CJ-DEC2"
+        assert EvtCollisions.constat(ev, "aud1") == "CJ-DEC2 | OBJ-A-DEC2 | DS-CJ-DEC2-1|OBJ-A-DEC2|systeme||999000000000|accord des parties | arretee |  |  | 5000000 | 999999940000 | "
+        assert_fails EvtCollisions.constat(ev, "intrus1") matching "Habilitation"
+        assert_fails EvtCollisions.instruire(1000000100000, ev, "decision_suivie", "le designe a manoeuvre", "analyste1", "sup1") matching "Incoherent"
+        assert_fails EvtCollisions.instruire(1000000100000, ev, "sans_decision", "rien", "analyste1", "sup1") matching "Incoherent"
+        assert_fails EvtCollisions.instruire(1000000100000, ev, "hors_coordination", "rien", "analyste1", "sup1") matching "Incoherent"
+        assert_fails EvtCollisions.instruire(1000000100000, ev, "decision_ignoree", "m", "analyste1", "analyste2") matching "Habilitation"
+        assert_fails EvtCollisions.instruire(1000000100000, ev, "decision_ignoree", "m", "analyste1", "sup-lie1") matching "QuatreYeux"
+        assert_fails EvtCollisions.instruire(1000000100000, ev, "decision_ignoree", "", "analyste1", "sup1") matching "MotifRequis"
+        assert_fails EvtCollisions.transmettre(1000000100000, ev, "conf1") matching "EtatInvalide"
+        assert EvtCollisions.instruire(1000000100000, ev, "decision_ignoree", "aucune manoeuvre du designe", "analyste1", "sup1") == "decision_ignoree"
+        assert EvtCollisions.etat(ev) == "instruite"
+        assert_fails EvtCollisions.transmettre(1000000110000, ev, "analyste1") matching "Habilitation"
+        assert EvtCollisions.transmettre(1000000120000, ev, "conf1") == "transmise"
+        assert ends_with(EvtCollisions.constat(ev, "conf1"), "| decision_ignoree")
+        // nuage : jamais estimé, stabilisé par décision à quatre yeux
+        assert_fails EvtNuages.stabiliser(1000000130000, ev, "seuil", "", "analyste1", "") matching "Insuffisant"
+        assert_fails EvtNuages.stabiliser(1000000130000, ev, "decision", "", "analyste1", "sup1") matching "MotifRequis"
+        assert_fails EvtNuages.stabiliser(1000000130000, ev, "decision", "surevalue", "analyste1", "sup-lie1") matching "QuatreYeux"
+        assert EvtNuages.stabiliser(1000000130000, ev, "decision", "estimation surevaluee", "analyste1", "sup1") == "stabilise"
+        assert ApiEvenements.nuage_actif("leo", 1000000200000)
+        assert !ApiEvenements.nuage_actif("leo", 1002678400000)
+        assert_fails EvtNuages.dissiper(1000000300000, ev, "systeme") matching "Delai"
+        assert_fails EvtNuages.dissiper(1002678400000, ev, "intrus1") matching "Habilitation"
+        assert EvtNuages.dissiper(1002678400000, ev, "systeme") == "dissipe"
+        assert EvtEvenements.clore(1002678460000, ev, "systeme") == "clos"
+    }
+}
+
+// Collision où le désigné a manœuvré : "decision_suivie" seulement.
+cell test CollisionDecisionSuivie {
+    rules {
+        let ev = ApiEvenements.declarer(1000000000000, "collision", ["OBJ-A-DECMANOEUVRE3", "OBJ-B-DECMANOEUVRE3"], "CJ-DECMANOEUVRE3", 999999970000, "choc", "analyste1", "sup1")
+        assert_fails EvtCollisions.instruire(1000000100000, ev, "decision_ignoree", "m", "analyste1", "sup1") matching "Incoherent"
+        assert EvtCollisions.instruire(1000000100000, ev, "decision_suivie", "erreur d'orbite", "analyste1", "sup1") == "decision_suivie"
+    }
+}
+
+// Collision avec un plan figé, exécuté d'après les manœuvres.
+cell test CollisionPlanExecute {
+    rules {
+        let ev = ApiEvenements.declarer(1000000000000, "collision", ["OBJ-A-DECPLAN4", "OBJ-B-DECPLAN4"], "CJ-DECPLAN4", 999999970000, "choc", "analyste1", "sup1")
+        assert ends_with(EvtCollisions.constat(ev, "analyste1"), "| PL-CJ-DECPLAN4 | approuve | 5000000 | 999999940000 | ")
+        mock ApiManoeuvres.etat "execute"
+        assert EvtCollisions.instruire(1000000100000, ev, "decision_suivie", "plan execute", "analyste1", "sup1") == "decision_suivie"
+    }
+}
+
+// Collision hors coordination, signalée par le traitement automatique : un superviseur seul confirme.
+cell test CollisionHorsCoordination {
+    rules {
+        let ev = EvtEvenements.signaler(1000000000000, "collision", ["OBJ-A-7"], 999999970000, "", "impact d'un debris non suivi", "systeme")
+        assert EvtCollisions.etat(ev) == "constatee"
+        assert_fails EvtCollisions.instruire(1000000050000, ev, "hors_coordination", "m", "analyste1", "sup1") matching "EtatInvalide"
+        assert EvtEvenements.confirmer(1000000060000, ev, "sup1") == "confirme"
+        assert_fails EvtCollisions.instruire(1000000100000, ev, "sans_decision", "m", "analyste1", "sup1") matching "Incoherent"
+        assert EvtCollisions.instruire(1000000100000, ev, "hors_coordination", "impacteur non catalogue", "analyste1", "sup1") == "hors_coordination"
+        assert EvtNuages.stabiliser(1000000130000, ev, "decision", "rien a cataloguer", "analyste1", "sup1") == "stabilise"
+        assert EvtNuages.dissiper(1002678400000, ev, "analyste1") == "dissipe"
+        // clôture impossible tant que l'instruction n'est pas transmise
+        assert_fails EvtEvenements.clore(1002678460000, ev, "analyste1") matching "Insuffisant"
+        assert EvtCollisions.transmettre(1002678470000, ev, "conf1") == "transmise"
+        assert EvtEvenements.clore(1002678480000, ev, "analyste1") == "clos"
+    }
+}
+
+// Transmission refusée quand l'évènement n'est plus sous gel (règle RespGels.gele).
+cell test TransmissionSansGel {
+    rules {
+        let ev = ApiEvenements.declarer(1000000000000, "collision", ["OBJ-A-12"], "", 999999970000, "choc", "analyste1", "sup1")
+        assert EvtCollisions.instruire(1000000100000, ev, "hors_coordination", "inconnu", "analyste1", "sup1") == "hors_coordination"
+        mock ApiResponsabilite.sous_gel false
+        assert_fails EvtCollisions.transmettre(1000000120000, ev, "conf1") matching "Insuffisant"
+    }
+}
+
+// Infirmation : nuage abandonné (fin du criblage renforcé), instruction et rapport sans objet.
+cell test Infirmation {
+    rules {
+        let ev = EvtEvenements.signaler(1000000000000, "collision", ["OBJ-A-8", "OBJ-B-8"], 999999970000, "CJ-8", "deux pistes", "analyste1")
+        assert ApiEvenements.nuage_actif("leo", 1000000010000)
+        assert_fails EvtEvenements.infirmer(1000000020000, ev, "pistes correlees", "analyste2") matching "Habilitation"
+        assert_fails EvtEvenements.infirmer(1000000020000, ev, "", "sup1") matching "MotifRequis"
+        assert_fails EvtEvenements.infirmer(1000000020000, "EV-999", "x", "sup1") matching "Inconnu"
+        assert EvtEvenements.infirmer(1000000020000, ev, "pistes correlees a des objets connus", "sup1") == "infirme"
+        assert ApiEvenements.etat(ev) == "infirme"
+        assert EvtNuages.etat(ev) == "abandonne"
+        assert !ApiEvenements.nuage_actif("leo", 1000000030000)
+        assert EvtCollisions.etat(ev) == "sans_objet"
+        assert_fails EvtRapports.rediger(1000000040000, ev, "sha:1", "analyste1") matching "Inconnu"
+        assert_fails EvtEvenements.confirmer(1000000040000, ev, "sup1") matching "EtatInvalide"
+        assert ApiEvenements.evenement_de("OBJ-A-8") == ""
+        // un évènement infirmé n'est pas un doublon
+        assert starts_with(EvtEvenements.signaler(1000000050000, "fragmentation", ["OBJ-A-8"], 999999980000, "", "nouvelle gerbe", "analyste1"), "EV-")
+    }
+}
+
+// Refus du signalement.
+cell test RefusSignalement {
+    rules {
+        assert_fails EvtEvenements.signaler(1000000000000, "fragmentation", ["OBJ-A-9"], 999999990000, "", "x", "intrus1") matching "Habilitation"
+        assert_fails EvtEvenements.signaler(1000000000000, "fragmentation", ["OBJ-A-9"], 999999990000, "", "x", "dyn-alpha") matching "Habilitation"
+        assert_fails EvtEvenements.signaler(1000000000000, "fragmentation", ["OBJ-A-9"], 999999990000, "", "", "analyste1") matching "MotifRequis"
+        assert_fails EvtEvenements.signaler(1000000000000, "fragmentation", ["OBJ-A-9", "OBJ-B-9"], 999999990000, "", "x", "analyste1") matching "HorsBornes"
+        assert_fails EvtEvenements.signaler(1000000000000, "collision", ["OBJ-A-9", "OBJ-B-9", "OBJ-C-9"], 999999990000, "", "x", "analyste1") matching "HorsBornes"
+        assert_fails EvtEvenements.signaler(1000000000000, "collision", [], 999999990000, "", "x", "analyste1") matching "HorsBornes"
+        assert_fails EvtEvenements.signaler(1000000000000, "fragmentation", ["OBJ-A-9"], 1000000000001, "", "x", "analyste1") matching "Incoherent"
+        assert_fails EvtEvenements.signaler(1000000000000, "fragmentation", ["OBJ-INCONNU-9"], 999999990000, "", "x", "analyste1") matching "Inconnu"
+        assert_fails EvtEvenements.signaler(1000000000000, "fragmentation", ["OBJ-RENTRE-9"], 999999990000, "", "x", "analyste1") matching "Inconnu"
+        assert_fails EvtEvenements.signaler(1000000000000, "fragmentation", ["OBJ-A-9"], 999999990000, "CJ-9", "x", "analyste1") matching "Incoherent"
+        assert_fails EvtEvenements.signaler(1000000000000, "collision", ["OBJ-A-10"], 999999990000, "CJ-9", "x", "analyste1") matching "Incoherent"
+        assert_fails EvtEvenements.signaler(1000000000000, "collision", ["OBJ-A-9", "OBJ-A-9"], 999999990000, "", "x", "analyste1") matching "Incoherent"
+        assert_fails EvtEvenements.signaler(1000000000000, "collision", ["OBJ-A-X"], 999999990000, "CJ-INCONNU", "x", "analyste1") matching "Inconnu"
+        assert_fails ApiEvenements.declarer(1000000000000, "explosion", ["OBJ-A-9"], "", 999999990000, "x", "analyste1", "sup1") matching "Incoherent"
+        let ev = EvtEvenements.signaler(1000000000000, "fragmentation", ["OBJ-A-11"], 999990000000, "", "gerbe", "analyste1")
+        assert_fails EvtEvenements.signaler(1000000010000, "collision", ["OBJ-A-11"], 999990600000, "", "meme objet", "analyste1") matching "Doublon"
+        assert starts_with(EvtEvenements.signaler(1000000010000, "fragmentation", ["OBJ-A-11"], 1000000005000, "", "deux heures plus tard", "analyste1"), "EV-")
+        assert ApiEvenements.etat(ev) == "signale"
+    }
+}
+
+// Refus de la confirmation, de la qualification, du gel et de la clôture.
+cell test RefusConfirmation {
+    rules {
+        let ev = EvtEvenements.signaler(1000000000000, "fragmentation", ["OBJ-A-13"], 999999990000, "", "gerbe", "analyste1")
+        assert_fails EvtEvenements.confirmer(1000000010000, ev, "analyste2") matching "Habilitation"
+        assert_fails EvtEvenements.confirmer(1000000010000, ev, "intrus1") matching "Habilitation"
+        assert_fails EvtEvenements.confirmer(1000000010000, ev, "sup-lie1") matching "QuatreYeux"
+        assert_fails EvtEvenements.confirmer(1000000010000, "EV-999", "sup1") matching "Inconnu"
+        assert_fails EvtEvenements.qualifier(1000000010000, ev, "explosion", "m", "analyste1") matching "EtatInvalide"
+        assert_fails EvtEvenements.geler_preuves(1000000010000, ev, "dommage", "conf1") matching "EtatInvalide"
+        assert_fails EvtEvenements.geler_preuves(1000000010000, "EV-999", "dommage", "conf1") matching "Inconnu"
+        assert EvtEvenements.confirmer(1000000020000, ev, "sup1") == "confirme"
+        assert_fails EvtEvenements.confirmer(1000000030000, ev, "sup2") matching "EtatInvalide"
+        assert_fails EvtEvenements.infirmer(1000000030000, ev, "x", "sup2") matching "EtatInvalide"
+        assert_fails EvtEvenements.qualifier(1000000040000, ev, "collision_cataloguee", "m", "analyste1") matching "Incoherent"
+        assert_fails EvtEvenements.qualifier(1000000040000, ev, "explosion", "m", "sup1") matching "Habilitation"
+        assert_fails EvtEvenements.qualifier(1000000040000, ev, "explosion", "", "analyste1") matching "MotifRequis"
+        assert_fails EvtEvenements.geler_preuves(1000000050000, ev, "dommage", "analyste1") matching "Habilitation"
+        assert_fails EvtEvenements.geler_preuves(1000000050000, ev, "", "conf1") matching "MotifRequis"
+        assert EvtEvenements.geler_preuves(1000000050000, ev, "dommage a un tiers", "conf1") == "DP-{ev}"
+        assert EvtEvenements.dossier(ev) == "DP-{ev}"
+        assert_fails EvtEvenements.geler_preuves(1000000060000, ev, "encore", "dir1") matching "Existe"
+        assert_fails EvtEvenements.clore(1000000070000, ev, "intrus1") matching "Habilitation"
+        assert_fails EvtEvenements.clore(1000000070000, "EV-999", "analyste1") matching "Inconnu"
+        let ev2 = EvtEvenements.signaler(1000000000000, "collision", ["OBJ-A-14"], 999999990000, "", "choc", "analyste1")
+        assert EvtEvenements.confirmer(1000000020000, ev2, "sup1") == "confirme"
+        assert_fails EvtEvenements.qualifier(1000000040000, ev2, "explosion", "m", "analyste1") matching "Incoherent"
+        assert EvtEvenements.qualifier(1000000040000, ev2, "collision_non_cataloguee", "m", "analyste1") == "collision_non_cataloguee"
+    }
+}
+
+// Anomalie : déclarée par le propriétaire, prise en charge, suivie, levée sur preuve à quatre yeux.
+cell test AnomalieLevee {
+    rules {
+        let an = ApiEvenements.anomalie(1000000000000, "OBJ-A-20", "propulsion", "perte de poussee", "dyn-alpha")
+        assert starts_with(an, "AN-")
+        assert ApiEvenements.en_anomalie("OBJ-A-20")
+        assert !ApiEvenements.en_anomalie("OBJ-A-21")
+        assert_fails ApiEvenements.anomalie(1000000000001, "OBJ-A-20", "attitude", "x", "analyste1") matching "Doublon"
+        assert_fails EvtAnomalies.lever(1000000010000, an, "m", "dyn-alpha", "sup1") matching "EtatInvalide"
+        assert_fails EvtAnomalies.prendre_en_charge(1000000010000, an, "dyn-alpha") matching "Habilitation"
+        assert_fails EvtAnomalies.prendre_en_charge(1000000010000, "AN-999", "analyste1") matching "Inconnu"
+        assert EvtAnomalies.prendre_en_charge(1000000010000, an, "analyste1") == "en_suivi"
+        assert EvtAnomalies.noter_suivi(1000000020000, an, "essai de rallumage", "dyn-alpha") == 2
+        assert_fails EvtAnomalies.noter_suivi(1000000020000, an, "x", "dyn-beta") matching "Habilitation"
+        assert_fails EvtAnomalies.noter_suivi(1000000020000, an, "", "analyste1") matching "MotifRequis"
+        assert_fails EvtAnomalies.lever(1000000030000, an, "preuve", "dyn-alpha", "dyn-alpha") matching "Habilitation"
+        assert_fails EvtAnomalies.lever(1000000030000, an, "preuve", "dyn-alpha", "sup-lie1") matching "QuatreYeux"
+        assert_fails EvtAnomalies.lever(1000000030000, an, "preuve", "intrus1", "sup1") matching "Habilitation"
+        assert_fails EvtAnomalies.lever(1000000030000, an, "", "dyn-alpha", "sup1") matching "MotifRequis"
+        assert EvtAnomalies.lever(1000000030000, an, "orbite independante et ephemeride a jour", "dyn-alpha", "sup1") == "levee"
+        assert !ApiEvenements.en_anomalie("OBJ-A-20")
+        assert_fails EvtAnomalies.noter_suivi(1000000040000, an, "x", "analyste1") matching "EtatInvalide"
+        // déclaration (propriétaire, État) puis levée (propriétaire, État)
+        assert len(EvtNotifications.de_sujet(an, 100, "auditeur1")) == 4
+    }
+}
+
+// Levée refusée sans preuve, déclaration refusée hors portée.
+cell test AnomalieRefus {
+    rules {
+        assert_fails ApiEvenements.anomalie(1000000000000, "OBJ-A-22", "attitude", "x", "dyn-beta") matching "Habilitation"
+        assert_fails ApiEvenements.anomalie(1000000000000, "OBJ-A-22", "attitude", "x", "intrus1") matching "Habilitation"
+        assert_fails ApiEvenements.anomalie(1000000000000, "OBJ-INCONNU-22", "attitude", "x", "analyste1") matching "Inconnu"
+        assert_fails ApiEvenements.anomalie(1000000000000, "OBJ-A-22", "attitude", "", "analyste1") matching "MotifRequis"
+        let an1 = ApiEvenements.anomalie(1000000000000, "OBJ-A-NOSUIVI-22", "attitude", "rotation", "systeme")
+        assert EvtAnomalies.prendre_en_charge(1000000010000, an1, "analyste1") == "en_suivi"
+        assert_fails EvtAnomalies.lever(1000000030000, an1, "preuve", "analyste1", "sup1") matching "Insuffisant"
+        let an2 = ApiEvenements.anomalie(1000000000000, "OBJ-A-PERIME-SANSDEPOT-23", "propulsion", "poussee incertaine", "cdm-alpha")
+        assert EvtAnomalies.prendre_en_charge(1000000010000, an2, "analyste1") == "en_suivi"
+        assert_fails EvtAnomalies.lever(1000000030000, an2, "preuve", "cdm-alpha", "sup1") matching "Perime"
+        assert ApiEvenements.en_anomalie("OBJ-A-PERIME-SANSDEPOT-23")
+    }
+}
+
+// Rejet (jamais par le déclarant) et constat de perte (propriétaire, ou analyste à quatre yeux).
+cell test AnomalieRejetPerte {
+    rules {
+        let an1 = ApiEvenements.anomalie(1000000000000, "OBJ-A-24", "communication", "telemetrie muette", "cdm-alpha")
+        assert_fails EvtAnomalies.rejeter(1000000010000, an1, "telemetrie revenue", "cdm-alpha") matching "QuatreYeux"
+        assert_fails EvtAnomalies.rejeter(1000000010000, an1, "telemetrie revenue", "dyn-alpha") matching "Habilitation"
+        assert_fails EvtAnomalies.rejeter(1000000010000, an1, "telemetrie revenue", "cdm-beta") matching "Habilitation"
+        assert_fails EvtAnomalies.rejeter(1000000010000, an1, "", "sup1") matching "MotifRequis"
+        assert EvtAnomalies.rejeter(1000000010000, an1, "telemetrie revenue", "sup1") == "rejetee"
+        assert !ApiEvenements.en_anomalie("OBJ-A-24")
+        assert_fails EvtAnomalies.prendre_en_charge(1000000020000, an1, "analyste1") matching "EtatInvalide"
+        let an2 = ApiEvenements.anomalie(1000000000000, "OBJ-A-25", "energie", "panneaux perdus", "analyste1")
+        assert_fails EvtAnomalies.constater_perte(1000000020000, an2, "perte", "cdm-alpha", "") matching "EtatInvalide"
+        assert EvtAnomalies.prendre_en_charge(1000000010000, an2, "analyste1") == "en_suivi"
+        assert_fails EvtAnomalies.constater_perte(1000000020000, an2, "perte", "analyste1", "analyste2") matching "Habilitation"
+        assert_fails EvtAnomalies.constater_perte(1000000020000, an2, "perte", "analyste1", "sup-lie1") matching "QuatreYeux"
+        assert_fails EvtAnomalies.constater_perte(1000000020000, an2, "perte", "cdm-beta", "") matching "Habilitation"
+        assert_fails EvtAnomalies.constater_perte(1000000020000, an2, "", "cdm-alpha", "") matching "MotifRequis"
+        assert EvtAnomalies.constater_perte(1000000020000, an2, "plus aucune energie", "cdm-alpha", "") == "perdu"
+        assert !ApiEvenements.en_anomalie("OBJ-A-25")
+        let an3 = ApiEvenements.anomalie(1000000000000, "OBJ-A-26", "chute_libre", "chute", "analyste1")
+        assert EvtAnomalies.prendre_en_charge(1000000010000, an3, "analyste2") == "en_suivi"
+        assert EvtAnomalies.constater_perte(1000000020000, an3, "rentree imminente", "analyste1", "sup1") == "perdu"
+    }
+}
+
+// Une fragmentation confirmée clôt l'anomalie ouverte de l'objet.
+cell test AnomalieCloseParFragmentation {
+    rules {
+        let an = ApiEvenements.anomalie(1000000000000, "OBJ-A-27", "attitude", "rotation rapide", "dyn-alpha")
+        let ev = ApiEvenements.declarer(1000000010000, "fragmentation", ["OBJ-A-27"], "", 1000000005000, "eclatement", "analyste1", "sup1")
+        assert !ApiEvenements.en_anomalie("OBJ-A-27")
+        assert_fails EvtAnomalies.prendre_en_charge(1000000020000, an, "analyste1") matching "EtatInvalide"
+        assert EvtAnomalies.clore_par_evenement(1000000030000, "OBJ-A-27", ev) == 0
+    }
+}
+
+// Notifications : retenue par la diffusion, accusé, silence d'un opérateur (manquement), lecture réservée.
+cell test Notifications {
+    rules {
+        let an1 = ApiEvenements.anomalie(1000000000000, "OBJ-A-SECRET-30", "attitude", "rotation", "analyste1")
+        let lignes1 = EvtNotifications.de_sujet(an1, 10, "conf1")
+        assert len(lignes1) == 2
+        assert contains(lignes1[0], "| ORG-ALPHA | anomalie | envoyee | MSG-ORG-ALPHA-")
+        assert ends_with(lignes1[1], "| ORG-ALD | anomalie | retenue | ")
+        let an2 = ApiEvenements.anomalie(1000000000000, "OBJ-B-31", "attitude", "rotation", "dyn-beta")
+        // ronde à H0 + 2 h : l'accusé d'ORG-ALPHA, le silence d'ORG-BETA (échéance H0 + 1 h)
+        assert ApiEvenements.balayer(1000007200000, "systeme") == 2
+        assert contains(EvtNotifications.de_sujet(an1, 10, "dir1")[0], "| acquittee |")
+        assert contains(EvtNotifications.de_sujet(an2, 10, "dir1")[0], "| ORG-BETA | anomalie | sans_reponse |")
+        assert contains(EvtNotifications.de_sujet(an2, 10, "dir1")[1], "| ORG-BRV | anomalie | envoyee |")
+        assert_fails EvtNotifications.de_sujet(an2, 10, "intrus1") matching "Habilitation"
+        assert_fails EvtNotifications.de_sujet(an2, 10, "dyn-beta") matching "Habilitation"
+        assert_fails EvtNotifications.relever(1000007200000, 10, "analyste1") matching "Habilitation"
+        assert_fails EvtNotifications.diffuser(1000000000000, an2, "anomalie", "OBJ-B-31", ["leo"]) matching "HorsBornes"
+        assert_fails EvtNotifications.envoyer(1000000000000, "NT-999") matching "Inconnu"
+    }
+}
+
+// Veille : monotonie, habilitation, pistes perdues, incidents (un seul par élément), bilans.
+cell test Veille {
+    rules {
+        assert EvtVeille.derniere_ronde() == 0
+        assert ApiEvenements.balayer(1000000000000, "systeme") == 0
+        assert_fails ApiEvenements.balayer(999999999999, "systeme") matching "HorsBornes"
+        assert_fails ApiEvenements.balayer(1000000000001, "intrus1") matching "Habilitation"
+        assert_fails ApiEvenements.balayer(1000000000001, "analyste1") matching "Habilitation"
+        assert EvtVeille.ronde(1000000000001, "expl1") == 0
+        let ev = EvtEvenements.signaler(1000000000000, "fragmentation", ["OBJ-A-40"], 999999990000, "", "gerbe", "systeme")
+        let fr = EvtFragments.detecter(1000000000000, ev, "PI-2", "OBJ-A-40", "leo", 2, "systeme")
+        let an = ApiEvenements.anomalie(1000000000000, "OBJ-A-RAPP-41", "attitude", "rotation", "analyste1")
+        assert EvtFragments.perdus(1000691200000, 10) == [fr]
+        // H0 + 8 j : 2 notifications relevées, 1 piste perdue ; 2 incidents (évènement non confirmé, anomalie délaissée)
+        assert ApiEvenements.balayer(1000691200000, "systeme") == 3
+        assert EvtVeille.bilans(1) == ["1000691200000 | 2 | 0 | 1 | 0 | 0 | 2"]
+        assert EvtFragments.perdus(1000691200000, 10) == []
+        assert_fails EvtFragments.rattacher(1000691200000, fr, "analyste1") matching "EtatInvalide"
+        assert ApiEvenements.balayer(1000691260000, "systeme") == 0
+        assert EvtVeille.bilans(5) == ["1000000000000 | 0 | 0 | 0 | 0 | 0 | 0", "1000000000001 | 0 | 0 | 0 | 0 | 0 | 0", "1000691200000 | 2 | 0 | 1 | 0 | 0 | 2", "1000691260000 | 0 | 0 | 0 | 0 | 0 | 0"]
+        assert EvtVeille.derniere_ronde() == 1000691260000
+        assert EvtEvenements.en_souffrance(1000691260000, 10) == ["{ev} | signalé non confirmé depuis 1000000000000"]
+        assert EvtAnomalies.en_souffrance(1000691260000, 10) == ["{an} | OBJ-A-RAPP-41 | anomalie non prise en charge"]
+    }
+}
+
+// Nuages : refus d'estimation, régime ajouté, prolongation, abandon.
+cell test Nuages {
+    rules {
+        let ev = EvtEvenements.signaler(1000000000000, "fragmentation", ["OBJ-A-50"], 999999990000, "", "gerbe", "analyste1")
+        assert_fails EvtNuages.estimer(1000000010000, ev, 10, 100, 1000, 700000, 900000, ["leo"], "intrus1") matching "Habilitation"
+        assert_fails EvtNuages.estimer(1000000010000, ev, 10, 100, 1000, 700000, 900000, ["leo", "meo", "geo", "heo", "xeo"], "analyste1") matching "HorsBornes"
+        assert_fails EvtNuages.estimer(1000000010000, ev, 10, 100, 1000, 700000, 900000, ["xeo"], "analyste1") matching "HorsBornes"
+        assert_fails EvtNuages.estimer(1000000010000, ev, 10, 100, 1000, 700000, 900000, [], "analyste1") matching "HorsBornes"
+        assert_fails EvtNuages.estimer(1000000010000, ev, 200000, 100, 1000, 700000, 900000, ["leo"], "analyste1") matching "HorsBornes"
+        assert_fails EvtNuages.estimer(1000000010000, ev, 10, 100, 1000, 900000, 700000, ["leo"], "analyste1") matching "Incoherent"
+        assert_fails EvtNuages.estimer(1000000010000, "EV-999", 10, 100, 1000, 700000, 900000, ["leo"], "analyste1") matching "Inconnu"
+        assert EvtNuages.estimer(1000000010000, ev, 10, 100, 1000, 700000, 900000, ["leo", "geo"], "analyste1") == 10
+        assert EvtNuages.estimer(1000000020000, ev, 12, 100, 1000, 950000, 990000, ["leo", "geo"], "analyste1") == 12
+        assert EvtNuages.regimes_de(ev) == ["leo", "geo"]
+        assert ApiEvenements.nuage_actif("geo", 1000000030000)
+        assert_fails EvtNuages.amorcer(1000000030000, ev, ["leo"]) matching "Existe"
+        assert_fails EvtNuages.stabiliser(1000000030000, ev, "decision", "m", "analyste1", "sup1") matching "EtatInvalide"
+        assert_fails EvtNuages.prolonger(1000000040000, ev, 1002592000000, "lent", "analyste1") matching "HorsBornes"
+        assert_fails EvtNuages.prolonger(1000000040000, ev, 1007776040001, "lent", "analyste1") matching "HorsBornes"
+        assert_fails EvtNuages.prolonger(1000000040000, ev, 1003000000000, "", "analyste1") matching "MotifRequis"
+        assert_fails EvtNuages.prolonger(1000000040000, ev, 1003000000000, "lent", "sup1") matching "Habilitation"
+        assert EvtNuages.prolonger(1000000040000, ev, 1003000000000, "dispersion lente", "analyste1") == 1003000000000
+        assert ApiEvenements.nuage_actif("leo", 1002900000000)
+        assert !ApiEvenements.nuage_actif("leo", 1003000000001)
+        assert EvtNuages.a_dissiper(1003000000001, 10) == []
+        assert EvtEvenements.infirmer(1000000050000, ev, "reflet", "sup1") == "infirme"
+        assert_fails EvtNuages.prolonger(1000000060000, ev, 1003100000000, "lent", "analyste1") matching "EtatInvalide"
+        assert_fails EvtNuages.estimer(1000000060000, ev, 10, 100, 1000, 700000, 900000, ["leo"], "analyste1") matching "EtatInvalide"
+        assert !ApiEvenements.nuage_actif("geo", 1000000070000)
+    }
+}
+
+// Fragments : refus de détection, rattachement, écart.
+cell test Fragments {
+    rules {
+        let ev = EvtEvenements.signaler(1000000000000, "fragmentation", ["OBJ-A-60"], 999999990000, "", "gerbe", "analyste1")
+        assert_fails EvtFragments.detecter(1000000010000, ev, "PI-9", "OBJ-A-60", "leo", 1, "analyste1") matching "Inconnu"
+        assert_fails EvtFragments.detecter(1000000010000, ev, "PI-1", "OBJ-B-60", "leo", 1, "analyste1") matching "Inconnu"
+        assert_fails EvtFragments.detecter(1000000010000, "EV-999", "PI-1", "OBJ-A-60", "leo", 1, "analyste1") matching "Inconnu"
+        assert_fails EvtFragments.detecter(1000000010000, ev, "PI-1", "OBJ-A-60", "leo", 1, "intrus1") matching "Habilitation"
+        let fr = EvtFragments.detecter(1000000010000, ev, "PI-1", "OBJ-A-60", "leo", 1, "systeme")
+        assert_fails EvtFragments.detecter(1000000010000, ev, "PI-1", "OBJ-A-60", "leo", 1, "analyste1") matching "Doublon"
+        assert_fails EvtFragments.rattacher(1000000020000, fr, "analyste1") matching "EtatInvalide"
+        assert_fails EvtFragments.cataloguer(1000000020000, fr, "analyste1") matching "EtatInvalide"
+        assert_fails EvtFragments.cataloguer(1000000020000, "FR-999", "analyste1") matching "Inconnu"
+        assert EvtEvenements.confirmer(1000000030000, ev, "sup1") == "confirme"
+        assert_fails EvtFragments.rattacher(1000000040000, fr, "intrus1") matching "Habilitation"
+        assert EvtFragments.rattacher(1000000040000, fr, "analyste1") == "rattache"
+        assert_fails EvtFragments.cataloguer(1000000050000, fr, "dyn-alpha") matching "Habilitation"
+        assert_fails EvtFragments.ecarter(1000000050000, fr, "erreur", "reflet", "systeme") matching "Habilitation"
+        assert_fails EvtFragments.ecarter(1000000050000, fr, "erreur", "", "analyste1") matching "MotifRequis"
+        assert_fails EvtFragments.ecarter(1000000050000, "FR-999", "erreur", "x", "analyste1") matching "Inconnu"
+        assert EvtFragments.ecarter(1000000050000, fr, "correlee", "objet deja catalogue", "analyste1") == "ecarte"
+        assert_fails EvtFragments.ecarter(1000000060000, fr, "erreur", "x", "analyste1") matching "EtatInvalide"
+        assert EvtNuages.estimer(1000000065000, ev, 1, 40, 100, 30000000, 36000000, ["leo", "geo"], "analyste1") == 1
+        let fr2 = EvtFragments.detecter(1000000070000, ev, "PI-3", "OBJ-A-60", "geo", 40, "analyste1")
+        assert EvtFragments.rattacher(1000000080000, fr2, "analyste1") == "rattache"
+        assert EvtFragments.cataloguer(1000000090000, fr2, "analyste1") == "OBJ-FRAG-40"
+        assert EvtNuages.stabiliser(1000000100000, ev, "seuil", "", "analyste1", "") == "stabilise"
+        assert_fails EvtFragments.constater_rentrees(1000000100000, 10, "intrus1") matching "Habilitation"
+        assert EvtFragments.constater_rentrees(1000000100000, 10, "analyste1") == 0
+    }
+}
+
+// Rapport : rédaction en versions, validation à quatre yeux plafonnée par la diffusion, publication.
+cell test Rapports {
+    rules {
+        let ev = ApiEvenements.declarer(1000000000000, "fragmentation", ["OBJ-A-70"], "", 999999990000, "explosion observee", "analyste1", "sup1")
+        assert EvtRapports.en_retard(1002678400000, 10) == ["{ev} | attendu | 1002592000000"]
+        assert EvtRapports.en_retard(1000000000000, 10) == []
+        assert_fails EvtRapports.rediger(1000086400000, ev, "", "analyste1") matching "MotifRequis"
+        assert_fails EvtRapports.rediger(1000086400000, ev, "sha:aa", "sup1") matching "Habilitation"
+        assert_fails EvtRapports.valider(1000086400000, ev, "public", "analyste1", "sup1") matching "Inconnu"
+        assert EvtRapports.rediger(1000086400000, ev, "sha:aa", "analyste1") == 1
+        assert EvtRapports.rediger(1000172800000, ev, "sha:bb", "analyste2") == 2
+        assert_fails EvtRapports.valider(1000259200000, ev, "restreint", "analyste1", "sup1") matching "Confidentiel"
+        assert_fails EvtRapports.valider(1000259200000, ev, "public", "analyste1", "analyste2") matching "Habilitation"
+        assert_fails EvtRapports.valider(1000259200000, ev, "public", "analyste1", "sup-lie1") matching "QuatreYeux"
+        assert_fails EvtRapports.publier(1000259200000, ev, "sup1") matching "Inconnu"
+        assert EvtRapports.valider(1000259200000, ev, "public", "analyste1", "sup1") == "valide"
+        assert_fails EvtRapports.rediger(1000259300000, ev, "sha:cc", "analyste1") matching "EtatInvalide"
+        assert_fails EvtRapports.publier(1000345600000, ev, "analyste1") matching "Habilitation"
+        // propriétaire et État (2) ; États participants autres que l'État déjà notifié (2) ; riverains
+        // autres que le propriétaire déjà notifié (1)
+        assert EvtRapports.publier(1000345600000, ev, "sup1") == 5
+        assert_fails EvtRapports.publier(1000345700000, ev, "sup1") matching "EtatInvalide"
+        assert EvtRapports.en_retard(1002678400000, 10) == []
+        let ev2 = ApiEvenements.declarer(1000000000000, "fragmentation", ["OBJ-A-PART-71"], "", 999999990000, "explosion", "analyste1", "sup1")
+        assert EvtRapports.rediger(1000086400000, ev2, "sha:dd", "analyste1") == 1
+        assert_fails EvtRapports.valider(1000259200000, ev2, "participants", "analyste1", "sup1") matching "Confidentiel"
+        assert EvtRapports.valider(1000259200000, ev2, "parties", "analyste1", "sup1") == "valide"
+        // diffusion "parties" : pas de riverains
+        assert EvtRapports.publier(1000345600000, ev2, "sup1") == 2
+        let ev3 = ApiEvenements.declarer(1000000000000, "fragmentation", ["OBJ-A-RESTR-72"], "", 999999990000, "explosion", "analyste1", "sup1")
+        assert EvtRapports.rediger(1000086400000, ev3, "sha:ee", "analyste1") == 1
+        assert EvtRapports.valider(1000259200000, ev3, "parties", "analyste1", "sup1") == "valide"
+    }
+}

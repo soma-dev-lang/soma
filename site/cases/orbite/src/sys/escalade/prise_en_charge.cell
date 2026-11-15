@@ -1,0 +1,79 @@
+// escalade — PRISE EN CHARGE DE LA REPRISE PAR ORBITE. Quand un dossier passe en reprise, ORBITE
+// doit arbitrer (ApiCoordination.arbitrer, analyste + superviseur). Ce fichier ferme le dernier
+// trou de la propriété 5 : la reprise elle-même ne peut pas rester sans suite. Un analyste doit
+// la prendre en charge dans DELAI_PRISE_MS ; sinon la direction d'ORBITE est alertée et un
+// incident de gravité 3 est déclaré (ApiOperations). La prise en charge est « tranchée » quand la
+// coordination n'attend plus de décision (EscVeille.couverte).
+
+// Prises en charge : id = dossier d'escalade (une par dossier en reprise).
+skeleton EscPriseEnCharge {
+    const MAX_PRISES = 1000000
+    // Délai de prise en charge d'une reprise par un analyste : 15 min.
+    const DELAI_PRISE_MS = 900000
+    memory {
+        rapprochement_de: Map<String, String> [persistent]  // dossier → rapprochement ; écrit une fois par ouvrir_prise, jamais effacé
+        ouverte_a: Map<String, Horodatage> [persistent]     // dossier → début de l'attente (ms)
+        limite: Map<String, Horodatage> [persistent]        // dossier → min(ouverte_a + DELAI_PRISE_MS, max(échéance finale, ouverte_a))
+        analyste: Map<String, String> [persistent]          // dossier → "h | analyste" qui l'a prise
+        incident: Map<String, String> [persistent]          // dossier → id d'incident déclaré au dépassement
+        invariant rapprochement_de.size <= MAX_PRISES
+        invariant (ouverte_a ?? 0) <= (limite ?? 0)
+    }
+    // Cycle de vie d'une prise en charge (id = dossier).
+    state prise {
+        initial: inexistante
+        inexistante -> en_attente     // ouvrir_prise : le dossier est en reprise
+        en_attente -> prise           // prendre : un analyste s'en charge
+        en_attente -> alerte_direction // depasser : DELAI_PRISE_MS écoulé sans analyste
+        alerte_direction -> prise     // prendre : un analyste (ou la direction) s'en charge
+        prise -> tranchee             // trancher : décision arrêtée sur le rapprochement
+        en_attente -> tranchee        // trancher : la coordination a abouti entre-temps
+        alerte_direction -> tranchee  // trancher
+        prise -> caduque              // trancher : TCA passé sans décision (constat de conformité par EscDossiers.caduquer)
+        en_attente -> caduque         // trancher
+        alerte_direction -> caduque   // trancher
+    }
+    face {
+        // Ouvre l'attente de prise en charge d'un dossier qui vient de passer en reprise et
+        // prévient les analystes et superviseurs d'ORBITE (ApiPasserelle.notifier avec r, vers
+        // ApiRef.orbite(), urgence 3). Renvoie "en_attente". Rôle exigé : "systeme".
+        // Refus : Doublon, Habilitation, Plein.
+        signal ouvrir_prise(h: Horodatage, dossier: String, r: Rapprochement, fin: Horodatage, par: String) -> String
+            writes rapprochement_de, ouverte_a, limite
+            moves inexistante -> en_attente when EscDossiers.reprise
+            calls ApiAcces.a_le_role, ApiRef.orbite, ApiPasserelle.notifier, Journal.noter
+        // Un analyste prend la reprise en charge : il conduira l'arbitrage. Renvoie "prise".
+        // Rôle exigé : "analyste" ou "direction" d'ORBITE. Refus : Inconnu, EtatInvalide, Habilitation.
+        signal prendre(h: Horodatage, dossier: String, par: String) -> String
+            writes analyste
+            moves en_attente -> prise, alerte_direction -> prise
+            calls ApiAcces.a_le_role, Journal.noter
+        // Passe en alerte de direction les attentes dont la limite est dépassée : déclare un
+        // incident (ApiOperations.declarer_incident, gravité 3, "escalade", id "PEC-<dossier>") et
+        // notifie la direction d'ORBITE. Renvoie le nombre d'attentes passées en alerte.
+        signal depasser(h: Horodatage) -> Int
+            writes incident
+            reads limite, rapprochement_de
+            moves en_attente -> alerte_direction
+            calls ApiOperations.declarer_incident, ApiRef.orbite, ApiPasserelle.notifier, Journal.noter
+        // Termine la prise en charge : "tranchee" si la veille du rapprochement est couverte,
+        // "caduque" si le rapprochement est clos ou son TCA passé ; sinon ne change rien. Renvoie
+        // l'état. Rôle exigé : "systeme" ou "analyste". Refus : Inconnu, Habilitation.
+        signal trancher(h: Horodatage, dossier: String, par: String) -> String
+            reads rapprochement_de
+            moves prise -> tranchee when EscVeille.couverte via rapprochement_de, en_attente -> tranchee when EscVeille.couverte via rapprochement_de, alerte_direction -> tranchee when EscVeille.couverte via rapprochement_de, prise -> caduque, en_attente -> caduque, alerte_direction -> caduque
+            calls ApiAcces.a_le_role, EscVeille.couverte, ApiConjonctions.etat, ApiConjonctions.tca, Journal.noter
+        // Attentes et alertes non tranchées, "dossier | rapprochement | état | limite | analyste" :
+        // le tableau de la salle de veille d'ORBITE. Rôle exigé : "analyste", "superviseur",
+        // "direction" d'ORBITE. Refus : Habilitation.
+        signal a_traiter(h: Horodatage, par: String) -> List<String>
+            reads rapprochement_de, limite, analyste, prise
+            calls ApiAcces.a_le_role
+        // Suivi, appelé par EscBalayage.balayer : depasser(h) puis trancher(h, …, "systeme") sur
+        // chaque prise non terminée. Renvoie le nombre d'états changés.
+        signal suivre(h: Horodatage) -> Int
+            ensures result >= 0
+            reads rapprochement_de, prise
+            calls depasser, trancher
+    }
+}

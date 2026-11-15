@@ -1,0 +1,166 @@
+// PRIORITÉS — désignation : applique la version en vigueur à deux objets et dit lequel doit
+// manœuvrer. Chaque désignation est une DÉCISION enregistrée avec la version appliquée et
+// l'instantané des données qui l'ont fondée (propriété 6 : traçable jusqu'aux données,
+// rejouable, communiquée aux seules organisations autorisées). Instance = id de décision
+// ("PD-<n>").
+
+// Ce qui a tranché une décision (valeurs de PrioDesignation.motif).
+// - "aucun_capable"  : aucun des deux objets ne peut manœuvrer à temps → "" (arbitrage) ;
+// - "seul_capable"   : un seul objet capable, désigné même s'il est habité (propriété 3) ;
+// - "habite_exempte" : deux capables dont un habité : l'autre manœuvre ;
+// - "regle"          : une ligne de la table a départagé (rang dans PrioDesignation.regle) ;
+// - "arrivee"        : aucune ligne n'a départagé : le dernier injecté manœuvre ;
+// - "catalogue"      : injections égales ou inconnues : le plus grand numéro de catalogue.
+cell type PrioMotifDesignation = String where value == "aucun_capable" || value == "seul_capable" || value == "habite_exempte" || value == "regle" || value == "arrivee" || value == "catalogue"
+
+skeleton PrioDesignation {
+    const MAX_DECISIONS = 10000000
+    // Au plus 1 000 décisions conservées par rapprochement (une par mise à jour de la coordination).
+    const MAX_PAR_RAPPROCHEMENT = 1000
+    // Une décision passe en archive 30 jours après son calcul.
+    const DELAI_ARCHIVE = 2592000000
+    // Conservation minimale avant purge : 10 ans (délai de réclamation de la Convention de
+    // 1972 largement couvert), sauf gel par un dossier de preuve (ApiResponsabilite.sous_gel).
+    const CONSERVATION = 315360000000
+    memory {
+        a_de: Map<String, Objet> [persistent]
+        b_de: Map<String, Objet> [persistent]
+        resultat_de: Map<String, Objet> [persistent]        // objet désigné ; "" : aucun ne peut manœuvrer
+        motif_de: Map<String, PrioMotifDesignation> [persistent]
+        regle_de: Map<String, Int> [persistent]             // rang de la ligne qui a tranché ; 0 sinon
+        version_de: Map<String, String> [persistent]        // version appliquée ; écrit une fois
+        rapprochement_de: Map<String, Rapprochement> [persistent] // rapprochement r de l'appel
+        purge_de: Map<String, String> [persistent]          // décision -> purge autorisée par responsabilite (RespPurges) ; écrit une fois par purger, jamais effacé (lien de la règle)
+        tca_de: Map<String, Horodatage> [persistent]        // TCA de r retenu pour les préavis
+        calculee_le: Map<String, Horodatage> [persistent]
+        // Instantané des entrées, par objet : "objet | etat_objet | propulsion | habite |
+        // peut_manoeuvrer | operateur_actif | preavis_ms | injecte_le | masse | derogation |
+        // essaim_autonome | operateur_surveille" — effacé seulement à la purge.
+        entrees_de: Map<String, String> [persistent]
+        par_rapprochement: Map<String, List<String>> [persistent] // rapprochement -> décisions, dans l'ordre
+        contestation_de: Map<String, String> [persistent]   // décision -> "par | motif" de la contestation
+        verdict_de: Map<String, String> [persistent]        // décision -> "par / valideur | motif" du réexamen
+        compte_motif: Map<String, Int> [persistent]         // "version|motif" -> décisions (indicateur de la table)
+        invariant a_de.size <= 10000000
+        invariant regle_de >= 0 && regle_de <= 16
+        invariant len(par_rapprochement) <= 1000
+        invariant entrees_de.size <= a_de.size
+        invariant compte_motif >= 0
+        invariant contestation_de.size <= a_de.size
+    }
+    // Cycle d'une décision. Terminal : purgee.
+    state decision {
+        initial: calculee
+        calculee -> contestee           // un propriétaire conteste l'application des règles
+        contestee -> confirmee          // réexamen : la décision rejouée est conforme
+        contestee -> infirmee           // réexamen : données fausses ou règle mal appliquée
+        calculee -> archivee            // après DELAI_ARCHIVE : plus servie en ligne, toujours rejouable
+        confirmee -> archivee
+        infirmee -> archivee
+        archivee -> purgee              // après CONSERVATION, hors gel ; l'instantané est effacé
+    }
+    face {
+        // Désigne l'objet qui doit manœuvrer entre `a` et `b`, objets du rapprochement `r`, à
+        // l'instant `h` et enregistre la décision (lue ensuite par decision_de). Traitement automatique (identité "systeme"), sans habilitation : il
+        // n'engage personne, la coordination arrête ensuite la désignation.
+        // Algorithme, dans l'ordre :
+        // 1. version = PrioVersion.en_vigueur_a(h) ; "" → refus Ferme.
+        // 2. ApiConjonctions.objets(r) doit valoir {a, b} (sinon Incoherent) ; TCA =
+        //    ApiConjonctions.tca(r) (un TCA passé rend les deux objets incapables : "").
+        // 3. Un objet est CAPABLE s'il peut manœuvrer (ApiRef.peut_manoeuvrer : en service,
+        //    propulsion ≠ "aucune", ni en anomalie ni passivé), son opérateur est actif
+        //    (ApiOperateurs.est_actif) et h + préavis ≤ TCA, préavis = max(PrioTable.preavis_de_version(version,
+        //    propulsion), PrioPreparation.delai(objet)).
+        // 4. Aucun capable → "" ("aucun_capable") ; un seul → lui ("seul_capable", habité compris).
+        // 5. Deux capables dont un habité → l'autre ("habite_exempte").
+        // 6. Lignes de la table de `version` dans l'ordre des rangs (voir PrioCritere,
+        //    PrioEffet) : la première qui départage tranche ("regle").
+        // 7. Sinon le dernier injecté (ApiLancements.injecte_le, 0 = inconnu = le plus ancien)
+        //    ("arrivee") ; à égalité le plus grand numéro de catalogue ("catalogue").
+        // Ainsi une propulsion faible manœuvre si son préavis tient avant le TCA, sinon elle
+        // est incapable et l'impulsionnelle manœuvre (lecture confirmée du contrat).
+        // Renvoie l'objet désigné, "" si aucun. Refus : Inconnu (objet ou rapprochement),
+        // Incoherent (a == b, ou a/b ne sont pas les objets de r), Ferme (aucune version en vigueur), Plein.
+        signal designer(h: Horodatage, r: Rapprochement, a: Objet, b: Objet) -> Objet
+            writes a_de, b_de, resultat_de, motif_de, regle_de, version_de, rapprochement_de, tca_de, calculee_le, entrees_de, par_rapprochement, compte_motif
+            calls next_id, PrioEcheancier.planifier, PrioVersion.en_vigueur_a, PrioTable.regles, PrioTable.preavis_de_version, PrioPreparation.delai, PrioDerogation.en_cours, PrioEssaim.autonome, ApiRef.etat_objet, ApiRef.peut_manoeuvrer, ApiRef.propulsion, ApiRef.habite, ApiRef.proprietaire, ApiRef.masse, ApiOperateurs.est_actif, ApiConformite.sous_surveillance, ApiLancements.injecte_le, ApiConjonctions.objets, ApiConjonctions.tca, Journal.noter
+        // Recalcule une décision à partir de son instantané et de la table de SA version
+        // (étapes 3 à 7, sans relire les autres sous-systèmes) : doit redonner le résultat
+        // enregistré. Renvoie l'objet recalculé. Refus : Inconnu, EtatInvalide (purgée).
+        signal rejouer(decision: String) -> Objet
+            reads decision, entrees_de, version_de, tca_de, calculee_le
+            calls PrioTable.regles
+        // Dernière décision calculée pour le rapprochement (façade decision_de) :
+        // "id|designe|version|regle_appliquee|instant", regle_appliquee = motif, suivi du rang
+        // pour "regle" ("regle:3") ; "" si aucune.
+        signal decision_de(r: Rapprochement) -> String
+            reads par_rapprochement, resultat_de, version_de, motif_de, regle_de, calculee_le
+        // Décisions du rapprochement, de la plus ancienne à la plus récente (au plus
+        // MAX_PAR_RAPPROCHEMENT).
+        signal decisions_de(r: Rapprochement) -> List<String>
+            reads par_rapprochement
+        // Communique la décision complète (résultat, motif, version, rang, instantané) à
+        // l'organisation `org`, si elle peut recevoir les données des DEUX objets pour ce
+        // rapprochement (ApiDonnees.peut_recevoir), et trace la communication
+        // (ApiDonnees.tracer, une par objet). `par` : personne agissant pour `org`
+        // (ApiAcces.agit_pour), ou "analyste" / "auditeur" / "conformite" d'ORBITE. Renvoie
+        // "resultat | motif | version | regle | tca | entrees_a | entrees_b".
+        // Refus : Inconnu, EtatInvalide (purgée), Confidentiel, Habilitation.
+        signal communiquer(h: Horodatage, decision: String, org: Org, par: String) -> String
+            reads decision, a_de, b_de, resultat_de, motif_de, regle_de, version_de, rapprochement_de, tca_de, entrees_de
+            calls ApiDonnees.peut_recevoir, ApiDonnees.tracer, ApiAcces.a_le_role, ApiAcces.agit_pour, Journal.noter
+        // Conteste une décision (calculee -> contestee) : le propriétaire d'un des deux objets
+        // soutient que les données de l'instantané étaient fausses ou la table mal appliquée.
+        // La contestation NE SUSPEND PAS la coordination (elle répond ou est arbitrée dans ses
+        // délais) : elle ouvre un réexamen qui sert de preuve. `par` : "dynamicien" ou
+        // "chef_de_mission" du propriétaire de a ou de b (ApiAcces.agit_pour). Renvoie
+        // "contestee". Refus : Inconnu, EtatInvalide, Echu (plus de DELAI_ARCHIVE après le
+        // calcul), MotifRequis, Habilitation.
+        signal contester(h: Horodatage, decision: String, motif: String, par: String) -> String
+            writes contestation_de
+            reads a_de, b_de, calculee_le
+            moves calculee -> contestee
+            calls ApiRef.proprietaire, ApiAcces.a_le_role, ApiAcces.agit_pour, Journal.noter
+        // Statue sur une contestation après avoir rejoué la décision (rejouer) et comparé
+        // l'instantané aux données de référence de l'époque : contestee -> confirmee si
+        // `fondee` est faux, contestee -> infirmee sinon (un manquement de données est
+        // signalé à la conformité par l'appelant). `par` "analyste", `valideur`
+        // "superviseur" d'ORBITE. Renvoie l'état atteint. Refus : Inconnu, EtatInvalide,
+        // MotifRequis, Habilitation, QuatreYeux.
+        signal statuer(h: Horodatage, decision: String, fondee: Bool, motif: String, par: String, valideur: String) -> String
+            writes verdict_de
+            moves contestee -> confirmee, contestee -> infirmee
+            calls rejouer, ApiAcces.a_le_role, ApiAcces.quatre_yeux, Journal.noter
+        // Indicateur de la table : décisions de `version` par motif, "motif | nombre" (une
+        // ligne par PrioMotifDesignation) ; sert à la revue de la version suivante.
+        signal statistiques(version: String) -> List<String>
+            reads compte_motif
+        // Archive une décision de plus de DELAI_ARCHIVE, non contestée ou réexaminée
+        // (calculee, confirmee ou infirmee -> archivee ; une contestation pendante retient
+        // l'archivage). `par` "systeme". Renvoie "archivee". Refus : Inconnu, EtatInvalide,
+        // Delai, Habilitation.
+        signal archiver(h: Horodatage, decision: String, par: String) -> String
+            reads calculee_le
+            moves calculee -> archivee, confirmee -> archivee, infirmee -> archivee
+            calls PrioEcheancier.planifier, ApiAcces.a_le_role, Journal.noter
+        // Purge l'instantané d'une décision archivée de plus de CONSERVATION (archivee ->
+        // purgee) sous la purge `purge` autorisée par responsabilite (RespPurges, cible le
+        // rapprochement), mémorisée une fois dans purge_de ; résultat, version et motif restent.
+        // Interdit tant qu'un dossier de preuve gelé
+        // couvre son rapprochement ou l'un de ses deux objets (ApiResponsabilite.sous_gel sur
+        // "CJ-…" et "OBJ-…", ApiResponsabilite.purge_autorisee sur le rapprochement). Geste
+        // d'administration (l'échéancier signale seulement la purge due) : `par` "conformite"
+        // d'ORBITE (ApiAcces.a_le_role). Renvoie "purgee". Refus : Inconnu, EtatInvalide, Delai (conservation non
+        // échue), Conflit (sous gel, ou `purge` non autorisée pour ce rapprochement), Habilitation.
+        signal purger(h: Horodatage, decision: String, purge: String, par: String) -> String
+            writes entrees_de, purge_de
+            reads calculee_le, rapprochement_de, a_de, b_de
+            moves archivee -> purgee when RespPurges.autorisee via purge_de
+            calls ApiResponsabilite.sous_gel, ApiResponsabilite.purge_autorisee, ApiAcces.a_le_role, Journal.noter
+        // Résumé : "a | b | resultat | motif | version | regle | rapprochement | calculee_le |
+        // etat | contestation | verdict" (sans l'instantané, réservé à communiquer).
+        // Refus : Inconnu.
+        signal resume(decision: String) -> String
+            reads decision, a_de, b_de, resultat_de, motif_de, version_de, regle_de, rapprochement_de, calculee_le, contestation_de, verdict_de
+    }
+}

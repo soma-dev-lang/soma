@@ -1,0 +1,169 @@
+// RENTRÉES — corps : débris retrouvés au sol et restitution (Accord de 1968).
+
+flesh ReeDebris {
+    on signaler(h, etat, campagne, ou, quoi, danger, par) {
+        require ApiRef.etat_participant(etat) else Inconnu "État non participant : {etat}"
+        let org = ApiRef.org_de_etat(etat)
+        let pour_etat = (ApiAcces.a_le_role(par, "point_focal") || ApiAcces.a_le_role(par, "autorite")) && ApiAcces.agit_pour(par, org)
+        require pour_etat || ApiAcces.a_le_role(par, "analyste") else Habilitation "signaler : point focal ou autorité de {etat}, ou analyste d'ORBITE"
+        let ec = if campagne == "" { "" } else { to_string(ReeCampagne.etat(campagne)) }
+        require ec != "inconnue" else Inconnu "campagne inconnue : {campagne}"
+        require len(trim(quoi)) > 0 else MotifRequis "description du débris exigée"
+        require etat_decouverte.size < MAX_DEBRIS else Plein "trop de débris"
+        let d = "DB-{next_id()}"
+        etat_decouverte.set(d, etat)
+        campagne_de.set(d, campagne)
+        lieu.set(d, ou)
+        description.set(d, quoi)
+        dangereux.set(d, danger)
+        signale_le.set(d, h)
+        if danger {
+            let _ = ApiPasserelle.notifier(h, ApiRef.orbite(), Rapprochement(""), "débris dangereux {d} signalé", "{etat}, {ou} : {quoi} ; identification urgente demandée", 3)
+            let _ = Journal.noter(h, "reentrees", par, "débris dangereux {d} : identification urgente demandée")
+        }
+        if ec == "rentree" || ec == "close" {
+            let _ = ReeConstat.ouvrir_recherche(h, campagne)
+        }
+        let _ = Journal.noter(h, "reentrees", par, "débris {d} signalé par {etat} à {ou} : {quoi} (campagne présumée {campagne})")
+        return d
+    }
+
+    on identifier(h, debris, objet, par) {
+        require ApiAcces.a_le_role(par, "analyste") else Habilitation "identifier : analyste d'ORBITE"
+        require etat_decouverte.get(debris) != () else Inconnu "débris inconnu : {debris}"
+        let st = get_status(debris) ?? "signale"
+        require st == "signale" else EtatInvalide "débris {debris} {st}"
+        require objet_attribue.get(debris) == () else EtatInvalide "débris {debris} déjà attribué"
+        let eo = ApiRef.etat_objet(objet)
+        require eo != "inconnu" else Inconnu "objet inconnu : {objet}"
+        require eo == "rentre" || eo == "fragmente" else Incoherent "objet {objet} {eo} : ni rentré ni fragmenté"
+        let lanceurs = ApiLancements.etats_de_lancement(objet)
+        if len(lanceurs) == 0 {
+            let ei = to_string(ApiRef.etat_immatriculation(objet))
+            if ei != "" {
+                lanceurs = [ei]
+            }
+        }
+        objet_attribue.set(debris, objet)
+        etats_lancement.set(debris, lanceurs)
+        transition(debris, "signale", "identifie")
+        let lj = join(lanceurs, ",")
+        let _ = Journal.noter(h, "reentrees", par, "débris {debris} attribué à {objet} ; États de lancement {lj}")
+        return "identifie"
+    }
+
+    on notifier(h, debris, par) {
+        require ApiAcces.a_le_role(par, "analyste") || ApiAcces.a_le_role(par, "systeme") else Habilitation "notifier : analyste ou systeme d'ORBITE"
+        let ed = etat_decouverte.get(debris)
+        require ed != () else Inconnu "débris inconnu : {debris}"
+        let st = get_status(debris) ?? "signale"
+        require st == "identifie" else EtatInvalide "débris {debris} {st}"
+        let objet = objet_attribue.get(debris) ?? Objet("")
+        let danger = dangereux.get(debris) ?? false
+        let urg = if danger { 3 } else { 1 }
+        let dest_s = etats_lancement.get(debris) ?? []
+        if !contains(dest_s, to_string(ed)) {
+            dest_s = dest_s ++ [to_string(ed)]
+        }
+        let dernier = ""
+        for e in dest_s {
+            let org = ApiRef.org_de_etat(Etat(e))
+            let tr = try { ApiDonnees.tracer(h, org, objet, Rapprochement(""), "débris {debris} retrouvé") }
+            let texte = if tr.error == () { "débris {debris} retrouvé en {ed} : attribué à {objet}, dangereux {danger}" } else { "débris {debris} retrouvé en {ed}, dangereux {danger}" }
+            dernier = ApiPasserelle.notifier(h, org, Rapprochement(""), "débris retrouvé {debris}", texte, Niveau(urg))
+        }
+        notifie_le.set(debris, h)
+        message_de.set(debris, dernier)
+        transition(debris, "identifie", "notifie")
+        let _ = Journal.noter(h, "reentrees", par, "débris {debris} notifié aux États de lancement (copie {ed}) ; Secrétaire général des Nations unies informé hors ORBITE")
+        return "notifie"
+    }
+
+    on demander(h, debris, par) {
+        let lanceurs = etats_lancement.get(debris)
+        require lanceurs != () else Inconnu "débris inconnu ou non identifié : {debris}"
+        let qui = ""
+        for e in lanceurs {
+            if qui == "" {
+                let org = ApiRef.org_de_etat(Etat(e))
+                let role_ok = ApiAcces.a_le_role(par, "autorite") || ApiAcces.a_le_role(par, "point_focal")
+                if role_ok && ApiAcces.agit_pour(par, org) {
+                    qui = e
+                }
+            }
+        }
+        require qui != "" else Habilitation "demander : autorité ou point focal d'un État de lancement"
+        let st = get_status(debris) ?? "signale"
+        require st == "notifie" else EtatInvalide "débris {debris} {st}"
+        let t = to_int(notifie_le.get(debris) ?? h)
+        require to_int(h) - t <= DELAI_DEMANDE else Delai "demande après le délai de 90 jours"
+        demandeur.set(debris, Etat(qui))
+        transition(debris, "notifie", "demande")
+        let _ = Journal.noter(h, "reentrees", par, "restitution du débris {debris} demandée par {qui}")
+        return "demande"
+    }
+
+    on neutraliser(h, debris, mesures, par) {
+        let ed = etat_decouverte.get(debris)
+        require ed != () else Inconnu "débris inconnu : {debris}"
+        let org = ApiRef.org_de_etat(ed)
+        require ApiAcces.a_le_role(par, "autorite") && ApiAcces.agit_pour(par, org) else Habilitation "neutraliser : autorité de {ed}"
+        require dangereux.get(debris) ?? false else EtatInvalide "débris {debris} non dangereux"
+        require neutralisation.get(debris) == () else EtatInvalide "débris {debris} déjà neutralisé"
+        require (get_status(debris) ?? "signale") != "signale" else EtatInvalide "débris {debris} encore signalé"
+        require len(trim(mesures)) > 0 else MotifRequis "mesures d'élimination du danger exigées"
+        neutralisation.set(debris, "{h} | {mesures} | {par}")
+        let _ = Journal.noter(h, "reentrees", par, "débris {debris} neutralisé : {mesures}")
+        let reste = 0
+        for e in etat_decouverte.entries {
+            if to_string(e.value) == to_string(ed) && (dangereux.get(e.key) ?? false) && neutralisation.get(e.key) == () {
+                reste = reste + 1
+            }
+        }
+        return reste
+    }
+
+    on balayer(h, par) {
+        require ApiAcces.a_le_role(par, "systeme") else Habilitation "balayage : systeme"
+        let n = 0
+        for e in signale_le.entries {
+            let d = e.key
+            let st = get_status(d) ?? "signale"
+            if st == "signale" && to_int(h) - to_int(e.value) > DELAI_IDENTIFICATION {
+                transition(d, "signale", "non_identifie")
+                n = n + 1
+                let _ = Journal.noter(h, "reentrees", par, "débris {d} non identifié dans le délai")
+            } else if st == "notifie" {
+                let t = to_int(notifie_le.get(d) ?? h)
+                if to_int(h) - t > DELAI_DEMANDE {
+                    let danger = dangereux.get(d) ?? false
+                    if !danger || neutralisation.get(d) != () {
+                        transition(d, "notifie", "conserve")
+                        n = n + 1
+                        let _ = Journal.noter(h, "reentrees", par, "débris {d} conservé par l'État de découverte (pas de demande)")
+                    } else {
+                        let _ = ApiPasserelle.notifier(h, ApiRef.orbite(), Rapprochement(""), "débris dangereux {d} non neutralisé", "délai de demande écoulé, danger non éliminé", 3)
+                        for el in etats_lancement.get(d) ?? [] {
+                            let _ = ApiPasserelle.notifier(h, ApiRef.org_de_etat(Etat(el)), Rapprochement(""), "débris dangereux {d} non neutralisé", "mesures d'élimination du danger attendues (Accord de 1968, art. 5.4)", 3)
+                        }
+                    }
+                }
+            }
+        }
+        return n
+    }
+
+    on restituer(h, debris, par, valideur) {
+        let ed = etat_decouverte.get(debris)
+        require ed != () else Inconnu "débris inconnu : {debris}"
+        let org = ApiRef.org_de_etat(ed)
+        require ApiAcces.a_le_role(par, "autorite") && ApiAcces.agit_pour(par, org) else Habilitation "restituer : autorité de {ed}"
+        require ApiAcces.a_le_role(valideur, "superviseur") && ApiAcces.quatre_yeux(par, valideur) else QuatreYeux "valideur : superviseur d'ORBITE"
+        let st = get_status(debris) ?? "signale"
+        require st == "demande" else EtatInvalide "débris {debris} {st}"
+        remise.set(debris, "{h} | {par} | {valideur}")
+        transition(debris, "demande", "restitue")
+        let _ = Journal.noter(h, "reentrees", par, "débris {debris} restitué, valideur {valideur}")
+        return "restitue"
+    }
+}

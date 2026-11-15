@@ -1,0 +1,255 @@
+// OPÉRATIONS — changements en production : gels programmés, gels d'urgence (rapprochement de
+// niveau 3 à moins de 6 h du TCA), demandes de changement, approbation à quatre yeux,
+// déploiement, vérification, retour arrière. Un changement normal ne se déploie que si
+// `ApiOperations.changement_autorise(h)` ; un changement d'urgence ne sert qu'à traiter un
+// incident en cours et passe le gel.
+
+// Genre d'un changement. "urgence" : correctif d'un incident en traitement ou contourné.
+cell type OpsGenreChangement = String where value == "normal" || value == "urgence"
+// Risque fixé à l'évaluation : "eleve" exige la "direction" comme valideur.
+cell type OpsRisque = String where value == "faible" || value == "moyen" || value == "eleve"
+// État d'un changement ; "inconnu" si jamais soumis.
+cell type OpsEtatChangement = String where value == "soumis" || value == "evalue" || value == "approuve" || value == "approuve_urgence" || value == "en_deploiement" || value == "deploye" || value == "retour_arriere" || value == "clos" || value == "clos_echec" || value == "rejete" || value == "retire" || value == "inconnu"
+
+// Gels programmés (campagne de rentrée majeure, lancement habité, exercice international…).
+skeleton OpsGel {
+    const MAX_GELS = 10000
+    // Durée maximale d'un gel programmé (ms) : 14 jours.
+    const DUREE_MAX = 1209600000
+    memory {
+        debut: Map<String, Horodatage> [persistent]
+        fin: Map<String, Horodatage> [persistent]
+        motif: Map<String, String> [persistent]
+        invariant debut.size <= 10000
+        invariant (fin ?? 9000000000000000) >= (debut ?? 0)
+    }
+    // `leve` et `annule` sont terminaux. Un gel « programme » dont `debut` est passé gèle
+    // quand même (gel_a lit les dates) : l'oubli d'entrée en vigueur n'ouvre pas de trou.
+    state gel {
+        initial: programme
+        programme -> en_vigueur    // entrer_en_vigueur
+        programme -> annule        // annuler
+        en_vigueur -> leve         // lever
+    }
+    face {
+        // Programme un gel sur [deb, fi[. Renvoie l'id. Refus : Existe, HorsBornes (fi ≤ deb,
+        // deb < h, fi − deb > DUREE_MAX), MotifRequis, Plein, Habilitation (par "direction" d'ORBITE).
+        signal programmer(h: Horodatage, g: String, deb: Horodatage, fi: Horodatage, m: String, par: String) -> String
+            writes debut, fin, motif
+            calls ApiAcces.a_le_role, Journal.noter
+        // Renvoie "en_vigueur". Refus : Inconnu, EtatInvalide, Delai (h < debut), Habilitation
+        // (par "systeme" ou "exploitant").
+        signal entrer_en_vigueur(h: Horodatage, g: String, par: String) -> String
+            reads debut
+            moves programme -> en_vigueur
+            calls ApiAcces.a_le_role, Journal.noter
+        // Renvoie "annule". Refus : Inconnu, EtatInvalide, MotifRequis, Habilitation (par "direction").
+        signal annuler(h: Horodatage, g: String, m: String, par: String) -> String
+            reads debut
+            moves programme -> annule
+            calls ApiAcces.a_le_role, Journal.noter
+        // Lève le gel : à `fin` par "systeme" ; avant `fin` seulement par "direction" avec motif.
+        // Renvoie "leve". Refus : Inconnu, EtatInvalide, MotifRequis, Habilitation.
+        signal lever(h: Horodatage, g: String, m: String, par: String) -> String
+            reads fin
+            moves en_vigueur -> leve
+            calls ApiAcces.a_le_role, Journal.noter
+        // Vrai si un gel en vigueur, ou programmé dont [debut, fin[ couvre `h`.
+        signal gel_a(h: Horodatage) -> Bool
+            reads gel, debut, fin
+        // Gels dont l'état doit changer à `h`, triés : programmés dont `debut` est passé (à mettre
+        // en vigueur) et en vigueur dont `fin` est passée (à lever). Lu par la ronde.
+        signal echus(h: Horodatage) -> List<String>
+            reads gel, debut, fin
+    }
+}
+
+// Gel d'urgence, un par rapprochement (id = Rapprochement, même id que chez conjonctions) :
+// la ronde (OpsRonde.balayer) arme un gel pour chaque rapprochement de
+// ApiConjonctions.urgents(h, HORIZON, 3), et le lève quand le rapprochement est clos ou son TCA
+// passé. Une baisse de niveau ne le lève pas (prudence) : `actif_a` lit à la fois `urgents`
+// (aucun trou entre deux rondes) et les gels armés (hystérésis, trace d'audit).
+skeleton OpsGelUrgence {
+    // Horizon de gel avant le TCA (ms) : 6 h.
+    const HORIZON = 21600000
+    const MAX_ARMES = 100000
+    memory {
+        tca: Map<String, Horodatage> [persistent]       // rapprochement → TCA lu à l'armement
+        arme_a: Map<String, Horodatage> [persistent]
+        // Rapprochements dont le gel est en vigueur, clé = rapprochement ; sert à `actif_a`.
+        en_vigueur: Map<String, Horodatage> [persistent]
+        invariant tca.size <= 100000
+        invariant en_vigueur.size <= 100000
+        invariant (tca ?? 9000000000000000) >= (arme_a ?? 0)
+    }
+    // `leve` est terminal.
+    state gel {
+        initial: veille
+        veille -> arme            // armer
+        arme -> leve              // lever
+    }
+    face {
+        // Arme le gel d'un rapprochement : ApiConjonctions.niveau(r) = 3 et tca(r) − h ≤ HORIZON.
+        // Règle (même id) : le rapprochement est ouvert et en alerte ou en coordination
+        // (ApiConjonctions.etat(r) ∈ {alerte, en_coordination}).
+        // Appelé par la ronde ("systeme"), ou par l'astreinte "exploitant".
+        // Renvoie le TCA (ms). Refus : Inconnu (rapprochement), NonEligible (niveau < 3, ou TCA à
+        // plus de HORIZON), Echu (TCA passé), EtatInvalide (déjà armé ou levé, ou rapprochement ni
+        // en alerte ni en coordination), Plein, Habilitation (par "systeme" ou "exploitant").
+        signal armer(h: Horodatage, r: Rapprochement, par: String) -> Horodatage
+            writes tca, arme_a, en_vigueur
+            moves veille -> arme when ConjRapprochement.alerte || ConjRapprochement.en_coordination
+            calls ApiConjonctions.etat, ApiConjonctions.niveau, ApiConjonctions.tca, ApiAcces.a_le_role, Journal.noter
+        // Lève le gel : ApiConjonctions.etat(r) ∈ {resolu, passe, collision}, ou h > tca + 1 h.
+        // Renvoie "leve". Refus : Inconnu, EtatInvalide (non armé, ou rapprochement encore ouvert
+        // avant TCA + 1 h), Habilitation (par "systeme" ou "superviseur").
+        signal lever(h: Horodatage, r: Rapprochement, par: String) -> String
+            writes en_vigueur
+            reads tca
+            moves arme -> leve
+            calls ApiConjonctions.etat, ApiAcces.a_le_role, Journal.noter
+        // Vrai si au moins un gel d'urgence est armé à `h` — y compris un gel dont la levée est
+        // en retard (seul `lever` retire un gel) — OU si ApiConjonctions.urgents(h, HORIZON, 3)
+        // est non vide : un rapprochement devenu urgent entre deux rondes gèle déjà.
+        signal actif_a(h: Horodatage) -> Bool
+            reads en_vigueur
+            calls ApiConjonctions.urgents
+        // "veille", "arme" ou "leve" : la ronde n'arme que les rapprochements en veille.
+        signal etat_de(r: Rapprochement) -> String
+            reads gel
+        // Gels armés dont la levée est due à `h` (TCA + 1 h passé, ou rapprochement clos selon
+        // ApiConjonctions.etat), triés : à lever par la ronde.
+        signal a_lever(h: Horodatage) -> List<String>
+            reads gel, tca
+            calls ApiConjonctions.etat
+    }
+}
+
+// Demandes de changement. Un changement vise UN sous-système ; son incident (urgence) est écrit
+// une fois à la soumission ("" pour un changement normal).
+skeleton OpsChangement {
+    const MAX_CHANGEMENTS = 1000000
+    const MAX_TEXTE = 20000
+    // Délai de vérification après déploiement (ms) : 24 h ; au-delà, le changement est en retard.
+    const DELAI_VERIFICATION = 86400000
+    memory {
+        genre: Map<String, OpsGenreChangement> [persistent]
+        incident_de: Map<String, String> [persistent]          // changement → incident traité ("" si normal), écrit une fois
+        cible: Map<String, SousSysteme> [persistent]
+        demandeur: Map<String, String> [persistent]            // changement → personne qui l'a soumis ; écrit une fois par soumettre (lien de règle)
+        description: Map<String, String> [persistent]
+        plan_retour: Map<String, String> [persistent]          // procédure de retour arrière, obligatoire
+        risque: Map<String, OpsRisque> [persistent]
+        approbateur: Map<String, String> [persistent]
+        deploye_par: Map<String, String> [persistent]
+        deploye_a: Map<String, Horodatage> [persistent]
+        invariant genre.size <= 1000000
+        invariant incident_de.size <= 1000000
+    }
+    // `clos`, `clos_echec`, `rejete` et `retire` sont terminaux.
+    state changement {
+        initial: soumis
+        soumis -> evalue                                                                  // evaluer
+        soumis -> retire                                                                  // retirer
+        soumis -> approuve_urgence                                                        // approuver_urgence : incident en traitement ou contourné
+        evalue -> approuve                                                                // approuver
+        evalue -> rejete                                                                  // rejeter
+        approuve -> retire                                                                // retirer
+        approuve_urgence -> retire                                                        // retirer : incident résolu sans lui
+        approuve -> en_deploiement                                                        // deployer
+        approuve_urgence -> en_deploiement                                                // deployer
+        en_deploiement -> deploye                                                         // achever
+        en_deploiement -> retour_arriere                                                  // revenir_en_arriere
+        deploye -> retour_arriere                                                         // revenir_en_arriere : vérification échouée
+        deploye -> clos                                                                   // verifier
+        retour_arriere -> clos_echec                                                      // constater_retour
+    }
+    face {
+        // Soumet un changement : genre, sous-système visé, description, plan de retour arrière, et
+        // pour une urgence l'incident (non résolu, visant `ss`) qu'il corrige. Renvoie l'id.
+        // Refus : Existe, MotifRequis (description ou plan de retour vide), HorsBornes (texte >
+        // MAX_TEXTE), Incoherent (urgence sans incident, ou normal avec incident), Inconnu
+        // (incident), Plein, Habilitation (par "exploitant" d'ORBITE).
+        signal soumettre(h: Horodatage, c: String, g: OpsGenreChangement, ss: SousSysteme, desc: String, retour: String, incident: String, par: String) -> String
+            writes genre, incident_de, cible, demandeur, description, plan_retour
+            calls OpsIncident.etat, OpsIncident.vise_de, ApiAcces.a_le_role, Journal.noter
+        // Fixe le risque d'un changement normal. Renvoie "evalue".
+        // Refus : Inconnu, EtatInvalide (urgence, ou pas "soumis"), Habilitation (par "exploitant", ≠ demandeur).
+        signal evaluer(h: Horodatage, c: String, r: OpsRisque, par: String) -> String
+            writes risque
+            reads genre, demandeur
+            moves soumis -> evalue
+            calls ApiAcces.a_le_role, Journal.noter
+        // Approuve un changement normal évalué. Renvoie "approuve".
+        // Refus : Inconnu, EtatInvalide, Habilitation (par "superviseur"), QuatreYeux (valideur
+        // ≠ par et ≠ demandeur ; "direction" si risque "eleve").
+        signal approuver(h: Horodatage, c: String, par: String, valideur: String) -> String
+            writes approbateur
+            reads risque, demandeur
+            moves evalue -> approuve
+            calls ApiAcces.a_le_role, ApiAcces.quatre_yeux, Journal.noter
+        // Approuve un changement d'urgence tant que son incident est en traitement ou contourné.
+        // Renvoie "approuve_urgence". Refus : Inconnu, EtatInvalide (normal, ou incident résolu),
+        // Habilitation (par "superviseur"), QuatreYeux (valideur "direction", ≠ demandeur).
+        signal approuver_urgence(h: Horodatage, c: String, par: String, valideur: String) -> String
+            writes approbateur
+            reads genre, incident_de, demandeur
+            moves soumis -> approuve_urgence when OpsIncident.en_traitement || OpsIncident.contourne via incident_de
+            calls OpsIncident.etat, ApiAcces.a_le_role, ApiAcces.quatre_yeux, Journal.noter
+        // Rejette un changement évalué. Renvoie "rejete".
+        // Refus : Inconnu, EtatInvalide, MotifRequis, Habilitation (par "superviseur").
+        signal rejeter(h: Horodatage, c: String, motif: String, par: String) -> String
+            moves evalue -> rejete
+            calls ApiAcces.a_le_role, Journal.noter
+        // Retire un changement non déployé. Renvoie "retire".
+        // Refus : Inconnu, EtatInvalide, MotifRequis, Habilitation (par = demandeur, ou "superviseur").
+        signal retirer(h: Horodatage, c: String, motif: String, par: String) -> String
+            reads demandeur
+            moves soumis -> retire, approuve -> retire, approuve_urgence -> retire
+            calls ApiAcces.a_le_role, Journal.noter
+        // Démarre le déploiement. Normal : ApiOperations.changement_autorise(h) doit être vrai
+        // (contrôlé ici par OpsGel.gel_a, OpsGelUrgence.actif_a — gels armés et
+        // ApiConjonctions.urgents à 6 h —, OpsIncident.majeur_en_cours, OpsBascule.en_transition). Urgence : passe le gel, mais pas une bascule en transition.
+        // Règle : le demandeur (demandeur, écrit par soumettre) est encore une personne active chez
+        // acces (ApiAcces.role_de(demandeur) ≠ "aucun") : un changement dont le porteur est
+        // suspendu ou parti n'est pas déployé (le retirer et le resoumettre).
+        // Renvoie "en_deploiement". Refus : Inconnu, EtatInvalide (bascule en transition, ou
+        // demandeur inactif), Suspendu (gel, gel d'urgence ou incident majeur pour un changement
+        // normal), Habilitation (par "exploitant", ≠ demandeur pour un changement normal).
+        signal deployer(h: Horodatage, c: String, par: String) -> String
+            writes deploye_par
+            reads genre, demandeur
+            moves approuve -> en_deploiement when AccesPersonnes.active via demandeur, approuve_urgence -> en_deploiement when AccesPersonnes.active via demandeur
+            calls ApiAcces.role_de, OpsGel.gel_a, OpsGelUrgence.actif_a, OpsIncident.majeur_en_cours, OpsBascule.en_transition, ApiAcces.a_le_role, Journal.noter
+        // Déploiement terminé. Renvoie "deploye". Refus : Inconnu, EtatInvalide, Habilitation (par = deploye_par).
+        signal achever(h: Horodatage, c: String, par: String) -> String
+            writes deploye_a
+            reads deploye_par
+            moves en_deploiement -> deploye
+            calls Journal.noter
+        // Retour arrière (pendant le déploiement, ou vérification échouée) selon le plan écrit.
+        // Renvoie "retour_arriere". Refus : Inconnu, EtatInvalide, MotifRequis,
+        // Habilitation (par "exploitant").
+        signal revenir_en_arriere(h: Horodatage, c: String, motif: String, par: String) -> String
+            reads plan_retour
+            moves en_deploiement -> retour_arriere, deploye -> retour_arriere
+            calls ApiAcces.a_le_role, Journal.noter
+        // Retour arrière constaté : l'état d'avant est rétabli. Un échec de retour arrière est un
+        // incident à déclarer (OpsIncident.declarer, gravité ≥ 2). Renvoie "clos_echec".
+        // Refus : Inconnu, EtatInvalide, Habilitation (par "exploitant").
+        signal constater_retour(h: Horodatage, c: String, par: String) -> String
+            moves retour_arriere -> clos_echec
+            calls ApiAcces.a_le_role, Journal.noter
+        // Vérification réussie du service après déploiement. Renvoie "clos".
+        // Refus : Inconnu, EtatInvalide, QuatreYeux (par ≠ deploye_par, "superviseur").
+        signal verifier(h: Horodatage, c: String, par: String) -> String
+            reads deploye_par
+            moves deploye -> clos
+            calls ApiAcces.quatre_yeux, Journal.noter
+        signal etat(c: String) -> OpsEtatChangement
+            reads changement, genre
+        // Changements déployés non vérifiés au-delà de DELAI_VERIFICATION à `h`, triés.
+        signal non_verifies(h: Horodatage) -> List<String>
+            reads changement, deploye_a
+    }
+}

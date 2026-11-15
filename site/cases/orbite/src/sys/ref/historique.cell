@@ -1,0 +1,144 @@
+// ref — modifications à quatre yeux et historique versionné du référentiel.
+// Tout changement d'un champ du catalogue ou du nom d'une organisation après sa création passe
+// par une demande : proposée par une personne, validée par une autre (ApiAcces.quatre_yeux),
+// appliquée par le setter de la cell propriétaire du champ, qui revérifie la demande. Une seule
+// demande en cours par (cible, champ). RefHistorique garde chaque valeur avec sa date : on peut
+// reconstituer le référentiel TEL QU'IL ÉTAIT à l'instant d'une décision (propriété 6 :
+// preuve en cas de dommage). Il est distinct du Journal (qui trace les gestes, pas les valeurs).
+
+// Statut d'une demande tel que le lit un appelant ; "inconnue" si jamais proposée.
+cell type RefStatutModif = String where value == "proposee" || value == "validee" || value == "appliquee" || value == "rejetee" || value == "annulee" || value == "expiree" || value == "inconnue"
+
+skeleton RefModification {
+    const MAX_DEMANDES = 500000
+    // 7 jours (ms) pour valider puis appliquer une demande.
+    const DELAI_MODIFICATION_MS = 604800000
+    memory {
+        cibles: Map<String, String> [persistent, consistent, immutable]    // demande → objet ou org
+        champs: Map<String, RefChamp> [persistent, consistent, immutable]
+        valeurs: Map<String, String> [persistent, consistent, immutable]   // nouvelle valeur, en texte
+        motifs: Map<String, String> [persistent, consistent, immutable]
+        proposants: Map<String, String> [persistent, consistent, immutable]
+        valideurs: Map<String, String> [persistent]
+        echeances: Map<String, Horodatage> [persistent, consistent, immutable]
+        // "cible|champ" → demande en cours (proposee ou validee) ; effacé à la sortie
+        en_cours: Map<String, String> [persistent]
+        invariant cibles.size <= 500000
+        invariant champs.size <= 500000
+        invariant valeurs.size <= 500000
+        invariant motifs.size <= 500000
+        invariant proposants.size <= 500000
+        invariant valideurs.size <= 500000
+        invariant echeances.size <= 500000
+        invariant en_cours.size <= 500000
+    }
+    // Demande de modification. Terminaux : appliquee, rejetee, annulee, expiree.
+    state demande {
+        initial: proposee
+        proposee -> validee       // valider : quatre yeux
+        validee -> appliquee      // appliquer : setter du champ
+        proposee -> rejetee       // rejeter : le valideur refuse
+        proposee -> annulee       // annuler : le proposant renonce
+        validee -> annulee
+        proposee -> expiree       // expirer : échéance dépassée
+        validee -> expiree
+    }
+    face {
+        // Propose une nouvelle valeur pour un champ. Champ "nom" : la cible est une org
+        // (RefOrg.existe) ; sinon un objet non rentré ni fragmenté (RefObjet.etat).
+        // Échéance = h + DELAI_MODIFICATION_MS. Renvoie l'id de la demande.
+        // Habilitation : champ "nom" : "superviseur" (ORBITE) ou "administrateur_operateur" de
+        // l'org ; champs d'objet : "analyste" (ORBITE) ou "dynamicien" du propriétaire
+        // (ApiAcces.agit_pour sur RefObjet.proprietaire).
+        // Refus : Existe (id), Inconnu (cible), EtatInvalide (cible radiée, rentrée, fragmentée),
+        // Conflit (demande déjà en cours sur ce champ), MotifRequis, Plein, Habilitation.
+        signal proposer(h: Horodatage, demande: String, cible: String, champ: RefChamp, valeur: String, motif: String, par: String) -> String
+            writes cibles, champs, valeurs, motifs, proposants, echeances, en_cours
+            calls RefObjet.etat, RefObjet.proprietaire, RefOrg.existe, ApiAcces.a_le_role, ApiAcces.agit_pour, Journal.noter
+        // Valide la demande. Renvoie "validee".
+        // Habilitation : ApiAcces.quatre_yeux(proposant, valideur) — "superviseur",
+        // "conformite" ou "direction" d'ORBITE, ou "chef_de_mission" du même opérateur.
+        // Refus : Inconnu, EtatInvalide, Echu, QuatreYeux.
+        signal valider(h: Horodatage, demande: String, valideur: String) -> String
+            reads proposants, echeances
+            writes valideurs
+            moves proposee -> validee
+            calls ApiAcces.quatre_yeux, Journal.noter
+        // Applique une demande validée : RefObjet.modifier ou RefOrg.renommer (par "systeme"),
+        // puis RefHistorique.consigner (valeur, demande, proposant, valideur). Libère en_cours.
+        // Renvoie "appliquee". Habilitation : le proposant, le valideur, ou "systeme".
+        // Refus : Inconnu, EtatInvalide, Echu, Incoherent (valeur refusée par le setter),
+        // Habilitation.
+        signal appliquer(h: Horodatage, demande: String, par: String) -> String
+            reads cibles, champs, valeurs, proposants, valideurs, echeances
+            writes en_cours
+            moves validee -> appliquee
+            calls RefObjet.modifier, RefOrg.renommer, RefHistorique.consigner, ApiAcces.a_le_role, Journal.noter
+        // Le valideur pressenti refuse. Libère en_cours. Renvoie "rejetee".
+        // Habilitation : ApiAcces.quatre_yeux(proposant, par). Refus : Inconnu, EtatInvalide,
+        // MotifRequis, QuatreYeux.
+        signal rejeter(h: Horodatage, demande: String, motif: String, par: String) -> String
+            reads proposants, cibles, champs
+            writes valideurs, en_cours
+            moves proposee -> rejetee
+            calls ApiAcces.quatre_yeux, Journal.noter
+        // Le proposant renonce. Libère en_cours. Renvoie "annulee".
+        // Habilitation : le proposant lui-même. Refus : Inconnu, EtatInvalide, Habilitation.
+        signal annuler(h: Horodatage, demande: String, par: String) -> String
+            reads proposants, cibles, champs
+            writes en_cours
+            moves proposee -> annulee, validee -> annulee
+            calls Journal.noter
+        // Fait expirer une demande non appliquée dont l'échéance est < h. Libère en_cours.
+        // Renvoie "expiree". Habilitation : par "systeme".
+        // Refus : Inconnu, EtatInvalide, Delai (échéance non atteinte), Habilitation.
+        signal expirer(h: Horodatage, demande: String, par: String) -> String
+            reads echeances, cibles, champs
+            writes en_cours
+            moves proposee -> expiree, validee -> expiree
+            calls ApiAcces.a_le_role, Journal.noter
+        // Ronde (appelée par RefBalayage.balayer) : fait expirer (expirer) les demandes en cours
+        // dont l'échéance est < h, au plus 1 000 par appel. Renvoie le nombre d'expirations.
+        // Habilitation : par "systeme". Refus : Habilitation.
+        signal balayer(h: Horodatage, par: String) -> Int
+            ensures result >= 0 && result <= 1000
+            reads en_cours, echeances
+            calls expirer, ApiAcces.a_le_role
+        // Statut ; "inconnue" si jamais proposée.
+        signal etat(demande: String) -> RefStatutModif
+            reads cibles, demande
+    }
+}
+
+// Historique versionné, en ajout seul : une ligne par valeur prise par un champ d'une cible
+// (objet, org, État), avec sa date d'effet et sa source (demande, cession, déclaration…).
+skeleton RefHistorique {
+    const MAX_VERSIONS = 20000000
+    const MAX_VERSIONS_PAR_CIBLE = 2000
+    memory {
+        // cible → lignes "h|champ|valeur|source|par", par h croissant
+        versions: Map<String, List<String>> [persistent]
+        invariant versions.size <= 2000000
+        invariant len(versions) <= 2000
+        total: Map<String, Int> [persistent]                      // "versions" → nombre de lignes
+        invariant total >= 0 && total <= 20000000
+    }
+    face {
+        // Ajoute une version : la cible prend `valeur` pour `champ` à l'instant h (h ≥ dernière
+        // version de la cible). Appelé par les cells de ref à chaque création ou changement.
+        // Renvoie le nombre de versions de la cible.
+        // Refus : Incoherent (h antérieur à la dernière version), Plein.
+        signal consigner(h: Horodatage, cible: String, champ: String, valeur: String, source: String, par: String) -> Int
+            ensures result >= 1 && result <= 2000
+            writes versions, total
+        // Valeur du champ de la cible à l'instant h (la dernière version de date ≤ h) ; "" si le
+        // champ n'avait pas encore de valeur. Sert à responsabilite : propriétaire, propulsion,
+        // État d'immatriculation tels qu'ils étaient au moment d'une décision.
+        signal valeur_au(cible: String, champ: String, h: Horodatage) -> String
+            reads versions
+        // Les n dernières versions de la cible (au plus 200), la plus récente en dernier.
+        signal historique(cible: String, n: Int) -> List<String>
+            requires n > 0 && n <= 200
+            reads versions
+    }
+}

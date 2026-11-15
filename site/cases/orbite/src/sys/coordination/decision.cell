@@ -1,0 +1,127 @@
+// COORDINATION — les décisions arrêtées et leur fondement (propriété 6). Instance = id de
+// décision "DS-<r>-<n>" (n = rang de la pose du verrou). Une décision n'est jamais réécrite :
+// une rouverture la lève et une nouvelle décision naît ; l'historique d'un rapprochement est la
+// suite de ses décisions. Chaque décision fige, au moment de l'arrêt, les données qui la
+// fondaient : c'est la preuve en cas de dommage, communiquée aux seules organisations autorisées.
+
+// Voie par laquelle la désignation a été arrêtée.
+cell type CoordMode = String where value == "accord" || value == "arbitrage"
+// État d'une décision ; "inconnue" si jamais prise.
+cell type CoordEtatDecision = String where value == "prise" || value == "designee" || value == "abstention" || value == "en_vigueur" || value == "levee" || value == "soldee" || value == "purgee" || value == "inconnue"
+// Fondement figé d'une décision : ce qu'ORBITE savait à l'instant de l'arrêt.
+// pc en milliardièmes ; tca, h en ms ; ages en ms (−1 : aucune éphéméride validée) ;
+// distance en m ; priorite : ApiPriorites.decision_de(r) ("id|designe|version|regle|instant") ;
+// depot_* : dépôt validé en vigueur à h, ApiEphemerides.fondement ("" : aucun) ; reponses : "org:sens" du dernier tour
+// ("org:muette" pour un silence) ; defaut : désignation par défaut des règles ("" : aucune).
+cell type CoordFondement { variants { CoordFondement { r: Rapprochement, objet: Objet, mode: CoordMode, h: Horodatage, tca: Horodatage, pc: Probabilite, distance: Distance, niveau: Niveau, version: String, priorite: String, defaut: Objet, objet_a: Objet, objet_b: Objet, propulsion_a: Propulsion, propulsion_b: Propulsion, depot_a: String, depot_b: String, age_a: Int, age_b: Int, reponses: List<String>, motif: String, par: String, valideur: String } } }
+
+skeleton CoordDecision {
+    const MAX_DECISIONS = 100000000
+    // Décisions d'un même rapprochement (une par tour au plus).
+    const MAX_PAR_RAPPROCHEMENT = 50
+    // Conservation minimale avant purge : 10 ans (ms), délai de prescription de la Convention
+    // de 1972 couvert avec marge.
+    const CONSERVATION = 315576000000
+    // Réserves d'une décision (une par partie et par motif au plus, en pratique quelques-unes).
+    const MAX_RESERVES = 20
+    memory {
+        rapprochement_de: Map<String, Rapprochement> [persistent]  // décision -> r ; écrit une fois par prendre, jamais effacé (lien des règles avec CoordVerrou)
+        objet_de: Map<String, Objet> [persistent]                  // décision -> objet désigné ; écrit une fois par prendre (absent pour « ne pas manœuvrer »), jamais effacé (lien de la règle avec RefObjet)
+        purge_de: Map<String, String> [persistent]                 // décision -> purge autorisée par responsabilite (RespPurges) ; écrit une fois par purger, jamais effacé (lien de la règle avec RespPurges)
+        fondement_de: Map<String, CoordFondement> [persistent]     // décision -> fondement figé à l'arrêt ; jamais réécrit, effacé par la seule purge
+        fin_le: Map<String, Horodatage> [persistent]               // décision -> instant de levée ou de solde (départ de la conservation)
+        motif_fin_de: Map<String, String> [persistent]             // décision -> motif de levée ("" pour un solde)
+        historique_de: Map<String, List<String>> [persistent]      // r -> décisions, dans l'ordre de prise
+        reserves_de: Map<String, List<String>> [persistent]        // décision -> "h | org | par | motif" : contestations d'une partie, sans effet suspensif
+        invariant rapprochement_de.size <= 100000000
+        invariant len(historique_de) <= 50
+        invariant len(reserves_de) <= 20
+    }
+    // Cycle d'une décision ; elle ne quitte en_vigueur qu'au rythme du verrou (même r, via
+    // rapprochement_de).
+    state decision {
+        initial: prise
+        prise -> designee                // objet désigné en service chez ref (propriété 2)
+        designee -> en_vigueur           // l'arrêt : le verrou du rapprochement est tenu
+        prise -> abstention              // décision de ne pas manœuvrer (objet "") : verrou tenu
+        en_vigueur -> levee              // rouverture : le verrou a été levé
+        en_vigueur -> soldee             // clôture du rapprochement : le verrou est clos
+        abstention -> levee
+        abstention -> soldee
+        levee -> purgee                  // fin de conservation, hors gel
+        soldee -> purgee
+    }
+    face {
+        // Prend la décision `d` sur `r` : objet désigné -> prise -> designee (ApiRef.etat_objet(objet)
+        // == "en_service", NonEligible sinon) -> en_vigueur (verrou de `r` tenu) ; objet "" ->
+        // prise -> abstention (verrou tenu). Seul écrivain de rapprochement_de et de objet_de
+        // (objet non vide seulement ; Existe si `d` existe) ; fige le fondement en lisant
+        // ApiConjonctions.tca / pc / distance / niveau, CoordDossier.objets / defaut,
+        // ApiPriorites.decision_de(r) (règle appliquée), ApiRef.propulsion des deux objets,
+        // ApiEphemerides.fondement(objet, h) et age de chacun (−1 si Inconnu), CoordReponse.du_tour. Ajoute `d` à l'historique de `r`. Appelé par
+        // CoordVerrou.poser seulement. Renvoie `d`. Refus : Existe, Plein (MAX_PAR_RAPPROCHEMENT),
+        // NonEligible (objet désigné pas en service).
+        signal prendre(h: Horodatage, d: String, r: Rapprochement, objet: Objet, mode: CoordMode, motif: String, par: String, valideur: String) -> String
+            writes rapprochement_de, objet_de, fondement_de, historique_de
+            moves prise -> designee when RefObjet.en_service via objet_de, designee -> en_vigueur when CoordVerrou.tenu via rapprochement_de, prise -> abstention when CoordVerrou.tenu via rapprochement_de
+            calls ApiRef.etat_objet, ApiConjonctions.tca, ApiConjonctions.pc, ApiConjonctions.distance, ApiConjonctions.niveau, CoordDossier.objets, CoordDossier.defaut, ApiPriorites.decision_de, ApiRef.propulsion, ApiEphemerides.fondement, ApiEphemerides.age, CoordReponse.du_tour
+        // Lève la décision (en_vigueur|abstention -> levee) après la levée du verrou. Appelé par
+        // CoordVerrou.lever. Renvoie "levee". Refus : Inconnu, EtatInvalide, MotifRequis.
+        signal lever(h: Horodatage, d: String, motif: String) -> CoordEtatDecision
+            writes fin_le, motif_fin_de
+            reads rapprochement_de
+            moves en_vigueur -> levee when CoordVerrou.leve via rapprochement_de, abstention -> levee when CoordVerrou.leve via rapprochement_de
+        // Solde la décision (en_vigueur|abstention -> soldee) à la clôture du verrou. Appelé par
+        // CoordVerrou.clore. Renvoie "soldee". Refus : Inconnu, EtatInvalide.
+        signal solder(h: Horodatage, d: String) -> CoordEtatDecision
+            writes fin_le, motif_fin_de
+            reads rapprochement_de
+            moves en_vigueur -> soldee when CoordVerrou.clos via rapprochement_de, abstention -> soldee when CoordVerrou.clos via rapprochement_de
+        // Purge le fondement d'une décision levée ou soldée (levee|soldee -> purgee) après
+        // CONSERVATION, sous la purge `purge` autorisée par responsabilite (RespPurges, cible
+        // `r` ; ApiResponsabilite.purge_autorisee(r, h) vrai), mémorisée une fois dans purge_de,
+        // et si aucun dossier de preuve ne couvre son rapprochement
+        // (ApiResponsabilite.sous_gel(r), cible "CJ-…") ni ses objets
+        // (ApiResponsabilite.sous_gel(objet)). L'id, le lien et l'état restent (traçabilité de la purge).
+        // Geste d'administration. Renvoie "purgee". Refus : Inconnu, EtatInvalide (pas levée ni
+        // soldée, purge non autorisée, ou rapprochement sous gel), Delai (conservation non échue), Habilitation
+        // ("conformite" d'ORBITE), QuatreYeux (valideur "direction").
+        signal purger(h: Horodatage, d: String, purge: String, par: String, valideur: String) -> CoordEtatDecision
+            writes fondement_de, purge_de
+            reads rapprochement_de, fin_le
+            moves levee -> purgee when RespPurges.autorisee via purge_de, soldee -> purgee when RespPurges.autorisee via purge_de
+            calls ApiResponsabilite.purge_autorisee, ApiResponsabilite.sous_gel, ApiAcces.a_le_role, ApiAcces.quatre_yeux, Journal.noter
+        // Une partie inscrit une réserve sur une décision arbitrée (elle conteste la désignation
+        // sans pouvoir s'y soustraire : la décision reste en vigueur et son désigné reste tenu
+        // de manœuvrer). La réserve entre dans le dossier de preuve (responsabilité pour faute).
+        // Renvoie le nombre de réserves. Refus : Inconnu, EtatInvalide (décision ni en vigueur ni abstention ni
+        // levée/soldée depuis moins de 30 jours), MotifRequis, Plein, Habilitation
+        // ("chef_de_mission" ou "administrateur_operateur" d'une partie, ApiAcces.agit_pour sur
+        // ApiRef.proprietaire d'un des deux objets du fondement).
+        signal contester(h: Horodatage, d: String, motif: String, par: String) -> Int
+            writes reserves_de
+            reads fondement_de, fin_le, decision
+            calls ApiAcces.a_le_role, ApiAcces.agit_pour, ApiRef.proprietaire, CoordEchange.noter, Journal.noter
+        // Fondement d'une décision (avec ses réserves) communiqué à l'organisation employeur de `par`
+        // (ApiAcces.employeur) : autorisée si c'est ORBITE (ApiRef.orbite(), rôles "analyste",
+        // "superviseur", "conformite", "direction" ou "auditeur") ou si ApiDonnees.peut_recevoir
+        // vaut vrai pour CHACUN des deux objets dans le contexte de `r` ; chaque communication
+        // est tracée (ApiDonnees.tracer, nature "fondement"). Refus : Inconnu, Confidentiel,
+        // Habilitation (personne inactive), Ferme (fondement purgé).
+        signal consulter(h: Horodatage, d: String, par: String) -> CoordFondement
+            reads fondement_de, rapprochement_de, reserves_de, decision
+            calls ApiAcces.employeur, ApiAcces.a_le_role, ApiRef.orbite, ApiDonnees.peut_recevoir, ApiDonnees.tracer, Journal.noter
+        // État de la décision ; "inconnue" si jamais prise.
+        signal etat(d: String) -> CoordEtatDecision
+            reads decision, rapprochement_de
+        // Résumé d'une décision pour la façade (ApiCoordination.decision) :
+        // "id|designe|auteur|valideur|instant|motif" ("" si `d` vide ou inconnue), lu du fondement ;
+        // une décision purgée garde "id|||||purgee".
+        signal resume(d: String) -> String
+            reads fondement_de, decision
+        // Décisions de `r`, dans l'ordre de prise (la dernière est l'en vigueur ou la soldée) ;
+        // pour responsabilite (gel) et escalade. Aucune donnée : des ids seulement.
+        signal historique(r: Rapprochement) -> List<String>
+            reads historique_de
+    }
+}

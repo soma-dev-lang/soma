@@ -1,0 +1,102 @@
+// Corps de ConfNotation : note glissante sur 365 jours, propositions de mesures aux seuils.
+flesh ConfNotation {
+    on enregistrer(h, m, op, gravite) {
+        require op_de.get(m) == () else Existe "manquement {m} deja inscrit a la note"
+        require op_de.size < MAX_INSCRITS else Plein "plafond de {MAX_INSCRITS} inscriptions atteint"
+        let avant = _calcul(op, h)
+        let pts = if gravite == 3 { POINTS_G3 } else if gravite == 2 { POINTS_G2 } else { POINTS_G1 }
+        op_de.set(m, op)
+        points_de.set(m, pts)
+        compte_le.set(m, h)
+        let apres = _calcul(op, h)
+        derniere_note.set(op, apres)
+        calculee_le.set(op, h)
+        dernier_fondement.set(op, m)
+        let _ = Journal.noter(h, "conformite", "systeme", "note de {op} : {avant} -> {apres} ({m}, {pts} points)")
+        for nat in _franchis(avant, apres) {
+            let p = try { ConfMesure.proposer(h, op, nat, m, "note de {op} passee de {avant} a {apres} ({m})", "systeme") }
+            if p.error != () {
+                let k = p.kind
+                let _ = Journal.noter(h, "conformite", "systeme", "proposition {nat} contre {op} impossible ({k})")
+            }
+        }
+        return apres
+    }
+    on retirer(h, m) {
+        let op_m = op_de.get(m)
+        require op_m != () else Inconnu "manquement {m} non inscrit a la note"
+        op_de.delete(m)
+        points_de.delete(m)
+        compte_le.delete(m)
+        let n = _calcul(op_m, h)
+        derniere_note.set(op_m, n)
+        calculee_le.set(op_m, h)
+        return n
+    }
+    on note(op, h) {
+        return _calcul(op, h)
+    }
+    on relever(h, op, par) {
+        require ApiAcces.a_le_role(par, "systeme") || ApiAcces.a_le_role(par, "conformite") else Habilitation "{par} ne releve pas les notes"
+        let jour = idiv(to_int(h), 86400000)
+        let cle = "{op}|{jour}"
+        require releves.get(cle) != () || releves.size < MAX_RELEVES else Plein "plafond de {MAX_RELEVES} releves atteint"
+        let n = _calcul(op, h)
+        let avant = derniere_note.get(op) ?? 100
+        releves.set(cle, n)
+        derniere_note.set(op, n)
+        calculee_le.set(op, h)
+        let fondement = dernier_fondement.get(op)
+        if fondement != () {
+            for nat in _franchis(avant, n) {
+                let _ = try { ConfMesure.proposer(h, op, nat, fondement, "releve du jour {jour} : note de {op} a {n}", "systeme") }
+            }
+        }
+        return n
+    }
+    on sous_surveillance(op) {
+        if (derniere_note.get(op) ?? 100) < SEUIL_SURVEILLANCE { return true }
+        if ConfManquement.g3_non_clos(op) > 0 { return true }
+        return ConfMesure.en_vigueur_pour(op, "surveillance_renforcee")
+    }
+    on releves_de(op, de, a) {
+        let cand_r = []
+        let prefixe = "{op}|"
+        for e in releves.entries {
+            if starts_with(e.key, prefixe) {
+                let j = to_int(substring(e.key, len(prefixe), len(e.key)))
+                if j >= de && j <= a { cand_r.push(map("j", j, "n", e.value)) }
+            }
+        }
+        return cand_r.sort_by(x => x.j).map(x => x.n)
+    }
+    on repartition() {
+        let haut = 0
+        let moyen = 0
+        let bas = 0
+        let critique = 0
+        for n in derniere_note.values {
+            if n >= SEUIL_AVERTISSEMENT { haut = haut + 1 } else if n >= SEUIL_SURVEILLANCE { moyen = moyen + 1 } else if n >= SEUIL_SUSPENSION { bas = bas + 1 } else { critique = critique + 1 }
+        }
+        return [haut, moyen, bas, critique]
+    }
+    // 100 − Σ points des manquements de l'opérateur comptés dans ]h − FENETRE_MS, h], plancher 0.
+    on _calcul(op: Org, h: Horodatage) {
+        let total = 0
+        for e in op_de.entries {
+            if e.value == op {
+                let t = compte_le.get(e.key) ?? 0
+                if to_int(t) > to_int(h) - FENETRE_MS && to_int(t) <= to_int(h) { total = total + (points_de.get(e.key) ?? 0) }
+            }
+        }
+        return max(0, 100 - total)
+    }
+    // Natures de mesure dont le seuil est franchi vers le bas entre `avant` et `apres`.
+    on _franchis(avant: Int, apres: Int) {
+        let res_f = []
+        if apres < SEUIL_AVERTISSEMENT && avant >= SEUIL_AVERTISSEMENT { res_f.push("avertissement") }
+        if apres < SEUIL_SURVEILLANCE && avant >= SEUIL_SURVEILLANCE { res_f.push("surveillance_renforcee") }
+        if apres < SEUIL_SUSPENSION && avant >= SEUIL_SUSPENSION { res_f.push("demande_suspension") }
+        return res_f
+    }
+}

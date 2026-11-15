@@ -1,0 +1,600 @@
+use app
+use commun::journal_chair
+use commun::horloge_chair
+use sys::ref::chair::api
+use sys::ref::chair::etats
+use sys::ref::chair::organisations
+use sys::ref::chair::catalogue
+use sys::ref::chair::registre
+use sys::ref::chair::cessions
+use sys::ref::chair::historique
+use doublures::ref
+
+// Le monde de départ (voir doublures/ref.cell pour les conventions de personnes).
+// ALD : État du siège (fondé). BRV : admis. ORG-ALD / ORG-BRV : autorités. ORG-OPA (ALD) et
+// ORG-OPB (BRV) : opérateurs. Objets OBJ-1..OBJ-4 : satellites de ORG-OPA (OBJ-3 et OBJ-4
+// sont des témoins des doublures) ; OBJ-5 : débris non attribué.
+cell Monde {
+    on h0() { return 1000000000 }
+    on jour() { return 86400000 }
+    on installer() {
+        let h = Horodatage(1000000000)
+        let _ = RefOrg.amorcer(h, "ALD", "Aldanie", "systeme")
+        let _ = ApiRef.inscrire_organisation(h, "ORG-ALD", "Agence d'Aldanie", "ALD", "etat", "superviseur#1@ORG-ORBITE", "direction#1@ORG-ORBITE")
+        let _ = RefEtat.declarer(h, "BRV", "Bravie", "analyste#1@ORG-ORBITE")
+        let _ = RefEtat.candidater(h, "BRV", "INSTR-BRV-1", "superviseur#1@ORG-ORBITE")
+        let _ = RefEtat.admettre(h, "BRV", "direction#1@ORG-ORBITE", "direction#2@ORG-ORBITE")
+        let _ = ApiRef.inscrire_organisation(h, "ORG-BRV", "Office de Bravie", "BRV", "etat", "superviseur#1@ORG-ORBITE", "direction#1@ORG-ORBITE")
+        let _ = ApiRef.inscrire_organisation(h, "ORG-OPA", "Opérateur A", "ALD", "operateur", "superviseur#1@ORG-ORBITE", "direction#1@ORG-ORBITE")
+        let _ = ApiRef.inscrire_organisation(h, "ORG-OPB", "Opérateur B", "BRV", "operateur", "superviseur#1@ORG-ORBITE", "direction#1@ORG-ORBITE")
+        return "ok"
+    }
+    // installer + quatre satellites de ORG-OPA et un débris non attribué.
+    on peupler() {
+        let _ = installer()
+        let h = Horodatage(1000000000)
+        let a = "analyste#1@ORG-ORBITE"
+        let _ = ApiRef.cataloguer(h, "satellite", "ORG-OPA", "ALD", "leo", "impulsionnelle", 500, a)
+        let _ = ApiRef.cataloguer(h, "satellite", "ORG-OPA", "ALD", "geo", "faible", 2000, a)
+        let _ = ApiRef.cataloguer(h, "satellite", "ORG-OPA", "ALD", "leo", "impulsionnelle", 300, a)
+        let _ = ApiRef.cataloguer(h, "satellite", "ORG-OPA", "ALD", "geo", "impulsionnelle", 3000, a)
+        let _ = ApiRef.cataloguer(h, "debris", "ORG-ORBITE", "", "leo", "aucune", 10, a)
+        return "ok"
+    }
+    // OBJ-n immatriculé par l'autorité d'ALD puis mis en service par le dynamicien d'OPA.
+    on en_service(n: Int) {
+        let h = Horodatage(1000000000 + 1000)
+        let o = Objet("OBJ-{n}")
+        let _ = ApiRef.immatriculer(h, o, "ALD-{n}", "autorite#1@ORG-ALD")
+        return ApiRef.changer_etat_objet(h, o, "en_service", "", "premier contact", "dynamicien#1@ORG-OPA")
+    }
+    // Cession OBJ-1 de ORG-OPA (ALD) à ORG-OPB (BRV), jusqu'aux deux visas.
+    on cession_visee(effet: Int) {
+        let h = Horodatage(1000000000 + 2000)
+        let _ = RefCession.demander(h, "CES-1", "OBJ-1", "ORG-OPB", Horodatage(effet), "vente", "chef_de_mission#1@ORG-OPA")
+        let _ = RefCession.accepter(h, "CES-1", "administrateur_operateur#1@ORG-OPB")
+        let _ = RefCession.viser(h, "CES-1", "", "autorite#1@ORG-ALD")
+        return RefCession.viser(h, "CES-1", "BRV-77", "autorite#1@ORG-BRV")
+    }
+}
+
+// ── États
+
+cell test FondationOrbite {
+    rules {
+        let _ = Monde.installer()
+        assert ApiRef.orbite() == "ORG-ORBITE"
+        assert ApiRef.etat_participant("ALD")
+        assert RefOrg.etat("ORG-ORBITE") == "active"
+        assert ApiRef.genre("ORG-ORBITE") == "orbite"
+        assert ApiRef.organisations("orbite") == ["ORG-ORBITE"]
+        assert ApiRef.org_de_etat("ALD") == "ORG-ALD"
+        // une seule fondation ; jamais par une personne
+        assert_fails RefOrg.amorcer(Horodatage(1000000000), "CAZ", "Cazie", "systeme") matching "Existe"
+        assert_fails RefOrg.amorcer(Horodatage(1000000000), "CAZ", "Cazie", "direction#1@ORG-ORBITE") matching "Habilitation"
+        // genre orbite hors amorçage
+        assert_fails ApiRef.inscrire_organisation(Horodatage(1000000000), "ORG-ORBITE2", "Faux", "ALD", "orbite", "superviseur#1@ORG-ORBITE", "direction#1@ORG-ORBITE") matching "HorsBornes"
+    }
+}
+
+cell test CycleAdhesionEtat {
+    rules {
+        let _ = Monde.installer()
+        let h = Horodatage(1000000000 + 5000)
+        assert RefEtat.declarer(h, "CAZ", "Cazie", "analyste#1@ORG-ORBITE") == "CAZ"
+        assert RefEtat.etat("CAZ") == "tiers"
+        assert ApiRef.inscrire_organisation(h, "ORG-CAZ", "Autorité de Cazie", "CAZ", "etat", "superviseur#1@ORG-ORBITE", "direction#1@ORG-ORBITE") == "ORG-CAZ"
+        assert RefOrg.etat("ORG-CAZ") == "inscrite"
+        assert RefEtat.candidater(h, "CAZ", "LETTRE-CAZ", "superviseur#1@ORG-ORBITE") == "candidat"
+        assert RefEtat.admettre(h, "CAZ", "direction#1@ORG-ORBITE", "superviseur#1@ORG-ORBITE") == "participant"
+        // l'admission active les organisations inscrites sous sa tutelle
+        assert RefOrg.etat("ORG-CAZ") == "active"
+        assert contains(ApiRef.etats_participants(), "CAZ")
+        assert RefEtat.suspendre(h, "CAZ", "manquements graves", "direction#1@ORG-ORBITE", "direction#2@ORG-ORBITE") == "suspendu"
+        assert !ApiRef.etat_participant("CAZ")
+        assert !contains(ApiRef.etats_participants(), "CAZ")
+        assert RefEtat.retablir(h, "CAZ", "direction#1@ORG-ORBITE", "conformite#1@ORG-ORBITE") == "participant"
+        // l'autorité de l'État se retire seule (valideur ignoré)
+        assert RefEtat.retirer(h, "CAZ", "retrait notifié", "autorite#1@ORG-CAZ", "") == "tiers"
+        assert RefEtat.etat("CAZ") == "tiers"
+        // une candidature rejetée revient à tiers
+        assert RefEtat.declarer(h, "DUR", "Durie", "superviseur#1@ORG-ORBITE") == "DUR"
+        assert RefEtat.candidater(h, "DUR", "LETTRE-DUR", "superviseur#1@ORG-ORBITE") == "candidat"
+        assert RefEtat.rejeter(h, "DUR", "dossier incomplet", "direction#1@ORG-ORBITE") == "tiers"
+        assert RefEtat.etat("ZZZ") == "inconnu"
+        assert RefEtat.nom("DUR") == "Durie"
+    }
+}
+
+cell test RefusEtat {
+    rules {
+        let _ = Monde.installer()
+        let h = Horodatage(1000000000 + 5000)
+        assert_fails RefEtat.declarer(h, "CAZ", "Cazie", "intrus") matching "Habilitation"
+        assert_fails RefEtat.declarer(h, "CAZ", "Cazie", "dynamicien#1@ORG-OPA") matching "Habilitation"
+        assert_fails RefEtat.declarer(h, "Ca", "Cazie", "analyste#1@ORG-ORBITE") matching "Incoherent"
+        assert_fails RefEtat.declarer(h, "caz", "Cazie", "analyste#1@ORG-ORBITE") matching "Incoherent"
+        assert_fails RefEtat.declarer(h, "BRV", "Bravie", "analyste#1@ORG-ORBITE") matching "Existe"
+        let _ = RefEtat.declarer(h, "CAZ", "Cazie", "analyste#1@ORG-ORBITE")
+        assert_fails RefEtat.candidater(h, "CAZ", "", "superviseur#1@ORG-ORBITE") matching "MotifRequis"
+        assert_fails RefEtat.candidater(h, "CAZ", "ORBITE:fondation", "superviseur#1@ORG-ORBITE") matching "MotifRequis"
+        assert_fails RefEtat.admettre(h, "CAZ", "direction#1@ORG-ORBITE", "direction#2@ORG-ORBITE") matching "EtatInvalide"
+        let _ = RefEtat.candidater(h, "CAZ", "LETTRE", "superviseur#1@ORG-ORBITE")
+        // quatre yeux : même personne, valideur d'un opérateur, demandeur non direction
+        assert_fails RefEtat.admettre(h, "CAZ", "direction#1@ORG-ORBITE", "direction#1@ORG-ORBITE") matching "QuatreYeux"
+        assert_fails RefEtat.admettre(h, "CAZ", "direction#1@ORG-ORBITE", "chef_de_mission#1@ORG-OPA") matching "QuatreYeux"
+        assert_fails RefEtat.admettre(h, "CAZ", "superviseur#1@ORG-ORBITE", "direction#2@ORG-ORBITE") matching "Habilitation"
+        assert_fails RefEtat.admettre(h, "XXX", "direction#1@ORG-ORBITE", "direction#2@ORG-ORBITE") matching "Inconnu"
+        // l'État du siège ne se suspend ni ne se retire
+        assert_fails RefEtat.suspendre(h, "ALD", "essai", "direction#1@ORG-ORBITE", "direction#2@ORG-ORBITE") matching "EtatInvalide"
+        assert_fails RefEtat.retirer(h, "ALD", "essai", "direction#1@ORG-ORBITE", "direction#2@ORG-ORBITE") matching "EtatInvalide"
+        // retrait : l'autorité d'un AUTRE État n'est pas habilitée ; la direction exige quatre yeux
+        assert_fails RefEtat.retirer(h, "BRV", "essai", "autorite#1@ORG-ALD", "") matching "Habilitation"
+        assert_fails RefEtat.retirer(h, "BRV", "essai", "direction#1@ORG-ORBITE", "direction#1@ORG-ORBITE") matching "QuatreYeux"
+        assert_fails RefEtat.suspendre(h, "BRV", "", "direction#1@ORG-ORBITE", "direction#2@ORG-ORBITE") matching "MotifRequis"
+        assert_fails RefEtat.retablir(h, "BRV", "direction#1@ORG-ORBITE", "direction#2@ORG-ORBITE") matching "EtatInvalide"
+        assert_fails RefEtat.fonder(h, "QQQ", "Q", "systeme") matching "Existe"
+    }
+}
+
+// ── Organisations
+
+cell test OrganisationsCycle {
+    rules {
+        let _ = Monde.installer()
+        let h = Horodatage(1000000000 + 5000)
+        let sup = "superviseur#1@ORG-ORBITE"
+        let dir = "direction#1@ORG-ORBITE"
+        assert RefOrg.est_active("ORG-OPA")
+        assert ApiRef.etat_de("ORG-OPB") == "BRV"
+        assert ApiRef.organisations("operateur") == ["ORG-OPA", "ORG-OPB"]
+        assert RefOrg.sous_tutelle_de("BRV") == ["ORG-BRV", "ORG-OPB"]
+        // refus d'inscription
+        assert_fails ApiRef.inscrire_organisation(h, "ORG-X", "X", "ALD", "operateur", sup, sup) matching "QuatreYeux"
+        assert_fails ApiRef.inscrire_organisation(h, "ORG-X", "X", "ALD", "operateur", sup, "superviseur#2@ORG-ORBITE") matching "QuatreYeux"
+        assert_fails ApiRef.inscrire_organisation(h, "ORG-X", "X", "ALD", "operateur", "analyste#1@ORG-ORBITE", dir) matching "Habilitation"
+        assert_fails ApiRef.inscrire_organisation(h, "ORG-X", "X", "ZZZ", "operateur", sup, dir) matching "Inconnu"
+        assert_fails ApiRef.inscrire_organisation(h, "OPX", "X", "ALD", "operateur", sup, dir) matching "Incoherent"
+        assert_fails ApiRef.inscrire_organisation(h, "ORG-OPA", "X", "ALD", "operateur", sup, dir) matching "Existe"
+        assert_fails ApiRef.inscrire_organisation(h, "ORG-ALD2", "X", "ALD", "etat", sup, dir) matching "Existe"
+        // changement de contrôle
+        assert ApiRef.changer_tutelle(h, "ORG-OPA", "BRV", sup, dir) == "BRV"
+        assert ApiRef.etat_de("ORG-OPA") == "BRV"
+        assert RefOrg.sous_tutelle_de("ALD") == ["ORG-ORBITE", "ORG-ALD"]
+        assert_fails ApiRef.changer_tutelle(h, "ORG-OPA", "BRV", sup, dir) matching "Incoherent"
+        assert_fails ApiRef.changer_tutelle(h, "ORG-ALD", "BRV", sup, dir) matching "EtatInvalide"
+        assert_fails ApiRef.changer_tutelle(h, "ORG-OPA", "ALD", sup, sup) matching "QuatreYeux"
+        // radiation
+        assert RefOrg.radier(h, "ORG-OPB", "plus d'activité", dir, "direction#2@ORG-ORBITE") == "radiee"
+        assert !ApiRef.organisation_existe("ORG-OPB")
+        assert RefOrg.etat("ORG-OPB") == "radiee"
+        assert_fails RefOrg.radier(h, "ORG-OPB", "encore", dir, "direction#2@ORG-ORBITE") matching "EtatInvalide"
+        assert_fails RefOrg.radier(h, "ORG-ORBITE", "non", dir, "direction#2@ORG-ORBITE") matching "EtatInvalide"
+        assert_fails RefOrg.radier(h, "ORG-BRV", "non", dir, "direction#2@ORG-ORBITE") matching "EtatInvalide"
+        assert_fails RefOrg.radier(h, "ORG-OPA", "non", sup, "direction#2@ORG-ORBITE") matching "Habilitation"
+        assert_fails RefOrg.radier(h, "ORG-OPA", "non", dir, dir) matching "QuatreYeux"
+    }
+}
+
+cell test RadiationConflits {
+    rules {
+        let _ = Monde.peupler()
+        let h = Horodatage(1000000000 + 5000)
+        let sup = "superviseur#1@ORG-ORBITE"
+        let dir = "direction#1@ORG-ORBITE"
+        let dir2 = "direction#2@ORG-ORBITE"
+        // ORG-OPA possède des objets en orbite
+        assert_fails RefOrg.radier(h, "ORG-OPA", "fin", dir, dir2) matching "Conflit"
+        // opérateur encore membre (doublure : ORG-MEMBRE…) ; personnes encore actives
+        let _ = ApiRef.inscrire_organisation(h, "ORG-MEMBRE1", "M", "ALD", "operateur", sup, dir)
+        assert_fails RefOrg.radier(h, "ORG-MEMBRE1", "fin", dir, dir2) matching "EtatInvalide"
+        let _ = ApiRef.inscrire_organisation(h, "ORG-PEUPLEE1", "P", "ALD", "capteur", sup, dir)
+        assert_fails RefOrg.radier(h, "ORG-PEUPLEE1", "fin", dir, dir2) matching "Conflit"
+        assert_fails RefOrg.radier(h, "ORG-OPB", "", dir, dir2) matching "MotifRequis"
+    }
+}
+
+// ── Catalogue : cycle de vie des objets
+
+cell test CatalogueCycleNominal {
+    rules {
+        let _ = Monde.peupler()
+        let h1 = Horodatage(1000000000 + 1000)
+        let dyn = "dynamicien#1@ORG-OPA"
+        assert ApiRef.catalogue("", "", 10) == ["OBJ-1", "OBJ-2", "OBJ-3", "OBJ-4", "OBJ-5"]
+        assert ApiRef.catalogue("geo", "", 10) == ["OBJ-2", "OBJ-4"]
+        assert ApiRef.catalogue("", "OBJ-2", 2) == ["OBJ-3", "OBJ-4"]
+        assert ApiRef.etat_objet("OBJ-1") == "catalogue"
+        assert ApiRef.etat_objet("OBJ-99") == "inconnu"
+        assert ApiRef.proprietaire("OBJ-1") == "ORG-OPA"
+        assert ApiRef.etat_immatriculation("OBJ-1") == "ALD"
+        assert ApiRef.nature("OBJ-1") == "satellite"
+        assert ApiRef.masse("OBJ-2") == 2000
+        assert ApiRef.regime("OBJ-2") == "geo"
+        assert !ApiRef.habite("OBJ-1")
+        assert ApiRef.objets_de("ORG-OPA") == ["OBJ-1", "OBJ-2", "OBJ-3", "OBJ-4"]
+        // hors service : propulsion "aucune"
+        assert ApiRef.propulsion("OBJ-1") == "aucune"
+        assert !ApiRef.peut_manoeuvrer("OBJ-1")
+        assert ApiRef.immatriculer(h1, "OBJ-1", "ALD-1", "autorite#1@ORG-ALD") == "immatricule"
+        assert ApiRef.immatricule("OBJ-1")
+        assert ApiRef.changer_etat_objet(h1, "OBJ-1", "en_service", "", "premier contact", dyn) == "en_service"
+        assert ApiRef.propulsion("OBJ-1") == "impulsionnelle"
+        assert ApiRef.peut_manoeuvrer("OBJ-1")
+        // dégradation déclarée : vaut tout de suite, rouvre la coordination où il est désigné
+        let h2 = Horodatage(1000000000 + 2000)
+        assert ApiRef.declarer_propulsion(h2, "OBJ-1", "faible", "tuyère dégradée", dyn) == "faible"
+        assert ApiRef.propulsion("OBJ-1") == "faible"
+        assert_fails ApiRef.declarer_propulsion(h2, "OBJ-1", "impulsionnelle", "réparée", dyn) matching "Incoherent"
+        let h3 = Horodatage(1000000000 + 3000)
+        assert ApiRef.changer_etat_objet(h3, "OBJ-1", "hors_service", "", "perte de contrôle", "chef_de_mission#1@ORG-OPA") == "hors_service"
+        assert ApiRef.propulsion("OBJ-1") == "aucune"
+        let h4 = Horodatage(1000000000 + 4000)
+        assert ApiRef.changer_etat_objet(h4, "OBJ-1", "en_service", "", "reprise de contrôle", dyn) == "en_service"
+        // reprise : la capacité perdue ne revient que par une demande de modification
+        assert ApiRef.propulsion("OBJ-1") == "aucune"
+        let h5 = Horodatage(1000000000 + 5000)
+        assert ApiRef.changer_etat_objet(h5, "OBJ-1", "rentre", "RE-1", "", "systeme") == "rentre"
+        assert RefRegistre.statut("OBJ-1") == "radie"
+        assert RefObjet.cause("OBJ-1") == "RE-1"
+        assert RefObjet.cause("OBJ-2") == ""
+        // propriété 6 : la fiche telle qu'elle était
+        assert ApiRef.valeur_au("OBJ-1", "etat_objet", Horodatage(1000000000 + 3500)) == "hors_service"
+        assert ApiRef.valeur_au("OBJ-1", "propulsion", Horodatage(1000000000 + 2500)) == "faible"
+        assert ApiRef.valeur_au("OBJ-1", "propulsion", Horodatage(1000000000)) == "impulsionnelle"
+        assert ApiRef.valeur_au("OBJ-1", "proprietaire", h5) == "ORG-OPA"
+        assert ApiRef.valeur_au("OBJ-1", "etat_objet", h5) == "rentre"
+        assert_fails ApiRef.valeur_au("OBJ-1", "etat_objet", Horodatage(5)) matching "Inconnu"
+        assert_fails ApiRef.valeur_au("OBJ-1", "couleur", h5) matching "Inconnu"
+        assert_fails ApiRef.changer_etat_objet(h5, "OBJ-1", "en_service", "", "x", dyn) matching "EtatInvalide"
+        assert_fails ApiRef.changer_etat_objet(h5, "OBJ-1", "rentre", "RE-2", "", "systeme") matching "EtatInvalide"
+    }
+}
+
+cell test CatalogueFinsDeVie {
+    rules {
+        let _ = Monde.peupler()
+        let h = Horodatage(1000000000 + 5000)
+        let an = "analyste#1@ORG-ORBITE"
+        // OBJ-4 passivé (doublure) : orbite cimetière, puis retrait actif, puis rentrée
+        assert Monde.en_service(4) == "en_service"
+        assert !ApiRef.peut_manoeuvrer("OBJ-4")
+        assert ApiRef.changer_etat_objet(h, "OBJ-4", "cimetiere", "", "orbite cimetière atteinte", an) == "cimetiere"
+        assert ApiRef.changer_etat_objet(h, "OBJ-4", "retire", "FDV-R-1", "", "systeme") == "retire"
+        assert RefObjet.cause("OBJ-4") == "FDV-R-1"
+        assert ApiRef.changer_etat_objet(h, "OBJ-4", "rentre", "RE-4", "", "systeme") == "rentre"
+        assert RefObjet.cause("OBJ-4") == "RE-4"
+        // OBJ-2 en service : cimetière refusé (fin de vie ni passive ni en retard)
+        assert Monde.en_service(2) == "en_service"
+        assert_fails ApiRef.changer_etat_objet(h, "OBJ-2", "cimetiere", "", "x", an) matching "EtatInvalide"
+        // fragmentation : l'évènement doit compter l'objet
+        assert_fails ApiRef.changer_etat_objet(h, "OBJ-2", "fragmente", "EV-OBJ-9", "", "systeme") matching "Incoherent"
+        assert_fails ApiRef.changer_etat_objet(h, "OBJ-2", "fragmente", "XX-1", "", "systeme") matching "Inconnu"
+        assert ApiRef.changer_etat_objet(h, "OBJ-2", "fragmente", "EV-OBJ-2+OBJ-9", "", "systeme") == "fragmente"
+        assert RefRegistre.statut("OBJ-2") == "radie"
+        assert RefObjet.cause("OBJ-2") == "EV-OBJ-2+OBJ-9"
+        // OBJ-3 : rentrée non constatée, retrait non autorisé (doublures)
+        assert_fails ApiRef.changer_etat_objet(h, "OBJ-3", "rentre", "RE-3", "", "systeme") matching "NonEligible"
+        let _ = ApiRef.changer_etat_objet(h, "OBJ-3", "hors_service", "", "panne", an)
+        assert_fails ApiRef.changer_etat_objet(h, "OBJ-3", "retire", "FDV-R-3", "", "systeme") matching "NonEligible"
+        assert_fails ApiRef.changer_etat_objet(h, "OBJ-3", "retire", "", "", "systeme") matching "MotifRequis"
+        assert_fails ApiRef.changer_etat_objet(h, "OBJ-3", "catalogue", "", "x", an) matching "EtatInvalide"
+        // le débris ne se met pas en service ; un étranger n'agit pas sur l'objet
+        assert_fails ApiRef.changer_etat_objet(h, "OBJ-5", "en_service", "", "x", an) matching "EtatInvalide"
+        assert_fails ApiRef.changer_etat_objet(h, "OBJ-1", "hors_service", "", "x", "dynamicien#1@ORG-OPB") matching "Habilitation"
+        assert_fails ApiRef.changer_etat_objet(h, "OBJ-1", "rentre", "RE-1", "", "intrus") matching "Habilitation"
+        assert_fails ApiRef.changer_etat_objet(h, "OBJ-1", "hors_service", "", "", an) matching "MotifRequis"
+        assert_fails ApiRef.changer_etat_objet(h, "OBJ-77", "hors_service", "", "x", an) matching "Inconnu"
+    }
+}
+
+cell test CatalogueRefus {
+    rules {
+        let _ = Monde.installer()
+        let h = Horodatage(1000000000 + 5000)
+        let an = "analyste#1@ORG-ORBITE"
+        assert_fails ApiRef.cataloguer(h, "debris", "ORG-OPA", "ALD", "leo", "faible", 1, an) matching "Incoherent"
+        assert_fails ApiRef.cataloguer(h, "satellite", "ORG-ORBITE", "", "leo", "faible", 1, an) matching "Incoherent"
+        assert_fails ApiRef.cataloguer(h, "debris", "ORG-ORBITE", "ALD", "leo", "aucune", 1, an) matching "Incoherent"
+        assert_fails ApiRef.cataloguer(h, "satellite", "ORG-OPA", "", "leo", "faible", 1, an) matching "Incoherent"
+        assert_fails ApiRef.cataloguer(h, "satellite", "ORG-OPA", "ZZZ", "leo", "faible", 1, an) matching "Inconnu"
+        assert_fails ApiRef.cataloguer(h, "satellite", "ORG-NUL", "ALD", "leo", "faible", 1, an) matching "Inconnu"
+        assert_fails ApiRef.cataloguer(h, "satellite", "ORG-OPA", "ALD", "leo", "faible", 1, "dynamicien#1@ORG-OPA") matching "Habilitation"
+        assert_fails ApiRef.catalogue("lune", "", 10) matching "HorsBornes"
+        // les numéros ne sont jamais réattribués
+        assert ApiRef.cataloguer(h, "etage", "ORG-OPA", "ALD", "leo", "aucune", 1, "systeme") == "OBJ-1"
+        assert ApiRef.cataloguer(h, "satellite", "ORG-OPB", "BRV", "meo", "faible", 1, an) == "OBJ-2"
+        assert ApiRef.changer_regime(h, "OBJ-2", "geo", "systeme") == "geo"
+        assert ApiRef.valeur_au("OBJ-2", "regime", h) == "geo"
+        assert_fails ApiRef.changer_regime(h, "OBJ-2", "leo", "dynamicien#1@ORG-OPB") matching "Habilitation"
+    }
+}
+
+cell test DesignationsRouvertes {
+    rules {
+        let _ = Monde.peupler()
+        let h = Horodatage(1000000000 + 5000)
+        // doublure : OBJ-1 est désigné sur CJ-D-OBJ-1, pas sur CJ-X-OBJ-1
+        assert RefObjet.rouvrir_designations(h, "OBJ-1", "essai") == 1
+        assert RefObjet.rouvrir_designations(h, "OBJ-1", "") == 1
+        // anomalie (OBJ-3) : en service mais ne peut pas manœuvrer
+        assert Monde.en_service(3) == "en_service"
+        assert !ApiRef.peut_manoeuvrer("OBJ-3")
+        assert Monde.en_service(1) == "en_service"
+        assert ApiRef.peut_manoeuvrer("OBJ-1")
+        assert ApiRef.declarer_propulsion(h, "OBJ-1", "aucune", "réservoirs vides", "systeme") == "aucune"
+        assert !ApiRef.peut_manoeuvrer("OBJ-1")
+        assert !ApiRef.peut_manoeuvrer("OBJ-404")
+    }
+}
+
+// ── Registre (Convention de 1975)
+
+cell test RegistreRetardsEtDispenses {
+    rules {
+        let _ = Monde.peupler()
+        let tard = Horodatage(1000000000 + 61 * 86400000)
+        assert RefRegistre.statut("OBJ-5") == "dispense"
+        assert RefRegistre.statut("OBJ-2") == "a_immatriculer"
+        assert RefRegistre.echeance("OBJ-2") == 1000000000 + 5184000000
+        // l'immatriculation d'OBJ-1 à temps
+        assert ApiRef.immatriculer(Horodatage(1000000000 + 10), "OBJ-1", "ALD-1", "autorite#1@ORG-ALD") == "immatricule"
+        assert_fails ApiRef.immatriculer(Horodatage(1000000000 + 10), "OBJ-1", "ALD-9", "autorite#1@ORG-ALD") matching "Existe"
+        assert_fails ApiRef.immatriculer(Horodatage(1000000000 + 10), "OBJ-2", "ALD-1", "autorite#1@ORG-ALD") matching "Doublon"
+        assert_fails ApiRef.immatriculer(Horodatage(1000000000 + 10), "OBJ-2", "", "autorite#1@ORG-ALD") matching "MotifRequis"
+        assert_fails ApiRef.immatriculer(Horodatage(1000000000 + 10), "OBJ-2", "ALD-2", "autorite#1@ORG-BRV") matching "Habilitation"
+        assert_fails ApiRef.immatriculer(Horodatage(1000000000 + 10), "OBJ-2", "ALD-2", "analyste#1@ORG-ORBITE") matching "Habilitation"
+        assert_fails ApiRef.immatriculer(Horodatage(1000000000 + 10), "OBJ-5", "X-5", "systeme") matching "EtatInvalide"
+        // 61 jours plus tard : OBJ-2, OBJ-3, OBJ-4 en retard
+        assert ApiRef.balayer(tard, "systeme") == 3
+        assert RefRegistre.statut("OBJ-2") == "en_retard"
+        assert RefRegistre.retards_de("ALD") == 3
+        assert_fails ApiRef.balayer(tard, "analyste#1@ORG-ORBITE") matching "Habilitation"
+        // en retard : pas de mise en service ; l'immatriculation tardive la rouvre
+        assert_fails ApiRef.changer_etat_objet(tard, "OBJ-2", "en_service", "", "x", "dynamicien#1@ORG-OPA") matching "EtatInvalide"
+        assert ApiRef.immatriculer(tard, "OBJ-2", "ALD-2", "systeme") == "immatricule"
+        assert ApiRef.changer_etat_objet(tard, "OBJ-2", "en_service", "", "x", "dynamicien#1@ORG-OPA") == "en_service"
+        assert RefRegistre.retards_de("ALD") == 2
+        assert RefRegistre.consigner_onu(tard, "OBJ-2", "ST/SG/SER.E/999", "autorite#1@ORG-ALD") == "ST/SG/SER.E/999"
+        assert_fails RefRegistre.consigner_onu(tard, "OBJ-5", "ST/SG/SER.E/1", "analyste#1@ORG-ORBITE") matching "EtatInvalide"
+        assert RefRegistre.numero("OBJ-2") == "ALD-2"
+    }
+}
+
+cell test AttributionEtDispense {
+    rules {
+        let _ = Monde.peupler()
+        let h = Horodatage(1000000000 + 5000)
+        let an = "analyste#1@ORG-ORBITE"
+        let sup = "superviseur#1@ORG-ORBITE"
+        // un objet inconnu identifié : attribué, puis à immatriculer sous un nouveau délai
+        assert ApiRef.cataloguer(h, "inconnu", "ORG-ORBITE", "", "leo", "aucune", 50, an) == "OBJ-6"
+        assert RefRegistre.statut("OBJ-6") == "dispense"
+        assert_fails ApiRef.attribuer(h, "OBJ-6", "ORG-OPB", "BRV", an, an) matching "QuatreYeux"
+        assert_fails ApiRef.attribuer(h, "OBJ-6", "ORG-OPB", "BRV", sup, "superviseur#2@ORG-ORBITE") matching "Habilitation"
+        assert_fails ApiRef.attribuer(h, "OBJ-6", "ORG-ORBITE", "", an, sup) matching "Incoherent"
+        assert_fails ApiRef.attribuer(h, "OBJ-6", "ORG-OPB", "ZZZ", an, sup) matching "Inconnu"
+        let h2 = Horodatage(1000000000 + 6000)
+        assert ApiRef.attribuer(h2, "OBJ-6", "ORG-OPB", "BRV", an, sup) == "ORG-OPB"
+        assert ApiRef.proprietaire("OBJ-6") == "ORG-OPB"
+        assert ApiRef.etat_immatriculation("OBJ-6") == "BRV"
+        assert RefRegistre.statut("OBJ-6") == "a_immatriculer"
+        assert RefRegistre.echeance("OBJ-6") == 1000000000 + 6000 + 5184000000
+        assert ApiRef.objets_de("ORG-ORBITE") == ["OBJ-5"]
+        assert_fails ApiRef.attribuer(h2, "OBJ-6", "ORG-OPA", "ALD", an, sup) matching "EtatInvalide"
+        assert ApiRef.valeur_au("OBJ-6", "proprietaire", h) == "ORG-ORBITE"
+        assert ApiRef.valeur_au("OBJ-6", "etat", h2) == "BRV"
+        // requalifié en débris, puis dispensé à quatre yeux
+        assert_fails RefRegistre.dispenser(h2, "OBJ-1", "débris", an, sup) matching "EtatInvalide"
+        let _ = RefModification.proposer(h2, "MOD-6", "OBJ-6", "nature", "debris", "identifié comme débris", an)
+        let _ = RefModification.valider(h2, "MOD-6", sup)
+        let _ = RefModification.appliquer(h2, "MOD-6", an)
+        assert ApiRef.nature("OBJ-6") == "debris"
+        assert_fails RefRegistre.dispenser(h2, "OBJ-6", "débris", an, an) matching "QuatreYeux"
+        assert RefRegistre.dispenser(h2, "OBJ-6", "débris", an, sup) == "dispense"
+    }
+}
+
+// ── Cessions
+
+cell test CessionNominale {
+    rules {
+        let _ = Monde.peupler()
+        let _ = Monde.en_service(1)
+        let effet = 1000000000 + 10 * 86400000
+        assert Monde.cession_visee(effet) == "visee_cessionnaire"
+        assert RefCession.en_cours_sur("OBJ-1") == "CES-1"
+        assert RefCession.en_cours_pour_org("ORG-OPB")
+        assert RefCession.en_cours_pour_etat("BRV")
+        // l'État visé ne se retire pas, les parties ne changent pas de tutelle
+        assert_fails RefEtat.retirer(Horodatage(1000000000 + 3000), "BRV", "départ", "autorite#1@ORG-BRV", "") matching "Conflit"
+        assert_fails ApiRef.changer_tutelle(Horodatage(1000000000 + 3000), "ORG-OPA", "BRV", "superviseur#1@ORG-ORBITE", "direction#1@ORG-ORBITE") matching "Conflit"
+        // avant la date d'effet : rien ne se passe
+        assert_fails RefCession.realiser(Horodatage(1000000000 + 3000), "CES-1", "systeme") matching "Delai"
+        assert ApiRef.balayer(Horodatage(1000000000 + 3000), "systeme") == 0
+        // à la date d'effet, la ronde réalise
+        assert ApiRef.balayer(Horodatage(effet), "systeme") == 1
+        assert RefCession.etat("CES-1") == "realisee"
+        assert ApiRef.proprietaire("OBJ-1") == "ORG-OPB"
+        assert ApiRef.etat_immatriculation("OBJ-1") == "BRV"
+        assert RefRegistre.numero("OBJ-1") == "BRV-77"
+        assert ApiRef.objets_de("ORG-OPB") == ["OBJ-1"]
+        assert RefCession.en_cours_sur("OBJ-1") == ""
+        assert ApiRef.valeur_au("OBJ-1", "proprietaire", Horodatage(effet - 1)) == "ORG-OPA"
+        assert ApiRef.valeur_au("OBJ-1", "etat", Horodatage(effet)) == "BRV"
+        assert RefCession.etat("CES-404") == "inconnue"
+    }
+}
+
+cell test CessionRefus {
+    rules {
+        let _ = Monde.peupler()
+        let _ = Monde.en_service(1)
+        let h = Horodatage(1000000000 + 2000)
+        let cm = "chef_de_mission#1@ORG-OPA"
+        let effet = Horodatage(1000000000 + 86400000)
+        assert_fails RefCession.demander(h, "CES-1", "OBJ-1", "ORG-OPB", effet, "vente", "chef_de_mission#1@ORG-OPB") matching "Habilitation"
+        assert_fails RefCession.demander(h, "CES-1", "OBJ-1", "ORG-OPA", effet, "vente", cm) matching "Incoherent"
+        assert_fails RefCession.demander(h, "CES-1", "OBJ-1", "ORG-BRV", effet, "vente", cm) matching "Incoherent"
+        assert_fails RefCession.demander(h, "CES-1", "OBJ-1", "ORG-NUL", effet, "vente", cm) matching "Inconnu"
+        assert_fails RefCession.demander(h, "CES-1", "OBJ-1", "ORG-OPB", Horodatage(1), "vente", cm) matching "HorsBornes"
+        assert_fails RefCession.demander(h, "CES-1", "OBJ-1", "ORG-OPB", effet, "", cm) matching "MotifRequis"
+        assert_fails RefCession.demander(h, "CES-1", "OBJ-2", "ORG-OPB", effet, "vente", cm) matching "EtatInvalide"
+        assert_fails RefCession.demander(h, "CES-1", "OBJ-5", "ORG-OPB", effet, "vente", cm) matching "EtatInvalide"
+        assert RefCession.demander(h, "CES-1", "OBJ-1", "ORG-OPB", effet, "vente", cm) == "CES-1"
+        assert_fails RefCession.demander(h, "CES-2", "OBJ-1", "ORG-OPB", effet, "vente", cm) matching "Conflit"
+        assert_fails RefCession.demander(h, "CES-1", "OBJ-1", "ORG-OPB", effet, "vente", cm) matching "Existe"
+        // visa avant acceptation ; mauvais acceptant ; mauvais État
+        assert_fails RefCession.viser(h, "CES-1", "", "autorite#1@ORG-ALD") matching "EtatInvalide"
+        assert_fails RefCession.accepter(h, "CES-1", "administrateur_operateur#1@ORG-OPA") matching "Habilitation"
+        assert RefCession.accepter(h, "CES-1", "administrateur_operateur#1@ORG-OPB") == "acceptee"
+        assert_fails RefCession.viser(h, "CES-1", "", "autorite#1@ORG-BRV") matching "Habilitation"
+        assert RefCession.viser(h, "CES-1", "", "autorite#1@ORG-ALD") == "visee_cedant"
+        assert_fails RefCession.viser(h, "CES-1", "", "autorite#1@ORG-BRV") matching "MotifRequis"
+        // refus motivé de l'État du cessionnaire : libère l'objet
+        assert_fails RefCession.refuser(h, "CES-1", "non", "dynamicien#1@ORG-OPA") matching "Habilitation"
+        assert RefCession.refuser(h, "CES-1", "contrôle export", "autorite#1@ORG-BRV") == "refusee"
+        assert_fails RefCession.annuler(h, "CES-1", "trop tard", cm) matching "EtatInvalide"
+        // annulation par le cédant
+        assert RefCession.demander(h, "CES-2", "OBJ-1", "ORG-OPB", effet, "vente", cm) == "CES-2"
+        assert_fails RefCession.annuler(h, "CES-2", "x", "administrateur_operateur#1@ORG-OPB") matching "Habilitation"
+        assert RefCession.annuler(h, "CES-2", "renonce", "administrateur_operateur#1@ORG-OPA") == "annulee"
+        // expiration après 90 jours
+        assert RefCession.demander(h, "CES-3", "OBJ-1", "ORG-OPB", effet, "vente", cm) == "CES-3"
+        assert_fails RefCession.expirer(h, "CES-3", "systeme") matching "Delai"
+        assert ApiRef.balayer(Horodatage(1000000000 + 91 * 86400000), "systeme") >= 1
+        assert RefCession.etat("CES-3") == "expiree"
+        assert RefCession.en_cours_sur("OBJ-1") == ""
+    }
+}
+
+// ── Modifications à quatre yeux
+
+cell test ModificationsQuatreYeux {
+    rules {
+        let _ = Monde.peupler()
+        let _ = Monde.en_service(2)
+        let h = Horodatage(1000000000 + 5000)
+        let dyn = "dynamicien#1@ORG-OPA"
+        let an = "analyste#1@ORG-ORBITE"
+        let sup = "superviseur#1@ORG-ORBITE"
+        let _ = ApiRef.declarer_propulsion(h, "OBJ-2", "aucune", "panne", dyn)
+        // retour à la capacité nominale : proposé par le dynamicien, validé par son chef de mission
+        assert RefModification.proposer(h, "MOD-1", "OBJ-2", "propulsion", "faible", "réparé", dyn) == "MOD-1"
+        assert_fails RefModification.proposer(h, "MOD-2", "OBJ-2", "propulsion", "faible", "doublon", an) matching "Conflit"
+        assert_fails RefModification.proposer(h, "MOD-1", "OBJ-1", "masse", "1", "x", an) matching "Existe"
+        assert_fails RefModification.appliquer(h, "MOD-1", dyn) matching "EtatInvalide"
+        assert_fails RefModification.valider(h, "MOD-1", dyn) matching "QuatreYeux"
+        assert_fails RefModification.valider(h, "MOD-1", "chef_de_mission#1@ORG-OPB") matching "QuatreYeux"
+        assert RefModification.valider(h, "MOD-1", "chef_de_mission#1@ORG-OPA") == "validee"
+        assert_fails RefModification.appliquer(h, "MOD-1", "intrus") matching "Habilitation"
+        assert RefModification.appliquer(h, "MOD-1", dyn) == "appliquee"
+        assert ApiRef.propulsion("OBJ-2") == "faible"
+        assert RefModification.etat("MOD-1") == "appliquee"
+        // au-dessus de la nominale : refusé par le setter à l'application
+        let _ = RefModification.proposer(h, "MOD-3", "OBJ-2", "propulsion", "impulsionnelle", "essai", an)
+        let _ = RefModification.valider(h, "MOD-3", sup)
+        assert_fails RefModification.appliquer(h, "MOD-3", "systeme") matching "Incoherent"
+        assert RefModification.etat("MOD-3") == "validee"
+        assert RefModification.annuler(h, "MOD-3", an) == "annulee"
+        // masse ; habilitation par portée
+        assert_fails RefModification.proposer(h, "MOD-4", "OBJ-2", "masse", "2100", "pesée", "dynamicien#1@ORG-OPB") matching "Habilitation"
+        let _ = RefModification.proposer(h, "MOD-4", "OBJ-2", "masse", "2100", "pesée", dyn)
+        assert RefModification.rejeter(h, "MOD-4", "non justifié", sup) == "rejetee"
+        let _ = RefModification.proposer(h, "MOD-5", "OBJ-2", "masse", "2100", "pesée", dyn)
+        let _ = RefModification.valider(h, "MOD-5", sup)
+        let _ = RefModification.appliquer(h, "MOD-5", sup)
+        assert ApiRef.masse("OBJ-2") == 2100
+        // renommer une organisation
+        assert_fails RefModification.proposer(h, "MOD-6", "ORG-OPA", "nom", "Opérateur Alpha", "fusion", "administrateur_operateur#1@ORG-OPB") matching "Habilitation"
+        let _ = RefModification.proposer(h, "MOD-6", "ORG-OPA", "nom", "Opérateur Alpha", "fusion", "administrateur_operateur#1@ORG-OPA")
+        let _ = RefModification.valider(h, "MOD-6", "direction#1@ORG-ORBITE")
+        let _ = RefModification.appliquer(h, "MOD-6", "systeme")
+        assert RefOrg.nom("ORG-OPA") == "Opérateur Alpha"
+        // le setter refuse une demande non validée
+        assert_fails RefObjet.modifier(h, "OBJ-2", "masse", "1", "MOD-404", "systeme") matching "EtatInvalide"
+        // expiration après 7 jours, par la ronde
+        let _ = RefModification.proposer(h, "MOD-7", "OBJ-2", "nature", "station_habitee", "requalification", an)
+        assert ApiRef.balayer(Horodatage(1000000000 + 8 * 86400000), "systeme") >= 1
+        assert RefModification.etat("MOD-7") == "expiree"
+        assert_fails RefModification.valider(Horodatage(1000000000 + 8 * 86400000), "MOD-7", sup) matching "EtatInvalide"
+    }
+}
+
+cell test PassivationBloqueHausse {
+    rules {
+        let _ = Monde.peupler()
+        let _ = Monde.en_service(4)
+        let h = Horodatage(1000000000 + 5000)
+        let an = "analyste#1@ORG-ORBITE"
+        let _ = ApiRef.declarer_propulsion(h, "OBJ-4", "aucune", "passivation", "systeme")
+        let _ = RefModification.proposer(h, "MOD-1", "OBJ-4", "propulsion", "faible", "relance", an)
+        let _ = RefModification.valider(h, "MOD-1", "superviseur#1@ORG-ORBITE")
+        assert_fails RefModification.appliquer(h, "MOD-1", an) matching "NonEligible"
+    }
+}
+
+cell test HistoriqueAjoutSeul {
+    rules {
+        assert RefHistorique.consigner(Horodatage(100), "X", "champ", "a", "test", "systeme") == 1
+        assert RefHistorique.consigner(Horodatage(200), "X", "champ", "b", "test", "systeme") == 2
+        assert_fails RefHistorique.consigner(Horodatage(150), "X", "champ", "c", "test", "systeme") matching "Incoherent"
+        assert RefHistorique.valeur_au("X", "champ", Horodatage(99)) == ""
+        assert RefHistorique.valeur_au("X", "champ", Horodatage(150)) == "a"
+        assert RefHistorique.valeur_au("X", "champ", Horodatage(250)) == "b"
+        assert RefHistorique.historique("X", 1) == ["200|champ|b|test|systeme"]
+    }
+}
+
+// ── Scénario métier : un nouvel État rejoint ORBITE, son opérateur lance un satellite, le
+// cède, le satellite perd sa propulsion, puis rentre dans l'atmosphère.
+cell test ScenarioNouvelEtat {
+    rules {
+        let _ = Monde.installer()
+        let h = Horodatage(1000000000 + 1000)
+        let sup = "superviseur#1@ORG-ORBITE"
+        let dir = "direction#1@ORG-ORBITE"
+        assert RefEtat.declarer(h, "CAZ", "Cazie", "analyste#1@ORG-ORBITE") == "CAZ"
+        assert RefEtat.candidater(h, "CAZ", "LETTRE-CAZ-2026", sup) == "candidat"
+        // autorité et opérateur inscrits avant l'admission : inscrits, pas actifs
+        let _ = ApiRef.inscrire_organisation(h, "ORG-CAZ", "Agence de Cazie", "CAZ", "etat", sup, dir)
+        let _ = ApiRef.inscrire_organisation(h, "ORG-OPC", "Opérateur C", "CAZ", "operateur", sup, dir)
+        assert !RefOrg.est_active("ORG-OPC")
+        assert_fails ApiRef.cataloguer(h, "satellite", "ORG-OPC", "CAZ", "leo", "impulsionnelle", 800, "systeme") matching "Inconnu"
+        assert RefEtat.admettre(h, "CAZ", dir, "direction#2@ORG-ORBITE") == "participant"
+        assert ApiRef.organisations("operateur") == ["ORG-OPA", "ORG-OPB", "ORG-OPC"]
+        // lancement : catalogage (par lancements), immatriculation, mise en service
+        let o = ApiRef.cataloguer(h, "satellite", "ORG-OPC", "CAZ", "leo", "impulsionnelle", 800, "systeme")
+        assert o == "OBJ-1"
+        assert ApiRef.immatriculer(h, o, "CAZ-2026-1", "autorite#1@ORG-CAZ") == "immatricule"
+        assert ApiRef.changer_etat_objet(h, o, "en_service", "", "acquisition", "dynamicien#1@ORG-OPC") == "en_service"
+        assert ApiRef.peut_manoeuvrer(o)
+        // cession à ORG-OPA (ALD) : visas de CAZ puis d'ALD
+        let h2 = Horodatage(1000000000 + 2000)
+        let effet = Horodatage(1000000000 + 3000)
+        assert RefCession.demander(h2, "CES-C1", o, "ORG-OPA", effet, "cession commerciale", "administrateur_operateur#1@ORG-OPC") == "CES-C1"
+        assert RefCession.accepter(h2, "CES-C1", "administrateur_operateur#1@ORG-OPA") == "acceptee"
+        assert RefCession.viser(h2, "CES-C1", "", "autorite#1@ORG-CAZ") == "visee_cedant"
+        assert RefCession.viser(h2, "CES-C1", "ALD-500", "autorite#1@ORG-ALD") == "visee_cessionnaire"
+        assert RefCession.realiser(effet, "CES-C1", "analyste#1@ORG-ORBITE") == "realisee"
+        assert ApiRef.proprietaire(o) == "ORG-OPA"
+        assert ApiRef.etat_immatriculation(o) == "ALD"
+        // perte de propulsion déclarée par le nouveau propriétaire
+        let h3 = Horodatage(1000000000 + 4000)
+        assert_fails ApiRef.declarer_propulsion(h3, o, "aucune", "panne", "dynamicien#1@ORG-OPC") matching "Habilitation"
+        assert ApiRef.declarer_propulsion(h3, o, "aucune", "panne", "dynamicien#1@ORG-OPA") == "aucune"
+        assert !ApiRef.peut_manoeuvrer(o)
+        // rentrée constatée par reentrees
+        let h4 = Horodatage(1000000000 + 5000)
+        assert ApiRef.changer_etat_objet(h4, o, "rentre", "RE-9", "", "systeme") == "rentre"
+        assert RefRegistre.statut(o) == "radie"
+        // la fiche au moment de la décision de cession, et après
+        assert ApiRef.valeur_au(o, "proprietaire", h2) == "ORG-OPC"
+        assert ApiRef.valeur_au(o, "etat", h2) == "CAZ"
+        assert ApiRef.valeur_au(o, "propulsion", h2) == "impulsionnelle"
+        assert ApiRef.valeur_au(o, "propulsion", h4) == "aucune"
+        // l'opérateur C, sans objets en orbite, peut être radié
+        assert RefOrg.radier(h4, "ORG-OPC", "cessation", dir, "direction#2@ORG-ORBITE") == "radiee"
+        assert Journal.taille() > 10
+    }
+}

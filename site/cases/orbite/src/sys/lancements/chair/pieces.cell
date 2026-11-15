@@ -1,0 +1,348 @@
+// lancements — corps de LancPiece (manifeste : séparation, catalogage, identification,
+// immatriculation et leurs délais). Une pièce d'un lancement non notifié a le propriétaire
+// "inconnu" : elle est cataloguée au nom d'ORBITE (ORG-ORBITE, État "").
+
+flesh LancPiece {
+    on prevoir(h, lancement, piece, genre, proprietaire, etat_immat, masse, propulsion, habitee, par) {
+        require lancement_de.get(piece) == () else Existe "pièce {piece} déjà prévue"
+        require lancement_de.size < MAX_PIECES else Plein "registre des pièces plein"
+        let lst = LancLancement.etat(lancement)
+        require lst != "inconnu" else Inconnu "lancement {lancement} inconnu"
+        require lst != "identifie" && lst != "echec" && lst != "annule" else EtatInvalide "lancement {lancement} : {lst}"
+        let f = LancLancement.fiche(lancement)
+        let analyste = ApiAcces.a_le_role(par, "analyste")
+        let chef = ApiAcces.a_le_role(par, "chef_de_mission") && (ApiAcces.agit_pour(par, f.op) || ApiAcces.agit_pour(par, proprietaire))
+        require analyste || chef else Habilitation "{par} : chef_de_mission du lanceur ou du propriétaire, ou analyste requis"
+        let man = manifeste_de.get(lancement) ?? []
+        require len(man) < MAX_MANIFESTE else Plein "manifeste plein (400)"
+        // Hors annonce : un élément imprévu vu après l'injection, ou toute pièce d'un lancement
+        // non notifié (0 pièce annoncée), ajoutés par un analyste.
+        let imprevu = analyste && ((genre == "element" && lst == "injecte") || f.nb_objets == 0)
+        require imprevu || len(man) < f.nb_objets else Plein "{f.nb_objets} pièce(s) annoncée(s)"
+        let inconnu = proprietaire == "inconnu"
+        require inconnu || ApiRef.organisation_existe(proprietaire) else Inconnu "propriétaire {proprietaire} non inscrit"
+        require inconnu || ApiRef.etat_participant(etat_immat) else NonEligible "État {etat_immat} non participant"
+        require LancZones.est_etat_de_lancement(lancement, etat_immat) else NonEligible "État {etat_immat} n'est pas un État de lancement de {lancement}"
+        require (!habitee) || genre == "charge_utile" else Incoherent "seule une charge utile est habitée"
+        lancement_de.set(piece, lancement)
+        genre_de.set(piece, genre)
+        proprietaire_de.set(piece, proprietaire)
+        etat_immat_de.set(piece, etat_immat)
+        masse_de.set(piece, masse)
+        propulsion_de.set(piece, propulsion)
+        habitee_de.set(piece, habitee)
+        manifeste_de.set(lancement, man ++ [piece])
+        Journal.noter(h, "lancements", par, "pièce {piece} ({genre}, {proprietaire}) prévue sur {lancement}")
+        return piece
+    }
+
+    on separer(h, piece, instant, par) {
+        let l = lancement_de.get(piece)
+        require l != () else Inconnu "pièce {piece} inconnue"
+        let f = LancLancement.fiche(l)
+        require _gestes_pieces(par, f.op, proprietaire_de.get(piece) ?? "inconnu") else Habilitation "{par} : dynamicien ou chef_de_mission du propriétaire ou du lanceur, ou analyste requis"
+        let st = get_status(piece) ?? "prevue"
+        require st == "prevue" else EtatInvalide "pièce {piece} : {st}"
+        let lst = LancLancement.etat(l)
+        require lst == "injecte" else EtatInvalide "lancement {l} : {lst}"
+        require to_int(instant) <= to_int(h) && to_int(instant) >= to_int(f.injection) else Incoherent "séparation avant l'injection ou dans le futur"
+        separee_le.set(piece, instant)
+        transition(piece, "prevue", "separee")
+        Journal.noter(h, "lancements", par, "pièce {piece} séparée à {instant}")
+        return "separee"
+    }
+
+    on declarer_non_separee(h, piece, motif, par) {
+        let l = lancement_de.get(piece)
+        require l != () else Inconnu "pièce {piece} inconnue"
+        let f = LancLancement.fiche(l)
+        require _gestes_pieces(par, f.op, proprietaire_de.get(piece) ?? "inconnu") else Habilitation "{par} : dynamicien ou chef_de_mission du propriétaire ou du lanceur, ou analyste requis"
+        let st = get_status(piece) ?? "prevue"
+        require st == "prevue" else EtatInvalide "pièce {piece} : {st}"
+        require motif != "" else MotifRequis "motif requis"
+        transition(piece, "prevue", "non_separee")
+        Journal.noter(h, "lancements", par, "pièce {piece} non séparée : {motif}")
+        return "non_separee"
+    }
+
+    on abandonner_manifeste(h, lancement, par) {
+        require ApiAcces.a_le_role(par, "systeme") else Habilitation "{par} : systeme requis"
+        let n = 0
+        for p in manifeste_de.get(lancement) ?? [] {
+            if (get_status(p) ?? "prevue") == "prevue" {
+                transition(p, "prevue", "non_separee")
+                n = n + 1
+            }
+        }
+        if n > 0 { Journal.noter(h, "lancements", par, "{n} pièce(s) de {lancement} non séparée(s)") }
+        return n
+    }
+
+    on cataloguer(h, piece, par) {
+        require ApiAcces.a_le_role(par, "analyste") || ApiAcces.a_le_role(par, "systeme") else Habilitation "{par} : analyste ou systeme requis"
+        let l = lancement_de.get(piece)
+        require l != () else Inconnu "pièce {piece} inconnue"
+        let f = LancLancement.fiche(l)
+        let genre = genre_de.get(piece) ?? "element"
+        let nature = if genre == "charge_utile" {
+            if habitee_de.get(piece) ?? false { "station_habitee" } else { "satellite" }
+        } else if genre == "etage" { "etage" } else { "debris" }
+        let prop = if genre == "charge_utile" { propulsion_de.get(piece) ?? "aucune" } else { "aucune" }
+        let proprio = proprietaire_de.get(piece) ?? "inconnu"
+        let inconnu = proprio == "inconnu"
+        let org = if inconnu { Org("ORG-ORBITE") } else { proprio }
+        let etat = if inconnu { Etat("") } else { etat_immat_de.get(piece) ?? "" }
+        let obj = ApiRef.cataloguer(h, NatureObjet(nature), org, etat, f.regime, Propulsion(prop), masse_de.get(piece) ?? 0, "systeme")
+        let _ = LancPiece.lier(h, piece, obj)
+        let _ = ApiObservation.demander_suivi(h, obj, 2, 259200000, "suivi renforcé après lancement ({l})", "systeme")
+        Journal.noter(h, "lancements", par, "pièce {piece} cataloguée : {obj}")
+        return obj
+    }
+
+    on rattacher(h, piece, objet, par, valideur) {
+        require ApiAcces.a_le_role(par, "analyste") else Habilitation "{par} : analyste d'ORBITE requis"
+        require ApiAcces.a_le_role(valideur, "superviseur") && ApiAcces.quatre_yeux(par, valideur) else QuatreYeux "{valideur} : superviseur distinct requis"
+        let l = lancement_de.get(piece)
+        require l != () else Inconnu "pièce {piece} inconnue"
+        let eo = ApiRef.etat_objet(objet)
+        require eo != "inconnu" else Inconnu "objet {objet} non catalogué"
+        require eo == "catalogue" else EtatInvalide "objet {objet} : {eo}"
+        let _ = LancPiece.lier(h, piece, objet)
+        let proprio = proprietaire_de.get(piece) ?? "inconnu"
+        if proprio != "inconnu" {
+            let _ = ApiRef.attribuer(h, objet, proprio, etat_immat_de.get(piece) ?? "", par, valideur)
+        }
+        Journal.noter(h, "lancements", par, "objet {objet} rattaché à la pièce {piece}, validé par {valideur}")
+        return objet
+    }
+
+    on lier(h, piece, objet) {
+        let st = get_status(piece) ?? "prevue"
+        require st == "separee" else EtatInvalide "pièce {piece} : {st}"
+        require objet_de.get(piece) == () else Existe "pièce {piece} déjà liée"
+        require origine_de.get(objet) == () else Doublon "objet {objet} déjà lié à une pièce"
+        let eo = ApiRef.etat_objet(objet)
+        require eo == "catalogue" else EtatInvalide "objet {objet} : {eo}"
+        objet_de.set(piece, objet)
+        origine_de.set(objet, piece)
+        transition(piece, "separee", "cataloguee")
+        Journal.noter(h, "lancements", "systeme", "pièce {piece} liée à {objet}")
+        return "cataloguee"
+    }
+
+    on identifier(h, piece, par) {
+        let l = lancement_de.get(piece)
+        require l != () else Inconnu "pièce {piece} inconnue"
+        let proprio = proprietaire_de.get(piece) ?? "inconnu"
+        let genre = genre_de.get(piece) ?? "element"
+        let dyn = ApiAcces.a_le_role(par, "dynamicien") && ApiAcces.agit_pour(par, proprio)
+        let ana = genre != "charge_utile" && ApiAcces.a_le_role(par, "analyste")
+        require dyn || ana else Habilitation "{par} : dynamicien du propriétaire requis (analyste pour un étage ou un élément)"
+        let st = get_status(piece) ?? "prevue"
+        require st == "cataloguee" || (st == "en_retard" && identifiee_le.get(piece) == ()) else EtatInvalide "pièce {piece} : {st}"
+        let obj = objet_de.get(piece)
+        require obj != () else EtatInvalide "pièce {piece} non cataloguée"
+        let rd = try { ApiEphemerides.derniere(obj) }
+        require rd.error == () else Perime "aucune éphéméride validée pour {obj}"
+        if ApiObservation.suivi(obj, h) {
+            let re = try { ApiObservation.ecart_declare(obj) }
+            if re.error == () {
+                require to_int(re.value) <= ECART_IDENTIFICATION else Incoherent "écart de {re.value} m entre l'éphéméride et l'orbite observée"
+            }
+        }
+        if genre == "etage" && !ApiFinDeVie.plan_conforme(obj) {
+            let f = LancLancement.fiche(l)
+            let rc = try { ApiConformite.constater(h, f.op, "étage {obj} en orbite sans plan de fin de vie conforme", 2, piece, "systeme") }
+            if rc.error != () { Journal.noter(h, "lancements", "systeme", "manquement non constaté pour {f.op} : {rc.kind}") }
+        }
+        identifiee_le.set(piece, h)
+        if st == "cataloguee" {
+            transition(piece, "cataloguee", "identifiee")
+        }
+        Journal.noter(h, "lancements", par, "pièce {piece} identifiée ({obj})")
+        return get_status(piece) ?? "identifiee"
+    }
+
+    on immatriculer(h, piece, reference, par) {
+        let e = etat_immat_de.get(piece)
+        require e != () else Inconnu "pièce {piece} inconnue"
+        let ro = try { ApiRef.org_de_etat(e) }
+        require ro.error == () && ApiAcces.a_le_role(par, "autorite") && ApiAcces.agit_pour(par, ro.value) else Habilitation "{par} : autorité de l'État {e} requise"
+        let st = get_status(piece) ?? "prevue"
+        require (st == "identifiee" || st == "en_retard") && identifiee_le.get(piece) != () else EtatInvalide "pièce {piece} non identifiée ({st})"
+        let obj = objet_de.get(piece)
+        require obj != () else EtatInvalide "pièce {piece} non cataloguée"
+        require reference != "" else MotifRequis "référence du registre requise"
+        let ei = ApiRef.etat_immatriculation(obj)
+        require ei == e else Incoherent "État d'immatriculation au catalogue {ei} ≠ {e}"
+        if !ApiRef.immatricule(obj) {
+            let _ = ApiRef.immatriculer(h, obj, reference, "systeme")
+        }
+        require ApiRef.immatricule(obj) else EtatInvalide "registre de {obj} non inscrit"
+        registre_de.set(piece, reference)
+        immatriculee_le.set(piece, h)
+        _retirer_retard(e, piece)
+        if st == "identifiee" {
+            transition(piece, "identifiee", "immatriculee")
+        } else {
+            transition(piece, "en_retard", "immatriculee")
+        }
+        Journal.noter(h, "lancements", par, "pièce {piece} ({obj}) immatriculée par {e} : {reference}")
+        return "immatriculee"
+    }
+
+    on relever_retards(h, lancement, par) {
+        require ApiAcces.a_le_role(par, "systeme") else Habilitation "{par} : systeme requis"
+        let man = manifeste_de.get(lancement)
+        require man != () else Inconnu "aucun manifeste pour {lancement}"
+        let inj = to_int(LancLancement.injecte_le(lancement))
+        if inj == 0 { return 0 }
+        let t = to_int(h)
+        let n = 0
+        for p in man {
+            let st = get_status(p) ?? "prevue"
+            let obj = objet_de.get(p)
+            let e = etat_immat_de.get(p) ?? ""
+            let identifiee = identifiee_le.get(p) != ()
+            if (st == "identifiee" || (st == "en_retard" && identifiee)) && obj != () && ApiRef.immatricule(obj) {
+                immatriculee_le.set(p, h)
+                _retirer_retard(e, p)
+                if st == "identifiee" {
+                    transition(p, "identifiee", "immatriculee")
+                } else {
+                    transition(p, "en_retard", "immatriculee")
+                }
+                n = n + 1
+            } else if st == "separee" && t - to_int(separee_le.get(p) ?? h) > DELAI_PERTE {
+                transition(p, "separee", "perdue")
+                n = n + 1
+            } else if st == "cataloguee" && t - inj > DELAI_IDENTIFICATION {
+                transition(p, "cataloguee", "en_retard")
+                let proprio = proprietaire_de.get(p) ?? "inconnu"
+                if proprio != "inconnu" {
+                    let rc = try { ApiConformite.constater(h, proprio, "pièce {p} non identifiée 30 jours après l'injection", 2, p, "systeme") }
+                    if rc.error != () { Journal.noter(h, "lancements", "systeme", "manquement non constaté pour {proprio} : {rc.kind}") }
+                }
+                _notifier_etat(h, e, "pièce {p} non identifiée 30 jours après l'injection")
+                n = n + 1
+            } else if (st == "identifiee" || (st == "en_retard" && identifiee)) && t - inj > DELAI_IMMATRICULATION && !contains(retards_de.get(e) ?? [], p) {
+                if st == "identifiee" {
+                    transition(p, "identifiee", "en_retard")
+                    n = n + 1
+                }
+                let liste = retards_de.get(e) ?? []
+                if len(liste) < MAX_RETARDS_ETAT { retards_de.set(e, liste ++ [p]) }
+                let rc = try { ApiConformite.constater_etat(h, e, "pièce {p} non immatriculée 60 jours après l'injection", 2, p, "systeme") }
+                if rc.error != () { Journal.noter(h, "lancements", "systeme", "manquement non constaté pour l'État {e} : {rc.kind}") }
+                _notifier_etat(h, e, "pièce {p} non immatriculée 60 jours après l'injection")
+            }
+        }
+        if n > 0 { Journal.noter(h, "lancements", par, "délais du manifeste de {lancement} : {n} pièce(s) changée(s)") }
+        return n
+    }
+
+    on constater_retombee(h, piece, par) {
+        require ApiAcces.a_le_role(par, "systeme") || ApiAcces.a_le_role(par, "analyste") else Habilitation "{par} : systeme ou analyste requis"
+        let obj = objet_de.get(piece)
+        require obj != () else Inconnu "pièce {piece} inconnue ou non cataloguée"
+        let eo = ApiRef.etat_objet(obj)
+        require eo == "rentre" else EtatInvalide "objet {obj} : {eo}"
+        let st = get_status(piece) ?? "prevue"
+        if st == "cataloguee" {
+            transition(piece, "cataloguee", "retombee")
+        } else if st == "identifiee" {
+            transition(piece, "identifiee", "retombee")
+        } else if st == "en_retard" {
+            transition(piece, "en_retard", "retombee")
+        } else {
+            fail("EtatInvalide", "pièce {piece} : {st}")
+        }
+        Journal.noter(h, "lancements", par, "pièce {piece} ({obj}) retombée avant immatriculation")
+        return "retombee"
+    }
+
+    on retards_etat(etat, n, par) {
+        let ro = try { ApiRef.org_de_etat(etat) }
+        let de_l_etat = ro.error == () && (ApiAcces.a_le_role(par, "point_focal") || ApiAcces.a_le_role(par, "autorite")) && ApiAcces.agit_pour(par, ro.value)
+        require de_l_etat || ApiAcces.a_le_role(par, "conformite") else Habilitation "{par} : point focal ou autorité de {etat}, ou conformité d'ORBITE requis"
+        return slice(retards_de.get(etat) ?? [], 0, n)
+    }
+
+    on restantes(lancement) {
+        let n = 0
+        for p in manifeste_de.get(lancement) ?? [] {
+            let st = get_status(p) ?? "prevue"
+            let fini = st == "immatriculee" || st == "non_separee" || st == "perdue" || st == "retombee" || st == "identifiee"
+            let note = st == "en_retard" && identifiee_le.get(p) != ()
+            if !fini && !note { n = n + 1 }
+        }
+        return n
+    }
+
+    on objets_du_lancement(lancement) {
+        let res_o = []
+        for p in manifeste_de.get(lancement) ?? [] {
+            let o = objet_de.get(p)
+            if o != () { res_o.push(to_string(o)) }
+        }
+        return res_o
+    }
+
+    on etats_de_lancement(objet) {
+        let p = origine_de.get(objet)
+        if p == () { return [] }
+        let l = lancement_de.get(p)
+        if l == () { return [] }
+        return LancZones.etats_lancement(l)
+    }
+
+    on origine(objet) {
+        let p = origine_de.get(objet)
+        if p == () { return "" }
+        return lancement_de.get(p) ?? ""
+    }
+
+    on etat(piece) {
+        if lancement_de.get(piece) == () { return "inconnue" }
+        return get_status(piece) ?? "prevue"
+    }
+
+    on fiche(piece) {
+        let l = lancement_de.get(piece)
+        require l != () else Inconnu "pièce {piece} inconnue"
+        return LancFichePiece {
+            lancement: l,
+            genre: genre_de.get(piece) ?? "element",
+            proprietaire: proprietaire_de.get(piece) ?? "inconnu",
+            etat_immat: etat_immat_de.get(piece) ?? "",
+            masse: masse_de.get(piece) ?? 0,
+            propulsion: propulsion_de.get(piece) ?? "aucune",
+            objet: objet_de.get(piece) ?? ""
+        }
+    }
+
+    on manifeste(lancement) {
+        return manifeste_de.get(lancement) ?? []
+    }
+
+    // dynamicien ou chef_de_mission du propriétaire ou de l'opérateur du lanceur, ou analyste.
+    on _gestes_pieces(par: String, op: Org, proprio: Org) {
+        if ApiAcces.a_le_role(par, "analyste") { return true }
+        let r = ApiAcces.a_le_role(par, "dynamicien") || ApiAcces.a_le_role(par, "chef_de_mission")
+        return r && (ApiAcces.agit_pour(par, op) || ApiAcces.agit_pour(par, proprio))
+    }
+
+    on _retirer_retard(e: Etat, piece: String) {
+        let liste = retards_de.get(e)
+        if liste != () && contains(liste, piece) {
+            retards_de.set(e, liste.filter(x => x != piece))
+        }
+    }
+
+    on _notifier_etat(h: Horodatage, e: Etat, texte: String) {
+        let ro = try { ApiRef.org_de_etat(e) }
+        if ro.error == () {
+            let _ = ApiPasserelle.notifier(h, ro.value, "", "retard d'un lancement", texte, 2)
+        }
+    }
+}

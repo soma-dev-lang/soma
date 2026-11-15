@@ -1,0 +1,122 @@
+// COORDINATION — les réponses attendues des parties, tour par tour. Instance = "<r>#<tour>|<org>".
+// Une réponse ne compte que tant que la proposition à laquelle elle répond est sur la table
+// (coordination proposee ou desaccord, via dossier_de) ; un silence passé l'échéance est
+// constaté « muette » et escaladé ; un tour dépassé (contre-proposition, rouverture, arbitrage,
+// clôture) rend caduques les réponses encore attendues.
+
+// État d'une réponse attendue ; "inconnue" si jamais attendue.
+// Bilan de réactivité d'une partie sur une fenêtre (pour conformite et escalade) : nombres de
+// réponses attendues, données (acceptées + refusées), muettes ; delai_moyen en ms (0 si aucune).
+cell type CoordBilan { variants { CoordBilan { attendues: Int, acceptees: Int, refusees: Int, muettes: Int, delai_moyen: Duree } } }
+cell type CoordEtatReponse = String where value == "attendue" || value == "acceptee" || value == "refusee" || value == "muette" || value == "caduque" || value == "inconnue"
+
+skeleton CoordReponse {
+    const MAX_REPONSES = 200000000
+    // Parties d'un tour : les deux propriétaires au plus.
+    const MAX_PARTIES = 2
+    // Réponses d'une organisation gardées pour son bilan (les plus anciennes sortent).
+    const MAX_PAR_ORG = 10000
+    // Relances d'une réponse attendue (au-delà, c'est l'escalade qui parle).
+    const MAX_RELANCES = 3
+    memory {
+        dossier_de: Map<String, Rapprochement> [persistent]   // réponse -> r ; écrit une fois par attendre, jamais effacé (lien des règles avec CoordDossier)
+        org_de: Map<String, Org> [persistent]                 // réponse -> partie interrogée
+        attendue_le: Map<String, Horodatage> [persistent]     // réponse -> instant de la demande
+        repondu_le: Map<String, Horodatage> [persistent]      // réponse -> instant de la réponse ou du constat
+        sens_de: Map<String, CoordSens> [persistent]          // réponse -> sens donné
+        contre_de: Map<String, Objet> [persistent]            // réponse -> contre-proposition (refus seulement)
+        motif_de: Map<String, String> [persistent]            // réponse -> motif du refus
+        par_de: Map<String, String> [persistent]              // réponse -> personne qui a répondu
+        du_tour_de: Map<String, List<String>> [persistent]    // "<r>#<tour>" -> réponses du tour
+        de_org: Map<String, List<String>> [persistent]        // org -> ses réponses attendues, les plus récentes en dernier
+        relances_de: Map<String, Int> [persistent]            // réponse -> relances envoyées
+        invariant dossier_de.size <= 200000000
+        invariant len(du_tour_de) <= 2
+        invariant (repondu_le ?? 0) >= (attendue_le ?? 0)
+        invariant len(de_org) <= 10000
+        invariant relances_de >= 0 && relances_de <= 3
+    }
+    // Cycle d'une réponse attendue.
+    state reponse {
+        initial: attendue
+        attendue -> acceptee             // la partie accepte la proposition du tour
+        attendue -> refusee              // la partie refuse, avec contre-proposition et motif
+        attendue -> muette               // échéance passée sans réponse : escaladée
+        attendue -> caduque              // le tour est dépassé avant réponse
+    }
+    face {
+        // Ouvre l'attente de la réponse de `org` au tour `tour` de `r` : id "<r>#<tour>|<org>",
+        // seul écrivain de dossier_de et org_de. Si l'organisation n'est pas active
+        // (ApiOperateurs.est_actif) l'attente est créée puis aussitôt constatée muette et
+        // escaladée : un opérateur suspendu ne retient pas la coordination. Appelé par
+        // CoordDossier (ouvrir, repondre, rouvrir). Renvoie l'id. Refus : Existe, Plein (MAX_PARTIES).
+        signal attendre(h: Horodatage, r: Rapprochement, tour: Int, org: Org) -> String
+            requires tour >= 1
+            writes dossier_de, org_de, attendue_le, du_tour_de, de_org, repondu_le
+            moves attendue -> muette
+            calls ApiOperateurs.est_actif, ApiEscalade.escalader
+        // Enregistre la réponse de l'employeur de `par` au tour `tour` (attendue -> acceptee ou
+        // refusee) tant que la proposition tient. Contrôles d'habilitation et de cohérence faits
+        // par CoordDossier.repondre, qui seul l'appelle. Accuse l'escalade éventuelle
+        // (ApiEscalade.accuser, par `par`). Renvoie l'état atteint.
+        // Refus : Inconnu (pas une partie attendue de ce tour), EtatInvalide (déjà répondu,
+        // muette ou caduque), Delai (h > échéance).
+        signal enregistrer(h: Horodatage, r: Rapprochement, tour: Int, org: Org, sens: CoordSens, contre: Objet, motif: String, par: String) -> CoordEtatReponse
+            requires tour >= 1
+            writes repondu_le, sens_de, contre_de, motif_de, par_de
+            reads dossier_de, org_de, du_tour_de
+            moves attendue -> acceptee when CoordDossier.proposee || CoordDossier.desaccord via dossier_de, attendue -> refusee when CoordDossier.proposee || CoordDossier.desaccord via dossier_de
+            calls CoordDossier.echeance, ApiEscalade.echelon, ApiEscalade.accuser
+        // Relance les parties dont la réponse au tour courant est encore attendue, une fois
+        // passée la moitié du délai (h ≥ attendue_le + (échéance − attendue_le) / 2) :
+        // CoordEchange.notifier "relance" avec l'échéance restante, à l'astreinte
+        // (ApiOperateurs.astreinte). Au plus MAX_RELANCES par réponse. `par` "systeme".
+        // Renvoie le nombre de relances envoyées. Refus : Inconnu, Habilitation.
+        signal relancer(h: Horodatage, r: Rapprochement, par: String) -> Int
+            reads du_tour_de, org_de, attendue_le, reponse
+            writes relances_de
+            calls CoordDossier.tour, CoordDossier.echeance, ApiOperateurs.astreinte, ApiAcces.a_le_role, CoordEchange.notifier
+        // Constate muettes les réponses encore attendues du tour courant de `r` (attendue ->
+        // muette) et escalade chaque partie muette (ApiEscalade.escalader, motif "silence
+        // coordination", par "systeme") ; signale un manquement « réponse tardive » à la
+        // conformité (ApiConformite.constater, gravité = niveau du rapprochement).
+        // Renvoie le nombre de parties muettes. Refus : Inconnu.
+        signal constater_muettes(h: Horodatage, r: Rapprochement) -> Int
+            reads du_tour_de, org_de
+            writes repondu_le
+            moves attendue -> muette
+            calls CoordDossier.tour, ApiConjonctions.niveau, ApiEscalade.escalader, ApiConformite.constater
+        // Rend caduques les réponses encore attendues de tous les tours de `r` (attendue ->
+        // caduque). Renvoie leur nombre. Refus : aucun.
+        signal rendre_caduques(h: Horodatage, r: Rapprochement) -> Int
+            reads du_tour_de
+            writes repondu_le
+            moves attendue -> caduque
+            calls CoordDossier.tour
+        // Vrai si toutes les parties attendues au tour courant de `r` ont accepté (et au moins
+        // une partie attendue). Faux si le tour n'a aucune partie.
+        signal toutes_acceptees(r: Rapprochement, tour: Int) -> Bool
+            reads du_tour_de, reponse
+        // Réponses du tour courant de `r`, "org:etat" (acceptee, refusee, muette, attendue,
+        // caduque) — pour le fondement d'une décision. Refus : aucun ([] si aucun tour).
+        signal du_tour(r: Rapprochement) -> List<String>
+            reads du_tour_de, org_de, reponse
+            calls CoordDossier.tour
+        // Parties muettes au tour courant de `r` (état "muette"), Org triées : lu par escalade et
+        // conformite via ApiCoordination.muets ; aucun appel sortant (pas de cycle). Refus : aucun.
+        signal muets(r: Rapprochement) -> List<String>
+            reads du_tour_de, org_de, reponse
+            calls CoordDossier.tour
+        // Rapprochements où `org` a une réponse "attendue" (au plus 1 000, les plus anciens
+        // d'abord) : ApiCoordination.en_attente_de. Refus : aucun.
+        signal en_attente_de(org: Org) -> List<String>
+            reads de_org, dossier_de, reponse
+        // Bilan de réactivité de l'organisation sur les réponses attendues depuis `depuis` (ms),
+        // lu par `par` : "conformite", "analyste" ou "auditeur" d'ORBITE, ou
+        // "administrateur_operateur" de l'organisation elle-même (ApiAcces.agit_pour).
+        // Refus : Habilitation (bilan nul si aucune réponse attendue).
+        signal bilan(h: Horodatage, org: Org, depuis: Horodatage, par: String) -> CoordBilan
+            reads de_org, attendue_le, repondu_le, reponse
+            calls ApiAcces.a_le_role, ApiAcces.agit_pour
+    }
+}

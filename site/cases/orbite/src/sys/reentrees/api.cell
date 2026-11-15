@@ -1,0 +1,43 @@
+// Façade des RENTRÉES : prévision des rentrées atmosphériques, risque au sol, notification des États.
+skeleton ApiReentrees {
+    face {
+        // Ouvre (ou met à jour) la prévision de rentrée d'un objet : fenêtre (début, fin),
+        // espérance de victimes en millionièmes (règle : > 100 ⇒ rentrée à risque). Renvoie
+        // l'id de la campagne. Refus : Inconnu, Incoherent (fin ≤ début), Habilitation ("analyste" ou "systeme").
+        signal prevoir(h: Horodatage, objet: Objet, debut: Horodatage, fin: Horodatage, victimes_ppm: Int, par: String) -> String
+            calls ReeCampagne.prevoir
+        // Vrai si une campagne de rentrée est en cours pour l'objet.
+        signal en_campagne(objet: Objet) -> Bool
+            calls ReeCampagne.en_campagne
+        // Constate la rentrée (heure, lieu approximatif, débris retrouvés ou non). Renvoie "rentre".
+        // Refus : Inconnu, EtatInvalide, Incoherent (instant après h, ou objet encore suivi en
+        // orbite), Habilitation ("analyste"), QuatreYeux (valideur "superviseur").
+        signal constater(h: Horodatage, objet: Objet, instant: Horodatage, lieu: String, debris_au_sol: Bool, par: String, valideur: String) -> String
+            calls ReeCampagne.constater
+        // Vrai si la campagne en cours classe la rentrée à risque (> 100 ppm).
+        signal a_risque(objet: Objet) -> Bool
+            calls ReeCampagne.campagne_de, ReeRisque.a_risque
+        // Fenêtre courante "debut,fin" (ms). Refus : Inconnu.
+        signal fenetre(objet: Objet) -> String
+            calls ReeCampagne.campagne_de, ReeCampagne.fenetre
+        // Espérance de victimes courante (millionièmes). Refus : Inconnu.
+        signal victimes_ppm(objet: Objet) -> Int
+            calls ReeCampagne.campagne_de, ReeRisque.victimes_de
+        // Vrai si une rentrée contrôlée (zone d'impact océanique) est approuvée pour l'objet.
+        signal controlee_approuvee(objet: Objet) -> Bool
+            calls ReeCampagne.campagne_de, ReeControlee.actif
+        // Vrai si la rentrée de l'objet a été constatée.
+        signal constatee(objet: Objet) -> Bool
+            calls ReeCampagne.constatee
+        // Balayage des échéances du sous-système à `h` (délais, expirations, rondes), appelé par
+        // l'horloge d'ORBITE (Horloge.battre) — le SEUL point d'entrée du temps : aucun signal de
+        // reentrees ne lit l'horloge lui-même. Renvoie le nombre d'objets dont l'état a changé.
+        // Refus : Habilitation (par "systeme").
+        signal balayer(h: Horodatage, par: String) -> Int
+            calls ReeCampagne.balayer
+        // Campagne de rentrée en cours (ou la dernière) de l'objet ; "" si aucune : la référence que
+        // ref exige pour constater la rentrée.
+        signal campagne_de(objet: Objet) -> String
+            calls ReeCampagne.campagne_de
+    }
+}

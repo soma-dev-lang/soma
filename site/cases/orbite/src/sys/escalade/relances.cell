@@ -1,0 +1,87 @@
+// escalade — RELANCES. Chaque message d'escalade est une relance tracée : destinataire, échelon,
+// message de la passerelle, acquittement. Le contenu respecte la diffusion (propriété 6) : un
+// destinataire qui n'est pas autorisé à recevoir les données d'un objet (ApiDonnees.peut_recevoir)
+// reçoit un message réduit (« rapprochement r, niveau 3, répondez avant … ») sans identifiant
+// d'objet ni orbite ; chaque communication complète est tracée (ApiDonnees.tracer). Sans
+// acquittement, la relance est réémise toutes les PERIODE_RELANCE_MS tant que l'échelon dure.
+
+// Forme d'un message d'escalade.
+cell type EscForme = String where value == "complete" || value == "reduite"
+
+// Relances : id = "REL-<n>" (next_id).
+skeleton EscRelances {
+    const MAX_RELANCES = 20000000
+    // Réémission sans acquittement : toutes les 15 min.
+    const PERIODE_RELANCE_MS = 900000
+    memory {
+        dossier_de: Map<String, String> [persistent]       // relance → dossier ; écrit une fois par emettre, jamais effacé
+        destinataire_de: Map<String, String> [persistent]  // relance → Org destinataire
+        attention_de: Map<String, String> [persistent]     // relance → personne visée ("" : l'organisation)
+        echelon_de: Map<String, Int> [persistent]          // relance → échelon (1 à 4)
+        forme_de: Map<String, String> [persistent]         // relance → EscForme
+        message_de: Map<String, String> [persistent]       // relance → id du dernier message de la passerelle
+        emise_a: Map<String, Horodatage> [persistent]      // relance → première émission (ms)
+        derniere_a: Map<String, Horodatage> [persistent]   // relance → dernière (ré)émission (ms)
+        nb_envois: Map<String, Int> [persistent]           // relance → nombre d'envois
+        actives_de: Map<String, String> [persistent]       // dossier → relances en attente d'acquittement, "REL-1,REL-7"
+        rapprochement_de: Map<String, String> [persistent] // relance → rapprochement (pour la réémission) ; écrit une fois par emettre
+        texte_de: Map<String, String> [persistent]         // relance → texte émis, sous sa forme (réémis à l'identique)
+        invariant rapprochement_de.size <= MAX_RELANCES
+        invariant texte_de.size <= MAX_RELANCES
+        invariant dossier_de.size <= MAX_RELANCES
+        invariant echelon_de >= 1 && echelon_de <= 4
+        invariant nb_envois >= 1
+        invariant (emise_a ?? 0) <= (derniere_a ?? 0)
+    }
+    // Cycle de vie d'une relance (id = relance).
+    state relance {
+        initial: preparee
+        preparee -> emise             // emettre : message accepté par la passerelle
+        preparee -> echouee           // emettre : passerelle refuse (Plein, destinataire inconnu)
+        emise -> acquittee            // relancer_dues : ApiPasserelle.acquitte vrai
+        emise -> arretee              // arreter : le dossier a été accusé, repris, clos ou caduc
+        emise -> echouee              // relancer_dues : ApiPasserelle.echoue vrai (réessais épuisés)
+    }
+    face {
+        // Émet un message d'escalade du dossier vers `destinataire` (à l'attention de `personne`,
+        // "" pour l'organisation), urgence 3, via ApiPasserelle.notifier(h, destinataire, r, …) :
+        // la passerelle sait ainsi à quel rapprochement rattacher un échec. Forme "complete" si ApiDonnees.peut_recevoir est vrai
+        // pour les deux objets du rapprochement, "reduite" sinon ; une forme complète est tracée
+        // (ApiDonnees.tracer, nature "escalade") pour chaque objet. Renvoie l'id de relance (même
+        // échouée : l'échec est un fait de l'escalade). Refus : Inconnu (rapprochement), Plein.
+        signal emettre(h: Horodatage, dossier: String, r: Rapprochement, destinataire: Org, personne: String, echelon: EscEchelon, texte: String) -> String
+            writes dossier_de, destinataire_de, attention_de, echelon_de, forme_de, message_de, emise_a, derniere_a, nb_envois, actives_de, rapprochement_de, texte_de
+            moves preparee -> emise, preparee -> echouee
+            calls ApiConjonctions.objets, ApiDonnees.peut_recevoir, ApiDonnees.tracer, ApiPasserelle.notifier, next_id, Journal.noter
+        // Pour chaque relance émise : acquittée si ApiPasserelle.acquitte ; échouée si
+        // ApiPasserelle.echoue (le dossier n'attend pas : il monte à son échéance) ; sinon, si
+        // h ≥ derniere_a + PERIODE_RELANCE_MS, réémise sous la même forme (nouveau message, même
+        // relance). Renvoie le nombre de messages réémis.
+        signal relancer_dues(h: Horodatage) -> Int
+            ensures result >= 0
+            writes message_de, derniere_a, nb_envois, actives_de
+            reads dossier_de, destinataire_de, forme_de, emise_a, rapprochement_de, texte_de, relance
+            moves emise -> acquittee, emise -> echouee
+            calls ApiPasserelle.acquitte, ApiPasserelle.echoue, ApiPasserelle.notifier
+        // Arrête les relances en attente du dossier (accusé, reprise, clôture, caducité). Renvoie
+        // le nombre arrêté.
+        signal arreter(h: Horodatage, dossier: String) -> Int
+            writes actives_de
+            moves emise -> arretee
+        // Relances échouées depuis `depuis` (passerelle saturée ou destinataire inconnu de la
+        // passerelle), au plus n : "relance | dossier | destinataire | échelon | h". Au-delà de 10
+        // échecs, un incident est déclaré (ApiOperations.declarer_incident, gravité 3, "escalade") :
+        // une escalade qui ne part pas est une panne, pas un silence de l'opérateur.
+        // Rôle exigé : "systeme" ou "exploitant" d'ORBITE. Refus : Habilitation.
+        signal echouees(h: Horodatage, depuis: Horodatage, n: Int, par: String) -> List<String>
+            requires n > 0 && n <= 1000
+            reads dossier_de, destinataire_de, echelon_de, emise_a, relance
+            calls ApiAcces.a_le_role, ApiOperations.declarer_incident
+        // Relances d'un dossier, "relance | échelon | destinataire | personne | forme | état |
+        // envois | émise | dernière". Rôle exigé : "analyste", "superviseur", "auditeur" d'ORBITE.
+        // Refus : Habilitation.
+        signal relances_de(dossier: String, par: String) -> List<String>
+            reads dossier_de, destinataire_de, attention_de, echelon_de, forme_de, emise_a, derniere_a, nb_envois, relance
+            calls ApiAcces.a_le_role
+    }
+}

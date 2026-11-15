@@ -1,0 +1,443 @@
+// CONJONCTIONS — corps : cadence, campagnes de criblage (et noyau natif), ronde.
+
+flesh ConjCadence {
+    on fixer(h, regime, normale, renforcee, motif, par, valideur) {
+        require ApiAcces.a_le_role(par, "superviseur") else Habilitation "régler la cadence : superviseur d'ORBITE"
+        require ApiAcces.a_le_role(valideur, "direction") || ApiAcces.a_le_role(valideur, "superviseur") else QuatreYeux "valideur : direction ou superviseur d'ORBITE"
+        require valideur != par && ApiAcces.quatre_yeux(par, valideur) else QuatreYeux "valideur distinct exigé"
+        require len(motif) > 0 else MotifRequis "motif du réglage exigé"
+        let n = to_int(normale)
+        let rf = to_int(renforcee)
+        require n >= PERIODE_MIN && n <= PERIODE_MAX else HorsBornes "période normale entre 10 min et 6 h"
+        require rf >= RENFORCEE_MIN && rf <= n else HorsBornes "période renforcée entre 5 min et la période normale"
+        let r = to_string(regime)
+        let ancienne = to_int(periode_normale_de.get(r) ?? Duree(PERIODE_MAX))
+        // invariant renforcée ≤ normale : l'ordre d'écriture dépend du sens du changement
+        if n >= ancienne {
+            periode_normale_de.set(r, normale)
+            periode_renforcee_de.set(r, renforcee)
+        } else {
+            periode_renforcee_de.set(r, renforcee)
+            periode_normale_de.set(r, normale)
+        }
+        regle_par.set(r, "{h}|{par}|{valideur}|{motif}")
+        let _ = Journal.noter(h, "conjonctions", par, "cadence {r} : normale {n} ms, renforcée {rf} ms (valideur {valideur})")
+        return normale
+    }
+
+    on periode(regime, renforce) {
+        let r = to_string(regime)
+        if renforce {
+            return periode_renforcee_de.get(r) ?? Duree(DEFAUT_RENFORCEE)
+        }
+        let defaut = if r == "leo" { DEFAUT_LEO } else { DEFAUT_AUTRES }
+        return periode_normale_de.get(r) ?? Duree(defaut)
+    }
+}
+
+flesh ConjCampagne {
+    on planifier(h, portee, regime, objet, motif, par) {
+        let systeme = ApiAcces.a_le_role(par, "systeme")
+        require systeme || (motif == "manuel" && ApiAcces.a_le_role(par, "analyste")) else Habilitation "planifier : systeme, ou analyste d'ORBITE pour une campagne manuelle"
+        require portee_de.size < MAX_CAMPAGNES else Plein "trop de campagnes"
+        let reg = to_string(regime)
+        let obj = to_string(objet)
+        if portee == "objet" {
+            require obj != "" else Incoherent "portée objet sans objet"
+            let eo = ApiRef.etat_objet(objet)
+            require eo != "inconnu" && eo != "rentre" else Inconnu "objet non catalogué : {obj}"
+            reg = to_string(ApiRef.regime(objet))
+        }
+        if portee == "tout_contre_tout" {
+            reg = "leo"
+        }
+        let cle = "{portee}|{reg}"
+        require en_cours_de.get(cle) == () else Existe "campagne non close de même portée sur {reg}"
+        let c = "CB-{next_id()}"
+        portee_de.set(c, portee)
+        regime_de.set(c, Regime(reg))
+        objet_de.set(c, objet)
+        motif_de.set(c, motif)
+        planifiee_le.set(c, h)
+        en_cours_de.set(cle, c)
+        let _ = Journal.noter(h, "conjonctions", par, "campagne {c} planifiée ({portee}, {reg}, {motif})")
+        return c
+    }
+
+    on demarrer(h, campagne, par) {
+        require ApiAcces.a_le_role(par, "systeme") else Habilitation "démarrer une campagne : systeme"
+        require portee_de.get(campagne) != () else Inconnu "campagne inconnue : {campagne}"
+        require (get_status(campagne) ?? "planifiee") == "planifiee" else EtatInvalide "campagne non planifiée"
+        let capteurs = ApiObservation.capteurs_en_service()
+        debut_de.set(campagne, h)
+        capteurs_de.set(campagne, capteurs)
+        transition(campagne, "planifiee", "en_cours")
+        if capteurs < 3 {
+            let _ = Journal.noter(h, "conjonctions", par, "campagne {campagne} démarrée en couverture dégradée ({capteurs} capteurs)")
+        } else {
+            let _ = Journal.noter(h, "conjonctions", par, "campagne {campagne} démarrée ({capteurs} capteurs)")
+        }
+        return "en_cours"
+    }
+
+    on terminer(h, campagne, objets, paires, trouves, par) {
+        require ApiAcces.a_le_role(par, "systeme") else Habilitation "terminer une campagne : systeme"
+        let portee = portee_de.get(campagne)
+        require portee != () else Inconnu "campagne inconnue : {campagne}"
+        require (get_status(campagne) ?? "planifiee") == "en_cours" else EtatInvalide "campagne pas en cours"
+        require objets >= 0 && paires >= 0 && trouves >= 0 else HorsBornes "comptes négatifs"
+        require trouves <= paires else HorsBornes "plus de rapprochements que de paires"
+        require objets <= MAX_OBJETS else HorsBornes "trop d'objets criblés"
+        let debut = to_int(debut_de.get(campagne) ?? h)
+        require to_int(h) - debut <= DUREE_MAX else Delai "campagne en cours depuis plus de 2 h : à faire échouer"
+        let reg = to_string(regime_de.get(campagne) ?? "leo")
+        fin_de.set(campagne, h)
+        objets_cribles_de.set(campagne, objets)
+        paires_de.set(campagne, paires)
+        trouves_de.set(campagne, trouves)
+        en_cours_de.delete("{portee}|{reg}")
+        if portee == "tout_contre_tout" {
+            for r in ["leo", "meo", "geo", "heo"] {
+                derniere_de.set(r, campagne)
+            }
+        } else if portee == "regime" {
+            derniere_de.set(reg, campagne)
+        }
+        transition(campagne, "en_cours", "terminee")
+        let _ = Journal.noter(h, "conjonctions", par, "campagne {campagne} terminée : {objets} objets, {paires} paires, {trouves} rapprochements")
+        return "terminee"
+    }
+
+    on echouer(h, campagne, motif, par) {
+        require ApiAcces.a_le_role(par, "systeme") || ApiAcces.a_le_role(par, "exploitant") else Habilitation "constater l'échec : systeme ou exploitant d'ORBITE"
+        let portee = portee_de.get(campagne)
+        require portee != () else Inconnu "campagne inconnue : {campagne}"
+        require len(motif) > 0 else MotifRequis "motif de l'échec exigé"
+        require (get_status(campagne) ?? "planifiee") == "en_cours" else EtatInvalide "campagne pas en cours"
+        let reg = to_string(regime_de.get(campagne) ?? "leo")
+        fin_de.set(campagne, h)
+        cause_de.set(campagne, motif)
+        en_cours_de.delete("{portee}|{reg}")
+        transition(campagne, "en_cours", "echouee")
+        let inc = ApiOperations.declarer_incident(h, "INC-{campagne}", 2, "conjonctions", "campagne de criblage {campagne} ({portee}, {reg}) en échec : {motif}", "systeme")
+        let _ = Journal.noter(h, "conjonctions", par, "campagne {campagne} en échec ({motif}) : incident {inc}")
+        return inc
+    }
+
+    on declarer_exclus(h, campagne, objets, par) {
+        require ApiAcces.a_le_role(par, "systeme") else Habilitation "déclarer des exclus : systeme"
+        let reg = regime_de.get(campagne)
+        require reg != () else Inconnu "campagne inconnue : {campagne}"
+        require (get_status(campagne) ?? "planifiee") == "en_cours" else EtatInvalide "campagne pas en cours"
+        let deja = exclus_de.get(campagne) ?? []
+        require len(deja) + len(objets) <= MAX_OBJETS else Plein "trop d'objets exclus"
+        let precedente = derniere_de.get(to_string(reg)) ?? ""
+        let exclus_prec = if precedente == "" { [] } else { exclus_de.get(precedente) ?? [] }
+        let nouveaux_x = []
+        for o in objets {
+            let ob = Objet(o)
+            if !contains(deja, o) && !contains(nouveaux_x, o) && !ApiEphemerides.fraiche(ob, h) && !ApiObservation.suivi(ob, h) {
+                let _ = ApiObservation.demander_suivi(h, ob, 2, 86400000, "exclu du criblage {campagne}", "systeme")
+                nouveaux_x.push(o)
+                if contains(exclus_prec, o) {
+                    let proprio = ApiRef.proprietaire(ob)
+                    if to_string(proprio) != "inconnu" {
+                        let _ = ApiConformite.constater(h, proprio, "objet_non_criblable", 2, "{precedente}+{campagne}:{o}", "systeme")
+                    }
+                }
+            }
+        }
+        exclus_de.set(campagne, deja ++ nouveaux_x)
+        let nb = len(nouveaux_x)
+        let _ = Journal.noter(h, "conjonctions", par, "campagne {campagne} : {nb} objets exclus du criblage, suivi renforcé demandé")
+        return nb
+    }
+
+    on exclus(campagne) {
+        require portee_de.get(campagne) != () else Inconnu "campagne inconnue : {campagne}"
+        return exclus_de.get(campagne) ?? []
+    }
+
+    on annuler(h, campagne, motif, par) {
+        require ApiAcces.a_le_role(par, "systeme") || ApiAcces.a_le_role(par, "analyste") else Habilitation "annuler : systeme ou analyste d'ORBITE"
+        let portee = portee_de.get(campagne)
+        require portee != () else Inconnu "campagne inconnue : {campagne}"
+        require len(motif) > 0 else MotifRequis "motif de l'annulation exigé"
+        require (get_status(campagne) ?? "planifiee") == "planifiee" else EtatInvalide "seule une campagne planifiée s'annule"
+        let reg = to_string(regime_de.get(campagne) ?? "leo")
+        cause_de.set(campagne, motif)
+        en_cours_de.delete("{portee}|{reg}")
+        transition(campagne, "planifiee", "annulee")
+        let _ = Journal.noter(h, "conjonctions", par, "campagne {campagne} annulée : {motif}")
+        return "annulee"
+    }
+
+    on a_lancer(h) {
+        let res_l = []
+        for r in ["leo", "meo", "geo", "heo"] {
+            let libre = en_cours_de.get("regime|{r}") == () && en_cours_de.get("tout_contre_tout|leo") == ()
+            if libre {
+                let renf = ConjRenforcement.actif_pour(Regime(r))
+                let per = to_int(ConjCadence.periode(Regime(r), renf))
+                let der = derniere_de.get(r)
+                if der == () {
+                    res_l.push(r)
+                } else {
+                    let fin = to_int(fin_de.get(der) ?? 0)
+                    if fin + per <= to_int(h) {
+                        res_l.push(r)
+                    }
+                }
+            }
+        }
+        return res_l
+    }
+
+    on en_retard(h) {
+        let res_r = []
+        for c in en_cours_de.values {
+            let d = debut_de.get(c)
+            if d != () && to_int(d) + DUREE_MAX < to_int(h) {
+                res_r.push(c)
+            }
+        }
+        return res_r
+    }
+
+    on derniere(regime) {
+        return derniere_de.get(to_string(regime)) ?? ""
+    }
+
+    on age_crible(regime, h) {
+        let der = derniere_de.get(to_string(regime))
+        require der != () else Inconnu "régime jamais criblé : {regime}"
+        let fin = to_int(fin_de.get(der) ?? 0)
+        return Duree(max(0, to_int(h) - fin))
+    }
+
+    on fraiche(regime, h) {
+        let der = derniere_de.get(to_string(regime))
+        if der == () { return false }
+        let fin = fin_de.get(der)
+        if fin == () { return false }
+        return to_int(h) - to_int(fin) < 28800000
+    }
+
+    on etat(campagne) {
+        if portee_de.get(campagne) == () { return "inconnue" }
+        return get_status(campagne) ?? "planifiee"
+    }
+
+    // Noyau natif : deux passages sur la chaîne (comptage, décodage en tampons), puis
+    // propagation rectiligne et distance minimale pour chaque paire (a < b dans le catalogue).
+    on criblage(catalogue, horizon, seuil) [native] {
+        let len_c = str_len(catalogue)
+        let nb = 0
+        let vu = false
+        for i in range(0, len_c) {
+            let c = str_at(catalogue, i)
+            if c == 59 {
+                if vu { nb = nb + 1 }
+                vu = false
+            } else if c != 32 {
+                vu = true
+            }
+        }
+        if vu { nb = nb + 1 }
+        let ids = buffer(nb + 1)
+        let etat_f = buffer_f(nb * 6 + 6)
+        let k = 0
+        let champ = 0
+        let val = 0
+        let signe = 1
+        let chiffres = false
+        let i = 0
+        while i <= len_c {
+            let c = 59
+            if i < len_c { c = str_at(catalogue, i) }
+            if c >= 48 && c <= 57 {
+                val = val * 10 + (c - 48)
+                chiffres = true
+            } else if c == 45 {
+                signe = -1
+            } else if c == 44 || c == 59 {
+                if chiffres {
+                    let v = signe * val
+                    if champ == 0 {
+                        buf_set(ids, k, v)
+                    } else if champ <= 6 {
+                        buf_set_f(etat_f, k * 6 + champ - 1, to_float(v))
+                    }
+                    champ = champ + 1
+                }
+                val = 0
+                signe = 1
+                chiffres = false
+                if c == 59 {
+                    if champ > 0 { k = k + 1 }
+                    champ = 0
+                }
+            }
+            i = i + 1
+        }
+        let hs = to_float(horizon) / 1000.0
+        let s2 = to_float(seuil)
+        let sb = strbuf()
+        let premier = true
+        for a in range(0, k) {
+            for b in range(a + 1, k) {
+                let rx = buf_get_f(etat_f, b * 6) - buf_get_f(etat_f, a * 6)
+                let ry = buf_get_f(etat_f, b * 6 + 1) - buf_get_f(etat_f, a * 6 + 1)
+                let rz = buf_get_f(etat_f, b * 6 + 2) - buf_get_f(etat_f, a * 6 + 2)
+                let vx = buf_get_f(etat_f, b * 6 + 3) - buf_get_f(etat_f, a * 6 + 3)
+                let vy = buf_get_f(etat_f, b * 6 + 4) - buf_get_f(etat_f, a * 6 + 4)
+                let vz = buf_get_f(etat_f, b * 6 + 5) - buf_get_f(etat_f, a * 6 + 5)
+                let vv = vx * vx + vy * vy + vz * vz
+                let t = 0.0
+                if vv > 0.0 {
+                    t = 0.0 - (rx * vx + ry * vy + rz * vz) / vv
+                }
+                if t < 0.0 { t = 0.0 }
+                if t > hs { t = hs }
+                let dx = rx + vx * t
+                let dy = ry + vy * t
+                let dz = rz + vz * t
+                let d = sqrt(dx * dx + dy * dy + dz * dz)
+                if d < s2 {
+                    if !premier { sb_push_char(sb, 59) }
+                    premier = false
+                    sb_push_int(sb, buf_get(ids, a))
+                    sb_push_char(sb, 44)
+                    sb_push_int(sb, buf_get(ids, b))
+                    sb_push_char(sb, 44)
+                    sb_push_int(sb, round(t * 1000.0))
+                    sb_push_char(sb, 44)
+                    sb_push_int(sb, round(d))
+                }
+            }
+        }
+        return sb_finish(sb)
+    }
+}
+
+flesh ConjRonde {
+    on balayer(h, par) {
+        require ApiAcces.a_le_role(par, "systeme") else Habilitation "ronde : systeme seulement"
+        let nb = 0
+        // 1. campagnes en retard, puis régimes échus
+        for c in _lot(ConjCampagne.en_retard(h)) {
+            let e = try { ConjCampagne.echouer(h, c, "durée maximale dépassée", "systeme") }
+            if e.error == () { nb = nb + 1 } else { _erreur(h, c, e.kind) }
+        }
+        for reg in ConjCampagne.a_lancer(h) {
+            let p = try { ConjCampagne.planifier(h, "regime", Regime(reg), "", "cadence", "systeme") }
+            if p.error == () {
+                nb = nb + 1
+                let d = try { ConjCampagne.demarrer(h, p.value, "systeme") }
+                if d.error == () { nb = nb + 1 } else { _erreur(h, p.value, d.kind) }
+            } else {
+                _erreur(h, reg, p.kind)
+            }
+        }
+        // 2. épisodes renforcés
+        for ep in _lot(ConjRenforcement.non_clos()) {
+            let avant = ConjRenforcement.etat(ep)
+            let s = try { ConjRenforcement.surveiller(h, ep, "systeme") }
+            if s.error != () { _erreur(h, ep, s.kind) } else if s.value != avant { nb = nb + 1 }
+        }
+        // 3. exemptions
+        for ex in _lot(ConjExemption.non_closes()) {
+            let avant = ConjExemption.etat(ex)
+            let s = try { ConjExemption.avancer(h, ex, "systeme") }
+            if s.error != () { _erreur(h, ex, s.kind) } else if s.value != avant { nb = nb + 1 }
+        }
+        // 4. rapprochements à venir : réévaluation ; ceux passés en alerte sont engagés
+        for r in ConjRapprochement.a_reevaluer(h, LOT) {
+            let rr = Rapprochement(r)
+            let avant = ConjRapprochement.etat(rr)
+            let s = try { ConjRapprochement.reevaluer(h, rr, "systeme") }
+            if s.error != () {
+                _erreur(h, r, s.kind)
+            } else {
+                let apres = ConjRapprochement.etat(rr)
+                if apres != avant {
+                    nb = nb + 1
+                    if apres == "alerte" {
+                        let g = try { ConjRapprochement.engager(h, rr, "systeme") }
+                        if g.error != () { _erreur(h, r, g.kind) }
+                        let m = try { ConjRapprochement.demander_mesures(h, rr, "systeme") }
+                        if m.error != () { _erreur(h, r, m.kind) }
+                        let d = try { ConjMessage.diffuser(h, rr, "systeme") }
+                        if d.error != () { _erreur(h, r, d.kind) }
+                    }
+                }
+            }
+        }
+        // 5. rapprochements échus : analyse après TCA
+        let delai_reacq = 172800000   // ConjAnalyseTca.DELAI_REACQUISITION (48 h)
+        for r in ConjRapprochement.echus(h, LOT) {
+            let rr = Rapprochement(r)
+            let an = ConjAnalyseTca.etat(rr)
+            if an == "inconnue" {
+                let o = try { ConjAnalyseTca.ouvrir(h, rr, "systeme") }
+                if o.error == () { nb = nb + 1 } else { _erreur(h, r, o.kind) }
+            } else if an == "ouverte" {
+                let f = ConjRapprochement.fiche(rr)
+                let reacquis = ApiObservation.suivi(f.objet_a, h) && ApiObservation.suivi(f.objet_b, h)
+                if reacquis {
+                    let c = try { ConjAnalyseTca.conclure(h, rr, "intacts", "systeme") }
+                    if c.error == () { nb = nb + 1 } else { _erreur(h, r, c.kind) }
+                } else if to_int(h) > to_int(f.tca) + delai_reacq {
+                    let c = try { ConjAnalyseTca.conclure(h, rr, "objet_perdu", "systeme") }
+                    if c.error == () { nb = nb + 1 } else { _erreur(h, r, c.kind) }
+                }
+            } else if an == "sans_suite" || an == "infirmee" || an == "confirmee" {
+                let c = try { ConjRapprochement.clore_apres_tca(h, rr, "systeme") }
+                if c.error == () {
+                    nb = nb + 1
+                    let k = try { ConjMessage.clore_de(h, rr, "systeme") }
+                    if k.error == () { nb = nb + k.value } else { _erreur(h, r, k.kind) }
+                    let d = try { ConjMessage.diffuser(h, rr, "systeme") }
+                    if d.error != () { _erreur(h, r, d.kind) }
+                } else {
+                    _erreur(h, r, c.kind)
+                }
+            }
+        }
+        // 6. messages en attente d'accusé
+        for m in ConjMessage.en_attente(h, LOT) {
+            let avant = ConjMessage.etat(m)
+            let s = try { ConjMessage.relever(h, m, "systeme") }
+            if s.error != () {
+                _erreur(h, m, s.kind)
+            } else {
+                if s.value != avant { nb = nb + 1 }
+                if s.value == "sans_reponse" {
+                    let e = try { ConjMessage.escalader(h, m, "systeme") }
+                    if e.error == () { nb = nb + 1 } else { _erreur(h, m, e.kind) }
+                }
+            }
+        }
+        // 7. contestations et abonnements
+        for c in _lot(ConjContestation.non_closes()) {
+            let avant = ConjContestation.etat(c)
+            let s = try { ConjContestation.instruire(h, c, "systeme") }
+            if s.error != () { _erreur(h, c, s.kind) } else if s.value != avant { nb = nb + 1 }
+        }
+        for ab in _lot(ConjAbonnement.non_revoques()) {
+            let avant = ConjAbonnement.etat(ab)
+            let s = try { ConjAbonnement.verifier(h, ab, "systeme") }
+            if s.error != () { _erreur(h, ab, s.kind) } else if s.value != avant { nb = nb + 1 }
+        }
+        return nb
+    }
+
+    on _lot(xs: List<String>) {
+        if len(xs) > LOT { return slice(xs, 0, LOT) }
+        return xs
+    }
+
+    on _erreur(h: Horodatage, x: String, kind: String) {
+        let _ = Journal.noter(h, "conjonctions", "systeme", "ronde : {kind} sur {x}")
+    }
+}

@@ -1,0 +1,97 @@
+// donnees — PUBLICATION PUBLIQUE. ORBITE publie périodiquement le catalogue ouvert (objets de
+// diffusion effective "public", jamais sous embargo) et la liste anonymisée des rapprochements
+// clos (TCA arrondi à l'heure, régime, niveau maximal, natures des objets ; identifiants des
+// objets seulement si les deux sont publics). Une publication est préparée par un analyste,
+// relue par un second (quatre yeux), publiée sous la version de l'accord en vigueur à sa
+// préparation, et peut être retirée si elle a laissé passer une donnée non publique.
+
+// Genre de publication.
+cell type DonGenrePublication = String where value == "catalogue" || value == "rapprochements"
+
+// Publications : id = publication ("PUB-<n>", choisi par le préparateur).
+skeleton DonPublications {
+    const MAX_PUBLICATIONS = 100000
+    const MAX_ENTREES = 1000000
+    const RECUL_MS = 604800000                  // 7 jours : un rapprochement n'est publié que 7 j après son TCA
+    memory {
+        genre_de: Map<String, DonGenrePublication> [persistent] // publication → genre
+        version_de: Map<String, String> [persistent]         // publication → version de l'accord ; écrit une fois à la préparation, jamais effacé
+        prepare_par: Map<String, String> [persistent]        // publication → analyste préparateur
+        prepare_le: Map<String, Horodatage> [persistent]     // publication → préparation, ms
+        entrees: Map<String, List<String>> [persistent]      // publication → lignes publiées
+        objets_cites: Map<String, List<String>> [persistent] // publication → objets nommés (revérifiés à la publication)
+        exclus: Map<String, Int> [persistent]                // publication → nombre d'éléments écartés (non publics, sous embargo, trop récents)
+        publiee_le: Map<String, Horodatage> [persistent]     // publication → publication, ms
+        derniere: Map<String, String> [persistent]           // genre → dernière publication publiée
+        invariant genre_de.size <= MAX_PUBLICATIONS
+        invariant exclus >= 0
+        invariant (prepare_le ?? 0) <= (publiee_le ?? 9999999999999)   // publiee_le absente avant la publication
+    }
+    // Cycle de vie d'une publication (id = publication).
+    state publication {
+        initial: preparee
+        preparee -> relue                  // relire : second analyste
+        preparee -> annulee                // annuler
+        relue -> publiee                   // publier : version de l'accord encore en vigueur
+        relue -> annulee                   // annuler
+        publiee -> retiree                 // retirer : donnée non publique publiée par erreur
+    }
+    face {
+        // Prépare une publication en lisant elle-même ses sources (aucune liste fournie à la main) :
+        // - genre "catalogue" : parcourt ApiRef.catalogue(regime, apres, 1000) page par page
+        //   (regime "" : tous) et ne retient que les objets de diffusion effective "public"
+        //   (donc hors embargo) ; `debut` et `fin` ignorés ;
+        // - genre "rapprochements" : ApiConjonctions.clos_entre(debut, fin) (clos : resolu, passe,
+        //   collision), restreint au régime et aux TCA ≤ h − RECUL_MS ; nomme les objets seulement
+        //   si les deux sont "public", sinon nature et régime seuls.
+        // Fixe la version de l'accord en vigueur (seul écrivain de version_de). Renvoie le nombre
+        // d'éléments retenus (les autres comptent dans `exclus`). Rôle : "analyste" d'ORBITE.
+        // Refus : Existe, Incoherent (rapprochements avec fin ≤ debut), Ferme (aucune version de
+        // l'accord en vigueur), Plein, Habilitation.
+        // Refus supplémentaire : Plein (plus de MAX_ENTREES lignes retenues : restreindre le régime).
+        signal preparer(h: Horodatage, publication: String, g: DonGenrePublication, regime: String, debut: Horodatage, fin: Horodatage, par: String) -> Int
+            writes genre_de, version_de, prepare_par, prepare_le, entrees, objets_cites, exclus
+            calls ApiAcces.a_le_role, DonAccords.en_vigueur, DonControle.diffusion_effective, ApiRef.catalogue, ApiConjonctions.clos_entre, ApiConjonctions.tca, ApiConjonctions.objets, ApiConjonctions.niveau, ApiRef.nature, ApiRef.regime, ApiRef.etat_immatriculation, Journal.noter
+        // Relecture par un second analyste ou un superviseur. Renvoie "relue". Rôle : "analyste"
+        // ou "superviseur" d'ORBITE, distinct du préparateur. Refus : Inconnu, EtatInvalide,
+        // Habilitation, QuatreYeux (par = préparateur).
+        signal relire(h: Horodatage, publication: String, par: String) -> String
+            reads prepare_par
+            moves preparee -> relue
+            calls ApiAcces.a_le_role, Journal.noter
+        // Publie : revérifie que chaque objet cité est encore "public" (un embargo a pu tomber
+        // entre-temps). Renvoie "publiee". Rôle : "analyste" ou "systeme".
+        // Refus : Inconnu, EtatInvalide, Perime (version de l'accord remplacée : re-préparer),
+        // Confidentiel (un objet cité n'est plus public), Habilitation.
+        signal publier(h: Horodatage, publication: String, par: String) -> String
+            writes publiee_le, derniere
+            reads version_de, objets_cites, genre_de
+            moves relue -> publiee when DonAccords.en_vigueur via version_de
+            calls ApiAcces.a_le_role, DonAccords.en_vigueur, DonControle.diffusion_effective, Journal.noter
+        // Annule une publication non publiée. Renvoie "annulee". Rôle : "analyste" ou "superviseur".
+        // Refus : Inconnu, EtatInvalide, MotifRequis, Habilitation.
+        signal annuler(h: Horodatage, publication: String, motif: String, par: String) -> String
+            reads genre_de
+            moves preparee -> annulee, relue -> annulee
+            calls ApiAcces.a_le_role, Journal.noter
+        // Retire une publication qui a exposé une donnée non publique ; déclare un incident de
+        // gravité 2 sur "donnees" (ApiOperations.declarer_incident) et notifie le propriétaire
+        // de l'objet en cause. Renvoie "retiree". Rôle : "conformite" d'ORBITE ; valideur
+        // "direction" distinct. Refus : Inconnu, EtatInvalide, MotifRequis, Habilitation, QuatreYeux.
+        signal retirer(h: Horodatage, publication: String, objet: Objet, motif: String, par: String, valideur: String) -> String
+            writes derniere
+            reads genre_de
+            moves publiee -> retiree
+            calls ApiAcces.a_le_role, ApiAcces.quatre_yeux, ApiOperations.declarer_incident, ApiRef.proprietaire, ApiPasserelle.notifier, Journal.noter
+        // Lignes d'une publication publiée (lecture publique, sans habilitation).
+        // Refus : Inconnu, EtatInvalide (non publiée ou retirée).
+        signal contenu(publication: String) -> List<String>
+            reads entrees, publication
+        // Dernière publication publiée du genre ; "" si aucune.
+        signal derniere_de(g: DonGenrePublication) -> String
+            reads derniere
+        // État de la publication ; "inconnue" si jamais préparée.
+        signal etat(publication: String) -> String
+            reads publication, genre_de
+    }
+}

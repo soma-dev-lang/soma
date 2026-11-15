@@ -1,0 +1,243 @@
+// Doublures PROVISOIRES des façades que traversent les corps de responsabilite — pour
+// test_responsabilite seulement (l'intégrateur assemble les vrais corps dans prod.cell).
+// Sans état : tout se lit dans les identifiants. Instant de référence H0 = 1 000 000 000 000 ms.
+// - Personnes : "conf…" conformite, "dir…" direction, "sup…" superviseur, "analyste…",
+//   "expl…" exploitant d'ORBITE ; "aut-<E>" autorité et "pf-<E>" point focal de l'État <E>
+//   (Org "ORG-ETAT-<E>") ; "adm-<X>" administrateur et "cdm-<X>" chef de mission de "ORG-<X>" ;
+//   "intrus…" n'a aucun rôle ; "systeme" a le rôle "systeme". quatre_yeux(a, b) : a ≠ b, deux rôles.
+// - États : "ZZZ" non participant. Organisations : "ORG-…" existent ; "ORG-SECRET" ne reçoit
+//   aucune donnée ; statut opérateur "candidat" pour "ORG-CAND…", "inconnu" pour "ORG-INCONNU…",
+//   "actif" sinon.
+// - Évènement "EV-<s>" (sauf "EV-INCONNU…") : instant H0, objets ["OBJ-A-<s>", "OBJ-B-<s>"].
+// - Objets : "OBJ-A-…" appartient à ORG-ALPHA (État de lancement ALD) et a un plan "PL-<objet>" ;
+//   "OBJ-B-…" à ORG-BETA (État de lancement BRV) ; "OBJ-INCONNU…" n'est pas catalogué ;
+//   "PERIME" : éphéméride non fraîche ; "RETARD" : retrait en retard ; "MANO" : manœuvre non annoncée.
+// - Rapprochement "CJ-<s>" : objets ["OBJ-A-<s>", "OBJ-B-<s>"], TCA H0 − 1 000 (passé) ; il est le
+//   seul de l'historique de ses deux objets. "CJ-INCONNU…" inconnu ; "ALERTE" dans l'id : en alerte,
+//   sinon "passe". Coordination arrêtée (désigné OBJ-A-<s>, décision "D-<r>" à H0 − 5 000) sauf
+//   "NONARR" dans l'id ; "PLAN" : plan "PL-<r>" (en anomalie si "ANOM") ; "SILENCE" : échelon 3.
+// - Météo : Kp refusé (Perime) — la pièce porte "absent=Perime".
+
+flesh ApiAcces {
+    on a_le_role(personne, r) {
+        return _role(personne) == to_string(r) && _role(personne) != "aucun"
+    }
+    on agit_pour(personne, org) {
+        let e = _org(personne)
+        return e != "" && e == to_string(org)
+    }
+    on quatre_yeux(demandeur, valideur) {
+        return demandeur != valideur && _role(demandeur) != "aucun" && _role(valideur) != "aucun"
+    }
+    on _role(p: String) {
+        if p == "systeme" { return "systeme" }
+        if starts_with(p, "intrus") { return "aucun" }
+        if starts_with(p, "conf") { return "conformite" }
+        if starts_with(p, "dir") { return "direction" }
+        if starts_with(p, "sup") { return "superviseur" }
+        if starts_with(p, "analyste") { return "analyste" }
+        if starts_with(p, "expl") { return "exploitant" }
+        if starts_with(p, "aut-") { return "autorite" }
+        if starts_with(p, "pf-") { return "point_focal" }
+        if starts_with(p, "adm-") { return "administrateur_operateur" }
+        if starts_with(p, "cdm-") { return "chef_de_mission" }
+        return "aucun"
+    }
+    on _org(p: String) {
+        let ro = _role(p)
+        if ro == "conformite" || ro == "direction" || ro == "superviseur" || ro == "analyste" || ro == "exploitant" || ro == "systeme" { return "ORG-ORBITE" }
+        if ro == "autorite" { return "ORG-ETAT-" + substring(p, 4, len(p)) }
+        if ro == "point_focal" { return "ORG-ETAT-" + substring(p, 3, len(p)) }
+        if ro == "administrateur_operateur" || ro == "chef_de_mission" { return "ORG-" + substring(p, 4, len(p)) }
+        return ""
+    }
+}
+
+flesh ApiRef {
+    on orbite() { return Org("ORG-ORBITE") }
+    on etat_participant(etat) { return etat != "ZZZ" }
+    on org_de_etat(etat) { return Org("ORG-ETAT-{etat}") }
+    on organisation_existe(org) { return starts_with(to_string(org), "ORG-") }
+    on etat_de(org) {
+        let o = to_string(org)
+        if contains(o, "BETA") { return Etat("BRV") }
+        return Etat("ALD")
+    }
+    on etat_objet(objet) {
+        require !starts_with(to_string(objet), "OBJ-INCONNU") else Inconnu "objet {objet} non catalogué"
+        return "en_orbite"
+    }
+    on proprietaire(objet) {
+        let o = to_string(objet)
+        require !starts_with(o, "OBJ-INCONNU") else Inconnu "objet {o} non catalogué"
+        if starts_with(o, "OBJ-B") { return Org("ORG-BETA") }
+        return Org("ORG-ALPHA")
+    }
+    on valeur_au(objet, champ, h) {
+        let o = to_string(objet)
+        require !starts_with(o, "OBJ-INCONNU") else Inconnu "objet {o} non catalogué"
+        return "{champ}-de-{o}"
+    }
+}
+
+flesh ApiEvenements {
+    on existe(evenement) { return starts_with(evenement, "EV-") && !starts_with(evenement, "EV-INCONNU") }
+    on objets(evenement) {
+        require starts_with(evenement, "EV-") else Inconnu "évènement {evenement} inconnu"
+        let s = substring(evenement, 3, len(evenement))
+        return ["OBJ-A-{s}", "OBJ-B-{s}"]
+    }
+    on genre(evenement) { return "collision" }
+    on instant(evenement) { return Horodatage(1000000000000) }
+    on en_anomalie(objet) { return false }
+}
+
+flesh ApiConjonctions {
+    on etat(r) {
+        let s = to_string(r)
+        if starts_with(s, "CJ-INCONNU") { return "inconnu" }
+        if contains(s, "ALERTE") { return "alerte" }
+        return "passe"
+    }
+    on niveau(r) {
+        require !starts_with(to_string(r), "CJ-INCONNU") else Inconnu "rapprochement inconnu"
+        return Niveau(3)
+    }
+    on objets(r) {
+        let s = to_string(r)
+        require !starts_with(s, "CJ-INCONNU") else Inconnu "rapprochement inconnu"
+        let suf = substring(s, 3, len(s))
+        return ["OBJ-A-{suf}", "OBJ-B-{suf}"]
+    }
+    on tca(r) {
+        require !starts_with(to_string(r), "CJ-INCONNU") else Inconnu "rapprochement inconnu"
+        return Horodatage(999999999000)
+    }
+    on pc(r) { return Probabilite(150000) }
+    on distance(r) { return Distance(42) }
+    on mis_a_jour(r) { return Horodatage(999999998000) }
+    on historique(objet, depuis) {
+        let o = to_string(objet)
+        if starts_with(o, "OBJ-A-") || starts_with(o, "OBJ-B-") { return ["CJ-" + substring(o, 6, len(o))] }
+        return []
+    }
+}
+
+flesh ApiManoeuvres {
+    on plans_de(objet, depuis) {
+        if starts_with(to_string(objet), "OBJ-A-") { return ["PL-{objet}"] }
+        return []
+    }
+    on plan_de(r) {
+        if contains(to_string(r), "PLAN") { return "PL-{r}" }
+        return ""
+    }
+    on etat(plan) {
+        if contains(plan, "ANOM") { return "anomalie" }
+        return "approuve"
+    }
+    on objet_de(plan) { return Objet(substring(plan, 3, len(plan))) }
+    on motif_de(plan) { return "evitement" }
+}
+
+flesh ApiCoordination {
+    on etat(r) {
+        if contains(to_string(r), "NONARR") { return "ouverte" }
+        return "arretee"
+    }
+    on arretee(r) { return !contains(to_string(r), "NONARR") }
+    on designe(r, par) {
+        let s = to_string(r)
+        if contains(s, "NONARR") { return Objet("") }
+        return Objet("OBJ-A-" + substring(s, 3, len(s)))
+    }
+    on decision(r) {
+        let s = to_string(r)
+        if contains(s, "NONARR") { return "" }
+        let a = "OBJ-A-" + substring(s, 3, len(s))
+        return "D-{s}|{a}|analyste1|sup1|999999995000|accord"
+    }
+    on echeance(r) { return Horodatage(999999996000) }
+}
+
+flesh ApiPriorites {
+    on decision_de(r) { return "PR-{r}|OBJ-A|v3|regle-propulsion|999999994000" }
+}
+
+flesh ApiEscalade {
+    on echelon(r, op) {
+        if contains(to_string(r), "SILENCE") { return 3 }
+        return 0
+    }
+}
+
+flesh ApiEphemerides {
+    on fondement(objet, h) { return "DEP-{objet}" }
+    on empreinte(depot) { return "sha256:" + sha256(depot) }
+    on avec_manoeuvres(depot) { return true }
+    on depot_valide(depot) { return true }
+    on qualite(objet) { return Qualite("haute") }
+    on fraiche(objet, h) { return !contains(to_string(objet), "PERIME") }
+}
+
+flesh ApiMeteo {
+    on tempete(h) { return false }
+    on kp(h) {
+        fail("Perime", "aucune mesure Kp depuis 3 h")
+        return 0
+    }
+}
+
+flesh ApiLancements {
+    on etats_de_lancement(objet) {
+        if starts_with(to_string(objet), "OBJ-A") { return ["ALD"] }
+        return ["BRV"]
+    }
+}
+
+flesh ApiFinDeVie {
+    on plan_conforme(objet) { return true }
+    on en_retard(objet, h) { return contains(to_string(objet), "RETARD") }
+}
+
+flesh ApiObservation {
+    on suivi(objet, h) { return true }
+    on ecart_declare(objet) { return Distance(120) }
+    on manoeuvre_detectee(objet, depuis) { return contains(to_string(objet), "MANO") }
+}
+
+flesh ApiOperateurs {
+    on statut(op) {
+        let o = to_string(op)
+        if starts_with(o, "ORG-CAND") { return "candidat" }
+        if starts_with(o, "ORG-INCONNU") { return "inconnu" }
+        return "actif"
+    }
+    on joignable(op, h) { return true }
+}
+
+flesh ApiOperations {
+    on declarer_incident(h, incident, gravite, sous_systeme, description, par) { return incident }
+}
+
+flesh ApiConformite {
+    on constater(h, op, nature, gravite, reference, par) {
+        require reference != "" else MotifRequis "manquement sans référence"
+        return "MQ-{reference}"
+    }
+}
+
+flesh ApiPasserelle {
+    on notifier(h, destinataire, r, sujet, texte, urgence) {
+        require starts_with(to_string(destinataire), "ORG-") else Inconnu "destinataire inconnu"
+        return "MSG-{sujet}"
+    }
+}
+
+flesh ApiDonnees {
+    on peut_recevoir(org, objet, r, h) { return to_string(org) != "ORG-SECRET" }
+    on tracer(h, org, objet, r, nature) {
+        require to_string(org) != "ORG-SECRET" else Confidentiel "destinataire non autorisé"
+        return 1
+    }
+}

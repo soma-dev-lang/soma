@@ -1,0 +1,10 @@
+use app
+use commun::journal_chair
+use commun::horloge_chair
+use sys::lancements::chair::api
+use sys::lancements::chair::lancement
+use sys::lancements::chair::cola
+use sys::lancements::chair::pieces
+use sys::lancements::chair::echecs
+use sys::lancements::chair::veille
+use sys::lancements::chair::zones

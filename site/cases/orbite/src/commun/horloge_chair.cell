@@ -1,0 +1,56 @@
+// Corps de l'horloge d'ORBITE. Ordre des balayages : référentiel et habilitations d'abord (ils
+// fondent les autres), puis données d'entrée (météo, observation, éphémérides), puis criblage et
+// décision (conjonctions, priorités, coordination, manœuvres, escalade), puis le reste.
+flesh Horloge {
+    on battre() {
+        let h = now_ms()
+        let avant = dernier.get("h") ?? 0
+        if h < avant { return 0 }
+        dernier.set("h", h)
+        let total = 0
+        let r_ApiRef = try { ApiRef.balayer(h, "systeme") }
+        if r_ApiRef.error != () { Journal.noter(h, "operations", "systeme", "horloge : balayage ApiRef en erreur — {r_ApiRef.error}") } else { total = total + r_ApiRef.value }
+        let r_ApiAcces = try { ApiAcces.balayer(h, "systeme") }
+        if r_ApiAcces.error != () { Journal.noter(h, "operations", "systeme", "horloge : balayage ApiAcces en erreur — {r_ApiAcces.error}") } else { total = total + r_ApiAcces.value }
+        let r_ApiOperateurs = try { ApiOperateurs.balayer(h, "systeme") }
+        if r_ApiOperateurs.error != () { Journal.noter(h, "operations", "systeme", "horloge : balayage ApiOperateurs en erreur — {r_ApiOperateurs.error}") } else { total = total + r_ApiOperateurs.value }
+        let r_ApiMeteo = try { ApiMeteo.balayer(h, "systeme") }
+        if r_ApiMeteo.error != () { Journal.noter(h, "operations", "systeme", "horloge : balayage ApiMeteo en erreur — {r_ApiMeteo.error}") } else { total = total + r_ApiMeteo.value }
+        let r_ApiObservation = try { ApiObservation.balayer(h, "systeme") }
+        if r_ApiObservation.error != () { Journal.noter(h, "operations", "systeme", "horloge : balayage ApiObservation en erreur — {r_ApiObservation.error}") } else { total = total + r_ApiObservation.value }
+        let r_ApiEphemerides = try { ApiEphemerides.balayer(h, "systeme") }
+        if r_ApiEphemerides.error != () { Journal.noter(h, "operations", "systeme", "horloge : balayage ApiEphemerides en erreur — {r_ApiEphemerides.error}") } else { total = total + r_ApiEphemerides.value }
+        let r_ApiConjonctions = try { ApiConjonctions.balayer(h, "systeme") }
+        if r_ApiConjonctions.error != () { Journal.noter(h, "operations", "systeme", "horloge : balayage ApiConjonctions en erreur — {r_ApiConjonctions.error}") } else { total = total + r_ApiConjonctions.value }
+        let r_ApiPriorites = try { ApiPriorites.balayer(h, "systeme") }
+        if r_ApiPriorites.error != () { Journal.noter(h, "operations", "systeme", "horloge : balayage ApiPriorites en erreur — {r_ApiPriorites.error}") } else { total = total + r_ApiPriorites.value }
+        let r_ApiCoordination = try { ApiCoordination.balayer(h, "systeme") }
+        if r_ApiCoordination.error != () { Journal.noter(h, "operations", "systeme", "horloge : balayage ApiCoordination en erreur — {r_ApiCoordination.error}") } else { total = total + r_ApiCoordination.value }
+        let r_ApiManoeuvres = try { ApiManoeuvres.balayer(h, "systeme") }
+        if r_ApiManoeuvres.error != () { Journal.noter(h, "operations", "systeme", "horloge : balayage ApiManoeuvres en erreur — {r_ApiManoeuvres.error}") } else { total = total + r_ApiManoeuvres.value }
+        let r_ApiEscalade = try { ApiEscalade.balayer(h, "systeme") }
+        if r_ApiEscalade.error != () { Journal.noter(h, "operations", "systeme", "horloge : balayage ApiEscalade en erreur — {r_ApiEscalade.error}") } else { total = total + r_ApiEscalade.value }
+        let r_ApiReentrees = try { ApiReentrees.balayer(h, "systeme") }
+        if r_ApiReentrees.error != () { Journal.noter(h, "operations", "systeme", "horloge : balayage ApiReentrees en erreur — {r_ApiReentrees.error}") } else { total = total + r_ApiReentrees.value }
+        let r_ApiLancements = try { ApiLancements.balayer(h, "systeme") }
+        if r_ApiLancements.error != () { Journal.noter(h, "operations", "systeme", "horloge : balayage ApiLancements en erreur — {r_ApiLancements.error}") } else { total = total + r_ApiLancements.value }
+        let r_ApiFinDeVie = try { ApiFinDeVie.balayer(h, "systeme") }
+        if r_ApiFinDeVie.error != () { Journal.noter(h, "operations", "systeme", "horloge : balayage ApiFinDeVie en erreur — {r_ApiFinDeVie.error}") } else { total = total + r_ApiFinDeVie.value }
+        let r_ApiEvenements = try { ApiEvenements.balayer(h, "systeme") }
+        if r_ApiEvenements.error != () { Journal.noter(h, "operations", "systeme", "horloge : balayage ApiEvenements en erreur — {r_ApiEvenements.error}") } else { total = total + r_ApiEvenements.value }
+        let r_ApiResponsabilite = try { ApiResponsabilite.balayer(h, "systeme") }
+        if r_ApiResponsabilite.error != () { Journal.noter(h, "operations", "systeme", "horloge : balayage ApiResponsabilite en erreur — {r_ApiResponsabilite.error}") } else { total = total + r_ApiResponsabilite.value }
+        let r_ApiDonnees = try { ApiDonnees.balayer(h, "systeme") }
+        if r_ApiDonnees.error != () { Journal.noter(h, "operations", "systeme", "horloge : balayage ApiDonnees en erreur — {r_ApiDonnees.error}") } else { total = total + r_ApiDonnees.value }
+        let r_ApiConformite = try { ApiConformite.balayer(h, "systeme") }
+        if r_ApiConformite.error != () { Journal.noter(h, "operations", "systeme", "horloge : balayage ApiConformite en erreur — {r_ApiConformite.error}") } else { total = total + r_ApiConformite.value }
+        let r_ApiPasserelle = try { ApiPasserelle.balayer(h, "systeme") }
+        if r_ApiPasserelle.error != () { Journal.noter(h, "operations", "systeme", "horloge : balayage ApiPasserelle en erreur — {r_ApiPasserelle.error}") } else { total = total + r_ApiPasserelle.value }
+        let r_ApiOperations = try { ApiOperations.balayer(h, "systeme") }
+        if r_ApiOperations.error != () { Journal.noter(h, "operations", "systeme", "horloge : balayage ApiOperations en erreur — {r_ApiOperations.error}") } else { total = total + r_ApiOperations.value }
+        return total
+    }
+    on dernier_battement() {
+        return Horodatage(dernier.get("h") ?? 0)
+    }
+}

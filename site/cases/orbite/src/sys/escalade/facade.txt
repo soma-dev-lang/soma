@@ -1,0 +1,6 @@
+ApiEscalade.escalader: calls EscDossiers.dossier_actif, EscDossiers.ouvrir, EscDossiers.monter ; moves EscDossiers.escalade: nouveau -> e1, nouveau -> e2, nouveau -> e3, nouveau -> e4, e1 -> e2, e2 -> e3, e3 -> e4
+ApiEscalade.accuser: calls EscDossiers.accuser ; moves EscDossiers.escalade: e1 -> accusee, e2 -> accusee, e3 -> accusee, e4 -> accusee, e1 -> close, e2 -> close, e3 -> close, e4 -> close
+ApiEscalade.echelon: calls EscDossiers.echelon
+ApiEscalade.graves: calls EscStatistiques.graves
+ApiEscalade.reprise: calls EscDossiers.reprise_sur
+ApiEscalade.balayer: calls EscBalayage.balayer

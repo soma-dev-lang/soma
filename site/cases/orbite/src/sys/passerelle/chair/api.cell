@@ -1,0 +1,23 @@
+// PASSERELLE — corps de la façade ApiPasserelle : délégations (l'aiguillage vit dans les cells internes).
+
+flesh ApiPasserelle {
+    on request(method, path, body, headers) {
+        let rep = PasEntree.traiter(method, path, body, headers)
+        let statut = match rep { PasReponse { statut, corps } -> to_int(statut) }
+        let corps = match rep { PasReponse { statut, corps } -> corps }
+        let d = try { from_json(corps) }
+        return response(statut, if d.error == () { d.value } else { map("brut", corps) })
+    }
+    on notifier(h, destinataire, r, sujet, texte, urgence) {
+        return PasFormats.notifier(h, destinataire, r, sujet, texte, urgence)
+    }
+    on acquitte(message) {
+        return PasMessages.acquitte(message)
+    }
+    on echoue(message) {
+        return PasMessages.echoue(message)
+    }
+    on balayer(h, par) {
+        return PasRondes.balayer(h, par)
+    }
+}

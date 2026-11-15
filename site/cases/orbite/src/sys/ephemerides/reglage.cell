@@ -1,0 +1,125 @@
+// ephemerides — RÉGLAGE : les seuils qui jugent un dépôt et sa fraîcheur, versionnés.
+// Une version de réglage (id "EPR-<n>") fixe l'âge maximal par régime, le diviseur de
+// tempête, l'horizon minimal, la tolérance d'écart à l'orbite observée par qualité déclarée,
+// le quota de dépôts par opérateur et par jour, et la durée de conservation avant purge.
+// Une seule version est en vigueur à la fois ; chaque dépôt garde la version qui l'a jugé
+// (EphDepot.reglage_de) : une décision fondée sur un dépôt est rejouable avec ses seuils.
+// Valeurs de départ (version amorcée) : leo 8 h, meo 24 h, geo et heo 48 h ; tempête ÷ 2 ;
+// horizon ≥ 72 h ; écart max 1 km (haute), 5 km (moyenne), 20 km (faible) ; 48 dépôts/jour ;
+// conservation 10 ans.
+
+skeleton EphReglage {
+    const MAX_VERSIONS = 1000
+    // 10 jours : aucun âge maximal ne peut dépasser cette borne (ms).
+    const AGE_PLAFOND = 864000000
+    // 30 jours : horizon minimal le plus exigeant admissible (ms).
+    const HORIZON_PLAFOND = 2592000000
+
+    memory {
+        age_leo: Map<String, Duree> [persistent]          // version → âge maximal d'un dépôt validé en LEO, ms
+        age_meo: Map<String, Duree> [persistent]          // version → idem MEO, ms
+        age_geo: Map<String, Duree> [persistent]          // version → idem GEO, ms
+        age_heo: Map<String, Duree> [persistent]          // version → idem HEO, ms
+        diviseur_tempete: Map<String, Int> [persistent]   // version → diviseur des âges pendant une tempête (ApiMeteo.tempete)
+        horizon_min: Map<String, Duree> [persistent]      // version → horizon minimal d'un dépôt, ms
+        ecart_haute: Map<String, Distance> [persistent]   // version → écart toléré à l'orbite observée, qualité "haute", m
+        ecart_moyenne: Map<String, Distance> [persistent] // version → idem "moyenne", m
+        ecart_faible: Map<String, Distance> [persistent]  // version → idem "faible", m
+        quota_jour: Map<String, Int> [persistent]         // version → dépôts par opérateur et par jour (hors "systeme", hors urgence)
+        conservation: Map<String, Duree> [persistent]     // version → durée minimale de conservation d'un dépôt clos avant purge, ms
+        redige_par: Map<String, String> [persistent]      // version → rédacteur
+        valide_par: Map<String, String> [persistent]      // version → "par|valideur" de la mise en vigueur
+        en_vigueur_le: Map<String, Horodatage> [persistent]   // version → instant de mise en vigueur, ms
+        courante: Map<String, String> [persistent]        // "courante" → version en vigueur ; une seule clé
+        invariant courante.size <= 1
+        invariant age_leo.size <= MAX_VERSIONS
+        invariant age_leo > 0 && age_leo <= AGE_PLAFOND
+        invariant age_meo > 0 && age_meo <= AGE_PLAFOND
+        invariant age_geo > 0 && age_geo <= AGE_PLAFOND
+        invariant age_heo > 0 && age_heo <= AGE_PLAFOND
+        invariant diviseur_tempete >= 1 && diviseur_tempete <= 10
+        invariant horizon_min > 0 && horizon_min <= HORIZON_PLAFOND
+        invariant ecart_haute > 0
+        invariant quota_jour >= 1 && quota_jour <= 10000
+        invariant conservation > 0
+        // Une tolérance ne se resserre pas quand la qualité déclarée baisse.
+        invariant (ecart_haute ?? 0) <= (ecart_moyenne ?? 0)
+        invariant (ecart_moyenne ?? 0) <= (ecart_faible ?? 0)
+    }
+
+    // Cycle d'une version de réglage (id = version).
+    state vie {
+        initial: brouillon
+        brouillon -> en_vigueur      // mettre_en_vigueur (quatre yeux), ou amorcer
+        brouillon -> abandonne       // abandonner
+        en_vigueur -> remplace       // mettre_en_vigueur d'une autre version
+    }
+
+    face {
+        // Crée et met en vigueur la version de départ "EPR-0" aux valeurs de l'en-tête, si
+        // aucune version n'existe : sans elle aucun dépôt ne peut être validé. Par "exploitant"
+        // d'ORBITE (portée ORBITE) ; route d'administration. Renvoie "EPR-0".
+        // Refus : Existe (une version existe déjà), Habilitation.
+        signal amorcer(h: Horodatage, par: String) -> String
+            writes age_leo, age_meo, age_geo, age_heo, diviseur_tempete, horizon_min, ecart_haute, ecart_moyenne, ecart_faible, quota_jour, conservation, redige_par, valide_par, en_vigueur_le, courante
+            moves brouillon -> en_vigueur
+            calls ApiAcces.a_le_role, Journal.noter
+
+        // Rédige (ou corrige, tant qu'elle est en brouillon) une version de réglage. Âges et
+        // horizon en ms, écarts en m, quota en dépôts/jour, conservation en ms. Par "superviseur"
+        // d'ORBITE. Renvoie la version. Refus : Existe (version déjà en vigueur, remplacée ou
+        // abandonnée), HorsBornes (âge > AGE_PLAFOND, horizon > HORIZON_PLAFOND, écarts non
+        // croissants de haute à faible), Plein (MAX_VERSIONS), Habilitation.
+        signal rediger(h: Horodatage, version: String, leo: Duree, meo: Duree, geo: Duree, heo: Duree, diviseur: Int, horizon: Duree, e_haute: Distance, e_moyenne: Distance, e_faible: Distance, quota: Int, conserver: Duree, par: String) -> String
+            requires diviseur >= 1 && diviseur <= 10
+            requires quota >= 1 && quota <= 10000
+            writes age_leo, age_meo, age_geo, age_heo, diviseur_tempete, horizon_min, ecart_haute, ecart_moyenne, ecart_faible, quota_jour, conservation, redige_par
+            reads vie
+            calls ApiAcces.a_le_role, Journal.noter
+
+        // Met en vigueur une version rédigée ; la précédente passe "remplace". Par "superviseur"
+        // d'ORBITE, valideur "direction" (ApiAcces.quatre_yeux) distinct du rédacteur. Un
+        // changement de seuils est un changement de production : refusé pendant un gel ou un
+        // rapprochement de niveau 3 imminent (ApiOperations.changement_autorise faux → Delai).
+        // Renvoie "en_vigueur". Refus : Inconnu, EtatInvalide (pas en brouillon), Delai,
+        // Habilitation, QuatreYeux.
+        signal mettre_en_vigueur(h: Horodatage, version: String, par: String, valideur: String) -> String
+            writes valide_par, en_vigueur_le, courante
+            reads redige_par
+            moves brouillon -> en_vigueur, en_vigueur -> remplace
+            calls ApiAcces.a_le_role, ApiAcces.quatre_yeux, ApiOperations.changement_autorise, Journal.noter
+
+        // Abandonne une version en brouillon. Par "superviseur" d'ORBITE. Renvoie "abandonne".
+        // Refus : Inconnu, EtatInvalide, MotifRequis, Habilitation.
+        signal abandonner(h: Horodatage, version: String, motif: String, par: String) -> String
+            reads redige_par
+            moves brouillon -> abandonne
+            calls ApiAcces.a_le_role, Journal.noter
+
+        // Version en vigueur ; "" si aucune (avant amorcer : tout dépôt est alors refusé Ferme).
+        signal courante_version() -> String
+            reads courante
+
+        // Âge maximal (ms) d'un dépôt validé dans le régime selon la version en vigueur, divisé
+        // par le diviseur de tempête si `tempete`. Refus : Ferme (aucune version en vigueur).
+        signal age_max(regime: Regime, tempete: Bool) -> Duree
+            reads courante, age_leo, age_meo, age_geo, age_heo, diviseur_tempete
+
+        // Horizon minimal (ms) en vigueur. Refus : Ferme.
+        signal horizon_minimal() -> Duree
+            reads courante, horizon_min
+
+        // Écart (m) toléré entre un dépôt de qualité déclarée `q` et l'orbite observée.
+        // Refus : Ferme.
+        signal ecart_max(q: Qualite) -> Distance
+            reads courante, ecart_haute, ecart_moyenne, ecart_faible
+
+        // Quota quotidien de dépôts par opérateur. Refus : Ferme.
+        signal quota() -> Int
+            reads courante, quota_jour
+
+        // Durée minimale de conservation (ms) d'un dépôt clos. Refus : Ferme.
+        signal duree_conservation() -> Duree
+            reads courante, conservation
+    }
+}

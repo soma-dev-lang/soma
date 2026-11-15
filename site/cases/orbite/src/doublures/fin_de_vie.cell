@@ -1,0 +1,282 @@
+// Doublures PROVISOIRES des façades appelées par les corps de fin_de_vie (tests de fin_de_vie
+// seulement). Pures, sans mémoire : leur comportement se lit sur les identifiants.
+// - Personne "role[#n]@ORG-X" : a le rôle `role` pour l'employeur ORG-X ; un rôle d'ORBITE ne
+//   vaut que si ORG-X = ORG-ORBITE ; "intrus…" n'a aucun rôle ; "systeme" a le rôle "systeme".
+//   quatre_yeux(a, b) : faux si a == b ; vrai si b est superviseur / conformite / direction
+//   d'ORBITE, ou chef_de_mission du même employeur que a.
+// - Objet "OBJ-…" : "OBJ-INCONNU…" n'est pas catalogué ; état au catalogue selon le premier
+//   marqueur contenu : "-RENTRE" rentre, "-FRAG" fragmente, "-RETIRE" retire, "-HS" hors_service,
+//   "-CATAL" catalogue, "-CIM" cimetiere, sinon en_service. Propriétaire : "-SERV" ORG-SERV,
+//   "-SUSP" ORG-SUSP, "-ORPH" "inconnu", sinon ORG-ALPHA. État d'immatriculation "ALD"
+//   (autorité "ORG-ETAT-ALD"). Régime : "-GEO" geo, "-MEO" meo, sinon leo. "-HAB" habité,
+//   "-RISQ" rentrée à risque, "-ANOM" en anomalie, "-PERDU" sans orbite observée récente,
+//   "-BOUGE" manœuvre détectée, "-BAS" périgée observé 400 km. Propulsion "aucune" pour "-HS"
+//   et "-MORT", sinon "impulsionnelle".
+// - Opérateurs actifs : ORG-ALPHA et ORG-BETA (tout id sauf "ORG-SUSP…" est actif) ;
+//   objets de ORG-ALPHA : OBJ-C1, OBJ-C2-HS, OBJ-C3.
+// - Plan de manœuvre "MAN:<etat>:<objet>:<motif>" ; tout autre id est inconnu.
+// - Une organisation "ORG-SECRET…" ne peut recevoir aucune donnée.
+
+flesh ApiAcces {
+    on a_le_role(personne, r) {
+        if personne == "systeme" {
+            return r == "systeme"
+        }
+        if starts_with(personne, "intrus") {
+            return false
+        }
+        let parts = split(personne, "@")
+        if len(parts) != 2 {
+            return false
+        }
+        let role = split(parts[0], "#")[0]
+        if role != to_string(r) || role == "systeme" || role == "aucun" {
+            return false
+        }
+        if contains(["analyste", "superviseur", "exploitant", "conformite", "direction", "auditeur"], role) {
+            return parts[1] == "ORG-ORBITE"
+        }
+        return true
+    }
+    on agit_pour(personne, org) {
+        if starts_with(personne, "intrus") {
+            return false
+        }
+        let parts = split(personne, "@")
+        if len(parts) != 2 {
+            return false
+        }
+        return parts[1] == to_string(org)
+    }
+    on quatre_yeux(demandeur, valideur) {
+        if demandeur == valideur || starts_with(valideur, "intrus") {
+            return false
+        }
+        let pv = split(valideur, "@")
+        let pd = split(demandeur, "@")
+        if len(pv) != 2 || len(pd) != 2 {
+            return false
+        }
+        let rv = split(pv[0], "#")[0]
+        if contains(["superviseur", "conformite", "direction"], rv) && pv[1] == "ORG-ORBITE" {
+            return true
+        }
+        return rv == "chef_de_mission" && pv[1] == pd[1]
+    }
+}
+
+flesh ApiRef {
+    on orbite() {
+        return "ORG-ORBITE"
+    }
+    on org_de_etat(etat) {
+        require to_string(etat) != "" else Inconnu "État vide"
+        return Org("ORG-ETAT-{etat}")
+    }
+    on etat_objet(objet) {
+        let o = to_string(objet)
+        if starts_with(o, "OBJ-INCONNU") {
+            return "inconnu"
+        }
+        if contains(o, "-RENTRE") {
+            return "rentre"
+        }
+        if contains(o, "-FRAG") {
+            return "fragmente"
+        }
+        if contains(o, "-RETIRE") {
+            return "retire"
+        }
+        if contains(o, "-HS") {
+            return "hors_service"
+        }
+        if contains(o, "-CATAL") {
+            return "catalogue"
+        }
+        if contains(o, "-CIM") {
+            return "cimetiere"
+        }
+        return "en_service"
+    }
+    on changer_etat_objet(h, objet, cible, reference, motif, par) {
+        require par == "systeme" || starts_with(par, "analyste") else Habilitation "{par} : analyste ou systeme requis"
+        require reference != "" && motif != "" else MotifRequis "référence et motif requis"
+        return cible
+    }
+    on proprietaire(objet) {
+        let o = to_string(objet)
+        require !starts_with(o, "OBJ-INCONNU") else Inconnu "objet {o} inconnu"
+        if contains(o, "-SERV") {
+            return Org("ORG-SERV")
+        }
+        if contains(o, "-SUSP") {
+            return Org("ORG-SUSP")
+        }
+        if contains(o, "-ORPH") {
+            return Org("inconnu")
+        }
+        return Org("ORG-ALPHA")
+    }
+    on etat_immatriculation(objet) {
+        require !starts_with(to_string(objet), "OBJ-INCONNU") else Inconnu "objet {objet} inconnu"
+        return Etat("ALD")
+    }
+    on regime(objet) {
+        let o = to_string(objet)
+        require !starts_with(o, "OBJ-INCONNU") else Inconnu "objet {o} inconnu"
+        if contains(o, "-GEO") {
+            return Regime("geo")
+        }
+        if contains(o, "-MEO") {
+            return Regime("meo")
+        }
+        return Regime("leo")
+    }
+    on propulsion(objet) {
+        let o = to_string(objet)
+        require !starts_with(o, "OBJ-INCONNU") else Inconnu "objet {o} inconnu"
+        if contains(o, "-HS") || contains(o, "-MORT") {
+            return Propulsion("aucune")
+        }
+        return Propulsion("impulsionnelle")
+    }
+    on peut_manoeuvrer(objet) {
+        let o = to_string(objet)
+        let en_service = !starts_with(o, "OBJ-INCONNU") && !contains(o, "-RENTRE") && !contains(o, "-FRAG") && !contains(o, "-RETIRE") && !contains(o, "-HS") && !contains(o, "-CATAL") && !contains(o, "-CIM")
+        return en_service && !contains(o, "-MORT") && !contains(o, "-ANOM")
+    }
+    on declarer_propulsion(h, objet, p, motif, par) {
+        require starts_with(par, "analyste") || starts_with(par, "dynamicien") else Habilitation "{par} : analyste ou dynamicien requis"
+        return p
+    }
+    on habite(objet) {
+        return contains(to_string(objet), "-HAB")
+    }
+    on objets_de(org) {
+        if to_string(org) == "ORG-ALPHA" {
+            return ["OBJ-C1", "OBJ-C2-HS", "OBJ-C3"]
+        }
+        return []
+    }
+}
+
+flesh ApiOperateurs {
+    on est_actif(op, h) {
+        return !starts_with(to_string(op), "ORG-SUSP")
+    }
+    on actifs(h) {
+        return ["ORG-ALPHA", "ORG-BETA"]
+    }
+}
+
+flesh ApiReentrees {
+    on a_risque(objet) {
+        return contains(to_string(objet), "-RISQ")
+    }
+}
+
+flesh ApiConformite {
+    on constater(h, op, nature, gravite, reference, par) {
+        require par == "systeme" || starts_with(par, "analyste") else Habilitation "{par} : systeme ou analyste requis"
+        require reference != "" && nature != "" else MotifRequis "manquement sans nature ni référence"
+        return "MQ-{reference}"
+    }
+    on sous_surveillance(op) {
+        return starts_with(to_string(op), "ORG-SURV")
+    }
+}
+
+flesh ApiPasserelle {
+    on notifier(h, destinataire, r, sujet, texte, urgence) {
+        require to_string(destinataire) != "" else Inconnu "destinataire vide"
+        return "MSG-{destinataire}"
+    }
+}
+
+flesh ApiManoeuvres {
+    on etat(plan) {
+        let p = split(plan, ":")
+        if len(p) != 4 || p[0] != "MAN" {
+            return "inconnu"
+        }
+        return p[1]
+    }
+    on objet_de(plan) {
+        let p = split(plan, ":")
+        require len(p) == 4 && p[0] == "MAN" else Inconnu "plan {plan} inconnu"
+        return Objet(p[2])
+    }
+    on motif_de(plan) {
+        let p = split(plan, ":")
+        require len(p) == 4 && p[0] == "MAN" else Inconnu "plan {plan} inconnu"
+        return p[3]
+    }
+}
+
+flesh ApiObservation {
+    on suivi(objet, h) {
+        return !contains(to_string(objet), "-PERDU")
+    }
+    on perigee(objet) {
+        let o = to_string(objet)
+        if contains(o, "-BAS") {
+            return Distance(400000)
+        }
+        if contains(o, "-GEO") {
+            return Distance(36100000)
+        }
+        return Distance(2500000)
+    }
+    on apogee(objet) {
+        let o = to_string(objet)
+        if contains(o, "-BAS") {
+            return Distance(405000)
+        }
+        if contains(o, "-GEO") {
+            return Distance(36105000)
+        }
+        return Distance(2505000)
+    }
+    on ecart_declare(objet) {
+        return Distance(150)
+    }
+    on demander_suivi(h, objet, priorite, duree, motif, par) {
+        require par == "systeme" || starts_with(par, "analyste") else Habilitation "{par} : analyste ou systeme requis"
+        require motif != "" else MotifRequis "motif requis"
+        return "SUIVI-{objet}"
+    }
+    on manoeuvre_detectee(objet, depuis) {
+        return contains(to_string(objet), "-BOUGE")
+    }
+}
+
+flesh ApiEvenements {
+    on en_anomalie(objet) {
+        return contains(to_string(objet), "-ANOM")
+    }
+}
+
+flesh ApiDonnees {
+    on peut_recevoir(org, objet, r, h) {
+        return !starts_with(to_string(org), "ORG-SECRET")
+    }
+    on tracer(h, org, objet, r, nature) {
+        require !starts_with(to_string(org), "ORG-SECRET") else Confidentiel "{org} non autorisé"
+        return 1
+    }
+}
+
+flesh ApiEscalade {
+    on graves(op, h) {
+        return 0
+    }
+}
+
+flesh ApiConjonctions {
+    on exempter(h, chasseur, cible, debut, fin, par, valideur) {
+        require fin > debut else Incoherent "fenêtre vide"
+        require starts_with(par, "analyste") else Habilitation "{par} : analyste requis"
+        require par != valideur else QuatreYeux "quatre yeux requis"
+        return "EX-{chasseur}-{cible}"
+    }
+}

@@ -1,0 +1,58 @@
+// Façade des MANŒUVRES : plans d'évitement et de maintien à poste, criblage, exécution, vérification.
+skeleton ApiManoeuvres {
+    face {
+        // Déclare un plan : objet, début, delta-v, motif ("evitement" lié à un rapprochement, ou
+        // "maintien", "transfert", "desorbitation"). Renvoie l'id du plan.
+        // Refus : Existe, Inconnu, NonEligible (objet incapable), Suspendu (opérateur), Perime
+        // (éphéméride non fraîche), Conflit (autre plan actif sur l'objet dans la même fenêtre,
+        // ou évitement sur un rapprochement dont l'objet n'est pas le désigné), Habilitation
+        // ("dynamicien" du propriétaire).
+        signal declarer(h: Horodatage, plan: String, objet: Objet, r: Rapprochement, motif: String, debut: Horodatage, dv: DeltaV, par: String) -> String
+            calls ManPlan.declarer, ManCriblage.cribler, ManPlan.statuer, ManPlan.approuver, ManPlan.rejeter
+        // Cycle de vie : "declare", "crible", "approuve", "rejete", "execute", "verifie",
+        // "anomalie", "annule" ; "inconnu".
+        signal etat(plan: String) -> String
+            calls ManPlan.etat
+        // Vrai si l'objet a un plan approuvé ou exécuté non encore vérifié.
+        signal plan_actif(objet: Objet) -> Bool
+            calls ManPlan.actif
+        // Le propriétaire confirme l'exécution (heure réelle, delta-v réalisé). Renvoie "execute".
+        // Refus : Inconnu, EtatInvalide, Habilitation ("dynamicien" du propriétaire), Incoherent
+        // (écart > 20 % au plan).
+        signal confirmer_execution(h: Horodatage, plan: String, reel: Horodatage, dv: DeltaV, par: String) -> String
+            calls ManPlan.confirmer
+        // Annule un plan non exécuté. Renvoie "annule". Refus : Inconnu, EtatInvalide, MotifRequis, Habilitation.
+        signal annuler(h: Horodatage, plan: String, motif: String, par: String) -> String
+            calls ManPlan.annuler
+        // Retire un plan non exécuté à la demande de la coordination (rouverture : le désigné a
+        // changé), sans la rouvrir en retour. Par "systeme". Renvoie "annule".
+        // Refus : Inconnu, EtatInvalide, MotifRequis, Habilitation.
+        signal retirer(h: Horodatage, plan: String, motif: String, par: String) -> String
+            calls ManPlan.retirer
+        // Plan d'évitement en cours pour un rapprochement ; "" si aucun.
+        signal plan_de(r: Rapprochement) -> String
+            calls ManPlan.plan_de
+        // Objet et motif d'un plan. Refus : Inconnu.
+        signal objet_de(plan: String) -> Objet
+            calls ManPlan.fiche
+        signal motif_de(plan: String) -> String
+            calls ManPlan.fiche
+        // Plans de l'objet depuis `depuis` (au plus 1 000).
+        signal plans_de(objet: Objet, depuis: Horodatage) -> List<String>
+            calls ManPlan.plans_de
+        // Plan approuvé ou exécuté dont la fenêtre couvre l'instant ; "" si aucun.
+        signal plan_couvrant(objet: Objet, instant: Horodatage) -> String
+            calls ManPlan.plan_couvrant
+        // Constate une manœuvre non annoncée (détectée par l'observation, aucun plan ne la couvre) :
+        // invalide l'éphéméride, ouvre un manquement chez conformite. Renvoie l'id du constat.
+        // Refus : Inconnu, Doublon, Habilitation ("analyste" ou "systeme").
+        signal constater_non_annoncee(h: Horodatage, objet: Objet, depuis: Horodatage, par: String) -> String
+            calls ManNonAnnoncee.constater
+        // Balayage des échéances du sous-système à `h` (délais, expirations, rondes), appelé par
+        // l'horloge d'ORBITE (Horloge.battre) — le SEUL point d'entrée du temps : aucun signal de
+        // manoeuvres ne lit l'horloge lui-même. Renvoie le nombre d'objets dont l'état a changé.
+        // Refus : Habilitation (par "systeme").
+        signal balayer(h: Horodatage, par: String) -> Int
+            calls ManVeille.balayer
+    }
+}

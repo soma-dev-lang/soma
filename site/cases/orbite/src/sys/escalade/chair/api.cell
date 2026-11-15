@@ -1,0 +1,25 @@
+// Corps de la façade ApiEscalade : délègue aux cells internes.
+flesh ApiEscalade {
+    on escalader(h, r, op, motif, par) {
+        let d = EscDossiers.dossier_actif(r, op)
+        if d == "" {
+            return EscDossiers.ouvrir(h, r, op, motif, par)
+        }
+        return EscDossiers.monter(h, d, motif, par)
+    }
+    on accuser(h, r, op, par) {
+        return EscDossiers.accuser(h, r, op, par)
+    }
+    on echelon(r, op) {
+        return EscDossiers.echelon(r, op)
+    }
+    on graves(op, h) {
+        return EscStatistiques.graves(op, h)
+    }
+    on reprise(r) {
+        return EscDossiers.reprise_sur(r)
+    }
+    on balayer(h, par) {
+        return EscBalayage.balayer(h, par)
+    }
+}

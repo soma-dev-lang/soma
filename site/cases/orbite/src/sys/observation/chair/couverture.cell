@@ -1,0 +1,70 @@
+// Corps de la couverture par régime et du balayage du temps.
+flesh ObsCouverture {
+    on evaluer(h, par) {
+        require par == "systeme" else Habilitation "ronde réservée à systeme"
+        let non_nominaux = 0
+        for regime in ["leo", "meo", "geo", "heo"] {
+            let caps = ObsCapteurs.disponibles(Regime(regime), 100)
+            let nb = len(caps)
+            let total = 0
+            for c in caps { total = total + ObsTaches.charge(c) }
+            // Capacité d'un capteur : 50 tâches (ObsTaches.TACHES_PAR_CAPTEUR, non lisible d'ici).
+            let pct = if nb == 0 { 0 } else { min(idiv(total * 100, nb * 50), 10000) }
+            nb_capteurs.set(regime, nb)
+            charge_pct.set(regime, pct)
+            evaluee_le.set(regime, h)
+            let cible = if nb >= SEUIL_NOMINAL { "nominale" } else if nb >= 1 { "degradee" } else { "aveugle" }
+            let cur = get_status(regime) ?? "nominale"
+            let suivant = cur
+            if cur == "nominale" && cible != "nominale" {
+                transition(regime, "nominale", "degradee")
+                suivant = "degradee"
+                let _ = ApiOperations.declarer_incident(h, "OBS-COUV-{regime}-{h}", 2, "observation", "couverture {regime} dégradée : {nb} capteur(s)", "systeme")
+            } else if cur == "degradee" && cible == "nominale" {
+                transition(regime, "degradee", "nominale")
+                suivant = "nominale"
+            } else if cur == "degradee" && cible == "aveugle" {
+                transition(regime, "degradee", "aveugle")
+                suivant = "aveugle"
+                let inc = ApiOperations.declarer_incident(h, "OBS-AVEUGLE-{regime}-{h}", 3, "observation", "régime {regime} aveugle : aucun capteur en service", "systeme")
+                incident_de.set(regime, inc)
+            } else if cur == "aveugle" && cible != "aveugle" {
+                transition(regime, "aveugle", "degradee")
+                suivant = "degradee"
+                incident_de.set(regime, "")
+            }
+            if suivant != cur {
+                let _ = Journal.noter(h, "observation", "systeme", "couverture {regime} : {cur} -> {suivant} ({nb} capteur(s), charge {pct} %)")
+            }
+            if suivant != "nominale" { non_nominaux = non_nominaux + 1 }
+        }
+        return non_nominaux
+    }
+    on niveau(regime) {
+        return get_status(regime) ?? "nominale"
+    }
+    on charge(regime) {
+        return charge_pct.get(regime) ?? 0
+    }
+    on peut_servir(regime, p) {
+        let lvl = get_status(regime) ?? "nominale"
+        if lvl == "aveugle" { return false }
+        return (charge_pct.get(regime) ?? 0) < 90 || p == 3
+    }
+}
+
+flesh ObsBalayage {
+    on balayer(h, par) {
+        require par == "systeme" else Habilitation "balayage réservé à systeme"
+        let a = ObsCapteurs.veiller(h, "systeme")
+        let b = ObsTaches.expirer(h, "systeme")
+        let c = ObsOrbites.perimer(h, "systeme")
+        let d = ObsPistes.veiller(h, "systeme")
+        let e = ObsDetections.veiller(h, "systeme")
+        let f = ObsCouverture.evaluer(h, "systeme")
+        let g = ObsMesures.purger(h, "systeme")
+        let total = a + b + c + d + e + f + g
+        let _ = Journal.noter(h, "observation", "systeme", "balayage : {a} capteur(s), {b} tâche(s), {c} orbite(s), {d} piste(s), {e} détection(s), {f} régime(s) non nominal(aux), {g} purge(s)")
+        return total
+    }
+}

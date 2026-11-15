@@ -1,0 +1,269 @@
+// CONJONCTIONS — rapprochements : création et mises à jour (résultats de criblage), niveau,
+// passage en coordination, résolution, clôture après le TCA, et traçabilité des fondements
+// de chaque mise à jour (preuve en cas de dommage, communiquée aux seules organisations
+// autorisées).
+
+// Un évènement de rapprochement entre deux objets catalogués. Instance = "CJ-<n>".
+// Le même couple (ordre du catalogue) et un TCA à ±10 min désignent le même rapprochement
+// tant qu'il est ouvert ; un rapprochement clos n'est jamais rouvert (un nouveau est créé).
+skeleton ConjRapprochement {
+    const MAX_RAPPROCHEMENTS = 5000000
+    const MAX_FONDEMENTS = 500            // mises à jour conservées par rapprochement (les plus récentes)
+    const MAX_OUVERTS_PAR_OBJET = 1000
+    const MAX_PAR_COUPLE = 1000
+    const FENETRE_MEME_TCA = 600000       // ±10 min
+    const DELAI_ANALYSE = 3600000         // l'analyse après TCA s'ouvre à TCA + 1 h
+    memory {
+        objet_a_de: Map<String, Objet> [persistent]         // écrit à la création, jamais modifié
+        objet_b_de: Map<String, Objet> [persistent]
+        regime_de: Map<String, Regime> [persistent]
+        cree_par: Map<String, String> [persistent]
+        tca_de: Map<String, Horodatage> [persistent]        // dernier TCA connu (ms)
+        distance_de: Map<String, Distance> [persistent]     // m
+        pc_de: Map<String, Probabilite> [persistent]        // milliardièmes
+        niveau_de: Map<String, Niveau> [persistent]
+        maj_le: Map<String, Horodatage> [persistent]        // dernière mise à jour ou réévaluation
+        cree_le: Map<String, Horodatage> [persistent]
+        nb_maj: Map<String, Int> [persistent]               // mises à jour reçues (création comprise)
+        sous_seuil_de: Map<String, Int> [persistent]        // mises à jour consécutives avec pc < seuil de suivi (plafonné à 2)
+        // une ligne par mise à jour : "h|par|tca|distance|pc|niveau|depot_a|depot_b|seuils|facteur|campagne"
+        // (dépôts d'éphémérides des deux objets, version des seuils, facteur météo, dernière
+        // campagne du régime) : de quoi refaire la décision. Jamais effacé.
+        fondements_de: Map<String, List<String>> [persistent]
+        par_couple: Map<String, List<String>> [persistent]  // "a|b" -> rapprochements du couple
+        ouverts_par_objet: Map<String, List<String>> [persistent]  // objet -> rapprochements non clos
+        par_objet: Map<String, List<String>> [persistent]   // objet -> rapprochements, clos compris (les 10 000 plus récents)
+        clos_par_jour: Map<String, List<String>> [persistent]  // jour de clôture (epoch day) -> rapprochements clos ce jour
+        motif_cloture_de: Map<String, String> [persistent]
+        // niveau imposé par un analyste sous quatre yeux (covariance irréaliste, objet habité,
+        // donnée contestée) : remplace le niveau calculé jusqu'à la clôture ; jamais sous 1.
+        force_de: Map<String, Niveau> [persistent]
+        clos_le: Map<String, Horodatage> [persistent]
+        // plan d'évitement vérifié qui a résolu le rapprochement (ApiManoeuvres.plan_de) : écrit
+        // une fois par resoudre (motif "manoeuvre_verifiee"), jamais effacé (lien de la règle
+        // en_coordination -> evite when ManPlan.verifie).
+        plan_de: Map<String, String> [persistent]
+        invariant objet_a_de.size <= 5000000
+        invariant nb_maj >= 0
+        invariant sous_seuil_de >= 0
+        invariant sous_seuil_de <= 2
+        invariant len(fondements_de) <= 500
+        invariant len(ouverts_par_objet) <= 1000
+        invariant len(par_couple) <= 1000
+        invariant len(par_objet) <= 10000
+        invariant len(clos_par_jour) <= 100000
+        // écrire maj_le avant cree_le à la création
+        invariant (cree_le ?? 0) <= (maj_le ?? 0)
+    }
+    // Cycle d'un rapprochement (les noms sont ceux de ApiConjonctions.etat).
+    state rapprochement {
+        initial: detecte
+        detecte -> suivi                 // niveau 1 confirmé par une deuxième mise à jour
+        detecte -> alerte                // niveau ≥ 2 dès la première qualification
+        suivi -> alerte                  // le niveau monte à 2 ou 3
+        alerte -> suivi                  // le niveau retombe à 1 avant toute coordination
+        alerte -> en_coordination        // coordination ouverte entre les propriétaires
+        detecte -> resolu                // pc retombée sous le seuil de suivi deux fois
+        suivi -> resolu
+        alerte -> resolu
+        en_coordination -> resolu        // pc retombée pendant la coordination
+        en_coordination -> evite         // manœuvre d'évitement vérifiée (plan "verifie" chez MANŒUVRES)
+        evite -> resolu                  // aussitôt, dans resoudre : "evite" n'est jamais observé hors de resoudre
+        detecte -> passe                 // TCA passé, analyse sans suite
+        suivi -> passe
+        alerte -> passe
+        en_coordination -> passe
+        detecte -> collision             // TCA passé, collision confirmée
+        suivi -> collision
+        alerte -> collision
+        en_coordination -> collision
+    }
+    face {
+        // Ouvre ou met à jour le rapprochement (a, b) au TCA donné : cherche dans par_couple un
+        // rapprochement ouvert du couple au TCA ±10 min, sinon en crée un ("CJ-<n>", detecte).
+        // Calcule le niveau (ConjSeuils.niveau avec le temps restant tca − h et le facteur
+        // d'incertitude du régime), ajoute une ligne de fondements, tient sous_seuil_de. Sur un
+        // rapprochement existant : detecte -> suivi (niveau 1 à la 2e mise à jour), detecte ou
+        // suivi -> alerte (niveau ≥ 2), alerte -> suivi (niveau 1). Un rapprochement
+        // en_coordination garde son état (son niveau change). Renvoie l'id.
+        // Unités : ms, m, milliardièmes. Rôle : "systeme" (campagnes) ou "analyste" d'ORBITE.
+        // Covariance de qualité "faible" sur l'un des objets (ApiEphemerides.qualite) : le niveau
+        // calculé est au moins 2 dès que la distance est sous le seuil d'attention. Un niveau
+        // forcé (force_de) prime sur le calcul. Un couple chasseur / cible exempté
+        // (ConjExemption.couvre) est plafonné au niveau 1 : suivi, sans alerte ni coordination.
+        // Refus : Inconnu (objet non catalogué ou rentré), Incoherent (a == b, ou tca < h),
+        // Plein, Habilitation.
+        signal signaler(h: Horodatage, objet_a: Objet, objet_b: Objet, tca: Horodatage, distance: Distance, pc: Probabilite, par: String) -> Rapprochement
+            writes objet_a_de, objet_b_de, regime_de, cree_par, tca_de, distance_de, pc_de, niveau_de, maj_le, cree_le, nb_maj, sous_seuil_de, fondements_de, par_couple, ouverts_par_objet, par_objet
+            reads force_de
+            moves detecte -> suivi, detecte -> alerte, suivi -> alerte, alerte -> suivi
+            calls next_id, ApiRef.etat_objet, ApiRef.regime, ApiEphemerides.derniere, ApiEphemerides.qualite, ApiMeteo.facteur_incertitude, ConjSeuils.niveau, ConjSeuils.seuil_suivi, ConjSeuils.version_en_vigueur, ConjCampagne.derniere, ConjExemption.couvre, ApiAcces.a_le_role, Journal.noter
+        // Impose un niveau (1 à 3) au rapprochement ouvert, ou lève le forçage (niveau calculé
+        // rétabli) avec `lever` vrai ; applique aussitôt les arêtes de signaler (detecte ou suivi
+        // -> alerte, alerte -> suivi). Ligne de fondements "force|…" ajoutée. Renvoie le niveau
+        // en vigueur. Rôle : `par` "analyste" d'ORBITE, `valideur` "superviseur" distinct
+        // (ApiAcces.quatre_yeux). Geste d'administration.
+        // Refus : Inconnu, Ferme (clos), MotifRequis, Habilitation, QuatreYeux.
+        signal forcer_niveau(h: Horodatage, r: Rapprochement, n: Niveau, lever: Bool, motif: String, par: String, valideur: String) -> Niveau
+            reads tca_de, distance_de, pc_de, regime_de
+            writes force_de, niveau_de, maj_le, fondements_de
+            moves detecte -> alerte, suivi -> alerte, alerte -> suivi
+            calls ApiMeteo.facteur_incertitude, ConjSeuils.niveau, ApiAcces.a_le_role, ApiAcces.quatre_yeux, Journal.noter
+        // Réévalue le niveau sans nouvelle donnée : le temps restant diminue, un rapprochement
+        // peut entrer dans l'horizon d'urgence (detecte ou suivi -> alerte). Une ligne de
+        // fondements est ajoutée si le niveau change ; exemption et forçage priment comme dans
+        // signaler. Renvoie le niveau. Appelé par ConjRonde.balayer.
+        // Rôle : "systeme". Refus : Inconnu, Ferme (clos), Habilitation.
+        signal reevaluer(h: Horodatage, r: Rapprochement, par: String) -> Niveau
+            reads objet_a_de, objet_b_de, tca_de, distance_de, pc_de, regime_de, force_de
+            writes niveau_de, maj_le, fondements_de
+            moves detecte -> alerte, suivi -> alerte
+            calls ApiMeteo.facteur_incertitude, ConjSeuils.niveau, ConjSeuils.version_en_vigueur, ConjExemption.couvre, ApiAcces.a_le_role, Journal.noter
+        // Ouvre la coordination d'un rapprochement en alerte (ApiCoordination.ouvrir, par
+        // "systeme") puis le fait passer alerte -> en_coordination, seulement si la coordination
+        // est alors "proposee" ou "arbitrage" (ApiCoordination.etat : ouverte et non close —
+        // règle sur l'arête). Si une coordination existe déjà (ouverte par un analyste), la
+        // reprend sans la rouvrir, dans les mêmes états. Renvoie l'id de la coordination.
+        // Rôle : "systeme" ou "analyste" d'ORBITE.
+        // Refus : Inconnu, EtatInvalide (pas en alerte, ou coordination ni "proposee" ni
+        // "arbitrage"), Habilitation.
+        signal engager(h: Horodatage, r: Rapprochement, par: String) -> String
+            reads objet_a_de
+            moves alerte -> en_coordination when CoordDossier.proposee || CoordDossier.arbitrage
+            calls ApiCoordination.ouvrir, ApiCoordination.etat, ApiAcces.a_le_role, Journal.noter
+        // Demande un suivi renforcé (ApiObservation.demander_suivi, priorité = niveau, jusqu'à
+        // TCA + DELAI_ANALYSE) pour chaque objet du rapprochement sans éphéméride fraîche
+        // (ApiEphemerides.fraiche) ou sans orbite indépendante récente (ApiObservation.suivi) :
+        // un objet silencieux ou mal connu ne passe pas sous le radar. Niveau ≥ 2 seulement.
+        // Renvoie les ids des demandes (vide si les deux objets sont bien connus).
+        // Rôle : "systeme" ou "analyste" d'ORBITE.
+        // Refus : Inconnu, Ferme, Insuffisant (niveau 1), Plein (capacité des capteurs), Habilitation.
+        signal demander_mesures(h: Horodatage, r: Rapprochement, par: String) -> List<String>
+            reads objet_a_de, objet_b_de, tca_de, niveau_de, rapprochement
+            calls ApiEphemerides.fraiche, ApiObservation.suivi, ApiObservation.demander_suivi, ApiAcces.a_le_role, Journal.noter
+        // Résout le rapprochement. "pc_retombee" (detecte, suivi, alerte ou en_coordination ->
+        // resolu) exige sous_seuil_de == 2. "manoeuvre_verifiee" exige un rapprochement
+        // en_coordination dont le plan d'évitement (ApiManoeuvres.plan_de) est "verifie"
+        // (ApiManoeuvres.etat) : écrit plan_de (une fois), puis en_coordination -> evite (règle :
+        // ManPlan.verifie via plan_de) -> resolu. Retire le rapprochement des ouverts de ses
+        // objets. Renvoie "resolu". Rôle : "systeme" ou "analyste" d'ORBITE.
+        // Refus : Inconnu, EtatInvalide (déjà clos ; pas en_coordination pour une manœuvre ;
+        // condition du motif non remplie), Habilitation.
+        signal resoudre(h: Horodatage, r: Rapprochement, motif: ConjMotifResolution, par: String) -> String
+            reads objet_a_de, objet_b_de, sous_seuil_de, plan_de
+            writes motif_cloture_de, clos_le, ouverts_par_objet, clos_par_jour, fondements_de, plan_de
+            moves detecte -> resolu, suivi -> resolu, alerte -> resolu, en_coordination -> resolu, en_coordination -> evite when ManPlan.verifie via plan_de, evite -> resolu
+            calls ApiManoeuvres.plan_de, ApiManoeuvres.etat, ApiAcces.a_le_role, Journal.noter
+        // Clôt un rapprochement après son TCA selon l'analyse (ConjAnalyseTca, même id) :
+        // sans_suite ou infirmee ⇒ passe ; confirmee ⇒ collision. Retire des ouverts. Appelé
+        // par ConjRonde.balayer et par ApiConjonctions.constater_collision (après
+        // ConjAnalyseTca.confirmer). Renvoie l'état atteint. Rôle : "systeme" ou "analyste".
+        // (Le message de clôture part par ConjMessage.diffuser.)
+        // Refus : Inconnu, Ferme (déjà clos), EtatInvalide (analyse non conclue), Habilitation.
+        signal clore_apres_tca(h: Horodatage, r: Rapprochement, par: String) -> String
+            reads objet_a_de, objet_b_de
+            writes motif_cloture_de, clos_le, ouverts_par_objet, clos_par_jour
+            moves detecte -> passe when ConjAnalyseTca.sans_suite || ConjAnalyseTca.infirmee, suivi -> passe when ConjAnalyseTca.sans_suite || ConjAnalyseTca.infirmee, alerte -> passe when ConjAnalyseTca.sans_suite || ConjAnalyseTca.infirmee, en_coordination -> passe when ConjAnalyseTca.sans_suite || ConjAnalyseTca.infirmee, detecte -> collision when ConjAnalyseTca.confirmee, suivi -> collision when ConjAnalyseTca.confirmee, alerte -> collision when ConjAnalyseTca.confirmee, en_coordination -> collision when ConjAnalyseTca.confirmee
+            calls ConjAnalyseTca.etat, ApiAcces.a_le_role, Journal.noter
+        // Lignes de fondements (au plus n, les plus récentes en dernier) communiquées à `org`
+        // si elle peut recevoir les données des DEUX objets pour ce rapprochement
+        // (ApiDonnees.peut_recevoir) ; chaque communication est tracée (ApiDonnees.tracer).
+        // Rôle : "analyste", "superviseur", "conformite" ou "auditeur" d'ORBITE pour org =
+        // ApiRef.orbite(), sinon une personne qui agit pour `org` (ApiAcces.agit_pour).
+        // Geste d'administration (preuve en cas de dommage).
+        // Refus : Inconnu, HorsBornes (n hors 1..500), Confidentiel, Habilitation.
+        signal fondements(h: Horodatage, r: Rapprochement, org: Org, n: Int, par: String) -> List<String>
+            reads objet_a_de, objet_b_de, fondements_de
+            calls ApiDonnees.peut_recevoir, ApiDonnees.tracer, ApiRef.orbite, ApiAcces.a_le_role, ApiAcces.agit_pour, Journal.noter
+        // Fiche du rapprochement. Refus : Inconnu.
+        signal fiche(r: Rapprochement) -> ConjFiche
+            reads objet_a_de, objet_b_de, tca_de, distance_de, pc_de, niveau_de, regime_de, nb_maj, maj_le
+        // "detecte", "suivi", "alerte", "en_coordination", "resolu", "passe", "collision" ;
+        // "inconnu" si jamais signalé.
+        signal etat(r: Rapprochement) -> String
+            reads rapprochement, objet_a_de
+        // Rapprochements non clos impliquant l'objet.
+        signal ouverts_de(objet: Objet) -> List<String>
+            reads ouverts_par_objet
+        // Au plus n rapprochements non clos dont le TCA + DELAI_ANALYSE est passé à `h` :
+        // l'analyse après TCA est à ouvrir, conclure ou appliquer. Appelé par ConjRonde.balayer.
+        signal echus(h: Horodatage, n: Int) -> List<String>
+            requires n > 0 && n <= 1000
+            reads ouverts_par_objet, tca_de
+        // Au plus n rapprochements non clos à réévaluer (niveau < 3, TCA à venir), les plus
+        // proches du TCA d'abord. Appelé par ConjRonde.balayer.
+        signal a_reevaluer(h: Horodatage, n: Int) -> List<String>
+            requires n > 0 && n <= 1000
+            reads ouverts_par_objet, tca_de, niveau_de
+        // Rapprochements non clos de niveau ≥ niveau_min dont le TCA tombe dans [h, h + horizon],
+        // au plus 1 000, TCA le plus proche d'abord (gel des changements, veille d'escalade).
+        signal urgents(h: Horodatage, horizon: Duree, niveau_min: Niveau) -> List<String>
+            reads ouverts_par_objet, tca_de, niveau_de
+        // Rapprochements (clos compris) impliquant l'objet, créés ou mis à jour depuis `depuis`
+        // (ms), au plus 1 000, du plus ancien au plus récent.
+        signal historique(objet: Objet, depuis: Horodatage) -> List<String>
+            reads par_objet, maj_le
+        // Rapprochements clos (resolu, passe, collision) dont la clôture tombe dans [debut, fin],
+        // au plus 10 000. Refus : Incoherent (fin < debut).
+        signal clos_entre(debut: Horodatage, fin: Horodatage) -> List<String>
+            reads clos_par_jour, clos_le
+    }
+}
+
+// Exemption d'un couple chasseur / cible pendant une mission de retrait actif autorisée
+// (rendez-vous voulu) : leur rapprochement reste suivi au niveau 1, sans alerte ni coordination ;
+// le reste du catalogue est criblé contre les deux. Instance = "EX-<n>".
+skeleton ConjExemption {
+    const MAX_EXEMPTIONS = 100000
+    const DUREE_MAX = 2592000000              // 30 j : au-delà, une nouvelle exemption
+    memory {
+        chasseur_de: Map<String, Objet> [persistent]
+        cible_de: Map<String, Objet> [persistent]
+        fin_de: Map<String, Horodatage> [persistent]
+        debut_de: Map<String, Horodatage> [persistent]
+        accordee_par: Map<String, String> [persistent]      // "h|par|valideur"
+        cause_de: Map<String, String> [persistent]          // levée : autorisation retirée
+        par_objet: Map<String, List<String>> [persistent]   // objet (chasseur ou cible) -> exemptions non closes
+        invariant chasseur_de.size <= 100000
+        invariant len(par_objet) <= 10
+        // écrire fin_de avant debut_de
+        invariant (debut_de ?? 0) <= (fin_de ?? 0)
+    }
+    // Cycle d'une exemption.
+    state exemption {
+        initial: accordee
+        accordee -> en_vigueur       // début atteint
+        en_vigueur -> echue          // fin passée
+        accordee -> levee            // retrait plus autorisé (ApiFinDeVie.retrait_autorise faux)
+        en_vigueur -> levee
+    }
+    face {
+        // Accorde l'exemption du couple pendant [debut, fin] (ms, au plus 30 j) si la mission de
+        // retrait actif visant la cible est autorisée par son propriétaire ET son État
+        // (ApiFinDeVie.retrait_autorise(cible)). Renvoie "EX-<n>". Rôle : `par` "analyste"
+        // d'ORBITE, `valideur` "superviseur" distinct (ApiAcces.quatre_yeux).
+        // Refus : Inconnu (objet non catalogué), NonEligible (retrait non autorisé), Incoherent
+        // (fin ≤ debut, durée > 30 j, chasseur == cible), Habilitation, QuatreYeux.
+        signal accorder(h: Horodatage, chasseur: Objet, cible: Objet, debut: Horodatage, fin: Horodatage, par: String, valideur: String) -> String
+            writes chasseur_de, cible_de, fin_de, debut_de, accordee_par, par_objet
+            calls next_id, ApiRef.etat_objet, ApiFinDeVie.retrait_autorise, ApiAcces.a_le_role, ApiAcces.quatre_yeux, Journal.noter
+        // Fait avancer l'exemption à `h` : début atteint ⇒ en_vigueur ; fin passée ⇒ echue ;
+        // autorisation de retrait retirée ⇒ levee (le couple est de nouveau criblé normalement,
+        // la ronde réévalue ses rapprochements). Renvoie l'état. Rôle : "systeme".
+        // Refus : Inconnu, Ferme (échue ou levée), Habilitation.
+        signal avancer(h: Horodatage, exemption: String, par: String) -> String
+            reads chasseur_de, cible_de, debut_de, fin_de
+            writes cause_de, par_objet
+            moves accordee -> en_vigueur, en_vigueur -> echue, accordee -> levee, en_vigueur -> levee
+            calls ApiFinDeVie.retrait_autorise, ApiAcces.a_le_role, Journal.noter
+        // Exemptions non closes (pour la ronde).
+        signal non_closes() -> List<String>
+            reads par_objet
+        // Vrai si une exemption en_vigueur couvre le couple (a, b), dans un ordre ou l'autre, à `h`.
+        signal couvre(a: Objet, b: Objet, h: Horodatage) -> Bool
+            reads par_objet, chasseur_de, cible_de, debut_de, fin_de, exemption
+        // "accordee", "en_vigueur", "echue", "levee" ; "inconnue".
+        signal etat(exemption: String) -> String
+            reads exemption, chasseur_de
+    }
+}

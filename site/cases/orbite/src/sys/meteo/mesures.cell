@@ -1,0 +1,157 @@
+// meteo — MESURES ET VEILLE DU FLUX. Chaque mesure (kp ou f107) est reçue d'une source, puis
+// validée ou rejetée ; seule une mesure validée fonde une décision (tempête, facteur
+// d'incertitude). Une valeur hors de l'échelle physique est refusée (rien n'est stocké) ; une
+// valeur plausible mais douteuse est conservée à l'état "rejetee" avec son motif, pour la
+// preuve. La veille transforme l'absence de mesure en état explicite ("silence") : kp() refuse
+// alors Perime et le facteur d'incertitude passe en précaution, sans jamais attendre la source.
+
+// Kp en dixièmes (0 à 90 ; 70 = Kp 7, seuil de tempête G3).
+cell type MetKp = Int where value >= 0 && value <= 90
+// Motif du rejet d'une mesure plausible : "source_inactive" (source déclarée, en panne ou
+// retirée), "epoque_future" (époque > h + 5 min), "trop_ancienne" (époque < h − 24 h),
+// "saut_aberrant" (kp : écart > 40 dixièmes en moins de 3 h avec la précédente, non confirmé
+// par une autre source ; f107 : écart > 50 % d'un jour à l'autre), "nature" (la source ne
+// produit pas cette grandeur).
+cell type MetMotifRejet = String where value == "source_inactive" || value == "epoque_future" || value == "trop_ancienne" || value == "saut_aberrant" || value == "nature"
+
+// Mesures : id = identifiant d'envoi fourni par la source, "M-<source>-<n>".
+skeleton MetMesure {
+    const MAX_MESURES = 20000000
+    const VALEUR_MAX = 10000             // f107 ≤ 1 000 sfu ; kp ≤ 90
+    const AVANCE_MAX = 300000            // 5 min de tolérance d'horloge
+    const RETARD_MAX = 86400000          // 24 h
+    const PEREMPTION_KP = 10800000       // 3 h : kp() refuse Perime au-delà
+    const PEREMPTION_F107 = 93600000     // 26 h
+    const REJETS_EN_SERIE = 5            // au 5e rejet consécutif la source est mise en écart
+    const FIN_DES_TEMPS = 32503680000000  // an 3000 : borne d'une réception pas encore écrite
+    memory {
+        source_de: Map<String, String> [persistent]       // mesure → source ; écrit une fois par recevoir (lien des règles)
+        jour_de: Map<String, String> [persistent]         // mesure → jour calendaire de son époque (id MetJournee) ; écrit une fois par recevoir
+        // mesure → cible de gel de sa journée chez RESPONSABILITÉ, "J:<jour>" ; écrit une fois par
+        // recevoir, jamais effacé (lien de la règle toml MetMesure.archivee while RespGels.libre)
+        gel_de: Map<String, String> [persistent]
+        grandeur_de: Map<String, MetGrandeur> [persistent]    // mesure → grandeur
+        valeur: Map<String, Int> [persistent]             // mesure → valeur (dixièmes : kp 0–90, f107 en dixièmes de sfu)
+        epoque: Map<String, Horodatage> [persistent]      // mesure → instant mesuré
+        recue_le: Map<String, Horodatage> [persistent]    // mesure → instant de réception
+        motif_rejet: Map<String, MetMotifRejet> [persistent]  // mesure rejetée → motif
+        precedente: Map<String, String> [persistent]      // mesure validée → mesure validée qui la précédait pour sa grandeur ("" : première)
+        derniere: Map<String, String> [persistent]        // grandeur → dernière mesure validée et non invalidée
+        rejets_suivis: Map<String, Int> [persistent]      // source → rejets consécutifs (remis à 0 par une validation)
+        invariant source_de.size <= MAX_MESURES
+        invariant valeur >= 0 && valeur <= VALEUR_MAX
+        invariant rejets_suivis >= 0 && rejets_suivis <= REJETS_EN_SERIE
+        invariant (epoque ?? 0) <= (recue_le ?? FIN_DES_TEMPS) + AVANCE_MAX
+    }
+    // Cycle de vie d'une mesure (id = mesure).
+    state mesure {
+        initial: recue
+        recue -> validee          // recevoir : source active, contrôles passés
+        recue -> rejetee          // recevoir : motif dans motif_rejet
+        validee -> invalidee      // invalider : erreur constatée après coup (étalonnage, analyste)
+        validee -> archivee       // archiver : journée scellée, la valeur brute passe en stockage froid
+    }
+    face {
+        // Reçoit une mesure d'une source. Contrôle la source (active, de la bonne nature), l'époque
+        // et la vraisemblance, puis la valide (elle devient la dernière de sa grandeur, rattachée
+        // à sa précédente, et rouvre la veille) ou la rejette avec motif ; au 5e rejet consécutif,
+        // la source est mise en écart. Une mesure validée d'une journée déjà close la met en
+        // rectification. Renvoie l'état atteint ("validee" ou "rejetee").
+        // Unités : valeur en dixièmes (kp 0–90 ; f107 en dixièmes de sfu), époque en ms.
+        // Rôle exigé : "capteur" du fournisseur de la source (ApiAcces.agit_pour), ou "systeme"
+        // (ingestion automatique d'un flux public). Refus : Existe (id déjà reçu), Inconnu
+        // (source), HorsBornes (kp > 90, valeur > 10 000), Plein, Habilitation.
+        signal recevoir(h: Horodatage, mesure: String, source: String, g: MetGrandeur, at: Horodatage, v: Int, par: String) -> String
+            requires v >= 0
+            writes source_de, jour_de, gel_de, grandeur_de, valeur, epoque, recue_le, motif_rejet, precedente, derniere, rejets_suivis
+            moves recue -> validee when MetSource.active via source_de, recue -> rejetee
+            calls MetSource.active, MetSource.nature, MetSource.fournisseur_de, MetSource.noter_reception, MetSource.mettre_en_ecart, MetVeille.reprendre, MetJournee.rectifier, ApiAcces.a_le_role, ApiAcces.agit_pour, Journal.noter
+        // Invalide une mesure validée (erreur d'étalonnage découverte, valeur contredite par
+        // trois autres sources). Si c'était la dernière de sa grandeur, sa précédente le
+        // redevient. Met la journée concernée en rectification si elle était close. La tempête
+        // qu'elle a pu confirmer n'est pas défaite : l'analyste en juge (MetTempete). Renvoie
+        // "invalidee". Rôle exigé : "analyste" d'ORBITE. Refus : Inconnu, EtatInvalide,
+        // MotifRequis, Habilitation.
+        signal invalider(h: Horodatage, mesure: String, motif: String, par: String) -> String
+            writes derniere
+            reads precedente, grandeur_de, jour_de
+            moves validee -> invalidee
+            calls MetJournee.rectifier, ApiAcces.a_le_role, Journal.noter
+        // Archive les mesures validées du jour `jour` si la journée est scellée et qu'aucun
+        // dossier de preuve ne la gèle (ApiResponsabilite.sous_gel("J:<jour>") faux, règle toml
+        // while RespGels.libre via gel_de ; sinon rien n'est archivé, 0). Au plus 10 000 par appel ; la valeur reste consultable, seul
+        // l'état change. Renvoie le nombre archivé. Rôle exigé : "systeme". Refus : Habilitation.
+        signal archiver(h: Horodatage, jour: Jour, par: String) -> Int
+            reads jour_de, gel_de
+            moves validee -> archivee when MetJournee.scellee via jour_de
+            calls MetJournee.scellee, ApiResponsabilite.sous_gel, ApiAcces.a_le_role, Journal.noter
+        // Vrai si la mesure est "validee" (règle de MetTempete.confirmer).
+        signal validee(mesure: String) -> Bool
+            reads mesure
+        // Valeur et grandeur d'une mesure, quel que soit son état. Refus : Inconnu.
+        signal valeur_de(mesure: String) -> Int
+            reads valeur
+        signal grandeur(mesure: String) -> MetGrandeur
+            reads grandeur_de
+        // Époque (ms) d'une mesure. Refus : Inconnu.
+        signal epoque_de(mesure: String) -> Horodatage
+            reads epoque
+        // Dernière mesure validée de `g` ; Refus : Inconnu (aucune), Perime (époque plus vieille
+        // que 3 h pour kp, 26 h pour f107, à `h`).
+        signal derniere_de(g: MetGrandeur, h: Horodatage) -> String
+            reads derniere, epoque
+        // Dernier kp validé, en dixièmes. Refus : Inconnu (aucune mesure), Perime (plus de 3 h).
+        signal kp_courant(h: Horodatage) -> MetKp
+            reads derniere, epoque, valeur
+        // Mesure validée (ou archivée) de `g` en vigueur à l'instant passé `a` : la plus récente
+        // d'époque ≤ a, non invalidée ; "" si aucune de moins de 3 h (kp) ou 26 h (f107) à cet
+        // instant. Sert à la preuve (MetJournee.conditions_a).
+        signal en_vigueur_a(g: MetGrandeur, a: Horodatage) -> String
+            reads mesure, grandeur_de, epoque
+        // Kp maximal (dixièmes) des mesures validées d'époque dans [debut, fin] ; Refus :
+        // Inconnu (aucune mesure dans l'intervalle), HorsBornes (fin < debut ou plus de 7 j).
+        signal kp_max_entre(debut: Horodatage, fin: Horodatage) -> MetKp
+            reads mesure, grandeur_de, epoque, valeur
+        // Ids des mesures validées de `g` d'époque dans le jour `j`, au plus 2 000 (bilan journalier).
+        signal du_jour(g: MetGrandeur, j: Jour) -> List<String>
+            reads mesure, grandeur_de, jour_de
+    }
+}
+
+// Veille du flux de mesures, par grandeur (id = "kp" ou "f107"). Machine réactive : le
+// silence n'est jamais un état d'attente, il bascule le système en précaution.
+skeleton MetVeille {
+    memory {
+        silence_depuis: Map<String, Horodatage> [persistent]  // grandeur → instant de passage en silence
+        incident_de: Map<String, String> [persistent]         // grandeur → incident ApiOperations du dernier silence
+        silences: Map<String, Int> [persistent]               // grandeur → nombre de silences depuis l'origine
+        invariant silences >= 0
+    }
+    // Flux d'une grandeur (id = grandeur).
+    state flux {
+        initial: nominal
+        nominal -> silence        // surveiller : aucune mesure validée depuis la péremption (3 h kp, 26 h f107)
+        silence -> nominal        // reprendre : une mesure validée est arrivée
+    }
+    face {
+        // Surveillance du flux (par = "systeme", chaque minute par MetRonde.balayer) : pour chaque
+        // grandeur, passe en "silence" si aucune mesure validée n'est fraîche, et déclare alors
+        // un incident de gravité 2 sur le sous-système meteo (gravité 3 si aucune source de la
+        // grandeur n'est active). Renvoie le nombre de grandeurs en silence après le passage.
+        // Refus : Habilitation (par ≠ "systeme").
+        signal surveiller(h: Horodatage, par: String) -> Int
+            writes silence_depuis, incident_de, silences
+            moves nominal -> silence
+            calls MetMesure.derniere_de, MetSource.actives, ApiOperations.declarer_incident, ApiAcces.a_le_role, Journal.noter
+        // Une mesure validée de `g` vient d'arriver (appelé par MetMesure.recevoir) : ramène la
+        // grandeur en "nominal" si elle était en silence. Renvoie l'état du flux.
+        signal reprendre(h: Horodatage, g: MetGrandeur) -> String
+            reads silence_depuis
+            moves silence -> nominal
+            calls Journal.noter
+        // Vrai si la grandeur est en silence (aucune mesure fraîche) : le facteur d'incertitude
+        // applique alors la bande de précaution.
+        signal en_silence(g: MetGrandeur) -> Bool
+            reads flux
+    }
+}

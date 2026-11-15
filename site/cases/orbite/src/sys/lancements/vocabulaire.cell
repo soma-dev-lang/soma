@@ -1,0 +1,73 @@
+// LANCEMENTS — vocabulaire : listes fermées du sous-système et fiches renvoyées par ses getters.
+
+// État d'un lancement (exposé par ApiLancements.etat) : "notifie" préavis reçu, "crible" COLA
+// conclu sur la fenêtre en cours, "autorise" avis favorable d'ORBITE en vigueur, "lance" tir
+// constaté, "injecte" orbite atteinte, "identifie" toutes les pièces catalogées et identifiées
+// (ou déclarées perdues / non séparées), "reporte" fenêtre abandonnée en attente d'une nouvelle,
+// "echec" lanceur ou injection perdus, "annule" ; "inconnu" si jamais notifié.
+cell type LancEtat = String where value == "notifie" || value == "crible" || value == "autorise" || value == "lance" || value == "injecte" || value == "identifie" || value == "reporte" || value == "echec" || value == "annule" || value == "inconnu"
+
+// Motif d'un report : "technique" (lanceur, charge utile), "meteo_sol" (vent, foudre au pas de
+// tir), "cola" (avis défavorable ou fenêtre entièrement interdite), "meteo_spatiale" (tempête),
+// "autorite" (décision de l'État de lancement), "fenetre_echue" (fenêtre passée sans tir,
+// constaté par la veille).
+cell type LancMotifReport = String where value == "technique" || value == "meteo_sol" || value == "cola" || value == "meteo_spatiale" || value == "autorite" || value == "fenetre_echue"
+
+// État d'un criblage COLA (collision on launch assessment) de la fenêtre en cours :
+// "a_cribler" jamais demandé, "en_cours" calcul lancé, "conclu" résultat valable,
+// "impossible" catalogue ou éphémérides insuffisants pour conclure, "perime" résultat trop
+// ancien ou fenêtre changée, "archive" lancement terminé ; "inconnu" si jamais notifié.
+cell type LancEtatCola = String where value == "a_cribler" || value == "en_cours" || value == "conclu" || value == "impossible" || value == "perime" || value == "archive" || value == "inconnu"
+
+// Sens de l'avis d'ORBITE sur une fenêtre de tir.
+cell type LancSensAvis = String where value == "favorable" || value == "defavorable"
+
+// État de l'avis d'ORBITE : "a_rediger", "redige" (proposé par l'analyste), "favorable" /
+// "defavorable" (validé à quatre yeux et notifié), "caduc" (COLA périmé, fenêtre reportée),
+// "archive" ; "inconnu" si jamais notifié.
+cell type LancEtatAvis = String where value == "a_rediger" || value == "redige" || value == "favorable" || value == "defavorable" || value == "caduc" || value == "archive" || value == "inconnu"
+
+// Genre d'une pièce du manifeste : "charge_utile" (satellite ou station), "etage" (étage
+// supérieur mis en orbite), "element" (coiffe, adaptateur, dispositif de séparation : catalogué
+// comme débris).
+cell type LancGenrePiece = String where value == "charge_utile" || value == "etage" || value == "element"
+
+// État d'une pièce du manifeste : "prevue", "separee" (séparation déclarée après injection),
+// "cataloguee" (numéro OBJ attribué), "identifiee" (correspondance confirmée par le
+// propriétaire), "en_retard" (délai d'identification ou d'immatriculation échu),
+// "immatriculee" (inscrite au registre de l'État, Convention de 1975), "non_separee" (restée
+// solidaire, ou lancement en échec), "perdue" (jamais retrouvée par l'observation),
+// "retombee" (rentrée avant immatriculation) ; "inconnue" si jamais prévue.
+cell type LancEtatPiece = String where value == "prevue" || value == "separee" || value == "cataloguee" || value == "identifiee" || value == "en_retard" || value == "immatriculee" || value == "non_separee" || value == "perdue" || value == "retombee" || value == "inconnue"
+
+// Issue d'une injection déclarée par l'opérateur : "nominale" (orbite visée dans les
+// tolérances), "degradee" (orbite atteinte hors tolérances : pièces catalogables),
+// "perdue" (aucune orbite exploitable : le lancement est en échec).
+cell type LancIssueInjection = String where value == "nominale" || value == "degradee" || value == "perdue"
+
+// Phase d'un échec : "lanceur" (avant injection : retombées au sol ou en mer), "injection"
+// (orbite inutilisable), "separation" (une ou plusieurs charges utiles non séparées ou mortes).
+cell type LancPhaseEchec = String where value == "lanceur" || value == "injection" || value == "separation"
+
+// État d'une enquête d'échec : "a_ouvrir", "ouverte", "debris_evalues" (objets en orbite et
+// zones de retombée connus, États notifiés), "close" (quatre yeux) ; "inconnue".
+cell type LancEtatEnquete = String where value == "a_ouvrir" || value == "ouverte" || value == "debris_evalues" || value == "close" || value == "inconnue"
+
+// Fiche d'un lancement (ce qui fonde l'avis, preuve en cas de dommage).
+cell type LancFiche { variants { LancFiche { op: Org, etat: Etat, debut: Horodatage, fin: Horodatage, regime: Regime, nb_objets: Int, version: Int, tir: Horodatage, injection: Horodatage } } }
+
+// Fiche d'une pièce du manifeste.
+cell type LancFichePiece { variants { LancFichePiece { lancement: String, genre: LancGenrePiece, proprietaire: Org, etat_immat: Etat, masse: Masse, propulsion: Propulsion, objet: Objet } } }
+
+// Fondement d'un avis : le criblage sur lequel il repose (version de fenêtre, instant de
+// calcul, empreinte de la trajectoire, dépôts d’éphémérides lus, élargissement des covariances, criblage renforcé ou non,
+// périodes interdites qui en découlent), pour la traçabilité exigée en cas de dommage.
+cell type LancFondement { variants { LancFondement { version: Int, calcule_le: Horodatage, trajectoire: String, depots: List<String>, facteur: Pourcent, renforce: Bool, interdits: List<String> } } }
+
+// Fiche d'une enquête d'échec (preuve pour la responsabilité : qui a été notifié, de quoi).
+cell type LancFicheEnquete { variants { LancFicheEnquete { phase: LancPhaseEchec, ouverte_le: Horodatage, objets: List<String>, zones: List<String>, notifies: List<String>, evenement: String, conclusion: String } } }
+
+// État de la déclaration des zones de retombée prévues (étages, coiffe) : "a_declarer",
+// "declarees" (États survolés notifiés), "acquittees" (tous ont acquitté), "closes" (lancement
+// tiré, en échec ou annulé) ; "inconnue" si jamais ouverte.
+cell type LancEtatZones = String where value == "a_declarer" || value == "declarees" || value == "acquittees" || value == "closes" || value == "inconnue"

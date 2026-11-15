@@ -1,0 +1,488 @@
+// PASSERELLE — corps de la table des routes, du mode de service, de la chaîne de traitement
+// et des rondes.
+
+flesh PasRoutes {
+    on declarer(h, route, cible, classe, par) {
+        require ApiAcces.a_le_role(par, "exploitant") else Habilitation "déclarer une route : exploitant d'ORBITE"
+        require _bien_formee(route) else Incoherent "route {route} : \"GET|POST|DELETE /gabarit\" avec au plus un segment {{id}}"
+        require cible_de.get(route) == () else Existe "route {route} déjà déclarée"
+        require gabarits.len < MAX_ROUTES else Plein "table pleine ({MAX_ROUTES} routes)"
+        require cible != "session.ouvrir" || classe == "session" else Incoherent "session.ouvrir est de classe session"
+        let urgente = cible == "coordination.repondre" || cible == "escalade.accuser" || cible == "message.accuser"
+        require (!urgente) || classe == "urgence" else Incoherent "{cible} est de classe urgence : une erreur de table ne doit jamais brider une réponse d'urgence"
+        cible_de.set(route, cible)
+        classe_de.set(route, classe)
+        gabarits.push(route)
+        let _ = Journal.noter(h, "passerelle", par, "route {route} déclarée -> {cible} ({classe})")
+        return "declaree"
+    }
+
+    on ouvrir(h, route, par, valideur) {
+        require ApiAcces.a_le_role(par, "exploitant") else Habilitation "ouvrir une route : exploitant d'ORBITE"
+        require ApiAcces.quatre_yeux(par, valideur) else QuatreYeux "ouvrir une route : quatre yeux"
+        require cible_de.get(route) != () else Inconnu "route {route} inconnue"
+        let st = get_status(route) ?? "declaree"
+        require st == "declaree" || st == "fermee" else EtatInvalide "route {route} : {st}"
+        require ApiOperations.changement_autorise(h) else Ferme "changement de production non autorisé (gel)"
+        if st == "declaree" { transition(route, "declaree", "ouverte") } else { transition(route, "fermee", "ouverte") }
+        motif_fermeture.set(route, "")
+        let _ = Journal.noter(h, "passerelle", par, "route {route} ouverte (valideur {valideur})")
+        return "ouverte"
+    }
+
+    on fermer(h, route, motif, par, valideur) {
+        require ApiAcces.a_le_role(par, "exploitant") else Habilitation "fermer une route : exploitant d'ORBITE"
+        let classe = classe_de.get(route)
+        require cible_de.get(route) != () && classe != () else Inconnu "route {route} inconnue"
+        let st = get_status(route) ?? "declaree"
+        require st == "ouverte" else EtatInvalide "route {route} : {st}"
+        require motif != "" else MotifRequis "fermeture sans motif"
+        if classe == "urgence" {
+            require ApiAcces.quatre_yeux(par, valideur) else QuatreYeux "une route d'urgence ne se ferme qu'à quatre yeux"
+        }
+        transition(route, "ouverte", "fermee")
+        motif_fermeture.set(route, motif)
+        let _ = Journal.noter(h, "passerelle", par, "route {route} fermée : {motif}")
+        return "fermee"
+    }
+
+    on retirer(h, route, motif, par, valideur) {
+        require ApiAcces.a_le_role(par, "exploitant") else Habilitation "retirer une route : exploitant d'ORBITE"
+        require ApiAcces.quatre_yeux(par, valideur) else QuatreYeux "retirer une route : quatre yeux"
+        require cible_de.get(route) != () else Inconnu "route {route} inconnue"
+        let st = get_status(route) ?? "declaree"
+        require st == "declaree" || st == "fermee" else EtatInvalide "route {route} : {st} (une route ouverte se ferme d'abord)"
+        require motif != "" else MotifRequis "retrait sans motif"
+        if st == "declaree" { transition(route, "declaree", "retiree") } else { transition(route, "fermee", "retiree") }
+        motif_fermeture.set(route, "retirée : {motif}")
+        let _ = Journal.noter(h, "passerelle", par, "route {route} retirée : {motif}")
+        return "retiree"
+    }
+
+    on resoudre(method, path) {
+        let chemin = split(path, "?")[0]
+        let autre_methode = false
+        for route in gabarits {
+            let mg = split(route, " ")
+            let param = _apparier(mg[1], chemin)
+            if param == () { continue }
+            if mg[0] != method {
+                autre_methode = true
+                continue
+            }
+            let cible = cible_de.get(route) ?? ""
+            let classe = classe_de.get(route) ?? ""
+            let st = get_status(route) ?? "declaree"
+            if st == "ouverte" {
+                return map("route", route, "cible", cible, "classe", classe, "param", param, "statut", 200, "corps", "")
+            }
+            let motif = if st == "declaree" { "route {route} pas encore ouverte" } else { motif_fermeture.get(route) ?? "route {route} fermée" }
+            let corps_f = to_json(map("error", if motif == "" { "route {route} {st}" } else { motif }, "kind", "Ferme"))
+            return map("route", route, "cible", cible, "classe", classe, "param", param, "statut", 422, "corps", corps_f)
+        }
+        if autre_methode {
+            return map("route", "", "cible", "", "classe", "", "param", "", "statut", 405, "corps", to_json(map("error", "méthode {method} non permise sur {chemin}", "kind", "Inconnu")))
+        }
+        return map("route", "", "cible", "", "classe", "", "param", "", "statut", 404, "corps", to_json(map("error", "aucune route pour {chemin}", "kind", "Inconnu")))
+    }
+
+    on catalogue() {
+        let res_c = []
+        for route in gabarits {
+            if (get_status(route) ?? "declaree") == "ouverte" {
+                let c = classe_de.get(route) ?? ""
+                res_c.push("{route} | {c}")
+            }
+        }
+        return res_c
+    }
+
+    // ── aides pures
+
+    on _bien_formee(route: String) {
+        let mg = split(route, " ")
+        if len(mg) != 2 { return false }
+        if mg[0] != "GET" && mg[0] != "POST" && mg[0] != "DELETE" { return false }
+        let g = mg[1]
+        if !starts_with(g, "/") || len(g) < 2 || contains(g, "?") { return false }
+        let segs = split(substring(g, 1, len(g)), "/")
+        let n_id = 0
+        for s in segs {
+            if s == "" { return false }
+            if contains(s, "{{") || contains(s, "}}") {
+                if s != "{{id}}" { return false }
+                n_id = n_id + 1
+            }
+        }
+        return n_id <= 1
+    }
+    // Le paramètre {id} si `chemin` suit `gabarit` ("" sans paramètre), () sinon.
+    on _apparier(gabarit: String, chemin: String) {
+        let gs = split(gabarit, "/")
+        let cs = split(chemin, "/")
+        if len(gs) != len(cs) { return () }
+        let param = ""
+        for i in range(0, len(gs)) {
+            if gs[i] == "{{id}}" {
+                if cs[i] == "" { return () }
+                param = cs[i]
+            } else if gs[i] != cs[i] {
+                return ()
+            }
+        }
+        return param
+    }
+}
+
+flesh PasService {
+    on restreindre(h, motif, par) {
+        require ApiAcces.a_le_role(par, "exploitant") else Habilitation "restreindre la passerelle : exploitant d'ORBITE"
+        require motif != "" else MotifRequis "restriction sans motif"
+        let st = get_status("passerelle") ?? "normal"
+        require st == "normal" else EtatInvalide "passerelle : {st}"
+        transition("passerelle", "normal", "restreint")
+        motif_de.set("passerelle", motif)
+        let _ = Journal.noter(h, "passerelle", par, "mode restreint : {motif}")
+        return "restreint"
+    }
+
+    on fermer(h, motif, par, valideur) {
+        require ApiAcces.a_le_role(par, "exploitant") else Habilitation "fermer la passerelle : exploitant d'ORBITE"
+        require ApiAcces.quatre_yeux(par, valideur) else QuatreYeux "fermer la passerelle : quatre yeux"
+        require motif != "" else MotifRequis "fermeture sans motif"
+        let st = get_status("passerelle") ?? "normal"
+        require st == "normal" || st == "restreint" else EtatInvalide "passerelle : {st}"
+        let _ = ApiOperations.declarer_incident(h, "INC-PASSERELLE-{h}", 3, "passerelle", "passerelle fermée (bascule de secours) : {motif}", par)
+        if st == "normal" { transition("passerelle", "normal", "ferme") } else { transition("passerelle", "restreint", "ferme") }
+        motif_de.set("passerelle", motif)
+        let _ = Journal.noter(h, "passerelle", par, "mode fermé (valideur {valideur}) : {motif}")
+        return "ferme"
+    }
+
+    on retablir(h, par, valideur) {
+        require ApiAcces.a_le_role(par, "exploitant") else Habilitation "rétablir la passerelle : exploitant d'ORBITE"
+        require ApiAcces.quatre_yeux(par, valideur) else QuatreYeux "rétablir la passerelle : quatre yeux"
+        let st = get_status("passerelle") ?? "normal"
+        require st == "restreint" || st == "ferme" else EtatInvalide "passerelle : {st}"
+        require !ApiOperations.incident_majeur() else Ferme "incident majeur en cours"
+        if st == "restreint" { transition("passerelle", "restreint", "normal") } else { transition("passerelle", "ferme", "normal") }
+        motif_de.set("passerelle", "")
+        let _ = Journal.noter(h, "passerelle", par, "mode normal (valideur {valideur})")
+        return "normal"
+    }
+
+    on mode() {
+        return [get_status("passerelle") ?? "normal", motif_de.get("passerelle") ?? ""]
+    }
+}
+
+flesh PasRondes {
+    on balayer(h, par) {
+        require ApiAcces.a_le_role(par, "systeme") else Habilitation "balayage : systeme"
+        let total = 0
+        let a = try { PasMessages.traiter_file(h, LOT) }
+        if a.error == () { total = total + a.value } else {
+            let k = a.kind
+            let _ = Journal.noter(h, "passerelle", "systeme", "ronde : file des messages en échec ({k})")
+        }
+        let b = try { PasRequetes.purger(h, LOT) }
+        if b.error == () { total = total + b.value } else {
+            let k = b.kind
+            let _ = Journal.noter(h, "passerelle", "systeme", "ronde : purge des requêtes en échec ({k})")
+        }
+        let c = try { PasBridage.apaiser(h, LOT) }
+        if c.error == () { total = total + c.value } else {
+            let k = c.kind
+            let _ = Journal.noter(h, "passerelle", "systeme", "ronde : apaisement en échec ({k})")
+        }
+        return total
+    }
+}
+
+flesh PasEntree {
+    on traiter(method, path, body, headers) {
+        let h = Horodatage(now_ms())
+        let hd = _entetes(headers)
+        // 1. route (gestes d'administration câblés hors table)
+        let res = _resoudre(method, path)
+        if res.statut != 200 { return PasReponse { statut: PasStatut(res.statut), corps: res.corps } }
+        let cible = res.cible
+        let classe = res.classe
+        if len(body) > MAX_CORPS { return _err(400, "corps de plus de {MAX_CORPS} octets", "HorsBornes") }
+        let corps = map()
+        let brut = cible == "ephemeride.deposer" || cible == "mesure.deposer"
+        if !brut && trim(body) != "" {
+            let d = try { from_json(body) }
+            if d.error != () || type_of(d.value) != "Map" { return _err(400, "JSON invalide (objet attendu)", "HorsBornes") }
+            corps = d.value
+        }
+        // 2. mode de service
+        let mode = PasService.mode()
+        if !_admise(mode[0], classe) {
+            let m1 = mode[1]
+            return _err(422, "passerelle en mode {mode[0]} : {m1}", "Ferme")
+        }
+        // 3. ouverture de session : seule route sans jeton
+        if cible == "session.ouvrir" { return _ouvrir_session(h, corps) }
+        // 4. jeton -> appelant
+        let auth = hd["authorization"] ?? ""
+        let jeton = if starts_with(auth, "Bearer ") { trim(substring(auth, 7, len(auth))) } else { "" }
+        let personne = if jeton == "" { "" } else { ApiAcces.authentifier(jeton, h) }
+        if personne == "" || personne == "systeme" { return _err(401, "non authentifié", "Habilitation") }
+        let emp = try { ApiAcces.employeur(personne) }
+        if emp.error != () { return _err(401, "non authentifié", "Habilitation") }
+        let org = emp.value
+        let role = ApiAcces.role_de(personne)
+        if role == "aucun" || role == "systeme" { return _err(401, "non authentifié", "Habilitation") }
+        let appelant = PasAppelant { personne: personne, org: org, role: role }
+        if cible == "session.clore" {
+            let f = try { ApiAcces.fermer_session(h, jeton, personne) }
+            let rep_c = if f.error == () { _rep(200, map("session", f.value)) } else { _traduire(f.kind, f.detail) }
+            let _ = Journal.noter(h, "passerelle", personne, "{org} {method} {res.route} -> {_statut(rep_c)}")
+            return rep_c
+        }
+        // 5. débit et bridage (jamais pour la classe urgence)
+        if classe != "urgence" {
+            let br = PasBridage.etat(org)
+            if br == "bloque" { return _err(429, "organisation bloquée pour dépassements répétés", "Plein") }
+            // bridée : chaque requête coûte 4 jetons (débit divisé par 4)
+            let cout = if br == "bride" { 4 } else { 1 }
+            let ok = true
+            for i in range(0, cout) {
+                if ok && !PasDebit.consommer(h, to_string(org), classe) { ok = false }
+            }
+            if !ok {
+                let _ = try { PasBridage.constater(h, org) }
+                return _err(429, "débit dépassé ({classe})", "Plein")
+            }
+        }
+        // 6. sous-système dégradé
+        let sous = res.sous
+        if sous != "passerelle" && ApiOperations.degrade(SousSysteme(sous)) {
+            return _err(422, "sous-système {sous} dégradé", "Suspendu")
+        }
+        // 7. idempotence
+        let cle_req = ""
+        if method == "POST" || method == "DELETE" {
+            let k = hd["idempotency-key"] ?? ""
+            if k == "" { return _err(400, "en-tête Idempotency-Key obligatoire", "HorsBornes") }
+            let resa = PasRequetes.reserver(h, "{org}|{k}", personne, sha256("{method}|{path}|{body}"))
+            let issue_r = match resa { PasReservation { issue, statut, corps } -> issue }
+            let st_r = match resa { PasReservation { issue, statut, corps } -> statut }
+            let corps_r = match resa { PasReservation { issue, statut, corps } -> corps }
+            if issue_r == "rejeu" { return PasReponse { statut: PasStatut(st_r), corps: corps_r } }
+            if issue_r == "incoherent" { return _err(422, "clé {k} déjà utilisée pour une autre requête", "Incoherent") }
+            if issue_r == "en_cours" { return _err(422, "requête {k} encore en cours", "Doublon") }
+            cle_req = corps_r
+        }
+        // 8. second jeton (quatre yeux)
+        let vj = hd["x-jeton-valideur"] ?? ""
+        let valideur = if vj == "" { "" } else { ApiAcces.authentifier(vj, h) }
+        if vj != "" && (valideur == "" || valideur == personne || valideur == "systeme") {
+            if cle_req != "" { let _ = PasRequetes.abandonner(h, cle_req) }
+            return _err(403, "second jeton invalide ou du même titulaire", "QuatreYeux")
+        }
+        // 9. aiguillage
+        let r = try { _aiguiller(h, appelant, valideur, res, corps, body) }
+        let rep = if r.error == () { r.value } else { _traduire(r.kind, r.detail) }
+        let imprevu = r.error != () && !_refus_connu(r.kind)
+        // 10. réponse gardée pour rejeu, puis trace
+        if cle_req != "" {
+            if imprevu || (r.error != () && r.kind == "QuatreYeux") {
+                let _ = PasRequetes.abandonner(h, cle_req)
+            } else {
+                let _ = PasRequetes.terminer(h, cle_req, rep)
+            }
+        }
+        let st_f = _statut(rep)
+        let route_j = if res.route == "" { path } else { res.route }
+        let _ = Journal.noter(h, "passerelle", personne, "{org} {route_j} -> {st_f}")
+        return rep
+    }
+
+    // ── aides
+
+    on _entetes(headers: Map) {
+        let hd = map()
+        for k in keys(headers) {
+            let v = headers[k]
+            hd[lowercase(k)] = if type_of(v) == "String" { v } else { to_string(v) }
+        }
+        return hd
+    }
+    on _rep(statut: Int, m: Any) {
+        return PasReponse { statut: PasStatut(statut), corps: to_json(m) }
+    }
+    on _err(statut: Int, message: String, kind: String) {
+        return PasReponse { statut: PasStatut(statut), corps: to_json(map("error", message, "kind", kind)) }
+    }
+    on _statut(rep: PasReponse) {
+        return match rep { PasReponse { statut, corps } -> to_int(statut) }
+    }
+    on _admise(mode: String, classe: String) {
+        if mode == "normal" { return true }
+        if classe == "session" || classe == "urgence" || classe == "administration" { return true }
+        return mode == "restreint" && classe == "lecture"
+    }
+    on _refus_connu(kind: String) {
+        return contains(["Habilitation", "QuatreYeux", "Existe", "Inconnu", "EtatInvalide", "HorsBornes", "Insuffisant", "Perime", "Suspendu", "Ferme", "Echu", "NonEligible", "Doublon", "Incoherent", "Plein", "MotifRequis", "Delai", "Conflit", "Confidentiel", "OutOfRange", "requires"], kind)
+    }
+    on _traduire(kind: String, detail: Any) {
+        let d = if detail == () { "" } else { to_string(detail) }
+        if kind == "Habilitation" || kind == "QuatreYeux" || kind == "Confidentiel" { return _err(403, d, kind) }
+        // valeur hors de son type ou du contrat de la cible : elle vient du client (400)
+        if kind == "OutOfRange" || kind == "requires" || (kind == "HorsBornes" && starts_with(d, "champ")) { return _err(400, d, "HorsBornes") }
+        if kind == "Inconnu" && starts_with(d, "geste ") { return _err(404, d, "Inconnu") }
+        if _refus_connu(kind) { return _err(422, d, kind) }
+        return _err(422, "erreur imprévue ({kind})", "EtatInvalide")
+    }
+    on _sous_systeme(cible: String) {
+        if cible == "objet.anomalie" { return "evenements" }
+        if cible == "objet.fin_de_mission" { return "fin_de_vie" }
+        if starts_with(cible, "objet.") || starts_with(cible, "registre.") { return "ref" }
+        if starts_with(cible, "lancement.") { return "lancements" }
+        if starts_with(cible, "ephemeride.") { return "ephemerides" }
+        if starts_with(cible, "mesure.") { return "observation" }
+        if starts_with(cible, "rapprochement.") { return "conjonctions" }
+        if starts_with(cible, "coordination.") { return "coordination" }
+        if starts_with(cible, "escalade.") { return "escalade" }
+        if starts_with(cible, "manoeuvre.") { return "manoeuvres" }
+        if starts_with(cible, "operateur.") { return "operateurs" }
+        return "passerelle"
+    }
+    // Résolution : table des routes, ou "/admin/<sous-systeme>/<Cell.signal>" (POST).
+    on _resoudre(method: String, path: String) {
+        let chemin = split(path, "?")[0]
+        if starts_with(chemin, "/admin/") {
+            let segs = split(chemin, "/")
+            let introuvable = to_json(map("error", "aucune route pour {chemin}", "kind", "Inconnu"))
+            if len(segs) != 4 { return map("statut", 404, "corps", introuvable) }
+            let sous = segs[2]
+            let geste = segs[3]
+            let connus = ["passerelle", "acces", "conformite", "conjonctions", "coordination", "donnees", "ephemerides", "escalade", "evenements", "fin_de_vie", "lancements", "manoeuvres", "meteo", "observation", "operateurs", "operations", "priorites", "reentrees", "ref", "responsabilite"]
+            if !contains(connus, sous) || geste == "" { return map("statut", 404, "corps", introuvable) }
+            if sous == "passerelle" && !contains(_gestes_passerelle(), geste) { return map("statut", 404, "corps", introuvable) }
+            if method != "POST" { return map("statut", 405, "corps", to_json(map("error", "les gestes d'administration sont en POST", "kind", "Inconnu"))) }
+            return map("statut", 200, "corps", "", "route", "POST /admin/{sous}/{geste}", "cible", "admin", "classe", "administration", "param", geste, "sous", sous)
+        }
+        let r = PasRoutes.resoudre(method, chemin)
+        let c = r.cible ?? ""
+        return map("statut", r.statut, "corps", r.corps ?? "", "route", r.route ?? "", "cible", c, "classe", r.classe ?? "", "param", r.param ?? "", "sous", _sous_systeme(to_string(c)))
+    }
+    on _gestes_passerelle() {
+        return ["PasRoutes.declarer", "PasRoutes.ouvrir", "PasRoutes.fermer", "PasRoutes.retirer", "PasService.restreindre", "PasService.fermer", "PasService.retablir", "PasDebit.fixer", "PasBridage.lever", "PasMessages.annuler", "PasMessages.du_rapprochement", "PasCanaux.suspendre"]
+    }
+    on _ouvrir_session(h: Horodatage, corps: Map) {
+        let p = corps["personne"]
+        let f = corps["facteur"]
+        if p == () || type_of(p) != "String" || p == "" || f == () || type_of(f) != "String" {
+            return _err(400, "champ personne / facteur manquant", "HorsBornes")
+        }
+        if p == "systeme" { return _err(401, "non authentifié", "Habilitation") }
+        if !PasDebit.consommer(h, "p:" + p, "session") { return _err(429, "trop de tentatives d'ouverture de session", "Plein") }
+        let s = try { ApiAcces.ouvrir_session(h, p, f) }
+        if s.error != () {
+            let k = s.kind
+            let _ = Journal.noter(h, "passerelle", p, "ouverture de session refusée ({k})")
+            // ne dit pas pourquoi : 401 pour tout échec d'authentification
+            if k == "Plein" { return _err(429, "trop de sessions", "Plein") }
+            return _err(401, "non authentifié", "Habilitation")
+        }
+        let _ = Journal.noter(h, "passerelle", p, "session ouverte")
+        return _rep(201, map("jeton", s.value))
+    }
+    // Aiguillage (étape 9) : lève les refus des cibles, traduits par l'appelant.
+    on _aiguiller(h: Horodatage, appelant: PasAppelant, valideur: String, res: Map, corps: Map, body: String) {
+        let cible = res.cible
+        let param = res.param
+        let qui = match appelant { PasAppelant { personne, org, role } -> personne }
+        let org = match appelant { PasAppelant { personne, org, role } -> org }
+        if cible == "admin" { return _admin(h, appelant, valideur, res.sous, param, corps) }
+        let c = PasCible(cible)
+        if starts_with(cible, "objet.") || starts_with(cible, "registre.") || starts_with(cible, "lancement.") {
+            return PasMetier.objets(h, appelant, c, param, corps)
+        }
+        if starts_with(cible, "ephemeride.") || starts_with(cible, "mesure.") {
+            return PasMetier.orbites(h, appelant, c, param, body)
+        }
+        if starts_with(cible, "rapprochement.") || starts_with(cible, "coordination.") || starts_with(cible, "escalade.") {
+            return PasMetier.rapprochements(h, appelant, c, param, corps)
+        }
+        if starts_with(cible, "manoeuvre.") { return PasMetier.manoeuvres(h, appelant, c, param, corps) }
+        if starts_with(cible, "operateur.") { return PasMetier.etats(h, appelant, valideur, c, param, corps) }
+        if cible == "canal.declarer" {
+            let o = if corps["org"] == () { to_string(org) } else { _s(corps, "org") }
+            let g = _s(corps, "genre")
+            require g == "webhook" || g == "messagerie_securisee" else HorsBornes "champ genre : webhook ou messagerie_securisee"
+            let canal = _s(corps, "canal")
+            let r = PasCanaux.declarer(h, canal, Org(o), PasCanalGenre(g), _s(corps, "adresse"), qui)
+            return _rep(201, map("canal", canal, "etat", r))
+        }
+        if cible == "canal.verifier" { return _rep(200, map("canal", param, "etat", PasCanaux.verifier(h, param, _s(corps, "defi"), appelant))) }
+        if cible == "canal.reverifier" { return _rep(200, map("canal", param, "etat", PasCanaux.reverifier(h, param, qui))) }
+        if cible == "canal.retirer" { return _rep(200, map("canal", param, "etat", PasCanaux.retirer(h, param, qui))) }
+        if cible == "message.lister" { return _rep(200, map("messages", PasMessages.en_attente(appelant, 500))) }
+        if cible == "message.accuser" { return _rep(200, map("message", param, "etat", PasMessages.acquitter(h, param, appelant))) }
+        if cible == "route.catalogue" { return _rep(200, map("routes", PasRoutes.catalogue())) }
+        fail("Inconnu", "cible {cible} sans aiguillage")
+    }
+    on _admin(h: Horodatage, appelant: PasAppelant, valideur: String, sous: String, geste: String, corps: Map) {
+        if sous == "passerelle" { return _rep(200, map("resultat", _admin_passerelle(h, appelant, valideur, geste, corps))) }
+        let v = match sous {
+            "acces" -> PasAdmin.router_acces(h, appelant, valideur, geste, corps)
+            "conformite" -> PasAdmin.router_conformite(h, appelant, valideur, geste, corps)
+            "conjonctions" -> PasAdmin.router_conjonctions(h, appelant, valideur, geste, corps)
+            "coordination" -> PasAdmin.router_coordination(h, appelant, valideur, geste, corps)
+            "donnees" -> PasAdmin.router_donnees(h, appelant, valideur, geste, corps)
+            "ephemerides" -> PasAdmin.router_ephemerides(h, appelant, valideur, geste, corps)
+            "escalade" -> PasAdmin.router_escalade(h, appelant, valideur, geste, corps)
+            "evenements" -> PasAdmin.router_evenements(h, appelant, valideur, geste, corps)
+            "fin_de_vie" -> PasAdmin.router_fin_de_vie(h, appelant, valideur, geste, corps)
+            "lancements" -> PasAdmin.router_lancements(h, appelant, valideur, geste, corps)
+            "manoeuvres" -> PasAdmin.router_manoeuvres(h, appelant, valideur, geste, corps)
+            "meteo" -> PasAdmin.router_meteo(h, appelant, valideur, geste, corps)
+            "observation" -> PasAdmin.router_observation(h, appelant, valideur, geste, corps)
+            "operateurs" -> PasAdmin.router_operateurs(h, appelant, valideur, geste, corps)
+            "operations" -> PasAdmin.router_operations(h, appelant, valideur, geste, corps)
+            "priorites" -> PasAdmin.router_priorites(h, appelant, valideur, geste, corps)
+            "reentrees" -> PasAdmin.router_reentrees(h, appelant, valideur, geste, corps)
+            "ref" -> PasAdmin.router_ref(h, appelant, valideur, geste, corps)
+            "responsabilite" -> PasAdmin.router_responsabilite(h, appelant, valideur, geste, corps)
+            _ -> fail("Inconnu", "geste {geste} : sous-système {sous} inconnu")
+        }
+        return _rep(200, map("resultat", v))
+    }
+    // Gestes de la passerelle elle-même (par = appelant, valideur = second jeton).
+    on _admin_passerelle(h: Horodatage, appelant: PasAppelant, valideur: String, geste: String, corps: Map) {
+        let qui = match appelant { PasAppelant { personne, org, role } -> personne }
+        require corps["par"] == () && corps["valideur"] == () && corps["h"] == () else HorsBornes "champ par / valideur / h interdit dans le corps"
+        if geste == "PasRoutes.declarer" { return PasRoutes.declarer(h, _s(corps, "route"), PasCible(_s(corps, "cible")), PasClasse(_s(corps, "classe")), qui) }
+        if geste == "PasRoutes.ouvrir" { return PasRoutes.ouvrir(h, _s(corps, "route"), qui, valideur) }
+        if geste == "PasRoutes.fermer" { return PasRoutes.fermer(h, _s(corps, "route"), _s(corps, "motif"), qui, valideur) }
+        if geste == "PasRoutes.retirer" { return PasRoutes.retirer(h, _s(corps, "route"), _s(corps, "motif"), qui, valideur) }
+        if geste == "PasService.restreindre" { return PasService.restreindre(h, _s(corps, "motif"), qui) }
+        if geste == "PasService.fermer" { return PasService.fermer(h, _s(corps, "motif"), qui, valideur) }
+        if geste == "PasService.retablir" { return PasService.retablir(h, qui, valideur) }
+        if geste == "PasDebit.fixer" {
+            let debit = _i(corps, "debit")
+            let rafale = _i(corps, "rafale")
+            require debit >= 1 && debit <= 6000 && rafale >= 1 && rafale <= 30000 else HorsBornes "débit 1..6000, rafale 1..30000"
+            return PasDebit.fixer(h, Org(_s(corps, "org")), PasClasse(_s(corps, "classe")), debit, rafale, qui, valideur)
+        }
+        if geste == "PasBridage.lever" { return PasBridage.lever(h, Org(_s(corps, "org")), _s(corps, "motif"), qui, valideur) }
+        if geste == "PasMessages.annuler" { return PasMessages.annuler(h, _s(corps, "message"), _s(corps, "motif"), qui) }
+        if geste == "PasMessages.du_rapprochement" { return PasMessages.du_rapprochement(Rapprochement(_s(corps, "r")), qui) }
+        if geste == "PasCanaux.suspendre" { return PasCanaux.suspendre(h, _s(corps, "canal"), _s(corps, "motif"), qui) }
+        fail("Inconnu", "geste {geste} hors des gestes de la passerelle")
+    }
+    on _s(corps: Map, nom: String) {
+        let v = corps[nom]
+        require v != () && type_of(v) == "String" else HorsBornes "champ {nom} manquant ou non textuel"
+        return v
+    }
+    on _i(corps: Map, nom: String) {
+        let v = corps[nom]
+        require v != () && type_of(v) == "Int" else HorsBornes "champ {nom} manquant ou non entier"
+        return v
+    }
+}

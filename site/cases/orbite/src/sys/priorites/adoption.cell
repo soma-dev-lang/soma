@@ -1,0 +1,174 @@
+// PRIORITÉS — adoption d'une version par les États : consultation (avis motivés), puis
+// scrutin (un bulletin par État électeur, quorum et majorité qualifiée). Instance = id de version
+// dans les deux machines : PrioVersion lit leur état sous le même id (règles sans `via`).
+
+// Avis d'un État consulté.
+cell type PrioAvis = String where value == "favorable" || value == "reserves" || value == "defavorable"
+// Bulletin d'un État électeur.
+cell type PrioChoix = String where value == "pour" || value == "contre" || value == "abstention"
+
+// Consultation des États sur une version en rédaction achevée.
+skeleton PrioConsultation {
+    const MAX_ETATS = 250
+    // Durée minimale d'une consultation : 30 jours.
+    const DUREE_MIN = 2592000000
+    // Durée maximale : 120 jours (une consultation ne bloque pas indéfiniment la version).
+    const DUREE_MAX = 10368000000
+    memory {
+        ouverte_le: Map<String, Horodatage> [persistent]
+        echeance_de: Map<String, Horodatage> [persistent]   // version -> fin des avis (ms)
+        avis_de: Map<String, PrioAvis> [persistent]         // "version|etat" -> avis, écrit une fois
+        commentaire_de: Map<String, String> [persistent]    // "version|etat" -> motivation (obligatoire hors favorable)
+        auteur_de: Map<String, String> [persistent]         // "version|etat" -> personne qui a déposé l'avis
+        nb_avis: Map<String, Int> [persistent]              // version -> avis reçus
+        nb_defavorables: Map<String, Int> [persistent]      // version -> avis défavorables
+        nb_a_repondre: Map<String, Int> [persistent]        // version -> avis "reserves" ou "defavorable" reçus
+        nb_repondus: Map<String, Int> [persistent]          // version -> avis auxquels ORBITE a répondu
+        reponse_de: Map<String, String> [persistent]        // "version|etat" -> réponse motivée d'ORBITE, écrite une fois
+        invariant echeance_de.size <= 1000
+        invariant avis_de.size <= 250000
+        invariant nb_avis >= 0 && nb_avis <= 250
+        invariant nb_defavorables >= 0
+        invariant (nb_defavorables ?? 0) <= (nb_avis ?? 0)
+        invariant nb_a_repondre >= 0
+        invariant nb_repondus >= 0
+        invariant (nb_repondus ?? 0) <= (nb_a_repondre ?? 0)
+        invariant (ouverte_le ?? 0) <= (echeance_de ?? 0)
+    }
+    // Cycle d'une consultation. Instance = version.
+    state consultation {
+        initial: ouverte
+        ouverte -> close                // échéance passée : les avis sont figés
+        ouverte -> annulee              // version retirée pendant la consultation
+    }
+    face {
+        // Ouvre la consultation de `version` jusqu'à `echeance` (entre DUREE_MIN et DUREE_MAX
+        // après `h`). Appelé seulement par PrioVersion.soumettre, qui contrôle l'habilitation
+        // de `par`. Renvoie l'échéance (ms). Refus : Existe, HorsBornes.
+        signal ouvrir(h: Horodatage, version: String, echeance: Horodatage, par: String) -> Horodatage
+            writes ouverte_le, echeance_de
+            calls PrioEcheancier.planifier, Journal.noter
+        // Dépose l'avis de l'État `etat` (au plus un par État, non modifiable), avant
+        // l'échéance. Une réserve ou un avis défavorable exige un commentaire motivé. `par` :
+        // "point_focal" ou "autorite" de cet État (ApiAcces.agit_pour sur ApiRef.org_de_etat).
+        // Renvoie le nombre d'avis reçus. Refus : Inconnu (version ou État), EtatInvalide
+        // (consultation non ouverte), Delai (échéance passée), Suspendu (État non
+        // participant), Doublon, MotifRequis, Plein, Habilitation.
+        signal donner_avis(h: Horodatage, version: String, etat: Etat, avis: PrioAvis, commentaire: String, par: String) -> Int
+            writes avis_de, commentaire_de, auteur_de, nb_avis, nb_defavorables, nb_a_repondre
+            reads consultation, echeance_de
+            calls ApiRef.etat_participant, ApiRef.org_de_etat, ApiAcces.a_le_role, ApiAcces.agit_pour, Journal.noter
+        // Répond (« se conformer ou expliquer ») à l'avis "reserves" ou "defavorable" de
+        // l'État `etat` : ORBITE dit ce qu'elle retient ou pourquoi elle maintient le texte.
+        // Possible jusqu'à la mise au vote, la consultation étant ouverte ou close. `par`
+        // "analyste" d'ORBITE. Renvoie le nombre d'avis restant sans réponse. Refus : Inconnu
+        // (aucun avis de cet État), EtatInvalide (consultation annulée), NonEligible (avis
+        // favorable), Doublon, MotifRequis, Habilitation.
+        signal repondre(h: Horodatage, version: String, etat: Etat, reponse: String, par: String) -> Int
+            writes reponse_de, nb_repondus
+            reads consultation, avis_de, nb_a_repondre
+            calls ApiAcces.a_le_role, Journal.noter
+        // Nombre d'avis "reserves" ou "defavorable" encore sans réponse d'ORBITE : la mise au
+        // vote exige 0 (PrioVersion.mettre_au_vote, refus Insuffisant).
+        signal sans_reponse(version: String) -> Int
+            reads nb_a_repondre, nb_repondus
+        // Clôt la consultation à l'échéance (ouverte -> close) ; traitement automatique, `par`
+        // "systeme". Renvoie le nombre d'avis reçus. Refus : Inconnu, EtatInvalide, Delai
+        // (échéance non atteinte), Habilitation.
+        signal clore(h: Horodatage, version: String, par: String) -> Int
+            reads echeance_de, nb_avis
+            moves ouverte -> close
+            calls ApiAcces.a_le_role, Journal.noter
+        // Annule la consultation (ouverte -> annulee) ; appelé par PrioVersion.retirer.
+        // Renvoie "annulee". Refus : Inconnu, EtatInvalide.
+        signal annuler(h: Horodatage, version: String, par: String) -> String
+            reads echeance_de
+            moves ouverte -> annulee
+            calls PrioEcheancier.annuler, Journal.noter
+        // Avis reçus : une ligne "etat | avis | commentaire | reponse" par État, triée par
+        // État. Refus : Inconnu.
+        signal synthese(version: String) -> List<String>
+            reads avis_de, commentaire_de, reponse_de, echeance_de
+        // État de la consultation : "ouverte", "close", "annulee" ; "inconnue" si jamais ouverte
+        // (getter de la règle PrioVersion consultation -> vote when PrioConsultation.close).
+        signal etat(version: String) -> String
+            reads consultation, echeance_de
+    }
+}
+
+// Scrutin des États sur une version consultée. Adoption : quorum (QUORUM % des inscrits ont
+// voté, abstentions comprises) ET pour ≥ MAJORITE % des suffrages exprimés (pour + contre).
+skeleton PrioScrutin {
+    const MAX_ETATS = 250
+    const QUORUM = 50
+    const MAJORITE = 67
+    // Durée minimale d'un scrutin : 14 jours (les États votent par leur point focal).
+    const DUREE_MIN = 1209600000
+    memory {
+        echeance_de: Map<String, Horodatage> [persistent]
+        inscrits: Map<String, Int> [persistent]             // version -> nombre d'États électeurs
+        electeur: Map<String, Bool> [persistent]            // "version|etat" -> inscrit sur la liste
+        choix_de: Map<String, PrioChoix> [persistent]       // "version|etat" -> bulletin, écrit une fois
+        votant_de: Map<String, String> [persistent]         // "version|etat" -> personne qui a voté
+        pour: Map<String, Int> [persistent]
+        contre: Map<String, Int> [persistent]
+        abstentions: Map<String, Int> [persistent]
+        motif_annulation: Map<String, String> [persistent]
+        invariant inscrits >= 0 && inscrits <= 250
+        invariant electeur.size <= 250000
+        invariant pour >= 0
+        invariant contre >= 0
+        invariant abstentions >= 0
+        invariant (pour ?? 0) <= (inscrits ?? 0)
+        invariant (contre ?? 0) <= (inscrits ?? 0)
+        invariant (abstentions ?? 0) <= (inscrits ?? 0)
+    }
+    // Cycle d'un scrutin. Instance = version.
+    state scrutin {
+        initial: ouvert
+        ouvert -> adopte                // dépouillé : quorum et majorité atteints
+        ouvert -> rejete                // dépouillé : quorum ou majorité manqués
+        ouvert -> annule                // irrégularité constatée (quatre yeux de la direction)
+    }
+    face {
+        // Ouvre le scrutin : la liste électorale, figée à l'ouverture, est celle des États
+        // participants non suspendus (ApiRef.etats_participants, 1 à MAX_ETATS) ; échéance
+        // ≥ DUREE_MIN après `h`. Appelé seulement par PrioVersion.mettre_au_vote, qui contrôle
+        // l'habilitation. Renvoie le nombre d'inscrits. Refus : Existe, HorsBornes,
+        // Insuffisant (aucun État participant).
+        signal ouvrir(h: Horodatage, version: String, echeance: Horodatage, par: String) -> Int
+            writes echeance_de, inscrits, electeur
+            calls ApiRef.etats_participants, PrioEcheancier.planifier, Journal.noter
+        // Vote de l'État `etat` (un bulletin, définitif), avant l'échéance. `par` :
+        // "point_focal" de cet État (ApiAcces.agit_pour sur ApiRef.org_de_etat). Un État
+        // suspendu depuis l'ouverture ne vote plus. Renvoie le nombre de bulletins reçus.
+        // Refus : Inconnu, EtatInvalide, Delai, NonEligible (État hors liste), Suspendu,
+        // Doublon, Habilitation.
+        signal voter(h: Horodatage, version: String, etat: Etat, choix: PrioChoix, par: String) -> Int
+            writes choix_de, votant_de, pour, contre, abstentions
+            reads scrutin, echeance_de, electeur
+            calls ApiRef.etat_participant, ApiRef.org_de_etat, ApiAcces.a_le_role, ApiAcces.agit_pour, Journal.noter
+        // Dépouille à l'échéance (traitement automatique, `par` "systeme") : ouvert -> adopte
+        // si quorum et majorité qualifiée, sinon ouvert -> rejete. Renvoie "adopte" ou
+        // "rejete". Refus : Inconnu, EtatInvalide, Delai (échéance non atteinte), Habilitation.
+        signal depouiller(h: Horodatage, version: String, par: String) -> String
+            reads echeance_de, inscrits, pour, contre, abstentions
+            moves ouvert -> adopte, ouvert -> rejete
+            calls ApiAcces.a_le_role, Journal.noter
+        // Annule un scrutin irrégulier (ouvert -> annule) ; la version ne peut plus qu'être
+        // retirée. `par` "direction", `valideur` "direction" ou "conformite" d'ORBITE.
+        // Renvoie "annule". Refus : Inconnu, EtatInvalide, MotifRequis, Habilitation, QuatreYeux.
+        signal annuler(h: Horodatage, version: String, motif: String, par: String, valideur: String) -> String
+            writes motif_annulation
+            reads echeance_de
+            moves ouvert -> annule
+            calls PrioEcheancier.annuler, ApiAcces.a_le_role, ApiAcces.quatre_yeux, Journal.noter
+        // Résultat : "inscrits | pour | contre | abstentions | etat". Refus : Inconnu.
+        signal resultat(version: String) -> String
+            reads scrutin, inscrits, pour, contre, abstentions
+        // État du scrutin : "ouvert", "adopte", "rejete", "annule" ; "inconnu" si jamais ouvert
+        // (getter des règles PrioVersion vote -> adoptee|rejetee|retiree when PrioScrutin.*).
+        signal etat(version: String) -> String
+            reads scrutin, inscrits
+    }
+}

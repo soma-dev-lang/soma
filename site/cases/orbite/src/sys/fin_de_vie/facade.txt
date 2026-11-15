@@ -1,0 +1,9 @@
+ApiFinDeVie.plan_conforme: calls FdvPlan.conforme
+ApiFinDeVie.fin_de_mission: calls FdvFin.declarer_fin ; moves FdvFin.fin: en_mission -> en_retrait
+ApiFinDeVie.en_retard: calls FdvFin.en_retard
+ApiFinDeVie.retrait_autorise: calls FdvRetrait.autorise_sur
+ApiFinDeVie.passive: calls FdvPassivation.passive
+ApiFinDeVie.mission_capturee: calls FdvRetrait.capturee_sur
+ApiFinDeVie.plan: calls FdvPlan.plan_de
+ApiFinDeVie.balayer: calls FdvCouverture.balayer
+ApiFinDeVie.missions_de: calls FdvRetrait.missions

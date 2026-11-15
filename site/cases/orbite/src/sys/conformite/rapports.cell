@@ -1,0 +1,115 @@
+// CONFORMITÉ — rapports annuels aux États : pour chaque État participant et chaque année,
+// le bilan de conformité de SES opérateurs (notes, manquements par gravité, mesures) et les suites
+// qu'il a données aux demandes de suspension. Un rapport ne contient que des données sur les
+// opérateurs de cet État : diffusion "restreint" (l'État, ORBITE), tracée.
+
+skeleton ConfRapport {
+    const MAX_RAPPORTS = 20000
+    const ANNEE_MIN = 2020
+    const ANNEE_MAX = 2200
+    const DELAI_ACCUSE_MS = 5184000000     // l'État accuse réception sous 60 jours
+    const MOIS_ECHEANCE = 3                // rapport de l'année N transmis avant le 31 mars N+1
+    memory {
+        // rapport → État destinataire et année couverte ; écrits une fois par ouvrir, jamais effacés
+        // (etat_de : lien de la règle valide -> transmis). Id "RAP-<etat>-<annee>".
+        etat_de: Map<String, Etat> [persistent]
+        invariant etat_de.size <= 20000
+        annee_de: Map<String, Int> [persistent]
+        invariant annee_de >= 2020
+        invariant annee_de <= 2200
+        echeance_de: Map<String, Horodatage> [persistent]       // 31 mars de l'année suivante, 0 h UTC
+        contenu_de: Map<String, String> [persistent]            // bilan compilé (texte structuré)
+        empreinte_de: Map<String, String> [persistent]          // empreinte du contenu validé (preuve)
+        compile_par: Map<String, String> [persistent]
+        valide_par: Map<String, String> [persistent]
+        transmis_le: Map<String, Horodatage> [persistent]
+        message_de: Map<String, String> [persistent]
+        accuse_par: Map<String, String> [persistent]
+        motif_de: Map<String, String> [persistent]
+    }
+    // Cycle d'un rapport. Terminaux : accuse, sans_accuse, annule.
+    state cycle {
+        initial: redaction
+        redaction -> valide          // valider : quatre yeux "direction", contenu figé
+        redaction -> annule          // annuler (doublon, État retiré)
+        valide -> transmis           // transmettre : point focal de l'État notifié, État participant (RefEtat.participant via etat_de)
+        valide -> annule             // annuler (dont État devenu non participant)
+        transmis -> accuse           // accuser : réception par l'État
+        transmis -> sans_accuse      // constater_silence : 60 jours sans accusé
+    }
+    face {
+        // Ouvre le rapport de l'année `annee` pour l'État `etat`. Renvoie "RAP-<etat>-<annee>".
+        // Refus : Existe, Inconnu (État non participant : ApiRef.etat_participant), HorsBornes
+        // (année hors [ANNEE_MIN, ANNEE_MAX] ou non échue à `h`), Plein, Habilitation (par
+        // "conformite" d'ORBITE, ou "systeme").
+        signal ouvrir(h: Horodatage, etat: Etat, annee: Int, par: String) -> String
+            writes etat_de, annee_de, echeance_de
+            calls ApiAcces.a_le_role, ApiRef.etat_participant, Journal.noter
+        // Compile (ou recompile) le bilan en rédaction : pour chaque opérateur suivi de l'État
+        // (ConfVeille.operateurs_de_etat), note au 31 décembre (ConfNotation.note), relevés de
+        // l'année, manquements qualifiés [g1, g2, g3] (ConfManquement.compter), mesures
+        // (ConfMesure.compter) ; puis les demandes de suspension à cet État et leurs issues
+        // (ConfDemande.compter_etat), et les manquements de l'État lui-même
+        // (ConfManquementEtat.compter). Renvoie le nombre d'opérateurs couverts.
+        // Refus : Inconnu, EtatInvalide (rapport validé), Habilitation (par "conformite" d'ORBITE, ou "systeme").
+        signal compiler(h: Horodatage, rapport: String, par: String) -> Int
+            writes contenu_de, compile_par
+            reads etat_de, annee_de, cycle
+            calls ApiAcces.a_le_role, ConfVeille.operateurs_de_etat, ConfNotation.note, ConfNotation.releves_de, ConfManquement.compter, ConfMesure.compter, ConfDemande.compter_etat, ConfManquementEtat.compter
+        // Valide le contenu compilé : redaction -> valide, empreinte figée. Renvoie "valide".
+        // Refus : Inconnu, EtatInvalide, Insuffisant (jamais compilé), Habilitation (par
+        // "direction" d'ORBITE), QuatreYeux (par ≠ compilateur, ApiAcces.quatre_yeux).
+        signal valider(h: Horodatage, rapport: String, par: String) -> String
+            writes valide_par, empreinte_de
+            reads contenu_de, compile_par, etat_de
+            moves redaction -> valide
+            calls ApiAcces.a_le_role, ApiAcces.quatre_yeux, Journal.noter
+        // Transmet au point focal de l'État (ApiRef.org_de_etat, ApiPasserelle.notifier urgence 1),
+        // communication tracée. Renvoie "transmis". Après l'échéance, il est transmis quand même
+        // et le retard journalisé. Refus : Inconnu, EtatInvalide (rapport non validé, ou État non
+        // participant à h : ApiRef.etat_participant, règle de l'arête via etat_de ; le rapport s'annule
+        // alors), Habilitation (par "conformite" d'ORBITE, ou "systeme").
+        signal transmettre(h: Horodatage, rapport: String, par: String) -> String
+            writes transmis_le, message_de
+            reads etat_de, empreinte_de, echeance_de
+            moves valide -> transmis when RefEtat.participant via etat_de
+            calls ApiAcces.a_le_role, ApiRef.etat_participant, ApiRef.org_de_etat, ApiPasserelle.notifier, Journal.noter
+        // Accusé de réception de l'État : transmis -> accuse. Renvoie "accuse".
+        // Refus : Inconnu, EtatInvalide, Habilitation (par "point_focal" ou "autorite" de l'État
+        // destinataire : ApiAcces.agit_pour sur ApiRef.org_de_etat(etat)).
+        signal accuser(h: Horodatage, rapport: String, par: String) -> String
+            writes accuse_par
+            reads etat_de
+            moves transmis -> accuse
+            calls ApiAcces.a_le_role, ApiAcces.agit_pour, ApiRef.org_de_etat, Journal.noter
+        // Aucun accusé DELAI_ACCUSE_MS après la transmission : transmis -> sans_accuse, manquement
+        // d'État "rapport_sans_accuse" g1 constaté (ConfManquementEtat.constater). Renvoie "sans_accuse".
+        // Refus : Inconnu, EtatInvalide, Delai, Habilitation (par "systeme").
+        signal constater_silence(h: Horodatage, rapport: String, par: String) -> String
+            reads transmis_le, etat_de
+            moves transmis -> sans_accuse
+            calls ApiAcces.a_le_role, ConfManquementEtat.constater, Journal.noter
+        // Annule un rapport non transmis : redaction | valide -> annule. Renvoie "annule".
+        // Refus : Inconnu, EtatInvalide, MotifRequis, Habilitation (par "direction" d'ORBITE).
+        signal annuler(h: Horodatage, rapport: String, motif: String, par: String) -> String
+            writes motif_de
+            reads etat_de
+            moves redaction -> annule, valide -> annule
+            calls ApiAcces.a_le_role, Journal.noter
+        // Contenu d'un rapport pour `par` : la conformité, la direction et l'auditeur d'ORBITE, le
+        // "point_focal" ou l'"autorite" de l'État destinataire. Lecture journalisée.
+        // Refus : Inconnu, Confidentiel.
+        signal lire(h: Horodatage, rapport: String, par: String) -> String
+            reads contenu_de, etat_de
+            calls ApiAcces.a_le_role, ApiAcces.agit_pour, ApiRef.org_de_etat, Journal.noter
+        // État ; "inconnu" si l'id n'existe pas.
+        signal etat_rapport(rapport: String) -> String
+            reads cycle, etat_de
+        // Rapports à traiter à `h`, au plus `n` : non transmis après l'échéance, transmis sans
+        // accusé depuis DELAI_ACCUSE_MS. Les rapports MANQUANTS sont ouverts par ConfRonde
+        // (un par État de ApiRef.etats_participants et par année échue).
+        signal en_retard(h: Horodatage, n: Int) -> List<String>
+            requires n > 0 && n <= 1000
+            reads echeance_de, transmis_le, cycle
+    }
+}

@@ -1,0 +1,7 @@
+ApiLancements.notifier: calls LancLancement.notifier
+ApiLancements.etat: calls LancLancement.etat
+ApiLancements.objets: calls LancPiece.objets_du_lancement
+ApiLancements.origine: calls LancPiece.origine
+ApiLancements.injecte_le: calls LancPiece.origine, LancLancement.injecte_le
+ApiLancements.etats_de_lancement: calls LancPiece.etats_de_lancement
+ApiLancements.balayer: calls LancVeille.balayer

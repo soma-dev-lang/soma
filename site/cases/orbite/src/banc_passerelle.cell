@@ -1,0 +1,11 @@
+use app
+use commun::journal_chair
+use commun::horloge_chair
+use sys::passerelle::chair::api
+use sys::passerelle::chair::routage
+use sys::passerelle::chair::debit
+use sys::passerelle::chair::idempotence
+use sys::passerelle::chair::messages
+use sys::passerelle::chair::formats
+use sys::passerelle::chair::metier
+use sys::passerelle::chair::admin

@@ -1,0 +1,813 @@
+use app
+use commun::journal_chair
+use commun::horloge_chair
+use sys::passerelle::chair::api
+use sys::passerelle::chair::routage
+use sys::passerelle::chair::debit
+use sys::passerelle::chair::idempotence
+use sys::passerelle::chair::messages
+use sys::passerelle::chair::formats
+use sys::passerelle::chair::metier
+use sys::passerelle::chair::admin
+use doublures::passerelle
+
+// Le monde des tests (voir doublures/passerelle.cell pour les conventions) :
+// ORBITE (exploitant, superviseur, analyste, auditeur), ORG-OPA et ORG-OPB (opérateurs),
+// ORG-ETAT-BRV (État). h0 = 1 800 000 000 000 ms (les tests figent now() sur h0 / 1000).
+cell BancPas {
+    on h0() { return 1800000000000 }
+    on exp() { return "exploitant#1@ORG-ORBITE" }
+    on sup() { return "superviseur#1@ORG-ORBITE" }
+    on adm_a() { return "administrateur_operateur#1@ORG-OPA" }
+    on dyn_a() { return "dynamicien#1@ORG-OPA" }
+    on dyn_b() { return "dynamicien#1@ORG-OPB" }
+
+    // Déclare et ouvre une route (exploitant + superviseur).
+    on route(route: String, cible: String, classe: String) {
+        let h = Horodatage(h0())
+        let _ = PasRoutes.declarer(h, route, PasCible(cible), PasClasse(classe), exp())
+        return PasRoutes.ouvrir(h, route, exp(), sup())
+    }
+    // La table publique complète.
+    on table() {
+        let t = [
+            ["POST /v1/sessions", "session.ouvrir", "session"],
+            ["DELETE /v1/sessions", "session.clore", "session"],
+            ["POST /v1/canaux", "canal.declarer", "administration"],
+            ["POST /v1/canaux/{{id}}/verification", "canal.verifier", "administration"],
+            ["POST /v1/canaux/{{id}}/reverification", "canal.reverifier", "administration"],
+            ["DELETE /v1/canaux/{{id}}", "canal.retirer", "administration"],
+            ["GET /v1/messages", "message.lister", "lecture"],
+            ["POST /v1/messages/{{id}}/accuse", "message.accuser", "urgence"],
+            ["GET /v1/routes", "route.catalogue", "lecture"],
+            ["GET /v1/objets/{{id}}", "objet.lire", "lecture"],
+            ["POST /v1/objets/{{id}}/propulsion", "objet.propulsion", "decision"],
+            ["POST /v1/objets/{{id}}/anomalie", "objet.anomalie", "depot"],
+            ["POST /v1/objets/{{id}}/ephemerides", "ephemeride.deposer", "depot"],
+            ["GET /v1/objets/{{id}}/ephemerides", "ephemeride.lire", "lecture"],
+            ["POST /v1/capteurs/{{id}}/mesures", "mesure.deposer", "depot"],
+            ["GET /v1/rapprochements/{{id}}", "rapprochement.lire", "lecture"],
+            ["GET /v1/coordinations", "coordination.en_attente", "lecture"],
+            ["GET /v1/coordinations/{{id}}", "coordination.lire", "lecture"],
+            ["POST /v1/coordinations/{{id}}/reponse", "coordination.repondre", "urgence"],
+            ["POST /v1/escalades/{{id}}/accuse", "escalade.accuser", "urgence"],
+            ["POST /v1/manoeuvres", "manoeuvre.declarer", "decision"],
+            ["GET /v1/manoeuvres/{{id}}", "manoeuvre.lire", "lecture"],
+            ["POST /v1/operateurs/{{id}}/suspension", "operateur.suspendre", "decision"]
+        ]
+        for x in t { let _ = route(x[0], x[1], x[2]) }
+        return len(t)
+    }
+    // Un appel HTTP : statut et corps décodé.
+    on appel(method: String, path: String, body: String, qui: String, cle: String) {
+        return appel_v(method, path, body, qui, cle, "")
+    }
+    on appel_v(method: String, path: String, body: String, qui: String, cle: String, valideur: String) {
+        let hd = map()
+        if qui != "" { hd["Authorization"] = "Bearer J:" + qui }
+        if cle != "" { hd["Idempotency-Key"] = cle }
+        if valideur != "" { hd["X-Jeton-Valideur"] = "J:" + valideur }
+        let rep = PasEntree.traiter(method, path, body, hd)
+        return match rep { PasReponse { statut, corps } -> map("statut", to_int(statut), "corps", from_json(corps)) }
+    }
+    // Canal webhook vérifié de ORG-OPA (le test mocke random_token = "DEFI" et http_post).
+    on canal_opa() {
+        let h = Horodatage(h0())
+        let _ = PasCanaux.declarer(h, "C-A1", "ORG-OPA", "webhook", "https://opa.example/orbite", adm_a())
+        return PasCanaux.verifier(h, "C-A1", "DEFI", appelant(adm_a()))
+    }
+    on appelant(p: String) {
+        let parts = split(p, "@")
+        return PasAppelant { personne: p, org: Org(parts[1]), role: Role(split(parts[0], "#")[0]) }
+    }
+    on consommer_n(h: Int, cle: String, classe: String, n: Int) {
+        let ok = 0
+        for i in range(0, n) {
+            if PasDebit.consommer(Horodatage(h), cle, PasClasse(classe)) { ok = ok + 1 }
+        }
+        return ok
+    }
+    on constater_n(h: Int, org: String, n: Int) {
+        let e = "libre"
+        for i in range(0, n) { e = PasBridage.constater(Horodatage(h + i), Org(org)) }
+        return e
+    }
+    on oem(objet: String, cov: String) {
+        let l = [
+            "CCSDS_OEM_VERS = 3.0",
+            "CREATION_DATE = 2026-01-01T00:00:00",
+            "ORIGINATOR = OPA",
+            "META_START",
+            "OBJECT_NAME = SAT",
+            "OBJECT_ID = " + objet,
+            "CENTER_NAME = EARTH",
+            "REF_FRAME = EME2000",
+            "TIME_SYSTEM = UTC",
+            "START_TIME = 2026-01-01T00:00:00.000",
+            "STOP_TIME = 2026-01-02T00:00:00.000",
+            "META_STOP",
+            "COMMENT premier point",
+            "2026-01-01T00:00:00.000 7000.0 0.0 0.0 0.0 7.5 0.0",
+            "2026-01-01T00:01:00.000 6999.0 450.0 0.0 -0.05 7.49 0.0"
+        ]
+        if cov == "diagonale" || cov == "complete" {
+            let x = if cov == "complete" { "0.1" } else { "0.0" }
+            l = l ++ ["COVARIANCE_START", "EPOCH = 2026-01-01T00:00:00.000", "COV_REF_FRAME = RTN", "1.0", x + " 1.0", "0.0 0.0 1.0", "0.0 0.0 0.0 1.0", "0.0 0.0 0.0 0.0 1.0", "0.0 0.0 0.0 0.0 0.0 1.0", "COVARIANCE_STOP"]
+        }
+        return join(l, "\n")
+    }
+    on etat_msg(id: String) {
+        if PasMessages.acquitte(id) { return "acquitte" }
+        if PasMessages.echoue(id) { return "echoue" }
+        return "vivant"
+    }
+}
+
+// ── PasRoutes
+
+cell test RoutesCycleDeVie {
+    rules {
+        let h = Horodatage(1800000000000)
+        assert PasRoutes.declarer(h, "GET /v1/objets/{{id}}", "objet.lire", "lecture", BancPas.exp()) == "declaree"
+        assert PasRoutes.resoudre("GET", "/v1/objets/OBJ-A1").statut == 422
+        assert PasRoutes.ouvrir(h, "GET /v1/objets/{{id}}", BancPas.exp(), BancPas.sup()) == "ouverte"
+        assert PasRoutes.resoudre("GET", "/v1/objets/OBJ-A1").param == "OBJ-A1"
+        assert PasRoutes.resoudre("GET", "/v1/objets/OBJ-A1?x=1").statut == 200
+        assert PasRoutes.catalogue() == ["GET /v1/objets/{{id}} | lecture"]
+        assert PasRoutes.fermer(h, "GET /v1/objets/{{id}}", "maintenance", BancPas.exp(), "") == "fermee"
+        assert PasRoutes.resoudre("GET", "/v1/objets/OBJ-A1").statut == 422
+        assert contains(PasRoutes.resoudre("GET", "/v1/objets/OBJ-A1").corps, "maintenance")
+        assert PasRoutes.catalogue() == []
+        assert PasRoutes.ouvrir(h, "GET /v1/objets/{{id}}", BancPas.exp(), BancPas.sup()) == "ouverte"
+        assert PasRoutes.fermer(h, "GET /v1/objets/{{id}}", "retrait annoncé", BancPas.exp(), "") == "fermee"
+        assert PasRoutes.retirer(h, "GET /v1/objets/{{id}}", "remplacée par v2", BancPas.exp(), BancPas.sup()) == "retiree"
+        assert PasRoutes.resoudre("GET", "/v1/objets/OBJ-A1").statut == 422
+        // déclarée puis retirée sans avoir servi
+        assert PasRoutes.declarer(h, "GET /v1/vieux", "route.catalogue", "lecture", BancPas.exp()) == "declaree"
+        assert PasRoutes.retirer(h, "GET /v1/vieux", "jamais ouverte", BancPas.exp(), BancPas.sup()) == "retiree"
+    }
+}
+
+cell test RoutesRefus {
+    rules {
+        let h = Horodatage(1800000000000)
+        assert_fails PasRoutes.declarer(h, "GET /v1/routes", "route.catalogue", "lecture", "intrus") matching "Habilitation"
+        assert_fails PasRoutes.declarer(h, "GET /v1/routes", "route.catalogue", "lecture", BancPas.dyn_a()) matching "Habilitation"
+        assert_fails PasRoutes.declarer(h, "GET /v1/routes", "route.catalogue", "lecture", "exploitant#1@ORG-OPA") matching "Habilitation"
+        assert_fails PasRoutes.declarer(h, "PUT /v1/routes", "route.catalogue", "lecture", BancPas.exp()) matching "Incoherent"
+        assert_fails PasRoutes.declarer(h, "GET v1/routes", "route.catalogue", "lecture", BancPas.exp()) matching "Incoherent"
+        assert_fails PasRoutes.declarer(h, "GET /v1/{{id}}/x/{{id}}", "route.catalogue", "lecture", BancPas.exp()) matching "Incoherent"
+        assert_fails PasRoutes.declarer(h, "GET /v1/{{nom}}", "route.catalogue", "lecture", BancPas.exp()) matching "Incoherent"
+        assert_fails PasRoutes.declarer(h, "POST /v1/sessions", "session.ouvrir", "lecture", BancPas.exp()) matching "Incoherent"
+        // une erreur de table ne bride jamais une réponse d'urgence
+        assert_fails PasRoutes.declarer(h, "POST /v1/coordinations/{{id}}/reponse", "coordination.repondre", "decision", BancPas.exp()) matching "Incoherent"
+        assert_fails PasRoutes.declarer(h, "POST /v1/messages/{{id}}/accuse", "message.accuser", "lecture", BancPas.exp()) matching "Incoherent"
+        assert PasRoutes.declarer(h, "POST /v1/coordinations/{{id}}/reponse", "coordination.repondre", "urgence", BancPas.exp()) == "declaree"
+        assert_fails PasRoutes.declarer(h, "POST /v1/coordinations/{{id}}/reponse", "coordination.repondre", "urgence", BancPas.exp()) matching "Existe"
+        // quatre yeux, gel des changements
+        assert_fails PasRoutes.ouvrir(h, "POST /v1/coordinations/{{id}}/reponse", BancPas.exp(), BancPas.exp()) matching "QuatreYeux"
+        assert_fails PasRoutes.ouvrir(h, "POST /v1/coordinations/{{id}}/reponse", BancPas.exp(), "intrus") matching "QuatreYeux"
+        assert_fails PasRoutes.ouvrir(Horodatage(777), "POST /v1/coordinations/{{id}}/reponse", BancPas.exp(), BancPas.sup()) matching "Ferme"
+        assert_fails PasRoutes.ouvrir(h, "GET /v1/rien", BancPas.exp(), BancPas.sup()) matching "Inconnu"
+        assert PasRoutes.ouvrir(h, "POST /v1/coordinations/{{id}}/reponse", BancPas.exp(), BancPas.sup()) == "ouverte"
+        assert_fails PasRoutes.ouvrir(h, "POST /v1/coordinations/{{id}}/reponse", BancPas.exp(), BancPas.sup()) matching "EtatInvalide"
+        // une route d'urgence ne se ferme qu'à quatre yeux, avec un motif
+        assert_fails PasRoutes.fermer(h, "POST /v1/coordinations/{{id}}/reponse", "maintenance", BancPas.exp(), "") matching "QuatreYeux"
+        assert_fails PasRoutes.fermer(h, "POST /v1/coordinations/{{id}}/reponse", "", BancPas.exp(), BancPas.sup()) matching "MotifRequis"
+        // une route ouverte ne se retire pas
+        assert_fails PasRoutes.retirer(h, "POST /v1/coordinations/{{id}}/reponse", "fin", BancPas.exp(), BancPas.sup()) matching "EtatInvalide"
+        assert PasRoutes.fermer(h, "POST /v1/coordinations/{{id}}/reponse", "maintenance", BancPas.exp(), BancPas.sup()) == "fermee"
+        assert_fails PasRoutes.retirer(h, "POST /v1/coordinations/{{id}}/reponse", "", BancPas.exp(), BancPas.sup()) matching "MotifRequis"
+        assert_fails PasRoutes.retirer(h, "POST /v1/coordinations/{{id}}/reponse", "fin", BancPas.exp(), BancPas.exp()) matching "QuatreYeux"
+    }
+}
+
+cell test RoutesResolution {
+    rules {
+        let n = BancPas.table()
+        assert n == 23
+        assert PasRoutes.resoudre("GET", "/v1/coordinations").cible == "coordination.en_attente"
+        assert PasRoutes.resoudre("GET", "/v1/coordinations/CJ-1").cible == "coordination.lire"
+        assert PasRoutes.resoudre("POST", "/v1/coordinations/CJ-1/reponse").classe == "urgence"
+        assert PasRoutes.resoudre("DELETE", "/v1/coordinations/CJ-1").statut == 405
+        assert PasRoutes.resoudre("GET", "/v1/inexistant").statut == 404
+        assert PasRoutes.resoudre("GET", "/v1/objets/").statut == 404
+        assert len(PasRoutes.catalogue()) == 23
+        assert PasRoutes.catalogue()[0] == "POST /v1/sessions | session"
+    }
+}
+
+// ── PasService
+
+cell test ServiceModes {
+    rules {
+        let h = Horodatage(1800000000000)
+        assert PasService.mode() == ["normal", ""]
+        assert PasService.restreindre(h, "surcharge de conjonctions", BancPas.exp()) == "restreint"
+        assert PasService.mode() == ["restreint", "surcharge de conjonctions"]
+        assert PasService.fermer(h, "bascule de secours", BancPas.exp(), BancPas.sup()) == "ferme"
+        mock ApiOperations.incident_majeur true
+        assert_fails PasService.retablir(h, BancPas.exp(), BancPas.sup()) matching "Ferme"
+        assert PasService.retablir(h, BancPas.exp(), BancPas.sup()) == "normal"
+        assert PasService.mode() == ["normal", ""]
+        assert PasService.fermer(h, "incident majeur", BancPas.exp(), BancPas.sup()) == "ferme"
+        assert PasService.retablir(h, BancPas.exp(), BancPas.sup()) == "normal"
+        assert PasService.restreindre(h, "test", BancPas.exp()) == "restreint"
+        assert PasService.retablir(h, BancPas.exp(), BancPas.sup()) == "normal"
+    }
+}
+
+cell test ServiceRefus {
+    rules {
+        let h = Horodatage(1800000000000)
+        assert_fails PasService.restreindre(h, "x", BancPas.dyn_a()) matching "Habilitation"
+        assert_fails PasService.restreindre(h, "", BancPas.exp()) matching "MotifRequis"
+        assert_fails PasService.retablir(h, BancPas.exp(), BancPas.sup()) matching "EtatInvalide"
+        assert_fails PasService.fermer(h, "secours", BancPas.exp(), "") matching "QuatreYeux"
+        assert_fails PasService.fermer(h, "secours", "intrus", BancPas.sup()) matching "Habilitation"
+        assert PasService.fermer(h, "secours", BancPas.exp(), BancPas.sup()) == "ferme"
+        assert_fails PasService.restreindre(h, "x", BancPas.exp()) matching "EtatInvalide"
+        assert_fails PasService.fermer(h, "secours", BancPas.exp(), BancPas.sup()) matching "EtatInvalide"
+        assert_fails PasService.retablir(h, BancPas.exp(), BancPas.exp()) matching "QuatreYeux"
+    }
+}
+
+// ── PasDebit / PasBridage
+
+cell test DebitSeaux {
+    rules {
+        let h = 1800000000000
+        // rafale par défaut 300, puis 60 / min
+        assert BancPas.consommer_n(h, "ORG-OPA", "lecture", 300) == 300
+        assert !PasDebit.consommer(Horodatage(h), "ORG-OPA", "lecture")
+        // l'autre classe a son propre seau
+        assert PasDebit.consommer(Horodatage(h), "ORG-OPA", "depot")
+        assert PasDebit.consommer(Horodatage(h + 1000), "ORG-OPA", "lecture")
+        assert !PasDebit.consommer(Horodatage(h + 1500), "ORG-OPA", "lecture")
+        assert BancPas.consommer_n(h + 11000, "ORG-OPA", "lecture", 20) == 10
+        // l'urgence n'est jamais comptée
+        assert BancPas.consommer_n(h, "ORG-OPA", "urgence", 1000) == 1000
+        // quota fixé
+        assert PasDebit.fixer(Horodatage(h), "ORG-OPB", "lecture", 2, 3, BancPas.exp(), "") == 2
+        assert PasDebit.quota("ORG-OPB", "lecture") == [2, 3]
+        assert PasDebit.quota("ORG-OPA", "lecture") == [60, 300]
+        assert BancPas.consommer_n(h, "ORG-OPB", "lecture", 5) == 3
+        assert BancPas.consommer_n(h + 30000, "ORG-OPB", "lecture", 5) == 1
+        // le plein reste plafonné à la rafale
+        assert BancPas.consommer_n(h + 10000000, "ORG-OPB", "lecture", 5) == 3
+        // abaisser la rafale sous l'ancien débit, puis relever le débit au-dessus de l'ancienne rafale
+        assert PasDebit.fixer(Horodatage(h), "ORG-OPB", "lecture", 1, 1, BancPas.exp(), "") == 1
+        assert PasDebit.fixer(Horodatage(h), "ORG-OPB", "lecture", 500, 600, BancPas.exp(), "") == 500
+    }
+}
+
+cell test DebitRefus {
+    rules {
+        let h = Horodatage(1800000000000)
+        assert_fails PasDebit.fixer(h, "ORG-OPA", "lecture", 10, 20, BancPas.dyn_a(), "") matching "Habilitation"
+        assert_fails PasDebit.fixer(h, "ORG-INCONNUE", "lecture", 10, 20, BancPas.exp(), "") matching "Inconnu"
+        assert_fails PasDebit.fixer(h, "ORG-OPA", "urgence", 10, 20, BancPas.exp(), "") matching "Incoherent"
+        assert_fails PasDebit.fixer(h, "ORG-OPA", "lecture", 10, 5, BancPas.exp(), "") matching "HorsBornes"
+        assert_fails PasDebit.fixer(h, "ORG-OPA", "lecture", 601, 1000, BancPas.exp(), "") matching "QuatreYeux"
+        assert PasDebit.fixer(h, "ORG-OPA", "lecture", 601, 1000, BancPas.exp(), BancPas.sup()) == 601
+    }
+}
+
+cell test BridageCrans {
+    rules {
+        let h = 1800000000000
+        assert PasBridage.etat("ORG-OPA") == "libre"
+        assert BancPas.constater_n(h, "ORG-OPA", 9) == "libre"
+        assert BancPas.constater_n(h + 100, "ORG-OPA", 1) == "surveille"
+        assert BancPas.constater_n(h + 200, "ORG-OPA", 10) == "bride"
+        assert BancPas.constater_n(h + 300, "ORG-OPA", 10) == "bloque"
+        // au blocage : l'organisation est notifiée (aucun canal : le message est en défaut)
+        assert PasMessages.echoue("MSG-1")
+        assert_fails PasBridage.lever(Horodatage(h), "ORG-OPA", "faux positif", BancPas.exp(), BancPas.exp()) matching "QuatreYeux"
+        assert_fails PasBridage.lever(Horodatage(h), "ORG-OPA", "", BancPas.exp(), BancPas.sup()) matching "MotifRequis"
+        assert_fails PasBridage.lever(Horodatage(h), "ORG-OPA", "faux positif", BancPas.dyn_a(), BancPas.sup()) matching "Habilitation"
+        assert_fails PasBridage.lever(Horodatage(h), "ORG-OPB", "faux positif", BancPas.exp(), BancPas.sup()) matching "EtatInvalide"
+        assert PasBridage.lever(Horodatage(h), "ORG-OPA", "client corrigé", BancPas.exp(), BancPas.sup()) == "libre"
+        // dépassements espacés de plus d'une fenêtre : jamais de cran
+        assert BancPas.constater_n(h + 400000, "ORG-OPB", 5) == "libre"
+        assert BancPas.constater_n(h + 800000, "ORG-OPB", 5) == "libre"
+    }
+}
+
+cell test BridageApaisement {
+    rules {
+        let h = 1800000000000
+        assert BancPas.constater_n(h, "ORG-OPA", 10) == "surveille"
+        assert BancPas.constater_n(h, "ORG-OPB", 20) == "bride"
+        assert PasBridage.apaiser(Horodatage(h + 100000), 10) == 0
+        assert PasBridage.apaiser(Horodatage(h + 300100), 10) == 1
+        assert PasBridage.etat("ORG-OPA") == "libre"
+        assert PasBridage.etat("ORG-OPB") == "bride"
+        assert PasBridage.apaiser(Horodatage(h + 600100), 10) == 1
+        assert PasBridage.etat("ORG-OPB") == "libre"
+    }
+}
+
+// ── PasRequetes
+
+cell test RequetesIdempotence {
+    rules {
+        let h = Horodatage(1800000000000)
+        let e1 = sha256("POST|/v1/x|a")
+        let e2 = sha256("POST|/v1/x|b")
+        let r1 = PasRequetes.reserver(h, "ORG-OPA|k1", BancPas.dyn_a(), e1)
+        assert r1 == PasReservation { issue: "nouvelle", statut: 0, corps: "ORG-OPA|k1" }
+        // même clé pendant le traitement
+        assert PasRequetes.reserver(h, "ORG-OPA|k1", BancPas.dyn_a(), e1) == PasReservation { issue: "en_cours", statut: 422, corps: "" }
+        assert PasRequetes.terminer(h, "ORG-OPA|k1", PasReponse { statut: 201, corps: "{{\"ok\": 1}}" }) == "terminee"
+        // rejeu : même réponse, y compris pour un collègue de la même organisation
+        assert PasRequetes.reserver(Horodatage(h + 5), "ORG-OPA|k1", "chef_de_mission#1@ORG-OPA", e1) == PasReservation { issue: "rejeu", statut: 201, corps: "{{\"ok\": 1}}" }
+        assert PasRequetes.reserver(h, "ORG-OPA|k1", BancPas.dyn_a(), e2).issue == "incoherent"
+        assert_fails PasRequetes.terminer(h, "ORG-OPA|k1", PasReponse { statut: 200, corps: "" }) matching "EtatInvalide"
+        assert_fails PasRequetes.terminer(h, "ORG-OPA|rien", PasReponse { statut: 200, corps: "" }) matching "Inconnu"
+        // abandon : la clé se rejoue sous "#1"
+        let _ = PasRequetes.reserver(h, "ORG-OPA|k2", BancPas.dyn_a(), e1)
+        assert PasRequetes.abandonner(h, "ORG-OPA|k2") == "abandonnee"
+        assert_fails PasRequetes.abandonner(h, "ORG-OPA|k2") matching "EtatInvalide"
+        assert PasRequetes.reserver(h, "ORG-OPA|k2", BancPas.dyn_a(), e1).corps == "ORG-OPA|k2#1"
+        assert PasRequetes.terminer(h, "ORG-OPA|k2#1", PasReponse { statut: 200, corps: "x" }) == "terminee"
+        assert PasRequetes.reserver(h, "ORG-OPA|k2", BancPas.dyn_a(), e1).issue == "rejeu"
+        // purge après 24 h : la trace (statut) survit au corps
+        assert PasRequetes.purger(Horodatage(h + 1000), 10) == 0
+        assert PasRequetes.purger(Horodatage(h + 86400001), 10) == 2
+        assert PasRequetes.reserver(h, "ORG-OPA|k1", BancPas.dyn_a(), e1).statut == 201
+    }
+}
+
+// ── PasCanaux
+
+cell test CanauxCycle {
+    rules {
+        let h = Horodatage(1800000000000)
+        mock random_token "DEFI"
+        mock http_post "ok"
+        assert PasCanaux.declarer(h, "C-A1", "ORG-OPA", "webhook", "https://opa.example/orbite", BancPas.adm_a()) == "declare"
+        assert PasCanaux.principal("ORG-OPA") == ""
+        assert PasCanaux.adresse("C-A1") == ["webhook", "https://opa.example/orbite"]
+        assert_fails PasCanaux.verifier(h, "C-A1", "FAUX", BancPas.appelant(BancPas.adm_a())) matching "Incoherent"
+        assert PasCanaux.verifier(h, "C-A1", "DEFI", BancPas.appelant(BancPas.adm_a())) == "actif"
+        assert PasCanaux.principal("ORG-OPA") == "C-A1"
+        assert PasCanaux.est_actif("C-A1")
+        // second canal (messagerie sécurisée), de secours
+        mock random_token "DEFI2"
+        mock http_post "ok"
+        assert PasCanaux.declarer(h, "C-A2", "ORG-OPA", "messagerie_securisee", "dfv@opa.example", BancPas.adm_a()) == "declare"
+        assert PasCanaux.verifier(h, "C-A2", "DEFI2", BancPas.appelant(BancPas.dyn_a())) == "actif"
+        assert PasCanaux.principal("ORG-OPA") == "C-A1"
+        // suspension du principal : le secours prend le relais
+        assert PasCanaux.suspendre(h, "C-A1", "maintenance du webhook", BancPas.adm_a()) == "suspendu"
+        assert PasCanaux.principal("ORG-OPA") == "C-A2"
+        mock random_token "DEFI3"
+        mock http_post "ok"
+        assert PasCanaux.reverifier(h, "C-A1", BancPas.adm_a()) == "declare"
+        assert PasCanaux.verifier(h, "C-A1", "DEFI3", BancPas.appelant(BancPas.adm_a())) == "actif"
+        // défauts de livraison consécutifs : suspension automatique
+        assert PasCanaux.noter_issue(h, "C-A2", false) == 1
+        assert PasCanaux.noter_issue(h, "C-A2", true) == 0
+        assert PasCanaux.noter_issue(h, "C-A2", false) == 1
+        assert PasCanaux.noter_issue(h, "C-A2", false) == 2
+        assert PasCanaux.noter_issue(h, "C-A2", false) == 3
+        assert PasCanaux.noter_issue(h, "C-A2", false) == 4
+        assert PasCanaux.noter_issue(h, "C-A2", false) == 5
+        assert !PasCanaux.est_actif("C-A2")
+        assert PasCanaux.principal("ORG-OPA") == "C-A1"
+        // retrait : jamais le dernier canal actif d'un opérateur actif
+        assert PasCanaux.retirer(h, "C-A2", BancPas.adm_a()) == "retire"
+        assert_fails PasCanaux.retirer(h, "C-A1", BancPas.adm_a()) matching "Insuffisant"
+        assert_fails PasCanaux.retirer(h, "C-A2", BancPas.adm_a()) matching "EtatInvalide"
+    }
+}
+
+cell test CanauxRefus {
+    rules {
+        let h = Horodatage(1800000000000)
+        assert_fails PasCanaux.declarer(h, "C-X", "ORG-OPA", "webhook", "https://opa.example", "intrus") matching "Habilitation"
+        assert_fails PasCanaux.declarer(h, "C-X", "ORG-OPA", "webhook", "https://opa.example", BancPas.dyn_a()) matching "Habilitation"
+        assert_fails PasCanaux.declarer(h, "C-X", "ORG-OPA", "webhook", "https://opa.example", "administrateur_operateur#1@ORG-OPB") matching "Habilitation"
+        assert_fails PasCanaux.declarer(h, "C-X", "ORG-ETAT-BRV", "webhook", "https://brv.example", "administrateur_operateur#1@ORG-ETAT-BRV") matching "Habilitation"
+        assert_fails PasCanaux.declarer(h, "C-X", "ORG-RADIEE", "webhook", "https://x.example", BancPas.exp()) matching "Inconnu"
+        assert_fails PasCanaux.declarer(h, "C-X", "ORG-OPA", "webhook", "http://opa.example", BancPas.adm_a()) matching "Incoherent"
+        assert_fails PasCanaux.declarer(h, "C-X", "ORG-OPA", "messagerie_securisee", "pas une adresse", BancPas.adm_a()) matching "Incoherent"
+        // l'autorité d'un État déclare le canal de son État ; l'exploitant celui de tous
+        mock http_post "ok"
+        assert PasCanaux.declarer(h, "C-BRV", "ORG-ETAT-BRV", "messagerie_securisee", "pf@brv.example", "point_focal#1@ORG-ETAT-BRV") == "declare"
+        mock http_post "ok"
+        assert PasCanaux.declarer(h, "C-B1", "ORG-OPB", "webhook", "https://opb.example", BancPas.exp()) == "declare"
+        assert_fails PasCanaux.declarer(h, "C-B1", "ORG-OPB", "webhook", "https://opb.example", BancPas.exp()) matching "Existe"
+        // seule l'organisation du canal le vérifie ; un canal non vérifié ne se suspend pas
+        assert_fails PasCanaux.verifier(h, "C-B1", "x", BancPas.appelant(BancPas.dyn_a())) matching "Habilitation"
+        assert_fails PasCanaux.verifier(h, "C-ZZ", "x", BancPas.appelant(BancPas.dyn_a())) matching "Inconnu"
+        assert_fails PasCanaux.suspendre(h, "C-B1", "test", BancPas.exp()) matching "EtatInvalide"
+        assert_fails PasCanaux.suspendre(h, "C-B1", "", BancPas.exp()) matching "MotifRequis"
+        assert_fails PasCanaux.suspendre(h, "C-B1", "test", BancPas.adm_a()) matching "Habilitation"
+        assert_fails PasCanaux.reverifier(h, "C-B1", BancPas.exp()) matching "EtatInvalide"
+        assert_fails PasCanaux.retirer(h, "C-B1", BancPas.dyn_b()) matching "Habilitation"
+        assert_fails PasCanaux.adresse("C-ZZ") matching "Inconnu"
+        // un canal jamais vérifié se retire librement
+        assert PasCanaux.retirer(h, "C-B1", "administrateur_operateur#1@ORG-OPB") == "retire"
+    }
+}
+
+// ── PasMessages
+
+cell test MessagesLivraisonAcquittement {
+    rules {
+        let h = Horodatage(1800000000000)
+        mock random_token "DEFI"
+        mock http_post "ok"
+        let _ = BancPas.canal_opa()
+        mock http_post "ok"
+        let id = PasMessages.mettre_en_file(h, "ORG-OPA", "CJ-1", "texte", "Accord", "Votre accord est enregistré.", 2)
+        assert id == "MSG-1"
+        assert BancPas.etat_msg(id) == "vivant"
+        assert PasMessages.en_attente(BancPas.appelant(BancPas.dyn_a()), 10) == ["MSG-1 | texte | Accord | CJ-1 | 2 | 1800014400000"]
+        assert PasMessages.en_attente(BancPas.appelant(BancPas.dyn_b()), 10) == []
+        assert_fails PasMessages.acquitter(h, id, BancPas.appelant(BancPas.dyn_b())) matching "Habilitation"
+        assert PasMessages.acquitter(h, id, BancPas.appelant(BancPas.dyn_a())) == "acquitte"
+        assert PasMessages.acquitte(id)
+        assert !PasMessages.echoue(id)
+        assert_fails PasMessages.acquitter(h, id, BancPas.appelant(BancPas.dyn_a())) matching "EtatInvalide"
+        assert_fails PasMessages.acquitter(h, "MSG-99", BancPas.appelant(BancPas.dyn_a())) matching "Inconnu"
+        assert PasMessages.en_attente(BancPas.appelant(BancPas.dyn_a()), 10) == []
+        // preuve : qui a été averti de quoi, et quand
+        assert PasMessages.du_rapprochement("CJ-1", "auditeur#1@ORG-ORBITE") == ["MSG-1 | ORG-OPA | texte | acquitte | 1800000000000"]
+        assert_fails PasMessages.du_rapprochement("CJ-1", BancPas.dyn_a()) matching "Habilitation"
+        assert_fails PasMessages.mettre_en_file(h, "OPA", "", "texte", "x", "y", 1) matching "Inconnu"
+    }
+}
+
+cell test MessagesDefautEscalade {
+    rules {
+        let h = Horodatage(1800000000000)
+        // opérateur sans canal : défaut immédiat, escalade au battement
+        let m1 = PasMessages.mettre_en_file(h, "ORG-OPC", "CJ-1", "alerte", "Alerte", "", 3)
+        assert PasMessages.echoue(m1)
+        // État sans canal : signalé à la conformité
+        let m2 = PasMessages.mettre_en_file(h, "ORG-ETAT-BRV", "CJ-1", "texte", "Info", "x", 2)
+        // hors rapprochement : signalé aussi
+        let m3 = PasMessages.mettre_en_file(h, "ORG-OPB", "", "texte", "Info", "x", 1)
+        assert PasMessages.traiter_file(h, 100) == 3
+        assert PasMessages.du_rapprochement("CJ-1", "analyste#1@ORG-ORBITE") == ["MSG-1 | ORG-OPC | alerte | escalade | 1800000000000", "MSG-2 | ORG-ETAT-BRV | texte | signale | 1800000000000"]
+        assert PasMessages.echoue(m3)
+        assert PasMessages.traiter_file(h, 100) == 0
+        // accusé non rendu à l'échéance (niveau 3 : 15 min) : défaut puis escalade
+        mock random_token "DEFI"
+        mock http_post "ok"
+        let _ = BancPas.canal_opa()
+        mock http_post "ok"
+        let m4 = PasMessages.mettre_en_file(h, "ORG-OPA", "CJ-2", "texte", "Urgence", "Répondez", 3)
+        assert PasMessages.traiter_file(Horodatage(1800000000000 + 900000), 100) == 0
+        assert PasMessages.traiter_file(Horodatage(1800000000000 + 900001), 100) == 2
+        assert PasMessages.echoue(m4)
+        assert_fails PasMessages.acquitter(Horodatage(1800000000000 + 900002), m4, BancPas.appelant(BancPas.dyn_a())) matching "Echu"
+    }
+}
+
+cell test MessagesReessais {
+    rules {
+        let h = Horodatage(1800000000000)
+        mock random_token "DEFI"
+        mock http_post "ok"
+        let _ = BancPas.canal_opa()
+        // premier envoi en échec transitoire : reste en file, réessai au battement
+        mock http_post map("error", "indisponible", "kind", "http_status", "status", 503, "body", "")
+        let m1 = PasMessages.mettre_en_file(h, "ORG-OPA", "", "texte", "Info", "x", 2)
+        assert BancPas.etat_msg(m1) == "vivant"
+        assert PasMessages.en_attente(BancPas.appelant(BancPas.dyn_a()), 10) == []
+        mock http_post "ok"
+        assert PasMessages.traiter_file(Horodatage(1800000000000 + 60000), 100) == 1
+        assert PasMessages.en_attente(BancPas.appelant(BancPas.dyn_a()), 10) == ["MSG-1 | texte | Info |  | 2 | 1800014460000"]
+        // refus définitif du destinataire (4xx) : défaut, puis signalement (hors rapprochement)
+        mock http_post map("error", "refus", "kind", "http_status", "status", 503, "body", "")
+        let m2 = PasMessages.mettre_en_file(h, "ORG-OPA", "", "texte", "Info", "y", 1)
+        mock http_post map("error", "refus", "kind", "http_status", "status", 410, "body", "")
+        assert PasMessages.traiter_file(Horodatage(1800000000000 + 60000), 100) == 2
+        assert PasMessages.echoue(m2)
+        // échéance de livraison dépassée (niveau 3 : 5 min)
+        mock http_post map("error", "lent", "kind", "timeout", "status", 0, "body", "")
+        let m3 = PasMessages.mettre_en_file(h, "ORG-OPA", "CJ-1", "texte", "Urgence", "z", 3)
+        assert PasMessages.traiter_file(Horodatage(1800000000000 + 300001), 100) == 2
+        assert PasMessages.echoue(m3)
+        // annulation : jamais un message de niveau 3
+        mock http_post map("error", "lent", "kind", "timeout", "status", 0, "body", "")
+        let m4 = PasMessages.mettre_en_file(h, "ORG-OPA", "", "texte", "Erreur", "w", 1)
+        mock http_post map("error", "lent", "kind", "timeout", "status", 0, "body", "")
+        let m5 = PasMessages.mettre_en_file(h, "ORG-OPA", "CJ-1", "texte", "Urgence", "v", 3)
+        assert_fails PasMessages.annuler(h, m5, "erreur", BancPas.exp()) matching "NonEligible"
+        assert_fails PasMessages.annuler(h, m4, "erreur", BancPas.dyn_a()) matching "Habilitation"
+        assert_fails PasMessages.annuler(h, m4, "", BancPas.exp()) matching "MotifRequis"
+        assert_fails PasMessages.annuler(h, "MSG-99", "erreur", BancPas.exp()) matching "Inconnu"
+        assert PasMessages.annuler(h, m4, "message erroné", BancPas.sup()) == "annule"
+        assert_fails PasMessages.annuler(h, m4, "message erroné", BancPas.sup()) matching "EtatInvalide"
+        assert !PasMessages.echoue(m4)
+    }
+}
+
+// ── PasFormats
+
+cell test FormatsOem {
+    rules {
+        let e = PasFormats.lire_oem(BancPas.oem("OBJ-A1", "diagonale"))
+        assert e.objet == "OBJ-A1"
+        assert e.epoque == 1767225600000
+        assert e.horizon == 86400000
+        assert e.q == "moyenne"
+        assert e.position == "7000000,0,0,0,7500000,0"
+        assert e.empreinte == sha256(BancPas.oem("OBJ-A1", "diagonale"))
+        assert !e.avec_manoeuvres
+        assert PasFormats.lire_oem(BancPas.oem("OBJ-A1", "complete")).q == "haute"
+        assert PasFormats.lire_oem(BancPas.oem("OBJ-A1", "aucune")).q == "faible"
+        assert PasFormats.lire_oem(BancPas.oem("OBJ-A1", "aucune") + "\nMAN_ID = M1").avec_manoeuvres
+        assert_fails PasFormats.lire_oem(replace(BancPas.oem("OBJ-A1", "aucune"), "3.0", "2.0")) matching "Incoherent"
+        assert_fails PasFormats.lire_oem(BancPas.oem("SAT-7", "aucune")) matching "Incoherent"
+        assert_fails PasFormats.lire_oem(replace(BancPas.oem("OBJ-A1", "aucune"), "EME2000", "MARS")) matching "Incoherent"
+        assert_fails PasFormats.lire_oem(replace(BancPas.oem("OBJ-A1", "aucune"), "2026-01-02T", "2025-12-31T")) matching "Incoherent"
+        assert_fails PasFormats.lire_oem(replace(BancPas.oem("OBJ-A1", "aucune"), "7000.0 0.0 0.0 0.0 7.5 0.0", "x y")) matching "Incoherent"
+        assert_fails PasFormats.lire_oem(replace(BancPas.oem("OBJ-A1", "aucune"), "START_TIME", "DEBUT")) matching "Incoherent"
+    }
+}
+
+cell test FormatsCdmAlerte {
+    rules {
+        let h = Horodatage(1800000000000)
+        let cdm = PasFormats.cdm(h, "CJ-1", "ORG-OPB")
+        assert contains(cdm, "CCSDS_CDM_VERS = 2.0")
+        assert contains(cdm, "MISS_DISTANCE = 120 [m]")
+        assert contains(cdm, "OBJECT_DESIGNATOR = OBJ-B1")
+        assert contains(cdm, "OPERATOR_ORGANIZATION = ORG-OPA")
+        assert !contains(cdm, "masque")
+        // l'objet confidentiel est masqué, le numéro reste
+        let cdm_s = PasFormats.cdm(h, "CJ-S1", "ORG-OPB")
+        assert contains(cdm_s, "OBJECT_DESIGNATOR = OBJ-SECRET1")
+        assert contains(cdm_s, "OBJECT_NAME = masque")
+        assert !contains(PasFormats.cdm(h, "CJ-S1", "ORG-OPA"), "masque")
+        assert_fails PasFormats.cdm(h, "CJ-X1", "ORG-OPB") matching "Confidentiel"
+        assert_fails PasFormats.cdm(h, "CJ-INCONNU", "ORG-OPB") matching "Inconnu"
+        let a = from_json(PasFormats.alerte(h, "CJ-1", "ORG-OPB"))
+        assert a.niveau == 3
+        assert a.designe == "OBJ-A1"
+        assert a.temps_restant == 7200000
+        assert a.route_reponse == "POST /v1/coordinations/CJ-1/reponse"
+        let a_s = from_json(PasFormats.alerte(h, "CJ-S1", "ORG-OPB"))
+        assert a_s.objets == ["OBJ-A1", "masque"]
+        // aucun objet diffusable : alerte réduite au numéro et au niveau
+        let a_x = from_json(PasFormats.alerte(h, "CJ-X1", "ORG-OPB"))
+        assert a_x.reduite
+        assert a_x.objets == ()
+        assert_fails PasFormats.alerte(h, "CJ-INCONNU", "ORG-OPB") matching "Inconnu"
+        // notifier choisit le format
+        assert PasFormats.notifier(h, "ORG-OPC", "CJ-1", "CDM", "", 3) == "MSG-1"
+        assert PasFormats.notifier(h, "ORG-OPC", "CJ-1", "Alerte", "", 3) == "MSG-2"
+        assert PasFormats.notifier(h, "ORG-OPC", "", "Info", "texte", 1) == "MSG-3"
+        assert PasMessages.du_rapprochement("CJ-1", "analyste#1@ORG-ORBITE") == ["MSG-1 | ORG-OPC | CDM | en_defaut | 1800000000000", "MSG-2 | ORG-OPC | alerte | en_defaut | 1800000000000"]
+    }
+}
+
+// ── PasEntree (chaîne HTTP), avec now() figé sur h0
+
+cell test EntreeAuthentification {
+    rules {
+        let n = BancPas.table()
+        mock now 1800000000
+        assert BancPas.appel("GET", "/v1/routes", "", "", "").statut == 401
+        assert BancPas.appel("GET", "/v1/routes", "", "intrus@ORG-OPA", "").statut == 401
+        assert BancPas.appel("GET", "/v1/routes", "", "expire#1@ORG-OPA", "").statut == 401
+        assert BancPas.appel("GET", "/v1/routes", "", "systeme", "").statut == 401
+        assert BancPas.appel("GET", "/v1/routes", "", BancPas.dyn_a(), "").statut == 200
+        assert len(BancPas.appel("GET", "/v1/routes", "", BancPas.dyn_a(), "").corps.routes) == 23
+        assert BancPas.appel("GET", "/v1/rien", "", BancPas.dyn_a(), "").statut == 404
+        assert BancPas.appel("DELETE", "/v1/routes", "", BancPas.dyn_a(), "k").statut == 405
+        // ouverture de session : seule route sans jeton
+        let s = BancPas.appel("POST", "/v1/sessions", "{{\"personne\": \"dynamicien#1@ORG-OPA\", \"facteur\": \"2FA-ok\"}}", "", "")
+        assert s.statut == 201
+        assert s.corps.jeton == "J:dynamicien#1@ORG-OPA"
+        assert BancPas.appel("POST", "/v1/sessions", "{{\"personne\": \"dynamicien#1@ORG-OPA\", \"facteur\": \"faux\"}}", "", "").statut == 401
+        assert BancPas.appel("POST", "/v1/sessions", "{{\"personne\": \"systeme\", \"facteur\": \"2FA-ok\"}}", "", "").statut == 401
+        assert BancPas.appel("POST", "/v1/sessions", "{{\"facteur\": \"2FA-ok\"}}", "", "").statut == 400
+        assert BancPas.appel("POST", "/v1/sessions", "pas du json", "", "").statut == 400
+        assert BancPas.appel("DELETE", "/v1/sessions", "", BancPas.dyn_a(), "").statut == 200
+        // POST sans Idempotency-Key
+        assert BancPas.appel("POST", "/v1/objets/OBJ-A1/propulsion", "{{\"p\": \"aucune\", \"motif\": \"y\"}}", BancPas.dyn_a(), "").statut == 400
+        assert Journal.taille() > 0
+    }
+}
+
+cell test EntreeIdempotenceQuatreYeux {
+    rules {
+        let n = BancPas.table()
+        mock now 1800000000
+        let corps = "{{\"reponse\": \"accepte\", \"motif\": \"OK\"}}"
+        let r1 = BancPas.appel("POST", "/v1/coordinations/CJ-1/reponse", corps, BancPas.dyn_a(), "rep-1")
+        assert r1.statut == 201
+        assert r1.corps.reponse == "enregistree"
+        // réessai : même réponse, aucune seconde décision
+        assert BancPas.appel("POST", "/v1/coordinations/CJ-1/reponse", corps, "chef_de_mission#1@ORG-OPA", "rep-1") == r1
+        assert BancPas.appel("POST", "/v1/coordinations/CJ-1/reponse", "{{\"reponse\": \"refuse\"}}", BancPas.dyn_a(), "rep-1").corps.kind == "Incoherent"
+        // la même clé dans une autre organisation est une autre requête
+        assert BancPas.appel("POST", "/v1/coordinations/CJ-1/reponse", corps, BancPas.dyn_b(), "rep-1").statut == 201
+        // refus de la façade : 403 / 422 gardés pour rejeu
+        assert BancPas.appel("POST", "/v1/coordinations/CJ-1/reponse", corps, "capteur#1@ORG-OPA", "rep-2").statut == 403
+        assert BancPas.appel("POST", "/v1/coordinations/CJ-1/reponse", "{{\"reponse\": \"peut-etre\"}}", BancPas.dyn_a(), "rep-3").corps.kind == "Incoherent"
+        assert BancPas.appel("POST", "/v1/coordinations/CJ-1/reponse", "{{\"motif\": \"x\"}}", BancPas.dyn_a(), "rep-4").statut == 400
+        // quatre yeux : second jeton du même titulaire, ou absent
+        let pf = "point_focal#1@ORG-ETAT-BRV"
+        assert BancPas.appel_v("POST", "/v1/operateurs/ORG-OPB/suspension", "{{\"motif\": \"manquements\"}}", pf, "s-1", pf).statut == 403
+        assert BancPas.appel("POST", "/v1/operateurs/ORG-OPB/suspension", "{{\"motif\": \"manquements\"}}", pf, "s-2").corps.kind == "QuatreYeux"
+        // l'abandon rend la clé rejouable avec un bon valideur
+        let ok = BancPas.appel_v("POST", "/v1/operateurs/ORG-OPB/suspension", "{{\"motif\": \"manquements\"}}", pf, "s-1", "direction#1@ORG-ORBITE")
+        assert ok.statut == 200
+        assert ok.corps.etat == "suspendu"
+    }
+}
+
+cell test EntreeModeDebitBridage {
+    rules {
+        let n = BancPas.table()
+        mock now 1800000000
+        let h = Horodatage(1800000000000)
+        let anomalie = "{{\"genre\": \"perte_attitude\", \"description\": \"roue à inertie\"}}"
+        assert BancPas.appel("POST", "/v1/objets/OBJ-A1/anomalie", anomalie, BancPas.dyn_a(), "a-1").statut == 422
+        assert BancPas.appel("POST", "/v1/objets/OBJ-A1/anomalie", anomalie, BancPas.dyn_a(), "a-1").corps.kind == "Suspendu"
+        // mode restreint : lectures oui, dépôts non, urgence toujours
+        let _ = PasService.restreindre(h, "surcharge", BancPas.exp())
+        assert BancPas.appel("GET", "/v1/routes", "", BancPas.dyn_a(), "").statut == 200
+        assert BancPas.appel("POST", "/v1/manoeuvres", "{{}}", BancPas.dyn_a(), "m-1").corps.kind == "Ferme"
+        let _ = PasService.fermer(h, "secours", BancPas.exp(), BancPas.sup())
+        assert BancPas.appel("GET", "/v1/routes", "", BancPas.dyn_a(), "").corps.kind == "Ferme"
+        assert BancPas.appel("POST", "/v1/coordinations/CJ-1/reponse", "{{\"reponse\": \"accepte\"}}", BancPas.dyn_a(), "u-1").statut == 201
+        let _ = PasService.retablir(h, BancPas.exp(), BancPas.sup())
+        // débit : rafale de 3 pour ORG-OPB en lecture
+        let _ = PasDebit.fixer(h, "ORG-OPB", "lecture", 1, 3, BancPas.exp(), "")
+        assert BancPas.appel("GET", "/v1/routes", "", BancPas.dyn_b(), "").statut == 200
+        assert BancPas.appel("GET", "/v1/routes", "", BancPas.dyn_b(), "").statut == 200
+        assert BancPas.appel("GET", "/v1/routes", "", BancPas.dyn_b(), "").statut == 200
+        assert BancPas.appel("GET", "/v1/routes", "", BancPas.dyn_b(), "").statut == 429
+        assert PasBridage.etat("ORG-OPB") == "libre"
+        // une organisation bloquée garde l'urgence
+        assert BancPas.constater_n(1800000000000, "ORG-OPB", 30) == "bloque"
+        assert BancPas.appel("GET", "/v1/routes", "", BancPas.dyn_b(), "").corps.error == "organisation bloquée pour dépassements répétés"
+        assert BancPas.appel("POST", "/v1/escalades/CJ-1/accuse", "{{}}", BancPas.dyn_b(), "e-1").statut == 201
+    }
+}
+
+cell test EntreeAdministration {
+    rules {
+        mock now 1800000000
+        let e = BancPas.exp()
+        // gestes de la passerelle câblés hors table : la table vide ne les ferme pas
+        let d = BancPas.appel("POST", "/admin/passerelle/PasRoutes.declarer", "{{\"route\": \"GET /v1/routes\", \"cible\": \"route.catalogue\", \"classe\": \"lecture\"}}", e, "d-1")
+        assert d.statut == 200
+        assert d.corps.resultat == "declaree"
+        assert BancPas.appel("POST", "/admin/passerelle/PasRoutes.ouvrir", "{{\"route\": \"GET /v1/routes\"}}", e, "o-1").statut == 403
+        assert BancPas.appel_v("POST", "/admin/passerelle/PasRoutes.ouvrir", "{{\"route\": \"GET /v1/routes\"}}", e, "o-1", BancPas.sup()).corps.resultat == "ouverte"
+        assert BancPas.appel("GET", "/v1/routes", "", BancPas.dyn_a(), "").corps.routes == ["GET /v1/routes | lecture"]
+        assert BancPas.appel("POST", "/admin/passerelle/PasRoutes.declarer", "{{\"route\": \"GET /v1/x\", \"cible\": \"inventee\", \"classe\": \"lecture\"}}", e, "d-2").statut == 400
+        assert BancPas.appel("POST", "/admin/passerelle/PasRoutes.declarer", "{{\"route\": \"GET /v1/x\"}}", e, "d-3").statut == 400
+        assert BancPas.appel("POST", "/admin/passerelle/PasRoutes.declarer", "{{\"route\": \"GET /v1/x\", \"cible\": \"route.catalogue\", \"classe\": \"lecture\", \"par\": \"exploitant#2@ORG-ORBITE\"}}", e, "d-4").statut == 400
+        assert BancPas.appel("POST", "/admin/passerelle/PasInconnu.geste", "{{}}", e, "x-1").statut == 404
+        assert BancPas.appel("GET", "/admin/passerelle/PasService.restreindre", "", e, "").statut == 405
+        assert BancPas.appel("POST", "/admin/passerelle/PasService.restreindre", "{{\"motif\": \"surcharge\"}}", BancPas.dyn_a(), "r-1").statut == 403
+        assert BancPas.appel("POST", "/admin/passerelle/PasService.restreindre", "{{\"motif\": \"surcharge\"}}", e, "r-2").corps.resultat == "restreint"
+        // routeurs des autres sous-systèmes
+        let c = BancPas.appel("POST", "/admin/ref/ApiRef.cataloguer", "{{\"nature\": \"debris\", \"proprietaire\": \"ORG-ORBITE\", \"etat\": \"\", \"regime\": \"leo\", \"propulsion\": \"aucune\", \"masse\": 10}}", "analyste#1@ORG-ORBITE", "c-1")
+        assert c.statut == 200
+        assert c.corps.resultat == "OBJ-A9"
+        assert BancPas.appel("POST", "/admin/ref/ApiRef.cataloguer", "{{\"nature\": \"licorne\", \"proprietaire\": \"ORG-ORBITE\", \"etat\": \"\", \"regime\": \"leo\", \"propulsion\": \"aucune\", \"masse\": 10}}", "analyste#1@ORG-ORBITE", "c-2").statut == 400
+        assert BancPas.appel("POST", "/admin/ref/ApiRef.cataloguer", "{{\"nature\": \"debris\", \"proprietaire\": \"ORG-ORBITE\", \"etat\": \"\", \"regime\": \"leo\", \"propulsion\": \"aucune\", \"masse\": 10}}", BancPas.dyn_a(), "c-3").statut == 403
+        assert BancPas.appel("POST", "/admin/ref/ApiRef.inexistant", "{{}}", "analyste#1@ORG-ORBITE", "c-4").statut == 404
+        assert BancPas.appel("POST", "/admin/meteo/MetBareme.fixer", "{{}}", "analyste#1@ORG-ORBITE", "c-5").statut == 404
+        assert BancPas.appel("POST", "/admin/lune/X.y", "{{}}", "analyste#1@ORG-ORBITE", "c-6").statut == 404
+        assert BancPas.appel("POST", "/admin/escalade/ApiEscalade.escalader", "{{\"r\": \"CJ-1\", \"op\": \"ORG-OPB\", \"motif\": \"silence\"}}", "analyste#1@ORG-ORBITE", "c-7").corps.resultat == 1
+        assert BancPas.appel("POST", "/admin/conformite/ApiConformite.constater", "{{\"op\": \"ORG-OPB\", \"nature\": \"x\", \"gravite\": 7, \"reference\": \"R\"}}", "conformite#1@ORG-ORBITE", "c-8").statut == 400
+    }
+}
+
+cell test PasAdminRouteurs {
+    rules {
+        let h = Horodatage(1800000000000)
+        let an = BancPas.appelant("analyste#1@ORG-ORBITE")
+        assert PasAdmin.router_ref(h, an, "", "ApiRef.cataloguer", map("nature", "debris", "proprietaire", "ORG-ORBITE", "etat", "", "regime", "leo", "propulsion", "aucune", "masse", 10)) == "OBJ-A9"
+        assert_fails PasAdmin.router_ref(h, an, "", "ApiRef.cataloguer", map("nature", "debris")) matching "HorsBornes"
+        assert_fails PasAdmin.router_ref(h, an, "", "ApiRef.cataloguer", map("h", 1)) matching "HorsBornes"
+        assert_fails PasAdmin.router_ref(h, an, "", "ApiRef.rien", map()) matching "Inconnu"
+        assert_fails PasAdmin.router_donnees(h, an, "", "ApiDonnees.tracer", map()) matching "Inconnu"
+        assert_fails PasAdmin.router_ref(h, BancPas.appelant("intrus@ORG-OPA"), "", "ApiRef.cataloguer", map()) matching "Habilitation"
+        // un rôle d'ORBITE revendiqué hors d'ORBITE ne passe pas le contrôle préalable
+        assert_fails PasAdmin.router_ref(h, PasAppelant { personne: "analyste#1@ORG-OPA", org: "ORG-OPA", role: "analyste" }, "", "ApiRef.cataloguer", map()) matching "Habilitation"
+        assert PasAdmin.router_operateurs(h, BancPas.appelant("point_focal#1@ORG-ETAT-BRV"), "direction#1@ORG-ORBITE", "ApiOperateurs.suspendre", map("op", "ORG-OPB", "motif", "x")) == "suspendu"
+    }
+}
+
+cell test MetierLecturesEtDepots {
+    rules {
+        let n = BancPas.table()
+        mock now 1800000000
+        let o = BancPas.appel("GET", "/v1/objets/OBJ-A1", "", BancPas.dyn_b(), "")
+        assert o.statut == 200
+        assert o.corps.proprietaire == "ORG-OPA"
+        assert o.corps.rapprochements_ouverts == ["CJ-1"]
+        // propriété 6 : données d'un objet confidentiel
+        assert BancPas.appel("GET", "/v1/objets/OBJ-SECRET1", "", BancPas.dyn_b(), "").statut == 403
+        assert BancPas.appel("GET", "/v1/objets/OBJ-SECRET1", "", BancPas.dyn_a(), "").statut == 200
+        assert BancPas.appel("GET", "/v1/objets/OBJ-SECRET1/ephemerides", "", BancPas.dyn_b(), "").statut == 403
+        assert BancPas.appel("GET", "/v1/objets/OBJ-A1/ephemerides", "", BancPas.dyn_b(), "").corps.depot == "OEM-0123456789abcdef"
+        assert BancPas.appel("GET", "/v1/manoeuvres/PLAN-S1", "", BancPas.dyn_b(), "").statut == 403
+        assert BancPas.appel("GET", "/v1/manoeuvres/PLAN-1", "", BancPas.dyn_b(), "").corps.objet == "OBJ-A1"
+        assert BancPas.appel("GET", "/v1/rapprochements/CJ-X1", "", BancPas.dyn_b(), "").statut == 403
+        assert contains(BancPas.appel("GET", "/v1/rapprochements/CJ-S1", "", BancPas.dyn_b(), "").corps.cdm, "OBJECT_NAME = masque")
+        // dépôt d'éphéméride : OEM brut
+        let oem = BancPas.oem("OBJ-A1", "diagonale")
+        let dep = BancPas.appel("POST", "/v1/objets/OBJ-A1/ephemerides", oem, BancPas.dyn_a(), "oem-1")
+        assert dep.statut == 201
+        assert dep.corps.issue == "validee"
+        assert dep.corps.depot == "OEM-" + substring(sha256(oem), 0, 16)
+        assert BancPas.appel("POST", "/v1/objets/OBJ-B1/ephemerides", oem, BancPas.dyn_a(), "oem-2").corps.kind == "Incoherent"
+        assert BancPas.appel("POST", "/v1/objets/OBJ-A1/ephemerides", oem, BancPas.dyn_b(), "oem-3").statut == 403
+        // mesure d'un capteur
+        assert BancPas.appel("POST", "/v1/capteurs/CAPT-1/mesures", "{{\"objet\": \"OBJ-A1\", \"instant\": 1799999990000, \"mesure\": \"az=1;el=2\"}}", "capteur#1@ORG-CAPT1", "me-1").statut == 201
+        assert BancPas.appel("POST", "/v1/capteurs/CAPT-1/mesures", "{{\"objet\": \"OBJ-A1\"}}", "capteur#1@ORG-CAPT1", "me-2").statut == 400
+        // propulsion, manœuvre
+        assert BancPas.appel("POST", "/v1/objets/OBJ-A1/propulsion", "{{\"p\": \"aucune\", \"motif\": \"panne\"}}", BancPas.dyn_a(), "p-1").corps.propulsion == "aucune"
+        assert BancPas.appel("POST", "/v1/objets/OBJ-A1/propulsion", "{{\"p\": \"aucune\", \"motif\": \"panne\"}}", BancPas.dyn_b(), "p-2").statut == 403
+        assert BancPas.appel("POST", "/v1/manoeuvres", "{{\"plan\": \"PLAN-7\", \"objet\": \"OBJ-A1\", \"r\": \"CJ-1\", \"motif\": \"évitement\", \"debut\": 1800001000000, \"dv\": 120}}", BancPas.dyn_a(), "mv-1").statut == 201
+        assert BancPas.appel("POST", "/v1/manoeuvres", "{{\"plan\": \"PLAN-8\", \"objet\": \"OBJ-A1\", \"motif\": \"x\", \"debut\": 1, \"dv\": -5}}", BancPas.dyn_a(), "mv-2").statut == 400
+        // coordinations en attente de l'organisation
+        assert BancPas.appel("GET", "/v1/coordinations", "", BancPas.dyn_a(), "").corps.en_attente == [map("rapprochement", "CJ-1", "echeance", 1800003600000)]
+        assert BancPas.appel("GET", "/v1/coordinations/CJ-1", "", BancPas.dyn_a(), "").corps.designe == "OBJ-A1"
+    }
+}
+
+// ── Rondes et façade
+
+cell test RondesEtFacade {
+    rules {
+        let h = Horodatage(1800000000000)
+        assert_fails PasRondes.balayer(h, BancPas.exp()) matching "Habilitation"
+        assert_fails ApiPasserelle.balayer(h, "intrus") matching "Habilitation"
+        let m1 = ApiPasserelle.notifier(h, "ORG-OPC", "CJ-1", "Alerte", "", 3)
+        assert m1 == "MSG-1"
+        assert ApiPasserelle.echoue(m1)
+        assert !ApiPasserelle.acquitte(m1)
+        assert ApiPasserelle.balayer(h, "systeme") == 1
+        assert PasMessages.du_rapprochement("CJ-1", "analyste#1@ORG-ORBITE") == ["MSG-1 | ORG-OPC | alerte | escalade | 1800000000000"]
+        let _ = PasRequetes.reserver(h, "ORG-OPA|k", "x", sha256("a"))
+        let _ = PasRequetes.terminer(h, "ORG-OPA|k", PasReponse { statut: 200, corps: "x" })
+        let _ = BancPas.constater_n(1800000000000, "ORG-OPA", 10)
+        assert ApiPasserelle.balayer(Horodatage(1800000000000 + 86400001), "systeme") == 2
+        let n = BancPas.table()
+        mock now 1800000000
+        let rep = ApiPasserelle.request("GET", "/v1/routes", "", map("Authorization", "Bearer J:dynamicien#1@ORG-OPA"))
+        assert rep._status == 200
+        assert ApiPasserelle.request("GET", "/v1/routes", "", map())._status == 401
+    }
+}
+
+// ── Scénario : alerte de niveau 3 jusqu'à la réponse de l'opérateur, et l'opérateur muet escaladé
+
+cell test ScenarioAlerteCoordination {
+    rules {
+        let n = BancPas.table()
+        mock now 1800000000
+        let h = Horodatage(1800000000000)
+        let adm = BancPas.adm_a()
+        // 1. l'opérateur A déclare et vérifie son webhook par l'API
+        mock random_token "DEFI-A"
+        mock http_post "ok"
+        assert BancPas.appel("POST", "/v1/canaux", "{{\"canal\": \"C-A\", \"genre\": \"webhook\", \"adresse\": \"https://opa.example/hook\"}}", adm, "c-1").statut == 201
+        assert BancPas.appel("POST", "/v1/canaux/C-A/verification", "{{\"defi\": \"DEFI-A\"}}", adm, "c-2").corps.etat == "actif"
+        // 2. ORBITE alerte les deux parties de CJ-1 (alerte composée à l'envoi) ; B n'a pas de canal
+        let ma = ApiPasserelle.notifier(h, "ORG-OPA", "CJ-1", "Alerte", "", 3)
+        let mb = ApiPasserelle.notifier(h, "ORG-OPB", "CJ-1", "Alerte", "", 3)
+        assert ApiPasserelle.echoue(mb)
+        // 3. battement : l'alerte part vers A, B est escaladé
+        mock http_post "ok"
+        assert ApiPasserelle.balayer(Horodatage(1800000000000 + 60000), "systeme") == 2
+        assert PasMessages.du_rapprochement("CJ-1", "conformite#1@ORG-ORBITE") == ["MSG-1 | ORG-OPA | alerte | livre | 1800000000000", "MSG-2 | ORG-OPB | alerte | escalade | 1800000000000"]
+        // 4. A relève ses messages, acquitte, et répond à la coordination
+        let l = BancPas.appel("GET", "/v1/messages", "", BancPas.dyn_a(), "")
+        assert len(l.corps.messages) == 1
+        assert starts_with(l.corps.messages[0], "MSG-1 | alerte | Alerte | CJ-1 | 3")
+        assert BancPas.appel("POST", "/v1/messages/MSG-1/accuse", "{{}}", BancPas.dyn_b(), "ack-0").statut == 403
+        assert BancPas.appel("POST", "/v1/messages/MSG-1/accuse", "{{}}", BancPas.dyn_a(), "ack-1").corps.etat == "acquitte"
+        assert ApiPasserelle.acquitte(ma)
+        assert BancPas.appel("GET", "/v1/coordinations", "", BancPas.dyn_a(), "").corps.en_attente[0].rapprochement == "CJ-1"
+        let rep = BancPas.appel("POST", "/v1/coordinations/CJ-1/reponse", "{{\"reponse\": \"accepte\", \"motif\": \"A manœuvre\"}}", BancPas.dyn_a(), "rep-CJ-1")
+        assert rep.statut == 201
+        // le réseau coupe, le client réessaie : la même réponse, aucune seconde décision
+        assert BancPas.appel("POST", "/v1/coordinations/CJ-1/reponse", "{{\"reponse\": \"accepte\", \"motif\": \"A manœuvre\"}}", BancPas.dyn_a(), "rep-CJ-1") == rep
+        // 5. B accuse son escalade par l'API (route d'urgence)
+        assert BancPas.appel("POST", "/v1/escalades/CJ-1/accuse", "{{}}", BancPas.dyn_b(), "esc-1").corps.accuse == "accuse"
+        // 6. après l'échéance de réponse, l'arbitrage d'ORBITE a repris la main
+        mock now 1800003700
+        let tard = BancPas.appel("POST", "/v1/coordinations/CJ-1/reponse", "{{\"reponse\": \"refuse\"}}", BancPas.dyn_b(), "rep-B")
+        assert tard.corps.kind == "Delai"
+        assert contains(tard.corps.error, "arbitrage")
+        // 7. la trace : chaque requête est au journal
+        assert len(Journal.chercher("ORG-OPA POST /v1/coordinations/{{id}}/reponse -> 201", 10)) == 1
+    }
+}

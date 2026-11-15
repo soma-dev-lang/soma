@@ -1,0 +1,108 @@
+// operateurs — corps des ENGAGEMENTS (OpEngagements).
+
+flesh OpEngagements {
+    on proposer(h, op, d1, d2, d3, par) {
+        require (ApiAcces.a_le_role(par, "administrateur_operateur") || ApiAcces.a_le_role(par, "chef_de_mission")) && ApiAcces.agit_pour(par, op) else Habilitation "proposition réservée à l'administrateur ou au chef de mission de {op}"
+        require OpMembres.etat(op) != "inconnu" else Inconnu "{op} jamais candidat"
+        let st = get_status(op) ?? "propose"
+        require st != "resilie" else Ferme "engagements de {op} résiliés"
+        let a = to_int(d1)
+        let b = to_int(d2)
+        let c = to_int(d3)
+        require a >= PLANCHER_MS && a <= PLAFOND_N1_MS && b >= PLANCHER_MS && b <= PLAFOND_N2_MS && c >= PLANCHER_MS && c <= PLAFOND_N3_MS else HorsBornes "délais hors [plancher, plafond du niveau]"
+        require c <= b && b <= a else Incoherent "il faut n3 ≤ n2 ≤ n1"
+        if propose.get(op) == () {
+            require propose.size < MAX_ENGAGEMENTS else Plein "registre des engagements plein"
+        }
+        propose.set(op, "{a}|{b}|{c}|{h}|{par}")
+        historique.push("{h} | {op} | {a}|{b}|{c} | proposition | {par} | -")
+        let _ = Journal.noter(h, "operateurs", par, "engagements proposés pour {op}")
+        return "propose"
+    }
+    on accepter(h, op, par) {
+        require ApiAcces.a_le_role(par, "superviseur") else Habilitation "acceptation réservée à un superviseur d'ORBITE"
+        let p = propose.get(op)
+        require p != () else Inconnu "aucune proposition pour {op}"
+        let st = get_status(op) ?? "propose"
+        require st == "propose" || st == "en_vigueur" else EtatInvalide "engagements de {op} {st}"
+        let parts = split(p, "|")
+        let b1 = to_int(parts[0])
+        let b2 = to_int(parts[1])
+        let b3 = to_int(parts[2])
+        let a1 = n1.get(op)
+        if a1 == () {
+            n1.set(op, Duree(b1))
+            n2.set(op, Duree(b2))
+            n3.set(op, Duree(b3))
+        } else {
+            // Ordre d'écriture qui garde n3 ≤ n2 ≤ n1 vrai à chaque écriture.
+            let a3 = to_int(n3.get(op) ?? b3)
+            n1.set(op, Duree(max(to_int(a1), b1)))
+            n3.set(op, Duree(min(a3, b3)))
+            n2.set(op, Duree(b2))
+            n1.set(op, Duree(b1))
+            n3.set(op, Duree(b3))
+        }
+        propose.delete(op)
+        accepte_a.set(op, h)
+        historique.push("{h} | {op} | {b1}|{b2}|{b3} | acceptation | {par} | -")
+        transition(op, st, "en_vigueur")
+        let _ = ApiPasserelle.notifier(h, op, "", "engagements", "délais acceptés : {b1} / {b2} / {b3} ms", 1)
+        let _ = Journal.noter(h, "operateurs", par, "engagements de {op} en vigueur")
+        return "en_vigueur"
+    }
+    on ecarter(h, op, motif, par) {
+        require ApiAcces.a_le_role(par, "superviseur") else Habilitation "réservé à un superviseur d'ORBITE"
+        let p = propose.get(op)
+        require p != () else Inconnu "aucune proposition pour {op}"
+        require motif != "" else MotifRequis "motif requis"
+        propose.delete(op)
+        historique.push("{h} | {op} | {p} | écartée : {motif} | {par} | -")
+        let _ = ApiPasserelle.notifier(h, op, "", "engagements", "proposition écartée : {motif}", 1)
+        let _ = Journal.noter(h, "operateurs", par, "proposition d'engagements de {op} écartée")
+        return get_status(op) ?? "propose"
+    }
+    on resilier(h, op) {
+        let st = get_status(op) ?? "propose"
+        if st == "resilie" { return "resilie" }
+        if propose.get(op) != () { propose.delete(op) }
+        historique.push("{h} | {op} | - | résiliation | systeme | -")
+        transition(op, st, "resilie")
+        let _ = Journal.noter(h, "operateurs", "systeme", "engagements de {op} résiliés")
+        return "resilie"
+    }
+    on delai(op, n) {
+        require OpMembres.etat(op) != "inconnu" else Inconnu "{op} jamais candidat"
+        let st = get_status(op) ?? "propose"
+        if st == "en_vigueur" {
+            let v = match to_int(n) {
+                1 -> n1.get(op)
+                2 -> n2.get(op)
+                _ -> n3.get(op)
+            }
+            if v != () { return v }
+        }
+        let plafond = match to_int(n) {
+            1 -> PLAFOND_N1_MS
+            2 -> PLAFOND_N2_MS
+            _ -> PLAFOND_N3_MS
+        }
+        return Duree(plafond)
+    }
+    on conditions(op) {
+        let a = accepte_a.get(op)
+        if a == () { return "" }
+        let v1 = n1.get(op) ?? 0
+        let v2 = n2.get(op) ?? 0
+        let v3 = n3.get(op) ?? 0
+        let base = "{v1} | {v2} | {v3} | {a}"
+        let p = propose.get(op)
+        if p == () { return base }
+        return base + " | proposé : " + p
+    }
+    on etat(op) {
+        let st = get_status(op) ?? "propose"
+        if st == "propose" && propose.get(op) == () && accepte_a.get(op) == () { return "aucun" }
+        return st
+    }
+}

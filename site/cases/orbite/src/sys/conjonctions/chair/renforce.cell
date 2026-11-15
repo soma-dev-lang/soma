@@ -1,0 +1,115 @@
+// CONJONCTIONS — corps : épisodes de criblage renforcé.
+
+flesh ConjRenforcement {
+    on renforcer(h, regime, fin, motif, par) {
+        require ApiAcces.a_le_role(par, "systeme") || ApiAcces.a_le_role(par, "analyste") else Habilitation "renforcer : systeme ou analyste d'ORBITE"
+        require len(motif) > 0 else MotifRequis "motif du renforcement exigé"
+        require to_int(fin) > to_int(h) else Incoherent "fin de l'épisode déjà passée"
+        let reg = to_string(regime)
+        let existant = actif_de.get(reg)
+        if existant != () {
+            // épisode non clos : la fin est repoussée (jamais avancée), le motif s'ajoute en tête
+            let ancienne_fin = to_int(fin_de.get(existant) ?? 0)
+            if to_int(fin) > ancienne_fin {
+                fin_de.set(existant, fin)
+            }
+            let anciens = reference_de.get(existant) ?? ""
+            let refs = substring("{motif} ; {anciens}", 0, 2000)
+            reference_de.set(existant, refs)
+            if (get_status(existant) ?? "actif") == "fin_demandee" {
+                transition(existant, "fin_demandee", "actif")
+            }
+            let _ = Journal.noter(h, "conjonctions", par, "épisode renforcé {existant} ({reg}) prolongé : {motif}")
+            return existant
+        }
+        require regime_de.size < MAX_EPISODES else Plein "trop d'épisodes renforcés"
+        let cause = if ApiMeteo.renforce(regime, h) { "tempete" } else if ApiEvenements.nuage_actif(regime, h) { "nuage" } else { "manuel" }
+        let e = "RF-{next_id()}"
+        regime_de.set(e, regime)
+        cause_de.set(e, ConjCauseRenforce(cause))
+        reference_de.set(e, motif)
+        fin_de.set(e, fin)
+        ouvert_le.set(e, h)
+        actif_de.set(reg, e)
+        // campagne renforcée du régime : si une campagne du régime est déjà non close, l'épisode
+        // reste sans campagne liée (journalisé) ; il ne pourra être levé qu'après un nouveau
+        // renforcer qui en obtient une, ou abandonné.
+        let essai = try { ConjCampagne.planifier(h, "regime", regime, "", "renforce", "systeme") }
+        if essai.error == () {
+            campagne_de.set(e, essai.value)
+            let _ = Journal.noter(h, "conjonctions", par, "épisode renforcé {e} ouvert sur {reg} ({cause}), campagne {essai.value}")
+        } else {
+            let _ = Journal.noter(h, "conjonctions", par, "épisode renforcé {e} ouvert sur {reg} ({cause}) sans campagne propre : {essai.kind}")
+        }
+        return e
+    }
+
+    on surveiller(h, episode, par) {
+        require ApiAcces.a_le_role(par, "systeme") else Habilitation "surveiller : systeme"
+        let reg = regime_de.get(episode)
+        require reg != () else Inconnu "épisode inconnu : {episode}"
+        let st = get_status(episode) ?? "actif"
+        require st == "actif" || st == "fin_demandee" else Ferme "épisode clos"
+        let cause_presente = ApiMeteo.renforce(reg, h) || ApiEvenements.nuage_actif(reg, h)
+        if st == "actif" {
+            let fin = to_int(fin_de.get(episode) ?? 0)
+            if to_int(h) >= fin && !cause_presente {
+                transition(episode, "actif", "fin_demandee")
+                let _ = Journal.noter(h, "conjonctions", par, "épisode {episode} : fin demandée")
+                return "fin_demandee"
+            }
+            return "actif"
+        }
+        if cause_presente {
+            transition(episode, "fin_demandee", "actif")
+            let _ = Journal.noter(h, "conjonctions", par, "épisode {episode} : cause revenue, de nouveau actif")
+            return "actif"
+        }
+        let c = campagne_de.get(episode)
+        if c != () && ConjCampagne.etat(c) == "terminee" {
+            clos_le.set(episode, h)
+            if actif_de.get(to_string(reg)) == episode {
+                actif_de.delete(to_string(reg))
+            }
+            transition(episode, "fin_demandee", "leve")
+            let _ = Journal.noter(h, "conjonctions", par, "épisode {episode} levé après la campagne {c}")
+            return "leve"
+        }
+        return "fin_demandee"
+    }
+
+    on abandonner(h, episode, motif, par, valideur) {
+        let reg = regime_de.get(episode)
+        require reg != () else Inconnu "épisode inconnu : {episode}"
+        require ApiAcces.a_le_role(par, "superviseur") else Habilitation "abandonner : superviseur d'ORBITE"
+        require ApiAcces.a_le_role(valideur, "direction") else QuatreYeux "valideur : direction d'ORBITE"
+        require valideur != par && ApiAcces.quatre_yeux(par, valideur) else QuatreYeux "valideur distinct exigé"
+        require len(motif) > 0 else MotifRequis "motif de l'abandon exigé"
+        let st = get_status(episode) ?? "actif"
+        require st == "actif" || st == "fin_demandee" else Ferme "épisode clos"
+        clos_le.set(episode, h)
+        if actif_de.get(to_string(reg)) == episode {
+            actif_de.delete(to_string(reg))
+        }
+        if st == "actif" {
+            transition(episode, "actif", "abandonne")
+        } else {
+            transition(episode, "fin_demandee", "abandonne")
+        }
+        let _ = Journal.noter(h, "conjonctions", par, "épisode {episode} abandonné (valideur {valideur}) : {motif}")
+        return "abandonne"
+    }
+
+    on actif_pour(regime) {
+        return actif_de.get(to_string(regime)) != ()
+    }
+
+    on non_clos() {
+        return actif_de.values
+    }
+
+    on etat(episode) {
+        if regime_de.get(episode) == () { return "inconnu" }
+        return get_status(episode) ?? "actif"
+    }
+}

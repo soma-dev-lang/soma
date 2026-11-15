@@ -1,0 +1,282 @@
+// Corps de responsabilite : durées de conservation (RespDurees), purges (RespPurges),
+// communications de pièces (RespCommunications) et rondes (RespRondes).
+
+flesh RespDurees {
+    on fixer(h, categorie, minimum, maximum, par, valideur) {
+        require ApiAcces.a_le_role(par, "direction") else Habilitation "{par} n'est pas direction"
+        require ApiAcces.quatre_yeux(par, valideur) else QuatreYeux "durées de conservation : quatre yeux requis"
+        require ApiAcces.a_le_role(valideur, "conformite") else Habilitation "le valideur {valideur} n'est pas conformite"
+        require to_int(minimum) <= to_int(maximum) else Incoherent "durée minimale supérieure à la maximale"
+        require to_int(minimum) >= PLANCHER else HorsBornes "durée minimale sous le plancher de 2 ans"
+        // invariant minimum ≤ maximum vérifié à chaque écriture : écrire d'abord le côté qui l'élargit
+        if to_int(minimum_de.get(categorie) ?? 0) > to_int(maximum) {
+            minimum_de.set(categorie, minimum)
+            maximum_de.set(categorie, maximum)
+        } else {
+            maximum_de.set(categorie, maximum)
+            minimum_de.set(categorie, minimum)
+        }
+        fixee_le.set(categorie, h)
+        Journal.noter(h, "responsabilite", par, "conservation {categorie} : minimum {minimum} ms, maximum {maximum} ms ({valideur})")
+        return minimum
+    }
+
+    on minimum(categorie) {
+        return minimum_de.get(categorie) ?? Duree(PLANCHER)
+    }
+
+    on purge_due(categorie, cree_le, h) {
+        let mx = maximum_de.get(categorie)
+        if mx == () {
+            return false
+        }
+        return to_int(h) - to_int(cree_le) > to_int(mx)
+    }
+}
+
+flesh RespPurges {
+    on demander(h, cible, categorie, avant, detenteur, par) {
+        require ApiAcces.a_le_role(par, "exploitant") || ApiAcces.a_le_role(par, "systeme") else Habilitation "{par} n'est ni exploitant ni systeme"
+        require to_int(avant) <= to_int(h) else Incoherent "date de coupure postérieure à la demande"
+        require to_int(avant) + to_int(RespDurees.minimum(categorie)) <= to_int(h) else Delai "conservation obligatoire non échue pour {categorie}"
+        require !RespGels.est_gele(cible) else Conflit "{cible} est sous gel"
+        require cible_de.size < MAX_PURGES else Plein "registre des purges plein"
+        let id = "PG-{next_id()}"
+        transition(id, "aucune", "demandee")
+        cible_de.set(id, cible)
+        categorie_de.set(id, categorie)
+        avant_de.set(id, avant)
+        detenteur_de.set(id, detenteur)
+        demandee_par.set(id, par)
+        purges_de_cible.set(cible, (purges_de_cible.get(cible) ?? []) ++ [id])
+        Journal.noter(h, "responsabilite", par, "purge {id} demandée : {categorie} de {cible} avant {avant} chez {detenteur}")
+        return id
+    }
+
+    on autoriser(h, purge, par) {
+        require ApiAcces.a_le_role(par, "conformite") else Habilitation "{par} n'est pas conformite"
+        let st = get_status(purge) ?? "aucune"
+        require st != "aucune" else Inconnu "purge {purge} inconnue"
+        require par != (demandee_par.get(purge) ?? "") else Habilitation "le demandeur n'autorise pas sa propre purge"
+        require st == "demandee" else EtatInvalide "la purge {purge} est {st}"
+        let cible = cible_de.get(purge) ?? ""
+        require !RespGels.est_gele(cible) else Conflit "{cible} est sous gel"
+        let cat = categorie_de.get(purge)
+        require to_int(avant_de.get(purge) ?? h) + to_int(RespDurees.minimum(cat)) <= to_int(h) else Delai "conservation obligatoire non échue"
+        transition(purge, "demandee", "autorisee")
+        autorisee_le.set(purge, h)
+        Journal.noter(h, "responsabilite", par, "purge {purge} autorisée sur {cible}")
+        return "autorisee"
+    }
+
+    on refuser(h, purge, motif, par) {
+        require ApiAcces.a_le_role(par, "conformite") else Habilitation "{par} n'est pas conformite"
+        require motif != "" else MotifRequis "refus sans motif"
+        let st = get_status(purge) ?? "aucune"
+        require st != "aucune" else Inconnu "purge {purge} inconnue"
+        require st == "demandee" else EtatInvalide "la purge {purge} est {st}"
+        transition(purge, "demandee", "refusee")
+        motif_de.set(purge, motif)
+        Journal.noter(h, "responsabilite", par, "purge {purge} refusée — {motif}")
+        return "refusee"
+    }
+
+    on constater(h, purge, supprimes, par) {
+        require ApiAcces.a_le_role(par, "systeme") || ApiAcces.a_le_role(par, "exploitant") else Habilitation "{par} n'est ni systeme ni exploitant"
+        let st = get_status(purge) ?? "aucune"
+        require st != "aucune" else Inconnu "purge {purge} inconnue"
+        require st == "autorisee" else EtatInvalide "la purge {purge} est {st}"
+        let cible = cible_de.get(purge) ?? ""
+        require !RespGels.est_gele(cible) else Conflit "{cible} est sous gel"
+        transition(purge, "autorisee", "executee")
+        executee_le.set(purge, h)
+        supprimes_de.set(purge, supprimes)
+        Journal.noter(h, "responsabilite", par, "purge {purge} exécutée : {supprimes} enregistrement(s)")
+        return "executee"
+    }
+
+    on annuler_pour_gel(h, cible) {
+        let n = 0
+        for p in purges_de_cible.get(cible) ?? [] {
+            if (get_status(p) ?? "aucune") == "autorisee" {
+                transition(p, "autorisee", "annulee")
+                motif_de.set(p, "gel posé sur {cible}")
+                n = n + 1
+            }
+        }
+        if n > 0 {
+            Journal.noter(h, "responsabilite", "systeme", "{n} purge(s) de {cible} annulée(s) par un gel")
+        }
+        return n
+    }
+
+    on autorisee_pour(cible, h) {
+        if RespGels.est_gele(cible) {
+            return false
+        }
+        for p in purges_de_cible.get(cible) ?? [] {
+            if (get_status(p) ?? "aucune") == "autorisee" {
+                let cat = categorie_de.get(p)
+                if cat != () && to_int(avant_de.get(p) ?? h) + to_int(RespDurees.minimum(cat)) <= to_int(h) {
+                    return true
+                }
+            }
+        }
+        return false
+    }
+}
+
+flesh RespCommunications {
+    on demander(h, dossier, destinataire, pieces, motif, par) {
+        let pour_dest = ApiAcces.agit_pour(par, destinataire) && (ApiAcces.a_le_role(par, "point_focal") || ApiAcces.a_le_role(par, "autorite") || ApiAcces.a_le_role(par, "administrateur_operateur") || ApiAcces.a_le_role(par, "chef_de_mission"))
+        let orbite_p = ApiAcces.a_le_role(par, "conformite") || ApiAcces.a_le_role(par, "direction")
+        require pour_dest || orbite_p else Habilitation "{par} ne demande pas pour {destinataire}"
+        require motif != "" else MotifRequis "communication sans usage déclaré"
+        require ApiRef.organisation_existe(destinataire) else Inconnu "organisation {destinataire} inconnue"
+        require RespDossiers.etat(dossier) != "aucun" else Inconnu "dossier {dossier} inconnu"
+        require len(pieces) > 0 && len(pieces) <= MAX_PIECES_COMM else HorsBornes "entre 1 et {MAX_PIECES_COMM} pièces"
+        let du_dossier = RespPieces.pieces_de(dossier)
+        for p in pieces {
+            require contains(du_dossier, p) else Inconnu "pièce {p} hors du dossier {dossier}"
+        }
+        require dossier_de.size < MAX_COMMUNICATIONS else Plein "registre des communications plein"
+        let id = "CM-{next_id()}"
+        transition(id, "aucune", "demandee")
+        dossier_de.set(id, dossier)
+        destinataire_de.set(id, destinataire)
+        pieces_de.set(id, pieces)
+        motif_de.set(id, motif)
+        demandee_par.set(id, par)
+        communications_du_dossier.set(dossier, (communications_du_dossier.get(dossier) ?? []) ++ [id])
+        let nb_p = len(pieces)
+        Journal.noter(h, "responsabilite", par, "communication {id} demandée : {nb_p} pièce(s) de {dossier} pour {destinataire} — {motif}")
+        return id
+    }
+
+    on autoriser(h, com, par, valideur) {
+        require ApiAcces.a_le_role(par, "conformite") else Habilitation "{par} n'est pas conformite"
+        require ApiAcces.quatre_yeux(par, valideur) else QuatreYeux "communication : quatre yeux requis"
+        require ApiAcces.a_le_role(valideur, "direction") || ApiAcces.a_le_role(valideur, "superviseur") else Habilitation "le valideur {valideur} n'est ni direction ni superviseur"
+        let st = get_status(com) ?? "aucune"
+        require st != "aucune" else Inconnu "communication {com} inconnue"
+        require st == "demandee" else EtatInvalide "la communication {com} est {st}"
+        let dossier = dossier_de.get(com) ?? ""
+        require RespDossiers.etat(dossier) == "scelle" else Insuffisant "le dossier {dossier} n'est pas scellé"
+        let dest = destinataire_de.get(com)
+        for p in pieces_de.get(com) ?? [] {
+            let r = _rapprochement(RespPieces.lire(p))
+            for o in RespPieces.objets(p) {
+                require ApiDonnees.peut_recevoir(dest, Objet(o), Rapprochement(r), h) else Confidentiel "{dest} ne peut recevoir les données de {o} (pièce {p})"
+            }
+        }
+        transition(com, "demandee", "autorisee")
+        decidee_par.set(com, "{par}/{valideur}")
+        Journal.noter(h, "responsabilite", par, "communication {com} autorisée vers {dest} ({valideur})")
+        return "autorisee"
+    }
+
+    on refuser(h, com, motif, par) {
+        require ApiAcces.a_le_role(par, "conformite") else Habilitation "{par} n'est pas conformite"
+        require motif != "" else MotifRequis "refus sans motif"
+        let st = get_status(com) ?? "aucune"
+        require st != "aucune" else Inconnu "communication {com} inconnue"
+        require st == "demandee" else EtatInvalide "la communication {com} est {st}"
+        transition(com, "demandee", "refusee")
+        decidee_par.set(com, par)
+        motif_de.set(com, motif)
+        Journal.noter(h, "responsabilite", par, "communication {com} refusée — {motif}")
+        return "refusee"
+    }
+
+    on communiquer(h, com, par) {
+        require ApiAcces.a_le_role(par, "systeme") else Habilitation "{par} n'est pas systeme"
+        let st = get_status(com) ?? "aucune"
+        require st != "aucune" else Inconnu "communication {com} inconnue"
+        require st == "autorisee" else EtatInvalide "la communication {com} est {st}"
+        let dest = destinataire_de.get(com)
+        let traces_c = []
+        for p in pieces_de.get(com) ?? [] {
+            let fiche = RespPieces.lire(p)
+            let r = _rapprochement(fiche)
+            let objs_p = RespPieces.objets(p)
+            for o in objs_p {
+                require ApiDonnees.peut_recevoir(dest, Objet(o), Rapprochement(r), h) else Confidentiel "droit de {dest} sur {o} retiré depuis l'autorisation : révoquer"
+            }
+            for o in objs_p {
+                traces_c.push(ApiDonnees.tracer(h, dest, Objet(o), Rapprochement(r), "piece:{p}"))
+            }
+            let _ = ApiPasserelle.notifier(h, dest, Rapprochement(r), "piece {p} ({com})", fiche, 1)
+        }
+        transition(com, "autorisee", "communiquee")
+        traces_de.set(com, traces_c)
+        communiquee_le.set(com, h)
+        let nb_t = len(traces_c)
+        Journal.noter(h, "responsabilite", par, "communication {com} envoyée à {dest} : {nb_t} trace(s)")
+        return nb_t
+    }
+
+    on revoquer(h, com, motif, par) {
+        require ApiAcces.a_le_role(par, "conformite") || ApiAcces.a_le_role(par, "systeme") else Habilitation "{par} n'est ni conformite ni systeme"
+        require motif != "" else MotifRequis "révocation sans motif"
+        let st = get_status(com) ?? "aucune"
+        require st != "aucune" else Inconnu "communication {com} inconnue"
+        require st == "autorisee" else EtatInvalide "la communication {com} est {st}"
+        transition(com, "autorisee", "revoquee")
+        motif_de.set(com, motif)
+        Journal.noter(h, "responsabilite", par, "communication {com} révoquée — {motif}")
+        return "revoquee"
+    }
+
+    on etat(com) {
+        return get_status(com) ?? "aucune"
+    }
+
+    on de_dossier(dossier) {
+        let res_c = []
+        for c in communications_du_dossier.get(dossier) ?? [] {
+            let d = destinataire_de.get(c) ?? ""
+            let st = get_status(c) ?? "aucune"
+            res_c.push("{c}|{d}|{st}")
+        }
+        return res_c
+    }
+
+    // Rapprochement concerné par une pièce : sa cible si c'est un "CJ-…", "" sinon.
+    on _rapprochement(fiche: String) {
+        let champs_f = split(fiche, " | ")
+        let ci = if len(champs_f) >= 2 { champs_f[1] } else { "" }
+        return if starts_with(ci, "CJ-") { ci } else { "" }
+    }
+}
+
+flesh RespRondes {
+    on balayer(h, par) {
+        require ApiAcces.a_le_role(par, "systeme") else Habilitation "{par} n'est pas systeme"
+        let n = 0
+        let r1 = try { RespPieces.ronde(h, "systeme") }
+        if r1.error != () {
+            Journal.noter(h, "responsabilite", "systeme", "ronde des empreintes en échec : {r1.kind}")
+        } else {
+            n = n + r1.value
+        }
+        let r2 = try { RespPolices.echoir(h, "systeme") }
+        if r2.error != () {
+            Journal.noter(h, "responsabilite", "systeme", "ronde des polices en échec : {r2.kind}")
+        } else {
+            n = n + r2.value
+        }
+        let r3 = try { RespFautes.relancer_contradictoires(h, "systeme") }
+        if r3.error != () {
+            Journal.noter(h, "responsabilite", "systeme", "ronde des contradictoires en échec : {r3.kind}")
+        } else {
+            n = n + r3.value
+        }
+        let r4 = try { RespCommissions.relancer_carences(h, "systeme") }
+        if r4.error != () {
+            Journal.noter(h, "responsabilite", "systeme", "ronde des commissions en échec : {r4.kind}")
+        } else {
+            n = n + r4.value
+        }
+        return n
+    }
+}

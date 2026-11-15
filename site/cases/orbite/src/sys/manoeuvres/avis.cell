@@ -1,0 +1,97 @@
+// MANŒUVRES — avis de manœuvre aux parties (l'autre opérateur du rapprochement, les États
+// d'immatriculation) avec contrôle de diffusion et trace (propriété 6), accusés attendus avant
+// la fenêtre et escalade du silence (propriété 5) ; veille périodique du sous-système.
+
+// Sujet d'un avis.
+cell type ManSujetAvis = String where value == "approbation" || value == "execution" || value == "annulation" || value == "anomalie"
+
+skeleton ManAvis {
+    const MAX_AVIS = 200000000
+    // Accusé attendu au plus tard 2 h avant le début de la fenêtre (approbation) ou 6 h après
+    // l'émission (autres sujets).
+    const AVANCE_ACCUSE_MS = 7200000
+    const DELAI_ACCUSE_MS = 21600000
+    // Avis par plan : 4 sujets × au plus 10 destinataires.
+    const MAX_AVIS_PAR_PLAN = 40
+    const MAX_REFUS_PAR_PLAN = 10
+    memory {
+        plan_de: Map<String, String> [persistent]        // avis -> plan ; écrit par `emettre` seul
+        destinataire_de: Map<String, Org> [persistent]
+        message_de: Map<String, String> [persistent]     // id du message ApiPasserelle
+        trace_de: Map<String, Int> [persistent]          // numéro de trace ApiDonnees.tracer
+        echeance_de: Map<String, Horodatage> [persistent]
+        avis_du_plan: Map<String, List<String>> [persistent] // plan -> avis émis (refusés pour diffusion compris : `refuses_de`)
+        refuses_de: Map<String, List<String>> [persistent]   // plan -> organisations non autorisées (ApiDonnees.peut_recevoir faux) : jamais avisées
+        en_file: List<String> [persistent]               // avis sans accusé (ManVeille)
+        invariant plan_de.size <= MAX_AVIS
+        invariant trace_de >= 0
+        invariant len(avis_du_plan) <= MAX_AVIS_PAR_PLAN
+        invariant len(refuses_de) <= MAX_REFUS_PAR_PLAN
+        invariant en_file.size <= MAX_AVIS
+    }
+    // Cycle d'un avis. Instance = "plan|org|sujet".
+    state cycle {
+        initial: en_file
+        en_file -> acquitte      // ApiPasserelle.acquitte
+        en_file -> echu          // pas d'accusé à l'échéance : escalade (évitement) ou journal
+    }
+    face {
+        // Avise les parties d'un plan (sujet) : pour un évitement, le propriétaire de l'autre
+        // objet (ApiConjonctions.objets, sauf "inconnu") ; dans tous les cas l'organisation de
+        // l'État d'immatriculation de l'objet (ApiRef.org_de_etat). Pour chaque destinataire :
+        // ApiDonnees.peut_recevoir(org, objet, r, h) — faux ⇒ noté dans `refuses_de`, rien
+        // n'est envoyé — puis ApiDonnees.tracer et ApiPasserelle.notifier (r du plan, "" hors évitement ;
+        // urgence = niveau du rapprochement, 1 hors évitement). Appelé par ManPlan (interne). Renvoie le nombre d'avis émis.
+        // Refus : Plein.
+        signal emettre(h: Horodatage, plan: String, sujet: ManSujetAvis) -> Int
+            writes plan_de, destinataire_de, message_de, trace_de, echeance_de, avis_du_plan, refuses_de, en_file
+            calls ManPlan.fiche, ApiConjonctions.objets, ApiConjonctions.niveau, ApiRef.proprietaire, ApiRef.etat_immatriculation, ApiRef.org_de_etat, ApiDonnees.peut_recevoir, ApiDonnees.tracer, ApiPasserelle.notifier
+        // Relève l'accusé (en_file -> acquitte si ApiPasserelle.acquitte) ou, l'échéance passée,
+        // échoit (en_file -> echu) : pour un évitement dont le rapprochement est de niveau 3,
+        // ApiEscalade.escalader(r, destinataire) — l'autre opérateur doit savoir que le désigné
+        // manœuvre (ou ne manœuvre plus). `par` "systeme" (ManVeille). Renvoie l'état atteint ;
+        // "en_file" si ni accusé ni échéance. Refus : Inconnu, EtatInvalide, Habilitation.
+        signal relever(h: Horodatage, avis: String, par: String) -> String
+            writes en_file
+            reads plan_de, destinataire_de, message_de, echeance_de
+            moves en_file -> acquitte, en_file -> echu
+            calls ManPlan.fiche, ApiPasserelle.acquitte, ApiConjonctions.niveau, ApiEscalade.escalader, ApiAcces.a_le_role, ManIndicateurs.compter, Journal.noter
+        // Avis en attente d'accusé (au plus n), les plus anciens d'abord.
+        signal en_attente(n: Int) -> List<String>
+            requires n > 0 && n <= 1000
+            reads en_file
+        // Avis émis pour un plan et organisations écartées par la diffusion (preuve).
+        signal avis_de(plan: String) -> List<String>
+            reads avis_du_plan
+        signal refuses(plan: String) -> List<String>
+            reads refuses_de
+    }
+}
+
+// Veille du sous-système, appelée par l'horloge d'ORBITE via ApiManoeuvres.balayer (seul point
+// d'entrée du temps : aucune cell de manoeuvres ne lit l'horloge). Fait avancer à `h` tout ce qui
+// dépend du temps — fenêtres à ouvrir et échues, plans approuvés à réexaminer, vérifications
+// échues, anomalies sans explication, constats non régularisés, avis sans accusé, verrous des
+// rapprochements clos. Aucun opérateur silencieux ne bloque un plan, un verrou ou une coordination.
+skeleton ManVeille {
+    // Éléments traités au plus par passage et par file.
+    const LOT = 200
+    memory {
+        dernier_passage: Map<String, Horodatage> [persistent] // "veille" -> h du dernier passage ; ne recule pas
+        invariant value >= Horodatage(dernier_passage.get(key) ?? 0)
+    }
+    face {
+        // Un passage (au plus LOT éléments par file) : ManFenetre.a_traiter ⇒ ouvrir, ou echoir puis
+        // ManPlan.constater_echeance ; ManPlan.approuves_en_cours ⇒ ManPlan.reexaminer ;
+        // ManVerification.attendues ⇒ verifier (Insuffisant ignoré) puis, échéance passée,
+        // expirer ; ManAnomalie.echues ⇒ transmettre ; ManNonAnnoncee.echus ⇒ forclore ;
+        // ManAvis.en_attente ⇒ relever ; ApiConjonctions.clos_entre(dernier passage, h) ⇒
+        // ManEvitement.constater_cloture. Un refus sur un élément est journalisé et n'arrête pas
+        // le passage. `par` "systeme" (Horloge.battre via ApiManoeuvres.balayer) ou "exploitant".
+        // h < dernier passage : passage ignoré, renvoie 0 (l'horloge ne recule pas). Renvoie le
+        // nombre d'éléments dont l'état a changé. Refus : Habilitation.
+        signal balayer(h: Horodatage, par: String) -> Int
+            writes dernier_passage
+            calls ManFenetre.a_traiter, ManFenetre.ouvrir, ManFenetre.echoir, ManFenetre.etat, ManPlan.constater_echeance, ManPlan.approuves_en_cours, ManPlan.reexaminer, ManVerification.attendues, ManVerification.verifier, ManVerification.expirer, ManAnomalie.echues, ManAnomalie.transmettre, ManNonAnnoncee.echus, ManNonAnnoncee.forclore, ManAvis.en_attente, ManAvis.relever, ManEvitement.constater_cloture, ApiConjonctions.clos_entre, ApiAcces.a_le_role, Journal.noter
+    }
+}

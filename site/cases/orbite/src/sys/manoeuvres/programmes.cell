@@ -1,0 +1,88 @@
+// MANŒUVRES — programmes de maintien à poste : un opérateur annonce une fois la cadence de ses
+// manœuvres de routine (GEO : boîte en longitude ; LEO : maintien d'altitude). Le programme
+// n'exempte d'AUCUN contrôle : chaque poussée reste un plan déclaré, criblé et approuvé
+// (propriété 4). Il sert à prévoir la charge de criblage, à rattacher les plans "maintien", et à
+// qualifier une poussée non annoncée conforme au programme (gravité 1 au lieu de 2).
+// Instance = id du programme.
+
+// Fiche d'un programme : objet, propriétaire, cadence nominale (ms entre deux poussées),
+// delta-v nominal et maximal par poussée (mm/s), période de validité.
+cell type ManFicheProgramme { variants { ManFicheProgramme { objet: Objet, proprietaire: Org, cadence: Duree, dv_nominal: DeltaV, dv_max: DeltaV, debut: Horodatage, fin: Horodatage } } }
+
+skeleton ManProgramme {
+    const MAX_PROGRAMMES = 1000000
+    // Cadence admise : de 1 jour à 90 jours.
+    const CADENCE_MIN_MS = 86400000
+    const CADENCE_MAX_MS = 7776000000
+    // Validité maximale d'un programme : 1 an (renouvelé par un nouveau programme).
+    const VALIDITE_MAX_MS = 31536000000
+    // Plans rattachés à un programme : au plus une poussée par jour sur un an.
+    const MAX_PLANS_PAR_PROGRAMME = 400
+    memory {
+        fiche_de: Map<String, ManFicheProgramme> [persistent] // programme -> fiche ; écrite par `proposer` seul
+        programme_de: Map<Objet, String> [persistent]         // objet -> programme accepté ou suspendu en cours ("" sinon)
+        plans_de: Map<String, List<String>> [persistent]      // programme -> plans "maintien" rattachés
+        motif_de: Map<String, String> [persistent]            // motif du refus, de la suspension ou de la clôture
+        invariant fiche_de.size <= MAX_PROGRAMMES
+        invariant programme_de.size <= MAX_PROGRAMMES
+        invariant len(plans_de) <= MAX_PLANS_PAR_PROGRAMME
+    }
+    // Cycle d'un programme.
+    state cycle {
+        initial: propose
+        propose -> accepte       // analyste : objet manœuvrant, opérateur actif, cadence plausible
+        propose -> refuse
+        accepte -> suspendu      // objet en anomalie, propulsion perdue, opérateur suspendu
+        suspendu -> accepte      // cause levée
+        accepte -> clos          // fin de validité, fin de mission, retrait par l'opérateur
+        suspendu -> clos
+    }
+    face {
+        // Propose un programme : CADENCE_MIN_MS ≤ cadence ≤ CADENCE_MAX_MS, 0 < dv_nominal ≤
+        // dv_max, debut < fin ≤ debut + VALIDITE_MAX_MS (sinon HorsBornes) ; objet
+        // ApiRef.peut_manoeuvrer (sinon NonEligible) ; un seul programme en cours par objet (sinon
+        // Conflit). `par` "dynamicien" ou "chef_de_mission" du propriétaire. Seul écrivain de
+        // `fiche_de`. Renvoie l'id. Refus : Existe, Inconnu, HorsBornes, NonEligible, Conflit,
+        // Suspendu (ApiOperateurs.est_actif), Habilitation.
+        signal proposer(h: Horodatage, programme: String, objet: Objet, cadence: Duree, dv_nominal: DeltaV, dv_max: DeltaV, debut: Horodatage, fin: Horodatage, par: String) -> String
+            writes fiche_de
+            reads programme_de
+            calls ApiRef.peut_manoeuvrer, ApiRef.proprietaire, ApiOperateurs.est_actif, ApiAcces.a_le_role, ApiAcces.agit_pour, Journal.noter
+        // Selon `decision`, accepte (propose -> accepte, `programme_de` de l'objet) ou refuse (propose -> refuse,
+        // motif requis). `par` "analyste" d'ORBITE. Renvoie l'état atteint.
+        // Refus : Inconnu, EtatInvalide, Conflit (autre programme accepté entre-temps), MotifRequis, Habilitation.
+        signal instruire(h: Horodatage, programme: String, decision: Bool, motif: String, par: String) -> String
+            writes programme_de, motif_de
+            reads fiche_de
+            moves propose -> accepte, propose -> refuse
+            calls ApiAcces.a_le_role, Journal.noter
+        // Selon `suspension`, suspend (accepte -> suspendu) ou reprend (suspendu -> accepte, objet de nouveau
+        // ApiRef.peut_manoeuvrer (hors anomalie et passivation), opérateur actif — sinon
+        // NonEligible). `par` "systeme" ou "analyste". Renvoie l'état atteint.
+        // Refus : Inconnu, EtatInvalide, MotifRequis, NonEligible, Habilitation.
+        signal suspendre(h: Horodatage, programme: String, suspension: Bool, motif: String, par: String) -> String
+            writes motif_de
+            reads fiche_de
+            moves accepte -> suspendu, suspendu -> accepte
+            calls ApiRef.peut_manoeuvrer, ApiOperateurs.est_actif, ApiAcces.a_le_role, Journal.noter
+        // Clôt (accepte | suspendu -> clos) et vide `programme_de` de l'objet. `par` "dynamicien"
+        // ou "chef_de_mission" du propriétaire, "analyste", ou "systeme" (fin de validité).
+        // Renvoie "clos". Refus : Inconnu, EtatInvalide, MotifRequis, Habilitation.
+        signal clore(h: Horodatage, programme: String, motif: String, par: String) -> String
+            writes programme_de, motif_de
+            reads fiche_de
+            moves accepte -> clos, suspendu -> clos
+            calls ApiRef.proprietaire, ApiAcces.a_le_role, ApiAcces.agit_pour, Journal.noter
+        // Rattache un plan "maintien" au programme accepté de son objet (dv ≤ dv_max, sinon
+        // HorsBornes). Appelé par ManPlan.declarer (interne). Renvoie l'id du programme ("" si
+        // l'objet n'en a pas : le plan reste valable). Refus : HorsBornes, Plein.
+        signal rattacher(plan: String, objet: Objet, dv: DeltaV) -> String
+            writes plans_de
+            reads programme_de, fiche_de, cycle
+        // Vrai si une poussée observée à `instant` sur l'objet tombe dans la cadence d'un
+        // programme accepté (± 1 jour autour d'une échéance nominale) : ManNonAnnoncee en tient
+        // compte pour la gravité.
+        signal conforme(objet: Objet, instant: Horodatage) -> Bool
+            reads programme_de, fiche_de, cycle
+    }
+}

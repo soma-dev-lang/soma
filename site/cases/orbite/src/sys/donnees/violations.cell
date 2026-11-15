@@ -1,0 +1,87 @@
+// donnees — VIOLATIONS DE L'ACCORD DE PARTAGE. Une organisation qui rediffuse des données
+// reçues au-delà de leur niveau, les utilise hors de la finalité d'une demande, ou qu'ORBITE
+// a servie sans fondement (fuite par publication) fait l'objet d'un signalement. ORBITE instruit
+// en contradictoire : l'organisation en cause a DELAI_CONTRADICTOIRE_MS pour présenter ses
+// observations ; son silence ne bloque pas la qualification. Une violation constatée devient
+// un manquement chez conformite (ApiConformite.constater) ; de gravité 3, elle suspend
+// l'adhésion de l'organisation (DonAdhesions.suspendre).
+
+// Nature d'une violation signalée.
+cell type DonNatureViolation = String where value == "rediffusion" || value == "hors_finalite" || value == "fuite_orbite" || value == "embargo_rompu"
+
+// Violations : id = violation ("VIO-<n>", tiré par signaler).
+skeleton DonViolations {
+    const MAX_VIOLATIONS = 100000
+    const DELAI_CONTRADICTOIRE_MS = 1296000000  // 15 jours
+    memory {
+        en_cause: Map<String, String> [persistent]           // violation → organisation en cause (ApiRef.orbite() pour une fuite d'ORBITE)
+        nature: Map<String, DonNatureViolation> [persistent] // violation → nature
+        objet_de: Map<String, String> [persistent]           // violation → objet dont les données ont fui ("" si plusieurs)
+        signalement: Map<String, String> [persistent]        // violation → "h | par | description"
+        echeance: Map<String, Horodatage> [persistent]       // violation → fin du contradictoire, ms
+        observations: Map<String, String> [persistent]       // violation → observations de l'organisation en cause
+        manquement: Map<String, String> [persistent]         // violation → id du manquement chez conformite
+        invariant en_cause.size <= MAX_VIOLATIONS
+        invariant signalement.size <= MAX_VIOLATIONS
+    }
+    // Cycle de vie d'une violation (id = violation).
+    state violation {
+        initial: signalee
+        signalee -> instruite              // instruire : contradictoire ouvert
+        signalee -> classee                // instruire : irrecevable
+        instruite -> constatee             // qualifier : violation établie
+        instruite -> classee               // qualifier : non établie
+        constatee -> close                 // clore : mesures exécutées
+    }
+    face {
+        // Signale une violation. Renvoie l'id. Rôle : toute personne active d'une organisation
+        // adhérente (ApiAcces.role_de ≠ "aucun"), "analyste" ou "systeme" d'ORBITE ; le
+        // propriétaire de l'objet est notifié. Refus : Inconnu (organisation en cause ou objet),
+        // MotifRequis (description vide), Plein, Habilitation.
+        signal signaler(h: Horodatage, org: Org, n: DonNatureViolation, objet: Objet, description: String, par: String) -> String
+            writes en_cause, nature, objet_de, signalement
+            calls ApiAcces.role_de, ApiAcces.a_le_role, ApiAcces.employeur, DonAdhesions.adherent, ApiRef.organisation_existe, ApiRef.etat_objet, ApiRef.proprietaire, ApiPasserelle.notifier, next_id, Journal.noter
+        // Instruit : recevable ⇒ "instruite", contradictoire ouvert jusqu'à h + DELAI_CONTRADICTOIRE_MS
+        // et organisation en cause notifiée ; irrecevable ⇒ "classee". Renvoie l'état atteint.
+        // Rôle : "conformite" d'ORBITE. Refus : Inconnu, EtatInvalide, MotifRequis (classement
+        // sans motif), Habilitation.
+        signal instruire(h: Horodatage, violation: String, recevable: Bool, motif: String, par: String) -> String
+            writes echeance
+            reads en_cause
+            moves signalee -> instruite, signalee -> classee
+            calls ApiAcces.a_le_role, ApiPasserelle.notifier, Journal.noter
+        // Observations de l'organisation en cause pendant le contradictoire. Renvoie "instruite".
+        // Rôle : "administrateur_operateur" ou "autorite" de l'organisation en cause
+        // (ApiAcces.agit_pour). Refus : Inconnu, EtatInvalide, Delai (échéance passée), Habilitation.
+        signal observer(h: Horodatage, violation: String, texte: String, par: String) -> String
+            writes observations
+            reads en_cause, echeance, violation
+            calls ApiAcces.a_le_role, ApiAcces.agit_pour, Journal.noter
+        // Qualifie après observations ou échéance passée (silence : on qualifie sans elles).
+        // Établie ⇒ manquement constaté (ApiConformite.constater, gravité g) et, si g == 3,
+        // adhésion suspendue (DonAdhesions.suspendre ; sauf fuite d'ORBITE, qui déclare un
+        // incident ApiOperations de gravité g sur "donnees"). Renvoie l'état atteint.
+        // Rôle : "conformite" d'ORBITE ; valideur "direction" distinct (ApiAcces.quatre_yeux).
+        // Refus : Inconnu, EtatInvalide, Delai (contradictoire en cours sans observations),
+        // MotifRequis, Habilitation, QuatreYeux.
+        signal qualifier(h: Horodatage, violation: String, etablie: Bool, g: Gravite, motif: String, par: String, valideur: String) -> String
+            writes manquement
+            reads en_cause, nature, echeance, observations
+            moves instruite -> constatee, instruite -> classee
+            calls ApiAcces.a_le_role, ApiAcces.quatre_yeux, ApiConformite.constater, DonAdhesions.suspendre, ApiOperations.declarer_incident, ApiRef.orbite, Journal.noter
+        // Clôt une violation constatée (mesures exécutées, adhésion rétablie ou retirée).
+        // Renvoie "close". Rôle : "conformite". Refus : Inconnu, EtatInvalide, MotifRequis, Habilitation.
+        signal clore(h: Horodatage, violation: String, motif: String, par: String) -> String
+            reads en_cause
+            moves constatee -> close
+            calls ApiAcces.a_le_role, Journal.noter
+        // État de la violation ; "inconnue" si jamais signalée.
+        signal etat(violation: String) -> String
+            reads violation, en_cause
+        // Violations instruites dont le contradictoire est échu à `h` sans qualification (au plus
+        // n) : la liste de travail de la conformité.
+        signal a_qualifier(h: Horodatage, n: Int) -> List<String>
+            requires n > 0 && n <= 1000
+            reads echeance, violation
+    }
+}

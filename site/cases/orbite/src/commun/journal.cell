@@ -1,0 +1,20 @@
+// Journal d'audit commun à tous les sous-systèmes, en ajout seul, borné.
+skeleton Journal {
+    const MAX_LIGNES = 10000000
+    memory {
+        lignes: List<String> [persistent]   // "h | sous_systeme | acteur | evenement"
+        invariant lignes.size <= 10000000
+    }
+    face {
+        // Ajoute "h | sous_systeme | acteur | evenement". Renvoie le nombre de lignes.
+        // Refus : Plein.
+        signal noter(h: Horodatage, sous_systeme: SousSysteme, acteur: String, evenement: String) -> Int
+            writes lignes
+        signal taille() -> Int
+            reads lignes
+        // Au plus n lignes contenant `motif`, les plus récentes en dernier.
+        signal chercher(motif: String, n: Int) -> List<String>
+            requires n > 0 && n <= 1000
+            reads lignes
+    }
+}

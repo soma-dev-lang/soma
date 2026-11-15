@@ -1,0 +1,298 @@
+// CONJONCTIONS — corps : messages de conjonction et abonnements.
+
+flesh ConjMessage {
+    on diffuser(h, r, par) {
+        require ApiAcces.a_le_role(par, "systeme") || ApiAcces.a_le_role(par, "analyste") else Habilitation "diffuser : systeme ou analyste d'ORBITE"
+        let f = ConjRapprochement.fiche(r)
+        let st = ConjRapprochement.etat(r)
+        let rid = to_string(r)
+        let clos = st == "resolu" || st == "passe" || st == "collision"
+        let nv = to_int(f.niveau)
+        let genre = if clos { "cloture" } else if nv >= 3 { "alerte" } else { "cdm" }
+        let anciens = par_rapprochement.get(rid) ?? []
+        // destinataires : "org|objet de l'autre partie|astreinte à vérifier"
+        let dests = []
+        let paires = [[to_string(f.objet_a), to_string(f.objet_b)], [to_string(f.objet_b), to_string(f.objet_a)]]
+        for p in paires {
+            let o = p[0]
+            let autre = p[1]
+            let pr = try { ApiRef.proprietaire(Objet(o)) }
+            let proprio = if pr.error == () { to_string(pr.value) } else { "inconnu" }
+            if proprio != "inconnu" {
+                let abonnes = ConjAbonnement.destinataires(Org(proprio), f.niveau)
+                // l'opérateur : niveau ≥ 2 d'office, niveau 1 s'il s'est abonné lui-même ;
+                // une clôture va à qui a déjà reçu des messages du rapprochement
+                let au_proprio = if clos { len(anciens) > 0 } else { nv >= 2 || contains(abonnes, proprio) }
+                if au_proprio {
+                    dests.push("{proprio}|{autre}|{genre == \"alerte\"}")
+                }
+                if !clos || len(anciens) > 0 {
+                    for d in abonnes {
+                        if d != proprio {
+                            dests.push("{d}|{autre}|false")
+                        }
+                    }
+                }
+                if nv >= 3 && !clos {
+                    let et = try { ApiRef.etat_de(proprio) }
+                    if et.error == () && to_string(et.value) != "" {
+                        let pf = try { ApiRef.org_de_etat(et.value) }
+                        if pf.error == () {
+                            dests.push("{pf.value}|{autre}|false")
+                        }
+                    }
+                }
+            }
+        }
+        // un message par organisation (la première raison de l'envoyer l'emporte)
+        let uniques = []
+        let orgs_vues = []
+        for d in dests {
+            let org_d = split(d, "|")[0]
+            if !contains(orgs_vues, org_d) {
+                orgs_vues.push(org_d)
+                uniques.push(d)
+            }
+        }
+        require rapprochement_de.size + len(uniques) <= MAX_MESSAGES else Plein "trop de messages"
+        require len(anciens) + len(uniques) <= MAX_PAR_RAPPROCHEMENT else Plein "trop de messages pour {rid}"
+        let ids_m = []
+        for d in uniques {
+            let morceaux = split(d, "|")
+            let dest = Org(morceaux[0])
+            let autre = morceaux[1]
+            let verifier_astreinte = morceaux[2] == "true"
+            let m = "MC-{next_id()}"
+            rapprochement_de.set(m, rid)
+            destinataire_de.set(m, dest)
+            genre_de.set(m, ConjGenreMessage(genre))
+            niveau_de.set(m, f.niveau)
+            prepare_le.set(m, h)
+            if !ApiDonnees.peut_recevoir(dest, Objet(autre), r, h) {
+                cause_de.set(m, "diffusion refusée : {dest} ne peut pas recevoir les données de {autre}")
+                transition(m, "prepare", "bloque")
+            } else {
+                let texte = "rapprochement {rid} ({st}) : TCA {f.tca}, distance {f.distance} m, pc {f.pc} milliardièmes, niveau {nv}"
+                let pid = ApiPasserelle.notifier(h, dest, r, "conjonction {genre} {rid}", texte, f.niveau)
+                let tr = ApiDonnees.tracer(h, dest, Objet(autre), r, genre)
+                passerelle_de.set(m, pid)
+                trace_de.set(m, tr)
+                if genre == "alerte" {
+                    let dl = try { ApiOperateurs.delai_reponse(dest, 3) }
+                    let delai = if dl.error == () { to_int(dl.value) } else { DELAI_DEFAUT_N3 }
+                    let ech = min(to_int(h) + delai, max(to_int(h), to_int(f.tca)))
+                    echeance_de.set(m, Horodatage(ech))
+                }
+                transition(m, "prepare", "envoye")
+                if verifier_astreinte {
+                    let ast = try { ApiOperateurs.astreinte(dest, h) }
+                    if ast.error == () && ast.value == "" {
+                        let ech_e = ApiEscalade.escalader(h, r, dest, "opérateur sans astreinte : alerte {m}", "systeme")
+                        if ech_e >= 1 && ech_e <= 4 {
+                            escalade_de.set(m, ech_e)
+                        }
+                    }
+                }
+            }
+            ids_m.push(m)
+        }
+        if len(ids_m) > 0 {
+            par_rapprochement.set(rid, anciens ++ ids_m)
+            let nb = len(ids_m)
+            let _ = Journal.noter(h, "conjonctions", par, "{genre} de {rid} : {nb} messages préparés")
+        }
+        return ids_m
+    }
+
+    on relever(h, message, par) {
+        require ApiAcces.a_le_role(par, "systeme") else Habilitation "relever : systeme"
+        let genre = genre_de.get(message)
+        require genre != () else Inconnu "message inconnu : {message}"
+        let st = get_status(message) ?? "prepare"
+        require st == "envoye" || st == "sans_reponse" else Ferme "message terminé ({st})"
+        let pid = passerelle_de.get(message) ?? ""
+        let acq = pid != "" && ApiPasserelle.acquitte(pid)
+        if acq {
+            if st == "envoye" {
+                transition(message, "envoye", "acquitte")
+            } else {
+                transition(message, "sans_reponse", "acquitte")
+            }
+            let _ = Journal.noter(h, "conjonctions", par, "message {message} acquitté")
+            return "acquitte"
+        }
+        if st == "envoye" {
+            let ech = echeance_de.get(message)
+            let echu = genre == "alerte" && ech != () && to_int(h) > to_int(ech)
+            if echu || (pid != "" && ApiPasserelle.echoue(pid)) {
+                transition(message, "envoye", "sans_reponse")
+                let _ = Journal.noter(h, "conjonctions", par, "message {message} sans réponse")
+                return "sans_reponse"
+            }
+        }
+        return st
+    }
+
+    on escalader(h, message, par) {
+        require ApiAcces.a_le_role(par, "systeme") else Habilitation "escalader : systeme"
+        let r = rapprochement_de.get(message)
+        require r != () else Inconnu "message inconnu : {message}"
+        require (get_status(message) ?? "prepare") == "sans_reponse" else EtatInvalide "message pas sans réponse"
+        let dest = destinataire_de.get(message) ?? ""
+        let e = try { ApiEscalade.escalader(h, Rapprochement(r), dest, "alerte {message} sans accusé", "systeme") }
+        let ech = if e.error == () { e.value } else { ApiEscalade.echelon(Rapprochement(r), dest) }
+        if e.error != () && ech == 0 {
+            if e.kind != "Inconnu" && e.kind != "NonEligible" && e.kind != "Ferme" { fail(e) }
+            cause_de.set(message, "escalade sans objet ({e.kind})")
+            transition(message, "sans_reponse", "caduc")
+            let _ = Journal.noter(h, "conjonctions", par, "message {message} : escalade sans objet ({e.kind}), caduc")
+            return 0
+        }
+        require ech >= 1 && ech <= 4 else EtatInvalide "escalade non ouverte pour {r}"
+        escalade_de.set(message, ech)
+        transition(message, "sans_reponse", "escalade")
+        let _ = Journal.noter(h, "conjonctions", par, "message {message} escaladé (échelon {ech})")
+        return ech
+    }
+
+    on clore_de(h, r, par) {
+        require ApiAcces.a_le_role(par, "systeme") else Habilitation "clore les messages : systeme"
+        let st = ConjRapprochement.etat(r)
+        require st != "inconnu" else Inconnu "rapprochement inconnu : {r}"
+        require st == "resolu" || st == "passe" || st == "collision" else EtatInvalide "rapprochement non clos"
+        let nb = 0
+        for m in par_rapprochement.get(to_string(r)) ?? [] {
+            let sm = get_status(m) ?? "prepare"
+            if sm == "envoye" {
+                cause_de.set(m, "rapprochement {st}")
+                transition(m, "envoye", "caduc")
+                nb = nb + 1
+            } else if sm == "sans_reponse" {
+                cause_de.set(m, "rapprochement {st}")
+                transition(m, "sans_reponse", "caduc")
+                nb = nb + 1
+            }
+        }
+        if nb > 0 {
+            let _ = Journal.noter(h, "conjonctions", par, "{nb} messages de {r} caducs ({st})")
+        }
+        return nb
+    }
+
+    on en_attente(h, n) {
+        let cand = []
+        for m in prepare_le.keys {
+            let sm = get_status(m) ?? "prepare"
+            if sm == "envoye" || sm == "sans_reponse" {
+                cand.push(map("id", m, "t", to_int(prepare_le.get(m) ?? Horodatage(0))))
+            }
+        }
+        let tries = cand.sort_by(e => e.t)
+        let res_m = tries.map(e => e.id)
+        if len(res_m) > n { return slice(res_m, 0, n) }
+        return res_m
+    }
+
+    on de(r) {
+        return par_rapprochement.get(to_string(r)) ?? []
+    }
+
+    on etat(message) {
+        if rapprochement_de.get(message) == () { return "inconnu" }
+        return get_status(message) ?? "prepare"
+    }
+}
+
+flesh ConjAbonnement {
+    on abonner(h, op, destinataire, niveau_min, par, valideur) {
+        require ApiRef.organisation_existe(op) else Inconnu "organisation inconnue : {op}"
+        require ApiRef.organisation_existe(destinataire) else Inconnu "organisation inconnue : {destinataire}"
+        require ApiAcces.a_le_role(par, "administrateur_operateur") && ApiAcces.agit_pour(par, op) else Habilitation "abonner : administrateur de {op}"
+        require valideur != par && ApiAcces.a_le_role(valideur, "chef_de_mission") && ApiAcces.agit_pour(valideur, op) && ApiAcces.quatre_yeux(par, valideur) else QuatreYeux "valideur : chef de mission de {op}, distinct"
+        require ApiOperateurs.est_actif(op, h) else Suspendu "opérateur {op} non actif"
+        require ApiDonnees.adherent(destinataire) else NonEligible "{destinataire} n'adhère pas à l'accord de partage"
+        let so = to_string(op)
+        let siens = par_operateur.get(so) ?? []
+        for ab in siens {
+            require to_string(destinataire_de.get(ab) ?? "") != to_string(destinataire) else Existe "abonnement {ab} déjà en place"
+        }
+        require len(siens) < MAX_PAR_OPERATEUR else Plein "trop d'abonnements pour {op}"
+        require operateur_de.size < MAX_ABONNEMENTS else Plein "trop d'abonnements"
+        let ab = "AB-{next_id()}"
+        operateur_de.set(ab, op)
+        destinataire_de.set(ab, destinataire)
+        niveau_min_de.set(ab, niveau_min)
+        cree_par.set(ab, "{h}|{par}|{valideur}")
+        par_operateur.set(so, siens ++ [ab])
+        let _ = Journal.noter(h, "conjonctions", par, "abonnement {ab} : {destinataire} reçoit les messages de {op} dès le niveau {niveau_min}")
+        return ab
+    }
+
+    on verifier(h, abonnement, par) {
+        require ApiAcces.a_le_role(par, "systeme") else Habilitation "vérifier : systeme"
+        let op = operateur_de.get(abonnement)
+        require op != () else Inconnu "abonnement inconnu : {abonnement}"
+        let st = get_status(abonnement) ?? "actif"
+        require st != "revoque" else Ferme "abonnement révoqué"
+        let dest = destinataire_de.get(abonnement) ?? op
+        let adh = ApiDonnees.adherent(dest)
+        let actif = ApiOperateurs.est_actif(op, h)
+        if st == "actif" && !(adh && actif) {
+            let pourquoi = if !adh { "{dest} n'adhère plus" } else { "{op} n'est plus actif" }
+            cause_de.set(abonnement, pourquoi)
+            transition(abonnement, "actif", "suspendu")
+            let _ = Journal.noter(h, "conjonctions", par, "abonnement {abonnement} suspendu : {pourquoi}")
+            return "suspendu"
+        }
+        if st == "suspendu" && adh && actif {
+            cause_de.set(abonnement, "rétabli")
+            transition(abonnement, "suspendu", "actif")
+            let _ = Journal.noter(h, "conjonctions", par, "abonnement {abonnement} rétabli")
+            return "actif"
+        }
+        return st
+    }
+
+    on revoquer(h, abonnement, motif, par) {
+        let op = operateur_de.get(abonnement)
+        require op != () else Inconnu "abonnement inconnu : {abonnement}"
+        require (ApiAcces.a_le_role(par, "administrateur_operateur") && ApiAcces.agit_pour(par, op)) || ApiAcces.a_le_role(par, "conformite") else Habilitation "révoquer : administrateur de {op} ou conformité d'ORBITE"
+        require len(motif) > 0 else MotifRequis "motif exigé"
+        let st = get_status(abonnement) ?? "actif"
+        require st == "actif" || st == "suspendu" else Ferme "abonnement révoqué"
+        cause_de.set(abonnement, motif)
+        let so = to_string(op)
+        par_operateur.set(so, (par_operateur.get(so) ?? []).filter(x => x != abonnement))
+        if st == "actif" {
+            transition(abonnement, "actif", "revoque")
+        } else {
+            transition(abonnement, "suspendu", "revoque")
+        }
+        let _ = Journal.noter(h, "conjonctions", par, "abonnement {abonnement} révoqué : {motif}")
+        return "revoque"
+    }
+
+    on destinataires(op, n) {
+        let res_d = []
+        for ab in par_operateur.get(to_string(op)) ?? [] {
+            if (get_status(ab) ?? "actif") == "actif" && to_int(niveau_min_de.get(ab) ?? Niveau(3)) <= to_int(n) {
+                let d = to_string(destinataire_de.get(ab) ?? "")
+                if d != "" && !contains(res_d, d) { res_d.push(d) }
+            }
+        }
+        return res_d
+    }
+
+    on non_revoques() {
+        let res_n = []
+        for lst in par_operateur.values {
+            for ab in lst { res_n.push(ab) }
+        }
+        return res_n
+    }
+
+    on etat(abonnement) {
+        if operateur_de.get(abonnement) == () { return "inconnu" }
+        return get_status(abonnement) ?? "actif"
+    }
+}

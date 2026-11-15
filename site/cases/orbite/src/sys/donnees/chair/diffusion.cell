@@ -1,0 +1,163 @@
+// donnees — corps : niveaux de diffusion et point de décision unique (fondement).
+
+flesh DonDiffusion {
+    on declarer(h, objet, d, par) {
+        let eo = ApiRef.etat_objet(objet)
+        require eo != "inconnu" else Inconnu "objet non catalogué : {objet}"
+        let prop = ApiRef.proprietaire(objet)
+        let role_ok = ApiAcces.a_le_role(par, "chef_de_mission") || ApiAcces.a_le_role(par, "administrateur_operateur")
+        require role_ok && ApiAcces.agit_pour(par, prop) else Habilitation "déclarer la diffusion : chef de mission ou administrateur du propriétaire {prop}"
+        require d != "restreint" else HorsBornes "« restreint » : demander un embargo"
+        let nat = to_string(ApiRef.nature(objet))
+        let pl = plafond.get(nat) ?? Diffusion("parties")
+        require DonControle.ouverture(d) >= DonControle.ouverture(pl) else HorsBornes "plus restrictif que le plafond {pl} des objets {nat}"
+        let ancien = declare.get(objet)
+        if ancien == () {
+            require declare.size < MAX_OBJETS else Plein "trop de niveaux déclarés"
+        }
+        require historique.size < MAX_HISTORIQUE else Plein "historique de diffusion plein"
+        declare.set(objet, d)
+        let av = if ancien == () { "défaut" } else { to_string(ancien) }
+        historique.push("{h} | {objet} | {av} → {d} | {par}")
+        let _ = Journal.noter(h, "donnees", par, "diffusion de {objet} déclarée {d}")
+        return DonControle.diffusion_effective(objet)
+    }
+
+    on fixer_plafond(h, nature, d, motif, par, valideur) {
+        require ApiAcces.a_le_role(par, "direction") else Habilitation "fixer un plafond : direction d'ORBITE"
+        let val_ok = ApiAcces.a_le_role(valideur, "direction") || ApiAcces.a_le_role(valideur, "conformite")
+        require valideur != par && val_ok && ApiAcces.quatre_yeux(par, valideur) else QuatreYeux "valideur direction ou conformite distinct exigé"
+        require d != "restreint" else HorsBornes "un plafond n'est jamais « restreint »"
+        require len(motif) > 0 else MotifRequis "motif de la politique exigé"
+        require historique.size < MAX_HISTORIQUE else Plein "historique de diffusion plein"
+        let nat = to_string(nature)
+        let ancien = plafond.get(nat)
+        let av = if ancien == () { "parties (défaut)" } else { to_string(ancien) }
+        plafond.set(nat, d)
+        historique.push("{h} | {nat} | {av} → {d} | {par}")
+        let _ = Journal.noter(h, "donnees", par, "plafond de diffusion {nat} : {d} ({motif}, valideur {valideur})")
+        return d
+    }
+
+    on declaree(objet) {
+        let d = declare.get(objet)
+        if d != () { return d }
+        let r = try { ApiRef.nature(objet) }
+        if r.error != () { return Diffusion("participants") }
+        let nat = to_string(r.value)
+        if nat == "debris" || nat == "inconnu" { return Diffusion("public") }
+        return Diffusion("participants")
+    }
+
+    on plafond_de(nature) {
+        return plafond.get(to_string(nature)) ?? Diffusion("parties")
+    }
+
+    on historique_de(cle, n) {
+        let motif_c = " | {cle} | "
+        let lignes_h = historique.filter(l => contains(l, motif_c))
+        let k = len(lignes_h)
+        if k <= n { return lignes_h }
+        let res_h = []
+        for i in range(k - n, k) { res_h.push(lignes_h[i]) }
+        return res_h
+    }
+}
+
+flesh DonControle {
+    on ouverture(d) {
+        return match to_string(d) {
+            "restreint" -> 0
+            "parties" -> 1
+            "participants" -> 2
+            _ -> 3
+        }
+    }
+
+    on diffusion_effective(objet) {
+        if ApiRef.etat_objet(objet) == "inconnu" { return Diffusion("restreint") }
+        let rang = 0
+        if !DonEmbargos.sous_embargo(objet) {
+            let rd = ouverture(DonDiffusion.declaree(objet))
+            let rp = ouverture(DonDiffusion.plafond_de(ApiRef.nature(objet)))
+            rang = max(rd, rp)
+        }
+        if rang < 1 && len(ApiConjonctions.ouverts_de(objet)) > 0 {
+            rang = 1
+        }
+        return _niveau(rang)
+    }
+
+    on _niveau(rang: Int) {
+        if rang <= 0 { return Diffusion("restreint") }
+        if rang == 1 { return Diffusion("parties") }
+        if rang == 2 { return Diffusion("participants") }
+        return Diffusion("public")
+    }
+
+    on fondement(org, objet, r, h) {
+        if !ApiRef.organisation_existe(org) { return "" }
+        if ApiRef.etat_objet(objet) == "inconnu" { return "" }
+        let orb = ApiRef.orbite()
+        let prop = ApiRef.proprietaire(objet)
+        if prop == "inconnu" || prop == "" { prop = orb }
+        if org == prop { return "proprietaire" }
+        let ei = ApiRef.etat_immatriculation(objet)
+        if ei != "" {
+            if ApiRef.org_de_etat(ei) == org { return "etat_immatriculation" }
+        }
+        if org == orb { return "orbite" }
+        if r != "" {
+            let st = ApiConjonctions.etat(r)
+            let ouvert = st == "detecte" || st == "suivi" || st == "alerte" || st == "en_coordination"
+            if ouvert {
+                let objs = ApiConjonctions.objets(r)
+                if contains(objs, objet) {
+                    let partie = false
+                    for o in objs {
+                        let po = ApiRef.proprietaire(Objet(o))
+                        if po == org { partie = true }
+                        let eio = ApiRef.etat_immatriculation(Objet(o))
+                        if eio != "" {
+                            if ApiRef.org_de_etat(eio) == org { partie = true }
+                        }
+                    }
+                    if partie {
+                        if DonAdhesions.adherent(org) { return "partie:{r}" }
+                        if ApiConjonctions.niveau(r) == 3 { return "urgence:{r}" }
+                    }
+                }
+            }
+        }
+        if DonEmbargos.sous_embargo(objet) { return "" }
+        let eff = diffusion_effective(objet)
+        if eff == "public" { return "public" }
+        let adh = DonAdhesions.adherent(org)
+        if adh && ouverture(eff) >= 2 {
+            let stat = ApiOperateurs.statut(org)
+            if stat != "suspendu" && stat != "exclu" {
+                let ad = DonAdhesions.adhesion_de(org)
+                return "adhesion:{ad}"
+            }
+        }
+        if adh {
+            let pb = DonPartages.actif_pour(prop, org, h)
+            if pb != "" { return "bilateral:{pb}" }
+        }
+        let da = DonDemandes.accordee_pour(org, objet, h)
+        if da != "" { return "demande:{da}" }
+        return ""
+    }
+
+    on filtrer(orgs, objet, r, h) {
+        let res_f = []
+        for o in orgs {
+            if fondement(Org(o), objet, r, h) != "" { res_f.push(o) }
+        }
+        return res_f
+    }
+
+    on peut_recevoir(org, objet, r, h) {
+        return fondement(org, objet, r, h) != ""
+    }
+}

@@ -1,0 +1,105 @@
+// Corps des tests de continuité (operations).
+
+flesh OpsTest {
+    on planifier(h, t, s, prevu, resp, par) {
+        require ApiAcces.a_le_role(par, "superviseur") else Habilitation "planifier : superviseur d'ORBITE"
+        require ApiAcces.a_le_role(resp, "exploitant") else Habilitation "le responsable doit être exploitant d'ORBITE"
+        require !scenario.has(t) else Existe "test '{t}' déjà planifié"
+        require prevu >= h else HorsBornes "date prévue dans le passé"
+        require scenario.size < MAX_TESTS else Plein "registre des tests plein"
+        scenario.set(t, s)
+        prevu_a.set(t, prevu)
+        responsable.set(t, resp)
+        let _ = Journal.noter(h, "operations", par, "test {t} ({s}) planifié pour {prevu}")
+        return t
+    }
+
+    on demarrer(h, t, par) {
+        let s = scenario.get(t)
+        require s != () else Inconnu "test '{t}' inconnu"
+        require par == (responsable.get(t) ?? "") else Habilitation "seul le responsable démarre le test"
+        require (get_status(t) ?? "planifie") == "planifie" else EtatInvalide "test non planifié"
+        require h >= (prevu_a.get(t) ?? 0) else Delai "test démarré avant sa date"
+        let urgence = OpsGel.gel_a(h) || OpsGelUrgence.actif_a(h) || OpsIncident.majeur_en_cours() || OpsBascule.en_transition()
+        require !urgence else Suspendu "gel, urgence ou bascule en cours : reporter le test"
+        let ss_ex = _sous_systeme_exerce(to_string(s))
+        require !OpsDegradation.est_degrade(ss_ex) else Suspendu "{ss_ex} en mode dégradé : reporter le test"
+        transition(t, "planifie", "en_cours")
+        debut.set(t, h)
+        // Les opérateurs d'exercice sont prévenus par l'astreinte (le cadre n'appelle pas la passerelle).
+        let _ = Journal.noter(h, "operations", par, "test {t} ({s}) démarré sur {ss_ex}")
+        return "en_cours"
+    }
+
+    on interrompre(h, t, motif, par) {
+        let resp = responsable.get(t)
+        require resp != () else Inconnu "test '{t}' inconnu"
+        require par == resp || par == "systeme" else Habilitation "interrompre : le responsable ou systeme"
+        require len(motif) > 0 else MotifRequis "motif requis"
+        require (get_status(t) ?? "planifie") == "en_cours" else EtatInvalide "test non en cours"
+        transition(t, "en_cours", "interrompu")
+        let _ = Journal.noter(h, "operations", par, "test {t} interrompu : {motif}")
+        return "interrompu"
+    }
+
+    on annuler(h, t, motif, par) {
+        require ApiAcces.a_le_role(par, "superviseur") else Habilitation "annuler : superviseur d'ORBITE"
+        require scenario.has(t) else Inconnu "test '{t}' inconnu"
+        require len(motif) > 0 else MotifRequis "motif requis"
+        require (get_status(t) ?? "planifie") == "planifie" else EtatInvalide "test déjà démarré ou clos"
+        transition(t, "planifie", "annule")
+        let _ = Journal.noter(h, "operations", par, "test {t} annulé : {motif}")
+        return "annule"
+    }
+
+    on rapporter(h, t, res, reprise_ms, constats, par, valideur) {
+        let s = scenario.get(t)
+        require s != () else Inconnu "test '{t}' inconnu"
+        let resp = responsable.get(t) ?? ""
+        require valideur != resp && valideur != par && ApiAcces.quatre_yeux(par, valideur) else QuatreYeux "rapport contre-signé par un superviseur autre que le responsable"
+        require (get_status(t) ?? "planifie") == "en_cours" else EtatInvalide "test non en cours"
+        require len(constats) <= MAX_ECARTS else Plein "trop d'écarts"
+        if res == "reussi" {
+            require reprise_ms <= RTO && len(constats) == 0 else Incoherent "« reussi » exige une reprise dans le RTO et aucun écart"
+        }
+        transition(t, "en_cours", "termine")
+        reprise.set(t, reprise_ms)
+        resultat.set(t, res)
+        ecarts.set(t, constats)
+        if res == "reussi" {
+            dernier_reussi.set(to_string(s), h)
+        }
+        let _ = Journal.noter(h, "operations", par, "test {t} ({s}) : {res}, reprise {reprise_ms} ms, contre-signé par {valideur}")
+        return res
+    }
+
+    on a_jour(s, h) {
+        let d = dernier_reussi.get(to_string(s))
+        if d == () { return false }
+        return h - d < PERIODICITE
+    }
+
+    on en_retard(h) {
+        let retard_t = []
+        for sc in ["alerte_bout_en_bout", "bascule_a_blanc", "indisponibilite_equipe", "perte_capteurs", "perte_passerelle", "restauration_sauvegarde"] {
+            let d = dernier_reussi.get(sc)
+            if d == () || h - d >= PERIODICITE { retard_t.push(sc) }
+        }
+        return retard_t
+    }
+
+    on etat(t) {
+        if !scenario.has(t) { return "inconnu" }
+        return get_status(t) ?? "planifie"
+    }
+
+    // Sous-système exercé par un scénario (mode dégradé à vérifier avant de démarrer).
+    on _sous_systeme_exerce(s: String) {
+        return match s {
+            "perte_capteurs" -> SousSysteme("observation")
+            "perte_passerelle" -> SousSysteme("passerelle")
+            "alerte_bout_en_bout" -> SousSysteme("escalade")
+            _ -> SousSysteme("operations")
+        }
+    }
+}

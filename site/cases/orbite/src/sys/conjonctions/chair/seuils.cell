@@ -1,0 +1,96 @@
+// CONJONCTIONS — corps : seuils de niveau (table versionnée, quatre yeux).
+
+flesh ConjSeuils {
+    on rediger(h, pc_suivi, pc_attention, pc_urgence, distance_attention, distance_urgence, horizon_urgence, motif, par) {
+        require ApiAcces.a_le_role(par, "analyste") else Habilitation "rédiger des seuils : analyste d'ORBITE"
+        require len(motif) > 0 else MotifRequis "motif de la nouvelle table exigé"
+        require to_int(pc_suivi) <= to_int(pc_attention) && to_int(pc_attention) <= to_int(pc_urgence) else HorsBornes "pc : suivi ≤ attention ≤ urgence"
+        require to_int(distance_urgence) <= to_int(distance_attention) else HorsBornes "distance d'urgence ≤ distance d'attention"
+        require to_int(horizon_urgence) >= 3600000 && to_int(horizon_urgence) <= 604800000 else HorsBornes "horizon d'urgence entre 1 h et 7 j"
+        require redige_par.size < MAX_VERSIONS else Plein "trop de versions de seuils"
+        let v = "SEU-{next_id()}"
+        pc_suivi_de.set(v, pc_suivi)
+        pc_attention_de.set(v, pc_attention)
+        pc_urgence_de.set(v, pc_urgence)
+        distance_attention_de.set(v, distance_attention)
+        distance_urgence_de.set(v, distance_urgence)
+        horizon_urgence_de.set(v, horizon_urgence)
+        redige_par.set(v, par)
+        motif_de.set(v, motif)
+        let _ = Journal.noter(h, "conjonctions", par, "seuils {v} rédigés : {motif}")
+        return v
+    }
+
+    on adopter(h, version, par, valideur) {
+        let redacteur = redige_par.get(version)
+        require redacteur != () else Inconnu "version de seuils inconnue : {version}"
+        require (get_status(version) ?? "brouillon") == "brouillon" else EtatInvalide "seule une version en brouillon s'adopte"
+        require !ApiOperations.incident_majeur() else Suspendu "incident majeur en cours : pas de changement de seuils"
+        require ApiAcces.a_le_role(par, "superviseur") else Habilitation "adopter des seuils : superviseur d'ORBITE"
+        require ApiAcces.a_le_role(valideur, "direction") else QuatreYeux "valideur : direction d'ORBITE"
+        require valideur != par && valideur != redacteur && ApiAcces.quatre_yeux(par, valideur) else QuatreYeux "valideur distinct du demandeur et du rédacteur"
+        let ancienne = en_vigueur.get("courante")
+        if ancienne != () {
+            transition(ancienne, "en_vigueur", "remplacee")
+        }
+        transition(version, "brouillon", "en_vigueur")
+        en_vigueur.set("courante", version)
+        adopte_le.set(version, h)
+        valide_par.set(version, valideur)
+        let _ = Journal.noter(h, "conjonctions", par, "seuils {version} adoptés (valideur {valideur})")
+        return version
+    }
+
+    on rejeter(h, version, motif, par) {
+        require redige_par.get(version) != () else Inconnu "version de seuils inconnue : {version}"
+        require ApiAcces.a_le_role(par, "superviseur") else Habilitation "rejeter des seuils : superviseur d'ORBITE"
+        require len(motif) > 0 else MotifRequis "motif du rejet exigé"
+        require (get_status(version) ?? "brouillon") == "brouillon" else EtatInvalide "seule une version en brouillon se rejette"
+        transition(version, "brouillon", "rejetee")
+        let _ = Journal.noter(h, "conjonctions", par, "seuils {version} rejetés : {motif}")
+        return "rejetee"
+    }
+
+    on niveau(pc, distance, restant, facteur) {
+        let v = en_vigueur.get("courante")
+        let pc_att = DEFAUT_PC_ATTENTION
+        let pc_urg = DEFAUT_PC_URGENCE
+        let d_att = DEFAUT_DISTANCE_ATTENTION
+        let d_urg = DEFAUT_DISTANCE_URGENCE
+        let horizon = DEFAUT_HORIZON_URGENCE
+        if v != () {
+            pc_att = to_int(pc_attention_de.get(v) ?? DEFAUT_PC_ATTENTION)
+            pc_urg = to_int(pc_urgence_de.get(v) ?? DEFAUT_PC_URGENCE)
+            d_att = to_int(distance_attention_de.get(v) ?? DEFAUT_DISTANCE_ATTENTION)
+            d_urg = to_int(distance_urgence_de.get(v) ?? DEFAUT_DISTANCE_URGENCE)
+            horizon = to_int(horizon_urgence_de.get(v) ?? DEFAUT_HORIZON_URGENCE)
+        }
+        let f = to_int(facteur)
+        let d_att_f = idiv(d_att * f, 100)
+        let d_urg_f = idiv(d_urg * f, 100)
+        let p = to_int(pc)
+        let d = to_int(distance)
+        if (p >= pc_urg || d < d_urg_f) && to_int(restant) <= horizon {
+            return Niveau(3)
+        }
+        if p >= pc_att || d < d_att_f {
+            return Niveau(2)
+        }
+        return Niveau(1)
+    }
+
+    on seuil_suivi() {
+        let v = en_vigueur.get("courante")
+        if v == () { return Probabilite(DEFAUT_PC_SUIVI) }
+        return pc_suivi_de.get(v) ?? Probabilite(DEFAUT_PC_SUIVI)
+    }
+
+    on version_en_vigueur() {
+        return en_vigueur.get("courante") ?? "defaut"
+    }
+
+    on etat(version) {
+        if redige_par.get(version) == () { return "inconnue" }
+        return get_status(version) ?? "brouillon"
+    }
+}

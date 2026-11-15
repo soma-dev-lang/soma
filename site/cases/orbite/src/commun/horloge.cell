@@ -1,0 +1,20 @@
+// Horloge d'ORBITE : le SEUL endroit, avec l'entrée HTTP de la passerelle, qui lit le temps.
+// Toutes les minutes, elle fournit h à chaque sous-système (ApiX.balayer), par "systeme".
+skeleton Horloge {
+    memory {
+        dernier: Map<String, Int> [persistent]   // "h" → dernier battement (ms) ; ne recule jamais
+        invariant dernier.size <= 1
+    }
+    every 60s { battre() }
+    face {
+        // Lit l'heure (now_ms), refuse un battement qui reculerait, puis appelle le balayage de
+        // chaque sous-système dans l'ordre du contrat ; une erreur d'un balayage est journalisée
+        // et n'arrête pas les suivants. Renvoie le nombre total d'objets dont l'état a changé.
+        signal battre() -> Int
+            writes dernier
+            calls now_ms, Journal.noter, ApiAcces.balayer, ApiConformite.balayer, ApiConjonctions.balayer, ApiCoordination.balayer, ApiDonnees.balayer, ApiEphemerides.balayer, ApiEscalade.balayer, ApiEvenements.balayer, ApiFinDeVie.balayer, ApiLancements.balayer, ApiManoeuvres.balayer, ApiMeteo.balayer, ApiObservation.balayer, ApiOperateurs.balayer, ApiOperations.balayer, ApiPasserelle.balayer, ApiPriorites.balayer, ApiReentrees.balayer, ApiRef.balayer, ApiResponsabilite.balayer
+        // Dernier battement (ms) ; 0 si jamais battu.
+        signal dernier_battement() -> Horodatage
+            reads dernier
+    }
+}

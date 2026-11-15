@@ -1,0 +1,12 @@
+use app
+use commun::journal_chair
+use commun::horloge_chair
+use sys::donnees::chair::api
+use sys::donnees::chair::accords
+use sys::donnees::chair::diffusion
+use sys::donnees::chair::embargos
+use sys::donnees::chair::demandes
+use sys::donnees::chair::traces
+use sys::donnees::chair::publication
+use sys::donnees::chair::violations
+use sys::donnees::chair::balayage

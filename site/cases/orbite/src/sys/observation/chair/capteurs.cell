@@ -1,0 +1,290 @@
+// Corps du réseau de capteurs : fournisseurs agréés et capteurs.
+flesh ObsFournisseurs {
+    on demander(h, fournisseur, par) {
+        require ApiRef.organisation_existe(fournisseur) else Inconnu "organisation {fournisseur} inconnue"
+        let pour_lui = ApiAcces.a_le_role(par, "administrateur_operateur") && ApiAcces.agit_pour(par, fournisseur)
+        require pour_lui || ApiAcces.a_le_role(par, "exploitant") else Habilitation "{par} : administrateur_operateur du fournisseur ou exploitant d'ORBITE requis"
+        let g = ApiRef.genre(fournisseur)
+        require g == "capteur" || g == "operateur" else NonEligible "genre {g} : seuls les fournisseurs de capteurs et les opérateurs"
+        require ApiDonnees.adherent(fournisseur) else NonEligible "{fournisseur} n'adhère pas à l'accord de partage"
+        require !demande_le.has(fournisseur) else Existe "demande d'agrément déjà déposée pour {fournisseur}"
+        require demande_le.size < MAX_FOURNISSEURS else Plein "registre des fournisseurs plein"
+        demande_le.set(fournisseur, h)
+        let _ = Journal.noter(h, "observation", par, "agrément demandé : {fournisseur}")
+        return "demande"
+    }
+    on agreer(h, fournisseur, par, valideur) {
+        require demande_le.has(fournisseur) else Inconnu "aucune demande d'agrément pour {fournisseur}"
+        require ApiAcces.a_le_role(par, "exploitant") else Habilitation "{par} : exploitant d'ORBITE requis"
+        require ApiAcces.quatre_yeux(par, valideur) && ApiAcces.a_le_role(valideur, "superviseur") else QuatreYeux "contre-signature d'un superviseur distinct requise"
+        let st = get_status(fournisseur) ?? "demande"
+        require st == "demande" else EtatInvalide "agrément de {fournisseur} : {st}, pas en demande"
+        // Règle entre sous-systèmes : demande -> agree when RefOrg.active (même id Org).
+        let actives = ApiRef.organisations(ApiRef.genre(fournisseur))
+        require contains(actives, fournisseur) else EtatInvalide "{fournisseur} n'est pas une organisation active du registre"
+        require ApiDonnees.adherent(fournisseur) else NonEligible "{fournisseur} n'adhère pas à l'accord de partage"
+        transition(fournisseur, "demande", "agree")
+        agree_le.set(fournisseur, h)
+        agree_par.set(fournisseur, par)
+        let _ = Journal.noter(h, "observation", par, "fournisseur {fournisseur} agréé (valideur {valideur})")
+        return "agree"
+    }
+    on suspendre(h, fournisseur, motif, par) {
+        let ok = ApiAcces.a_le_role(par, "exploitant") || ApiAcces.a_le_role(par, "superviseur") || ApiAcces.a_le_role(par, "systeme")
+        require ok else Habilitation "{par} : exploitant, superviseur ou systeme requis"
+        let st = get_status(fournisseur) ?? "demande"
+        require st == "agree" else EtatInvalide "agrément de {fournisseur} : {st}, pas agréé"
+        require motif != "" else MotifRequis "motif de suspension requis"
+        transition(fournisseur, "agree", "suspendu")
+        // « auteur|motif » : l'auteur sert au contrôle quatre yeux du rétablissement.
+        motif_suspension.set(fournisseur, "{par}|{motif}")
+        let n = ObsCapteurs.suspendre_de(h, fournisseur)
+        let _ = Journal.noter(h, "observation", par, "fournisseur {fournisseur} suspendu ({motif}) ; {n} capteur(s) mis en panne")
+        return "suspendu"
+    }
+    on retablir(h, fournisseur, par) {
+        require ApiAcces.a_le_role(par, "superviseur") else Habilitation "{par} : superviseur d'ORBITE requis"
+        let st = get_status(fournisseur) ?? "demande"
+        require st == "suspendu" else EtatInvalide "agrément de {fournisseur} : {st}, pas suspendu"
+        let trace = motif_suspension.get(fournisseur) ?? ""
+        let auteur = split(trace, "|")[0]
+        require auteur != par else QuatreYeux "le rétablissement doit venir d'un autre que l'auteur de la suspension"
+        require ApiDonnees.adherent(fournisseur) else NonEligible "{fournisseur} n'adhère plus à l'accord de partage"
+        transition(fournisseur, "suspendu", "agree")
+        motif_suspension.delete(fournisseur)
+        agree_le.set(fournisseur, h)
+        let _ = Journal.noter(h, "observation", par, "agrément de {fournisseur} rétabli")
+        return "agree"
+    }
+    on retirer(h, fournisseur, motif, par) {
+        require demande_le.has(fournisseur) else Inconnu "fournisseur {fournisseur} inconnu"
+        let lui = ApiAcces.a_le_role(par, "administrateur_operateur") && ApiAcces.agit_pour(par, fournisseur)
+        require lui || ApiAcces.a_le_role(par, "superviseur") else Habilitation "{par} : superviseur d'ORBITE ou administrateur_operateur du fournisseur requis"
+        require motif != "" else MotifRequis "motif de retrait requis"
+        let st = get_status(fournisseur) ?? "demande"
+        if st == "demande" {
+            transition(fournisseur, "demande", "retire")
+        } else if st == "agree" {
+            transition(fournisseur, "agree", "retire")
+        } else if st == "suspendu" {
+            transition(fournisseur, "suspendu", "retire")
+        } else {
+            fail("EtatInvalide", "fournisseur {fournisseur} déjà retiré")
+        }
+        let n = ObsCapteurs.retirer_de(h, fournisseur)
+        let _ = Journal.noter(h, "observation", par, "fournisseur {fournisseur} retiré ({motif}) ; {n} capteur(s) retiré(s)")
+        return "retire"
+    }
+    on etat(fournisseur) {
+        if !demande_le.has(fournisseur) { return "inconnu" }
+        return get_status(fournisseur) ?? "demande"
+    }
+}
+
+flesh ObsCapteurs {
+    on declarer(h, fournisseur, genre, regimes, precision, par) {
+        let ef = ObsFournisseurs.etat(fournisseur)
+        require ef != "inconnu" else Inconnu "fournisseur {fournisseur} inconnu"
+        let du_fournisseur = (ApiAcces.a_le_role(par, "capteur") || ApiAcces.a_le_role(par, "administrateur_operateur")) && ApiAcces.agit_pour(par, fournisseur)
+        require du_fournisseur || ApiAcces.a_le_role(par, "exploitant") else Habilitation "{par} : capteur ou administrateur_operateur du fournisseur, ou exploitant d'ORBITE requis"
+        require ef == "agree" || ef == "demande" else NonEligible "fournisseur {fournisseur} : {ef}"
+        require len(regimes) > 0 else HorsBornes "au moins un régime couvert"
+        for r in regimes {
+            require r == "leo" || r == "meo" || r == "geo" || r == "heo" else HorsBornes "régime {r} inconnu"
+        }
+        require precision > 0 else HorsBornes "précision nulle"
+        let n = (compteur.get("capteurs") ?? 0) + 1
+        require n <= MAX_CAPTEURS else Plein "réseau plein ({MAX_CAPTEURS} capteurs)"
+        let id = "CAP-{n}"
+        compteur.set("capteurs", n)
+        fournisseur_de.set(id, fournisseur)
+        genre_de.set(id, genre)
+        regimes_de.set(id, regimes)
+        precision_de.set(id, precision)
+        let _ = Journal.noter(h, "observation", par, "capteur {id} déclaré ({genre}, {fournisseur})")
+        return id
+    }
+    on etalonner(h, capteur, par) {
+        require fournisseur_de.has(capteur) else Inconnu "capteur {capteur} inconnu"
+        let f = fournisseur_de.get(capteur)
+        let du_fournisseur = ApiAcces.a_le_role(par, "capteur") && ApiAcces.agit_pour(par, f)
+        require du_fournisseur || ApiAcces.a_le_role(par, "exploitant") else Habilitation "{par} : capteur du fournisseur ou exploitant d'ORBITE requis"
+        let st = get_status(capteur) ?? "declare"
+        if st == "declare" {
+            transition(capteur, "declare", "en_etalonnage")
+        } else if st == "en_service" {
+            transition(capteur, "en_service", "en_etalonnage")
+        } else if st == "en_panne" {
+            transition(capteur, "en_panne", "en_etalonnage")
+        } else {
+            fail("EtatInvalide", "capteur {capteur} : {st}")
+        }
+        let _ = Journal.noter(h, "observation", par, "étalonnage ouvert : {capteur}")
+        return "en_etalonnage"
+    }
+    on valider_etalonnage(h, capteur, biais, par) {
+        require fournisseur_de.has(capteur) else Inconnu "capteur {capteur} inconnu"
+        require ApiAcces.a_le_role(par, "analyste") else Habilitation "{par} : analyste d'ORBITE requis"
+        let st = get_status(capteur) ?? "declare"
+        require st == "en_etalonnage" else EtatInvalide "capteur {capteur} : {st}, pas en étalonnage"
+        let p = precision_de.get(capteur) ?? 0
+        require biais <= 3 * p else Insuffisant "biais {biais} m au-delà de 3 × {p} m"
+        let f = fournisseur_de.get(capteur)
+        // Règle interne : en_etalonnage -> en_service when ObsFournisseurs.agree via fournisseur_de.
+        require ObsFournisseurs.etat(f) == "agree" else NonEligible "fournisseur {f} non agréé"
+        transition(capteur, "en_etalonnage", "en_service")
+        etalonne_le.set(capteur, h)
+        motif_panne.delete(capteur)
+        let _ = Journal.noter(h, "observation", par, "étalonnage validé, {capteur} en service (biais {biais} m)")
+        return "en_service"
+    }
+    on declarer_panne(h, capteur, motif, par) {
+        require fournisseur_de.has(capteur) else Inconnu "capteur {capteur} inconnu"
+        let f = fournisseur_de.get(capteur)
+        let du_fournisseur = ApiAcces.a_le_role(par, "capteur") && ApiAcces.agit_pour(par, f)
+        require du_fournisseur || ApiAcces.a_le_role(par, "exploitant") || ApiAcces.a_le_role(par, "systeme") else Habilitation "{par} : capteur du fournisseur, exploitant ou systeme requis"
+        let st = get_status(capteur) ?? "declare"
+        if st == "en_service" {
+            transition(capteur, "en_service", "en_panne")
+        } else if st == "en_etalonnage" {
+            transition(capteur, "en_etalonnage", "en_panne")
+        } else {
+            fail("EtatInvalide", "capteur {capteur} : {st}")
+        }
+        motif_panne.set(capteur, motif)
+        let n = ObsTaches.interrompre_capteur(h, capteur)
+        let _ = Journal.noter(h, "observation", par, "capteur {capteur} en panne ({motif}) ; {n} tâche(s) interrompue(s)")
+        return "en_panne"
+    }
+    on veiller(h, par) {
+        require par == "systeme" else Habilitation "ronde réservée à systeme"
+        let pannes = 0
+        let restants = 0
+        let tous = etalonne_le.keys
+        for c in tous {
+            if (get_status(c) ?? "declare") == "en_service" {
+                let et = etalonne_le.get(c) ?? 0
+                let vu = max(derniere_mesure.get(c) ?? 0, et)
+                let motif = if h - et > VALIDITE_ETALONNAGE_MS { "etalonnage_echu" } else if h - vu > SILENCE_MAX_MS { "silence" } else { "" }
+                if motif != "" {
+                    transition(c, "en_service", "en_panne")
+                    motif_panne.set(c, ObsMotifPanne(motif))
+                    let k = ObsTaches.interrompre_capteur(h, c)
+                    let _ = Journal.noter(h, "observation", "systeme", "capteur {c} mis en panne ({motif}) ; {k} tâche(s) interrompue(s)")
+                    pannes = pannes + 1
+                } else {
+                    restants = restants + 1
+                }
+            }
+        }
+        if pannes > 0 && restants < 3 {
+            let _ = ApiOperations.declarer_incident(h, "OBS-CAPTEURS-{h}", 2, "observation", "couverture dégradée : {restants} capteur(s) en service", "systeme")
+        }
+        return pannes
+    }
+    on noter_mesure(h, capteur) {
+        require fournisseur_de.has(capteur) else Inconnu "capteur {capteur} inconnu"
+        derniere_mesure.set(capteur, h)
+        return h
+    }
+    on retirer(h, capteur, motif, par) {
+        require fournisseur_de.has(capteur) else Inconnu "capteur {capteur} inconnu"
+        let f = fournisseur_de.get(capteur)
+        let du_fournisseur = ApiAcces.a_le_role(par, "administrateur_operateur") && ApiAcces.agit_pour(par, f)
+        require du_fournisseur || ApiAcces.a_le_role(par, "superviseur") else Habilitation "{par} : administrateur_operateur du fournisseur ou superviseur d'ORBITE requis"
+        require motif != "" else MotifRequis "motif de retrait requis"
+        let st = get_status(capteur) ?? "declare"
+        require st != "retire" else EtatInvalide "capteur {capteur} déjà retiré"
+        _retirer_un(capteur, st)
+        let n = ObsTaches.interrompre_capteur(h, capteur)
+        let _ = Journal.noter(h, "observation", par, "capteur {capteur} retiré ({motif}) ; {n} tâche(s) interrompue(s)")
+        return "retire"
+    }
+    on suspendre_de(h, fournisseur) {
+        let n = 0
+        let siens = fournisseur_de.entries.filter(e => e.value == fournisseur)
+        for e in siens {
+            let c = e.key
+            let st = get_status(c) ?? "declare"
+            if st == "en_service" || st == "en_etalonnage" {
+                transition(c, st, "en_panne")
+                motif_panne.set(c, "autre")
+                let _ = ObsTaches.interrompre_capteur(h, c)
+                n = n + 1
+            }
+        }
+        let _ = Journal.noter(h, "observation", "systeme", "fournisseur {fournisseur} suspendu : {n} capteur(s) mis en panne")
+        return n
+    }
+    on retirer_de(h, fournisseur) {
+        let n = 0
+        let siens = fournisseur_de.entries.filter(e => e.value == fournisseur)
+        for e in siens {
+            let c = e.key
+            let st = get_status(c) ?? "declare"
+            if st != "retire" {
+                _retirer_un(c, st)
+                let _ = ObsTaches.interrompre_capteur(h, c)
+                n = n + 1
+            }
+        }
+        let _ = Journal.noter(h, "observation", "systeme", "fournisseur {fournisseur} retiré : {n} capteur(s) retiré(s)")
+        return n
+    }
+    on _retirer_un(c: String, st: String) {
+        if st == "declare" {
+            transition(c, "declare", "retire")
+        } else if st == "en_etalonnage" {
+            transition(c, "en_etalonnage", "retire")
+        } else if st == "en_service" {
+            transition(c, "en_service", "retire")
+        } else if st == "en_panne" {
+            transition(c, "en_panne", "retire")
+        }
+    }
+    on etat(capteur) {
+        if !fournisseur_de.has(capteur) { return "inconnu" }
+        return get_status(capteur) ?? "declare"
+    }
+    on fournisseur(capteur) {
+        let f = fournisseur_de.get(capteur)
+        require f != () else Inconnu "capteur {capteur} inconnu"
+        return f
+    }
+    on genre(capteur) {
+        let g = genre_de.get(capteur)
+        require g != () else Inconnu "capteur {capteur} inconnu"
+        return g
+    }
+    on precision(capteur) {
+        let p = precision_de.get(capteur)
+        require p != () else Inconnu "capteur {capteur} inconnu"
+        return p
+    }
+    on couvre(capteur, regime) {
+        if (get_status(capteur) ?? "declare") != "en_service" { return false }
+        return contains(regimes_de.get(capteur) ?? [], regime)
+    }
+    on en_service_nb() {
+        let n = 0
+        for c in fournisseur_de.keys {
+            if (get_status(c) ?? "declare") == "en_service" { n = n + 1 }
+        }
+        return n
+    }
+    on disponibles(regime, n) {
+        let cands = []
+        for e in regimes_de.entries {
+            if (get_status(e.key) ?? "declare") == "en_service" && contains(e.value, regime) {
+                let ch = ObsTaches.charge(e.key)
+                cands.push(map("c", e.key, "ch", ch))
+            }
+        }
+        let tries = sort_by(cands, x => [x.ch, x.c])
+        let res_dispo = []
+        for x in tries {
+            if len(res_dispo) < n { res_dispo.push(x.c) }
+        }
+        return res_dispo
+    }
+}

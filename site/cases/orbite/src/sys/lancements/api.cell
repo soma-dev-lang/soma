@@ -1,0 +1,35 @@
+// Façade des LANCEMENTS : préavis, criblage de la fenêtre (COLA), injection, identification des objets.
+skeleton ApiLancements {
+    face {
+        // Notifie un lancement : opérateur, État de lancement, fenêtre, orbite visée, nombre
+        // d'objets prévus. Renvoie l'id. Refus : Existe, Inconnu, Suspendu (opérateur),
+        // Delai (préavis < 72 h), Habilitation ("chef_de_mission" de l'opérateur, ou "autorite"
+        // de l'État de lancement).
+        signal notifier(h: Horodatage, lancement: String, op: Org, etat: Etat, debut: Horodatage, fin: Horodatage, regime: Regime, nb_objets: Int, par: String) -> String
+            calls LancLancement.notifier
+        // Cycle : "notifie", "crible", "autorise", "lance", "injecte", "identifie", "reporte",
+        // "echec", "annule" ; "inconnu".
+        signal etat(lancement: String) -> String
+            calls LancLancement.etat
+        // Objets catalogués issus du lancement.
+        signal objets(lancement: String) -> List<String>
+            calls LancPiece.objets_du_lancement
+        // Lancement d'origine d'un objet ; "" si inconnu.
+        signal origine(objet: Objet) -> String
+            calls LancPiece.origine
+        // Instant d'injection du lancement d'origine de l'objet (0 si inconnu) : sert à
+        // l'ordre d'arrivée des règles de priorité.
+        signal injecte_le(objet: Objet) -> Horodatage
+            calls LancPiece.origine, LancLancement.injecte_le
+        // États de lancement de l'objet (qui lance, fait lancer, ou dont le territoire sert) : ceux
+        // qui en répondent (Convention de 1972) et à qui restituer les débris (Accord de 1968).
+        signal etats_de_lancement(objet: Objet) -> List<String>
+            calls LancPiece.etats_de_lancement
+        // Balayage des échéances du sous-système à `h` (délais, expirations, rondes), appelé par
+        // l'horloge d'ORBITE (Horloge.battre) — le SEUL point d'entrée du temps : aucun signal de
+        // lancements ne lit l'horloge lui-même. Renvoie le nombre d'objets dont l'état a changé.
+        // Refus : Habilitation (par "systeme").
+        signal balayer(h: Horodatage, par: String) -> Int
+            calls LancVeille.balayer
+    }
+}

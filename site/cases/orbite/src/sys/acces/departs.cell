@@ -1,0 +1,101 @@
+// acces — DÉPARTS. Le départ d'une personne est annoncé (date d'effet), puis rendu effectif à
+// cette date : facteur révoqué, sessions et jetons fermés, urgence close, attributions
+// révoquées, personne "partie". Il peut être immédiat (licenciement, compromission) ou
+// d'office (employeur radié de ref). Un identifiant parti n'est jamais réutilisé.
+// Ordre prouvé : la personne ne passe "partie" que départ "effectif" (règle sur
+// AccesPersonnes.sortir), et le départ ne se clôt que personne "partie" (règle ci-dessous).
+
+// Motif d'un départ.
+cell type AccesMotifDepart = String where value == "demission" || value == "fin_de_contrat" || value == "mutation" || value == "licenciement" || value == "deces" || value == "employeur_radie" || value == "compromission"
+
+// Départ d'une personne : id = personne (un départ par personne).
+skeleton AccesDeparts {
+    const MAX_DEPARTS = 500000
+    const PREAVIS_MAX_MS = 15552000000
+    memory {
+        motif_de: Map<String, AccesMotifDepart> [persistent]   // personne → motif du départ annoncé ou effectif
+        effet: Map<String, Horodatage> [persistent]            // personne → date d'effet prévue, ms
+        annonce_par: Map<String, String> [persistent]          // personne → auteur de l'annonce ("systeme" si d'office)
+        parti_le: Map<String, Horodatage> [persistent]         // personne → date d'effet réelle, ms
+        invariant motif_de.size <= MAX_DEPARTS
+        invariant (effet ?? 0) <= (parti_le ?? 9999999999999)   // parti_le absent (départ annoncé) : sans borne
+    }
+    // Cycle de vie d'un départ (id = personne).
+    state depart {
+        initial: aucun
+        aucun -> annonce            // annoncer : date d'effet future
+        annonce -> aucun            // annuler : départ renoncé avant effet
+        annonce -> effectif         // rendre_effectif : date d'effet atteinte
+        aucun -> effectif           // partir_maintenant, depart_d_office
+        effectif -> clos            // rendre_effectif, une fois la personne partie
+    }
+    face {
+        // Annonce le départ de `personne` à la date `effet_ms` (h < effet_ms ≤ h + PREAVIS_MAX_MS).
+        // Renvoie "annonce". Rôle exigé de `par` : "administrateur_operateur" de l'employeur
+        // (AccesControle.agit_pour), "exploitant" d'ORBITE pour un employé d'ORBITE ou d'un
+        // État, ou la personne elle-même ("demission" seulement).
+        // Refus : Inconnu, EtatInvalide (personne partie ou départ déjà annoncé), HorsBornes
+        // (date d'effet), Habilitation, Plein.
+        signal annoncer(h: Horodatage, personne: String, motif: AccesMotifDepart, effet_ms: Horodatage, par: String) -> String
+            writes motif_de, effet, annonce_par
+            moves aucun -> annonce
+            calls AccesPersonnes.etat, AccesPersonnes.employeur, AccesControle.a_le_role, AccesControle.agit_pour, ApiRef.orbite, Journal.noter, AccesPortees.genre_de
+        // Renonce à un départ annoncé avant sa date d'effet. Mêmes rôles qu'annoncer (sauf la
+        // personne elle-même). Renvoie "aucun". Refus : Inconnu, EtatInvalide, Echu (date
+        // d'effet atteinte), Habilitation.
+        signal annuler(h: Horodatage, personne: String, par: String) -> String
+            reads effet
+            writes motif_de, annonce_par
+            moves annonce -> aucun
+            calls AccesPersonnes.employeur, AccesControle.a_le_role, AccesControle.agit_pour, Journal.noter, AccesPortees.genre_de
+        // Départ immédiat (licenciement, compromission, décès) : effet = h, puis
+        // rendre_effectif. Rôle exigé de `par` : "administrateur_operateur" de l'employeur, ou
+        // "direction" / "conformite" d'ORBITE ; par ≠ personne. Renvoie "clos".
+        // Refus : Inconnu, EtatInvalide (personne partie), MotifRequis (detail vide),
+        // Habilitation, QuatreYeux.
+        signal partir_maintenant(h: Horodatage, personne: String, motif: AccesMotifDepart, detail: String, par: String) -> String
+            writes motif_de, effet, annonce_par
+            calls AccesPersonnes.etat, AccesPersonnes.employeur, AccesControle.a_le_role, AccesControle.agit_pour, rendre_effectif, Journal.noter
+        // Départ d'office, motif "employeur_radie", par "systeme" (appelé par
+        // AccesPersonnes.balayer_employeurs). Renvoie l'état atteint du départ ; sans effet si
+        // la personne est déjà partie.
+        signal depart_d_office(h: Horodatage, personne: String) -> String
+            writes motif_de, effet, annonce_par
+            calls AccesPersonnes.etat, rendre_effectif
+        // Rend effectif le départ de la personne : AccesFacteurs.revoquer, AccesSessions.fermer_toutes
+        // ("depart"), AccesUrgences.fermer_de, AccesAttributions.revoquer_de, puis
+        // AccesPersonnes.sortir, puis clôt le départ. Renvoie "clos". Refus : Inconnu,
+        // EtatInvalide (aucun départ en cours), Delai (date d'effet non atteinte).
+        signal rendre_effectif(h: Horodatage, personne: String) -> String
+            reads effet
+            writes parti_le
+            moves annonce -> effectif, aucun -> effectif, effectif -> clos when AccesPersonnes.partie
+            calls AccesPersonnes.etat, AccesFacteurs.revoquer, AccesSessions.fermer_toutes, AccesUrgences.fermer_de, AccesAttributions.revoquer_de, AccesPersonnes.sortir, Journal.noter
+        // Balayage : rend effectifs les départs annoncés dont la date d'effet est ≤ h. Renvoie leur nombre.
+        signal effectuer_echus(h: Horodatage) -> Int
+            reads effet, depart
+            calls rendre_effectif
+        // État du départ : "aucun", "annonce", "effectif", "clos".
+        signal etat(personne: String) -> String
+            reads depart
+    }
+}
+
+// Balayage du sous-système, appelé par ApiAcces.balayer(h, par) depuis l'horloge d'ORBITE
+// (Horloge.battre, toutes les 60 s) : acces ne lit jamais l'heure lui-même.
+skeleton AccesBalayage {
+    memory {
+        dernier_jour: Map<String, Jour> [persistent]   // "ronde" → dernier jour où la ronde quotidienne a tourné
+        invariant dernier_jour.size <= 1
+    }
+    face {
+        // À chaque appel : jetons échus, sessions inactives ou trop longues, urgences expirées,
+        // attributions échues. Une fois par jour (premier appel d'un nouveau Jour, h / 86 400 000) :
+        // départs échus, employeurs radiés, rattachements non confirmés, campagnes échues, revues
+        // d'urgence en retard. Renvoie le nombre d'objets dont l'état a changé.
+        // Refus : Habilitation (par ≠ "systeme", AccesControle.a_le_role(par, "systeme")).
+        signal balayer(h: Horodatage, par: String) -> Int
+            writes dernier_jour
+            calls AccesControle.a_le_role, AccesJetons.echoir, AccesSessions.balayer, AccesUrgences.echoir, AccesAttributions.echoir, AccesDeparts.effectuer_echus, AccesPersonnes.balayer_employeurs, AccesRattachements.echoir, AccesCampagnes.cloturer_echues, AccesUrgences.relancer_revues
+    }
+}

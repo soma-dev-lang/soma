@@ -1,0 +1,116 @@
+// OPÉRATIONS — bascule de secours : ORBITE tourne sur un site primaire et un site de secours
+// répliqué. Une bascule réelle n'est décidée que par une cellule de crise active ; elle est
+// autorisée à quatre yeux, mesurée (perte de données, durée de reprise), et suivie d'un retour.
+// Pendant une transition, aucune décision de trafic ne devrait être approuvée (règle proposée).
+
+// Site qui porte la production.
+cell type OpsSite = String where value == "primaire" || value == "secours"
+// État d'une bascule ; "inconnue" si jamais demandée.
+cell type OpsEtatBascule = String where value == "demandee" || value == "autorisee" || value == "en_cours" || value == "sur_secours" || value == "retour_en_cours" || value == "terminee" || value == "echouee" || value == "annulee" || value == "inconnue"
+
+// Une bascule vers le secours, puis son retour au primaire.
+skeleton OpsBascule {
+    const MAX_BASCULES = 10000
+    // Perte de données admise (RPO, ms) : 5 min de réplication.
+    const RPO = 300000
+    // Durée de reprise visée (RTO, ms) : 1 h entre lancement et confirmation.
+    const RTO = 3600000
+    memory {
+        // bascule → incident (crise) qui l'a décidée : écrit une fois par `demander`, jamais effacé.
+        crise_de: Map<String, String> [persistent]
+        demandeur: Map<String, String> [persistent]
+        demandee_a: Map<String, Horodatage> [persistent]
+        lancee_a: Map<String, Horodatage> [persistent]
+        confirmee_a: Map<String, Horodatage> [persistent]     // production reprise sur le secours
+        // Retard de réplication constaté au lancement (ms) = données perdues si la bascule aboutit.
+        perte: Map<String, Duree> [persistent]
+        // Exploitation, clé unique "orbite" : site portant la production.
+        site_actif: Map<String, OpsSite> [persistent]
+        // Bascule en transition (en_cours ou retour_en_cours), clé unique "orbite" ; absente sinon.
+        transition: Map<String, String> [persistent]
+        invariant crise_de.size <= 10000
+        invariant site_actif.size <= 1
+        invariant transition.size <= 1
+        invariant perte <= 86400000
+        invariant (lancee_a ?? 9000000000000000) >= (demandee_a ?? 0)
+        invariant (confirmee_a ?? 9000000000000000) >= (lancee_a ?? 0)
+    }
+    // `terminee`, `echouee` et `annulee` sont terminaux.
+    state bascule {
+        initial: demandee
+        demandee -> autorisee                                       // autoriser (quatre yeux) : crise du même incident active
+        demandee -> annulee                                         // annuler
+        autorisee -> annulee                                        // annuler
+        autorisee -> en_cours                                       // lancer
+        en_cours -> sur_secours                                     // confirmer : contrôles passés sur le secours
+        en_cours -> echouee                                         // constater_echec : le primaire garde la main
+        sur_secours -> retour_en_cours                              // rapatrier
+        retour_en_cours -> terminee                                 // confirmer : production revenue au primaire
+        retour_en_cours -> echouee                                  // constater_echec : le secours garde la main
+    }
+    face {
+        // Demande une bascule au nom de la crise d'un incident (décision "bascule" enregistrée par
+        // OpsCrise.decider). Renvoie l'id. Refus : Existe, Inconnu (crise), EtatInvalide (crise
+        // non active, production déjà sur le secours, ou une bascule déjà demandée/en cours),
+        // Plein, Habilitation (par "exploitant" ou "direction" d'ORBITE, membre de la crise).
+        signal demander(h: Horodatage, b: String, incident: String, par: String) -> String
+            writes crise_de, demandeur, demandee_a
+            reads site_actif, transition
+            calls OpsCrise.active_pour, OpsCrise.etat, ApiAcces.a_le_role, Journal.noter
+        // Autorise la bascule (crise toujours active). Renvoie "autorisee".
+        // Refus : Inconnu, EtatInvalide, Habilitation (par "direction"), QuatreYeux (valideur
+        // "superviseur", ≠ par et ≠ demandeur).
+        signal autoriser(h: Horodatage, b: String, par: String, valideur: String) -> String
+            reads crise_de, demandeur
+            moves demandee -> autorisee when OpsCrise.active via crise_de
+            calls OpsCrise.active_pour, OpsCrise.etat, ApiAcces.a_le_role, ApiAcces.quatre_yeux, Journal.noter
+        // Renonce à une bascule non lancée. Renvoie "annulee".
+        // Refus : Inconnu, EtatInvalide, MotifRequis, Habilitation (par "direction" ou le demandeur).
+        signal annuler(h: Horodatage, b: String, motif: String, par: String) -> String
+            reads demandeur
+            moves demandee -> annulee, autorisee -> annulee
+            calls ApiAcces.a_le_role, Journal.noter
+        // Lance la bascule : fige le retard de réplication mesuré (`retard_ms`, perte de données
+        // assumée) et marque la transition. Renvoie "en_cours".
+        // Refus : Inconnu, EtatInvalide (autre transition en cours), HorsBornes (retard_ms >
+        // RPO : la perte dépasse le RPO, il faut une nouvelle autorisation à quatre yeux avec
+        // motif — annuler puis redemander), Habilitation (par "exploitant").
+        signal lancer(h: Horodatage, b: String, retard_ms: Duree, par: String) -> String
+            writes lancee_a, perte, transition
+            moves autorisee -> en_cours
+            calls ApiAcces.a_le_role, Journal.noter
+        // Contrôles passés sur le site d'arrivée (catalogue, dernières éphémérides, rapprochements
+        // ouverts, file des messages sortants rejouée) : fin de transition, site actif basculé.
+        // Après en_cours : production sur le secours ; après retour_en_cours : sur le primaire.
+        // Renvoie l'état atteint. Refus : Inconnu, EtatInvalide, Habilitation (par "exploitant"),
+        // QuatreYeux (valideur "superviseur").
+        signal confirmer(h: Horodatage, b: String, par: String, valideur: String) -> String
+            writes confirmee_a, site_actif, transition
+            moves en_cours -> sur_secours, retour_en_cours -> terminee
+            calls ApiAcces.a_le_role, ApiAcces.quatre_yeux, Journal.noter
+        // La transition a échoué : le site d'origine garde la main, la transition est levée ; un
+        // incident de gravité 3 est déclaré si aucun n'est ouvert sur "operations".
+        // Renvoie "echouee". Refus : Inconnu, EtatInvalide, MotifRequis, Habilitation (par "exploitant").
+        signal constater_echec(h: Horodatage, b: String, motif: String, par: String) -> String
+            writes transition
+            moves en_cours -> echouee, retour_en_cours -> echouee
+            calls OpsIncident.est_degrade, OpsIncident.declarer, ApiAcces.a_le_role, Journal.noter
+        // Engage le retour au primaire (primaire réparé et resynchronisé). Renvoie "retour_en_cours".
+        // Refus : Inconnu, EtatInvalide, Habilitation (par "direction"), QuatreYeux (valideur "superviseur").
+        signal rapatrier(h: Horodatage, b: String, par: String, valideur: String) -> String
+            writes transition
+            moves sur_secours -> retour_en_cours
+            calls ApiAcces.a_le_role, ApiAcces.quatre_yeux, Journal.noter
+        // Vrai pendant une transition (en_cours ou retour_en_cours).
+        signal en_transition() -> Bool
+            reads transition
+        // Site portant la production ("primaire" par défaut).
+        signal actif() -> OpsSite
+            reads site_actif
+        // Durée de reprise mesurée (ms, confirmee_a − lancee_a) ; −1 si non confirmée. Refus : Inconnu.
+        signal duree_reprise(b: String) -> Int
+            reads lancee_a, confirmee_a
+        signal etat(b: String) -> OpsEtatBascule
+            reads bascule, crise_de
+    }
+}

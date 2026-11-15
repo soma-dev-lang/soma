@@ -1,0 +1,351 @@
+// operateurs — corps de ADHÉSION (OpDossiers, OpMembres) et des RONDES (OpRondes).
+
+flesh OpDossiers {
+    on deposer(h, op, pieces_jointes, par) {
+        require ApiAcces.a_le_role(par, "administrateur_operateur") && ApiAcces.agit_pour(par, op) else Habilitation "dépôt réservé à un administrateur_operateur de {op}"
+        require ApiRef.organisation_existe(op) else Inconnu "organisation {op} non inscrite au référentiel"
+        require ApiRef.genre(op) == "operateur" else NonEligible "{op} n'est pas un opérateur"
+        let e = ApiRef.etat_de(op)
+        require ApiRef.etat_participant(e) else NonEligible "État de tutelle {e} non participant"
+        require pieces_jointes != "" else MotifRequis "pièces justificatives absentes"
+        require vivant_de.get(op) == () else Doublon "un dossier vivant existe déjà pour {op}"
+        require operateur.size < MAX_DOSSIERS else Plein "registre des dossiers plein"
+        let st = OpMembres.inscrire_candidat(h, op)
+        require st == "candidat" else Existe "{op} est déjà {st}"
+        let n = next_id()
+        let id = "DA-{n}"
+        operateur.set(id, op)
+        depose_a.set(id, h)
+        depose_par.set(id, par)
+        pieces.set(id, pieces_jointes)
+        vivant_de.set(op, id)
+        let _ = Journal.noter(h, "operateurs", par, "dossier {id} déposé pour {op}")
+        return id
+    }
+    on completer(h, dossier, pieces_jointes, par) {
+        let op = operateur.get(dossier)
+        require op != () else Inconnu "dossier {dossier} inconnu"
+        require ApiAcces.a_le_role(par, "administrateur_operateur") && ApiAcces.agit_pour(par, op) else Habilitation "réservé à un administrateur_operateur de {op}"
+        let st = get_status(dossier) ?? "depose"
+        require st == "depose" || st == "en_instruction" else EtatInvalide "dossier {dossier} clos ({st})"
+        require pieces_jointes != "" else MotifRequis "pièces vides"
+        let avant = pieces.get(dossier) ?? ""
+        pieces.set(dossier, if avant == "" { pieces_jointes } else { avant + " ; " + pieces_jointes })
+        let _ = Journal.noter(h, "operateurs", par, "dossier {dossier} complété")
+        return st
+    }
+    on instruire(h, dossier, par) {
+        require operateur.get(dossier) != () else Inconnu "dossier {dossier} inconnu"
+        require ApiAcces.a_le_role(par, "analyste") else Habilitation "instruction réservée à un analyste d'ORBITE"
+        let st = get_status(dossier) ?? "depose"
+        require st == "depose" else EtatInvalide "dossier {dossier} déjà {st}"
+        instructeur.set(dossier, par)
+        transition(dossier, "depose", "en_instruction")
+        let _ = Journal.noter(h, "operateurs", par, "dossier {dossier} en instruction")
+        return "en_instruction"
+    }
+    on accepter(h, dossier, par, valideur) {
+        let op = operateur.get(dossier)
+        require op != () else Inconnu "dossier {dossier} inconnu"
+        require ApiAcces.a_le_role(par, "analyste") && (instructeur.get(dossier) ?? "") == par else Habilitation "seul l'analyste instructeur accepte"
+        require ApiAcces.quatre_yeux(par, valideur) && ApiAcces.a_le_role(valideur, "superviseur") else QuatreYeux "valideur superviseur distinct requis"
+        let st = get_status(dossier) ?? "depose"
+        require st == "en_instruction" else EtatInvalide "dossier {dossier} {st}"
+        require OpLicences.etat(op) == "en_vigueur" else Insuffisant "licence nationale de {op} non en vigueur"
+        require ApiDonnees.adherent(op) else Insuffisant "{op} n'a pas signé l'accord de partage"
+        decision.set(dossier, "{h} | accepte | - | {par} | {valideur}")
+        vivant_de.delete(op)
+        transition(dossier, "en_instruction", "accepte")
+        let _ = OpMembres.admettre(h, op, dossier)
+        let _ = ApiPasserelle.notifier(h, op, "", "adhesion", "dossier {dossier} accepté : {op} admis", 1)
+        let _ = Journal.noter(h, "operateurs", par, "dossier {dossier} accepté (valideur {valideur})")
+        return "accepte"
+    }
+    on rejeter(h, dossier, motif, commentaire, par) {
+        let op = operateur.get(dossier)
+        require op != () else Inconnu "dossier {dossier} inconnu"
+        require ApiAcces.a_le_role(par, "analyste") else Habilitation "rejet réservé à un analyste d'ORBITE"
+        let st = get_status(dossier) ?? "depose"
+        require st == "en_instruction" else EtatInvalide "dossier {dossier} {st}"
+        require commentaire != "" else MotifRequis "commentaire de rejet requis"
+        decision.set(dossier, "{h} | rejete | {motif} : {commentaire} | {par} | -")
+        vivant_de.delete(op)
+        transition(dossier, "en_instruction", "rejete")
+        let _ = ApiPasserelle.notifier(h, op, "", "adhesion", "dossier {dossier} rejeté : {motif}", 1)
+        let _ = Journal.noter(h, "operateurs", par, "dossier {dossier} rejeté ({motif})")
+        return "rejete"
+    }
+    on abandonner(h, dossier, par) {
+        let op = operateur.get(dossier)
+        require op != () else Inconnu "dossier {dossier} inconnu"
+        require ApiAcces.a_le_role(par, "administrateur_operateur") && ApiAcces.agit_pour(par, op) else Habilitation "réservé à un administrateur_operateur de {op}"
+        let st = get_status(dossier) ?? "depose"
+        require st == "depose" || st == "en_instruction" else EtatInvalide "dossier {dossier} {st}"
+        decision.set(dossier, "{h} | abandonne | - | {par} | -")
+        vivant_de.delete(op)
+        transition(dossier, st, "abandonne")
+        let _ = Journal.noter(h, "operateurs", par, "dossier {dossier} abandonné")
+        return "abandonne"
+    }
+    on en_retard(h, n) {
+        let res_r = []
+        for e in vivant_de.entries {
+            if len(res_r) >= n { break }
+            let d = e.value
+            let da = depose_a.get(d) ?? h
+            if to_int(h) - to_int(da) > DELAI_INSTRUCTION_MS {
+                let qui = instructeur.get(d) ?? "-"
+                res_r.push("{d} | {e.key} | {da} | {qui}")
+            }
+        }
+        return res_r
+    }
+    on etat(dossier) {
+        if operateur.get(dossier) == () { return "inconnu" }
+        return get_status(dossier) ?? "depose"
+    }
+}
+
+flesh OpMembres {
+    on inscrire_candidat(h, op) {
+        if candidat_depuis.get(op) == () {
+            candidat_depuis.set(op, h)
+            return "candidat"
+        }
+        let st = get_status(op) ?? "candidat"
+        require st != "exclu" && st != "retire" else Ferme "{op} est {st} : pas de nouvelle candidature sous cet identifiant"
+        return st
+    }
+    on admettre(h, op, dossier) {
+        require dossier_de.get(op) == () else Existe "{op} déjà admis"
+        let st = get_status(op) ?? "candidat"
+        require st == "candidat" else EtatInvalide "{op} est {st}"
+        require OpDossiers.etat(dossier) == "accepte" else EtatInvalide "dossier {dossier} non accepté"
+        dossier_de.set(op, dossier)
+        admis_a.set(op, h)
+        historique.push("{h} | {op} | candidat->admis | dossier {dossier} | systeme | -")
+        transition(op, "candidat", "admis")
+        let _ = Journal.noter(h, "operateurs", "systeme", "{op} admis (dossier {dossier})")
+        return "admis"
+    }
+    on activer(h, op, par) {
+        require ApiAcces.a_le_role(par, "superviseur") else Habilitation "activation réservée à un superviseur d'ORBITE"
+        let s0 = get_status(op)
+        let st = s0 ?? "candidat"
+        require ApiRef.organisation_existe(op) || st != "candidat" else Inconnu "{op} absent du référentiel"
+        require st == "admis" else EtatInvalide "{op} est {st}"
+        require ApiRef.organisation_existe(op) else EtatInvalide "{op} radiée ou non activée au référentiel"
+        require OpEngagements.etat(op) == "en_vigueur" else Insuffisant "engagements de {op} non en vigueur"
+        require OpLicences.valide_a(op, h) else Insuffisant "licence de {op} non valide"
+        require len(OpAstreinte.trous(op, h, Duree(COUVERTURE_ACTIVATION_MS))) == 0 else Insuffisant "astreinte de {op} non couverte sur 7 jours"
+        require OpExercices.joignable(op, h) else Insuffisant "aucun exercice de joignabilité réussi pour {op}"
+        require len(OpContacts.chaine(op, "chef_de_mission", h)) > 0 else Insuffisant "aucun chef_de_mission confirmé pour {op}"
+        historique.push("{h} | {op} | admis->actif | activation | {par} | -")
+        transition(op, "admis", "actif")
+        let _ = ApiPasserelle.notifier(h, op, "", "adhesion", "{op} actif", 1)
+        let _ = Journal.noter(h, "operateurs", par, "{op} activé")
+        return "actif"
+    }
+    on suspendre(h, op, motif, par, valideur) {
+        let s0 = get_status(op)
+        let org_e = ApiRef.org_de_etat(ApiRef.etat_de(op))
+        let cause = if ApiAcces.a_le_role(par, "conformite") {
+            "conformite"
+        } else if (ApiAcces.a_le_role(par, "point_focal") || ApiAcces.a_le_role(par, "autorite")) && ApiAcces.agit_pour(par, org_e) {
+            "etat"
+        } else {
+            ""
+        }
+        require cause != "" else Habilitation "suspension réservée à la conformité d'ORBITE ou à l'État de tutelle"
+        require ApiAcces.quatre_yeux(par, valideur) && ApiAcces.a_le_role(valideur, "direction") else QuatreYeux "valideur direction d'ORBITE requis"
+        let st = s0 ?? "candidat"
+        require st == "actif" else EtatInvalide "{op} est {st}"
+        require motif != "" else MotifRequis "motif de suspension requis"
+        suspension.set(op, "{h} | {cause} | {motif} | {par} | {valideur}")
+        origine.set(op, OpOrigineSuspension(cause))
+        suspendu_a.set(op, h)
+        historique.push("{h} | {op} | actif->suspendu | {cause} : {motif} | {par} | {valideur}")
+        transition(op, "actif", "suspendu")
+        let _ = ApiPasserelle.notifier(h, op, "", "adhesion", "{op} suspendu : {motif}", 2)
+        let _ = Journal.noter(h, "operateurs", par, "{op} suspendu ({cause}, valideur {valideur})")
+        return "suspendu"
+    }
+    on suspendre_auto(h, op, cause, motif) {
+        require motif != "" else MotifRequis "motif de suspension automatique requis"
+        let st = get_status(op) ?? "candidat"
+        if st != "actif" { return OpStatut(st) }
+        suspension.set(op, "{h} | {cause} | {motif} | systeme | -")
+        origine.set(op, cause)
+        suspendu_a.set(op, h)
+        historique.push("{h} | {op} | actif->suspendu | {cause} : {motif} | systeme | -")
+        transition(op, "actif", "suspendu")
+        let _ = ApiPasserelle.notifier(h, op, "", "adhesion", "{op} suspendu automatiquement : {motif}", 3)
+        if cause == "joignabilite" {
+            let _ = ApiConformite.constater(h, op, "suspension_injoignable", 3, motif, "systeme")
+        }
+        let _ = Journal.noter(h, "operateurs", "systeme", "{op} suspendu automatiquement ({cause})")
+        return "suspendu"
+    }
+    on retablir(h, op, par, valideur) {
+        let s0 = get_status(op)
+        let st = s0 ?? "candidat"
+        require st == "suspendu" else EtatInvalide "{op} est {st}"
+        let orig = origine.get(op) ?? "conformite"
+        if orig == "etat" {
+            let org_e = ApiRef.org_de_etat(ApiRef.etat_de(op))
+            require (ApiAcces.a_le_role(par, "point_focal") || ApiAcces.a_le_role(par, "autorite")) && ApiAcces.agit_pour(par, org_e) else Habilitation "suspension d'origine État : seul l'État de tutelle la lève"
+        } else {
+            require ApiAcces.a_le_role(par, "conformite") else Habilitation "rétablissement réservé à la conformité d'ORBITE"
+        }
+        require ApiAcces.quatre_yeux(par, valideur) && ApiAcces.a_le_role(valideur, "direction") else QuatreYeux "valideur direction d'ORBITE requis"
+        require ApiRef.organisation_existe(op) else EtatInvalide "{op} radiée"
+        require OpLicences.valide_a(op, h) else Insuffisant "licence de {op} non valide"
+        require len(OpAstreinte.trous(op, h, Duree(COUVERTURE_ACTIVATION_MS))) == 0 else Insuffisant "astreinte de {op} non couverte sur 7 jours"
+        suspension.delete(op)
+        origine.delete(op)
+        suspendu_a.delete(op)
+        historique.push("{h} | {op} | suspendu->actif | levée ({orig}) | {par} | {valideur}")
+        transition(op, "suspendu", "actif")
+        let _ = ApiPasserelle.notifier(h, op, "", "adhesion", "{op} rétabli", 1)
+        let _ = Journal.noter(h, "operateurs", par, "{op} rétabli (valideur {valideur})")
+        return "actif"
+    }
+    on exclure(h, op, motif, par, valideur) {
+        let s0 = get_status(op)
+        require ApiAcces.a_le_role(par, "conformite") else Habilitation "exclusion réservée à la conformité d'ORBITE"
+        require ApiAcces.quatre_yeux(par, valideur) && ApiAcces.a_le_role(valideur, "direction") else QuatreYeux "valideur direction d'ORBITE requis"
+        let st = s0 ?? "candidat"
+        require st == "actif" || st == "suspendu" else EtatInvalide "{op} est {st}"
+        require motif != "" else MotifRequis "motif d'exclusion requis"
+        let org_e = ApiRef.org_de_etat(ApiRef.etat_de(op))
+        historique.push("{h} | {op} | {st}->exclu | {motif} | {par} | {valideur}")
+        transition(op, st, "exclu")
+        let _ = OpEngagements.resilier(h, op)
+        let _ = ApiPasserelle.notifier(h, op, "", "adhesion", "{op} exclu : {motif}", 2)
+        let _ = ApiPasserelle.notifier(h, org_e, "", "adhesion", "{op} exclu : la coordination de ses objets passe à l'État de tutelle", 3)
+        let _ = Journal.noter(h, "operateurs", par, "{op} exclu (valideur {valideur})")
+        return "exclu"
+    }
+    on retirer(h, op, motif, par, valideur) {
+        require candidat_depuis.get(op) != () else Inconnu "{op} jamais candidat"
+        require ApiAcces.a_le_role(par, "administrateur_operateur") && ApiAcces.agit_pour(par, op) else Habilitation "retrait réservé à un administrateur_operateur de {op}"
+        require ApiAcces.quatre_yeux(par, valideur) && ApiAcces.a_le_role(valideur, "chef_de_mission") && ApiAcces.agit_pour(valideur, op) else QuatreYeux "valideur chef_de_mission de {op} requis"
+        let st = get_status(op) ?? "candidat"
+        require st == "candidat" || st == "admis" || st == "actif" || st == "suspendu" else EtatInvalide "{op} est {st}"
+        require motif != "" else MotifRequis "motif de retrait requis"
+        for o in ApiRef.objets_de(op) {
+            let eo = ApiRef.etat_objet(Objet(o))
+            require eo == "rentre" || eo == "retire" else Insuffisant "objet {o} encore en orbite ({eo})"
+        }
+        historique.push("{h} | {op} | {st}->retire | {motif} | {par} | {valideur}")
+        transition(op, st, "retire")
+        let _ = OpEngagements.resilier(h, op)
+        let _ = Journal.noter(h, "operateurs", par, "{op} retiré (valideur {valideur})")
+        return "retire"
+    }
+    on etat(op) {
+        if candidat_depuis.get(op) == () { return "inconnu" }
+        return OpStatut(get_status(op) ?? "candidat")
+    }
+    on est_actif(op, h) {
+        if (get_status(op) ?? "candidat") != "actif" { return false }
+        return OpLicences.valide_a(op, h)
+    }
+    on repondant(op, h) {
+        let e = ApiRef.etat_de(op)
+        let st = get_status(op) ?? "candidat"
+        if (st == "admis" || st == "actif" || st == "suspendu") && OpExercices.joignable(op, h) {
+            return op
+        }
+        return ApiRef.org_de_etat(e)
+    }
+    on suspensions_longues(h, n) {
+        let res_s = []
+        for e in suspendu_a.entries {
+            if len(res_s) >= n { break }
+            if (get_status(e.key) ?? "candidat") == "suspendu" && to_int(h) - to_int(e.value) > SUSPENSION_LONGUE_MS {
+                let o = origine.get(e.key) ?? "-"
+                res_s.push("{e.key} | {e.value} | {o}")
+            }
+        }
+        return res_s
+    }
+    on historique_de(op, n) {
+        let motif_h = " | {op} | "
+        let tous = historique.filter(l => contains(l, motif_h))
+        let k = len(tous)
+        if k <= n { return tous }
+        return slice(tous, k - n, k)
+    }
+    on sous_tutelle(etat, n) {
+        let res_t = []
+        for op in candidat_depuis.keys {
+            if len(res_t) >= n { break }
+            let r = try { ApiRef.etat_de(op) }
+            if r.error == () && r.value == etat {
+                let st = if candidat_depuis.get(op) == () { "inconnu" } else { get_status(op) ?? "candidat" }
+                res_t.push("{op} | {st}")
+            }
+        }
+        return res_t
+    }
+    on actifs(h, n) {
+        let res_a = []
+        let ks = candidat_depuis.keys.sort()
+        for op in ks {
+            if len(res_a) >= n { break }
+            if (get_status(op) ?? "candidat") == "actif" && OpLicences.valide_a(op, h) {
+                res_a.push(to_string(op))
+            }
+        }
+        return res_a
+    }
+}
+
+flesh OpRondes {
+    on balayer(h, par) {
+        require ApiAcces.a_le_role(par, "systeme") || ApiAcces.a_le_role(par, "exploitant") else Habilitation "ronde réservée au système ou à un exploitant d'ORBITE"
+        let total = 0
+        total = total + OpLicences.echoir(h, LOT, "systeme")
+        total = total + OpAstreinte.balayer(h, LOT, "systeme")
+        total = total + OpAstreinte.sanctionner_trous(h, LOT, "systeme")
+        total = total + OpExercices.echoir(h, LOT, "systeme")
+        for id in OpExercices.dus(h, LOT) {
+            let r = try { OpExercices.lancer(h, id, "systeme") }
+            if r.error == () { total = total + 1 }
+        }
+        total = total + OpContacts.balayer(h, LOT, "systeme")
+        total = total + OpChangements.rendre_caducs(h, LOT, "systeme")
+        let hi = to_int(h)
+        let d_alerte = to_int(dernier_passage.get("alerte_trous") ?? 0)
+        if d_alerte == 0 || hi - d_alerte >= PERIODE_ALERTE_MS {
+            let _ = OpAstreinte.alerter_trous(h, LOT, "systeme")
+            dernier_passage.set("alerte_trous", h)
+        }
+        let d_planif = to_int(dernier_passage.get("planif_exercices") ?? 0)
+        if d_planif == 0 || hi - d_planif >= PERIODE_JOUR_MS {
+            for op in OpExercices.a_exercer(h, LOT) {
+                // Instant tiré dans les 7 jours, déterministe (h et op), tenu secret de l'opérateur.
+                let decalage = (hi * 7 + len(op) * 104729) % 604800000
+                let r = try { OpExercices.planifier(h, Org(op), Horodatage(hi + decalage), "systeme") }
+                if r.error == () { total = total + 1 }
+            }
+            dernier_passage.set("planif_exercices", h)
+        }
+        let d_renouv = to_int(dernier_passage.get("renouvellements") ?? 0)
+        if d_renouv == 0 || hi - d_renouv >= PERIODE_JOUR_MS {
+            for ligne in OpLicences.a_renouveler(h, LOT) {
+                let parts = split(ligne, " | ")
+                let _ = try { ApiPasserelle.notifier(h, Org(parts[0]), "", "licence", "licence à renouveler avant {parts[1]}", 1) }
+            }
+            dernier_passage.set("renouvellements", h)
+        }
+        if total > 0 {
+            let _ = Journal.noter(h, "operateurs", par, "ronde : {total} objet(s) changé(s)")
+        }
+        return total
+    }
+    on dernier(ronde) {
+        return dernier_passage.get(ronde) ?? 0
+    }
+}

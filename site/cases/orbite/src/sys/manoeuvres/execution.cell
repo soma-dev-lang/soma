@@ -1,0 +1,143 @@
+// MANŒUVRES — fenêtres d'exécution et vérification après manœuvre par l'observation
+// indépendante d'ORBITE. Instance = id du plan pour les deux machines.
+
+// État d'une fenêtre d'exécution.
+cell type ManEtatFenetre = String where value == "reservee" || value == "ouverte" || value == "consommee" || value == "echue" || value == "liberee"
+// État d'une vérification ("attendue" : programmée ou jamais programmée).
+cell type ManEtatVerification = String where value == "attendue" || value == "conforme" || value == "ecart" || value == "non_observee"
+
+skeleton ManFenetre {
+    const MAX_FENETRES = 50000000
+    // Fenêtres non terminées par objet (même borne que les plans actifs).
+    const MAX_PAR_OBJET = 16
+    // Délai de confirmation après la fin de la fenêtre : 6 h. Passé ce délai la fenêtre est échue.
+    const DELAI_CONFIRMATION_MS = 21600000
+    memory {
+        objet_de: Map<String, Objet> [persistent]        // plan -> objet ; écrit par `reserver` seul
+        fin_de: Map<String, Horodatage> [persistent]     // fin de la fenêtre (ms)
+        debut_de: Map<String, Horodatage> [persistent]   // début de la fenêtre (ms) ; ≤ fin
+        par_objet: Map<Objet, List<String>> [persistent] // fenêtres réservées ou ouvertes de l'objet (contrôle de chevauchement)
+        a_surveiller: List<String> [persistent]          // fenêtres réservées ou ouvertes, tous objets (ManVeille)
+        invariant objet_de.size <= MAX_FENETRES
+        invariant (debut_de ?? 0) <= (fin_de ?? 0)
+        invariant len(par_objet) <= MAX_PAR_OBJET
+        invariant a_surveiller.size <= MAX_FENETRES
+    }
+    // Cycle d'une fenêtre d'exécution.
+    state cycle {
+        initial: reservee
+        reservee -> ouverte      // h ≥ debut (ManVeille, ou la confirmation elle-même)
+        reservee -> liberee      // plan rejeté ou annulé avant la fenêtre
+        ouverte -> consommee     // exécution confirmée
+        ouverte -> echue         // h > fin + DELAI_CONFIRMATION_MS sans confirmation
+        ouverte -> liberee       // plan annulé pendant la fenêtre
+    }
+    face {
+        // Réserve la fenêtre [debut, fin] du plan sur l'objet. Seul écrivain de `objet_de`
+        // (écrit fin_de avant debut_de). Appelé par ManPlan.declarer après `chevauche`.
+        // Renvoie le nombre de fenêtres de l'objet. Refus : Existe, HorsBornes (fin ≤ debut), Plein.
+        signal reserver(h: Horodatage, plan: String, objet: Objet, debut: Horodatage, fin: Horodatage) -> Int
+            writes objet_de, fin_de, debut_de, par_objet, a_surveiller
+        // Plan dont une fenêtre réservée ou ouverte de l'objet chevauche [debut, fin] ; "" si aucun.
+        // Sert aussi à ManNonAnnoncee (une manœuvre observée dans une fenêtre est annoncée).
+        signal chevauche(objet: Objet, debut: Horodatage, fin: Horodatage) -> String
+            reads par_objet, debut_de, fin_de
+        // Ouvre la fenêtre (reservee -> ouverte) quand h ≥ debut. Renvoie "ouverte".
+        // Refus : Inconnu, EtatInvalide, Delai (h < debut).
+        signal ouvrir(h: Horodatage, plan: String) -> ManEtatFenetre
+            reads debut_de
+            moves reservee -> ouverte
+        // Consomme la fenêtre (ouverte -> consommee) à la confirmation d'exécution ; la retire des
+        // fenêtres de l'objet. Renvoie "consommee". Refus : Inconnu, EtatInvalide.
+        signal consommer(h: Horodatage, plan: String) -> ManEtatFenetre
+            writes par_objet, a_surveiller
+            reads objet_de
+            moves ouverte -> consommee
+        // Constate l'échéance (ouverte -> echue) quand h > fin + DELAI_CONFIRMATION_MS ;
+        // ManVeille enchaîne ManPlan.constater_echeance. Renvoie "echue".
+        // Refus : Inconnu, EtatInvalide, Delai (pas encore échue).
+        signal echoir(h: Horodatage, plan: String) -> ManEtatFenetre
+            writes par_objet, a_surveiller
+            reads fin_de, objet_de
+            moves ouverte -> echue
+        // Libère la fenêtre d'un plan rejeté ou annulé (reservee | ouverte -> liberee). Sans
+        // effet (renvoie l'état) si elle est déjà terminée. Refus : Inconnu.
+        signal liberer(h: Horodatage, plan: String) -> ManEtatFenetre
+            writes par_objet, a_surveiller
+            reads objet_de
+            moves reservee -> liberee, ouverte -> liberee
+        // Fenêtres à faire avancer à `h` : réservées dont le début est passé, ouvertes échues
+        // (au plus n). Lu par ManVeille.
+        signal a_traiter(h: Horodatage, n: Int) -> List<String>
+            requires n > 0 && n <= 1000
+            reads a_surveiller, debut_de, fin_de, cycle
+        signal etat(plan: String) -> ManEtatFenetre
+            reads cycle
+    }
+}
+
+skeleton ManVerification {
+    const MAX_VERIFICATIONS = 50000000
+    // Délai pour vérifier par l'observation : 72 h après la poussée (durée de ApiObservation.suivi).
+    const DELAI_VERIFICATION_MS = 259200000
+    // Écart maximal entre la nouvelle éphéméride du propriétaire et l'orbite observée : 2 km.
+    const ECART_MAX_M = 2000
+    memory {
+        objet_de: Map<String, Objet> [persistent]        // plan -> objet ; écrit par `programmer` seul
+        reel_de: Map<String, Horodatage> [persistent]    // poussée confirmée
+        echeance_de: Map<String, Horodatage> [persistent] // reel + DELAI_VERIFICATION_MS ; ≥ reel
+        suivi_de: Map<String, String> [persistent]       // id de la demande de suivi renforcé (ApiObservation)
+        ecart_de: Map<String, Distance> [persistent]     // écart mesuré à la vérification (m)
+        verifie_par: Map<String, String> [persistent]
+        en_attente: List<String> [persistent]            // vérifications attendues (ManVeille)
+        invariant objet_de.size <= MAX_VERIFICATIONS
+        invariant (reel_de ?? 0) <= (echeance_de ?? 0)
+        invariant en_attente.size <= MAX_VERIFICATIONS
+    }
+    // Cycle de la vérification d'une manœuvre exécutée.
+    state cycle {
+        initial: attendue
+        attendue -> conforme     // nouvelle éphéméride post-poussée à moins de ECART_MAX_M de l'orbite observée, rien d'inexpliqué
+        attendue -> ecart        // écart > ECART_MAX_M, ou manœuvre NON annoncée détectée (ApiObservation.manoeuvre_detectee) depuis reel − 1 h
+        attendue -> non_observee // échéance passée sans orbite indépendante (ApiObservation.suivi faux)
+    }
+    face {
+        // Programme la vérification du plan exécuté : échéance = reel + DELAI_VERIFICATION_MS
+        // (écrite avant reel_de), demande un suivi renforcé (ApiObservation.demander_suivi,
+        // priorité 3 pour un évitement, 2 sinon, durée DELAI_VERIFICATION_MS, par "systeme" ; un
+        // refus Plein est journalisé, la vérification reste attendue). Seul écrivain de
+        // `objet_de`. Appelé par ManPlan.confirmer. Renvoie l'échéance (ms).
+        // Refus : Existe.
+        signal programmer(h: Horodatage, plan: String, objet: Objet, reel: Horodatage, priorite: Niveau) -> Horodatage
+            writes objet_de, reel_de, echeance_de, suivi_de, en_attente
+            calls ApiObservation.demander_suivi, Journal.noter
+        // Vérifie : exige un dépôt d'éphéméride validé APRÈS la poussée (ApiEphemerides.age <
+        // h − reel) et ApiObservation.suivi ; aucune manœuvre non annoncée depuis reel − 1 h
+        // (ApiObservation.manoeuvre_detectee faux : la poussée annoncée y est « expliquée ») et
+        // ApiObservation.ecart_declare ≤ ECART_MAX_M ⇒ conforme, sinon ecart. Avant
+        // l'échéance, sans orbite observée ou sans nouvelle éphéméride : Insuffisant (on attend).
+        // Enchaîne ManPlan.clore. `par` "systeme" ou "analyste". Renvoie l'état atteint.
+        // Refus : Inconnu, EtatInvalide, Insuffisant, Habilitation.
+        signal verifier(h: Horodatage, plan: String, par: String) -> ManEtatVerification
+            writes ecart_de, verifie_par, en_attente
+            reads objet_de, reel_de
+            moves attendue -> conforme, attendue -> ecart
+            calls ManPlan.clore, ApiObservation.suivi, ApiObservation.ecart_declare, ApiObservation.manoeuvre_detectee, ApiEphemerides.age, ApiAcces.a_le_role, Journal.noter
+        // Échéance passée sans vérification possible (attendue -> non_observee) : ORBITE n'a pas
+        // pu confirmer la manœuvre — invalide l'éphéméride du propriétaire
+        // (ApiEphemerides.invalider, motif "manoeuvre_non_verifiee") et enchaîne ManPlan.clore.
+        // `par` "systeme" (ManVeille). Renvoie "non_observee".
+        // Refus : Inconnu, EtatInvalide, Delai (échéance non atteinte), Habilitation.
+        signal expirer(h: Horodatage, plan: String, par: String) -> ManEtatVerification
+            writes en_attente
+            reads objet_de, echeance_de
+            moves attendue -> non_observee
+            calls ManPlan.clore, ApiEphemerides.invalider, ApiAcces.a_le_role, Journal.noter
+        // Vérifications attendues (au plus n), les plus anciennes d'abord. Lu par ManVeille.
+        signal attendues(n: Int) -> List<String>
+            requires n > 0 && n <= 1000
+            reads en_attente
+        signal etat(plan: String) -> ManEtatVerification
+            reads cycle
+    }
+}

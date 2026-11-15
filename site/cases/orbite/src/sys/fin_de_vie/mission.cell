@@ -1,0 +1,199 @@
+// FIN DE VIE — cycle de fin de vie d'un objet : fin de mission (déclarée ou d'office),
+// manœuvres de retrait, passivation, échéance et retard, défaillance, sortie constatée
+// (rentrée, cimetière, fragmentation). Instance = numéro de catalogue de l'objet.
+// L'échéance est fixée à la fin de mission ; un plan remplacé ensuite ne la repousse pas.
+// Seule une prorogation accordée (FdvProrogation, une au plus par objet) la reporte.
+
+// Dossier de fin de vie d'un objet : ce qui fonde l'échéance et les constats (preuve en cas
+// de dommage, gelable par responsabilite). plan : plan retenu à la fin de mission ("" si
+// aucun) ; prorogation : "" si aucune ; manquement : id du manquement de retard ("" si aucun).
+cell type FdvDossierFin { variants { FdvDossierFin { etat: String, plan: String, fin: Horodatage, echeance: Horodatage, declare_par: String, d_office: Bool, prorogation: String, manoeuvres: List<String>, manquement: String, sortie: Horodatage } } }
+
+skeleton FdvFin {
+    // Une fin de mission prévue au plan et non déclarée 90 jours plus tard est déclarée d'office (ms).
+    const GRACE_FIN = 7776000000
+    // Altitude de l'anneau géostationnaire (m) : un cimetière GEO a un périgée observé au moins
+    // à GEO_ALTITUDE + rehausse du plan (FdvPlan.REHAUSSE_GEO_MIN par défaut).
+    const GEO_ALTITUDE = 35786000
+    // Hors GEO, un cimetière a un périgée observé au-dessus de 2 000 km (sortie de la LEO, m).
+    const CIMETIERE_MIN_HORS_GEO = 2000000
+    // Au plus 200 000 objets en fin de vie non terminée suivis simultanément.
+    const MAX_SUIVIS = 200000
+    const MAX_MANOEUVRES = 50
+    memory {
+        plan_retenu_de: Map<Objet, String> [persistent]      // plan approuvé au jour de la fin de mission ("" si aucun) ; écrit une fois
+        fin_le: Map<Objet, Horodatage> [persistent]          // instant de la fin de mission
+        echeance_de: Map<Objet, Horodatage> [persistent]     // échéance de retrait ; écrite avant fin_le, reportée au plus une fois
+        prorogation_de: Map<Objet, String> [persistent]      // prorogation accordée (FdvProrogation) ; écrite une fois
+        declare_par: Map<Objet, String> [persistent]         // personne, ou "systeme" pour une fin d'office
+        d_office: Map<Objet, Bool> [persistent]              // vrai si la fin a été déclarée par ORBITE
+        manoeuvres_de: Map<Objet, List<String>> [persistent] // plans de manœuvre de retrait (ApiManoeuvres) rattachés
+        manquement_de: Map<Objet, String> [persistent]       // id du manquement de retard (ApiConformite), un seul par objet
+        sortie_le: Map<Objet, Horodatage> [persistent]       // instant du constat de sortie (rentrée, cimetière, fragmentation)
+        motif_de: Map<Objet, String> [persistent]            // motif de la fin d'office ou de la défaillance
+        suivis: List<String> [persistent]                    // objets en fin de vie non terminée (balayage des échéances)
+        invariant suivis.size <= 200000
+        invariant len(manoeuvres_de) <= 50
+        invariant (echeance_de ?? 0) >= (fin_le ?? 0)
+        invariant (sortie_le ?? 999999999999999) >= (fin_le ?? 0)
+    }
+    // Cycle de fin de vie d'un objet (états exposés par etat).
+    state fin {
+        initial: en_mission
+        en_mission -> en_retrait          // fin de mission déclarée (propriétaire) ou d'office (ORBITE)
+        en_mission -> defaillant          // mort en orbite avant la fin de mission (propulsion perdue, anomalie)
+        en_mission -> rentre              // rentrée accidentelle en cours de mission
+        en_mission -> fragmente
+        en_retrait -> passive   // passivation vérifiée, manœuvres de retrait vérifiées
+        en_retrait -> en_retard           // échéance dépassée avant la passivation
+        en_retrait -> defaillant          // perte de contrôle pendant le retrait
+        en_retrait -> rentre              // désorbitation contrôlée achevée
+        en_retrait -> fragmente
+        passive -> en_retard              // décroissance plus lente que prévue : échéance dépassée
+        passive -> rentre                 // rentrée naturelle constatée
+        passive -> cimetiere              // orbite cimetière constatée
+        passive -> fragmente
+        en_retard -> defaillant
+        en_retard -> rentre
+        en_retard -> cimetiere
+        en_retard -> fragmente
+        defaillant -> rentre              // décroissance naturelle ou retrait actif
+        defaillant -> cimetiere           // retrait actif vers un cimetière
+        defaillant -> fragmente
+    }
+    face {
+        // Déclare la fin de mission d'un objet en service ou hors service (en_mission ->
+        // en_retrait). Échéance de retrait = h + delai du plan approuvé et conforme
+        // (FdvPlan.conforme, FdvPlan.fiche) ; sans plan conforme, h + délai maximal du régime
+        // (FdvPlan : LEO 5 ans, GEO 1 an, MEO et HEO 25 ans) et manquement de gravité 2 «
+        // fin de mission sans plan conforme » (ApiConformite.constater). Inscrit l'objet dans
+        // `suivis`. Habilitation : "chef_de_mission" du propriétaire (ApiAcces.agit_pour sur
+        // ApiRef.proprietaire). Renvoie l'échéance (ms).
+        // Refus : Inconnu (objet non catalogué), EtatInvalide (fin déjà déclarée, objet rentré,
+        // fragmenté ou retiré), Plein, Habilitation.
+        signal declarer_fin(h: Horodatage, objet: Objet, par: String) -> Horodatage
+            writes plan_retenu_de, fin_le, echeance_de, declare_par, d_office, suivis
+            moves en_mission -> en_retrait
+            calls FdvPlan.plan_de, FdvPlan.conforme, FdvPlan.fiche, ApiRef.etat_objet, ApiRef.proprietaire, ApiRef.regime, ApiConformite.constater, ApiAcces.a_le_role, ApiAcces.agit_pour, Journal.noter
+        // Fin de mission d'office (en_mission -> en_retrait) quand le propriétaire se tait :
+        // objet "hors_service" au catalogue (ApiRef.etat_objet), ou fin de mission prévue au
+        // plan approuvé dépassée de plus de 90 jours. Échéance calculée comme declarer_fin,
+        // à partir de `h` ; manquement de gravité 2 contre le propriétaire ; propriétaire et
+        // point focal de l'État d'immatriculation notifiés. Habilitation : "analyste" d'ORBITE
+        // ou "systeme". Renvoie l'échéance (ms).
+        // Refus : Inconnu, EtatInvalide, NonEligible (objet en service et fin prévue non
+        // dépassée), MotifRequis, Plein, Habilitation.
+        signal declarer_fin_d_office(h: Horodatage, objet: Objet, motif: String, par: String) -> Horodatage
+            writes plan_retenu_de, fin_le, echeance_de, declare_par, d_office, motif_de, suivis
+            moves en_mission -> en_retrait
+            calls FdvPlan.plan_de, FdvPlan.conforme, FdvPlan.fiche, ApiRef.etat_objet, ApiRef.proprietaire, ApiRef.regime, ApiRef.etat_immatriculation, ApiRef.org_de_etat, ApiConformite.constater, ApiPasserelle.notifier, ApiAcces.a_le_role, Journal.noter
+        // Rattache à l'objet un plan de manœuvre de retrait déclaré chez manoeuvres (motif
+        // "desorbitation" ou "transfert") ; le passage à "passive" exige que tous les plans
+        // rattachés soient "verifie" ou "annule". Le plan doit viser cet objet
+        // (ApiManoeuvres.objet_de) avec le motif "desorbitation" ou "transfert"
+        // (ApiManoeuvres.motif_de). Habilitation : "dynamicien" du propriétaire.
+        // Renvoie le nombre de plans rattachés.
+        // Refus : Inconnu (objet ou plan), EtatInvalide (objet ni en_retrait ni en_retard, plan
+        // rejeté ou annulé), Incoherent (autre objet, ou motif ni "desorbitation" ni
+        // "transfert"), Doublon, Plein (50 plans), Habilitation.
+        signal rattacher_manoeuvre(h: Horodatage, objet: Objet, plan_man: String, par: String) -> Int
+            writes manoeuvres_de
+            reads fin
+            calls ApiManoeuvres.etat, ApiManoeuvres.objet_de, ApiManoeuvres.motif_de, ApiRef.proprietaire, ApiAcces.a_le_role, ApiAcces.agit_pour, Journal.noter
+        // Constate la passivation (en_retrait -> passive) : FdvPassivation "verifiee" pour
+        // l'objet et tous les plans rattachés "verifie" ou "annule" (ApiManoeuvres.etat).
+        // Habilitation : "analyste" d'ORBITE ou "systeme". Renvoie "passive".
+        // Refus : Inconnu, EtatInvalide (passivation non vérifiée), Insuffisant (manœuvre de
+        // retrait non vérifiée), Habilitation.
+        signal constater_passivation(h: Horodatage, objet: Objet, par: String) -> String
+            reads manoeuvres_de
+            moves en_retrait -> passive when FdvPassivation.verifiee
+            calls FdvPassivation.etat, ApiManoeuvres.etat, ApiAcces.a_le_role, Journal.noter
+        // Constate le retard (en_retrait -> en_retard, passive -> en_retard) d'un objet dont
+        // l'échéance est dépassée à `h` : manquement de gravité 3 contre le propriétaire (un seul,
+        // gardé dans manquement_de), propriétaire et point focal de l'État d'immatriculation
+        // notifiés (ApiPasserelle.notifier, r = "", urgence 2). Appelé par le balayage sur a_echoir. Habilitation : "systeme".
+        // Renvoie l'id du manquement.
+        // Refus : Inconnu, EtatInvalide (échéance non dépassée, ou état terminal), Habilitation.
+        signal constater_retard(h: Horodatage, objet: Objet, par: String) -> String
+            writes manquement_de
+            reads echeance_de
+            moves en_retrait -> en_retard, passive -> en_retard
+            calls ApiRef.proprietaire, ApiRef.etat_immatriculation, ApiRef.org_de_etat, ApiConformite.constater, ApiPasserelle.notifier, ApiAcces.a_le_role, Journal.noter
+        // Constate qu'un objet ne peut plus se retirer lui-même (-> defaillant) : anomalie non
+        // levée (ApiEvenements.en_anomalie) ou propulsion "aucune" (ApiRef.propulsion) alors que
+        // le plan exigeait une manœuvre. L'objet n'est plus retirable que par décroissance
+        // naturelle ou retrait actif. Habilitation : "analyste" d'ORBITE ou "systeme".
+        // Renvoie "defaillant".
+        // Refus : Inconnu, EtatInvalide, Incoherent (ni anomalie ni propulsion perdue),
+        // MotifRequis, Plein, Habilitation.
+        signal constater_defaillance(h: Horodatage, objet: Objet, motif: String, par: String) -> String
+            writes motif_de, suivis
+            moves en_mission -> defaillant, en_retrait -> defaillant, en_retard -> defaillant
+            calls ApiEvenements.en_anomalie, ApiRef.propulsion, ApiAcces.a_le_role, Journal.noter
+        // Constate la mise en orbite cimetière (passive -> cimetiere, en_retard -> cimetiere,
+        // defaillant -> cimetiere) : orbite indépendante d'ORBITE de moins de 72 h
+        // (ApiObservation.suivi) dont le périgée (ApiObservation.perigee, m) est au moins
+        // GEO_ALTITUDE + rehausse du plan retenu (FdvPlan.fiche ; REHAUSSE_GEO_MIN sans plan) en
+        // GEO, ou CIMETIERE_MIN_HORS_GEO ailleurs, et l'apogée (ApiObservation.apogee) ≥ périgée ;
+        // écart déclaré / observé (ApiObservation.ecart_declare) consigné au journal ; passe l'objet "cimetiere" au catalogue
+        // (ApiRef.changer_etat_objet), clôt le plan (FdvPlan.clore) et les missions de retrait
+        // actif capturées (FdvRetrait.achever_pour). Habilitation : "analyste" d'ORBITE ;
+        // QuatreYeux : valideur "superviseur". Renvoie "cimetiere".
+        // Refus : Inconnu, EtatInvalide, Perime (pas d'orbite observée récente), Incoherent
+        // (orbite observée hors cimetière), Habilitation, QuatreYeux.
+        signal constater_cimetiere(h: Horodatage, objet: Objet, par: String, valideur: String) -> String
+            writes sortie_le, suivis
+            moves passive -> cimetiere, en_retard -> cimetiere, defaillant -> cimetiere
+            reads plan_retenu_de
+            calls ApiObservation.suivi, ApiObservation.perigee, ApiObservation.apogee, ApiObservation.ecart_declare, ApiRef.regime, FdvPlan.fiche, ApiRef.changer_etat_objet, FdvPlan.clore, FdvRetrait.achever_pour, ApiAcces.a_le_role, ApiAcces.quatre_yeux, Journal.noter
+        // Aligne la fin de vie sur une sortie constatée au catalogue par un autre sous-système
+        // (ApiRef.etat_objet "rentre" — rentrée constatée par reentrees — ou "fragmente") :
+        // -> rentre ou -> fragmente depuis tout état non terminal ; clôt le plan et les
+        // missions de retrait actif capturées. Règle entre sous-systèmes (même id objet) : -> rentre
+        // seulement si RefObjet "rentre", -> fragmente seulement si RefObjet "fragmente".
+        // Habilitation : "systeme". Renvoie l'état atteint.
+        // Refus : Inconnu, EtatInvalide (catalogue ni "rentre" ni "fragmente", ou déjà terminal),
+        // Habilitation.
+        signal constater_sortie(h: Horodatage, objet: Objet, par: String) -> String
+            writes sortie_le, suivis
+            moves en_mission -> rentre when RefObjet.rentre, en_retrait -> rentre when RefObjet.rentre, passive -> rentre when RefObjet.rentre, en_retard -> rentre when RefObjet.rentre, defaillant -> rentre when RefObjet.rentre, en_mission -> fragmente when RefObjet.fragmente, en_retrait -> fragmente when RefObjet.fragmente, passive -> fragmente when RefObjet.fragmente, en_retard -> fragmente when RefObjet.fragmente, defaillant -> fragmente when RefObjet.fragmente
+            calls ApiRef.etat_objet, FdvPlan.clore, FdvRetrait.achever_pour, ApiAcces.a_le_role, Journal.noter
+        // Reporte l'échéance de `duree` ms au titre d'une prorogation accordée ; appelé seulement
+        // par FdvProrogation.accorder. Une seule prorogation par objet, et seulement avant
+        // l'échéance (objet "en_retrait" ou "passive"). Renvoie la nouvelle échéance (ms).
+        // Refus : Inconnu, EtatInvalide (état autre, ou échéance déjà dépassée à `h`), Doublon
+        // (déjà prorogée).
+        signal proroger(h: Horodatage, objet: Objet, prorogation: String, duree: Duree) -> Horodatage
+            writes echeance_de, prorogation_de
+            reads fin
+            calls Journal.noter
+        // Vrai si l'objet a dépassé son échéance de retrait à `h` sans être sorti : état
+        // "en_retard", ou état "en_retrait", "passive" ou "defaillant" avec h > échéance.
+        signal en_retard(objet: Objet, h: Horodatage) -> Bool
+            reads fin, echeance_de
+        // Échéance de retrait (ms). Refus : Inconnu (fin de mission non déclarée).
+        signal echeance(objet: Objet) -> Horodatage
+            reads echeance_de
+        // Au plus n objets suivis dont l'échéance est dépassée à `h` et qui ne sont pas encore
+        // "en_retard" (entrée du traitement périodique constater_retard).
+        signal a_echoir(h: Horodatage, n: Int) -> List<String>
+            requires n > 0 && n <= 1000
+            reads suivis, echeance_de, fin
+        // Dossier de fin de vie (lecture interne et responsabilite, sans contrôle de diffusion).
+        // Refus : Inconnu (fin de mission non déclarée et objet "en_mission").
+        signal dossier(objet: Objet) -> FdvDossierFin
+            reads fin, plan_retenu_de, fin_le, echeance_de, declare_par, d_office, prorogation_de, manoeuvres_de, manquement_de, sortie_le
+        // Communique le dossier de fin de vie à une organisation : diffusion contrôlée par
+        // ApiDonnees.peut_recevoir (r = "") et tracée (ApiDonnees.tracer). Habilitation : toute
+        // personne active qui agit pour `org`, ou "analyste" / "conformite" / "auditeur"
+        // d'ORBITE. Refus : Inconnu, Confidentiel, Habilitation.
+        signal consulter_dossier(h: Horodatage, objet: Objet, org: Org, par: String) -> FdvDossierFin
+            reads fin, plan_retenu_de, fin_le, echeance_de, declare_par, d_office, prorogation_de, manoeuvres_de, manquement_de, sortie_le
+            calls ApiDonnees.peut_recevoir, ApiDonnees.tracer, ApiAcces.a_le_role, ApiAcces.agit_pour
+        // État : "en_mission", "en_retrait", "passive", "en_retard", "defaillant", "rentre",
+        // "cimetiere", "fragmente".
+        signal etat(objet: Objet) -> String
+            reads fin
+    }
+}

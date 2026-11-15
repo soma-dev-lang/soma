@@ -1,0 +1,269 @@
+// OPÉRATIONS — incidents du système ORBITE : déclaration, qualification, traitement,
+// résolution, revue post-incident (post-mortem). Un incident et son post-mortem portent LE MÊME
+// id : la règle `clos when OpsPostMortem.publie || OpsPostMortem.dispense` suit cet id.
+// Un incident d'ORBITE n'est pas une panne ordinaire : un criblage faux, une alerte non partie
+// ou une éphéméride mal datée fondent des décisions d'évitement. La « fenêtre suspecte »
+// (effet_depuis → resolu_a) borne les décisions à revoir (propriété 6).
+
+// Nature d'un incident. "calcul" : résultat faux sans panne visible (criblage, pc, niveau) ;
+// "diffusion" : une alerte ou un CDM n'est pas parti, ou est parti au mauvais destinataire ;
+// "dependance" : capteurs, météo spatiale ou hébergeur défaillants ; "securite" : intrusion,
+// jeton compromis.
+cell type OpsCategorie = String where value == "panne" || value == "performance" || value == "calcul" || value == "diffusion" || value == "donnees" || value == "dependance" || value == "securite"
+// Effet sur les décisions de trafic : "aucune" ; "retardees" (alertes ou réponses en retard,
+// aucune décision fausse) ; "faussees" (une décision a pu reposer sur une donnée fausse :
+// revue obligatoire des décisions prises dans la fenêtre suspecte).
+cell type OpsEffet = String where value == "aucune" || value == "retardees" || value == "faussees"
+// État d'un incident vu de l'extérieur ; "inconnu" si jamais déclaré.
+cell type OpsEtatIncident = String where value == "declare" || value == "qualifie" || value == "en_traitement" || value == "contourne" || value == "resolu" || value == "clos" || value == "classe" || value == "inconnu"
+
+// Registre des incidents. Tant qu'un incident n'est pas résolu, le sous-système qu'il vise est
+// « dégradé » (ApiOperations.degrade) ; un incident de gravité 3 non résolu est « majeur »
+// (ApiOperations.incident_majeur) et convoque la cellule de crise du même id.
+skeleton OpsIncident {
+    const MAX_INCIDENTS = 1000000
+    const MAX_DESCRIPTION = 10000
+    // Délai de qualification après déclaration (ms), gravité 3 / 2 / 1 : 15 min, 1 h, 4 h.
+    const DELAI_QUALIF_G3 = 900000
+    const DELAI_QUALIF_G2 = 3600000
+    const DELAI_QUALIF_G1 = 14400000
+    // Antériorité maximale de l'effet déclaré (ms) : 30 jours.
+    const RECUL_MAX = 2592000000
+    memory {
+        gravite: Map<String, Gravite> [persistent]             // incident → gravité courante (requalifiable)
+        vise: Map<String, SousSysteme> [persistent]            // incident → sous-système touché, écrit à la déclaration
+        categorie: Map<String, OpsCategorie> [persistent]      // fixée à la qualification
+        effet: Map<String, OpsEffet> [persistent]              // effet sur les décisions, fixé à la qualification
+        description: Map<String, String> [persistent]
+        declare_par: Map<String, String> [persistent]          // personne ou "systeme" (sonde)
+        declare_a: Map<String, Horodatage> [persistent]        // instant de déclaration (ms)
+        // Début estimé de l'effet (≤ declare_a) : borne basse de la fenêtre suspecte.
+        effet_depuis: Map<String, Horodatage> [persistent]
+        resolu_a: Map<String, Horodatage> [persistent]         // rétablissement du service (absent : pas encore)
+        responsable: Map<String, String> [persistent]          // "exploitant" qui pilote le traitement
+        // Incidents non résolus par sous-système (clé SousSysteme) : sert à `est_degrade`.
+        ouverts: Map<String, Int> [persistent]
+        // Incidents de gravité 3 non résolus ; une seule clé "orbite".
+        majeurs: Map<String, Int> [persistent]
+        // incident → id du dossier de preuve ouvert chez responsabilite (effet "faussees").
+        dossier: Map<String, String> [persistent]
+        invariant gravite.size <= 1000000
+        invariant vise.size <= 1000000
+        invariant ouverts >= 0
+        invariant majeurs >= 0
+        invariant majeurs.size <= 1
+        invariant ouverts.size <= 20
+        invariant (effet_depuis ?? 0) <= (declare_a ?? 9000000000000000)
+        invariant (resolu_a ?? 9000000000000000) >= (declare_a ?? 0)
+    }
+    // `clos` et `classe` sont terminaux.
+    state cycle {
+        initial: declare
+        declare -> qualifie            // qualifier : gravité confirmée, catégorie, effet, responsable
+        declare -> classe              // classer : fausse alerte de sonde, aucun effet
+        qualifie -> en_traitement      // prendre_en_charge
+        en_traitement -> contourne     // contourner : service rendu par une procédure de repli
+        contourne -> en_traitement     // reprendre : le repli ne tient pas
+        en_traitement -> resolu        // resoudre
+        contourne -> resolu            // resoudre
+        resolu -> en_traitement        // rouvrir : récidive avant clôture
+        resolu -> clos                 // clore : post-mortem publié ou dispensé (règle sur l'arête)
+    }
+    face {
+        // Enregistre l'incident à "declare", incrémente `ouverts[ss]` (et `majeurs` si gravité 3,
+        // auquel cas il convoque la cellule de crise du même id : OpsCrise.convoquer).
+        // `effet_depuis` (ms) : début estimé de l'effet, ≤ h. Renvoie l'id.
+        // Refus : Existe, MotifRequis (description vide), HorsBornes (description >
+        // MAX_DESCRIPTION, effet_depuis > h ou antérieur de plus de RECUL_MAX), Plein,
+        // Habilitation (par "exploitant" ou "systeme", rôles d'ORBITE).
+        signal declarer(h: Horodatage, incident: String, g: Gravite, ss: SousSysteme, desc: String, effet_depuis_ms: Horodatage, par: String) -> String
+            writes gravite, vise, description, declare_par, declare_a, effet_depuis, ouverts, majeurs
+            calls OpsCrise.convoquer, ApiAcces.a_le_role, Journal.noter
+        // Qualifie : gravité confirmée ou modifiée, catégorie, effet sur les décisions, responsable
+        // (personne "exploitant"). Passage à 3 : `majeurs` +1 et convocation de la crise ; passage
+        // de 3 à moins : `majeurs` −1 et la crise encore convoquée est annulée. Renvoie "qualifie".
+        // Refus : Inconnu, EtatInvalide, Delai (h > declare_a + délai de sa gravité : l'incident
+        // doit d'abord être escaladé, voir en_retard_qualification), Habilitation (par
+        // "superviseur" d'ORBITE ; resp doit être "exploitant").
+        signal qualifier(h: Horodatage, incident: String, g: Gravite, cat: OpsCategorie, eff: OpsEffet, resp: String, par: String) -> String
+            writes gravite, categorie, effet, responsable, majeurs
+            reads declare_a
+            moves declare -> qualifie
+            calls OpsCrise.convoquer, OpsCrise.annuler, ApiAcces.a_le_role, Journal.noter
+        // Classe une fausse alerte (sonde) : décrémente les compteurs. Renvoie "classe".
+        // Refus : Inconnu, EtatInvalide, MotifRequis, Habilitation (par "superviseur").
+        signal classer(h: Horodatage, incident: String, motif: String, par: String) -> String
+            writes ouverts, majeurs
+            reads gravite, vise
+            moves declare -> classe
+            calls OpsCrise.annuler, ApiAcces.a_le_role, Journal.noter
+        // Le responsable désigné prend l'incident en charge. Renvoie "en_traitement".
+        // Refus : Inconnu, EtatInvalide, Habilitation (par = responsable).
+        signal prendre_en_charge(h: Horodatage, incident: String, par: String) -> String
+            reads responsable
+            moves qualifie -> en_traitement
+            calls Journal.noter
+        // Service rendu par une procédure de repli (OpsDegradation.decreter sur le sous-système
+        // visé) ; le sous-système reste « dégradé ». Renvoie "contourne".
+        // Refus : Inconnu, EtatInvalide, MotifRequis (mesure vide), Habilitation (par = responsable).
+        signal contourner(h: Horodatage, incident: String, mesure: String, par: String) -> String
+            reads responsable, vise
+            moves en_traitement -> contourne
+            calls Journal.noter
+        // Le repli ne tient plus. Renvoie "en_traitement".
+        // Refus : Inconnu, EtatInvalide, MotifRequis, Habilitation (par = responsable).
+        signal reprendre(h: Horodatage, incident: String, motif: String, par: String) -> String
+            reads responsable
+            moves contourne -> en_traitement
+            calls Journal.noter
+        // Service rétabli : note resolu_a = h, décrémente les compteurs, ouvre le post-mortem du
+        // même id (gravité ≥ 2 ou effet ≠ "aucune") ou le dispense (gravité 1 sans effet).
+        // Renvoie "resolu". Refus : Inconnu, EtatInvalide, HorsBornes (h < declare_a),
+        // Habilitation (par = responsable, ou "superviseur").
+        signal resoudre(h: Horodatage, incident: String, par: String) -> String
+            writes resolu_a, ouverts, majeurs
+            reads gravite, vise, effet, declare_a, responsable
+            moves en_traitement -> resolu, contourne -> resolu
+            calls OpsPostMortem.ouvrir, OpsPostMortem.dispenser, ApiAcces.a_le_role, Journal.noter
+        // Récidive avant clôture : compteurs ré-incrémentés, resolu_a effacé (la fenêtre suspecte
+        // se rouvre). Renvoie "en_traitement". Refus : Inconnu, EtatInvalide, MotifRequis,
+        // Habilitation (par "superviseur").
+        signal rouvrir(h: Horodatage, incident: String, motif: String, par: String) -> String
+            writes resolu_a, ouverts, majeurs
+            reads gravite, vise
+            moves resolu -> en_traitement
+            calls OpsCrise.convoquer, ApiAcces.a_le_role, Journal.noter
+        // Gel des preuves d'un incident à effet "faussees" (propriété 6) : ouvre chez
+        // responsabilite le dossier de l'incident (journaux, éphémérides et décisions de la
+        // fenêtre suspecte). Renvoie l'id du dossier. Refus : Inconnu, EtatInvalide (effet ≠
+        // "faussees", ou incident non qualifié), Existe (dossier déjà ouvert), Habilitation
+        // (par "direction" ou "conformite" d'ORBITE, exigé aussi par ApiResponsabilite.geler).
+        signal geler_preuves(h: Horodatage, incident: String, par: String) -> String
+            writes dossier
+            reads cycle, effet, effet_depuis, resolu_a
+            calls ApiResponsabilite.geler, ApiAcces.a_le_role, Journal.noter
+        // Clôt l'incident : post-mortem publié ou dispensé, cellule de crise levée, et — effet
+        // "faussees" — dossier de preuve ouvert. Renvoie "clos".
+        // Refus : Inconnu, EtatInvalide (post-mortem en cours, crise non levée, dossier absent),
+        // Habilitation (par "superviseur" ; "direction" pour gravité 3).
+        signal clore(h: Horodatage, incident: String, par: String) -> String
+            reads gravite, effet, dossier
+            moves resolu -> clos when OpsPostMortem.publie || OpsPostMortem.dispense
+            calls OpsPostMortem.etat, OpsCrise.active_pour, ApiAcces.a_le_role, Journal.noter
+        // Vrai si au moins un incident de gravité 3 n'est pas résolu.
+        signal majeur_en_cours() -> Bool
+            reads majeurs
+        // Vrai si au moins un incident non résolu vise ce sous-système.
+        signal est_degrade(ss: SousSysteme) -> Bool
+            reads ouverts
+        // Gravité courante ; Refus : Inconnu.
+        signal gravite_de(incident: String) -> Gravite
+            reads gravite
+        // Effet sur les décisions fixé à la qualification ("aucune" tant qu'il n'est pas
+        // qualifié). Lu par OpsPostMortem.soumettre. Refus : Inconnu.
+        signal effet_de(incident: String) -> OpsEffet
+            reads effet, gravite
+        // Sous-système visé par l'incident. Lu par OpsDegradation.decreter et
+        // OpsChangement.soumettre. Refus : Inconnu.
+        signal vise_de(incident: String) -> SousSysteme
+            reads vise
+        signal etat(incident: String) -> OpsEtatIncident
+            reads cycle, gravite
+        // Fenêtre suspecte [effet_depuis, resolu_a] en ms ; resolu_a = h si non résolu. Sert à
+        // relire les décisions de coordination et de manœuvre prises pendant l'incident.
+        // Refus : Inconnu.
+        signal fenetre_suspecte(incident: String, h: Horodatage) -> List<Int>
+            reads effet_depuis, resolu_a
+        // Incidents encore à "declare" au-delà du délai de qualification de leur gravité à `h`,
+        // triés (à remonter au "superviseur" puis à la "direction").
+        signal en_retard_qualification(h: Horodatage) -> List<String>
+            reads cycle, gravite, declare_a
+    }
+}
+
+// Revue post-incident : chronologie, cause racine, décisions de trafic revues, actions
+// correctives. Même id que l'incident ; un post-mortem publié n'est plus modifié.
+skeleton OpsPostMortem {
+    const MAX_TEXTE = 50000
+    const MAX_ACTIONS = 30
+    // Délai de publication après résolution (ms) : 10 jours.
+    const DELAI_PUBLICATION = 864000000
+    memory {
+        redacteur: Map<String, String> [persistent]          // incident → "exploitant" qui rédige
+        ouvert_a: Map<String, Horodatage> [persistent]
+        chronologie: Map<String, String> [persistent]        // "h | fait" par ligne
+        cause_racine: Map<String, String> [persistent]
+        // Décisions de trafic (coordinations, manœuvres) prises dans la fenêtre suspecte et leur
+        // verdict après revue : "rapprochement | maintenue|revue|annulee".
+        decisions_revues: Map<String, List<String>> [persistent]
+        actions: Map<String, List<String>> [persistent]      // libellés "porteur | échéance (Jour) | action"
+        relu_par: Map<String, String> [persistent]           // contre-signataire (quatre yeux)
+        invariant redacteur.size <= 1000000
+        invariant actions.size <= 1000000
+    }
+    // `publie` et `dispense` sont terminaux.
+    state redaction {
+        initial: a_rediger
+        a_rediger -> dispense         // dispenser : gravité 1 sans effet sur les décisions
+        a_rediger -> redige           // soumettre
+        redige -> a_rediger           // renvoyer : compléments demandés
+        redige -> relu                // relire (quatre yeux)
+        relu -> publie                // publier
+    }
+    face {
+        // Crée le post-mortem, confié à `red`. Renvoie "a_rediger". Appelée par OpsIncident.resoudre.
+        // Refus : Existe, Habilitation (red "exploitant").
+        signal ouvrir(h: Horodatage, incident: String, red: String) -> String
+            writes redacteur, ouvert_a
+            calls ApiAcces.a_le_role
+        // Dispense de revue (gravité 1, effet "aucune"). Renvoie "dispense". Appelée par
+        // OpsIncident.resoudre. Refus : Existe, EtatInvalide.
+        signal dispenser(h: Horodatage, incident: String) -> String
+            writes redacteur
+            moves a_rediger -> dispense
+        // Soumet chronologie, cause racine et verdict sur chaque décision de la fenêtre suspecte
+        // (liste vide admise seulement si l'effet est "aucune" ou "retardees"). Renvoie "redige".
+        // Refus : Inconnu, EtatInvalide, MotifRequis (cause vide), HorsBornes (texte >
+        // MAX_TEXTE), Insuffisant (effet "faussees" sans décision revue), Habilitation (par = rédacteur).
+        signal soumettre(h: Horodatage, incident: String, chrono: String, cause: String, decisions: List<String>, par: String) -> String
+            writes chronologie, cause_racine, decisions_revues
+            reads redacteur
+            moves a_rediger -> redige
+            calls OpsIncident.fenetre_suspecte, OpsIncident.effet_de, Journal.noter
+        // Ajoute une action corrective. Renvoie le nombre d'actions.
+        // Refus : Inconnu, EtatInvalide (relu ou publié), Plein (MAX_ACTIONS), MotifRequis,
+        // Habilitation (par = rédacteur).
+        signal ajouter_action(h: Horodatage, incident: String, porteur: String, echeance: Jour, libelle: String, par: String) -> Int
+            writes actions
+            reads redaction, redacteur
+            calls Journal.noter
+        // Relecture refusée. Renvoie "a_rediger".
+        // Refus : Inconnu, EtatInvalide, MotifRequis, QuatreYeux (par ≠ rédacteur, "superviseur").
+        signal renvoyer(h: Horodatage, incident: String, motif: String, par: String) -> String
+            reads redacteur
+            moves redige -> a_rediger
+            calls ApiAcces.quatre_yeux, Journal.noter
+        // Relecture acceptée. Renvoie "relu". Refus : Inconnu, EtatInvalide, QuatreYeux (par ≠ rédacteur).
+        signal relire(h: Horodatage, incident: String, par: String) -> String
+            writes relu_par
+            reads redacteur
+            moves redige -> relu
+            calls ApiAcces.quatre_yeux, Journal.noter
+        // Publie la revue aux propriétaires des objets de chaque rapprochement figurant dans les
+        // décisions revues (contrôle ApiDonnees.peut_recevoir, trace ApiDonnees.tracer, envoi
+        // ApiPasserelle.notifier(h, org, r, …, 2) avec ce rapprochement) et, gravité 3, aux points
+        // focaux informés pendant la crise (r = ""). Renvoie "publie".
+        // Refus : Inconnu, EtatInvalide, Confidentiel (aucun envoi refusé n'est sauté en silence :
+        // le corps journalise chaque destinataire écarté), Habilitation (par "direction").
+        signal publier(h: Horodatage, incident: String, par: String) -> String
+            reads decisions_revues
+            moves relu -> publie
+            calls OpsCrise.etats_informes_de, ApiRef.org_de_etat, ApiConjonctions.objets, ApiRef.proprietaire, ApiDonnees.peut_recevoir, ApiDonnees.tracer, ApiPasserelle.notifier, ApiAcces.a_le_role, Journal.noter
+        // "a_rediger", "dispense", "redige", "relu", "publie" ; "inconnu" si jamais ouvert.
+        signal etat(incident: String) -> String
+            reads redaction, redacteur
+        // Post-mortems non publiés plus de DELAI_PUBLICATION après leur ouverture, triés.
+        signal en_retard(h: Horodatage) -> List<String>
+            reads redaction, ouvert_a
+    }
+}

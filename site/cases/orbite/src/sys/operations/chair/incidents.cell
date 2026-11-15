@@ -1,0 +1,380 @@
+// Corps des incidents et des post-mortems (operations).
+
+flesh OpsIncident {
+    on declarer(h, incident, g, ss, desc, effet_depuis_ms, par) {
+        require ApiAcces.a_le_role(par, "exploitant") || ApiAcces.a_le_role(par, "systeme") else Habilitation "déclarer un incident : exploitant d'ORBITE ou systeme"
+        require !gravite.has(incident) else Existe "incident '{incident}' déjà déclaré"
+        require len(desc) > 0 else MotifRequis "description vide"
+        require len(desc) <= MAX_DESCRIPTION else HorsBornes "description trop longue"
+        require effet_depuis_ms <= h else HorsBornes "début de l'effet postérieur à la déclaration"
+        require h - effet_depuis_ms <= RECUL_MAX else HorsBornes "début de l'effet antérieur de plus de 30 jours"
+        require gravite.size < MAX_INCIDENTS else Plein "registre des incidents plein"
+        gravite.set(incident, g)
+        vise.set(incident, ss)
+        description.set(incident, desc)
+        declare_par.set(incident, par)
+        declare_a.set(incident, h)
+        effet_depuis.set(incident, effet_depuis_ms)
+        let ss_cle = to_string(ss)
+        ouverts.set(ss_cle, (ouverts.get(ss_cle) ?? 0) + 1)
+        if g == 3 {
+            majeurs.set("orbite", (majeurs.get("orbite") ?? 0) + 1)
+        }
+        let _ = Journal.noter(h, "operations", par, "incident {incident} déclaré (gravité {g}, {ss_cle})")
+        if g == 3 {
+            let _ = OpsCrise.convoquer(h, incident, par)
+        }
+        return incident
+    }
+
+    on qualifier(h, incident, g, cat, eff, resp, par) {
+        require ApiAcces.a_le_role(par, "superviseur") else Habilitation "qualifier : superviseur d'ORBITE"
+        require gravite.has(incident) else Inconnu "incident '{incident}' inconnu"
+        require (get_status(incident) ?? "declare") == "declare" else EtatInvalide "incident déjà qualifié ou classé"
+        let ancienne = gravite.get(incident) ?? 1
+        let depuis_decl = declare_a.get(incident) ?? h
+        require h <= depuis_decl + _delai(ancienne) else Delai "délai de qualification dépassé : escalader d'abord"
+        require ApiAcces.a_le_role(resp, "exploitant") else Habilitation "le responsable doit être exploitant d'ORBITE"
+        transition(incident, "declare", "qualifie")
+        gravite.set(incident, g)
+        categorie.set(incident, cat)
+        effet.set(incident, eff)
+        responsable.set(incident, resp)
+        if ancienne != 3 && g == 3 {
+            majeurs.set("orbite", (majeurs.get("orbite") ?? 0) + 1)
+            let _ = OpsCrise.convoquer(h, incident, par)
+        }
+        if ancienne == 3 && g != 3 {
+            majeurs.set("orbite", max((majeurs.get("orbite") ?? 0) - 1, 0))
+            // la crise encore convoquée est annulée ; une crise déjà active reste au pilote
+            let _ = try { OpsCrise.annuler(h, incident, "incident requalifié en gravité {g}") }
+        }
+        let _ = Journal.noter(h, "operations", par, "incident {incident} qualifié (gravité {g}, {cat}, effet {eff}, responsable {resp})")
+        return "qualifie"
+    }
+
+    on classer(h, incident, motif, par) {
+        require ApiAcces.a_le_role(par, "superviseur") else Habilitation "classer : superviseur d'ORBITE"
+        require gravite.has(incident) else Inconnu "incident '{incident}' inconnu"
+        require (get_status(incident) ?? "declare") == "declare" else EtatInvalide "seul un incident déclaré se classe"
+        require len(motif) > 0 else MotifRequis "motif de classement requis"
+        let g = gravite.get(incident) ?? 1
+        if g == 3 {
+            let r = try { OpsCrise.annuler(h, incident, "fausse alerte : {motif}") }
+            require r.error == () else EtatInvalide "la cellule de crise est déjà active : la lever d'abord"
+            majeurs.set("orbite", max((majeurs.get("orbite") ?? 0) - 1, 0))
+        }
+        let ss_cle = to_string(vise.get(incident) ?? "operations")
+        ouverts.set(ss_cle, max((ouverts.get(ss_cle) ?? 0) - 1, 0))
+        transition(incident, "declare", "classe")
+        let _ = Journal.noter(h, "operations", par, "incident {incident} classé : {motif}")
+        return "classe"
+    }
+
+    on prendre_en_charge(h, incident, par) {
+        let resp = responsable.get(incident)
+        require resp != () else Inconnu "incident '{incident}' inconnu ou non qualifié"
+        require par == resp else Habilitation "seul le responsable désigné prend l'incident en charge"
+        require (get_status(incident) ?? "declare") == "qualifie" else EtatInvalide "incident non qualifié"
+        transition(incident, "qualifie", "en_traitement")
+        let _ = Journal.noter(h, "operations", par, "incident {incident} pris en charge")
+        return "en_traitement"
+    }
+
+    on contourner(h, incident, mesure, par) {
+        let resp = responsable.get(incident)
+        require resp != () else Inconnu "incident '{incident}' inconnu ou non qualifié"
+        require par == resp else Habilitation "seul le responsable contourne"
+        require len(mesure) > 0 else MotifRequis "mesure de repli requise"
+        require (get_status(incident) ?? "declare") == "en_traitement" else EtatInvalide "incident pas en traitement"
+        transition(incident, "en_traitement", "contourne")
+        let ss_cle = to_string(vise.get(incident) ?? "operations")
+        let _ = Journal.noter(h, "operations", par, "incident {incident} contourné sur {ss_cle} : {mesure}")
+        return "contourne"
+    }
+
+    on reprendre(h, incident, motif, par) {
+        let resp = responsable.get(incident)
+        require resp != () else Inconnu "incident '{incident}' inconnu ou non qualifié"
+        require par == resp else Habilitation "seul le responsable reprend"
+        require len(motif) > 0 else MotifRequis "motif requis"
+        require (get_status(incident) ?? "declare") == "contourne" else EtatInvalide "incident non contourné"
+        transition(incident, "contourne", "en_traitement")
+        let _ = Journal.noter(h, "operations", par, "incident {incident} : repli abandonné ({motif})")
+        return "en_traitement"
+    }
+
+    on resoudre(h, incident, par) {
+        require gravite.has(incident) else Inconnu "incident '{incident}' inconnu"
+        let resp = responsable.get(incident) ?? ""
+        require par == resp || ApiAcces.a_le_role(par, "superviseur") else Habilitation "résoudre : le responsable ou un superviseur"
+        let st = get_status(incident) ?? "declare"
+        require st == "en_traitement" || st == "contourne" else EtatInvalide "incident ni en traitement ni contourné"
+        require h >= (declare_a.get(incident) ?? 0) else HorsBornes "résolution antérieure à la déclaration"
+        if st == "en_traitement" { transition(incident, "en_traitement", "resolu") } else { transition(incident, "contourne", "resolu") }
+        resolu_a.set(incident, h)
+        let g = gravite.get(incident) ?? 1
+        let ss_cle = to_string(vise.get(incident) ?? "operations")
+        ouverts.set(ss_cle, max((ouverts.get(ss_cle) ?? 0) - 1, 0))
+        if g == 3 {
+            majeurs.set("orbite", max((majeurs.get("orbite") ?? 0) - 1, 0))
+        }
+        let eff = effet.get(incident) ?? "aucune"
+        if g >= 2 || eff != "aucune" {
+            // une résolution après réouverture retrouve le post-mortem déjà ouvert
+            let r = try { OpsPostMortem.ouvrir(h, incident, resp) }
+            if r.error != () && r.kind != "Existe" { fail(r) }
+        } else {
+            let r = try { OpsPostMortem.dispenser(h, incident) }
+            if r.error != () && r.kind != "Existe" { fail(r) }
+        }
+        let _ = Journal.noter(h, "operations", par, "incident {incident} résolu")
+        return "resolu"
+    }
+
+    on rouvrir(h, incident, motif, par) {
+        require ApiAcces.a_le_role(par, "superviseur") else Habilitation "rouvrir : superviseur d'ORBITE"
+        require gravite.has(incident) else Inconnu "incident '{incident}' inconnu"
+        require len(motif) > 0 else MotifRequis "motif de réouverture requis"
+        require (get_status(incident) ?? "declare") == "resolu" else EtatInvalide "seul un incident résolu se rouvre"
+        transition(incident, "resolu", "en_traitement")
+        resolu_a.delete(incident)
+        let g = gravite.get(incident) ?? 1
+        let ss_cle = to_string(vise.get(incident) ?? "operations")
+        ouverts.set(ss_cle, (ouverts.get(ss_cle) ?? 0) + 1)
+        if g == 3 {
+            majeurs.set("orbite", (majeurs.get("orbite") ?? 0) + 1)
+            let _ = OpsCrise.convoquer(h, incident, par)
+        }
+        let _ = Journal.noter(h, "operations", par, "incident {incident} rouvert : {motif}")
+        return "en_traitement"
+    }
+
+    on geler_preuves(h, incident, par) {
+        require ApiAcces.a_le_role(par, "direction") || ApiAcces.a_le_role(par, "conformite") else Habilitation "geler les preuves : direction ou conformite d'ORBITE"
+        let eff = effet.get(incident)
+        require effet_depuis.has(incident) else Inconnu "incident '{incident}' inconnu"
+        require eff != () else EtatInvalide "incident non qualifié"
+        require eff == "faussees" else EtatInvalide "seul un incident à effet « faussees » ouvre un dossier de preuve"
+        require !dossier.has(incident) else Existe "dossier de preuve déjà ouvert"
+        let deb = effet_depuis.get(incident) ?? 0
+        let fin_f = resolu_a.get(incident) ?? h
+        let id = ApiResponsabilite.geler(h, incident, "incident {incident} : fenêtre suspecte {deb} - {fin_f}", par)
+        dossier.set(incident, id)
+        let _ = Journal.noter(h, "operations", par, "incident {incident} : preuves gelées (dossier {id})")
+        return id
+    }
+
+    on clore(h, incident, par) {
+        require gravite.has(incident) else Inconnu "incident '{incident}' inconnu"
+        let g = gravite.get(incident) ?? 1
+        if g == 3 {
+            require ApiAcces.a_le_role(par, "direction") else Habilitation "clore un incident majeur : direction d'ORBITE"
+        } else {
+            require ApiAcces.a_le_role(par, "superviseur") else Habilitation "clore : superviseur d'ORBITE"
+        }
+        require (get_status(incident) ?? "declare") == "resolu" else EtatInvalide "incident non résolu"
+        let pm = OpsPostMortem.etat(incident)
+        require pm == "publie" || pm == "dispense" else EtatInvalide "post-mortem ni publié ni dispensé ({pm})"
+        require !OpsCrise.active_pour(incident) else EtatInvalide "cellule de crise non levée"
+        if (effet.get(incident) ?? "aucune") == "faussees" {
+            require dossier.has(incident) else EtatInvalide "décisions faussées : dossier de preuve à ouvrir avant clôture"
+        }
+        transition(incident, "resolu", "clos")
+        let _ = Journal.noter(h, "operations", par, "incident {incident} clos")
+        return "clos"
+    }
+
+    on majeur_en_cours() {
+        return (majeurs.get("orbite") ?? 0) > 0
+    }
+
+    on est_degrade(ss) {
+        return (ouverts.get(to_string(ss)) ?? 0) > 0
+    }
+
+    on gravite_de(incident) {
+        let g = gravite.get(incident)
+        require g != () else Inconnu "incident '{incident}' inconnu"
+        return g
+    }
+
+    on effet_de(incident) {
+        require gravite.has(incident) else Inconnu "incident '{incident}' inconnu"
+        return effet.get(incident) ?? "aucune"
+    }
+
+    on vise_de(incident) {
+        let v = vise.get(incident)
+        require v != () else Inconnu "incident '{incident}' inconnu"
+        return v
+    }
+
+    on etat(incident) {
+        if !gravite.has(incident) { return "inconnu" }
+        return get_status(incident) ?? "declare"
+    }
+
+    on fenetre_suspecte(incident, h) {
+        let deb = effet_depuis.get(incident)
+        require deb != () else Inconnu "incident '{incident}' inconnu"
+        return [deb, resolu_a.get(incident) ?? h]
+    }
+
+    on en_retard_qualification(h) {
+        let retard_q = []
+        for e in declare_a.entries {
+            if (get_status(e.key) ?? "declare") == "declare" {
+                let g = gravite.get(e.key) ?? 1
+                if h > e.value + _delai(g) { retard_q.push(e.key) }
+            }
+        }
+        return retard_q.sort()
+    }
+
+    on _delai(g: Gravite) {
+        if g == 3 { return DELAI_QUALIF_G3 }
+        if g == 2 { return DELAI_QUALIF_G2 }
+        return DELAI_QUALIF_G1
+    }
+}
+
+flesh OpsPostMortem {
+    on ouvrir(h, incident, red) {
+        require !redacteur.has(incident) else Existe "post-mortem '{incident}' déjà ouvert"
+        require ApiAcces.a_le_role(red, "exploitant") else Habilitation "le rédacteur doit être exploitant d'ORBITE"
+        redacteur.set(incident, red)
+        ouvert_a.set(incident, h)
+        return "a_rediger"
+    }
+
+    on dispenser(h, incident) {
+        require !redacteur.has(incident) else Existe "post-mortem '{incident}' déjà ouvert"
+        require (get_status(incident) ?? "a_rediger") == "a_rediger" else EtatInvalide "post-mortem déjà engagé"
+        redacteur.set(incident, "")
+        transition(incident, "a_rediger", "dispense")
+        return "dispense"
+    }
+
+    on soumettre(h, incident, chrono, cause, decisions, par) {
+        let red = redacteur.get(incident)
+        require red != () else Inconnu "post-mortem '{incident}' inconnu"
+        require par == red else Habilitation "seul le rédacteur soumet"
+        require (get_status(incident) ?? "a_rediger") == "a_rediger" else EtatInvalide "post-mortem pas à rédiger"
+        require len(cause) > 0 else MotifRequis "cause racine requise"
+        let taille = len(chrono) + len(cause) + len(join(decisions, "\n"))
+        require taille <= MAX_TEXTE else HorsBornes "texte trop long"
+        let eff = OpsIncident.effet_de(incident)
+        require eff != "faussees" || len(decisions) > 0 else Insuffisant "effet « faussees » : les décisions de la fenêtre suspecte doivent être revues"
+        let fen = OpsIncident.fenetre_suspecte(incident, h)
+        transition(incident, "a_rediger", "redige")
+        chronologie.set(incident, chrono)
+        cause_racine.set(incident, cause)
+        decisions_revues.set(incident, decisions)
+        let nd = len(decisions)
+        let f0 = fen[0]
+        let f1 = fen[1]
+        let _ = Journal.noter(h, "operations", par, "post-mortem {incident} soumis ({nd} décisions revues, fenêtre {f0} - {f1})")
+        return "redige"
+    }
+
+    on ajouter_action(h, incident, porteur, echeance, libelle, par) {
+        let red = redacteur.get(incident)
+        require red != () else Inconnu "post-mortem '{incident}' inconnu"
+        require par == red else Habilitation "seul le rédacteur ajoute des actions"
+        let st = get_status(incident) ?? "a_rediger"
+        require st == "a_rediger" || st == "redige" else EtatInvalide "post-mortem relu, publié ou dispensé"
+        require len(libelle) > 0 && len(porteur) > 0 else MotifRequis "porteur et libellé requis"
+        let actions_l = actions.get(incident) ?? []
+        require len(actions_l) < MAX_ACTIONS else Plein "trop d'actions correctives"
+        let nouvelles = actions_l ++ ["{porteur} | {echeance} | {libelle}"]
+        actions.set(incident, nouvelles)
+        let _ = Journal.noter(h, "operations", par, "post-mortem {incident} : action corrective ({porteur})")
+        return len(nouvelles)
+    }
+
+    on renvoyer(h, incident, motif, par) {
+        let red = redacteur.get(incident)
+        require red != () else Inconnu "post-mortem '{incident}' inconnu"
+        require (get_status(incident) ?? "a_rediger") == "redige" else EtatInvalide "post-mortem non soumis"
+        require len(motif) > 0 else MotifRequis "motif de renvoi requis"
+        require ApiAcces.quatre_yeux(red, par) else QuatreYeux "relecture : une autre personne, superviseur"
+        transition(incident, "redige", "a_rediger")
+        let _ = Journal.noter(h, "operations", par, "post-mortem {incident} renvoyé : {motif}")
+        return "a_rediger"
+    }
+
+    on relire(h, incident, par) {
+        let red = redacteur.get(incident)
+        require red != () else Inconnu "post-mortem '{incident}' inconnu"
+        require (get_status(incident) ?? "a_rediger") == "redige" else EtatInvalide "post-mortem non soumis"
+        require ApiAcces.quatre_yeux(red, par) else QuatreYeux "relecture : une autre personne, superviseur"
+        transition(incident, "redige", "relu")
+        relu_par.set(incident, par)
+        let _ = Journal.noter(h, "operations", par, "post-mortem {incident} relu")
+        return "relu"
+    }
+
+    on publier(h, incident, par) {
+        require ApiAcces.a_le_role(par, "direction") else Habilitation "publier : direction d'ORBITE"
+        let revues = decisions_revues.get(incident)
+        require revues != () else Inconnu "post-mortem '{incident}' inconnu ou non soumis"
+        require (get_status(incident) ?? "a_rediger") == "relu" else EtatInvalide "post-mortem non relu"
+        transition(incident, "relu", "publie")
+        let sujet = "Revue post-incident {incident}"
+        let texte = "La revue post-incident {incident} est publiée."
+        let envois = 0
+        for ligne in revues {
+            let r = trim(split(ligne, "|")[0])
+            if len(r) > 0 {
+                let rr = Rapprochement(r)
+                let objets_r = ApiConjonctions.objets(rr)
+                let servis_r = []
+                for objet_s in objets_r {
+                    let objet = Objet(objet_s)
+                    let org = ApiRef.proprietaire(objet)
+                    let org_s = to_string(org)
+                    if org_s == "inconnu" {
+                        let _ = Journal.noter(h, "operations", par, "post-mortem {incident} : {objet} sans propriétaire, écarté")
+                    } else if !contains(servis_r, org_s) {
+                        if ApiDonnees.peut_recevoir(org, objet, rr, h) {
+                            let _ = ApiDonnees.tracer(h, org, objet, rr, "post_mortem")
+                            let _ = ApiPasserelle.notifier(h, org, rr, sujet, texte, 2)
+                            servis_r.push(org_s)
+                            envois = envois + 1
+                        } else {
+                            let _ = Journal.noter(h, "operations", par, "post-mortem {incident} : {org_s} écarté (diffusion refusée pour {objet}, {r})")
+                        }
+                    }
+                }
+            }
+        }
+        for etat_c in OpsCrise.etats_informes_de(incident) {
+            let r = try { ApiRef.org_de_etat(etat_c) }
+            if r.error != () {
+                let _ = Journal.noter(h, "operations", par, "post-mortem {incident} : État {etat_c} sans organisation, écarté")
+            } else {
+                let _ = ApiPasserelle.notifier(h, r.value, "", sujet, texte, 3)
+                envois = envois + 1
+            }
+        }
+        let _ = Journal.noter(h, "operations", par, "post-mortem {incident} publié ({envois} envois)")
+        return "publie"
+    }
+
+    on etat(incident) {
+        if !redacteur.has(incident) { return "inconnu" }
+        return get_status(incident) ?? "a_rediger"
+    }
+
+    on en_retard(h) {
+        let retard_pm = []
+        for e in ouvert_a.entries {
+            let st = get_status(e.key) ?? "a_rediger"
+            if st != "publie" && st != "dispense" && h > e.value + DELAI_PUBLICATION {
+                retard_pm.push(e.key)
+            }
+        }
+        return retard_pm.sort()
+    }
+}

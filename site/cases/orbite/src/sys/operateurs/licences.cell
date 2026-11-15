@@ -1,0 +1,137 @@
+// operateurs — LICENCE NATIONALE : l'autorisation d'opérer délivrée par l'État de tutelle
+// (art. VI du traité de 1967). ORBITE ne la délivre pas : elle la fait VÉRIFIER par l'État
+// (son "autorite"), suit son échéance et répercute retrait et suspension sur le statut.
+// Une licence non valide à `h` rend l'opérateur inactif sans attendre aucun balayage
+// (OpMembres.est_actif lit valide_a).
+
+// Avis de l'État sur une licence déclarée.
+cell type OpAvisEtat = String where value == "confirmee" || value == "inconnue" || value == "non_conforme"
+
+// État d'une licence tel que les getters le rendent ("aucune" : jamais déclarée).
+cell type OpEtatLicence = String where value == "aucune" || value == "declaree" || value == "refusee" || value == "en_vigueur" || value == "suspendue" || value == "expiree" || value == "retiree"
+
+// Licence de l'opérateur (id = Org de l'opérateur : une licence courante par opérateur ;
+// l'historique garde les précédentes).
+skeleton OpLicences {
+    const MAX_LICENCES = 100000
+    const MAX_HISTORIQUE = 1000000
+    // Durée maximale d'une licence enregistrée : 25 ans.
+    const DUREE_MAX_MS = 788940000000
+    // Préavis de renouvellement : 90 jours avant l'échéance.
+    const PREAVIS_MS = 7776000000
+    // Délai laissé à l'État pour confirmer une déclaration : 30 jours.
+    const DELAI_VERIFICATION_MS = 2592000000
+    memory {
+        numero: Map<Org, String> [persistent]                 // opérateur → numéro de licence national
+        etat_licence: Map<Org, Etat> [persistent]             // opérateur → État qui a délivré la licence (= État de tutelle à la déclaration)
+        declaree_a: Map<Org, Horodatage> [persistent]         // opérateur → déclaration, ms
+        debut: Map<Org, Horodatage> [persistent]              // opérateur → début de validité, ms
+        echeance: Map<Org, Horodatage> [persistent]           // opérateur → fin de validité, ms ; ≤ debut + DUREE_MAX_MS
+        verifiee_par: Map<Org, String> [persistent]           // opérateur → "autorite" de l'État qui a confirmé
+        historique: List<String> [persistent]                 // "h | op | numero | etat | evenement | par", en ajout seul
+        invariant numero.size <= MAX_LICENCES
+        invariant historique.size <= MAX_HISTORIQUE
+        invariant (debut ?? 0) <= (echeance ?? 0)
+        invariant (declaree_a ?? 0) <= (echeance ?? 0)
+    }
+    // Cycle de vie de la licence courante (id = opérateur). retiree est terminal : un
+    // opérateur dont l'État a retiré la licence ne revient qu'en changeant de contrôle sous
+    // un nouvel identifiant.
+    state licence {
+        initial: declaree
+        declaree -> en_vigueur          // confirmer : l'autorité de l'État confirme
+        declaree -> refusee             // infirmer : l'État ne la connaît pas ou la dit non conforme ; echoir_verifications : silence de l'État
+        refusee -> declaree             // declarer : nouvelle déclaration
+        en_vigueur -> suspendue         // suspendre_par_etat
+        suspendue -> en_vigueur         // lever_suspension
+        en_vigueur -> expiree           // echoir : échéance atteinte
+        expiree -> declaree             // declarer : renouvellement
+        en_vigueur -> declaree          // transferer : changement de contrôle vers un autre État
+        en_vigueur -> retiree           // retirer_par_etat
+        suspendue -> retiree            // retirer_par_etat
+    }
+    face {
+        // Déclare (ou renouvelle) la licence nationale de op : numéro, validité [debut_validite,
+        // fin_validite] en ms. L'État de la licence est l'État de tutelle de op au référentiel ;
+        // son organisation est notifiée pour vérification sous DELAI_VERIFICATION_MS. Renvoie
+        // "declaree". Rôle exigé : "administrateur_operateur" de op (agit_pour).
+        // Refus : Inconnu (op non inscrit), NonEligible (État non participant), HorsBornes
+        // (fin ≤ début, fin ≤ h, durée > DUREE_MAX_MS), EtatInvalide (licence en vigueur ou
+        // suspendue : seul le transfert la redéclare), MotifRequis (numéro vide), Habilitation, Plein.
+        signal declarer(h: Horodatage, op: Org, numero_national: String, debut_validite: Horodatage, fin_validite: Horodatage, par: String) -> OpEtatLicence
+            writes numero, etat_licence, declaree_a, debut, echeance, historique
+            moves refusee -> declaree, expiree -> declaree
+            calls ApiAcces.a_le_role, ApiAcces.agit_pour, ApiRef.organisation_existe, ApiRef.etat_de, ApiRef.etat_participant, ApiRef.org_de_etat, ApiPasserelle.notifier, Journal.noter
+        // L'État confirme ou infirme la licence déclarée. "confirmee" la met en vigueur ;
+        // "inconnue" / "non_conforme" la refusent (l'opérateur est notifié). Renvoie l'état atteint.
+        // Rôle exigé : "autorite" de l'État de la licence (agit_pour sur ApiRef.org_de_etat).
+        // Refus : Inconnu, EtatInvalide, Delai (déclaration plus vieille que
+        // DELAI_VERIFICATION_MS : redéclarer), Habilitation.
+        signal repondre_etat(h: Horodatage, op: Org, avis: OpAvisEtat, par: String) -> OpEtatLicence
+            writes verifiee_par, historique
+            reads numero, etat_licence, declaree_a
+            moves declaree -> en_vigueur, declaree -> refusee
+            calls ApiAcces.a_le_role, ApiAcces.agit_pour, ApiRef.org_de_etat, ApiPasserelle.notifier, Journal.noter
+        // L'État suspend la licence : l'opérateur actif est suspendu (OpMembres.suspendre_auto,
+        // origine "licence"). Renvoie "suspendue".
+        // Rôle exigé : "autorite" de l'État de la licence. Refus : Inconnu, EtatInvalide,
+        // MotifRequis, Habilitation.
+        signal suspendre_par_etat(h: Horodatage, op: Org, motif: String, par: String) -> OpEtatLicence
+            writes historique
+            reads numero, etat_licence
+            moves en_vigueur -> suspendue
+            calls ApiAcces.a_le_role, ApiAcces.agit_pour, ApiRef.org_de_etat, OpMembres.suspendre_auto, Journal.noter
+        // L'État lève sa suspension (le statut de l'opérateur, lui, se rétablit par
+        // OpMembres.retablir). Renvoie "en_vigueur". Rôle exigé : "autorite" de l'État de la
+        // licence. Refus : Inconnu, EtatInvalide, Echu (échéance passée : redéclarer), Habilitation.
+        signal lever_suspension(h: Horodatage, op: Org, par: String) -> OpEtatLicence
+            writes historique
+            reads numero, etat_licence, echeance
+            moves suspendue -> en_vigueur
+            calls ApiAcces.a_le_role, ApiAcces.agit_pour, ApiRef.org_de_etat, Journal.noter
+        // L'État retire la licence (définitif) : suspension automatique de l'opérateur et
+        // signalement à la conformité (gravité 3). Renvoie "retiree".
+        // Rôle exigé : "autorite" de l'État de la licence. Refus : Inconnu, EtatInvalide,
+        // MotifRequis, Habilitation.
+        signal retirer_par_etat(h: Horodatage, op: Org, motif: String, par: String) -> OpEtatLicence
+            writes historique
+            reads numero, etat_licence
+            moves en_vigueur -> retiree, suspendue -> retiree
+            calls ApiAcces.a_le_role, ApiAcces.agit_pour, ApiRef.org_de_etat, OpMembres.suspendre_auto, ApiConformite.constater, Journal.noter
+        // Changement de contrôle effectif vers un autre État de tutelle : la licence repasse
+        // "declaree" sous l'État d'accueil, qui doit la confirmer (l'opérateur est inactif
+        // jusque-là). Appelé par OpChangements.rendre_effectif seulement (par = "systeme").
+        // Renvoie "declaree". Refus : Inconnu, EtatInvalide, MotifRequis (numéro vide).
+        signal transferer(h: Horodatage, op: Org, etat_accueil: Etat, numero_national: String, fin_validite: Horodatage) -> OpEtatLicence
+            writes numero, etat_licence, declaree_a, debut, echeance, historique
+            moves en_vigueur -> declaree
+            calls ApiRef.org_de_etat, ApiPasserelle.notifier, Journal.noter
+        // Balayage (par "systeme" ou "exploitant" d'ORBITE) : licences en vigueur dont
+        // l'échéance est ≤ h → "expiree" (opérateur notifié, manquement de gravité 2 s'il est
+        // actif) ; déclarations sans réponse de l'État depuis DELAI_VERIFICATION_MS →
+        // "refusee". Renvoie le nombre de licences changées (au plus n).
+        // Refus : Habilitation.
+        signal echoir(h: Horodatage, n: Int, par: String) -> Int
+            requires n > 0 && n <= 10000
+            writes historique
+            reads echeance, declaree_a
+            moves en_vigueur -> expiree, declaree -> refusee
+            calls ApiAcces.a_le_role, OpMembres.etat, ApiPasserelle.notifier, ApiConformite.constater, Journal.noter
+        // Opérateurs dont la licence en vigueur échoit avant h + PREAVIS_MS (au plus n), pour
+        // relance. Chaque entrée : "op | echeance".
+        signal a_renouveler(h: Horodatage, n: Int) -> List<String>
+            requires n > 0 && n <= 10000
+            reads echeance, licence
+        // Les n derniers évènements de licence de op (déclarations, avis de l'État, retraits),
+        // les plus récents en dernier.
+        signal historique_de(op: Org, n: Int) -> List<String>
+            requires n > 0 && n <= 1000
+            reads historique
+        // Vrai si la licence de op est "en_vigueur" et debut ≤ h < echeance.
+        signal valide_a(op: Org, h: Horodatage) -> Bool
+            reads debut, echeance, licence
+        // État de la licence courante ; "aucune" si jamais déclarée.
+        signal etat(op: Org) -> OpEtatLicence
+            reads numero, licence
+    }
+}

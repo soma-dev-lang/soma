@@ -1,0 +1,214 @@
+// LANCEMENTS — pièces du manifeste : charges utiles, étages et éléments mis en orbite ;
+// séparation, catalogage (ApiRef.cataloguer, ou rattachement d'un objet déjà découvert par
+// l'observation), identification par le propriétaire, immatriculation par l'État (Convention
+// de 1975) et ses délais. Instance = id de pièce, fourni par le déclarant ("<lancement>/<k>").
+
+skeleton LancPiece {
+    const MAX_PIECES = 20000000
+    // 200 pièces annoncées au plus, autant d'éléments imprévus ajoutés par les analystes.
+    const MAX_MANIFESTE = 400
+    const MAX_RETARDS_ETAT = 100000
+    // Délais comptés depuis l'injection : identification 30 jours, immatriculation 60 jours
+    // (pratique recommandée pour la Convention de 1975) ; une pièce séparée que l'observation
+    // n'a pas retrouvée en 30 jours est déclarée perdue.
+    const DELAI_IDENTIFICATION = 2592000000
+    const DELAI_IMMATRICULATION = 5184000000
+    const DELAI_PERTE = 2592000000
+    // Écart maximal (m) entre l'éphéméride du propriétaire et l'orbite observée pour confirmer
+    // une identification : 10 km.
+    const ECART_IDENTIFICATION = 10000
+    memory {
+        lancement_de: Map<String, String> [persistent]   // pièce -> lancement ; écrit par `prevoir`, jamais effacé (lien des règles)
+        genre_de: Map<String, LancGenrePiece> [persistent]
+        proprietaire_de: Map<String, Org> [persistent]   // opérateur propriétaire ; "inconnu" pour un lancement non notifié
+        etat_immat_de: Map<String, Etat> [persistent]    // État qui doit immatriculer (un des États de lancement)
+        masse_de: Map<String, Masse> [persistent]
+        propulsion_de: Map<String, Propulsion> [persistent]
+        habitee_de: Map<String, Bool> [persistent]       // charge utile habitée (station, capsule)
+        separee_le: Map<String, Horodatage> [persistent]
+        objet_de: Map<String, Objet> [persistent]        // pièce -> OBJ ; écrit une fois par `lier` seul, jamais effacé (lien des règles avec ref)
+        origine_de: Map<Objet, String> [persistent]      // OBJ -> pièce ; écrit une fois par `lier` (Doublon sinon)
+        identifiee_le: Map<String, Horodatage> [persistent]
+        immatriculee_le: Map<String, Horodatage> [persistent]
+        registre_de: Map<String, String> [persistent]    // référence du registre national et de la communication à l'ONU
+        manifeste_de: Map<String, List<String>> [persistent] // lancement -> pièces, dans l'ordre de déclaration
+        retards_de: Map<Etat, List<String>> [persistent]     // État d'immatriculation -> pièces en retard non encore immatriculées
+        invariant lancement_de.size <= 20000000
+        invariant origine_de.size <= lancement_de.size
+        invariant len(manifeste_de) <= 400
+        invariant len(retards_de) <= 100000
+        invariant masse_de >= 0
+        // Catalogage après séparation, immatriculation après identification.
+        invariant objet_de.size <= separee_le.size
+        invariant immatriculee_le.size <= identifiee_le.size
+    }
+    // Cycle d'une pièce du manifeste.
+    state piece {
+        initial: prevue
+        prevue -> separee                // séparation déclarée, seulement sur un lancement injecté
+        prevue -> non_separee            // restée solidaire, lancement annulé ou en échec
+        separee -> cataloguee            // numéro OBJ attribué ou objet découvert rattaché
+        separee -> perdue                // 30 jours sans être retrouvée par l'observation
+        cataloguee -> identifiee         // propriétaire confirme, orbite observée cohérente
+        cataloguee -> en_retard          // 30 jours sans identification
+        identifiee -> en_retard          // 60 jours sans immatriculation
+        identifiee -> immatriculee       // inscrite au registre par l'État
+        en_retard -> immatriculee        // immatriculation tardive (exige l'identification)
+        cataloguee -> retombee           // rentrée avant immatriculation (ApiRef : "rentre")
+        identifiee -> retombee
+        en_retard -> retombee
+    }
+    face {
+        // Ajoute une pièce au manifeste d'un lancement non terminé (ni identifie, echec, annule) :
+        // au plus nb_objets de la fiche (sinon Plein), sauf un "element" ajouté par l'"analyste"
+        // après l'injection (objet imprévu vu par l'observation : rien de ce qui monte n'échappe). Propriétaire inscrit
+        // (ApiRef.organisation_existe) sauf "inconnu" (lancement non notifié) ; État
+        // d'immatriculation participant (ApiRef.etat_participant) et État de lancement
+        // (LancZones.est_etat_de_lancement, sinon NonEligible : Convention de 1975, art. II) ; "habitee" seulement pour une
+        // charge utile (sinon Incoherent). `par` : "chef_de_mission" de l'opérateur du lanceur ou du
+        // propriétaire, ou "analyste" d'ORBITE. Seul écrivain de `lancement_de`. Renvoie l'id.
+        // Refus : Existe, Inconnu, EtatInvalide, Plein, NonEligible, Incoherent, Habilitation.
+        signal prevoir(h: Horodatage, lancement: String, piece: String, genre: LancGenrePiece, proprietaire: Org, etat_immat: Etat, masse: Masse, propulsion: Propulsion, habitee: Bool, par: String) -> String
+            writes lancement_de, genre_de, proprietaire_de, etat_immat_de, masse_de, propulsion_de, habitee_de, manifeste_de
+            calls LancLancement.etat, LancLancement.fiche, LancZones.est_etat_de_lancement, ApiRef.organisation_existe, ApiRef.etat_participant, ApiAcces.a_le_role, ApiAcces.agit_pour, Journal.noter
+        // Déclare la séparation (prevue -> separee) à `instant` (≤ h, ≥ injection, sinon
+        // Incoherent), seulement si le lancement est injecté. `par` "dynamicien" ou
+        // "chef_de_mission" du propriétaire ou de l'opérateur du lanceur, ou "analyste" (séparation
+        // vue par l'observation). Renvoie "separee". Refus : Inconnu, EtatInvalide, Incoherent, Habilitation.
+        signal separer(h: Horodatage, piece: String, instant: Horodatage, par: String) -> LancEtatPiece
+            writes separee_le
+            reads lancement_de, proprietaire_de
+            moves prevue -> separee when LancLancement.injecte via lancement_de
+            calls LancLancement.fiche, LancLancement.etat, ApiAcces.a_le_role, ApiAcces.agit_pour, Journal.noter
+        // Déclare une pièce non séparée (prevue -> non_separee) : restée solidaire de l'étage.
+        // `par` comme `separer`. Renvoie "non_separee". Refus : Inconnu, EtatInvalide, MotifRequis, Habilitation.
+        signal declarer_non_separee(h: Horodatage, piece: String, motif: String, par: String) -> LancEtatPiece
+            reads lancement_de, proprietaire_de
+            moves prevue -> non_separee
+            calls LancLancement.fiche, ApiAcces.a_le_role, ApiAcces.agit_pour, Journal.noter
+        // Passe "non_separee" toutes les pièces encore prévues d'un lancement annulé ou en échec.
+        // Appelé par LancLancement.annuler et LancEnquete.evaluer, `par` "systeme". Renvoie le
+        // nombre de pièces concernées. Refus : Habilitation.
+        signal abandonner_manifeste(h: Horodatage, lancement: String, par: String) -> Int
+            reads manifeste_de, piece
+            moves prevue -> non_separee
+            calls ApiAcces.a_le_role, Journal.noter
+        // Catalogue une pièce séparée comme nouvel objet (separee -> cataloguee) :
+        // ApiRef.cataloguer (nature "satellite" ou "station_habitee" pour une charge utile, "etage",
+        // "debris" pour un élément ; régime du lancement ; propulsion "aucune" pour étage et
+        // élément ; propriétaire et État d'immatriculation de la pièce). Demande son suivi renforcé
+        // 72 h (ApiObservation.demander_suivi, priorité 2). `par` "analyste" ou "systeme".
+        // La pièce passe "cataloguee" par `lier`.
+        // Renvoie le numéro OBJ. Refus : Inconnu, EtatInvalide, Plein (capteurs), Habilitation.
+        signal cataloguer(h: Horodatage, piece: String, par: String) -> Objet
+            reads lancement_de, genre_de, proprietaire_de, etat_immat_de, masse_de, propulsion_de, habitee_de
+            calls LancPiece.lier, LancLancement.fiche, ApiRef.cataloguer, ApiObservation.demander_suivi, ApiAcces.a_le_role, Journal.noter
+        // Rattache à une pièce séparée un objet déjà catalogué par l'observation (piste non
+        // corrélée, propriétaire provisoire ApiRef.orbite()) (separee -> cataloguee, par `lier`) :
+        // l'objet doit exister (ApiRef.etat_objet, sinon Inconnu), être encore "catalogue" chez ref
+        // (ni mis en service, ni sorti de l'orbite : sinon EtatInvalide) et n'être rattaché à
+        // aucune pièce (sinon Doublon) ; il est attribué au propriétaire et à l'État d'immatriculation de la pièce
+        // (ApiRef.attribuer, mêmes `par` et `valideur`). Si le propriétaire de la pièce est
+        // "inconnu" (lancement non notifié), l'objet reste à ORBITE et la pièce est rattachée
+        // seulement. `par` "analyste", `valideur` "superviseur" (ApiAcces.quatre_yeux).
+        // Renvoie le numéro OBJ. Refus : Inconnu, EtatInvalide, Doublon, Habilitation, QuatreYeux.
+        signal rattacher(h: Horodatage, piece: String, objet: Objet, par: String, valideur: String) -> Objet
+            reads lancement_de, proprietaire_de, etat_immat_de
+            calls LancPiece.lier, ApiRef.etat_objet, ApiRef.attribuer, ApiAcces.a_le_role, ApiAcces.quatre_yeux, Journal.noter
+        // Lie la pièce séparée à son objet du catalogue (separee -> cataloguee) : seul écrivain de
+        // `objet_de` et `origine_de`, une fois. Règle de l'arête : l'objet est "catalogue" chez ref
+        // (ApiRef.etat_objet). Appelé par `cataloguer` (objet neuf) et `rattacher` (objet découvert),
+        // qui portent l'habilitation. Renvoie "cataloguee".
+        // Refus : Inconnu (pièce), EtatInvalide (pièce pas "separee", ou objet pas "catalogue"),
+        // Doublon (objet déjà lié à une pièce), Existe (pièce déjà liée).
+        signal lier(h: Horodatage, piece: String, objet: Objet) -> LancEtatPiece
+            writes objet_de, origine_de
+            reads objet_de, origine_de
+            moves separee -> cataloguee when RefObjet.catalogue via objet_de
+            calls ApiRef.etat_objet, Journal.noter
+        // Le propriétaire confirme que l'objet catalogué est sa pièce (cataloguee -> identifiee ;
+        // depuis en_retard, l'identification est notée sans changer d'état). Exige une éphéméride
+        // validée (ApiEphemerides.derniere) et, si l'observation suit l'objet, un écart déclaré
+        // ≤ 10 km (ApiObservation.ecart_declare, sinon Incoherent : essaim mal attribué). Un
+        // élément ou un étage peut être identifié par l'"analyste". Un étage resté en orbite sans
+        // plan de fin de vie conforme (ApiFinDeVie.plan_conforme) est identifié quand même, avec
+        // un manquement de l'opérateur du lanceur (ApiConformite.constater, gravité 2). `par` "dynamicien" du
+        // propriétaire (ApiAcces.agit_pour). Renvoie l'état. Refus : Inconnu, EtatInvalide,
+        // Incoherent, Perime (pas d'éphéméride validée), Habilitation.
+        signal identifier(h: Horodatage, piece: String, par: String) -> LancEtatPiece
+            writes identifiee_le
+            reads objet_de, proprietaire_de, genre_de, lancement_de, piece
+            moves cataloguee -> identifiee
+            calls LancLancement.fiche, ApiFinDeVie.plan_conforme, ApiConformite.constater, ApiEphemerides.derniere, ApiObservation.suivi, ApiObservation.ecart_declare, ApiAcces.a_le_role, ApiAcces.agit_pour, Journal.noter
+        // L'État inscrit la pièce identifiée à son registre national (identifiee | en_retard ->
+        // immatriculee), avec la référence de registre et de communication à l'ONU (non vide,
+        // sinon MotifRequis). L'État d'immatriculation au catalogue (ApiRef.etat_immatriculation)
+        // doit être celui de la pièce (sinon Incoherent). Écrit le registre de 1975 chez ref
+        // (ApiRef.immatriculer, numéro = référence, par "systeme") ; une entrée déjà présente
+        // (ApiRef.immatricule) n'est pas réécrite. `par` "autorite" de cet État (ApiAcces.agit_pour
+        // ApiRef.org_de_etat). Retire la pièce de `retards_de`. Règle des arêtes : l'entrée du
+        // registre de l'objet (`objet_de`) est "immatricule" chez ref (ApiRef.immatricule vrai
+        // après l'écriture). Renvoie "immatriculee".
+        // Refus : Inconnu, EtatInvalide (non identifiée, ou registre non inscrit), MotifRequis, Incoherent, Habilitation.
+        signal immatriculer(h: Horodatage, piece: String, reference: String, par: String) -> LancEtatPiece
+            writes immatriculee_le, registre_de, retards_de
+            reads objet_de, etat_immat_de, identifiee_le
+            moves identifiee -> immatriculee when RefRegistre.immatricule via objet_de, en_retard -> immatriculee when RefRegistre.immatricule via objet_de
+            calls ApiRef.etat_immatriculation, ApiRef.immatriculer, ApiRef.immatricule, ApiRef.org_de_etat, ApiAcces.a_le_role, ApiAcces.agit_pour, Journal.noter
+        // Relève les délais du manifeste d'un lancement injecté, à `h` (appelé par la veille) :
+        // - une pièce identifiée dont l'objet est déjà inscrit chez ref (ApiRef.immatricule : l'État
+        //   a immatriculé directement) -> immatriculee, retirée de `retards_de` ;
+        // - séparée depuis 30 jours non cataloguée -> perdue ;
+        // - cataloguée 30 jours après l'injection non identifiée -> en_retard, manquement du
+        //   propriétaire (ApiConformite.constater, gravité 2) ;
+        // - identifiée 60 jours après non immatriculée -> en_retard, manquement de l'État
+        //   d'immatriculation (ApiConformite.constater_etat, gravité 2, référence = pièce), rangée
+        //   dans `retards_de`.
+        // Chaque retard est notifié au point focal de l'État (ApiPasserelle.notifier, r "").
+        // `par` "systeme". Renvoie le nombre de pièces dont l'état a changé. Refus : Inconnu, Habilitation.
+        signal relever_retards(h: Horodatage, lancement: String, par: String) -> Int
+            writes retards_de, immatriculee_le
+            reads manifeste_de, separee_le, objet_de, etat_immat_de, proprietaire_de, identifiee_le, piece
+            moves separee -> perdue, cataloguee -> en_retard, identifiee -> en_retard, identifiee -> immatriculee when RefRegistre.immatricule via objet_de, en_retard -> immatriculee when RefRegistre.immatricule via objet_de
+            calls LancLancement.injecte_le, ApiRef.immatricule, ApiRef.org_de_etat, ApiPasserelle.notifier, ApiConformite.constater, ApiConformite.constater_etat, ApiAcces.a_le_role, Journal.noter
+        // Constate qu'une pièce cataloguée est rentrée avant son immatriculation (-> retombee),
+        // si ApiRef.etat_objet de son objet est "rentre" (sinon EtatInvalide). `par` "systeme" ou
+        // "analyste". Renvoie "retombee". Refus : Inconnu, EtatInvalide, Habilitation.
+        signal constater_retombee(h: Horodatage, piece: String, par: String) -> LancEtatPiece
+            reads objet_de
+            moves cataloguee -> retombee, identifiee -> retombee, en_retard -> retombee
+            calls ApiRef.etat_objet, ApiAcces.a_le_role, Journal.noter
+        // Pièces en retard d'immatriculation d'un État (au plus n), pour sa relance et le rapport
+        // annuel aux États. `par` "point_focal" ou "autorite" de cet État (ApiAcces.agit_pour
+        // ApiRef.org_de_etat), ou "conformite" d'ORBITE. Refus : Habilitation.
+        signal retards_etat(etat: Etat, n: Int, par: String) -> List<String>
+            requires n > 0 && n <= 10000
+            reads retards_de
+            calls ApiRef.org_de_etat, ApiAcces.a_le_role, ApiAcces.agit_pour
+        // Nombre de pièces du manifeste qui ne sont ni terminées (immatriculee, non_separee,
+        // perdue, retombee) ni identifiées (identifiee, ou en_retard avec identification notée).
+        signal restantes(lancement: String) -> Int
+            reads manifeste_de, identifiee_le, piece
+        // Numéros OBJ catalogués issus du lancement, dans l'ordre du manifeste.
+        signal objets_du_lancement(lancement: String) -> List<String>
+            reads manifeste_de, objet_de
+        // États de lancement d'un objet (LancZones.etats_lancement de son lancement d'origine) :
+        // responsabilité (Convention de 1972), restitution des débris (Accord de 1968) ; [] si
+        // l'objet n'est rattaché à aucune pièce.
+        signal etats_de_lancement(objet: Objet) -> List<String>
+            reads origine_de, lancement_de
+            calls LancZones.etats_lancement
+        // Lancement d'origine d'un objet ; "" s'il n'est rattaché à aucune pièce.
+        signal origine(objet: Objet) -> String
+            reads origine_de, lancement_de
+        // État ("inconnue" si jamais prévue).
+        signal etat(piece: String) -> LancEtatPiece
+            reads piece, lancement_de
+        // Fiche ; objet "" tant que non cataloguée. Refus : Inconnu.
+        signal fiche(piece: String) -> LancFichePiece
+            reads lancement_de, genre_de, proprietaire_de, etat_immat_de, masse_de, propulsion_de, objet_de
+        // Pièces du manifeste d'un lancement, dans l'ordre de déclaration.
+        signal manifeste(lancement: String) -> List<String>
+            reads manifeste_de
+    }
+}

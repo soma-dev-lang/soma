@@ -1,0 +1,78 @@
+// ORBITE COMMUNE — types communs. Les conventions vivent ici, dans des types : un type
+// apparaît dans la fiche de chaque signal qui le nomme, un commentaire d'en-tête non.
+// Tout est simulé : États, opérateurs et objets sont fictifs.
+
+// ── temps
+// Horodatage en millisecondes depuis l'époque Unix (UTC), fourni par l'appelant.
+cell type Horodatage = Int where value >= 0
+// Durée en millisecondes.
+cell type Duree = Int where value >= 0
+// Numéro de jour calendaire (epoch day).
+cell type Jour = Int where value >= 0
+
+// ── grandeurs physiques (entiers, unités fixes)
+// Distance en mètres.
+cell type Distance = Int where value >= 0
+// Variation de vitesse (delta-v) en millimètres par seconde.
+cell type DeltaV = Int where value >= 0 && value <= 10000000
+// Masse en kilogrammes.
+cell type Masse = Int where value >= 0
+// Probabilité en milliardièmes : 1 000 000 000 = certitude ; 1e-4 = 100 000 ; 1e-7 = 100.
+cell type Probabilite = Int where value >= 0 && value <= 1000000000
+// Pourcentage entier (100 = 100 %), au plus 10 000 %.
+cell type Pourcent = Int where value >= 0 && value <= 10000
+
+// ── identifiants
+// Identifiant d'une organisation participante : État (autorité nationale), opérateur,
+// fournisseur de capteurs, ou ORBITE elle-même (ApiRef.orbite()). Forme "ORG-<code>".
+cell type Org = String
+// Code d'un État participant (3 lettres, fictif : "ALD", "BRV", "CAZ"…).
+cell type Etat = String
+// Numéro de catalogue d'un objet spatial, attribué par ORBITE : "OBJ-<n>".
+cell type Objet = String
+// Identifiant d'un évènement de rapprochement (conjonction) : "CJ-<n>".
+cell type Rapprochement = String
+
+// ── énumérations
+// Nature d'un objet catalogué.
+cell type NatureObjet = String where value == "satellite" || value == "station_habitee" || value == "etage" || value == "debris" || value == "inconnu"
+// Capacité de manœuvre : "aucune" (débris, satellite mort ou sans propulsion), "faible"
+// (propulsion électrique : manœuvre lente, à préparer des jours à l'avance), "impulsionnelle".
+cell type Propulsion = String where value == "aucune" || value == "faible" || value == "impulsionnelle"
+// Régime orbital.
+cell type Regime = String where value == "leo" || value == "meo" || value == "geo" || value == "heo"
+// Niveau d'un rapprochement : 1 suivi, 2 attention (préparer), 3 urgence (agir avant le TCA).
+cell type Niveau = Int where value >= 1 && value <= 3
+// Gravité d'un incident ou d'un manquement : 1 information, 2 à traiter dans la journée,
+// 3 critique (escalade immédiate).
+cell type Gravite = Int where value >= 1 && value <= 3
+// Qualité d'une donnée orbitale (covariance, fraîcheur, source).
+cell type Qualite = String where value == "haute" || value == "moyenne" || value == "faible"
+// Niveau de diffusion d'une donnée : "public", "participants" (toutes les organisations
+// participantes), "parties" (les seules organisations concernées par l'évènement),
+// "restreint" (le propriétaire, son État et ORBITE).
+cell type Diffusion = String where value == "public" || value == "participants" || value == "parties" || value == "restreint"
+
+// Rôle d'une personne physique. "aucun" : personne inconnue, suspendue ou sans rôle.
+// PORTÉE :
+// - rôles d'ORBITE : "analyste", "superviseur", "exploitant" (exploitation du système),
+//   "conformite", "direction", "auditeur" (lecture et revue, aucun geste), "systeme" — ils ne valent que pour un employé d'ORBITE
+//   (ApiRef.orbite()). "systeme" est l'identité interne des traitements automatiques :
+//   jamais attribuable à une personne, jamais acceptée d'un client de la passerelle.
+// - rôles d'opérateur : "dynamicien" (dynamique du vol, décide et pilote les manœuvres),
+//   "chef_de_mission", "administrateur_operateur", "capteur" (fournisseur de mesures) — ils ne
+//   valent que pour l'employeur de la personne (ApiAcces.agit_pour).
+// - rôles d'État : "point_focal" (contact national 24/7), "autorite" (autorité qui licencie
+//   et immatricule) — seulement pour leur État (ApiAcces.agit_pour sur l'Org de l'État).
+cell type Role = String where value == "aucun" || value == "analyste" || value == "superviseur" || value == "exploitant" || value == "conformite" || value == "direction" || value == "systeme" || value == "dynamicien" || value == "chef_de_mission" || value == "administrateur_operateur" || value == "capteur" || value == "point_focal" || value == "autorite" || value == "auditeur"
+
+// Sous-système d'ORBITE (pour le journal, les incidents et la conformité).
+cell type SousSysteme = String where value == "ref" || value == "acces" || value == "operateurs" || value == "ephemerides" || value == "observation" || value == "conjonctions" || value == "coordination" || value == "priorites" || value == "manoeuvres" || value == "escalade" || value == "reentrees" || value == "lancements" || value == "fin_de_vie" || value == "evenements" || value == "responsabilite" || value == "donnees" || value == "meteo" || value == "conformite" || value == "passerelle" || value == "operations"
+
+// ── refus
+// Catalogue des tags de refus (`require … else Tag`). Tout signal cite dans son commentaire
+// « Refus : … » les tags qu'il peut lever, pris dans cette liste et seulement elle.
+// Perime : donnée trop ancienne pour fonder une décision. Conflit : contredit une décision
+// déjà prise (deux manœuvres sur le même rapprochement, deux désignations). Confidentiel :
+// le demandeur n'a pas le niveau de diffusion requis.
+cell type Refus = String where value == "Habilitation" || value == "QuatreYeux" || value == "Existe" || value == "Inconnu" || value == "EtatInvalide" || value == "HorsBornes" || value == "Insuffisant" || value == "Perime" || value == "Suspendu" || value == "Ferme" || value == "Echu" || value == "NonEligible" || value == "Doublon" || value == "Incoherent" || value == "Plein" || value == "MotifRequis" || value == "Delai" || value == "Conflit" || value == "Confidentiel"

@@ -1,0 +1,9 @@
+// PASSERELLE — identité des appels externes. Contrat v2 : les sessions humaines et leurs
+// jetons appartiennent à acces (ApiAcces.ouvrir_session / authentifier / fermer_session) ; la
+// passerelle ne garde aucun secret et ne fait que résoudre un jeton à chaque requête.
+
+// Qui appelle : la personne titulaire du jeton (ApiAcces.authentifier), son employeur
+// (ApiAcces.employeur, jamais lu dans le corps) et son rôle au moment de l'appel. Jamais "systeme".
+cell type PasAppelant { variants { PasAppelant { personne: String, org: Org, role: Role } } }
+// Empreinte SHA-256 en hexadécimal (64 caractères) : seule trace gardée d'un contenu reçu.
+cell type PasEmpreinte = String where len(value) == 64

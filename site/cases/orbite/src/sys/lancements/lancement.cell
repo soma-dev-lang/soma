@@ -1,0 +1,232 @@
+// LANCEMENTS — le lancement : préavis, fenêtre et ses reports, tir, injection, échec,
+// clôture par l'identification de toutes les pièces. Instance = id du lancement.
+// Un lancement non notifié (État non participant, préavis hors délai) est quand même
+// enregistré par un analyste dès que le tir est connu : rien de ce qui monte n'échappe au catalogue.
+
+skeleton LancLancement {
+    const MAX_LANCEMENTS = 1000000
+    // Préavis minimal entre la notification et le début de la fenêtre : 72 h.
+    const PREAVIS_MIN = 259200000
+    // Préavis minimal d'une nouvelle fenêtre après report : 12 h (un COLA tient en 8 h).
+    const PREAVIS_REPORT = 43200000
+    // Durée maximale d'une fenêtre de tir : 30 jours.
+    const FENETRE_MAX = 2592000000
+    // Au plus 50 reports ; un lancement reporté depuis 180 jours est annulé par la veille.
+    const MAX_REPORTS = 50
+    const REPORT_MAX = 15552000000
+    // Au plus 200 pièces par lancement (essaims de petits satellites compris).
+    const MAX_OBJETS = 200
+    memory {
+        op_de: Map<String, Org> [persistent]             // opérateur du lanceur ; écrit une fois par `creer` seul, jamais effacé (lien de la règle autorise ⇐ opérateur actif)
+        etat_de: Map<String, Etat> [persistent]          // État de lancement (celui qui procède au tir)
+        debut_de: Map<String, Horodatage> [persistent]   // fenêtre en cours, ms
+        fin_de: Map<String, Horodatage> [persistent]
+        regime_de: Map<String, Regime> [persistent]      // régime de l'orbite visée
+        nb_objets_de: Map<String, Int> [persistent]      // pièces annoncées au préavis (manifeste attendu)
+        version_de: Map<String, Int> [persistent]        // version de la fenêtre : 1 au préavis, +1 à chaque report
+        notifie_le: Map<String, Horodatage> [persistent]
+        hors_avis: Map<String, Bool> [persistent]        // tir constaté sans avis favorable en vigueur
+        reports_de: Map<String, List<String>> [persistent] // "h|version|motif|par" à chaque report
+        reporte_le: Map<String, Horodatage> [persistent] // dernier report (veille : annulation à 180 j)
+        tir_de: Map<String, Horodatage> [persistent]     // instant du tir, ms
+        injection_de: Map<String, Horodatage> [persistent] // instant d'injection, ms (ordre d'arrivée des priorités)
+        issue_de: Map<String, LancIssueInjection> [persistent]
+        vivants: List<String> [persistent]               // lancements non terminés (veille)
+        invariant op_de.size <= 1000000
+        invariant nb_objets_de >= 1
+        invariant nb_objets_de <= 200
+        invariant version_de >= 1
+        invariant version_de <= 51
+        invariant len(reports_de) <= 50
+        invariant (debut_de ?? 0) <= (fin_de ?? 0)
+        invariant vivants.size <= 1000000
+        // Un tir n'est connu que d'un lancement enregistré ; une injection, que d'un tir.
+        invariant tir_de.size <= op_de.size
+        invariant injection_de.size <= tir_de.size
+        invariant reports_de.size <= op_de.size
+    }
+    // Cycle d'un lancement.
+    state lancement {
+        initial: notifie
+        notifie -> crible                // COLA conclu sur la fenêtre en cours
+        crible -> autorise               // avis favorable d'ORBITE validé à quatre yeux
+        crible -> notifie                // COLA périmé avant l'avis : à recribler
+        autorise -> notifie              // COLA périmé ou avis caduc avant le tir : à recribler
+        autorise -> lance                // tir dans la fenêtre, hors périodes interdites, sous avis favorable
+        notifie -> lance                 // tir hors avis (non notifié, non criblé) : constaté, manquement
+        crible -> lance                  // tir hors avis (avis absent ou défavorable) : constaté, manquement
+        reporte -> lance                 // tir hors avis sur une fenêtre abandonnée : constaté, manquement
+        notifie -> reporte               // report demandé, ou fenêtre échue sans tir
+        crible -> reporte
+        autorise -> reporte
+        reporte -> notifie               // nouvelle fenêtre déclarée : nouveau COLA
+        notifie -> annule
+        crible -> annule
+        autorise -> annule
+        reporte -> annule                // abandon, ou 180 jours sans nouvelle fenêtre
+        lance -> injecte                 // injection nominale ou dégradée déclarée
+        lance -> echec                   // perte du lanceur avant injection
+        injecte -> echec                 // aucune orbite exploitable constatée après coup
+        injecte -> identifie             // toutes les pièces terminées (identifiées, immatriculées, perdues ou non séparées)
+    }
+    face {
+        // Enregistre le préavis d'un lancement (version 1 de la fenêtre) et ouvre son COLA
+        // (LancCola.ouvrir) et son dossier d'États concernés (LancZones.ouvrir). Contrôles : opérateur actif à `h` (ApiOperateurs.est_actif,
+        // sinon Suspendu) ; État de lancement participant (ApiRef.etat_participant, sinon Inconnu) ;
+        // opérateur inscrit (ApiRef.organisation_existe, sinon Inconnu) ; debut − h ≥ 72 h (sinon
+        // Delai : le tir se constatera par `enregistrer_non_notifie`) ; fin > debut, fin − debut
+        // ≤ 30 jours (sinon HorsBornes) ; 1 ≤ nb_objets ≤ 200 (sinon HorsBornes).
+        // `par` : "chef_de_mission" de l'opérateur (ApiAcces.agit_pour op), ou "autorite" de l'État
+        // de lancement (ApiAcces.agit_pour ApiRef.org_de_etat(etat)). Crée l'instance par `creer`.
+        // Notifie le point focal de l'État (ApiPasserelle.notifier, urgence 1). Renvoie l'id.
+        // Refus : Existe, Inconnu, Suspendu, Delai, HorsBornes, Habilitation.
+        signal notifier(h: Horodatage, lancement: String, op: Org, etat: Etat, debut: Horodatage, fin: Horodatage, regime: Regime, nb_objets: Int, par: String) -> String
+            calls LancLancement.creer, LancCola.ouvrir, LancZones.ouvrir, ApiOperateurs.est_actif, ApiRef.etat_participant, ApiRef.organisation_existe, ApiRef.org_de_etat, ApiAcces.a_le_role, ApiAcces.agit_pour, ApiPasserelle.notifier, Journal.noter
+        // Enregistre un lancement dont le tir est constaté sans préavis recevable (État non
+        // participant, préavis < 72 h, découverte par l'observation) : crée l'instance, puis
+        // notifie -> lance, marqué hors avis. `op` peut être "inconnu" (pièces au propriétaire
+        // "inconnu"). Constate un manquement (ApiConformite.constater, gravité 3) si l'opérateur est
+        // connu ; notifie la direction et le point focal de l'État. `par` "analyste" d'ORBITE,
+        // `valideur` "superviseur" (ApiAcces.quatre_yeux). Crée l'instance par `creer` (fenêtre
+        // [tir, tir], 0 pièce annoncée). Renvoie l'id.
+        // Refus : Existe, Incoherent (tir > h), MotifRequis, Habilitation, QuatreYeux.
+        signal enregistrer_non_notifie(h: Horodatage, lancement: String, op: Org, etat: Etat, tir: Horodatage, regime: Regime, motif: String, par: String, valideur: String) -> String
+            writes hors_avis, tir_de, vivants
+            moves notifie -> lance
+            calls LancLancement.creer, LancCola.ouvrir, LancZones.ouvrir, LancZones.clore, ApiAcces.a_le_role, ApiAcces.quatre_yeux, ApiRef.org_de_etat, ApiConformite.constater, ApiPasserelle.notifier, Journal.noter
+        // Prend acte d'un COLA conclu sur la fenêtre en cours (notifie -> crible). Appelé par
+        // LancCola.conclure, `par` "systeme". Renvoie "crible". Refus : Inconnu, EtatInvalide.
+        signal prendre_acte_cola(h: Horodatage, lancement: String, par: String) -> LancEtat
+            moves notifie -> crible when LancCola.conclu
+            calls LancCola.etat, Journal.noter
+        // Crée l'instance d'un lancement (état initial "notifie") : seul écrivain de `op_de` et des
+        // champs d'identité, une fois (Existe si `op_de` a déjà l'id). Appelé par `notifier` et
+        // `enregistrer_non_notifie` après leurs contrôles (habilitation comprise). Renvoie l'id.
+        // Refus : Existe, Plein (MAX_LANCEMENTS).
+        signal creer(h: Horodatage, lancement: String, op: Org, etat: Etat, debut: Horodatage, fin: Horodatage, regime: Regime, nb_objets: Int) -> String
+            writes op_de, etat_de, debut_de, fin_de, regime_de, nb_objets_de, version_de, notifie_le, vivants
+        // Prend acte de l'avis favorable validé (crible -> autorise). Appelé par LancAvis.valider,
+        // `par` "systeme". Exige l'opérateur du lanceur (`op_de`) actif à `h`
+        // (ApiOperateurs.est_actif ; règle regles.toml : OpMembres.actif). Renvoie "autorise".
+        // Refus : Inconnu, EtatInvalide, Suspendu (opérateur non actif : le lancement reste "crible").
+        signal prendre_acte_avis(h: Horodatage, lancement: String, par: String) -> LancEtat
+            reads op_de
+            moves crible -> autorise when LancAvis.favorable
+            calls LancAvis.etat, ApiOperateurs.est_actif, Journal.noter
+        // Ramène à "notifie" un lancement criblé ou autorisé dont le COLA a été périmé (âge,
+        // tempête, nuage de débris) : un nouveau COLA est nécessaire avant le tir. Appelé par
+        // LancCola.perimer, `par` "systeme". Renvoie "notifie". Refus : Inconnu, EtatInvalide.
+        signal recribler(h: Horodatage, lancement: String, motif: String, par: String) -> LancEtat
+            moves crible -> notifie, autorise -> notifie
+            calls Journal.noter
+        // Reporte la fenêtre en cours (notifie | crible | autorise -> reporte) : rend le COLA
+        // périmé et l'avis caduc (LancCola.perimer, LancAvis.rendre_caduc), ajoute la ligne à
+        // `reports_de`. `par` : "chef_de_mission" de l'opérateur, "autorite" de l'État de lancement,
+        // ou "systeme" (motif "fenetre_echue", par la veille). Renvoie "reporte".
+        // Refus : Inconnu, EtatInvalide, Plein (50 reports), Habilitation.
+        signal reporter(h: Horodatage, lancement: String, motif: LancMotifReport, par: String) -> LancEtat
+            writes reports_de, reporte_le
+            reads op_de, etat_de, version_de
+            moves notifie -> reporte, crible -> reporte, autorise -> reporte
+            calls LancCola.perimer, LancAvis.rendre_caduc, ApiAcces.a_le_role, ApiAcces.agit_pour, ApiRef.org_de_etat, ApiPasserelle.notifier, Journal.noter
+        // Déclare la nouvelle fenêtre d'un lancement reporté (reporte -> notifie), version + 1, et
+        // relance son COLA (LancCola.relancer). Contrôles : debut − h ≥ 12 h (sinon Delai) ;
+        // fin > debut, fin − debut ≤ 30 jours (sinon HorsBornes) ; opérateur actif (sinon Suspendu).
+        // `par` comme `reporter` (hors "systeme"). Renvoie la version de la fenêtre.
+        // Refus : Inconnu, EtatInvalide, Delai, HorsBornes, Suspendu, Habilitation.
+        signal nouvelle_fenetre(h: Horodatage, lancement: String, debut: Horodatage, fin: Horodatage, par: String) -> Int
+            writes debut_de, fin_de, version_de
+            reads op_de, etat_de
+            moves reporte -> notifie
+            calls LancCola.relancer, ApiOperateurs.est_actif, ApiAcces.a_le_role, ApiAcces.agit_pour, ApiRef.org_de_etat, Journal.noter
+        // Révise le nombre de pièces annoncées avant le tir (client de covoiturage retiré, charge
+        // ajoutée) : 1 ≤ nb_objets ≤ 200 et au moins le nombre de pièces déjà au manifeste
+        // (LancPiece.manifeste, sinon Incoherent). Ne touche ni le COLA ni l'avis (ils portent sur
+        // la trajectoire du lanceur). `par` "chef_de_mission" de l'opérateur du lanceur.
+        // Renvoie le nouveau nombre. Refus : Inconnu, EtatInvalide (tiré ou terminé), HorsBornes,
+        // Incoherent, Habilitation.
+        signal reviser_manifeste(h: Horodatage, lancement: String, nb_objets: Int, par: String) -> Int
+            writes nb_objets_de
+            reads op_de, lancement
+            calls LancPiece.manifeste, ApiAcces.a_le_role, ApiAcces.agit_pour, Journal.noter
+        // Annule un lancement non tiré (-> annule) ; archive son COLA et son avis, clôt ses zones ; les pièces
+        // prévues passent "non_separee" (LancPiece.abandonner_manifeste). `par` comme `reporter`
+        // ("systeme" : 180 jours reporté). Renvoie "annule".
+        // Refus : Inconnu, EtatInvalide, MotifRequis, Habilitation.
+        signal annuler(h: Horodatage, lancement: String, motif: String, par: String) -> LancEtat
+            writes vivants
+            reads op_de, etat_de
+            moves notifie -> annule, crible -> annule, autorise -> annule, reporte -> annule
+            calls LancCola.archiver, LancAvis.archiver, LancZones.clore, LancPiece.abandonner_manifeste, ApiAcces.a_le_role, ApiAcces.agit_pour, ApiRef.org_de_etat, Journal.noter
+        // Confirme le tir sous avis favorable (autorise -> lance) : `tir` dans la fenêtre en cours
+        // et hors des périodes interdites de l'avis (LancAvis.tir_permis), sinon HorsBornes — un
+        // tel tir se déclare par `constater_tir_hors_avis`. `par` : "chef_de_mission" de
+        // l'opérateur, ou "systeme" (télémesure reçue par la passerelle). Clôt le dossier des
+        // zones (LancZones.clore). Renvoie "lance".
+        // Refus : Inconnu, EtatInvalide, HorsBornes, Incoherent (tir > h), Habilitation.
+        signal confirmer_tir(h: Horodatage, lancement: String, tir: Horodatage, par: String) -> LancEtat
+            writes tir_de
+            reads op_de, debut_de, fin_de
+            moves autorise -> lance when LancAvis.favorable
+            calls LancAvis.tir_permis, LancZones.clore, ApiAcces.a_le_role, ApiAcces.agit_pour, Journal.noter
+        // Constate un tir sans avis favorable en vigueur (notifie | crible | reporte -> lance) :
+        // marque `hors_avis`, constate un manquement de gravité 3 à l'opérateur
+        // (ApiConformite.constater, référence = lancement), notifie le point focal de l'État de
+        // lancement, clôt le dossier des zones. Le catalogage suit son cours. `par` "analyste" d'ORBITE, "systeme"
+        // (observation), ou "chef_de_mission" de l'opérateur (aveu). Renvoie "lance".
+        // Refus : Inconnu, EtatInvalide, Incoherent (tir > h), Habilitation.
+        signal constater_tir_hors_avis(h: Horodatage, lancement: String, tir: Horodatage, par: String) -> LancEtat
+            writes tir_de, hors_avis
+            reads op_de, etat_de
+            moves notifie -> lance, crible -> lance, reporte -> lance
+            calls LancZones.clore, ApiAcces.a_le_role, ApiAcces.agit_pour, ApiRef.org_de_etat, ApiConformite.constater, ApiPasserelle.notifier, Journal.noter
+        // Déclare l'injection (lance -> injecte, issue "nominale" ou "degradee") ou la perte de
+        // l'orbite (issue "perdue" : lance -> echec, ouvre l'enquête). Archive COLA et avis.
+        // Demande le suivi renforcé du régime visé pour les pièces à cataloguer
+        // (ApiObservation.demander_suivi sur chaque objet déjà rattaché). `injection` ≥ tir, ≤ h
+        // (sinon Incoherent). `par` "chef_de_mission" ou "dynamicien" de l'opérateur, ou
+        // "analyste". Renvoie l'état atteint.
+        // Refus : Inconnu, EtatInvalide, Incoherent, Habilitation.
+        signal declarer_injection(h: Horodatage, lancement: String, injection: Horodatage, issue: LancIssueInjection, par: String) -> LancEtat
+            writes injection_de, issue_de, vivants
+            reads op_de, tir_de
+            moves lance -> injecte, lance -> echec
+            calls LancCola.archiver, LancAvis.archiver, LancEnquete.ouvrir, ApiAcces.a_le_role, ApiAcces.agit_pour, Journal.noter
+        // Déclare l'échec d'un lancement injecté dont aucune orbite n'est exploitable
+        // (injecte -> echec) et ouvre l'enquête (LancEnquete.ouvrir, phase "injection"). `par`
+        // "analyste" d'ORBITE, `valideur` "superviseur". Renvoie "echec".
+        // Refus : Inconnu, EtatInvalide, MotifRequis, Habilitation, QuatreYeux.
+        signal declarer_echec(h: Horodatage, lancement: String, motif: String, par: String, valideur: String) -> LancEtat
+            writes vivants
+            moves injecte -> echec
+            calls LancEnquete.ouvrir, ApiAcces.a_le_role, ApiAcces.quatre_yeux, Journal.noter
+        // Clôt l'identification (injecte -> identifie) quand chaque pièce du manifeste est
+        // terminée ou au moins identifiée (LancPiece.restantes == 0) et que le manifeste compte
+        // au moins une pièce. `par` "systeme" (veille) ou "analyste". Renvoie "identifie".
+        // Refus : Inconnu, EtatInvalide, Insuffisant (pièces restantes), Habilitation.
+        signal clore_identification(h: Horodatage, lancement: String, par: String) -> LancEtat
+            writes vivants
+            moves injecte -> identifie
+            calls LancPiece.restantes, LancPiece.manifeste, ApiAcces.a_le_role, Journal.noter
+        // État ("inconnu" si jamais notifié).
+        signal etat(lancement: String) -> LancEtat
+            reads lancement, op_de
+        // Fiche (fenêtre en cours, version, tir et injection, 0 si pas encore). Refus : Inconnu.
+        signal fiche(lancement: String) -> LancFiche
+            reads op_de, etat_de, debut_de, fin_de, regime_de, nb_objets_de, version_de, tir_de, injection_de
+        // Instant d'injection (0 si pas d'injection). Refus : Inconnu.
+        signal injecte_le(lancement: String) -> Horodatage
+            reads op_de, injection_de
+        // Vrai si le tir a été constaté hors avis (preuve en cas de dommage).
+        signal tire_hors_avis(lancement: String) -> Bool
+            reads hors_avis
+        // Historique des reports, "h|version|motif|par", du plus ancien au plus récent.
+        // Refus : Inconnu.
+        signal reports(lancement: String) -> List<String>
+            reads op_de, reports_de
+        // Lancements non terminés (veille), au plus n. Refus : aucun.
+        signal en_cours(n: Int) -> List<String>
+            requires n > 0 && n <= 10000
+            reads vivants
+    }
+}

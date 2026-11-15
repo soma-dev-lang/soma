@@ -1,0 +1,109 @@
+// Corps de EvtFragments : catalogage progressif des fragments d'un nuage.
+flesh EvtFragments {
+    on detecter(h, nuage, piste, parent, r, m, par) {
+        require ApiAcces.a_le_role(par, "analyste") || ApiAcces.a_le_role(par, "systeme") else Habilitation "{par} ne détecte pas de fragment"
+        let objs_d = EvtEvenements.objets(nuage)
+        require contains(objs_d, to_string(parent)) else Inconnu "{parent} n'est pas en cause de {nuage}"
+        let st_n = EvtNuages.etat(nuage)
+        require st_n != "inconnu" else Inconnu "nuage inconnu : {nuage}"
+        require st_n != "dissipe" && st_n != "abandonne" else EtatInvalide "nuage {nuage} {st_n}"
+        require fragment_de_piste.get(piste) == () else Doublon "piste {piste} déjà enregistrée"
+        let pistes_d = ApiObservation.pistes_non_correlees(1000)
+        require contains(pistes_d, piste) else Inconnu "piste {piste} absente des pistes non corrélées"
+        require nuage_du_fragment.size < MAX_FRAGMENTS else Plein "plafond de {MAX_FRAGMENTS} fragments atteint"
+        let n_id = next_id()
+        let fr = "FR-{n_id}"
+        nuage_du_fragment.set(fr, nuage)
+        parent_de.set(fr, parent)
+        piste_de.set(fr, piste)
+        fragment_de_piste.set(piste, fr)
+        detecte_le.set(fr, h)
+        regime_du_fragment.set(fr, r)
+        masse_estimee.set(fr, m)
+        let _ = Journal.noter(h, "evenements", par, "{fr} détecté (piste {piste}, nuage {nuage}, parent {parent})")
+        return fr
+    }
+
+    on rattacher(h, fragment, par) {
+        let nu = nuage_du_fragment.get(fragment)
+        require nu != () else Inconnu "fragment inconnu : {fragment}"
+        let st = get_status(fragment) ?? "detecte"
+        require st == "detecte" else EtatInvalide "{fragment} {st}"
+        require ApiAcces.a_le_role(par, "analyste") else Habilitation "{par} n'est pas analyste d'ORBITE"
+        let st_n = EvtNuages.etat(nu)
+        require st_n == "en_catalogage" else EtatInvalide "nuage {nu} {st_n} : rattachement impossible"
+        transition(fragment, "detecte", "rattache")
+        let _ = Journal.noter(h, "evenements", par, "{fragment} rattaché au nuage {nu}")
+        return "rattache"
+    }
+
+    on cataloguer(h, fragment, par) {
+        let nu = nuage_du_fragment.get(fragment)
+        require nu != () else Inconnu "fragment inconnu : {fragment}"
+        let st = get_status(fragment) ?? "detecte"
+        require st == "rattache" else EtatInvalide "{fragment} {st}"
+        require ApiAcces.a_le_role(par, "analyste") else Habilitation "{par} n'est pas analyste d'ORBITE"
+        let par_o = parent_de.get(fragment) ?? ""
+        let prop = ApiRef.proprietaire(par_o)
+        let etat_im = ApiRef.etat_immatriculation(par_o)
+        let reg = regime_du_fragment.get(fragment) ?? "leo"
+        let ms = masse_estimee.get(fragment) ?? 0
+        let _ = EvtNuages.compter_fragment(nu)
+        let obj = ApiRef.cataloguer(h, "debris", prop, etat_im, reg, "aucune", ms, "systeme")
+        objet_du_fragment.set(fragment, obj)
+        transition(fragment, "rattache", "catalogue")
+        let _ = Journal.noter(h, "evenements", par, "{fragment} catalogué {obj} (débris de {par_o}, {prop})")
+        return obj
+    }
+
+    on ecarter(h, fragment, e, motif, par) {
+        require nuage_du_fragment.get(fragment) != () else Inconnu "fragment inconnu : {fragment}"
+        require len(motif) > 0 else MotifRequis "motif de l'écart vide"
+        let habilite = ApiAcces.a_le_role(par, "analyste") || (e == "perdue" && ApiAcces.a_le_role(par, "systeme"))
+        require habilite else Habilitation "{par} n'écarte pas de fragment ({e})"
+        let st = get_status(fragment) ?? "detecte"
+        if st == "detecte" {
+            transition(fragment, "detecte", "ecarte")
+        } else if st == "rattache" {
+            transition(fragment, "rattache", "ecarte")
+        } else {
+            fail("EtatInvalide", "{fragment} {st}")
+        }
+        ecart.set(fragment, "{h} | {e} | {par} | {motif}")
+        let _ = Journal.noter(h, "evenements", par, "{fragment} écarté ({e}) : {motif}")
+        return "ecarte"
+    }
+
+    on perdus(h, n) {
+        let res_p = []
+        for f in detecte_le.keys {
+            if len(res_p) >= n { break }
+            let st = get_status(f) ?? "detecte"
+            if st == "detecte" && h - (detecte_le.get(f) ?? h) > DELAI_RATTACHEMENT_MS {
+                res_p.push(f)
+            }
+        }
+        return res_p
+    }
+
+    on constater_rentrees(h, n, par) {
+        require ApiAcces.a_le_role(par, "systeme") || ApiAcces.a_le_role(par, "analyste") else Habilitation "{par} ne constate pas de rentrée"
+        let nb = 0
+        for f in objet_du_fragment.keys {
+            if nb >= n { break }
+            let st = get_status(f) ?? "detecte"
+            if st == "catalogue" {
+                let obj = objet_du_fragment.get(f) ?? ""
+                if ApiRef.etat_objet(obj) == "rentre" {
+                    transition(f, "catalogue", "rentre")
+                    let _ = EvtNuages.compter_rentree(nuage_du_fragment.get(f) ?? "")
+                    nb = nb + 1
+                }
+            }
+        }
+        if nb > 0 {
+            let _ = Journal.noter(h, "evenements", par, "{nb} fragment(s) rentré(s)")
+        }
+        return nb
+    }
+}

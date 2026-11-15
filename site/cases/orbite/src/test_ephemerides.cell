@@ -1,0 +1,426 @@
+use app
+use commun::journal_chair
+use commun::horloge_chair
+use sys::ephemerides::chair::api
+use sys::ephemerides::chair::reglage
+use sys::ephemerides::chair::depot
+use sys::ephemerides::chair::controle
+use sys::ephemerides::chair::suivi
+use sys::ephemerides::chair::quota
+use sys::ephemerides::chair::contestation
+use sys::ephemerides::chair::historique
+use sys::ephemerides::chair::tempete
+use doublures::ephemerides
+
+// Le monde des tests : h0 = 1 700 000 000 000 ms ; une heure = 3 600 000 ms.
+// Conventions des doublures : voir doublures/ephemerides.cell.
+cell MondeEph {
+    on empr(n: Int) {
+        return "sha256:" + pad_left(to_string(n), 64, "0")
+    }
+    on amorcer_eph() {
+        return EphReglage.amorcer(Horodatage(1700000000000), "exploitant")
+    }
+    // Dépôt d'une éphéméride d'époque h − age (horizon 7 jours, sans manœuvres).
+    on dep(h: Int, objet: String, id: String, age: Int, q: String, pos: String, par: String, n: Int) {
+        return ApiEphemerides.deposer(Horodatage(h), Objet(objet), id, Horodatage(h - age), Duree(604800000), Qualite(q), empr(n), pos, false, par)
+    }
+    on dep_hz(h: Int, objet: String, id: String, hz: Int, n: Int) {
+        return ApiEphemerides.deposer(Horodatage(h), Objet(objet), id, Horodatage(h - 3600000), Duree(hz), Qualite("haute"), empr(n), "100,0,0", false, "dynamicien_alpha")
+    }
+    on dep_emp(h: Int, objet: String, id: String, emp: String) {
+        return ApiEphemerides.deposer(Horodatage(h), Objet(objet), id, Horodatage(h - 3600000), Duree(604800000), Qualite("haute"), emp, "100,0,0", false, "dynamicien_alpha")
+    }
+    on dep_man(h: Int, objet: String, id: String, avec: Bool, n: Int) {
+        return ApiEphemerides.deposer(Horodatage(h), Objet(objet), id, Horodatage(h - 3600000), Duree(604800000), Qualite("haute"), empr(n), "100,0,0", avec, "dynamicien_alpha")
+    }
+    on etat_dep(id: String) {
+        return EphDepot.etat_de(id)
+    }
+}
+
+// ── RÉGLAGE : amorçage, rédaction, mise en vigueur à quatre yeux, abandon.
+cell test EphReglageCycle {
+    rules {
+        assert EphReglage.courante_version() == ""
+        assert_fails EphReglage.age_max("leo", false) matching "Ferme"
+        assert_fails EphReglage.amorcer(1700000000000, "intrus") matching "Habilitation"
+        assert_fails EphReglage.amorcer(1700000000000, "analyste") matching "Habilitation"
+        assert amorcer_eph() == "EPR-0"
+        assert_fails amorcer_eph() matching "Existe"
+        assert EphReglage.courante_version() == "EPR-0"
+        assert EphReglage.age_max("leo", false) == 28800000
+        assert EphReglage.age_max("geo", false) == 172800000
+        assert EphReglage.age_max("leo", true) == 14400000
+        assert EphReglage.ecart_max("moyenne") == 5000
+        assert EphReglage.quota() == 48
+        assert EphReglage.rediger(1700000000000, "EPR-1", 7200000, 86400000, 172800000, 172800000, 3, 259200000, 500, 2000, 10000, 100, 315360000000, "superviseur") == "EPR-1"
+        // Correction d'un brouillon avec des tolérances plus serrées.
+        assert EphReglage.rediger(1700000000000, "EPR-1", 7200000, 86400000, 172800000, 172800000, 3, 259200000, 200, 300, 400, 100, 315360000000, "superviseur") == "EPR-1"
+        assert_fails EphReglage.rediger(1700000000000, "EPR-X", 7200000, 86400000, 172800000, 172800000, 3, 259200000, 500, 2000, 10000, 100, 315360000000, "intrus") matching "Habilitation"
+        assert_fails EphReglage.rediger(1700000000000, "EPR-X", 900000000, 86400000, 172800000, 172800000, 3, 259200000, 500, 2000, 10000, 100, 315360000000, "superviseur") matching "HorsBornes"
+        assert_fails EphReglage.rediger(1700000000000, "EPR-X", 7200000, 86400000, 172800000, 172800000, 3, 259200000, 5000, 2000, 10000, 100, 315360000000, "superviseur") matching "HorsBornes"
+        // Quatre yeux : valideur de direction, distinct, hors gel.
+        assert_fails EphReglage.mettre_en_vigueur(1700000000000, "EPR-1", "superviseur", "superviseur2") matching "QuatreYeux"
+        assert_fails EphReglage.mettre_en_vigueur(1700000000000, "EPR-1", "direction", "direction") matching "Habilitation"
+        assert_fails EphReglage.mettre_en_vigueur(1700000000000, "EPR-1", "intrus", "direction") matching "Habilitation"
+        assert_fails EphReglage.mettre_en_vigueur(1850000000000, "EPR-1", "superviseur", "direction") matching "Delai"
+        assert_fails EphReglage.mettre_en_vigueur(1700000000000, "EPR-9", "superviseur", "direction") matching "Inconnu"
+        assert EphReglage.mettre_en_vigueur(1700000000000, "EPR-1", "superviseur", "direction") == "en_vigueur"
+        assert EphReglage.courante_version() == "EPR-1"
+        assert EphReglage.age_max("leo", true) == 2400000
+        assert EphReglage.ecart_max("haute") == 200
+        assert_fails EphReglage.mettre_en_vigueur(1700000000000, "EPR-1", "superviseur", "direction") matching "EtatInvalide"
+        assert_fails EphReglage.rediger(1700000000000, "EPR-1", 7200000, 86400000, 172800000, 172800000, 3, 259200000, 500, 2000, 10000, 100, 315360000000, "superviseur") matching "Existe"
+        assert EphReglage.rediger(1700000000000, "EPR-2", 7200000, 86400000, 172800000, 172800000, 3, 259200000, 500, 2000, 10000, 100, 315360000000, "superviseur") == "EPR-2"
+        assert_fails EphReglage.abandonner(1700000000000, "EPR-2", "", "superviseur") matching "MotifRequis"
+        assert_fails EphReglage.abandonner(1700000000000, "EPR-7", "erreur", "superviseur") matching "Inconnu"
+        assert EphReglage.abandonner(1700000000000, "EPR-2", "erreur de saisie", "superviseur") == "abandonne"
+        assert_fails EphReglage.mettre_en_vigueur(1700000000000, "EPR-2", "superviseur", "direction") matching "EtatInvalide"
+    }
+}
+
+// ── DÉPÔT : cycle nominal, remplacement, dépôt plus ancien, fondement (propriété 6).
+cell test EphDepotNominal {
+    rules {
+        let _ = amorcer_eph()
+        assert_fails ApiEphemerides.derniere("OBJ-1") matching "Inconnu"
+        assert ApiEphemerides.qualite("OBJ-1") == "faible"
+        assert dep(1700000000000, "OBJ-1", "D1", 3600000, "haute", "100,0,0", "dynamicien_alpha", 1) == "D1"
+        assert etat_dep("D1") == "validee"
+        assert ApiEphemerides.derniere("OBJ-1") == "D1"
+        assert ApiEphemerides.qualite("OBJ-1") == "haute"
+        assert ApiEphemerides.depot_valide("D1")
+        assert ApiEphemerides.empreinte("D1") == empr(1)
+        assert ApiEphemerides.avec_manoeuvres("D1") == false
+        assert ApiEphemerides.age("OBJ-1", 1700003600000) == 7200000
+        assert ApiEphemerides.fraiche("OBJ-1", 1700003600000)
+        assert !ApiEphemerides.fraiche("OBJ-1", 1700030000000)
+        assert EphSuivi.situation("OBJ-1") == "a_jour"
+        // Un dépôt plus récent remplace le courant.
+        assert dep(1700010000000, "OBJ-1", "D2", 3600000, "moyenne", "100,0,0", "dynamicien_alpha", 2) == "D2"
+        assert etat_dep("D1") == "remplacee"
+        assert etat_dep("D2") == "validee"
+        assert ApiEphemerides.derniere("OBJ-1") == "D2"
+        assert ApiEphemerides.qualite("OBJ-1") == "moyenne"
+        // Un dépôt d'époque antérieure complète l'historique sans devenir courant.
+        assert dep(1700011000000, "OBJ-1", "D3", 7200000, "haute", "100,0,0", "dynamicien_alpha", 3) == "D3"
+        assert etat_dep("D3") == "remplacee"
+        assert ApiEphemerides.derniere("OBJ-1") == "D2"
+        // Fondement : D1 de 1 700 000 000 000 à 1 700 010 000 000, puis D2.
+        assert ApiEphemerides.fondement("OBJ-1", 1699999999999) == ""
+        assert ApiEphemerides.fondement("OBJ-1", 1700005000000) == "D1"
+        assert ApiEphemerides.fondement("OBJ-1", 1700010000000) == "D2"
+        assert ApiEphemerides.fondement("OBJ-1", 1700020000000) == "D2"
+        assert EphHistorique.historique("OBJ-1", 2) == ["D2", "D3"]
+        assert len(split(EphDepot.fiche("D2"), "|")) == 16
+        // Dépôt « observation » par systeme, pour un objet d'opérateur suspendu.
+        assert dep(1700000000000, "OBJ-SUSP-1", "DS", 3600000, "haute", "0,0,0", "systeme", 4) == "DS"
+        assert etat_dep("DS") == "validee"
+    }
+}
+
+// ── DÉPÔT : rejets à la réception, et témoin absent.
+cell test EphDepotRejets {
+    rules {
+        let _ = amorcer_eph()
+        assert dep(1700000000000, "OBJ-1", "R1", 3600000, "moyenne", "30000,0,0", "dynamicien_alpha", 1) == "R1"
+        assert etat_dep("R1") == "rejetee"
+        assert EphDepot.motif_rejet_de("R1") == "incoherence"
+        assert dep(1700000000000, "OBJ-1", "R2", -3600000, "haute", "0,0,0", "dynamicien_alpha", 2) == "R2"
+        assert EphDepot.motif_rejet_de("R2") == "epoque_future"
+        assert dep(1700000000000, "OBJ-1", "R3", 36000000, "haute", "0,0,0", "dynamicien_alpha", 3) == "R3"
+        assert EphDepot.motif_rejet_de("R3") == "nee_perimee"
+        assert dep_hz(1700000000000, "OBJ-1", "R4", 3600000, 4) == "R4"
+        assert EphDepot.motif_rejet_de("R4") == "horizon_court"
+        assert dep_emp(1700000000000, "OBJ-1", "R5", "md5:abc") == "R5"
+        assert EphDepot.motif_rejet_de("R5") == "format"
+        assert dep(1700000000000, "OBJ-1", "R6", 3600000, "haute", "1,2", "dynamicien_alpha", 6) == "R6"
+        assert EphDepot.motif_rejet_de("R6") == "format"
+        assert dep(1700000000000, "OBJ-RENTRE-1", "R7", 3600000, "haute", "0,0,0", "dynamicien_alpha", 7) == "R7"
+        assert EphDepot.motif_rejet_de("R7") == "objet_clos"
+        assert_fails ApiEphemerides.derniere("OBJ-1") matching "Inconnu"
+        // Sans témoin : validé, qualité « faible » d'office.
+        assert dep(1700000000000, "OBJ-SANS-1", "T1", 3600000, "haute", "0,0,0", "dynamicien_alpha", 8) == "T1"
+        assert etat_dep("T1") == "validee"
+        assert ApiEphemerides.qualite("OBJ-SANS-1") == "faible"
+        // Horizon entre 72 h et 144 h : qualité dégradée d'un cran.
+        assert dep_hz(1700000000000, "OBJ-2", "T2", 300000000, 9) == "T2"
+        assert ApiEphemerides.qualite("OBJ-2") == "moyenne"
+        // Plan actif omis : qualité « faible ».
+        assert dep_man(1700000000000, "OBJ-PLAN-1", "T3", false, 10) == "T3"
+        assert ApiEphemerides.qualite("OBJ-PLAN-1") == "faible"
+        assert contains(EphDepot.fiche("T3"), "|true|1700000000000|")
+        assert EphBilan.bilan("ORG-ALPHA", 1700000000000) == "10|7|0|0|1"
+        assert EphBilan.taux_rejet("ORG-ALPHA", 1700000000000) == 70
+        assert EphBilan.examiner_operateur(1700000000000, "ORG-ALPHA", "systeme") == "MQ-ORG-ALPHA-discipline_depot-1"
+        assert EphBilan.examiner_operateur(1700000000000, "ORG-ALPHA", "systeme") == ""
+        assert_fails EphBilan.examiner_operateur(1700000000000, "ORG-ALPHA", "intrus") matching "Habilitation"
+    }
+}
+
+// ── DÉPÔT : refus de sécurité.
+cell test EphDepotRefus {
+    rules {
+        assert_fails dep(1700000000000, "OBJ-1", "F0", 3600000, "haute", "0,0,0", "dynamicien_alpha", 1) matching "Ferme"
+        let _ = amorcer_eph()
+        assert_fails dep(1700000000000, "OBJ-1", "F1", 3600000, "haute", "0,0,0", "intrus_alpha", 1) matching "Habilitation"
+        assert_fails dep(1700000000000, "OBJ-1", "F1", 3600000, "haute", "0,0,0", "dynamicien_beta", 1) matching "Habilitation"
+        assert_fails dep(1700000000000, "OBJ-1", "F1", 3600000, "haute", "0,0,0", "chef_de_mission_alpha", 1) matching "Habilitation"
+        assert_fails dep(1700000000000, "OBJ-1", "F1", 3600000, "haute", "0,0,0", "analyste", 1) matching "Habilitation"
+        assert_fails dep(1700000000000, "OBJ-SUSP-1", "F1", 3600000, "haute", "0,0,0", "dynamicien_susp-1", 1) matching "Suspendu"
+        assert_fails dep(1700000000000, "OBJ-INCONNU-1", "F1", 3600000, "haute", "0,0,0", "dynamicien_alpha", 1) matching "Inconnu"
+        assert dep(1700000000000, "OBJ-1", "F1", 3600000, "haute", "0,0,0", "dynamicien_alpha", 1) == "F1"
+        assert_fails dep(1700000000000, "OBJ-1", "F2", 3600000, "haute", "0,0,0", "dynamicien_alpha", 1) matching "Doublon"
+        assert_fails dep(1700000000000, "OBJ-1", "F1", 3600000, "haute", "0,0,0", "dynamicien_alpha", 2) matching "Existe"
+        // Un refus ne laisse rien : le quota n'a compté qu'un dépôt.
+        assert EphQuota.restant("ORG-ALPHA", 1700000000000) == 47
+        // Une admission directe d'un dépôt d'observation est refusée.
+        assert dep(1700000000000, "OBJ-2", "F3", 3600000, "haute", "0,0,0", "systeme", 3) == "F3"
+        assert_fails EphDepot.admettre(1700000000000, "F3") matching "EtatInvalide"
+    }
+}
+
+// ── QUOTA : saturation, exemption d'urgence, relèvement, bridage à quatre yeux, jour suivant.
+cell test EphQuotaCycle {
+    rules {
+        let _ = amorcer_eph()
+        assert_fails EphQuota.relever(1700000000000, "ORG-ALPHA", 2, "test", "intrus") matching "Habilitation"
+        assert_fails EphQuota.relever(1700000000000, "ORG-ALPHA", 2, "", "superviseur") matching "MotifRequis"
+        assert_fails EphQuota.relever(1700000000000, "ORG-INCONNU-9", 2, "test", "superviseur") matching "Inconnu"
+        assert EphQuota.relever(1700000000000, "ORG-ALPHA", 2, "essai", "superviseur") == 2
+        assert dep(1700000000000, "OBJ-1", "Q1", 3600000, "haute", "0,0,0", "dynamicien_alpha", 1) == "Q1"
+        assert dep(1700000000000, "OBJ-2", "Q2", 3600000, "haute", "0,0,0", "dynamicien_alpha", 2) == "Q2"
+        assert EphQuota.restant("ORG-ALPHA", 1700000000000) == 0
+        assert_fails dep(1700000000000, "OBJ-3", "Q3", 3600000, "haute", "0,0,0", "dynamicien_alpha", 3) matching "Plein"
+        // Objet en rapprochement de niveau 3 : passe toujours.
+        assert dep(1700000000000, "OBJ-A-N3", "Q4", 3600000, "haute", "0,0,0", "dynamicien_alpha", 4) == "Q4"
+        // Dépôt systeme : jamais compté.
+        assert dep(1700000000000, "OBJ-3", "Q5", 3600000, "haute", "0,0,0", "systeme", 5) == "Q5"
+        // Relever libère l'opérateur saturé.
+        assert EphQuota.relever(1700000000000, "ORG-ALPHA", 3, "campagne", "superviseur") == 3
+        assert dep(1700000000000, "OBJ-3", "Q6", 3000000, "haute", "0,0,0", "dynamicien_alpha", 6) == "Q6"
+        // Jour suivant : compteur remis à zéro.
+        assert EphQuota.restant("ORG-ALPHA", 1700086400000) == 3
+        assert dep(1700086400000, "OBJ-4", "Q7", 3600000, "haute", "0,0,0", "dynamicien_alpha", 7) == "Q7"
+        // Bridage : conformite + valideur superviseur/direction distinct.
+        assert_fails EphQuota.brider(1700086400000, "ORG-ALPHA", "rafale", "conformite", "conformite") matching "QuatreYeux"
+        assert_fails EphQuota.brider(1700086400000, "ORG-ALPHA", "rafale", "conformite", "analyste") matching "QuatreYeux"
+        assert_fails EphQuota.brider(1700086400000, "ORG-ALPHA", "rafale", "superviseur", "direction") matching "Habilitation"
+        assert_fails EphQuota.brider(1700086400000, "ORG-ALPHA", "", "conformite", "direction") matching "MotifRequis"
+        assert EphQuota.brider(1700086400000, "ORG-ALPHA", "rafale de dépôts", "conformite", "direction") == "bride"
+        assert_fails EphQuota.brider(1700086400000, "ORG-ALPHA", "encore", "conformite", "direction") matching "EtatInvalide"
+        assert EphQuota.restant("ORG-ALPHA", 1700086400000) == 0
+        assert_fails dep(1700086400000, "OBJ-5", "Q8", 3600000, "haute", "0,0,0", "dynamicien_alpha", 8) matching "Plein"
+        assert dep(1700086400000, "OBJ-B-N3", "Q9", 3600000, "haute", "0,0,0", "dynamicien_beta", 9) == "Q9"
+        assert dep(1700086400000, "OBJ-A-N3", "Q10", 3000000, "haute", "0,0,0", "dynamicien_alpha", 10) == "Q10"
+        assert_fails EphQuota.debrider(1700086400000, "ORG-ALPHA", "superviseur") matching "Habilitation"
+        assert EphQuota.debrider(1700086400000, "ORG-ALPHA", "conformite") == "libre"
+        assert_fails EphQuota.debrider(1700086400000, "ORG-ALPHA", "conformite") matching "EtatInvalide"
+        assert dep(1700086400000, "OBJ-5", "Q8", 3600000, "haute", "0,0,0", "dynamicien_alpha", 8) == "Q8"
+    }
+}
+
+// ── SUIVI : invalidation, balayage de fraîcheur, relance, clôture.
+cell test EphSuiviCycle {
+    rules {
+        let _ = amorcer_eph()
+        assert dep(1700000000000, "OBJ-1", "S1", 3600000, "haute", "0,0,0", "dynamicien_alpha", 1) == "S1"
+        assert dep(1700000000000, "OBJ-A-N3", "S2", 3600000, "haute", "0,0,0", "dynamicien_alpha", 2) == "S2"
+        assert_fails ApiEphemerides.invalider(1700000000000, "OBJ-1", "anomalie", "intrus") matching "Habilitation"
+        assert_fails ApiEphemerides.invalider(1700000000000, "OBJ-1", "anomalie", "dynamicien_alpha") matching "Habilitation"
+        assert_fails ApiEphemerides.invalider(1700000000000, "OBJ-1", "", "analyste") matching "MotifRequis"
+        assert_fails ApiEphemerides.invalider(1700000000000, "OBJ-9", "x", "analyste") matching "Inconnu"
+        assert ApiEphemerides.invalider(1700000000000, "OBJ-1", "signalement d'anomalie", "analyste") == 1
+        assert etat_dep("S1") == "invalidee"
+        assert EphSuivi.situation("OBJ-1") == "invalide"
+        assert !ApiEphemerides.fraiche("OBJ-1", 1700000000000)
+        assert_fails ApiEphemerides.derniere("OBJ-1") matching "Inconnu"
+        assert dep(1700001000000, "OBJ-1", "S3", 600000, "haute", "0,0,0", "dynamicien_alpha", 3) == "S3"
+        assert EphSuivi.situation("OBJ-1") == "a_jour"
+        // Retrait par le propriétaire lui-même.
+        assert EphDepot.invalider_depuis(1700001000000, "OBJ-1", 0, "retrait_proprietaire", "erreur de fichier", "dynamicien_alpha") == 1
+        assert_fails EphDepot.invalider_depuis(1700001000000, "OBJ-A-N3", 0, "retrait_proprietaire", "x", "dynamicien_beta") matching "Habilitation"
+        // Balayage par l'horloge : 9 h plus tard, OBJ-A-N3 (leo, 8 h) est périmé.
+        assert_fails ApiEphemerides.balayer(1700032400000, "exploitant") matching "Habilitation"
+        assert ApiEphemerides.balayer(1700032400000, "systeme") == 1
+        assert EphSuivi.situation("OBJ-A-N3") == "perime"
+        assert etat_dep("S2") == "perimee"
+        assert ApiEphemerides.derniere("OBJ-A-N3") == "S2"
+        assert !ApiEphemerides.fraiche("OBJ-A-N3", 1700032400000)
+        assert EphBilan.bilan("ORG-ALPHA", 1700032400000) == "3|0|1|1|0"
+        assert ApiEphemerides.balayer(1700032460000, "systeme") == 0
+        // Un dépôt neuf rend l'objet à jour ; le périmé peut encore être invalidé.
+        assert dep(1700032400000, "OBJ-A-N3", "S4", 600000, "haute", "0,0,0", "dynamicien_alpha", 4) == "S4"
+        assert EphSuivi.situation("OBJ-A-N3") == "a_jour"
+        assert etat_dep("S2") == "perimee"
+        // Clôture : seulement pour un objet rentré, fragmenté ou retiré.
+        assert_fails EphSuivi.clore(1700032400000, "OBJ-1", "analyste") matching "EtatInvalide"
+        assert_fails EphSuivi.clore(1700032400000, "OBJ-RENTRE-1", "intrus") matching "Habilitation"
+        assert EphSuivi.clore(1700032400000, "OBJ-RENTRE-1", "analyste") == "clos"
+        assert_fails EphSuivi.clore(1700032400000, "OBJ-RENTRE-1", "analyste") matching "EtatInvalide"
+        assert EphSuivi.situation("OBJ-RENTRE-1") == "clos"
+    }
+}
+
+// ── CONTRÔLES a posteriori : confrontation, anomalie, plan annulé, ronde.
+cell test EphControlesPosteriori {
+    rules {
+        let _ = amorcer_eph()
+        assert dep(1700000000000, "OBJ-ECART-1", "C1", 3600000, "haute", "100,0,0", "dynamicien_alpha", 1) == "C1"
+        assert_fails EphControle.confronter(1700000000000, "OBJ-ECART-1", "intrus") matching "Habilitation"
+        assert EphControle.confronter(1700000000000, "OBJ-ECART-1", "analyste") == 50000
+        assert etat_dep("C1") == "invalidee"
+        assert EphControle.ecart("OBJ-ECART-1") == "50000|C1|1700000000000"
+        assert_fails EphControle.ecart("OBJ-1") matching "Inconnu"
+        assert dep(1700000000000, "OBJ-1", "C2", 3600000, "haute", "100,0,0", "dynamicien_alpha", 2) == "C2"
+        assert EphControle.confronter(1700000000000, "OBJ-1", "systeme") == 100
+        assert etat_dep("C2") == "validee"
+        assert dep(1700000000000, "OBJ-ANOMALIE-1", "C3", 3600000, "haute", "100,0,0", "dynamicien_alpha", 3) == "C3"
+        assert EphControle.controler_objet(1700000000000, "OBJ-ANOMALIE-1", "analyste") == 1
+        assert etat_dep("C3") == "invalidee"
+        assert_fails EphControle.controler_objet(1700000000000, "OBJ-ANOMALIE-1", "analyste") matching "Inconnu"
+        assert EphControle.controler_objet(1700000000000, "OBJ-1", "systeme") == 0
+        // Manœuvre non annoncée : constat transmis à manoeuvres (la doublure n'invalide pas).
+        assert dep(1700000000000, "OBJ-MANOEUVRE-1", "C4", 3600000, "haute", "100,0,0", "dynamicien_alpha", 4) == "C4"
+        assert EphControle.controler_objet(1700000000000, "OBJ-MANOEUVRE-1", "systeme") == 0
+        // Plan inclus puis annulé.
+        assert dep_man(1700000000000, "OBJ-2", "C5", true, 5) == "C5"
+        assert_fails EphDepot.inclure_plan(1700000000000, "C5", "PLAN-1@OBJ-3", "dynamicien_alpha") matching "Incoherent"
+        assert_fails EphDepot.inclure_plan(1700000000000, "C5", "PLAN-1@OBJ-2", "dynamicien_beta") matching "Habilitation"
+        assert_fails EphDepot.inclure_plan(1700000000000, "C5", "PLAN-INCONNU@OBJ-2", "dynamicien_alpha") matching "Inconnu"
+        assert_fails EphDepot.inclure_plan(1700000000000, "C2", "PLAN-1@OBJ-1", "dynamicien_alpha") matching "Incoherent"
+        assert EphDepot.inclure_plan(1700000000000, "C5", "PLAN-1@OBJ-2", "dynamicien_alpha") == 1
+        assert EphDepot.inclure_plan(1700000000000, "C5", "PLAN-1@OBJ-2", "dynamicien_alpha") == 1
+        mock ApiManoeuvres.etat "annule"
+        assert EphControle.controler_objet(1700000000000, "OBJ-2", "analyste") == 1
+        assert etat_dep("C5") == "invalidee"
+        // Ronde : objets des rapprochements urgents (OBJ-A-N3, OBJ-B-N3) ayant un dépôt courant.
+        assert dep(1700000000000, "OBJ-A-N3", "C6", 3600000, "haute", "100,0,0", "dynamicien_alpha", 6) == "C6"
+        assert_fails EphControle.tourner(1700000000000, 3600000, 10, "analyste") matching "Habilitation"
+        assert EphControle.tourner(1700000000000, 3600000, 10, "systeme") == 1
+        assert EphControle.tourner(1700000060000, 3600000, 10, "systeme") == 0
+    }
+}
+
+// ── CONTESTATION : scénario complet (rejet → contestation → instruction → acceptation → courant).
+cell test EphContestationAcceptee {
+    rules {
+        let _ = amorcer_eph()
+        assert dep(1700000000000, "OBJ-1", "K1", 3600000, "moyenne", "30000,0,0", "dynamicien_alpha", 1) == "K1"
+        assert etat_dep("K1") == "rejetee"
+        assert EphContestation.etat("K1") == "aucune"
+        assert_fails EphContestation.contester(1700000000000, "K1", "manœuvre réelle", "dynamicien_beta") matching "Habilitation"
+        assert_fails EphContestation.contester(1700000000000, "K1", "", "dynamicien_alpha") matching "MotifRequis"
+        assert_fails EphContestation.contester(1700100000000, "K1", "trop tard", "dynamicien_alpha") matching "Delai"
+        assert_fails EphContestation.contester(1700000000000, "K9", "x", "dynamicien_alpha") matching "Inconnu"
+        assert EphContestation.contester(1700000000000, "K1", "manœuvre réelle annoncée", "chef_de_mission_alpha") == "K1"
+        assert_fails EphContestation.contester(1700000000000, "K1", "encore", "dynamicien_alpha") matching "Existe"
+        assert EphContestation.etat("K1") == "ouverte"
+        assert_fails EphContestation.instruire(1700000000000, "K1", "superviseur") matching "Habilitation"
+        assert EphContestation.instruire(1700000000000, "K1", "analyste") == "SUIVI-OBJ-1-1700000000000"
+        assert_fails EphContestation.accepter(1700001000000, "K1", "vu", "analyste", "analyste2") matching "QuatreYeux"
+        assert_fails EphContestation.accepter(1700001000000, "K1", "vu", "analyste", "analyste") matching "QuatreYeux"
+        assert_fails EphContestation.accepter(1700001000000, "K1", "vu", "dynamicien_alpha", "superviseur") matching "Habilitation"
+        assert_fails EphContestation.accepter(1700100000000, "K1", "vu", "analyste", "superviseur") matching "Echu"
+        assert EphContestation.accepter(1700001000000, "K1", "le suivi confirme la manœuvre", "analyste", "superviseur") == "acceptee"
+        assert etat_dep("K1") == "validee"
+        assert ApiEphemerides.derniere("OBJ-1") == "K1"
+        assert ApiEphemerides.qualite("OBJ-1") == "moyenne"
+        assert EphContestation.etat("K1") == "acceptee"
+        assert_fails EphContestation.refuser(1700001000000, "K1", "non", "analyste") matching "EtatInvalide"
+        // Une réhabilitation ne se fait que sur contestation acceptée.
+        assert dep(1700000000000, "OBJ-2", "K2", 3600000, "moyenne", "30000,0,0", "dynamicien_alpha", 2) == "K2"
+        assert_fails EphDepot.rehabiliter(1700000000000, "K2") matching "EtatInvalide"
+        // Un rejet pour horizon court ne se conteste pas.
+        assert dep_hz(1700000000000, "OBJ-3", "K3", 3600000, 3) == "K3"
+        assert_fails EphContestation.contester(1700000000000, "K3", "x", "dynamicien_alpha") matching "EtatInvalide"
+    }
+}
+
+// ── CONTESTATION : refus, et silence d'ORBITE ⇒ caduque.
+cell test EphContestationRefusCaduque {
+    rules {
+        let _ = amorcer_eph()
+        assert dep(1700000000000, "OBJ-1", "K1", 3600000, "moyenne", "30000,0,0", "dynamicien_alpha", 1) == "K1"
+        assert dep(1700000000000, "OBJ-2", "K2", 3600000, "moyenne", "30000,0,0", "dynamicien_alpha", 2) == "K2"
+        assert dep(1700000000000, "OBJ-3", "K3", 3600000, "moyenne", "30000,0,0", "dynamicien_alpha", 3) == "K3"
+        assert EphContestation.contester(1700000000000, "K1", "a", "dynamicien_alpha") == "K1"
+        assert EphContestation.contester(1700000000000, "K2", "b", "dynamicien_alpha") == "K2"
+        assert EphContestation.contester(1700000000000, "K3", "c", "dynamicien_alpha") == "K3"
+        assert_fails EphContestation.refuser(1700000000000, "K1", "", "analyste") matching "MotifRequis"
+        assert EphContestation.refuser(1700000000000, "K1", "écart confirmé", "analyste") == "refusee"
+        // OBJ-2 reçoit un dépôt plus récent validé : sa contestation devient sans objet.
+        assert dep(1700001000000, "OBJ-2", "K4", 600000, "haute", "0,0,0", "dynamicien_alpha", 4) == "K4"
+        assert_fails EphContestation.classer(1700001000000, 10, "analyste") matching "Habilitation"
+        assert EphContestation.classer(1700001000000, 10, "systeme") == 1
+        assert EphContestation.etat("K2") == "caduque"
+        assert EphContestation.etat("K3") == "ouverte"
+        // Silence : échéance passée, K3 est classée, jamais réhabilitée.
+        assert EphContestation.classer(1700090000000, 10, "systeme") == 1
+        assert EphContestation.etat("K3") == "caduque"
+        assert etat_dep("K3") == "rejetee"
+    }
+}
+
+// ── PREUVE : rétention, purge, diffusion contrôlée.
+cell test EphPreuvePurge {
+    rules {
+        let _ = amorcer_eph()
+        assert dep(1700000000000, "OBJ-1", "P1", 3600000, "haute", "0,0,0", "dynamicien_alpha", 1) == "P1"
+        assert dep(1700010000000, "OBJ-1", "P2", 3600000, "haute", "0,0,0", "dynamicien_alpha", 2) == "P2"
+        assert dep(1700020000000, "OBJ-1", "P3", 3600000, "haute", "0,0,0", "dynamicien_alpha", 3) == "P3"
+        assert dep(1700020000000, "OBJ-1", "P4", 3600000, "moyenne", "30000,0,0", "dynamicien_alpha", 4) == "P4"
+        // Diffusion contrôlée et tracée.
+        assert starts_with(EphHistorique.consulter(1700020000000, "P1", "ORG-ALPHA", "", "dynamicien_alpha"), "OBJ-1|ORG-ALPHA|proprietaire|")
+        assert_fails EphHistorique.consulter(1700020000000, "P1", "ORG-TIERS-1", "", "analyste") matching "Confidentiel"
+        assert_fails EphHistorique.consulter(1700020000000, "P1", "ORG-BETA", "", "dynamicien_alpha") matching "Habilitation"
+        assert_fails EphHistorique.consulter(1700020000000, "P9", "ORG-ALPHA", "", "analyste") matching "Inconnu"
+        // P1 fonde une décision du rapprochement CJ-7 : retenue.
+        assert_fails EphRetention.retenir(1700020000000, "P1", "CJ-7", "désignation", "intrus") matching "Habilitation"
+        assert_fails EphRetention.retenir(1700020000000, "P1", "CJ-7", "", "systeme") matching "MotifRequis"
+        assert EphRetention.retenir(1700020000000, "P1", "CJ-7", "désignation arrêtée", "systeme") == 1
+        assert EphRetention.retenir(1700020000000, "P1", "CJ-GEL-1", "enquête", "conformite") == 2
+        assert EphRetention.est_retenu("P1")
+        // Onze ans plus tard : P2 et P4 sont archivés, P1 retenu, P3 courant.
+        assert_fails EphHistorique.purger(2047000000000, 100, "analyste") matching "Habilitation"
+        assert EphHistorique.purger(2047000000000, 100, "systeme") == 2
+        assert etat_dep("P1") == "remplacee"
+        assert etat_dep("P2") == "archivee"
+        assert etat_dep("P3") == "validee"
+        assert etat_dep("P4") == "archivee"
+        assert EphHistorique.historique("OBJ-1", 10) == ["P1", "P3"]
+        // Libération : conformite + direction, jamais un motif sous gel.
+        assert_fails EphRetention.liberer(2047000000000, "P1", "CJ-7", "conformite", "superviseur") matching "QuatreYeux"
+        assert_fails EphRetention.liberer(2047000000000, "P1", "CJ-GEL-1", "conformite", "direction") matching "Conflit"
+        assert EphRetention.liberer(2047000000000, "P1", "CJ-7", "conformite", "direction") == 1
+        assert EphRetention.est_retenu("P1")
+        assert_fails EphDepot.archiver(2047000000000, "P1") matching "EtatInvalide"
+        assert_fails EphRetention.retenir(2047000000000, "P2", "CJ-8", "trop tard", "analyste") matching "EtatInvalide"
+    }
+}
+
+// ── TEMPÊTE : entrée (balayage aux âges divisés, appels), sortie, météo muette.
+cell test EphTempeteEpisode {
+    rules {
+        let _ = amorcer_eph()
+        // Dépôts d'époque h − 5 h : frais au calme (8 h), périmés en tempête (4 h).
+        assert dep(1799999000000, "OBJ-A-N3", "M1", 18000000, "haute", "0,0,0", "dynamicien_alpha", 1) == "M1"
+        assert dep(1799999000000, "OBJ-1", "M2", 18000000, "haute", "0,0,0", "dynamicien_alpha", 2) == "M2"
+        assert dep(1799999000000, "OBJ-B-N3", "M3", 600000, "haute", "0,0,0", "dynamicien_beta", 3) == "M3"
+        assert ApiEphemerides.fraiche("OBJ-1", 1799999000000)
+        assert !ApiEphemerides.fraiche("OBJ-1", 1800000000000)
+        assert_fails EphTempete.surveiller(1800000000000, 10, "analyste") matching "Habilitation"
+        assert EphTempete.episode() == ""
+        assert EphTempete.surveiller(1800000000000, 10, "systeme") == "renforce"
+        assert EphTempete.episode() == "T-1800000000000|1800000000000|2|1"
+        assert EphSuivi.situation("OBJ-1") == "perime"
+        assert EphSuivi.situation("OBJ-B-N3") == "a_jour"
+        assert EphTempete.surveiller(1800000060000, 10, "systeme") == "renforce"
+        assert EphTempete.surveiller(1800200000000, 10, "systeme") == "calme"
+        assert EphTempete.episode() == ""
+        // Météo muette : renforcement par prudence.
+        assert EphTempete.surveiller(1810000000000, 10, "systeme") == "renforce"
+        assert EphTempete.surveiller(1810200000000, 10, "systeme") == "calme"
+    }
+}

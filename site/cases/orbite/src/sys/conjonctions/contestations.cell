@@ -1,0 +1,80 @@
+// CONJONCTIONS — contestations d'un rapprochement par un propriétaire : il estime que ses
+// propres données (une éphéméride plus récente, une manœuvre déjà prévue) écartent le risque.
+// ORBITE ne le croit pas sur parole : la contestation lance un criblage ciblé de l'objet sur
+// ses dépôts validés, et n'est acceptée qu'au vu de cette campagne terminée.
+
+// Une contestation. Instance = "CT-<n>". Au plus une contestation non close par rapprochement
+// et par objet.
+skeleton ConjContestation {
+    const MAX_CONTESTATIONS = 1000000
+    const MAX_PAR_RAPPROCHEMENT = 2
+    memory {
+        rapprochement_de: Map<String, String> [persistent]
+        objet_de: Map<String, Objet> [persistent]           // objet du contestataire
+        depot_de: Map<String, String> [persistent]          // dépôt d'éphéméride invoqué (ApiEphemerides.derniere)
+        motif_de: Map<String, String> [persistent]
+        deposee_par: Map<String, String> [persistent]
+        deposee_le: Map<String, Horodatage> [persistent]
+        // campagne ciblée (portée "objet") lancée au dépôt : écrit une fois par deposer, jamais
+        // effacé (lien de la règle examinee -> acceptee)
+        campagne_de: Map<String, String> [persistent]
+        decision_de: Map<String, String> [persistent]       // "h|par|motif" de la décision
+        en_cours_de: Map<String, List<String>> [persistent] // rapprochement -> contestations non closes
+        invariant rapprochement_de.size <= 1000000
+        invariant len(en_cours_de) <= 2
+    }
+    // Cycle d'une contestation.
+    state contestation {
+        initial: deposee
+        deposee -> examinee          // campagne ciblée démarrée sur le dépôt invoqué
+        examinee -> acceptee         // la campagne terminée ne retrouve pas le risque : le rapprochement est mis à jour
+        examinee -> rejetee          // la campagne retrouve le risque, ou elle a échoué
+        deposee -> rejetee           // dépôt invoqué invalidé, ou rapprochement clos entre-temps
+        deposee -> retiree           // retirée par le contestataire
+        examinee -> retiree
+    }
+    face {
+        // Dépose une contestation sur un rapprochement ouvert, au nom du propriétaire de
+        // `objet` (un des deux objets) : l'éphéméride invoquée est la dernière validée et doit
+        // être fraîche ; planifie une campagne de portée "objet" (motif "manuel"). Renvoie
+        // "CT-<n>". Rôle : "dynamicien" ou "chef_de_mission" du propriétaire de l'objet
+        // (ApiAcces.a_le_role + ApiAcces.agit_pour sur ApiRef.proprietaire). La contestation ne
+        // suspend NI le niveau NI la coordination en cours.
+        // Refus : Inconnu, Ferme (rapprochement clos), Incoherent (objet étranger au
+        // rapprochement), Perime (éphéméride non fraîche), Existe, MotifRequis, Suspendu
+        // (opérateur non actif), Plein, Habilitation.
+        signal deposer(h: Horodatage, r: Rapprochement, objet: Objet, motif: String, par: String) -> String
+            writes rapprochement_de, objet_de, depot_de, motif_de, deposee_par, deposee_le, campagne_de, en_cours_de
+            calls next_id, ConjRapprochement.fiche, ConjRapprochement.etat, ConjCampagne.planifier, ApiEphemerides.fraiche, ApiEphemerides.derniere, ApiRef.proprietaire, ApiOperateurs.est_actif, ApiAcces.a_le_role, ApiAcces.agit_pour, Journal.noter
+        // Fait avancer une contestation (ConjRonde.balayer) : campagne démarrée ⇒ deposee ->
+        // examinee ; campagne terminée sans risque retrouvé ⇒ examinee -> acceptee (la campagne
+        // a déjà mis le rapprochement à jour par ConjRapprochement.signaler) ; risque retrouvé ou
+        // campagne échouée ⇒ rejetee ; rapprochement clos ou dépôt invoqué plus valide
+        // (ApiEphemerides.depot_valide) ⇒ deposee ->
+        // rejetee. Renvoie l'état atteint. Rôle : "systeme".
+        // Refus : Inconnu, Ferme (contestation close), Habilitation.
+        signal instruire(h: Horodatage, contestation: String, par: String) -> String
+            reads rapprochement_de, objet_de, depot_de, campagne_de
+            writes decision_de, en_cours_de
+            moves deposee -> examinee, examinee -> acceptee when ConjCampagne.terminee via campagne_de, examinee -> rejetee, deposee -> rejetee
+            calls ConjCampagne.etat, ConjRapprochement.fiche, ConjRapprochement.etat, ConjSeuils.seuil_suivi, ApiEphemerides.depot_valide, ApiAcces.a_le_role, Journal.noter
+        // Retire une contestation non close (deposee ou examinee -> retiree) ; la campagne ciblée
+        // déjà lancée va à son terme. Renvoie "retiree". Rôle : "dynamicien" ou
+        // "chef_de_mission" du propriétaire de l'objet contesté (ApiAcces.agit_pour).
+        // Refus : Inconnu, Ferme (close), MotifRequis, Habilitation.
+        signal retirer(h: Horodatage, contestation: String, motif: String, par: String) -> String
+            reads rapprochement_de, objet_de
+            writes decision_de, en_cours_de
+            moves deposee -> retiree, examinee -> retiree
+            calls ApiRef.proprietaire, ApiAcces.a_le_role, ApiAcces.agit_pour, Journal.noter
+        // Contestations non closes, tous rapprochements (pour ConjRonde.balayer).
+        signal non_closes() -> List<String>
+            reads en_cours_de
+        // Contestations non closes d'un rapprochement.
+        signal de(r: Rapprochement) -> List<String>
+            reads en_cours_de
+        // "deposee", "examinee", "acceptee", "rejetee", "retiree" ; "inconnue".
+        signal etat(contestation: String) -> String
+            reads contestation, rapprochement_de
+    }
+}

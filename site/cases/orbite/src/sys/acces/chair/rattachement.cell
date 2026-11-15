@@ -1,0 +1,109 @@
+// acces — corps du rattachement confirmé par l'employeur.
+flesh AccesRattachements {
+    on ouvrir(h, personne, employeur, par) {
+        require employeur_du.get(personne) == () else Existe "rattachement de {personne} déjà ouvert"
+        require ApiRef.organisation_existe(employeur) else Inconnu "organisation {employeur} inconnue ou radiée"
+        employeur_du.set(personne, employeur)
+        ouvert_le.set(personne, h)
+        if employeur == ApiRef.orbite() || AccesControle.agit_pour(par, employeur) {
+            // Règle « confirme when AccesPersonnes.active » : agit_pour(personne, employeur) exige
+            // la personne active (employeur_de est écrit avant cet appel par enregistrer).
+            require AccesControle.agit_pour(personne, employeur) else Suspendu "personne {personne} non active"
+            confirme_par.set(personne, par)
+            transition(personne, "a_confirmer", "confirme")
+            return "confirme"
+        }
+        return "a_confirmer"
+    }
+
+    on confirmer(h, personne, piece_ref, par, valideur) {
+        let emp = employeur_du.get(personne)
+        require emp != () else Inconnu "rattachement de {personne} inconnu"
+        let st = get_status(personne) ?? "a_confirmer"
+        require st == "a_confirmer" else EtatInvalide "rattachement de {personne} {st}"
+        require AccesPersonnes.est_active(personne) else Suspendu "personne {personne} non active"
+        require ApiRef.organisation_existe(emp) else NonEligible "employeur {emp} radié"
+        require piece_ref != "" else MotifRequis "pièce justificative exigée"
+        require par != personne else QuatreYeux "{par} ne peut confirmer son propre rattachement"
+        let g = AccesPortees.genre_de(emp)
+        let collegues = AccesPersonnes.personnes_de(emp, 2000).filter(x => x != personne)
+        if g == "operateur" || g == "capteur" {
+            let admin = AccesControle.a_le_role(par, "administrateur_operateur") && AccesControle.agit_pour(par, emp)
+            if !admin {
+                let a_un_admin = len(collegues.filter(x => AccesControle.a_le_role(x, "administrateur_operateur"))) > 0
+                require !a_un_admin else Habilitation "{emp} a un administrateur : à lui de confirmer"
+                require _autorite_tutelle(emp, par) else Habilitation "{par} : administrateur de {emp} ou autorité de son État"
+            }
+        } else if g == "etat" {
+            let autorite = AccesControle.a_le_role(par, "autorite") && AccesControle.agit_pour(par, emp)
+            if !autorite {
+                let a_une_autorite = len(collegues.filter(x => AccesControle.a_le_role(x, "autorite"))) > 0
+                require !a_une_autorite else Habilitation "{emp} a une autorité : à elle de confirmer"
+                require AccesControle.a_le_role(par, "direction") else Habilitation "{par} : autorité de {emp} ou direction d'ORBITE"
+                require valideur != "" && valideur != personne else QuatreYeux "première autorité : contre-signature exigée"
+                let _ = AccesControle.contresigner(h, "rattachement:{personne}", par, valideur)
+            }
+        } else {
+            require AccesControle.a_le_role(par, "direction") else Habilitation "{par} : direction d'ORBITE"
+        }
+        confirme_par.set(personne, par)
+        piece.set(personne, piece_ref)
+        transition(personne, "a_confirmer", "confirme")
+        let _ = Journal.noter(h, "acces", par, "confirme rattachement {personne} chez {emp} (pièce {piece_ref})")
+        return "confirme"
+    }
+
+    on contester(h, personne, motif, par) {
+        let emp = employeur_du.get(personne)
+        require emp != () else Inconnu "rattachement de {personne} inconnu"
+        let st = get_status(personne) ?? "a_confirmer"
+        require st == "a_confirmer" else EtatInvalide "rattachement de {personne} {st}"
+        require motif != "" else MotifRequis "contestation sans motif"
+        require par != personne else Habilitation "{par} ne peut contester son propre rattachement"
+        let g = AccesPortees.genre_de(emp)
+        let ok = if g == "operateur" || g == "capteur" {
+            (AccesControle.a_le_role(par, "administrateur_operateur") && AccesControle.agit_pour(par, emp)) || _autorite_tutelle(emp, par)
+        } else if g == "etat" {
+            (AccesControle.a_le_role(par, "autorite") && AccesControle.agit_pour(par, emp)) || AccesControle.a_le_role(par, "direction")
+        } else {
+            AccesControle.a_le_role(par, "direction")
+        }
+        require ok else Habilitation "{par} ne peut contester le rattachement de {personne}"
+        confirme_par.set(personne, par)
+        piece.set(personne, motif)
+        transition(personne, "a_confirmer", "conteste")
+        let _ = AccesPersonnes.suspendre_auto(h, personne, "rattachement_conteste")
+        let _ = Journal.noter(h, "acces", par, "conteste rattachement {personne} chez {emp} : {motif}")
+        return "conteste"
+    }
+
+    on echoir(h) {
+        let ids = ouvert_le.entries.filter(e => to_int(h) - to_int(e.value) > DELAI_CONFIRMATION_MS && (get_status(e.key) ?? "a_confirmer") == "a_confirmer").map(e => e.key).sort()
+        for p in ids {
+            transition(p, "a_confirmer", "expire")
+            let _ = AccesPersonnes.suspendre_auto(h, p, "rattachement_conteste")
+        }
+        if len(ids) > 0 {
+            let _ = Journal.noter(h, "acces", "systeme", "echoir : {len(ids)} rattachements non confirmés")
+        }
+        return len(ids)
+    }
+
+    on confirme(personne) {
+        return (get_status(personne) ?? "a_confirmer") == "confirme"
+    }
+
+    on a_confirmer_de(employeur, n) {
+        let res_a = employeur_du.entries.filter(e => e.value == employeur && (get_status(e.key) ?? "a_confirmer") == "a_confirmer").map(e => e.key).sort()
+        return slice(res_a, 0, min(n, len(res_a)))
+    }
+
+    // Vrai si `par` est une "autorite" de l'État de tutelle de `emp`.
+    on _autorite_tutelle(emp: Org, par: String) {
+        let e = try { ApiRef.etat_de(emp) }
+        if e.error != () { return false }
+        let o = try { ApiRef.org_de_etat(e.value) }
+        if o.error != () { return false }
+        return AccesControle.a_le_role(par, "autorite") && AccesControle.agit_pour(par, o.value)
+    }
+}

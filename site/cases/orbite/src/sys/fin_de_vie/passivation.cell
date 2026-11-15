@@ -1,0 +1,100 @@
+// FIN DE VIE — passivation d'un objet en fin de mission : vidange des ergols et
+// pressurisants, décharge des batteries, arrêt des roues et des émetteurs, puis vérification
+// par ORBITE. Un objet passivé ne peut plus manœuvrer : la vérification déclare sa
+// propulsion "aucune" au catalogue (il ne sera jamais désigné). Instance = objet.
+
+// Organe à passiver (source d'énergie résiduelle ou d'émission).
+cell type FdvOrgane = String where value == "ergols" || value == "pressurisants" || value == "batteries" || value == "roues" || value == "emetteurs"
+
+skeleton FdvPassivation {
+    const MAX_ORGANES = 5
+    // Une passivation déclarée doit être vérifiée sur une observation postérieure d'au moins 24 h (ms).
+    const RECUL_VERIFICATION = 86400000
+    memory {
+        requis_de: Map<Objet, List<String>> [persistent]   // organes à passiver, fixés au commencement
+        faits_de: Map<Objet, List<String>> [persistent]    // organes déclarés passivés
+        commence_le: Map<Objet, Horodatage> [persistent]
+        declaree_le: Map<Objet, Horodatage> [persistent]   // dernier organe déclaré
+        verifiee_le: Map<Objet, Horodatage> [persistent]
+        verifiee_par: Map<Objet, String> [persistent]      // "par|valideur"
+        motif_de: Map<Objet, String> [persistent]          // motif de la contestation ou de l'échec
+        invariant len(requis_de) <= 5
+        invariant len(faits_de) <= 5
+        invariant (declaree_le ?? 999999999999999) >= (commence_le ?? 0)
+        invariant (verifiee_le ?? 999999999999999) >= (declaree_le ?? 0)
+    }
+    // Cycle de la passivation d'un objet (états exposés par etat).
+    state passivation {
+        initial: a_planifier
+        a_planifier -> en_cours   // commencée après la fin de mission
+        a_planifier -> echouee            // objet devenu incontrôlable avant toute passivation
+        en_cours -> declaree              // tous les organes requis déclarés passivés
+        en_cours -> echouee               // passivation impossible (anomalie, organe bloqué)
+        declaree -> en_cours              // contestée : l'observation contredit la déclaration
+        declaree -> verifiee              // vérifiée à quatre yeux sur observation
+        declaree -> echouee
+    }
+    face {
+        // Commence la passivation (a_planifier -> en_cours) d'un objet dont la fin de mission
+        // est déclarée (FdvFin "en_retrait" ou "en_retard") et fixe les organes à passiver
+        // (au moins "ergols" si la propulsion catalogue n'est pas "aucune", et "batteries").
+        // Habilitation : "dynamicien" du propriétaire. Renvoie le nombre d'organes requis.
+        // Refus : Inconnu, EtatInvalide, HorsBornes (organe hors FdvOrgane, liste vide ou > 5),
+        // Insuffisant (organe obligatoire absent), Doublon (organe répété), Habilitation.
+        signal commencer(h: Horodatage, objet: Objet, organes: List<String>, par: String) -> Int
+            writes requis_de, commence_le
+            moves a_planifier -> en_cours when FdvFin.en_retrait || FdvFin.en_retard
+            calls FdvFin.etat, ApiRef.proprietaire, ApiRef.propulsion, ApiAcces.a_le_role, ApiAcces.agit_pour, Journal.noter
+        // Déclare un organe passivé ; quand tous les organes requis le sont, en_cours ->
+        // declaree. Habilitation : "dynamicien" du propriétaire. Renvoie le nombre d'organes
+        // restant à passiver (0 : déclarée).
+        // Refus : Inconnu, EtatInvalide, HorsBornes (organe non requis), Doublon, Habilitation.
+        signal declarer_organe(h: Horodatage, objet: Objet, organe: FdvOrgane, par: String) -> Int
+            writes faits_de, declaree_le
+            reads requis_de, commence_le
+            moves en_cours -> declaree
+            calls ApiRef.proprietaire, ApiAcces.a_le_role, ApiAcces.agit_pour, Journal.noter
+        // Vérifie la passivation (declaree -> verifiee) : au moins 24 h après la déclaration,
+        // orbite indépendante récente (ApiObservation.suivi), aucune manœuvre détectée depuis la
+        // déclaration (ApiObservation.manoeuvre_detectee), pas d'anomalie ouverte
+        // (ApiEvenements.en_anomalie). Déclare alors la propulsion "aucune" au catalogue
+        // (ApiRef.declarer_propulsion, par l'analyste `par`, motif "passivation") : ref rouvre
+        // les coordinations où l'objet est désigné, et ApiRef.peut_manoeuvrer le refuse (passive).
+        // Habilitation : "analyste" d'ORBITE ; QuatreYeux : valideur "superviseur".
+        // Renvoie "verifiee". Refus : Inconnu, EtatInvalide, Delai (moins de 24 h après la
+        // déclaration), Perime (pas d'orbite observée récente), Incoherent (manœuvre détectée ou
+        // anomalie ouverte), Habilitation, QuatreYeux.
+        signal verifier(h: Horodatage, objet: Objet, par: String, valideur: String) -> String
+            writes verifiee_le, verifiee_par
+            reads declaree_le
+            moves declaree -> verifiee
+            calls ApiObservation.suivi, ApiObservation.manoeuvre_detectee, ApiEvenements.en_anomalie, ApiRef.declarer_propulsion, ApiAcces.a_le_role, ApiAcces.quatre_yeux, Journal.noter
+        // Conteste une passivation déclarée (declaree -> en_cours) : l'observation la contredit
+        // (émission captée, manœuvre détectée). Les organes déclarés sont remis à passiver ; le
+        // propriétaire est notifié (ApiPasserelle.notifier, r = ""). Habilitation : "analyste" d'ORBITE. Renvoie "en_cours".
+        // Refus : Inconnu, EtatInvalide, MotifRequis, Habilitation.
+        signal contester(h: Horodatage, objet: Objet, motif: String, par: String) -> String
+            writes faits_de, motif_de
+            moves declaree -> en_cours
+            calls ApiRef.proprietaire, ApiPasserelle.notifier, ApiAcces.a_le_role, Journal.noter
+        // Constate l'échec de la passivation (-> echouee) : objet incontrôlable ou organe
+        // impossible à passiver ; risque d'explosion — manquement de gravité 2
+        // (ApiConformite.constater) et suivi renforcé (ApiObservation.demander_suivi, priorité 2,
+        // 30 jours). Habilitation : "dynamicien" du propriétaire, ou "analyste" d'ORBITE.
+        // Renvoie "echouee". Refus : Inconnu, EtatInvalide, MotifRequis, Habilitation.
+        signal constater_echec(h: Horodatage, objet: Objet, motif: String, par: String) -> String
+            writes motif_de
+            moves a_planifier -> echouee, en_cours -> echouee, declaree -> echouee
+            calls ApiRef.proprietaire, ApiConformite.constater, ApiObservation.demander_suivi, ApiAcces.a_le_role, ApiAcces.agit_pour, Journal.noter
+        // Vrai si la passivation de l'objet est "verifiee" (lu par ApiFinDeVie.passive, donc par
+        // ApiRef.peut_manoeuvrer : un objet passivé n'est jamais désigné).
+        signal passive(objet: Objet) -> Bool
+            reads passivation
+        // Organes requis non encore déclarés passivés.
+        signal restants(objet: Objet) -> List<String>
+            reads requis_de, faits_de
+        // État : "a_planifier", "en_cours", "declaree", "verifiee", "echouee".
+        signal etat(objet: Objet) -> String
+            reads passivation
+    }
+}

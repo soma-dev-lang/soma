@@ -1,0 +1,181 @@
+// RENTRÉES — la rentrée contrôlée : le propriétaire d'un objet manœuvrant dépose un plan de
+// désorbitation dirigée vers une zone d'impact océanique (loin des côtes et des routes), ORBITE
+// l'instruit (zone, avis aux navigants et aux navigateurs aériens), l'approuve à quatre yeux,
+// puis constate si la rentrée a eu lieu dans la zone. Le plan de manœuvre lui-même (criblage,
+// approbation, exécution) relève de manœuvres : il est référencé ici par son id, écrit une fois.
+// Une rentrée contrôlée ouvre (ou révise) la campagne de l'objet ; elle la suit par
+// `campagne_de`.
+
+// État d'une rentrée contrôlée ; "inconnue" : id jamais déposé.
+cell type ReeEtatControlee = String where value == "inconnue" || value == "depose" || value == "instruit" || value == "approuve" || value == "executee" || value == "reussie" || value == "manquee" || value == "rejete" || value == "annule"
+
+skeleton ReeControlee {
+    const MAX_PLANS = 100000
+    // Distance minimale entre la zone d'impact et la terre habitée la plus proche : 500 km.
+    const DISTANCE_COTES_MIN = 500000
+    // Espérance de victimes maximale admise dans la zone d'impact (millionièmes) : 1e-6.
+    const VICTIMES_ZONE_MAX = 1
+    // Préavis minimal entre l'approbation et le début de la fenêtre d'impact : 72 h (avis aux
+    // navigants, NOTAM).
+    const PREAVIS = 259200000
+    const MAX_PPM = 1000000000
+
+    memory {
+        // plan de rentrée → campagne. Écrit une fois par `deposer` à la création, jamais supprimé.
+        campagne_de: Map<String, String> [persistent]
+        // plan de rentrée → plan de manœuvre de désorbitation (ApiManoeuvres), écrit une fois par
+        // `deposer` : lien des règles proposées avec manœuvres.
+        manoeuvre_de: Map<String, String> [persistent]
+        objet_de: Map<String, Objet> [persistent]
+        // campagne → plan de rentrée contrôlée (le dernier déposé).
+        par_campagne: Map<String, String> [persistent]
+        // Zone d'impact : désignation ("SPOUA", ou boîte "lat1,lon1,lat2,lon2"), distance aux côtes (m).
+        zone: Map<String, String> [persistent]
+        distance_cotes: Map<String, Distance> [persistent]
+        impact_debut: Map<String, Horodatage> [persistent]
+        impact_fin: Map<String, Horodatage> [persistent]
+        // Espérance de victimes dans la zone (millionièmes), de l'étude du propriétaire.
+        victimes_zone: Map<String, Int> [persistent]
+        // Référence des avis aux navigants maritimes et aériens émis (NAVAREA, NOTAM).
+        avis: Map<String, String> [persistent]
+        // plan → fondement de l'approbation : "plan=<état manœuvre> | eph=<dépôt> | op=<actif>"
+        // et "par / valideur" — preuve en cas de dommage.
+        approbation: Map<String, String> [persistent]
+        // plan → motif d'un rejet ou d'une annulation.
+        motif: Map<String, String> [persistent]
+        invariant campagne_de.size <= MAX_PLANS
+        invariant manoeuvre_de.size <= MAX_PLANS
+        invariant victimes_zone >= 0 && victimes_zone <= MAX_PPM
+        invariant (impact_fin ?? 1000000000000000000) > (impact_debut ?? 0)
+    }
+
+    // Vie d'un plan de rentrée contrôlée (instance = "RC-<n>").
+    // Terminaux : reussie, manquee, rejete, annule.
+    state plan {
+        initial: depose
+        depose -> instruit          // instruire : zone et avis vérifiés
+        depose -> rejete            // rejeter, ou constater_rentree (rentrée survenue avant)
+        instruit -> rejete          // rejeter, ou constater_rentree
+        instruit -> approuve        // approuver : quatre yeux, campagne en cours
+        approuve -> executee        // confirmer : manœuvre de désorbitation exécutée
+        approuve -> depose          // reporter : nouvelle fenêtre d'impact, à réinstruire
+        approuve -> annule          // annuler, ou constater_rentree (rentrée avant exécution)
+        executee -> reussie         // constater_rentree : impact dans la zone
+        executee -> manquee         // constater_rentree : impact hors zone (rentrée non contrôlée)
+    }
+
+    face {
+        // Dépose un plan de rentrée contrôlée d'un objet : plan de manœuvre de désorbitation déjà
+        // déclaré chez manœuvres pour CET objet avec le motif "desorbitation" (ApiManoeuvres.objet_de,
+        // ApiManoeuvres.motif_de), zone d'impact,
+        // distance aux côtes (m), fenêtre d'impact (ms), espérance de victimes dans la zone
+        // (millionièmes). Ouvre ou révise la campagne de l'objet (ReeCampagne.prevoir, par
+        // "systeme", fenêtre = fenêtre d'impact). Renvoie l'id ("RC-<n>").
+        // Habilitation : par "dynamicien" du propriétaire de l'objet (rôle d'opérateur,
+        // ApiAcces.agit_pour sur ApiRef.proprietaire).
+        // Refus : Inconnu (objet, ou plan de manœuvre), Existe (plan de manœuvre déjà lié),
+        // Incoherent (fin ≤ debut, debut ≤ h, plan d'un autre objet ou d'un autre motif),
+        // NonEligible (ApiRef.peut_manoeuvrer faux : hors service, sans propulsion, en anomalie
+        // ou passivé), Suspendu (ApiOperateurs.est_actif faux), Conflit (autre
+        // plan non terminal pour la campagne), HorsBornes (victimes_ppm), Habilitation, Plein.
+        signal deposer(h: Horodatage, objet: Objet, manoeuvre: String, zone_impact: String, distance: Distance, debut: Horodatage, fin: Horodatage, victimes_ppm: Int, par: String) -> String
+            writes campagne_de, manoeuvre_de, objet_de, par_campagne, zone, distance_cotes, impact_debut, impact_fin, victimes_zone
+            reads plan
+            calls ApiAcces.a_le_role, ApiAcces.agit_pour, ApiRef.proprietaire, ApiRef.peut_manoeuvrer, ApiOperateurs.est_actif, ApiManoeuvres.objet_de, ApiManoeuvres.motif_de, ReeCampagne.prevoir, Journal.noter, next_id
+
+        // Instruit le plan (premier dépôt, ou après un report) : distance aux côtes ≥ DISTANCE_COTES_MIN, victimes dans la zone ≤
+        // VICTIMES_ZONE_MAX, avis aux navigants et NOTAM émis (référence `avis_navigation`).
+        // Renvoie "instruit".
+        // Habilitation : par "analyste" (rôle d'ORBITE).
+        // Refus : Inconnu, EtatInvalide (pas "depose"), HorsBornes (zone trop proche des côtes,
+        // ou trop de victimes attendues), MotifRequis (avis_navigation vide), Habilitation.
+        signal instruire(h: Horodatage, rc: String, avis_navigation: String, par: String) -> ReeEtatControlee
+            writes avis
+            reads distance_cotes, victimes_zone
+            moves depose -> instruit
+            calls ApiAcces.a_le_role, Journal.noter
+
+        // Approuve la rentrée contrôlée. Exige, et garde dans `approbation` : le plan de manœuvre
+        // criblé chez manœuvres (ApiManoeuvres.etat "crible" — manœuvres n'approuve ensuite la
+        // désorbitation que sur ApiReentrees.controlee_approuvee : l'ordre est criblage → rentrée
+        // approuvée ici → manœuvre approuvée là), une éphéméride fraîche de l'objet
+        // (ApiEphemerides.fraiche, dépôt ApiEphemerides.derniere), l'opérateur actif, l'objet
+        // capable de manœuvrer (ApiRef.peut_manoeuvrer, anomalie comprise), le préavis PREAVIS
+        // avant le début de la fenêtre d'impact. Renvoie "approuve".
+        // Habilitation : par "analyste", valideur "superviseur" (rôles d'ORBITE, ApiAcces.quatre_yeux).
+        // Règle (regles.toml) : le plan de manœuvre lu dans `manoeuvre_de` est "crible" ou
+        // "approuve" (ré-approbation après un report) au moment de l'approbation.
+        // Refus : Inconnu, EtatInvalide (pas "instruit", ou campagne terminée), Insuffisant (plan
+        // de manœuvre ni "crible" ni "approuve"), Perime (éphéméride), Suspendu (opérateur), NonEligible (objet),
+        // Delai (préavis), Habilitation, QuatreYeux.
+        signal approuver(h: Horodatage, rc: String, par: String, valideur: String) -> ReeEtatControlee
+            writes approbation
+            reads campagne_de, manoeuvre_de, objet_de, impact_debut
+            moves instruit -> approuve when ReeCampagne.ouverte || ReeCampagne.imminente via campagne_de
+            calls ApiAcces.a_le_role, ApiAcces.quatre_yeux, ReeCampagne.etat, ApiManoeuvres.etat, ApiEphemerides.fraiche, ApiEphemerides.derniere, ApiOperateurs.est_actif, ApiRef.proprietaire, ApiRef.peut_manoeuvrer, Journal.noter
+
+        // Reporte un plan approuvé non exécuté sur une nouvelle fenêtre d'impact (météo, report de
+        // la manœuvre) : le plan revient "depose", ses avis aux navigants sont effacés (à réémettre
+        // par `instruire`), l'approbation est à refaire, et la campagne est révisée
+        // (ReeCampagne.prevoir, par "systeme"). Renvoie "depose".
+        // Habilitation : par "dynamicien" du propriétaire (rôle d'opérateur, ApiAcces.agit_pour).
+        // Refus : Inconnu, EtatInvalide (pas "approuve"), Incoherent (fin ≤ debut, ou debut ≤ h),
+        // MotifRequis, Habilitation.
+        signal reporter(h: Horodatage, rc: String, debut: Horodatage, fin: Horodatage, motif_report: String, par: String) -> ReeEtatControlee
+            writes impact_debut, impact_fin, avis, motif
+            reads objet_de, victimes_zone
+            moves approuve -> depose
+            calls ApiAcces.a_le_role, ApiAcces.agit_pour, ApiRef.proprietaire, ReeCampagne.prevoir, Journal.noter
+
+        // Rejette un plan non approuvé. Renvoie "rejete".
+        // Habilitation : par "analyste" (rôle d'ORBITE).
+        // Refus : Inconnu, EtatInvalide (ni "depose" ni "instruit"), MotifRequis, Habilitation.
+        signal rejeter(h: Horodatage, rc: String, motif_rejet: String, par: String) -> ReeEtatControlee
+            writes motif
+            reads campagne_de
+            moves depose -> rejete, instruit -> rejete
+            calls ApiAcces.a_le_role, Journal.noter
+
+        // Annule un plan approuvé non exécuté (propulsion perdue, report). La campagne continue
+        // comme rentrée non contrôlée. Renvoie "annule".
+        // Habilitation : par "dynamicien" du propriétaire (rôle d'opérateur, ApiAcces.agit_pour)
+        // ou "analyste" (rôle d'ORBITE).
+        // Refus : Inconnu, EtatInvalide (pas "approuve"), MotifRequis, Habilitation.
+        signal annuler(h: Horodatage, rc: String, motif_annulation: String, par: String) -> ReeEtatControlee
+            writes motif
+            reads objet_de
+            moves approuve -> annule
+            calls ApiAcces.a_le_role, ApiAcces.agit_pour, ApiRef.proprietaire, Journal.noter
+
+        // Constate l'exécution de la manœuvre de désorbitation (ApiManoeuvres.etat "execute" ou
+        // "verifie" du plan lu dans `manoeuvre_de` : règle de l'arête). Renvoie "executee".
+        // Habilitation : par "systeme" ou "analyste" (rôles d'ORBITE).
+        // Refus : Inconnu, EtatInvalide (pas "approuve", ou manœuvre ni "execute" ni "verifie"), Habilitation.
+        signal confirmer(h: Horodatage, rc: String, par: String) -> ReeEtatControlee
+            reads manoeuvre_de
+            moves approuve -> executee when ManPlan.execute || ManPlan.verifie via manoeuvre_de
+            calls ApiAcces.a_le_role, ApiManoeuvres.etat, Journal.noter
+
+        // Tranche le plan de la campagne à la rentrée constatée : "executee" → "reussie" si
+        // `dans_zone`, "manquee" sinon (manquement de l'opérateur : ApiConformite.constater,
+        // gravité 3, par "systeme") ; un plan "depose"/"instruit" → "rejete", "approuve" →
+        // "annule" (rentrée survenue avant l'exécution). Sans plan pour la campagne : rien.
+        // Appelé par ReeCampagne.constater, qui porte l'habilitation. Renvoie l'état atteint,
+        // "inconnue" sans plan.
+        signal constater_rentree(h: Horodatage, campagne: String, dans_zone: Bool) -> ReeEtatControlee
+            writes motif
+            reads par_campagne, objet_de, campagne_de
+            moves executee -> reussie when ReeCampagne.rentree via campagne_de, executee -> manquee, depose -> rejete, instruit -> rejete, approuve -> annule
+            calls ApiRef.proprietaire, ApiConformite.constater, Journal.noter
+
+        // Vrai si la campagne a un plan de rentrée contrôlée "approuve" ou "executee"
+        // (ApiReentrees.controlee_approuvee).
+        signal actif(campagne: String) -> Bool
+            reads par_campagne, plan
+
+        // Zone d'impact du plan de la campagne ("" sans plan) : ReeCampagne.constater en déduit
+        // `dans_zone` à partir du lieu constaté.
+        signal zone_de(campagne: String) -> String
+            reads par_campagne, zone
+    }
+}

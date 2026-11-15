@@ -1,0 +1,89 @@
+// CONFORMITÉ — indicateurs publics trimestriels : ce que le public peut savoir de la discipline
+// collective, sans désigner personne. Seuls des agrégats sont publiés ; une case qui compterait
+// moins de K_MIN opérateurs est fusionnée avec sa voisine ou masquée (aucun opérateur
+// reconnaissable). Diffusion "public".
+
+// Indicateur publié.
+// "manquements_par_nature" : manquements qualifiés du trimestre par ConfNature ;
+// "taux_forclusion" : part (Pourcent) des contradictoires clos par forclusion (silence) ;
+// "repartition_notes" : opérateurs par tranche de note (ConfNotation.repartition) ;
+// "mesures" : mesures entrées en vigueur par nature ; "reponses_etats" : demandes de suspension
+// et part de réponses des États dans le délai.
+cell type ConfIndicateurNom = String where value == "manquements_par_nature" || value == "taux_forclusion" || value == "repartition_notes" || value == "mesures" || value == "reponses_etats"
+
+skeleton ConfIndicateur {
+    const MAX_PUBLICATIONS = 10000
+    const K_MIN = 3                        // effectif minimal d'une case publiée
+    memory {
+        // publication "IND-<annee>-T<n>" → période couverte [debut, fin[ (ms), écrite par calculer.
+        debut_de: Map<String, Horodatage> [persistent]
+        invariant debut_de.size <= 10000
+        fin_de: Map<String, Horodatage> [persistent]
+        valeurs_de: Map<String, String> [persistent]       // indicateur=valeur;… (agrégats seuls)
+        masquees_de: Map<String, Int> [persistent]         // cases masquées par K_MIN
+        invariant masquees_de >= 0
+        calcule_par: Map<String, String> [persistent]
+        verifie_par: Map<String, String> [persistent]
+        publie_le: Map<String, Horodatage> [persistent]
+        motif_de: Map<String, String> [persistent]          // motif de rejet ou de retrait
+        // publication retirée → publication qui la remplace ("" si aucune).
+        remplacee_par: Map<String, String> [persistent]
+    }
+    // Cycle d'une publication. Terminaux : rejetee, retiree.
+    state cycle {
+        initial: calculee
+        calculee -> verifiee     // verifier : quatre yeux, contrôle d'anonymat
+        calculee -> rejetee      // rejeter
+        verifiee -> publiee      // publier
+        verifiee -> rejetee      // rejeter
+        publiee -> retiree       // retirer : erratum, remplacée par une nouvelle publication
+    }
+    face {
+        // Calcule les indicateurs de la période [debut, fin[ à partir des agrégats de la
+        // conformité (ConfNotation.repartition, ConfManquement.compter, ConfMesure.compter,
+        // ConfDemande.compter_etat sur les opérateurs et États suivis), applique K_MIN.
+        // Renvoie le nombre de cases masquées.
+        // Refus : Existe, Incoherent (fin ≤ debut ou fin > h), Plein, Habilitation (par
+        // "conformite" ou "analyste" d'ORBITE, ou "systeme").
+        signal calculer(h: Horodatage, publication: String, debut: Horodatage, fin: Horodatage, par: String) -> Int
+            writes debut_de, fin_de, valeurs_de, masquees_de, calcule_par
+            calls ApiAcces.a_le_role, ConfNotation.repartition, ConfManquement.compter, ConfMesure.compter, ConfDemande.compter_etat, ConfVeille.operateurs_de_etat, ConfVeille.operateurs_suivis, ApiRef.etats_participants
+        // Vérifie (anonymat, cohérence avec le trimestre précédent) : calculee -> verifiee.
+        // Renvoie "verifiee". Refus : Inconnu, EtatInvalide, Habilitation (par "conformite"
+        // d'ORBITE), QuatreYeux (par ≠ calculateur, ApiAcces.quatre_yeux).
+        signal verifier(h: Horodatage, publication: String, par: String) -> String
+            writes verifie_par
+            reads calcule_par
+            moves calculee -> verifiee
+            calls ApiAcces.a_le_role, ApiAcces.quatre_yeux, Journal.noter
+        // Publie : verifiee -> publiee. Renvoie "publiee".
+        // Refus : Inconnu, EtatInvalide, Habilitation (par "direction" d'ORBITE).
+        signal publier(h: Horodatage, publication: String, par: String) -> String
+            writes publie_le
+            reads debut_de
+            moves verifiee -> publiee
+            calls ApiAcces.a_le_role, Journal.noter
+        // Rejette une publication non publiée : calculee | verifiee -> rejetee. Renvoie "rejetee".
+        // Refus : Inconnu, EtatInvalide, MotifRequis, Habilitation (par "conformite" ou "direction" d'ORBITE).
+        signal rejeter(h: Horodatage, publication: String, motif: String, par: String) -> String
+            writes motif_de
+            reads debut_de
+            moves calculee -> rejetee, verifiee -> rejetee
+            calls ApiAcces.a_le_role, Journal.noter
+        // Retire une publication erronée : publiee -> retiree ; `remplacante` ("" si aucune) doit
+        // être publiée et couvrir la même période. Renvoie "retiree".
+        // Refus : Inconnu, EtatInvalide, MotifRequis, Incoherent (remplaçante non publiée ou autre
+        // période), Habilitation (par "direction" d'ORBITE).
+        signal retirer(h: Horodatage, publication: String, remplacante: String, motif: String, par: String) -> String
+            writes motif_de, remplacee_par
+            reads debut_de, fin_de, cycle
+            moves publiee -> retiree
+            calls ApiAcces.a_le_role, Journal.noter
+        // Valeurs publiées (lecture publique, sans habilitation). Refus : Inconnu, EtatInvalide (non publiée).
+        signal lire(publication: String) -> String
+            reads valeurs_de, cycle
+        // État ; "inconnue" si l'id n'existe pas.
+        signal etat_publication(publication: String) -> String
+            reads cycle, debut_de
+    }
+}

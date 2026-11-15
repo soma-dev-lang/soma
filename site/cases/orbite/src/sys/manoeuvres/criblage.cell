@@ -1,0 +1,65 @@
+// MANŒUVRES — criblage obligatoire de la trajectoire après manœuvre (propriété 4) : une seule
+// demande par plan, sur l'éphéméride du propriétaire en vigueur et le catalogue d'ORBITE, avec
+// recriblages avant exécution quand le premier vieillit. Instance = id du plan.
+
+// Fiche d'un criblage : dépôt d'éphéméride criblé (ApiEphemerides.derniere au moment du
+// criblage), son âge et sa qualité, facteur d'incertitude météo appliqué (100 = aucun),
+// criblage renforcé (tempête ou nuage de débris dans le régime), nombre de rapprochements de
+// niveau ≥ 2 que la trajectoire créerait (0 : sûr), instant du dernier criblage.
+// État d'un criblage ("demande" : pas encore criblé).
+cell type ManEtatCriblage = String where value == "demande" || value == "sur" || value == "a_risque" || value == "impossible"
+cell type ManFicheCriblage { variants { ManFicheCriblage { depot: String, age_ephemeride: Duree, qualite: Qualite, facteur: Pourcent, renforce: Bool, conflits: Int, crible_le: Horodatage, recriblages: Int } } }
+
+skeleton ManCriblage {
+    const MAX_CRIBLAGES = 50000000
+    // Recriblages d'un même plan avant exécution (un par cycle de 8 h sur une fenêtre lointaine).
+    const MAX_RECRIBLAGES = 50
+    memory {
+        fiche_de: Map<String, ManFicheCriblage> [persistent] // plan -> dernier résultat ; écrit par `cribler`, mis à jour par `recribler`
+        motif_impossible_de: Map<String, String> [persistent] // plan -> raison d'un criblage impossible (catalogue périmé, éphéméride périmée)
+        depot_de: Map<String, String> [persistent]         // plan -> dépôt d'éphéméride du PREMIER criblage (ApiEphemerides.derniere, "" si aucun) ; écrit par `cribler` seul, une fois, jamais effacé (lien de la règle demande -> sur)
+        invariant depot_de.size <= MAX_CRIBLAGES
+        invariant fiche_de.size <= MAX_CRIBLAGES
+        invariant motif_impossible_de.size <= MAX_CRIBLAGES
+    }
+    // Cycle du criblage d'un plan. Terminal : le plan statue sur le premier résultat ; un
+    // recriblage met à jour la fiche sans changer l'état (un nouveau risque annule le plan).
+    state cycle {
+        initial: demande
+        demande -> sur           // 0 rapprochement de niveau ≥ 2 créé dans les 7 jours
+        demande -> a_risque      // au moins un rapprochement de niveau ≥ 2 créé
+        demande -> impossible    // éphéméride non fraîche, ou catalogue non criblé depuis 8 h (Perime)
+    }
+    face {
+        // Crible le plan (ManPlan.fiche) : exige ApiEphemerides.fraiche(objet, h) et un dernier dépôt
+        // qui intègre la poussée (ApiEphemerides.avec_manoeuvres(derniere)) — sinon demande -> impossible ; appelle ApiConjonctions.cribler_plan(h, objet, plan, debut, dv) —
+        // refus Perime ⇒ impossible, 0 ⇒ sur, > 0 ⇒ a_risque. Note le dépôt
+        // (ApiEphemerides.derniere), son âge et sa qualité, ApiMeteo.facteur_incertitude du régime
+        // et le renforcement (ApiMeteo.tempete ou ApiEvenements.nuage_actif). `par` "systeme"
+        // (enchaîné par ApiManoeuvres.declarer). Écrit `depot_de` une fois (`require
+        // depot_de.get(plan) == () else EtatInvalide`). "sur" exige en outre que ce dépôt soit validé
+        // (ApiEphemerides.depot_valide, règle entre sous-systèmes : EphDepot "validee" ; sinon impossible).
+        // Renvoie le nombre de conflits (−1 si impossible).
+        // Refus : Inconnu (plan), EtatInvalide (déjà criblé), Habilitation.
+        signal cribler(h: Horodatage, plan: String, par: String) -> Int
+            writes fiche_de, motif_impossible_de, depot_de
+            moves demande -> sur when EphDepot.validee via depot_de, demande -> a_risque, demande -> impossible
+            calls ManPlan.fiche, ApiRef.regime, ApiEphemerides.fraiche, ApiEphemerides.derniere, ApiEphemerides.depot_valide, ApiEphemerides.avec_manoeuvres, ApiEphemerides.age, ApiEphemerides.qualite, ApiConjonctions.cribler_plan, ApiMeteo.facteur_incertitude, ApiMeteo.tempete, ApiEvenements.nuage_actif, ApiAcces.a_le_role, Journal.noter
+        // Recrible un plan "sur" dont le criblage a plus de 8 h (ManPlan.reexaminer) : même
+        // procédure (dépôt frais intégrant la poussée), met à jour la fiche (dépôt, âge, conflits, crible_le, recriblages + 1). Ne
+        // change pas l'état : l'appelant annule le plan si conflits > 0 ou si l'éphéméride n'est
+        // plus fraîche. `par` "systeme" ou "analyste". Renvoie le nombre de conflits.
+        // Refus : Inconnu, EtatInvalide (criblage pas "sur"), Perime (éphéméride ou catalogue),
+        // Plein (MAX_RECRIBLAGES atteint), Habilitation.
+        signal recribler(h: Horodatage, plan: String, par: String) -> Int
+            writes fiche_de
+            reads cycle
+            calls ManPlan.fiche, ApiRef.regime, ApiEphemerides.fraiche, ApiEphemerides.derniere, ApiEphemerides.avec_manoeuvres, ApiEphemerides.age, ApiEphemerides.qualite, ApiConjonctions.cribler_plan, ApiMeteo.facteur_incertitude, ApiMeteo.tempete, ApiEvenements.nuage_actif, ApiAcces.a_le_role, Journal.noter
+        // État du criblage : "demande", "sur", "a_risque", "impossible" ; "demande" si jamais criblé.
+        signal etat(plan: String) -> ManEtatCriblage
+            reads cycle
+        // Dernière fiche de criblage. Refus : Inconnu (jamais criblé).
+        signal fiche(plan: String) -> ManFicheCriblage
+            reads fiche_de
+    }
+}

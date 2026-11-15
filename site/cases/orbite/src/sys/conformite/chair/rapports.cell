@@ -1,0 +1,180 @@
+// Corps de ConfRapport : rapports annuels de conformité adressés aux États.
+flesh ConfRapport {
+    on ouvrir(h, etat, annee, par) {
+        require ApiAcces.a_le_role(par, "conformite") || ApiAcces.a_le_role(par, "systeme") else Habilitation "{par} n'ouvre pas de rapport"
+        let id = "RAP-{etat}-{annee}"
+        require etat_de.get(id) == () else Existe "rapport {id} deja ouvert"
+        require ApiRef.etat_participant(etat) else Inconnu "Etat {etat} non participant"
+        require annee >= ANNEE_MIN && annee <= ANNEE_MAX && annee < _annee(to_int(h)) else HorsBornes "annee {annee} hors bornes ou non echue"
+        require etat_de.size < MAX_RAPPORTS else Plein "plafond de {MAX_RAPPORTS} rapports atteint"
+        let ech = Horodatage(_jour_civil(annee + 1, MOIS_ECHEANCE, 31) * 86400000)
+        etat_de.set(id, etat)
+        annee_de.set(id, annee)
+        echeance_de.set(id, ech)
+        let _ = Journal.noter(h, "conformite", par, "rapport {id} ouvert, a transmettre avant {ech}")
+        return id
+    }
+    on compiler(h, rapport, par) {
+        require ApiAcces.a_le_role(par, "conformite") || ApiAcces.a_le_role(par, "systeme") else Habilitation "{par} ne compile pas de rapport"
+        let etat_r = etat_de.get(rapport)
+        require etat_r != () else Inconnu "rapport inconnu : {rapport}"
+        let st = get_status(rapport) ?? "redaction"
+        require st == "redaction" else EtatInvalide "rapport {rapport} en {st}"
+        let annee = annee_de.get(rapport) ?? ANNEE_MIN
+        let j_debut = _jour_civil(annee, 1, 1)
+        let j_fin = _jour_civil(annee + 1, 1, 1) - 1
+        let de = Horodatage(j_debut * 86400000)
+        let a = Horodatage((j_fin + 1) * 86400000 - 1)
+        let lignes_r = ["rapport={rapport};etat={etat_r};annee={annee}"]
+        let ops = ConfVeille.operateurs_de_etat(etat_r)
+        for op in ops {
+            let n = ConfNotation.note(Org(op), a)
+            let rel = ConfNotation.releves_de(Org(op), Jour(j_debut), Jour(j_fin))
+            let rel_min = if len(rel) > 0 { min(rel) } else { n }
+            let nb_rel = len(rel)
+            let mq = ConfManquement.compter(Org(op), de, a)
+            let ms = ConfMesure.compter(Org(op), de, a)
+            let mq_t = join(mq.map(x => to_string(x)), "/")
+            let ms_t = join(ms.map(x => to_string(x)), "/")
+            lignes_r.push("operateur={op};note_31_12={n};releves={nb_rel};note_min={rel_min};manquements_g1_g2_g3={mq_t};mesures_av_sr_ds={ms_t}")
+        }
+        let dm = ConfDemande.compter_etat(etat_r, de, a)
+        let dm_t = join(dm.map(x => to_string(x)), "/")
+        lignes_r.push("demandes_transmises_acceptees_refusees_sans_reponse={dm_t}")
+        let me = ConfManquementEtat.compter(etat_r, de, a)
+        let me_t = join(me.map(x => to_string(x)), "/")
+        lignes_r.push("manquements_etat_g1_g2_g3={me_t}")
+        contenu_de.set(rapport, join(lignes_r, "\n"))
+        compile_par.set(rapport, par)
+        return len(ops)
+    }
+    on valider(h, rapport, par) {
+        require ApiAcces.a_le_role(par, "direction") else Habilitation "{par} ne valide pas de rapport"
+        require etat_de.get(rapport) != () else Inconnu "rapport inconnu : {rapport}"
+        let st = get_status(rapport) ?? "redaction"
+        require st == "redaction" else EtatInvalide "rapport {rapport} en {st}"
+        let contenu = contenu_de.get(rapport)
+        require contenu != () else Insuffisant "rapport {rapport} jamais compile"
+        let comp = compile_par.get(rapport) ?? ""
+        let qy = if comp == "systeme" { true } else { ApiAcces.quatre_yeux(comp, par) }
+        require par != comp && qy else QuatreYeux "{par} ne contre-signe pas la compilation de {comp}"
+        let taille = len(contenu)
+        valide_par.set(rapport, par)
+        empreinte_de.set(rapport, "{rapport}|{taille}|{par}|{h}")
+        transition(rapport, "redaction", "valide")
+        let _ = Journal.noter(h, "conformite", par, "rapport {rapport} valide")
+        return "valide"
+    }
+    on transmettre(h, rapport, par) {
+        require ApiAcces.a_le_role(par, "conformite") || ApiAcces.a_le_role(par, "systeme") else Habilitation "{par} ne transmet pas de rapport"
+        let etat_r = etat_de.get(rapport)
+        require etat_r != () else Inconnu "rapport inconnu : {rapport}"
+        let st = get_status(rapport) ?? "redaction"
+        require st == "valide" else EtatInvalide "rapport {rapport} en {st}"
+        require ApiRef.etat_participant(etat_r) else EtatInvalide "Etat {etat_r} non participant : annuler le rapport"
+        let org_e = ApiRef.org_de_etat(etat_r)
+        let emp = empreinte_de.get(rapport) ?? ""
+        let msg = ApiPasserelle.notifier(h, org_e, "", "rapport de conformite {rapport}", "rapport annuel {rapport} (empreinte {emp}), diffusion restreinte", 1)
+        transmis_le.set(rapport, h)
+        message_de.set(rapport, msg)
+        transition(rapport, "valide", "transmis")
+        let ech = echeance_de.get(rapport) ?? h
+        if h > ech {
+            let _ = Journal.noter(h, "conformite", par, "rapport {rapport} transmis en retard (echeance {ech})")
+        }
+        let _ = Journal.noter(h, "conformite", par, "rapport {rapport} transmis a {org_e} (message {msg})")
+        return "transmis"
+    }
+    on accuser(h, rapport, par) {
+        let etat_r = etat_de.get(rapport)
+        require etat_r != () else Inconnu "rapport inconnu : {rapport}"
+        let org_e = ApiRef.org_de_etat(etat_r)
+        let role_ok = ApiAcces.a_le_role(par, "point_focal") || ApiAcces.a_le_role(par, "autorite")
+        require role_ok && ApiAcces.agit_pour(par, org_e) else Habilitation "{par} n'accuse pas pour {etat_r}"
+        let st = get_status(rapport) ?? "redaction"
+        require st == "transmis" else EtatInvalide "rapport {rapport} en {st}"
+        accuse_par.set(rapport, par)
+        transition(rapport, "transmis", "accuse")
+        let _ = Journal.noter(h, "conformite", par, "rapport {rapport} accuse par {etat_r}")
+        return "accuse"
+    }
+    on constater_silence(h, rapport, par) {
+        require ApiAcces.a_le_role(par, "systeme") else Habilitation "{par} ne constate pas de silence"
+        let etat_r = etat_de.get(rapport)
+        require etat_r != () else Inconnu "rapport inconnu : {rapport}"
+        let st = get_status(rapport) ?? "redaction"
+        require st == "transmis" else EtatInvalide "rapport {rapport} en {st}"
+        let t = transmis_le.get(rapport) ?? h
+        require h - t >= DELAI_ACCUSE_MS else Delai "delai d'accuse de {rapport} non ecoule"
+        transition(rapport, "transmis", "sans_accuse")
+        let me = ConfManquementEtat.constater(h, etat_r, "rapport_sans_accuse", 1, rapport, "rapport {rapport} sans accuse de reception", "systeme")
+        let _ = Journal.noter(h, "conformite", par, "rapport {rapport} sans accuse : manquement {me}")
+        return "sans_accuse"
+    }
+    on annuler(h, rapport, motif, par) {
+        require ApiAcces.a_le_role(par, "direction") else Habilitation "{par} n'annule pas de rapport"
+        require etat_de.get(rapport) != () else Inconnu "rapport inconnu : {rapport}"
+        require motif != "" else MotifRequis "motif d'annulation requis"
+        let st = get_status(rapport) ?? "redaction"
+        require st == "redaction" || st == "valide" else EtatInvalide "rapport {rapport} en {st}"
+        motif_de.set(rapport, motif)
+        if st == "redaction" {
+            transition(rapport, "redaction", "annule")
+        } else {
+            transition(rapport, "valide", "annule")
+        }
+        let _ = Journal.noter(h, "conformite", par, "rapport {rapport} annule : {motif}")
+        return "annule"
+    }
+    on lire(h, rapport, par) {
+        let etat_r = etat_de.get(rapport)
+        require etat_r != () else Inconnu "rapport inconnu : {rapport}"
+        let ok = ApiAcces.a_le_role(par, "conformite") || ApiAcces.a_le_role(par, "direction") || ApiAcces.a_le_role(par, "auditeur")
+        if !ok && (ApiAcces.a_le_role(par, "point_focal") || ApiAcces.a_le_role(par, "autorite")) {
+            ok = ApiAcces.agit_pour(par, ApiRef.org_de_etat(etat_r))
+        }
+        require ok else Confidentiel "{par} n'a pas acces au rapport {rapport}"
+        let _ = Journal.noter(h, "conformite", par, "lecture du rapport {rapport}")
+        return contenu_de.get(rapport) ?? ""
+    }
+    on etat_rapport(rapport) {
+        if etat_de.get(rapport) == () { return "inconnu" }
+        return get_status(rapport) ?? "redaction"
+    }
+    on en_retard(h, n) {
+        let cand_p = []
+        for e in echeance_de.entries {
+            let st = get_status(e.key) ?? "redaction"
+            let t = transmis_le.get(e.key) ?? 0
+            let pris = ((st == "redaction" || st == "valide") && h > e.value) || (st == "transmis" && h - t >= DELAI_ACCUSE_MS)
+            if pris { cand_p.push(map("id", e.key, "t", e.value)) }
+        }
+        let tries_p = cand_p.sort_by(x => x.t)
+        let res_p = []
+        for c in tries_p {
+            if len(res_p) < n { res_p.push(c.id) }
+        }
+        return res_p
+    }
+    // Numéro de jour (epoch day) d'une date civile (Hinnant).
+    on _jour_civil(y: Int, m: Int, d: Int) {
+        let ya = if m <= 2 { y - 1 } else { y }
+        let era = idiv(ya, 400)
+        let yoe = ya - era * 400
+        let mp = if m > 2 { m - 3 } else { m + 9 }
+        let doy = idiv(153 * mp + 2, 5) + d - 1
+        let doe = yoe * 365 + idiv(yoe, 4) - idiv(yoe, 100) + doy
+        return era * 146097 + doe - 719468
+    }
+    on _annee(ms: Int) {
+        let z = idiv(ms, 86400000) + 719468
+        let era = idiv(z, 146097)
+        let doe = z - era * 146097
+        let yoe = idiv(doe - idiv(doe, 1460) + idiv(doe, 36524) - idiv(doe, 146096), 365)
+        let doy = doe - (365 * yoe + idiv(yoe, 4) - idiv(yoe, 100))
+        let mp = idiv(5 * doy + 2, 153)
+        let mois = if mp < 10 { mp + 3 } else { mp - 9 }
+        let y = yoe + era * 400
+        return if mois <= 2 { y + 1 } else { y }
+    }
+}

@@ -1,0 +1,119 @@
+// Corps de ConfRemediation : plan de remédiation après un manquement qualifié de gravité ≥ 2.
+flesh ConfRemediation {
+    on demander(h, m, par) {
+        require ApiAcces.a_le_role(par, "conformite") || ApiAcces.a_le_role(par, "systeme") else Habilitation "{par} ne demande pas de remediation"
+        require op_de.get(m) == () else Existe "remediation {m} deja demandee"
+        let em = ConfManquement.etat_manquement(m)
+        require em != "inconnu" else Inconnu "manquement inconnu : {m}"
+        require em == "qualifie" else EtatInvalide "manquement {m} en {em}"
+        require ConfManquement.gravite(m) >= 2 else NonEligible "manquement {m} de gravite 1"
+        require op_de.size < MAX_REMEDIATIONS else Plein "plafond de {MAX_REMEDIATIONS} remediations atteint"
+        let op_m = ConfManquement.op(m)
+        let ech = Horodatage(to_int(h) + DELAI_DEPOT_MS)
+        op_de.set(m, op_m)
+        echeance_de.set(m, ech)
+        let _ = ApiPasserelle.notifier(h, op_m, "", "remediation {m}", "plan de remediation du manquement {m} a deposer avant {ech}", 2)
+        let _ = Journal.noter(h, "conformite", par, "remediation {m} demandee a {op_m}, depot avant {ech}")
+        return ech
+    }
+    on deposer(h, m, empreinte, par) {
+        let op_m = op_de.get(m)
+        require op_m != () else Inconnu "remediation inconnue : {m}"
+        require ApiAcces.a_le_role(par, "chef_de_mission") && ApiAcces.agit_pour(par, op_m) else Habilitation "{par} ne depose pas pour {op_m}"
+        let st = get_status(m) ?? "demandee"
+        require st == "demandee" || st == "refusee" else EtatInvalide "remediation {m} en {st}"
+        require empreinte != "" else MotifRequis "empreinte du plan vide"
+        let ech = echeance_de.get(m) ?? 0
+        require h <= ech else Delai "echeance de depot de {m} passee"
+        let v = (versions_de.get(m) ?? 0) + 1
+        require v <= 10 else HorsBornes "plus de 10 versions du plan {m}"
+        plan_de.set(m, empreinte)
+        versions_de.set(m, v)
+        depose_par.set(m, par)
+        if st == "demandee" {
+            transition(m, "demandee", "deposee")
+        } else {
+            transition(m, "refusee", "deposee")
+        }
+        let _ = Journal.noter(h, "conformite", par, "remediation {m} : plan v{v} depose")
+        return v
+    }
+    on accepter(h, m, fin, par) {
+        require ApiAcces.a_le_role(par, "conformite") else Habilitation "{par} n'accepte pas de plan"
+        require echeance_de.get(m) != () else Inconnu "remediation inconnue : {m}"
+        let st = get_status(m) ?? "demandee"
+        require st == "deposee" else EtatInvalide "remediation {m} en {st}"
+        require to_int(fin) > to_int(h) && to_int(fin) <= to_int(h) + DELAI_MAX_PLAN_MS else HorsBornes "fin du plan hors de ]h, h + 180 j]"
+        echeance_de.set(m, fin)
+        decide_par.set(m, par)
+        transition(m, "deposee", "acceptee")
+        let _ = Journal.noter(h, "conformite", par, "remediation {m} acceptee, realisation avant {fin}")
+        return "acceptee"
+    }
+    on refuser(h, m, motif, par) {
+        require ApiAcces.a_le_role(par, "conformite") else Habilitation "{par} ne refuse pas de plan"
+        let op_m = op_de.get(m)
+        require op_m != () else Inconnu "remediation inconnue : {m}"
+        let st = get_status(m) ?? "demandee"
+        require st == "deposee" else EtatInvalide "remediation {m} en {st}"
+        require motif != "" else MotifRequis "motif de refus requis"
+        motif_de.set(m, motif)
+        decide_par.set(m, par)
+        let _ = ApiPasserelle.notifier(h, op_m, "", "remediation {m}", "plan refuse : {motif}", 2)
+        transition(m, "deposee", "refusee")
+        let _ = Journal.noter(h, "conformite", par, "remediation {m} : plan refuse")
+        return "refusee"
+    }
+    on constater_realisation(h, m, preuve, par, valideur) {
+        require ApiAcces.a_le_role(par, "conformite") else Habilitation "{par} ne constate pas de realisation"
+        require op_de.get(m) != () else Inconnu "remediation inconnue : {m}"
+        let accepteur = decide_par.get(m) ?? ""
+        require valideur != accepteur && ApiAcces.quatre_yeux(par, valideur) else QuatreYeux "contre-signature de {valideur} refusee"
+        let st = get_status(m) ?? "demandee"
+        require st == "acceptee" else EtatInvalide "remediation {m} en {st}"
+        require preuve != "" else MotifRequis "preuve de realisation requise"
+        realisee_le.set(m, h)
+        motif_de.set(m, preuve)
+        transition(m, "acceptee", "realisee")
+        let _ = Journal.noter(h, "conformite", par, "remediation {m} realisee (valideur {valideur})")
+        return "realisee"
+    }
+    on constater_defaillance(h, m, par) {
+        require ApiAcces.a_le_role(par, "systeme") else Habilitation "{par} ne constate pas de defaillance"
+        let op_m = op_de.get(m)
+        require op_m != () else Inconnu "remediation inconnue : {m}"
+        let st = get_status(m) ?? "demandee"
+        require st == "demandee" || st == "refusee" || st == "acceptee" else EtatInvalide "remediation {m} en {st}"
+        let ech = echeance_de.get(m) ?? 0
+        require h > ech else Delai "echeance de {m} non atteinte"
+        let raison = if st == "acceptee" { "plan non realise a son terme" } else if st == "refusee" { "aucun plan acceptable" } else { "aucun plan depose" }
+        motif_de.set(m, raison)
+        if st == "demandee" {
+            transition(m, "demandee", "defaillante")
+        } else if st == "refusee" {
+            transition(m, "refusee", "defaillante")
+        } else {
+            transition(m, "acceptee", "defaillante")
+        }
+        let mq = ConfManquement.constater(h, op_m, "remediation_non_tenue", 2, m, raison, "systeme")
+        let _ = Journal.noter(h, "conformite", par, "remediation {m} defaillante ({raison}) : manquement {mq}")
+        return mq
+    }
+    on etat_remediation(m) {
+        if op_de.get(m) == () { return "inconnue" }
+        return get_status(m) ?? "demandee"
+    }
+    on echues(h, n) {
+        let cand_m = []
+        for e in echeance_de.entries {
+            let st = get_status(e.key) ?? "demandee"
+            if (st == "demandee" || st == "refusee" || st == "acceptee") && h > e.value { cand_m.push(map("id", e.key, "t", e.value)) }
+        }
+        let tries_m = cand_m.sort_by(x => x.t)
+        let res_m = []
+        for c in tries_m {
+            if len(res_m) < n { res_m.push(c.id) }
+        }
+        return res_m
+    }
+}

@@ -1,0 +1,59 @@
+// RENTRÉES — les États survolés : à chaque révision de la fenêtre, un analyste reporte la trace
+// au sol (les États sous la fenêtre, la part de la fenêtre au-dessus de chacun, l'espérance de
+// victimes sur son territoire). La trace pilote les notifications : un État qui entre sous la
+// fenêtre est inscrit, un État qui en sort (rétrécissement) reçoit un avis de levée, un État
+// dont le risque propre dépasse le seuil reçoit des messages d'urgence 3.
+// Clé "campagne|etat". Pas de machine : la trace est une donnée, révisée en bloc.
+
+skeleton ReeSurvol {
+    const MAX_TRACES = 1000000
+    const MAX_CAMPAGNES = 100000
+    // États sous une même fenêtre, au plus (une fenêtre de plusieurs orbites couvre la Terre).
+    const MAX_ETATS = 200
+    const MAX_PPM = 1000000000
+    // Traces gardées par campagne, au plus (autant que de révisions de fenêtre).
+    const MAX_REVISIONS = 500
+
+    memory {
+        // "campagne|etat" → part de la fenêtre passée au-dessus du territoire (%, ≤ 100).
+        part: Map<String, Pourcent> [persistent]
+        // "campagne|etat" → espérance de victimes sur le territoire, en millionièmes.
+        victimes_etat: Map<String, Int> [persistent]
+        // campagne → États survolés à la dernière trace.
+        etats_de: Map<String, List<String>> [persistent]
+        // campagne → "h | fenêtre debut-fin | par" de la dernière trace (fondement des avis).
+        trace: Map<String, String> [persistent]
+        // campagne → toutes les traces successives "h | debut-fin | etat:part:ppm, …" : quels États
+        // étaient sous quelle fenêtre, et quand (preuve en cas de dommage ; jamais réécrit).
+        historique: Map<String, List<String>> [persistent]
+        invariant part.size <= MAX_TRACES
+        invariant victimes_etat.size <= MAX_TRACES
+        invariant etats_de.size <= MAX_CAMPAGNES
+        invariant historique.size <= MAX_CAMPAGNES
+        invariant part <= 100
+        invariant victimes_etat >= 0 && victimes_etat <= MAX_PPM
+    }
+
+    face {
+        // Reporte la trace au sol de la fenêtre courante (ReeCampagne.fenetre) : `etats[i]` reçoit
+        // `parts[i]` % de la fenêtre et `victimes[i]` millionièmes de victimes attendues. Inscrit
+        // les nouveaux États (ReeNotification.inscrire, motif "survol"), lève les notifications
+        // des États sortis (ReeNotification.retirer), puis rediffuse (ReeNotification.diffuser).
+        // Renvoie le nombre d'États survolés.
+        // Habilitation : par "analyste" ou "systeme" (rôles d'ORBITE).
+        // Refus : Inconnu (campagne), EtatInvalide (campagne ni "ouverte" ni "imminente"),
+        // Incoherent (listes de longueurs différentes, État en double, somme des parts > 100),
+        // HorsBornes (part > 100, victimes hors [0, MAX_PPM]), Habilitation, Plein (MAX_ETATS, ou
+        // MAX_REVISIONS traces pour la campagne).
+        signal tracer(h: Horodatage, campagne: String, etats: List<String>, parts: List<Int>, victimes: List<Int>, par: String) -> Int
+            writes part, victimes_etat, etats_de, trace, historique
+            calls ApiAcces.a_le_role, ReeCampagne.etat, ReeCampagne.fenetre, ReeNotification.inscrire, ReeNotification.retirer, ReeNotification.diffuser, Journal.noter
+            ensures result >= 0
+
+        // Espérance de victimes sur le territoire de l'État pour la campagne (millionièmes) ;
+        // 0 si l'État n'est pas sous la dernière trace.
+        signal victimes_sur(campagne: String, etat: Etat) -> Int
+            reads victimes_etat, etats_de
+            ensures result >= 0
+    }
+}

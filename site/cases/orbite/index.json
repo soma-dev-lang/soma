@@ -1,0 +1,3460 @@
+{
+ "name": "orbite",
+ "description": "Simulated worldwide space traffic coordination system in Soma, written skeleton first by 20 coding agents.",
+ "readme": "https://soma-lang.dev/cases/orbite/README.md",
+ "archive": "https://soma-lang.dev/cases/orbite/orbite.tar.gz",
+ "manifest": "https://soma-lang.dev/cases/orbite/MANIFEST.txt",
+ "files": 491,
+ "lines_by_kind": {
+  "doc": 13175,
+  "entry": 582,
+  "skeleton": 21177,
+  "body": 29997,
+  "test": 15935
+ },
+ "entries": {
+  "skeleton": "app.cell",
+  "program": "prod.cell",
+  "end_to_end_test": "test_bout_en_bout.cell",
+  "replay_aeolus": "test_aeolus.cell"
+ },
+ "file_list": [
+  {
+   "path": "AEOLUS_TRACE.md",
+   "kind": "doc",
+   "lines": 128,
+   "sha256": "cfbd1a1bed64456906119c3e8b06f034affc5c4aef9709792fa89771d279daaf",
+   "url": "https://soma-lang.dev/cases/orbite/src/AEOLUS_TRACE.md"
+  },
+  {
+   "path": "CONSIGNES.md",
+   "kind": "doc",
+   "lines": 126,
+   "sha256": "8f8e2b35489697cfe6893b16185b9fa6e0d958b37277471d824b377826287432",
+   "url": "https://soma-lang.dev/cases/orbite/src/CONSIGNES.md"
+  },
+  {
+   "path": "CONSIGNES_CORPS.md",
+   "kind": "doc",
+   "lines": 124,
+   "sha256": "0345090ed2d013135cd3983c66e57e7c81f01fab79f9f8e2c7a2a672eaf9b10d",
+   "url": "https://soma-lang.dev/cases/orbite/src/CONSIGNES_CORPS.md"
+  },
+  {
+   "path": "CONSIGNES_REGLES.md",
+   "kind": "doc",
+   "lines": 78,
+   "sha256": "5df2deac107017faa7d34b8f5e0714e1da04a893c182d99129401786d26b4cdc",
+   "url": "https://soma-lang.dev/cases/orbite/src/CONSIGNES_REGLES.md"
+  },
+  {
+   "path": "CONSIGNES_V2.md",
+   "kind": "doc",
+   "lines": 72,
+   "sha256": "69e0b4415b183b0f7cfd9e4fb34365d07fad41c30f49729775ec36064ed1d85c",
+   "url": "https://soma-lang.dev/cases/orbite/src/CONSIGNES_V2.md"
+  },
+  {
+   "path": "INTEGRATION.md",
+   "kind": "doc",
+   "lines": 65,
+   "sha256": "a7d2f7f8fe2902b9cd04383e4eff7e9a7c3237a7e06da962ec2602a7b34933d1",
+   "url": "https://soma-lang.dev/cases/orbite/src/INTEGRATION.md"
+  },
+  {
+   "path": "INTEGRATION_BOUT_EN_BOUT.md",
+   "kind": "doc",
+   "lines": 221,
+   "sha256": "71d22161380e2bfbb21d90921a90a294218b3c85b8826ee18b6869ebe592278f",
+   "url": "https://soma-lang.dev/cases/orbite/src/INTEGRATION_BOUT_EN_BOUT.md"
+  },
+  {
+   "path": "app.cell",
+   "kind": "entry",
+   "lines": 177,
+   "sha256": "04e356e7590bf673f19b9446cfd6159076be098a7934a8892a7aa3b37247a267",
+   "url": "https://soma-lang.dev/cases/orbite/src/app.cell"
+  },
+  {
+   "path": "banc_acces.cell",
+   "kind": "entry",
+   "lines": 12,
+   "sha256": "a2f86fa821ca21413e235e7ee58469fb758c839ee6a20a5d82cdf1fe13e24069",
+   "url": "https://soma-lang.dev/cases/orbite/src/banc_acces.cell"
+  },
+  {
+   "path": "banc_commun.cell",
+   "kind": "entry",
+   "lines": 3,
+   "sha256": "150ceb9c2cb4059e07e12ca8a73f05de1d180a9bef24a125b0800125434c1b91",
+   "url": "https://soma-lang.dev/cases/orbite/src/banc_commun.cell"
+  },
+  {
+   "path": "banc_conformite.cell",
+   "kind": "entry",
+   "lines": 12,
+   "sha256": "3fec3336511f600f0f235fa004a7b0c48cb61ef826427d4862e3fac1edffaaab",
+   "url": "https://soma-lang.dev/cases/orbite/src/banc_conformite.cell"
+  },
+  {
+   "path": "banc_conjonctions.cell",
+   "kind": "entry",
+   "lines": 12,
+   "sha256": "3e4d721e87af38a93c3d4af62f06a05d512ef7958cafe52c51eeb5282dbfd09e",
+   "url": "https://soma-lang.dev/cases/orbite/src/banc_conjonctions.cell"
+  },
+  {
+   "path": "banc_coordination.cell",
+   "kind": "entry",
+   "lines": 12,
+   "sha256": "751eda09ce837f9b66c17719646f1cb016c795e3a14e39e217036d754c1fbdc0",
+   "url": "https://soma-lang.dev/cases/orbite/src/banc_coordination.cell"
+  },
+  {
+   "path": "banc_donnees.cell",
+   "kind": "entry",
+   "lines": 12,
+   "sha256": "a06206cb833edbdc557e49f67d08cc65333c00c9d44da94da098f6f2f9aad59c",
+   "url": "https://soma-lang.dev/cases/orbite/src/banc_donnees.cell"
+  },
+  {
+   "path": "banc_ephemerides.cell",
+   "kind": "entry",
+   "lines": 12,
+   "sha256": "eba295dd6c9381629a83161f5387b0ac1ff9bc66e4c545a9ef9b28ce8b847d33",
+   "url": "https://soma-lang.dev/cases/orbite/src/banc_ephemerides.cell"
+  },
+  {
+   "path": "banc_escalade.cell",
+   "kind": "entry",
+   "lines": 14,
+   "sha256": "77f6b15ac35c235b54af5de81f7463da19981cd8fe233f83941a90b1953db858",
+   "url": "https://soma-lang.dev/cases/orbite/src/banc_escalade.cell"
+  },
+  {
+   "path": "banc_evenements.cell",
+   "kind": "entry",
+   "lines": 12,
+   "sha256": "6fc6fffb5f4e178480c8047cbf2b42b170e688377da48b48b3fd6da16fc7ee56",
+   "url": "https://soma-lang.dev/cases/orbite/src/banc_evenements.cell"
+  },
+  {
+   "path": "banc_fin_de_vie.cell",
+   "kind": "entry",
+   "lines": 11,
+   "sha256": "05daa11be4ac01fdcac22154e96a4b55f06430b87d30e17012b34f4c3b5df529",
+   "url": "https://soma-lang.dev/cases/orbite/src/banc_fin_de_vie.cell"
+  },
+  {
+   "path": "banc_lancements.cell",
+   "kind": "entry",
+   "lines": 10,
+   "sha256": "1960a1f37b495897c249b81da7ccb88cfe30d1af7ba14f2d9d48514c9e5713e4",
+   "url": "https://soma-lang.dev/cases/orbite/src/banc_lancements.cell"
+  },
+  {
+   "path": "banc_manoeuvres.cell",
+   "kind": "entry",
+   "lines": 12,
+   "sha256": "13c5595b79018ecc0cbc3690cf4f3cc8ffca44b44e7b7fe3b3b9e0939aa8188f",
+   "url": "https://soma-lang.dev/cases/orbite/src/banc_manoeuvres.cell"
+  },
+  {
+   "path": "banc_meteo.cell",
+   "kind": "entry",
+   "lines": 12,
+   "sha256": "95039b20f6c7acc4b6bd539b1a611097fc11c747170333416f5349722506fd85",
+   "url": "https://soma-lang.dev/cases/orbite/src/banc_meteo.cell"
+  },
+  {
+   "path": "banc_observation.cell",
+   "kind": "entry",
+   "lines": 11,
+   "sha256": "f3f59b88f3a1349e01b1edd2d87c00d7b1bf07b520dd4e50441a34a8a730cd1d",
+   "url": "https://soma-lang.dev/cases/orbite/src/banc_observation.cell"
+  },
+  {
+   "path": "banc_operateurs.cell",
+   "kind": "entry",
+   "lines": 11,
+   "sha256": "f4ededb451080436bb8438fbfc919e46d455d3f4b613aeab00d36de38937e3b5",
+   "url": "https://soma-lang.dev/cases/orbite/src/banc_operateurs.cell"
+  },
+  {
+   "path": "banc_operations.cell",
+   "kind": "entry",
+   "lines": 11,
+   "sha256": "051e05145009b7e5bc3bcfb3590c877ddd5ac729f07fb3941e093557219f0a33",
+   "url": "https://soma-lang.dev/cases/orbite/src/banc_operations.cell"
+  },
+  {
+   "path": "banc_passerelle.cell",
+   "kind": "entry",
+   "lines": 11,
+   "sha256": "84cbf9ba66d45c324de70cd8f4e9b435fcebe1a60e5be37356f4cb1c78d2be67",
+   "url": "https://soma-lang.dev/cases/orbite/src/banc_passerelle.cell"
+  },
+  {
+   "path": "banc_priorites.cell",
+   "kind": "entry",
+   "lines": 11,
+   "sha256": "a95892e864e18541c77f4631e3f1826f51434a6808e020ebafafb183a7562933",
+   "url": "https://soma-lang.dev/cases/orbite/src/banc_priorites.cell"
+  },
+  {
+   "path": "banc_reentrees.cell",
+   "kind": "entry",
+   "lines": 11,
+   "sha256": "1aca69a35aed7f83194151759e755c4fcbf84d056ada3f9f827723733034b291",
+   "url": "https://soma-lang.dev/cases/orbite/src/banc_reentrees.cell"
+  },
+  {
+   "path": "banc_ref.cell",
+   "kind": "entry",
+   "lines": 10,
+   "sha256": "26e2085b73c454a47f4e4b7521608621b411bacf2b05defaa31c01a192463eac",
+   "url": "https://soma-lang.dev/cases/orbite/src/banc_ref.cell"
+  },
+  {
+   "path": "banc_responsabilite.cell",
+   "kind": "entry",
+   "lines": 10,
+   "sha256": "6995f02775017de335af6881b0f3379ef28d43be9f7655c3647fa437f61069c9",
+   "url": "https://soma-lang.dev/cases/orbite/src/banc_responsabilite.cell"
+  },
+  {
+   "path": "commun/horloge.cell",
+   "kind": "skeleton",
+   "lines": 20,
+   "sha256": "fc2626beb2da74425e6532362d70f53e4ccae37cdfe48fab21f24fc423c1a087",
+   "url": "https://soma-lang.dev/cases/orbite/src/commun/horloge.cell"
+  },
+  {
+   "path": "commun/horloge_chair.cell",
+   "kind": "body",
+   "lines": 56,
+   "sha256": "8fad415b2ee908b1c20ae24dc4508cb46ef34ecc2f1b1716159ad5571eac3144",
+   "url": "https://soma-lang.dev/cases/orbite/src/commun/horloge_chair.cell"
+  },
+  {
+   "path": "commun/journal.cell",
+   "kind": "skeleton",
+   "lines": 20,
+   "sha256": "80ccac9fc8409a1d4f745041587275c75988d1dfe23d0edb36e62d39afab0d1f",
+   "url": "https://soma-lang.dev/cases/orbite/src/commun/journal.cell"
+  },
+  {
+   "path": "commun/journal_chair.cell",
+   "kind": "body",
+   "lines": 19,
+   "sha256": "27b0b6e578a83cf25c970f75c750a6d58fdfc63300d629bacc4668c97008a120",
+   "url": "https://soma-lang.dev/cases/orbite/src/commun/journal_chair.cell"
+  },
+  {
+   "path": "commun/types.cell",
+   "kind": "skeleton",
+   "lines": 78,
+   "sha256": "772584025b26e63693bc5d8689a6e6f6bfab66a319132013fc8d7bf7e4a776b5",
+   "url": "https://soma-lang.dev/cases/orbite/src/commun/types.cell"
+  },
+  {
+   "path": "doublures/acces.cell",
+   "kind": "test",
+   "lines": 60,
+   "sha256": "4a05a811676c180f1d7cf7a27f68eda9e14e97602931aa694b7f9cb4e3ab59e6",
+   "url": "https://soma-lang.dev/cases/orbite/src/doublures/acces.cell"
+  },
+  {
+   "path": "doublures/conformite.cell",
+   "kind": "test",
+   "lines": 191,
+   "sha256": "5a9c3c5a956b5363bdbc6807fa611f80daeb55ed2b6d1f9cd2374d9042c1cd8f",
+   "url": "https://soma-lang.dev/cases/orbite/src/doublures/conformite.cell"
+  },
+  {
+   "path": "doublures/conjonctions.cell",
+   "kind": "test",
+   "lines": 159,
+   "sha256": "d0fdad97dc3683dfb81500896668eaea7ee9777d0b4f32a8e1de945b43bbf5b9",
+   "url": "https://soma-lang.dev/cases/orbite/src/doublures/conjonctions.cell"
+  },
+  {
+   "path": "doublures/coordination.cell",
+   "kind": "test",
+   "lines": 249,
+   "sha256": "6fa5279bec575f6ae38c64c659add5083c327ce5630c2d2b790b620ed595ce80",
+   "url": "https://soma-lang.dev/cases/orbite/src/doublures/coordination.cell"
+  },
+  {
+   "path": "doublures/donnees.cell",
+   "kind": "test",
+   "lines": 201,
+   "sha256": "0550d181117305bfa97037c32cf5356b37961f2a078d8bf2bbb926809effe78f",
+   "url": "https://soma-lang.dev/cases/orbite/src/doublures/donnees.cell"
+  },
+  {
+   "path": "doublures/ephemerides.cell",
+   "kind": "test",
+   "lines": 226,
+   "sha256": "d67bea2462a86248cf7f8757afe32086ee47912f20065dea57890c449778b5af",
+   "url": "https://soma-lang.dev/cases/orbite/src/doublures/ephemerides.cell"
+  },
+  {
+   "path": "doublures/escalade.cell",
+   "kind": "test",
+   "lines": 225,
+   "sha256": "97b3711208ccdb5b81ef61f2e87e3c53db845a66a4017492512b2623664c1703",
+   "url": "https://soma-lang.dev/cases/orbite/src/doublures/escalade.cell"
+  },
+  {
+   "path": "doublures/evenements.cell",
+   "kind": "test",
+   "lines": 228,
+   "sha256": "a33be555505be7bd2a7a66731e3b4e58f7f9a40563b9a7ed84921ad181a45074",
+   "url": "https://soma-lang.dev/cases/orbite/src/doublures/evenements.cell"
+  },
+  {
+   "path": "doublures/fin_de_vie.cell",
+   "kind": "test",
+   "lines": 282,
+   "sha256": "493587c45fc8aa6d1d293304c8231d770b603c0b1789a82ab75dd91fd385e35f",
+   "url": "https://soma-lang.dev/cases/orbite/src/doublures/fin_de_vie.cell"
+  },
+  {
+   "path": "doublures/lancements.cell",
+   "kind": "test",
+   "lines": 188,
+   "sha256": "f04b6cf4da77f2240bb9078d91d1032ce242e78ba9dbf25d407ca0bb89ba9582",
+   "url": "https://soma-lang.dev/cases/orbite/src/doublures/lancements.cell"
+  },
+  {
+   "path": "doublures/manoeuvres.cell",
+   "kind": "test",
+   "lines": 311,
+   "sha256": "f66d96fb1d83015a1be5eb4c4bb35775a266e7d6e6dae4308613f1ea42c485b8",
+   "url": "https://soma-lang.dev/cases/orbite/src/doublures/manoeuvres.cell"
+  },
+  {
+   "path": "doublures/meteo.cell",
+   "kind": "test",
+   "lines": 79,
+   "sha256": "4f8fc5595bbb906c0e7ba84bd291b32c59ae70c51b36254e00bf96911961a80e",
+   "url": "https://soma-lang.dev/cases/orbite/src/doublures/meteo.cell"
+  },
+  {
+   "path": "doublures/observation.cell",
+   "kind": "test",
+   "lines": 191,
+   "sha256": "9ec193aad2d635814c2c9cc018ce86b9a21b0201a81444e9104d99f4d85fa510",
+   "url": "https://soma-lang.dev/cases/orbite/src/doublures/observation.cell"
+  },
+  {
+   "path": "doublures/operateurs.cell",
+   "kind": "test",
+   "lines": 99,
+   "sha256": "7cc4565200c1fd8bd84ab1ad73a2092b42845a3bea989c83182fd74cf9e53eb4",
+   "url": "https://soma-lang.dev/cases/orbite/src/doublures/operateurs.cell"
+  },
+  {
+   "path": "doublures/operations.cell",
+   "kind": "test",
+   "lines": 121,
+   "sha256": "3030859b2e9e6cc8bab8d7593943d6a11c35ca15c4d32ec96ff81f8f64548a84",
+   "url": "https://soma-lang.dev/cases/orbite/src/doublures/operations.cell"
+  },
+  {
+   "path": "doublures/passerelle.cell",
+   "kind": "test",
+   "lines": 274,
+   "sha256": "329607160dfcc54376c7dfe8bab84e3db653da25d7ba6fca3728345ff9b3f4f7",
+   "url": "https://soma-lang.dev/cases/orbite/src/doublures/passerelle.cell"
+  },
+  {
+   "path": "doublures/priorites.cell",
+   "kind": "test",
+   "lines": 174,
+   "sha256": "a4db16cee4eca89a921db268305684ca4b89a0268d9b8bf670f525491f4ae30c",
+   "url": "https://soma-lang.dev/cases/orbite/src/doublures/priorites.cell"
+  },
+  {
+   "path": "doublures/reentrees.cell",
+   "kind": "test",
+   "lines": 197,
+   "sha256": "c9de59205a8c6c9b2b001e0150a8114f456711394e401a5a80c0859bbfe91e03",
+   "url": "https://soma-lang.dev/cases/orbite/src/doublures/reentrees.cell"
+  },
+  {
+   "path": "doublures/ref.cell",
+   "kind": "test",
+   "lines": 112,
+   "sha256": "368205ebe874241c4e6a5753693a128d0c17e7626dfae1ad14c8aedd3b9b4ff0",
+   "url": "https://soma-lang.dev/cases/orbite/src/doublures/ref.cell"
+  },
+  {
+   "path": "doublures/responsabilite.cell",
+   "kind": "test",
+   "lines": 243,
+   "sha256": "7f66244a2babf30046a985439f4fe17c853729c478daedcdc47f40a3769bc08a",
+   "url": "https://soma-lang.dev/cases/orbite/src/doublures/responsabilite.cell"
+  },
+  {
+   "path": "outils/cycles.py",
+   "kind": "doc",
+   "lines": 33,
+   "sha256": "19b6ff27534c15a37870c0bf07f513822a548c948c6c8465e9b5d19c55006165",
+   "url": "https://soma-lang.dev/cases/orbite/src/outils/cycles.py"
+  },
+  {
+   "path": "outils/graphe.py",
+   "kind": "doc",
+   "lines": 15,
+   "sha256": "e3a6dfd45daf426ea393c8a9eebb79a536dd0c85979fed048e18290b8ed59f44",
+   "url": "https://soma-lang.dev/cases/orbite/src/outils/graphe.py"
+  },
+  {
+   "path": "prod.cell",
+   "kind": "entry",
+   "lines": 173,
+   "sha256": "8b125968fbc69fa37130a9443973e0f66b7c576de803d34c7e0f07940394fec2",
+   "url": "https://soma-lang.dev/cases/orbite/src/prod.cell"
+  },
+  {
+   "path": "skeleton.lock",
+   "kind": "doc",
+   "lines": 10579,
+   "sha256": "561c5a8b4018ae2c4a77771ff200067bed7b9e2f3ca1fa2e0b23c7cf3198c282",
+   "url": "https://soma-lang.dev/cases/orbite/src/skeleton.lock"
+  },
+  {
+   "path": "soma.toml",
+   "kind": "doc",
+   "lines": 97,
+   "sha256": "566d9072dde95170a99bc4590ada7aebe44bef2de5ee6d7a2366ab1bb70bf6e7",
+   "url": "https://soma-lang.dev/cases/orbite/src/soma.toml"
+  },
+  {
+   "path": "sys/acces/NOTES.md",
+   "kind": "doc",
+   "lines": 73,
+   "sha256": "effa2287aa48057b607ad39925413a9d0c3e3441e68c33248e2f548feb3af42f",
+   "url": "https://soma-lang.dev/cases/orbite/src/sys/acces/NOTES.md"
+  },
+  {
+   "path": "sys/acces/api.cell",
+   "kind": "skeleton",
+   "lines": 72,
+   "sha256": "cd26c543a075ea55d9d03ed8f69561a33bc5de47ab328b10944ee5eea0f3837e",
+   "url": "https://soma-lang.dev/cases/orbite/src/sys/acces/api.cell"
+  },
+  {
+   "path": "sys/acces/chair/api.cell",
+   "kind": "body",
+   "lines": 70,
+   "sha256": "16671973e40d513037f6b0409d1d346d59811bee32582675d3f4d199b325f6cb",
+   "url": "https://soma-lang.dev/cases/orbite/src/sys/acces/chair/api.cell"
+  },
+  {
+   "path": "sys/acces/chair/controle.cell",
+   "kind": "body",
+   "lines": 92,
+   "sha256": "808ada156b7465002988fd4dd7283773184dc5434edc8b7fcf6c4fcdf7fb4172",
+   "url": "https://soma-lang.dev/cases/orbite/src/sys/acces/chair/controle.cell"
+  },
+  {
+   "path": "sys/acces/chair/departs.cell",
+   "kind": "body",
+   "lines": 128,
+   "sha256": "c4d46e8d81bf86797f57f7b2576d3b9383f3006052741f7bb8806e731cb3f045",
+   "url": "https://soma-lang.dev/cases/orbite/src/sys/acces/chair/departs.cell"
+  },
+  {
+   "path": "sys/acces/chair/personnes.cell",
+   "kind": "body",
+   "lines": 194,
+   "sha256": "a68713f3dc58bce1033ac2eb5998e7c420fa5a19268c620ac2b744354b0e9adc",
+   "url": "https://soma-lang.dev/cases/orbite/src/sys/acces/chair/personnes.cell"
+  },
+  {
+   "path": "sys/acces/chair/rattachement.cell",
+   "kind": "body",
+   "lines": 109,
+   "sha256": "ce8aa31a0efe22bd84211e4a189f22d9eebbd542cf0be44273ee2c1b67af2b65",
+   "url": "https://soma-lang.dev/cases/orbite/src/sys/acces/chair/rattachement.cell"
+  },
+  {
+   "path": "sys/acces/chair/recertification.cell",
+   "kind": "body",
+   "lines": 135,
+   "sha256": "05d149d0997e89bb01c3b4642f0c68b14d7b1534675297e15d2973d529247534",
+   "url": "https://soma-lang.dev/cases/orbite/src/sys/acces/chair/recertification.cell"
+  },
+  {
+   "path": "sys/acces/chair/roles.cell",
+   "kind": "body",
+   "lines": 198,
+   "sha256": "3dfd2d1b400c0644744986e3b97b4a1e37e964c6535932ce29baf58c01ce2d29",
+   "url": "https://soma-lang.dev/cases/orbite/src/sys/acces/chair/roles.cell"
+  },
+  {
+   "path": "sys/acces/chair/sessions.cell",
+   "kind": "body",
+   "lines": 273,
+   "sha256": "1697e0338ea7c0821e88b3f60f0fcd5ab07d98efd287c4b065bbb488bfdd7b3f",
+   "url": "https://soma-lang.dev/cases/orbite/src/sys/acces/chair/sessions.cell"
+  },
+  {
+   "path": "sys/acces/chair/urgence.cell",
+   "kind": "body",
+   "lines": 148,
+   "sha256": "b3265b1f47fecf6c9b78c270570e457010f8e250e249d7f4e7459601fcdfc603",
+   "url": "https://soma-lang.dev/cases/orbite/src/sys/acces/chair/urgence.cell"
+  },
+  {
+   "path": "sys/acces/controle.cell",
+   "kind": "skeleton",
+   "lines": 70,
+   "sha256": "d4057c9362fcd542cf2bb5e08b10d846194645224ecc6e7d6936221cbf59275e",
+   "url": "https://soma-lang.dev/cases/orbite/src/sys/acces/controle.cell"
+  },
+  {
+   "path": "sys/acces/departs.cell",
+   "kind": "skeleton",
+   "lines": 101,
+   "sha256": "74f09c18bcf73746f81166fffa068f60fd483268eb8eff853b9c7198ee3e62cf",
+   "url": "https://soma-lang.dev/cases/orbite/src/sys/acces/departs.cell"
+  },
+  {
+   "path": "sys/acces/entree.cell",
+   "kind": "skeleton",
+   "lines": 33,
+   "sha256": "6f0b04667ee7d274c09ff4d8de6adaef35c0ce8312adf388f58a732dcfed38e3",
+   "url": "https://soma-lang.dev/cases/orbite/src/sys/acces/entree.cell"
+  },
+  {
+   "path": "sys/acces/facade.txt",
+   "kind": "doc",
+   "lines": 16,
+   "sha256": "ffca0cbd231aacca38f0cebade00876742534a41cbc2dd2f3e04f9eff0d0e9ec",
+   "url": "https://soma-lang.dev/cases/orbite/src/sys/acces/facade.txt"
+  },
+  {
+   "path": "sys/acces/personnes.cell",
+   "kind": "skeleton",
+   "lines": 155,
+   "sha256": "891c555fee1d7af30a0e2b0a557bad214ac340cb3dc1cd565ec81061d0f1ef23",
+   "url": "https://soma-lang.dev/cases/orbite/src/sys/acces/personnes.cell"
+  },
+  {
+   "path": "sys/acces/rattachement.cell",
+   "kind": "skeleton",
+   "lines": 74,
+   "sha256": "ad28a4fec7f1b487a602a1ff5685ac7b2e667c0430e975f10acdb7130b94c3e0",
+   "url": "https://soma-lang.dev/cases/orbite/src/sys/acces/rattachement.cell"
+  },
+  {
+   "path": "sys/acces/recertification.cell",
+   "kind": "skeleton",
+   "lines": 129,
+   "sha256": "3318d00f077511231369ddbb40125eae865b074ca0e4b0e69b69decbd0ea5dc1",
+   "url": "https://soma-lang.dev/cases/orbite/src/sys/acces/recertification.cell"
+  },
+  {
+   "path": "sys/acces/regles.toml",
+   "kind": "doc",
+   "lines": 13,
+   "sha256": "f6a77ae15868a4596d66d3593e90163df4dc847f5f44efcd73e12c54d74c74a1",
+   "url": "https://soma-lang.dev/cases/orbite/src/sys/acces/regles.toml"
+  },
+  {
+   "path": "sys/acces/roles.cell",
+   "kind": "skeleton",
+   "lines": 132,
+   "sha256": "fe8f6bb3a78d7a8f63a47e65388db6c400a218567fc4f3b996d51a985985fa78",
+   "url": "https://soma-lang.dev/cases/orbite/src/sys/acces/roles.cell"
+  },
+  {
+   "path": "sys/acces/sessions.cell",
+   "kind": "skeleton",
+   "lines": 210,
+   "sha256": "2deeb9d49d33bc95c8748a3d704a855d5af869460756cf72f0db2c4058a8f113",
+   "url": "https://soma-lang.dev/cases/orbite/src/sys/acces/sessions.cell"
+  },
+  {
+   "path": "sys/acces/urgence.cell",
+   "kind": "skeleton",
+   "lines": 113,
+   "sha256": "1d60a6790d2a3ee0fa90eaeaf62fc37d9515b1b155a8be7320617550a0298679",
+   "url": "https://soma-lang.dev/cases/orbite/src/sys/acces/urgence.cell"
+  },
+  {
+   "path": "sys/conformite/NOTES.md",
+   "kind": "doc",
+   "lines": 65,
+   "sha256": "81c119c2a7ba251bd5ced18b8deb48146a9d03ce9bd63f9951694deeaeba7fb6",
+   "url": "https://soma-lang.dev/cases/orbite/src/sys/conformite/NOTES.md"
+  },
+  {
+   "path": "sys/conformite/api.cell",
+   "kind": "skeleton",
+   "lines": 28,
+   "sha256": "e8bdd52848617753d06593f624fd5315e1cb9a357aaf6a8d0d5161e135492caf",
+   "url": "https://soma-lang.dev/cases/orbite/src/sys/conformite/api.cell"
+  },
+  {
+   "path": "sys/conformite/chair/api.cell",
+   "kind": "body",
+   "lines": 33,
+   "sha256": "213c09c877ed9cfcba0b99c2ebaa02c7c487981924605553813b76fabdcb93ad",
+   "url": "https://soma-lang.dev/cases/orbite/src/sys/conformite/chair/api.cell"
+  },
+  {
+   "path": "sys/conformite/chair/contradictoire.cell",
+   "kind": "body",
+   "lines": 109,
+   "sha256": "03987ba379211ff9866f1759f63ba573cbe9b39fe888719d1b70a2d3b35cc259",
+   "url": "https://soma-lang.dev/cases/orbite/src/sys/conformite/chair/contradictoire.cell"
+  },
+  {
+   "path": "sys/conformite/chair/indicateurs.cell",
+   "kind": "body",
+   "lines": 165,
+   "sha256": "781bac7da54d94ab2ff00effaa7b93d7ddd100fe9310e003a2599ce97bcdeeb8",
+   "url": "https://soma-lang.dev/cases/orbite/src/sys/conformite/chair/indicateurs.cell"
+  },
+  {
+   "path": "sys/conformite/chair/manquements.cell",
+   "kind": "body",
+   "lines": 457,
+   "sha256": "5862d0268b77c001aa05f1da7d1c893f9d26793fbb0075d88050827c25bc1b59",
+   "url": "https://soma-lang.dev/cases/orbite/src/sys/conformite/chair/manquements.cell"
+  },
+  {
+   "path": "sys/conformite/chair/mesures.cell",
+   "kind": "body",
+   "lines": 325,
+   "sha256": "14c0bd863e725d21d3cfd737da15b73bf4646e4ae5a40ad53870e9429e9b8bb7",
+   "url": "https://soma-lang.dev/cases/orbite/src/sys/conformite/chair/mesures.cell"
+  },
+  {
+   "path": "sys/conformite/chair/notation.cell",
+   "kind": "body",
+   "lines": 102,
+   "sha256": "009d894d4a0402753ec01e81568dff4f8be1bf726b51293df651f8a472e7fbd7",
+   "url": "https://soma-lang.dev/cases/orbite/src/sys/conformite/chair/notation.cell"
+  },
+  {
+   "path": "sys/conformite/chair/rapports.cell",
+   "kind": "body",
+   "lines": 180,
+   "sha256": "41c280bdc38c354f3764962200169859aef0c16caa9161daf742ab913fad8bf3",
+   "url": "https://soma-lang.dev/cases/orbite/src/sys/conformite/chair/rapports.cell"
+  },
+  {
+   "path": "sys/conformite/chair/remediation.cell",
+   "kind": "body",
+   "lines": 119,
+   "sha256": "ada09f48f445c4b6085a1de9934268a233a1b03b50d0b16519d47d1411598212",
+   "url": "https://soma-lang.dev/cases/orbite/src/sys/conformite/chair/remediation.cell"
+  },
+  {
+   "path": "sys/conformite/chair/veille.cell",
+   "kind": "body",
+   "lines": 263,
+   "sha256": "e74db50f69c598a356ce81f921507fe5dfb927ebb53f187110224350c9a146df",
+   "url": "https://soma-lang.dev/cases/orbite/src/sys/conformite/chair/veille.cell"
+  },
+  {
+   "path": "sys/conformite/contradictoire.cell",
+   "kind": "skeleton",
+   "lines": 95,
+   "sha256": "0a3d76df50efa1d6ae7fdd829a135407ddb3f3a915ac7937fc9b6384af31fae2",
+   "url": "https://soma-lang.dev/cases/orbite/src/sys/conformite/contradictoire.cell"
+  },
+  {
+   "path": "sys/conformite/entree.cell",
+   "kind": "skeleton",
+   "lines": 33,
+   "sha256": "c75d479a519cacaaa559062ca5b8ede9fb131696c28c482558d20c551b47ed25",
+   "url": "https://soma-lang.dev/cases/orbite/src/sys/conformite/entree.cell"
+  },
+  {
+   "path": "sys/conformite/facade.txt",
+   "kind": "doc",
+   "lines": 5,
+   "sha256": "15fbefd00ecb6acd48ec37429daffee32f6be2ffd45d0ebd5586151ec99d2102",
+   "url": "https://soma-lang.dev/cases/orbite/src/sys/conformite/facade.txt"
+  },
+  {
+   "path": "sys/conformite/indicateurs.cell",
+   "kind": "skeleton",
+   "lines": 89,
+   "sha256": "1d263338269b2740e5647527e68d1b56b7b323918b4edcee2755be1a1a1081fe",
+   "url": "https://soma-lang.dev/cases/orbite/src/sys/conformite/indicateurs.cell"
+  },
+  {
+   "path": "sys/conformite/manquements.cell",
+   "kind": "skeleton",
+   "lines": 305,
+   "sha256": "ead308d3f39f74241ddad1e9cd81227b5bf8f1c460b6bace1dcda755594b260f",
+   "url": "https://soma-lang.dev/cases/orbite/src/sys/conformite/manquements.cell"
+  },
+  {
+   "path": "sys/conformite/mesures.cell",
+   "kind": "skeleton",
+   "lines": 229,
+   "sha256": "efa824ed01cbeabc732e5d6465a3b7f772d136c3c5835194b9ab3efadbdea1e0",
+   "url": "https://soma-lang.dev/cases/orbite/src/sys/conformite/mesures.cell"
+  },
+  {
+   "path": "sys/conformite/notation.cell",
+   "kind": "skeleton",
+   "lines": 80,
+   "sha256": "893ba7c364ad0109767424f2efa0b0b3d1367df86b54432eab19f27283425c6d",
+   "url": "https://soma-lang.dev/cases/orbite/src/sys/conformite/notation.cell"
+  },
+  {
+   "path": "sys/conformite/rapports.cell",
+   "kind": "skeleton",
+   "lines": 115,
+   "sha256": "29e59cbc92d2ede7a87290c7c6dc50249736f9034c2e8f9449cbae68d492e21e",
+   "url": "https://soma-lang.dev/cases/orbite/src/sys/conformite/rapports.cell"
+  },
+  {
+   "path": "sys/conformite/regles.toml",
+   "kind": "doc",
+   "lines": 6,
+   "sha256": "7dd8d78da315f838b1f2d028a1b5547d95409535d9bd84a1cc44831c95492d4d",
+   "url": "https://soma-lang.dev/cases/orbite/src/sys/conformite/regles.toml"
+  },
+  {
+   "path": "sys/conformite/remediation.cell",
+   "kind": "skeleton",
+   "lines": 94,
+   "sha256": "a3462ccf1a0add672c0c201da51a75a1d9ff082f1b565c0ea812a58e021532db",
+   "url": "https://soma-lang.dev/cases/orbite/src/sys/conformite/remediation.cell"
+  },
+  {
+   "path": "sys/conformite/veille.cell",
+   "kind": "skeleton",
+   "lines": 117,
+   "sha256": "c6d9ff78f407488550c237ba42b9fff4d297f0a839ba2622b6fe636c6d26800a",
+   "url": "https://soma-lang.dev/cases/orbite/src/sys/conformite/veille.cell"
+  },
+  {
+   "path": "sys/conjonctions/NOTES.md",
+   "kind": "doc",
+   "lines": 57,
+   "sha256": "4825e6db24bcda0d762f4574526e81570abd019772720721bba1d411d02e53e9",
+   "url": "https://soma-lang.dev/cases/orbite/src/sys/conjonctions/NOTES.md"
+  },
+  {
+   "path": "sys/conjonctions/api.cell",
+   "kind": "skeleton",
+   "lines": 84,
+   "sha256": "b2a22fbcc96f2e251361df58ab50feabf01d8adaa85479cf3c167bc51df52263",
+   "url": "https://soma-lang.dev/cases/orbite/src/sys/conjonctions/api.cell"
+  },
+  {
+   "path": "sys/conjonctions/campagnes.cell",
+   "kind": "skeleton",
+   "lines": 202,
+   "sha256": "9a3ae87c293f8aa631f02b153f4104e38aed31a4c76562783d9a391fd5e416ea",
+   "url": "https://soma-lang.dev/cases/orbite/src/sys/conjonctions/campagnes.cell"
+  },
+  {
+   "path": "sys/conjonctions/chair/api.cell",
+   "kind": "body",
+   "lines": 105,
+   "sha256": "7971312d7aa44d677b39fb0f26b45e9e5d1020ba32f0fe570b09130c46d0dcdb",
+   "url": "https://soma-lang.dev/cases/orbite/src/sys/conjonctions/chair/api.cell"
+  },
+  {
+   "path": "sys/conjonctions/chair/campagnes.cell",
+   "kind": "body",
+   "lines": 443,
+   "sha256": "e56c968f2ec82399e2fc85d3d74fd4f99fcfaa24a1f2560d33a30a9071f467fa",
+   "url": "https://soma-lang.dev/cases/orbite/src/sys/conjonctions/chair/campagnes.cell"
+  },
+  {
+   "path": "sys/conjonctions/chair/clotures.cell",
+   "kind": "body",
+   "lines": 101,
+   "sha256": "88b167a23e536f56c71cafeaa3368cd3e753c92e4753e4eb31b66d3456c144e8",
+   "url": "https://soma-lang.dev/cases/orbite/src/sys/conjonctions/chair/clotures.cell"
+  },
+  {
+   "path": "sys/conjonctions/chair/contestations.cell",
+   "kind": "body",
+   "lines": 127,
+   "sha256": "e16fe4ad6d4b1a15f86a86122ba386711523ce98a683a95544eba256bdd5916f",
+   "url": "https://soma-lang.dev/cases/orbite/src/sys/conjonctions/chair/contestations.cell"
+  },
+  {
+   "path": "sys/conjonctions/chair/messages.cell",
+   "kind": "body",
+   "lines": 298,
+   "sha256": "7a9d06f406d7560643700728b214eacfb020c625885a5c4f1d8e9ecbba1bf090",
+   "url": "https://soma-lang.dev/cases/orbite/src/sys/conjonctions/chair/messages.cell"
+  },
+  {
+   "path": "sys/conjonctions/chair/plans.cell",
+   "kind": "body",
+   "lines": 107,
+   "sha256": "4702eb48eb881f14553ef03ddd55de0c53bfc98ac975f47288428703303ea31d",
+   "url": "https://soma-lang.dev/cases/orbite/src/sys/conjonctions/chair/plans.cell"
+  },
+  {
+   "path": "sys/conjonctions/chair/rapprochements.cell",
+   "kind": "body",
+   "lines": 566,
+   "sha256": "d17a2db5129ec7149430c459538bda27e7a4f52b48a7e64afb65e0ff82fc767e",
+   "url": "https://soma-lang.dev/cases/orbite/src/sys/conjonctions/chair/rapprochements.cell"
+  },
+  {
+   "path": "sys/conjonctions/chair/renforce.cell",
+   "kind": "body",
+   "lines": 115,
+   "sha256": "7eb86e3a0f0f67fa598cf4d4d30437c36f9277a780507d015848faf50c1aae38",
+   "url": "https://soma-lang.dev/cases/orbite/src/sys/conjonctions/chair/renforce.cell"
+  },
+  {
+   "path": "sys/conjonctions/chair/seuils.cell",
+   "kind": "body",
+   "lines": 96,
+   "sha256": "6f88220045381dd186e6ff429f39102a45b752a0046370f6b819c13f42df110f",
+   "url": "https://soma-lang.dev/cases/orbite/src/sys/conjonctions/chair/seuils.cell"
+  },
+  {
+   "path": "sys/conjonctions/clotures.cell",
+   "kind": "skeleton",
+   "lines": 79,
+   "sha256": "94e4a12bbaf298977316c1224827a02991ad5338f1e8d1934a1eccc1dd96bbf1",
+   "url": "https://soma-lang.dev/cases/orbite/src/sys/conjonctions/clotures.cell"
+  },
+  {
+   "path": "sys/conjonctions/contestations.cell",
+   "kind": "skeleton",
+   "lines": 80,
+   "sha256": "333aa06d1666deca51890e8c440b06a973a8956cd9928dc29d7bf4d095ff361b",
+   "url": "https://soma-lang.dev/cases/orbite/src/sys/conjonctions/contestations.cell"
+  },
+  {
+   "path": "sys/conjonctions/entree.cell",
+   "kind": "skeleton",
+   "lines": 34,
+   "sha256": "cd9d9f9b51487ba86aa23aad2ba888aa78bc04d1eb7abe2e51a719eeec653df8",
+   "url": "https://soma-lang.dev/cases/orbite/src/sys/conjonctions/entree.cell"
+  },
+  {
+   "path": "sys/conjonctions/facade.txt",
+   "kind": "doc",
+   "lines": 20,
+   "sha256": "7222903061c82bd6e4f7bad8f551d452fc97ea83deb765dd4fc80479a1a321b1",
+   "url": "https://soma-lang.dev/cases/orbite/src/sys/conjonctions/facade.txt"
+  },
+  {
+   "path": "sys/conjonctions/messages.cell",
+   "kind": "skeleton",
+   "lines": 164,
+   "sha256": "a8036d4457eefef5de31ce15e1be3cbfa024b82786a4b2a6fb71bc19779bdfbe",
+   "url": "https://soma-lang.dev/cases/orbite/src/sys/conjonctions/messages.cell"
+  },
+  {
+   "path": "sys/conjonctions/plans.cell",
+   "kind": "skeleton",
+   "lines": 72,
+   "sha256": "325ec8f926ead0eb8ad12df964c1fd7a5aadb0923177da3255660206a63a486c",
+   "url": "https://soma-lang.dev/cases/orbite/src/sys/conjonctions/plans.cell"
+  },
+  {
+   "path": "sys/conjonctions/rapprochements.cell",
+   "kind": "skeleton",
+   "lines": 269,
+   "sha256": "8e68013d5fc46d64371fe07fe16fbc88565078612c48e1e69ac080fb555e54ab",
+   "url": "https://soma-lang.dev/cases/orbite/src/sys/conjonctions/rapprochements.cell"
+  },
+  {
+   "path": "sys/conjonctions/renforce.cell",
+   "kind": "skeleton",
+   "lines": 75,
+   "sha256": "c61b275318eb3e05145285c32f92cc14cdae5122b08cfcb13065d96032f634a6",
+   "url": "https://soma-lang.dev/cases/orbite/src/sys/conjonctions/renforce.cell"
+  },
+  {
+   "path": "sys/conjonctions/seuils.cell",
+   "kind": "skeleton",
+   "lines": 83,
+   "sha256": "80018554c6581a45499b32eaba550f447e1d5090b4b15be70ea38b30c6e0cce2",
+   "url": "https://soma-lang.dev/cases/orbite/src/sys/conjonctions/seuils.cell"
+  },
+  {
+   "path": "sys/conjonctions/vocabulaire.cell",
+   "kind": "skeleton",
+   "lines": 35,
+   "sha256": "7407a4a588807d521ebb15906af2262ede2145baf73cf02135a35e757fed604c",
+   "url": "https://soma-lang.dev/cases/orbite/src/sys/conjonctions/vocabulaire.cell"
+  },
+  {
+   "path": "sys/coordination/NOTES.md",
+   "kind": "doc",
+   "lines": 61,
+   "sha256": "790f12bd78c30bf97c25facfc09f4cb0b0c54b2a83c17385ea3008efae3961b9",
+   "url": "https://soma-lang.dev/cases/orbite/src/sys/coordination/NOTES.md"
+  },
+  {
+   "path": "sys/coordination/api.cell",
+   "kind": "skeleton",
+   "lines": 63,
+   "sha256": "3995a5ba748d1cbcdfc909b1fd7bb78f41fa220e1ec824bad2969e10df498ce5",
+   "url": "https://soma-lang.dev/cases/orbite/src/sys/coordination/api.cell"
+  },
+  {
+   "path": "sys/coordination/arbitrage.cell",
+   "kind": "skeleton",
+   "lines": 85,
+   "sha256": "f91993d4d6ccde6eae73002f1d7c98f5c327549517c16dac3cf9a35b2a2941c1",
+   "url": "https://soma-lang.dev/cases/orbite/src/sys/coordination/arbitrage.cell"
+  },
+  {
+   "path": "sys/coordination/chair/api.cell",
+   "kind": "body",
+   "lines": 45,
+   "sha256": "44f8e84de032480c915c6e070a36ce4bac43e8042bb0e990e356f1f3ec612a52",
+   "url": "https://soma-lang.dev/cases/orbite/src/sys/coordination/chair/api.cell"
+  },
+  {
+   "path": "sys/coordination/chair/arbitrage.cell",
+   "kind": "body",
+   "lines": 82,
+   "sha256": "2e966759fad07e69ba7818e1b02d231e45e1464cc638b7861d40634b0c8ca0e1",
+   "url": "https://soma-lang.dev/cases/orbite/src/sys/coordination/chair/arbitrage.cell"
+  },
+  {
+   "path": "sys/coordination/chair/decision.cell",
+   "kind": "body",
+   "lines": 163,
+   "sha256": "1d681726320a5109273845564fd7511483c7f7ccd38a652fa82aba7cf7451091",
+   "url": "https://soma-lang.dev/cases/orbite/src/sys/coordination/chair/decision.cell"
+  },
+  {
+   "path": "sys/coordination/chair/dossier.cell",
+   "kind": "body",
+   "lines": 541,
+   "sha256": "40f879179f844f78c1c33e3170a3c652ad67438e704aae3610d048d561fe2e6c",
+   "url": "https://soma-lang.dev/cases/orbite/src/sys/coordination/chair/dossier.cell"
+  },
+  {
+   "path": "sys/coordination/chair/echanges.cell",
+   "kind": "body",
+   "lines": 76,
+   "sha256": "0103fb0a04eda4bdb0db2fb5a7ef0d43744a33de71e50bf6f018038310123a70",
+   "url": "https://soma-lang.dev/cases/orbite/src/sys/coordination/chair/echanges.cell"
+  },
+  {
+   "path": "sys/coordination/chair/grappes.cell",
+   "kind": "body",
+   "lines": 172,
+   "sha256": "3eea9b83ee8873d2323ed8360a78f18da422d5afea4b2ef0537037f0492861d4",
+   "url": "https://soma-lang.dev/cases/orbite/src/sys/coordination/chair/grappes.cell"
+  },
+  {
+   "path": "sys/coordination/chair/reponses.cell",
+   "kind": "body",
+   "lines": 173,
+   "sha256": "94e17d4c0281bb1869456129daf3960f3d23e4b20cb889f9a63880f1693cc6f0",
+   "url": "https://soma-lang.dev/cases/orbite/src/sys/coordination/chair/reponses.cell"
+  },
+  {
+   "path": "sys/coordination/chair/suivi.cell",
+   "kind": "body",
+   "lines": 122,
+   "sha256": "55a9cc502d04cb5b496deae77330f42ce0983a693194f8dffdca2a36ef2349ab",
+   "url": "https://soma-lang.dev/cases/orbite/src/sys/coordination/chair/suivi.cell"
+  },
+  {
+   "path": "sys/coordination/chair/verrou.cell",
+   "kind": "body",
+   "lines": 98,
+   "sha256": "277a3af901aa123205d2e6768baeac0528825cd01cd88d184143748acb682f56",
+   "url": "https://soma-lang.dev/cases/orbite/src/sys/coordination/chair/verrou.cell"
+  },
+  {
+   "path": "sys/coordination/decision.cell",
+   "kind": "skeleton",
+   "lines": 127,
+   "sha256": "63e96b3d4d19b00494414bfec4660a0f04ca4ae2850728ea1c7c344b37bd1987",
+   "url": "https://soma-lang.dev/cases/orbite/src/sys/coordination/decision.cell"
+  },
+  {
+   "path": "sys/coordination/dossier.cell",
+   "kind": "skeleton",
+   "lines": 272,
+   "sha256": "0bc44dd4c148ce25940490d32e9c3fef80b1feb3925a2c9d41d744d1449287fb",
+   "url": "https://soma-lang.dev/cases/orbite/src/sys/coordination/dossier.cell"
+  },
+  {
+   "path": "sys/coordination/echanges.cell",
+   "kind": "skeleton",
+   "lines": 51,
+   "sha256": "f0a121760358a1e80c3c0d03e4facb8f315822ae66ee460c4108fa0c6f048205",
+   "url": "https://soma-lang.dev/cases/orbite/src/sys/coordination/echanges.cell"
+  },
+  {
+   "path": "sys/coordination/entree.cell",
+   "kind": "skeleton",
+   "lines": 33,
+   "sha256": "cc4bc423ed8684626d5abcbd694e5cfa997244f6ec924c1edc8d49b47919701e",
+   "url": "https://soma-lang.dev/cases/orbite/src/sys/coordination/entree.cell"
+  },
+  {
+   "path": "sys/coordination/facade.txt",
+   "kind": "doc",
+   "lines": 13,
+   "sha256": "82129e7b47452db66d8add66bfa537216e82a4ed346a8db673eacecacfc45ef1",
+   "url": "https://soma-lang.dev/cases/orbite/src/sys/coordination/facade.txt"
+  },
+  {
+   "path": "sys/coordination/grappes.cell",
+   "kind": "skeleton",
+   "lines": 116,
+   "sha256": "051f66f3b47d06c67b7fed97de23d8c27c571c3367602b6d57b5e19fc20af75c",
+   "url": "https://soma-lang.dev/cases/orbite/src/sys/coordination/grappes.cell"
+  },
+  {
+   "path": "sys/coordination/reponses.cell",
+   "kind": "skeleton",
+   "lines": 122,
+   "sha256": "6a2bb7516fe622851b217c7a54afbbcac6b08531ab88f332f363551717aad607",
+   "url": "https://soma-lang.dev/cases/orbite/src/sys/coordination/reponses.cell"
+  },
+  {
+   "path": "sys/coordination/suivi.cell",
+   "kind": "skeleton",
+   "lines": 75,
+   "sha256": "544c7c84ccf07e2855ded70f6f790fe0c35329f1d330467b2e12d3ec83e36222",
+   "url": "https://soma-lang.dev/cases/orbite/src/sys/coordination/suivi.cell"
+  },
+  {
+   "path": "sys/coordination/verrou.cell",
+   "kind": "skeleton",
+   "lines": 90,
+   "sha256": "30ce2bde1eb47fe2ac12bb5446be64da9f4c2edfb13aecc48fc50f6da78a06f4",
+   "url": "https://soma-lang.dev/cases/orbite/src/sys/coordination/verrou.cell"
+  },
+  {
+   "path": "sys/donnees/NOTES.md",
+   "kind": "doc",
+   "lines": 65,
+   "sha256": "75c71ba6e4b86ccfed907c34bd1143e744e393f885b63aba7b0d860650220996",
+   "url": "https://soma-lang.dev/cases/orbite/src/sys/donnees/NOTES.md"
+  },
+  {
+   "path": "sys/donnees/accords.cell",
+   "kind": "skeleton",
+   "lines": 237,
+   "sha256": "69e516e8433908ab124bc05ff6d5f375353298722df3fd5ec3e798322c31c280",
+   "url": "https://soma-lang.dev/cases/orbite/src/sys/donnees/accords.cell"
+  },
+  {
+   "path": "sys/donnees/api.cell",
+   "kind": "skeleton",
+   "lines": 27,
+   "sha256": "431106d1e2534dcdd488f74d0fa8dbe9b4a9b736b2b8e04f6783f9592ca1a3f8",
+   "url": "https://soma-lang.dev/cases/orbite/src/sys/donnees/api.cell"
+  },
+  {
+   "path": "sys/donnees/balayage.cell",
+   "kind": "skeleton",
+   "lines": 22,
+   "sha256": "fa0cdc93d6d70ca65c681a8451caae173ccb28b2f6a8c0f13ca5f3919fa50339",
+   "url": "https://soma-lang.dev/cases/orbite/src/sys/donnees/balayage.cell"
+  },
+  {
+   "path": "sys/donnees/chair/accords.cell",
+   "kind": "body",
+   "lines": 316,
+   "sha256": "1e94a96598487330fbd8c304c93ecda632f2ccc032113002f1f8e8760d3a1b08",
+   "url": "https://soma-lang.dev/cases/orbite/src/sys/donnees/chair/accords.cell"
+  },
+  {
+   "path": "sys/donnees/chair/api.cell",
+   "kind": "body",
+   "lines": 23,
+   "sha256": "708a5417333c11077e0f4ea31e9bf5274562111743e2527b0de4deeb0fff50ed",
+   "url": "https://soma-lang.dev/cases/orbite/src/sys/donnees/chair/api.cell"
+  },
+  {
+   "path": "sys/donnees/chair/balayage.cell",
+   "kind": "body",
+   "lines": 16,
+   "sha256": "9aa68a53a749054f35b878ccb086dabc9639786fc8ea149a7f0a3309cb237bab",
+   "url": "https://soma-lang.dev/cases/orbite/src/sys/donnees/chair/balayage.cell"
+  },
+  {
+   "path": "sys/donnees/chair/demandes.cell",
+   "kind": "body",
+   "lines": 297,
+   "sha256": "01d35627755c4b08f03d97ff203153e2a9d1616f2981ed785c619b2fbb415859",
+   "url": "https://soma-lang.dev/cases/orbite/src/sys/donnees/chair/demandes.cell"
+  },
+  {
+   "path": "sys/donnees/chair/diffusion.cell",
+   "kind": "body",
+   "lines": 163,
+   "sha256": "aced69ecefe9fb19a3617c97f2071f13dfb0f2bda21c3b6821b9ff2560db9c49",
+   "url": "https://soma-lang.dev/cases/orbite/src/sys/donnees/chair/diffusion.cell"
+  },
+  {
+   "path": "sys/donnees/chair/embargos.cell",
+   "kind": "body",
+   "lines": 123,
+   "sha256": "5cb3534b7b447e22e4fdc8667522d7a16d232c902686bba467b865a884d7934b",
+   "url": "https://soma-lang.dev/cases/orbite/src/sys/donnees/chair/embargos.cell"
+  },
+  {
+   "path": "sys/donnees/chair/publication.cell",
+   "kind": "body",
+   "lines": 150,
+   "sha256": "4e76e7425c0d25f20c9dac558fd1523c1551ca9428eb4f98571d1c658f264778",
+   "url": "https://soma-lang.dev/cases/orbite/src/sys/donnees/chair/publication.cell"
+  },
+  {
+   "path": "sys/donnees/chair/traces.cell",
+   "kind": "body",
+   "lines": 124,
+   "sha256": "9949a543cd2d37a15755fe00d89e75628338571509f5fd6b8eedb67467bc2ae8",
+   "url": "https://soma-lang.dev/cases/orbite/src/sys/donnees/chair/traces.cell"
+  },
+  {
+   "path": "sys/donnees/chair/violations.cell",
+   "kind": "body",
+   "lines": 116,
+   "sha256": "02aa047666cd5b706633f1384789f732b942e9141df78fd7baf7c38d36f5dbcf",
+   "url": "https://soma-lang.dev/cases/orbite/src/sys/donnees/chair/violations.cell"
+  },
+  {
+   "path": "sys/donnees/demandes.cell",
+   "kind": "skeleton",
+   "lines": 235,
+   "sha256": "fdfb206386407bb1db25568b51ca2e08256965a04d1a4e310bd58dbb438ed1da",
+   "url": "https://soma-lang.dev/cases/orbite/src/sys/donnees/demandes.cell"
+  },
+  {
+   "path": "sys/donnees/diffusion.cell",
+   "kind": "skeleton",
+   "lines": 100,
+   "sha256": "9349eb5dfa7d2f0f6c0befcd18596f41a7a82acdeb314b957ccd9e9bbcc8e720",
+   "url": "https://soma-lang.dev/cases/orbite/src/sys/donnees/diffusion.cell"
+  },
+  {
+   "path": "sys/donnees/embargos.cell",
+   "kind": "skeleton",
+   "lines": 90,
+   "sha256": "e01b2e0537fcdbf6c00f8ffc95899fa4e45ed1227ab464f0c7c698dc504540fb",
+   "url": "https://soma-lang.dev/cases/orbite/src/sys/donnees/embargos.cell"
+  },
+  {
+   "path": "sys/donnees/entree.cell",
+   "kind": "skeleton",
+   "lines": 33,
+   "sha256": "505958ab9503c83d685d4ce02892de9804860b7eac96b51d73f13a73d1f118c6",
+   "url": "https://soma-lang.dev/cases/orbite/src/sys/donnees/entree.cell"
+  },
+  {
+   "path": "sys/donnees/facade.txt",
+   "kind": "doc",
+   "lines": 5,
+   "sha256": "9bbc35c60b4831e209ccef2caf7bcf9913e2865fef2e63dedf1a84b8ca5d7d9e",
+   "url": "https://soma-lang.dev/cases/orbite/src/sys/donnees/facade.txt"
+  },
+  {
+   "path": "sys/donnees/publication.cell",
+   "kind": "skeleton",
+   "lines": 97,
+   "sha256": "42a7f4e40bb47d93c42b0ef0aff980483e8917e9e020ecfbe5b6381dc16f9bee",
+   "url": "https://soma-lang.dev/cases/orbite/src/sys/donnees/publication.cell"
+  },
+  {
+   "path": "sys/donnees/regles.toml",
+   "kind": "doc",
+   "lines": 10,
+   "sha256": "6acab1365f50906a7e47499a215cbde4c6b64cbac261499c79c9e45271ccbe13",
+   "url": "https://soma-lang.dev/cases/orbite/src/sys/donnees/regles.toml"
+  },
+  {
+   "path": "sys/donnees/traces.cell",
+   "kind": "skeleton",
+   "lines": 72,
+   "sha256": "5c8c3bbd0d693f4c72b8b6e6fc6d02266c51df14de84dbed98fb820df5e228f9",
+   "url": "https://soma-lang.dev/cases/orbite/src/sys/donnees/traces.cell"
+  },
+  {
+   "path": "sys/donnees/violations.cell",
+   "kind": "skeleton",
+   "lines": 87,
+   "sha256": "ca5a1b2380cf295bc25406749f4f44b55726759cb7cf34877f581573e2d83775",
+   "url": "https://soma-lang.dev/cases/orbite/src/sys/donnees/violations.cell"
+  },
+  {
+   "path": "sys/ephemerides/NOTES.md",
+   "kind": "doc",
+   "lines": 70,
+   "sha256": "b41dfbb23c0960ddc8b423e0619425372b1e1c02d97e9a320318ff4f32f7566c",
+   "url": "https://soma-lang.dev/cases/orbite/src/sys/ephemerides/NOTES.md"
+  },
+  {
+   "path": "sys/ephemerides/api.cell",
+   "kind": "skeleton",
+   "lines": 52,
+   "sha256": "380225bb8cbc45d28066863c3c542aded4da2747e73a045dbc1f1ff015d6b077",
+   "url": "https://soma-lang.dev/cases/orbite/src/sys/ephemerides/api.cell"
+  },
+  {
+   "path": "sys/ephemerides/chair/api.cell",
+   "kind": "body",
+   "lines": 50,
+   "sha256": "73d644009f01554e992e7a872604961b42506512f703767a3feb0f788b9887dc",
+   "url": "https://soma-lang.dev/cases/orbite/src/sys/ephemerides/chair/api.cell"
+  },
+  {
+   "path": "sys/ephemerides/chair/contestation.cell",
+   "kind": "body",
+   "lines": 103,
+   "sha256": "e098217bfdfb71ba854a2d06d863a42d9c35de227661e2dab3c3e540c9d2d39a",
+   "url": "https://soma-lang.dev/cases/orbite/src/sys/ephemerides/chair/contestation.cell"
+  },
+  {
+   "path": "sys/ephemerides/chair/controle.cell",
+   "kind": "body",
+   "lines": 187,
+   "sha256": "9ced14123ca579c263695e75969eeea25a46998ebe9036fa2f8a87deee3e044b",
+   "url": "https://soma-lang.dev/cases/orbite/src/sys/ephemerides/chair/controle.cell"
+  },
+  {
+   "path": "sys/ephemerides/chair/depot.cell",
+   "kind": "body",
+   "lines": 358,
+   "sha256": "41638ca6523a0dc33b3416e5dcc2eff3df815ea6c5a6862ab676c1eb95b7e4f1",
+   "url": "https://soma-lang.dev/cases/orbite/src/sys/ephemerides/chair/depot.cell"
+  },
+  {
+   "path": "sys/ephemerides/chair/historique.cell",
+   "kind": "body",
+   "lines": 142,
+   "sha256": "6c8c37351e6f5c690febfe908f5091d895da932ca00b297fb428c92f81e5f16f",
+   "url": "https://soma-lang.dev/cases/orbite/src/sys/ephemerides/chair/historique.cell"
+  },
+  {
+   "path": "sys/ephemerides/chair/quota.cell",
+   "kind": "body",
+   "lines": 158,
+   "sha256": "e348c9e51207a951965890202fa21360e54021f1d690d2ac77bb70fe8ca03f66",
+   "url": "https://soma-lang.dev/cases/orbite/src/sys/ephemerides/chair/quota.cell"
+  },
+  {
+   "path": "sys/ephemerides/chair/reglage.cell",
+   "kind": "body",
+   "lines": 143,
+   "sha256": "c001616ba7c03be9b4d187b3ce19372cab928e178c69f5f6115fba81e4aedf52",
+   "url": "https://soma-lang.dev/cases/orbite/src/sys/ephemerides/chair/reglage.cell"
+  },
+  {
+   "path": "sys/ephemerides/chair/suivi.cell",
+   "kind": "body",
+   "lines": 167,
+   "sha256": "23cb4cdd2cfc4aca089afdb155869beb288475561572bdcff8d268d75a78abb0",
+   "url": "https://soma-lang.dev/cases/orbite/src/sys/ephemerides/chair/suivi.cell"
+  },
+  {
+   "path": "sys/ephemerides/chair/tempete.cell",
+   "kind": "body",
+   "lines": 63,
+   "sha256": "5a1b3d88045d12c68a116bfa0bbee6316494226d81f9e0f69ebc1a563fc3c52b",
+   "url": "https://soma-lang.dev/cases/orbite/src/sys/ephemerides/chair/tempete.cell"
+  },
+  {
+   "path": "sys/ephemerides/contestation.cell",
+   "kind": "skeleton",
+   "lines": 85,
+   "sha256": "2364fd385add72e3f2a7e0cc8441570fb9f14d97f96c8d4d7d814f6cd07ef7d5",
+   "url": "https://soma-lang.dev/cases/orbite/src/sys/ephemerides/contestation.cell"
+  },
+  {
+   "path": "sys/ephemerides/controle.cell",
+   "kind": "skeleton",
+   "lines": 93,
+   "sha256": "af1df968827f5c88ecc368e8dd5fd53d9304a672807fc0ee878aea6a69abc5f4",
+   "url": "https://soma-lang.dev/cases/orbite/src/sys/ephemerides/controle.cell"
+  },
+  {
+   "path": "sys/ephemerides/depot.cell",
+   "kind": "skeleton",
+   "lines": 247,
+   "sha256": "12526554c4a3d81f64253f80994c1b967fc60a5e4bd9bf49f3d57dd4755fc994",
+   "url": "https://soma-lang.dev/cases/orbite/src/sys/ephemerides/depot.cell"
+  },
+  {
+   "path": "sys/ephemerides/entree.cell",
+   "kind": "skeleton",
+   "lines": 33,
+   "sha256": "c4c430ee0ed9b6643f604216390a6b4a560ed7de4f536272f32de09de9b94fc5",
+   "url": "https://soma-lang.dev/cases/orbite/src/sys/ephemerides/entree.cell"
+  },
+  {
+   "path": "sys/ephemerides/facade.txt",
+   "kind": "doc",
+   "lines": 11,
+   "sha256": "39dd5d6acaa9999b895ebc1e750e7e816f205d99cea71fc03e430e25e8a54de5",
+   "url": "https://soma-lang.dev/cases/orbite/src/sys/ephemerides/facade.txt"
+  },
+  {
+   "path": "sys/ephemerides/historique.cell",
+   "kind": "skeleton",
+   "lines": 110,
+   "sha256": "a29329e549fe75d027e0f075dc3b74a424f7a3cdaa529231a45f54827c3cb05b",
+   "url": "https://soma-lang.dev/cases/orbite/src/sys/ephemerides/historique.cell"
+  },
+  {
+   "path": "sys/ephemerides/quota.cell",
+   "kind": "skeleton",
+   "lines": 134,
+   "sha256": "9ee466ee18ffad243401d6de66a7cc9c9b9ef0b9ea6f5ade5a7bd270dd3b670d",
+   "url": "https://soma-lang.dev/cases/orbite/src/sys/ephemerides/quota.cell"
+  },
+  {
+   "path": "sys/ephemerides/reglage.cell",
+   "kind": "skeleton",
+   "lines": 125,
+   "sha256": "523a26b2e85ae334f205bfbff2e495024779f3366f7cfce8e9d422b4fbc4de1d",
+   "url": "https://soma-lang.dev/cases/orbite/src/sys/ephemerides/reglage.cell"
+  },
+  {
+   "path": "sys/ephemerides/suivi.cell",
+   "kind": "skeleton",
+   "lines": 124,
+   "sha256": "5be337dc56569470de7401e523c6abb3e87657745668c31f1fb7b0c19d1eedf4",
+   "url": "https://soma-lang.dev/cases/orbite/src/sys/ephemerides/suivi.cell"
+  },
+  {
+   "path": "sys/ephemerides/tempete.cell",
+   "kind": "skeleton",
+   "lines": 53,
+   "sha256": "0e972931948f435519b842a691b99656f7c12f4c48f4dfbcf458922802156748",
+   "url": "https://soma-lang.dev/cases/orbite/src/sys/ephemerides/tempete.cell"
+  },
+  {
+   "path": "sys/escalade/NOTES.md",
+   "kind": "doc",
+   "lines": 104,
+   "sha256": "4a19169aea4409608abce70a39df09a4e074f7889991c87e2c16dbb5357a5498",
+   "url": "https://soma-lang.dev/cases/orbite/src/sys/escalade/NOTES.md"
+  },
+  {
+   "path": "sys/escalade/api.cell",
+   "kind": "skeleton",
+   "lines": 31,
+   "sha256": "14d024fe4f08c2d9ad1d8e7acb250630fdc8953e6a2463a3ef4197175b381fd9",
+   "url": "https://soma-lang.dev/cases/orbite/src/sys/escalade/api.cell"
+  },
+  {
+   "path": "sys/escalade/balayage.cell",
+   "kind": "skeleton",
+   "lines": 27,
+   "sha256": "59c349051bf34c5bfc17cd67c48572318770fa1d440626867805e110e05389dd",
+   "url": "https://soma-lang.dev/cases/orbite/src/sys/escalade/balayage.cell"
+  },
+  {
+   "path": "sys/escalade/bareme.cell",
+   "kind": "skeleton",
+   "lines": 119,
+   "sha256": "2c47d250645d4ad8c8b81edc04f2ba127dd0606d4d9b1a9184c1b5a996515029",
+   "url": "https://soma-lang.dev/cases/orbite/src/sys/escalade/bareme.cell"
+  },
+  {
+   "path": "sys/escalade/chair/api.cell",
+   "kind": "body",
+   "lines": 25,
+   "sha256": "bce638af7827451c3114dd09d50582044fca7faa0baac344a33ff3641d4ed8c8",
+   "url": "https://soma-lang.dev/cases/orbite/src/sys/escalade/chair/api.cell"
+  },
+  {
+   "path": "sys/escalade/chair/balayage.cell",
+   "kind": "body",
+   "lines": 30,
+   "sha256": "f94fc0e0c9ea236a3fa2a93317adbfbb84a2b8271bdd0e0af85e55879f2f5f2a",
+   "url": "https://soma-lang.dev/cases/orbite/src/sys/escalade/chair/balayage.cell"
+  },
+  {
+   "path": "sys/escalade/chair/bareme.cell",
+   "kind": "body",
+   "lines": 146,
+   "sha256": "1bb724b352e2291f49f7b8415c5d87bf9a005ef9569d1fba29fd61333847eb3c",
+   "url": "https://soma-lang.dev/cases/orbite/src/sys/escalade/chair/bareme.cell"
+  },
+  {
+   "path": "sys/escalade/chair/concertation.cell",
+   "kind": "body",
+   "lines": 74,
+   "sha256": "de3cd2f73302fed1a11ff689f8ff88a423bfc20b9f0a23e81954172622a94f6f",
+   "url": "https://soma-lang.dev/cases/orbite/src/sys/escalade/chair/concertation.cell"
+  },
+  {
+   "path": "sys/escalade/chair/contacts.cell",
+   "kind": "body",
+   "lines": 52,
+   "sha256": "162e11cf5158ac90b3fa0e1823a6b5b54454b95f38f83875ac210d4e97ae899b",
+   "url": "https://soma-lang.dev/cases/orbite/src/sys/escalade/chair/contacts.cell"
+  },
+  {
+   "path": "sys/escalade/chair/diplomatie.cell",
+   "kind": "body",
+   "lines": 124,
+   "sha256": "49921d054bf38fe4a2f4ea153a4e63a506b54457353473940a67243fa128d2d7",
+   "url": "https://soma-lang.dev/cases/orbite/src/sys/escalade/chair/diplomatie.cell"
+  },
+  {
+   "path": "sys/escalade/chair/dossiers.cell",
+   "kind": "body",
+   "lines": 345,
+   "sha256": "4a71695dfd918aa9895c54eb1e62a3f5dcae5ca074453627995b4f09f099fc16",
+   "url": "https://soma-lang.dev/cases/orbite/src/sys/escalade/chair/dossiers.cell"
+  },
+  {
+   "path": "sys/escalade/chair/prise_en_charge.cell",
+   "kind": "body",
+   "lines": 97,
+   "sha256": "fff685c3b928e07b45e43ff8c8528c11d9fb8f724b1dc7c4ff993c0cf7f83eb4",
+   "url": "https://soma-lang.dev/cases/orbite/src/sys/escalade/chair/prise_en_charge.cell"
+  },
+  {
+   "path": "sys/escalade/chair/relances.cell",
+   "kind": "body",
+   "lines": 130,
+   "sha256": "63082c38245739b8b1eb8c61c1d4c4b2047021eef806d7383450bf912b047230",
+   "url": "https://soma-lang.dev/cases/orbite/src/sys/escalade/chair/relances.cell"
+  },
+  {
+   "path": "sys/escalade/chair/statistiques.cell",
+   "kind": "body",
+   "lines": 143,
+   "sha256": "e2cbcbae1b67b79f16c7eed55a1087e7482f970a86517e75c51d7b3829c0215d",
+   "url": "https://soma-lang.dev/cases/orbite/src/sys/escalade/chair/statistiques.cell"
+  },
+  {
+   "path": "sys/escalade/chair/veille.cell",
+   "kind": "body",
+   "lines": 115,
+   "sha256": "e2a9bc790f8adab98fc1c118a7524c50b01798ed7910107df8bfbf290d9ed40a",
+   "url": "https://soma-lang.dev/cases/orbite/src/sys/escalade/chair/veille.cell"
+  },
+  {
+   "path": "sys/escalade/concertation.cell",
+   "kind": "skeleton",
+   "lines": 63,
+   "sha256": "d3b9a3f003989cbae6327a3067e53b2e24d3e527d13ebbaa098550438163660a",
+   "url": "https://soma-lang.dev/cases/orbite/src/sys/escalade/concertation.cell"
+  },
+  {
+   "path": "sys/escalade/contacts.cell",
+   "kind": "skeleton",
+   "lines": 32,
+   "sha256": "216a5d23d5c0f905fb490144169bdd10da943b414bcf1b1a3f25f6d354c5674b",
+   "url": "https://soma-lang.dev/cases/orbite/src/sys/escalade/contacts.cell"
+  },
+  {
+   "path": "sys/escalade/diplomatie.cell",
+   "kind": "skeleton",
+   "lines": 94,
+   "sha256": "8714b86f19ad5919c9a937de3db6dae391277830288675486656865b2d3cd511",
+   "url": "https://soma-lang.dev/cases/orbite/src/sys/escalade/diplomatie.cell"
+  },
+  {
+   "path": "sys/escalade/dossiers.cell",
+   "kind": "skeleton",
+   "lines": 209,
+   "sha256": "7b55111fc045b91c058379dcb8adf5fa77ac99db6913705431045f0d2cc01619",
+   "url": "https://soma-lang.dev/cases/orbite/src/sys/escalade/dossiers.cell"
+  },
+  {
+   "path": "sys/escalade/entree.cell",
+   "kind": "skeleton",
+   "lines": 35,
+   "sha256": "e93360902f08072f76ba7ed2ad17a7fab662946cc25ae249c523087d30c3b13e",
+   "url": "https://soma-lang.dev/cases/orbite/src/sys/escalade/entree.cell"
+  },
+  {
+   "path": "sys/escalade/facade.txt",
+   "kind": "doc",
+   "lines": 6,
+   "sha256": "e2131398000e46e74cdab0b2e3ca1c179983897a0402bae041cede5dc61988a3",
+   "url": "https://soma-lang.dev/cases/orbite/src/sys/escalade/facade.txt"
+  },
+  {
+   "path": "sys/escalade/prise_en_charge.cell",
+   "kind": "skeleton",
+   "lines": 79,
+   "sha256": "a2e2bca79a423dacac5fe4be11e5997018793c786d01bb4e73a484838310712a",
+   "url": "https://soma-lang.dev/cases/orbite/src/sys/escalade/prise_en_charge.cell"
+  },
+  {
+   "path": "sys/escalade/relances.cell",
+   "kind": "skeleton",
+   "lines": 87,
+   "sha256": "07ba1ef645853e881f69103e922d92ec0ddc9b907a00ccc36d854a56087c2958",
+   "url": "https://soma-lang.dev/cases/orbite/src/sys/escalade/relances.cell"
+  },
+  {
+   "path": "sys/escalade/statistiques.cell",
+   "kind": "skeleton",
+   "lines": 90,
+   "sha256": "db1a0bb2bef26e133e829a120cd3146f7e36e3f11e9a9d0a342b758341b3d408",
+   "url": "https://soma-lang.dev/cases/orbite/src/sys/escalade/statistiques.cell"
+  },
+  {
+   "path": "sys/escalade/veille.cell",
+   "kind": "skeleton",
+   "lines": 70,
+   "sha256": "8d91c133fee522c753789f62f8b7d35a9f7d1e136beaf74c8d2009e556a57af2",
+   "url": "https://soma-lang.dev/cases/orbite/src/sys/escalade/veille.cell"
+  },
+  {
+   "path": "sys/evenements/NOTES.md",
+   "kind": "doc",
+   "lines": 72,
+   "sha256": "b1004c9877378e5bb216b597f01c3e94e2c0c0483442c9e3ba661e0fb71f20cf",
+   "url": "https://soma-lang.dev/cases/orbite/src/sys/evenements/NOTES.md"
+  },
+  {
+   "path": "sys/evenements/abonnements.cell",
+   "kind": "skeleton",
+   "lines": 3,
+   "sha256": "6c234d89256c13d49c7565bb8bb9cd3edea4a961b7869bb39d655af870040965",
+   "url": "https://soma-lang.dev/cases/orbite/src/sys/evenements/abonnements.cell"
+  },
+  {
+   "path": "sys/evenements/anomalies.cell",
+   "kind": "skeleton",
+   "lines": 135,
+   "sha256": "3e6a90fdb5b30bea998ba294e2957c3ef2b87a61f7addb62e4aa5b2f3e8d8b2a",
+   "url": "https://soma-lang.dev/cases/orbite/src/sys/evenements/anomalies.cell"
+  },
+  {
+   "path": "sys/evenements/api.cell",
+   "kind": "skeleton",
+   "lines": 43,
+   "sha256": "219abf5744ce2171b653e234b9138694cb1892843091cda6a4a96d55d829eb8b",
+   "url": "https://soma-lang.dev/cases/orbite/src/sys/evenements/api.cell"
+  },
+  {
+   "path": "sys/evenements/chair/anomalies.cell",
+   "kind": "body",
+   "lines": 169,
+   "sha256": "a0d7870f33f436b039bef3b58ef03da9af24f1a278dce3ac8004fc32f43c5cd6",
+   "url": "https://soma-lang.dev/cases/orbite/src/sys/evenements/chair/anomalies.cell"
+  },
+  {
+   "path": "sys/evenements/chair/api.cell",
+   "kind": "body",
+   "lines": 50,
+   "sha256": "8e4cc6d7d4cdca3b6625cefb51732d1794320889dd5d31f99c5205122a71766e",
+   "url": "https://soma-lang.dev/cases/orbite/src/sys/evenements/chair/api.cell"
+  },
+  {
+   "path": "sys/evenements/chair/collisions.cell",
+   "kind": "body",
+   "lines": 126,
+   "sha256": "6c5589f445c84591f73b3e4b8e77524aee8e2e86808f03cd39eaa8327c8228bb",
+   "url": "https://soma-lang.dev/cases/orbite/src/sys/evenements/chair/collisions.cell"
+  },
+  {
+   "path": "sys/evenements/chair/evenements.cell",
+   "kind": "body",
+   "lines": 225,
+   "sha256": "fe846ef25d51c0ff7511429adf581885dad03604d5a86d7927bcdfb1ea74490a",
+   "url": "https://soma-lang.dev/cases/orbite/src/sys/evenements/chair/evenements.cell"
+  },
+  {
+   "path": "sys/evenements/chair/fragments.cell",
+   "kind": "body",
+   "lines": 109,
+   "sha256": "f5787c31513db81ce569d4dfd8720f576a81072966f8582ba56ef38bde6c89f7",
+   "url": "https://soma-lang.dev/cases/orbite/src/sys/evenements/chair/fragments.cell"
+  },
+  {
+   "path": "sys/evenements/chair/notifications.cell",
+   "kind": "body",
+   "lines": 187,
+   "sha256": "2c761539cf438c981d79bab6239e872c42b52be3d4abdfadd8c9562679afd97e",
+   "url": "https://soma-lang.dev/cases/orbite/src/sys/evenements/chair/notifications.cell"
+  },
+  {
+   "path": "sys/evenements/chair/nuages.cell",
+   "kind": "body",
+   "lines": 214,
+   "sha256": "f50490d2f9392a36a58b1c6ca4e61de251d14f24cded51dba2a3a95a74bf48d6",
+   "url": "https://soma-lang.dev/cases/orbite/src/sys/evenements/chair/nuages.cell"
+  },
+  {
+   "path": "sys/evenements/chair/rapports.cell",
+   "kind": "body",
+   "lines": 109,
+   "sha256": "a1faf726b1e48da39a72b7d2711cded10f99d9f977bf5c01174977dafba4ed9c",
+   "url": "https://soma-lang.dev/cases/orbite/src/sys/evenements/chair/rapports.cell"
+  },
+  {
+   "path": "sys/evenements/chair/veille.cell",
+   "kind": "body",
+   "lines": 74,
+   "sha256": "67eeaca48bcfb749949076cecac76e9865dd758642df74720b4494caa9bf527d",
+   "url": "https://soma-lang.dev/cases/orbite/src/sys/evenements/chair/veille.cell"
+  },
+  {
+   "path": "sys/evenements/collisions.cell",
+   "kind": "skeleton",
+   "lines": 98,
+   "sha256": "5d556ab505e081db9cddf080af225aef02b14c6f6d1979101a908a49e7a084f7",
+   "url": "https://soma-lang.dev/cases/orbite/src/sys/evenements/collisions.cell"
+  },
+  {
+   "path": "sys/evenements/entree.cell",
+   "kind": "skeleton",
+   "lines": 33,
+   "sha256": "31c437a021139ae6a253de2abd02ed15178c60173a9b814644262eeb48bb0a1b",
+   "url": "https://soma-lang.dev/cases/orbite/src/sys/evenements/entree.cell"
+  },
+  {
+   "path": "sys/evenements/evenements.cell",
+   "kind": "skeleton",
+   "lines": 158,
+   "sha256": "88d0760e4afa1330c92d055b505508eddf16a45980f9cdcfaa8c1ebe43c92d4d",
+   "url": "https://soma-lang.dev/cases/orbite/src/sys/evenements/evenements.cell"
+  },
+  {
+   "path": "sys/evenements/facade.txt",
+   "kind": "doc",
+   "lines": 11,
+   "sha256": "cacbc298f968d7b37c779ff971440cffd9e094f60da82c85ffe919efce30b872",
+   "url": "https://soma-lang.dev/cases/orbite/src/sys/evenements/facade.txt"
+  },
+  {
+   "path": "sys/evenements/fragments.cell",
+   "kind": "skeleton",
+   "lines": 94,
+   "sha256": "2bf47b36d4f7b47d92667f9af34daba26590623cbffdeee47295829805a2669c",
+   "url": "https://soma-lang.dev/cases/orbite/src/sys/evenements/fragments.cell"
+  },
+  {
+   "path": "sys/evenements/notifications.cell",
+   "kind": "skeleton",
+   "lines": 116,
+   "sha256": "236dd34df9fd4ba4a6256966f8c6eabbf248a9eb5527147ea7837ba5279f00d1",
+   "url": "https://soma-lang.dev/cases/orbite/src/sys/evenements/notifications.cell"
+  },
+  {
+   "path": "sys/evenements/nuages.cell",
+   "kind": "skeleton",
+   "lines": 152,
+   "sha256": "35ca9ea4e8e8de48a82ac8efa03840ffe4fc4d18593fef643c88efe96f5a4ced",
+   "url": "https://soma-lang.dev/cases/orbite/src/sys/evenements/nuages.cell"
+  },
+  {
+   "path": "sys/evenements/rapports.cell",
+   "kind": "skeleton",
+   "lines": 82,
+   "sha256": "c4e68fbfa737c78d07844db7c86c67ef45e35e1254ff395ba1ff83dd75aa9253",
+   "url": "https://soma-lang.dev/cases/orbite/src/sys/evenements/rapports.cell"
+  },
+  {
+   "path": "sys/evenements/veille.cell",
+   "kind": "skeleton",
+   "lines": 50,
+   "sha256": "506cbe319b6f36cf91d35cebf03997d0d92b0a5710818ae9e21126989e257448",
+   "url": "https://soma-lang.dev/cases/orbite/src/sys/evenements/veille.cell"
+  },
+  {
+   "path": "sys/fin_de_vie/NOTES.md",
+   "kind": "doc",
+   "lines": 59,
+   "sha256": "c4bf478d6e9c9c91fb238b9dc82f5782a04e61e27560da6292d469ffe02fabce",
+   "url": "https://soma-lang.dev/cases/orbite/src/sys/fin_de_vie/NOTES.md"
+  },
+  {
+   "path": "sys/fin_de_vie/api.cell",
+   "kind": "skeleton",
+   "lines": 39,
+   "sha256": "a515bc0adcbf4b6aa809dcf7398a8457fb33120ef2d2a03e7861a41fb6d16455",
+   "url": "https://soma-lang.dev/cases/orbite/src/sys/fin_de_vie/api.cell"
+  },
+  {
+   "path": "sys/fin_de_vie/chair/api.cell",
+   "kind": "body",
+   "lines": 42,
+   "sha256": "2fa8f8a870ceec078cdc8de5e4fdb54c3012f4300e62f930dbef525f469bc239",
+   "url": "https://soma-lang.dev/cases/orbite/src/sys/fin_de_vie/chair/api.cell"
+  },
+  {
+   "path": "sys/fin_de_vie/chair/consentements.cell",
+   "kind": "body",
+   "lines": 161,
+   "sha256": "250b11c4613a0c0b49bdfe51a37e4ecb080333afe0648397943906b4dec8c0ac",
+   "url": "https://soma-lang.dev/cases/orbite/src/sys/fin_de_vie/chair/consentements.cell"
+  },
+  {
+   "path": "sys/fin_de_vie/chair/couverture.cell",
+   "kind": "body",
+   "lines": 182,
+   "sha256": "beda032264cea4db40208ea6bd913ae14c8b4efd1c1dc6fc333d2d8c26ae50d5",
+   "url": "https://soma-lang.dev/cases/orbite/src/sys/fin_de_vie/chair/couverture.cell"
+  },
+  {
+   "path": "sys/fin_de_vie/chair/mission.cell",
+   "kind": "body",
+   "lines": 336,
+   "sha256": "61c7a0025c1aac6732d7dd146ccf407b73587a630f24cc8e197fcbb216af7b87",
+   "url": "https://soma-lang.dev/cases/orbite/src/sys/fin_de_vie/chair/mission.cell"
+  },
+  {
+   "path": "sys/fin_de_vie/chair/passivation.cell",
+   "kind": "body",
+   "lines": 119,
+   "sha256": "90a081e4abe5ce1fe9d76fbfa081d580dacfa95f3b0dbfaca2bf3b6fbbfcf2b9",
+   "url": "https://soma-lang.dev/cases/orbite/src/sys/fin_de_vie/chair/passivation.cell"
+  },
+  {
+   "path": "sys/fin_de_vie/chair/plans.cell",
+   "kind": "body",
+   "lines": 344,
+   "sha256": "e35133db25ecc3511357f7787f4c7de6a6956362af6189bb893f8551c6eb7a1d",
+   "url": "https://soma-lang.dev/cases/orbite/src/sys/fin_de_vie/chair/plans.cell"
+  },
+  {
+   "path": "sys/fin_de_vie/chair/prorogations.cell",
+   "kind": "body",
+   "lines": 155,
+   "sha256": "e856f682a530ed0b5eb861c7e8bcbeadfef9311b9f64e8e447bf40cda4334b25",
+   "url": "https://soma-lang.dev/cases/orbite/src/sys/fin_de_vie/chair/prorogations.cell"
+  },
+  {
+   "path": "sys/fin_de_vie/chair/retrait_actif.cell",
+   "kind": "body",
+   "lines": 331,
+   "sha256": "f0c283fc1c96c4f39405bd95ca2006eb89cad7e90de7fdaeb61c0c39f5c2829f",
+   "url": "https://soma-lang.dev/cases/orbite/src/sys/fin_de_vie/chair/retrait_actif.cell"
+  },
+  {
+   "path": "sys/fin_de_vie/consentements.cell",
+   "kind": "skeleton",
+   "lines": 110,
+   "sha256": "2b409650390efda6f0dc7af47efc4b574ca7753fa0fa30eda83aa03c1e57de07",
+   "url": "https://soma-lang.dev/cases/orbite/src/sys/fin_de_vie/consentements.cell"
+  },
+  {
+   "path": "sys/fin_de_vie/couverture.cell",
+   "kind": "skeleton",
+   "lines": 90,
+   "sha256": "d8a0d8afb84c1f4579f759173fd2c65bbbf798c931d8d0c41b0856338db7d907",
+   "url": "https://soma-lang.dev/cases/orbite/src/sys/fin_de_vie/couverture.cell"
+  },
+  {
+   "path": "sys/fin_de_vie/entree.cell",
+   "kind": "skeleton",
+   "lines": 32,
+   "sha256": "1572a8c2d0a87f2a30f907d9628d333503497844ee7e352c6c251a5f5ddc8071",
+   "url": "https://soma-lang.dev/cases/orbite/src/sys/fin_de_vie/entree.cell"
+  },
+  {
+   "path": "sys/fin_de_vie/facade.txt",
+   "kind": "doc",
+   "lines": 9,
+   "sha256": "76f96a4175d2338c249cab636cefe8fbe329d4513257c2689255826d839c3996",
+   "url": "https://soma-lang.dev/cases/orbite/src/sys/fin_de_vie/facade.txt"
+  },
+  {
+   "path": "sys/fin_de_vie/mission.cell",
+   "kind": "skeleton",
+   "lines": 199,
+   "sha256": "ca231c3996a61f42df2d604d7d418f97ed3c446e2c825a94888a9213043cd882",
+   "url": "https://soma-lang.dev/cases/orbite/src/sys/fin_de_vie/mission.cell"
+  },
+  {
+   "path": "sys/fin_de_vie/passivation.cell",
+   "kind": "skeleton",
+   "lines": 100,
+   "sha256": "53cd847457b1f8443a5c678a89ffa757033a35fdebfeb8874e337810fecc0cd2",
+   "url": "https://soma-lang.dev/cases/orbite/src/sys/fin_de_vie/passivation.cell"
+  },
+  {
+   "path": "sys/fin_de_vie/plans.cell",
+   "kind": "skeleton",
+   "lines": 215,
+   "sha256": "37b599aab6cca75aee1b241fca001b70532bf09bb9a7e78f72f5e67b6df87587",
+   "url": "https://soma-lang.dev/cases/orbite/src/sys/fin_de_vie/plans.cell"
+  },
+  {
+   "path": "sys/fin_de_vie/prorogations.cell",
+   "kind": "skeleton",
+   "lines": 97,
+   "sha256": "54960b5ae37e7d8c4222107d23cfe1f200339f5d1537296e863507f03b22492d",
+   "url": "https://soma-lang.dev/cases/orbite/src/sys/fin_de_vie/prorogations.cell"
+  },
+  {
+   "path": "sys/fin_de_vie/retrait_actif.cell",
+   "kind": "skeleton",
+   "lines": 187,
+   "sha256": "45d0a399347e3f574905f08559d7b3d2a990b368405472e32b564cafe42b3e38",
+   "url": "https://soma-lang.dev/cases/orbite/src/sys/fin_de_vie/retrait_actif.cell"
+  },
+  {
+   "path": "sys/lancements/NOTES.md",
+   "kind": "doc",
+   "lines": 83,
+   "sha256": "97d16ee602f3ef4af3497b8108dddcb179d4be96397c79b6c31cd9dbbb0b951f",
+   "url": "https://soma-lang.dev/cases/orbite/src/sys/lancements/NOTES.md"
+  },
+  {
+   "path": "sys/lancements/api.cell",
+   "kind": "skeleton",
+   "lines": 35,
+   "sha256": "8b5d7ab930158ace39189aa4cfa8b91af01963fb87b140d09e217704e085418c",
+   "url": "https://soma-lang.dev/cases/orbite/src/sys/lancements/api.cell"
+  },
+  {
+   "path": "sys/lancements/chair/api.cell",
+   "kind": "body",
+   "lines": 33,
+   "sha256": "e6de57d4e83cb1acc30869c477118bfe630605ea923c7004a99b68d57881f844",
+   "url": "https://soma-lang.dev/cases/orbite/src/sys/lancements/chair/api.cell"
+  },
+  {
+   "path": "sys/lancements/chair/cola.cell",
+   "kind": "body",
+   "lines": 357,
+   "sha256": "57e2e388c8c33817703158e52da41ef926368b3607a48f347f4935b0da3527e8",
+   "url": "https://soma-lang.dev/cases/orbite/src/sys/lancements/chair/cola.cell"
+  },
+  {
+   "path": "sys/lancements/chair/echecs.cell",
+   "kind": "body",
+   "lines": 131,
+   "sha256": "48c2cdd4c29d962b6e7a45632b1bee6dd22a3cafbe170bd8c60a88f6c160ea7c",
+   "url": "https://soma-lang.dev/cases/orbite/src/sys/lancements/chair/echecs.cell"
+  },
+  {
+   "path": "sys/lancements/chair/lancement.cell",
+   "kind": "body",
+   "lines": 354,
+   "sha256": "3d20bf11d20d97f34188186f7a8fe730978d649ac39c7f4172b09e69ab75a6fb",
+   "url": "https://soma-lang.dev/cases/orbite/src/sys/lancements/chair/lancement.cell"
+  },
+  {
+   "path": "sys/lancements/chair/pieces.cell",
+   "kind": "body",
+   "lines": 348,
+   "sha256": "753a1754ce610fb93affe4d0568e0413e951d9ee4f2b4422aed30bbb5761a2d5",
+   "url": "https://soma-lang.dev/cases/orbite/src/sys/lancements/chair/pieces.cell"
+  },
+  {
+   "path": "sys/lancements/chair/veille.cell",
+   "kind": "body",
+   "lines": 71,
+   "sha256": "8018fb9a421f8eb766ecbd3543b0538eeba3ec61acde67f500fad8bf0ba26fa8",
+   "url": "https://soma-lang.dev/cases/orbite/src/sys/lancements/chair/veille.cell"
+  },
+  {
+   "path": "sys/lancements/chair/zones.cell",
+   "kind": "body",
+   "lines": 133,
+   "sha256": "33c0b090bee538c9c169b312c732b0a5090c9bb576f7b597a7575039cbb1a288",
+   "url": "https://soma-lang.dev/cases/orbite/src/sys/lancements/chair/zones.cell"
+  },
+  {
+   "path": "sys/lancements/cola.cell",
+   "kind": "skeleton",
+   "lines": 225,
+   "sha256": "400b6ab34c91466e744e7a74c9b32a05a3285e0eab75c56b514e205427530dab",
+   "url": "https://soma-lang.dev/cases/orbite/src/sys/lancements/cola.cell"
+  },
+  {
+   "path": "sys/lancements/echecs.cell",
+   "kind": "skeleton",
+   "lines": 85,
+   "sha256": "a644738bc6cd83aa7d864361c6380fc9d4ed6c59d31c9c205571e3ffd64c11f9",
+   "url": "https://soma-lang.dev/cases/orbite/src/sys/lancements/echecs.cell"
+  },
+  {
+   "path": "sys/lancements/entree.cell",
+   "kind": "skeleton",
+   "lines": 32,
+   "sha256": "03ed3b62fda7235eabe28ca63f1b207684c614492a53f30ad1cf94672a25c37a",
+   "url": "https://soma-lang.dev/cases/orbite/src/sys/lancements/entree.cell"
+  },
+  {
+   "path": "sys/lancements/facade.txt",
+   "kind": "doc",
+   "lines": 7,
+   "sha256": "1f87a57d291aab4f3520d65e9a51365152f3b838e83099ba54803aefb9323485",
+   "url": "https://soma-lang.dev/cases/orbite/src/sys/lancements/facade.txt"
+  },
+  {
+   "path": "sys/lancements/lancement.cell",
+   "kind": "skeleton",
+   "lines": 232,
+   "sha256": "5242e2e6ed9ec73a4f22cbe86a99bac17a3f749a51d44254dd91e9393749bfa8",
+   "url": "https://soma-lang.dev/cases/orbite/src/sys/lancements/lancement.cell"
+  },
+  {
+   "path": "sys/lancements/pieces.cell",
+   "kind": "skeleton",
+   "lines": 214,
+   "sha256": "5097b3609bdf8f5b2ee68fc58f9fb3d71cf84c94086f9aa50de5b279e19532c5",
+   "url": "https://soma-lang.dev/cases/orbite/src/sys/lancements/pieces.cell"
+  },
+  {
+   "path": "sys/lancements/regles.toml",
+   "kind": "doc",
+   "lines": 7,
+   "sha256": "f0aecb6d97033505b7a77201fd0e629b25d73d703ae156ba40bed3c165f974ee",
+   "url": "https://soma-lang.dev/cases/orbite/src/sys/lancements/regles.toml"
+  },
+  {
+   "path": "sys/lancements/veille.cell",
+   "kind": "skeleton",
+   "lines": 36,
+   "sha256": "6adb5fcd4035b1949170604b1f4c029200e4dc4ff841c5070f2c4ab60c1b9aa2",
+   "url": "https://soma-lang.dev/cases/orbite/src/sys/lancements/veille.cell"
+  },
+  {
+   "path": "sys/lancements/vocabulaire.cell",
+   "kind": "skeleton",
+   "lines": 73,
+   "sha256": "e6153cae375e90801cdde5b36c50e6fc3f1a5f505bb2fc27234f815929b87265",
+   "url": "https://soma-lang.dev/cases/orbite/src/sys/lancements/vocabulaire.cell"
+  },
+  {
+   "path": "sys/lancements/zones.cell",
+   "kind": "skeleton",
+   "lines": 87,
+   "sha256": "667c282ecb18c6f75d4b4c55e01c3bdbb63546eb2e27de8d4bde5d96d4ca2712",
+   "url": "https://soma-lang.dev/cases/orbite/src/sys/lancements/zones.cell"
+  },
+  {
+   "path": "sys/manoeuvres/NOTES.md",
+   "kind": "doc",
+   "lines": 63,
+   "sha256": "83c616d3516ce36e479077f845163816a9b5ad7e49bca9213205a5d95fad3e27",
+   "url": "https://soma-lang.dev/cases/orbite/src/sys/manoeuvres/NOTES.md"
+  },
+  {
+   "path": "sys/manoeuvres/anomalies.cell",
+   "kind": "skeleton",
+   "lines": 162,
+   "sha256": "b1e8d20937ca77fbf75e1e5da992bd1d0ac35f746db929cdd4a708670a097573",
+   "url": "https://soma-lang.dev/cases/orbite/src/sys/manoeuvres/anomalies.cell"
+  },
+  {
+   "path": "sys/manoeuvres/api.cell",
+   "kind": "skeleton",
+   "lines": 58,
+   "sha256": "0b90b12c45a36f64a18260fe8c48255bbf2a7c9dab26563e65c584c410828aea",
+   "url": "https://soma-lang.dev/cases/orbite/src/sys/manoeuvres/api.cell"
+  },
+  {
+   "path": "sys/manoeuvres/avis.cell",
+   "kind": "skeleton",
+   "lines": 97,
+   "sha256": "e9e927ddefae7b33bbb80d6056f8e1d66fb0d1dea9f9d32a96123c9c48d96e52",
+   "url": "https://soma-lang.dev/cases/orbite/src/sys/manoeuvres/avis.cell"
+  },
+  {
+   "path": "sys/manoeuvres/chair/anomalies.cell",
+   "kind": "body",
+   "lines": 233,
+   "sha256": "84b9767876db90e2bcf6ca5def395aa21e3e64aff04598978409253173628f59",
+   "url": "https://soma-lang.dev/cases/orbite/src/sys/manoeuvres/chair/anomalies.cell"
+  },
+  {
+   "path": "sys/manoeuvres/chair/api.cell",
+   "kind": "body",
+   "lines": 65,
+   "sha256": "aabff7a114baf280692d16178d4d976a0fd26d25831376a92ffab4cf74ff0820",
+   "url": "https://soma-lang.dev/cases/orbite/src/sys/manoeuvres/chair/api.cell"
+  },
+  {
+   "path": "sys/manoeuvres/chair/avis.cell",
+   "kind": "body",
+   "lines": 181,
+   "sha256": "127a86c25bf15a845c03cc7dec25e96a34ccb50cd22b05248a1bba2514b8d02b",
+   "url": "https://soma-lang.dev/cases/orbite/src/sys/manoeuvres/chair/avis.cell"
+  },
+  {
+   "path": "sys/manoeuvres/chair/criblage.cell",
+   "kind": "body",
+   "lines": 87,
+   "sha256": "9e002cae928e1a9e201489562e580e6bc6467b020ecb5c9367ff6aa26df12dee",
+   "url": "https://soma-lang.dev/cases/orbite/src/sys/manoeuvres/chair/criblage.cell"
+  },
+  {
+   "path": "sys/manoeuvres/chair/execution.cell",
+   "kind": "body",
+   "lines": 176,
+   "sha256": "a112767d915e238475b7917edbdae04fb4db0d4f1863f3d3b36fe98acb62ef07",
+   "url": "https://soma-lang.dev/cases/orbite/src/sys/manoeuvres/chair/execution.cell"
+  },
+  {
+   "path": "sys/manoeuvres/chair/plans.cell",
+   "kind": "body",
+   "lines": 500,
+   "sha256": "c96f5b413411ba9ebeef5410eaea780764fdf2fc221fded51ebafb70923b1fcc",
+   "url": "https://soma-lang.dev/cases/orbite/src/sys/manoeuvres/chair/plans.cell"
+  },
+  {
+   "path": "sys/manoeuvres/chair/preuve.cell",
+   "kind": "body",
+   "lines": 89,
+   "sha256": "e839cf9d9f0595e19fd13c64c2b138b2a6c4aa44a5b3e37f273f8eb6444be2ca",
+   "url": "https://soma-lang.dev/cases/orbite/src/sys/manoeuvres/chair/preuve.cell"
+  },
+  {
+   "path": "sys/manoeuvres/chair/programmes.cell",
+   "kind": "body",
+   "lines": 112,
+   "sha256": "80875f30c9812107ab2fd16a2e15f8c791a02e9083f346ea1c9958728efa6944",
+   "url": "https://soma-lang.dev/cases/orbite/src/sys/manoeuvres/chair/programmes.cell"
+  },
+  {
+   "path": "sys/manoeuvres/chair/verrou.cell",
+   "kind": "body",
+   "lines": 76,
+   "sha256": "d45d480a274c50a5a61896f961e0262ab2871c1bdface49491b495f505aa8ffb",
+   "url": "https://soma-lang.dev/cases/orbite/src/sys/manoeuvres/chair/verrou.cell"
+  },
+  {
+   "path": "sys/manoeuvres/criblage.cell",
+   "kind": "skeleton",
+   "lines": 65,
+   "sha256": "1327ea0b6ac08350616897687308f3e3d8a1576bb8963cdc0323b6295830a296",
+   "url": "https://soma-lang.dev/cases/orbite/src/sys/manoeuvres/criblage.cell"
+  },
+  {
+   "path": "sys/manoeuvres/entree.cell",
+   "kind": "skeleton",
+   "lines": 33,
+   "sha256": "df93fa1bc96f5950de79b4605f866f11af961f9fa3d1c311c63246413454d984",
+   "url": "https://soma-lang.dev/cases/orbite/src/sys/manoeuvres/entree.cell"
+  },
+  {
+   "path": "sys/manoeuvres/execution.cell",
+   "kind": "skeleton",
+   "lines": 143,
+   "sha256": "ec75327deb70c0de92c9eaf88efeb9194f92685070c07a099f0fcb3828526f9d",
+   "url": "https://soma-lang.dev/cases/orbite/src/sys/manoeuvres/execution.cell"
+  },
+  {
+   "path": "sys/manoeuvres/facade.txt",
+   "kind": "doc",
+   "lines": 13,
+   "sha256": "e12640187b2aa0f51941d52f9f14eb295cb339b3113deadcc14a0a4ce00b962e",
+   "url": "https://soma-lang.dev/cases/orbite/src/sys/manoeuvres/facade.txt"
+  },
+  {
+   "path": "sys/manoeuvres/plans.cell",
+   "kind": "skeleton",
+   "lines": 288,
+   "sha256": "15d049fdf57f46b302785ea28f6ebb578dd4ed1911af4757d4f7dc2cb6eecf13",
+   "url": "https://soma-lang.dev/cases/orbite/src/sys/manoeuvres/plans.cell"
+  },
+  {
+   "path": "sys/manoeuvres/preuve.cell",
+   "kind": "skeleton",
+   "lines": 73,
+   "sha256": "cc6d1d3dee71a8ba348e41eb61536657ae16ee330ed732932a53990de6f77e22",
+   "url": "https://soma-lang.dev/cases/orbite/src/sys/manoeuvres/preuve.cell"
+  },
+  {
+   "path": "sys/manoeuvres/programmes.cell",
+   "kind": "skeleton",
+   "lines": 88,
+   "sha256": "a74750ea7c81b5456bf8972692c8d9f30cdd171229593abe6aa350f889c820ec",
+   "url": "https://soma-lang.dev/cases/orbite/src/sys/manoeuvres/programmes.cell"
+  },
+  {
+   "path": "sys/manoeuvres/verrou.cell",
+   "kind": "skeleton",
+   "lines": 69,
+   "sha256": "1c7e4f3102da873b655b713ba83e6b666247a80cf210f78e795b4832b0bc39ff",
+   "url": "https://soma-lang.dev/cases/orbite/src/sys/manoeuvres/verrou.cell"
+  },
+  {
+   "path": "sys/meteo/NOTES.md",
+   "kind": "doc",
+   "lines": 63,
+   "sha256": "433bbc813809955648698384f402bd9ab810eba5f7a08981660c44fe20e1bfee",
+   "url": "https://soma-lang.dev/cases/orbite/src/sys/meteo/NOTES.md"
+  },
+  {
+   "path": "sys/meteo/api.cell",
+   "kind": "skeleton",
+   "lines": 28,
+   "sha256": "4ff9c58bd9c960b4253b938045f72e2e7cfab1d4dab5ed129c4fc03413757deb",
+   "url": "https://soma-lang.dev/cases/orbite/src/sys/meteo/api.cell"
+  },
+  {
+   "path": "sys/meteo/bareme.cell",
+   "kind": "skeleton",
+   "lines": 88,
+   "sha256": "22a4fa1062868e0774a88ee5bd1f711e8dd0c998d828957da4b23a14c4074c9d",
+   "url": "https://soma-lang.dev/cases/orbite/src/sys/meteo/bareme.cell"
+  },
+  {
+   "path": "sys/meteo/chair/api.cell",
+   "kind": "body",
+   "lines": 21,
+   "sha256": "7248767c110cd73509613e483de34636e760214afb70061693244f095f312d8d",
+   "url": "https://soma-lang.dev/cases/orbite/src/sys/meteo/chair/api.cell"
+  },
+  {
+   "path": "sys/meteo/chair/bareme.cell",
+   "kind": "body",
+   "lines": 132,
+   "sha256": "5b4e01141158632ba04e2f272471c83b959a41b404c084978514e8bb62a0455c",
+   "url": "https://soma-lang.dev/cases/orbite/src/sys/meteo/chair/bareme.cell"
+  },
+  {
+   "path": "sys/meteo/chair/historique.cell",
+   "kind": "body",
+   "lines": 119,
+   "sha256": "66d9c26f18af87ef43224728102a3c17f561b9a9d0fe70e3f9884eb276b17702",
+   "url": "https://soma-lang.dev/cases/orbite/src/sys/meteo/chair/historique.cell"
+  },
+  {
+   "path": "sys/meteo/chair/incertitude.cell",
+   "kind": "body",
+   "lines": 145,
+   "sha256": "42251e8834f90457461c5ce5ae816c0a8659a5ee08a69a19af22625ec29dd6f8",
+   "url": "https://soma-lang.dev/cases/orbite/src/sys/meteo/chair/incertitude.cell"
+  },
+  {
+   "path": "sys/meteo/chair/mesures.cell",
+   "kind": "body",
+   "lines": 294,
+   "sha256": "1379c6fb13f8197a65a6ddc996b143f26482a18c4cd55edb5990bd1781728e6e",
+   "url": "https://soma-lang.dev/cases/orbite/src/sys/meteo/chair/mesures.cell"
+  },
+  {
+   "path": "sys/meteo/chair/previsions.cell",
+   "kind": "body",
+   "lines": 178,
+   "sha256": "c979c99ba07a8daf7ef73e5ec9d9e8e3d32a3daa3b2b7681666cdf1574766003",
+   "url": "https://soma-lang.dev/cases/orbite/src/sys/meteo/chair/previsions.cell"
+  },
+  {
+   "path": "sys/meteo/chair/renforce.cell",
+   "kind": "body",
+   "lines": 270,
+   "sha256": "181963735b0762fad112a62cd8b4a0afa935869a4d5e2607704d209a5952f4c5",
+   "url": "https://soma-lang.dev/cases/orbite/src/sys/meteo/chair/renforce.cell"
+  },
+  {
+   "path": "sys/meteo/chair/sources.cell",
+   "kind": "body",
+   "lines": 228,
+   "sha256": "b46c6d9c1b6b9096f03ab4abb75401c2da04dbb89c4a21a1a9fa6142c80cf715",
+   "url": "https://soma-lang.dev/cases/orbite/src/sys/meteo/chair/sources.cell"
+  },
+  {
+   "path": "sys/meteo/chair/tempetes.cell",
+   "kind": "body",
+   "lines": 251,
+   "sha256": "4270c93220da34e986605fcd9265c5c27a0a9204edc5eae8c2b3545d36a147e2",
+   "url": "https://soma-lang.dev/cases/orbite/src/sys/meteo/chair/tempetes.cell"
+  },
+  {
+   "path": "sys/meteo/entree.cell",
+   "kind": "skeleton",
+   "lines": 33,
+   "sha256": "b4884f7b80a9534d849b1a9b309a8764dd17fb23998491b780555765b3c2978a",
+   "url": "https://soma-lang.dev/cases/orbite/src/sys/meteo/entree.cell"
+  },
+  {
+   "path": "sys/meteo/facade.txt",
+   "kind": "doc",
+   "lines": 6,
+   "sha256": "150533e738daa49247a2a660eb62f0aa8c9f4e6404b9cd5aef61265f68f2c03c",
+   "url": "https://soma-lang.dev/cases/orbite/src/sys/meteo/facade.txt"
+  },
+  {
+   "path": "sys/meteo/historique.cell",
+   "kind": "skeleton",
+   "lines": 97,
+   "sha256": "e1eaded60afd7f9fa691bc4820cf407bdd89699d155edd038446d9617b5a5256",
+   "url": "https://soma-lang.dev/cases/orbite/src/sys/meteo/historique.cell"
+  },
+  {
+   "path": "sys/meteo/incertitude.cell",
+   "kind": "skeleton",
+   "lines": 93,
+   "sha256": "86691dd2909cca0372feae5352b428793ecc3eff472101039f50485b133898bd",
+   "url": "https://soma-lang.dev/cases/orbite/src/sys/meteo/incertitude.cell"
+  },
+  {
+   "path": "sys/meteo/mesures.cell",
+   "kind": "skeleton",
+   "lines": 157,
+   "sha256": "64062c36b6c9710d4be2d6666ae28a9f7a1eb0fb343111da3f6e690e97c26822",
+   "url": "https://soma-lang.dev/cases/orbite/src/sys/meteo/mesures.cell"
+  },
+  {
+   "path": "sys/meteo/previsions.cell",
+   "kind": "skeleton",
+   "lines": 107,
+   "sha256": "6da82045b5e36842e8d7f543b08fca4773ce8c626f63bf3a2bd1008df57f8da3",
+   "url": "https://soma-lang.dev/cases/orbite/src/sys/meteo/previsions.cell"
+  },
+  {
+   "path": "sys/meteo/regles.toml",
+   "kind": "doc",
+   "lines": 8,
+   "sha256": "149a4bbf184709d3822730291bb1243d65a5e61fa543a74a439e4a027eaecb87",
+   "url": "https://soma-lang.dev/cases/orbite/src/sys/meteo/regles.toml"
+  },
+  {
+   "path": "sys/meteo/renforce.cell",
+   "kind": "skeleton",
+   "lines": 152,
+   "sha256": "6eb9e222fa85c6aef6bac5838f136c6f8458735feb87d92e0ec0602d9a342f48",
+   "url": "https://soma-lang.dev/cases/orbite/src/sys/meteo/renforce.cell"
+  },
+  {
+   "path": "sys/meteo/sources.cell",
+   "kind": "skeleton",
+   "lines": 173,
+   "sha256": "cb5448a9a4d34e9a7be56d0b34fadd959a79d1f06f76f798fa9607ff45660f40",
+   "url": "https://soma-lang.dev/cases/orbite/src/sys/meteo/sources.cell"
+  },
+  {
+   "path": "sys/meteo/tempetes.cell",
+   "kind": "skeleton",
+   "lines": 140,
+   "sha256": "ace4a35ee46f2952df6132f454a6fbf3112052b72bf51f7889e4e365b09dfdb9",
+   "url": "https://soma-lang.dev/cases/orbite/src/sys/meteo/tempetes.cell"
+  },
+  {
+   "path": "sys/observation/NOTES.md",
+   "kind": "doc",
+   "lines": 62,
+   "sha256": "bcf8a9481466a26b2d2fbfbef8738a25fb04fb7ddfe8a7f990a87c35beb32eb1",
+   "url": "https://soma-lang.dev/cases/orbite/src/sys/observation/NOTES.md"
+  },
+  {
+   "path": "sys/observation/api.cell",
+   "kind": "skeleton",
+   "lines": 49,
+   "sha256": "ca790c02904b7711061910c7e9705060330401d0921a710d4fa1d5ddc5f7f5d1",
+   "url": "https://soma-lang.dev/cases/orbite/src/sys/observation/api.cell"
+  },
+  {
+   "path": "sys/observation/capteurs.cell",
+   "kind": "skeleton",
+   "lines": 220,
+   "sha256": "d276629b520b7c14e8beea0902303670a20ee1e35b6a6fce969a5b41058dcca3",
+   "url": "https://soma-lang.dev/cases/orbite/src/sys/observation/capteurs.cell"
+  },
+  {
+   "path": "sys/observation/chair/api.cell",
+   "kind": "body",
+   "lines": 42,
+   "sha256": "a0759399b35d23644509c4b9f93694bf7e44ec6858374689621eb4b39b1142a4",
+   "url": "https://soma-lang.dev/cases/orbite/src/sys/observation/chair/api.cell"
+  },
+  {
+   "path": "sys/observation/chair/capteurs.cell",
+   "kind": "body",
+   "lines": 290,
+   "sha256": "36e4eef886103a7318a71c9d2fb73810c5ea7b44f266b7d5f55758b525602626",
+   "url": "https://soma-lang.dev/cases/orbite/src/sys/observation/chair/capteurs.cell"
+  },
+  {
+   "path": "sys/observation/chair/couverture.cell",
+   "kind": "body",
+   "lines": 70,
+   "sha256": "691c3c5b3a3f4e4e2def09594ab556fb13008f9c691228c7b74e4b35092650f1",
+   "url": "https://soma-lang.dev/cases/orbite/src/sys/observation/chair/couverture.cell"
+  },
+  {
+   "path": "sys/observation/chair/detections.cell",
+   "kind": "body",
+   "lines": 140,
+   "sha256": "b0e3fc4e281337350ecc136f5774e7a81d4a876feda87fdcb98d7709a19e7ea1",
+   "url": "https://soma-lang.dev/cases/orbite/src/sys/observation/chair/detections.cell"
+  },
+  {
+   "path": "sys/observation/chair/mesures.cell",
+   "kind": "body",
+   "lines": 178,
+   "sha256": "1bdd0251a7dedf78f4b11e4bf0e4513919ea606a5bfada7491068ab5a5d74d53",
+   "url": "https://soma-lang.dev/cases/orbite/src/sys/observation/chair/mesures.cell"
+  },
+  {
+   "path": "sys/observation/chair/orbites.cell",
+   "kind": "body",
+   "lines": 215,
+   "sha256": "f8a3b0de9933d247273188729d64a828d9d0acdfdba218a9484b7a42069383d7",
+   "url": "https://soma-lang.dev/cases/orbite/src/sys/observation/chair/orbites.cell"
+  },
+  {
+   "path": "sys/observation/chair/pistes.cell",
+   "kind": "body",
+   "lines": 156,
+   "sha256": "6affb4f5ee363ed1b86876f84002da63a7e833ca95cae2ca9b53531416ea921e",
+   "url": "https://soma-lang.dev/cases/orbite/src/sys/observation/chair/pistes.cell"
+  },
+  {
+   "path": "sys/observation/chair/taches.cell",
+   "kind": "body",
+   "lines": 247,
+   "sha256": "950620d0415147a2cfc860226a874c2a621cf11228ca7e736d449980f16d7586",
+   "url": "https://soma-lang.dev/cases/orbite/src/sys/observation/chair/taches.cell"
+  },
+  {
+   "path": "sys/observation/couverture.cell",
+   "kind": "skeleton",
+   "lines": 66,
+   "sha256": "f7fe54d90d4414b7d49012908d517b7f438ada88af429ad9ebc515dd3772cc82",
+   "url": "https://soma-lang.dev/cases/orbite/src/sys/observation/couverture.cell"
+  },
+  {
+   "path": "sys/observation/detections.cell",
+   "kind": "skeleton",
+   "lines": 112,
+   "sha256": "de31eb21b9039fb8ffe521f62f24707cf5aec9b53a66de8c604f0e586fff0bb1",
+   "url": "https://soma-lang.dev/cases/orbite/src/sys/observation/detections.cell"
+  },
+  {
+   "path": "sys/observation/entree.cell",
+   "kind": "skeleton",
+   "lines": 32,
+   "sha256": "f9dd85b3d87993800e124e188eeb86953ed7d62fc94c611c53ee37a5cb67e2ad",
+   "url": "https://soma-lang.dev/cases/orbite/src/sys/observation/entree.cell"
+  },
+  {
+   "path": "sys/observation/facade.txt",
+   "kind": "doc",
+   "lines": 11,
+   "sha256": "34a31b3402d41a44e1c0cb4b01a25e7adf7dee8f7b8bb8bb3fccab08972f8543",
+   "url": "https://soma-lang.dev/cases/orbite/src/sys/observation/facade.txt"
+  },
+  {
+   "path": "sys/observation/mesures.cell",
+   "kind": "skeleton",
+   "lines": 151,
+   "sha256": "86c38e062934409117cd09338f30f0644d195a5fd9fe2886aabbe6a5578d2307",
+   "url": "https://soma-lang.dev/cases/orbite/src/sys/observation/mesures.cell"
+  },
+  {
+   "path": "sys/observation/orbites.cell",
+   "kind": "skeleton",
+   "lines": 164,
+   "sha256": "7facda913d452febed5f63f91f8f4949acfec79d94eb4642950780793867fb39",
+   "url": "https://soma-lang.dev/cases/orbite/src/sys/observation/orbites.cell"
+  },
+  {
+   "path": "sys/observation/pistes.cell",
+   "kind": "skeleton",
+   "lines": 121,
+   "sha256": "73b01bfd79e01a5cbef766304f61f692644f70b0a36046b91849e0d0c99d5eae",
+   "url": "https://soma-lang.dev/cases/orbite/src/sys/observation/pistes.cell"
+  },
+  {
+   "path": "sys/observation/taches.cell",
+   "kind": "skeleton",
+   "lines": 162,
+   "sha256": "d7e537191f7a12fcf512ed1b81e9a93dfafac5b85a11d7af4e27e51292041a15",
+   "url": "https://soma-lang.dev/cases/orbite/src/sys/observation/taches.cell"
+  },
+  {
+   "path": "sys/operateurs/NOTES.md",
+   "kind": "doc",
+   "lines": 68,
+   "sha256": "b5a2dfad0399a907d4d725a544ae9ec265c544321a5870891781cc701f9d14ef",
+   "url": "https://soma-lang.dev/cases/orbite/src/sys/operateurs/NOTES.md"
+  },
+  {
+   "path": "sys/operateurs/adhesion.cell",
+   "kind": "skeleton",
+   "lines": 298,
+   "sha256": "0be4479f07bfd4654d67408f7fe6ad777a8ae43b5ee89a6a4630b8587b32f6f1",
+   "url": "https://soma-lang.dev/cases/orbite/src/sys/operateurs/adhesion.cell"
+  },
+  {
+   "path": "sys/operateurs/api.cell",
+   "kind": "skeleton",
+   "lines": 47,
+   "sha256": "7a0bf6e0f83d342b4fc29bea7b7c4fe2f4b2e8b604640c41a0d587b03a48c49c",
+   "url": "https://soma-lang.dev/cases/orbite/src/sys/operateurs/api.cell"
+  },
+  {
+   "path": "sys/operateurs/astreinte.cell",
+   "kind": "skeleton",
+   "lines": 129,
+   "sha256": "20c3da88e895d5f4a40af62ae1e5c5c76d70bebeeec1467447a057ffc74eae97",
+   "url": "https://soma-lang.dev/cases/orbite/src/sys/operateurs/astreinte.cell"
+  },
+  {
+   "path": "sys/operateurs/chair/adhesion.cell",
+   "kind": "body",
+   "lines": 351,
+   "sha256": "e28ec0bf9f6569341c7b6331fe11fe040b68e8026821ff643e92869b235827f2",
+   "url": "https://soma-lang.dev/cases/orbite/src/sys/operateurs/chair/adhesion.cell"
+  },
+  {
+   "path": "sys/operateurs/chair/api.cell",
+   "kind": "body",
+   "lines": 34,
+   "sha256": "d33835b2666349f42db8d09ed35152a672d279019c15802dfd89e1f536791f4a",
+   "url": "https://soma-lang.dev/cases/orbite/src/sys/operateurs/chair/api.cell"
+  },
+  {
+   "path": "sys/operateurs/chair/astreinte.cell",
+   "kind": "body",
+   "lines": 220,
+   "sha256": "92afa5f296775f32675e13adbb519eda9b21607b930b579b4427a43c7ddfd6f8",
+   "url": "https://soma-lang.dev/cases/orbite/src/sys/operateurs/chair/astreinte.cell"
+  },
+  {
+   "path": "sys/operateurs/chair/changements.cell",
+   "kind": "body",
+   "lines": 172,
+   "sha256": "0389765760d188f2f8a7978b052e166f5b46111be586f3acd3faafc29e59044f",
+   "url": "https://soma-lang.dev/cases/orbite/src/sys/operateurs/chair/changements.cell"
+  },
+  {
+   "path": "sys/operateurs/chair/contacts.cell",
+   "kind": "body",
+   "lines": 126,
+   "sha256": "41cfbf5a825bd33569f36ff6f52e014fb70016135ccb396565726b163913f700",
+   "url": "https://soma-lang.dev/cases/orbite/src/sys/operateurs/chair/contacts.cell"
+  },
+  {
+   "path": "sys/operateurs/chair/engagements.cell",
+   "kind": "body",
+   "lines": 108,
+   "sha256": "eff9c58c80c84cb0c0a109cdd52f3054905276c6984744189e9f9c013fdb8fca",
+   "url": "https://soma-lang.dev/cases/orbite/src/sys/operateurs/chair/engagements.cell"
+  },
+  {
+   "path": "sys/operateurs/chair/joignabilite.cell",
+   "kind": "body",
+   "lines": 151,
+   "sha256": "29b6870e252d625060f2630afde7b697cecf8e903a8bc4aab84cc47e822b762a",
+   "url": "https://soma-lang.dev/cases/orbite/src/sys/operateurs/chair/joignabilite.cell"
+  },
+  {
+   "path": "sys/operateurs/chair/licences.cell",
+   "kind": "body",
+   "lines": 171,
+   "sha256": "41218844772af2fa6a45ddac9340d9729c4e39a2943caf0c04f54a1bbd27388f",
+   "url": "https://soma-lang.dev/cases/orbite/src/sys/operateurs/chair/licences.cell"
+  },
+  {
+   "path": "sys/operateurs/changements.cell",
+   "kind": "skeleton",
+   "lines": 124,
+   "sha256": "f6732d57b61e4eb5d735173a1708195353a3e0d8db14a46f70ec271dc1a6f0cf",
+   "url": "https://soma-lang.dev/cases/orbite/src/sys/operateurs/changements.cell"
+  },
+  {
+   "path": "sys/operateurs/contacts.cell",
+   "kind": "skeleton",
+   "lines": 93,
+   "sha256": "c1170ffa0343cd49dfbe74b6946ddffa7e5e1995c91bf51b9ef165f6b250ee9d",
+   "url": "https://soma-lang.dev/cases/orbite/src/sys/operateurs/contacts.cell"
+  },
+  {
+   "path": "sys/operateurs/engagements.cell",
+   "kind": "skeleton",
+   "lines": 85,
+   "sha256": "b11e107baa6d6f130288efde9d81ab09e7d3a893b171d8908c8eb047ddb3d99b",
+   "url": "https://soma-lang.dev/cases/orbite/src/sys/operateurs/engagements.cell"
+  },
+  {
+   "path": "sys/operateurs/entree.cell",
+   "kind": "skeleton",
+   "lines": 32,
+   "sha256": "3accecaea556f03a82db03f9c27d320bfa36c104bf9f2d1383112aecb7b9f609",
+   "url": "https://soma-lang.dev/cases/orbite/src/sys/operateurs/entree.cell"
+  },
+  {
+   "path": "sys/operateurs/facade.txt",
+   "kind": "doc",
+   "lines": 10,
+   "sha256": "743195bf9db18ac84faf97302c944025c41b6723541d9f380f5e7c9d717ff015",
+   "url": "https://soma-lang.dev/cases/orbite/src/sys/operateurs/facade.txt"
+  },
+  {
+   "path": "sys/operateurs/joignabilite.cell",
+   "kind": "skeleton",
+   "lines": 113,
+   "sha256": "d196b550da4dff7096ed84a201756cb57bcdd280dbed5bbc446dbc73a70a8078",
+   "url": "https://soma-lang.dev/cases/orbite/src/sys/operateurs/joignabilite.cell"
+  },
+  {
+   "path": "sys/operateurs/licences.cell",
+   "kind": "skeleton",
+   "lines": 137,
+   "sha256": "1ceddd7f73fd49d4becfa595238f5a1b5adfcc0adf98dc1adf96d5424a63db81",
+   "url": "https://soma-lang.dev/cases/orbite/src/sys/operateurs/licences.cell"
+  },
+  {
+   "path": "sys/operateurs/regles.toml",
+   "kind": "doc",
+   "lines": 9,
+   "sha256": "ac83cf3ac9c03ddc2bf0918ee32500845175a15f2a2da0c255170766675f89f8",
+   "url": "https://soma-lang.dev/cases/orbite/src/sys/operateurs/regles.toml"
+  },
+  {
+   "path": "sys/operations/NOTES.md",
+   "kind": "doc",
+   "lines": 69,
+   "sha256": "85aa210dd0f8e73797097edfb06626f87f28763fa725be5a5de995985558c485",
+   "url": "https://soma-lang.dev/cases/orbite/src/sys/operations/NOTES.md"
+  },
+  {
+   "path": "sys/operations/api.cell",
+   "kind": "skeleton",
+   "lines": 28,
+   "sha256": "86aa816b16fcb29fa27fdce90bd772a5999e5b08a177e74a75388a4779592730",
+   "url": "https://soma-lang.dev/cases/orbite/src/sys/operations/api.cell"
+  },
+  {
+   "path": "sys/operations/chair/api.cell",
+   "kind": "body",
+   "lines": 33,
+   "sha256": "a73c00741b6df0886dab050c5ad20a902e6ca6fefcb940c430e00a4c69fcc579",
+   "url": "https://soma-lang.dev/cases/orbite/src/sys/operations/chair/api.cell"
+  },
+  {
+   "path": "sys/operations/chair/changements.cell",
+   "kind": "body",
+   "lines": 312,
+   "sha256": "921efa96199bf433a88e65f0aa857bd621d2e402917077572a9613b924111a34",
+   "url": "https://soma-lang.dev/cases/orbite/src/sys/operations/chair/changements.cell"
+  },
+  {
+   "path": "sys/operations/chair/continuite.cell",
+   "kind": "body",
+   "lines": 105,
+   "sha256": "77819d5f574930477d19bc7284f826207990c80c3a9fee01591ecb6eed9912f7",
+   "url": "https://soma-lang.dev/cases/orbite/src/sys/operations/chair/continuite.cell"
+  },
+  {
+   "path": "sys/operations/chair/crise.cell",
+   "kind": "body",
+   "lines": 169,
+   "sha256": "d790e0ef5ac7e6d0c1447d9ace996fbd9fddb6e6f2530734e0d7f41272164ab0",
+   "url": "https://soma-lang.dev/cases/orbite/src/sys/operations/chair/crise.cell"
+  },
+  {
+   "path": "sys/operations/chair/degrade.cell",
+   "kind": "body",
+   "lines": 119,
+   "sha256": "fc38ee7d98f4b7d8bff82278af19534c5d438b34453e7ee52d503675851c40d9",
+   "url": "https://soma-lang.dev/cases/orbite/src/sys/operations/chair/degrade.cell"
+  },
+  {
+   "path": "sys/operations/chair/incidents.cell",
+   "kind": "body",
+   "lines": 380,
+   "sha256": "4e1d1d177f1725501c110304c63a08964545567f1f9193ade8d279d6886db5f1",
+   "url": "https://soma-lang.dev/cases/orbite/src/sys/operations/chair/incidents.cell"
+  },
+  {
+   "path": "sys/operations/chair/ronde.cell",
+   "kind": "body",
+   "lines": 121,
+   "sha256": "f8cc613e000de9c4b3d0aa0c4446daac9357b3fea402adac7eae5a26020f5fd5",
+   "url": "https://soma-lang.dev/cases/orbite/src/sys/operations/chair/ronde.cell"
+  },
+  {
+   "path": "sys/operations/chair/secours.cell",
+   "kind": "body",
+   "lines": 123,
+   "sha256": "7407f024369fb1c662dd7d2a17bac2e9bc7e885d1d7af1ec7562a52d75bef775",
+   "url": "https://soma-lang.dev/cases/orbite/src/sys/operations/chair/secours.cell"
+  },
+  {
+   "path": "sys/operations/changements.cell",
+   "kind": "skeleton",
+   "lines": 255,
+   "sha256": "32df1a9dc7b6677693af998ef4a0c3ba8c8c68c1f36d716693390e937064c0aa",
+   "url": "https://soma-lang.dev/cases/orbite/src/sys/operations/changements.cell"
+  },
+  {
+   "path": "sys/operations/continuite.cell",
+   "kind": "skeleton",
+   "lines": 93,
+   "sha256": "eb518ba23dea6d2d46c2a054724d47f31793b665abff596d9f0a47edf358112c",
+   "url": "https://soma-lang.dev/cases/orbite/src/sys/operations/continuite.cell"
+  },
+  {
+   "path": "sys/operations/crise.cell",
+   "kind": "skeleton",
+   "lines": 134,
+   "sha256": "e4614537a4f0d05316f1e97903ad82679fb9a184c7433726ec6ee07fa82c7d31",
+   "url": "https://soma-lang.dev/cases/orbite/src/sys/operations/crise.cell"
+  },
+  {
+   "path": "sys/operations/degrade.cell",
+   "kind": "skeleton",
+   "lines": 88,
+   "sha256": "ba16002d256a23268069c54f862bd256fc93485f78cb821a138271a2d05e5dc2",
+   "url": "https://soma-lang.dev/cases/orbite/src/sys/operations/degrade.cell"
+  },
+  {
+   "path": "sys/operations/entree.cell",
+   "kind": "skeleton",
+   "lines": 32,
+   "sha256": "fd6438fe352222c5c49c8d5ccdc3026704ccbfdb84f5411682b39802f7ed110f",
+   "url": "https://soma-lang.dev/cases/orbite/src/sys/operations/entree.cell"
+  },
+  {
+   "path": "sys/operations/facade.txt",
+   "kind": "doc",
+   "lines": 6,
+   "sha256": "db567f32c79117502d58d36e2523bab62f75bf5da872e94a0e2a302aabddea47",
+   "url": "https://soma-lang.dev/cases/orbite/src/sys/operations/facade.txt"
+  },
+  {
+   "path": "sys/operations/incidents.cell",
+   "kind": "skeleton",
+   "lines": 269,
+   "sha256": "27f2087a5f8cf94c1e2b10e1f0fd423ec9ff6efb7c17d763ef5f18606bf2bc95",
+   "url": "https://soma-lang.dev/cases/orbite/src/sys/operations/incidents.cell"
+  },
+  {
+   "path": "sys/operations/ronde.cell",
+   "kind": "skeleton",
+   "lines": 53,
+   "sha256": "27c93be98fbb973567d5b9d7334920c42fcdf3043a2dd3703259ed0a61b56280",
+   "url": "https://soma-lang.dev/cases/orbite/src/sys/operations/ronde.cell"
+  },
+  {
+   "path": "sys/operations/secours.cell",
+   "kind": "skeleton",
+   "lines": 116,
+   "sha256": "dc6438d0da46148c8f27fd86af1bf00560fdf0a7561e891a56413b2b337206d6",
+   "url": "https://soma-lang.dev/cases/orbite/src/sys/operations/secours.cell"
+  },
+  {
+   "path": "sys/passerelle/NOTES.md",
+   "kind": "doc",
+   "lines": 62,
+   "sha256": "f1d1acb815e767e5a81bef05e80f0a6888c05f3b7dcb14f318bbbdf97e48dae0",
+   "url": "https://soma-lang.dev/cases/orbite/src/sys/passerelle/NOTES.md"
+  },
+  {
+   "path": "sys/passerelle/admin.cell",
+   "kind": "skeleton",
+   "lines": 84,
+   "sha256": "6d87f5608d4a0dc69d17478e009bf6270f0e4dbd177aedb194f0cc534a2978ef",
+   "url": "https://soma-lang.dev/cases/orbite/src/sys/passerelle/admin.cell"
+  },
+  {
+   "path": "sys/passerelle/api.cell",
+   "kind": "skeleton",
+   "lines": 31,
+   "sha256": "8e9cc3d297e3e07e53e537a5c97e30b8c9a519c944206650520dd23378c14709",
+   "url": "https://soma-lang.dev/cases/orbite/src/sys/passerelle/api.cell"
+  },
+  {
+   "path": "sys/passerelle/chair/admin.cell",
+   "kind": "body",
+   "lines": 346,
+   "sha256": "b7ab909d13d92a674fef746ced636b6567fdbf876b9771c7ee8e1b25639a3c91",
+   "url": "https://soma-lang.dev/cases/orbite/src/sys/passerelle/chair/admin.cell"
+  },
+  {
+   "path": "sys/passerelle/chair/api.cell",
+   "kind": "body",
+   "lines": 23,
+   "sha256": "01ca269be57523e9fe276327ca14dd6d684a833fdf774a0e304683b27326a373",
+   "url": "https://soma-lang.dev/cases/orbite/src/sys/passerelle/chair/api.cell"
+  },
+  {
+   "path": "sys/passerelle/chair/debit.cell",
+   "kind": "body",
+   "lines": 128,
+   "sha256": "b1372f7b13c5893b756b6eb0a7bfb8a823c70c3e592726aa8e4009381d54b360",
+   "url": "https://soma-lang.dev/cases/orbite/src/sys/passerelle/chair/debit.cell"
+  },
+  {
+   "path": "sys/passerelle/chair/formats.cell",
+   "kind": "body",
+   "lines": 230,
+   "sha256": "fc3ae20854fb7a4c7be9bfc33a343c43b51d25a17e09333e06eeab001381bb93",
+   "url": "https://soma-lang.dev/cases/orbite/src/sys/passerelle/chair/formats.cell"
+  },
+  {
+   "path": "sys/passerelle/chair/idempotence.cell",
+   "kind": "body",
+   "lines": 83,
+   "sha256": "ee8c9e7422003520f8528b24b215a58ac98cb1aa79ae0c87d9454379b67b3d43",
+   "url": "https://soma-lang.dev/cases/orbite/src/sys/passerelle/chair/idempotence.cell"
+  },
+  {
+   "path": "sys/passerelle/chair/messages.cell",
+   "kind": "body",
+   "lines": 480,
+   "sha256": "12477cc71a398d6291f65687074db290234e5bfb0858f49d9056fcde5d3896aa",
+   "url": "https://soma-lang.dev/cases/orbite/src/sys/passerelle/chair/messages.cell"
+  },
+  {
+   "path": "sys/passerelle/chair/metier.cell",
+   "kind": "body",
+   "lines": 250,
+   "sha256": "f650c60192cebed035d27bf49c3974bf4781c5ae2c684e888ba6772b8dc2484e",
+   "url": "https://soma-lang.dev/cases/orbite/src/sys/passerelle/chair/metier.cell"
+  },
+  {
+   "path": "sys/passerelle/chair/routage.cell",
+   "kind": "body",
+   "lines": 488,
+   "sha256": "c918bff11e2d214209411082cbba4ae48bf106b26dc41f4550801caa58915244",
+   "url": "https://soma-lang.dev/cases/orbite/src/sys/passerelle/chair/routage.cell"
+  },
+  {
+   "path": "sys/passerelle/debit.cell",
+   "kind": "skeleton",
+   "lines": 92,
+   "sha256": "8aae43c8ed684d9d64f05f29952fa430e35bc601150be6b77ad2323bc2c0483b",
+   "url": "https://soma-lang.dev/cases/orbite/src/sys/passerelle/debit.cell"
+  },
+  {
+   "path": "sys/passerelle/entree.cell",
+   "kind": "skeleton",
+   "lines": 33,
+   "sha256": "37cb317ee47310d707431a84faa38744e44ce276b8b28e1c7507d6f4d120f565",
+   "url": "https://soma-lang.dev/cases/orbite/src/sys/passerelle/entree.cell"
+  },
+  {
+   "path": "sys/passerelle/facade.txt",
+   "kind": "doc",
+   "lines": 5,
+   "sha256": "ced8461b14e84e1a1743f78c17d66b17025cf176af776171a348fc5c33d6be35",
+   "url": "https://soma-lang.dev/cases/orbite/src/sys/passerelle/facade.txt"
+  },
+  {
+   "path": "sys/passerelle/formats.cell",
+   "kind": "skeleton",
+   "lines": 52,
+   "sha256": "fb5c1fcf3454ac4f72925444bc26fa95b23fed189d87ee771176aeffe205bde4",
+   "url": "https://soma-lang.dev/cases/orbite/src/sys/passerelle/formats.cell"
+  },
+  {
+   "path": "sys/passerelle/idempotence.cell",
+   "kind": "skeleton",
+   "lines": 63,
+   "sha256": "a65aca3fd03a2561dd0e477b76dd48ec7516d8ed9236fb44bdb7f6f16e408e5c",
+   "url": "https://soma-lang.dev/cases/orbite/src/sys/passerelle/idempotence.cell"
+  },
+  {
+   "path": "sys/passerelle/identite.cell",
+   "kind": "skeleton",
+   "lines": 9,
+   "sha256": "4b134364c863a41e332bfbdc528a416ace2992ee1ac3e54058a520f9afde1891",
+   "url": "https://soma-lang.dev/cases/orbite/src/sys/passerelle/identite.cell"
+  },
+  {
+   "path": "sys/passerelle/messages.cell",
+   "kind": "skeleton",
+   "lines": 215,
+   "sha256": "a468cf25c4a717ab44825a8fcde9298e0b37fa32e64d0e22f902bb05472129c8",
+   "url": "https://soma-lang.dev/cases/orbite/src/sys/passerelle/messages.cell"
+  },
+  {
+   "path": "sys/passerelle/metier.cell",
+   "kind": "skeleton",
+   "lines": 85,
+   "sha256": "feb7ec70c15196ca3b2f141948fc2e065e06628b6690ec469739ecca795f57c8",
+   "url": "https://soma-lang.dev/cases/orbite/src/sys/passerelle/metier.cell"
+  },
+  {
+   "path": "sys/passerelle/routage.cell",
+   "kind": "skeleton",
+   "lines": 177,
+   "sha256": "80d2aafe80d4f45f73103dcedbbeb0464cc2cdbd9004766fa23d446c5abd8cab",
+   "url": "https://soma-lang.dev/cases/orbite/src/sys/passerelle/routage.cell"
+  },
+  {
+   "path": "sys/priorites/NOTES.md",
+   "kind": "doc",
+   "lines": 58,
+   "sha256": "1dd2bdf37514e6fb4e94fdc0e91be632456a7b3fdb472c7faa39714b22f0e19c",
+   "url": "https://soma-lang.dev/cases/orbite/src/sys/priorites/NOTES.md"
+  },
+  {
+   "path": "sys/priorites/adoption.cell",
+   "kind": "skeleton",
+   "lines": 174,
+   "sha256": "6685155a6bcab49292912e529c1802dde9c7c34efd7e53819b04c75caa62fec5",
+   "url": "https://soma-lang.dev/cases/orbite/src/sys/priorites/adoption.cell"
+  },
+  {
+   "path": "sys/priorites/api.cell",
+   "kind": "skeleton",
+   "lines": 35,
+   "sha256": "2a16eb5d34d93bfac31b30d271984bff175a58ae0e6410ce5e7059e0c10cdc86",
+   "url": "https://soma-lang.dev/cases/orbite/src/sys/priorites/api.cell"
+  },
+  {
+   "path": "sys/priorites/cas.cell",
+   "kind": "skeleton",
+   "lines": 125,
+   "sha256": "e1ed36bb9532e79968f89612d88b6d1733c682c78e8e7cd8d06a9b0990b018cc",
+   "url": "https://soma-lang.dev/cases/orbite/src/sys/priorites/cas.cell"
+  },
+  {
+   "path": "sys/priorites/chair/adoption.cell",
+   "kind": "body",
+   "lines": 203,
+   "sha256": "11f81031db95225214ac360ca0c28d4dcda55683bb7e93b9fd5414947dfc72b9",
+   "url": "https://soma-lang.dev/cases/orbite/src/sys/priorites/chair/adoption.cell"
+  },
+  {
+   "path": "sys/priorites/chair/api.cell",
+   "kind": "body",
+   "lines": 26,
+   "sha256": "fe7c6de2421378ebe1098bd572aeb2b91f3518b159d75de9e393e1efb366142a",
+   "url": "https://soma-lang.dev/cases/orbite/src/sys/priorites/chair/api.cell"
+  },
+  {
+   "path": "sys/priorites/chair/cas.cell",
+   "kind": "body",
+   "lines": 156,
+   "sha256": "57fde7e7af1813b03262c07ec92bcc5526c24eb6e3bf2034b22c8e039bc378c9",
+   "url": "https://soma-lang.dev/cases/orbite/src/sys/priorites/chair/cas.cell"
+  },
+  {
+   "path": "sys/priorites/chair/derogations.cell",
+   "kind": "body",
+   "lines": 207,
+   "sha256": "dc82e2e2e9ee0fcfca423f39d0bb7e8ec5f814a3a1118a146f8b2123ef6c18db",
+   "url": "https://soma-lang.dev/cases/orbite/src/sys/priorites/chair/derogations.cell"
+  },
+  {
+   "path": "sys/priorites/chair/designation.cell",
+   "kind": "body",
+   "lines": 276,
+   "sha256": "5cc990b75f6fcbc54c959782b478fdd5f66a9d95cb02a64d6f86f5f7e488b004",
+   "url": "https://soma-lang.dev/cases/orbite/src/sys/priorites/chair/designation.cell"
+  },
+  {
+   "path": "sys/priorites/chair/echeancier.cell",
+   "kind": "body",
+   "lines": 117,
+   "sha256": "3e5d6c648fcf3049993c3d8bb101e2264d8f3b541a55ce9fc54840b517a414cf",
+   "url": "https://soma-lang.dev/cases/orbite/src/sys/priorites/chair/echeancier.cell"
+  },
+  {
+   "path": "sys/priorites/chair/table.cell",
+   "kind": "body",
+   "lines": 162,
+   "sha256": "268b3c2e68faa9b19a1a3a2720900cf378d1a2c701b2f6d770589cdc614ec703",
+   "url": "https://soma-lang.dev/cases/orbite/src/sys/priorites/chair/table.cell"
+  },
+  {
+   "path": "sys/priorites/chair/versions.cell",
+   "kind": "body",
+   "lines": 216,
+   "sha256": "b7d574f2a20bb481dd805948cca11e920dfa3d9e94bd0ffff5e698ae7c3dbceb",
+   "url": "https://soma-lang.dev/cases/orbite/src/sys/priorites/chair/versions.cell"
+  },
+  {
+   "path": "sys/priorites/derogations.cell",
+   "kind": "skeleton",
+   "lines": 150,
+   "sha256": "ff72857caeb7fe1b221f7595c87cce35b4581ca656434b883111ccca85af11d2",
+   "url": "https://soma-lang.dev/cases/orbite/src/sys/priorites/derogations.cell"
+  },
+  {
+   "path": "sys/priorites/designation.cell",
+   "kind": "skeleton",
+   "lines": 166,
+   "sha256": "f262028ab76d124a43e397513abb1fc88594cd3f52efa00e14392ba342d99ac2",
+   "url": "https://soma-lang.dev/cases/orbite/src/sys/priorites/designation.cell"
+  },
+  {
+   "path": "sys/priorites/echeancier.cell",
+   "kind": "skeleton",
+   "lines": 70,
+   "sha256": "a46f5d2a0ded2c62be2bbe503e893dde29795e08664947721bd481d10b002f29",
+   "url": "https://soma-lang.dev/cases/orbite/src/sys/priorites/echeancier.cell"
+  },
+  {
+   "path": "sys/priorites/entree.cell",
+   "kind": "skeleton",
+   "lines": 32,
+   "sha256": "d54b7b23f47c7a9936f4c39a7abda40af9febd8186ceb69ff918cfb3d48cff99",
+   "url": "https://soma-lang.dev/cases/orbite/src/sys/priorites/entree.cell"
+  },
+  {
+   "path": "sys/priorites/facade.txt",
+   "kind": "doc",
+   "lines": 6,
+   "sha256": "ed0039ef188b0f7fac07e53621d0a6cee682eec35fe6fc19132f0de7c8a5f6d2",
+   "url": "https://soma-lang.dev/cases/orbite/src/sys/priorites/facade.txt"
+  },
+  {
+   "path": "sys/priorites/table.cell",
+   "kind": "skeleton",
+   "lines": 97,
+   "sha256": "a65a87c2557eee2a404830b71c04bc2fb146a886080bb1f447352e2b83a1e997",
+   "url": "https://soma-lang.dev/cases/orbite/src/sys/priorites/table.cell"
+  },
+  {
+   "path": "sys/priorites/versions.cell",
+   "kind": "skeleton",
+   "lines": 161,
+   "sha256": "48ebea0aae8d90ee83bd7d9293d79d5df91c989e1aa352f1f960993e910edfd7",
+   "url": "https://soma-lang.dev/cases/orbite/src/sys/priorites/versions.cell"
+  },
+  {
+   "path": "sys/reentrees/NOTES.md",
+   "kind": "doc",
+   "lines": 81,
+   "sha256": "cd43f29f1b5bd532328b7d603e6ec09051d08ff435a82e551528178aa94e73bc",
+   "url": "https://soma-lang.dev/cases/orbite/src/sys/reentrees/NOTES.md"
+  },
+  {
+   "path": "sys/reentrees/api.cell",
+   "kind": "skeleton",
+   "lines": 43,
+   "sha256": "8e5c2c51a6df121fb6059944abc3ffb48833fb16d6e140760e6e873121864152",
+   "url": "https://soma-lang.dev/cases/orbite/src/sys/reentrees/api.cell"
+  },
+  {
+   "path": "sys/reentrees/campagne.cell",
+   "kind": "skeleton",
+   "lines": 181,
+   "sha256": "e57a49e40c1f6cdea279fa08dd8b90d1d5da99248acb0dafaee514258d63d4ed",
+   "url": "https://soma-lang.dev/cases/orbite/src/sys/reentrees/campagne.cell"
+  },
+  {
+   "path": "sys/reentrees/chair/api.cell",
+   "kind": "body",
+   "lines": 55,
+   "sha256": "2f2d69438091ca8b9aee7d354f5881552707f8817074ac2fd982a74158fbb0e4",
+   "url": "https://soma-lang.dev/cases/orbite/src/sys/reentrees/chair/api.cell"
+  },
+  {
+   "path": "sys/reentrees/chair/campagne.cell",
+   "kind": "body",
+   "lines": 270,
+   "sha256": "a101089de21944ba8c94c324c16d21fdf7d34d312e53824039c1b0f0768f8e55",
+   "url": "https://soma-lang.dev/cases/orbite/src/sys/reentrees/chair/campagne.cell"
+  },
+  {
+   "path": "sys/reentrees/chair/constat.cell",
+   "kind": "body",
+   "lines": 96,
+   "sha256": "de5a9686bbe87d8c1a1e3055da746d1968b9ed4af1a66b42f3a9de2447778aad",
+   "url": "https://soma-lang.dev/cases/orbite/src/sys/reentrees/chair/constat.cell"
+  },
+  {
+   "path": "sys/reentrees/chair/controlee.cell",
+   "kind": "body",
+   "lines": 193,
+   "sha256": "80b4f8a2577b3d428398ba9d93d816f2f383d3666cbf0357d2c4b58b9b0839cf",
+   "url": "https://soma-lang.dev/cases/orbite/src/sys/reentrees/chair/controlee.cell"
+  },
+  {
+   "path": "sys/reentrees/chair/debris.cell",
+   "kind": "body",
+   "lines": 169,
+   "sha256": "303483d12aa3ff1db5365647dec7872375fc0ee3eec427bf78a9ca3f9f220f06",
+   "url": "https://soma-lang.dev/cases/orbite/src/sys/reentrees/chair/debris.cell"
+  },
+  {
+   "path": "sys/reentrees/chair/notifications.cell",
+   "kind": "body",
+   "lines": 185,
+   "sha256": "f88c0f4e46b104d04af86fa0e8809f67f36aa16794020d4c26f5b4110e343ef0",
+   "url": "https://soma-lang.dev/cases/orbite/src/sys/reentrees/chair/notifications.cell"
+  },
+  {
+   "path": "sys/reentrees/chair/risque.cell",
+   "kind": "body",
+   "lines": 110,
+   "sha256": "5f711a1a2d57bceb547ce23c7932e524d3aaf996b0a4abeffa4c36c4a9499718",
+   "url": "https://soma-lang.dev/cases/orbite/src/sys/reentrees/chair/risque.cell"
+  },
+  {
+   "path": "sys/reentrees/chair/survol.cell",
+   "kind": "body",
+   "lines": 65,
+   "sha256": "4cc4308aaa753c29af2daccd2a79c5dc5734cf6a0c0c23ad6c3ca8995eb56060",
+   "url": "https://soma-lang.dev/cases/orbite/src/sys/reentrees/chair/survol.cell"
+  },
+  {
+   "path": "sys/reentrees/constat.cell",
+   "kind": "skeleton",
+   "lines": 108,
+   "sha256": "02b67765086e0d387d4cfdb4e1831b5eccb1cc03751fc68852494d23608580e6",
+   "url": "https://soma-lang.dev/cases/orbite/src/sys/reentrees/constat.cell"
+  },
+  {
+   "path": "sys/reentrees/controlee.cell",
+   "kind": "skeleton",
+   "lines": 181,
+   "sha256": "51e76ee6b91ec464a614f7f6acf0a8b037394b1d65551cabe08b763e7c898aa3",
+   "url": "https://soma-lang.dev/cases/orbite/src/sys/reentrees/controlee.cell"
+  },
+  {
+   "path": "sys/reentrees/debris.cell",
+   "kind": "skeleton",
+   "lines": 148,
+   "sha256": "5ab01a2cf2c3009ad22b1ab35f94b56d359c67505d599ab0b09ec6474593334a",
+   "url": "https://soma-lang.dev/cases/orbite/src/sys/reentrees/debris.cell"
+  },
+  {
+   "path": "sys/reentrees/entree.cell",
+   "kind": "skeleton",
+   "lines": 32,
+   "sha256": "5de4454fdf9665f5f69f6fcca0f80c8cf790a1df039c9db1b021168d4daf3ac5",
+   "url": "https://soma-lang.dev/cases/orbite/src/sys/reentrees/entree.cell"
+  },
+  {
+   "path": "sys/reentrees/facade.txt",
+   "kind": "doc",
+   "lines": 10,
+   "sha256": "d641579801fcade5076ccf8eeb0bf078f981aeabedc3d40aa7106dda9a6069a9",
+   "url": "https://soma-lang.dev/cases/orbite/src/sys/reentrees/facade.txt"
+  },
+  {
+   "path": "sys/reentrees/notifications.cell",
+   "kind": "skeleton",
+   "lines": 152,
+   "sha256": "267195ff2f7a53a018bce81ec1e69430886d56703f95d9c3f214b5eaf19d5dc6",
+   "url": "https://soma-lang.dev/cases/orbite/src/sys/reentrees/notifications.cell"
+  },
+  {
+   "path": "sys/reentrees/regles.toml",
+   "kind": "doc",
+   "lines": 8,
+   "sha256": "32cfc1e7b24f6eeb85ca526e28dd873c2ebdda43fb7d859aa5ada71322b40d3b",
+   "url": "https://soma-lang.dev/cases/orbite/src/sys/reentrees/regles.toml"
+  },
+  {
+   "path": "sys/reentrees/risque.cell",
+   "kind": "skeleton",
+   "lines": 115,
+   "sha256": "b8f4170ae79fe0aaf5735296b813deb19aec53084bfa7d3c6dff5fe7f9031cec",
+   "url": "https://soma-lang.dev/cases/orbite/src/sys/reentrees/risque.cell"
+  },
+  {
+   "path": "sys/reentrees/survol.cell",
+   "kind": "skeleton",
+   "lines": 59,
+   "sha256": "4da61aaaf4d62921e0ef3eb64c4252c936136c89cdfef59b4476f912756b01c2",
+   "url": "https://soma-lang.dev/cases/orbite/src/sys/reentrees/survol.cell"
+  },
+  {
+   "path": "sys/ref/NOTES.md",
+   "kind": "doc",
+   "lines": 64,
+   "sha256": "705a8b37f0dc5e6f7d559264f920506692ee7a31b8941f9e02e36ddb8afbd7e4",
+   "url": "https://soma-lang.dev/cases/orbite/src/sys/ref/NOTES.md"
+  },
+  {
+   "path": "sys/ref/api.cell",
+   "kind": "skeleton",
+   "lines": 126,
+   "sha256": "05699f0c74914418e844be5fe79ede93494d1c172e075efd567992f774105696",
+   "url": "https://soma-lang.dev/cases/orbite/src/sys/ref/api.cell"
+  },
+  {
+   "path": "sys/ref/catalogue.cell",
+   "kind": "skeleton",
+   "lines": 277,
+   "sha256": "a3738909f226649bbecfd95be3d5c567b29f61687b89e3db4e4b90430c651442",
+   "url": "https://soma-lang.dev/cases/orbite/src/sys/ref/catalogue.cell"
+  },
+  {
+   "path": "sys/ref/cessions.cell",
+   "kind": "skeleton",
+   "lines": 163,
+   "sha256": "bf7cdf6ee3c559edc3e7fd27dbc5a5de8b9b2aa9eacc533c55e96df5b2d60d59",
+   "url": "https://soma-lang.dev/cases/orbite/src/sys/ref/cessions.cell"
+  },
+  {
+   "path": "sys/ref/chair/api.cell",
+   "kind": "body",
+   "lines": 133,
+   "sha256": "5bae135acab3b1cc78638d417718b19fbeb637b02c3cfe0f6b895c1f33dda3ae",
+   "url": "https://soma-lang.dev/cases/orbite/src/sys/ref/chair/api.cell"
+  },
+  {
+   "path": "sys/ref/chair/catalogue.cell",
+   "kind": "body",
+   "lines": 448,
+   "sha256": "1a4545257586ceac850e2c7c2cc1cbcc49e8da35248ac533e59ec88e94f47fa8",
+   "url": "https://soma-lang.dev/cases/orbite/src/sys/ref/chair/catalogue.cell"
+  },
+  {
+   "path": "sys/ref/chair/cessions.cell",
+   "kind": "body",
+   "lines": 251,
+   "sha256": "45c68017e916017d5fd53b1ab7ec60ab7d60368535bcda9c1b1cf66d47e98fb3",
+   "url": "https://soma-lang.dev/cases/orbite/src/sys/ref/chair/cessions.cell"
+  },
+  {
+   "path": "sys/ref/chair/etats.cell",
+   "kind": "body",
+   "lines": 155,
+   "sha256": "d862950a2fabd143197226781d134e6f6e75b6656e734e3474215e09267fdd59",
+   "url": "https://soma-lang.dev/cases/orbite/src/sys/ref/chair/etats.cell"
+  },
+  {
+   "path": "sys/ref/chair/historique.cell",
+   "kind": "body",
+   "lines": 176,
+   "sha256": "44908bdd8cf7f06b55fcb04482dfbfabf706a66b98158edc37858f9b4aca23b0",
+   "url": "https://soma-lang.dev/cases/orbite/src/sys/ref/chair/historique.cell"
+  },
+  {
+   "path": "sys/ref/chair/organisations.cell",
+   "kind": "body",
+   "lines": 198,
+   "sha256": "d9c9a7879711b9e34aaffc30b5c9e403434f191533efd295019207099cc567d4",
+   "url": "https://soma-lang.dev/cases/orbite/src/sys/ref/chair/organisations.cell"
+  },
+  {
+   "path": "sys/ref/chair/registre.cell",
+   "kind": "body",
+   "lines": 199,
+   "sha256": "830c47299233e6ef26e7fad2795081532913d5bec3829774d9ec9d6a1adc4a6e",
+   "url": "https://soma-lang.dev/cases/orbite/src/sys/ref/chair/registre.cell"
+  },
+  {
+   "path": "sys/ref/entree.cell",
+   "kind": "skeleton",
+   "lines": 31,
+   "sha256": "809d88439a3e7c0f1411884f83b8b66ccbe500e2854d2a087fb1cf5bd0a82247",
+   "url": "https://soma-lang.dev/cases/orbite/src/sys/ref/entree.cell"
+  },
+  {
+   "path": "sys/ref/etats.cell",
+   "kind": "skeleton",
+   "lines": 128,
+   "sha256": "d44ccdb26dc36275079acdd399bc97678bb379422eefd75aaabae44b43d11696",
+   "url": "https://soma-lang.dev/cases/orbite/src/sys/ref/etats.cell"
+  },
+  {
+   "path": "sys/ref/facade.txt",
+   "kind": "doc",
+   "lines": 30,
+   "sha256": "c942f61626c0b7f042cc0b1be29d3ec572840047a1790ec89d051b9f51036485",
+   "url": "https://soma-lang.dev/cases/orbite/src/sys/ref/facade.txt"
+  },
+  {
+   "path": "sys/ref/historique.cell",
+   "kind": "skeleton",
+   "lines": 144,
+   "sha256": "ce16d3662c3a21748a843f4b7d77d40c0dc935d721a0b2e7dc7d3e06bad97baa",
+   "url": "https://soma-lang.dev/cases/orbite/src/sys/ref/historique.cell"
+  },
+  {
+   "path": "sys/ref/organisations.cell",
+   "kind": "skeleton",
+   "lines": 147,
+   "sha256": "9b12bedc5b45345418c5a13c76f5653da7af7e33e943b9c706e945750c4bcdd7",
+   "url": "https://soma-lang.dev/cases/orbite/src/sys/ref/organisations.cell"
+  },
+  {
+   "path": "sys/ref/registre.cell",
+   "kind": "skeleton",
+   "lines": 159,
+   "sha256": "d4b46ccab8e5019072f6804024c16f3cdfdd11fe6fa2aa5ed73dc23d01476ee1",
+   "url": "https://soma-lang.dev/cases/orbite/src/sys/ref/registre.cell"
+  },
+  {
+   "path": "sys/responsabilite/NOTES.md",
+   "kind": "doc",
+   "lines": 56,
+   "sha256": "a559a4ff82f9d4b300ff27d5e0672a0fd0fced33fe5632412c80cd20d25d2087",
+   "url": "https://soma-lang.dev/cases/orbite/src/sys/responsabilite/NOTES.md"
+  },
+  {
+   "path": "sys/responsabilite/api.cell",
+   "kind": "skeleton",
+   "lines": 28,
+   "sha256": "4658262b0a07df7239cf896b365adb583dcc1332b1eff31c4af5c082b6e68aed",
+   "url": "https://soma-lang.dev/cases/orbite/src/sys/responsabilite/api.cell"
+  },
+  {
+   "path": "sys/responsabilite/assurance.cell",
+   "kind": "skeleton",
+   "lines": 141,
+   "sha256": "6a32c0dc92d6f539db35ec80853749db325349782b9bff003b4c5daf1a10cba7",
+   "url": "https://soma-lang.dev/cases/orbite/src/sys/responsabilite/assurance.cell"
+  },
+  {
+   "path": "sys/responsabilite/chair/api.cell",
+   "kind": "body",
+   "lines": 23,
+   "sha256": "6d5b2f80d2ca8a5cf3317d20a81652b3f80be3edca7dec512319923a0e7e0d8f",
+   "url": "https://soma-lang.dev/cases/orbite/src/sys/responsabilite/chair/api.cell"
+  },
+  {
+   "path": "sys/responsabilite/chair/assurance.cell",
+   "kind": "body",
+   "lines": 173,
+   "sha256": "70320a87377043bbc1a1c02ae8b056faf0523d346855fbf0bd40eadc7753529c",
+   "url": "https://soma-lang.dev/cases/orbite/src/sys/responsabilite/chair/assurance.cell"
+  },
+  {
+   "path": "sys/responsabilite/chair/conservation.cell",
+   "kind": "body",
+   "lines": 282,
+   "sha256": "b508af41efb218e387558cc7bf07c7210f53ccc730bff58ce319247056a7b3ba",
+   "url": "https://soma-lang.dev/cases/orbite/src/sys/responsabilite/chair/conservation.cell"
+  },
+  {
+   "path": "sys/responsabilite/chair/dossiers.cell",
+   "kind": "body",
+   "lines": 331,
+   "sha256": "d88bce8518d7bea7aeb1a6f89304c9e22de73669ab4002ce2277bb6b4095586c",
+   "url": "https://soma-lang.dev/cases/orbite/src/sys/responsabilite/chair/dossiers.cell"
+  },
+  {
+   "path": "sys/responsabilite/chair/fautes.cell",
+   "kind": "body",
+   "lines": 197,
+   "sha256": "8d108edbd2198b0a3c4353fb847ef9a4ea53da0ba12cd113f9b192147defb42e",
+   "url": "https://soma-lang.dev/cases/orbite/src/sys/responsabilite/chair/fautes.cell"
+  },
+  {
+   "path": "sys/responsabilite/chair/pieces.cell",
+   "kind": "body",
+   "lines": 391,
+   "sha256": "9416d501e0afadbd5b608b4218964e118cd472f85978937aa3ab56a762631ff2",
+   "url": "https://soma-lang.dev/cases/orbite/src/sys/responsabilite/chair/pieces.cell"
+  },
+  {
+   "path": "sys/responsabilite/chair/reclamations.cell",
+   "kind": "body",
+   "lines": 371,
+   "sha256": "1a8326c458c97c02a2b00be857eddb778de0176a2349a7eb0b56b6fcaeab9e19",
+   "url": "https://soma-lang.dev/cases/orbite/src/sys/responsabilite/chair/reclamations.cell"
+  },
+  {
+   "path": "sys/responsabilite/conservation.cell",
+   "kind": "skeleton",
+   "lines": 206,
+   "sha256": "5a389983532086757bcab9fad0ab7bc860940a4f4934e6c527de2041265089e8",
+   "url": "https://soma-lang.dev/cases/orbite/src/sys/responsabilite/conservation.cell"
+  },
+  {
+   "path": "sys/responsabilite/dossiers.cell",
+   "kind": "skeleton",
+   "lines": 180,
+   "sha256": "c749cb503a239ad45a80efc7e9310400f9b482268b7cde4b9c4a3d034c2a9986",
+   "url": "https://soma-lang.dev/cases/orbite/src/sys/responsabilite/dossiers.cell"
+  },
+  {
+   "path": "sys/responsabilite/entree.cell",
+   "kind": "skeleton",
+   "lines": 31,
+   "sha256": "839b0797e5704818498876ba1b6dc0e0aaf43a727f9f67d23e6788849c84c505",
+   "url": "https://soma-lang.dev/cases/orbite/src/sys/responsabilite/entree.cell"
+  },
+  {
+   "path": "sys/responsabilite/facade.txt",
+   "kind": "doc",
+   "lines": 5,
+   "sha256": "5b59e01484ddfae0ff83ef7c9ce24d57632acf11e5ebc4edcbfd3e8b00389dd1",
+   "url": "https://soma-lang.dev/cases/orbite/src/sys/responsabilite/facade.txt"
+  },
+  {
+   "path": "sys/responsabilite/fautes.cell",
+   "kind": "skeleton",
+   "lines": 131,
+   "sha256": "904170fef1a0a38e914a170c13dac2b0547e7ba0fc0b75f4185c470301617417",
+   "url": "https://soma-lang.dev/cases/orbite/src/sys/responsabilite/fautes.cell"
+  },
+  {
+   "path": "sys/responsabilite/pieces.cell",
+   "kind": "skeleton",
+   "lines": 159,
+   "sha256": "b382f8d390bfef77194dc0d318873a8360d31731aaf20dcf8244ed0fc0ad0cae",
+   "url": "https://soma-lang.dev/cases/orbite/src/sys/responsabilite/pieces.cell"
+  },
+  {
+   "path": "sys/responsabilite/reclamations.cell",
+   "kind": "skeleton",
+   "lines": 262,
+   "sha256": "8da42821380062439360dae440b7ad0c759b6d0c25a804e4dcfb03809faf9aa4",
+   "url": "https://soma-lang.dev/cases/orbite/src/sys/responsabilite/reclamations.cell"
+  },
+  {
+   "path": "sys/responsabilite/regles.toml",
+   "kind": "doc",
+   "lines": 16,
+   "sha256": "95f02b5dd3aede60a67523be32f57c9da7ace6bad04a3cd0ac2ffad9c506fa31",
+   "url": "https://soma-lang.dev/cases/orbite/src/sys/responsabilite/regles.toml"
+  },
+  {
+   "path": "test_acces.cell",
+   "kind": "test",
+   "lines": 460,
+   "sha256": "c1be87d8705198ae731705f3f9b8e1412d9741b5257e77091114a386d78174e0",
+   "url": "https://soma-lang.dev/cases/orbite/src/test_acces.cell"
+  },
+  {
+   "path": "test_aeolus.cell",
+   "kind": "test",
+   "lines": 688,
+   "sha256": "fa34db6d38eda3da4c8614855cdbeafea50ae82eaf98b19e4add4306e8a77714",
+   "url": "https://soma-lang.dev/cases/orbite/src/test_aeolus.cell"
+  },
+  {
+   "path": "test_bout_en_bout.cell",
+   "kind": "test",
+   "lines": 791,
+   "sha256": "6c3469973e7789503fd259654e2368ad39b5f999b33ed690efa5c5142833b557",
+   "url": "https://soma-lang.dev/cases/orbite/src/test_bout_en_bout.cell"
+  },
+  {
+   "path": "test_conformite.cell",
+   "kind": "test",
+   "lines": 498,
+   "sha256": "b03edfa19357da5adf2d009d4c2b5caddaa3c7d44463b222a73f382590c7d78a",
+   "url": "https://soma-lang.dev/cases/orbite/src/test_conformite.cell"
+  },
+  {
+   "path": "test_conjonctions.cell",
+   "kind": "test",
+   "lines": 584,
+   "sha256": "4e505cfaf6c1ca7699e25eea62697c1352ff387f3466772e997372b8fa356640",
+   "url": "https://soma-lang.dev/cases/orbite/src/test_conjonctions.cell"
+  },
+  {
+   "path": "test_coordination.cell",
+   "kind": "test",
+   "lines": 394,
+   "sha256": "1ced1f9a17f9b31cb13238fcf1bf6507c56419e919a7baf3c65a186cf7e64851",
+   "url": "https://soma-lang.dev/cases/orbite/src/test_coordination.cell"
+  },
+  {
+   "path": "test_donnees.cell",
+   "kind": "test",
+   "lines": 610,
+   "sha256": "a346f4bf502abc071a4feb16a638ac57c61392b81485bb82ed6aa6f2110ce1b8",
+   "url": "https://soma-lang.dev/cases/orbite/src/test_donnees.cell"
+  },
+  {
+   "path": "test_ephemerides.cell",
+   "kind": "test",
+   "lines": 426,
+   "sha256": "f2ec733257e06e5c3b765a4ff7eafb0ce0cc7609913ecda06f8ad4d469de8952",
+   "url": "https://soma-lang.dev/cases/orbite/src/test_ephemerides.cell"
+  },
+  {
+   "path": "test_escalade.cell",
+   "kind": "test",
+   "lines": 439,
+   "sha256": "b464cb759d299580609febd7f5b1c8930272984c61dcc2241368f317d9dcc308",
+   "url": "https://soma-lang.dev/cases/orbite/src/test_escalade.cell"
+  },
+  {
+   "path": "test_evenements.cell",
+   "kind": "test",
+   "lines": 448,
+   "sha256": "fe9c0c9d3376235373d4f1da455e8219c762b4a689e5d4310ff21e3e6bb14f54",
+   "url": "https://soma-lang.dev/cases/orbite/src/test_evenements.cell"
+  },
+  {
+   "path": "test_fin_de_vie.cell",
+   "kind": "test",
+   "lines": 616,
+   "sha256": "46bdeb90af9fc712d88b62771c154dd36b279f6cec97cc80c3502c382de038c8",
+   "url": "https://soma-lang.dev/cases/orbite/src/test_fin_de_vie.cell"
+  },
+  {
+   "path": "test_lancements.cell",
+   "kind": "test",
+   "lines": 579,
+   "sha256": "5d89202988f5cd3a48b5b70edec577c3e9cbd25e26a112b85db51a1487f0af15",
+   "url": "https://soma-lang.dev/cases/orbite/src/test_lancements.cell"
+  },
+  {
+   "path": "test_manoeuvres.cell",
+   "kind": "test",
+   "lines": 344,
+   "sha256": "83e51fdfca4e43c9e0e4f2eb231ade5ffe99466ead4977328fb1eea93a4c2459",
+   "url": "https://soma-lang.dev/cases/orbite/src/test_manoeuvres.cell"
+  },
+  {
+   "path": "test_meteo.cell",
+   "kind": "test",
+   "lines": 602,
+   "sha256": "0a030a6c04148a30f36d1deec32e877d421aae8603b4f8bf5bbb9d8962bf832d",
+   "url": "https://soma-lang.dev/cases/orbite/src/test_meteo.cell"
+  },
+  {
+   "path": "test_observation.cell",
+   "kind": "test",
+   "lines": 568,
+   "sha256": "c95e4e307a5a85c1d35cf3aa2a3e9dbee111d4d36e84244712b911f70fc3761d",
+   "url": "https://soma-lang.dev/cases/orbite/src/test_observation.cell"
+  },
+  {
+   "path": "test_operateurs.cell",
+   "kind": "test",
+   "lines": 515,
+   "sha256": "3c48c75fdb4b4960a048e6696815628e2673da377bae3704c37743987117ddb6",
+   "url": "https://soma-lang.dev/cases/orbite/src/test_operateurs.cell"
+  },
+  {
+   "path": "test_operations.cell",
+   "kind": "test",
+   "lines": 562,
+   "sha256": "8a8a193c7758968cd38b2b30c521239b65b0201e9d651f8880d1e88152fedc91",
+   "url": "https://soma-lang.dev/cases/orbite/src/test_operations.cell"
+  },
+  {
+   "path": "test_passerelle.cell",
+   "kind": "test",
+   "lines": 813,
+   "sha256": "2d84867c50ea786d023d758f567a152e323ce6fa21a3518aee8f1ab518413c5c",
+   "url": "https://soma-lang.dev/cases/orbite/src/test_passerelle.cell"
+  },
+  {
+   "path": "test_priorites.cell",
+   "kind": "test",
+   "lines": 546,
+   "sha256": "772176c87295c8da615564bad8f96ea889152b63c809e13d63ec49e8a773350e",
+   "url": "https://soma-lang.dev/cases/orbite/src/test_priorites.cell"
+  },
+  {
+   "path": "test_reentrees.cell",
+   "kind": "test",
+   "lines": 497,
+   "sha256": "dc834a11b47defad78e4dc9ac1a415ca1ff98c29ed8a16d9df716f9330fe0837",
+   "url": "https://soma-lang.dev/cases/orbite/src/test_reentrees.cell"
+  },
+  {
+   "path": "test_ref.cell",
+   "kind": "test",
+   "lines": 600,
+   "sha256": "b7910aab950ea5865e70441e46cd07f54567e19abf74ceaf2e21071981173402",
+   "url": "https://soma-lang.dev/cases/orbite/src/test_ref.cell"
+  },
+  {
+   "path": "test_responsabilite.cell",
+   "kind": "test",
+   "lines": 545,
+   "sha256": "2a8887d8d002ec054158504a199996113008de025f636d64732d2e68711bf0d3",
+   "url": "https://soma-lang.dev/cases/orbite/src/test_responsabilite.cell"
+  }
+ ]
+}

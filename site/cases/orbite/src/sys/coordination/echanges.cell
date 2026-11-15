@@ -1,0 +1,51 @@
+// COORDINATION — le journal des échanges d'une coordination (propositions, réponses, relances,
+// arbitrages, décisions, rouvertures) et la notification des parties. Ajout seul, borné par
+// rapprochement. Toute communication sort par ApiPasserelle.notifier après contrôle de diffusion
+// (ApiDonnees.peut_recevoir sur chacun des deux objets) et trace (ApiDonnees.tracer) :
+// une organisation non autorisée ne reçoit que le fait qu'une décision la concerne.
+
+// Nature d'un échange.
+cell type CoordNature = String where value == "proposition" || value == "reponse" || value == "relance" || value == "arbitrage" || value == "decision" || value == "rouverture" || value == "cloture" || value == "note"
+
+skeleton CoordEchange {
+    // Échanges d'une coordination (au-delà, la coordination doit être arbitrée, pas discutée).
+    const MAX_ECHANGES = 2000
+    const MAX_FILS = 50000000
+    // Longueur maximale d'un texte d'échange (caractères).
+    const MAX_TEXTE = 4000
+    memory {
+        fil_de: Map<String, List<String>> [persistent]        // r -> "h | org | par | nature | texte", ajout seul
+        messages_de: Map<String, List<String>> [persistent]   // r -> ids des messages sortants (ApiPasserelle) : preuve de notification
+        invariant fil_de.size <= 50000000
+        invariant len(fil_de) <= 2000
+        invariant len(messages_de) <= 2000
+    }
+    face {
+        // Ajoute un échange au fil de `r` : `org` émettrice (ApiRef.orbite() pour ORBITE),
+        // `par` la personne ou "systeme", `texte` au plus MAX_TEXTE caractères (sans "|").
+        // Interne : appelé par CoordDossier pour chaque geste. Renvoie le nombre d'échanges du fil.
+        // Refus : Plein (MAX_ECHANGES), HorsBornes (texte trop long), Incoherent (texte avec "|").
+        signal noter(h: Horodatage, r: Rapprochement, org: Org, nature: CoordNature, texte: String, par: String) -> Int
+            writes fil_de
+        // Notifie toutes les parties de `r` (CoordDossier.parties) et ApiRef.orbite() d'un
+        // échange de nature `nature` : pour chaque partie, le texte complet si
+        // ApiDonnees.peut_recevoir(partie, objet, r, h) vaut vrai pour les deux objets, sinon le
+        // seul avis « décision vous concernant sur r » ; trace chaque envoi complet
+        // (ApiDonnees.tracer, nature = `nature`) ; envoi par ApiPasserelle.notifier(h, partie, r, sujet,
+        // texte, urgence = ApiConjonctions.niveau(r)) ; note
+        // l'échange (noter). Renvoie le nombre de messages mis en file. Refus : Inconnu, Plein.
+        signal notifier(h: Horodatage, r: Rapprochement, nature: CoordNature, texte: String) -> Int
+            writes fil_de, messages_de
+            calls CoordDossier.parties, CoordDossier.objets, ApiConjonctions.niveau, ApiDonnees.peut_recevoir, ApiDonnees.tracer, ApiPasserelle.notifier, ApiRef.orbite
+        // Fil des échanges de `r` lu par la personne `par` : complet pour un employé d'ORBITE
+        // (rôles "analyste", "superviseur", "conformite", "direction", "auditeur"), et pour une
+        // partie si ApiDonnees.peut_recevoir vaut vrai pour les deux objets ; chaque lecture
+        // externe est tracée (ApiDonnees.tracer, nature "fil"). Au plus `n` échanges, les plus
+        // récents en dernier. Refus : Inconnu, Habilitation (personne inactive ou ni ORBITE ni
+        // partie, ApiAcces.employeur + ApiAcces.a_le_role), Confidentiel.
+        signal fil(h: Horodatage, r: Rapprochement, n: Int, par: String) -> List<String>
+            requires n > 0 && n <= 2000
+            reads fil_de
+            calls CoordDossier.parties, CoordDossier.objets, ApiAcces.employeur, ApiAcces.a_le_role, ApiRef.orbite, ApiDonnees.peut_recevoir, ApiDonnees.tracer
+    }
+}

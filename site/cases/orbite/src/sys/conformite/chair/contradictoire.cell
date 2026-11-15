@@ -1,0 +1,109 @@
+// Corps de ConfContradictoire : le droit de l'opérateur à répondre, même id que le manquement.
+flesh ConfContradictoire {
+    on ouvrir(h, m, op, gravite, resume) {
+        require op_de.get(m) == () else Existe "contradictoire {m} deja ouvert"
+        require op_de.size < MAX_CONTRADICTOIRES else Plein "plafond de {MAX_CONTRADICTOIRES} contradictoires atteint"
+        let e = try { ApiRef.etat_de(op) }
+        require e.error == () else Inconnu "{op} sans Etat de tutelle"
+        let delai = if gravite == 3 { DELAI_G3_MS } else if gravite == 2 { DELAI_G2_MS } else { DELAI_G1_MS }
+        let ech = Horodatage(to_int(h) + delai)
+        // le résumé commence par la référence du manquement (ConfManquement.notifier)
+        let premier = split(resume, " ")[0]
+        let r = if starts_with(premier, "CJ-") { premier } else { "" }
+        let msg = ApiPasserelle.notifier(h, op, Rapprochement(r), "contradictoire {m}", "{resume} ; vos observations avant {ech}", Niveau(to_int(gravite)))
+        op_de.set(m, op)
+        gravite_de.set(m, gravite)
+        ouvert_le.set(m, h)
+        echeance_de.set(m, ech)
+        message_de.set(m, msg)
+        if gravite == 3 {
+            let org_e = ApiRef.org_de_etat(e.value)
+            let msg_e = ApiPasserelle.notifier(h, org_e, Rapprochement(r), "contradictoire {m}", "manquement grave de {op}, operateur sous votre tutelle : {resume}", 3)
+            message_etat_de.set(m, msg_e)
+        }
+        let _ = Journal.noter(h, "conformite", "systeme", "contradictoire {m} ouvert pour {op}, echeance {ech} (message {msg})")
+        return ech
+    }
+    on enregistrer(h, m, observations, auteur) {
+        let ech = echeance_de.get(m)
+        require ech != () else Inconnu "contradictoire inconnu : {m}"
+        let st = get_status(m) ?? "ouvert"
+        require st == "ouvert" || st == "proroge" else EtatInvalide "contradictoire {m} en {st}"
+        require observations != "" else MotifRequis "observations vides"
+        require h <= ech else Delai "echeance de {m} passee"
+        observations_de.set(m, observations)
+        repondu_par.set(m, auteur)
+        repondu_le.set(m, h)
+        if st == "ouvert" {
+            transition(m, "ouvert", "repondu")
+        } else {
+            transition(m, "proroge", "repondu")
+        }
+        return "repondu"
+    }
+    on proroger(h, m, motif) {
+        let ech = echeance_de.get(m)
+        require ech != () else Inconnu "contradictoire inconnu : {m}"
+        let st = get_status(m) ?? "ouvert"
+        require st == "ouvert" else EtatInvalide "contradictoire {m} en {st}"
+        require (gravite_de.get(m) ?? 1) != 3 else NonEligible "pas de prorogation en gravite 3"
+        require motif != "" else MotifRequis "motif requis"
+        require h <= ech else Delai "echeance de {m} passee"
+        let debut = ouvert_le.get(m) ?? h
+        let nouvelle = Horodatage(to_int(ech) + (to_int(ech) - to_int(debut)))
+        echeance_de.set(m, nouvelle)
+        motif_prorogation.set(m, motif)
+        transition(m, "ouvert", "proroge")
+        return nouvelle
+    }
+    on forclore(h, m) {
+        let ech = echeance_de.get(m)
+        require ech != () else Inconnu "contradictoire inconnu : {m}"
+        let st = get_status(m) ?? "ouvert"
+        require st == "ouvert" || st == "proroge" else EtatInvalide "contradictoire {m} en {st}"
+        require h > ech else Delai "echeance de {m} non atteinte"
+        let msg = message_de.get(m) ?? ""
+        let fin = if ApiPasserelle.acquitte(msg) { "forclos" } else if ApiPasserelle.echoue(msg) { "injoignable" } else { "" }
+        require fin != "" else Insuffisant "notification de {m} encore en cours"
+        forclos_le.set(m, h)
+        if fin == "forclos" {
+            if st == "ouvert" { transition(m, "ouvert", "forclos") } else { transition(m, "proroge", "forclos") }
+        } else {
+            if st == "ouvert" { transition(m, "ouvert", "injoignable") } else { transition(m, "proroge", "injoignable") }
+        }
+        return fin
+    }
+    on etat_contradictoire(m) {
+        if op_de.get(m) == () { return "inconnu" }
+        return get_status(m) ?? "ouvert"
+    }
+    on echeance(m) {
+        let ech = echeance_de.get(m)
+        require ech != () else Inconnu "contradictoire inconnu : {m}"
+        return ech
+    }
+    on observations(m) {
+        require op_de.get(m) != () else Inconnu "contradictoire inconnu : {m}"
+        return observations_de.get(m) ?? ""
+    }
+    on notification(m) {
+        let msg = message_de.get(m)
+        require msg != () else Inconnu "contradictoire inconnu : {m}"
+        if ApiPasserelle.acquitte(msg) { return "acquittee" }
+        if ApiPasserelle.echoue(msg) { return "echouee" }
+        return "en_cours"
+    }
+    on echus(h, n) {
+        let cand_e = []
+        for e in echeance_de.entries {
+            let st = get_status(e.key) ?? "ouvert"
+            if (st == "ouvert" || st == "proroge") && h > e.value { cand_e.push(map("id", e.key, "t", e.value)) }
+        }
+        let tries_e = cand_e.sort_by(x => x.t)
+        let res_e = []
+        for c in tries_e {
+            if len(res_e) < n { res_e.push(c.id) }
+        }
+        return res_e
+    }
+}

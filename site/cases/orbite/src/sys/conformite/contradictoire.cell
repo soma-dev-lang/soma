@@ -1,0 +1,95 @@
+// CONFORMITÉ — contradictoire : le droit de l'opérateur à répondre avant toute qualification.
+// Une instance par manquement, SOUS LE MÊME ID (les règles d'arête de ConfManquement suivent cet
+// id sans lien). Appelée seulement par ConfManquement, qui contrôle les habilitations : aucun
+// signal ici ne prend `par`. Un opérateur silencieux est forclos à l'échéance, jamais attendu.
+
+skeleton ConfContradictoire {
+    const MAX_CONTRADICTOIRES = 2000000
+    const DELAI_G3_MS = 172800000       // gravité 3 : 48 h, sans prorogation
+    const DELAI_G2_MS = 604800000       // gravité 2 : 7 jours
+    const DELAI_G1_MS = 1296000000      // gravité 1 : 15 jours
+    memory {
+        op_de: Map<String, Org> [persistent]                 // manquement → opérateur (écrit par ouvrir)
+        invariant op_de.size <= 2000000
+        gravite_de: Map<String, Gravite> [persistent]
+        ouvert_le: Map<String, Horodatage> [persistent]
+        echeance_de: Map<String, Horodatage> [persistent]    // ms ; reportée une fois par proroger
+        // manquement → id du message ApiPasserelle.notifier à l'opérateur (preuve de notification).
+        // Écrit une fois par ouvrir, jamais effacé : lien des règles ouvert | proroge -> forclos | injoignable.
+        message_de: Map<String, String> [persistent]
+        // manquement → id du message à l'État de tutelle (gravité 3 seulement).
+        message_etat_de: Map<String, String> [persistent]
+        observations_de: Map<String, String> [persistent]
+        repondu_par: Map<String, String> [persistent]
+        repondu_le: Map<String, Horodatage> [persistent]
+        motif_prorogation: Map<String, String> [persistent]
+        forclos_le: Map<String, Horodatage> [persistent]
+    }
+    // Cycle du contradictoire. Terminaux : repondu, forclos, injoignable (forclusion d'un opérateur
+    // que la passerelle n'a pas pu joindre : le silence ne bloque pas, mais la preuve le distingue).
+    state cycle {
+        initial: ouvert
+        ouvert -> repondu        // enregistrer : observations reçues avant l'échéance
+        ouvert -> proroge        // proroger : échéance reportée une fois
+        proroge -> repondu       // enregistrer
+        ouvert -> forclos        // forclore : échéance passée sans réponse, notification acquittée
+        proroge -> forclos       // forclore
+        ouvert -> injoignable    // forclore : échéance passée, notification en échec définitif (escaladée ou signalée)
+        proroge -> injoignable   // forclore
+    }
+    face {
+        // Ouvre le contradictoire du manquement `m` (état "ouvert") : échéance = h + délai de la
+        // gravité ; notifie l'opérateur (ApiPasserelle.notifier, r = la référence si c'est un "CJ-…", sinon "" ; urgence = gravité) et, en gravité 3,
+        // le point focal de son État de tutelle. Renvoie l'échéance (ms).
+        // Refus : Existe (déjà ouvert), Inconnu (opérateur sans État de tutelle), Plein.
+        signal ouvrir(h: Horodatage, m: String, op: Org, gravite: Gravite, resume: String) -> Horodatage
+            writes op_de, gravite_de, ouvert_le, echeance_de, message_de, message_etat_de
+            calls ApiPasserelle.notifier, ApiRef.etat_de, ApiRef.org_de_etat, Journal.noter
+        // Enregistre les observations de `auteur` (déjà habilité par l'appelant) : ouvert | proroge
+        // -> repondu. Renvoie "repondu". Refus : Inconnu, EtatInvalide, MotifRequis (vides),
+        // Delai (h > échéance).
+        signal enregistrer(h: Horodatage, m: String, observations: String, auteur: String) -> String
+            writes observations_de, repondu_par, repondu_le
+            reads echeance_de
+            moves ouvert -> repondu, proroge -> repondu
+        // Reporte l'échéance d'une durée égale au délai initial : ouvert -> proroge. Renvoie la
+        // nouvelle échéance. Refus : Inconnu, EtatInvalide (déjà prorogé), NonEligible (gravité 3),
+        // MotifRequis, Delai (h > échéance).
+        signal proroger(h: Horodatage, m: String, motif: String) -> Horodatage
+            writes echeance_de, motif_prorogation
+            reads gravite_de, ouvert_le
+            moves ouvert -> proroge
+        // Constate la forclusion, h > échéance, selon l'issue de la notification lue sur message_de :
+        // acquittée (ApiPasserelle.acquitte) ⇒ ouvert | proroge -> forclos, renvoie "forclos" ;
+        // en échec définitif (ApiPasserelle.echoue : message escaladé ou signalé) ⇒ ouvert | proroge
+        // -> injoignable, renvoie "injoignable". On ne forclôt pas un opérateur jamais prévenu.
+        // Refus : Inconnu, EtatInvalide, Delai (échéance non atteinte), Insuffisant (notification
+        // encore en cours : ni acquittée ni en échec).
+        signal forclore(h: Horodatage, m: String) -> String
+            writes forclos_le
+            reads echeance_de, message_de
+            moves ouvert -> forclos when PasMessages.acquitte via message_de, proroge -> forclos when PasMessages.acquitte via message_de, ouvert -> injoignable when PasMessages.escalade || PasMessages.signale via message_de, proroge -> injoignable when PasMessages.escalade || PasMessages.signale via message_de
+            calls ApiPasserelle.acquitte, ApiPasserelle.echoue
+        // État : "ouvert", "proroge", "repondu", "forclos", "injoignable" ; "inconnu" si jamais ouvert.
+        signal etat_contradictoire(m: String) -> String
+            reads cycle, op_de
+        // Échéance courante (ms). Refus : Inconnu.
+        signal echeance(m: String) -> Horodatage
+            reads echeance_de
+        // Observations déposées ("" si aucune) ; l'appelant a contrôlé la diffusion. Refus : Inconnu.
+        signal observations(m: String) -> String
+            reads observations_de, op_de
+        // Issue de la notification à l'opérateur : "acquittee" (ApiPasserelle.acquitte), "echouee"
+        // (ApiPasserelle.echoue : réessais épuisés, opérateur injoignable), "en_cours" sinon.
+        // Une forclusion n'est prononcée que sur une notification acquittée ou échouée : on ne
+        // forclôt pas un opérateur que la passerelle essaie encore de joindre. Refus : Inconnu.
+        signal notification(m: String) -> String
+            reads message_de
+            calls ApiPasserelle.acquitte, ApiPasserelle.echoue
+        // Contradictoires ouverts ou prorogés dont l'échéance est passée à `h` (à forclore par
+        // ConfManquement.forclore, par = "systeme"), les plus anciens d'abord, au plus `n`.
+        signal echus(h: Horodatage, n: Int) -> List<String>
+            requires n > 0 && n <= 1000
+            reads echeance_de, cycle
+    }
+}

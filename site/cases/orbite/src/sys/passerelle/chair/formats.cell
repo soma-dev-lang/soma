@@ -1,0 +1,230 @@
+// PASSERELLE — corps des formats d'échange (OEM entrant, CDM et alertes sortants).
+
+flesh PasFormats {
+    on lire_oem(contenu) {
+        require len(contenu) <= MAX_OEM else HorsBornes "OEM de {len(contenu)} octets > {MAX_OEM}"
+        let lignes_o = split(replace(contenu, "\r", ""), "\n")
+        let champs = map()
+        let premier = ""
+        let dans_cov = false
+        let cov = []
+        let vu_cov = false
+        let man = false
+        let meta_fini = false
+        for brute in lignes_o {
+            let l = trim(brute)
+            if l == "" || starts_with(l, "COMMENT") { continue }
+            if starts_with(l, "COVARIANCE_START") {
+                dans_cov = true
+                vu_cov = true
+                continue
+            }
+            if starts_with(l, "COVARIANCE_STOP") {
+                dans_cov = false
+                continue
+            }
+            if starts_with(l, "MAN_") { man = true }
+            if starts_with(l, "META_STOP") {
+                meta_fini = true
+                continue
+            }
+            if contains(l, "=") {
+                let kv = split(l, "=")
+                let cle = trim(kv[0])
+                let val = trim(join(slice(kv, 1), "="))
+                if champs[cle] == () { champs[cle] = val }
+                continue
+            }
+            let mots = split(l, " ").filter(m => m != "")
+            if dans_cov {
+                for m in mots { cov.push(m) }
+                continue
+            }
+            if meta_fini && premier == "" { premier = l }
+        }
+        require (champs["CCSDS_OEM_VERS"] ?? "") == VERSION_OEM else Incoherent "CCSDS_OEM_VERS doit valoir {VERSION_OEM}"
+        let objet = champs["OBJECT_ID"] ?? ""
+        require starts_with(objet, "OBJ-") && len(objet) > 4 else Incoherent "OBJECT_ID doit être un numéro ORBITE OBJ-<n>"
+        require (champs["CENTER_NAME"] ?? "") == "EARTH" else Incoherent "CENTER_NAME doit valoir EARTH"
+        let repere = champs["REF_FRAME"] ?? ""
+        require contains(["EME2000", "J2000", "GCRF", "ICRF", "ITRF2000", "ITRF-93", "ITRF-97", "TEME", "TOD"], repere) else Incoherent "REF_FRAME {repere} inconnu"
+        let debut = _instant(champs["START_TIME"] ?? "")
+        let fin = _instant(champs["STOP_TIME"] ?? "")
+        require debut >= 0 && fin >= 0 else Incoherent "START_TIME / STOP_TIME manquant ou illisible"
+        require fin > debut else Incoherent "STOP_TIME <= START_TIME"
+        require premier != "" else Incoherent "premier point illisible"
+        let pt = split(premier, " ").filter(m => m != "")
+        require len(pt) == 7 else Incoherent "premier point illisible ({premier})"
+        let comp = []
+        for i in range(1, 7) {
+            let v = parse_float(pt[i])
+            require v != () else Incoherent "premier point illisible ({premier})"
+            // km -> m, km/s -> mm/s
+            let echelle = if i <= 3 { 1000.0 } else { 1000000.0 }
+            comp.push(to_int(round(v * echelle, 0)))
+        }
+        let q = if !vu_cov { "faible" } else { _qualite_cov(cov) }
+        return PasEnteteOem {
+            objet: Objet(objet),
+            epoque: Horodatage(debut),
+            horizon: Duree(fin - debut),
+            q: Qualite(q),
+            empreinte: PasEmpreinte(sha256(contenu)),
+            position: join(comp.map(c => to_string(c)), ","),
+            avec_manoeuvres: man
+        }
+    }
+
+    on cdm(h, r, pour) {
+        let objs = ApiConjonctions.objets(r)
+        require len(objs) == 2 else Inconnu "rapprochement {r} sans ses deux objets"
+        let visibles = objs.map(o => ApiDonnees.peut_recevoir(pour, Objet(o), r, h))
+        require visibles[0] || visibles[1] else Confidentiel "{pour} ne peut recevoir aucun des objets de {r}"
+        let tca = ApiConjonctions.tca(r)
+        let d = ApiConjonctions.distance(r)
+        let pc = ApiConjonctions.pc(r)
+        let niv = ApiConjonctions.niveau(r)
+        let maj = ApiConjonctions.mis_a_jour(r)
+        let kvn = []
+        kvn.push("CCSDS_CDM_VERS = {VERSION_CDM}")
+        kvn.push("CREATION_DATE = {h}")
+        kvn.push("ORIGINATOR = ORBITE")
+        kvn.push("MESSAGE_FOR = {pour}")
+        kvn.push("MESSAGE_ID = CDM-{r}-{h}")
+        kvn.push("COMMENT unites : instants en ms depuis l'epoque Unix, distances en m, pc en milliardiemes")
+        kvn.push("TCA = {tca}")
+        kvn.push("MISS_DISTANCE = {d} [m]")
+        kvn.push("COLLISION_PROBABILITY = {pc}")
+        kvn.push("COLLISION_PROBABILITY_METHOD = ORBITE")
+        kvn.push("COMMENT NIVEAU = {niv}")
+        kvn.push("COMMENT MIS_A_JOUR = {maj}")
+        for i in range(0, 2) {
+            let o = Objet(objs[i])
+            let rang = i + 1
+            kvn.push("OBJECT = OBJECT{rang}")
+            kvn.push("OBJECT_DESIGNATOR = {o}")
+            if !visibles[i] {
+                for c in ["OBJECT_NAME", "OPERATOR_ORGANIZATION", "OBJECT_TYPE", "ORBIT_CENTER", "MANEUVERABLE", "COMMENT HABITE", "COMMENT REGIME", "COMMENT EPHEMERIDE_AGE", "COMMENT EPHEMERIDE_QUALITE", "COMMENT FACTEUR_METEO"] {
+                    kvn.push("{c} = masque")
+                }
+                continue
+            }
+            let regime = ApiRef.regime(o)
+            let prop = ApiRef.propulsion(o)
+            let age_r = try { ApiEphemerides.age(o, h) }
+            let age = if age_r.error == () { to_string(age_r.value) } else { "aucune" }
+            let qual = ApiEphemerides.qualite(o)
+            let fac = ApiMeteo.facteur_incertitude(regime, h)
+            let nat = ApiRef.nature(o)
+            let prop_o = ApiRef.proprietaire(o)
+            let manoeuvrable = if prop == "aucune" { "NO" } else { "YES" }
+            let hab = ApiRef.habite(o)
+            kvn.push("OBJECT_NAME = {o}")
+            kvn.push("OPERATOR_ORGANIZATION = {prop_o}")
+            kvn.push("OBJECT_TYPE = {nat}")
+            kvn.push("ORBIT_CENTER = EARTH")
+            kvn.push("MANEUVERABLE = {manoeuvrable}")
+            kvn.push("COMMENT PROPULSION = {prop}")
+            kvn.push("COMMENT HABITE = {hab}")
+            kvn.push("COMMENT REGIME = {regime}")
+            kvn.push("COMMENT EPHEMERIDE_AGE = {age}")
+            kvn.push("COMMENT EPHEMERIDE_QUALITE = {qual}")
+            kvn.push("COMMENT FACTEUR_METEO = {fac}")
+            let _ = ApiDonnees.tracer(h, pour, o, r, "CDM")
+        }
+        return join(kvn, "\n")
+    }
+
+    on alerte(h, r, pour) {
+        let objs = ApiConjonctions.objets(r)
+        let niv = ApiConjonctions.niveau(r)
+        let visibles = objs.map(o => ApiDonnees.peut_recevoir(pour, Objet(o), r, h))
+        let un_visible = visibles.filter(v => v)
+        if len(un_visible) == 0 {
+            let _ = Journal.noter(h, "passerelle", "systeme", "alerte {r} réduite pour {pour} (aucun objet diffusable)")
+            return to_json(map("type", "alerte", "rapprochement", r, "niveau", niv, "reduite", true))
+        }
+        let tca = ApiConjonctions.tca(r)
+        let et = try { ApiCoordination.etat(r) }
+        let coord = if et.error == () { et.value } else { "aucune" }
+        let dz = try { ApiCoordination.designe(r, "systeme") }
+        let desig0 = if dz.error == () { to_string(dz.value) } else { "" }
+        let ec = try { ApiCoordination.echeance(r) }
+        let echeance = if ec.error == () { to_int(ec.value) } else { 0 }
+        let objets_a = []
+        let desig = desig0
+        for i in range(0, len(objs)) {
+            if visibles[i] {
+                objets_a.push(objs[i])
+                let _ = ApiDonnees.tracer(h, pour, Objet(objs[i]), r, "alerte")
+            } else {
+                objets_a.push("masque")
+                if objs[i] == desig0 { desig = "masque" }
+            }
+        }
+        return to_json(map(
+            "type", "alerte",
+            "rapprochement", r,
+            "niveau", niv,
+            "tca", tca,
+            "temps_restant", max(0, to_int(tca) - to_int(h)),
+            "objets", objets_a,
+            "coordination", coord,
+            "designe", desig,
+            "echeance_reponse", echeance,
+            "route_reponse", "POST /v1/coordinations/{r}/reponse"
+        ))
+    }
+
+    on notifier(h, destinataire, r, sujet, texte, urgence) {
+        let f = if r != "" && texte == "" { if sujet == "CDM" { "CDM" } else { "alerte" } } else { "texte" }
+        return PasMessages.mettre_en_file(h, destinataire, r, PasFormat(f), sujet, texte, urgence)
+    }
+
+    // ── aides pures
+
+    // Instant KVN : "AAAA-MM-JJThh:mm:ss[.fff]" (UTC, "Z" toléré) ou entier en ms ; -1 si illisible.
+    on _instant(s: String) {
+        if s == "" { return -1 }
+        let n = parse_int(s)
+        if n != () { return if n >= 0 { n } else { -1 } }
+        let t = replace(s, "Z", "")
+        let dt = split(t, "T")
+        if len(dt) != 2 { return -1 }
+        let d = split(dt[0], "-")
+        let hms = split(dt[1], ":")
+        if len(d) != 3 || len(hms) != 3 { return -1 }
+        let a = parse_int(d[0])
+        let mo = parse_int(d[1])
+        let j = parse_int(d[2])
+        let hh = parse_int(hms[0])
+        let mi = parse_int(hms[1])
+        let sec = parse_float(hms[2])
+        if a == () || mo == () || j == () || hh == () || mi == () || sec == () { return -1 }
+        if mo < 1 || mo > 12 || j < 1 || j > 31 || hh > 23 || mi > 59 || sec >= 61.0 || a < 1970 { return -1 }
+        // jours depuis l'époque (algorithme civil de H. Hinnant)
+        let y = if mo <= 2 { a - 1 } else { a }
+        let ere = floor_div(y, 400)
+        let yoe = y - ere * 400
+        let mp = if mo > 2 { mo - 3 } else { mo + 9 }
+        let doy = idiv(153 * mp + 2, 5) + j - 1
+        let doe = yoe * 365 + idiv(yoe, 4) - idiv(yoe, 100) + doy
+        let jours = ere * 146097 + doe - 719468
+        return jours * 86400000 + hh * 3600000 + mi * 60000 + to_int(round(sec * 1000.0, 0))
+    }
+    // Covariance 6x6 triangulaire inférieure (21 valeurs) : "haute" si un terme hors diagonale
+    // est non nul, "moyenne" si diagonale (6 valeurs, ou 21 aux termes croisés nuls).
+    on _qualite_cov(vals: List) {
+        if len(vals) == 6 { return "moyenne" }
+        if len(vals) < 21 { return "faible" }
+        let k = 0
+        for ligne in range(0, 6) {
+            for col in range(0, ligne + 1) {
+                let v = parse_float(vals[k]) ?? 0.0
+                if col != ligne && v != 0.0 { return "haute" }
+                k = k + 1
+            }
+        }
+        return "moyenne"
+    }
+}

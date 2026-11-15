@@ -1,0 +1,497 @@
+use app
+use commun::journal_chair
+use commun::horloge_chair
+use sys::reentrees::chair::api
+use sys::reentrees::chair::campagne
+use sys::reentrees::chair::risque
+use sys::reentrees::chair::notifications
+use sys::reentrees::chair::controlee
+use sys::reentrees::chair::constat
+use sys::reentrees::chair::debris
+use sys::reentrees::chair::survol
+use doublures::reentrees
+
+// Conventions de personnes et d'objets : voir doublures/reentrees.cell.
+// Temps : H0 = 10¹² ms ; J = un jour, HR = une heure.
+cell Monde {
+    on h(jours: Int, heures: Int) { return Horodatage(1000000000000 + jours * 86400000 + heures * 3600000) }
+    on an() { return 31536000000 }
+    // Ouvre une campagne pour `objet` : fenêtre [J+jd, J+jf], `ppm` victimes, à J+0.
+    on ouvrir(objet: String, jd: Int, jf: Int, ppm: Int) {
+        return ApiReentrees.prevoir(h(0, 0), Objet(objet), h(jd, 0), h(jf, 0), ppm, "analyste#1@ORG-ORBITE")
+    }
+    // Id de la dernière notification de `etat` pour `campagne`, lu dans le journal d'inscription.
+    on nt(campagne: String, etat: String) {
+        let trouve = ""
+        for l in Journal.chercher("campagne {campagne} :", 1000) {
+            for tok in split(l, " ") {
+                if starts_with(tok, "NT-") && ends_with(tok, "={etat}") {
+                    trouve = split(tok, "=")[0]
+                }
+            }
+        }
+        return trouve
+    }
+    on journal_a(motif: String) { return len(Journal.chercher(motif, 1000)) > 0 }
+    on nb_journal(motif: String) { return len(Journal.chercher(motif, 1000)) }
+    // Campagne de OBJ-1 imminente, à constater.
+    on imminente(objet: String) {
+        let c = ApiReentrees.prevoir(h(0, 0), Objet(objet), h(0, 2), h(0, 20), 10, "analyste#1@ORG-ORBITE")
+        return c
+    }
+}
+
+// ── campagne : cycle nominal
+
+cell test CycleCampagneNominal {
+    rules {
+        let c = Monde.ouvrir("OBJ-1", 3, 6, 10)
+        assert starts_with(c, "RE-")
+        assert ApiReentrees.campagne_de("OBJ-1") == c
+        assert ApiReentrees.en_campagne("OBJ-1")
+        assert ReeCampagne.etat(c) == "ouverte"
+        assert ApiReentrees.fenetre("OBJ-1") == "{Monde.h(3, 0)},{Monde.h(6, 0)}"
+        assert ReeCampagne.retrecissement(c) == 100
+        assert !ApiReentrees.a_risque("OBJ-1")
+        assert ApiReentrees.victimes_ppm("OBJ-1") == 10
+        // d'office : État d'immatriculation (ALD) et État de tutelle du propriétaire (BRV)
+        assert Monde.nt(c, "ALD") != ""
+        assert Monde.nt(c, "BRV") != ""
+        assert Monde.journal_a("{c} : 2 avis diffusé(s)")
+        // révision : la fenêtre se resserre (moitié)
+        assert ApiReentrees.prevoir(Monde.h(1, 0), "OBJ-1", Monde.h(4, 0), Monde.h(5, 12), 10, "systeme") == c
+        assert ReeCampagne.retrecissement(c) == 50
+        assert ReeCampagne.etat(c) == "ouverte"
+        // phase finale : fin à moins de 24 h
+        assert ApiReentrees.prevoir(Monde.h(4, 0), "OBJ-1", Monde.h(4, 6), Monde.h(4, 18), 10, "systeme") == c
+        assert ReeCampagne.etat(c) == "imminente"
+        assert Monde.journal_a("campagne {c} (OBJ-1) révisée")
+        // constat à quatre yeux
+        assert ApiReentrees.constater(Monde.h(4, 20), "OBJ-1", Monde.h(4, 10), "10.5,20.5", false, "analyste#1@ORG-ORBITE", "superviseur#1@ORG-ORBITE") == "rentre"
+        assert ReeCampagne.etat(c) == "rentree"
+        assert ApiReentrees.constatee("OBJ-1")
+        assert !ApiReentrees.en_campagne("OBJ-1")
+        assert ReeConstat.etat(c) == "enregistre"
+        assert ReeRisque.a_risque(c) == false
+        assert Monde.journal_a("notification(s) close(s), issue rentree")
+        // un an plus tard sans dommage : constat sans suite, campagne close
+        assert ApiReentrees.balayer(Monde.h(370, 0), "systeme") >= 2
+        assert ReeConstat.etat(c) == "sans_suite"
+        assert ReeCampagne.etat(c) == "close"
+        assert ApiReentrees.constatee("OBJ-1")
+    }
+}
+
+cell test RefusCampagne {
+    rules {
+        let h0 = Monde.h(0, 0)
+        assert_fails ApiReentrees.prevoir(h0, "OBJ-1", Monde.h(1, 0), Monde.h(2, 0), 10, "intrus") matching "Habilitation"
+        assert_fails ApiReentrees.prevoir(h0, "OBJ-1", Monde.h(1, 0), Monde.h(2, 0), 10, "analyste#1@ORG-OPA") matching "Habilitation"
+        assert_fails ApiReentrees.prevoir(h0, "OBJ-INCONNU-1", Monde.h(1, 0), Monde.h(2, 0), 10, "analyste#1@ORG-ORBITE") matching "Inconnu"
+        assert_fails ApiReentrees.prevoir(h0, "OBJ-RENTRE-1", Monde.h(1, 0), Monde.h(2, 0), 10, "analyste#1@ORG-ORBITE") matching "Inconnu"
+        assert_fails ApiReentrees.prevoir(h0, "OBJ-1", Monde.h(2, 0), Monde.h(1, 0), 10, "analyste#1@ORG-ORBITE") matching "Incoherent"
+        assert_fails ApiReentrees.prevoir(Monde.h(3, 0), "OBJ-1", Monde.h(1, 0), Monde.h(2, 0), 10, "analyste#1@ORG-ORBITE") matching "Incoherent"
+        let c = Monde.ouvrir("OBJ-1", 3, 6, 10)
+        // constat : quatre yeux, état, instant
+        assert_fails ApiReentrees.constater(Monde.h(4, 0), "OBJ-2", Monde.h(3, 0), "SPOUA", false, "analyste#1@ORG-ORBITE", "superviseur#1@ORG-ORBITE") matching "Inconnu"
+        assert_fails ApiReentrees.constater(Monde.h(4, 0), "OBJ-1", Monde.h(3, 0), "SPOUA", false, "analyste#1@ORG-ORBITE", "superviseur#1@ORG-ORBITE") matching "EtatInvalide"
+        let _ = ApiReentrees.prevoir(Monde.h(5, 0), "OBJ-1", Monde.h(5, 6), Monde.h(5, 18), 10, "systeme")
+        assert ReeCampagne.etat(c) == "imminente"
+        assert_fails ApiReentrees.constater(Monde.h(5, 20), "OBJ-1", Monde.h(5, 10), "SPOUA", false, "intrus", "superviseur#1@ORG-ORBITE") matching "Habilitation"
+        assert_fails ApiReentrees.constater(Monde.h(5, 20), "OBJ-1", Monde.h(5, 10), "SPOUA", false, "analyste#1@ORG-ORBITE", "analyste#1@ORG-ORBITE") matching "QuatreYeux"
+        assert_fails ApiReentrees.constater(Monde.h(5, 20), "OBJ-1", Monde.h(5, 10), "SPOUA", false, "analyste#1@ORG-ORBITE", "analyste#2@ORG-ORBITE") matching "QuatreYeux"
+        assert_fails ApiReentrees.constater(Monde.h(5, 20), "OBJ-1", Monde.h(5, 22), "SPOUA", false, "analyste#1@ORG-ORBITE", "superviseur#1@ORG-ORBITE") matching "Incoherent"
+        // objet encore suivi par ORBITE plus de 72 h après l'instant déclaré
+        let c2 = Monde.imminente("OBJ-SUIVI-1")
+        assert ReeCampagne.etat(c2) == "imminente"
+        assert_fails ApiReentrees.constater(Monde.h(4, 0), "OBJ-SUIVI-1", Monde.h(0, 10), "SPOUA", false, "analyste#1@ORG-ORBITE", "superviseur#1@ORG-ORBITE") matching "Incoherent"
+        assert ApiReentrees.constater(Monde.h(1, 0), "OBJ-SUIVI-1", Monde.h(0, 10), "SPOUA", false, "analyste#1@ORG-ORBITE", "superviseur#1@ORG-ORBITE") == "rentre"
+        // annulation
+        assert_fails ReeCampagne.annuler(Monde.h(5, 21), c, "", "analyste#1@ORG-ORBITE", "superviseur#1@ORG-ORBITE") matching "MotifRequis"
+        assert_fails ReeCampagne.annuler(Monde.h(5, 21), c, "remonté", "analyste#1@ORG-ORBITE", "intrus") matching "QuatreYeux"
+        assert_fails ReeCampagne.annuler(Monde.h(5, 21), "RE-0", "remonté", "analyste#1@ORG-ORBITE", "superviseur#1@ORG-ORBITE") matching "Inconnu"
+        assert ReeCampagne.annuler(Monde.h(5, 21), c, "objet remonté", "analyste#1@ORG-ORBITE", "superviseur#1@ORG-ORBITE") == "annulee"
+        assert_fails ReeCampagne.annuler(Monde.h(5, 22), c, "encore", "analyste#1@ORG-ORBITE", "superviseur#1@ORG-ORBITE") matching "EtatInvalide"
+        assert ReeRisque.figer(Monde.h(5, 22), c) == "fige"
+        assert ReeCampagne.etat("RE-0") == "inconnue"
+        // balayage : seulement par le systeme
+        assert_fails ApiReentrees.balayer(Monde.h(6, 0), "analyste#1@ORG-ORBITE") matching "Habilitation"
+    }
+}
+
+cell test CampagneEchueRouverte {
+    rules {
+        let c = Monde.ouvrir("OBJ-1", 1, 2, 10)
+        // fin + 6 h dépassée sans constat : échue
+        assert ApiReentrees.balayer(Monde.h(2, 7), "systeme") >= 1
+        assert ReeCampagne.etat(c) == "echue"
+        assert ApiReentrees.en_campagne("OBJ-1")
+        assert Monde.journal_a("campagne {c} (OBJ-1) échue")
+        // l'objet est toujours là : nouvelle prévision → l'ancienne est annulée, une nouvelle s'ouvre
+        let c2 = ApiReentrees.prevoir(Monde.h(2, 8), "OBJ-1", Monde.h(4, 0), Monde.h(6, 0), 10, "systeme")
+        assert c2 != c
+        assert ReeCampagne.etat(c) == "annulee"
+        assert ReeCampagne.etat(c2) == "ouverte"
+        assert ApiReentrees.campagne_de("OBJ-1") == c2
+        // prévision périmée (cadence 24 h) : signalée sans changer d'état
+        let _ = ApiReentrees.balayer(Monde.h(3, 12), "systeme")
+        assert Monde.journal_a("campagne {c2} (OBJ-1) : prévision périmée")
+        assert ReeCampagne.etat(c2) == "ouverte"
+        // constat d'une rentrée après l'échéance
+        assert ApiReentrees.balayer(Monde.h(6, 7), "systeme") >= 1
+        assert ReeCampagne.etat(c2) == "echue"
+        assert ApiReentrees.constater(Monde.h(6, 8), "OBJ-1", Monde.h(6, 3), "SPOUA", false, "analyste#1@ORG-ORBITE", "superviseur#1@ORG-ORBITE") == "rentre"
+        assert ReeCampagne.etat(c2) == "rentree"
+    }
+}
+
+// ── risque : cliquet, déclassement à quatre yeux, majeur
+
+cell test RisqueCliquet {
+    rules {
+        let c = Monde.ouvrir("OBJ-1", 3, 6, 500)
+        assert ApiReentrees.a_risque("OBJ-1")
+        // objet manœuvrant à risque : rentrée contrôlée demandée au propriétaire
+        assert Monde.journal_a("campagne {c} (OBJ-1) ouverte")
+        // une prévision plus favorable ne fait pas redescendre
+        let _ = ApiReentrees.prevoir(Monde.h(1, 0), "OBJ-1", Monde.h(3, 0), Monde.h(5, 0), 50, "systeme")
+        assert ApiReentrees.a_risque("OBJ-1")
+        assert ApiReentrees.victimes_ppm("OBJ-1") == 500
+        // déclassement : quatre yeux, sous le seuil, motif
+        assert_fails ReeRisque.declasser(Monde.h(1, 0), c, 50, "fenêtre océanique", "analyste#1@ORG-ORBITE", "analyste#1@ORG-ORBITE") matching "QuatreYeux"
+        assert_fails ReeRisque.declasser(Monde.h(1, 0), c, 50, "fenêtre océanique", "intrus", "superviseur#1@ORG-ORBITE") matching "Habilitation"
+        assert_fails ReeRisque.declasser(Monde.h(1, 0), c, 150, "fenêtre océanique", "analyste#1@ORG-ORBITE", "superviseur#1@ORG-ORBITE") matching "HorsBornes"
+        assert_fails ReeRisque.declasser(Monde.h(1, 0), c, 50, "", "analyste#1@ORG-ORBITE", "superviseur#1@ORG-ORBITE") matching "MotifRequis"
+        assert_fails ReeRisque.declasser(Monde.h(1, 0), "RE-0", 50, "x", "analyste#1@ORG-ORBITE", "superviseur#1@ORG-ORBITE") matching "Inconnu"
+        assert ReeRisque.declasser(Monde.h(1, 0), c, 50, "fenêtre océanique", "analyste#1@ORG-ORBITE", "superviseur#1@ORG-ORBITE") == "faible"
+        assert !ApiReentrees.a_risque("OBJ-1")
+        assert_fails ReeRisque.declasser(Monde.h(1, 0), c, 50, "encore", "analyste#1@ORG-ORBITE", "superviseur#1@ORG-ORBITE") matching "EtatInvalide"
+        // l'analyse de survie fait remonter (masse survivante > 500 kg), et bloque le déclassement
+        assert_fails ReeRisque.detailler(Monde.h(1, 1), c, 600, 12, 40, "intrus") matching "Habilitation"
+        assert_fails ReeRisque.detailler(Monde.h(1, 1), c, 600, -1, 40, "analyste#1@ORG-ORBITE") matching "HorsBornes"
+        assert ReeRisque.detailler(Monde.h(1, 1), c, 600, 12, 40, "analyste#1@ORG-ORBITE") == "a_risque"
+        assert_fails ReeRisque.declasser(Monde.h(1, 2), c, 40, "fenêtre océanique", "analyste#1@ORG-ORBITE", "superviseur#1@ORG-ORBITE") matching "EtatInvalide"
+        // à la fin de la campagne le risque est figé
+        assert ReeCampagne.annuler(Monde.h(1, 3), c, "objet remonté", "analyste#1@ORG-ORBITE", "superviseur#1@ORG-ORBITE") == "annulee"
+        assert ReeRisque.a_risque(c) == false
+        assert_fails ReeRisque.evaluer(Monde.h(1, 4), c, 10) matching "EtatInvalide"
+        assert_fails ReeRisque.detailler(Monde.h(1, 4), c, 10, 1, 10, "analyste#1@ORG-ORBITE") matching "EtatInvalide"
+        assert_fails ReeRisque.evaluer(Monde.h(1, 4), c, -1) matching "HorsBornes"
+    }
+}
+
+cell test RisqueMajeur {
+    rules {
+        // 6 t au catalogue : à risque et majeur ; tous les États participants sont inscrits
+        let c = Monde.ouvrir("OBJ-LOURD-1", 3, 6, 10)
+        assert ApiReentrees.a_risque("OBJ-LOURD-1")
+        assert ReeRisque.majeur(c)
+        assert Monde.nt(c, "CAZ") != ""
+        assert Monde.nt(c, "DUR") != ""
+        assert Monde.journal_a("{c} : 2 État(s) inscrit(s) (majeur)")
+        assert Monde.journal_a("{c} : 4 avis diffusé(s)")
+        // victimes > 1 % : majeur aussi
+        let c2 = Monde.ouvrir("OBJ-2", 3, 6, 20000)
+        assert ReeRisque.majeur(c2)
+        assert !ReeRisque.majeur(Monde.ouvrir("OBJ-3", 3, 6, 200))
+    }
+}
+
+// ── notifications
+
+cell test NotificationsAccusesRelances {
+    rules {
+        let c = Monde.ouvrir("OBJ-1", 3, 6, 10)
+        let n_ald = Monde.nt(c, "ALD")
+        let n_brv = Monde.nt(c, "BRV")
+        // accusé : point focal ou autorité de l'État destinataire seulement
+        assert_fails ReeNotification.accuser(Monde.h(0, 1), n_ald, "", "intrus") matching "Habilitation"
+        assert_fails ReeNotification.accuser(Monde.h(0, 1), n_ald, "", "point_focal#1@ORG-BRV") matching "Habilitation"
+        assert_fails ReeNotification.accuser(Monde.h(0, 1), n_ald, "", "dynamicien#1@ORG-ALD") matching "Habilitation"
+        assert_fails ReeNotification.accuser(Monde.h(0, 1), "NT-0", "", "point_focal#1@ORG-ALD") matching "Inconnu"
+        assert ReeNotification.accuser(Monde.h(0, 1), n_ald, "NOTAM, alerte protection civile", "point_focal#1@ORG-ALD") == "accusee"
+        assert_fails ReeNotification.accuser(Monde.h(0, 2), n_ald, "", "point_focal#1@ORG-ALD") matching "EtatInvalide"
+        // BRV silencieux : relancé après 24 h, puis « sans accusé » (ORBITE avertie, manquement)
+        assert ReeNotification.relancer(Monde.h(0, 12), c, "systeme") == 0
+        assert_fails ReeNotification.relancer(Monde.h(1, 1), c, "analyste#1@ORG-ORBITE") matching "Habilitation"
+        assert ApiReentrees.balayer(Monde.h(1, 1), "systeme") >= 1
+        assert Monde.journal_a("{n_brv} (BRV) relancée")
+        assert ApiReentrees.balayer(Monde.h(2, 2), "systeme") >= 1
+        assert Monde.journal_a("{n_brv} (BRV) sans accusé")
+        assert_fails ReeNotification.accuser(Monde.h(2, 3), n_brv, "", "autorite#1@ORG-BRV") matching "EtatInvalide"
+        // la campagne continue
+        assert ReeCampagne.etat(c) == "ouverte"
+        // une notification relancée peut encore être accusée
+        let c2 = Monde.ouvrir("OBJ-2", 3, 6, 10)
+        let n2 = Monde.nt(c2, "BRV")
+        let _ = ReeNotification.relancer(Monde.h(1, 1), c2, "systeme")
+        assert ReeNotification.accuser(Monde.h(1, 2), n2, "", "autorite#1@ORG-BRV") == "accusee"
+        // clôture : toutes closes à l'annulation
+        assert ReeNotification.clore(Monde.h(1, 3), "RE-0", "annulee") == 0
+        assert ReeCampagne.annuler(Monde.h(1, 3), c2, "prévision erronée", "analyste#1@ORG-ORBITE", "superviseur#1@ORG-ORBITE") == "annulee"
+        assert_fails ReeNotification.accuser(Monde.h(1, 4), Monde.nt(c2, "ALD"), "", "point_focal#1@ORG-ALD") matching "EtatInvalide"
+        assert_fails ReeNotification.inscrire(Monde.h(1, 4), c2, ["CAZ"], "survol", "analyste#1@ORG-ORBITE") matching "EtatInvalide"
+    }
+}
+
+cell test SurvolInscriptionsLevees {
+    rules {
+        let c = Monde.ouvrir("OBJ-1", 3, 6, 10)
+        // trace au sol : CAZ et DUR sous la fenêtre, CAZ à risque propre (> 100 ppm)
+        assert ReeSurvol.tracer(Monde.h(0, 1), c, ["CAZ", "DUR"], [30, 20], [150, 5], "analyste#1@ORG-ORBITE") == 2
+        assert ReeSurvol.victimes_sur(c, "CAZ") == 150
+        assert ReeSurvol.victimes_sur(c, "ALD") == 0
+        let n_caz = Monde.nt(c, "CAZ")
+        assert n_caz != ""
+        assert Monde.nt(c, "DUR") != ""
+        // État non participant : hors ORBITE
+        assert ReeSurvol.tracer(Monde.h(0, 2), c, ["CAZ", "DUR", "ZZZ"], [30, 20, 10], [150, 5, 1], "analyste#1@ORG-ORBITE") == 3
+        assert Monde.journal_a("État ZZZ non participant")
+        // la fenêtre se resserre : CAZ sort, avis de levée ; les notifications d'office restent
+        assert ReeSurvol.tracer(Monde.h(0, 3), c, ["DUR"], [40], [5], "systeme") == 1
+        assert Monde.journal_a("{c} : 1 avis de survol levé(s)")
+        assert ReeSurvol.victimes_sur(c, "CAZ") == 0
+        assert_fails ReeNotification.accuser(Monde.h(0, 4), n_caz, "", "point_focal#1@ORG-CAZ") matching "EtatInvalide"
+        // CAZ revient sous la fenêtre : nouvelle notification
+        assert ReeSurvol.tracer(Monde.h(0, 5), c, ["CAZ", "DUR"], [10, 40], [3, 5], "systeme") == 2
+        let n_caz2 = Monde.nt(c, "CAZ")
+        assert n_caz2 != n_caz
+        assert ReeNotification.accuser(Monde.h(0, 6), n_caz2, "aucune", "point_focal#1@ORG-CAZ") == "accusee"
+        // refus
+        assert_fails ReeSurvol.tracer(Monde.h(0, 7), c, ["CAZ"], [10], [3], "intrus") matching "Habilitation"
+        assert_fails ReeSurvol.tracer(Monde.h(0, 7), "RE-0", ["CAZ"], [10], [3], "systeme") matching "Inconnu"
+        assert_fails ReeSurvol.tracer(Monde.h(0, 7), c, ["CAZ", "DUR"], [10], [3, 4], "systeme") matching "Incoherent"
+        assert_fails ReeSurvol.tracer(Monde.h(0, 7), c, ["CAZ", "CAZ"], [10, 10], [3, 4], "systeme") matching "Incoherent"
+        assert_fails ReeSurvol.tracer(Monde.h(0, 7), c, ["CAZ", "DUR"], [60, 50], [3, 4], "systeme") matching "Incoherent"
+        assert_fails ReeSurvol.tracer(Monde.h(0, 7), c, ["CAZ"], [101], [3], "systeme") matching "HorsBornes"
+        assert_fails ReeSurvol.tracer(Monde.h(0, 7), c, ["CAZ"], [10], [-3], "systeme") matching "HorsBornes"
+        assert ReeCampagne.annuler(Monde.h(0, 8), c, "remonté", "analyste#1@ORG-ORBITE", "superviseur#1@ORG-ORBITE") == "annulee"
+        assert_fails ReeSurvol.tracer(Monde.h(0, 9), c, ["CAZ"], [10], [3], "systeme") matching "EtatInvalide"
+    }
+}
+
+// ── rentrée contrôlée
+
+cell test RentreeControleeReussie {
+    rules {
+        let dyn = "dynamicien#1@ORG-OPA"
+        // dépôt : ouvre la campagne de l'objet sur la fenêtre d'impact
+        let rc = ReeControlee.deposer(Monde.h(0, 0), "OBJ-1", "MAN:OBJ-1:desorbitation:crible", "-40,-150,-50,-120", 2000000, Monde.h(5, 0), Monde.h(5, 2), 0, dyn)
+        assert starts_with(rc, "RC-")
+        let c = ApiReentrees.campagne_de("OBJ-1")
+        assert ReeCampagne.etat(c) == "ouverte"
+        assert ReeControlee.zone_de(c) == "-40,-150,-50,-120"
+        assert !ApiReentrees.controlee_approuvee("OBJ-1")
+        assert ReeControlee.instruire(Monde.h(0, 1), rc, "NAVAREA-XIV-12 / NOTAM A0123", "analyste#1@ORG-ORBITE") == "instruit"
+        assert ReeControlee.approuver(Monde.h(0, 2), rc, "analyste#1@ORG-ORBITE", "superviseur#1@ORG-ORBITE") == "approuve"
+        assert ApiReentrees.controlee_approuvee("OBJ-1")
+        // une campagne à rentrée contrôlée approuvée ne s'annule pas
+        assert_fails ReeCampagne.annuler(Monde.h(0, 3), c, "x", "analyste#1@ORG-ORBITE", "superviseur#1@ORG-ORBITE") matching "Conflit"
+        // exécution : la manœuvre doit être exécutée chez manœuvres
+        assert_fails ReeControlee.confirmer(Monde.h(4, 0), rc, "systeme") matching "EtatInvalide"
+        assert_fails ReeControlee.confirmer(Monde.h(4, 0), rc, "intrus") matching "Habilitation"
+        mock ApiManoeuvres.etat "execute"
+        assert ReeControlee.confirmer(Monde.h(4, 0), rc, "systeme") == "executee"
+        assert ApiReentrees.controlee_approuvee("OBJ-1")
+        // rentrée : fenêtre révisée (imminente), constat dans la zone d'impact
+        let _ = ApiReentrees.prevoir(Monde.h(4, 12), "OBJ-1", Monde.h(5, 0), Monde.h(5, 2), 0, "systeme")
+        assert ReeCampagne.etat(c) == "imminente"
+        assert ApiReentrees.constater(Monde.h(5, 3), "OBJ-1", Monde.h(5, 1), "-45.0,-130.5", false, "analyste#1@ORG-ORBITE", "superviseur#1@ORG-ORBITE") == "rentre"
+        assert Monde.journal_a("rentrée contrôlée {rc} réussie")
+        assert !ApiReentrees.controlee_approuvee("OBJ-1")
+    }
+}
+
+cell test RentreeControleeManqueeEtReport {
+    rules {
+        let dyn = "dynamicien#1@ORG-OPA"
+        let rc = ReeControlee.deposer(Monde.h(0, 0), "OBJ-1", "MAN:OBJ-1:desorbitation", "SPOUA", 2000000, Monde.h(5, 0), Monde.h(5, 2), 0, dyn)
+        let c = ApiReentrees.campagne_de("OBJ-1")
+        let _ = ReeControlee.instruire(Monde.h(0, 1), rc, "NAVAREA-1", "analyste#1@ORG-ORBITE")
+        let _ = ReeControlee.approuver(Monde.h(0, 2), rc, "analyste#1@ORG-ORBITE", "superviseur#1@ORG-ORBITE")
+        // report : revient « depose », à réinstruire et réapprouver
+        assert_fails ReeControlee.reporter(Monde.h(0, 3), rc, Monde.h(8, 0), Monde.h(8, 2), "météo", "dynamicien#1@ORG-OPB") matching "Habilitation"
+        assert_fails ReeControlee.reporter(Monde.h(0, 3), rc, Monde.h(8, 0), Monde.h(8, 2), "", dyn) matching "MotifRequis"
+        assert_fails ReeControlee.reporter(Monde.h(0, 3), rc, Monde.h(8, 2), Monde.h(8, 0), "météo", dyn) matching "Incoherent"
+        assert ReeControlee.reporter(Monde.h(0, 3), rc, Monde.h(8, 0), Monde.h(8, 2), "météo défavorable", dyn) == "depose"
+        assert ApiReentrees.fenetre("OBJ-1") == "{Monde.h(8, 0)},{Monde.h(8, 2)}"
+        assert_fails ReeControlee.reporter(Monde.h(0, 4), rc, Monde.h(9, 0), Monde.h(9, 2), "x", dyn) matching "EtatInvalide"
+        assert_fails ReeControlee.approuver(Monde.h(0, 4), rc, "analyste#1@ORG-ORBITE", "superviseur#1@ORG-ORBITE") matching "EtatInvalide"
+        let _ = ReeControlee.instruire(Monde.h(0, 5), rc, "NAVAREA-2", "analyste#1@ORG-ORBITE")
+        // ré-approbation : plan de manœuvre déjà « approuve » chez manœuvres
+        mock ApiManoeuvres.etat "approuve"
+        assert ReeControlee.approuver(Monde.h(0, 6), rc, "analyste#1@ORG-ORBITE", "superviseur#1@ORG-ORBITE") == "approuve"
+        mock ApiManoeuvres.etat "verifie"
+        assert ReeControlee.confirmer(Monde.h(7, 0), rc, "analyste#1@ORG-ORBITE") == "executee"
+        // impact hors zone : manquée, manquement de l'opérateur
+        let _ = ApiReentrees.prevoir(Monde.h(7, 12), "OBJ-1", Monde.h(8, 0), Monde.h(8, 2), 0, "systeme")
+        assert ApiReentrees.constater(Monde.h(8, 3), "OBJ-1", Monde.h(8, 1), "48.8,2.3", false, "analyste#1@ORG-ORBITE", "superviseur#1@ORG-ORBITE") == "rentre"
+        assert Monde.journal_a("rentrée contrôlée {rc} manquée")
+        assert ReeCampagne.etat(c) == "rentree"
+    }
+}
+
+cell test RefusRentreeControlee {
+    rules {
+        let dyn = "dynamicien#1@ORG-OPA"
+        let h0 = Monde.h(0, 0)
+        assert_fails ReeControlee.deposer(h0, "OBJ-1", "MAN:OBJ-1:desorbitation", "SPOUA", 2000000, Monde.h(5, 0), Monde.h(5, 2), 0, "intrus") matching "Habilitation"
+        assert_fails ReeControlee.deposer(h0, "OBJ-1", "MAN:OBJ-1:desorbitation", "SPOUA", 2000000, Monde.h(5, 0), Monde.h(5, 2), 0, "dynamicien#1@ORG-OPB") matching "Habilitation"
+        assert_fails ReeControlee.deposer(h0, "OBJ-1", "PLAN-X", "SPOUA", 2000000, Monde.h(5, 0), Monde.h(5, 2), 0, dyn) matching "Inconnu"
+        assert_fails ReeControlee.deposer(h0, "OBJ-1", "MAN:OBJ-2:desorbitation", "SPOUA", 2000000, Monde.h(5, 0), Monde.h(5, 2), 0, dyn) matching "Incoherent"
+        assert_fails ReeControlee.deposer(h0, "OBJ-1", "MAN:OBJ-1:evitement", "SPOUA", 2000000, Monde.h(5, 0), Monde.h(5, 2), 0, dyn) matching "Incoherent"
+        assert_fails ReeControlee.deposer(h0, "OBJ-1", "MAN:OBJ-1:desorbitation", "SPOUA", 2000000, Monde.h(5, 2), Monde.h(5, 0), 0, dyn) matching "Incoherent"
+        assert_fails ReeControlee.deposer(Monde.h(6, 0), "OBJ-1", "MAN:OBJ-1:desorbitation", "SPOUA", 2000000, Monde.h(5, 0), Monde.h(7, 0), 0, dyn) matching "Incoherent"
+        assert_fails ReeControlee.deposer(h0, "OBJ-MORT-1", "MAN:OBJ-MORT-1:desorbitation", "SPOUA", 2000000, Monde.h(5, 0), Monde.h(5, 2), 0, dyn) matching "NonEligible"
+        assert_fails ReeControlee.deposer(h0, "OBJ-SUSP-1", "MAN:OBJ-SUSP-1:desorbitation", "SPOUA", 2000000, Monde.h(5, 0), Monde.h(5, 2), 0, "dynamicien#1@ORG-SUSP-OPC") matching "Suspendu"
+        assert_fails ReeControlee.deposer(h0, "OBJ-1", "MAN:OBJ-1:desorbitation", "SPOUA", 2000000, Monde.h(5, 0), Monde.h(5, 2), -1, dyn) matching "HorsBornes"
+        // zone trop proche des côtes / trop de victimes attendues
+        let rc1 = ReeControlee.deposer(h0, "OBJ-1", "MAN:OBJ-1:desorbitation", "SPOUA", 100000, Monde.h(5, 0), Monde.h(5, 2), 0, dyn)
+        assert_fails ReeControlee.deposer(h0, "OBJ-1", "MAN:OBJ-1:desorbitation", "SPOUA", 2000000, Monde.h(5, 0), Monde.h(5, 2), 0, dyn) matching "Existe"
+        assert_fails ReeControlee.deposer(h0, "OBJ-1", "MAN:OBJ-1:desorbitation:bis", "SPOUA", 2000000, Monde.h(5, 0), Monde.h(5, 2), 0, dyn) matching "Conflit"
+        assert_fails ReeControlee.instruire(Monde.h(0, 1), rc1, "NAVAREA", "analyste#1@ORG-ORBITE") matching "HorsBornes"
+        assert_fails ReeControlee.instruire(Monde.h(0, 1), rc1, "NAVAREA", "intrus") matching "Habilitation"
+        assert_fails ReeControlee.instruire(Monde.h(0, 1), "RC-0", "NAVAREA", "analyste#1@ORG-ORBITE") matching "Inconnu"
+        assert_fails ReeControlee.rejeter(Monde.h(0, 1), rc1, "", "analyste#1@ORG-ORBITE") matching "MotifRequis"
+        assert_fails ReeControlee.rejeter(Monde.h(0, 1), "RC-0", "trop près", "analyste#1@ORG-ORBITE") matching "Inconnu"
+        assert ReeControlee.rejeter(Monde.h(0, 1), rc1, "zone trop proche des côtes", "analyste#1@ORG-ORBITE") == "rejete"
+        assert_fails ReeControlee.rejeter(Monde.h(0, 1), rc1, "encore", "analyste#1@ORG-ORBITE") matching "EtatInvalide"
+        // nouveau plan après rejet : préavis, plan non criblé, éphéméride, quatre yeux
+        let rc2 = ReeControlee.deposer(h0, "OBJ-1", "MAN:OBJ-1:desorbitation:declare", "SPOUA", 2000000, Monde.h(2, 0), Monde.h(2, 2), 0, dyn)
+        assert_fails ReeControlee.approuver(Monde.h(0, 2), rc2, "analyste#1@ORG-ORBITE", "superviseur#1@ORG-ORBITE") matching "EtatInvalide"
+        assert_fails ReeControlee.instruire(Monde.h(0, 2), rc2, "", "analyste#1@ORG-ORBITE") matching "MotifRequis"
+        let _ = ReeControlee.instruire(Monde.h(0, 2), rc2, "NAVAREA", "analyste#1@ORG-ORBITE")
+        assert_fails ReeControlee.approuver(Monde.h(0, 3), rc2, "analyste#1@ORG-ORBITE", "analyste#1@ORG-ORBITE") matching "QuatreYeux"
+        assert_fails ReeControlee.approuver(Monde.h(0, 3), rc2, "intrus", "superviseur#1@ORG-ORBITE") matching "Habilitation"
+        assert_fails ReeControlee.approuver(Monde.h(0, 3), rc2, "analyste#1@ORG-ORBITE", "superviseur#1@ORG-ORBITE") matching "Insuffisant"
+        mock ApiManoeuvres.etat "crible"
+        assert_fails ReeControlee.approuver(Monde.h(0, 3), rc2, "analyste#1@ORG-ORBITE", "superviseur#1@ORG-ORBITE") matching "Delai"
+        // éphéméride périmée
+        let rc3 = ReeControlee.deposer(h0, "OBJ-VIEUX-1", "MAN:OBJ-VIEUX-1:desorbitation", "SPOUA", 2000000, Monde.h(5, 0), Monde.h(5, 2), 0, dyn)
+        let _ = ReeControlee.instruire(Monde.h(0, 2), rc3, "NAVAREA", "analyste#1@ORG-ORBITE")
+        assert_fails ReeControlee.approuver(Monde.h(0, 3), rc3, "analyste#1@ORG-ORBITE", "superviseur#1@ORG-ORBITE") matching "Perime"
+        // annulation d'un plan approuvé, par le dynamicien du propriétaire ; un plan non approuvé ne s'annule pas
+        let rc4 = ReeControlee.deposer(h0, "OBJ-4", "MAN:OBJ-4:desorbitation", "SPOUA", 2000000, Monde.h(5, 0), Monde.h(5, 2), 0, dyn)
+        assert_fails ReeControlee.annuler(Monde.h(0, 3), rc4, "propulsion perdue", dyn) matching "EtatInvalide"
+        let _ = ReeControlee.instruire(Monde.h(0, 2), rc4, "NAVAREA", "analyste#1@ORG-ORBITE")
+        let _ = ReeControlee.approuver(Monde.h(0, 3), rc4, "analyste#1@ORG-ORBITE", "superviseur#1@ORG-ORBITE")
+        assert_fails ReeControlee.annuler(Monde.h(0, 4), rc4, "propulsion perdue", "dynamicien#1@ORG-OPB") matching "Habilitation"
+        assert_fails ReeControlee.annuler(Monde.h(0, 4), rc4, "", dyn) matching "MotifRequis"
+        assert ReeControlee.annuler(Monde.h(0, 4), rc4, "propulsion perdue", dyn) == "annule"
+        assert !ApiReentrees.controlee_approuvee("OBJ-4")
+        // rentrée survenue avant l'exécution : un plan instruit devient caduc
+        let rc5 = ReeControlee.deposer(h0, "OBJ-5", "MAN:OBJ-5:desorbitation", "SPOUA", 2000000, Monde.h(0, 4), Monde.h(0, 10), 0, dyn)
+        let c5 = ApiReentrees.campagne_de("OBJ-5")
+        assert ReeCampagne.etat(c5) == "imminente"
+        assert ReeControlee.constater_rentree(Monde.h(0, 1), "RE-0", true) == "inconnue"
+        assert ApiReentrees.constater(Monde.h(0, 8), "OBJ-5", Monde.h(0, 6), "SPOUA", false, "analyste#1@ORG-ORBITE", "superviseur#1@ORG-ORBITE") == "rentre"
+        assert Monde.journal_a("rentrée contrôlée {rc5} caduque")
+    }
+}
+
+// ── constat, dommages, transmission
+
+cell test ConstatDommagesTransmission {
+    rules {
+        let c = Monde.imminente("OBJ-1")
+        assert_fails ApiReentrees.constater(Monde.h(0, 21), "OBJ-1", Monde.h(0, 22), "CAZ", true, "analyste#1@ORG-ORBITE", "superviseur#1@ORG-ORBITE") matching "Incoherent"
+        assert ApiReentrees.constater(Monde.h(1, 0), "OBJ-1", Monde.h(0, 23), "12.0,30.0", true, "analyste#1@ORG-ORBITE", "superviseur#1@ORG-ORBITE") == "rentre"
+        assert ReeConstat.etat(c) == "recherche"
+        assert_fails ReeConstat.enregistrer(Monde.h(1, 0), c, "OBJ-1", Monde.h(0, 23), "x", false, Monde.h(0, 2), Monde.h(0, 20), "a", "b") matching "Existe"
+        // dommages déclarés par l'État touché
+        assert_fails ReeConstat.declarer_dommages(Monde.h(2, 0), c, "CAZ", "toiture détruite", "point_focal#1@ORG-ALD") matching "Habilitation"
+        assert_fails ReeConstat.declarer_dommages(Monde.h(2, 0), c, "CAZ", "", "point_focal#1@ORG-CAZ") matching "MotifRequis"
+        assert_fails ReeConstat.declarer_dommages(Monde.h(2, 0), "RE-0", "CAZ", "toit", "point_focal#1@ORG-CAZ") matching "Inconnu"
+        assert ReeConstat.declarer_dommages(Monde.h(2, 0), c, "CAZ", "toiture détruite", "point_focal#1@ORG-CAZ") == 1
+        assert ReeConstat.declarer_dommages(Monde.h(3, 0), c, "CAZ", "véhicule endommagé", "autorite#1@ORG-CAZ") == 2
+        assert ReeConstat.etat(c) == "dommages"
+        // pas de clôture tant que le dossier n'est pas transmis
+        let _ = ApiReentrees.balayer(Monde.h(400, 0), "systeme")
+        assert ReeCampagne.etat(c) == "rentree"
+        assert_fails ReeConstat.transmettre(Monde.h(4, 0), c, "dommages au sol", "analyste#1@ORG-ORBITE") matching "Habilitation"
+        assert_fails ReeConstat.transmettre(Monde.h(4, 0), c, "", "conformite#1@ORG-ORBITE") matching "MotifRequis"
+        assert ReeConstat.transmettre(Monde.h(4, 0), c, "dommages au sol", "conformite#1@ORG-ORBITE") == "DOS-{c}"
+        assert ReeConstat.etat(c) == "transmis"
+        assert_fails ReeConstat.transmettre(Monde.h(4, 0), c, "encore", "direction#1@ORG-ORBITE") matching "EtatInvalide"
+        assert_fails ReeConstat.declarer_dommages(Monde.h(5, 0), c, "CAZ", "x", "point_focal#1@ORG-CAZ") matching "EtatInvalide"
+        assert ApiReentrees.balayer(Monde.h(5, 0), "systeme") >= 1
+        assert ReeCampagne.etat(c) == "close"
+        // délai de réclamation d'un an
+        let c2 = Monde.imminente("OBJ-2")
+        let _ = ApiReentrees.constater(Monde.h(1, 0), "OBJ-2", Monde.h(0, 10), "SPOUA", false, "analyste#1@ORG-ORBITE", "superviseur#1@ORG-ORBITE")
+        assert ReeConstat.etat(c2) == "enregistre"
+        assert_fails ReeConstat.declarer_dommages(Monde.h(367, 0), c2, "ALD", "x", "point_focal#1@ORG-ALD") matching "Delai"
+        assert_fails ReeConstat.transmettre(Monde.h(2, 0), c2, "gel", "conformite#1@ORG-ORBITE") matching "EtatInvalide"
+        assert_fails ReeConstat.balayer(Monde.h(2, 0), "analyste#1@ORG-ORBITE") matching "Habilitation"
+        assert ReeConstat.etat("RE-0") == "aucun"
+    }
+}
+
+// ── débris retrouvés
+
+cell test DebrisRestitution {
+    rules {
+        let c = Monde.imminente("OBJ-1")
+        let _ = ApiReentrees.constater(Monde.h(1, 0), "OBJ-1", Monde.h(0, 10), "CAZ", false, "analyste#1@ORG-ORBITE", "superviseur#1@ORG-ORBITE")
+        assert ReeConstat.etat(c) == "enregistre"
+        // signalement par le point focal de l'État de découverte : la recherche du constat s'ouvre
+        assert_fails ReeDebris.signaler(Monde.h(2, 0), "CAZ", c, "Plaine nord", "réservoir", true, "point_focal#1@ORG-ALD") matching "Habilitation"
+        assert_fails ReeDebris.signaler(Monde.h(2, 0), "ZZZ", c, "Plaine nord", "réservoir", true, "point_focal#1@ORG-ZZZ") matching "Inconnu"
+        assert_fails ReeDebris.signaler(Monde.h(2, 0), "CAZ", "RE-0", "Plaine nord", "réservoir", true, "point_focal#1@ORG-CAZ") matching "Inconnu"
+        assert_fails ReeDebris.signaler(Monde.h(2, 0), "CAZ", c, "Plaine nord", "", true, "point_focal#1@ORG-CAZ") matching "MotifRequis"
+        let d = ReeDebris.signaler(Monde.h(2, 0), "CAZ", c, "Plaine nord", "réservoir d'ergols", true, "point_focal#1@ORG-CAZ")
+        assert starts_with(d, "DB-")
+        assert ReeConstat.etat(c) == "recherche"
+        assert Monde.journal_a("débris dangereux {d}")
+        // identification : l'objet doit être rentré ou fragmenté chez ref
+        assert_fails ReeDebris.identifier(Monde.h(3, 0), d, "OBJ-2", "analyste#1@ORG-ORBITE") matching "Incoherent"
+        assert_fails ReeDebris.identifier(Monde.h(3, 0), d, "OBJ-INCONNU-1", "analyste#1@ORG-ORBITE") matching "Inconnu"
+        assert_fails ReeDebris.identifier(Monde.h(3, 0), d, "OBJ-RENTRE-1", "point_focal#1@ORG-CAZ") matching "Habilitation"
+        assert_fails ReeDebris.identifier(Monde.h(3, 0), "DB-0", "OBJ-RENTRE-1", "analyste#1@ORG-ORBITE") matching "Inconnu"
+        assert_fails ReeDebris.neutraliser(Monde.h(3, 0), d, "vidange", "autorite#1@ORG-CAZ") matching "EtatInvalide"
+        assert ReeDebris.identifier(Monde.h(3, 0), d, "OBJ-RENTRE-1", "analyste#1@ORG-ORBITE") == "identifie"
+        assert_fails ReeDebris.identifier(Monde.h(3, 0), d, "OBJ-RENTRE-1", "analyste#1@ORG-ORBITE") matching "EtatInvalide"
+        assert_fails ReeDebris.demander(Monde.h(3, 0), d, "autorite#1@ORG-ALD") matching "EtatInvalide"
+        assert ReeDebris.notifier(Monde.h(4, 0), d, "systeme") == "notifie"
+        assert_fails ReeDebris.notifier(Monde.h(4, 0), d, "systeme") matching "EtatInvalide"
+        // danger éliminé, constaté par l'autorité de l'État de découverte
+        assert_fails ReeDebris.neutraliser(Monde.h(5, 0), d, "vidange", "point_focal#1@ORG-CAZ") matching "Habilitation"
+        assert_fails ReeDebris.neutraliser(Monde.h(5, 0), d, "", "autorite#1@ORG-CAZ") matching "MotifRequis"
+        assert ReeDebris.neutraliser(Monde.h(5, 0), d, "vidange des ergols", "autorite#1@ORG-CAZ") == 0
+        assert_fails ReeDebris.neutraliser(Monde.h(5, 0), d, "encore", "autorite#1@ORG-CAZ") matching "EtatInvalide"
+        // demande de restitution par un État de lancement (ALD, CAZ)
+        assert_fails ReeDebris.demander(Monde.h(6, 0), d, "autorite#1@ORG-BRV") matching "Habilitation"
+        assert ReeDebris.demander(Monde.h(6, 0), d, "autorite#1@ORG-ALD") == "demande"
+        assert_fails ReeDebris.restituer(Monde.h(30, 0), d, "autorite#1@ORG-CAZ", "autorite#1@ORG-CAZ") matching "QuatreYeux"
+        assert_fails ReeDebris.restituer(Monde.h(30, 0), d, "autorite#1@ORG-ALD", "superviseur#1@ORG-ORBITE") matching "Habilitation"
+        assert ReeDebris.restituer(Monde.h(30, 0), d, "autorite#1@ORG-CAZ", "superviseur#1@ORG-ORBITE") == "restitue"
+        assert_fails ReeDebris.restituer(Monde.h(31, 0), d, "autorite#1@ORG-CAZ", "superviseur#1@ORG-ORBITE") matching "EtatInvalide"
+    }
+}
+
+cell test DebrisEcheances {
+    rules {
+        // non dangereux, sans demande dans 90 jours : conservé
+        let d1 = ReeDebris.signaler(Monde.h(0, 0), "ALD", "", "Côte est", "panneau", false, "analyste#1@ORG-ORBITE")
+        let _ = ReeDebris.identifier(Monde.h(1, 0), d1, "OBJ-FRAG-1", "analyste#1@ORG-ORBITE")
+        let _ = ReeDebris.notifier(Monde.h(1, 0), d1, "analyste#1@ORG-ORBITE")
+        assert_fails ReeDebris.demander(Monde.h(100, 0), d1, "autorite#1@ORG-CAZ") matching "Delai"
+        // dangereux non neutralisé : reste notifié, alerte
+        let d2 = ReeDebris.signaler(Monde.h(0, 0), "BRV", "", "Désert", "source radioactive", true, "autorite#1@ORG-BRV")
+        let _ = ReeDebris.identifier(Monde.h(1, 0), d2, "OBJ-RENTRE-ORPH-1", "analyste#1@ORG-ORBITE")
+        let _ = ReeDebris.notifier(Monde.h(1, 0), d2, "systeme")
+        // jamais identifié : non identifié après 180 jours
+        let d3 = ReeDebris.signaler(Monde.h(0, 0), "DUR", "", "Forêt", "fragment", false, "point_focal#1@ORG-DUR")
+        assert_fails ReeDebris.balayer(Monde.h(100, 0), "analyste#1@ORG-ORBITE") matching "Habilitation"
+        assert ApiReentrees.balayer(Monde.h(100, 0), "systeme") == 1
+        assert Monde.journal_a("débris {d1} conservé")
+        assert !Monde.journal_a("débris {d2} conservé")
+        assert ApiReentrees.balayer(Monde.h(200, 0), "systeme") == 1
+        assert Monde.journal_a("débris {d3} non identifié")
+        assert_fails ReeDebris.identifier(Monde.h(201, 0), d3, "OBJ-RENTRE-1", "analyste#1@ORG-ORBITE") matching "EtatInvalide"
+        // une fois neutralisé, le débris dangereux est conservé au balayage suivant
+        assert ReeDebris.neutraliser(Monde.h(201, 0), d2, "source confinée", "autorite#1@ORG-BRV") == 0
+        assert ApiReentrees.balayer(Monde.h(202, 0), "systeme") == 1
+        assert Monde.journal_a("débris {d2} conservé")
+    }
+}

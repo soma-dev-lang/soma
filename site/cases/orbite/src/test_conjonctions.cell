@@ -1,0 +1,584 @@
+use app
+use commun::journal_chair
+use commun::horloge_chair
+use sys::conjonctions::chair::api
+use sys::conjonctions::chair::seuils
+use sys::conjonctions::chair::campagnes
+use sys::conjonctions::chair::renforce
+use sys::conjonctions::chair::rapprochements
+use sys::conjonctions::chair::clotures
+use sys::conjonctions::chair::messages
+use sys::conjonctions::chair::plans
+use sys::conjonctions::chair::contestations
+use doublures::conjonctions
+
+// Repères de temps : H0 = 1 800 000 000 000 ms ; 1 h = 3 600 000 ms.
+// Niveaux par défaut : pc ≥ 10 000 ou distance < 1 000 m ⇒ 2 ; pc ≥ 100 000 ou < 200 m dans 72 h ⇒ 3.
+
+// Une campagne de régime terminée (catalogue frais) à `h`.
+cell Fx {
+    on campagne_terminee(h: Horodatage, regime: Regime) {
+        let c = ConjCampagne.planifier(h, "regime", regime, "", "cadence", "systeme")
+        let _ = ConjCampagne.demarrer(h, c, "systeme")
+        let _ = ConjCampagne.terminer(Horodatage(to_int(h) + 600000), c, 100, 50, 0, "systeme")
+        return c
+    }
+}
+
+// ── noyau natif de criblage, sur un petit catalogue calculable à la main
+cell test NoyauCriblage {
+    rules {
+        assert ConjCampagne.criblage("", 1000, 10) == ""
+        // 2 fonce sur 1 à 10 m/s depuis 1 000 m : contact à t = 100 s ; 3 reste à 5 km
+        assert ConjCampagne.criblage("1,0,0,0,0,0,0;2,1000,0,0,-10,0,0;3,0,5000,0,0,0,0", 600000, 100) == "1,2,100000,0"
+        // décalage latéral de 30 m : distance minimale 30 m au même TCA
+        assert ConjCampagne.criblage("1,0,0,0,0,0,0;2,1000,30,0,-10,0,0;3,0,5000,0,0,0,0", 600000, 100) == "1,2,100000,30"
+        // horizon de 50 s : le TCA est hors fenêtre, distance à 50 s = 500 m > seuil
+        assert ConjCampagne.criblage("1,0,0,0,0,0,0;2,1000,30,0,-10,0,0", 50000, 100) == ""
+        // objets immobiles : TCA à l'époque, triangle 3-4-5 ; deux paires sous le seuil
+        assert ConjCampagne.criblage("7,0,0,0,0,0,0;9,3,4,0,0,0,0;11,-3,-4,0,0,0,0", 1000, 11) == "7,9,0,5;7,11,0,5;9,11,0,10"
+    }
+}
+
+// ── seuils : rédaction, adoption sous quatre yeux, remplacement, rejet, calcul du niveau
+cell test SeuilsCycle {
+    rules {
+        let h = 1800000000000
+        // défauts avant toute adoption
+        assert ConjSeuils.version_en_vigueur() == "defaut"
+        assert ConjSeuils.niveau(6000, 5000, 3600000, 100) == 1
+        assert ConjSeuils.niveau(20000, 5000, 3600000, 100) == 2
+        assert ConjSeuils.niveau(200000, 5000, 3600000, 100) == 3
+        assert ConjSeuils.niveau(200000, 5000, 300000000, 100) == 2
+        // le facteur météo élargit les distances de seuil
+        assert ConjSeuils.niveau(0, 1500, 3600000, 100) == 1
+        assert ConjSeuils.niveau(0, 1500, 3600000, 200) == 2
+        let v = ConjSeuils.rediger(h, 100, 5000, 50000, 2000, 300, 86400000, "révision annuelle", "analyste1")
+        assert ConjSeuils.etat(v) == "brouillon"
+        assert ConjSeuils.adopter(h, v, "superviseur1", "direction1") == v
+        assert ConjSeuils.etat(v) == "en_vigueur"
+        assert ConjSeuils.version_en_vigueur() == v
+        assert ConjSeuils.niveau(6000, 5000, 3600000, 100) == 2
+        let v2 = ConjSeuils.rediger(h, 200, 5000, 50000, 2000, 300, 86400000, "seuil de suivi relevé", "analyste2")
+        let _ = ConjSeuils.adopter(h, v2, "superviseur1", "direction1")
+        assert ConjSeuils.etat(v) == "remplacee"
+        assert ConjSeuils.seuil_suivi() == 200
+        let v3 = ConjSeuils.rediger(h, 200, 5000, 50000, 2000, 300, 86400000, "essai", "analyste1")
+        assert ConjSeuils.rejeter(h, v3, "inutile", "superviseur2") == "rejetee"
+        assert_fails ConjSeuils.adopter(h, v3, "superviseur1", "direction1") matching "EtatInvalide"
+        assert ConjSeuils.etat("SEU-999") == "inconnue"
+    }
+}
+
+cell test SeuilsRefus {
+    rules {
+        let h = 1800000000000
+        assert_fails ConjSeuils.rediger(h, 100, 5000, 50000, 2000, 300, 86400000, "x", "intrus1") matching "Habilitation"
+        assert_fails ConjSeuils.rediger(h, 100, 50000, 5000, 2000, 300, 86400000, "x", "analyste1") matching "HorsBornes"
+        assert_fails ConjSeuils.rediger(h, 100, 5000, 50000, 300, 2000, 86400000, "x", "analyste1") matching "HorsBornes"
+        assert_fails ConjSeuils.rediger(h, 100, 5000, 50000, 2000, 300, 60000, "x", "analyste1") matching "HorsBornes"
+        assert_fails ConjSeuils.rediger(h, 100, 5000, 50000, 2000, 300, 86400000, "", "analyste1") matching "MotifRequis"
+        let v = ConjSeuils.rediger(h, 100, 5000, 50000, 2000, 300, 86400000, "révision", "analyste1")
+        // valideur sans le rôle de direction, ou valideur = demandeur
+        assert_fails ConjSeuils.adopter(h, v, "superviseur1", "superviseur2") matching "QuatreYeux"
+        assert_fails ConjSeuils.adopter(h, v, "analyste1", "direction1") matching "Habilitation"
+        assert_fails ConjSeuils.adopter(h, "SEU-77", "superviseur1", "direction1") matching "Inconnu"
+        assert_fails ConjSeuils.rejeter(h, v, "non", "analyste1") matching "Habilitation"
+        assert ConjSeuils.etat(v) == "brouillon"
+    }
+}
+
+// ── cadence
+cell test Cadence {
+    rules {
+        let h = 1800000000000
+        assert ConjCadence.periode("leo", false) == 7200000
+        assert ConjCadence.periode("geo", false) == 21600000
+        assert ConjCadence.periode("leo", true) == 1800000
+        assert ConjCadence.fixer(h, "leo", 3600000, 600000, "trafic dense", "superviseur1", "direction1") == 3600000
+        assert ConjCadence.periode("leo", false) == 3600000
+        assert ConjCadence.periode("leo", true) == 600000
+        // allonger puis raccourcir : l'ordre d'écriture tient l'invariant
+        assert ConjCadence.fixer(h, "leo", 21600000, 3600000, "allègement", "superviseur1", "superviseur2") == 21600000
+        assert ConjCadence.fixer(h, "leo", 1200000, 300000, "resserrement", "superviseur1", "direction1") == 1200000
+        assert_fails ConjCadence.fixer(h, "leo", 25200000, 600000, "7 h", "superviseur1", "direction1") matching "HorsBornes"
+        assert_fails ConjCadence.fixer(h, "leo", 3600000, 7200000, "inversé", "superviseur1", "direction1") matching "HorsBornes"
+        assert_fails ConjCadence.fixer(h, "leo", 3600000, 600000, "seul", "superviseur1", "superviseur1") matching "QuatreYeux"
+        assert_fails ConjCadence.fixer(h, "leo", 3600000, 600000, "x", "analyste1", "direction1") matching "Habilitation"
+        assert_fails ConjCadence.fixer(h, "leo", 3600000, 600000, "", "superviseur1", "direction1") matching "MotifRequis"
+    }
+}
+
+// ── campagnes : cycle nominal, fraîcheur, annulation, échec, exclus
+cell test CampagneCycle {
+    rules {
+        let h = 1800000000000
+        let c = ConjCampagne.planifier(h, "tout_contre_tout", "leo", "", "cadence", "systeme")
+        assert ConjCampagne.etat(c) == "planifiee"
+        assert_fails ConjCampagne.planifier(h, "tout_contre_tout", "geo", "", "cadence", "systeme") matching "Existe"
+        assert ConjCampagne.demarrer(h, c, "systeme") == "en_cours"
+        assert_fails ConjCampagne.terminer(h + 600000, c, 10, 5, 6, "systeme") matching "HorsBornes"
+        assert ConjCampagne.terminer(h + 600000, c, 100, 4950, 3, "systeme") == "terminee"
+        assert ConjCampagne.derniere("meo") == c
+        assert ConjCampagne.fraiche("geo", h + 3600000)
+        assert !ConjCampagne.fraiche("geo", h + 32400000)
+        assert ConjCampagne.age_crible("leo", h + 3600000) == 3000000
+        assert ApiConjonctions.campagne_fraiche("heo", h + 3600000)
+        assert_fails ConjCampagne.terminer(h + 700000, c, 1, 1, 1, "systeme") matching "EtatInvalide"
+        // annulation d'une campagne planifiée, la portée redevient libre
+        let c2 = ConjCampagne.planifier(h, "regime", "geo", "", "manuel", "analyste1")
+        assert ConjCampagne.annuler(h, c2, "doublon", "analyste1") == "annulee"
+        let c3 = ConjCampagne.planifier(h, "regime", "geo", "", "cadence", "systeme")
+        let _ = ConjCampagne.demarrer(h, c3, "systeme")
+        // plus de 2 h en cours : terminer refuse, la ronde la fait échouer
+        assert_fails ConjCampagne.terminer(h + 7300000, c3, 1, 1, 0, "systeme") matching "Delai"
+        assert ConjCampagne.en_retard(h + 7300000) == [c3]
+        assert ConjCampagne.echouer(h + 7300000, c3, "durée dépassée", "systeme") == "INC-{c3}"
+        assert ConjCampagne.etat(c3) == "echouee"
+        assert ConjCampagne.derniere("geo") == c
+    }
+}
+
+cell test CampagneRefus {
+    rules {
+        let h = 1800000000000
+        assert_fails ConjCampagne.planifier(h, "regime", "leo", "", "cadence", "intrus1") matching "Habilitation"
+        // un analyste ne planifie qu'en « manuel »
+        assert_fails ConjCampagne.planifier(h, "regime", "leo", "", "cadence", "analyste1") matching "Habilitation"
+        assert_fails ConjCampagne.planifier(h, "objet", "leo", "", "nouvel_objet", "systeme") matching "Incoherent"
+        assert_fails ConjCampagne.planifier(h, "objet", "leo", "OBJ-INCONNU-1", "nouvel_objet", "systeme") matching "Inconnu"
+        let c = ConjCampagne.planifier(h, "objet", "leo", "OBJ-6", "nouvel_objet", "systeme")
+        assert_fails ConjCampagne.demarrer(h, c, "analyste1") matching "Habilitation"
+        assert_fails ConjCampagne.demarrer(h, "CB-404", "systeme") matching "Inconnu"
+        assert_fails ConjCampagne.echouer(h, c, "pas commencée", "systeme") matching "EtatInvalide"
+        assert_fails ConjCampagne.annuler(h, c, "", "systeme") matching "MotifRequis"
+        assert ConjCampagne.etat("CB-404") == "inconnue"
+    }
+}
+
+// Un objet exclu de deux campagnes de suite de son régime est signalé à la conformité.
+cell test CampagneExclus {
+    rules {
+        let h = 1800000000000
+        let c = ConjCampagne.planifier(h, "regime", "leo", "", "cadence", "systeme")
+        assert_fails ConjCampagne.declarer_exclus(h, c, ["OBJ-3"], "systeme") matching "EtatInvalide"
+        let _ = ConjCampagne.demarrer(h, c, "systeme")
+        // OBJ-1 est criblable (éphéméride fraîche) : seul OBJ-3 est exclu
+        assert ConjCampagne.declarer_exclus(h, c, ["OBJ-3", "OBJ-1"], "systeme") == 1
+        assert ConjCampagne.exclus(c) == ["OBJ-3"]
+        let _ = ConjCampagne.terminer(h + 600000, c, 100, 10, 0, "systeme")
+        let c2 = ConjCampagne.planifier(h + 7200000, "regime", "leo", "", "cadence", "systeme")
+        let _ = ConjCampagne.demarrer(h + 7200000, c2, "systeme")
+        assert ConjCampagne.declarer_exclus(h + 7200000, c2, ["OBJ-3"], "systeme") == 1
+        assert len(Journal.chercher("2 objets exclus", 10)) == 0
+        assert ConjCampagne.exclus(c2) == ["OBJ-3"]
+        assert_fails ConjCampagne.declarer_exclus(h, c2, ["OBJ-3"], "analyste1") matching "Habilitation"
+    }
+}
+
+// ── épisodes renforcés : ouverture, prolongation, fin demandée, levée après la campagne
+cell test RenforcementCycle {
+    rules {
+        let h = 1800000000000
+        let e = ApiConjonctions.renforcer(h, "leo", h + 7200000, "décision analyste", "analyste1")
+        assert ConjRenforcement.etat(e) == "actif"
+        assert ConjRenforcement.actif_pour("leo")
+        assert ConjCampagne.etat("CB-1") == "planifiee"
+        // période renforcée pendant l'épisode
+        assert ConjRenforcement.renforcer(h + 3600000, "leo", h + 10800000, "second motif", "systeme") == e
+        assert ConjRenforcement.non_clos() == [e]
+        assert ConjRenforcement.surveiller(h + 3600000, e, "systeme") == "actif"
+        assert ConjRenforcement.surveiller(h + 14400000, e, "systeme") == "fin_demandee"
+        // la campagne renforcée n'est pas terminée : pas de levée
+        assert ConjRenforcement.surveiller(h + 14460000, e, "systeme") == "fin_demandee"
+        let _ = ConjCampagne.demarrer(h + 14400000, "CB-1", "systeme")
+        let _ = ConjCampagne.terminer(h + 15000000, "CB-1", 10, 10, 0, "systeme")
+        assert ConjRenforcement.surveiller(h + 15000000, e, "systeme") == "leve"
+        assert !ConjRenforcement.actif_pour("leo")
+        assert_fails ConjRenforcement.surveiller(h + 15000000, e, "systeme") matching "Ferme"
+    }
+}
+
+cell test RenforcementTempeteEtAbandon {
+    rules {
+        let h = 1800000000000
+        // tempête en meo (doublure) : la fin passée ne suffit pas
+        let e = ApiConjonctions.renforcer(h, "meo", h + 3600000, "alerte météo", "systeme")
+        assert ConjRenforcement.surveiller(h + 7200000, e, "systeme") == "actif"
+        assert_fails ApiConjonctions.renforcer(h, "leo", h, "fin passée", "systeme") matching "Incoherent"
+        assert_fails ApiConjonctions.renforcer(h, "leo", h + 1, "", "systeme") matching "MotifRequis"
+        assert_fails ApiConjonctions.renforcer(h, "leo", h + 1, "x", "dyn@ORG-ALPHA") matching "Habilitation"
+        assert_fails ConjRenforcement.abandonner(h, e, "injustifié", "superviseur1", "superviseur1") matching "QuatreYeux"
+        assert_fails ConjRenforcement.abandonner(h, e, "injustifié", "analyste1", "direction1") matching "Habilitation"
+        assert ConjRenforcement.abandonner(h, e, "injustifié", "superviseur1", "direction1") == "abandonne"
+        assert !ConjRenforcement.actif_pour("meo")
+        assert_fails ConjRenforcement.abandonner(h, e, "encore", "superviseur1", "direction1") matching "Ferme"
+    }
+}
+
+// ── rapprochements : detecte -> suivi -> alerte -> en_coordination -> evite -> resolu
+cell test RapprochementCycle {
+    rules {
+        let h = 1800000000000
+        let tca = h + 360000000
+        let r = ApiConjonctions.signaler(h, "OBJ-2", "OBJ-1", tca, 5000, 500, "systeme")
+        assert ApiConjonctions.etat(r) == "detecte"
+        assert ApiConjonctions.objets(r) == ["OBJ-1", "OBJ-2"]
+        assert ApiConjonctions.niveau(r) == 1
+        // même couple, TCA à ±10 min : même rapprochement, niveau 1 confirmé
+        assert ApiConjonctions.signaler(h + 3600000, "OBJ-1", "OBJ-2", tca + 300000, 4000, 600, "systeme") == r
+        assert ApiConjonctions.etat(r) == "suivi"
+        assert ApiConjonctions.distance(r) == 4000
+        // un TCA à 20 min est un autre rapprochement
+        let autre = ApiConjonctions.signaler(h + 3600000, "OBJ-1", "OBJ-2", tca + 1200000, 4000, 600, "systeme")
+        assert autre != r
+        // pc d'attention : alerte, puis la façade engage la coordination (proposée)
+        assert ApiConjonctions.signaler(h + 7200000, "OBJ-1", "OBJ-2", tca, 3000, 20000, "systeme") == r
+        assert ApiConjonctions.etat(r) == "en_coordination"
+        assert ApiConjonctions.niveau(r) == 2
+        assert ApiConjonctions.pc(r) == 20000
+        assert ApiConjonctions.mis_a_jour(r) == h + 7200000
+        assert contains(ApiConjonctions.ouverts_de("OBJ-1"), r)
+        assert ApiConjonctions.urgents(h, 400000000, 2) == [r]
+        assert ApiConjonctions.urgents(h, 400000000, 3) == []
+        // manœuvre vérifiée (doublure : plan "verifie")
+        assert ApiConjonctions.resoudre(h + 10800000, r, "manoeuvre_verifiee", "analyste1") == "resolu"
+        assert ApiConjonctions.etat(r) == "resolu"
+        assert !contains(ApiConjonctions.ouverts_de("OBJ-1"), r)
+        assert ApiConjonctions.clos_entre(h, h + 86400000) == [r]
+        assert ApiConjonctions.historique("OBJ-2", h) == [r, autre]
+        assert_fails ApiConjonctions.resoudre(h + 10800000, r, "pc_retombee", "analyste1") matching "EtatInvalide"
+        // un rapprochement clos n'est jamais rouvert : nouveau rapprochement
+        let r2 = ApiConjonctions.signaler(h + 14400000, "OBJ-1", "OBJ-2", tca, 5000, 500, "systeme")
+        assert r2 != r
+        assert ApiConjonctions.etat("CJ-0") == "inconnu"
+    }
+}
+
+cell test RapprochementPcRetombee {
+    rules {
+        let h = 1800000000000
+        let tca = h + 360000000
+        let r = ConjRapprochement.signaler(h, "OBJ-1", "OBJ-2", tca, 5000, 20000, "systeme")
+        assert ConjRapprochement.etat(r) == "alerte"
+        let _ = ConjRapprochement.signaler(h + 60000, "OBJ-1", "OBJ-2", tca, 5000, 50, "systeme")
+        assert ConjRapprochement.etat(r) == "suivi"
+        // une seule mise à jour sous le seuil de suivi : pas encore
+        assert_fails ConjRapprochement.resoudre(h + 60000, r, "pc_retombee", "systeme") matching "EtatInvalide"
+        let _ = ConjRapprochement.signaler(h + 120000, "OBJ-1", "OBJ-2", tca, 5000, 40, "systeme")
+        // manœuvre : exige la coordination
+        assert_fails ConjRapprochement.resoudre(h + 120000, r, "manoeuvre_verifiee", "systeme") matching "EtatInvalide"
+        assert_fails ConjRapprochement.resoudre(h + 120000, r, "pc_retombee", "dyn@ORG-ALPHA") matching "Habilitation"
+        assert ConjRapprochement.resoudre(h + 120000, r, "pc_retombee", "systeme") == "resolu"
+        assert ConjRapprochement.ouverts_de("OBJ-2") == []
+    }
+}
+
+cell test RapprochementRefus {
+    rules {
+        let h = 1800000000000
+        assert_fails ApiConjonctions.signaler(h, "OBJ-1", "OBJ-1", h + 3600000, 100, 100, "systeme") matching "Incoherent"
+        assert_fails ApiConjonctions.signaler(h, "OBJ-1", "OBJ-2", h - 1, 100, 100, "systeme") matching "Incoherent"
+        assert_fails ApiConjonctions.signaler(h, "OBJ-1", "OBJ-9", h + 3600000, 100, 100, "systeme") matching "Inconnu"
+        assert_fails ApiConjonctions.signaler(h, "OBJ-1", "OBJ-INCONNU-8", h + 3600000, 100, 100, "systeme") matching "Inconnu"
+        assert_fails ApiConjonctions.signaler(h, "OBJ-1", "OBJ-2", h + 3600000, 100, 100, "intrus1") matching "Habilitation"
+        assert_fails ApiConjonctions.signaler(h, "OBJ-1", "OBJ-2", h + 3600000, 100, 100, "dyn@ORG-ALPHA") matching "Habilitation"
+        assert_fails ApiConjonctions.niveau("CJ-404") matching "Inconnu"
+        assert_fails ConjRapprochement.engager(h, "CJ-404", "systeme") matching "Inconnu"
+        let r = ConjRapprochement.signaler(h, "OBJ-1", "OBJ-2", h + 360000000, 5000, 500, "systeme")
+        assert_fails ConjRapprochement.engager(h, r, "systeme") matching "EtatInvalide"
+        assert_fails ConjRapprochement.demander_mesures(h, r, "systeme") matching "Insuffisant"
+        assert_fails ConjRapprochement.reevaluer(h, r, "analyste1") matching "Habilitation"
+        assert_fails ApiConjonctions.clos_entre(h, h - 1) matching "Incoherent"
+    }
+}
+
+// Covariance faible, réévaluation dans l'horizon d'urgence, mesures demandées.
+cell test RapprochementQualiteEtReevaluation {
+    rules {
+        let h = 1800000000000
+        // OBJ-3 : covariance faible ; 800 m < 1 000 m ⇒ niveau 2 malgré une pc minuscule
+        let r = ConjRapprochement.signaler(h, "OBJ-1", "OBJ-3", h + 360000000, 800, 10, "systeme")
+        assert ConjRapprochement.etat(r) == "alerte"
+        assert ConjRapprochement.fiche(r).niveau == 2
+        // OBJ-3 n'est ni frais ni suivi : une demande de suivi renforcé
+        assert len(ConjRapprochement.demander_mesures(h, r, "systeme")) == 1
+        // pc d'urgence mais TCA à 100 h : niveau 2 ; la réévaluation dans les 72 h le passe à 3
+        let r2 = ConjRapprochement.signaler(h, "OBJ-1", "OBJ-2", h + 360000000, 5000, 200000, "systeme")
+        assert ConjRapprochement.fiche(r2).niveau == 2
+        assert ConjRapprochement.a_reevaluer(h, 10) == [r, r2]
+        assert ConjRapprochement.reevaluer(h + 120000000, r2, "systeme") == 3
+        assert ConjRapprochement.a_reevaluer(h, 10) == [r]
+    }
+}
+
+// Forçage sous quatre yeux et fondements communiqués sous contrôle de diffusion.
+cell test ForcageEtFondements {
+    rules {
+        let h = 1800000000000
+        let r = ConjRapprochement.signaler(h, "OBJ-1", "OBJ-5", h + 360000000, 5000, 500, "systeme")
+        assert_fails ConjRapprochement.forcer_niveau(h, r, 3, false, "station habitée", "analyste1", "analyste2") matching "QuatreYeux"
+        assert_fails ConjRapprochement.forcer_niveau(h, r, 3, false, "", "analyste1", "superviseur1") matching "MotifRequis"
+        assert ConjRapprochement.forcer_niveau(h, r, 3, false, "covariance irréaliste", "analyste1", "superviseur1") == 3
+        assert ConjRapprochement.etat(r) == "alerte"
+        // une mise à jour ne défait pas le forçage
+        let _ = ConjRapprochement.signaler(h + 60000, "OBJ-1", "OBJ-5", h + 360000000, 5000, 500, "systeme")
+        assert ConjRapprochement.fiche(r).niveau == 3
+        assert ConjRapprochement.forcer_niveau(h + 120000, r, 1, true, "levée", "analyste1", "superviseur1") == 1
+        assert ConjRapprochement.etat(r) == "suivi"
+        // fondements : 4 lignes (2 mises à jour, 2 forçages)
+        assert len(ConjRapprochement.fondements(h, r, "ORG-ALPHA", 500, "dyn@ORG-ALPHA")) == 4
+        assert len(ConjRapprochement.fondements(h, r, "ORG-ORBITE", 2, "auditeur1")) == 2
+        assert_fails ConjRapprochement.fondements(h, r, "ORG-FERME", 10, "dyn@ORG-FERME") matching "Confidentiel"
+        assert_fails ConjRapprochement.fondements(h, r, "ORG-ALPHA", 10, "dyn@ORG-BETA") matching "Habilitation"
+        assert_fails ConjRapprochement.fondements(h, r, "ORG-ORBITE", 10, "exploitant1") matching "Habilitation"
+        assert_fails ConjRapprochement.fondements(h, r, "ORG-ALPHA", 0, "dyn@ORG-ALPHA") matching "HorsBornes"
+    }
+}
+
+// ── exemption chasseur / cible
+cell test Exemption {
+    rules {
+        let h = 1800000000000
+        assert_fails ApiConjonctions.exempter(h, "OBJ-2", "OBJ-1", h, h + 3600000, "analyste1", "superviseur1") matching "NonEligible"
+        assert_fails ApiConjonctions.exempter(h, "OBJ-1", "OBJ-2", h, h + 3600000, "analyste1", "analyste1") matching "QuatreYeux"
+        assert_fails ApiConjonctions.exempter(h, "OBJ-1", "OBJ-2", h, h, "analyste1", "superviseur1") matching "Incoherent"
+        assert_fails ApiConjonctions.exempter(h, "OBJ-1", "OBJ-2", h, h + 2600000000, "analyste1", "superviseur1") matching "Incoherent"
+        assert_fails ApiConjonctions.exempter(h, "OBJ-1", "OBJ-2", h, h + 3600000, "superviseur1", "direction1") matching "Habilitation"
+        let e = ApiConjonctions.exempter(h, "OBJ-1", "OBJ-2", h + 3600000, h + 36000000, "analyste1", "superviseur1")
+        assert ConjExemption.etat(e) == "accordee"
+        assert ConjExemption.avancer(h + 7200000, e, "systeme") == "en_vigueur"
+        assert ConjExemption.couvre("OBJ-2", "OBJ-1", h + 7200000)
+        // rendez-vous voulu : pc énorme, niveau plafonné à 1
+        let r = ConjRapprochement.signaler(h + 7200000, "OBJ-1", "OBJ-2", h + 20000000, 50, 500000, "systeme")
+        assert ConjRapprochement.fiche(r).niveau == 1
+        assert ConjRapprochement.etat(r) == "detecte"
+        assert ConjExemption.non_closes() == [e]
+        assert ConjExemption.avancer(h + 40000000, e, "systeme") == "echue"
+        assert ConjExemption.non_closes() == []
+        assert_fails ConjExemption.avancer(h + 40000000, e, "systeme") matching "Ferme"
+    }
+}
+
+// ── analyse après TCA par la ronde : ouverte -> sans_suite -> passe
+cell test AnalyseApresTcaRonde {
+    rules {
+        let h = 1800000000000
+        let tca = h + 7200000
+        let r = ConjRapprochement.signaler(h, "OBJ-1", "OBJ-2", tca, 5000, 500, "systeme")
+        assert_fails ApiConjonctions.balayer(h, "analyste1") matching "Habilitation"
+        // TCA + 1 h pas encore passé
+        assert_fails ConjAnalyseTca.ouvrir(h + 7300000, r, "systeme") matching "Delai"
+        let _ = ApiConjonctions.balayer(h + 14400000, "systeme")
+        assert ConjAnalyseTca.etat(r) == "ouverte"
+        assert_fails ConjAnalyseTca.ouvrir(h + 14400000, r, "systeme") matching "Existe"
+        let _ = ApiConjonctions.balayer(h + 14460000, "systeme")
+        assert ConjAnalyseTca.etat(r) == "sans_suite"
+        let _ = ApiConjonctions.balayer(h + 14520000, "systeme")
+        assert ApiConjonctions.etat(r) == "passe"
+        assert ApiConjonctions.clos_entre(h, h + 86400000) == [r]
+    }
+}
+
+// Objet perdu : suspicion qui ne s'infirme pas sans réacquisition, puis collision déclarée.
+cell test AnalyseObjetPerduEtCollision {
+    rules {
+        let h = 1800000000000
+        let tca = h + 7200000
+        let r = ConjRapprochement.signaler(h, "OBJ-1", "OBJ-3", tca, 5000, 500, "systeme")
+        let _ = ConjAnalyseTca.ouvrir(tca + 3600000, r, "systeme")
+        assert_fails ConjAnalyseTca.conclure(tca + 3600000, r, "intacts", "systeme") matching "Incoherent"
+        // le délai de réacquisition n'est pas écoulé : la ronde attend
+        let _ = ApiConjonctions.balayer(tca + 7200000, "systeme")
+        assert ConjAnalyseTca.etat(r) == "ouverte"
+        let _ = ApiConjonctions.balayer(tca + 180000000, "systeme")
+        assert ConjAnalyseTca.etat(r) == "suspecte"
+        assert_fails ConjAnalyseTca.infirmer(tca + 180000000, r, "fragments rattachés", "analyste1") matching "Insuffisant"
+        assert_fails ApiConjonctions.constater_collision(tca + 180000000, r, "EV-COL-1", "analyste1") matching "Incoherent"
+        assert ApiConjonctions.etat(r) == "alerte" || ApiConjonctions.etat(r) == "detecte"
+        // collision OBJ-1 / OBJ-2 déclarée avant même TCA + 1 h
+        let r2 = ConjRapprochement.signaler(h, "OBJ-1", "OBJ-2", tca, 50, 500000, "systeme")
+        assert_fails ApiConjonctions.constater_collision(tca, r2, "EV-FRAG-1", "analyste1") matching "Incoherent"
+        assert_fails ApiConjonctions.constater_collision(tca, r2, "EV-XYZ", "analyste1") matching "Inconnu"
+        assert_fails ApiConjonctions.constater_collision(tca, r2, "EV-COL-1", "dyn@ORG-ALPHA") matching "Habilitation"
+        assert ApiConjonctions.constater_collision(tca, r2, "EV-COL-1", "analyste1") == "collision"
+        assert ConjAnalyseTca.etat(r2) == "confirmee"
+        assert_fails ConjRapprochement.clore_apres_tca(tca, r2, "systeme") matching "Ferme"
+    }
+}
+
+// ── messages : alerte de niveau 3, échéance, sans réponse, escalade ; blocage de diffusion
+cell test MessagesAlerteEtEscalade {
+    rules {
+        let h = 1800000000000
+        let r = ApiConjonctions.signaler(h, "OBJ-1", "OBJ-2", h + 36000000, 100, 200000, "systeme")
+        assert ApiConjonctions.niveau(r) == 3
+        // ALPHA, BETA et le point focal de leur État (une seule fois)
+        let ms = ConjMessage.de(r)
+        assert len(ms) == 3
+        assert ConjMessage.etat(ms[0]) == "envoye"
+        assert ConjMessage.en_attente(h, 10) == ms
+        assert ConjMessage.relever(h + 60000, ms[0], "systeme") == "envoye"
+        // échéance (30 min) passée sans accusé : sans réponse puis escalade par la ronde
+        let _ = ApiConjonctions.balayer(h + 3600000, "systeme")
+        assert ConjMessage.etat(ms[0]) == "escalade"
+        assert_fails ConjMessage.escalader(h + 3600000, ms[0], "systeme") matching "EtatInvalide"
+        assert_fails ConjMessage.relever(h + 3600000, ms[0], "systeme") matching "Ferme"
+        assert_fails ConjMessage.diffuser(h, r, "intrus1") matching "Habilitation"
+        assert_fails ConjMessage.diffuser(h, "CJ-404", "systeme") matching "Inconnu"
+    }
+}
+
+cell test MessagesBlocageEtClotureCaduque {
+    rules {
+        let h = 1800000000000
+        // OBJ-5 appartient à ORG-FERME, qui ne peut pas recevoir les données d'OBJ-1
+        let r = ConjRapprochement.signaler(h, "OBJ-1", "OBJ-5", h + 360000000, 5000, 20000, "systeme")
+        let ms = ConjMessage.diffuser(h, r, "systeme")
+        assert len(ms) == 2
+        assert ConjMessage.etat(ms[0]) == "envoye"
+        assert ConjMessage.etat(ms[1]) == "bloque"
+        // clos avant l'accusé : le message en attente devient caduc
+        assert_fails ConjMessage.clore_de(h, r, "systeme") matching "EtatInvalide"
+        let _ = ConjRapprochement.signaler(h + 60000, "OBJ-1", "OBJ-5", h + 360000000, 5000, 50, "systeme")
+        let _ = ConjRapprochement.signaler(h + 120000, "OBJ-1", "OBJ-5", h + 360000000, 5000, 50, "systeme")
+        assert ApiConjonctions.resoudre(h + 180000, r, "pc_retombee", "systeme") == "resolu"
+        assert ConjMessage.etat(ms[0]) == "caduc"
+        // le message de clôture est parti vers ALPHA (la diffusion à FERME reste bloquée)
+        assert len(ConjMessage.de(r)) == 4
+    }
+}
+
+// ── abonnements : délégué abonné dès le niveau 1, acquittement, révocation
+cell test Abonnements {
+    rules {
+        let h = 1800000000000
+        assert_fails ConjAbonnement.abonner(h, "ORG-ALPHA", "ORG-RAPIDE-CDV", 1, "admin@ORG-BETA", "chef@ORG-ALPHA") matching "Habilitation"
+        assert_fails ConjAbonnement.abonner(h, "ORG-ALPHA", "ORG-RAPIDE-CDV", 1, "admin@ORG-ALPHA", "admin@ORG-ALPHA") matching "QuatreYeux"
+        assert_fails ConjAbonnement.abonner(h, "ORG-ALPHA", "ORG-NONADH-X", 1, "admin@ORG-ALPHA", "chef@ORG-ALPHA") matching "NonEligible"
+        assert_fails ConjAbonnement.abonner(h, "ORG-SUSP-1", "ORG-RAPIDE-CDV", 1, "admin@ORG-SUSP-1", "chef@ORG-SUSP-1") matching "Suspendu"
+        assert_fails ConjAbonnement.abonner(h, "ORG-INCONNUE-1", "ORG-RAPIDE-CDV", 1, "admin@ORG-INCONNUE-1", "chef@ORG-INCONNUE-1") matching "Inconnu"
+        let ab = ConjAbonnement.abonner(h, "ORG-ALPHA", "ORG-RAPIDE-CDV", 1, "admin@ORG-ALPHA", "chef@ORG-ALPHA")
+        assert_fails ConjAbonnement.abonner(h, "ORG-ALPHA", "ORG-RAPIDE-CDV", 2, "admin@ORG-ALPHA", "chef@ORG-ALPHA") matching "Existe"
+        assert ConjAbonnement.destinataires("ORG-ALPHA", 1) == ["ORG-RAPIDE-CDV"]
+        assert ConjAbonnement.verifier(h, ab, "systeme") == "actif"
+        // niveau 1 : seul le délégué reçoit ; il acquitte aussitôt
+        let r = ConjRapprochement.signaler(h, "OBJ-1", "OBJ-2", h + 360000000, 5000, 500, "systeme")
+        let ms = ConjMessage.diffuser(h, r, "systeme")
+        assert len(ms) == 1
+        assert ConjMessage.relever(h + 60000, ms[0], "systeme") == "acquitte"
+        assert_fails ConjAbonnement.revoquer(h, ab, "fin de contrat", "dyn@ORG-ALPHA") matching "Habilitation"
+        assert ConjAbonnement.revoquer(h, ab, "fin de contrat", "conformite1") == "revoque"
+        assert ConjAbonnement.destinataires("ORG-ALPHA", 3) == []
+        assert_fails ConjAbonnement.verifier(h, ab, "systeme") matching "Ferme"
+        assert ConjAbonnement.non_revoques() == []
+    }
+}
+
+// ── criblage des plans : sûr, périmé par un nouveau rapprochement, à risque, refus
+cell test CriblagePlans {
+    rules {
+        let h = 1800000000000
+        assert_fails ApiConjonctions.cribler_plan(h, "OBJ-1", "PL-DECL-0", h + 18000000, 100) matching "Perime"
+        let _ = campagne_terminee(h, "leo")
+        assert ApiConjonctions.cribler_plan(h + 3600000, "OBJ-1", "PL-DECL-1", h + 18000000, 100) == 0
+        assert ApiConjonctions.criblage_plan("PL-DECL-1") == "sur"
+        // idempotent
+        assert ApiConjonctions.cribler_plan(h + 3600000, "OBJ-1", "PL-DECL-1", h + 18000000, 100) == 0
+        assert_fails ApiConjonctions.cribler_plan(h + 3600000, "OBJ-2", "PL-DECL-1", h + 18000000, 100) matching "Inconnu"
+        // nouveau rapprochement de niveau 2 sur OBJ-1 : le plan sûr est périmé
+        let r = ApiConjonctions.signaler(h + 7200000, "OBJ-1", "OBJ-2", h + 180000000, 5000, 20000, "systeme")
+        assert ApiConjonctions.criblage_plan("PL-DECL-1") == "perime"
+        assert_fails ApiConjonctions.cribler_plan(h + 7200000, "OBJ-1", "PL-DECL-1", h + 18000000, 100) matching "Perime"
+        // sans poussée, le rapprochement reste de niveau 2 : à risque
+        assert ApiConjonctions.cribler_plan(h + 10800000, "OBJ-1", "PL-DECL-2", h + 14400000, 0) == 1
+        assert ApiConjonctions.criblage_plan("PL-DECL-2") == "a_risque"
+        // 1 m/s tangentiel : dérive de ~500 km au TCA, risque écarté
+        assert ApiConjonctions.cribler_plan(h + 10800000, "OBJ-1", "PL-DECL-3", h + 14400000, 1000) == 0
+        assert ConjCriblagePlan.resultat("PL-DECL-3") == 0
+        assert_fails ApiConjonctions.cribler_plan(h + 10800000, "OBJ-1", "PL-APP-1", h + 14400000, 1000) matching "EtatInvalide"
+        assert_fails ApiConjonctions.cribler_plan(h + 10800000, "OBJ-1", "PL-INCONNU", h + 14400000, 1000) matching "Inconnu"
+        assert_fails ApiConjonctions.cribler_plan(h + 10800000, "OBJ-1", "PL-DECL-4", h, 1000) matching "Perime"
+        assert_fails ApiConjonctions.cribler_plan(h + 10800000, "OBJ-6", "PL-DECL-5", h + 14400000, 1000) matching "Perime"
+        assert_fails ApiConjonctions.cribler_plan(h + 10800000, "OBJ-3", "PL-DECL-6", h + 14400000, 1000) matching "Perime"
+        // catalogue de plus de 8 h
+        assert_fails ApiConjonctions.cribler_plan(h + 36000000, "OBJ-1", "PL-DECL-7", h + 40000000, 1000) matching "Perime"
+        assert ApiConjonctions.criblage_plan("PL-JAMAIS") == ""
+        assert_fails ConjCriblagePlan.cribler(h + 10800000, "OBJ-1", "PL-DECL-8", h + 14400000, 1000, "dyn@ORG-ALPHA") matching "Habilitation"
+    }
+}
+
+// ── contestations : déposée -> examinée -> acceptée ; rejet sur dépôt invalidé ; retrait
+cell test ContestationAcceptee {
+    rules {
+        let h = 1800000000000
+        let r = ConjRapprochement.signaler(h, "OBJ-1", "OBJ-2", h + 180000000, 5000, 20000, "systeme")
+        assert_fails ConjContestation.deposer(h, r, "OBJ-1", "éphéméride récente", "dyn@ORG-BETA") matching "Habilitation"
+        assert_fails ConjContestation.deposer(h, r, "OBJ-6", "étranger", "dyn@ORG-ALPHA") matching "Incoherent"
+        assert_fails ConjContestation.deposer(h, r, "OBJ-1", "", "dyn@ORG-ALPHA") matching "MotifRequis"
+        assert_fails ConjContestation.deposer(h, "CJ-404", "OBJ-1", "x", "dyn@ORG-ALPHA") matching "Inconnu"
+        let c = ConjContestation.deposer(h, r, "OBJ-1", "éphéméride récente", "dyn@ORG-ALPHA")
+        assert_fails ConjContestation.deposer(h, r, "OBJ-1", "encore", "chef@ORG-ALPHA") matching "Existe"
+        assert ConjContestation.de(r) == [c]
+        // la campagne ciblée n'a pas démarré
+        assert ConjContestation.instruire(h, c, "systeme") == "deposee"
+        let _ = ConjCampagne.demarrer(h + 60000, "CB-1", "systeme")
+        assert ConjContestation.instruire(h + 60000, c, "systeme") == "examinee"
+        // la campagne met le rapprochement à jour (pc retombée) puis se termine
+        let _ = ConjRapprochement.signaler(h + 120000, "OBJ-1", "OBJ-2", h + 180000000, 5000, 50, "systeme")
+        let _ = ConjCampagne.terminer(h + 180000, "CB-1", 1, 100, 1, "systeme")
+        assert ConjContestation.instruire(h + 180000, c, "systeme") == "acceptee"
+        assert ConjContestation.non_closes() == []
+        assert_fails ConjContestation.instruire(h + 180000, c, "systeme") matching "Ferme"
+    }
+}
+
+cell test ContestationRejeteeEtRetiree {
+    rules {
+        let h = 1800000000000
+        // OBJ-7 : dépôt invoqué invalidé par la suite (doublure) ⇒ rejet
+        let r = ConjRapprochement.signaler(h, "OBJ-1", "OBJ-7", h + 180000000, 5000, 20000, "systeme")
+        let c = ConjContestation.deposer(h, r, "OBJ-7", "manœuvre prévue", "dyn@ORG-BETA")
+        assert ConjContestation.instruire(h, c, "systeme") == "rejetee"
+        // retrait par le propriétaire
+        let r2 = ConjRapprochement.signaler(h, "OBJ-6", "OBJ-2", h + 180000000, 5000, 20000, "systeme")
+        let c2 = ConjContestation.deposer(h, r2, "OBJ-6", "éphéméride", "chef@ORG-ALPHA")
+        assert_fails ConjContestation.retirer(h, c2, "erreur", "dyn@ORG-BETA") matching "Habilitation"
+        assert_fails ConjContestation.retirer(h, c2, "", "dyn@ORG-ALPHA") matching "MotifRequis"
+        assert ConjContestation.retirer(h, c2, "erreur de saisie", "dyn@ORG-ALPHA") == "retiree"
+        assert ConjContestation.etat(c2) == "retiree"
+        assert_fails ConjContestation.retirer(h, c2, "encore", "dyn@ORG-ALPHA") matching "Ferme"
+        // contestataire d'un opérateur suspendu : refus
+        assert ConjContestation.etat("CT-404") == "inconnue"
+    }
+}
+
+// ── scénario métier complet : du criblage à la clôture
+// Campagne terminée → rapprochement en alerte (niveau 3) → coordination proposée → messages
+// d'alerte → plan d'évitement criblé sûr → manœuvre vérifiée → résolu, messages caducs et
+// message de clôture → fondements communiqués à une partie, puis analyse et ronde sans effet.
+cell test ScenarioCompletRapprochement {
+    rules {
+        let h = 1800000000000
+        let _ = campagne_terminee(h, "leo")
+        let r = ApiConjonctions.signaler(h + 3600000, "OBJ-2", "OBJ-1", h + 86400000, 150, 150000, "systeme")
+        assert ApiConjonctions.etat(r) == "en_coordination"
+        assert ApiConjonctions.niveau(r) == 3
+        let alertes = ConjMessage.de(r)
+        assert len(alertes) == 3
+        // le désigné déclare un plan qui ne touche pas d'autre objet : criblé sûr
+        assert ApiConjonctions.cribler_plan(h + 7200000, "OBJ-1", "PL-DECL-EVITEMENT", h + 10800000, 2000) == 0
+        assert ApiConjonctions.criblage_plan("PL-DECL-EVITEMENT") == "sur"
+        // manœuvre exécutée et vérifiée chez MANŒUVRES (doublure : plan_de vérifié)
+        assert ApiConjonctions.resoudre(h + 14400000, r, "manoeuvre_verifiee", "systeme") == "resolu"
+        assert ConjMessage.etat(alertes[0]) == "caduc"
+        assert len(ConjMessage.de(r)) == 5
+        assert ApiConjonctions.ouverts_de("OBJ-2") == []
+        assert len(ConjRapprochement.fondements(h + 14400000, r, "ORG-BETA", 10, "chef@ORG-BETA")) == 2
+        assert len(Journal.chercher("rapprochement {r}", 20)) >= 3
+        // la ronde suivante ne touche plus au rapprochement clos
+        let _ = ApiConjonctions.balayer(h + 100000000, "systeme")
+        assert ApiConjonctions.etat(r) == "resolu"
+        assert ConjAnalyseTca.etat(r) == "inconnue"
+    }
+}

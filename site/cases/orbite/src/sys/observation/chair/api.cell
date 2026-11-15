@@ -1,0 +1,42 @@
+// Corps de la façade de l'observation : délégations aux cells internes.
+flesh ApiObservation {
+    on suivi(objet, h) {
+        return ObsOrbites.suivi(to_string(objet), h)
+    }
+    on ecart_declare(objet) {
+        return ObsOrbites.ecart_declare(objet)
+    }
+    on demander_suivi(h, objet, priorite, duree, motif, par) {
+        require motif != "" else MotifRequis "motif de suivi requis"
+        // Le motif libre commence par sa catégorie (« rapprochement CJ-12 ») ; à défaut : routine.
+        let tete = lowercase(split(trim(replace(motif, ":", " ")), " ")[0])
+        let connus = ["rapprochement", "rentree", "fragmentation", "verification_manoeuvre", "nouvel_objet", "lancement", "routine"]
+        let categorie = if contains(connus, tete) { tete } else { "routine" }
+        return ObsTaches.demander(h, objet, priorite, duree, ObsMotifTache(categorie), motif, par)
+    }
+    on manoeuvre_detectee(objet, depuis) {
+        return ObsDetections.detectee_depuis(objet, depuis)
+    }
+    on capteurs_en_service() {
+        return ObsCapteurs.en_service_nb()
+    }
+    on ecart_a(objet, epoque, position) {
+        return ObsOrbites.ecart_a(objet, epoque, position)
+    }
+    on deposer_mesure(h, capteur, objet, instant, mesure, par) {
+        return ObsMesures.recevoir(h, capteur, to_string(objet), instant, mesure, par)
+    }
+    on perigee(objet) {
+        return ObsOrbites.perigee(objet)
+    }
+    on apogee(objet) {
+        return ObsOrbites.apogee(objet)
+    }
+    on pistes_non_correlees(n) {
+        if n <= 0 { return [] }
+        return ObsPistes.en_attente(min(n, 1000))
+    }
+    on balayer(h, par) {
+        return ObsBalayage.balayer(h, par)
+    }
+}

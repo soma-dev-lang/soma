@@ -1,0 +1,336 @@
+// fin_de_vie — corps de FdvFin (cycle de fin de vie d'un objet).
+// Les délais maximaux par régime sont ceux de FdvPlan (DELAI_LEO, DELAI_GEO, DELAI_MEO_HEO) et
+// la rehausse GEO minimale celle de FdvPlan.REHAUSSE_GEO_MIN : recopiés en littéraux, une
+// constante d'une autre cell échouant à l'exécution (piège Soma 3.2.x n° 3).
+
+flesh FdvFin {
+    on _delai_max(reg: String) {
+        if reg == "leo" {
+            return 157680000000
+        }
+        if reg == "geo" {
+            return 31536000000
+        }
+        return 788400000000
+    }
+
+    on _oter_suivi(o: String) {
+        let i = suivis.size - 1
+        while i >= 0 {
+            if suivis[i] == o {
+                suivis.delete(i)
+            }
+            i = i - 1
+        }
+    }
+
+    on _dossier_fin(objet: Objet) {
+        let st = get_status(objet) ?? "en_mission"
+        require (fin_le.get(objet) != ()) || st != "en_mission" else Inconnu "fin de mission de {objet} non déclarée"
+        return FdvDossierFin { etat: st, plan: plan_retenu_de.get(objet) ?? "", fin: fin_le.get(objet) ?? 0, echeance: echeance_de.get(objet) ?? 0, declare_par: declare_par.get(objet) ?? "", d_office: d_office.get(objet) ?? false, prorogation: prorogation_de.get(objet) ?? "", manoeuvres: manoeuvres_de.get(objet) ?? [], manquement: manquement_de.get(objet) ?? "", sortie: sortie_le.get(objet) ?? 0 }
+    }
+
+    on declarer_fin(h, objet, par) {
+        let st_obj = ApiRef.etat_objet(objet)
+        require st_obj != "inconnu" else Inconnu "objet {objet} non catalogué"
+        let prop = ApiRef.proprietaire(objet)
+        require ApiAcces.a_le_role(par, "chef_de_mission") && ApiAcces.agit_pour(par, prop) else Habilitation "{par} : chef de mission de {prop} requis"
+        let st = get_status(objet) ?? "en_mission"
+        require st == "en_mission" else EtatInvalide "fin de vie de {objet} : {st}"
+        require st_obj == "en_service" || st_obj == "hors_service" else EtatInvalide "objet {objet} : {st_obj}"
+        require suivis.size < MAX_SUIVIS else Plein "suivi des fins de vie plein"
+        let plan = FdvPlan.plan_de(objet)
+        let conf = FdvPlan.conforme(objet, h)
+        let delai = 0
+        if conf {
+            delai = FdvPlan.fiche(plan).delai
+        } else {
+            delai = _delai_max(to_string(ApiRef.regime(objet)))
+        }
+        let ech = h + delai
+        echeance_de.set(objet, ech)
+        fin_le.set(objet, h)
+        plan_retenu_de.set(objet, plan)
+        declare_par.set(objet, par)
+        d_office.set(objet, false)
+        suivis.push(to_string(objet))
+        transition(objet, "en_mission", "en_retrait")
+        if !conf {
+            ApiConformite.constater(h, prop, "fin de mission sans plan conforme", 2, to_string(objet), "systeme")
+        }
+        Journal.noter(h, "fin_de_vie", par, "fin de mission de {objet} déclarée (plan '{plan}', conforme {conf}, échéance {ech})")
+        return ech
+    }
+
+    on declarer_fin_d_office(h, objet, motif, par) {
+        require ApiAcces.a_le_role(par, "analyste") || ApiAcces.a_le_role(par, "systeme") else Habilitation "{par} : analyste d'ORBITE ou systeme requis"
+        let st_obj = ApiRef.etat_objet(objet)
+        require st_obj != "inconnu" else Inconnu "objet {objet} non catalogué"
+        let st = get_status(objet) ?? "en_mission"
+        require st == "en_mission" else EtatInvalide "fin de vie de {objet} : {st}"
+        require st_obj == "en_service" || st_obj == "hors_service" else EtatInvalide "objet {objet} : {st_obj}"
+        require motif != "" else MotifRequis "motif de la fin d'office requis"
+        let plan = FdvPlan.plan_de(objet)
+        let fin_depassee = false
+        if plan != "" {
+            fin_depassee = h > FdvPlan.fiche(plan).fin_prevue + GRACE_FIN
+        }
+        require st_obj == "hors_service" || fin_depassee else NonEligible "objet {objet} en service et fin prévue non dépassée de 90 jours"
+        require suivis.size < MAX_SUIVIS else Plein "suivi des fins de vie plein"
+        let conf = FdvPlan.conforme(objet, h)
+        let delai = 0
+        if conf {
+            delai = FdvPlan.fiche(plan).delai
+        } else {
+            delai = _delai_max(to_string(ApiRef.regime(objet)))
+        }
+        let ech = h + delai
+        let prop = ApiRef.proprietaire(objet)
+        echeance_de.set(objet, ech)
+        fin_le.set(objet, h)
+        plan_retenu_de.set(objet, plan)
+        declare_par.set(objet, par)
+        d_office.set(objet, true)
+        motif_de.set(objet, motif)
+        suivis.push(to_string(objet))
+        transition(objet, "en_mission", "en_retrait")
+        ApiConformite.constater(h, prop, "fin de mission non déclarée (fin d'office)", 2, to_string(objet), "systeme")
+        let texte = "fin de mission de {objet} déclarée d'office : {motif} ; échéance de retrait {ech}"
+        ApiPasserelle.notifier(h, prop, "", "fin de mission d'office {objet}", texte, 2)
+        let etat_imm = to_string(ApiRef.etat_immatriculation(objet))
+        if etat_imm != "" {
+            ApiPasserelle.notifier(h, ApiRef.org_de_etat(Etat(etat_imm)), "", "fin de mission d'office {objet}", texte, 2)
+        }
+        Journal.noter(h, "fin_de_vie", par, texte)
+        return ech
+    }
+
+    on rattacher_manoeuvre(h, objet, plan_man, par) {
+        let prop = ApiRef.proprietaire(objet)
+        require ApiAcces.a_le_role(par, "dynamicien") && ApiAcces.agit_pour(par, prop) else Habilitation "{par} : dynamicien de {prop} requis"
+        let st = get_status(objet) ?? "en_mission"
+        require st == "en_retrait" || st == "en_retard" else EtatInvalide "fin de vie de {objet} : {st}"
+        let st_man = ApiManoeuvres.etat(plan_man)
+        require st_man != "inconnu" else Inconnu "plan de manœuvre {plan_man} inconnu"
+        require st_man != "rejete" && st_man != "annule" else EtatInvalide "plan de manœuvre {plan_man} : {st_man}"
+        require ApiManoeuvres.objet_de(plan_man) == objet else Incoherent "plan {plan_man} d'un autre objet"
+        let motif = ApiManoeuvres.motif_de(plan_man)
+        require motif == "desorbitation" || motif == "transfert" else Incoherent "motif {motif} ni desorbitation ni transfert"
+        let deja = manoeuvres_de.get(objet) ?? []
+        require !contains(deja, plan_man) else Doublon "plan {plan_man} déjà rattaché"
+        require len(deja) < MAX_MANOEUVRES else Plein "50 plans de retrait déjà rattachés"
+        let nouveaux = deja ++ [plan_man]
+        manoeuvres_de.set(objet, nouveaux)
+        Journal.noter(h, "fin_de_vie", par, "plan de manœuvre {plan_man} ({motif}) rattaché à la fin de vie de {objet}")
+        return len(nouveaux)
+    }
+
+    on constater_passivation(h, objet, par) {
+        require ApiAcces.a_le_role(par, "analyste") || ApiAcces.a_le_role(par, "systeme") else Habilitation "{par} : analyste d'ORBITE ou systeme requis"
+        let st = get_status(objet) ?? "en_mission"
+        require st != "en_mission" else Inconnu "fin de mission de {objet} non déclarée"
+        require st == "en_retrait" else EtatInvalide "fin de vie de {objet} : {st}"
+        let st_pas = FdvPassivation.etat(objet)
+        require st_pas == "verifiee" else EtatInvalide "passivation de {objet} : {st_pas}"
+        for pm in manoeuvres_de.get(objet) ?? [] {
+            let e = ApiManoeuvres.etat(pm)
+            require e == "verifie" || e == "annule" else Insuffisant "manœuvre de retrait {pm} : {e}"
+        }
+        transition(objet, "en_retrait", "passive")
+        Journal.noter(h, "fin_de_vie", par, "passivation de {objet} constatée")
+        return "passive"
+    }
+
+    on constater_retard(h, objet, par) {
+        require ApiAcces.a_le_role(par, "systeme") else Habilitation "{par} : systeme requis"
+        let ech = echeance_de.get(objet)
+        require ech != () else Inconnu "fin de mission de {objet} non déclarée"
+        let st = get_status(objet) ?? "en_mission"
+        require st == "en_retrait" || st == "passive" else EtatInvalide "fin de vie de {objet} : {st}"
+        require h > ech else EtatInvalide "échéance de {objet} non dépassée"
+        let prop = ApiRef.proprietaire(objet)
+        if st == "en_retrait" {
+            transition(objet, "en_retrait", "en_retard")
+        } else {
+            transition(objet, "passive", "en_retard")
+        }
+        let mq = manquement_de.get(objet) ?? ""
+        if mq == "" {
+            mq = ApiConformite.constater(h, prop, "retrait de fin de vie en retard", 3, to_string(objet), "systeme")
+            manquement_de.set(objet, mq)
+        }
+        let texte = "objet {objet} : échéance de retrait {ech} dépassée (manquement {mq})"
+        ApiPasserelle.notifier(h, prop, "", "retard de fin de vie {objet}", texte, 2)
+        let etat_imm = to_string(ApiRef.etat_immatriculation(objet))
+        if etat_imm != "" {
+            ApiPasserelle.notifier(h, ApiRef.org_de_etat(Etat(etat_imm)), "", "retard de fin de vie {objet}", texte, 2)
+        }
+        Journal.noter(h, "fin_de_vie", par, texte)
+        return mq
+    }
+
+    on constater_defaillance(h, objet, motif, par) {
+        require ApiAcces.a_le_role(par, "analyste") || ApiAcces.a_le_role(par, "systeme") else Habilitation "{par} : analyste d'ORBITE ou systeme requis"
+        let prop_actuelle = to_string(ApiRef.propulsion(objet))
+        let st = get_status(objet) ?? "en_mission"
+        require st == "en_mission" || st == "en_retrait" || st == "en_retard" else EtatInvalide "fin de vie de {objet} : {st}"
+        require motif != "" else MotifRequis "motif de la défaillance requis"
+        require ApiEvenements.en_anomalie(objet) || prop_actuelle == "aucune" else Incoherent "{objet} ni en anomalie ni sans propulsion"
+        if !contains(suivis, objet) {
+            require suivis.size < MAX_SUIVIS else Plein "suivi des fins de vie plein"
+            suivis.push(to_string(objet))
+        }
+        motif_de.set(objet, motif)
+        if st == "en_mission" {
+            transition(objet, "en_mission", "defaillant")
+        } else if st == "en_retrait" {
+            transition(objet, "en_retrait", "defaillant")
+        } else {
+            transition(objet, "en_retard", "defaillant")
+        }
+        Journal.noter(h, "fin_de_vie", par, "objet {objet} défaillant : {motif}")
+        return "defaillant"
+    }
+
+    on constater_cimetiere(h, objet, par, valideur) {
+        require ApiAcces.a_le_role(par, "analyste") else Habilitation "{par} : analyste d'ORBITE requis"
+        require ApiAcces.quatre_yeux(par, valideur) && ApiAcces.a_le_role(valideur, "superviseur") else QuatreYeux "{valideur} : superviseur distinct de {par} requis"
+        let st = get_status(objet) ?? "en_mission"
+        require st != "en_mission" else Inconnu "fin de mission de {objet} non déclarée"
+        require st == "passive" || st == "en_retard" || st == "defaillant" else EtatInvalide "fin de vie de {objet} : {st}"
+        require ApiObservation.suivi(objet, h) else Perime "pas d'orbite indépendante de moins de 72 h pour {objet}"
+        let peri = ApiObservation.perigee(objet)
+        let apo = ApiObservation.apogee(objet)
+        let plan = plan_retenu_de.get(objet) ?? ""
+        let seuil = CIMETIERE_MIN_HORS_GEO
+        if to_string(ApiRef.regime(objet)) == "geo" {
+            let rehausse = 235000
+            if plan != "" {
+                rehausse = max(FdvPlan.fiche(plan).rehausse, 235000)
+            }
+            seuil = GEO_ALTITUDE + rehausse
+        }
+        require peri >= seuil && apo >= peri else Incoherent "orbite observée de {objet} (périgée {peri} m, apogée {apo} m) hors cimetière (seuil {seuil} m)"
+        let r_ecart = try { ApiObservation.ecart_declare(objet) }
+        let ecart = if r_ecart.error == () { to_string(r_ecart.value) } else { "inconnu" }
+        sortie_le.set(objet, h)
+        _oter_suivi(to_string(objet))
+        if st == "passive" {
+            transition(objet, "passive", "cimetiere")
+        } else if st == "en_retard" {
+            transition(objet, "en_retard", "cimetiere")
+        } else {
+            transition(objet, "defaillant", "cimetiere")
+        }
+        let reference = if plan != "" { plan } else { to_string(objet) }
+        ApiRef.changer_etat_objet(h, objet, "cimetiere", reference, "orbite cimetière constatée (périgée {peri} m)", par)
+        let clos = FdvPlan.clore(h, objet)
+        let achevees = FdvRetrait.achever_pour(h, objet)
+        Journal.noter(h, "fin_de_vie", par, "objet {objet} en orbite cimetière ({par}|{valideur}, périgée {peri} m, apogée {apo} m, écart déclaré/observé {ecart} m, plan clos '{clos}', missions achevées {achevees})")
+        return "cimetiere"
+    }
+
+    on constater_sortie(h, objet, par) {
+        require ApiAcces.a_le_role(par, "systeme") else Habilitation "{par} : systeme requis"
+        let st_obj = ApiRef.etat_objet(objet)
+        require st_obj != "inconnu" else Inconnu "objet {objet} non catalogué"
+        require st_obj == "rentre" || st_obj == "fragmente" else EtatInvalide "objet {objet} : {st_obj} au catalogue"
+        let st = get_status(objet) ?? "en_mission"
+        require st != "rentre" && st != "fragmente" && st != "cimetiere" else EtatInvalide "fin de vie de {objet} déjà terminée ({st})"
+        sortie_le.set(objet, h)
+        _oter_suivi(to_string(objet))
+        if st_obj == "rentre" {
+            if st == "en_mission" {
+                transition(objet, "en_mission", "rentre")
+            } else if st == "en_retrait" {
+                transition(objet, "en_retrait", "rentre")
+            } else if st == "passive" {
+                transition(objet, "passive", "rentre")
+            } else if st == "en_retard" {
+                transition(objet, "en_retard", "rentre")
+            } else {
+                transition(objet, "defaillant", "rentre")
+            }
+            let clos = FdvPlan.clore(h, objet)
+            let achevees = FdvRetrait.achever_pour(h, objet)
+            Journal.noter(h, "fin_de_vie", par, "rentrée de {objet} constatée (plan clos '{clos}', missions achevées {achevees})")
+            return "rentre"
+        }
+        if st == "en_mission" {
+            transition(objet, "en_mission", "fragmente")
+        } else if st == "en_retrait" {
+            transition(objet, "en_retrait", "fragmente")
+        } else if st == "passive" {
+            transition(objet, "passive", "fragmente")
+        } else if st == "en_retard" {
+            transition(objet, "en_retard", "fragmente")
+        } else {
+            transition(objet, "defaillant", "fragmente")
+        }
+        Journal.noter(h, "fin_de_vie", par, "fragmentation de {objet} constatée")
+        return "fragmente"
+    }
+
+    on proroger(h, objet, prorogation, duree) {
+        let ech = echeance_de.get(objet)
+        require ech != () else Inconnu "fin de mission de {objet} non déclarée"
+        let st = get_status(objet) ?? "en_mission"
+        require st == "en_retrait" || st == "passive" else EtatInvalide "fin de vie de {objet} : {st}"
+        require h <= ech else EtatInvalide "échéance de {objet} déjà dépassée"
+        require prorogation_de.get(objet) == () else Doublon "échéance de {objet} déjà prorogée"
+        let nouvelle = Horodatage(to_int(ech) + to_int(duree))
+        echeance_de.set(objet, nouvelle)
+        prorogation_de.set(objet, prorogation)
+        Journal.noter(h, "fin_de_vie", "systeme", "échéance de {objet} reportée de {ech} à {nouvelle} (prorogation {prorogation})")
+        return nouvelle
+    }
+
+    on en_retard(objet, h) {
+        let st = get_status(objet) ?? "en_mission"
+        if st == "en_retard" {
+            return true
+        }
+        if st == "en_retrait" || st == "passive" || st == "defaillant" {
+            let ech = echeance_de.get(objet)
+            return ech != () && h > ech
+        }
+        return false
+    }
+
+    on echeance(objet) {
+        let ech = echeance_de.get(objet)
+        require ech != () else Inconnu "fin de mission de {objet} non déclarée"
+        return ech
+    }
+
+    on a_echoir(h, n) {
+        let res_echus = []
+        for o in suivis {
+            if len(res_echus) < n {
+                let st = get_status(o) ?? "en_mission"
+                let ech = echeance_de.get(o) ?? h
+                if (st == "en_retrait" || st == "passive") && h > ech {
+                    res_echus.push(o)
+                }
+            }
+        }
+        return res_echus
+    }
+
+    on dossier(objet) {
+        return _dossier_fin(objet)
+    }
+
+    on consulter_dossier(h, objet, org, par) {
+        let d = _dossier_fin(objet)
+        let habilite = ApiAcces.agit_pour(par, org) || ApiAcces.a_le_role(par, "analyste") || ApiAcces.a_le_role(par, "conformite") || ApiAcces.a_le_role(par, "auditeur")
+        require habilite else Habilitation "{par} : agent de {org}, ou analyste / conformite / auditeur d'ORBITE requis"
+        require ApiDonnees.peut_recevoir(org, objet, "", h) else Confidentiel "{org} ne peut recevoir les données de {objet}"
+        ApiDonnees.tracer(h, org, objet, "", "dossier de fin de vie")
+        return d
+    }
+
+    on etat(objet) {
+        return get_status(objet) ?? "en_mission"
+    }
+}

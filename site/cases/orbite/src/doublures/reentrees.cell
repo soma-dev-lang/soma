@@ -1,0 +1,197 @@
+// Doublures (corps PROVISOIRES) des façades des autres sous-systèmes que traversent les tests de
+// reentrees. Pures, sans mémoire : leur comportement se lit sur les identifiants.
+// - Personne "role[#n]@ORG-X" : a le rôle `role` pour l'employeur ORG-X ; un rôle d'ORBITE ne
+//   vaut que si ORG-X = ORG-ORBITE ; "intrus…" n'a aucun rôle ; "systeme" a le rôle "systeme".
+// - quatre_yeux(a, b) : faux si a == b ; vrai si b est superviseur/conformite/direction
+//   d'ORBITE, ou chef_de_mission du même employeur que a.
+// - États participants : ALD, BRV, CAZ, DUR ; autorité de l'État E : "ORG-E". ORBITE = "ORG-ORBITE".
+// - Objets "OBJ-…" : en service, propriétaire ORG-OPA (tutelle BRV), immatriculé ALD, 300 kg ;
+//   "OBJ-INCONNU…" non catalogué ; "OBJ-RENTRE…" rentré ; "OBJ-FRAG…" fragmenté ; "OBJ-MORT…"
+//   ne peut pas manœuvrer ; "OBJ-LOURD…" 6 000 kg ; "OBJ-SUIVI…" suivi en orbite par ORBITE ;
+//   "OBJ-SUSP…" propriétaire ORG-SUSP-OPC (suspendu) ; "OBJ-VIEUX…" éphéméride périmée ;
+//   "OBJ-ORPH…" sans propriétaire ("inconnu") ni État d'immatriculation ni lancement connu.
+//   États de lancement : ALD et CAZ.
+// - Plan de manœuvre "MAN:<objet>:<motif>:<état>" (état "crible" par défaut s'il manque).
+// - Données : seule ORG-ALD (adhérente) reçoit l'avis complet.
+// - Organisation "ORG-SUSP…" : opérateur non actif.
+
+flesh ApiAcces {
+    on a_le_role(personne, r) {
+        if personne == "systeme" { return r == "systeme" }
+        if starts_with(personne, "intrus") { return false }
+        let parts = split(personne, "@")
+        if len(parts) != 2 { return false }
+        let role = split(parts[0], "#")[0]
+        if role != to_string(r) || role == "systeme" || role == "aucun" { return false }
+        if contains(["analyste", "superviseur", "exploitant", "conformite", "direction", "auditeur"], role) {
+            return parts[1] == "ORG-ORBITE"
+        }
+        return true
+    }
+    on agit_pour(personne, org) {
+        if starts_with(personne, "intrus") { return false }
+        let parts = split(personne, "@")
+        if len(parts) != 2 { return false }
+        return parts[1] == to_string(org)
+    }
+    on quatre_yeux(demandeur, valideur) {
+        if demandeur == valideur || starts_with(valideur, "intrus") { return false }
+        let pv = split(valideur, "@")
+        let pd = split(demandeur, "@")
+        if len(pv) != 2 || len(pd) != 2 { return false }
+        let rv = split(pv[0], "#")[0]
+        if contains(["superviseur", "conformite", "direction"], rv) && pv[1] == "ORG-ORBITE" { return true }
+        return rv == "chef_de_mission" && pv[1] == pd[1]
+    }
+}
+
+flesh ApiRef {
+    on orbite() { return "ORG-ORBITE" }
+    on etat_participant(etat) {
+        return contains(["ALD", "BRV", "CAZ", "DUR"], to_string(etat))
+    }
+    on etats_participants() { return ["ALD", "BRV", "CAZ", "DUR"] }
+    on org_de_etat(etat) {
+        let e = to_string(etat)
+        require e != "" else Inconnu "État vide"
+        return Org("ORG-{e}")
+    }
+    on etat_de(org) {
+        let o = to_string(org)
+        require starts_with(o, "ORG-") else Inconnu "organisation inconnue : {o}"
+        return "BRV"
+    }
+    on etat_objet(objet) {
+        let o = to_string(objet)
+        if !starts_with(o, "OBJ-") || starts_with(o, "OBJ-INCONNU") { return "inconnu" }
+        if starts_with(o, "OBJ-RENTRE") { return "rentre" }
+        if starts_with(o, "OBJ-FRAG") { return "fragmente" }
+        return "en_service"
+    }
+    on proprietaire(objet) {
+        let o = to_string(objet)
+        require starts_with(o, "OBJ-") && !starts_with(o, "OBJ-INCONNU") else Inconnu "objet inconnu : {o}"
+        if starts_with(o, "OBJ-ORPH") { return "inconnu" }
+        if starts_with(o, "OBJ-SUSP") { return "ORG-SUSP-OPC" }
+        return "ORG-OPA"
+    }
+    on etat_immatriculation(objet) {
+        let o = to_string(objet)
+        require starts_with(o, "OBJ-") && !starts_with(o, "OBJ-INCONNU") else Inconnu "objet inconnu : {o}"
+        if starts_with(o, "OBJ-ORPH") || contains(o, "ORPH") { return "" }
+        return "ALD"
+    }
+    on masse(objet) {
+        if starts_with(to_string(objet), "OBJ-LOURD") { return 6000 }
+        return 300
+    }
+    on peut_manoeuvrer(objet) {
+        return !starts_with(to_string(objet), "OBJ-MORT")
+    }
+    on changer_etat_objet(h, objet, cible, reference, motif, par) {
+        require reference != "" else NonEligible "cause non constatée"
+        require par == "systeme" || starts_with(par, "analyste") else Habilitation "changer l'état d'un objet"
+        return cible
+    }
+}
+
+flesh ApiPasserelle {
+    on notifier(h, destinataire, r, sujet, texte, urgence) {
+        let d = to_string(destinataire)
+        require d != "inconnu" && d != "" else Inconnu "destinataire inconnu"
+        return "MSG|{d}|{urgence}"
+    }
+}
+
+flesh ApiEphemerides {
+    on derniere(objet) {
+        let o = to_string(objet)
+        require !starts_with(o, "OBJ-ORPH") else Inconnu "aucun dépôt"
+        return "DEP-{o}"
+    }
+    on fraiche(objet, h) {
+        return !starts_with(to_string(objet), "OBJ-VIEUX")
+    }
+}
+
+flesh ApiMeteo {
+    on f107_prevu(debut, fin) { return 150 }
+    on kp(h) { return 30 }
+}
+
+flesh ApiObservation {
+    on suivi(objet, h) {
+        return starts_with(to_string(objet), "OBJ-SUIVI")
+    }
+    on demander_suivi(h, objet, priorite, duree, motif, par) {
+        require par == "systeme" || starts_with(par, "analyste") else Habilitation "suivi renforcé"
+        return "SUIVI-{objet}-{priorite}"
+    }
+}
+
+flesh ApiConjonctions {
+    on ouverts_de(objet) {
+        let o = to_string(objet)
+        return ["CJ-1-{o}"]
+    }
+    on resoudre(h, r, motif, par) { return "resolu" }
+}
+
+flesh ApiDonnees {
+    on peut_recevoir(org, objet, r, h) {
+        return to_string(org) == "ORG-ALD"
+    }
+    on tracer(h, org, objet, r, nature) {
+        require to_string(org) == "ORG-ALD" else Confidentiel "destinataire non autorisé"
+        return 1
+    }
+}
+
+flesh ApiConformite {
+    on constater(h, op, nature, gravite, reference, par) {
+        return "MQ-{op}-{gravite}"
+    }
+    on constater_etat(h, etat, nature, gravite, reference, par) {
+        return "MQE-{etat}-{gravite}"
+    }
+}
+
+flesh ApiManoeuvres {
+    on objet_de(plan) {
+        let p = split(plan, ":")
+        require len(p) >= 3 && p[0] == "MAN" else Inconnu "plan inconnu : {plan}"
+        return Objet(p[1])
+    }
+    on motif_de(plan) {
+        let p = split(plan, ":")
+        require len(p) >= 3 && p[0] == "MAN" else Inconnu "plan inconnu : {plan}"
+        return p[2]
+    }
+    on etat(plan) {
+        let p = split(plan, ":")
+        if len(p) < 3 || p[0] != "MAN" { return "inconnu" }
+        if len(p) >= 4 { return p[3] }
+        return "crible"
+    }
+}
+
+flesh ApiOperateurs {
+    on est_actif(op, h) {
+        return !starts_with(to_string(op), "ORG-SUSP")
+    }
+}
+
+flesh ApiResponsabilite {
+    on geler(h, evenement, motif, par) {
+        require starts_with(par, "conformite") || starts_with(par, "direction") else Habilitation "geler"
+        return "DOS-{evenement}"
+    }
+    on sous_gel(cible) { return true }
+}
+
+flesh ApiLancements {
+    on etats_de_lancement(objet) {
+        if contains(to_string(objet), "ORPH") { return [] }
+        return ["ALD", "CAZ"]
+    }
+}

@@ -1,0 +1,88 @@
+// OPÉRATIONS — mode dégradé : quand un sous-système ne rend plus son service nominal, ORBITE
+// passe sur une procédure de repli écrite d'avance plutôt que de s'arrêter. Le mode dégradé
+// d'un sous-système est décrété (par un exploitant, par la cellule de crise, ou par la sonde de
+// couverture des capteurs), borné dans le temps, et levé à quatre yeux.
+
+// Procédure de repli appliquée pendant le mode dégradé :
+// "criblage_reduit" (conjonctions : seuls les objets manœuvrants et les rapprochements de niveau
+// ≥ 2 sont recriblés), "covariances_elargies" (observation/ephemerides : incertitude majorée faute
+// de mesures), "coordination_telephonique" (coordination : échanges par l'astreinte ORBITE,
+// saisis a posteriori), "notification_manuelle" (passerelle : alertes de niveau 3 relayées par
+// téléphone aux astreintes et points focaux), "lecture_seule" (dépôts refusés, décisions
+// existantes maintenues), "capteurs_partenaires" (observation : mesures des fournisseurs tiers).
+cell type OpsRepli = String where value == "criblage_reduit" || value == "covariances_elargies" || value == "coordination_telephonique" || value == "notification_manuelle" || value == "lecture_seule" || value == "capteurs_partenaires"
+
+// Mode d'exploitation d'un sous-système (id = SousSysteme). Réactif : revient à `nominal`.
+skeleton OpsDegradation {
+    // Durée maximale d'un mode dégradé avant réexamen obligatoire (ms) : 72 h.
+    const DUREE_MAX = 259200000
+    const MAX_REPLIS = 6
+    // Seuil de couverture : en dessous de 3 capteurs en service, l'observation est dégradée.
+    const CAPTEURS_MIN = 3
+    memory {
+        replis: Map<String, List<OpsRepli>> [persistent]        // sous-système → procédures en vigueur
+        depuis: Map<String, Horodatage> [persistent]            // début du mode dégradé en cours
+        reexamen: Map<String, Horodatage> [persistent]          // échéance du prochain réexamen (≤ depuis + DUREE_MAX)
+        incident_lie: Map<String, String> [persistent]          // incident qui l'a motivé ("" : sonde de couverture)
+        decrete_par: Map<String, String> [persistent]
+        // Historique "h | ss | decrete|prolonge|leve | replis | par", en ajout seul.
+        historique: List<String> [persistent]
+        invariant replis.size <= 20
+        invariant depuis.size <= 20
+        invariant historique.size <= 1000000
+        invariant (reexamen ?? 9000000000000000) >= (depuis ?? 0)
+    }
+    state mode {
+        initial: nominal
+        nominal -> degrade             // decreter, constater_couverture
+        degrade -> nominal             // lever
+    }
+    face {
+        // Décrète le mode dégradé d'un sous-système, avec ses procédures de repli (1 à
+        // MAX_REPLIS) et l'incident qui le motive (non résolu, visant ce sous-système). Le
+        // réexamen est fixé à h + DUREE_MAX. Sur un sous-système déjà dégradé, ajoute les replis
+        // (l'échéance ne bouge pas). Renvoie le nombre de replis en vigueur.
+        // Refus : Inconnu (incident), EtatInvalide (incident résolu ou visant un autre
+        // sous-système), Incoherent (aucun repli, ou repli sans objet pour ce sous-système),
+        // HorsBornes (> MAX_REPLIS), Habilitation (par "exploitant" ou "superviseur" d'ORBITE ;
+        // "lecture_seule" et "coordination_telephonique" exigent une crise active pour l'incident).
+        signal decreter(h: Horodatage, ss: SousSysteme, rep: List<OpsRepli>, incident: String, par: String) -> Int
+            writes replis, depuis, reexamen, incident_lie, decrete_par, historique
+            moves nominal -> degrade
+            calls OpsIncident.etat, OpsIncident.vise_de, OpsCrise.active_pour, OpsCrise.etat, ApiAcces.a_le_role, Journal.noter
+        // Sonde de couverture (par "systeme", appelée par la ronde OpsRonde.balayer) : si ApiObservation.capteurs_en_service
+        // < CAPTEURS_MIN, décrète "observation" dégradée avec "covariances_elargies" et
+        // "capteurs_partenaires", et déclare l'incident "COUV-<h>" de gravité 2 s'il n'y en a pas.
+        // Renvoie le nombre de capteurs en service. Refus : Habilitation (par "systeme").
+        signal constater_couverture(h: Horodatage, par: String) -> Int
+            writes replis, depuis, reexamen, incident_lie, decrete_par, historique
+            moves nominal -> degrade
+            calls ApiObservation.capteurs_en_service, OpsIncident.declarer, ApiAcces.a_le_role, Journal.noter
+        // Prolonge un mode dégradé arrivé à réexamen : nouvelle échéance h + DUREE_MAX.
+        // Renvoie la nouvelle échéance (ms). Refus : Inconnu, EtatInvalide (nominal), MotifRequis,
+        // Habilitation (par "superviseur"), QuatreYeux (valideur "direction").
+        signal prolonger(h: Horodatage, ss: SousSysteme, motif: String, par: String, valideur: String) -> Horodatage
+            writes reexamen, historique
+            reads mode
+            calls ApiAcces.a_le_role, ApiAcces.quatre_yeux, Journal.noter
+        // Lève le mode dégradé : retour au service nominal constaté, aucun incident non résolu ne
+        // vise plus ce sous-système. Les saisies faites en repli (coordination téléphonique) doivent
+        // avoir été reportées : `reportees` le confirme. Renvoie "nominal".
+        // Refus : Inconnu, EtatInvalide (incident encore ouvert, ou couverture < CAPTEURS_MIN pour
+        // "observation"), Insuffisant (reportees faux), Habilitation (par "exploitant"),
+        // QuatreYeux (valideur "superviseur").
+        signal lever(h: Horodatage, ss: SousSysteme, reportees: Bool, par: String, valideur: String) -> String
+            writes replis, historique
+            moves degrade -> nominal
+            calls OpsIncident.est_degrade, ApiObservation.capteurs_en_service, ApiAcces.a_le_role, ApiAcces.quatre_yeux, Journal.noter
+        // Vrai si le sous-système est en mode dégradé décrété.
+        signal est_degrade(ss: SousSysteme) -> Bool
+            reads mode
+        // Procédures de repli en vigueur ; [] si nominal.
+        signal replis_de(ss: SousSysteme) -> List<OpsRepli>
+            reads mode, replis
+        // Sous-systèmes dégradés dont le réexamen est échu à `h`, triés (à prolonger ou lever).
+        signal a_reexaminer(h: Horodatage) -> List<String>
+            reads mode, reexamen
+    }
+}

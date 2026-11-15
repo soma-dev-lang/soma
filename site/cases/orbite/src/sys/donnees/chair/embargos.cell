@@ -1,0 +1,123 @@
+// donnees — corps : embargos des objets sensibles.
+
+flesh DonEmbargos {
+    on demander(h, objet, jusqua, motif_declare, par) {
+        require ApiRef.etat_objet(objet) != "inconnu" else Inconnu "objet non catalogué : {objet}"
+        let ei = ApiRef.etat_immatriculation(objet)
+        require ei != "" else Habilitation "objet sans État d'immatriculation : aucun embargo possible"
+        let org_e = ApiRef.org_de_etat(ei)
+        require ApiAcces.a_le_role(par, "autorite") && ApiAcces.agit_pour(par, org_e) else Habilitation "embargo : autorité de l'État {ei}"
+        require ApiRef.etat_participant(ei) else Suspendu "État {ei} non participant"
+        require en_cours_de.get(objet) == () else Doublon "embargo déjà demandé ou actif sur {objet}"
+        require len(motif_declare) > 0 else MotifRequis "motif de l'embargo exigé"
+        let t = to_int(h)
+        let f = to_int(jusqua)
+        require f > t && f <= t + DUREE_MAX_MS else HorsBornes "embargo de 365 jours au plus"
+        require objet_de.size < MAX_EMBARGOS && en_cours_de.size < MAX_EMBARGOS else Plein "trop d'embargos"
+        let id = "EMB-{next_id()}"
+        require objet_de.get(id) == () else Existe "embargo {id} existe"
+        objet_de.set(id, to_string(objet))
+        etat_demandeur.set(id, to_string(ei))
+        motif.set(id, motif_declare)
+        fin.set(id, jusqua)
+        demande_le.set(id, h)
+        en_cours_de.set(objet, id)
+        let _ = Journal.noter(h, "donnees", par, "embargo {id} demandé sur {objet} jusqu'à {f}")
+        return id
+    }
+
+    on accorder(h, embargo, par, valideur) {
+        require ApiAcces.a_le_role(par, "conformite") else Habilitation "accorder un embargo : conformite d'ORBITE"
+        require valideur != par && ApiAcces.a_le_role(valideur, "direction") && ApiAcces.quatre_yeux(par, valideur) else QuatreYeux "valideur direction distinct exigé"
+        let objet = objet_de.get(embargo)
+        require objet != () else Inconnu "embargo inconnu : {embargo}"
+        require (get_status(embargo) ?? "demande") == "demande" else EtatInvalide "embargo {embargo} non demandé"
+        require to_int(h) < to_int(demande_le.get(embargo) ?? h) + DELAI_INSTRUCTION_MS else Delai "instruction échue"
+        let eo = ApiRef.etat_objet(Objet(objet))
+        require eo == "catalogue" || eo == "en_service" else EtatInvalide "objet {objet} {eo} : plus d'embargo"
+        transition(embargo, "demande", "actif")
+        let nr = DonDemandes.revoquer_objet(h, Objet(objet))
+        let prop = ApiRef.proprietaire(Objet(objet))
+        if prop != "inconnu" && prop != "" {
+            let _ = ApiPasserelle.notifier(h, prop, "", "embargo {embargo}", "données de {objet} restreintes", 1)
+        }
+        let _ = Journal.noter(h, "donnees", par, "embargo {embargo} accordé sur {objet} (valideur {valideur}) ; {nr} demandes révoquées")
+        return "actif"
+    }
+
+    on refuser(h, embargo, motif_refus, par) {
+        require ApiAcces.a_le_role(par, "conformite") || ApiAcces.a_le_role(par, "systeme") else Habilitation "refuser un embargo : conformite ou systeme"
+        let objet = objet_de.get(embargo)
+        require objet != () else Inconnu "embargo inconnu : {embargo}"
+        require (get_status(embargo) ?? "demande") == "demande" else EtatInvalide "embargo {embargo} déjà instruit"
+        require len(motif_refus) > 0 else MotifRequis "motif du refus exigé"
+        transition(embargo, "demande", "refuse")
+        if (en_cours_de.get(objet) ?? "") == embargo { en_cours_de.delete(objet) }
+        let _ = Journal.noter(h, "donnees", par, "embargo {embargo} refusé : {motif_refus}")
+        return "refuse"
+    }
+
+    on prolonger(h, embargo, jusqua, motif_declare, par, valideur) {
+        let ed = etat_demandeur.get(embargo)
+        require ed != () else Inconnu "embargo inconnu : {embargo}"
+        require ApiAcces.a_le_role(par, "autorite") && ApiAcces.agit_pour(par, ApiRef.org_de_etat(Etat(ed))) else Habilitation "prolonger : autorité de l'État {ed}"
+        require valideur != par && ApiAcces.a_le_role(valideur, "conformite") && ApiAcces.quatre_yeux(par, valideur) else QuatreYeux "valideur conformite d'ORBITE exigé"
+        require (get_status(embargo) ?? "demande") == "actif" else EtatInvalide "embargo {embargo} non actif"
+        require len(motif_declare) > 0 else MotifRequis "motif de la prolongation exigé"
+        let t = to_int(h)
+        let f = to_int(jusqua)
+        let ancienne = to_int(fin.get(embargo) ?? h)
+        require f > ancienne && f <= t + DUREE_MAX_MS else HorsBornes "nouvelle fin au-delà de l'actuelle et à 365 jours au plus"
+        fin.set(embargo, jusqua)
+        let _ = Journal.noter(h, "donnees", par, "embargo {embargo} prolongé jusqu'à {f} : {motif_declare} (valideur {valideur})")
+        return jusqua
+    }
+
+    on lever(h, embargo, motif_levee, par) {
+        let objet = objet_de.get(embargo)
+        require objet != () else Inconnu "embargo inconnu : {embargo}"
+        let ed = etat_demandeur.get(embargo) ?? ""
+        let par_etat = ApiAcces.a_le_role(par, "autorite") && ApiAcces.agit_pour(par, ApiRef.org_de_etat(Etat(ed)))
+        require par_etat || ApiAcces.a_le_role(par, "direction") else Habilitation "lever : autorité de l'État {ed} ou direction d'ORBITE"
+        require (get_status(embargo) ?? "demande") == "actif" else EtatInvalide "embargo {embargo} non actif"
+        require len(motif_levee) > 0 else MotifRequis "motif de la levée exigé"
+        transition(embargo, "actif", "leve")
+        if (en_cours_de.get(objet) ?? "") == embargo { en_cours_de.delete(objet) }
+        let _ = Journal.noter(h, "donnees", par, "embargo {embargo} levé : {motif_levee}")
+        return "leve"
+    }
+
+    on echoir(h, par) {
+        require ApiAcces.a_le_role(par, "systeme") else Habilitation "échéances des embargos : systeme"
+        let t = to_int(h)
+        let n = 0
+        let finis = fin.entries.filter(e => (get_status(e.key) ?? "demande") == "actif" && to_int(e.value) <= t).map(e => e.key)
+        for id in finis {
+            transition(id, "actif", "expire")
+            let o = objet_de.get(id) ?? ""
+            if (en_cours_de.get(o) ?? "") == id { en_cours_de.delete(o) }
+            let _ = Journal.noter(h, "donnees", par, "embargo {id} expiré")
+            n = n + 1
+        }
+        let echus = demande_le.entries.filter(e => (get_status(e.key) ?? "demande") == "demande" && to_int(e.value) + DELAI_INSTRUCTION_MS <= t).map(e => e.key)
+        for id in echus {
+            transition(id, "demande", "refuse")
+            let o = objet_de.get(id) ?? ""
+            if (en_cours_de.get(o) ?? "") == id { en_cours_de.delete(o) }
+            let _ = Journal.noter(h, "donnees", par, "embargo {id} refusé faute d'instruction")
+            n = n + 1
+        }
+        return n
+    }
+
+    on sous_embargo(objet) {
+        let e = en_cours_de.get(objet)
+        if e == () { return false }
+        return (get_status(e) ?? "demande") == "actif"
+    }
+
+    on etat(embargo) {
+        if objet_de.get(embargo) == () { return "inconnu" }
+        return get_status(embargo) ?? "demande"
+    }
+}

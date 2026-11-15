@@ -1,0 +1,568 @@
+use app
+use commun::journal_chair
+use commun::horloge_chair
+use sys::observation::chair::api
+use sys::observation::chair::capteurs
+use sys::observation::chair::taches
+use sys::observation::chair::mesures
+use sys::observation::chair::orbites
+use sys::observation::chair::pistes
+use sys::observation::chair::detections
+use sys::observation::chair::couverture
+use doublures::observation
+
+// Le monde de départ : le fournisseur ORG-CAPTA agréé, trois capteurs LEO en service
+// (CAP-1 radar, CAP-2 optique, CAP-3 laser, précision 10 m). H = 15/01/2027.
+cell ObsMonde {
+    on obs_h0() { return 1800000000000 }
+    on obs_installer() {
+        let h = obs_h0()
+        let _ = ObsFournisseurs.demander(h, "ORG-CAPTA", "administrateur_operateur1@ORG-CAPTA")
+        let _ = ObsFournisseurs.agreer(h, "ORG-CAPTA", "exploitant1", "superviseur1")
+        let _ = obs_capteur_en_service("radar", ["leo"])
+        let _ = obs_capteur_en_service("optique", ["leo"])
+        let _ = obs_capteur_en_service("laser", ["leo"])
+        return "ok"
+    }
+    on obs_capteur_en_service(genre: String, regimes: List<String>) {
+        let h = obs_h0()
+        let c = ObsCapteurs.declarer(h, "ORG-CAPTA", ObsGenreCapteur(genre), regimes, 10, "capteur1@ORG-CAPTA")
+        let _ = ObsCapteurs.etalonner(h, c, "capteur1@ORG-CAPTA")
+        let _ = ObsCapteurs.valider_etalonnage(h, c, 5, "analyste1")
+        return c
+    }
+    // Une mesure du capteur `c` sur l'objet présumé, prise 1 s avant `t`.
+    on obs_mesurer(c: String, objet: Objet, k: Int, t: Horodatage) {
+        return ApiObservation.deposer_mesure(t, c, objet, t - 1000, "TDM {c} {objet} {k} {t}", "capteur1@ORG-CAPTA")
+    }
+    // n mesures corrélées à l'objet, alternativement de CAP-1 et CAP-2.
+    on obs_correlees(objet: Objet, n: Int, t: Horodatage) {
+        let ids = []
+        for i in range(0, n) {
+            let c = if i % 2 == 0 { "CAP-1" } else { "CAP-2" }
+            let m = obs_mesurer(c, objet, i, t)
+            let _ = ObsMesures.correler(t, m, objet, 1, "analyste1")
+            ids.push(m)
+        }
+        return ids
+    }
+    // Détermination calculée et validée pour l'objet, comparée à `eph` avec l'écart `ecart`.
+    on obs_orbite(objet: Objet, t: Horodatage, eph: String, ecart: Distance) {
+        let ms = obs_correlees(objet, 6, t)
+        let od = ObsOrbites.calculer(t, to_string(objet), t - 500, ms, 50, "7000000,0,0,0,7500000,0", 600000, 620000, "analyste1")
+        let _ = ObsOrbites.valider(t, od, eph, ecart, "analyste1")
+        return od
+    }
+    on obs_calcul_court(objet: Objet, t: Horodatage, n: Int) {
+        let ms = obs_correlees(objet, n, t)
+        return ObsOrbites.calculer(t, to_string(objet), t - 500, ms, 50, "7000000,0,0,0,7500000,0", 600000, 620000, "analyste1")
+    }
+    // n mesures non corrélées (CAP-1 / CAP-2) versées à une piste ; renvoie la dernière piste.
+    on obs_non_correlees(n: Int, t: Horodatage) {
+        let p = ""
+        for i in range(0, n) {
+            let c = if i % 2 == 0 { "CAP-1" } else { "CAP-2" }
+            let m = obs_mesurer(c, "", i, t)
+            p = ObsMesures.non_correler(t, m, "analyste1")
+        }
+        return p
+    }
+    // Piste confirmée sur une orbite validée.
+    on obs_piste_confirmee(t: Horodatage) {
+        let p = obs_non_correlees(6, t)
+        let ms = []
+        for i in range(1, 7) { ms.push("MS-{i}") }
+        let od = ObsOrbites.calculer(t, p, t - 500, ms, 80, "42000000,0,0,0,3000000,0", 35000000, 35100000, "analyste1")
+        let _ = ObsOrbites.valider(t, od, "", 0, "analyste1")
+        let _ = ObsPistes.confirmer(t, p, od, "geo", "analyste1")
+        return p
+    }
+    // Remplit un capteur GEO de `n` tâches de priorité 1.
+    on obs_remplir_geo(n: Int) {
+        let h = obs_h0()
+        for i in range(0, n) {
+            let _ = ObsTaches.demander(h, "OBJ-GEO-{i}", 1, 86400000, "routine", "remplissage {i}", "analyste1")
+        }
+        return n
+    }
+}
+
+// ── Fournisseurs : cycle nominal et refus.
+cell test ObsFournisseurCycle {
+    rules {
+        let h = obs_h0()
+        assert ObsFournisseurs.etat("ORG-CAPTA") == "inconnu"
+        assert ObsFournisseurs.demander(h, "ORG-CAPTA", "administrateur_operateur1@ORG-CAPTA") == "demande"
+        assert ObsFournisseurs.agreer(h, "ORG-CAPTA", "exploitant1", "superviseur1") == "agree"
+        let c = obs_capteur_en_service("radar", ["leo"])
+        assert ObsCapteurs.etat(c) == "en_service"
+        assert ObsFournisseurs.suspendre(h + 10, "ORG-CAPTA", "qualité insuffisante", "superviseur1") == "suspendu"
+        assert ObsCapteurs.etat(c) == "en_panne"
+        // Quatre yeux : l'auteur de la suspension ne la lève pas.
+        assert_fails ObsFournisseurs.retablir(h + 20, "ORG-CAPTA", "superviseur1") matching "QuatreYeux"
+        assert ObsFournisseurs.retablir(h + 20, "ORG-CAPTA", "superviseur2") == "agree"
+        assert ObsFournisseurs.retirer(h + 30, "ORG-CAPTA", "fin de contrat", "administrateur_operateur1@ORG-CAPTA") == "retire"
+        assert ObsFournisseurs.etat("ORG-CAPTA") == "retire"
+        assert ObsCapteurs.etat(c) == "retire"
+        assert_fails ObsFournisseurs.retirer(h + 40, "ORG-CAPTA", "encore", "superviseur1") matching "EtatInvalide"
+    }
+}
+
+cell test ObsFournisseurRefus {
+    rules {
+        let h = obs_h0()
+        assert_fails ObsFournisseurs.demander(h, "ORG-CAPTA", "intrus") matching "Habilitation"
+        // Portée : l'administrateur d'un autre fournisseur n'agit pas pour ORG-CAPTA.
+        assert_fails ObsFournisseurs.demander(h, "ORG-CAPTA", "administrateur_operateur1@ORG-CAPTB") matching "Habilitation"
+        assert_fails ObsFournisseurs.demander(h, "ORG-ETAT-ALD", "exploitant1") matching "NonEligible"
+        assert_fails ObsFournisseurs.demander(h, "ORG-CAPT-NONADH", "exploitant1") matching "NonEligible"
+        assert_fails ObsFournisseurs.demander(h, "XYZ", "exploitant1") matching "Inconnu"
+        assert ObsFournisseurs.demander(h, "ORG-CAPTA", "exploitant1") == "demande"
+        assert_fails ObsFournisseurs.demander(h, "ORG-CAPTA", "exploitant1") matching "Existe"
+        assert_fails ObsFournisseurs.agreer(h, "ORG-CAPTA", "exploitant1", "exploitant1") matching "QuatreYeux"
+        assert_fails ObsFournisseurs.agreer(h, "ORG-CAPTA", "analyste1", "superviseur1") matching "Habilitation"
+        assert_fails ObsFournisseurs.agreer(h, "ORG-CAPTB", "exploitant1", "superviseur1") matching "Inconnu"
+        // Règle entre sous-systèmes : une organisation seulement inscrite (non active) n'est pas agréée.
+        assert ObsFournisseurs.demander(h, "ORG-CAPT-INSCRITE", "exploitant1") == "demande"
+        assert_fails ObsFournisseurs.agreer(h, "ORG-CAPT-INSCRITE", "exploitant1", "superviseur1") matching "EtatInvalide"
+        assert ObsFournisseurs.etat("ORG-CAPT-INSCRITE") == "demande"
+        assert_fails ObsFournisseurs.suspendre(h, "ORG-CAPTA", "x", "superviseur1") matching "EtatInvalide"
+        assert ObsFournisseurs.agreer(h, "ORG-CAPTA", "exploitant1", "superviseur1") == "agree"
+        assert_fails ObsFournisseurs.suspendre(h, "ORG-CAPTA", "", "superviseur1") matching "MotifRequis"
+        assert_fails ObsFournisseurs.suspendre(h, "ORG-CAPTA", "x", "capteur1@ORG-CAPTA") matching "Habilitation"
+    }
+}
+
+// ── Capteurs : cycle de vie complet, règles et refus.
+cell test ObsCapteurCycle {
+    rules {
+        let h = obs_h0()
+        let _ = ObsFournisseurs.demander(h, "ORG-CAPTA", "exploitant1")
+        let _ = ObsFournisseurs.agreer(h, "ORG-CAPTA", "exploitant1", "superviseur1")
+        let c = ObsCapteurs.declarer(h, "ORG-CAPTA", "radar", ["leo", "meo"], 10, "capteur1@ORG-CAPTA")
+        assert c == "CAP-1"
+        assert ObsCapteurs.etat(c) == "declare"
+        assert ObsCapteurs.fournisseur(c) == "ORG-CAPTA"
+        assert ObsCapteurs.etalonner(h, c, "capteur1@ORG-CAPTA") == "en_etalonnage"
+        // Contrôle indépendant : le fournisseur ne valide pas son propre étalonnage.
+        assert_fails ObsCapteurs.valider_etalonnage(h, c, 5, "capteur1@ORG-CAPTA") matching "Habilitation"
+        assert_fails ObsCapteurs.valider_etalonnage(h, c, 31, "analyste1") matching "Insuffisant"
+        assert ObsCapteurs.valider_etalonnage(h, c, 30, "analyste1") == "en_service"
+        assert ObsCapteurs.couvre(c, "meo")
+        assert !ObsCapteurs.couvre(c, "geo")
+        assert ObsCapteurs.en_service_nb() == 1
+        assert ApiObservation.capteurs_en_service() == 1
+        assert ObsCapteurs.declarer_panne(h + 1, c, "materiel", "capteur1@ORG-CAPTA") == "en_panne"
+        assert_fails ObsCapteurs.declarer_panne(h + 1, c, "materiel", "systeme") matching "EtatInvalide"
+        assert ObsCapteurs.etalonner(h + 2, c, "exploitant1") == "en_etalonnage"
+        assert ObsCapteurs.valider_etalonnage(h + 3, c, 0, "analyste1") == "en_service"
+        assert_fails ObsCapteurs.retirer(h + 4, c, "", "superviseur1") matching "MotifRequis"
+        assert_fails ObsCapteurs.retirer(h + 4, c, "obsolète", "capteur1@ORG-CAPTA") matching "Habilitation"
+        assert ObsCapteurs.retirer(h + 4, c, "obsolète", "administrateur_operateur1@ORG-CAPTA") == "retire"
+        assert_fails ObsCapteurs.etalonner(h + 5, c, "exploitant1") matching "EtatInvalide"
+        assert ObsCapteurs.etat("CAP-99") == "inconnu"
+    }
+}
+
+cell test ObsCapteurRefus {
+    rules {
+        let h = obs_h0()
+        let _ = ObsFournisseurs.demander(h, "ORG-CAPTA", "exploitant1")
+        // Fournisseur en demande : on peut déclarer, pas mettre en service (règle agree via fournisseur_de).
+        let c = ObsCapteurs.declarer(h, "ORG-CAPTA", "optique", ["geo"], 20, "exploitant1")
+        assert ObsCapteurs.etalonner(h, c, "capteur1@ORG-CAPTA") == "en_etalonnage"
+        assert_fails ObsCapteurs.valider_etalonnage(h, c, 1, "analyste1") matching "NonEligible"
+        assert ObsCapteurs.etat(c) == "en_etalonnage"
+        // Portée : un capteur d'un autre fournisseur n'agit pas sur ce capteur.
+        assert_fails ObsCapteurs.etalonner(h, c, "capteur1@ORG-CAPTB") matching "Habilitation"
+        assert_fails ObsCapteurs.declarer(h, "ORG-CAPTA", "radar", ["leo"], 10, "intrus") matching "Habilitation"
+        assert_fails ObsCapteurs.declarer(h, "ORG-CAPTA", "radar", [], 10, "exploitant1") matching "HorsBornes"
+        assert_fails ObsCapteurs.declarer(h, "ORG-CAPTA", "radar", ["lune"], 10, "exploitant1") matching "HorsBornes"
+        assert_fails ObsCapteurs.declarer(h, "ORG-CAPTA", "radar", ["leo"], 0, "exploitant1") matching "HorsBornes"
+        assert_fails ObsCapteurs.declarer(h, "ORG-CAPTB", "radar", ["leo"], 10, "exploitant1") matching "Inconnu"
+        assert_fails ObsCapteurs.veiller(h, "exploitant1") matching "Habilitation"
+    }
+}
+
+// ── Ronde des capteurs : silence de plus de 6 h.
+cell test ObsCapteurSilence {
+    rules {
+        let _ = obs_installer()
+        let h = obs_h0()
+        let _ = obs_mesurer("CAP-1", "", 1, h + 21000000)
+        // À h + 7 h : CAP-2 et CAP-3 muets depuis l'étalonnage, CAP-1 a parlé il y a 50 min.
+        assert ObsCapteurs.veiller(h + 25200000, "systeme") == 2
+        assert ObsCapteurs.etat("CAP-1") == "en_service"
+        assert ObsCapteurs.etat("CAP-2") == "en_panne"
+        assert ObsCapteurs.en_service_nb() == 1
+        // Étalonnage échu (31 jours) même avec des mesures récentes.
+        let _ = obs_mesurer("CAP-1", "", 2, h + 2678000000)
+        assert ObsCapteurs.veiller(h + 2678400000, "systeme") == 1
+        assert ObsCapteurs.etat("CAP-1") == "en_panne"
+    }
+}
+
+// ── Tâches : demande, affectation, mesure, fin ; panne et relève ; expiration ; annulation.
+cell test ObsTacheCycle {
+    rules {
+        let _ = obs_installer()
+        let h = obs_h0()
+        let t = ObsTaches.demander(h, "OBJ-1", 2, 86400000, "rapprochement", "CJ-12", "analyste1")
+        assert t == "TS-1"
+        assert ObsTaches.etat(t) == "affectee"
+        assert ObsTaches.charge("CAP-1") == 1
+        assert ObsTaches.active_sur("CAP-1", "OBJ-1") == t
+        let m = obs_mesurer("CAP-1", "OBJ-1", 1, h + 1000)
+        assert ObsMesures.etat(m) == "validee"
+        assert ObsTaches.etat(t) == "en_cours"
+        assert_fails ObsTaches.terminer(h + 2000, t, false, "analyste1") matching "Delai"
+        assert ObsTaches.terminer(h + 2000, t, true, "analyste1") == "terminee"
+        assert ObsTaches.charge("CAP-1") == 0
+        assert ObsTaches.etat("TS-404") == "inconnue"
+    }
+}
+
+cell test ObsTacheReleve {
+    rules {
+        let _ = obs_installer()
+        let h = obs_h0()
+        let t = ApiObservation.demander_suivi(h, "OBJ-1", 2, 86400000, "rentree OBJ-1", "systeme")
+        assert ObsTaches.active_sur("CAP-1", "OBJ-1") == t
+        assert ObsCapteurs.declarer_panne(h + 10, "CAP-1", "materiel", "exploitant1") == "en_panne"
+        assert ObsTaches.etat(t) == "interrompue"
+        // La relève est affectée à un autre capteur, avec la filiation.
+        assert ObsTaches.etat("TS-2") == "affectee"
+        assert ObsTaches.active_sur("CAP-2", "OBJ-1") == "TS-2"
+        assert_fails ObsTaches.relever(h + 20, t) matching "Doublon"
+        assert ObsTaches.suivi_actif("OBJ-1", 2)
+        assert !ObsTaches.suivi_actif("OBJ-1", 3)
+    }
+}
+
+cell test ObsTacheExpireAnnule {
+    rules {
+        let _ = obs_installer()
+        let h = obs_h0()
+        let t = ObsTaches.demander(h, "OBJ-1", 3, 1000, "routine", "test", "analyste1")
+        assert ObsTaches.expirer(h + 500, "systeme") == 0
+        assert ObsTaches.expirer(h + 1000, "systeme") == 1
+        assert ObsTaches.etat(t) == "expiree"
+        assert_fails ObsTaches.expirer(h, "analyste1") matching "Habilitation"
+        let t2 = ObsTaches.demander(h, "OBJ-2", 1, 86400000, "routine", "test", "analyste1")
+        assert_fails ObsTaches.annuler(h, t2, "", "analyste1") matching "MotifRequis"
+        assert_fails ObsTaches.annuler(h, t2, "inutile", "intrus") matching "Habilitation"
+        assert ObsTaches.annuler(h, t2, "inutile", "analyste1") == "annulee"
+        assert_fails ObsTaches.annuler(h, t2, "inutile", "analyste1") matching "EtatInvalide"
+    }
+}
+
+cell test ObsTacheRefus {
+    rules {
+        let _ = obs_installer()
+        let h = obs_h0()
+        assert_fails ObsTaches.demander(h, "OBJ-1", 1, 1000, "routine", "x", "intrus") matching "Habilitation"
+        assert_fails ObsTaches.demander(h, "OBJ-1", 1, 1000, "routine", "x", "capteur1@ORG-CAPTA") matching "Habilitation"
+        assert_fails ObsTaches.demander(h, "OBJ-INCONNU-1", 1, 1000, "routine", "x", "analyste1") matching "Inconnu"
+        assert_fails ObsTaches.demander(h, "OBJ-1", 1, 0, "routine", "x", "analyste1") matching "HorsBornes"
+        assert_fails ObsTaches.demander(h, "OBJ-1", 1, 1209600001, "routine", "x", "analyste1") matching "HorsBornes"
+        assert_fails ObsTaches.demander(h, "OBJ-1", 1, 1000, "routine", "", "analyste1") matching "MotifRequis"
+        assert_fails ApiObservation.demander_suivi(h, "OBJ-1", 1, 1000, "", "analyste1") matching "MotifRequis"
+        // Aucun capteur ne couvre le GEO.
+        assert_fails ObsTaches.demander(h, "OBJ-GEO-1", 1, 1000, "routine", "x", "analyste1") matching "Plein"
+    }
+}
+
+// ── Capacité : un capteur saturé ; la priorité 3 préempte la plus basse priorité.
+cell test ObsTachePreemption {
+    rules {
+        let _ = obs_installer()
+        let h = obs_h0()
+        let c = obs_capteur_en_service("radar", ["geo"])
+        assert obs_remplir_geo(50) == 50
+        assert ObsTaches.charge(c) == 50
+        assert_fails ObsTaches.demander(h, "OBJ-GEO-X", 2, 1000, "rapprochement", "CJ-1", "analyste1") matching "Plein"
+        let t = ObsTaches.demander(h, "OBJ-GEO-X", 3, 1000, "rapprochement", "CJ-1", "analyste1")
+        assert ObsTaches.etat(t) == "affectee"
+        assert ObsTaches.etat("TS-1") == "interrompue"
+        assert ObsTaches.charge(c) == 50
+        assert_fails ObsTaches.preempter(h, t) matching "NonEligible"
+    }
+}
+
+// ── Mesures : réception, rejet, doublon, corrélation, refus, communication, purge.
+cell test ObsMesureCycle {
+    rules {
+        let _ = obs_installer()
+        let h = obs_h0()
+        let m = obs_mesurer("CAP-1", "OBJ-1", 1, h)
+        assert m == "MS-1"
+        assert ObsMesures.etat(m) == "validee"
+        assert ObsMesures.capteur(m) == "CAP-1"
+        assert_fails ApiObservation.deposer_mesure(h, "CAP-1", "OBJ-1", h - 1000, "TDM CAP-1 OBJ-1 1 {h}", "capteur1@ORG-CAPTA") matching "Doublon"
+        assert_fails ObsMesures.correler(h, m, "OBJ-1", 51, "analyste1") matching "HorsBornes"
+        assert_fails ObsMesures.correler(h, m, "OBJ-INCONNU-1", 1, "analyste1") matching "Inconnu"
+        assert_fails ObsMesures.correler(h, m, "OBJ-1", 1, "intrus") matching "Habilitation"
+        assert ObsMesures.correler(h, m, "OBJ-1", 50, "analyste1") == "correlee"
+        assert ObsMesures.correlees("OBJ-1", h - 10000, h, 10) == [m]
+        assert ObsMesures.communiquer(h, m, "ORG-OPX") == "TDM CAP-1 OBJ-1 1 {h}"
+        assert_fails ObsMesures.communiquer(h, m, "ORG-TIERS") matching "Confidentiel"
+        let m2 = obs_mesurer("CAP-2", "OBJ-1", 2, h)
+        assert_fails ObsMesures.rejeter(h, m2, "", "analyste1") matching "MotifRequis"
+        assert_fails ObsMesures.rejeter(h, m2, "reflet", "systeme") matching "Habilitation"
+        assert ObsMesures.rejeter(h, m2, "reflet", "analyste1") == "rejetee"
+        assert_fails ObsMesures.rejeter(h, m2, "reflet", "analyste1") matching "EtatInvalide"
+        // Trop ancienne (4 jours) ou datée du futur : enregistrée puis rejetée.
+        let m3 = ApiObservation.deposer_mesure(h, "CAP-1", "", h - 345600000, "vieille", "capteur1@ORG-CAPTA")
+        assert ObsMesures.etat(m3) == "rejetee"
+        let m4 = ApiObservation.deposer_mesure(h, "CAP-1", "", h + 5000, "future", "capteur1@ORG-CAPTA")
+        assert ObsMesures.etat(m4) == "rejetee"
+    }
+}
+
+cell test ObsMesureRefus {
+    rules {
+        let _ = obs_installer()
+        let h = obs_h0()
+        assert_fails ApiObservation.deposer_mesure(h, "CAP-1", "", h, "x", "intrus") matching "Habilitation"
+        // Portée : le capteur d'un autre fournisseur ne verse pas pour ORG-CAPTA.
+        assert_fails ApiObservation.deposer_mesure(h, "CAP-1", "", h, "x", "capteur1@ORG-CAPTB") matching "Habilitation"
+        assert_fails ApiObservation.deposer_mesure(h, "CAP-9", "", h, "x", "systeme") matching "Inconnu"
+        let _ = ObsCapteurs.declarer_panne(h, "CAP-1", "materiel", "systeme")
+        assert_fails ApiObservation.deposer_mesure(h, "CAP-1", "", h, "x", "capteur1@ORG-CAPTA") matching "Suspendu"
+        assert_fails ObsMesures.purger(h, "analyste1") matching "Habilitation"
+    }
+}
+
+cell test ObsMesurePurge {
+    rules {
+        let _ = obs_installer()
+        let h = obs_h0()
+        let libre = obs_mesurer("CAP-1", "OBJ-2", 1, h)
+        let _ = ObsMesures.correler(h, libre, "OBJ-2", 1, "analyste1")
+        let gelee = obs_mesurer("CAP-1", "OBJ-GEL-1", 2, h)
+        let _ = ObsMesures.correler(h, gelee, "OBJ-GEL-1", 1, "analyste1")
+        let od = obs_orbite("OBJ-1", h, "EPH-OBJ-1", 100)
+        assert ObsOrbites.citee("MS-3")
+        // Deux ans et un jour plus tard : seule la mesure libre est purgée.
+        let tard = h + 63072000000 + 86400000
+        assert ObsMesures.purger(tard, "systeme") == 1
+        assert ObsMesures.communiquer(tard, libre, "ORG-OPX") == ""
+        assert ObsMesures.etat(libre) == "correlee"
+        assert ObsMesures.communiquer(tard, gelee, "ORG-OPX") != ""
+        assert ObsMesures.communiquer(tard, "MS-3", "ORG-OPX") != ""
+    }
+}
+
+// ── Orbites : calcul, validation, remplacement, péremption, écarts, fondement.
+cell test ObsOrbiteCycle {
+    rules {
+        let _ = obs_installer()
+        let h = obs_h0()
+        let od1 = obs_orbite("OBJ-1", h, "EPH-OBJ-1", 300)
+        assert ObsOrbites.etat(od1) == "validee"
+        assert ApiObservation.suivi("OBJ-1", h)
+        assert ApiObservation.ecart_declare("OBJ-1") == 300
+        assert ApiObservation.perigee("OBJ-1") == 600000
+        assert ApiObservation.apogee("OBJ-1") == 620000
+        // Propagation : époque h − 500, vy = 7,5 km/s ; à h + 500 (1 s) la position est (7 000 000, 7 500, 0).
+        assert ApiObservation.ecart_a("OBJ-1", h + 500, "7000000,7500,0") == 0
+        assert ApiObservation.ecart_a("OBJ-1", h + 500, "7000300,7500,400") == 500
+        assert_fails ApiObservation.ecart_a("OBJ-1", h + 500, "7000300,abc") matching "Incoherent"
+        assert_fails ApiObservation.ecart_a("OBJ-2", h, "0,0,0") matching "Inconnu"
+        let f = ObsOrbites.fondement(h, od1, "ORG-OPX")
+        assert starts_with(f, "OBJ-1|{h - 500}|EPH-OBJ-1|300|analyste1|MS-1|")
+        assert_fails ObsOrbites.fondement(h, od1, "ORG-TIERS") matching "Confidentiel"
+        let od2 = obs_orbite("OBJ-1", h + 3600000, "EPH-OBJ-1", 200)
+        assert ObsOrbites.etat(od1) == "remplacee"
+        assert ObsOrbites.courante_de("OBJ-1") == od2
+        // 72 h après l'époque : périmée, et un suivi de routine est demandé.
+        assert !ApiObservation.suivi("OBJ-1", h + 3600000 + 259200000)
+        assert ObsOrbites.perimer(h + 3600000 + 259200000, "systeme") == 1
+        assert ObsOrbites.etat(od2) == "perimee"
+        assert ObsOrbites.courante_de("OBJ-1") == ""
+        assert ObsTaches.suivi_actif("OBJ-1", 1)
+        assert_fails ApiObservation.perigee("OBJ-1") matching "Inconnu"
+    }
+}
+
+cell test ObsOrbiteRefus {
+    rules {
+        let _ = obs_installer()
+        let h = obs_h0()
+        let od = obs_calcul_court("OBJ-1", h, 4)
+        assert_fails ObsOrbites.valider(h, od, "EPH-OBJ-1", 0, "analyste1") matching "Insuffisant"
+        assert ObsOrbites.rejeter(h, od, "mesures_insuffisantes", "analyste1") == "rejetee"
+        assert_fails ObsOrbites.rejeter(h, od, "autre", "analyste1") matching "EtatInvalide"
+        assert_fails ObsOrbites.rejeter(h, "OD-99", "autre", "analyste1") matching "Inconnu"
+        let od2 = obs_calcul_court("OBJ-2", h, 6)
+        assert_fails ObsOrbites.valider(h, od2, "EPH-AUTRE", 0, "analyste1") matching "Perime"
+        assert_fails ObsOrbites.valider(h, od2, "EPH-OBJ-2", 0, "capteur1@ORG-CAPTA") matching "Habilitation"
+        assert ObsOrbites.valider(h, od2, "EPH-OBJ-2", 0, "analyste1") == "validee"
+        assert_fails ObsOrbites.valider(h, od2, "EPH-OBJ-2", 0, "analyste1") matching "EtatInvalide"
+        // Objet sans éphéméride : rien à comparer.
+        let od3 = obs_calcul_court("OBJ-SANSEPH-1", h, 6)
+        assert ObsOrbites.valider(h, od3, "", 0, "systeme") == "validee"
+        assert_fails ObsOrbites.calculer(h, "OBJ-1", h + 1, ["MS-1"], 10, "1,2,3,4,5,6", 1, 2, "analyste1") matching "HorsBornes"
+        assert_fails ObsOrbites.calculer(h, "OBJ-1", h, ["MS-1"], 10, "1,2,3", 1, 2, "analyste1") matching "Incoherent"
+        assert_fails ObsOrbites.calculer(h, "OBJ-1", h, ["MS-1"], 10, "1,2,3,4,5,6", 3, 2, "analyste1") matching "Incoherent"
+        assert_fails ObsOrbites.calculer(h, "OBJ-1", h, ["MS-404"], 10, "1,2,3,4,5,6", 1, 2, "analyste1") matching "Inconnu"
+        assert_fails ObsOrbites.calculer(h, "OBJ-1", h, ["MS-1"], 10, "1,2,3,4,5,6", 1, 2, "intrus") matching "Habilitation"
+        assert_fails ObsOrbites.perimer(h, "analyste1") matching "Habilitation"
+    }
+}
+
+// ── Pistes : mesures non corrélées → piste → orbite → confirmation → catalogage.
+cell test ObsPisteCatalogage {
+    rules {
+        let _ = obs_installer()
+        let h = obs_h0()
+        let p = obs_piste_confirmee(h)
+        assert p == "PI-1"
+        assert ObsPistes.etat(p) == "confirmee"
+        assert ApiObservation.pistes_non_correlees(10) == [p]
+        assert_fails ObsPistes.cataloguer(h, p, "debris", "inconnue", "", "", "analyste1", "analyste1") matching "QuatreYeux"
+        assert_fails ObsPistes.cataloguer(h, p, "satellite", "inconnue", "", "", "analyste1", "superviseur1") matching "HorsBornes"
+        assert_fails ObsPistes.cataloguer(h, p, "debris", "fragmentation", "ORG-OPX", "", "analyste1", "superviseur1") matching "Incoherent"
+        assert_fails ObsPistes.cataloguer(h, p, "debris", "inconnue", "", "", "intrus", "superviseur1") matching "Habilitation"
+        let o = ObsPistes.cataloguer(h, p, "debris", "fragmentation", "ORG-OPX", "ALD", "analyste1", "superviseur1")
+        assert o == "OBJ-NEUF-{h}"
+        assert ObsPistes.etat(p) == "cataloguee"
+        assert ObsPistes.objet(p) == o
+        assert ObsMesures.etat("MS-1") == "correlee"
+        assert ObsMesures.correlees(o, 0, h, 100) == ["MS-1", "MS-2", "MS-3", "MS-4", "MS-5", "MS-6"]
+        assert ObsTaches.suivi_actif(o, 2)
+        assert ApiObservation.pistes_non_correlees(10) == []
+        assert_fails ObsPistes.abandonner(h, p, "erreur", "analyste1") matching "EtatInvalide"
+    }
+}
+
+cell test ObsPisteRefusAbandon {
+    rules {
+        let _ = obs_installer()
+        let h = obs_h0()
+        let p = obs_non_correlees(4, h)
+        assert ObsPistes.etat(p) == "ouverte"
+        // Orbite de 4 mesures : pas de validation, donc pas de confirmation.
+        let od = ObsOrbites.calculer(h, p, h - 500, ["MS-1", "MS-2", "MS-3", "MS-4"], 80, "1,2,3,4,5,6", 1, 2, "analyste1")
+        assert_fails ObsPistes.confirmer(h, p, od, "geo", "analyste1") matching "Incoherent"
+        assert_fails ObsPistes.confirmer(h, p, od, "geo", "intrus") matching "Habilitation"
+        assert_fails ObsPistes.confirmer(h, "PI-9", od, "geo", "analyste1") matching "Inconnu"
+        assert_fails ObsPistes.objet(p) matching "EtatInvalide"
+        assert_fails ObsPistes.rattacher(h, p, "OBJ-1", "perdu", "analyste1") matching "EtatInvalide"
+        // Une seconde piste trois jours plus tard ; la première, muette depuis 7 jours, est abandonnée.
+        let p2 = obs_non_correlees(1, h + 259200000)
+        assert p2 == "PI-2"
+        assert ObsPistes.veiller(h + 604800000 + 1000, "systeme") == 1
+        assert ObsPistes.etat(p) == "abandonnee"
+        assert ObsMesures.etat("MS-1") == "ecartee"
+        assert_fails ObsPistes.abandonner(h, p2, "", "analyste1") matching "MotifRequis"
+        assert ObsPistes.abandonner(h, p2, "reflet", "analyste1") == "abandonnee"
+        assert_fails ObsPistes.abandonner(h, "PI-77", "reflet", "analyste1") matching "Inconnu"
+    }
+}
+
+cell test ObsPisteRattachement {
+    rules {
+        let _ = obs_installer()
+        let h = obs_h0()
+        let p = obs_piste_confirmee(h)
+        assert_fails ObsPistes.rattacher(h, p, "OBJ-INCONNU-2", "perdu", "analyste1") matching "Inconnu"
+        assert ObsPistes.rattacher(h, p, "OBJ-2", "perdu", "analyste1") == "rattachee"
+        assert ObsPistes.objet(p) == "OBJ-2"
+        assert ObsMesures.etat("MS-6") == "correlee"
+    }
+}
+
+// ── Détections : écart au-delà du seuil → suspicion → confirmation → signalement ou explication.
+cell test ObsDetectionSignalee {
+    rules {
+        let _ = obs_installer()
+        let h = obs_h0()
+        let _ = obs_orbite("OBJ-CJ-1", h, "EPH-OBJ-CJ-1", 500)
+        assert ObsDetections.etat("MD-1") == "inconnue"
+        let od2 = obs_orbite("OBJ-CJ-1", h + 1000, "EPH-OBJ-CJ-1", 5000)
+        assert ObsDetections.etat("MD-1") == "suspectee"
+        assert !ApiObservation.manoeuvre_detectee("OBJ-CJ-1", 0)
+        assert_fails ObsDetections.confirmer(h + 2000, "MD-1", "intrus") matching "Habilitation"
+        assert ObsDetections.confirmer(h + 2000, "MD-1", "analyste1") == "signalee"
+        assert ApiObservation.manoeuvre_detectee("OBJ-CJ-1", h)
+        assert !ApiObservation.manoeuvre_detectee("OBJ-CJ-1", h + 10000)
+        assert ObsTaches.suivi_actif("OBJ-CJ-1", 3)
+        assert_fails ObsDetections.confirmer(h + 3000, "MD-1", "analyste1") matching "EtatInvalide"
+        assert_fails ObsDetections.signaler(h + 3000, "MD-1") matching "EtatInvalide"
+    }
+}
+
+cell test ObsDetectionExpliquee {
+    rules {
+        let _ = obs_installer()
+        let h = obs_h0()
+        let _ = obs_orbite("OBJ-PLAN-1", h, "EPH-OBJ-PLAN-1", 4000)
+        assert ObsDetections.etat("MD-1") == "suspectee"
+        assert ObsDetections.confirmer(h + 10, "MD-1", "analyste1") == "expliquee"
+        assert !ApiObservation.manoeuvre_detectee("OBJ-PLAN-1", 0)
+    }
+}
+
+cell test ObsDetectionInfirmeeEtRonde {
+    rules {
+        let _ = obs_installer()
+        let h = obs_h0()
+        let _ = obs_orbite("OBJ-2", h, "EPH-OBJ-2", 3000)
+        assert_fails ObsDetections.infirmer(h, "MD-1", "météo", "analyste1", "analyste1") matching "QuatreYeux"
+        assert_fails ObsDetections.infirmer(h, "MD-1", "", "analyste1", "superviseur1") matching "MotifRequis"
+        assert_fails ObsDetections.infirmer(h, "MD-9", "météo", "analyste1", "superviseur1") matching "Inconnu"
+        assert ObsDetections.infirmer(h, "MD-1", "tempête", "analyste1", "superviseur1") == "infirmee"
+        // Une suspicion non jugée en 12 h est confirmée d'office par la ronde.
+        let _ = obs_orbite("OBJ-3", h, "EPH-OBJ-3", 3000)
+        assert ObsDetections.etat("MD-2") == "suspectee"
+        assert ObsDetections.veiller(h + 3600000, "systeme") == 0
+        assert ObsDetections.veiller(h + 43200001, "systeme") == 1
+        assert ObsDetections.etat("MD-2") == "signalee"
+        assert_fails ObsDetections.veiller(h, "analyste1") matching "Habilitation"
+    }
+}
+
+// ── Couverture par régime : nominale → dégradée → aveugle, et retour.
+cell test ObsCouvertureCycle {
+    rules {
+        let _ = obs_installer()
+        let h = obs_h0()
+        assert ObsCouverture.evaluer(h, "systeme") == 3
+        assert ObsCouverture.niveau("leo") == "nominale"
+        assert ObsCouverture.niveau("geo") == "degradee"
+        assert ObsCouverture.evaluer(h + 1, "systeme") == 3
+        assert ObsCouverture.niveau("geo") == "aveugle"
+        assert !ObsCouverture.peut_servir("geo", 3)
+        assert ObsCouverture.peut_servir("leo", 1)
+        let _ = obs_capteur_en_service("radar", ["geo"])
+        assert ObsCouverture.evaluer(h + 2, "systeme") == 3
+        assert ObsCouverture.niveau("geo") == "degradee"
+        assert_fails ObsCouverture.evaluer(h, "exploitant1") matching "Habilitation"
+    }
+}
+
+// ── Scénario métier complet, par la façade : réseau → suivi demandé → mesures → orbite
+// indépendante → manœuvre non annoncée détectée, confirmée d'office et signalée → balayage.
+cell test ObsScenarioComplet {
+    rules {
+        let _ = obs_installer()
+        let h = obs_h0()
+        assert ApiObservation.capteurs_en_service() == 3
+        let t = ApiObservation.demander_suivi(h, "OBJ-1", 2, 86400000, "rapprochement CJ-5", "analyste1")
+        assert ObsTaches.etat(t) == "affectee"
+        let _ = obs_orbite("OBJ-1", h + 1000, "EPH-OBJ-1", 100)
+        assert ObsTaches.etat(t) == "en_cours"
+        assert ApiObservation.suivi("OBJ-1", h + 2000)
+        let _ = obs_orbite("OBJ-1", h + 3600000, "EPH-OBJ-1", 12000)
+        assert ObsDetections.etat("MD-1") == "suspectee"
+        assert_fails ApiObservation.balayer(h, "analyste1") matching "Habilitation"
+        // 13 h plus tard : la ronde confirme et signale ; CAP-3, muet, tombe en panne.
+        assert ApiObservation.balayer(h + 3600000 + 46800000, "systeme") >= 2
+        assert ObsDetections.etat("MD-1") == "signalee"
+        assert ApiObservation.manoeuvre_detectee("OBJ-1", h)
+        assert ApiObservation.ecart_declare("OBJ-1") == 12000
+        assert ObsCapteurs.etat("CAP-3") == "en_panne"
+        assert ObsCouverture.niveau("leo") == "degradee"
+    }
+}

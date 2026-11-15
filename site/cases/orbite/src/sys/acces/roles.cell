@@ -1,0 +1,132 @@
+// acces — RÔLES ET LEUR PORTÉE, et ATTRIBUTIONS de rôles supplémentaires.
+// La portée d'un rôle (type Role de commun/types.cell) est fixée ici, une fois :
+//   orbite    : analyste, superviseur, exploitant, conformite, direction, auditeur
+//   operateur : dynamicien, chef_de_mission, administrateur_operateur, capteur
+//   etat      : point_focal, autorite
+//   interne   : systeme (jamais attribuable) ; aucun (absence de rôle).
+// Une attribution confère à une personne active un rôle de plus que son rôle principal
+// (intérim, astreinte d'un chef de mission, superviseur adjoint), dans la même portée,
+// pour au plus DUREE_MAX_MS, à quatre yeux, sous la séparation des tâches.
+
+// Portée d'un rôle : l'organisation pour laquelle il vaut.
+cell type AccesPortee = String where value == "orbite" || value == "operateur" || value == "etat" || value == "interne"
+
+// Genre d'une organisation, lu dans ref (ApiRef.genre) : "orbite", "etat", "operateur",
+// "capteur" (fournisseur de capteurs) ; "inconnu" si radiée ou jamais inscrite.
+cell type AccesGenre = String where value == "orbite" || value == "etat" || value == "operateur" || value == "capteur" || value == "inconnu"
+
+// Catalogue des rôles : portée, compatibilité avec le genre de l'employeur, séparation des tâches.
+skeleton AccesPortees {
+    face {
+        // Portée du rôle (table d'en-tête). "aucun" et "systeme" → "interne".
+        signal portee(r: Role) -> AccesPortee
+        // Genre de l'organisation : ApiRef.genre(org) si ApiRef.organisation_existe(org),
+        // "inconnu" sinon (le refus Inconnu de ApiRef.genre n'est jamais levé).
+        signal genre_de(org: Org) -> AccesGenre
+            calls ApiRef.organisation_existe, ApiRef.genre
+        // Vrai si le rôle peut être tenu chez une organisation de ce genre : portée "orbite" ↔
+        // "orbite" ; "operateur" ↔ "operateur" (et les rôles "capteur" et "administrateur_operateur"
+        // ↔ genre "capteur" aussi) ;
+        // "etat" ↔ "etat" ; jamais pour "interne".
+        signal compatible(r: Role, g: AccesGenre) -> Bool
+        // Vrai si une même personne ne peut cumuler `a` et `b` (séparation des tâches) :
+        // auditeur avec tout autre rôle d'ORBITE ; conformite avec exploitant ; dynamicien avec
+        // capteur ; autorite avec point_focal n'est PAS incompatible (petits États).
+        signal incompatibles(a: Role, b: Role) -> Bool
+        // Vrai si le rôle confère le pouvoir de contre-signer (quatre yeux) : "superviseur",
+        // "conformite", "direction" d'ORBITE ; "chef_de_mission" pour un geste d'opérateur.
+        signal valideur(r: Role) -> Bool
+    }
+}
+
+// Attribution d'un rôle supplémentaire : id = "at-<n>" tiré par demander.
+skeleton AccesAttributions {
+    const MAX_ATTRIBUTIONS = 1000000
+    const MAX_PAR_PERSONNE = 4
+    const DUREE_MAX_MS = 31622400000
+    memory {
+        titulaire_de: Map<String, String> [persistent]       // attribution → personne ; écrit une fois par demander, jamais effacé (lien de règle)
+        role_de: Map<String, Role> [persistent]              // attribution → rôle conféré
+        demandeur: Map<String, String> [persistent]          // attribution → auteur de la demande
+        valide_par: Map<String, String> [persistent]         // attribution → contre-signataire (accorder ou refuser)
+        motif: Map<String, String> [persistent]              // attribution → motif de la demande puis de la fin
+        debut: Map<String, Horodatage> [persistent]          // attribution → accord, ms
+        echeance: Map<String, Horodatage> [persistent]       // attribution → fin de validité, ms ; ≤ debut + DUREE_MAX_MS
+        en_cours: Map<String, Int> [persistent]              // personne → attributions demandées ou accordées
+        invariant titulaire_de.size <= MAX_ATTRIBUTIONS
+        invariant en_cours >= 0 && en_cours <= MAX_PAR_PERSONNE
+        invariant role_de != "aucun" && role_de != "systeme"
+        invariant (debut ?? 0) <= (echeance ?? 0)
+    }
+    // Cycle de vie d'une attribution (id = attribution).
+    state attribution {
+        initial: demandee
+        demandee -> accordee        // accorder : titulaire actif, contre-signé
+        demandee -> refusee         // refuser
+        accordee -> revoquee        // revoquer, revoquer_de, revoquer_incompatibles
+        accordee -> echue           // echoir : échéance atteinte
+    }
+    face {
+        // Demande d'attribuer `r` à `personne` jusqu'à `echeance` (ms). Renvoie l'id.
+        // Rôle exigé de `par` : celui qu'exige AccesPersonnes.enregistrer pour `r` ; par ≠ personne.
+        // Refus : Inconnu (personne), EtatInvalide (personne non active), HorsBornes (rôle hors
+        // portée de l'employeur, "systeme", échéance ≤ h ou > h + DUREE_MAX_MS), Doublon (rôle
+        // principal ou déjà attribué), Conflit (incompatible avec un rôle détenu), MotifRequis,
+        // Habilitation, QuatreYeux, Plein.
+        signal demander(h: Horodatage, personne: String, r: Role, echeance_ms: Horodatage, motif_demande: String, par: String) -> String
+            writes titulaire_de, role_de, demandeur, motif, echeance, en_cours
+            calls AccesPersonnes.est_active, AccesPersonnes.role, AccesPersonnes.employeur, AccesPortees.genre_de, AccesPortees.compatible, AccesPortees.incompatibles, AccesControle.a_le_role, AccesControle.agit_pour, roles_de, next_id, Journal.noter
+        // Accorde une attribution demandée. `valideur` contre-signe (AccesControle.contresigner :
+        // valideur ≠ demandeur, ≠ titulaire). Renvoie "accordee".
+        // Refus : Inconnu, EtatInvalide, Echu (échéance déjà passée), Suspendu (titulaire non
+        // actif), QuatreYeux.
+        signal accorder(h: Horodatage, id: String, valideur: String) -> String
+            reads titulaire_de, demandeur, echeance
+            writes valide_par, debut
+            moves demandee -> accordee when AccesPersonnes.active via titulaire_de
+            calls AccesPersonnes.est_active, AccesControle.contresigner, Journal.noter
+        // Refuse une attribution demandée. Rôle exigé de `par` : AccesPortees.valideur du rôle
+        // détenu, ≠ demandeur. Renvoie "refusee". Refus : Inconnu, EtatInvalide, MotifRequis, Habilitation.
+        signal refuser(h: Horodatage, id: String, motif_refus: String, par: String) -> String
+            reads titulaire_de, demandeur
+            writes valide_par, motif, en_cours
+            moves demandee -> refusee
+            calls AccesControle.a_le_role, Journal.noter, AccesControle.agit_pour, AccesPersonnes.employeur
+        // Révoque une attribution accordée. Rôle exigé de `par` : "conformite" ou "direction"
+        // d'ORBITE, ou "administrateur_operateur" de l'employeur du titulaire. Renvoie "revoquee".
+        // Refus : Inconnu, EtatInvalide, MotifRequis, Habilitation.
+        signal revoquer(h: Horodatage, id: String, motif_fin: String, par: String) -> String
+            reads titulaire_de
+            writes motif, en_cours
+            moves accordee -> revoquee
+            calls AccesControle.a_le_role, AccesControle.agit_pour, AccesPersonnes.employeur, Journal.noter
+        // Révoque toutes les attributions accordées de la personne (suspension). Renvoie leur nombre.
+        signal revoquer_de(h: Horodatage, personne: String) -> Int
+            reads titulaire_de
+            writes motif, en_cours
+            moves accordee -> revoquee
+            calls Journal.noter
+        // Révoque les attributions de la personne incompatibles avec le rôle `r` (changement de
+        // rôle principal). Renvoie leur nombre.
+        signal revoquer_incompatibles(h: Horodatage, personne: String, r: Role) -> Int
+            reads titulaire_de, role_de
+            writes motif, en_cours
+            moves accordee -> revoquee
+            calls AccesPortees.incompatibles, Journal.noter
+        // Fait échoir les attributions accordées dont l'échéance est ≤ h. Renvoie leur nombre.
+        signal echoir(h: Horodatage) -> Int
+            reads echeance, titulaire_de
+            writes en_cours
+            moves accordee -> echue
+            calls Journal.noter
+        // Rôles accordés à la personne (état "accordee"), sans le rôle principal. L'échéance
+        // est portée par echoir (balayage minute) : une attribution échue depuis moins d'une
+        // minute peut encore figurer ici.
+        signal roles_de(personne: String) -> List<String>
+            reads titulaire_de, role_de, attribution
+        // État d'une attribution : "demandee", "accordee", "refusee", "revoquee", "echue" ;
+        // "inconnue" si jamais demandée.
+        signal etat(id: String) -> String
+            reads titulaire_de, attribution
+    }
+}

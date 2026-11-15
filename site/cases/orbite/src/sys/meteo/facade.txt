@@ -1,0 +1,6 @@
+ApiMeteo.tempete: calls MetTempete.en_vue
+ApiMeteo.facteur_incertitude: calls MetIncertitude.facteur
+ApiMeteo.kp: calls MetMesure.kp_courant
+ApiMeteo.renforce: calls MetRenforce.renforce
+ApiMeteo.f107_prevu: calls MetPrevision.f107_moyen
+ApiMeteo.balayer: calls MetRonde.balayer

@@ -1,0 +1,82 @@
+// evenements — RAPPORTS D'ÉVÈNEMENT AUX ÉTATS.
+// Toute fragmentation ou collision confirmée donne lieu, sous DELAI_RAPPORT_MS, à un rapport
+// écrit (faits, cause retenue, estimation du nuage, fragments catalogués), validé à quatre
+// yeux puis publié aux États des objets en cause et aux riverains des régimes touchés. Le niveau
+// de diffusion choisi ne peut être plus large que celui des données de chaque objet en cause
+// (ApiDonnees.diffusion) : un objet "restreint" impose un rapport anonymisé "parties".
+// Id = id de l'évènement.
+
+// Rapports : id = évènement.
+skeleton EvtRapports {
+    const MAX_RAPPORTS = 100000
+    const DELAI_RAPPORT_MS = 2592000000
+    memory {
+        du_le: Map<String, Horodatage> [persistent]           // rapport → échéance de publication, ms (confirmation + DELAI_RAPPORT_MS) ; écrit une fois par ouvrir
+        ouvert_le: Map<String, Horodatage> [persistent]       // rapport → confirmation de l'évènement, ms ; ≤ du_le
+        empreinte: Map<String, String> [persistent]           // rapport → empreinte du texte courant (le texte reste hors ORBITE)
+        versions: Map<String, List<String>> [persistent]      // rapport → "h | par | empreinte", en ajout seul
+        diffusion_de: Map<String, Diffusion> [persistent]     // rapport → niveau de diffusion retenu à la validation
+        validation: Map<String, String> [persistent]          // rapport → "h | par | valideur"
+        publie_le: Map<String, Horodatage> [persistent]       // rapport → publication, ms
+        invariant du_le.size <= MAX_RAPPORTS
+        invariant (ouvert_le ?? 0) <= (du_le ?? 0)
+    }
+    // Cycle de vie d'un rapport (id = évènement).
+    state rapport {
+        initial: attendu
+        attendu -> redige            // rediger : seulement évènement confirmé
+        attendu -> sans_objet        // classer : seulement évènement infirmé
+        redige -> valide             // valider : quatre yeux
+        valide -> publie             // publier
+    }
+    face {
+        // Ouvre l'obligation de rapport d'un évènement confirmé : échéance h + DELAI_RAPPORT_MS.
+        // Appelé par EvtEvenements.confirmer seul. Renvoie l'échéance. Refus : Existe, Plein.
+        signal ouvrir(h: Horodatage, ev: String) -> Horodatage
+            writes du_le, ouvert_le
+        // Dépose (ou remplace, tant qu'il n'est pas validé) le texte du rapport, par son
+        // empreinte ; chaque version est conservée. Le premier dépôt fait passer "redige".
+        // Renvoie le nombre de versions. Rôle exigé de `par` : "analyste" d'ORBITE.
+        // Refus : Inconnu (aucune obligation ouverte), EtatInvalide (validé, publié ou sans
+        // objet), MotifRequis (empreinte vide), Habilitation.
+        signal rediger(h: Horodatage, ev: String, e: String, par: String) -> Int
+            writes empreinte, versions
+            reads du_le, rapport
+            moves attendu -> redige when EvtEvenements.confirme
+            calls ApiAcces.a_le_role, EvtEvenements.etat, Journal.noter
+            ensures result >= 1
+        // Valide la dernière version et fixe sa diffusion `d` ("public", "participants" ou
+        // "parties"), plafonnée par ApiDonnees.diffusion de chaque objet en cause
+        // (EvtEvenements.objets). Renvoie "valide".
+        // Rôle exigé de `par` : "analyste" d'ORBITE (auteur ou non) ; `valideur` "superviseur"
+        // (ApiAcces.quatre_yeux), qui ne peut avoir déposé aucune version.
+        // Refus : Inconnu, EtatInvalide, Confidentiel (d plus large qu'un objet ne le permet ;
+        // "restreint" refusé : un rapport s'adresse au moins aux parties), Habilitation, QuatreYeux.
+        signal valider(h: Horodatage, ev: String, d: Diffusion, par: String, valideur: String) -> String
+            writes diffusion_de, validation
+            reads versions
+            moves redige -> valide
+            calls ApiAcces.a_le_role, ApiAcces.quatre_yeux, ApiDonnees.diffusion, EvtEvenements.objets, Journal.noter
+        // Publie un rapport validé : notification "rapport" aux propriétaires et États des objets
+        // en cause (EvtNotifications.preparer, urgence 1) et, pour "participants" ou "public",
+        // aux riverains des régimes du nuage (EvtNuages.regimes_de, EvtNotifications.diffuser).
+        // Renvoie le nombre de notifications préparées.
+        // Rôle exigé de `par` : "superviseur" d'ORBITE. Refus : Inconnu, EtatInvalide, Habilitation.
+        signal publier(h: Horodatage, ev: String, par: String) -> Int
+            writes publie_le
+            reads diffusion_de
+            moves valide -> publie
+            calls ApiAcces.a_le_role, EvtEvenements.objets, EvtNuages.regimes_de, EvtNotifications.preparer, EvtNotifications.diffuser, Journal.noter
+            ensures result >= 0
+        // Classe le rapport d'un évènement infirmé. Appelé par EvtEvenements.infirmer seul.
+        // Renvoie "sans_objet". Refus : EtatInvalide.
+        signal classer(h: Horodatage, ev: String) -> String
+            moves attendu -> sans_objet when EvtEvenements.infirme
+            calls Journal.noter
+        // Rapports non publiés dont l'échéance est passée à `h`, au plus `n` : "ev | état |
+        // échéance". Lecture seule, pour la ronde (incident) et la conformité d'ORBITE elle-même.
+        signal en_retard(h: Horodatage, n: Int) -> List<String>
+            requires n > 0 && n <= 1000
+            reads du_le, rapport
+    }
+}

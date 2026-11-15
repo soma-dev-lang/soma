@@ -1,0 +1,126 @@
+// operateurs — corps de la CHAÎNE DE CONTACTS (OpContacts).
+
+flesh OpContacts {
+    on declarer(h, op, pour, ou, ordre, canal_ref, par) {
+        if ou == "point_focal" {
+            require ApiAcces.a_le_role(par, "autorite") && ApiAcces.agit_pour(par, op) else Habilitation "point focal déclaré par l'autorité de l'État"
+            require ApiRef.genre(op) == "etat" else NonEligible "{op} n'est pas un État"
+            require ApiAcces.a_le_role(pour, "point_focal") && ApiAcces.agit_pour(pour, op) else NonEligible "{pour} n'est pas point focal de {op}"
+        } else {
+            require ApiAcces.a_le_role(par, "administrateur_operateur") && ApiAcces.agit_pour(par, op) else Habilitation "déclaration réservée à un administrateur_operateur de {op}"
+            require ApiRef.genre(op) == "operateur" else NonEligible "{op} n'est pas un opérateur"
+            let st = OpMembres.etat(op)
+            require st != "inconnu" && st != "candidat" else Inconnu "{op} jamais admis"
+            require st != "exclu" && st != "retire" else Ferme "{op} est {st}"
+            require ApiAcces.agit_pour(pour, op) else NonEligible "{pour} n'est pas employé par {op}"
+            let role_ok = match to_string(ou) {
+                "chef_de_mission" -> ApiAcces.a_le_role(pour, "chef_de_mission")
+                "direction_operateur" -> ApiAcces.a_le_role(pour, "administrateur_operateur") || ApiAcces.a_le_role(pour, "chef_de_mission")
+                _ -> ApiAcces.a_le_role(pour, "dynamicien") || ApiAcces.a_le_role(pour, "chef_de_mission") || ApiAcces.a_le_role(pour, "administrateur_operateur") || ApiAcces.a_le_role(pour, "capteur")
+            }
+            require role_ok else NonEligible "{pour} n'a pas le rôle exigé pour la place {ou}"
+        }
+        require ordre >= 1 && ordre <= 50 else HorsBornes "rang hors [1, 50]"
+        require canal_ref != "" else MotifRequis "canal hors ligne requis"
+        for e in personne.entries {
+            if e.value == pour && (operateur.get(e.key) ?? "") == op && (place.get(e.key) ?? "") == ou && (get_status(e.key) ?? "declare") != "retire" {
+                fail("Doublon", "{pour} est déjà {ou} de {op} ({e.key})")
+            }
+        }
+        let nb = nb_vivants.get(op) ?? 0
+        require nb < MAX_PAR_OPERATEUR && operateur.size < MAX_CONTACTS else Plein "trop de contacts"
+        let n = next_id()
+        let id = "CT-{n}"
+        operateur.set(id, op)
+        personne.set(id, pour)
+        place.set(id, ou)
+        rang.set(id, ordre)
+        canal.set(id, canal_ref)
+        nb_vivants.set(op, nb + 1)
+        let _ = Journal.noter(h, "operateurs", par, "contact {id} déclaré : {pour} ({ou}) pour {op}")
+        return id
+    }
+    on confirmer(h, id, par) {
+        let op = operateur.get(id)
+        require op != () else Inconnu "contact {id} inconnu"
+        require par == (personne.get(id) ?? "") && ApiAcces.agit_pour(par, op) else Habilitation "seule la personne du contact, toujours employée par {op}, confirme"
+        let st = get_status(id) ?? "declare"
+        require st == "declare" || st == "a_reconfirmer" else EtatInvalide "contact {id} {st}"
+        confirme_a.set(id, h)
+        if st == "declare" {
+            transition(id, "declare", "confirme")
+        } else {
+            transition(id, "a_reconfirmer", "confirme")
+        }
+        let _ = Journal.noter(h, "operateurs", par, "contact {id} confirmé")
+        return "confirme"
+    }
+    on retirer(h, id, par) {
+        let op = operateur.get(id)
+        require op != () else Inconnu "contact {id} inconnu"
+        let p = personne.get(id) ?? ""
+        let gerant = (ApiAcces.a_le_role(par, "administrateur_operateur") || ApiAcces.a_le_role(par, "autorite")) && ApiAcces.agit_pour(par, op)
+        require gerant || par == p || ApiAcces.a_le_role(par, "systeme") else Habilitation "réservé à l'administrateur de {op}, à la personne elle-même ou au système"
+        let st = get_status(id) ?? "declare"
+        require st != "retire" else EtatInvalide "contact {id} déjà retiré"
+        nb_vivants.set(op, max((nb_vivants.get(op) ?? 1) - 1, 0))
+        transition(id, st, "retire")
+        let _ = Journal.noter(h, "operateurs", par, "contact {id} retiré")
+        return "retire"
+    }
+    on balayer(h, n, par) {
+        require ApiAcces.a_le_role(par, "systeme") || ApiAcces.a_le_role(par, "exploitant") else Habilitation "balayage réservé au système ou à un exploitant"
+        let compte = 0
+        for e in operateur.entries {
+            if compte >= n { break }
+            let id = e.key
+            let op = e.value
+            let st = get_status(id) ?? "declare"
+            if st != "retire" {
+                let p = personne.get(id) ?? ""
+                if !ApiAcces.agit_pour(p, op) {
+                    nb_vivants.set(op, max((nb_vivants.get(op) ?? 1) - 1, 0))
+                    transition(id, st, "retire")
+                    compte = compte + 1
+                } else if st == "confirme" && to_int(h) - to_int(confirme_a.get(id) ?? h) > RECONFIRMATION_MS {
+                    transition(id, "confirme", "a_reconfirmer")
+                    let _ = ApiPasserelle.notifier(h, op, "", "contacts", "contact {id} ({p}) à reconfirmer", 1)
+                    compte = compte + 1
+                }
+            }
+        }
+        if compte > 0 {
+            let _ = Journal.noter(h, "operateurs", par, "contacts : {compte} changé(s)")
+        }
+        return compte
+    }
+    on chaine(op, ou, h) {
+        let lignes_c = []
+        for e in operateur.entries {
+            if e.value == op {
+                let id = e.key
+                if (place.get(id) ?? "") == ou && (get_status(id) ?? "declare") == "confirme" && to_int(h) - to_int(confirme_a.get(id) ?? 0) <= RECONFIRMATION_MS {
+                    let p = personne.get(id) ?? ""
+                    let c = canal.get(id) ?? ""
+                    lignes_c.push(map("r", rang.get(id) ?? 50, "l", "{p} | {c}"))
+                }
+            }
+        }
+        return lignes_c.sort_by(x => x.r).map(x => x.l)
+    }
+    on contacts_echelon(op, echelon, h) {
+        let e = ApiRef.etat_de(op)
+        require echelon >= 1 && echelon <= 3 else HorsBornes "échelon hors [1, 3]"
+        if echelon == 1 {
+            let r = try { OpAstreinte.en_service(op, h) }
+            if r.error != () || r.value == "" { return [] }
+            return [r.value]
+        }
+        let lignes_e = if echelon == 2 {
+            chaine(op, "chef_de_mission", h) ++ chaine(op, "suppleant", h)
+        } else {
+            chaine(ApiRef.org_de_etat(e), "point_focal", h)
+        }
+        return lignes_e.map(l => split(l, " | ")[0])
+    }
+}

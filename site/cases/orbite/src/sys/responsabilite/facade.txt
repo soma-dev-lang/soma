@@ -1,0 +1,5 @@
+ApiResponsabilite.geler: calls RespDossiers.ouvrir; moves RespDossiers.dossier: aucun -> gele
+ApiResponsabilite.sous_gel: calls RespGels.est_gele
+ApiResponsabilite.purge_autorisee: calls RespPurges.autorisee_pour
+ApiResponsabilite.chaine: calls RespPieces.chaine_de
+ApiResponsabilite.balayer: calls RespRondes.balayer

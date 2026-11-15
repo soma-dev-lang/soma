@@ -1,0 +1,113 @@
+// acces — ACCÈS D'URGENCE (« bris de glace »). Ouvert pendant un rapprochement de niveau 3
+// quand la personne qui devrait agir ne le peut pas (astreinte injoignable, rôle absent,
+// facteur bloqué), pour au plus DUREE_MAX_MS (4 h), par une seule personne habilitée (pas le temps d'un
+// contre-signataire), journalisé. Il ne change
+// pas a_le_role : il est lu par ApiAcces.en_urgence_pour(personne, r, h) (ou en_urgence), que les sous-systèmes qui
+// l'admettent (coordination, manoeuvres) testent explicitement, et il permet le canal de
+// session "urgence". Revue a posteriori obligatoire, indépendante, sous DELAI_REVUE_MS.
+
+// Conclusion d'une revue a posteriori.
+cell type AccesConclusion = String where value == "conforme" || value == "non_conforme"
+
+// Accès d'urgence : id = "u-<n>" tiré par ouvrir.
+skeleton AccesUrgences {
+    const MAX_URGENCES = 100000
+    const DUREE_MAX_MS = 14400000
+    const DELAI_REVUE_MS = 259200000
+    memory {
+        beneficiaire: Map<String, String> [persistent]            // urgence → personne ; écrit une fois par ouvrir, jamais effacé (lien de règle)
+        rapprochement_de: Map<String, Rapprochement> [persistent] // urgence → rapprochement de niveau 3 qui la fonde ; écrit une fois par ouvrir
+        ouvreur: Map<String, String> [persistent]                 // urgence → auteur ("direction" ou "superviseur")
+        motif: Map<String, String> [persistent]                   // urgence → motif déclaré
+        debut: Map<String, Horodatage> [persistent]               // urgence → ouverture, ms
+        fin: Map<String, Horodatage> [persistent]                 // urgence → fin prévue puis effective, ms ; ≤ debut + DUREE_MAX_MS
+        ouverte_de: Map<String, String> [persistent]              // personne → urgence ouverte (au plus une par personne)
+        revue: Map<String, String> [persistent]                   // urgence → "h | par | conclusion | constat"
+        invariant beneficiaire.size <= MAX_URGENCES
+        invariant ouverte_de.size <= MAX_URGENCES
+        invariant (debut ?? 0) <= (fin ?? 0)
+    }
+    // Cycle de vie d'un accès d'urgence (id = urgence).
+    state urgence {
+        initial: demandee
+        demandee -> ouverte                 // ouvrir : bénéficiaire actif ; regles.toml : rapprochement en alerte ou en coordination (via rapprochement_de)
+        ouverte -> close                    // fermer, fermer_de : fin anticipée
+        ouverte -> expiree                  // echoir : fin atteinte
+        close -> revue_conforme             // reviser "conforme"
+        expiree -> revue_conforme           // reviser "conforme"
+        close -> revue_non_conforme         // reviser "non_conforme" : bénéficiaire suspendu
+        expiree -> revue_non_conforme       // reviser "non_conforme"
+    }
+    face {
+        // Ouvre un accès d'urgence pour `personne` sur le rapprochement `r`, de h à
+        // h + DUREE_MAX_MS (fin anticipée par fermer). Exige
+        // ApiConjonctions.niveau(r) == 3 et ApiConjonctions.etat(r) ouvert (ni "resolu", ni
+        // "passe", ni "collision", ni "inconnu") ; règle (regles.toml, via rapprochement_de, écrit
+        // une fois ici) : ConjRapprochement « alerte » ou « en_coordination ».
+        // Renvoie l'id. Rôle exigé de `par` : "direction" ou
+        // "superviseur" d'ORBITE ; par ≠ personne. Une seule urgence ouverte par personne.
+        // Refus : Inconnu (personne, rapprochement), Suspendu (personne non active), NonEligible
+        // (rapprochement pas de niveau 3 ou clos), Doublon (urgence déjà
+        // ouverte), MotifRequis, Habilitation, QuatreYeux (par = personne), Plein.
+        signal ouvrir(h: Horodatage, personne: String, r: Rapprochement, motif_declare: String, par: String) -> String
+            writes beneficiaire, rapprochement_de, ouvreur, motif, debut, fin, ouverte_de
+            moves demandee -> ouverte when AccesPersonnes.active via beneficiaire
+            calls AccesPersonnes.est_active, AccesControle.a_le_role, ApiConjonctions.niveau, ApiConjonctions.etat, next_id, Journal.noter
+        // Clôt une urgence ouverte avant son terme (rapprochement résolu, relève revenue) et ferme
+        // les sessions de la personne. `par` : le bénéficiaire, ou "direction" / "superviseur"
+        // d'ORBITE. Renvoie "close". Refus : Inconnu, EtatInvalide, Habilitation.
+        signal fermer(h: Horodatage, id: String, par: String) -> String
+            reads beneficiaire
+            writes fin, ouverte_de
+            moves ouverte -> close
+            calls AccesControle.a_le_role, AccesSessions.fermer_toutes, Journal.noter
+        // Clôt l'urgence ouverte de la personne s'il y en a une (suspension, départ). Renvoie 0 ou 1.
+        signal fermer_de(h: Horodatage, personne: String) -> Int
+            writes fin, ouverte_de
+            moves ouverte -> close
+            calls Journal.noter
+        // Fait expirer les urgences dont la fin est ≤ h et ferme les sessions de leurs
+        // bénéficiaires. Renvoie leur nombre.
+        signal echoir(h: Horodatage) -> Int
+            reads fin, beneficiaire
+            writes ouverte_de
+            moves ouverte -> expiree
+            calls AccesSessions.fermer_toutes, Journal.noter
+        // Revue a posteriori d'une urgence close ou expirée, sur la matière d'actes(id). Rôle
+        // exigé de `par` : "conformite" ou "auditeur" d'ORBITE, ni le bénéficiaire, ni l'ouvreur. "non_conforme" suspend le bénéficiaire (AccesPersonnes.suspendre_auto,
+        // "urgence_non_conforme") et, s'il est employé d'un opérateur, constate un manquement de
+        // gravité 2 (ApiConformite.constater). Renvoie l'état atteint.
+        // Refus : Inconnu, EtatInvalide, MotifRequis (constat vide), Habilitation, QuatreYeux.
+        signal reviser(h: Horodatage, id: String, conclusion: AccesConclusion, constat: String, par: String) -> String
+            reads beneficiaire, ouvreur
+            writes revue
+            moves close -> revue_conforme, expiree -> revue_conforme, close -> revue_non_conforme, expiree -> revue_non_conforme
+            calls AccesControle.a_le_role, AccesPersonnes.suspendre_auto, AccesPersonnes.employeur, AccesPortees.genre_de, ApiConformite.constater, Journal.noter
+        // Urgences closes ou expirées non revues dont la fin date de plus de DELAI_REVUE_MS à h :
+        // chacune déclare un incident de gravité 2 (ApiOperations.declarer_incident, sous-système
+        // "acces", par "systeme", id d'incident "revue-<urgence>", une fois). Renvoie leur nombre.
+        signal relancer_revues(h: Horodatage) -> Int
+            reads fin, revue, urgence
+            calls ApiOperations.declarer_incident, Journal.noter
+        // Vrai si une urgence de la personne est "ouverte" et sa fin > h.
+        signal en_urgence(personne: String, h: Horodatage) -> Bool
+            reads ouverte_de, fin
+        // Vrai si l'urgence ouverte de la personne a une fin > h ET pour fondement `r` : seule
+        // forme que coordination et manoeuvres doivent admettre (une urgence sur CJ-1 ne vaut
+        // pas pour CJ-2).
+        signal en_urgence_pour(personne: String, r: Rapprochement, h: Horodatage) -> Bool
+            reads ouverte_de, fin, rapprochement_de
+        // Vrai si une urgence de la personne est dans l'état "ouverte" (sans horloge).
+        signal ouverte_pour(personne: String) -> Bool
+            reads ouverte_de
+        // Rapprochement qui fonde l'urgence ; Refus : Inconnu.
+        signal fondement(id: String) -> Rapprochement
+            reads rapprochement_de
+        // Lignes du journal d'audit dont l'acteur est le bénéficiaire, entre debut et fin
+        // (au plus `n`) : la matière de la revue. Refus : Inconnu.
+        signal actes(id: String, n: Int) -> List<String>
+            requires n > 0 && n <= 1000
+            reads beneficiaire, debut, fin
+            calls Journal.chercher
+    }
+}

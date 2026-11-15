@@ -1,0 +1,162 @@
+// PRIORITÉS — corps de PrioTable (table de décision et préavis par version).
+flesh PrioTable {
+    on poser_regle(h, version, rang, critere, effet, par) {
+        require ApiAcces.a_le_role(par, "analyste") else Habilitation "table réservée à un analyste d'ORBITE"
+        _redaction(version)
+        require rang >= 1 && rang <= MAX_REGLES else HorsBornes "rang {rang} hors 1..16"
+        let deja = rang_de.get("{version}|{critere}")
+        require deja == () || deja == rang else Doublon "critère {critere} déjà posé au rang {deja}"
+        let cle = "{version}|{rang}"
+        let n = nb_regles.get(version) ?? 0
+        let ancien = critere_de.get(cle)
+        if ancien == () {
+            require n < MAX_REGLES && critere_de.size < 16000 else Plein "table pleine"
+            n = n + 1
+        } else {
+            rang_de.delete("{version}|{ancien}")
+        }
+        critere_de.set(cle, critere)
+        effet_de.set(cle, effet)
+        rang_de.set("{version}|{critere}", rang)
+        nb_regles.set(version, n)
+        Journal.noter(h, "priorites", par, "table {version} : rang {rang} = {critere} / {effet}")
+        return n
+    }
+
+    on retirer_regle(h, version, rang, par) {
+        require ApiAcces.a_le_role(par, "analyste") else Habilitation "table réservée à un analyste d'ORBITE"
+        _redaction(version)
+        let cle = "{version}|{rang}"
+        let c = critere_de.get(cle)
+        require c != () else Inconnu "aucune ligne au rang {rang}"
+        critere_de.delete(cle)
+        effet_de.delete(cle)
+        rang_de.delete("{version}|{c}")
+        let n = (nb_regles.get(version) ?? 1) - 1
+        nb_regles.set(version, n)
+        Journal.noter(h, "priorites", par, "table {version} : rang {rang} retiré")
+        return n
+    }
+
+    on fixer_preavis(h, version, p, d, par) {
+        require ApiAcces.a_le_role(par, "analyste") else Habilitation "table réservée à un analyste d'ORBITE"
+        _redaction(version)
+        require p != "aucune" else HorsBornes "pas de préavis pour la propulsion 'aucune'"
+        require to_int(d) <= MAX_PREAVIS else HorsBornes "préavis supérieur à 30 jours"
+        if p == "faible" {
+            let imp = preavis_de.get("{version}|impulsionnelle")
+            require imp == () || to_int(d) >= to_int(imp) else Incoherent "préavis faible inférieur à l'impulsionnel"
+        } else {
+            let fai = preavis_de.get("{version}|faible")
+            require fai == () || to_int(fai) >= to_int(d) else Incoherent "préavis impulsionnel supérieur au faible"
+        }
+        require preavis_de.has("{version}|{p}") || preavis_de.size < 2000 else Plein "registre des préavis plein"
+        preavis_de.set("{version}|{p}", d)
+        Journal.noter(h, "priorites", par, "table {version} : préavis {p} = {d} ms")
+        return d
+    }
+
+    on reprendre(h, version, base, par) {
+        require ApiAcces.a_le_role(par, "analyste") else Habilitation "table réservée à un analyste d'ORBITE"
+        require PrioVersion.etat(base) != "inconnue" else Inconnu "version de base {base} inconnue"
+        _redaction(version)
+        let entamee = (nb_regles.get(version) ?? 0) > 0 || preavis_de.has("{version}|faible") || preavis_de.has("{version}|impulsionnelle")
+        require !entamee else Existe "table de {version} déjà entamée"
+        let n = 0
+        for i in range(1, MAX_REGLES + 1) {
+            let c = critere_de.get("{base}|{i}")
+            if c != () {
+                let e = effet_de.get("{base}|{i}") ?? "designe"
+                critere_de.set("{version}|{i}", c)
+                effet_de.set("{version}|{i}", e)
+                rang_de.set("{version}|{c}", i)
+                n = n + 1
+            }
+        }
+        nb_regles.set(version, n)
+        for p in ["impulsionnelle", "faible"] {
+            let d = preavis_de.get("{base}|{p}")
+            if d != () { preavis_de.set("{version}|{p}", d) }
+        }
+        Journal.noter(h, "priorites", par, "table {version} reprise de {base} : {n} lignes")
+        return n
+    }
+
+    on complete(version) {
+        return (nb_regles.get(version) ?? 0) >= 1 && preavis_de.has("{version}|faible") && preavis_de.has("{version}|impulsionnelle")
+    }
+
+    on regles(version) {
+        let lignes_r = []
+        for i in range(1, MAX_REGLES + 1) {
+            let c = critere_de.get("{version}|{i}")
+            if c != () {
+                let e = effet_de.get("{version}|{i}") ?? ""
+                lignes_r = lignes_r ++ ["{i} | {c} | {e}"]
+            }
+        }
+        return lignes_r
+    }
+
+    on differences(version, base) {
+        let criteres = ["derogation", "propulsion_faible", "arrivee_recente", "essaim_autonome", "operateur_surveille", "masse_moindre"]
+        let connue = preavis_de.has("{version}|faible") || preavis_de.has("{version}|impulsionnelle") || criteres.filter(c => rang_de.has("{version}|{c}")).len() > 0
+        require connue else Inconnu "table de {version} vide"
+        let diff_d = []
+        for c in criteres {
+            let rv = rang_de.get("{version}|{c}")
+            let rb = rang_de.get("{base}|{c}")
+            if rv != () && rb == () {
+                let e = effet_de.get("{version}|{rv}") ?? ""
+                diff_d = diff_d ++ ["+ {rv} | {c} | {e}"]
+            } else if rv == () && rb != () {
+                let e = effet_de.get("{base}|{rb}") ?? ""
+                diff_d = diff_d ++ ["- {rb} | {c} | {e}"]
+            } else if rv != () && rb != () {
+                if rv != rb {
+                    diff_d = diff_d ++ ["~ {c} : rang {rb} -> {rv}"]
+                }
+                let ev = effet_de.get("{version}|{rv}") ?? ""
+                let eb = effet_de.get("{base}|{rb}") ?? ""
+                if ev != eb {
+                    diff_d = diff_d ++ ["~ {c} : effet {eb} -> {ev}"]
+                }
+            }
+        }
+        for p in ["impulsionnelle", "faible"] {
+            let a = preavis_de.get("{base}|{p}")
+            let b = preavis_de.get("{version}|{p}")
+            if a != b {
+                let sa = if a == () { "-" } else { to_string(a) }
+                let sb = if b == () { "-" } else { to_string(b) }
+                diff_d = diff_d ++ ["preavis {p} : {sa} -> {sb}"]
+            }
+        }
+        return diff_d
+    }
+
+    on preavis_de_version(version, p) {
+        return _preavis(version, p)
+    }
+
+    on preavis_courant(p) {
+        return _preavis(PrioVersion.version_courante(), p)
+    }
+
+    // Préavis de `p` dans `version` ; défauts si la version n'en fixe pas (ou "").
+    on _preavis(version: String, p: Propulsion) {
+        if p == "aucune" { return PREAVIS_JAMAIS }
+        let d = preavis_de.get("{version}|{p}")
+        if d != () { return d }
+        if p == "faible" { return PREAVIS_FAIBLE_DEFAUT }
+        return PREAVIS_IMPULSIONNELLE_DEFAUT
+    }
+
+    // Refuse si la version est inconnue (Inconnu) ou hors rédaction (EtatInvalide).
+    on _redaction(version: String) {
+        let st = PrioVersion.etat(version)
+        require st != "inconnue" else Inconnu "version {version} inconnue"
+        require st == "redaction" else EtatInvalide "version {version} : {st}, table figée"
+        return st
+    }
+}

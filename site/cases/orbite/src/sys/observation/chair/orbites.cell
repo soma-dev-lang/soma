@@ -1,0 +1,215 @@
+// Corps de la détermination d'orbite indépendante.
+flesh ObsOrbites {
+    on calculer(h, sujet, epoque, mesures, sigma, vecteur, perigee, apogee, par) {
+        require ApiAcces.a_le_role(par, "analyste") || ApiAcces.a_le_role(par, "systeme") else Habilitation "{par} : analyste d'ORBITE ou systeme requis"
+        let de_piste = starts_with(sujet, "PI-")
+        if de_piste {
+            let ep = ObsPistes.etat(sujet)
+            require ep != "inconnue" else Inconnu "piste {sujet} inconnue"
+            require ep == "ouverte" || ep == "confirmee" else Incoherent "piste {sujet} : {ep}"
+        } else {
+            require ApiRef.etat_objet(Objet(sujet)) != "inconnu" else Inconnu "objet {sujet} non catalogué"
+        }
+        require epoque <= h else HorsBornes "époque future"
+        require sigma > 0 else HorsBornes "sigma nul"
+        require len(mesures) > 0 && len(mesures) <= 10000 else HorsBornes "1 à 10 000 mesures"
+        let attendu = if de_piste { "non_correlee" } else { "correlee" }
+        let vus = []
+        for m in mesures {
+            let em = ObsMesures.etat(m)
+            require em != "inconnue" else Inconnu "mesure {m} inconnue"
+            require em == attendu else Incoherent "mesure {m} : {em}, attendu {attendu}"
+            let c = ObsMesures.capteur(m)
+            if !contains(vus, c) { vus.push(c) }
+        }
+        require len(_composantes(vecteur)) == 6 else Incoherent "vecteur d'état mal formé : x,y,z,vx,vy,vz entiers"
+        require perigee <= apogee else Incoherent "périgée au-dessus de l'apogée"
+        let n = (compteur.get("orbites") ?? 0) + 1
+        require n <= MAX_DETERMINATIONS else Plein "registre des déterminations plein"
+        let id = "OD-{n}"
+        compteur.set("orbites", n)
+        sujet_de.set(id, sujet)
+        calculee_le.set(id, h)
+        epoque_de.set(id, epoque)
+        mesures_de.set(id, mesures)
+        nb_capteurs.set(id, len(vus))
+        sigma_de.set(id, sigma)
+        vecteur_de.set(id, vecteur)
+        apogee_de.set(id, apogee)
+        perigee_de.set(id, perigee)
+        let nm = len(mesures)
+        let nc = len(vus)
+        let _ = Journal.noter(h, "observation", par, "détermination {id} calculée pour {sujet} ({nm} mesures, {nc} capteurs)")
+        return id
+    }
+    on valider(h, od, eph, ecart, par) {
+        require ApiAcces.a_le_role(par, "analyste") || ApiAcces.a_le_role(par, "systeme") else Habilitation "{par} : analyste d'ORBITE ou systeme requis"
+        let sujet = sujet_de.get(od)
+        require sujet != () else Inconnu "détermination {od} inconnue"
+        let st = get_status(od) ?? "calculee"
+        require st == "calculee" else EtatInvalide "détermination {od} : {st}"
+        let ms = mesures_de.get(od) ?? []
+        require len(ms) >= MIN_MESURES && (nb_capteurs.get(od) ?? 0) >= MIN_CAPTEURS else Insuffisant "au moins {MIN_MESURES} mesures de {MIN_CAPTEURS} capteurs"
+        let de_piste = starts_with(sujet, "PI-")
+        let facteur = if de_piste { 100 } else { ApiMeteo.facteur_incertitude(ApiRef.regime(Objet(sujet)), h) }
+        let s = idiv(to_int(sigma_de.get(od) ?? 1) * to_int(facteur), 100)
+        let q = if s <= 100 { "haute" } else if s <= 1000 { "moyenne" } else { "faible" }
+        let eph_retenue = ""
+        let ecart_retenu = 0
+        if !de_piste {
+            let r = try { ApiEphemerides.derniere(Objet(sujet)) }
+            if r.error == () {
+                let d = r.value
+                require eph == d && ApiEphemerides.depot_valide(d) else Perime "{eph} n'est pas la dernière éphéméride valide de {sujet} ({d})"
+                eph_retenue = d
+                ecart_retenu = ecart
+            } else {
+                // Objet sans éphéméride déclarée (débris, objet orphelin) : rien à comparer.
+                require eph == "" else Perime "aucune éphéméride validée pour {sujet}"
+            }
+        }
+        transition(od, "calculee", "validee")
+        let avant = courante.get(sujet) ?? ""
+        if avant != "" && avant != od && (get_status(avant) ?? "calculee") == "validee" {
+            transition(avant, "validee", "remplacee")
+        }
+        courante.set(sujet, od)
+        for m in ms { citee_par.set(m, od) }
+        qualite_de.set(od, Qualite(q))
+        eph_comparee.set(od, eph_retenue)
+        ecart_de.set(od, ecart_retenu)
+        valide_par.set(od, par)
+        let _ = Journal.noter(h, "observation", par, "détermination {od} validée pour {sujet} (qualité {q}, écart {ecart_retenu} m)")
+        if eph_retenue != "" && ecart_retenu > SEUIL_MANOEUVRE_M {
+            let ep = epoque_de.get(od) ?? 0
+            let _ = ObsDetections.suspecter(h, Objet(sujet), od, ecart_retenu, min(ep, h))
+        }
+        if eph_retenue != "" && ecart_retenu > SEUIL_INVALIDATION_M {
+            let _ = ApiEphemerides.invalider(h, Objet(sujet), "écart observé {ecart_retenu} m (détermination {od})", "systeme")
+        }
+        return "validee"
+    }
+    on rejeter(h, od, motif, par) {
+        require ApiAcces.a_le_role(par, "analyste") || ApiAcces.a_le_role(par, "systeme") else Habilitation "{par} : analyste d'ORBITE ou systeme requis"
+        require sujet_de.has(od) else Inconnu "détermination {od} inconnue"
+        let st = get_status(od) ?? "calculee"
+        require st == "calculee" else EtatInvalide "détermination {od} : {st}"
+        transition(od, "calculee", "rejetee")
+        rejet_de.set(od, motif)
+        let _ = Journal.noter(h, "observation", par, "détermination {od} rejetée ({motif})")
+        return "rejetee"
+    }
+    on perimer(h, par) {
+        require par == "systeme" else Habilitation "ronde réservée à systeme"
+        let n = 0
+        let courantes = courante.entries
+        for e in courantes {
+            let od = e.value
+            let ep = epoque_de.get(od) ?? 0
+            if (get_status(od) ?? "calculee") == "validee" && h - ep > VALIDITE_MS {
+                transition(od, "validee", "perimee")
+                courante.delete(e.key)
+                n = n + 1
+                let _ = Journal.noter(h, "observation", "systeme", "orbite {od} de {e.key} périmée")
+                if !starts_with(e.key, "PI-") {
+                    _routine(h, Objet(e.key))
+                }
+            }
+        }
+        // Une page du catalogue : tout objet sans orbite courante reçoit un suivi de routine.
+        let apres = curseur.get("catalogue") ?? ""
+        let page = ApiRef.catalogue("", apres, 1000)
+        for o in page {
+            if courante.get(o) == () { _routine(h, Objet(o)) }
+        }
+        let prochain = if len(page) < 1000 { "" } else { page[len(page) - 1] }
+        curseur.set("catalogue", Objet(prochain))
+        return n
+    }
+    on _routine(h: Horodatage, objet: Objet) {
+        if !ObsTaches.suivi_actif(objet, 1) {
+            let r = try { ObsTaches.demander(h, objet, 1, VALIDITE_MS, "routine", "orbite indépendante absente ou périmée", "systeme") }
+            if r.error != () {
+                let k = r.kind
+                let _ = Journal.noter(h, "observation", "systeme", "suivi de routine de {objet} impossible ({k})")
+            }
+        }
+    }
+    on suivi(sujet, h) {
+        let od = courante.get(sujet)
+        if od == () { return false }
+        if (get_status(od) ?? "calculee") != "validee" { return false }
+        return (epoque_de.get(od) ?? 0) > h - VALIDITE_MS
+    }
+    on ecart_declare(objet) {
+        let od = courante.get(objet)
+        require od != () else Inconnu "aucune orbite observée pour {objet}"
+        return ecart_de.get(od) ?? 0
+    }
+    on ecart_a(objet, epoque, position) {
+        let od = courante.get(objet)
+        require od != () else Inconnu "aucune orbite observée pour {objet}"
+        let ep = epoque_de.get(od) ?? 0
+        require (get_status(od) ?? "calculee") == "validee" && ep > epoque - VALIDITE_MS else Inconnu "orbite observée de {objet} trop ancienne"
+        let p = _composantes(position)
+        require len(p) == 3 else Incoherent "position mal formée : x,y,z entiers (m)"
+        let v = _composantes(vecteur_de.get(od) ?? "")
+        require len(v) == 6 else Incoherent "vecteur d'état de {od} illisible"
+        // Propagation rectiligne à l'échelle de la fenêtre (vitesses mm/s, durées ms).
+        let dt = epoque - ep
+        let dx = v[0] + v[3] * dt / 1000000 - p[0]
+        let dy = v[1] + v[4] * dt / 1000000 - p[1]
+        let dz = v[2] + v[5] * dt / 1000000 - p[2]
+        return to_int(sqrt(dx * dx + dy * dy + dz * dz) + 0.5)
+    }
+    on _composantes(s: String) {
+        let res_v = []
+        for part in split(s, ",") {
+            let x = parse_int(trim(part))
+            if x == () { return [] }
+            res_v.push(x)
+        }
+        return res_v
+    }
+    on perigee(objet) {
+        let od = courante.get(objet)
+        require od != () else Inconnu "aucune orbite observée pour {objet}"
+        return perigee_de.get(od) ?? 0
+    }
+    on apogee(objet) {
+        let od = courante.get(objet)
+        require od != () else Inconnu "aucune orbite observée pour {objet}"
+        return apogee_de.get(od) ?? 0
+    }
+    on courante_de(sujet) {
+        return courante.get(sujet) ?? ""
+    }
+    on etat(od) {
+        if !sujet_de.has(od) { return "inconnue" }
+        return get_status(od) ?? "calculee"
+    }
+    on sigma_effectif(od, h) {
+        let sujet = sujet_de.get(od)
+        require sujet != () else Inconnu "détermination {od} inconnue"
+        let s = sigma_de.get(od) ?? 1
+        if starts_with(sujet, "PI-") { return s }
+        let f = ApiMeteo.facteur_incertitude(ApiRef.regime(Objet(sujet)), h)
+        return Distance(max(idiv(to_int(s) * to_int(f), 100), 1))
+    }
+    on fondement(h, od, org) {
+        let sujet = sujet_de.get(od)
+        require sujet != () else Inconnu "détermination {od} inconnue"
+        require !starts_with(sujet, "PI-") else Confidentiel "piste non cataloguée : diffusion réservée à ORBITE"
+        require ApiDonnees.peut_recevoir(org, Objet(sujet), "", h) else Confidentiel "{org} ne peut recevoir les données de {sujet}"
+        let _ = ApiDonnees.tracer(h, org, Objet(sujet), "", "orbite")
+        let ep = epoque_de.get(od) ?? 0
+        let eph = eph_comparee.get(od) ?? ""
+        let ec = ecart_de.get(od) ?? 0
+        let auteur = valide_par.get(od) ?? ""
+        let ms = join(mesures_de.get(od) ?? [], "|")
+        return "{sujet}|{ep}|{eph}|{ec}|{auteur}|{ms}"
+    }
+    on citee(mesure) {
+        return citee_par.has(mesure)
+    }
+}

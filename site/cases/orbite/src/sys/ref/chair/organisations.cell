@@ -1,0 +1,198 @@
+// ref — corps de RefOrg (organisations participantes).
+
+flesh RefOrg {
+    on amorcer(h, etat_siege, nom_etat, par) {
+        require ApiAcces.a_le_role(par, "systeme") else Habilitation "amorçage réservé à systeme"
+        let _ = RefEtat.fonder(h, etat_siege, nom_etat, "systeme")
+        let _ = inscrire(h, Org(ORG_ORBITE), "ORBITE", etat_siege, "orbite", "systeme", "systeme")
+        return Org(ORG_ORBITE)
+    }
+
+    on inscrire(h, org, nom, etat, genre, par, valideur) {
+        if genre == "orbite" {
+            require to_string(org) == ORG_ORBITE && par == "systeme" && valideur == "systeme" else HorsBornes "genre orbite réservé à l'amorçage"
+            require ApiAcces.a_le_role(par, "systeme") else Habilitation "amorçage réservé à systeme"
+        } else {
+            require ApiAcces.a_le_role(par, "superviseur") else Habilitation "{par} : superviseur d'ORBITE requis"
+            let contre = ApiAcces.quatre_yeux(par, valideur) && ApiAcces.a_le_role(valideur, "direction")
+            require contre else QuatreYeux "{valideur} : direction d'ORBITE, distincte de {par}, requise"
+        }
+        let o = to_string(org)
+        let e = to_string(etat)
+        require noms.get(o) == () else Existe "organisation {o} déjà inscrite"
+        require RefEtat.connu(etat) else Inconnu "État {e} non déclaré"
+        if genre == "etat" {
+            require autorite_de.get(e) == () else Existe "l'État {e} a déjà son autorité"
+        }
+        require starts_with(o, "ORG-") && len(o) > 4 else Incoherent "identifiant {o} hors forme ORG-…"
+        require nom != "" else Incoherent "raison sociale vide"
+        require noms.size < MAX_ORGS else Plein "trop d'organisations"
+        let liste = sous_tutelle.get(e) ?? []
+        require len(liste) < MAX_ORGS_PAR_ETAT else Plein "trop d'organisations sous la tutelle de {e}"
+        require sous_tutelle.get(e) != () || sous_tutelle.size < 300 else Plein "trop d'États de tutelle"
+        noms.set(o, nom)
+        genres.set(o, genre)
+        tutelle_de.set(o, e)
+        tutelles.set(o, e)
+        if genre == "etat" {
+            autorite_de.set(e, o)
+        }
+        sous_tutelle.set(e, liste ++ [o])
+        inscrites_par.set(o, par)
+        let st = "inscrite"
+        if RefEtat.participant(etat) {
+            transition(o, "inscrite", "active")
+            st = "active"
+        }
+        RefHistorique.consigner(h, o, "tutelle", e, "inscription", par)
+        Journal.noter(h, "ref", par, "organisation {o} ({genre}) inscrite sous {e} : {st}")
+        return org
+    }
+
+    on activer_tutelle(h, etat, par) {
+        require ApiAcces.a_le_role(par, "systeme") else Habilitation "activation réservée à systeme"
+        let n = 0
+        for o in sous_tutelle.get(to_string(etat)) ?? [] {
+            if (get_status(o) ?? "inscrite") == "inscrite" {
+                let t = tutelle_de.get(o) ?? ""
+                if RefEtat.participant(Etat(t)) {
+                    transition(o, "inscrite", "active")
+                    n = n + 1
+                }
+            }
+        }
+        if n > 0 {
+            Journal.noter(h, "ref", par, "{n} organisation(s) activée(s) sous {etat}")
+        }
+        return n
+    }
+
+    on radier(h, org, motif, par, valideur) {
+        require ApiAcces.a_le_role(par, "direction") else Habilitation "{par} : direction d'ORBITE requise"
+        require ApiAcces.quatre_yeux(par, valideur) else QuatreYeux "{valideur} ne peut pas contre-signer la radiation"
+        let o = to_string(org)
+        let genre = genres.get(o)
+        require genre != () else Inconnu "organisation {o} inconnue"
+        let st = get_status(o) ?? "inscrite"
+        require st != "radiee" else EtatInvalide "organisation {o} déjà radiée"
+        require genre != "orbite" else EtatInvalide "ORBITE ne se radie pas"
+        if genre == "etat" {
+            let t = tutelles.get(o) ?? ""
+            require !RefEtat.participant(Etat(t)) else EtatInvalide "autorité d'un État participant"
+        }
+        if genre == "operateur" {
+            let statut_op = ApiOperateurs.statut(org)
+            require statut_op == "retire" || statut_op == "exclu" || statut_op == "inconnu" else EtatInvalide "opérateur encore membre ({statut_op})"
+        }
+        let restants = RefObjet.objets_de(org).filter(x => RefObjet.etat(Objet(x)) != "rentre" && RefObjet.etat(Objet(x)) != "fragmente")
+        require len(restants) == 0 else Conflit "{o} possède encore des objets en orbite"
+        require !RefCession.en_cours_pour_org(org) else Conflit "cession en cours pour {o}"
+        require ApiAcces.actifs_de(org) == 0 else Conflit "personnes encore actives chez {o}"
+        require motif != "" else MotifRequis "motif requis"
+        motifs.set(o, motif)
+        if st == "inscrite" {
+            transition(o, "inscrite", "radiee")
+        } else {
+            transition(o, "active", "radiee")
+        }
+        RefHistorique.consigner(h, o, "statut", "radiee", motif, par)
+        Journal.noter(h, "ref", par, "organisation {o} radiée (valideur {valideur}) : {motif}")
+        return "radiee"
+    }
+
+    on changer_tutelle(h, org, etat, par, valideur) {
+        require ApiAcces.a_le_role(par, "superviseur") else Habilitation "{par} : superviseur d'ORBITE requis"
+        let contre = ApiAcces.quatre_yeux(par, valideur) && ApiAcces.a_le_role(valideur, "direction")
+        require contre else QuatreYeux "{valideur} : direction d'ORBITE, distincte de {par}, requise"
+        let o = to_string(org)
+        let e = to_string(etat)
+        let genre = genres.get(o)
+        require genre != () else Inconnu "organisation {o} inconnue"
+        require RefEtat.connu(etat) else Inconnu "État {e} non déclaré"
+        let st = get_status(o) ?? "inscrite"
+        require st == "active" else EtatInvalide "organisation {o} : {st}"
+        require genre != "etat" && genre != "orbite" else EtatInvalide "une organisation de genre {genre} ne change pas de tutelle"
+        require RefEtat.participant(etat) else EtatInvalide "État {e} non participant"
+        let ancien = tutelles.get(o) ?? ""
+        require ancien != e else Incoherent "{o} est déjà sous la tutelle de {e}"
+        require !RefCession.en_cours_pour_org(org) else Conflit "cession en cours pour {o}"
+        let nouvelle = sous_tutelle.get(e) ?? []
+        require len(nouvelle) < MAX_ORGS_PAR_ETAT else Plein "trop d'organisations sous la tutelle de {e}"
+        require sous_tutelle.get(e) != () || sous_tutelle.size < 300 else Plein "trop d'États de tutelle"
+        let anciennes = sous_tutelle.get(ancien) ?? []
+        sous_tutelle.set(ancien, anciennes.filter(x => x != o))
+        sous_tutelle.set(e, nouvelle ++ [o])
+        tutelles.set(o, e)
+        RefHistorique.consigner(h, o, "tutelle", e, "changement de contrôle", par)
+        Journal.noter(h, "ref", par, "organisation {o} : tutelle {ancien} → {e} (valideur {valideur})")
+        return etat
+    }
+
+    on renommer(h, org, nom, demande, par) {
+        require ApiAcces.a_le_role(par, "systeme") else Habilitation "renommage réservé à systeme"
+        let o = to_string(org)
+        let ancien = noms.get(o)
+        require ancien != () else Inconnu "organisation {o} inconnue"
+        require (get_status(o) ?? "inscrite") != "radiee" else EtatInvalide "organisation {o} radiée"
+        require RefModification.etat(demande) == "validee" else EtatInvalide "demande {demande} non validée"
+        noms.set(o, nom)
+        Journal.noter(h, "ref", par, "organisation {o} renommée « {nom} » (demande {demande})")
+        return ancien
+    }
+
+    on orbite() {
+        return Org(ORG_ORBITE)
+    }
+
+    on existe(org) {
+        let o = to_string(org)
+        return noms.get(o) != () && (get_status(o) ?? "inscrite") != "radiee"
+    }
+
+    on est_active(org) {
+        return (get_status(to_string(org)) ?? "inscrite") == "active"
+    }
+
+    on etat(org) {
+        let o = to_string(org)
+        if noms.get(o) == () { return "inconnue" }
+        return get_status(o) ?? "inscrite"
+    }
+
+    on etat_de(org) {
+        let t = tutelles.get(to_string(org))
+        require t != () else Inconnu "organisation {org} inconnue"
+        return Etat(t)
+    }
+
+    on org_de_etat(etat) {
+        let o = autorite_de.get(to_string(etat))
+        require o != () else Inconnu "aucune autorité inscrite pour l'État {etat}"
+        return Org(o)
+    }
+
+    on sous_tutelle_de(etat) {
+        return sous_tutelle.get(to_string(etat)) ?? []
+    }
+
+    on organisations(genre) {
+        let genres_ok = ["etat", "operateur", "capteur", "orbite"]
+        require genre == "" || contains(genres_ok, genre) else HorsBornes "genre {genre} inconnu"
+        let res_o = genres.keys.filter(k => (get_status(k) ?? "inscrite") == "active" && (genre == "" || to_string(genres.get(k) ?? "") == genre))
+        let triees = res_o.sort()
+        if len(triees) > 10000 { return slice(triees, 0, 10000) }
+        return triees
+    }
+
+    on genre(org) {
+        let g = genres.get(to_string(org))
+        require g != () else Inconnu "organisation {org} inconnue"
+        return g
+    }
+
+    on nom(org) {
+        let n = noms.get(to_string(org))
+        require n != () else Inconnu "organisation {org} inconnue"
+        return n
+    }
+}

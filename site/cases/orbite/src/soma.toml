@@ -1,0 +1,97 @@
+[package]
+name = "orbite"
+
+# Règles entre sous-systèmes (phase 2), fusionnées depuis sys/*/regles.toml
+
+# ── sys/acces/regles.toml
+# acces — règles entre sous-systèmes (phase 2), forme toml : l'arête porte déjà un `when`.
+# À fusionner dans soma.toml par l'intégrateur.
+
+# Rattachement confirmé ⇐ employeur ni radié ni inconnu chez ref (lien écrit une fois par ouvrir).
+[verify.before."AccesRattachements.confirme"]
+while = ["RefOrg.inscrite", "RefOrg.active"]
+via = "AccesRattachements.employeur_du"
+
+# Accès d'urgence ouvert ⇐ rapprochement en alerte (niveau ≥ 2 ; niveau 3 contrôlé au corps)
+# ou en coordination (lien écrit une fois par ouvrir).
+[verify.before."AccesUrgences.ouverte"]
+while = ["ConjRapprochement.alerte", "ConjRapprochement.en_coordination"]
+via = "AccesUrgences.rapprochement_de"
+
+# ── sys/conformite/regles.toml
+# conformite — phase 2 : règle entre sous-systèmes en forme toml (l'arête preparee -> transmise
+# porte déjà `when ConfMesure.decidee`). Une demande de suspension n'est transmise qu'à un État
+# participant (RefEtat, id = code de l'État), lu par le lien ConfDemande.etat_de (écrit une fois par preparer).
+[verify.before."ConfDemande.transmise"]
+while = ["RefEtat.participant"]
+via = "ConfDemande.etat_de"
+
+# ── sys/donnees/regles.toml
+# donnees — règles entre sous-systèmes en forme toml (phase 2), à fusionner dans soma.toml.
+
+# Adhésion active ⇐ organisation inscrite et non radiée au référentiel (RefOrg, id = Org).
+# L'arête signee -> active porte déjà `when DonAccords.en_vigueur via version_de`, et l'état
+# est aussi atteint par suspendue -> active (retablir) : une table couvre les deux entrées.
+# org_de est écrit une fois par DonAdhesions.signer seul, jamais effacé.
+# Corps : contresigner et retablir exigent ApiRef.organisation_existe(org_de(adhesion)).
+[verify.before."DonAdhesions.active"]
+while = ["RefOrg.inscrite", "RefOrg.active"]
+via = "DonAdhesions.org_de"
+
+# ── sys/lancements/regles.toml
+# lancements — règles entre sous-systèmes en forme toml (phase 2), à fusionner dans soma.toml.
+
+# Lancement autorisé ⇐ opérateur du lanceur actif chez operateurs. L'arête crible -> autorise
+# porte déjà `when LancAvis.favorable` ; op_de est écrit une fois par LancLancement.creer seul.
+[verify.before."LancLancement.autorise"]
+while = ["OpMembres.actif"]
+via = "LancLancement.op_de"
+
+# ── sys/meteo/regles.toml
+# meteo — règles entre sous-systèmes en forme toml (phase 2), à fusionner dans soma.toml.
+
+# Mesure archivée (stockage froid) ⇐ sa journée n'est sous aucun gel de RESPONSABILITÉ
+# (cible "J:<jour>", libre). L'arête validee -> archivee porte déjà
+# `when MetJournee.scellee via jour_de`.
+[verify.before."MetMesure.archivee"]
+while = ["RespGels.libre"]
+via = "MetMesure.gel_de"
+
+# ── sys/operateurs/regles.toml
+# operateurs — règles entre sous-systèmes en forme toml (arête déjà porteuse d'un `when`).
+# À fusionner dans soma.toml par l'intégrateur.
+
+# Un créneau d'astreinte n'entre en service que si sa personne est active chez acces.
+# Lien : OpAstreinte.personne, écrit une fois par planifier. Arête planifie -> en_service
+# déjà `when OpEngagements.en_vigueur via operateur`.
+[verify.before."OpAstreinte.en_service"]
+while = ["AccesPersonnes.active"]
+via = "OpAstreinte.personne"
+
+# ── sys/reentrees/regles.toml
+# reentrees — règles entre sous-systèmes en forme toml (phase 2), à fusionner dans soma.toml.
+
+# Rentrée contrôlée approuvée ⇐ plan de désorbitation criblé chez manœuvres (ou déjà approuvé
+# là, pour une ré-approbation après report). L'arête instruit -> approuve porte déjà
+# `when ReeCampagne.ouverte || ReeCampagne.imminente via campagne_de`.
+[verify.before."ReeControlee.approuve"]
+while = ["ManPlan.crible", "ManPlan.approuve"]
+via = "ReeControlee.manoeuvre_de"
+
+# ── sys/responsabilite/regles.toml
+# responsabilite — règles entre sous-systèmes en forme toml (règle sur le passé `requires`).
+# À fusionner dans soma.toml par l'intégrateur.
+
+# Une faute "designation_ignoree" n'est présumée que si la coordination de son rapprochement a
+# été arrêtée (au TCA échu elle est close : condition sur le passé). Lien : RespFautes.rapprochement_de,
+# écrit une fois par presumer. L'arête porte déjà `when ConjRapprochement.passe || collision`.
+[verify.before."RespFautes.designation_presumee"]
+requires = ["CoordDossier.arretee"]
+via = "RespFautes.rapprochement_de"
+
+# Un sinistre ne se déclare que pour un assuré admis un jour à ORBITE (il peut s'être retiré
+# depuis). Lien : RespSinistres.op_de, écrit une fois par declarer. L'arête porte déjà
+# `when RespPolices.en_vigueur || RespPolices.echue via police_de`.
+[verify.before."RespSinistres.declare"]
+requires = ["OpMembres.admis"]
+via = "RespSinistres.op_de"

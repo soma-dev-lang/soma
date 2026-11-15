@@ -1,0 +1,185 @@
+// RENTRÉES — corps : notification des États (inscription, diffusion, accusé, relances, clôture,
+// levée).
+
+flesh ReeNotification {
+    on inscrire(h, campagne, etats, motif_inscription, par) {
+        require ApiAcces.a_le_role(par, "analyste") || ApiAcces.a_le_role(par, "systeme") else Habilitation "inscrire des États : analyste ou systeme d'ORBITE"
+        let ec = ReeCampagne.etat(campagne)
+        require ec != "inconnue" else Inconnu "campagne inconnue : {campagne}"
+        require ec == "ouverte" || ec == "imminente" || ec == "echue" else EtatInvalide "campagne {campagne} terminée ({ec})"
+        let liste_nt = par_campagne.get(campagne) ?? []
+        let vus_e = []
+        let crees = 0
+        let nouv_ids = []
+        for e in etats {
+            if e != "" && !contains(vus_e, e) {
+                vus_e = vus_e ++ [e]
+                let k = "{campagne}|{e}"
+                let cur = cle.get(k)
+                let ouverte = cur != () && (get_status(cur) ?? "a_envoyer") != "close"
+                if !ouverte {
+                    if !ApiRef.etat_participant(Etat(e)) {
+                        let _ = Journal.noter(h, "reentrees", par, "campagne {campagne} : État {e} non participant, notifié par voie diplomatique hors ORBITE")
+                    } else {
+                        require len(liste_nt) < MAX_ETATS else Plein "trop d'États inscrits pour {campagne}"
+                        require campagne_de.size < MAX_NOTIFICATIONS else Plein "trop de notifications"
+                        let nt = "NT-{next_id()}"
+                        campagne_de.set(nt, campagne)
+                        etat_de.set(nt, Etat(e))
+                        cle.set(k, nt)
+                        motif.set(nt, motif_inscription)
+                        version.set(nt, 0)
+                        liste_nt = liste_nt ++ [nt]
+                        nouv_ids = nouv_ids ++ ["{nt}={e}"]
+                        crees = crees + 1
+                    }
+                }
+            }
+        }
+        par_campagne.set(campagne, liste_nt)
+        if crees > 0 {
+            let ids_txt = join(nouv_ids, " ")
+            let _ = Journal.noter(h, "reentrees", par, "campagne {campagne} : {crees} État(s) inscrit(s) ({motif_inscription}) : {ids_txt}")
+        }
+        return crees
+    }
+
+    on diffuser(h, campagne, par) {
+        require ApiAcces.a_le_role(par, "analyste") || ApiAcces.a_le_role(par, "systeme") else Habilitation "diffuser : analyste ou systeme d'ORBITE"
+        let ec = ReeCampagne.etat(campagne)
+        require ec != "inconnue" else Inconnu "campagne inconnue : {campagne}"
+        let objet = ReeCampagne.objet(campagne)
+        let fen = ReeCampagne.fenetre(campagne)
+        let deb = fen[0]
+        let fin = fen[1]
+        let retr = ReeCampagne.retrecissement(campagne)
+        let risque = ReeRisque.a_risque(campagne)
+        let premier_envoi_permis = ec == "ouverte" || ec == "imminente"
+        let n = 0
+        for nt in par_campagne.get(campagne) ?? [] {
+            let st = get_status(nt) ?? "a_envoyer"
+            let eligible = st != "close" && (st != "a_envoyer" || premier_envoi_permis)
+            if eligible {
+                let v = (version.get(nt) ?? 0) + 1
+                require v <= MAX_VERSIONS else Plein "trop de révisions diffusées pour {nt}"
+                let e = etat_de.get(nt) ?? Etat("")
+                let org = ApiRef.org_de_etat(e)
+                let propre = ReeSurvol.victimes_sur(campagne, e)
+                let urg = if risque || ec == "imminente" || propre > 100 { 3 } else { 2 }
+                let complet = ApiDonnees.peut_recevoir(org, objet, Rapprochement(""), h)
+                let texte = ""
+                if complet {
+                    let _ = ApiDonnees.tracer(h, org, objet, Rapprochement(""), "avis de rentrée {campagne} v{v}")
+                    texte = "objet {objet} : fenêtre {deb}-{fin} (largeur {retr} % de l'initiale), à risque {risque}, victimes sur votre territoire {propre} ppm, données orbitales jointes"
+                } else {
+                    texte = "rentrée {campagne} : fenêtre {deb}-{fin} (largeur {retr} %), à risque {risque}, victimes sur votre territoire {propre} ppm"
+                }
+                let m = ApiPasserelle.notifier(h, org, Rapprochement(""), "avis de rentrée {campagne} (v{v})", texte, Niveau(urg))
+                version.set(nt, v)
+                contenu.set(nt, ReeContenu(if complet { "complet" } else { "reduit" }))
+                message_de.set(nt, m)
+                envoyee_le.set(nt, h)
+                if st == "a_envoyer" {
+                    transition(nt, "a_envoyer", "envoyee")
+                }
+                n = n + 1
+            }
+        }
+        if n > 0 {
+            let _ = Journal.noter(h, "reentrees", par, "campagne {campagne} : {n} avis diffusé(s), fenêtre {deb}-{fin}")
+        }
+        return n
+    }
+
+    on accuser(h, notification, mesures, par) {
+        let e = etat_de.get(notification)
+        require e != () else Inconnu "notification inconnue : {notification}"
+        let org = ApiRef.org_de_etat(e)
+        let role_ok = ApiAcces.a_le_role(par, "point_focal") || ApiAcces.a_le_role(par, "autorite")
+        require role_ok && ApiAcces.agit_pour(par, org) else Habilitation "accusé : point focal ou autorité de l'État {e}"
+        let st = get_status(notification) ?? "a_envoyer"
+        require st == "envoyee" || st == "relancee" else EtatInvalide "notification {notification} {st}"
+        accuse.set(notification, "{h} | {par} | {mesures}")
+        transition(notification, st, "accusee")
+        let _ = Journal.noter(h, "reentrees", par, "accusé de {notification} ({e}) ; mesures : {mesures}")
+        return "accusee"
+    }
+
+    on relancer(h, campagne, par) {
+        require ApiAcces.a_le_role(par, "systeme") else Habilitation "relances : systeme"
+        let ec = ReeCampagne.etat(campagne)
+        require ec != "inconnue" else Inconnu "campagne inconnue : {campagne}"
+        let risque = ReeRisque.a_risque(campagne)
+        let urgent = risque || ec == "imminente"
+        let delai = if urgent { DELAI_ACCUSE_URGENT } else { DELAI_ACCUSE }
+        let n = 0
+        for nt in par_campagne.get(campagne) ?? [] {
+            let st = get_status(nt) ?? "a_envoyer"
+            let dernier = to_int(envoyee_le.get(nt) ?? h)
+            if (st == "envoyee" || st == "relancee") && to_int(h) - dernier > delai {
+                let e = etat_de.get(nt) ?? Etat("")
+                if st == "envoyee" {
+                    let org = ApiRef.org_de_etat(e)
+                    let urg = if urgent { 3 } else { 2 }
+                    let m = ApiPasserelle.notifier(h, org, Rapprochement(""), "relance : avis de rentrée {campagne}", "accusé attendu pour {nt}", Niveau(urg))
+                    message_de.set(nt, m)
+                    envoyee_le.set(nt, h)
+                    transition(nt, "envoyee", "relancee")
+                    let _ = Journal.noter(h, "reentrees", par, "{nt} ({e}) relancée")
+                } else {
+                    let m = ApiPasserelle.notifier(h, ApiRef.orbite(), Rapprochement(""), "État sans accusé : {e}", "{nt} de la campagne {campagne} sans accusé après relance ; la campagne continue", 3)
+                    message_de.set(nt, m)
+                    let grav = if risque { 3 } else { 2 }
+                    let _ = ApiConformite.constater_etat(h, e, "accusé de rentrée manquant", Gravite(grav), nt, "systeme")
+                    transition(nt, "relancee", "sans_accuse")
+                    let _ = Journal.noter(h, "reentrees", par, "{nt} ({e}) sans accusé : ORBITE avertie, manquement constaté")
+                }
+                n = n + 1
+            }
+        }
+        return n
+    }
+
+    on clore(h, campagne, issue) {
+        let n = 0
+        for nt in par_campagne.get(campagne) ?? [] {
+            let st = get_status(nt) ?? "a_envoyer"
+            if st != "close" {
+                if (version.get(nt) ?? 0) > 0 {
+                    let e = etat_de.get(nt) ?? Etat("")
+                    let org = ApiRef.org_de_etat(e)
+                    let m = ApiPasserelle.notifier(h, org, Rapprochement(""), "avis final de rentrée {campagne} : {issue}", "campagne {campagne} terminée ({issue})", 2)
+                    message_de.set(nt, m)
+                }
+                transition(nt, st, "close")
+                n = n + 1
+            }
+        }
+        if n > 0 {
+            let _ = Journal.noter(h, "reentrees", "systeme", "campagne {campagne} : {n} notification(s) close(s), issue {issue}")
+        }
+        return n
+    }
+
+    on retirer(h, campagne, etats) {
+        let n = 0
+        for nt in par_campagne.get(campagne) ?? [] {
+            let st = get_status(nt) ?? "a_envoyer"
+            let e = etat_de.get(nt) ?? Etat("")
+            let mo = motif.get(nt) ?? "office"
+            if st != "close" && mo == "survol" && !contains(etats, to_string(e)) {
+                if (version.get(nt) ?? 0) > 0 {
+                    let org = ApiRef.org_de_etat(e)
+                    let m = ApiPasserelle.notifier(h, org, Rapprochement(""), "levée d'avis de rentrée {campagne}", "votre territoire n'est plus sous la fenêtre de rentrée de {campagne}", 1)
+                    message_de.set(nt, m)
+                }
+                transition(nt, st, "close")
+                n = n + 1
+            }
+        }
+        if n > 0 {
+            let _ = Journal.noter(h, "reentrees", "systeme", "campagne {campagne} : {n} avis de survol levé(s)")
+        }
+        return n
+    }
+}

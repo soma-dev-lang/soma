@@ -1,0 +1,10 @@
+# donnees — règles entre sous-systèmes en forme toml (phase 2), à fusionner dans soma.toml.
+
+# Adhésion active ⇐ organisation inscrite et non radiée au référentiel (RefOrg, id = Org).
+# L'arête signee -> active porte déjà `when DonAccords.en_vigueur via version_de`, et l'état
+# est aussi atteint par suspendue -> active (retablir) : une table couvre les deux entrées.
+# org_de est écrit une fois par DonAdhesions.signer seul, jamais effacé.
+# Corps : contresigner et retablir exigent ApiRef.organisation_existe(org_de(adhesion)).
+[verify.before."DonAdhesions.active"]
+while = ["RefOrg.inscrite", "RefOrg.active"]
+via = "DonAdhesions.org_de"

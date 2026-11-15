@@ -1,0 +1,148 @@
+// acces — corps des accès d'urgence (bris de glace).
+flesh AccesUrgences {
+    on ouvrir(h, personne, r, motif_declare, par) {
+        let etat_r = ApiConjonctions.etat(r)
+        require etat_r != "inconnu" else Inconnu "rapprochement {r} inconnu"
+        require AccesPersonnes.est_active(personne) else Suspendu "personne {personne} inconnue ou non active"
+        require etat_r == "alerte" || etat_r == "en_coordination" else NonEligible "rapprochement {r} {etat_r}"
+        require to_int(ApiConjonctions.niveau(r)) == 3 else NonEligible "rapprochement {r} pas de niveau 3"
+        require ouverte_de.get(personne) == () else Doublon "{personne} a déjà une urgence ouverte"
+        require motif_declare != "" else MotifRequis "urgence sans motif"
+        require par != personne else QuatreYeux "{par} ne peut s'ouvrir une urgence"
+        require AccesControle.a_le_role(par, "direction") || AccesControle.a_le_role(par, "superviseur") else Habilitation "{par} : direction ou superviseur d'ORBITE"
+        require beneficiaire.size < MAX_URGENCES && ouverte_de.size < MAX_URGENCES else Plein "registre des urgences plein"
+        let id = "u-{next_id()}"
+        beneficiaire.set(id, personne)
+        rapprochement_de.set(id, r)
+        ouvreur.set(id, par)
+        motif.set(id, motif_declare)
+        fin.set(id, Horodatage(to_int(h) + DUREE_MAX_MS))
+        debut.set(id, h)
+        ouverte_de.set(personne, id)
+        transition(id, "demandee", "ouverte")
+        let _ = Journal.noter(h, "acces", par, "ouvrir urgence {id} pour {personne} sur {r} : {motif_declare}")
+        return id
+    }
+
+    on fermer(h, id, par) {
+        let p = beneficiaire.get(id)
+        require p != () else Inconnu "urgence {id} inconnue"
+        let st = get_status(id) ?? "demandee"
+        require st == "ouverte" else EtatInvalide "urgence {id} {st}"
+        require par == p || AccesControle.a_le_role(par, "direction") || AccesControle.a_le_role(par, "superviseur") else Habilitation "{par} : bénéficiaire, direction ou superviseur"
+        _clore(h, id, p)
+        let n = AccesSessions.fermer_toutes(h, p, "urgence_close")
+        let _ = Journal.noter(h, "acces", par, "fermer urgence {id} ({n} sessions fermées)")
+        return "close"
+    }
+
+    on fermer_de(h, personne) {
+        let id = ouverte_de.get(personne)
+        if id == () { return 0 }
+        _clore(h, id, personne)
+        let _ = Journal.noter(h, "acces", "systeme", "fermer urgence {id} de {personne}")
+        return 1
+    }
+
+    on echoir(h) {
+        let echues = ouverte_de.entries.filter(e => to_int(fin.get(e.value) ?? 0) <= to_int(h)).sort_by(e => e.key)
+        for e in echues {
+            ouverte_de.delete(e.key)
+            transition(e.value, "ouverte", "expiree")
+            let _ = AccesSessions.fermer_toutes(h, e.key, "urgence_close")
+        }
+        if len(echues) > 0 {
+            let _ = Journal.noter(h, "acces", "systeme", "echoir : {len(echues)} urgences expirées")
+        }
+        return len(echues)
+    }
+
+    on reviser(h, id, conclusion, constat, par) {
+        let p = beneficiaire.get(id)
+        require p != () else Inconnu "urgence {id} inconnue"
+        let st = get_status(id) ?? "demandee"
+        require st == "close" || st == "expiree" else EtatInvalide "urgence {id} {st}"
+        require constat != "" else MotifRequis "revue sans constat"
+        require AccesControle.a_le_role(par, "conformite") || AccesControle.a_le_role(par, "auditeur") else Habilitation "{par} : conformite ou auditeur d'ORBITE"
+        let auteur = ouvreur.get(id) ?? ""
+        require par != p && par != auteur else QuatreYeux "revue indépendante : ni le bénéficiaire ni l'ouvreur"
+        revue.set(id, "{h} | {par} | {conclusion} | {constat}")
+        let cible = if conclusion == "conforme" { "revue_conforme" } else { "revue_non_conforme" }
+        if st == "close" {
+            if cible == "revue_conforme" { transition(id, "close", "revue_conforme") } else { transition(id, "close", "revue_non_conforme") }
+        } else {
+            if cible == "revue_conforme" { transition(id, "expiree", "revue_conforme") } else { transition(id, "expiree", "revue_non_conforme") }
+        }
+        if cible == "revue_non_conforme" {
+            let _ = AccesPersonnes.suspendre_auto(h, p, "urgence_non_conforme")
+            let emp = AccesPersonnes.employeur(p)
+            if AccesPortees.genre_de(emp) == "operateur" {
+                let _ = ApiConformite.constater(h, emp, "urgence_non_conforme", 2, id, "systeme")
+            }
+        }
+        let _ = Journal.noter(h, "acces", par, "reviser urgence {id} : {conclusion}")
+        return cible
+    }
+
+    on relancer_revues(h) {
+        // Fenêtre d'un jour après le délai : la ronde quotidienne (une fois par Jour) déclare
+        // l'incident une seule fois sans mémoire d'écriture (le cadre n'en a pas).
+        let ids = fin.entries.filter(e => to_int(h) - to_int(e.value) > DELAI_REVUE_MS && to_int(h) - to_int(e.value) <= DELAI_REVUE_MS + 86400000 && revue.get(e.key) == () && ((get_status(e.key) ?? "demandee") == "close" || (get_status(e.key) ?? "demandee") == "expiree")).map(e => e.key).sort()
+        let declares = 0
+        for id in ids {
+            let r = try { ApiOperations.declarer_incident(h, "revue-{id}", 2, "acces", "revue a posteriori de l'urgence {id} en retard", "systeme") }
+            if r.error == () { declares = declares + 1 }
+        }
+        if declares > 0 {
+            let _ = Journal.noter(h, "acces", "systeme", "relancer_revues : {declares} incidents déclarés")
+        }
+        return declares
+    }
+
+    on en_urgence(personne, h) {
+        let id = ouverte_de.get(personne)
+        if id == () { return false }
+        return to_int(fin.get(id) ?? 0) > to_int(h)
+    }
+
+    on en_urgence_pour(personne, r, h) {
+        let id = ouverte_de.get(personne)
+        if id == () { return false }
+        if to_int(fin.get(id) ?? 0) <= to_int(h) { return false }
+        return rapprochement_de.get(id) == r
+    }
+
+    on ouverte_pour(personne) {
+        return ouverte_de.get(personne) != ()
+    }
+
+    on fondement(id) {
+        let r = rapprochement_de.get(id)
+        require r != () else Inconnu "urgence {id} inconnue"
+        return r
+    }
+
+    on actes(id, n) {
+        let p = beneficiaire.get(id)
+        require p != () else Inconnu "urgence {id} inconnue"
+        let d = to_int(debut.get(id) ?? 0)
+        let f = to_int(fin.get(id) ?? 0)
+        let lignes_u = Journal.chercher(" | {p} | ", 1000)
+        let res_a = []
+        for l in lignes_u {
+            let champs = split(l, " | ")
+            if len(champs) >= 4 && champs[2] == p {
+                let t = to_int(champs[0])
+                if t >= d && t <= f && len(res_a) < n { res_a.push(l) }
+            }
+        }
+        return res_a
+    }
+
+    on _clore(h: Horodatage, id: String, p: String) {
+        let f = to_int(fin.get(id) ?? 0)
+        fin.set(id, Horodatage(min(f, to_int(h))))
+        ouverte_de.delete(p)
+        transition(id, "ouverte", "close")
+    }
+}

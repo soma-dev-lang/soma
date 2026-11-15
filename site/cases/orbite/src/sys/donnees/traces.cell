@@ -1,0 +1,72 @@
+// donnees — TRACES DE COMMUNICATION. Toute donnée d'objet qui sort d'ORBITE vers une
+// organisation (CDM, éphéméride, alerte, décision, réponse à une demande) est tracée AVANT
+// l'envoi, avec le fondement qui l'autorisait (DonControle.fondement) : une communication sans
+// fondement est refusée (Confidentiel), jamais envoyée puis regrettée. Les traces sont en ajout
+// seul ; seule la purge de rétention les supprime, et seulement là où responsabilite l'autorise
+// pour le rapprochement, l'objet ET le jour de la trace (ApiResponsabilite.purge_autorisee).
+
+// Natures usuelles d'une communication tracée (valeurs conseillées ; `nature` reste un texte libre).
+cell type DonNatureComm = String where value == "cdm" || value == "ephemeride" || value == "alerte" || value == "decision" || value == "escalade" || value == "reponse_demande" || value == "rentree" || value == "evenement"
+
+// Registre des traces : id = numéro de trace (entier croissant, en texte comme clé).
+skeleton DonTraces {
+    const MAX_TRACES = 50000000
+    const MAX_PAR_CLE = 100000
+    const RETENTION_MS = 315360000000           // 10 ans de conservation au moins
+    memory {
+        traces: Map<String, String> [persistent]             // numéro → "h | org | objet | r | nature | fondement"
+        instant: Map<String, Horodatage> [persistent]        // numéro → h de la communication
+        rapprochement_de: Map<String, String> [persistent]   // numéro → rapprochement ("" hors rapprochement)
+        par_rapprochement: Map<String, List<String>> [persistent] // rapprochement → numéros (dossier de preuve)
+        par_objet: Map<String, List<String>> [persistent]    // objet → numéros (transparence au propriétaire)
+        compteur: Map<String, Int> [persistent]              // "traces" → dernier numéro attribué (croissant)
+        invariant traces.size <= MAX_TRACES
+        invariant instant.size <= MAX_TRACES
+        invariant compteur >= 0
+        invariant value >= (compteur.get(key) ?? 0)
+    }
+    face {
+        // Trace une communication des données de `objet` à `org` (dans le cadre du rapprochement
+        // `r`, "" sinon) et renvoie son numéro ; l'appelant n'envoie qu'après. `nature` : texte
+        // libre non vide (≤ 200 caractères) qui dit quoi et pourquoi, de préférence une
+        // DonNatureComm. Refus : Confidentiel (DonControle.fondement vide : destinataire non
+        // autorisé), Incoherent (nature vide ou trop longue), Plein (registre ou index d'une clé plein).
+        signal tracer(h: Horodatage, org: Org, objet: Objet, r: Rapprochement, nature: String) -> Int
+            writes traces, instant, rapprochement_de, par_rapprochement, par_objet, compteur
+            calls DonControle.fondement
+        // Au plus n traces d'un rapprochement, dans l'ordre (dossier de preuve, enquête).
+        // Rôle : "conformite", "direction" ou "auditeur" d'ORBITE ; ou "point_focal" / "autorite"
+        // d'un État partie au rapprochement (ApiAcces.agit_pour). Refus : Habilitation.
+        signal du_rapprochement(r: Rapprochement, n: Int, par: String) -> List<String>
+            requires n > 0 && n <= 10000
+            reads par_rapprochement, traces
+            calls ApiAcces.a_le_role, ApiAcces.agit_pour, ApiConjonctions.objets, ApiRef.etat_immatriculation, ApiRef.org_de_etat
+        // Au plus n traces des données d'un objet, les plus récentes en dernier : à qui ses
+        // données ont été communiquées et sur quel fondement. Rôle : "chef_de_mission" ou
+        // "administrateur_operateur" du propriétaire (ApiAcces.agit_pour), "autorite" de l'État
+        // d'immatriculation, ou "conformite" / "auditeur" d'ORBITE. Refus : Inconnu (objet), Habilitation.
+        signal de_objet(objet: Objet, n: Int, par: String) -> List<String>
+            requires n > 0 && n <= 10000
+            reads par_objet, traces
+            calls ApiAcces.a_le_role, ApiAcces.agit_pour, ApiRef.proprietaire, ApiRef.etat_immatriculation, ApiRef.org_de_etat
+        // Purge au plus n traces antérieures à `limite` (limite ≤ h − RETENTION_MS). Une trace
+        // n'est purgée que si ApiResponsabilite.purge_autorisee(c, h) est vrai pour chacune de ses
+        // cibles c : son rapprochement (si ≠ ""), son objet "OBJ-…" et son jour "J:<jour>" ;
+        // sinon elle est sautée. Renvoie le nombre de traces purgées.
+        // Rôle : "exploitant" d'ORBITE ; valideur "conformite" distinct (ApiAcces.quatre_yeux).
+        // Refus : HorsBornes (limite trop récente, n hors 1..100 000), Habilitation, QuatreYeux.
+        signal purger(h: Horodatage, limite: Horodatage, n: Int, par: String, valideur: String) -> Int
+            writes traces, instant, rapprochement_de, par_rapprochement, par_objet
+            calls ApiAcces.a_le_role, ApiAcces.quatre_yeux, ApiResponsabilite.purge_autorisee, Journal.noter
+        // Une trace par son numéro : "h | org | objet | r | nature | fondement".
+        // Rôle : "conformite", "direction" ou "auditeur" d'ORBITE. Refus : Inconnu (jamais
+        // attribuée, ou purgée), Habilitation.
+        signal lire(numero: Int, par: String) -> String
+            reads traces
+            calls ApiAcces.a_le_role
+        // Nombre de traces conservées.
+        signal taille() -> Int
+            reads traces
+            ensures result >= 0
+    }
+}

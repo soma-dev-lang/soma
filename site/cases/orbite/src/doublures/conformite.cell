@@ -1,0 +1,191 @@
+// Doublures PROVISOIRES des façades que les corps de conformite appellent — pour test_conformite
+// seulement (l'intégrateur assemble les vrais corps dans prod.cell). Sans état : tout se lit dans les ids.
+//
+// Monde de test (H0 = 1 700 000 000 000 ms, 14/11/2023) :
+// - personnes d'ORBITE : "conf-…" (conformite), "dir-…" (direction), "aud-…" (auditeur), "analyste-…",
+//   "sup-…" (superviseur) ; d'opérateur : "cdm-<alpha|beta>" (chef_de_mission), "adm-<…>"
+//   (administrateur_operateur), "dyn-<…>" (dynamicien) pour ORG-ALPHA / ORG-BETA ; d'État :
+//   "pf-<ald|brv>" (point_focal), "aut-<…>" (autorite) pour ORG-ETAT-ALD / ORG-ETAT-BRV ;
+//   "intrus…" n'a aucun rôle ; quatre_yeux(a, b) faux si a == b ou si b n'est ni superviseur,
+//   ni conformite, ni direction.
+// - organisations : ORG-ALPHA, ORG-ECHEC, ORG-MUET… sous l'État ALD ; ORG-BETA… sous BRV ; ORG-XSU… sous
+//   XSU (non participant) ; "ORG-SANSETAT…" sans État ; "ORG-INCONNU…" jamais candidat ;
+//   "ORG-SUSP…" suspendu, "ORG-EXCLU…" exclu ; contient "NOLIC" : sans licence valide ; "INJ" : injoignable ;
+//   "ESC" : une escalade grave ; "VEILLE" : possède les objets de la veille (ci-dessous).
+// - passerelle : le message porte le destinataire ; destinataire contenant "ECHEC" ⇒ échec définitif,
+//   "MUET" ⇒ en cours (ni acquitté ni échoué), sinon acquitté.
+// - objets : "RETARD" en retard de retrait, "PERIME" sans éphéméride fraîche, "MANO" manœuvre détectée,
+//   "PLAN" plan de manœuvre actif, "MORT" sans propulsion, "HS" hors service.
+// - ApiConjonctions.urgents : ["CJ-URG3", "CJ-URG2"] si h % 1000 == 7, sinon [] ; niveau 3 si l'id contient "3".
+//   ApiCoordination.muets : CJ-URG3 → [ORG-ALPHA, ORG-ETAT-ALD] ; CJ-URG2 → [ORG-BETA].
+
+flesh ApiAcces {
+    on a_le_role(personne, r) {
+        if personne == "systeme" { return r == "systeme" }
+        let role_p = _role(personne)
+        return role_p != "aucun" && role_p == to_string(r)
+    }
+    on agit_pour(personne, org) {
+        let e = _org(personne)
+        return e != "" && e == to_string(org) && _role(personne) != "aucun"
+    }
+    on quatre_yeux(demandeur, valideur) {
+        let rv = _role(valideur)
+        let rd = if demandeur == "systeme" { "systeme" } else { _role(demandeur) }
+        return demandeur != valideur && rd != "aucun" && (rv == "superviseur" || rv == "conformite" || rv == "direction")
+    }
+    on _org(p: String) {
+        let role_p = _role(p)
+        if role_p == "analyste" || role_p == "superviseur" || role_p == "direction" || role_p == "conformite" || role_p == "auditeur" { return "ORG-ORBITE" }
+        if role_p == "point_focal" || role_p == "autorite" {
+            if ends_with(p, "-ald") { return "ORG-ETAT-ALD" }
+            if ends_with(p, "-brv") { return "ORG-ETAT-BRV" }
+            return ""
+        }
+        if ends_with(p, "-alpha") { return "ORG-ALPHA" }
+        if ends_with(p, "-beta") { return "ORG-BETA" }
+        return ""
+    }
+    on _role(p: String) {
+        if starts_with(p, "intrus") { return "aucun" }
+        if starts_with(p, "analyste") { return "analyste" }
+        if starts_with(p, "sup-") { return "superviseur" }
+        if starts_with(p, "dir-") { return "direction" }
+        if starts_with(p, "conf-") { return "conformite" }
+        if starts_with(p, "aud-") { return "auditeur" }
+        if starts_with(p, "dyn-") { return "dynamicien" }
+        if starts_with(p, "cdm-") { return "chef_de_mission" }
+        if starts_with(p, "adm-") { return "administrateur_operateur" }
+        if starts_with(p, "pf-") { return "point_focal" }
+        if starts_with(p, "aut-") { return "autorite" }
+        return "aucun"
+    }
+}
+
+flesh ApiRef {
+    on orbite() {
+        return "ORG-ORBITE"
+    }
+    on etat_participant(etat) {
+        return etat == "ALD" || etat == "BRV"
+    }
+    on etats_participants() {
+        return ["ALD", "BRV"]
+    }
+    on etat_de(org) {
+        require !starts_with(org, "ORG-SANSETAT") && !starts_with(org, "ORG-INCONNU") else Inconnu "organisation sans Etat : {org}"
+        if starts_with(org, "ORG-BETA") { return "BRV" }
+        if starts_with(org, "ORG-XSU") { return "XSU" }
+        return "ALD"
+    }
+    on org_de_etat(etat) {
+        require etat == "ALD" || etat == "BRV" || etat == "XSU" else Inconnu "Etat inconnu : {etat}"
+        return "ORG-ETAT-{etat}"
+    }
+    on genre(org) {
+        if starts_with(org, "ORG-ETAT") { return "etat" }
+        if org == "ORG-ORBITE" { return "orbite" }
+        return "operateur"
+    }
+    on objets_de(org) {
+        if contains(org, "VEILLE") {
+            return ["OBJ-RETARD-1", "OBJ-PERIME-2", "OBJ-MANO-3", "OBJ-MANO-PLAN-4", "OBJ-MORT-PERIME-5", "OBJ-HS-RETARD-6"]
+        }
+        return []
+    }
+    on etat_objet(objet) {
+        if contains(objet, "HS") { return "hors_service" }
+        return "en_service"
+    }
+    on propulsion(objet) {
+        if contains(objet, "MORT") { return "aucune" }
+        return "impulsionnelle"
+    }
+}
+
+flesh ApiOperateurs {
+    on statut(op) {
+        if starts_with(op, "ORG-INCONNU") { return "inconnu" }
+        if starts_with(op, "ORG-SUSP") { return "suspendu" }
+        if starts_with(op, "ORG-EXCLU") { return "exclu" }
+        return "actif"
+    }
+    on est_actif(op, h) {
+        return !contains(op, "NOLIC") && !starts_with(op, "ORG-SUSP") && !starts_with(op, "ORG-EXCLU")
+    }
+    on joignable(op, h) {
+        return !contains(op, "INJ")
+    }
+    on actifs(h) {
+        return ["ORG-ALPHA", "ORG-BETA"]
+    }
+    on suspendre(h, op, motif, par, valideur) {
+        // doublure sans appel : les rôles se lisent dans les noms (conf-…, dir-…)
+        require starts_with(par, "conf-") else Habilitation "{par} ne suspend pas"
+        require starts_with(valideur, "dir-") else QuatreYeux "valideur direction requis"
+        require motif != "" else MotifRequis "motif requis"
+        return "suspendu"
+    }
+}
+
+flesh ApiPasserelle {
+    on notifier(h, destinataire, r, sujet, texte, urgence) {
+        return "MSG-{destinataire}-{h}"
+    }
+    on acquitte(message) {
+        return !contains(message, "ECHEC") && !contains(message, "MUET")
+    }
+    on echoue(message) {
+        return contains(message, "ECHEC")
+    }
+}
+
+flesh ApiEscalade {
+    on graves(op, h) {
+        if contains(op, "ESC") { return 1 }
+        return 0
+    }
+}
+
+flesh ApiFinDeVie {
+    on en_retard(objet, h) {
+        return contains(objet, "RETARD")
+    }
+}
+
+flesh ApiEphemerides {
+    on fraiche(objet, h) {
+        return !contains(objet, "PERIME")
+    }
+}
+
+flesh ApiObservation {
+    on manoeuvre_detectee(objet, depuis) {
+        return contains(objet, "MANO")
+    }
+}
+
+flesh ApiManoeuvres {
+    on plan_actif(objet) {
+        return contains(objet, "PLAN")
+    }
+}
+
+flesh ApiConjonctions {
+    on urgents(h, horizon, niveau_min) {
+        if h % 1000 == 7 { return ["CJ-URG3", "CJ-URG2"] }
+        return []
+    }
+    on niveau(r) {
+        if contains(r, "3") { return 3 }
+        return 2
+    }
+}
+
+flesh ApiCoordination {
+    on muets(r) {
+        if r == "CJ-URG3" { return ["ORG-ALPHA", "ORG-ETAT-ALD"] }
+        if r == "CJ-URG2" { return ["ORG-BETA"] }
+        return []
+    }
+}

@@ -1,0 +1,128 @@
+// acces — corps des départs et du balayage du sous-système.
+flesh AccesDeparts {
+    on annoncer(h, personne, motif, effet_ms, par) {
+        let st = AccesPersonnes.etat(personne)
+        require st != "inconnue" else Inconnu "personne {personne} inconnue"
+        require st != "partie" else EtatInvalide "personne {personne} partie"
+        let sd = get_status(personne) ?? "aucun"
+        require sd == "aucun" else EtatInvalide "départ de {personne} {sd}"
+        require to_int(effet_ms) > to_int(h) && to_int(effet_ms) - to_int(h) <= PREAVIS_MAX_MS else HorsBornes "date d'effet hors de ]h, h + préavis max]"
+        require _habilite(personne, par) || (par == personne && motif == "demission") else Habilitation "{par} ne peut annoncer le départ de {personne}"
+        if motif_de.get(personne) == () {
+            require motif_de.size < MAX_DEPARTS else Plein "registre des départs plein"
+        }
+        motif_de.set(personne, motif)
+        effet.set(personne, effet_ms)
+        annonce_par.set(personne, par)
+        transition(personne, "aucun", "annonce")
+        let _ = Journal.noter(h, "acces", par, "annoncer départ {personne} ({motif}) effet {effet_ms}")
+        return "annonce"
+    }
+
+    on annuler(h, personne, par) {
+        require AccesPersonnes.employeur(personne) != "" else Inconnu "personne {personne} inconnue"
+        let sd = get_status(personne) ?? "aucun"
+        require sd == "annonce" else EtatInvalide "départ de {personne} {sd}"
+        require to_int(h) < to_int(effet.get(personne) ?? 0) else Echu "date d'effet atteinte"
+        require _habilite(personne, par) else Habilitation "{par} ne peut annuler le départ de {personne}"
+        motif_de.delete(personne)
+        annonce_par.delete(personne)
+        transition(personne, "annonce", "aucun")
+        let _ = Journal.noter(h, "acces", par, "annuler départ {personne}")
+        return "aucun"
+    }
+
+    on partir_maintenant(h, personne, motif, detail, par) {
+        let st = AccesPersonnes.etat(personne)
+        require st != "inconnue" else Inconnu "personne {personne} inconnue"
+        require st != "partie" else EtatInvalide "personne {personne} partie"
+        require detail != "" else MotifRequis "départ immédiat sans motif"
+        let emp = AccesPersonnes.employeur(personne)
+        let ok = AccesControle.a_le_role(par, "direction") || AccesControle.a_le_role(par, "conformite") || (AccesControle.a_le_role(par, "administrateur_operateur") && AccesControle.agit_pour(par, emp))
+        require ok else Habilitation "{par} ne peut prononcer le départ de {personne}"
+        require par != personne else QuatreYeux "{par} ne peut prononcer son propre départ immédiat"
+        _poser(personne, motif, h, par)
+        let r = rendre_effectif(h, personne)
+        let _ = Journal.noter(h, "acces", par, "partir_maintenant {personne} ({motif}) : {detail}")
+        return r
+    }
+
+    on depart_d_office(h, personne) {
+        let st = AccesPersonnes.etat(personne)
+        require st != "inconnue" else Inconnu "personne {personne} inconnue"
+        if st == "partie" { return "clos" }
+        _poser(personne, "employeur_radie", h, "systeme")
+        return rendre_effectif(h, personne)
+    }
+
+    on rendre_effectif(h, personne) {
+        let st = AccesPersonnes.etat(personne)
+        require st != "inconnue" else Inconnu "personne {personne} inconnue"
+        require st != "partie" else EtatInvalide "personne {personne} déjà partie"
+        let sd = get_status(personne) ?? "aucun"
+        let e = effet.get(personne)
+        require e != () && (sd == "annonce" || (sd == "aucun" && to_int(e) == to_int(h))) else EtatInvalide "aucun départ en cours pour {personne}"
+        require to_int(e) <= to_int(h) else Delai "date d'effet non atteinte"
+        if sd == "annonce" {
+            transition(personne, "annonce", "effectif")
+        } else {
+            transition(personne, "aucun", "effectif")
+        }
+        parti_le.set(personne, h)
+        let _ = AccesFacteurs.revoquer(h, personne)
+        let _ = AccesSessions.fermer_toutes(h, personne, "depart")
+        let _ = AccesUrgences.fermer_de(h, personne)
+        let _ = AccesAttributions.revoquer_de(h, personne)
+        let _ = AccesPersonnes.sortir(h, personne)
+        require AccesPersonnes.etat(personne) == "partie" else EtatInvalide "{personne} n'est pas partie"
+        transition(personne, "effectif", "clos")
+        let _ = Journal.noter(h, "acces", "systeme", "départ effectif de {personne}")
+        return "clos"
+    }
+
+    on effectuer_echus(h) {
+        let ids = effet.entries.filter(e => to_int(e.value) <= to_int(h) && (get_status(e.key) ?? "aucun") == "annonce").map(e => e.key).sort()
+        for p in ids { let _ = rendre_effectif(h, p) }
+        return len(ids)
+    }
+
+    on etat(personne) {
+        return get_status(personne) ?? "aucun"
+    }
+
+    on _poser(personne: String, m: AccesMotifDepart, h: Horodatage, par: String) {
+        if motif_de.get(personne) == () {
+            require motif_de.size < MAX_DEPARTS else Plein "registre des départs plein"
+        }
+        motif_de.set(personne, m)
+        effet.set(personne, h)
+        annonce_par.set(personne, par)
+    }
+
+    // Annonce ou renonciation : administrateur de l'employeur, ou exploitant d'ORBITE pour un
+    // employé d'ORBITE ou d'un État.
+    on _habilite(personne: String, par: String) {
+        let emp = AccesPersonnes.employeur(personne)
+        if AccesControle.a_le_role(par, "administrateur_operateur") && AccesControle.agit_pour(par, emp) { return true }
+        let g = AccesPortees.genre_de(emp)
+        return AccesControle.a_le_role(par, "exploitant") && (g == "orbite" || g == "etat")
+    }
+}
+
+flesh AccesBalayage {
+    on balayer(h, par) {
+        require AccesControle.a_le_role(par, "systeme") else Habilitation "balayage réservé à systeme"
+        let n = AccesJetons.echoir(h) + AccesSessions.balayer(h) + AccesUrgences.echoir(h) + AccesAttributions.echoir(h)
+        let jour = idiv(to_int(h), 86400000)
+        let dernier = dernier_jour.get("ronde")
+        if dernier == () || to_int(dernier) < jour {
+            dernier_jour.set("ronde", Jour(jour))
+            n = n + AccesDeparts.effectuer_echus(h)
+            n = n + len(AccesPersonnes.balayer_employeurs(h, 5000))
+            n = n + AccesRattachements.echoir(h)
+            n = n + AccesCampagnes.cloturer_echues(h)
+            n = n + AccesUrgences.relancer_revues(h)
+        }
+        return n
+    }
+}

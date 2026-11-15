@@ -1,0 +1,143 @@
+// Corps de EscStatistiques : compteurs par opérateur, escalades graves sur 365 jours, vigilance.
+flesh EscStatistiques {
+    on compter(h, op, dossier, echelon, ouverture) {
+        let o = to_string(op)
+        if ouverture {
+            require ouvertures.get(o) != () || ouvertures.size < MAX_OPERATEURS else Plein "plafond d'opérateurs atteint"
+            ouvertures.set(o, (ouvertures.get(o) ?? 0) + 1)
+        }
+        let cle = "{o}|{echelon}"
+        let nb = (par_echelon.get(cle) ?? 0) + 1
+        par_echelon.set(cle, nb)
+        if to_int(echelon) >= 3 {
+            require graves.size < MAX_GRAVES else Plein "plafond de lignes graves atteint"
+            graves.push("{o} | {h} | {dossier} | {echelon}")
+            let _ = EscStatistiques.evaluer(h, op)
+        }
+        return nb
+    }
+    on compter_accuse(h, op, delai) {
+        let o = to_string(op)
+        let nb = (accuses.get(o) ?? 0) + 1
+        let w = try { accuses.set(o, nb) }
+        if w.error != () { fail("Incoherent", "plus d'accusés que d'ouvertures pour {o}") }
+        delai_accuse_cumul.set(o, Duree(to_int(delai_accuse_cumul.get(o) ?? 0) + to_int(delai)))
+        return nb
+    }
+    on compter_reprise(h, op, dossier) {
+        let o = to_string(op)
+        let nb = (reprises.get(o) ?? 0) + 1
+        let w = try { reprises.set(o, nb) }
+        if w.error != () { fail("Incoherent", "plus de reprises que d'ouvertures pour {o}") }
+        return nb
+    }
+    on graves(op, h) {
+        return _nb_graves(to_string(op), to_int(h))
+    }
+    on evaluer(h, op) {
+        let o = to_string(op)
+        let g = _nb_graves(o, to_int(h))
+        let st = get_status(o) ?? "normale"
+        if g >= SEUIL_VIGILANCE {
+            if st == "normale" {
+                transition(o, "normale", "vigilance")
+                st = "vigilance"
+                let _ = Journal.noter(h, "escalade", "systeme", "{o} en vigilance ({g} escalades graves sur 365 j)")
+            }
+            if st == "vigilance" {
+                let c = try { ApiConformite.constater(h, op, "silence_escalade", 2, "VIG-{o}-{h}", "systeme") }
+                if c.error == () {
+                    transition(o, "vigilance", "signalee")
+                    st = "signalee"
+                    let _ = Journal.noter(h, "escalade", "systeme", "{o} signale a la conformite ({c.value})")
+                } else {
+                    let _ = Journal.noter(h, "escalade", "systeme", "constat de vigilance de {o} refuse : {c.kind}")
+                }
+            }
+        } else {
+            if st == "vigilance" {
+                transition(o, "vigilance", "normale")
+                st = "normale"
+            } else if st == "signalee" {
+                transition(o, "signalee", "normale")
+                st = "normale"
+                let _ = Journal.noter(h, "escalade", "systeme", "{o} sorti de vigilance")
+            }
+        }
+        return st
+    }
+    on tableau(op, h, par) {
+        let o = to_string(op)
+        let ok_orbite = ApiAcces.a_le_role(par, "analyste") || ApiAcces.a_le_role(par, "conformite") || ApiAcces.a_le_role(par, "direction") || ApiAcces.a_le_role(par, "auditeur")
+        let ok = ok_orbite || ApiAcces.agit_pour(par, op)
+        if !ok && ApiAcces.a_le_role(par, "point_focal") {
+            ok = ApiAcces.agit_pour(par, ApiRef.org_de_etat(ApiRef.etat_de(op)))
+        }
+        require ok else Habilitation "{par} ne lit pas le tableau de {o}"
+        let ouv = ouvertures.get(o) ?? 0
+        let e1 = par_echelon.get("{o}|1") ?? 0
+        let e2 = par_echelon.get("{o}|2") ?? 0
+        let e3 = par_echelon.get("{o}|3") ?? 0
+        let e4 = par_echelon.get("{o}|4") ?? 0
+        let acc = accuses.get(o) ?? 0
+        let cumul = to_int(delai_accuse_cumul.get(o) ?? 0)
+        let moyen = if acc > 0 { idiv(cumul, acc) } else { 0 }
+        let rep = reprises.get(o) ?? 0
+        let g = _nb_graves(o, to_int(h))
+        let st = get_status(o) ?? "normale"
+        return "{ouv} | {e1} | {e2} | {e3} | {e4} | {acc} | {moyen} | {rep} | {g} | {st}"
+    }
+    on en_vigilance(h, par) {
+        require ApiAcces.a_le_role(par, "conformite") || ApiAcces.a_le_role(par, "direction") || ApiAcces.a_le_role(par, "analyste") else Habilitation "{par} ne lit pas les vigilances"
+        let vus = []
+        let res_v = []
+        for l in graves {
+            let o = split(l, " | ")[0]
+            if !contains(vus, o) {
+                vus.push(o)
+                let st = get_status(o) ?? "normale"
+                if st != "normale" {
+                    let g = _nb_graves(o, to_int(h))
+                    res_v.push("{o} | {st} | {g}")
+                }
+            }
+        }
+        return res_v
+    }
+    on purger(h, par) {
+        require ApiAcces.a_le_role(par, "systeme") || ApiAcces.a_le_role(par, "exploitant") else Habilitation "{par} ne purge pas les statistiques"
+        let seuil = to_int(h) - CONSERVATION_MS
+        let purgees = 0
+        let i = graves.size - 1
+        while i >= 0 {
+            let champs = split(graves[i], " | ")
+            if to_int(champs[1]) < seuil {
+                let r = EscDossiers.rapprochement(champs[2])
+                let gel = to_string(r) != "" && ApiResponsabilite.sous_gel(to_string(r))
+                if !gel {
+                    graves.delete(i)
+                    purgees = purgees + 1
+                }
+            }
+            i = i - 1
+        }
+        if purgees > 0 {
+            let _ = Journal.noter(h, "escalade", par, "{purgees} lignes d'escalades graves purgees")
+        }
+        return purgees
+    }
+    // Dossiers distincts d'échelon ≥ 3 visant o dont h − FENETRE_MS < instant ≤ h.
+    on _nb_graves(o: String, hi: Int) {
+        let dossiers_g = []
+        for l in graves {
+            let champs = split(l, " | ")
+            if champs[0] == o {
+                let t = to_int(champs[1])
+                if t > hi - FENETRE_MS && t <= hi && !contains(dossiers_g, champs[2]) {
+                    dossiers_g.push(champs[2])
+                }
+            }
+        }
+        return len(dossiers_g)
+    }
+}

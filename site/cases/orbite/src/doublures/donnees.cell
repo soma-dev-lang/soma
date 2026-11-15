@@ -1,0 +1,201 @@
+// Doublures (corps PROVISOIRES) des façades que traversent les tests de donnees.
+// Sans mémoire : tout se lit dans les identifiants.
+// - Personne : "<role>.<nom>@<ORG>" (ex. "conformite.c@ORG-ORBITE") ; "systeme" ; un nom qui
+//   commence par "intrus" n'a aucun rôle et n'agit pour personne.
+// - Organisation : "ORG-ORBITE" (ORBITE), "ORG-ETAT-<E>" (autorité de l'État E), "ORG-CAPT…"
+//   (capteur), sinon opérateur ; l'État de tutelle est le dernier segment ("ORG-OPA-ALD" → "ALD").
+//   "ORG-INCONNU…" / "ORG-RADIE…" n'existent pas ; un État qui commence par "X" n'est pas
+//   participant ; un opérateur dont l'id contient "SUSP" est suspendu chez operateurs.
+// - Objet "OBJ-<L>…" : la lettre L donne le propriétaire et l'État d'immatriculation —
+//   A : ORG-OPA-ALD / ALD ; B : ORG-OPB-BRV / BRV ; S : ORG-OPSUSP-ALD / ALD ; X : ORG-OPX-XLD / XLD ;
+//   D : débris non attribué (ORG-ORBITE, État ""). "OBJ-INCONNU…" n'est pas catalogué ; un
+//   numéro qui contient "RENTRE" est rentré ; "GEO" est en geo (sinon leo) ; "STA" est une
+//   station habitée ; "V" est impliqué dans le rapprochement ouvert "CJ-<suffixe>-B1".
+// - Rapprochement "CJ-<a>-<b>[-CLOS][-U][-RECENT]" : objets OBJ-<a> et OBJ-<b> ; "CLOS" → resolu
+//   (sinon alerte) ; "-U" → niveau 3 (sinon 2) ; TCA = 1 800 000 000 000 − 1 j si "RECENT",
+//   sinon − 30 j + 1 234 567 ms.
+// - Purge : refusée pour toute cible qui contient "GEL".
+
+flesh ApiAcces {
+    on a_le_role(personne, r) {
+        if personne == "systeme" { return r == "systeme" }
+        if r == "systeme" || starts_with(personne, "intrus") { return false }
+        let morceaux = split(personne, "@")
+        if len(morceaux) != 2 { return false }
+        let role_p = split(morceaux[0], ".")[0]
+        if role_p != to_string(r) { return false }
+        let orbite_seule = r == "analyste" || r == "superviseur" || r == "exploitant" || r == "conformite" || r == "direction" || r == "auditeur"
+        if orbite_seule { return morceaux[1] == "ORG-ORBITE" }
+        return true
+    }
+    on agit_pour(personne, org) {
+        if starts_with(personne, "intrus") { return false }
+        let morceaux = split(personne, "@")
+        if len(morceaux) != 2 { return false }
+        return morceaux[1] == to_string(org)
+    }
+    on quatre_yeux(demandeur, valideur) {
+        if demandeur == valideur || starts_with(valideur, "intrus") || starts_with(demandeur, "intrus") { return false }
+        let mv = split(valideur, "@")
+        let md = split(demandeur, "@")
+        if len(mv) != 2 || len(md) != 2 { return false }
+        let rv = split(mv[0], ".")[0]
+        if (rv == "superviseur" || rv == "conformite" || rv == "direction") && mv[1] == "ORG-ORBITE" { return true }
+        return rv == "chef_de_mission" && mv[1] == md[1]
+    }
+    on role_de(personne) {
+        if personne == "systeme" { return Role("systeme") }
+        if starts_with(personne, "intrus") { return Role("aucun") }
+        let morceaux = split(personne, "@")
+        if len(morceaux) != 2 { return Role("aucun") }
+        return Role(split(morceaux[0], ".")[0])
+    }
+    on employeur(personne) {
+        let morceaux = split(personne, "@")
+        require len(morceaux) == 2 && !starts_with(personne, "intrus") else Inconnu "personne inconnue : {personne}"
+        return Org(morceaux[1])
+    }
+}
+
+flesh ApiRef {
+    on orbite() {
+        return Org("ORG-ORBITE")
+    }
+    on etat_participant(etat) {
+        return etat != "" && !starts_with(etat, "X")
+    }
+    on organisation_existe(org) {
+        return starts_with(org, "ORG-") && !starts_with(org, "ORG-INCONNU") && !starts_with(org, "ORG-RADIE")
+    }
+    on etat_de(org) {
+        require starts_with(org, "ORG-") && !starts_with(org, "ORG-INCONNU") else Inconnu "organisation {org} inconnue"
+        let segs = split(org, "-")
+        return Etat(segs[len(segs) - 1])
+    }
+    on org_de_etat(etat) {
+        require etat != "" else Inconnu "État vide"
+        return Org("ORG-ETAT-{etat}")
+    }
+    on genre(org) {
+        require starts_with(org, "ORG-") && !starts_with(org, "ORG-INCONNU") else Inconnu "organisation {org} inconnue"
+        if org == "ORG-ORBITE" { return "orbite" }
+        if starts_with(org, "ORG-ETAT-") { return "etat" }
+        if starts_with(org, "ORG-CAPT") { return "capteur" }
+        return "operateur"
+    }
+    on etat_objet(objet) {
+        if !starts_with(objet, "OBJ-") || starts_with(objet, "OBJ-INCONNU") { return "inconnu" }
+        if contains(objet, "RENTRE") { return "rentre" }
+        return "en_service"
+    }
+    on proprietaire(objet) {
+        require starts_with(objet, "OBJ-") && !starts_with(objet, "OBJ-INCONNU") else Inconnu "objet inconnu : {objet}"
+        let l = substring(objet, 4, 5)
+        let p = match l {
+            "A" -> "ORG-OPA-ALD"
+            "B" -> "ORG-OPB-BRV"
+            "S" -> "ORG-OPSUSP-ALD"
+            "X" -> "ORG-OPX-XLD"
+            _ -> "ORG-ORBITE"
+        }
+        return Org(p)
+    }
+    on etat_immatriculation(objet) {
+        require starts_with(objet, "OBJ-") && !starts_with(objet, "OBJ-INCONNU") else Inconnu "objet inconnu : {objet}"
+        let l = substring(objet, 4, 5)
+        let e = match l {
+            "A" -> "ALD"
+            "B" -> "BRV"
+            "S" -> "ALD"
+            "X" -> "XLD"
+            _ -> ""
+        }
+        return Etat(e)
+    }
+    on nature(objet) {
+        require starts_with(objet, "OBJ-") && !starts_with(objet, "OBJ-INCONNU") else Inconnu "objet inconnu : {objet}"
+        if substring(objet, 4, 5) == "D" { return NatureObjet("debris") }
+        if contains(objet, "STA") { return NatureObjet("station_habitee") }
+        return NatureObjet("satellite")
+    }
+    on regime(objet) {
+        if contains(objet, "GEO") { return Regime("geo") }
+        return Regime("leo")
+    }
+    on catalogue(regime, apres, n) {
+        let tous = ["OBJ-A1", "OBJ-A2", "OBJ-A8GEO", "OBJ-B1", "OBJ-D1", "OBJ-D2"]
+        let res_c = []
+        for o in tous {
+            let rg = if contains(o, "GEO") { "geo" } else { "leo" }
+            if (regime == "" || regime == rg) && (apres == "" || o > to_string(apres)) && len(res_c) < n { res_c.push(o) }
+        }
+        return res_c
+    }
+}
+
+flesh ApiConjonctions {
+    on etat(r) {
+        if !starts_with(r, "CJ-") { return "inconnu" }
+        if contains(r, "CLOS") { return "resolu" }
+        return "alerte"
+    }
+    on niveau(r) {
+        require starts_with(r, "CJ-") else Inconnu "rapprochement inconnu : {r}"
+        if contains(r, "-U") { return Niveau(3) }
+        return Niveau(2)
+    }
+    on objets(r) {
+        require starts_with(r, "CJ-") else Inconnu "rapprochement inconnu : {r}"
+        let p = split(r, "-")
+        return ["OBJ-{p[1]}", "OBJ-{p[2]}"]
+    }
+    on tca(r) {
+        require starts_with(r, "CJ-") else Inconnu "rapprochement inconnu : {r}"
+        if contains(r, "RECENT") { return Horodatage(1800000000000 - 86400000) }
+        return Horodatage(1800000000000 - 30 * 86400000 + 1234567)
+    }
+    on ouverts_de(objet) {
+        if contains(objet, "V") {
+            let suffixe = substring(objet, 4, len(objet))
+            return ["CJ-{suffixe}-B1"]
+        }
+        return []
+    }
+    on clos_entre(debut, fin) {
+        return ["CJ-A1-B1-CLOS", "CJ-D1-D2-CLOS", "CJ-A2-D1-CLOS-RECENT"]
+    }
+}
+
+flesh ApiOperateurs {
+    on statut(op) {
+        if contains(op, "SUSP") { return "suspendu" }
+        if op == "ORG-ORBITE" || starts_with(op, "ORG-ETAT-") { return "inconnu" }
+        return "actif"
+    }
+}
+
+flesh ApiPasserelle {
+    on notifier(h, destinataire, r, sujet, texte, urgence) {
+        return "MSG-{destinataire}-{h}"
+    }
+}
+
+flesh ApiOperations {
+    on declarer_incident(h, incident, gravite, sous_systeme, description, par) {
+        require len(description) > 0 else MotifRequis "description exigée"
+        return incident
+    }
+}
+
+flesh ApiConformite {
+    on constater(h, op, nature, gravite, reference, par) {
+        require starts_with(op, "ORG-") else Inconnu "opérateur inconnu : {op}"
+        return "MQ-{reference}"
+    }
+}
+
+flesh ApiResponsabilite {
+    on purge_autorisee(cible, h) {
+        return !contains(cible, "GEL")
+    }
+}

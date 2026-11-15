@@ -1,0 +1,45 @@
+// Corps de la façade ApiCoordination : délégation aux cells internes de coordination.
+flesh ApiCoordination {
+    on ouvrir(h, r, par) {
+        return CoordDossier.ouvrir(h, r, par)
+    }
+    on repondre(h, r, reponse, contre, motif, par) {
+        require reponse == "accepte" || reponse == "refuse" else Incoherent "réponse '{reponse}' : « accepte » ou « refuse »"
+        return to_string(CoordDossier.repondre(h, r, CoordSens(reponse), contre, motif, par))
+    }
+    on designe(r, par) {
+        return CoordVerrou.designe(r, par)
+    }
+    on arretee(r) {
+        return CoordVerrou.arretee(r)
+    }
+    on arbitrer(h, r, objet, motif, par, valideur) {
+        return to_string(CoordDossier.arbitrer(h, r, objet, motif, par, valideur))
+    }
+    on rouvrir(h, r, motif, par) {
+        return to_string(CoordDossier.rouvrir(h, r, motif, par))
+    }
+    on echeance(r) {
+        return CoordDossier.echeance(r)
+    }
+    on etat(r) {
+        return to_string(CoordDossier.etat(r))
+    }
+    on decidee(r) {
+        return CoordVerrou.decidee(r)
+    }
+    on muets(r) {
+        return CoordReponse.muets(r)
+    }
+    on decision(r) {
+        let d = CoordVerrou.decision(r)
+        if d == "" { return "" }
+        return CoordDecision.resume(d)
+    }
+    on en_attente_de(org) {
+        return CoordReponse.en_attente_de(org)
+    }
+    on balayer(h, par) {
+        return CoordDossier.balayer(h, par)
+    }
+}

@@ -1,0 +1,108 @@
+// RENTRÉES — le constat d'une rentrée et ses suites : écart à la prévision, recherche des débris
+// au sol, dommages déclarés par les États (Convention de 1972 sur la responsabilité : demande
+// dans l'année qui suit le dommage), transmission à la responsabilité (gel des données).
+// Instance = id de campagne (même id que ReeCampagne et ReeRisque).
+
+// État d'un constat ; "aucun" : campagne sans constat.
+cell type ReeEtatConstat = String where value == "aucun" || value == "enregistre" || value == "recherche" || value == "dommages" || value == "sans_suite" || value == "transmis"
+
+skeleton ReeConstat {
+    const MAX_CONSTATS = 100000
+    // Délai de déclaration des dommages après la rentrée : 1 an (Convention de 1972, art. X).
+    const DELAI_RECLAMATION = 31536000000
+    // Dommages déclarés par constat, au plus.
+    const MAX_DOMMAGES = 200
+
+    memory {
+        // campagne → objet, instant réel (ms), lieu ("lat,lon" ou zone nommée).
+        objet_de: Map<String, Objet> [persistent]
+        instant: Map<String, Horodatage> [persistent]
+        lieu: Map<String, String> [persistent]
+        debris_au_sol: Map<String, Bool> [persistent]
+        // campagne → écart (ms) entre l'instant réel et la dernière fenêtre prévue (0 si dedans).
+        ecart_prevision: Map<String, Duree> [persistent]
+        // campagne → "par / valideur" du constat.
+        constate_par: Map<String, String> [persistent]
+        // campagne → dommages déclarés "h | État | description | par".
+        dommages: Map<String, List<String>> [persistent]
+        // campagne → id du dossier de preuve (ApiResponsabilite.geler). Écrit une fois par
+        // `transmettre` seul, jamais supprimé : lien de la règle « transmis ⇐ dossier gelé ».
+        dossier: Map<String, String> [persistent]
+        // campagne → motif de la clôture sans suite.
+        motif: Map<String, String> [persistent]
+        invariant objet_de.size <= MAX_CONSTATS
+        invariant dommages.size <= MAX_CONSTATS
+    }
+
+    // Suites d'un constat (instance = campagne). Terminaux : sans_suite, transmis.
+    state suite {
+        initial: enregistre
+        enregistre -> recherche     // enregistrer, ou ouvrir_recherche : débris retrouvés au sol
+        enregistre -> sans_suite    // balayer : délai de réclamation écoulé sans dommage
+        recherche -> sans_suite     // balayer
+        enregistre -> dommages      // declarer_dommages
+        recherche -> dommages       // declarer_dommages
+        dommages -> transmis        // transmettre : dossier de preuve gelé
+    }
+
+    face {
+        // Enregistre le constat d'une rentrée (appelé par ReeCampagne.constater, qui porte
+        // l'habilitation à quatre yeux) ; calcule l'écart à la fenêtre [debut, fin] ; avec débris
+        // au sol, ouvre la recherche. Renvoie l'état atteint.
+        // Refus : Existe (constat déjà enregistré pour la campagne), Incoherent (instant > h).
+        signal enregistrer(h: Horodatage, campagne: String, objet: Objet, quand: Horodatage, ou: String, debris: Bool, debut: Horodatage, fin: Horodatage, par: String, valideur: String) -> ReeEtatConstat
+            writes objet_de, instant, lieu, debris_au_sol, ecart_prevision, constate_par
+            moves enregistre -> recherche
+
+        // Ouvre la recherche de débris d'une rentrée constatée sans débris, quand un fragment est
+        // signalé plus tard (ReeDebris.signaler, qui porte l'habilitation). Sans effet si la
+        // recherche est déjà ouverte ou le constat au-delà. Renvoie l'état du constat.
+        // Refus : Inconnu (campagne sans constat).
+        signal ouvrir_recherche(h: Horodatage, campagne: String) -> ReeEtatConstat
+            writes debris_au_sol
+            moves enregistre -> recherche
+
+        // Un État déclare des dommages attribués à la rentrée (personnes, biens, aéronefs).
+        // Renvoie le nombre de dommages déclarés pour la campagne.
+        // Habilitation : par "point_focal" ou "autorite" de l'État `etat` (rôle d'État,
+        // ApiAcces.agit_pour sur ApiRef.org_de_etat).
+        // Refus : Inconnu (campagne sans constat, État), EtatInvalide (constat terminé),
+        // Delai (plus de DELAI_RECLAMATION après l'instant de rentrée), MotifRequis (description
+        // vide), Habilitation, Plein (MAX_DOMMAGES).
+        signal declarer_dommages(h: Horodatage, campagne: String, etat: Etat, description: String, par: String) -> Int
+            writes dommages
+            reads objet_de, instant
+            moves enregistre -> dommages, recherche -> dommages
+            calls ApiAcces.a_le_role, ApiAcces.agit_pour, ApiRef.org_de_etat, Journal.noter
+            ensures result >= 1
+
+        // Transmet le constat avec dommages à la responsabilité : gel des journaux, éphémérides
+        // et décisions concernés (ApiResponsabilite.geler, évènement = id de campagne, avec
+        // l'identité `par`). L'id rendu est écrit une fois dans `dossier` (seul écrivain) ; la
+        // transmission exige ce dossier "gele" (règle de l'arête, ApiResponsabilite.sous_gel de la
+        // campagne). Renvoie l'id du dossier de preuve.
+        // Habilitation : par "conformite" ou "direction" (rôles d'ORBITE).
+        // Refus : Inconnu, Existe (campagne déjà gelée par ailleurs : ApiResponsabilite.geler),
+        // EtatInvalide (pas "dommages", ou dossier non gelé), MotifRequis, Habilitation.
+        signal transmettre(h: Horodatage, campagne: String, motif_gel: String, par: String) -> String
+            writes dossier
+            reads dossier, objet_de
+            moves dommages -> transmis when RespDossiers.gele via dossier
+            calls ApiAcces.a_le_role, ApiResponsabilite.geler, ApiResponsabilite.sous_gel, Journal.noter
+
+        // Échéances des constats à `h` (appelé par ReeCampagne.balayer) : tout constat "enregistre"
+        // ou "recherche" sans dommage dont DELAI_RECLAMATION est écoulé passe "sans_suite" (motif
+        // "délai de réclamation écoulé"). Renvoie le nombre de constats clos.
+        // Habilitation : par "systeme" (rôle d'ORBITE). Refus : Habilitation.
+        signal balayer(h: Horodatage, par: String) -> Int
+            writes motif
+            reads instant, suite
+            moves enregistre -> sans_suite, recherche -> sans_suite
+            calls ApiAcces.a_le_role, Journal.noter
+            ensures result >= 0
+
+        // État du constat de la campagne ; "aucun" si la rentrée n'est pas constatée.
+        signal etat(campagne: String) -> ReeEtatConstat
+            reads objet_de, suite
+    }
+}

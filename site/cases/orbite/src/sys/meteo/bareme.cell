@@ -1,0 +1,88 @@
+// meteo — BARÈME D'INCERTITUDE. Le facteur d'élargissement des covariances (100 = aucun) dépend
+// du régime orbital et de la bande d'activité géomagnétique. Le barème est versionné : rédigé
+// par un analyste, adopté à quatre yeux, il abroge le précédent ; il ne change jamais pendant
+// une alerte de tempête ouverte (les facteurs appliqués restent ceux qui ont fondé les décisions
+// en cours). Sans barème adopté, le barème d'origine s'applique :
+//   leo  : calme 100, agitee 150, tempete 300, extreme 500
+//   meo  : calme 100, agitee 100, tempete 150, extreme 200
+//   geo, heo : calme 100, agitee 100, tempete 120, extreme 150
+
+// Bande d'activité géomagnétique : "calme" (Kp < 5), "agitee" (5 ≤ Kp < 7), "tempete"
+// (7 ≤ Kp < 8), "extreme" (Kp ≥ 8). "precaution" n'est pas une bande : sans kp frais, le
+// facteur applique la bande "tempete" (voir ApiMeteo.facteur_incertitude dans facade.txt).
+cell type MetBande = String where value == "calme" || value == "agitee" || value == "tempete" || value == "extreme"
+
+// Versions du barème : id "B-<n>".
+skeleton MetBareme {
+    const MAX_VERSIONS = 1000
+    const CASES = 16                     // 4 régimes × 4 bandes : un barème adoptable est complet
+    const FACTEUR_MIN = 100
+    const FACTEUR_MAX = 1000
+    memory {
+        motif: Map<String, String> [persistent]               // version → motif de la révision (étude, retour d'expérience)
+        redige_par: Map<String, String> [persistent]          // version → auteur
+        facteur_case: Map<String, Pourcent> [persistent]      // "version|regime|bande" → facteur
+        vigueur_debut: Map<String, Horodatage> [persistent]   // version → entrée en vigueur
+        vigueur_fin: Map<String, Horodatage> [persistent]     // version → abrogation
+        adopte_par: Map<String, String> [persistent]          // version → "par/valideur"
+        courant: Map<String, String> [persistent]             // "courant" → version en vigueur ; absent : barème d'origine
+        invariant motif.size <= MAX_VERSIONS
+        invariant facteur_case >= FACTEUR_MIN && facteur_case <= FACTEUR_MAX
+        invariant courant.size <= 1
+        invariant (vigueur_debut ?? 0) <= (vigueur_fin ?? 32503680000000)
+    }
+    // Cycle de vie d'une version (id = version).
+    state bareme {
+        initial: redige
+        redige -> en_vigueur      // adopter : complet, cohérent, quatre yeux, aucune alerte ouverte
+        redige -> abandonne       // abandonner
+        en_vigueur -> abroge      // adopter (la version suivante)
+    }
+    face {
+        // Ouvre une nouvelle version à rédiger. Renvoie "redige". Rôle exigé : "analyste"
+        // d'ORBITE. Refus : Existe, MotifRequis, Plein, Habilitation.
+        signal rediger(h: Horodatage, version: String, raison: String, par: String) -> String
+            writes motif, redige_par
+            calls ApiAcces.a_le_role, Journal.noter
+        // Fixe le facteur d'une case (régime, bande) d'une version en rédaction (100 à 1 000).
+        // Renvoie le nombre de cases fixées de la version. Rôle exigé : "analyste" d'ORBITE.
+        // Refus : Inconnu, EtatInvalide (version non redige), HorsBornes (f hors [100, 1 000]),
+        // Habilitation.
+        signal fixer(h: Horodatage, version: String, regime: Regime, b: MetBande, f: Int, par: String) -> Int
+            writes facteur_case
+            reads bareme, redige_par
+            calls ApiAcces.a_le_role, Journal.noter
+        // Adopte une version rédigée : elle entre en vigueur à h et abroge la version courante.
+        // Renvoie "en_vigueur". Rôle exigé : "superviseur" d'ORBITE, contre-signé par `valideur`
+        // ("direction", ApiAcces.quatre_yeux) ; l'auteur de la version ne peut ni adopter ni
+        // valider. Refus : Inconnu, EtatInvalide, Insuffisant (moins de 16 cases), Incoherent
+        // (un facteur décroît quand la bande monte, ou un facteur "calme" ≠ 100),
+        // Conflit (alerte de tempête ouverte), Habilitation, QuatreYeux.
+        signal adopter(h: Horodatage, version: String, par: String, valideur: String) -> String
+            writes vigueur_debut, vigueur_fin, adopte_par, courant
+            reads facteur_case, redige_par
+            moves redige -> en_vigueur, en_vigueur -> abroge
+            calls MetTempete.courante, ApiAcces.a_le_role, ApiAcces.quatre_yeux, Journal.noter
+        // Abandonne une version en rédaction. Renvoie "abandonne". Rôle exigé : "analyste"
+        // d'ORBITE. Refus : Inconnu, EtatInvalide, MotifRequis, Habilitation.
+        signal abandonner(h: Horodatage, version: String, raison: String, par: String) -> String
+            reads redige_par
+            moves redige -> abandonne
+            calls ApiAcces.a_le_role, Journal.noter
+        // Bande d'un kp en dixièmes (0 à 90).
+        signal bande(kp: Int) -> MetBande
+            requires kp >= 0 && kp <= 90
+        // Facteur (100 à 1 000) du barème en vigueur pour le régime et la bande ; barème
+        // d'origine si aucune version n'est en vigueur.
+        signal facteur(regime: Regime, b: MetBande) -> Pourcent
+            reads courant, facteur_case
+            ensures result >= 100 && result <= 1000
+        // Version en vigueur à l'instant `a` (passé ou présent) ; "origine" si aucune.
+        signal en_vigueur_a(a: Horodatage) -> String
+            reads vigueur_debut, vigueur_fin
+        // Facteur d'une case d'une version donnée ("origine" : barème d'origine) ; sert à la
+        // preuve. Refus : Inconnu (version ou case non fixée).
+        signal facteur_a(version: String, regime: Regime, b: MetBande) -> Pourcent
+            reads facteur_case
+    }
+}

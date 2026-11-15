@@ -1,0 +1,74 @@
+// Corps de EscConcertation : concertation d'urgence de l'échelon 4.
+flesh EscConcertation {
+    on convoquer(h) {
+        let convoquees = 0
+        for d in EscDossiers.en_e4(10000) {
+            if convoquee_a.get(d) == () {
+                require convoquee_a.size < MAX_CONCERTATIONS else Plein "plafond de {MAX_CONCERTATIONS} concertations atteint"
+                let r = EscDossiers.rapprochement(d)
+                let etats_c = []
+                for ob in ApiConjonctions.objets(r) {
+                    let p = ApiRef.proprietaire(Objet(ob))
+                    if to_string(p) != "inconnu" {
+                        let e = try { ApiRef.etat_de(p) }
+                        if e.error == () && !contains(etats_c, to_string(e.value)) { etats_c.push(to_string(e.value)) }
+                    }
+                }
+                convoquee_a.set(d, h)
+                etats.set(d, join(etats_c, ","))
+                transition(d, "aucune", "convoquee")
+                let liste_e = join(etats_c, ",")
+                let _ = Journal.noter(h, "escalade", "systeme", "concertation {d} convoquee ({liste_e})")
+                convoquees = convoquees + 1
+            }
+        }
+        return convoquees
+    }
+    on tenir(h, dossier, presents_liste, engagement_etat, texte, par) {
+        require ApiAcces.a_le_role(par, "direction") || ApiAcces.a_le_role(par, "superviseur") else Habilitation "{par} ne tient pas de concertation"
+        require texte != "" else MotifRequis "compte rendu requis"
+        let st = get_status(dossier) ?? "aucune"
+        require st != "aucune" else Inconnu "aucune concertation pour {dossier}"
+        require st == "convoquee" else EtatInvalide "concertation {dossier} {st}"
+        presents.set(dossier, presents_liste)
+        engagement.set(dossier, to_string(engagement_etat))
+        compte_rendu.set(dossier, "{h} | {par} | {texte}")
+        transition(dossier, "convoquee", "tenue")
+        let _ = Journal.noter(h, "escalade", par, "concertation {dossier} tenue : {engagement_etat}")
+        return "tenue"
+    }
+    on abandonner(h) {
+        let manquees = 0
+        for d in convoquee_a.keys {
+            if (get_status(d) ?? "aucune") == "convoquee" {
+                let ed = EscDossiers.etat(d)
+                if ed == "close" || ed == "caduque" {
+                    transition(d, "convoquee", "manquee")
+                    let _ = Journal.noter(h, "escalade", "systeme", "concertation {d} manquee (dossier {ed})")
+                    manquees = manquees + 1
+                }
+            }
+        }
+        return manquees
+    }
+    on lire(dossier, par) {
+        let cv = convoquee_a.get(dossier)
+        require cv != () else Inconnu "aucune concertation pour {dossier}"
+        let ets = etats.get(dossier) ?? ""
+        let ok = ApiAcces.a_le_role(par, "direction") || ApiAcces.a_le_role(par, "superviseur") || ApiAcces.a_le_role(par, "auditeur")
+        if !ok && ApiAcces.a_le_role(par, "point_focal") {
+            for e in split(ets, ",") {
+                if e != "" {
+                    let o = try { ApiRef.org_de_etat(Etat(e)) }
+                    if o.error == () && ApiAcces.agit_pour(par, o.value) { ok = true }
+                }
+            }
+        }
+        require ok else Habilitation "{par} ne lit pas la concertation {dossier}"
+        let st = get_status(dossier) ?? "aucune"
+        let pr = presents.get(dossier) ?? ""
+        let en = engagement.get(dossier) ?? ""
+        let cr = compte_rendu.get(dossier) ?? ""
+        return "{st} | {cv} | {ets} | {pr} | {en} | {cr}"
+    }
+}

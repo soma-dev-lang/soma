@@ -1,0 +1,274 @@
+// Doublures (corps PROVISOIRES) des façades que traversent les tests de passerelle. Pures,
+// sans mémoire : leur comportement se lit sur les identifiants.
+// - Personne "role[#n]@ORG-X" : rôle `role` pour l'employeur ORG-X ; un rôle d'ORBITE ne vaut
+//   que pour ORG-ORBITE ; "intrus…" n'a aucun rôle ; "systeme" a le rôle "systeme".
+// - Jeton de session "J:<personne>" (authentifier le résout, sauf personne "intrus…" ou
+//   "expire…") ; ouvrir_session exige le facteur "2FA-ok".
+// - quatre_yeux(a, b) : faux si a == b ; vrai si b est superviseur/conformite/direction
+//   d'ORBITE, ou chef_de_mission du même employeur que a.
+// - Organisations : existe si "ORG-…" sauf "ORG-RADIE…" / "ORG-INCONNU…" ; genre : "ORG-ORBITE"
+//   orbite, "ORG-ETAT-<E>" État <E>, "ORG-CAPT…" capteur, sinon opérateur ; tutelle "ALD".
+//   Opérateur actif : tout opérateur sauf "ORG-RETIRE…".
+// - Objets : "OBJ-A…" à ORG-OPA, "OBJ-B…" à ORG-OPB, "OBJ-SECRET…" à ORG-OPA et diffusé à lui
+//   seul (et à ORBITE) ; les autres objets sont diffusés à toute organisation.
+// - Rapprochements : "CJ-INCONNU…" inconnu ; "CJ-S…" : OBJ-A1 / OBJ-SECRET1 ; "CJ-X…" :
+//   OBJ-SECRET1 / OBJ-SECRET2 ; sinon OBJ-A1 / OBJ-B1. Niveau 2 si "CJ-N2…", 3 sinon.
+//   Désigné : OBJ-A1 ; échéance de réponse 1 800 000 000 000 + 3 600 000.
+// - Opérations : changement autorisé sauf à h == 777 ; aucun sous-système dégradé sauf
+//   "evenements" ; incident majeur : jamais (les tests le simulent par mock).
+
+flesh ApiAcces {
+    on a_le_role(personne, r) {
+        if personne == "systeme" { return r == "systeme" }
+        if r == "systeme" || starts_with(personne, "intrus") { return false }
+        let parts = split(personne, "@")
+        if len(parts) != 2 { return false }
+        let role = split(parts[0], "#")[0]
+        if role != to_string(r) || role == "aucun" { return false }
+        if contains(["analyste", "superviseur", "exploitant", "conformite", "direction", "auditeur"], role) {
+            return parts[1] == "ORG-ORBITE"
+        }
+        return true
+    }
+    on agit_pour(personne, org) {
+        if starts_with(personne, "intrus") { return false }
+        let parts = split(personne, "@")
+        if len(parts) != 2 { return false }
+        return parts[1] == to_string(org)
+    }
+    on quatre_yeux(demandeur, valideur) {
+        if demandeur == valideur || starts_with(valideur, "intrus") || starts_with(demandeur, "intrus") { return false }
+        let pv = split(valideur, "@")
+        let pd = split(demandeur, "@")
+        if len(pv) != 2 || len(pd) != 2 { return false }
+        let rv = split(pv[0], "#")[0]
+        if contains(["superviseur", "conformite", "direction"], rv) && pv[1] == "ORG-ORBITE" { return true }
+        return rv == "chef_de_mission" && pv[1] == pd[1]
+    }
+    on authentifier(jeton, h) {
+        if !starts_with(jeton, "J:") { return "" }
+        let p = substring(jeton, 2, len(jeton))
+        if starts_with(p, "expire") { return "" }
+        return p
+    }
+    on employeur(personne) {
+        let parts = split(personne, "@")
+        require len(parts) == 2 else Inconnu "personne {personne} inconnue"
+        return Org(parts[1])
+    }
+    on role_de(personne) {
+        if personne == "systeme" { return "systeme" }
+        if starts_with(personne, "intrus") { return "aucun" }
+        let parts = split(personne, "@")
+        if len(parts) != 2 { return "aucun" }
+        let role = split(parts[0], "#")[0]
+        let connus = ["analyste", "superviseur", "exploitant", "conformite", "direction", "auditeur", "dynamicien", "chef_de_mission", "administrateur_operateur", "capteur", "point_focal", "autorite"]
+        if !contains(connus, role) { return "aucun" }
+        return Role(role)
+    }
+    on ouvrir_session(h, personne, facteur) {
+        require contains(personne, "@") else Inconnu "personne {personne} inconnue"
+        require facteur == "2FA-ok" else Habilitation "facteur invalide"
+        return "J:" + personne
+    }
+    on fermer_session(h, jeton, par) {
+        require starts_with(jeton, "J:") else Inconnu "session inconnue"
+        return "fermee"
+    }
+    on enregistrer(h, personne, employeur, r, par) {
+        require starts_with(par, "exploitant") || starts_with(par, "administrateur_operateur") else Habilitation "enregistrer : exploitant ou administrateur"
+        return r
+    }
+}
+
+flesh ApiRef {
+    on orbite() { return Org("ORG-ORBITE") }
+    on organisation_existe(org) {
+        return starts_with(org, "ORG-") && !starts_with(org, "ORG-RADIE") && !starts_with(org, "ORG-INCONNU")
+    }
+    on genre(org) {
+        require starts_with(org, "ORG-") && !starts_with(org, "ORG-INCONNU") else Inconnu "organisation {org} inconnue"
+        if org == "ORG-ORBITE" { return "orbite" }
+        if starts_with(org, "ORG-ETAT-") { return "etat" }
+        if starts_with(org, "ORG-CAPT") { return "capteur" }
+        return "operateur"
+    }
+    on etat_de(org) {
+        require starts_with(org, "ORG-") else Inconnu "organisation {org} inconnue"
+        if starts_with(org, "ORG-ETAT-") { return Etat(substring(org, 9, len(org))) }
+        return Etat("ALD")
+    }
+    on proprietaire(objet) {
+        if starts_with(objet, "OBJ-B") { return Org("ORG-OPB") }
+        return Org("ORG-OPA")
+    }
+    on nature(objet) { return "satellite" }
+    on regime(objet) { return "leo" }
+    on propulsion(objet) { return "impulsionnelle" }
+    on habite(objet) { return false }
+    on etat_objet(objet) { return "en_service" }
+    on etat_immatriculation(objet) { return Etat("ALD") }
+    on immatricule(objet) { return true }
+    on peut_manoeuvrer(objet) { return true }
+    on declarer_propulsion(h, objet, p, motif, par) {
+        require _proprio_ok(objet, par) else Habilitation "propulsion : dynamicien du propriétaire"
+        return p
+    }
+    on immatriculer(h, objet, numero, par) {
+        require starts_with(par, "autorite") else Habilitation "immatriculer : autorité"
+        return numero
+    }
+    on cataloguer(h, nature, proprietaire, etat, regime, propulsion, masse, par) {
+        require starts_with(par, "analyste") && ends_with(par, "@ORG-ORBITE") else Habilitation "cataloguer : analyste d'ORBITE"
+        return Objet("OBJ-A9")
+    }
+    on _proprio_ok(objet: Objet, par: String) {
+        let o = if starts_with(objet, "OBJ-B") { "ORG-OPB" } else { "ORG-OPA" }
+        return starts_with(par, "dynamicien") && ends_with(par, "@" + o)
+    }
+}
+
+flesh ApiOperations {
+    on changement_autorise(h) { return h != 777 }
+    on declarer_incident(h, incident, gravite, sous_systeme, description, par) {
+        require description != "" else MotifRequis "incident sans description"
+        return incident
+    }
+    on incident_majeur() { return false }
+    on degrade(sous_systeme) { return sous_systeme == "evenements" }
+}
+
+flesh ApiConformite {
+    on constater(h, op, nature, gravite, reference, par) {
+        require reference != "" && nature != "" else MotifRequis "manquement sans nature ni référence"
+        return "MQ-{reference}"
+    }
+    on constater_etat(h, etat, nature, gravite, reference, par) {
+        require reference != "" && nature != "" else MotifRequis "manquement sans nature ni référence"
+        return "MQE-{reference}"
+    }
+}
+
+flesh ApiOperateurs {
+    on est_actif(op, h) { return !starts_with(op, "ORG-RETIRE") && !starts_with(op, "ORG-ETAT") }
+    on suspendre(h, op, motif, par, valideur) {
+        require starts_with(par, "point_focal") || starts_with(par, "conformite") else Habilitation "suspendre : point focal ou conformité"
+        require (valideur != "" && valideur != par && !starts_with(valideur, "intrus")) else QuatreYeux "suspendre : quatre yeux"
+        return "suspendu"
+    }
+    on retablir(h, op, par, valideur) {
+        require (valideur != "" && valideur != par && !starts_with(valideur, "intrus")) else QuatreYeux "rétablir : quatre yeux"
+        return "actif"
+    }
+}
+
+flesh ApiEscalade {
+    on escalader(h, r, op, motif, par) {
+        require starts_with(par, "systeme") || starts_with(par, "analyste") else Habilitation "escalader : systeme ou analyste"
+        require motif != "" else MotifRequis "escalade sans motif"
+        return 1
+    }
+    on accuser(h, r, op, par) {
+        require ends_with(par, "@" + to_string(op)) else Habilitation "accuser pour {op}"
+        return "accuse"
+    }
+    // aucune escalade en cours ni reprise dans le monde du banc : tout défaut escalade
+    on echelon(r, op) { return 0 }
+    on reprise(r) { return false }
+}
+
+flesh ApiConjonctions {
+    on objets(r) {
+        require !starts_with(r, "CJ-INCONNU") else Inconnu "rapprochement {r} inconnu"
+        if starts_with(r, "CJ-S") { return ["OBJ-A1", "OBJ-SECRET1"] }
+        if starts_with(r, "CJ-X") { return ["OBJ-SECRET1", "OBJ-SECRET2"] }
+        return ["OBJ-A1", "OBJ-B1"]
+    }
+    on tca(r) { return Horodatage(1800000000000 + 7200000) }
+    on distance(r) { return Distance(120) }
+    on pc(r) { return Probabilite(250000) }
+    on niveau(r) {
+        require !starts_with(r, "CJ-INCONNU") else Inconnu "rapprochement {r} inconnu"
+        if starts_with(r, "CJ-N2") { return 2 }
+        return 3
+    }
+    on mis_a_jour(r) { return Horodatage(1800000000000) }
+    on ouverts_de(objet) { return ["CJ-1"] }
+}
+
+flesh ApiDonnees {
+    on peut_recevoir(org, objet, r, h) {
+        if org == "ORG-ORBITE" { return true }
+        if starts_with(objet, "OBJ-SECRET") { return org == "ORG-OPA" }
+        return true
+    }
+    on tracer(h, org, objet, r, nature) { return 1 }
+}
+
+flesh ApiEphemerides {
+    on age(objet, h) {
+        require !starts_with(objet, "OBJ-NEUF") else Inconnu "aucune éphéméride"
+        return Duree(3600000)
+    }
+    on qualite(objet) { return "haute" }
+    on fraiche(objet, h) { return true }
+    on derniere(objet) { return "OEM-0123456789abcdef" }
+    on deposer(h, objet, depot, epoque, horizon, q, empreinte, position, avec_manoeuvres, par) {
+        let o = if starts_with(objet, "OBJ-B") { "ORG-OPB" } else { "ORG-OPA" }
+        require starts_with(par, "dynamicien") && ends_with(par, "@" + o) else Habilitation "déposer : dynamicien du propriétaire"
+        return "validee"
+    }
+}
+
+flesh ApiMeteo {
+    on facteur_incertitude(regime, h) { return Pourcent(100) }
+}
+
+flesh ApiCoordination {
+    on etat(r) { return "en_coordination" }
+    on designe(r, par) { return Objet("OBJ-A1") }
+    on echeance(r) { return Horodatage(1800000000000 + 3600000) }
+    on decidee(r) { return false }
+    on en_attente_de(org) {
+        if org == "ORG-OPA" { return ["CJ-1"] }
+        return []
+    }
+    on repondre(h, r, reponse, contre, motif, par) {
+        require starts_with(par, "dynamicien") || starts_with(par, "chef_de_mission") else Habilitation "répondre : dynamicien ou chef de mission"
+        require to_int(h) <= 1800000000000 + 3600000 else Delai "échéance de réponse passée"
+        require reponse == "accepte" || reponse == "refuse" || reponse == "contre" else Incoherent "réponse inconnue"
+        return "enregistree"
+    }
+}
+
+flesh ApiManoeuvres {
+    on objet_de(plan) { return if starts_with(plan, "PLAN-S") { Objet("OBJ-SECRET1") } else { Objet("OBJ-A1") } }
+    on etat(plan) { return "declare" }
+    on motif_de(plan) { return "évitement" }
+    on declarer(h, plan, objet, r, motif, debut, dv, par) {
+        require starts_with(par, "dynamicien") else Habilitation "déclarer : dynamicien"
+        return "declare"
+    }
+    on confirmer_execution(h, plan, reel, dv, par) { return "executee" }
+    on annuler(h, plan, motif, par) {
+        require motif != "" else MotifRequis "annulation sans motif"
+        return "annulee"
+    }
+}
+
+flesh ApiObservation {
+    on deposer_mesure(h, capteur, objet, instant, mesure, par) {
+        require starts_with(par, "capteur") else Habilitation "déposer une mesure : capteur"
+        return "MES-1"
+    }
+}
+
+flesh ApiEvenements {
+    on en_anomalie(objet) { return false }
+    on anomalie(h, objet, genre, description, par) { return "EV-1" }
+}
+
+flesh ApiFinDeVie {
+    on passive(objet) { return false }
+    on plan_conforme(objet) { return true }
+}

@@ -1,0 +1,85 @@
+// LANCEMENTS — enquête d'échec : un lancement perdu (avant injection, à l'injection) ou une
+// séparation ratée laisse des retombées au sol et des objets en orbite que personne n'a prévus.
+// L'enquête les évalue, notifie les États concernés et déclare les fragmentations.
+// Instance = id du lancement (au plus une enquête par lancement).
+
+skeleton LancEnquete {
+    const MAX_ENQUETES = 1000000
+    // Au plus 500 objets en orbite et 100 zones de retombée par enquête.
+    const MAX_OBJETS_ORBITE = 500
+    const MAX_ZONES = 100
+    memory {
+        phase_de: Map<String, LancPhaseEchec> [persistent]
+        ouverte_le: Map<String, Horodatage> [persistent]
+        description_de: Map<String, String> [persistent]
+        objets_orbite_de: Map<String, List<String>> [persistent] // OBJ issus de l'échec (catalogués par l'observation)
+        zones_de: Map<String, List<String>> [persistent]         // "etat|debut|fin|lieu" : zones de retombée, États survolés
+        notifies_de: Map<String, List<String>> [persistent]      // États notifiés (Org de leur autorité), sans doublon
+        evenement_de: Map<String, String> [persistent]           // fragmentation déclarée (ApiEvenements), "" si aucune
+        conclusion_de: Map<String, String> [persistent]
+        invariant phase_de.size <= 1000000
+        invariant len(objets_orbite_de) <= 500
+        invariant len(zones_de) <= 100
+        invariant len(notifies_de) <= 100
+    }
+    // Cycle de l'enquête.
+    state enquete {
+        initial: a_ouvrir
+        a_ouvrir -> ouverte              // lancement en échec, ou injecté avec séparation ratée
+        ouverte -> debris_evalues        // objets en orbite et zones de retombée connus, États notifiés
+        debris_evalues -> ouverte        // nouveaux débris découverts : réévaluation
+        debris_evalues -> close          // conclusions validées à quatre yeux
+    }
+    face {
+        // Ouvre l'enquête (a_ouvrir -> ouverte) d'un lancement en échec (phases "lanceur",
+        // "injection") ou injecté (phase "separation"). Notifie le point focal de l'État de
+        // lancement (ApiPasserelle.notifier, urgence 3). `par` "systeme" (appel de
+        // LancLancement), "analyste" d'ORBITE, ou "chef_de_mission" de l'opérateur du lanceur.
+        // Renvoie "ouverte". Refus : Existe, Inconnu, EtatInvalide, MotifRequis, Habilitation.
+        signal ouvrir(h: Horodatage, lancement: String, phase: LancPhaseEchec, description: String, par: String) -> LancEtatEnquete
+            writes phase_de, ouverte_le, description_de
+            moves a_ouvrir -> ouverte when LancLancement.echec || LancLancement.injecte
+            calls LancLancement.fiche, LancLancement.etat, ApiRef.org_de_etat, ApiPasserelle.notifier, ApiAcces.a_le_role, ApiAcces.agit_pour, Journal.noter
+        // Évalue les conséquences (ouverte -> debris_evalues) : `objets` = OBJ déjà catalogués
+        // issus de l'échec (ApiRef.etat_objet ≠ "inconnu", sinon Inconnu) ; `zones` =
+        // "etat|debut|fin|lieu" des retombées (hors des zones prévues : LancZones.zones). Notifie
+        // chaque État survolé et chaque État de lancement (LancZones.etats_lancement) une seule fois
+        // (ApiPasserelle.notifier à ApiRef.org_de_etat, urgence 3) ; si au moins deux objets sont
+        // en orbite, déclare une fragmentation (ApiEvenements.declarer, r "", mêmes `par` et
+        // `valideur`) ; passe "non_separee" les pièces encore prévues
+        // (LancPiece.abandonner_manifeste). `par` "analyste", `valideur` "superviseur".
+        // Renvoie le nombre d'États notifiés. Refus : Inconnu, EtatInvalide, Plein, Incoherent
+        // (zone mal formée), Habilitation, QuatreYeux.
+        signal evaluer(h: Horodatage, lancement: String, objets: List<String>, zones: List<String>, par: String, valideur: String) -> Int
+            writes objets_orbite_de, zones_de, notifies_de, evenement_de
+            reads phase_de
+            moves ouverte -> debris_evalues
+            calls LancPiece.abandonner_manifeste, LancZones.zones, LancZones.etats_lancement, ApiRef.etat_objet, ApiRef.org_de_etat, ApiEvenements.declarer, ApiPasserelle.notifier, ApiAcces.a_le_role, ApiAcces.quatre_yeux, Journal.noter
+        // Rouvre l'évaluation (debris_evalues -> ouverte) : nouveaux objets découverts par
+        // l'observation ou nouvelle zone de retombée. `par` "analyste". Renvoie "ouverte".
+        // Refus : Inconnu, EtatInvalide, MotifRequis, Habilitation.
+        signal rouvrir(h: Horodatage, lancement: String, motif: String, par: String) -> LancEtatEnquete
+            moves debris_evalues -> ouverte
+            calls ApiAcces.a_le_role, Journal.noter
+        // Clôt l'enquête (debris_evalues -> close) avec ses conclusions (cause, responsabilités
+        // présumées). Si des dommages sont constatés (`dommages`), le dossier de preuve doit couvrir
+        // le lancement : s'il n'est pas déjà sous gel (ApiResponsabilite.sous_gel(lancement)), il est
+        // gelé (ApiResponsabilite.geler, évènement = lancement, par "systeme") avant la clôture.
+        // `par` "analyste", `valideur` "superviseur" ou "direction". Renvoie "close".
+        // Refus : Inconnu, EtatInvalide, MotifRequis, Habilitation, QuatreYeux.
+        signal clore(h: Horodatage, lancement: String, conclusion: String, dommages: Bool, par: String, valideur: String) -> LancEtatEnquete
+            writes conclusion_de
+            moves debris_evalues -> close
+            calls ApiResponsabilite.sous_gel, ApiResponsabilite.geler, ApiAcces.a_le_role, ApiAcces.quatre_yeux, Journal.noter
+        // État ("inconnue" si jamais ouverte).
+        signal etat(lancement: String) -> LancEtatEnquete
+            reads enquete, phase_de
+        // Fiche complète de l'enquête (preuve). Refus : Inconnu.
+        signal fiche(lancement: String) -> LancFicheEnquete
+            reads phase_de, ouverte_le, objets_orbite_de, zones_de, notifies_de, evenement_de, conclusion_de
+        // Zones de retombée "etat|debut|fin|lieu" retenues (preuve de notification aux États).
+        // Refus : Inconnu.
+        signal zones(lancement: String) -> List<String>
+            reads zones_de, phase_de
+    }
+}

@@ -1,0 +1,90 @@
+// COORDINATION — le verrou de désignation unique (propriété 1). Instance = id du rapprochement.
+// Une désignation n'est « arrêtée » que verrou tenu ; le seul chemin qui écrit une désignation
+// est `poser`, qui prend l'arête libre -> tenu : tant que l'instance est tenue, aucun second
+// `poser` ne peut réussir (invalid_transition, rendu Conflit). Une autre désignation exige de
+// lever le verrou (rouverture), ce qui fait passer la décision précédente à "levee".
+
+skeleton CoordVerrou {
+    const MAX_VERROUS = 50000000
+    memory {
+        designe_de: Map<String, Objet> [persistent]       // r -> objet désigné ("" : décision de ne pas manœuvrer) ; présent seulement verrou tenu
+        decision_de: Map<String, String> [persistent]     // r -> décision en vigueur (CoordDecision) ; présent seulement verrou tenu
+        pose_le: Map<String, Horodatage> [persistent]     // r -> instant de la dernière pose
+        poses_de: Map<String, Int> [persistent]           // r -> nombre de poses (numérote les décisions)
+        invariant designe_de.size <= 50000000
+        invariant decision_de.size <= 50000000
+        invariant poses_de >= 1
+    }
+    // Verrou d'un rapprochement : réactif tant que le rapprochement vit, clos avec lui.
+    state verrou {
+        initial: libre
+        libre -> tenu                    // pose : une désignation arrêtée, une décision en vigueur
+        tenu -> leve                     // levée : rouverture de la coordination (jamais vers l'initial :
+                                         // une règle ne peut viser l'état initial d'une machine)
+        leve -> tenu                     // nouvelle pose après rouverture
+        libre -> clos                    // clôture du rapprochement sans désignation en vigueur
+        tenu -> clos                     // clôture avec désignation en vigueur (la décision est soldée)
+        leve -> clos                     // clôture après une levée, sans nouvelle désignation
+    }
+    face {
+        // Pose le verrou de `r` sur `objet` (libre -> tenu), seulement quand la coordination est
+        // en accord ou en arbitrage (même id). Contrôles, dans l'ordre :
+        // - `objet` est un des deux objets de CoordDossier.objets(r), ou "" en mode "arbitrage"
+        //   seulement (décision de ne pas manœuvrer) — Incoherent sinon ;
+        // - verrou libre — Conflit sinon (une désignation est déjà arrêtée) ;
+        // - propriété 2 : ApiRef.peut_manoeuvrer(objet) (en service, propulsion, ni anomalie ni
+        //   passivation) — NonEligible : jamais un objet que ref refuse ;
+        // - propriété 3 : si ApiRef.habite(objet), l'autre objet ne doit pas pouvoir manœuvrer
+        //   (peut_manoeuvrer faux, ou habité lui aussi) — NonEligible ;
+        // - propriétaire actif (ApiOperateurs.est_actif) — Suspendu ;
+        // - h + ApiPriorites.preavis(ApiRef.propulsion(objet)) <= ApiConjonctions.tca(r) — Delai ;
+        // - grappe : CoordGrappe.compatible(r, objet) — Conflit (la grappe de l'objet pivot n'est
+        //   pas arbitrée, ou la désignation contredit son arbitrage).
+        // Écrit designe_de et decision_de, numérote la décision "DS-<r>-<n>" et la prend
+        // (CoordDecision.prendre, qui fige le fondement) et en ouvre le
+        // suivi d'exécution (CoordSuivi.ouvrir). Mode CoordMode ; `par`/`valideur`
+        // sont ceux du geste (accord : par "systeme", valideur "").
+        // Renvoie l'id de la décision. Refus : Incoherent, Conflit, NonEligible, Suspendu, Delai.
+        signal poser(h: Horodatage, r: Rapprochement, objet: Objet, mode: CoordMode, motif: String, par: String, valideur: String) -> String
+            writes designe_de, decision_de, pose_le, poses_de
+            moves libre -> tenu when CoordDossier.accord || CoordDossier.arbitrage, leve -> tenu when CoordDossier.accord || CoordDossier.arbitrage
+            calls CoordDossier.phase, CoordDossier.objets, ApiRef.peut_manoeuvrer, ApiRef.habite, ApiRef.proprietaire, ApiRef.propulsion, ApiOperateurs.est_actif, ApiPriorites.preavis, ApiConjonctions.tca, CoordGrappe.compatible, CoordDecision.prendre, CoordSuivi.ouvrir, Journal.noter
+        // Lève le verrou (tenu -> leve) : efface designe_de et decision_de, passe la décision en
+        // vigueur à "levee" (CoordDecision.lever, avec `motif`) et son suivi
+        // à "caduc" (CoordSuivi.rendre_caduc). Appelé par CoordDossier.rouvrir
+        // seulement, avant la rouverture (après arretee -> liberee). Renvoie l'id de la décision levée.
+        // Refus : Inconnu, EtatInvalide (verrou non tenu, ou coordination pas "liberee"), MotifRequis.
+        signal lever(h: Horodatage, r: Rapprochement, motif: String) -> String
+            writes designe_de, decision_de
+            moves tenu -> leve when CoordDossier.liberee
+            calls CoordDossier.phase, CoordDecision.lever, CoordSuivi.rendre_caduc, Journal.noter
+        // Clôt le verrou avec le rapprochement (libre|tenu -> clos) ; une décision en vigueur est
+        // soldée (CoordDecision.solder), son suivi rendu
+        // caduc s'il n'a pas exécuté (CoordSuivi.rendre_caduc), et elle reste lisible
+        // par designe/decision pour la preuve.
+        // Appelé par CoordDossier.clore. Renvoie "clos". Refus : Inconnu, EtatInvalide (déjà clos).
+        signal clore(h: Horodatage, r: Rapprochement) -> String
+            reads decision_de
+            moves libre -> clos, tenu -> clos, leve -> clos
+            calls CoordDecision.solder, CoordSuivi.rendre_caduc, Journal.noter
+        // Objet désigné par la décision arrêtée ; "" si verrou libre (en cours) ou décision de
+        // ne pas manœuvrer ; la dernière désignation si le verrou a été clos tenu. Lecture
+        // contrôlée (propriété 6) : `par` "systeme", ou personne active (ApiAcces.employeur) d'ORBITE
+        // (ApiRef.orbite()), ou d'une organisation pour qui ApiDonnees.peut_recevoir(org, objet, r,
+        // pose_le) vaut vrai pour les deux objets (CoordDossier.objets) — instant de la pose, la
+        // façade ne fournissant pas `h`. Refus : Inconnu (rapprochement jamais ouvert), Confidentiel.
+        signal designe(r: Rapprochement, par: String) -> Objet
+            reads designe_de, pose_le
+            calls CoordDossier.objets, ApiAcces.employeur, ApiRef.orbite, ApiDonnees.peut_recevoir
+        // Vrai si le verrou est tenu sur un objet (désignation d'objet arrêtée).
+        signal arretee(r: Rapprochement) -> Bool
+            reads verrou, designe_de
+        // Décision en vigueur (ou soldée à la clôture) ; "" si aucune.
+        signal decision(r: Rapprochement) -> String
+            reads decision_de
+        // Vrai si la coordination a statué : verrou tenu (désignation d'un objet ou décision de ne
+        // pas manœuvrer), ou clos sur une décision soldée.
+        signal decidee(r: Rapprochement) -> Bool
+            reads verrou, decision_de
+    }
+}

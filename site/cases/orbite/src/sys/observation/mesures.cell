@@ -1,0 +1,151 @@
+// observation — MESURES et CORRÉLATION. Une mesure (distance et vitesse radiale radar, angles
+// optiques, distance laser) est versée par un capteur, validée si le capteur est en service,
+// puis corrélée à un objet catalogué (résidu sous le seuil) ou déclarée non corrélée : elle
+// alimente alors une piste (ObsPistes), candidate à un nouvel objet. Les mesures sont la base
+// de toute orbite indépendante : elles sont conservées tant qu'une détermination les cite, et
+// ne sont communiquées qu'aux organisations autorisées (ApiDonnees.peut_recevoir), trace à l'appui.
+
+// Grandeur mesurée.
+cell type ObsGenreMesure = String where value == "distance_vitesse" || value == "angles" || value == "distance_laser"
+// Cause du rejet d'une mesure.
+cell type ObsMotifRejet = String where value == "capteur_hors_service" || value == "format" || value == "instant_futur" || value == "trop_ancienne" || value == "aberrante" || value == "doublon"
+
+skeleton ObsMesures {
+    const MAX_MESURES = 5000000
+    // Âge maximal d'une mesure à la réception : 3 jours.
+    const AGE_MAX_MS = 259200000
+    // Conservation d'une mesure non citée (rejetée, écartée, ou corrélée et non citée) : 2 ans.
+    const CONSERVATION_MS = 63072000000
+    // Seuil de corrélation : résidu au plus SEUIL_SIGMAS × précision du capteur.
+    const SEUIL_SIGMAS = 5
+    memory {
+        capteur_de: Map<String, String> [persistent]          // mesure → capteur ; écrit une fois par recevoir, jamais effacé (lien de règle)
+        genre_de: Map<String, ObsGenreMesure> [persistent]    // mesure → grandeur mesurée
+        instant_de: Map<String, Horodatage> [persistent]      // mesure → instant de la mesure (époque), ms
+        recue_le: Map<String, Horodatage> [persistent]        // mesure → réception par ORBITE, ms
+        valeurs_de: Map<String, String> [persistent]          // mesure → valeurs brutes (format TDM) ; effacées par purger
+        presume_de: Map<String, String> [persistent]          // mesure → objet présumé par le fournisseur ("" : inconnu)
+        objet_de: Map<String, Objet> [persistent]             // mesure → objet retenu par la corrélation
+        residu_de: Map<String, Distance> [persistent]         // mesure → résidu de corrélation, m
+        tache_de: Map<String, String> [persistent]            // mesure → tâche de suivi qu'elle sert ("" : opportuniste)
+        piste_de: Map<String, String> [persistent]            // mesure non corrélée → piste qu'elle alimente
+        rejet_de: Map<String, ObsMotifRejet> [persistent]     // mesure → motif du rejet
+        empreinte_de: Map<String, String> [persistent]        // empreinte des valeurs → mesure (détection des doublons)
+        compteur: Map<String, Int> [persistent]               // "mesures" → dernier numéro attribué
+        invariant capteur_de.size <= MAX_MESURES
+        invariant genre_de.size <= MAX_MESURES
+        invariant instant_de.size <= MAX_MESURES
+        invariant recue_le.size <= MAX_MESURES
+        invariant valeurs_de.size <= MAX_MESURES
+        invariant presume_de.size <= MAX_MESURES
+        invariant objet_de.size <= MAX_MESURES
+        invariant residu_de.size <= MAX_MESURES
+        invariant tache_de.size <= MAX_MESURES
+        invariant piste_de.size <= MAX_MESURES
+        invariant rejet_de.size <= MAX_MESURES
+        invariant empreinte_de.size <= MAX_MESURES
+        invariant compteur.size <= 1
+        invariant compteur >= 0 && compteur <= MAX_MESURES
+        invariant (instant_de ?? 0) <= (recue_le ?? 0)
+    }
+    // Cycle d'une mesure (id = "MS-<n>").
+    state mesure {
+        initial: recue
+        recue -> validee           // valider : capteur en service, instant plausible
+        recue -> rejetee           // valider : capteur hors service, mesure trop ancienne, doublon, format
+        validee -> correlee        // correler : résidu sous le seuil sur un objet catalogué
+        validee -> non_correlee    // non_correler : aucun objet ; versée à une piste
+        validee -> rejetee         // rejeter : aberrante (résidu incompatible avec toute orbite)
+        non_correlee -> correlee   // rattacher : la piste a été cataloguée ou rattachée à un objet
+        non_correlee -> ecartee    // ecarter : piste abandonnée
+    }
+    face {
+        // Reçoit une mesure (ApiObservation.deposer_mesure) de `capteur` prise à `instant` (≤ h, et
+        // h − instant ≤ AGE_MAX_MS) sur l'objet présumé `presume` ("" si inconnu), `valeurs` au
+        // format TDM. La grandeur découle de la technique du capteur (ObsCapteurs.genre : radar →
+        // "distance_vitesse", optique → "angles", laser → "distance_laser") ; l'empreinte est le
+        // hachage de capteur|instant|valeurs. Refuse un capteur hors service ou d'un fournisseur non
+        // agréé (Suspendu). Note la réception (ObsCapteurs.noter_mesure), rattache la tâche active
+        // (ObsTaches.active_sur) puis valide (valider). Renvoie l'id "MS-<n>", même rejetée (le rejet
+        // est une trace). Seul écrivain de capteur_de.
+        // Rôle exigé : "capteur" du fournisseur du capteur (ApiAcces.agit_pour) ou "systeme".
+        // Refus : Inconnu (capteur), Suspendu, Doublon (empreinte déjà reçue), Habilitation, Plein.
+        signal recevoir(h: Horodatage, capteur: String, presume: String, instant: Horodatage, valeurs: String, par: String) -> String
+            writes capteur_de, genre_de, instant_de, recue_le, valeurs_de, presume_de, tache_de, empreinte_de, compteur
+            calls ObsCapteurs.etat, ObsCapteurs.genre, ObsCapteurs.fournisseur, ObsFournisseurs.etat, ObsCapteurs.noter_mesure, ObsTaches.active_sur, ApiAcces.a_le_role, ApiAcces.agit_pour, valider, Journal.noter
+        // Valide une mesure reçue : capteur lié en service, instant ≤ h et pas plus ancien
+        // qu'AGE_MAX_MS. Sinon la mesure passe « rejetee » avec son motif (sans refus : la trace
+        // reste). Si une tâche est liée : ObsTaches.demarrer (première passe) et ObsTaches.compter.
+        // Renvoie "validee" ou "rejetee". Refus : Inconnu, EtatInvalide.
+        signal valider(h: Horodatage, mesure: String) -> String
+            reads capteur_de, instant_de, tache_de
+            writes rejet_de
+            moves recue -> validee when ObsCapteurs.en_service via capteur_de, recue -> rejetee
+            calls ObsCapteurs.etat, ObsTaches.demarrer, ObsTaches.compter
+        // Corrèle une mesure validée à `objet` (catalogué) : résidu `residu` (m) au plus SEUIL_SIGMAS ×
+        // précision du capteur (ObsCapteurs.precision). Renvoie "correlee".
+        // Rôle exigé : "analyste" d'ORBITE ou "systeme".
+        // Refus : Inconnu (mesure, objet), EtatInvalide, HorsBornes (résidu au-delà du seuil), Habilitation.
+        signal correler(h: Horodatage, mesure: String, objet: Objet, residu: Distance, par: String) -> String
+            reads capteur_de
+            writes objet_de, residu_de
+            moves validee -> correlee
+            calls ObsCapteurs.precision, ApiRef.etat_objet, ApiAcces.a_le_role, Journal.noter
+        // Déclare une mesure validée non corrélée et la verse à une piste (ObsPistes.alimenter :
+        // piste ouverte compatible, ou nouvelle piste). Renvoie l'id de la piste.
+        // Rôle exigé : "analyste" d'ORBITE ou "systeme". Refus : Inconnu, EtatInvalide, Habilitation.
+        signal non_correler(h: Horodatage, mesure: String, par: String) -> String
+            reads capteur_de, instant_de
+            writes piste_de
+            moves validee -> non_correlee
+            calls ObsPistes.alimenter, ApiAcces.a_le_role, Journal.noter
+        // Rejette une mesure validée jugée aberrante. Renvoie "rejetee".
+        // Rôle exigé : "analyste" d'ORBITE. Refus : Inconnu, EtatInvalide, MotifRequis, Habilitation.
+        signal rejeter(h: Horodatage, mesure: String, motif: String, par: String) -> String
+            writes rejet_de
+            moves validee -> rejetee
+            calls ApiAcces.a_le_role, Journal.noter
+        // Rattache à `objet` toutes les mesures non corrélées de la piste (appelé par ObsPistes quand la
+        // piste est cataloguée ou rattachée). Renvoie le nombre de mesures rattachées. Refus : Inconnu.
+        signal rattacher(h: Horodatage, piste: String, objet: Objet) -> Int
+            reads piste_de
+            writes objet_de
+            moves non_correlee -> correlee
+            calls Journal.noter
+        // Écarte toutes les mesures non corrélées de la piste abandonnée (appelé par ObsPistes).
+        // Renvoie leur nombre.
+        signal ecarter(h: Horodatage, piste: String) -> Int
+            reads piste_de
+            moves non_correlee -> ecartee
+            calls Journal.noter
+        // Efface les valeurs brutes des mesures reçues avant h − CONSERVATION_MS qui ne sont citées
+        // par aucune détermination d'orbite (ObsOrbites.citee) et dont l'objet n'est sous aucun gel
+        // (ApiResponsabilite.sous_gel("OBJ-…")) ni sur le jour de réception
+        // (ApiResponsabilite.sous_gel("J:<jour>")). L'état et les liens restent (traçabilité).
+        // Renvoie le nombre de mesures purgées. Rôle exigé : "exploitant" d'ORBITE ou "systeme"
+        // (ObsBalayage.balayer). Refus : Habilitation.
+        signal purger(h: Horodatage, par: String) -> Int
+            reads recue_le, objet_de
+            writes valeurs_de
+            calls ObsOrbites.citee, ApiResponsabilite.sous_gel, ApiAcces.a_le_role, Journal.noter
+        // Valeurs brutes d'une mesure pour `org` : refus Confidentiel si l'objet retenu n'est pas
+        // communicable à `org` (ApiDonnees.peut_recevoir, r = ""), chaque communication tracée
+        // (ApiDonnees.tracer, nature "mesure"). Renvoie "" si purgée.
+        // Refus : Inconnu, Confidentiel.
+        signal communiquer(h: Horodatage, mesure: String, org: Org) -> String
+            reads valeurs_de, objet_de
+            calls ApiDonnees.peut_recevoir, ApiDonnees.tracer
+        // État de la mesure : "recue", "validee", "correlee", "non_correlee", "rejetee", "ecartee",
+        // ou "inconnue".
+        signal etat(mesure: String) -> String
+            reads mesure, capteur_de
+        // Mesures corrélées de l'objet prises dans [debut, fin], au plus `n`, les plus récentes en
+        // dernier : la base d'une détermination d'orbite.
+        signal correlees(objet: Objet, debut: Horodatage, fin: Horodatage, n: Int) -> List<String>
+            requires n > 0 && n <= 10000
+            reads mesure, objet_de, instant_de
+        // Capteur de la mesure ; Refus : Inconnu.
+        signal capteur(mesure: String) -> String
+            reads capteur_de
+    }
+}

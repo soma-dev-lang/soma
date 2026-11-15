@@ -1,0 +1,94 @@
+// escalade — ESCALADE DIPLOMATIQUE. Quand ORBITE a dû reprendre la main (dossier en reprise), une
+// démarche formelle est préparée auprès de l'État de tutelle de l'opérateur silencieux : elle
+// rappelle ses engagements (adhésion, licence nationale) et le nombre d'escalades graves de
+// l'opérateur sur 365 jours. La direction la valide à quatre yeux puis la transmet ; l'État répond
+// ou la démarche est classée sans suite après DELAI_REPONSE_ETAT_MS (constaté à la conformité).
+
+// Issue d'une démarche.
+cell type EscIssue = String where value == "mesures_annoncees" || value == "contestation" || value == "prise_acte"
+
+// Démarches : id = "DIP-<n>" (next_id).
+skeleton EscDiplomatie {
+    const MAX_DEMARCHES = 100000
+    // Délai de réponse attendu d'un État : 30 jours.
+    const DELAI_REPONSE_ETAT_MS = 2592000000
+    memory {
+        dossier_de: Map<String, String> [persistent]       // démarche → dossier d'escalade ; écrit une fois par preparer, jamais effacé
+        etat_vise: Map<String, String> [persistent]        // démarche → Etat de tutelle de l'opérateur ; écrit une fois par preparer, jamais effacé (lien de la règle validee -> transmise)
+        operateur_de: Map<String, String> [persistent]     // démarche → opérateur
+        graves_au_depot: Map<String, Int> [persistent]     // démarche → escalades graves sur 365 j à la préparation
+        validee_par: Map<String, String> [persistent]      // démarche → "par | valideur"
+        transmise_a: Map<String, Horodatage> [persistent]  // démarche → transmission (ms)
+        reponse: Map<String, String> [persistent]          // démarche → "h | par | EscIssue | texte"
+        de_dossier: Map<String, String> [persistent]       // dossier → démarche (au plus une par dossier)
+        invariant dossier_de.size <= MAX_DEMARCHES
+        invariant de_dossier.size <= MAX_DEMARCHES
+        invariant graves_au_depot >= 0
+    }
+    // Cycle de vie d'une démarche (id = démarche).
+    state demarche {
+        initial: projet
+        projet -> preparee            // preparer : seulement pour un dossier en reprise
+        preparee -> validee           // valider : direction + quatre yeux
+        preparee -> abandonnee        // classer : démarche inopportune (erreur de l'escalade)
+        validee -> abandonnee         // classer : l'État visé n'est plus participant (suspendu, retiré)
+        validee -> transmise          // transmettre au point focal de l'État, État participant (RefEtat.participant via etat_vise)
+        transmise -> repondue         // repondre : l'État répond
+        transmise -> sans_suite       // echoir : pas de réponse dans DELAI_REPONSE_ETAT_MS
+    }
+    face {
+        // Prépare la démarche d'un dossier passé en reprise (une par dossier). Renvoie l'id.
+        // Rôle exigé de `par` : "systeme" (depuis EscDossiers.reprendre) ou "analyste".
+        // Refus : Inconnu, Doublon (démarche déjà préparée pour ce dossier), Habilitation, Plein.
+        signal preparer(h: Horodatage, dossier: String, op: Org, par: String) -> String
+            writes dossier_de, etat_vise, operateur_de, graves_au_depot, de_dossier
+            moves projet -> preparee when EscDossiers.reprise via dossier_de
+            calls ApiAcces.a_le_role, ApiRef.etat_de, EscStatistiques.graves, EscDossiers.etat, next_id, Journal.noter
+        // Valide une démarche préparée. Renvoie "validee". Rôle exigé : "direction" d'ORBITE ;
+        // `valideur` contre-signe (ApiAcces.quatre_yeux). Refus : Inconnu, EtatInvalide,
+        // Habilitation, QuatreYeux.
+        signal valider(h: Horodatage, demarche: String, par: String, valideur: String) -> String
+            writes validee_par
+            moves preparee -> validee
+            calls ApiAcces.a_le_role, ApiAcces.quatre_yeux, Journal.noter
+        // Transmet la démarche validée au point focal de l'État visé (ApiPasserelle.notifier, r = le
+        // rapprochement du dossier (EscDossiers.rapprochement), vers
+        // ApiRef.org_de_etat, urgence 2) avec la fiche du dossier : forme réduite si l'État n'est pas
+        // autorisé à recevoir les données des objets (ApiDonnees.peut_recevoir), traçage sinon.
+        // Renvoie "transmise". Rôle exigé : "direction" d'ORBITE. Refus : Inconnu, EtatInvalide
+        // (démarche non validée, ou État visé non participant : ApiRef.etat_participant, règle de
+        // l'arête via etat_vise ; la démarche se classe alors), Habilitation.
+        signal transmettre(h: Horodatage, demarche: String, par: String) -> String
+            writes transmise_a
+            reads dossier_de, etat_vise
+            moves validee -> transmise when RefEtat.participant via etat_vise
+            calls ApiAcces.a_le_role, ApiRef.etat_participant, ApiRef.org_de_etat, EscDossiers.rapprochement, ApiConjonctions.objets, ApiDonnees.peut_recevoir, ApiDonnees.tracer, ApiPasserelle.notifier, Journal.noter
+        // Enregistre la réponse de l'État. Renvoie "repondue". Rôle exigé : "point_focal" ou
+        // "autorite" de l'État visé (ApiAcces.agit_pour sur ApiRef.org_de_etat(État)).
+        // Refus : Inconnu, EtatInvalide, MotifRequis (texte vide), Habilitation.
+        signal repondre(h: Horodatage, demarche: String, issue: EscIssue, texte: String, par: String) -> String
+            writes reponse
+            reads etat_vise
+            moves transmise -> repondue
+            calls ApiAcces.a_le_role, ApiAcces.agit_pour, ApiRef.org_de_etat, Journal.noter
+        // Classe une démarche préparée (erreur d'escalade) ou validée dont l'État visé n'est plus
+        // participant. Renvoie "abandonnee". Rôle exigé : "direction" d'ORBITE. Refus : Inconnu,
+        // EtatInvalide, MotifRequis, Habilitation.
+        signal classer(h: Horodatage, demarche: String, motif: String, par: String) -> String
+            moves preparee -> abandonnee, validee -> abandonnee
+            calls ApiAcces.a_le_role, Journal.noter
+        // Classe sans suite les démarches transmises depuis plus de DELAI_REPONSE_ETAT_MS et le
+        // constate à la conformité contre l'opérateur (ApiConformite.constater, gravité 2,
+        // référence = démarche). Renvoie le nombre classé.
+        signal echoir(h: Horodatage) -> Int
+            reads transmise_a, operateur_de
+            moves transmise -> sans_suite
+            calls ApiConformite.constater, Journal.noter
+        // Démarches visant un État, "démarche | dossier | opérateur | état | issue". Rôle exigé :
+        // "direction", "superviseur", "auditeur" d'ORBITE, ou "point_focal" / "autorite" de cet État.
+        // Refus : Habilitation.
+        signal demarches_vers(etat: Etat, par: String) -> List<String>
+            reads etat_vise, dossier_de, operateur_de, reponse, demarche
+            calls ApiAcces.a_le_role, ApiAcces.agit_pour, ApiRef.org_de_etat
+    }
+}

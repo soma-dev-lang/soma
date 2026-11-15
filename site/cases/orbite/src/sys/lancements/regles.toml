@@ -1,0 +1,7 @@
+# lancements — règles entre sous-systèmes en forme toml (phase 2), à fusionner dans soma.toml.
+
+# Lancement autorisé ⇐ opérateur du lanceur actif chez operateurs. L'arête crible -> autorise
+# porte déjà `when LancAvis.favorable` ; op_de est écrit une fois par LancLancement.creer seul.
+[verify.before."LancLancement.autorise"]
+while = ["OpMembres.actif"]
+via = "LancLancement.op_de"

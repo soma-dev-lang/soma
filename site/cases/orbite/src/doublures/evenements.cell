@@ -1,0 +1,228 @@
+// Doublures PROVISOIRES des façades que les corps de evenements appellent — pour test_evenements
+// seulement (l'intégrateur assemble les vrais corps dans prod.cell). Sans état : tout se lit dans les ids.
+//
+// Monde de test (H0 = 1 000 000 000 000 ms) :
+// - personnes : "analyste…" (analyste), "sup…" (superviseur), "conf…" (conformite), "dir…" (direction),
+//   "aud…" (auditeur), "expl…" (exploitant) d'ORBITE ; "dyn-<org>", "cdm-<org>" (dynamicien, chef de
+//   mission) des opérateurs alpha et beta ; "intrus…" n'a aucun rôle ; un superviseur "sup-lie…" est
+//   refusé par quatre_yeux (lien d'intérêt) ; quatre_yeux(a, a) est faux.
+// - objets : "OBJ-B…" appartient à ORG-BETA (État BRV), "OBJ-DEB…" sans propriétaire ("inconnu", État ""),
+//   sinon ORG-ALPHA (État ALD). États participants ALD, BRV, CAZ (autorités "ORG-<code>"). ORBITE = "ORG-ORBITE".
+//   Marqueurs dans l'id : INCONNU (non catalogué), RENTRE (rentré), GEO (régime geo, sinon leo), RAPP
+//   (rapprochement ouvert), NOSUIVI (pas d'orbite indépendante), PERIME (éphéméride non fraîche),
+//   SANSDEPOT (aucun dépôt à invalider), SECRET (seul le propriétaire reçoit ses données), RESTR / PART
+//   (diffusion "restreint" / "parties", sinon "public"), MANOEUVRE (manœuvre détectée).
+// - rapprochement "CJ-<s>" : objets ["OBJ-A-<s>", "OBJ-B-<s>"] ; "CJ-INCONNU…" inconnu ; DEC dans l'id :
+//   décision arrêtée désignant OBJ-A-<s> ; PLAN : plan "PL-<r>" (état "approuve", à moquer).
+// - catalogue leo (première page) : OBJ-A-R1 (alpha), OBJ-B-R2 (beta), OBJ-DEB-R3 (sans propriétaire).
+// - ApiRef.cataloguer renvoie "OBJ-FRAG-<masse>", ou "OBJ-RENTRE-FRAG-13" pour une masse de 13 kg.
+// - pistes non corrélées : PI-1, PI-2, PI-3. Passerelle : ORG-ALPHA acquitte, les autres jamais.
+
+flesh ApiAcces {
+    on a_le_role(personne, r) {
+        if personne == "systeme" { return r == "systeme" }
+        let role_p = _role(personne)
+        return role_p != "aucun" && role_p == to_string(r)
+    }
+    on agit_pour(personne, org) {
+        let e = _org(personne)
+        return e != "" && e == to_string(org)
+    }
+    on quatre_yeux(demandeur, valideur) {
+        let rv = _role(valideur)
+        if starts_with(valideur, "sup-lie") { return false }
+        return demandeur != valideur && _role(demandeur) != "aucun" && (rv == "superviseur" || rv == "conformite" || rv == "direction")
+    }
+    on _org(p: String) {
+        if ends_with(p, "-alpha") { return "ORG-ALPHA" }
+        if ends_with(p, "-beta") { return "ORG-BETA" }
+        let role_p = _role(p)
+        if role_p != "aucun" { return "ORG-ORBITE" }
+        return ""
+    }
+    on _role(p: String) {
+        if starts_with(p, "intrus") { return "aucun" }
+        if starts_with(p, "analyste") { return "analyste" }
+        if starts_with(p, "sup") { return "superviseur" }
+        if starts_with(p, "conf") { return "conformite" }
+        if starts_with(p, "dir") { return "direction" }
+        if starts_with(p, "aud") { return "auditeur" }
+        if starts_with(p, "expl") { return "exploitant" }
+        if starts_with(p, "dyn-") { return "dynamicien" }
+        if starts_with(p, "cdm-") { return "chef_de_mission" }
+        return "aucun"
+    }
+}
+
+flesh ApiRef {
+    on orbite() {
+        return "ORG-ORBITE"
+    }
+    on etat_objet(objet) {
+        if contains(objet, "INCONNU") { return "inconnu" }
+        if contains(objet, "RENTRE") { return "rentre" }
+        return "en_service"
+    }
+    on regime(objet) {
+        require !contains(objet, "INCONNU") else Inconnu "objet inconnu : {objet}"
+        if contains(objet, "GEO") { return "geo" }
+        return "leo"
+    }
+    on proprietaire(objet) {
+        require !contains(objet, "INCONNU") else Inconnu "objet inconnu : {objet}"
+        if starts_with(objet, "OBJ-DEB") { return "inconnu" }
+        if starts_with(objet, "OBJ-B") { return "ORG-BETA" }
+        return "ORG-ALPHA"
+    }
+    on etat_immatriculation(objet) {
+        require !contains(objet, "INCONNU") else Inconnu "objet inconnu : {objet}"
+        if starts_with(objet, "OBJ-DEB") { return "" }
+        if starts_with(objet, "OBJ-B") { return "BRV" }
+        return "ALD"
+    }
+    on org_de_etat(etat) {
+        return "ORG-{etat}"
+    }
+    on etats_participants() {
+        return ["ALD", "BRV", "CAZ"]
+    }
+    on catalogue(regime, apres, n) {
+        if regime == "leo" && apres == "" { return ["OBJ-A-R1", "OBJ-B-R2", "OBJ-DEB-R3"] }
+        return []
+    }
+    on cataloguer(h, nature, proprietaire, etat, regime, propulsion, masse, par) {
+        if masse == 13 { return "OBJ-RENTRE-FRAG-13" }
+        return "OBJ-FRAG-{masse}"
+    }
+    on changer_etat_objet(h, objet, cible, reference, motif, par) {
+        require par == "systeme" || par == "analyste1" else Habilitation "doublure : {par}"
+        return cible
+    }
+    on declarer_propulsion(h, objet, p, motif, par) {
+        return p
+    }
+}
+
+flesh ApiConjonctions {
+    on objets(r) {
+        require !starts_with(r, "CJ-INCONNU") else Inconnu "rapprochement inconnu : {r}"
+        let s = substring(r, 3, len(r))
+        return ["OBJ-A-{s}", "OBJ-B-{s}"]
+    }
+    on renforcer(h, regime, fin, motif, par) {
+        require fin > h else Incoherent "fin <= h"
+        return "RF-{regime}"
+    }
+    on constater_collision(h, r, evenement, par) {
+        return "collision"
+    }
+    on ouverts_de(objet) {
+        if contains(objet, "RAPP") { return ["CJ-RAPP"] }
+        return []
+    }
+    on pc(r) {
+        return 5000000
+    }
+    on tca(r) {
+        return 999999940000
+    }
+}
+
+flesh ApiObservation {
+    on demander_suivi(h, objet, priorite, duree, motif, par) {
+        return "SV-{objet}-{priorite}"
+    }
+    on pistes_non_correlees(n) {
+        return ["PI-1", "PI-2", "PI-3"]
+    }
+    on suivi(objet, h) {
+        return !contains(objet, "NOSUIVI")
+    }
+    on manoeuvre_detectee(objet, depuis) {
+        return contains(objet, "MANOEUVRE")
+    }
+}
+
+flesh ApiCoordination {
+    on decision(r) {
+        if !contains(r, "DEC") { return "" }
+        let s = substring(r, 3, len(r))
+        return "DS-{r}-1|OBJ-A-{s}|systeme||999000000000|accord des parties"
+    }
+    on etat(r) {
+        if contains(r, "DEC") { return "arretee" }
+        return "inconnue"
+    }
+}
+
+flesh ApiManoeuvres {
+    on plan_de(r) {
+        if contains(r, "PLAN") { return "PL-{r}" }
+        return ""
+    }
+    on etat(plan) {
+        return "approuve"
+    }
+}
+
+flesh ApiResponsabilite {
+    on geler(h, evenement, motif, par) {
+        return "DP-{evenement}"
+    }
+    on sous_gel(cible) {
+        return true
+    }
+}
+
+flesh ApiDonnees {
+    on peut_recevoir(org, objet, r, h) {
+        if !contains(objet, "SECRET") { return true }
+        let prop = if starts_with(objet, "OBJ-B") { "ORG-BETA" } else { "ORG-ALPHA" }
+        return to_string(org) == prop
+    }
+    on tracer(h, org, objet, r, nature) {
+        return 1
+    }
+    on diffusion(objet) {
+        if contains(objet, "RESTR") { return "restreint" }
+        if contains(objet, "PART") { return "parties" }
+        return "public"
+    }
+}
+
+flesh ApiPasserelle {
+    on notifier(h, destinataire, r, sujet, texte, urgence) {
+        return "MSG-{destinataire}-{sujet}"
+    }
+    on acquitte(message) {
+        return contains(message, "ORG-ALPHA")
+    }
+}
+
+flesh ApiConformite {
+    on constater(h, op, nature, gravite, reference, par) {
+        return "MQ-{reference}"
+    }
+}
+
+flesh ApiOperations {
+    on declarer_incident(h, incident, gravite, sous_systeme, description, par) {
+        return "INC-{incident}"
+    }
+}
+
+flesh ApiOperateurs {
+    on delai_reponse(op, n) {
+        return 3600000
+    }
+}
+
+flesh ApiEphemerides {
+    on invalider(h, objet, motif, par) {
+        require !contains(objet, "SANSDEPOT") else Inconnu "aucun dépôt pour {objet}"
+        return 1
+    }
+    on fraiche(objet, h) {
+        return !contains(objet, "PERIME")
+    }
+}

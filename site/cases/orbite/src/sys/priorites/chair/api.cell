@@ -1,0 +1,26 @@
+// PRIORITÉS — corps de la façade ApiPriorites (délégation aux cells internes).
+flesh ApiPriorites {
+    on qui_manoeuvre(h, r, a, b) {
+        return PrioDesignation.designer(h, r, a, b)
+    }
+
+    on version_en_vigueur(h) {
+        return PrioVersion.en_vigueur_a(h)
+    }
+
+    on derogation(objet, h) {
+        return PrioDerogation.en_cours(objet, h)
+    }
+
+    on preavis(p) {
+        return PrioTable.preavis_courant(p)
+    }
+
+    on decision_de(r) {
+        return PrioDesignation.decision_de(r)
+    }
+
+    on balayer(h, par) {
+        return PrioEcheancier.balayer(h, par)
+    }
+}

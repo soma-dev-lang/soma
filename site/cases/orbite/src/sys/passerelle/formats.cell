@@ -1,0 +1,52 @@
+// PASSERELLE — formats d'échange : CDM (Conjunction Data Message, CCSDS 508.0), OEM (Orbit
+// Ephemeris Message, CCSDS 502.0, en-tête et premier point seulement : le contenu reste hors
+// ORBITE), alertes. Toute donnée d'objet qui sort passe ici : contrôle de diffusion
+// (ApiDonnees.peut_recevoir) et trace (ApiDonnees.tracer), objet par objet.
+
+// En-tête d'un OEM déposé : objet, époque du premier point (ms), horizon couvert (ms), qualité
+// de covariance déclarée, empreinte SHA-256 du fichier entier, premier vecteur d'état
+// "x,y,z,vx,vy,vz" (m, mm/s ; pour ApiObservation.ecart_a), manœuvres incluses.
+cell type PasEnteteOem { variants { PasEnteteOem { objet: Objet, epoque: Horodatage, horizon: Duree, q: Qualite, empreinte: PasEmpreinte, position: String, avec_manoeuvres: Bool } } }
+
+skeleton PasFormats {
+    const VERSION_CDM = "2.0"
+    const VERSION_OEM = "3.0"
+    const MAX_OEM = 1048576            // octets
+    face {
+        // Lit l'en-tête d'un OEM en KVN (CCSDS_OEM_VERS, OBJECT_ID, CENTER_NAME "EARTH",
+        // REF_FRAME, START_TIME, STOP_TIME, COVARIANCE, MAN_ incluses) et son premier point :
+        // époque = START_TIME, horizon = STOP_TIME − START_TIME, q = "haute" si covariance
+        // complète, "moyenne" si diagonale, "faible" si absente ; empreinte = sha256(contenu).
+        // OBJECT_ID doit être un numéro ORBITE "OBJ-<n>". Refus : Incoherent (version ≠
+        // VERSION_OEM, champ manquant, STOP ≤ START, repère inconnu, premier point illisible),
+        // HorsBornes (contenu > MAX_OEM).
+        signal lire_oem(contenu: String) -> PasEnteteOem
+        // Compose le CDM du rapprochement `r` pour l'organisation `pour` : TCA, MISS_DISTANCE
+        // (ApiConjonctions.distance, m), pc, niveau, dernière mise à jour ; pour chaque objet :
+        // numéro, nature, propriétaire, régime, propulsion, habité, âge et qualité de la dernière
+        // éphéméride, facteur d'incertitude météo. Un objet que `pour` ne peut pas recevoir
+        // (ApiDonnees.peut_recevoir faux) est MASQUÉ (numéro seul, "masque" partout ailleurs) ;
+        // chaque objet communiqué est tracé (ApiDonnees.tracer, nature "CDM"). Renvoie le CDM en
+        // KVN. Refus : Inconnu (rapprochement), Confidentiel (`pour` ne peut recevoir aucun des
+        // deux objets).
+        signal cdm(h: Horodatage, r: Rapprochement, pour: Org) -> String
+            calls ApiConjonctions.objets, ApiConjonctions.tca, ApiConjonctions.distance, ApiConjonctions.pc, ApiConjonctions.niveau, ApiConjonctions.mis_a_jour, ApiRef.nature, ApiRef.proprietaire, ApiRef.regime, ApiRef.propulsion, ApiRef.habite, ApiEphemerides.age, ApiEphemerides.qualite, ApiMeteo.facteur_incertitude, ApiDonnees.peut_recevoir, ApiDonnees.tracer
+        // Compose l'alerte d'un rapprochement pour l'organisation `pour` (JSON) : niveau, TCA,
+        // temps restant (ms), état de la coordination, objet désigné s'il est arrêté
+        // (ApiCoordination.designe(r, "systeme"), lu ici pour un destinataire dont la diffusion
+        // est contrôlée objet par objet), échéance de réponse (ApiCoordination.echeance) et route
+        // de réponse ("POST /v1/coordinations/{r}/reponse"). Mêmes masquage et trace que cdm
+        // (nature "alerte"). Un Confidentiel réduit l'alerte au numéro et au niveau (le
+        // destinataire a été choisi par l'appelant) et c'est journalisé.
+        // Refus : Inconnu.
+        signal alerte(h: Horodatage, r: Rapprochement, pour: Org) -> String
+            calls ApiConjonctions.objets, ApiConjonctions.tca, ApiConjonctions.niveau, ApiCoordination.etat, ApiCoordination.designe, ApiCoordination.echeance, ApiDonnees.peut_recevoir, ApiDonnees.tracer, Journal.noter
+        // Point d'entrée de ApiPasserelle.notifier. Format : `r` ≠ "" et `texte` == "" ⇒ "CDM"
+        // si `sujet` == "CDM", sinon "alerte" (composé À L'ENVOI par PasMessages.traiter_file,
+        // pour que ce chemin, emprunté par toute alerte du programme, reste court) ; sinon
+        // "texte". Puis PasMessages.mettre_en_file. Renvoie l'id du message.
+        // Refus : Inconnu, Plein (ceux de mettre_en_file).
+        signal notifier(h: Horodatage, destinataire: Org, r: Rapprochement, sujet: String, texte: String, urgence: Niveau) -> String
+            calls PasMessages.mettre_en_file
+    }
+}

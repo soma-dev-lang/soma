@@ -1,0 +1,11 @@
+ApiEphemerides.deposer: calls EphDepot.deposer; moves EphDepot.cycle: recu -> admis, recu -> validee, admis -> validee, recu -> rejetee, admis -> rejetee, validee -> remplacee, EphSuivi.suivi: sans_donnee -> a_jour, perime -> a_jour, invalide -> a_jour, EphQuota.quota: libre -> sature, sature -> libre
+ApiEphemerides.fraiche: calls EphSuivi.fraiche
+ApiEphemerides.derniere: calls EphSuivi.derniere
+ApiEphemerides.qualite: calls EphSuivi.qualite
+ApiEphemerides.age: calls EphSuivi.age
+ApiEphemerides.invalider: calls EphSuivi.derniere, EphDepot.epoque_de, EphDepot.invalider_depuis; moves EphDepot.cycle: validee -> invalidee, remplacee -> invalidee, perimee -> invalidee, EphSuivi.suivi: a_jour -> invalide, perime -> invalide
+ApiEphemerides.fondement: calls EphHistorique.fondement
+ApiEphemerides.empreinte: calls EphDepot.empreinte_du_depot
+ApiEphemerides.avec_manoeuvres: calls EphDepot.inclut_manoeuvres
+ApiEphemerides.depot_valide: calls EphDepot.est_valide
+ApiEphemerides.balayer: calls EphSuivi.ronde; moves EphSuivi.suivi: a_jour -> perime, EphDepot.cycle: validee -> perimee, EphTempete.reaction: calme -> renforce, renforce -> calme, EphContestation.contestation: ouverte -> caduque

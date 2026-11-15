@@ -1,0 +1,134 @@
+// ephemerides — QUOTAS DE DÉPÔT : un opérateur ne peut pas noyer ORBITE sous ses dépôts
+// (chaque dépôt validé déclenche du criblage). Compte par opérateur et par jour calendaire
+// (Jour = h / 86 400 000), plafond EphReglage.quota, relevable pour un opérateur donné.
+// Deux exemptions, pour que le quota ne bloque jamais la sécurité : les dépôts "systeme"
+// (orbites d'ORBITE) ne sont pas comptés, et un dépôt d'un objet ayant un rapprochement ouvert
+// de niveau 3 passe toujours, même saturé (il est compté à part, nb_urgence).
+// Un opérateur bridé (abus constaté) n'a plus que les dépôts d'urgence.
+
+skeleton EphQuota {
+    const MAX_OPERATEURS = 100000
+    const PLAFOND_ABSOLU = 10000
+    // ms par jour.
+    const JOUR_MS = 86400000
+
+    memory {
+        jour_de: Map<Org, Jour> [persistent]          // opérateur → jour du compteur courant
+        compte: Map<Org, Int> [persistent]            // opérateur → dépôts comptés ce jour
+        nb_urgence: Map<Org, Int> [persistent]        // opérateur → dépôts exemptés (niveau 3) ce jour
+        plafond_propre: Map<Org, Int> [persistent]    // opérateur → plafond relevé (remplace EphReglage.quota) ; absent : celui du réglage
+        releve_par: Map<Org, String> [persistent]     // opérateur → "par|motif" du dernier relèvement
+        bride_par: Map<Org, String> [persistent]      // opérateur → "par|valideur|motif" du bridage en cours
+        invariant jour_de.size <= MAX_OPERATEURS
+        invariant compte >= 0 && compte <= PLAFOND_ABSOLU
+        invariant nb_urgence >= 0
+        invariant plafond_propre >= 1 && plafond_propre <= PLAFOND_ABSOLU
+    }
+
+    // Situation d'un opérateur (id = Org) ; réactive : revient toujours à "libre".
+    state quota {
+        initial: libre
+        libre -> sature      // compter : plafond du jour atteint
+        sature -> libre      // compter (jour suivant), ou relever
+        libre -> bride       // brider
+        sature -> bride      // brider
+        bride -> libre       // debrider
+    }
+
+    face {
+        // Compte un dépôt de l'opérateur `op` pour l'objet à `h` (appelé par EphDepot.deposer,
+        // jamais pour "systeme") : remet le compteur à zéro au changement de jour (sature →
+        // libre), exempte le dépôt si l'objet a un rapprochement ouvert de niveau 3
+        // (ApiConjonctions.ouverts_de, ApiConjonctions.niveau), sinon l'ajoute et passe "sature"
+        // au plafond. Renvoie le nombre de dépôts restants ce jour.
+        // Refus : Plein (saturé, ou bridé, hors exemption).
+        signal compter(h: Horodatage, op: Org, objet: Objet) -> Int
+            writes jour_de, compte, nb_urgence
+            reads plafond_propre
+            moves libre -> sature, sature -> libre
+            calls EphReglage.quota, ApiConjonctions.ouverts_de, ApiConjonctions.niveau
+
+        // Dépôts restants à `h` pour l'opérateur (0 si bridé). Refus : Ferme (aucun réglage).
+        signal restant(op: Org, h: Horodatage) -> Int
+            reads jour_de, compte, plafond_propre, quota
+            calls EphReglage.quota
+
+        // Relève (ou rabaisse) le plafond propre d'un opérateur (constellation nombreuse,
+        // campagne de manœuvres) ; un opérateur saturé redevient libre si le nouveau plafond le
+        // permet. Par "superviseur" d'ORBITE. Renvoie le plafond retenu.
+        // Refus : Inconnu (opérateur, ApiOperateurs.statut "inconnu"), MotifRequis, Habilitation.
+        signal relever(h: Horodatage, op: Org, plafond: Int, motif: String, par: String) -> Int
+            requires plafond >= 1 && plafond <= 10000
+            writes plafond_propre, releve_par
+            reads compte
+            moves sature -> libre
+            calls ApiOperateurs.statut, ApiAcces.a_le_role, Journal.noter
+
+        // Bride un opérateur (dépôts en rafale, empreintes en doublon répétées) : seuls les
+        // dépôts d'urgence passent. Par "conformite" d'ORBITE, valideur "superviseur" ou
+        // "direction" (ApiAcces.quatre_yeux). Manquement constaté (ApiConformite.constater,
+        // gravité 1). Renvoie "bride". Refus : Inconnu, EtatInvalide (déjà bridé), MotifRequis,
+        // Habilitation, QuatreYeux.
+        signal brider(h: Horodatage, op: Org, motif: String, par: String, valideur: String) -> String
+            writes bride_par
+            moves libre -> bride, sature -> bride
+            calls ApiOperateurs.statut, ApiConformite.constater, ApiAcces.a_le_role, ApiAcces.quatre_yeux, Journal.noter
+
+        // Lève le bridage. Par "conformite" d'ORBITE. Renvoie "libre".
+        // Refus : Inconnu, EtatInvalide (pas bridé), Habilitation.
+        signal debrider(h: Horodatage, op: Org, par: String) -> String
+            writes bride_par
+            moves bride -> libre
+            calls ApiAcces.a_le_role, Journal.noter
+    }
+}
+
+// Événement compté au bilan d'un opérateur.
+// depot : dépôt reçu (hors "systeme") ; rejet : dépôt rejeté ; invalidation : dépôt courant
+// invalidé pour une cause imputable à l'opérateur (incoherence, manoeuvre_non_annoncee,
+// plan_annule, retrait_proprietaire) ; perime_en_rapprochement : objet constaté périmé alors
+// qu'il avait un rapprochement ouvert ; omission : dépôt sans les manœuvres d'un plan actif.
+cell type EphEvenementBilan = String where value == "depot" || value == "rejet" || value == "invalidation" || value == "perime_en_rapprochement" || value == "omission"
+
+// Bilan de discipline de dépôt par opérateur, glissant sur 30 jours (seaux journaliers) :
+// matière de la notation de la conformité, sans que la conformité lise nos cellules.
+skeleton EphBilan {
+    const MAX_SEAUX = 5000000
+    // 30 jours, ms : fenêtre du bilan.
+    const FENETRE = 2592000000
+    // Taux de rejet au-delà duquel un manquement est constaté (%).
+    const SEUIL_REJET = 30
+
+    memory {
+        seaux: Map<String, Int> [persistent]          // "op|jour|evenement" → nombre
+        signale_le: Map<Org, Horodatage> [persistent] // opérateur → dernier manquement « dérive » constaté, ms
+        invariant seaux.size <= MAX_SEAUX
+        invariant seaux >= 0
+    }
+
+    face {
+        // Ajoute un événement au seau du jour de `h` de l'opérateur (appelé par EphDepot.deposer,
+        // EphDepot.rejeter, EphDepot.invalider_depuis, EphSuivi.balayer). Les seaux de plus de
+        // FENETRE sont effacés au passage. Renvoie le compte du seau. Refus : Plein.
+        signal compter(h: Horodatage, op: Org, ev: EphEvenementBilan) -> Int
+            writes seaux
+
+        // Bilan à `h` sur FENETRE : "depots|rejets|invalidations|perimes_en_rapprochement|omissions".
+        signal bilan(op: Org, h: Horodatage) -> String
+            reads seaux
+
+        // Taux de rejet sur FENETRE (rejets / dépôts, en %) ; 0 sans dépôt.
+        signal taux_rejet(op: Org, h: Horodatage) -> Pourcent
+            reads seaux
+
+        // Constate un manquement « discipline de dépôt » (ApiConformite.constater, gravité 1 ;
+        // 2 si un objet a été périmé en rapprochement) quand le taux de rejet dépasse SEUIL_REJET
+        // ou qu'un objet a été périmé en rapprochement, au plus une fois par FENETRE et par
+        // opérateur. Par "systeme" ou "conformite" d'ORBITE. Renvoie l'id du manquement, "" si
+        // rien à constater. Refus : Inconnu (opérateur), Habilitation.
+        signal examiner_operateur(h: Horodatage, op: Org, par: String) -> String
+            writes signale_le
+            reads seaux
+            calls ApiOperateurs.statut, ApiConformite.constater, ApiAcces.a_le_role, Journal.noter
+    }
+}

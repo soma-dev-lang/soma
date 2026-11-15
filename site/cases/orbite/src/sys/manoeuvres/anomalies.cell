@@ -1,0 +1,162 @@
+// MANŒUVRES — anomalies de manœuvre (plan exécuté hors tolérance, non observé, échoué, non
+// confirmé) et manœuvres non annoncées constatées par l'observation (aucun plan ne les couvre).
+
+// Nature d'une anomalie de plan : "echec_execution" (déclarée par le propriétaire),
+// "non_confirmee" (poussée observée, jamais confirmée), "ecart" (orbite observée hors
+// tolérance), "non_observee" (manœuvre jamais vue par l'observation).
+cell type ManNatureAnomalie = String where value == "echec_execution" || value == "non_confirmee" || value == "ecart" || value == "non_observee"
+
+skeleton ManAnomalie {
+    const MAX_ANOMALIES = 5000000
+    // Délai donné au propriétaire pour expliquer et déposer une éphéméride corrigée : 24 h.
+    const DELAI_EXPLICATION_MS = 86400000
+    memory {
+        nature_de: Map<String, ManNatureAnomalie> [persistent] // plan -> nature ; écrite par `ouvrir` seul
+        ouverte_le: Map<String, Horodatage> [persistent]
+        echeance_de: Map<String, Horodatage> [persistent]  // ouverte_le + DELAI_EXPLICATION_MS
+        explication_de: Map<String, String> [persistent]   // explication du propriétaire
+        depot_corrige_de: Map<String, String> [persistent] // dépôt d'éphéméride déposé après l'anomalie
+        conclusion_de: Map<String, String> [persistent]    // conclusion de l'analyste (levée) ou id de l'anomalie d'objet (transmise)
+        ouvertes: List<String> [persistent]                // anomalies ni levées ni transmises (ManVeille)
+        invariant nature_de.size <= MAX_ANOMALIES
+        invariant (ouverte_le ?? 0) <= (echeance_de ?? 0)
+        invariant ouvertes.size <= MAX_ANOMALIES
+    }
+    // Cycle d'une anomalie de plan. Instance = id du plan (une anomalie au plus par plan).
+    state cycle {
+        initial: ouverte
+        ouverte -> en_analyse    // le propriétaire a expliqué et déposé une éphéméride corrigée
+        ouverte -> transmise     // pas d'explication à l'échéance : anomalie d'objet (ApiEvenements)
+        en_analyse -> levee      // trajectoire réelle recriblée sans danger, à quatre yeux
+        en_analyse -> transmise  // l'analyse conclut à une anomalie de l'objet
+    }
+    face {
+        // Ouvre l'anomalie d'un plan (appelé par ManPlan.declarer_echec, constater_echeance,
+        // clore) : invalide l'éphéméride en vigueur (ApiEphemerides.invalider : la trajectoire
+        // réelle est inconnue), demande un suivi renforcé priorité 3 (ApiObservation.demander_suivi),
+        // rouvre les coordinations des rapprochements ouverts de l'objet ENCORE arrêtées
+        // (ApiConjonctions.ouverts_de, ApiCoordination.arretee, puis rouvrir : leurs désignations
+        // reposaient sur la trajectoire prévue ; une coordination déjà rouverte — par ref sur perte
+        // de propulsion, ou par le plan — n'est pas rouverte deux fois). L'appelant a pris sa
+        // transition avant : la coordination ne trouve aucun plan à retirer. Seul écrivain de `nature_de`. `par` "systeme" ou l'auteur
+        // de la déclaration d'échec. Renvoie l'échéance d'explication (ms).
+        // Refus : Existe, Plein.
+        signal ouvrir(h: Horodatage, plan: String, nature: ManNatureAnomalie, description: String, par: String) -> Horodatage
+            writes nature_de, ouverte_le, echeance_de, ouvertes
+            calls ManPlan.fiche, ApiEphemerides.invalider, ApiObservation.demander_suivi, ApiConjonctions.ouverts_de, ApiCoordination.arretee, ApiCoordination.rouvrir, Journal.noter
+        // Le propriétaire explique (ouverte -> en_analyse) et désigne son nouveau dépôt
+        // d'éphéméride, qui doit être validé et postérieur à l'ouverture (ApiEphemerides.derniere
+        // == depot, ApiEphemerides.depot_valide et ApiEphemerides.age < h − ouverte_le, sinon Perime). `par` "dynamicien" ou
+        // "chef_de_mission" du propriétaire. Renvoie "en_analyse".
+        // Refus : Inconnu, EtatInvalide, Delai (après l'échéance), MotifRequis, Perime, Habilitation.
+        signal expliquer(h: Horodatage, plan: String, explication: String, depot: String, par: String) -> String
+            writes explication_de, depot_corrige_de
+            reads ouverte_le, echeance_de
+            moves ouverte -> en_analyse
+            calls ManPlan.fiche, ApiEphemerides.derniere, ApiEphemerides.depot_valide, ApiEphemerides.age, ApiRef.proprietaire, ApiAcces.a_le_role, ApiAcces.agit_pour, Journal.noter
+        // Lève l'anomalie (en_analyse -> levee) : écart observé revenu sous ManVerification.ECART_MAX_M
+        // (ApiObservation.ecart_declare, sinon Incoherent) et aucun rapprochement ouvert de
+        // niveau 3 impliquant l'objet sans coordination arrêtée. `par` "analyste" d'ORBITE,
+        // `valideur` "superviseur" (ApiAcces.quatre_yeux). Renvoie "levee".
+        // Refus : Inconnu, EtatInvalide, MotifRequis, Incoherent, Habilitation, QuatreYeux.
+        signal lever(h: Horodatage, plan: String, conclusion: String, par: String, valideur: String) -> String
+            writes conclusion_de, ouvertes
+            reads depot_corrige_de
+            moves en_analyse -> levee
+            calls ManPlan.fiche, ApiObservation.ecart_declare, ApiConjonctions.ouverts_de, ApiConjonctions.niveau, ApiCoordination.arretee, ApiAcces.a_le_role, ApiAcces.quatre_yeux, Journal.noter
+        // Transmet en anomalie d'objet (ouverte | en_analyse -> transmise) : ApiEvenements.anomalie
+        // (genre "manoeuvre" ; l'objet ne sera plus désigné, propriété 2, et evenements rouvre les
+        // coordinations où il est désigné) et manquement si le propriétaire n'a pas
+        // expliqué (ApiConformite.constater, gravité 2). `par` "analyste" d'ORBITE, ou
+        // "systeme" à l'échéance d'explication (ManVeille, ouverte seulement). Renvoie l'id de
+        // l'anomalie d'objet. Refus : Inconnu, EtatInvalide, Delai (systeme avant l'échéance),
+        // MotifRequis, Habilitation.
+        signal transmettre(h: Horodatage, plan: String, motif: String, par: String) -> String
+            writes conclusion_de, ouvertes
+            reads echeance_de, explication_de
+            moves ouverte -> transmise, en_analyse -> transmise
+            calls ManPlan.fiche, ApiRef.proprietaire, ApiEvenements.anomalie, ApiConformite.constater, ApiAcces.a_le_role, Journal.noter
+        // Anomalies ouvertes dont l'échéance d'explication est passée à `h` (au plus n).
+        signal echues(h: Horodatage, n: Int) -> List<String>
+            requires n > 0 && n <= 1000
+            reads ouvertes, echeance_de, cycle
+        // État : "ouverte", "en_analyse", "levee", "transmise" ; "" si le plan n'a pas d'anomalie.
+        signal etat(plan: String) -> String
+            reads nature_de, cycle
+    }
+}
+
+skeleton ManNonAnnoncee {
+    const MAX_CONSTATS = 5000000
+    // Délai donné au propriétaire pour déposer une éphéméride qui intègre la poussée : 24 h.
+    const DELAI_REGULARISATION_MS = 86400000
+    memory {
+        objet_de: Map<String, Objet> [persistent]        // constat ("NA:" + objet + ":" + depuis) -> objet ; écrit par `constater` seul
+        operateur_de: Map<String, Org> [persistent]      // propriétaire au moment du constat
+        depuis_de: Map<String, Horodatage> [persistent]  // début de l'intervalle d'observation
+        constate_le: Map<String, Horodatage> [persistent]
+        echeance_de: Map<String, Horodatage> [persistent] // constate_le + DELAI_REGULARISATION_MS
+        manquement_de: Map<String, String> [persistent]  // id du manquement ouvert chez conformite au constat
+        depot_de: Map<String, String> [persistent]       // dépôt d'éphéméride de régularisation
+        en_cours: List<String> [persistent]              // constats non régularisés (ManVeille)
+        invariant objet_de.size <= MAX_CONSTATS
+        invariant (depuis_de ?? 0) <= (constate_le ?? 0)
+        invariant (constate_le ?? 0) <= (echeance_de ?? 0)
+        invariant en_cours.size <= MAX_CONSTATS
+    }
+    // Suite technique d'une manœuvre non annoncée (la qualification du manquement et son
+    // contradictoire appartiennent à conformite). Instance = id du constat.
+    state cycle {
+        initial: constatee
+        constatee -> regularisee // éphéméride validée intégrant la poussée déposée avant l'échéance
+        constatee -> persistante // rien à l'échéance : l'objet est imprévisible, anomalie d'objet
+    }
+    face {
+        // Constate une manœuvre non annoncée détectée par l'observation (appelé par
+        // ApiManoeuvres.constater_non_annoncee, que l'observation appelle sur une détection
+        // confirmée : aucun appel en retour vers observation). Aucun plan ne doit couvrir
+        // [depuis, h] (ManPlan.plan_couvrant == "", sinon Conflit : la poussée est annoncée).
+        // Effets : éphéméride invalidée (ApiEphemerides.invalider) ; coordinations des
+        // rapprochements ouverts de l'objet (ApiConjonctions.ouverts_de) encore arrêtées
+        // (ApiCoordination.arretee) rouvertes — la désignation reposait sur la trajectoire
+        // annoncée, et si l'objet n'était pas le désigné les DEUX objets ont pu manœuvrer ;
+        // manquement ouvert (ApiConformite.constater : gravité 3 si l'objet était dans un
+        // rapprochement de niveau 3 sans en être le désigné — ApiCoordination.designe(r,
+        // "systeme") —, 1 si la poussée est conforme à son programme de maintien
+        // (ManProgramme.conforme), 2 sinon) ; propriétaire avisé (ApiPasserelle.notifier, r = "").
+        // Id = "NA:" + objet + ":" + depuis ; seul écrivain de `objet_de`. `par` "systeme" ou
+        // "analyste" d'ORBITE. Renvoie l'id du constat.
+        // Refus : Doublon (même objet et même `depuis`), Inconnu (objet), Conflit, Plein, Habilitation.
+        signal constater(h: Horodatage, objet: Objet, depuis: Horodatage, par: String) -> String
+            writes objet_de, operateur_de, depuis_de, constate_le, echeance_de, manquement_de, en_cours
+            calls ManPlan.plan_couvrant, ManProgramme.conforme, ApiEphemerides.invalider, ApiConjonctions.ouverts_de, ApiConjonctions.niveau, ApiCoordination.arretee, ApiCoordination.designe, ApiCoordination.rouvrir, ApiConformite.constater, ApiRef.proprietaire, ApiPasserelle.notifier, ApiAcces.a_le_role, ManIndicateurs.compter, Journal.noter
+        // Régularise (constatee -> regularisee) : le propriétaire désigne un dépôt validé
+        // (ApiEphemerides.depot_valide), dernier de l'objet (ApiEphemerides.derniere), déposé
+        // après le constat (ApiEphemerides.age < h − constate_le) et intégrant la poussée
+        // (ApiEphemerides.avec_manoeuvres) — sinon Perime. `par` "dynamicien" de l'opérateur du
+        // constat (ApiAcces.agit_pour). Renvoie "regularisee".
+        // Refus : Inconnu, EtatInvalide, Delai (après l'échéance), Perime, Habilitation.
+        signal regulariser(h: Horodatage, constat: String, depot: String, par: String) -> String
+            writes depot_de, en_cours
+            reads objet_de, operateur_de, constate_le, echeance_de
+            moves constatee -> regularisee
+            calls ApiEphemerides.depot_valide, ApiEphemerides.derniere, ApiEphemerides.age, ApiEphemerides.avec_manoeuvres, ApiAcces.a_le_role, ApiAcces.agit_pour, Journal.noter
+        // Échéance sans régularisation (constatee -> persistante) : l'objet est déclaré en
+        // anomalie (ApiEvenements.anomalie, genre "manoeuvres_non_annoncees" : il n'est plus
+        // désignable, propriété 2, et evenements rouvre les coordinations où il est désigné).
+        // `par` "systeme" (ManVeille). Renvoie l'id de l'anomalie d'objet.
+        // Refus : Inconnu, EtatInvalide, Delai (avant l'échéance), Habilitation.
+        signal forclore(h: Horodatage, constat: String, par: String) -> String
+            writes en_cours
+            reads objet_de, echeance_de
+            moves constatee -> persistante
+            calls ApiEvenements.anomalie, ApiAcces.a_le_role, Journal.noter
+        // Constats non régularisés dont l'échéance est passée à `h` (au plus n).
+        signal echus(h: Horodatage, n: Int) -> List<String>
+            requires n > 0 && n <= 1000
+            reads en_cours, echeance_de, cycle
+        // État : "constatee", "regularisee", "persistante" ; "inconnu".
+        signal etat(constat: String) -> String
+            reads objet_de, cycle
+    }
+}

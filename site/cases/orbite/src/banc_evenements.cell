@@ -1,0 +1,12 @@
+use app
+use commun::journal_chair
+use commun::horloge_chair
+use sys::evenements::chair::api
+use sys::evenements::chair::evenements
+use sys::evenements::chair::nuages
+use sys::evenements::chair::fragments
+use sys::evenements::chair::anomalies
+use sys::evenements::chair::notifications
+use sys::evenements::chair::veille
+use sys::evenements::chair::collisions
+use sys::evenements::chair::rapports

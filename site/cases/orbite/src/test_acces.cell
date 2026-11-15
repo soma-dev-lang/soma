@@ -1,0 +1,460 @@
+use app
+use commun::journal_chair
+use commun::horloge_chair
+use sys::acces::chair::api
+use sys::acces::chair::personnes
+use sys::acces::chair::roles
+use sys::acces::chair::controle
+use sys::acces::chair::sessions
+use sys::acces::chair::urgence
+use sys::acces::chair::recertification
+use sys::acces::chair::departs
+use sys::acces::chair::rattachement
+use doublures::acces
+
+// ── le monde de départ ────────────────────────────────────────────────────────────────
+// ORBITE ("ORG-ORBITE") : p-dir (amorce, direction), p-dir2 (direction), p-exp (exploitant),
+// p-sup (superviseur), p-conf (conformite), p-aud (auditeur), p-ana (analyste).
+// État ALD ("ORG-ETAT-ALD") : p-aut (autorite, première : direction + contre-signature).
+// Opérateur ORG-OPA (tutelle ALD) : p-adm (administrateur, confirmé par p-aut), p-dyn
+// (dynamicien) et p-chef (chef_de_mission) inscrits par p-adm. Opérateur ORG-OPB : p-admb.
+cell MondeAcces {
+    on installer() {
+        let h = Horodatage(1700000000000)
+        let _ = AccesPersonnes.amorcer(h, "p-dir")
+        let _ = ApiAcces.enregistrer(h, "p-dir2", "ORG-ORBITE", "direction", "p-dir")
+        let _ = ApiAcces.enregistrer(h, "p-exp", "ORG-ORBITE", "exploitant", "p-dir")
+        let _ = ApiAcces.enregistrer(h, "p-sup", "ORG-ORBITE", "superviseur", "p-dir")
+        let _ = ApiAcces.enregistrer(h, "p-conf", "ORG-ORBITE", "conformite", "p-dir")
+        let _ = ApiAcces.enregistrer(h, "p-aud", "ORG-ORBITE", "auditeur", "p-dir")
+        let _ = ApiAcces.enregistrer(h, "p-ana", "ORG-ORBITE", "analyste", "p-exp")
+        let _ = ApiAcces.enregistrer(h, "p-aut", "ORG-ETAT-ALD", "autorite", "p-exp")
+        let _ = AccesRattachements.confirmer(h, "p-aut", "NV-ALD-1", "p-dir", "p-sup")
+        let _ = ApiAcces.enregistrer(h, "p-adm", "ORG-OPA", "administrateur_operateur", "p-exp")
+        let _ = AccesRattachements.confirmer(h, "p-adm", "CONTRAT-OPA", "p-aut", "")
+        let _ = ApiAcces.enregistrer(h, "p-dyn", "ORG-OPA", "dynamicien", "p-adm")
+        let _ = ApiAcces.enregistrer(h, "p-chef", "ORG-OPA", "chef_de_mission", "p-adm")
+        let _ = ApiAcces.enregistrer(h, "p-admb", "ORG-OPB", "administrateur_operateur", "p-exp")
+        let _ = AccesRattachements.confirmer(h, "p-admb", "CONTRAT-OPB", "p-aut", "")
+        return "ok"
+    }
+    // Clé enrôlée par l'administrateur, session ouverte : renvoie le jeton en clair.
+    on connecter(p: String, par: String, cle: String) {
+        let h = Horodatage(1700000000000)
+        let _ = AccesFacteurs.enroler(h, p, cle, par)
+        return ApiAcces.ouvrir_session(h, p, cle)
+    }
+    // n preuves de facteur fausses ; renvoie les jetons obtenus, joints.
+    on echouer(p: String, n: Int) {
+        let jetons_e = []
+        for i in range(0, n) { jetons_e.push(ApiAcces.ouvrir_session(Horodatage(1700000000000 + i), p, "MAUVAISE")) }
+        return join(jetons_e, ",")
+    }
+}
+
+// Amorçage, identifiants réservés, portée à l'inscription.
+cell test AccesAmorcage {
+    rules {
+        let _ = MondeAcces.installer()
+        assert ApiAcces.role_de("p-dir") == "direction"
+        assert ApiAcces.role_de("p-exp") == "exploitant"
+        assert_fails AccesPersonnes.amorcer(Horodatage(1700000000001), "p-x") matching "Existe"
+        assert_fails ApiAcces.enregistrer(Horodatage(1700000000001), "p-x", "ORG-ORBITE", "direction", "amorce") matching "Habilitation"
+        assert_fails ApiAcces.enregistrer(Horodatage(1700000000001), "p-dyn", "ORG-OPA", "dynamicien", "p-adm") matching "Existe"
+        assert_fails ApiAcces.enregistrer(Horodatage(1700000000001), "systeme", "ORG-ORBITE", "analyste", "p-exp") matching "Existe"
+        assert_fails ApiAcces.enregistrer(Horodatage(1700000000001), "p-x", "ORG-ORBITE", "systeme", "p-dir") matching "HorsBornes"
+        assert_fails ApiAcces.enregistrer(Horodatage(1700000000001), "p-x", "ORG-OPA", "analyste", "p-exp") matching "HorsBornes"
+        assert_fails ApiAcces.enregistrer(Horodatage(1700000000001), "p-x", "ORG-ETAT-ALD", "dynamicien", "p-exp") matching "HorsBornes"
+        assert_fails ApiAcces.enregistrer(Horodatage(1700000000001), "p-x", "ORG-RADIEE-9", "dynamicien", "p-exp") matching "Inconnu"
+        assert_fails ApiAcces.enregistrer(Horodatage(1700000000001), "p-x", "ORG-ORBITE", "direction", "p-exp") matching "Habilitation"
+        assert_fails ApiAcces.enregistrer(Horodatage(1700000000001), "p-x", "ORG-OPB", "dynamicien", "p-adm") matching "Habilitation"
+        assert_fails ApiAcces.enregistrer(Horodatage(1700000000001), "p-x", "ORG-OPA", "dynamicien", "intrus-1") matching "Habilitation"
+        assert_fails ApiAcces.enregistrer(Horodatage(1700000000001), "p-x", "ORG-OPA", "dynamicien", "p-x") matching "QuatreYeux"
+        assert ApiAcces.enregistrer(Horodatage(1700000000001), "p-capt", "ORG-CAPT-1", "capteur", "p-exp") == "capteur"
+        assert_fails ApiAcces.enregistrer(Horodatage(1700000000001), "p-y", "ORG-CAPT-1", "dynamicien", "p-exp") matching "HorsBornes"
+        assert ApiAcces.employeur("p-dyn") == "ORG-OPA"
+        assert_fails ApiAcces.employeur("intrus-1") matching "Inconnu"
+        assert ApiAcces.actifs_de("ORG-OPA") == 3
+        assert Journal.taille() > 10
+    }
+}
+
+// Portée : un rôle d'ORBITE ne vaut que chez ORBITE, un rôle d'opérateur que pour l'employeur.
+cell test AccesPortee {
+    rules {
+        let _ = MondeAcces.installer()
+        assert ApiAcces.a_le_role("p-dyn", "dynamicien")
+        assert !ApiAcces.a_le_role("p-dyn", "exploitant")
+        assert !ApiAcces.a_le_role("p-dyn", "aucun")
+        assert ApiAcces.agit_pour("p-dyn", "ORG-OPA")
+        assert !ApiAcces.agit_pour("p-dyn", "ORG-OPB")
+        assert !ApiAcces.agit_pour("systeme", "ORG-ORBITE")
+        assert ApiAcces.a_le_role("systeme", "systeme")
+        assert !ApiAcces.a_le_role("p-dir", "systeme")
+        assert ApiAcces.role_de("systeme") == "systeme"
+        assert ApiAcces.role_de("intrus-1") == "aucun"
+        assert !ApiAcces.a_le_role("intrus-1", "analyste")
+        assert AccesControle.verdict("p-dyn", "dynamicien") == "habilite"
+        assert AccesControle.verdict("intrus-1", "analyste") == "inconnue"
+        assert AccesControle.verdict("p-dyn", "exploitant") == "hors_portee"
+        assert AccesControle.verdict("p-dyn", "chef_de_mission") == "role_absent"
+        assert AccesControle.verdict("p-dir", "systeme") == "systeme_refuse"
+        assert AccesPortees.incompatibles("auditeur", "analyste")
+        assert AccesPortees.incompatibles("exploitant", "conformite")
+        assert !AccesPortees.incompatibles("autorite", "point_focal")
+        assert AccesPortees.portee("systeme") == "interne"
+    }
+}
+
+// Rattachement : sans confirmation de l'employeur, aucun rôle effectif (exploitant faussaire).
+cell test AccesRattachement {
+    rules {
+        let _ = MondeAcces.installer()
+        let h = Horodatage(1700000100000)
+        assert ApiAcces.enregistrer(h, "p-faux", "ORG-OPA", "dynamicien", "p-exp") == "dynamicien"
+        assert ApiAcces.role_de("p-faux") == "aucun"
+        assert AccesControle.verdict("p-faux", "dynamicien") == "non_rattachee"
+        assert AccesRattachements.a_confirmer_de("ORG-OPA", 10) == ["p-faux"]
+        // ORG-OPA a un administrateur : l'autorité de tutelle ne confirme plus à sa place.
+        assert_fails AccesRattachements.confirmer(h, "p-faux", "X", "p-aut", "") matching "Habilitation"
+        assert_fails AccesRattachements.confirmer(h, "p-faux", "", "p-adm", "") matching "MotifRequis"
+        assert_fails AccesRattachements.confirmer(h, "p-faux", "X", "p-admb", "") matching "Habilitation"
+        assert AccesRattachements.contester(h, "p-faux", "inconnu chez nous", "p-adm") == "conteste"
+        assert AccesPersonnes.etat("p-faux") == "suspendue"
+        assert AccesPersonnes.motif("p-faux") == "rattachement_conteste"
+        assert_fails AccesRattachements.confirmer(h, "p-faux", "X", "p-adm", "") matching "EtatInvalide"
+        // Première autorité d'un État : direction à quatre yeux, sur pièce.
+        let _ = ApiAcces.enregistrer(h, "p-autb", "ORG-ETAT-BRV", "autorite", "p-exp")
+        assert_fails AccesRattachements.confirmer(h, "p-autb", "NV-BRV-1", "p-dir", "") matching "QuatreYeux"
+        assert_fails AccesRattachements.confirmer(h, "p-autb", "NV-BRV-1", "p-dir", "p-ana") matching "QuatreYeux"
+        assert_fails AccesRattachements.confirmer(h, "p-autb", "NV-BRV-1", "p-exp", "p-sup") matching "Habilitation"
+        assert AccesRattachements.confirmer(h, "p-autb", "NV-BRV-1", "p-dir", "p-sup") == "confirme"
+        assert ApiAcces.role_de("p-autb") == "autorite"
+        // Sans réponse en 14 jours : expiré, personne suspendue.
+        let _ = ApiAcces.enregistrer(h, "p-lent", "ORG-OPB", "dynamicien", "p-exp")
+        assert ApiAcces.balayer(Horodatage(1700000100000 + 1209600001), "systeme") >= 1
+        assert AccesPersonnes.etat("p-lent") == "suspendue"
+    }
+}
+
+// Cycle de vie d'une personne : suspension, rétablissement, changement de rôle à quatre yeux.
+cell test AccesPersonnesCycle {
+    rules {
+        let _ = MondeAcces.installer()
+        let h = Horodatage(1700000200000)
+        assert_fails ApiAcces.suspendre(h, "p-dyn", "enquete", "intrus-1") matching "Habilitation"
+        assert_fails ApiAcces.suspendre(h, "p-dyn", "enquete", "p-admb") matching "Habilitation"
+        assert_fails ApiAcces.suspendre(h, "p-dyn", "", "p-conf") matching "MotifRequis"
+        assert_fails ApiAcces.suspendre(h, "p-conf", "enquete", "p-conf") matching "QuatreYeux"
+        assert_fails ApiAcces.suspendre(h, "intrus-1", "enquete", "p-conf") matching "Inconnu"
+        assert ApiAcces.suspendre(h, "p-dyn", "enquete", "p-adm") == "suspendue"
+        assert ApiAcces.role_de("p-dyn") == "aucun"
+        assert !ApiAcces.a_le_role("p-dyn", "dynamicien")
+        assert_fails ApiAcces.suspendre(h, "p-dyn", "enquete", "p-adm") matching "EtatInvalide"
+        assert_fails ApiAcces.retablir(h, "p-dyn", "p-adm") matching "Habilitation"
+        assert ApiAcces.retablir(h, "p-dyn", "p-conf") == "active"
+        assert ApiAcces.a_le_role("p-dyn", "dynamicien")
+        assert_fails ApiAcces.retablir(h, "p-dyn", "p-conf") matching "EtatInvalide"
+        // L'auteur de la suspension ne rétablit pas.
+        let _ = ApiAcces.suspendre(h, "p-ana", "enquete", "p-conf")
+        assert_fails ApiAcces.retablir(h, "p-ana", "p-conf") matching "QuatreYeux"
+        assert ApiAcces.retablir(h, "p-ana", "p-dir") == "active"
+        // Changement de rôle : contre-signé, dans la portée.
+        assert_fails AccesPersonnes.changer_role(h, "p-dyn", "chef_de_mission", "p-adm", "p-adm") matching "QuatreYeux"
+        assert_fails AccesPersonnes.changer_role(h, "p-dyn", "analyste", "p-adm", "p-chef") matching "HorsBornes"
+        assert AccesPersonnes.changer_role(h, "p-dyn", "chef_de_mission", "p-adm", "p-chef") == "chef_de_mission"
+        assert ApiAcces.role_de("p-dyn") == "chef_de_mission"
+        assert AccesControle.paires_concentrees(10) == []
+    }
+}
+
+// Quatre yeux : personnes distinctes, valideur d'ORBITE ou chef de mission du même employeur.
+cell test AccesQuatreYeux {
+    rules {
+        let _ = MondeAcces.installer()
+        assert ApiAcces.quatre_yeux("p-dyn", "p-chef")
+        assert ApiAcces.quatre_yeux("p-dyn", "p-sup")
+        assert ApiAcces.quatre_yeux("p-exp", "p-conf")
+        assert !ApiAcces.quatre_yeux("p-sup", "p-sup")
+        assert !ApiAcces.quatre_yeux("p-dyn", "p-ana")
+        assert !ApiAcces.quatre_yeux("p-admb", "p-chef")
+        assert !ApiAcces.quatre_yeux("intrus-1", "p-sup")
+        assert !ApiAcces.quatre_yeux("systeme", "p-sup")
+        assert !ApiAcces.quatre_yeux("p-exp", "p-chef")
+        assert_fails AccesControle.contresigner(Horodatage(1700000000000), "test", "p-dyn", "p-ana") matching "QuatreYeux"
+        assert AccesControle.contresigner(Horodatage(1700000000000), "test", "p-dyn", "p-chef") == 1
+    }
+}
+
+// Attributions : demande, accord à quatre yeux, révocation, échéance, séparation des tâches.
+cell test AccesAttributionsCycle {
+    rules {
+        let _ = MondeAcces.installer()
+        let h = Horodatage(1700000300000)
+        let fin = Horodatage(1700000300000 + 86400000)
+        let a1 = AccesAttributions.demander(h, "p-ana", "superviseur", fin, "intérim", "p-dir")
+        assert AccesAttributions.etat(a1) == "demandee"
+        assert !ApiAcces.a_le_role("p-ana", "superviseur")
+        assert_fails AccesAttributions.accorder(h, a1, "p-dir") matching "QuatreYeux"
+        assert_fails AccesAttributions.accorder(h, a1, "p-ana") matching "QuatreYeux"
+        assert_fails AccesAttributions.accorder(h, a1, "p-exp") matching "QuatreYeux"
+        assert AccesAttributions.accorder(h, a1, "p-conf") == "accordee"
+        assert ApiAcces.a_le_role("p-ana", "superviseur")
+        assert AccesAttributions.roles_de("p-ana") == ["superviseur"]
+        assert_fails AccesAttributions.demander(h, "p-ana", "superviseur", fin, "encore", "p-dir") matching "Doublon"
+        assert_fails AccesAttributions.demander(h, "p-ana", "analyste", fin, "encore", "p-dir") matching "Doublon"
+        assert_fails AccesAttributions.demander(h, "p-conf", "exploitant", fin, "astreinte", "p-dir") matching "Conflit"
+        assert_fails AccesAttributions.demander(h, "p-ana", "dynamicien", fin, "x", "p-exp") matching "HorsBornes"
+        assert_fails AccesAttributions.demander(h, "p-ana", "exploitant", Horodatage(1700000300000 + 31622400001), "x", "p-dir") matching "HorsBornes"
+        assert_fails AccesAttributions.demander(h, "p-ana", "exploitant", fin, "", "p-dir") matching "MotifRequis"
+        assert_fails AccesAttributions.demander(h, "p-ana", "exploitant", fin, "x", "p-ana") matching "QuatreYeux"
+        assert_fails AccesAttributions.demander(h, "p-ana", "exploitant", fin, "x", "p-adm") matching "Habilitation"
+        assert_fails AccesAttributions.revoquer(h, a1, "fin", "p-adm") matching "Habilitation"
+        assert AccesAttributions.revoquer(h, a1, "fin d'intérim", "p-conf") == "revoquee"
+        assert !ApiAcces.a_le_role("p-ana", "superviseur")
+        // Refus : par un valideur tiers.
+        let a2 = AccesAttributions.demander(h, "p-dyn", "chef_de_mission", fin, "astreinte", "p-adm")
+        assert_fails AccesAttributions.refuser(h, a2, "non", "p-adm") matching "Habilitation"
+        assert_fails AccesAttributions.refuser(h, a2, "", "p-sup") matching "MotifRequis"
+        assert AccesAttributions.refuser(h, a2, "pas d'astreinte ce mois", "p-chef") == "refusee"
+        // Échéance : le balayage la fait échoir.
+        let a3 = AccesAttributions.demander(h, "p-dyn", "chef_de_mission", fin, "astreinte", "p-adm")
+        assert AccesAttributions.accorder(h, a3, "p-chef") == "accordee"
+        assert ApiAcces.a_le_role("p-dyn", "chef_de_mission")
+        assert ApiAcces.balayer(Horodatage(1700000300000 + 86400000), "systeme") >= 1
+        assert AccesAttributions.etat(a3) == "echue"
+        assert !ApiAcces.a_le_role("p-dyn", "chef_de_mission")
+    }
+}
+
+// Facteurs, sessions, jetons : chaîne de confiance, blocage, verrouillage, durée maximale.
+cell test AccesSessionsJetons {
+    rules {
+        let _ = MondeAcces.installer()
+        let h = Horodatage(1700000000000)
+        assert_fails AccesFacteurs.enroler(h, "p-dyn", "K-DYN", "p-dyn") matching "QuatreYeux"
+        assert_fails AccesFacteurs.enroler(h, "p-dyn", "K-DYN", "p-admb") matching "Habilitation"
+        let j = MondeAcces.connecter("p-dyn", "p-adm", "K-DYN")
+        assert j != ""
+        assert_fails AccesFacteurs.enroler(h, "p-chef", "K-DYN", "p-adm") matching "Doublon"
+        assert_fails AccesFacteurs.enroler(h, "p-dyn", "K-2", "p-adm") matching "EtatInvalide"
+        assert ApiAcces.authentifier(j, Horodatage(1700000000000 + 1000)) == "p-dyn"
+        assert ApiAcces.authentifier("faux", h) == ""
+        assert ApiAcces.authentifier("", h) == ""
+        assert_fails ApiAcces.fermer_session(h, j, "intrus-1") matching "Habilitation"
+        assert_fails ApiAcces.fermer_session(h, "faux", "p-dyn") matching "Inconnu"
+        assert ApiAcces.fermer_session(Horodatage(1700000000000 + 2000), j, "p-dyn") == "fermee"
+        assert ApiAcces.authentifier(j, Horodatage(1700000000000 + 3000)) == ""
+        assert_fails ApiAcces.fermer_session(h, j, "p-dyn") matching "EtatInvalide"
+        // Inactivité (canal api, 1 h) : verrouillée par le balayage, rouverte par le facteur.
+        let j2 = ApiAcces.ouvrir_session(h, "p-dyn", "K-DYN")
+        let s2 = AccesJetons.session_de(j2)
+        assert ApiAcces.balayer(Horodatage(1700000000000 + 3600001), "systeme") >= 1
+        assert ApiAcces.authentifier(j2, Horodatage(1700000000000 + 3600002)) == ""
+        assert AccesSessions.deverrouiller(Horodatage(1700000000000 + 3600003), s2, "MAUVAISE") == "verrouillee"
+        assert AccesSessions.deverrouiller(Horodatage(1700000000000 + 3600003), s2, "K-DYN") == "ouverte"
+        assert ApiAcces.authentifier(j2, Horodatage(1700000000000 + 3600004)) == "p-dyn"
+        // Durée maximale (12 h) : fermée, jeton mort.
+        assert ApiAcces.balayer(Horodatage(1700000000000 + 43200000), "systeme") >= 1
+        assert !AccesSessions.est_ouverte(s2)
+        assert ApiAcces.authentifier(j2, Horodatage(1700000000000 + 43200001)) == ""
+        // Console pour un employé d'ORBITE : inactivité de 15 min.
+        let jc = MondeAcces.connecter("p-ana", "p-exp", "K-ANA")
+        assert ApiAcces.authentifier(jc, Horodatage(1700000000000 + 900000)) == "p-ana"
+        assert ApiAcces.authentifier(jc, Horodatage(1700000000000 + 1800001)) == ""
+        assert_fails ApiAcces.balayer(h, "p-dir") matching "Habilitation"
+    }
+}
+
+// Force brute : 5 preuves fausses bloquent le facteur ; déblocage à quatre yeux.
+cell test AccesFacteurBloque {
+    rules {
+        let _ = MondeAcces.installer()
+        let h = Horodatage(1700000000000)
+        let _ = AccesFacteurs.enroler(h, "p-dyn", "K-DYN", "p-adm")
+        assert MondeAcces.echouer("p-dyn", 5) == ",,,,"
+        assert !AccesFacteurs.utilisable("p-dyn")
+        assert_fails ApiAcces.ouvrir_session(h, "p-dyn", "K-DYN") matching "Habilitation"
+        assert_fails AccesFacteurs.debloquer(h, "p-dyn", "", "p-adm", "p-adm") matching "QuatreYeux"
+        assert_fails AccesFacteurs.debloquer(h, "p-dyn", "", "p-adm", "p-dyn") matching "QuatreYeux"
+        assert_fails AccesFacteurs.debloquer(h, "p-dyn", "", "p-adm", "p-ana") matching "QuatreYeux"
+        assert AccesFacteurs.debloquer(h, "p-dyn", "K-DYN-2", "p-adm", "p-chef") == "enrole"
+        assert ApiAcces.ouvrir_session(h, "p-dyn", "K-DYN") == ""
+        let j = ApiAcces.ouvrir_session(h, "p-dyn", "K-DYN-2")
+        assert ApiAcces.authentifier(j, h) == "p-dyn"
+        // Compromission : facteur bloqué, sessions fermées.
+        assert_fails AccesFacteurs.compromettre(h, "p-dyn", "p-admb") matching "Habilitation"
+        assert AccesFacteurs.compromettre(h, "p-dyn", "p-dyn") == "bloque"
+        assert ApiAcces.authentifier(j, h) == ""
+        // Suspension : plus d'authentification.
+        let _ = AccesFacteurs.enroler(h, "p-chef", "K-CHEF", "p-adm")
+        let jc = ApiAcces.ouvrir_session(h, "p-chef", "K-CHEF")
+        let _ = ApiAcces.suspendre(h, "p-chef", "enquete", "p-conf")
+        assert ApiAcces.authentifier(jc, h) == ""
+        assert_fails ApiAcces.ouvrir_session(h, "p-chef", "K-CHEF") matching "Suspendu"
+        assert_fails ApiAcces.ouvrir_session(h, "intrus-1", "K") matching "Inconnu"
+    }
+}
+
+// Accès d'urgence : rapprochement de niveau 3 ouvert, une par personne, 4 h, revue indépendante.
+cell test AccesUrgence {
+    rules {
+        let _ = MondeAcces.installer()
+        let h = Horodatage(1700000400000)
+        assert_fails ApiAcces.ouvrir_urgence(h, "p-dyn", "CJ-INCONNU-1", "relève injoignable", "p-sup") matching "Inconnu"
+        assert_fails ApiAcces.ouvrir_urgence(h, "p-dyn", "CJ-N2-1", "relève injoignable", "p-sup") matching "NonEligible"
+        assert_fails ApiAcces.ouvrir_urgence(h, "p-dyn", "CJ-RESOLU-1", "relève injoignable", "p-sup") matching "NonEligible"
+        assert_fails ApiAcces.ouvrir_urgence(h, "p-dyn", "CJ-7", "", "p-sup") matching "MotifRequis"
+        assert_fails ApiAcces.ouvrir_urgence(h, "p-dyn", "CJ-7", "relève injoignable", "p-ana") matching "Habilitation"
+        assert_fails ApiAcces.ouvrir_urgence(h, "p-sup", "CJ-7", "relève injoignable", "p-sup") matching "QuatreYeux"
+        assert_fails ApiAcces.ouvrir_urgence(h, "intrus-1", "CJ-7", "relève injoignable", "p-sup") matching "Suspendu"
+        let u = ApiAcces.ouvrir_urgence(h, "p-dyn", "CJ-7", "relève injoignable", "p-sup")
+        assert ApiAcces.en_urgence("p-dyn", Horodatage(1700000400000 + 1000))
+        assert ApiAcces.en_urgence_pour("p-dyn", "CJ-7", Horodatage(1700000400000 + 1000))
+        assert !ApiAcces.en_urgence_pour("p-dyn", "CJ-8", Horodatage(1700000400000 + 1000))
+        assert !ApiAcces.en_urgence("p-dyn", Horodatage(1700000400000 + 14400000))
+        assert !ApiAcces.a_le_role("p-dyn", "chef_de_mission")
+        assert_fails ApiAcces.ouvrir_urgence(h, "p-dyn", "CJ-9", "encore", "p-sup") matching "Doublon"
+        assert AccesUrgences.fondement(u) == "CJ-7"
+        assert_fails AccesUrgences.reviser(h, u, "conforme", "ok", "p-aud") matching "EtatInvalide"
+        // Fin des 4 h : expirée par le balayage.
+        assert ApiAcces.balayer(Horodatage(1700000400000 + 14400000), "systeme") >= 1
+        assert !ApiAcces.en_urgence("p-dyn", Horodatage(1700000400000 + 14400000))
+        assert len(AccesUrgences.actes(u, 10)) >= 0
+        assert_fails AccesUrgences.reviser(h, u, "conforme", "ok", "p-sup") matching "Habilitation"
+        assert_fails AccesUrgences.reviser(h, u, "conforme", "", "p-aud") matching "MotifRequis"
+        assert AccesUrgences.reviser(Horodatage(1700000400000 + 20000000), u, "conforme", "gestes conformes au motif", "p-aud") == "revue_conforme"
+        // Seconde urgence, close par le bénéficiaire, revue non conforme : suspension.
+        let u2 = ApiAcces.ouvrir_urgence(Horodatage(1700000400000 + 20000000), "p-dyn", "CJ-8", "relève injoignable", "p-dir")
+        assert_fails AccesUrgences.fermer(Horodatage(1700000400000 + 20000001), u2, "p-chef") matching "Habilitation"
+        assert AccesUrgences.fermer(Horodatage(1700000400000 + 20000001), u2, "p-dyn") == "close"
+        assert_fails AccesUrgences.reviser(Horodatage(1700000400000 + 20000002), u2, "conforme", "x", "p-dyn") matching "Habilitation"
+        assert AccesUrgences.reviser(Horodatage(1700000400000 + 20000002), u2, "non_conforme", "gestes hors du rapprochement", "p-conf") == "revue_non_conforme"
+        assert AccesPersonnes.etat("p-dyn") == "suspendue"
+        assert AccesPersonnes.motif("p-dyn") == "urgence_non_conforme"
+    }
+}
+
+// Revue en retard de plus de 72 h : un incident déclaré, une seule fois.
+cell test AccesUrgenceRelance {
+    rules {
+        let _ = MondeAcces.installer()
+        let h = Horodatage(1700000400000)
+        let u = ApiAcces.ouvrir_urgence(h, "p-dyn", "CJ-7", "relève injoignable", "p-sup")
+        assert AccesUrgences.fermer(h, u, "p-sup") == "close"
+        assert AccesUrgences.relancer_revues(Horodatage(1700000400000 + 259200001)) == 1
+        assert AccesUrgences.relancer_revues(Horodatage(1700000400000 + 259200001 + 86400000)) == 0
+        assert AccesUrgences.reviser(Horodatage(1700000400000 + 259200002), u, "conforme", "tardive mais conforme", "p-aud") == "revue_conforme"
+        assert AccesUrgences.relancer_revues(Horodatage(1700000400000 + 259200003)) == 0
+    }
+}
+
+// Recertification : campagne, attestations, retrait, échéance.
+cell test AccesRecertification {
+    rules {
+        let _ = MondeAcces.installer()
+        let h = Horodatage(1700000500000)
+        let ech = Horodatage(1700000500000 + 604800000)
+        assert_fails AccesCampagnes.ouvrir(h, "ORG-OPA", ech, "p-exp") matching "Habilitation"
+        assert_fails AccesCampagnes.ouvrir(h, "ORG-OPA", Horodatage(1700000500000 + 1000), "p-conf") matching "HorsBornes"
+        assert_fails AccesCampagnes.ouvrir(h, "ORG-RADIEE-1", ech, "p-conf") matching "Inconnu"
+        let c = AccesCampagnes.ouvrir(h, "ORG-OPA", ech, "p-conf")
+        assert AccesCampagnes.etat(c) == "ouverte"
+        assert_fails AccesCampagnes.ouvrir(h, "ORG-OPA", ech, "p-conf") matching "Doublon"
+        assert len(AccesAttestations.a_revoir_de(c, 10)) == 3
+        assert_fails AccesAttestations.attester(h, "{c}|p-dyn", "maintenir", "", "p-admb") matching "Habilitation"
+        assert_fails AccesAttestations.attester(h, "{c}|p-dyn", "maintenir", "", "p-sup") matching "Habilitation"
+        assert_fails AccesAttestations.attester(h, "{c}|p-adm", "maintenir", "", "p-adm") matching "QuatreYeux"
+        assert AccesAttestations.attester(Horodatage(1700000500001), "{c}|p-dyn", "maintenir", "", "p-adm") == "confirmee"
+        assert AccesPersonnes.certifiee("p-dyn") == 1700000500001
+        assert_fails AccesAttestations.attester(h, "{c}|p-dyn", "maintenir", "", "p-adm") matching "EtatInvalide"
+        assert_fails AccesAttestations.attester(h, "{c}|p-chef", "retirer", "", "p-adm") matching "MotifRequis"
+        assert AccesAttestations.attester(h, "{c}|p-chef", "retirer", "a quitté la mission", "p-adm") == "retiree"
+        assert AccesPersonnes.etat("p-chef") == "suspendue"
+        assert_fails AccesCampagnes.cloturer(h, c, "p-conf") matching "Delai"
+        assert_fails AccesCampagnes.cloturer(ech, c, "p-exp") matching "Habilitation"
+        // Échéance : le balayage quotidien clôt, l'attestation restante (p-adm) échoit.
+        assert ApiAcces.balayer(ech, "systeme") >= 1
+        assert AccesCampagnes.etat(c) == "close"
+        assert AccesPersonnes.motif("p-adm") == "recertification_echue"
+        assert_fails AccesAttestations.attester(ech, "{c}|p-adm", "maintenir", "", "p-adm") matching "EtatInvalide"
+        assert AccesCampagnes.a_ouvrir(Horodatage(1700000500000 + 604800000 + 31536000001), 10) == ["ORG-OPA"]
+        assert_fails AccesCampagnes.annuler(h, c, "p-conf") matching "EtatInvalide"
+        let c2 = AccesCampagnes.ouvrir(h, "ORG-OPB", ech, "p-conf")
+        assert_fails AccesCampagnes.annuler(h, c2, "p-conf") matching "NonEligible"
+    }
+}
+
+// Départs : annonce, renonciation, effet au balayage, départ immédiat, démission.
+cell test AccesDepartsCycle {
+    rules {
+        let _ = MondeAcces.installer()
+        let h = Horodatage(1700000600000)
+        let effet = Horodatage(1700000600000 + 86400000)
+        let _ = AccesFacteurs.enroler(h, "p-dyn", "K-DYN", "p-adm")
+        let j = ApiAcces.ouvrir_session(h, "p-dyn", "K-DYN")
+        assert_fails AccesDeparts.annoncer(h, "p-dyn", "mutation", effet, "p-exp") matching "Habilitation"
+        assert_fails AccesDeparts.annoncer(h, "p-dyn", "mutation", h, "p-adm") matching "HorsBornes"
+        assert_fails AccesDeparts.annoncer(h, "p-dyn", "mutation", effet, "p-dyn") matching "Habilitation"
+        assert AccesDeparts.annoncer(h, "p-dyn", "mutation", effet, "p-adm") == "annonce"
+        assert_fails AccesDeparts.annoncer(h, "p-dyn", "mutation", effet, "p-adm") matching "EtatInvalide"
+        assert AccesDeparts.annuler(h, "p-dyn", "p-adm") == "aucun"
+        assert AccesDeparts.annoncer(h, "p-dyn", "fin_de_contrat", effet, "p-adm") == "annonce"
+        assert_fails AccesDeparts.rendre_effectif(h, "p-dyn") matching "Delai"
+        assert ApiAcces.balayer(effet, "systeme") >= 1
+        assert AccesDeparts.etat("p-dyn") == "clos"
+        assert AccesPersonnes.etat("p-dyn") == "partie"
+        assert ApiAcces.role_de("p-dyn") == "aucun"
+        assert ApiAcces.authentifier(j, effet) == ""
+        assert !AccesFacteurs.utilisable("p-dyn")
+        assert ApiAcces.actifs_de("ORG-OPA") == 2
+        assert_fails AccesDeparts.annoncer(effet, "p-dyn", "mutation", Horodatage(1700000600000 + 2 * 86400000), "p-adm") matching "EtatInvalide"
+        // Démission annoncée par la personne elle-même ; départ immédiat par la conformité.
+        assert AccesDeparts.annoncer(h, "p-ana", "demission", effet, "p-ana") == "annonce"
+        assert_fails AccesDeparts.partir_maintenant(h, "p-chef", "licenciement", "", "p-conf") matching "MotifRequis"
+        assert_fails AccesDeparts.partir_maintenant(h, "p-chef", "licenciement", "faute", "p-admb") matching "Habilitation"
+        assert AccesDeparts.partir_maintenant(h, "p-chef", "licenciement", "faute grave", "p-conf") == "clos"
+        assert AccesPersonnes.etat("p-chef") == "partie"
+        assert AccesDeparts.partir_maintenant(h, "p-ana", "compromission", "clé volée", "p-dir") == "clos"
+        assert AccesDeparts.depart_d_office(h, "p-ana") == "clos"
+        assert_fails AccesDeparts.partir_maintenant(h, "p-ana", "deces", "x", "p-dir") matching "EtatInvalide"
+    }
+}
+
+// Scénario métier complet : un opérateur rejoint ORBITE, son dynamicien agit sous urgence,
+// la revue est conforme, la recertification maintient, puis il part.
+cell test AccesScenarioOperateur {
+    rules {
+        let _ = MondeAcces.installer()
+        let h = Horodatage(1700001000000)
+        // Adhésion : administrateur inscrit par ORBITE, confirmé par l'autorité de tutelle (BRV).
+        let _ = ApiAcces.enregistrer(h, "p-autb", "ORG-ETAT-BRV", "autorite", "p-exp")
+        let _ = AccesRattachements.confirmer(h, "p-autb", "NV-BRV-1", "p-dir2", "p-conf")
+        assert ApiAcces.enregistrer(h, "p-admc", "ORG-OPC-BRV", "administrateur_operateur", "p-exp") == "administrateur_operateur"
+        assert ApiAcces.role_de("p-admc") == "aucun"
+        assert_fails AccesRattachements.confirmer(h, "p-admc", "CONTRAT", "p-aut", "") matching "Habilitation"
+        assert AccesRattachements.confirmer(h, "p-admc", "CONTRAT-OPC", "p-autb", "") == "confirme"
+        // L'administrateur inscrit son dynamicien, ORBITE enrôle sa clé, une session s'ouvre.
+        assert ApiAcces.enregistrer(h, "p-dync", "ORG-OPC-BRV", "dynamicien", "p-admc") == "dynamicien"
+        assert ApiAcces.a_le_role("p-dync", "dynamicien") && ApiAcces.agit_pour("p-dync", "ORG-OPC-BRV")
+        let _ = AccesFacteurs.enroler(h, "p-dync", "K-DYNC", "p-exp")
+        // Rapprochement de niveau 3 : urgence ouverte par le superviseur, session au canal urgence.
+        let u = ApiAcces.ouvrir_urgence(h, "p-dync", "CJ-42", "astreinte injoignable", "p-sup")
+        let j = ApiAcces.ouvrir_session(h, "p-dync", "K-DYNC")
+        assert ApiAcces.authentifier(j, h) == "p-dync"
+        assert ApiAcces.en_urgence_pour("p-dync", "CJ-42", Horodatage(1700001000000 + 60000))
+        // Rapprochement résolu : le superviseur clôt, la session se ferme.
+        assert AccesUrgences.fermer(Horodatage(1700001000000 + 3600000), u, "p-sup") == "close"
+        assert ApiAcces.authentifier(j, Horodatage(1700001000000 + 3600001)) == ""
+        assert AccesUrgences.reviser(Horodatage(1700001000000 + 7200000), u, "conforme", "manœuvre d'évitement conforme", "p-aud") == "revue_conforme"
+        // Recertification annuelle : maintenu.
+        let c = AccesCampagnes.ouvrir(Horodatage(1700001000000 + 7200000), "ORG-OPC-BRV", Horodatage(1700001000000 + 7200000 + 604800000), "p-conf")
+        assert AccesAttestations.attester(Horodatage(1700001000000 + 7300000), "{c}|p-dync", "maintenir", "", "p-admc") == "confirmee"
+        // Départ annoncé par l'administrateur, effectif au balayage.
+        assert AccesDeparts.annoncer(Horodatage(1700001000000 + 7300000), "p-dync", "mutation", Horodatage(1700001000000 + 86400000), "p-admc") == "annonce"
+        assert ApiAcces.balayer(Horodatage(1700001000000 + 86400000), "systeme") >= 1
+        assert AccesPersonnes.etat("p-dync") == "partie"
+        assert ApiAcces.actifs_de("ORG-OPC-BRV") == 1
+        assert len(Journal.chercher("p-dync", 100)) > 5
+    }
+}

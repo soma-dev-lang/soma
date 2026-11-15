@@ -1,0 +1,202 @@
+// CONJONCTIONS — campagnes de criblage : cadence par régime et cycle de vie d'une campagne.
+// Une campagne compare des trajectoires (éphémérides validées des propriétaires, orbites
+// observées d'ORBITE) et signale chaque rapprochement trouvé (ConjRapprochement.signaler).
+
+// Période de criblage de chaque régime, en mode normal et en mode renforcé. Sans réglage, les
+// valeurs par défaut s'appliquent. Une période trop longue rendrait le catalogue « périmé »
+// pour le criblage des plans (ConjCriblagePlan : 8 h) : la borne haute la tient en dessous.
+skeleton ConjCadence {
+    const PERIODE_MIN = 600000            // 10 min
+    const PERIODE_MAX = 21600000          // 6 h : toujours sous les 8 h du criblage des plans
+    const RENFORCEE_MIN = 300000          // 5 min
+    const DEFAUT_LEO = 7200000            // 2 h
+    const DEFAUT_AUTRES = 21600000        // 6 h (meo, geo, heo)
+    const DEFAUT_RENFORCEE = 1800000      // 30 min
+    memory {
+        periode_normale_de: Map<String, Duree> [persistent]     // régime -> période normale (ms)
+        periode_renforcee_de: Map<String, Duree> [persistent]   // régime -> période en mode renforcé (ms)
+        regle_par: Map<String, String> [persistent]             // régime -> "h|par|valideur|motif" du dernier réglage
+        invariant periode_normale_de >= 600000
+        invariant periode_normale_de <= 21600000
+        invariant periode_renforcee_de >= 300000
+        // le mode renforcé crible au moins aussi souvent : écrire la période normale AVANT la
+        // renforcée quand on allonge, la renforcée AVANT la normale quand on raccourcit.
+        invariant (periode_renforcee_de ?? 0) <= (periode_normale_de ?? 21600000)
+        invariant regle_par.size <= 4
+    }
+    face {
+        // Fixe les deux périodes d'un régime (ms). Renvoie la période normale retenue.
+        // Rôle : `par` "superviseur" d'ORBITE ; `valideur` "direction" ou "superviseur" d'ORBITE
+        // distinct (ApiAcces.quatre_yeux). Geste d'administration :
+        // /admin/conjonctions/ConjCadence.fixer.
+        // Refus : HorsBornes (normale hors [10 min, 6 h], renforcée < 5 min ou > normale),
+        // MotifRequis, Habilitation, QuatreYeux.
+        signal fixer(h: Horodatage, regime: Regime, normale: Duree, renforcee: Duree, motif: String, par: String, valideur: String) -> Duree
+            writes periode_normale_de, periode_renforcee_de, regle_par
+            calls ApiAcces.a_le_role, ApiAcces.quatre_yeux, Journal.noter
+        // Période en vigueur du régime (ms), normale ou renforcée ; défaut si jamais réglée.
+        signal periode(regime: Regime, renforce: Bool) -> Duree
+            reads periode_normale_de, periode_renforcee_de
+    }
+}
+
+// Une campagne de criblage. Instance = "CB-<n>". Une seule campagne non close (planifiée ou en
+// cours) par régime et par portée à la fois ; une campagne "tout_contre_tout" vaut pour les
+// quatre régimes.
+skeleton ConjCampagne {
+    const MAX_CAMPAGNES = 2000000
+    const DUREE_MAX = 7200000             // 2 h : au-delà une campagne en cours est en échec
+    const MAX_OBJETS = 200000             // objets criblés par campagne
+    memory {
+        portee_de: Map<String, ConjPortee> [persistent]
+        regime_de: Map<String, Regime> [persistent]         // régime visé ("leo" pour tout_contre_tout, sans effet)
+        objet_de: Map<String, Objet> [persistent]           // portée "objet" seulement
+        motif_de: Map<String, ConjMotifCampagne> [persistent]
+        planifiee_le: Map<String, Horodatage> [persistent]
+        debut_de: Map<String, Horodatage> [persistent]
+        fin_de: Map<String, Horodatage> [persistent]
+        objets_cribles_de: Map<String, Int> [persistent]
+        paires_de: Map<String, Int> [persistent]            // paires évaluées après filtrage géométrique
+        trouves_de: Map<String, Int> [persistent]           // rapprochements signalés ou mis à jour
+        capteurs_de: Map<String, Int> [persistent]          // capteurs en service au démarrage (< 3 : couverture dégradée)
+        cause_de: Map<String, String> [persistent]          // motif d'échec ou d'annulation
+        // objets du périmètre NON criblés faute de trajectoire exploitable (ni éphéméride fraîche,
+        // ni orbite observée de moins de 72 h) : ils sont signalés, jamais oubliés en silence.
+        exclus_de: Map<String, List<String>> [persistent]
+        en_cours_de: Map<String, String> [persistent]       // "portee|regime" -> campagne non close ; effacée à la clôture
+        derniere_de: Map<String, String> [persistent]       // régime -> dernière campagne terminée couvrant ce régime
+        invariant portee_de.size <= 2000000
+        invariant objets_cribles_de >= 0
+        invariant objets_cribles_de <= 200000
+        invariant paires_de >= 0
+        invariant trouves_de >= 0
+        invariant capteurs_de >= 0
+        invariant (trouves_de ?? 0) <= (paires_de ?? 0)
+        invariant en_cours_de.size <= 12
+        invariant derniere_de.size <= 4
+        invariant len(exclus_de) <= 200000
+    }
+    // Cycle d'une campagne.
+    state campagne {
+        initial: planifiee
+        planifiee -> en_cours       // démarrage : catalogue figé, éphémérides fraîches retenues
+        planifiee -> annulee        // remplacée par une campagne plus large, ou décision d'analyste
+        en_cours -> terminee        // toutes les paires évaluées, rapprochements signalés
+        en_cours -> echouee         // durée dépassée, données inexploitables : incident déclaré
+    }
+    face {
+        // Planifie une campagne. `objet` n'est lu que pour la portée "objet" ("" sinon).
+        // Renvoie l'id "CB-<n>". Rôle : "systeme" (cadence, renforcement, nouvel objet) ou
+        // "analyste" d'ORBITE (motif "manuel"). Refus : Existe (campagne non close de même
+        // portée sur le régime ou l'objet), Inconnu (objet non catalogué), Incoherent (portée
+        // "objet" sans objet), Plein, Habilitation.
+        signal planifier(h: Horodatage, portee: ConjPortee, regime: Regime, objet: Objet, motif: ConjMotifCampagne, par: String) -> String
+            writes portee_de, regime_de, objet_de, motif_de, planifiee_le, en_cours_de
+            calls next_id, ApiRef.etat_objet, ApiRef.regime, ApiAcces.a_le_role, Journal.noter
+        // Démarre une campagne planifiée (planifiee -> en_cours) : relève les capteurs en
+        // service ; moins de 3 ⇒ la campagne est notée « couverture dégradée » au journal (les
+        // orbites observées vieillissent). Renvoie "en_cours".
+        // Rôle : "systeme". Refus : Inconnu, EtatInvalide, Habilitation.
+        signal demarrer(h: Horodatage, campagne: String, par: String) -> String
+            reads portee_de
+            writes debut_de, capteurs_de
+            moves planifiee -> en_cours
+            calls ApiObservation.capteurs_en_service, ApiAcces.a_le_role, Journal.noter
+        // Termine une campagne (en_cours -> terminee) avec ses comptes : objets criblés, paires
+        // évaluées, rapprochements trouvés. Devient la dernière campagne des régimes couverts.
+        // Renvoie "terminee". Rôle : "systeme".
+        // Refus : Inconnu, EtatInvalide, HorsBornes (comptes négatifs, trouvés > paires,
+        // objets > MAX_OBJETS), Delai (en cours depuis plus de DUREE_MAX : echouer), Habilitation.
+        signal terminer(h: Horodatage, campagne: String, objets: Int, paires: Int, trouves: Int, par: String) -> String
+            reads portee_de, regime_de, debut_de
+            writes fin_de, objets_cribles_de, paires_de, trouves_de, en_cours_de, derniere_de
+            moves en_cours -> terminee
+            calls ApiAcces.a_le_role, Journal.noter
+        // Constate l'échec d'une campagne en cours (en_cours -> echouee) : durée dépassée ou
+        // données inexploitables. Déclare un incident de gravité 2 visant "conjonctions"
+        // (ApiOperations.declarer_incident). Renvoie l'id de l'incident.
+        // Rôle : "systeme" ou "exploitant" d'ORBITE. Refus : Inconnu, EtatInvalide, MotifRequis, Habilitation.
+        signal echouer(h: Horodatage, campagne: String, motif: String, par: String) -> String
+            reads portee_de, regime_de
+            writes fin_de, cause_de, en_cours_de
+            moves en_cours -> echouee
+            calls ApiOperations.declarer_incident, ApiAcces.a_le_role, Journal.noter
+        // Déclare les objets du périmètre d'une campagne en cours qui n'ont pas pu être criblés
+        // (ni ApiEphemerides.fraiche, ni ApiObservation.suivi) et demande pour chacun un suivi
+        // renforcé (priorité 2, 24 h). Un objet exclu de deux campagnes terminées consécutives de
+        // son régime est signalé à la conformité (ApiConformite.constater, gravité 2, contre son
+        // propriétaire). Renvoie le nombre d'objets exclus enregistrés. Rôle : "systeme".
+        // Refus : Inconnu, EtatInvalide (campagne pas en cours), Plein (capacité des capteurs ou
+        // plus de MAX_OBJETS), Habilitation.
+        signal declarer_exclus(h: Horodatage, campagne: String, objets: List<String>, par: String) -> Int
+            reads regime_de, derniere_de, campagne
+            writes exclus_de
+            calls ApiEphemerides.fraiche, ApiObservation.suivi, ApiObservation.demander_suivi, ApiRef.proprietaire, ApiConformite.constater, ApiAcces.a_le_role, Journal.noter
+        // Objets non criblés par la campagne (vide si aucun). Refus : Inconnu.
+        signal exclus(campagne: String) -> List<String>
+            reads exclus_de, portee_de
+        // Annule une campagne planifiée (planifiee -> annulee). Renvoie "annulee".
+        // Rôle : "systeme" ou "analyste" d'ORBITE. Refus : Inconnu, EtatInvalide, MotifRequis, Habilitation.
+        signal annuler(h: Horodatage, campagne: String, motif: String, par: String) -> String
+            reads portee_de, regime_de
+            writes cause_de, en_cours_de
+            moves planifiee -> annulee
+            calls ApiAcces.a_le_role, Journal.noter
+        // Régimes dont la cadence est échue à `h` (dernière campagne terminée plus vieille que
+        // la période, renforcée pendant un épisode) et sans campagne non close : à planifier
+        // en "cadence" ou "renforce" (ConjRonde.balayer).
+        signal a_lancer(h: Horodatage) -> List<String>
+            reads derniere_de, fin_de, en_cours_de
+            calls ConjCadence.periode, ConjRenforcement.actif_pour
+        // Campagnes en cours depuis plus de DUREE_MAX à `h` (à faire échouer, ConjRonde.balayer).
+        signal en_retard(h: Horodatage) -> List<String>
+            reads en_cours_de, debut_de
+        // Dernière campagne terminée couvrant le régime ; "" si aucune.
+        signal derniere(regime: Regime) -> String
+            reads derniere_de
+        // Âge (ms) à `h` du dernier criblage complet du régime (fin de la dernière campagne
+        // terminée). Refus : Inconnu (jamais criblé).
+        signal age_crible(regime: Regime, h: Horodatage) -> Duree
+            reads derniere_de, fin_de
+        // Vrai si le régime a été criblé contre tout le catalogue (campagne "tout_contre_tout" ou
+        // "regime" terminée) depuis moins de 8 h à `h` : COLA des lancements, criblage des plans.
+        signal fraiche(regime: Regime, h: Horodatage) -> Bool
+            reads derniere_de, fin_de
+        // "planifiee", "en_cours", "terminee", "echouee", "annulee" ; "inconnue".
+        signal etat(campagne: String) -> String
+            reads campagne, portee_de
+        // Noyau de criblage tout-contre-tout (natif, pur) : `catalogue` = "n,x,y,z,vx,vy,vz;…"
+        // (n = numéro de catalogue sans "OBJ-", positions en m et vitesses en m/s à l'époque
+        // du catalogue), propagation rectiligne sur [0, horizon] (ms), distance minimale par
+        // paire. Renvoie "a,b,tca,distance;…" (tca en ms depuis l'époque, distance en m) pour
+        // chaque paire, dans l'ordre du catalogue, dont la distance minimale est < seuil.
+        signal criblage(catalogue: String, horizon: Duree, seuil: Distance) -> String
+    }
+}
+
+// Ronde du sous-système : le SEUL endroit où le temps fait avancer conjonctions. Appelée par
+// ApiConjonctions.balayer (Horloge.battre, toutes les minutes, par "systeme") ; aucun autre
+// signal de conjonctions ne lit l'horloge.
+skeleton ConjRonde {
+    const LOT = 1000                      // au plus LOT éléments de chaque liste par ronde
+    face {
+        // Fait, dans cet ordre, à `h` :
+        // 1. campagnes : fait échouer les campagnes en retard (ConjCampagne.en_retard, echouer) ;
+        //    planifie ("cadence" ou "renforce") puis démarre les régimes échus (a_lancer) ;
+        // 2. épisodes renforcés : ConjRenforcement.surveiller sur chaque non_clos ;
+        // 3. exemptions : ConjExemption.avancer sur chaque non_closes ;
+        // 4. rapprochements à venir : ConjRapprochement.reevaluer (a_reevaluer) ; ceux passés en
+        //    alerte : engager, demander_mesures, puis ConjMessage.diffuser ;
+        // 5. rapprochements échus (echus) : analyse inconnue ⇒ ConjAnalyseTca.ouvrir ; ouverte
+        //    ⇒ conclure "intacts" dès que ApiObservation.suivi vaut pour les deux objets, ou
+        //    "objet_perdu" une fois DELAI_REACQUISITION passé (lu dans ConjAnalyseTca.conclure) ; conclue ⇒ ConjRapprochement.clore_apres_tca,
+        //    ConjMessage.clore_de puis diffuser (message de clôture) ;
+        // 6. messages en attente : ConjMessage.relever, puis escalader les sans_reponse ;
+        // 7. contestations (instruire) et abonnements (verifier).
+        // Une erreur sur un élément est journalisée et n'arrête pas la ronde. Renvoie le nombre
+        // d'instances dont l'état a changé. Rôle : "systeme" seulement.
+        // Refus : Habilitation.
+        signal balayer(h: Horodatage, par: String) -> Int
+            calls ConjCampagne.en_retard, ConjCampagne.echouer, ConjCampagne.a_lancer, ConjCampagne.planifier, ConjCampagne.demarrer, ConjRenforcement.non_clos, ConjRenforcement.surveiller, ConjExemption.non_closes, ConjExemption.avancer, ConjRapprochement.a_reevaluer, ConjRapprochement.reevaluer, ConjRapprochement.etat, ConjRapprochement.engager, ConjRapprochement.demander_mesures, ConjRapprochement.echus, ConjRapprochement.fiche, ConjRapprochement.clore_apres_tca, ConjAnalyseTca.etat, ConjAnalyseTca.ouvrir, ConjAnalyseTca.conclure, ApiObservation.suivi, ConjMessage.diffuser, ConjMessage.clore_de, ConjMessage.en_attente, ConjMessage.relever, ConjMessage.escalader, ConjMessage.etat, ConjContestation.non_closes, ConjContestation.instruire, ConjAbonnement.non_revoques, ConjAbonnement.verifier, ConjRenforcement.etat, ConjExemption.etat, ConjContestation.etat, ConjAbonnement.etat, ApiAcces.a_le_role, Journal.noter
+    }
+}

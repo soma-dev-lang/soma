@@ -1,0 +1,97 @@
+// FIN DE VIE — prorogations d'échéance : un propriétaire dont le retrait est retardé pour
+// une cause qu'il ne maîtrise pas (fenêtre de rentrée contrôlée, activité solaire, mission de
+// retrait actif en préparation) demande un report. Avis de l'État d'immatriculation, puis
+// décision d'ORBITE à quatre yeux, avant l'échéance. Une prorogation au plus par objet.
+// Instance = id "PRO-<n>" choisi par le demandeur.
+
+// Cause invoquée à l'appui d'une prorogation.
+cell type FdvCause = String where value == "fenetre_rentree" || value == "activite_solaire" || value == "retrait_actif_prevu" || value == "anomalie_temporaire"
+
+skeleton FdvProrogation {
+    // Report maximal : 1 an (ms).
+    const REPORT_MAX = 31536000000
+    // Une demande doit être déposée au moins 30 jours avant l'échéance (ms).
+    const PREAVIS = 2592000000
+    const MAX_DEMANDES = 100000
+    memory {
+        objet_de: Map<String, Objet> [persistent]       // demande -> objet ; écrit au dépôt, jamais effacé (lien des règles de décision)
+        en_attente: List<String> [persistent]           // demandes non décidées (balayage des échéances)
+        invariant en_attente.size <= 100000
+        cause_de: Map<String, FdvCause> [persistent]
+        duree_de: Map<String, Duree> [persistent]       // report demandé (ms), ≤ 1 an
+        empreinte_de: Map<String, String> [persistent]  // condensat du dossier justificatif
+        demandee_le: Map<String, Horodatage> [persistent]
+        avis_par: Map<String, String> [persistent]      // autorité de l'État qui a donné son avis
+        decide_par: Map<String, String> [persistent]    // "par|valideur" de la décision d'ORBITE
+        motif_de: Map<String, String> [persistent]      // motif du refus
+        invariant objet_de.size <= 100000
+        invariant duree_de <= 31536000000
+    }
+    // Cycle d'une demande de prorogation (états exposés par etat).
+    state prorogation {
+        initial: demandee
+        demandee -> avis_favorable        // l'État d'immatriculation soutient la demande
+        demandee -> refusee               // avis défavorable de l'État, ou refus d'ORBITE
+        demandee -> echue                 // échéance atteinte sans avis
+        avis_favorable -> accordee   // décision d'ORBITE avant l'échéance
+        avis_favorable -> refusee
+        avis_favorable -> echue           // échéance atteinte sans décision : le retard sera constaté
+    }
+    face {
+        // Demande un report de `duree` ms de l'échéance de l'objet (FdvFin "en_retrait" ou
+        // "passive", échéance dans plus de 30 jours, aucune prorogation déjà accordée).
+        // Notifie le point focal de l'État d'immatriculation (ApiPasserelle.notifier, r = ""). Habilitation : "chef_de_mission"
+        // du propriétaire. Renvoie "demandee".
+        // Refus : Existe, Inconnu (objet sans fin de mission), EtatInvalide, Delai (échéance
+        // dans moins de 30 jours), HorsBornes (duree nulle ou > 1 an), Doublon (déjà prorogé),
+        // MotifRequis (empreinte vide), Plein, Habilitation.
+        signal demander(h: Horodatage, demande: String, objet: Objet, cause: FdvCause, duree: Duree, empreinte: String, par: String) -> String
+            writes objet_de, cause_de, duree_de, empreinte_de, demandee_le, en_attente
+            reads prorogation
+            calls FdvFin.etat, FdvFin.echeance, ApiRef.proprietaire, ApiRef.etat_immatriculation, ApiRef.org_de_etat, ApiPasserelle.notifier, ApiAcces.a_le_role, ApiAcces.agit_pour, Journal.noter
+        // Avis de l'État d'immatriculation : favorable (demandee -> avis_favorable) ou
+        // défavorable (demandee -> refusee, motif requis). Habilitation : "autorite" ou
+        // "point_focal" de l'État d'immatriculation (ApiAcces.agit_pour sur ApiRef.org_de_etat).
+        // Renvoie l'état atteint. Refus : Inconnu, EtatInvalide, MotifRequis, Habilitation.
+        signal donner_avis(h: Horodatage, demande: String, favorable: Bool, motif: String, par: String) -> String
+            writes avis_par, motif_de
+            reads objet_de
+            moves demandee -> avis_favorable, demandee -> refusee
+            calls ApiRef.etat_immatriculation, ApiRef.org_de_etat, ApiAcces.a_le_role, ApiAcces.agit_pour, Journal.noter
+        // Accorde la prorogation (avis_favorable -> accordee) avant l'échéance : reporte
+        // l'échéance (FdvFin.proroger). Habilitation : "analyste" d'ORBITE ; QuatreYeux :
+        // valideur "direction". Renvoie la nouvelle échéance (ms).
+        // Refus : Inconnu, EtatInvalide, Delai (échéance dépassée), Doublon, Habilitation, QuatreYeux.
+        signal accorder(h: Horodatage, demande: String, par: String, valideur: String) -> Horodatage
+            writes decide_par
+            reads objet_de, duree_de
+            moves avis_favorable -> accordee when FdvFin.en_retrait || FdvFin.passive via objet_de
+            calls FdvFin.etat, FdvFin.proroger, ApiAcces.a_le_role, ApiAcces.quatre_yeux, Journal.noter
+        // Refuse la prorogation (avis_favorable -> refusee) ; notifie le propriétaire.
+        // Habilitation : "analyste" d'ORBITE. Renvoie "refusee".
+        // Refus : Inconnu, EtatInvalide, MotifRequis, Habilitation.
+        signal refuser(h: Horodatage, demande: String, motif: String, par: String) -> String
+            writes motif_de, decide_par
+            reads objet_de
+            moves avis_favorable -> refusee
+            calls ApiRef.proprietaire, ApiPasserelle.notifier, ApiAcces.a_le_role, Journal.noter
+        // Classe une demande restée sans décision à l'échéance de l'objet (-> echue).
+        // Habilitation : "systeme". Renvoie "echue".
+        // Refus : Inconnu, EtatInvalide (échéance non atteinte, ou demande décidée), Habilitation.
+        signal expirer(h: Horodatage, demande: String, par: String) -> String
+            reads objet_de
+            moves demandee -> echue, avis_favorable -> echue
+            calls FdvFin.echeance, ApiAcces.a_le_role, Journal.noter
+        // Balayage (appelé par FdvCouverture.balayer) : au plus n demandes de en_attente dont
+        // l'échéance de l'objet (FdvFin.echeance) est atteinte passent "echue" (expirer) ; les
+        // demandes décidées sortent de la liste. Habilitation : "systeme". Renvoie le nombre d'échues.
+        // Refus : HorsBornes (n hors 1..1000), Habilitation.
+        signal balayer(h: Horodatage, n: Int, par: String) -> Int
+            writes en_attente
+            reads objet_de, prorogation
+            calls expirer, FdvFin.echeance, ApiAcces.a_le_role
+        // État : "demandee", "avis_favorable", "accordee", "refusee", "echue" ; "inconnu".
+        signal etat(demande: String) -> String
+            reads prorogation, objet_de
+    }
+}

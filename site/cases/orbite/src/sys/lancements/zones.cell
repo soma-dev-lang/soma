@@ -1,0 +1,87 @@
+// LANCEMENTS — États concernés par un lancement : les États de lancement au sens des
+// Conventions de 1972 et 1975 (celui qui procède au tir, qui le fait procéder, dont le
+// territoire ou l'installation sert ; solidairement responsables, l'un d'eux immatricule), et
+// les États survolés par les zones de retombée prévues (premier étage, coiffe, étage supérieur
+// en rentrée contrôlée), notifiés avant tout avis. Instance = id du lancement.
+
+skeleton LancZones {
+    const MAX_DOSSIERS = 1000000
+    // Au plus 4 États de lancement (les quatre qualités de la Convention) et 50 zones.
+    const MAX_ETATS_LANCEMENT = 4
+    const MAX_ZONES = 50
+    memory {
+        etats_lancement_de: Map<String, List<String>> [persistent] // États de lancement ; le premier est celui du préavis, jamais retiré
+        zones_de: Map<String, List<String>> [persistent]   // "etat|debut|fin|zone|element" : zones de retombée prévues
+        messages_de: Map<String, List<String>> [persistent] // messages de notification (ApiPasserelle) de la dernière déclaration
+        version_de: Map<String, Int> [persistent]          // version de fenêtre couverte par la dernière déclaration
+        declare_le: Map<String, Horodatage> [persistent]
+        invariant etats_lancement_de.size <= 1000000
+        invariant len(etats_lancement_de) <= 4
+        invariant len(zones_de) <= 50
+        invariant len(messages_de) <= 50
+        invariant version_de >= 1
+    }
+    // Cycle de la déclaration des zones.
+    state zones {
+        initial: a_declarer
+        a_declarer -> declarees          // zones et États survolés notifiés (liste vide : retombées en haute mer seulement)
+        declarees -> declarees           // mise à jour (nouvelle fenêtre, nouvelle zone) : re-notification
+        acquittees -> declarees          // nouvelle fenêtre après acquittement : re-notification
+        declarees -> acquittees          // tous les États survolés ont acquitté (le silence ne bloque pas l'avis)
+        a_declarer -> closes             // lancement terminé
+        declarees -> closes
+        acquittees -> closes
+    }
+    face {
+        // Crée le dossier avec l'État du préavis comme premier État de lancement (reste
+        // "a_declarer"). Appelé par LancLancement.notifier et enregistrer_non_notifie, `par`
+        // "systeme". Renvoie le nombre d'États de lancement. Refus : Existe, Habilitation.
+        signal ouvrir(h: Horodatage, lancement: String, etat: Etat, par: String) -> Int
+            writes etats_lancement_de
+            calls ApiAcces.a_le_role
+        // Ajoute un État de lancement (celui qui fait procéder au tir, ou dont le territoire ou
+        // l'installation sert). Un État non participant est enregistré quand même (sa
+        // responsabilité ne dépend pas de son adhésion). `par` "autorite" d'un État de lancement
+        // déjà inscrit, ou "analyste". Renvoie le nombre d'États de lancement.
+        // Refus : Inconnu, Doublon, Plein (4), Ferme (lancement déjà tiré), Habilitation.
+        signal ajouter_etat(h: Horodatage, lancement: String, etat: Etat, par: String) -> Int
+            writes etats_lancement_de
+            calls LancLancement.etat, ApiRef.org_de_etat, ApiAcces.a_le_role, ApiAcces.agit_pour, Journal.noter
+        // Déclare (ou redéclare) les zones de retombée de la fenêtre en cours
+        // (a_declarer | declarees | acquittees -> declarees) et notifie chaque État survolé une
+        // fois (ApiRef.org_de_etat, ApiPasserelle.notifier, urgence 2 ; un État sans autorité
+        // inscrite : Inconnu). Zone "etat|debut|fin|zone|element", dans la fenêtre (sinon
+        // Incoherent). `par` "chef_de_mission" de l'opérateur du lanceur, ou "autorite" de l'État
+        // du préavis. Renvoie le nombre d'États notifiés.
+        // Refus : Inconnu, EtatInvalide (lancement tiré ou terminé), Incoherent, Plein, Habilitation.
+        signal declarer(h: Horodatage, lancement: String, zones: List<String>, par: String) -> Int
+            writes zones_de, messages_de, version_de, declare_le
+            reads etats_lancement_de
+            moves a_declarer -> declarees, declarees -> declarees, acquittees -> declarees
+            calls LancLancement.etat, LancLancement.fiche, ApiRef.org_de_etat, ApiPasserelle.notifier, ApiAcces.a_le_role, ApiAcces.agit_pour, Journal.noter
+        // Relève les acquittements (declarees -> acquittees quand ApiPasserelle.acquitte est vrai
+        // pour chaque message). `par` "systeme". Renvoie le nombre de messages non acquittés.
+        // Refus : Inconnu, Habilitation.
+        signal relever_acquittements(h: Horodatage, lancement: String, par: String) -> Int
+            reads messages_de
+            moves declarees -> acquittees
+            calls ApiPasserelle.acquitte, ApiAcces.a_le_role
+        // Clôt le dossier d'un lancement tiré, en échec ou annulé (-> closes). `par` "systeme".
+        // Renvoie "closes". Refus : Inconnu, Habilitation.
+        signal clore(h: Horodatage, lancement: String, par: String) -> LancEtatZones
+            moves a_declarer -> closes, declarees -> closes, acquittees -> closes
+            calls ApiAcces.a_le_role
+        // Vrai si `etat` est un État de lancement du lancement (seul l'un d'eux immatricule).
+        signal est_etat_de_lancement(lancement: String, etat: Etat) -> Bool
+            reads etats_lancement_de
+        // États de lancement (responsabilité solidaire, Convention de 1972). Refus : Inconnu.
+        signal etats_lancement(lancement: String) -> List<String>
+            reads etats_lancement_de
+        // Zones de retombée déclarées pour la fenêtre en cours. Refus : Inconnu.
+        signal zones(lancement: String) -> List<String>
+            reads zones_de, etats_lancement_de
+        // État ("inconnue" si jamais ouvert).
+        signal etat(lancement: String) -> LancEtatZones
+            reads zones, etats_lancement_de
+    }
+}

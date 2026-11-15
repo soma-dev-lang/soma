@@ -1,0 +1,119 @@
+// escalade — BARÈME des échelons. Le délai laissé à chaque échelon est une part du temps restant
+// au TCA (pour mille), bornée par un plancher et par le délai contractuel de l'opérateur à une
+// alerte de niveau 3 (ApiOperateurs.delai_reponse). L'échéance finale — l'instant où ORBITE
+// reprend la main quoi qu'il arrive — est TCA − max(MARGE_REPRISE_MS, préavis de la propulsion la
+// plus lente des objets en cause) : passé cet instant, attendre l'opérateur ne sert plus à rien.
+// Sans barème en vigueur, les constantes DEFAUT_* s'appliquent : l'escalade ne dépend jamais d'un
+// texte adopté pour fonctionner.
+
+// Échelon d'escalade : 1 relance de l'astreinte, 2 chef de mission, 3 point focal de l'État de
+// tutelle, 4 direction d'ORBITE et points focaux des deux États.
+cell type EscEchelon = Int where value >= 1 && value <= 4
+// Part du temps restant au TCA accordée à un échelon, en pour mille (1000 = tout le temps restant).
+cell type EscPourMille = Int where value >= 1 && value <= 1000
+
+// Versions du barème : id = identifiant de version ("BAR-<n>", choisi par le rédacteur).
+skeleton EscBareme {
+    const MAX_VERSIONS = 1000
+    const MAX_LIGNES_BAREME = 4000
+    // Marge minimale avant le TCA laissée à l'arbitrage d'ORBITE et à la manœuvre : 6 h.
+    const MARGE_REPRISE_MS = 21600000
+    // Temps laissé à l'arbitrage avant la limite d'action (TCA − préavis) : 2 h, comme la
+    // MARGE_ARBITRAGE de la coordination (qui passe en arbitrage à limite − 2 h).
+    const MARGE_ARBITRAGE_MS = 7200000
+    // Plancher absolu d'un échelon : 10 min (le temps d'un appel et d'un rappel).
+    const PLANCHER_MIN_MS = 600000
+    // Barème par défaut, pour mille du temps restant jusqu'à l'échéance finale, par échelon.
+    const DEFAUT_E1 = 250
+    const DEFAUT_E2 = 200
+    const DEFAUT_E3 = 150
+    const DEFAUT_E4 = 100
+    // Seuils d'entrée directe : temps restant jusqu'à l'échéance finale sous lequel on ouvre
+    // l'escalade directement à l'échelon 4 (12 h), à l'échelon 3 (24 h), à l'échelon 2 (48 h).
+    const SEUIL_E4_MS = 43200000
+    const SEUIL_E3_MS = 86400000
+    const SEUIL_E2_MS = 172800000
+    memory {
+        redacteur: Map<String, String> [persistent]       // version → analyste qui l'a rédigée ; écrit une fois par rediger
+        parts: Map<String, Int> [persistent]              // "version|échelon" → part pour mille du temps restant
+        planchers: Map<String, Duree> [persistent]        // "version|échelon" → délai minimal (ms)
+        adoptee_le: Map<String, Horodatage> [persistent]  // version → instant d'adoption (ms)
+        en_vigueur: Map<String, String> [persistent]      // "courante" → version en vigueur (au plus une entrée)
+        invariant redacteur.size <= MAX_VERSIONS
+        invariant parts.size <= MAX_LIGNES_BAREME
+        invariant planchers.size <= MAX_LIGNES_BAREME
+        invariant parts >= 1 && parts <= 1000
+        invariant planchers >= 600000
+        invariant en_vigueur.size <= 1
+    }
+    // Cycle de vie d'une version du barème (id = version).
+    state bareme {
+        initial: brouillon
+        brouillon -> en_vigueur       // adopter : quatre lignes fixées, direction + quatre yeux
+        brouillon -> abandonnee       // abandonner
+        en_vigueur -> abrogee         // adopter (d'une autre version) : la précédente est abrogée
+    }
+    face {
+        // Crée une version de barème en brouillon. Renvoie l'id de version.
+        // Rôle exigé de `par` : "analyste" d'ORBITE. Refus : Habilitation, Existe (version déjà
+        // créée), Plein.
+        signal rediger(h: Horodatage, version: String, par: String) -> String
+            writes redacteur
+            calls ApiAcces.a_le_role, Journal.noter
+        // Fixe, pour une version en brouillon, la part (pour mille du temps restant jusqu'à
+        // l'échéance finale) et le plancher (ms, ≥ PLANCHER_MIN_MS) d'un échelon. Renvoie la part.
+        // Rôle exigé : "analyste" d'ORBITE. Refus : Inconnu, EtatInvalide (version adoptée),
+        // HorsBornes (plancher < PLANCHER_MIN_MS), Habilitation, Plein.
+        signal fixer(h: Horodatage, version: String, echelon: EscEchelon, part: EscPourMille, plancher: Duree, par: String) -> Int
+            writes parts, planchers
+            reads redacteur, bareme
+            calls ApiAcces.a_le_role, Journal.noter
+        // Met en vigueur une version en brouillon dont les quatre échelons sont fixés et dont la
+        // somme des parts est ≤ 1000 (les échelons tiennent tous avant l'échéance finale) ; la
+        // version précédente est abrogée. Renvoie "en_vigueur". Rôle exigé : "direction" d'ORBITE ;
+        // `valideur` contre-signe (ApiAcces.quatre_yeux). Refus : Inconnu, EtatInvalide,
+        // Insuffisant (échelon non fixé), Incoherent (somme des parts > 1000), Habilitation, QuatreYeux.
+        signal adopter(h: Horodatage, version: String, par: String, valideur: String) -> String
+            writes adoptee_le, en_vigueur
+            reads parts, planchers, redacteur
+            moves brouillon -> en_vigueur, en_vigueur -> abrogee
+            calls ApiAcces.a_le_role, ApiAcces.quatre_yeux, Journal.noter
+        // Abandonne une version en brouillon. Renvoie "abandonnee". Rôle exigé : "analyste" ou
+        // "direction" d'ORBITE. Refus : Inconnu, EtatInvalide, MotifRequis, Habilitation.
+        signal abandonner(h: Horodatage, version: String, motif: String, par: String) -> String
+            reads redacteur
+            moves brouillon -> abandonnee
+            calls ApiAcces.a_le_role, Journal.noter
+        // Échéance finale d'un rapprochement (ms) : tca − max(MARGE_REPRISE_MS, plus PETIT
+        // ApiPriorites.preavis des objets en cause capables de manœuvrer (ApiRef.propulsion ≠
+        // "aucune") + MARGE_ARBITRAGE_MS) ; tca − MARGE_REPRISE_MS si aucun ne l'est : la reprise
+        // laisse le temps d'arbitrer avant la limite d'action de l'objet le plus réactif, que
+        // l'arbitrage peut toujours désigner (un débris ou un satellite à propulsion faible en
+        // cause ne rend pas la reprise immédiate). Peut être ≤ h : la reprise par ORBITE est alors
+        // immédiate. Refus : Inconnu (rapprochement ou objet).
+        signal echeance_finale(r: Rapprochement) -> Horodatage
+            calls ApiConjonctions.tca, ApiConjonctions.objets, ApiRef.propulsion, ApiPriorites.preavis
+        // Échelon d'entrée d'une escalade ouverte à h, d'après le temps restant jusqu'à l'échéance
+        // finale `fin` : < SEUIL_E4_MS → 4, < SEUIL_E3_MS → 3, < SEUIL_E2_MS → 2, sinon 1.
+        signal echelon_initial(h: Horodatage, fin: Horodatage) -> Int
+            ensures result >= 1 && result <= 4
+        // Délai (ms) accordé à l'échelon `echelon` ouvert à h pour l'opérateur `op` : part du
+        // barème en vigueur (DEFAUT_* sinon) × (fin − h) / 1000, au moins le plancher, au plus
+        // ApiOperateurs.delai_reponse(op, 3) aux échelons 1 et 2, et jamais au-delà de `fin`
+        // (la réponse est bornée par l'échéance finale). 0 si fin ≤ h. Refus : Inconnu (opérateur).
+        signal delai(h: Horodatage, fin: Horodatage, echelon: EscEchelon, op: Org) -> Duree
+            ensures result >= 0
+            reads parts, planchers, en_vigueur
+            calls ApiOperateurs.delai_reponse
+        // Simulation d'une version (brouillon ou en vigueur) pour la revue à quatre yeux : pour une
+        // escalade ouverte à h sur un TCA donné et un opérateur dont le délai contractuel de niveau
+        // 3 vaut `contractuel` (ms), "échelon d'entrée | fin e1 | fin e2 | fin e3 | fin e4 | échéance
+        // finale" (ms ; "-" pour un échelon sauté), avec MARGE_REPRISE_MS comme marge.
+        // Refus : Inconnu (version), Insuffisant (échelon non fixé).
+        signal simuler(version: String, h: Horodatage, tca: Horodatage, contractuel: Duree) -> String
+            reads parts, planchers, redacteur
+        // Version en vigueur ; "" si aucune (constantes DEFAUT_* appliquées).
+        signal version_en_vigueur() -> String
+            reads en_vigueur
+    }
+}

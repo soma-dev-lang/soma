@@ -1,0 +1,23 @@
+// donnees — corps de la façade ApiDonnees : délégation aux cells internes.
+
+flesh ApiDonnees {
+    on diffusion(objet) {
+        return DonControle.diffusion_effective(objet)
+    }
+
+    on peut_recevoir(org, objet, r, h) {
+        return DonControle.peut_recevoir(org, objet, r, h)
+    }
+
+    on adherent(org) {
+        return DonAdhesions.adherent(org)
+    }
+
+    on tracer(h, org, objet, r, nature) {
+        return DonTraces.tracer(h, org, objet, r, nature)
+    }
+
+    on balayer(h, par) {
+        return DonBalayage.balayer(h, par)
+    }
+}

@@ -1,0 +1,161 @@
+// PRIORITÉS — versions des règles de priorité : rédaction par ORBITE, consultation des États,
+// vote, adoption, entrée en vigueur à date, remplacement par la version suivante, abrogation.
+// Instance = id de version ("PRIO-<année>-<n>"). Une seule version en vigueur à la fois.
+
+// Cycle d'une version des règles (valeurs de PrioVersion.etat).
+cell type PrioEtatVersion = String where value == "redaction" || value == "consultation" || value == "vote" || value == "adoptee" || value == "publiee" || value == "en_vigueur" || value == "remplacee" || value == "abrogee" || value == "retiree" || value == "rejetee" || value == "inconnue"
+
+skeleton PrioVersion {
+    const MAX_VERSIONS = 1000
+    // Délai minimal entre la rédaction et l'entrée en vigueur prévue : 90 jours, pour que la
+    // consultation (≥ 30 j), le vote (≥ 14 j) et la mise à jour des procédures des opérateurs
+    // tiennent avant la date d'effet.
+    const DELAI_MIN_EFFET = 7776000000
+    // Délai minimal entre la fin du vote et l'entrée en vigueur : 30 jours de préavis aux
+    // opérateurs (publication de la nouvelle table).
+    const PREAVIS_EFFET = 2592000000
+    memory {
+        titre_de: Map<String, String> [persistent]
+        redige_par: Map<String, String> [persistent]       // personne (analyste d'ORBITE)
+        redige_le: Map<String, Horodatage> [persistent]
+        base_de: Map<String, String> [persistent]          // version qu'elle amende ("" : première) ; écrit à la rédaction, jamais effacé
+        effet_prevu_de: Map<String, Horodatage> [persistent]  // date d'entrée en vigueur proposée, reportable tant que non adoptée
+        debut_vigueur: Map<String, Horodatage> [persistent] // instant réel d'entrée en vigueur
+        fin_vigueur: Map<String, Horodatage> [persistent]   // instant de remplacement ou d'abrogation (≥ debut_vigueur)
+        motif_fin: Map<String, String> [persistent]         // motif d'abrogation ou de retrait
+        publiee_le: Map<String, Horodatage> [persistent]    // diffusion du texte adopté (≤ effet - PREAVIS_EFFET)
+        destinataires_de: Map<String, Int> [persistent]     // nombre d'organisations notifiées à la publication
+        courante: Map<String, String> [persistent]          // clé unique "courante" -> version en vigueur ; absente : aucune
+        ordre: List<String> [persistent]                    // versions dans l'ordre de leur entrée en vigueur (historique)
+        invariant titre_de.size <= 1000
+        invariant ordre.size <= 1000
+        invariant courante.size <= 1
+        invariant destinataires_de >= 0 && destinataires_de <= 100000
+    }
+    // Cycle d'une version. Les états terminaux sont retiree, rejetee, remplacee et abrogee :
+    // une version ne revient jamais en rédaction (un amendement est une nouvelle version, base_de).
+    state cycle {
+        initial: redaction
+        redaction -> consultation       // table complète, consultation des États ouverte
+        redaction -> retiree            // abandon avant consultation
+        consultation -> vote            // seulement une fois la consultation close
+        consultation -> retiree         // avis défavorables : on réécrit une nouvelle version
+        vote -> adoptee                 // scrutin dépouillé adopté
+        vote -> rejetee                 // scrutin dépouillé rejeté
+        vote -> retiree                 // scrutin annulé
+        adoptee -> publiee              // texte et table diffusés aux participants
+        adoptee -> abrogee              // abandon après adoption, avant publication
+        publiee -> en_vigueur           // date d'effet atteinte, préavis de publication écoulé, hors gel
+        publiee -> abrogee              // abandon après publication, avant l'effet
+        en_vigueur -> remplacee         // la version suivante entre en vigueur
+        en_vigueur -> abrogee           // abrogation d'urgence : plus aucune version en vigueur
+    }
+    face {
+        // Ouvre la rédaction d'une version (état initial "redaction"). `base` : version en
+        // vigueur ou adoptée qu'elle amende, "" pour la première. `effet_prevu` : date
+        // d'entrée en vigueur proposée (ms), au moins DELAI_MIN_EFFET après `h`. La table de
+        // décision et les préavis se saisissent ensuite (PrioTable). `par` : "analyste"
+        // d'ORBITE. Renvoie l'id. Refus : Existe, Plein (MAX_VERSIONS), Inconnu (base),
+        // HorsBornes (effet_prevu trop proche), MotifRequis (titre vide), Habilitation.
+        signal rediger(h: Horodatage, version: String, titre: String, base: String, effet_prevu: Horodatage, par: String) -> String
+            writes titre_de, redige_par, redige_le, base_de, effet_prevu_de
+            reads cycle
+            calls ApiAcces.a_le_role, Journal.noter
+        // Reporte la date d'effet prévue d'une version non encore adoptée (redaction,
+        // consultation ou vote) : au moins DELAI_MIN_EFFET après `h`. `par` "superviseur"
+        // d'ORBITE. Renvoie la nouvelle date (ms). Refus : Inconnu, EtatInvalide, HorsBornes,
+        // MotifRequis, Habilitation.
+        signal reporter(h: Horodatage, version: String, effet_prevu: Horodatage, motif: String, par: String) -> Horodatage
+            writes effet_prevu_de
+            reads cycle
+            calls ApiAcces.a_le_role, Journal.noter
+        // Soumet la version aux États (redaction -> consultation) jusqu'à `echeance`, au moins
+        // 30 jours après `h` (PrioConsultation.ouvrir). Exige une table complète
+        // (PrioTable.complete). `par` "analyste", `valideur` "superviseur" d'ORBITE (quatre
+        // yeux). Renvoie "consultation". Refus : Inconnu, EtatInvalide, Insuffisant (table
+        // incomplète), HorsBornes (échéance), Habilitation, QuatreYeux.
+        signal soumettre(h: Horodatage, version: String, echeance: Horodatage, par: String, valideur: String) -> String
+            reads effet_prevu_de
+            moves redaction -> consultation
+            calls PrioTable.complete, PrioConsultation.ouvrir, ApiAcces.a_le_role, ApiAcces.quatre_yeux, Journal.noter
+        // Met la version au vote (consultation -> vote), seulement une fois la consultation
+        // close : ouvre le scrutin (PrioScrutin.ouvrir) des États participants jusqu'à
+        // `echeance` (≥ 14 jours après `h`, et au moins PREAVIS_EFFET avant l'effet prévu).
+        // Chaque avis réservé ou défavorable doit avoir reçu une réponse d'ORBITE
+        // (PrioConsultation.sans_reponse = 0). `par` "superviseur", `valideur` "direction"
+        // d'ORBITE. Renvoie "vote". Refus : Inconnu, EtatInvalide (consultation non close),
+        // Insuffisant (avis sans réponse, ou aucun État participant), HorsBornes (échéance),
+        // Habilitation, QuatreYeux.
+        signal mettre_au_vote(h: Horodatage, version: String, echeance: Horodatage, par: String, valideur: String) -> String
+            reads effet_prevu_de
+            moves consultation -> vote when PrioConsultation.close
+            calls PrioConsultation.etat, PrioConsultation.sans_reponse, PrioScrutin.ouvrir, ApiAcces.a_le_role, ApiAcces.quatre_yeux, Journal.noter
+        // Prend acte du dépouillement (traitement automatique, `par` "systeme") : vote ->
+        // adoptee si le scrutin est adopté, vote -> rejetee s'il est rejeté. Renvoie l'état
+        // atteint ; une version adoptée attend sa publication. Refus : Inconnu, EtatInvalide
+        // (scrutin non dépouillé), Habilitation.
+        signal prendre_acte(h: Horodatage, version: String, par: String) -> PrioEtatVersion
+            reads titre_de
+            moves vote -> adoptee when PrioScrutin.adopte, vote -> rejetee when PrioScrutin.rejete
+            calls PrioScrutin.etat, ApiAcces.a_le_role, Journal.noter
+        // Retire une version jamais adoptée : en rédaction ou en consultation (la consultation
+        // est annulée, PrioConsultation.annuler), ou au vote après annulation du scrutin.
+        // `par` "superviseur" d'ORBITE. Renvoie "retiree". Refus : Inconnu, EtatInvalide,
+        // MotifRequis, Habilitation.
+        signal retirer(h: Horodatage, version: String, motif: String, par: String) -> String
+            writes motif_fin
+            reads titre_de
+            moves redaction -> retiree, consultation -> retiree, vote -> retiree when PrioScrutin.annule
+            calls PrioScrutin.etat, PrioConsultation.annuler, ApiAcces.a_le_role, Journal.noter
+        // Publie une version adoptée (adoptee -> publiee) : notifie le texte et la table
+        // (ApiPasserelle.notifier, r = "", urgence 1) à chaque organisation active
+        // (ApiRef.organisations("") : États, opérateurs, capteurs) ; la table devient publique.
+        // Doit précéder la date d'effet d'au moins PREAVIS_EFFET, sinon la date d'effet est
+        // repoussée d'autant (effet_prevu_de). `par` "systeme" ou "superviseur" d'ORBITE.
+        // Renvoie le nombre de notifications émises. Refus : Inconnu, EtatInvalide,
+        // Insuffisant (aucun destinataire), Plein (file de la passerelle), Habilitation.
+        signal publier(h: Horodatage, version: String, par: String) -> Int
+            writes publiee_le, destinataires_de, effet_prevu_de
+            reads titre_de
+            moves adoptee -> publiee
+            calls PrioTable.regles, PrioEcheancier.planifier, ApiRef.organisations, ApiPasserelle.notifier, ApiAcces.a_le_role, Journal.noter
+        // Fait entrer en vigueur une version publiée dont la date d'effet est atteinte
+        // (`h` ≥ effet_prevu_de) : publiee -> en_vigueur, et la version courante éventuelle
+        // en_vigueur -> remplacee (fin_vigueur = h). Pas de changement de règles pendant un
+        // gel d'exploitation (ApiOperations.changement_autorise faux : rapprochement de
+        // niveau 3 dans les 6 h, incident majeur) : la bascule attend le balayage suivant,
+        // pour qu'aucune coordination en cours ne change de règles en route. Les dérogations
+        // de l'ancienne version deviennent caduques (PrioDerogation.caduquer, au balayage).
+        // `par` "systeme". Renvoie la version désormais en vigueur. Refus : Inconnu,
+        // EtatInvalide, Delai (date d'effet non atteinte, ou gel), Plein (historique), Habilitation.
+        signal entrer_en_vigueur(h: Horodatage, version: String, par: String) -> String
+            writes debut_vigueur, fin_vigueur, courante, ordre
+            reads effet_prevu_de, publiee_le
+            moves publiee -> en_vigueur, en_vigueur -> remplacee
+            calls PrioEcheancier.planifier, ApiOperations.changement_autorise, ApiAcces.a_le_role, Journal.noter
+        // Abroge une version adoptée, publiée ou en vigueur (règle jugée dangereuse). Une version en
+        // vigueur abrogée laisse le système SANS règles : qui_manoeuvre refuse alors Ferme et
+        // toute coordination passe par l'arbitrage d'ORBITE jusqu'à la version suivante.
+        // `par` "direction", `valideur` "direction" ou "superviseur" d'ORBITE (quatre yeux).
+        // Renvoie "abrogee". Refus : Inconnu, EtatInvalide, MotifRequis, Habilitation, QuatreYeux.
+        signal abroger(h: Horodatage, version: String, motif: String, par: String, valideur: String) -> String
+            writes fin_vigueur, courante, motif_fin
+            reads titre_de
+            moves adoptee -> abrogee, publiee -> abrogee, en_vigueur -> abrogee
+            calls PrioEcheancier.planifier, PrioEcheancier.annuler, ApiAcces.a_le_role, ApiAcces.quatre_yeux, Journal.noter
+        // Version en vigueur à l'instant `h` (passé compris : sert à rejouer une décision),
+        // d'après l'historique [debut_vigueur, fin_vigueur[ ; "" si aucune.
+        signal en_vigueur_a(h: Horodatage) -> String
+            reads ordre, debut_vigueur, fin_vigueur
+        // Version en vigueur maintenant ; "" si aucune (abrogation, ou avant la première).
+        signal version_courante() -> String
+            reads courante
+        // État de la version (PrioEtatVersion) ; "inconnue" si jamais rédigée.
+        signal etat(version: String) -> PrioEtatVersion
+            reads cycle, titre_de
+        // Fiche : "titre | base | redige_par | effet_prevu | publiee_le | debut | fin | motif_fin".
+        // Refus : Inconnu.
+        signal fiche(version: String) -> String
+            reads titre_de, base_de, redige_par, effet_prevu_de, publiee_le, debut_vigueur, fin_vigueur, motif_fin
+    }
+}

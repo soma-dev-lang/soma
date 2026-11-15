@@ -1,0 +1,193 @@
+// RENTRÉES — corps : rentrée contrôlée (dépôt, instruction, approbation à quatre yeux, report,
+// rejet, annulation, exécution, issue à la rentrée constatée).
+
+flesh ReeControlee {
+    on deposer(h, objet, manoeuvre, zone_impact, distance, debut, fin, victimes_ppm, par) {
+        let prop = ApiRef.proprietaire(objet)
+        require ApiAcces.a_le_role(par, "dynamicien") && ApiAcces.agit_pour(par, prop) else Habilitation "déposer : dynamicien du propriétaire {prop}"
+        let r_obj = try { ApiManoeuvres.objet_de(manoeuvre) }
+        require r_obj.error == () else Inconnu "plan de manœuvre inconnu : {manoeuvre}"
+        require !contains(manoeuvre_de.values, manoeuvre) else Existe "plan de manœuvre déjà lié : {manoeuvre}"
+        require to_string(r_obj.value) == to_string(objet) else Incoherent "plan {manoeuvre} d'un autre objet"
+        require ApiManoeuvres.motif_de(manoeuvre) == "desorbitation" else Incoherent "plan {manoeuvre} : motif autre que desorbitation"
+        require to_int(fin) > to_int(debut) else Incoherent "fenêtre d'impact vide"
+        require to_int(debut) > to_int(h) else Incoherent "fenêtre d'impact déjà commencée"
+        require victimes_ppm >= 0 && victimes_ppm <= MAX_PPM else HorsBornes "victimes dans la zone hors bornes"
+        require ApiRef.peut_manoeuvrer(objet) else NonEligible "objet {objet} incapable de manœuvrer"
+        require ApiOperateurs.est_actif(prop, h) else Suspendu "opérateur {prop} non actif"
+        require campagne_de.size < MAX_PLANS else Plein "trop de plans de rentrée contrôlée"
+        let c = ReeCampagne.prevoir(h, objet, debut, fin, victimes_ppm, "systeme")
+        let prec = par_campagne.get(c)
+        if prec != () {
+            let sp = get_status(prec) ?? "depose"
+            require sp == "reussie" || sp == "manquee" || sp == "rejete" || sp == "annule" else Conflit "plan {prec} encore en cours pour {c}"
+        }
+        let rc = "RC-{next_id()}"
+        campagne_de.set(rc, c)
+        manoeuvre_de.set(rc, manoeuvre)
+        objet_de.set(rc, objet)
+        par_campagne.set(c, rc)
+        zone.set(rc, zone_impact)
+        distance_cotes.set(rc, distance)
+        impact_fin.set(rc, fin)
+        impact_debut.set(rc, debut)
+        victimes_zone.set(rc, victimes_ppm)
+        let _ = Journal.noter(h, "reentrees", par, "rentrée contrôlée {rc} déposée pour {objet} ({c}), plan {manoeuvre}, zone {zone_impact}, impact {debut}-{fin}")
+        return rc
+    }
+
+    on instruire(h, rc, avis_navigation, par) {
+        require ApiAcces.a_le_role(par, "analyste") else Habilitation "instruire : analyste d'ORBITE"
+        let d = distance_cotes.get(rc)
+        require d != () else Inconnu "plan inconnu : {rc}"
+        let st = get_status(rc) ?? "depose"
+        require st == "depose" else EtatInvalide "plan {rc} {st}"
+        require to_int(d) >= DISTANCE_COTES_MIN else HorsBornes "zone à {d} m des côtes (< {DISTANCE_COTES_MIN})"
+        let v = victimes_zone.get(rc) ?? 0
+        require v <= VICTIMES_ZONE_MAX else HorsBornes "victimes dans la zone {v} ppm > {VICTIMES_ZONE_MAX}"
+        require len(trim(avis_navigation)) > 0 else MotifRequis "référence des avis aux navigants exigée"
+        avis.set(rc, avis_navigation)
+        transition(rc, "depose", "instruit")
+        let _ = Journal.noter(h, "reentrees", par, "plan {rc} instruit ; avis {avis_navigation}")
+        return "instruit"
+    }
+
+    on approuver(h, rc, par, valideur) {
+        require ApiAcces.a_le_role(par, "analyste") else Habilitation "approuver : analyste d'ORBITE"
+        require ApiAcces.a_le_role(valideur, "superviseur") && ApiAcces.quatre_yeux(par, valideur) else QuatreYeux "valideur : superviseur d'ORBITE distinct"
+        let c = campagne_de.get(rc)
+        require c != () else Inconnu "plan inconnu : {rc}"
+        let st = get_status(rc) ?? "depose"
+        require st == "instruit" else EtatInvalide "plan {rc} {st} : pas instruit"
+        let ec = ReeCampagne.etat(c)
+        require ec == "ouverte" || ec == "imminente" else EtatInvalide "campagne {c} {ec}"
+        let man = manoeuvre_de.get(rc) ?? ""
+        let em = ApiManoeuvres.etat(man)
+        require em == "crible" || em == "approuve" else Insuffisant "plan de manœuvre {man} {em} : ni criblé ni approuvé"
+        let objet = objet_de.get(rc) ?? Objet("")
+        require ApiEphemerides.fraiche(objet, h) else Perime "éphéméride de {objet} périmée"
+        let r_dep = try { ApiEphemerides.derniere(objet) }
+        let dep = if r_dep.error == () { r_dep.value } else { "aucun" }
+        let prop = ApiRef.proprietaire(objet)
+        require ApiOperateurs.est_actif(prop, h) else Suspendu "opérateur {prop} non actif"
+        require ApiRef.peut_manoeuvrer(objet) else NonEligible "objet {objet} incapable de manœuvrer"
+        let deb = to_int(impact_debut.get(rc) ?? h)
+        require deb - to_int(h) >= PREAVIS else Delai "préavis de 72 h non tenu avant {deb}"
+        approbation.set(rc, "plan={em} | eph={dep} | op=actif | {par} / {valideur}")
+        transition(rc, "instruit", "approuve")
+        let _ = Journal.noter(h, "reentrees", par, "rentrée contrôlée {rc} approuvée (plan {man} {em}, eph {dep}), valideur {valideur}")
+        return "approuve"
+    }
+
+    on reporter(h, rc, debut, fin, motif_report, par) {
+        let objet = objet_de.get(rc)
+        require objet != () else Inconnu "plan inconnu : {rc}"
+        let prop = ApiRef.proprietaire(objet)
+        require ApiAcces.a_le_role(par, "dynamicien") && ApiAcces.agit_pour(par, prop) else Habilitation "reporter : dynamicien du propriétaire {prop}"
+        let st = get_status(rc) ?? "depose"
+        require st == "approuve" else EtatInvalide "plan {rc} {st} : pas approuvé"
+        require to_int(fin) > to_int(debut) else Incoherent "fenêtre d'impact vide"
+        require to_int(debut) > to_int(h) else Incoherent "fenêtre d'impact déjà commencée"
+        require len(trim(motif_report)) > 0 else MotifRequis "motif du report exigé"
+        let ancienne_fin = to_int(impact_fin.get(rc) ?? fin)
+        if to_int(debut) >= ancienne_fin {
+            impact_fin.set(rc, fin)
+            impact_debut.set(rc, debut)
+        } else {
+            impact_debut.set(rc, debut)
+            impact_fin.set(rc, fin)
+        }
+        avis.delete(rc)
+        motif.set(rc, "report : {motif_report}")
+        transition(rc, "approuve", "depose")
+        let _ = ReeCampagne.prevoir(h, objet, debut, fin, victimes_zone.get(rc) ?? 0, "systeme")
+        let _ = Journal.noter(h, "reentrees", par, "rentrée contrôlée {rc} reportée à {debut}-{fin} : {motif_report}")
+        return "depose"
+    }
+
+    on rejeter(h, rc, motif_rejet, par) {
+        require ApiAcces.a_le_role(par, "analyste") else Habilitation "rejeter : analyste d'ORBITE"
+        require campagne_de.get(rc) != () else Inconnu "plan inconnu : {rc}"
+        let st = get_status(rc) ?? "depose"
+        require st == "depose" || st == "instruit" else EtatInvalide "plan {rc} {st}"
+        require len(trim(motif_rejet)) > 0 else MotifRequis "motif du rejet exigé"
+        motif.set(rc, motif_rejet)
+        transition(rc, st, "rejete")
+        let _ = Journal.noter(h, "reentrees", par, "rentrée contrôlée {rc} rejetée : {motif_rejet}")
+        return "rejete"
+    }
+
+    on annuler(h, rc, motif_annulation, par) {
+        let objet = objet_de.get(rc)
+        require objet != () else Inconnu "plan inconnu : {rc}"
+        let prop = ApiRef.proprietaire(objet)
+        let ok = ApiAcces.a_le_role(par, "analyste") || (ApiAcces.a_le_role(par, "dynamicien") && ApiAcces.agit_pour(par, prop))
+        require ok else Habilitation "annuler : dynamicien du propriétaire ou analyste d'ORBITE"
+        let st = get_status(rc) ?? "depose"
+        require st == "approuve" else EtatInvalide "plan {rc} {st} : pas approuvé"
+        require len(trim(motif_annulation)) > 0 else MotifRequis "motif de l'annulation exigé"
+        motif.set(rc, motif_annulation)
+        transition(rc, "approuve", "annule")
+        let _ = Journal.noter(h, "reentrees", par, "rentrée contrôlée {rc} annulée : {motif_annulation}")
+        return "annule"
+    }
+
+    on confirmer(h, rc, par) {
+        require ApiAcces.a_le_role(par, "systeme") || ApiAcces.a_le_role(par, "analyste") else Habilitation "confirmer : systeme ou analyste d'ORBITE"
+        let man = manoeuvre_de.get(rc)
+        require man != () else Inconnu "plan inconnu : {rc}"
+        let st = get_status(rc) ?? "depose"
+        require st == "approuve" else EtatInvalide "plan {rc} {st} : pas approuvé"
+        let em = ApiManoeuvres.etat(man)
+        require em == "execute" || em == "verifie" else EtatInvalide "manœuvre {man} {em} : pas exécutée"
+        transition(rc, "approuve", "executee")
+        let _ = Journal.noter(h, "reentrees", par, "rentrée contrôlée {rc} : désorbitation exécutée ({man} {em})")
+        return "executee"
+    }
+
+    on constater_rentree(h, campagne, dans_zone) {
+        let rc = par_campagne.get(campagne)
+        if rc == () { return "inconnue" }
+        let st = get_status(rc) ?? "depose"
+        if st == "executee" {
+            if dans_zone {
+                transition(rc, "executee", "reussie")
+                let _ = Journal.noter(h, "reentrees", "systeme", "rentrée contrôlée {rc} réussie : impact dans la zone")
+                return "reussie"
+            }
+            transition(rc, "executee", "manquee")
+            motif.set(rc, "impact hors zone")
+            let objet = objet_de.get(rc) ?? Objet("")
+            let prop = ApiRef.proprietaire(objet)
+            let _ = ApiConformite.constater(h, prop, "rentrée contrôlée manquée : impact hors zone", 3, rc, "systeme")
+            let _ = Journal.noter(h, "reentrees", "systeme", "rentrée contrôlée {rc} manquée : impact hors zone, manquement de {prop}")
+            return "manquee"
+        }
+        if st == "depose" || st == "instruit" {
+            motif.set(rc, "rentrée survenue avant l'approbation")
+            transition(rc, st, "rejete")
+            let _ = Journal.noter(h, "reentrees", "systeme", "rentrée contrôlée {rc} caduque (rentrée avant approbation)")
+            return "rejete"
+        }
+        if st == "approuve" {
+            motif.set(rc, "rentrée survenue avant l'exécution")
+            transition(rc, "approuve", "annule")
+            let _ = Journal.noter(h, "reentrees", "systeme", "rentrée contrôlée {rc} annulée (rentrée avant exécution)")
+            return "annule"
+        }
+        return ReeEtatControlee(st)
+    }
+
+    on actif(campagne) {
+        let rc = par_campagne.get(campagne)
+        if rc == () { return false }
+        let st = get_status(rc) ?? "depose"
+        return st == "approuve" || st == "executee"
+    }
+
+    on zone_de(campagne) {
+        let rc = par_campagne.get(campagne)
+        if rc == () { return "" }
+        return zone.get(rc) ?? ""
+    }
+}

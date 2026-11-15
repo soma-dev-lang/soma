@@ -1,0 +1,23 @@
+// Corps de la façade ApiResponsabilite : délégation aux cells internes.
+
+flesh ApiResponsabilite {
+    on geler(h, evenement, motif, par) {
+        return RespDossiers.ouvrir(h, evenement, motif, par)
+    }
+
+    on sous_gel(cible) {
+        return RespGels.est_gele(cible)
+    }
+
+    on purge_autorisee(cible, h) {
+        return RespPurges.autorisee_pour(cible, h)
+    }
+
+    on chaine(decision) {
+        return RespPieces.chaine_de(decision)
+    }
+
+    on balayer(h, par) {
+        return RespRondes.balayer(h, par)
+    }
+}

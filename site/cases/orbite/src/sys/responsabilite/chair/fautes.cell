@@ -1,0 +1,197 @@
+// Corps de responsabilite : responsabilité pour faute d'un opérateur (RespFautes).
+
+flesh RespFautes {
+    on presumer(h, dossier, objet, r, nature, motif, par) {
+        require ApiAcces.a_le_role(par, "systeme") || ApiAcces.a_le_role(par, "analyste") || ApiAcces.a_le_role(par, "conformite") else Habilitation "{par} n'est ni systeme, ni analyste, ni conformite"
+        require motif != "" else MotifRequis "présomption sans motif"
+        let ed = RespDossiers.etat(dossier)
+        require ed != "aucun" else Inconnu "dossier {dossier} inconnu"
+        require ed == "gele" || ed == "scelle" else EtatInvalide "le dossier {dossier} est {ed}"
+        let cbl = RespDossiers.cibles(dossier)
+        require contains(cbl, to_string(objet)) else Inconnu "objet {objet} hors du dossier {dossier}"
+        require r == "" || contains(cbl, to_string(r)) else Inconnu "rapprochement {r} hors du dossier {dossier}"
+        // doublon : même nature, même objet, même rapprochement, non écartée
+        for f in fautes_du_dossier.get(dossier) ?? [] {
+            let meme = nature_de.get(f) == nature && objet_de.get(f) == objet && rapprochement_de.get(f) == r
+            require !(meme && (get_status(f) ?? "aucune") != "ecartee") else Doublon "faute {f} déjà présumée"
+        }
+        require dossier_de.size < MAX_FAUTES else Plein "registre des fautes plein"
+        let op = ApiRef.proprietaire(objet)
+        let depuis = if r != "" { max(0, to_int(ApiConjonctions.tca(r)) - 604800000) } else { max(0, to_int(h) - 2592000000) }
+        let t_dec = if r != "" { min(to_int(ApiConjonctions.tca(r)), to_int(h)) } else { to_int(h) }
+        let cible_etat = "presumee"
+        if nature == "designation_ignoree" {
+            require r != "" else Insuffisant "désignation ignorée sans rapprochement"
+            let ce = ApiConjonctions.etat(r)
+            require ce != "inconnu" else Inconnu "rapprochement {r} inconnu"
+            require ce == "passe" || ce == "collision" else EtatInvalide "TCA de {r} non échu ({ce})"
+            let co = ApiCoordination.etat(r)
+            require ApiCoordination.arretee(r) || co == "arretee" || co == "close" else Insuffisant "coordination jamais arrêtée sur {r}"
+            require ApiCoordination.designe(r, "systeme") == objet else Insuffisant "{objet} n'était pas l'objet désigné sur {r}"
+            let plan = ApiManoeuvres.plan_de(r)
+            if plan != "" {
+                let pe = ApiManoeuvres.etat(plan)
+                require pe != "execute" && pe != "verifie" else Insuffisant "le plan {plan} a été exécuté"
+            }
+            cible_etat = "designation_presumee"
+        } else if nature == "manoeuvre_non_annoncee" {
+            require ApiObservation.manoeuvre_detectee(objet, Horodatage(depuis)) else Insuffisant "aucune manœuvre non annoncée détectée sur {objet}"
+        } else if nature == "manoeuvre_non_conforme" {
+            require r != "" else Insuffisant "manœuvre non conforme sans rapprochement"
+            let plan = ApiManoeuvres.plan_de(r)
+            require plan != "" && ApiManoeuvres.etat(plan) == "anomalie" else Insuffisant "aucun plan en anomalie sur {r}"
+        } else if nature == "ephemeride_perimee" {
+            require !ApiEphemerides.fraiche(objet, Horodatage(t_dec)) else Insuffisant "l'éphéméride de {objet} était fraîche"
+        } else if nature == "silence" {
+            require r != "" else Insuffisant "silence sans rapprochement"
+            require ApiEscalade.echelon(r, op) >= 3 else Insuffisant "escalade de {op} sous l'échelon 3 sur {r}"
+        } else {
+            require ApiFinDeVie.en_retard(objet, h) else Insuffisant "{objet} n'est pas en retard de retrait"
+        }
+        let id = "FT-{next_id()}"
+        if cible_etat == "designation_presumee" {
+            rapprochement_de.set(id, r)
+            transition(id, "aucune", "designation_presumee")
+        } else {
+            rapprochement_de.set(id, r)
+            transition(id, "aucune", "presumee")
+        }
+        dossier_de.set(id, dossier)
+        op_de.set(id, op)
+        objet_de.set(id, objet)
+        nature_de.set(id, nature)
+        presumee_le.set(id, h)
+        motif_de.set(id, motif)
+        fautes_du_dossier.set(dossier, (fautes_du_dossier.get(dossier) ?? []) ++ [id])
+        Journal.noter(h, "responsabilite", par, "faute {id} présumée : {nature}, {objet} ({op}) — {motif}")
+        return id
+    }
+
+    on ouvrir_contradictoire(h, faute, par) {
+        require ApiAcces.a_le_role(par, "conformite") else Habilitation "{par} n'est pas conformite"
+        let st = get_status(faute) ?? "aucune"
+        require st != "aucune" else Inconnu "faute {faute} inconnue"
+        require st == "presumee" || st == "designation_presumee" else EtatInvalide "la faute {faute} est {st}"
+        let ech = Horodatage(to_int(h) + DELAI_CONTRADICTOIRE)
+        transition(faute, st, "contradictoire")
+        echeance_reponse.set(faute, ech)
+        en_attente.set(faute, ech)
+        let op = op_de.get(faute)
+        let r = rapprochement_de.get(faute) ?? ""
+        let _ = ApiPasserelle.notifier(h, op, r, "contradictoire {faute}", "Faute présumée : observations attendues avant {ech}", 2)
+        Journal.noter(h, "responsabilite", par, "contradictoire ouvert sur {faute} avec {op}, échéance {ech}")
+        return ech
+    }
+
+    on repondre(h, faute, reponse, par) {
+        let st = get_status(faute) ?? "aucune"
+        require st != "aucune" else Inconnu "faute {faute} inconnue"
+        let op = op_de.get(faute)
+        require (ApiAcces.a_le_role(par, "chef_de_mission") || ApiAcces.a_le_role(par, "administrateur_operateur")) && ApiAcces.agit_pour(par, op) else Habilitation "{par} ne répond pas pour {op}"
+        require st == "contradictoire" else EtatInvalide "la faute {faute} est {st}"
+        require to_int(h) <= to_int(echeance_reponse.get(faute) ?? 0) else Delai "échéance de réponse passée"
+        require reponse != "" else MotifRequis "réponse vide"
+        reponse_de.set(faute, reponse)
+        Journal.noter(h, "responsabilite", par, "observations de {op} reçues sur {faute}")
+        return "recue"
+    }
+
+    on qualifier(h, faute, retenue, gravite, part, motif, par, valideur) {
+        require ApiAcces.a_le_role(par, "conformite") else Habilitation "{par} n'est pas conformite"
+        require ApiAcces.quatre_yeux(par, valideur) else QuatreYeux "qualification de {faute} : quatre yeux requis"
+        require ApiAcces.a_le_role(valideur, "direction") else Habilitation "le valideur {valideur} n'est pas direction"
+        require motif != "" else MotifRequis "qualification sans motif"
+        let st = get_status(faute) ?? "aucune"
+        require st != "aucune" else Inconnu "faute {faute} inconnue"
+        require st == "contradictoire" else EtatInvalide "la faute {faute} est {st}"
+        require to_int(part) <= 100 else HorsBornes "part de responsabilité supérieure à 100 %"
+        require reponse_de.has(faute) || to_int(h) > to_int(echeance_reponse.get(faute) ?? 0) else Delai "contradictoire non épuisé"
+        en_attente.delete(faute)
+        motif_de.set(faute, motif)
+        if retenue {
+            require RespDossiers.etat(dossier_de.get(faute) ?? "") == "scelle" else Insuffisant "dossier de {faute} non scellé"
+            gravite_de.set(faute, gravite)
+            part_de.set(faute, part)
+            transition(faute, "contradictoire", "retenue")
+            Journal.noter(h, "responsabilite", par, "faute {faute} retenue : gravité {gravite}, part {part} % ({valideur})")
+            return "retenue"
+        }
+        transition(faute, "contradictoire", "ecartee")
+        Journal.noter(h, "responsabilite", par, "faute {faute} écartée ({valideur}) — {motif}")
+        return "ecartee"
+    }
+
+    on ecarter(h, faute, motif, par) {
+        require ApiAcces.a_le_role(par, "conformite") else Habilitation "{par} n'est pas conformite"
+        require motif != "" else MotifRequis "classement sans motif"
+        let st = get_status(faute) ?? "aucune"
+        require st != "aucune" else Inconnu "faute {faute} inconnue"
+        require st == "presumee" || st == "designation_presumee" else EtatInvalide "la faute {faute} est {st}"
+        if st == "presumee" {
+            transition(faute, "presumee", "ecartee")
+        } else {
+            transition(faute, "designation_presumee", "ecartee")
+        }
+        motif_de.set(faute, motif)
+        Journal.noter(h, "responsabilite", par, "présomption {faute} classée — {motif}")
+        return "ecartee"
+    }
+
+    on transmettre(h, faute, par) {
+        require ApiAcces.a_le_role(par, "conformite") || ApiAcces.a_le_role(par, "systeme") else Habilitation "{par} n'est ni conformite ni systeme"
+        let st = get_status(faute) ?? "aucune"
+        require st != "aucune" else Inconnu "faute {faute} inconnue"
+        require st == "retenue" else EtatInvalide "la faute {faute} est {st}"
+        let op = op_de.get(faute)
+        let nat = nature_de.get(faute) ?? ""
+        let grav = gravite_de.get(faute) ?? 1
+        let mq = ApiConformite.constater(h, op, "faute:{nat}", grav, faute, par)
+        manquement_de.set(faute, mq)
+        transition(faute, "retenue", "transmise")
+        let txt = "Faute {faute} ({nat}) retenue, gravité {grav} : manquement {mq}"
+        let _ = ApiPasserelle.notifier(h, op, "", "faute {faute}", txt, 2)
+        let _ = ApiPasserelle.notifier(h, ApiRef.org_de_etat(ApiRef.etat_de(op)), "", "faute {faute}", txt, 2)
+        Journal.noter(h, "responsabilite", par, "faute {faute} transmise : manquement {mq}")
+        return mq
+    }
+
+    on etat(faute) {
+        return get_status(faute) ?? "aucune"
+    }
+
+    on retenues_de_dossier(dossier) {
+        let res_f = []
+        for f in fautes_du_dossier.get(dossier) ?? [] {
+            let st = get_status(f) ?? "aucune"
+            if st == "retenue" || st == "transmise" {
+                let o = objet_de.get(f) ?? ""
+                let p = part_de.get(f) ?? 0
+                res_f.push("{f}|{o}|{p}")
+            }
+        }
+        return res_f
+    }
+
+    on relancer_contradictoires(h, par) {
+        require ApiAcces.a_le_role(par, "systeme") else Habilitation "{par} n'est pas systeme"
+        let dues = en_attente.entries.filter(e => to_int(e.value) < to_int(h)).map(e => e.key)
+        for f in dues {
+            let rep = if reponse_de.has(f) { "observations reçues" } else { "sans réponse" }
+            let _ = ApiPasserelle.notifier(h, ApiRef.orbite(), "", "qualification due {f}", "Contradictoire de {f} échu ({rep}) : qualification due", 1)
+            en_attente.delete(f)
+            Journal.noter(h, "responsabilite", par, "contradictoire {f} échu ({rep}) : qualification due")
+        }
+        return len(dues)
+    }
+
+    on pendantes_de_dossier(dossier) {
+        let n = 0
+        for f in fautes_du_dossier.get(dossier) ?? [] {
+            let st = get_status(f) ?? "aucune"
+            if st == "presumee" || st == "designation_presumee" || st == "contradictoire" || st == "retenue" {
+                n = n + 1
+            }
+        }
+        return n
+    }
+}

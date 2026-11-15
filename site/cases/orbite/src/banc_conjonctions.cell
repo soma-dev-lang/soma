@@ -1,0 +1,12 @@
+use app
+use commun::journal_chair
+use commun::horloge_chair
+use sys::conjonctions::chair::api
+use sys::conjonctions::chair::seuils
+use sys::conjonctions::chair::campagnes
+use sys::conjonctions::chair::renforce
+use sys::conjonctions::chair::rapprochements
+use sys::conjonctions::chair::clotures
+use sys::conjonctions::chair::messages
+use sys::conjonctions::chair::plans
+use sys::conjonctions::chair::contestations

@@ -1,0 +1,158 @@
+// evenements — FRAGMENTATIONS ET COLLISIONS CONFIRMÉES.
+// Un évènement naît « signale » (un analyste, ou le traitement automatique "systeme" sur une
+// gerbe de pistes non corrélées autour d'un objet), est confirmé à quatre yeux ou infirmé, puis
+// reste ouvert tant que son nuage de débris (EvtNuages, MÊME identifiant) n'est pas dissipé.
+// Dès le signalement, le nuage est amorcé : le criblage renforcé du régime touché commence
+// AVANT la confirmation (un doute sur une fragmentation ne doit pas attendre un valideur).
+// La confirmation porte les conséquences : objets passés "fragmente" au référentiel, suivi
+// renforcé demandé à l'observation, anomalies ouvertes des objets closes, notifications aux
+// propriétaires et États d'immatriculation, alerte des riverains du régime. Une collision a en
+// plus son instruction (EvtCollisions, même id) : constat de la décision en vigueur figé dès le
+// signalement, verdict, transmission (propriété 6).
+
+// Nature d'un évènement.
+cell type EvtGenre = String where value == "fragmentation" || value == "collision"
+// Cause retenue après analyse : "explosion" (réservoir, batterie, autodestruction),
+// "collision_cataloguee" (avec un objet catalogué), "collision_non_cataloguee" (impact d'un
+// débris non suivi), "degradation" (désagrégation lente : vieillissement, érosion), "inconnue".
+cell type EvtCause = String where value == "explosion" || value == "collision_cataloguee" || value == "collision_non_cataloguee" || value == "degradation" || value == "inconnue"
+
+// Registre des évènements : id = "EV-<n>", tiré par signaler.
+skeleton EvtEvenements {
+    const MAX_EVENEMENTS = 100000
+    const MAX_OBJETS = 2
+    const DELAI_CONFIRMATION_MS = 21600000
+    const DELAI_GEL_MS = 172800000
+    const FENETRE_DOUBLON_MS = 3600000
+    memory {
+        genre_de: Map<String, EvtGenre> [persistent]               // évènement → nature ; écrit une fois par signaler
+        objets_de: Map<String, List<String>> [persistent]       // évènement → objets catalogués en cause (1 ou 2) ; écrit une fois
+        instant_de: Map<String, Horodatage> [persistent]        // évènement → instant estimé de l'évènement, ms
+        signale_le: Map<String, Horodatage> [persistent]        // évènement → instant du signalement, ms ; ≥ instant
+        description: Map<String, String> [persistent]           // évènement → constat de l'analyste ou du traitement automatique
+        auteur: Map<String, String> [persistent]                // évènement → personne (ou "systeme") qui l'a signalé
+        valideur_de: Map<String, String> [persistent]           // évènement → superviseur qui l'a confirmé ou infirmé
+        cause: Map<String, EvtCause> [persistent]               // évènement → cause retenue ("inconnue" à la confirmation)
+        dossier_de: Map<String, String> [persistent]            // évènement → dossier de preuve (ApiResponsabilite.geler) ; écrit une fois
+        dernier_de: Map<String, String> [persistent]            // objet → dernier évènement le visant (doublon, evenement_de)
+        invariant genre_de.size <= MAX_EVENEMENTS
+        invariant objets_de.size <= MAX_EVENEMENTS
+        invariant dernier_de.size <= MAX_EVENEMENTS
+        invariant (instant_de ?? 0) <= (signale_le ?? 0)
+    }
+    // Cycle de vie d'un évènement (id = évènement ; le nuage EvtNuages porte le même id).
+    state evenement {
+        initial: signale
+        signale -> confirme                          // confirmer : quatre yeux
+        signale -> infirme                           // infirmer : fausse alerte (pistes corrélées, erreur de mesure)
+        confirme -> clos                             // clore : seulement nuage dissipé
+    }
+    face {
+        // Signale une fragmentation ou une collision : `en_cause` sont les objets catalogués en
+        // cause (fragmentation : exactement 1 ; collision : 1 si l'impacteur n'est pas catalogué,
+        // 2 sinon), `instant` l'heure estimée de l'évènement (ms, ≤ h), `r` le rapprochement
+        // dont il est l'issue ("" si aucun ; s'il est donné, ses objets doivent être ceux de la
+        // collision). Amorce le nuage (EvtNuages.amorcer, régimes des objets en cause) : le
+        // criblage renforcé commence dès ce signal. Une collision ouvre son instruction
+        // (EvtCollisions.ouvrir), qui fige la décision en vigueur sur `r` à cet instant.
+        // Renvoie l'id "EV-<n>", état "signale".
+        // Rôle exigé de `par` : "analyste" d'ORBITE, ou "systeme" (détection automatique).
+        // Refus : Inconnu (objet non catalogué ou déjà rentré, rapprochement inconnu), HorsBornes
+        // (nombre d'objets), Incoherent (instant > h, r étranger aux objets, fragmentation avec
+        // r), MotifRequis (description vide), Doublon (un objet déjà en cause d'un évènement
+        // non infirmé dont l'instant est à ±FENETRE_DOUBLON_MS), Plein, Habilitation.
+        signal signaler(h: Horodatage, g: EvtGenre, en_cause: List<String>, quand: Horodatage, r: Rapprochement, motif: String, par: String) -> String
+            writes genre_de, objets_de, instant_de, signale_le, description, auteur, dernier_de
+            reads evenement
+            calls ApiAcces.a_le_role, ApiRef.etat_objet, ApiRef.regime, ApiConjonctions.objets, EvtNuages.amorcer, EvtCollisions.ouvrir, next_id, Journal.noter
+        // Confirme un évènement signalé, à quatre yeux : `valideur` contre-signe le signalement
+        // de l'auteur. Effets, dans cet ordre : chaque objet passe "fragmente"
+        // (ApiRef.changer_etat_objet, par "systeme") et reçoit un suivi renforcé de niveau 3 pendant 7 jours (ApiObservation.demander_suivi) ; ses
+        // anomalies ouvertes sont closes (EvtAnomalies.clore_par_evenement) ; le nuage entre en
+        // catalogage (EvtNuages.ouvrir) ; propriétaires et États d'immatriculation sont notifiés
+        // en urgence 3 (EvtNotifications.preparer) ; les riverains des régimes du nuage sont
+        // alertés (EvtNuages.regimes_de, EvtNotifications.diffuser, fait "nuage") ; pour une
+        // collision, le dossier de preuve est gelé (ApiResponsabilite.geler, par "systeme") et,
+        // si un rapprochement est en cause (EvtCollisions.rapprochement), il est constaté en
+        // collision (ApiConjonctions.constater_collision, par "systeme") ; le rapport
+        // devient dû sous EvtRapports.DELAI_RAPPORT_MS (EvtRapports.ouvrir). Renvoie "confirme".
+        // Rôle exigé de `valideur` : "superviseur" d'ORBITE, et ApiAcces.quatre_yeux(auteur,
+        // valideur) ; un signalement "systeme" se confirme par un superviseur seul.
+        // Refus : Inconnu, EtatInvalide, Habilitation, QuatreYeux, Plein (capacité des capteurs).
+        signal confirmer(h: Horodatage, ev: String, valideur: String) -> String
+            writes valideur_de, cause, dossier_de
+            reads auteur, objets_de, genre_de
+            moves signale -> confirme
+            calls ApiAcces.a_le_role, ApiAcces.quatre_yeux, ApiRef.changer_etat_objet, ApiObservation.demander_suivi, EvtAnomalies.clore_par_evenement, EvtNuages.ouvrir, EvtNuages.regimes_de, EvtNotifications.preparer, EvtNotifications.diffuser, EvtRapports.ouvrir, EvtCollisions.rapprochement, ApiResponsabilite.geler, ApiConjonctions.constater_collision, Journal.noter
+        // Infirme un évènement signalé (pistes finalement corrélées à des objets connus, erreur de
+        // mesure) : le nuage amorcé est abandonné (EvtNuages.abandonner), ce qui met fin au
+        // criblage renforcé qu'il déclenchait ; l'instruction d'une collision et le rapport sont
+        // classés sans objet (EvtCollisions.classer pour une collision, EvtRapports.classer).
+        // Renvoie "infirme".
+        // Rôle exigé de `par` : "superviseur" d'ORBITE, distinct de l'auteur.
+        // Refus : Inconnu, EtatInvalide, MotifRequis, Habilitation, QuatreYeux (par = auteur).
+        signal infirmer(h: Horodatage, ev: String, motif: String, par: String) -> String
+            writes valideur_de
+            reads auteur
+            moves signale -> infirme
+            reads genre_de
+            calls ApiAcces.a_le_role, EvtNuages.abandonner, EvtCollisions.classer, EvtRapports.classer, Journal.noter
+        // Retient la cause d'un évènement confirmé, après analyse des fragments (base de la
+        // responsabilité pour faute : une explosion de réservoir non passivé n'est pas une
+        // collision subie). Révisable tant que l'évènement n'est pas clos. Renvoie la cause.
+        // Rôle exigé de `par` : "analyste" d'ORBITE.
+        // Refus : Inconnu, EtatInvalide, MotifRequis, Incoherent (cause de collision pour une
+        // fragmentation, "explosion" pour une collision), Habilitation.
+        signal qualifier(h: Horodatage, ev: String, c: EvtCause, motif: String, par: String) -> EvtCause
+            writes cause
+            reads genre_de, evenement
+            calls ApiAcces.a_le_role, Journal.noter
+        // Ouvre le dossier de preuve d'un évènement confirmé : gel des journaux, éphémérides et
+        // décisions de coordination le concernant (ApiResponsabilite.geler, sous l'id de
+        // l'évènement). Une collision a le sien dès sa confirmation : ce geste sert aux
+        // fragmentations qui ont causé un dommage. Renvoie l'id du dossier.
+        // Rôle exigé de `par` : "conformite" ou "direction" d'ORBITE.
+        // Refus : Inconnu, EtatInvalide (non confirmé), Existe (dossier déjà ouvert),
+        // MotifRequis, Habilitation.
+        signal geler_preuves(h: Horodatage, ev: String, motif: String, par: String) -> String
+            writes dossier_de
+            reads genre_de, evenement
+            calls ApiAcces.a_le_role, ApiResponsabilite.geler, Journal.noter
+        // Clôt un évènement confirmé dont le nuage est dissipé. Renvoie "clos".
+        // Rôle exigé de `par` : "analyste" d'ORBITE ou "systeme".
+        // Refus : Inconnu, EtatInvalide (nuage non dissipé), Insuffisant (collision sans dossier
+        // de preuve, ou dont l'instruction n'est pas transmise : EvtCollisions.etat), Habilitation.
+        signal clore(h: Horodatage, ev: String, par: String) -> String
+            reads genre_de, dossier_de
+            moves confirme -> clos when EvtNuages.dissipe
+            calls ApiAcces.a_le_role, EvtCollisions.etat, EvtNuages.etat, Journal.noter
+        // Dossier de preuve de l'évènement ; "" si aucun.
+        signal dossier(ev: String) -> String
+            reads dossier_de
+        // État de l'évènement : "signale", "confirme", "infirme", "clos" ; "inconnu" si jamais signalé.
+        signal etat(ev: String) -> String
+            reads genre_de, evenement
+        // Vrai si l'évènement a été signalé (quel que soit son état).
+        signal existe(ev: String) -> Bool
+            reads genre_de
+        // Objets en cause de l'évènement. Refus : Inconnu.
+        signal objets(ev: String) -> List<String>
+            reads objets_de
+        // Nature de l'évènement. Refus : Inconnu.
+        signal genre(ev: String) -> EvtGenre
+            reads genre_de
+        // Instant estimé de l'évènement (ms). Refus : Inconnu.
+        signal instant(ev: String) -> Horodatage
+            reads instant_de
+        // Dernier évènement non clos ni infirmé impliquant l'objet ; "" si aucun.
+        signal evenement_de(objet: Objet) -> String
+            reads dernier_de, evenement
+        // Évènements en souffrance à `h`, au plus `n` : signalés non confirmés depuis plus de
+        // DELAI_CONFIRMATION_MS (le criblage renforcé tourne sur une hypothèse non validée),
+        // collisions confirmées sans dossier de preuve depuis plus de DELAI_GEL_MS. Chaque ligne :
+        // "ev | motif". Lecture seule, pour la relance du superviseur et de la conformité.
+        signal en_souffrance(h: Horodatage, n: Int) -> List<String>
+            requires n > 0 && n <= 1000
+            reads genre_de, signale_le, dossier_de, evenement
+    }
+}

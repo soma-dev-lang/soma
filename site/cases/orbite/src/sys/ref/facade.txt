@@ -1,0 +1,30 @@
+ApiRef.orbite: calls RefOrg.orbite
+ApiRef.etat_participant: calls RefEtat.participant
+ApiRef.inscrire_organisation: calls RefOrg.inscrire; moves RefOrg.organisation: inscrite -> active
+ApiRef.organisation_existe: calls RefOrg.existe
+ApiRef.etat_de: calls RefOrg.etat_de
+ApiRef.org_de_etat: calls RefOrg.org_de_etat
+ApiRef.cataloguer: calls RefObjet.cataloguer, RefRegistre.ouvrir; moves RefRegistre.entree: a_immatriculer -> dispense
+ApiRef.etat_objet: calls RefObjet.etat
+ApiRef.changer_etat_objet: calls RefObjet.mettre_en_service, RefObjet.mettre_hors_service, RefObjet.placer_cimetiere, RefObjet.constater_retrait, RefObjet.constater_rentree, RefObjet.constater_fragmentation; moves RefObjet.vie: * -> en_service|hors_service|cimetiere|retire|rentre|fragmente, RefRegistre.entree: * -> radie
+ApiRef.nature: calls RefObjet.nature
+ApiRef.proprietaire: calls RefObjet.proprietaire
+ApiRef.etat_immatriculation: calls RefRegistre.etat_de
+ApiRef.regime: calls RefObjet.regime
+ApiRef.propulsion: calls RefObjet.propulsion
+ApiRef.peut_manoeuvrer: calls RefObjet.peut_manoeuvrer
+ApiRef.declarer_propulsion: calls RefObjet.declarer_propulsion, RefObjet.rouvrir_designations
+ApiRef.habite: calls RefObjet.habite
+ApiRef.objets_de: calls RefObjet.objets_de
+ApiRef.genre: calls RefOrg.genre
+ApiRef.etats_participants: calls RefEtat.participants
+ApiRef.organisations: calls RefOrg.organisations
+ApiRef.catalogue: calls RefObjet.catalogue
+ApiRef.masse: calls RefObjet.masse
+ApiRef.valeur_au: calls RefObjet.valeur_au, RefHistorique.valeur_au
+ApiRef.attribuer: calls RefObjet.attribuer, RefRegistre.requalifier; moves RefRegistre.entree: dispense -> a_immatriculer
+ApiRef.immatriculer: calls RefRegistre.immatriculer; moves RefRegistre.entree: a_immatriculer -> immatricule, en_retard -> immatricule
+ApiRef.immatricule: calls RefRegistre.est_immatricule
+ApiRef.changer_regime: calls RefObjet.changer_regime
+ApiRef.changer_tutelle: calls RefOrg.changer_tutelle
+ApiRef.balayer: calls RefBalayage.balayer, RefRegistre.constater_retards, RefCession.balayer, RefModification.balayer

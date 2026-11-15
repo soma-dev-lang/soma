@@ -1,0 +1,85 @@
+// operateurs — ENGAGEMENTS : délais de réponse contractuels par niveau d'alerte. Ce sont eux
+// qui fixent les échéances de coordination et d'escalade (ApiOperateurs.delai_reponse).
+// Un opérateur ne choisit pas d'être lent : chaque délai est plafonné par ORBITE, et un
+// délai plus court au niveau plus grave (n3 ≤ n2 ≤ n1). Sans engagement en vigueur, ce sont
+// les plafonds qui s'appliquent : un opérateur sans engagement n'obtient jamais plus de temps.
+
+// Engagements d'un opérateur (id = Org de l'opérateur).
+skeleton OpEngagements {
+    const MAX_ENGAGEMENTS = 100000
+    const MAX_HISTORIQUE = 1000000
+    // Plafonds (et délais par défaut) : niveau 3 = 1 h, niveau 2 = 12 h, niveau 1 = 72 h.
+    const PLAFOND_N3_MS = 3600000
+    const PLAFOND_N2_MS = 43200000
+    const PLAFOND_N1_MS = 259200000
+    // Plancher : 5 minutes (en dessous, l'engagement n'est pas tenable et masque un défaut).
+    const PLANCHER_MS = 300000
+    memory {
+        n1: Map<Org, Duree> [persistent]                      // opérateur → délai en vigueur au niveau 1, ms
+        n2: Map<Org, Duree> [persistent]                      // opérateur → délai en vigueur au niveau 2, ms
+        n3: Map<Org, Duree> [persistent]                      // opérateur → délai en vigueur au niveau 3, ms
+        propose: Map<Org, String> [persistent]                // opérateur → "n1|n2|n3|h|par" proposé, en attente d'acceptation
+        accepte_a: Map<Org, Horodatage> [persistent]          // opérateur → dernière acceptation, ms
+        historique: List<String> [persistent]                 // "h | op | n1|n2|n3 | evenement | par | valideur", en ajout seul
+        invariant n1.size <= MAX_ENGAGEMENTS
+        invariant propose.size <= MAX_ENGAGEMENTS
+        invariant historique.size <= MAX_HISTORIQUE
+        invariant n1 >= 300000 && n1 <= 259200000
+        invariant n2 >= 300000 && n2 <= 43200000
+        invariant n3 >= 300000 && n3 <= 3600000
+        invariant (n3 ?? 0) <= (n2 ?? 0)
+        invariant (n2 ?? 0) <= (n1 ?? 0)
+    }
+    // Cycle de vie des engagements (id = opérateur). Une révision ne quitte pas "en_vigueur" :
+    // les anciens délais valent jusqu'à l'acceptation des nouveaux.
+    state engagement {
+        initial: propose
+        propose -> en_vigueur           // accepter : première acceptation
+        en_vigueur -> en_vigueur        // accepter : révision acceptée
+        propose -> resilie              // resilier : retrait, exclusion
+        en_vigueur -> resilie           // resilier
+    }
+    face {
+        // L'opérateur propose ses délais (ms) par niveau, première fois ou révision.
+        // Renvoie "propose". Rôle exigé : "administrateur_operateur" ou "chef_de_mission" de op
+        // (agit_pour). Refus : Inconnu (op jamais candidat), Ferme (engagements résiliés),
+        // HorsBornes (hors [PLANCHER_MS, plafond du niveau]), Incoherent (n3 > n2 ou n2 > n1),
+        // Habilitation, Plein.
+        signal proposer(h: Horodatage, op: Org, d1: Duree, d2: Duree, d3: Duree, par: String) -> String
+            writes propose, historique
+            reads engagement
+            calls ApiAcces.a_le_role, ApiAcces.agit_pour, OpMembres.etat, Journal.noter
+        // ORBITE accepte la proposition en attente : elle devient les délais en vigueur.
+        // Renvoie "en_vigueur". Rôle exigé : "superviseur" d'ORBITE.
+        // Refus : Inconnu (aucune proposition), EtatInvalide, Habilitation.
+        signal accepter(h: Horodatage, op: Org, par: String) -> String
+            writes n1, n2, n3, propose, accepte_a, historique
+            moves propose -> en_vigueur, en_vigueur -> en_vigueur
+            calls ApiAcces.a_le_role, ApiPasserelle.notifier, Journal.noter
+        // ORBITE écarte la proposition en attente (les délais en vigueur restent).
+        // Renvoie l'état de l'engagement. Rôle exigé : "superviseur" d'ORBITE.
+        // Refus : Inconnu (aucune proposition), MotifRequis, Habilitation.
+        signal ecarter(h: Horodatage, op: Org, motif: String, par: String) -> String
+            writes propose, historique
+            reads engagement
+            calls ApiAcces.a_le_role, ApiPasserelle.notifier, Journal.noter
+        // Résilie les engagements (retrait, exclusion) ; appelé par OpMembres seulement
+        // (par = "systeme"). Sans effet s'ils sont déjà résiliés. Renvoie "resilie".
+        signal resilier(h: Horodatage, op: Org) -> String
+            writes propose, historique
+            moves propose -> resilie, en_vigueur -> resilie
+            calls Journal.noter
+        // Délai de réponse (ms) au niveau n : celui en vigueur, sinon le plafond du niveau
+        // (opérateur candidat, admis sans engagement, résilié). Refus : Inconnu (op jamais candidat).
+        signal delai(op: Org, n: Niveau) -> Duree
+            reads n1, n2, n3, engagement
+            calls OpMembres.etat
+        // Conditions en vigueur de op : "n1 | n2 | n3 | accepte_a" (ms) et, s'il y en a une, la
+        // proposition en attente ; "" si aucun engagement n'a jamais été accepté.
+        signal conditions(op: Org) -> String
+            reads n1, n2, n3, accepte_a, propose
+        // État des engagements : "propose", "en_vigueur", "resilie" ; "aucun" si jamais proposés.
+        signal etat(op: Org) -> String
+            reads propose, accepte_a, engagement
+    }
+}

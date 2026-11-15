@@ -1,0 +1,148 @@
+// RENTRÉES — débris retrouvés au sol et leur restitution (Accord de 1968 sur le sauvetage, art. 5) :
+// l'État sur le territoire duquel un fragment est découvert le signale ; ORBITE l'attribue à un
+// objet catalogué et notifie l'autorité de lancement ; sur sa demande, l'objet lui est restitué,
+// à ses frais ; sans demande dans le délai, l'État de découverte le conserve. Un débris
+// dangereux (ergols, source radioactive) est signalé comme tel : l'autorité de lancement doit
+// prendre les mesures pour éliminer le danger (art. 5.4), sa notification est d'urgence 3.
+// Autorités de lancement = ApiLancements.etats_de_lancement de l'objet (qui lance, fait lancer,
+// ou dont le territoire sert) ; à défaut (objet sans lancement connu), l'État d'immatriculation.
+
+// État d'un débris retrouvé.
+cell type ReeEtatDebris = String where value == "signale" || value == "identifie" || value == "notifie" || value == "demande" || value == "restitue" || value == "conserve" || value == "non_identifie"
+
+skeleton ReeDebris {
+    const MAX_DEBRIS = 100000
+    // Délai d'identification après le signalement : 180 jours, puis "non_identifie".
+    const DELAI_IDENTIFICATION = 15552000000
+    // Délai laissé à l'autorité de lancement pour demander la restitution : 90 jours.
+    const DELAI_DEMANDE = 7776000000
+
+    memory {
+        // débris → État de découverte. Écrit une fois par `signaler`, jamais supprimé.
+        etat_decouverte: Map<String, Etat> [persistent]
+        // débris → campagne de rentrée présumée ("" si aucune n'est connue au signalement).
+        campagne_de: Map<String, String> [persistent]
+        lieu: Map<String, String> [persistent]
+        description: Map<String, String> [persistent]
+        dangereux: Map<String, Bool> [persistent]
+        signale_le: Map<String, Horodatage> [persistent]
+        // débris → objet catalogué d'origine (écrit une fois par `identifier` seul, jamais
+        // supprimé : lien de la règle « identifie ⇐ objet rentré ou fragmenté »), et ses États de
+        // lancement (autorités de lancement).
+        objet_attribue: Map<String, Objet> [persistent]
+        etats_lancement: Map<String, List<String>> [persistent]
+        // débris → État de lancement qui a demandé la restitution (celui qui la reçoit).
+        demandeur: Map<String, Etat> [persistent]
+        notifie_le: Map<String, Horodatage> [persistent]
+        // débris → id du message de notification (ApiPasserelle.notifier).
+        message_de: Map<String, String> [persistent]
+        // débris dangereux → "h | mesures | par" : mesures d'élimination du danger prises par
+        // l'autorité de lancement (art. 5.4), constatées par l'État de découverte.
+        neutralisation: Map<String, String> [persistent]
+        // débris → "h | par | valideur" de la remise.
+        remise: Map<String, String> [persistent]
+        invariant etat_decouverte.size <= MAX_DEBRIS
+        invariant campagne_de.size <= MAX_DEBRIS
+        invariant (notifie_le ?? 1000000000000000000) >= (signale_le ?? 0)
+    }
+
+    // Vie d'un débris retrouvé (instance = "DB-<n>"). Terminaux : restitue, conserve, non_identifie.
+    state restitution {
+        initial: signale
+        signale -> identifie        // identifier : attribué à un objet catalogué
+        signale -> non_identifie    // balayer : DELAI_IDENTIFICATION écoulé
+        identifie -> notifie        // notifier : l'autorité de lancement est avertie
+        notifie -> demande          // demander : l'autorité de lancement demande la restitution
+        notifie -> conserve         // balayer : pas de demande dans DELAI_DEMANDE (danger neutralisé)
+        demande -> restitue         // restituer : remise constatée
+    }
+
+    face {
+        // Un État signale un fragment retrouvé sur son territoire : lieu, description, danger
+        // éventuel, campagne de rentrée présumée ("" si inconnue). Un débris dangereux fait
+        // demander d'urgence l'identification (Journal, message d'urgence 3 à ORBITE). Avec une
+        // campagne présumée déjà constatée, la recherche de débris de son constat est ouverte
+        // (ReeConstat.ouvrir_recherche).
+        // Renvoie l'id ("DB-<n>").
+        // Habilitation : par "point_focal" ou "autorite" de l'État de découverte (rôle d'État,
+        // ApiAcces.agit_pour sur ApiRef.org_de_etat), ou "analyste" (rôle d'ORBITE).
+        // Refus : Inconnu (État non participant, ou campagne inconnue), MotifRequis
+        // (description vide), Habilitation, Plein.
+        signal signaler(h: Horodatage, etat: Etat, campagne: String, ou: String, quoi: String, danger: Bool, par: String) -> String
+            writes etat_decouverte, campagne_de, lieu, description, dangereux, signale_le
+            calls ApiAcces.a_le_role, ApiAcces.agit_pour, ApiRef.etat_participant, ApiRef.org_de_etat, ApiRef.orbite, ApiPasserelle.notifier, ReeCampagne.etat, ReeConstat.ouvrir_recherche, Journal.noter, next_id
+
+        // Attribue le débris à un objet catalogué (de préférence l'objet de la campagne présumée)
+        // et retient ses États de lancement (ApiLancements.etats_de_lancement ; liste vide :
+        // ApiRef.etat_immatriculation). Renvoie "identifie".
+        // Habilitation : par "analyste" (rôle d'ORBITE).
+        // `objet_attribue` est écrit une fois, ici seulement : la règle de l'arête exige l'objet
+        // "rentre" ou "fragmente" chez ref.
+        // Refus : Inconnu (débris, objet), EtatInvalide (pas "signale"), Incoherent (objet
+        // ni "rentre" ni "fragmente" pour ApiRef.etat_objet), Habilitation.
+        signal identifier(h: Horodatage, debris: String, objet: Objet, par: String) -> ReeEtatDebris
+            writes objet_attribue, etats_lancement
+            reads objet_attribue, etat_decouverte
+            moves signale -> identifie when RefObjet.rentre || RefObjet.fragmente via objet_attribue
+            calls ApiAcces.a_le_role, ApiRef.etat_objet, ApiRef.etat_immatriculation, ApiLancements.etats_de_lancement, Journal.noter
+
+        // Notifie chaque État de lancement retenu (ApiRef.org_de_etat ; r = "") de la découverte,
+        // avec copie à l'État de découverte (le Secrétaire général des Nations unies, que l'Accord
+        // de 1968 veut aussi informé, l'est hors ORBITE : la ligne de Journal en fait foi) ; urgence 3 si dangereux, 1 sinon. Chaque envoi
+        // d'informations sur l'objet est tracé (ApiDonnees.tracer). Renvoie "notifie".
+        // Habilitation : par "analyste" ou "systeme" (rôles d'ORBITE).
+        // Refus : Inconnu, EtatInvalide (pas "identifie"), Habilitation, Plein (file de la
+        // passerelle), Confidentiel (traçage refusé : envoi réduit à la seule découverte).
+        signal notifier(h: Horodatage, debris: String, par: String) -> ReeEtatDebris
+            writes notifie_le, message_de
+            reads etat_decouverte, etats_lancement, objet_attribue, dangereux
+            moves identifie -> notifie
+            calls ApiAcces.a_le_role, ApiRef.org_de_etat, ApiDonnees.tracer, ApiPasserelle.notifier, Journal.noter
+
+        // Un État de lancement demande la restitution (à ses frais) ; le premier qui demande est
+        // le destinataire de la remise (`demandeur`). Renvoie "demande".
+        // Habilitation : par "autorite" ou "point_focal" d'un des États de lancement retenus (rôle
+        // d'État, ApiAcces.agit_pour). Refus : Inconnu, EtatInvalide (pas "notifie"),
+        // Delai (après DELAI_DEMANDE), Habilitation.
+        signal demander(h: Horodatage, debris: String, par: String) -> ReeEtatDebris
+            writes demandeur
+            reads etats_lancement, notifie_le
+            moves notifie -> demande
+            calls ApiAcces.a_le_role, ApiAcces.agit_pour, ApiRef.org_de_etat, Journal.noter
+
+        // L'État de découverte constate que le danger d'un débris dangereux a été éliminé
+        // (mesures de l'autorité de lancement : vidange, confinement de la source). État de la
+        // machine inchangé. Renvoie le nombre de débris dangereux encore non neutralisés de cet
+        // État de découverte.
+        // Habilitation : par "autorite" de l'État de découverte (rôle d'État, ApiAcces.agit_pour).
+        // Refus : Inconnu, EtatInvalide (débris non dangereux, déjà neutralisé, ou encore
+        // "signale"), MotifRequis (mesures vides), Habilitation.
+        signal neutraliser(h: Horodatage, debris: String, mesures: String, par: String) -> Int
+            writes neutralisation
+            reads etat_decouverte, dangereux, restitution
+            calls ApiAcces.a_le_role, ApiAcces.agit_pour, ApiRef.org_de_etat, Journal.noter
+            ensures result >= 0
+
+        // Échéances des débris à `h` (appelé par ReeCampagne.balayer) : "signale" depuis plus de
+        // DELAI_IDENTIFICATION → "non_identifie" ; "notifie" depuis plus de DELAI_DEMANDE →
+        // "conserve" si le débris n'est pas dangereux ou est neutralisé, sinon message d'urgence 3
+        // à ORBITE et aux États de lancement (r = "") et le débris reste "notifie".
+        // Renvoie le nombre de débris dont l'état a changé.
+        // Habilitation : par "systeme" (rôle d'ORBITE). Refus : Habilitation.
+        signal balayer(h: Horodatage, par: String) -> Int
+            reads signale_le, notifie_le, dangereux, neutralisation, etats_lancement, restitution
+            moves signale -> non_identifie, notifie -> conserve
+            calls ApiAcces.a_le_role, ApiRef.orbite, ApiRef.org_de_etat, ApiPasserelle.notifier, Journal.noter
+            ensures result >= 0
+
+        // Constate la remise du débris à l'État de lancement demandeur. Renvoie "restitue".
+        // Habilitation : par "autorite" de l'État de découverte (rôle d'État, ApiAcces.agit_pour),
+        // valideur "superviseur" d'ORBITE (ApiAcces.quatre_yeux).
+        // Refus : Inconnu, EtatInvalide (pas "demande"), Habilitation, QuatreYeux.
+        signal restituer(h: Horodatage, debris: String, par: String, valideur: String) -> ReeEtatDebris
+            writes remise
+            reads etat_decouverte
+            moves demande -> restitue
+            calls ApiAcces.a_le_role, ApiAcces.agit_pour, ApiAcces.quatre_yeux, ApiRef.org_de_etat, Journal.noter
+    }
+}

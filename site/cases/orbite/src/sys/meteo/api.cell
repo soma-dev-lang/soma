@@ -1,0 +1,28 @@
+// Façade de la MÉTÉO SPATIALE : activité solaire, tempêtes géomagnétiques, incertitude de traînée.
+skeleton ApiMeteo {
+    face {
+        // Vrai si une tempête géomagnétique (Kp ≥ 7) est en cours ou prévue sous 24 h à `h`.
+        signal tempete(h: Horodatage) -> Bool
+            calls MetTempete.en_vue
+        // Facteur d'élargissement des covariances à appliquer dans le régime (100 = aucun) :
+        // > 100 pendant une tempête en LEO.
+        signal facteur_incertitude(regime: Regime, h: Horodatage) -> Pourcent
+            calls MetIncertitude.facteur
+        // Dernier indice Kp en dixièmes (0 à 90). Refus : Perime (aucune mesure depuis 3 h).
+        signal kp(h: Horodatage) -> Int
+            calls MetMesure.kp_courant
+        // Vrai si un renforcement du criblage est en cours dans le régime à `h`.
+        signal renforce(regime: Regime, h: Horodatage) -> Bool
+            calls MetRenforce.renforce
+        // Flux solaire F10.7 prévu (moyenne, unités de flux solaire) sur [debut, fin] : entrée des
+        // prévisions de rentrée. Refus : Perime (aucune prévision couvrant la période).
+        signal f107_prevu(debut: Horodatage, fin: Horodatage) -> Int
+            calls MetPrevision.f107_moyen
+        // Balayage des échéances du sous-système à `h` (délais, expirations, rondes), appelé par
+        // l'horloge d'ORBITE (Horloge.battre) — le SEUL point d'entrée du temps : aucun signal de
+        // meteo ne lit l'horloge lui-même. Renvoie le nombre d'objets dont l'état a changé.
+        // Refus : Habilitation (par "systeme").
+        signal balayer(h: Horodatage, par: String) -> Int
+            calls MetRonde.balayer
+    }
+}

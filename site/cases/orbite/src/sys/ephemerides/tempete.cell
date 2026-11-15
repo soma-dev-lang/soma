@@ -1,0 +1,53 @@
+// ephemerides — TEMPÊTE GÉOMAGNÉTIQUE : pendant une tempête (ApiMeteo.tempete, Kp ≥ 7 en
+// cours ou prévu sous 24 h), la traînée atmosphérique devient imprévisible et l'âge maximal
+// d'une éphéméride est divisé (EphReglage.diviseur_tempete, 2 par défaut). D'un coup, des
+// objets frais deviennent périmés : sans action, la coordination se retrouve sans donnée au
+// pire moment. EphTempete fait de l'entrée en tempête un évènement : balayage immédiat,
+// appel à redéposer adressé aux propriétaires des objets en rapprochement, puis retour au
+// calme. Le calcul de fraîcheur, lui, lit ApiMeteo.tempete à chaque appel (EphSuivi.fraiche) :
+// cette machine n'est pas la source de vérité de la tempête, seulement de notre réaction.
+
+skeleton EphTempete {
+    const MAX_EPISODES = 100000
+    // Id unique de l'instance : la tempête est globale pour le sous-système.
+    const INSTANCE = "tempete"
+
+    memory {
+        debut: Map<String, Horodatage> [persistent]     // épisode "T-<début ms>" → début constaté, ms
+        fin: Map<String, Horodatage> [persistent]       // épisode → fin constatée, ms
+        perimes: Map<String, Int> [persistent]          // épisode → objets passés "perime" au balayage d'entrée
+        appels: Map<String, Int> [persistent]           // épisode → propriétaires appelés à redéposer
+        episode_courant: Map<String, String> [persistent]   // INSTANCE → épisode en cours ; absent au calme
+        invariant debut.size <= MAX_EPISODES
+        invariant episode_courant.size <= 1
+        invariant perimes >= 0
+        invariant appels >= 0
+    }
+
+    // Réaction du sous-système (id = INSTANCE) ; réactive.
+    state reaction {
+        initial: calme
+        calme -> renforce     // surveiller : ApiMeteo.tempete(h) devient vrai
+        renforce -> calme     // surveiller : ApiMeteo.tempete(h) redevient faux
+    }
+
+    face {
+        // Compare ApiMeteo.tempete(h) à l'état de la réaction. À l'entrée : ouvre un épisode,
+        // balaye aussitôt (EphSuivi.balayer, âges divisés), puis pour chaque objet en
+        // rapprochement ouvert de niveau ≥ 2 dont le dépôt n'est plus frais, appelle son
+        // propriétaire à redéposer (ApiPasserelle.notifier, r, urgence = niveau) — au plus `n`
+        // objets, pris dans ApiConjonctions.urgents(h, 72 h, 2) (ApiConjonctions.objets). À la
+        // sortie : clôt l'épisode. Par "systeme". Renvoie l'état atteint ("calme", "renforce").
+        // Refus : Habilitation, Perime (météo sans mesure depuis 3 h : ApiMeteo.kp ; la réaction
+        // passe alors "renforce" par prudence).
+        signal surveiller(h: Horodatage, n: Int, par: String) -> String
+            requires n > 0 && n <= 100000
+            writes debut, fin, perimes, appels, episode_courant
+            moves calme -> renforce, renforce -> calme
+            calls ApiMeteo.tempete, ApiMeteo.kp, EphSuivi.balayer, EphSuivi.fraiche, ApiConjonctions.urgents, ApiConjonctions.objets, ApiConjonctions.niveau, ApiRef.proprietaire, ApiPasserelle.notifier, ApiAcces.a_le_role, Journal.noter
+
+        // Épisode en cours ("" au calme) et son bilan : "episode|debut|perimes|appels".
+        signal episode() -> String
+            reads episode_courant, debut, perimes, appels, reaction
+    }
+}

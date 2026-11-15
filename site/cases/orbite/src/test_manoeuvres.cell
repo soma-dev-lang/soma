@@ -1,0 +1,344 @@
+use app
+use commun::journal_chair
+use commun::horloge_chair
+use sys::manoeuvres::chair::api
+use sys::manoeuvres::chair::plans
+use sys::manoeuvres::chair::criblage
+use sys::manoeuvres::chair::verrou
+use sys::manoeuvres::chair::execution
+use sys::manoeuvres::chair::anomalies
+use sys::manoeuvres::chair::avis
+use sys::manoeuvres::chair::preuve
+use sys::manoeuvres::chair::programmes
+use doublures::manoeuvres
+
+// Temps : H0 = 1 000 000 000 000 ms (septembre 2001). Fenêtre type : début D = H0 + 2 h
+// (1 000 007 200 000), fin F = D + 1 h (1 000 010 800 000) ; échéance de confirmation F + 6 h
+// (1 000 032 400 000). Monde : voir doublures/manoeuvres.cell.
+
+// ── plan de maintien : cycle nominal declare -> crible -> approuve -> execute -> verifie
+cell test MaintienNominal {
+    rules {
+        assert ApiManoeuvres.declarer(1000000000000, "PL-M1", "OBJ-1", "", "maintien", 1000007200000, 500, "dyn-alpha") == "PL-M1"
+        assert ApiManoeuvres.etat("PL-M1") == "approuve"
+        assert ManCriblage.etat("PL-M1") == "sur"
+        assert ManFenetre.etat("PL-M1") == "reservee"
+        assert ManEvitement.etat("P:PL-M1") == "engage"
+        assert ApiManoeuvres.plan_actif("OBJ-1")
+        assert to_string(ApiManoeuvres.objet_de("PL-M1")) == "OBJ-1"
+        assert ApiManoeuvres.motif_de("PL-M1") == "maintien"
+        assert ApiManoeuvres.plans_de("OBJ-1", 0) == ["PL-M1"]
+        assert ApiManoeuvres.plan_couvrant("OBJ-1", 1000007300000) == "PL-M1"
+        assert ApiManoeuvres.plan_couvrant("OBJ-1", 1000000000000) == ""
+        assert ManPlan.fondement("PL-M1").depot == "DEP-OBJ-1"
+        assert len(ManAvis.avis_de("PL-M1")) == 1
+        assert ApiManoeuvres.confirmer_execution(1000007800000, "PL-M1", 1000007500000, 520, "dyn-alpha") == "execute"
+        assert ManFenetre.etat("PL-M1") == "consommee"
+        assert ManEvitement.etat("P:PL-M1") == "solde"
+        assert ManVerification.etat("PL-M1") == "attendue"
+        assert ApiManoeuvres.balayer(1000010800000, "systeme") >= 1
+        assert ManVerification.etat("PL-M1") == "conforme"
+        assert ApiManoeuvres.etat("PL-M1") == "verifie"
+        assert !ApiManoeuvres.plan_actif("OBJ-1")
+        assert ManIndicateurs.valeur("ORG-ALPHA", 2001, "declare") == 1
+        assert ManIndicateurs.valeur("ORG-ALPHA", 2001, "verifie") == 1
+        assert ManIndicateurs.taux_verifie("ORG-ALPHA", 2001) == 100
+        assert ApiManoeuvres.etat("PL-INEXISTANT") == "inconnu"
+    }
+}
+
+// ── scénario métier : évitement d'un rapprochement arrêté, verrou, avis, exécution, vérification
+cell test EvitementComplet {
+    rules {
+        let r = "CJ-1~OBJ-A1~OBJ-B1"
+        assert ApiManoeuvres.declarer(1000000000000, "PL-E1", "OBJ-A1", r, "evitement", 1000007200000, 500, "dyn-alpha") == "PL-E1"
+        assert ApiManoeuvres.etat("PL-E1") == "approuve"
+        assert ApiManoeuvres.plan_de(r) == "PL-E1"
+        assert ManEvitement.etat(r) == "engage"
+        assert ManEvitement.titulaire(r) == "PL-E1"
+        assert to_string(ManPlan.fondement("PL-E1").designe) == "OBJ-A1"
+        assert ManPlan.fondement("PL-E1").version_regles == "V1"
+        assert len(ManAvis.avis_de("PL-E1")) == 2
+        assert ManDossier.consulter(1000000001000, "PL-E1", "ORG-BETA", "dyn-beta").etat == "approuve"
+        assert ManDossier.consulter(1000000002000, "PL-E1", "ORG-ORBITE", "analyste1").verrou == "engage"
+        assert len(ManDossier.consultations_de("PL-E1", 10, "aud1")) == 2
+        assert_fails ManDossier.consultations_de("PL-E1", 10, "dyn-alpha") matching "Habilitation"
+        assert_fails ApiManoeuvres.confirmer_execution(1000007800000, "PL-E1", 1000007500000, 700, "dyn-alpha") matching "Incoherent"
+        assert_fails ApiManoeuvres.confirmer_execution(1000007800000, "PL-E1", 1000020000000, 500, "dyn-alpha") matching "Incoherent"
+        assert_fails ApiManoeuvres.confirmer_execution(1000007800000, "PL-E1", 1000007500000, 500, "dyn-beta") matching "Habilitation"
+        assert ApiManoeuvres.confirmer_execution(1000007800000, "PL-E1", 1000007500000, 500, "dyn-alpha") == "execute"
+        assert ManEvitement.etat(r) == "solde"
+        assert_fails ApiManoeuvres.declarer(1000000000000, "PL-E2", "OBJ-A1", r, "evitement", 1000086400000, 500, "dyn-alpha") matching "Conflit"
+        assert ApiManoeuvres.balayer(1000010800000, "systeme") >= 1
+        assert ApiManoeuvres.etat("PL-E1") == "verifie"
+        assert ApiManoeuvres.plan_de(r) == "PL-E1"
+        assert_fails ApiManoeuvres.annuler(1000010900000, "PL-E1", "trop tard", "dyn-alpha") matching "EtatInvalide"
+    }
+}
+
+// ── propriété 1 : au plus un plan approuvé par rapprochement ; libération puis reprise du verrou
+cell test VerrouUnique {
+    rules {
+        let r = "CJ-2~OBJ-A2~OBJ-B2"
+        assert ApiManoeuvres.declarer(1000000000000, "PL-V1", "OBJ-A2", r, "evitement", 1000007200000, 500, "dyn-alpha") == "PL-V1"
+        assert_fails ApiManoeuvres.declarer(1000000000000, "PL-V2", "OBJ-A2", r, "evitement", 1000086400000, 500, "dyn-alpha") matching "Conflit"
+        assert ApiManoeuvres.etat("PL-V2") == "inconnu"
+        assert_fails ApiManoeuvres.annuler(1000000001000, "PL-V1", "", "dyn-alpha") matching "MotifRequis"
+        assert_fails ApiManoeuvres.annuler(1000000001000, "PL-V1", "revue", "intrus1") matching "Habilitation"
+        assert ApiManoeuvres.annuler(1000000001000, "PL-V1", "nouvelle solution", "dyn-alpha") == "annule"
+        assert ManEvitement.etat(r) == "libre"
+        assert ManFenetre.etat("PL-V1") == "liberee"
+        assert ApiManoeuvres.plan_de(r) == ""
+        assert ApiManoeuvres.declarer(1000000002000, "PL-V3", "OBJ-A2", r, "evitement", 1000007200000, 400, "dyn-alpha") == "PL-V3"
+        assert ApiManoeuvres.etat("PL-V3") == "approuve"
+        assert ManEvitement.titulaire(r) == "PL-V3"
+        assert ApiManoeuvres.plan_de(r) == "PL-V3"
+        assert ApiManoeuvres.annuler(1000000003000, "PL-V3", "décision d'ORBITE", "analyste1") == "annule"
+        assert ManEvitement.etat(r) == "libre"
+    }
+}
+
+// ── refus de déclaration : habilitation, portée, éligibilité, fraîcheur, délais, cohérence
+cell test RefusDeclaration {
+    rules {
+        let d = 1000007200000
+        assert_fails ApiManoeuvres.declarer(1000000000000, "PL-R1", "OBJ-1", "", "maintien", d, 500, "intrus1") matching "Habilitation"
+        assert_fails ApiManoeuvres.declarer(1000000000000, "PL-R1", "OBJ-1", "", "maintien", d, 500, "dyn-beta") matching "Habilitation"
+        assert_fails ApiManoeuvres.declarer(1000000000000, "PL-R1", "OBJ-1", "", "maintien", d, 500, "analyste1") matching "Habilitation"
+        assert_fails ApiManoeuvres.declarer(1000000000000, "PL-R1", "OBJ-MORT1", "", "maintien", d, 500, "dyn-alpha") matching "NonEligible"
+        assert_fails ApiManoeuvres.declarer(1000000000000, "PL-R1", "OBJ-S-1", "", "maintien", d, 500, "dyn-susp") matching "Suspendu"
+        assert_fails ApiManoeuvres.declarer(1000000000000, "PL-R1", "OBJ-PERIME1", "", "maintien", d, 500, "dyn-alpha") matching "Perime"
+        assert_fails ApiManoeuvres.declarer(1000000000000, "PL-R1", "OBJ-1", "", "maintien", 1000000060000, 500, "dyn-alpha") matching "Delai"
+        assert_fails ApiManoeuvres.declarer(1000000000000, "PL-R1", "OBJ-1", "", "maintien", d, 0, "dyn-alpha") matching "HorsBornes"
+        assert_fails ApiManoeuvres.declarer(1000000000000, "PL-R1", "OBJ-1", "", "promenade", d, 500, "dyn-alpha") matching "Incoherent"
+        assert_fails ApiManoeuvres.declarer(1000000000000, "PL-R1", "OBJ-1", "", "evitement", d, 500, "dyn-alpha") matching "Incoherent"
+        assert_fails ApiManoeuvres.declarer(1000000000000, "PL-R1", "OBJ-1", "CJ-9~OBJ-1~OBJ-B9", "maintien", d, 500, "dyn-alpha") matching "Incoherent"
+        assert_fails ApiManoeuvres.declarer(1000000000000, "PL-R1", "OBJ-1", "CJ-9~OBJ-X~OBJ-B9", "evitement", d, 500, "dyn-alpha") matching "Incoherent"
+        assert_fails ApiManoeuvres.declarer(1000000000000, "PL-R1", "OBJ-1", "CJ-9CLOS~OBJ-1~OBJ-B9", "evitement", d, 500, "dyn-alpha") matching "EtatInvalide"
+        assert_fails ApiManoeuvres.declarer(1000000000000, "PL-R1", "OBJ-1", "CJ-9PREFB~OBJ-1~OBJ-B9", "evitement", d, 500, "dyn-alpha") matching "Conflit"
+        assert_fails ApiManoeuvres.declarer(1000000000000, "PL-R1", "OBJ-1", "CJ-9OUVERTE~OBJ-1~OBJ-B9", "evitement", d, 500, "dyn-alpha") matching "Conflit"
+        assert_fails ApiManoeuvres.declarer(1000000000000, "PL-R1", "OBJ-HAB1", "CJ-9~OBJ-HAB1~OBJ-B9", "evitement", d, 500, "dyn-alpha") matching "NonEligible"
+        assert_fails ApiManoeuvres.declarer(1000000000000, "PL-R1", "OBJ-1", "CJ-9~OBJ-1~OBJ-B9", "evitement", 1000864000000, 500, "dyn-alpha") matching "Delai"
+        assert_fails ApiManoeuvres.declarer(1000000000000, "PL-R1", "OBJ-INCONNU1", "", "maintien", d, 500, "dyn-alpha") matching "Inconnu"
+        assert ApiManoeuvres.declarer(1000000000000, "PL-R1", "OBJ-1", "", "maintien", d, 500, "dyn-alpha") == "PL-R1"
+        assert_fails ApiManoeuvres.declarer(1000000000000, "PL-R1", "OBJ-2", "", "maintien", d, 500, "dyn-alpha") matching "Existe"
+        assert_fails ApiManoeuvres.declarer(1000000000000, "PL-R2", "OBJ-1", "", "maintien", 1000008000000, 500, "dyn-alpha") matching "Conflit"
+        assert ApiManoeuvres.declarer(1000000000000, "PL-R3", "OBJ-HAB2", "CJ-9~OBJ-HAB2~OBJ-MORT9", "evitement", d, 500, "dyn-alpha") == "PL-R3"
+    }
+}
+
+// ── propriété 4 : criblage à risque, impossible, catalogue périmé ; désorbitation à risque
+cell test CriblageEtRejets {
+    rules {
+        let d = 1000007200000
+        assert ApiManoeuvres.declarer(1000000000000, "PL-RISQUE", "OBJ-1", "", "maintien", d, 500, "dyn-alpha") == "PL-RISQUE"
+        assert ApiManoeuvres.etat("PL-RISQUE") == "rejete"
+        assert ManCriblage.etat("PL-RISQUE") == "a_risque"
+        assert ManFenetre.etat("PL-RISQUE") == "liberee"
+        assert ApiManoeuvres.declarer(1000000000000, "PL-S1", "OBJ-SANSMAN1", "", "maintien", d, 500, "dyn-alpha") == "PL-S1"
+        assert ManCriblage.etat("PL-S1") == "impossible"
+        assert ApiManoeuvres.etat("PL-S1") == "rejete"
+        assert ApiManoeuvres.declarer(1000000000000, "PL-CATPERIME", "OBJ-2", "", "maintien", d, 500, "dyn-alpha") == "PL-CATPERIME"
+        assert ManCriblage.etat("PL-CATPERIME") == "impossible"
+        assert ApiManoeuvres.declarer(1000000000000, "PL-D1", "OBJ-RISQUESOL1", "", "desorbitation", d, 500, "dyn-alpha") == "PL-D1"
+        assert ApiManoeuvres.etat("PL-D1") == "rejete"
+        assert ApiManoeuvres.declarer(1000000000000, "PL-D2", "OBJ-RISQUESOL-CTRL1", "", "desorbitation", d, 500, "dyn-alpha") == "PL-D2"
+        assert ApiManoeuvres.etat("PL-D2") == "approuve"
+        assert ManIndicateurs.valeur("ORG-ALPHA", 2001, "rejete") == 4
+        assert_fails ManCriblage.cribler(1000000000000, "PL-D2", "systeme") matching "EtatInvalide"
+        assert_fails ManPlan.statuer(1000000000000, "PL-D2", "systeme") matching "EtatInvalide"
+        assert_fails ManPlan.approuver(1000000000000, "PL-D2", "dyn-alpha") matching "Habilitation"
+        assert_fails ManPlan.rejeter(1000000000000, "PL-D2", "refus_analyste", "", "analyste1") matching "EtatInvalide"
+    }
+}
+
+// ── fenêtre échue sans manœuvre : annulation automatique ; avec poussée observée : anomalie
+cell test FenetreEchue {
+    rules {
+        assert ApiManoeuvres.declarer(1000000000000, "PL-N1", "OBJ-NONVU1", "", "maintien", 1000007200000, 500, "dyn-alpha") == "PL-N1"
+        assert ApiManoeuvres.declarer(1000000000000, "PL-N2", "OBJ-INEXPL2", "", "maintien", 1000007200000, 500, "dyn-alpha") == "PL-N2"
+        assert ApiManoeuvres.balayer(1000007200000, "systeme") >= 2
+        assert ManFenetre.etat("PL-N1") == "ouverte"
+        assert ApiManoeuvres.balayer(1000032400001, "systeme") >= 2
+        assert ManFenetre.etat("PL-N1") == "echue"
+        assert ApiManoeuvres.etat("PL-N1") == "annule"
+        assert ManEvitement.etat("P:PL-N1") == "libre"
+        assert ApiManoeuvres.etat("PL-N2") == "anomalie"
+        assert ManEvitement.etat("P:PL-N2") == "solde"
+        assert ManAnomalie.etat("PL-N2") == "ouverte"
+        assert ManAnomalie.etat("PL-N1") == ""
+        assert ManIndicateurs.valeur("ORG-ALPHA", 2001, "fenetre_echue") == 1
+        assert ApiManoeuvres.balayer(1000118900000, "systeme") >= 1
+        assert ManAnomalie.etat("PL-N2") == "transmise"
+        assert ApiManoeuvres.balayer(1000000000000, "systeme") == 0
+        assert_fails ApiManoeuvres.balayer(1000118900001, "intrus1") matching "Habilitation"
+        assert ApiManoeuvres.balayer(1000118900001, "expl1") >= 0
+    }
+}
+
+// ── échec déclaré, explication, levée à quatre yeux
+cell test EchecEtAnomalie {
+    rules {
+        assert ApiManoeuvres.declarer(1000000000000, "PL-X1", "OBJ-4", "", "maintien", 1000007200000, 500, "dyn-alpha") == "PL-X1"
+        assert_fails ManPlan.declarer_echec(1000000001000, "PL-X1", false, "", "cdm-alpha") matching "MotifRequis"
+        assert_fails ManPlan.declarer_echec(1000000001000, "PL-X1", false, "avorté", "cdm-beta") matching "Habilitation"
+        assert ManPlan.declarer_echec(1000000001000, "PL-X1", true, "allumage avorté", "cdm-alpha") == "anomalie"
+        assert ManEvitement.etat("P:PL-X1") == "libre"
+        assert ManFenetre.etat("PL-X1") == "liberee"
+        assert ManAnomalie.etat("PL-X1") == "ouverte"
+        assert_fails ManAnomalie.expliquer(1000000005000, "PL-X1", "vanne", "DEP-AUTRE", "dyn-alpha") matching "Perime"
+        assert_fails ManAnomalie.expliquer(1000000005000, "PL-X1", "", "DEP-OBJ-4", "dyn-alpha") matching "MotifRequis"
+        assert_fails ManAnomalie.lever(1000000005000, "PL-X1", "sûr", "analyste1", "sup1") matching "EtatInvalide"
+        assert ManAnomalie.expliquer(1000000005000, "PL-X1", "vanne bloquée", "DEP-OBJ-4", "dyn-alpha") == "en_analyse"
+        assert_fails ManAnomalie.lever(1000000006000, "PL-X1", "sûr", "analyste1", "analyste1") matching "QuatreYeux"
+        assert_fails ManAnomalie.lever(1000000006000, "PL-X1", "sûr", "dyn-alpha", "sup1") matching "Habilitation"
+        assert ManAnomalie.lever(1000000006000, "PL-X1", "trajectoire réelle sûre", "analyste1", "sup1") == "levee"
+        assert_fails ManAnomalie.transmettre(1000000007000, "PL-X1", "trop tard", "analyste1") matching "EtatInvalide"
+    }
+}
+
+// ── vérification : écart hors tolérance ; non observée à l'échéance
+cell test VerificationEnEchec {
+    rules {
+        assert ApiManoeuvres.declarer(1000000000000, "PL-EC", "OBJ-ECART1", "", "maintien", 1000007200000, 500, "dyn-alpha") == "PL-EC"
+        assert ApiManoeuvres.declarer(1000000000000, "PL-NS", "OBJ-NONSUIVI1", "", "maintien", 1000007200000, 500, "dyn-alpha") == "PL-NS"
+        assert ApiManoeuvres.confirmer_execution(1000007800000, "PL-EC", 1000007500000, 500, "dyn-alpha") == "execute"
+        assert ApiManoeuvres.confirmer_execution(1000007800000, "PL-NS", 1000007500000, 500, "dyn-alpha") == "execute"
+        assert_fails ManVerification.verifier(1000010800000, "PL-NS", "systeme") matching "Insuffisant"
+        assert_fails ManVerification.expirer(1000010800000, "PL-NS", "systeme") matching "Delai"
+        assert ApiManoeuvres.balayer(1000010800000, "systeme") >= 1
+        assert ManVerification.etat("PL-EC") == "ecart"
+        assert ApiManoeuvres.etat("PL-EC") == "anomalie"
+        assert ManAnomalie.etat("PL-EC") == "ouverte"
+        assert ManVerification.etat("PL-NS") == "attendue"
+        assert ApiManoeuvres.balayer(1000266800000, "systeme") >= 1
+        assert ManVerification.etat("PL-NS") == "non_observee"
+        assert ApiManoeuvres.etat("PL-NS") == "anomalie"
+    }
+}
+
+// ── transfert vérifié (changement de régime) et confirmation qui ouvre elle-même la fenêtre
+cell test TransfertVerifie {
+    rules {
+        assert ApiManoeuvres.declarer(1000000000000, "PL-T1", "OBJ-GEO1", "", "transfert", 1000007200000, 1500, "dyn-alpha") == "PL-T1"
+        assert_fails ApiManoeuvres.confirmer_execution(1000007000000, "PL-T1", 1000007300000, 1500, "dyn-alpha") matching "EtatInvalide"
+        assert ApiManoeuvres.confirmer_execution(1000007400000, "PL-T1", 1000007300000, 1500, "dyn-alpha") == "execute"
+        assert ManVerification.verifier(1000009000000, "PL-T1", "analyste1") == "conforme"
+        assert ApiManoeuvres.etat("PL-T1") == "verifie"
+        assert_fails ManPlan.clore(1000009000000, "PL-T1", "systeme") matching "EtatInvalide"
+    }
+}
+
+// ── manœuvres non annoncées : constat, doublon, couverture, régularisation, forclusion
+cell test NonAnnoncees {
+    rules {
+        assert ApiManoeuvres.constater_non_annoncee(1000000000000, "OBJ-7", 999996400000, "systeme") == "NA:OBJ-7:999996400000"
+        assert ManNonAnnoncee.etat("NA:OBJ-7:999996400000") == "constatee"
+        assert_fails ApiManoeuvres.constater_non_annoncee(1000000000000, "OBJ-7", 999996400000, "systeme") matching "Doublon"
+        assert_fails ApiManoeuvres.constater_non_annoncee(1000000000000, "OBJ-8", 999996400000, "intrus1") matching "Habilitation"
+        assert_fails ManNonAnnoncee.regulariser(1000000010000, "NA:OBJ-7:999996400000", "DEP-OBJ-7", "dyn-beta") matching "Habilitation"
+        assert_fails ManNonAnnoncee.regulariser(1000000010000, "NA:OBJ-7:999996400000", "DEP-OBJ-7-SANSMAN", "dyn-alpha") matching "Perime"
+        assert ManNonAnnoncee.regulariser(1000000010000, "NA:OBJ-7:999996400000", "DEP-OBJ-7", "dyn-alpha") == "regularisee"
+        assert ApiManoeuvres.constater_non_annoncee(1000000000000, "OBJ-RAPP8", 999996400000, "analyste1") == "NA:OBJ-RAPP8:999996400000"
+        assert_fails ManNonAnnoncee.forclore(1000000010000, "NA:OBJ-RAPP8:999996400000", "systeme") matching "Delai"
+        assert ApiManoeuvres.balayer(1000086400001, "systeme") >= 1
+        assert ManNonAnnoncee.etat("NA:OBJ-RAPP8:999996400000") == "persistante"
+        assert ManNonAnnoncee.etat("NA:INCONNU") == "inconnu"
+        assert ApiManoeuvres.declarer(1000000000000, "PL-C1", "OBJ-9", "", "maintien", 1000007200000, 500, "dyn-alpha") == "PL-C1"
+        assert_fails ApiManoeuvres.constater_non_annoncee(1000007300000, "OBJ-9", 1000007200000, "systeme") matching "Conflit"
+    }
+}
+
+// ── avis d'un évitement de niveau 3 : l'État acquitte, l'opérateur silencieux est escaladé
+cell test AvisEtEscalade {
+    rules {
+        let r = "CJ-3N3~OBJ-A3~OBJ-B3"
+        assert ApiManoeuvres.declarer(1000000000000, "PL-A3", "OBJ-A3", r, "evitement", 1000007200000, 500, "dyn-alpha") == "PL-A3"
+        assert len(ManAvis.en_attente(10)) == 2
+        assert ApiManoeuvres.balayer(1000007200000, "systeme") >= 2
+        assert len(ManAvis.en_attente(10)) == 0
+        assert ManIndicateurs.valeur("ORG-BETA", 2001, "avis_echu") == 1
+        assert ApiManoeuvres.declarer(1000000000000, "PL-SEC", "OBJ-A4", "CJ-4SECRET~OBJ-A4~OBJ-B4", "evitement", 1000007200000, 500, "dyn-alpha") == "PL-SEC"
+        assert ManAvis.refuses("PL-SEC") == ["ORG-BETA"]
+        assert len(ManAvis.avis_de("PL-SEC")) == 1
+        assert_fails ManDossier.consulter(1000000001000, "PL-SEC", "ORG-BETA", "dyn-beta") matching "Confidentiel"
+        assert_fails ManDossier.consulter(1000000001000, "PL-SEC", "ORG-BETA", "dyn-alpha") matching "Habilitation"
+    }
+}
+
+// ── retrait par la coordination, réexamen (opérateur suspendu, recriblage)
+cell test RetraitEtReexamen {
+    rules {
+        let r = "CJ-5~OBJ-A5~OBJ-B5"
+        assert ApiManoeuvres.declarer(1000000000000, "PL-W1", "OBJ-A5", r, "evitement", 1000007200000, 500, "dyn-alpha") == "PL-W1"
+        assert_fails ApiManoeuvres.retirer(1000000001000, "PL-W1", "désigné changé", "dyn-alpha") matching "Habilitation"
+        assert_fails ApiManoeuvres.retirer(1000000001000, "PL-W1", "", "systeme") matching "MotifRequis"
+        assert ApiManoeuvres.retirer(1000000001000, "PL-W1", "désigné changé", "systeme") == "annule"
+        assert ManEvitement.etat(r) == "libre"
+        assert_fails ApiManoeuvres.retirer(1000000002000, "PL-W1", "encore", "systeme") matching "EtatInvalide"
+        assert ApiManoeuvres.declarer(1000000000000, "PL-T", "OBJ-T-1", "", "maintien", 1000172800000, 500, "dyn-temp") == "PL-T"
+        assert ApiManoeuvres.declarer(1000000000000, "PL-TARDRISQUE", "OBJ-R1", "", "maintien", 1000172800000, 500, "dyn-alpha") == "PL-TARDRISQUE"
+        assert ApiManoeuvres.declarer(1000000000000, "PL-RC", "OBJ-R2", "", "maintien", 1000172800000, 500, "dyn-alpha") == "PL-RC"
+        assert ManPlan.reexaminer(1000032400000, "PL-TARDRISQUE", "systeme") == "recriblage"
+        assert ApiManoeuvres.etat("PL-TARDRISQUE") == "annule"
+        assert ManPlan.reexaminer(1000032400000, "PL-RC", "analyste1") == ""
+        assert ManCriblage.fiche("PL-RC").recriblages == 1
+        assert ApiManoeuvres.etat("PL-RC") == "approuve"
+        assert_fails ManPlan.reexaminer(1000032400000, "PL-RC", "dyn-alpha") matching "Habilitation"
+        assert ApiManoeuvres.balayer(1000086401000, "systeme") >= 1
+        assert ApiManoeuvres.etat("PL-T") == "annule"
+    }
+}
+
+// ── programme de maintien à poste : cycle complet, rattachement, conformité d'une poussée
+cell test ProgrammeMaintien {
+    rules {
+        assert_fails ManProgramme.proposer(1000000000000, "PG-1", "OBJ-P1", 1000, 100, 200, 1000000000000, 1025920000000, "dyn-alpha") matching "HorsBornes"
+        assert_fails ManProgramme.proposer(1000000000000, "PG-1", "OBJ-P1", 604800000, 100, 200, 1000000000000, 1025920000000, "dyn-beta") matching "Habilitation"
+        assert_fails ManProgramme.proposer(1000000000000, "PG-1", "OBJ-MORT2", 604800000, 100, 200, 1000000000000, 1025920000000, "dyn-alpha") matching "NonEligible"
+        assert ManProgramme.proposer(1000000000000, "PG-1", "OBJ-P1", 604800000, 100, 200, 1000000000000, 1025920000000, "dyn-alpha") == "PG-1"
+        assert_fails ManProgramme.instruire(1000000001000, "PG-1", true, "", "dyn-alpha") matching "Habilitation"
+        assert ManProgramme.instruire(1000000001000, "PG-1", true, "", "analyste1") == "accepte"
+        assert_fails ManProgramme.proposer(1000000002000, "PG-2", "OBJ-P1", 604800000, 100, 200, 1000000000000, 1025920000000, "dyn-alpha") matching "Conflit"
+        assert_fails ApiManoeuvres.declarer(1000000000000, "PL-P0", "OBJ-P1", "", "maintien", 1000007200000, 300, "dyn-alpha") matching "HorsBornes"
+        assert ApiManoeuvres.declarer(1000000000000, "PL-P1", "OBJ-P1", "", "maintien", 1000007200000, 150, "dyn-alpha") == "PL-P1"
+        assert ManProgramme.conforme("OBJ-P1", 1000608400000)
+        assert !ManProgramme.conforme("OBJ-P1", 1000302400000)
+        assert ManProgramme.suspendre(1000000003000, "PG-1", true, "propulsion douteuse", "systeme") == "suspendu"
+        assert !ManProgramme.conforme("OBJ-P1", 1000608400000)
+        assert ManProgramme.suspendre(1000000004000, "PG-1", false, "propulsion rétablie", "analyste1") == "accepte"
+        assert_fails ManProgramme.clore(1000000005000, "PG-1", "fin", "dyn-beta") matching "Habilitation"
+        assert ManProgramme.clore(1000000005000, "PG-1", "fin de mission", "dyn-alpha") == "clos"
+        assert_fails ManProgramme.suspendre(1000000006000, "PG-1", true, "x", "systeme") matching "EtatInvalide"
+        assert ApiManoeuvres.constater_non_annoncee(1000608400000, "OBJ-P1", 1000604800000, "systeme") == "NA:OBJ-P1:1000604800000"
+    }
+}
+
+// ── preuve : scellé sous gel, refus hors gel et hors rôle
+cell test PreuveScellee {
+    rules {
+        assert ApiManoeuvres.declarer(1000000000000, "PL-G1", "OBJ-GEL1", "", "maintien", 1000007200000, 500, "dyn-alpha") == "PL-G1"
+        assert ApiManoeuvres.declarer(1000000000000, "PL-G2", "OBJ-1", "", "maintien", 1000007200000, 500, "dyn-alpha") == "PL-G2"
+        assert ManDossier.sceller(1000000001000, "PL-G1", "conf1") > 0
+        assert_fails ManDossier.sceller(1000000001000, "PL-G2", "conf1") matching "EtatInvalide"
+        assert_fails ManDossier.sceller(1000000001000, "PL-G1", "analyste1") matching "Habilitation"
+        assert ManDossier.consulter(1000000002000, "PL-G1", "ORG-ALPHA", "dyn-alpha").verification == "attendue"
+        assert ManDossier.consulter(1000000002000, "PL-G1", "ORG-ALPHA", "dyn-alpha").anomalie == ""
+    }
+}
+
+// ── verrou : clôture d'un rapprochement sans plan, refus internes
+cell test VerrouCloture {
+    rules {
+        assert ManEvitement.constater_cloture(1000000000000, "CJ-CLOS~OBJ-C1~OBJ-C2", "systeme") == "solde"
+        assert ManEvitement.etat("CJ-CLOS~OBJ-C1~OBJ-C2") == "solde"
+        assert_fails ManEvitement.constater_cloture(1000000000000, "CJ-6~OBJ-A6~OBJ-B6", "systeme") matching "EtatInvalide"
+        assert_fails ManEvitement.constater_cloture(1000000000000, "CJ-CLOS2~OBJ-C1~OBJ-C2", "analyste1") matching "Habilitation"
+        assert ManEvitement.engager(1000000000000, "CJ-7~A~B", "PL-1") == 1
+        assert_fails ManEvitement.engager(1000000000000, "CJ-7~A~B", "PL-2") matching "Conflit"
+        assert_fails ManEvitement.liberer(1000000000000, "CJ-7~A~B", "PL-2", "x") matching "Conflit"
+        assert ManEvitement.liberer(1000000000000, "CJ-7~A~B", "PL-1", "annule")
+        assert !ManEvitement.liberer(1000000000000, "CJ-7~A~B", "PL-1", "annule")
+        assert_fails ManEvitement.engager(1000000000000, "CJ-CLOS~OBJ-C1~OBJ-C2", "PL-3") matching "Ferme"
+    }
+}

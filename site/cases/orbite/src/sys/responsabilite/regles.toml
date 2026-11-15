@@ -1,0 +1,16 @@
+# responsabilite — règles entre sous-systèmes en forme toml (règle sur le passé `requires`).
+# À fusionner dans soma.toml par l'intégrateur.
+
+# Une faute "designation_ignoree" n'est présumée que si la coordination de son rapprochement a
+# été arrêtée (au TCA échu elle est close : condition sur le passé). Lien : RespFautes.rapprochement_de,
+# écrit une fois par presumer. L'arête porte déjà `when ConjRapprochement.passe || collision`.
+[verify.before."RespFautes.designation_presumee"]
+requires = ["CoordDossier.arretee"]
+via = "RespFautes.rapprochement_de"
+
+# Un sinistre ne se déclare que pour un assuré admis un jour à ORBITE (il peut s'être retiré
+# depuis). Lien : RespSinistres.op_de, écrit une fois par declarer. L'arête porte déjà
+# `when RespPolices.en_vigueur || RespPolices.echue via police_de`.
+[verify.before."RespSinistres.declare"]
+requires = ["OpMembres.admis"]
+via = "RespSinistres.op_de"

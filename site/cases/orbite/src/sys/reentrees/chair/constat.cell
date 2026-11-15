@@ -1,0 +1,96 @@
+// RENTRÉES — corps : constat d'une rentrée et ses suites (recherche, dommages, transmission,
+// délai de réclamation).
+
+flesh ReeConstat {
+    on enregistrer(h, campagne, objet, quand, ou, debris, debut, fin, par, valideur) {
+        require objet_de.get(campagne) == () else Existe "constat déjà enregistré : {campagne}"
+        require to_int(quand) <= to_int(h) else Incoherent "instant de rentrée dans le futur"
+        let q = to_int(quand)
+        let ecart = 0
+        if q < to_int(debut) {
+            ecart = to_int(debut) - q
+        } else if q > to_int(fin) {
+            ecart = q - to_int(fin)
+        }
+        objet_de.set(campagne, objet)
+        instant.set(campagne, quand)
+        lieu.set(campagne, ou)
+        debris_au_sol.set(campagne, debris)
+        ecart_prevision.set(campagne, Duree(ecart))
+        constate_par.set(campagne, "{par} / {valideur}")
+        if debris {
+            transition(campagne, "enregistre", "recherche")
+            return "recherche"
+        }
+        return "enregistre"
+    }
+
+    on ouvrir_recherche(h, campagne) {
+        let d = debris_au_sol.get(campagne)
+        require d != () else Inconnu "aucun constat pour {campagne}"
+        let st = get_status(campagne) ?? "enregistre"
+        if st == "enregistre" {
+            debris_au_sol.set(campagne, true)
+            transition(campagne, "enregistre", "recherche")
+            return "recherche"
+        }
+        return ReeEtatConstat(st)
+    }
+
+    on declarer_dommages(h, campagne, etat, description, par) {
+        require objet_de.get(campagne) != () else Inconnu "aucun constat pour {campagne}"
+        let org = ApiRef.org_de_etat(etat)
+        let role_ok = ApiAcces.a_le_role(par, "point_focal") || ApiAcces.a_le_role(par, "autorite")
+        require role_ok && ApiAcces.agit_pour(par, org) else Habilitation "dommages : point focal ou autorité de l'État {etat}"
+        let st = get_status(campagne) ?? "enregistre"
+        require st == "enregistre" || st == "recherche" || st == "dommages" else EtatInvalide "constat {campagne} terminé ({st})"
+        let t = to_int(instant.get(campagne) ?? h)
+        require to_int(h) - t <= DELAI_RECLAMATION else Delai "demande au-delà d'un an après la rentrée"
+        require len(trim(description)) > 0 else MotifRequis "description des dommages exigée"
+        let liste_d = dommages.get(campagne) ?? []
+        require len(liste_d) < MAX_DOMMAGES else Plein "trop de dommages déclarés pour {campagne}"
+        liste_d = liste_d ++ ["{h} | {etat} | {description} | {par}"]
+        dommages.set(campagne, liste_d)
+        if st != "dommages" {
+            transition(campagne, st, "dommages")
+        }
+        let _ = Journal.noter(h, "reentrees", par, "dommages déclarés par {etat} pour {campagne} : {description}")
+        return len(liste_d)
+    }
+
+    on transmettre(h, campagne, motif_gel, par) {
+        require ApiAcces.a_le_role(par, "conformite") || ApiAcces.a_le_role(par, "direction") else Habilitation "transmettre : conformite ou direction d'ORBITE"
+        require objet_de.get(campagne) != () else Inconnu "aucun constat pour {campagne}"
+        let st = get_status(campagne) ?? "enregistre"
+        require st == "dommages" else EtatInvalide "constat {campagne} {st} : pas de dommages"
+        require len(trim(motif_gel)) > 0 else MotifRequis "motif du gel exigé"
+        require dossier.get(campagne) == () else Existe "dossier déjà lié : {campagne}"
+        let d = ApiResponsabilite.geler(h, campagne, motif_gel, par)
+        dossier.set(campagne, d)
+        require ApiResponsabilite.sous_gel(campagne) else EtatInvalide "dossier {d} non gelé"
+        transition(campagne, "dommages", "transmis")
+        let _ = Journal.noter(h, "reentrees", par, "constat {campagne} transmis à la responsabilité : dossier {d}")
+        return d
+    }
+
+    on balayer(h, par) {
+        require ApiAcces.a_le_role(par, "systeme") else Habilitation "balayage : systeme"
+        let n = 0
+        for e in instant.entries {
+            let c = e.key
+            let st = get_status(c) ?? "enregistre"
+            if (st == "enregistre" || st == "recherche") && to_int(h) - to_int(e.value) > DELAI_RECLAMATION {
+                motif.set(c, "délai de réclamation écoulé")
+                transition(c, st, "sans_suite")
+                n = n + 1
+                let _ = Journal.noter(h, "reentrees", par, "constat {c} clos sans suite : délai de réclamation écoulé")
+            }
+        }
+        return n
+    }
+
+    on etat(campagne) {
+        if objet_de.get(campagne) == () { return "aucun" }
+        return ReeEtatConstat(get_status(campagne) ?? "enregistre")
+    }
+}

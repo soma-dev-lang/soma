@@ -1,0 +1,203 @@
+// PRIORITÉS — corps de PrioConsultation et PrioScrutin (adoption d'une version par les États).
+flesh PrioConsultation {
+    on ouvrir(h, version, echeance, par) {
+        require !echeance_de.has(version) else Existe "consultation de {version} déjà ouverte"
+        let d = to_int(echeance) - to_int(h)
+        require d >= DUREE_MIN && d <= DUREE_MAX else HorsBornes "durée de consultation hors 30..120 jours"
+        require echeance_de.size < 1000 else Plein "registre des consultations plein"
+        echeance_de.set(version, echeance)
+        ouverte_le.set(version, h)
+        PrioEcheancier.planifier(h, "consultation", version, echeance)
+        Journal.noter(h, "priorites", par, "consultation {version} ouverte jusqu'à {echeance}")
+        return echeance
+    }
+
+    on donner_avis(h, version, etat, avis, commentaire, par) {
+        require echeance_de.has(version) else Inconnu "aucune consultation pour {version}"
+        let org = ApiRef.org_de_etat(etat)
+        require (ApiAcces.a_le_role(par, "point_focal") || ApiAcces.a_le_role(par, "autorite")) && ApiAcces.agit_pour(par, org) else Habilitation "avis réservé au point focal ou à l'autorité de {etat}"
+        let st = get_status(version) ?? "ouverte"
+        require st == "ouverte" else EtatInvalide "consultation {version} : {st}"
+        let fin = echeance_de.get(version) ?? 0
+        require to_int(h) < to_int(fin) else Delai "échéance de la consultation passée"
+        require ApiRef.etat_participant(etat) else Suspendu "État {etat} non participant ou suspendu"
+        let cle = "{version}|{etat}"
+        require !avis_de.has(cle) else Doublon "{etat} a déjà donné son avis"
+        require avis == "favorable" || commentaire != "" else MotifRequis "réserve ou avis défavorable sans motivation"
+        let n = (nb_avis.get(version) ?? 0) + 1
+        require n <= MAX_ETATS && avis_de.size < 250000 else Plein "trop d'avis"
+        avis_de.set(cle, avis)
+        commentaire_de.set(cle, commentaire)
+        auteur_de.set(cle, par)
+        nb_avis.set(version, n)
+        if avis == "defavorable" {
+            nb_defavorables.set(version, (nb_defavorables.get(version) ?? 0) + 1)
+        }
+        if avis != "favorable" {
+            nb_a_repondre.set(version, (nb_a_repondre.get(version) ?? 0) + 1)
+        }
+        Journal.noter(h, "priorites", par, "consultation {version} : avis {avis} de {etat}")
+        return n
+    }
+
+    on repondre(h, version, etat, reponse, par) {
+        require ApiAcces.a_le_role(par, "analyste") else Habilitation "réponse réservée à un analyste d'ORBITE"
+        let cle = "{version}|{etat}"
+        let avis = avis_de.get(cle)
+        require avis != () else Inconnu "aucun avis de {etat} sur {version}"
+        let st = get_status(version) ?? "ouverte"
+        require st != "annulee" else EtatInvalide "consultation {version} annulée"
+        require avis != "favorable" else NonEligible "un avis favorable n'appelle pas de réponse"
+        require !reponse_de.has(cle) else Doublon "ORBITE a déjà répondu à {etat}"
+        require reponse != "" else MotifRequis "réponse motivée requise"
+        reponse_de.set(cle, reponse)
+        let rep = (nb_repondus.get(version) ?? 0) + 1
+        nb_repondus.set(version, rep)
+        Journal.noter(h, "priorites", par, "consultation {version} : réponse à {etat}")
+        return (nb_a_repondre.get(version) ?? 0) - rep
+    }
+
+    on sans_reponse(version) {
+        return (nb_a_repondre.get(version) ?? 0) - (nb_repondus.get(version) ?? 0)
+    }
+
+    on clore(h, version, par) {
+        require ApiAcces.a_le_role(par, "systeme") else Habilitation "clôture automatique (systeme)"
+        require echeance_de.has(version) else Inconnu "aucune consultation pour {version}"
+        let st = get_status(version) ?? "ouverte"
+        require st == "ouverte" else EtatInvalide "consultation {version} : {st}"
+        let fin = echeance_de.get(version) ?? 0
+        require to_int(h) >= to_int(fin) else Delai "échéance non atteinte"
+        transition(version, "ouverte", "close")
+        let n = nb_avis.get(version) ?? 0
+        Journal.noter(h, "priorites", par, "consultation {version} close : {n} avis")
+        return n
+    }
+
+    on annuler(h, version, par) {
+        require echeance_de.has(version) else Inconnu "aucune consultation pour {version}"
+        let st = get_status(version) ?? "ouverte"
+        require st == "ouverte" else EtatInvalide "consultation {version} : {st}"
+        transition(version, "ouverte", "annulee")
+        PrioEcheancier.annuler("consultation", version)
+        Journal.noter(h, "priorites", par, "consultation {version} annulée")
+        return "annulee"
+    }
+
+    on synthese(version) {
+        require echeance_de.has(version) else Inconnu "aucune consultation pour {version}"
+        let prefixe = "{version}|"
+        let cles_s = avis_de.keys.filter(k => starts_with(k, prefixe)).sort()
+        let lignes_s = []
+        for k in cles_s {
+            let e = substring(k, len(prefixe), len(k))
+            let a = avis_de.get(k) ?? ""
+            let c = commentaire_de.get(k) ?? ""
+            let r = reponse_de.get(k) ?? ""
+            lignes_s = lignes_s ++ ["{e} | {a} | {c} | {r}"]
+        }
+        return lignes_s
+    }
+
+    on etat(version) {
+        if !echeance_de.has(version) { return "inconnue" }
+        return get_status(version) ?? "ouverte"
+    }
+}
+
+flesh PrioScrutin {
+    on ouvrir(h, version, echeance, par) {
+        require !echeance_de.has(version) else Existe "scrutin de {version} déjà ouvert"
+        require to_int(echeance) >= to_int(h) + DUREE_MIN else HorsBornes "scrutin de moins de 14 jours"
+        let liste = ApiRef.etats_participants()
+        let n = len(liste)
+        require n >= 1 else Insuffisant "aucun État participant"
+        require n <= MAX_ETATS else HorsBornes "plus de {n} États"
+        echeance_de.set(version, echeance)
+        inscrits.set(version, n)
+        for e in liste {
+            electeur.set("{version}|{e}", true)
+        }
+        PrioEcheancier.planifier(h, "scrutin", version, echeance)
+        Journal.noter(h, "priorites", par, "scrutin {version} ouvert : {n} inscrits, échéance {echeance}")
+        return n
+    }
+
+    on voter(h, version, etat, choix, par) {
+        require echeance_de.has(version) else Inconnu "aucun scrutin pour {version}"
+        let org = ApiRef.org_de_etat(etat)
+        require ApiAcces.a_le_role(par, "point_focal") && ApiAcces.agit_pour(par, org) else Habilitation "vote réservé au point focal de {etat}"
+        let st = get_status(version) ?? "ouvert"
+        require st == "ouvert" else EtatInvalide "scrutin {version} : {st}"
+        let fin = echeance_de.get(version) ?? 0
+        require to_int(h) < to_int(fin) else Delai "scrutin clos"
+        let cle = "{version}|{etat}"
+        require electeur.get(cle) ?? false else NonEligible "{etat} n'est pas inscrit"
+        require ApiRef.etat_participant(etat) else Suspendu "{etat} suspendu"
+        require !choix_de.has(cle) else Doublon "{etat} a déjà voté"
+        choix_de.set(cle, choix)
+        votant_de.set(cle, par)
+        if choix == "pour" {
+            pour.set(version, (pour.get(version) ?? 0) + 1)
+        } else if choix == "contre" {
+            contre.set(version, (contre.get(version) ?? 0) + 1)
+        } else {
+            abstentions.set(version, (abstentions.get(version) ?? 0) + 1)
+        }
+        Journal.noter(h, "priorites", par, "scrutin {version} : bulletin de {etat}")
+        return (pour.get(version) ?? 0) + (contre.get(version) ?? 0) + (abstentions.get(version) ?? 0)
+    }
+
+    on depouiller(h, version, par) {
+        require ApiAcces.a_le_role(par, "systeme") else Habilitation "dépouillement automatique (systeme)"
+        require echeance_de.has(version) else Inconnu "aucun scrutin pour {version}"
+        let st = get_status(version) ?? "ouvert"
+        require st == "ouvert" else EtatInvalide "scrutin {version} : {st}"
+        let fin = echeance_de.get(version) ?? 0
+        require to_int(h) >= to_int(fin) else Delai "scrutin encore ouvert"
+        let ins = inscrits.get(version) ?? 0
+        let p = pour.get(version) ?? 0
+        let c = contre.get(version) ?? 0
+        let a = abstentions.get(version) ?? 0
+        let quorum = (p + c + a) * 100 >= QUORUM * ins
+        let majorite = (p + c) > 0 && p * 100 >= MAJORITE * (p + c)
+        let issue = if quorum && majorite { "adopte" } else { "rejete" }
+        if issue == "adopte" {
+            transition(version, "ouvert", "adopte")
+        } else {
+            transition(version, "ouvert", "rejete")
+        }
+        Journal.noter(h, "priorites", par, "scrutin {version} dépouillé : {issue} ({p} pour, {c} contre, {a} abstentions, {ins} inscrits)")
+        return issue
+    }
+
+    on annuler(h, version, motif, par, valideur) {
+        require ApiAcces.a_le_role(par, "direction") else Habilitation "annulation réservée à la direction d'ORBITE"
+        require ApiAcces.a_le_role(valideur, "direction") || ApiAcces.a_le_role(valideur, "conformite") else QuatreYeux "le valideur doit être direction ou conformité"
+        require ApiAcces.quatre_yeux(par, valideur) else QuatreYeux "contre-signature refusée"
+        require echeance_de.has(version) else Inconnu "aucun scrutin pour {version}"
+        require motif != "" else MotifRequis "motif d'annulation requis"
+        let st = get_status(version) ?? "ouvert"
+        require st == "ouvert" else EtatInvalide "scrutin {version} : {st}"
+        motif_annulation.set(version, motif)
+        transition(version, "ouvert", "annule")
+        PrioEcheancier.annuler("scrutin", version)
+        Journal.noter(h, "priorites", par, "scrutin {version} annulé ({motif}, validé par {valideur})")
+        return "annule"
+    }
+
+    on resultat(version) {
+        require inscrits.has(version) else Inconnu "aucun scrutin pour {version}"
+        let ins = inscrits.get(version) ?? 0
+        let p = pour.get(version) ?? 0
+        let c = contre.get(version) ?? 0
+        let a = abstentions.get(version) ?? 0
+        let st = get_status(version) ?? "ouvert"
+        return "{ins} | {p} | {c} | {a} | {st}"
+    }
+
+    on etat(version) {
+        if !inscrits.has(version) { return "inconnu" }
+        return get_status(version) ?? "ouvert"
+    }
+}

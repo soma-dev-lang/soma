@@ -1,0 +1,131 @@
+// lancements — corps de LancEnquete (enquête d'échec : débris en orbite, retombées, États notifiés).
+
+flesh LancEnquete {
+    on ouvrir(h, lancement, phase, description, par) {
+        let f = LancLancement.fiche(lancement)
+        let chef = ApiAcces.a_le_role(par, "chef_de_mission") && ApiAcces.agit_pour(par, f.op)
+        require chef || ApiAcces.a_le_role(par, "systeme") || ApiAcces.a_le_role(par, "analyste") else Habilitation "{par} : systeme, analyste ou chef_de_mission du lanceur requis"
+        require phase_de.get(lancement) == () else Existe "enquête sur {lancement} déjà ouverte"
+        require phase_de.size < MAX_ENQUETES else Plein "registre des enquêtes plein"
+        require description != "" else MotifRequis "description requise"
+        let lst = LancLancement.etat(lancement)
+        let ok = if phase == "separation" { lst == "injecte" || lst == "echec" } else { lst == "echec" }
+        require ok else EtatInvalide "lancement {lancement} : {lst} (phase {phase})"
+        phase_de.set(lancement, phase)
+        ouverte_le.set(lancement, h)
+        description_de.set(lancement, description)
+        transition(lancement, "a_ouvrir", "ouverte")
+        let ro = try { ApiRef.org_de_etat(f.etat) }
+        if ro.error == () {
+            let _ = ApiPasserelle.notifier(h, ro.value, "", "enquête d'échec {lancement}", "enquête ouverte (phase {phase}) : {description}", 3)
+        }
+        Journal.noter(h, "lancements", par, "enquête d'échec ouverte sur {lancement} (phase {phase})")
+        return "ouverte"
+    }
+
+    on evaluer(h, lancement, objets, zones, par, valideur) {
+        require ApiAcces.a_le_role(par, "analyste") else Habilitation "{par} : analyste d'ORBITE requis"
+        require ApiAcces.a_le_role(valideur, "superviseur") && ApiAcces.quatre_yeux(par, valideur) else QuatreYeux "{valideur} : superviseur distinct requis"
+        require phase_de.get(lancement) != () else Inconnu "aucune enquête sur {lancement}"
+        let st = get_status(lancement) ?? "a_ouvrir"
+        require st == "ouverte" else EtatInvalide "enquête sur {lancement} : {st}"
+        let objs = objets_orbite_de.get(lancement) ?? []
+        for o in objets {
+            require ApiRef.etat_objet(Objet(o)) != "inconnu" else Inconnu "objet {o} non catalogué"
+            if !contains(objs, o) { objs.push(o) }
+        }
+        require len(objs) <= MAX_OBJETS_ORBITE else Plein "500 objets au plus"
+        let zs = zones_de.get(lancement) ?? []
+        let etats_n = []
+        for z in zones {
+            let p = split(z, "|")
+            require len(p) == 4 && p[0] != "" else Incoherent "zone mal formée : {z}"
+            let rd = try { to_int(p[1]) }
+            let rf = try { to_int(p[2]) }
+            require rd.error == () && rf.error == () && rd.value <= rf.value else Incoherent "zone mal formée : {z}"
+            if !contains(zs, z) { zs.push(z) }
+            if !contains(etats_n, p[0]) { etats_n.push(p[0]) }
+        }
+        require len(zs) <= MAX_ZONES else Plein "100 zones au plus"
+        for e in LancZones.etats_lancement(lancement) {
+            if !contains(etats_n, e) { etats_n.push(e) }
+        }
+        let prevues = len(LancZones.zones(lancement))
+        let notif_e = notifies_de.get(lancement) ?? []
+        let n = 0
+        for e in etats_n {
+            let ro = try { ApiRef.org_de_etat(Etat(e)) }
+            if ro.error == () {
+                let org = to_string(ro.value)
+                if !contains(notif_e, org) {
+                    let _ = ApiPasserelle.notifier(h, ro.value, "", "échec du lancement {lancement}", "retombées et débris de l'échec de {lancement} ({prevues} zone(s) prévue(s))", 3)
+                    notif_e.push(org)
+                    n = n + 1
+                }
+            }
+        }
+        require len(notif_e) <= 100 else Plein "100 États notifiés au plus"
+        let ev = evenement_de.get(lancement) ?? ""
+        if ev == "" && len(objs) >= 2 {
+            ev = ApiEvenements.declarer(h, "fragmentation", objs, "", h, "débris de l'échec du lancement {lancement}", par, valideur)
+        }
+        objets_orbite_de.set(lancement, objs)
+        zones_de.set(lancement, zs)
+        notifies_de.set(lancement, notif_e)
+        evenement_de.set(lancement, ev)
+        let _ = LancPiece.abandonner_manifeste(h, lancement, "systeme")
+        transition(lancement, "ouverte", "debris_evalues")
+        Journal.noter(h, "lancements", par, "échec de {lancement} évalué : {n} État(s) notifié(s), évènement {ev}, validé par {valideur}")
+        return n
+    }
+
+    on rouvrir(h, lancement, motif, par) {
+        require ApiAcces.a_le_role(par, "analyste") else Habilitation "{par} : analyste d'ORBITE requis"
+        require motif != "" else MotifRequis "motif requis"
+        let st = get_status(lancement) ?? "a_ouvrir"
+        require st == "debris_evalues" else EtatInvalide "enquête sur {lancement} : {st}"
+        transition(lancement, "debris_evalues", "ouverte")
+        Journal.noter(h, "lancements", par, "enquête sur {lancement} rouverte : {motif}")
+        return "ouverte"
+    }
+
+    on clore(h, lancement, conclusion, dommages, par, valideur) {
+        require ApiAcces.a_le_role(par, "analyste") else Habilitation "{par} : analyste d'ORBITE requis"
+        let val = ApiAcces.a_le_role(valideur, "superviseur") || ApiAcces.a_le_role(valideur, "direction")
+        require val && ApiAcces.quatre_yeux(par, valideur) else QuatreYeux "{valideur} : superviseur ou direction distinct requis"
+        require conclusion != "" else MotifRequis "conclusion requise"
+        let st = get_status(lancement) ?? "a_ouvrir"
+        require st == "debris_evalues" else EtatInvalide "enquête sur {lancement} : {st}"
+        if dommages && !ApiResponsabilite.sous_gel(lancement) {
+            let _ = ApiResponsabilite.geler(h, lancement, "dommages de l'échec du lancement {lancement}", "systeme")
+        }
+        conclusion_de.set(lancement, conclusion)
+        transition(lancement, "debris_evalues", "close")
+        Journal.noter(h, "lancements", par, "enquête sur {lancement} close (dommages {dommages}), validée par {valideur}")
+        return "close"
+    }
+
+    on etat(lancement) {
+        if phase_de.get(lancement) == () { return "inconnue" }
+        return get_status(lancement) ?? "a_ouvrir"
+    }
+
+    on fiche(lancement) {
+        let phase = phase_de.get(lancement)
+        require phase != () else Inconnu "aucune enquête sur {lancement}"
+        return LancFicheEnquete {
+            phase: phase,
+            ouverte_le: ouverte_le.get(lancement) ?? 0,
+            objets: objets_orbite_de.get(lancement) ?? [],
+            zones: zones_de.get(lancement) ?? [],
+            notifies: notifies_de.get(lancement) ?? [],
+            evenement: evenement_de.get(lancement) ?? "",
+            conclusion: conclusion_de.get(lancement) ?? ""
+        }
+    }
+
+    on zones(lancement) {
+        require phase_de.get(lancement) != () else Inconnu "aucune enquête sur {lancement}"
+        return zones_de.get(lancement) ?? []
+    }
+}

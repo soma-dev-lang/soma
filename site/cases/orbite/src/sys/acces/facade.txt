@@ -1,0 +1,16 @@
+ApiAcces.enregistrer: calls AccesPersonnes.enregistrer, AccesRattachements.ouvrir; moves AccesPersonnes.cycle: inconnue -> active, AccesRattachements.rattachement: a_confirmer -> confirme
+ApiAcces.role_de: calls AccesControle.role_de
+ApiAcces.a_le_role: calls AccesControle.a_le_role
+ApiAcces.agit_pour: calls AccesControle.agit_pour
+ApiAcces.employeur: calls AccesPersonnes.employeur
+ApiAcces.quatre_yeux: calls AccesControle.quatre_yeux
+ApiAcces.suspendre: calls AccesPersonnes.suspendre; moves AccesPersonnes.cycle: active -> suspendue
+ApiAcces.retablir: calls AccesPersonnes.retablir; moves AccesPersonnes.cycle: suspendue -> active
+ApiAcces.ouvrir_urgence: calls AccesUrgences.ouvrir; moves AccesUrgences.urgence: demandee -> ouverte
+ApiAcces.en_urgence: calls AccesUrgences.en_urgence
+ApiAcces.en_urgence_pour: calls AccesUrgences.en_urgence_pour
+ApiAcces.ouvrir_session: calls AccesSessions.ouvrir, AccesJetons.emettre; moves AccesSessions.session: nouvelle -> ouverte, AccesJetons.jeton: prepare -> emis
+ApiAcces.authentifier: calls AccesJetons.authentifier
+ApiAcces.fermer_session: calls AccesSessions.fermer, AccesJetons.revoquer_session; moves AccesSessions.session: ouverte -> fermee, verrouillee -> fermee
+ApiAcces.actifs_de: calls AccesControle.actifs_de
+ApiAcces.balayer: calls AccesBalayage.balayer

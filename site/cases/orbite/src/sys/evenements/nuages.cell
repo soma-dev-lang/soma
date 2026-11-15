@@ -1,0 +1,152 @@
+// evenements — NUAGES DE DÉBRIS.
+// Chaque évènement a un nuage du MÊME identifiant. Il est amorcé au signalement (régimes des
+// objets en cause, fenêtre de criblage renforcé de DUREE_RENFORCE_MS), estimé par un analyste
+// (nombre de fragments, masse dispersée, dispersion de vitesse, couche d'altitude, régimes),
+// puis catalogué fragment par fragment (EvtFragments) jusqu'à la stabilisation et la
+// dissipation. Le criblage renforcé est DEMANDÉ aux conjonctions (ApiConjonctions.renforcer, par
+// "systeme") à l'amorçage, à chaque régime ajouté et à chaque prolongation ; tant que le nuage est
+// actif, ApiEvenements.nuage_actif le confirme (les conjonctions lèvent l'épisode sinon).
+
+// Motif du constat de stabilisation : "seuil" (part cataloguée ≥ SEUIL_STABLE_PCT de
+// l'estimation) ou "decision" (l'analyste juge l'estimation surévaluée ; motif obligatoire).
+cell type EvtStabilisation = String where value == "seuil" || value == "decision"
+
+// Nuages de débris : id = id de l'évènement ("EV-<n>").
+skeleton EvtNuages {
+    const MAX_NUAGES = 100000
+    const MAX_FRAGMENTS = 100000
+    const MAX_REGIMES = 4
+    const SEUIL_STABLE_PCT = 90
+    const DUREE_RENFORCE_MS = 2592000000
+    const PROLONGATION_MAX_MS = 7776000000
+    memory {
+        regimes: Map<String, List<String>> [persistent]       // nuage → régimes touchés (Regime), 1 à MAX_REGIMES
+        amorce_le: Map<String, Horodatage> [persistent]       // nuage → instant d'amorçage (= signalement), ms
+        renforce_jusqua: Map<String, Horodatage> [persistent] // nuage → fin du criblage renforcé, ms ; ≥ amorce_le
+        estime_nb: Map<String, Int> [persistent]              // nuage → fragments ≥ 10 cm estimés
+        masse: Map<String, Masse> [persistent]                // nuage → masse dispersée estimée, kg
+        dispersion: Map<String, DeltaV> [persistent]          // nuage → dispersion de vitesse typique, mm/s
+        altitude_basse: Map<String, Distance> [persistent]    // nuage → altitude minimale de la couche touchée, m
+        altitude_haute: Map<String, Distance> [persistent]    // nuage → altitude maximale, m ; ≥ altitude_basse
+        catalogues: Map<String, Int> [persistent]             // nuage → fragments catalogués (EvtFragments.cataloguer)
+        rentres: Map<String, Int> [persistent]                // nuage → fragments catalogués puis rentrés ; ≤ catalogues
+        stabilisation: Map<String, String> [persistent]       // nuage → "h | EvtStabilisation | par | motif"
+        estimations: Map<String, List<String>> [persistent]   // nuage → "h | par | nb | masse | dv | basse-haute | régimes", en ajout seul (preuve)
+        invariant regimes.size <= MAX_NUAGES
+        invariant estime_nb >= 0 && estime_nb <= MAX_FRAGMENTS
+        invariant catalogues >= 0 && catalogues <= MAX_FRAGMENTS
+        invariant rentres >= 0
+        invariant (rentres ?? 0) <= (catalogues ?? 0)
+        invariant (amorce_le ?? 0) <= (renforce_jusqua ?? 0)
+        invariant (altitude_basse ?? 0) <= (altitude_haute ?? 0)
+    }
+    // Cycle de vie d'un nuage (id = évènement).
+    state nuage {
+        initial: estime
+        estime -> en_catalogage   // ouvrir : l'évènement est confirmé
+        estime -> abandonne        // abandonner : l'évènement est infirmé
+        en_catalogage -> stabilise                            // stabiliser : seuil atteint ou décision
+        en_catalogage -> dissipe                              // dissiper : tous les fragments catalogués sont rentrés
+        stabilise -> dissipe                                  // dissiper : nuage fondu dans la population
+    }
+    face {
+        // Amorce le nuage d'un évènement qui vient d'être signalé : régimes = ceux des objets en
+        // cause (sans doublon), fenêtre renforcée [h, h + DUREE_RENFORCE_MS]. Appelé par
+        // EvtEvenements.signaler seul. Demande le renforcement de chaque régime jusqu'à la fin
+        // de la fenêtre (ApiConjonctions.renforcer). Renvoie le nombre de régimes retenus.
+        // Refus : Existe (nuage déjà amorcé), HorsBornes (aucun régime ou plus de MAX_REGIMES), Plein.
+        signal amorcer(h: Horodatage, nuage: String, touches: List<String>) -> Int
+            writes regimes, amorce_le, renforce_jusqua, catalogues, rentres
+            calls ApiConjonctions.renforcer
+            ensures result >= 1 && result <= 4
+        // Estime ou révise le nuage : `nb` fragments ≥ 10 cm, masse dispersée (kg), dispersion
+        // (mm/s), couche [basse, haute] (m), régimes touchés (remplacent ceux de l'amorçage ; un
+        // nuage GEO qui descend vers MEO en ajoute). Permis avant et pendant le catalogage.
+        // Chaque estimation s'ajoute à l'historique ; si l'évènement est confirmé, les riverains
+        // des régimes touchés sont alertés (EvtNotifications.diffuser, parent = premier objet en
+        // cause) et le renforcement est demandé pour chaque régime ajouté
+        // (ApiConjonctions.renforcer). Renvoie `nb`. Rôle exigé de `par` : "analyste" d'ORBITE.
+        // Refus : Inconnu (évènement), EtatInvalide (nuage stabilisé, dissipé ou abandonné),
+        // HorsBornes (nb > MAX_FRAGMENTS, régimes vides ou plus de MAX_REGIMES, valeur hors
+        // Regime), Incoherent (basse > haute), Habilitation.
+        signal estimer(h: Horodatage, nuage: String, nb: Int, m: Masse, dv: DeltaV, basse: Distance, haute: Distance, touches: List<String>, par: String) -> Int
+            requires nb >= 0
+            writes estime_nb, masse, dispersion, altitude_basse, altitude_haute, regimes, estimations
+            reads nuage, renforce_jusqua
+            calls ApiAcces.a_le_role, EvtEvenements.etat, EvtEvenements.objets, EvtNotifications.diffuser, ApiConjonctions.renforcer, Journal.noter
+        // Fait entrer le nuage en catalogage quand son évènement est confirmé. Appelé par
+        // EvtEvenements.confirmer seul. Renvoie "en_catalogage".
+        // Refus : Inconnu (nuage jamais amorcé), EtatInvalide.
+        signal ouvrir(h: Horodatage, nuage: String) -> String
+            reads regimes
+            moves estime -> en_catalogage when EvtEvenements.confirme
+            calls Journal.noter
+        // Abandonne le nuage d'un évènement infirmé : fin immédiate du criblage renforcé.
+        // Appelé par EvtEvenements.infirmer seul. Renvoie "abandonne". Refus : EtatInvalide.
+        signal abandonner(h: Horodatage, nuage: String) -> String
+            moves estime -> abandonne when EvtEvenements.infirme
+            calls Journal.noter
+        // Compte un fragment catalogué. Appelé par EvtFragments.cataloguer seul. Renvoie le
+        // nouveau nombre. Refus : EtatInvalide (ni en_catalogage, ni stabilise), Plein.
+        signal compter_fragment(nuage: String) -> Int
+            writes catalogues
+            reads nuage
+            ensures result >= 1
+        // Compte un fragment catalogué constaté rentré. Appelé par EvtFragments.constater_rentrees
+        // seul. Renvoie le nombre de rentrés. Refus : Incoherent (plus de rentrés que de catalogués).
+        signal compter_rentree(nuage: String) -> Int
+            writes rentres
+            ensures result >= 1
+        // Prolonge la fenêtre de criblage renforcé jusqu'à `jusqua` (ms) : la dispersion est plus
+        // lente que prévu, des fragments restent à cataloguer ; le renforcement de chaque régime
+        // est repoussé d'autant (ApiConjonctions.renforcer). Renvoie la nouvelle fin.
+        // Rôle exigé de `par` : "analyste" d'ORBITE.
+        // Refus : Inconnu, EtatInvalide (dissipé ou abandonné), HorsBornes (jusqua ≤ fin
+        // actuelle ou > h + PROLONGATION_MAX_MS), MotifRequis, Habilitation.
+        signal prolonger(h: Horodatage, nuage: String, jusqua: Horodatage, motif: String, par: String) -> Horodatage
+            writes renforce_jusqua
+            reads nuage, regimes
+            calls ApiAcces.a_le_role, ApiConjonctions.renforcer, Journal.noter
+        // Déclare le nuage stabilisé : la part cataloguée atteint SEUIL_STABLE_PCT de
+        // l'estimation ("seuil"), ou l'analyste juge l'estimation surévaluée ("decision", à
+        // quatre yeux). Le criblage renforcé continue jusqu'à renforce_jusqua. Renvoie "stabilise".
+        // Rôle exigé de `par` : "analyste" d'ORBITE ; pour "decision", `valideur` "superviseur"
+        // (ApiAcces.quatre_yeux) — ignoré pour "seuil".
+        // Refus : Inconnu, EtatInvalide, Insuffisant ("seuil" non atteint), MotifRequis
+        // ("decision" sans motif), Habilitation, QuatreYeux.
+        signal stabiliser(h: Horodatage, nuage: String, s: EvtStabilisation, motif: String, par: String, valideur: String) -> String
+            writes stabilisation
+            reads estime_nb, catalogues
+            moves en_catalogage -> stabilise
+            calls ApiAcces.a_le_role, ApiAcces.quatre_yeux, Journal.noter
+        // Déclare le nuage dissipé : depuis "en_catalogage", seulement si tous les fragments
+        // catalogués sont rentrés et h > renforce_jusqua ; depuis "stabilise", seulement si
+        // h > renforce_jusqua (les fragments restants sont des débris ordinaires du catalogue).
+        // Permet la clôture de l'évènement. Renvoie "dissipe".
+        // Rôle exigé de `par` : "analyste" d'ORBITE ou "systeme".
+        // Refus : Inconnu, EtatInvalide, Insuffisant (fragments en orbite pendant le
+        // catalogage), Delai (fenêtre renforcée non échue), Habilitation.
+        signal dissiper(h: Horodatage, nuage: String, par: String) -> String
+            reads catalogues, rentres, renforce_jusqua
+            moves en_catalogage -> dissipe, stabilise -> dissipe
+            calls ApiAcces.a_le_role, Journal.noter
+        // Vrai si un nuage touche `regime` et impose le criblage renforcé à `h` : nuage
+        // "en_catalogage" (quelle que soit l'heure), ou "estime" / "stabilise" avec
+        // h ≤ renforce_jusqua. Un nuage abandonné ou dissipé n'est jamais actif.
+        signal actif(regime: Regime, h: Horodatage) -> Bool
+            reads regimes, renforce_jusqua, nuage
+        // Régimes touchés par le nuage ([] s'il n'a jamais été amorcé).
+        signal regimes_de(nuage: String) -> List<String>
+            reads regimes
+        // Nuages candidats à la dissipation à `h`, au plus `n` : "stabilise" avec
+        // h > renforce_jusqua, ou "en_catalogage" avec h > renforce_jusqua et rentres = catalogues.
+        // Lecture seule (la veille appelle dissiper sur chacun).
+        signal a_dissiper(h: Horodatage, n: Int) -> List<String>
+            requires n > 0 && n <= 1000
+            reads catalogues, rentres, renforce_jusqua, nuage
+        // État du nuage : "estime", "en_catalogage", "stabilise", "dissipe", "abandonne" ;
+        // "inconnu" s'il n'a jamais été amorcé.
+        signal etat(nuage: String) -> String
+            reads regimes, nuage
+    }
+}

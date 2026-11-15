@@ -1,0 +1,43 @@
+// Façade des ÉVÈNEMENTS : fragmentations, collisions, anomalies, nuages de débris.
+skeleton ApiEvenements {
+    face {
+        // Déclare une fragmentation ou une collision confirmée impliquant des objets catalogués ;
+        // `r` : le rapprochement d'origine ("" si aucun) — une collision le fait constater chez
+        // conjonctions et gèle un dossier de preuve chez responsabilite.
+        // Renvoie l'id de l'évènement. Refus : Inconnu, MotifRequis, Habilitation ("analyste"),
+        // QuatreYeux (valideur "superviseur").
+        signal declarer(h: Horodatage, genre: String, objets: List<String>, r: Rapprochement, instant: Horodatage, description: String, par: String, valideur: String) -> String
+            calls EvtEvenements.signaler, EvtEvenements.confirmer
+        // Déclare un objet en anomalie (perte de contrôle d'attitude, propulsion incertaine, chute
+        // libre) : par son propriétaire ou un analyste. Renvoie l'id. Refus : Inconnu, MotifRequis, Habilitation.
+        signal anomalie(h: Horodatage, objet: Objet, genre: String, description: String, par: String) -> String
+            calls EvtAnomalies.declarer
+        // Vrai si l'objet est en anomalie non levée.
+        signal en_anomalie(objet: Objet) -> Bool
+            calls EvtAnomalies.en_anomalie
+        // Vrai si un nuage de débris en cours de catalogage touche ce régime (criblage renforcé).
+        signal nuage_actif(regime: Regime, h: Horodatage) -> Bool
+            calls EvtNuages.actif
+        // Vrai si l'évènement existe ; ses objets, son genre, son instant. Refus : Inconnu.
+        signal existe(evenement: String) -> Bool
+            calls EvtEvenements.existe
+        signal objets(evenement: String) -> List<String>
+            calls EvtEvenements.objets
+        signal genre(evenement: String) -> String
+            calls EvtEvenements.genre
+        signal instant(evenement: String) -> Horodatage
+            calls EvtEvenements.instant
+        // Dernier évènement non clos impliquant l'objet ; "" si aucun.
+        signal evenement_de(objet: Objet) -> String
+            calls EvtEvenements.evenement_de
+        // Balayage des échéances du sous-système à `h` (délais, expirations, rondes), appelé par
+        // l'horloge d'ORBITE (Horloge.battre) — le SEUL point d'entrée du temps : aucun signal de
+        // evenements ne lit l'horloge lui-même. Renvoie le nombre d'objets dont l'état a changé.
+        // Refus : Habilitation (par "systeme").
+        signal balayer(h: Horodatage, par: String) -> Int
+            calls EvtVeille.ronde
+        // État d'un évènement : "signale", "confirme", "infirme", "clos" ; "inconnu" s'il n'existe pas.
+        signal etat(evenement: String) -> String
+            calls EvtEvenements.etat
+    }
+}

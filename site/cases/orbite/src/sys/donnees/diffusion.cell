@@ -1,0 +1,100 @@
+// donnees — DIFFUSION ET CONTRÔLE. Chaque objet a un niveau de diffusion déclaré par son
+// propriétaire, jamais plus restrictif que le plafond de la politique d'ORBITE pour sa nature
+// ("restreint" n'est atteint que par un embargo accordé). DonControle est le SEUL point de
+// décision « telle organisation peut-elle recevoir telles données » : il renvoie le fondement
+// de la communication, que DonTraces enregistre avec elle (propriété 6 : une décision remonte
+// aux données qui la fondaient, et chaque donnée à l'autorisation qui permettait de la communiquer).
+//
+// Ordre d'ouverture : "restreint" (0) < "parties" (1) < "participants" (2) < "public" (3).
+// Niveau effectif d'un objet :
+//   1. sous embargo actif : "restreint" ;
+//   2. sinon : le plus ouvert du niveau déclaré et du plafond de sa nature ;
+//   3. plancher de sécurité : impliqué dans un rapprochement non clos ⇒ au moins "parties"
+//      (un embargo ne cache jamais un rapprochement aux parties).
+
+// Niveaux déclarés par les propriétaires et plafonds de la politique.
+skeleton DonDiffusion {
+    const MAX_OBJETS = 1000000
+    const MAX_HISTORIQUE = 5000000
+    memory {
+        declare: Map<String, Diffusion> [persistent]     // objet → niveau déclaré par le propriétaire (jamais "restreint")
+        plafond: Map<String, Diffusion> [persistent]     // NatureObjet → niveau le plus restrictif admis (jamais "restreint")
+        historique: List<String> [persistent]            // "h | objet ou nature | ancien → nouveau | par"
+        invariant declare.size <= MAX_OBJETS
+        invariant historique.size <= MAX_HISTORIQUE
+        invariant declare != "restreint"
+        invariant plafond != "restreint"
+    }
+    face {
+        // Le propriétaire déclare le niveau de diffusion d'un objet catalogué. Prend effet à `h`
+        // pour toute communication future. Renvoie le niveau EFFECTIF qui en résulte
+        // (DonControle.diffusion_effective). Rôle : "chef_de_mission" ou "administrateur_operateur"
+        // du propriétaire (ApiAcces.agit_pour sur ApiRef.proprietaire(objet)).
+        // Refus : Inconnu (objet non catalogué), HorsBornes ("restreint" : demander un embargo ;
+        // ou plus restrictif que le plafond de sa nature), Plein, Habilitation.
+        signal declarer(h: Horodatage, objet: Objet, d: Diffusion, par: String) -> Diffusion
+            writes declare, historique
+            reads plafond
+            calls ApiAcces.a_le_role, ApiAcces.agit_pour, ApiRef.etat_objet, ApiRef.proprietaire, ApiRef.nature, DonControle.ouverture, DonControle.diffusion_effective, Journal.noter
+        // Fixe le plafond de la politique pour une nature d'objet (ex. "debris" et "inconnu" →
+        // "public" : le catalogue des débris est ouvert ; "station_habitee" → "participants").
+        // S'applique aussitôt aux niveaux déjà déclarés (lecture par le plus ouvert des deux).
+        // Renvoie le plafond. Rôle : "direction" d'ORBITE ; valideur "direction" ou "conformite"
+        // distinct (ApiAcces.quatre_yeux). Refus : HorsBornes ("restreint"), MotifRequis, Plein,
+        // Habilitation, QuatreYeux.
+        signal fixer_plafond(h: Horodatage, nature: NatureObjet, d: Diffusion, motif: String, par: String, valideur: String) -> Diffusion
+            writes plafond, historique
+            calls ApiAcces.a_le_role, ApiAcces.quatre_yeux, Journal.noter
+        // Niveau déclaré de l'objet ; à défaut "participants" (et "public" pour un débris ou un
+        // objet de nature inconnue, ApiRef.nature).
+        signal declaree(objet: Objet) -> Diffusion
+            reads declare
+            calls ApiRef.nature
+        // Plafond de la nature ; "parties" si la politique n'en fixe pas.
+        signal plafond_de(nature: NatureObjet) -> Diffusion
+            reads plafond
+        // Au plus n lignes d'historique concernant l'objet ou la nature, les plus récentes en dernier.
+        signal historique_de(cle: String, n: Int) -> List<String>
+            requires n > 0 && n <= 1000
+            reads historique
+    }
+}
+
+// Point de décision unique de la diffusion (sans mémoire : il lit les autres cells).
+skeleton DonControle {
+    face {
+        // Rang d'ouverture d'un niveau : restreint 0, parties 1, participants 2, public 3.
+        signal ouverture(d: Diffusion) -> Int
+            ensures result >= 0 && result <= 3
+        // Niveau de diffusion effectif de l'objet (règles 1-3 de l'en-tête). Un objet non
+        // catalogué (ApiRef.etat_objet == "inconnu") est "restreint".
+        signal diffusion_effective(objet: Objet) -> Diffusion
+            calls ApiRef.etat_objet, ApiRef.nature, DonDiffusion.declaree, DonDiffusion.plafond_de, DonEmbargos.sous_embargo, ApiConjonctions.ouverts_de, ouverture
+        // Fondement de la communication des données de `objet` à `org` à `h`, "" si aucun.
+        // Premier fondement qui s'applique, dans cet ordre :
+        //  "proprietaire" (org = ApiRef.proprietaire(objet)) ; "etat_immatriculation"
+        //  (org = ApiRef.org_de_etat(ApiRef.etat_immatriculation(objet)), sauté si l'objet non
+        //  attribué n'a pas d'État, etat_immatriculation == "") ; "orbite" ;
+        //  "partie:<r>" si r ≠ "", r non clos (ApiConjonctions.etat ∈ detecte, suivi, alerte,
+        //  en_coordination), objet ∈ ApiConjonctions.objets(r), org propriétaire de l'un des deux
+        //  objets ou organisation de son État d'immatriculation, ET (org adhérente OU
+        //  ApiConjonctions.niveau(r) == 3 → "urgence:<r>" : la sécurité prime l'accord) ;
+        //  — si l'objet est sous embargo, s'arrêter là ("") ; sinon :
+        //  "public" (niveau effectif public) ; "adhesion:<AD>" (effectif ≥ participants, org
+        //  adhérente, opérateur ni "suspendu" ni "exclu" chez ApiOperateurs.statut) ;
+        //  "bilateral:<PB>" (partage actif du propriétaire vers org, DonPartages.actif_pour, org
+        //  adhérente) ; "demande:<DA>" (demande accordée, non échue à `h`, DonDemandes.accordee_pour).
+        // Une organisation absente du référentiel (ApiRef.organisation_existe faux) n'a aucun fondement.
+        signal fondement(org: Org, objet: Objet, r: Rapprochement, h: Horodatage) -> String
+            calls diffusion_effective, ouverture, ApiRef.organisation_existe, ApiRef.etat_objet, ApiRef.proprietaire, ApiRef.etat_immatriculation, ApiRef.org_de_etat, ApiRef.orbite, ApiConjonctions.etat, ApiConjonctions.objets, ApiConjonctions.niveau, DonAdhesions.adherent, DonAdhesions.adhesion_de, ApiOperateurs.statut, DonEmbargos.sous_embargo, DonDemandes.accordee_pour, DonPartages.actif_pour
+        // Sous-liste des organisations fondées à recevoir les données de l'objet (au plus 1 000) :
+        // l'appelant qui diffuse un CDM ou une alerte à plusieurs destinataires filtre ici, puis
+        // trace chaque envoi (DonTraces.tracer).
+        signal filtrer(orgs: List<String>, objet: Objet, r: Rapprochement, h: Horodatage) -> List<String>
+            requires len(orgs) <= 1000
+            calls fondement
+        // Vrai si fondement(org, objet, r, h) ≠ "".
+        signal peut_recevoir(org: Org, objet: Objet, r: Rapprochement, h: Horodatage) -> Bool
+            calls fondement
+    }
+}

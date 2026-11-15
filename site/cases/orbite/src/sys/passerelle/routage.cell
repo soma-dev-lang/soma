@@ -1,0 +1,177 @@
+// PASSERELLE — table des routes, mode de service et chaîne de traitement d'une requête HTTP
+// JSON : route -> mode -> jeton -> débit -> idempotence -> aiguillage -> réponse.
+
+// Méthode HTTP acceptée.
+cell type PasMethode = String where value == "GET" || value == "POST" || value == "DELETE"
+// Statut HTTP rendu par la passerelle (liste fermée de ApiPasserelle.request).
+cell type PasStatut = Int where value == 200 || value == 201 || value == 400 || value == 401 || value == 403 || value == 404 || value == 405 || value == 422 || value == 429
+// Classe de débit d'une route ; chaque classe a son seau (PasDebit). "urgence" : réponses aux
+// alertes et accusés (coordination, escalade, messages) — jamais bridée, jamais restreinte.
+cell type PasClasse = String where value == "session" || value == "lecture" || value == "depot" || value == "decision" || value == "urgence" || value == "administration"
+// Cible d'une route : le signal interne qui la sert. Liste fermée : une route ne peut viser que
+// du code qui existe.
+cell type PasCible = String where value == "session.ouvrir" || value == "session.clore" || value == "canal.declarer" || value == "canal.verifier" || value == "canal.reverifier" || value == "canal.retirer" || value == "message.lister" || value == "message.accuser" || value == "route.catalogue" || value == "objet.lire" || value == "objet.propulsion" || value == "objet.anomalie" || value == "objet.fin_de_mission" || value == "registre.immatriculer" || value == "lancement.notifier" || value == "lancement.lire" || value == "ephemeride.deposer" || value == "ephemeride.lire" || value == "mesure.deposer" || value == "rapprochement.lire" || value == "coordination.lire" || value == "coordination.en_attente" || value == "coordination.repondre" || value == "escalade.accuser" || value == "manoeuvre.declarer" || value == "manoeuvre.lire" || value == "manoeuvre.confirmer" || value == "manoeuvre.annuler" || value == "operateur.suspendre" || value == "operateur.retablir"
+// Réponse interne d'une cible : statut HTTP et corps JSON ({…} ou {error, kind}).
+cell type PasReponse { variants { PasReponse { statut: PasStatut, corps: String } } }
+
+// Table des routes : id = "METHODE /gabarit" (ex. "POST /v1/coordinations/{id}/reponse").
+// Un gabarit a au plus un paramètre {id}.
+skeleton PasRoutes {
+    const MAX_ROUTES = 200
+    memory {
+        cible_de: Map<String, PasCible> [persistent]      // écrit une fois, à la déclaration
+        classe_de: Map<String, PasClasse> [persistent]
+        motif_fermeture: Map<String, String> [persistent]
+        gabarits: List<String> [persistent]                // ordre de déclaration
+        invariant gabarits.size <= 200
+    }
+    state vie {
+        initial: declaree
+        declaree -> ouverte         // ouvrir : quatre yeux, changement autorisé
+        ouverte -> fermee           // fermer : maintenance, incident, retrait annoncé
+        fermee -> ouverte           // ouvrir
+        declaree -> retiree         // retirer
+        fermee -> retiree           // retirer (une route ouverte se ferme d'abord)
+    }
+    face {
+        // Déclare une route vers une cible avec sa classe de débit. Renvoie "declaree".
+        // Habilitation : "exploitant" d'ORBITE. Refus : Existe, Plein (MAX_ROUTES), Incoherent
+        // (gabarit mal formé ; méthode hors PasMethode ; "session.ouvrir" hors classe "session" ;
+        // "coordination.repondre", "escalade.accuser" ou "message.accuser" hors classe "urgence" :
+        // une erreur de table ne doit jamais brider une réponse d'urgence), Habilitation.
+        signal declarer(h: Horodatage, route: String, cible: PasCible, classe: PasClasse, par: String) -> String
+            writes cible_de, classe_de, gabarits
+            calls ApiAcces.a_le_role, Journal.noter
+        // declaree|fermee -> ouverte. Renvoie "ouverte". Habilitation : "exploitant" d'ORBITE ;
+        // quatre yeux (ApiAcces.quatre_yeux). Changer l'API publique est un changement de
+        // production : refus Ferme si ApiOperations.changement_autorise(h) est faux.
+        // Refus : Inconnu, EtatInvalide, Ferme, Habilitation, QuatreYeux.
+        signal ouvrir(h: Horodatage, route: String, par: String, valideur: String) -> String
+            reads cible_de
+            writes motif_fermeture
+            moves declaree -> ouverte, fermee -> ouverte
+            calls ApiAcces.a_le_role, ApiAcces.quatre_yeux, ApiOperations.changement_autorise, Journal.noter
+        // ouverte -> fermee : la route répond 422 {kind: "Ferme"} avec le motif. Les routes de
+        // classe "urgence" ne se ferment qu'à quatre yeux. Renvoie "fermee". Habilitation :
+        // "exploitant" d'ORBITE. Refus : Inconnu, EtatInvalide, MotifRequis, Habilitation,
+        // QuatreYeux (valideur "" sur une route "urgence").
+        signal fermer(h: Horodatage, route: String, motif: String, par: String, valideur: String) -> String
+            reads cible_de, classe_de
+            writes motif_fermeture
+            moves ouverte -> fermee
+            calls ApiAcces.a_le_role, ApiAcces.quatre_yeux, Journal.noter
+        // declaree|fermee -> retiree (définitif). Renvoie "retiree". Habilitation : "exploitant"
+        // d'ORBITE ; quatre yeux. Refus : Inconnu, EtatInvalide, MotifRequis, Habilitation, QuatreYeux.
+        signal retirer(h: Horodatage, route: String, motif: String, par: String, valideur: String) -> String
+            reads cible_de
+            writes motif_fermeture
+            moves declaree -> retiree, fermee -> retiree
+            calls ApiAcces.a_le_role, ApiAcces.quatre_yeux, Journal.noter
+        // Résout (méthode, chemin) : map("route", "cible", "classe", "param", "statut") ; statut
+        // 200 (route ouverte), 404 (aucun gabarit), 405 (gabarit connu, autre méthode) ou 422
+        // (déclarée, fermée ou retirée : corps {error: motif, kind: "Ferme"}).
+        signal resoudre(method: String, path: String) -> Map
+            reads cible_de, classe_de, motif_fermeture, gabarits, vie
+        // Catalogue publié : routes ouvertes, "route | classe", ordre de déclaration.
+        signal catalogue() -> List<String>
+            reads gabarits, classe_de, vie
+    }
+}
+
+// Mode de service de toute la passerelle, instance unique "passerelle". Réactif (revient à
+// "normal"). "restreint" : seules passent les routes "lecture", "session", "urgence" et
+// l'administration ; "ferme" (bascule de secours) : seules "session", "urgence" et
+// l'administration. Une route "urgence" n'est jamais coupée par le mode : un opérateur doit
+// toujours pouvoir répondre à une alerte ; s'il ne le peut pas, l'arbitrage d'ORBITE reprend.
+skeleton PasService {
+    memory {
+        motif_de: Map<String, String> [persistent]       // motif du mode courant ("" en normal)
+    }
+    state mode {
+        initial: normal
+        normal -> restreint         // restreindre : surcharge, incident d'un sous-système
+        normal -> ferme             // fermer : bascule de secours, incident majeur
+        restreint -> ferme          // fermer
+        restreint -> normal         // retablir
+        ferme -> normal             // retablir
+    }
+    face {
+        // normal -> restreint. Renvoie "restreint". Habilitation : "exploitant" d'ORBITE.
+        // Refus : EtatInvalide, MotifRequis, Habilitation.
+        signal restreindre(h: Horodatage, motif: String, par: String) -> String
+            writes motif_de
+            moves normal -> restreint
+            calls ApiAcces.a_le_role, Journal.noter
+        // normal|restreint -> ferme ; déclare un incident (ApiOperations.declarer_incident,
+        // gravité 3, sous-système "passerelle") : les États sont informés. Renvoie "ferme".
+        // Habilitation : "exploitant" d'ORBITE ; quatre yeux. Refus : EtatInvalide, MotifRequis,
+        // Habilitation, QuatreYeux.
+        signal fermer(h: Horodatage, motif: String, par: String, valideur: String) -> String
+            writes motif_de
+            moves normal -> ferme, restreint -> ferme
+            calls ApiAcces.a_le_role, ApiAcces.quatre_yeux, ApiOperations.declarer_incident, Journal.noter
+        // restreint|ferme -> normal ; refusé (Ferme) tant que ApiOperations.incident_majeur() est
+        // vrai. Renvoie "normal". Habilitation : "exploitant" d'ORBITE ; quatre yeux.
+        // Refus : EtatInvalide, Ferme, Habilitation, QuatreYeux.
+        signal retablir(h: Horodatage, par: String, valideur: String) -> String
+            writes motif_de
+            moves restreint -> normal, ferme -> normal
+            calls ApiAcces.a_le_role, ApiAcces.quatre_yeux, ApiOperations.incident_majeur, Journal.noter
+        // Mode courant et son motif : [mode, motif].
+        signal mode() -> List<String>
+            reads motif_de, mode
+    }
+}
+
+// La chaîne de traitement : sert ApiPasserelle.request. La façade ne porte pas d'horodatage :
+// h = now_ms() à la réception, propagé à tout l'aval — avec Horloge.battre, le seul point où
+// le temps entre dans ORBITE.
+skeleton PasEntree {
+    const MAX_CORPS = 1048576          // octets (un OEM de 7 jours tient dans 1 Mo)
+    face {
+        // Ordre fixe ; chaque étape rend sa réponse d'échec sans aller plus loin :
+        //  1. "/admin/passerelle/<Cell.signal>" (POST) : gestes de la passerelle elle-même
+        //     (PasRoutes, PasService, PasDebit.fixer, PasBridage.lever, PasMessages.annuler,
+        //     PasMessages.du_rapprochement, PasCanaux.suspendre), câblés hors table : une erreur
+        //     de table ne peut pas les fermer. "/admin/<sous-systeme>/<Cell.signal>" (POST) :
+        //     PasAdmin.router_<sous-systeme>. Sinon PasRoutes.resoudre -> 404 / 405 / 422 Ferme ;
+        //     corps > MAX_CORPS ou JSON invalide -> 400.
+        //  2. PasService.mode : classe non admise par le mode -> 422 {kind: "Ferme"}.
+        //  3. "session.ouvrir" {personne, facteur} : seule route sans jeton ; débit compté sur la
+        //     personne (PasDebit.consommer("p:" + personne, "session")) ; ApiAcces.ouvrir_session.
+        //  4. Authorization: Bearer -> ApiAcces.authentifier(jeton, h) -> personne ; "" -> 401
+        //     (sans dire pourquoi) ; appelant = {personne, ApiAcces.employeur, ApiAcces.role_de} ;
+        //     rôle "aucun" ou "systeme" -> 401. "session.clore" -> ApiAcces.fermer_session(jeton).
+        //  5. Hors classe "urgence" : PasBridage.etat(org) == "bloque" -> 429 ;
+        //     PasDebit.consommer(org, classe) faux -> 429 (et PasBridage.constater).
+        //  6. ApiOperations.degrade(sous-système de la cible) -> 422 {kind: "Suspendu"}.
+        //  7. POST / DELETE : en-tête Idempotency-Key obligatoire (400 sinon) ;
+        //     PasRequetes.reserver rejoue une réponse déjà rendue, refuse une clé réutilisée pour
+        //     un autre corps (422 Incoherent) ou encore en cours (422 Doublon).
+        //  8. Quatre yeux : en-tête X-Jeton-Valideur -> ApiAcces.authentifier -> valideur ; même
+        //     personne que l'appelant, "" ou "systeme" -> 403 QuatreYeux (pour un geste qui en a un).
+        //  9. Aiguillage (PasMetier, PasCanaux, PasMessages, PasAdmin) ; Habilitation /
+        //     QuatreYeux / Confidentiel -> 403, autre tag -> 422 {error, kind}, imprévu ->
+        //     PasRequetes.abandonner puis 422 {kind: "EtatInvalide"}.
+        // 10. PasRequetes.terminer (réponse gardée pour rejeu) ; Journal.noter (personne, org,
+        //     route, statut) — la trace de qui a fait quoi par l'API.
+        signal traiter(method: String, path: String, body: String, headers: Map) -> PasReponse
+            calls now_ms, PasRoutes.resoudre, PasRoutes.catalogue, PasRoutes.declarer, PasRoutes.ouvrir, PasRoutes.fermer, PasRoutes.retirer, PasService.mode, PasService.restreindre, PasService.fermer, PasService.retablir, ApiAcces.ouvrir_session, ApiAcces.authentifier, ApiAcces.fermer_session, ApiAcces.employeur, ApiAcces.role_de, PasDebit.consommer, PasDebit.fixer, PasBridage.etat, PasBridage.constater, PasBridage.lever, PasRequetes.reserver, PasRequetes.terminer, PasRequetes.abandonner, PasCanaux.declarer, PasCanaux.verifier, PasCanaux.reverifier, PasCanaux.retirer, PasCanaux.suspendre, PasMessages.en_attente, PasMessages.acquitter, PasMessages.annuler, PasMessages.du_rapprochement, PasMetier.objets, PasMetier.orbites, PasMetier.rapprochements, PasMetier.manoeuvres, PasMetier.etats, PasAdmin.router_acces, PasAdmin.router_conformite, PasAdmin.router_conjonctions, PasAdmin.router_coordination, PasAdmin.router_donnees, PasAdmin.router_ephemerides, PasAdmin.router_escalade, PasAdmin.router_evenements, PasAdmin.router_fin_de_vie, PasAdmin.router_lancements, PasAdmin.router_manoeuvres, PasAdmin.router_meteo, PasAdmin.router_observation, PasAdmin.router_operateurs, PasAdmin.router_operations, PasAdmin.router_priorites, PasAdmin.router_reentrees, PasAdmin.router_ref, PasAdmin.router_responsabilite, ApiOperations.degrade, Journal.noter
+    }
+}
+
+// Rondes de la passerelle, sans horloge propre : ApiPasserelle.balayer (Horloge.battre, toutes
+// les 60 s) fournit h. Les échéances (livraison, accusés de niveau 3) sont ainsi constatées même
+// quand aucun client n'appelle.
+skeleton PasRondes {
+    const LOT = 500                    // éléments traités par machine et par battement
+    face {
+        // Dans cet ordre : PasMessages.traiter_file(h, LOT) (envois, réessais, défauts et
+        // escalades — d'abord, c'est la sûreté), PasRequetes.purger(h, LOT),
+        // PasBridage.apaiser(h, LOT). Un échec d'une étape est journalisé et n'empêche pas les
+        // suivantes. Renvoie le nombre d'éléments dont l'état a changé.
+        // Habilitation : par "systeme" (ApiAcces.a_le_role(par, "systeme")). Refus : Habilitation.
+        signal balayer(h: Horodatage, par: String) -> Int
+            calls ApiAcces.a_le_role, PasMessages.traiter_file, PasRequetes.purger, PasBridage.apaiser, Journal.noter
+    }
+}

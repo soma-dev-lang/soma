@@ -1,0 +1,9 @@
+# operateurs — règles entre sous-systèmes en forme toml (arête déjà porteuse d'un `when`).
+# À fusionner dans soma.toml par l'intégrateur.
+
+# Un créneau d'astreinte n'entre en service que si sa personne est active chez acces.
+# Lien : OpAstreinte.personne, écrit une fois par planifier. Arête planifie -> en_service
+# déjà `when OpEngagements.en_vigueur via operateur`.
+[verify.before."OpAstreinte.en_service"]
+while = ["AccesPersonnes.active"]
+via = "OpAstreinte.personne"

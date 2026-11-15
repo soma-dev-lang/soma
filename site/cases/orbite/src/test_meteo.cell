@@ -1,0 +1,602 @@
+use app
+use commun::journal_chair
+use commun::horloge_chair
+use sys::meteo::chair::api
+use sys::meteo::chair::sources
+use sys::meteo::chair::mesures
+use sys::meteo::chair::previsions
+use sys::meteo::chair::tempetes
+use sys::meteo::chair::renforce
+use sys::meteo::chair::bareme
+use sys::meteo::chair::historique
+use sys::meteo::chair::incertitude
+use doublures::meteo
+
+// Le monde des tests : H = 1 700 006 400 000 ms = minuit UTC du jour 19676 ; une minute =
+// 60 000 ms, une heure = 3 600 000 ms, un jour = 86 400 000 ms.
+// Personnes (conventions de doublures/meteo.cell) : "exploitant@ORG-ORBITE",
+// "superviseur@ORG-ORBITE", "direction@ORG-ORBITE", "analyste@ORG-ORBITE",
+// "capteur@ORG-FOURN" (capteur du fournisseur des sources), "capteur@ORG-AUTRE".
+cell MondeMet {
+    on m(n: Int) { return 1700006400000 + n * 60000 }
+    on hh(n: Int) { return 1700006400000 + n * 3600000 }
+    on jj(n: Int) { return 1700006400000 + n * 86400000 }
+    // Source déclarée à H, étalonnée la veille, qualifiée à quatre yeux.
+    on source_q(id: String, nature: String, rang: Int, cad: Int) {
+        let h = Horodatage(1700006400000)
+        let _ = MetSource.declarer(h, id, MetGenreSource(nature), "ORG-FOURN", Duree(cad), rang, "exploitant@ORG-ORBITE")
+        let _ = MetSource.etalonner(h, id, Horodatage(1700006400000 - 86400000), "capteur@ORG-FOURN")
+        return MetSource.qualifier(h, id, "exploitant@ORG-ORBITE", "superviseur@ORG-ORBITE")
+    }
+    // Réseau : magnétomètres K1 (rang 1) et K2 (rang 2), radio-flux R1, centre de prévision C1.
+    on reseau() {
+        let _ = source_q("SRC-K1", "magnetometre", 1, 900000)
+        let _ = source_q("SRC-K2", "magnetometre", 2, 900000)
+        let _ = source_q("SRC-R1", "radio_flux", 1, 900000)
+        return source_q("SRC-C1", "centre_prevision", 1, 900000)
+    }
+    // Mesure kp d'époque t reçue à t (ingestion systeme).
+    on mk(t: Int, id: String, src: String, v: Int) {
+        return MetMesure.recevoir(Horodatage(t), id, src, "kp", Horodatage(t), v, "systeme")
+    }
+    on mf(t: Int, id: String, src: String, v: Int) {
+        return MetMesure.recevoir(Horodatage(t), id, src, "f107", Horodatage(t), v, "systeme")
+    }
+    on prev(h: Int, id: String, src: String, de: Int, a: Int, k: Int, f: Int) {
+        return MetPrevision.deposer(Horodatage(h), id, src, Horodatage(de), Horodatage(a), k, f, "capteur@ORG-FOURN")
+    }
+    // Barème complet : leo 100/200/400/600, autres régimes 100/100/150/200 ; `extreme_leo`
+    // permet de le rendre incohérent.
+    on remplir(v: String, extreme_leo: Int) {
+        let h = Horodatage(1700006400000)
+        let n = 0
+        for r in ["leo", "meo", "geo", "heo"] {
+            let fs = if r == "leo" { [100, 200, 400, extreme_leo] } else { [100, 100, 150, 200] }
+            let bs = ["calme", "agitee", "tempete", "extreme"]
+            for i in range(0, 4) {
+                n = MetBareme.fixer(h, v, Regime(r), MetBande(bs[i]), fs[i], "analyste@ORG-ORBITE")
+            }
+        }
+        return n
+    }
+}
+
+// ── SOURCES : déclaration, étalonnage, qualification à quatre yeux, panne, maintenance, retrait.
+cell test MetSourceCycle {
+    rules {
+        assert_fails MetSource.declarer(1700006400000, "SRC-K1", "magnetometre", "ORG-FOURN", 900000, 1, "intrus") matching "Habilitation"
+        assert_fails MetSource.declarer(1700006400000, "SRC-K1", "magnetometre", "ORG-FOURN", 900000, 1, "capteur@ORG-FOURN") matching "Habilitation"
+        assert_fails MetSource.declarer(1700006400000, "SRC-K1", "magnetometre", "ORG-RADIEE-1", 900000, 1, "exploitant@ORG-ORBITE") matching "Inconnu"
+        assert_fails MetSource.declarer(1700006400000, "SRC-K1", "magnetometre", "ORG-FOURN", 1000, 1, "exploitant@ORG-ORBITE") matching "HorsBornes"
+        assert_fails MetSource.declarer(1700006400000, "SRC-K1", "magnetometre", "ORG-FOURN", 900000, 10, "exploitant@ORG-ORBITE") matching "HorsBornes"
+        assert MetSource.declarer(1700006400000, "SRC-K1", "magnetometre", "ORG-FOURN", 900000, 1, "exploitant@ORG-ORBITE") == "declaree"
+        assert_fails MetSource.declarer(1700006400000, "SRC-K1", "magnetometre", "ORG-FOURN", 900000, 1, "exploitant@ORG-ORBITE") matching "Existe"
+        assert !MetSource.active("SRC-K1")
+        assert MetSource.actives("kp") == []
+        // Étalonnage : daté, récent, attesté par le capteur du fournisseur.
+        assert_fails MetSource.qualifier(1700006400000, "SRC-K1", "exploitant@ORG-ORBITE", "superviseur@ORG-ORBITE") matching "Perime"
+        assert_fails MetSource.etalonner(1700006400000, "SRC-K1", 1700006500000, "capteur@ORG-FOURN") matching "Incoherent"
+        assert_fails MetSource.etalonner(1700006400000, "SRC-K1", 1660000000000, "capteur@ORG-FOURN") matching "Perime"
+        assert_fails MetSource.etalonner(1700006400000, "SRC-K1", 1699920000000, "capteur@ORG-AUTRE") matching "Habilitation"
+        assert_fails MetSource.etalonner(1700006400000, "SRC-X", 1699920000000, "capteur@ORG-FOURN") matching "Inconnu"
+        assert MetSource.etalonner(1700006400000, "SRC-K1", 1699920000000, "capteur@ORG-FOURN") == 364
+        // Qualification à quatre yeux.
+        assert_fails MetSource.qualifier(1700006400000, "SRC-K1", "exploitant@ORG-ORBITE", "exploitant@ORG-ORBITE") matching "QuatreYeux"
+        assert_fails MetSource.qualifier(1700006400000, "SRC-K1", "analyste@ORG-ORBITE", "superviseur@ORG-ORBITE") matching "Habilitation"
+        assert_fails MetSource.qualifier(1700006400000, "SRC-X", "exploitant@ORG-ORBITE", "superviseur@ORG-ORBITE") matching "Inconnu"
+        assert MetSource.qualifier(1700006400000, "SRC-K1", "exploitant@ORG-ORBITE", "superviseur@ORG-ORBITE") == "active"
+        assert_fails MetSource.qualifier(1700006400000, "SRC-K1", "exploitant@ORG-ORBITE", "superviseur@ORG-ORBITE") matching "EtatInvalide"
+        assert MetSource.active("SRC-K1")
+        assert MetSource.nature("SRC-K1") == "magnetometre"
+        assert MetSource.fournisseur_de("SRC-K1") == "ORG-FOURN"
+        assert_fails MetSource.nature("SRC-X") matching "Inconnu"
+        // Dernière source active de sa grandeur : la maintenance attendra.
+        assert_fails MetSource.annoncer_maintenance(1700006400000, "SRC-K1", 1700010000000, "capteur@ORG-FOURN") matching "Insuffisant"
+        assert source_q("SRC-K0", "magnetometre", 2, 900000) == "active"
+        assert MetSource.actives("kp") == ["SRC-K1", "SRC-K0"]
+        assert MetSource.actives("f107") == []
+        assert_fails MetSource.annoncer_maintenance(1700006400000, "SRC-K1", 1700006400000, "capteur@ORG-FOURN") matching "HorsBornes"
+        assert_fails MetSource.annoncer_maintenance(1700006400000, "SRC-K1", 1700700000000, "capteur@ORG-FOURN") matching "HorsBornes"
+        assert_fails MetSource.annoncer_maintenance(1700006400000, "SRC-K1", 1700010000000, "intrus") matching "Habilitation"
+        assert MetSource.annoncer_maintenance(1700006400000, "SRC-K1", 1700013600000, "capteur@ORG-FOURN") == "en_maintenance"
+        assert MetSource.actives("kp") == ["SRC-K0"]
+        // Reprise : étalonnage postérieur au début de la maintenance exigé.
+        assert_fails MetSource.reprendre_service(1700010000000, "SRC-K1", "capteur@ORG-FOURN") matching "Perime"
+        assert MetSource.etalonner(1700010000000, "SRC-K1", 1700010000000, "capteur@ORG-FOURN") == 365
+        assert MetSource.reprendre_service(1700010000000, "SRC-K1", "capteur@ORG-FOURN") == "active"
+        // Panne déclarée, rétablissement sur un étalonnage postérieur à la panne.
+        assert_fails MetSource.declarer_panne(1700013600000, "SRC-K1", "", "capteur@ORG-FOURN") matching "MotifRequis"
+        assert_fails MetSource.declarer_panne(1700013600000, "SRC-K1", "capteur HS", "capteur@ORG-AUTRE") matching "Habilitation"
+        assert MetSource.declarer_panne(1700013600000, "SRC-K1", "capteur HS", "capteur@ORG-FOURN") == "en_panne"
+        assert_fails MetSource.declarer_panne(1700013600000, "SRC-K1", "encore", "capteur@ORG-FOURN") matching "EtatInvalide"
+        assert_fails MetSource.retablir(1700017200000, "SRC-K1", "exploitant@ORG-ORBITE", "superviseur@ORG-ORBITE") matching "Perime"
+        assert MetSource.etalonner(1700017200000, "SRC-K1", 1700017200000, "capteur@ORG-FOURN") == 365
+        assert_fails MetSource.retablir(1700017200000, "SRC-K1", "exploitant@ORG-ORBITE", "exploitant@ORG-ORBITE") matching "QuatreYeux"
+        assert_fails MetSource.retablir(1700017200000, "SRC-K1", "capteur@ORG-FOURN", "superviseur@ORG-ORBITE") matching "Habilitation"
+        assert MetSource.retablir(1700017200000, "SRC-K1", "exploitant@ORG-ORBITE", "superviseur@ORG-ORBITE") == "active"
+        assert_fails MetSource.retablir(1700017200000, "SRC-K1", "exploitant@ORG-ORBITE", "superviseur@ORG-ORBITE") matching "EtatInvalide"
+        // Retrait définitif.
+        assert_fails MetSource.retirer(1700017200000, "SRC-K1", "", "exploitant@ORG-ORBITE") matching "MotifRequis"
+        assert_fails MetSource.retirer(1700017200000, "SRC-X", "fin", "exploitant@ORG-ORBITE") matching "Inconnu"
+        assert_fails MetSource.retirer(1700017200000, "SRC-K1", "fin", "capteur@ORG-FOURN") matching "Habilitation"
+        assert MetSource.retirer(1700017200000, "SRC-K1", "contrat echu", "exploitant@ORG-ORBITE") == "retiree"
+        assert_fails MetSource.retirer(1700017200000, "SRC-K1", "contrat echu", "exploitant@ORG-ORBITE") matching "EtatInvalide"
+        assert_fails MetSource.etalonner(1700017200000, "SRC-K1", 1700017200000, "capteur@ORG-FOURN") matching "EtatInvalide"
+        assert MetSource.actives("kp") == ["SRC-K0"]
+    }
+}
+
+// ── SOURCES : le balayage met en panne sans jamais attendre (silence, maintenance dépassée,
+// étalonnage échu).
+cell test MetSourceBalayage {
+    rules {
+        let _ = source_q("SRC-K1", "magnetometre", 1, 900000)
+        let _ = source_q("SRC-K2", "magnetometre", 2, 900000)
+        let _ = source_q("SRC-R1", "radio_flux", 1, 86400000)
+        let _ = source_q("SRC-R2", "radio_flux", 2, 86400000)
+        assert_fails MetSource.balayer(m(40), "analyste@ORG-ORBITE") matching "Habilitation"
+        assert MetSource.balayer(m(40), "systeme") == 0
+        assert MetSource.noter_reception(m(40), "SRC-K2") == m(40)
+        assert_fails MetSource.noter_reception(m(40), "SRC-X") matching "Inconnu"
+        // K1 muet depuis 3 cadences (45 min) : panne ; K2 a émis à 40 min.
+        assert MetSource.balayer(m(50), "systeme") == 1
+        assert !MetSource.active("SRC-K1")
+        assert MetSource.actives("kp") == ["SRC-K2"]
+        // Maintenance de R1 jusqu'à H + 1 h, dépassée de 24 h : panne (et K2 muet).
+        assert MetSource.annoncer_maintenance(hh(0), "SRC-R1", hh(1), "capteur@ORG-FOURN") == "en_maintenance"
+        assert MetSource.balayer(hh(25), "systeme") == 1
+        assert MetSource.balayer(hh(25) + 1, "systeme") == 1
+        assert MetSource.actives("f107") == ["SRC-R2"]
+        // Étalonnage de plus de 365 j : R2 n'est plus crue, même si elle émet.
+        assert MetSource.noter_reception(jj(365), "SRC-R2") == jj(365)
+        assert MetSource.balayer(jj(365), "systeme") == 1
+        assert MetSource.actives("f107") == []
+    }
+}
+
+// ── MESURES : validation, refus physiques, rejets motivés, saut confirmé, invalidation.
+cell test MetMesureCycle {
+    rules {
+        let _ = reseau()
+        assert mk(m(10), "M-1", "SRC-K1", 30) == "validee"
+        assert_fails mk(m(10), "M-1", "SRC-K1", 30) matching "Existe"
+        assert_fails MetMesure.recevoir(m(10), "M-X", "SRC-K1", "kp", m(10), 95, "systeme") matching "HorsBornes"
+        assert_fails MetMesure.recevoir(m(10), "M-X", "SRC-R1", "f107", m(10), 20000, "systeme") matching "HorsBornes"
+        assert_fails MetMesure.recevoir(m(10), "M-X", "SRC-K1", "kp", m(10), 30, "capteur@ORG-AUTRE") matching "Habilitation"
+        assert_fails MetMesure.recevoir(m(10), "M-X", "SRC-K1", "kp", m(10), 30, "intrus") matching "Habilitation"
+        assert_fails MetMesure.recevoir(m(10), "M-X", "SRC-INCONNUE", "kp", m(10), 30, "systeme") matching "Inconnu"
+        assert MetMesure.recevoir(m(12), "M-2", "SRC-K1", "kp", m(12), 32, "capteur@ORG-FOURN") == "validee"
+        assert MetMesure.kp_courant(hh(1)) == 32
+        assert ApiMeteo.kp(hh(1)) == 32
+        assert_fails ApiMeteo.kp(m(12) + 10800001) matching "Perime"
+        assert MetMesure.derniere_de("kp", hh(1)) == "M-2"
+        assert_fails MetMesure.derniere_de("f107", hh(1)) matching "Inconnu"
+        // Rejets motivés : conservés, sans effet sur la dernière mesure.
+        assert MetMesure.recevoir(m(20), "M-N", "SRC-R1", "kp", m(20), 30, "systeme") == "rejetee"
+        assert MetMesure.recevoir(m(20), "M-F", "SRC-K2", "kp", m(30), 30, "systeme") == "rejetee"
+        assert MetMesure.recevoir(hh(30), "M-A", "SRC-K2", "kp", m(20), 30, "systeme") == "rejetee"
+        assert MetMesure.valeur_de("M-N") == 30
+        assert !MetMesure.validee("M-N")
+        // Saut de 48 dixièmes en 18 min : rejeté, puis confirmé par une autre source.
+        assert mk(m(30), "M-S1", "SRC-K1", 80) == "rejetee"
+        assert MetMesure.kp_courant(m(31)) == 32
+        assert mk(m(35), "M-S2", "SRC-K2", 78) == "validee"
+        assert MetMesure.kp_courant(m(40)) == 78
+        assert MetMesure.kp_max_entre(hh(0), hh(1)) == 78
+        // Invalidation : la précédente redevient la dernière.
+        assert_fails MetMesure.invalider(m(40), "M-S2", "derive", "intrus") matching "Habilitation"
+        assert_fails MetMesure.invalider(m(40), "M-S2", "", "analyste@ORG-ORBITE") matching "MotifRequis"
+        assert_fails MetMesure.invalider(m(40), "M-N", "derive", "analyste@ORG-ORBITE") matching "EtatInvalide"
+        assert_fails MetMesure.invalider(m(40), "M-Z", "derive", "analyste@ORG-ORBITE") matching "Inconnu"
+        assert MetMesure.invalider(m(40), "M-S2", "etalonnage faux", "analyste@ORG-ORBITE") == "invalidee"
+        assert_fails MetMesure.invalider(m(40), "M-S2", "etalonnage faux", "analyste@ORG-ORBITE") matching "EtatInvalide"
+        assert MetMesure.kp_courant(m(40)) == 32
+        assert MetMesure.kp_max_entre(hh(0), hh(1)) == 32
+        assert_fails MetMesure.kp_max_entre(hh(1), hh(0)) matching "HorsBornes"
+        assert_fails MetMesure.kp_max_entre(jj(2), jj(3)) matching "Inconnu"
+        assert MetMesure.en_vigueur_a("kp", m(15)) == "M-2"
+        assert MetMesure.en_vigueur_a("kp", m(5)) == ""
+        assert MetMesure.en_vigueur_a("kp", m(12) + 10800001) == ""
+        assert len(MetMesure.du_jour("kp", 19676)) == 2
+        assert MetMesure.du_jour("f107", 19676) == []
+        assert MetMesure.epoque_de("M-2") == m(12)
+        assert MetMesure.grandeur("M-2") == "kp"
+    }
+}
+
+// ── MESURES : au 5e rejet consécutif la source est mise en écart (panne "ecarts").
+cell test MetMesureEcarts {
+    rules {
+        let _ = reseau()
+        assert mf(m(1), "E-1", "SRC-K2", 10) == "rejetee"
+        assert mf(m(2), "E-2", "SRC-K2", 10) == "rejetee"
+        assert mf(m(3), "E-3", "SRC-K2", 10) == "rejetee"
+        assert mf(m(4), "E-4", "SRC-K2", 10) == "rejetee"
+        assert MetSource.active("SRC-K2")
+        assert mf(m(5), "E-5", "SRC-K2", 10) == "rejetee"
+        assert !MetSource.active("SRC-K2")
+        // Une source en panne voit ses envois rejetés (source_inactive), sans nouvelle panne.
+        assert mk(m(6), "E-6", "SRC-K2", 10) == "rejetee"
+        assert mf(m(7), "F-1", "SRC-R1", 1500) == "validee"
+    }
+}
+
+// ── VEILLE : l'absence de mesure devient un état explicite, et en sort à la première mesure.
+cell test MetVeilleCycle {
+    rules {
+        let _ = reseau()
+        assert_fails MetVeille.surveiller(hh(0), "analyste@ORG-ORBITE") matching "Habilitation"
+        assert MetVeille.surveiller(hh(0), "systeme") == 2
+        assert MetVeille.en_silence("kp")
+        assert MetVeille.en_silence("f107")
+        assert MetVeille.surveiller(m(1), "systeme") == 2
+        assert mk(m(2), "M-1", "SRC-K1", 20) == "validee"
+        assert !MetVeille.en_silence("kp")
+        assert MetVeille.surveiller(m(3), "systeme") == 1
+        // 3 h sans mesure kp : retour en silence.
+        assert MetVeille.surveiller(m(2) + 10800001, "systeme") == 2
+        assert MetVeille.en_silence("kp")
+        assert mk(hh(4), "M-2", "SRC-K2", 20) == "validee"
+        assert MetVeille.reprendre(hh(4), "kp") == "nominal"
+    }
+}
+
+// ── PRÉVISIONS : dépôt, remplacement, rejets, moyenne f107 pondérée, vérification, retrait.
+cell test MetPrevisionCycle {
+    rules {
+        let _ = reseau()
+        let _ = source_q("SRC-C2", "centre_prevision", 2, 900000)
+        assert_fails MetPrevision.deposer(hh(0), "P-1", "SRC-C1", hh(1), hh(7), 80, 1500, "intrus") matching "Habilitation"
+        assert_fails prev(hh(0), "P-1", "SRC-C1", hh(7), hh(1), 80, 1500) matching "Incoherent"
+        assert_fails prev(hh(0), "P-1", "SRC-C1", hh(1), hh(2), 80, 1500) matching "HorsBornes"
+        assert_fails prev(hh(0), "P-1", "SRC-C1", hh(1), hh(80), 80, 1500) matching "HorsBornes"
+        assert_fails prev(hh(0), "P-1", "SRC-C1", hh(1), hh(7), 95, 1500) matching "HorsBornes"
+        assert_fails prev(hh(0), "P-1", "SRC-X", hh(1), hh(7), 80, 1500) matching "Inconnu"
+        assert prev(hh(0), "P-1", "SRC-C1", hh(1), hh(7), 80, 1500) == "publiee"
+        assert_fails prev(hh(0), "P-1", "SRC-C1", hh(1), hh(7), 80, 1500) matching "Existe"
+        assert MetPrevision.publiee("P-1")
+        assert prev(hh(0), "P-N", "SRC-K1", hh(1), hh(7), 80, 1500) == "rejetee"
+        assert prev(hh(10), "P-0", "SRC-C1", hh(1), hh(7), 80, 1500) == "rejetee"
+        // Une prévision plus récente du même centre remplace la courante.
+        assert MetPrevision.deposer(hh(1), "P-2", "SRC-C1", hh(2), hh(8), 50, 1000, "systeme") == "publiee"
+        assert !MetPrevision.publiee("P-1")
+        assert MetPrevision.kp_attendu("P-2") == 50
+        assert MetPrevision.debut_de("P-2") == hh(2)
+        assert MetPrevision.fin_de("P-2") == hh(8)
+        assert_fails MetPrevision.kp_attendu("P-9") matching "Inconnu"
+        // f107 moyen en sfu, pondéré par le recouvrement.
+        assert MetPrevision.f107_moyen(hh(2), hh(8)) == 100
+        assert ApiMeteo.f107_prevu(hh(5), hh(11)) == 100
+        assert prev(hh(1), "P-4", "SRC-C2", hh(2), hh(5), 30, 2000) == "publiee"
+        assert MetPrevision.f107_moyen(hh(2), hh(8)) == 133
+        assert_fails MetPrevision.f107_moyen(hh(20), hh(30)) matching "Perime"
+        assert_fails MetPrevision.f107_moyen(hh(8), hh(2)) matching "Incoherent"
+        assert MetPrevision.fiabilite("SRC-C1", hh(1)) == 100
+        assert MetPrevision.pire_dans(hh(1), 86400000) == "P-2"
+        // Vérification à l'échéance : écart au kp maximal observé.
+        assert MetPrevision.echues(hh(7)) == ["P-4"]
+        assert MetPrevision.echues(hh(9)) == ["P-2", "P-4"]
+        assert_fails MetPrevision.verifier(hh(4), "P-2", "systeme") matching "EtatInvalide"
+        assert_fails MetPrevision.verifier(hh(9), "P-2", "systeme") matching "Inconnu"
+        assert_fails MetPrevision.verifier(hh(9), "P-2", "analyste@ORG-ORBITE") matching "Habilitation"
+        assert mk(hh(3), "M-1", "SRC-K1", 40) == "validee"
+        assert MetPrevision.verifier(hh(9), "P-2", "systeme") == 10
+        assert MetPrevision.verifier(hh(9), "P-4", "systeme") == 10
+        assert_fails MetPrevision.verifier(hh(9), "P-2", "systeme") matching "EtatInvalide"
+        assert MetPrevision.echues(hh(9)) == []
+        assert MetPrevision.pire_dans(hh(1), 86400000) == ""
+        // Retrait d'une prévision erronée.
+        assert prev(hh(9), "P-5", "SRC-C1", hh(10), hh(16), 60, 1200) == "publiee"
+        assert_fails MetPrevision.retirer(hh(9), "P-5", "", "analyste@ORG-ORBITE") matching "MotifRequis"
+        assert_fails MetPrevision.retirer(hh(9), "P-5", "erreur", "capteur@ORG-AUTRE") matching "Habilitation"
+        assert_fails MetPrevision.retirer(hh(9), "P-9", "erreur", "analyste@ORG-ORBITE") matching "Inconnu"
+        assert MetPrevision.retirer(hh(9), "P-5", "erreur de modele", "capteur@ORG-FOURN") == "retiree"
+        assert_fails MetPrevision.retirer(hh(9), "P-5", "erreur de modele", "analyste@ORG-ORBITE") matching "EtatInvalide"
+        assert MetPrevision.pire_dans(hh(9), 86400000) == ""
+    }
+}
+
+// ── BARÈME : rédaction, cases, adoption à quatre yeux, cohérence, abrogation, gel pendant alerte.
+cell test MetBaremeCycle {
+    rules {
+        let _ = reseau()
+        assert MetBareme.bande(49) == "calme"
+        assert MetBareme.bande(50) == "agitee"
+        assert MetBareme.bande(70) == "tempete"
+        assert MetBareme.bande(80) == "extreme"
+        assert MetBareme.facteur("leo", "tempete") == 300
+        assert MetBareme.facteur("geo", "extreme") == 150
+        assert MetBareme.en_vigueur_a(hh(0)) == "origine"
+        assert_fails MetBareme.rediger(hh(0), "B-1", "etude", "intrus") matching "Habilitation"
+        assert_fails MetBareme.rediger(hh(0), "B-1", "", "analyste@ORG-ORBITE") matching "MotifRequis"
+        assert MetBareme.rediger(hh(0), "B-1", "retour d'experience", "analyste@ORG-ORBITE") == "redige"
+        assert_fails MetBareme.rediger(hh(0), "B-1", "bis", "analyste@ORG-ORBITE") matching "Existe"
+        assert_fails MetBareme.fixer(hh(0), "B-1", "leo", "calme", 50, "analyste@ORG-ORBITE") matching "HorsBornes"
+        assert_fails MetBareme.fixer(hh(0), "B-9", "leo", "calme", 100, "analyste@ORG-ORBITE") matching "Inconnu"
+        assert_fails MetBareme.fixer(hh(0), "B-1", "leo", "calme", 100, "superviseur@ORG-ORBITE") matching "Habilitation"
+        assert MetBareme.fixer(hh(0), "B-1", "leo", "calme", 100, "analyste@ORG-ORBITE") == 1
+        assert_fails MetBareme.adopter(hh(0), "B-1", "superviseur@ORG-ORBITE", "direction@ORG-ORBITE") matching "Insuffisant"
+        assert remplir("B-1", 600) == 16
+        assert_fails MetBareme.adopter(hh(0), "B-1", "superviseur@ORG-ORBITE", "superviseur#2@ORG-ORBITE") matching "QuatreYeux"
+        assert_fails MetBareme.adopter(hh(0), "B-1", "analyste@ORG-ORBITE", "direction@ORG-ORBITE") matching "Habilitation"
+        assert_fails MetBareme.adopter(hh(0), "B-9", "superviseur@ORG-ORBITE", "direction@ORG-ORBITE") matching "Inconnu"
+        assert MetBareme.adopter(hh(0), "B-1", "superviseur@ORG-ORBITE", "direction@ORG-ORBITE") == "en_vigueur"
+        assert_fails MetBareme.adopter(hh(0), "B-1", "superviseur@ORG-ORBITE", "direction@ORG-ORBITE") matching "EtatInvalide"
+        assert_fails MetBareme.fixer(hh(0), "B-1", "leo", "calme", 100, "analyste@ORG-ORBITE") matching "EtatInvalide"
+        assert MetBareme.facteur("leo", "tempete") == 400
+        assert MetBareme.facteur_a("B-1", "leo", "extreme") == 600
+        assert MetBareme.facteur_a("origine", "leo", "tempete") == 300
+        // Version incohérente (extrême < tempête) : refusée, puis abandonnée.
+        assert MetBareme.rediger(hh(0), "B-2", "essai", "analyste@ORG-ORBITE") == "redige"
+        assert remplir("B-2", 150) == 16
+        assert_fails MetBareme.adopter(hh(1), "B-2", "superviseur@ORG-ORBITE", "direction@ORG-ORBITE") matching "Incoherent"
+        assert_fails MetBareme.abandonner(hh(1), "B-2", "", "analyste@ORG-ORBITE") matching "MotifRequis"
+        assert MetBareme.abandonner(hh(1), "B-2", "incoherent", "analyste@ORG-ORBITE") == "abandonne"
+        assert_fails MetBareme.abandonner(hh(1), "B-2", "incoherent", "analyste@ORG-ORBITE") matching "EtatInvalide"
+        // Nouvelle version : abroge B-1 ; l'historique reste lisible.
+        assert MetBareme.rediger(hh(1), "B-3", "revision", "analyste@ORG-ORBITE") == "redige"
+        assert remplir("B-3", 700) == 16
+        assert MetBareme.adopter(hh(2), "B-3", "superviseur@ORG-ORBITE", "direction@ORG-ORBITE") == "en_vigueur"
+        assert MetBareme.en_vigueur_a(hh(1)) == "B-1"
+        assert MetBareme.en_vigueur_a(hh(3)) == "B-3"
+        assert MetBareme.en_vigueur_a(hh(0) - 1) == "origine"
+        assert MetBareme.facteur("leo", "extreme") == 700
+        // Pendant une alerte ouverte, le barème est figé.
+        assert MetBareme.rediger(hh(3), "B-4", "revision", "analyste@ORG-ORBITE") == "redige"
+        assert remplir("B-4", 800) == 16
+        assert MetTempete.emettre(hh(3), "T-1", "", "analyste@ORG-ORBITE") == "T-1"
+        assert_fails MetBareme.adopter(hh(3), "B-4", "superviseur@ORG-ORBITE", "direction@ORG-ORBITE") matching "Conflit"
+        // Le renforcement a figé le facteur du barème en vigueur au déclenchement (G3, LEO).
+        assert MetRenforce.facteur_de("T-1", "leo") == 400
+        assert MetRenforce.facteur_de("T-1", "meo") == 100
+        assert_fails MetRenforce.facteur_de("T-9", "leo") matching "Inconnu"
+    }
+}
+
+// ── SCÉNARIO MÉTIER : prévision G4 → alerte annoncée → criblage renforcé et avis → confirmation
+// par mesure → montée G5 (extension) → déclin → calme 6 h → clôture, levée ; facteurs et preuve.
+cell test MetScenarioTempete {
+    rules {
+        let _ = reseau()
+        assert mk(hh(0), "M-0", "SRC-K1", 20) == "validee"
+        assert MetIncertitude.arreter(hh(0), "systeme") == 0
+        assert ApiMeteo.facteur_incertitude("leo", hh(0)) == 100
+        assert prev(m(10), "P-1", "SRC-C1", hh(2), hh(8), 80, 1500) == "publiee"
+        assert !ApiMeteo.tempete(m(10))
+        assert MetTempete.courante() == ""
+        assert_fails MetTempete.evaluer(m(20), "analyste@ORG-ORBITE") matching "Habilitation"
+        // L'alerte est émise sur la prévision (Kp 8 prévu sous 24 h).
+        assert MetTempete.evaluer(m(20), "systeme") == "annoncee"
+        let t = MetTempete.courante()
+        assert t == "T-1700007600000"
+        assert ApiMeteo.tempete(m(20))
+        assert MetTempete.echelle_de(t) == 4
+        assert ApiMeteo.renforce("leo", m(20))
+        assert ApiMeteo.renforce("meo", m(20))
+        assert !ApiMeteo.renforce("geo", m(20))
+        assert MetRenforce.facteur_de(t, "leo") == 500
+        assert MetRenforce.facteur_de(t, "geo") == 100
+        assert_fails MetTempete.emettre(m(21), "T-2", "P-1", "systeme") matching "Doublon"
+        // Avis : ORBITE, ORG-OPA, ORG-ETAT-ALD acquittent ; ORG-MUET-B se tait.
+        assert_fails MetAvis.suivre(m(21), "analyste@ORG-ORBITE") matching "Habilitation"
+        assert MetAvis.suivre(m(21), "systeme") == 1
+        assert MetAvis.silencieux(t) == []
+        assert MetAvis.suivre(m(40), "systeme") == 1
+        assert MetAvis.silencieux(t) == ["ORG-MUET-B"]
+        assert MetAvis.suivre(m(101), "systeme") == 0
+        assert MetAvis.silencieux(t) == ["ORG-MUET-B"]
+        // Facteurs : le renforcement fige LEO à 500 et MEO à 200 malgré un kp calme.
+        assert MetIncertitude.arreter(m(25), "systeme") == 2
+        assert ApiMeteo.facteur_incertitude("leo", m(26)) == 500
+        assert ApiMeteo.facteur_incertitude("meo", m(26)) == 200
+        assert ApiMeteo.facteur_incertitude("geo", m(26)) == 100
+        // Confirmation : un saut isolé est rejeté, confirmé par la seconde source.
+        assert mk(hh(2), "M-1", "SRC-K1", 75) == "rejetee"
+        assert mk(hh(2) + 60000, "M-2", "SRC-K2", 74) == "validee"
+        assert MetTempete.evaluer(hh(2) + 120000, "systeme") == "en_cours"
+        assert MetTempete.echelle_de(t) == 3
+        // Montée à Kp 9 : G5, extension à tous les régimes.
+        assert mk(hh(2) + 1800000, "M-3", "SRC-K1", 90) == "validee"
+        assert MetTempete.evaluer(hh(2) + 1860000, "systeme") == "en_cours"
+        assert MetTempete.echelle_de(t) == 5
+        assert ApiMeteo.renforce("geo", hh(3))
+        assert ApiMeteo.renforce("heo", hh(3))
+        assert MetRenforce.facteur_de(t, "geo") == 150
+        // Déclin puis calme.
+        assert mk(hh(3), "M-4", "SRC-K1", 60) == "validee"
+        assert MetTempete.evaluer(hh(3) + 60000, "systeme") == "declinante"
+        assert ApiMeteo.tempete(hh(3) + 60000)
+        assert mk(hh(4), "M-5", "SRC-K1", 40) == "validee"
+        assert MetTempete.evaluer(hh(4) + 60000, "systeme") == "declinante"
+        assert_fails MetTempete.clore(hh(5), t, "systeme") matching "Insuffisant"
+        assert_fails MetTempete.clore(hh(5), t, "intrus") matching "Habilitation"
+        assert mk(hh(10), "M-6", "SRC-K1", 30) == "validee"
+        assert MetTempete.evaluer(hh(10) + 60000, "systeme") == "aucune"
+        assert MetTempete.terminee(t)
+        assert !ApiMeteo.tempete(hh(10) + 120000)
+        assert !ApiMeteo.renforce("leo", hh(10) + 120000)
+        assert_fails MetTempete.clore(hh(11), t, "systeme") matching "EtatInvalide"
+        // Preuve : les conditions servies pendant l'alerte restent restituables.
+        assert MetTempete.ouverte_a(hh(1)) == t
+        assert MetTempete.ouverte_a(hh(11)) == ""
+        assert MetIncertitude.facteur_a("leo", m(10)) == 100
+        assert MetIncertitude.facteur_a("leo", m(30)) == 500
+        let c = MetJournee.conditions_a(hh(11), m(30), "leo", "auditeur@ORG-ORBITE")
+        assert c.kp_mesure == "M-0"
+        assert c.kp == 20
+        assert c.tempete == t
+        assert c.bareme == "origine"
+        assert c.bande == "calme"
+        assert c.facteur == 500
+        assert c.f107_mesure == ""
+        assert_fails MetJournee.conditions_a(hh(11), hh(12), "leo", "analyste@ORG-ORBITE") matching "HorsBornes"
+        assert_fails MetJournee.conditions_a(hh(11), m(30), "leo", "capteur@ORG-FOURN") matching "Habilitation"
+    }
+}
+
+// ── ANNULATION : alerte jamais confirmée ; quatre yeux avant le terme, automatique après.
+cell test MetTempeteAnnulation {
+    rules {
+        let _ = reseau()
+        assert mk(hh(0), "M-0", "SRC-K1", 20) == "validee"
+        assert prev(hh(0), "P-1", "SRC-C1", hh(2), hh(8), 75, 1500) == "publiee"
+        assert_fails MetTempete.emettre(hh(0), "T-1", "P-1", "intrus") matching "Habilitation"
+        assert_fails MetTempete.emettre(hh(0), "T-1", "P-9", "systeme") matching "Inconnu"
+        assert MetTempete.emettre(hh(0), "T-1", "P-1", "systeme") == "T-1"
+        assert_fails MetTempete.emettre(hh(0), "T-1", "P-1", "systeme") matching "Existe"
+        assert_fails MetTempete.emettre(hh(0), "T-2", "P-1", "systeme") matching "Doublon"
+        assert_fails MetTempete.confirmer(hh(0), "T-1", "M-0", "systeme") matching "Insuffisant"
+        assert_fails MetTempete.annuler(hh(9), "T-1", "echue", "systeme", "systeme") matching "Delai"
+        assert_fails MetTempete.annuler(hh(9), "T-1", "contredite", "analyste@ORG-ORBITE", "analyste#2@ORG-ORBITE") matching "QuatreYeux"
+        assert_fails MetTempete.annuler(hh(9), "T-1", "contredite", "analyste@ORG-ORBITE", "intrus") matching "QuatreYeux"
+        assert_fails MetTempete.annuler(hh(9), "T-1", "", "analyste@ORG-ORBITE", "superviseur@ORG-ORBITE") matching "MotifRequis"
+        assert_fails MetTempete.annuler(hh(9), "T-1", "contredite", "intrus", "superviseur@ORG-ORBITE") matching "Habilitation"
+        assert_fails MetTempete.annuler(hh(9), "T-9", "contredite", "analyste@ORG-ORBITE", "superviseur@ORG-ORBITE") matching "Inconnu"
+        assert MetTempete.annuler(hh(9), "T-1", "prevision contredite", "analyste@ORG-ORBITE", "superviseur@ORG-ORBITE") == "annulee"
+        assert MetTempete.annulee("T-1")
+        assert MetTempete.courante() == ""
+        assert !ApiMeteo.renforce("leo", hh(9))
+        assert_fails MetTempete.annuler(hh(9), "T-1", "bis", "analyste@ORG-ORBITE", "superviseur@ORG-ORBITE") matching "EtatInvalide"
+        // Prévision insuffisante ou retirée : pas d'alerte.
+        assert prev(hh(9), "P-2", "SRC-C1", hh(10), hh(16), 60, 1500) == "publiee"
+        assert_fails MetTempete.emettre(hh(9), "T-3", "P-2", "systeme") matching "Insuffisant"
+        assert prev(hh(9), "P-3", "SRC-C1", hh(40), hh(46), 85, 1500) == "publiee"
+        assert_fails MetTempete.emettre(hh(9), "T-3", "P-3", "systeme") matching "Insuffisant"
+        assert MetPrevision.retirer(hh(9), "P-3", "erreur", "analyste@ORG-ORBITE") == "retiree"
+        assert_fails MetTempete.emettre(hh(9), "T-3", "P-3", "systeme") matching "EtatInvalide"
+        // Annulation automatique par la ronde 6 h après la fin de fenêtre sans confirmation.
+        assert prev(hh(9), "P-4", "SRC-C1", hh(10), hh(16), 75, 1500) == "publiee"
+        assert MetTempete.evaluer(hh(9) + 60000, "systeme") == "annoncee"
+        assert MetTempete.evaluer(hh(21), "systeme") == "annoncee"
+        assert MetTempete.evaluer(hh(22) + 60000, "systeme") == "aucune"
+        assert MetTempete.annulee("T-1700038860000")
+    }
+}
+
+// ── DÉSAVEU : la mesure de confirmation est invalidée ; quatre yeux ; autre mesure ≥ Kp 7.
+cell test MetTempeteDesaveu {
+    rules {
+        let _ = reseau()
+        assert mk(hh(0), "M-0", "SRC-K1", 72) == "validee"
+        assert MetTempete.evaluer(m(1), "systeme") == "en_cours"
+        let t = MetTempete.courante()
+        assert t == "T-1700006460000"
+        assert_fails MetTempete.desavouer(m(2), t, "derive", "analyste@ORG-ORBITE", "superviseur@ORG-ORBITE") matching "EtatInvalide"
+        assert MetMesure.invalider(m(2), "M-0", "magnetometre en derive", "analyste@ORG-ORBITE") == "invalidee"
+        assert_fails MetTempete.desavouer(m(3), t, "derive", "analyste@ORG-ORBITE", "analyste#2@ORG-ORBITE") matching "QuatreYeux"
+        assert_fails MetTempete.desavouer(m(3), t, "derive", "superviseur@ORG-ORBITE", "superviseur#2@ORG-ORBITE") matching "Habilitation"
+        assert_fails MetTempete.desavouer(m(3), t, "", "analyste@ORG-ORBITE", "superviseur@ORG-ORBITE") matching "MotifRequis"
+        assert MetTempete.desavouer(m(3), t, "mesure invalidee", "analyste@ORG-ORBITE", "superviseur@ORG-ORBITE") == "annulee"
+        assert !ApiMeteo.tempete(m(3))
+        assert !ApiMeteo.renforce("leo", m(3))
+        // Seconde tempête : une autre mesure validée porte Kp ≥ 7, le désaveu est incohérent.
+        assert mk(hh(1), "M-1", "SRC-K1", 72) == "validee"
+        assert MetTempete.evaluer(hh(1) + 60000, "systeme") == "en_cours"
+        let t2 = MetTempete.courante()
+        assert mk(hh(1) + 300000, "M-2", "SRC-K2", 80) == "validee"
+        assert MetTempete.evaluer(hh(1) + 360000, "systeme") == "en_cours"
+        assert MetMesure.invalider(hh(1) + 400000, "M-1", "derive", "analyste@ORG-ORBITE") == "invalidee"
+        assert_fails MetTempete.desavouer(hh(1) + 420000, t2, "derive", "analyste@ORG-ORBITE", "superviseur@ORG-ORBITE") matching "Incoherent"
+        assert_fails MetTempete.mettre_a_jour(hh(1) + 420000, t2, "M-2", "systeme") matching "EtatInvalide"
+        assert_fails MetTempete.mettre_a_jour(hh(1) + 420000, t2, "M-2", "analyste@ORG-ORBITE") matching "Habilitation"
+    }
+}
+
+// ── FACTEUR D'INCERTITUDE : paliers arrêtés, précaution sur arrêt périmé, retard constaté.
+cell test MetIncertitudeCycle {
+    rules {
+        let _ = reseau()
+        assert ApiMeteo.facteur_incertitude("leo", hh(0)) == 300
+        assert mk(hh(0), "M-0", "SRC-K1", 60) == "validee"
+        assert_fails MetIncertitude.arreter(m(1), "analyste@ORG-ORBITE") matching "Habilitation"
+        assert MetIncertitude.arreter(m(1), "systeme") == 1
+        assert ApiMeteo.facteur_incertitude("leo", m(2)) == 150
+        assert ApiMeteo.facteur_incertitude("meo", m(2)) == 100
+        assert MetIncertitude.arreter(m(2), "systeme") == 0
+        // Plus de 30 min sans arrêt : la lecture applique la précaution sans attendre.
+        assert ApiMeteo.facteur_incertitude("leo", m(40)) == 300
+        assert ApiMeteo.facteur_incertitude("meo", m(40)) == 150
+        assert_fails MetIncertitude.constater_retard(m(40), "analyste@ORG-ORBITE") matching "Habilitation"
+        assert MetIncertitude.constater_retard(m(40), "exploitant@ORG-ORBITE") == 4
+        assert MetIncertitude.constater_retard(m(41), "systeme") == 0
+        assert ApiMeteo.facteur_incertitude("leo", m(41)) == 300
+        // Reprise sans kp frais (plus de 3 h) : bande "tempete" de précaution.
+        assert MetIncertitude.arreter(hh(4), "systeme") == 4
+        assert ApiMeteo.facteur_incertitude("geo", hh(4) + 60000) == 120
+        assert MetIncertitude.facteur_a("leo", hh(0)) == 100
+        assert MetIncertitude.facteur_a("leo", m(30)) == 150
+        assert MetIncertitude.facteur_a("leo", hh(5)) == 300
+        assert MetIncertitude.facteur_a("meo", hh(1)) == 100
+    }
+}
+
+// ── JOURNÉES : clôture, bilan, rectification, scellement, archivage, gel.
+cell test MetJourneeCycle {
+    rules {
+        let _ = reseau()
+        assert mk(hh(1), "M-1", "SRC-K1", 30) == "validee"
+        assert mk(hh(2), "M-2", "SRC-K1", 50) == "validee"
+        assert mf(hh(3), "F-1", "SRC-R1", 1500) == "validee"
+        assert_fails MetJournee.clore(jj(1) + 3600000, 19676, "systeme") matching "Delai"
+        assert_fails MetJournee.clore(jj(1) + 14400000, 19676, "analyste@ORG-ORBITE") matching "Habilitation"
+        assert contains(MetJournee.a_clore(jj(1) + 14400000), "19676")
+        assert !contains(MetJournee.a_clore(jj(1) + 3600000), "19676")
+        assert MetJournee.clore(jj(1) + 14400000, 19676, "systeme") == 50
+        assert MetJournee.bilan(19676) == "kp_max=50;kp_moyen=40;f107=1500;mesures=3;alertes=0;bareme=origine"
+        assert_fails MetJournee.clore(jj(1) + 14400000, 19676, "systeme") matching "EtatInvalide"
+        assert_fails MetJournee.bilan(19600) matching "Inconnu"
+        assert !contains(MetJournee.a_clore(jj(1) + 14400000), "19676")
+        // Mesure validée tard : la journée passe en rectification, le bilan est recalculé.
+        assert MetMesure.recevoir(jj(1) + 18000000, "M-3", "SRC-K1", "kp", hh(20), 60, "systeme") == "validee"
+        assert contains(MetJournee.a_clore(jj(1) + 21600000), "19676")
+        assert MetJournee.clore(jj(1) + 21600000, 19676, "systeme") == 60
+        assert MetJournee.bilan(19676) == "kp_max=60;kp_moyen=46;f107=1500;mesures=4;alertes=0;bareme=origine"
+        assert_fails MetJournee.rectifier(jj(1) + 21600000, 19676, "", "analyste@ORG-ORBITE") matching "MotifRequis"
+        assert_fails MetJournee.rectifier(jj(1) + 21600000, 19676, "revue", "intrus") matching "Habilitation"
+        assert MetJournee.rectifier(jj(1) + 21600000, 19677, "rien", "analyste@ORG-ORBITE") == "ouverte"
+        // Scellement à 90 j, puis archivage des mesures (toujours lisibles).
+        assert_fails MetJournee.sceller(jj(30), 19676, "systeme") matching "Delai"
+        assert_fails MetJournee.sceller(jj(30), 19000, "systeme") matching "Inconnu"
+        assert MetMesure.archiver(jj(30), 19676, "systeme") == 0
+        assert_fails MetMesure.archiver(jj(30), 19676, "analyste@ORG-ORBITE") matching "Habilitation"
+        assert MetJournee.a_sceller(jj(92)) == ["19676"]
+        assert MetJournee.sceller(jj(92), 19676, "systeme") == "scellee"
+        assert MetJournee.scellee("19676")
+        assert_fails MetJournee.sceller(jj(92), 19676, "systeme") matching "EtatInvalide"
+        assert_fails MetJournee.rectifier(jj(92), 19676, "revue", "analyste@ORG-ORBITE") matching "Ferme"
+        assert MetMesure.archiver(jj(92), 19676, "systeme") == 4
+        assert !MetMesure.validee("M-1")
+        assert MetMesure.valeur_de("M-1") == 30
+        assert MetMesure.en_vigueur_a("kp", hh(1) + 1800000) == "M-1"
+        assert len(MetMesure.du_jour("kp", 19676)) == 3
+        // Journée sous gel (dossier de preuve) : rien n'est archivé.
+        assert mk(jj(4) + 3600000, "M-G", "SRC-K1", 20) == "validee"
+        assert MetJournee.clore(jj(5) + 14400000, 19680, "systeme") == 20
+        assert MetJournee.sceller(jj(96), 19680, "systeme") == "scellee"
+        assert MetMesure.archiver(jj(96), 19680, "systeme") == 0
+        assert MetMesure.validee("M-G")
+    }
+}
+
+// ── RONDE : seul point d'entrée du temps ; une alerte naît d'une mesure au fil de la ronde.
+cell test MetRondeBalayage {
+    rules {
+        let _ = reseau()
+        assert_fails ApiMeteo.balayer(hh(0), "analyste@ORG-ORBITE") matching "Habilitation"
+        assert_fails ApiMeteo.balayer(hh(0), "intrus") matching "Habilitation"
+        // Aucun kp : facteurs en précaution (4 régimes) ; trois journées passées closes.
+        assert ApiMeteo.balayer(hh(0), "systeme") == 7
+        assert MetVeille.en_silence("kp")
+        assert ApiMeteo.facteur_incertitude("leo", m(1)) == 300
+        assert mk(m(1), "M-1", "SRC-K1", 75) == "validee"
+        assert !MetVeille.en_silence("kp")
+        assert ApiMeteo.balayer(m(2), "systeme") >= 1
+        assert ApiMeteo.tempete(m(2))
+        assert ApiMeteo.renforce("leo", m(2))
+        assert MetTempete.courante() == "T-1700006520000"
+        // Sources muettes : mises en panne par la ronde, jamais attendues.
+        assert ApiMeteo.balayer(hh(1), "systeme") >= 4
+        assert MetSource.actives("kp") == []
+        assert ApiMeteo.tempete(hh(1))
+    }
+}

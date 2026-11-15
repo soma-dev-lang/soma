@@ -1,0 +1,33 @@
+// lancements — corps de la façade ApiLancements : délégation aux cells internes.
+
+flesh ApiLancements {
+    on notifier(h, lancement, op, etat, debut, fin, regime, nb_objets, par) {
+        return LancLancement.notifier(h, lancement, op, etat, debut, fin, regime, nb_objets, par)
+    }
+
+    on etat(lancement) {
+        return to_string(LancLancement.etat(lancement))
+    }
+
+    on objets(lancement) {
+        return LancPiece.objets_du_lancement(lancement)
+    }
+
+    on origine(objet) {
+        return LancPiece.origine(objet)
+    }
+
+    on injecte_le(objet) {
+        let l = LancPiece.origine(objet)
+        if l == "" { return 0 }
+        return LancLancement.injecte_le(l)
+    }
+
+    on etats_de_lancement(objet) {
+        return LancPiece.etats_de_lancement(objet)
+    }
+
+    on balayer(h, par) {
+        return LancVeille.balayer(h, par)
+    }
+}

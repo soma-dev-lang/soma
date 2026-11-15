@@ -1,0 +1,21 @@
+// meteo — corps de la façade ApiMeteo : délégation pure aux cells internes.
+flesh ApiMeteo {
+    on tempete(h) {
+        return MetTempete.en_vue(h)
+    }
+    on facteur_incertitude(regime, h) {
+        return MetIncertitude.facteur(regime, h)
+    }
+    on kp(h) {
+        return to_int(MetMesure.kp_courant(h))
+    }
+    on renforce(regime, h) {
+        return MetRenforce.renforce(regime)
+    }
+    on f107_prevu(debut, fin) {
+        return MetPrevision.f107_moyen(debut, fin)
+    }
+    on balayer(h, par) {
+        return MetRonde.balayer(h, par)
+    }
+}

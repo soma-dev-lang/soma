@@ -1,0 +1,70 @@
+// escalade — VEILLE DES ALERTES. Le filet de la propriété 5 : chaque rapprochement non clos de
+// niveau 3 dont le TCA tombe dans HORIZON_VEILLE_MS (ApiConjonctions.urgents) est armé ici d'office
+// par la ronde, et suivi jusqu'à ce que la coordination ait statué (ApiCoordination.decidee) ou
+// qu'il soit clos, même si personne n'appelle ApiEscalade.escalader. La ronde ouvre d'office un
+// dossier contre chaque organisation muette (ApiCoordination.muets : partie qui n'a pas répondu
+// au tour courant avant l'échéance) sans dossier actif ; et, si la coordination n'est toujours pas
+// ouverte à moins de SEUIL_SANS_COORDINATION_MS de l'échéance finale, contre chaque propriétaire
+// d'un objet en cause capable de manœuvrer.
+
+// Veilles : id = rapprochement. Écrite une fois par armer (un rapprochement, une veille).
+skeleton EscVeille {
+    const MAX_VEILLES = 1000000
+    // Horizon d'armement d'office : rapprochements de niveau 3 dont le TCA est à moins de 7 jours.
+    const HORIZON_VEILLE_MS = 604800000
+    // Coordination jamais ouverte à moins de 24 h de l'échéance finale : escalade d'office.
+    const SEUIL_SANS_COORDINATION_MS = 86400000
+    memory {
+        armee_a: Map<String, Horodatage> [persistent]      // rapprochement → instant d'armement (ms) ; écrit une fois par armer
+        armee_par: Map<String, String> [persistent]        // rapprochement → "systeme" ou analyste qui l'a armée
+        derniere_ronde: Map<String, Horodatage> [persistent] // rapprochement → dernier examen par ronde (ms)
+        couverte_a: Map<String, Horodatage> [persistent]   // rapprochement → instant où la décision a été constatée
+        invariant armee_a.size <= MAX_VEILLES
+        invariant armee_par.size <= MAX_VEILLES
+        invariant derniere_ronde.size <= MAX_VEILLES
+        invariant couverte_a.size <= MAX_VEILLES
+        invariant (armee_a ?? 0) <= (derniere_ronde ?? 0)
+    }
+    // Cycle de vie d'une veille (id = rapprochement).
+    state veille {
+        initial: inactive
+        inactive -> surveillee        // armer (d'office par la ronde sur ApiConjonctions.urgents, ou par EscDossiers.ouvrir / un analyste)
+        surveillee -> couverte        // ronde : ApiCoordination.decidee(r) (désignation ou décision de ne pas manœuvrer)
+        couverte -> surveillee        // ronde : coordination rouverte (ApiCoordination.decidee redevenu faux)
+        surveillee -> close           // ronde : rapprochement resolu, passe ou collision
+        couverte -> close             // ronde : rapprochement resolu, passe ou collision
+    }
+    face {
+        // Arme la veille d'un rapprochement (idempotent : renvoie l'état courant s'il est déjà
+        // armé). Appelée par la ronde, par EscDossiers.ouvrir, et par un analyste (rapprochement de
+        // niveau 2 jugé à risque). Renvoie "surveillee" ou l'état courant. Rôle exigé : "systeme" ou
+        // "analyste" d'ORBITE. Refus : Inconnu (rapprochement), Ferme (resolu, passe, collision),
+        // Habilitation, Plein.
+        signal armer(h: Horodatage, r: Rapprochement, par: String) -> String
+            writes armee_a, armee_par, derniere_ronde
+            moves inactive -> surveillee
+            calls ApiAcces.a_le_role, ApiConjonctions.etat, Journal.noter
+        // Ronde, appelée par EscBalayage.balayer : (1) arme les ApiConjonctions.urgents(h,
+        // HORIZON_VEILLE_MS, 3) pas encore armés ; (2) pour chaque veille non close : close si le
+        // rapprochement est clos, couverte / surveillee selon ApiCoordination.decidee ; (3) pour une
+        // veille surveillee, ouvre (EscDossiers.ouvrir, par "systeme", motif "silence constate par
+        // la veille") un dossier contre chaque Org de ApiCoordination.muets(r) sans dossier actif
+        // (EscDossiers.dossier_actif) ; si ApiCoordination.etat(r) == "inconnue" à moins de
+        // SEUIL_SANS_COORDINATION_MS de l'échéance finale, contre chaque propriétaire
+        // (ApiRef.proprietaire) d'un objet en cause que ApiRef.peut_manoeuvrer accepte.
+        // Renvoie le nombre de veilles armées, changées d'état ou de dossiers ouverts.
+        signal ronde(h: Horodatage) -> Int
+            ensures result >= 0
+            writes derniere_ronde, couverte_a
+            moves surveillee -> couverte, couverte -> surveillee, surveillee -> close, couverte -> close
+            calls armer, ApiConjonctions.urgents, ApiConjonctions.etat, ApiConjonctions.objets, ApiRef.proprietaire, ApiRef.peut_manoeuvrer, ApiCoordination.decidee, ApiCoordination.muets, ApiCoordination.etat, EscBareme.echeance_finale, EscDossiers.dossier_actif, EscDossiers.ouvrir, Journal.noter
+        // Vrai si la veille du rapprochement est "couverte" (la coordination a statué).
+        signal couverte(r: Rapprochement) -> Bool
+            reads veille
+        // Veilles non closes, "r | état | armée | par | dernière ronde | couverte". Rôle exigé :
+        // "analyste", "superviseur", "direction" d'ORBITE. Refus : Habilitation.
+        signal veilles(par: String) -> List<String>
+            reads armee_a, armee_par, derniere_ronde, couverte_a, veille
+            calls ApiAcces.a_le_role
+    }
+}

@@ -1,0 +1,92 @@
+// PASSERELLE — limites de débit (seaux à jetons par organisation et par classe) et bridage
+// des organisations qui inondent l'API. La classe "urgence" n'est jamais comptée ni bridée.
+
+// État de bridage d'une organisation.
+cell type PasEtatBridage = String where value == "libre" || value == "surveille" || value == "bride" || value == "bloque"
+
+// Seaux à jetons : instance = "org|classe" (ou "p:<personne>|session" pour l'ouverture de session, avant tout jeton).
+skeleton PasDebit {
+    const DEBIT_DEFAUT = 60            // requêtes par minute, par organisation et par classe
+    const RAFALE_DEFAUT = 300
+    const MAX_DEBIT = 6000
+    const FENETRE = 60000              // ms : période de recharge
+    const MAX_SEAUX = 200000
+    memory {
+        debit_de: Map<String, Int> [persistent]     // quota "org|classe" fixé par l'exploitant
+        invariant debit_de >= 1 && debit_de <= 6000
+        rafale_de: Map<String, Int> [persistent]
+        invariant rafale_de >= 1 && rafale_de <= 30000
+        invariant (debit_de ?? 1) <= (rafale_de ?? 30000)
+        jetons_de: Map<String, Int> [persistent]    // jetons restants du seau
+        invariant jetons_de >= 0 && jetons_de <= 30000
+        recharge_le: Map<String, Horodatage> [persistent]
+        invariant jetons_de.size <= 200000
+    }
+    face {
+        // Fixe le quota d'une organisation pour une classe (débit par minute, rafale).
+        // Renvoie le débit retenu. Habilitation : "exploitant" d'ORBITE ; quatre yeux pour un
+        // débit > 10 × DEBIT_DEFAUT. Refus : Inconnu (organisation), HorsBornes (debit hors
+        // 1..MAX_DEBIT, rafale < debit), Incoherent (classe "urgence" : jamais limitée),
+        // Habilitation, QuatreYeux.
+        signal fixer(h: Horodatage, org: Org, classe: PasClasse, debit: Int, rafale: Int, par: String, valideur: String) -> Int
+            requires debit >= 1 && debit <= 6000 && rafale >= 1 && rafale <= 30000
+            writes debit_de, rafale_de
+            calls ApiRef.organisation_existe, ApiAcces.a_le_role, ApiAcces.quatre_yeux, Journal.noter
+        // Prend un jeton du seau "cle|classe" (cle = org ou "p:<personne>") après recharge proportionnelle au temps écoulé
+        // depuis recharge_le (débit par FENETRE, plafonné à la rafale). Vrai si un jeton a été
+        // pris ; faux : 429. La classe "urgence" rend toujours vrai sans rien compter.
+        signal consommer(h: Horodatage, cle: String, classe: PasClasse) -> Bool
+            reads debit_de, rafale_de
+            writes jetons_de, recharge_le
+        // Quota en vigueur : [debit, rafale].
+        signal quota(org: Org, classe: PasClasse) -> List<Int>
+            reads debit_de, rafale_de
+    }
+}
+
+// Bridage réactif d'une organisation, instance = Org. Chaque refus 429 est un dépassement ;
+// 10 dépassements dans une FENETRE font monter d'un cran. "bloque" coupe tout sauf les classes
+// "session" et "urgence". Réactif : revient à "libre".
+skeleton PasBridage {
+    const SEUIL = 10                   // dépassements par fenêtre pour monter d'un cran
+    const FENETRE = 300000             // 5 min en ms
+    memory {
+        depassements_de: Map<Org, Int> [persistent]
+        invariant depassements_de >= 0 && depassements_de <= 10
+        fenetre_de: Map<Org, Horodatage> [persistent]   // début de la fenêtre de comptage
+        dernier_cran_le: Map<Org, Horodatage> [persistent]
+    }
+    state bridage {
+        initial: libre
+        libre -> surveille          // constater : SEUIL dépassements dans la fenêtre
+        surveille -> bride          // constater : débit de l'organisation divisé par 4
+        bride -> bloque             // constater : l'organisation est notifiée (urgence 2)
+        surveille -> libre          // apaiser : une FENETRE sans dépassement
+        bride -> libre              // apaiser : deux FENETRE sans dépassement
+        bloque -> libre             // lever : à la main, quatre yeux
+    }
+    face {
+        // Compte un dépassement de l'organisation ; au SEUIL, monte d'un cran (au passage à
+        // "bloque" : ApiConformite.constater, gravité 1, et notification). Renvoie l'état atteint.
+        signal constater(h: Horodatage, org: Org) -> PasEtatBridage
+            writes depassements_de, fenetre_de, dernier_cran_le
+            moves libre -> surveille, surveille -> bride, bride -> bloque
+            calls PasMessages.mettre_en_file, ApiConformite.constater, Journal.noter
+        // Redescend à "libre" les organisations surveillées ou bridées sans dépassement depuis
+        // FENETRE (surveille) ou 2 × FENETRE (bride) ; au plus n. Renvoie leur nombre.
+        signal apaiser(h: Horodatage, n: Int) -> Int
+            requires n > 0 && n <= 1000
+            reads dernier_cran_le
+            writes depassements_de, fenetre_de
+            moves surveille -> libre, bride -> libre
+        // bloque -> libre. Renvoie "libre". Habilitation : "exploitant" d'ORBITE ; quatre yeux.
+        // Refus : EtatInvalide, MotifRequis, Habilitation, QuatreYeux.
+        signal lever(h: Horodatage, org: Org, motif: String, par: String, valideur: String) -> PasEtatBridage
+            writes depassements_de, fenetre_de
+            moves bloque -> libre
+            calls ApiAcces.a_le_role, ApiAcces.quatre_yeux, Journal.noter
+        // État de bridage courant ("libre" pour une organisation jamais vue).
+        signal etat(org: Org) -> PasEtatBridage
+            reads bridage
+    }
+}

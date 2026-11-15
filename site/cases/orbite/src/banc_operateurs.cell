@@ -1,0 +1,11 @@
+use app
+use commun::journal_chair
+use commun::horloge_chair
+use sys::operateurs::chair::api
+use sys::operateurs::chair::adhesion
+use sys::operateurs::chair::licences
+use sys::operateurs::chair::engagements
+use sys::operateurs::chair::astreinte
+use sys::operateurs::chair::joignabilite
+use sys::operateurs::chair::changements
+use sys::operateurs::chair::contacts

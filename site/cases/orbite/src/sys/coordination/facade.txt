@@ -1,0 +1,13 @@
+ApiCoordination.ouvrir: calls CoordDossier.ouvrir ; moves CoordDossier.coordination: ouverte -> proposee, ouverte -> arbitrage
+ApiCoordination.repondre: calls CoordDossier.repondre ; moves CoordDossier.coordination: proposee -> accord, proposee -> desaccord, desaccord -> accord, desaccord -> arbitrage, accord -> arretee, accord -> arbitrage, CoordVerrou.verrou: libre -> tenu
+ApiCoordination.designe: calls CoordVerrou.designe
+ApiCoordination.arretee: calls CoordVerrou.arretee
+ApiCoordination.arbitrer: calls CoordDossier.arbitrer ; moves CoordDossier.coordination: proposee -> arbitrage, desaccord -> arbitrage, arbitrage -> arretee, CoordVerrou.verrou: libre -> tenu
+ApiCoordination.rouvrir: calls CoordDossier.rouvrir ; moves CoordVerrou.verrou: tenu -> libre, CoordDossier.coordination: arretee -> liberee, liberee -> rouverte, rouverte -> proposee, rouverte -> arbitrage
+ApiCoordination.echeance: calls CoordDossier.echeance
+ApiCoordination.etat: calls CoordDossier.etat
+ApiCoordination.decidee: calls CoordVerrou.decidee
+ApiCoordination.muets: calls CoordReponse.muets
+ApiCoordination.decision: calls CoordVerrou.decision, CoordDecision.resume
+ApiCoordination.en_attente_de: calls CoordReponse.en_attente_de
+ApiCoordination.balayer: calls CoordDossier.balayer

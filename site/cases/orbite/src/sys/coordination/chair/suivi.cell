@@ -1,0 +1,122 @@
+// Corps de CoordSuivi : l'exécution d'une décision arrêtée, jusqu'à la vérification ou la défaillance.
+flesh CoordSuivi {
+    on ouvrir(h, d, r, objet) {
+        require rapprochement_de.get(d) == () else Existe "suivi déjà ouvert : {d}"
+        require rapprochement_de.size < MAX_SUIVIS else Plein "plafond de {MAX_SUIVIS} suivis atteint"
+        let lim = CoordDossier.limite(r)
+        rapprochement_de.set(d, r)
+        objet_de.set(d, objet)
+        limite_de.set(d, lim)
+        constate_le.set(d, h)
+        if objet == "" {
+            transition(d, "attente_plan", "sans_objet")
+            return "sans_objet"
+        }
+        return "attente_plan"
+    }
+    on suivre(h, d, par) {
+        require ApiAcces.a_le_role(par, "systeme") || ApiAcces.a_le_role(par, "analyste") else Habilitation "{par} ne suit pas les décisions"
+        require rapprochement_de.get(d) != () else Inconnu "suivi inconnu : {d}"
+        let r = rapprochement_de.get(d) ?? ""
+        let obj = objet_de.get(d) ?? ""
+        let lim = limite_de.get(d) ?? 0
+        let st = get_status(d) ?? "attente_plan"
+        constate_le.set(d, h)
+        if st == "attente_plan" {
+            let plan_r = ApiManoeuvres.plan_de(r)
+            if plan_r != "" {
+                let motif_p = ApiManoeuvres.motif_de(plan_r)
+                let objet_p = ApiManoeuvres.objet_de(plan_r)
+                if motif_p == "evitement" && objet_p == obj {
+                    transition(d, "attente_plan", "plan_depose")
+                    if plan_de.get(d) == () { plan_de.set(d, plan_r) }
+                    st = "plan_depose"
+                } else {
+                    let _ = Journal.noter(h, "coordination", "systeme", "suivi {d} : plan {plan_r} ignoré (objet {objet_p}, motif {motif_p}, désigné {obj})")
+                }
+            }
+            if st == "attente_plan" {
+                if h > lim { return _defaillir(h, d, r, obj, "attente_plan", "aucun plan d'évitement à l'heure limite") }
+                return "attente_plan"
+            }
+        }
+        if st == "plan_depose" {
+            let plan_r = plan_de.get(d) ?? ""
+            let e = ApiManoeuvres.etat(plan_r)
+            if e == "execute" || e == "verifie" {
+                transition(d, "plan_depose", "execute")
+                st = "execute"
+            } else if e == "rejete" || e == "annule" || e == "anomalie" {
+                return _defaillir(h, d, r, obj, "plan_depose", "plan {plan_r} {e}")
+            } else if h > lim && e != "approuve" {
+                return _defaillir(h, d, r, obj, "plan_depose", "plan {plan_r} non approuvé à l'heure limite ({e})")
+            } else {
+                return "plan_depose"
+            }
+        }
+        if st == "execute" {
+            let plan_r = plan_de.get(d) ?? ""
+            let e = ApiManoeuvres.etat(plan_r)
+            if e == "verifie" {
+                transition(d, "execute", "verifie")
+                let _ = Journal.noter(h, "coordination", "systeme", "suivi {d} : manœuvre {plan_r} vérifiée")
+                return "verifie"
+            }
+            if e == "anomalie" {
+                transition(d, "execute", "anomalie")
+                let _ = Journal.noter(h, "coordination", "systeme", "suivi {d} : manœuvre {plan_r} exécutée hors plan, rouverture")
+                let rv = try { CoordDossier.rouvrir(h, r, "manoeuvre {plan_r} executee hors plan", "systeme") }
+                if rv.error != () {
+                    let _ = Journal.noter(h, "coordination", "systeme", "suivi {d} : rouverture impossible ({rv.kind})")
+                }
+                return "anomalie"
+            }
+            return "execute"
+        }
+        return st
+    }
+    on rendre_caduc(h, d) {
+        require rapprochement_de.get(d) != () else Inconnu "suivi inconnu : {d}"
+        let st = get_status(d) ?? "attente_plan"
+        if st == "attente_plan" {
+            transition(d, "attente_plan", "caduc")
+            constate_le.set(d, h)
+            return "caduc"
+        }
+        if st == "plan_depose" {
+            transition(d, "plan_depose", "caduc")
+            constate_le.set(d, h)
+            return "caduc"
+        }
+        return st
+    }
+    on plan(d) {
+        return plan_de.get(d) ?? ""
+    }
+    on etat(d) {
+        if rapprochement_de.get(d) == () { return "inconnu" }
+        return get_status(d) ?? "attente_plan"
+    }
+    // Défaillance du désigné : escalade de son propriétaire, manquement, rouverture si le TCA n'est pas passé.
+    on _defaillir(h: Horodatage, d: String, r: Rapprochement, obj: Objet, depuis: String, raison: String) {
+        if depuis == "attente_plan" {
+            transition(d, "attente_plan", "defaillant")
+        } else {
+            transition(d, "plan_depose", "defaillant")
+        }
+        let prop = try { ApiRef.proprietaire(obj) }
+        if prop.error == () && prop.value != "inconnu" {
+            let _ = try { ApiEscalade.escalader(h, r, prop.value, "designe defaillant : {raison}", "systeme") }
+            let _ = try { ApiConformite.constater(h, prop.value, "designe_defaillant", 3, d, "systeme") }
+        }
+        let _ = try { CoordEchange.notifier(h, r, "note", "désigné {obj} défaillant : {raison}") }
+        let _ = Journal.noter(h, "coordination", "systeme", "suivi {d} : désigné {obj} défaillant — {raison}")
+        if h < ApiConjonctions.tca(r) {
+            let rv = try { CoordDossier.rouvrir(h, r, "designe {obj} defaillant", "systeme") }
+            if rv.error != () {
+                let _ = Journal.noter(h, "coordination", "systeme", "suivi {d} : rouverture impossible ({rv.kind})")
+            }
+        }
+        return "defaillant"
+    }
+}

@@ -1,0 +1,110 @@
+// ephemerides — HISTORIQUE, PREUVE ET DIFFUSION.
+// Propriété 6 : une décision (désignation, approbation de manœuvre, arbitrage) est traçable
+// jusqu'au dépôt qui la fondait. ORBITE garde, pour chaque objet, la suite de ses dépôts avec
+// les instants où chacun a été courant : fondement(objet, h) rend le dépôt sur lequel
+// reposait toute décision prise à l'instant h. Un dépôt cité comme preuve est RETENU
+// (EphRetention) et ne peut être archivé tant qu'il l'est. Ses données ne sont communiquées
+// qu'aux organisations autorisées (ApiDonnees.peut_recevoir), et chaque communication est
+// tracée (ApiDonnees.tracer).
+
+skeleton EphHistorique {
+    const MAX_OBJETS = 2000000
+    // Dépôts gardés par objet ; au-delà, purger archive d'abord les plus anciens.
+    const MAX_PAR_OBJET = 5000
+
+    memory {
+        historique_de: Map<Objet, List<String>> [persistent]   // objet → ses dépôts, du plus ancien au plus récent
+        purge_le: Map<Objet, Horodatage> [persistent]          // objet → dernière purge, ms
+        nb_archives: Map<Objet, Int> [persistent]              // objet → dépôts archivés
+        invariant historique_de.size <= MAX_OBJETS
+        invariant len(historique_de) <= MAX_PAR_OBJET
+        invariant nb_archives >= 0
+    }
+
+    face {
+        // Ajoute un dépôt à l'historique de son objet (appelé par EphDepot.creer seulement).
+        // Renvoie la taille de l'historique. Refus : Plein (MAX_PAR_OBJET : purger d'abord).
+        signal noter_depot(h: Horodatage, objet: Objet, depot: String) -> Int
+            writes historique_de
+
+        // Les `n` derniers dépôts de l'objet, du plus ancien au plus récent, tous états.
+        signal historique(objet: Objet, n: Int) -> List<String>
+            requires n > 0 && n <= 5000
+            reads historique_de
+
+        // Façade `fondement` : le dépôt qui était courant pour l'objet à l'instant `h` (valide_depuis ≤ h < fin_de,
+        // ou fin_de = 0) ; "" si aucun : une décision prise à `h` sur cet objet ne reposait sur
+        // aucune éphéméride du propriétaire (orbite d'observation seulement).
+        signal fondement(objet: Objet, h: Horodatage) -> String
+            reads historique_de
+            calls EphDepot.valide_depuis, EphDepot.fin_de
+
+        // Communique la fiche d'un dépôt (EphDepot.fiche) à l'organisation `org`, dans le cadre
+        // du rapprochement `r` ("" si hors rapprochement). `par` doit agir pour `org`
+        // (ApiAcces.agit_pour, toute personne active de l'organisation) ou être un "analyste",
+        // "conformite" ou "auditeur" d'ORBITE. L'organisation doit pouvoir recevoir les données de
+        // l'objet (ApiDonnees.peut_recevoir), et la communication est tracée
+        // (ApiDonnees.tracer, nature "ephemeride"). Renvoie la fiche.
+        // Refus : Inconnu (dépôt), Confidentiel, Habilitation, Plein (trace).
+        signal consulter(h: Horodatage, depot: String, org: Org, r: Rapprochement, par: String) -> String
+            calls EphDepot.fiche, EphDepot.objet_du_depot, ApiDonnees.peut_recevoir, ApiDonnees.tracer, ApiAcces.agit_pour, ApiAcces.a_le_role, Journal.noter
+
+        // Archive, au plus `n`, les dépôts clos (rejetee, remplacee, perimee, invalidee) dont la
+        // fin remonte à plus de EphReglage.duree_conservation, dont la rétention est libre, dont
+        // l'objet n'a aucun rapprochement ouvert (ApiConjonctions.ouverts_de) et n'est pas sous
+        // gel (ApiResponsabilite.sous_gel("OBJ-…"), ni le dépôt lui-même) ; les plus
+        // anciens d'abord, et d'office au-delà de MAX_PAR_OBJET − 100 dépôts. Le dépôt courant
+        // n'est jamais archivé. Par "systeme" ou "exploitant". Renvoie le nombre archivé.
+        // Refus : Habilitation, Ferme (aucun réglage).
+        signal purger(h: Horodatage, n: Int, par: String) -> Int
+            requires n > 0 && n <= 100000
+            writes historique_de, purge_le, nb_archives
+            calls EphDepot.archiver, EphDepot.etat_de, EphDepot.fin_de, EphDepot.fiche, EphRetention.est_retenu, EphReglage.duree_conservation, ApiConjonctions.ouverts_de, ApiResponsabilite.sous_gel, ApiAcces.a_le_role, Journal.noter
+    }
+}
+
+// Rétention d'un dépôt comme preuve (id = dépôt). Réactive : "libre" ⇄ "retenu".
+// Un dépôt retenu ne peut pas être archivé (règle EphDepot * -> archivee when EphRetention.libre).
+skeleton EphRetention {
+    const MAX_RETENUS = 1000000
+    const MAX_MOTIFS = 100
+
+    memory {
+        motifs: Map<String, List<String>> [persistent]       // dépôt → "r|evenement|par|h" de chaque rétention en cours
+        retenu_le: Map<String, Horodatage> [persistent]      // dépôt → première rétention en cours, ms
+        invariant motifs.size <= MAX_RETENUS
+        invariant len(motifs) <= MAX_MOTIFS
+    }
+
+    state retention {
+        initial: libre
+        libre -> retenu      // retenir
+        retenu -> libre      // liberer : plus aucun motif, aucun gel
+    }
+
+    face {
+        // Retient un dépôt comme preuve d'une décision sur le rapprochement `r` (ou d'un
+        // évènement : dossier de preuve, enquête) ; plusieurs motifs se cumulent. Par "conformite"
+        // ou "analyste" d'ORBITE, ou "systeme" (fondement d'une désignation arrêtée). Renvoie le
+        // nombre de motifs en cours. Refus : Inconnu (dépôt), EtatInvalide (dépôt archivé),
+        // MotifRequis, Plein, Habilitation.
+        signal retenir(h: Horodatage, depot: String, r: Rapprochement, motif: String, par: String) -> Int
+            writes motifs, retenu_le
+            moves libre -> retenu
+            calls EphDepot.etat_de, ApiAcces.a_le_role, Journal.noter
+
+        // Retire un motif de rétention ; quand il n'en reste aucun, le dépôt redevient "libre".
+        // Un motif dont le rapprochement est sous gel (ApiResponsabilite.sous_gel(r)) ne se retire
+        // pas. Par "conformite" d'ORBITE, valideur "direction" (ApiAcces.quatre_yeux).
+        // Renvoie le nombre de motifs restants.
+        // Refus : Inconnu, EtatInvalide (pas retenu), Conflit (sous gel), Habilitation, QuatreYeux.
+        signal liberer(h: Horodatage, depot: String, r: Rapprochement, par: String, valideur: String) -> Int
+            writes motifs, retenu_le
+            moves retenu -> libre
+            calls ApiResponsabilite.sous_gel, ApiAcces.a_le_role, ApiAcces.quatre_yeux, Journal.noter
+
+        // Vrai si le dépôt est retenu.
+        signal est_retenu(depot: String) -> Bool
+            reads retention
+    }
+}

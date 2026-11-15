@@ -1,0 +1,500 @@
+// Corps de manoeuvres : plans de manœuvre (ManPlan).
+flesh ManPlan {
+    on declarer(h, plan, objet, r, motif, debut, dv, par) {
+        require verrou_de.get(plan) == () else Existe "plan {plan} déjà déclaré"
+        let proprio = ApiRef.proprietaire(objet)
+        require ApiAcces.a_le_role(par, "dynamicien") && ApiAcces.agit_pour(par, proprio) else Habilitation "{par} n'est pas dynamicien de {proprio}"
+        require dv > 0 else HorsBornes "delta-v nul"
+        require ApiRef.peut_manoeuvrer(objet) else NonEligible "objet {objet} incapable de manœuvrer"
+        require ApiOperateurs.est_actif(proprio, h) else Suspendu "opérateur {proprio} non actif"
+        require ApiEphemerides.fraiche(objet, h) else Perime "éphéméride de {objet} non fraîche"
+        require debut >= h + PREAVIS_DECLARATION_MS else Delai "fenêtre trop proche : préavis de {PREAVIS_DECLARATION_MS} ms"
+        let prop = ApiRef.propulsion(objet)
+        let fin = if prop == "faible" { debut + FENETRE_FAIBLE_MS } else { debut + FENETRE_IMPULSIONNELLE_MS }
+        let evit = motif == "evitement"
+        let lst_evit = []
+        if evit {
+            require r != "" else Incoherent "un évitement est lié à un rapprochement"
+            let etat_r = ApiConjonctions.etat(r)
+            require etat_r != "inconnu" else Inconnu "rapprochement {r} inconnu"
+            require etat_r != "resolu" && etat_r != "passe" && etat_r != "collision" else EtatInvalide "rapprochement {r} clos ({etat_r})"
+            let objs = ApiConjonctions.objets(r)
+            require contains(objs, objet) else Incoherent "{objet} n'est pas en cause dans {r}"
+            require ApiCoordination.arretee(r) else Conflit "coordination de {r} non arrêtée"
+            require ApiCoordination.designe(r, "systeme") == objet else Conflit "{objet} n'est pas le désigné de {r}"
+            let tca_r = ApiConjonctions.tca(r)
+            // ApiPriorites.preavis = délai minimal entre la DÉCISION et le TCA (façade des priorités) :
+            // le plan est déclaré au plus tard à la limite d'action (TCA − préavis, celle de la
+            // coordination) ; la poussée elle-même peut être tardive (une demi-orbite avant le TCA).
+            require to_int(h) + to_int(ApiPriorites.preavis(prop)) <= to_int(tca_r) else Delai "plan déclaré après la limite d'action de {r} (TCA − préavis)"
+            require to_int(debut) < to_int(tca_r) else Delai "fenêtre ouverte après le TCA de {r}"
+            if ApiRef.habite(objet) {
+                for o in objs {
+                    if o != to_string(objet) {
+                        require !ApiRef.peut_manoeuvrer(Objet(o)) else NonEligible "objet habité : l'autre objet {o} peut manœuvrer"
+                    }
+                }
+            }
+            lst_evit = evitements_de.get(r) ?? []
+            require len(lst_evit) < MAX_PLANS_PAR_RAPPROCHEMENT else Plein "trop de plans pour {r}"
+        } else {
+            require r == "" else Incoherent "seul un évitement est lié à un rapprochement"
+        }
+        let autre = ManFenetre.chevauche(objet, debut, fin)
+        require autre == "" else Conflit "fenêtre en conflit avec le plan {autre}"
+        let lst_actifs = actifs_de.get(objet) ?? []
+        require len(lst_actifs) < MAX_ACTIFS_PAR_OBJET else Plein "trop de plans actifs pour {objet}"
+        let lst_tous = tous_de.get(objet) ?? []
+        require len(lst_tous) < MAX_PLANS_PAR_OBJET else Plein "trop de plans pour {objet}"
+        require fiche_de.size < MAX_PLANS else Plein "registre des plans plein"
+        if motif == "maintien" {
+            ManProgramme.rattacher(plan, objet, dv)
+        }
+        ManFenetre.reserver(h, plan, objet, debut, fin)
+        fiche_de.set(plan, ManFichePlan { objet: objet, r: r, motif: motif, debut: debut, fin: fin, dv: dv, proprietaire: proprio, declarant: par, declare_le: h })
+        let verrou = if evit { r } else { "P:" + plan }
+        verrou_de.set(plan, verrou)
+        objet_de.set(plan, objet)
+        proprietaire_de.set(plan, proprio)
+        actifs_de.set(objet, lst_actifs ++ [plan])
+        tous_de.set(objet, lst_tous ++ [plan])
+        if evit {
+            evitements_de.set(r, lst_evit ++ [plan])
+        }
+        ManIndicateurs.compter(h, proprio, "declare")
+        Journal.noter(h, "manoeuvres", par, "plan {plan} déclaré ({motif}) sur {objet}, fenêtre {debut}-{fin}, dv {dv}")
+        return plan
+    }
+
+    on statuer(h, plan, par) {
+        require ApiAcces.a_le_role(par, "systeme") else Habilitation "statuer est un traitement interne"
+        let f = fiche_de.get(plan)
+        require f != () else Inconnu "plan {plan} inconnu"
+        let s = get_status(plan) ?? "declare"
+        require s == "declare" else EtatInvalide "plan {plan} déjà statué ({s})"
+        let c = ManCriblage.etat(plan)
+        require c != "demande" else EtatInvalide "plan {plan} pas encore criblé"
+        if c == "sur" {
+            transition(plan, "declare", "crible")
+            Journal.noter(h, "manoeuvres", par, "plan {plan} criblé sûr")
+            return "crible"
+        }
+        let cause = if c == "a_risque" { "criblage_risque" } else { "criblage_impossible" }
+        transition(plan, "declare", "rejete")
+        cause_rejet_de.set(plan, ManCauseRejet(cause))
+        ManFenetre.liberer(h, plan)
+        _oter_actif(f.objet, plan)
+        ManIndicateurs.compter(h, f.proprietaire, "rejete")
+        Journal.noter(h, "manoeuvres", par, "plan {plan} rejeté : {cause}")
+        return "rejete"
+    }
+
+    on approuver(h, plan, par) {
+        require ApiAcces.a_le_role(par, "systeme") || ApiAcces.a_le_role(par, "analyste") else Habilitation "approbation par systeme ou analyste d'ORBITE"
+        let f = fiche_de.get(plan)
+        require f != () else Inconnu "plan {plan} inconnu"
+        let s = get_status(plan) ?? "declare"
+        require s == "crible" else EtatInvalide "plan {plan} non criblé ({s})"
+        let objet = objet_de.get(plan) ?? f.objet
+        let proprio = proprietaire_de.get(plan) ?? f.proprietaire
+        let verrou = verrou_de.get(plan) ?? ("P:" + plan)
+        let evit = f.motif == "evitement"
+        let cf = ManCriblage.fiche(plan)
+        // Contrôles de la propriété 4 et des règles entre sous-systèmes, tous AVANT la première transition.
+        let cause = ""
+        let detail = ""
+        if h - cf.crible_le > VALIDITE_CRIBLAGE_MS || ApiConjonctions.criblage_plan(plan) != "sur" {
+            cause = "criblage_perime"
+            detail = "criblage du plan trop ancien ou non sûr"
+        }
+        if cause == "" {
+            let r_der = try { ApiEphemerides.derniere(objet) }
+            let meme = r_der.error == () && r_der.value == cf.depot
+            if !ApiEphemerides.fraiche(objet, h) || !meme {
+                cause = "ephemeride_perimee"
+                detail = "éphéméride non fraîche ou différente du dépôt criblé"
+            } else if !(ApiEphemerides.depot_valide(cf.depot) && ApiEphemerides.avec_manoeuvres(cf.depot)) {
+                cause = "ephemeride_perimee"
+                detail = "dépôt criblé invalide ou sans la poussée"
+            }
+        }
+        if cause == "" && !ApiOperateurs.est_actif(proprio, h) {
+            cause = "operateur_suspendu"
+            detail = "opérateur {proprio} non actif"
+        }
+        if cause == "" && !(ApiRef.peut_manoeuvrer(objet) && ApiRef.etat_objet(objet) == "en_service") {
+            cause = "objet_incapable"
+            detail = "objet {objet} incapable ou hors service"
+        }
+        if cause == "" && evit {
+            if !(ApiCoordination.arretee(Rapprochement(verrou)) && ApiCoordination.designe(f.r, "systeme") == objet) {
+                cause = "designation_changee"
+                detail = "{objet} n'est plus le désigné arrêté de {f.r}"
+            }
+        }
+        if cause == "" && f.motif == "desorbitation" {
+            if ApiReentrees.a_risque(objet) && !ApiReentrees.controlee_approuvee(objet) {
+                cause = "objet_incapable"
+                detail = "désorbitation à risque sans rentrée contrôlée approuvée"
+            }
+        }
+        if cause != "" {
+            return rejeter(h, plan, cause, detail, "systeme")
+        }
+        require fondement_de.get(plan) == () else EtatInvalide "fondement de {plan} déjà écrit"
+        require approuves.size < MAX_APPROUVES else Plein "trop de plans approuvés"
+        transition(plan, "crible", "recoupe")
+        if evit {
+            transition(plan, "recoupe", "coordonne")
+            transition(plan, "coordonne", "habilite")
+        } else {
+            transition(plan, "recoupe", "habilite")
+        }
+        transition(plan, "habilite", "localise")
+        transition(plan, "localise", "capable")
+        let r_eng = try { ManEvitement.engager(h, verrou, plan) }
+        if r_eng.error != () {
+            if r_eng.kind == "Ferme" {
+                fail("Conflit", "une manœuvre a déjà été exécutée pour {verrou}")
+            }
+            fail(r_eng)
+        }
+        transition(plan, "capable", "approuve")
+        let designe_o = if evit { ApiCoordination.designe(f.r, "systeme") } else { "" }
+        let pc_r = if evit { ApiConjonctions.pc(f.r) } else { 0 }
+        let niv_r = if evit { ApiConjonctions.niveau(f.r) } else { 1 }
+        fondement_de.set(plan, ManFondement { approuve_le: h, approuve_par: par, depot: cf.depot, age_ephemeride: ApiEphemerides.age(objet, h), qualite: ApiEphemerides.qualite(objet), conflits: cf.conflits, crible_le: cf.crible_le, version_regles: ApiPriorites.version_en_vigueur(h), designe: designe_o, pc: pc_r, niveau: niv_r, statut_operateur: ApiOperateurs.statut(proprio) })
+        approuves.push(plan)
+        ManAvis.emettre(h, plan, "approbation")
+        ManIndicateurs.compter(h, proprio, "approuve")
+        Journal.noter(h, "manoeuvres", par, "plan {plan} approuvé (verrou {verrou}, dépôt {cf.depot})")
+        return "approuve"
+    }
+
+    on rejeter(h, plan, cause, motif, par) {
+        require ApiAcces.a_le_role(par, "systeme") || ApiAcces.a_le_role(par, "analyste") else Habilitation "rejet par systeme ou analyste d'ORBITE"
+        let f = fiche_de.get(plan)
+        require f != () else Inconnu "plan {plan} inconnu"
+        let s = get_status(plan) ?? "declare"
+        require s == "crible" else EtatInvalide "plan {plan} non criblé ({s})"
+        require (cause != "refus_analyste") || motif != "" else MotifRequis "un refus d'analyste est motivé"
+        transition(plan, "crible", "rejete")
+        cause_rejet_de.set(plan, ManCauseRejet(cause))
+        if motif != "" {
+            motif_annulation_de.set(plan, motif)
+        }
+        ManFenetre.liberer(h, plan)
+        _oter_actif(f.objet, plan)
+        ManIndicateurs.compter(h, f.proprietaire, "rejete")
+        Journal.noter(h, "manoeuvres", par, "plan {plan} rejeté : {cause} {motif}")
+        return "rejete"
+    }
+
+    on confirmer(h, plan, reel, dv, par) {
+        let f = fiche_de.get(plan)
+        require f != () else Inconnu "plan {plan} inconnu"
+        let proprio = ApiRef.proprietaire(f.objet)
+        require ApiAcces.a_le_role(par, "dynamicien") && ApiAcces.agit_pour(par, proprio) else Habilitation "{par} n'est pas dynamicien de {proprio}"
+        let s = get_status(plan) ?? "declare"
+        require s == "approuve" else EtatInvalide "plan {plan} non approuvé ({s})"
+        require reel >= f.debut && reel <= f.fin else Incoherent "poussée hors de la fenêtre {f.debut}-{f.fin}"
+        let ecart = abs(dv - f.dv)
+        require ecart * 100 <= ECART_DV_POURCENT * f.dv else Incoherent "delta-v réalisé {dv} à plus de {ECART_DV_POURCENT} % du plan ({f.dv})"
+        let fs = ManFenetre.etat(plan)
+        if fs == "reservee" {
+            require h >= f.debut else EtatInvalide "fenêtre de {plan} pas encore ouverte"
+            ManFenetre.ouvrir(h, plan)
+        } else {
+            require fs == "ouverte" else EtatInvalide "fenêtre de {plan} {fs}"
+        }
+        transition(plan, "approuve", "execute")
+        ManFenetre.consommer(h, plan)
+        let verrou = verrou_de.get(plan) ?? ("P:" + plan)
+        ManEvitement.solder(h, verrou, plan, "executee")
+        reel_de.set(plan, reel)
+        dv_reel_de.set(plan, dv)
+        confirme_par.set(plan, par)
+        _oter_approuve(plan)
+        let prio = if f.motif == "evitement" { 3 } else { 2 }
+        ManVerification.programmer(h, plan, f.objet, reel, Niveau(prio))
+        ManAvis.emettre(h, plan, "execution")
+        ManIndicateurs.compter(h, f.proprietaire, "execute")
+        Journal.noter(h, "manoeuvres", par, "plan {plan} exécuté à {reel}, dv {dv}")
+        return "execute"
+    }
+
+    on declarer_echec(h, plan, propulsion_perdue, motif, par) {
+        let f = fiche_de.get(plan)
+        require f != () else Inconnu "plan {plan} inconnu"
+        let proprio = ApiRef.proprietaire(f.objet)
+        require (ApiAcces.a_le_role(par, "dynamicien") || ApiAcces.a_le_role(par, "chef_de_mission")) && ApiAcces.agit_pour(par, proprio) else Habilitation "{par} n'agit pas pour {proprio}"
+        require motif != "" else MotifRequis "échec sans motif"
+        let s = get_status(plan) ?? "declare"
+        require s == "approuve" else EtatInvalide "plan {plan} non approuvé ({s})"
+        transition(plan, "approuve", "anomalie")
+        motif_annulation_de.set(plan, motif)
+        _oter_approuve(plan)
+        _oter_actif(f.objet, plan)
+        ManFenetre.liberer(h, plan)
+        ManEvitement.liberer(h, verrou_de.get(plan) ?? ("P:" + plan), plan, "echec_execution")
+        ManAnomalie.ouvrir(h, plan, "echec_execution", motif, par)
+        if propulsion_perdue {
+            ApiRef.declarer_propulsion(h, f.objet, "aucune", motif, par)
+        }
+        ManAvis.emettre(h, plan, "anomalie")
+        ManIndicateurs.compter(h, f.proprietaire, "anomalie")
+        Journal.noter(h, "manoeuvres", par, "plan {plan} en échec : {motif}")
+        return "anomalie"
+    }
+
+    on annuler(h, plan, cause, motif, par) {
+        let f = fiche_de.get(plan)
+        require f != () else Inconnu "plan {plan} inconnu"
+        if cause == "proprietaire" {
+            let proprio = ApiRef.proprietaire(f.objet)
+            require (ApiAcces.a_le_role(par, "dynamicien") || ApiAcces.a_le_role(par, "chef_de_mission")) && ApiAcces.agit_pour(par, proprio) else Habilitation "{par} n'agit pas pour {proprio}"
+        } else {
+            require ApiAcces.a_le_role(par, "analyste") || ApiAcces.a_le_role(par, "systeme") else Habilitation "annulation {cause} réservée à ORBITE"
+        }
+        require motif != "" else MotifRequis "annulation sans motif"
+        let s = get_status(plan) ?? "declare"
+        require s == "declare" || s == "crible" || s == "approuve" else EtatInvalide "plan {plan} {s} : plus annulable"
+        transition(plan, s, "annule")
+        cause_annulation_de.set(plan, cause)
+        motif_annulation_de.set(plan, motif)
+        ManFenetre.liberer(h, plan)
+        _oter_actif(f.objet, plan)
+        if s == "approuve" {
+            _oter_approuve(plan)
+            ManEvitement.liberer(h, verrou_de.get(plan) ?? ("P:" + plan), plan, to_string(cause))
+            ManAvis.emettre(h, plan, "annulation")
+            if f.motif == "evitement" {
+                if ApiCoordination.arretee(f.r) && ApiCoordination.designe(f.r, "systeme") == f.objet {
+                    ApiCoordination.rouvrir(h, f.r, "plan {plan} annulé : {motif}", "systeme")
+                }
+            }
+        }
+        ManIndicateurs.compter(h, f.proprietaire, "annule")
+        Journal.noter(h, "manoeuvres", par, "plan {plan} annulé ({cause}) : {motif}")
+        return "annule"
+    }
+
+    on retirer(h, plan, motif, par) {
+        require ApiAcces.a_le_role(par, "systeme") else Habilitation "retrait réservé à la coordination (systeme)"
+        let f = fiche_de.get(plan)
+        require f != () else Inconnu "plan {plan} inconnu"
+        require motif != "" else MotifRequis "retrait sans motif"
+        let s = get_status(plan) ?? "declare"
+        require s == "declare" || s == "crible" || s == "approuve" else EtatInvalide "plan {plan} {s} : plus retirable"
+        transition(plan, s, "annule")
+        cause_annulation_de.set(plan, "designation_retiree")
+        motif_annulation_de.set(plan, motif)
+        ManFenetre.liberer(h, plan)
+        _oter_actif(f.objet, plan)
+        if s == "approuve" {
+            _oter_approuve(plan)
+            ManEvitement.liberer(h, verrou_de.get(plan) ?? ("P:" + plan), plan, "designation_retiree")
+            ManAvis.emettre(h, plan, "annulation")
+        }
+        ManIndicateurs.compter(h, f.proprietaire, "annule")
+        Journal.noter(h, "manoeuvres", par, "plan {plan} retiré par la coordination : {motif}")
+        return "annule"
+    }
+
+    on constater_echeance(h, plan, par) {
+        require ApiAcces.a_le_role(par, "systeme") else Habilitation "constat d'échéance interne"
+        let f = fiche_de.get(plan)
+        require f != () else Inconnu "plan {plan} inconnu"
+        let s = get_status(plan) ?? "declare"
+        require s == "approuve" else EtatInvalide "plan {plan} non approuvé ({s})"
+        let fs = ManFenetre.etat(plan)
+        require fs == "echue" else EtatInvalide "fenêtre de {plan} non échue ({fs})"
+        let evit = f.motif == "evitement"
+        let niv = 1
+        if evit {
+            let r_niv = try { ApiConjonctions.niveau(f.r) }
+            if r_niv.error == () { niv = r_niv.value }
+        }
+        let gravite = if evit && niv == 3 { 3 } else { 2 }
+        let verrou = verrou_de.get(plan) ?? ("P:" + plan)
+        _oter_approuve(plan)
+        _oter_actif(f.objet, plan)
+        let atteint = "annule"
+        if ApiObservation.manoeuvre_detectee(f.objet, f.debut) {
+            transition(plan, "approuve", "anomalie")
+            atteint = "anomalie"
+            ManEvitement.solder(h, verrou, plan, "executee")
+            ManAnomalie.ouvrir(h, plan, "non_confirmee", "poussée observée jamais confirmée", "systeme")
+            ManAvis.emettre(h, plan, "anomalie")
+            ManIndicateurs.compter(h, f.proprietaire, "anomalie")
+            ApiConformite.constater(h, f.proprietaire, "manoeuvre_non_confirmee", Gravite(gravite), plan, "systeme")
+        } else {
+            transition(plan, "approuve", "annule")
+            cause_annulation_de.set(plan, "fenetre_echue")
+            ManEvitement.liberer(h, verrou, plan, "fenetre_echue")
+            ManAvis.emettre(h, plan, "annulation")
+            if evit && ApiCoordination.arretee(f.r) {
+                ApiCoordination.rouvrir(h, f.r, "fenêtre du plan {plan} échue sans manœuvre", "systeme")
+            }
+            ManIndicateurs.compter(h, f.proprietaire, "fenetre_echue")
+            ManIndicateurs.compter(h, f.proprietaire, "annule")
+            ApiConformite.constater(h, f.proprietaire, "fenetre_echue", Gravite(gravite), plan, "systeme")
+        }
+        Journal.noter(h, "manoeuvres", par, "plan {plan} : fenêtre échue, {atteint}")
+        return atteint
+    }
+
+    on clore(h, plan, par) {
+        require ApiAcces.a_le_role(par, "systeme") else Habilitation "clôture interne"
+        let f = fiche_de.get(plan)
+        require f != () else Inconnu "plan {plan} inconnu"
+        let s = get_status(plan) ?? "declare"
+        require s == "execute" else EtatInvalide "plan {plan} non exécuté ({s})"
+        let v = ManVerification.etat(plan)
+        require v != "attendue" else EtatInvalide "vérification de {plan} encore attendue"
+        _oter_actif(f.objet, plan)
+        if v == "conforme" {
+            transition(plan, "execute", "verifie")
+            if f.motif == "evitement" {
+                let r_res = try { ApiConjonctions.resoudre(h, f.r, "manoeuvre_verifiee", "systeme") }
+                if r_res.error != () {
+                    Journal.noter(h, "manoeuvres", "systeme", "plan {plan} : résolution de {f.r} refusée ({r_res.kind})")
+                }
+            }
+            if f.motif == "transfert" {
+                let per = ApiObservation.perigee(f.objet)
+                let apo = ApiObservation.apogee(f.objet)
+                let reg = _regime(to_int(per), to_int(apo))
+                let r_reg = try { ApiRef.changer_regime(h, f.objet, reg, "systeme") }
+                if r_reg.error != () {
+                    Journal.noter(h, "manoeuvres", "systeme", "plan {plan} : changement de régime refusé ({r_reg.kind})")
+                }
+            }
+            ManIndicateurs.compter(h, f.proprietaire, "verifie")
+            Journal.noter(h, "manoeuvres", par, "plan {plan} vérifié conforme")
+            return "verifie"
+        }
+        transition(plan, "execute", "anomalie")
+        let nature = if v == "ecart" { "ecart" } else { "non_observee" }
+        ManAnomalie.ouvrir(h, plan, ManNatureAnomalie(nature), "vérification : {v}", "systeme")
+        ManIndicateurs.compter(h, f.proprietaire, "anomalie")
+        Journal.noter(h, "manoeuvres", par, "plan {plan} en anomalie : {nature}")
+        return "anomalie"
+    }
+
+    on reexaminer(h, plan, par) {
+        require ApiAcces.a_le_role(par, "systeme") || ApiAcces.a_le_role(par, "analyste") else Habilitation "réexamen par systeme ou analyste"
+        let f = fiche_de.get(plan)
+        require f != () else Inconnu "plan {plan} inconnu"
+        let s = get_status(plan) ?? "declare"
+        if s != "crible" && s != "approuve" { return "" }
+        let cause = ""
+        if !ApiRef.peut_manoeuvrer(f.objet) {
+            cause = "objet_incapable"
+        } else if !ApiOperateurs.est_actif(f.proprietaire, h) {
+            cause = "operateur_suspendu"
+        } else if f.motif == "evitement" {
+            if !(ApiCoordination.arretee(f.r) && ApiCoordination.designe(f.r, "systeme") == f.objet) {
+                cause = "designation_retiree"
+            }
+        }
+        if cause != "" {
+            annuler(h, plan, cause, "réexamen : {cause}", "systeme")
+            return cause
+        }
+        if h < f.debut {
+            let r_cf = try { ManCriblage.fiche(plan) }
+            if r_cf.error == () && h - r_cf.value.crible_le > VALIDITE_CRIBLAGE_MS {
+                let r_rc = try { ManCriblage.recribler(h, plan, "systeme") }
+                if r_rc.error != () || r_rc.value > 0 {
+                    annuler(h, plan, "recriblage", "recriblage avant fenêtre : risque ou éphéméride périmée", "systeme")
+                    return "recriblage"
+                }
+            }
+        }
+        return ""
+    }
+
+    on etat(plan) {
+        if fiche_de.get(plan) == () { return "inconnu" }
+        return get_status(plan) ?? "declare"
+    }
+
+    on fiche(plan) {
+        let f = fiche_de.get(plan)
+        require f != () else Inconnu "plan {plan} inconnu"
+        return f
+    }
+
+    on fondement(plan) {
+        let fo = fondement_de.get(plan)
+        require fo != () else Inconnu "plan {plan} jamais approuvé"
+        return fo
+    }
+
+    on actif(objet) {
+        for p in actifs_de.get(objet) ?? [] {
+            let s = get_status(p) ?? "declare"
+            if s == "approuve" || s == "execute" { return true }
+        }
+        return false
+    }
+
+    on plan_de(r) {
+        let lst_r = evitements_de.get(r) ?? []
+        let k = len(lst_r)
+        for i in range(k - 1, -1, -1) {
+            let p = lst_r[i]
+            let s = get_status(p) ?? "declare"
+            if s != "annule" && s != "rejete" { return p }
+        }
+        return ""
+    }
+
+    on plans_de(objet, depuis) {
+        let res_p = []
+        for p in tous_de.get(objet) ?? [] {
+            let f = fiche_de.get(p)
+            if f != () && f.declare_le >= depuis && len(res_p) < 1000 {
+                res_p.push(p)
+            }
+        }
+        return res_p
+    }
+
+    on plan_couvrant(objet, instant) {
+        // 21 600 000 ms = ManFenetre.DELAI_CONFIRMATION_MS (constante d'une autre cell : recopiée).
+        let lst_t = tous_de.get(objet) ?? []
+        let k = len(lst_t)
+        for i in range(k - 1, -1, -1) {
+            let p = lst_t[i]
+            let s = get_status(p) ?? "declare"
+            if s == "approuve" || s == "execute" || s == "verifie" || s == "anomalie" {
+                let f = fiche_de.get(p)
+                if f != () && instant >= f.debut && instant <= f.fin + 21600000 { return p }
+            }
+        }
+        return ""
+    }
+
+    on approuves_en_cours() {
+        return approuves.filter(p => true)
+    }
+
+    on _oter_actif(objet: Objet, plan: String) {
+        let lst_a = actifs_de.get(objet) ?? []
+        actifs_de.set(objet, lst_a.filter(p => p != plan))
+    }
+
+    on _oter_approuve(plan: String) {
+        let i = index_of(approuves, plan)
+        if i >= 0 { approuves.delete(i) }
+    }
+
+    on _regime(per: Int, apo: Int) {
+        if apo <= 2000000 { return "leo" }
+        if per >= 35000000 && apo <= 37000000 { return "geo" }
+        if apo - per > 10000000 { return "heo" }
+        return "meo"
+    }
+}

@@ -1,0 +1,124 @@
+// ephemerides — SUIVI PAR OBJET : le dépôt courant de chaque objet et sa fraîcheur.
+// C'est ici que se lisent les réponses de la façade (fraiche, derniere, qualite, age) que
+// coordination, manœuvres et conjonctions consultent avant toute décision (propriété 4 :
+// aucune manœuvre approuvée sur une éphéméride périmée).
+// Fraîcheur : un dépôt validé est frais à `h` si h − époque ≤ EphReglage.age_max(régime de
+// l'objet, ApiMeteo.tempete(h)) — leo 8 h, meo 24 h, geo et heo 48 h, divisés par 2 en
+// tempête. Elle est CALCULÉE à chaque lecture (jamais un état en retard) ; l'état "perime" de
+// la machine, posé par le balayage, sert aux relances et au constat des manquements.
+
+skeleton EphSuivi {
+    const MAX_OBJETS = 2000000
+    // Délai (ms, 1 h) entre deux relances d'un propriétaire dont l'objet est périmé et en
+    // rapprochement ouvert.
+    const RELANCE = 3600000
+
+    memory {
+        courant: Map<Objet, String> [persistent]          // objet → dépôt validé courant ; absent si aucun ou invalidé
+        epoque_courante: Map<Objet, Horodatage> [persistent]  // objet → époque du dépôt courant, ms
+        qualite_courante: Map<Objet, Qualite> [persistent]    // objet → qualité retenue du dépôt courant
+        pris_le: Map<Objet, Horodatage> [persistent]      // objet → instant où le dépôt courant a été pris, ms
+        perime_le: Map<Objet, Horodatage> [persistent]    // objet → instant où le balayage l'a constaté périmé, ms
+        relance_le: Map<Objet, Horodatage> [persistent]   // objet → dernière relance du propriétaire, ms
+        nb_relances: Map<Objet, Int> [persistent]         // objet → relances depuis la dernière prise de dépôt
+        clos_motif: Map<Objet, String> [persistent]       // objet → état final de l'objet dans ref à la clôture
+        invariant courant.size <= MAX_OBJETS
+        invariant pris_le.size <= MAX_OBJETS
+        invariant nb_relances >= 0 && nb_relances <= 10000
+        // Un dépôt n'est pris qu'une fois son époque passée.
+        invariant (epoque_courante ?? 0) <= (pris_le ?? 0)
+    }
+
+    // Situation d'un objet du point de vue des éphémérides (id = objet).
+    state suivi {
+        initial: sans_donnee
+        sans_donnee -> a_jour    // prendre : premier dépôt validé
+        a_jour -> perime         // balayer : âge au-delà du maximum
+        perime -> a_jour         // prendre : nouveau dépôt validé
+        a_jour -> invalide       // perdre : dépôt courant invalidé
+        perime -> invalide       // perdre
+        invalide -> a_jour       // prendre
+        sans_donnee -> clos      // clore : objet rentré, fragmenté ou retiré
+        a_jour -> clos           // clore
+        perime -> clos           // clore
+        invalide -> clos         // clore
+    }
+
+    face {
+        // Fait du dépôt `depot` (validé) le dépôt courant de l'objet : courant, époque, qualité
+        // (lus dans EphDepot), relances remises à zéro. Appelé par EphDepot.valider et
+        // EphDepot.rehabiliter seulement. Renvoie l'état atteint ("a_jour").
+        // Refus : EtatInvalide (objet "clos"), Incoherent (époque > h).
+        signal prendre(h: Horodatage, objet: Objet, depot: String) -> String
+            writes courant, epoque_courante, qualite_courante, pris_le, nb_relances
+            moves sans_donnee -> a_jour, perime -> a_jour, invalide -> a_jour
+            calls EphDepot.epoque_de, EphDepot.qualite_de
+
+        // Retire le dépôt courant de l'objet après invalidation (EphDepot.invalider_depuis).
+        // Renvoie "invalide". Refus : Inconnu, EtatInvalide (sans dépôt, ou clos).
+        signal perdre(h: Horodatage, objet: Objet) -> String
+            writes courant, qualite_courante
+            moves a_jour -> invalide, perime -> invalide
+
+        // Clôt le suivi d'un objet dont ApiRef.etat_objet est "rentre", "fragmente" ou "retire" :
+        // aucun dépôt ne sera plus validé (EphControle.examiner : "objet_clos"). Par "systeme"
+        // ou "analyste" d'ORBITE. Renvoie "clos".
+        // Refus : Inconnu, EtatInvalide (objet encore en orbite dans ref, ou déjà clos), Habilitation.
+        signal clore(h: Horodatage, objet: Objet, par: String) -> String
+            writes clos_motif
+            moves sans_donnee -> clos, a_jour -> clos, perime -> clos, invalide -> clos
+            calls ApiRef.etat_objet, ApiAcces.a_le_role, Journal.noter
+
+        // Balayage de fraîcheur, au plus `n` objets "a_jour" dont l'âge à `h` dépasse l'âge
+        // maximal (tempête comprise) : chacun passe "perime" avec son dépôt (EphDepot.perimer).
+        // Puis, pour chaque objet "perime" ou "invalide" ayant un rapprochement ouvert
+        // (ApiConjonctions.ouverts_de) et non relancé depuis RELANCE : relance du propriétaire
+        // (ApiPasserelle.notifier, r = le rapprochement de plus haut niveau, urgence = son niveau) ; si un rapprochement
+        // est de niveau 3, manquement "ephemeride_perimee" constaté (ApiConformite.constater,
+        // gravité 3) et suivi renforcé demandé à l'observation (ApiObservation.demander_suivi),
+        // pour que le criblage dispose d'une orbite indépendante. Par "systeme" ou "exploitant".
+        // Renvoie le nombre d'objets passés "perime".
+        // Refus : Habilitation.
+        signal balayer(h: Horodatage, n: Int, par: String) -> Int
+            requires n > 0 && n <= 100000
+            writes perime_le, relance_le, nb_relances
+            reads courant, epoque_courante
+            moves a_jour -> perime
+            calls fraiche, EphDepot.perimer, EphBilan.compter, ApiRef.proprietaire, ApiConjonctions.ouverts_de, ApiConjonctions.niveau, ApiPasserelle.notifier, ApiConformite.constater, ApiObservation.demander_suivi, ApiAcces.a_le_role, Journal.noter
+
+        // Ronde complète du sous-système, cible de la façade `balayer` (appelée par Horloge.battre
+        // avec le `h` d'ORBITE ; aucun signal d'ephemerides ne lit l'horloge). Dans l'ordre :
+        // EphTempete.surveiller(h, 1000) (entrée en tempête : balayage aux âges divisés et appels
+        // à redéposer), balayer(h, 10000), EphControle.tourner(h, 1 h, 1000),
+        // EphContestation.classer(h, 1000), EphHistorique.purger(h, 10000), tous par "systeme".
+        // Par "systeme" seulement. Renvoie le nombre d'objets dont la situation a changé
+        // (passés "perime", ou "invalide" par les contrôles).
+        // Refus : Habilitation.
+        signal ronde(h: Horodatage, par: String) -> Int
+            calls balayer, EphTempete.surveiller, EphControle.tourner, EphContestation.classer, EphHistorique.purger, ApiAcces.a_le_role
+
+        // Façade `fraiche` : vrai si l'objet a un dépôt courant (état "a_jour" ou "perime" non
+        // encore balayé) dont l'âge à `h` ≤ EphReglage.age_max(ApiRef.regime(objet),
+        // ApiMeteo.tempete(h)). Faux si aucun dépôt, invalidé, clos, ou aucun réglage en vigueur.
+        signal fraiche(objet: Objet, h: Horodatage) -> Bool
+            reads courant, epoque_courante, suivi
+            calls EphReglage.age_max, ApiRef.regime, ApiMeteo.tempete
+
+        // Façade `derniere` : le dépôt validé courant. Refus : Inconnu (aucun, ou invalidé).
+        signal derniere(objet: Objet) -> String
+            reads courant
+
+        // Façade `qualite` : qualité retenue du dépôt courant ; "faible" si aucun.
+        signal qualite(objet: Objet) -> Qualite
+            reads qualite_courante, courant
+
+        // Façade `age` : h − époque du dépôt courant, ms (0 si époque > h).
+        // Refus : Inconnu (aucun dépôt courant).
+        signal age(objet: Objet, h: Horodatage) -> Duree
+            reads epoque_courante, courant
+
+        // Situation de l'objet : "sans_donnee", "a_jour", "perime", "invalide", "clos".
+        signal situation(objet: Objet) -> String
+            reads suivi
+    }
+}

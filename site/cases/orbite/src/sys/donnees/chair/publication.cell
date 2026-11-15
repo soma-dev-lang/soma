@@ -1,0 +1,150 @@
+// donnees — corps : publications publiques (catalogue ouvert, rapprochements clos anonymisés).
+
+flesh DonPublications {
+    on preparer(h, publication, g, regime, debut, fin, par) {
+        require ApiAcces.a_le_role(par, "analyste") else Habilitation "préparer une publication : analyste d'ORBITE"
+        require genre_de.get(publication) == () else Existe "publication {publication} existe"
+        require genre_de.size < MAX_PUBLICATIONS else Plein "trop de publications"
+        let v = DonAccords.en_vigueur()
+        require v != "" else Ferme "aucune version de l'accord en vigueur"
+        let reg = to_string(regime)
+        let lignes_p = []
+        let cites = []
+        let ecartes = 0
+        if g == "catalogue" {
+            let apres = ""
+            let encore = true
+            while encore {
+                let page = ApiRef.catalogue(reg, apres, 1000)
+                for o in page {
+                    if DonControle.diffusion_effective(Objet(o)) == "public" {
+                        require len(lignes_p) < MAX_ENTREES else Plein "plus de {MAX_ENTREES} lignes : restreindre le régime"
+                        let nat = ApiRef.nature(Objet(o))
+                        let rg = ApiRef.regime(Objet(o))
+                        let ei = ApiRef.etat_immatriculation(Objet(o))
+                        lignes_p.push("{o} | {nat} | {rg} | {ei}")
+                        cites.push(o)
+                    } else {
+                        ecartes = ecartes + 1
+                    }
+                }
+                if len(page) < 1000 {
+                    encore = false
+                } else {
+                    apres = page[len(page) - 1]
+                }
+            }
+        } else {
+            require to_int(fin) > to_int(debut) else Incoherent "fin ≤ début"
+            let borne = to_int(h) - RECUL_MS
+            for r in ApiConjonctions.clos_entre(debut, fin) {
+                let t = to_int(ApiConjonctions.tca(Rapprochement(r)))
+                let objs = ApiConjonctions.objets(Rapprochement(r))
+                let a = objs[0]
+                let b = objs[1]
+                let rg = to_string(ApiRef.regime(Objet(a)))
+                if t > borne || (reg != "" && rg != reg) {
+                    ecartes = ecartes + 1
+                } else {
+                    require len(lignes_p) < MAX_ENTREES else Plein "plus de {MAX_ENTREES} lignes : restreindre le régime"
+                    let heure = idiv(t, 3600000) * 3600000
+                    let nv = ApiConjonctions.niveau(Rapprochement(r))
+                    let na = ApiRef.nature(Objet(a))
+                    let nb = ApiRef.nature(Objet(b))
+                    let publics = DonControle.diffusion_effective(Objet(a)) == "public" && DonControle.diffusion_effective(Objet(b)) == "public"
+                    if publics {
+                        lignes_p.push("{heure} | {rg} | niveau {nv} | {na} / {nb} | {a} / {b}")
+                        cites.push(a)
+                        cites.push(b)
+                    } else {
+                        lignes_p.push("{heure} | {rg} | niveau {nv} | {na} / {nb}")
+                    }
+                }
+            }
+        }
+        genre_de.set(publication, g)
+        version_de.set(publication, v)
+        prepare_par.set(publication, par)
+        prepare_le.set(publication, h)
+        entrees.set(publication, lignes_p)
+        objets_cites.set(publication, cites)
+        exclus.set(publication, ecartes)
+        let k = len(lignes_p)
+        let _ = Journal.noter(h, "donnees", par, "publication {publication} ({g}) préparée sous l'accord {v} : {k} retenus, {ecartes} écartés")
+        return k
+    }
+
+    on relire(h, publication, par) {
+        let prep = prepare_par.get(publication)
+        require prep != () else Inconnu "publication inconnue : {publication}"
+        require ApiAcces.a_le_role(par, "analyste") || ApiAcces.a_le_role(par, "superviseur") else Habilitation "relire : analyste ou superviseur d'ORBITE"
+        require par != prep else QuatreYeux "le relecteur doit être distinct du préparateur"
+        require (get_status(publication) ?? "preparee") == "preparee" else EtatInvalide "publication {publication} déjà relue ou close"
+        transition(publication, "preparee", "relue")
+        let _ = Journal.noter(h, "donnees", par, "publication {publication} relue")
+        return "relue"
+    }
+
+    on publier(h, publication, par) {
+        require ApiAcces.a_le_role(par, "analyste") || ApiAcces.a_le_role(par, "systeme") else Habilitation "publier : analyste ou systeme"
+        let g = genre_de.get(publication)
+        require g != () else Inconnu "publication inconnue : {publication}"
+        require (get_status(publication) ?? "preparee") == "relue" else EtatInvalide "publication {publication} non relue"
+        let v = version_de.get(publication) ?? ""
+        require DonAccords.en_vigueur() == v else Perime "accord {v} remplacé : re-préparer"
+        for o in objets_cites.get(publication) ?? [] {
+            require DonControle.diffusion_effective(Objet(o)) == "public" else Confidentiel "{o} n'est plus public"
+        }
+        publiee_le.set(publication, h)
+        derniere.set(to_string(g), publication)
+        transition(publication, "relue", "publiee")
+        let _ = Journal.noter(h, "donnees", par, "publication {publication} publiée")
+        return "publiee"
+    }
+
+    on annuler(h, publication, motif, par) {
+        require ApiAcces.a_le_role(par, "analyste") || ApiAcces.a_le_role(par, "superviseur") else Habilitation "annuler : analyste ou superviseur d'ORBITE"
+        require genre_de.get(publication) != () else Inconnu "publication inconnue : {publication}"
+        require len(motif) > 0 else MotifRequis "motif d'annulation exigé"
+        let st = get_status(publication) ?? "preparee"
+        require st == "preparee" || st == "relue" else EtatInvalide "publication {publication} {st}"
+        transition(publication, st, "annulee")
+        let _ = Journal.noter(h, "donnees", par, "publication {publication} annulée : {motif}")
+        return "annulee"
+    }
+
+    on retirer(h, publication, objet, motif, par, valideur) {
+        require ApiAcces.a_le_role(par, "conformite") else Habilitation "retirer une publication : conformite d'ORBITE"
+        require valideur != par && ApiAcces.a_le_role(valideur, "direction") && ApiAcces.quatre_yeux(par, valideur) else QuatreYeux "valideur direction distinct exigé"
+        let g = genre_de.get(publication)
+        require g != () else Inconnu "publication inconnue : {publication}"
+        require (get_status(publication) ?? "preparee") == "publiee" else EtatInvalide "publication {publication} non publiée"
+        require len(motif) > 0 else MotifRequis "motif du retrait exigé"
+        transition(publication, "publiee", "retiree")
+        let gs = to_string(g)
+        if (derniere.get(gs) ?? "") == publication { derniere.delete(gs) }
+        let inc = ApiOperations.declarer_incident(h, "INC-DON-{publication}", 2, "donnees", "publication {publication} retirée : {objet} exposé ({motif})", "systeme")
+        let prop = ApiRef.proprietaire(objet)
+        if prop != "inconnu" && prop != "" {
+            let _ = ApiPasserelle.notifier(h, prop, "", "publication {publication} retirée", "données de {objet} exposées par erreur : {motif}", 2)
+        }
+        let _ = Journal.noter(h, "donnees", par, "publication {publication} retirée ({objet}, incident {inc}, valideur {valideur})")
+        return "retiree"
+    }
+
+    on contenu(publication) {
+        let e = entrees.get(publication)
+        require e != () else Inconnu "publication inconnue : {publication}"
+        require (get_status(publication) ?? "preparee") == "publiee" else EtatInvalide "publication {publication} non publiée ou retirée"
+        return e
+    }
+
+    on derniere_de(g) {
+        return derniere.get(to_string(g)) ?? ""
+    }
+
+    on etat(publication) {
+        if genre_de.get(publication) == () { return "inconnue" }
+        return get_status(publication) ?? "preparee"
+    }
+}

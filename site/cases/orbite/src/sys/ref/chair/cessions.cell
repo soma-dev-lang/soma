@@ -1,0 +1,251 @@
+// ref — corps de RefCession (cessions d'objets en orbite).
+
+flesh RefCession {
+    on demander(h, cession, objet, cessionnaire, effet, motif, par) {
+        require objet_de.get(cession) == () else Existe "cession {cession} déjà demandée"
+        let o = to_string(objet)
+        let e = RefObjet.etat(objet)
+        require e != "inconnu" else Inconnu "objet {o} inconnu"
+        let cedant = RefObjet.proprietaire(objet)
+        let ced = to_string(cedant)
+        require ced != "ORG-ORBITE" else EtatInvalide "objet {o} non attribué : passer par attribuer"
+        let habilite = (ApiAcces.a_le_role(par, "chef_de_mission") || ApiAcces.a_le_role(par, "administrateur_operateur")) && ApiAcces.agit_pour(par, cedant)
+        require habilite else Habilitation "{par} : chef de mission ou administrateur du propriétaire requis"
+        require e == "en_service" || e == "hors_service" || e == "cimetiere" else EtatInvalide "objet {o} : {e}"
+        let g = try { RefOrg.genre(cessionnaire) }
+        require g.error == () else Inconnu "cessionnaire {cessionnaire} inconnu"
+        let cess = to_string(cessionnaire)
+        require cess != ced else Incoherent "cessionnaire = cédant"
+        require to_string(g.value) == "operateur" else Incoherent "le cessionnaire doit être un opérateur"
+        require effet >= h && effet <= h + DELAI_CESSION_MS else HorsBornes "date d'effet hors de [h, h + 90 jours]"
+        require en_cours.get(o) == () else Conflit "cession déjà en cours sur {o}"
+        require motif != "" else MotifRequis "motif requis"
+        require objet_de.size < MAX_CESSIONS else Plein "trop de cessions"
+        let etat_ced = to_string(RefRegistre.etat_de(objet))
+        require etat_ced != "" else EtatInvalide "objet {o} sans État d'immatriculation"
+        let etat_cess = to_string(RefOrg.etat_de(cessionnaire))
+        objet_de.set(cession, o)
+        cedant_de.set(cession, ced)
+        cessionnaire_de.set(cession, cess)
+        etat_cedant_de.set(cession, etat_ced)
+        etat_cessionnaire_de.set(cession, etat_cess)
+        echeances.set(cession, h + DELAI_CESSION_MS)
+        effets.set(cession, effet)
+        demandees_le.set(cession, h)
+        demandeurs.set(cession, par)
+        motifs.set(cession, motif)
+        en_cours.set(o, cession)
+        Journal.noter(h, "ref", par, "cession {cession} demandée : {o} de {ced} ({etat_ced}) à {cess} ({etat_cess})")
+        return cession
+    }
+
+    on accepter(h, cession, par) {
+        let c = cessionnaire_de.get(cession)
+        require c != () else Inconnu "cession {cession} inconnue"
+        require ApiAcces.a_le_role(par, "administrateur_operateur") && ApiAcces.agit_pour(par, Org(c)) else Habilitation "{par} : administrateur du cessionnaire requis"
+        let st = get_status(cession) ?? "demandee"
+        require st == "demandee" else EtatInvalide "cession {cession} : {st}"
+        require h <= (echeances.get(cession) ?? 0) else Echu "cession {cession} échue"
+        require RefOrg.est_active(Org(c)) else EtatInvalide "cessionnaire {c} non actif"
+        transition(cession, "demandee", "acceptee")
+        Journal.noter(h, "ref", par, "cession {cession} acceptée par {c}")
+        return "acceptee"
+    }
+
+    on viser(h, cession, numero, par) {
+        let ec = etat_cedant_de.get(cession)
+        require ec != () else Inconnu "cession {cession} inconnue"
+        let es = etat_cessionnaire_de.get(cession) ?? ""
+        let st = get_status(cession) ?? "demandee"
+        require st == "acceptee" || st == "visee_cedant" else EtatInvalide "cession {cession} : {st}"
+        let visant = if st == "acceptee" { ec } else { es }
+        let autorite = try { RefOrg.org_de_etat(Etat(visant)) }
+        let habilite = autorite.error == () && ApiAcces.a_le_role(par, "autorite") && ApiAcces.agit_pour(par, autorite.value)
+        require habilite else Habilitation "{par} : autorité de l'État {visant} requise"
+        require h <= (echeances.get(cession) ?? 0) else Echu "cession {cession} échue"
+        require RefEtat.participant(Etat(visant)) else EtatInvalide "État {visant} non participant"
+        if st == "acceptee" {
+            transition(cession, "acceptee", "visee_cedant")
+            if es != ec {
+                Journal.noter(h, "ref", par, "cession {cession} visée par l'État d'immatriculation {ec}")
+                return "visee_cedant"
+            }
+            // même État des deux côtés : les deux visas dans le même appel, pas de nouveau numéro
+            numeros.set(cession, "")
+            transition(cession, "visee_cedant", "visee_cessionnaire")
+            Journal.noter(h, "ref", par, "cession {cession} visée par {ec} (cédant et cessionnaire)")
+            return "visee_cessionnaire"
+        }
+        if es != ec {
+            require numero != "" else MotifRequis "nouveau numéro national requis (changement d'État)"
+            numeros.set(cession, numero)
+        } else {
+            numeros.set(cession, "")
+        }
+        transition(cession, "visee_cedant", "visee_cessionnaire")
+        Journal.noter(h, "ref", par, "cession {cession} visée par l'État du cessionnaire {es}")
+        return "visee_cessionnaire"
+    }
+
+    on realiser(h, cession, par) {
+        require ApiAcces.a_le_role(par, "systeme") || ApiAcces.a_le_role(par, "analyste") else Habilitation "{par} : systeme ou analyste d'ORBITE requis"
+        let o = objet_de.get(cession)
+        require o != () else Inconnu "cession {cession} inconnue"
+        let st = get_status(cession) ?? "demandee"
+        require st == "visee_cessionnaire" else EtatInvalide "cession {cession} : {st}"
+        require h >= (effets.get(cession) ?? 0) else Delai "date d'effet de {cession} non atteinte"
+        require h <= (echeances.get(cession) ?? 0) else Echu "cession {cession} échue"
+        let e = RefObjet.etat(Objet(o))
+        require e == "en_service" || e == "hors_service" else EtatInvalide "objet {o} : {e}"
+        let ced = cedant_de.get(cession) ?? ""
+        let cess = cessionnaire_de.get(cession) ?? ""
+        let ec = etat_cedant_de.get(cession) ?? ""
+        let es = etat_cessionnaire_de.get(cession) ?? ""
+        let _ = RefObjet.transferer(h, Objet(o), Org(cess), cession, "systeme")
+        if es != ec {
+            let _ = RefRegistre.transferer(h, Objet(o), Etat(es), numeros.get(cession) ?? "", cession, "systeme")
+        }
+        transition(cession, "visee_cessionnaire", "realisee")
+        en_cours.delete(o)
+        RefHistorique.consigner(h, o, "proprietaire", cess, cession, par)
+        let texte = "Cession {cession} réalisée : l'objet {o} passe de {ced} à {cess}."
+        let _ = try { ApiPasserelle.notifier(h, Org(ced), Rapprochement(""), "cession réalisée", texte, 1) }
+        let _ = try { ApiPasserelle.notifier(h, Org(cess), Rapprochement(""), "cession réalisée", texte, 1) }
+        Journal.noter(h, "ref", par, texte)
+        return "realisee"
+    }
+
+    on refuser(h, cession, motif, par) {
+        let o = objet_de.get(cession)
+        require o != () else Inconnu "cession {cession} inconnue"
+        let st = get_status(cession) ?? "demandee"
+        let ouverte = st == "demandee" || st == "acceptee" || st == "visee_cedant" || st == "visee_cessionnaire"
+        require ouverte else EtatInvalide "cession {cession} terminée ({st})"
+        require motif != "" else MotifRequis "motif requis"
+        let cess = cessionnaire_de.get(cession) ?? ""
+        let ec = etat_cedant_de.get(cession) ?? ""
+        let es = etat_cessionnaire_de.get(cession) ?? ""
+        let par_cess = ApiAcces.a_le_role(par, "administrateur_operateur") && ApiAcces.agit_pour(par, Org(cess))
+        let par_autorite = false
+        if (!par_cess) && ApiAcces.a_le_role(par, "autorite") {
+            let a1 = try { RefOrg.org_de_etat(Etat(ec)) }
+            let a2 = try { RefOrg.org_de_etat(Etat(es)) }
+            par_autorite = (a1.error == () && ApiAcces.agit_pour(par, a1.value)) || (a2.error == () && ApiAcces.agit_pour(par, a2.value))
+        }
+        require par_cess || par_autorite else Habilitation "{par} : administrateur du cessionnaire ou autorité d'un des États requis"
+        motifs.set(cession, motif)
+        en_cours.delete(o)
+        if st == "demandee" {
+            transition(cession, "demandee", "refusee")
+        } else if st == "acceptee" {
+            transition(cession, "acceptee", "refusee")
+        } else if st == "visee_cedant" {
+            transition(cession, "visee_cedant", "refusee")
+        } else {
+            transition(cession, "visee_cessionnaire", "refusee")
+        }
+        Journal.noter(h, "ref", par, "cession {cession} refusée : {motif}")
+        return "refusee"
+    }
+
+    on annuler(h, cession, motif, par) {
+        let o = objet_de.get(cession)
+        require o != () else Inconnu "cession {cession} inconnue"
+        let ced = cedant_de.get(cession) ?? ""
+        let habilite = (ApiAcces.a_le_role(par, "chef_de_mission") || ApiAcces.a_le_role(par, "administrateur_operateur")) && ApiAcces.agit_pour(par, Org(ced))
+        require habilite else Habilitation "{par} : chef de mission ou administrateur du cédant requis"
+        let st = get_status(cession) ?? "demandee"
+        let ouverte = st == "demandee" || st == "acceptee" || st == "visee_cedant" || st == "visee_cessionnaire"
+        require ouverte else EtatInvalide "cession {cession} terminée ({st})"
+        require motif != "" else MotifRequis "motif requis"
+        motifs.set(cession, motif)
+        en_cours.delete(o)
+        if st == "demandee" {
+            transition(cession, "demandee", "annulee")
+        } else if st == "acceptee" {
+            transition(cession, "acceptee", "annulee")
+        } else if st == "visee_cedant" {
+            transition(cession, "visee_cedant", "annulee")
+        } else {
+            transition(cession, "visee_cessionnaire", "annulee")
+        }
+        Journal.noter(h, "ref", par, "cession {cession} annulée par le cédant : {motif}")
+        return "annulee"
+    }
+
+    on expirer(h, cession, par) {
+        require ApiAcces.a_le_role(par, "systeme") else Habilitation "expiration réservée à systeme"
+        let o = objet_de.get(cession)
+        require o != () else Inconnu "cession {cession} inconnue"
+        let st = get_status(cession) ?? "demandee"
+        let ouverte = st == "demandee" || st == "acceptee" || st == "visee_cedant" || st == "visee_cessionnaire"
+        require ouverte else EtatInvalide "cession {cession} terminée ({st})"
+        let e = RefObjet.etat(Objet(o))
+        let sorti = e == "rentre" || e == "fragmente" || e == "retire"
+        require sorti || (echeances.get(cession) ?? 0) < h else Delai "cession {cession} non échue"
+        en_cours.delete(o)
+        if st == "demandee" {
+            transition(cession, "demandee", "expiree")
+        } else if st == "acceptee" {
+            transition(cession, "acceptee", "expiree")
+        } else if st == "visee_cedant" {
+            transition(cession, "visee_cedant", "expiree")
+        } else {
+            transition(cession, "visee_cessionnaire", "expiree")
+        }
+        Journal.noter(h, "ref", par, "cession {cession} expirée")
+        return "expiree"
+    }
+
+    on balayer(h, par) {
+        require ApiAcces.a_le_role(par, "systeme") else Habilitation "balayage réservé à systeme"
+        let ouvertes_c = en_cours.values
+        let n = 0
+        let vus = 0
+        for c in ouvertes_c {
+            if vus < 1000 {
+                vus = vus + 1
+                let fait = false
+                let st = get_status(c) ?? "demandee"
+                if st == "visee_cessionnaire" && (effets.get(c) ?? 0) <= h {
+                    let r = try { realiser(h, c, "systeme") }
+                    if r.error == () {
+                        fait = true
+                    }
+                }
+                if !fait {
+                    // expirer refuse (Delai) une cession non échue dont l'objet est en orbite
+                    let r2 = try { expirer(h, c, "systeme") }
+                    if r2.error == () {
+                        fait = true
+                    }
+                }
+                if fait {
+                    n = n + 1
+                }
+            }
+        }
+        return n
+    }
+
+    on etat(cession) {
+        if objet_de.get(cession) == () { return "inconnue" }
+        return get_status(cession) ?? "demandee"
+    }
+
+    on en_cours_sur(objet) {
+        return en_cours.get(to_string(objet)) ?? ""
+    }
+
+    on en_cours_pour_org(org) {
+        let o = to_string(org)
+        let res_e = en_cours.values.filter(c => cedant_de.get(c) == o || cessionnaire_de.get(c) == o)
+        return len(res_e) > 0
+    }
+
+    on en_cours_pour_etat(etat) {
+        let e = to_string(etat)
+        let res_e = en_cours.values.filter(c => etat_cedant_de.get(c) == e || etat_cessionnaire_de.get(c) == e)
+        return len(res_e) > 0
+    }
+}

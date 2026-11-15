@@ -1,0 +1,119 @@
+// meteo — corps de l'HISTORIQUE journalier et de la preuve (conditions_a).
+flesh MetJournee {
+    on clore(h, jour, par) {
+        require ApiAcces.a_le_role(par, "systeme") else Habilitation "clôture réservée à systeme"
+        let js = to_string(jour)
+        let st = get_status(js) ?? "ouverte"
+        require st == "ouverte" || st == "en_rectification" else EtatInvalide "journée {js} : {st}"
+        let fin_jour = (to_int(jour) + 1) * DUREE_JOUR
+        require to_int(h) >= fin_jour + CONSOLIDATION else Delai "journée {js} close au plus tôt 3 h après sa fin"
+        let kps = MetMesure.du_jour("kp", jour).map(m => MetMesure.valeur_de(m))
+        let fs = MetMesure.du_jour("f107", jour).map(m => MetMesure.valeur_de(m))
+        let nk = len(kps)
+        let nf = len(fs)
+        let kmax = if nk > 0 { max(kps) } else { 0 }
+        let kmoy = if nk > 0 { idiv(sum(kps), nk) } else { 0 }
+        let fmoy = if nf > 0 { idiv(sum(fs), nf) } else { 0 }
+        let nal = len(MetTempete.du_jour(jour))
+        let version = MetBareme.en_vigueur_a(Horodatage(fin_jour - 1))
+        // kp_moyen ≤ kp_max : abaisser la moyenne avant de réécrire le maximum.
+        kp_moyen.set(js, 0)
+        kp_max.set(js, kmax)
+        kp_moyen.set(js, kmoy)
+        f107_moyen.set(js, fmoy)
+        nb_mesures.set(js, nk + nf)
+        alertes.set(js, nal)
+        bareme_du_jour.set(js, version)
+        close_le.set(js, h)
+        if st == "ouverte" {
+            transition(js, "ouverte", "close")
+        } else {
+            transition(js, "en_rectification", "close")
+        }
+        let _ = Journal.noter(h, "meteo", par, "journee {js} close : kp_max {kmax}, {nk} kp, {nf} f107, {nal} alertes")
+        return kmax
+    }
+
+    on rectifier(h, jour, motif, par) {
+        require ApiAcces.a_le_role(par, "systeme") || ApiAcces.a_le_role(par, "analyste") else Habilitation "{par} n'est ni systeme ni analyste d'ORBITE"
+        require motif != "" else MotifRequis "motif de rectification requis"
+        let js = to_string(jour)
+        let st = get_status(js) ?? "ouverte"
+        require st != "scellee" else Ferme "journée {js} scellée"
+        if st != "close" { return st }
+        transition(js, "close", "en_rectification")
+        rectifications.set(js, (rectifications.get(js) ?? 0) + 1)
+        motif_rectif.set(js, motif)
+        let _ = Journal.noter(h, "meteo", par, "journee {js} en rectification : {motif}")
+        return "en_rectification"
+    }
+
+    on sceller(h, jour, par) {
+        require ApiAcces.a_le_role(par, "systeme") else Habilitation "scellement réservé à systeme"
+        let js = to_string(jour)
+        let c = close_le.get(js)
+        require c != () else Inconnu "journée {js} jamais close"
+        let st = get_status(js) ?? "ouverte"
+        require st == "close" else EtatInvalide "journée {js} : {st}"
+        require to_int(h) - to_int(c) >= SCELLEMENT else Delai "journée {js} close depuis moins de 90 j"
+        transition(js, "close", "scellee")
+        let _ = Journal.noter(h, "meteo", par, "journee {js} scellee")
+        return "scellee"
+    }
+
+    on a_clore(h) {
+        let t = to_int(h)
+        let aujourdhui = idiv(t, DUREE_JOUR)
+        let res_j = []
+        // La veille et les trois jours d'avant (une ronde arrêtée ne fait sauter aucun jour).
+        for k in range(1, 5) {
+            let j = aujourdhui - k
+            if j >= 0 && t >= (j + 1) * DUREE_JOUR + CONSOLIDATION && (get_status(to_string(j)) ?? "ouverte") == "ouverte" {
+                res_j = res_j ++ [to_string(j)]
+            }
+        }
+        for js in rectifications.keys {
+            if len(res_j) < 100 && (get_status(js) ?? "ouverte") == "en_rectification" && !contains(res_j, js) {
+                res_j = res_j ++ [js]
+            }
+        }
+        return slice(res_j, 0, 100)
+    }
+
+    on a_sceller(h) {
+        let t = to_int(h)
+        let res_s = close_le.entries.filter(e => t - to_int(e.value) >= SCELLEMENT && (get_status(e.key) ?? "ouverte") == "close").map(e => e.key)
+        return slice(res_s, 0, 100)
+    }
+
+    on scellee(jour) {
+        return (get_status(jour) ?? "ouverte") == "scellee"
+    }
+
+    on bilan(jour) {
+        let js = to_string(jour)
+        let km = kp_max.get(js)
+        require km != () else Inconnu "journée {js} jamais close"
+        let kmoy = kp_moyen.get(js) ?? 0
+        let f = f107_moyen.get(js) ?? 0
+        let n = nb_mesures.get(js) ?? 0
+        let al = alertes.get(js) ?? 0
+        let b = bareme_du_jour.get(js) ?? "origine"
+        return "kp_max={km};kp_moyen={kmoy};f107={f};mesures={n};alertes={al};bareme={b}"
+    }
+
+    on conditions_a(h, a, regime, par) {
+        let habilite = ApiAcces.a_le_role(par, "analyste") || ApiAcces.a_le_role(par, "conformite") || ApiAcces.a_le_role(par, "auditeur") || ApiAcces.a_le_role(par, "systeme")
+        require habilite else Habilitation "{par} n'est ni analyste, ni conformite, ni auditeur d'ORBITE"
+        require to_int(a) <= to_int(h) else HorsBornes "instant demandé dans le futur"
+        let kpm = MetMesure.en_vigueur_a("kp", a)
+        let kpv = if kpm != "" { MetMesure.valeur_de(kpm) } else { 0 }
+        let fm = MetMesure.en_vigueur_a("f107", a)
+        let t = MetTempete.ouverte_a(a)
+        let version = MetBareme.en_vigueur_a(a)
+        let b = if kpm != "" { MetBareme.bande(kpv) } else { MetBareme.bande(70) }
+        let f = MetIncertitude.facteur_a(regime, a)
+        let _ = Journal.noter(h, "meteo", par, "consultation des conditions a {a} ({regime})")
+        return MetConditions { kp_mesure: kpm, kp: kpv, f107_mesure: fm, tempete: t, bareme: version, bande: b, facteur: f }
+    }
+}

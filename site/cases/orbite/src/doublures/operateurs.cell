@@ -1,0 +1,99 @@
+// Doublures (corps PROVISOIRES) des façades que traversent les tests de operateurs.
+// Sans mémoire : tout se lit dans les identifiants.
+// - Personne : "<role>.<nom>@<ORG>" (ex. "dynamicien.d1@ORG-OPA-ALD", "analyste.a@ORG-ORBITE") ;
+//   "systeme" ; un nom qui commence par "intrus" n'a aucun rôle et n'agit pour personne.
+// - Organisation : "ORG-ORBITE" (ORBITE), "ORG-ETAT-<E>" (État E), "ORG-CAPT…" (capteur), sinon
+//   opérateur ; l'État de tutelle est le dernier segment ("ORG-OPA-ALD" → "ALD").
+//   "ORG-INCONNU…" / "ORG-RADIE…" n'existent pas ; un État qui commence par "X" n'est pas participant.
+//   Un opérateur dont l'id contient "SATS" possède un objet en service ; "NONADH" n'a pas signé
+//   l'accord de partage ; "MUET" n'acquitte jamais ses messages.
+
+flesh ApiAcces {
+    on a_le_role(personne, r) {
+        if personne == "systeme" { return r == "systeme" }
+        if r == "systeme" || starts_with(personne, "intrus") { return false }
+        let morceaux = split(personne, "@")
+        if len(morceaux) != 2 { return false }
+        let role_p = split(morceaux[0], ".")[0]
+        if role_p != to_string(r) { return false }
+        let orbite_seule = r == "analyste" || r == "superviseur" || r == "exploitant" || r == "conformite" || r == "direction" || r == "auditeur"
+        if orbite_seule { return morceaux[1] == "ORG-ORBITE" }
+        return true
+    }
+    on agit_pour(personne, org) {
+        if starts_with(personne, "intrus") { return false }
+        let morceaux = split(personne, "@")
+        if len(morceaux) != 2 { return false }
+        return morceaux[1] == to_string(org)
+    }
+    on quatre_yeux(demandeur, valideur) {
+        if demandeur == valideur || starts_with(valideur, "intrus") || starts_with(demandeur, "intrus") { return false }
+        let mv = split(valideur, "@")
+        let md = split(demandeur, "@")
+        if len(mv) != 2 || len(md) != 2 { return false }
+        let rv = split(mv[0], ".")[0]
+        if (rv == "superviseur" || rv == "conformite" || rv == "direction") && mv[1] == "ORG-ORBITE" { return true }
+        return rv == "chef_de_mission" && mv[1] == md[1]
+    }
+}
+
+flesh ApiRef {
+    on orbite() {
+        return Org("ORG-ORBITE")
+    }
+    on etat_participant(etat) {
+        return etat != "" && !starts_with(etat, "X")
+    }
+    on organisation_existe(org) {
+        return starts_with(org, "ORG-") && !starts_with(org, "ORG-INCONNU") && !starts_with(org, "ORG-RADIE")
+    }
+    on etat_de(org) {
+        require starts_with(org, "ORG-") && !starts_with(org, "ORG-INCONNU") else Inconnu "organisation {org} inconnue"
+        let segs = split(org, "-")
+        return Etat(segs[len(segs) - 1])
+    }
+    on org_de_etat(etat) {
+        require etat != "" else Inconnu "État vide"
+        return Org("ORG-ETAT-{etat}")
+    }
+    on genre(org) {
+        require starts_with(org, "ORG-") && !starts_with(org, "ORG-INCONNU") else Inconnu "organisation {org} inconnue"
+        if org == "ORG-ORBITE" { return "orbite" }
+        if starts_with(org, "ORG-ETAT-") { return "etat" }
+        if starts_with(org, "ORG-CAPT") { return "capteur" }
+        return "operateur"
+    }
+    on objets_de(org) {
+        if contains(org, "SATS") { return ["OBJ-1-RENTRE", "OBJ-2-EN"] }
+        return ["OBJ-9-RENTRE"]
+    }
+    on etat_objet(objet) {
+        if ends_with(objet, "RENTRE") { return "rentre" }
+        return "en_service"
+    }
+    on changer_tutelle(h, org, etat, par, valideur) {
+        require etat != "" && !starts_with(etat, "X") else EtatInvalide "État {etat} non participant"
+        return etat
+    }
+}
+
+flesh ApiPasserelle {
+    on notifier(h, destinataire, r, sujet, texte, urgence) {
+        return "MSG-{destinataire}-{h}"
+    }
+    on acquitte(message) {
+        return !contains(message, "MUET")
+    }
+}
+
+flesh ApiConformite {
+    on constater(h, op, nature, gravite, reference, par) {
+        return "MQ-{op}-{nature}-{h}"
+    }
+}
+
+flesh ApiDonnees {
+    on adherent(org) {
+        return !contains(org, "NONADH")
+    }
+}

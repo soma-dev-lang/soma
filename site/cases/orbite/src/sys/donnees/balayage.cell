@@ -1,0 +1,22 @@
+// donnees — BALAYAGE. Seul point d'entrée du temps dans donnees : ApiDonnees.balayer(h, par),
+// appelé par Horloge.battre chaque minute, délègue ici. Aucun signal de donnees ne lit l'horloge ;
+// chaque échéance est un état atteint par l'un des balayages ci-dessous, et les contrôles
+// d'accès comparent déjà `fin` à `h` (justes entre deux battements).
+
+// Ronde des échéances de donnees (sans mémoire).
+skeleton DonBalayage {
+    face {
+        // Fait, dans cet ordre, à `h` : entrée en vigueur d'une version adoptée
+        // (DonAccords.entrer_en_vigueur, qui ouvre les re-signatures), caducité des adhésions et
+        // annulation des signatures non contre-signées (DonAdhesions.echoir), fin des embargos
+        // et refus des demandes d'embargo non instruites (DonEmbargos.echoir), silence des
+        // propriétaires (DonConsentements.echoir, qui conclut les demandes), expiration des
+        // accès et des demandes non instruites (DonDemandes.echoir), fin des partages
+        // bilatéraux (DonPartages.echoir). Renvoie le nombre total de changements d'état
+        // (une version mise en vigueur compte 1). `par` = "systeme" (ApiAcces.a_le_role).
+        // Refus : Habilitation.
+        signal balayer(h: Horodatage, par: String) -> Int
+            ensures result >= 0
+            calls ApiAcces.a_le_role, DonAccords.en_vigueur, DonAccords.entrer_en_vigueur, DonAdhesions.echoir, DonEmbargos.echoir, DonConsentements.echoir, DonDemandes.echoir, DonPartages.echoir
+    }
+}

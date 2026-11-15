@@ -1,0 +1,14 @@
+use app
+use commun::journal_chair
+use commun::horloge_chair
+use sys::escalade::chair::api
+use sys::escalade::chair::bareme
+use sys::escalade::chair::dossiers
+use sys::escalade::chair::veille
+use sys::escalade::chair::contacts
+use sys::escalade::chair::relances
+use sys::escalade::chair::diplomatie
+use sys::escalade::chair::statistiques
+use sys::escalade::chair::prise_en_charge
+use sys::escalade::chair::concertation
+use sys::escalade::chair::balayage

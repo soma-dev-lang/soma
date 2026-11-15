@@ -1,0 +1,298 @@
+// operateurs — ADHÉSION : dossiers de candidature et statut de l'opérateur admis.
+// Ordre d'entrée : dossier déposé → licence nationale vérifiée par l'État → dossier accepté
+// (quatre yeux) → admis → engagements en vigueur, astreinte couverte, exercice réussi → actif.
+// Un opérateur ne disparaît jamais tant qu'un de ses objets est en orbite : le retrait exige
+// un catalogue vide, l'exclusion laisse ses objets sous la responsabilité de son État.
+
+// Statut d'adhésion tel que la façade le rend ("inconnu" : jamais candidat).
+cell type OpStatut = String where value == "inconnu" || value == "candidat" || value == "admis" || value == "actif" || value == "suspendu" || value == "exclu" || value == "retire"
+
+// Motif de rejet d'un dossier d'adhésion.
+cell type OpMotifRejet = String where value == "pieces_manquantes" || value == "licence_absente" || value == "accord_donnees_absent" || value == "etat_non_participant" || value == "doublon" || value == "autre"
+
+// Origine d'une suspension (journal, conformité, et levée : une suspension d'origine "etat"
+// ne se lève que par l'État de tutelle).
+cell type OpOrigineSuspension = String where value == "conformite" || value == "etat" || value == "licence" || value == "joignabilite"
+
+// Dossier d'adhésion (id = "DA-<n>", tiré par deposer). Un opérateur rejeté peut redéposer
+// sous un nouvel id ; au plus un dossier vivant (depose ou en_instruction) par opérateur.
+skeleton OpDossiers {
+    const MAX_DOSSIERS = 200000
+    // Délai d'instruction que s'impose ORBITE : 30 jours après le dépôt.
+    const DELAI_INSTRUCTION_MS = 2592000000
+    memory {
+        operateur: Map<String, Org> [persistent]              // dossier → opérateur ; écrit une fois par deposer, jamais effacé
+        depose_a: Map<String, Horodatage> [persistent]        // dossier → dépôt, ms
+        depose_par: Map<String, String> [persistent]          // dossier → "administrateur_operateur" déposant
+        pieces: Map<String, String> [persistent]              // dossier → références des pièces (statuts, licence, contacts, plan d'astreinte)
+        instructeur: Map<String, String> [persistent]         // dossier → "analyste" chargé de l'instruction
+        decision: Map<String, String> [persistent]            // dossier → "h | issue | motif | par | valideur"
+        vivant_de: Map<Org, String> [persistent]              // opérateur → dossier depose ou en_instruction
+        invariant operateur.size <= MAX_DOSSIERS
+        invariant vivant_de.size <= MAX_DOSSIERS
+    }
+    // Cycle de vie d'un dossier (id = dossier).
+    state dossier {
+        initial: depose
+        depose -> en_instruction        // instruire : un analyste prend le dossier
+        depose -> abandonne             // abandonner : le candidat retire sa demande
+        en_instruction -> accepte       // accepter : licence vérifiée par l'État, quatre yeux
+        en_instruction -> rejete        // rejeter : motif obligatoire
+        en_instruction -> abandonne     // abandonner
+    }
+    face {
+        // Dépose un dossier de candidature pour `op` (organisation inscrite au référentiel,
+        // rattachée à un État participant) et inscrit l'opérateur comme candidat. `pieces`
+        // énumère les références des justificatifs. Renvoie l'id du dossier.
+        // Rôle exigé : "administrateur_operateur" de `op` (ApiAcces.agit_pour(par, op)).
+        // Refus : Inconnu (organisation non inscrite), NonEligible (ApiRef.genre(op) ≠
+        // "operateur", ou État de tutelle non participant), Doublon (dossier vivant pour op), Existe (op déjà admis), MotifRequis
+        // (pieces vide), Habilitation, Plein.
+        signal deposer(h: Horodatage, op: Org, pieces_jointes: String, par: String) -> String
+            writes operateur, depose_a, depose_par, pieces, vivant_de
+            calls ApiAcces.a_le_role, ApiAcces.agit_pour, ApiRef.organisation_existe, ApiRef.genre, ApiRef.etat_de, ApiRef.etat_participant, OpMembres.inscrire_candidat, next_id, Journal.noter
+        // Le candidat complète les pièces d'un dossier vivant (à la demande de l'instructeur) ;
+        // les nouvelles références s'ajoutent aux anciennes, rien n'est effacé. Renvoie l'état
+        // du dossier. Rôle exigé : "administrateur_operateur" de l'opérateur du dossier.
+        // Refus : Inconnu, EtatInvalide (dossier clos), MotifRequis (pièces vides), Habilitation.
+        signal completer(h: Horodatage, dossier: String, pieces_jointes: String, par: String) -> String
+            writes pieces
+            reads operateur, dossier
+            calls ApiAcces.a_le_role, ApiAcces.agit_pour, Journal.noter
+        // Un analyste d'ORBITE prend le dossier en instruction. Renvoie "en_instruction".
+        // Rôle exigé : "analyste" d'ORBITE. Refus : Inconnu, EtatInvalide, Habilitation.
+        signal instruire(h: Horodatage, dossier: String, par: String) -> String
+            writes instructeur
+            reads operateur
+            moves depose -> en_instruction
+            calls ApiAcces.a_le_role, Journal.noter
+        // Accepte le dossier : la licence nationale de l'opérateur est en vigueur (vérifiée par
+        // son État), l'opérateur adhère à l'accord de partage des données. Admet l'opérateur
+        // (OpMembres.admettre). Renvoie "accepte".
+        // Rôle exigé : "analyste" d'ORBITE instructeur du dossier ; valideur "superviseur"
+        // (ApiAcces.quatre_yeux). Refus : Inconnu, EtatInvalide, Insuffisant (licence non en
+        // vigueur, accord de partage non signé), Habilitation, QuatreYeux.
+        signal accepter(h: Horodatage, dossier: String, par: String, valideur: String) -> String
+            writes decision, vivant_de
+            reads operateur, instructeur
+            moves en_instruction -> accepte when OpLicences.en_vigueur via operateur
+            calls ApiAcces.a_le_role, ApiAcces.quatre_yeux, ApiDonnees.adherent, OpLicences.etat, OpMembres.admettre, ApiPasserelle.notifier, Journal.noter
+        // Rejette le dossier avec un motif typé et un commentaire ; l'opérateur reste candidat
+        // et peut redéposer. Renvoie "rejete". Rôle exigé : "analyste" d'ORBITE.
+        // Refus : Inconnu, EtatInvalide, MotifRequis (commentaire vide), Habilitation.
+        signal rejeter(h: Horodatage, dossier: String, motif: OpMotifRejet, commentaire: String, par: String) -> String
+            writes decision, vivant_de
+            reads operateur
+            moves en_instruction -> rejete
+            calls ApiAcces.a_le_role, ApiPasserelle.notifier, Journal.noter
+        // Le candidat retire son dossier. Renvoie "abandonne".
+        // Rôle exigé : "administrateur_operateur" de l'opérateur du dossier.
+        // Refus : Inconnu, EtatInvalide, Habilitation.
+        signal abandonner(h: Horodatage, dossier: String, par: String) -> String
+            writes decision, vivant_de
+            reads operateur
+            moves depose -> abandonne, en_instruction -> abandonne
+            calls ApiAcces.a_le_role, ApiAcces.agit_pour, Journal.noter
+        // Dossiers déposés ou en instruction depuis plus de DELAI_INSTRUCTION_MS à h (au plus
+        // n), chaque entrée "dossier | op | depose_a | instructeur" : retard d'ORBITE, suivi
+        // par le superviseur.
+        signal en_retard(h: Horodatage, n: Int) -> List<String>
+            requires n > 0 && n <= 10000
+            reads depose_a, instructeur, vivant_de
+        // État du dossier ("depose", "en_instruction", "accepte", "rejete", "abandonne") ;
+        // "inconnu" si l'id n'a jamais été déposé.
+        signal etat(dossier: String) -> String
+            reads operateur, dossier
+    }
+}
+
+// Statut d'adhésion d'un opérateur (id = Org de l'opérateur). Seule source de "est_actif".
+skeleton OpMembres {
+    const MAX_MEMBRES = 100000
+    const MAX_HISTORIQUE = 1000000
+    // Couverture d'astreinte exigée à l'activation et au rétablissement : 7 jours.
+    const COUVERTURE_ACTIVATION_MS = 604800000
+    // Suspension au-delà de laquelle la conformité doit statuer (rétablir ou exclure) : 180 jours.
+    const SUSPENSION_LONGUE_MS = 15552000000
+    memory {
+        candidat_depuis: Map<Org, Horodatage> [persistent]    // opérateur → premier dépôt, ms (distingue "candidat" de "inconnu")
+        dossier_de: Map<Org, String> [persistent]             // opérateur → dossier accepté ; écrit une fois par admettre, jamais effacé
+        admis_a: Map<Org, Horodatage> [persistent]            // opérateur → admission, ms
+        suspension: Map<Org, String> [persistent]            // opérateur → "h | origine | motif | par | valideur" de la suspension en cours
+        origine: Map<Org, OpOrigineSuspension> [persistent]   // opérateur → origine de la suspension en cours
+        suspendu_a: Map<Org, Horodatage> [persistent]         // opérateur → début de la suspension en cours, ms
+        historique: List<String> [persistent]                 // "h | op | transition | motif | par | valideur", en ajout seul
+        invariant candidat_depuis.size <= MAX_MEMBRES
+        invariant dossier_de.size <= MAX_MEMBRES
+        invariant historique.size <= MAX_HISTORIQUE
+        invariant (candidat_depuis ?? 0) <= (admis_a ?? 9000000000000000000)
+    }
+    // Cycle de vie de l'adhésion (id = opérateur). exclu et retire sont terminaux.
+    state adhesion {
+        initial: candidat
+        candidat -> admis           // admettre : dossier accepté
+        candidat -> retire          // retirer : le candidat renonce
+        admis -> actif              // activer : engagements en vigueur (+ licence, astreinte, exercice)
+        admis -> retire             // retirer
+        actif -> suspendu           // suspendre, suspendre_auto
+        suspendu -> actif           // retablir
+        actif -> exclu              // exclure
+        suspendu -> exclu           // exclure
+        actif -> retire             // retirer (catalogue vide)
+        suspendu -> retire          // retirer (catalogue vide)
+    }
+    face {
+        // Inscrit `op` comme candidat au premier dépôt (sans effet ensuite). Renvoie le statut.
+        // Appelé par OpDossiers.deposer seulement. Refus : Ferme (op exclu ou retiré : une
+        // organisation exclue ne recandidate pas sous le même identifiant).
+        signal inscrire_candidat(h: Horodatage, op: Org) -> OpStatut
+            writes candidat_depuis
+            reads adhesion
+        // Admet l'opérateur sur la foi du dossier accepté. Renvoie "admis".
+        // Appelé par OpDossiers.accepter seulement (par = "systeme").
+        // Refus : Existe (déjà admis), EtatInvalide.
+        signal admettre(h: Horodatage, op: Org, dossier: String) -> OpStatut
+            writes dossier_de, admis_a, historique
+            moves candidat -> admis when OpDossiers.accepte via dossier_de
+            calls OpDossiers.etat, Journal.noter
+        // Active un opérateur admis : engagements en vigueur, licence en vigueur à `h`,
+        // astreinte couverte sans trou sur COUVERTURE_ACTIVATION_MS, exercice de joignabilité
+        // réussi, au moins un contact "chef_de_mission" confirmé, organisation "active" au
+        // référentiel (contrôle du corps ; l'arête porte déjà la règle des engagements). Renvoie "actif".
+        // Rôle exigé : "superviseur" d'ORBITE. Refus : Inconnu, EtatInvalide (aussi :
+        // organisation radiée ou non activée, ApiRef.organisation_existe), Insuffisant
+        // (licence, astreinte, exercice ou contact manquant), Habilitation.
+        signal activer(h: Horodatage, op: Org, par: String) -> OpStatut
+            writes historique
+            moves admis -> actif when OpEngagements.en_vigueur
+            calls ApiAcces.a_le_role, ApiRef.organisation_existe, OpEngagements.etat, OpLicences.valide_a, OpAstreinte.trous, OpExercices.joignable, OpContacts.chaine, ApiPasserelle.notifier, Journal.noter
+        // Suspend un opérateur actif (manquements graves, licence retirée par son État).
+        // Ses objets restent suivis et ses rapprochements coordonnés : seule l'approbation de
+        // ses manœuvres est refusée (règle de manoeuvres sur est_actif). Renvoie "suspendu".
+        // Rôle exigé : "conformite" d'ORBITE (origine "conformite"), ou "point_focal" /
+        // "autorite" de l'État de tutelle de op (agit_pour sur ApiRef.org_de_etat ; origine
+        // "etat") ; valideur "direction" d'ORBITE (ApiAcces.quatre_yeux + a_le_role).
+        // Refus : Inconnu, EtatInvalide, MotifRequis, Habilitation, QuatreYeux.
+        signal suspendre(h: Horodatage, op: Org, motif: String, par: String, valideur: String) -> OpStatut
+            writes suspension, origine, suspendu_a, historique
+            moves actif -> suspendu
+            calls ApiAcces.a_le_role, ApiAcces.agit_pour, ApiAcces.quatre_yeux, ApiRef.etat_de, ApiRef.org_de_etat, ApiPasserelle.notifier, Journal.noter
+        // Suspension automatique (par = "systeme") : licence retirée ou suspendue par l'État
+        // (origine "licence"), astreinte vide depuis plus d'un jour (origine "joignabilite").
+        // Sans effet si op n'est pas actif. Renvoie le statut atteint.
+        // Refus : MotifRequis.
+        signal suspendre_auto(h: Horodatage, op: Org, cause: OpOrigineSuspension, motif: String) -> OpStatut
+            writes suspension, origine, suspendu_a, historique
+            moves actif -> suspendu
+            calls ApiPasserelle.notifier, ApiConformite.constater, Journal.noter
+        // Rétablit un opérateur suspendu : licence en vigueur à `h` et astreinte couverte
+        // sur COUVERTURE_ACTIVATION_MS, organisation "active" au référentiel (contrôle du
+        // corps). Renvoie "actif".
+        // Rôle exigé : celui de l'origine — "conformite" d'ORBITE (origines "conformite",
+        // "licence", "joignabilite") ou "point_focal" / "autorite" de l'État de tutelle
+        // (origine "etat") ; valideur "direction" d'ORBITE.
+        // Refus : Inconnu, EtatInvalide (aussi : organisation radiée), Insuffisant (licence,
+        // astreinte), Habilitation, QuatreYeux.
+        signal retablir(h: Horodatage, op: Org, par: String, valideur: String) -> OpStatut
+            writes suspension, origine, suspendu_a, historique
+            moves suspendu -> actif
+            calls ApiAcces.a_le_role, ApiRef.organisation_existe, ApiAcces.agit_pour, ApiAcces.quatre_yeux, ApiRef.etat_de, ApiRef.org_de_etat, OpLicences.valide_a, OpAstreinte.trous, ApiPasserelle.notifier, Journal.noter
+        // Exclut définitivement l'opérateur (manquements graves répétés, refus d'escalade).
+        // Ses objets restent catalogués ; leur coordination passe à l'État de tutelle
+        // (point focal), notifié. Renvoie "exclu".
+        // Rôle exigé : "conformite" d'ORBITE ; valideur "direction" d'ORBITE.
+        // Refus : Inconnu, EtatInvalide, MotifRequis, Habilitation, QuatreYeux.
+        signal exclure(h: Horodatage, op: Org, motif: String, par: String, valideur: String) -> OpStatut
+            writes historique
+            moves actif -> exclu, suspendu -> exclu
+            calls ApiAcces.a_le_role, ApiAcces.quatre_yeux, ApiRef.etat_de, ApiRef.org_de_etat, ApiPasserelle.notifier, OpEngagements.resilier, Journal.noter
+        // Retrait volontaire : aucun de ses objets n'est encore en orbite (ApiRef.objets_de :
+        // tous "rentre", "retire" ou cédés). Résilie ses engagements. Renvoie "retire".
+        // Rôle exigé : "administrateur_operateur" de op ; valideur "chef_de_mission" de op
+        // (ApiAcces.quatre_yeux). Refus : Inconnu, EtatInvalide, Insuffisant (objet encore en
+        // orbite), MotifRequis, Habilitation, QuatreYeux.
+        signal retirer(h: Horodatage, op: Org, motif: String, par: String, valideur: String) -> OpStatut
+            writes historique
+            reads candidat_depuis
+            moves candidat -> retire, admis -> retire, actif -> retire, suspendu -> retire
+            calls ApiAcces.a_le_role, ApiAcces.agit_pour, ApiAcces.quatre_yeux, ApiRef.objets_de, ApiRef.etat_objet, OpEngagements.resilier, Journal.noter
+        // Statut d'adhésion ; "inconnu" si op n'a jamais déposé de dossier.
+        signal etat(op: Org) -> OpStatut
+            reads candidat_depuis, adhesion
+        // Vrai si op est "actif" et sa licence est valide à `h`.
+        signal est_actif(op: Org, h: Horodatage) -> Bool
+            reads adhesion
+            calls OpLicences.valide_a
+        // Organisation qui RÉPOND des objets de op à h : op lui-même s'il est admis, actif ou
+        // suspendu ET joignable (OpExercices.joignable) ; sinon l'organisation de son État de
+        // tutelle (exclu, retiré, injoignable, jamais admis). Jamais "" : le silence d'un
+        // opérateur reporte la charge sur son État, il ne bloque pas. Refus : Inconnu (op
+        // absent du référentiel).
+        signal repondant(op: Org, h: Horodatage) -> Org
+            reads adhesion
+            calls OpExercices.joignable, ApiRef.etat_de, ApiRef.org_de_etat
+        // Opérateurs suspendus depuis plus de SUSPENSION_LONGUE_MS à h (au plus n), chaque
+        // entrée "op | suspendu_a | origine" : la conformité doit rétablir ou exclure.
+        signal suspensions_longues(h: Horodatage, n: Int) -> List<String>
+            requires n > 0 && n <= 10000
+            reads suspendu_a, origine, adhesion
+        // Les n dernières transitions de op (preuve : qui a admis, suspendu, rétabli, exclu,
+        // avec quel motif et quel valideur), les plus récentes en dernier.
+        signal historique_de(op: Org, n: Int) -> List<String>
+            requires n > 0 && n <= 1000
+            reads historique
+        // Opérateurs (au plus n) dont `etat` est l'État de tutelle au référentiel, chaque entrée
+        // "op | statut" : ce dont répond l'État, pour ses points focaux et le rapport annuel.
+        signal sous_tutelle(etat: Etat, n: Int) -> List<String>
+            requires n > 0 && n <= 10000
+            reads candidat_depuis, adhesion
+            calls ApiRef.etat_de
+        // Opérateurs actifs à h (statut "actif" ET licence valide à h, comme est_actif ; au
+        // plus n, ordre des identifiants) : ApiOperateurs.actifs (n = 10 000) et la population
+        // des balayages d'astreinte et d'exercices.
+        signal actifs(h: Horodatage, n: Int) -> List<String>
+            requires n > 0 && n <= 100000
+            reads candidat_depuis, adhesion
+            calls OpLicences.valide_a
+    }
+}
+
+// operateurs — RONDES : l'unique entrée du temps dans le sous-système. L'horloge d'ORBITE
+// appelle ApiOperateurs.balayer(h, "systeme") chaque minute ; la ronde enchaîne les
+// balayages internes (échéances de licence, créneaux, exercices, contacts, changements).
+// Les rondes lentes (alerte de planning, planification d'exercices, relance de
+// renouvellement) ne tournent qu'une fois par période, mémorisée ici.
+
+// Ronde lente dont la ronde minute mémorise le dernier passage.
+cell type OpRondeLente = String where value == "alerte_trous" || value == "planif_exercices" || value == "renouvellements"
+
+skeleton OpRondes {
+    // Lot traité par balayage interne à chaque ronde.
+    const LOT = 1000
+    // Périodes des rondes lentes : alerte de planning toutes les heures, planification
+    // d'exercices et relance de renouvellement une fois par jour.
+    const PERIODE_ALERTE_MS = 3600000
+    const PERIODE_JOUR_MS = 86400000
+    memory {
+        dernier_passage: Map<OpRondeLente, Horodatage> [persistent]   // ronde lente → dernier passage, ms ; ne recule jamais
+        invariant dernier_passage.size <= 3
+    }
+    face {
+        // Ronde à h, dans cet ordre : OpLicences.echoir ; OpAstreinte.balayer puis
+        // sanctionner_trous ; OpExercices.echoir, puis lancer chaque exercice de dus(h, LOT) ;
+        // OpContacts.balayer ; OpChangements.rendre_caducs ; puis, si leur période est écoulée
+        // depuis dernier_passage : OpAstreinte.alerter_trous, planification par
+        // OpExercices.planifier (instant tiré dans les 7 jours, par "systeme") de chaque
+        // opérateur de OpExercices.a_exercer, relance (ApiPasserelle.notifier, r = "") de chaque
+        // licence de OpLicences.a_renouveler. Chaque balayage interne prend LOT éléments au
+        // plus ; un reliquat passe à la minute suivante. Renvoie la somme des objets changés.
+        // Rôle exigé : "systeme" (l'horloge) ou "exploitant" d'ORBITE (rattrapage manuel).
+        // Refus : Habilitation.
+        signal balayer(h: Horodatage, par: String) -> Int
+            writes dernier_passage
+            calls ApiAcces.a_le_role, OpLicences.echoir, OpLicences.a_renouveler, OpAstreinte.balayer, OpAstreinte.sanctionner_trous, OpAstreinte.alerter_trous, OpExercices.echoir, OpExercices.dus, OpExercices.lancer, OpExercices.a_exercer, OpExercices.planifier, OpContacts.balayer, OpChangements.rendre_caducs, ApiPasserelle.notifier, Journal.noter
+        // Dernier passage d'une ronde lente (ms) ; 0 si jamais passée.
+        signal dernier(ronde: OpRondeLente) -> Horodatage
+            reads dernier_passage
+    }
+}

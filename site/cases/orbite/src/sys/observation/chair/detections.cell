@@ -1,0 +1,140 @@
+// Corps des détections de manœuvres non annoncées.
+flesh ObsDetections {
+    on suspecter(h, objet, od, ecart, instant) {
+        let deja = derniere_de.get(objet) ?? ""
+        if deja != "" && (get_status(deja) ?? "suspectee") == "suspectee" {
+            // Suspicion déjà ouverte : complétée (écart le plus fort), pas doublée.
+            ecart_de.set(deja, max(ecart_de.get(deja) ?? 0, ecart))
+            let _ = Journal.noter(h, "observation", "systeme", "détection {deja} complétée par {od} (écart {ecart} m)")
+            return deja
+        }
+        let n = (compteur.get("detections") ?? 0) + 1
+        require n <= MAX_DETECTIONS else Plein "registre des détections plein"
+        let id = "MD-{n}"
+        compteur.set("detections", n)
+        objet_de.set(id, objet)
+        orbite_apres.set(id, od)
+        ecart_de.set(id, ecart)
+        ouverte_le.set(id, h)
+        instant_de.set(id, min(instant, h))
+        derniere_de.set(objet, id)
+        let r = try { ObsTaches.demander(h, objet, 2, SUIVI_RENFORCE_MS, "verification_manoeuvre", id, "systeme") }
+        let suivi = if r.error == () { r.value } else { "impossible" }
+        let _ = Journal.noter(h, "observation", "systeme", "détection {id} ouverte sur {objet} : écart {ecart} m ({od}) ; suivi {suivi}")
+        return id
+    }
+    on confirmer(h, detection, par) {
+        require ApiAcces.a_le_role(par, "analyste") else Habilitation "{par} : analyste d'ORBITE requis"
+        require objet_de.has(detection) else Inconnu "détection {detection} inconnue"
+        let st = get_status(detection) ?? "suspectee"
+        require st == "suspectee" else EtatInvalide "détection {detection} : {st}"
+        let od = orbite_apres.get(detection) ?? ""
+        let eo = ObsOrbites.etat(od)
+        // Règle interne : suspectee -> confirmee when ObsOrbites.validee || ObsOrbites.remplacee via orbite_apres.
+        require eo == "validee" || eo == "remplacee" else EtatInvalide "orbite {od} : {eo}"
+        transition(detection, "suspectee", "confirmee")
+        juge_par.set(detection, par)
+        let _ = Journal.noter(h, "observation", par, "détection {detection} confirmée")
+        return _juger(h, detection)
+    }
+    on _juger(h: Horodatage, detection: String) {
+        let objet = objet_de.get(detection) ?? ""
+        let plan = ApiManoeuvres.plan_couvrant(Objet(objet), instant_de.get(detection) ?? 0)
+        if plan != "" {
+            return expliquer(h, detection, plan)
+        }
+        let _ = signaler(h, detection)
+        return "signalee"
+    }
+    on infirmer(h, detection, motif, par, valideur) {
+        require ApiAcces.a_le_role(par, "analyste") else Habilitation "{par} : analyste d'ORBITE requis"
+        require ApiAcces.quatre_yeux(par, valideur) && ApiAcces.a_le_role(valideur, "superviseur") else QuatreYeux "contre-signature d'un superviseur distinct requise"
+        require objet_de.has(detection) else Inconnu "détection {detection} inconnue"
+        require motif != "" else MotifRequis "motif requis"
+        let st = get_status(detection) ?? "suspectee"
+        require st == "suspectee" else EtatInvalide "détection {detection} : {st}"
+        transition(detection, "suspectee", "infirmee")
+        juge_par.set(detection, par)
+        let _ = Journal.noter(h, "observation", par, "détection {detection} infirmée ({motif}, valideur {valideur})")
+        return "infirmee"
+    }
+    on expliquer(h, detection, plan) {
+        let objet = objet_de.get(detection)
+        require objet != () else Inconnu "détection {detection} inconnue"
+        let st = get_status(detection) ?? "suspectee"
+        require st == "confirmee" else EtatInvalide "détection {detection} : {st}"
+        let couvrant = ApiManoeuvres.plan_couvrant(objet, instant_de.get(detection) ?? 0)
+        require plan != "" && couvrant == plan else Incoherent "le plan {plan} ne couvre pas l'instant estimé ({couvrant})"
+        transition(detection, "confirmee", "expliquee")
+        plan_de.set(detection, plan)
+        let _ = Journal.noter(h, "observation", "systeme", "détection {detection} expliquée par {plan}")
+        return "expliquee"
+    }
+    on signaler(h, detection) {
+        let objet = objet_de.get(detection)
+        require objet != () else Inconnu "détection {detection} inconnue"
+        let st = get_status(detection) ?? "suspectee"
+        require st == "confirmee" else EtatInvalide "détection {detection} : {st}"
+        let instant = instant_de.get(detection) ?? 0
+        transition(detection, "confirmee", "signalee")
+        let constat = ApiManoeuvres.constater_non_annoncee(h, objet, instant, "systeme")
+        constat_de.set(detection, constat)
+        // Rapprochement ouvert le plus grave de l'objet.
+        let r_grave = ""
+        let niv = 0
+        for r in ApiConjonctions.ouverts_de(objet) {
+            let k = ApiConjonctions.niveau(Rapprochement(r))
+            if k > niv {
+                niv = k
+                r_grave = Rapprochement(r)
+            }
+        }
+        let urgence = if ApiRef.habite(objet) || niv == 3 { 3 } else { 2 }
+        let proprio = ApiRef.proprietaire(objet)
+        let ecart = ecart_de.get(detection) ?? 0
+        if proprio != "inconnu" && proprio != "" {
+            let _ = ApiPasserelle.notifier(h, proprio, r_grave, "manoeuvre_non_annoncee", "Manœuvre non annoncée détectée sur {objet} vers {instant} (écart {ecart} m) ; constat {constat}", Niveau(urgence))
+        }
+        let rs = try { ObsTaches.demander(h, objet, 3, SUIVI_RENFORCE_MS, "verification_manoeuvre", "constat {constat}", "systeme") }
+        let suivi = if rs.error == () { rs.value } else { "impossible" }
+        let _ = Journal.noter(h, "observation", "systeme", "détection {detection} signalée : constat {constat}, urgence {urgence}, suivi {suivi}")
+        return constat
+    }
+    on veiller(h, par) {
+        require par == "systeme" else Habilitation "ronde réservée à systeme"
+        let n = 0
+        let echues = ouverte_le.entries.filter(e => h - e.value > DELAI_JUGEMENT_MS)
+        for e in echues {
+            let d = e.key
+            if (get_status(d) ?? "suspectee") == "suspectee" {
+                let od = orbite_apres.get(d) ?? ""
+                let eo = ObsOrbites.etat(od)
+                if eo == "validee" || eo == "remplacee" {
+                    // Règle interne : même garde que confirmer.
+                    require eo == "validee" || eo == "remplacee" else EtatInvalide "orbite {od} : {eo}"
+                    transition(d, "suspectee", "confirmee")
+                    juge_par.set(d, "systeme")
+                    let issue = _juger(h, d)
+                    let _ = Journal.noter(h, "observation", "systeme", "détection {d} confirmée d'office ({issue})")
+                    n = n + 1
+                } else {
+                    let _ = Journal.noter(h, "observation", "systeme", "détection {d} non jugée, orbite {od} : {eo}")
+                }
+            }
+        }
+        return n
+    }
+    on detectee_depuis(objet, depuis) {
+        for e in objet_de.entries {
+            if e.value == objet {
+                let st = get_status(e.key) ?? "suspectee"
+                if (st == "confirmee" || st == "signalee") && (instant_de.get(e.key) ?? 0) >= depuis { return true }
+            }
+        }
+        return false
+    }
+    on etat(detection) {
+        if !objet_de.has(detection) { return "inconnue" }
+        return get_status(detection) ?? "suspectee"
+    }
+}

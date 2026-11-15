@@ -1,0 +1,123 @@
+// Corps de la bascule de secours (operations).
+
+flesh OpsBascule {
+    on demander(h, b, incident, par) {
+        require ApiAcces.a_le_role(par, "exploitant") || ApiAcces.a_le_role(par, "direction") else Habilitation "demander une bascule : exploitant ou direction d'ORBITE"
+        require !crise_de.has(b) else Existe "bascule '{b}' déjà demandée"
+        let st_c = OpsCrise.etat(incident)
+        require st_c != "inconnue" else Inconnu "aucune crise pour l'incident '{incident}'"
+        require st_c == "active" else EtatInvalide "la crise {incident} n'est pas active ({st_c})"
+        require (site_actif.get("orbite") ?? "primaire") == "primaire" else EtatInvalide "la production est déjà sur le secours"
+        require transition.size == 0 else EtatInvalide "une bascule est déjà en transition"
+        require crise_de.size < MAX_BASCULES else Plein "registre des bascules plein"
+        crise_de.set(b, incident)
+        demandeur.set(b, par)
+        demandee_a.set(b, h)
+        let _ = Journal.noter(h, "operations", par, "bascule {b} demandée (crise {incident})")
+        return b
+    }
+
+    on autoriser(h, b, par, valideur) {
+        let incident = crise_de.get(b)
+        require incident != () else Inconnu "bascule '{b}' inconnue"
+        require ApiAcces.a_le_role(par, "direction") else Habilitation "autoriser : direction d'ORBITE"
+        let dem = demandeur.get(b) ?? ""
+        require valideur != par && valideur != dem && ApiAcces.quatre_yeux(par, valideur) && ApiAcces.a_le_role(valideur, "superviseur") else QuatreYeux "autorisation contre-signée par un superviseur, ni demandeur ni autorisant"
+        require (get_status(b) ?? "demandee") == "demandee" else EtatInvalide "bascule non en demande"
+        require OpsCrise.etat(incident) == "active" else EtatInvalide "la crise {incident} n'est plus active"
+        transition(b, "demandee", "autorisee")
+        let _ = Journal.noter(h, "operations", par, "bascule {b} autorisée, contre-signée par {valideur}")
+        return "autorisee"
+    }
+
+    on annuler(h, b, motif, par) {
+        let dem = demandeur.get(b)
+        require dem != () else Inconnu "bascule '{b}' inconnue"
+        require par == dem || ApiAcces.a_le_role(par, "direction") else Habilitation "annuler : le demandeur ou la direction"
+        require len(motif) > 0 else MotifRequis "motif requis"
+        let st = get_status(b) ?? "demandee"
+        require st == "demandee" || st == "autorisee" else EtatInvalide "bascule déjà lancée ou close"
+        if st == "demandee" { transition(b, "demandee", "annulee") } else { transition(b, "autorisee", "annulee") }
+        let _ = Journal.noter(h, "operations", par, "bascule {b} annulée : {motif}")
+        return "annulee"
+    }
+
+    on lancer(h, b, retard_ms, par) {
+        require ApiAcces.a_le_role(par, "exploitant") else Habilitation "lancer : exploitant d'ORBITE"
+        let st = get_status(b) ?? "demandee"
+        require st == "autorisee" else EtatInvalide "bascule '{b}' non autorisée"
+        require transition.size == 0 else EtatInvalide "une autre transition est en cours"
+        require retard_ms <= RPO else HorsBornes "perte de données {retard_ms} ms au-delà du RPO : annuler et redemander"
+        transition(b, "autorisee", "en_cours")
+        lancee_a.set(b, h)
+        perte.set(b, retard_ms)
+        transition.set("orbite", b)
+        let _ = Journal.noter(h, "operations", par, "bascule {b} lancée (perte {retard_ms} ms)")
+        return "en_cours"
+    }
+
+    on confirmer(h, b, par, valideur) {
+        require ApiAcces.a_le_role(par, "exploitant") else Habilitation "confirmer : exploitant d'ORBITE"
+        require valideur != par && ApiAcces.quatre_yeux(par, valideur) && ApiAcces.a_le_role(valideur, "superviseur") else QuatreYeux "confirmation contre-signée par un superviseur"
+        let st = get_status(b) ?? "demandee"
+        require st == "en_cours" || st == "retour_en_cours" else EtatInvalide "bascule '{b}' pas en transition"
+        let cible_s = "terminee"
+        if st == "en_cours" {
+            transition(b, "en_cours", "sur_secours")
+            cible_s = "sur_secours"
+            site_actif.set("orbite", OpsSite("secours"))
+        } else {
+            transition(b, "retour_en_cours", "terminee")
+            site_actif.set("orbite", OpsSite("primaire"))
+        }
+        confirmee_a.set(b, h)
+        transition.delete("orbite")
+        let _ = Journal.noter(h, "operations", par, "bascule {b} confirmée : {cible_s}")
+        return cible_s
+    }
+
+    on constater_echec(h, b, motif, par) {
+        require ApiAcces.a_le_role(par, "exploitant") else Habilitation "constater l'échec : exploitant d'ORBITE"
+        require len(motif) > 0 else MotifRequis "motif requis"
+        let st = get_status(b) ?? "demandee"
+        require st == "en_cours" || st == "retour_en_cours" else EtatInvalide "bascule '{b}' pas en transition"
+        if st == "en_cours" { transition(b, "en_cours", "echouee") } else { transition(b, "retour_en_cours", "echouee") }
+        transition.delete("orbite")
+        if !OpsIncident.est_degrade("operations") {
+            let _ = OpsIncident.declarer(h, "BASC-{b}-{h}", 3, "operations", "échec de la bascule {b} : {motif}", h, par)
+        }
+        let _ = Journal.noter(h, "operations", par, "bascule {b} en échec : {motif}")
+        return "echouee"
+    }
+
+    on rapatrier(h, b, par, valideur) {
+        require ApiAcces.a_le_role(par, "direction") else Habilitation "rapatrier : direction d'ORBITE"
+        require valideur != par && ApiAcces.quatre_yeux(par, valideur) && ApiAcces.a_le_role(valideur, "superviseur") else QuatreYeux "retour contre-signé par un superviseur"
+        require (get_status(b) ?? "demandee") == "sur_secours" else EtatInvalide "bascule '{b}' pas sur le secours"
+        require transition.size == 0 else EtatInvalide "une autre transition est en cours"
+        transition(b, "sur_secours", "retour_en_cours")
+        transition.set("orbite", b)
+        let _ = Journal.noter(h, "operations", par, "bascule {b} : retour au primaire engagé")
+        return "retour_en_cours"
+    }
+
+    on en_transition() {
+        return transition.size > 0
+    }
+
+    on actif() {
+        return site_actif.get("orbite") ?? "primaire"
+    }
+
+    on duree_reprise(b) {
+        let l = lancee_a.get(b)
+        let c = confirmee_a.get(b)
+        if l == () || c == () { return -1 }
+        return to_int(c - l)
+    }
+
+    on etat(b) {
+        if !crise_de.has(b) { return "inconnue" }
+        return get_status(b) ?? "demandee"
+    }
+}

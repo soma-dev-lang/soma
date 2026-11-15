@@ -1,0 +1,247 @@
+// ephemerides — DÉPÔTS : une éphéméride (positions prévues au format OEM, avec covariance)
+// déposée par le propriétaire d'un objet, ou produite par ORBITE à partir de ses propres
+// mesures (source "observation", par "systeme"). Le contenu du fichier reste hors ORBITE :
+// seule son empreinte est gardée, et c'est elle qui sert de preuve (propriété 6).
+// Un dépôt (id choisi par le déposant, unique) est jugé à sa réception : validé ou rejeté.
+// Au plus UN dépôt "validee" par objet : un nouveau dépôt validé fait passer le précédent
+// "remplacee". Les dépôts clos restent consultables jusqu'à leur purge (EphHistorique).
+
+// Origine d'un dépôt.
+cell type EphSource = String where value == "proprietaire" || value == "observation"
+// Motif de rejet à la réception (EphControle.examiner) ; "" n'est jamais stocké.
+// format : empreinte ou id mal formés ; epoque_future : époque > h ; nee_perimee : époque
+// plus ancienne que l'âge maximal du régime ; horizon_court : horizon < horizon minimal ;
+// incoherence : écart avec l'orbite observée au-delà de la tolérance ; objet_clos : objet
+// rentré, fragmenté, retiré.
+cell type EphMotifRejet = String where value == "format" || value == "epoque_future" || value == "nee_perimee" || value == "horizon_court" || value == "incoherence" || value == "objet_clos"
+// Nature d'une invalidation. signalement : demande par la façade (motif libre) ;
+// anomalie : objet déclaré en anomalie (ApiEvenements.en_anomalie) ; manoeuvre_non_annoncee :
+// ApiObservation.manoeuvre_detectee ; plan_annule : un plan inclus dans le dépôt a été annulé
+// ou rejeté ; incoherence : écart constaté a posteriori (EphControle.confronter) ;
+// retrait_proprietaire : le propriétaire retire lui-même son dépôt (erreur de sa part).
+cell type EphNatureInvalidation = String where value == "signalement" || value == "anomalie" || value == "manoeuvre_non_annoncee" || value == "plan_annule" || value == "incoherence" || value == "retrait_proprietaire"
+
+skeleton EphDepot {
+    const MAX_DEPOTS = 50000000
+    const MAX_PLANS_INCLUS = 20
+    // 72 heures, ms : horizon minimal absolu, quelle que soit la version de réglage.
+    const HORIZON_ABSOLU = 259200000
+
+    memory {
+        objet_de: Map<String, Objet> [persistent]         // dépôt → objet ; écrit une fois par creer, jamais effacé (lien de règle)
+        reglage_de: Map<String, String> [persistent]      // dépôt → version de réglage qui l'a jugé ; écrit une fois par creer (lien de la règle EphReglage.en_vigueur)
+        operateur_de: Map<String, Org> [persistent]       // dépôt → propriétaire de l'objet au dépôt ; écrit une fois par creer (lien proposé vers operateurs)
+        source: Map<String, EphSource> [persistent]       // dépôt → origine
+        epoque: Map<String, Horodatage> [persistent]      // dépôt → époque (premier point de l'éphéméride), ms
+        horizon: Map<String, Duree> [persistent]          // dépôt → durée couverte depuis l'époque, ms
+        q_declaree: Map<String, Qualite> [persistent]     // dépôt → qualité de covariance déclarée par le déposant
+        q_retenue: Map<String, Qualite> [persistent]      // dépôt → qualité retenue par ORBITE (jamais meilleure que la déclarée)
+        empreinte_de: Map<String, String> [persistent]    // dépôt → empreinte "sha256:<64 hex>" du fichier
+        empreintes: Map<String, String> [persistent]      // empreinte → dépôt (refus Doublon) ; jamais effacé
+        position_de: Map<String, String> [persistent]     // dépôt → position déclarée à l'époque, "x,y,z" en m (repère inertiel commun)
+        ecart_recu: Map<String, Distance> [persistent]    // dépôt → écart à l'orbite observée mesuré à la réception (ApiObservation.ecart_a), m ; absent si sans témoin
+        avec_manoeuvres: Map<String, Bool> [persistent]   // dépôt → vrai si la trajectoire intègre des manœuvres prévues
+        plans_inclus: Map<String, List<String>> [persistent]  // dépôt → plans de manœuvre intégrés (ApiManoeuvres)
+        manoeuvre_omise: Map<String, Bool> [persistent]   // dépôt → vrai si déposé sans manœuvres alors qu'un plan de l'objet était actif
+        depose_le: Map<String, Horodatage> [persistent]   // dépôt → réception, ms
+        depose_par: Map<String, String> [persistent]      // dépôt → déposant (personne ou "systeme")
+        age_max_applique: Map<String, Duree> [persistent] // dépôt validé → âge maximal du régime au dépôt, ms (écrit avant age_au_depot)
+        age_au_depot: Map<String, Duree> [persistent]     // dépôt validé → h − époque à la validation, ms
+        motif_rejet: Map<String, EphMotifRejet> [persistent]  // dépôt rejeté → motif
+        valide_le: Map<String, Horodatage> [persistent]   // dépôt → instant où il devient le dépôt courant de l'objet, ms
+        fin_le: Map<String, Horodatage> [persistent]      // dépôt → instant où il cesse d'être courant (remplacé, invalidé, périmé), ms
+        motif_fin: Map<String, String> [persistent]       // dépôt invalidé → "nature|motif|par"
+        invariant objet_de.size <= MAX_DEPOTS
+        invariant empreintes.size <= MAX_DEPOTS
+        invariant source == "proprietaire" || source == "observation"
+        invariant horizon >= 0
+        invariant len(plans_inclus) <= MAX_PLANS_INCLUS
+        // Un dépôt validé n'est pas né périmé.
+        invariant (age_au_depot ?? 0) <= (age_max_applique ?? 0)
+    }
+
+    // Cycle de vie d'un dépôt (id = dépôt).
+    state cycle {
+        initial: recu
+        recu -> admis          // admettre : dépôt "proprietaire", opérateur propriétaire actif (règle operateurs)
+        recu -> validee        // valider : dépôt "observation" seulement, contrôles passés sous le réglage en vigueur
+        admis -> validee       // valider : dépôt "proprietaire", contrôles passés sous le réglage en vigueur
+        recu -> rejetee        // rejeter : motif EphMotifRejet
+        admis -> rejetee       // rejeter : motif EphMotifRejet
+        validee -> remplacee   // valider d'un dépôt plus récent du même objet
+        validee -> perimee     // perimer : âge au-delà du maximum (balayage)
+        validee -> invalidee   // invalider_depuis
+        remplacee -> invalidee // invalider_depuis : dépôt antérieur touché par la même cause
+        perimee -> invalidee   // invalider_depuis
+        rejetee -> validee     // rehabiliter : contestation acceptée, dépôt plus récent que le courant
+        rejetee -> remplacee   // rehabiliter : contestation acceptée, un dépôt plus récent est déjà courant
+        rejetee -> archivee    // archiver (purge)
+        remplacee -> archivee  // archiver
+        perimee -> archivee    // archiver
+        invalidee -> archivee  // archiver
+    }
+
+    face {
+        // Point d'entrée de ApiEphemerides.deposer. Contrôle : objet catalogué (ApiRef.etat_objet
+        // ≠ "inconnu"), habilitation (`par` "dynamicien" ET ApiAcces.agit_pour le propriétaire
+        // ApiRef.proprietaire(objet) — rôle d'opérateur ; ou "systeme" : source "observation"),
+        // propriétaire actif (ApiOperateurs.est_actif), quota (EphQuota.compter, sauf "systeme"),
+        // empreinte jamais vue ; puis creer, admettre (source "proprietaire"), EphControle.examiner (qui compare `pos`, position
+        // "x,y,z" en m à l'époque, à l'orbite observée par ApiObservation.ecart_a) : rejeter(motif),
+        // ou valider avec la qualité EphControle.qualite_retenue — "faible" d'office si
+        // l'observation n'a pas de témoin (verdict "sans_temoin"). Si avec_manoeuvres est faux alors qu'un plan de
+        // l'objet est actif (ApiManoeuvres.plan_actif), le dépôt est marqué manoeuvre_omise et sa
+        // qualité retenue est "faible". `epoque` et `h` en ms, `horizon` en ms.
+        // Renvoie l'id du dépôt ; son état ("validee" ou "rejetee") se lit par etat_de.
+        // Refus : Inconnu (objet), Habilitation, Suspendu (opérateur non actif), Doublon
+        // (empreinte), Existe (id de dépôt), Plein (quota du jour, MAX_DEPOTS), Ferme (aucun
+        // réglage en vigueur).
+        signal deposer(h: Horodatage, objet: Objet, depot: String, ep: Horodatage, hz: Duree, q: Qualite, empreinte: String, pos: String, manoeuvres: Bool, par: String) -> String
+            writes manoeuvre_omise, ecart_recu
+            calls creer, admettre, valider, rejeter, EphBilan.compter, EphControle.examiner, ApiObservation.ecart_a, EphControle.qualite_retenue, EphQuota.compter, EphReglage.courante_version, EphReglage.age_max, ApiRef.regime, ApiMeteo.tempete, ApiRef.etat_objet, ApiRef.proprietaire, ApiOperateurs.est_actif, ApiManoeuvres.plan_actif, ApiAcces.a_le_role, ApiAcces.agit_pour, Journal.noter
+
+        // Enregistre un dépôt reçu, état "recu" : seul écrivain de objet_de, reglage_de et
+        // operateur_de (une fois : require objet_de.get(depot) == () else Existe ; operateur_de
+        // est le lien de la règle EphDepot.admettre, jamais effacé). Ajoute le
+        // dépôt à l'historique de l'objet. Appelé par deposer seulement. Renvoie l'id.
+        // Refus : Existe, Doublon (empreinte), Plein (MAX_DEPOTS).
+        signal creer(h: Horodatage, depot: String, objet: Objet, op: Org, reglage: String, src: EphSource, ep: Horodatage, hz: Duree, q: Qualite, empreinte: String, pos: String, manoeuvres: Bool, par: String) -> String
+            writes objet_de, reglage_de, operateur_de, source, epoque, horizon, q_declaree, empreinte_de, empreintes, position_de, avec_manoeuvres, depose_le, depose_par
+            calls EphHistorique.noter_depot
+
+        // Admet un dépôt "proprietaire" reçu (appelé par deposer, entre creer et
+        // EphControle.examiner) : l'opérateur du dépôt (operateur_de, propriétaire de l'objet au
+        // dépôt) est actif à h — require ApiOperateurs.est_actif(operateur_de.get(depot), h).
+        // Un dépôt "observation" (par "systeme") ne passe pas ici : ORBITE garde la trajectoire
+        // d'un objet dont l'opérateur est suspendu. Règle entre sous-systèmes (operateurs) :
+        // recu -> admis when OpMembres.actif via operateur_de. Renvoie "admis".
+        // Refus : Inconnu, EtatInvalide (pas "recu", ou source "observation"), Suspendu.
+        signal admettre(h: Horodatage, depot: String) -> String
+            reads operateur_de, source
+            moves recu -> admis when OpMembres.actif via operateur_de
+            calls ApiOperateurs.est_actif
+
+        // Valide un dépôt reçu (source "observation") ou admis (source "proprietaire") avec la qualité retenue `q` et l'âge maximal `age_max` (ms) de son
+        // régime ; le dépôt courant de l'objet, s'il est plus ancien (époque), passe "remplacee"
+        // (fin_le = h), et le nouveau devient courant (EphSuivi.prendre). Un dépôt d'époque
+        // antérieure au courant est validé puis aussitôt "remplacee" (il complète l'historique).
+        // Règle interne : la version de réglage du dépôt est en vigueur. Renvoie "validee".
+        // Refus : Inconnu, EtatInvalide, Perime (h − époque > age_max).
+        signal valider(h: Horodatage, depot: String, q: Qualite, age_max: Duree) -> String
+            writes q_retenue, age_max_applique, age_au_depot, valide_le, fin_le
+            reads objet_de, reglage_de, epoque, source
+            moves recu -> validee when EphReglage.en_vigueur via reglage_de, admis -> validee when EphReglage.en_vigueur via reglage_de, validee -> remplacee
+            calls EphSuivi.prendre, EphSuivi.derniere, EphReglage.courante_version, Journal.noter
+
+        // Rejette un dépôt reçu ou admis. Renvoie "rejetee". Refus : Inconnu, EtatInvalide.
+        signal rejeter(h: Horodatage, depot: String, motif: EphMotifRejet) -> String
+            writes motif_rejet
+            reads operateur_de, source
+            moves recu -> rejetee, admis -> rejetee
+            calls EphBilan.compter, Journal.noter
+
+        // Rattache un plan de manœuvre (ApiManoeuvres) à un dépôt déclaré avec_manoeuvres, pour
+        // que l'annulation du plan invalide le dépôt (EphControle.controler_objet). Par le
+        // "dynamicien" du propriétaire (ApiAcces.agit_pour operateur_de) — rôle d'opérateur.
+        // Le plan doit être "declare", "crible" ou "approuve" et viser l'objet du dépôt
+        // (ApiManoeuvres.objet_de). Renvoie le nombre de plans inclus.
+        // Refus : Inconnu (dépôt ou plan), EtatInvalide (dépôt non validé, plan dans un autre
+        // état), Incoherent (dépôt sans manœuvres, ou plan d'un autre objet), Plein
+        // (MAX_PLANS_INCLUS), Habilitation.
+        signal inclure_plan(h: Horodatage, depot: String, plan: String, par: String) -> Int
+            writes plans_inclus
+            reads avec_manoeuvres, operateur_de, objet_de, cycle
+            calls ApiManoeuvres.etat, ApiManoeuvres.objet_de, ApiAcces.a_le_role, ApiAcces.agit_pour, Journal.noter
+
+        // Invalide les dépôts de l'objet dont l'époque est ≥ `depuis` (ms) et qui ne sont ni
+        // rejetés ni archivés : le dépôt courant en tête, puis les remplacés et périmés touchés
+        // par la même cause. Si le courant est invalidé, l'objet perd sa donnée (EphSuivi.perdre)
+        // et son propriétaire est prévenu (ApiPasserelle.notifier, r = le rapprochement ouvert de
+        // plus haut niveau de l'objet ou "", urgence 2 ; 3 si ce rapprochement est de niveau 3). Habilitation : "analyste" ou "systeme" d'ORBITE ; pour
+        // retrait_proprietaire, le "dynamicien" du propriétaire (ApiAcces.agit_pour).
+        // Renvoie le nombre de dépôts invalidés (0 : rien à invalider).
+        // Refus : Inconnu (objet sans dépôt), MotifRequis, Habilitation.
+        signal invalider_depuis(h: Horodatage, objet: Objet, depuis: Horodatage, nature: EphNatureInvalidation, motif: String, par: String) -> Int
+            writes fin_le, motif_fin
+            reads objet_de, epoque, operateur_de
+            moves validee -> invalidee, remplacee -> invalidee, perimee -> invalidee
+            calls EphSuivi.perdre, EphBilan.compter, EphHistorique.historique, ApiConjonctions.ouverts_de, ApiConjonctions.niveau, ApiPasserelle.notifier, ApiAcces.a_le_role, ApiAcces.agit_pour, Journal.noter
+
+        // Marque périmé le dépôt courant d'un objet (appelé par EphSuivi.balayer). fin_le = h.
+        // Renvoie "perimee". Refus : Inconnu, EtatInvalide.
+        signal perimer(h: Horodatage, depot: String) -> String
+            writes fin_le
+            moves validee -> perimee
+
+        // Réhabilite un dépôt rejeté dont la contestation est acceptée (appelé par
+        // EphContestation.accepter seulement) : "validee" s'il est plus récent que le courant
+        // (qui passe alors "remplacee"), sinon "remplacee". Qualité retenue au plus "moyenne".
+        // Renvoie l'état atteint. Refus : Inconnu, EtatInvalide.
+        signal rehabiliter(h: Horodatage, depot: String) -> String
+            writes q_retenue, valide_le, fin_le
+            reads objet_de, epoque, q_declaree
+            moves rejetee -> validee when EphContestation.acceptee, rejetee -> remplacee when EphContestation.acceptee, validee -> remplacee
+            calls EphSuivi.prendre, EphSuivi.derniere, EphContestation.etat, Journal.noter
+
+        // Archive un dépôt clos (appelé par EphHistorique.purger seulement) : son empreinte et ses
+        // dates restent, il ne fonde plus rien. Règle interne : la rétention du dépôt est libre
+        // (EphRetention, même id). Renvoie "archivee". Refus : Inconnu, EtatInvalide.
+        signal archiver(h: Horodatage, depot: String) -> String
+            moves rejetee -> archivee when EphRetention.libre, remplacee -> archivee when EphRetention.libre, perimee -> archivee when EphRetention.libre, invalidee -> archivee when EphRetention.libre
+            calls EphRetention.est_retenu
+
+        // État du dépôt ("recu", "admis", "validee", …, "archivee") ; "inconnu" si jamais déposé.
+        signal etat_de(depot: String) -> String
+            reads cycle, objet_de
+
+        // Motif de rejet d'un dépôt rejeté (EphMotifRejet) ; "" s'il n'a pas été rejeté.
+        // Refus : Inconnu.
+        signal motif_rejet_de(depot: String) -> String
+            reads motif_rejet, objet_de
+
+        // Objet d'un dépôt. Refus : Inconnu.
+        signal objet_du_depot(depot: String) -> Objet
+            reads objet_de
+
+        // Époque (ms) d'un dépôt. Refus : Inconnu.
+        signal epoque_de(depot: String) -> Horodatage
+            reads epoque
+
+        // Qualité retenue d'un dépôt validé (ou ayant été validé). Refus : Inconnu.
+        signal qualite_de(depot: String) -> Qualite
+            reads q_retenue
+
+        // Plans de manœuvre inclus dans le dépôt ([] si aucun). Refus : Inconnu.
+        signal plans_de(depot: String) -> List<String>
+            reads plans_inclus, objet_de
+
+        // Instant (ms) où le dépôt a cessé d'être courant ; 0 s'il l'est encore ou ne l'a jamais
+        // été. Refus : Inconnu.
+        signal fin_de(depot: String) -> Horodatage
+            reads fin_le, objet_de
+
+        // Instant (ms) où le dépôt est devenu courant ; 0 s'il ne l'a jamais été. Refus : Inconnu.
+        signal valide_depuis(depot: String) -> Horodatage
+            reads valide_le, objet_de
+
+        // Façade `empreinte` : empreinte du fichier déposé. Refus : Inconnu.
+        signal empreinte_du_depot(depot: String) -> String
+            reads empreinte_de
+
+        // Façade `avec_manoeuvres` : vrai si le dépôt intègre des manœuvres prévues. Refus : Inconnu.
+        signal inclut_manoeuvres(depot: String) -> Bool
+            reads avec_manoeuvres
+
+        // Façade `depot_valide` : vrai si le dépôt est "validee" (ni remplacé, ni périmé, ni
+        // invalidé, ni archivé) ; faux s'il est inconnu.
+        signal est_valide(depot: String) -> Bool
+            reads cycle, objet_de
+
+        // Fiche de preuve d'un dépôt : "objet|operateur|source|epoque|horizon|q_declaree|
+        // q_retenue|empreinte|position|ecart_recu|reglage|avec_manoeuvres|manoeuvre_omise|
+        // depose_le|depose_par|etat". Lecture interne : la diffusion est contrôlée par
+        // EphHistorique.consulter. Refus : Inconnu.
+        signal fiche(depot: String) -> String
+            reads objet_de, operateur_de, source, epoque, horizon, q_declaree, q_retenue, empreinte_de, position_de, ecart_recu, reglage_de, avec_manoeuvres, manoeuvre_omise, depose_le, depose_par, cycle
+    }
+}

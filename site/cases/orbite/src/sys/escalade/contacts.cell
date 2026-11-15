@@ -1,0 +1,32 @@
+// escalade — CONTACTS SUCCESSIFS. Qui prévenir à chaque échelon d'un dossier (r, op) :
+//   1 l'astreinte de l'opérateur, 2 ses "chef_de_mission", 3 les "point_focal" de son État de
+//     tutelle — les trois listes viennent d'operateurs (ApiOperateurs.contacts(op, échelon, h)),
+//     seul propriétaire des astreintes et des annuaires ;
+//   4 la direction d'ORBITE (ApiRef.orbite()) et les Org des États de tutelle des propriétaires des
+//     DEUX objets (ApiRef.org_de_etat(ApiRef.etat_de(ApiRef.proprietaire(objet)))) ; ce message
+//     vaut convocation à la concertation d'échelon 4 (EscConcertation).
+// Un échelon sans contact (liste vide) n'arrête rien : prevenir renvoie 0, le dossier monte au
+// balayage suivant sans attendre (délai nul), et un manquement est constaté contre l'opérateur
+// aux échelons 1 et 2.
+
+// Sans mémoire ni machine : la résolution des contacts et l'émission sont un calcul sur le
+// contrat d'operateurs et de ref, l'état des messages vit dans EscRelances.
+skeleton EscContacts {
+    face {
+        // Émet les messages d'un échelon du dossier : un EscRelances.emettre par destinataire (une
+        // Org, à l'attention d'une personne quand operateurs en donne une), texte « rapprochement r,
+        // échelon n, répondez avant <échéance de l'échelon> ». Renvoie le nombre de messages émis ;
+        // 0 = échelon sans contact : manquement constaté aux échelons 1 et 2
+        // (ApiConformite.constater, nature "escalade_sans_contact", gravité 2, référence = dossier,
+        // par "systeme"). Refus : Inconnu (opérateur ou rapprochement), Plein.
+        signal prevenir(h: Horodatage, dossier: String, r: Rapprochement, op: Org, echelon: EscEchelon, echeance: Horodatage) -> Int
+            ensures result >= 0
+            calls ApiOperateurs.contacts, ApiAcces.employeur, ApiRef.etat_de, ApiRef.org_de_etat, ApiRef.orbite, ApiRef.proprietaire, ApiConjonctions.objets, ApiConformite.constater, EscRelances.emettre
+        // Contacts qu'atteindrait l'échelon `echelon` du dossier (r, op) à `h`, sans rien émettre :
+        // "Org | personne" (personne "" pour une organisation). Sert à la revue d'un dossier et à
+        // l'exercice de joignabilité. Rôle exigé : "analyste" ou "superviseur" d'ORBITE, ou une
+        // personne agissant pour `op` (ApiAcces.agit_pour). Refus : Inconnu, Habilitation.
+        signal destinataires(h: Horodatage, r: Rapprochement, op: Org, echelon: EscEchelon, par: String) -> List<String>
+            calls ApiAcces.a_le_role, ApiAcces.agit_pour, ApiOperateurs.contacts, ApiAcces.employeur, ApiRef.etat_de, ApiRef.org_de_etat, ApiRef.orbite, ApiRef.proprietaire, ApiConjonctions.objets
+    }
+}

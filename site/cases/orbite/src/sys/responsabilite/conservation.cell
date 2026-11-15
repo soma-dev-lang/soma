@@ -1,0 +1,206 @@
+// RESPONSABILITÉ — conservation, purge et communication des données de preuve.
+// Chaque catégorie de données a une durée minimale de conservation (avant elle, aucune purge)
+// et une durée maximale (au-delà, la purge est due). Une purge est AUTORISÉE ici et EXÉCUTÉE
+// par le sous-système détenteur ; elle n'est jamais autorisée ni exécutée sur une cible gelée,
+// et un gel posé après l'autorisation l'annule. Les pièces d'un dossier ne sont communiquées
+// qu'à une organisation qu'ApiDonnees autorise pour chaque objet concerné, et chaque envoi est
+// tracé (ApiDonnees.tracer) : c'est la seconde moitié de la propriété 6.
+
+// Catégorie de données soumise à conservation.
+cell type RespCategorie = String where value == "journal" || value == "ephemeride" || value == "cdm" || value == "coordination" || value == "manoeuvre" || value == "observation" || value == "escalade" || value == "communication" || value == "piece"
+
+// Durées de conservation par catégorie (pas de machine : une table versionnée par le journal).
+skeleton RespDurees {
+    // Plancher de la durée minimale : 2 ans (délai de dépôt d'une réclamation + marge), ms.
+    const PLANCHER = 63115200000
+    memory {
+        minimum_de: Map<String, Duree> [persistent]   // catégorie -> durée minimale, ms
+        maximum_de: Map<String, Duree> [persistent]   // catégorie -> durée maximale, ms
+        invariant (minimum_de ?? 0) <= (maximum_de ?? 0)
+        fixee_le: Map<String, Horodatage> [persistent]
+    }
+    face {
+        // Fixe les durées d'une catégorie. Renvoie la durée minimale retenue. Par "direction",
+        // valideur "conformite" (quatre yeux). Refus : Incoherent (minimum > maximum),
+        // HorsBornes (minimum < PLANCHER), Habilitation, QuatreYeux.
+        signal fixer(h: Horodatage, categorie: RespCategorie, minimum: Duree, maximum: Duree, par: String, valideur: String) -> Duree
+            writes minimum_de, maximum_de, fixee_le
+            calls ApiAcces.a_le_role, ApiAcces.quatre_yeux, Journal.noter
+        // Durée minimale ; PLANCHER si la catégorie n'a jamais été fixée.
+        signal minimum(categorie: RespCategorie) -> Duree
+            reads minimum_de
+        // Vrai si des données de la catégorie créées à `cree_le` ont dépassé leur durée
+        // maximale à `h` (purge due).
+        signal purge_due(categorie: RespCategorie, cree_le: Horodatage, h: Horodatage) -> Bool
+            reads maximum_de
+    }
+}
+
+// Purges (une instance par id "PG-<n>") : autorisation de supprimer, chez un détenteur, les
+// données d'une catégorie antérieures à une date et concernant une cible.
+skeleton RespPurges {
+    const MAX_PURGES = 1000000
+    memory {
+        cible_de: Map<String, String> [persistent]        // purge -> rapprochement ou objet ; écrit une fois par demander, jamais supprimé (lien `via`)
+        invariant cible_de.size <= 1000000
+        categorie_de: Map<String, RespCategorie> [persistent]
+        avant_de: Map<String, Horodatage> [persistent]    // données créées avant cet instant
+        detenteur_de: Map<String, SousSysteme> [persistent]
+        demandee_par: Map<String, String> [persistent]
+        autorisee_le: Map<String, Horodatage> [persistent]
+        executee_le: Map<String, Horodatage> [persistent]
+        invariant (autorisee_le ?? 0) <= (executee_le ?? 9000000000000000)
+        supprimes_de: Map<String, Int> [persistent]       // enregistrements supprimés déclarés par le détenteur
+        invariant supprimes_de >= 0
+        motif_de: Map<String, String> [persistent]
+        purges_de_cible: Map<String, List<String>> [persistent]  // cible -> purges demandées
+    }
+    state purge {
+        initial: aucune
+        aucune -> demandee
+        demandee -> autorisee     // durée minimale échue, cible libre
+        demandee -> refusee
+        autorisee -> executee     // détenteur a supprimé ; cible toujours libre
+        autorisee -> annulee      // gel posé entre-temps, ou retrait du demandeur
+    }
+    face {
+        // Demande la purge, chez `detenteur`, des données de `categorie` concernant `cible` et
+        // créées avant `avant`. Renvoie l'id "PG-<n>". Par "exploitant" ou "systeme" d'ORBITE.
+        // Refus : Incoherent (avant > h), Delai (avant + durée minimale > h : conservation
+        // obligatoire), Conflit (cible gelée), Habilitation, Plein.
+        signal demander(h: Horodatage, cible: String, categorie: RespCategorie, avant: Horodatage, detenteur: SousSysteme, par: String) -> String
+            writes cible_de, categorie_de, avant_de, detenteur_de, demandee_par, purges_de_cible
+            moves aucune -> demandee
+            calls ApiAcces.a_le_role, RespDurees.minimum, RespGels.est_gele, Journal.noter, next_id
+        // Autorise une purge demandée. Renvoie "autorisee". Par "conformite" (≠ demandeur).
+        // Refus : Inconnu, EtatInvalide, Conflit (cible gelée), Delai (durée minimale non
+        // échue, recontrôlée à h), Habilitation.
+        signal autoriser(h: Horodatage, purge: String, par: String) -> String
+            reads cible_de, categorie_de, avant_de, demandee_par
+            writes autorisee_le
+            moves demandee -> autorisee when RespGels.libre via cible_de
+            calls ApiAcces.a_le_role, RespGels.est_gele, RespDurees.minimum, Journal.noter
+        // Refuse une purge demandée. Renvoie "refusee". Par "conformite". Refus : Inconnu,
+        // EtatInvalide, MotifRequis, Habilitation.
+        signal refuser(h: Horodatage, purge: String, motif: String, par: String) -> String
+            writes motif_de
+            moves demandee -> refusee
+            calls ApiAcces.a_le_role, Journal.noter
+        // Le détenteur déclare la purge faite (nombre d'enregistrements supprimés). Renvoie
+        // "executee". Par "systeme" ou "exploitant". Refus : Inconnu, EtatInvalide (non
+        // autorisée, ou annulée par un gel), Conflit (cible gelée), Habilitation.
+        signal constater(h: Horodatage, purge: String, supprimes: Int, par: String) -> String
+            reads cible_de
+            writes executee_le, supprimes_de
+            moves autorisee -> executee when RespGels.libre via cible_de
+            calls ApiAcces.a_le_role, RespGels.est_gele, Journal.noter
+        // Annule les purges autorisées non exécutées d'une cible qui vient d'être gelée.
+        // Renvoie le nombre de purges annulées. Appelé par RespGels.poser seulement.
+        signal annuler_pour_gel(h: Horodatage, cible: String) -> Int
+            reads purges_de_cible
+            writes motif_de
+            moves autorisee -> annulee
+            calls Journal.noter
+        // Vrai si une purge de la cible est autorisée à `h` : une purge "autorisee" la vise,
+        // la cible n'est pas gelée, et la durée minimale de sa catégorie est échue à h pour
+        // les données visées. Seul feu vert qu'un détenteur lit avant de supprimer
+        // (ApiResponsabilite.purge_autorisee).
+        signal autorisee_pour(cible: String, h: Horodatage) -> Bool
+            reads purges_de_cible, purge, categorie_de, avant_de
+            calls RespGels.est_gele, RespDurees.minimum
+    }
+}
+
+// Communications de pièces d'un dossier à une organisation (une instance par id "CM-<n>").
+skeleton RespCommunications {
+    const MAX_COMMUNICATIONS = 500000
+    // Pièces par communication.
+    const MAX_PIECES_COMM = 500
+    memory {
+        dossier_de: Map<String, String> [persistent]      // communication -> dossier ; écrit une fois par demander, jamais supprimé (lien `via`)
+        invariant dossier_de.size <= 500000
+        destinataire_de: Map<String, Org> [persistent]
+        pieces_de: Map<String, List<String>> [persistent] // pièces demandées (même dossier)
+        motif_de: Map<String, String> [persistent]        // usage déclaré : réclamation, commission, assurance, enquête
+        demandee_par: Map<String, String> [persistent]
+        decidee_par: Map<String, String> [persistent]     // "par/valideur" de l'autorisation ou du refus
+        traces_de: Map<String, List<Int>> [persistent]    // numéros de trace ApiDonnees, un par pièce et objet
+        communiquee_le: Map<String, Horodatage> [persistent]
+        communications_du_dossier: Map<String, List<String>> [persistent]
+    }
+    state communication {
+        initial: aucune
+        aucune -> demandee
+        demandee -> autorisee     // dossier scellé ; destinataire autorisé pour chaque objet de chaque pièce
+        demandee -> refusee
+        autorisee -> communiquee  // envoyée, tracée
+        autorisee -> revoquee     // droit retiré avant l'envoi
+    }
+    face {
+        // Demande la communication de pièces d'un dossier à `destinataire`. Renvoie l'id
+        // "CM-<n>". Par une personne employée par le destinataire avec un rôle "point_focal"
+        // ou "autorite" (État), "administrateur_operateur" ou "chef_de_mission" (opérateur) ;
+        // ou "conformite" / "direction" d'ORBITE pour une commission ou un assureur.
+        // Refus : Inconnu (dossier, pièce hors dossier), MotifRequis, HorsBornes (aucune pièce,
+        // ou > MAX_PIECES_COMM), Habilitation, Plein.
+        signal demander(h: Horodatage, dossier: String, destinataire: Org, pieces: List<String>, motif: String, par: String) -> String
+            writes dossier_de, destinataire_de, pieces_de, motif_de, demandee_par, communications_du_dossier
+            moves aucune -> demandee
+            calls ApiAcces.a_le_role, ApiAcces.agit_pour, ApiRef.organisation_existe, RespDossiers.etat, RespPieces.pieces_de, Journal.noter, next_id
+        // Autorise : pour chaque pièce et chaque objet qu'elle concerne,
+        // ApiDonnees.peut_recevoir(destinataire, objet, r, h) — r = la cible de la pièce si
+        // c'est un rapprochement, "" sinon. Renvoie "autorisee". Par "conformite", valideur
+        // "direction" ou "superviseur" (quatre yeux). Refus : Inconnu, EtatInvalide,
+        // Insuffisant (dossier non scellé), Confidentiel (une pièce non communicable),
+        // Habilitation, QuatreYeux.
+        signal autoriser(h: Horodatage, com: String, par: String, valideur: String) -> String
+            reads dossier_de, destinataire_de, pieces_de
+            writes decidee_par
+            moves demandee -> autorisee when RespDossiers.scelle via dossier_de
+            calls ApiAcces.a_le_role, ApiAcces.quatre_yeux, RespDossiers.etat, RespPieces.objets, RespPieces.lire, ApiDonnees.peut_recevoir, Journal.noter
+        // Refuse. Renvoie "refusee". Par "conformite". Refus : Inconnu, EtatInvalide,
+        // MotifRequis, Habilitation.
+        signal refuser(h: Horodatage, com: String, motif: String, par: String) -> String
+            writes decidee_par, motif_de
+            moves demandee -> refusee
+            calls ApiAcces.a_le_role, Journal.noter
+        // Envoie les fiches (RespPieces.lire) via ApiPasserelle.notifier après un nouveau
+        // contrôle peut_recevoir à h, et trace chaque pièce et objet (ApiDonnees.tracer).
+        // Renvoie le nombre de traces. Par "systeme". Refus : Inconnu, EtatInvalide,
+        // Confidentiel (droit retiré depuis l'autorisation : révoquer), Plein (trace refusée),
+        // Habilitation.
+        signal communiquer(h: Horodatage, com: String, par: String) -> Int
+            reads destinataire_de, pieces_de
+            writes traces_de, communiquee_le
+            moves autorisee -> communiquee
+            calls ApiAcces.a_le_role, RespPieces.objets, RespPieces.lire, ApiDonnees.peut_recevoir, ApiDonnees.tracer, ApiPasserelle.notifier, Journal.noter
+        // Révoque une autorisation non encore exécutée. Renvoie "revoquee". Par "conformite"
+        // ou "systeme" (droit ApiDonnees retiré). Refus : Inconnu, EtatInvalide, MotifRequis,
+        // Habilitation.
+        signal revoquer(h: Horodatage, com: String, motif: String, par: String) -> String
+            writes motif_de
+            moves autorisee -> revoquee
+            calls ApiAcces.a_le_role, Journal.noter
+        // État : "aucune", "demandee", "autorisee", "refusee", "communiquee", "revoquee".
+        signal etat(com: String) -> String
+            reads communication
+        // Communications d'un dossier, sous la forme "com|destinataire|état" (qui a reçu quoi).
+        signal de_dossier(dossier: String) -> List<String>
+            reads communications_du_dossier, destinataire_de, communication
+    }
+}
+
+// Rondes du sous-système : le SEUL usage du temps, fourni par ApiResponsabilite.balayer(h,
+// "systeme") depuis l'horloge d'ORBITE. Pas de mémoire.
+skeleton RespRondes {
+    face {
+        // Balaye toutes les échéances à `h` : vérification périodique des empreintes
+        // (RespPieces.ronde), polices échues (RespPolices.echoir), contradictoires échus
+        // (RespFautes.relancer_contradictoires), commissions en carence
+        // (RespCommissions.relancer_carences). Une ronde qui échoue est journalisée et
+        // n'arrête pas les suivantes. Renvoie le nombre d'objets dont l'état a changé ou qui ont
+        // fait l'objet d'un avis. Par "systeme". Refus : Habilitation.
+        signal balayer(h: Horodatage, par: String) -> Int
+            calls ApiAcces.a_le_role, RespPieces.ronde, RespPolices.echoir, RespFautes.relancer_contradictoires, RespCommissions.relancer_carences, Journal.noter
+    }
+}

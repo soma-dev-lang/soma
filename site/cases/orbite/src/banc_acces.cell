@@ -1,0 +1,12 @@
+use app
+use commun::journal_chair
+use commun::horloge_chair
+use sys::acces::chair::api
+use sys::acces::chair::personnes
+use sys::acces::chair::roles
+use sys::acces::chair::controle
+use sys::acces::chair::sessions
+use sys::acces::chair::urgence
+use sys::acces::chair::recertification
+use sys::acces::chair::departs
+use sys::acces::chair::rattachement
