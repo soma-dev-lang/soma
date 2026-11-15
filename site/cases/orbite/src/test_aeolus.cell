@@ -297,6 +297,11 @@ cell Monde {
     }
     // 28/08/2019 10 h : première alerte, pc 1/50 000 (20 000 milliardièmes), 1 200 m.
     on alerte_28_aout() { return signaler(h(18136, 36000), 4000, 20000) }
+    // 28/08/2019 11 h : les deux opérateurs voient l'alerte (historique : échange de courriels,
+    // SpaceX répond ce jour-là) — ils acquittent les messages d'ORBITE reçus jusque-là.
+    on echange_28_aout() {
+        return acquitte("dyn.esa", "ORG-ESA", h(18136, 39600)) + acquitte("dyn.sx", "ORG-SPACEX", h(18136, 39600))
+    }
     // 30/08/2019 14 h : la pc monte à 1/1 000 (1 000 000 milliardièmes), 150 m ; les deux opérateurs
     // ont déposé à 13 h 50 leurs éphémérides du jour (flux automatique simulé).
     on montee_30_aout() {
@@ -320,8 +325,9 @@ cell Monde {
     }
     // L'ESA, opérateur joignable, acquitte à chaque battement les messages qu'ORBITE lui a livrés
     // (SpaceX, elle, ne voit pas les siens : défaut de son astreinte).
-    on esa_acquitte(t: Horodatage) {
-        let qui = appelant("dyn.esa", "ORG-ESA", "dynamicien")
+    on esa_acquitte(t: Horodatage) { return acquitte("dyn.esa", "ORG-ESA", t) }
+    on acquitte(p: String, org: String, t: Horodatage) {
+        let qui = appelant(p, org, "dynamicien")
         let n = 0
         for x in PasMessages.en_attente(qui, 100) {
             let a = try { PasMessages.acquitter(t, split(x, " | ")[0], qui) }
@@ -433,9 +439,20 @@ cell Monde {
     on jusqu_a_la_montee() {
         let _ = pret()
         let _ = alerte_28_aout()
+        let _ = echange_28_aout()
         let r = montee_30_aout()
         let _ = ApiCoordination.repondre(h(18138, 51000), r, "accepte", "", "", "dyn.esa")
+        let _ = esa_acquitte(h(18138, 51000))
         return r
+    }
+    // Messages livrés à `org` et pas encore acquittés : "sujet | rapprochement".
+    on en_souffrance(p: String, org: String) {
+        let res_s = []
+        for x in PasMessages.en_attente(appelant(p, org, "dynamicien"), 100) {
+            let f = split(x, " | ")
+            res_s.push("{f[2]} | {f[3]}")
+        }
+        return res_s
     }
     // 5a. Mesures de deux capteurs sur AEOLUS autour de `ep`, orbite déterminée (vecteur `vec`,
     // m et mm/s) validée contre la dernière éphéméride déclarée avec l'écart `ecart` (moteur).
@@ -452,13 +469,15 @@ cell Monde {
         let od = ObsOrbites.calculer(Horodatage(to_int(ep) + 50000), to_string(o), ep, ms, Distance(20), vec, Distance(310000), Distance(330000), "ana1")
         return ObsOrbites.valider(Horodatage(to_int(ep) + 60000), od, ApiEphemerides.derniere(o), Distance(ecart), "ana1")
     }
-    // 5b. Plan d'évitement d'AEOLUS, déclaré le 02/09 4 h 20 après l'arbitrage : campagne du
-    // régime à 4 h 10, éphéméride incluant la poussée planifiée à 4 h 15, poussée à 11 h 15 (TCA
-    // − 45 min, « environ une demi-orbite »), relèvement d'orbite de 0,5 m/s (simulé).
+    // 5b. Plan d'évitement d'AEOLUS, déclaré le 30/08 à 15 h 20, juste après l'accord tacite :
+    // campagne du régime à 15 h 10, éphéméride incluant la poussée planifiée à 15 h 15. La poussée
+    // reste le 02/09 à 11 h 15 (TCA − 45 min, « environ une demi-orbite ») et le Δv simulé reste
+    // 0,5 m/s : seul le plan est prêt plus tôt (une poussée avancée de deux jours demanderait
+    // moins de Δv, ce que le rejeu ne modélise pas).
     on plan_aeolus(r: Rapprochement) {
-        let _ = campagne(h(18141, 15000))
-        let _ = ephemeride("AEOLUS", h(18141, 15300), "P", true)
-        return ApiManoeuvres.declarer(h(18141, 15600), "PL-AEOLUS", objet("AEOLUS"), r, "evitement", h(18141, 40500), DeltaV(500), "dyn.esa")
+        let _ = campagne(h(18138, 54600))
+        let _ = ephemeride("AEOLUS", h(18138, 54900), "P", true)
+        return ApiManoeuvres.declarer(h(18138, 55200), "PL-AEOLUS", objet("AEOLUS"), r, "evitement", h(18141, 40500), DeltaV(500), "dyn.esa")
     }
     // 5c. Après la poussée (réelle à 11 h 15 min 10 s) : orbite observée à 11 h 30, à 3 500 m de
     // l'éphéméride déclarée (détection, expliquée par PL-AEOLUS) ; nouvelle éphéméride à 11 h 35
@@ -585,88 +604,94 @@ cell test A3Montee {
     }
 }
 
-// ── A4. Le silence de SpaceX (défaut d'astreinte : messages livrés, jamais vus) : l'horloge fait
-// monter l'escalade échelon par échelon jusqu'à la reprise par ORBITE (assertion 3) ; manquement
-// constaté chez conformite (assertion 6).
+// ── A4. Le silence de SpaceX (défaut d'astreinte : messages livrés, jamais vus). L'ESA, propriétaire
+// de l'objet proposé, a accepté : à la première échéance passée, ORBITE constate l'ACCORD TACITE et
+// arrête la désignation d'AEOLUS (30/08 15 h). L'escalade de SpaceX continue, pour l'informer
+// seulement : elle monte échelon par échelon mais ne reprend rien (assertion 3) ; manquement constaté
+// chez conformite (assertion 6).
 cell test A4Silence {
     rules {
         mock random_token ["DEFI-C-ESA", "DEFI-C-SX"]
         mock http_post ["ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok"]
         let r = Monde.jusqu_a_la_montee()
+        let aeolus = Monde.objet("AEOLUS")
         // webhooks de SpaceX : livrés ("ok"), jamais acquittés
         mock http_post ["ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok"]
-        // battement toutes les 30 min du 30/08 14 h 30 au 02/09 4 h ; aucun balayage en erreur.
-        // e1 astreinte, e2 chef de mission (30 min chacun, engagement de niveau 3), e3 point focal
-        // de CAZ (15 % du temps restant), e4 direction d'ORBITE et points focaux des deux États ;
-        // échéance finale = TCA − (préavis d'AEOLUS 6 h + 2 h d'arbitrage) = 02/09 4 h.
-        assert Monde.veiller(r, "ORG-SPACEX", Monde.h(18138, 52200), Monde.h(18141, 14400), 1800000) == ["30/08 14h30 echelon=0 coord=proposee reprise=false", "30/08 15h00 echelon=1 coord=proposee reprise=false", "30/08 15h30 echelon=2 coord=proposee reprise=false", "30/08 16h00 echelon=3 coord=proposee reprise=false", "31/08 01h00 echelon=4 coord=proposee reprise=false", "02/09 04h00 echelon=4 coord=arbitrage reprise=true"]
-        assert len(Journal.chercher("dossier ESC-1 ouvert contre ORG-SPACEX sur {r} a l'echelon 1 (echeance finale {Monde.h(18141, 14400)})", 5)) == 1
+        // 14 h 32 : échéance de réponse passée ; au battement de 15 h, accord tacite et verrou
+        assert Monde.veiller(r, "ORG-SPACEX", Monde.h(18138, 52200), Monde.h(18138, 54000), 1800000) == ["30/08 14h30 echelon=0 coord=proposee reprise=false", "30/08 15h00 echelon=1 coord=arretee reprise=false"]
+        assert len(Journal.chercher("{Monde.h(18138, 54000)} | coordination | systeme | {r} : accord tacite — ORG-ESA accepte que {aeolus} manœuvre, 1 partie(s) muette(s) sans refus", 5)) == 1
+        assert len(Journal.chercher("{Monde.h(18138, 54000)} | coordination | systeme | {r} arrêtée par accord : {aeolus}, décision DS-{r}-1", 5)) == 1
+        assert len(Journal.chercher("verrou {r} posé : décision DS-{r}-1, désigné '{aeolus}', mode accord, valideur ''", 5)) == 1
+        assert ApiCoordination.arretee(r)
+        assert ApiCoordination.designe(r, "dyn.sx") == aeolus
+        assert ApiCoordination.muets(r) == ["ORG-SPACEX"]
+        // SpaceX est notifiée de la désignation arrêtée (message « decision » livré à son webhook)
+        // — notifiée, pas informée : son astreinte ne voit rien, le message reste sans accusé
+        assert Monde.en_souffrance("dyn.sx", "ORG-SPACEX").contains("decision | {r}")
+        // l'ESA, elle, a acquitté au battement : rien ne reste en souffrance chez elle
+        assert Monde.en_souffrance("dyn.esa", "ORG-ESA") == []
+        // plus de seconde désignation : ni arbitrage, ni autre objet
+        assert_fails ApiCoordination.arbitrer(Monde.h(18138, 54300), r, Monde.objet("STARLINK44"), "SpaceX muet", "ana1", "sup1") matching "EtatInvalide"
+        mock http_post ["ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok"]
+        // l'escalade continue pour informer : chef de mission, point focal de CAZ, direction et
+        // points focaux ; jamais de reprise, la décision n'est pas retenue
+        assert Monde.veiller(r, "ORG-SPACEX", Monde.h(18138, 55800), Monde.h(18141, 14400), 1800000) == ["30/08 15h30 echelon=2 coord=arretee reprise=false", "30/08 16h00 echelon=3 coord=arretee reprise=false", "31/08 01h00 echelon=4 coord=arretee reprise=false"]
         assert len(Journal.chercher("relance REL-1 (complete) emise vers ORG-SPACEX pour ESC-1", 5)) == 1
         assert len(Journal.chercher("relance REL-2 (complete) emise vers ORG-SPACEX pour ESC-1", 5)) == 1
         assert len(Journal.chercher("relance REL-3 (complete) emise vers ORG-CAZ pour ESC-1", 5)) == 1
         assert len(Journal.chercher("dossier ESC-1 monte a l'echelon 4", 5)) == 1
-        assert len(Journal.chercher("dossier ESC-1 : reprise par ORBITE sur {r}", 5)) == 1
-        assert ApiEscalade.reprise(r)
+        assert Journal.chercher("reprise par ORBITE", 5) == []
+        assert !ApiEscalade.reprise(r)
         assert ApiEscalade.echelon(r, "ORG-SPACEX") == 4
         assert ApiEscalade.echelon(r, "ORG-ESA") == 0
-        assert ApiCoordination.muets(r) == ["ORG-SPACEX"]
-        assert ApiCoordination.etat(r) == "arbitrage"
-        assert !ApiCoordination.arretee(r)
-        // assertion 6 : manquement « reponse_tardive » de gravité 3 contre SpaceX, constaté au
+        assert ApiCoordination.etat(r) == "arretee"
+        assert ApiCoordination.designe(r, "dyn.esa") == aeolus
+        // assertion 6 : un manquement « reponse_tardive » de gravité 3 contre SpaceX, constaté au
         // silence (30/08 15 h) ; aucun contre l'ESA, qui a répondu
         let ms = Journal.chercher("constate : ORG-SPACEX reponse_tardive g3 reference {r}", 5)
         assert len(ms) == 1
         assert starts_with(ms[0], "{Monde.h(18138, 54000)} | conformite | systeme | manquement MQ-")
         assert ConfManquement.ouverts("ORG-SPACEX") >= 1
         assert Journal.chercher("constate : ORG-ESA reponse_tardive", 5) == []
+        // un seul silence, un seul manquement de réponse : les alertes du 30/08 non acquittées avant
+        // l'échéance ne s'y ajoutent pas (escalade refusée NonEligible, défaut journalisé)
+        assert Journal.chercher("constate : ORG-SPACEX autre g3 reference MSG-", 5) == []
     }
 }
 
-// ── A5. Arbitrage d'ORBITE à quatre yeux, désignation unique, plan d'évitement d'AEOLUS déclaré,
-// criblé, approuvé, exécuté une demi-orbite avant le TCA, vérifié ; rapprochement résolu
-// (assertion 4) ; puis la trace (assertion 5).
+// ── A5. Désignation unique ; plan d'évitement d'AEOLUS déclaré, criblé et approuvé dès le 30/08,
+// exécuté une demi-orbite avant le TCA, vérifié ; rapprochement résolu (assertion 4) ; la trace
+// (assertion 5).
 cell test A5Evitement {
     rules {
         mock random_token ["DEFI-C-ESA", "DEFI-C-SX"]
         mock http_post ["ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok"]
         let r = Monde.jusqu_a_la_montee()
         mock http_post ["ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok"]
-        assert len(Monde.veiller(r, "ORG-SPACEX", Monde.h(18138, 52200), Monde.h(18141, 14400), 1800000)) == 6
+        assert len(Monde.veiller(r, "ORG-SPACEX", Monde.h(18138, 52200), Monde.h(18138, 54000), 1800000)) == 2
         let aeolus = Monde.objet("AEOLUS")
         let starlink = Monde.objet("STARLINK44")
-        let t = Monde.h(18141, 14700)
-        // arbitrage : quatre yeux (analyste + superviseur), motif exigé
-        assert_fails ApiCoordination.arbitrer(t, r, aeolus, "SpaceX muet", "ana1", "ana1") matching "QuatreYeux"
-        assert_fails ApiCoordination.arbitrer(t, r, aeolus, "SpaceX muet", "sup1", "sup2") matching "Habilitation"
-        assert_fails ApiCoordination.arbitrer(t, r, aeolus, "", "ana1", "sup1") matching "MotifRequis"
-        // STARLINK44 ne peut plus être désigné : préavis de 72 h de la propulsion faible
-        assert_fails ApiCoordination.arbitrer(t, r, starlink, "SpaceX muet", "ana1", "sup1") matching "Delai"
-        // (un refus jette les mocks restants : les webhooks sont re-scriptés après chaque refus)
-        mock http_post ["ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok"]
-        assert ApiCoordination.arbitrer(t, r, aeolus, "SpaceX muet malgré l'escalade : AEOLUS, seul capable à temps, manœuvre", "ana1", "sup1") == "arretee"
+        let t = Monde.h(18138, 54300)
         assert ApiCoordination.arretee(r)
-        assert ApiCoordination.designe(r, "dyn.esa") == aeolus
-        assert ApiCoordination.designe(r, "dyn.sx") == aeolus
-        assert contains(ApiCoordination.decision(r), "|ana1|sup1|")
-        // désignation unique (propriété 1) : un second arbitrage est refusé
-        assert_fails ApiCoordination.arbitrer(Monde.h(18141, 14800), r, aeolus, "bis", "ana2", "sup2") matching "EtatInvalide"
+        assert starts_with(ApiCoordination.decision(r), "DS-{r}-1|{aeolus}|systeme||{Monde.h(18138, 54000)}|")
+        // désignation unique (propriété 1) : aucun arbitrage ne peut en poser une seconde
+        assert_fails ApiCoordination.arbitrer(t, r, aeolus, "bis", "ana1", "sup1") matching "EtatInvalide"
+        assert_fails ApiCoordination.arbitrer(t, r, starlink, "SpaceX muet", "ana2", "sup2") matching "EtatInvalide"
         mock http_post ["ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok"]
-        // plan d'évitement : déclaré 4 h 20, criblé sûr, approuvé ; poussée à 11 h 15
+        // plan d'évitement dès le 30/08 15 h 20 (TCA − 68 h 40) : criblé sûr, approuvé
         assert Monde.plan_aeolus(r) == "PL-AEOLUS"
         assert ApiConjonctions.criblage_plan("PL-AEOLUS") == "sur"
         assert ApiManoeuvres.etat("PL-AEOLUS") == "approuve"
         assert ApiManoeuvres.plan_de(r) == "PL-AEOLUS"
-        // l'horloge continue jusqu'à 11 h : l'arbitrage rendu à 4 h 05 vaut prise en charge de la
-        // reprise (limite 4 h 15) ; l'escalade se clôt sur la décision arrêtée
-        // (à 9 h 30, l'avis d'approbation du plan à SpaceX échoit sans accusé : escalade ESC-2,
-        // aussitôt en reprise — « l'autre opérateur doit savoir que le désigné manœuvre » —,
-        // close à 10 h sur la décision arrêtée)
-        assert Monde.veiller(r, "ORG-SPACEX", Monde.h(18141, 16200), Monde.h(18141, 39600), 1800000) == ["02/09 04h30 echelon=0 coord=arretee reprise=true", "02/09 09h30 echelon=4 coord=arretee reprise=true", "02/09 10h00 echelon=0 coord=arretee reprise=true"]
-        assert len(Journal.chercher("prise en charge de ESC-1 tranchee", 5)) == 1
-        assert Journal.chercher("prise en charge de ESC-1 depassee", 5) == []
-        assert len(Journal.chercher("dossier ESC-1 clos (decision_arretee)", 5)) == 1
-        // jamais deux évitements approuvés pour un rapprochement (propriété 1)
-        assert_fails ApiManoeuvres.declarer(Monde.h(18141, 15700), "PL-STARLINK44", starlink, r, "evitement", Monde.h(18141, 30000), DeltaV(100), "dyn.sx") matching "Conflit"
+        assert len(Journal.chercher("{Monde.h(18138, 55200)} | manoeuvres | systeme | plan PL-AEOLUS approuvé (verrou {r}", 5)) == 1
+        // un plan de STARLINK44 est refusé : il n'est pas le désigné (Conflit)
+        assert_fails ApiManoeuvres.declarer(Monde.h(18138, 55300), "PL-STARLINK44", starlink, r, "evitement", Monde.h(18139, 36000), DeltaV(100), "dyn.sx") matching "Conflit"
+        mock http_post ["ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok"]
+        // l'horloge jusqu'au 02/09 11 h : l'escalade de SpaceX informe et monte, le plan reste approuvé
+        assert Monde.veiller(r, "ORG-SPACEX", Monde.h(18138, 55800), Monde.h(18141, 39600), 1800000) == ["30/08 15h30 echelon=2 coord=arretee reprise=false", "30/08 16h00 echelon=3 coord=arretee reprise=false", "31/08 01h00 echelon=4 coord=arretee reprise=false"]
+        assert ApiManoeuvres.etat("PL-AEOLUS") == "approuve"
+        assert ApiCoordination.designe(r, "dyn.esa") == aeolus
+        assert Journal.chercher("reprise par ORBITE", 5) == []
         mock http_post ["ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok"]
         // exécution (11 h 15 min 10 s, TCA − 45 min) puis vérification par l'observation
         assert ApiManoeuvres.confirmer_execution(Monde.h(18141, 40800), "PL-AEOLUS", Monde.h(18141, 40510), DeltaV(500), "dyn.esa") == "execute"
@@ -678,11 +703,10 @@ cell test A5Evitement {
         assert ApiCoordination.balayer(Monde.h(18141, 42700), "systeme") >= 1
         assert ApiCoordination.etat(r) == "close"
         // une journée d'horloge après le TCA : aucun balayage en erreur
-        assert Monde.battre_de(Monde.h(18141, 46800), Monde.h(18142, 43200), 3600000) == []
+        assert Monde.battre_de(Monde.h(18141, 43200), Monde.h(18142, 43200), 3600000) == []
         // assertion 5 : la trace. Journal.chercher(r) rend la chronologie du rapprochement
         let ch = Monde.chronologie_lisible(r)
-        assert ch == ["28/08 10h02 | conjonctions | systeme | rapprochement CJ-1 (OBJ-1|OBJ-2) ouvert : TCA 1567425600000, 4000 m, pc 20000, niveau 1", "30/08 14h02 | conjonctions | systeme | rapprochement CJ-1 (OBJ-1|OBJ-2) mis à jour : TCA 1567425600000, 150 m, pc 1000000, niveau 3", "30/08 14h02 | priorites | systeme | décision PD-1 sur CJ-1 : 'OBJ-1' (seul_capable) sous PRIO-2019", "30/08 14h02 | coordination | systeme | coordination CJ-1 ouverte : proposee, propose 'OBJ-1', raison ''", "30/08 14h02 | conjonctions | systeme | rapprochement CJ-1 en coordination (CO-CJ-1, proposee)", "30/08 14h02 | observation | systeme | tâche TS-1 demandée : OBJ-1, priorité 3, rapprochement (rapprochement CJ-1 niveau 3)", "30/08 14h02 | observation | systeme | tâche TS-2 demandée : OBJ-2, priorité 3, rapprochement (rapprochement CJ-1 niveau 3)", "30/08 14h02 | conjonctions | systeme | rapprochement CJ-1 : suivi renforcé demandé ([\"TS-1\", \"TS-2\"])", "30/08 14h02 | conjonctions | systeme | alerte de CJ-1 : 4 messages préparés", "30/08 14h10 | coordination | dyn.esa | ORG-ESA accepte OBJ-1 sur CJ-1 (tour 1)", "30/08 14h30 | escalade | systeme | veille armee sur CJ-1", "30/08 15h00 | escalade | systeme | dossier ESC-1 ouvert contre ORG-SPACEX sur CJ-1 a l'echelon 1 (echeance finale 1567396800000) : silence coordination", "30/08 15h00 | conformite | systeme | manquement MQ-15 constate : ORG-SPACEX reponse_tardive g3 reference CJ-1", "02/09 04h00 | coordination | systeme | saisine CJ-1#1 : silence", "02/09 04h00 | coordination | systeme | CJ-1 : silence de 1 partie(s), arbitrage d'ORBITE (ORG-ORBITE)", "02/09 04h00 | escalade | systeme | dossier ESC-1 : reprise par ORBITE sur CJ-1", "02/09 04h05 | coordination | ana1 | verrou CJ-1 posé : décision DS-CJ-1-1, désigné 'OBJ-1', mode arbitrage, valideur 'sup1'", "02/09 04h05 | coordination | ana1 | CJ-1 arbitrée : 'OBJ-1', décision DS-CJ-1-1, valideur sup1", "02/09 04h20 | manoeuvres | systeme | plan PL-AEOLUS approuvé (verrou CJ-1, dépôt EPH-AEOLUS-P)", "02/09 04h30 | escalade | systeme | veille CJ-1 couverte", "02/09 06h00 | operations | systeme | gel d'urgence armé pour CJ-1 (TCA 1567425600000)", "02/09 09h30 | escalade | systeme | dossier ESC-2 ouvert contre ORG-SPACEX sur CJ-1 a l'echelon 4 (echeance finale 1567396800000) : avis de manoeuvre PL-AEOLUS|ORG-SPACEX|approbation sans accusé", "02/09 09h30 | escalade | systeme | dossier ESC-2 : reprise par ORBITE sur CJ-1", "02/09 11h50 | conjonctions | systeme | rapprochement CJ-1 résolu (manoeuvre_verifiee)", "02/09 11h50 | conjonctions | systeme | cloture de CJ-1 : 2 messages préparés", "02/09 11h51 | coordination | systeme | verrou CJ-1 clos : décision DS-CJ-1-1 soldée", "02/09 11h51 | coordination | systeme | CJ-1 close (resolu, depuis arretee)", "02/09 13h00 | escalade | systeme | veille CJ-1 close (resolu)", "02/09 13h00 | operations | systeme | gel d'urgence levé pour CJ-1 (resolu)"]
-        // la décision est traçable jusqu'à ses données (propriété 6) : fondement figé
+        assert ch == ["28/08 10h02 | conjonctions | systeme | rapprochement CJ-1 (OBJ-1|OBJ-2) ouvert : TCA 1567425600000, 4000 m, pc 20000, niveau 1", "30/08 14h02 | conjonctions | systeme | rapprochement CJ-1 (OBJ-1|OBJ-2) mis à jour : TCA 1567425600000, 150 m, pc 1000000, niveau 3", "30/08 14h02 | priorites | systeme | décision PD-1 sur CJ-1 : 'OBJ-1' (seul_capable) sous PRIO-2019", "30/08 14h02 | coordination | systeme | coordination CJ-1 ouverte : proposee, propose 'OBJ-1', raison ''", "30/08 14h02 | conjonctions | systeme | rapprochement CJ-1 en coordination (CO-CJ-1, proposee)", "30/08 14h02 | observation | systeme | tâche TS-1 demandée : OBJ-1, priorité 3, rapprochement (rapprochement CJ-1 niveau 3)", "30/08 14h02 | observation | systeme | tâche TS-2 demandée : OBJ-2, priorité 3, rapprochement (rapprochement CJ-1 niveau 3)", "30/08 14h02 | conjonctions | systeme | rapprochement CJ-1 : suivi renforcé demandé ([\"TS-1\", \"TS-2\"])", "30/08 14h02 | conjonctions | systeme | alerte de CJ-1 : 4 messages préparés", "30/08 14h10 | coordination | dyn.esa | ORG-ESA accepte OBJ-1 sur CJ-1 (tour 1)", "30/08 14h30 | escalade | systeme | veille armee sur CJ-1", "30/08 15h00 | escalade | systeme | dossier ESC-1 ouvert contre ORG-SPACEX sur CJ-1 a l'echelon 1 (echeance finale 1567396800000) : silence coordination", "30/08 15h00 | conformite | systeme | manquement MQ-5 constate : ORG-SPACEX reponse_tardive g3 reference CJ-1", "30/08 15h00 | coordination | systeme | CJ-1 : accord tacite — ORG-ESA accepte que OBJ-1 manœuvre, 1 partie(s) muette(s) sans refus", "30/08 15h00 | coordination | systeme | verrou CJ-1 posé : décision DS-CJ-1-1, désigné 'OBJ-1', mode accord, valideur ''", "30/08 15h00 | coordination | systeme | CJ-1 arrêtée par accord : OBJ-1, décision DS-CJ-1-1", "30/08 15h00 | escalade | systeme | veille CJ-1 couverte", "30/08 15h20 | manoeuvres | systeme | plan PL-AEOLUS approuvé (verrou CJ-1, dépôt EPH-AEOLUS-P)", "02/09 06h00 | operations | systeme | gel d'urgence armé pour CJ-1 (TCA 1567425600000)", "02/09 11h50 | conjonctions | systeme | rapprochement CJ-1 résolu (manoeuvre_verifiee)", "02/09 11h50 | conjonctions | systeme | cloture de CJ-1 : 2 messages préparés", "02/09 11h51 | coordination | systeme | verrou CJ-1 clos : décision DS-CJ-1-1 soldée", "02/09 11h51 | coordination | systeme | CJ-1 close (resolu, depuis arretee)", "02/09 12h00 | escalade | systeme | veille CJ-1 close (resolu)", "02/09 12h00 | operations | systeme | gel d'urgence levé pour CJ-1 (resolu)"]
         assert len(Journal.chercher("{r}", 1000)) > len(ch)
     }
 }

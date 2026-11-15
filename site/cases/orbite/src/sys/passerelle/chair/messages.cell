@@ -446,6 +446,14 @@ flesh PasMessages {
                 let _ = Journal.noter(h, "passerelle", "systeme", "message {id} : escalade de {r} contre {dest} (échelon {ech})")
                 return true
             }
+            if e.kind == "NonEligible" || e.kind == "Ferme" {
+                // r en coordination où dest n'est pas (encore) muet : la coordination constate elle-même
+                // le silence à son échéance (reponse_tardive) ; r clos : plus rien à exiger. Un manquement
+                // par message doublerait le compte d'un même silence.
+                transition(id, "en_defaut", "signale")
+                let _ = Journal.noter(h, "passerelle", "systeme", "message {id} non acquitté : escalade refusée ({e.kind}), défaut journalisé sans manquement ({dest})")
+                return true
+            }
         }
         let nature = "message {id} non livré ou non acquitté"
         let sujet = sujet_de.get(id) ?? ""

@@ -118,12 +118,19 @@ skeleton CoordDossier {
         // (proposee|desaccord -> arbitrage, CoordArbitrage.saisir raison "silence") dès que
         // l'escalade a rendu la main (ApiEscalade.reprise(r)) OU que h ≥ limite −
         // MARGE_ARBITRAGE (filet : l'escalade ne retient jamais la décision au-delà). Un opérateur
-        // silencieux ne bloque donc jamais (propriété 5). `par` "systeme". Renvoie le nombre de
-        // parties muettes. Refus : Inconnu, EtatInvalide, Delai (échéance non atteinte), Habilitation.
+        // silencieux ne bloque donc jamais (propriété 5).
+        // ACCORD TACITE (avant tout arbitrage) : sur une coordination "proposee", si le
+        // propriétaire de l'objet proposé (propose_de, qui peut manœuvrer : ApiRef.peut_manoeuvrer)
+        // a ACCEPTÉ au tour courant et que les autres parties sont seulement muettes (aucun
+        // refus), le silence ne retient pas la décision : proposee -> accord, puis `arreter` pose
+        // le verrou et notifie toutes les parties, les muettes comprises, que la désignation est
+        // arrêtée. Celui qui se tait n'a rien à faire ; celui qui manœuvre a dit oui. L'escalade
+        // des muettes continue (elle informe, elle ne retient plus). `par` "systeme". Renvoie le
+        // nombre de parties muettes. Refus : Inconnu, EtatInvalide, Delai (échéance non atteinte), Habilitation.
         signal constater_silence(h: Horodatage, r: Rapprochement, par: String) -> Int
-            reads echeance_de, limite_de, parties_de, tour_de
-            moves proposee -> arbitrage, desaccord -> arbitrage
-            calls CoordReponse.constater_muettes, ApiEscalade.reprise, CoordArbitrage.saisir, CoordEchange.notifier, ApiRef.orbite, ApiAcces.a_le_role, Journal.noter
+            reads echeance_de, limite_de, parties_de, tour_de, propose_de
+            moves proposee -> arbitrage, desaccord -> arbitrage, proposee -> accord
+            calls CoordReponse.constater_muettes, CoordReponse.du_tour, ApiRef.proprietaire, ApiRef.peut_manoeuvrer, arreter, ApiEscalade.reprise, CoordArbitrage.saisir, CoordEchange.notifier, ApiRef.orbite, ApiAcces.a_le_role, Journal.noter
         // Arbitrage d'ORBITE (désaccord, silence, accord sans verrou, rouverture tardive, ou
         // ouverture directe en arbitrage) : désigne `objet` (un des deux objets du rapprochement,
         // Incoherent sinon) ou "" pour décider de ne pas manœuvrer. proposee|desaccord ->

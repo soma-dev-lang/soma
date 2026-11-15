@@ -165,7 +165,9 @@ skeleton PasMessages {
         //    (le barème règle le rythme des échelons), sinon ApiEscalade.escalader (motif
         //    "message non acquitté", par "systeme") ; une notification de manquement (sujet
         //    "manquement …" ou "contradictoire …") : signale, défaut seulement journalisé (pas de
-        //    manquement du manquement) ; si l'escalade est refusée, ou sinon
+        //    manquement du manquement) ; escalade refusée NonEligible (dest pas muet : la
+        //    coordination constate elle-même le silence) ou Ferme (r clos) : signale, défaut
+        //    seulement journalisé ; si l'escalade est refusée autrement, ou sinon
         //    ApiConformite.constater (opérateur) ou ApiConformite.constater_etat (État), gravité =
         //    urgence, puis signale ; pour tout autre destinataire (ORBITE, fournisseur de
         //    capteurs) : signale, défaut seulement journalisé.

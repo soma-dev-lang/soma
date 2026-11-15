@@ -186,6 +186,22 @@ flesh CoordDossier {
         let ech = echeance_de.get(r) ?? h
         require h > ech else Delai "échéance {ech} non atteinte"
         let n_m = CoordReponse.constater_muettes(h, r)
+        // accord tacite : le désigné a accepté, les autres se taisent — la décision tient
+        if st == "proposee" && n_m > 0 {
+            let propose = propose_de.get(r) ?? ""
+            if propose != "" && ApiRef.peut_manoeuvrer(propose) {
+                let prop_org = to_string(ApiRef.proprietaire(propose))
+                let rep_t = CoordReponse.du_tour(r)
+                let accepte = contains(rep_t, "{prop_org}:acceptee")
+                let aucun_refus = all(rep_t, x => ends_with(x, ":acceptee") || ends_with(x, ":muette"))
+                if accepte && aucun_refus {
+                    transition(r, "proposee", "accord")
+                    let _ = Journal.noter(h, "coordination", par, "{r} : accord tacite — {prop_org} accepte que {propose} manœuvre, {n_m} partie(s) muette(s) sans refus")
+                    let _ = arreter(h, r)
+                    return n_m
+                }
+            }
+        }
         let lim = to_int(limite_de.get(r) ?? h)
         if ApiEscalade.reprise(r) || to_int(h) >= lim - MARGE_ARBITRAGE {
             if st == "proposee" { transition(r, "proposee", "arbitrage") } else { transition(r, "desaccord", "arbitrage") }

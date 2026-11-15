@@ -99,8 +99,9 @@ skeleton EscDossiers {
         // Accusé de réception du dossier actif de (r, op). `par` : une personne qui agit pour
         // l'opérateur (ApiAcces.agit_pour(par, op)), ou le "point_focal" de son État de tutelle
         // (ApiAcces.agit_pour(par, ApiRef.org_de_etat(ApiRef.etat_de(op)))). Si l'opérateur a
-        // répondu (op ∉ ApiCoordination.muets(r), ou ApiCoordination.decidee(r)) le dossier est
-        // clos "repondu", sinon il passe "accusee" et l'échéance finale continue de courir.
+        // répondu (op ∉ ApiCoordination.muets(r)) le dossier est clos "repondu" ; si la décision
+        // est arrêtée sans lui (ApiCoordination.decidee(r), accord tacite) il est clos "informe" ;
+        // sinon il passe "accusee" et l'échéance finale continue de courir.
         // Arrête les relances en cours (EscRelances.arreter). Compte le délai d'accusé.
         // Renvoie l'état atteint ("accusee" ou "close"). Refus : Inconnu (aucun dossier actif),
         // EtatInvalide (déjà accusé, reprise), Habilitation.
@@ -125,7 +126,7 @@ skeleton EscDossiers {
             moves e1 -> reprise when ConjRapprochement.alerte || ConjRapprochement.en_coordination via rapprochement_de, e2 -> reprise when ConjRapprochement.alerte || ConjRapprochement.en_coordination via rapprochement_de, e3 -> reprise when ConjRapprochement.alerte || ConjRapprochement.en_coordination via rapprochement_de, e4 -> reprise when ConjRapprochement.alerte || ConjRapprochement.en_coordination via rapprochement_de, accusee -> reprise when ConjRapprochement.alerte || ConjRapprochement.en_coordination via rapprochement_de
             calls ApiAcces.a_le_role, ApiConjonctions.etat, ApiRef.orbite, ApiPasserelle.notifier, ApiResponsabilite.geler, EscRelances.arreter, EscDiplomatie.preparer, EscPriseEnCharge.ouvrir_prise, EscStatistiques.compter_reprise, Journal.noter
         // Clôt un dossier. Depuis "accusee" ou un échelon : l'opérateur a répondu
-        // (op ∉ ApiCoordination.muets(r), ou ApiCoordination.decidee(r)) ou erreur d'ouverture. Depuis "reprise" :
+        // (op ∉ ApiCoordination.muets(r) ; une décision arrêtée sans lui n'est pas une réponse) ou erreur d'ouverture. Depuis "reprise" :
         // seulement si la décision est arrêtée (EscVeille.couverte du rapprochement). Efface
         // `courant`. Renvoie "close". Rôle exigé : "systeme" ou "analyste" ("erreur" : "superviseur").
         // Refus : Inconnu, EtatInvalide, Insuffisant (opérateur sans réponse, décision non arrêtée),
@@ -158,8 +159,10 @@ skeleton EscDossiers {
             reads rapprochement_de, escalade
             calls ApiAcces.a_le_role, EscBareme.echeance_finale, Journal.noter
         // Balayage : pour chaque dossier actif, dans l'ordre — recaler ; caduquer si TCA passé ou
-        // rapprochement clos ou retombé hors alerte sans coordination ; reprendre si h ≥ échéance finale ; clore "repondu" si l'opérateur a
-        // répondu ; monter si h ≥ échéance de l'échelon ; clore "decision_arretee" un dossier en
+        // rapprochement clos ou retombé hors alerte sans coordination ; reprendre si h ≥ échéance finale
+        // et aucune décision arrêtée (après un accord tacite, l'escalade d'un muet continue jusqu'à
+        // son accusé ou au TCA pour l'informer, sans reprise) ; clore "repondu" si l'opérateur a
+        // répondu (op ∉ muets) ; monter si h ≥ échéance de l'échelon ; clore "decision_arretee" un dossier en
         // reprise couvert. Puis relances dues (EscRelances.relancer_dues). par = "systeme".
         // Appelé par EscBalayage.balayer. Renvoie le nombre de dossiers changés d'état.
         signal balayer(h: Horodatage) -> Int

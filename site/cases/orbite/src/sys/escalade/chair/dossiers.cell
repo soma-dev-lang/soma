@@ -93,15 +93,18 @@ flesh EscDossiers {
         let st = get_status(d) ?? "nouveau"
         require st == "e1" || st == "e2" || st == "e3" || st == "e4" else EtatInvalide "dossier {d} en {st}"
         let repondu = _a_repondu(to_string(r), to_string(op))
-        if accuse.get(d) == () { accuse.set(d, "{h} | {par}") }
+        // décision arrêtée sans lui (accord tacite) : l'escalade ne faisait plus que l'informer,
+        // son accusé la clôt
+        let informe = !repondu && _decidee(to_string(r))
         let _ = EscRelances.arreter(h, d)
         let ouv = to_int(ouvert_a.get(d) ?? h)
         let _ = EscStatistiques.compter_accuse(h, op, Duree(max(0, to_int(h) - ouv)))
-        let cible = if repondu { "close" } else { "accusee" }
-        if repondu {
+        if accuse.get(d) == () { accuse.set(d, "{h} | {par}") }
+        let cible = if repondu || informe { "close" } else { "accusee" }
+        if repondu || informe {
             if st == "e1" { transition(d, "e1", "close") } else if st == "e2" { transition(d, "e2", "close") } else if st == "e3" { transition(d, "e3", "close") } else { transition(d, "e4", "close") }
             courant.delete(cle)
-            cloture.set(d, "{h} | {par} | repondu | accuse apres reponse")
+            cloture.set(d, if informe { "{h} | {par} | informe | accuse de la decision arretee" } else { "{h} | {par} | repondu | accuse apres reponse" })
         } else {
             if st == "e1" { transition(d, "e1", "accusee") } else if st == "e2" { transition(d, "e2", "accusee") } else if st == "e3" { transition(d, "e3", "accusee") } else { transition(d, "e4", "accusee") }
         }
@@ -234,7 +237,7 @@ flesh EscDossiers {
                 if fini || to_int(h) >= tca {
                     let c = try { EscDossiers.caduquer(h, d, "systeme") }
                     fait = c.error == ()
-                } else if st != "reprise" && to_int(h) >= to_int(echeance_finale.get(d) ?? h) {
+                } else if st != "reprise" && to_int(h) >= to_int(echeance_finale.get(d) ?? h) && !_decidee(to_string(r)) {
                     let c = try { EscDossiers.reprendre(h, d, "systeme") }
                     fait = c.error == ()
                 } else if st != "reprise" && _a_repondu(to_string(r), op) {
@@ -335,11 +338,15 @@ flesh EscDossiers {
         return res_f
     }
     // L'opérateur a répondu : il n'est plus muet, ou la coordination a statué.
+    // L'opérateur a répondu : il n'est pas (ou plus) muet sur r. Une décision arrêtée SANS lui
+    // (accord tacite) n'est pas une réponse : l'escalade continue pour l'informer, sans reprise.
     on _a_repondu(r: String, op: String) {
-        let dec = try { ApiCoordination.decidee(Rapprochement(r)) }
-        if dec.error == () && dec.value { return true }
         let m = try { ApiCoordination.muets(Rapprochement(r)) }
         if m.error != () { return false }
         return !contains(m.value, op)
+    }
+    on _decidee(r: String) {
+        let dec = try { ApiCoordination.decidee(Rapprochement(r)) }
+        return dec.error == () && dec.value
     }
 }

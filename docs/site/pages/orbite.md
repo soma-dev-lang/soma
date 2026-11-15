@@ -39,7 +39,7 @@ Twenty subsystems in all, from access control and the API gateway to space weath
 
 ## A real incident, replayed
 
-In September 2019 ESA's Aeolus had to dodge Starlink 44 alone after its messages went unanswered. [The incident replayed in Orbite](/orbite-aeolus), on the real code: the alert, the silent operator escalated up to the States, Orbite taking over, one designation, a screened and verified manoeuvre — and the one thing Orbite would have done worse than ESA.
+In September 2019 ESA's Aeolus had to dodge Starlink 44 alone after its messages went unanswered. [The incident replayed in Orbite](/orbite-aeolus), on the real code: the alert, the silent operator escalated up to the States, Orbite taking over, one designation, a screened and verified manoeuvre. The first replay showed Orbite deciding later than ESA; one new rule, the tacit agreement, now settles the designation three days before the closest approach.
 
 ## Six properties, written down before any code
 
@@ -206,9 +206,9 @@ No model holds 67,000 lines. None had to.
 
 | | |
 |---|---|
-| Skeleton | 21,177 lines · 220 cells · 156 state machines · 1,787 signals |
-| Bodies | 29,997 lines · every signal filled, 0 holes |
-| Tests | 15,935 lines (12,125 of tests, 3,810 of test doubles) · 22 suites (one per subsystem, end to end, and the Aeolus replay) · **6,264 assertions, all green** |
+| Skeleton | 21,189 lines · 220 cells · 156 state machines · 1,787 signals |
+| Bodies | 30,028 lines · every signal filled, 0 holes |
+| Tests | 15,959 lines (12,149 of tests, 3,810 of test doubles) · 22 suites (one per subsystem, end to end, and the Aeolus replay) · **6,268 assertions, all green** |
 | `soma verify`, on the skeleton | **97 rules between machines proven**, 21 of them across subsystems · 149 more through a link (`via`), open until judged on the bodies · 0 failures · 0 unexplored |
 | Call graph | no cycle · deepest chain 23 calls |
 
@@ -230,7 +230,7 @@ The decision layer is interpreted — it is a few lookups per event. The all-aga
 Honesty is part of the design:
 
 - **Proven**: the 97 rules above, on the skeleton: they hold for every body that stays in its frame — `soma check` proves that every body does — and takes an edge only under its condition, which `soma verify` judges on the bodies. Every lifecycle reaches a terminal state or returns to its initial one; no machine deadlocks.
-- **Tested, not yet proven**: properties 2 to 6 rest partly on bodies (a `require` before a transition) and on 149 rules through a link, checked by 6,264 assertions and an end-to-end scenario.
+- **Tested, not yet proven**: properties 2 to 6 rest partly on bodies (a `require` before a transition) and on 149 rules through a link, checked by 6,268 assertions and an end-to-end scenario.
 - **Next**: running `soma verify` on the 1,787 bodies together: it judges that each body honours the conditions on its edges, and closes the 149 open obligations, each proven once the verifier sees, in the body that writes its link, that the link is written once, at creation. That is the work in progress — and the two prover improvements above came from it: many of Orbite's links are keyed by an id the signal makes itself.
 - **Simulated**: orbital mechanics are simplified and every actor is fictional. Orbite is a demonstration of method, not a service.
 - **Versions**: everything on this page — the two examples and Orbite's figures — was produced with soma 3.2.4, the current release. With 3.2.4, `soma verify app.cell` on the published source proves the 97 rules in about 8 minutes.
@@ -241,18 +241,18 @@ The page and the code were read by people trying to break them. What they found,
 
 - **A second designation, in five lines of test.** The real lock could be lifted while its coordination still stood decided, then taken for the other object. The lock now has a `leve` (lifted) state; it is taken only for a coordination in agreement or arbitration and lifted only during a reopening, both as rules on its edges and as checks in its bodies; the attempt is a regression test. The miniature above was fixed the same way.
 - **`--strict` failed on this page's own example** once bodies were written: the verifier took `Coordination.close → Lock.close` for a recursion. Fixed in the verifier (above); the example was renamed meanwhile.
-- **Figures**: 1,775 signals was 1,787 (the count `soma holes` prints); 22,107 lines of skeleton counted the façades twice — it is 21,177.
+- **Figures**: 1,775 signals was 1,787 (the count `soma holes` prints); 22,107 lines of skeleton counted the façades twice — it is 21,189.
 - **Wording**: what is proven was stated more broadly than the proof; the sections above now separate the rules proven on the skeleton, the 149 left open, and what the released verifier reproduces — now all of it, with 3.2.4.
 
 ## Download and check it
 
-The whole program is published for anyone — person or agent — who wants to check these claims: 491 files, 67,691 lines of Soma.
+The whole program is published for anyone — person or agent — who wants to check these claims: 491 files, 67,758 lines of Soma.
 
 - [orbite.tar.gz](/cases/orbite/orbite.tar.gz) — everything, 1.1 MB: `curl -fsSL https://soma-lang.dev/cases/orbite/orbite.tar.gz | tar xz`
 - [README](/cases/orbite/README.md) — layout, the commands to run, and what each one prints
 - [index.json](/cases/orbite/index.json) and [MANIFEST.txt](/cases/orbite/MANIFEST.txt) — every file with its kind, line count, sha256 and URL, to fetch them one by one
 
-With soma 3.2.4, `soma check prod.cell` passes, the 22 test suites pass (6,264 assertions), and `soma verify app.cell` proves the 97 rules (about 8 minutes) — VERIFY OK, 0 failures, 0 unexplored, 149 open obligations. With 3.2.3, the verifier stopped at "more than 12 machines" on these rules; 3.2.4 is the release that changed that. The README says exactly what you will see.
+With soma 3.2.4, `soma check prod.cell` passes, the 22 test suites pass (6,268 assertions), and `soma verify app.cell` proves the 97 rules (about 8 minutes) — VERIFY OK, 0 failures, 0 unexplored, 149 open obligations. With 3.2.3, the verifier stopped at "more than 12 machines" on these rules; 3.2.4 is the release that changed that. The README says exactly what you will see.
 
 ## Try the method
 

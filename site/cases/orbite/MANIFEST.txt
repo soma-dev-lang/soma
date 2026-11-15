@@ -1,11 +1,11 @@
 # sha256  lines  path — ORBITE source, https://soma-lang.dev/cases/orbite/
-cfbd1a1bed64456906119c3e8b06f034affc5c4aef9709792fa89771d279daaf     128  AEOLUS_TRACE.md
+7d55557f152e33362b583831adbc4f1e92243c56562e079f39eb2cbf3c1a9549     140  AEOLUS_TRACE.md
 8f8e2b35489697cfe6893b16185b9fa6e0d958b37277471d824b377826287432     126  CONSIGNES.md
 0345090ed2d013135cd3983c66e57e7c81f01fab79f9f8e2c7a2a672eaf9b10d     124  CONSIGNES_CORPS.md
 5df2deac107017faa7d34b8f5e0714e1da04a893c182d99129401786d26b4cdc      78  CONSIGNES_REGLES.md
 69e0b4415b183b0f7cfd9e4fb34365d07fad41c30f49729775ec36064ed1d85c      72  CONSIGNES_V2.md
 a7d2f7f8fe2902b9cd04383e4eff7e9a7c3237a7e06da962ec2602a7b34933d1      65  INTEGRATION.md
-71d22161380e2bfbb21d90921a90a294218b3c85b8826ee18b6869ebe592278f     221  INTEGRATION_BOUT_EN_BOUT.md
+d1ccca6bc9c2683d2f7b931132e845dc890f622fd1d615274d86268ea1652d26     254  INTEGRATION_BOUT_EN_BOUT.md
 04e356e7590bf673f19b9446cfd6159076be098a7934a8892a7aa3b37247a267     177  app.cell
 a2f86fa821ca21413e235e7ee58469fb758c839ee6a20a5d82cdf1fe13e24069      12  banc_acces.cell
 150ceb9c2cb4059e07e12ca8a73f05de1d180a9bef24a125b0800125434c1b91       3  banc_commun.cell
@@ -56,7 +56,7 @@ c9de59205a8c6c9b2b001e0150a8114f456711394e401a5a80c0859bbfe91e03     197  doublu
 19b6ff27534c15a37870c0bf07f513822a548c948c6c8465e9b5d19c55006165      33  outils/cycles.py
 e3a6dfd45daf426ea393c8a9eebb79a536dd0c85979fed048e18290b8ed59f44      15  outils/graphe.py
 8b125968fbc69fa37130a9443973e0f66b7c576de803d34c7e0f07940394fec2     173  prod.cell
-561c5a8b4018ae2c4a77771ff200067bed7b9e2f3ca1fa2e0b23c7cf3198c282   10579  skeleton.lock
+c566d1bf977db588071ae704ee51715894e390253902b2a344336d22ae0fa33b   10579  skeleton.lock
 566d9072dde95170a99bc4590ada7aebe44bef2de5ee6d7a2366ab1bb70bf6e7      97  soma.toml
 effa2287aa48057b607ad39925413a9d0c3e3441e68c33248e2f548feb3af42f      73  sys/acces/NOTES.md
 cd26c543a075ea55d9d03ed8f69561a33bc5de47ab328b10944ee5eea0f3837e      72  sys/acces/api.cell
@@ -130,14 +130,14 @@ f91993d4d6ccde6eae73002f1d7c98f5c327549517c16dac3cf9a35b2a2941c1      85  sys/co
 44f8e84de032480c915c6e070a36ce4bac43e8042bb0e990e356f1f3ec612a52      45  sys/coordination/chair/api.cell
 2e966759fad07e69ba7818e1b02d231e45e1464cc638b7861d40634b0c8ca0e1      82  sys/coordination/chair/arbitrage.cell
 1d681726320a5109273845564fd7511483c7f7ccd38a652fa82aba7cf7451091     163  sys/coordination/chair/decision.cell
-40f879179f844f78c1c33e3170a3c652ad67438e704aae3610d048d561fe2e6c     541  sys/coordination/chair/dossier.cell
+f5cb91c593595495bb2648b44d6d68b4690b3af6d8959e118ce3b62adbe8c81d     557  sys/coordination/chair/dossier.cell
 0103fb0a04eda4bdb0db2fb5a7ef0d43744a33de71e50bf6f018038310123a70      76  sys/coordination/chair/echanges.cell
 3eea9b83ee8873d2323ed8360a78f18da422d5afea4b2ef0537037f0492861d4     172  sys/coordination/chair/grappes.cell
 94e17d4c0281bb1869456129daf3960f3d23e4b20cb889f9a63880f1693cc6f0     173  sys/coordination/chair/reponses.cell
 55a9cc502d04cb5b496deae77330f42ce0983a693194f8dffdca2a36ef2349ab     122  sys/coordination/chair/suivi.cell
 277a3af901aa123205d2e6768baeac0528825cd01cd88d184143748acb682f56      98  sys/coordination/chair/verrou.cell
 63e96b3d4d19b00494414bfec4660a0f04ca4ae2850728ea1c7c344b37bd1987     127  sys/coordination/decision.cell
-0bc44dd4c148ce25940490d32e9c3fef80b1feb3925a2c9d41d744d1449287fb     272  sys/coordination/dossier.cell
+4965a2274582ebe45f5d5c492f0fd37314ee6371aec70fc9f6336a733265ef53     279  sys/coordination/dossier.cell
 f0a121760358a1e80c3c0d03e4facb8f315822ae66ee460c4108fa0c6f048205      51  sys/coordination/echanges.cell
 cc4bc423ed8684626d5abcbd694e5cfa997244f6ec924c1edc8d49b47919701e      33  sys/coordination/entree.cell
 82129e7b47452db66d8add66bfa537216e82a4ed346a8db673eacecacfc45ef1      13  sys/coordination/facade.txt
@@ -198,7 +198,7 @@ f94fc0e0c9ea236a3fa2a93317adbfbb84a2b8271bdd0e0af85e55879f2f5f2a      30  sys/es
 de3cd2f73302fed1a11ff689f8ff88a423bfc20b9f0a23e81954172622a94f6f      74  sys/escalade/chair/concertation.cell
 162e11cf5158ac90b3fa0e1823a6b5b54454b95f38f83875ac210d4e97ae899b      52  sys/escalade/chair/contacts.cell
 49921d054bf38fe4a2f4ea153a4e63a506b54457353473940a67243fa128d2d7     124  sys/escalade/chair/diplomatie.cell
-4a71695dfd918aa9895c54eb1e62a3f5dcae5ca074453627995b4f09f099fc16     345  sys/escalade/chair/dossiers.cell
+30616226d021f26fbd5c876ea4443a429d6ce83163893f60389a10ee6ed3a226     352  sys/escalade/chair/dossiers.cell
 fff685c3b928e07b45e43ff8c8528c11d9fb8f724b1dc7c4ff993c0cf7f83eb4      97  sys/escalade/chair/prise_en_charge.cell
 63082c38245739b8b1eb8c61c1d4c4b2047021eef806d7383450bf912b047230     130  sys/escalade/chair/relances.cell
 e2cbcbae1b67b79f16c7eed55a1087e7482f970a86517e75c51d7b3829c0215d     143  sys/escalade/chair/statistiques.cell
@@ -206,7 +206,7 @@ e2a9bc790f8adab98fc1c118a7524c50b01798ed7910107df8bfbf290d9ed40a     115  sys/es
 d3b9a3f003989cbae6327a3067e53b2e24d3e527d13ebbaa098550438163660a      63  sys/escalade/concertation.cell
 216a5d23d5c0f905fb490144169bdd10da943b414bcf1b1a3f25f6d354c5674b      32  sys/escalade/contacts.cell
 8714b86f19ad5919c9a937de3db6dae391277830288675486656865b2d3cd511      94  sys/escalade/diplomatie.cell
-7b55111fc045b91c058379dcb8adf5fa77ac99db6913705431045f0d2cc01619     209  sys/escalade/dossiers.cell
+667a98ed04d6707272105e8e19cfd15772b08e195f4e5c18ea95d27463d85d74     212  sys/escalade/dossiers.cell
 e93360902f08072f76ba7ed2ad17a7fab662946cc25ae249c523087d30c3b13e      35  sys/escalade/entree.cell
 e2131398000e46e74cdab0b2e3ca1c179983897a0402bae041cede5dc61988a3       6  sys/escalade/facade.txt
 a2e2bca79a423dacac5fe4be11e5997018793c786d01bb4e73a484838310712a      79  sys/escalade/prise_en_charge.cell
@@ -382,7 +382,7 @@ b7ab909d13d92a674fef746ced636b6567fdbf876b9771c7ee8e1b25639a3c91     346  sys/pa
 b1372f7b13c5893b756b6eb0a7bfb8a823c70c3e592726aa8e4009381d54b360     128  sys/passerelle/chair/debit.cell
 fc3ae20854fb7a4c7be9bfc33a343c43b51d25a17e09333e06eeab001381bb93     230  sys/passerelle/chair/formats.cell
 ee8c9e7422003520f8528b24b215a58ac98cb1aa79ae0c87d9454379b67b3d43      83  sys/passerelle/chair/idempotence.cell
-12477cc71a398d6291f65687074db290234e5bfb0858f49d9056fcde5d3896aa     480  sys/passerelle/chair/messages.cell
+64f69c9d92bc7b386cb46e21b629eb1fcf1c1caa0d2ccbab922c0ca5fa0c11df     488  sys/passerelle/chair/messages.cell
 f650c60192cebed035d27bf49c3974bf4781c5ae2c684e888ba6772b8dc2484e     250  sys/passerelle/chair/metier.cell
 c918bff11e2d214209411082cbba4ae48bf106b26dc41f4550801caa58915244     488  sys/passerelle/chair/routage.cell
 8aae43c8ed684d9d64f05f29952fa430e35bc601150be6b77ad2323bc2c0483b      92  sys/passerelle/debit.cell
@@ -391,7 +391,7 @@ ced8461b14e84e1a1743f78c17d66b17025cf176af776171a348fc5c33d6be35       5  sys/pa
 fb5c1fcf3454ac4f72925444bc26fa95b23fed189d87ee771176aeffe205bde4      52  sys/passerelle/formats.cell
 a65aca3fd03a2561dd0e477b76dd48ec7516d8ed9236fb44bdb7f6f16e408e5c      63  sys/passerelle/idempotence.cell
 4b134364c863a41e332bfbdc528a416ace2992ee1ac3e54058a520f9afde1891       9  sys/passerelle/identite.cell
-a468cf25c4a717ab44825a8fcde9298e0b37fa32e64d0e22f902bb05472129c8     215  sys/passerelle/messages.cell
+bb2720ba171d1bfbedf4e58b045479061045f2dbcc83c013948fc7772d96367b     217  sys/passerelle/messages.cell
 feb7ec70c15196ca3b2f141948fc2e065e06628b6690ec469739ecca795f57c8      85  sys/passerelle/metier.cell
 80d2aafe80d4f45f73103dcedbbeb0464cc2cdbd9004766fa23d446c5abd8cab     177  sys/passerelle/routage.cell
 1dd2bdf37514e6fb4e94fdc0e91be632456a7b3fdb472c7faa39714b22f0e19c      58  sys/priorites/NOTES.md
@@ -469,7 +469,7 @@ b382f8d390bfef77194dc0d318873a8360d31731aaf20dcf8244ed0fc0ad0cae     159  sys/re
 8da42821380062439360dae440b7ad0c759b6d0c25a804e4dcfb03809faf9aa4     262  sys/responsabilite/reclamations.cell
 95f02b5dd3aede60a67523be32f57c9da7ace6bad04a3cd0ac2ffad9c506fa31      16  sys/responsabilite/regles.toml
 c1be87d8705198ae731705f3f9b8e1412d9741b5257e77091114a386d78174e0     460  test_acces.cell
-fa34db6d38eda3da4c8614855cdbeafea50ae82eaf98b19e4add4306e8a77714     688  test_aeolus.cell
+c16fa5d457fa0df495d89a422f007cd664dc55c6678642608d1b3b7a41c31da9     712  test_aeolus.cell
 6c3469973e7789503fd259654e2368ad39b5f999b33ed690efa5c5142833b557     791  test_bout_en_bout.cell
 b03edfa19357da5adf2d009d4c2b5caddaa3c7d44463b222a73f382590c7d78a     498  test_conformite.cell
 4e505cfaf6c1ca7699e25eea62697c1352ff387f3466772e997372b8fa356640     584  test_conjonctions.cell

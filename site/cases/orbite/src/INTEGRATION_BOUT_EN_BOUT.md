@@ -219,3 +219,36 @@ Constaté, non corrigé :
   contradictoire n'est pas ouvert ; manquements quotidiens de fin de vie (objets sans plan de fin de vie) ;
   incidents météo (aucune source Kp/F10.7, facteur de tempête 300 % appliqué par défaut) ; États et ORBITE sans
   canal (leurs messages partent en défaut).
+
+### Rejeu Aeolus avec l'accord tacite (binaire `soma-v3.2.4`)
+
+La coordination arrête désormais une proposition acceptée par le propriétaire du proposé quand les autres
+parties sont seulement muettes (`CoordDossier.constater_silence`, « accord tacite »). Rejeu : désignation
+d'AEOLUS arrêtée le 30/08 à 15 h (TCA − 69 h) par accord, plan approuvé à 15 h 20, plus de reprise ni
+d'arbitrage. `test_aeolus.cell` 99/99 ; coordination 227, escalade 270, conformite 338, passerelle 370,
+bout_en_bout 182, manoeuvres 231 : tous verts ; `check prod.cell` sans erreur ; cycles.py : profondeur 23.
+
+15. **Après un accord tacite, l'escalade d'un muet se clôturait « repondu », puis renaissait tous les
+    battements (escalade ↔ coordination ↔ passerelle)** — symptôme : ESC-1 clos « repondu » au battement de
+    l'accord, puis un nouveau dossier toutes les 30 min (ESC-2…ESC-150), chacun clos au battement suivant,
+    avec sa relance ; aucune montée cohérente vers le chef de mission ni le point focal, statistiques
+    d'escalades faussées. Cause : `EscDossiers._a_repondu` tenait `ApiCoordination.decidee(r)` pour une
+    réponse de l'opérateur ; ce n'en est pas une quand la décision est prise sans lui. Correction
+    (`sys/escalade/chair/dossiers.cell`) : « répondu » = op ∉ `ApiCoordination.muets(r)` ; décision arrêtée
+    sans lui : l'escalade continue pour INFORMER (montée selon le barème, pas de reprise à l'échéance
+    finale), close « informe » par son accusé, caduque au TCA ou à la clôture du rapprochement ;
+    commentaires de `EscDossiers.accuser`, `clore`, `balayer` (`sys/escalade/dossiers.cell`), `--amend`.
+    Rejeu : e1 15 h, e2 15 h 30, e3 16 h, e4 31/08 1 h, jamais de reprise, décision intacte.
+16. **Un même silence compté plusieurs fois (passerelle ↔ conformite)** — symptôme : deux manquements « autre »
+    de gravité 3 contre SpaceX à 14 h 30 (alertes du 30/08 non acquittées avant même l'échéance de réponse),
+    puis quatre de plus après la clôture du rapprochement, en plus du « reponse_tardive ». Cause :
+    `PasMessages._suivre_defaut` signalait à la conformité tout défaut dont l'escalade était refusée, y
+    compris NonEligible (op pas encore muet : la coordination constatera elle-même le silence) et Ferme
+    (rapprochement clos). Correction : `sys/passerelle/chair/messages.cell` (ces deux refus : défaut seulement
+    journalisé) ; commentaire de `PasMessages.traiter_file`, `--amend`. Rejeu : un seul « reponse_tardive »
+    (MQ-5) ; reste « refus_escalade » (MQ-6, veille de conformite sur l'escalade sans accusé), voulu.
+
+Constaté, non corrigé : l'accord tacite ne vaut qu'information « notifiée » pour le muet — SpaceX reçoit la
+décision sur son webhook mais ne l'acquitte jamais ; ORBITE ne peut garantir qu'il ne manœuvrera pas de son
+côté (risque résiduel de 2019). La décision est prise sans quatre yeux d'ORBITE (mode accord, valideur ''),
+alors que l'arbitrage d'un silence en exigeait : choix de conception à confirmer.

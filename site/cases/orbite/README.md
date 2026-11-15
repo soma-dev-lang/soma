@@ -19,11 +19,11 @@ same as `sha256  lines  path`. Check a download with
 
 | kind | lines | where |
 |---|---|---|
-| skeleton | 21,177 | `commun/*.cell` (types, journal, clock), `sys/<subsystem>/*.cell` — memory, invariants, state machines, frames |
-| bodies | 29,997 | `commun/*_chair.cell`, `sys/<subsystem>/chair/*.cell` — `flesh` blocks |
-| tests | 15,935 | `test_<subsystem>.cell` (12,125, unit, with test doubles), `doublures/*.cell` (3,810), `test_bout_en_bout.cell` (end to end, no doubles) |
+| skeleton | 21,189 | `commun/*.cell` (types, journal, clock), `sys/<subsystem>/*.cell` — memory, invariants, state machines, frames |
+| bodies | 30,028 | `commun/*_chair.cell`, `sys/<subsystem>/chair/*.cell` — `flesh` blocks |
+| tests | 15,959 | `test_<subsystem>.cell` (12,149, unit, with test doubles), `doublures/*.cell` (3,810), `test_bout_en_bout.cell` (end to end, no doubles) |
 | entries | 582 | `app.cell` (all skeletons), `prod.cell` (skeletons + all bodies), `banc_<subsystem>.cell` (one subsystem's bodies) |
-| documents | 13,175 | `CONSIGNES*.md` (the instructions each phase's agents got), `INTEGRATION*.md` (integration reports), `sys/*/NOTES.md` (each subsystem's design notes), `sys/*/facade.txt`, `sys/*/regles.toml` |
+| documents | 13,220 | `CONSIGNES*.md` (the instructions each phase's agents got), `INTEGRATION*.md` (integration reports), `sys/*/NOTES.md` (each subsystem's design notes), `sys/*/facade.txt`, `sys/*/regles.toml` |
 
 `soma.toml` holds the rules between machines written as tables; `skeleton.lock` freezes the
 220 skeletons. `outils/cycles.py` checks the call graph has no cycle.
@@ -35,7 +35,7 @@ same as `sha256  lines  path`. Check a download with
     soma check prod.cell                     # 0 errors (warnings are listed and expected)
     soma check app.cell                      # the skeleton alone: 0 errors, every signal a hole
     for t in test_*.cell; do soma test "$t"; done
-                                             # 22 suites, 6,264 assertions, 0 failures
+                                             # 22 suites, 6,268 assertions, 0 failures
     soma verify app.cell                     # about 8 minutes: VERIFY OK
     python3 outils/cycles.py | head -3       # no cycle; deepest call chain 23
     soma skeleton prod.cell CoordVerrou.poser    # the one-screen brief of any signal

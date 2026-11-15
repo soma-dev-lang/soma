@@ -6,11 +6,11 @@
  "manifest": "https://soma-lang.dev/cases/orbite/MANIFEST.txt",
  "files": 491,
  "lines_by_kind": {
-  "doc": 13175,
+  "doc": 13220,
   "entry": 582,
-  "skeleton": 21177,
-  "body": 29997,
-  "test": 15935
+  "skeleton": 21189,
+  "body": 30028,
+  "test": 15959
  },
  "entries": {
   "skeleton": "app.cell",
@@ -22,8 +22,8 @@
   {
    "path": "AEOLUS_TRACE.md",
    "kind": "doc",
-   "lines": 128,
-   "sha256": "cfbd1a1bed64456906119c3e8b06f034affc5c4aef9709792fa89771d279daaf",
+   "lines": 140,
+   "sha256": "7d55557f152e33362b583831adbc4f1e92243c56562e079f39eb2cbf3c1a9549",
    "url": "https://soma-lang.dev/cases/orbite/src/AEOLUS_TRACE.md"
   },
   {
@@ -64,8 +64,8 @@
   {
    "path": "INTEGRATION_BOUT_EN_BOUT.md",
    "kind": "doc",
-   "lines": 221,
-   "sha256": "71d22161380e2bfbb21d90921a90a294218b3c85b8826ee18b6869ebe592278f",
+   "lines": 254,
+   "sha256": "d1ccca6bc9c2683d2f7b931132e845dc890f622fd1d615274d86268ea1652d26",
    "url": "https://soma-lang.dev/cases/orbite/src/INTEGRATION_BOUT_EN_BOUT.md"
   },
   {
@@ -422,7 +422,7 @@
    "path": "skeleton.lock",
    "kind": "doc",
    "lines": 10579,
-   "sha256": "561c5a8b4018ae2c4a77771ff200067bed7b9e2f3ca1fa2e0b23c7cf3198c282",
+   "sha256": "c566d1bf977db588071ae704ee51715894e390253902b2a344336d22ae0fa33b",
    "url": "https://soma-lang.dev/cases/orbite/src/skeleton.lock"
   },
   {
@@ -939,8 +939,8 @@
   {
    "path": "sys/coordination/chair/dossier.cell",
    "kind": "body",
-   "lines": 541,
-   "sha256": "40f879179f844f78c1c33e3170a3c652ad67438e704aae3610d048d561fe2e6c",
+   "lines": 557,
+   "sha256": "f5cb91c593595495bb2648b44d6d68b4690b3af6d8959e118ce3b62adbe8c81d",
    "url": "https://soma-lang.dev/cases/orbite/src/sys/coordination/chair/dossier.cell"
   },
   {
@@ -988,8 +988,8 @@
   {
    "path": "sys/coordination/dossier.cell",
    "kind": "skeleton",
-   "lines": 272,
-   "sha256": "0bc44dd4c148ce25940490d32e9c3fef80b1feb3925a2c9d41d744d1449287fb",
+   "lines": 279,
+   "sha256": "4965a2274582ebe45f5d5c492f0fd37314ee6371aec70fc9f6336a733265ef53",
    "url": "https://soma-lang.dev/cases/orbite/src/sys/coordination/dossier.cell"
   },
   {
@@ -1415,8 +1415,8 @@
   {
    "path": "sys/escalade/chair/dossiers.cell",
    "kind": "body",
-   "lines": 345,
-   "sha256": "4a71695dfd918aa9895c54eb1e62a3f5dcae5ca074453627995b4f09f099fc16",
+   "lines": 352,
+   "sha256": "30616226d021f26fbd5c876ea4443a429d6ce83163893f60389a10ee6ed3a226",
    "url": "https://soma-lang.dev/cases/orbite/src/sys/escalade/chair/dossiers.cell"
   },
   {
@@ -1471,8 +1471,8 @@
   {
    "path": "sys/escalade/dossiers.cell",
    "kind": "skeleton",
-   "lines": 209,
-   "sha256": "7b55111fc045b91c058379dcb8adf5fa77ac99db6913705431045f0d2cc01619",
+   "lines": 212,
+   "sha256": "667a98ed04d6707272105e8e19cfd15772b08e195f4e5c18ea95d27463d85d74",
    "url": "https://soma-lang.dev/cases/orbite/src/sys/escalade/dossiers.cell"
   },
   {
@@ -2703,8 +2703,8 @@
   {
    "path": "sys/passerelle/chair/messages.cell",
    "kind": "body",
-   "lines": 480,
-   "sha256": "12477cc71a398d6291f65687074db290234e5bfb0858f49d9056fcde5d3896aa",
+   "lines": 488,
+   "sha256": "64f69c9d92bc7b386cb46e21b629eb1fcf1c1caa0d2ccbab922c0ca5fa0c11df",
    "url": "https://soma-lang.dev/cases/orbite/src/sys/passerelle/chair/messages.cell"
   },
   {
@@ -2766,8 +2766,8 @@
   {
    "path": "sys/passerelle/messages.cell",
    "kind": "skeleton",
-   "lines": 215,
-   "sha256": "a468cf25c4a717ab44825a8fcde9298e0b37fa32e64d0e22f902bb05472129c8",
+   "lines": 217,
+   "sha256": "bb2720ba171d1bfbedf4e58b045479061045f2dbcc83c013948fc7772d96367b",
    "url": "https://soma-lang.dev/cases/orbite/src/sys/passerelle/messages.cell"
   },
   {
@@ -3312,8 +3312,8 @@
   {
    "path": "test_aeolus.cell",
    "kind": "test",
-   "lines": 688,
-   "sha256": "fa34db6d38eda3da4c8614855cdbeafea50ae82eaf98b19e4add4306e8a77714",
+   "lines": 712,
+   "sha256": "c16fa5d457fa0df495d89a422f007cd664dc55c6678642608d1b3b7a41c31da9",
    "url": "https://soma-lang.dev/cases/orbite/src/test_aeolus.cell"
   },
   {
