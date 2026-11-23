@@ -25,7 +25,8 @@ ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 def one(soma, path):
     rel = os.path.relpath(path, ROOT)
     src_dir, name = os.path.dirname(path), os.path.basename(path)
-    text = open(path, encoding="utf-8").read()
+    # (a file that is not UTF-8 is a fixture of E0115, not a program: no test cell in it)
+    text = open(path, encoding="utf-8", errors="replace").read()
     if not re.search(r"^\s*cell\s+test\s", text, re.M):
         return rel, "notest", []
     with tempfile.TemporaryDirectory() as tmp:
