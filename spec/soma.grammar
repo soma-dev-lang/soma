@@ -99,7 +99,7 @@ let ::= "let" ws1 name ( ws ":" ws type )? ws "=" ws expr
 return ::= "return" ( ws expr )?
 if ::= "if" ws1 expr ws block ( ws "else" ws ( if | block ) )?
 for ::= "for" ws ( brackets ws )? name ( ws "," ws name )? ( ws brackets )? ws1 "in" ws1 expr ws block
-while ::= "while" ws1 expr ws block
+while ::= "while" ws1 ( brackets ws )? expr ws block
 emit ::= ( "emit" | "signal" ) ws1 name ws "(" args ")"
 require ::= "require" ws1 expr ws "else" ws1 ( string | name ( hws string )? )
 ensure ::= "ensure" ws1 expr
