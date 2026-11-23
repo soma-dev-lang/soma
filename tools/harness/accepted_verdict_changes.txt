@@ -1,0 +1,2 @@
+# programs whose check/verify verdict a change is MEANT to move: one path per line, the reason after a #
+# (emptied at each release: the next reference binary already has them)

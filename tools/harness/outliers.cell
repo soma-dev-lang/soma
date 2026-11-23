@@ -1,0 +1,295 @@
+// Programs far from Soma's home ground — search, simulation, parsing, number
+// theory, hashing, dates — each with an answer known from elsewhere. A wrong
+// assertion here is a wrong answer of the interpreter on ordinary code.
+// Run by tools/harness/run.py (gate `outliers`): soma test tools/harness/outliers.cell
+cell Algo {
+    face {
+        signal queens(n: Int) -> Int
+        signal life() -> List
+        signal primes(n: Int) -> Int
+        signal is_prime(n: Int) -> Bool
+        signal calc(s: String) -> Int
+        signal lev(a: String, b: String) -> Int
+        signal fri13(year: Int) -> List
+        signal roman(n: Int) -> String
+        signal dijkstra() -> Map
+        signal collatz(n: Int) -> Int
+        signal hanoi(n: Int) -> Int
+        signal perms(s: String) -> Int
+        signal base(n: Int, b: Int) -> String
+        signal sha(s: String) -> String
+        signal mersenne() -> List
+        signal kahan(n: Int) -> List
+        signal wordfreq(t: String) -> List
+        signal bsearch(n: Int) -> Int
+    }
+    on _safe(cols: List, r: Int, c: Int) {
+        for i in range(0, r) {
+            let d = cols[i] - c
+            if d == 0 || abs(d) == r - i { return false }
+        }
+        return true
+    }
+    on _place(cols: List, r: Int, n: Int) {
+        if r == n { return 1 }
+        let t = 0
+        for c in range(0, n) { if _safe(cols, r, c) { t += _place(push(cols, c), r + 1, n) } }
+        return t
+    }
+    on queens(n: Int) { return _place([], 0, n) }
+
+    on _step(g: List, h: Int, w: Int) {
+        let out = []
+        for y in range(0, h) {
+            let row = []
+            for x in range(0, w) {
+                let c = 0
+                for dy in [0 - 1, 0, 1] { for dx in [0 - 1, 0, 1] {
+                    if !(dy == 0 && dx == 0) { c += g[(y + dy + h) % h][(x + dx + w) % w] }
+                } }
+                let alive = g[y][x] == 1
+                row = push(row, if (alive && (c == 2 || c == 3)) || (!alive && c == 3) { 1 } else { 0 })
+            }
+            out = push(out, row)
+        }
+        return out
+    }
+    on life() {
+        let g = [[0, 1, 0, 0, 0, 0], [0, 0, 1, 0, 0, 0], [1, 1, 1, 0, 0, 0], [0, 0, 0, 0, 0, 0], [0, 0, 0, 0, 0, 0], [0, 0, 0, 0, 0, 0]]
+        for i in range(0, 24) { g = _step(g, 6, 6) }
+        return g
+    }
+    on is_prime(n: Int) {
+        if n < 2 { return false }
+        for p in [2, 3, 5, 7, 11, 13, 17, 19, 23, 29, 31, 37] { if n % p == 0 { return n == p } }
+        let d = n - 1
+        let r = 0
+        while d % 2 == 0 { d = idiv(d, 2)
+            r += 1 }
+        for a in [2, 3, 5, 7, 11, 13, 17, 19, 23, 29, 31, 37] {
+            let x = pow_mod(a, d, n)
+            if x == 1 || x == n - 1 { continue }
+            let comp = true
+            for i in range(0, r - 1) {
+                x = pow_mod(x, 2, n)
+                if x == n - 1 { comp = false
+                    break }
+            }
+            if comp { return false }
+        }
+        return true
+    }
+    on primes(n: Int) { return count(range(0, n), x => is_prime(x)) }
+    on mersenne() { return filter(range(2, 130), p => is_prime(ipow(2, p) - 1)) }
+
+    // recursive descent: returns [value, pos]
+    on _atom(s: String, i: Int) {
+        if s[i] == "(" { let r = _expr(s, i + 1)
+            return [r[0], r[1] + 1] }
+        if s[i] == "-" { let r = _atom(s, i + 1)
+            return [0 - r[0], r[1]] }
+        let j = i
+        while j < len(s) && s[j] >= "0" && s[j] <= "9" { j += 1 }
+        return [to_int(substring(s, i, j)), j]
+    }
+    on _term(s: String, i: Int) {
+        let l = _atom(s, i)
+        while l[1] < len(s) && (s[l[1]] == "*" || s[l[1]] == "/" || s[l[1]] == "%") {
+            let op = s[l[1]]
+            let r = _atom(s, l[1] + 1)
+            l = [if op == "*" { l[0] * r[0] } else if op == "/" { idiv(l[0], r[0]) } else { l[0] % r[0] }, r[1]]
+        }
+        return l
+    }
+    on _expr(s: String, i: Int) {
+        let l = _term(s, i)
+        while l[1] < len(s) && (s[l[1]] == "+" || s[l[1]] == "-") {
+            let op = s[l[1]]
+            let r = _term(s, l[1] + 1)
+            l = [if op == "+" { l[0] + r[0] } else { l[0] - r[0] }, r[1]]
+        }
+        return l
+    }
+    on calc(s: String) { return _expr(replace(s, " ", ""), 0)[0] }
+
+    on lev(a: String, b: String) {
+        let prev = range(0, len(b) + 1)
+        for i in range(1, len(a) + 1) {
+            let cur = [i]
+            for j in range(1, len(b) + 1) {
+                let cost = if a[i - 1] == b[j - 1] { 0 } else { 1 }
+                cur = push(cur, min(min(prev[j] + 1, cur[j - 1] + 1), prev[j - 1] + cost))
+            }
+            prev = cur
+        }
+        return prev[len(b)]
+    }
+    on fri13(year: Int) {
+        let out = []
+        for m in range(1, 13) {
+            let d = "{year}-{pad_left(to_string(m), 2, \"0\")}-13"
+            if parse_date(d).weekday == 5 { out = push(out, m) }
+        }
+        return out
+    }
+    on roman(n: Int) {
+        let vals = [1000, 900, 500, 400, 100, 90, 50, 40, 10, 9, 5, 4, 1]
+        let syms = ["M", "CM", "D", "CD", "C", "XC", "L", "XL", "X", "IX", "V", "IV", "I"]
+        let out = ""
+        let k = n
+        for i in range(0, 13) { while k >= vals[i] { out += syms[i]
+            k -= vals[i] } }
+        return out
+    }
+    on dijkstra() {
+        let g = map("a", map("b", 7, "c", 9, "f", 14), "b", map("a", 7, "c", 10, "d", 15), "c", map("a", 9, "b", 10, "d", 11, "f", 2), "d", map("b", 15, "c", 11, "e", 6), "e", map("d", 6, "f", 9), "f", map("a", 14, "c", 2, "e", 9))
+        let dist = map("a", 0)
+        let done = map()
+        while len(done) < len(g) {
+            let best = ()
+            for k in keys(dist) { if !contains(done, k) && (best == () || dist[k] < dist[best]) { best = k } }
+            if best == () { break }
+            done[best] = true
+            for e in entries(g[best]) {
+                let nd = dist[best] + e.value
+                if !contains(dist, e.key) || nd < dist[e.key] { dist[e.key] = nd }
+            }
+        }
+        return dist
+    }
+    on collatz(n: Int) {
+        let best = 0
+        let arg = 0
+        for s in range(1, n) {
+            let x = s
+            let c = 0
+            while x != 1 { x = if x % 2 == 0 { idiv(x, 2) } else { 3 * x + 1 }
+                c += 1 }
+            if c > best { best = c
+                arg = s }
+        }
+        return arg
+    }
+    on hanoi(n: Int) { if n == 0 { return 0 }
+        return 2 * hanoi(n - 1) + 1 }
+    on _perm(rest: List, acc: String, seen: Map) {
+        if len(rest) == 0 { return 1 }
+        let t = 0
+        let used = map()
+        for i in range(0, len(rest)) {
+            if contains(used, rest[i]) { continue }
+            used[rest[i]] = 1
+            t += _perm(concat(slice(rest, 0, i), slice(rest, i + 1)), acc + rest[i], seen)
+        }
+        return t
+    }
+    on perms(s: String) { return _perm(split(s, ""), "", map()) }
+    on base(n: Int, b: Int) {
+        let digits = "0123456789abcdefghijklmnopqrstuvwxyz"
+        if n == 0 { return "0" }
+        let k = abs(n)
+        let out = ""
+        while k > 0 { out = digits[k % b] + out
+            k = idiv(k, b) }
+        return if n < 0 { "-" + out } else { out }
+    }
+    on _rotr(x: Int, n: Int) { return band(bor(shr(x, n), shl(x, 32 - n)), 4294967295) }
+    on sha(s: String) {
+        let k = [1116352408, 1899447441, 3049323471, 3921009573, 961987163, 1508970993, 2453635748, 2870763221, 3624381080, 310598401, 607225278, 1426881987, 1925078388, 2162078206, 2614888103, 3248222580, 3835390401, 4022224774, 264347078, 604807628, 770255983, 1249150122, 1555081692, 1996064986, 2554220882, 2821834349, 2952996808, 3210313671, 3336571891, 3584528711, 113926993, 338241895, 666307205, 773529912, 1294757372, 1396182291, 1695183700, 1986661051, 2177026350, 2456956037, 2730485921, 2820302411, 3259730800, 3345764771, 3516065817, 3600352804, 4094571909, 275423344, 430227734, 506948616, 659060556, 883997877, 958139571, 1322822218, 1537002063, 1747873779, 1955562222, 2024104815, 2227730452, 2361852424, 2428436474, 2756734187, 3204031479, 3329325298]
+        let h = [1779033703, 3144134277, 1013904242, 2773480762, 1359893119, 2600822924, 528734635, 1541459225]
+        let bytes = []
+        for i in range(0, len(s)) { bytes = push(bytes, ord(s[i])) }
+        let bitlen = len(bytes) * 8
+        bytes = push(bytes, 128)
+        while len(bytes) % 64 != 56 { bytes = push(bytes, 0) }
+        for i in range(0, 8) { bytes = push(bytes, band(shr(bitlen, 8 * (7 - i)), 255)) }
+        for c in range(0, idiv(len(bytes), 64)) {
+            let w = []
+            for i in range(0, 16) { w = push(w, bor(bor(shl(bytes[c * 64 + i * 4], 24), shl(bytes[c * 64 + i * 4 + 1], 16)), bor(shl(bytes[c * 64 + i * 4 + 2], 8), bytes[c * 64 + i * 4 + 3]))) }
+            for i in range(16, 64) {
+                let s0 = bxor(bxor(_rotr(w[i - 15], 7), _rotr(w[i - 15], 18)), shr(w[i - 15], 3))
+                let s1 = bxor(bxor(_rotr(w[i - 2], 17), _rotr(w[i - 2], 19)), shr(w[i - 2], 10))
+                w = push(w, band(w[i - 16] + s0 + w[i - 7] + s1, 4294967295))
+            }
+            let v = h
+            for i in range(0, 64) {
+                let e1 = bxor(bxor(_rotr(v[4], 6), _rotr(v[4], 11)), _rotr(v[4], 25))
+                let ch = bxor(band(v[4], v[5]), band(bxor(v[4], 4294967295), v[6]))
+                let t1 = v[7] + e1 + ch + k[i] + w[i]
+                let e0 = bxor(bxor(_rotr(v[0], 2), _rotr(v[0], 13)), _rotr(v[0], 22))
+                let maj = bxor(bxor(band(v[0], v[1]), band(v[0], v[2])), band(v[1], v[2]))
+                v = [band(t1 + e0 + maj, 4294967295), v[0], v[1], v[2], band(v[3] + t1, 4294967295), v[4], v[5], v[6]]
+            }
+            h = h + v
+            h = h |> map(x => band(x, 4294967295))
+        }
+        return join(h |> map(x => pad_left(base(x, 16), 8, "0")), "")
+    }
+    on kahan(n: Int) {
+        let naive = 0.0
+        let s = 0.0
+        let c = 0.0
+        for i in range(0, n) {
+            naive += 0.1
+            let y = 0.1 - c
+            let t = s + y
+            c = (t - s) - y
+            s = t
+        }
+        return [naive, s, sum(range(0, n) |> map(i => 0.1))]
+    }
+    on wordfreq(t: String) {
+        let wc = word_count(lowercase(t))
+        return top(sort_by(entries(wc), "value", "desc"), 3)
+    }
+    on bsearch(n: Int) {
+        let xs = range(0, 100000) |> map(i => i * 3)
+        let lo = 0
+        let hi = len(xs) - 1
+        while lo <= hi {
+            let mid = idiv(lo + hi, 2)
+            if xs[mid] == n { return mid }
+            if xs[mid] < n { lo = mid + 1 } else { hi = mid - 1 }
+        }
+        return 0 - 1
+    }
+}
+cell test T { rules {
+    assert Algo.queens(6) == 4
+    assert Algo.queens(8) == 92
+    assert Algo.life() == [[0, 1, 0, 0, 0, 0], [0, 0, 1, 0, 0, 0], [1, 1, 1, 0, 0, 0], [0, 0, 0, 0, 0, 0], [0, 0, 0, 0, 0, 0], [0, 0, 0, 0, 0, 0]]
+    assert Algo.primes(10000) == 1229
+    assert Algo.is_prime(170141183460469231731687303715884105727)
+    assert !Algo.is_prime(170141183460469231731687303715884105725)
+    assert !Algo.is_prime(3215031751)
+    assert Algo.mersenne() == [2, 3, 5, 7, 13, 17, 19, 31, 61, 89, 107, 127]
+    assert Algo.calc("2 + 3 * (4 - 1)") == 11
+    assert Algo.calc("-(2+3)*-4 - 10/3 + 7%4") == 20
+    assert Algo.calc("((((((1))))))+2*3*4-100/7") == 11
+    assert Algo.lev("kitten", "sitting") == 3
+    assert Algo.lev("", "abc") == 3
+    assert Algo.lev("flaw", "lawn") == 2
+    assert Algo.lev("déjà vu", "deja vu") == 2
+    assert Algo.fri13(2026) == [2, 3, 11]
+    assert Algo.fri13(2015) == [2, 3, 11]
+    assert Algo.fri13(2000) == [10]
+    assert Algo.roman(1994) == "MCMXCIV"
+    assert Algo.roman(3888) == "MMMDCCCLXXXVIII"
+    assert Algo.dijkstra() == map("a", 0, "b", 7, "c", 9, "f", 11, "d", 20, "e", 20)
+    assert Algo.collatz(10000) == 6171
+    assert Algo.hanoi(64) == 18446744073709551615
+    assert Algo.perms("abcd") == 24
+    assert Algo.perms("aabb") == 6
+    assert Algo.perms("mississippi") == 34650
+    assert Algo.base(255, 16) == "ff"
+    assert Algo.base(0 - 255, 2) == "-11111111"
+    assert parse_int(Algo.base(123456789012345678901234567890, 36), 36) == 123456789012345678901234567890
+    assert Algo.sha("") == sha256("")
+    assert Algo.sha("abc") == "ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad"
+    assert Algo.sha("The quick brown fox jumps over the lazy dog, again and again and again and again!") == sha256("The quick brown fox jumps over the lazy dog, again and again and again and again!")
+    assert Algo.kahan(10)[1] == 1.0
+    assert Algo.kahan(10)[0] == 0.9999999999999999
+    assert Algo.wordfreq("the cat and The dog and THE bird")[0] == map("key", "the", "value", 3)
+    assert Algo.bsearch(299997) == 99999
+    assert Algo.bsearch(299998) == 0 - 1
+} }

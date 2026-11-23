@@ -36,3 +36,7 @@ site/gotchas/
 site/programs/
 site/cli/
 site/changelog/
+
+# the improvement harness: reference binary, last scorecard
+tools/harness/.ref/
+tools/harness/last.json
