@@ -38,6 +38,8 @@ pub fn verify_program(program: &Program) -> Vec<VerifyResult> {
     // "runtime-checked — put a require before the transition()"
     let analysis = super::desugar::expose_for_analysis(&super::contracts::inline_requires(program));
     let program = &analysis;
+    // (of the program the proofs read: `analysis` lives to the end of this function)
+    let _facts = super::termination::program_scope(program);
     let mut results = Vec::new();
     PROGRAM_CELLS.with(|c| *c.borrow_mut() = super::desugar::program_names(program).1);
     PROGRAM_HANDLERS.with(|c| *c.borrow_mut() = super::desugar::program_names(program).0);

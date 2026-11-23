@@ -51,6 +51,71 @@ pub enum TerminationFinding {
     },
 }
 
+/// What `check_cell_termination` needs of the whole program, the same for
+/// every cell: worked out once per `verify_program` instead of once per cell
+/// (the call graph, itself over every cell, was rebuilt for every cell of
+/// every cell's check — 200 independent cells took 3 s to verify, 400 took 26).
+struct ProgramFacts {
+    program: *const Program,
+    graph: Option<std::rc::Rc<HashMap<String, Vec<String>>>>,
+    bad: Option<std::rc::Rc<HashSet<String>>>,
+}
+
+thread_local! {
+    static FACTS: std::cell::RefCell<Option<ProgramFacts>> = const { std::cell::RefCell::new(None) };
+}
+
+/// Holds the program's facts while it lives (see `program_scope`).
+pub struct ProgramScope(bool);
+
+impl Drop for ProgramScope {
+    fn drop(&mut self) {
+        if self.0 { FACTS.with(|f| *f.borrow_mut() = None); }
+    }
+}
+
+/// Keep the call graph of `program` for as long as the returned guard lives.
+/// The caller borrows `program` for that long, so it cannot change under the
+/// facts; without a guard nothing is kept.
+pub fn program_scope(program: &Program) -> ProgramScope {
+    FACTS.with(|f| {
+        let mut f = f.borrow_mut();
+        if f.is_some() { return ProgramScope(false); }
+        *f = Some(ProgramFacts { program: program as *const Program, graph: None, bad: None });
+        ProgramScope(true)
+    })
+}
+
+fn kept<T: Clone>(program: &Program, get: impl Fn(&ProgramFacts) -> Option<T>) -> Option<T> {
+    FACTS.with(|f| f.borrow().as_ref().filter(|k| std::ptr::eq(k.program, program)).and_then(|k| get(k)))
+}
+
+fn keep(program: &Program, set: impl FnOnce(&mut ProgramFacts)) {
+    FACTS.with(|f| if let Some(k) = f.borrow_mut().as_mut().filter(|k| std::ptr::eq(k.program, program)) { set(k) });
+}
+
+fn call_graph(program: &Program) -> std::rc::Rc<HashMap<String, Vec<String>>> {
+    if let Some(g) = kept(program, |k| k.graph.clone()) { return g; }
+    let g = std::rc::Rc::new(build_call_graph(program));
+    keep(program, |k| k.graph = Some(g.clone()));
+    g
+}
+
+/// The handlers of the program (`Cell.handler`) that may not terminate by themselves.
+fn non_terminating(program: &Program) -> std::rc::Rc<HashSet<String>> {
+    if let Some(b) = kept(program, |k| k.bad.clone()) { return b; }
+    let mut bad: HashSet<String> = HashSet::new();
+    for c in super::names::collect_cells(program) {
+        if !matches!(c.kind, CellKind::Cell | CellKind::Agent) { continue; }
+        for f in check_cell_termination_raw(c, program) {
+            if let TerminationFinding::MayNotTerminate { handler, .. } = f { bad.insert(format!("{}.{}", c.name, handler)); }
+        }
+    }
+    let b = std::rc::Rc::new(bad);
+    keep(program, |k| k.bad = Some(b.clone()));
+    b
+}
+
 /// Check termination for all handlers in a cell. `program` supplies the
 /// call graph: handlers call each other by bare name, across cells too.
 pub fn check_cell_termination(cell: &CellDef, program: &Program) -> Vec<TerminationFinding> {
@@ -78,13 +143,7 @@ pub fn check_cell_termination(cell: &CellDef, program: &Program) -> Vec<Terminat
     // a handler that CALLS one that may not terminate may not terminate
     // either (`go` calling an imported `spin` with `while true` was "✓
     // structurally terminates")
-    let mut bad: std::collections::HashSet<String> = std::collections::HashSet::new();
-    for c in super::names::collect_cells(program) {
-        if !matches!(c.kind, CellKind::Cell | CellKind::Agent) { continue; }
-        for f in check_cell_termination_raw(c, program) {
-            if let TerminationFinding::MayNotTerminate { handler, .. } = f { bad.insert(format!("{}.{}", c.name, handler)); }
-        }
-    }
+    let bad = non_terminating(program);
     if bad.is_empty() { return findings; }
     let graph = call_graph(program);
     for f in findings.iter_mut() {
@@ -301,7 +360,7 @@ fn check_cell_termination_raw(cell: &CellDef, program: &Program) -> Vec<Terminat
 /// `Escalades.ouvrir` is no recursion; `A.f` → `B.f` → `A.f` is one). The
 /// direct self-edge is left out: direct recursion is judged by the
 /// decreasing-argument rule.
-fn call_graph(program: &Program) -> HashMap<String, Vec<String>> {
+fn build_call_graph(program: &Program) -> HashMap<String, Vec<String>> {
     // every cell, interior ones included: the handlers of `interior { }`
     // contributed no edge (A.ping → B.pong → A.ping "✓ terminates")
     let all_cells = super::names::collect_cells(program);

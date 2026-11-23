@@ -7486,3 +7486,25 @@ cell T {
     assert_eq!(code, 0, "{out}");
     assert!(out.contains("[99, 42]"), "{out}");
 }
+
+#[test]
+fn verify_does_not_rebuild_the_call_graph_for_every_cell() {
+    // termination rebuilt the program's call graph for every cell inside a
+    // loop over every cell: 200 independent cells took 3 s to verify, 400
+    // took 25 s (cubic). A spinning handler in one cell is still found
+    // through a call from another.
+    let dir = scratch("verify_many_cells");
+    let mut src = String::new();
+    for i in 0..300 {
+        src.push_str(&format!(
+            "cell C{i} {{\n    face {{ signal f{i}(n: Int) -> Int }}\n    memory {{ m: Map<String, Int> [persistent]\n        invariant m >= 0 }}\n    on f{i}(n: Int) {{ require n >= 0 else Bad\n        m.set(\"k\", n)\n        return n }}\n}}\n"));
+    }
+    src.push_str("cell Spin {\n    on spin(n: Int) { while true { }\n        return n }\n}\ncell Caller {\n    on go(n: Int) { return spin(n) }\n}\n");
+    std::fs::write(dir.join("app.cell"), src).unwrap();
+    let started = std::time::Instant::now();
+    let (code, out) = soma(&dir, &["verify", "app.cell"]);
+    let took = started.elapsed();
+    assert_eq!(code, 0, "{out}");
+    assert!(out.contains("`go` calls `Spin.spin`, which may not terminate"), "{out}");
+    assert!(took < std::time::Duration::from_secs(8), "verify of 302 cells took {took:?}");
+}
