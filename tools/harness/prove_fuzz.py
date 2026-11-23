@@ -7,7 +7,8 @@ one on EVERY input its `requires` admits (n in -7..5, k in -3..9) to get the
 true range [lo, hi] of what it returns. Then asks `soma verify` about four
 `ensures` clauses per handler:
 
-    result >= lo + 1      false      a `✓ proven` here is a FALSE PROOF  (unsound)
+    result >= lo + 1      false      a `✓ proven` here is a FALSE PROOF  (unsound);
+                                     a `✗` counts in `refuted` — the bugs verify names
     result <= hi - 1      false      idem
     result >= lo          true       a `✗` here FAILS A CORRECT PROGRAM  (false_fail)
     result <= hi          true       idem; a `✓` counts in `proven`
@@ -15,7 +16,9 @@ true range [lo, hi] of what it returns. Then asks `soma verify` about four
     python3 tools/harness/prove_fuzz.py --seeds 2-21 --bodies 40
     python3 tools/harness/prove_fuzz.py --seeds 7 --keep     # keep s7.cell / v7.cell
 
-Prints one JSON object: {"bodies", "unsound", "false_fail", "proven", "cases"}.
+Prints one JSON object: {"bodies", "unsound", "false_fail", "proven", "refuted", "cases"}.
+`false_fail` at 0 is worth nothing alone — a verify that never says `✗` has it:
+`refuted` (of 2 × bodies false clauses) is the number that must not fall.
 Exit 1 when unsound > 0. Standard library only.
 """
 import argparse, json, os, random, re, subprocess, sys, tempfile
@@ -127,7 +130,7 @@ def campaign(soma, seed, n, workdir):
     txt = p.stdout + p.stderr
     if claims and "ensures" not in txt:
         raise SystemExit(f"prove_fuzz: seed {seed}: verify printed no ensures line:\n{txt[-800:]}")
-    tally = {"bodies": len(claims), "unsound": 0, "false_fail": 0, "proven": 0, "cases": []}
+    tally = {"bodies": len(claims), "unsound": 0, "false_fail": 0, "proven": 0, "refuted": 0, "cases": []}
     for line in txt.splitlines():
         m = re.match(r"\s*✓ (lo|hi|tl|th)(\d+): ensures (.*?) — proven", line)
         if m and m.group(1) in ('lo', 'hi'):
@@ -136,6 +139,8 @@ def campaign(soma, seed, n, workdir):
             tally["cases"].append({"kind": "unsound", "seed": seed, "claim": m.group(3), "actual": claims[i], "body": bodies[i]})
         elif m:
             tally["proven"] += 1
+        if re.match(r"\s*✗ (lo|hi)\d+: ensures ", line):
+            tally["refuted"] += 1
         m = re.match(r"\s*✗ (tl|th)(\d+): ensures (.*?) — (.*)", line)
         if m:
             i = int(m.group(2))
@@ -160,11 +165,11 @@ def main():
     ap.add_argument("--cases", type=int, default=5, help="how many cases to print in full")
     a = ap.parse_args()
     soma = os.path.abspath(a.soma)
-    total = {"bodies": 0, "unsound": 0, "false_fail": 0, "proven": 0, "cases": []}
+    total = {"bodies": 0, "unsound": 0, "false_fail": 0, "proven": 0, "refuted": 0, "cases": []}
     with tempfile.TemporaryDirectory() as tmp:
         for s in seeds_of(a.seeds):
             t = campaign(soma, s, a.bodies, os.getcwd() if a.keep else tmp)
-            for k in ("bodies", "unsound", "false_fail", "proven"):
+            for k in ("bodies", "unsound", "false_fail", "proven", "refuted"):
                 total[k] += t[k]
             total["cases"] += t["cases"]
     # the false proofs first, then the shortest false failures: the ones to read

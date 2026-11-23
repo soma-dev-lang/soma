@@ -12,7 +12,7 @@ machine (Apple silicon, 10 cores); the reference binary is 3.2.4
 | W0 green `main` | **not green** | the three skeleton tools had never run in CI (fixed); they now run, and say two true things: files they cannot finish, and proofs lost between Orbite's skeleton and its bodies |
 | W1 size | Orbite: done for `app`, `prod`, most test files; probes: faster, exponents not all at target | `verify app.cell` 249 s → 10 s |
 | W2 values | **done** | lists and maps shared until written; every `run_*` probe linear |
-| W3 false `✗` | 42 → 12; the rest waits for a decision | no false proof |
+| W3 false `✗` | **42 → 0** (decided 2026-11-24: a `✗` is an input that breaks the clause) | no false proof; false clauses named 306 → 3,020 of 3,020 |
 | W4 native | gate complete by construction; the single way to bind arguments is **not done** | 100 shapes, 16 differ on 3.2.4, 0 now |
 | W5 surface | proposals below, nothing changed | one of them is a hole in nominal types |
 | W6 hunting | four oracles run, clean; two findings | see below |
@@ -46,7 +46,8 @@ the baseline or equal.
 | `orbite.verify_prod` | did not finish in 20 min | 57 s | finishes, then 60 s |
 | `verify test_ref.cell` | did not finish in 10 min | 9 s | 20 s |
 | `verify test_coordination.cell` and three more | did not finish | **still over 10 min** | 20 s |
-| `prover_false_failures` (of 1,510) | 42 | 12 | 0 |
+| `prover_false_failures` (of 1,510) | 42 | 0 | 0 |
+| `prover_false_clauses_refuted` (of 3,020) | 306 on 3.2.4 | 3,020 | — |
 | `prover_true_clauses_proven` | 1,083 | 1,120 | — |
 | false proofs | 0 | 0 | 0 |
 | `run_nested_list` (16,000 wraps) | 4.2 s | 0.006 s | 0.05 s |
@@ -123,7 +124,7 @@ on Orbite's `app.cell`.
 
 ## Decisions waiting for the owner
 
-**D1 — what a `✗` means (W3).** Today `✗ … can never satisfy it` is said of a
+**D1 — what a `✗` means (W3). Decided and done (2026-11-24):** an unproven `ensures` is tried by running the handler; a `✗` shows the input (`checker/witness.rs`). What follows is the question as it stood. Before, `✗ … can never satisfy it` is said of a
 `return` the prover cannot show to be unreachable. 12 of 1,510 random correct
 handlers still get it (47 of 3,083 on seeds never tuned on), each for
 arithmetic the prover does not do (`if n != n % n`).

@@ -38,6 +38,7 @@ pub mod contracts;
 pub mod waits;
 pub mod product;
 pub mod nominal;
+pub mod witness;
 
 pub use properties::PropertyChecker;
 pub use signals::SignalChecker;

@@ -109,7 +109,9 @@ fn b2_verify_proves_ensures_and_call_sites() {
     let d = project("verify", LEDGER);
     let (out, err, code) = soma_in(&d, &["verify", "app.cell"]);
     let all = format!("{out}{err}");
-    assert_eq!(code, 0, "{all}");
+    // (`bad` breaks its `ensures` on an input: the one `✗`, and what fails verify)
+    assert_ne!(code, 0, "{all}");
+    assert_eq!(all.matches("  ✗ ").count(), 1, "{all}");
     assert!(all.contains("Ledger/contracts"), "{all}");
     // from the slot's invariant, by induction
     assert!(all.contains("✓ balance: ensures result >= 0 — proven for every returned value"), "{all}");
@@ -120,7 +122,8 @@ fn b2_verify_proves_ensures_and_call_sites() {
     assert!(all.contains("debit: requires amount > 0 — no call site in the program"), "{all}");
     // the recursive call is the one that is not proven — and it is the bug
     assert!(all.contains("⚠ fact: requires n >= 0 — runtime-checked at 1 of 1 call site: fact → fact(n - 2)"), "{all}");
-    assert!(all.contains("⚠ bad: ensures result > n — runtime-checked"), "{all}");
+    // (3.2.5: not proven, and an input breaks it — it is run and shown, where it was a `⚠`)
+    assert!(all.contains("✗ bad: ensures result > n — `bad(n = "), "{all}");
 }
 
 #[test]
@@ -155,7 +158,9 @@ cell Desk {
     let d = project("cross", &src);
     let (out, err, code) = soma_in(&d, &["verify", "app.cell"]);
     let all = format!("{out}{err}");
-    assert_eq!(code, 0, "{all}");
+    // (the Ledger's `bad` is its one `✗`)
+    assert_ne!(code, 0, "{all}");
+    assert_eq!(all.matches("  ✗ ").count(), 1, "{all}");
     // a number read through another cell's handler was "unbounded"
     assert!(all.contains("✓ invariant seen >= 0 && seen <= 1000000 — writer 'snapshot' proven (writes balance())"), "{all}");
     assert!(all.contains("writer 'snapshot' proven (writes Ledger.balance())"), "{all}");
@@ -242,7 +247,8 @@ fn b2_requires_is_a_fact_for_the_handler_and_nothing_more() {
     assert!(all.contains("✓ twice: ensures result <= 20 — proven"), "{all}");
     // a return that can never satisfy the clause fails verify
     assert_ne!(code, 0, "{all}");
-    assert!(all.contains("✗ never: ensures result >= 0 — the handler returns `0 - 1`, which can never satisfy it"), "{all}");
+    assert!(all.contains("✗ never: ensures result >= 0 — `never(n = "), "{all}");
+    assert!(all.contains(")` returns -1, which breaks it (the call raises kind `ensures`)"), "{all}");
 }
 
 #[test]
@@ -362,7 +368,7 @@ cell C {
     assert!(all.contains("✓ invariant m >= 0 && m <= 10 — writer 'put' never reaches its write of 99 to 'm'"), "{all}");
     assert!(all.contains("✓ lim: requires n <= 5 — proven at 2 call sites"), "{all}");
     // a path an input does reach still fails
-    assert!(all.contains("✗ live: ensures result <= 6 — the handler returns `99`, which can never satisfy it"), "{all}");
+    assert!(all.contains("✗ live: ensures result <= 6 — `live(n = 5)` returns 99, which breaks it"), "{all}");
     assert_eq!(all.matches("  ✗ ").count(), 1, "{all}");
 }
 
@@ -423,7 +429,7 @@ cell C {
         assert!(all.contains(&format!("✓ {proven}: ensures result <= 6 — proven for every returned value")), "{proven}:\n{all}");
     }
     for live in ["nan", "one_branch", "either"] {
-        assert!(all.contains(&format!("✗ {live}: ensures result <= 6 — the handler returns `99`")), "{live}:\n{all}");
+        assert!(all.contains(&format!("✗ {live}: ensures result <= 6 — `{live}(")) && all.contains(")` returns 99, which breaks it"), "{live}:\n{all}");
     }
     assert_eq!(all.matches("  ✗ ").count(), 3, "{all}");
     // …and they are reached indeed
@@ -431,4 +437,76 @@ cell C {
         let (out, err, code) = soma_in(&d, &["run", "app.cell", call, arg]);
         assert!(code != 0 && format!("{out}{err}").contains("ensures"), "{call}({arg}): {out}{err}");
     }
+}
+
+#[test]
+fn a_failed_ensures_is_an_input_that_breaks_it() {
+    // A `✗` on an `ensures` is a call: the handler is run on the inputs its
+    // text suggests, and the one that breaks the clause is shown. A clause
+    // the prover cannot decide and no input breaks is a `⚠` — it was a `✗`
+    // whenever the returned expression alone could not satisfy it, also on a
+    // `return` nothing reaches (12 of 1,510 random correct handlers).
+    let d = project("witness", r#"
+cell C {
+    face {
+        signal off_by_one(n: Int) -> Int
+            requires n >= 0 && n <= 9
+            ensures result > n
+        signal unreached(n: Int, k: Int) -> Int
+            requires n >= 1 && n <= 5 && k >= 1 && k <= 5
+            ensures result >= 0
+        signal fine(n: Int) -> Int
+            requires n >= 0 && n <= 9
+            ensures result >= 0
+        signal stored(n: Int) -> Int
+            ensures result <= 6
+        signal stored_maybe(n: Int) -> Int
+            ensures result <= 6
+        signal writes_a_file(n: Int) -> Int
+            ensures result <= 6
+    }
+    memory { m: Map<String, Int> }
+    // 9 → 9: not above n
+    on off_by_one(n: Int) { return min(n + 1, 9) }
+    // n * k % n is 0 for every n ≥ 1: the prover does not know it
+    on unreached(n: Int, k: Int) {
+        if n * k % n != 0 { return 0 - 1 }
+        return n
+    }
+    on fine(n: Int) { return n * n % 7 }
+    // not run (it writes a slot) — every call returns 99: said as before
+    on stored(n: Int) {
+        m.set("k", n)
+        return 99
+    }
+    // not run, and the return is under a condition: not known
+    on stored_maybe(n: Int) {
+        m.set("k", n)
+        if n * n % 2 == 3 { return 99 }
+        return 1
+    }
+    on writes_a_file(n: Int) {
+        write_file("witness_was_here.txt", "x")
+        if n * n % 2 == 3 { return 99 }
+        return 1
+    }
+}
+"#);
+    let (out, err, code) = soma_in(&d, &["verify", "app.cell"]);
+    let all = format!("{out}{err}");
+    assert!(all.contains("✗ off_by_one: ensures result > n — `off_by_one(n = 9)` returns 9, which breaks it (the call raises kind `ensures`)"), "{all}");
+    assert!(all.contains("⚠ unreached: ensures result >= 0 — runtime-checked: a `return 0 - 1` would break it, and no input is known to reach it; none of 25 inputs tried breaks it"), "{all}");
+    assert!(all.contains("fine: ensures result >= 0") && !all.contains("✗ fine"), "{all}");
+    assert!(all.contains("✗ stored: ensures result <= 6 — the handler returns `99`, which can never satisfy it"), "{all}");
+    assert!(all.contains("⚠ stored_maybe: ensures result <= 6 — runtime-checked: a `return 99` would break it, and no input is known to reach it (a result"), "{all}");
+    assert!(all.contains("⚠ writes_a_file: ensures result <= 6"), "{all}");
+    assert_eq!(all.matches("  ✗ ").count(), 2, "{all}");
+    assert_ne!(code, 0, "{all}");
+    // nothing was run that touches the world
+    assert!(!d.join("witness_was_here.txt").exists() && !d.join(".soma_data").exists(), "verify ran an effect");
+    // and what verify shows is what a call does
+    let (out, err, code) = soma_in(&d, &["run", "app.cell", "off_by_one", "9"]);
+    assert!(code != 0 && format!("{out}{err}").contains("ensures"), "{out}{err}");
+    let (out, _, code) = soma_in(&d, &["run", "app.cell", "off_by_one", "8"]);
+    assert_eq!((code, out.trim()), (0, "9"));
 }

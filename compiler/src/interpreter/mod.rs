@@ -795,6 +795,9 @@ pub struct Interpreter {
     pub(crate) cell_order: Vec<String>,
     /// Pre-computed handler lookup — avoids scanning sections on every call
     handler_cache: HashMap<HandlerKey, HandlerValue>,
+    /// Statements this interpreter may still execute, when it is run by an
+    /// analysis that must end (`checker::witness`); `None`: no bound.
+    pub(crate) fuel: Option<u64>,
     /// type text → its number for `Shared::fits` (see `fit_id`)
     fit_ids: std::sync::Mutex<HashMap<String, u32>>,
     /// 3.0: the face contracts (`requires` / `ensures`) of the signals that
@@ -1215,6 +1218,7 @@ impl Interpreter {
         Self {
             cells,
             handler_cache,
+            fuel: None,
             fit_ids: Default::default(),
             face_contracts,
             cell_order,
@@ -2092,6 +2096,10 @@ impl Interpreter {
         cell_name: &str,
         signal_name: &str,
     ) -> Result<Value, ExecError> {
+        if let Some(left) = self.fuel.as_mut() {
+            if *left == 0 { return Err(ExecError::Runtime(RuntimeError::TypeError("the run was stopped: more statements than the analysis allows".to_string()))); }
+            *left -= 1;
+        }
         if crate::runtime::storage::has_storage_error() || self.snapshot { self.check_storage_write()?; }
         self.check_transaction()?;
         match stmt {

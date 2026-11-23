@@ -3795,6 +3795,8 @@ pub fn verify_contracts(program: &Program) -> Vec<VerifyResult> {
     }
 
     let mut results = Vec::new();
+    // (the program as written: the handlers are run, not read)
+    let mut runner = super::witness::Runner::new(program);
     for cell in &cells {
         let contracted = super::contracts::contracted(cell);
         if contracted.is_empty() { continue; }
@@ -3874,12 +3876,21 @@ pub fn verify_contracts(program: &Program) -> Vec<VerifyResult> {
             for clause in &sig.ensures {
                 for c in conjuncts(&clause.node) {
                     let text = render_expr(c);
+                    // a `✗` is an input that breaks the clause: the handler is run (see `witness`)
+                    let ran = |runner: &mut super::witness::Runner| runner.search(&cell.name, &sig.name, c);
+                    let broken = |f: &super::witness::Found| VerifyCheck::Fail(format!(
+                        "{}: ensures {} — `{}` returns {}, which breaks it (the call raises kind `ensures`)", sig.name, text, f.call, f.returned), None);
                     if let Some(why) = &blocked {
-                        result.checks.push(VerifyCheck::Warning(format!("{}: ensures {} — runtime-checked: {}", sig.name, text, why)));
+                        result.checks.push(match ran(&mut runner) {
+                            super::witness::Search::Found(f) => broken(&f),
+                            _ => VerifyCheck::Warning(format!("{}: ensures {} — runtime-checked: {}", sig.name, text, why)),
+                        });
                         continue;
                     }
                     let mut open: Vec<String> = Vec::new();
                     let mut failed: Option<String> = None;
+                    // the path of a return the prover refutes, when every call takes it
+                    let mut certain = false;
                     for (value, path, _) in &returns {
                         let hyp_h = hyp_for(on, &hyp);
                         let ctx = RangeCtx { hyp: &hyp_h, vars: local_ranges_at(on, &hyp_h, &handlers, 0, path, None), handlers: &handlers, depth: 0 };
@@ -3904,7 +3915,10 @@ pub fn verify_contracts(program: &Program) -> Vec<VerifyResult> {
                             // under `requires n <= 5`) was reported ✗ "can never
                             // satisfy it" and failed verify
                             Proof::Violated if dead_path(on, path, &ctx.vars, &hyp_h, &int_returning(cell)) => {}
-                            Proof::Violated => { failed.get_or_insert(render_expr(value)); }
+                            Proof::Violated => {
+                                if failed.is_none() { certain = sig.requires.is_empty() && path.len() == 1 && !on.body.iter().take(path[0] / 4).any(|s| can_exit(s) || matches!(s.node, Statement::Require { .. })); }
+                                failed.get_or_insert(render_expr(value));
+                            }
                             Proof::Unknown => open.push(match bounds(known) {
                                 _ if absent => format!("`{}` (may be () — a missing key)", render_expr(value)),
                                 Some((lo, hi)) => format!("`{}` (known: {} to {})", render_expr(value), fmt_bound(lo), fmt_bound(hi)),
@@ -3912,19 +3926,33 @@ pub fn verify_contracts(program: &Program) -> Vec<VerifyResult> {
                             }),
                         }
                     }
-                    if let Some(v) = failed {
-                        result.checks.push(VerifyCheck::Fail(format!(
-                            "{}: ensures {} — the handler returns `{}`, which can never satisfy it (the call raises kind `ensures` on that path)", sig.name, text, v), None));
-                    } else if open.is_empty() {
+                    if failed.is_none() && open.is_empty() {
                         result.checks.push(VerifyCheck::Pass(format!(
                             "{}: ensures {} — proven for every returned value ({} return{}); callers in any cell may rely on it",
                             sig.name, text, returns.len(), if returns.len() == 1 { "" } else { "s" })));
                     } else {
-                        open.sort();
-                        open.dedup();
-                        result.checks.push(VerifyCheck::Warning(format!(
-                            "{}: ensures {} — runtime-checked: not proven for {} (callers may still rely on it: a result that breaks it is refused, kind `ensures`)",
-                            sig.name, text, open.join(", "))));
+                        // not proven: is there an input that breaks it?
+                        let searched = ran(&mut runner);
+                        let tried = match &searched {
+                            super::witness::Search::Clean { tried } => format!("; none of {} inputs tried breaks it", tried),
+                            _ => String::new(),
+                        };
+                        result.checks.push(match (searched, failed) {
+                            (super::witness::Search::Found(f), _) => broken(&f),
+                            // every call returns it, and no run could be made: said as before
+                            (super::witness::Search::NotRun(_), Some(v)) if certain => VerifyCheck::Fail(format!(
+                                "{}: ensures {} — the handler returns `{}`, which can never satisfy it (the call raises kind `ensures` on that path)", sig.name, text, v), None),
+                            (_, Some(v)) => VerifyCheck::Warning(format!(
+                                "{}: ensures {} — runtime-checked: a `return {}` would break it, and no input is known to reach it{} (a result that breaks it is refused, kind `ensures`)",
+                                sig.name, text, v, tried)),
+                            (_, None) => {
+                                open.sort();
+                                open.dedup();
+                                VerifyCheck::Warning(format!(
+                                    "{}: ensures {} — runtime-checked: not proven for {}{} (callers may still rely on it: a result that breaks it is refused, kind `ensures`)",
+                                    sig.name, text, open.join(", "), tried))
+                            }
+                        });
                     }
                 }
             }

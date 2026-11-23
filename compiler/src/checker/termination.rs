@@ -155,6 +155,9 @@ fn on_a_cycle(program: &Program) -> std::rc::Rc<HashSet<String>> {
     cyclic
 }
 
+/// (for a pass that RUNS handlers: see `witness`)
+pub fn may_not_terminate(program: &Program) -> std::rc::Rc<HashSet<String>> { non_terminating(program) }
+
 /// The handlers of the program (`Cell.handler`) that may not terminate by themselves.
 fn non_terminating(program: &Program) -> std::rc::Rc<HashSet<String>> {
     if let Some(b) = kept(program, |k| k.bad.clone()) { return b; }

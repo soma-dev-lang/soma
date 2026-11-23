@@ -139,6 +139,7 @@ def main():
     if "false_fail" in fz:
         m["prover_false_failures"] = fz["false_fail"]       # lower is better
         m["prover_true_clauses_proven"] = fz["proven"]      # higher is better
+        m["prover_false_clauses_refuted"] = fz.get("refuted", 0)  # higher is better: the bugs verify names
     _, sc = tool_json([os.path.join(HERE, "scale.py"), "--soma", soma])
     for name, p in sc.get("probes", {}).items():
         m[f"scale.{name}.seconds"] = p["seconds"] if p["seconds"] is not None else 9999.0
@@ -159,7 +160,7 @@ def main():
     regressed, improved = [], {}
     for k in sorted(m):
         v, b = m[k], base.get(k)
-        higher = k in ("prover_true_clauses_proven", "rust_tests")
+        higher = k in ("prover_true_clauses_proven", "prover_false_clauses_refuted", "rust_tests")
         mark = ""
         if b is not None:
             if higher:
