@@ -300,3 +300,68 @@ fn b2_describe_and_fmt_know_the_clauses() {
     let text = std::fs::read_to_string(d.join("app.cell")).unwrap();
     assert!(text.contains("        signal f(n: Int) -> Int\n            requires n > 0\n            ensures result > 0\n"), "{text}");
 }
+
+#[test]
+fn a_statement_no_input_reaches_fails_no_proof() {
+    // `if n >= 6 { return 99 }` under `requires n <= 5` was ✗ "the handler
+    // returns `99`, which can never satisfy it" and VERIFY FAILED, on a
+    // program that honours its contract for every input; the same for a
+    // write and for a call on such a path
+    let d = project("dead_path", r#"
+cell C {
+    face {
+        signal f(n: Int) -> Int
+            requires n >= 0 && n <= 5
+            ensures result <= 6
+        signal meet(n: Int, k: Int) -> Int
+            requires n >= 0 && n <= 5 && k >= 6 && k <= 9
+            ensures result <= 6
+        signal lim(n: Int) -> Int
+            requires n <= 5
+        signal put(n: Int) -> Int
+        signal call(n: Int) -> Int
+        signal live(n: Int) -> Int
+            requires n >= 0 && n <= 5
+            ensures result <= 6
+    }
+    memory {
+        m: Map<String, Int> [persistent]
+        invariant m >= 0 && m <= 10
+    }
+    on f(n: Int) {
+        if n >= 6 { return 99 }
+        return n
+    }
+    on meet(n: Int, k: Int) {
+        if n == k { return 99 }
+        return n
+    }
+    on lim(n: Int) { return n }
+    on put(n: Int) {
+        require n >= 0 && n <= 5 else Bad
+        if n >= 6 { m.set("a", 99) }
+        m.set("a", n)
+        return n
+    }
+    on call(n: Int) {
+        require n >= 0 && n <= 5 else Bad
+        if n >= 6 { return lim(99) }
+        return lim(n)
+    }
+    on live(n: Int) {
+        if n >= 5 { return 99 }
+        return n
+    }
+}
+"#);
+    let (out, err, _) = soma_in(&d, &["verify", "app.cell"]);
+    let all = format!("{out}{err}");
+    assert!(all.contains("✓ f: ensures result <= 6 — proven for every returned value (2 returns)"), "{all}");
+    // n in 0..5 and k in 6..9 cannot meet: linear facts, not one interval
+    assert!(all.contains("✓ meet: ensures result <= 6 — proven for every returned value (2 returns)"), "{all}");
+    assert!(all.contains("✓ invariant m >= 0 && m <= 10 — writer 'put' never reaches its write of 99 to 'm'"), "{all}");
+    assert!(all.contains("✓ lim: requires n <= 5 — proven at 2 call sites"), "{all}");
+    // a path an input does reach still fails
+    assert!(all.contains("✗ live: ensures result <= 6 — the handler returns `99`, which can never satisfy it"), "{all}");
+    assert_eq!(all.matches("  ✗ ").count(), 1, "{all}");
+}

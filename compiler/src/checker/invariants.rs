@@ -963,6 +963,14 @@ pub fn verify_program_invariants(program: &Program) -> Vec<VerifyResult> {
                          always rejected (and the handler catches it)",
                         render_expr(value_expr)
                     )));
+                } else if verdicts.iter().any(|v| *v == Proof::Violated)
+                    && handlers.get(handler).is_some_and(|on| dead_path(on, wpath, &ctx.vars, ctx.hyp, &int_returning(cell))) {
+                    // `if n >= 6 { m.set(k, 99) }` after `require n <= 5`
+                    // was "statically violated" and failed verify
+                    result.checks.push(VerifyCheck::Pass(format!(
+                        "invariant {inv_text} — writer '{handler}' never reaches its write of {} to '{slot}': the conditions on its path exclude every input",
+                        render_expr(value_expr)
+                    )));
                 } else if verdicts.iter().any(|v| *v == Proof::Violated) {
                     result.checks.push(VerifyCheck::Fail(
                         format!(
@@ -1225,6 +1233,17 @@ fn mk(lo: f64, hi: f64) -> Known {
     } else {
         Known::Range(lo, hi)
     }
+}
+
+/// No input reaches the statement on `path` of `on`: the facts there — its
+/// requires, the conditions around it, the early exits before it — contradict
+/// each other. Either they leave a parameter an empty interval (`n >= 6`
+/// under `n <= 5`), or their linear arithmetic has no solution (`n == k`
+/// where the two cannot meet: contradictory facts entail anything, `1 <= 0`
+/// too). What such a statement writes, returns or calls breaks nothing.
+fn dead_path(on: &OnSection, path: &[usize], vars: &HashMap<String, Known>, hyp: &HashMap<String, (f64, f64)>, int_returns: &HashSet<String>) -> bool {
+    on.params.iter().any(|p| matches!(vars.get(&p.name), Some(Known::Range(lo, hi)) if lo > hi))
+        || linear_entails(on, path, &Expr::Literal(Literal::Int(1)), CmpOp::Le, &Expr::Literal(Literal::Int(0)), None, hyp, int_returns)
 }
 
 fn join(a: Known, b: Known) -> Known {
@@ -3687,6 +3706,8 @@ pub fn verify_contracts(program: &Program) -> Vec<VerifyResult> {
                         // a `[task]` handler's facts may be stale after a think(): not claimed
                         let verdict = if verdict == Proof::Holds && on.properties.iter().any(|p| p == "task") { Proof::Unknown } else { verdict };
                         let verdict = if verdict == Proof::Violated && call.in_try { Proof::Unknown } else { verdict };
+                        // a call no input reaches does not raise "every time"
+                        let verdict = if verdict == Proof::Violated && dead_path(on, &call.path, &ctx.vars, &hyp_h, &int_returning(cell)) { Proof::Holds } else { verdict };
                         sites.entry((owner.name.clone(), sig.name.clone())).or_default()
                             .push((on.signal_name.clone(), render_expr(c), verdict, shown.clone()));
                     }
@@ -3801,6 +3822,10 @@ pub fn verify_contracts(program: &Program) -> Vec<VerifyResult> {
                         };
                         match verdict {
                             Proof::Holds => {}
+                            // a return no input reaches (`if n >= 6 { return 99 }`
+                            // under `requires n <= 5`) was reported ✗ "can never
+                            // satisfy it" and failed verify
+                            Proof::Violated if dead_path(on, path, &ctx.vars, &hyp_h, &int_returning(cell)) => {}
                             Proof::Violated => { failed.get_or_insert(render_expr(value)); }
                             Proof::Unknown => open.push(match bounds(known) {
                                 _ if absent => format!("`{}` (may be () — a missing key)", render_expr(value)),
