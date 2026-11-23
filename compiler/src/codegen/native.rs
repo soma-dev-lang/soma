@@ -5048,9 +5048,12 @@ impl FnGenerator {
                         if let Expr::Ident(buf_name) = &args[0].node {
                             let i = self.gen_expr_direct(&args[1].node, NativeType::Int);
                             let v = self.gen_expr_direct(&args[2].node, NativeType::Int);
+                            // the index before the value, as written (`b[i] = v`
+                            // alone evaluates `v` first); one tuple, so that no
+                            // temporary shadows a user name inside the other argument
                             return format!(
-                                "{}{}[({}) as usize] = {};\n",
-                                ind, buf_name, i, v
+                                "{}{{ let (_bi, _bv) = (({}) as usize, {}); {}[_bi] = _bv; }}\n",
+                                ind, i, v, buf_name
                             );
                         }
                     }
@@ -5058,9 +5061,12 @@ impl FnGenerator {
                         if let Expr::Ident(buf_name) = &args[0].node {
                             let i = self.gen_expr_direct(&args[1].node, NativeType::Int);
                             let v = self.gen_expr_direct(&args[2].node, NativeType::Float);
+                            // the index before the value, as written (`b[i] = v`
+                            // alone evaluates `v` first); one tuple, so that no
+                            // temporary shadows a user name inside the other argument
                             return format!(
-                                "{}{}[({}) as usize] = {};\n",
-                                ind, buf_name, i, v
+                                "{}{{ let (_bi, _bv) = (({}) as usize, {}); {}[_bi] = _bv; }}\n",
+                                ind, i, v, buf_name
                             );
                         }
                     }
@@ -5504,7 +5510,7 @@ impl FnGenerator {
                 if let Expr::Ident(buf_name) = &args[0].node {
                     let i = self.gen_expr_direct(&args[1].node, NativeType::Int);
                     let v = self.gen_expr_direct(&args[2].node, NativeType::Int);
-                    return format!("{{ {}[({}) as usize] = {}; 0i64 }}", buf_name, i, v);
+                    return format!("{{ let (_bi, _bv) = (({}) as usize, {}); {}[_bi] = _bv; 0i64 }}", i, v, buf_name);
                 }
                 self.err("buf_set: first arg must be an identifier");
                 "0i64".to_string()
@@ -5523,7 +5529,7 @@ impl FnGenerator {
                 if let Expr::Ident(buf_name) = &args[0].node {
                     let i = self.gen_expr_direct(&args[1].node, NativeType::Int);
                     let v = self.gen_expr_direct(&args[2].node, NativeType::Float);
-                    return format!("{{ {}[({}) as usize] = {}; 0.0f64 }}", buf_name, i, v);
+                    return format!("{{ let (_bi, _bv) = (({}) as usize, {}); {}[_bi] = _bv; 0.0f64 }}", i, v, buf_name);
                 }
                 self.err("buf_set_f: first arg must be an identifier");
                 "0.0f64".to_string()
@@ -5933,8 +5939,8 @@ impl FnGenerator {
                 let m = self.gen_int_arg_direct(&args[2].node, name);
                 // the result is in [0, m) like the interpreter (a negative
                 // base gave -1 for pow_mod(-1, 1, 7), not 6)
-                format!("{{ let (_m, _base, mut _e): (i128, i128, i64) = (({}) as i128, ({}) as i128, {}); if _m == 0 {{ panic!(\"soma:type: pow_mod: modulus is zero\") }} let mut _r: i128 = 1i128.rem_euclid(_m); let mut _b: i128 = _base.rem_euclid(_m); if _e < 0 {{ panic!(\"soma:type: pow_mod: negative exponent (a modular inverse is not computed)\") }} while _e > 0 {{ if _e & 1 == 1 {{ _r = (_r * _b).rem_euclid(_m); }} _e >>= 1; _b = (_b * _b).rem_euclid(_m); }} _r as i64 }}",
-                    m, base, exp)
+                format!("{{ let (_base, mut _e, _m): (i128, i64, i128) = (({}) as i128, {}, ({}) as i128); if _m == 0 {{ panic!(\"soma:type: pow_mod: modulus is zero\") }} let mut _r: i128 = 1i128.rem_euclid(_m); let mut _b: i128 = _base.rem_euclid(_m); if _e < 0 {{ panic!(\"soma:type: pow_mod: negative exponent (a modular inverse is not computed)\") }} while _e > 0 {{ if _e & 1 == 1 {{ _r = (_r * _b).rem_euclid(_m); }} _e >>= 1; _b = (_b * _b).rem_euclid(_m); }} _r as i64 }}",
+                    base, exp, m)
             }
             other => {
                 // Sibling native handler call — go through inner_handler_X
@@ -6249,8 +6255,8 @@ impl FnGenerator {
                             // error, not a second overflow panic
                             let v = self.gen_expr_rug(&args[2].node);
                             return format!(
-                                "{}{{ let _v: Integer = {}; match _v.to_i64() {{ Some(_n) => {{ {}[({}) as usize] = _n; }}, None => panic!(\"soma:range: a Buf holds 64-bit Ints — {{}} does not fit (keep it in a scalar, which promotes to BigInt, or mask it)\", _v) }} }}\n",
-                                ind, v, buf_name, i
+                                "{}{{ let (_bi, _v): (usize, Integer) = (({}) as usize, {}); match _v.to_i64() {{ Some(_n) => {{ {}[_bi] = _n; }}, None => panic!(\"soma:range: a Buf holds 64-bit Ints — {{}} does not fit (keep it in a scalar, which promotes to BigInt, or mask it)\", _v) }} }}\n",
+                                ind, i, v, buf_name
                             );
                         }
                     }
@@ -6258,9 +6264,12 @@ impl FnGenerator {
                         if let Expr::Ident(buf_name) = &args[0].node {
                             let i = self.gen_int_to_i64_rug(&args[1].node);
                             let v = self.gen_expr_direct(&args[2].node, NativeType::Float);
+                            // the index before the value, as written (`b[i] = v`
+                            // alone evaluates `v` first); one tuple, so that no
+                            // temporary shadows a user name inside the other argument
                             return format!(
-                                "{}{}[({}) as usize] = {};\n",
-                                ind, buf_name, i, v
+                                "{}{{ let (_bi, _bv) = (({}) as usize, {}); {}[_bi] = _bv; }}\n",
+                                ind, i, v, buf_name
                             );
                         }
                     }
@@ -7277,8 +7286,8 @@ impl FnGenerator {
                     // second overflow panic
                     let v = self.gen_expr_rug(&args[2].node);
                     return format!(
-                        "{{ let _v: Integer = {}; match _v.to_i64() {{ Some(_n) => {{ {}[({}) as usize] = _n; }}, None => panic!(\"soma:range: a Buf holds 64-bit Ints — {{}} does not fit (keep it in a scalar, which promotes to BigInt, or mask it)\", _v) }} Integer::from(0i64) }}",
-                        v, buf_name, i
+                        "{{ let (_bi, _v): (usize, Integer) = (({}) as usize, {}); match _v.to_i64() {{ Some(_n) => {{ {}[_bi] = _n; }}, None => panic!(\"soma:range: a Buf holds 64-bit Ints — {{}} does not fit (keep it in a scalar, which promotes to BigInt, or mask it)\", _v) }} Integer::from(0i64) }}",
+                        i, v, buf_name
                     );
                 }
                 self.err("buf_set: first arg must be an identifier");
@@ -7298,8 +7307,8 @@ impl FnGenerator {
                     let i = self.gen_int_to_i64_rug(&args[1].node);
                     let v = self.gen_expr_direct(&args[2].node, NativeType::Float);
                     return format!(
-                        "{{ {}[({}) as usize] = {}; Integer::from(0i64) }}",
-                        buf_name, i, v
+                        "{{ let (_bi, _bv) = (({}) as usize, {}); {}[_bi] = _bv; Integer::from(0i64) }}",
+                        i, v, buf_name
                     );
                 }
                 self.err("buf_set_f: first arg must be an identifier");
@@ -7604,7 +7613,9 @@ impl FnGenerator {
                 let base = self.gen_expr_rug(&args[0].node);
                 let exp = self.gen_int_borrow_rug(&args[1].node);
                 let m = self.gen_int_borrow_rug(&args[2].node);
-                format!("{{ if Integer::from({}) < 0 {{ panic!(\"soma:type: pow_mod: negative exponent (a modular inverse is not computed)\") }} if Integer::from({}) == 0 {{ panic!(\"soma:type: pow_mod: modulus is zero\") }} ({}).pow_mod({}, {}).expect(\"pow_mod failed\") }}", exp, m, base, exp, m)
+                // each argument once, left to right; the modulus is checked
+                // first, like the interpreter
+                format!("{{ let (_b, _e, _m): (Integer, &Integer, &Integer) = (Integer::from({}), {}, {}); if *_m == 0 {{ panic!(\"soma:type: pow_mod: modulus is zero\") }} if *_e < 0 {{ panic!(\"soma:type: pow_mod: negative exponent (a modular inverse is not computed)\") }} _b.pow_mod(_e, _m).expect(\"pow_mod failed\") }}", base, exp, m)
             }
             "random" if args.len() == 1 => {
                 let m = self.gen_int_to_i64_rug_msg(&args[0].node, "\"soma:range: random(): an Int argument past 64 bits (a count, index or width is at most 2^63 - 1)\"");

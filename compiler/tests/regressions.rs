@@ -665,6 +665,67 @@ cell test T { rules {
 }
 
 #[test]
+fn native_buf_set_and_pow_mod_evaluate_their_arguments_left_to_right_once() {
+    // buf_set / buf_set_f evaluated the value before the index, pow_mod
+    // the modulus before the base; in BigInt mode pow_mod evaluated its
+    // exponent and modulus twice and checked the exponent before the
+    // modulus (the interpreter checks the modulus first)
+    passes(
+        "native_buf_set_pow_mod_argument_order",
+        r#"
+cell P {
+    on bad(n: Int) [native] { return idiv(1, n) }
+    on neg(n: Int) [native] { return sqrt_int(n) }
+    on set(n: Int) [native] {
+        let u = buffer(4)
+        buf_set(u, bad(n), neg(n - 1))
+        return 0
+    }
+    on set_f(n: Int) [native] {
+        let u = buffer_f(4)
+        buf_set_f(u, bad(n), sqrt(to_float(neg(n - 1))))
+        return 0
+    }
+    on set_wide(n: Int) [native] {
+        let g = shl(1, 70)
+        let u = buffer(4)
+        buf_set(u, bad(n), neg(n - 1))
+        return bit_len(g)
+    }
+    on pm(n: Int) [native] { return pow_mod(bad(n), 2, neg(n - 1)) }
+    on pm_wide(n: Int) [native] { return pow_mod(shl(1, 70) + bad(n), 2, neg(n - 1)) }
+    on pm_checks(n: Int) [native] { return pow_mod(shl(1, 70), n - 1, n) }
+    on names(_bi: Int, _bv: Int) [native] {
+        let u = buffer(8)
+        buf_set(u, _bv, _bi)
+        let f = buffer_f(8)
+        buf_set_f(f, _bv, to_float(_bi))
+        return buf_get(u, _bv) * 10 + to_int(buf_get_f(f, _bv))
+    }
+    on names_wide(_b: Int, _e: Int, _m: Int) [native] { return pow_mod(shl(1, 70) + _m, _b, _e) }
+    on ok() [native] {
+        let u = buffer(4)
+        buf_set(u, 1, 7)
+        buf_set(u, 2, buf_get(u, 1) + 1)
+        return buf_get(u, 2) * 100 + pow_mod(shl(1, 70) + 3, 5, 1000)
+    }
+}
+cell test T { rules {
+    assert_fails set(0) matching "division by zero"
+    assert_fails set_f(0) matching "division by zero"
+    assert_fails set_wide(0) matching "division by zero"
+    assert_fails pm(0) matching "division by zero"
+    assert_fails pm_wide(0) matching "division by zero"
+    assert_fails pm_checks(0) matching "modulus is zero"
+    assert ok() == 800 + pow_mod(shl(1, 70) + 3, 5, 1000)
+    assert names(7, 2) == 77
+    assert names_wide(5, 1000, 3) == pow_mod(shl(1, 70) + 3, 5, 1000)
+} }
+"#,
+    );
+}
+
+#[test]
 fn while_optimization_preserves_inputs_iteration_order_and_errors() {
     passes(
         "while_semantics",
