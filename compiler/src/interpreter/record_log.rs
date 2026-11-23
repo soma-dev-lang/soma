@@ -219,7 +219,7 @@ pub fn json_to_value(v: &serde_json::Value) -> Value {
         serde_json::Value::Object(obj) => {
             let mut map = indexmap::IndexMap::new();
             for (k, v) in obj { map.insert(k.clone(), json_to_value(v)); }
-            Value::Map(map)
+            Value::Map((map).into())
         }
     }
 }

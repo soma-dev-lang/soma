@@ -573,7 +573,7 @@ impl Interpreter {
         if let Some(inst) = self.horde_instance.clone() {
             let conv: Vec<Value> = self.agent_conversations.get(&spec.target_cell).map(|c| c.iter().map(|m| Value::String(m.to_string())).collect()).unwrap_or_default();
             let mem = super::builtins::storage::agent_memory(self, &spec.target_cell);
-            self.horde_set(&mem, &crate::interpreter::builtins::storage::instance_key(&inst, "__conversation"), &Value::List(conv));
+            self.horde_set(&mem, &crate::interpreter::builtins::storage::instance_key(&inst, "__conversation"), &Value::List((conv).into()));
         }
         let rec = map_from_pairs(vec![
             ("input".to_string(), input.clone()), ("state".to_string(), s("done")),
@@ -1174,7 +1174,7 @@ impl Interpreter {
             ("k".to_string(), int(k as i64)),
             ("unanimous".to_string(), Value::Bool(best_n == k)),
             ("errors".to_string(), int(errors)),
-            ("votes".to_string(), Value::List(votes)),
+            ("votes".to_string(), Value::List((votes).into())),
         ]))
     }
 }

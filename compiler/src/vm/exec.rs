@@ -365,7 +365,7 @@ impl VM {
                 x if x == Op::IterInit as u8 => {
                     let val = self.stack.pop().unwrap_or(Value::Unit);
                     let items = match val {
-                        Value::List(items) => items,
+                        Value::List(items) => items.take(),
                         Value::String(s) => {
                             s.split('\n').map(|l| l.strip_suffix('\r').unwrap_or(l)).filter(|l| !l.is_empty())
                                 .map(|l| Value::String(l.to_string())).collect()
@@ -584,7 +584,7 @@ impl VM {
                     entries.insert(format!("{}", args[i]), args[i + 1].clone());
                     i += 2;
                 }
-                Value::Map(entries)
+                Value::Map((entries).into())
             }
             "filter" => {
                 if args.len() == 2 {
@@ -616,7 +616,7 @@ impl VM {
                     result.extend(args[1..].to_vec());
                     Value::List(result)
                 } else {
-                    Value::List(args)
+                    Value::List((args).into())
                 }
             }
             "from_json" => {
@@ -707,7 +707,7 @@ impl VM {
                         Err(_) => result.push(Value::Unit),
                     }
                 }
-                Value::List(result)
+                Value::List((result).into())
             }
             "filter" => {
                 let mut result = Vec::new();
@@ -721,7 +721,7 @@ impl VM {
                         Err(_) => {}
                     }
                 }
-                Value::List(result)
+                Value::List((result).into())
             }
             "find" => {
                 for item in items {

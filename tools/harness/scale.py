@@ -50,6 +50,45 @@ NEST = """cell N {
   }
 }"""
 
+# a large value handed around: passed, returned, read, grown
+BIG = """cell B {
+  face { signal pass(n: Int) -> Int
+         signal ret(n: Int) -> Int
+         signal index(n: Int) -> Int
+         signal grow(n: Int) -> Int
+         signal keys(n: Int) -> Int }
+  on first(xs: List<Int>) { return xs[0] }
+  on same(xs: List<Int>) { return xs }
+  on pass(n: Int) {
+    let xs = range(0, n)
+    let t = 0
+    for i in range(0, n) { t = t + first(xs) }
+    return t
+  }
+  on ret(n: Int) {
+    let xs = range(0, n)
+    let t = 0
+    for i in range(0, n) { t = t + len(same(xs)) }
+    return t
+  }
+  on index(n: Int) {
+    let xs = range(0, n)
+    let t = 0
+    for i in range(0, n) { t = t + xs[i] }
+    return t
+  }
+  on grow(n: Int) {
+    let xs = []
+    for i in range(0, n) { xs = push(xs, i) }
+    return len(xs)
+  }
+  on keys(n: Int) {
+    let m = map()
+    for i in range(0, n) { m = with(m, "k{i}", i) }
+    return len(m)
+  }
+}"""
+
 # name: (N, source at size n, command at size n)
 PROBES = {
     # many cells — a large application
@@ -63,6 +102,13 @@ PROBES = {
     # values at run time: a structure built by wrapping (a linked list, a tree)
     "run_nested_list": (8000, lambda n: NEST, lambda n: ["run", "p.cell", "list", str(n)]),
     "run_nested_map": (2000, lambda n: NEST, lambda n: ["run", "p.cell", "map", str(n)]),
+    # values at run time: a large list passed to a handler n times, returned n times,
+    # read by index n times; a list and a map grown one element at a time
+    "run_pass_list": (10000, lambda n: BIG, lambda n: ["run", "p.cell", "pass", str(n)]),
+    "run_return_list": (10000, lambda n: BIG, lambda n: ["run", "p.cell", "ret", str(n)]),
+    "run_index_list": (20000, lambda n: BIG, lambda n: ["run", "p.cell", "index", str(n)]),
+    "run_grow_list": (10000, lambda n: BIG, lambda n: ["run", "p.cell", "grow", str(n)]),
+    "run_grow_map": (10000, lambda n: BIG, lambda n: ["run", "p.cell", "keys", str(n)]),
 }
 
 

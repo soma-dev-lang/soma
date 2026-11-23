@@ -17,7 +17,7 @@ pub fn call_builtin(name: &str, args: &[Value]) -> Option<Result<Value, RuntimeE
                 Some(Value::Map(m)) => Some(m),
                 Some(other) => return Some(Err(RuntimeError::TypeError(format!("http_get(url, opts): opts must be a map(\"timeout\", ms, …), got {}", super::super::value_type_name(other))))),
             };
-            Some(http_call("GET", url, None, opts))
+            Some(http_call("GET", url, None, opts.map(|v| &**v)))
         }
         "http_post" | "http_put" | "http_patch" | "http_delete" => {
             let method = match name { "http_post" => "POST", "http_put" => "PUT", "http_patch" => "PATCH", _ => "DELETE" };
@@ -37,7 +37,7 @@ pub fn call_builtin(name: &str, args: &[Value]) -> Option<Result<Value, RuntimeE
                 Value::String(s) => s.clone(),
                 other => super::string::to_json_string(other),
             });
-            Some(http_call(method, url, text, opts))
+            Some(http_call(method, url, text, opts.map(|v| &**v)))
         }
         "ws_connect" => {
             // ws_connect(url) — open a WS connection, return connection ID

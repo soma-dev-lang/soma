@@ -87,7 +87,7 @@ pub fn try_matrix_binop(l: &Value, op: BinOp, r: &Value) -> Option<Result<Value,
             _ => None,
         };
         if let Some(ps) = pairs {
-            return Some(ps.iter().map(|(a, b)| q(a, b)).collect::<Result<Vec<_>, _>>().map(Value::List));
+            return Some(ps.iter().map(|(a, b)| q(a, b)).collect::<Result<Vec<_>, _>>().map(|items| Value::List(items.into())));
         }
     }
     // Int matrix with an Int scalar (+ - *): exact, element by element
@@ -224,7 +224,7 @@ pub fn try_tensor_cmpop(l: &Value, op: crate::ast::CmpOp, r: &Value) -> Option<R
                 if !xs.iter().all(is_scalar) { return Some(Err(te("linalg: expected numeric matrix elements"))); }
                 result.push(mask(xs));
             }
-            return Some(Ok(Value::List(result)));
+            return Some(Ok(Value::List((result).into())));
         }
         if is_vector(l) {
             let Value::List(xs) = l else { unreachable!() };
@@ -650,7 +650,7 @@ fn sampled_handle_value(id: i64, m: &SampledMatrix) -> Value {
     out.insert("cols".into(), Value::Int(SomaInt::from_i64(m.cols as i64)));
     out.insert("fro_norm".into(), Value::Float(m.fro_sq.sqrt()));
     out.insert("kind".into(), Value::String("sampled".into()));
-    Value::Map(out)
+    Value::Map((out).into())
 }
 
 /// Best-effort matrix access: accept either a dense `List<List<Float>>`
@@ -869,7 +869,7 @@ fn importance_sample_rows_impl(a: &Value, opts: &Value) -> Result<Value, Runtime
     out.insert("weights".into(), vec_to_value(&weights));
     out.insert("submatrix".into(), matrix_to_value(&submat));
     out.insert("fro_norm".into(), Value::Float(fro_sq.sqrt()));
-    Ok(Value::Map(out))
+    Ok(Value::Map((out).into()))
 }
 
 // ── svd_lowrank (FKV-style, Tang 1807.04271 §4.2) ────────────────────
@@ -981,7 +981,7 @@ fn svd_lowrank_impl(a: &Value, opts: &Value) -> Result<Value, RuntimeError> {
                 .collect(),
         ),
     );
-    Ok(Value::Map(out))
+    Ok(Value::Map((out).into()))
 }
 
 // ── regress_sgd (Gilyén-Song-Tang 2009.07268 Algorithm 1) ────────────
@@ -1111,7 +1111,7 @@ fn regress_sgd_impl(a: &Value, b: &Value, opts: &Value) -> Result<Value, Runtime
     out.insert("eta".into(), Value::Float(eta));
     out.insert("spec_norm".into(), Value::Float(spec_sq.sqrt()));
     out.insert("fro_norm".into(), Value::Float(fro_sq.sqrt()));
-    Ok(Value::Map(out))
+    Ok(Value::Map((out).into()))
 }
 
 // ── RMT covariance cleaning (Bouchaud-Potters) ───────────────────────
@@ -1294,7 +1294,7 @@ fn clean_covariance_impl(returns: &Value, opts: &Value) -> Result<Value, Runtime
     out.insert("q".into(), Value::Float(n as f64 / t as f64));
     out.insert("n_obs".into(), Value::Int(SomaInt::from_i64(t as i64)));
     out.insert("n_assets".into(), Value::Int(SomaInt::from_i64(n as i64)));
-    Ok(Value::Map(out))
+    Ok(Value::Map((out).into()))
 }
 
 // ── Market impact (Bouchaud square-root law) ─────────────────────────
@@ -1328,7 +1328,7 @@ fn impact_sqrt_impl(args: &[Value], opts: &Value) -> Result<Value, RuntimeError>
     out.insert("bps".into(), Value::Float(cost_bps));
     out.insert("Y".into(), Value::Float(y));
     out.insert("q_over_v".into(), Value::Float(q / v));
-    Ok(Value::Map(out))
+    Ok(Value::Map((out).into()))
 }
 
 // ── Risk metrics (historical + Gaussian) ─────────────────────────────
@@ -1539,9 +1539,9 @@ pub fn call_builtin(name: &str, args: &[Value]) -> Option<Result<Value, RuntimeE
                     if items.iter().any(|r| matches!(r, Value::List(x) if x.len() != cols)) {
                         return Some(Err(te("shape: ragged matrix (rows of different lengths)")));
                     }
-                    Some(Ok(Value::List(vec![int(items.len()), int(cols)])))
+                    Some(Ok(Value::List((vec![int(items.len()), int(cols)]).into())))
                 }
-                Value::List(items) => Some(Ok(Value::List(vec![int(items.len())]))),
+                Value::List(items) => Some(Ok(Value::List((vec![int(items.len())]).into()))),
                 _ => Some(Err(te("shape(matrix or vector)"))),
             }
         }
@@ -1622,7 +1622,7 @@ pub fn call_builtin(name: &str, args: &[Value]) -> Option<Result<Value, RuntimeE
                     "impact_sqrt expects (qty, daily_volume, sigma, opts?)".into(),
                 )));
             }
-            let opts = args.get(3).cloned().unwrap_or(Value::Map(IndexMap::new()));
+            let opts = args.get(3).cloned().unwrap_or(Value::Map((IndexMap::new()).into()));
             Some(opts_known("impact_sqrt", &opts).and_then(|_| impact_sqrt_impl(args, &opts)))
         }
         // Empirical quantile of a sample.
@@ -1641,7 +1641,7 @@ pub fn call_builtin(name: &str, args: &[Value]) -> Option<Result<Value, RuntimeE
                     "var_historical expects (returns: List<Float>, opts?: Map)".into(),
                 )));
             }
-            let opts = args.get(1).cloned().unwrap_or(Value::Map(IndexMap::new()));
+            let opts = args.get(1).cloned().unwrap_or(Value::Map((IndexMap::new()).into()));
             Some(quant_opts_ok("var_historical", &args[0], &opts).and_then(|_| var_historical_impl(&args[0], &opts)))
         }
         // Historical expected shortfall / CVaR.
@@ -1651,7 +1651,7 @@ pub fn call_builtin(name: &str, args: &[Value]) -> Option<Result<Value, RuntimeE
                     "expected_shortfall_historical expects (returns, opts?)".into(),
                 )));
             }
-            let opts = args.get(1).cloned().unwrap_or(Value::Map(IndexMap::new()));
+            let opts = args.get(1).cloned().unwrap_or(Value::Map((IndexMap::new()).into()));
             Some(quant_opts_ok("expected_shortfall_historical", &args[0], &opts).and_then(|_| expected_shortfall_historical_impl(&args[0], &opts)))
         }
         // Gaussian VaR — assumes N(μ, σ²).  μ / σ inferred from sample
@@ -1662,7 +1662,7 @@ pub fn call_builtin(name: &str, args: &[Value]) -> Option<Result<Value, RuntimeE
                     "var_gaussian expects (returns: List<Float>, opts?: Map)".into(),
                 )));
             }
-            let opts = args.get(1).cloned().unwrap_or(Value::Map(IndexMap::new()));
+            let opts = args.get(1).cloned().unwrap_or(Value::Map((IndexMap::new()).into()));
             Some(quant_opts_ok("var_gaussian", &args[0], &opts).and_then(|_| var_gaussian_impl(&args[0], &opts)))
         }
         // Reshape a flat list of numbers into an r×c matrix.
@@ -1992,7 +1992,7 @@ mod tests {
         for (k, v) in pairs {
             m.insert((*k).into(), v.clone());
         }
-        Value::Map(m)
+        Value::Map(m.into())
     }
 
     fn extract_vec(v: &Value) -> Vec<f64> {

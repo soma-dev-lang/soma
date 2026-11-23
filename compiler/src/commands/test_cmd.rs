@@ -321,7 +321,7 @@ pub fn cmd_test(path: &PathBuf, json: bool, registry: &mut Registry) {
                             // an answer is a Bool: `mock approve "false"` approved
                             // (a non-empty String is truthy)
                             let answers = match eval_test_expr(&mut interp, &reply.node, &test_env) {
-                                Ok(interpreter::Value::List(items)) => Ok(items),
+                                Ok(interpreter::Value::List(items)) => Ok(items.take()),
                                 Ok(v) => Ok(vec![v]),
                                 Err(e) => Err(e),
                             }.and_then(|items| items.into_iter().map(|it| match it {

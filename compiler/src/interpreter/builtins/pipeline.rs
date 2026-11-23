@@ -153,7 +153,7 @@ pub fn call_builtin(name: &str, args: &[Value]) -> Option<Result<Value, RuntimeE
                         }
                     }
                 }).cloned().collect();
-                Some(Ok(Value::List(result)))
+                Some(Ok(Value::List((result).into())))
             } else {
                 Some(Err(RuntimeError::TypeError("filter_by expects (list, field, op, value)".to_string())))
             }
@@ -207,7 +207,7 @@ pub fn call_builtin(name: &str, args: &[Value]) -> Option<Result<Value, RuntimeE
                     return Err(RuntimeError::Domain { kind: "range".into(), message: format!("{}(): n must be nonnegative", name) });
                 }
                 let n = count.to_rug().to_usize().unwrap_or(usize::MAX).min(items.len());
-                Ok(Value::List(if name == "top" { items[..n].to_vec() } else { items[items.len() - n..].to_vec() }))
+                Ok(Value::List(if name == "top" { (items[..n].to_vec()).into() } else { (items[items.len() - n..].to_vec()).into() }))
             })())
         }
         "sum_by" => {
@@ -275,8 +275,8 @@ pub fn call_builtin(name: &str, args: &[Value]) -> Option<Result<Value, RuntimeE
                             entries.get(&field).cloned().unwrap_or(Value::Unit)
                         } else { Value::Unit }
                     }).collect();
-                    Some(Ok(Value::List(result)))
-                } else if matches!(args[0], Value::Unit) { Some(Ok(Value::List(vec![]))) }
+                    Some(Ok(Value::List((result).into())))
+                } else if matches!(args[0], Value::Unit) { Some(Ok(Value::List((vec![]).into()))) }
                 // a Map or a String answered an empty result (`distinct(m)` was [])
                 else { Some(Err(RuntimeError::Domain { kind: "type".to_string(), message: format!("pluck(): needs a List of rows, got {}", crate::interpreter::value_type_name(&args[0])) })) }
             } else {
@@ -296,9 +296,9 @@ pub fn call_builtin(name: &str, args: &[Value]) -> Option<Result<Value, RuntimeE
                         groups.entry(key).or_default().push(item.clone());
                     }
                     let result: IndexMap<String, Value> = groups.into_iter()
-                        .map(|(k, v)| (k, Value::List(v))).collect();
-                    Some(Ok(Value::Map(result)))
-                } else if matches!(args[0], Value::Unit) { Some(Ok(Value::Map(IndexMap::new()))) }
+                        .map(|(k, v)| (k, Value::List((v).into()))).collect();
+                    Some(Ok(Value::Map((result).into())))
+                } else if matches!(args[0], Value::Unit) { Some(Ok(Value::Map((IndexMap::new()).into()))) }
                 // a Map or a String answered an empty result (`distinct(m)` was [])
                 else { Some(Err(RuntimeError::Domain { kind: "type".to_string(), message: format!("group_by(): needs a List of rows, got {}", crate::interpreter::value_type_name(&args[0])) })) }
             } else {
@@ -317,7 +317,7 @@ pub fn call_builtin(name: &str, args: &[Value]) -> Option<Result<Value, RuntimeE
                         result.push(item.clone());
                     }
                 }
-                Some(Ok(Value::List(result)))
+                Some(Ok(Value::List((result).into())))
             } else {
                 Some(Err(RuntimeError::TypeError("distinct_by(rows: List<Map>, field: String) -> List<Map>".to_string())))
             }
@@ -338,13 +338,13 @@ pub fn call_builtin(name: &str, args: &[Value]) -> Option<Result<Value, RuntimeE
                             result.push(v);
                         }
                     }
-                    Some(Ok(Value::List(result)))
+                    Some(Ok(Value::List((result).into())))
                 } else {
                     let mut seen: std::collections::HashSet<String> = std::collections::HashSet::new();
                     let result: Vec<Value> = items.iter().filter(|item| distinct_key(item).map_or(true, |key| seen.insert(key))).cloned().collect();
-                    Some(Ok(Value::List(result)))
+                    Some(Ok(Value::List((result).into())))
                 }
-            } else if matches!(args[0], Value::Unit) { Some(Ok(Value::List(vec![]))) }
+            } else if matches!(args[0], Value::Unit) { Some(Ok(Value::List((vec![]).into()))) }
             // a Map or a String answered an empty result (`distinct(m)` was [])
             else { Some(Err(RuntimeError::Domain { kind: "type".to_string(), message: format!("distinct(): needs a List of rows, got {}", crate::interpreter::value_type_name(&args[0])) })) }
         }
@@ -357,7 +357,7 @@ pub fn call_builtin(name: &str, args: &[Value]) -> Option<Result<Value, RuntimeE
                     let kept = match call_builtin("filter_by", &[args[0].clone(), args[1].clone(), Value::String("==".to_string()), args[2].clone()]) {
                         Some(Ok(Value::List(k))) => k,
                         Some(Err(e)) => return Some(Err(e)),
-                        _ => Vec::new(),
+                        _ => (Vec::new()).into(),
                     };
                     let _ = items;
                     let count = kept.len() as i64;
@@ -383,11 +383,11 @@ pub fn call_builtin(name: &str, args: &[Value]) -> Option<Result<Value, RuntimeE
                             let filtered: IndexMap<String, Value> = fields.iter()
                                 .filter_map(|f| entries.get(f).map(|v| (f.clone(), v.clone())))
                                 .collect();
-                            Value::Map(filtered)
+                            Value::Map((filtered).into())
                         } else { item.clone() }
                     }).collect();
-                    Some(Ok(Value::List(result)))
-                } else if matches!(args[0], Value::Unit) { Some(Ok(Value::List(vec![]))) }
+                    Some(Ok(Value::List((result).into())))
+                } else if matches!(args[0], Value::Unit) { Some(Ok(Value::List((vec![]).into()))) }
                 // a Map or a String answered an empty result (`distinct(m)` was [])
                 else { Some(Err(RuntimeError::Domain { kind: "type".to_string(), message: format!("select(): needs a List of rows, got {}", crate::interpreter::value_type_name(&args[0])) })) }
             } else {
@@ -454,10 +454,10 @@ pub fn call_builtin(name: &str, args: &[Value]) -> Option<Result<Value, RuntimeE
                                 row.insert(format!("{}_{}", col, func), agg_val);
                             }
                         }
-                        Value::Map(row)
+                        Value::Map((row).into())
                     }).collect();
-                    Some(Ok(Value::List(result)))
-                } else if matches!(args[0], Value::Unit) { Some(Ok(Value::List(vec![]))) }
+                    Some(Ok(Value::List((result).into())))
+                } else if matches!(args[0], Value::Unit) { Some(Ok(Value::List((vec![]).into()))) }
                 // a Map or a String answered an empty result (`distinct(m)` was [])
                 else { Some(Err(RuntimeError::Domain { kind: "type".to_string(), message: format!("agg(): needs a List of rows, got {}", crate::interpreter::value_type_name(&args[0])) })) }
             } else {
@@ -503,7 +503,7 @@ fn distinct_key(v: &Value) -> Option<String> {
                 let payload = match fields {
                     VariantValue::Unit => json!(["unit"]),
                     VariantValue::Tuple(xs) => json!(["tuple", xs.iter().map(key).collect::<Option<Vec<_>>>()?]),
-                    VariantValue::Struct(m) => key(&Value::Map(m.clone()))?,
+                    VariantValue::Struct(m) => key(&Value::Map((m.clone()).into()))?,
                 };
                 json!(["variant", type_name, variant, payload])
             }

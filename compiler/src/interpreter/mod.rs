@@ -414,6 +414,55 @@ pub fn is_truthy(val: &Value) -> bool {
     }
 }
 
+/// The items of a list, or the entries of a map: shared until written.
+///
+/// A value is copied wherever it is read — `let b = a`, an argument, a
+/// `return`, `[v]` — and a copy of a list was a copy of every item, down to
+/// the last: `v = [v]` 16,000 times took 4 s, building any nested structure
+/// was quadratic. A copy now shares the items; the first WRITE through a
+/// copy (`b[0] = 99`, a push) takes its own first (`Arc::make_mut`), so no
+/// write ever shows through another name. Reading goes through `Deref`,
+/// writing through `DerefMut`: the code that handles a `Vec<Value>` or an
+/// `IndexMap` is the code that handles this.
+pub struct Shared<T>(std::sync::Arc<Held<T>>);
+
+/// What a `Shared` holds: the content, and the type it was last checked
+/// against all the way down (`Interpreter::fit_id`; 0: none). Every name
+/// that shares the content shares that answer; the content cannot change
+/// while it is shared, and a write (which has it to itself) clears it. A
+/// list of 20,000 Ints handed to `xs: List<Int>` 20,000 times was checked
+/// item by item each time.
+struct Held<T> { content: T, fits: std::sync::atomic::AtomicU32 }
+
+impl<T: Clone> Clone for Held<T> {
+    fn clone(&self) -> Self { Held { content: self.content.clone(), fits: std::sync::atomic::AtomicU32::new(0) } }
+}
+
+impl<T> Clone for Shared<T> { fn clone(&self) -> Self { Shared(self.0.clone()) } }
+impl<T: std::fmt::Debug> std::fmt::Debug for Shared<T> { fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result { self.0.content.fmt(f) } }
+impl<T: Default> Default for Shared<T> { fn default() -> Self { T::default().into() } }
+impl<T> std::ops::Deref for Shared<T> { type Target = T; fn deref(&self) -> &T { &self.0.content } }
+impl<T: Clone> std::ops::DerefMut for Shared<T> {
+    fn deref_mut(&mut self) -> &mut T {
+        let held = std::sync::Arc::make_mut(&mut self.0);
+        *held.fits.get_mut() = 0;
+        &mut held.content
+    }
+}
+impl<T> From<T> for Shared<T> { fn from(content: T) -> Self { Shared(std::sync::Arc::new(Held { content, fits: std::sync::atomic::AtomicU32::new(0) })) } }
+impl<T: Clone> Shared<T> {
+    /// The content, to own: taken when nothing else holds it, copied otherwise.
+    pub fn take(self) -> T { std::sync::Arc::try_unwrap(self.0).map(|held| held.content).unwrap_or_else(|held| held.content.clone()) }
+}
+impl<T> Shared<T> {
+    pub fn fits(&self) -> u32 { self.0.fits.load(std::sync::atomic::Ordering::Relaxed) }
+    pub fn set_fits(&self, id: u32) { self.0.fits.store(id, std::sync::atomic::Ordering::Relaxed); }
+}
+impl<T: Clone + IntoIterator> IntoIterator for Shared<T> { type Item = T::Item; type IntoIter = T::IntoIter; fn into_iter(self) -> T::IntoIter { self.take().into_iter() } }
+impl<'a, T> IntoIterator for &'a Shared<T> where &'a T: IntoIterator { type Item = <&'a T as IntoIterator>::Item; type IntoIter = <&'a T as IntoIterator>::IntoIter; fn into_iter(self) -> Self::IntoIter { (&self.0.content).into_iter() } }
+impl<'a, T: Clone> IntoIterator for &'a mut Shared<T> where &'a mut T: IntoIterator { type Item = <&'a mut T as IntoIterator>::Item; type IntoIter = <&'a mut T as IntoIterator>::IntoIter; fn into_iter(self) -> Self::IntoIter { std::ops::DerefMut::deref_mut(self).into_iter() } }
+impl<A, T: FromIterator<A>> FromIterator<A> for Shared<T> { fn from_iter<I: IntoIterator<Item = A>>(iter: I) -> Self { T::from_iter(iter).into() } }
+
 /// Runtime values
 #[derive(Debug, Clone)]
 pub enum Value {
@@ -421,8 +470,8 @@ pub enum Value {
     Float(f64),
     String(String),
     Bool(bool),
-    List(Vec<Value>),
-    Map(IndexMap<String, Value>),
+    List(Shared<Vec<Value>>),
+    Map(Shared<IndexMap<String, Value>>),
     /// Lambda: captured param name + body expression + closure environment
     Lambda {
         param: std::string::String,
@@ -560,6 +609,15 @@ impl std::fmt::Display for Value {
 }
 
 impl Value {
+    /// The named entries of a Map, or of a variant with named fields.
+    pub fn entries(&self) -> Option<&IndexMap<String, Value>> {
+        match self {
+            Value::Map(m) => Some(m),
+            Value::Variant { fields: VariantValue::Struct(m), .. } => Some(m),
+            _ => None,
+        }
+    }
+
     pub fn as_int(&self) -> Result<i64, RuntimeError> {
         match self {
             Value::Int(si) => si.to_i64().ok_or_else(|| RuntimeError::TypeError("BigInt too large for i64".to_string())),
@@ -737,6 +795,8 @@ pub struct Interpreter {
     pub(crate) cell_order: Vec<String>,
     /// Pre-computed handler lookup — avoids scanning sections on every call
     handler_cache: HashMap<HandlerKey, HandlerValue>,
+    /// type text → its number for `Shared::fits` (see `fit_id`)
+    fit_ids: std::sync::Mutex<HashMap<String, u32>>,
     /// 3.0: the face contracts (`requires` / `ensures`) of the signals that
     /// declare one — empty for most programs, so a call pays nothing
     face_contracts: HashMap<HandlerKey, Arc<FaceContract>>,
@@ -1155,6 +1215,7 @@ impl Interpreter {
         Self {
             cells,
             handler_cache,
+            fit_ids: Default::default(),
             face_contracts,
             cell_order,
             handler_arities,
@@ -1252,6 +1313,8 @@ impl Interpreter {
 
     /// Register an additional cell definition (used by runtime to inject interior cells)
     pub fn register_cell(&mut self, cell: CellDef) {
+        // (a new cell may bring types: what was checked before is checked again)
+        self.fit_ids.lock().unwrap_or_else(|e| e.into_inner()).clear();
         // Update handler cache
         collect_face_contracts(&cell, &mut self.face_contracts);
         for section in &cell.sections {
@@ -1785,7 +1848,7 @@ impl Interpreter {
                     }
                     let mut checked = Vec::with_capacity(args.len());
                     for (p, a) in params.iter().zip(args.into_iter()) {
-                        match check_param_type(p, a).and_then(|v| self.check_sum_param(p, v)) {
+                        match self.check_param(p, a) {
                             Ok(v) => checked.push(v),
                             Err(m) => return Err(RuntimeError::Domain { kind: "type".to_string(), message: format!("{}(): {}", signal_name, m) }),
                         }
@@ -1968,7 +2031,7 @@ impl Interpreter {
         // body ("cannot compare String and Int"), or not at all.
         let mut env = FxHashMap::with_capacity_and_hasher(params.len() + 4, Default::default());
         for (param, val) in params.iter().zip(args) {
-            let val = match check_param_type(param, val).and_then(|v| self.check_sum_param(param, v)) {
+            let val = match self.check_param(param, val) {
                 Ok(v) => v,
                 Err(msg) => {
                     self.current_depth -= 1;
@@ -2082,7 +2145,7 @@ impl Interpreter {
                             let mut probe = IndexMap::new();
                             probe.insert("_status".to_string(), new_val.clone());
                             probe.insert("_response".to_string(), http_marker());
-                            check_response_status(&Value::Map(probe)).map_err(ExecError::Runtime)?;
+                            check_response_status(&Value::Map((probe).into())).map_err(ExecError::Runtime)?;
                         }
                         entries.insert(key, new_val);
                         Ok(Value::Unit)
@@ -2362,7 +2425,7 @@ impl Interpreter {
                     // an absent value (`slot.get(missing)`) has no elements
                     // (the body ran once with `()`); a number is not a
                     // sequence (`for x in 5` ran once with 5)
-                    Value::Unit => Vec::new(),
+                    Value::Unit => (Vec::new()).into(),
                     other => return Err(ExecError::Runtime(RuntimeError::Domain { kind: "type".to_string(), message: format!(
                         "for {} in …: {} {} is not a List, Map or String — for a count write `for i in range(0, n)`", var, value_type_name(&other), { let t: String = format!("{}", other).chars().take(30).collect(); t }) })),
                 };
@@ -2574,7 +2637,7 @@ impl Interpreter {
                 let dispatch_args = arg_vals.clone();
                 self.emitted_signals.push((sig.clone(), arg_vals.clone()));
                 // Prepare data for broadcast
-                let broadcast_data = if arg_vals.len() == 1 { arg_vals[0].clone() } else { Value::List(arg_vals) };
+                let broadcast_data = if arg_vals.len() == 1 { arg_vals[0].clone() } else { Value::List((arg_vals).into()) };
                 // Broadcast to event bus (SSE / WebSocket clients) — at commit
                 if self.event_bus.is_some() {
                     self.send_bus(BusEvent { stream: sig.clone(), data: broadcast_data.clone(), internal: true });
@@ -2841,7 +2904,7 @@ impl Interpreter {
                 for elem in elements {
                     items.push(self.eval_expr(&elem.node, env, cell_name, signal_name)?);
                 }
-                Ok(Value::List(items))
+                Ok(Value::List((items).into()))
             }
 
             Expr::Record { type_name, fields } => {
@@ -2887,7 +2950,7 @@ impl Interpreter {
                     let val = self.eval_expr(&field_expr.node, env, cell_name, signal_name)?;
                     entries.insert(field_name.clone(), val);
                 }
-                Ok(Value::Map(entries))
+                Ok(Value::Map((entries).into()))
             }
 
             Expr::Try(inner) => {
@@ -3606,7 +3669,7 @@ impl Interpreter {
                 // only the no-argument aliases: `rows.all(r => …)` is the
                 // builtin over the content, not "give me everything" (it
                 // returned the list, so `if rows.all(p)` was always taken)
-                "values" | "all" | "list" | "entries" | "items" if args.is_empty() => return Ok(Value::List(items())),
+                "values" | "all" | "list" | "entries" | "items" if args.is_empty() => return Ok(Value::List((items()).into())),
                 "first" if args.is_empty() => return Ok(items().into_iter().next().unwrap_or(Value::Unit)),
                 "last" if args.is_empty() => return Ok(items().into_iter().last().unwrap_or(Value::Unit)),
                 "get" | "at" | "nth" => {
@@ -3925,7 +3988,7 @@ impl Interpreter {
                 if self.slot_int_keys(cell_name, slot_name) {
                     let vals: Vec<Value> = Self::int_key_order(backend.keys()).into_iter()
                         .filter_map(|k| backend.get(&k)).map(|v| self.from_slot(cell_name, slot_name, stored_to_value(v))).collect();
-                    return Ok(Value::List(vals));
+                    return Ok(Value::List((vals).into()));
                 }
                 let items = backend.list();
                 Ok(Value::List(items.into_iter().map(stored_to_value).collect()))
@@ -3950,7 +4013,7 @@ impl Interpreter {
                 let int_keys = self.slot_int_keys(cell_name, slot_name);
                 let mut keys: Vec<Value> = backend.keys().into_iter().map(|k| self.slot_key_restore(cell_name, slot_name, int_keys, k)).collect();
                 if int_keys { keys.sort_by(|a, b| numeric_cmp(a, b).unwrap_or(std::cmp::Ordering::Equal)); }
-                Ok(Value::List(keys))
+                Ok(Value::List((keys).into()))
             }
             "values" => {
                 // Full replicas: values/keys/len/get read the same local
@@ -3960,7 +4023,7 @@ impl Interpreter {
                 if self.slot_int_keys(cell_name, slot_name) {
                     let vals: Vec<Value> = Self::int_key_order(backend.keys()).into_iter()
                         .filter_map(|k| backend.get(&k)).map(|v| self.from_slot(cell_name, slot_name, stored_to_value(v))).collect();
-                    return Ok(Value::List(vals));
+                    return Ok(Value::List((vals).into()));
                 }
                 let vals = backend.values();
                 Ok(Value::List(vals.into_iter().map(stored_to_value).collect()))
@@ -4856,7 +4919,21 @@ impl Interpreter {
         Ok(Value::Variant { type_name: ty.to_string(), variant, fields })
     }
 
+    /// Can `coerce_records` change a value of this type? (An Int where a
+    /// Float is declared, a record's fields, and what holds one of them.)
+    fn coerces(&self, ty: &TypeExpr) -> bool {
+        match ty {
+            TypeExpr::Simple(t) => t == "Float" || self.type_variants.contains_key(t),
+            TypeExpr::Generic { name, args } if name == "List" => args.first().map_or(false, |t| self.coerces(&t.node)),
+            TypeExpr::Generic { name, args } if name == "Map" => args.last().map_or(false, |t| self.coerces(&t.node)),
+            _ => true,
+        }
+    }
+
     fn coerce_records(&self, ty: &TypeExpr, v: Value) -> Result<Value, String> {
+        // (a list of a million Ints handed to `xs: List<Int>` was taken apart
+        // and put together again, unchanged, at every call)
+        if matches!(v, Value::List(_) | Value::Map(_)) && !self.coerces(ty) { return Ok(v); }
         match (ty, v) {
             // an Int where a Float is declared is that Float (`score = 3`
             // on `score: Float` kept an Int; `p.x + p.y` of JSON 1 and 2 gave Int 3)
@@ -4865,13 +4942,13 @@ impl Interpreter {
                 let Some(t) = args.first() else { return Ok(Value::List(xs)) };
                 let mut out = Vec::with_capacity(xs.len());
                 for (i, x) in xs.into_iter().enumerate() { out.push(self.coerce_records(&t.node, x).map_err(|m| format!("element {}: {}", i, m))?); }
-                Ok(Value::List(out))
+                Ok(Value::List((out).into()))
             }
             (TypeExpr::Generic { name, args }, Value::Map(m)) if name == "Map" => {
                 let Some(t) = args.last() else { return Ok(Value::Map(m)) };
                 let mut out = IndexMap::new();
                 for (k, x) in m.into_iter() { let c = self.coerce_records(&t.node, x).map_err(|e| format!("key {:?}: {}", k, e))?; out.insert(k, c); }
-                Ok(Value::Map(out))
+                Ok(Value::Map((out).into()))
             }
             // JSON text for a record parameter (`soma run app.cell one '{"sku":…}'`)
             (TypeExpr::Simple(t), Value::String(txt)) if self.type_variants.get(t).map_or(false, |vs| vs.len() == 1) && txt.trim_start().starts_with('{') => {
@@ -4910,6 +4987,27 @@ impl Interpreter {
         }
     }
 
+    /// The number of a type, for `Shared::fits`: one per type text per
+    /// interpreter, never 0, never given twice in the process (a value
+    /// checked by one program says nothing to another).
+    fn fit_id(&self, ty: &TypeExpr) -> u32 {
+        static NEXT: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(1);
+        let text = crate::commands::describe::format_type(ty);
+        let mut ids = self.fit_ids.lock().unwrap_or_else(|e| e.into_inner());
+        *ids.entry(text).or_insert_with(|| NEXT.fetch_add(1, std::sync::atomic::Ordering::Relaxed))
+    }
+
+    /// A value against the parameter it is passed for: its type, its
+    /// elements, its records. A list or a map already checked against this
+    /// very type and not written since is not gone through again.
+    fn check_param(&self, param: &Param, val: Value) -> Result<Value, String> {
+        if let (TypeExpr::Generic { .. }, Value::List(_) | Value::Map(_)) = (&param.ty.node, &val) {
+            let id = self.fit_id(&param.ty.node);
+            if matches!(&val, Value::List(xs) if xs.fits() == id) || matches!(&val, Value::Map(m) if m.fits() == id) { return Ok(val); }
+        }
+        check_param_type(param, val).and_then(|v| self.check_sum_param(param, v))
+    }
+
     fn check_sum_param(&self, param: &Param, val: Value) -> Result<Value, String> {
         let val = self.coerce_records(&param.ty.node, val)
             .map_err(|m| format!("parameter '{}' expects {}: {}", param.name, crate::commands::describe::format_type(&param.ty.node), m))?;
@@ -4917,8 +5015,13 @@ impl Interpreter {
         // `xs: List<Map<String, Int>>` took `[{"a": "x"}]` from HTTP, the
         // bus and an LLM tool call (only the first level was checked)
         if let TypeExpr::Generic { .. } = &param.ty.node {
-            return self.value_fits(&param.ty.node, &val).map(|_| val)
-                .map_err(|m| format!("parameter '{}' expects {}: {}", param.name, crate::commands::describe::format_type(&param.ty.node), m));
+            // (a content already checked against this very type, and not written since, fits)
+            let id = self.fit_id(&param.ty.node);
+            if matches!(&val, Value::List(xs) if xs.fits() == id) || matches!(&val, Value::Map(m) if m.fits() == id) { return Ok(val); }
+            self.value_fits(&param.ty.node, &val)
+                .map_err(|m| format!("parameter '{}' expects {}: {}", param.name, crate::commands::describe::format_type(&param.ty.node), m))?;
+            match &val { Value::List(xs) => xs.set_fits(id), Value::Map(m) => m.set_fits(id), _ => {} }
+            return Ok(val);
         }
         let TypeExpr::Simple(t) = &param.ty.node else { return Ok(val) };
         let Some(variants) = self.type_variants.get(t) else { return Ok(val) };
@@ -5215,7 +5318,7 @@ impl Interpreter {
                 let arg = match param.strip_prefix("__args").and_then(|n| n.parse::<usize>().ok()) {
                     Some(n) => {
                         let parts: Vec<Value> = match arg {
-                            Value::List(items) => items,
+                            Value::List(items) => (items).take(),
                             Value::Map(entries) => entries.into_iter().map(|(_, v)| v).collect(),
                             other => return Err(ExecError::Runtime(RuntimeError::TypeError(format!(
                                 "a lambda of {} parameters was given one {} — it takes {} arguments, or one list / map of {} values to take apart",
@@ -5225,7 +5328,7 @@ impl Interpreter {
                             return Err(ExecError::Runtime(RuntimeError::TypeError(format!(
                                 "a lambda of {} parameters was given {} values", n, parts.len()))));
                         }
-                        Value::List(parts)
+                        Value::List((parts).into())
                     }
                     None => arg,
                 };
@@ -5925,7 +6028,7 @@ impl Interpreter {
             let wanted = multi_param_count(&lam);
             if let Some(n) = wanted {
                 if arg_vals.len() == n {
-                    return self.apply_lambda(&lam, Value::List(arg_vals), cell_name);
+                    return self.apply_lambda(&lam, Value::List((arg_vals).into()), cell_name);
                 }
                 if arg_vals.len() != 1 {
                     return Err(ExecError::Runtime(RuntimeError::TypeError(format!(
@@ -6528,7 +6631,8 @@ impl Interpreter {
                 other => Err(format!("expected a List, got {}", value_type_name(other))),
             },
             TypeExpr::Generic { name, args } if name == "Map" => match v {
-                Value::Map(m) | Value::Variant { fields: VariantValue::Struct(m), .. } => {
+                _ if v.entries().is_some() => {
+                    let m = v.entries().expect("checked by the arm's guard");
                     // the key type too: a Map<Int, String> parameter took
                     // {"007": …, "abc": …}, which its slot refuses
                     if args.len() == 2 {
@@ -6886,7 +6990,7 @@ impl Interpreter {
 
     pub(crate) fn do_valid_transitions_for(&self, cell_name: &str, id: &str) -> Value {
         let Some((sm, status_slot)) = self.find_state_machine_for(cell_name) else {
-            return Value::List(vec![]);
+            return Value::List((vec![]).into());
         };
 
         let current = status_slot.get(id)
@@ -6901,7 +7005,7 @@ impl Interpreter {
             .map(|t| Value::String(t.node.to.clone()))
             .collect();
 
-        Value::List(targets)
+        Value::List((targets).into())
     }
 
     /// Find the first state machine and its backing storage slot
@@ -7039,11 +7143,14 @@ pub(crate) fn validate_storable(val: &Value) -> Result<(), &'static str> {
             return Err("a value whose storage encoding is nested deeper than 100 levels cannot be stored — flatten it");
         }
         match v {
-            Value::List(xs) | Value::Variant { fields: VariantValue::Tuple(xs), .. } => {
+            Value::List(xs) => {
+                for x in xs.iter() { storable(x, depth)?; }
+            }
+            Value::Variant { fields: VariantValue::Tuple(xs), .. } => {
                 for x in xs { storable(x, depth)?; }
             }
-            Value::Map(m) | Value::Variant { fields: VariantValue::Struct(m), .. } => {
-                for x in m.values() { storable(x, depth)?; }
+            _ if v.entries().is_some() => {
+                for x in v.entries().into_iter().flat_map(|m| m.values()) { storable(x, depth)?; }
             }
             _ => {}
         }
@@ -7300,7 +7407,7 @@ pub(crate) fn stored_to_value(stored: StoredValue) -> Value {
                 .map(|(k, v)| { let v = if k == "_response" { http_marker() } else { stored_to_value(v) }; (k, v) })
                 .collect();
             if !m.contains_key("_response") { m.insert("_response".to_string(), http_marker()); }
-            Value::Map(m)
+            Value::Map((m).into())
         }
         StoredValue::Variant { type_name, variant, fields } => {
             let v_fields = match fields {
@@ -7356,7 +7463,7 @@ pub fn json_to_value(v: &serde_json::Value) -> Value {
             let entries: indexmap::IndexMap<String, Value> = obj.iter()
                 .map(|(k, v)| (k.clone(), json_to_value(v)))
                 .collect();
-            Value::Map(entries)
+            Value::Map((entries).into())
         }
     }
 }

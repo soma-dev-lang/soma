@@ -7559,3 +7559,51 @@ fn a_long_chain_of_calls_is_checked_and_verified_in_the_time_of_its_length() {
     assert!(started.elapsed() < std::time::Duration::from_secs(10), "verify of a chain of {cells} cells took {:?}", started.elapsed());
     let _ = std::fs::remove_dir_all(dir);
 }
+
+#[test]
+fn a_shared_list_or_map_is_never_written_through_another_name() {
+    // Lists and maps are shared until written (`Shared`, copy-on-write): a
+    // copy, an argument, a slot, a captured variable, a loop variable must
+    // each keep its own, and a value checked against a parameter's type is
+    // checked again once written. These held before the change of
+    // representation and pin what it must keep.
+    let dir = scratch("value_semantics");
+    std::fs::copy(concat!(env!("CARGO_MANIFEST_DIR"), "/tests/fixtures/value_semantics/app.cell"), dir.join("app.cell")).unwrap();
+    let (code, out) = soma(&dir, &["test", "app.cell"]);
+    assert_eq!(code, 0, "{out}");
+    assert!(out.contains("15 tests: 15 passed, 0 failed"), "{out}");
+    let _ = std::fs::remove_dir_all(dir);
+}
+
+#[test]
+fn wrapping_passing_and_returning_a_large_value_is_not_a_copy_of_it() {
+    // `v = [v]` copied every level each time (16,000 levels: 4 s), and a list
+    // of 20,000 Ints passed to `xs: List<Int>` 20,000 times was rebuilt and
+    // checked item by item at each call (9 s).
+    let dir = scratch("large_values");
+    std::fs::write(dir.join("app.cell"), r#"cell B {
+  on first(xs: List<Int>) { return xs[0] }
+  on same(xs: List<Int>) { return xs }
+  on wrap(n: Int) {
+    let v = []
+    for i in range(0, n) { v = [v] }
+    let m = map("a", 1)
+    for i in range(0, n) { m = map("a", m) }
+    return 1
+  }
+  on pass(n: Int) {
+    let xs = range(0, n)
+    let t = 0
+    for i in range(0, n) { t = t + first(xs) + len(same(xs)) }
+    return t
+  }
+}
+"#).unwrap();
+    let started = std::time::Instant::now();
+    let (code, out) = soma(&dir, &["run", "app.cell", "wrap", "40000"]);
+    assert_eq!((code, out.trim()), (0, "1"), "{out}");
+    let (code, out) = soma(&dir, &["run", "app.cell", "pass", "30000"]);
+    assert_eq!((code, out.trim()), (0, "900000000"), "{out}");
+    assert!(started.elapsed() < std::time::Duration::from_secs(10), "took {:?}", started.elapsed());
+    let _ = std::fs::remove_dir_all(dir);
+}

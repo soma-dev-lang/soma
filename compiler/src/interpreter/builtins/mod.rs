@@ -301,7 +301,7 @@ pub fn call_lambda_builtin(interp: &mut super::Interpreter, name: &str, args: &[
                     Err(e) => return Some(Err(crate::interpreter::lambda_error(e))),
                 }
             }
-            Some(Ok(Value::List(result)))
+            Some(Ok(Value::List((result).into())))
         }
         "filter" => {
             let mut result = Vec::new();
@@ -315,7 +315,7 @@ pub fn call_lambda_builtin(interp: &mut super::Interpreter, name: &str, args: &[
                     Err(e) => return Some(Err(crate::interpreter::lambda_error(e))),
                 }
             }
-            Some(Ok(Value::List(result)))
+            Some(Ok(Value::List((result).into())))
         }
         "find" => {
             for item in list {

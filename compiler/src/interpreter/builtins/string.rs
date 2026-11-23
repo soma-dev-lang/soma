@@ -55,7 +55,7 @@ pub fn call_builtin(name: &str, args: &[Value]) -> Option<Result<Value, RuntimeE
                     let parts: Vec<Value> = s.split(delim.as_str())
                         .map(|p| Value::String(p.to_string()))
                         .collect();
-                    Some(Ok(Value::List(parts)))
+                    Some(Ok(Value::List((parts).into())))
                 } else {
                     Some(Err(RuntimeError::TypeError("split expects (string, delimiter)".to_string())))
                 }
@@ -552,7 +552,7 @@ fn write_json_with(v: &Value, out: &mut String, spaced: bool) {
                 VariantValue::Unit => {}
                 VariantValue::Tuple(items) => {
                     out.push_str(sep); out.push_str("\"_values\""); out.push_str(colon);
-                    write_json_with(&Value::List(items.clone()), out, spaced);
+                    write_json_with(&Value::List((items.clone()).into()), out, spaced);
                 }
                 VariantValue::Struct(entries) => {
                     for (k, val) in entries {

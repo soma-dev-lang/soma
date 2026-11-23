@@ -115,7 +115,7 @@ pub fn call_builtin(name: &str, args: &[Value]) -> Option<Result<Value, RuntimeE
             entries.insert("_status".to_string(), Value::Int(SomaInt::from_i64(status)));
             entries.insert("_body".to_string(), body);
             entries.insert("_response".to_string(), crate::interpreter::http_marker());
-            Some(Ok(Value::Map(entries)))
+            Some(Ok(Value::Map((entries).into())))
         }
         "response" => {
             let status = args.first().cloned().unwrap_or(Value::Int(SomaInt::from_i64(200)));
@@ -138,7 +138,7 @@ pub fn call_builtin(name: &str, args: &[Value]) -> Option<Result<Value, RuntimeE
                     "response(status, body, name, value, …): header \"{}\" has no value", headers[headers.len() - 1]) }));
             }
             add_header_pairs(&mut entries, headers);
-            Some(Ok(Value::Map(entries)))
+            Some(Ok(Value::Map((entries).into())))
         }
         "redirect" => {
             let url = args.first().map(|a| format!("{}", a)).unwrap_or("/".to_string());
@@ -262,7 +262,7 @@ fn add_header_pairs(entries: &mut IndexMap<String, Value>, pairs: &[Value]) {
         let key = format!("{}", name);
         match entries.get_mut(&key) {
             Some(Value::List(vs)) => vs.push(val.clone()),
-            Some(prev) => { let first = std::mem::replace(prev, Value::Unit); *prev = Value::List(vec![first, val.clone()]); }
+            Some(prev) => { let first = std::mem::replace(prev, Value::Unit); *prev = Value::List((vec![first, val.clone()]).into()); }
             None => { entries.insert(key, val.clone()); }
         }
     }
@@ -301,7 +301,7 @@ fn call_bulk_io(name: &str, args: &[Value]) -> Option<Result<Value, RuntimeError
                             }
                         }
                     }
-                    Some(Ok(Value::List(results)))
+                    Some(Ok(Value::List((results).into())))
                 } else {
                     Some(Err(RuntimeError::TypeError("read_files(dir, count)".to_string())))
                 }
@@ -325,7 +325,7 @@ fn call_bulk_io(name: &str, args: &[Value]) -> Option<Result<Value, RuntimeError
                     let map: IndexMap<String, Value> = counts.into_iter()
                         .map(|(k, v)| (k, Value::Int(SomaInt::from_i64(v))))
                         .collect();
-                    Some(Ok(Value::Map(map)))
+                    Some(Ok(Value::Map((map).into())))
                 }
                 Some(Value::List(items)) => {
                     // Aggregate word counts across all strings in the list
@@ -349,7 +349,7 @@ fn call_bulk_io(name: &str, args: &[Value]) -> Option<Result<Value, RuntimeError
                     let map: IndexMap<String, Value> = counts.into_iter()
                         .map(|(k, v)| (k, Value::Int(SomaInt::from_i64(v))))
                         .collect();
-                    Some(Ok(Value::Map(map)))
+                    Some(Ok(Value::Map((map).into())))
                 }
                 _ => Some(Err(RuntimeError::TypeError("word_count(text) or word_count(list)".to_string())))
             }
@@ -402,7 +402,7 @@ fn call_bulk_io(name: &str, args: &[Value]) -> Option<Result<Value, RuntimeError
                         results.extend(read);
                     }
 
-                    Some(Ok(Value::List(results)))
+                    Some(Ok(Value::List((results).into())))
                 } else {
                     Some(Err(RuntimeError::TypeError("par_read_files(dir, count)".to_string())))
                 }
@@ -457,7 +457,7 @@ fn call_bulk_io(name: &str, args: &[Value]) -> Option<Result<Value, RuntimeError
                 let map: IndexMap<String, Value> = merged.into_iter()
                     .map(|(k, v)| (k, Value::Int(SomaInt::from_i64(v))))
                     .collect();
-                Some(Ok(Value::Map(map)))
+                Some(Ok(Value::Map((map).into())))
             } else {
                 Some(Err(RuntimeError::TypeError("par_word_count(list)".to_string())))
             }
@@ -555,7 +555,7 @@ fn csv_rows(content: &str, (raw, delim): (bool, char), source: &str) -> Result<V
     };
     let headers: Vec<String> = match records.next() {
         Some(h) => h.into_iter().map(|(t, _)| t.trim().to_string()).collect(),
-        None => return Ok(Value::List(vec![])),
+        None => return Ok(Value::List((vec![]).into())),
     };
     // `sku,qty,qty`: the second `qty` overwrote the first in
     // every row, silently — name the duplicate instead
@@ -605,9 +605,9 @@ fn csv_rows(content: &str, (raw, delim): (bool, char), source: &str) -> Result<V
             };
             entries.insert(header.clone(), typed);
         }
-        rows.push(Value::Map(entries));
+        rows.push(Value::Map((entries).into()));
     }
-    Ok(Value::List(rows))
+    Ok(Value::List((rows).into()))
 }
 
 /// Every row a Map or a record: another row (a field-less variant, a

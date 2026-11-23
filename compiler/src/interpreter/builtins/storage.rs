@@ -206,7 +206,7 @@ pub fn call_builtin(interp: &mut Interpreter, name: &str, args: &[Value], cell_n
             let (Value::String(target), Value::List(inputs)) = (&args[0], &args[1]) else {
                 return Some(Err(RuntimeError::TypeError("horde(handler, inputs: List, opts?: Map) — handler is `Cell.handler` or \"Cell.handler\"".to_string())));
             };
-            Some(interp.horde_start(cell_name, target, inputs.clone(), args.get(2)))
+            Some(interp.horde_start(cell_name, target, (inputs.clone()).take(), args.get(2)))
         }
         "vote" if args.len() == 3 => {
             let (Value::String(target), Value::Int(k)) = (&args[0], &args[2]) else {
@@ -281,9 +281,9 @@ pub fn call_builtin(interp: &mut Interpreter, name: &str, args: &[Value], cell_n
             if crate::interpreter::IN_SERVE.load(std::sync::atomic::Ordering::Relaxed) {
                 let mut all: Vec<Value> = SERVE_TRACE.lock().unwrap_or_else(|e| e.into_inner()).iter().cloned().collect();
                 all.extend(interp.agent_trace.iter().cloned());
-                return Some(Ok(Value::List(all)));
+                return Some(Ok(Value::List((all).into())));
             }
-            Some(Ok(Value::List(interp.agent_trace.clone())))
+            Some(Ok(Value::List((interp.agent_trace.clone()).into())))
         }
         "clear_trace" => {
             interp.agent_trace.clear();

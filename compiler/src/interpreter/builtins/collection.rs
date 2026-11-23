@@ -207,7 +207,7 @@ pub fn call_builtin(name: &str, args: &[Value]) -> Option<Result<Value, RuntimeE
                 Value::List(items) => {
                     let a = clamp_index(start, items.len());
                     let b = end.map(|e| clamp_index(e, items.len())).unwrap_or(items.len());
-                    Some(Ok(Value::List(if a < b { items[a..b].to_vec() } else { Vec::new() })))
+                    Some(Ok(Value::List(if a < b { (items[a..b].to_vec()).into() } else { (Vec::new()).into() })))
                 }
                 Value::String(text) => {
                     let chars: Vec<char> = text.chars().collect();
@@ -240,7 +240,7 @@ pub fn call_builtin(name: &str, args: &[Value]) -> Option<Result<Value, RuntimeE
             Some(Ok(Value::List(m.values().cloned().collect())))
         }
         "entries" if args.len() == 1 && matches!(args[0], Value::Map(_) | Value::Variant { fields: crate::interpreter::VariantValue::Struct(_), .. }) => {
-            let (Value::Map(m) | Value::Variant { fields: crate::interpreter::VariantValue::Struct(m), .. }) = &args[0] else { return None };
+            let Some(m) = args[0].entries() else { return None };
             Some(Ok(Value::List(
                 m.iter()
                     .map(|(k, v)| map_from_pairs(vec![
@@ -256,7 +256,7 @@ pub fn call_builtin(name: &str, args: &[Value]) -> Option<Result<Value, RuntimeE
             // the [a, b] literal. The `x = list(x, item)` append idiom is
             // handled in-place by the interpreter's assignment fast path
             // (it never reaches here); use push() or `+` to concatenate.
-            Some(Ok(Value::List(args.to_vec())))
+            Some(Ok(Value::List((args.to_vec()).into())))
         }
         "map" => {
             if args.len() % 2 != 0 {
@@ -279,7 +279,7 @@ pub fn call_builtin(name: &str, args: &[Value]) -> Option<Result<Value, RuntimeE
                 entries.insert(key, val);
                 i += 2;
             }
-            Some(Ok(Value::Map(entries)))
+            Some(Ok(Value::Map((entries).into())))
         }
         "push" => {
             // push(list(1)) answered [[1]] and push(5, 6) the list [5, 6]:
@@ -373,7 +373,7 @@ pub fn call_builtin(name: &str, args: &[Value]) -> Option<Result<Value, RuntimeE
                     .filter(|(k, _)| !keys_to_remove.contains(k))
                     .map(|(k, v)| (k.clone(), v.clone()))
                     .collect();
-                Some(Ok(Value::Map(result)))
+                Some(Ok(Value::Map((result).into())))
             } else {
                 Some(Err(RuntimeError::TypeError("without expects (map, keys...)".to_string())))
             }
@@ -397,7 +397,7 @@ pub fn call_builtin(name: &str, args: &[Value]) -> Option<Result<Value, RuntimeE
             }
             // a response's `_status` set by merging (`merge(response(200, x),
             // map("_status", 999))`) is checked as with() checks it
-            let out = Value::Map(result);
+            let out = Value::Map((result).into());
             if let Err(e) = crate::interpreter::check_response_status(&out) { return Some(Err(e)); }
             Some(Ok(out))
         }
@@ -438,9 +438,9 @@ pub fn call_builtin(name: &str, args: &[Value]) -> Option<Result<Value, RuntimeE
         "flatten" => {
             if let Some(Value::List(items)) = args.first() {
                 let result: Vec<Value> = items.iter().flat_map(|item| {
-                    if let Value::List(inner) = item { inner.clone() } else { vec![item.clone()] }
+                    if let Value::List(inner) = item { inner.to_vec() } else { vec![item.clone()] }
                 }).collect();
-                Some(Ok(Value::List(result)))
+                Some(Ok(Value::List((result).into())))
             } else { not_a_list("flatten(list)", args.first()) }
         }
         "zip" => {
@@ -449,7 +449,7 @@ pub fn call_builtin(name: &str, args: &[Value]) -> Option<Result<Value, RuntimeE
                     let result: Vec<Value> = a.iter().zip(b.iter()).map(|(l, r)| {
                         map_from_pairs(vec![("left".to_string(), l.clone()), ("right".to_string(), r.clone())])
                     }).collect();
-                    Some(Ok(Value::List(result)))
+                    Some(Ok(Value::List((result).into())))
                 } else { not_a_list("zip(a, b)", args[..2].iter().find(|v| !matches!(v, Value::List(_)))) }
             } else { Some(Err(RuntimeError::TypeError("zip expects (list, list)".to_string()))) }
         }
@@ -458,7 +458,7 @@ pub fn call_builtin(name: &str, args: &[Value]) -> Option<Result<Value, RuntimeE
                 let result: Vec<Value> = items.iter().enumerate().map(|(i, v)| {
                     map_from_pairs(vec![("index".to_string(), Value::Int(SomaInt::from_i64(i as i64))), ("value".to_string(), v.clone())])
                 }).collect();
-                Some(Ok(Value::List(result)))
+                Some(Ok(Value::List((result).into())))
             } else { not_a_list("enumerate(list)", args.first()) }
         }
         "render_each" => {
@@ -531,7 +531,7 @@ pub fn call_builtin(name: &str, args: &[Value]) -> Option<Result<Value, RuntimeE
                                 }
                             }
                         }
-                        Value::Map(merged)
+                        Value::Map((merged).into())
                     };
                     let result: Vec<Value> = if name == "inner_join" {
                         left.iter().filter_map(|l| {
@@ -544,7 +544,7 @@ pub fn call_builtin(name: &str, args: &[Value]) -> Option<Result<Value, RuntimeE
                             merge(l, lk.and_then(|lk_val| index.get(&lk_val)))
                         }).collect()
                     };
-                    Some(Ok(Value::List(result)))
+                    Some(Ok(Value::List((result).into())))
                 } else { Some(Err(RuntimeError::TypeError(format!("{} expects (list, list, key)", what)))) }
             } else { Some(Err(RuntimeError::TypeError(format!("{} expects (list, list, key)", what)))) }
         }
@@ -573,7 +573,7 @@ pub fn call_builtin(name: &str, args: &[Value]) -> Option<Result<Value, RuntimeE
                     let mut i = start;
                     while i > end { result.push(Value::Int(SomaInt::from_i64(i))); match i.checked_add(step) { Some(n) => i = n, None => break } }
                 }
-                Ok(Value::List(result))
+                Ok(Value::List((result).into()))
             })())
         }
         "sort" => {

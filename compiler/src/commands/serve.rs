@@ -2089,7 +2089,7 @@ pub fn cmd_serve(path: &PathBuf, port: u16, host: &str, verbose: bool, join: Opt
                         Some(v) if matches!(v, interpreter::Value::Map(_) | interpreter::Value::List(_)) => v,
                         // an empty body is the empty value of the declared type
                         // (`body: List` answered every GET with a 400)
-                        _ if body.trim().is_empty() => if request_body_type.as_str() == "List" { interpreter::Value::List(vec![]) } else { interpreter::Value::Map(Default::default()) },
+                        _ if body.trim().is_empty() => if request_body_type.as_str() == "List" { interpreter::Value::List((vec![]).into()) } else { interpreter::Value::Map(Default::default()) },
                         _ => {
                             let msg = if request_body_type.as_str() == "Map" && body.trim_start().starts_with('{') {
                                 "request body is not a JSON object Soma reads: malformed, or nested deeper than the limit (the `request` handler declares body: Map)".to_string()
@@ -2183,7 +2183,7 @@ pub fn cmd_serve(path: &PathBuf, port: u16, host: &str, verbose: bool, join: Opt
                 }
                 // an absent body for a trailing Map/List parameter is an empty one
                 while out.len() < types.len() && matches!(types[out.len()].as_str(), "Map" | "List") {
-                    out.push(if types[out.len()] == "Map" { interpreter::Value::Map(Default::default()) } else { interpreter::Value::List(vec![]) });
+                    out.push(if types[out.len()] == "Map" { interpreter::Value::Map(Default::default()) } else { interpreter::Value::List((vec![]).into()) });
                 }
                 out
             }
@@ -2862,7 +2862,7 @@ pub(crate) fn coerce_to_type(ty: &str, v: interpreter::Value) -> interpreter::Va
         ("Int", Value::Float(f)) if f.fract() == 0.0 && f.abs() < 9.0e15 => Value::Int(crate::interpreter::soma_int::SomaInt::from_i64(*f as i64)),
         ("Map" | "List", Value::String(s)) => {
             if s.trim().is_empty() {
-                return if ty == "Map" { Value::Map(Default::default()) } else { Value::List(vec![]) };
+                return if ty == "Map" { Value::Map(Default::default()) } else { Value::List((vec![]).into()) };
             }
             match serde_json::from_str::<serde_json::Value>(s) {
                 // `_type` / `_variant` would forge a record or a variant

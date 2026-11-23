@@ -92,7 +92,7 @@ pub fn call_builtin(name: &str, args: &[Value]) -> Option<Result<Value, RuntimeE
             Some(Ok(match name {
                 "floor_div" => Value::Int(SomaInt::from_rug(q)),
                 "mod" => Value::Int(SomaInt::from_rug(r)),
-                _ => Value::List(vec![Value::Int(SomaInt::from_rug(q)), Value::Int(SomaInt::from_rug(r))]),
+                _ => Value::List((vec![Value::Int(SomaInt::from_rug(q)), Value::Int(SomaInt::from_rug(r))]).into()),
             }))
         }
         // exact integer division rounded to nearest, half away from zero
@@ -635,7 +635,7 @@ pub fn call_builtin(name: &str, args: &[Value]) -> Option<Result<Value, RuntimeE
 /// rule.
 fn stats_reduce(args: &[Value], op: &str) -> Result<Value, RuntimeError> {
     let items: Vec<Value> = match args.first() {
-        Some(Value::List(xs)) if args.len() == 1 => xs.clone(),
+        Some(Value::List(xs)) if args.len() == 1 => (xs.clone()).take(),
         _ => args.to_vec(),
     };
     if let Some(bad) = items.iter().find(|v| !matches!(v, Value::Int(_) | Value::Float(_))) {
@@ -799,7 +799,7 @@ fn rational_sqrt_to_f64(value: rug::Rational) -> f64 {
 fn numeric_reduce(args: &[Value], op: &str) -> Result<Value, RuntimeError> {
     // accept either a single List arg or variadic numbers
     let items: Vec<Value> = match args.first() {
-        Some(Value::List(xs)) if args.len() == 1 => xs.clone(),
+        Some(Value::List(xs)) if args.len() == 1 => (xs.clone()).take(),
         _ => args.to_vec(),
     };
     if items.is_empty() {

@@ -1,0 +1,126 @@
+cell A {
+    memory { kept: Map<String, List<Int>>  rows: List<List<Int>> }
+
+    on index_set_on_a_copy() {
+        let a = [1, 2, 3]
+        let b = a
+        b[0] = 99
+        return [a, b]
+    }
+    on push_on_a_copy() {
+        let a = [1, 2]
+        let b = a
+        b = push(b, 3)
+        return [a, b]
+    }
+    on nested_copy() {
+        let inner = [1, 2]
+        let outer = [inner, inner]
+        inner[0] = 7
+        let o2 = outer
+        o2[0] = [0]
+        return [inner, outer, o2]
+    }
+    on wrap_keeps_the_old() {
+        let v = [1]
+        let w = [v]
+        v[0] = 2
+        v = [v]
+        return [v, w]
+    }
+    on mutate(xs: List<Int>) {
+        xs[0] = -1
+        return xs
+    }
+    on a_handler_gets_its_own() {
+        let a = [5, 6]
+        let b = mutate(a)
+        return [a, b]
+    }
+    on a_slot_keeps_its_own() {
+        let a = [1, 2]
+        kept.set("k", a)
+        a[0] = 50
+        let back = kept.get("k")
+        back[1] = 60
+        return [a, back, kept.get("k")]
+    }
+    on a_lambda_keeps_its_own() {
+        let a = [1, 2]
+        let f = x => a[0] + x
+        a[0] = 100
+        return [f(1), a[0]]
+    }
+    on map_copy() {
+        let m = map("a", [1, 2])
+        let n = m
+        n = with(n, "a", [9])
+        let l = m.a
+        l[0] = 4
+        return [m, n, l]
+    }
+    on loop_var_is_a_copy() {
+        let rows = [[1], [2]]
+        for r in rows { r[0] = 0 }
+        return rows
+    }
+    on map_values_copy() {
+        let a = [1, 2, 3]
+        let b = a.map(x => x * 2)
+        let c = a
+        c[2] = 0
+        return [a, b, c]
+    }
+    on first(xs: List<Int>) { return xs[0] }
+    on deep(xs: List<List<Int>>) { return xs[0][0] }
+    on checked_again_after_a_write() {
+        let xs = [1, 2]
+        let a = first(xs)
+        xs[1] = "two"
+        return first(xs)
+    }
+    on a_copy_written_is_checked_again() {
+        let xs = [1, 2]
+        let a = first(xs)
+        let ys = xs
+        ys[0] = "one"
+        let b = first(xs)
+        return first(ys)
+    }
+    on nested_written_is_checked_again() {
+        let xs = [[1], [2]]
+        let a = deep(xs)
+        let row = xs[1]
+        row[0] = "x"
+        xs[1] = row
+        return deep(xs)
+    }
+    on pushed_is_checked_again() {
+        let xs = [1]
+        let a = first(xs)
+        xs = push(xs, "more")
+        return first(xs)
+    }
+    on checked_twice() {
+        let xs = [1, 2]
+        return first(xs) + first(xs)
+    }
+}
+
+cell test T { rules {
+    assert checked_twice() == 2
+    assert_fails checked_again_after_a_write()
+    assert_fails a_copy_written_is_checked_again()
+    assert_fails nested_written_is_checked_again()
+    assert_fails pushed_is_checked_again()
+    assert index_set_on_a_copy() == [[1, 2, 3], [99, 2, 3]]
+    assert push_on_a_copy() == [[1, 2], [1, 2, 3]]
+    assert nested_copy() == [[7, 2], [[1, 2], [1, 2]], [[0], [1, 2]]]
+    assert wrap_keeps_the_old() == [[[2]], [[1]]]
+    assert a_handler_gets_its_own() == [[5, 6], [-1, 6]]
+    assert a_slot_keeps_its_own() == [[50, 2], [1, 60], [1, 2]]
+    assert a_lambda_keeps_its_own() == [2, 100]
+    assert map_copy() == [map("a", [1, 2]), map("a", [9]), [4, 2]]
+    assert loop_var_is_a_copy() == [[1], [2]]
+    assert map_values_copy() == [[1, 2, 3], [2, 4, 6], [1, 2, 0]]
+} }
