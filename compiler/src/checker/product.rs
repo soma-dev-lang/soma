@@ -86,6 +86,52 @@ fn kid(text: &str) -> u32 {
     })
 }
 
+/// An id key: `Some(n)`, n the number of its `§link:` key when that one exists
+/// (`None` for the keys that are no id choice: `§…`, the outcome of a `try`).
+fn id_key(k: u32) -> Option<Option<u32>> {
+    KEYS.with(|t| {
+        let t = t.borrow();
+        let text = &t.1[k as usize];
+        if text.starts_with('§') || text.starts_with("ok:") || text.starts_with("either:") { return None; }
+        Some(t.0.get(format!("§link:{}", text).as_str()).copied())
+    })
+}
+
+/// Two states that differ only in "this id is the followed one" / "it is
+/// not" are the one state where that is not decided: undecided, the next
+/// read of the id decides it both ways, and nothing else reads it. A handler
+/// that reads the status of seven ids it does not move held each state 128
+/// times. (Not where the instance the id NAMES was decided: `split` reads
+/// that to decide the id.)
+fn undecide(states: &mut Set) {
+    if states.len() < 64 { return; }
+    let mut ids: HashMap<u32, Option<Option<u32>>> = HashMap::new();
+    loop {
+        let mut pairs: Vec<(Exec, u32)> = Vec::new();
+        for x in states.iter() {
+            for (k, v) in &x.bind.0 {
+                if !*v { continue; }
+                let Some(named) = *ids.entry(*k).or_insert_with(|| id_key(*k)) else { continue };
+                if named.is_some_and(|n| x.bind.contains_key(n)) { continue; }
+                let mut twin = x.clone();
+                twin.bind.insert(*k, false);
+                if states.contains(&twin) { pairs.push((x.clone(), *k)); break; }
+            }
+        }
+        if pairs.is_empty() { return; }
+        for (mut x, k) in pairs {
+            let mut twin = x.clone();
+            twin.bind.insert(k, false);
+            // (one of the two may have been joined on another key in this turn)
+            if !states.contains(&x) || !states.contains(&twin) { continue; }
+            states.remove(&x);
+            states.remove(&twin);
+            x.bind.remove(k);
+            states.insert(x);
+        }
+    }
+}
+
 /// `states` without the keys whose text `gone` names (asked once per key).
 fn without(states: Set, gone: impl Fn(&str) -> bool) -> Set {
     let mut known: HashMap<u32, bool> = HashMap::new();
@@ -679,7 +725,9 @@ impl<'a> Engine<'a> {
         // the callee's own choices end with it
         let local = format!(":{}", uid);
         // (…and the outcomes of its `try`s: `ok:l:…`, read only through its own variables)
-        without(out, |k| { let k = k.trim_start_matches('§').trim_start_matches("either:").trim_start_matches("ok:"); (k.starts_with("l:") || k.starts_with("x:")) && k.contains(&local) })
+        let mut out = without(out, |k| { let k = k.trim_start_matches('§').trim_start_matches("either:").trim_start_matches("ok:"); (k.starts_with("l:") || k.starts_with("x:")) && k.contains(&local) });
+        undecide(&mut out);
+        out
     }
 
     /// `frame` with `names` bound to values nothing is known of (a loop
@@ -1219,6 +1267,7 @@ impl<'a> Engine<'a> {
                     let mut read = Vec::new();
                     tries_read(&condition.node, &local, &mut read);
                     for k in read { rejoin(&mut flow.normal, &k); }
+                    undecide(&mut flow.normal);
                 }
                 Statement::For { var, iter, body, .. } => {
                     let s = self.expr(iter, &local, cur, entry);

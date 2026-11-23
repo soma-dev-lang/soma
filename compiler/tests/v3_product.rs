@@ -543,3 +543,33 @@ fn rules_of_one_cone_searched_together_answer_as_each_alone() {
     }
     let _ = std::fs::remove_dir_all(&together);
 }
+
+/// A handler that reads the status of N ids it does not move: each read
+/// decides "this id is the followed one" or not, and both answers went on —
+/// 2^N copies of every state. Two states that differ only in such a choice
+/// are the one state where it is not decided.
+#[test]
+fn reading_the_status_of_many_ids_does_not_double_the_search_at_each_read() {
+    let n = 22;
+    let params: Vec<String> = (0..n).map(|i| format!("a{i}: String")).collect();
+    let mut body = String::new();
+    for i in 0..n { body += &format!("        if Approval.approved(a{i}) {{ total = total + 1 }}\n"); }
+    let source = format!(r#"{TWO}
+cell Census {{
+    face {{ signal count(id: String, {params}) -> Int }}
+    on count(id: String, {params}) {{
+        let total = 0
+{body}        Pay.settle(id)
+        return total
+    }}
+}}
+"#, params = params.join(", "));
+    let dir = project("census", "[verify.before.\"Pay.paid\"]\nrequires = [\"Approval.signed_off\"]\n", &source);
+    let started = std::time::Instant::now();
+    let (out, code) = soma_in(&dir, &["verify", "app.cell"]);
+    let took = started.elapsed();
+    assert!(out.contains("✓ before Pay.paid requires Approval.signed_off"), "{out}");
+    assert_eq!(code, 0, "{out}");
+    assert!(took.as_secs() < 20, "the status of {n} ids read in a row: verify took {took:?}");
+    let _ = std::fs::remove_dir_all(&dir);
+}
