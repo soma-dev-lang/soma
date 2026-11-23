@@ -78,10 +78,14 @@ def one(soma, path):
             return rel, "FAIL", "check: " + (errs[0] if errs else out.strip()[-300:])
         if "skeleton " not in p.stdout:
             return rel, "nocell", ""
-        ta, tb = tally(run(soma, ["test", name], a)[1]), tally(run(soma, ["test", name], b)[1])
+        runs = [run(soma, [cmd, name], d) for cmd, d in (("test", a), ("test", b), ("verify", a), ("verify", b))]
+        # a command that did not finish compared nothing: two of them are not "the same"
+        if any(code == -9 for code, _ in runs):
+            return rel, "timeout", "test / verify did not finish in 120 s"
+        ta, tb = tally(runs[0][1]), tally(runs[1][1])
         if ta != tb:
             return rel, "FAIL", f"test: {ta} became {tb}"
-        va, vb = verdict(run(soma, ["verify", name], a)[1]), verdict(run(soma, ["verify", name], b)[1])
+        va, vb = verdict(runs[2][1]), verdict(runs[3][1])
         if va != vb:
             return rel, "FAIL", f"verify: {va!r} became {vb!r}"
         return rel, "ok", ""
@@ -104,12 +108,13 @@ def main():
     with concurrent.futures.ThreadPoolExecutor(args.jobs) as pool:
         for rel, status, detail in pool.map(lambda f: one(args.soma, f), files):
             counts[status] = counts.get(status, 0) + 1
-            if status in ("FAIL", "unframed"):
+            if status in ("FAIL", "unframed", "timeout"):
                 failures.append((status, rel, detail))
     for status, rel, detail in sorted(failures):
         print(f"{status:9} {rel}: {detail}")
     print(", ".join(f"{k}: {v}" for k, v in sorted(counts.items())))
-    return 1 if counts.get("FAIL") else 0
+    # (a file that did not finish was not compared: it is not a pass)
+    return 1 if counts.get("FAIL") or counts.get("timeout") else 0
 
 
 if __name__ == "__main__":

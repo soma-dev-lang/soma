@@ -121,6 +121,10 @@ def main():
         for tool in ("split_roundtrip", "frame_oracle", "skeleton_monotone"):
             code, out, _ = sh([sys.executable, f"tools/{tool}.py", "--soma", soma])
             gate(res, tool, code == 0, out.strip().splitlines()[-1][:110] if out.strip() else "")
+            # files a tool could not finish in its limit: a number that must reach 0
+            import re
+            late = re.search(r"timeout: (\d+)", out.strip().splitlines()[-1] if out.strip() else "")
+            res["metrics"][f"tools.{tool}.timeouts"] = int(late.group(1)) if late else (9999 if code == 124 else 0)
         code, out, _ = sh([sys.executable, "tools/gen_grammar.py", "--check"])
         gate(res, "grammar_artifacts", code == 0, (out.strip().splitlines() or ["up to date"])[-1][:110])
 

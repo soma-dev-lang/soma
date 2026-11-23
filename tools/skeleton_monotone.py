@@ -38,13 +38,23 @@ def proven(out):
     return got
 
 
+LIMIT = 120  # seconds, each command: a file that does not finish is counted, never passed
+
+
 def one(soma, path):
+    try:
+        return checked(soma, path)
+    except subprocess.TimeoutExpired:
+        return os.path.relpath(path, ROOT), "timeout", []
+
+
+def checked(soma, path):
     rel = os.path.relpath(path, ROOT)
     src_dir, name = os.path.dirname(path), os.path.basename(path)
-    if subprocess.run([soma, "check", name], cwd=src_dir, env=ENV, capture_output=True).returncode != 0:
+    if subprocess.run([soma, "check", name], cwd=src_dir, env=ENV, capture_output=True, timeout=LIMIT).returncode != 0:
         return rel, "skip", []
-    full = subprocess.run([soma, "verify", name], cwd=src_dir, env=ENV, capture_output=True, text=True)
-    sk = subprocess.run([soma, "skeleton", name], cwd=src_dir, env=ENV, capture_output=True, text=True)
+    full = subprocess.run([soma, "verify", name], cwd=src_dir, env=ENV, capture_output=True, text=True, timeout=LIMIT)
+    sk = subprocess.run([soma, "skeleton", name], cwd=src_dir, env=ENV, capture_output=True, text=True, timeout=LIMIT)
     if sk.returncode != 0 or "skeleton " not in sk.stdout:
         return rel, "nocell", []
     with tempfile.TemporaryDirectory() as tmp:
@@ -52,9 +62,9 @@ def one(soma, path):
         toml = os.path.join(src_dir, "soma.toml")
         if os.path.exists(toml):
             shutil.copy(toml, tmp)
-        if subprocess.run([soma, "check", name], cwd=tmp, env=ENV, capture_output=True).returncode != 0:
+        if subprocess.run([soma, "check", name], cwd=tmp, env=ENV, capture_output=True, timeout=LIMIT).returncode != 0:
             return rel, "underivable", []
-        hole = subprocess.run([soma, "verify", name], cwd=tmp, env=ENV, capture_output=True, text=True)
+        hole = subprocess.run([soma, "verify", name], cwd=tmp, env=ENV, capture_output=True, text=True, timeout=LIMIT)
     a, b = proven(hole.stdout + hole.stderr), proven(full.stdout + full.stderr)
     lost = [f"{sec} ✓ {k}" for (sec, k), n in a.items() if b[(sec, k)] < n]
     return rel, ("BROKEN" if lost else "ok"), lost
@@ -73,18 +83,22 @@ def main():
     # compiler/tests/skeleton.rs, not a program these harnesses hold an invariant on)
     if not args.files:
         files = [f for f in files if "/tests/fixtures/skeleton_review/" not in f]
-    counts, bad = {}, []
+    counts, bad, late = {}, [], []
     with concurrent.futures.ThreadPoolExecutor(args.jobs) as pool:
         for rel, status, lost in pool.map(lambda f: one(args.soma, f), files):
             counts[status] = counts.get(status, 0) + 1
+            if status == "timeout":
+                late.append(rel)
             if lost:
                 bad.append((rel, lost))
     for rel, lost in sorted(bad):
         print(rel)
         for l in lost[:6]:
             print("   ", l[:200])
+    for rel in sorted(late):
+        print(f"timeout   {rel}: a command did not finish in {LIMIT} s")
     print(", ".join(f"{k}: {v}" for k, v in sorted(counts.items())))
-    return 1 if bad else 0
+    return 1 if bad or late else 0
 
 
 if __name__ == "__main__":
