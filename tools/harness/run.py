@@ -105,6 +105,11 @@ def main():
     if a.ref:
         n, changed = verdicts(soma, os.path.abspath(a.ref))
         gate(res, "verdicts_unchanged", not changed, f"{len(changed)} verdict(s) changed on {n} tracked programs" + "".join(f" · {c}" for c in changed[:4]))
+        # the words too: a count of explored states, a witness run, the order of the lines
+        code, same = tool_json([os.path.join(HERE, "verify_same.py"), "--soma", soma, "--ref", os.path.abspath(a.ref)])
+        bad = same.get("different", []) + same.get("timeout", [])
+        gate(res, "verify_output_unchanged", code == 0 and "error" not in same,
+             same.get("error", f"{same.get('same', 0)} of {same.get('files', 0)} programs print what the reference prints, {same.get('ref_timeout', 0)} the reference cannot finish") + "".join(f" · {c}" for c in bad[:4]))
     if a.full:
         code, out, _ = sh(["cargo", "test", "--release", "--no-fail-fast"], cwd=os.path.join(ROOT, "compiler"))
         passed = sum(int(l.split()[3]) for l in out.splitlines() if l.startswith("test result"))

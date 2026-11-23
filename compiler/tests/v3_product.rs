@@ -483,3 +483,63 @@ cell B {
     let (out, _) = soma_in(&d, &["verify", "app.cell"]);
     assert!(out.contains("mutual recursion A.f → B.f → A.f"), "{out}");
 }
+
+// ── the search at the size of a large application (Orbite) ──────────────────
+
+/// A sweep: N handlers tried one after the other, each outcome read at once
+/// and never again. The outcome of each `try` was remembered to the end of
+/// the handler: every state of the search was held 2^N times (Orbite's
+/// `Horloge.battre`, N = 20: `soma verify` of its test files did not finish).
+#[test]
+fn a_sweep_of_tries_does_not_double_the_search_at_each_try() {
+    let n = 24;
+    let mut sweep = String::new();
+    for i in 0..n {
+        sweep += &format!("        let r{i} = try {{ Log.note(id, \"step {i}\") }}\n        if r{i}.error != () {{ total = total + 1 }} else {{ Log.note(id, \"failed: {{r{i}.error}}\") }}\n");
+    }
+    let source = format!(r#"{TWO}
+cell Log {{
+    face {{ signal note(id: String, what: String) -> Int }}
+    memory {{ lines: Map<String, String> }}
+    on note(id: String, what: String) {{ lines.set(id, what)  return 1 }}
+}}
+
+cell Sweep {{
+    face {{ signal run(id: String) -> Int }}
+    on run(id: String) {{
+        let total = 0
+{sweep}        Pay.settle(id)
+        return total
+    }}
+}}
+"#);
+    let dir = project("sweep", "[verify.before.\"Pay.paid\"]\nrequires = [\"Approval.signed_off\"]\n", &source);
+    let started = std::time::Instant::now();
+    let (out, code) = soma_in(&dir, &["verify", "app.cell"]);
+    let took = started.elapsed();
+    assert!(out.contains("✓ before Pay.paid requires Approval.signed_off"), "{out}");
+    assert_eq!(code, 0, "{out}");
+    assert!(took.as_secs() < 20, "24 tries in a row: verify took {took:?}");
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+/// Rules that name the same cells are searched together: each must be given
+/// the words its own search gives — the same count of explored states.
+#[test]
+fn rules_of_one_cone_searched_together_answer_as_each_alone() {
+    let rules = [
+        "[verify.before.\"Pay.paid\"]\nrequires = [\"Approval.signed_off\"]\n",
+        "[verify.before.\"Pay.open\"]\nrequires = [\"Approval.asked\"]\n",
+    ];
+    let line = |out: &str, what: &str| out.lines().find(|l| l.contains(what)).unwrap_or_else(|| panic!("no line `{what}` in:\n{out}")).to_string();
+    let together = project("cone_together", &format!("{}{}", rules[0], rules[1]), TWO);
+    let (both, _) = soma_in(&together, &["verify", "app.cell"]);
+    for (rule, what) in [(rules[0], "before Pay.paid requires"), (rules[1], "before Pay.open requires")] {
+        let alone = project("cone_alone", rule, TWO);
+        let (one, _) = soma_in(&alone, &["verify", "app.cell"]);
+        assert_eq!(line(&both, what), line(&one, what), "together:\n{both}\nalone:\n{one}");
+        assert!(line(&one, what).contains("product state(s) explored"), "{one}");
+        let _ = std::fs::remove_dir_all(&alone);
+    }
+    let _ = std::fs::remove_dir_all(&together);
+}

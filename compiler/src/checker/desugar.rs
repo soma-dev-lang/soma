@@ -403,6 +403,8 @@ fn fix_expr(e: &mut Spanned<Expr>, ctx: &Ctx, extra: &mut Vec<Spanned<Expr>>) {
 /// `interpolate_string`: `{{`/`}}` escapes, CSS-like and regex-quantifier
 /// segments are literal text).
 pub(crate) fn segments(s: &str) -> Vec<String> {
+    // (most strings have no `{`: asked of every string an analysis passes)
+    if !s.contains('{') { return Vec::new(); }
     let b = s.as_bytes();
     let mut out = Vec::new();
     let mut pos = 0;
