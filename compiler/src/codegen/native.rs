@@ -5875,20 +5875,20 @@ impl FnGenerator {
                 let a = self.gen_int_arg_direct(&args[0].node, name);
                 // past bit 63 the sign bit repeats (two's complement, like
                 // the interpreter's BigInt: bit_test(-1, 64) is 1)
-                format!("({{ let (_k, _a): (i64, i64) = ({}, {}); if _k < 0 {{ panic!(\"soma:type: bit_test(): bit index {{}} out of range\", _k) }} else if _k >= 64 {{ if _a < 0 {{ 1i64 }} else {{ 0i64 }} }} else {{ (_a >> _k) & 1i64 }} }})", b, a)
+                format!("({{ let (_a, _k): (i64, i64) = ({}, {}); if _k < 0 {{ panic!(\"soma:type: bit_test(): bit index {{}} out of range\", _k) }} else if _k >= 64 {{ if _a < 0 {{ 1i64 }} else {{ 0i64 }} }} else {{ (_a >> _k) & 1i64 }} }})", a, b)
             }
             "bit_set" if args.len() == 2 => {
                 let b_expr = &args[1].node;
                 let a = self.gen_int_arg_direct(&args[0].node, name);
                 let b = format!("_soma_bit_index({}, \"{}\")", self.gen_int_arg_direct(b_expr, name), name);
                 // bit 63 and above do not fit an i64: the BigInt variant computes it
-                format!("({{ let (_k, _a): (i64, i64) = ({}, {}); if _k >= 63 {{ panic!(\"attempt to shift left with overflow\") }} _a | (1i64 << _k) }})", b, a)
+                format!("({{ let (_a, _k): (i64, i64) = ({}, {}); if _k >= 63 {{ panic!(\"attempt to shift left with overflow\") }} _a | (1i64 << _k) }})", a, b)
             }
             "bit_clr" if args.len() == 2 => {
                 let b_expr = &args[1].node;
                 let a = self.gen_int_arg_direct(&args[0].node, name);
                 let b = format!("_soma_bit_index({}, \"{}\")", self.gen_int_arg_direct(b_expr, name), name);
-                format!("({{ let (_k, _a): (i64, i64) = ({}, {}); if _k >= 63 {{ panic!(\"attempt to shift left with overflow\") }} _a & !(1i64 << _k) }})", b, a)
+                format!("({{ let (_a, _k): (i64, i64) = ({}, {}); if _k >= 63 {{ panic!(\"attempt to shift left with overflow\") }} _a & !(1i64 << _k) }})", a, b)
             }
             "bit_next" if args.len() == 2 => {
                 let b = format!("_soma_bit_index({}, \"{}\")", self.gen_int_arg_direct(&args[1].node, name), name);
@@ -7521,7 +7521,7 @@ impl FnGenerator {
                 // (u32 << u32 in plain Rust would panic for shift > 31).
                 let a = self.gen_expr_rug(&args[0].node);
                 let b = self.gen_int_to_i64_rug_msg(&args[1].node, "\"soma:range: shl(): shift count {} out of range\", _v");
-                format!("{{ let (_k, _a) = ({}, Integer::from({})); if _k < 0 || _k > (1i64 << 24) {{ panic!(\"soma:type: shl(): shift count {{}} out of range\", _k) }} if _a.significant_bits() as u64 + _k as u64 > (1u64 << 24) {{ panic!(\"soma:range: range: shl() would build an Int of {{}} bits, past the limit of {{}}\", _a.significant_bits() as u64 + _k as u64, 1u64 << 24) }} _a << (_k as u32) }}", b, a)
+                format!("{{ let (_a, _k) = (Integer::from({}), {}); if _k < 0 || _k > (1i64 << 24) {{ panic!(\"soma:type: shl(): shift count {{}} out of range\", _k) }} if _a.significant_bits() as u64 + _k as u64 > (1u64 << 24) {{ panic!(\"soma:range: range: shl() would build an Int of {{}} bits, past the limit of {{}}\", _a.significant_bits() as u64 + _k as u64, 1u64 << 24) }} _a << (_k as u32) }}", a, b)
             }
             "shr" if args.len() == 2 => {
                 let a = self.gen_expr_rug(&args[0].node);

@@ -637,6 +637,34 @@ cell test T { rules {
 }
 
 #[test]
+fn native_bit_builtins_evaluate_their_arguments_left_to_right() {
+    // natively the bit index was evaluated before the value: with both
+    // arguments failing, bit_clr(5 % 0, -1) raised "bit index -1 out of
+    // range" where the interpreter raises "modulo by zero"
+    passes(
+        "native_bit_argument_order",
+        r#"
+cell P {
+    on tst(n: Int) [native] { return bit_test(5 % n, n - 1) }
+    on set(n: Int) [native] { return bit_set(5 % n, n - 1) }
+    on clr(n: Int) [native] { return bit_clr(5 % n, n - 1) }
+    on wide(big: Int, n: Int) [native] { return shl(big % n, n - 1) }
+}
+cell test T { rules {
+    assert_fails tst(0) matching "modulo by zero"
+    assert_fails set(0) matching "modulo by zero"
+    assert_fails clr(0) matching "modulo by zero"
+    assert_fails wide(1180591620717411303424, 0) matching "modulo by zero"
+    assert tst(3) == 0
+    assert set(3) == 6
+    assert clr(3) == 2
+    assert wide(1180591620717411303424, 3) == 4
+} }
+"#,
+    );
+}
+
+#[test]
 fn while_optimization_preserves_inputs_iteration_order_and_errors() {
     passes(
         "while_semantics",

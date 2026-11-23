@@ -1,5 +1,8 @@
 # Changelog
 
+## Unreleased
+
+- A `[native]` handler evaluates the arguments of `bit_test`, `bit_set` and `bit_clr` left to right, as the interpreter does. The bit index was evaluated before the value: `bit_test(a(), b())` ran `b` first (two sibling handlers calling `write_str` printed in the reverse order), and `bit_clr(5 % n, n - 1)` with `n = 0` raised `bit index -1 out of range` (kind `type`) where the interpreter raises `modulo by zero` (kind `division_by_zero`). `shl` in BigInt mode binds its arguments in the same order. (Found by comparing native and interpreted results on random expressions.)
 ## 3.2.4 — 2026-11-15
 
 What a 67,000-line program written by twenty agents ([Orbite](https://soma-lang.dev/orbite)) found in the verifier, and what its reviewers found next. Validation: 1,108 Rust tests, 118 CLI checks, 327 corpus programs, 1,280 numeric comparisons; no verdict changed on the 2,271 tracked programs, nor on the 327 corpus programs under `soma verify`.
