@@ -51,7 +51,10 @@ def gate(results, name, ok, detail):
 
 
 def verdicts(soma, ref):
-    """Exit codes of check and verify on every tracked program: new binary against the reference."""
+    """Exit code of `check` on every tracked program: new binary against the reference.
+    (`verify` — its exit code and every word it prints — is `verify_same.py`'s, which
+    gives the reference a time limit: 3.2.4 does not finish on Orbite's files, and
+    this gate, run on them without one, did not end.)"""
     files = [f for f in subprocess.run(["git", "ls-files", "*.cell"], cwd=ROOT, capture_output=True, text=True).stdout.split()
              if "/tests/fixtures/skeleton_review/" not in f]
     accepted = set()
@@ -61,9 +64,12 @@ def verdicts(soma, ref):
 
     def one(f):
         out = []
-        for cmd in ("check", "verify"):
-            a = subprocess.run([ref, cmd, f], capture_output=True, cwd=ROOT).returncode
-            b = subprocess.run([soma, cmd, f], capture_output=True, cwd=ROOT).returncode
+        for cmd in ("check",):
+            try:
+                a = subprocess.run([ref, cmd, f], capture_output=True, cwd=ROOT, timeout=120).returncode
+                b = subprocess.run([soma, cmd, f], capture_output=True, cwd=ROOT, timeout=120).returncode
+            except subprocess.TimeoutExpired:
+                a, b = 0, 124
             if a != b:
                 out.append(f"{cmd} {f}: {a} -> {b}")
         return f, out
