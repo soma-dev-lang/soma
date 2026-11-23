@@ -365,3 +365,70 @@ cell C {
     assert!(all.contains("✗ live: ensures result <= 6 — the handler returns `99`, which can never satisfy it"), "{all}");
     assert_eq!(all.matches("  ✗ ").count(), 1, "{all}");
 }
+
+#[test]
+fn a_statement_after_a_certain_return_or_under_a_condition_no_value_meets_fails_no_proof() {
+    // three more shapes of "no input reaches it" that were ✗ "can never
+    // satisfy it": after an `if` whose two branches return; under `k != k`
+    // of an Int; under a negated `||` whose parts cannot both fail
+    let d = project("dead_path_shapes", r#"
+cell C {
+    face {
+        signal after(n: Int) -> Int
+            ensures result <= 6
+        signal same(n: Int, k: Int) -> Int
+            ensures result <= 6
+        signal neither(n: Int) -> Int
+            ensures result <= 6
+        signal nan(x: Float) -> Int
+            ensures result <= 6
+        signal one_branch(n: Int) -> Int
+            ensures result <= 6
+        signal either(n: Int) -> Int
+            ensures result <= 6
+    }
+    on after(n: Int) {
+        if n > 0 { return 1 } else { return 2 }
+        return 99
+    }
+    on same(n: Int, k: Int) {
+        if k != k { return 99 }
+        if !(n == n) { return 98 }
+        return 3
+    }
+    on neither(n: Int) {
+        if !(n < 3 || n >= 3) { return 99 }
+        return 4
+    }
+    // a NaN is not itself: this return is reached
+    on nan(x: Float) {
+        if x != x { return 99 }
+        return 5
+    }
+    // only one branch returns: what follows is reached
+    on one_branch(n: Int) {
+        if n > 0 { return 1 } else { let m = n }
+        return 99
+    }
+    // `!(a && b)`: one of them may fail
+    on either(n: Int) {
+        if !(n < 3 && n >= 3) { return 99 }
+        return 6
+    }
+}
+"#);
+    let (out, err, _) = soma_in(&d, &["verify", "app.cell"]);
+    let all = format!("{out}{err}");
+    for proven in ["after", "same", "neither"] {
+        assert!(all.contains(&format!("✓ {proven}: ensures result <= 6 — proven for every returned value")), "{proven}:\n{all}");
+    }
+    for live in ["nan", "one_branch", "either"] {
+        assert!(all.contains(&format!("✗ {live}: ensures result <= 6 — the handler returns `99`")), "{live}:\n{all}");
+    }
+    assert_eq!(all.matches("  ✗ ").count(), 3, "{all}");
+    // …and they are reached indeed
+    for (call, arg) in [("one_branch", "0"), ("either", "1")] {
+        let (out, err, code) = soma_in(&d, &["run", "app.cell", call, arg]);
+        assert!(code != 0 && format!("{out}{err}").contains("ensures"), "{call}({arg}): {out}{err}");
+    }
+}

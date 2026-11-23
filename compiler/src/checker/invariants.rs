@@ -1288,9 +1288,36 @@ fn mk(lo: f64, hi: f64) -> Known {
 /// under `n <= 5`), or their linear arithmetic has no solution (`n == k`
 /// where the two cannot meet: contradictory facts entail anything, `1 <= 0`
 /// too). What such a statement writes, returns or calls breaks nothing.
+///
+/// Or the statement comes after one that always leaves the handler: a
+/// `return`, or an `if` whose two branches both return — nothing runs there.
 fn dead_path(on: &OnSection, path: &[usize], vars: &HashMap<String, Known>, hyp: &HashMap<String, (f64, f64)>, int_returns: &HashSet<String>) -> bool {
     on.params.iter().any(|p| matches!(vars.get(&p.name), Some(Known::Range(lo, hi)) if lo > hi))
+        || after_certain_exit(&on.body, path)
         || linear_entails(on, path, &Expr::Literal(Literal::Int(1)), CmpOp::Le, &Expr::Literal(Literal::Int(0)), None, hyp, int_returns)
+}
+
+/// Does this statement leave the handler whatever its input?
+fn always_returns(st: &Spanned<Statement>) -> bool {
+    match &st.node {
+        Statement::Return { .. } => true,
+        Statement::If { then_body, else_body, .. } => then_body.iter().any(always_returns) && else_body.iter().any(always_returns),
+        _ => false,
+    }
+}
+
+/// Is the statement at `path` (see `block_step`) after one of its block, or
+/// of a block around it, that always returns?
+fn after_certain_exit(stmts: &[Spanned<Statement>], path: &[usize]) -> bool {
+    let Some((step, rest)) = path.split_first() else { return false };
+    let (i, branch) = (step / 4, step % 4);
+    if stmts.iter().take(i).any(always_returns) { return true; }
+    match (stmts.get(i).map(|s| &s.node), branch) {
+        (Some(Statement::If { then_body, .. }), 0) => after_certain_exit(then_body, rest),
+        (Some(Statement::If { else_body, .. }), 1) => after_certain_exit(else_body, rest),
+        (Some(Statement::For { body, .. } | Statement::While { body, .. }), 2) => after_certain_exit(body, rest),
+        _ => false,
+    }
 }
 
 fn join(a: Known, b: Known) -> Known {
@@ -2212,6 +2239,8 @@ fn positive_comparisons(c: &Expr) -> Vec<(&Expr, CmpOp, &Expr)> {
             v.extend(positive_comparisons(&right.node));
             v
         }
+        // `!(a || b)` holds: neither does
+        Expr::Not(inner) => negated_comparisons(&inner.node),
         _ => vec![],
     }
 }
@@ -2231,6 +2260,8 @@ fn negated_comparisons(c: &Expr) -> Vec<(&Expr, CmpOp, &Expr)> {
             v.extend(negated_comparisons(&right.node));
             v
         }
+        // `!(a && b)` does not hold: both do
+        Expr::Not(inner) => positive_comparisons(&inner.node),
         _ => vec![],
     }
 }
@@ -4128,6 +4159,9 @@ fn linear_entails(
             _ => Vec::new(),
         };
         for (l, o, r) in comparisons {
+            // `k != k` of an Int nothing assigns holds of no input: the path is
+            // not taken, and a path not taken entails anything
+            if let (CmpOp::Ne, Expr::Ident(a), Expr::Ident(b)) = (o, l, r) { if a == b && no_subst.int_params.contains(a.as_str()) { return true; } }
             // (a fact names the handler's values, never `result` or the slot)
             if let Some(cs) = no_subst.constraints(l, o, r) { facts.extend(cs); }
         }
