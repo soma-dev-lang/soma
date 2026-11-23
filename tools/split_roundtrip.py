@@ -93,6 +93,7 @@ def main():
     ap.add_argument("--jobs", type=int, default=8)
     ap.add_argument("files", nargs="*")
     args = ap.parse_args()
+    args.soma = os.path.abspath(args.soma)  # each program runs in its own directory
     files = [os.path.abspath(f) for f in args.files] or [
         os.path.join(ROOT, f) for f in subprocess.run(["git", "ls-files", "*.cell"], cwd=ROOT, capture_output=True, text=True).stdout.split()]
     # (the reproducers of the review rounds are adversarial programs: each is a test of
