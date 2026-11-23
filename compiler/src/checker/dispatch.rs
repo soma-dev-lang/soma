@@ -107,6 +107,8 @@ pub fn check_program(program: &Program) -> (Vec<DispatchFinding>, Vec<DispatchFi
     }
 
     let parents = super::names::interior_parents(program);
+    // (once: listed again for every handler, 4,000 handlers were 16 million names)
+    let handler_names: HashSet<&str> = index.handler_map.keys().map(|k| k.as_str()).collect();
     for cell in super::names::collect_cells(program) {
         if !matches!(cell.kind, CellKind::Cell | CellKind::Agent) {
             continue;
@@ -148,7 +150,6 @@ pub fn check_program(program: &Program) -> (Vec<DispatchFinding>, Vec<DispatchFi
                         if matches!(t.as_str(), "Int" | "Float" | "String" | "Bool" | "BigInt" | "List" | "Map")))
                     .map(|p| p.name.clone()).collect();
                 let data_params: HashSet<String> = params.iter().map(|p| p.name.clone()).filter(|n| !callable.contains(n)).collect();
-                let handler_names: HashSet<&str> = index.handler_map.keys().map(|k| k.as_str()).collect();
                 let local_fns = bind_callable(body, &mut callable, &data_params, &handler_names);
                 let mut reported: HashSet<&str> = HashSet::new();
                 for (name, _, _, sp) in &call_shapes {

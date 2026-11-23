@@ -914,19 +914,41 @@ thread_local! {
     /// Calls made one after another release their frames: what adds to the
     /// caller's peak is the largest of them, not their sum.
     static CALLEE_MAX: std::cell::RefCell<Vec<Cost>> = const { std::cell::RefCell::new(Vec::new()) };
+    /// The peak of a handler of the cell under analysis, once worked out —
+    /// when working it out met no handler already being followed (a cycle is
+    /// costed from where it was entered: that answer is not the handler's
+    /// alone). Without it a chain of N handlers, each calling the next, was
+    /// followed to its end from every one of them: N²/2 handlers costed.
+    static PEAKS: std::cell::RefCell<std::collections::HashMap<String, Cost>> = std::cell::RefCell::new(Default::default());
+    /// How many times a handler already being followed was met.
+    static CYCLES_MET: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
 }
 
 /// The peak of a handler of this cell called from another, or None when it is not one.
 fn callee_peak(name: &str) -> Option<Cost> {
+    let known = PEAKS.with(|p| p.borrow().get(name).cloned());
     let on = CELL_HANDLERS.with(|h| {
         let h = h.borrow();
         if h.1.iter().any(|n| n == name) { return Some(None); }
-        h.0.get(name).cloned().map(Some)
+        // (a known peak needs no body)
+        h.0.get(name).map(|on| Some(if known.is_some() { None } else { Some(on.clone()) }))
     })?;
-    let Some(on) = on else { return Some(Cost::unbounded(format!("{} calls itself (directly or through others): each nested frame holds its allocations", name))) };
-    CELL_HANDLERS.with(|h| h.borrow_mut().1.push(name.to_string()));
-    let c = handler_peak(&on);
-    CELL_HANDLERS.with(|h| { h.borrow_mut().1.pop(); });
+    let Some(on) = on else {
+        CYCLES_MET.with(|n| n.set(n.get() + 1));
+        return Some(Cost::unbounded(format!("{} calls itself (directly or through others): each nested frame holds its allocations", name)));
+    };
+    let c = match (known, on) {
+        (Some(known), _) => known,
+        (None, on) => {
+            let on = on.expect("a handler not costed yet comes with its body");
+            let met = CYCLES_MET.with(|n| n.get());
+            CELL_HANDLERS.with(|h| h.borrow_mut().1.push(name.to_string()));
+            let c = handler_peak(&on);
+            CELL_HANDLERS.with(|h| { h.borrow_mut().1.pop(); });
+            if CYCLES_MET.with(|n| n.get()) == met { PEAKS.with(|p| p.borrow_mut().insert(name.to_string(), c.clone())); }
+            c
+        }
+    };
     // (held while it runs: the caller's peak takes the largest such frame —
     // on the same thread stack, already charged once for the caller)
     let c = match c { Cost::Bounded(b) => Cost::Bounded(b.saturating_sub(HANDLER_STACK_OVERHEAD)), u => u };
@@ -963,6 +985,7 @@ fn applied_cost(collection: &Expr, lambda: &Expr, what: &str) -> Cost {
 pub fn check_cell(cell: &CellDef) -> BudgetReport {
     let handlers: std::collections::HashMap<String, OnSection> = crate::checker::bodies::entries(cell).into_iter().map(|on| (on.signal_name.clone(), on)).collect();
     CELL_HANDLERS.with(|h| *h.borrow_mut() = (handlers, Vec::new()));
+    PEAKS.with(|p| p.borrow_mut().clear());
     // 1. Sum of slot bounds.
     let mut slot_sum = Cost::zero();
     for section in &cell.sections {

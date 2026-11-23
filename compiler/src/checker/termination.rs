@@ -59,6 +59,7 @@ struct ProgramFacts {
     program: *const Program,
     graph: Option<std::rc::Rc<HashMap<String, Vec<String>>>>,
     bad: Option<std::rc::Rc<HashSet<String>>>,
+    cyclic: Option<std::rc::Rc<HashSet<String>>>,
 }
 
 thread_local! {
@@ -81,7 +82,7 @@ pub fn program_scope(program: &Program) -> ProgramScope {
     FACTS.with(|f| {
         let mut f = f.borrow_mut();
         if f.is_some() { return ProgramScope(false); }
-        *f = Some(ProgramFacts { program: program as *const Program, graph: None, bad: None });
+        *f = Some(ProgramFacts { program: program as *const Program, graph: None, bad: None, cyclic: None });
         ProgramScope(true)
     })
 }
@@ -99,6 +100,59 @@ fn call_graph(program: &Program) -> std::rc::Rc<HashMap<String, Vec<String>>> {
     let g = std::rc::Rc::new(build_call_graph(program));
     keep(program, |k| k.graph = Some(g.clone()));
     g
+}
+
+/// The handlers that are on a cycle of calls: the only ones `find_cycle` has
+/// anything to find from. (Searched from every handler, with the whole path
+/// copied at each step, a chain of 800 cells each calling the next took 20 s
+/// to be told it has no cycle.)
+fn on_a_cycle(program: &Program) -> std::rc::Rc<HashSet<String>> {
+    if let Some(c) = kept(program, |k| k.cyclic.clone()) { return c; }
+    let graph = call_graph(program);
+    // strongly connected components (Tarjan, with its own stack: a call chain is as deep as the program)
+    let mut index: HashMap<&str, usize> = HashMap::new();
+    let mut low: HashMap<&str, usize> = HashMap::new();
+    let mut on_stack: HashSet<&str> = HashSet::new();
+    let mut stack: Vec<&str> = Vec::new();
+    let mut cyclic: HashSet<String> = HashSet::new();
+    let none: Vec<String> = Vec::new();
+    let mut roots: Vec<&str> = graph.keys().map(|k| k.as_str()).collect();
+    roots.sort();
+    for root in roots {
+        if index.contains_key(root) { continue; }
+        let mut work: Vec<(&str, usize)> = vec![(root, 0)];
+        while let Some((node, at)) = work.pop() {
+            if at == 0 {
+                let n = index.len();
+                index.insert(node, n);
+                low.insert(node, n);
+                stack.push(node);
+                on_stack.insert(node);
+            }
+            let next = graph.get(node).unwrap_or(&none);
+            if let Some(to) = next.get(at) {
+                work.push((node, at + 1));
+                let to = to.as_str();
+                if !index.contains_key(to) { work.push((to, 0)); }
+                else if on_stack.contains(to) { let l = low[node].min(index[to]); low.insert(node, l); }
+                continue;
+            }
+            if low[node] == index[node] {
+                let mut members: Vec<&str> = Vec::new();
+                while let Some(top) = stack.pop() {
+                    on_stack.remove(top);
+                    members.push(top);
+                    if top == node { break; }
+                }
+                if members.len() > 1 || next.iter().any(|t| t == node) { cyclic.extend(members.into_iter().map(|m| m.to_string())); }
+            }
+            // (back in the caller: what the callee reaches, the caller reaches)
+            if let Some((parent, _)) = work.last() { let l = low[parent].min(low[node]); low.insert(parent, l); }
+        }
+    }
+    let cyclic = std::rc::Rc::new(cyclic);
+    keep(program, |k| k.cyclic = Some(cyclic.clone()));
+    cyclic
 }
 
 /// The handlers of the program (`Cell.handler`) that may not terminate by themselves.
@@ -203,6 +257,7 @@ pub fn check_cell_termination(cell: &CellDef, program: &Program) -> Vec<Terminat
 fn check_cell_termination_raw(cell: &CellDef, program: &Program) -> Vec<TerminationFinding> {
     let mut findings = Vec::new();
     let graph = call_graph(program);
+    let cyclic = on_a_cycle(program);
 
     for section in &cell.sections {
         // an `every` / `after` block holds the process lock while it runs:
@@ -325,7 +380,8 @@ fn check_cell_termination_raw(cell: &CellDef, program: &Program) -> Vec<Terminat
                     }
                 }
             }
-            if let Some(cycle) = find_cycle(&graph, &format!("{}.{}", cell.name, on.signal_name)) {
+            let me = format!("{}.{}", cell.name, on.signal_name);
+            if let Some(cycle) = Some(&me).filter(|m| cyclic.contains(*m)).and_then(|m| find_cycle(&graph, m)) {
                 reasons.push(format!(
                     "handler `{}`: mutual recursion {} without a provable decreasing measure",
                     on.signal_name,
@@ -470,20 +526,23 @@ fn build_call_graph(program: &Program) -> HashMap<String, Vec<String>> {
 
 /// A path `start → … → start` of length ≥ 2, if one exists.
 fn find_cycle(graph: &HashMap<String, Vec<String>>, start: &str) -> Option<Vec<String>> {
-    let mut stack: Vec<Vec<String>> = vec![vec![start.to_string()]];
-    let mut seen: HashSet<String> = HashSet::new();
-    while let Some(path) = stack.pop() {
-        let last = path.last().unwrap();
+    // (each handler remembers the one it was reached from: the path is read
+    // back at the end, not carried — and copied — along the search)
+    let mut stack: Vec<&str> = vec![start];
+    let mut from: HashMap<&str, &str> = HashMap::new();
+    while let Some(last) = stack.pop() {
         for next in graph.get(last).map(|v| v.as_slice()).unwrap_or(&[]) {
             if next == start {
-                let mut cycle = path.clone();
+                let mut cycle = vec![start.to_string()];
+                let mut at = last;
+                while at != start { cycle.push(at.to_string()); at = from[at]; }
                 cycle.push(start.to_string());
+                cycle.reverse();
                 return Some(cycle);
             }
-            if seen.insert(next.clone()) {
-                let mut p = path.clone();
-                p.push(next.clone());
-                stack.push(p);
+            if next != start && !from.contains_key(next.as_str()) {
+                from.insert(next.as_str(), last);
+                stack.push(next.as_str());
             }
         }
     }

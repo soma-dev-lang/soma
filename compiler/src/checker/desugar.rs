@@ -20,9 +20,11 @@ const EFFECT_BUILTINS: &[&str] = &[
     "http_get", "http_post", "http_put", "http_delete", "write_file", "set_budget",
 ];
 
-struct Ctx {
-    handlers: HashSet<String>,
-    cells: HashSet<String>,
+/// (the program's names are borrowed: copied for every handler exposed, 8,000
+/// handlers made 64 million copies of a name)
+struct Ctx<'n> {
+    handlers: &'n HashSet<String>,
+    cells: &'n HashSet<String>,
     slots: HashSet<String>,
 }
 
@@ -57,7 +59,7 @@ pub fn expose_in_place(program: &Program) -> Program {
 
 /// The expressions a string evaluates in its `{…}`, exposed like the rest.
 pub fn segment_exprs(text: &str, names: &(HashSet<String>, HashSet<String>), cell: &CellDef) -> Vec<Expr> {
-    let ctx = Ctx { handlers: names.0.clone(), cells: names.1.clone(), slots: slots_of(cell) };
+    let ctx = Ctx { handlers: &names.0, cells: &names.1, slots: slots_of(cell) };
     let was = IN_PLACE.with(|f| f.replace(true));
     let out = segments(text).iter().filter_map(|seg| parse_segment(seg)).map(|x| {
         let mut sx = Spanned::new(x, Span::new(0, 0));
@@ -77,7 +79,7 @@ pub fn expose_for_analysis(program: &Program) -> Program {
     // interior cells too: their handlers are proven (and run) as well
     let (handlers, cells) = program_names(program);
     fn fix_cell(cell: &mut CellDef, handlers: &HashSet<String>, cells: &HashSet<String>) {
-        let ctx = Ctx { handlers: handlers.clone(), cells: cells.clone(), slots: slots_of(cell) };
+        let ctx = Ctx { handlers: &handlers, cells: &cells, slots: slots_of(cell) };
         for sec in &mut cell.sections {
             match &mut sec.node {
                 Section::OnSignal(on) => fix_stmts(&mut on.body, &ctx),
@@ -103,7 +105,7 @@ fn slots_of(cell: &CellDef) -> HashSet<String> {
 /// One handler of `cell` with its hidden calls made explicit (as
 /// `expose_for_analysis` does for the whole program).
 pub fn expose_handler(on: &OnSection, cell: &CellDef, names: &(HashSet<String>, HashSet<String>)) -> OnSection {
-    let ctx = Ctx { handlers: names.0.clone(), cells: names.1.clone(), slots: slots_of(cell) };
+    let ctx = Ctx { handlers: &names.0, cells: &names.1, slots: slots_of(cell) };
     let mut out = on.clone();
     fix_stmts(&mut out.body, &ctx);
     out

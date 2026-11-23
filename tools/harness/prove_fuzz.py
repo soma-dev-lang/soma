@@ -153,7 +153,7 @@ def seeds_of(text):
 
 def main():
     ap = argparse.ArgumentParser()
-    ap.add_argument("--soma", default=os.environ.get("SOMA", "compiler/target/release/soma"))
+    ap.add_argument("--soma", default=os.environ.get("SOMA", os.path.join(os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))), "compiler/target/release/soma")))
     ap.add_argument("--seeds", default="2-21")
     ap.add_argument("--bodies", type=int, default=40)
     ap.add_argument("--keep", action="store_true", help="write the programs in the current directory")

@@ -301,12 +301,58 @@ fn set_slot_int(cell: &CellDef) {
     });
 }
 
+/// What "which handlers does this one reach?" is asked of, for the whole
+/// program: built once. (Built again for every cell, and searched from one
+/// end to the other for every handler met, `verify` of 400 cells each
+/// calling the next took 4 s and of 800, 26 s.)
+struct Reach<'p> {
+    cell_names: HashSet<String>,
+    /// every handler of each cell: a computed `delegate` may run any
+    cell_handlers: HashMap<String, Vec<String>>,
+    /// the face tools of each cell: a think() there may run any of them
+    /// (a tool that pushed to the slot broke a "proven" size bound)
+    cell_tools: HashMap<String, Vec<String>>,
+    handler_names: HashSet<String>,
+    /// cell → handler → the first handler of that name there
+    by_key: HashMap<&'p str, HashMap<&'p str, &'p OnSection>>,
+    /// handler name → the cells that define one, in order (once per definition)
+    by_name: HashMap<&'p str, Vec<String>>,
+    /// what a handler calls (`calls_of`), by its address
+    calls: std::cell::RefCell<HashMap<usize, std::rc::Rc<Vec<(Option<String>, String)>>>>,
+}
+
+impl<'p> Reach<'p> {
+    fn of(program: &'p Program) -> Self {
+        let mut r = Reach {
+            cell_names: program.cells.iter().map(|c| c.node.name.clone()).collect(),
+            cell_handlers: program.cells.iter().map(|c| (c.node.name.clone(),
+                c.node.sections.iter().filter_map(|s| match &s.node { Section::OnSignal(o) => Some(o.signal_name.clone()), _ => None }).collect())).collect(),
+            cell_tools: program.cells.iter().map(|c| (c.node.name.clone(),
+                c.node.sections.iter().filter_map(|s| match &s.node {
+                    Section::Face(f) => Some(f.declarations.iter().filter_map(|d| match &d.node { FaceDecl::Tool(t) => Some(t.name.clone()), _ => None }).collect::<Vec<_>>()),
+                    _ => None,
+                }).flatten().collect())).collect(),
+            handler_names: HashSet::new(), by_key: HashMap::new(), by_name: HashMap::new(), calls: Default::default(),
+        };
+        for c in &program.cells {
+            for s in &c.node.sections {
+                let Section::OnSignal(on) = &s.node else { continue };
+                r.handler_names.insert(on.signal_name.clone());
+                r.by_key.entry(c.node.name.as_str()).or_default().entry(on.signal_name.as_str()).or_insert(on);
+                r.by_name.entry(on.signal_name.as_str()).or_default().push(c.node.name.clone());
+            }
+        }
+        r
+    }
+}
+
 pub fn verify_program_invariants(program: &Program) -> Vec<VerifyResult> {
     PROGRAM_HANDLERS.with(|h| *h.borrow_mut() = super::desugar::program_names(program).0);
     // 3.0: a face `requires` is a fact for the handler's writes
     let inlined = super::contracts::inline_requires(program);
     let program = &inlined;
     let mut results = Vec::new();
+    let reach = Reach::of(program);
 
     // interior cells too: an invariant inside `interior { }` was never
     // proven — a statically violated one passed as VERIFY OK
@@ -387,28 +433,29 @@ pub fn verify_program_invariants(program: &Program) -> Vec<VerifyResult> {
             .collect();
         for t in &ticks { handlers.insert(t.signal_name.clone(), t); }
         let handlers = handlers;
-        // every handler of the program, for growth that goes through
-        // another cell (`B.relay(x)` → `A.extra(x)`, which pushes)
-        let mut all_handlers: Vec<(String, &OnSection)> = program.cells.iter()
-            .flat_map(|c| c.node.sections.iter().filter_map(move |s| match &s.node {
-                Section::OnSignal(on) => Some((c.node.name.clone(), on)),
-                _ => None,
-            }))
-            .collect();
-        // this cell's ticks too (a `[task]` tick's think() ends a step)
-        for t in &ticks { all_handlers.push((cell.name.clone(), t)); }
-        let all_handlers = all_handlers;
-        let cell_names: HashSet<String> = program.cells.iter().map(|c| c.node.name.clone()).collect();
-        // every handler of each cell: a computed `delegate` may run any
-        let cell_handlers: HashMap<String, Vec<String>> = program.cells.iter().map(|c| (c.node.name.clone(),
-            c.node.sections.iter().filter_map(|s| match &s.node { Section::OnSignal(o) => Some(o.signal_name.clone()), _ => None }).collect())).collect();
-        // the face tools of each cell: a think() there may run any of them
-        // (a tool that pushed to the slot broke a "proven" size bound)
-        let cell_tools: HashMap<String, Vec<String>> = program.cells.iter().map(|c| (c.node.name.clone(),
-            c.node.sections.iter().filter_map(|s| match &s.node {
-                Section::Face(f) => Some(f.declarations.iter().filter_map(|d| match &d.node { FaceDecl::Tool(t) => Some(t.name.clone()), _ => None }).collect::<Vec<_>>()),
-                _ => None,
-            }).flatten().collect())).collect();
+        // the handlers of the program (see `Reach`), and this cell's ticks
+        // (a `[task]` tick's think() ends a step)
+        let find = |c: &str, h: &str| -> Option<((), &OnSection)> {
+            reach.by_key.get(c).and_then(|hs| hs.get(h).copied())
+                .or_else(|| if c == cell.name { ticks.iter().find(|t| t.signal_name == h) } else { None })
+                .map(|on| ((), on))
+        };
+        // the cells that define a handler of that name, in the program's order
+        let named = |name: &str| -> Vec<String> {
+            let mut out: Vec<String> = reach.by_name.get(name).cloned().unwrap_or_default();
+            for t in &ticks { if t.signal_name == name { out.push(cell.name.clone()); } }
+            out
+        };
+        let calls = |on: &OnSection, c: &str| -> std::rc::Rc<Vec<(Option<String>, String)>> {
+            let work = || calls_of(&on.body, &reach.cell_names, reach.cell_tools.get(c).map(|v| v.as_slice()).unwrap_or(&[]), &reach.cell_handlers, &reach.handler_names);
+            // (a tick is this cell's own, made for this turn of the loop: not kept)
+            if ticks.iter().any(|t| std::ptr::eq(t, on)) { return std::rc::Rc::new(work()); }
+            let at = on as *const OnSection as usize;
+            if let Some(known) = reach.calls.borrow().get(&at) { return known.clone(); }
+            let found = std::rc::Rc::new(work());
+            reach.calls.borrow_mut().insert(at, found.clone());
+            found
+        };
 
         // every write site in every handler: (handler, slot, value expr)
         let mut writes: Vec<(String, String, Expr, bool, Vec<usize>, Option<String>)> = Vec::new();
@@ -520,14 +567,14 @@ pub fn verify_program_invariants(program: &Program) -> Vec<VerifyResult> {
                         if !seen.insert((c.clone(), h.clone())) { continue; }
                         if (c != me || h != *handler) && c == me
                             && writes.iter().any(|(wh, sl, e, _, _, _)| *wh == h && sl == slot && !matches!(e, Expr::Ident(n) if n == "<deleted entry>")) { other = true; }
-                        let Some((_, on)) = all_handlers.iter().find(|(cn, o)| *cn == c && o.signal_name == h) else { continue };
-                        for (target, name) in calls_of(&on.body, &cell_names, cell_tools.get(&c).map(|v| v.as_slice()).unwrap_or(&[]), &cell_handlers) {
+                        let Some((_, on)) = find(&c, &h) else { continue };
+                        for (target, name) in calls(on, &c).iter().cloned() {
                             match target {
                                 None => {
-                                    if all_handlers.iter().any(|(cn, o)| *cn == c && o.signal_name == name) { stack.push((c.clone(), name)); }
-                                    else { for (cn, o) in &all_handlers { if o.signal_name == name { stack.push((cn.clone(), name.clone())); } } }
+                                    if find(&c, &name).is_some() { stack.push((c.clone(), name)); }
+                                    else { for cn in named(&name) { stack.push((cn, name.clone())); } }
                                 }
-                                Some(t) if t == "*" => { for (cn, o) in &all_handlers { if o.signal_name == name { stack.push((cn.clone(), name.clone())); } } }
+                                Some(t) if t == "*" => { for cn in named(&name) { stack.push((cn, name.clone())); } }
                                 Some(t) => stack.push((t, name)),
                             }
                         }
@@ -551,16 +598,16 @@ pub fn verify_program_invariants(program: &Program) -> Vec<VerifyResult> {
                     let mut t = false;
                     while let Some((c, h)) = stack.pop() {
                         if (t && resumes) || !seen.insert((c.clone(), h.clone())) { continue; }
-                        let Some((_, on)) = all_handlers.iter().find(|(cn, o)| *cn == c && o.signal_name == h) else { continue };
+                        let Some((_, on)) = find(&c, &h) else { continue };
                         crate::checker::literals::for_each_expr(&on.body, &mut |e| if matches!(e, Expr::FnCall { name, .. } if matches!(name.as_str(), "think" | "think_json" | "vote" | "await_approve" | "await_signal" | "await_sleep")) { t = true; });
                         crate::checker::literals::for_each_expr(&on.body, &mut |e| if matches!(e, Expr::FnCall { name, .. } if name == "resume" || name == "deliver") { resumes = true; });
-                        for (target, name) in calls_of(&on.body, &cell_names, cell_tools.get(&c).map(|v| v.as_slice()).unwrap_or(&[]), &cell_handlers) {
+                        for (target, name) in calls(on, &c).iter().cloned() {
                             match target {
                                 None => {
-                                    if all_handlers.iter().any(|(cn, o)| *cn == c && o.signal_name == name) { stack.push((c.clone(), name)); }
-                                    else { for (cn, o) in &all_handlers { if o.signal_name == name { stack.push((cn.clone(), name.clone())); } } }
+                                    if find(&c, &name).is_some() { stack.push((c.clone(), name)); }
+                                    else { for cn in named(&name) { stack.push((cn, name.clone())); } }
                                 }
-                                Some(tg) if tg == "*" => { for (cn, o) in &all_handlers { if o.signal_name == name { stack.push((cn.clone(), name.clone())); } } }
+                                Some(tg) if tg == "*" => { for cn in named(&name) { stack.push((cn, name.clone())); } }
                                 Some(tg) => stack.push((tg, name)),
                             }
                         }
@@ -698,14 +745,14 @@ pub fn verify_program_invariants(program: &Program) -> Vec<VerifyResult> {
                     while let Some((c, h)) = stack.pop() {
                         if hit || !seen.insert((c.clone(), h.clone())) { continue; }
                         if c == me && writes.iter().any(|(wh, sl, e, _, _, _)| *wh == h && sl == slot && matches!(e, Expr::Ident(n) if n == "<deleted entry>")) { hit = true; break; }
-                        let Some((_, on)) = all_handlers.iter().find(|(cn, o)| *cn == c && o.signal_name == h) else { continue };
-                        for (target, name) in calls_of(&on.body, &cell_names, cell_tools.get(&c).map(|v| v.as_slice()).unwrap_or(&[]), &cell_handlers) {
+                        let Some((_, on)) = find(&c, &h) else { continue };
+                        for (target, name) in calls(on, &c).iter().cloned() {
                             match target {
                                 None => {
-                                    if all_handlers.iter().any(|(cn, o)| *cn == c && o.signal_name == name) { stack.push((c.clone(), name)); }
-                                    else { for (cn, o) in &all_handlers { if o.signal_name == name { stack.push((cn.clone(), name.clone())); } } }
+                                    if find(&c, &name).is_some() { stack.push((c.clone(), name)); }
+                                    else { for cn in named(&name) { stack.push((cn, name.clone())); } }
                                 }
-                                Some(t) if t == "*" => { for (cn, o) in &all_handlers { if o.signal_name == name { stack.push((cn.clone(), name.clone())); } } }
+                                Some(t) if t == "*" => { for cn in named(&name) { stack.push((cn, name.clone())); } }
                                 Some(t) => stack.push((t, name)),
                             }
                         }
@@ -798,13 +845,13 @@ pub fn verify_program_invariants(program: &Program) -> Vec<VerifyResult> {
                         let mut seen: HashSet<(String, String)> = HashSet::new();
                         let mut stack: Vec<(String, String)> = Vec::new();
                         let push_calls = |c: &str, on: &OnSection, stack: &mut Vec<(String, String)>| {
-                            for (target, name) in calls_of(&on.body, &cell_names, cell_tools.get(c).map(|v| v.as_slice()).unwrap_or(&[]), &cell_handlers) {
+                            for (target, name) in calls(on, c).iter().cloned() {
                                 match target {
                                     None => {
-                                        if all_handlers.iter().any(|(cn, o)| cn == c && o.signal_name == name) { stack.push((c.to_string(), name)); }
-                                        else { for (cn, o) in &all_handlers { if o.signal_name == name { stack.push((cn.clone(), name.clone())); } } }
+                                        if find(c, &name).is_some() { stack.push((c.to_string(), name)); }
+                                        else { for cn in named(&name) { stack.push((cn, name.clone())); } }
                                     }
-                                    Some(t) if t == "*" => { for (cn, o) in &all_handlers { if o.signal_name == name { stack.push((cn.clone(), name.clone())); } } }
+                                    Some(t) if t == "*" => { for cn in named(&name) { stack.push((cn, name.clone())); } }
                                     Some(t) => stack.push((t, name)),
                                 }
                             }
@@ -815,7 +862,7 @@ pub fn verify_program_invariants(program: &Program) -> Vec<VerifyResult> {
                             if hit || !seen.insert((c.clone(), h.clone())) { continue; }
                             if c == me && h == *handler { hit = true; break; }   // recursion back into the writer
                             if c == me && writes.iter().any(|(wh, sl, _, _, _, _)| *wh == h && sl == slot) { hit = true; break; }
-                            match all_handlers.iter().find(|(cn, o)| *cn == c && o.signal_name == h) {
+                            match find(&c, &h) {
                                 Some((_, on)) => push_calls(&c, on, &mut stack),
                                 None => {}
                             }
@@ -879,25 +926,25 @@ pub fn verify_program_invariants(program: &Program) -> Vec<VerifyResult> {
                         // (`w` recursing before its write was "proven")
                         if c == me && h == *handler && !seen.is_empty() { recursive = true; }
                         if !seen.insert((c.clone(), h.clone())) { continue; }
-                        let Some((_, on)) = all_handlers.iter().find(|(cn, o)| *cn == c && o.signal_name == h) else { continue };
+                        let Some((_, on)) = find(&c, &h) else { continue };
                         if (c != me || h != *handler) && c == me
                             && writes.iter().any(|(wh, sl, e, _, _, _)| *wh == h && sl == slot && !matches!(e, Expr::Ident(n) if n == "<deleted entry>"))
                         {
                             adds_here += 1;
                         }
-                        for (target, name) in calls_of(&on.body, &cell_names, cell_tools.get(&c).map(|v| v.as_slice()).unwrap_or(&[]), &cell_handlers) {
+                        for (target, name) in calls(on, &c).iter().cloned() {
                             match target {
                                 // a bare call: the calling cell's own handler, else any definer
                                 None => {
-                                    if all_handlers.iter().any(|(cn, o)| *cn == c && o.signal_name == name) {
+                                    if find(&c, &name).is_some() {
                                         stack.push((c.clone(), name));
                                     } else {
-                                        for (cn, o) in &all_handlers { if o.signal_name == name { stack.push((cn.clone(), name.clone())); } }
+                                        for cn in named(&name) { stack.push((cn, name.clone())); }
                                     }
                                 }
                                 // `emit ev` reaches every `on ev` of the program
                                 Some(t) if t == "*" => {
-                                    for (cn, o) in &all_handlers { if o.signal_name == name { stack.push((cn.clone(), name.clone())); } }
+                                    for cn in named(&name) { stack.push((cn, name.clone())); }
                                 }
                                 Some(t) => stack.push((t, name)),
                             }
@@ -3145,7 +3192,7 @@ fn existing_key_facts(stmts: &[Spanned<Statement>], path: &[usize], slot: &str, 
 
 /// The handlers a body can call: `f(..)` (cell None), `Cell.h(..)` (Some(cell)),
 /// `emit ev(..)` (Some("*")).
-fn calls_of(stmts: &[Spanned<Statement>], cells: &HashSet<String>, tools: &[String], cell_handlers: &HashMap<String, Vec<String>>) -> Vec<(Option<String>, String)> {
+fn calls_of(stmts: &[Spanned<Statement>], cells: &HashSet<String>, tools: &[String], cell_handlers: &HashMap<String, Vec<String>>, handler_names: &HashSet<String>) -> Vec<(Option<String>, String)> {
     let mut out: Vec<(Option<String>, String)> = Vec::new();
     // the names these statements bind: one of them where a handler's or a
     // cell's name is expected is a VALUE (`vote(h, …)` with a local `h`,
@@ -3159,7 +3206,7 @@ fn calls_of(stmts: &[Spanned<Statement>], cells: &HashSet<String>, tools: &[Stri
     });
     // `x.h()` on such a local is `h(x)`, whatever slot or cell bears the name `x`
     crate::checker::literals::for_each_expr(stmts, &mut |e| if let Expr::MethodCall { target, method, .. } = e {
-        if matches!(&target.node, Expr::Ident(t) if bound.contains(t)) && cell_handlers.values().any(|hs| hs.contains(method)) { out.push((None, method.clone())); }
+        if matches!(&target.node, Expr::Ident(t) if bound.contains(t)) && handler_names.contains(method) { out.push((None, method.clone())); }
     });
     // `delegate("A", op, x)` with a computed handler may run any handler of
     // A (a computed cell: any handler anywhere) — it "proved" a size bound
@@ -3182,7 +3229,7 @@ fn calls_of(stmts: &[Spanned<Statement>], cells: &HashSet<String>, tools: &[Stri
                 },
                 // a bare name that is no handler is a local holding the
                 // target's name: any handler
-                Expr::Ident(h) if !bound.contains(h) && cell_handlers.values().any(|hs| hs.contains(h)) => out.push((None, h.clone())),
+                Expr::Ident(h) if !bound.contains(h) && handler_names.contains(h) => out.push((None, h.clone())),
                 Expr::Literal(Literal::String(t)) => match t.split_once('.') {
                     Some((c, h)) => out.push((Some(c.to_string()), h.to_string())),
                     None => out.push((None, t.clone())),

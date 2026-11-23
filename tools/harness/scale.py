@@ -82,7 +82,7 @@ def timed(soma, d, src, cmd):
 
 def main():
     ap = argparse.ArgumentParser()
-    ap.add_argument("--soma", default=os.environ.get("SOMA", "compiler/target/release/soma"))
+    ap.add_argument("--soma", default=os.environ.get("SOMA", os.path.join(os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))), "compiler/target/release/soma")))
     ap.add_argument("--only")
     ap.add_argument("--keep", action="store_true", help="work in the current directory")
     a = ap.parse_args()
