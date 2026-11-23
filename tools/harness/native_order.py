@@ -55,18 +55,63 @@ SHAPES = {
     'atan2': 'return to_int(atan2(fa(), fb()))',
     'str_eq': 'if str_eq(sa(), sb()) { return 1 }\n return 0', 'str_len': 'return str_len(sa())', 'str_cat': 'return str_len(sa() + sb())',
     'str_at': 'return str_at(sa(), b())', 'to_string': 'return str_len(to_string(a()) + to_string(fb()))',
-    'regex_count': 'return regex_count(sa(), "l")', 'regex_replace': 'return str_len(regex_replace(sa(), "l", sb()))',
+    'f_unary': 'return to_int(sqrt(fa()) + log(fb()) + exp(fa()) + sin(fb()) + cos(fa()) + tan(fb()) + atan(fa()) + to_float(b()))',
+    'f_arc': 'return to_int(10.0 * (asin(fa() - fb() - 0.5) + acos(fb() - fa() + 1.5)))',
+    'len': 'return len(sa()) + b()',
+    'regex_count': 'return regex_count(sa(), "l")', 'regex_match': 'return regex_match(sa(), "l") + b()', 'regex_replace': 'return str_len(regex_replace(sa(), "l", sb()))',
 }
+# two arguments that both fail: the error is the FIRST one's (`z()` is 0)
+SHAPES.update({
+    'err_bit_clr': 'return bit_clr(5 % z(), z() - 1)', 'err_bit_set': 'return bit_set(idiv(5, z()), z() - 1)',
+    'err_bit_test': 'return bit_test(5 % z(), z() - 1)', 'err_shl': 'return shl(idiv(1, z()), z() - 1)',
+    'err_idiv': 'return idiv(shl(1, z() - 1), z())', 'err_mod': 'return shl(1, z() - 1) % z()',
+    'err_pow_mod': 'return pow_mod(5 % z(), z() - 1, z())', 'err_pow_mod2': 'return pow_mod(5, shl(1, z() - 1), z())',
+    'err_gcd': 'return gcd(idiv(1, z()), shl(1, z() - 1))', 'err_min': 'return min(shl(1, z() - 1), idiv(1, z()))',
+    'err_add': 'return idiv(1, z()) + shl(1, z() - 1)', 'err_sibling': 'return two(shl(1, z() - 1), idiv(1, z()))',
+})
 # native-only primitives: (body, the trace and result it must print)
 NATIVE_ONLY = {
     'buf_set': ('let u = buffer(10)\n buf_set(u, a(), b())\n return buf_get(u, a())', 'ABA3'),
     'buf_set_f': ('let u = buffer_f(10)\n buf_set_f(u, a(), fb())\n return to_int(buf_get_f(u, a()))', 'AGA1'),
     'hm_set': ('let h = hashmap()\n hm_set(h, a(), b())\n hm_inc(h, a())\n return hm_get(h, a()) + hm_len(h)', 'ABAA5'),
     'sb_push': ('let t = strbuf()\n sb_push_int(t, a())\n sb_push(t, sa())\n sb_push_char(t, b() + 60)\n return sb_len(t)', 'ASB7'),
+    'hm_has': ('let h = hashmap()\n hm_set(h, a(), b())\n if hm_has(h, b()) { return 1 }\n return 0', 'ABB0'),
+    'sb_finish': ('let t = strbuf()\n sb_push(t, sa())\n return str_len(sb_finish(t)) + b()', 'SB8'),
     'big_buf_set': (f'let g = {G}\n let u = buffer(10)\n buf_set(u, a(), b())\n return buf_get(u, a()) + bit_len(g)', 'ABA74'),
 }
+# builtins of the native vocabulary with no shape, and why: anything else in
+# `ALLOWED_BUILTINS` (compiler/src/checker/native.rs) must appear in a shape —
+# a builtin added there without one makes this tool fail
+EXEMPT = {
+    "pi": "no argument", "random": "no argument, and no two runs agree",
+    "map": "takes a lambda: what it evaluates is the list before it", "filter": "takes a lambda", "reduce": "takes a lambda", "fold": "takes a lambda",
+    "hashmap": "no argument", "strbuf": "no argument",
+    "read_file": "reads the world", "read_stdin": "reads the world",
+    # a finding of this tool: the checker lists `nth`, the native compiler has no such call
+    # ("unknown function call: nth") — a handler using it is refused at `check`, with that message
+    "nth": "in the checker's list, not in the native compiler",
+}
+
+
+def vocabulary():
+    """The builtins a [native] handler may call, as the checker lists them."""
+    import re
+    root = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+    src = open(os.path.join(root, "compiler", "src", "checker", "native.rs"), encoding="utf-8").read()
+    # (comments out first: one of them writes `buf[i];`)
+    block = "\n".join(l.split("//")[0] for l in src[src.index("const ALLOWED_BUILTINS"):].splitlines())
+    block = block[:block.index("];")]
+    return re.findall(r'"([a-z_0-9]+)"', block)
+
+
+def uncovered():
+    import re
+    bodies = " ".join(SHAPES.values()) + " " + " ".join(b for b, _ in NATIVE_ONLY.values()) + ' write_str("x")'
+    return [n for n in vocabulary() if n not in EXEMPT and not re.search(r"\b" + n + r"\(", bodies)]
+
+
 PRINTERS = [('a', 'Int', 'A', '5'), ('b', 'Int', 'B', '3'), ('c', 'Int', 'C', '7'), ('sa', 'String', 'S', '"hello"'),
-            ('sb', 'String', 'T', '"l"'), ('fa', 'Float', 'F', '2.5'), ('fb', 'Float', 'G', '1.5')]
+            ('sb', 'String', 'T', '"l"'), ('fa', 'Float', 'F', '2.5'), ('fb', 'Float', 'G', '1.5'), ('z', 'Int', 'Z', '0')]
 
 
 def program():
@@ -110,8 +155,9 @@ def main():
             got = run(f"n_{k}")
             if want != got:
                 cases.append({"shape": k, "body": body, "expected": want, "native": got})
-    print(json.dumps({"shapes": len(SHAPES) + len(NATIVE_ONLY), "differing": len(cases), "cases": cases}, indent=1, ensure_ascii=False))
-    sys.exit(1 if cases else 0)
+    missing = uncovered()
+    print(json.dumps({"shapes": len(SHAPES) + len(NATIVE_ONLY), "differing": len(cases), "uncovered": missing, "cases": cases}, indent=1, ensure_ascii=False))
+    sys.exit(1 if cases or missing else 0)
 
 
 if __name__ == "__main__":
