@@ -3518,20 +3518,7 @@ fn a_variant_pattern_on_get_status_is_refused() {
 
 /// Start `soma serve app.cell` in `dir` on a free port.
 fn serve_dir(dir: &Path) -> (Server, u16) {
-    let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
-    let port = listener.local_addr().unwrap().port();
-    drop(listener);
-    let server = Server(
-        Command::new(env!("CARGO_BIN_EXE_soma"))
-            .args(["serve", "app.cell", "--no-schedule", "-p", &port.to_string()])
-            .current_dir(dir)
-            .stdout(Stdio::null())
-            .stderr(Stdio::null())
-            .spawn()
-            .unwrap(),
-    );
-    wait_http(port);
-    (server, port)
+    serve_dir_env(dir, &[])
 }
 
 /// Send one raw HTTP/1.0 request and read the whole answer.
@@ -5779,19 +5766,40 @@ cell Vault {
 }
 
 /// `serve_dir` with extra environment variables.
+/// `soma serve app.cell` in `dir`, on a free port, once it answers.
+///
+/// The port is found by binding port 0 and letting go of it, and the server
+/// binds it a moment later: in a full parallel run another test can be handed
+/// the same port in between. This server then exits on "address in use" —
+/// the intermittent "server on PORT did not answer" — or, worse, the probe is
+/// answered by the other test's server. So: a server that exits before it
+/// answers is started again on another port, and an answer counts only while
+/// this server is still running.
 fn serve_dir_env(dir: &Path, env: &[(&str, &str)]) -> (Server, u16) {
-    let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
-    let port = listener.local_addr().unwrap().port();
-    drop(listener);
-    let mut cmd = Command::new(env!("CARGO_BIN_EXE_soma"));
-    cmd.args(["serve", "app.cell", "--no-schedule", "-p", &port.to_string()])
-        .current_dir(dir)
-        .stdout(Stdio::null())
-        .stderr(Stdio::null());
-    for (k, v) in env { cmd.env(k, v); }
-    let server = Server(cmd.spawn().unwrap());
-    wait_http(port);
-    (server, port)
+    for _ in 0..8 {
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let port = listener.local_addr().unwrap().port();
+        drop(listener);
+        let mut cmd = Command::new(env!("CARGO_BIN_EXE_soma"));
+        cmd.args(["serve", "app.cell", "--no-schedule", "-p", &port.to_string()])
+            .current_dir(dir)
+            .stdout(Stdio::null())
+            .stderr(Stdio::null());
+        for (k, v) in env { cmd.env(k, v); }
+        let mut server = Server(cmd.spawn().unwrap());
+        // up to 20 s, as `wait_http`
+        for _ in 0..800 {
+            if matches!(server.0.try_wait(), Ok(Some(_))) { break; }
+            if http_probe(port) {
+                // (a server that lost the port to another is gone within this delay)
+                std::thread::sleep(std::time::Duration::from_millis(60));
+                if matches!(server.0.try_wait(), Ok(None)) { return (server, port); }
+                break;
+            }
+            std::thread::sleep(std::time::Duration::from_millis(25));
+        }
+    }
+    panic!("`soma serve` did not answer an HTTP request on any of 8 ports");
 }
 
 #[test]
@@ -7507,4 +7515,47 @@ fn verify_does_not_rebuild_the_call_graph_for_every_cell() {
     assert_eq!(code, 0, "{out}");
     assert!(out.contains("`go` calls `Spin.spin`, which may not terminate"), "{out}");
     assert!(took < std::time::Duration::from_secs(8), "verify of 302 cells took {took:?}");
+}
+
+#[test]
+fn a_long_chain_of_calls_is_checked_and_verified_in_the_time_of_its_length() {
+    // Three passes followed a chain of calls to its end from every handler
+    // of it: the memory budget (`check`: 2,000 handlers each calling the
+    // next, 2.1 s, four times that at twice the length), `verify`'s search
+    // for a cycle of calls (the whole path copied at each step) and its
+    // "which handlers does this write reach" (the program's handlers listed
+    // again for every cell): 800 cells each calling the next took 4 s to
+    // verify, 400 took 0.6 s.
+    let dir = scratch("long_call_chain");
+    let n = 3000;
+    let mut src = String::from("cell H {\n  face {\n");
+    for i in 0..n { src.push_str(&format!("    signal h{i}(n: Int) -> Int\n")); }
+    src.push_str("  }\n");
+    for i in 0..n {
+        if i + 1 < n { src.push_str(&format!("  on h{i}(n: Int) {{ return h{}(n) + 1 }}\n", i + 1)); }
+        else { src.push_str(&format!("  on h{i}(n: Int) {{ return n }}\n")); }
+    }
+    src.push_str("}\n");
+    std::fs::write(dir.join("app.cell"), src).unwrap();
+    let started = std::time::Instant::now();
+    let (code, out) = soma(&dir, &["check", "app.cell"]);
+    assert_eq!(code, 0, "{out}");
+    assert!(started.elapsed() < std::time::Duration::from_secs(6), "check of a chain of {n} handlers took {:?}", started.elapsed());
+
+    let cells = 1200;
+    let mut src = String::new();
+    for i in 0..cells {
+        let ret = if i + 1 < cells { format!("C{}.f(n) + 1", i + 1) } else { "n".to_string() };
+        src.push_str(&format!(
+            "cell C{i} {{\n  face {{ signal f(n: Int) -> Int }}\n  memory {{ m: Map<String, Int> [persistent]\n    invariant m >= 0 }}\n  on f(n: Int) {{ require n >= 0 else Bad\n    m.set(\"k\", n)\n    return {ret} }}\n}}\n"));
+    }
+    // (a cycle across two cells is still named, from each of its handlers)
+    src.push_str("cell Ping {\n  on ping(n: Int) { return Pong.pong(n) }\n}\ncell Pong {\n  on pong(n: Int) { return Ping.ping(n) }\n}\n");
+    std::fs::write(dir.join("app.cell"), src).unwrap();
+    let started = std::time::Instant::now();
+    let (_, out) = soma(&dir, &["verify", "app.cell"]);
+    assert!(out.contains("mutual recursion Ping.ping → Pong.pong → Ping.ping"), "{}", &out[out.len().saturating_sub(1500)..]);
+    assert!(out.contains("mutual recursion Pong.pong → Ping.ping → Pong.pong"), "{}", &out[out.len().saturating_sub(1500)..]);
+    assert!(started.elapsed() < std::time::Duration::from_secs(10), "verify of a chain of {cells} cells took {:?}", started.elapsed());
+    let _ = std::fs::remove_dir_all(dir);
 }
