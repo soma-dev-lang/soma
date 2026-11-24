@@ -31,6 +31,11 @@ use crate::ast::*;
 use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet, VecDeque};
 use std::rc::Rc;
 
+/// How deep handler calls are followed. (12 until 3.2.6: a program of twenty
+/// subsystems behind a gateway nests 23 deep, and a call is now answered
+/// from what it gave before — a deep chain costs what its handlers cost.)
+const DEPTH: usize = 40;
+
 /// The published bound on explored product states.
 pub const LIMIT: usize = 200_000;
 
@@ -188,7 +193,9 @@ struct Frame<'a> {
     status: Rc<HashMap<String, StatusRead>>,
 }
 
-type StatusRead = (usize, String, Option<String>);
+/// A status read: machine, id key, `??` fallback — and the texts it may answer
+/// instead (a getter that returns `"unknown"` for an id it has no entry of).
+type StatusRead = (usize, String, Option<String>, Vec<String>);
 
 /// `get_status(id)` or `get_status(id) ?? "state"`: the id, and the fallback.
 fn status_read(e: &Expr) -> Option<(&Spanned<Expr>, Option<&str>)> {
@@ -200,6 +207,26 @@ fn status_read(e: &Expr) -> Option<(&Spanned<Expr>, Option<&str>)> {
         },
         _ => None,
     }
+}
+
+/// `if … { return "text" }` with no `else`: the text.
+fn early_text(st: &Spanned<Statement>) -> Option<String> {
+    let Statement::If { then_body, else_body, .. } = &st.node else { return None };
+    let ([only], true) = (then_body.as_slice(), else_body.is_empty()) else { return None };
+    match &only.node {
+        Statement::Return { value } => match &value.node {
+            Expr::Literal(Literal::String(t)) if super::desugar::segments(t).is_empty() => Some(t.clone()),
+            _ => None,
+        },
+        _ => None,
+    }
+}
+
+/// `if … { return false }` with no `else`.
+fn early_false(st: &Spanned<Statement>) -> bool {
+    let Statement::If { then_body, else_body, .. } = &st.node else { return false };
+    let ([only], true) = (then_body.as_slice(), else_body.is_empty()) else { return false };
+    matches!(&only.node, Statement::Return { value } if matches!(value.node, Expr::Literal(Literal::Bool(false))))
 }
 
 /// Does `st` call anything (a handler, a builtin, a method, an emit)?
@@ -507,8 +534,8 @@ impl<'a> Engine<'a> {
         // also WITHIN the statement that reads it (`if close(id) == "done" && s == "open"`)
         let head_calls = match &st.node {
             Statement::If { condition: h, .. } | Statement::While { condition: h, .. } | Statement::For { iter: h, .. } =>
-                calls_something(&Spanned::new(Statement::ExprStmt { expr: h.clone() }, st.span)),
-            _ => calls_something(st),
+                self.may_move(&Spanned::new(Statement::ExprStmt { expr: h.clone() }, st.span)),
+            _ => self.may_move(st),
         };
         let one = std::slice::from_ref(st);
         let mut errors = Some(Vec::new());
@@ -522,9 +549,48 @@ impl<'a> Engine<'a> {
             },
             _ => {}
         });
-        let f = Rc::new(StmtFacts { head_calls, calls: calls_something(st), assigned: assigned_in(one), errors });
+        let f = Rc::new(StmtFacts { head_calls, calls: self.may_move(st), assigned: assigned_in(one), errors });
         self.facts.insert(at, f.clone());
         f
+    }
+
+    /// May `st` move a machine of this search? In a cone, a statement that
+    /// calls only builtins, slot methods and handlers that cannot move a kept
+    /// machine (`touching`) leaves every status as it was read: a status held
+    /// in a variable is still the status after `seen.set(id, h)`.
+    fn may_move(&self, st: &Spanned<Statement>) -> bool {
+        let Some(prune) = &self.prune else { return calls_something(st) };
+        let builtins = super::names::builtin_names();
+        let moving = |name: &str| self.cells.iter().any(|c| prune.contains(&format!("{}.{}", c.name, name)));
+        let known = |name: &str| self.first_ix.contains_key(name);
+        let mut hit = false;
+        let one = std::slice::from_ref(st);
+        super::literals::for_each_expr(one, &mut |e| match e {
+            Expr::FnCall { name, .. } if name == "_coalesce" => {}
+            Expr::FnCall { name, .. } => {
+                if name == "transition" || OPAQUE.contains(&name.as_str()) || moving(name) { hit = true; }
+                // a function value: it may be anything
+                else if !known(name) && !builtins.contains(name.as_str()) && !self.variants.contains(name) { hit = true; }
+            }
+            Expr::MethodCall { target, method, .. } => {
+                if method == "transition" || moving(method) { hit = true; }
+                if let Expr::Ident(t) = &target.node { if self.cell(t).is_some() && prune.contains(&format!("{}.{}", t, method)) { hit = true; } }
+            }
+            Expr::Pipe { .. } => hit = true,
+            Expr::Literal(Literal::String(s)) if !super::desugar::segments(s).is_empty() => hit = true,
+            Expr::Match { arms, .. } => for arm in arms {
+                let mut texts = Vec::new();
+                super::desugar::pattern_texts(&arm.pattern, &mut texts);
+                if texts.iter().any(|t| !super::desugar::segments(t).is_empty()) { hit = true; }
+            },
+            _ => {}
+        });
+        super::literals::for_each_stmt_deep(one, &mut |s| match s {
+            Statement::Emit { .. } => hit = true,
+            Statement::MethodCall { target, method, .. } => if method == "transition" || moving(method) || (self.cell(target).is_some() && prune.contains(&format!("{}.{}", target, method))) { hit = true; },
+            _ => {}
+        });
+        hit
     }
 
     /// The machine `transition()` / `get_status()` reach from `cell`: its
@@ -571,6 +637,10 @@ impl<'a> Engine<'a> {
             Expr::FnCall { name, args } if name == "_coalesce" && args.len() == 2 && matches!(args[1].node, Expr::Literal(_))
                 && matches!(&args[0].node, Expr::MethodCall { target, method, args: a } if method == "get" && a.len() == 1 && self.is_link(&target.node, frame)) =>
                 self.key_of(&args[0].node, args[0].span, frame),
+            // `to_string(id)` names the instance `id` names (`transition(5, …)` and
+            // `get_status("5")` are one instance)
+            Expr::FnCall { name, args } if name == "to_string" && args.len() == 1 && self.first(name).is_none()
+                && matches!(&args[0].node, Expr::Ident(v) if frame.env.contains_key(v)) => self.key_at(&args[0].node, args[0].span, frame),
             // a computed id: its own value at each place it is written
             _ => format!("x:{}:{}", frame.uid, at.start),
         }
@@ -584,10 +654,12 @@ impl<'a> Engine<'a> {
         if let Expr::Ident(v) = e { return frame.status.get(v).cloned(); }
         if let Some((id, fallback)) = status_read(e) {
             let m = self.machine_of(frame.cell)?;
-            return Some((m, self.key_of(&id.node, id.span, frame), fallback.map(|f| f.to_string())));
+            return Some((m, self.key_of(&id.node, id.span, frame), fallback.map(|f| f.to_string()), Vec::new()));
         }
+        // `to_string(status)` is the status
+        if let Expr::FnCall { name, args } = e { if name == "to_string" && args.len() == 1 && self.first(name).is_none() { return self.status_of(&args[0].node, frame); } }
         self.deepest.set(self.deepest.get().max(frame.depth));
-        if frame.depth >= 12 { return None; }
+        if frame.depth >= DEPTH { return None; }
         let (cell, on, args): (&'a CellDef, &'a OnSection, &[Spanned<Expr>]) = match e {
             Expr::MethodCall { target, method, args } => match &target.node {
                 Expr::Ident(c) if !frame.env.contains_key(c) => { let cell = self.cell(c)?; (cell, self.handler(cell, method)?, args) }
@@ -604,15 +676,32 @@ impl<'a> Engine<'a> {
             _ => return None,
         };
         if !crate::ast::accepted_arities(&on.params).contains(&args.len()) { return None; }
-        let [only] = on.body.as_slice() else { return None };
+        // the getter: `return get_status(id)`, after any number of
+        // `if … { return "text" }` — an id it knows nothing of answers a text
+        // that is no status (`if seen.get(id) == () { return "unknown" }`)
+        let (only, guards) = on.body.split_last()?;
         let Statement::Return { value } = &only.node else { return None };
+        let mut alts: Vec<String> = Vec::new();
         let mut env = HashMap::new();
         for (i, p) in on.params.iter().enumerate() {
             let key = match args.get(i) { Some(a) => self.key_of(&a.node, a.span, frame), None => format!("x:{}:g{}p{}", frame.uid, only.span.start, i) };
             env.insert(p.name.clone(), key);
         }
-        let inner = Frame { cell, env: Rc::new(env), uid: format!("{}/g{}", frame.uid, only.span.start).into(), depth: frame.depth + 1, status: Rc::default() };
-        self.status_of(&value.node, &inner)
+        let mut inner = Frame { cell, env: Rc::new(env), uid: format!("{}/g{}", frame.uid, only.span.start).into(), depth: frame.depth + 1, status: Rc::default() };
+        for g in guards {
+            match &g.node {
+                // (`let o = to_string(id)`: another name of the id)
+                Statement::Let { name, value } if matches!(&value.node, Expr::Ident(v) if inner.env.contains_key(v))
+                    || matches!(&value.node, Expr::FnCall { name: f, args } if f == "to_string" && args.len() == 1 && self.first(f).is_none() && matches!(&args[0].node, Expr::Ident(v) if inner.env.contains_key(v))) => {
+                    let key = self.key_of(&value.node, value.span, &inner);
+                    Rc::make_mut(&mut inner.env).insert(name.clone(), key);
+                }
+                _ => alts.push(early_text(g)?),
+            }
+        }
+        let mut read = self.status_of(&value.node, &inner)?;
+        read.3.extend(alts);
+        Some(read)
     }
 
     /// A lambda that may move a machine (it calls a handler, `transition`, an
@@ -815,8 +904,8 @@ impl<'a> Engine<'a> {
         // followed as it was, whether it succeeds or fails
         if let Some(p) = &self.prune { if !p.contains(&format!("{}.{}", cell.name, on.signal_name)) { return states; } }
         self.deepest.set(self.deepest.get().max(frame.depth));
-        if frame.depth >= 12 {
-            self.unsupported.get_or_insert(format!("handler calls nest deeper than 12 (through {}.{}) — recursion is not explored", cell.name, on.signal_name));
+        if frame.depth >= DEPTH {
+            self.unsupported.get_or_insert(format!("handler calls nest deeper than {} (through {}.{}) — recursion is not explored", DEPTH, cell.name, on.signal_name));
             return states;
         }
         for a in args { self.kept_lambda(&a.node); }
@@ -885,7 +974,7 @@ impl<'a> Engine<'a> {
             let mut key = view(&slot.borrow());
             let found = {
                 let slot = slot.borrow();
-                slot.known.get(&key).filter(|s| frame.depth + 1 + s.height < 12).or_else(|| slot.deep.get(&(frame.depth, key.clone()))).cloned()
+                slot.known.get(&key).filter(|s| frame.depth + 1 + s.height < DEPTH).or_else(|| slot.deep.get(&(frame.depth, key.clone()))).cloned()
             };
             let summary = match found {
                 Some(s) => {
@@ -950,7 +1039,7 @@ impl<'a> Engine<'a> {
                         unsupported: if unsupported { self.unsupported.clone() } else { None },
                     });
                     let mut slot = slot.borrow_mut();
-                    if frame.depth + 1 + height < 12 { slot.known.insert(key, s.clone()); } else { slot.deep.insert((frame.depth, key), s.clone()); }
+                    if frame.depth + 1 + height < DEPTH { slot.known.insert(key, s.clone()); } else { slot.deep.insert((frame.depth, key), s.clone()); }
                     s
                 }
             };
@@ -1333,7 +1422,7 @@ impl<'a> Engine<'a> {
                     (Expr::Literal(Literal::String(s)), r) => (self.status_of(r, frame), s),
                     _ => return (states.clone(), states),
                 };
-                let Some((m, key, fallback)) = read else { return (states.clone(), states) };
+                let Some((m, key, fallback, alts)) = read else { return (states.clone(), states) };
                 let fallback = fallback.as_deref();
                 let Some(state) = self.machines[m].states.iter().position(|x| x == lit) else { return (states.clone(), states) };
                 let initial = self.machines[m].initial;
@@ -1354,6 +1443,8 @@ impl<'a> Engine<'a> {
                 for s in hit {
                     let cur = s.st.cur[m] as usize;
                     let eq = *op == CmpOp::Eq;
+                    // (the getter may have answered one of its other texts, whatever the state)
+                    for alt in &alts { if (alt == lit) == eq { yes.insert(s.clone()); } else { no.insert(s.clone()); } }
                     match unborn {
                         Some(alt) if cur == initial && alt != Some(initial) => {
                             // the initial state, or the unborn reading
@@ -1367,7 +1458,7 @@ impl<'a> Engine<'a> {
                 (yes, no)
             }
             // a predicate handler: `on approved(id) { return get_status(id) == "signed_off" }`
-            Expr::FnCall { name, args } | Expr::MethodCall { method: name, args, .. } if frame.depth < 12 => {
+            Expr::FnCall { name, args } | Expr::MethodCall { method: name, args, .. } if frame.depth < DEPTH => {
                 let callee: Option<(&'a CellDef, &'a OnSection)> = match cond {
                     Expr::MethodCall { target, .. } => match &target.node {
                         Expr::Ident(c) if !frame.env.contains_key(c) => self.cell(c).and_then(|cell| self.handler(cell, name).map(|on| (cell, on))),
@@ -1378,13 +1469,17 @@ impl<'a> Engine<'a> {
                             self.first(name) }),
                 };
                 let Some((cell, on)) = callee else { return (states.clone(), states) };
-                let [only] = on.body.as_slice() else { return (states.clone(), states) };
+                // (…after any number of `if … { return false }`: where it answers true, its last line did)
+                let Some((only, guards)) = on.body.split_last() else { return (states.clone(), states) };
                 let Statement::Return { value } = &only.node else { return (states.clone(), states) };
+                if !guards.iter().all(early_false) { return (states.clone(), states); }
+                let guarded = !guards.is_empty();
                 let mut env = HashMap::new();
                 for (i, p) in on.params.iter().enumerate() {
                     if let Some(a) = args.get(i) { env.insert(p.name.clone(), self.key_of(&a.node, a.span, frame)); }
                 }
                 let inner = Frame { cell, env: Rc::new(env), uid: format!("{}/b{}", frame.uid, only.span.start).into(), depth: frame.depth + 1, status: Rc::default() };
+                if guarded { let all = states.clone(); return (self.branch(&value.node, &inner, states).0, all); }
                 self.branch(&value.node, &inner, states)
             }
             _ => (states.clone(), states),
@@ -1485,6 +1580,8 @@ impl<'a> Engine<'a> {
                     } else { self.expr(value, &local, cur, entry) };
                     let key = match &value.node {
                         Expr::Ident(v) if local.env.contains_key(v) => local.env[v].clone(),
+                        Expr::FnCall { name: f, args } if f == "to_string" && args.len() == 1 && self.first(f).is_none()
+                            && matches!(&args[0].node, Expr::Ident(v) if local.env.contains_key(v)) => self.key_of(&value.node, value.span, &local),
                         Expr::Literal(Literal::String(_) | Literal::Int(_)) => self.key_of(&value.node, value.span, &local),
                         // `let c = consult_of.get(id)`: the instance `id` names
                         _ if self.key_of(&value.node, value.span, &local).starts_with("link:") => self.key_of(&value.node, value.span, &local),
@@ -1746,9 +1843,11 @@ pub fn frame_specs(program: &Program) -> Vec<Spec> {
 /// resolve). A cone search skips every other handler: it cannot change the
 /// product state followed, and its failing only leaves that state as it was.
 /// Resolution is by name, so homonyms in other cells only widen the set.
+/// Builtins that run a handler this file does not name (see `touching`).
+const OPAQUE: &[&str] = &["think", "think_json", "delegate", "horde", "vote", "horde_cancel", "await_approve", "await_signal",
+    "await_sleep", "resume", "deliver", "cancel_wait", "_external_tool", "_std", "approve"];
+
 fn touching(cells: &[&CellDef], kept: &HashSet<usize>) -> HashSet<String> {
-    const OPAQUE: &[&str] = &["think", "think_json", "delegate", "horde", "vote", "horde_cancel", "await_approve", "await_signal",
-        "await_sleep", "resume", "deliver", "cancel_wait", "_external_tool", "_std", "approve"];
     let handlers: HashMap<String, HashSet<String>> = cells.iter().map(|c| (c.name.clone(), c.sections.iter()
         .filter_map(|s| match &s.node { Section::OnSignal(on) => Some(on.signal_name.clone()), _ => None }).collect())).collect();
     let builtins = super::names::builtin_names();
@@ -1799,6 +1898,57 @@ fn touching(cells: &[&CellDef], kept: &HashSet<usize>) -> HashSet<String> {
     touch
 }
 
+/// `c` says the entry of `slot` at `key` does not exist: `slot.get(key) == ()`,
+/// `!slot.has(key)`, either as one term of an `&&`.
+fn says_absent(c: &Constraint, slot: &str, key: &str) -> bool {
+    fn reads(e: &Expr, slot: &str, key: &str, how: &str) -> bool {
+        matches!(e, Expr::MethodCall { target, method, args } if method == how && args.len() == 1
+            && matches!(&target.node, Expr::Ident(t) if t == slot) && render_expr(&args[0].node) == key)
+    }
+    fn unit(e: &Expr) -> bool { matches!(e, Expr::Literal(Literal::Unit)) }
+    fn absent(e: &Expr, slot: &str, key: &str) -> bool {
+        match e {
+            Expr::CmpOp { left, op: CmpOp::Eq, right } => (reads(&left.node, slot, key, "get") && unit(&right.node)) || (reads(&right.node, slot, key, "get") && unit(&left.node)),
+            Expr::Not(i) => present(&i.node, slot, key),
+            _ => false,
+        }
+    }
+    fn present(e: &Expr, slot: &str, key: &str) -> bool {
+        match e {
+            Expr::CmpOp { left, op: CmpOp::Ne, right } => (reads(&left.node, slot, key, "get") && unit(&right.node)) || (reads(&right.node, slot, key, "get") && unit(&left.node)),
+            Expr::Not(i) => absent(&i.node, slot, key),
+            _ => reads(e, slot, key, "has"),
+        }
+    }
+    fn there(c: &Constraint, slot: &str, key: &str) -> bool {
+        match c {
+            Constraint::Comparison { left, op: CmpOp::Ne, right } => (reads(&left.node, slot, key, "get") && unit(&right.node)) || (reads(&right.node, slot, key, "get") && unit(&left.node)),
+            Constraint::Comparison { left, op: CmpOp::Eq, right } => match &right.node {
+                Expr::Literal(Literal::Bool(true)) => present(&left.node, slot, key),
+                Expr::Literal(Literal::Bool(false)) => absent(&left.node, slot, key),
+                _ => false,
+            },
+            Constraint::Not(i) => says_absent(&i.node, slot, key),
+            _ => false,
+        }
+    }
+    match c {
+        Constraint::Comparison { left, op: CmpOp::Eq, right } => match &right.node {
+            Expr::Literal(Literal::Bool(true)) => absent(&left.node, slot, key),
+            Expr::Literal(Literal::Bool(false)) => present(&left.node, slot, key),
+            _ => (reads(&left.node, slot, key, "get") && unit(&right.node)) || (reads(&right.node, slot, key, "get") && unit(&left.node)),
+        },
+        Constraint::Not(i) => there(&i.node, slot, key),
+        Constraint::And(a, b) => says_absent(&a.node, slot, key) || says_absent(&b.node, slot, key),
+        _ => false,
+    }
+}
+
+/// No cell of the program has a handler of that name: the name is the builtin.
+fn cells_have_no_handler_named(cells: &[&CellDef], name: &str) -> bool {
+    !cells.iter().any(|c| c.sections.iter().any(|s| matches!(&s.node, Section::OnSignal(o) if o.signal_name == name)))
+}
+
 const OPEN_MARK: &str = "\u{1f}open:";
 
 /// `via` is sound only if the link of an entry never changes: the slot is
@@ -1842,6 +1992,12 @@ fn link_written_once(cells: &[&CellDef], cell: &str, slot: &str) -> Result<(), S
     if let Some((h, _)) = writers.iter().find(|(h, _)| c.sections.iter().any(|s| matches!(&s.node, Section::OnSignal(o) if &o.signal_name == h && o.properties.iter().any(|p| p == HOLE)))) {
         return Err(format!("{}{} is written by the hole `{}` — that it is written once (one `set`, after `require {}.get(id) == () else …`, never deleted) is judged when it has a body", OPEN_MARK, slot, h, slot));
     }
+    // an `[immutable]` slot: the run time refuses to rewrite or delete an entry
+    // (the handler that tries fails, and nothing of it is kept) — written once,
+    // whoever writes it
+    let immutable = c.sections.iter().any(|s| matches!(&s.node, Section::Memory(m) if m.slots.iter().any(|sl| sl.node.name == slot
+        && sl.node.properties.iter().any(|p| p.node.name() == "immutable"))));
+    if immutable { return Ok(()); }
     let rule = format!("`via = \"{}.{}\"` needs the link written once — by ONE signal, once, when the entry is created (`require {}.get(id) == () else Exists` before `{}.set(id, …)`), never rewritten nor deleted: keep the link in a slot of its own", cell, slot, slot, slot);
     let [(handler, ws)] = writers.as_slice() else {
         return Err(format!("{} — `{}` is written by {}", rule, slot, if writers.is_empty() { "no signal".to_string() } else { writers.iter().map(|(h, _)| format!("`{}`", h)).collect::<Vec<_>>().join(", ") }));
@@ -1889,15 +2045,93 @@ fn link_written_once(cells: &[&CellDef], cell: &str, slot: &str) -> Result<(), S
         return Err(format!("{} — `{}` is a `[task]`: another run may pass the guard while it waits, and write the link again", rule, handler));
     }
     // the creation guard, at the top level of the writer, before the write
-    let guarded = on.is_some_and(|o| o.body.iter().take_while(|st| !matches!(&st.node, Statement::MethodCall { target, .. } if target == slot)).any(|st| {
-        let Statement::Require { constraint, .. } = &st.node else { return false };
-        let Constraint::Comparison { left, op: CmpOp::Eq, right } = &constraint.node else { return false };
-        let reads_key = |e: &Expr| matches!(e, Expr::MethodCall { target, method, args } if method == "get" && args.len() == 1
-            && matches!(&target.node, Expr::Ident(t) if t == slot) && render_expr(&args[0].node) == *key);
-        let absent = |l: &Expr, r: &Expr| (reads_key(l) && matches!(r, Expr::Literal(Literal::Unit))) || (reads_key(r) && matches!(l, Expr::Literal(Literal::Unit)));
-        // `require slot.get(k) == () else …` is the comparison `(slot.get(k) == ()) == true`
-        absent(&left.node, &right.node) || matches!((&left.node, &right.node), (Expr::CmpOp { left: l, op: CmpOp::Eq, right: r }, Expr::Literal(Literal::Bool(true))) if absent(&l.node, &r.node))
-    }));
+    let Some(o) = on else { return Err(format!("{} — `{}` writes it without refusing an existing entry first", rule, handler)) };
+    // (the first statement of the body that writes the link, at any depth)
+    let writes_link = |st: &Spanned<Statement>| {
+        let mut found = false;
+        let one = std::slice::from_ref(st);
+        super::literals::for_each_stmt_deep(one, &mut |x| if matches!(x, Statement::MethodCall { target, method, .. } if target == slot && writes(method))
+            || matches!(x, Statement::IndexSet { name, .. } if name.split(|ch| ch == '.' || ch == '[').next() == Some(slot)) { found = true; });
+        super::literals::for_each_expr(one, &mut |e| if matches!(e, Expr::MethodCall { target, method, .. } if matches!(&target.node, Expr::Ident(t) if t == slot) && writes(method)) { found = true; });
+        found
+    };
+    let at = o.body.iter().position(writes_link).unwrap_or(o.body.len());
+    let before = &o.body[..at];
+    let refuses = |of: &str| before.iter().any(|st| matches!(&st.node, Statement::Require { constraint, .. } if says_absent(&constraint.node, of, key)));
+    // 1. `require slot.get(k) == () else …` (or `!slot.has(k)`) on the link itself
+    let guarded = refuses(slot)
+    // 2. a key no entry can have: made from this cell's `next_id()`, which never
+    //    gives the same number twice — `let id = "rc-{next_id()}"`, or through
+    //    `let n = next_id()`; the link's one writer writes it at such keys only
+        || {
+            let once = |name: &str| -> Option<&Expr> {
+                let mut binders: HashSet<String> = HashSet::new();
+                super::invariants::collect_binders_stmts(&o.body, &mut binders);
+                if binders.contains(name) || o.params.iter().any(|p| p.name == name) { return None; }
+                let (mut count, mut assigned) = (0usize, false);
+                super::literals::for_each_stmt_deep(&o.body, &mut |st| match st {
+                    Statement::Let { name: n, .. } if n == name => { count += 1; }
+                    Statement::Assign { name: n, .. } if n == name => { assigned = true; }
+                    Statement::For { var, .. } if var == name => { assigned = true; }
+                    _ => {}
+                });
+                if count != 1 || assigned { return None; }
+                before.iter().find_map(|st| match &st.node { Statement::Let { name: n, value } if n == name => Some(&value.node), _ => None })
+            };
+            let counter = |e: &Expr| matches!(e, Expr::FnCall { name, args } if name == "next_id" && args.is_empty());
+            // the number itself, or a text with that number as its one `{…}`
+            let from_counter = |e: &Expr| -> bool {
+                if counter(e) { return true; }
+                let Expr::Literal(Literal::String(t)) = e else { return false };
+                let segs = super::desugar::segments(t);
+                let [seg] = segs.as_slice() else { return false };
+                match super::desugar::parse_segment(seg) {
+                    Some(x) if counter(&x) => true,
+                    Some(Expr::Ident(n)) => once(&n).is_some_and(counter),
+                    _ => false,
+                }
+            };
+            cells_have_no_handler_named(cells, "next_id") && once(key).is_some_and(from_counter)
+        }
+    // 3. the same refusal on another slot of the cell that this handler fills
+    //    at the same key before the link, and that nothing ever empties: an
+    //    entry of the link has one there, so none there is none here
+        || c.sections.iter().filter_map(|s| match &s.node { Section::Memory(m) => Some(m), _ => None }).flat_map(|m| m.slots.iter())
+            .map(|sl| sl.node.name.as_str()).filter(|other| *other != slot).any(|other| {
+                if !refuses(other) { return false; }
+                let fills = |method: &str, args: &[Spanned<Expr>]| matches!(method, "set" | "put") && args.len() == 2
+                    && render_expr(&args[0].node) == *key && !matches!(args[1].node, Expr::Literal(Literal::Unit));
+                let filled = before.iter().any(|st| match &st.node {
+                    Statement::MethodCall { target, method, args } => target == other && fills(method, args),
+                    Statement::ExprStmt { expr } => matches!(&expr.node, Expr::MethodCall { target, method, args }
+                        if matches!(&target.node, Expr::Ident(t) if t == other) && fills(method, args)),
+                    _ => false,
+                });
+                if !filled { return false; }
+                // (never emptied, by any handler of the cell: no delete, no `()` put there, not replaced whole)
+                let mut emptied = false;
+                for h in super::bodies::entries(c) {
+                    super::literals::for_each_stmt_deep(&h.body, &mut |st| match st {
+                        Statement::MethodCall { target, method, args } if target == other =>
+                            if !matches!(method.as_str(), "set" | "put") || args.get(1).map_or(true, |v| matches!(v.node, Expr::Literal(Literal::Unit))) { emptied = true; },
+                        Statement::Assign { name, .. } | Statement::Let { name, .. } if name == other => emptied = true,
+                        Statement::IndexSet { name, value, .. } if name.split(|ch| ch == '.' || ch == '[').next() == Some(other) =>
+                            if matches!(value.node, Expr::Literal(Literal::Unit)) || name != other { emptied = true; },
+                        _ => {}
+                    });
+                    super::literals::for_each_expr(&h.body, &mut |e| match e {
+                        Expr::MethodCall { target, method, args } if matches!(&target.node, Expr::Ident(t) if t == other) => match method.as_str() {
+                            "delete" | "remove" | "clear" | "push" | "append" | "pop" => emptied = true,
+                            "set" | "put" => if args.get(1).map_or(true, |v| matches!(v.node, Expr::Literal(Literal::Unit))) { emptied = true; },
+                            _ => {}
+                        },
+                        // (inside a string's `{…}`: not read here)
+                        Expr::Literal(Literal::String(t)) if t.contains(&format!("{}.", other)) && !super::desugar::segments(t).is_empty() => emptied = true,
+                        _ => {}
+                    });
+                }
+                !emptied
+            });
     if !guarded { return Err(format!("{} — `{}` writes it without refusing an existing entry first", rule, handler)); }
     Ok(())
 }
