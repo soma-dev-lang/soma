@@ -607,3 +607,135 @@ cell Route{i} {{
     assert!(took.as_secs() < 20, "a handler reached through 4^{levels} paths: verify took {took:?}");
     let _ = std::fs::remove_dir_all(&dir);
 }
+
+// ── What a large program writes (Orbite, 69,000 lines): the forms `verify`
+//    did not read, each with the variant that must still fail.
+
+const LINKED: &str = r#"cell Org {
+    face { signal inscrire(o: String) -> String  signal radier(o: String) -> String  signal etat(o: String) -> String  signal radiee(o: String) -> Bool }
+    memory { connue: Map<String, String> [persistent] }
+    state vie { initial: inconnue  inconnue -> inscrite  inscrite -> radiee }
+    on inscrire(o: String) { connue.set(o, "oui")  transition(o, "inscrite")  return "ok" }
+    on radier(o: String) { transition(o, "radiee")  return "ok" }
+    on etat(o: String) {
+        let k = to_string(o)
+        if connue.get(k) == () { return "inconnu" }
+        return get_status(k) ?? "inconnue"
+    }
+    on radiee(o: String) { return get_status(o) == "radiee" }
+}
+cell Source {
+    face { signal declarer(source: String, nature: String, org: String) -> String  signal activer(source: String, h: Int) -> String }
+    memory {
+        genre: Map<String, String> [persistent]
+        fournisseur: Map<String, String> [persistent]
+        vue: Map<String, Int> [persistent]
+    }
+    state vie { initial: declaree  declaree -> active }
+    on declarer(source: String, nature: String, org: String) {
+        require genre.get(source) == () else Existe "déjà"
+        genre.set(source, nature)
+        fournisseur.set(source, org)
+        return "declaree"
+    }
+    on activer(source: String, h: Int) {
+        let o = fournisseur.get(source) ?? ""
+        let e = Org.etat(o)
+        vue.set(source, h)
+        require e == "inscrite" else Non "non"
+        transition(source, "active")
+        return "active"
+    }
+}
+"#;
+
+const LINKED_RULE: &str = "[verify.before.\"Source.active\"]\nwhile = [\"Org.inscrite\"]\nvia = \"Source.fournisseur\"\n";
+
+fn linked(name: &str, source: &str) -> (String, i32) {
+    let dir = project(name, LINKED_RULE, source);
+    let out = soma_in(&dir, &["verify", "app.cell"]);
+    let _ = std::fs::remove_dir_all(&dir);
+    out
+}
+
+#[test]
+fn a_link_guarded_on_a_sibling_slot_and_a_status_read_through_a_getter_are_proven() {
+    let (out, code) = linked("linked_ok", LINKED);
+    assert!(out.contains("✓ entering Source.active while Org.inscrite via Source.fournisseur"), "{out}");
+    assert_eq!(code, 0, "{out}");
+    // the same link, written once in three other ways
+    for (name, from, to) in [
+        ("linked_has", "require genre.get(source) == () else Existe \"déjà\"", "require !genre.has(source) else Existe \"déjà\""),
+        ("linked_immutable", "fournisseur: Map<String, String> [persistent]", "fournisseur: Map<String, String> [persistent, immutable]"),
+    ] {
+        assert!(LINKED.contains(from));
+        let (out, code) = linked(name, &LINKED.replace(from, to));
+        assert!(out.contains("✓ entering Source.active while Org.inscrite via Source.fournisseur"), "{name}: {out}");
+        assert_eq!(code, 0, "{name}: {out}");
+    }
+    // an [immutable] link needs no guard at all: the run time refuses the second write
+    let (out, _) = linked("linked_immutable_bare", &LINKED.replace("fournisseur: Map<String, String> [persistent]", "fournisseur: Map<String, String> [persistent, immutable]")
+        .replace("        require genre.get(source) == () else Existe \"déjà\"\n", ""));
+    assert!(out.contains("✓ entering Source.active while Org.inscrite via Source.fournisseur"), "{out}");
+    // `require !Org.radiee(o)` is read too (it does not prove this rule: unknown is not inscrite)
+    let (out, code) = linked("linked_not", &LINKED.replace("require e == \"inscrite\" else Non \"non\"", "require !Org.radiee(o) else Non \"non\""));
+    assert!(out.contains("✗ entering Source.active while Org.inscrite"), "{out}");
+    assert_ne!(code, 0);
+}
+
+#[test]
+fn what_those_forms_do_not_say_is_still_a_failure() {
+    for (name, from, to, needle) in [
+        // the getter answers the awaited state for an id it does not know
+        ("linked_bad_getter", "return \"inconnu\" }", "return \"inscrite\" }", "✗ entering Source.active while Org.inscrite"),
+        // the handler does not ask
+        ("linked_no_require", "        require e == \"inscrite\" else Non \"non\"\n", "", "✗ entering Source.active while Org.inscrite"),
+        ("linked_weak_require", "require e == \"inscrite\"", "require e != \"radiee\"", "✗ entering Source.active while Org.inscrite"),
+        // the status was read before a call that moves the machine
+        ("linked_stale", "        vue.set(source, h)\n", "        let _ = Org.radier(o)\n", "✗ entering Source.active while Org.inscrite"),
+        // nothing refuses a second write of the link
+        ("linked_no_guard", "        require genre.get(source) == () else Existe \"déjà\"\n", "", "needs the link written once"),
+        // the sibling slot is filled after the link
+        ("linked_late", "        genre.set(source, nature)\n        fournisseur.set(source, org)\n", "        fournisseur.set(source, org)\n        genre.set(source, nature)\n", "needs the link written once"),
+    ] {
+        assert!(LINKED.contains(from), "{name}");
+        let (out, code) = linked(name, &LINKED.replace(from, to));
+        assert!(out.contains(needle), "{name}: {out}");
+        assert_ne!(code, 0, "{name}: {out}");
+    }
+    // the sibling slot is emptied by another handler
+    let emptied = LINKED.replace("signal activer(source: String, h: Int) -> String", "signal activer(source: String, h: Int) -> String  signal oublier(source: String) -> String")
+        .replace("    on activer(source: String, h: Int) {", "    on oublier(source: String) { genre.delete(source)  return \"ok\" }\n    on activer(source: String, h: Int) {");
+    let (out, code) = linked("linked_emptied", &emptied);
+    assert!(out.contains("needs the link written once"), "{out}");
+    assert_ne!(code, 0);
+}
+
+#[test]
+fn a_link_at_a_key_made_from_next_id_is_written_once() {
+    let source = LINKED.replace("signal declarer(source: String, nature: String, org: String) -> String", "signal declarer(nature: String, org: String) -> String")
+        .replace("    on declarer(source: String, nature: String, org: String) {\n        require genre.get(source) == () else Existe \"déjà\"\n", "    on declarer(nature: String, org: String) {\n        let n = next_id()\n        let source = \"SRC-{n}\"\n");
+    assert!(source.contains("let source = \"SRC-{n}\""));
+    let (out, code) = linked("linked_fresh", &source);
+    assert!(out.contains("✓ entering Source.active while Org.inscrite via Source.fournisseur"), "{out}");
+    assert_eq!(code, 0, "{out}");
+    // a key made from a parameter is not new
+    let (out, code) = linked("linked_not_fresh", &source.replace("signal declarer(nature: String", "signal declarer(n: Int, nature: String").replace("on declarer(nature: String", "on declarer(n: Int, nature: String").replace("        let n = next_id()\n", ""));
+    assert!(out.contains("needs the link written once"), "{out}");
+    assert_ne!(code, 0);
+}
+
+// Calls nested 20 deep are followed (the limit was 12: Orbite's gateway nests 23).
+#[test]
+fn a_chain_of_twenty_calls_is_followed() {
+    let mut cells = String::new();
+    for i in 0..20 {
+        let next = if i == 19 { "Pay.settle(id)".to_string() } else { format!("Hop{}.go(id)", i + 1) };
+        cells += &format!("\ncell Hop{i} {{\n    face {{ signal go(id: String) -> String }}\n    on go(id: String) {{ return {next} }}\n}}\n");
+    }
+    let dir = project("deep", "[verify.before.\"Pay.paid\"]\nrequires = [\"Approval.signed_off\"]\n", &format!("{TWO}{cells}"));
+    let (out, code) = soma_in(&dir, &["verify", "app.cell"]);
+    assert!(out.contains("✓ before Pay.paid requires Approval.signed_off"), "{out}");
+    assert_eq!(code, 0, "{out}");
+    let _ = std::fs::remove_dir_all(&dir);
+}

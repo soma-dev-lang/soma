@@ -209,6 +209,20 @@ fn status_read(e: &Expr) -> Option<(&Spanned<Expr>, Option<&str>)> {
     }
 }
 
+/// A constraint as the condition it states, where it is one (`!a`, `a == b`, `a && b`, `a || b`).
+fn as_condition(c: &Constraint) -> Option<Expr> {
+    let at = |e: Expr| Box::new(Spanned::new(e, Span { start: 0, end: 0 }));
+    Some(match c {
+        // (`require f(x) else …` is the comparison `f(x) == true`)
+        Constraint::Comparison { left, op: CmpOp::Eq, right } if matches!(right.node, Expr::Literal(Literal::Bool(true))) => left.node.clone(),
+        Constraint::Comparison { left, op, right } => Expr::CmpOp { left: Box::new(left.clone()), op: *op, right: Box::new(right.clone()) },
+        Constraint::Not(a) => Expr::Not(at(as_condition(&a.node)?)),
+        Constraint::And(a, b) => Expr::BinaryOp { left: at(as_condition(&a.node)?), op: BinOp::And, right: at(as_condition(&b.node)?) },
+        Constraint::Or(a, b) => Expr::BinaryOp { left: at(as_condition(&a.node)?), op: BinOp::Or, right: at(as_condition(&b.node)?) },
+        _ => return None,
+    })
+}
+
 /// `if … { return "text" }` with no `else`: the text.
 fn early_text(st: &Spanned<Statement>) -> Option<String> {
     let Statement::If { then_body, else_body, .. } = &st.node else { return None };
@@ -559,9 +573,10 @@ impl<'a> Engine<'a> {
     /// machine (`touching`) leaves every status as it was read: a status held
     /// in a variable is still the status after `seen.set(id, h)`.
     fn may_move(&self, st: &Spanned<Statement>) -> bool {
-        let Some(prune) = &self.prune else { return calls_something(st) };
+        // (outside a cone, any handler may)
+        let may = |cell: &str, name: &str| self.prune.as_ref().map_or(true, |p| p.contains(&format!("{}.{}", cell, name)));
         let builtins = super::names::builtin_names();
-        let moving = |name: &str| self.cells.iter().any(|c| prune.contains(&format!("{}.{}", c.name, name)));
+        let moving = |name: &str| self.cells.iter().any(|c| self.handler(c, name).is_some() && may(&c.name, name));
         let known = |name: &str| self.first_ix.contains_key(name);
         let mut hit = false;
         let one = std::slice::from_ref(st);
@@ -574,7 +589,7 @@ impl<'a> Engine<'a> {
             }
             Expr::MethodCall { target, method, .. } => {
                 if method == "transition" || moving(method) { hit = true; }
-                if let Expr::Ident(t) = &target.node { if self.cell(t).is_some() && prune.contains(&format!("{}.{}", t, method)) { hit = true; } }
+                if let Expr::Ident(t) = &target.node { if self.cell(t).is_some() && may(t, method) { hit = true; } }
             }
             Expr::Pipe { .. } => hit = true,
             Expr::Literal(Literal::String(s)) if !super::desugar::segments(s).is_empty() => hit = true,
@@ -587,7 +602,7 @@ impl<'a> Engine<'a> {
         });
         super::literals::for_each_stmt_deep(one, &mut |s| match s {
             Statement::Emit { .. } => hit = true,
-            Statement::MethodCall { target, method, .. } => if method == "transition" || moving(method) || (self.cell(target).is_some() && prune.contains(&format!("{}.{}", target, method))) { hit = true; },
+            Statement::MethodCall { target, method, .. } => if method == "transition" || moving(method) || (self.cell(target).is_some() && may(target, method)) { hit = true; },
             _ => {}
         });
         hit
@@ -1500,11 +1515,17 @@ impl<'a> Engine<'a> {
             Constraint::And(a, b) => { let s = self.constraint(&a.node, frame, states, entry); self.constraint(&b.node, frame, s, entry) }
             Constraint::Or(a, b) => { let s = self.constraint(&a.node, frame, states.clone(), entry); let mut out = self.constraint(&b.node, frame, states, entry); join(&mut out, s); out }
             Constraint::Not(a) => {
-                // the calls inside run; which states pass is not narrowed
+                // the calls inside run…
+                let abs: BTreeSet<Abs> = states.iter().map(|x| x.st.clone()).collect();
+                let moves_before = self.moves;
                 let before = states.clone();
                 let mut out = self.constraint(&a.node, frame, states, entry);
                 join(&mut out, before);
-                out
+                // …and `require !Hold.is_held(id) else …` lets through the states where it is not
+                match as_condition(&a.node) {
+                    Some(cond) => self.narrow(&cond, frame, &abs, out, moves_before).1,
+                    None => out,
+                }
             }
             Constraint::Descriptive(_) => states,
         }

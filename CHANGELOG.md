@@ -1,5 +1,16 @@
 # Changelog
 
+## Unreleased
+
+What reading Orbite's 228 ✗ of `verify prod.cell` found: most were forms the prover did not read, and some are true. On `prod.cell`: 228 ✗ → 135, 3,846 ✓ → 3,939; `verify` prints the same on the 1,810 tracked programs the reference finishes.
+
+- **A link written once, in the ways a program writes it.** `via = "Cell.slot"` asked for `require slot.get(id) == () else …` before `slot.set(id, …)`, word for word. Also accepted: a slot declared `[immutable]` (the run time refuses to rewrite or delete an entry, whoever writes it); a key made from `next_id()` — `let id = "rc-{next_id()}"`, or through `let n = next_id()`; the same refusal on another slot of the cell that the handler fills at the same key before the link and that no handler empties; `require !slot.has(id)`. Still refused: no guard, the other slot filled after the link, the other slot emptied elsewhere, a key made from a parameter.
+- **A status read through a real getter.** Only `on etat(id) { return get_status(id) }` was a status read. Also read: a getter that first answers a text for an id it does not know (`if seen.get(id) == () { return "unknown" }` — the comparison then accounts for that text: `== "unknown"` is not narrowed to a state), `to_string(status)`, `let k = to_string(id)` as another name of `id` (`transition(5, …)` and `get_status("5")` are one instance), and a predicate handler after `if … { return false }`. `require !Cell.is_held(id) else …` lets through the states where it is not held (a `!` was not narrowed).
+- **A status held in a variable stays the status until a statement may move a machine**, not until the next call of anything: `let e = Org.etat(o)`, then `seen.set(id, h)`, then `require e == "inscrite"` is read. A call of a handler that may move a machine of the search still ends it.
+- **Calls are followed 40 deep** (12 before): a program of twenty subsystems behind a gateway nests 23, and 26 of its rules stopped at "handler calls nest deeper than 12".
+
+Found in Orbite, and true: `ReeRisque.figer` enters `fige` while its campaign is still `ouverte` (run with 3.2.6: the three asserts pass), where its frame says `moves faible -> fige when ReeCampagne.rentree || ReeCampagne.annulee`. Its body checks nothing of the campaign — "called by ReeCampagne, which carries the check". Five more handlers read the same way, not run (`EvtRapports.classer`, `EvtCollisions.classer`, `EvtNuages.ouvrir`, `RespCommissions.saisir`, `EscPriseEnCharge.ouvrir_prise`): a rule on an edge that only the caller keeps. Orbite's sources are not changed here.
+
 ## 3.2.6 — 2026-11-24
 
 `verify` on the files 3.2.5 could not finish. Validation: 1,121 Rust tests, 118 CLI checks, 327 corpus programs, 1,280 numeric comparisons; `check` exits the same on the 1,855 tracked programs, and `verify` prints the same, byte for byte, on the 1,810 of them 3.2.4 finishes in a minute and on Orbite's `app.cell`, `test_ref.cell` and `prod.cell` (against 3.2.5).

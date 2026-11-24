@@ -102,6 +102,26 @@ on Orbite's `app.cell`.
 4. `nth` is in the checker's native vocabulary; the native compiler has no
    such call.
 
+## The 228 ✗ of `prod.cell`, read (2026-11-24)
+
+Finding 1 above is answered in part. The ✗ were of three kinds, and of two causes.
+
+| Kind | 3.2.6 | Now | Cause |
+|---|---|---|---|
+| "needs the link written once" | 88 | 15 | the prover asked for one spelling of the guard; Orbite writes four others (an `[immutable]` slot, a key from `next_id()`, the guard on a sibling slot, `!slot.has`) |
+| "handler calls nest deeper than 12" | 26 | 0 | a limit of the prover; 40 now |
+| "a run … enters X without it" | 113 | 119 | both: getters the prover did not read through (fixed for five shapes), **and handlers that do not check** |
+| total ✗ / ✓ | 228 / 3,846 | 135 / 3,939 | |
+
+**True defects of Orbite.** `ReeRisque.figer` was run: it enters `fige` on an open campaign, against the rule on its own edge. Five more handlers read the same way (`EvtRapports.classer`, `EvtCollisions.classer`, `EvtNuages.ouvrir`, `RespCommissions.saisir`, `EscPriseEnCharge.ouvrir_prise`; not run) — the frame states `moves a -> b when Other.state`, the body checks nothing, a comment says the caller does. Under the model `verify` uses (every handler is an entry point) these ✗ are right.
+
+**Not known yet.** Of the 119 runs left: 15 end in a handler that never reads the required cell (6 read, all of the kind above); 26 end in a handler that does read it, through a shape the prover still loses; 43 enter through a gateway or an API handler and 35 from a timer — not read. 15 links are left (a key that is a local name of a parameter, two writers).
+
+**Decision D8 — a handler only another handler may call.** These handlers say "called by X alone" in a comment. Soma has no way to state it, so `verify` must take them as entry points, and it is right to fail them.
+- Option A: nothing; such a handler checks its own rule (a `require` reading the other machine), as the note of `verify` already says.
+- Option B: a property on the signal (`[internal]`, or `called_by X.f`) that `check` enforces (no route, no call from elsewhere) and that removes the handler from the entry points of the search.
+- **Recommendation: A now** — it is what makes the frame true of the handler alone, which is what a frame is for; B is a language change to weigh on its own.
+
 ## What was tried and did not work, or was left
 
 - *(Done in 3.2.6: the summary per handler call below was written; the four files take 15 to 60 s. What follows is the note as it stood.)*
