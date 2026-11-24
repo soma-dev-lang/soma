@@ -2424,6 +2424,16 @@ fn s6_what_a_hole_may_still_do_against_a_when_clause_is_an_open_obligation() {
         .replace("moves drafted -> delivered when Consult.done  calls Consult.is_done", "reads consult_of  moves drafted -> delivered when Consult.done via consult_of  calls Consult.is_done\n        signal draft(id: String, c: String) -> String  writes consult_of");
     let (out, code) = soma(&["verify", &program("s6_when_via_hole", &via)]);
     assert!(code == 0 && out.contains("open obligation — before Ordo.delivered via Ordo.consult_of: consult_of is written by the hole `draft`"), "{out}");
+    // …unless the slot is [immutable]: the run time refuses a second write whoever writes it,
+    // so the rule is judged on the skeleton — the hole that moves is read under its clause
+    let immutable = via.replace("memory { consult_of: Map<String, String> }", "memory { consult_of: Map<String, String> [immutable] }");
+    let (out, code) = soma(&["verify", &program("s6_when_via_hole_immutable", &immutable)]);
+    assert!(code == 0 && out.contains("✓ entering Ordo.delivered from drafted while Consult.done via Ordo.consult_of"), "{out}");
+    assert!(!out.contains("is written by the hole"), "{out}");
+    // …and a hole that takes the same edge without the clause is still an open obligation
+    let other = immutable.replace("        signal draft(", "        signal force(id: String) -> String  moves drafted -> delivered\n        signal draft(");
+    let (out, code) = soma(&["verify", &program("s6_when_via_hole_immutable_other", &other)]);
+    assert!(code == 0 && out.contains("⚠ open obligation — entering Ordo.delivered from drafted while Consult.done via Ordo.consult_of"), "{out}");
     // the frozen structure holds the clause: removing it is a change of structure
     let path = program("s6_when_lock", WHEN_SK);
     let (out, code) = soma(&["skeleton", &path, "--freeze"]);
@@ -2431,6 +2441,25 @@ fn s6_what_a_hole_may_still_do_against_a_when_clause_is_an_open_obligation() {
     std::fs::write(&path, WHEN_SK.replace(" when Consult.done", "")).unwrap();
     let (out, code) = soma(&["check", &path]);
     assert!(code != 0 && out.contains("differs from skeleton.lock"), "{out}");
+}
+
+/// An edge under two rules is written twice in the frame (`p -> q when A.y via a_de, p -> q
+/// when C.v via c_de`): a hole takes it only under both.
+#[test]
+fn an_edge_under_two_rules_binds_a_hole_by_both() {
+    let two = "skeleton A {\n    state a {\n        initial: x\n        x -> y\n    }\n    face { signal f(id: String) -> String  moves x -> y }\n}\nskeleton C {\n    state c {\n        initial: u\n        u -> v\n    }\n    face { signal g(id: String) -> String  moves u -> v }\n}\nskeleton B {\n    memory {\n        a_de: Map<String, String> [immutable]\n        c_de: Map<String, String> [immutable]\n    }\n    state b {\n        initial: p\n        p -> q\n    }\n    face {\n        signal lier(id: String, a: String, c: String) -> String  writes a_de, c_de\n        signal go(id: String) -> String  reads a_de, c_de  moves p -> q when A.y via a_de, p -> q when C.v via c_de\n    }\n}\n";
+    let (out, code) = soma(&["verify", &program("two_rules_one_edge", two)]);
+    assert!(code == 0 && out.contains("✓ entering B.q from p while A.y via B.a_de") && out.contains("✓ entering B.q from p while C.v via B.c_de"), "{out}");
+    // and without a link
+    let plain = two.replace(" via a_de", "").replace(" via c_de", "");
+    let (out, _) = soma(&["verify", &program("two_rules_one_edge_plain", &plain)]);
+    assert!(out.contains("✓ entering B.q from p while A.y") && out.contains("✓ entering B.q from p while C.v"), "{out}");
+    // a body held to only one of them breaks the other
+    let two = two.replace("face { signal f(id: String) -> String  moves x -> y }", "face { signal f(id: String) -> String  moves x -> y  signal etat(id: String) -> String  reads a }")
+        .replace("moves p -> q when A.y via a_de, p -> q when C.v via c_de\n", "moves p -> q when A.y via a_de, p -> q when C.v via c_de  calls A.etat\n");
+    let one = format!("{two}flesh A {{\n    on f(id) {{ transition(id, \"x\", \"y\")  return \"y\" }}\n    on etat(id) {{ return get_status(id) ?? \"x\" }}\n}}\nflesh B {{\n    on lier(id, a, c) {{ a_de.set(id, a)  c_de.set(id, c)  return \"ok\" }}\n    on go(id) {{\n        let a = a_de.get(id) ?? \"\"\n        require A.etat(a) == \"y\" else No\n        transition(id, \"p\", \"q\")\n        return \"q\"\n    }}\n}}\n");
+    let (out, _) = soma(&["verify", &program("two_rules_one_edge_body", &one)]);
+    assert!(out.contains("while C.v via B.c_de") && !out.contains("✓ entering B.q from p while C.v via B.c_de"), "{out}");
 }
 
 #[test]

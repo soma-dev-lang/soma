@@ -298,7 +298,11 @@ fn model_body(cell: &CellDef, frame: &FrameDecl, span: Span, all: &[&CellDef], m
     });
     let mut body: Vec<Spanned<Statement>> = Vec::new();
 
+    // (an edge under two rules is written twice: it is taken once, under both)
+    let mut seen_moves: Vec<(&String, &String, &String)> = Vec::new();
     for (label, from, to) in &frame.moves {
+        if seen_moves.contains(&(label, from, to)) { continue; }
+        seen_moves.push((label, from, to));
         // the machine the label names: the cell's own, or (from a cell
         // without one) the program's only machine — the two a
         // `transition()` written in this cell can reach
@@ -321,19 +325,18 @@ fn model_body(cell: &CellDef, frame: &FrameDecl, span: Span, all: &[&CellDef], m
                 let take = Statement::ExprStmt { expr: sp(Expr::FnCall { name: "transition".to_string(), args: vec![unknown(), lit(f), lit(t)] }) };
                 // `when Other.s`: the edge is taken only under its condition — what the
                 // frame promises, and what `verify` holds every body to
-                let cond = frame.conditions.iter().find(|c| &c.machine == label && (c.from == f || c.from == "*") && (c.to == t || c.to == "*"));
-                match cond {
-                    Some(c) => {
-                        let id = match &c.via {
-                            Some(v) => sp(Expr::MethodCall { target: Box::new(sp(Expr::Ident(v.clone()))), method: "get".to_string(), args: vec![unknown()] }),
-                            None => unknown(),
-                        };
-                        let mut args = vec![id];
-                        args.extend(c.states.iter().map(|s| lit(s)));
-                        body.push(maybe(Statement::If { condition: sp(Expr::FnCall { name: STATUS_IN.to_string(), args }), then_body: vec![Spanned::new(take, span)], else_body: vec![] }));
-                    }
-                    None => body.push(maybe(take)),
+                // (each condition on the edge, nested: it is taken only under all of them)
+                let mut guarded = Spanned::new(take, span);
+                for c in frame.conditions.iter().filter(|c| &c.machine == label && (c.from == f || c.from == "*") && (c.to == t || c.to == "*")) {
+                    let id = match &c.via {
+                        Some(v) => sp(Expr::MethodCall { target: Box::new(sp(Expr::Ident(v.clone()))), method: "get".to_string(), args: vec![unknown()] }),
+                        None => unknown(),
+                    };
+                    let mut args = vec![id];
+                    args.extend(c.states.iter().map(|s| lit(s)));
+                    guarded = Spanned::new(Statement::If { condition: sp(Expr::FnCall { name: STATUS_IN.to_string(), args }), then_body: vec![guarded], else_body: vec![] }, span);
                 }
+                body.push(maybe(guarded.node));
             }
         }
     }

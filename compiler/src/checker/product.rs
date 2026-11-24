@@ -2250,16 +2250,17 @@ fn link_written_once(cells: &[&CellDef], cell: &str, slot: &str) -> Result<(), S
         });
         if !found.is_empty() { writers.push((on.signal_name.clone(), found)); }
     }
-    // a writer that is still a hole: written once is judged on its body
-    if let Some((h, _)) = writers.iter().find(|(h, _)| c.sections.iter().any(|s| matches!(&s.node, Section::OnSignal(o) if &o.signal_name == h && o.properties.iter().any(|p| p == HOLE)))) {
-        return Err(format!("{}{} is written by the hole `{}` — that it is written once (one `set`, after `require {}.get(id) == () else …`, never deleted) is judged when it has a body", OPEN_MARK, slot, h, slot));
-    }
     // an `[immutable]` slot: the run time refuses to rewrite or delete an entry
     // (the handler that tries fails, and nothing of it is kept) — written once,
     // whoever writes it
     let immutable = c.sections.iter().any(|s| matches!(&s.node, Section::Memory(m) if m.slots.iter().any(|sl| sl.node.name == slot
         && sl.node.properties.iter().any(|p| p.node.name() == "immutable"))));
     if immutable { return Ok(()); }
+    // a writer that is still a hole: written once is judged on its body (an
+    // `[immutable]` slot needs none, above)
+    if let Some((h, _)) = writers.iter().find(|(h, _)| c.sections.iter().any(|s| matches!(&s.node, Section::OnSignal(o) if &o.signal_name == h && o.properties.iter().any(|p| p == HOLE)))) {
+        return Err(format!("{}{} is written by the hole `{}` — that it is written once (one `set`, after `require {}.get(id) == () else …`, never deleted) is judged when it has a body", OPEN_MARK, slot, h, slot));
+    }
     let rule = format!("`via = \"{}.{}\"` needs the link written once — by ONE signal, once, when the entry is created (`require {}.get(id) == () else Exists` before `{}.set(id, …)`), never rewritten nor deleted: keep the link in a slot of its own", cell, slot, slot, slot);
     let [(handler, ws)] = writers.as_slice() else {
         return Err(format!("{} — `{}` is written by {}", rule, slot, if writers.is_empty() { "no signal".to_string() } else { writers.iter().map(|(h, _)| format!("`{}`", h)).collect::<Vec<_>>().join(", ") }));

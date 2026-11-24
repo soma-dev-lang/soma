@@ -2,6 +2,10 @@
 
 ## Unreleased
 
+- **A link declared `[immutable]` is judged on the skeleton.** A rule `via` such a slot stayed an open obligation while the slot's writer was a hole ("written by the hole … judged when it has a body"), though the run time refuses a second write whoever writes it. 33 of the 36 rules of the second case study could not be proven before its bodies. Now they are.
+- **An edge under two rules binds a hole by both.** `moves p -> q when A.y via a_de, p -> q when C.v via c_de`: a hole was read as taking the edge under the first condition only, so the second rule stayed open on the skeleton. It takes it under all of them; written in the skeleton guide.
+- **Attelage, a second case study, designed skeleton first.** A harness for Claude agents — sessions, model requests, tools, permissions, human approvals, operator hooks, budgets, memory, sub-agents, plan mode, schedules, MCP connectors, recovery — as 34 cells and 212 signals, every one a hole. `soma verify` proves its 35 rules between machines before any body exists (no tool runs without a granted decision, an accepting hook, its turn awaiting tools and its session active; no model request without a held reservation and an active API credential; no compaction during a turn…). The review of the skeleton changed the design four times before a line of body (`site/cases/attelage/NOTES.md`); what Soma made hard is logged in `FRICTIONS.md`.
+
 Orbite, the 69,000-line case study, passes its own verification: `soma verify prod.cell` says `VERIFY OK`, 0 ✗ (69 in 3.2.9), 4,073 ✓, and its 6,482 tests pass.
 
 **A correction to the three entries below.** The counts of ✗ they gave for Orbite were one too many each: the line was counted that closes a failed `verify` (`VERIFY FAILED … (see ✗ lines)`). 3.2.7 went from 227 to 109, 3.2.8 to 96, 3.2.9 to 69. They are corrected in place.
