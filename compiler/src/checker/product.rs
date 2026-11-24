@@ -322,9 +322,9 @@ struct Engine<'a> {
     /// in a cone: the handlers ("Cell.handler") that may move a kept machine;
     /// a call of any other is skipped (it cannot change the state followed)
     prune: Option<HashSet<String>>,
-    /// outside a cone: the handlers that may move any machine (what a status
-    /// held in a variable does not outlive a call of)
-    movers: Option<HashSet<String>>,
+    /// handler ("Cell.handler") → the machines of this search it may move, one
+    /// bit each (what a status held in a variable does not outlive a call of)
+    masks: HashMap<String, u16>,
     /// (machine, state) → bit of `seen`
     watched: HashMap<(usize, usize), u32>,
     props: Vec<Property>,
@@ -465,7 +465,8 @@ struct Summary { /// it leaves the state as it was
 
 /// What `block` needs of a statement, whatever state it is run from.
 struct StmtFacts {
-    head_calls: bool, calls: bool, assigned: Vec<String>,
+    /// the machines (one bit each) the statement's head, and the statement, may move
+    head_moves: u16, moves: u16, assigned: Vec<String>,
     /// the variables whose `.error` the statement reads, at any depth
     /// (`None`: it may read any — inside a string's `{…}`)
     errors: Option<Vec<String>>,
@@ -557,15 +558,15 @@ impl<'a> Engine<'a> {
         parsed
     }
 
-    fn stmt_facts(&mut self, st: &Spanned<Statement>) -> Rc<StmtFacts> {
+    fn stmt_facts(&mut self, st: &Spanned<Statement>, cell: &CellDef) -> Rc<StmtFacts> {
         let at = st as *const Spanned<Statement> as usize;
         if let Some(f) = self.facts.get(&at) { return f.clone(); }
-        // a status held in a variable is not the status once anything is called:
-        // also WITHIN the statement that reads it (`if close(id) == "done" && s == "open"`)
-        let head_calls = match &st.node {
+        // a status held in a variable is not the status once its machine may have
+        // moved: also WITHIN the statement that reads it (`if close(id) == "done" && s == "open"`)
+        let head_moves = match &st.node {
             Statement::If { condition: h, .. } | Statement::While { condition: h, .. } | Statement::For { iter: h, .. } =>
-                self.may_move(&Spanned::new(Statement::ExprStmt { expr: h.clone() }, st.span)),
-            _ => self.may_move(st),
+                self.may_move(&Spanned::new(Statement::ExprStmt { expr: h.clone() }, st.span), cell),
+            _ => self.may_move(st, cell),
         };
         let one = std::slice::from_ref(st);
         let mut errors = Some(Vec::new());
@@ -579,45 +580,68 @@ impl<'a> Engine<'a> {
             },
             _ => {}
         });
-        let f = Rc::new(StmtFacts { head_calls, calls: self.may_move(st), assigned: assigned_in(one), errors });
+        let f = Rc::new(StmtFacts { head_moves, moves: self.may_move(st, cell), assigned: assigned_in(one), errors });
         self.facts.insert(at, f.clone());
         f
     }
 
-    /// May `st` move a machine of this search? In a cone, a statement that
-    /// calls only builtins, slot methods and handlers that cannot move a kept
-    /// machine (`touching`) leaves every status as it was read: a status held
-    /// in a variable is still the status after `seen.set(id, h)`.
-    fn may_move(&self, st: &Spanned<Statement>) -> bool {
-        let may = |cell: &str, name: &str| self.prune.as_ref().or(self.movers.as_ref()).map_or(true, |p| p.contains(&format!("{}.{}", cell, name)));
+    /// The machines (one bit each) a statement of `cell` may move.
+    fn may_move(&self, st: &Spanned<Statement>, cell: &CellDef) -> u16 {
+        const ALL: u16 = u16::MAX;
         let builtins = super::names::builtin_names();
-        let moving = |name: &str| self.cells.iter().any(|c| self.handler(c, name).is_some() && may(&c.name, name));
+        let of = |cell: &str, name: &str| self.masks.get(&format!("{}.{}", cell, name)).copied().unwrap_or(0);
+        let named = |name: &str| self.cells.iter().filter(|c| self.handler(c, name).is_some()).fold(0u16, |m, c| m | of(&c.name, name));
         let known = |name: &str| self.first_ix.contains_key(name);
-        let mut hit = false;
+        // its own machine — and whatever the edge's effect does
+        let own: u16 = match self.machines.iter().position(|m| m.owner == cell as *const CellDef as usize) {
+            Some(m) if self.machines[m].edges.values().all(|e| e.is_empty()) => 1 << m,
+            Some(_) => ALL,
+            None => 0,
+        };
+        let mut hit = 0u16;
         let one = std::slice::from_ref(st);
         super::literals::for_each_expr(one, &mut |e| match e {
             Expr::FnCall { name, .. } if name == "_coalesce" => {}
             Expr::FnCall { name, .. } => {
-                if name == "transition" || OPAQUE.contains(&name.as_str()) || moving(name) { hit = true; }
+                if name == "transition" { hit |= own; }
+                else if OPAQUE.contains(&name.as_str()) { hit = ALL; }
+                else if known(name) { hit |= named(name); }
                 // a function value: it may be anything
-                else if !known(name) && !builtins.contains(name.as_str()) && !self.variants.contains(name) { hit = true; }
+                else if !builtins.contains(name.as_str()) && !self.variants.contains(name) { hit = ALL; }
             }
             Expr::MethodCall { target, method, .. } => {
-                if method == "transition" || moving(method) { hit = true; }
-                if let Expr::Ident(t) = &target.node { if self.cell(t).is_some() && may(t, method) { hit = true; } }
+                if method == "transition" { hit = ALL; }
+                hit |= named(method);
+                if let Expr::Ident(t) = &target.node { if self.cell(t).is_some() { hit |= of(t, method); } }
             }
-            Expr::Pipe { .. } => hit = true,
-            Expr::Literal(Literal::String(s)) if !super::desugar::segments(s).is_empty() => hit = true,
+            Expr::Pipe { .. } => hit = ALL,
+            // a text's `{…}`: the handlers its words name — anything else it calls may be anything
+            Expr::Literal(Literal::String(s)) => for seg in super::desugar::segments(s) {
+                if !seg.contains('(') && !seg.contains("|>") { continue; }
+                let mut rest = seg.as_str();
+                while let Some(open) = rest.find('(') {
+                    let word: String = rest[..open].chars().rev().take_while(|c| c.is_alphanumeric() || *c == '_').collect::<Vec<_>>().into_iter().rev().collect();
+                    if word == "transition" || OPAQUE.contains(&word.as_str()) || seg.contains("|>") { hit = ALL; }
+                    else if known(&word) { hit |= named(&word); }
+                    else if !word.is_empty() && !builtins.contains(word.as_str()) && !self.variants.contains(&word) { hit = ALL; }
+                    rest = &rest[open + 1..];
+                }
+                if seg.contains("|>") { hit = ALL; }
+            },
             Expr::Match { arms, .. } => for arm in arms {
                 let mut texts = Vec::new();
                 super::desugar::pattern_texts(&arm.pattern, &mut texts);
-                if texts.iter().any(|t| !super::desugar::segments(t).is_empty()) { hit = true; }
+                if texts.iter().any(|t| !super::desugar::segments(t).is_empty()) { hit = ALL; }
             },
             _ => {}
         });
         super::literals::for_each_stmt_deep(one, &mut |s| match s {
-            Statement::Emit { .. } => hit = true,
-            Statement::MethodCall { target, method, .. } => if method == "transition" || moving(method) || (self.cell(target).is_some() && may(target, method)) { hit = true; },
+            Statement::Emit { .. } => hit = ALL,
+            Statement::MethodCall { target, method, .. } => {
+                if method == "transition" { hit = ALL; }
+                hit |= named(method);
+                if self.cell(target).is_some() { hit |= of(target, method); }
+            }
             _ => {}
         });
         hit
@@ -1651,8 +1675,8 @@ impl<'a> Engine<'a> {
                     _ => {}
                 }
             }
-            let facts = self.stmt_facts(st);
-            if facts.head_calls && !(local.status.is_empty() && local.derived.is_empty()) { local.status = Rc::default(); local.derived = Rc::default(); }
+            let facts = self.stmt_facts(st, local.cell);
+            if facts.head_moves != 0 { moved(&mut local, facts.head_moves); }
             // a variable assigned inside an expression of this statement may be
             // read after that, in the same statement: unknown from the start
             for n in &facts.assigned {
@@ -1674,7 +1698,7 @@ impl<'a> Engine<'a> {
                         let (try_key, either) = (kid(&try_key), kid(&either_key(&try_key)));
                         let mut last = at;
                         for (j, later) in stmts.iter().enumerate().skip(at + 1) {
-                            if self.stmt_facts(later).errors.as_ref().map_or(true, |read| read.contains(name)) { last = j; }
+                            if self.stmt_facts(later, local.cell).errors.as_ref().map_or(true, |read| read.contains(name)) { last = j; }
                         }
                         tried.retain(|t| t.0 != try_key);
                         tried.push((try_key, either, last));
@@ -1851,11 +1875,11 @@ impl<'a> Engine<'a> {
             }
             // a status held in a variable is the status until something is
             // called: any call may move the machine
-            if facts.calls && !(local.status.is_empty() && local.derived.is_empty()) { local.status = Rc::default(); local.derived = Rc::default(); }
+            if facts.moves != 0 { moved(&mut local, facts.moves); }
             if let Statement::Let { name, value } | Statement::Assign { name, value } = &st.node {
                 forget_derived(&mut local.derived, name);
                 // (its conditions are read where the variable is: only statuses still held decide them)
-                if !facts.calls { if let Some(arms) = text_arms(&value.node) { Rc::make_mut(&mut local.derived).insert(name.clone(), Rc::new((arms, Vec::new()))); } }
+                if facts.moves == 0 { if let Some(arms) = text_arms(&value.node) { Rc::make_mut(&mut local.derived).insert(name.clone(), Rc::new((arms, Vec::new()))); } }
                 match self.status_of(&value.node, &local).filter(|_| !matches!(value.node, Expr::Ident(_))) {
                     Some(read) => { Rc::make_mut(&mut local.status).insert(name.clone(), read); }
                     None => if local.status.contains_key(name) { Rc::make_mut(&mut local.status).remove(name); },
@@ -2421,8 +2445,8 @@ fn attempt(exposed: &Program, cells: &[&CellDef], group: &[&Spec], cone: bool, s
             }
         }
         let prune = if sliced.is_empty() { None } else { Some(touching(cells, &machines.iter().map(|m| m.owner).collect())) };
-        let movers = if prune.is_none() { Some(touching(cells, &machines.iter().map(|m| m.owner).collect())) } else { None };
-        let mut engine = Engine { cells: cells.to_vec(), machines, sliced: sliced.clone(), prune, movers, watched, props, broken: BTreeMap::new(), site: BTreeMap::new(), unsupported: None, names: super::desugar::program_names(exposed), link: link.cloned(), secondary: secondary.clone(), moves: 0, forced: false, variants: variant_names(exposed), top: exposed.cells.iter().map(|c| &c.node as *const CellDef as usize).collect(), parent_of: {
+        let masks = moving_masks(cells, &machines);
+        let mut engine = Engine { cells: cells.to_vec(), machines, sliced: sliced.clone(), prune, masks, watched, props, broken: BTreeMap::new(), site: BTreeMap::new(), unsupported: None, names: super::desugar::program_names(exposed), link: link.cloned(), secondary: secondary.clone(), moves: 0, forced: false, variants: variant_names(exposed), top: exposed.cells.iter().map(|c| &c.node as *const CellDef as usize).collect(), parent_of: {
             fn walk(c: &CellDef, out: &mut HashMap<usize, usize>) {
                 for s in &c.sections { if let Section::Interior(i) = &s.node { for x in &i.cells { out.insert(&x.node as *const CellDef as usize, c as *const CellDef as usize); walk(&x.node, out); } } }
             }
@@ -2777,6 +2801,88 @@ fn past<'a>(frame: &Frame<'a>, cond: &Expr, truth: bool) -> Option<Frame<'a>> {
     let status = refused(&frame.status, cond, truth);
     if Rc::ptr_eq(&status, &frame.status) { return None; }
     Some(Frame { cell: frame.cell, env: frame.env.clone(), uid: frame.uid.clone(), depth: frame.depth, status, derived: frame.derived.clone() })
+}
+
+/// The machines in `mask` may have moved: a status read of one of them is no
+/// longer its status, nor is a text chosen under conditions that read any.
+fn moved(frame: &mut Frame, mask: u16) {
+    if frame.status.values().any(|read| mask & (1 << read.0) != 0) { Rc::make_mut(&mut frame.status).retain(|_, read| mask & (1 << read.0) == 0); }
+    if !frame.derived.is_empty() { frame.derived = Rc::default(); }
+}
+
+/// Handler ("Cell.handler") → the machines it may move, one bit each: by its
+/// own `transition`, by what it calls (by name: homonyms only widen the
+/// set), all of them by what this file does not follow (see `touching`).
+fn moving_masks(cells: &[&CellDef], machines: &[Machine]) -> HashMap<String, u16> {
+    const ALL: u16 = u16::MAX;
+    let handlers: HashMap<String, HashSet<String>> = cells.iter().map(|c| (c.name.clone(), c.sections.iter()
+        .filter_map(|s| match &s.node { Section::OnSignal(on) => Some(on.signal_name.clone()), _ => None }).collect())).collect();
+    let builtins = super::names::builtin_names();
+    let mut mask: HashMap<String, u16> = HashMap::new();
+    let mut edges: Vec<(String, Vec<String>)> = Vec::new();
+    for c in cells {
+        let own_bit: u16 = match machines.iter().position(|m| m.owner == *c as *const CellDef as usize) {
+            Some(m) if machines[m].edges.values().all(|e| e.is_empty()) => 1 << m,
+            Some(_) => ALL,
+            None => 0,
+        };
+        let own: HashSet<String> = handlers.get(&c.name).cloned().unwrap_or_default();
+        for s in &c.sections {
+            let Section::OnSignal(on) = &s.node else { continue };
+            let me = format!("{}.{}", c.name, on.signal_name);
+            let mut direct = 0u16;
+            let mut callees: Vec<String> = Vec::new();
+            super::literals::for_each_expr(&on.body, &mut |e| match e {
+                Expr::FnCall { name, .. } => {
+                    if name == "transition" { direct |= own_bit; }
+                    else if OPAQUE.contains(&name.as_str()) { direct = ALL; }
+                    else if own.contains(name) { callees.push(format!("{}.{}", c.name, name)); }
+                    else {
+                        let mut found = false;
+                        for (cn, hs) in &handlers { if hs.contains(name) { callees.push(format!("{}.{}", cn, name)); found = true; } }
+                        let lower = name.chars().next().map_or(false, |ch| ch.is_lowercase());
+                        if !found && lower && !builtins.contains(name.as_str()) { direct = ALL; }
+                    }
+                }
+                Expr::MethodCall { target, method, .. } => {
+                    if method == "transition" { direct = ALL; }
+                    else if let Expr::Ident(t) = &target.node { if handlers.contains_key(t) { callees.push(format!("{}.{}", t, method)); } }
+                    // (a handler called as a method of a value)
+                    for (cn, hs) in &handlers { if hs.contains(method) { callees.push(format!("{}.{}", cn, method)); } }
+                }
+                Expr::Pipe { .. } => direct = ALL,
+                Expr::Literal(Literal::String(t)) => for seg in super::desugar::segments(t) {
+                    if seg.contains("|>") { direct = ALL; }
+                    for word in seg.split(|ch: char| !ch.is_alphanumeric() && ch != '_') {
+                        if word == "transition" || OPAQUE.contains(&word) { direct = ALL; }
+                        for (cn, hs) in &handlers { if hs.contains(word) { callees.push(format!("{}.{}", cn, word)); } }
+                    }
+                },
+                _ => {}
+            });
+            super::literals::for_each_stmt_deep(&on.body, &mut |st| match st {
+                Statement::Emit { .. } => direct = ALL,
+                Statement::MethodCall { target, method, .. } => {
+                    if method == "transition" { direct = ALL; }
+                    if handlers.contains_key(target) { callees.push(format!("{}.{}", target, method)); }
+                    for (cn, hs) in &handlers { if hs.contains(method) { callees.push(format!("{}.{}", cn, method)); } }
+                }
+                _ => {}
+            });
+            if direct != 0 { mask.insert(me.clone(), direct); }
+            edges.push((me, callees));
+        }
+    }
+    loop {
+        let mut changed = false;
+        for (n, cs) in &edges {
+            let now = mask.get(n).copied().unwrap_or(0);
+            let more = cs.iter().fold(now, |m, c| m | mask.get(c).copied().unwrap_or(0));
+            if more != now { mask.insert(n.clone(), more); changed = true; }
+        }
+        if !changed { break; }
+    }
+    mask
 }
 
 /// `name` holds another value: the texts chosen from it, and its own, are no longer known.

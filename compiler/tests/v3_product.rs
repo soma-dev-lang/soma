@@ -901,3 +901,22 @@ fn a_predicate_that_holds_the_status_in_a_variable_is_read() {
     let (out, _) = linked("predicate_let_other", &source.replace("let st = get_status(o) ?? \"inconnue\"", "let st = connue.get(o) ?? \"\""));
     assert!(out.contains("✗ entering Source.active while Org.inscrite"), "{out}");
 }
+
+/// A status held in a variable is the status until a statement may move THAT
+/// machine: the handler's own transition, a call that moves another machine,
+/// leave it as it was read.
+#[test]
+fn a_status_outlives_what_moves_another_machine() {
+    let own = LINKED.replace("state vie { initial: declaree  declaree -> active }", "state vie { initial: declaree  declaree -> prete  prete -> active }")
+        .replace("        require e == \"inscrite\" else Non \"non\"\n        transition(source, \"active\")\n", "        transition(source, \"prete\")\n        require e == \"inscrite\" else Non \"non\"\n        transition(source, \"active\")\n");
+    assert!(own.contains("transition(source, \"prete\")"));
+    let (out, code) = linked("own_move", &own);
+    assert!(out.contains("✓ entering Source.active while Org.inscrite via Source.fournisseur"), "{out}");
+    assert_eq!(code, 0, "{out}");
+    // the machine that was read is moved in between: the variable is stale
+    let (out, _) = linked("own_move_stale", &own.replace("        transition(source, \"prete\")\n", "        transition(source, \"prete\")\n        let _ = Org.radier(o)\n"));
+    assert!(out.contains("✗ entering Source.active while Org.inscrite"), "{out}");
+    // …or may be, by a call inside a text
+    let (out, _) = linked("own_move_text", &own.replace("        transition(source, \"prete\")\n", "        transition(source, \"prete\")\n        let note = \"radiation {Org.radier(o)}\"\n"));
+    assert!(out.contains("✗ entering Source.active while Org.inscrite"), "{out}");
+}
