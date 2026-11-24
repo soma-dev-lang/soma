@@ -5,7 +5,7 @@
 // un catalogue vide, l'exclusion laisse ses objets sous la responsabilité de son État.
 
 // Statut d'adhésion tel que la façade le rend ("inconnu" : jamais candidat).
-cell type OpStatut = String where value == "inconnu" || value == "candidat" || value == "admis" || value == "actif" || value == "suspendu" || value == "exclu" || value == "retire"
+cell type OpStatut = String where value == "inconnu" || value == "candidat" || value == "admis" || value == "actif" || value == "suspendu" || value == "exclu" || value == "retire" || value == "renonce"
 
 // Motif de rejet d'un dossier d'adhésion.
 cell type OpMotifRejet = String where value == "pieces_manquantes" || value == "licence_absente" || value == "accord_donnees_absent" || value == "etat_non_participant" || value == "doublon" || value == "autre"
@@ -127,11 +127,12 @@ skeleton OpMembres {
         invariant historique.size <= MAX_HISTORIQUE
         invariant (candidat_depuis ?? 0) <= (admis_a ?? 9000000000000000000)
     }
-    // Cycle de vie de l'adhésion (id = opérateur). exclu et retire sont terminaux.
+    // Cycle de vie de l'adhésion (id = opérateur). exclu, retire et renonce sont terminaux ;
+    // renonce est le retrait d'un candidat jamais admis : retire dit donc « admis un jour ».
     state adhesion {
         initial: candidat
         candidat -> admis           // admettre : dossier accepté
-        candidat -> retire          // retirer : le candidat renonce
+        candidat -> renonce         // retirer : le candidat renonce (jamais admis)
         admis -> actif              // activer : engagements en vigueur (+ licence, astreinte, exercice)
         admis -> retire             // retirer
         actif -> suspendu           // suspendre, suspendre_auto
@@ -207,14 +208,14 @@ skeleton OpMembres {
             moves actif -> exclu, suspendu -> exclu
             calls ApiAcces.a_le_role, ApiAcces.quatre_yeux, ApiRef.etat_de, ApiRef.org_de_etat, ApiPasserelle.notifier, OpEngagements.resilier, Journal.noter
         // Retrait volontaire : aucun de ses objets n'est encore en orbite (ApiRef.objets_de :
-        // tous "rentre", "retire" ou cédés). Résilie ses engagements. Renvoie "retire".
+        // tous "rentre", "retire" ou cédés). Résilie ses engagements. Renvoie "retire" — "renonce" pour un candidat jamais admis.
         // Rôle exigé : "administrateur_operateur" de op ; valideur "chef_de_mission" de op
         // (ApiAcces.quatre_yeux). Refus : Inconnu, EtatInvalide, Insuffisant (objet encore en
         // orbite), MotifRequis, Habilitation, QuatreYeux.
         signal retirer(h: Horodatage, op: Org, motif: String, par: String, valideur: String) -> OpStatut
             writes historique
             reads candidat_depuis
-            moves candidat -> retire, admis -> retire, actif -> retire, suspendu -> retire
+            moves candidat -> renonce, admis -> retire, actif -> retire, suspendu -> retire
             calls ApiAcces.a_le_role, ApiAcces.agit_pour, ApiAcces.quatre_yeux, ApiRef.objets_de, ApiRef.etat_objet, OpEngagements.resilier, Journal.noter
         // Statut d'adhésion ; "inconnu" si op n'a jamais déposé de dossier.
         signal etat(op: Org) -> OpStatut

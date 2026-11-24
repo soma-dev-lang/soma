@@ -34,7 +34,7 @@ skeleton ConfContradictoire {
         proroge -> repondu       // enregistrer
         ouvert -> forclos        // forclore : échéance passée sans réponse, notification acquittée
         proroge -> forclos       // forclore
-        ouvert -> injoignable    // forclore : échéance passée, notification en échec définitif (escaladée ou signalée)
+        ouvert -> injoignable    // forclore : échéance passée, notification en échec définitif (en défaut, escaladée ou signalée : ApiPasserelle.echoue)
         proroge -> injoignable   // forclore
     }
     face {
@@ -68,7 +68,7 @@ skeleton ConfContradictoire {
         signal forclore(h: Horodatage, m: String) -> String
             writes forclos_le
             reads echeance_de, message_de
-            moves ouvert -> forclos when PasMessages.acquitte via message_de, proroge -> forclos when PasMessages.acquitte via message_de, ouvert -> injoignable when PasMessages.escalade || PasMessages.signale via message_de, proroge -> injoignable when PasMessages.escalade || PasMessages.signale via message_de
+            moves ouvert -> forclos when PasMessages.acquitte via message_de, proroge -> forclos when PasMessages.acquitte via message_de, ouvert -> injoignable when PasMessages.en_defaut || PasMessages.escalade || PasMessages.signale via message_de, proroge -> injoignable when PasMessages.en_defaut || PasMessages.escalade || PasMessages.signale via message_de
             calls ApiPasserelle.acquitte, ApiPasserelle.echoue
         // État : "ouvert", "proroge", "repondu", "forclos", "injoignable" ; "inconnu" si jamais ouvert.
         signal etat_contradictoire(m: String) -> String

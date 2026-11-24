@@ -205,7 +205,14 @@ type Derived = Rc<HashMap<String, Rc<(Vec<(Option<Expr>, String)>, Vec<String>)>
 
 /// A status read: machine, id key, `??` fallback — and the texts it may answer
 /// instead (a getter that returns `"unknown"` for an id it has no entry of).
-type StatusRead = (usize, String, Option<String>, Vec<String>);
+type StatusRead = (usize, String, Option<String>, Vec<String>, Known);
+
+/// What the handler has established of a value it holds: each (texts, is) —
+/// the value is one of the texts, or none of them.
+type Known = Vec<(Vec<String>, bool)>;
+fn allowed(known: &Known, value: Option<&str>) -> bool {
+    known.iter().all(|(texts, is)| value.map_or(!*is, |v| texts.iter().any(|t| t == v) == *is))
+}
 
 /// `get_status(id)` or `get_status(id) ?? "state"`: the id, and the fallback.
 fn status_read(e: &Expr) -> Option<(&Spanned<Expr>, Option<&str>)> {
@@ -717,7 +724,7 @@ impl<'a> Engine<'a> {
         if let Expr::Ident(v) = e { return frame.status.get(v).cloned(); }
         if let Some((id, fallback)) = status_read(e) {
             let m = self.machine_of(frame.cell)?;
-            return Some((m, self.key_of(&id.node, id.span, frame), fallback.map(|f| f.to_string()), Vec::new()));
+            return Some((m, self.key_of(&id.node, id.span, frame), fallback.map(|f| f.to_string()), Vec::new(), Vec::new()));
         }
         // `to_string(status)` is the status
         if let Expr::FnCall { name, args } = e { if name == "to_string" && args.len() == 1 && self.first(name).is_none() { return self.status_of(&args[0].node, frame); } }
@@ -1529,9 +1536,8 @@ impl<'a> Engine<'a> {
                     (Expr::Literal(Literal::String(s)), r) => (self.status_of(r, frame), s),
                     _ => return (states.clone(), states),
                 };
-                let Some((m, key, fallback, alts)) = read else { return (states.clone(), states) };
+                let Some((m, key, fallback, alts, known)) = read else { return (states.clone(), states) };
                 let fallback = fallback.as_deref();
-                let Some(state) = self.machines[m].states.iter().position(|x| x == lit) else { return (states.clone(), states) };
                 let initial = self.machines[m].initial;
                 // An id never moved is in the initial state — where edition
                 // 2027 answers `()` (so `?? "x"` answers "x"): what is read
@@ -1547,19 +1553,27 @@ impl<'a> Engine<'a> {
                 };
                 let (hit, other) = self.split_on(&states, &key, m);
                 let (mut yes, mut no) = (other.clone(), other);
+                let eq = *op == CmpOp::Eq;
+                let name = |i: usize| self.machines[m].states[i].as_str();
                 for s in hit {
                     let cur = s.st.cur[m] as usize;
-                    let eq = *op == CmpOp::Eq;
-                    // (the getter may have answered one of its other texts, whatever the state)
-                    for alt in &alts { if (alt == lit) == eq { yes.insert(s.clone()); } else { no.insert(s.clone()); } }
+                    // What may have been read: the state — or, of an id never
+                    // moved, the unborn reading — and the texts the getter
+                    // answers in place of the state, whatever it is; less
+                    // what the handler has established the value is not. (A
+                    // text that is no state is read too: only a getter's own
+                    // text, or the `??` one, equals it.)
+                    let mut read: Vec<Option<&str>> = alts.iter().map(|a| Some(a.as_str())).collect();
                     match unborn {
                         Some(alt) if cur == initial && alt != Some(initial) => {
-                            // the initial state, or the unborn reading
-                            for is in [state == initial, alt == Some(state)] {
-                                if is == eq { yes.insert(s.clone()); } else { no.insert(s.clone()); }
-                            }
+                            read.push(Some(name(initial)));
+                            read.push(match alt { Some(i) => Some(name(i)), None => fallback });
                         }
-                        _ => if (cur == state) == eq { yes.insert(s); } else { no.insert(s); },
+                        _ => read.push(Some(name(cur))),
+                    }
+                    for text in read {
+                        if !allowed(&known, text) { continue; }
+                        if (text == Some(lit.as_str())) == eq { yes.insert(s.clone()); } else { no.insert(s.clone()); }
                     }
                 }
                 (yes, no)
@@ -1658,7 +1672,12 @@ impl<'a> Engine<'a> {
                 passed
             }
             Constraint::Predicate { args, .. } => { let mut s = states; for a in args { s = self.expr(a, frame, s, entry); } s }
-            Constraint::And(a, b) => { let s = self.constraint(&a.node, frame, states, entry); self.constraint(&b.node, frame, s, entry) }
+            Constraint::And(a, b) => {
+                let s = self.constraint(&a.node, frame, states, entry);
+                // (the second is read where the first held)
+                let after = as_condition(&a.node).and_then(|c| past(frame, &c, true));
+                self.constraint(&b.node, after.as_ref().unwrap_or(frame), s, entry)
+            }
             Constraint::Or(a, b) => { let s = self.constraint(&a.node, frame, states.clone(), entry); let mut out = self.constraint(&b.node, frame, states, entry); join(&mut out, s); out }
             Constraint::Not(a) => {
                 // the calls inside run…
@@ -2308,12 +2327,30 @@ fn link_written_once(cells: &[&CellDef], cell: &str, slot: &str) -> Result<(), S
         Some((_, since_loop, conds)) => (since_loop, conds),
         None => { let at = o.body.iter().position(writes_link).unwrap_or(o.body.len()); (o.body[..at].iter().collect(), Vec::new()) }
     };
-    let refuses = |of: &str| before.iter().any(|st| matches!(&st.node, Statement::Require { constraint, .. } if says_absent(&constraint.node, of, key)));
+    // (`let was = slot.get(k)`, bound once on the way: what the slot held there)
+    let held = |name: &str, of: &str| before.iter().filter(|st| matches!(&st.node, Statement::Let { name: n, .. } | Statement::Assign { name: n, .. } if n == name)).count() == 1
+        && before.iter().any(|st| matches!(&st.node, Statement::Let { name: n, value } if n == name
+            && matches!(&value.node, Expr::MethodCall { target, method, args } if method == "get" && args.len() == 1 && matches!(&target.node, Expr::Ident(t) if t == of) && render_expr(&args[0].node) == *key)));
+    // `if slot.get(k) != () { …  return … }` (or `slot.has(k)`): the handler leaves when the entry is there
+    let leaves_if_there = |st: &Spanned<Statement>, of: &str| -> bool {
+        let Statement::If { condition, then_body, else_body } = &st.node else { return false };
+        if !else_body.is_empty() || !matches!(then_body.last().map(|x| &x.node), Some(Statement::Return { .. })) { return false; }
+        let unit = |x: &Expr| matches!(x, Expr::Literal(Literal::Unit));
+        let read = |x: &Expr| match x {
+            Expr::MethodCall { target, method, args } => method == "get" && args.len() == 1 && matches!(&target.node, Expr::Ident(t) if t == of) && render_expr(&args[0].node) == *key,
+            Expr::Ident(v) => held(v, of),
+            _ => false,
+        };
+        match &condition.node {
+            Expr::CmpOp { left, op: CmpOp::Ne, right } => (read(&left.node) && unit(&right.node)) || (read(&right.node) && unit(&left.node)),
+            Expr::MethodCall { target, method, args } => method == "has" && args.len() == 1 && matches!(&target.node, Expr::Ident(t) if t == of) && render_expr(&args[0].node) == *key,
+            _ => false,
+        }
+    };
+    let refuses = |of: &str| before.iter().any(|st| matches!(&st.node, Statement::Require { constraint, .. } if says_absent(&constraint.node, of, key)) || leaves_if_there(st, of));
     // `if slot.get(k) == () { slot.set(k, v) }` (or `!slot.has(k)`; or through
     // `let was = slot.get(k)` — the link has this one write: nothing fills it in between)
-    let held = |name: &str| before.iter().filter(|st| matches!(&st.node, Statement::Let { name: n, .. } | Statement::Assign { name: n, .. } if n == name)).count() == 1
-        && before.iter().any(|st| matches!(&st.node, Statement::Let { name: n, value } if n == name
-            && matches!(&value.node, Expr::MethodCall { target, method, args } if method == "get" && args.len() == 1 && matches!(&target.node, Expr::Ident(t) if t == slot) && render_expr(&args[0].node) == *key)));
+    let held = |name: &str| held(name, slot);
     let absent = |e: &Expr| -> bool {
         let unit = |x: &Expr| matches!(x, Expr::Literal(Literal::Unit));
         let read = |x: &Expr| match x {
@@ -2885,9 +2922,10 @@ fn refused(status: &Rc<HashMap<String, StatusRead>>, cond: &Expr, truth: bool) -
     let mut out = status.clone();
     for (v, texts, is) in known {
         let Some(read) = out.get(&v) else { continue };
-        if !read.3.iter().any(|alt| texts.contains(alt) != is) { continue; }
+        if read.4.iter().any(|k| k.0 == texts && k.1 == is) { continue; }
         let mut read = read.clone();
         read.3.retain(|alt| texts.contains(alt) == is);
+        read.4.push((texts, is));
         Rc::make_mut(&mut out).insert(v, read);
     }
     out

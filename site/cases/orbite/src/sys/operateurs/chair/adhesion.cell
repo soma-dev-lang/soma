@@ -113,7 +113,7 @@ flesh OpMembres {
             return "candidat"
         }
         let st = get_status(op) ?? "candidat"
-        require st != "exclu" && st != "retire" else Ferme "{op} est {st} : pas de nouvelle candidature sous cet identifiant"
+        require st != "exclu" && st != "retire" && st != "renonce" else Ferme "{op} est {st} : pas de nouvelle candidature sous cet identifiant"
         return st
     }
     on admettre(h, op, dossier) {
@@ -236,6 +236,14 @@ flesh OpMembres {
         for o in ApiRef.objets_de(op) {
             let eo = ApiRef.etat_objet(Objet(o))
             require eo == "rentre" || eo == "retire" else Insuffisant "objet {o} encore en orbite ({eo})"
+        }
+        if st == "candidat" {
+            // un candidat jamais admis renonce : "retire" dit « admis un jour »
+            historique.push("{h} | {op} | candidat->renonce | {motif} | {par} | {valideur}")
+            transition(op, "candidat", "renonce")
+            let _ = OpEngagements.resilier(h, op)
+            let _ = Journal.noter(h, "operateurs", par, "{op} renonce à sa candidature (valideur {valideur})")
+            return "renonce"
         }
         historique.push("{h} | {op} | {st}->retire | {motif} | {par} | {valideur}")
         transition(op, st, "retire")

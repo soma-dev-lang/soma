@@ -4,7 +4,7 @@ flesh OpExercices {
     on planifier(h, op, quand, par) {
         require ApiAcces.a_le_role(par, "analyste") || ApiAcces.a_le_role(par, "systeme") else Habilitation "réservé à un analyste d'ORBITE ou au système"
         let st = OpMembres.etat(op)
-        require st != "inconnu" && st != "candidat" else Inconnu "{op} jamais admis"
+        require st != "inconnu" && st != "candidat" && st != "renonce" else Inconnu "{op} jamais admis"
         require st != "exclu" && st != "retire" else Ferme "{op} est {st}"
         require prevu_de.get(op) == () else Doublon "un exercice est déjà prévu pour {op}"
         require to_int(quand) >= to_int(h) else HorsBornes "instant prévu dans le passé"

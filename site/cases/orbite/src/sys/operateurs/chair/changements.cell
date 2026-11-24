@@ -5,7 +5,7 @@ flesh OpChangements {
         require ApiAcces.a_le_role(par, "administrateur_operateur") && ApiAcces.agit_pour(par, op) else Habilitation "déclaration réservée à un administrateur_operateur de {op}"
         require ApiAcces.quatre_yeux(par, valideur) && ApiAcces.a_le_role(valideur, "chef_de_mission") && ApiAcces.agit_pour(valideur, op) else QuatreYeux "valideur chef_de_mission de {op} requis"
         let st = OpMembres.etat(op)
-        require st != "inconnu" && st != "candidat" else Inconnu "{op} jamais admis"
+        require st != "inconnu" && st != "candidat" && st != "renonce" else Inconnu "{op} jamais admis"
         require st != "exclu" && st != "retire" else Ferme "{op} est {st}"
         require ApiRef.etat_participant(accueil) else NonEligible "État d'accueil {accueil} non participant"
         require en_cours_de.get(op) == () else Doublon "un changement de contrôle est déjà en cours pour {op}"

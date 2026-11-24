@@ -870,6 +870,9 @@ fn a_text_the_handler_refused_is_not_what_the_getter_answered() {
         ("alt_require", "        require e != \"inconnu\" else Non \"non\"\n        if e == \"radiee\" { return \"non\" }\n        require e != \"inconnue\" else Non \"non\"\n", proven),
         ("alt_only", "        require e == \"inscrite\" || e == \"radiee\" else Non \"non\"\n        if e == \"radiee\" { return \"non\" }\n", proven),
         ("alt_else", "        if e == \"inconnu\" { return \"non\" } else {\n            if e == \"radiee\" { return \"non\" }\n            require e != \"inconnue\" else Non \"non\"\n        }\n", proven),
+        // …whatever the order: refused as a state first, the getter's own text does not let the state through after
+        ("alt_and_state_first", "        require e != \"radiee\" && e != \"inconnue\" && e != \"inconnu\" else Non \"non\"\n", proven),
+        ("alt_state_then_text", "        require e != \"radiee\" else Non \"non\"\n        require e != \"inconnue\" else Non \"non\"\n        require e != \"inconnu\" else Non \"non\"\n", proven),
         ("alt_and", "        require e != \"inconnu\" && e != \"radiee\" else Non \"non\"\n        require e != \"inconnue\" else Non \"non\"\n", proven),
         // nothing refuses "inconnu": the getter may answer it of a struck-off organisation it has no entry of
         ("alt_kept", "        if e == \"radiee\" { return \"non\" }\n        require e != \"inconnue\" else Non \"non\"\n", failed),
@@ -963,6 +966,11 @@ fn a_link_written_under_its_guard_or_inside_a_branch_is_written_once() {
         ("under_if_has", "        genre.set(source, nature)\n        if !fournisseur.has(source) {\n            fournisseur.set(source, org)\n        }\n", proven),
         ("under_if_let", "        let deja = fournisseur.get(source)\n        genre.set(source, nature)\n        if deja == () { fournisseur.set(source, org) }\n", proven),
         ("in_branch", "        if nature != \"\" {\n            require fournisseur.get(source) == () else Existe \"déjà\"\n            genre.set(source, nature)\n            fournisseur.set(source, org)\n        }\n", proven),
+        // the handler leaves when the entry is there: what follows runs on a new one
+        ("early_return", "        if fournisseur.get(source) != () { return \"declaree\" }\n        genre.set(source, nature)\n        fournisseur.set(source, org)\n", proven),
+        ("early_return_sibling", "        let deja = genre.get(source)\n        if deja != () {\n            vue.set(source, 0)\n            return \"declaree\"\n        }\n        genre.set(source, nature)\n        fournisseur.set(source, org)\n", proven),
+        // …it does not always leave
+        ("early_maybe", "        if fournisseur.get(source) != () {\n            if nature == \"\" { return \"declaree\" }\n        }\n        genre.set(source, nature)\n        fournisseur.set(source, org)\n", "needs the link written once"),
         // the guard says the entry is there
         ("under_if_not", "        genre.set(source, nature)\n        if fournisseur.get(source) != () { fournisseur.set(source, org) }\n", "needs the link written once"),
         // the write is in the `else` of its guard

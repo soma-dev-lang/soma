@@ -10,7 +10,7 @@ flesh OpContacts {
             require ApiAcces.a_le_role(par, "administrateur_operateur") && ApiAcces.agit_pour(par, op) else Habilitation "déclaration réservée à un administrateur_operateur de {op}"
             require ApiRef.genre(op) == "operateur" else NonEligible "{op} n'est pas un opérateur"
             let st = OpMembres.etat(op)
-            require st != "inconnu" && st != "candidat" else Inconnu "{op} jamais admis"
+            require st != "inconnu" && st != "candidat" && st != "renonce" else Inconnu "{op} jamais admis"
             require st != "exclu" && st != "retire" else Ferme "{op} est {st}"
             require ApiAcces.agit_pour(pour, op) else NonEligible "{pour} n'est pas employé par {op}"
             let role_ok = match to_string(ou) {

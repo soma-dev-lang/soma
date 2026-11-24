@@ -4,7 +4,7 @@ flesh OpAstreinte {
     on planifier(h, op, pour, debut_prevu, fin_prevue, par) {
         require (ApiAcces.a_le_role(par, "chef_de_mission") || ApiAcces.a_le_role(par, "administrateur_operateur")) && ApiAcces.agit_pour(par, op) else Habilitation "planification réservée au chef de mission ou à l'administrateur de {op}"
         let st = OpMembres.etat(op)
-        require st != "inconnu" && st != "candidat" else Inconnu "{op} jamais admis"
+        require st != "inconnu" && st != "candidat" && st != "renonce" else Inconnu "{op} jamais admis"
         require st != "exclu" && st != "retire" else Ferme "{op} est {st}"
         let d = to_int(debut_prevu)
         let f = to_int(fin_prevue)

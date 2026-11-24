@@ -1221,7 +1221,7 @@ skeleton AccesUrgences {
     //~ actes ea98cae7b323c358
 }
 
-== ConfContradictoire sha256:2a308fc29a365a784fcae391067d136e251ee1604a8bc55444f5959572e3902f core:d3296849e46d07cc1744c6fe1cdc80c1d914da443bbb1a61ca51a971cd8fc36c
+== ConfContradictoire sha256:003e78c0cedcf86c666f1b17c44b6b2cc66984d6619afa6b6944a0007ed2b43e core:0564d4a1cc113a4ac8768f2e4c80ff501393fd397366559af69d9057b4619b76
 skeleton ConfContradictoire {
     memory {
         op_de: Map<String, Org> [persistent]
@@ -1256,7 +1256,7 @@ skeleton ConfContradictoire {
         signal ouvrir(h: Horodatage, m: String, op: Org, gravite: Gravite, resume: String) -> Horodatage  requires h >= 0  requires gravite >= 1 && gravite <= 3  ensures result >= 0  writes echeance_de, gravite_de, message_de, message_etat_de, op_de, ouvert_le  calls ApiPasserelle.notifier, ApiRef.etat_de, ApiRef.org_de_etat, Journal.noter
         signal enregistrer(h: Horodatage, m: String, observations: String, auteur: String) -> String  requires h >= 0  reads echeance_de  writes observations_de, repondu_le, repondu_par  moves ouvert -> repondu, proroge -> repondu
         signal proroger(h: Horodatage, m: String, motif: String) -> Horodatage  requires h >= 0  ensures result >= 0  reads gravite_de, ouvert_le  writes echeance_de, motif_prorogation  moves ouvert -> proroge
-        signal forclore(h: Horodatage, m: String) -> String  requires h >= 0  reads echeance_de, message_de  writes forclos_le  moves ouvert -> forclos when PasMessages.acquitte via message_de, ouvert -> injoignable when PasMessages.escalade || PasMessages.signale via message_de, proroge -> forclos when PasMessages.acquitte via message_de, proroge -> injoignable when PasMessages.escalade || PasMessages.signale via message_de  calls ApiPasserelle.acquitte, ApiPasserelle.echoue
+        signal forclore(h: Horodatage, m: String) -> String  requires h >= 0  reads echeance_de, message_de  writes forclos_le  moves ouvert -> forclos when PasMessages.acquitte via message_de, ouvert -> injoignable when PasMessages.en_defaut || PasMessages.escalade || PasMessages.signale via message_de, proroge -> forclos when PasMessages.acquitte via message_de, proroge -> injoignable when PasMessages.en_defaut || PasMessages.escalade || PasMessages.signale via message_de  calls ApiPasserelle.acquitte, ApiPasserelle.echoue
         signal etat_contradictoire(m: String) -> String  reads cycle, op_de
         signal echeance(m: String) -> Horodatage  ensures result >= 0  reads echeance_de
         signal observations(m: String) -> String  reads observations_de, op_de
@@ -7319,7 +7319,7 @@ skeleton OpDossiers {
     //~ etat 7bef5d9dff6196ac
 }
 
-== OpMembres sha256:9c62d9880304e47013aad21a71853473998a79cf1a47f4a098505386fdaf77c7 core:f509396228fa6e84cb0398f80939fd23cba312db490a6a4d1ae6686e8df561ff
+== OpMembres sha256:8e9b486ca6f3319161941bbafeacc63b3461c1bb486c582dbefec5ebaa017e7b core:c2e01ac740b16ea8fe15847d11626b34e465966ca2eba21fd2889cd7f5bc8300
 skeleton OpMembres {
     memory {
         candidat_depuis: Map<Org, Horodatage> [persistent]
@@ -7341,7 +7341,7 @@ skeleton OpMembres {
     state adhesion {
         initial: candidat
         candidat -> admis
-        candidat -> retire
+        candidat -> renonce
         admis -> actif
         admis -> retire
         actif -> suspendu
@@ -7352,15 +7352,15 @@ skeleton OpMembres {
         suspendu -> retire
     }
     face {
-        signal inscrire_candidat(h: Horodatage, op: Org) -> OpStatut  requires h >= 0  ensures result == "inconnu" || result == "candidat" || result == "admis" || result == "actif" || result == "suspendu" || result == "exclu" || result == "retire"  reads adhesion  writes candidat_depuis
-        signal admettre(h: Horodatage, op: Org, dossier: String) -> OpStatut  requires h >= 0  ensures result == "inconnu" || result == "candidat" || result == "admis" || result == "actif" || result == "suspendu" || result == "exclu" || result == "retire"  writes admis_a, dossier_de, historique  moves candidat -> admis when OpDossiers.accepte via dossier_de  calls Journal.noter, OpDossiers.etat
-        signal activer(h: Horodatage, op: Org, par: String) -> OpStatut  requires h >= 0  ensures result == "inconnu" || result == "candidat" || result == "admis" || result == "actif" || result == "suspendu" || result == "exclu" || result == "retire"  writes historique  moves admis -> actif when OpEngagements.en_vigueur  calls ApiAcces.a_le_role, ApiPasserelle.notifier, ApiRef.organisation_existe, Journal.noter, OpAstreinte.trous, OpContacts.chaine, OpEngagements.etat, OpExercices.joignable, OpLicences.valide_a
-        signal suspendre(h: Horodatage, op: Org, motif: String, par: String, valideur: String) -> OpStatut  requires h >= 0  ensures result == "inconnu" || result == "candidat" || result == "admis" || result == "actif" || result == "suspendu" || result == "exclu" || result == "retire"  writes historique, origine, suspendu_a, suspension  moves actif -> suspendu  calls ApiAcces.a_le_role, ApiAcces.agit_pour, ApiAcces.quatre_yeux, ApiPasserelle.notifier, ApiRef.etat_de, ApiRef.org_de_etat, Journal.noter
-        signal suspendre_auto(h: Horodatage, op: Org, cause: OpOrigineSuspension, motif: String) -> OpStatut  requires h >= 0  requires cause == "conformite" || cause == "etat" || cause == "licence" || cause == "joignabilite"  ensures result == "inconnu" || result == "candidat" || result == "admis" || result == "actif" || result == "suspendu" || result == "exclu" || result == "retire"  writes historique, origine, suspendu_a, suspension  moves actif -> suspendu  calls ApiConformite.constater, ApiPasserelle.notifier, Journal.noter
-        signal retablir(h: Horodatage, op: Org, par: String, valideur: String) -> OpStatut  requires h >= 0  ensures result == "inconnu" || result == "candidat" || result == "admis" || result == "actif" || result == "suspendu" || result == "exclu" || result == "retire"  writes historique, origine, suspendu_a, suspension  moves suspendu -> actif  calls ApiAcces.a_le_role, ApiAcces.agit_pour, ApiAcces.quatre_yeux, ApiPasserelle.notifier, ApiRef.etat_de, ApiRef.org_de_etat, ApiRef.organisation_existe, Journal.noter, OpAstreinte.trous, OpLicences.valide_a
-        signal exclure(h: Horodatage, op: Org, motif: String, par: String, valideur: String) -> OpStatut  requires h >= 0  ensures result == "inconnu" || result == "candidat" || result == "admis" || result == "actif" || result == "suspendu" || result == "exclu" || result == "retire"  writes historique  moves actif -> exclu, suspendu -> exclu  calls ApiAcces.a_le_role, ApiAcces.quatre_yeux, ApiPasserelle.notifier, ApiRef.etat_de, ApiRef.org_de_etat, Journal.noter, OpEngagements.resilier
-        signal retirer(h: Horodatage, op: Org, motif: String, par: String, valideur: String) -> OpStatut  requires h >= 0  ensures result == "inconnu" || result == "candidat" || result == "admis" || result == "actif" || result == "suspendu" || result == "exclu" || result == "retire"  reads candidat_depuis  writes historique  moves actif -> retire, admis -> retire, candidat -> retire, suspendu -> retire  calls ApiAcces.a_le_role, ApiAcces.agit_pour, ApiAcces.quatre_yeux, ApiRef.etat_objet, ApiRef.objets_de, Journal.noter, OpEngagements.resilier
-        signal etat(op: Org) -> OpStatut  ensures result == "inconnu" || result == "candidat" || result == "admis" || result == "actif" || result == "suspendu" || result == "exclu" || result == "retire"  reads adhesion, candidat_depuis
+        signal inscrire_candidat(h: Horodatage, op: Org) -> OpStatut  requires h >= 0  ensures result == "inconnu" || result == "candidat" || result == "admis" || result == "actif" || result == "suspendu" || result == "exclu" || result == "retire" || result == "renonce"  reads adhesion  writes candidat_depuis
+        signal admettre(h: Horodatage, op: Org, dossier: String) -> OpStatut  requires h >= 0  ensures result == "inconnu" || result == "candidat" || result == "admis" || result == "actif" || result == "suspendu" || result == "exclu" || result == "retire" || result == "renonce"  writes admis_a, dossier_de, historique  moves candidat -> admis when OpDossiers.accepte via dossier_de  calls Journal.noter, OpDossiers.etat
+        signal activer(h: Horodatage, op: Org, par: String) -> OpStatut  requires h >= 0  ensures result == "inconnu" || result == "candidat" || result == "admis" || result == "actif" || result == "suspendu" || result == "exclu" || result == "retire" || result == "renonce"  writes historique  moves admis -> actif when OpEngagements.en_vigueur  calls ApiAcces.a_le_role, ApiPasserelle.notifier, ApiRef.organisation_existe, Journal.noter, OpAstreinte.trous, OpContacts.chaine, OpEngagements.etat, OpExercices.joignable, OpLicences.valide_a
+        signal suspendre(h: Horodatage, op: Org, motif: String, par: String, valideur: String) -> OpStatut  requires h >= 0  ensures result == "inconnu" || result == "candidat" || result == "admis" || result == "actif" || result == "suspendu" || result == "exclu" || result == "retire" || result == "renonce"  writes historique, origine, suspendu_a, suspension  moves actif -> suspendu  calls ApiAcces.a_le_role, ApiAcces.agit_pour, ApiAcces.quatre_yeux, ApiPasserelle.notifier, ApiRef.etat_de, ApiRef.org_de_etat, Journal.noter
+        signal suspendre_auto(h: Horodatage, op: Org, cause: OpOrigineSuspension, motif: String) -> OpStatut  requires h >= 0  requires cause == "conformite" || cause == "etat" || cause == "licence" || cause == "joignabilite"  ensures result == "inconnu" || result == "candidat" || result == "admis" || result == "actif" || result == "suspendu" || result == "exclu" || result == "retire" || result == "renonce"  writes historique, origine, suspendu_a, suspension  moves actif -> suspendu  calls ApiConformite.constater, ApiPasserelle.notifier, Journal.noter
+        signal retablir(h: Horodatage, op: Org, par: String, valideur: String) -> OpStatut  requires h >= 0  ensures result == "inconnu" || result == "candidat" || result == "admis" || result == "actif" || result == "suspendu" || result == "exclu" || result == "retire" || result == "renonce"  writes historique, origine, suspendu_a, suspension  moves suspendu -> actif  calls ApiAcces.a_le_role, ApiAcces.agit_pour, ApiAcces.quatre_yeux, ApiPasserelle.notifier, ApiRef.etat_de, ApiRef.org_de_etat, ApiRef.organisation_existe, Journal.noter, OpAstreinte.trous, OpLicences.valide_a
+        signal exclure(h: Horodatage, op: Org, motif: String, par: String, valideur: String) -> OpStatut  requires h >= 0  ensures result == "inconnu" || result == "candidat" || result == "admis" || result == "actif" || result == "suspendu" || result == "exclu" || result == "retire" || result == "renonce"  writes historique  moves actif -> exclu, suspendu -> exclu  calls ApiAcces.a_le_role, ApiAcces.quatre_yeux, ApiPasserelle.notifier, ApiRef.etat_de, ApiRef.org_de_etat, Journal.noter, OpEngagements.resilier
+        signal retirer(h: Horodatage, op: Org, motif: String, par: String, valideur: String) -> OpStatut  requires h >= 0  ensures result == "inconnu" || result == "candidat" || result == "admis" || result == "actif" || result == "suspendu" || result == "exclu" || result == "retire" || result == "renonce"  reads candidat_depuis  writes historique  moves actif -> retire, admis -> retire, candidat -> renonce, suspendu -> retire  calls ApiAcces.a_le_role, ApiAcces.agit_pour, ApiAcces.quatre_yeux, ApiRef.etat_objet, ApiRef.objets_de, Journal.noter, OpEngagements.resilier
+        signal etat(op: Org) -> OpStatut  ensures result == "inconnu" || result == "candidat" || result == "admis" || result == "actif" || result == "suspendu" || result == "exclu" || result == "retire" || result == "renonce"  reads adhesion, candidat_depuis
         signal est_actif(op: Org, h: Horodatage) -> Bool  requires h >= 0  reads adhesion  calls OpLicences.valide_a
         signal repondant(op: Org, h: Horodatage) -> Org  requires h >= 0  reads adhesion  calls ApiRef.etat_de, ApiRef.org_de_etat, OpExercices.joignable
         signal suspensions_longues(h: Horodatage, n: Int) -> List<String>  requires n > 0 && n <= 10000  requires h >= 0  reads adhesion, origine, suspendu_a
@@ -7371,7 +7371,7 @@ skeleton OpMembres {
     // type Etat = String (nominal: never mixed with another type; build Etat(x), read to_string(q); literals take its type)
     // type Horodatage = Int where value >= 0 (nominal: never mixed with another type; build Horodatage(x), read to_int(q); literals take its type)
     // type OpOrigineSuspension = String where value == "conformite" || value == "etat" || value == "licence" || value == "joignabilite" (nominal: never mixed with another type; build OpOrigineSuspension(x), read to_string(q); literals take its type)
-    // type OpStatut = String where value == "inconnu" || value == "candidat" || value == "admis" || value == "actif" || value == "suspendu" || value == "exclu" || value == "retire" (nominal: never mixed with another type; build OpStatut(x), read to_string(q); literals take its type)
+    // type OpStatut = String where value == "inconnu" || value == "candidat" || value == "admis" || value == "actif" || value == "suspendu" || value == "exclu" || value == "retire" || value == "renonce" (nominal: never mixed with another type; build OpStatut(x), read to_string(q); literals take its type)
     // type Org = String (nominal: never mixed with another type; build Org(x), read to_string(q); literals take its type)
     // type Refus = String where value == "Habilitation" || value == "QuatreYeux" || value == "Existe" || value == "Inconnu" || value == "EtatInvalide" || value == "HorsBornes" || value == "Insuffisant" || value == "Perime" || value == "Suspendu" || value == "Ferme" || value == "Echu" || value == "NonEligible" || value == "Doublon" || value == "Incoherent" || value == "Plein" || value == "MotifRequis" || value == "Delai" || value == "Conflit" || value == "Confidentiel" (nominal: never mixed with another type; build Refus(x), read to_string(q); literals take its type)
     //~ inscrire_candidat fca1f1bb7f27cd54
@@ -7381,7 +7381,7 @@ skeleton OpMembres {
     //~ suspendre_auto 77cff368d270e2fd
     //~ retablir 2d5876ad11392131
     //~ exclure 28f4dded7bd1f072
-    //~ retirer 9480508c69cc223c
+    //~ retirer 0166684405bd83f3
     //~ etat 9a47bc8a829b7766
     //~ est_actif 07aec2ed8beef11f
     //~ repondant c703acd74cc06ddf
@@ -10640,4 +10640,4 @@ verify.before.RespSinistres.declare.requires = ["OpMembres.admis"]
 verify.before.RespSinistres.declare.via = "RespSinistres.op_de"
 package.edition = "2026"
 
-checksum sha256:06498af9a94ac1b1593e73b4fab23c7d7afae83f754ac0315b1643f628ede2de
+checksum sha256:511f396953ff6656d5544ccc9266123b43e05c9e7d30f756b3acb32026d1d18c

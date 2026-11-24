@@ -110,7 +110,7 @@ flesh RespSinistres {
         let ps = RespPolices.etat(police)
         require ps == "en_vigueur" || ps == "echue" else EtatInvalide "la police {police} est {ps}"
         let so = ApiOperateurs.statut(op)
-        require so != "candidat" && so != "inconnu" else NonEligible "{op} n'a jamais été admis à ORBITE"
+        require so != "candidat" && so != "inconnu" && so != "renonce" else NonEligible "{op} n'a jamais été admis à ORBITE"
         let dmg = RespReclamations.dommage(rec)
         require RespPolices.couvre_a(police, dmg) else Incoherent "dommage hors de la période de {police}"
         require to_int(montant) <= plafond else HorsBornes "montant supérieur au plafond de {police}"
