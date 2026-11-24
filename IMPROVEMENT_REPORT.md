@@ -111,7 +111,7 @@ Finding 1 above is answered in part. The ✗ were of three kinds, and of two cau
 | "needs the link written once" | 88 | 15 | the prover asked for one spelling of the guard; Orbite writes four others (an `[immutable]` slot, a key from `next_id()`, the guard on a sibling slot, `!slot.has`) |
 | "handler calls nest deeper than 12" | 26 | 0 | a limit of the prover; 40 now |
 | "a run … enters X without it" | 113 | 94 | both: getters the prover did not read through (fixed for five shapes), **and handlers that do not check** |
-| total ✗ / ✓ | 228 / 3,846 | 110 / 3,964 | |
+| total ✗ / ✓ | 227 / 3,846 | 109 / 3,964 | |
 
 **True defects of Orbite.** `ReeRisque.figer` was run: it enters `fige` on an open campaign, against the rule on its own edge. Five more handlers read the same way (`EvtRapports.classer`, `EvtCollisions.classer`, `EvtNuages.ouvrir`, `RespCommissions.saisir`, `EscPriseEnCharge.ouvrir_prise`; not run) — the frame states `moves a -> b when Other.state`, the body checks nothing, a comment says the caller does. Under the model `verify` uses (every handler is an entry point) these ✗ are right.
 
@@ -124,6 +124,8 @@ Finding 1 above is answered in part. The ✗ were of three kinds, and of two cau
 **The 63 "read, not decisive", begun (after 3.2.8).** Three forms the search lost, now read: a text chosen from a status by an `if` expression (`ConjRapprochement.clore_apres_tca`, 8 ✗; `ConfContradictoire.forclore`, 2), a getter's text for an unknown id that the handler had refused (`FdvFin.constater_sortie`, 5), a predicate that holds the status in a variable. 97 ✗ → 75 with the forms that followed (a status stale only when its own machine may have moved; a getter and a predicate with statements between; a link written under its guard or inside a branch: 15 links refused → 7). Two rules the code does not keep, found on the way and left to the owner:
 - `ConfContradictoire.forclore` enters `injoignable` when `PasMessages.echoue` holds, which is `en_defaut`, `escalade` or `signale`; the rule on its edge says `escalade | signale`. The code or the rule is one state too wide.
 - `RefObjet.constater_rentree` writes the campaign it is GIVEN in `rentree_de` and checks the object's CURRENT campaign (`ReeCampagne.constatee(objet)`): nothing says they are the same one.
+
+**Orbite passes (after 3.2.9, branch `orbite/vitrine`).** `verify prod.cell`: `VERIFY OK`, 0 ✗. Forty handlers read the machine their rule names (option A of D8, everywhere); four rules were decided (see the changelog: `forclore`, `renonce`, `solde`, `constater_rentree`). The counts of ✗ this report and the changelog gave since 3.2.7 were one too many (the closing line of a failed `verify` bears a ✗): 227 → 109 → 96 → 69 → 0. Left: 205 warnings of `check` (57 invariants that measure a value where they mean a count, 51 untyped values, 13 quadratic concatenations, 80 invariants between two slots), 1,271 ⚠ of `verify` (clauses checked at run time).
 
 **Decision D8 — a handler only another handler may call.** These handlers say "called by X alone" in a comment. Soma has no way to state it, so `verify` must take them as entry points, and it is right to fail them.
 - Option A: nothing; such a handler checks its own rule (a `require` reading the other machine), as the note of `verify` already says.

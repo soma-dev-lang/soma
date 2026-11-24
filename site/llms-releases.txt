@@ -3,21 +3,26 @@
 > Newest first. The language itself: https://soma-lang.dev/llms.txt (`soma docs agent`).
 > Every fix and its compatibility note: https://soma-lang.dev/CHANGELOG.md.
 
+Soma 3.2.10: the 69,000-line case study passes `soma verify` (0 ✗): each
+handler reads the state its rule is on, on the instance the rule's link
+names, just before the move. `verify` keeps a computed id handed to a
+handler as one id, and what a held status is known not to be.
+
 Soma 3.2.9: `verify` follows a text chosen from a status by an `if`
 expression, rules out a getter's text for an unknown id once the handler
 refuses it, keeps a status until its own machine may have moved, reads a
 link written under its guard (`if link.get(k) == () { link.set(k, v) }`).
-On a 69,000-line program: 97 ✗ → 70.
+On a 69,000-line program: 96 ✗ → 69.
 
 Soma 3.2.8: a ✗ between machines names the handler that makes the move and
 says whether it, or the entry the run came in by, reads the state the rule
 requires; no verdict changes. On a 69,000-line program whose handlers now
-read the machine their rule names: 110 ✗ → 97.
+read the machine their rule names: 109 ✗ → 96.
 
 Soma 3.2.7: `verify` reads a link written once in an `[immutable]` slot, at a
 key from `next_id()` or guarded on a sibling slot; a status through a getter
 that answers a text for an unknown id; a link written with the value just
-checked; calls 40 deep (12 before). On a 69,000-line program: 228 ✗ → 110.
+checked; calls 40 deep (12 before). On a 69,000-line program: 227 ✗ → 109.
 
 Soma 3.2.6: `verify` keeps what a handler call gives from a state instead of
 walking its body at every call: files of a 69,000-line program that took more
