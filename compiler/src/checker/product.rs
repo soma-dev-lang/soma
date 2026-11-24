@@ -758,6 +758,11 @@ impl<'a> Engine<'a> {
                     let key = self.key_of(&value.node, value.span, &inner);
                     Rc::make_mut(&mut inner.env).insert(name.clone(), key);
                 }
+                // (`let st = get_status(id) ?? "new"`, answered at the end: `return st`)
+                Statement::Let { name, value } if status_read(&value.node).is_some() => {
+                    let read = self.status_of(&value.node, &inner)?;
+                    Rc::make_mut(&mut inner.status).insert(name.clone(), read);
+                }
                 _ => alts.push(early_text(g)?),
             }
         }
@@ -1595,7 +1600,28 @@ impl<'a> Engine<'a> {
                             passing = self.branch(&condition.node, &inner, passing).1;
                             guarded = true;
                         }
-                        _ => return (all.clone(), all),
+                        // Anything else it does on the way: the refusals read so far
+                        // are still what it takes to answer true — unless it may
+                        // answer here. What the statement assigns holds another
+                        // value, what it may move is no longer what was read.
+                        _ => {
+                            let one = std::slice::from_ref(g);
+                            let mut answers = false;
+                            let mut names = assigned_in(one);
+                            super::literals::for_each_stmt_deep(one, &mut |st| match st {
+                                Statement::Return { value } if !matches!(value.node, Expr::Literal(Literal::Bool(false))) => answers = true,
+                                Statement::Let { name, .. } | Statement::For { var: name, .. } => names.push(name.clone()),
+                                _ => {}
+                            });
+                            if answers { return if guarded { (passing, all) } else { (all.clone(), all) }; }
+                            for n in names {
+                                Rc::make_mut(&mut inner.env).insert(n.clone(), format!("x:{}:r{}:{}", inner.uid, g.span.start, n));
+                                if inner.status.contains_key(&n) { Rc::make_mut(&mut inner.status).remove(&n); }
+                            }
+                            let mask = self.may_move(g, cell);
+                            if mask != 0 { moved(&mut inner, mask); }
+                            guarded = true;
+                        }
                     }
                 }
                 if guarded { return (self.branch(&value.node, &inner, passing).0, all); }

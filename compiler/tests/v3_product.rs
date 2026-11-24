@@ -920,3 +920,32 @@ fn a_status_outlives_what_moves_another_machine() {
     let (out, _) = linked("own_move_text", &own.replace("        transition(source, \"prete\")\n", "        transition(source, \"prete\")\n        let note = \"radiation {Org.radier(o)}\"\n"));
     assert!(out.contains("✗ entering Source.active while Org.inscrite"), "{out}");
 }
+
+/// A getter that holds the status in a variable before it answers, and a
+/// predicate with more to say than its refusals: what they read is read.
+#[test]
+fn a_getter_and_a_predicate_with_statements_between_are_read() {
+    // `let st = get_status(k) …  if … { return "text" }  return st`
+    let getter = LINKED.replace("        if connue.get(k) == () { return \"inconnu\" }\n        return get_status(k) ?? \"inconnue\"\n",
+        "        let st = get_status(k) ?? \"inconnue\"\n        if st == \"inconnue\" && connue.get(k) == () { return \"aucun\" }\n        return st\n");
+    assert_ne!(getter, LINKED);
+    let (out, code) = linked("getter_let", &getter);
+    assert!(out.contains("✓ entering Source.active while Org.inscrite via Source.fournisseur"), "{out}");
+    assert_eq!(code, 0, "{out}");
+    // a predicate: its first refusals are what it takes to answer true, whatever follows
+    let with = |body: &str| LINKED.replace("signal radiee(o: String) -> Bool }", "signal radiee(o: String) -> Bool  signal admise(o: String, n: Int) -> Bool }")
+        .replace("    on radiee(o: String) {", &format!("    on admise(o: String, n: Int) {{\n{body}    }}\n    on radiee(o: String) {{"))
+        .replace("        require e == \"inscrite\" else Non \"non\"\n", "        require Org.admise(o, h) else Non \"non\"\n");
+    let (out, code) = linked("predicate_more", &with("        let st = get_status(o) ?? \"inconnue\"\n        if st != \"inscrite\" { return false }\n        let lu = connue.get(o) ?? \"\"\n        for c in [1, 2, 3] {\n            if c == n { return false }\n        }\n        return lu == \"oui\"\n"));
+    assert!(out.contains("✓ entering Source.active while Org.inscrite via Source.fournisseur"), "{out}");
+    assert_eq!(code, 0, "{out}");
+    // it may answer true before the refusal: the refusal says nothing
+    let (out, _) = linked("predicate_early_true", &with("        if n == 0 { return true }\n        let st = get_status(o) ?? \"inconnue\"\n        if st != \"inscrite\" { return false }\n        return true\n"));
+    assert!(out.contains("✗ entering Source.active while Org.inscrite"), "{out}");
+    // the variable is given another value before the refusal reads it
+    let (out, _) = linked("predicate_reassigned", &with("        let st = get_status(o) ?? \"inconnue\"\n        if n > 0 { st = \"inscrite\" }\n        if st != \"inscrite\" { return false }\n        return true\n"));
+    assert!(out.contains("✗ entering Source.active while Org.inscrite"), "{out}");
+    // the machine is moved between the read and the refusal
+    let (out, _) = linked("predicate_moved", &with("        let st = get_status(o) ?? \"inconnue\"\n        let _ = radier(o)\n        if st != \"inscrite\" { return false }\n        return true\n"));
+    assert!(out.contains("✗ entering Source.active while Org.inscrite"), "{out}");
+}
