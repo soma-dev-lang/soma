@@ -573,3 +573,37 @@ cell Census {{
     assert!(took.as_secs() < 20, "the status of {n} ids read in a row: verify took {took:?}");
     let _ = std::fs::remove_dir_all(&dir);
 }
+
+// A handler reached through many paths (a gateway that routes to handlers
+// that route again) was walked once per path, from every state: four calls
+// at each of eleven levels are four million walks of the last body. What a call
+// gives from a state is asked once.
+#[test]
+fn a_handler_reached_through_many_paths_is_walked_once_per_state() {
+    let levels = 11;
+    let mut cells = String::new();
+    for i in 0..levels {
+        let next = if i + 1 == levels { "Pay.settle(id)".to_string() } else { format!("Route{}.go(id, k)", i + 1) };
+        cells += &format!(r#"
+cell Route{i} {{
+    face {{ signal go(id: String, k: Int) -> Int }}
+    on go(id: String, k: Int) {{
+        if k == 1 {{ {next} }}
+        if k == 2 {{ {next} }}
+        if k == 3 {{ {next} }}
+        {next}
+        return k
+    }}
+}}
+"#);
+    }
+    let source = format!("{TWO}{cells}");
+    let dir = project("paths", "[verify.before.\"Pay.paid\"]\nrequires = [\"Approval.signed_off\"]\n", &source);
+    let started = std::time::Instant::now();
+    let (out, code) = soma_in(&dir, &["verify", "app.cell"]);
+    let took = started.elapsed();
+    assert!(out.contains("✓ before Pay.paid requires Approval.signed_off"), "{out}");
+    assert_eq!(code, 0, "{out}");
+    assert!(took.as_secs() < 20, "a handler reached through 4^{levels} paths: verify took {took:?}");
+    let _ = std::fs::remove_dir_all(&dir);
+}

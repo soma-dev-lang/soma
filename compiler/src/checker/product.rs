@@ -105,12 +105,22 @@ fn id_key(k: u32) -> Option<Option<u32>> {
 /// that to decide the id.)
 fn undecide(states: &mut Set) {
     if states.len() < 64 { return; }
+    // (a state's print: its twin on a key has the print one term away — most
+    // states have no twin, and are not copied to find that out)
+    fn term(k: u32, v: bool) -> u64 { (((k as u64) << 1 | v as u64) + 1).wrapping_mul(0x9E37_79B9_7F4A_7C15).rotate_left(k % 63) }
+    fn print(x: &Exec) -> u64 {
+        let st = x.st.cur.iter().fold(x.st.seen, |a, c| (a.rotate_left(5) ^ *c as u64).wrapping_mul(0x517c_c1b7_2722_0a95));
+        x.bind.0.iter().fold(st, |a, (k, v)| a.wrapping_add(term(*k, *v)))
+    }
     let mut ids: HashMap<u32, Option<Option<u32>>> = HashMap::new();
     loop {
+        let prints: HashSet<u64, std::hash::BuildHasherDefault<Quick>> = states.iter().map(print).collect();
         let mut pairs: Vec<(Exec, u32)> = Vec::new();
         for x in states.iter() {
+            let mine = print(x);
             for (k, v) in &x.bind.0 {
                 if !*v { continue; }
+                if !prints.contains(&mine.wrapping_sub(term(*k, true)).wrapping_add(term(*k, false))) { continue; }
                 let Some(named) = *ids.entry(*k).or_insert_with(|| id_key(*k)) else { continue };
                 if named.is_some_and(|n| x.bind.contains_key(n)) { continue; }
                 let mut twin = x.clone();
@@ -142,6 +152,16 @@ fn without(states: Set, gone: impl Fn(&str) -> bool) -> Set {
 }
 
 type Set = BTreeSet<Exec>;
+
+/// `more` added to `into`. (A chain of `else if` hands the states that left
+/// it up through every level: added one by one each time, a hundred levels
+/// re-sorted the same states a hundred times.)
+fn join(into: &mut Set, mut more: Set) {
+    if more.is_empty() { return; }
+    if into.is_empty() { *into = more; return; }
+    if more.len() > into.len() { std::mem::swap(into, &mut more); }
+    if more.len() * 8 < into.len() { into.extend(more); } else { into.append(&mut more); }
+}
 
 struct Property {
     label: String,
@@ -292,7 +312,99 @@ struct Engine<'a> {
     slots_ix: HashMap<usize, HashSet<String>>,
     facts: HashMap<usize, Rc<StmtFacts>>,
     segs: HashMap<(usize, usize, String), Rc<Vec<Spanned<Expr>>>>,
+    /// (handler, the keys of its arguments, depth, state) → what the call gives
+    summaries: QuickMap<(usize, Vec<u32>), Rc<std::cell::RefCell<Slot>>>,
+    /// the literals and globals named since the run at hand began
+    named: std::cell::RefCell<BTreeSet<u32>>,
+    /// the deepest frame since the run at hand began
+    deepest: std::cell::Cell<usize>,
+    /// the keys of a call's arguments → their names in the callee
+    renames: HashMap<Vec<u32>, Rc<std::cell::RefCell<Rename>>>,
 }
+
+/// A hash for small keys made of numbers (the tables of `Engine::call` are
+/// asked once per state and per key at every call).
+#[derive(Default, Clone, Copy)]
+struct Quick(u64);
+impl std::hash::Hasher for Quick {
+    fn finish(&self) -> u64 { self.0 }
+    fn write(&mut self, bytes: &[u8]) { for b in bytes { self.write_u64(*b as u64); } }
+    fn write_u8(&mut self, n: u8) { self.write_u64(n as u64) }
+    fn write_u32(&mut self, n: u32) { self.write_u64(n as u64) }
+    fn write_usize(&mut self, n: usize) { self.write_u64(n as u64) }
+    fn write_u64(&mut self, n: u64) { self.0 = (self.0.rotate_left(5) ^ n).wrapping_mul(0x517c_c1b7_2722_0a95); }
+}
+type QuickMap<K, V> = HashMap<K, V, std::hash::BuildHasherDefault<Quick>>;
+
+/// The prefixes a key may bear before the id it is about (`§link:ok:…`), and that id.
+fn peel(key: &str) -> (&str, &str) {
+    let mut rest = key;
+    loop {
+        let next = ["§", "either:", "ok:", "link:"].iter().find_map(|p| rest.strip_prefix(p));
+        match next { Some(r) => rest = r, None => break }
+    }
+    (&key[..key.len() - rest.len()], rest)
+}
+
+/// A literal or a global: the same id wherever it is named.
+fn global_base(base: &str) -> bool { base.starts_with("lit:") || base.starts_with("g:") }
+
+/// The names a call gives the ids it hands over (see `Engine::call`).
+struct Rename {
+    /// the caller's id → its name in the callee
+    bases: Vec<(String, String)>,
+    /// per parameter, the key it holds in the callee
+    canon: Vec<Option<String>>,
+    there: QuickMap<u32, Seen>,
+    back: QuickMap<u32, u32>,
+}
+
+impl Rename {
+    /// A key of the caller, for the callee.
+    fn to(&mut self, k: u32) -> Seen {
+        if let Some(c) = self.there.get(&k) { return *c; }
+        let text: Rc<str> = KEYS.with(|t| t.borrow().1[k as usize].clone());
+        let (prefix, base) = peel(&text);
+        let c = if global_base(base) { Seen::Global(kid(base)) } else {
+            match self.bases.iter().find(|b| b.0 == base) { Some(b) => Seen::As(kid(&format!("{}{}", prefix, b.1))), None => Seen::Not }
+        };
+        self.there.insert(k, c);
+        if let Seen::As(c) = c { self.back.insert(c, k); }
+        c
+    }
+    /// A key the callee left, as the caller knows it.
+    fn from(&mut self, c: u32) -> u32 {
+        if let Some(k) = self.back.get(&c) { return *k; }
+        let text: Rc<str> = KEYS.with(|t| t.borrow().1[c as usize].clone());
+        let (prefix, base) = peel(&text);
+        let k = match self.bases.iter().find(|b| b.1 == base) { Some(b) => kid(&format!("{}{}", prefix, b.0)), None => c };
+        self.back.insert(c, k);
+        k
+    }
+}
+
+/// A key of the caller, for a callee: one it cannot read, one of an id it is
+/// handed (under the callee's name for it), one of a literal or a global
+/// (that id: read only by a callee that names it).
+#[derive(Clone, Copy)]
+enum Seen { Not, As(u32), Global(u32) }
+
+/// What is known of a handler called with given arguments (see `Engine::call`).
+#[derive(Default)]
+struct Slot {
+    /// the literals and globals a run of it has named: what it gives depends
+    /// on the choices made for these, and for no other
+    names: BTreeSet<u32>,
+    /// state → what the call gives (where the nesting limit is not near)
+    known: QuickMap<Exec, Rc<Summary>>,
+    /// the same at a given depth, for a run that reached the limit
+    deep: QuickMap<(usize, Exec), Rc<Summary>>,
+}
+
+/// What a handler gives from one state (see `Engine::call`).
+struct Summary { /// it leaves the state as it was
+    same: bool, /// how many calls deep it went
+    height: usize, ends: Vec<Exec>, moves: usize, broke: Vec<usize>, unsupported: Option<String> }
 
 /// What `block` needs of a statement, whatever state it is run from.
 struct StmtFacts {
@@ -438,6 +550,13 @@ impl<'a> Engine<'a> {
     }
 
     fn key_of(&self, e: &Expr, at: Span, frame: &Frame) -> String {
+        let key = self.key_at(e, at, frame);
+        let base = peel(&key).1;
+        if global_base(base) { self.named.borrow_mut().insert(kid(base)); }
+        key
+    }
+
+    fn key_at(&self, e: &Expr, at: Span, frame: &Frame) -> String {
         match e {
             Expr::Ident(v) => frame.env.get(v).cloned().unwrap_or_else(|| format!("g:{}:{}", frame.cell.name, v)),
             // (`"{x}"` is computed: its text is not its value)
@@ -467,6 +586,7 @@ impl<'a> Engine<'a> {
             let m = self.machine_of(frame.cell)?;
             return Some((m, self.key_of(&id.node, id.span, frame), fallback.map(|f| f.to_string())));
         }
+        self.deepest.set(self.deepest.get().max(frame.depth));
         if frame.depth >= 12 { return None; }
         let (cell, on, args): (&'a CellDef, &'a OnSection, &[Spanned<Expr>]) = match e {
             Expr::MethodCall { target, method, args } => match &target.node {
@@ -682,7 +802,7 @@ impl<'a> Engine<'a> {
                 let mut after = Set::new();
                 after.insert(next);
                 let flow = self.block(&effect, frame, after, entry);
-                out.extend(flow.normal); out.extend(flow.returned); out.extend(flow.broke); out.extend(flow.continued);
+                join(&mut out, flow.normal); join(&mut out, flow.returned); join(&mut out, flow.broke); join(&mut out, flow.continued);
             }
         }
         // (a computed id is read once: its choice is not kept)
@@ -694,6 +814,7 @@ impl<'a> Engine<'a> {
         // a handler that cannot move a machine of this search leaves the state
         // followed as it was, whether it succeeds or fails
         if let Some(p) = &self.prune { if !p.contains(&format!("{}.{}", cell.name, on.signal_name)) { return states; } }
+        self.deepest.set(self.deepest.get().max(frame.depth));
         if frame.depth >= 12 {
             self.unsupported.get_or_insert(format!("handler calls nest deeper than 12 (through {}.{}) — recursion is not explored", cell.name, on.signal_name));
             return states;
@@ -707,25 +828,157 @@ impl<'a> Engine<'a> {
             super::literals::for_each_expr(&on.body, &mut |e| if matches!(e, Expr::FnCall { name, .. } if name.starts_with("await_")) { waits = true; });
             if waits { self.unsupported.get_or_insert(format!("`{}.{}` is a `[task]` that awaits, called by a handler: the caller goes on from the wait, which this search does not follow", cell.name, on.signal_name)); }
         }
-        let uid = format!("{}/{}", frame.uid, at.start);
+        // WHAT A CALL DOES IS ASKED ONCE. A handler reads the state of the
+        // machines, the choices made for the ids it is handed (and for the
+        // literals and globals it names), and nothing else of its caller. So
+        // it is run from ONE state at a time, under names that do not depend
+        // on where it is called from — its parameters hold `e:#0`, `l:#1`… —
+        // and what it gives from that state is kept: the next call with the
+        // same handler, arguments (up to their names) and state is answered
+        // from it, wherever in the program it is. A gateway that reaches a
+        // handler through a hundred paths walked its body a hundred times
+        // from each state.
+        let real: Vec<Option<String>> = (0..on.params.len()).map(|i| args.get(i).map(|a| self.key_of(&a.node, a.span, frame))).collect();
+        let table = {
+            let sig: Vec<u32> = real.iter().map(|k| k.as_deref().map_or(u32::MAX, kid)).collect();
+            self.renames.entry(sig).or_insert_with(|| {
+                let mut bases: Vec<(String, String)> = Vec::new();
+                let canon: Vec<Option<String>> = real.iter().map(|k| k.as_deref().map(|k| {
+                    let (prefix, base) = peel(k);
+                    if global_base(base) { return k.to_string(); }
+                    let n = match bases.iter().position(|b| b.0 == base) {
+                        Some(n) => n,
+                        None => { bases.push((base.to_string(), format!("{}:#{}", base.split(':').next().unwrap_or(""), bases.len()))); bases.len() - 1 }
+                    };
+                    format!("{}{}", prefix, bases[n].1)
+                })).collect();
+                Rc::new(std::cell::RefCell::new(Rename { bases, canon, there: Default::default(), back: Default::default() }))
+            }).clone()
+        };
+        let uid = format!("^{:x}", on as *const OnSection as usize);
         let mut env = HashMap::new();
         for (i, p) in on.params.iter().enumerate() {
-            let key = match args.get(i) {
-                Some(a) => self.key_of(&a.node, a.span, frame),
-                None => format!("x:{}:p{}", uid, i),
-            };
-            env.insert(p.name.clone(), key);
+            env.insert(p.name.clone(), table.borrow().canon[i].clone().unwrap_or_else(|| format!("x:{}:p{}", uid, i)));
         }
+        let args_key: Vec<u32> = table.borrow().canon.iter().map(|k| k.as_deref().map_or(u32::MAX, kid)).collect();
         let inner = Frame { cell, env: Rc::new(env), uid: uid.as_str().into(), depth: frame.depth + 1, status: Rc::default() };
-        let flow = self.block(&on.body, &inner, states, entry);
-        let mut out = flow.normal;
-        out.extend(flow.returned);
-        out.extend(flow.broke);
-        out.extend(flow.continued);
-        // the callee's own choices end with it
         let local = format!(":{}", uid);
-        // (…and the outcomes of its `try`s: `ok:l:…`, read only through its own variables)
-        let mut out = without(out, |k| { let k = k.trim_start_matches('§').trim_start_matches("either:").trim_start_matches("ok:"); (k.starts_with("l:") || k.starts_with("x:")) && k.contains(&local) });
+        // (states that left the caller from inside the expression at hand are the caller's)
+        let pending = (std::mem::take(&mut self.returned), std::mem::take(&mut self.broke), std::mem::take(&mut self.continued));
+        // (most calls leave most states as they were: those are not rebuilt)
+        let slot = self.summaries.entry((on as *const OnSection as usize, args_key.clone())).or_default().clone();
+        let handed: Vec<u32> = table.borrow().canon.iter().flatten().map(|k| peel(k).1).filter(|b| global_base(b)).map(kid).collect();
+        let mut out = Set::new();
+        let mut same: Vec<bool> = Vec::with_capacity(states.len());
+        let mut answered = false;
+        for x in &states {
+            // what the callee can read of `x`: the ids it is handed, and the
+            // literals and globals a run of it has named
+            let view = |slot: &Slot| {
+                let mut t = table.borrow_mut();
+                let mut seen = Bind::default();
+                for (k, v) in &x.bind.0 {
+                    match t.to(*k) { Seen::As(c) => seen.insert(c, *v), Seen::Global(b) if slot.names.contains(&b) => seen.insert(*k, *v), _ => {} }
+                }
+                Exec { st: x.st, bind: seen }
+            };
+            let mut key = view(&slot.borrow());
+            let found = {
+                let slot = slot.borrow();
+                slot.known.get(&key).filter(|s| frame.depth + 1 + s.height < 12).or_else(|| slot.deep.get(&(frame.depth, key.clone()))).cloned()
+            };
+            let summary = match found {
+                Some(s) => {
+                    answered = true;
+                    self.deepest.set(self.deepest.get().max(frame.depth + 1 + s.height));
+                    s
+                }
+                None => {
+                    let (moves, broken, unsupported) = (self.moves, self.broken.len(), self.unsupported.is_none());
+                    let names_before = slot.borrow().names.len();
+                    let named = std::mem::replace(&mut *self.named.borrow_mut(), handed.iter().copied().collect());
+                    let deepest = self.deepest.replace(frame.depth + 1);
+                    // (it is run with every literal and global of `x`: which of them it names is not known yet)
+                    let mut init = Set::new();
+                    init.insert({
+                        let mut t = table.borrow_mut();
+                        let mut all = Bind::default();
+                        for (k, v) in &x.bind.0 { match t.to(*k) { Seen::As(c) => all.insert(c, *v), Seen::Global(_) => all.insert(*k, *v), Seen::Not => {} } }
+                        Exec { st: x.st, bind: all }
+                    });
+                    let flow = self.block(&on.body, &inner, init, entry);
+                    let mut ends = flow.normal;
+                    join(&mut ends, flow.returned);
+                    join(&mut ends, flow.broke);
+                    join(&mut ends, flow.continued);
+                    let mine = std::mem::replace(&mut *self.named.borrow_mut(), named);
+                    self.named.borrow_mut().extend(mine.iter().copied());
+                    let height = self.deepest.get() - (frame.depth + 1);
+                    self.deepest.set(self.deepest.get().max(deepest));
+                    {
+                        // a name it had not named before: what was kept was asked with less than it reads
+                        let mut slot = slot.borrow_mut();
+                        if !mine.is_subset(&slot.names) {
+                            slot.names.extend(mine);
+                            slot.known.clear();
+                            slot.deep.clear();
+                        }
+                    }
+                    // (…or one a call of itself, further down, named)
+                    if slot.borrow().names.len() != names_before { key = view(&slot.borrow()); }
+                    // the callee's own choices end with it
+                    // (…and the outcomes of its `try`s: `ok:l:…`, read only through its own variables);
+                    // a literal or a global it did not name is as it was: the caller's
+                    let names = slot.borrow().names.clone();
+                    let mut bases: QuickMap<u32, bool> = Default::default();
+                    let ends: Set = without(ends, |k| { let k = k.trim_start_matches('§').trim_start_matches("either:").trim_start_matches("ok:"); (k.starts_with("l:") || k.starts_with("x:")) && k.contains(&local) })
+                        .into_iter().map(|mut e| {
+                            e.bind.0.retain(|(k, _)| *bases.entry(*k).or_insert_with(|| {
+                                let text: Rc<str> = KEYS.with(|t| t.borrow().1[*k as usize].clone());
+                                let base = peel(&text).1;
+                                !global_base(base) || names.contains(&kid(base))
+                            }));
+                            e
+                        }).collect();
+                    let ends: Vec<Exec> = ends.into_iter().collect();
+                    let s = Rc::new(Summary {
+                        same: ends.len() == 1 && ends[0] == key,
+                        height,
+                        ends,
+                        moves: self.moves - moves,
+                        broke: if self.broken.len() > broken { self.props.iter().enumerate().map(|(i, _)| i).filter(|i| self.broken.contains_key(i)).collect() } else { Vec::new() },
+                        unsupported: if unsupported { self.unsupported.clone() } else { None },
+                    });
+                    let mut slot = slot.borrow_mut();
+                    if frame.depth + 1 + height < 12 { slot.known.insert(key, s.clone()); } else { slot.deep.insert((frame.depth, key), s.clone()); }
+                    s
+                }
+            };
+            self.moves += summary.moves;
+            for i in &summary.broke { self.broken.entry(*i).or_insert_with(|| entry.to_string()); }
+            if let Some(why) = &summary.unsupported { self.unsupported.get_or_insert_with(|| why.clone()); }
+            same.push(summary.same);
+            if summary.same { continue; }
+            let mut t = table.borrow_mut();
+            let slot = slot.borrow();
+            let rest: Vec<(u32, bool)> = x.bind.0.iter().filter(|(k, _)| match t.to(*k) { Seen::Not => true, Seen::As(_) => false, Seen::Global(b) => !slot.names.contains(&b) }).copied().collect();
+            for e in &summary.ends {
+                let mut y = Exec { st: e.st, bind: Bind(rest.clone()) };
+                for (k, v) in &e.bind.0 { y.bind.insert(t.from(*k), *v); }
+                out.insert(y);
+            }
+        }
+        // (what an answer kept depends on is what the caller's own depends on)
+        if answered { self.named.borrow_mut().extend(slot.borrow().names.iter().copied()); }
+        if same.iter().all(|s| *s) {
+            self.returned = pending.0; self.broke = pending.1; self.continued = pending.2;
+            return states;
+        }
+        let mut states = states;
+        let mut kept = same.into_iter();
+        states.retain(|_| kept.next().unwrap_or(true));
+        join(&mut out, states);
+        self.returned = pending.0; self.broke = pending.1; self.continued = pending.2;
         undecide(&mut out);
         out
     }
@@ -783,7 +1036,7 @@ impl<'a> Engine<'a> {
             Expr::BinaryOp { left, op: BinOp::And | BinOp::Or, right } => {
                 let s = self.expr(left, frame, states, entry);
                 let mut out = self.expr(right, frame, s.clone(), entry);
-                out.extend(s);
+                join(&mut out, s);
                 out
             }
             Expr::FnCall { name, args } => self.fn_call(name, args, e.span, frame, states, entry),
@@ -794,7 +1047,7 @@ impl<'a> Engine<'a> {
             Expr::Record { fields, .. } => { let mut s = states; for (_, f) in fields { s = self.expr(f, frame, s, entry); } s }
             Expr::ListLiteral(items) => { let mut s = states; for i in items { s = self.expr(i, frame, s, entry); } s }
             // a failed `try` undoes what it did: the state it started from
-            Expr::Try(inner) => { let mut out = self.expr(inner, frame, states.clone(), entry); out.extend(states); out }
+            Expr::Try(inner) => { let mut out = self.expr(inner, frame, states.clone(), entry); join(&mut out, states); out }
             Expr::Pipe { left, right } => {
                 let s = self.expr(left, frame, states, entry);
                 self.expr(right, frame, s, entry)
@@ -812,7 +1065,7 @@ impl<'a> Engine<'a> {
                 self.repeat(states, |me, s| {
                     let flow = me.block(stmts, &inner, Self::forget(s, &keys, &inner), entry);
                     let mut out = me.expr(result, &inner, flow.normal, entry);
-                    out.extend(flow.returned); out.extend(flow.broke); out.extend(flow.continued);
+                    join(&mut out, flow.returned); join(&mut out, flow.broke); join(&mut out, flow.continued);
                     out
                 })
             }
@@ -826,9 +1079,9 @@ impl<'a> Engine<'a> {
                 let b = self.block(else_body, frame, no, entry);
                 out.extend(self.expr(else_result, frame, b.normal, entry));
                 // a `return` in a branch ends the handler there
-                self.returned.extend(a.returned); self.returned.extend(b.returned);
-                self.broke.extend(a.broke); self.broke.extend(b.broke);
-                self.continued.extend(a.continued); self.continued.extend(b.continued);
+                join(&mut self.returned, a.returned); join(&mut self.returned, b.returned);
+                join(&mut self.broke, a.broke); join(&mut self.broke, b.broke);
+                join(&mut self.continued, a.continued); join(&mut self.continued, b.continued);
                 out
             }
             Expr::Match { subject, arms } => {
@@ -856,7 +1109,7 @@ impl<'a> Engine<'a> {
                     carried.extend(Self::forget(t.clone(), &keys, frame));
                     let flow = self.block(&arm.body, frame, t, entry);
                     out.extend(self.expr(&arm.result, frame, flow.normal, entry));
-                    self.returned.extend(flow.returned); self.broke.extend(flow.broke); self.continued.extend(flow.continued);
+                    join(&mut self.returned, flow.returned); join(&mut self.broke, flow.broke); join(&mut self.continued, flow.continued);
                 }
                 out
             }
@@ -917,7 +1170,7 @@ impl<'a> Engine<'a> {
             "_coalesce" if args.len() == 2 => {
                 let s = self.expr(&args[0], frame, states, entry);
                 let mut out = self.expr(&args[1], frame, s.clone(), entry);
-                out.extend(s);
+                join(&mut out, s);
                 out
             }
             // `std.f(a…)`: the builtin f
@@ -1150,12 +1403,12 @@ impl<'a> Engine<'a> {
             }
             Constraint::Predicate { args, .. } => { let mut s = states; for a in args { s = self.expr(a, frame, s, entry); } s }
             Constraint::And(a, b) => { let s = self.constraint(&a.node, frame, states, entry); self.constraint(&b.node, frame, s, entry) }
-            Constraint::Or(a, b) => { let s = self.constraint(&a.node, frame, states.clone(), entry); let mut out = self.constraint(&b.node, frame, states, entry); out.extend(s); out }
+            Constraint::Or(a, b) => { let s = self.constraint(&a.node, frame, states.clone(), entry); let mut out = self.constraint(&b.node, frame, states, entry); join(&mut out, s); out }
             Constraint::Not(a) => {
                 // the calls inside run; which states pass is not narrowed
                 let before = states.clone();
                 let mut out = self.constraint(&a.node, frame, states, entry);
-                out.extend(before);
+                join(&mut out, before);
                 out
             }
             Constraint::Descriptive(_) => states,
@@ -1260,10 +1513,10 @@ impl<'a> Engine<'a> {
                     let (yes, no) = self.narrow(&condition.node, &local, &before, s, moves_before);
                     let a = self.block(then_body, &local, yes, entry);
                     let b = self.block(else_body, &local, no, entry);
-                    flow.normal.extend(a.normal); flow.normal.extend(b.normal);
-                    flow.returned.extend(a.returned); flow.returned.extend(b.returned);
-                    flow.broke.extend(a.broke); flow.broke.extend(b.broke);
-                    flow.continued.extend(a.continued); flow.continued.extend(b.continued);
+                    join(&mut flow.normal, a.normal); join(&mut flow.normal, b.normal);
+                    join(&mut flow.returned, a.returned); join(&mut flow.returned, b.returned);
+                    join(&mut flow.broke, a.broke); join(&mut flow.broke, b.broke);
+                    join(&mut flow.continued, a.continued); join(&mut flow.continued, b.continued);
                     let mut read = Vec::new();
                     tries_read(&condition.node, &local, &mut read);
                     for k in read { rejoin(&mut flow.normal, &k); }
@@ -1278,13 +1531,13 @@ impl<'a> Engine<'a> {
                     let (mut returned, mut broke) = (Set::new(), Set::new());
                     let all = self.repeat(s, |me, x| {
                         let f = me.block(body, &inner, Self::forget(x, &keys, &inner), entry);
-                        returned.extend(f.returned); broke.extend(f.broke);
+                        join(&mut returned, f.returned); join(&mut broke, f.broke);
                         // (`continue` goes to the next turn, like the end of the body)
-                        let mut next = f.normal; next.extend(f.continued);
+                        let mut next = f.normal; join(&mut next, f.continued);
                         next
                     });
-                    flow.normal = all; flow.normal.extend(broke);
-                    flow.returned.extend(returned);
+                    flow.normal = all; join(&mut flow.normal, broke);
+                    join(&mut flow.returned, returned);
                 }
                 Statement::While { condition, body, .. } => {
                     let (mut returned, mut broke) = (Set::new(), Set::new());
@@ -1292,16 +1545,16 @@ impl<'a> Engine<'a> {
                     let all = self.repeat(cur, |me, x| {
                         let x = me.expr(condition, &inner, Self::forget(x, &keys, &inner), entry);
                         let f = me.block(body, &inner, x, entry);
-                        returned.extend(f.returned); broke.extend(f.broke);
+                        join(&mut returned, f.returned); join(&mut broke, f.broke);
                         // (`continue` goes to the next turn, like the end of the body)
-                        let mut next = f.normal; next.extend(f.continued);
+                        let mut next = f.normal; join(&mut next, f.continued);
                         next
                     });
-                    flow.normal = self.expr(condition, &inner, all, entry); flow.normal.extend(broke);
-                    flow.returned.extend(returned);
+                    flow.normal = self.expr(condition, &inner, all, entry); join(&mut flow.normal, broke);
+                    join(&mut flow.returned, returned);
                 }
-                Statement::Break => { flow.broke.extend(cur); }
-                Statement::Continue => { flow.continued.extend(cur); }
+                Statement::Break => { join(&mut flow.broke, cur); }
+                Statement::Continue => { join(&mut flow.continued, cur); }
                 Statement::ExprStmt { expr } => { flow.normal = self.expr(expr, &local, cur, entry); }
                 Statement::IndexSet { index, value, .. } => { flow.normal = self.exprs(&[index, value], &local, cur, entry); }
                 Statement::Require { constraint, .. } => { flow.normal = self.constraint(&constraint.node, &local, cur, entry); }
@@ -1338,14 +1591,14 @@ impl<'a> Engine<'a> {
                         // drives the program): it may run, or not
                         let inside = self.parent_of.get(&(cell as *const CellDef as usize)).copied() == Some(me);
                         let after = self.call(cell, on, args, &local, st.span, s.clone(), entry);
-                        if inside { s.extend(after); } else { s = after; }
+                        if inside { join(&mut s, after); } else { s = after; }
                     }
                     flow.normal = s;
                 }
             }
-            flow.returned.extend(std::mem::take(&mut self.returned));
-            flow.broke.extend(std::mem::take(&mut self.broke));
-            flow.continued.extend(std::mem::take(&mut self.continued));
+            join(&mut flow.returned, std::mem::take(&mut self.returned));
+            join(&mut flow.broke, std::mem::take(&mut self.broke));
+            join(&mut flow.continued, std::mem::take(&mut self.continued));
             let over: Vec<(u32, u32)> = tried.iter().filter(|t| t.2 == at).map(|t| (t.0, t.1)).collect();
             forget_tries(&mut flow.normal, &over);
             // a variable assigned in a block inside this statement (a
@@ -1795,7 +2048,7 @@ fn attempt(exposed: &Program, cells: &[&CellDef], group: &[&Spec], cone: bool, s
             for c in &exposed.cells { walk(&c.node, &mut out); }
             out
         }, returned: Set::new(), broke: Set::new(), continued: Set::new(),
-            cell_ix: HashMap::new(), handler_ix: HashMap::new(), first_ix: HashMap::new(), slots_ix: HashMap::new(), facts: HashMap::new(), segs: HashMap::new() };
+            cell_ix: HashMap::new(), handler_ix: HashMap::new(), first_ix: HashMap::new(), slots_ix: HashMap::new(), facts: HashMap::new(), segs: HashMap::new(), summaries: Default::default(), named: Default::default(), deepest: Default::default(), renames: HashMap::new() };
         engine.index();
         let mut start = Abs { cur: [0; 12], seen: 0 };
         for (m, mach) in engine.machines.iter().enumerate() { start.cur[m] = mach.initial as u8; }
@@ -1962,42 +2215,50 @@ pub fn check(program: &Program, specs: &[Spec]) -> Vec<super::verify::VerifyResu
     let jobs: Vec<(usize, &Vec<usize>)> = preps.iter().enumerate()
         .flat_map(|(g, p)| p.iter().flat_map(move |p| p.cones.iter().map(move |members| (g, members)))).collect();
     let (cells_ref, exposed_ref, preps_ref) = (&cells[..], &exposed, &preps);
-    let search = |g: usize, members: &Vec<usize>| -> Vec<(usize, usize, Vec<VerifyCheck>)> {
-        let p = preps_ref[g].as_ref().expect("a job of a prepared group");
-        let run = |specs: &[&Spec], shared: bool| attempt(exposed_ref, cells_ref, specs, true, shared, p.assumption.as_ref(), p.assuming.as_ref(), p.via.as_ref(), p.link.as_ref());
-        if members.len() > 1 {
-            let specs: Vec<&Spec> = members.iter().map(|i| p.group[*i]).collect();
-            let all = run(&specs, true);
-            if all.len() == members.len() && all.iter().all(|c| matches!(c, VerifyCheck::Pass(_))) {
-                return members.iter().zip(all).map(|(i, c)| (g, *i, vec![c])).collect();
-            }
-        }
-        members.iter().map(|i| (g, *i, run(&[p.group[*i]], false))).collect()
+    // A job: the rules of one cone searched together (`shared`), or one rule alone.
+    let search = |job: &(usize, Vec<usize>, bool)| -> Vec<VerifyCheck> {
+        let p = preps_ref[job.0].as_ref().expect("a job of a prepared group");
+        let specs: Vec<&Spec> = job.1.iter().map(|i| p.group[*i]).collect();
+        attempt(exposed_ref, cells_ref, &specs, true, job.2, p.assumption.as_ref(), p.assuming.as_ref(), p.via.as_ref(), p.link.as_ref())
     };
-    let mut per_rule: Vec<Vec<Option<Vec<VerifyCheck>>>> = preps.iter().map(|p| p.as_ref().map_or(Vec::new(), |p| p.group.iter().map(|_| None).collect())).collect();
-    let workers = std::thread::available_parallelism().map(|n| n.get()).unwrap_or(1).min(jobs.len());
-    if workers <= 1 {
-        for (g, members) in &jobs { for (g, i, out) in search(*g, members) { per_rule[g][i] = Some(out); } }
-    } else {
+    let names = super::desugar::program_names(exposed_ref).1;
+    let run_all = |jobs: &[(usize, Vec<usize>, bool)]| -> Vec<Vec<VerifyCheck>> {
+        let workers = std::thread::available_parallelism().map(|n| n.get()).unwrap_or(1).min(jobs.len());
+        if workers <= 1 { return jobs.iter().map(&search).collect(); }
         let next = std::sync::atomic::AtomicUsize::new(0);
-        let done: std::sync::Mutex<Vec<(usize, usize, Vec<VerifyCheck>)>> = std::sync::Mutex::new(Vec::new());
+        let done: std::sync::Mutex<Vec<(usize, Vec<VerifyCheck>)>> = std::sync::Mutex::new(Vec::new());
         std::thread::scope(|scope| {
             for _ in 0..workers {
                 // (a search recurses through the handlers it follows, as deep as they call)
                 std::thread::Builder::new().stack_size(512 * 1024 * 1024).spawn_scoped(scope, || {
                     // ("is this name a cell?" is asked of the thread's own program)
-                    super::names::set_program_cells(super::desugar::program_names(exposed_ref).1);
+                    super::names::set_program_cells(names.clone());
                     loop {
                         let n = next.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-                        let Some((g, members)) = jobs.get(n) else { break };
-                        let found = search(*g, members);
-                        done.lock().unwrap().extend(found);
+                        let Some(job) = jobs.get(n) else { break };
+                        let found = search(job);
+                        done.lock().unwrap().push((n, found));
                     }
                 }).expect("spawn a search thread");
             }
         });
-        for (g, i, out) in done.into_inner().unwrap() { per_rule[g][i] = Some(out); }
+        let mut done = done.into_inner().unwrap();
+        done.sort_by_key(|d| d.0);
+        done.into_iter().map(|d| d.1).collect()
+    };
+    let mut per_rule: Vec<Vec<Option<Vec<VerifyCheck>>>> = preps.iter().map(|p| p.as_ref().map_or(Vec::new(), |p| p.group.iter().map(|_| None).collect())).collect();
+    let first: Vec<(usize, Vec<usize>, bool)> = jobs.iter().map(|(g, members)| (*g, (*members).clone(), members.len() > 1)).collect();
+    // a rule the shared search of its cone proves is proven; one it does not is
+    // searched alone, for the run its own search finds — these, too, on every core
+    let mut alone: Vec<(usize, Vec<usize>, bool)> = Vec::new();
+    for (job, found) in first.iter().zip(run_all(&first)) {
+        if !job.2 { per_rule[job.0][job.1[0]] = Some(found); continue; }
+        if found.len() != job.1.len() { alone.extend(job.1.iter().map(|i| (job.0, vec![*i], false))); continue; }
+        for (i, c) in job.1.iter().zip(found) {
+            if matches!(c, VerifyCheck::Pass(_)) { per_rule[job.0][*i] = Some(vec![c]); } else { alone.push((job.0, vec![*i], false)); }
+        }
     }
+    for (job, found) in alone.iter().zip(run_all(&alone)) { per_rule[job.0][job.1[0]] = Some(found); }
     for ((pre, prep), found) in said.into_iter().zip(&preps).zip(per_rule) {
         result.checks.extend(pre);
         let Some(Prep { assuming, via, group, link, assumption, .. }) = prep else { continue };
