@@ -844,6 +844,21 @@ impl<'a> Engine<'a> {
         (yes, no)
     }
 
+    /// The instance `k` names is `v` (the link was just written so, or a
+    /// `require link.get(k) == v` passed): where `k` is the followed one, `v`
+    /// is the followed other instance — a state that had decided it is not
+    /// is no run.
+    fn names(&self, states: Set, k: &str, v: &str) -> Set {
+        let (followed, mut rest) = self.split(&states, k);
+        let is_other = kid(&format!("§{}", v));
+        for mut x in followed {
+            if x.bind.get(is_other) == Some(false) { continue; }
+            x.bind.insert(is_other, true);
+            rest.insert(x);
+        }
+        rest
+    }
+
     /// `slot.get(k)` / `slot[k]` of the link slot, read in its cell.
     fn is_link(&self, target: &Expr, frame: &Frame) -> bool {
         matches!((&self.link, target), (Some((c, sl)), Expr::Ident(t)) if t == sl && frame.cell.name == *c && !frame.env.contains_key(t))
@@ -1532,7 +1547,20 @@ impl<'a> Engine<'a> {
                 let s = self.exprs(&[left, right], frame, states, entry);
                 // `require get_status(id) == "x" else …`: only those states go on
                 let cond = Expr::CmpOp { left: Box::new(left.clone()), op: *op, right: Box::new(right.clone()) };
-                self.narrow(&cond, frame, &before, s, moves_before).0
+                let passed = self.narrow(&cond, frame, &before, s, moves_before).0;
+                // `require link.get(k) == v else …`: past it, the instance `k` names is `v`
+                if *op == CmpOp::Eq && self.link.is_some() {
+                    // (`require (a == b) else …` is the comparison `(a == b) == true`)
+                    let (left, right) = match (&left.node, &right.node) {
+                        (Expr::CmpOp { left: l, op: CmpOp::Eq, right: r }, Expr::Literal(Literal::Bool(true))) => (&**l, &**r),
+                        _ => (left, right),
+                    };
+                    let (l, r) = (self.key_of(&left.node, left.span, frame), self.key_of(&right.node, right.span, frame));
+                    let named = |a: &str, b: &Expr| a.strip_prefix("link:").filter(|_| matches!(b, Expr::Ident(v) if frame.env.contains_key(v))).map(|k| k.to_string());
+                    if let Some(k) = named(&l, &right.node) { return self.names(passed, &k, &r); }
+                    if let Some(k) = named(&r, &left.node) { return self.names(passed, &k, &l); }
+                }
+                passed
             }
             Constraint::Predicate { args, .. } => { let mut s = states; for a in args { s = self.expr(a, frame, s, entry); } s }
             Constraint::And(a, b) => { let s = self.constraint(&a.node, frame, states, entry); self.constraint(&b.node, frame, s, entry) }
@@ -1752,15 +1780,7 @@ impl<'a> Engine<'a> {
             };
             if let Some((id, other)) = written {
                 let (k, v) = (self.key_of(&id.node, id.span, &local), self.key_of(&other.node, other.span, &local));
-                let (followed, mut rest) = self.split(&flow.normal, &k);
-                let is_other = kid(&format!("§{}", v));
-                for mut x in followed {
-                    // (decided "`other` is not the followed other": no run is both)
-                    if x.bind.get(is_other) == Some(false) { continue; }
-                    x.bind.insert(is_other, true);
-                    rest.insert(x);
-                }
-                flow.normal = rest;
+                flow.normal = self.names(std::mem::take(&mut flow.normal), &k, &v);
             }
             join(&mut flow.returned, std::mem::take(&mut self.returned));
             join(&mut flow.broke, std::mem::take(&mut self.broke));

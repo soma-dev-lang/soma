@@ -766,3 +766,26 @@ fn a_link_written_with_the_value_just_checked_names_the_instance_checked() {
         assert_ne!(code, 0, "{name}: {out}");
     }
 }
+
+// `require link.get(k) == v else …`: past it, the instance `k` names is `v` —
+// a handler that finds the entry from the other side and checks that it is its own.
+#[test]
+fn a_require_on_the_link_names_the_instance_too() {
+    let from = "    on activer(source: String, h: Int) {";
+    assert!(LINKED.contains(from));
+    let source = LINKED.replace("signal activer(source: String, h: Int) -> String", "signal activer(source: String, h: Int) -> String  signal activer_pour(org: String) -> String")
+        .replace("        vue: Map<String, Int> [persistent]", "        vue: Map<String, Int> [persistent]\n        source_de: Map<String, String> [persistent]")
+        .replace(from, "    on activer_pour(org: String) {\n        let source = source_de.get(org) ?? \"\"\n        if source == \"\" { return \"\" }\n        let e = Org.etat(org)\n        require e == \"inscrite\" else Non \"non\"\n        require (fournisseur.get(source) ?? \"\") == org else Incoherent \"autre\"\n        source_de.delete(org)\n        transition(source, \"active\")\n        return \"active\"\n    }\n    on activer(source: String, h: Int) {");
+    let (out, code) = linked("linked_require", &source);
+    assert!(out.contains("✓ entering Source.active while Org.inscrite via Source.fournisseur"), "{out}");
+    assert_eq!(code, 0, "{out}");
+    for (name, from, to) in [
+        ("linked_require_none", "        require (fournisseur.get(source) ?? \"\") == org else Incoherent \"autre\"\n", ""),
+        ("linked_require_ne", "require (fournisseur.get(source) ?? \"\") == org", "require (fournisseur.get(source) ?? \"\") != org"),
+    ] {
+        assert!(source.contains(from), "{name}");
+        let (out, code) = linked(name, &source.replace(from, to));
+        assert!(out.contains("✗ entering Source.active while Org.inscrite"), "{name}: {out}");
+        assert_ne!(code, 0, "{name}: {out}");
+    }
+}

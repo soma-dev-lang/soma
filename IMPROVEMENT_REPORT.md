@@ -110,12 +110,12 @@ Finding 1 above is answered in part. The ✗ were of three kinds, and of two cau
 |---|---|---|---|
 | "needs the link written once" | 88 | 15 | the prover asked for one spelling of the guard; Orbite writes four others (an `[immutable]` slot, a key from `next_id()`, the guard on a sibling slot, `!slot.has`) |
 | "handler calls nest deeper than 12" | 26 | 0 | a limit of the prover; 40 now |
-| "a run … enters X without it" | 113 | 119 | both: getters the prover did not read through (fixed for five shapes), **and handlers that do not check** |
-| total ✗ / ✓ | 228 / 3,846 | 135 / 3,939 | |
+| "a run … enters X without it" | 113 | 94 | both: getters the prover did not read through (fixed for five shapes), **and handlers that do not check** |
+| total ✗ / ✓ | 228 / 3,846 | 110 / 3,964 | |
 
 **True defects of Orbite.** `ReeRisque.figer` was run: it enters `fige` on an open campaign, against the rule on its own edge. Five more handlers read the same way (`EvtRapports.classer`, `EvtCollisions.classer`, `EvtNuages.ouvrir`, `RespCommissions.saisir`, `EscPriseEnCharge.ouvrir_prise`; not run) — the frame states `moves a -> b when Other.state`, the body checks nothing, a comment says the caller does. Under the model `verify` uses (every handler is an entry point) these ✗ are right.
 
-**Not known yet.** Of the 119 runs left: 15 end in a handler that never reads the required cell (6 read, all of the kind above); 26 end in a handler that does read it, through a shape the prover still loses; 43 enter through a gateway or an API handler and 35 from a timer — not read. 15 links are left (a key that is a local name of a parameter, two writers).
+**Not known yet.** Of the 94 runs left: 8 end in a handler that never reads the required cell (7 handlers; 6 read, all of the kind above); 23 end in a handler that does read it, through a shape the prover still loses; 32 enter through another cell and 32 from a timer — a few read (`FdvPlan.clore` checks, and is still lost). 15 links are left (a key that is a local name of a parameter, two writers).
 
 **Decision D8 — a handler only another handler may call.** These handlers say "called by X alone" in a comment. Soma has no way to state it, so `verify` must take them as entry points, and it is right to fail them.
 - Option A: nothing; such a handler checks its own rule (a `require` reading the other machine), as the note of `verify` already says.

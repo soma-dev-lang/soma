@@ -3,10 +3,9 @@
 # that is broken and not here, and on a line here that is no longer true.
 #
 # Orbite (IMPROVEMENT_REPORT.md, "The 228 ✗ of prod.cell, read"): with its bodies,
-# 135 rules between machines are not proven — handlers that do not check the rule
+# 110 rules between machines are not proven — handlers that do not check the rule
 # on their own edge (ReeRisque.figer, run: a true defect), and shapes the prover
 # does not read yet. Every file below includes those bodies.
-site/cases/orbite/src/banc_acces.cell  # Orbite: rules its bodies do not keep, or the prover does not read
 site/cases/orbite/src/banc_conjonctions.cell  # Orbite: rules its bodies do not keep, or the prover does not read
 site/cases/orbite/src/banc_coordination.cell  # Orbite: rules its bodies do not keep, or the prover does not read
 site/cases/orbite/src/banc_escalade.cell  # Orbite: rules its bodies do not keep, or the prover does not read
@@ -22,7 +21,6 @@ site/cases/orbite/src/banc_reentrees.cell  # Orbite: rules its bodies do not kee
 site/cases/orbite/src/banc_ref.cell  # Orbite: rules its bodies do not keep, or the prover does not read
 site/cases/orbite/src/banc_responsabilite.cell  # Orbite: rules its bodies do not keep, or the prover does not read
 site/cases/orbite/src/prod.cell  # Orbite: rules its bodies do not keep, or the prover does not read
-site/cases/orbite/src/test_acces.cell  # Orbite: rules its bodies do not keep, or the prover does not read
 site/cases/orbite/src/test_aeolus.cell  # Orbite: rules its bodies do not keep, or the prover does not read
 site/cases/orbite/src/test_bout_en_bout.cell  # Orbite: rules its bodies do not keep, or the prover does not read
 site/cases/orbite/src/test_colreg.cell  # Orbite: rules its bodies do not keep, or the prover does not read
