@@ -78,7 +78,7 @@ skeleton ConjMessage {
             reads rapprochement_de, destinataire_de
             writes escalade_de, cause_de
             moves sans_reponse -> escalade when EscVeille.surveillee || EscVeille.couverte via rapprochement_de, sans_reponse -> caduc
-            calls ApiEscalade.escalader, ApiEscalade.echelon, ApiAcces.a_le_role, Journal.noter
+            calls ApiEscalade.escalader, ApiEscalade.echelon, ApiAcces.a_le_role, Journal.noter, ApiEscalade.veille
         // Rend caducs les messages en attente d'accusé d'un rapprochement clos (envoye ou
         // sans_reponse -> caduc). Renvoie le nombre de messages rendus caducs. Rôle : "systeme".
         // Refus : Inconnu, EtatInvalide (rapprochement non clos), Habilitation.

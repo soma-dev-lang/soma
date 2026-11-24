@@ -7,6 +7,9 @@ flesh ApiEphemerides {
     on fraiche(objet, h) {
         return EphSuivi.fraiche(objet, h)
     }
+    on suivi(objet) {
+        return EphSuivi.etat(objet)
+    }
 
     on derniere(objet) {
         return EphSuivi.derniere(objet)

@@ -1,5 +1,8 @@
 // ephemerides — corps du SUIVI PAR OBJET.
 flesh EphSuivi {
+    on etat(objet) {
+        return get_status(objet) ?? "sans_donnee"
+    }
     on prendre(h, objet, depot) {
         let st = get_status(objet) ?? "sans_donnee"
         require st != "clos" else EtatInvalide "objet {objet} clos"

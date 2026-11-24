@@ -15,6 +15,9 @@ skeleton ApiEscalade {
         // Échelon courant ; 0 si aucune escalade ouverte.
         signal echelon(r: Rapprochement, op: Org) -> Int
             calls EscDossiers.echelon
+        // État de la veille d'escalade du rapprochement ("inactive", "surveillee", "couverte", "close").
+        signal veille(r: Rapprochement) -> String
+            calls EscVeille.etat
         // Nombre d'escalades d'échelon ≥ 3 visant l'opérateur sur les 365 derniers jours.
         signal graves(op: Org, h: Horodatage) -> Int
             calls EscStatistiques.graves

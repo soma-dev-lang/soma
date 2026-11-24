@@ -98,6 +98,7 @@ flesh ApiEvenements {
         return "fragmentation"
     }
     on objets(evenement) { return ["OBJ-1", "OBJ-2"] }
+    on etat(evenement) { return "confirme" }
 }
 
 flesh ApiObservation {
@@ -152,6 +153,7 @@ flesh ApiOperateurs {
 
 flesh ApiEscalade {
     on escalader(h, r, op, motif, par) { return 1 }
+    on veille(r) { return "surveillee" }
 }
 
 flesh ApiFinDeVie {

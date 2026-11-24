@@ -62,6 +62,8 @@ flesh ConjAnalyseTca {
         if ouverte_le.get(id) == () {
             ouverte_le.set(id, h)
         }
+        let ee = ApiEvenements.etat(evenement)
+        require ee == "signale" || ee == "confirme" else EtatInvalide "évènement {evenement} {ee} : il ne confirme plus de collision"
         let deja = evenement_de.get(id)
         if deja == () {
             evenement_de.set(id, evenement)

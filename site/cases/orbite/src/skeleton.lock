@@ -227,11 +227,12 @@ skeleton ApiDonnees {
     //~ balayer 59fc663a056f6a6c
 }
 
-== ApiEphemerides sha256:d227cd7f9fb3bcb889ffaa830fe8ba44f41ecf4995ab67f47dbaecfa30ebb5ac core:d313dff9f7d5c342af2fb0d3073782551b533b60f16da1205ed0d3d51b01effa
+== ApiEphemerides sha256:7f87eb5a6d1a0031487f098e17e399717f490c4ce3634e8077df89a8e02e7ec7 core:d9774e69778ab8141e94a7df839897c875777c9f7b337c77bffcc587e6395e15
 skeleton ApiEphemerides {
     face {
         signal deposer(h: Horodatage, objet: Objet, depot: String, epoque: Horodatage, horizon: Duree, q: Qualite, empreinte: String, position: String, avec_manoeuvres: Bool, par: String) -> String  requires h >= 0  requires epoque >= 0  requires horizon >= 0  requires q == "haute" || q == "moyenne" || q == "faible"  calls EphDepot.deposer
         signal fraiche(objet: Objet, h: Horodatage) -> Bool  requires h >= 0  calls EphSuivi.fraiche
+        signal suivi(objet: Objet) -> String  calls EphSuivi.etat
         signal derniere(objet: Objet) -> String  calls EphSuivi.derniere
         signal qualite(objet: Objet) -> Qualite  ensures result == "haute" || result == "moyenne" || result == "faible"  calls EphSuivi.qualite
         signal age(objet: Objet, h: Horodatage) -> Duree  requires h >= 0  ensures result >= 0  calls EphSuivi.age
@@ -249,6 +250,7 @@ skeleton ApiEphemerides {
     // type Refus = String where value == "Habilitation" || value == "QuatreYeux" || value == "Existe" || value == "Inconnu" || value == "EtatInvalide" || value == "HorsBornes" || value == "Insuffisant" || value == "Perime" || value == "Suspendu" || value == "Ferme" || value == "Echu" || value == "NonEligible" || value == "Doublon" || value == "Incoherent" || value == "Plein" || value == "MotifRequis" || value == "Delai" || value == "Conflit" || value == "Confidentiel" (nominal: never mixed with another type; build Refus(x), read to_string(q); literals take its type)
     //~ deposer ffbbdb63c117d4cb
     //~ fraiche c3c2ba1805ddfd3c
+    //~ suivi 9f24fd8cd40d0594
     //~ derniere f17a9fc59f21b286
     //~ qualite 3800f8c6494edc01
     //~ age 77433b169bd00a44
@@ -260,12 +262,13 @@ skeleton ApiEphemerides {
     //~ balayer 4aa2333e5c81e628
 }
 
-== ApiEscalade sha256:4862569bb39696ea656e3bece8e5679ba4d7fb276e5267f9a84b42288f27e57b core:1483b7b5d1ac7cb075523b9a8b83ffb7f3606fc0e4ba3f70730e57fb3099a81e
+== ApiEscalade sha256:41a8afed7e15b5a739aaaea077acba571b9726a8d27d1fea3a2cfe8d4275b33f core:d848cf192c381a110eacf3dfb2d3a86c5672f89ae44ddeabc1e903b419b0ceca
 skeleton ApiEscalade {
     face {
         signal escalader(h: Horodatage, r: Rapprochement, op: Org, motif: String, par: String) -> Int  requires h >= 0  calls EscDossiers.dossier_actif, EscDossiers.monter, EscDossiers.ouvrir
         signal accuser(h: Horodatage, r: Rapprochement, op: Org, par: String) -> String  requires h >= 0  calls EscDossiers.accuser
         signal echelon(r: Rapprochement, op: Org) -> Int  calls EscDossiers.echelon
+        signal veille(r: Rapprochement) -> String  calls EscVeille.etat
         signal graves(op: Org, h: Horodatage) -> Int  requires h >= 0  calls EscStatistiques.graves
         signal reprise(r: Rapprochement) -> Bool  calls EscDossiers.reprise_sur
         signal balayer(h: Horodatage, par: String) -> Int  requires h >= 0  calls EscBalayage.balayer
@@ -277,6 +280,7 @@ skeleton ApiEscalade {
     //~ escalader adac902fdb6d4614
     //~ accuser 1b3e0eed9caeb296
     //~ echelon a3cfa10d389c0d40
+    //~ veille 264aed4aea0dbc02
     //~ graves d9dce3004624d09e
     //~ reprise 6f40bb3bed3da200
     //~ balayer d1bc1321b510e236
@@ -1899,7 +1903,7 @@ skeleton ConjRonde {
     //~ balayer 87a2aa5097f350a0
 }
 
-== ConjAnalyseTca sha256:072aa02846579b81cb3aff34a65d70f2b61a89a5a20f7ee4205d097512e12ba1 core:6cf28320e2f77b6fac4f3da0eec9b129591748aab1b986a02673c72255d8e79b
+== ConjAnalyseTca sha256:b5a086f03f38fedf9116962c15bd5f8923355a22cb3297db5f68c62bf55c0107 core:43da9411e243571cdb97f969ca036ead015b1163a6543ea80602b09d1d306cc1
 skeleton ConjAnalyseTca {
     memory {
         ouverte_le: Map<String, Horodatage> [persistent]
@@ -1924,7 +1928,7 @@ skeleton ConjAnalyseTca {
     face {
         signal ouvrir(h: Horodatage, r: Rapprochement, par: String) -> Int  requires h >= 0  writes demandes_de, ouverte_le  calls ApiAcces.a_le_role, ApiObservation.demander_suivi, ConjRapprochement.etat, ConjRapprochement.fiche, Journal.noter
         signal conclure(h: Horodatage, r: Rapprochement, constat: ConjConstat, par: String) -> String  requires h >= 0  requires constat == "intacts" || constat == "objet_perdu" || constat == "fragments"  reads ouverte_le  writes conclu_par, constat_de  moves ouverte -> sans_suite, ouverte -> suspecte  calls ApiAcces.a_le_role, ApiObservation.suivi, ConjRapprochement.fiche, Journal.noter
-        signal confirmer(h: Horodatage, r: Rapprochement, evenement: String, par: String) -> String  requires h >= 0  writes conclu_par, evenement_de, ouverte_le  moves ouverte -> confirmee when EvtEvenements.signale || EvtEvenements.confirme via evenement_de, suspecte -> confirmee when EvtEvenements.signale || EvtEvenements.confirme via evenement_de  calls ApiAcces.a_le_role, ApiEvenements.existe, ApiEvenements.genre, ApiEvenements.objets, ConjRapprochement.fiche, Journal.noter
+        signal confirmer(h: Horodatage, r: Rapprochement, evenement: String, par: String) -> String  requires h >= 0  writes conclu_par, evenement_de, ouverte_le  moves ouverte -> confirmee when EvtEvenements.signale || EvtEvenements.confirme via evenement_de, suspecte -> confirmee when EvtEvenements.signale || EvtEvenements.confirme via evenement_de  calls ApiAcces.a_le_role, ApiEvenements.etat, ApiEvenements.existe, ApiEvenements.genre, ApiEvenements.objets, ConjRapprochement.fiche, Journal.noter
         signal infirmer(h: Horodatage, r: Rapprochement, motif: String, par: String) -> String  requires h >= 0  writes conclu_par, motif_de  moves suspecte -> infirmee  calls ApiAcces.a_le_role, ApiObservation.suivi, ConjRapprochement.fiche, Journal.noter
         signal etat(r: Rapprochement) -> String  reads analyse, ouverte_le
     }
@@ -1984,7 +1988,7 @@ skeleton ConjContestation {
     //~ etat 2749f1a8dcb4fe08
 }
 
-== ConjMessage sha256:2433a53f552afe1b5b88b8197106e13f1cfc43472fee5843e91c6f963b8c690d core:a9000edc98e39af26059837d26298337cb6d343c29f62fd889b1b03b8843350c
+== ConjMessage sha256:0d9125de445c3d38243b624168d39271131b3af04e1bbf3eedd4157a24ea84d0 core:e7757257f99d6cb46448a8fdccd26b7a7a721cb784ed619d0ddaaa3780a0e842
 skeleton ConjMessage {
     memory {
         rapprochement_de: Map<String, String> [persistent]
@@ -2021,7 +2025,7 @@ skeleton ConjMessage {
     face {
         signal diffuser(h: Horodatage, r: Rapprochement, par: String) -> List<String>  requires h >= 0  writes cause_de, destinataire_de, echeance_de, escalade_de, genre_de, niveau_de, par_rapprochement, passerelle_de, prepare_le, rapprochement_de, trace_de  moves prepare -> bloque, prepare -> envoye  calls ApiAcces.a_le_role, ApiDonnees.peut_recevoir, ApiDonnees.tracer, ApiEscalade.escalader, ApiOperateurs.astreinte, ApiOperateurs.delai_reponse, ApiPasserelle.notifier, ApiRef.etat_de, ApiRef.org_de_etat, ApiRef.proprietaire, ConjAbonnement.destinataires, ConjRapprochement.etat, ConjRapprochement.fiche, Journal.noter, next_id
         signal relever(h: Horodatage, message: String, par: String) -> String  requires h >= 0  reads echeance_de, genre_de, passerelle_de  moves envoye -> acquitte, envoye -> sans_reponse, sans_reponse -> acquitte  calls ApiAcces.a_le_role, ApiPasserelle.acquitte, ApiPasserelle.echoue, Journal.noter
-        signal escalader(h: Horodatage, message: String, par: String) -> Int  requires h >= 0  reads destinataire_de, rapprochement_de  writes cause_de, escalade_de  moves sans_reponse -> caduc, sans_reponse -> escalade when EscVeille.surveillee || EscVeille.couverte via rapprochement_de  calls ApiAcces.a_le_role, ApiEscalade.echelon, ApiEscalade.escalader, Journal.noter
+        signal escalader(h: Horodatage, message: String, par: String) -> Int  requires h >= 0  reads destinataire_de, rapprochement_de  writes cause_de, escalade_de  moves sans_reponse -> caduc, sans_reponse -> escalade when EscVeille.surveillee || EscVeille.couverte via rapprochement_de  calls ApiAcces.a_le_role, ApiEscalade.echelon, ApiEscalade.escalader, ApiEscalade.veille, Journal.noter
         signal clore_de(h: Horodatage, r: Rapprochement, par: String) -> Int  requires h >= 0  reads par_rapprochement  writes cause_de  moves envoye -> caduc, sans_reponse -> caduc  calls ApiAcces.a_le_role, ConjRapprochement.etat, Journal.noter
         signal en_attente(h: Horodatage, n: Int) -> List<String>  requires n > 0 && n <= 1000  requires h >= 0  reads echeance_de, message, prepare_le
         signal de(r: Rapprochement) -> List<String>  reads par_rapprochement
@@ -3744,7 +3748,7 @@ skeleton EphReglage {
     //~ duree_conservation 75a2b33c437fe62b
 }
 
-== EphSuivi sha256:e9d180073463cf4d07f378910ce7bf0f5da10a87cbf47a3471833b12e289bba0 core:097972be1c2f26989a99493a6d1cba180e27590a31b13a97223bc67e7ebc83ff
+== EphSuivi sha256:ccb9c53123ba5fb2dea7ae5a9e46bdb61a5c6cd4264aaa4e37ffa0cafa927e5d core:ac5c6f3300e64c55b81cb0a1090de13b16bc88175bd454dfb880ded70d3118b0
 skeleton EphSuivi {
     memory {
         courant: Map<Objet, String> [persistent]
@@ -3785,6 +3789,7 @@ skeleton EphSuivi {
         signal balayer(h: Horodatage, n: Int, par: String) -> Int  requires n > 0 && n <= 100000  requires h >= 0  reads courant, epoque_courante  writes nb_relances, perime_le, relance_le  moves a_jour -> perime  calls ApiAcces.a_le_role, ApiConformite.constater, ApiConjonctions.niveau, ApiConjonctions.ouverts_de, ApiObservation.demander_suivi, ApiPasserelle.notifier, ApiRef.proprietaire, EphBilan.compter, EphDepot.perimer, Journal.noter, fraiche
         signal ronde(h: Horodatage, par: String) -> Int  requires h >= 0  calls ApiAcces.a_le_role, EphContestation.classer, EphControle.tourner, EphHistorique.purger, EphTempete.surveiller, balayer
         signal fraiche(objet: Objet, h: Horodatage) -> Bool  requires h >= 0  reads courant, epoque_courante, suivi  calls ApiMeteo.tempete, ApiRef.regime, EphReglage.age_max
+        signal etat(objet: Objet) -> String  reads suivi
         signal derniere(objet: Objet) -> String  reads courant
         signal qualite(objet: Objet) -> Qualite  ensures result == "haute" || result == "moyenne" || result == "faible"  reads courant, qualite_courante
         signal age(objet: Objet, h: Horodatage) -> Duree  requires h >= 0  ensures result >= 0  reads courant, epoque_courante
@@ -3801,6 +3806,7 @@ skeleton EphSuivi {
     //~ balayer 12f32619a6e60ed9
     //~ ronde fe9452ea28dd284d
     //~ fraiche a726ad33e32cba59
+    //~ etat a6d1855ec6d66db2
     //~ derniere c2dfb2faa766f63a
     //~ qualite bc71d4c9bbd3be92
     //~ age 28c4c61790513431
@@ -4250,7 +4256,7 @@ skeleton EscStatistiques {
     //~ purger aed89ecccd6407b8
 }
 
-== EscVeille sha256:da505848d82c2df1da3aaa49c9ba04cff37c412c439369eca8df368cb83cdc74 core:e8d2461f2f1d83419b1853dd94c84a04079d1e4d31e207032aa41149cfb60b2d
+== EscVeille sha256:c22921233b3cb69d8cf9725d2f525fb3e3d61483629969da3c5c94943a877c58 core:a9fa97fcd22d4c161b187c6f78683da56ff2f99685bf27ce46d96512743a708b
 skeleton EscVeille {
     memory {
         armee_a: Map<String, Horodatage> [persistent]
@@ -4276,6 +4282,7 @@ skeleton EscVeille {
     }
     face {
         signal armer(h: Horodatage, r: Rapprochement, par: String) -> String  requires h >= 0  writes armee_a, armee_par, derniere_ronde  moves inactive -> surveillee  calls ApiAcces.a_le_role, ApiConjonctions.etat, Journal.noter
+        signal etat(r: Rapprochement) -> String  reads veille
         signal ronde(h: Horodatage) -> Int  requires h >= 0  ensures result >= 0  writes couverte_a, derniere_ronde  moves couverte -> close, couverte -> surveillee, surveillee -> close, surveillee -> couverte  calls ApiConjonctions.etat, ApiConjonctions.objets, ApiConjonctions.urgents, ApiCoordination.decidee, ApiCoordination.etat, ApiCoordination.muets, ApiRef.peut_manoeuvrer, ApiRef.proprietaire, EscBareme.echeance_finale, EscDossiers.dossier_actif, EscDossiers.ouvrir, Journal.noter, armer
         signal couverte(r: Rapprochement) -> Bool  reads veille
         signal veilles(par: String) -> List<String>  reads armee_a, armee_par, couverte_a, derniere_ronde, veille  calls ApiAcces.a_le_role
@@ -4285,12 +4292,13 @@ skeleton EscVeille {
     // type Rapprochement = String (nominal: never mixed with another type; build Rapprochement(x), read to_string(q); literals take its type)
     // type Refus = String where value == "Habilitation" || value == "QuatreYeux" || value == "Existe" || value == "Inconnu" || value == "EtatInvalide" || value == "HorsBornes" || value == "Insuffisant" || value == "Perime" || value == "Suspendu" || value == "Ferme" || value == "Echu" || value == "NonEligible" || value == "Doublon" || value == "Incoherent" || value == "Plein" || value == "MotifRequis" || value == "Delai" || value == "Conflit" || value == "Confidentiel" (nominal: never mixed with another type; build Refus(x), read to_string(q); literals take its type)
     //~ armer 9eda9a8fb4a4e5a7
+    //~ etat e95070db464b0cc8
     //~ ronde d0a0f73b0fcf5507
     //~ couverte e933d3b728a95a8c
     //~ veilles 03cb8af38eb88fc2
 }
 
-== EvtAnomalies sha256:5fec4d18b2b96e6f7931b10c68deb87b2edbe7531fec34d2fb4bb52ee278e3fc core:64e5cf5e263a14a137cc13f06193cb6f163405c526f88ea5a57544922fc2bca0
+== EvtAnomalies sha256:3e6dbebdf4b88d76d0a164bd15373af7e0b731fd46933639026f275e5d5d65dd core:6dc46f47716ad6f9ea3f07d71d43cbd3f39cea9f6a29713abc4295b7ef3deaad
 skeleton EvtAnomalies {
     memory {
         objet_de: Map<String, Objet> [persistent]
@@ -4324,7 +4332,7 @@ skeleton EvtAnomalies {
         signal prendre_en_charge(h: Horodatage, anomalie: String, par: String) -> String  requires h >= 0  reads genre_de, objet_de  moves declaree -> en_suivi  calls ApiAcces.a_le_role, ApiConjonctions.ouverts_de, ApiEphemerides.invalider, ApiObservation.demander_suivi, Journal.noter
         signal rejeter(h: Horodatage, anomalie: String, motif: String, par: String) -> String  requires h >= 0  reads declarant, objet_de  writes issue, ouverte_de  moves declaree -> rejetee  calls ApiAcces.a_le_role, ApiAcces.agit_pour, ApiRef.proprietaire, Journal.noter
         signal noter_suivi(h: Horodatage, anomalie: String, constat: String, par: String) -> Int  requires h >= 0  ensures result >= 1  reads anomalie, objet_de  writes dernier_point, points  calls ApiAcces.a_le_role, ApiAcces.agit_pour, ApiRef.proprietaire, Journal.noter
-        signal lever(h: Horodatage, anomalie: String, motif: String, par: String, valideur: String) -> String  requires h >= 0  reads objet_de  writes issue, ouverte_de  moves en_suivi -> levee when EphSuivi.a_jour via objet_de  calls ApiAcces.a_le_role, ApiAcces.agit_pour, ApiAcces.quatre_yeux, ApiEphemerides.fraiche, ApiObservation.suivi, ApiRef.proprietaire, EvtNotifications.preparer, Journal.noter
+        signal lever(h: Horodatage, anomalie: String, motif: String, par: String, valideur: String) -> String  requires h >= 0  reads objet_de  writes issue, ouverte_de  moves en_suivi -> levee when EphSuivi.a_jour via objet_de  calls ApiAcces.a_le_role, ApiAcces.agit_pour, ApiAcces.quatre_yeux, ApiEphemerides.fraiche, ApiEphemerides.suivi, ApiObservation.suivi, ApiRef.proprietaire, EvtNotifications.preparer, Journal.noter
         signal constater_perte(h: Horodatage, anomalie: String, motif: String, par: String, valideur: String) -> String  requires h >= 0  reads objet_de  writes issue, ouverte_de  moves en_suivi -> perdu  calls ApiAcces.a_le_role, ApiAcces.agit_pour, ApiAcces.quatre_yeux, ApiRef.changer_etat_objet, ApiRef.declarer_propulsion, ApiRef.proprietaire, EvtNotifications.preparer, Journal.noter
         signal clore_par_evenement(h: Horodatage, objet: Objet, ev: String) -> Int  requires h >= 0  ensures result >= 0 && result <= 1  writes evenement_de, ouverte_de  moves declaree -> fragmentee, en_suivi -> fragmentee  calls Journal.noter
         signal en_anomalie(objet: Objet) -> Bool  reads ouverte_de
@@ -10616,4 +10624,4 @@ verify.before.RespSinistres.declare.requires = ["OpMembres.admis"]
 verify.before.RespSinistres.declare.via = "RespSinistres.op_de"
 package.edition = "2026"
 
-checksum sha256:98641e06d27e5dd774fc030c6222711876d6ee3c68df2b5762ce75f093f3fc0f
+checksum sha256:265ecfb5b2279d12972b5d4962e55ae67d6bd46a7db034170077fc8a18d1b172

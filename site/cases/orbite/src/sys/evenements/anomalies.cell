@@ -100,7 +100,7 @@ skeleton EvtAnomalies {
             writes issue, ouverte_de
             reads objet_de
             moves en_suivi -> levee when EphSuivi.a_jour via objet_de
-            calls ApiAcces.a_le_role, ApiAcces.agit_pour, ApiAcces.quatre_yeux, ApiRef.proprietaire, ApiObservation.suivi, ApiEphemerides.fraiche, EvtNotifications.preparer, Journal.noter
+            calls ApiAcces.a_le_role, ApiAcces.agit_pour, ApiAcces.quatre_yeux, ApiRef.proprietaire, ApiObservation.suivi, ApiEphemerides.fraiche, EvtNotifications.preparer, Journal.noter, ApiEphemerides.suivi
         // Constate la perte définitive de l'objet : propulsion "aucune"
         // (ApiRef.declarer_propulsion) et objet "hors_service" (ApiRef.changer_etat_objet), par
         // "systeme" ; propriétaire et État notifiés (urgence 2). L'anomalie est close ; l'objet

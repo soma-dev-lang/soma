@@ -86,11 +86,11 @@ flesh FdvRetrait {
             return "abandonnee"
         }
         let atteint = st
-        if atteint == "proposee" && e_p == "accorde" && FdvConsentement.vaut(cp) {
+        if atteint == "proposee" && FdvConsentement.etat(cp) == "accorde" {
             transition(mission, "proposee", "accord_proprietaire")
             atteint = "accord_proprietaire"
         }
-        if atteint == "accord_proprietaire" && e_e == "accorde" && FdvConsentement.vaut(ce) {
+        if atteint == "accord_proprietaire" && FdvConsentement.etat(ce) == "accorde" {
             transition(mission, "accord_proprietaire", "consentie")
             atteint = "consentie"
         }
@@ -235,10 +235,14 @@ flesh FdvRetrait {
         }
         let n_ach = 0
         for m in missions_de.get(objet) ?? [] {
-            if (get_status(m) ?? "proposee") == "capturee" && cible_de.get(m) == objet {
-                transition(m, "capturee", "achevee")
-                n_ach = n_ach + 1
-                Journal.noter(h, "fin_de_vie", "systeme", "mission {m} achevée : sortie de {objet} constatée ({fin})")
+            let cible = cible_de.get(m)
+            if (get_status(m) ?? "proposee") == "capturee" && cible == objet {
+                let ef = FdvFin.etat(cible)
+                if ef == "rentre" || ef == "cimetiere" {
+                    transition(m, "capturee", "achevee")
+                    n_ach = n_ach + 1
+                    Journal.noter(h, "fin_de_vie", "systeme", "mission {m} achevée : sortie de {objet} constatée ({ef})")
+                }
             }
         }
         return n_ach

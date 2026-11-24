@@ -9,8 +9,7 @@ flesh LancEnquete {
         require phase_de.size < MAX_ENQUETES else Plein "registre des enquêtes plein"
         require description != "" else MotifRequis "description requise"
         let lst = LancLancement.etat(lancement)
-        let ok = if phase == "separation" { lst == "injecte" || lst == "echec" } else { lst == "echec" }
-        require ok else EtatInvalide "lancement {lancement} : {lst} (phase {phase})"
+        require lst == "echec" || (phase == "separation" && lst == "injecte") else EtatInvalide "lancement {lancement} : {lst} (phase {phase})"
         phase_de.set(lancement, phase)
         ouverte_le.set(lancement, h)
         description_de.set(lancement, description)

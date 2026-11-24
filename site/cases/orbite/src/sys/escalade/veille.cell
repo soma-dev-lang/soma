@@ -44,6 +44,9 @@ skeleton EscVeille {
             writes armee_a, armee_par, derniere_ronde
             moves inactive -> surveillee
             calls ApiAcces.a_le_role, ApiConjonctions.etat, Journal.noter
+        // État de la veille du rapprochement ("inactive" … "close").
+        signal etat(r: Rapprochement) -> String
+            reads veille
         // Ronde, appelée par EscBalayage.balayer : (1) arme les ApiConjonctions.urgents(h,
         // HORIZON_VEILLE_MS, 3) pas encore armés ; (2) pour chaque veille non close : close si le
         // rapprochement est clos, couverte / surveillee selon ApiCoordination.decidee ; (3) pour une

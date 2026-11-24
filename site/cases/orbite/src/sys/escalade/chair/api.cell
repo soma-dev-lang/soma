@@ -13,6 +13,9 @@ flesh ApiEscalade {
     on echelon(r, op) {
         return EscDossiers.echelon(r, op)
     }
+    on veille(r) {
+        return EscVeille.etat(r)
+    }
     on graves(op, h) {
         return EscStatistiques.graves(op, h)
     }

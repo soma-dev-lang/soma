@@ -225,4 +225,8 @@ flesh ApiEphemerides {
     on fraiche(objet, h) {
         return !contains(objet, "PERIME")
     }
+    on suivi(objet) {
+        if contains(objet, "PERIME") { return "perime" }
+        return "a_jour"
+    }
 }

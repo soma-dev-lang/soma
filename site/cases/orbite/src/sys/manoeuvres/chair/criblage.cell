@@ -48,6 +48,7 @@ flesh ManCriblage {
             return -1
         }
         if conflits == 0 {
+            require ApiEphemerides.depot_valide(depot) else EtatInvalide "dépôt {depot} non validé : le plan {plan} n'est pas sûr"
             transition(plan, "demande", "sur")
         } else {
             transition(plan, "demande", "a_risque")

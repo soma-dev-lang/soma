@@ -16,6 +16,9 @@ skeleton ApiEphemerides {
         // de son régime (leo 8 h, meo 24 h, geo et heo 48 h ; divisé par 2 pendant une tempête).
         signal fraiche(objet: Objet, h: Horodatage) -> Bool
             calls EphSuivi.fraiche
+        // État du suivi de l'éphéméride de l'objet ("sans_donnee", "a_jour", "perime", "invalide", "clos").
+        signal suivi(objet: Objet) -> String
+            calls EphSuivi.etat
         // Dernier dépôt validé de l'objet ; Refus : Inconnu (aucun).
         signal derniere(objet: Objet) -> String
             calls EphSuivi.derniere

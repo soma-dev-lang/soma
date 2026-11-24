@@ -63,7 +63,7 @@ skeleton ConjAnalyseTca {
             reads evenement_de
             writes ouverte_le, evenement_de, conclu_par
             moves ouverte -> confirmee when EvtEvenements.signale || EvtEvenements.confirme via evenement_de, suspecte -> confirmee when EvtEvenements.signale || EvtEvenements.confirme via evenement_de
-            calls ConjRapprochement.fiche, ApiEvenements.existe, ApiEvenements.genre, ApiEvenements.objets, ApiAcces.a_le_role, Journal.noter
+            calls ConjRapprochement.fiche, ApiEvenements.existe, ApiEvenements.genre, ApiEvenements.objets, ApiAcces.a_le_role, Journal.noter, ApiEvenements.etat
         // Infirme la suspicion (suspecte -> infirmee) : les deux objets sont réacquis
         // (ApiObservation.suivi). Renvoie "infirmee". Rôle : "analyste" d'ORBITE.
         // Geste d'administration. Refus : Inconnu, EtatInvalide, Insuffisant (un objet non

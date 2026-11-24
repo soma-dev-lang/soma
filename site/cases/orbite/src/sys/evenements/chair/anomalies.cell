@@ -87,6 +87,7 @@ flesh EvtAnomalies {
         require ApiAcces.quatre_yeux(par, valideur) else QuatreYeux "{valideur} ne contre-signe pas {par}"
         require ApiObservation.suivi(obj, h) else Insuffisant "pas d'orbite indépendante de moins de 72 h pour {obj}"
         require ApiEphemerides.fraiche(obj, h) else Perime "éphéméride de {obj} non fraîche"
+        require ApiEphemerides.suivi(obj) == "a_jour" else Perime "éphéméride de {obj} non à jour"
         transition(anomalie, "en_suivi", "levee")
         issue.set(anomalie, "{h} | {par} | {valideur} | {motif}")
         _liberer(obj, anomalie)

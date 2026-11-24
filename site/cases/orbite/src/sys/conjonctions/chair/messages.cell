@@ -149,6 +149,8 @@ flesh ConjMessage {
             return 0
         }
         require ech >= 1 && ech <= 4 else EtatInvalide "escalade non ouverte pour {r}"
+        let ev = ApiEscalade.veille(Rapprochement(r))
+        require ev == "surveillee" || ev == "couverte" else EtatInvalide "rapprochement {r} hors veille d'escalade ({ev})"
         escalade_de.set(message, ech)
         transition(message, "sans_reponse", "escalade")
         let _ = Journal.noter(h, "conjonctions", par, "message {message} escaladé (échelon {ech})")

@@ -1,5 +1,8 @@
 // Corps de EscVeille : armement des veilles, ronde (filet de la propriété 5).
 flesh EscVeille {
+    on etat(r) {
+        return get_status(r) ?? "inactive"
+    }
     on armer(h, r, par) {
         require ApiAcces.a_le_role(par, "systeme") || ApiAcces.a_le_role(par, "analyste") else Habilitation "{par} n'arme pas de veille"
         let ecj = ApiConjonctions.etat(r)

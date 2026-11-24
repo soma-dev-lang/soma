@@ -103,6 +103,9 @@ skeleton EphSuivi {
         signal fraiche(objet: Objet, h: Horodatage) -> Bool
             reads courant, epoque_courante, suivi
             calls EphReglage.age_max, ApiRef.regime, ApiMeteo.tempete
+        // État du suivi de l'objet ("sans_donnee" … "clos").
+        signal etat(objet: Objet) -> String
+            reads suivi
 
         // Façade `derniere` : le dépôt validé courant. Refus : Inconnu (aucun, ou invalidé).
         signal derniere(objet: Objet) -> String
