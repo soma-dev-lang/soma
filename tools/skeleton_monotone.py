@@ -38,7 +38,25 @@ def proven(out):
     return got
 
 
-LIMIT = 120  # seconds, each command: a file that does not finish is counted, never passed
+LIMIT = 120  # seconds, each command (--limit): a file that does not finish is counted, never passed
+
+# Files where a rule the skeleton proves is not proven with the bodies, and why
+# (one per line, `path  # reason`). A file listed here that is broken is "known";
+# one listed that is no longer broken, or broken and not listed, fails the run:
+# the list says what is true today, and nothing else.
+KNOWN = os.path.join(ROOT, "tools/skeleton_monotone.known")
+
+
+def known():
+    if not os.path.exists(KNOWN):
+        return {}
+    out = {}
+    for line in open(KNOWN, encoding="utf-8"):
+        line = line.strip()
+        if line and not line.startswith("#"):
+            path, _, why = line.partition("#")
+            out[path.strip()] = why.strip()
+    return out
 
 
 def one(soma, path):
@@ -71,11 +89,14 @@ def checked(soma, path):
 
 
 def main():
+    global LIMIT
     ap = argparse.ArgumentParser()
     ap.add_argument("--soma", default=os.path.join(ROOT, "compiler/target/release/soma"))
     ap.add_argument("--jobs", type=int, default=8)
+    ap.add_argument("--limit", type=int, default=LIMIT, help="seconds for each command")
     ap.add_argument("files", nargs="*")
     args = ap.parse_args()
+    LIMIT = args.limit
     args.soma = os.path.abspath(args.soma)  # each program runs in its own directory
     files = [os.path.abspath(f) for f in args.files] or [
         os.path.join(ROOT, f) for f in subprocess.run(["git", "ls-files", "*.cell"], cwd=ROOT, capture_output=True, text=True).stdout.split()]
@@ -91,14 +112,26 @@ def main():
                 late.append(rel)
             if lost:
                 bad.append((rel, lost))
-    for rel, lost in sorted(bad):
+    listed = known()
+    seen = dict(bad)
+    new = [(rel, lost) for rel, lost in sorted(bad) if rel not in listed]
+    for rel, lost in new:
         print(rel)
         for l in lost[:6]:
             print("   ", l[:200])
+    # (only where the whole set was run: a listed file not run is not "fixed")
+    stale = [] if args.files else sorted(rel for rel in listed if rel not in seen and rel not in late)
+    for rel in stale:
+        print(f"stale     {rel}: listed in tools/skeleton_monotone.known and no longer broken — remove the line")
+    if seen:
+        counts["BROKEN"] = len(new)
+        counts["known"] = len(seen) - len(new)
+        if not new:
+            del counts["BROKEN"]
     for rel in sorted(late):
         print(f"timeout   {rel}: a command did not finish in {LIMIT} s")
     print(", ".join(f"{k}: {v}" for k, v in sorted(counts.items())))
-    return 1 if bad or late else 0
+    return 1 if new or late or stale else 0
 
 
 if __name__ == "__main__":

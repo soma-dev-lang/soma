@@ -20,7 +20,11 @@ ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 ENV = dict(os.environ, SOMA_LLM_MOCK="fixed:ok", NO_COLOR="1")
 
 
-def run(soma, args, cwd, timeout=120):
+LIMIT = 120  # seconds, each command (--limit)
+
+
+def run(soma, args, cwd, timeout=None):
+    timeout = timeout or LIMIT
     try:
         p = subprocess.run([soma] + args, cwd=cwd, env=ENV, capture_output=True, text=True, timeout=timeout)
         return p.returncode, p.stdout + p.stderr
@@ -81,7 +85,7 @@ def one(soma, path):
         runs = [run(soma, [cmd, name], d) for cmd, d in (("test", a), ("test", b), ("verify", a), ("verify", b))]
         # a command that did not finish compared nothing: two of them are not "the same"
         if any(code == -9 for code, _ in runs):
-            return rel, "timeout", "test / verify did not finish in 120 s"
+            return rel, "timeout", f"test / verify did not finish in {LIMIT} s"
         ta, tb = tally(runs[0][1]), tally(runs[1][1])
         if ta != tb:
             return rel, "FAIL", f"test: {ta} became {tb}"
@@ -92,11 +96,14 @@ def one(soma, path):
 
 
 def main():
+    global LIMIT
     ap = argparse.ArgumentParser()
     ap.add_argument("--soma", default=os.path.join(ROOT, "compiler/target/release/soma"))
     ap.add_argument("--jobs", type=int, default=8)
+    ap.add_argument("--limit", type=int, default=LIMIT, help="seconds for each command")
     ap.add_argument("files", nargs="*")
     args = ap.parse_args()
+    LIMIT = args.limit
     args.soma = os.path.abspath(args.soma)  # each program runs in its own directory
     files = [os.path.abspath(f) for f in args.files] or [
         os.path.join(ROOT, f) for f in subprocess.run(["git", "ls-files", "*.cell"], cwd=ROOT, capture_output=True, text=True).stdout.split()]

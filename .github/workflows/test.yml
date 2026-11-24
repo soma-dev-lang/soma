@@ -12,7 +12,7 @@ permissions:
 jobs:
   test:
     runs-on: ubuntu-22.04
-    timeout-minutes: 30
+    timeout-minutes: 90
     steps:
       - uses: actions/checkout@v4
       - name: Build tools
@@ -31,8 +31,10 @@ jobs:
         run: python3 tools/build_site.py
       - name: Skeleton and flesh — every program split and compared, frames against observed effects
         run: |
-          python3 tools/split_roundtrip.py --soma compiler/target/release/soma
+          # (the limit of each command is for this machine: Orbite's largest files
+          # take a minute on ten cores; a file that does not finish still fails)
+          python3 tools/split_roundtrip.py --soma compiler/target/release/soma --limit 900 --jobs 4
           python3 tools/frame_oracle.py --soma compiler/target/release/soma
-          python3 tools/skeleton_monotone.py --soma compiler/target/release/soma
+          python3 tools/skeleton_monotone.py --soma compiler/target/release/soma --limit 900 --jobs 4
       - name: Core CLI fixtures
         run: bash tests/run_all.sh

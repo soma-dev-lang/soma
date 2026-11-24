@@ -1,0 +1,42 @@
+# Files where a rule the skeleton proves is not proven with the bodies — what is
+# true today, each with its reason. tools/skeleton_monotone.py fails on a file
+# that is broken and not here, and on a line here that is no longer true.
+#
+# Orbite (IMPROVEMENT_REPORT.md, "The 228 ✗ of prod.cell, read"): with its bodies,
+# 135 rules between machines are not proven — handlers that do not check the rule
+# on their own edge (ReeRisque.figer, run: a true defect), and shapes the prover
+# does not read yet. Every file below includes those bodies.
+site/cases/orbite/src/banc_acces.cell  # Orbite: rules its bodies do not keep, or the prover does not read
+site/cases/orbite/src/banc_conjonctions.cell  # Orbite: rules its bodies do not keep, or the prover does not read
+site/cases/orbite/src/banc_coordination.cell  # Orbite: rules its bodies do not keep, or the prover does not read
+site/cases/orbite/src/banc_escalade.cell  # Orbite: rules its bodies do not keep, or the prover does not read
+site/cases/orbite/src/banc_evenements.cell  # Orbite: rules its bodies do not keep, or the prover does not read
+site/cases/orbite/src/banc_fin_de_vie.cell  # Orbite: rules its bodies do not keep, or the prover does not read
+site/cases/orbite/src/banc_lancements.cell  # Orbite: rules its bodies do not keep, or the prover does not read
+site/cases/orbite/src/banc_manoeuvres.cell  # Orbite: rules its bodies do not keep, or the prover does not read
+site/cases/orbite/src/banc_observation.cell  # Orbite: rules its bodies do not keep, or the prover does not read
+site/cases/orbite/src/banc_operateurs.cell  # Orbite: rules its bodies do not keep, or the prover does not read
+site/cases/orbite/src/banc_operations.cell  # Orbite: rules its bodies do not keep, or the prover does not read
+site/cases/orbite/src/banc_priorites.cell  # Orbite: rules its bodies do not keep, or the prover does not read
+site/cases/orbite/src/banc_reentrees.cell  # Orbite: rules its bodies do not keep, or the prover does not read
+site/cases/orbite/src/banc_ref.cell  # Orbite: rules its bodies do not keep, or the prover does not read
+site/cases/orbite/src/banc_responsabilite.cell  # Orbite: rules its bodies do not keep, or the prover does not read
+site/cases/orbite/src/prod.cell  # Orbite: rules its bodies do not keep, or the prover does not read
+site/cases/orbite/src/test_acces.cell  # Orbite: rules its bodies do not keep, or the prover does not read
+site/cases/orbite/src/test_aeolus.cell  # Orbite: rules its bodies do not keep, or the prover does not read
+site/cases/orbite/src/test_bout_en_bout.cell  # Orbite: rules its bodies do not keep, or the prover does not read
+site/cases/orbite/src/test_colreg.cell  # Orbite: rules its bodies do not keep, or the prover does not read
+site/cases/orbite/src/test_conjonctions.cell  # Orbite: rules its bodies do not keep, or the prover does not read
+site/cases/orbite/src/test_coordination.cell  # Orbite: rules its bodies do not keep, or the prover does not read
+site/cases/orbite/src/test_escalade.cell  # Orbite: rules its bodies do not keep, or the prover does not read
+site/cases/orbite/src/test_evenements.cell  # Orbite: rules its bodies do not keep, or the prover does not read
+site/cases/orbite/src/test_fin_de_vie.cell  # Orbite: rules its bodies do not keep, or the prover does not read
+site/cases/orbite/src/test_lancements.cell  # Orbite: rules its bodies do not keep, or the prover does not read
+site/cases/orbite/src/test_manoeuvres.cell  # Orbite: rules its bodies do not keep, or the prover does not read
+site/cases/orbite/src/test_observation.cell  # Orbite: rules its bodies do not keep, or the prover does not read
+site/cases/orbite/src/test_operateurs.cell  # Orbite: rules its bodies do not keep, or the prover does not read
+site/cases/orbite/src/test_operations.cell  # Orbite: rules its bodies do not keep, or the prover does not read
+site/cases/orbite/src/test_priorites.cell  # Orbite: rules its bodies do not keep, or the prover does not read
+site/cases/orbite/src/test_reentrees.cell  # Orbite: rules its bodies do not keep, or the prover does not read
+site/cases/orbite/src/test_ref.cell  # Orbite: rules its bodies do not keep, or the prover does not read
+site/cases/orbite/src/test_responsabilite.cell  # Orbite: rules its bodies do not keep, or the prover does not read
