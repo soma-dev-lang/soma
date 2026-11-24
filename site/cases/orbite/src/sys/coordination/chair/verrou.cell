@@ -97,6 +97,9 @@ flesh CoordVerrou {
             }
         }
     }
+    on etat(r) {
+        return get_status(r) ?? "libre"
+    }
     on arretee(r) {
         return (get_status(r) ?? "libre") == "tenu" && (designe_de.get(r) ?? "") != ""
     }

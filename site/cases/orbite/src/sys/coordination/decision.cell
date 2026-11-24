@@ -65,19 +65,21 @@ skeleton CoordDecision {
         signal prendre(h: Horodatage, d: String, r: Rapprochement, objet: Objet, mode: CoordMode, motif: String, par: String, valideur: String) -> String
             writes rapprochement_de, objet_de, fondement_de, historique_de
             moves prise -> designee when RefObjet.en_service via objet_de, designee -> en_vigueur when CoordVerrou.tenu via rapprochement_de, prise -> abstention when CoordVerrou.tenu via rapprochement_de
-            calls ApiRef.etat_objet, ApiConjonctions.tca, ApiConjonctions.pc, ApiConjonctions.distance, ApiConjonctions.niveau, CoordDossier.objets, CoordDossier.defaut, ApiPriorites.decision_de, ApiRef.propulsion, ApiEphemerides.fondement, ApiEphemerides.age, CoordReponse.du_tour
+            calls ApiRef.etat_objet, ApiConjonctions.tca, ApiConjonctions.pc, ApiConjonctions.distance, ApiConjonctions.niveau, CoordDossier.objets, CoordDossier.defaut, ApiPriorites.decision_de, ApiRef.propulsion, ApiEphemerides.fondement, ApiEphemerides.age, CoordReponse.du_tour, CoordVerrou.etat
         // Lève la décision (en_vigueur|abstention -> levee) après la levée du verrou. Appelé par
         // CoordVerrou.lever. Renvoie "levee". Refus : Inconnu, EtatInvalide, MotifRequis.
         signal lever(h: Horodatage, d: String, motif: String) -> CoordEtatDecision
             writes fin_le, motif_fin_de
             reads rapprochement_de
             moves en_vigueur -> levee when CoordVerrou.leve via rapprochement_de, abstention -> levee when CoordVerrou.leve via rapprochement_de
+            calls CoordVerrou.etat
         // Solde la décision (en_vigueur|abstention -> soldee) à la clôture du verrou. Appelé par
         // CoordVerrou.clore. Renvoie "soldee". Refus : Inconnu, EtatInvalide.
         signal solder(h: Horodatage, d: String) -> CoordEtatDecision
             writes fin_le, motif_fin_de
             reads rapprochement_de
             moves en_vigueur -> soldee when CoordVerrou.clos via rapprochement_de, abstention -> soldee when CoordVerrou.clos via rapprochement_de
+            calls CoordVerrou.etat
         // Purge le fondement d'une décision levée ou soldée (levee|soldee -> purgee) après
         // CONSERVATION, sous la purge `purge` autorisée par responsabilite (RespPurges, cible
         // `r` ; ApiResponsabilite.purge_autorisee(r, h) vrai), mémorisée une fois dans purge_de,

@@ -152,7 +152,7 @@ skeleton CoordDossier {
         signal arbitrer(h: Horodatage, r: Rapprochement, objet: Objet, motif: String, par: String, valideur: String) -> CoordEtat
             reads objets_de, echeance_de, tour_de
             moves proposee -> arbitrage, desaccord -> arbitrage, arbitrage -> arretee when CoordVerrou.tenu
-            calls CoordVerrou.poser, CoordArbitrage.saisir, CoordArbitrage.rendre, CoordArbitrage.en_retard, ApiAcces.a_le_role, ApiAcces.quatre_yeux, ApiAcces.en_urgence_pour, CoordEchange.noter, CoordEchange.notifier, Journal.noter
+            calls CoordVerrou.poser, CoordArbitrage.saisir, CoordArbitrage.rendre, CoordArbitrage.en_retard, ApiAcces.a_le_role, ApiAcces.quatre_yeux, ApiAcces.en_urgence_pour, CoordEchange.noter, CoordEchange.notifier, Journal.noter, CoordVerrou.etat
         // Rouvre une coordination arrêtée (nouvelle pc, manœuvre annulée, désigné devenu
         // incapable ou défaillant, grappe dissoute) : refuse si le suivi de la décision en vigueur
         // (CoordVerrou.decision, CoordSuivi.etat) est "execute" ; annule le plan d'évitement non
@@ -174,7 +174,7 @@ skeleton CoordDossier {
             writes defaut_de, version_de, propose_de, echeance_de, limite_de, tour_de, en_cours
             reads objets_de, parties_de
             moves arretee -> liberee when ManEvitement.libre || ManEvitement.solde, liberee -> rouverte when CoordVerrou.leve, rouverte -> proposee, rouverte -> arbitrage
-            calls CoordVerrou.lever, CoordVerrou.designe, CoordVerrou.decision, CoordSuivi.etat, CoordSuivi.plan, CoordArbitrage.saisir, ApiManoeuvres.plan_de, ApiManoeuvres.etat, ApiManoeuvres.retirer, ApiPriorites.qui_manoeuvre, ApiPriorites.version_en_vigueur, ApiPriorites.preavis, ApiOperations.arbitrage_centralise, ApiRef.peut_manoeuvrer, ApiRef.propulsion, ApiConjonctions.tca, ApiConjonctions.niveau, ApiOperateurs.delai_reponse, ApiAcces.a_le_role, CoordReponse.attendre, CoordEchange.noter, CoordEchange.notifier, Journal.noter
+            calls CoordVerrou.lever, CoordVerrou.designe, CoordVerrou.decision, CoordSuivi.etat, CoordSuivi.plan, CoordArbitrage.saisir, ApiManoeuvres.plan_de, ApiManoeuvres.etat, ApiManoeuvres.retirer, ApiPriorites.qui_manoeuvre, ApiPriorites.version_en_vigueur, ApiPriorites.preavis, ApiOperations.arbitrage_centralise, ApiRef.peut_manoeuvrer, ApiRef.propulsion, ApiConjonctions.tca, ApiConjonctions.niveau, ApiOperateurs.delai_reponse, ApiAcces.a_le_role, CoordReponse.attendre, CoordEchange.noter, CoordEchange.notifier, Journal.noter, CoordVerrou.etat, ApiManoeuvres.verrou
         // Relève du désigné par le privilégié (règle 17b du COLREG). Sur une coordination arretee
         // dont la décision en vigueur (CoordVerrou.decision) désigne un objet et en privilégie un
         // autre (CoordVerrou.designe / privilegie), relève si TOUT tient, sinon refuse sans rien
@@ -209,7 +209,7 @@ skeleton CoordDossier {
             writes propose_de, echeance_de, limite_de, tour_de, en_cours
             reads objets_de
             moves arretee -> liberee when ManEvitement.libre || ManEvitement.solde, liberee -> rouverte when CoordVerrou.leve, rouverte -> arbitrage, arbitrage -> arretee when CoordVerrou.tenu
-            calls CoordVerrou.decision, CoordVerrou.designe, CoordVerrou.privilegie, CoordVerrou.lever, CoordVerrou.poser, CoordDecision.resume, CoordSuivi.etat, CoordSuivi.plan, CoordSuivi.relever, CoordArbitrage.saisir, CoordArbitrage.rendre, CoordGrappe.compatible, ApiManoeuvres.plan_de, ApiManoeuvres.etat, ApiManoeuvres.retirer, ApiRef.peut_manoeuvrer, ApiRef.habite, ApiRef.proprietaire, ApiRef.propulsion, ApiOperateurs.est_actif, ApiPriorites.preavis, ApiConjonctions.tca, ApiConjonctions.niveau, ApiConformite.constater, ApiAcces.a_le_role, CoordEchange.noter, CoordEchange.notifier, Journal.noter
+            calls CoordVerrou.decision, CoordVerrou.designe, CoordVerrou.privilegie, CoordVerrou.lever, CoordVerrou.poser, CoordDecision.resume, CoordSuivi.etat, CoordSuivi.plan, CoordSuivi.relever, CoordArbitrage.saisir, CoordArbitrage.rendre, CoordGrappe.compatible, ApiManoeuvres.plan_de, ApiManoeuvres.etat, ApiManoeuvres.retirer, ApiRef.peut_manoeuvrer, ApiRef.habite, ApiRef.proprietaire, ApiRef.propulsion, ApiOperateurs.est_actif, ApiPriorites.preavis, ApiConjonctions.tca, ApiConjonctions.niveau, ApiConformite.constater, ApiAcces.a_le_role, CoordEchange.noter, CoordEchange.notifier, Journal.noter, CoordVerrou.etat, ApiManoeuvres.verrou
         // Recale l'échéance et la limite d'action d'un dossier proposee ou desaccord quand le
         // rapprochement a changé chez conjonctions depuis le dernier recalage
         // (ApiConjonctions.mis_a_jour > recale_le : niveau monté, TCA avancé) ; sinon ne fait rien :

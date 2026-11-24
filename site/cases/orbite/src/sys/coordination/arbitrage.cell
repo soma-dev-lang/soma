@@ -61,6 +61,7 @@ skeleton CoordArbitrage {
             writes courante_de
             reads dossier_de
             moves saisie -> rendue when CoordDossier.arretee via dossier_de, prise_en_charge -> rendue when CoordDossier.arretee via dossier_de, hors_delai -> rendue when CoordDossier.arretee via dossier_de
+            calls CoordDossier.etat
         // Surveille la saisine courante de `r` : si h ≥ CoordDossier.limite(r) − ALERTE_LIMITE
         // sans arbitrage, passe hors_delai, déclare un incident de gravité 3
         // (ApiOperations.declarer_incident, sous-système "coordination") et escalade à l'échelon

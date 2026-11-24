@@ -31,6 +31,9 @@ flesh CoordReponse {
         require st == "attendue" else EtatInvalide "réponse {id_rep} : {st}"
         let ech = CoordDossier.echeance(r)
         require h <= ech else Delai "échéance de réponse dépassée ({ech})"
+        let dos = dossier_de.get(id_rep) ?? ""
+        let ed = CoordDossier.etat(Rapprochement(dos))
+        require ed == "proposee" || ed == "desaccord" else EtatInvalide "coordination {dos} {ed} : plus de réponse attendue"
         if sens == "accepte" {
             transition(id_rep, "attendue", "acceptee")
         } else {

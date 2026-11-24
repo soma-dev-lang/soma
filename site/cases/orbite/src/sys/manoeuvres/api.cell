@@ -13,6 +13,9 @@ skeleton ApiManoeuvres {
         // "anomalie", "annule" ; "inconnu".
         signal etat(plan: String) -> String
             calls ManPlan.etat
+        // État du verrou d'évitement d'un rapprochement ("libre", "engage", "solde").
+        signal verrou(r: Rapprochement) -> String
+            calls ManEvitement.etat
         // Vrai si l'objet a un plan approuvé ou exécuté non encore vérifié.
         signal plan_actif(objet: Objet) -> Bool
             calls ManPlan.actif

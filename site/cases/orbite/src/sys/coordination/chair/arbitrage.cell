@@ -28,6 +28,8 @@ flesh CoordArbitrage {
         let id_s = courante_de.get(r) ?? ""
         require id_s != "" && dossier_de.get(id_s) != () else Inconnu "aucune saisine courante pour {r}"
         let st = get_status(id_s) ?? "saisie"
+        let dos = dossier_de.get(id_s) ?? ""
+        require CoordDossier.etat(Rapprochement(dos)) == "arretee" else EtatInvalide "coordination de {dos} non arrêtée : l'arbitrage ne se rend pas"
         if st == "saisie" {
             transition(id_s, "saisie", "rendue")
         } else if st == "prise_en_charge" {

@@ -5,10 +5,6 @@ flesh CoordDecision {
         require rapprochement_de.size < MAX_DECISIONS else Plein "plafond de {MAX_DECISIONS} décisions atteint"
         let hist = historique_de.get(r) ?? []
         require len(hist) < MAX_PAR_RAPPROCHEMENT else Plein "{r} : plus de {MAX_PAR_RAPPROCHEMENT} décisions"
-        if objet != "" {
-            let eo = ApiRef.etat_objet(objet)
-            require eo == "en_service" else NonEligible "{objet} n'est pas en service ({eo})"
-        }
         let objets_d = CoordDossier.objets(r)
         let a = Objet(objets_d[0])
         let b = Objet(objets_d[1])
@@ -30,10 +26,13 @@ flesh CoordDecision {
             age_b: if age_b.error == () { to_int(age_b.value) } else { -1 },
             reponses: CoordReponse.du_tour(r), motif: motif, par: par, valideur: valideur
         }
+        require CoordVerrou.etat(r) == "tenu" else EtatInvalide "verrou de {r} non tenu : aucune décision ne se prend"
         rapprochement_de.set(d, r)
         fondement_de.set(d, f)
         historique_de.set(r, hist ++ [d])
         if objet != "" {
+            let eo = ApiRef.etat_objet(objet)
+            require eo == "en_service" else NonEligible "{objet} n'est pas en service ({eo})"
             objet_de.set(d, objet)
             transition(d, "prise", "designee")
             transition(d, "designee", "en_vigueur")
@@ -46,6 +45,8 @@ flesh CoordDecision {
         require motif != "" else MotifRequis "levée sans motif"
         require rapprochement_de.get(d) != () else Inconnu "décision inconnue : {d}"
         let st = get_status(d) ?? "prise"
+        let rv = rapprochement_de.get(d) ?? ""
+        require CoordVerrou.etat(Rapprochement(rv)) == "leve" else EtatInvalide "verrou de {rv} non levé : la décision {d} reste"
         if st == "en_vigueur" {
             transition(d, "en_vigueur", "levee")
         } else if st == "abstention" {
@@ -60,6 +61,8 @@ flesh CoordDecision {
     on solder(h, d) {
         require rapprochement_de.get(d) != () else Inconnu "décision inconnue : {d}"
         let st = get_status(d) ?? "prise"
+        let rv = rapprochement_de.get(d) ?? ""
+        require CoordVerrou.etat(Rapprochement(rv)) == "clos" else EtatInvalide "verrou de {rv} non clos : la décision {d} ne se solde pas"
         if st == "en_vigueur" {
             transition(d, "en_vigueur", "soldee")
         } else if st == "abstention" {

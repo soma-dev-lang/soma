@@ -228,6 +228,9 @@ flesh ApiManoeuvres {
     on retirer(h, plan, motif, par) {
         return "annule"
     }
+    on verrou(r) {
+        return "libre"
+    }
 }
 
 flesh ApiEphemerides {

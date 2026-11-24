@@ -28,6 +28,7 @@ flesh CoordSuivi {
                 let motif_p = ApiManoeuvres.motif_de(plan_r)
                 let objet_p = ApiManoeuvres.objet_de(plan_r)
                 if motif_p == "evitement" && objet_p == obj {
+                    require CoordDecision.etat(d) == "en_vigueur" else EtatInvalide "décision {d} plus en vigueur : le plan {plan_r} ne s'y rattache pas"
                     transition(d, "attente_plan", "plan_depose")
                     if plan_de.get(d) == () { plan_de.set(d, plan_r) }
                     st = "plan_depose"
@@ -78,6 +79,10 @@ flesh CoordSuivi {
     on rendre_caduc(h, d) {
         require rapprochement_de.get(d) != () else Inconnu "suivi inconnu : {d}"
         let st = get_status(d) ?? "attente_plan"
+        if st == "attente_plan" || st == "plan_depose" {
+            let ed = CoordDecision.etat(d)
+            require ed == "levee" || ed == "soldee" else EtatInvalide "décision {d} {ed} : le suivi ne devient pas caduc"
+        }
         if st == "attente_plan" {
             transition(d, "attente_plan", "caduc")
             constate_le.set(d, h)

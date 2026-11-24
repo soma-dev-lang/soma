@@ -58,7 +58,7 @@ skeleton CoordSuivi {
             writes plan_de, constate_le
             reads rapprochement_de, objet_de, limite_de
             moves attente_plan -> plan_depose when CoordDecision.en_vigueur, attente_plan -> defaillant, plan_depose -> execute, plan_depose -> defaillant, execute -> verifie when ManPlan.verifie via plan_de, execute -> anomalie
-            calls ApiManoeuvres.plan_de, ApiManoeuvres.objet_de, ApiManoeuvres.motif_de, ApiManoeuvres.etat, ApiRef.proprietaire, ApiConjonctions.tca, ApiConjonctions.niveau, ApiEscalade.escalader, ApiConformite.constater, ApiAcces.a_le_role, CoordDossier.rouvrir, CoordEchange.notifier, Journal.noter
+            calls ApiManoeuvres.plan_de, ApiManoeuvres.objet_de, ApiManoeuvres.motif_de, ApiManoeuvres.etat, ApiRef.proprietaire, ApiConjonctions.tca, ApiConjonctions.niveau, ApiEscalade.escalader, ApiConformite.constater, ApiAcces.a_le_role, CoordDossier.rouvrir, CoordEchange.notifier, Journal.noter, CoordDecision.etat
         // Rend le suivi caduc (attente_plan|plan_depose -> caduc) quand sa décision est levée
         // ou soldée ; un suivi execute continue jusqu'à la vérification. Appelé par
         // CoordVerrou.lever et CoordVerrou.clore. Renvoie l'état. Refus : Inconnu.
@@ -66,6 +66,7 @@ skeleton CoordSuivi {
             writes constate_le
             reads rapprochement_de
             moves attente_plan -> caduc when CoordDecision.levee || CoordDecision.soldee, plan_depose -> caduc when CoordDecision.levee || CoordDecision.soldee
+            calls CoordDecision.etat
         // Relève du désigné (règle 17b) : attente_plan|plan_depose -> releve, seulement pendant la
         // libération de la coordination (CoordDossier "liberee", lien rapprochement_de) — avant la
         // levée du verrou, qui ne rend alors pas le suivi caduc. Appelé par CoordDossier.relever

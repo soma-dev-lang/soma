@@ -368,11 +368,12 @@ skeleton ApiLancements {
     //~ balayer 60fd747ff203ba59
 }
 
-== ApiManoeuvres sha256:68f620e0b659ca847c19f0b4e01cbc15d1ce425c212b8199531fb9b0864e4799 core:73c587fba8bfd8243801c5712a1081ff82ef42ee8e68b6b704a73c49eee232b8
+== ApiManoeuvres sha256:33c0ddafb2a084ac6d0c96ce76ffeebfb69fba6622faef043c0344767ba127d8 core:4df75ce809d4924e110b5789ca8678bb9cffef54c9714d80a43c9b337388dcfb
 skeleton ApiManoeuvres {
     face {
         signal declarer(h: Horodatage, plan: String, objet: Objet, r: Rapprochement, motif: String, debut: Horodatage, dv: DeltaV, par: String) -> String  requires h >= 0  requires debut >= 0  requires dv >= 0 && dv <= 10000000  calls ManCriblage.cribler, ManPlan.approuver, ManPlan.declarer, ManPlan.rejeter, ManPlan.statuer
         signal etat(plan: String) -> String  calls ManPlan.etat
+        signal verrou(r: Rapprochement) -> String  calls ManEvitement.etat
         signal plan_actif(objet: Objet) -> Bool  calls ManPlan.actif
         signal confirmer_execution(h: Horodatage, plan: String, reel: Horodatage, dv: DeltaV, par: String) -> String  requires h >= 0  requires reel >= 0  requires dv >= 0 && dv <= 10000000  calls ManPlan.confirmer
         signal annuler(h: Horodatage, plan: String, motif: String, par: String) -> String  requires h >= 0  calls ManPlan.annuler
@@ -392,6 +393,7 @@ skeleton ApiManoeuvres {
     // type Refus = String where value == "Habilitation" || value == "QuatreYeux" || value == "Existe" || value == "Inconnu" || value == "EtatInvalide" || value == "HorsBornes" || value == "Insuffisant" || value == "Perime" || value == "Suspendu" || value == "Ferme" || value == "Echu" || value == "NonEligible" || value == "Doublon" || value == "Incoherent" || value == "Plein" || value == "MotifRequis" || value == "Delai" || value == "Conflit" || value == "Confidentiel" (nominal: never mixed with another type; build Refus(x), read to_string(q); literals take its type)
     //~ declarer 86561e4dd90bbed2
     //~ etat 1bf68fcf0b7dd10a
+    //~ verrou 1a4239ac0adb3b2f
     //~ plan_actif a6ac8ad71ed3ce9c
     //~ confirmer_execution 09c7d9c4f8f5e622
     //~ annuler 0adcca3665f4ff9a
@@ -2401,7 +2403,7 @@ skeleton ConjSeuils {
     //~ etat d05b7dcbe8598133
 }
 
-== CoordArbitrage sha256:0c52acc519fc2e14a9c9952a4ff8a68560ae0c65af4e727d102b91b372040f58 core:5d0bed1d2884cb4e88da620cf55ac8a487ef27e24dc37726312b62792370d05d
+== CoordArbitrage sha256:0661ed69a851ac3d0bc58c7e1544cfb2b871f6c93a6c8c36cde1ead4baaded7c core:751d7809765bc3a669b1d0b85804ad7e0d024ef4e79a4b8cf382bfbcfa381197
 skeleton CoordArbitrage {
     memory {
         dossier_de: Map<String, Rapprochement> [persistent]
@@ -2428,7 +2430,7 @@ skeleton CoordArbitrage {
     face {
         signal saisir(h: Horodatage, r: Rapprochement, tour: Int, raison: CoordRaison) -> String  requires tour >= 1  requires h >= 0  requires raison == "silence" || raison == "desaccord" || raison == "verrou_refuse" || raison == "sans_designation" || raison == "rouverture_tardive" || raison == "urgence" || raison == "crise" || raison == "grappe" || raison == "releve_17b"  writes courante_de, dossier_de, raison_de, saisie_le  calls CoordEchange.notifier, Journal.noter
         signal prendre_en_charge(h: Horodatage, r: Rapprochement, par: String) -> String  requires h >= 0  reads courante_de, dossier_de  writes analyste_de  moves saisie -> prise_en_charge  calls ApiAcces.a_le_role, CoordEchange.noter, Journal.noter
-        signal rendre(h: Horodatage, r: Rapprochement) -> String  requires h >= 0  reads dossier_de  writes courante_de  moves hors_delai -> rendue when CoordDossier.arretee via dossier_de, prise_en_charge -> rendue when CoordDossier.arretee via dossier_de, saisie -> rendue when CoordDossier.arretee via dossier_de
+        signal rendre(h: Horodatage, r: Rapprochement) -> String  requires h >= 0  reads dossier_de  writes courante_de  moves hors_delai -> rendue when CoordDossier.arretee via dossier_de, prise_en_charge -> rendue when CoordDossier.arretee via dossier_de, saisie -> rendue when CoordDossier.arretee via dossier_de  calls CoordDossier.etat
         signal surveiller(h: Horodatage, r: Rapprochement, par: String) -> CoordEtatSaisine  requires h >= 0  ensures result == "saisie" || result == "prise_en_charge" || result == "rendue" || result == "hors_delai" || result == "abandonnee" || result == "inconnue"  reads courante_de, dossier_de, saisine  moves prise_en_charge -> hors_delai, saisie -> hors_delai  calls ApiAcces.a_le_role, ApiEscalade.escalader, ApiOperations.declarer_incident, ApiRef.orbite, CoordDossier.limite, Journal.noter
         signal abandonner(h: Horodatage, r: Rapprochement) -> Int  requires h >= 0  writes courante_de  moves hors_delai -> abandonnee, prise_en_charge -> abandonnee, saisie -> abandonnee
         signal courante(r: Rapprochement) -> String  reads courante_de
@@ -2448,7 +2450,7 @@ skeleton CoordArbitrage {
     //~ en_retard 010529344ac6d886
 }
 
-== CoordDecision sha256:bdbf342d80d847dfbe41a7f831b47877431a16bfd2a640ca0f10b2e826296947 core:85db8fef7220324b1139bf9a8201495698608fd36c89a8e42447949897c892f0
+== CoordDecision sha256:d128b2bf311fea3b8dfe19b20848ce5f6d84f6e6370a57a1311376552f21c84a core:999675a73a555f3ecdef38a97c3f154c070842b348eeb262fa34cd21a49dad2a
 skeleton CoordDecision {
     memory {
         rapprochement_de: Map<String, Rapprochement> [persistent]
@@ -2477,9 +2479,9 @@ skeleton CoordDecision {
         soldee -> purgee
     }
     face {
-        signal prendre(h: Horodatage, d: String, r: Rapprochement, objet: Objet, mode: CoordMode, motif: String, par: String, valideur: String) -> String  requires h >= 0  requires mode == "accord" || mode == "arbitrage" || mode == "releve"  writes fondement_de, historique_de, objet_de, rapprochement_de  moves designee -> en_vigueur when CoordVerrou.tenu via rapprochement_de, prise -> abstention when CoordVerrou.tenu via rapprochement_de, prise -> designee when RefObjet.en_service via objet_de  calls ApiConjonctions.distance, ApiConjonctions.niveau, ApiConjonctions.pc, ApiConjonctions.tca, ApiEphemerides.age, ApiEphemerides.fondement, ApiPriorites.decision_de, ApiRef.etat_objet, ApiRef.propulsion, CoordDossier.defaut, CoordDossier.objets, CoordReponse.du_tour
-        signal lever(h: Horodatage, d: String, motif: String) -> CoordEtatDecision  requires h >= 0  ensures result == "prise" || result == "designee" || result == "abstention" || result == "en_vigueur" || result == "levee" || result == "soldee" || result == "purgee" || result == "inconnue"  reads rapprochement_de  writes fin_le, motif_fin_de  moves abstention -> levee when CoordVerrou.leve via rapprochement_de, en_vigueur -> levee when CoordVerrou.leve via rapprochement_de
-        signal solder(h: Horodatage, d: String) -> CoordEtatDecision  requires h >= 0  ensures result == "prise" || result == "designee" || result == "abstention" || result == "en_vigueur" || result == "levee" || result == "soldee" || result == "purgee" || result == "inconnue"  reads rapprochement_de  writes fin_le, motif_fin_de  moves abstention -> soldee when CoordVerrou.clos via rapprochement_de, en_vigueur -> soldee when CoordVerrou.clos via rapprochement_de
+        signal prendre(h: Horodatage, d: String, r: Rapprochement, objet: Objet, mode: CoordMode, motif: String, par: String, valideur: String) -> String  requires h >= 0  requires mode == "accord" || mode == "arbitrage" || mode == "releve"  writes fondement_de, historique_de, objet_de, rapprochement_de  moves designee -> en_vigueur when CoordVerrou.tenu via rapprochement_de, prise -> abstention when CoordVerrou.tenu via rapprochement_de, prise -> designee when RefObjet.en_service via objet_de  calls ApiConjonctions.distance, ApiConjonctions.niveau, ApiConjonctions.pc, ApiConjonctions.tca, ApiEphemerides.age, ApiEphemerides.fondement, ApiPriorites.decision_de, ApiRef.etat_objet, ApiRef.propulsion, CoordDossier.defaut, CoordDossier.objets, CoordReponse.du_tour, CoordVerrou.etat
+        signal lever(h: Horodatage, d: String, motif: String) -> CoordEtatDecision  requires h >= 0  ensures result == "prise" || result == "designee" || result == "abstention" || result == "en_vigueur" || result == "levee" || result == "soldee" || result == "purgee" || result == "inconnue"  reads rapprochement_de  writes fin_le, motif_fin_de  moves abstention -> levee when CoordVerrou.leve via rapprochement_de, en_vigueur -> levee when CoordVerrou.leve via rapprochement_de  calls CoordVerrou.etat
+        signal solder(h: Horodatage, d: String) -> CoordEtatDecision  requires h >= 0  ensures result == "prise" || result == "designee" || result == "abstention" || result == "en_vigueur" || result == "levee" || result == "soldee" || result == "purgee" || result == "inconnue"  reads rapprochement_de  writes fin_le, motif_fin_de  moves abstention -> soldee when CoordVerrou.clos via rapprochement_de, en_vigueur -> soldee when CoordVerrou.clos via rapprochement_de  calls CoordVerrou.etat
         signal purger(h: Horodatage, d: String, purge: String, par: String, valideur: String) -> CoordEtatDecision  requires h >= 0  ensures result == "prise" || result == "designee" || result == "abstention" || result == "en_vigueur" || result == "levee" || result == "soldee" || result == "purgee" || result == "inconnue"  reads fin_le, rapprochement_de  writes fondement_de, purge_de  moves levee -> purgee when RespPurges.autorisee via purge_de, soldee -> purgee when RespPurges.autorisee via purge_de  calls ApiAcces.a_le_role, ApiAcces.quatre_yeux, ApiResponsabilite.purge_autorisee, ApiResponsabilite.sous_gel, Journal.noter
         signal contester(h: Horodatage, d: String, motif: String, par: String) -> Int  requires h >= 0  reads decision, fin_le, fondement_de  writes reserves_de  calls ApiAcces.a_le_role, ApiAcces.agit_pour, ApiRef.proprietaire, CoordEchange.noter, Journal.noter
         signal consulter(h: Horodatage, d: String, par: String) -> CoordFondement  requires h >= 0  reads decision, fondement_de, rapprochement_de, reserves_de  calls ApiAcces.a_le_role, ApiAcces.employeur, ApiDonnees.peut_recevoir, ApiDonnees.tracer, ApiRef.orbite, Journal.noter
@@ -2505,7 +2507,7 @@ skeleton CoordDecision {
     //~ historique ed787323aaf24b18
 }
 
-== CoordDossier sha256:01eecab3fcd8dc44a816fd4766730b1a0fc08b8d77106740d4aa789fa1532719 core:e268ce68595f7db7f77fdb6f803bf3949e009ce543c80fbc731cef9085110795
+== CoordDossier sha256:ad07c523d2742b67e3b4224c1a434ffa8cdc3e3d1592086f801883fcb0c5b466 core:ee39b3507ae26d2da0ac92108a409193166b2dc0a14bb7355797d0ea400ce6fa
 skeleton CoordDossier {
     memory {
         objets_de: Map<String, List<String>> [persistent]
@@ -2556,9 +2558,9 @@ skeleton CoordDossier {
         signal repondre(h: Horodatage, r: Rapprochement, reponse: CoordSens, contre: Objet, motif: String, par: String) -> CoordEtat  requires h >= 0  requires reponse == "accepte" || reponse == "refuse"  ensures result == "ouverte" || result == "proposee" || result == "accord" || result == "desaccord" || result == "arbitrage" || result == "arretee" || result == "liberee" || result == "rouverte" || result == "close" || result == "inconnue"  reads defaut_de, objets_de, parties_de  writes echeance_de, en_cours, limite_de, propose_de, tour_de  moves desaccord -> accord, desaccord -> arbitrage, proposee -> accord, proposee -> desaccord  calls ApiAcces.a_le_role, ApiAcces.agit_pour, ApiAcces.employeur, ApiConjonctions.niveau, ApiConjonctions.tca, ApiOperateurs.delai_reponse, ApiPriorites.preavis, ApiRef.peut_manoeuvrer, ApiRef.propulsion, CoordArbitrage.saisir, CoordEchange.noter, CoordEchange.notifier, CoordReponse.attendre, CoordReponse.enregistrer, CoordReponse.rendre_caduques, CoordReponse.toutes_acceptees, Journal.noter, arreter
         signal arreter(h: Horodatage, r: Rapprochement) -> CoordEtat  requires h >= 0  ensures result == "ouverte" || result == "proposee" || result == "accord" || result == "desaccord" || result == "arbitrage" || result == "arretee" || result == "liberee" || result == "rouverte" || result == "close" || result == "inconnue"  reads en_cours, propose_de, tour_de  moves accord -> arbitrage, accord -> arretee when CoordVerrou.tenu  calls CoordArbitrage.saisir, CoordEchange.notifier, CoordVerrou.poser, Journal.noter
         signal constater_silence(h: Horodatage, r: Rapprochement, par: String) -> Int  requires h >= 0  reads echeance_de, limite_de, parties_de, propose_de, tour_de  moves desaccord -> arbitrage, proposee -> accord, proposee -> arbitrage  calls ApiAcces.a_le_role, ApiEscalade.reprise, ApiRef.orbite, ApiRef.peut_manoeuvrer, ApiRef.proprietaire, CoordArbitrage.saisir, CoordEchange.notifier, CoordReponse.constater_muettes, CoordReponse.du_tour, Journal.noter, arreter
-        signal arbitrer(h: Horodatage, r: Rapprochement, objet: Objet, motif: String, par: String, valideur: String) -> CoordEtat  requires h >= 0  ensures result == "ouverte" || result == "proposee" || result == "accord" || result == "desaccord" || result == "arbitrage" || result == "arretee" || result == "liberee" || result == "rouverte" || result == "close" || result == "inconnue"  reads echeance_de, objets_de, tour_de  moves arbitrage -> arretee when CoordVerrou.tenu, desaccord -> arbitrage, proposee -> arbitrage  calls ApiAcces.a_le_role, ApiAcces.en_urgence_pour, ApiAcces.quatre_yeux, CoordArbitrage.en_retard, CoordArbitrage.rendre, CoordArbitrage.saisir, CoordEchange.noter, CoordEchange.notifier, CoordVerrou.poser, Journal.noter
-        signal rouvrir(h: Horodatage, r: Rapprochement, motif: String, par: String) -> CoordEtat  requires h >= 0  ensures result == "ouverte" || result == "proposee" || result == "accord" || result == "desaccord" || result == "arbitrage" || result == "arretee" || result == "liberee" || result == "rouverte" || result == "close" || result == "inconnue"  reads objets_de, parties_de  writes defaut_de, echeance_de, en_cours, limite_de, propose_de, tour_de, version_de  moves arretee -> liberee when ManEvitement.libre || ManEvitement.solde, liberee -> rouverte when CoordVerrou.leve, rouverte -> arbitrage, rouverte -> proposee  calls ApiAcces.a_le_role, ApiConjonctions.niveau, ApiConjonctions.tca, ApiManoeuvres.etat, ApiManoeuvres.plan_de, ApiManoeuvres.retirer, ApiOperateurs.delai_reponse, ApiOperations.arbitrage_centralise, ApiPriorites.preavis, ApiPriorites.qui_manoeuvre, ApiPriorites.version_en_vigueur, ApiRef.peut_manoeuvrer, ApiRef.propulsion, CoordArbitrage.saisir, CoordEchange.noter, CoordEchange.notifier, CoordReponse.attendre, CoordSuivi.etat, CoordSuivi.plan, CoordVerrou.decision, CoordVerrou.designe, CoordVerrou.lever, Journal.noter
-        signal relever(h: Horodatage, r: Rapprochement, par: String) -> CoordEtat  requires h >= 0  ensures result == "ouverte" || result == "proposee" || result == "accord" || result == "desaccord" || result == "arbitrage" || result == "arretee" || result == "liberee" || result == "rouverte" || result == "close" || result == "inconnue"  reads objets_de  writes echeance_de, en_cours, limite_de, propose_de, tour_de  moves arbitrage -> arretee when CoordVerrou.tenu, arretee -> liberee when ManEvitement.libre || ManEvitement.solde, liberee -> rouverte when CoordVerrou.leve, rouverte -> arbitrage  calls ApiAcces.a_le_role, ApiConformite.constater, ApiConjonctions.niveau, ApiConjonctions.tca, ApiManoeuvres.etat, ApiManoeuvres.plan_de, ApiManoeuvres.retirer, ApiOperateurs.est_actif, ApiPriorites.preavis, ApiRef.habite, ApiRef.peut_manoeuvrer, ApiRef.proprietaire, ApiRef.propulsion, CoordArbitrage.rendre, CoordArbitrage.saisir, CoordDecision.resume, CoordEchange.noter, CoordEchange.notifier, CoordGrappe.compatible, CoordSuivi.etat, CoordSuivi.plan, CoordSuivi.relever, CoordVerrou.decision, CoordVerrou.designe, CoordVerrou.lever, CoordVerrou.poser, CoordVerrou.privilegie, Journal.noter
+        signal arbitrer(h: Horodatage, r: Rapprochement, objet: Objet, motif: String, par: String, valideur: String) -> CoordEtat  requires h >= 0  ensures result == "ouverte" || result == "proposee" || result == "accord" || result == "desaccord" || result == "arbitrage" || result == "arretee" || result == "liberee" || result == "rouverte" || result == "close" || result == "inconnue"  reads echeance_de, objets_de, tour_de  moves arbitrage -> arretee when CoordVerrou.tenu, desaccord -> arbitrage, proposee -> arbitrage  calls ApiAcces.a_le_role, ApiAcces.en_urgence_pour, ApiAcces.quatre_yeux, CoordArbitrage.en_retard, CoordArbitrage.rendre, CoordArbitrage.saisir, CoordEchange.noter, CoordEchange.notifier, CoordVerrou.etat, CoordVerrou.poser, Journal.noter
+        signal rouvrir(h: Horodatage, r: Rapprochement, motif: String, par: String) -> CoordEtat  requires h >= 0  ensures result == "ouverte" || result == "proposee" || result == "accord" || result == "desaccord" || result == "arbitrage" || result == "arretee" || result == "liberee" || result == "rouverte" || result == "close" || result == "inconnue"  reads objets_de, parties_de  writes defaut_de, echeance_de, en_cours, limite_de, propose_de, tour_de, version_de  moves arretee -> liberee when ManEvitement.libre || ManEvitement.solde, liberee -> rouverte when CoordVerrou.leve, rouverte -> arbitrage, rouverte -> proposee  calls ApiAcces.a_le_role, ApiConjonctions.niveau, ApiConjonctions.tca, ApiManoeuvres.etat, ApiManoeuvres.plan_de, ApiManoeuvres.retirer, ApiManoeuvres.verrou, ApiOperateurs.delai_reponse, ApiOperations.arbitrage_centralise, ApiPriorites.preavis, ApiPriorites.qui_manoeuvre, ApiPriorites.version_en_vigueur, ApiRef.peut_manoeuvrer, ApiRef.propulsion, CoordArbitrage.saisir, CoordEchange.noter, CoordEchange.notifier, CoordReponse.attendre, CoordSuivi.etat, CoordSuivi.plan, CoordVerrou.decision, CoordVerrou.designe, CoordVerrou.etat, CoordVerrou.lever, Journal.noter
+        signal relever(h: Horodatage, r: Rapprochement, par: String) -> CoordEtat  requires h >= 0  ensures result == "ouverte" || result == "proposee" || result == "accord" || result == "desaccord" || result == "arbitrage" || result == "arretee" || result == "liberee" || result == "rouverte" || result == "close" || result == "inconnue"  reads objets_de  writes echeance_de, en_cours, limite_de, propose_de, tour_de  moves arbitrage -> arretee when CoordVerrou.tenu, arretee -> liberee when ManEvitement.libre || ManEvitement.solde, liberee -> rouverte when CoordVerrou.leve, rouverte -> arbitrage  calls ApiAcces.a_le_role, ApiConformite.constater, ApiConjonctions.niveau, ApiConjonctions.tca, ApiManoeuvres.etat, ApiManoeuvres.plan_de, ApiManoeuvres.retirer, ApiManoeuvres.verrou, ApiOperateurs.est_actif, ApiPriorites.preavis, ApiRef.habite, ApiRef.peut_manoeuvrer, ApiRef.proprietaire, ApiRef.propulsion, CoordArbitrage.rendre, CoordArbitrage.saisir, CoordDecision.resume, CoordEchange.noter, CoordEchange.notifier, CoordGrappe.compatible, CoordSuivi.etat, CoordSuivi.plan, CoordSuivi.relever, CoordVerrou.decision, CoordVerrou.designe, CoordVerrou.etat, CoordVerrou.lever, CoordVerrou.poser, CoordVerrou.privilegie, Journal.noter
         signal recaler(h: Horodatage, r: Rapprochement, par: String) -> Horodatage  requires h >= 0  ensures result >= 0  reads parties_de, propose_de, tour_de  writes echeance_de, en_cours, limite_de, recale_le  moves desaccord -> arbitrage, proposee -> arbitrage  calls ApiAcces.a_le_role, ApiConjonctions.mis_a_jour, ApiConjonctions.niveau, ApiConjonctions.tca, ApiOperateurs.delai_reponse, ApiPriorites.preavis, ApiRef.propulsion, CoordArbitrage.saisir, CoordEchange.notifier, Journal.noter
         signal reverifier(h: Horodatage, r: Rapprochement, par: String) -> Bool  requires h >= 0  reads coordination  calls ApiAcces.a_le_role, ApiOperateurs.est_actif, ApiRef.peut_manoeuvrer, ApiRef.proprietaire, CoordVerrou.designe, rouvrir
         signal balayer(h: Horodatage, par: String) -> Int  requires h >= 0  reads coordination, echeance_de, en_cours  writes balaye_le  calls ApiAcces.a_le_role, ApiConjonctions.etat, CoordArbitrage.courante, CoordArbitrage.surveiller, CoordGrappe.etat, CoordGrappe.grappe_de_r, CoordGrappe.regler, CoordReponse.relancer, CoordSuivi.suivre, CoordVerrou.decision, clore, constater_silence, recaler, relever, reverifier
@@ -2682,7 +2684,7 @@ skeleton CoordGrappe {
     //~ etat c8e3fd50a62476f4
 }
 
-== CoordReponse sha256:7cef2d01c7b4116b74d2e645dbd42d9fec2f8f239c32503726dda8f8ba822a3f core:7216b2fc29cd560e72431fbbddee1970240fbef15428d085ad636184e5a6b190
+== CoordReponse sha256:705b40cfd01e652e0679dbaa4ebd743d17c0c52d913c6c280c13741323423380 core:d38d161718caa562d294d0c3d8a3dda913c9caf3de9caa6bab957512ebd3b534
 skeleton CoordReponse {
     memory {
         dossier_de: Map<String, Rapprochement> [persistent]
@@ -2714,7 +2716,7 @@ skeleton CoordReponse {
     }
     face {
         signal attendre(h: Horodatage, r: Rapprochement, tour: Int, org: Org) -> String  requires tour >= 1  requires h >= 0  writes attendue_le, de_org, dossier_de, du_tour_de, org_de, repondu_le  moves attendue -> muette  calls ApiEscalade.escalader, ApiOperateurs.est_actif
-        signal enregistrer(h: Horodatage, r: Rapprochement, tour: Int, org: Org, sens: CoordSens, contre: Objet, motif: String, par: String) -> CoordEtatReponse  requires tour >= 1  requires h >= 0  requires sens == "accepte" || sens == "refuse"  ensures result == "attendue" || result == "acceptee" || result == "refusee" || result == "muette" || result == "caduque" || result == "inconnue"  reads dossier_de, du_tour_de, org_de  writes contre_de, motif_de, par_de, repondu_le, sens_de  moves attendue -> acceptee when CoordDossier.proposee || CoordDossier.desaccord via dossier_de, attendue -> refusee when CoordDossier.proposee || CoordDossier.desaccord via dossier_de  calls ApiEscalade.accuser, ApiEscalade.echelon, CoordDossier.echeance
+        signal enregistrer(h: Horodatage, r: Rapprochement, tour: Int, org: Org, sens: CoordSens, contre: Objet, motif: String, par: String) -> CoordEtatReponse  requires tour >= 1  requires h >= 0  requires sens == "accepte" || sens == "refuse"  ensures result == "attendue" || result == "acceptee" || result == "refusee" || result == "muette" || result == "caduque" || result == "inconnue"  reads dossier_de, du_tour_de, org_de  writes contre_de, motif_de, par_de, repondu_le, sens_de  moves attendue -> acceptee when CoordDossier.proposee || CoordDossier.desaccord via dossier_de, attendue -> refusee when CoordDossier.proposee || CoordDossier.desaccord via dossier_de  calls ApiEscalade.accuser, ApiEscalade.echelon, CoordDossier.echeance, CoordDossier.etat
         signal relancer(h: Horodatage, r: Rapprochement, par: String) -> Int  requires h >= 0  reads attendue_le, du_tour_de, org_de, reponse  writes relances_de  calls ApiAcces.a_le_role, ApiOperateurs.astreinte, CoordDossier.echeance, CoordDossier.tour, CoordEchange.notifier
         signal constater_muettes(h: Horodatage, r: Rapprochement) -> Int  requires h >= 0  reads du_tour_de, org_de  writes repondu_le  moves attendue -> muette  calls ApiConformite.constater, ApiConjonctions.niveau, ApiEscalade.escalader, CoordDossier.tour
         signal rendre_caduques(h: Horodatage, r: Rapprochement) -> Int  requires h >= 0  reads du_tour_de  writes repondu_le  moves attendue -> caduque  calls CoordDossier.tour
@@ -2744,7 +2746,7 @@ skeleton CoordReponse {
     //~ bilan bcc43f489cfedffe
 }
 
-== CoordSuivi sha256:6391ca88f2d0e8c8306968f878c088892c50a798bb1517988b79ffd1a42a0865 core:3c9af7fe52677aa2764469f1d2e548eb2d6e95244dd4f7d7c61d4bb41dadefa8
+== CoordSuivi sha256:0da348dff01d29e850bbe96deb8917d13e989003c22502f729146759a58e2e7f core:67af3a3cc12df5080c3306f289b26ee59a230743b10c5c3287635350a22c7592
 skeleton CoordSuivi {
     memory {
         rapprochement_de: Map<String, Rapprochement> [persistent]
@@ -2772,8 +2774,8 @@ skeleton CoordSuivi {
     }
     face {
         signal ouvrir(h: Horodatage, d: String, r: Rapprochement, objet: Objet) -> CoordEtatSuivi  requires h >= 0  ensures result == "attente_plan" || result == "plan_depose" || result == "execute" || result == "verifie" || result == "anomalie" || result == "defaillant" || result == "sans_objet" || result == "caduc" || result == "releve" || result == "inconnu"  writes constate_le, limite_de, objet_de, rapprochement_de  moves attente_plan -> sans_objet  calls CoordDossier.limite
-        signal suivre(h: Horodatage, d: String, par: String) -> CoordEtatSuivi  requires h >= 0  ensures result == "attente_plan" || result == "plan_depose" || result == "execute" || result == "verifie" || result == "anomalie" || result == "defaillant" || result == "sans_objet" || result == "caduc" || result == "releve" || result == "inconnu"  reads limite_de, objet_de, rapprochement_de  writes constate_le, plan_de  moves attente_plan -> defaillant, attente_plan -> plan_depose when CoordDecision.en_vigueur, execute -> anomalie, execute -> verifie when ManPlan.verifie via plan_de, plan_depose -> defaillant, plan_depose -> execute  calls ApiAcces.a_le_role, ApiConformite.constater, ApiConjonctions.niveau, ApiConjonctions.tca, ApiEscalade.escalader, ApiManoeuvres.etat, ApiManoeuvres.motif_de, ApiManoeuvres.objet_de, ApiManoeuvres.plan_de, ApiRef.proprietaire, CoordDossier.rouvrir, CoordEchange.notifier, Journal.noter
-        signal rendre_caduc(h: Horodatage, d: String) -> CoordEtatSuivi  requires h >= 0  ensures result == "attente_plan" || result == "plan_depose" || result == "execute" || result == "verifie" || result == "anomalie" || result == "defaillant" || result == "sans_objet" || result == "caduc" || result == "releve" || result == "inconnu"  reads rapprochement_de  writes constate_le  moves attente_plan -> caduc when CoordDecision.levee || CoordDecision.soldee, plan_depose -> caduc when CoordDecision.levee || CoordDecision.soldee
+        signal suivre(h: Horodatage, d: String, par: String) -> CoordEtatSuivi  requires h >= 0  ensures result == "attente_plan" || result == "plan_depose" || result == "execute" || result == "verifie" || result == "anomalie" || result == "defaillant" || result == "sans_objet" || result == "caduc" || result == "releve" || result == "inconnu"  reads limite_de, objet_de, rapprochement_de  writes constate_le, plan_de  moves attente_plan -> defaillant, attente_plan -> plan_depose when CoordDecision.en_vigueur, execute -> anomalie, execute -> verifie when ManPlan.verifie via plan_de, plan_depose -> defaillant, plan_depose -> execute  calls ApiAcces.a_le_role, ApiConformite.constater, ApiConjonctions.niveau, ApiConjonctions.tca, ApiEscalade.escalader, ApiManoeuvres.etat, ApiManoeuvres.motif_de, ApiManoeuvres.objet_de, ApiManoeuvres.plan_de, ApiRef.proprietaire, CoordDecision.etat, CoordDossier.rouvrir, CoordEchange.notifier, Journal.noter
+        signal rendre_caduc(h: Horodatage, d: String) -> CoordEtatSuivi  requires h >= 0  ensures result == "attente_plan" || result == "plan_depose" || result == "execute" || result == "verifie" || result == "anomalie" || result == "defaillant" || result == "sans_objet" || result == "caduc" || result == "releve" || result == "inconnu"  reads rapprochement_de  writes constate_le  moves attente_plan -> caduc when CoordDecision.levee || CoordDecision.soldee, plan_depose -> caduc when CoordDecision.levee || CoordDecision.soldee  calls CoordDecision.etat
         signal relever(h: Horodatage, d: String) -> CoordEtatSuivi  requires h >= 0  ensures result == "attente_plan" || result == "plan_depose" || result == "execute" || result == "verifie" || result == "anomalie" || result == "defaillant" || result == "sans_objet" || result == "caduc" || result == "releve" || result == "inconnu"  reads rapprochement_de  writes constate_le  moves attente_plan -> releve when CoordDossier.liberee via rapprochement_de, plan_depose -> releve when CoordDossier.liberee via rapprochement_de  calls CoordDossier.phase
         signal plan(d: String) -> String  reads plan_de
         signal etat(d: String) -> CoordEtatSuivi  ensures result == "attente_plan" || result == "plan_depose" || result == "execute" || result == "verifie" || result == "anomalie" || result == "defaillant" || result == "sans_objet" || result == "caduc" || result == "releve" || result == "inconnu"  reads rapprochement_de, suivi
@@ -2791,7 +2793,7 @@ skeleton CoordSuivi {
     //~ etat ce745844c8e88475
 }
 
-== CoordVerrou sha256:fd71dce38f66dce7588e981195e05d959f313008346286c54fb1afbfed6ec4fa core:a856932f0f792d440695ee5780f0c13fd842d27e090fd96430d0d99bba60aa10
+== CoordVerrou sha256:96ce86723a0b55da54902ba8bd54c6236596000a84a49975280a39df81104478 core:afbf2f8fcb9a3251d331d1c51e1d95f7e6825c8fbb8fe8259ffb41a40d8f4178
 skeleton CoordVerrou {
     memory {
         designe_de: Map<String, Objet> [persistent]
@@ -2821,6 +2823,7 @@ skeleton CoordVerrou {
         signal designe(r: Rapprochement, par: String) -> Objet  reads designe_de, pose_le  calls ApiAcces.employeur, ApiDonnees.peut_recevoir, ApiRef.orbite, CoordDossier.objets
         signal privilegie(r: Rapprochement, par: String) -> Objet  reads pose_le, privilegie_de  calls ApiAcces.employeur, ApiDonnees.peut_recevoir, ApiRef.orbite, CoordDossier.objets
         signal arretee(r: Rapprochement) -> Bool  reads designe_de, verrou
+        signal etat(r: Rapprochement) -> String  reads verrou
         signal decision(r: Rapprochement) -> String  reads decision_de
         signal decidee(r: Rapprochement) -> Bool  reads decision_de, verrou
     }
@@ -2835,6 +2838,7 @@ skeleton CoordVerrou {
     //~ designe f886631054ccb1c2
     //~ privilegie e5d118cead766a29
     //~ arretee 6d06c48a1fdbbc78
+    //~ etat 504341d87cd431a3
     //~ decision ec008f75713bde41
     //~ decidee 2b549f558fc2e4d9
 }
@@ -10612,4 +10616,4 @@ verify.before.RespSinistres.declare.requires = ["OpMembres.admis"]
 verify.before.RespSinistres.declare.via = "RespSinistres.op_de"
 package.edition = "2026"
 
-checksum sha256:c64eb197ab5302780c43677b778a683d485455a4d9ea61b5bc78eb0ccdf1ab2a
+checksum sha256:98641e06d27e5dd774fc030c6222711876d6ee3c68df2b5762ce75f093f3fc0f

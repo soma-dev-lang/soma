@@ -977,7 +977,10 @@ impl<'a> Engine<'a> {
             }
         }
         // (a computed id is read once: its choice is not kept)
-        if key.starts_with("x:") { let (k, sk) = (kid(&key), kid(&format!("§{}", key))); out = out.into_iter().map(|mut s| { s.bind.remove(k); s.bind.remove(sk); s }).collect(); }
+        // (a computed id is its own value at each place it is written — but a
+        // parameter it was handed to is one value for the whole call, forgotten when the call ends)
+        let handed = key.rsplit(':').next().is_some_and(|last| last.len() > 1 && (last.starts_with('p') || last.starts_with('#')) && last[1..].chars().all(|c| c.is_ascii_digit()));
+        if key.starts_with("x:") && !handed { let (k, sk) = (kid(&key), kid(&format!("§{}", key))); out = out.into_iter().map(|mut s| { s.bind.remove(k); s.bind.remove(sk); s }).collect(); }
         out
     }
 

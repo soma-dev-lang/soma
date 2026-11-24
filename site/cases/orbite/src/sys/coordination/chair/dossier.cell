@@ -231,6 +231,7 @@ flesh CoordDossier {
             require st == "arbitrage" else EtatInvalide "coordination {r} : {st}"
         }
         let d = CoordVerrou.poser(h, r, objet, "arbitrage", motif, par, valideur)
+        require CoordVerrou.etat(r) == "tenu" else EtatInvalide "verrou de {r} non tenu : la coordination ne s'arrête pas"
         transition(r, "arbitrage", "arretee")
         let _ = CoordArbitrage.rendre(h, r)
         let propre = replace(motif, "|", "/")
@@ -266,8 +267,11 @@ flesh CoordDossier {
             }
             require ApiManoeuvres.etat(plan_r) != "approuve" else EtatInvalide "plan {plan_r} encore approuvé après retrait"
         }
+        let ev = ApiManoeuvres.verrou(r)
+        require ev == "libre" || ev == "solde" else EtatInvalide "manœuvre d'évitement de {r} encore engagée ({ev})"
         transition(r, "arretee", "liberee")
         let _ = CoordVerrou.lever(h, r, motif)
+        require CoordVerrou.etat(r) == "leve" else EtatInvalide "verrou de {r} non levé"
         transition(r, "liberee", "rouverte")
         let objets_r = objets_de.get(r) ?? []
         let a = Objet(objets_r[0])
@@ -359,9 +363,12 @@ flesh CoordDossier {
         if ep == "declare" || ep == "crible" {
             let _ = ApiManoeuvres.retirer(h, plan_r, "releve_17b", "systeme")
         }
+        let ev = ApiManoeuvres.verrou(r)
+        require ev == "libre" || ev == "solde" else EtatInvalide "manœuvre d'évitement de {r} encore engagée ({ev})"
         transition(r, "arretee", "liberee")
         let _ = CoordSuivi.relever(h, d)
         let _ = CoordVerrou.lever(h, r, "releve_17b")
+        require CoordVerrou.etat(r) == "leve" else EtatInvalide "verrou de {r} non levé"
         transition(r, "liberee", "rouverte")
         tour_de.set(r, nt)
         propose_de.set(r, priv)
@@ -370,6 +377,7 @@ flesh CoordDossier {
         transition(r, "rouverte", "arbitrage")
         let _ = CoordArbitrage.saisir(h, r, nt, "releve_17b")
         let d2 = CoordVerrou.poser(h, r, priv, "releve", "releve_17b : {des} sans plan approuvé", "systeme", "")
+        require CoordVerrou.etat(r) == "tenu" else EtatInvalide "verrou de {r} non tenu : la coordination ne s'arrête pas"
         transition(r, "arbitrage", "arretee")
         let _ = CoordArbitrage.rendre(h, r)
         let _ = CoordEchange.noter(h, r, "ORG-ORBITE", "rouverture", "releve (regle 17b) : {des} sans plan approuve, decision {d} levee ; {priv} manoeuvre (decision {d2})", par)
@@ -498,6 +506,7 @@ flesh CoordDossier {
         require st != () else Inconnu "aucune coordination pour {r}"
         require st != "close" else EtatInvalide "coordination {r} déjà close"
         let etat_cj = ApiConjonctions.etat(r)
+        require etat_cj == "resolu" || etat_cj == "passe" || etat_cj == "collision" else EtatInvalide "{r} est {etat_cj} chez conjonctions : pas de clôture"
         require etat_cj == to_string(motif) else EtatInvalide "{r} est {etat_cj} chez conjonctions, pas {motif}"
         transition(r, st, "close")
         let _ = CoordVerrou.clore(h, r)

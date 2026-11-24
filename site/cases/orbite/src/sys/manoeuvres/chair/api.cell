@@ -14,6 +14,9 @@ flesh ApiManoeuvres {
     on etat(plan) {
         return to_string(ManPlan.etat(plan))
     }
+    on verrou(r) {
+        return ManEvitement.etat(to_string(r))
+    }
 
     on plan_actif(objet) {
         return ManPlan.actif(objet)

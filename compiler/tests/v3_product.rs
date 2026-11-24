@@ -976,3 +976,84 @@ fn a_link_written_under_its_guard_or_inside_a_branch_is_written_once() {
         assert!(out.contains(expect), "{name}: {out}");
     }
 }
+
+/// What a `require` established holds through the handler's own transitions:
+/// the instance checked is still the one the link names two moves later.
+#[test]
+fn a_check_holds_through_the_handlers_own_transitions() {
+    let own = LINKED.replace("state vie { initial: declaree  declaree -> active }", "state vie { initial: declaree  declaree -> prete  prete -> active }")
+        .replace("        transition(source, \"active\")\n", "        transition(source, \"prete\")\n        transition(source, \"active\")\n");
+    assert!(own.contains("transition(source, \"prete\")"));
+    let (out, code) = linked("two_moves", &own);
+    assert!(out.contains("✓ entering Source.active while Org.inscrite via Source.fournisseur"), "{out}");
+    assert_eq!(code, 0, "{out}");
+    // …also when the link is written, with the value just checked, by the handler that moves
+    let written = own.replace("        require genre.get(source) == () else Existe \"déjà\"\n", "        require genre.get(source) == () else Existe \"déjà\"\n        require Org.etat(org) == \"inscrite\" else Non \"non\"\n")
+        .replace("        genre.set(source, nature)\n        fournisseur.set(source, org)\n        return \"declaree\"\n", "        genre.set(source, nature)\n        fournisseur.set(source, org)\n        if nature != \"\" {\n            transition(source, \"prete\")\n            transition(source, \"active\")\n        }\n        return \"active\"\n")
+        .replace("        transition(source, \"prete\")\n        transition(source, \"active\")\n        return \"active\"\n    }\n}", "        return \"active\"\n    }\n}");
+    assert!(written.contains("if nature != \"\" {"), "{written}");
+    let (out, code) = linked("two_moves_written", &written);
+    assert!(out.contains("✓ entering Source.active while Org.inscrite via Source.fournisseur"), "{out}");
+    assert_eq!(code, 0, "{out}");
+    // …with other work between the write and the moves
+    let busy = written.replace("        if nature != \"\" {\n            transition(source, \"prete\")", "        if nature != \"\" {\n            let eo = Org.radiee(nature)\n            require eo == false else Non \"non\"\n            vue.set(source, 1)\n            transition(source, \"prete\")");
+    assert_ne!(busy, written);
+    let (out, code) = linked("two_moves_busy", &busy);
+    assert!(out.contains("✓ entering Source.active while Org.inscrite via Source.fournisseur"), "{out}");
+    assert_eq!(code, 0, "{out}");
+}
+
+/// An id the caller computes is ONE id for the handler it is handed to: two
+/// transitions of it in a row are two moves of the same instance.
+#[test]
+fn a_computed_id_handed_to_a_handler_is_one_id_there() {
+    let source = r#"cell Org {
+    face { signal inscrire(o: String) -> String  signal radier(o: String) -> String  signal etat(o: String) -> String  signal poser(o: String, n: Int) -> String }
+    memory { connue: Map<String, String> [persistent]  poses: Map<String, Int> [persistent] }
+    state vie { initial: inconnue  inconnue -> inscrite  inscrite -> radiee }
+    on inscrire(o: String) { connue.set(o, "oui")  transition(o, "inscrite")  return "ok" }
+    on radier(o: String) { transition(o, "radiee")  return "ok" }
+    on etat(o: String) { return get_status(o) ?? "inconnue" }
+    on poser(o: String, n: Int) {
+        transition(o, "inconnue", "inscrite")
+        let k = (poses.get(o) ?? 0) + 1
+        poses.set(o, k)
+        let d = "{o}#{k}"
+        let _ = Source.declarer(d, "x", o)
+        return d
+    }
+}
+cell Source {
+    face { signal declarer(source: String, nature: String, org: String) -> String }
+    memory {
+        fournisseur: Map<String, String> [persistent]
+        vue: Map<String, Int> [persistent]
+    }
+    state vie { initial: declaree  declaree -> prete  prete -> active  declaree -> autre }
+    on declarer(source: String, nature: String, org: String) {
+        require fournisseur.get(source) == () else Existe "déjà"
+        require Org.etat(org) == "inscrite" else Non "non"
+        fournisseur.set(source, org)
+        if nature != "" {
+            vue.set(source, 1)
+            transition(source, "declaree", "prete")
+            transition(source, "prete", "active")
+        } else {
+            transition(source, "declaree", "autre")
+        }
+        return source
+    }
+}
+"#;
+    let (out, code) = linked("computed_param", source);
+    assert!(out.contains("✓ entering Source.active while Org.inscrite via Source.fournisseur"), "{out}");
+    assert_eq!(code, 0, "{out}");
+    // the same id computed twice by the caller is two ids, as before
+    let twice = source.replace("        let _ = Source.declarer(d, \"x\", o)\n", "        let _ = Source.declarer(d, \"\", o)\n        transition(o, \"inscrite\", \"radiee\")\n        let _ = Source.avancer(\"{o}#{k}\")\n")
+        .replace("signal declarer(source: String, nature: String, org: String) -> String }", "signal declarer(source: String, nature: String, org: String) -> String  signal avancer(source: String) -> String }")
+        .replace("state vie { initial: declaree  declaree -> prete  prete -> active  declaree -> autre }", "state vie { initial: declaree  declaree -> prete  prete -> active  declaree -> autre  autre -> active }")
+        .replace("    on declarer(", "    on avancer(source: String) { transition(source, \"autre\", \"active\")  return source }\n    on declarer(");
+    let (out, code) = linked("computed_twice", &twice);
+    assert!(out.contains("✗ entering Source.active while Org.inscrite"), "{out}");
+    assert_ne!(code, 0);
+}

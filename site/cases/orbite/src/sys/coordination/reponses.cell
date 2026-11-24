@@ -66,7 +66,7 @@ skeleton CoordReponse {
             writes repondu_le, sens_de, contre_de, motif_de, par_de
             reads dossier_de, org_de, du_tour_de
             moves attendue -> acceptee when CoordDossier.proposee || CoordDossier.desaccord via dossier_de, attendue -> refusee when CoordDossier.proposee || CoordDossier.desaccord via dossier_de
-            calls CoordDossier.echeance, ApiEscalade.echelon, ApiEscalade.accuser
+            calls CoordDossier.echeance, ApiEscalade.echelon, ApiEscalade.accuser, CoordDossier.etat
         // Relance les parties dont la réponse au tour courant est encore attendue, une fois
         // passée la moitié du délai (h ≥ attendue_le + (échéance − attendue_le) / 2) :
         // CoordEchange.notifier "relance" avec l'échéance restante, à l'astreinte
