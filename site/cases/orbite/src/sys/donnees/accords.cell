@@ -166,7 +166,7 @@ skeleton DonAdhesions {
             writes courante_de
             reads version_de, org_de
             moves signee -> active when DonAccords.en_vigueur via version_de, active -> remplacee
-            calls ApiAcces.a_le_role, DonAccords.en_vigueur, ApiRef.organisation_existe, ApiRef.etat_de, ApiRef.etat_participant, Journal.noter
+            calls ApiAcces.a_le_role, DonAccords.en_vigueur, ApiRef.organisation_existe, ApiRef.etat_de, ApiRef.etat_participant, Journal.noter, DonAccords.etat
         // Annule une signature non contre-signée (`par` = signataire, "conformite", ou "systeme"
         // au balayage). Renvoie "annulee". Refus : Inconnu, EtatInvalide, MotifRequis, Habilitation.
         signal annuler(h: Horodatage, adhesion: String, motif: String, par: String) -> String

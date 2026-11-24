@@ -131,7 +131,7 @@ skeleton EphDepot {
             writes q_retenue, age_max_applique, age_au_depot, valide_le, fin_le
             reads objet_de, reglage_de, epoque, source
             moves recu -> validee when EphReglage.en_vigueur via reglage_de, admis -> validee when EphReglage.en_vigueur via reglage_de, validee -> remplacee
-            calls EphSuivi.prendre, EphSuivi.derniere, EphReglage.courante_version, Journal.noter
+            calls EphSuivi.prendre, EphSuivi.derniere, EphReglage.courante_version, Journal.noter, EphReglage.etat
 
         // Rejette un dépôt reçu ou admis. Renvoie "rejetee". Refus : Inconnu, EtatInvalide.
         signal rejeter(h: Horodatage, depot: String, motif: EphMotifRejet) -> String

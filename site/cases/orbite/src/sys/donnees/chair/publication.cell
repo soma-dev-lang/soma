@@ -92,6 +92,7 @@ flesh DonPublications {
         require (get_status(publication) ?? "preparee") == "relue" else EtatInvalide "publication {publication} non relue"
         let v = version_de.get(publication) ?? ""
         require DonAccords.en_vigueur() == v else Perime "accord {v} remplacé : re-préparer"
+        require DonAccords.etat(v) == "en_vigueur" else Perime "accord {v} remplacé : re-préparer"
         for o in objets_cites.get(publication) ?? [] {
             require DonControle.diffusion_effective(Objet(o)) == "public" else Confidentiel "{o} n'est plus public"
         }

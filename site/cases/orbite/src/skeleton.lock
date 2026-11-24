@@ -2897,7 +2897,7 @@ skeleton DonAccords {
     //~ etat 9dce3a85b600593c
 }
 
-== DonAdhesions sha256:6311bcd8b78a31d4f7dde42951214818789f46ac17e7bbbed12632d64239eec2 core:9d1fd1f777889721fd9e4a74c3036027e721e60524a08c6689a19e4c9fd46fb1
+== DonAdhesions sha256:8a18831a3212f4ab6ddc3eaa602ccd451de7359d5acb0f683b93817c665006a2 core:3c5e022c230e162aa8f796081e19e9117c9feef4144e76f0ad38b16887f52d08
 skeleton DonAdhesions {
     memory {
         org_de: Map<String, String> [persistent]
@@ -2928,7 +2928,7 @@ skeleton DonAdhesions {
     }
     face {
         signal signer(h: Horodatage, org: Org, par: String) -> String  requires h >= 0  reads adhesion, courante_de  writes org_de, signataire, signee_le, version_de  calls ApiAcces.a_le_role, ApiAcces.agit_pour, ApiRef.genre, ApiRef.organisation_existe, DonAccords.en_vigueur, Journal.noter, next_id
-        signal contresigner(h: Horodatage, adhesion: String, par: String) -> String  requires h >= 0  reads org_de, version_de  writes courante_de  moves active -> remplacee, signee -> active when DonAccords.en_vigueur via version_de  calls ApiAcces.a_le_role, ApiRef.etat_de, ApiRef.etat_participant, ApiRef.organisation_existe, DonAccords.en_vigueur, Journal.noter
+        signal contresigner(h: Horodatage, adhesion: String, par: String) -> String  requires h >= 0  reads org_de, version_de  writes courante_de  moves active -> remplacee, signee -> active when DonAccords.en_vigueur via version_de  calls ApiAcces.a_le_role, ApiRef.etat_de, ApiRef.etat_participant, ApiRef.organisation_existe, DonAccords.en_vigueur, DonAccords.etat, Journal.noter
         signal annuler(h: Horodatage, adhesion: String, motif: String, par: String) -> String  requires h >= 0  reads signataire  moves signee -> annulee  calls ApiAcces.a_le_role, Journal.noter
         signal retirer(h: Horodatage, org: Org, motif: String, par: String) -> String  requires h >= 0  writes courante_de  moves active -> retiree, suspendue -> retiree  calls ApiAcces.a_le_role, ApiAcces.agit_pour, DonDemandes.revoquer_de, DonPartages.revoquer_beneficiaire, Journal.noter
         signal radier(h: Horodatage, org: Org, par: String) -> String  requires h >= 0  writes courante_de  moves active -> radiee, suspendue -> radiee  calls ApiAcces.a_le_role, ApiRef.organisation_existe, DonDemandes.revoquer_de, DonPartages.revoquer_beneficiaire, Journal.noter
@@ -3201,7 +3201,7 @@ skeleton DonEmbargos {
     //~ etat c89b757c7a8c85d4
 }
 
-== DonPublications sha256:1102573dd9dcf960752c5f8d349170fd1d145aaece7376af7c0eda4e5771f474 core:8056112afa04a02c682eb368b11d2ae4c2573991e5eda6002124553185adbf31
+== DonPublications sha256:5d17d092bc549e77878ef74c918fd7dbe29611a8666b5e419c4c84dbd37b0027 core:bcca5827556e19077688f8908f1b67ac56706d62e9a3693142427a28b5e70cc0
 skeleton DonPublications {
     memory {
         genre_de: Map<String, DonGenrePublication> [persistent]
@@ -3231,7 +3231,7 @@ skeleton DonPublications {
     face {
         signal preparer(h: Horodatage, publication: String, g: DonGenrePublication, regime: String, debut: Horodatage, fin: Horodatage, par: String) -> Int  requires h >= 0  requires g == "catalogue" || g == "rapprochements"  requires debut >= 0  requires fin >= 0  writes entrees, exclus, genre_de, objets_cites, prepare_le, prepare_par, version_de  calls ApiAcces.a_le_role, ApiConjonctions.clos_entre, ApiConjonctions.niveau, ApiConjonctions.objets, ApiConjonctions.tca, ApiRef.catalogue, ApiRef.etat_immatriculation, ApiRef.nature, ApiRef.regime, DonAccords.en_vigueur, DonControle.diffusion_effective, Journal.noter
         signal relire(h: Horodatage, publication: String, par: String) -> String  requires h >= 0  reads prepare_par  moves preparee -> relue  calls ApiAcces.a_le_role, Journal.noter
-        signal publier(h: Horodatage, publication: String, par: String) -> String  requires h >= 0  reads genre_de, objets_cites, version_de  writes derniere, publiee_le  moves relue -> publiee when DonAccords.en_vigueur via version_de  calls ApiAcces.a_le_role, DonAccords.en_vigueur, DonControle.diffusion_effective, Journal.noter
+        signal publier(h: Horodatage, publication: String, par: String) -> String  requires h >= 0  reads genre_de, objets_cites, version_de  writes derniere, publiee_le  moves relue -> publiee when DonAccords.en_vigueur via version_de  calls ApiAcces.a_le_role, DonAccords.en_vigueur, DonAccords.etat, DonControle.diffusion_effective, Journal.noter
         signal annuler(h: Horodatage, publication: String, motif: String, par: String) -> String  requires h >= 0  reads genre_de  moves preparee -> annulee, relue -> annulee  calls ApiAcces.a_le_role, Journal.noter
         signal retirer(h: Horodatage, publication: String, objet: Objet, motif: String, par: String, valideur: String) -> String  requires h >= 0  reads genre_de  writes derniere  moves publiee -> retiree  calls ApiAcces.a_le_role, ApiAcces.quatre_yeux, ApiOperations.declarer_incident, ApiPasserelle.notifier, ApiRef.proprietaire, Journal.noter
         signal contenu(publication: String) -> List<String>  reads entrees, publication
@@ -3413,7 +3413,7 @@ skeleton EphControle {
     //~ ecart 7995b2ad9372b963
 }
 
-== EphDepot sha256:bd010cd2feaaeb1efcd2e6817455aa3dd8910fbca99ee461088adae99ebdf6e8 core:c6862a1fc34b1b512ca44051356c83330d9c46200d6f8be772ce16758b3d5831
+== EphDepot sha256:ed8e84e9d0a9eb8e4ba2b1c4ada731ea5523c77ddbad4d5f1fa819c2158d4068 core:79dbcbdd0d3d743ebc37bc242d521dc8bd2ac2b120d792c2bec92c6803a38dcf
 skeleton EphDepot {
     memory {
         objet_de: Map<String, Objet> [persistent]
@@ -3481,7 +3481,7 @@ skeleton EphDepot {
         signal deposer(h: Horodatage, objet: Objet, depot: String, ep: Horodatage, hz: Duree, q: Qualite, empreinte: String, pos: String, manoeuvres: Bool, par: String) -> String  requires h >= 0  requires ep >= 0  requires hz >= 0  requires q == "haute" || q == "moyenne" || q == "faible"  writes ecart_recu, manoeuvre_omise  calls ApiAcces.a_le_role, ApiAcces.agit_pour, ApiManoeuvres.plan_actif, ApiMeteo.tempete, ApiObservation.ecart_a, ApiOperateurs.est_actif, ApiRef.etat_objet, ApiRef.proprietaire, ApiRef.regime, EphBilan.compter, EphControle.examiner, EphControle.qualite_retenue, EphQuota.compter, EphReglage.age_max, EphReglage.courante_version, Journal.noter, admettre, creer, rejeter, valider
         signal creer(h: Horodatage, depot: String, objet: Objet, op: Org, reglage: String, src: EphSource, ep: Horodatage, hz: Duree, q: Qualite, empreinte: String, pos: String, manoeuvres: Bool, par: String) -> String  requires h >= 0  requires src == "proprietaire" || src == "observation"  requires ep >= 0  requires hz >= 0  requires q == "haute" || q == "moyenne" || q == "faible"  writes avec_manoeuvres, depose_le, depose_par, empreinte_de, empreintes, epoque, horizon, objet_de, operateur_de, position_de, q_declaree, reglage_de, source  calls EphHistorique.noter_depot
         signal admettre(h: Horodatage, depot: String) -> String  requires h >= 0  reads operateur_de, source  moves recu -> admis when OpMembres.actif via operateur_de  calls ApiOperateurs.est_actif
-        signal valider(h: Horodatage, depot: String, q: Qualite, age_max: Duree) -> String  requires h >= 0  requires q == "haute" || q == "moyenne" || q == "faible"  requires age_max >= 0  reads epoque, objet_de, reglage_de, source  writes age_au_depot, age_max_applique, fin_le, q_retenue, valide_le  moves admis -> validee when EphReglage.en_vigueur via reglage_de, recu -> validee when EphReglage.en_vigueur via reglage_de, validee -> remplacee  calls EphReglage.courante_version, EphSuivi.derniere, EphSuivi.prendre, Journal.noter
+        signal valider(h: Horodatage, depot: String, q: Qualite, age_max: Duree) -> String  requires h >= 0  requires q == "haute" || q == "moyenne" || q == "faible"  requires age_max >= 0  reads epoque, objet_de, reglage_de, source  writes age_au_depot, age_max_applique, fin_le, q_retenue, valide_le  moves admis -> validee when EphReglage.en_vigueur via reglage_de, recu -> validee when EphReglage.en_vigueur via reglage_de, validee -> remplacee  calls EphReglage.courante_version, EphReglage.etat, EphSuivi.derniere, EphSuivi.prendre, Journal.noter
         signal rejeter(h: Horodatage, depot: String, motif: EphMotifRejet) -> String  requires h >= 0  requires motif == "format" || motif == "epoque_future" || motif == "nee_perimee" || motif == "horizon_court" || motif == "incoherence" || motif == "objet_clos"  reads operateur_de, source  writes motif_rejet  moves admis -> rejetee, recu -> rejetee  calls EphBilan.compter, Journal.noter
         signal inclure_plan(h: Horodatage, depot: String, plan: String, par: String) -> Int  requires h >= 0  reads avec_manoeuvres, cycle, objet_de, operateur_de  writes plans_inclus  calls ApiAcces.a_le_role, ApiAcces.agit_pour, ApiManoeuvres.etat, ApiManoeuvres.objet_de, Journal.noter
         signal invalider_depuis(h: Horodatage, objet: Objet, depuis: Horodatage, nature: EphNatureInvalidation, motif: String, par: String) -> Int  requires h >= 0  requires depuis >= 0  requires nature == "signalement" || nature == "anomalie" || nature == "manoeuvre_non_annoncee" || nature == "plan_annule" || nature == "incoherence" || nature == "retrait_proprietaire"  reads epoque, objet_de, operateur_de  writes fin_le, motif_fin  moves perimee -> invalidee, remplacee -> invalidee, validee -> invalidee  calls ApiAcces.a_le_role, ApiAcces.agit_pour, ApiConjonctions.niveau, ApiConjonctions.ouverts_de, ApiPasserelle.notifier, EphBilan.compter, EphHistorique.historique, EphSuivi.perdre, Journal.noter
@@ -3660,7 +3660,7 @@ skeleton EphBilan {
     //~ examiner_operateur 1d0392b8df66d81a
 }
 
-== EphReglage sha256:33da2605b239b9ae2649644526cec6e4b0d63be86553b824d96ee19392d80c90 core:bfadc97388bd8df877a3bd0bd1cb38418debc9ede1c5cd1d2d45bfb2811923a7
+== EphReglage sha256:2f6238a27ca042449109364994ce6a73ba7d6674ce110f3bef3aa9d78923eb3d core:857b27f4a85fa07a7132cf5818ac58c3e9737262ab0649cb3b2fe2dc4bf6d0e0
 skeleton EphReglage {
     memory {
         age_leo: Map<String, Duree> [persistent]
@@ -3714,6 +3714,7 @@ skeleton EphReglage {
         signal mettre_en_vigueur(h: Horodatage, version: String, par: String, valideur: String) -> String  requires h >= 0  reads redige_par  writes courante, en_vigueur_le, valide_par  moves brouillon -> en_vigueur, en_vigueur -> remplace  calls ApiAcces.a_le_role, ApiAcces.quatre_yeux, ApiOperations.changement_autorise, Journal.noter
         signal abandonner(h: Horodatage, version: String, motif: String, par: String) -> String  requires h >= 0  reads redige_par  moves brouillon -> abandonne  calls ApiAcces.a_le_role, Journal.noter
         signal courante_version() -> String  reads courante
+        signal etat(version: String) -> String  reads vie
         signal age_max(regime: Regime, tempete: Bool) -> Duree  requires regime == "leo" || regime == "meo" || regime == "geo" || regime == "heo"  ensures result >= 0  reads age_geo, age_heo, age_leo, age_meo, courante, diviseur_tempete
         signal horizon_minimal() -> Duree  ensures result >= 0  reads courante, horizon_min
         signal ecart_max(q: Qualite) -> Distance  requires q == "haute" || q == "moyenne" || q == "faible"  ensures result >= 0  reads courante, ecart_faible, ecart_haute, ecart_moyenne
@@ -3731,6 +3732,7 @@ skeleton EphReglage {
     //~ mettre_en_vigueur 3702aec18e92a412
     //~ abandonner 06f9a4df65e29d0c
     //~ courante_version a43ef3e5677b452c
+    //~ etat 7e13aaeaaaa52a10
     //~ age_max 1916ff5df67bff7f
     //~ horizon_minimal 00506c76bef532a9
     //~ ecart_max 461d5de00be48c4e
@@ -5895,7 +5897,7 @@ skeleton ManVerification {
     //~ etat af5570f5a1810b7a
 }
 
-== ManPlan sha256:5370387bfc6cfa53e68848adff654eb5f785e257b2dbd59fbc0fd27446512945 core:ac3670cdbcbc6a680393a3bc204406dc210560af16bab228c12c822c3c7d4c9a
+== ManPlan sha256:5cf3c37b3876222f503213f59260c721ae79f61f8adcf299fa78943f574fdcf7 core:79e9cf2e1f6ef429a88bd396ed3fe169fdf71d5ce3a7f60b623a1f9d84e2842f
 skeleton ManPlan {
     memory {
         fiche_de: Map<String, ManFichePlan> [persistent]
@@ -5950,7 +5952,7 @@ skeleton ManPlan {
     face {
         signal declarer(h: Horodatage, plan: String, objet: Objet, r: Rapprochement, motif: ManMotif, debut: Horodatage, dv: DeltaV, par: String) -> String  requires h >= 0  requires motif == "evitement" || motif == "maintien" || motif == "transfert" || motif == "desorbitation"  requires debut >= 0  requires dv >= 0 && dv <= 10000000  writes actifs_de, evitements_de, fiche_de, objet_de, proprietaire_de, tous_de, verrou_de  calls ApiAcces.a_le_role, ApiAcces.agit_pour, ApiConjonctions.etat, ApiConjonctions.objets, ApiConjonctions.ouverts_de, ApiConjonctions.tca, ApiCoordination.arretee, ApiCoordination.designe, ApiCoordination.privilegie, ApiEphemerides.fraiche, ApiOperateurs.est_actif, ApiPriorites.preavis, ApiRef.habite, ApiRef.peut_manoeuvrer, ApiRef.proprietaire, ApiRef.propulsion, Journal.noter, ManFenetre.chevauche, ManFenetre.reserver, ManIndicateurs.compter, ManProgramme.rattacher
         signal statuer(h: Horodatage, plan: String, par: String) -> ManEtatPlan  requires h >= 0  ensures result == "declare" || result == "crible" || result == "approuve" || result == "rejete" || result == "execute" || result == "verifie" || result == "anomalie" || result == "annule" || result == "inconnu"  reads fiche_de  writes actifs_de, cause_rejet_de  moves declare -> crible when ManCriblage.sur, declare -> rejete  calls ApiAcces.a_le_role, Journal.noter, ManCriblage.etat, ManFenetre.liberer, ManIndicateurs.compter
-        signal approuver(h: Horodatage, plan: String, par: String) -> ManEtatPlan  requires h >= 0  ensures result == "declare" || result == "crible" || result == "approuve" || result == "rejete" || result == "execute" || result == "verifie" || result == "anomalie" || result == "annule" || result == "inconnu"  reads fiche_de, objet_de, proprietaire_de, verrou_de  writes approuves, fondement_de  moves capable -> approuve when ManEvitement.engage via verrou_de, coordonne -> habilite when OpMembres.actif via proprietaire_de, crible -> recoupe when ConjCriblagePlan.sur, habilite -> localise when EphSuivi.a_jour via objet_de, localise -> capable when RefObjet.en_service via objet_de, recoupe -> coordonne when CoordDossier.arretee via verrou_de, recoupe -> habilite when OpMembres.actif via proprietaire_de  calls ApiAcces.a_le_role, ApiConjonctions.criblage_plan, ApiConjonctions.niveau, ApiConjonctions.ouverts_de, ApiConjonctions.pc, ApiConjonctions.pc_apres_plan, ApiConjonctions.tca, ApiCoordination.arretee, ApiCoordination.designe, ApiCoordination.privilegie, ApiEphemerides.age, ApiEphemerides.avec_manoeuvres, ApiEphemerides.depot_valide, ApiEphemerides.derniere, ApiEphemerides.fraiche, ApiEphemerides.qualite, ApiOperateurs.est_actif, ApiOperateurs.statut, ApiPriorites.preavis, ApiPriorites.version_en_vigueur, ApiReentrees.a_risque, ApiReentrees.controlee_approuvee, ApiRef.etat_objet, ApiRef.peut_manoeuvrer, ApiRef.propulsion, Journal.noter, ManAvis.emettre, ManCriblage.fiche, ManEvitement.engager, ManIndicateurs.compter, rejeter
+        signal approuver(h: Horodatage, plan: String, par: String) -> ManEtatPlan  requires h >= 0  ensures result == "declare" || result == "crible" || result == "approuve" || result == "rejete" || result == "execute" || result == "verifie" || result == "anomalie" || result == "annule" || result == "inconnu"  reads fiche_de, objet_de, proprietaire_de, verrou_de  writes approuves, fondement_de  moves capable -> approuve when ManEvitement.engage via verrou_de, coordonne -> habilite when OpMembres.actif via proprietaire_de, crible -> recoupe when ConjCriblagePlan.sur, habilite -> localise when EphSuivi.a_jour via objet_de, localise -> capable when RefObjet.en_service via objet_de, recoupe -> coordonne when CoordDossier.arretee via verrou_de, recoupe -> habilite when OpMembres.actif via proprietaire_de  calls ApiAcces.a_le_role, ApiConjonctions.criblage_plan, ApiConjonctions.niveau, ApiConjonctions.ouverts_de, ApiConjonctions.pc, ApiConjonctions.pc_apres_plan, ApiConjonctions.tca, ApiCoordination.arretee, ApiCoordination.designe, ApiCoordination.etat, ApiCoordination.privilegie, ApiEphemerides.age, ApiEphemerides.avec_manoeuvres, ApiEphemerides.depot_valide, ApiEphemerides.derniere, ApiEphemerides.fraiche, ApiEphemerides.qualite, ApiOperateurs.est_actif, ApiOperateurs.statut, ApiPriorites.preavis, ApiPriorites.version_en_vigueur, ApiReentrees.a_risque, ApiReentrees.controlee_approuvee, ApiRef.etat_objet, ApiRef.peut_manoeuvrer, ApiRef.propulsion, Journal.noter, ManAvis.emettre, ManCriblage.fiche, ManEvitement.engager, ManIndicateurs.compter, rejeter
         signal rejeter(h: Horodatage, plan: String, cause: ManCauseRejet, motif: String, par: String) -> ManEtatPlan  requires h >= 0  requires cause == "criblage_risque" || cause == "criblage_impossible" || cause == "criblage_perime" || cause == "ephemeride_perimee" || cause == "operateur_suspendu" || cause == "objet_incapable" || cause == "designation_changee" || cause == "hors_delai" || cause == "refus_analyste" || cause == "manoeuvre_timide" || cause == "privilegie"  ensures result == "declare" || result == "crible" || result == "approuve" || result == "rejete" || result == "execute" || result == "verifie" || result == "anomalie" || result == "annule" || result == "inconnu"  reads fiche_de  writes actifs_de, cause_rejet_de, motif_annulation_de  moves crible -> rejete  calls ApiAcces.a_le_role, Journal.noter, ManFenetre.liberer, ManIndicateurs.compter
         signal confirmer(h: Horodatage, plan: String, reel: Horodatage, dv: DeltaV, par: String) -> ManEtatPlan  requires h >= 0  requires reel >= 0  requires dv >= 0 && dv <= 10000000  ensures result == "declare" || result == "crible" || result == "approuve" || result == "rejete" || result == "execute" || result == "verifie" || result == "anomalie" || result == "annule" || result == "inconnu"  reads fiche_de, verrou_de  writes approuves, confirme_par, dv_reel_de, reel_de  moves approuve -> execute when ManFenetre.ouverte  calls ApiAcces.a_le_role, ApiAcces.agit_pour, ApiRef.proprietaire, Journal.noter, ManAvis.emettre, ManEvitement.solder, ManFenetre.consommer, ManFenetre.etat, ManFenetre.ouvrir, ManIndicateurs.compter, ManVerification.programmer
         signal declarer_echec(h: Horodatage, plan: String, propulsion_perdue: Bool, motif: String, par: String) -> ManEtatPlan  requires h >= 0  ensures result == "declare" || result == "crible" || result == "approuve" || result == "rejete" || result == "execute" || result == "verifie" || result == "anomalie" || result == "annule" || result == "inconnu"  reads fiche_de, verrou_de  writes actifs_de, approuves, motif_annulation_de  moves approuve -> anomalie  calls ApiAcces.a_le_role, ApiAcces.agit_pour, ApiRef.declarer_propulsion, ApiRef.proprietaire, Journal.noter, ManAnomalie.ouvrir, ManAvis.emettre, ManEvitement.liberer, ManFenetre.liberer, ManIndicateurs.compter
@@ -10610,4 +10612,4 @@ verify.before.RespSinistres.declare.requires = ["OpMembres.admis"]
 verify.before.RespSinistres.declare.via = "RespSinistres.op_de"
 package.edition = "2026"
 
-checksum sha256:20d67d754142eed1295fd3b1f1aa56326790c02fe0eb65fd4d6abb60fadcac40
+checksum sha256:c64eb197ab5302780c43677b778a683d485455a4d9ea61b5bc78eb0ccdf1ab2a

@@ -205,6 +205,10 @@ flesh ApiCoordination {
     on arretee(r) {
         return !contains(to_string(r), "OUVERTE")
     }
+    on etat(r) {
+        if contains(to_string(r), "OUVERTE") { return "ouverte" }
+        return "arretee"
+    }
     on designe(r, par) {
         let parts = split(to_string(r), "~")
         require len(parts) == 3 else Inconnu "rapprochement {r} inconnu"

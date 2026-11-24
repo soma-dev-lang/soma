@@ -170,6 +170,7 @@ flesh DonAdhesions {
         require (get_status(adhesion) ?? "signee") == "signee" else EtatInvalide "adhésion {adhesion} déjà traitée"
         let v = version_de.get(adhesion) ?? ""
         require DonAccords.en_vigueur() == v else Perime "version {v} plus en vigueur : re-signer"
+        require DonAccords.etat(v) == "en_vigueur" else Perime "version {v} plus en vigueur : re-signer"
         require ApiRef.organisation_existe(Org(org)) else EtatInvalide "organisation {org} radiée"
         let tutelle = ApiRef.etat_de(Org(org))
         require ApiRef.etat_participant(tutelle) else Suspendu "État de tutelle {tutelle} non participant"

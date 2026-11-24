@@ -67,7 +67,7 @@ skeleton DonPublications {
             writes publiee_le, derniere
             reads version_de, objets_cites, genre_de
             moves relue -> publiee when DonAccords.en_vigueur via version_de
-            calls ApiAcces.a_le_role, DonAccords.en_vigueur, DonControle.diffusion_effective, Journal.noter
+            calls ApiAcces.a_le_role, DonAccords.en_vigueur, DonControle.diffusion_effective, Journal.noter, DonAccords.etat
         // Annule une publication non publiée. Renvoie "annulee". Rôle : "analyste" ou "superviseur".
         // Refus : Inconnu, EtatInvalide, MotifRequis, Habilitation.
         signal annuler(h: Horodatage, publication: String, motif: String, par: String) -> String

@@ -97,6 +97,10 @@ flesh EphReglage {
         return courante.get("courante") ?? ""
     }
 
+    on etat(version) {
+        return get_status(version) ?? "brouillon"
+    }
+
     on age_max(regime, tempete) {
         let v = courante.get("courante")
         require v != () else Ferme "aucun réglage en vigueur"

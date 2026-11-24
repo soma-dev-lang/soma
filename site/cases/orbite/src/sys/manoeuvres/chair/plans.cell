@@ -166,6 +166,8 @@ flesh ManPlan {
         require approuves.size < MAX_APPROUVES else Plein "trop de plans approuvés"
         transition(plan, "crible", "recoupe")
         if evit {
+            let lie = verrou_de.get(plan) ?? ""
+            require ApiCoordination.etat(Rapprochement(lie)) == "arretee" else EtatInvalide "coordination de {lie} non arrêtée"
             transition(plan, "recoupe", "coordonne")
             transition(plan, "coordonne", "habilite")
         } else {

@@ -114,6 +114,8 @@ flesh EphDepot {
     }
 
     on _valider_depuis(depot: String, st: String) {
+        let rg = reglage_de.get(depot) ?? ""
+        require EphReglage.etat(rg) == "en_vigueur" else EtatInvalide "le réglage {rg} du dépôt n'est pas en vigueur"
         if st == "recu" {
             transition(depot, "recu", "validee")
         } else {
