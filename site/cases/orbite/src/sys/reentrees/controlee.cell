@@ -166,7 +166,7 @@ skeleton ReeControlee {
             writes motif
             reads par_campagne, objet_de, campagne_de
             moves executee -> reussie when ReeCampagne.rentree via campagne_de, executee -> manquee, depose -> rejete, instruit -> rejete, approuve -> annule
-            calls ApiRef.proprietaire, ApiConformite.constater, Journal.noter
+            calls ApiRef.proprietaire, ApiConformite.constater, Journal.noter, ReeCampagne.etat
 
         // Vrai si la campagne a un plan de rentrée contrôlée "approuve" ou "executee"
         // (ApiReentrees.controlee_approuvee).

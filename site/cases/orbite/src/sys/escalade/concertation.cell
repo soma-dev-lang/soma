@@ -38,7 +38,7 @@ skeleton EscConcertation {
             ensures result >= 0
             writes convoquee_a, etats
             moves aucune -> convoquee when EscDossiers.e4
-            calls EscDossiers.en_e4, EscDossiers.rapprochement, ApiConjonctions.objets, ApiRef.proprietaire, ApiRef.etat_de, Journal.noter
+            calls EscDossiers.en_e4, EscDossiers.rapprochement, ApiConjonctions.objets, ApiRef.proprietaire, ApiRef.etat_de, Journal.noter, EscDossiers.etat
         // Dépose le compte rendu : présents (personnes, séparées par des virgules), engagement de
         // l'État de l'opérateur, texte. Renvoie "tenue". Rôle exigé : "direction" ou "superviseur"
         // d'ORBITE. Refus : Inconnu, EtatInvalide, MotifRequis (texte vide), Habilitation.

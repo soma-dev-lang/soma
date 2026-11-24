@@ -65,6 +65,7 @@ flesh RefCession {
         require h <= (echeances.get(cession) ?? 0) else Echu "cession {cession} échue"
         require RefEtat.participant(Etat(visant)) else EtatInvalide "État {visant} non participant"
         if st == "acceptee" {
+            require RefEtat.participant(Etat(ec)) else EtatInvalide "État {ec} non participant"
             transition(cession, "acceptee", "visee_cedant")
             if es != ec {
                 Journal.noter(h, "ref", par, "cession {cession} visée par l'État d'immatriculation {ec}")
@@ -72,6 +73,7 @@ flesh RefCession {
             }
             // même État des deux côtés : les deux visas dans le même appel, pas de nouveau numéro
             numeros.set(cession, "")
+            require RefEtat.participant(Etat(es)) else EtatInvalide "État {es} non participant"
             transition(cession, "visee_cedant", "visee_cessionnaire")
             Journal.noter(h, "ref", par, "cession {cession} visée par {ec} (cédant et cessionnaire)")
             return "visee_cessionnaire"
@@ -82,6 +84,7 @@ flesh RefCession {
         } else {
             numeros.set(cession, "")
         }
+        require RefEtat.participant(Etat(es)) else EtatInvalide "État {es} non participant"
         transition(cession, "visee_cedant", "visee_cessionnaire")
         Journal.noter(h, "ref", par, "cession {cession} visée par l'État du cessionnaire {es}")
         return "visee_cessionnaire"

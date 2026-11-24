@@ -130,7 +130,7 @@ skeleton RespSinistres {
             reads montant_reclame, reclamation_de
             writes montant_indemnise
             moves instruit -> indemnise when RespReclamations.reglee || RespReclamations.close via reclamation_de
-            calls ApiAcces.a_le_role, ApiAcces.quatre_yeux, RespReclamations.alloue, Journal.noter
+            calls ApiAcces.a_le_role, ApiAcces.quatre_yeux, RespReclamations.alloue, Journal.noter, RespReclamations.etat
         // Refuse la prise en charge (exclusion de garantie). Renvoie "refuse". Par
         // "conformite". Refus : Inconnu, EtatInvalide, MotifRequis, Habilitation.
         signal refuser(h: Horodatage, sinistre: String, motif: String, par: String) -> String

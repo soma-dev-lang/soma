@@ -68,6 +68,7 @@ flesh ReeConstat {
         let d = ApiResponsabilite.geler(h, campagne, motif_gel, par)
         dossier.set(campagne, d)
         require ApiResponsabilite.sous_gel(campagne) else EtatInvalide "dossier {d} non gelé"
+        require ApiResponsabilite.etat_dossier(d) == "gele" else EtatInvalide "dossier {d} non gelé"
         transition(campagne, "dommages", "transmis")
         let _ = Journal.noter(h, "reentrees", par, "constat {campagne} transmis à la responsabilité : dossier {d}")
         return d

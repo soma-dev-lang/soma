@@ -79,7 +79,8 @@ flesh ReeNotification {
                 contenu.set(nt, ReeContenu(if complet { "complet" } else { "reduit" }))
                 message_de.set(nt, m)
                 envoyee_le.set(nt, h)
-                if st == "a_envoyer" {
+                let en = ReeCampagne.etat(campagne_de.get(nt) ?? "")
+                if st == "a_envoyer" && (en == "ouverte" || en == "imminente") {
                     transition(nt, "a_envoyer", "envoyee")
                 }
                 n = n + 1

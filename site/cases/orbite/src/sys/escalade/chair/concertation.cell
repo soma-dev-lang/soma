@@ -16,6 +16,7 @@ flesh EscConcertation {
                 }
                 convoquee_a.set(d, h)
                 etats.set(d, join(etats_c, ","))
+                require EscDossiers.etat(d) == "e4" else EtatInvalide "dossier {d} hors échelon 4"
                 transition(d, "aucune", "convoquee")
                 let liste_e = join(etats_c, ",")
                 let _ = Journal.noter(h, "escalade", "systeme", "concertation {d} convoquee ({liste_e})")

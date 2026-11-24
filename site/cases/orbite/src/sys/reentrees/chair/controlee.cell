@@ -151,6 +151,8 @@ flesh ReeControlee {
         let st = get_status(rc) ?? "depose"
         if st == "executee" {
             if dans_zone {
+                let cc = campagne_de.get(rc) ?? ""
+                require ReeCampagne.etat(cc) == "rentree" else EtatInvalide "campagne {cc} sans rentrée constatée"
                 transition(rc, "executee", "reussie")
                 let _ = Journal.noter(h, "reentrees", "systeme", "rentrée contrôlée {rc} réussie : impact dans la zone")
                 return "reussie"

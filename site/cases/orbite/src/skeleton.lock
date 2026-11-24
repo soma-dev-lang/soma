@@ -679,11 +679,12 @@ skeleton ApiRef {
     //~ balayer b3083899b378e962
 }
 
-== ApiResponsabilite sha256:bc94b5912c0adef2eb2a65074a9afa5d119c76c7f412b317d6b3fa959e041a1c core:88f7fa81ba7ce535b06a943fccd2043b53e34f244b4a40e21d8549df7d00243f
+== ApiResponsabilite sha256:4042f6de0f21f72f5c7a31a42d608bd86ed17957c1e73f897d761e04caf21ac0 core:caef0b9f62a45177c69a59c79b1a1a845e32bd29ce4ec55868224c53b6fea9ad
 skeleton ApiResponsabilite {
     face {
         signal geler(h: Horodatage, evenement: String, motif: String, par: String) -> String  requires h >= 0  calls RespDossiers.ouvrir
         signal sous_gel(cible: String) -> Bool  calls RespGels.est_gele
+        signal etat_dossier(dossier: String) -> String  calls RespDossiers.etat
         signal purge_autorisee(cible: String, h: Horodatage) -> Bool  requires h >= 0  calls RespPurges.autorisee_pour
         signal etat_purge(purge: String) -> String  calls RespPurges.etat
         signal chaine(decision: String) -> List<String>  calls RespPieces.chaine_de
@@ -693,6 +694,7 @@ skeleton ApiResponsabilite {
     // type Refus = String where value == "Habilitation" || value == "QuatreYeux" || value == "Existe" || value == "Inconnu" || value == "EtatInvalide" || value == "HorsBornes" || value == "Insuffisant" || value == "Perime" || value == "Suspendu" || value == "Ferme" || value == "Echu" || value == "NonEligible" || value == "Doublon" || value == "Incoherent" || value == "Plein" || value == "MotifRequis" || value == "Delai" || value == "Conflit" || value == "Confidentiel" (nominal: never mixed with another type; build Refus(x), read to_string(q); literals take its type)
     //~ geler 6214d8b85c1eaa78
     //~ sous_gel 1092ab1f5eaff0c0
+    //~ etat_dossier cf3b22667a4541b7
     //~ purge_autorisee 85ac413f4bf57396
     //~ etat_purge 42baf4992c844f49
     //~ chaine aaa953040cbefa0a
@@ -3924,7 +3926,7 @@ skeleton EscBareme {
     //~ version_en_vigueur 1f8ec3fca8f0ab20
 }
 
-== EscConcertation sha256:2209ae85eca9e7f6ac06cd2aa5c6a2484f85a9196e2dd930035b5c76d42b4b69 core:cf2731d59e7fdfa9b0ae29f0c40f34420e5af921202e70122f2286dfeac07cf2
+== EscConcertation sha256:b5548c0133fb6b75af3191e444e1f35ebd3c10f0d1f026422e44a67faae00e17 core:be343d16de20e7c45445e14a3ddb4a75f0c43a11d0ad60d461f0a2230fd4f732
 skeleton EscConcertation {
     memory {
         convoquee_a: Map<String, Horodatage> [persistent]
@@ -3942,7 +3944,7 @@ skeleton EscConcertation {
         convoquee -> manquee
     }
     face {
-        signal convoquer(h: Horodatage) -> Int  requires h >= 0  ensures result >= 0  writes convoquee_a, etats  moves aucune -> convoquee when EscDossiers.e4  calls ApiConjonctions.objets, ApiRef.etat_de, ApiRef.proprietaire, EscDossiers.en_e4, EscDossiers.rapprochement, Journal.noter
+        signal convoquer(h: Horodatage) -> Int  requires h >= 0  ensures result >= 0  writes convoquee_a, etats  moves aucune -> convoquee when EscDossiers.e4  calls ApiConjonctions.objets, ApiRef.etat_de, ApiRef.proprietaire, EscDossiers.en_e4, EscDossiers.etat, EscDossiers.rapprochement, Journal.noter
         signal tenir(h: Horodatage, dossier: String, presents_liste: String, engagement_etat: EscEngagement, texte: String, par: String) -> String  requires h >= 0  requires engagement_etat == "joindre_operateur" || engagement_etat == "operateur_injoignable" || engagement_etat == "aucun"  writes compte_rendu, engagement, presents  moves convoquee -> tenue  calls ApiAcces.a_le_role, Journal.noter
         signal abandonner(h: Horodatage) -> Int  requires h >= 0  reads convoquee_a  moves convoquee -> manquee  calls EscDossiers.etat, Journal.noter
         signal lire(dossier: String, par: String) -> String  reads compte_rendu, concertation, convoquee_a, engagement, etats, presents  calls ApiAcces.a_le_role, ApiAcces.agit_pour, ApiRef.org_de_etat
@@ -9193,7 +9195,7 @@ skeleton ReeCampagne {
     //~ balayer 614eafbf190466c8
 }
 
-== ReeConstat sha256:ce41a8df815c226d4799c2bf58c0d19575baf05b2160c833b309a0fbe1f7a06e core:205958cddb152c6e29f5220468dba1fd92fc6686eea26436f5859700834957de
+== ReeConstat sha256:1807c8dda59214f20e4441f88cf994ec0772b01a9b8aca1bd5af376556290832 core:feede31118c3ad2a21458a28e3903031afe3dba71a442263b4d4620d0bed82bd
 skeleton ReeConstat {
     memory {
         objet_de: Map<String, Objet> [persistent]
@@ -9223,7 +9225,7 @@ skeleton ReeConstat {
         signal enregistrer(h: Horodatage, campagne: String, objet: Objet, quand: Horodatage, ou: String, debris: Bool, debut: Horodatage, fin: Horodatage, par: String, valideur: String) -> ReeEtatConstat  requires h >= 0  requires quand >= 0  requires debut >= 0  requires fin >= 0  ensures result == "aucun" || result == "enregistre" || result == "recherche" || result == "dommages" || result == "sans_suite" || result == "transmis"  writes constate_par, debris_au_sol, ecart_prevision, instant, lieu, objet_de  moves enregistre -> recherche
         signal ouvrir_recherche(h: Horodatage, campagne: String) -> ReeEtatConstat  requires h >= 0  ensures result == "aucun" || result == "enregistre" || result == "recherche" || result == "dommages" || result == "sans_suite" || result == "transmis"  writes debris_au_sol  moves enregistre -> recherche
         signal declarer_dommages(h: Horodatage, campagne: String, etat: Etat, description: String, par: String) -> Int  requires h >= 0  ensures result >= 1  reads instant, objet_de  writes dommages  moves enregistre -> dommages, recherche -> dommages  calls ApiAcces.a_le_role, ApiAcces.agit_pour, ApiRef.org_de_etat, Journal.noter
-        signal transmettre(h: Horodatage, campagne: String, motif_gel: String, par: String) -> String  requires h >= 0  reads objet_de  writes dossier  moves dommages -> transmis when RespDossiers.gele via dossier  calls ApiAcces.a_le_role, ApiResponsabilite.geler, ApiResponsabilite.sous_gel, Journal.noter
+        signal transmettre(h: Horodatage, campagne: String, motif_gel: String, par: String) -> String  requires h >= 0  reads objet_de  writes dossier  moves dommages -> transmis when RespDossiers.gele via dossier  calls ApiAcces.a_le_role, ApiResponsabilite.etat_dossier, ApiResponsabilite.geler, ApiResponsabilite.sous_gel, Journal.noter
         signal balayer(h: Horodatage, par: String) -> Int  requires h >= 0  ensures result >= 0  reads instant, suite  writes motif  moves enregistre -> sans_suite, recherche -> sans_suite  calls ApiAcces.a_le_role, Journal.noter
         signal etat(campagne: String) -> ReeEtatConstat  ensures result == "aucun" || result == "enregistre" || result == "recherche" || result == "dommages" || result == "sans_suite" || result == "transmis"  reads objet_de, suite
     }
@@ -9241,7 +9243,7 @@ skeleton ReeConstat {
     //~ etat eb73f5ce405e6d39
 }
 
-== ReeControlee sha256:b5478b4e2509dbd94a07bff15804d9a33a8490c48606b864728cc2cb5dd7432d core:3a5f997ed8faabff0d40b0ce20122f6e529af91b5a432de76bd67b3d33e8d3a1
+== ReeControlee sha256:651d4f70901def8ced429dafcd4fc7751904bed4df6ab9e332ba0bdb6fef6dc8 core:135834ecf0ecb2eec3ec0111efa04e7d9cfaa319544db5dcc8878d3e6ae83d45
 skeleton ReeControlee {
     memory {
         campagne_de: Map<String, String> [persistent]
@@ -9284,7 +9286,7 @@ skeleton ReeControlee {
         signal rejeter(h: Horodatage, rc: String, motif_rejet: String, par: String) -> ReeEtatControlee  requires h >= 0  ensures result == "inconnue" || result == "depose" || result == "instruit" || result == "approuve" || result == "executee" || result == "reussie" || result == "manquee" || result == "rejete" || result == "annule"  reads campagne_de  writes motif  moves depose -> rejete, instruit -> rejete  calls ApiAcces.a_le_role, Journal.noter
         signal annuler(h: Horodatage, rc: String, motif_annulation: String, par: String) -> ReeEtatControlee  requires h >= 0  ensures result == "inconnue" || result == "depose" || result == "instruit" || result == "approuve" || result == "executee" || result == "reussie" || result == "manquee" || result == "rejete" || result == "annule"  reads objet_de  writes motif  moves approuve -> annule  calls ApiAcces.a_le_role, ApiAcces.agit_pour, ApiRef.proprietaire, Journal.noter
         signal confirmer(h: Horodatage, rc: String, par: String) -> ReeEtatControlee  requires h >= 0  ensures result == "inconnue" || result == "depose" || result == "instruit" || result == "approuve" || result == "executee" || result == "reussie" || result == "manquee" || result == "rejete" || result == "annule"  reads manoeuvre_de  moves approuve -> executee when ManPlan.execute || ManPlan.verifie via manoeuvre_de  calls ApiAcces.a_le_role, ApiManoeuvres.etat, Journal.noter
-        signal constater_rentree(h: Horodatage, campagne: String, dans_zone: Bool) -> ReeEtatControlee  requires h >= 0  ensures result == "inconnue" || result == "depose" || result == "instruit" || result == "approuve" || result == "executee" || result == "reussie" || result == "manquee" || result == "rejete" || result == "annule"  reads campagne_de, objet_de, par_campagne  writes motif  moves approuve -> annule, depose -> rejete, executee -> manquee, executee -> reussie when ReeCampagne.rentree via campagne_de, instruit -> rejete  calls ApiConformite.constater, ApiRef.proprietaire, Journal.noter
+        signal constater_rentree(h: Horodatage, campagne: String, dans_zone: Bool) -> ReeEtatControlee  requires h >= 0  ensures result == "inconnue" || result == "depose" || result == "instruit" || result == "approuve" || result == "executee" || result == "reussie" || result == "manquee" || result == "rejete" || result == "annule"  reads campagne_de, objet_de, par_campagne  writes motif  moves approuve -> annule, depose -> rejete, executee -> manquee, executee -> reussie when ReeCampagne.rentree via campagne_de, instruit -> rejete  calls ApiConformite.constater, ApiRef.proprietaire, Journal.noter, ReeCampagne.etat
         signal actif(campagne: String) -> Bool  reads par_campagne, plan
         signal zone_de(campagne: String) -> String  reads par_campagne, zone
     }
@@ -10046,7 +10048,7 @@ skeleton RespPolices {
     //~ fiche a04693d667b590a2
 }
 
-== RespSinistres sha256:9d3e7faa801f83b3725b6f919f7f0462ff61eda365811304b5ceecdb18965dd6 core:bf73afbfa1c13324775044bcea4d9a99fa30f810aab60e784e18f701db0db133
+== RespSinistres sha256:8db1c6a0fdc4cb086de342c553e8b4bcd36e8d52935fc66fbe9e7ef05ae1f7ed core:230e5cb7c37fcbdc49663060b32bb0c026a7b653e4262463241e760c068bb11f
 skeleton RespSinistres {
     memory {
         police_de: Map<String, String> [persistent]
@@ -10073,7 +10075,7 @@ skeleton RespSinistres {
     face {
         signal declarer(h: Horodatage, police: String, rec: String, montant: RespMontant, par: String) -> String  requires h >= 0  requires montant >= 0  writes declare_le, montant_reclame, op_de, police_de, reclamation_de  moves aucun -> declare when RespPolices.en_vigueur || RespPolices.echue via police_de  calls ApiAcces.a_le_role, ApiAcces.agit_pour, ApiOperateurs.statut, Journal.noter, RespPolices.couvre_a, RespPolices.etat, RespPolices.fiche, RespReclamations.dommage, next_id
         signal instruire(h: Horodatage, sinistre: String, par: String) -> String  requires h >= 0  moves declare -> instruit  calls ApiAcces.a_le_role, Journal.noter
-        signal indemniser(h: Horodatage, sinistre: String, montant: RespMontant, par: String, valideur: String) -> RespMontant  requires h >= 0  requires montant >= 0  ensures result >= 0  reads montant_reclame, reclamation_de  writes montant_indemnise  moves instruit -> indemnise when RespReclamations.reglee || RespReclamations.close via reclamation_de  calls ApiAcces.a_le_role, ApiAcces.quatre_yeux, Journal.noter, RespReclamations.alloue
+        signal indemniser(h: Horodatage, sinistre: String, montant: RespMontant, par: String, valideur: String) -> RespMontant  requires h >= 0  requires montant >= 0  ensures result >= 0  reads montant_reclame, reclamation_de  writes montant_indemnise  moves instruit -> indemnise when RespReclamations.reglee || RespReclamations.close via reclamation_de  calls ApiAcces.a_le_role, ApiAcces.quatre_yeux, Journal.noter, RespReclamations.alloue, RespReclamations.etat
         signal refuser(h: Horodatage, sinistre: String, motif: String, par: String) -> String  requires h >= 0  writes motif_de  moves declare -> refuse, instruit -> refuse  calls ApiAcces.a_le_role, Journal.noter
     }
     // type Horodatage = Int where value >= 0 (nominal: never mixed with another type; build Horodatage(x), read to_int(q); literals take its type)
@@ -10638,4 +10640,4 @@ verify.before.RespSinistres.declare.requires = ["OpMembres.admis"]
 verify.before.RespSinistres.declare.via = "RespSinistres.op_de"
 package.edition = "2026"
 
-checksum sha256:ad59cf5cbea02f7bbe8f42efede66d830955ae0f21c375b952884aac337396b2
+checksum sha256:06498af9a94ac1b1593e73b4fab23c7d7afae83f754ac0315b1643f628ede2de

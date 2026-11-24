@@ -51,6 +51,9 @@ flesh RespFautes {
         let id = "FT-{next_id()}"
         rapprochement_de.set(id, r)
         if cible_etat == "designation_presumee" {
+            let lr = rapprochement_de.get(id) ?? ""
+            let cj = ApiConjonctions.etat(Rapprochement(lr))
+            require cj == "passe" || cj == "collision" else EtatInvalide "TCA de {lr} non échu ({cj})"
             transition(id, "aucune", "designation_presumee")
         } else {
             transition(id, "aucune", "presumee")

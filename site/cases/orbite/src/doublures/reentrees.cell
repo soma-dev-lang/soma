@@ -187,6 +187,7 @@ flesh ApiResponsabilite {
         return "DOS-{evenement}"
     }
     on sous_gel(cible) { return true }
+    on etat_dossier(dossier) { return "gele" }
 }
 
 flesh ApiLancements {

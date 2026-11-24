@@ -8,6 +8,9 @@ flesh ApiResponsabilite {
     on sous_gel(cible) {
         return RespGels.est_gele(cible)
     }
+    on etat_dossier(dossier) {
+        return RespDossiers.etat(dossier)
+    }
 
     on purge_autorisee(cible, h) {
         return RespPurges.autorisee_pour(cible, h)

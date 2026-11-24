@@ -11,6 +11,9 @@ skeleton ApiResponsabilite {
         // un rapprochement "CJ-…", un objet "OBJ-…", un évènement, un plan, ou un jour "J:<jour>".
         signal sous_gel(cible: String) -> Bool
             calls RespGels.est_gele
+        // État d'un dossier de responsabilité ("aucun", "gele", …).
+        signal etat_dossier(dossier: String) -> String
+            calls RespDossiers.etat
         // Vrai si une purge de la cible est autorisée (durée de conservation échue, aucun gel).
         signal purge_autorisee(cible: String, h: Horodatage) -> Bool
             calls RespPurges.autorisee_pour

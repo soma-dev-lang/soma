@@ -150,6 +150,8 @@ flesh RespSinistres {
         let al = RespReclamations.alloue(rec)
         require to_int(montant) <= to_int(montant_reclame.get(sinistre) ?? 0) && to_int(montant) <= to_int(al) else HorsBornes "indemnité supérieure au montant réclamé ou alloué"
         montant_indemnise.set(sinistre, montant)
+        let er = RespReclamations.etat(rec)
+        require er == "reglee" || er == "close" else EtatInvalide "réclamation {rec} {er} : rien n'est alloué"
         transition(sinistre, "instruit", "indemnise")
         Journal.noter(h, "responsabilite", par, "sinistre {sinistre} indemnisé : {montant} EUR ({valideur})")
         return montant

@@ -88,7 +88,7 @@ skeleton ReeConstat {
             writes dossier
             reads dossier, objet_de
             moves dommages -> transmis when RespDossiers.gele via dossier
-            calls ApiAcces.a_le_role, ApiResponsabilite.geler, ApiResponsabilite.sous_gel, Journal.noter
+            calls ApiAcces.a_le_role, ApiResponsabilite.geler, ApiResponsabilite.sous_gel, Journal.noter, ApiResponsabilite.etat_dossier
 
         // Échéances des constats à `h` (appelé par ReeCampagne.balayer) : tout constat "enregistre"
         // ou "recherche" sans dommage dont DELAI_RECLAMATION est écoulé passe "sans_suite" (motif
