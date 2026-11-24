@@ -16,8 +16,8 @@ flesh ConjContestation {
         let depot = ApiEphemerides.derniere(objet)
         let rid = to_string(r)
         let en_cours = en_cours_de.get(rid) ?? []
-        for c in en_cours {
-            require to_string(objet_de.get(c) ?? "") != so else Existe "contestation {c} déjà ouverte pour {so}"
+        for autre in en_cours {
+            require to_string(objet_de.get(autre) ?? "") != so else Existe "contestation {autre} déjà ouverte pour {so}"
         }
         require len(en_cours) < MAX_PAR_RAPPROCHEMENT else Plein "trop de contestations sur {rid}"
         require rapprochement_de.size < MAX_CONTESTATIONS else Plein "trop de contestations"

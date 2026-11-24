@@ -16,6 +16,7 @@ flesh ObsMesures {
         compteur.set("mesures", n)
         let g = ObsCapteurs.genre(capteur)
         let grandeur = if g == "radar" { "distance_vitesse" } else if g == "optique" { "angles" } else { "distance_laser" }
+        require capteur_de.get(id) == () else Existe "mesure {id} déjà reçue"
         capteur_de.set(id, capteur)
         genre_de.set(id, ObsGenreMesure(grandeur))
         recue_le.set(id, h)

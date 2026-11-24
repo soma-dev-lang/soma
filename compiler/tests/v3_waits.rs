@@ -315,7 +315,7 @@ fn serve(dir: &std::path::Path, port: u16, extra: &[&str], env: &[(&str, &str)])
         .stdout(Stdio::null()).stderr(Stdio::null());
     for (k, v) in env { cmd.env(k, v); }
     let server = Server(cmd.spawn().unwrap());
-    for _ in 0..100 {
+    for _ in 0..600 {
         // an HTTP answer, not only an open port: `soma serve` binds before its accept loop runs
         if http(port, "GET", "/seen", "", &[]).0 != 0 { return server; }
         std::thread::sleep(std::time::Duration::from_millis(50));

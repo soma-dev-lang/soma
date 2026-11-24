@@ -97,6 +97,7 @@ flesh ObsCapteurs {
         require n <= MAX_CAPTEURS else Plein "réseau plein ({MAX_CAPTEURS} capteurs)"
         let id = "CAP-{n}"
         compteur.set("capteurs", n)
+        require fournisseur_de.get(id) == () else Existe "capteur {id} déjà déclaré"
         fournisseur_de.set(id, fournisseur)
         genre_de.set(id, genre)
         regimes_de.set(id, regimes)

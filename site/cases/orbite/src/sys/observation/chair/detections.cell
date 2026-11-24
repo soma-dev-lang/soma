@@ -13,6 +13,7 @@ flesh ObsDetections {
         let id = "MD-{n}"
         compteur.set("detections", n)
         objet_de.set(id, objet)
+        require orbite_apres.get(id) == () else Existe "détection {id} déjà enregistrée"
         orbite_apres.set(id, od)
         ecart_de.set(id, ecart)
         ouverte_le.set(id, h)

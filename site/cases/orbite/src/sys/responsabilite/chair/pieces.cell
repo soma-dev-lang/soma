@@ -14,8 +14,8 @@ flesh RespPieces {
         require dossier_de.size < MAX_PIECES else Plein "registre des pièces plein"
         require len(deja) < MAX_PIECES_PAR_DOSSIER else Plein "le dossier {dossier} a {MAX_PIECES_PAR_DOSSIER} pièces"
         let id = "PC-{next_id()}"
-        transition(id, "aucune", "gelee")
         dossier_de.set(id, dossier)
+        transition(id, "aucune", "gelee")
         genre_de.set(id, genre)
         cible_de.set(id, cible)
         objets_de.set(id, objets)

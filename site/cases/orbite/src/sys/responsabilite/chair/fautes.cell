@@ -49,11 +49,10 @@ flesh RespFautes {
             require ApiFinDeVie.en_retard(objet, h) else Insuffisant "{objet} n'est pas en retard de retrait"
         }
         let id = "FT-{next_id()}"
+        rapprochement_de.set(id, r)
         if cible_etat == "designation_presumee" {
-            rapprochement_de.set(id, r)
             transition(id, "aucune", "designation_presumee")
         } else {
-            rapprochement_de.set(id, r)
             transition(id, "aucune", "presumee")
         }
         dossier_de.set(id, dossier)
