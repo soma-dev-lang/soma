@@ -1428,13 +1428,16 @@ impl<'a> Engine<'a> {
             }
             Expr::BinaryOp { left, op: BinOp::And, right } => {
                 let (ya, na) = self.branch(&left.node, frame, states);
-                let (yb, mut nb) = self.branch(&right.node, frame, ya);
+                // (the right side is read where the left one held)
+                let after = past(frame, &left.node, true);
+                let (yb, mut nb) = self.branch(&right.node, after.as_ref().unwrap_or(frame), ya);
                 nb.extend(na);
                 (yb, nb)
             }
             Expr::BinaryOp { left, op: BinOp::Or, right } => {
                 let (mut ya, na) = self.branch(&left.node, frame, states);
-                let (yb, nb) = self.branch(&right.node, frame, na);
+                let after = past(frame, &left.node, false);
+                let (yb, nb) = self.branch(&right.node, after.as_ref().unwrap_or(frame), na);
                 ya.extend(yb);
                 (ya, nb)
             }
@@ -1713,14 +1716,11 @@ impl<'a> Engine<'a> {
                     let s = self.expr(condition, &local, cur, entry);
                     let (yes, no) = self.narrow(&condition.node, &local, &before, s, moves_before);
                     // (inside `if to == "x"`, and in its `else`, what `to` is not)
-                    let (a, b) = match derived_test(&condition.node, &local.derived) {
-                        Some((v, text, is)) => {
-                            let then = Frame { cell: local.cell, env: local.env.clone(), uid: local.uid.clone(), depth: local.depth, status: local.status.clone(), derived: knowing(&local.derived, v, text, is) };
-                            let other = Frame { cell: local.cell, env: local.env.clone(), uid: local.uid.clone(), depth: local.depth, status: local.status.clone(), derived: knowing(&local.derived, v, text, !is) };
-                            (self.block(then_body, &then, yes, entry), self.block(else_body, &other, no, entry))
-                        }
-                        None => (self.block(then_body, &local, yes, entry), self.block(else_body, &local, no, entry)),
+                    let known = |truth: bool| {
+                        let derived = match derived_test(&condition.node, &local.derived) { Some((v, text, is)) => knowing(&local.derived, v, text, is == truth), None => local.derived.clone() };
+                        Frame { cell: local.cell, env: local.env.clone(), uid: local.uid.clone(), depth: local.depth, status: refused(&local.status, &condition.node, truth), derived }
                     };
+                    let (a, b) = (self.block(then_body, &known(true), yes, entry), self.block(else_body, &known(false), no, entry));
                     join(&mut flow.normal, a.normal); join(&mut flow.normal, b.normal);
                     join(&mut flow.returned, a.returned); join(&mut flow.returned, b.returned);
                     join(&mut flow.broke, a.broke); join(&mut flow.broke, b.broke);
@@ -1770,6 +1770,8 @@ impl<'a> Engine<'a> {
                     // past `require to != "" else …`, `to` is not ""
                     if let Some(cond) = as_condition(&constraint.node) {
                         if let Some((v, text, is)) = derived_test(&cond, &local.derived) { local.derived = knowing(&local.derived, v, text, is); }
+                        // …and a status variable did not get the text it was refused for
+                        local.status = refused(&local.status, &cond, true);
                     }
                 }
                 Statement::MethodCall { target, method, args } => {
@@ -2707,6 +2709,65 @@ fn knowing(derived: &Derived, v: &str, text: &str, is: bool) -> Derived {
         Rc::make_mut(&mut out).insert(v.to_string(), Rc::new((d.0.clone(), not)));
     }
     out
+}
+
+/// What `cond`, known true (or false), says of the texts a variable holds:
+/// (variable, texts, whether it IS one of them — or is none of them).
+fn learn(cond: &Expr, truth: bool, out: &mut Vec<(String, Vec<String>, bool)>) {
+    let test = |e: &Expr| -> Option<(String, String, bool)> {
+        let Expr::CmpOp { left, op: op @ (CmpOp::Eq | CmpOp::Ne), right } = e else { return None };
+        match (&left.node, &right.node) {
+            (Expr::Ident(v), Expr::Literal(Literal::String(t))) | (Expr::Literal(Literal::String(t)), Expr::Ident(v)) if super::desugar::segments(t).is_empty() => Some((v.clone(), t.clone(), *op == CmpOp::Eq)),
+            _ => None,
+        }
+    };
+    match cond {
+        Expr::Not(inner) => learn(&inner.node, !truth, out),
+        Expr::CmpOp { left, op: op @ (CmpOp::Eq | CmpOp::Ne), right } if matches!(right.node, Expr::Literal(Literal::Bool(_))) => {
+            let Expr::Literal(Literal::Bool(b)) = right.node else { unreachable!() };
+            learn(&left.node, truth == (b == (*op == CmpOp::Eq)), out);
+        }
+        Expr::BinaryOp { left, op: BinOp::And, right } if truth => { learn(&left.node, true, out); learn(&right.node, true, out); }
+        Expr::BinaryOp { left, op: BinOp::Or, right } if !truth => { learn(&left.node, false, out); learn(&right.node, false, out); }
+        // `v == "a" || v == "b"`, true: `v` is one of them
+        Expr::BinaryOp { op: BinOp::Or, .. } => {
+            fn leaves<'e>(e: &'e Expr, into: &mut Vec<&'e Expr>) {
+                match e { Expr::BinaryOp { left, op: BinOp::Or, right } => { leaves(&left.node, into); leaves(&right.node, into); } other => into.push(other) }
+            }
+            let mut all = Vec::new();
+            leaves(cond, &mut all);
+            let tests: Option<Vec<(String, String, bool)>> = all.into_iter().map(test).collect();
+            if let Some(tests) = tests {
+                if tests.iter().all(|(v, _, eq)| *eq && *v == tests[0].0) { out.push((tests[0].0.clone(), tests.iter().map(|t| t.1.clone()).collect(), true)); }
+            }
+        }
+        _ => if let Some((v, t, eq)) = test(cond) { out.push((v, vec![t], eq == truth)); },
+    }
+}
+
+/// `status` where `cond` is known true (or false): a text a variable is known
+/// not to hold is not one its getter answered in place of the state.
+fn refused(status: &Rc<HashMap<String, StatusRead>>, cond: &Expr, truth: bool) -> Rc<HashMap<String, StatusRead>> {
+    if status.is_empty() { return status.clone(); }
+    let mut known = Vec::new();
+    learn(cond, truth, &mut known);
+    let mut out = status.clone();
+    for (v, texts, is) in known {
+        let Some(read) = out.get(&v) else { continue };
+        if !read.3.iter().any(|alt| texts.contains(alt) != is) { continue; }
+        let mut read = read.clone();
+        read.3.retain(|alt| texts.contains(alt) == is);
+        Rc::make_mut(&mut out).insert(v, read);
+    }
+    out
+}
+
+/// `frame` where `cond` is known true (or false), when that says something of a status it holds.
+fn past<'a>(frame: &Frame<'a>, cond: &Expr, truth: bool) -> Option<Frame<'a>> {
+    if frame.status.is_empty() { return None; }
+    let status = refused(&frame.status, cond, truth);
+    if Rc::ptr_eq(&status, &frame.status) { return None; }
+    Some(Frame { cell: frame.cell, env: frame.env.clone(), uid: frame.uid.clone(), depth: frame.depth, status, derived: frame.derived.clone() })
 }
 
 /// `name` holds another value: the texts chosen from it, and its own, are no longer known.

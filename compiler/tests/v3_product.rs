@@ -849,3 +849,29 @@ fn a_text_chosen_from_a_status_is_read_as_the_status() {
     let (out, _) = linked("derived_reassigned", &derived.replace("        require cible != \"\" else Non \"non\"\n", "        cible = \"active\"\n"));
     assert!(out.contains("✗ entering Source.active while Org.inscrite"), "{out}");
 }
+
+/// A getter that answers a text of its own for an id it does not know
+/// (`"inconnu"`) may have answered it whatever the state — until the handler
+/// has refused that text: past `require e != "inconnu"`, in the `else` of
+/// `if e == "inconnu"`, past `require e == "a" || e == "b"`, it did not.
+#[test]
+fn a_text_the_handler_refused_is_not_what_the_getter_answered() {
+    let body = |checks: &str| LINKED.replace("        require e == \"inscrite\" else Non \"non\"\n", checks);
+    let proven = "✓ entering Source.active while Org.inscrite via Source.fournisseur";
+    let failed = "✗ entering Source.active while Org.inscrite";
+    for (name, checks, expect) in [
+        ("alt_require", "        require e != \"inconnu\" else Non \"non\"\n        if e == \"radiee\" { return \"non\" }\n        require e != \"inconnue\" else Non \"non\"\n", proven),
+        ("alt_only", "        require e == \"inscrite\" || e == \"radiee\" else Non \"non\"\n        if e == \"radiee\" { return \"non\" }\n", proven),
+        ("alt_else", "        if e == \"inconnu\" { return \"non\" } else {\n            if e == \"radiee\" { return \"non\" }\n            require e != \"inconnue\" else Non \"non\"\n        }\n", proven),
+        ("alt_and", "        require e != \"inconnu\" && e != \"radiee\" else Non \"non\"\n        require e != \"inconnue\" else Non \"non\"\n", proven),
+        // nothing refuses "inconnu": the getter may answer it of a struck-off organisation it has no entry of
+        ("alt_kept", "        if e == \"radiee\" { return \"non\" }\n        require e != \"inconnue\" else Non \"non\"\n", failed),
+        // refused of another variable
+        ("alt_other", "        let f = Org.etat(o)\n        require f != \"inconnu\" else Non \"non\"\n        if e == \"radiee\" { return \"non\" }\n        require e != \"inconnue\" else Non \"non\"\n", failed),
+        // refused, then read again
+        ("alt_reread", "        require e != \"inconnu\" else Non \"non\"\n        e = Org.etat(o)\n        if e == \"radiee\" { return \"non\" }\n        require e != \"inconnue\" else Non \"non\"\n", failed),
+    ] {
+        let (out, _) = linked(name, &body(checks));
+        assert!(out.contains(expect), "{name}: {out}");
+    }
+}
