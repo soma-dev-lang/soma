@@ -92,6 +92,8 @@ flesh CoordDecision {
             require !ApiResponsabilite.sous_gel(to_string(f.objet_b)) else EtatInvalide "{f.objet_b} est sous gel"
         }
         if purge_de.get(d) == () { purge_de.set(d, purge) }
+        let pu = purge_de.get(d) ?? ""
+        require ApiResponsabilite.etat_purge(pu) == "autorisee" else EtatInvalide "purge {pu} non autorisée"
         if st == "levee" {
             transition(d, "levee", "purgee")
         } else {

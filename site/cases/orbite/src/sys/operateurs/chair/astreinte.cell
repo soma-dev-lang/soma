@@ -45,6 +45,7 @@ flesh OpAstreinte {
         let hi = to_int(h)
         require hi >= d - AVANCE_MS && hi <= d + TOLERANCE_MS else Delai "hors de la fenêtre de prise de service"
         require OpEngagements.etat(op) == "en_vigueur" else EtatInvalide "engagements de {op} non en vigueur"
+        require ApiAcces.etat_personne(p) == "active" else Habilitation "{p} n'est plus une personne active"
         let nb = nb_planifies.get(op) ?? 0
         let prec = en_service_de.get(op)
         if prec != () && prec != id {

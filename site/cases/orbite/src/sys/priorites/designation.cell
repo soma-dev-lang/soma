@@ -182,7 +182,7 @@ skeleton PrioDesignation {
             writes entrees_de, purge_de
             reads calculee_le, rapprochement_de, a_de, b_de
             moves archivee -> purgee when RespPurges.autorisee via purge_de
-            calls ApiResponsabilite.sous_gel, ApiResponsabilite.purge_autorisee, ApiAcces.a_le_role, Journal.noter
+            calls ApiResponsabilite.sous_gel, ApiResponsabilite.purge_autorisee, ApiAcces.a_le_role, Journal.noter, ApiResponsabilite.etat_purge
         // Résumé : "a | b | resultat | motif | version | regle | rapprochement | calculee_le |
         // etat | contestation | verdict" (sans l'instantané, réservé à communiquer).
         // Refus : Inconnu.

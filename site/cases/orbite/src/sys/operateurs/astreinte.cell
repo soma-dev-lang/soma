@@ -68,7 +68,7 @@ skeleton OpAstreinte {
             writes fin, pris_a, en_service_de, nb_planifies, sans_astreinte_depuis
             reads operateur, personne, debut
             moves planifie -> en_service when OpEngagements.en_vigueur via operateur, en_service -> termine
-            calls ApiAcces.a_le_role, ApiAcces.agit_pour, OpEngagements.etat, Journal.noter
+            calls ApiAcces.a_le_role, ApiAcces.agit_pour, OpEngagements.etat, Journal.noter, ApiAcces.etat_personne
         // Annule un créneau non commencé (debut > h). Renvoie "annule".
         // Rôle exigé : "chef_de_mission" ou "administrateur_operateur" de l'opérateur, ou la
         // personne du créneau. Refus : Inconnu, EtatInvalide, Delai (début atteint), Habilitation.

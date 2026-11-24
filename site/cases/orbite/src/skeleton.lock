@@ -37,11 +37,12 @@ skeleton Horloge {
     //~ dernier_battement ab4bdf15bd5708a3
 }
 
-== ApiAcces sha256:397c269c7ab1ba1dafdbdd0e507b9c42622c6ec4332a532106ff22d0ada4fc87 core:2e3541a0dd1c1d6539518238bfda156409fe4c563a02a36a57649b35fdf919ea
+== ApiAcces sha256:53a5ca96be1649a239a82b5eca2b0b9fdde061769e05ddb11f6df431a9b22013 core:ed64f28117f92cf080830813192534699725dba1c8d63cd6dd34733eab4f5d9a
 skeleton ApiAcces {
     face {
         signal enregistrer(h: Horodatage, personne: String, employeur: Org, r: Role, par: String) -> Role  requires h >= 0  requires r == "aucun" || r == "analyste" || r == "superviseur" || r == "exploitant" || r == "conformite" || r == "direction" || r == "systeme" || r == "dynamicien" || r == "chef_de_mission" || r == "administrateur_operateur" || r == "capteur" || r == "point_focal" || r == "autorite" || r == "auditeur"  ensures result == "aucun" || result == "analyste" || result == "superviseur" || result == "exploitant" || result == "conformite" || result == "direction" || result == "systeme" || result == "dynamicien" || result == "chef_de_mission" || result == "administrateur_operateur" || result == "capteur" || result == "point_focal" || result == "autorite" || result == "auditeur"  calls AccesPersonnes.enregistrer, AccesRattachements.ouvrir
         signal role_de(personne: String) -> Role  ensures result == "aucun" || result == "analyste" || result == "superviseur" || result == "exploitant" || result == "conformite" || result == "direction" || result == "systeme" || result == "dynamicien" || result == "chef_de_mission" || result == "administrateur_operateur" || result == "capteur" || result == "point_focal" || result == "autorite" || result == "auditeur"  calls AccesControle.role_de
+        signal etat_personne(personne: String) -> String  calls AccesPersonnes.etat
         signal a_le_role(personne: String, r: Role) -> Bool  requires r == "aucun" || r == "analyste" || r == "superviseur" || r == "exploitant" || r == "conformite" || r == "direction" || r == "systeme" || r == "dynamicien" || r == "chef_de_mission" || r == "administrateur_operateur" || r == "capteur" || r == "point_focal" || r == "autorite" || r == "auditeur"  calls AccesControle.a_le_role
         signal agit_pour(personne: String, org: Org) -> Bool  calls AccesControle.agit_pour
         signal employeur(personne: String) -> Org  calls AccesPersonnes.employeur
@@ -64,6 +65,7 @@ skeleton ApiAcces {
     // type Role = String where value == "aucun" || value == "analyste" || value == "superviseur" || value == "exploitant" || value == "conformite" || value == "direction" || value == "systeme" || value == "dynamicien" || value == "chef_de_mission" || value == "administrateur_operateur" || value == "capteur" || value == "point_focal" || value == "autorite" || value == "auditeur" (nominal: never mixed with another type; build Role(x), read to_string(q); literals take its type)
     //~ enregistrer 3bc79e723ab6af00
     //~ role_de 6e5a6f4964bd89c7
+    //~ etat_personne a3615c7714d1bd3d
     //~ a_le_role 17947f016ca5371a
     //~ agit_pour d9ca0a6a225eb651
     //~ employeur 258e52d811714e37
@@ -594,13 +596,14 @@ skeleton ApiReentrees {
     //~ campagne_de a6b595795221384d
 }
 
-== ApiRef sha256:7844d578390b237bd8cb0a94be400796c306f37e3ef24a586a73bbc36c553446 core:c3f47f4e39070c35a0c794670b55e3207540113145dbf006b99ffa62d971f5d2
+== ApiRef sha256:f3cc26d00a9cf96e8e6cd172d97178987141f3fb18df7e091f1d350a08f5a8e4 core:e01f47b6610761159e4aa0cc16ea4c80448ef21518ab8b370c10a11fe9467d6b
 skeleton ApiRef {
     face {
         signal orbite() -> Org  calls RefOrg.orbite
         signal etat_participant(etat: Etat) -> Bool  calls RefEtat.participant
         signal inscrire_organisation(h: Horodatage, org: Org, nom: String, etat: Etat, genre: String, par: String, valideur: String) -> Org  requires h >= 0  calls RefOrg.inscrire
         signal organisation_existe(org: Org) -> Bool  calls RefOrg.existe
+        signal etat_organisation(org: Org) -> String  calls RefOrg.etat
         signal etat_de(org: Org) -> Etat  calls RefOrg.etat_de
         signal org_de_etat(etat: Etat) -> Org  calls RefOrg.org_de_etat
         signal cataloguer(h: Horodatage, nature: NatureObjet, proprietaire: Org, etat: Etat, regime: Regime, propulsion: Propulsion, masse: Masse, par: String) -> Objet  requires h >= 0  requires nature == "satellite" || nature == "station_habitee" || nature == "etage" || nature == "debris" || nature == "inconnu"  requires regime == "leo" || regime == "meo" || regime == "geo" || regime == "heo"  requires propulsion == "aucune" || propulsion == "faible" || propulsion == "impulsionnelle"  requires masse >= 0  calls RefObjet.cataloguer, RefRegistre.ouvrir
@@ -641,6 +644,7 @@ skeleton ApiRef {
     //~ etat_participant 44d77ed653f4f650
     //~ inscrire_organisation 33a65824d55d385f
     //~ organisation_existe ae07666d03b05925
+    //~ etat_organisation 15aafcaf878a6490
     //~ etat_de 013b6b8d7bec75dd
     //~ org_de_etat e51476e0062ef8d3
     //~ cataloguer 69ee102bb9158711
@@ -669,12 +673,13 @@ skeleton ApiRef {
     //~ balayer b3083899b378e962
 }
 
-== ApiResponsabilite sha256:561ac0b0cb1a0bf0fd0fb5690af3acbd8026592c8947057a117560b2d2057765 core:dd27d8b03707ebe15b7eee796af9cffa808b3d8396d355362bbbd3da35bc416c
+== ApiResponsabilite sha256:bc94b5912c0adef2eb2a65074a9afa5d119c76c7f412b317d6b3fa959e041a1c core:88f7fa81ba7ce535b06a943fccd2043b53e34f244b4a40e21d8549df7d00243f
 skeleton ApiResponsabilite {
     face {
         signal geler(h: Horodatage, evenement: String, motif: String, par: String) -> String  requires h >= 0  calls RespDossiers.ouvrir
         signal sous_gel(cible: String) -> Bool  calls RespGels.est_gele
         signal purge_autorisee(cible: String, h: Horodatage) -> Bool  requires h >= 0  calls RespPurges.autorisee_pour
+        signal etat_purge(purge: String) -> String  calls RespPurges.etat
         signal chaine(decision: String) -> List<String>  calls RespPieces.chaine_de
         signal balayer(h: Horodatage, par: String) -> Int  requires h >= 0  calls RespRondes.balayer
     }
@@ -683,6 +688,7 @@ skeleton ApiResponsabilite {
     //~ geler 6214d8b85c1eaa78
     //~ sous_gel 1092ab1f5eaff0c0
     //~ purge_autorisee 85ac413f4bf57396
+    //~ etat_purge 42baf4992c844f49
     //~ chaine aaa953040cbefa0a
     //~ balayer f380333ab8b963fa
 }
@@ -2454,7 +2460,7 @@ skeleton CoordArbitrage {
     //~ en_retard 010529344ac6d886
 }
 
-== CoordDecision sha256:d128b2bf311fea3b8dfe19b20848ce5f6d84f6e6370a57a1311376552f21c84a core:999675a73a555f3ecdef38a97c3f154c070842b348eeb262fa34cd21a49dad2a
+== CoordDecision sha256:5ae8235fac31efaadc76a3305473f7b41bfc194ac160f0c2db2ae1a0a3302fd7 core:e2bdc4c0a8ecffc3a8adad92097d101aec81306df480bdb55233f9440ccefad9
 skeleton CoordDecision {
     memory {
         rapprochement_de: Map<String, Rapprochement> [persistent]
@@ -2486,7 +2492,7 @@ skeleton CoordDecision {
         signal prendre(h: Horodatage, d: String, r: Rapprochement, objet: Objet, mode: CoordMode, motif: String, par: String, valideur: String) -> String  requires h >= 0  requires mode == "accord" || mode == "arbitrage" || mode == "releve"  writes fondement_de, historique_de, objet_de, rapprochement_de  moves designee -> en_vigueur when CoordVerrou.tenu via rapprochement_de, prise -> abstention when CoordVerrou.tenu via rapprochement_de, prise -> designee when RefObjet.en_service via objet_de  calls ApiConjonctions.distance, ApiConjonctions.niveau, ApiConjonctions.pc, ApiConjonctions.tca, ApiEphemerides.age, ApiEphemerides.fondement, ApiPriorites.decision_de, ApiRef.etat_objet, ApiRef.propulsion, CoordDossier.defaut, CoordDossier.objets, CoordReponse.du_tour, CoordVerrou.etat
         signal lever(h: Horodatage, d: String, motif: String) -> CoordEtatDecision  requires h >= 0  ensures result == "prise" || result == "designee" || result == "abstention" || result == "en_vigueur" || result == "levee" || result == "soldee" || result == "purgee" || result == "inconnue"  reads rapprochement_de  writes fin_le, motif_fin_de  moves abstention -> levee when CoordVerrou.leve via rapprochement_de, en_vigueur -> levee when CoordVerrou.leve via rapprochement_de  calls CoordVerrou.etat
         signal solder(h: Horodatage, d: String) -> CoordEtatDecision  requires h >= 0  ensures result == "prise" || result == "designee" || result == "abstention" || result == "en_vigueur" || result == "levee" || result == "soldee" || result == "purgee" || result == "inconnue"  reads rapprochement_de  writes fin_le, motif_fin_de  moves abstention -> soldee when CoordVerrou.clos via rapprochement_de, en_vigueur -> soldee when CoordVerrou.clos via rapprochement_de  calls CoordVerrou.etat
-        signal purger(h: Horodatage, d: String, purge: String, par: String, valideur: String) -> CoordEtatDecision  requires h >= 0  ensures result == "prise" || result == "designee" || result == "abstention" || result == "en_vigueur" || result == "levee" || result == "soldee" || result == "purgee" || result == "inconnue"  reads fin_le, rapprochement_de  writes fondement_de, purge_de  moves levee -> purgee when RespPurges.autorisee via purge_de, soldee -> purgee when RespPurges.autorisee via purge_de  calls ApiAcces.a_le_role, ApiAcces.quatre_yeux, ApiResponsabilite.purge_autorisee, ApiResponsabilite.sous_gel, Journal.noter
+        signal purger(h: Horodatage, d: String, purge: String, par: String, valideur: String) -> CoordEtatDecision  requires h >= 0  ensures result == "prise" || result == "designee" || result == "abstention" || result == "en_vigueur" || result == "levee" || result == "soldee" || result == "purgee" || result == "inconnue"  reads fin_le, rapprochement_de  writes fondement_de, purge_de  moves levee -> purgee when RespPurges.autorisee via purge_de, soldee -> purgee when RespPurges.autorisee via purge_de  calls ApiAcces.a_le_role, ApiAcces.quatre_yeux, ApiResponsabilite.etat_purge, ApiResponsabilite.purge_autorisee, ApiResponsabilite.sous_gel, Journal.noter
         signal contester(h: Horodatage, d: String, motif: String, par: String) -> Int  requires h >= 0  reads decision, fin_le, fondement_de  writes reserves_de  calls ApiAcces.a_le_role, ApiAcces.agit_pour, ApiRef.proprietaire, CoordEchange.noter, Journal.noter
         signal consulter(h: Horodatage, d: String, par: String) -> CoordFondement  requires h >= 0  reads decision, fondement_de, rapprochement_de, reserves_de  calls ApiAcces.a_le_role, ApiAcces.employeur, ApiDonnees.peut_recevoir, ApiDonnees.tracer, ApiRef.orbite, Journal.noter
         signal etat(d: String) -> CoordEtatDecision  ensures result == "prise" || result == "designee" || result == "abstention" || result == "en_vigueur" || result == "levee" || result == "soldee" || result == "purgee" || result == "inconnue"  reads decision, rapprochement_de
@@ -2905,7 +2911,7 @@ skeleton DonAccords {
     //~ etat 9dce3a85b600593c
 }
 
-== DonAdhesions sha256:8a18831a3212f4ab6ddc3eaa602ccd451de7359d5acb0f683b93817c665006a2 core:3c5e022c230e162aa8f796081e19e9117c9feef4144e76f0ad38b16887f52d08
+== DonAdhesions sha256:abfe7b5e202ca9ea3f8f35c66d56c0b08eb73f044c957e33574c1a0f23b73b5f core:daf2de65a0033a61f0b213b412a945cf732bc723ce152ccf15e7de1cb714f807
 skeleton DonAdhesions {
     memory {
         org_de: Map<String, String> [persistent]
@@ -2943,7 +2949,7 @@ skeleton DonAdhesions {
         signal ouvrir_resignature(h: Horodatage, nouvelle: String) -> Int  requires h >= 0  reads adhesion, courante_de, version_de  writes caduque_le  calls ApiPasserelle.notifier
         signal echoir(h: Horodatage, par: String) -> Int  requires h >= 0  reads caduque_le, signee_le  writes courante_de  moves active -> caduque, signee -> annulee, suspendue -> caduque  calls ApiAcces.a_le_role, DonDemandes.revoquer_de, DonPartages.revoquer_beneficiaire, Journal.noter
         signal suspendre(h: Horodatage, org: Org, violation: String, par: String, valideur: String) -> String  requires h >= 0  reads courante_de  moves active -> suspendue  calls ApiAcces.a_le_role, ApiAcces.quatre_yeux, ApiPasserelle.notifier, DonDemandes.revoquer_de, DonPartages.revoquer_beneficiaire, Journal.noter
-        signal retablir(h: Horodatage, org: Org, motif: String, par: String, valideur: String) -> String  requires h >= 0  reads caduque_le, courante_de, org_de  moves suspendue -> active  calls ApiAcces.a_le_role, ApiAcces.quatre_yeux, ApiRef.organisation_existe, Journal.noter
+        signal retablir(h: Horodatage, org: Org, motif: String, par: String, valideur: String) -> String  requires h >= 0  reads caduque_le, courante_de, org_de  moves suspendue -> active  calls ApiAcces.a_le_role, ApiAcces.quatre_yeux, ApiRef.etat_organisation, ApiRef.organisation_existe, Journal.noter
         signal adherent(org: Org) -> Bool  reads adhesion, courante_de  calls ApiRef.orbite
         signal adhesion_de(org: Org) -> String  reads adhesion, courante_de
         signal etat(adhesion: String) -> String  reads adhesion, org_de
@@ -5909,7 +5915,7 @@ skeleton ManVerification {
     //~ etat af5570f5a1810b7a
 }
 
-== ManPlan sha256:5cf3c37b3876222f503213f59260c721ae79f61f8adcf299fa78943f574fdcf7 core:79e9cf2e1f6ef429a88bd396ed3fe169fdf71d5ce3a7f60b623a1f9d84e2842f
+== ManPlan sha256:c6bd5af7af941b1dc6980ff5d3fffbd5e7fabb4ab6ea914399c9c757306df98a core:12c371d2fe4089eab8690f7bc6ff483833b845ddf7302e73b0f074f2acda9a08
 skeleton ManPlan {
     memory {
         fiche_de: Map<String, ManFichePlan> [persistent]
@@ -5964,7 +5970,7 @@ skeleton ManPlan {
     face {
         signal declarer(h: Horodatage, plan: String, objet: Objet, r: Rapprochement, motif: ManMotif, debut: Horodatage, dv: DeltaV, par: String) -> String  requires h >= 0  requires motif == "evitement" || motif == "maintien" || motif == "transfert" || motif == "desorbitation"  requires debut >= 0  requires dv >= 0 && dv <= 10000000  writes actifs_de, evitements_de, fiche_de, objet_de, proprietaire_de, tous_de, verrou_de  calls ApiAcces.a_le_role, ApiAcces.agit_pour, ApiConjonctions.etat, ApiConjonctions.objets, ApiConjonctions.ouverts_de, ApiConjonctions.tca, ApiCoordination.arretee, ApiCoordination.designe, ApiCoordination.privilegie, ApiEphemerides.fraiche, ApiOperateurs.est_actif, ApiPriorites.preavis, ApiRef.habite, ApiRef.peut_manoeuvrer, ApiRef.proprietaire, ApiRef.propulsion, Journal.noter, ManFenetre.chevauche, ManFenetre.reserver, ManIndicateurs.compter, ManProgramme.rattacher
         signal statuer(h: Horodatage, plan: String, par: String) -> ManEtatPlan  requires h >= 0  ensures result == "declare" || result == "crible" || result == "approuve" || result == "rejete" || result == "execute" || result == "verifie" || result == "anomalie" || result == "annule" || result == "inconnu"  reads fiche_de  writes actifs_de, cause_rejet_de  moves declare -> crible when ManCriblage.sur, declare -> rejete  calls ApiAcces.a_le_role, Journal.noter, ManCriblage.etat, ManFenetre.liberer, ManIndicateurs.compter
-        signal approuver(h: Horodatage, plan: String, par: String) -> ManEtatPlan  requires h >= 0  ensures result == "declare" || result == "crible" || result == "approuve" || result == "rejete" || result == "execute" || result == "verifie" || result == "anomalie" || result == "annule" || result == "inconnu"  reads fiche_de, objet_de, proprietaire_de, verrou_de  writes approuves, fondement_de  moves capable -> approuve when ManEvitement.engage via verrou_de, coordonne -> habilite when OpMembres.actif via proprietaire_de, crible -> recoupe when ConjCriblagePlan.sur, habilite -> localise when EphSuivi.a_jour via objet_de, localise -> capable when RefObjet.en_service via objet_de, recoupe -> coordonne when CoordDossier.arretee via verrou_de, recoupe -> habilite when OpMembres.actif via proprietaire_de  calls ApiAcces.a_le_role, ApiConjonctions.criblage_plan, ApiConjonctions.niveau, ApiConjonctions.ouverts_de, ApiConjonctions.pc, ApiConjonctions.pc_apres_plan, ApiConjonctions.tca, ApiCoordination.arretee, ApiCoordination.designe, ApiCoordination.etat, ApiCoordination.privilegie, ApiEphemerides.age, ApiEphemerides.avec_manoeuvres, ApiEphemerides.depot_valide, ApiEphemerides.derniere, ApiEphemerides.fraiche, ApiEphemerides.qualite, ApiOperateurs.est_actif, ApiOperateurs.statut, ApiPriorites.preavis, ApiPriorites.version_en_vigueur, ApiReentrees.a_risque, ApiReentrees.controlee_approuvee, ApiRef.etat_objet, ApiRef.peut_manoeuvrer, ApiRef.propulsion, Journal.noter, ManAvis.emettre, ManCriblage.fiche, ManEvitement.engager, ManIndicateurs.compter, rejeter
+        signal approuver(h: Horodatage, plan: String, par: String) -> ManEtatPlan  requires h >= 0  ensures result == "declare" || result == "crible" || result == "approuve" || result == "rejete" || result == "execute" || result == "verifie" || result == "anomalie" || result == "annule" || result == "inconnu"  reads fiche_de, objet_de, proprietaire_de, verrou_de  writes approuves, fondement_de  moves capable -> approuve when ManEvitement.engage via verrou_de, coordonne -> habilite when OpMembres.actif via proprietaire_de, crible -> recoupe when ConjCriblagePlan.sur, habilite -> localise when EphSuivi.a_jour via objet_de, localise -> capable when RefObjet.en_service via objet_de, recoupe -> coordonne when CoordDossier.arretee via verrou_de, recoupe -> habilite when OpMembres.actif via proprietaire_de  calls ApiAcces.a_le_role, ApiConjonctions.criblage_plan, ApiConjonctions.niveau, ApiConjonctions.ouverts_de, ApiConjonctions.pc, ApiConjonctions.pc_apres_plan, ApiConjonctions.tca, ApiCoordination.arretee, ApiCoordination.designe, ApiCoordination.etat, ApiCoordination.privilegie, ApiEphemerides.age, ApiEphemerides.avec_manoeuvres, ApiEphemerides.depot_valide, ApiEphemerides.derniere, ApiEphemerides.fraiche, ApiEphemerides.qualite, ApiEphemerides.suivi, ApiOperateurs.est_actif, ApiOperateurs.statut, ApiPriorites.preavis, ApiPriorites.version_en_vigueur, ApiReentrees.a_risque, ApiReentrees.controlee_approuvee, ApiRef.etat_objet, ApiRef.peut_manoeuvrer, ApiRef.propulsion, Journal.noter, ManAvis.emettre, ManCriblage.fiche, ManEvitement.engager, ManEvitement.etat, ManIndicateurs.compter, rejeter
         signal rejeter(h: Horodatage, plan: String, cause: ManCauseRejet, motif: String, par: String) -> ManEtatPlan  requires h >= 0  requires cause == "criblage_risque" || cause == "criblage_impossible" || cause == "criblage_perime" || cause == "ephemeride_perimee" || cause == "operateur_suspendu" || cause == "objet_incapable" || cause == "designation_changee" || cause == "hors_delai" || cause == "refus_analyste" || cause == "manoeuvre_timide" || cause == "privilegie"  ensures result == "declare" || result == "crible" || result == "approuve" || result == "rejete" || result == "execute" || result == "verifie" || result == "anomalie" || result == "annule" || result == "inconnu"  reads fiche_de  writes actifs_de, cause_rejet_de, motif_annulation_de  moves crible -> rejete  calls ApiAcces.a_le_role, Journal.noter, ManFenetre.liberer, ManIndicateurs.compter
         signal confirmer(h: Horodatage, plan: String, reel: Horodatage, dv: DeltaV, par: String) -> ManEtatPlan  requires h >= 0  requires reel >= 0  requires dv >= 0 && dv <= 10000000  ensures result == "declare" || result == "crible" || result == "approuve" || result == "rejete" || result == "execute" || result == "verifie" || result == "anomalie" || result == "annule" || result == "inconnu"  reads fiche_de, verrou_de  writes approuves, confirme_par, dv_reel_de, reel_de  moves approuve -> execute when ManFenetre.ouverte  calls ApiAcces.a_le_role, ApiAcces.agit_pour, ApiRef.proprietaire, Journal.noter, ManAvis.emettre, ManEvitement.solder, ManFenetre.consommer, ManFenetre.etat, ManFenetre.ouvrir, ManIndicateurs.compter, ManVerification.programmer
         signal declarer_echec(h: Horodatage, plan: String, propulsion_perdue: Bool, motif: String, par: String) -> ManEtatPlan  requires h >= 0  ensures result == "declare" || result == "crible" || result == "approuve" || result == "rejete" || result == "execute" || result == "verifie" || result == "anomalie" || result == "annule" || result == "inconnu"  reads fiche_de, verrou_de  writes actifs_de, approuves, motif_annulation_de  moves approuve -> anomalie  calls ApiAcces.a_le_role, ApiAcces.agit_pour, ApiRef.declarer_propulsion, ApiRef.proprietaire, Journal.noter, ManAnomalie.ouvrir, ManAvis.emettre, ManEvitement.liberer, ManFenetre.liberer, ManIndicateurs.compter
@@ -6690,7 +6696,7 @@ skeleton MetTempete {
     //~ du_jour e080148228b636e7
 }
 
-== ObsFournisseurs sha256:695900d60f0efe257740b3eae4ee93701950f66f0dab064d8ec9f3dcfbac1856 core:e9e9e5e1819b3c27dad294ead634fb4b8c84eb63e3a0e5b160a13fcc848ba6a2
+== ObsFournisseurs sha256:a6a95362afa405c08b38ad5b32718530bc6b4f6cdd72157c55d487f5f70567c2 core:e465d9bc3bc7cd62203f91d33a463bf815674e16c206a97fcc1a6c876a37acb8
 skeleton ObsFournisseurs {
     memory {
         demande_le: Map<Org, Horodatage> [persistent]
@@ -6715,7 +6721,7 @@ skeleton ObsFournisseurs {
     }
     face {
         signal demander(h: Horodatage, fournisseur: Org, par: String) -> String  requires h >= 0  writes demande_le  calls ApiAcces.a_le_role, ApiAcces.agit_pour, ApiDonnees.adherent, ApiRef.genre, ApiRef.organisation_existe, Journal.noter
-        signal agreer(h: Horodatage, fournisseur: Org, par: String, valideur: String) -> String  requires h >= 0  reads demande_le  writes agree_le, agree_par  moves demande -> agree when RefOrg.active  calls ApiAcces.a_le_role, ApiAcces.quatre_yeux, ApiDonnees.adherent, ApiRef.genre, ApiRef.organisations, Journal.noter
+        signal agreer(h: Horodatage, fournisseur: Org, par: String, valideur: String) -> String  requires h >= 0  reads demande_le  writes agree_le, agree_par  moves demande -> agree when RefOrg.active  calls ApiAcces.a_le_role, ApiAcces.quatre_yeux, ApiDonnees.adherent, ApiRef.etat_organisation, ApiRef.genre, ApiRef.organisations, Journal.noter
         signal suspendre(h: Horodatage, fournisseur: Org, motif: String, par: String) -> String  requires h >= 0  writes motif_suspension  moves agree -> suspendu  calls ApiAcces.a_le_role, Journal.noter, ObsCapteurs.suspendre_de
         signal retablir(h: Horodatage, fournisseur: Org, par: String) -> String  requires h >= 0  writes agree_le, motif_suspension  moves suspendu -> agree  calls ApiAcces.a_le_role, ApiDonnees.adherent, Journal.noter
         signal retirer(h: Horodatage, fournisseur: Org, motif: String, par: String) -> String  requires h >= 0  reads demande_le  moves agree -> retire, demande -> retire, suspendu -> retire  calls ApiAcces.a_le_role, ApiAcces.agit_pour, Journal.noter, ObsCapteurs.retirer_de
@@ -7395,7 +7401,7 @@ skeleton OpRondes {
     //~ dernier c60f93b7a3b81de5
 }
 
-== OpAstreinte sha256:0c791061946c2e86c0f24317203c7046848da8cc6f4543f53eecdd2d0a43dfa8 core:0afb4a2235cff9524838a38514d65d83e69d1ae35e812d12948bf0099270dc25
+== OpAstreinte sha256:888047bfda67c1abd45747a8a1b743ad69f1bd897369c68b7acd592a013d29c0 core:7d64fdfd71e76ce23c191abb2869f53d6180185aac40bc8c080710d250e70d44
 skeleton OpAstreinte {
     memory {
         operateur: Map<String, Org> [persistent]
@@ -7425,7 +7431,7 @@ skeleton OpAstreinte {
     }
     face {
         signal planifier(h: Horodatage, op: Org, pour: String, debut_prevu: Horodatage, fin_prevue: Horodatage, par: String) -> String  requires h >= 0  requires debut_prevu >= 0  requires fin_prevue >= 0  reads creneau  writes debut, fin, nb_planifies, operateur, personne  calls ApiAcces.a_le_role, ApiAcces.agit_pour, Journal.noter, OpMembres.etat, next_id
-        signal prendre_service(h: Horodatage, id: String, par: String) -> String  requires h >= 0  reads debut, operateur, personne  writes en_service_de, fin, nb_planifies, pris_a, sans_astreinte_depuis  moves en_service -> termine, planifie -> en_service when OpEngagements.en_vigueur via operateur  calls ApiAcces.a_le_role, ApiAcces.agit_pour, Journal.noter, OpEngagements.etat
+        signal prendre_service(h: Horodatage, id: String, par: String) -> String  requires h >= 0  reads debut, operateur, personne  writes en_service_de, fin, nb_planifies, pris_a, sans_astreinte_depuis  moves en_service -> termine, planifie -> en_service when OpEngagements.en_vigueur via operateur  calls ApiAcces.a_le_role, ApiAcces.agit_pour, ApiAcces.etat_personne, Journal.noter, OpEngagements.etat
         signal annuler(h: Horodatage, id: String, par: String) -> String  requires h >= 0  reads debut, operateur, personne  writes nb_planifies  moves planifie -> annule  calls ApiAcces.a_le_role, ApiAcces.agit_pour, Journal.noter
         signal interrompre(h: Horodatage, id: String, motif: OpMotifInterruption, par: String) -> String  requires h >= 0  requires motif == "indisponible" || motif == "personne_suspendue" || motif == "erreur_planning" || motif == "operateur_sorti"  reads operateur, personne  writes en_service_de, fin, nb_planifies, sans_astreinte_depuis  moves en_service -> interrompu  calls ApiAcces.a_le_role, ApiAcces.agit_pour, ApiPasserelle.notifier, Journal.noter
         signal balayer(h: Horodatage, n: Int, par: String) -> Int  requires n > 0 && n <= 10000  requires h >= 0  reads debut, operateur  writes en_service_de, fin, nb_planifies, sans_astreinte_depuis  moves en_service -> termine, planifie -> manque  calls ApiAcces.a_le_role, ApiConformite.constater, ApiPasserelle.notifier, Journal.noter
@@ -7794,7 +7800,7 @@ skeleton OpsGelUrgence {
     //~ a_lever 870fd2325d36f898
 }
 
-== OpsChangement sha256:c457644ea91bd51334bbfced74e9e6281242dbc6ddbfc064e7a8695181132b3f core:fac9105d91365200e83e1a29bbfca5483f9158d2c3cd45ce54b7ba61d602716e
+== OpsChangement sha256:424cd061c18f841fc3f237f2ffb445d1940a188faad24af2ad20032c91109c44 core:2913a42c711adddca29dec8aa825e19d7161680a382dbc43301ed767a26ec91d
 skeleton OpsChangement {
     memory {
         genre: Map<String, OpsGenreChangement> [persistent]
@@ -7838,7 +7844,7 @@ skeleton OpsChangement {
         signal approuver_urgence(h: Horodatage, c: String, par: String, valideur: String) -> String  requires h >= 0  reads demandeur, genre, incident_de  writes approbateur  moves soumis -> approuve_urgence when OpsIncident.en_traitement || OpsIncident.contourne via incident_de  calls ApiAcces.a_le_role, ApiAcces.quatre_yeux, Journal.noter, OpsIncident.etat
         signal rejeter(h: Horodatage, c: String, motif: String, par: String) -> String  requires h >= 0  moves evalue -> rejete  calls ApiAcces.a_le_role, Journal.noter
         signal retirer(h: Horodatage, c: String, motif: String, par: String) -> String  requires h >= 0  reads demandeur  moves approuve -> retire, approuve_urgence -> retire, soumis -> retire  calls ApiAcces.a_le_role, Journal.noter
-        signal deployer(h: Horodatage, c: String, par: String) -> String  requires h >= 0  reads demandeur, genre  writes deploye_par  moves approuve -> en_deploiement when AccesPersonnes.active via demandeur, approuve_urgence -> en_deploiement when AccesPersonnes.active via demandeur  calls ApiAcces.a_le_role, ApiAcces.role_de, Journal.noter, OpsBascule.en_transition, OpsGel.gel_a, OpsGelUrgence.actif_a, OpsIncident.majeur_en_cours
+        signal deployer(h: Horodatage, c: String, par: String) -> String  requires h >= 0  reads demandeur, genre  writes deploye_par  moves approuve -> en_deploiement when AccesPersonnes.active via demandeur, approuve_urgence -> en_deploiement when AccesPersonnes.active via demandeur  calls ApiAcces.a_le_role, ApiAcces.etat_personne, ApiAcces.role_de, Journal.noter, OpsBascule.en_transition, OpsGel.gel_a, OpsGelUrgence.actif_a, OpsIncident.majeur_en_cours
         signal achever(h: Horodatage, c: String, par: String) -> String  requires h >= 0  reads deploye_par  writes deploye_a  moves en_deploiement -> deploye  calls Journal.noter
         signal revenir_en_arriere(h: Horodatage, c: String, motif: String, par: String) -> String  requires h >= 0  reads plan_retour  moves deploye -> retour_arriere, en_deploiement -> retour_arriere  calls ApiAcces.a_le_role, Journal.noter
         signal constater_retour(h: Horodatage, c: String, par: String) -> String  requires h >= 0  moves retour_arriere -> clos_echec  calls ApiAcces.a_le_role, Journal.noter
@@ -8464,7 +8470,7 @@ skeleton PasCanaux {
     //~ adresse 81b812812b120472
 }
 
-== PasMessages sha256:25bcb6a8846741dcfa48b9630eecda777d80998c2b70de52136e5700c1fa6a10 core:cdd05633ca9ea59190021d457db429414493c97201fdddb294b3816595ef29c6
+== PasMessages sha256:da83df9d19cc64ed7bab3dcde34802e00b23fc2d04422d6131e741bd0ee0ac1c core:d3d34683353d3d2df5e5bf14e162b7381c2e00ae1e87529a39165a80c05f41ae
 skeleton PasMessages {
     memory {
         canal_de: Map<String, String> [persistent]
@@ -8504,7 +8510,7 @@ skeleton PasMessages {
         en_file -> annule
     }
     face {
-        signal mettre_en_file(h: Horodatage, destinataire: Org, r: Rapprochement, format: PasFormat, sujet: String, texte: String, urgence: Niveau) -> String  requires h >= 0  requires format == "CDM" || format == "alerte" || format == "texte"  requires urgence >= 1 && urgence <= 3  writes accuser_avant, canal_de, cree_le, destinataire_de, en_attente_de, file, format_de, livrer_avant, rapprochement_de, sujet_de, tentatives_de, texte_de, urgence_de  moves en_envoi -> en_file, en_envoi -> livre, en_file -> en_defaut, en_file -> en_envoi when PasCanaux.actif via canal_de  calls Journal.noter, PasCanaux.adresse, PasCanaux.principal, http_post, next_id
+        signal mettre_en_file(h: Horodatage, destinataire: Org, r: Rapprochement, format: PasFormat, sujet: String, texte: String, urgence: Niveau) -> String  requires h >= 0  requires format == "CDM" || format == "alerte" || format == "texte"  requires urgence >= 1 && urgence <= 3  writes accuser_avant, canal_de, cree_le, destinataire_de, en_attente_de, file, format_de, livrer_avant, rapprochement_de, sujet_de, tentatives_de, texte_de, urgence_de  moves en_envoi -> en_file, en_envoi -> livre, en_file -> en_defaut, en_file -> en_envoi when PasCanaux.actif via canal_de  calls Journal.noter, PasCanaux.adresse, PasCanaux.est_actif, PasCanaux.principal, http_post, next_id
         signal traiter_file(h: Horodatage, n: Int) -> Int  requires n > 0 && n <= 1000  requires h >= 0  reads canal_de, destinataire_de, format_de, livrer_avant, rapprochement_de, sujet_de, urgence_de  writes accuser_avant, en_attente_de, file, tentatives_de, texte_de  moves en_defaut -> escalade, en_defaut -> signale, en_envoi -> en_defaut, en_envoi -> en_file, en_envoi -> livre, en_file -> en_defaut, en_file -> en_envoi when PasCanaux.actif via canal_de, livre -> en_defaut  calls ApiConformite.constater, ApiConformite.constater_etat, ApiEscalade.echelon, ApiEscalade.escalader, ApiEscalade.reprise, ApiRef.etat_de, ApiRef.genre, Journal.noter, PasCanaux.adresse, PasCanaux.est_actif, PasCanaux.noter_issue, PasFormats.alerte, PasFormats.cdm, http_post
         signal acquitter(h: Horodatage, message: String, appelant: PasAppelant) -> String  requires h >= 0  reads accuser_avant, destinataire_de  writes en_attente_de  moves livre -> acquitte  calls Journal.noter
         signal acquitte(message: String) -> Bool  reads vie
@@ -8886,7 +8892,7 @@ skeleton PrioDerogation {
     //~ fiche 1f989e9de158d933
 }
 
-== PrioDesignation sha256:b22c13b5886418dfa7b9de5ea5c4117b1aadfbaed66bc2f3a792523f1c7aa651 core:ff4f18310fbfe3356337c836c2c35df1fb0a728dd28f81509419aa780812b998
+== PrioDesignation sha256:16aab1249cf9f1543638801a5a11e97f2254b2c0886885397f041547bf116afa core:86cda395606241cbe3a90759d3922d052dca8541b7647c41def22cfc6703e667
 skeleton PrioDesignation {
     memory {
         a_de: Map<String, Objet> [persistent]
@@ -8934,7 +8940,7 @@ skeleton PrioDesignation {
         signal statuer(h: Horodatage, decision: String, fondee: Bool, motif: String, par: String, valideur: String) -> String  requires h >= 0  writes verdict_de  moves contestee -> confirmee, contestee -> infirmee  calls ApiAcces.a_le_role, ApiAcces.quatre_yeux, Journal.noter, rejouer
         signal statistiques(version: String) -> List<String>  reads compte_motif
         signal archiver(h: Horodatage, decision: String, par: String) -> String  requires h >= 0  reads calculee_le  moves calculee -> archivee, confirmee -> archivee, infirmee -> archivee  calls ApiAcces.a_le_role, Journal.noter, PrioEcheancier.planifier
-        signal purger(h: Horodatage, decision: String, purge: String, par: String) -> String  requires h >= 0  reads a_de, b_de, calculee_le, rapprochement_de  writes entrees_de, purge_de  moves archivee -> purgee when RespPurges.autorisee via purge_de  calls ApiAcces.a_le_role, ApiResponsabilite.purge_autorisee, ApiResponsabilite.sous_gel, Journal.noter
+        signal purger(h: Horodatage, decision: String, purge: String, par: String) -> String  requires h >= 0  reads a_de, b_de, calculee_le, rapprochement_de  writes entrees_de, purge_de  moves archivee -> purgee when RespPurges.autorisee via purge_de  calls ApiAcces.a_le_role, ApiResponsabilite.etat_purge, ApiResponsabilite.purge_autorisee, ApiResponsabilite.sous_gel, Journal.noter
         signal resume(decision: String) -> String  reads a_de, b_de, calculee_le, contestation_de, decision, motif_de, rapprochement_de, regle_de, resultat_de, verdict_de, version_de
     }
     // type Horodatage = Int where value >= 0 (nominal: never mixed with another type; build Horodatage(x), read to_int(q); literals take its type)
@@ -10099,7 +10105,7 @@ skeleton RespDurees {
     //~ purge_due 7cfe586ac4f51123
 }
 
-== RespPurges sha256:5e63541bb94e5dd9ab505d4e7c8bb27c470eee30ba203b0a96478bd34a0f9b88 core:9663c66be03fd370a127609cf2372e1d5c85e44bec61597480d73cf5f5802e90
+== RespPurges sha256:0009a04b3eaa1d3df77a00423453b89058e8a7ef804f41098f6f887b33fbcec3 core:71dfab5330b9297a500f1f1b7efdee3b018551a6b061cd7d2a16f23ee0a2f236
 skeleton RespPurges {
     memory {
         cible_de: Map<String, String> [persistent]
@@ -10136,6 +10142,7 @@ skeleton RespPurges {
         signal constater(h: Horodatage, purge: String, supprimes: Int, par: String) -> String  requires h >= 0  reads cible_de  writes executee_le, supprimes_de  moves autorisee -> executee when RespGels.libre via cible_de  calls ApiAcces.a_le_role, Journal.noter, RespGels.est_gele
         signal annuler_pour_gel(h: Horodatage, cible: String) -> Int  requires h >= 0  reads purges_de_cible  writes motif_de  moves autorisee -> annulee  calls Journal.noter
         signal autorisee_pour(cible: String, h: Horodatage) -> Bool  requires h >= 0  reads avant_de, categorie_de, purge, purges_de_cible  calls RespDurees.minimum, RespGels.est_gele
+        signal etat(purge: String) -> String  reads purge
     }
     // type Horodatage = Int where value >= 0 (nominal: never mixed with another type; build Horodatage(x), read to_int(q); literals take its type)
     // type Refus = String where value == "Habilitation" || value == "QuatreYeux" || value == "Existe" || value == "Inconnu" || value == "EtatInvalide" || value == "HorsBornes" || value == "Insuffisant" || value == "Perime" || value == "Suspendu" || value == "Ferme" || value == "Echu" || value == "NonEligible" || value == "Doublon" || value == "Incoherent" || value == "Plein" || value == "MotifRequis" || value == "Delai" || value == "Conflit" || value == "Confidentiel" (nominal: never mixed with another type; build Refus(x), read to_string(q); literals take its type)
@@ -10147,6 +10154,7 @@ skeleton RespPurges {
     //~ constater da0ea25e3e431c14
     //~ annuler_pour_gel d29cb06b5e0330d4
     //~ autorisee_pour 73a0c3239c83a3a6
+    //~ etat f8536bb3693daefe
 }
 
 == RespCommunications sha256:50a186501b4b88bd10a47c9e2e7b8b2908950992d737af81b6b5d56abe32b037 core:47d1ea55c24ba57ded347c3d9eb99da808fc6ce115111f7c95b800b947a04433
@@ -10624,4 +10632,4 @@ verify.before.RespSinistres.declare.requires = ["OpMembres.admis"]
 verify.before.RespSinistres.declare.via = "RespSinistres.op_de"
 package.edition = "2026"
 
-checksum sha256:265ecfb5b2279d12972b5d4962e55ae67d6bd46a7db034170077fc8a18d1b172
+checksum sha256:add10691eff309b8c976371adf2938ff695c08e696c8a627347337acd1fc942a

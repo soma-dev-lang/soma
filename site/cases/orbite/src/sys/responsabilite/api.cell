@@ -14,6 +14,9 @@ skeleton ApiResponsabilite {
         // Vrai si une purge de la cible est autorisée (durée de conservation échue, aucun gel).
         signal purge_autorisee(cible: String, h: Horodatage) -> Bool
             calls RespPurges.autorisee_pour
+        // État d'une purge ("aucune", "demandee", "autorisee", …).
+        signal etat_purge(purge: String) -> String
+            calls RespPurges.etat
         // Chaîne de preuve d'une décision : les pièces qui la fondaient, datées, avec empreinte.
         // Refus : Inconnu.
         signal chaine(decision: String) -> List<String>

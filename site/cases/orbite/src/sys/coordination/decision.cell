@@ -93,7 +93,7 @@ skeleton CoordDecision {
             writes fondement_de, purge_de
             reads rapprochement_de, fin_le
             moves levee -> purgee when RespPurges.autorisee via purge_de, soldee -> purgee when RespPurges.autorisee via purge_de
-            calls ApiResponsabilite.purge_autorisee, ApiResponsabilite.sous_gel, ApiAcces.a_le_role, ApiAcces.quatre_yeux, Journal.noter
+            calls ApiResponsabilite.purge_autorisee, ApiResponsabilite.sous_gel, ApiAcces.a_le_role, ApiAcces.quatre_yeux, Journal.noter, ApiResponsabilite.etat_purge
         // Une partie inscrit une réserve sur une décision arbitrée (elle conteste la désignation
         // sans pouvoir s'y soustraire : la décision reste en vigueur et son désigné reste tenu
         // de manœuvrer). La réserve entre dans le dossier de preuve (responsabilité pour faute).

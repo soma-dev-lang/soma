@@ -147,7 +147,9 @@ flesh MetMesure {
         let n = 0
         for m in a_archiver {
             if n >= 10000 { break }
-            if (gel_de.get(m) ?? "J:{js}") == "J:{js}" {
+            let jm = jour_de.get(m) ?? ""
+            let gm = gel_de.get(m) ?? ""
+            if jm == js && MetJournee.scellee(jm) && !ApiResponsabilite.sous_gel(gm) {
                 transition(m, "validee", "archivee")
                 n = n + 1
             }

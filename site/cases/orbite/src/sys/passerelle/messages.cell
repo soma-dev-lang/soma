@@ -150,7 +150,7 @@ skeleton PasMessages {
         signal mettre_en_file(h: Horodatage, destinataire: Org, r: Rapprochement, format: PasFormat, sujet: String, texte: String, urgence: Niveau) -> String
             writes canal_de, destinataire_de, rapprochement_de, format_de, sujet_de, urgence_de, texte_de, cree_le, livrer_avant, accuser_avant, tentatives_de, file, en_attente_de
             moves en_file -> en_envoi when PasCanaux.actif via canal_de, en_envoi -> livre, en_envoi -> en_file, en_file -> en_defaut
-            calls next_id, http_post, PasCanaux.principal, PasCanaux.adresse, Journal.noter
+            calls next_id, http_post, PasCanaux.principal, PasCanaux.adresse, Journal.noter, PasCanaux.est_actif
         // Un passage de file à h (par "systeme", depuis PasRondes.balayer), au plus n messages,
         // niveau 3 d'abord :
         //  - en_file au texte vide (CDM, alerte) : composé pour le destinataire (PasFormats.cdm /

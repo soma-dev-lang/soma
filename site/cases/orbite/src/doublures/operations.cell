@@ -13,6 +13,10 @@
 // - capteurs en service : 5 (les tests de couverture le moquent).
 
 flesh ApiAcces {
+    on etat_personne(personne) {
+        if _role(personne) == "aucun" { return "inconnue" }
+        return "active"
+    }
     on a_le_role(personne, r) {
         if personne == "systeme" { return r == "systeme" }
         return _role(personne) == to_string(r)

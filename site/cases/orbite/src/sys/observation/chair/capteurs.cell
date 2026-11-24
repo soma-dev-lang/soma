@@ -22,6 +22,7 @@ flesh ObsFournisseurs {
         // Règle entre sous-systèmes : demande -> agree when RefOrg.active (même id Org).
         let actives = ApiRef.organisations(ApiRef.genre(fournisseur))
         require contains(actives, fournisseur) else EtatInvalide "{fournisseur} n'est pas une organisation active du registre"
+        require ApiRef.etat_organisation(fournisseur) == "active" else EtatInvalide "{fournisseur} n'est pas une organisation active du registre"
         require ApiDonnees.adherent(fournisseur) else NonEligible "{fournisseur} n'adhère pas à l'accord de partage"
         transition(fournisseur, "demande", "agree")
         agree_le.set(fournisseur, h)

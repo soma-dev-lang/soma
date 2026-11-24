@@ -12,6 +12,9 @@ flesh ApiResponsabilite {
     on purge_autorisee(cible, h) {
         return RespPurges.autorisee_pour(cible, h)
     }
+    on etat_purge(purge) {
+        return RespPurges.etat(purge)
+    }
 
     on chaine(decision) {
         return RespPieces.chaine_de(decision)

@@ -67,6 +67,12 @@ flesh ApiRef {
     on organisation_existe(org) {
         return starts_with(org, "ORG-") && !starts_with(org, "ORG-INCONNU") && !starts_with(org, "ORG-RADIE")
     }
+    on etat_organisation(org) {
+        let o = to_string(org)
+        if !starts_with(o, "ORG-") || starts_with(o, "ORG-INCONNU") { return "inconnue" }
+        if starts_with(o, "ORG-RADIE") { return "radiee" }
+        return "active"
+    }
     on etat_de(org) {
         require starts_with(org, "ORG-") && !starts_with(org, "ORG-INCONNU") else Inconnu "organisation {org} inconnue"
         let segs = split(org, "-")

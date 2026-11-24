@@ -290,7 +290,9 @@ flesh DonAdhesions {
         require (get_status(cur) ?? "signee") == "suspendue" else EtatInvalide "adhésion {cur} non suspendue"
         let lim = caduque_le.get(cur)
         require lim == () || to_int(lim) > to_int(h) else Perime "version signée remplacée et délai de re-signature passé"
-        require ApiRef.organisation_existe(org_de.get(cur) ?? org) else EtatInvalide "{org} radiée : la radier"
+        let oa = org_de.get(cur) ?? ""
+        let eo = ApiRef.etat_organisation(Org(oa))
+        require eo == "inscrite" || eo == "active" else EtatInvalide "{org} radiée : la radier"
         transition(cur, "suspendue", "active")
         let _ = Journal.noter(h, "donnees", par, "adhésion {cur} de {org} rétablie : {motif} (valideur {valideur})")
         return "active"

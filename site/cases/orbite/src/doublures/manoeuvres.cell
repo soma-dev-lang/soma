@@ -129,6 +129,10 @@ flesh ApiEphemerides {
     on fraiche(objet, h) {
         return !contains(to_string(objet), "PERIME")
     }
+    on suivi(objet) {
+        if contains(to_string(objet), "PERIME") { return "perime" }
+        return "a_jour"
+    }
     on derniere(objet) {
         return "DEP-{objet}"
     }

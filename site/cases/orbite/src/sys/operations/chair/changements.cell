@@ -237,6 +237,7 @@ flesh OpsChangement {
         let st = get_status(c) ?? "soumis"
         require st == "approuve" || st == "approuve_urgence" else EtatInvalide "changement non approuvé"
         require ApiAcces.role_de(dem) != "aucun" else EtatInvalide "demandeur {dem} inactif : retirer et resoumettre"
+        require ApiAcces.etat_personne(dem) == "active" else EtatInvalide "demandeur {dem} inactif : retirer et resoumettre"
         require !OpsBascule.en_transition() else EtatInvalide "bascule de site en transition"
         if normal {
             require !OpsGel.gel_a(h) else Suspendu "gel des changements en vigueur"

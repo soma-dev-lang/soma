@@ -17,6 +17,9 @@ flesh ApiRef {
     on organisation_existe(org) {
         return RefOrg.existe(org)
     }
+    on etat_organisation(org) {
+        return to_string(RefOrg.etat(org))
+    }
 
     on etat_de(org) {
         return RefOrg.etat_de(org)

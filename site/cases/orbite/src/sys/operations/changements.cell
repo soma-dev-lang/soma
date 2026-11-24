@@ -220,7 +220,7 @@ skeleton OpsChangement {
             writes deploye_par
             reads genre, demandeur
             moves approuve -> en_deploiement when AccesPersonnes.active via demandeur, approuve_urgence -> en_deploiement when AccesPersonnes.active via demandeur
-            calls ApiAcces.role_de, OpsGel.gel_a, OpsGelUrgence.actif_a, OpsIncident.majeur_en_cours, OpsBascule.en_transition, ApiAcces.a_le_role, Journal.noter
+            calls ApiAcces.role_de, OpsGel.gel_a, OpsGelUrgence.actif_a, OpsIncident.majeur_en_cours, OpsBascule.en_transition, ApiAcces.a_le_role, Journal.noter, ApiAcces.etat_personne
         // Déploiement terminé. Renvoie "deploye". Refus : Inconnu, EtatInvalide, Habilitation (par = deploye_par).
         signal achever(h: Horodatage, c: String, par: String) -> String
             writes deploye_a

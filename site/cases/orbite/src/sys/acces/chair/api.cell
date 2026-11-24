@@ -7,6 +7,9 @@ flesh ApiAcces {
     on role_de(personne) {
         return AccesControle.role_de(personne)
     }
+    on etat_personne(personne) {
+        return AccesPersonnes.etat(personne)
+    }
 
     on a_le_role(personne, r) {
         return AccesControle.a_le_role(personne, r)

@@ -53,7 +53,7 @@ skeleton ObsFournisseurs {
             reads demande_le
             writes agree_le, agree_par
             moves demande -> agree when RefOrg.active
-            calls ApiRef.organisations, ApiRef.genre, ApiDonnees.adherent, ApiAcces.a_le_role, ApiAcces.quatre_yeux, Journal.noter
+            calls ApiRef.organisations, ApiRef.genre, ApiDonnees.adherent, ApiAcces.a_le_role, ApiAcces.quatre_yeux, Journal.noter, ApiRef.etat_organisation
         // Suspend l'agrément : les capteurs du fournisseur ne peuvent plus être (re)mis en service
         // et leurs mesures sont rejetées (ObsMesures.valider lit l'état du capteur, lui-même lié).
         // Renvoie "suspendu". Rôle exigé : "exploitant" ou "superviseur" d'ORBITE, ou "systeme"

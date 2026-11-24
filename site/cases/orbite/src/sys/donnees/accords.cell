@@ -220,7 +220,7 @@ skeleton DonAdhesions {
         signal retablir(h: Horodatage, org: Org, motif: String, par: String, valideur: String) -> String
             reads courante_de, caduque_le, org_de
             moves suspendue -> active
-            calls ApiAcces.a_le_role, ApiAcces.quatre_yeux, ApiRef.organisation_existe, Journal.noter
+            calls ApiAcces.a_le_role, ApiAcces.quatre_yeux, ApiRef.organisation_existe, Journal.noter, ApiRef.etat_organisation
         // Vrai si l'organisation a une adhésion active (re-signature éventuellement en cours ;
         // une adhésion suspendue ne compte pas).
         // ORBITE elle-même (ApiRef.orbite()) est adhérente de droit.

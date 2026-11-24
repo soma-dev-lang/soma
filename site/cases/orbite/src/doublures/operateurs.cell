@@ -9,6 +9,10 @@
 //   l'accord de partage ; "MUET" n'acquitte jamais ses messages.
 
 flesh ApiAcces {
+    on etat_personne(personne) {
+        if starts_with(personne, "intrus") || !contains(personne, "@") { return "inconnue" }
+        return "active"
+    }
     on a_le_role(personne, r) {
         if personne == "systeme" { return r == "systeme" }
         if r == "systeme" || starts_with(personne, "intrus") { return false }

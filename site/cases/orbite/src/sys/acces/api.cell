@@ -12,6 +12,9 @@ skeleton ApiAcces {
         // Rôle actuel ; "aucun" si inconnue, suspendue ou partie. "systeme" → "systeme".
         signal role_de(personne: String) -> Role
             calls AccesControle.role_de
+        // État de la personne ("active", "suspendue", "partie", "inconnue").
+        signal etat_personne(personne: String) -> String
+            calls AccesPersonnes.etat
         // Vrai si la personne est active et a le rôle `r`, dans sa PORTÉE (voir Role) : un rôle
         // d'ORBITE exige un employé de ApiRef.orbite(). a_le_role("systeme", "systeme") est vrai.
         signal a_le_role(personne: String, r: Role) -> Bool

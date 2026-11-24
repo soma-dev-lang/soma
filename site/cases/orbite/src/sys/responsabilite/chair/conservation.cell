@@ -35,6 +35,9 @@ flesh RespDurees {
 }
 
 flesh RespPurges {
+    on etat(purge) {
+        return get_status(purge) ?? "aucune"
+    }
     on demander(h, cible, categorie, avant, detenteur, par) {
         require ApiAcces.a_le_role(par, "exploitant") || ApiAcces.a_le_role(par, "systeme") else Habilitation "{par} n'est ni exploitant ni systeme"
         require to_int(avant) <= to_int(h) else Incoherent "date de coupure postérieure à la demande"

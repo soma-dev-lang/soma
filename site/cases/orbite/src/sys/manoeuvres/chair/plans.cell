@@ -164,16 +164,23 @@ flesh ManPlan {
         }
         require fondement_de.get(plan) == () else EtatInvalide "fondement de {plan} déjà écrit"
         require approuves.size < MAX_APPROUVES else Plein "trop de plans approuvés"
+        // Chaque arête sous sa règle, lue sur l'instance que le plan nomme, juste avant de la prendre.
+        let lie = verrou_de.get(plan) ?? ""
+        let po = proprietaire_de.get(plan) ?? ""
+        let ob = objet_de.get(plan)
+        require ApiConjonctions.criblage_plan(plan) == "sur" else EtatInvalide "criblage de {plan} non sûr"
         transition(plan, "crible", "recoupe")
+        require ApiOperateurs.statut(Org(po)) == "actif" else EtatInvalide "opérateur {po} non actif"
         if evit {
-            let lie = verrou_de.get(plan) ?? ""
             require ApiCoordination.etat(Rapprochement(lie)) == "arretee" else EtatInvalide "coordination de {lie} non arrêtée"
             transition(plan, "recoupe", "coordonne")
             transition(plan, "coordonne", "habilite")
         } else {
             transition(plan, "recoupe", "habilite")
         }
+        require ApiEphemerides.suivi(ob) == "a_jour" else EtatInvalide "éphéméride de {ob} non à jour"
         transition(plan, "habilite", "localise")
+        require ApiRef.etat_objet(ob) == "en_service" else EtatInvalide "objet {ob} hors service"
         transition(plan, "localise", "capable")
         let r_eng = try { ManEvitement.engager(h, verrou, plan) }
         if r_eng.error != () {
@@ -182,6 +189,7 @@ flesh ManPlan {
             }
             fail(r_eng)
         }
+        require ManEvitement.etat(lie) == "engage" else EtatInvalide "verrou {lie} non engagé"
         transition(plan, "capable", "approuve")
         let designe_o = if evit { ApiCoordination.designe(f.r, "systeme") } else { "" }
         let pc_r = if evit { ApiConjonctions.pc(f.r) } else { 0 }

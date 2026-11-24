@@ -108,6 +108,9 @@ skeleton RespPurges {
         signal autorisee_pour(cible: String, h: Horodatage) -> Bool
             reads purges_de_cible, purge, categorie_de, avant_de
             calls RespGels.est_gele, RespDurees.minimum
+        // État de la purge ("aucune" … ).
+        signal etat(purge: String) -> String
+            reads purge
     }
 }
 

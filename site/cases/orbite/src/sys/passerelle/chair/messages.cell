@@ -194,6 +194,7 @@ flesh PasMessages {
         }
         if texte != "" {
             // canal lié actif (PasCanaux.principal ne rend qu'un canal actif) : premier envoi
+            require PasCanaux.est_actif(canal) else EtatInvalide "canal {canal} inactif"
             transition(id, "en_file", "en_envoi")
             let res = http_post(_url(canal), _charge(id, d, to_string(r), to_string(format), sujet, texte, niv, canal))
             if _issue(res) == "ok" {

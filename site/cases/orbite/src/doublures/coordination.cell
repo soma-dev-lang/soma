@@ -246,6 +246,9 @@ flesh ApiResponsabilite {
     on purge_autorisee(cible, h) {
         return true
     }
+    on etat_purge(purge) {
+        return "autorisee"
+    }
     on sous_gel(cible) {
         return contains(cible, "GEL")
     }

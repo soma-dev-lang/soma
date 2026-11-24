@@ -16,6 +16,9 @@ skeleton ApiRef {
         // Vrai si l'organisation existe et n'est pas radiée.
         signal organisation_existe(org: Org) -> Bool
             calls RefOrg.existe
+        // État de l'organisation ("inscrite", "active", "radiee", "inconnue").
+        signal etat_organisation(org: Org) -> String
+            calls RefOrg.etat
         // État de tutelle d'une organisation (celui qui la licencie et en répond, art. VI du
         // traité de 1967). Refus : Inconnu.
         signal etat_de(org: Org) -> Etat

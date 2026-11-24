@@ -48,6 +48,12 @@ flesh ApiRef {
         let o = to_string(org)
         return starts_with(o, "ORG-") && !starts_with(o, "ORG-RADIEE")
     }
+    on etat_organisation(org) {
+        let o = to_string(org)
+        if !starts_with(o, "ORG-") { return "inconnue" }
+        if starts_with(o, "ORG-RADIEE") { return "radiee" }
+        return "active"
+    }
     on genre(org) {
         let o = to_string(org)
         require starts_with(o, "ORG-") && !starts_with(o, "ORG-RADIEE") else Inconnu "organisation {o} inconnue"

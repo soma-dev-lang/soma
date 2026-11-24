@@ -169,6 +169,7 @@ flesh PrioDesignation {
         require (!ApiResponsabilite.sous_gel(to_string(r))) && (!ApiResponsabilite.sous_gel(to_string(a))) && (!ApiResponsabilite.sous_gel(to_string(b))) else Conflit "un dossier de preuve gelé couvre {decision}"
         require purge != "" && ApiResponsabilite.purge_autorisee(to_string(r), h) else Conflit "purge {purge} non autorisée pour {r}"
         require purge_de.get(decision) == () else Conflit "purge déjà enregistrée"
+        require ApiResponsabilite.etat_purge(purge) == "autorisee" else Conflit "purge {purge} non autorisée"
         purge_de.set(decision, purge)
         entrees_de.delete(decision)
         transition(decision, "archivee", "purgee")
