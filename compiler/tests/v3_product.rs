@@ -820,3 +820,32 @@ fn a_failure_names_the_handler_that_moves_and_what_it_reads() {
     assert!(out.contains("open obligation — before Pay.paid requires Approval.signed_off"), "{out}");
     assert!(!out.contains("the move is made in"), "{out}");
 }
+
+/// A variable computed from a status by an `if` expression whose arms are
+/// texts says what the status said: `let to = if e == "a" { "x" } else { "" }`
+/// then `if to == "x"` is `if e == "a"`.
+#[test]
+fn a_text_chosen_from_a_status_is_read_as_the_status() {
+    let derived = LINKED.replace("        require e == \"inscrite\" else Non \"non\"\n        transition(source, \"active\")\n",
+        "        let cible = if e == \"inscrite\" { \"active\" } else if e == \"radiee\" { \"fin\" } else { \"\" }\n        require cible != \"\" else Non \"non\"\n        if cible == \"active\" {\n            transition(source, \"active\")\n        }\n");
+    assert_ne!(derived, LINKED);
+    let (out, code) = linked("derived_ok", &derived);
+    assert!(out.contains("✓ entering Source.active while Org.inscrite via Source.fournisseur"), "{out}");
+    assert_eq!(code, 0, "{out}");
+    // the `else` of the test on the text: every other arm, less those a `require` refused
+    let (out, code) = linked("derived_else", &derived.replace("if cible == \"active\" {\n            transition(source, \"active\")\n        }", "if cible == \"fin\" {\n            vue.set(source, 0)\n        } else {\n            transition(source, \"active\")\n        }"));
+    assert!(out.contains("✓ entering Source.active while Org.inscrite via Source.fournisseur"), "{out}");
+    assert_eq!(code, 0, "{out}");
+    // the arm that moves is not the one the rule asks for
+    let (out, code) = linked("derived_wrong_arm", &derived.replace("if cible == \"active\" {", "if cible == \"fin\" {"));
+    assert!(out.contains("✗ entering Source.active while Org.inscrite"), "{out}");
+    assert_ne!(code, 0);
+    let (out, _) = linked("derived_not", &derived.replace("if cible == \"active\" {", "if cible != \"active\" {"));
+    assert!(out.contains("✗ entering Source.active while Org.inscrite"), "{out}");
+    // the status is read again by nobody after a call that may move the machine: the text is stale
+    let (out, _) = linked("derived_stale", &derived.replace("        require cible != \"\" else Non \"non\"\n", "        require cible != \"\" else Non \"non\"\n        let _ = Org.radier(o)\n"));
+    assert!(out.contains("✗ entering Source.active while Org.inscrite"), "{out}");
+    // the variable is given another value
+    let (out, _) = linked("derived_reassigned", &derived.replace("        require cible != \"\" else Non \"non\"\n", "        cible = \"active\"\n"));
+    assert!(out.contains("✗ entering Source.active while Org.inscrite"), "{out}");
+}

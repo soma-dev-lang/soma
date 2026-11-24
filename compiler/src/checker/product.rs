@@ -191,7 +191,17 @@ struct Frame<'a> {
     /// through a getter): machine, id key, `??` fallback. Kept only until
     /// the next statement that calls anything.
     status: Rc<HashMap<String, StatusRead>>,
+    /// variable → the texts it was given by an `if` expression, each with the
+    /// condition it was given under (`None`: the last `else`). Kept while the
+    /// statuses its conditions read are: `let to = if e == "a" { "x" } else
+    /// { "" }`, then `to == "x"`, is `e == "a"`.
+    derived: Derived,
 }
+
+/// variable → its arms (condition, text), and the texts it is known not to
+/// be where the search stands: past `require to != ""`, inside `if to == "x"`
+/// or its `else`.
+type Derived = Rc<HashMap<String, Rc<(Vec<(Option<Expr>, String)>, Vec<String>)>>>;
 
 /// A status read: machine, id key, `??` fallback — and the texts it may answer
 /// instead (a getter that returns `"unknown"` for an id it has no entry of).
@@ -714,7 +724,7 @@ impl<'a> Engine<'a> {
             let key = match args.get(i) { Some(a) => self.key_of(&a.node, a.span, frame), None => format!("x:{}:g{}p{}", frame.uid, only.span.start, i) };
             env.insert(p.name.clone(), key);
         }
-        let mut inner = Frame { cell, env: Rc::new(env), uid: format!("{}/g{}", frame.uid, only.span.start).into(), depth: frame.depth + 1, status: Rc::default() };
+        let mut inner = Frame { cell, env: Rc::new(env), uid: format!("{}/g{}", frame.uid, only.span.start).into(), depth: frame.depth + 1, status: Rc::default(), derived: Rc::default() };
         for g in guards {
             match &g.node {
                 // (`let o = to_string(id)`: another name of the id)
@@ -991,7 +1001,7 @@ impl<'a> Engine<'a> {
             env.insert(p.name.clone(), table.borrow().canon[i].clone().unwrap_or_else(|| format!("x:{}:p{}", uid, i)));
         }
         let args_key: Vec<u32> = table.borrow().canon.iter().map(|k| k.as_deref().map_or(u32::MAX, kid)).collect();
-        let inner = Frame { cell, env: Rc::new(env), uid: uid.as_str().into(), depth: frame.depth + 1, status: Rc::default() };
+        let inner = Frame { cell, env: Rc::new(env), uid: uid.as_str().into(), depth: frame.depth + 1, status: Rc::default(), derived: Rc::default() };
         let local = format!(":{}", uid);
         // (states that left the caller from inside the expression at hand are the caller's)
         let pending = (std::mem::take(&mut self.returned), std::mem::take(&mut self.broke), std::mem::take(&mut self.continued));
@@ -1117,7 +1127,7 @@ impl<'a> Engine<'a> {
     /// variable, a match binder, a lambda parameter, a variable a nested
     /// block assigns): each gets a key of its own, returned with the frame.
     fn rebound(&self, frame: &Frame<'a>, names: impl IntoIterator<Item = String>, at: usize, tag: &str) -> (Frame<'a>, Vec<String>) {
-        let mut inner = Frame { cell: frame.cell, env: frame.env.clone(), uid: frame.uid.clone(), depth: frame.depth, status: Rc::default() };
+        let mut inner = Frame { cell: frame.cell, env: frame.env.clone(), uid: frame.uid.clone(), depth: frame.depth, status: Rc::default(), derived: Rc::default() };
         let mut keys = Vec::new();
         for n in names {
             let key = format!("l:{}:{}:{}:{}", n, frame.uid, at, tag);
@@ -1457,6 +1467,25 @@ impl<'a> Engine<'a> {
                 }
                 if *op == CmpOp::Eq { (yes, no) } else { (no, yes) }
             }
+            // a text chosen by an `if` expression: the conditions it was chosen under
+            Expr::CmpOp { left, op: op @ (CmpOp::Eq | CmpOp::Ne), right }
+                if matches!((&left.node, &right.node), (Expr::Ident(v), Expr::Literal(Literal::String(_))) | (Expr::Literal(Literal::String(_)), Expr::Ident(v)) if frame.derived.contains_key(v)) => {
+                let (v, lit) = match (&left.node, &right.node) {
+                    (Expr::Ident(v), Expr::Literal(Literal::String(t))) | (Expr::Literal(Literal::String(t)), Expr::Ident(v)) => (v, t),
+                    _ => unreachable!(),
+                };
+                // (a state may be taken by several arms — a getter answers one of its
+                // other texts whatever the state: an arm whose text the variable is
+                // known not to be was not the one taken)
+                let d = frame.derived[v].clone();
+                let (mut yes, mut no, mut rest) = (Set::new(), Set::new(), states);
+                for (cond, text) in d.0.iter() {
+                    let (taken, left_over) = match cond { Some(c) => self.branch(c, frame, rest), None => (rest, Set::new()) };
+                    if d.1.contains(text) {} else if text == lit { yes.extend(taken); } else { no.extend(taken); }
+                    rest = left_over;
+                }
+                if *op == CmpOp::Eq { (yes, no) } else { (no, yes) }
+            }
             Expr::CmpOp { left, op: op @ (CmpOp::Eq | CmpOp::Ne), right } => {
                 let (read, lit) = match (&left.node, &right.node) {
                     (l, Expr::Literal(Literal::String(s))) => (self.status_of(l, frame), s),
@@ -1519,7 +1548,7 @@ impl<'a> Engine<'a> {
                 for (i, p) in on.params.iter().enumerate() {
                     if let Some(a) = args.get(i) { env.insert(p.name.clone(), self.key_of(&a.node, a.span, frame)); }
                 }
-                let mut inner = Frame { cell, env: Rc::new(env), uid: format!("{}/b{}", frame.uid, only.span.start).into(), depth: frame.depth + 1, status: Rc::default() };
+                let mut inner = Frame { cell, env: Rc::new(env), uid: format!("{}/b{}", frame.uid, only.span.start).into(), depth: frame.depth + 1, status: Rc::default(), derived: Rc::default() };
                 let all = states.clone();
                 let (mut passing, mut guarded) = (states, false);
                 for g in guards {
@@ -1588,7 +1617,7 @@ impl<'a> Engine<'a> {
     fn block(&mut self, stmts: &[Spanned<Statement>], frame: &Frame<'a>, states: Set, entry: &str) -> Flow {
         let mut flow = Flow { normal: states, ..Default::default() };
         // (a block's own `let`s: tracked in a copy of the frame)
-        let mut local = Frame { cell: frame.cell, env: frame.env.clone(), uid: frame.uid.clone(), depth: frame.depth, status: frame.status.clone() };
+        let mut local = Frame { cell: frame.cell, env: frame.env.clone(), uid: frame.uid.clone(), depth: frame.depth, status: frame.status.clone(), derived: frame.derived.clone() };
         // The outcome of a `let p = try { … }` is remembered while `p.error`
         // can still be read: up to the last statement of this block that
         // reads it (ok key, "either" key, that statement's index). Kept to
@@ -1613,7 +1642,7 @@ impl<'a> Engine<'a> {
                 }
             }
             let facts = self.stmt_facts(st);
-            if facts.head_calls && !local.status.is_empty() { local.status = Rc::default(); }
+            if facts.head_calls && !local.status.is_empty() { local.status = Rc::default(); local.derived = Rc::default(); }
             // a variable assigned inside an expression of this statement may be
             // read after that, in the same statement: unknown from the start
             for n in &facts.assigned {
@@ -1683,8 +1712,15 @@ impl<'a> Engine<'a> {
                     let moves_before = self.moves;
                     let s = self.expr(condition, &local, cur, entry);
                     let (yes, no) = self.narrow(&condition.node, &local, &before, s, moves_before);
-                    let a = self.block(then_body, &local, yes, entry);
-                    let b = self.block(else_body, &local, no, entry);
+                    // (inside `if to == "x"`, and in its `else`, what `to` is not)
+                    let (a, b) = match derived_test(&condition.node, &local.derived) {
+                        Some((v, text, is)) => {
+                            let then = Frame { cell: local.cell, env: local.env.clone(), uid: local.uid.clone(), depth: local.depth, status: local.status.clone(), derived: knowing(&local.derived, v, text, is) };
+                            let other = Frame { cell: local.cell, env: local.env.clone(), uid: local.uid.clone(), depth: local.depth, status: local.status.clone(), derived: knowing(&local.derived, v, text, !is) };
+                            (self.block(then_body, &then, yes, entry), self.block(else_body, &other, no, entry))
+                        }
+                        None => (self.block(then_body, &local, yes, entry), self.block(else_body, &local, no, entry)),
+                    };
                     join(&mut flow.normal, a.normal); join(&mut flow.normal, b.normal);
                     join(&mut flow.returned, a.returned); join(&mut flow.returned, b.returned);
                     join(&mut flow.broke, a.broke); join(&mut flow.broke, b.broke);
@@ -1729,7 +1765,13 @@ impl<'a> Engine<'a> {
                 Statement::Continue => { join(&mut flow.continued, cur); }
                 Statement::ExprStmt { expr } => { flow.normal = self.expr(expr, &local, cur, entry); }
                 Statement::IndexSet { index, value, .. } => { flow.normal = self.exprs(&[index, value], &local, cur, entry); }
-                Statement::Require { constraint, .. } => { flow.normal = self.constraint(&constraint.node, &local, cur, entry); }
+                Statement::Require { constraint, .. } => {
+                    flow.normal = self.constraint(&constraint.node, &local, cur, entry);
+                    // past `require to != "" else …`, `to` is not ""
+                    if let Some(cond) = as_condition(&constraint.node) {
+                        if let Some((v, text, is)) = derived_test(&cond, &local.derived) { local.derived = knowing(&local.derived, v, text, is); }
+                    }
+                }
                 Statement::MethodCall { target, method, args } => {
                     let mut s = cur;
                     for a in args { s = self.expr(a, &local, s, entry); }
@@ -1796,11 +1838,15 @@ impl<'a> Engine<'a> {
                 if matches!(&st.node, Statement::Let { name, .. } | Statement::Assign { name, .. } if name == n) { continue; }
                 Rc::make_mut(&mut local.env).insert(n.clone(), format!("l:{}:{}:{}:a", n, local.uid, st.span.start));
                 if local.status.contains_key(n) { Rc::make_mut(&mut local.status).remove(n); }
+                forget_derived(&mut local.derived, n);
             }
             // a status held in a variable is the status until something is
             // called: any call may move the machine
-            if facts.calls && !local.status.is_empty() { local.status = Rc::default(); }
+            if facts.calls && !local.status.is_empty() { local.status = Rc::default(); local.derived = Rc::default(); }
             if let Statement::Let { name, value } | Statement::Assign { name, value } = &st.node {
+                forget_derived(&mut local.derived, name);
+                // (its conditions are read where the variable is: only statuses still held decide them)
+                if let Some(arms) = text_arms(&value.node) { if !local.status.is_empty() { Rc::make_mut(&mut local.derived).insert(name.clone(), Rc::new((arms, Vec::new()))); } }
                 match self.status_of(&value.node, &local).filter(|_| !matches!(value.node, Expr::Ident(_))) {
                     Some(read) => { Rc::make_mut(&mut local.status).insert(name.clone(), read); }
                     None => if local.status.contains_key(name) { Rc::make_mut(&mut local.status).remove(name); },
@@ -2396,7 +2442,7 @@ fn attempt(exposed: &Program, cells: &[&CellDef], group: &[&Spec], cone: bool, s
                 }
                 let mut env = HashMap::new();
                 for p in entry.params { env.insert(p.name.clone(), format!("e:{}", p.name)); }
-                let frame = Frame { cell: entry.cell, env: Rc::new(env), uid: "".into(), depth: 0, status: Rc::default() };
+                let frame = Frame { cell: entry.cell, env: Rc::new(env), uid: "".into(), depth: 0, status: Rc::default(), derived: Rc::default() };
                 let mut init = Set::new();
                 init.insert(Exec { st: state.clone(), bind: Bind::default() });
                 let before: BTreeSet<usize> = engine.broken.keys().copied().collect();
@@ -2622,6 +2668,54 @@ pub fn check(program: &Program, specs: &[Spec]) -> Vec<super::verify::VerifyResu
     vec![result]
 }
 
+/// `if c { "a" } else if d { "b" } else { "" }`: each text with its condition
+/// (`None` for the last `else`) — when every arm is a plain text and no
+/// condition calls or assigns anything.
+fn text_arms(e: &Expr) -> Option<Vec<(Option<Expr>, String)>> {
+    let plain = |x: &Expr| match x { Expr::Literal(Literal::String(t)) if super::desugar::segments(t).is_empty() => Some(t.clone()), _ => None };
+    let mut arms = Vec::new();
+    let mut at = e;
+    loop {
+        let Expr::IfExpr { condition, then_body, then_result, else_body, else_result } = at else { return None };
+        if !then_body.is_empty() || !else_body.is_empty() { return None; }
+        let mut pure = true;
+        super::literals::for_each_in_expr(&condition.node, &mut |x| if !matches!(x, Expr::Ident(_) | Expr::Literal(_) | Expr::CmpOp { .. } | Expr::BinaryOp { .. } | Expr::Not(_)) { pure = false; });
+        if !pure { return None; }
+        arms.push((Some(condition.node.clone()), plain(&then_result.node)?));
+        match plain(&else_result.node) {
+            Some(t) => { arms.push((None, t)); return Some(arms); }
+            None => at = &else_result.node,
+        }
+    }
+}
+
+/// `v == "text"` or `v != "text"` on a variable `derived` knows: the variable, the text, whether it is `==`.
+fn derived_test<'e>(cond: &'e Expr, derived: &Derived) -> Option<(&'e str, &'e str, bool)> {
+    let Expr::CmpOp { left, op: op @ (CmpOp::Eq | CmpOp::Ne), right } = cond else { return None };
+    match (&left.node, &right.node) {
+        (Expr::Ident(v), Expr::Literal(Literal::String(t))) | (Expr::Literal(Literal::String(t)), Expr::Ident(v)) if derived.contains_key(v) => Some((v, t, *op == CmpOp::Eq)),
+        _ => None,
+    }
+}
+
+/// `derived` where `v` is known to be `text` (`is`), or not to be.
+fn knowing(derived: &Derived, v: &str, text: &str, is: bool) -> Derived {
+    let mut out = derived.clone();
+    if let Some(d) = derived.get(v) {
+        let mut not = d.1.clone();
+        if is { not.extend(d.0.iter().map(|(_, t)| t.clone()).filter(|t| t != text)); } else { not.push(text.to_string()); }
+        Rc::make_mut(&mut out).insert(v.to_string(), Rc::new((d.0.clone(), not)));
+    }
+    out
+}
+
+/// `name` holds another value: the texts chosen from it, and its own, are no longer known.
+fn forget_derived(derived: &mut Derived, name: &str) {
+    if derived.is_empty() { return; }
+    let reads = |arms: &Vec<(Option<Expr>, String)>| arms.iter().any(|(c, _)| c.as_ref().is_some_and(|c| { let mut hit = false; super::literals::for_each_in_expr(c, &mut |x| if matches!(x, Expr::Ident(v) if v == name) { hit = true; }); hit }));
+    if derived.iter().any(|(k, d)| k == name || reads(&d.0)) { Rc::make_mut(derived).retain(|k, d| k != name && !reads(&d.0)); }
+}
+
 /// The handlers (`Cell.handler`, by cell address) a body may run, by name:
 /// `Cell.h(…)` is that handler, a bare `h(…)` the cell's own or any cell's,
 /// a method on a value or an `emit` every handler of that name. `None`: it
@@ -2751,7 +2845,7 @@ impl<'a> Engine<'a> {
                 _ => {}
             });
             for n in bound { env.insert(n.clone(), format!("l:{}:t{}", n, call.span.start)); }
-            let inner = Frame { cell, env: Rc::new(env), uid: format!("t{}", call.span.start).into(), depth: 1, status: Rc::default() };
+            let inner = Frame { cell, env: Rc::new(env), uid: format!("t{}", call.span.start).into(), depth: 1, status: Rc::default(), derived: Rc::default() };
             let mut init = Set::new();
             init.insert(Exec { st: state.clone(), bind: Bind::default() });
             out.extend(self.expr(call, &inner, init, entry).into_iter().map(|e| e.st));
