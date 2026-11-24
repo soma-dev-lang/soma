@@ -2539,3 +2539,21 @@ flesh Loans {
     // the invariant a hole may break is runtime-checked, and says why in words
     assert!(out.contains("take → copies because it is a hole") && !out.contains("`?`"), "{out}");
 }
+
+/// A file of types alone, imported by the entry, is a part of the program for `soma check
+/// <dir>`: alone it has no cell, but the program that imports it is checked.
+#[test]
+fn a_file_of_types_alone_is_a_part_of_the_program() {
+    let dir = std::env::temp_dir().join("soma_skeleton_types_part");
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(dir.join("commun")).unwrap();
+    std::fs::write(dir.join("commun/types.cell"), "// a count\ncell type Count = Int where value >= 0\n// a shape, over several lines\ncell type Shape {\n    variants {\n        Dot\n        Line { n: Count }\n    }\n}\n").unwrap();
+    std::fs::write(dir.join("app.cell"), "use commun::types\nskeleton A {\n    face { signal f(n: Count) -> Count }\n}\n").unwrap();
+    let (out, code) = soma(&["check", &dir.display().to_string()]);
+    assert_eq!(code, 0, "{out}");
+    assert!(out.contains("types.cell ── a part of a program"), "{out}");
+    // a file of types nobody imports is still checked alone (and is no program)
+    std::fs::write(dir.join("orphan.cell"), "cell type Lost = Int\n").unwrap();
+    let (out, code) = soma(&["check", &dir.display().to_string()]);
+    assert!(code != 0 && out.contains("orphan.cell"), "{out}");
+}

@@ -1562,13 +1562,16 @@ fn run_over_dir(cmd: &str, dir: &std::path::Path, json: bool, extra: &[&str]) ->
             false
         };
         let has_tests = |p: &Option<ast::Program>| p.as_ref().is_some_and(|p| p.cells.iter().any(|c| c.node.kind == ast::CellKind::Test));
+        // (a file of `cell type` declarations alone is a part too: alone it is no program,
+        // through its importer it is its types)
+        let types_only = |p: &ast::Program| !p.cells.is_empty() && p.cells.iter().all(|c| c.node.kind == ast::CellKind::Type);
         // a part: it holds a skeleton or a flesh, no test of its own, and a
         // file that is no test file imports it without being imported by it
         // (a test file may sit elsewhere, away from the project's soma.toml;
         // two files importing each other are both checked)
         let part = |f: &std::path::PathBuf, p: &Option<ast::Program>| {
             let me = real(f);
-            p.as_ref().is_some_and(|p| p.cells.iter().any(|c| c.node.skeleton || c.node.kind == ast::CellKind::Flesh)) && !has_tests(p)
+            p.as_ref().is_some_and(|p| p.cells.iter().any(|c| c.node.skeleton || c.node.kind == ast::CellKind::Flesh) || types_only(p)) && !has_tests(p)
                 && parsed.iter().any(|(g, gp)| { let g = real(g); g != me && !gp.as_ref().is_some_and(|p| !p.cells.is_empty() && p.cells.iter().all(|c| c.node.kind == ast::CellKind::Test)) && gp.is_some() && imports.get(&g).is_some_and(|v| v.contains(&me)) && !reaches(&me, &g) })
         };
         let parts: Vec<std::path::PathBuf> = parsed.iter().filter(|(f, p)| part(f, p)).map(|(f, _)| f.clone()).collect();
