@@ -1,5 +1,15 @@
 # Changelog
 
+## 3.2.6 — 2026-11-24
+
+`verify` on the files 3.2.5 could not finish. Validation: 1,121 Rust tests, 118 CLI checks, 327 corpus programs, 1,280 numeric comparisons; `check` exits the same on the 1,855 tracked programs, and `verify` prints the same, byte for byte, on the 1,810 of them 3.2.4 finishes in a minute and on Orbite's `app.cell`, `test_ref.cell` and `prod.cell` (against 3.2.5).
+
+- **What a call does is asked once.** The search between machines walked a handler's body again at every call of it: a gateway that reaches a handler through a hundred paths walked it a hundred times, from every state (on Orbite, `ApiPasserelle.request` took over a second from each state, in each of 300 searches). A handler is now run from one state at a time, under names that do not depend on where it is called from, and what it gives is kept for the next call with the same arguments and state — at any depth of calls, and whatever was chosen for the literals and globals it does not name. Four of Orbite's test files that took more than ten minutes: `test_aeolus.cell` and `test_bout_en_bout.cell` 15 s, `test_coordination.cell` and `banc_coordination.cell` 60 s. `verify app.cell` 10 s → 3.5 s, `prod.cell` 57 s → 13 s. A handler reached through four million paths: 87 s → under a second, same answer.
+- A rule its cone's shared search proves is no longer searched a second time when another rule of the same cone is not proven (only that one is searched alone), and those searches run on every core.
+- Joining two sets of states no longer sorts them again at every level of an `else if` chain; looking for two states that differ in one undecided id no longer copies every state to find there is none.
+
+Still open: the two coordination files are at 60 s, not the 20 s aimed at — inside one gateway the set of states reaches 1,500 and every call site goes through it. `verify` on these files and on `prod.cell` answers `VERIFY FAILED`; whether those are runs of the program or the search's over-approximation is not analysed yet.
+
 ## 3.2.5 — 2026-11-24
 
 `verify` at the size of a large program, values that are no longer copied where they are read, and a `✗` that is always true. Validation: 1,120 Rust tests, 118 CLI checks, 327 corpus programs, 1,280 numeric comparisons; `check` exits the same on the 1,855 tracked programs, and `verify` prints the same, byte for byte, on the 1,810 of them 3.2.4 finishes in a minute. Still open: four of Orbite's test files take more than ten minutes to verify, and `verify` on Orbite's `prod.cell` now finishes and answers `VERIFY FAILED` (not analysed yet).

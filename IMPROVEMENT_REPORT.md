@@ -42,10 +42,11 @@ the baseline or equal.
 
 | Metric | Start of session | Now | Target |
 |---|---|---|---|
-| `orbite.verify_app` | 249 s (475 s on 3.2.4) | 10 s | 20 s |
-| `orbite.verify_prod` | did not finish in 20 min | 57 s | finishes, then 60 s |
+| `orbite.verify_app` | 249 s (475 s on 3.2.4) | 3.5 s | 20 s |
+| `orbite.verify_prod` | did not finish in 20 min | 13 s | finishes, then 60 s |
 | `verify test_ref.cell` | did not finish in 10 min | 9 s | 20 s |
-| `verify test_coordination.cell` and three more | did not finish | **still over 10 min** | 20 s |
+| `verify test_coordination.cell`, `banc_coordination.cell` | did not finish | 60 s (3.2.6: a summary per handler call) | 20 s |
+| `verify test_aeolus.cell`, `test_bout_en_bout.cell` | did not finish | 15 s | 20 s |
 | `prover_false_failures` (of 1,510) | 42 | 0 | 0 |
 | `prover_false_clauses_refuted` (of 3,020) | 306 on 3.2.4 | 3,020 | — |
 | `prover_true_clauses_proven` | 1,083 | 1,120 | — |
@@ -103,6 +104,7 @@ on Orbite's `app.cell`.
 
 ## What was tried and did not work, or was left
 
+- *(Done in 3.2.6: the summary per handler call below was written; the four files take 15 to 60 s. What follows is the note as it stood.)*
 - **Four Orbite test files still take more than ten minutes** to verify
   (`test_coordination`, `test_aeolus`, `test_bout_en_bout`,
   `banc_coordination`). No state explosion is left there (the largest set of

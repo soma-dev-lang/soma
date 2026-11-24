@@ -3,6 +3,10 @@
 > Newest first. The language itself: https://soma-lang.dev/llms.txt (`soma docs agent`).
 > Every fix and its compatibility note: https://soma-lang.dev/CHANGELOG.md.
 
+Soma 3.2.6: `verify` keeps what a handler call gives from a state instead of
+walking its body at every call: files of a 69,000-line program that took more
+than ten minutes take 15 to 60 s; same output on every program 3.2.5 finishes.
+
 Soma 3.2.5: an unproven `ensures` of a handler that only computes is run, and
 a ✗ shows the input that breaks it (a statement no input reaches is no longer
 a ✗); `verify` on the skeleton of a 156-machine program takes 10 s where it
