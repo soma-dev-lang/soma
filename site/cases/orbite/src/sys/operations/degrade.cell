@@ -49,7 +49,7 @@ skeleton OpsDegradation {
         signal decreter(h: Horodatage, ss: SousSysteme, rep: List<OpsRepli>, incident: String, par: String) -> Int
             writes replis, depuis, reexamen, incident_lie, decrete_par, historique
             moves nominal -> degrade
-            calls OpsIncident.etat, OpsIncident.vise_de, OpsCrise.active_pour, OpsCrise.etat, ApiAcces.a_le_role, Journal.noter
+            calls OpsIncident.etat, OpsIncident.vise_de, OpsCrise.etat, ApiAcces.a_le_role, Journal.noter
         // Sonde de couverture (par "systeme", appelée par la ronde OpsRonde.balayer) : si ApiObservation.capteurs_en_service
         // < CAPTEURS_MIN, décrète "observation" dégradée avec "covariances_elargies" et
         // "capteurs_partenaires", et déclare l'incident "COUV-<h>" de gravité 2 s'il n'y en a pas.

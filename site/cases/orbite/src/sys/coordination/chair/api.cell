@@ -16,6 +16,9 @@ flesh ApiCoordination {
     on arretee(r) {
         return CoordVerrou.arretee(r)
     }
+    on verrou(r) {
+        return CoordVerrou.etat(r)
+    }
     on arbitrer(h, r, objet, motif, par, valideur) {
         return to_string(CoordDossier.arbitrer(h, r, objet, motif, par, valideur))
     }

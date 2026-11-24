@@ -119,7 +119,7 @@ skeleton ConfMesure {
         // [avertissement, surveillance_renforcee, demande_suspension]. Pour les rapports.
         signal compter(op: Org, de: Horodatage, a: Horodatage) -> List<Int>
             requires de <= a
-            reads op_de, nature_de, en_vigueur_le, cycle
+            reads op_de, nature_de, en_vigueur_le
     }
 }
 

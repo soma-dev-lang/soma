@@ -76,7 +76,7 @@ skeleton OpsTest {
         // des écarts), Plein (> MAX_ECARTS), QuatreYeux (valideur "superviseur", ≠ responsable).
         signal rapporter(h: Horodatage, t: String, res: OpsResultat, reprise_ms: Duree, constats: List<String>, par: String, valideur: String) -> OpsResultat
             writes reprise, resultat, ecarts, dernier_reussi
-            reads scenario, debut, responsable
+            reads scenario, responsable
             moves en_cours -> termine
             calls ApiAcces.quatre_yeux, Journal.noter
         // Vrai si le scénario a un test réussi depuis moins de PERIODICITE à `h`.
@@ -88,6 +88,6 @@ skeleton OpsTest {
         // État du test ("planifie", "en_cours", "termine", "interrompu", "annule") ; "inconnu"
         // si jamais planifié.
         signal etat(t: String) -> String
-            reads test, resultat, scenario
+            reads test, scenario
     }
 }

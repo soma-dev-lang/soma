@@ -60,7 +60,7 @@ skeleton EscRelances {
         signal relancer_dues(h: Horodatage) -> Int
             ensures result >= 0
             writes message_de, derniere_a, nb_envois, actives_de
-            reads dossier_de, destinataire_de, forme_de, emise_a, rapprochement_de, texte_de, relance
+            reads destinataire_de, rapprochement_de, texte_de, relance
             moves emise -> acquittee, emise -> echouee
             calls ApiPasserelle.acquitte, ApiPasserelle.echoue, ApiPasserelle.notifier
         // Arrête les relances en attente du dossier (accusé, reprise, clôture, caducité). Renvoie

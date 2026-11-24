@@ -276,7 +276,7 @@ skeleton ManPlan {
         // conflit ⇒ annulation (cause recriblage). Renvoie "" si le plan reste, sinon la cause.
         // `par` "systeme" (ManVeille) ou "analyste". Refus : Inconnu, Habilitation.
         signal reexaminer(h: Horodatage, plan: String, par: String) -> String
-            reads fiche_de, fondement_de, cycle
+            reads fiche_de, cycle
             calls annuler, ManCriblage.fiche, ManCriblage.recribler, ApiRef.peut_manoeuvrer, ApiOperateurs.est_actif, ApiCoordination.arretee, ApiCoordination.designe, ApiCoordination.privilegie, ApiConjonctions.ouverts_de, ApiConjonctions.tca, ApiAcces.a_le_role
         // État du plan ; "inconnu" s'il n'a jamais été déclaré. Les états transitoires de la chaîne
         // d'approbation (recoupe, coordonne, habilite, localise, capable) ne sont jamais observés.

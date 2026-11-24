@@ -47,7 +47,7 @@ skeleton ConfIndicateur {
         // "conformite" ou "analyste" d'ORBITE, ou "systeme").
         signal calculer(h: Horodatage, publication: String, debut: Horodatage, fin: Horodatage, par: String) -> Int
             writes debut_de, fin_de, valeurs_de, masquees_de, calcule_par
-            calls ApiAcces.a_le_role, ConfNotation.repartition, ConfManquement.compter, ConfMesure.compter, ConfDemande.compter_etat, ConfVeille.operateurs_de_etat, ConfVeille.operateurs_suivis, ApiRef.etats_participants
+            calls ApiAcces.a_le_role, ConfNotation.repartition, ConfManquement.compter, ConfMesure.compter, ConfDemande.compter_etat, ConfVeille.operateurs_suivis, ApiRef.etats_participants
         // Vérifie (anonymat, cohérence avec le trimestre précédent) : calculee -> verifiee.
         // Renvoie "verifiee". Refus : Inconnu, EtatInvalide, Habilitation (par "conformite"
         // d'ORBITE), QuatreYeux (par ≠ calculateur, ApiAcces.quatre_yeux).

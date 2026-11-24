@@ -25,8 +25,8 @@ flesh RespFautes {
             let ce = ApiConjonctions.etat(r)
             require ce != "inconnu" else Inconnu "rapprochement {r} inconnu"
             require ce == "passe" || ce == "collision" else EtatInvalide "TCA de {r} non échu ({ce})"
-            let co = ApiCoordination.etat(r)
-            require ApiCoordination.arretee(r) || co == "arretee" || co == "close" else Insuffisant "coordination jamais arrêtée sur {r}"
+            let ev = ApiCoordination.verrou(r)
+            require ev == "tenu" || ev == "solde" else Insuffisant "aucune désignation arrêtée et tenue sur {r}"
             require ApiCoordination.designe(r, "systeme") == objet else Insuffisant "{objet} n'était pas l'objet désigné sur {r}"
             let plan = ApiManoeuvres.plan_de(r)
             if plan != "" {
@@ -54,6 +54,8 @@ flesh RespFautes {
             let lr = rapprochement_de.get(id) ?? ""
             let cj = ApiConjonctions.etat(Rapprochement(lr))
             require cj == "passe" || cj == "collision" else EtatInvalide "TCA de {lr} non échu ({cj})"
+            let vr = ApiCoordination.verrou(Rapprochement(lr))
+            require vr == "tenu" || vr == "solde" else Insuffisant "aucune désignation arrêtée et tenue sur {lr}"
             transition(id, "aucune", "designation_presumee")
         } else {
             transition(id, "aucune", "presumee")

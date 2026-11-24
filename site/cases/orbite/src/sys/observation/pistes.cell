@@ -81,7 +81,7 @@ skeleton ObsPistes {
             reads orbite_de, regime_de
             writes origine_de, objet_de, decide_par
             moves confirmee -> cataloguee when ObsOrbites.validee via orbite_de
-            calls ObsOrbites.etat, ApiRef.cataloguer, ApiRef.orbite, ApiRef.etat_de, ApiRef.attribuer, ApiEvenements.evenement_de, ObsMesures.rattacher, ObsTaches.demander, ApiAcces.a_le_role, ApiAcces.quatre_yeux, Journal.noter
+            calls ObsOrbites.etat, ApiRef.cataloguer, ApiRef.orbite, ApiRef.etat_de, ApiRef.attribuer, ObsMesures.rattacher, ObsTaches.demander, ApiAcces.a_le_role, ApiAcces.quatre_yeux, Journal.noter
         // Rattache une piste confirmée à un objet déjà catalogué (perdu, lancé récemment :
         // ApiLancements.origine, fragment d'un évènement : ApiEvenements.evenement_de). Rattache les
         // mesures (ObsMesures.rattacher).

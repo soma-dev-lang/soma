@@ -49,7 +49,7 @@ skeleton ConjRenforcement {
         // fin_demandee -> leve (retour à la cadence normale). Renvoie l'état atteint.
         // Rôle : "systeme". Refus : Inconnu, Ferme (épisode levé ou abandonné), Habilitation.
         signal surveiller(h: Horodatage, episode: String, par: String) -> String
-            reads regime_de, cause_de, campagne_de, fin_de
+            reads regime_de, campagne_de, fin_de
             writes clos_le, actif_de
             moves actif -> fin_demandee, fin_demandee -> actif, fin_demandee -> leve when ConjCampagne.terminee via campagne_de
             calls ConjCampagne.etat, ApiMeteo.renforce, ApiEvenements.nuage_actif, ApiAcces.a_le_role, Journal.noter

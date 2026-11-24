@@ -107,7 +107,7 @@ skeleton EscDossiers {
         // EtatInvalide (déjà accusé, reprise), Habilitation.
         signal accuser(h: Horodatage, r: Rapprochement, op: Org, par: String) -> String
             writes accuse, courant, cloture, historique
-            reads ouvert_a, rapprochement_de
+            reads ouvert_a
             moves e1 -> accusee, e2 -> accusee, e3 -> accusee, e4 -> accusee, e1 -> close, e2 -> close, e3 -> close, e4 -> close
             calls ApiAcces.agit_pour, ApiAcces.a_le_role, ApiRef.etat_de, ApiRef.org_de_etat, ApiCoordination.muets, ApiCoordination.decidee, EscRelances.arreter, EscStatistiques.compter_accuse, Journal.noter
         // Reprise par ORBITE : l'échéance finale est atteinte sans réponse de l'opérateur. Notifie
@@ -135,7 +135,7 @@ skeleton EscDossiers {
             writes courant, cloture, historique
             reads rapprochement_de, operateur_de
             moves e1 -> close, e2 -> close, e3 -> close, e4 -> close, accusee -> close, reprise -> close when EscVeille.couverte via rapprochement_de
-            calls ApiAcces.a_le_role, ApiCoordination.muets, ApiCoordination.decidee, EscVeille.couverte, EscRelances.arreter, Journal.noter
+            calls ApiAcces.a_le_role, ApiCoordination.muets, EscVeille.couverte, EscRelances.arreter, Journal.noter
         // Rend caduc un dossier dont le TCA est passé, dont le rapprochement est clos
         // (ApiConjonctions.etat ∈ {"resolu", "passe", "collision"}) ou retombé hors alerte avant
         // toute coordination ("detecte", "suivi" : la reprise n'y est plus permise). Un dossier en reprise devenu

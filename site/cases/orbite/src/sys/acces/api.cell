@@ -8,7 +8,7 @@ skeleton ApiAcces {
         // "superviseur", "conformite", "direction" ou "auditeur"), QuatreYeux (par ≠ personne).
         // Un rôle n'est EFFECTIF qu'une fois le rattachement confirmé par l'employeur.
         signal enregistrer(h: Horodatage, personne: String, employeur: Org, r: Role, par: String) -> Role
-            calls AccesPersonnes.enregistrer, AccesRattachements.ouvrir
+            calls AccesPersonnes.enregistrer
         // Rôle actuel ; "aucun" si inconnue, suspendue ou partie. "systeme" → "systeme".
         signal role_de(personne: String) -> Role
             calls AccesControle.role_de
@@ -53,7 +53,7 @@ skeleton ApiAcces {
         // facteur). Renvoie le jeton (opaque) ; seule l'empreinte du jeton est conservée.
         // Refus : Inconnu, Suspendu, Habilitation (facteur invalide), Plein.
         signal ouvrir_session(h: Horodatage, personne: String, facteur: String) -> String
-            calls AccesSessions.ouvrir, AccesJetons.emettre
+            calls AccesSessions.ouvrir
         // Personne titulaire d'un jeton de session valide à `h` ; "" si jeton inconnu, expiré ou
         // révoqué, ou personne inactive. Seul point d'authentification de la passerelle.
         signal authentifier(jeton: String, h: Horodatage) -> String
@@ -61,7 +61,7 @@ skeleton ApiAcces {
         // Ferme une session (par son titulaire, ou "exploitant" / "systeme"). Renvoie "fermee".
         // Refus : Inconnu, EtatInvalide, Habilitation.
         signal fermer_session(h: Horodatage, jeton: String, par: String) -> String
-            calls AccesSessions.fermer, AccesJetons.revoquer_session
+            calls AccesSessions.fermer
         // Nombre de personnes actives (rôle effectif) employées par l'organisation.
         signal actifs_de(org: Org) -> Int
             calls AccesControle.actifs_de

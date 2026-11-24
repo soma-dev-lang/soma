@@ -163,7 +163,7 @@ skeleton EphDepot {
         // Refus : Inconnu (objet sans dépôt), MotifRequis, Habilitation.
         signal invalider_depuis(h: Horodatage, objet: Objet, depuis: Horodatage, nature: EphNatureInvalidation, motif: String, par: String) -> Int
             writes fin_le, motif_fin
-            reads objet_de, epoque, operateur_de
+            reads epoque, operateur_de
             moves validee -> invalidee, remplacee -> invalidee, perimee -> invalidee
             calls EphSuivi.perdre, EphBilan.compter, EphHistorique.historique, ApiConjonctions.ouverts_de, ApiConjonctions.niveau, ApiPasserelle.notifier, ApiAcces.a_le_role, ApiAcces.agit_pour, Journal.noter
 

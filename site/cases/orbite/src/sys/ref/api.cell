@@ -33,7 +33,7 @@ skeleton ApiRef {
         // (débris d'origine inconnue) a pour propriétaire provisoire ORBITE (ApiRef.orbite()) et
         // pour État d'immatriculation "" — jamais "inconnu".
         signal cataloguer(h: Horodatage, nature: NatureObjet, proprietaire: Org, etat: Etat, regime: Regime, propulsion: Propulsion, masse: Masse, par: String) -> Objet
-            calls RefObjet.cataloguer, RefRegistre.ouvrir
+            calls RefObjet.cataloguer
         // Cycle de vie d'un objet : "catalogue", "en_service", "hors_service", "rentre",
         // "fragmente", "cimetiere", "retire" ; "inconnu" s'il n'est pas catalogué.
         signal etat_objet(objet: Objet) -> String
@@ -68,7 +68,7 @@ skeleton ApiRef {
         // propulsion retenue. Refus : Inconnu, Habilitation (le "dynamicien" du propriétaire, ou
         // "analyste").
         signal declarer_propulsion(h: Horodatage, objet: Objet, p: Propulsion, motif: String, par: String) -> Propulsion
-            calls RefObjet.declarer_propulsion, RefObjet.rouvrir_designations
+            calls RefObjet.declarer_propulsion
         // Vrai si l'objet est habité (station) : priorité absolue.
         signal habite(objet: Objet) -> Bool
             calls RefObjet.habite
@@ -95,13 +95,13 @@ skeleton ApiRef {
         // "etat_objet", "nature") telle qu'elle était à `h` (propriété 6 : rejouer une décision).
         // Refus : Inconnu (objet ou champ, ou objet pas encore catalogué à h).
         signal valeur_au(objet: Objet, champ: String, h: Horodatage) -> String
-            calls RefObjet.valeur_au, RefHistorique.valeur_au
+            calls RefObjet.valeur_au
         // Attribue un objet non attribué (propriétaire provisoire ORBITE) à son propriétaire et à
         // son État d'immatriculation, quand l'observation ou un lancement l'a identifié.
         // Renvoie le propriétaire. Refus : Inconnu, EtatInvalide (déjà attribué), Incoherent, Plein, Habilitation
         // ("analyste"), QuatreYeux (valideur "superviseur").
         signal attribuer(h: Horodatage, objet: Objet, proprietaire: Org, etat: Etat, par: String, valideur: String) -> Org
-            calls RefObjet.attribuer, RefRegistre.requalifier
+            calls RefObjet.attribuer
         // Inscrit l'objet au registre de l'État d'immatriculation (Convention de 1975) avec son
         // numéro national. Renvoie l'état de l'entrée. Refus : Inconnu, Existe, Doublon (numéro déjà
         // attribué), MotifRequis, EtatInvalide, Habilitation ("autorite" de l'État d'immatriculation, ou "systeme").
@@ -124,6 +124,6 @@ skeleton ApiRef {
         // ref ne lit l'horloge lui-même. Renvoie le nombre d'objets dont l'état a changé.
         // Refus : Habilitation (par "systeme").
         signal balayer(h: Horodatage, par: String) -> Int
-            calls RefBalayage.balayer, RefRegistre.constater_retards, RefCession.balayer, RefModification.balayer
+            calls RefBalayage.balayer
     }
 }

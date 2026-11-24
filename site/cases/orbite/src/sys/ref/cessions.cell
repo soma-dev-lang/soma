@@ -145,7 +145,7 @@ skeleton RefCession {
         // Habilitation : par "systeme". Refus : Habilitation.
         signal balayer(h: Horodatage, par: String) -> Int
             ensures result >= 0 && result <= 1000
-            reads en_cours, effets, echeances, cession
+            reads en_cours, effets, cession
             calls realiser, expirer, ApiAcces.a_le_role
         // Statut ; "inconnue" si jamais demandée.
         signal etat(cession: String) -> RefStatutCession

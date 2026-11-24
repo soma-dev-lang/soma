@@ -62,7 +62,7 @@ flesh CoordDecision {
         require rapprochement_de.get(d) != () else Inconnu "décision inconnue : {d}"
         let st = get_status(d) ?? "prise"
         let rv = rapprochement_de.get(d) ?? ""
-        require CoordVerrou.etat(Rapprochement(rv)) == "clos" else EtatInvalide "verrou de {rv} non clos : la décision {d} ne se solde pas"
+        require CoordVerrou.etat(Rapprochement(rv)) == "solde" else EtatInvalide "verrou de {rv} non soldé : la décision {d} ne se solde pas"
         if st == "en_vigueur" {
             transition(d, "en_vigueur", "soldee")
         } else if st == "abstention" {

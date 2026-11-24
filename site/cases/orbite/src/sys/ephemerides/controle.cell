@@ -57,7 +57,7 @@ skeleton EphControle {
         // Refus : Inconnu (objet sans dépôt courant, ou sans orbite observée), Habilitation.
         signal confronter(h: Horodatage, objet: Objet, par: String) -> Distance
             writes dernier_ecart, confronte_le, depot_confronte, nb_invalidations
-            calls EphSuivi.derniere, EphDepot.qualite_de, EphDepot.fiche, EphReglage.ecart_max, EphDepot.invalider_depuis, ApiObservation.ecart_declare, ApiConjonctions.ouverts_de, ApiConjonctions.niveau, ApiConformite.constater, ApiRef.proprietaire, ApiAcces.a_le_role, Journal.noter
+            calls EphSuivi.derniere, EphDepot.fiche, EphReglage.ecart_max, EphDepot.invalider_depuis, ApiObservation.ecart_declare, ApiConjonctions.ouverts_de, ApiConjonctions.niveau, ApiConformite.constater, ApiAcces.a_le_role, Journal.noter
 
         // Contrôle a posteriori du dépôt courant d'un objet, dans l'ordre :
         // 1. objet en anomalie non levée (ApiEvenements.en_anomalie) ⇒ invalidation "anomalie" ;

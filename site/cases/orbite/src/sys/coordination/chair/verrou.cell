@@ -57,10 +57,10 @@ flesh CoordVerrou {
     }
     on clore(h, r) {
         let st = get_status(r) ?? "libre"
-        require st != "clos" else EtatInvalide "verrou {r} déjà clos"
+        require st != "clos" && st != "solde" else EtatInvalide "verrou {r} déjà clos"
         if st == "tenu" {
             let d = decision_de.get(r) ?? ""
-            transition(r, "tenu", "clos")
+            transition(r, "tenu", "solde")
             let _ = CoordDecision.solder(h, d)
             let _ = CoordSuivi.rendre_caduc(h, d)
             let _ = Journal.noter(h, "coordination", "systeme", "verrou {r} clos : décision {d} soldée")
@@ -108,6 +108,6 @@ flesh CoordVerrou {
     }
     on decidee(r) {
         let st = get_status(r) ?? "libre"
-        return st == "tenu" || (st == "clos" && (decision_de.get(r) ?? "") != "")
+        return st == "tenu" || st == "solde"
     }
 }

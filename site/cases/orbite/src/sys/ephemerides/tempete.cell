@@ -48,6 +48,6 @@ skeleton EphTempete {
 
         // Épisode en cours ("" au calme) et son bilan : "episode|debut|perimes|appels".
         signal episode() -> String
-            reads episode_courant, debut, perimes, appels, reaction
+            reads episode_courant, debut, perimes, appels
     }
 }

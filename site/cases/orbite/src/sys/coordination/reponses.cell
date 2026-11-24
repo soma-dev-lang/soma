@@ -64,7 +64,7 @@ skeleton CoordReponse {
         signal enregistrer(h: Horodatage, r: Rapprochement, tour: Int, org: Org, sens: CoordSens, contre: Objet, motif: String, par: String) -> CoordEtatReponse
             requires tour >= 1
             writes repondu_le, sens_de, contre_de, motif_de, par_de
-            reads dossier_de, org_de, du_tour_de
+            reads dossier_de, du_tour_de
             moves attendue -> acceptee when CoordDossier.proposee || CoordDossier.desaccord via dossier_de, attendue -> refusee when CoordDossier.proposee || CoordDossier.desaccord via dossier_de
             calls CoordDossier.echeance, ApiEscalade.echelon, ApiEscalade.accuser, CoordDossier.etat
         // Relance les parties dont la réponse au tour courant est encore attendue, une fois

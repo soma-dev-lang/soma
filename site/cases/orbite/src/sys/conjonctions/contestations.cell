@@ -54,7 +54,7 @@ skeleton ConjContestation {
         // rejetee. Renvoie l'état atteint. Rôle : "systeme".
         // Refus : Inconnu, Ferme (contestation close), Habilitation.
         signal instruire(h: Horodatage, contestation: String, par: String) -> String
-            reads rapprochement_de, objet_de, depot_de, campagne_de
+            reads rapprochement_de, depot_de, campagne_de
             writes decision_de, en_cours_de
             moves deposee -> examinee, examinee -> acceptee when ConjCampagne.terminee via campagne_de, examinee -> rejetee, deposee -> rejetee
             calls ConjCampagne.etat, ConjRapprochement.fiche, ConjRapprochement.etat, ConjSeuils.seuil_suivi, ApiEphemerides.depot_valide, ApiAcces.a_le_role, Journal.noter

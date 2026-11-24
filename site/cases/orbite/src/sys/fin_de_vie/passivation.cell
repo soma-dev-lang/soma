@@ -51,7 +51,7 @@ skeleton FdvPassivation {
         // Refus : Inconnu, EtatInvalide, HorsBornes (organe non requis), Doublon, Habilitation.
         signal declarer_organe(h: Horodatage, objet: Objet, organe: FdvOrgane, par: String) -> Int
             writes faits_de, declaree_le
-            reads requis_de, commence_le
+            reads requis_de
             moves en_cours -> declaree
             calls ApiRef.proprietaire, ApiAcces.a_le_role, ApiAcces.agit_pour, Journal.noter
         // Vérifie la passivation (declaree -> verifiee) : au moins 24 h après la déclaration,

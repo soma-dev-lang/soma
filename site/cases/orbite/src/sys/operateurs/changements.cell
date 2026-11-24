@@ -77,7 +77,7 @@ skeleton OpChangements {
         // Insuffisant (avis manquant), Habilitation, QuatreYeux.
         signal approuver(h: Horodatage, id: String, par: String, valideur: String) -> String
             writes decision
-            reads operateur, avis_depart, avis_accueil, etat_depart, etat_accueil
+            reads operateur, avis_depart, avis_accueil, etat_accueil
             moves en_examen -> approuve when RefEtat.participant via etat_accueil
             calls ApiAcces.a_le_role, ApiAcces.quatre_yeux, ApiRef.etat_participant, ApiPasserelle.notifier, Journal.noter
         // ORBITE refuse (acquéreur exclu, sous sanctions, dossier incomplet). Renvoie "refuse".

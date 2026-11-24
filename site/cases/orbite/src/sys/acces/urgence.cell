@@ -69,7 +69,7 @@ skeleton AccesUrgences {
         // Fait expirer les urgences dont la fin est ≤ h et ferme les sessions de leurs
         // bénéficiaires. Renvoie leur nombre.
         signal echoir(h: Horodatage) -> Int
-            reads fin, beneficiaire
+            reads fin
             writes ouverte_de
             moves ouverte -> expiree
             calls AccesSessions.fermer_toutes, Journal.noter

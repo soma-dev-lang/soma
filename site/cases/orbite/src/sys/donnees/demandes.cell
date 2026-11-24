@@ -46,7 +46,7 @@ skeleton DonDemandes {
         // HorsBornes (durée), Doublon (demande non close du même demandeur sur l'objet), Plein, Habilitation.
         signal deposer(h: Horodatage, org: Org, objet: Objet, f: DonFinalite, duree_ms: Duree, par: String) -> String
             writes demandeur, objet_de, adhesion_de, finalite, deposee_le, duree
-            reads accordee_de, demande
+            reads demande
             calls ApiAcces.a_le_role, ApiAcces.agit_pour, ApiRef.etat_objet, DonAdhesions.adhesion_de, DonEmbargos.sous_embargo, DonControle.peut_recevoir, next_id, Journal.noter
         // Instruit la finalité. Recevable : la demande passe "instruite" (l'adhésion du dépôt doit
         // être encore active) et un consentement est sollicité du propriétaire

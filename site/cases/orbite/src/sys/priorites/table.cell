@@ -91,7 +91,7 @@ skeleton PrioTable {
         // "+ rang | critere | effet" ajoutée, "- …" retirée, "~ critere : rang a -> b" déplacée,
         // "preavis p : a -> b" modifié. Refus : Inconnu.
         signal differences(version: String, base: String) -> List<String>
-            reads critere_de, effet_de, rang_de, preavis_de
+            reads effet_de, rang_de, preavis_de
         // Préavis (ms) de la propulsion `p` dans `version` : PREAVIS_JAMAIS pour "aucune" ;
         // pour une version sans table (ou ""), les préavis par défaut.
         signal preavis_de_version(version: String, p: Propulsion) -> Duree

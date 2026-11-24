@@ -83,7 +83,7 @@ skeleton FdvRetrait {
             writes motif_de
             reads consentement_proprietaire_de, consentement_etat_de
             moves proposee -> accord_proprietaire when FdvConsentement.accorde via consentement_proprietaire_de, accord_proprietaire -> consentie when FdvConsentement.accorde via consentement_etat_de, proposee -> abandonnee, accord_proprietaire -> abandonnee, consentie -> abandonnee
-            calls FdvConsentement.vaut, FdvConsentement.etat, FdvConsentement.classer, ApiAcces.a_le_role, Journal.noter
+            calls FdvConsentement.etat, FdvConsentement.classer, ApiAcces.a_le_role, Journal.noter
         // Autorise la mission (consentie -> instruite -> autorisee, les deux arêtes dans le même
         // appel : "instruite" n'est jamais observé) : les deux consentements valent encore,
         // le servicer est actif (ApiOperateurs.est_actif sur servicer_de ; règle entre

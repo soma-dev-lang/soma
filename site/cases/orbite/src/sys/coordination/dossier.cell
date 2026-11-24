@@ -103,7 +103,7 @@ skeleton CoordDossier {
         // Incoherent, MotifRequis (refus sans motif).
         signal repondre(h: Horodatage, r: Rapprochement, reponse: CoordSens, contre: Objet, motif: String, par: String) -> CoordEtat
             writes propose_de, echeance_de, limite_de, tour_de, en_cours
-            reads objets_de, parties_de, defaut_de
+            reads objets_de, parties_de
             moves proposee -> accord, proposee -> desaccord, desaccord -> accord, desaccord -> arbitrage
             calls ApiAcces.a_le_role, ApiAcces.agit_pour, ApiAcces.employeur, ApiRef.peut_manoeuvrer, ApiRef.propulsion, ApiPriorites.preavis, ApiConjonctions.tca, ApiOperateurs.delai_reponse, ApiConjonctions.niveau, CoordReponse.enregistrer, CoordReponse.attendre, CoordReponse.toutes_acceptees, CoordReponse.rendre_caduques, CoordArbitrage.saisir, CoordEchange.noter, CoordEchange.notifier, arreter, Journal.noter
         // Arrêt sur accord (accord -> arretee) : pose le verrou sur la proposition acceptée
@@ -112,7 +112,7 @@ skeleton CoordDossier {
         // ou "grappe") et renvoie "arbitrage" : l'accord ne vaut rien sans verrou. Appelé par repondre seulement.
         // Renvoie l'état atteint. Refus : Inconnu, EtatInvalide (pas en accord).
         signal arreter(h: Horodatage, r: Rapprochement) -> CoordEtat
-            reads propose_de, en_cours, tour_de
+            reads propose_de, tour_de
             moves accord -> arretee when CoordVerrou.tenu, accord -> arbitrage
             calls CoordVerrou.poser, CoordArbitrage.saisir, CoordEchange.notifier, Journal.noter
         // Constate le silence passé l'échéance du tour (h > échéance) : les réponses encore
@@ -131,9 +131,9 @@ skeleton CoordDossier {
         // des muettes continue (elle informe, elle ne retient plus). `par` "systeme". Renvoie le
         // nombre de parties muettes. Refus : Inconnu, EtatInvalide, Delai (échéance non atteinte), Habilitation.
         signal constater_silence(h: Horodatage, r: Rapprochement, par: String) -> Int
-            reads echeance_de, limite_de, parties_de, tour_de, propose_de
+            reads echeance_de, limite_de, tour_de, propose_de
             moves proposee -> arbitrage, desaccord -> arbitrage, proposee -> accord
-            calls CoordReponse.constater_muettes, CoordReponse.du_tour, ApiRef.proprietaire, ApiRef.peut_manoeuvrer, arreter, ApiEscalade.reprise, CoordArbitrage.saisir, CoordEchange.notifier, ApiRef.orbite, ApiAcces.a_le_role, Journal.noter
+            calls CoordReponse.constater_muettes, CoordReponse.du_tour, ApiRef.proprietaire, ApiRef.peut_manoeuvrer, arreter, ApiEscalade.reprise, CoordArbitrage.saisir, ApiRef.orbite, ApiAcces.a_le_role, Journal.noter
         // Arbitrage d'ORBITE (désaccord, silence, accord sans verrou, rouverture tardive, ou
         // ouverture directe en arbitrage) : désigne `objet` (un des deux objets du rapprochement,
         // Incoherent sinon) ou "" pour décider de ne pas manœuvrer. proposee|desaccord ->

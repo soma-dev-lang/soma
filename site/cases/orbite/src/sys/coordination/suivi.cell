@@ -58,7 +58,7 @@ skeleton CoordSuivi {
             writes plan_de, constate_le
             reads rapprochement_de, objet_de, limite_de
             moves attente_plan -> plan_depose when CoordDecision.en_vigueur, attente_plan -> defaillant, plan_depose -> execute, plan_depose -> defaillant, execute -> verifie when ManPlan.verifie via plan_de, execute -> anomalie
-            calls ApiManoeuvres.plan_de, ApiManoeuvres.objet_de, ApiManoeuvres.motif_de, ApiManoeuvres.etat, ApiRef.proprietaire, ApiConjonctions.tca, ApiConjonctions.niveau, ApiEscalade.escalader, ApiConformite.constater, ApiAcces.a_le_role, CoordDossier.rouvrir, CoordEchange.notifier, Journal.noter, CoordDecision.etat
+            calls ApiManoeuvres.plan_de, ApiManoeuvres.objet_de, ApiManoeuvres.motif_de, ApiManoeuvres.etat, ApiRef.proprietaire, ApiConjonctions.tca, ApiEscalade.escalader, ApiConformite.constater, ApiAcces.a_le_role, CoordDossier.rouvrir, CoordEchange.notifier, Journal.noter, CoordDecision.etat
         // Rend le suivi caduc (attente_plan|plan_depose -> caduc) quand sa décision est levée
         // ou soldée ; un suivi execute continue jusqu'à la vérification. Appelé par
         // CoordVerrou.lever et CoordVerrou.clore. Renvoie l'état. Refus : Inconnu.

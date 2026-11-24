@@ -91,7 +91,7 @@ skeleton LancLancement {
         // [tir, tir], 0 pièce annoncée). Renvoie l'id.
         // Refus : Existe, Incoherent (tir > h), MotifRequis, Habilitation, QuatreYeux.
         signal enregistrer_non_notifie(h: Horodatage, lancement: String, op: Org, etat: Etat, tir: Horodatage, regime: Regime, motif: String, par: String, valideur: String) -> String
-            writes hors_avis, tir_de, vivants
+            writes hors_avis, tir_de
             moves notifie -> lance
             calls LancLancement.creer, LancCola.ouvrir, LancZones.ouvrir, LancZones.clore, ApiAcces.a_le_role, ApiAcces.quatre_yeux, ApiRef.org_de_etat, ApiConformite.constater, ApiPasserelle.notifier, Journal.noter
         // Prend acte d'un COLA conclu sur la fenêtre en cours (notifie -> crible). Appelé par

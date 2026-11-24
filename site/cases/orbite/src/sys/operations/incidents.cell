@@ -140,7 +140,7 @@ skeleton OpsIncident {
         // (par "direction" ou "conformite" d'ORBITE, exigé aussi par ApiResponsabilite.geler).
         signal geler_preuves(h: Horodatage, incident: String, par: String) -> String
             writes dossier
-            reads cycle, effet, effet_depuis, resolu_a
+            reads effet, effet_depuis, resolu_a
             calls ApiResponsabilite.geler, ApiAcces.a_le_role, Journal.noter
         // Clôt l'incident : post-mortem publié ou dispensé, cellule de crise levée, et — effet
         // "faussees" — dossier de preuve ouvert. Renvoie "clos".

@@ -90,7 +90,7 @@ skeleton ConjMessage {
         // Messages envoye ou sans_reponse (au plus n) à relever ou escalader (ConjRonde.balayer).
         signal en_attente(h: Horodatage, n: Int) -> List<String>
             requires n > 0 && n <= 1000
-            reads message, echeance_de, prepare_le
+            reads message, prepare_le
         // Messages d'un rapprochement, du plus ancien au plus récent.
         signal de(r: Rapprochement) -> List<String>
             reads par_rapprochement

@@ -146,6 +146,10 @@ flesh ApiCoordination {
         return "arretee"
     }
     on arretee(r) { return !contains(to_string(r), "NONARR") }
+    on verrou(r) {
+        if contains(to_string(r), "NONARR") { return "libre" }
+        return "solde"
+    }
     on designe(r, par) {
         let s = to_string(r)
         if contains(s, "NONARR") { return Objet("") }

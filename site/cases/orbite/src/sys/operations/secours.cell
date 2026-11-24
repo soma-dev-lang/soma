@@ -56,14 +56,14 @@ skeleton OpsBascule {
         signal demander(h: Horodatage, b: String, incident: String, par: String) -> String
             writes crise_de, demandeur, demandee_a
             reads site_actif, transition
-            calls OpsCrise.active_pour, OpsCrise.etat, ApiAcces.a_le_role, Journal.noter
+            calls OpsCrise.etat, ApiAcces.a_le_role, Journal.noter
         // Autorise la bascule (crise toujours active). Renvoie "autorisee".
         // Refus : Inconnu, EtatInvalide, Habilitation (par "direction"), QuatreYeux (valideur
         // "superviseur", ≠ par et ≠ demandeur).
         signal autoriser(h: Horodatage, b: String, par: String, valideur: String) -> String
             reads crise_de, demandeur
             moves demandee -> autorisee when OpsCrise.active via crise_de
-            calls OpsCrise.active_pour, OpsCrise.etat, ApiAcces.a_le_role, ApiAcces.quatre_yeux, Journal.noter
+            calls OpsCrise.etat, ApiAcces.a_le_role, ApiAcces.quatre_yeux, Journal.noter
         // Renonce à une bascule non lancée. Renvoie "annulee".
         // Refus : Inconnu, EtatInvalide, MotifRequis, Habilitation (par "direction" ou le demandeur).
         signal annuler(h: Horodatage, b: String, motif: String, par: String) -> String

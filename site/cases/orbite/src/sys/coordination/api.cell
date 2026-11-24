@@ -29,6 +29,10 @@ skeleton ApiCoordination {
         // Vrai si la coordination a abouti (accord ou arbitrage) sur une désignation d'objet.
         signal arretee(r: Rapprochement) -> Bool
             calls CoordVerrou.arretee
+        // État du verrou de désignation du rapprochement ("libre", "tenu", "leve", "clos", "solde" :
+        // "solde" dit que le verrou était tenu à la clôture).
+        signal verrou(r: Rapprochement) -> String
+            calls CoordVerrou.etat
         // Arbitrage par ORBITE en cas de désaccord ou de silence passé l'échéance : désigne un
         // objet (qui doit pouvoir manœuvrer) ou décide de ne pas manœuvrer ("").
         // Refus : Inconnu, EtatInvalide, NonEligible (objet incapable de manœuvrer), MotifRequis,

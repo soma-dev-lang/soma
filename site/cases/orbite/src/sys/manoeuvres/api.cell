@@ -8,7 +8,7 @@ skeleton ApiManoeuvres {
         // ou évitement sur un rapprochement dont l'objet n'est pas le désigné), Habilitation
         // ("dynamicien" du propriétaire).
         signal declarer(h: Horodatage, plan: String, objet: Objet, r: Rapprochement, motif: String, debut: Horodatage, dv: DeltaV, par: String) -> String
-            calls ManPlan.declarer, ManCriblage.cribler, ManPlan.statuer, ManPlan.approuver, ManPlan.rejeter
+            calls ManPlan.declarer, ManCriblage.cribler, ManPlan.statuer, ManPlan.approuver
         // Cycle de vie : "declare", "crible", "approuve", "rejete", "execute", "verifie",
         // "anomalie", "annule" ; "inconnu".
         signal etat(plan: String) -> String

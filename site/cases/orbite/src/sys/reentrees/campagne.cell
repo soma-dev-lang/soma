@@ -142,7 +142,7 @@ skeleton ReeCampagne {
         // ApiObservation.suivi vrai et pas de mesure contraire — à trancher par l'analyste),
         // Habilitation, QuatreYeux.
         signal constater(h: Horodatage, objet: Objet, instant: Horodatage, lieu: String, debris_au_sol: Bool, par: String, valideur: String) -> String
-            reads courante, objet_de, fenetre_debut, fenetre_fin
+            reads courante, fenetre_debut, fenetre_fin
             moves imminente -> rentree, echue -> rentree
             calls ApiAcces.a_le_role, ApiAcces.quatre_yeux, ApiObservation.suivi, ApiRef.changer_etat_objet, ApiConjonctions.ouverts_de, ApiConjonctions.resoudre, ReeConstat.enregistrer, ReeRisque.figer, ReeControlee.zone_de, ReeControlee.constater_rentree, ReeNotification.clore, Journal.noter
 
@@ -154,7 +154,7 @@ skeleton ReeCampagne {
         // contrôlée approuvée ou exécutée : ReeControlee.actif — l'annuler d'abord), Habilitation, QuatreYeux.
         signal annuler(h: Horodatage, campagne: String, motif: String, par: String, valideur: String) -> ReeEtatCampagne
             writes annulation
-            reads objet_de, courante
+            reads objet_de
             moves ouverte -> annulee, imminente -> annulee, echue -> annulee
             calls ApiAcces.a_le_role, ApiAcces.quatre_yeux, ReeControlee.actif, ReeRisque.figer, ReeNotification.clore, Journal.noter
 
@@ -172,7 +172,7 @@ skeleton ReeCampagne {
         // Renvoie le nombre d'objets (campagnes, notifications, constats, débris) dont l'état a changé.
         // Habilitation : par "systeme" (rôle d'ORBITE). Refus : Habilitation.
         signal balayer(h: Horodatage, par: String) -> Int
-            reads objet_de, courante, fenetre_fin, derniere_revision
+            reads courante, fenetre_fin, derniere_revision
             moves ouverte -> echue, imminente -> echue, rentree -> close when ReeConstat.sans_suite || ReeConstat.transmis
             calls ApiAcces.a_le_role, ApiObservation.suivi, ApiRef.orbite, ApiPasserelle.notifier, ReeNotification.relancer, ReeConstat.balayer, ReeConstat.etat, ReeDebris.balayer, Journal.noter
             ensures result >= 0

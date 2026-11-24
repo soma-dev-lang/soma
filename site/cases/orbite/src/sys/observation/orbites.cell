@@ -117,7 +117,7 @@ skeleton ObsOrbites {
         // objet jamais observé ne reste pas hors suivi. Renvoie le nombre de déterminations
         // périmées. Refus : Habilitation.
         signal perimer(h: Horodatage, par: String) -> Int
-            reads epoque_de, sujet_de
+            reads epoque_de
             writes courante, curseur
             moves validee -> perimee
             calls ApiRef.catalogue, ObsTaches.suivi_actif, ObsTaches.demander, Journal.noter

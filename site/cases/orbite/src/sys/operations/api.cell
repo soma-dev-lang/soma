@@ -4,7 +4,7 @@ skeleton ApiOperations {
         // Déclare un incident du système. Gravité 3 : incident majeur (cellule de crise,
         // information des États). Renvoie l'id. Refus : MotifRequis, Habilitation ("exploitant" ou "systeme").
         signal declarer_incident(h: Horodatage, incident: String, gravite: Gravite, sous_systeme: SousSysteme, description: String, par: String) -> String
-            calls OpsIncident.declarer, OpsCrise.convoquer, ApiAcces.a_le_role
+            calls OpsIncident.declarer, ApiAcces.a_le_role
         // Vrai si un incident majeur est en cours.
         signal incident_majeur() -> Bool
             calls OpsIncident.majeur_en_cours

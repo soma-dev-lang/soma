@@ -39,7 +39,7 @@ skeleton AccesDeparts {
         signal annoncer(h: Horodatage, personne: String, motif: AccesMotifDepart, effet_ms: Horodatage, par: String) -> String
             writes motif_de, effet, annonce_par
             moves aucun -> annonce
-            calls AccesPersonnes.etat, AccesPersonnes.employeur, AccesControle.a_le_role, AccesControle.agit_pour, ApiRef.orbite, Journal.noter, AccesPortees.genre_de
+            calls AccesPersonnes.etat, AccesPersonnes.employeur, AccesControle.a_le_role, AccesControle.agit_pour, Journal.noter, AccesPortees.genre_de
         // Renonce à un départ annoncé avant sa date d'effet. Mêmes rôles qu'annoncer (sauf la
         // personne elle-même). Renvoie "aucun". Refus : Inconnu, EtatInvalide, Echu (date
         // d'effet atteinte), Habilitation.

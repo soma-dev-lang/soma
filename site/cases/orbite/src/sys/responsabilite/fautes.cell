@@ -42,7 +42,7 @@ skeleton RespFautes {
         initial: aucune
         aucune -> presumee          // faits relevés dans le dossier (toute nature sauf designation_ignoree)
         aucune -> designation_presumee  // "designation_ignoree" : TCA échu (rapprochement passe ou collision)
-                                        // et coordination arrêtée un jour sur r (regles.toml)
+                                        // et désignation arrêtée un jour sur r : verrou tenu (regles.toml)
         presumee -> contradictoire  // opérateur notifié, délai de réponse ouvert
         designation_presumee -> contradictoire
         presumee -> ecartee         // classement avant contradictoire
@@ -67,7 +67,7 @@ skeleton RespFautes {
         signal presumer(h: Horodatage, dossier: String, objet: Objet, r: Rapprochement, nature: RespNatureFaute, motif: String, par: String) -> String
             writes dossier_de, op_de, objet_de, rapprochement_de, nature_de, presumee_le, motif_de, fautes_du_dossier
             moves aucune -> presumee, aucune -> designation_presumee when ConjRapprochement.passe || ConjRapprochement.collision via rapprochement_de
-            calls ApiAcces.a_le_role, RespDossiers.etat, RespDossiers.cibles, ApiRef.proprietaire, ApiConjonctions.tca, ApiConjonctions.etat, ApiCoordination.arretee, ApiCoordination.etat, ApiCoordination.designe, ApiManoeuvres.plan_de, ApiManoeuvres.etat, ApiObservation.manoeuvre_detectee, ApiEphemerides.fraiche, ApiEscalade.echelon, ApiFinDeVie.en_retard, Journal.noter, next_id
+            calls ApiAcces.a_le_role, RespDossiers.etat, RespDossiers.cibles, ApiRef.proprietaire, ApiConjonctions.tca, ApiConjonctions.etat, ApiCoordination.designe, ApiManoeuvres.plan_de, ApiManoeuvres.etat, ApiObservation.manoeuvre_detectee, ApiEphemerides.fraiche, ApiEscalade.echelon, ApiFinDeVie.en_retard, Journal.noter, next_id, ApiCoordination.verrou
         // Ouvre le contradictoire : notifie l'opérateur (ApiPasserelle.notifier, r = le
         // rapprochement de la faute, urgence 2) avec la
         // liste des pièces. Renvoie l'échéance de réponse (h + DELAI_CONTRADICTOIRE). Par

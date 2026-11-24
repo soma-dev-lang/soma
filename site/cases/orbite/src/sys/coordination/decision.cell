@@ -78,7 +78,7 @@ skeleton CoordDecision {
         signal solder(h: Horodatage, d: String) -> CoordEtatDecision
             writes fin_le, motif_fin_de
             reads rapprochement_de
-            moves en_vigueur -> soldee when CoordVerrou.clos via rapprochement_de, abstention -> soldee when CoordVerrou.clos via rapprochement_de
+            moves en_vigueur -> soldee when CoordVerrou.solde via rapprochement_de, abstention -> soldee when CoordVerrou.solde via rapprochement_de
             calls CoordVerrou.etat
         // Purge le fondement d'une décision levée ou soldée (levee|soldee -> purgee) après
         // CONSERVATION, sous la purge `purge` autorisée par responsabilite (RespPurges, cible
