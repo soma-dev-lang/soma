@@ -317,6 +317,9 @@ struct Engine<'a> {
     props: Vec<Property>,
     /// property index → the entry that broke it (filled once)
     broken: BTreeMap<usize, String>,
+    /// property index → where the move that broke it is written: the cell
+    /// (by address) and the position of the `transition`
+    site: BTreeMap<usize, (usize, usize)>,
     unsupported: Option<String>,
     /// (handler names, cell names) of the program: what a string's `{…}` is read with
     names: (HashSet<String>, HashSet<String>),
@@ -445,7 +448,7 @@ struct Slot {
 /// What a handler gives from one state (see `Engine::call`).
 struct Summary { /// it leaves the state as it was
     same: bool, /// how many calls deep it went
-    height: usize, ends: Vec<Exec>, moves: usize, broke: Vec<usize>, unsupported: Option<String> }
+    height: usize, ends: Vec<Exec>, moves: usize, broke: Vec<(usize, (usize, usize))>, unsupported: Option<String> }
 
 /// What `block` needs of a statement, whatever state it is run from.
 struct StmtFacts {
@@ -923,7 +926,7 @@ impl<'a> Engine<'a> {
                     let met = if !p.now.is_empty() {
                         p.now.iter().all(|(om, _)| p.now.iter().any(|(mm, st)| mm == om && next.st.cur[*mm] as usize == *st))
                     } else if p.all { p.needs.iter().all(|b| next.st.seen & (1 << b) != 0) } else { p.needs.iter().any(|b| next.st.seen & (1 << b) != 0) };
-                    if !met { self.broken.insert(i, entry.to_string()); }
+                    if !met { self.broken.insert(i, entry.to_string()); self.site.insert(i, (frame.cell as *const CellDef as usize, id.span.start)); }
                 }
                 // the edge's effect runs with the transition
                 let mut after = Set::new();
@@ -1073,7 +1076,7 @@ impl<'a> Engine<'a> {
                         height,
                         ends,
                         moves: self.moves - moves,
-                        broke: if self.broken.len() > broken { self.props.iter().enumerate().map(|(i, _)| i).filter(|i| self.broken.contains_key(i)).collect() } else { Vec::new() },
+                        broke: if self.broken.len() > broken { self.site.iter().map(|(i, at)| (*i, *at)).collect() } else { Vec::new() },
                         unsupported: if unsupported { self.unsupported.clone() } else { None },
                     });
                     let mut slot = slot.borrow_mut();
@@ -1082,7 +1085,7 @@ impl<'a> Engine<'a> {
                 }
             };
             self.moves += summary.moves;
-            for i in &summary.broke { self.broken.entry(*i).or_insert_with(|| entry.to_string()); }
+            for (i, at) in &summary.broke { self.broken.entry(*i).or_insert_with(|| entry.to_string()); self.site.entry(*i).or_insert(*at); }
             if let Some(why) = &summary.unsupported { self.unsupported.get_or_insert_with(|| why.clone()); }
             same.push(summary.same);
             if summary.same { continue; }
@@ -2363,7 +2366,7 @@ fn attempt(exposed: &Program, cells: &[&CellDef], group: &[&Spec], cone: bool, s
             }
         }
         let prune = if sliced.is_empty() { None } else { Some(touching(cells, &machines.iter().map(|m| m.owner).collect())) };
-        let mut engine = Engine { cells: cells.to_vec(), machines, sliced: sliced.clone(), prune, watched, props, broken: BTreeMap::new(), unsupported: None, names: super::desugar::program_names(exposed), link: link.cloned(), secondary: secondary.clone(), moves: 0, forced: false, variants: variant_names(exposed), top: exposed.cells.iter().map(|c| &c.node as *const CellDef as usize).collect(), parent_of: {
+        let mut engine = Engine { cells: cells.to_vec(), machines, sliced: sliced.clone(), prune, watched, props, broken: BTreeMap::new(), site: BTreeMap::new(), unsupported: None, names: super::desugar::program_names(exposed), link: link.cloned(), secondary: secondary.clone(), moves: 0, forced: false, variants: variant_names(exposed), top: exposed.cells.iter().map(|c| &c.node as *const CellDef as usize).collect(), parent_of: {
             fn walk(c: &CellDef, out: &mut HashMap<usize, usize>) {
                 for s in &c.sections { if let Section::Interior(i) = &s.node { for x in &i.cells { out.insert(&x.node as *const CellDef as usize, c as *const CellDef as usize); walk(&x.node, out); } } }
             }
@@ -2426,8 +2429,9 @@ fn attempt(exposed: &Program, cells: &[&CellDef], group: &[&Spec], cone: bool, s
                 while let Some((prev, by)) = from.get(&cur) { steps.push(by.clone()); cur = prev.clone(); }
                 steps.reverse();
                 let show = |a: &Abs| a.cur.iter().take(engine.machines.len()).enumerate().map(|(m, s)| format!("{}={}", engine.machines[m].cell, engine.machines[m].states[*s as usize])).collect::<Vec<_>>().join(", ");
+                let moved = engine.site.get(&i).map(|at| engine.where_moved(p, *at, entry)).unwrap_or_default();
                 out.push(VerifyCheck::Fail(
-                    format!("{}: a run of the program's handlers enters `{}` without it (from {}){}", p.label, engine.machines[p.target.0].states[p.target.1], show(at), assumed),
+                    format!("{}: a run of the program's handlers enters `{}` without it (from {}){}{}", p.label, engine.machines[p.target.0].states[p.target.1], show(at), assumed, moved),
                     Some(steps)));
             } else if refused {
                 out.push(VerifyCheck::Fail(format!("{}: refused — more than {} product states over {} (the search is exhaustive or it is not a proof)", p.label, LIMIT, shape), None));
@@ -2618,7 +2622,107 @@ pub fn check(program: &Program, specs: &[Spec]) -> Vec<super::verify::VerifyResu
     vec![result]
 }
 
+/// The handlers (`Cell.handler`, by cell address) a body may run, by name:
+/// `Cell.h(…)` is that handler, a bare `h(…)` the cell's own or any cell's,
+/// a method on a value or an `emit` every handler of that name. `None`: it
+/// runs something that is not named here (`delegate`, a pipe, a waiting task).
+fn named_calls<'c>(cells: &[&'c CellDef], own: &'c CellDef, body: &[Spanned<Statement>]) -> Option<Vec<(&'c CellDef, &'c OnSection)>> {
+    fn handler<'c>(cell: &'c CellDef, name: &str) -> Option<&'c OnSection> {
+        cell.sections.iter().find_map(|s| match &s.node { Section::OnSignal(on) if on.signal_name == name => Some(on), _ => None })
+    }
+    let slots = super::frame::slots_of(own);
+    let mut out: Vec<(&'c CellDef, &'c OnSection)> = Vec::new();
+    let mut unknown = false;
+    let any = |name: &str, out: &mut Vec<(&'c CellDef, &'c OnSection)>| for c in cells { if let Some(on) = handler(c, name) { out.push((*c, on)); } };
+    let one = |target: &str, method: &str, out: &mut Vec<(&'c CellDef, &'c OnSection)>| {
+        if slots.contains(target) { return; }
+        match cells.iter().filter(|c| c.name == target).collect::<Vec<_>>().as_slice() {
+            [] => any(method, out),
+            named => for c in named { if let Some(on) = handler(c, method) { out.push((**c, on)); } },
+        }
+    };
+    super::literals::for_each_stmt_deep(body, &mut |st| match st {
+        Statement::Emit { signal_name, .. } => any(signal_name, &mut out),
+        Statement::MethodCall { target, method, .. } => one(target, method, &mut out),
+        _ => {}
+    });
+    super::literals::for_each_expr(body, &mut |e| match e {
+        Expr::FnCall { name, .. } => match name.as_str() {
+            "delegate" | "vote" | "deliver" | "resume" | "horde" => unknown = true,
+            _ => match handler(own, name) { Some(on) => out.push((own, on)), None => any(name, &mut out) },
+        },
+        Expr::MethodCall { target, method, .. } => match &target.node {
+            Expr::Ident(t) => one(t, method, &mut out),
+            _ => any(method, &mut out),
+        },
+        Expr::Pipe { .. } => unknown = true,
+        // a string's `{…}` may call anything: every handler a word of it names
+        Expr::Literal(Literal::String(t)) => for seg in super::desugar::segments(t) {
+            for word in seg.split(|c: char| !c.is_alphanumeric() && c != '_') { if !word.is_empty() { any(word, &mut out); } }
+        },
+        _ => {}
+    });
+    if unknown { None } else { Some(out) }
+}
+
 impl<'a> Engine<'a> {
+    /// The handlers `body` (of `cell`) runs that read the state of machine
+    /// `m` — `get_status`, `has_state`, `valid_transitions` in its cell —
+    /// through any number of calls. `None`: what it runs is not all named.
+    fn readers_of(&self, m: usize, cell: &'a CellDef, body: &'a [Spanned<Statement>]) -> Option<BTreeSet<String>> {
+        let mut found: BTreeSet<String> = BTreeSet::new();
+        let mut seen: HashSet<usize> = HashSet::new();
+        let mut todo: Vec<(&'a CellDef, &'a [Spanned<Statement>], Option<&'a str>)> = vec![(cell, body, None)];
+        while let Some((c, b, name)) = todo.pop() {
+            if self.machines[m].owner == c as *const CellDef as usize {
+                let mut reads = false;
+                super::literals::for_each_expr(b, &mut |e| if let Expr::FnCall { name, .. } = e { if matches!(name.as_str(), "get_status" | "has_state" | "valid_transitions") { reads = true; } });
+                if reads { found.insert(match name { Some(n) => format!("{}.{}", c.name, n), None => c.name.clone() }); }
+            }
+            for (to, on) in named_calls(&self.cells, c, b)? {
+                if seen.insert(on as *const OnSection as usize) { todo.push((to, &on.body, Some(&on.signal_name))); }
+            }
+        }
+        Some(found)
+    }
+
+    /// What is said of the move that broke `p`, written at `at` (cell, position):
+    /// the handler it is in, and whether that handler — and the entry the run
+    /// came in by — read the state of the machines `p` requires.
+    fn where_moved(&self, p: &Property, at: (usize, usize), entry: &str) -> String {
+        let Some(cell) = self.cells.iter().copied().find(|c| *c as *const CellDef as usize == at.0) else { return String::new() };
+        let Some((label, body)) = cell.sections.iter().filter(|s| s.span.start <= at.1 && at.1 < s.span.end).find_map(|s| match &s.node {
+            Section::OnSignal(on) => Some((format!("{}.{}", cell.name, on.signal_name), &on.body)),
+            Section::Every(e) | Section::After(e) => Some((format!("{} (a timer)", cell.name), &e.body)),
+            _ => None,
+        }) else { return String::new() };
+        let mut required: Vec<usize> = if p.now.is_empty() { self.watched.iter().filter(|(_, b)| p.needs.contains(b)).map(|((m, _), _)| *m).collect() } else { p.now.iter().map(|(m, _)| *m).collect() };
+        required.sort();
+        required.dedup();
+        required.retain(|m| *m != p.target.0);
+        let names = required.iter().map(|m| format!("`{}`", self.machines[*m].cell)).collect::<Vec<_>>().join(", ");
+        let said = format!(" — the move is made in `{}`", label);
+        if required.is_empty() { return said; }
+        let mut readers: BTreeSet<String> = BTreeSet::new();
+        for m in &required { match self.readers_of(*m, cell, body) { Some(r) => readers.extend(r), None => return said } }
+        if !readers.is_empty() {
+            return format!("{}, which reads the state of {} (in {}): that read does not decide this move", said, names, readers.iter().map(|r| format!("`{}`", r)).collect::<Vec<_>>().join(", "));
+        }
+        // the entry the run came in by: the same handler, or one that calls it
+        let came: Option<(&CellDef, &[Spanned<Statement>])> = self.cells.iter().copied().find_map(|c| c.sections.iter().enumerate().find_map(|(i, s)| match &s.node {
+            Section::OnSignal(on) if format!("{}.{}", c.name, on.signal_name) == entry => Some((c, on.body.as_slice())),
+            Section::Every(e) | Section::After(e) if format!("{} timer #{}", c.name, i) == entry => Some((c, e.body.as_slice())),
+            _ => None,
+        }));
+        let above: Option<BTreeSet<String>> = came.and_then(|(c, b)| { let mut all = BTreeSet::new(); for m in &required { all.extend(self.readers_of(*m, c, b)?); } Some(all) });
+        match above {
+            Some(r) if r.is_empty() && entry == label => format!("{}: nothing it runs reads the state of {} — no `require` asks for it", said, names),
+            Some(r) if r.is_empty() => format!("{}: nothing it runs reads the state of {}, and nothing `{}` runs does — no `require` asks for it", said, names, entry),
+            Some(r) => format!("{}, which reads nothing of the state of {} (a handler that calls it may: `{}` runs {}{})", said, names, entry, r.iter().take(3).map(|x| format!("`{}`", x)).collect::<Vec<_>>().join(", "), if r.len() > 3 { format!(" and {} more", r.len() - 3) } else { String::new() }),
+            None => format!("{}, which reads nothing of the state of {}", said, names),
+        }
+    }
+
     /// Every state a `[task]` body can stop in: each prefix of its work is
     /// committed where a step ends, and — since other invocations run
     /// between its steps — the rest then runs from whatever state the

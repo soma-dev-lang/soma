@@ -1,5 +1,9 @@
 # Changelog
 
+## Unreleased
+
+- **A `✗` between machines names the handler that makes the move, and what it reads.** The run shown ends at the entry it came in by — `Horloge timer #1  ← enters caduc here`, for a move made five calls below. Now the line says where the `transition` is written, and one of three things about the state the rule requires: nothing that handler runs reads it, nor anything the entry runs (`no require asks for it` — the rule is not checked by the code, and this is where the `require` goes); the handler reads nothing of it but its caller may; or the handler reads it and that read does not decide the move (a check that is too weak, made too early, or a form the search does not follow — `soma docs skeleton`). Read from the program's text, by name, towards more calls: "nothing reads it" is said only when no call the handler could make leads to a `get_status` of that cell. No verdict changes: on 230 programs with a rule between machines the output is the same but for this clause. On Orbite's `prod.cell`, the 94 runs divide into 13 never read, 18 read by a caller at most, 63 read and not decisive.
+
 ## 3.2.7 — 2026-11-24
 
 What reading the 228 ✗ of `verify` on Orbite's full program found: most were forms the prover did not read, and some are true. On `prod.cell`: 228 ✗ → 110, 3,846 ✓ → 3,964. Validation: 1,127 Rust tests, 118 CLI checks, 327 corpus programs, 1,280 numeric comparisons; `check` exits the same on the 1,855 tracked programs and `verify` prints the same on the 1,810 of them 3.2.4 finishes; no false proof on 1,510 random handlers.

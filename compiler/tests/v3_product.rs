@@ -789,3 +789,34 @@ fn a_require_on_the_link_names_the_instance_too() {
         assert_ne!(code, 0, "{name}: {out}");
     }
 }
+
+/// A `✗` names the handler that makes the move — not only the entry the run
+/// came in by — and says whether anything that handler runs reads the state
+/// the rule requires: what is never read is never checked, and that is where
+/// the `require` goes.
+#[test]
+fn a_failure_names_the_handler_that_moves_and_what_it_reads() {
+    // the move is made two calls below the entry, by a handler that reads nothing of Org
+    let never = LINKED.replace("        let e = Org.etat(o)\n", "").replace("        require e == \"inscrite\" else Non \"non\"\n", "")
+        .replace("cell Source {", "cell Guichet {\n    face { signal passer(source: String, h: Int) -> String }\n    on passer(source: String, h: Int) { return Source.activer(source, h) }\n}\ncell Source {");
+    let (out, code) = linked("site_never", &never);
+    assert!(out.contains("✗ entering Source.active while Org.inscrite"), "{out}");
+    assert!(out.contains("the move is made in `Source.activer`: nothing it runs reads the state of `Org`"), "{out}");
+    assert_ne!(code, 0);
+    // the entry reads it, the handler that moves does not: said of the handler only
+    let caller = never.replace("{ return Source.activer(source, h) }", "{ let vu = Org.etat(source)  return Source.activer(source, h) }");
+    let (out, _) = linked("site_caller", &caller);
+    assert!(out.contains("the move is made in `Source.activer`, which reads nothing of the state of `Org` (a handler that calls it may:"), "{out}");
+    // the handler reads it and the read does not decide the move
+    let (out, _) = linked("site_reads", &LINKED.replace("require e == \"inscrite\"", "require e != \"radiee\""));
+    assert!(out.contains("the move is made in `Source.activer`, which reads the state of `Org` (in `Org.etat`): that read does not decide this move"), "{out}");
+    assert!(!out.contains("nothing it runs reads"), "{out}");
+    // a proven rule says none of it
+    let (out, _) = linked("site_ok", LINKED);
+    assert!(!out.contains("the move is made in"), "{out}");
+    // nor does an open obligation: the handler it would name is a hole, read as its frame
+    let hole = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/skeleton_review/round4/v/v1");
+    let (out, _) = soma_in(&hole, &["verify", "app.cell"]);
+    assert!(out.contains("open obligation — before Pay.paid requires Approval.signed_off"), "{out}");
+    assert!(!out.contains("the move is made in"), "{out}");
+}

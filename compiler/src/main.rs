@@ -995,6 +995,11 @@ fn cmd_verify(files: &[PathBuf], json: bool, strict: bool) {
                             if let (checker::verify::VerifyCheck::Fail(msg, steps), checker::verify::VerifyCheck::Pass(_)) = (&*mc, pc) {
                                 // the run, in a line: the last call is the one to write (or to frame) so that it cannot
                                 let run = steps.as_ref().filter(|s| !s.is_empty()).map(|s| format!(" Run: {}.", s.iter().map(|x| x.split("  ←").next().unwrap_or(x).trim().to_string()).collect::<Vec<_>>().join(" → "))).unwrap_or_default();
+                                // (where the move is made and what it reads is said of a body: the modelled hole has none)
+                                let msg = match msg.find(" — the move is made in `") {
+                                    Some(at) => format!("{}{}", &msg[..at], msg[at..].find(" [in the rule's cone").map(|k| &msg[at + k..]).unwrap_or("")),
+                                    None => msg.clone(),
+                                };
                                 *mc = checker::verify::VerifyCheck::Warning(format!(
                                     "open obligation — {} — the bodies written so far respect it; a hole's frame allows this run.{} It is proven when the holes on the run have bodies that rule it out, or when their frames no longer allow it", msg, run));
                             }

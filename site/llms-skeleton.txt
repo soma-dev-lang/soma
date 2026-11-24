@@ -137,7 +137,11 @@ The frame, clause by clause (after the return type and any `requires` /
   to write there (`require Consult.is_done(c)` then `consult_of.set(id, c)`).
   A status is read through a getter (`on state(id) { if seen.get(id) == ()
   { return "unknown" }  return get_status(id) ?? "open" }`), not through
-  arithmetic on it.
+  arithmetic on it. A `✗` says where the move is made and what that
+  handler reads: `nothing it runs reads the state of Consult` — write the
+  `require` there; `reads the state of Consult (in Consult.state): that
+  read does not decide this move` — the check is too weak, comes before a
+  call that may move the machine, or is not in one of the forms above.
 - **A rule on an edge, in the frame**: `moves drafted -> delivered when
   Consult.done` (alternatives with `||`, another instance with
   `via consult_of`) says the edge is taken only while the other machine is

@@ -117,6 +117,8 @@ Finding 1 above is answered in part. The ✗ were of three kinds, and of two cau
 
 **Not known yet.** Of the 94 runs left: 8 end in a handler that never reads the required cell (7 handlers; 6 read, all of the kind above); 23 end in a handler that does read it, through a shape the prover still loses; 32 enter through another cell and 32 from a timer — a few read (`FdvPlan.clore` checks, and is still lost). 15 links are left (a key that is a local name of a parameter, two writers).
 
+**The 94, divided by `verify` itself (after 3.2.7).** Each `✗` now names the handler that makes the move and says what it reads of the required machine: 13 are never read (neither the handler nor the entry runs a `get_status` of that cell: the code does not check the rule), 18 are read by a caller at most (the timer runs everything), 63 are read and the read does not decide the move. Replaying the run in the interpreter to show an execution was weighed and not built: 55 of the 94 runs go through a link and 42 through the timer, about 17 are plain calls a blind search for arguments could try.
+
 **Decision D8 — a handler only another handler may call.** These handlers say "called by X alone" in a comment. Soma has no way to state it, so `verify` must take them as entry points, and it is right to fail them.
 - Option A: nothing; such a handler checks its own rule (a `require` reading the other machine), as the note of `verify` already says.
 - Option B: a property on the signal (`[internal]`, or `called_by X.f`) that `check` enforces (no route, no call from elsewhere) and that removes the handler from the entry points of the search.
