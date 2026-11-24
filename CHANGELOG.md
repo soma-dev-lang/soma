@@ -1,5 +1,14 @@
 # Changelog
 
+## Unreleased
+
+Reading the 63 `✗` of Orbite that said "that read does not decide this move": three forms the search lost, and two rules the code does not keep. `verify prod.cell`: 97 ✗ → 82. No verdict moves on the 185 other programs with a rule between machines.
+
+- **A text chosen from a status.** `let to = if e == "a" || e == "b" { "x" } else if e == "c" { "y" } else { "" }`, then `require to != ""`, then `if to == "x" { transition(…) } else { transition(…) }`: `to == "x"` is read as the condition `"x"` was chosen under — a comparison of a status, or a predicate of the other cell (`if Gate.acked(m) { "closed" } …`) — and inside the branches, and past the `require`, the arms `to` is known not to be are left out. Kept until a statement may move a machine, or the variable or one its conditions read is assigned.
+- **A text the handler refused is not what the getter answered.** A getter that answers `"unknown"` for an id it has no entry of may have answered it whatever the state. Past `require e != "unknown"`, past `require e == "a" || e == "b"`, in the `else` of `if e == "unknown"`, on the right of `e != "unknown" && …`, it did not: the state alone decides. Before, `if e == "a" { return }` let through the instances in state `a`, as read `"unknown"`.
+- **A predicate that holds the status in a variable.** `on failed(id) { let st = get_status(id) ?? "queued"  return st == "lost" || st == "escalated" }` is read as the comparison it returns.
+- **Outside a cone, a status held in a variable outlives the calls that can move no machine** (a getter, a predicate, the journal) — as it already did inside one.
+
 ## 3.2.8 — 2026-11-24
 
 What a `✗` between machines says, and eleven handlers of Orbite that now read the machine their rule names. Validation: 1,128 Rust tests, 118 CLI checks, 327 corpus programs, 1,280 numeric comparisons; `verify` prints the same on 230 programs with a rule between machines but for the clause added.

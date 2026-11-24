@@ -137,7 +137,10 @@ The frame, clause by clause (after the return type and any `requires` /
   to write there (`require Consult.is_done(c)` then `consult_of.set(id, c)`).
   A status is read through a getter (`on state(id) { if seen.get(id) == ()
   { return "unknown" }  return get_status(id) ?? "open" }`), not through
-  arithmetic on it. A `✗` says where the move is made and what that
+  arithmetic on it. A text chosen from a status is followed (`let to = if
+  e == "a" { "x" } else { "" }`, `require to != ""`, `if to == "x"`), and a
+  text the getter gives for an unknown id is ruled out once the handler
+  refuses it (`require e != "unknown"`). A `✗` says where the move is made and what that
   handler reads: `nothing it runs reads the state of Consult` — write the
   `require` there; `reads the state of Consult (in Consult.state): that
   read does not decide this move` — the check is too weak, comes before a
