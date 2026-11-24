@@ -66,11 +66,22 @@ flesh ApiFinDeVie {
     on mission_capturee(objet) {
         return to_string(objet) != "OBJ-3"
     }
+    on etat_mission(mission) {
+        return "capturee"
+    }
+    on etat_fin(objet) {
+        if to_string(objet) == "OBJ-4" { return "passive" }
+        if to_string(objet) == "OBJ-5" { return "en_retard" }
+        return "en_mission"
+    }
 }
 
 flesh ApiReentrees {
     on constatee(objet) {
         return to_string(objet) != "OBJ-3"
+    }
+    on etat_campagne(campagne) {
+        return "rentree"
     }
 }
 
@@ -84,6 +95,9 @@ flesh ApiEvenements {
     }
     on en_anomalie(objet) {
         return to_string(objet) == "OBJ-3"
+    }
+    on etat(evenement) {
+        return "confirme"
     }
 }
 

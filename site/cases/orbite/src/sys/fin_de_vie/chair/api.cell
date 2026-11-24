@@ -27,6 +27,12 @@ flesh ApiFinDeVie {
     on mission_capturee(objet) {
         return FdvRetrait.capturee_sur(objet)
     }
+    on etat_mission(mission) {
+        return FdvRetrait.etat(mission)
+    }
+    on etat_fin(objet) {
+        return FdvFin.etat(objet)
+    }
 
     on plan(objet) {
         return FdvPlan.plan_de(objet)

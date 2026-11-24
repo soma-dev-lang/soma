@@ -29,6 +29,9 @@ skeleton ApiReentrees {
         // Vrai si la rentrée de l'objet a été constatée.
         signal constatee(objet: Objet) -> Bool
             calls ReeCampagne.constatee
+        // État d'une campagne de rentrée ("ouverte" … "close", "inconnue").
+        signal etat_campagne(campagne: String) -> String
+            calls ReeCampagne.etat
         // Balayage des échéances du sous-système à `h` (délais, expirations, rondes), appelé par
         // l'horloge d'ORBITE (Horloge.battre) — le SEUL point d'entrée du temps : aucun signal de
         // reentrees ne lit l'horloge lui-même. Renvoie le nombre d'objets dont l'état a changé.

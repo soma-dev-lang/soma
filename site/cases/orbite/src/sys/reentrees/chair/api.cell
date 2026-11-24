@@ -44,6 +44,9 @@ flesh ApiReentrees {
     on constatee(objet) {
         return ReeCampagne.constatee(objet)
     }
+    on etat_campagne(campagne) {
+        return to_string(ReeCampagne.etat(campagne))
+    }
 
     on balayer(h, par) {
         return ReeCampagne.balayer(h, par)

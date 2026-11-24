@@ -321,7 +321,7 @@ skeleton ApiEvenements {
     //~ etat c8a58f80a01f4ef8
 }
 
-== ApiFinDeVie sha256:ce6d4f4153a8f77c2ae5ae870d70606caf61e907dba22ce84a107e48ee814f8c core:b0f4b45de1fdcdf2a8d72a1bce7d765b5245673158b8167d69360e7bf6a3eb0c
+== ApiFinDeVie sha256:15f0313b56cf9cfaa9830f014e914792e743a0aa5c707ff0fd8d641fa0eb7727 core:1b6b8fe2710a120c09f4a564524c60c643fd5bf02abebe7783b758e5a67e60d5
 skeleton ApiFinDeVie {
     face {
         signal plan_conforme(objet: Objet) -> Bool  calls FdvPlan.conforme
@@ -330,6 +330,8 @@ skeleton ApiFinDeVie {
         signal retrait_autorise(objet: Objet) -> Bool  calls FdvRetrait.autorise_sur
         signal passive(objet: Objet) -> Bool  calls FdvPassivation.passive
         signal mission_capturee(objet: Objet) -> Bool  calls FdvRetrait.capturee_sur
+        signal etat_mission(mission: String) -> String  calls FdvRetrait.etat
+        signal etat_fin(objet: Objet) -> String  calls FdvFin.etat
         signal plan(objet: Objet) -> String  calls FdvPlan.plan_de
         signal balayer(h: Horodatage, par: String) -> Int  requires h >= 0  calls FdvCouverture.balayer
         signal missions_de(objet: Objet) -> List<String>  calls FdvRetrait.missions
@@ -343,6 +345,8 @@ skeleton ApiFinDeVie {
     //~ retrait_autorise 13a6f81f7cbe9a4a
     //~ passive a42637822c4df50f
     //~ mission_capturee b76bb65e7903bc78
+    //~ etat_mission a15db288cf39ad5a
+    //~ etat_fin e48717203d7cc545
     //~ plan 5f9ebf25c60cce49
     //~ balayer ddc92ff0596635cd
     //~ missions_de b6f1d14dde3d61f8
@@ -567,7 +571,7 @@ skeleton ApiPriorites {
     //~ balayer 40e44eefe32ed000
 }
 
-== ApiReentrees sha256:20fcfe50ddb2570a0566c73c4841dca75cb78166fc48a2d140c06f05407600e7 core:cf1d1ecc66205d468fcccec5f554939c79501fa09ab8640e020c445a2d2d60b3
+== ApiReentrees sha256:6a6d87cc0ea828817dd887b0f7710139d07a9e75e53dcf7a78cd9752bd7e00f5 core:22ca335bb9c9bcfefc866263fc654c134e5723fa66d22c9094e84adf9aa91db5
 skeleton ApiReentrees {
     face {
         signal prevoir(h: Horodatage, objet: Objet, debut: Horodatage, fin: Horodatage, victimes_ppm: Int, par: String) -> String  requires h >= 0  requires debut >= 0  requires fin >= 0  calls ReeCampagne.prevoir
@@ -578,6 +582,7 @@ skeleton ApiReentrees {
         signal victimes_ppm(objet: Objet) -> Int  calls ReeCampagne.campagne_de, ReeRisque.victimes_de
         signal controlee_approuvee(objet: Objet) -> Bool  calls ReeCampagne.campagne_de, ReeControlee.actif
         signal constatee(objet: Objet) -> Bool  calls ReeCampagne.constatee
+        signal etat_campagne(campagne: String) -> String  calls ReeCampagne.etat
         signal balayer(h: Horodatage, par: String) -> Int  requires h >= 0  calls ReeCampagne.balayer
         signal campagne_de(objet: Objet) -> String  calls ReeCampagne.campagne_de
     }
@@ -592,6 +597,7 @@ skeleton ApiReentrees {
     //~ victimes_ppm 400aa40183287fdb
     //~ controlee_approuvee a726b26882d5d78a
     //~ constatee 57457a7f2f7dd05b
+    //~ etat_campagne c5b95654d378f4df
     //~ balayer 244b749e95bc6ecc
     //~ campagne_de a6b595795221384d
 }
@@ -9485,7 +9491,7 @@ skeleton ReeSurvol {
     //~ victimes_sur 044b20d2a2884d44
 }
 
-== RefObjet sha256:3912a580468e1f06265494e50f1ebe645717d2b8b30c7ef0be4098598a10889a core:4305564dbea4d9a5d3dd831608bd64656cff19c7a018e046d7fc234da9b379b0
+== RefObjet sha256:59e626ea67604aba447201cbeed1713d497b226551cf956d1fece4851a338d83 core:a5a8997b870d7c75fce333d874793b4b26da4281b5079e7ab5e25276d78f1187
 skeleton RefObjet {
     memory {
         compteur: Map<String, Int> [persistent, consistent]
@@ -9546,10 +9552,10 @@ skeleton RefObjet {
         signal cataloguer(h: Horodatage, nature: NatureObjet, proprietaire: Org, etat: Etat, regime: Regime, propulsion: Propulsion, masse: Masse, par: String) -> Objet  requires h >= 0  requires nature == "satellite" || nature == "station_habitee" || nature == "etage" || nature == "debris" || nature == "inconnu"  requires regime == "leo" || regime == "meo" || regime == "geo" || regime == "heo"  requires propulsion == "aucune" || propulsion == "faible" || propulsion == "impulsionnelle"  requires masse >= 0  writes catalogues_le, catalogues_par, compteur, masses, natures, nominales, parc, proprietaires, propulsions, regimes  calls ApiAcces.a_le_role, Journal.noter, RefEtat.connu, RefHistorique.consigner, RefOrg.est_active, RefRegistre.ouvrir
         signal mettre_en_service(h: Horodatage, objet: Objet, motif: String, par: String) -> String  requires h >= 0  reads natures, proprietaires  writes motifs  moves catalogue -> en_service when RefRegistre.immatricule || RefRegistre.a_immatriculer, hors_service -> en_service when RefRegistre.immatricule || RefRegistre.a_immatriculer  calls ApiAcces.a_le_role, ApiAcces.agit_pour, Journal.noter, RefHistorique.consigner, RefOrg.est_active, RefRegistre.statut
         signal mettre_hors_service(h: Horodatage, objet: Objet, motif: String, par: String) -> String  requires h >= 0  reads proprietaires  writes motifs, propulsions  moves catalogue -> hors_service, en_service -> hors_service  calls ApiAcces.a_le_role, ApiAcces.agit_pour, Journal.noter, RefHistorique.consigner, rouvrir_designations
-        signal placer_cimetiere(h: Horodatage, objet: Objet, motif: String, par: String) -> String  requires h >= 0  writes motifs, propulsions  moves en_service -> cimetiere when FdvFin.passive || FdvFin.en_retard  calls ApiAcces.a_le_role, ApiFinDeVie.en_retard, ApiFinDeVie.passive, Journal.noter, RefHistorique.consigner, rouvrir_designations
-        signal constater_retrait(h: Horodatage, objet: Objet, reference: String, par: String) -> String  requires h >= 0  writes motifs, retrait_de  moves cimetiere -> retire when FdvRetrait.capturee via retrait_de, hors_service -> retire when FdvRetrait.capturee via retrait_de  calls ApiAcces.a_le_role, ApiFinDeVie.mission_capturee, ApiFinDeVie.retrait_autorise, Journal.noter, RefHistorique.consigner
-        signal constater_rentree(h: Horodatage, objet: Objet, reference: String, par: String) -> String  requires h >= 0  writes motifs, propulsions, rentree_de  moves catalogue -> rentre when ReeCampagne.rentree || ReeCampagne.close via rentree_de, en_service -> rentre when ReeCampagne.rentree || ReeCampagne.close via rentree_de, hors_service -> rentre when ReeCampagne.rentree || ReeCampagne.close via rentree_de, retire -> rentre when ReeCampagne.rentree || ReeCampagne.close via rentree_de  calls ApiAcces.a_le_role, ApiReentrees.constatee, Journal.noter, RefHistorique.consigner, RefRegistre.radier, rouvrir_designations
-        signal constater_fragmentation(h: Horodatage, objet: Objet, reference: String, par: String) -> String  requires h >= 0  writes fragmentation_de, motifs, propulsions  moves catalogue -> fragmente when EvtEvenements.confirme || EvtEvenements.clos via fragmentation_de, cimetiere -> fragmente when EvtEvenements.confirme || EvtEvenements.clos via fragmentation_de, en_service -> fragmente when EvtEvenements.confirme || EvtEvenements.clos via fragmentation_de, hors_service -> fragmente when EvtEvenements.confirme || EvtEvenements.clos via fragmentation_de  calls ApiAcces.a_le_role, ApiEvenements.existe, ApiEvenements.objets, Journal.noter, RefHistorique.consigner, RefRegistre.radier, rouvrir_designations
+        signal placer_cimetiere(h: Horodatage, objet: Objet, motif: String, par: String) -> String  requires h >= 0  writes motifs, propulsions  moves en_service -> cimetiere when FdvFin.passive || FdvFin.en_retard  calls ApiAcces.a_le_role, ApiFinDeVie.en_retard, ApiFinDeVie.etat_fin, ApiFinDeVie.passive, Journal.noter, RefHistorique.consigner, rouvrir_designations
+        signal constater_retrait(h: Horodatage, objet: Objet, reference: String, par: String) -> String  requires h >= 0  writes motifs, retrait_de  moves cimetiere -> retire when FdvRetrait.capturee via retrait_de, hors_service -> retire when FdvRetrait.capturee via retrait_de  calls ApiAcces.a_le_role, ApiFinDeVie.etat_mission, ApiFinDeVie.mission_capturee, ApiFinDeVie.retrait_autorise, Journal.noter, RefHistorique.consigner
+        signal constater_rentree(h: Horodatage, objet: Objet, reference: String, par: String) -> String  requires h >= 0  writes motifs, propulsions, rentree_de  moves catalogue -> rentre when ReeCampagne.rentree || ReeCampagne.close via rentree_de, en_service -> rentre when ReeCampagne.rentree || ReeCampagne.close via rentree_de, hors_service -> rentre when ReeCampagne.rentree || ReeCampagne.close via rentree_de, retire -> rentre when ReeCampagne.rentree || ReeCampagne.close via rentree_de  calls ApiAcces.a_le_role, ApiReentrees.constatee, ApiReentrees.etat_campagne, Journal.noter, RefHistorique.consigner, RefRegistre.radier, rouvrir_designations
+        signal constater_fragmentation(h: Horodatage, objet: Objet, reference: String, par: String) -> String  requires h >= 0  writes fragmentation_de, motifs, propulsions  moves catalogue -> fragmente when EvtEvenements.confirme || EvtEvenements.clos via fragmentation_de, cimetiere -> fragmente when EvtEvenements.confirme || EvtEvenements.clos via fragmentation_de, en_service -> fragmente when EvtEvenements.confirme || EvtEvenements.clos via fragmentation_de, hors_service -> fragmente when EvtEvenements.confirme || EvtEvenements.clos via fragmentation_de  calls ApiAcces.a_le_role, ApiEvenements.etat, ApiEvenements.existe, ApiEvenements.objets, Journal.noter, RefHistorique.consigner, RefRegistre.radier, rouvrir_designations
         signal declarer_propulsion(h: Horodatage, objet: Objet, p: Propulsion, motif: String, par: String) -> Propulsion  requires h >= 0  requires p == "aucune" || p == "faible" || p == "impulsionnelle"  ensures result == "aucune" || result == "faible" || result == "impulsionnelle"  reads proprietaires, vie  writes propulsions  calls ApiAcces.a_le_role, ApiAcces.agit_pour, Journal.noter, RefHistorique.consigner, rouvrir_designations
         signal rouvrir_designations(h: Horodatage, objet: Objet, motif: String) -> Int  requires h >= 0  ensures result >= 0  calls ApiConjonctions.ouverts_de, ApiCoordination.designe, ApiCoordination.rouvrir
         signal modifier(h: Horodatage, objet: Objet, champ: RefChamp, valeur: String, demande: String, par: String) -> String  requires h >= 0  requires champ == "nature" || champ == "masse" || champ == "propulsion" || champ == "propulsion_nominale" || champ == "nom"  reads vie  writes masses, natures, nominales, propulsions  calls ApiAcces.a_le_role, ApiFinDeVie.passive, Journal.noter, RefModification.etat
@@ -10632,4 +10638,4 @@ verify.before.RespSinistres.declare.requires = ["OpMembres.admis"]
 verify.before.RespSinistres.declare.via = "RespSinistres.op_de"
 package.edition = "2026"
 
-checksum sha256:add10691eff309b8c976371adf2938ff695c08e696c8a627347337acd1fc942a
+checksum sha256:ad59cf5cbea02f7bbe8f42efede66d830955ae0f21c375b952884aac337396b2

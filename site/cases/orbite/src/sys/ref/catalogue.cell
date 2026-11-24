@@ -117,7 +117,7 @@ skeleton RefObjet {
         signal placer_cimetiere(h: Horodatage, objet: Objet, motif: String, par: String) -> String
             writes propulsions, motifs
             moves en_service -> cimetiere when FdvFin.passive || FdvFin.en_retard
-            calls rouvrir_designations, ApiFinDeVie.passive, ApiFinDeVie.en_retard, ApiAcces.a_le_role, RefHistorique.consigner, Journal.noter
+            calls rouvrir_designations, ApiFinDeVie.passive, ApiFinDeVie.en_retard, ApiAcces.a_le_role, RefHistorique.consigner, Journal.noter, ApiFinDeVie.etat_fin
         // Constate la capture par une mission de retrait actif autorisée par le propriétaire ET
         // l'État d'immatriculation (ApiFinDeVie.retrait_autorise) et qui a capturé sa cible
         // (ApiFinDeVie.mission_capturee). `reference` : id de la mission FdvRetrait, écrit une
@@ -128,7 +128,7 @@ skeleton RefObjet {
         signal constater_retrait(h: Horodatage, objet: Objet, reference: String, par: String) -> String
             writes retrait_de, motifs
             moves hors_service -> retire when FdvRetrait.capturee via retrait_de, cimetiere -> retire when FdvRetrait.capturee via retrait_de
-            calls ApiFinDeVie.retrait_autorise, ApiFinDeVie.mission_capturee, ApiAcces.a_le_role, RefHistorique.consigner, Journal.noter
+            calls ApiFinDeVie.retrait_autorise, ApiFinDeVie.mission_capturee, ApiAcces.a_le_role, RefHistorique.consigner, Journal.noter, ApiFinDeVie.etat_mission
         // Constate la rentrée atmosphérique ; radie l'objet du registre (RefRegistre.radier).
         // Exige la rentrée constatée par reentrees (ApiReentrees.constatee : reentrees la note
         // AVANT d'appeler ApiRef.changer_etat_objet). `reference` : id de la campagne ReeCampagne
@@ -143,7 +143,7 @@ skeleton RefObjet {
                 en_service -> rentre when ReeCampagne.rentree || ReeCampagne.close via rentree_de,
                 hors_service -> rentre when ReeCampagne.rentree || ReeCampagne.close via rentree_de,
                 retire -> rentre when ReeCampagne.rentree || ReeCampagne.close via rentree_de
-            calls rouvrir_designations, RefRegistre.radier, ApiReentrees.constatee, ApiAcces.a_le_role, RefHistorique.consigner, Journal.noter
+            calls rouvrir_designations, RefRegistre.radier, ApiReentrees.constatee, ApiAcces.a_le_role, RefHistorique.consigner, Journal.noter, ApiReentrees.etat_campagne
         // Constate la fragmentation (ou la collision) : l'objet parent sort du catalogue actif,
         // ses fragments sont catalogués à part (nature "debris"). `reference` : évènement
         // d'evenements qui doit exister (ApiEvenements.existe) et compter l'objet parmi ses
@@ -159,7 +159,7 @@ skeleton RefObjet {
                 en_service -> fragmente when EvtEvenements.confirme || EvtEvenements.clos via fragmentation_de,
                 hors_service -> fragmente when EvtEvenements.confirme || EvtEvenements.clos via fragmentation_de,
                 cimetiere -> fragmente when EvtEvenements.confirme || EvtEvenements.clos via fragmentation_de
-            calls rouvrir_designations, RefRegistre.radier, ApiEvenements.existe, ApiEvenements.objets, ApiAcces.a_le_role, RefHistorique.consigner, Journal.noter
+            calls rouvrir_designations, RefRegistre.radier, ApiEvenements.existe, ApiEvenements.objets, ApiAcces.a_le_role, RefHistorique.consigner, Journal.noter, ApiEvenements.etat
         // Déclare une perte ou une dégradation de propulsion : p doit être INFÉRIEURE OU ÉGALE à
         // la capacité actuelle (ordre aucune < faible < impulsionnelle) ; une hausse passe par
         // RefModification. Consigné dans RefHistorique (preuve de la capacité à l'instant h) ;

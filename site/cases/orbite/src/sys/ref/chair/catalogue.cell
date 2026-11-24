@@ -96,6 +96,8 @@ flesh RefObjet {
         let st = get_status(o) ?? "catalogue"
         require st == "en_service" else EtatInvalide "objet {o} : {st}"
         require ApiFinDeVie.passive(objet) || ApiFinDeVie.en_retard(objet, h) else EtatInvalide "fin de vie de {o} ni passive ni en retard"
+        let ef = ApiFinDeVie.etat_fin(objet)
+        require ef == "passive" || ef == "en_retard" else EtatInvalide "fin de vie de {o} ni passive ni en retard ({ef})"
         require motif != "" else MotifRequis "motif requis"
         propulsions.set(o, "aucune")
         motifs.set(o, motif)
@@ -115,6 +117,7 @@ flesh RefObjet {
         require reference != "" else MotifRequis "référence de la mission de retrait requise"
         require ApiFinDeVie.retrait_autorise(objet) && ApiFinDeVie.mission_capturee(objet) else NonEligible "retrait de {o} non autorisé ou non capturé"
         require retrait_de.get(o) == () else EtatInvalide "retrait de {o} déjà constaté"
+        require ApiFinDeVie.etat_mission(reference) == "capturee" else NonEligible "mission {reference} sans capture"
         retrait_de.set(o, reference)
         motifs.set(o, "retrait actif {reference}")
         if st == "hors_service" {
@@ -136,6 +139,8 @@ flesh RefObjet {
         require reference != "" else MotifRequis "référence de la campagne de rentrée requise"
         require ApiReentrees.constatee(objet) else NonEligible "rentrée de {o} non constatée"
         require rentree_de.get(o) == () else EtatInvalide "rentrée de {o} déjà constatée"
+        let ec = ApiReentrees.etat_campagne(reference)
+        require ec == "rentree" || ec == "close" else NonEligible "campagne {reference} {ec} : la rentrée de {o} n'y est pas constatée"
         rentree_de.set(o, reference)
         propulsions.set(o, "aucune")
         motifs.set(o, "rentrée {reference}")
@@ -166,6 +171,8 @@ flesh RefObjet {
         let st = get_status(o) ?? "catalogue"
         require st == "catalogue" || st == "en_service" || st == "hors_service" || st == "cimetiere" else EtatInvalide "objet {o} : {st}"
         require fragmentation_de.get(o) == () else EtatInvalide "fragmentation de {o} déjà constatée"
+        let ee = ApiEvenements.etat(reference)
+        require ee == "confirme" || ee == "clos" else EtatInvalide "évènement {reference} {ee} : la fragmentation ne se constate pas"
         fragmentation_de.set(o, reference)
         propulsions.set(o, "aucune")
         motifs.set(o, "fragmentation {reference}")

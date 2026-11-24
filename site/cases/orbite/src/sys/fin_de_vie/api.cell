@@ -22,6 +22,12 @@ skeleton ApiFinDeVie {
         // Vrai si la mission de retrait actif visant l'objet a capturé sa cible.
         signal mission_capturee(objet: Objet) -> Bool
             calls FdvRetrait.capturee_sur
+        // État d'une mission de retrait actif ("proposee" … "achevee", "inconnu").
+        signal etat_mission(mission: String) -> String
+            calls FdvRetrait.etat
+        // État de la fin de vie de l'objet ("en_mission" … "cimetiere").
+        signal etat_fin(objet: Objet) -> String
+            calls FdvFin.etat
         // Plan de fin de vie approuvé de l'objet ; "" si aucun.
         signal plan(objet: Objet) -> String
             calls FdvPlan.plan_de
