@@ -31,7 +31,7 @@ below is current for the binary named in https://soma-lang.dev/version.json.
 
 ## Pick Soma when / skip it when
 
-Current release: 3.2.8 — nominal types (`cell type Lots = Int where …`), after 3.1.0's
+Current release: 3.2.9 — nominal types (`cell type Lots = Int where …`), after 3.1.0's
 skeleton first. What each release changed: `soma docs releases`.
 
 Pick it when the task has a lifecycle or a limit that must hold: payments,
@@ -1181,7 +1181,12 @@ The frame, clause by clause (after the return type and any `requires` /
   to write there (`require Consult.is_done(c)` then `consult_of.set(id, c)`).
   A status is read through a getter (`on state(id) { if seen.get(id) == ()
   { return "unknown" }  return get_status(id) ?? "open" }`), not through
-  arithmetic on it. A `✗` says where the move is made and what that
+  arithmetic on it. A text chosen from a status is followed (`let to = if
+  e == "a" { "x" } else { "" }`, `require to != ""`, `if to == "x"`), and a
+  text the getter gives for an unknown id is ruled out once the handler
+  refuses it (`require e != "unknown"`). The link may also be written
+  under its guard: `if consult_of.get(id) == () { consult_of.set(id, c) }`.
+  A `✗` says where the move is made and what that
   handler reads: `nothing it runs reads the state of Consult` — write the
   `require` there; `reads the state of Consult (in Consult.state): that
   read does not decide this move` — the check is too weak, comes before a
@@ -1368,6 +1373,12 @@ it says "error kind X", raise it with `require … else X "…"` or `fail`.
 
 > Newest first. The language itself: https://soma-lang.dev/llms.txt (`soma docs agent`).
 > Every fix and its compatibility note: https://soma-lang.dev/CHANGELOG.md.
+
+Soma 3.2.9: `verify` follows a text chosen from a status by an `if`
+expression, rules out a getter's text for an unknown id once the handler
+refuses it, keeps a status until its own machine may have moved, reads a
+link written under its guard (`if link.get(k) == () { link.set(k, v) }`).
+On a 69,000-line program: 97 ✗ → 70.
 
 Soma 3.2.8: a ✗ between machines names the handler that makes the move and
 says whether it, or the entry the run came in by, reads the state the rule
