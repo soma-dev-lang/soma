@@ -2151,6 +2151,49 @@ const OPEN_MARK: &str = "\u{1f}open:";
 /// `via` is sound only if the link of an entry never changes: the slot is
 /// written by ONE handler, once, when the entry is created (after a
 /// `require slot.get(k) == ()` on the same key), and never deleted.
+/// The way to the one statement of `body` that writes `slot` (through `if`,
+/// `for`, `while`): every statement that runs before it, those since the
+/// innermost loop around it, and the conditions of the `if`s it is the
+/// `then` of since that loop. `None`: the write is not a statement on such a way.
+fn way_to<'s>(body: &'s [Spanned<Statement>], slot: &str) -> Option<(Vec<&'s Spanned<Statement>>, Vec<&'s Spanned<Statement>>, Vec<&'s Expr>)> {
+    fn is_write(st: &Statement, slot: &str) -> bool {
+        let writes = |m: &str| matches!(m, "set" | "put" | "delete" | "remove" | "push" | "append");
+        match st {
+            Statement::MethodCall { target, method, .. } => target == slot && writes(method),
+            Statement::IndexSet { name, .. } => name.split(|ch| ch == '.' || ch == '[').next() == Some(slot),
+            Statement::ExprStmt { expr } => matches!(&expr.node, Expr::MethodCall { target, method, .. } if matches!(&target.node, Expr::Ident(t) if t == slot) && writes(method)),
+            _ => false,
+        }
+    }
+    fn walk<'s>(body: &'s [Spanned<Statement>], slot: &str, all: &mut Vec<&'s Spanned<Statement>>, conds: &mut Vec<&'s Expr>, since: &mut (usize, usize)) -> bool {
+        for st in body {
+            if is_write(&st.node, slot) { return true; }
+            let (n, k, was) = (all.len(), conds.len(), *since);
+            match &st.node {
+                Statement::If { condition, then_body, else_body } => {
+                    conds.push(&condition.node);
+                    if walk(then_body, slot, all, conds, since) { return true; }
+                    conds.truncate(k); all.truncate(n);
+                    if walk(else_body, slot, all, conds, since) { return true; }
+                }
+                Statement::For { body, .. } | Statement::While { body, .. } => {
+                    *since = (n, k);
+                    if walk(body, slot, all, conds, since) { return true; }
+                    *since = was;
+                }
+                _ => {}
+            }
+            all.truncate(n);
+            all.push(st);
+        }
+        false
+    }
+    let (mut all, mut conds, mut since) = (Vec::new(), Vec::new(), (0usize, 0usize));
+    if !walk(body, slot, &mut all, &mut conds, &mut since) { return None; }
+    let (since_loop, under) = (all[since.0..].to_vec(), conds[since.1..].to_vec());
+    Some((all, since_loop, under))
+}
+
 fn link_written_once(cells: &[&CellDef], cell: &str, slot: &str) -> Result<(), String> {
     let Some(c) = cells.iter().find(|c| c.name == cell) else { return Err(format!("there is no cell `{}`", cell)) };
     let declared = c.sections.iter().any(|s| matches!(&s.node, Section::Memory(m) if m.slots.iter().any(|sl| sl.node.name == slot)));
@@ -2230,7 +2273,9 @@ fn link_written_once(cells: &[&CellDef], cell: &str, slot: &str) -> Result<(), S
             Statement::For { var, .. } if var == key => { assigned = true; }
             _ => {}
         });
-        count == 1 && !assigned && o.body.iter().any(|st| matches!(&st.node, Statement::Let { name, .. } if name == key))
+        count == 1 && !assigned && way_to(&o.body, slot).map_or_else(
+            || o.body.iter().any(|st| matches!(&st.node, Statement::Let { name, .. } if name == key)),
+            |(all, _, _)| all.iter().any(|st| matches!(&st.node, Statement::Let { name, .. } if name == key)))
     });
     if !local_once && (!on.is_some_and(|o| o.params.iter().any(|p| &p.name == key)) || rebound) {
         return Err(format!("{} — `{}` writes it at the key `{}`, which is not one of its parameters left as it came", rule, handler, key));
@@ -2252,11 +2297,35 @@ fn link_written_once(cells: &[&CellDef], cell: &str, slot: &str) -> Result<(), S
         super::literals::for_each_expr(one, &mut |e| if matches!(e, Expr::MethodCall { target, method, .. } if matches!(&target.node, Expr::Ident(t) if t == slot) && writes(method)) { found = true; });
         found
     };
-    let at = o.body.iter().position(writes_link).unwrap_or(o.body.len());
-    let before = &o.body[..at];
+    // What runs before the write, each time it is reached: the statements
+    // before it in its block and in the blocks around it — from the innermost
+    // loop on, since a loop reaches the write again — and the `if` conditions
+    // it stands under. (A write inside an expression: the top-level statements before it.)
+    let (before, under): (Vec<&Spanned<Statement>>, Vec<&Expr>) = match way_to(&o.body, slot) {
+        Some((_, since_loop, conds)) => (since_loop, conds),
+        None => { let at = o.body.iter().position(writes_link).unwrap_or(o.body.len()); (o.body[..at].iter().collect(), Vec::new()) }
+    };
     let refuses = |of: &str| before.iter().any(|st| matches!(&st.node, Statement::Require { constraint, .. } if says_absent(&constraint.node, of, key)));
+    // `if slot.get(k) == () { slot.set(k, v) }` (or `!slot.has(k)`; or through
+    // `let was = slot.get(k)` — the link has this one write: nothing fills it in between)
+    let held = |name: &str| before.iter().filter(|st| matches!(&st.node, Statement::Let { name: n, .. } | Statement::Assign { name: n, .. } if n == name)).count() == 1
+        && before.iter().any(|st| matches!(&st.node, Statement::Let { name: n, value } if n == name
+            && matches!(&value.node, Expr::MethodCall { target, method, args } if method == "get" && args.len() == 1 && matches!(&target.node, Expr::Ident(t) if t == slot) && render_expr(&args[0].node) == *key)));
+    let absent = |e: &Expr| -> bool {
+        let unit = |x: &Expr| matches!(x, Expr::Literal(Literal::Unit));
+        let read = |x: &Expr| match x {
+            Expr::MethodCall { target, method, args } => method == "get" && args.len() == 1 && matches!(&target.node, Expr::Ident(t) if t == slot) && render_expr(&args[0].node) == *key,
+            Expr::Ident(v) => held(v),
+            _ => false,
+        };
+        match e {
+            Expr::CmpOp { left, op: CmpOp::Eq, right } => (read(&left.node) && unit(&right.node)) || (read(&right.node) && unit(&left.node)),
+            Expr::Not(i) => matches!(&i.node, Expr::MethodCall { target, method, args } if method == "has" && args.len() == 1 && matches!(&target.node, Expr::Ident(t) if t == slot) && render_expr(&args[0].node) == *key),
+            _ => false,
+        }
+    };
     // 1. `require slot.get(k) == () else …` (or `!slot.has(k)`) on the link itself
-    let guarded = refuses(slot)
+    let guarded = refuses(slot) || under.iter().any(|c| absent(c))
     // 2. a key no entry can have: made from this cell's `next_id()`, which never
     //    gives the same number twice — `let id = "rc-{next_id()}"`, or through
     //    `let n = next_id()`; the link's one writer writes it at such keys only

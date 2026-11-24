@@ -949,3 +949,30 @@ fn a_getter_and_a_predicate_with_statements_between_are_read() {
     let (out, _) = linked("predicate_moved", &with("        let st = get_status(o) ?? \"inconnue\"\n        let _ = radier(o)\n        if st != \"inscrite\" { return false }\n        return true\n"));
     assert!(out.contains("✗ entering Source.active while Org.inscrite"), "{out}");
 }
+
+/// The link is written once also when the write stands under its guard
+/// (`if link.get(k) == () { link.set(k, v) }`), or when guard and write are
+/// both inside a branch.
+#[test]
+fn a_link_written_under_its_guard_or_inside_a_branch_is_written_once() {
+    let head = "        require genre.get(source) == () else Existe \"déjà\"\n        genre.set(source, nature)\n        fournisseur.set(source, org)\n";
+    assert!(LINKED.contains(head));
+    let proven = "✓ entering Source.active while Org.inscrite via Source.fournisseur";
+    for (name, with, expect) in [
+        ("under_if", "        genre.set(source, nature)\n        if fournisseur.get(source) == () { fournisseur.set(source, org) }\n", proven),
+        ("under_if_has", "        genre.set(source, nature)\n        if !fournisseur.has(source) {\n            fournisseur.set(source, org)\n        }\n", proven),
+        ("under_if_let", "        let deja = fournisseur.get(source)\n        genre.set(source, nature)\n        if deja == () { fournisseur.set(source, org) }\n", proven),
+        ("in_branch", "        if nature != \"\" {\n            require fournisseur.get(source) == () else Existe \"déjà\"\n            genre.set(source, nature)\n            fournisseur.set(source, org)\n        }\n", proven),
+        // the guard says the entry is there
+        ("under_if_not", "        genre.set(source, nature)\n        if fournisseur.get(source) != () { fournisseur.set(source, org) }\n", "needs the link written once"),
+        // the write is in the `else` of its guard
+        ("under_else", "        genre.set(source, nature)\n        if fournisseur.get(source) == () { vue.set(source, 0) } else { fournisseur.set(source, org) }\n", "needs the link written once"),
+        // the guard is in another branch than the write
+        ("other_branch", "        if nature != \"\" {\n            require fournisseur.get(source) == () else Existe \"déjà\"\n        }\n        fournisseur.set(source, org)\n", "needs the link written once"),
+        // the variable was read before another write of the link's key… by the guard of another key
+        ("under_if_let_other", "        let deja = fournisseur.get(org)\n        genre.set(source, nature)\n        if deja == () { fournisseur.set(source, org) }\n", "needs the link written once"),
+    ] {
+        let (out, _) = linked(name, &LINKED.replace(head, with));
+        assert!(out.contains(expect), "{name}: {out}");
+    }
+}

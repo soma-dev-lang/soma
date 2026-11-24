@@ -140,7 +140,9 @@ The frame, clause by clause (after the return type and any `requires` /
   arithmetic on it. A text chosen from a status is followed (`let to = if
   e == "a" { "x" } else { "" }`, `require to != ""`, `if to == "x"`), and a
   text the getter gives for an unknown id is ruled out once the handler
-  refuses it (`require e != "unknown"`). A `✗` says where the move is made and what that
+  refuses it (`require e != "unknown"`). The link may also be written
+  under its guard: `if consult_of.get(id) == () { consult_of.set(id, c) }`.
+  A `✗` says where the move is made and what that
   handler reads: `nothing it runs reads the state of Consult` — write the
   `require` there; `reads the state of Consult (in Consult.state): that
   read does not decide this move` — the check is too weak, comes before a

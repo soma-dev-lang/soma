@@ -2,12 +2,14 @@
 
 ## Unreleased
 
-Reading the 63 `✗` of Orbite that said "that read does not decide this move": three forms the search lost, and two rules the code does not keep. `verify prod.cell`: 97 ✗ → 82. No verdict moves on the 185 other programs with a rule between machines.
+Reading the 63 `✗` of Orbite that said "that read does not decide this move": three forms the search lost, and two rules the code does not keep. `verify prod.cell`: 97 ✗ → 75, 3,977 ✓ → 3,999. No verdict moves on the 185 other programs with a rule between machines.
 
 - **A text chosen from a status.** `let to = if e == "a" || e == "b" { "x" } else if e == "c" { "y" } else { "" }`, then `require to != ""`, then `if to == "x" { transition(…) } else { transition(…) }`: `to == "x"` is read as the condition `"x"` was chosen under — a comparison of a status, or a predicate of the other cell (`if Gate.acked(m) { "closed" } …`) — and inside the branches, and past the `require`, the arms `to` is known not to be are left out. Kept until a statement may move a machine, or the variable or one its conditions read is assigned.
 - **A text the handler refused is not what the getter answered.** A getter that answers `"unknown"` for an id it has no entry of may have answered it whatever the state. Past `require e != "unknown"`, past `require e == "a" || e == "b"`, in the `else` of `if e == "unknown"`, on the right of `e != "unknown" && …`, it did not: the state alone decides. Before, `if e == "a" { return }` let through the instances in state `a`, as read `"unknown"`.
 - **A predicate that holds the status in a variable.** `on failed(id) { let st = get_status(id) ?? "queued"  return st == "lost" || st == "escalated" }` is read as the comparison it returns.
-- **Outside a cone, a status held in a variable outlives the calls that can move no machine** (a getter, a predicate, the journal) — as it already did inside one.
+- **A status held in a variable is stale only once its own machine may have moved.** Each handler is given the machines it may move — by its `transition`, by what it calls, all of them by what the search does not follow — and a statement forgets the statuses of those only. `let sc = Ballot.state(v)`, the handler's own `transition`, then `require sc == "rejected"`: read. Before, any call (inside a cone: any call that could move a machine of the cone) forgot every status.
+- **A getter that holds the status in a variable** (`let st = get_status(id) ?? "new"  if st == "new" && … { return "none" }  return st`), **and a predicate that does more than refuse**: its first `if … { return false }` are what it takes to answer true, whatever it computes after — until a statement that may itself answer.
+- **A link written under its guard, or inside a branch.** Written once also as `if link.get(k) == () { link.set(k, v) }` (or `!link.has(k)`, or through `let was = link.get(k)`), and when the guard and the write — or the `let id = "x-{next_id()}"` and the write — stand together inside an `if` or a loop. The guard is looked for on the way to the write, since the innermost loop around it: a `require` before a loop no longer covers a write the loop repeats.
 
 ## 3.2.8 — 2026-11-24
 
