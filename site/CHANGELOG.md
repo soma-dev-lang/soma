@@ -1,6 +1,8 @@
 # Changelog
 
-## Unreleased
+## 3.2.5 — 2026-11-24
+
+`verify` at the size of a large program, values that are no longer copied where they are read, and a `✗` that is always true. Validation: 1,120 Rust tests, 118 CLI checks, 327 corpus programs, 1,280 numeric comparisons; `check` exits the same on the 1,855 tracked programs, and `verify` prints the same, byte for byte, on the 1,810 of them 3.2.4 finishes in a minute. Still open: four of Orbite's test files take more than ten minutes to verify, and `verify` on Orbite's `prod.cell` now finishes and answers `VERIFY FAILED` (not analysed yet).
 
 - A `[native]` handler evaluates the arguments of `bit_test`, `bit_set` and `bit_clr` left to right, as the interpreter does. The bit index was evaluated before the value: `bit_test(a(), b())` ran `b` first (two sibling handlers calling `write_str` printed in the reverse order), and `bit_clr(5 % n, n - 1)` with `n = 0` raised `bit index -1 out of range` (kind `type`) where the interpreter raises `modulo by zero` (kind `division_by_zero`). `shl` in BigInt mode binds its arguments in the same order. (Found by comparing native and interpreted results on random expressions.)
 - The same in `[native]` for `buf_set` / `buf_set_f` and `pow_mod`: `buf_set(u, i(), v())` evaluated the value before the index, `pow_mod(a(), b(), c())` the modulus before the base. In BigInt mode `pow_mod` evaluated its exponent and its modulus twice (a sibling call there ran twice) and checked the exponent before the modulus; it now evaluates each once and reports `modulus is zero` first, as the interpreter does. A sieve of 2·10^8 through `buf_set` takes the same time as before (1.35 s).

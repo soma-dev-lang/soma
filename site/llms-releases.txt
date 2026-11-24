@@ -3,6 +3,13 @@
 > Newest first. The language itself: https://soma-lang.dev/llms.txt (`soma docs agent`).
 > Every fix and its compatibility note: https://soma-lang.dev/CHANGELOG.md.
 
+Soma 3.2.5: an unproven `ensures` of a handler that only computes is run, and
+a ✗ shows the input that breaks it (a statement no input reaches is no longer
+a ✗); `verify` on the skeleton of a 156-machine program takes 10 s where it
+took 475; a list or a map is shared until written (passing one no longer
+copies it); `[native]` evaluates the arguments of every builtin left to
+right, as the interpreter.
+
 Soma 3.2.4: rules between machines are searched over each rule's cone of
 influence first (97 proven on a 156-machine program where 3.2.3 explored
 none); the success of a `try` is followed; a link key made once by the
