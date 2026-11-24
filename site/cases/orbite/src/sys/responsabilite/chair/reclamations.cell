@@ -214,6 +214,7 @@ flesh RespReclamations {
 flesh RespCommissions {
     on saisir(h, rec) {
         require (get_status(rec) ?? "aucune") == "aucune" else Existe "la commission de {rec} est déjà saisie"
+        require RespReclamations.etat(rec) == "commission" else EtatInvalide "réclamation {rec} sans demande de commission"
         transition(rec, "aucune", "en_constitution")
         saisie_le.set(rec, h)
         Journal.noter(h, "responsabilite", "systeme", "commission de règlement saisie pour {rec}")

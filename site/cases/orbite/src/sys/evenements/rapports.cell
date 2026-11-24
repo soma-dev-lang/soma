@@ -72,7 +72,7 @@ skeleton EvtRapports {
         // Renvoie "sans_objet". Refus : EtatInvalide.
         signal classer(h: Horodatage, ev: String) -> String
             moves attendu -> sans_objet when EvtEvenements.infirme
-            calls Journal.noter
+            calls Journal.noter, EvtEvenements.etat
         // Rapports non publiés dont l'échéance est passée à `h`, au plus `n` : "ev | état |
         // échéance". Lecture seule, pour la ronde (incident) et la conformité d'ORBITE elle-même.
         signal en_retard(h: Horodatage, n: Int) -> List<String>

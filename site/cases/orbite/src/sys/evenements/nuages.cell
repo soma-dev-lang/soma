@@ -80,12 +80,12 @@ skeleton EvtNuages {
         signal ouvrir(h: Horodatage, nuage: String) -> String
             reads regimes
             moves estime -> en_catalogage when EvtEvenements.confirme
-            calls Journal.noter
+            calls Journal.noter, EvtEvenements.etat
         // Abandonne le nuage d'un évènement infirmé : fin immédiate du criblage renforcé.
         // Appelé par EvtEvenements.infirmer seul. Renvoie "abandonne". Refus : EtatInvalide.
         signal abandonner(h: Horodatage, nuage: String) -> String
             moves estime -> abandonne when EvtEvenements.infirme
-            calls Journal.noter
+            calls Journal.noter, EvtEvenements.etat
         // Compte un fragment catalogué. Appelé par EvtFragments.cataloguer seul. Renvoie le
         // nouveau nombre. Refus : EtatInvalide (ni en_catalogage, ni stabilise), Plein.
         signal compter_fragment(nuage: String) -> Int

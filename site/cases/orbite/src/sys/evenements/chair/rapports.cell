@@ -80,6 +80,7 @@ flesh EvtRapports {
     on classer(h, ev) {
         let st = get_status(ev) ?? "attendu"
         require st == "attendu" else EtatInvalide "rapport de {ev} {st}"
+        require EvtEvenements.etat(ev) == "infirme" else EtatInvalide "évènement {ev} non infirmé : le rapport ne se classe pas"
         transition(ev, "attendu", "sans_objet")
         let _ = Journal.noter(h, "evenements", "systeme", "rapport de {ev} classé sans objet")
         return "sans_objet"

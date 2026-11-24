@@ -41,7 +41,7 @@ skeleton EscPriseEnCharge {
         signal ouvrir_prise(h: Horodatage, dossier: String, r: Rapprochement, fin: Horodatage, par: String) -> String
             writes rapprochement_de, ouverte_a, limite
             moves inexistante -> en_attente when EscDossiers.reprise
-            calls ApiAcces.a_le_role, ApiRef.orbite, ApiPasserelle.notifier, Journal.noter
+            calls ApiAcces.a_le_role, ApiRef.orbite, ApiPasserelle.notifier, Journal.noter, EscDossiers.etat
         // Un analyste prend la reprise en charge : il conduira l'arbitrage. Renvoie "prise".
         // Rôle exigé : "analyste" ou "direction" d'ORBITE. Refus : Inconnu, EtatInvalide, Habilitation.
         signal prendre(h: Horodatage, dossier: String, par: String) -> String

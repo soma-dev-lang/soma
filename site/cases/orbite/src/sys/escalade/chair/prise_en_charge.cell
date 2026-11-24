@@ -3,6 +3,7 @@ flesh EscPriseEnCharge {
     on ouvrir_prise(h, dossier, r, fin, par) {
         require ApiAcces.a_le_role(par, "systeme") else Habilitation "{par} : ouverture de prise en charge réservée au système"
         require rapprochement_de.get(dossier) == () else Doublon "prise en charge de {dossier} déjà ouverte"
+        require EscDossiers.etat(dossier) == "reprise" else EtatInvalide "dossier {dossier} non repris : pas de prise en charge"
         require rapprochement_de.size < MAX_PRISES else Plein "plafond de {MAX_PRISES} prises en charge atteint"
         let hi = to_int(h)
         // Une reprise survient à l'échéance finale ou après (fin ≤ h) : l'analyste dispose alors de

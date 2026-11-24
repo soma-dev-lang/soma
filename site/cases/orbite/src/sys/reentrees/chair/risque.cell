@@ -86,6 +86,8 @@ flesh ReeRisque {
         require victimes.get(campagne) != () else Inconnu "campagne jamais évaluée : {campagne}"
         let st = get_status(campagne) ?? "non_evalue"
         if st == "fige" { return "fige" }
+        let ec = ReeCampagne.etat(campagne)
+        require ec == "rentree" || ec == "annulee" else EtatInvalide "campagne {campagne} {ec} : le risque ne se fige qu'à la rentrée ou à l'annulation"
         transition(campagne, st, "fige")
         return "fige"
     }

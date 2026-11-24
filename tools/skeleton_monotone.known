@@ -17,9 +17,7 @@ site/cases/orbite/src/banc_observation.cell  # Orbite: rules its bodies do not k
 site/cases/orbite/src/banc_operateurs.cell  # Orbite: rules its bodies do not keep, or the prover does not read
 site/cases/orbite/src/banc_operations.cell  # Orbite: rules its bodies do not keep, or the prover does not read
 site/cases/orbite/src/banc_priorites.cell  # Orbite: rules its bodies do not keep, or the prover does not read
-site/cases/orbite/src/banc_reentrees.cell  # Orbite: rules its bodies do not keep, or the prover does not read
 site/cases/orbite/src/banc_ref.cell  # Orbite: rules its bodies do not keep, or the prover does not read
-site/cases/orbite/src/banc_responsabilite.cell  # Orbite: rules its bodies do not keep, or the prover does not read
 site/cases/orbite/src/prod.cell  # Orbite: rules its bodies do not keep, or the prover does not read
 site/cases/orbite/src/test_aeolus.cell  # Orbite: rules its bodies do not keep, or the prover does not read
 site/cases/orbite/src/test_bout_en_bout.cell  # Orbite: rules its bodies do not keep, or the prover does not read
@@ -35,6 +33,4 @@ site/cases/orbite/src/test_observation.cell  # Orbite: rules its bodies do not k
 site/cases/orbite/src/test_operateurs.cell  # Orbite: rules its bodies do not keep, or the prover does not read
 site/cases/orbite/src/test_operations.cell  # Orbite: rules its bodies do not keep, or the prover does not read
 site/cases/orbite/src/test_priorites.cell  # Orbite: rules its bodies do not keep, or the prover does not read
-site/cases/orbite/src/test_reentrees.cell  # Orbite: rules its bodies do not keep, or the prover does not read
 site/cases/orbite/src/test_ref.cell  # Orbite: rules its bodies do not keep, or the prover does not read
-site/cases/orbite/src/test_responsabilite.cell  # Orbite: rules its bodies do not keep, or the prover does not read

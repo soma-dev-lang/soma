@@ -193,7 +193,7 @@ skeleton RespCommissions {
         signal saisir(h: Horodatage, rec: String) -> Horodatage
             writes saisie_le
             moves aucune -> en_constitution when RespReclamations.commission
-            calls Journal.noter
+            calls Journal.noter, RespReclamations.etat
         // Un État désigne son membre (par son "autorite"). Après DELAI_MEMBRES, le siège vacant
         // est pourvu par la "direction" d'ORBITE. Renvoie le nombre de sièges de membres pourvus
         // (0 à 2). Refus : Inconnu, EtatInvalide, Existe (siège déjà pourvu), Delai (direction

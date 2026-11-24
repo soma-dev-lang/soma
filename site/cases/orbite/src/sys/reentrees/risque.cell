@@ -97,6 +97,7 @@ skeleton ReeRisque {
         signal figer(h: Horodatage, campagne: String) -> ReeClasseRisque
             reads victimes
             moves faible -> fige when ReeCampagne.rentree || ReeCampagne.annulee, a_risque -> fige when ReeCampagne.rentree || ReeCampagne.annulee
+            calls ReeCampagne.etat
 
         // Espérance de victimes retenue (millionièmes). Refus : Inconnu (jamais évaluée).
         signal victimes_de(campagne: String) -> Int

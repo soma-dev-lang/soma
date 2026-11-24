@@ -71,6 +71,7 @@ flesh EvtCollisions {
     on classer(h, ev) {
         let st = get_status(ev) ?? "constatee"
         require st == "constatee" else EtatInvalide "instruction de {ev} {st}"
+        require EvtEvenements.etat(ev) == "infirme" else EtatInvalide "évènement {ev} non infirmé : l'instruction ne se classe pas"
         transition(ev, "constatee", "sans_objet")
         let _ = Journal.noter(h, "evenements", "systeme", "instruction de {ev} classée sans objet")
         return "sans_objet"

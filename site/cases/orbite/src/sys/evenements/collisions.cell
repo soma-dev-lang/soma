@@ -65,7 +65,7 @@ skeleton EvtCollisions {
         // Renvoie "sans_objet". Refus : EtatInvalide.
         signal classer(h: Horodatage, ev: String) -> String
             moves constatee -> sans_objet when EvtEvenements.infirme
-            calls Journal.noter
+            calls Journal.noter, EvtEvenements.etat
         // Transmet l'instruction : exige le dossier de preuve de l'évènement
         // (EvtEvenements.dossier, gelé à la confirmation) ; pour "decision_ignoree", constate un manquement de gravité 3
         // "decision_coordination_ignoree" à l'encontre du propriétaire de l'objet désigné

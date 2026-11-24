@@ -1,6 +1,6 @@
-# skeleton.lock — the structure `soma check` holds app.cell to.
-# Written by `soma skeleton app.cell --freeze`; changed on purpose with `--amend`. Do not edit.
-file app.cell
+# skeleton.lock — the structure `soma check` holds prod.cell to.
+# Written by `soma skeleton prod.cell --freeze`; changed on purpose with `--amend`. Do not edit.
+file prod.cell
 
 == Journal sha256:e64825eefb8cd441e949ea4d3325d69af24bb70dabd46d3ea2316474716896a7 core:bf13712713c5e4934de3d2e4d5588d21ed516839bbf07fb17fd579be37be0ff5
 skeleton Journal {
@@ -1861,7 +1861,7 @@ skeleton ConjCampagne {
         signal age_crible(regime: Regime, h: Horodatage) -> Duree  requires regime == "leo" || regime == "meo" || regime == "geo" || regime == "heo"  requires h >= 0  ensures result >= 0  reads derniere_de, fin_de
         signal fraiche(regime: Regime, h: Horodatage) -> Bool  requires regime == "leo" || regime == "meo" || regime == "geo" || regime == "heo"  requires h >= 0  reads derniere_de, fin_de
         signal etat(campagne: String) -> String  reads campagne, portee_de
-        signal criblage(catalogue: String, horizon: Duree, seuil: Distance) -> String  requires horizon >= 0  requires seuil >= 0
+        signal criblage(catalogue: String, horizon: Duree, seuil: Distance) -> String
     }
     // type ConjMotifCampagne = String where value == "cadence" || value == "renforce" || value == "nouvel_objet" || value == "manoeuvre_detectee" || value == "manuel" (nominal: never mixed with another type; build ConjMotifCampagne(x), read to_string(q); literals take its type)
     // type ConjPortee = String where value == "tout_contre_tout" || value == "regime" || value == "objet" (nominal: never mixed with another type; build ConjPortee(x), read to_string(q); literals take its type)
@@ -4095,7 +4095,7 @@ skeleton EscDossiers {
     //~ fiche 89b080da8c4b8dc8
 }
 
-== EscPriseEnCharge sha256:26b27980aa7820cf96e783243cddc6b663f9d4d4430dd77bada73ecc1d0b28f9 core:ff38db268b0499743c0701d793c716c7904810ff3287a1badffde9467c49b25e
+== EscPriseEnCharge sha256:bc74d4ff1d08b9e0b4464ca5515b2556acfa0a5a4c08797465bc4b5fab87e13b core:962ca29c8cc2495b6c79d6793410f4e476b1be3c150ee4b145e34cc4d71c89cd
 skeleton EscPriseEnCharge {
     memory {
         rapprochement_de: Map<String, String> [persistent]
@@ -4122,7 +4122,7 @@ skeleton EscPriseEnCharge {
         alerte_direction -> caduque
     }
     face {
-        signal ouvrir_prise(h: Horodatage, dossier: String, r: Rapprochement, fin: Horodatage, par: String) -> String  requires h >= 0  requires fin >= 0  writes limite, ouverte_a, rapprochement_de  moves inexistante -> en_attente when EscDossiers.reprise  calls ApiAcces.a_le_role, ApiPasserelle.notifier, ApiRef.orbite, Journal.noter
+        signal ouvrir_prise(h: Horodatage, dossier: String, r: Rapprochement, fin: Horodatage, par: String) -> String  requires h >= 0  requires fin >= 0  writes limite, ouverte_a, rapprochement_de  moves inexistante -> en_attente when EscDossiers.reprise  calls ApiAcces.a_le_role, ApiPasserelle.notifier, ApiRef.orbite, EscDossiers.etat, Journal.noter
         signal prendre(h: Horodatage, dossier: String, par: String) -> String  requires h >= 0  writes analyste  moves alerte_direction -> prise, en_attente -> prise  calls ApiAcces.a_le_role, Journal.noter
         signal depasser(h: Horodatage) -> Int  requires h >= 0  reads limite, rapprochement_de  writes incident  moves en_attente -> alerte_direction  calls ApiOperations.declarer_incident, ApiPasserelle.notifier, ApiRef.orbite, Journal.noter
         signal trancher(h: Horodatage, dossier: String, par: String) -> String  requires h >= 0  reads rapprochement_de  moves alerte_direction -> caduque, alerte_direction -> tranchee when EscVeille.couverte via rapprochement_de, en_attente -> caduque, en_attente -> tranchee when EscVeille.couverte via rapprochement_de, prise -> caduque, prise -> tranchee when EscVeille.couverte via rapprochement_de  calls ApiAcces.a_le_role, ApiConjonctions.etat, ApiConjonctions.tca, EscVeille.couverte, Journal.noter
@@ -4339,7 +4339,7 @@ skeleton EvtAnomalies {
     //~ en_souffrance 7971e167be68f84e
 }
 
-== EvtCollisions sha256:f6a6ab479652671244f6cb51e51db56e618b5c851cf46a76cd51b2aee56c74ab core:9989fc00be41e0eb95f28ced4ed3f8386337417532fb363ed3ab4d838b05397d
+== EvtCollisions sha256:6501e5da1e14db2d32cdf8dc98458bf228180c31b7c69371d09ac2b4d2bf8b77 core:77026f8365c8478519e6c5479eca49496ab6b3330ecf2669a001a435d723ce5e
 skeleton EvtCollisions {
     memory {
         rapprochement_de: Map<String, Rapprochement> [persistent]
@@ -4368,7 +4368,7 @@ skeleton EvtCollisions {
     face {
         signal ouvrir(h: Horodatage, ev: String, r: Rapprochement) -> Objet  requires h >= 0  writes coordination_alors, decision_alors, designe_alors, etat_plan_alors, pc_alors, plan_alors, rapprochement_de, tca_alors  calls ApiConjonctions.pc, ApiConjonctions.tca, ApiCoordination.decision, ApiCoordination.etat, ApiManoeuvres.etat, ApiManoeuvres.plan_de, Journal.noter
         signal instruire(h: Horodatage, ev: String, v: EvtVerdict, motif: String, par: String, valideur: String) -> EvtVerdict  requires h >= 0  requires v == "decision_suivie" || v == "decision_ignoree" || v == "sans_decision" || v == "hors_coordination"  ensures result == "decision_suivie" || result == "decision_ignoree" || result == "sans_decision" || result == "hors_coordination"  reads designe_alors, plan_alors, rapprochement_de, tca_alors  writes instruction, verdict  moves constatee -> instruite when EvtEvenements.confirme  calls ApiAcces.a_le_role, ApiAcces.quatre_yeux, ApiManoeuvres.etat, ApiObservation.manoeuvre_detectee, EvtEvenements.etat, Journal.noter
-        signal classer(h: Horodatage, ev: String) -> String  requires h >= 0  moves constatee -> sans_objet when EvtEvenements.infirme  calls Journal.noter
+        signal classer(h: Horodatage, ev: String) -> String  requires h >= 0  moves constatee -> sans_objet when EvtEvenements.infirme  calls EvtEvenements.etat, Journal.noter
         signal transmettre(h: Horodatage, ev: String, par: String) -> String  requires h >= 0  reads designe_alors, verdict  writes manquement_de  moves instruite -> transmise when RespGels.gele  calls ApiAcces.a_le_role, ApiConformite.constater, ApiRef.proprietaire, ApiResponsabilite.sous_gel, EvtEvenements.dossier, EvtEvenements.objets, EvtNotifications.preparer, Journal.noter
         signal rapprochement(ev: String) -> Rapprochement  reads rapprochement_de
         signal etat(ev: String) -> String  reads collision, rapprochement_de
@@ -4558,7 +4558,7 @@ skeleton EvtNotifications {
     //~ de_sujet 22598ac6f7f07f5b
 }
 
-== EvtNuages sha256:e8bb1a5e06f56c567121ac52da52ef3c7851c0060b8e275d8309a4d320214a09 core:8057f2bc0e0a25e345614e33409239a47fcf5c86adc20e54e63465154378ffb7
+== EvtNuages sha256:48419c8e0dd43ccd198414ea44270e0a2339cf498f8686497019549af4dff5be core:a4b3c7f785dad0c1af9eaf5e9eeb23764d55623741a94e8626e03878a07f248c
 skeleton EvtNuages {
     memory {
         regimes: Map<String, List<String>> [persistent]
@@ -4598,8 +4598,8 @@ skeleton EvtNuages {
     face {
         signal amorcer(h: Horodatage, nuage: String, touches: List<String>) -> Int  requires h >= 0  ensures result >= 1 && result <= 4  writes amorce_le, catalogues, regimes, renforce_jusqua, rentres  calls ApiConjonctions.renforcer
         signal estimer(h: Horodatage, nuage: String, nb: Int, m: Masse, dv: DeltaV, basse: Distance, haute: Distance, touches: List<String>, par: String) -> Int  requires nb >= 0  requires h >= 0  requires m >= 0  requires dv >= 0 && dv <= 10000000  requires basse >= 0  requires haute >= 0  reads nuage, renforce_jusqua  writes altitude_basse, altitude_haute, dispersion, estimations, estime_nb, masse, regimes  calls ApiAcces.a_le_role, ApiConjonctions.renforcer, EvtEvenements.etat, EvtEvenements.objets, EvtNotifications.diffuser, Journal.noter
-        signal ouvrir(h: Horodatage, nuage: String) -> String  requires h >= 0  reads regimes  moves estime -> en_catalogage when EvtEvenements.confirme  calls Journal.noter
-        signal abandonner(h: Horodatage, nuage: String) -> String  requires h >= 0  moves estime -> abandonne when EvtEvenements.infirme  calls Journal.noter
+        signal ouvrir(h: Horodatage, nuage: String) -> String  requires h >= 0  reads regimes  moves estime -> en_catalogage when EvtEvenements.confirme  calls EvtEvenements.etat, Journal.noter
+        signal abandonner(h: Horodatage, nuage: String) -> String  requires h >= 0  moves estime -> abandonne when EvtEvenements.infirme  calls EvtEvenements.etat, Journal.noter
         signal compter_fragment(nuage: String) -> Int  ensures result >= 1  reads nuage  writes catalogues
         signal compter_rentree(nuage: String) -> Int  ensures result >= 1  writes rentres
         signal prolonger(h: Horodatage, nuage: String, jusqua: Horodatage, motif: String, par: String) -> Horodatage  requires h >= 0  requires jusqua >= 0  ensures result >= 0  reads nuage, regimes  writes renforce_jusqua  calls ApiAcces.a_le_role, ApiConjonctions.renforcer, Journal.noter
@@ -4632,7 +4632,7 @@ skeleton EvtNuages {
     //~ etat 268f815930a5e7fc
 }
 
-== EvtRapports sha256:4f69e5caf3bca2e55f8f58819043a0158bc0bfe5970a7d00b3dedf2f9ef5ec55 core:dda44a493bf54aecacc26c823b0588c6e08ae4faae42ebeec2f30e139e9adee2
+== EvtRapports sha256:92d1fe6f763000b4552509c39df54fe7480c93f0e39992e5f7ef4051f9a9145f core:b03bcdbeb4c47d45596626b4f508cd096532d0c1d788588f84e8b964a836a290
 skeleton EvtRapports {
     memory {
         du_le: Map<String, Horodatage> [persistent]
@@ -4661,7 +4661,7 @@ skeleton EvtRapports {
         signal rediger(h: Horodatage, ev: String, e: String, par: String) -> Int  requires h >= 0  ensures result >= 1  reads du_le, rapport  writes empreinte, versions  moves attendu -> redige when EvtEvenements.confirme  calls ApiAcces.a_le_role, EvtEvenements.etat, Journal.noter
         signal valider(h: Horodatage, ev: String, d: Diffusion, par: String, valideur: String) -> String  requires h >= 0  requires d == "public" || d == "participants" || d == "parties" || d == "restreint"  reads versions  writes diffusion_de, validation  moves redige -> valide  calls ApiAcces.a_le_role, ApiAcces.quatre_yeux, ApiDonnees.diffusion, EvtEvenements.objets, Journal.noter
         signal publier(h: Horodatage, ev: String, par: String) -> Int  requires h >= 0  ensures result >= 0  reads diffusion_de  writes publie_le  moves valide -> publie  calls ApiAcces.a_le_role, EvtEvenements.objets, EvtNotifications.diffuser, EvtNotifications.preparer, EvtNuages.regimes_de, Journal.noter
-        signal classer(h: Horodatage, ev: String) -> String  requires h >= 0  moves attendu -> sans_objet when EvtEvenements.infirme  calls Journal.noter
+        signal classer(h: Horodatage, ev: String) -> String  requires h >= 0  moves attendu -> sans_objet when EvtEvenements.infirme  calls EvtEvenements.etat, Journal.noter
         signal en_retard(h: Horodatage, n: Int) -> List<String>  requires n > 0 && n <= 1000  requires h >= 0  reads du_le, rapport
     }
     // type Diffusion = String where value == "public" || value == "participants" || value == "parties" || value == "restreint" (nominal: never mixed with another type; build Diffusion(x), read to_string(q); literals take its type)
@@ -9389,7 +9389,7 @@ skeleton ReeNotification {
     //~ retirer 50ea746556deea70
 }
 
-== ReeRisque sha256:eff5249e33f2cb0c5694aedce40f249fac46c97ed8600f498924af7e6a83ef24 core:739c3350b15d7ece62deb078f4f0fb3f905dc3c6a5cf2f1b5e481af47afa4ad6
+== ReeRisque sha256:bf64cf4758b4b020cae8bd471f7ea4f87d5d120caa8612e6cbc9d05172c75c72 core:394bc693efd809cb6184c532f18a511dee51eaf20b039dbd07c41f6cd090d0d9
 skeleton ReeRisque {
     memory {
         victimes: Map<String, Int> [persistent]
@@ -9419,7 +9419,7 @@ skeleton ReeRisque {
         signal evaluer(h: Horodatage, campagne: String, victimes_ppm: Int) -> ReeClasseRisque  requires h >= 0  ensures result == "non_evalue" || result == "faible" || result == "a_risque" || result == "fige"  writes demande_controlee, evalue_le, masse_catalogue, victimes  moves faible -> a_risque, non_evalue -> a_risque, non_evalue -> faible  calls ApiPasserelle.notifier, ApiRef.masse, ApiRef.peut_manoeuvrer, ApiRef.proprietaire, ReeCampagne.objet
         signal detailler(h: Horodatage, campagne: String, masse: Masse, nb_fragments: Int, victimes_ppm: Int, par: String) -> ReeClasseRisque  requires h >= 0  requires masse >= 0  ensures result == "non_evalue" || result == "faible" || result == "a_risque" || result == "fige"  writes evalue_le, fragments, masse_survivante, victimes  moves faible -> a_risque  calls ApiAcces.a_le_role, Journal.noter
         signal declasser(h: Horodatage, campagne: String, victimes_ppm: Int, motif: String, par: String, valideur: String) -> ReeClasseRisque  requires h >= 0  ensures result == "non_evalue" || result == "faible" || result == "a_risque" || result == "fige"  reads masse_survivante  writes declassement, victimes  moves a_risque -> faible  calls ApiAcces.a_le_role, ApiAcces.quatre_yeux, Journal.noter
-        signal figer(h: Horodatage, campagne: String) -> ReeClasseRisque  requires h >= 0  ensures result == "non_evalue" || result == "faible" || result == "a_risque" || result == "fige"  reads victimes  moves a_risque -> fige when ReeCampagne.rentree || ReeCampagne.annulee, faible -> fige when ReeCampagne.rentree || ReeCampagne.annulee
+        signal figer(h: Horodatage, campagne: String) -> ReeClasseRisque  requires h >= 0  ensures result == "non_evalue" || result == "faible" || result == "a_risque" || result == "fige"  reads victimes  moves a_risque -> fige when ReeCampagne.rentree || ReeCampagne.annulee, faible -> fige when ReeCampagne.rentree || ReeCampagne.annulee  calls ReeCampagne.etat
         signal victimes_de(campagne: String) -> Int  ensures result >= 0  reads victimes
         signal majeur(campagne: String) -> Bool  reads masse_catalogue, victimes
         signal a_risque(campagne: String) -> Bool  reads classe, victimes
@@ -10524,7 +10524,7 @@ skeleton RespReclamations {
     //~ pendantes_de_dossier 44439b54aa128cac
 }
 
-== RespCommissions sha256:198899ffc53d635ab33be7f20f38ef00abfe67e49d0de5d9920e09d03d64f942 core:b13f62bc8ef67237ef54192965372f7420c5e3305179a096f4c903129ad6ac78
+== RespCommissions sha256:2512e528703061875caa18844b33c2e108dc9a3141877384154e452b125e3018 core:1a4a2aeadee36390774871b1ef944320892520de7619644f553b2da4bcde107f
 skeleton RespCommissions {
     memory {
         saisie_le: Map<String, Horodatage> [persistent]
@@ -10558,7 +10558,7 @@ skeleton RespCommissions {
         constituee -> dissoute
     }
     face {
-        signal saisir(h: Horodatage, rec: String) -> Horodatage  requires h >= 0  ensures result >= 0  writes saisie_le  moves aucune -> en_constitution when RespReclamations.commission  calls Journal.noter
+        signal saisir(h: Horodatage, rec: String) -> Horodatage  requires h >= 0  ensures result >= 0  writes saisie_le  moves aucune -> en_constitution when RespReclamations.commission  calls Journal.noter, RespReclamations.etat
         signal designer_membre(h: Horodatage, rec: String, membre: String, etat: Etat, par: String) -> Int  requires h >= 0  reads commission, saisie_le  writes membre_defendeur, membre_demandeur  calls ApiAcces.a_le_role, ApiAcces.agit_pour, ApiRef.org_de_etat, Journal.noter, RespReclamations.parties
         signal designer_president(h: Horodatage, rec: String, president: String, par: String, valideur: String) -> Horodatage  requires h >= 0  ensures result >= 0  reads membre_defendeur, membre_demandeur, saisie_le  writes constituee_le, echeance_sentence, president_de, siegeantes  moves en_constitution -> constituee  calls ApiAcces.a_le_role, ApiAcces.agit_pour, ApiAcces.quatre_yeux, ApiRef.org_de_etat, Journal.noter, RespReclamations.parties
         signal accepter_force(h: Horodatage, rec: String, etat: Etat, par: String) -> Int  requires h >= 0  reads commission  writes acceptations_de  calls ApiAcces.a_le_role, ApiAcces.agit_pour, ApiRef.org_de_etat, Journal.noter, RespReclamations.parties
@@ -10610,4 +10610,4 @@ verify.before.RespSinistres.declare.requires = ["OpMembres.admis"]
 verify.before.RespSinistres.declare.via = "RespSinistres.op_de"
 package.edition = "2026"
 
-checksum sha256:2a5167753f23b5fc9a4f4fc241bc17ebc69a681768c88f3fc5a78bfa3ef29b63
+checksum sha256:20d67d754142eed1295fd3b1f1aa56326790c02fe0eb65fd4d6abb60fadcac40

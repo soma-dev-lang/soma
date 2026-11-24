@@ -71,6 +71,7 @@ flesh EvtNuages {
         require regimes.get(nuage) != () else Inconnu "nuage jamais amorcé : {nuage}"
         let st = get_status(nuage) ?? "estime"
         require st == "estime" else EtatInvalide "nuage {nuage} {st}"
+        require EvtEvenements.etat(nuage) == "confirme" else EtatInvalide "évènement {nuage} non confirmé : pas de catalogage"
         transition(nuage, "estime", "en_catalogage")
         let _ = Journal.noter(h, "evenements", "systeme", "nuage {nuage} en catalogage")
         return "en_catalogage"
@@ -79,6 +80,7 @@ flesh EvtNuages {
     on abandonner(h, nuage) {
         let st = get_status(nuage) ?? "estime"
         require st == "estime" else EtatInvalide "nuage {nuage} {st}"
+        require EvtEvenements.etat(nuage) == "infirme" else EtatInvalide "évènement {nuage} non infirmé : le nuage ne s'abandonne pas"
         transition(nuage, "estime", "abandonne")
         let _ = Journal.noter(h, "evenements", "systeme", "nuage {nuage} abandonné")
         return "abandonne"

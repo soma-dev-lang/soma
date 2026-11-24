@@ -2716,8 +2716,8 @@ impl<'a> Engine<'a> {
         }));
         let above: Option<BTreeSet<String>> = came.and_then(|(c, b)| { let mut all = BTreeSet::new(); for m in &required { all.extend(self.readers_of(*m, c, b)?); } Some(all) });
         match above {
-            Some(r) if r.is_empty() && entry == label => format!("{}: nothing it runs reads the state of {} — no `require` asks for it", said, names),
-            Some(r) if r.is_empty() => format!("{}: nothing it runs reads the state of {}, and nothing `{}` runs does — no `require` asks for it", said, names, entry),
+            Some(r) if r.is_empty() && entry == label => format!("{}: nothing it runs reads the state of {}", said, names),
+            Some(r) if r.is_empty() => format!("{}: nothing it runs reads the state of {}, nor does anything `{}` runs", said, names, entry),
             Some(r) => format!("{}, which reads nothing of the state of {} (a handler that calls it may: `{}` runs {}{})", said, names, entry, r.iter().take(3).map(|x| format!("`{}`", x)).collect::<Vec<_>>().join(", "), if r.len() > 3 { format!(" and {} more", r.len() - 3) } else { String::new() }),
             None => format!("{}, which reads nothing of the state of {}", said, names),
         }
