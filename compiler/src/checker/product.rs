@@ -322,6 +322,9 @@ struct Engine<'a> {
     /// in a cone: the handlers ("Cell.handler") that may move a kept machine;
     /// a call of any other is skipped (it cannot change the state followed)
     prune: Option<HashSet<String>>,
+    /// outside a cone: the handlers that may move any machine (what a status
+    /// held in a variable does not outlive a call of)
+    movers: Option<HashSet<String>>,
     /// (machine, state) → bit of `seen`
     watched: HashMap<(usize, usize), u32>,
     props: Vec<Property>,
@@ -586,8 +589,7 @@ impl<'a> Engine<'a> {
     /// machine (`touching`) leaves every status as it was read: a status held
     /// in a variable is still the status after `seen.set(id, h)`.
     fn may_move(&self, st: &Spanned<Statement>) -> bool {
-        // (outside a cone, any handler may)
-        let may = |cell: &str, name: &str| self.prune.as_ref().map_or(true, |p| p.contains(&format!("{}.{}", cell, name)));
+        let may = |cell: &str, name: &str| self.prune.as_ref().or(self.movers.as_ref()).map_or(true, |p| p.contains(&format!("{}.{}", cell, name)));
         let builtins = super::names::builtin_names();
         let moving = |name: &str| self.cells.iter().any(|c| self.handler(c, name).is_some() && may(&c.name, name));
         let known = |name: &str| self.first_ix.contains_key(name);
@@ -1560,6 +1562,11 @@ impl<'a> Engine<'a> {
                             let key = self.key_of(&value.node, value.span, &inner);
                             Rc::make_mut(&mut inner.env).insert(name.clone(), key);
                         }
+                        // `let st = get_status(id) ?? "new"`: the status, held in a variable
+                        Statement::Let { name, value } if !matches!(value.node, Expr::Ident(_)) && status_read(&value.node).is_some() => {
+                            let Some(read) = self.status_of(&value.node, &inner) else { return (all.clone(), all) };
+                            Rc::make_mut(&mut inner.status).insert(name.clone(), read);
+                        }
                         Statement::If { condition, .. } if early_false(g) => {
                             passing = self.branch(&condition.node, &inner, passing).1;
                             guarded = true;
@@ -1645,7 +1652,7 @@ impl<'a> Engine<'a> {
                 }
             }
             let facts = self.stmt_facts(st);
-            if facts.head_calls && !local.status.is_empty() { local.status = Rc::default(); local.derived = Rc::default(); }
+            if facts.head_calls && !(local.status.is_empty() && local.derived.is_empty()) { local.status = Rc::default(); local.derived = Rc::default(); }
             // a variable assigned inside an expression of this statement may be
             // read after that, in the same statement: unknown from the start
             for n in &facts.assigned {
@@ -1844,11 +1851,11 @@ impl<'a> Engine<'a> {
             }
             // a status held in a variable is the status until something is
             // called: any call may move the machine
-            if facts.calls && !local.status.is_empty() { local.status = Rc::default(); local.derived = Rc::default(); }
+            if facts.calls && !(local.status.is_empty() && local.derived.is_empty()) { local.status = Rc::default(); local.derived = Rc::default(); }
             if let Statement::Let { name, value } | Statement::Assign { name, value } = &st.node {
                 forget_derived(&mut local.derived, name);
                 // (its conditions are read where the variable is: only statuses still held decide them)
-                if let Some(arms) = text_arms(&value.node) { if !local.status.is_empty() { Rc::make_mut(&mut local.derived).insert(name.clone(), Rc::new((arms, Vec::new()))); } }
+                if !facts.calls { if let Some(arms) = text_arms(&value.node) { Rc::make_mut(&mut local.derived).insert(name.clone(), Rc::new((arms, Vec::new()))); } }
                 match self.status_of(&value.node, &local).filter(|_| !matches!(value.node, Expr::Ident(_))) {
                     Some(read) => { Rc::make_mut(&mut local.status).insert(name.clone(), read); }
                     None => if local.status.contains_key(name) { Rc::make_mut(&mut local.status).remove(name); },
@@ -2414,7 +2421,8 @@ fn attempt(exposed: &Program, cells: &[&CellDef], group: &[&Spec], cone: bool, s
             }
         }
         let prune = if sliced.is_empty() { None } else { Some(touching(cells, &machines.iter().map(|m| m.owner).collect())) };
-        let mut engine = Engine { cells: cells.to_vec(), machines, sliced: sliced.clone(), prune, watched, props, broken: BTreeMap::new(), site: BTreeMap::new(), unsupported: None, names: super::desugar::program_names(exposed), link: link.cloned(), secondary: secondary.clone(), moves: 0, forced: false, variants: variant_names(exposed), top: exposed.cells.iter().map(|c| &c.node as *const CellDef as usize).collect(), parent_of: {
+        let movers = if prune.is_none() { Some(touching(cells, &machines.iter().map(|m| m.owner).collect())) } else { None };
+        let mut engine = Engine { cells: cells.to_vec(), machines, sliced: sliced.clone(), prune, movers, watched, props, broken: BTreeMap::new(), site: BTreeMap::new(), unsupported: None, names: super::desugar::program_names(exposed), link: link.cloned(), secondary: secondary.clone(), moves: 0, forced: false, variants: variant_names(exposed), top: exposed.cells.iter().map(|c| &c.node as *const CellDef as usize).collect(), parent_of: {
             fn walk(c: &CellDef, out: &mut HashMap<usize, usize>) {
                 for s in &c.sections { if let Section::Interior(i) = &s.node { for x in &i.cells { out.insert(&x.node as *const CellDef as usize, c as *const CellDef as usize); walk(&x.node, out); } } }
             }
@@ -2671,8 +2679,8 @@ pub fn check(program: &Program, specs: &[Spec]) -> Vec<super::verify::VerifyResu
 }
 
 /// `if c { "a" } else if d { "b" } else { "" }`: each text with its condition
-/// (`None` for the last `else`) — when every arm is a plain text and no
-/// condition calls or assigns anything.
+/// (`None` for the last `else`) — when every arm is a plain text and its
+/// conditions are comparisons and calls.
 fn text_arms(e: &Expr) -> Option<Vec<(Option<Expr>, String)>> {
     let plain = |x: &Expr| match x { Expr::Literal(Literal::String(t)) if super::desugar::segments(t).is_empty() => Some(t.clone()), _ => None };
     let mut arms = Vec::new();
@@ -2681,7 +2689,8 @@ fn text_arms(e: &Expr) -> Option<Vec<(Option<Expr>, String)>> {
         let Expr::IfExpr { condition, then_body, then_result, else_body, else_result } = at else { return None };
         if !then_body.is_empty() || !else_body.is_empty() { return None; }
         let mut pure = true;
-        super::literals::for_each_in_expr(&condition.node, &mut |x| if !matches!(x, Expr::Ident(_) | Expr::Literal(_) | Expr::CmpOp { .. } | Expr::BinaryOp { .. } | Expr::Not(_)) { pure = false; });
+        // (a call is read where the variable is, as long as no statement between may move a machine)
+        super::literals::for_each_in_expr(&condition.node, &mut |x| if !matches!(x, Expr::Ident(_) | Expr::Literal(_) | Expr::CmpOp { .. } | Expr::BinaryOp { .. } | Expr::Not(_) | Expr::FnCall { .. } | Expr::MethodCall { .. }) { pure = false; });
         if !pure { return None; }
         arms.push((Some(condition.node.clone()), plain(&then_result.node)?));
         match plain(&else_result.node) {

@@ -836,6 +836,13 @@ fn a_text_chosen_from_a_status_is_read_as_the_status() {
     let (out, code) = linked("derived_else", &derived.replace("if cible == \"active\" {\n            transition(source, \"active\")\n        }", "if cible == \"fin\" {\n            vue.set(source, 0)\n        } else {\n            transition(source, \"active\")\n        }"));
     assert!(out.contains("✓ entering Source.active while Org.inscrite via Source.fournisseur"), "{out}");
     assert_eq!(code, 0, "{out}");
+    // an arm chosen by a predicate of the other cell
+    let (out, code) = linked("derived_predicate", &derived.replace("let cible = if e == \"inscrite\" { \"active\" } else if e == \"radiee\" { \"fin\" } else { \"\" }", "let cible = if Org.radiee(o) { \"fin\" } else if Org.etat(o) == \"inscrite\" { \"active\" } else { \"\" }"));
+    assert!(out.contains("✓ entering Source.active while Org.inscrite via Source.fournisseur"), "{out}");
+    assert_eq!(code, 0, "{out}");
+    // …read where the variable is: not past a call that may move the machine
+    let (out, _) = linked("derived_predicate_stale", &derived.replace("let cible = if e == \"inscrite\" { \"active\" } else if e == \"radiee\" { \"fin\" } else { \"\" }", "let cible = if Org.radiee(o) { \"fin\" } else if Org.etat(o) == \"inscrite\" { \"active\" } else { \"\" }\n        let _ = Org.radier(o)"));
+    assert!(out.contains("✗ entering Source.active while Org.inscrite"), "{out}");
     // the arm that moves is not the one the rule asks for
     let (out, code) = linked("derived_wrong_arm", &derived.replace("if cible == \"active\" {", "if cible == \"fin\" {"));
     assert!(out.contains("✗ entering Source.active while Org.inscrite"), "{out}");
@@ -874,4 +881,23 @@ fn a_text_the_handler_refused_is_not_what_the_getter_answered() {
         let (out, _) = linked(name, &body(checks));
         assert!(out.contains(expect), "{name}: {out}");
     }
+}
+
+/// A predicate that first holds the status in a variable is read as one that
+/// compares it at once: `on ok(id) { let st = get_status(id) ?? "new"  return st == "a" || st == "b" }`.
+#[test]
+fn a_predicate_that_holds_the_status_in_a_variable_is_read() {
+    let source = LINKED.replace("signal radiee(o: String) -> Bool }", "signal radiee(o: String) -> Bool  signal inscrite(o: String) -> Bool }")
+        .replace("    on radiee(o: String) {", "    on inscrite(o: String) {\n        let st = get_status(o) ?? \"inconnue\"\n        return st == \"inscrite\"\n    }\n    on radiee(o: String) {")
+        .replace("        require e == \"inscrite\" else Non \"non\"\n", "        require Org.inscrite(o) else Non \"non\"\n");
+    assert!(source.contains("require Org.inscrite(o)") && source.contains("on inscrite(o: String)"));
+    let (out, code) = linked("predicate_let", &source);
+    assert!(out.contains("✓ entering Source.active while Org.inscrite via Source.fournisseur"), "{out}");
+    assert_eq!(code, 0, "{out}");
+    // what it compares the variable with is what is read
+    let (out, _) = linked("predicate_let_wide", &source.replace("return st == \"inscrite\"", "return st == \"inscrite\" || st == \"radiee\""));
+    assert!(out.contains("✗ entering Source.active while Org.inscrite"), "{out}");
+    // a variable that is not the status says nothing
+    let (out, _) = linked("predicate_let_other", &source.replace("let st = get_status(o) ?? \"inconnue\"", "let st = connue.get(o) ?? \"\""));
+    assert!(out.contains("✗ entering Source.active while Org.inscrite"), "{out}");
 }
