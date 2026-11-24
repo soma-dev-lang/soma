@@ -739,3 +739,30 @@ fn a_chain_of_twenty_calls_is_followed() {
     assert_eq!(code, 0, "{out}");
     let _ = std::fs::remove_dir_all(&dir);
 }
+
+// The state of the other instance is checked on a parameter, then the link is
+// written with it, then the handler moves: the instance the link names is the
+// one that was checked. Written with another value, it is not.
+#[test]
+fn a_link_written_with_the_value_just_checked_names_the_instance_checked() {
+    let from = "        genre.set(source, nature)\n        fournisseur.set(source, org)\n        return \"declaree\"\n";
+    assert!(LINKED.contains(from));
+    let checked = LINKED.replace("        require genre.get(source) == () else Existe \"déjà\"\n", "        require genre.get(source) == () else Existe \"déjà\"\n        require Org.etat(org) == \"inscrite\" else Non \"non\"\n")
+        .replace(from, "        genre.set(source, nature)\n        fournisseur.set(source, org)\n        transition(source, \"active\")\n        return \"active\"\n");
+    let (out, code) = linked("linked_write", &checked);
+    assert!(out.contains("✓ entering Source.active while Org.inscrite via Source.fournisseur"), "{out}");
+    assert_eq!(code, 0, "{out}");
+    for (name, from, to) in [
+        // the link is written with another organisation than the one checked
+        ("linked_write_other", "fournisseur.set(source, org)\n        transition", "fournisseur.set(source, nature)\n        transition"),
+        // nothing is checked
+        ("linked_write_unchecked", "        require Org.etat(org) == \"inscrite\" else Non \"non\"\n", ""),
+        // the organisation is struck off between the check and the move
+        ("linked_write_stale", "fournisseur.set(source, org)\n        transition", "fournisseur.set(source, org)\n        let _ = Org.radier(org)\n        transition"),
+    ] {
+        assert!(checked.contains(from), "{name}");
+        let (out, code) = linked(name, &checked.replace(from, to));
+        assert!(out.contains("✗ entering Source.active while Org.inscrite"), "{name}: {out}");
+        assert_ne!(code, 0, "{name}: {out}");
+    }
+}

@@ -661,6 +661,15 @@ impl<'a> Engine<'a> {
         }
     }
 
+    /// `id` or `to_string(id)` of a name `frame` has a key for: another name of that id.
+    fn alias(&self, e: &Expr, frame: &Frame) -> bool {
+        match e {
+            Expr::Ident(v) => frame.env.contains_key(v),
+            Expr::FnCall { name, args } => name == "to_string" && args.len() == 1 && self.first(name).is_none() && matches!(&args[0].node, Expr::Ident(v) if frame.env.contains_key(v)),
+            _ => false,
+        }
+    }
+
     /// The status `e` reads, when it is one: `get_status(id)` (with or
     /// without `?? "state"`) in this cell, the same through a handler whose
     /// body is that one `return` (`Approval.status(id)`), or a variable just
@@ -706,8 +715,7 @@ impl<'a> Engine<'a> {
         for g in guards {
             match &g.node {
                 // (`let o = to_string(id)`: another name of the id)
-                Statement::Let { name, value } if matches!(&value.node, Expr::Ident(v) if inner.env.contains_key(v))
-                    || matches!(&value.node, Expr::FnCall { name: f, args } if f == "to_string" && args.len() == 1 && self.first(f).is_none() && matches!(&args[0].node, Expr::Ident(v) if inner.env.contains_key(v))) => {
+                Statement::Let { name, value } if self.alias(&value.node, &inner) => {
                     let key = self.key_of(&value.node, value.span, &inner);
                     Rc::make_mut(&mut inner.env).insert(name.clone(), key);
                 }
@@ -1484,18 +1492,33 @@ impl<'a> Engine<'a> {
                             self.first(name) }),
                 };
                 let Some((cell, on)) = callee else { return (states.clone(), states) };
-                // (…after any number of `if … { return false }`: where it answers true, its last line did)
+                // (…after any number of `if … { return false }`: where it answers true,
+                // none of those conditions held and its last line did; and of
+                // `let k = to_string(id)`, another name of the id)
                 let Some((only, guards)) = on.body.split_last() else { return (states.clone(), states) };
                 let Statement::Return { value } = &only.node else { return (states.clone(), states) };
-                if !guards.iter().all(early_false) { return (states.clone(), states); }
-                let guarded = !guards.is_empty();
                 let mut env = HashMap::new();
                 for (i, p) in on.params.iter().enumerate() {
                     if let Some(a) = args.get(i) { env.insert(p.name.clone(), self.key_of(&a.node, a.span, frame)); }
                 }
-                let inner = Frame { cell, env: Rc::new(env), uid: format!("{}/b{}", frame.uid, only.span.start).into(), depth: frame.depth + 1, status: Rc::default() };
-                if guarded { let all = states.clone(); return (self.branch(&value.node, &inner, states).0, all); }
-                self.branch(&value.node, &inner, states)
+                let mut inner = Frame { cell, env: Rc::new(env), uid: format!("{}/b{}", frame.uid, only.span.start).into(), depth: frame.depth + 1, status: Rc::default() };
+                let all = states.clone();
+                let (mut passing, mut guarded) = (states, false);
+                for g in guards {
+                    match &g.node {
+                        Statement::Let { name, value } if self.alias(&value.node, &inner) => {
+                            let key = self.key_of(&value.node, value.span, &inner);
+                            Rc::make_mut(&mut inner.env).insert(name.clone(), key);
+                        }
+                        Statement::If { condition, .. } if early_false(g) => {
+                            passing = self.branch(&condition.node, &inner, passing).1;
+                            guarded = true;
+                        }
+                        _ => return (all.clone(), all),
+                    }
+                }
+                if guarded { return (self.branch(&value.node, &inner, passing).0, all); }
+                self.branch(&value.node, &inner, passing)
             }
             _ => (states.clone(), states),
         }
@@ -1713,6 +1736,31 @@ impl<'a> Engine<'a> {
                     }
                     flow.normal = s;
                 }
+            }
+            // `link.set(id, other)`, in the link's cell: the instance `id` names IS
+            // `other` from here — where `id` is the followed one, what was read of
+            // `other` (a `require` on its state, before the link was written) was
+            // read of the followed other instance
+            let written: Option<(&Spanned<Expr>, &Spanned<Expr>)> = match &st.node {
+                Statement::MethodCall { target, method, args } if matches!(method.as_str(), "set" | "put") && args.len() == 2
+                    && self.is_link(&Expr::Ident(target.clone()), &local) => Some((&args[0], &args[1])),
+                Statement::ExprStmt { expr } => match &expr.node {
+                    Expr::MethodCall { target, method, args } if matches!(method.as_str(), "set" | "put") && args.len() == 2 && self.is_link(&target.node, &local) => Some((&args[0], &args[1])),
+                    _ => None,
+                },
+                _ => None,
+            };
+            if let Some((id, other)) = written {
+                let (k, v) = (self.key_of(&id.node, id.span, &local), self.key_of(&other.node, other.span, &local));
+                let (followed, mut rest) = self.split(&flow.normal, &k);
+                let is_other = kid(&format!("§{}", v));
+                for mut x in followed {
+                    // (decided "`other` is not the followed other": no run is both)
+                    if x.bind.get(is_other) == Some(false) { continue; }
+                    x.bind.insert(is_other, true);
+                    rest.insert(x);
+                }
+                flow.normal = rest;
             }
             join(&mut flow.returned, std::mem::take(&mut self.returned));
             join(&mut flow.broke, std::mem::take(&mut self.broke));
