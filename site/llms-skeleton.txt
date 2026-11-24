@@ -126,11 +126,18 @@ The frame, clause by clause (after the return type and any `requires` /
   requires = ["Consult.done"]        # or `while = […]`: the state it is in NOW
   via = "Ordo.consult_of"            # Map<String, String>: prescription → consultation
   ```
-  The link must be written by ONE signal, once, when the entry is created
-  (`require consult_of.get(id) == () else Exists` then
-  `consult_of.set(id, consult)`), and never deleted — `verify` refuses the
-  rule otherwise. A body proves it by checking the consultation it READS
-  from that slot (`let c = consult_of.get(id)  require Consult.is_done(c)`).
+  The link must be written once and never deleted — `verify` refuses the
+  rule otherwise. Declare the slot `[immutable]` (the run time refuses a
+  second write), or write it in ONE signal, once: at a key made from
+  `next_id()`, or after `require consult_of.get(id) == () else Exists`
+  (`!consult_of.has(id)`, or the same guard on another slot the handler
+  fills at that key first and nothing empties). A body proves the rule by
+  checking the consultation it READS from that slot (`let c =
+  consult_of.get(id)  require Consult.is_done(c)`), or the one it is about
+  to write there (`require Consult.is_done(c)` then `consult_of.set(id, c)`).
+  A status is read through a getter (`on state(id) { if seen.get(id) == ()
+  { return "unknown" }  return get_status(id) ?? "open" }`), not through
+  arithmetic on it.
 - **A rule on an edge, in the frame**: `moves drafted -> delivered when
   Consult.done` (alternatives with `||`, another instance with
   `via consult_of`) says the edge is taken only while the other machine is

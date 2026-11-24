@@ -31,7 +31,7 @@ below is current for the binary named in https://soma-lang.dev/version.json.
 
 ## Pick Soma when / skip it when
 
-Current release: 3.2.6 — nominal types (`cell type Lots = Int where …`), after 3.1.0's
+Current release: 3.2.7 — nominal types (`cell type Lots = Int where …`), after 3.1.0's
 skeleton first. What each release changed: `soma docs releases`.
 
 Pick it when the task has a lifecycle or a limit that must hold: payments,
@@ -1170,11 +1170,18 @@ The frame, clause by clause (after the return type and any `requires` /
   requires = ["Consult.done"]        # or `while = […]`: the state it is in NOW
   via = "Ordo.consult_of"            # Map<String, String>: prescription → consultation
   ```
-  The link must be written by ONE signal, once, when the entry is created
-  (`require consult_of.get(id) == () else Exists` then
-  `consult_of.set(id, consult)`), and never deleted — `verify` refuses the
-  rule otherwise. A body proves it by checking the consultation it READS
-  from that slot (`let c = consult_of.get(id)  require Consult.is_done(c)`).
+  The link must be written once and never deleted — `verify` refuses the
+  rule otherwise. Declare the slot `[immutable]` (the run time refuses a
+  second write), or write it in ONE signal, once: at a key made from
+  `next_id()`, or after `require consult_of.get(id) == () else Exists`
+  (`!consult_of.has(id)`, or the same guard on another slot the handler
+  fills at that key first and nothing empties). A body proves the rule by
+  checking the consultation it READS from that slot (`let c =
+  consult_of.get(id)  require Consult.is_done(c)`), or the one it is about
+  to write there (`require Consult.is_done(c)` then `consult_of.set(id, c)`).
+  A status is read through a getter (`on state(id) { if seen.get(id) == ()
+  { return "unknown" }  return get_status(id) ?? "open" }`), not through
+  arithmetic on it.
 - **A rule on an edge, in the frame**: `moves drafted -> delivered when
   Consult.done` (alternatives with `||`, another instance with
   `via consult_of`) says the edge is taken only while the other machine is
@@ -1357,6 +1364,11 @@ it says "error kind X", raise it with `require … else X "…"` or `fail`.
 
 > Newest first. The language itself: https://soma-lang.dev/llms.txt (`soma docs agent`).
 > Every fix and its compatibility note: https://soma-lang.dev/CHANGELOG.md.
+
+Soma 3.2.7: `verify` reads a link written once in an `[immutable]` slot, at a
+key from `next_id()` or guarded on a sibling slot; a status through a getter
+that answers a text for an unknown id; a link written with the value just
+checked; calls 40 deep (12 before). On a 69,000-line program: 228 ✗ → 110.
 
 Soma 3.2.6: `verify` keeps what a handler call gives from a state instead of
 walking its body at every call: files of a 69,000-line program that took more
