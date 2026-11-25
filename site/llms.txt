@@ -403,9 +403,8 @@ really has when `x.field` came back `()`.
   `network`); default timeout 30 s; invalid option values are refused;
   a String body is sent as text/plain unless it is JSON; `mock http_post …`
   in tests.
-- `run_process(prog, [args], opts?)` → `{code, stdout, stderr, truncated}`, no
-  shell, never raises (`{error, kind}`: `not_found` | `timeout` | `refused` |
-  `io`); `env_var(name)` → String or `()`. Effects a frame names; mockable.
+- `run_process(prog, [args], opts?)` → `{code, stdout, stderr, truncated}` (no shell, never raises:
+  `{error, kind}`); `env_var(name)` → String or `()`. Effects a frame names; mockable.
 - `verify --strict` bounds a write only from numbers it can bound: literals,
   slots with an interval invariant, and values narrowed by `require`/`if`. A
   number read out of a record (`a.balance`) is unbounded until a `require`
