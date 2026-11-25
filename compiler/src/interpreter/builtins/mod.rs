@@ -12,6 +12,7 @@ pub mod linalg;
 pub mod registry;
 pub mod process;
 pub mod files;
+pub mod octets;
 
 use super::{Value, RuntimeError, map_from_pairs};
 use std::collections::HashMap;
@@ -108,6 +109,7 @@ fn call_categories(interp: &mut super::Interpreter, name: &str, args: &[Value], 
         .or_else(|| io::call_builtin(name, args))
         .or_else(|| process::call_builtin(name, args))
         .or_else(|| files::call_builtin(name, args))
+        .or_else(|| octets::call_builtin(name, args))
         .or_else(|| string::call_builtin(name, args))
         .or_else(|| math::call_builtin(name, args))
         .or_else(|| collection::call_builtin(name, args))
