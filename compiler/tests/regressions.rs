@@ -7607,3 +7607,35 @@ fn wrapping_passing_and_returning_a_large_value_is_not_a_copy_of_it() {
     assert!(started.elapsed() < std::time::Duration::from_secs(10), "took {:?}", started.elapsed());
     let _ = std::fs::remove_dir_all(dir);
 }
+
+// `require !a || b else K` read as `require !(a || b)`: after `!` the operand was parsed as a
+// whole expression and swallowed the `||` — the condition meant the opposite of what it
+// says, silently. Found by Attelage: `require !interne || est_conseiller` refused the advisor.
+#[test]
+fn a_negation_in_require_binds_its_operand_only() {
+    passes(
+        "require_not",
+        r#"
+cell P {
+    on ou(a: Bool, b: Bool) { require !a || b else Refus "non"  return "oui" }
+    on et(a: Bool, b: Bool) { require !a && b else Refus "non"  return "oui" }
+    on appel(x: Int) { require !vide(x) || x == 0 else Refus "non"  return "oui" }
+    on vide(x: Int) { return x < 0 }
+    on cmp(a: Bool) { require !a == false else Refus "non"  return "oui" }
+}
+cell test T { rules {
+    assert ou(true, true) == "oui"
+    assert ou(false, false) == "oui"
+    assert_fails ou(true, false) matching "Refus"
+    assert et(false, true) == "oui"
+    assert_fails et(false, false) matching "Refus"
+    assert_fails et(true, true) matching "Refus"
+    assert appel(3) == "oui"
+    assert appel(0) == "oui"
+    assert_fails appel(-1) matching "Refus"
+    assert cmp(true) == "oui"
+    assert_fails cmp(false) matching "Refus"
+} }
+"#,
+    );
+}

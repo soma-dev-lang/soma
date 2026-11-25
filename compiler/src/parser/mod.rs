@@ -3200,9 +3200,40 @@ impl Parser {
     fn parse_primary_constraint(&mut self) -> Result<Spanned<Constraint>, ParseError> {
         let start = self.peek_span();
 
+        // `!` binds its operand only, as in an expression: `!a || b` is `(!a) || b`. The operand
+        // was parsed as a whole expression and swallowed the `|| b` — the condition meant the
+        // opposite of what it says. `!a == b` is `(!a) == b`: read as one expression.
         if self.check(&Token::Bang) {
+            let save = self.pos;
             self.advance();
-            let inner = self.parse_primary_constraint()?;
+            let operand = self.parse_unary()?;
+            if matches!(self.peek(), Token::Lt | Token::Gt | Token::Le | Token::Ge | Token::EqEq | Token::Ne) {
+                self.pos = save;
+                let whole = self.parse_comparison()?;
+                let span = whole.span;
+                return Ok(Spanned::new(
+                    Constraint::Comparison {
+                        left: whole,
+                        op: CmpOp::Eq,
+                        right: Spanned::new(Expr::Literal(Literal::Bool(true)), span),
+                    },
+                    span,
+                ));
+            }
+            let inner = match &operand.node {
+                Expr::Ident(name) => Spanned::new(Constraint::Predicate { name: name.clone(), args: vec![] }, operand.span),
+                _ => {
+                    let span = operand.span;
+                    Spanned::new(
+                        Constraint::Comparison {
+                            left: operand,
+                            op: CmpOp::Eq,
+                            right: Spanned::new(Expr::Literal(Literal::Bool(true)), span),
+                        },
+                        span,
+                    )
+                }
+            };
             let span = start.merge(inner.span);
             return Ok(Spanned::new(Constraint::Not(Box::new(inner)), span));
         }
