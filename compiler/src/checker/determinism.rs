@@ -43,6 +43,8 @@ fn forbid_reason(name: &str) -> Option<&'static str> {
         "read_file" | "write_file" | "append_file" | "delete_file" =>
             Some("performs file I/O"),
         "run_process" => Some("starts a process"),
+        "list_dir" | "file_info" => Some("reads the file system"),
+        "read_line" => Some("reads standard input"),
         "env_var" => Some("reads the environment of the running program"),
         "to_sampled" | "drop_sampled" =>
             Some("reads and writes a process-wide handle registry"),

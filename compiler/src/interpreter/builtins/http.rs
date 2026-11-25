@@ -195,13 +195,24 @@ fn http_call(method: &str, url: &str, body: Option<String>, opts: Option<&indexm
         }
         Value::String(text)
     };
-    let err = |kind: &str, msg: String, status: i64, body: Value| -> Value {
+    let err_h = |kind: &str, msg: String, status: i64, body: Value, headers: Value| -> Value {
         map_from_pairs(vec![
             ("error".to_string(), Value::String(msg)),
             ("kind".to_string(), Value::String(kind.to_string())),
             ("status".to_string(), Value::Int(crate::interpreter::soma_int::SomaInt::from_i64(status))),
             ("body".to_string(), body),
+            ("headers".to_string(), headers),
         ])
+    };
+    let err = |kind: &str, msg: String, status: i64, body: Value| -> Value { err_h(kind, msg, status, body, map_from_pairs(vec![])) };
+    // the headers of a response, names in lower case: a failure says when to retry
+    // (`retry-after`) and which request failed (`request-id`)
+    let headers_of = |resp: &ureq::Response| -> Value {
+        let mut pairs: Vec<(String, Value)> = Vec::new();
+        for n in resp.headers_names() {
+            if let Some(v) = resp.header(&n) { pairs.push((n.to_lowercase(), Value::String(v.to_string()))); }
+        }
+        map_from_pairs(pairs)
     };
     // read the whole body (bounded by max_bytes): a body that stalls after
     // the headers is a timeout, one larger than max_bytes is `too_large` —
@@ -224,17 +235,19 @@ fn http_call(method: &str, url: &str, body: Option<String>, opts: Option<&indexm
     Ok(match result {
         Ok(resp) => {
             let status = resp.status();
+            let hs = headers_of(&resp);
             match read_body(resp) {
-                Err((kind, msg)) => err(&kind, msg, status as i64, Value::Unit),
+                Err((kind, msg)) => err_h(&kind, msg, status as i64, Value::Unit, hs),
                 // a 3xx that was not followed (a 307 to a POST) is not a success
                 Ok(text) if !(200..300).contains(&status) =>
-                    err("http_status", format!("{} {}: status code {}", method, shown, status), status as i64, parse(text)),
+                    err_h("http_status", format!("{} {}: status code {}", method, shown, status), status as i64, parse(text), hs),
                 Ok(text) => parse(text),
             }
         }
         Err(ureq::Error::Status(code, resp)) => {
+            let hs = headers_of(&resp);
             let b = read_body(resp).map(parse).unwrap_or(Value::Unit);
-            err("http_status", format!("{} {}: status code {}", method, shown, code), code as i64, b)
+            err_h("http_status", format!("{} {}: status code {}", method, shown, code), code as i64, b, hs)
         }
         Err(ureq::Error::Transport(t)) => {
             let mut detail = t.to_string();

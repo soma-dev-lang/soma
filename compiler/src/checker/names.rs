@@ -24,6 +24,8 @@ pub const IO_BUILTINS: &[&str] = &[
     "print", "recall", "word_count", "par_word_count",
     // the environment of the running program
     "env_var",
+    // a directory, a path, a line from whoever runs the program
+    "list_dir", "file_info", "read_line",
 ];
 
 pub const EFFECT_BUILTINS: &[&str] = &[
@@ -31,6 +33,7 @@ pub const EFFECT_BUILTINS: &[&str] = &[
     "write_file", "write_csv", "write_str", "http_get", "http_post", "http_put", "http_patch", "http_delete",
     // a program started from a handler
     "run_process",
+    "append_file",
     "set_budget", "sleep", "link", "subscribe", "ws_connect", "ws_send", "approve", "clear_context", "clear_trace",
     // they run the handler they are given
     "horde", "vote",

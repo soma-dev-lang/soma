@@ -405,6 +405,10 @@ really has when `x.field` came back `()`.
   in tests.
 - `run_process(prog, [args], opts?)` → `{code, stdout, stderr, truncated}` (no shell, never raises:
   `{error, kind}`); `env_var(name)` → String or `()`. Effects a frame names; mockable.
+- `list_dir(dir)` → `[{name, kind, size, mtime}]` sorted; `file_info(path)` →
+  `{exists, kind, size, mtime}`; `append_file(path, text)`; `read_line(prompt?)` →
+  a line or `()` at the end. Never raise (`{error, kind}`); effects a frame names.
+  An HTTP failure carries `headers` (lower case): `r.headers["retry-after"]`.
 - `verify --strict` bounds a write only from numbers it can bound: literals,
   slots with an interval invariant, and values narrowed by `require`/`if`. A
   number read out of a record (`a.balance`) is unbounded until a `require`

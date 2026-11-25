@@ -21,7 +21,7 @@ pub struct TaintIssue {
     pub span: Span,
 }
 
-const SOURCES: &[&str] = &["think", "think_json", "http_get", "http_post", "http_put", "http_patch", "http_delete", "read_stdin",
+const SOURCES: &[&str] = &["think", "think_json", "http_get", "http_post", "http_put", "http_patch", "http_delete", "read_stdin", "read_line",
     // the winner of a vote among model answers is a model's answer
     "vote"];
 
@@ -38,6 +38,7 @@ const SINKS: &[(&str, usize, &str)] = &[
     ("read_file", 0, "the file read"), ("write_file", 0, "the file written"), ("read_csv", 0, "the file read"),
     ("write_csv", 0, "the file written"), ("load", 0, "the file loaded"), ("include", 0, "the file included"),
     ("set_budget", 0, "the token budget"),
+    ("append_file", 0, "the file written"), ("list_dir", 0, "the directory listed"),
     ("run_process", 0, "the program run"), ("run_process", 1, "the arguments of the program run"),
 ];
 

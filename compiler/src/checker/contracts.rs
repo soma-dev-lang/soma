@@ -30,7 +30,7 @@ pub struct ContractIssue {
 /// must give the same answer to the caller, the handler and the prover.
 fn impure(name: &str) -> bool {
     matches!(name, "think" | "think_json" | "vote" | "delegate" | "transition" | "get_status" | "has_state"
-        | "print" | "println" | "now" | "now_ms" | "today" | "random" | "rand" | "uuid" | "read_stdin"
+        | "print" | "println" | "now" | "now_ms" | "today" | "random" | "rand" | "uuid" | "read_stdin" | "read_line"
         | "set_budget" | "approve" | "sleep" | "emit" | "fail" | "trace" | "env")
         || ["http_", "read_", "write_", "file_", "sql_", "db_"].iter().any(|p| name.starts_with(p))
 }

@@ -11,6 +11,7 @@ pub mod llm;
 pub mod linalg;
 pub mod registry;
 pub mod process;
+pub mod files;
 
 use super::{Value, RuntimeError, map_from_pairs};
 use std::collections::HashMap;
@@ -50,7 +51,7 @@ pub fn call_builtin(interp: &mut super::Interpreter, name: &str, args: &[Value],
         | "load" | "include" | "load_template" | "link" | "ws_send"
         | "ws_connect" | "connect" | "subscribe" | "append_file"
         // the environment holds secrets, and a process reaches past every capability
-        | "env_var" | "run_process") {
+        | "env_var" | "run_process" | "list_dir" | "file_info" | "read_line") {
         let caps = interp.current_tool_caps.clone().unwrap_or_default();
         if !caps.iter().any(|c| c == "*") || interp.outer_tool_caps.iter().any(|o| !o.iter().any(|c| c == "*")) {
             return Some(Err(RuntimeError::TypeError(format!("capability denied: {}() is outside this tool's capabilities {:?}", name, caps))));
@@ -106,6 +107,7 @@ fn call_categories(interp: &mut super::Interpreter, name: &str, args: &[Value], 
     None
         .or_else(|| io::call_builtin(name, args))
         .or_else(|| process::call_builtin(name, args))
+        .or_else(|| files::call_builtin(name, args))
         .or_else(|| string::call_builtin(name, args))
         .or_else(|| math::call_builtin(name, args))
         .or_else(|| collection::call_builtin(name, args))
