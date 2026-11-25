@@ -531,6 +531,10 @@ pub static BUILTINS: &[BuiltinDoc] = &[
         "Replace every match; $1 refers to the first capture group."),
     doc("read_stdin", "io", "read_stdin() -> String", "The whole standard input (for `soma run` filters)."),
     doc("write_str", "io", "write_str(s: String) -> Int", "Write s to stdout without a newline; returns the byte count."),
+    doc("env_var", "io", "env_var(name: String) -> String | ()",
+        "The value of an environment variable of the running program; () when it is not set: `env_var(\"ANTHROPIC_API_KEY\") ?? \"\"`. An effect a frame names (`calls env_var`); refused inside a capability-scoped tool."),
+    doc("run_process", "io", "run_process(program: String, args: List<String>, opts?: {cwd, stdin, env, clear_env, timeout, max_bytes}) -> {code, stdout, stderr, truncated} | {error, kind}",
+        "Start a program and wait for it — no shell: the arguments are passed as they are (`\"$HOME\"` stays `$HOME`). Never raises on the process: a missing program is kind `not_found`, a timeout (default 30 s, the process is killed) `timeout`, the operator's policy `refused` (SOMA_PROCESS=deny, SOMA_PROCESS_ALLOW=git,ls), a failure to start `io`. Each output stream is kept up to max_bytes (default 1 MB; `truncated` says it was cut). An effect a frame names (`calls run_process`)."),
 
     // ── [native] handlers only ──────────────────────────────────────
     doc("buffer", "native", "buffer(n: Int) -> Buf   [native] only",

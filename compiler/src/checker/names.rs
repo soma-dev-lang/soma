@@ -22,11 +22,15 @@ const INLINE_BUILTIN_NAMES: &[&str] = &["append", "_coalesce", "_external_tool",
 pub const IO_BUILTINS: &[&str] = &[
     "read_file", "read_csv", "read_files", "par_read_files", "read_stdin", "load", "include", "load_template",
     "print", "recall", "word_count", "par_word_count",
+    // the environment of the running program
+    "env_var",
 ];
 
 pub const EFFECT_BUILTINS: &[&str] = &[
     "think", "think_json", "transition", "publish", "remember", "delegate", "next_id",
     "write_file", "write_csv", "write_str", "http_get", "http_post", "http_put", "http_patch", "http_delete",
+    // a program started from a handler
+    "run_process",
     "set_budget", "sleep", "link", "subscribe", "ws_connect", "ws_send", "approve", "clear_context", "clear_trace",
     // they run the handler they are given
     "horde", "vote",

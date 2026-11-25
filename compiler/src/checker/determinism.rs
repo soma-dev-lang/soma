@@ -42,6 +42,8 @@ fn forbid_reason(name: &str) -> Option<&'static str> {
             Some("performs network I/O"),
         "read_file" | "write_file" | "append_file" | "delete_file" =>
             Some("performs file I/O"),
+        "run_process" => Some("starts a process"),
+        "env_var" => Some("reads the environment of the running program"),
         "to_sampled" | "drop_sampled" =>
             Some("reads and writes a process-wide handle registry"),
         "delegate" =>
