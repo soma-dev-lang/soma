@@ -403,12 +403,8 @@ really has when `x.field` came back `()`.
   `network`); default timeout 30 s; invalid option values are refused;
   a String body is sent as text/plain unless it is JSON; `mock http_post …`
   in tests.
-- `run_process(prog, [args], opts?)` → `{code, stdout, stderr, truncated}` (no shell, never raises:
-  `{error, kind}`); `env_var(name)` → String or `()`. Effects a frame names; mockable.
-- `list_dir(dir)` → `[{name, kind, size, mtime}]` sorted; `file_info(path)` →
-  `{exists, kind, size, mtime}`; `append_file(path, text)`; `read_line(prompt?)` →
-  a line or `()` at the end. Never raise (`{error, kind}`); effects a frame names.
-  An HTTP failure carries `headers` (lower case): `r.headers["retry-after"]`.
+- `run_process(prog, [args], opts?)` (no shell), `env_var`, `list_dir`, `file_info`, `append_file`, `read_line`:
+  effects a frame names, never raise (`{error, kind}`); a CLI runs `soma run --ephemeral --exit-status`.
 - `verify --strict` bounds a write only from numbers it can bound: literals,
   slots with an interval invariant, and values narrowed by `require`/`if`. A
   number read out of a record (`a.balance`) is unbounded until a `require`

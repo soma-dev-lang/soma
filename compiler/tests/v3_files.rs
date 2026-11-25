@@ -140,3 +140,41 @@ fn an_http_failure_carries_the_response_headers() {
     assert_eq!(code, 0, "{out}");
     assert!(out.contains("429") && out.contains('7') && out.contains("req_abc") && out.contains("rate_limit_error"), "{out}");
 }
+
+#[test]
+fn run_exit_status_makes_an_int_result_the_status_of_the_process() {
+    let dir = project("status", "cell R {\n    on main(n: Int) { print(\"sortie\")  return n }\n    on texte() { return \"t\" }\n}\n");
+    // without the option: the value is printed, the status is 0
+    let (out, code) = soma(&dir, &["run", "app.cell", "main", "3"], "");
+    assert_eq!(code, 0, "{out}");
+    assert!(out.contains("sortie") && out.trim_end().ends_with('3'), "{out}");
+    // with it: the Int is the status, and it is not printed
+    let (out, code) = soma(&dir, &["run", "--exit-status", "app.cell", "main", "3"], "");
+    assert_eq!(code, 3, "{out}");
+    assert!(out.contains("sortie") && !out.trim_end().ends_with('3'), "{out}");
+    let (_, code) = soma(&dir, &["run", "--exit-status", "app.cell", "main", "0"], "");
+    assert_eq!(code, 0);
+    // a value that is not an Int is printed as before
+    let (out, code) = soma(&dir, &["run", "--exit-status", "app.cell", "texte"], "");
+    assert_eq!(code, 0, "{out}");
+    assert!(out.contains('t'), "{out}");
+}
+
+#[test]
+fn run_ephemeral_keeps_nothing_on_disk_between_runs() {
+    let src = "cell E {\n    memory { vus: Map<String, Int> [persistent] }\n    state m {\n        initial: a\n        a -> b\n    }\n    on avancer(id: String) {\n        transition(id, \"a\", \"b\")\n        vus.set(id, (vus.get(id) ?? 0) + 1)\n        return \"{get_status(id)} {vus.get(id)} {next_id()}\"\n    }\n}\n";
+    let dir = project("ephemeral", src);
+    // without the option, the machine and the slot persist: the second run finds `x` in `b`
+    let (out, code) = soma(&dir, &["run", "app.cell", "avancer", "x"], "");
+    assert_eq!(code, 0, "{out}");
+    let (out, code) = soma(&dir, &["run", "app.cell", "avancer", "x"], "");
+    assert_ne!(code, 0, "{out}");
+    // with it, every run starts from nothing, and nothing is written beside the program
+    let dir = project("ephemeral2", src);
+    for _ in 0..2 {
+        let (out, code) = soma(&dir, &["run", "--ephemeral", "app.cell", "avancer", "x"], "");
+        assert_eq!(code, 0, "{out}");
+        assert!(out.contains("b 1 1"), "{out}");
+    }
+    assert!(!dir.join(".soma_data").exists(), "--ephemeral wrote .soma_data");
+}

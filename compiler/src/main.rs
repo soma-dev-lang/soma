@@ -84,6 +84,12 @@ enum Commands {
         /// Start from empty storage: delete `.soma_data/` beside the program first (only this program's tables when other programs' cells also keep data there)
         #[arg(long)]
         fresh: bool,
+        /// The handler's Int result is the exit status of the process, not printed (a command-line program)
+        #[arg(long)]
+        exit_status: bool,
+        /// Keep nothing on disk: machine instances, next_id() counters and every slot ([persistent] too) live in memory for this run only
+        #[arg(long)]
+        ephemeral: bool,
     },
     /// Start HTTP server: soma serve app.cell [-p 8080] [--join host:port]
     Serve {
@@ -493,8 +499,10 @@ fn main_inner() {
         Commands::Build { file, output } => commands::build::cmd_build(&file, output.as_deref(), &mut registry),
         Commands::Ast { file } => cmd_ast(&file),
         Commands::Tokens { file } => cmd_tokens(&file),
-        Commands::Run { file, args, jit, signal, record, fresh } => {
+        Commands::Run { file, args, jit, signal, record, fresh, exit_status, ephemeral } => {
             runtime::storage::set_data_dir_beside(&file);
+            runtime::storage::EPHEMERAL.store(ephemeral, std::sync::atomic::Ordering::Relaxed);
+            commands::run::EXIT_STATUS.store(exit_status, std::sync::atomic::Ordering::Relaxed);
             // --fresh deletes data only once the program passes `soma check`
             // (a program with an error wiped the database, then refused to run)
             if fresh {

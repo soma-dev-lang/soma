@@ -881,6 +881,9 @@ impl StorageBackend for SqliteBackend {
     }
 }
 
+/// `soma run --ephemeral`: every slot lives in memory, nothing is written beside the program.
+pub static EPHEMERAL: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+
 /// Resolve memory properties to a storage backend.
 /// Uses the registry to find the best matching backend definition,
 /// then instantiates the corresponding native implementation.
@@ -890,6 +893,7 @@ pub fn resolve_backend_from_registry(
     properties: &[String],
     registry: &crate::registry::Registry,
 ) -> Arc<dyn StorageBackend> {
+    if EPHEMERAL.load(std::sync::atomic::Ordering::Relaxed) { return Arc::new(MemoryBackend::new()); }
     // Ask the registry which backend matches these properties
     if let Some(backend_def) = registry.resolve_backend(properties) {
         let native = backend_def.native_impl.as_deref().unwrap_or("memory");
@@ -906,7 +910,7 @@ pub fn resolve_backend(
     properties: &[String],
 ) -> Arc<dyn StorageBackend> {
     let is_persistent = properties.iter().any(|p| p == "persistent");
-    let is_ephemeral = properties.iter().any(|p| p == "ephemeral");
+    let is_ephemeral = properties.iter().any(|p| p == "ephemeral") || EPHEMERAL.load(std::sync::atomic::Ordering::Relaxed);
 
     if is_persistent && !is_ephemeral {
         Arc::new(FileBackend::new(cell_name, slot_name))

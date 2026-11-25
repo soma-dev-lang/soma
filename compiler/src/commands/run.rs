@@ -8,6 +8,22 @@ use crate::runtime;
 use super::{read_source, lex_with_location, parse_with_location, resolve_imports, load_meta_cells_from_program};
 
 /// `soma run --fresh`: the reset, run once the program passed its check
+/// `soma run --exit-status`: an Int result is the status of the process
+pub static EXIT_STATUS: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+
+/// Print the handler's value — or, under `--exit-status`, end the process with an Int result
+/// as its status (0..=255; the value is not printed).
+fn finish(val: &interpreter::Value) {
+    if EXIT_STATUS.load(std::sync::atomic::Ordering::Relaxed) {
+        if let interpreter::Value::Int(n) = val {
+            use std::io::Write;
+            let _ = std::io::stdout().flush();
+            process::exit(n.to_i64().map(|c| c.clamp(0, 255) as i32).unwrap_or(1));
+        }
+    }
+    println!("{}", run_output(val));
+}
+
 pub static FRESH_HOOK: std::sync::Mutex<Option<Box<dyn FnOnce() + Send>>> = std::sync::Mutex::new(None);
 
 pub fn cmd_run(path: &PathBuf, args: &[String], use_jit: bool, signal_flag: Option<&str>, record_all: bool, registry: &mut Registry) {
@@ -311,7 +327,7 @@ fn run_single_cell(program: ast::Program, arg_values: Vec<interpreter::Value>, r
     }
     // Always ensure state machine storage exists (even without memory
     // section) — on disk: an instance must survive the run
-    crate::interpreter::PERSIST_MACHINES.store(true, std::sync::atomic::Ordering::Relaxed);
+    crate::interpreter::PERSIST_MACHINES.store(!crate::runtime::storage::EPHEMERAL.load(std::sync::atomic::Ordering::Relaxed), std::sync::atomic::Ordering::Relaxed);
     interp.ensure_state_machine_storage();
 
     interp.source_file = Some(source_path.display().to_string());
@@ -415,7 +431,7 @@ fn run_single_cell(program: ast::Program, arg_values: Vec<interpreter::Value>, r
         // the handler's value is the command's output; `()` prints nothing
         // (a `main` that only prints used to end with a stray `null`)
         Ok(interpreter::Value::Unit) => {}
-        Ok(val) => println!("{}", run_output(&val)),
+        Ok(val) => finish(&val),
         Err(e) => {
             eprintln!("{}", interpreter::format_runtime_error(
                 &e,
@@ -663,7 +679,7 @@ fn run_interior_handler(program: ast::Program, parent: &str, child: &str, handle
         Some(def) => coerce_cli_args(&def, handler, args),
         None => args,
     };
-    crate::interpreter::PERSIST_MACHINES.store(true, std::sync::atomic::Ordering::Relaxed);
+    crate::interpreter::PERSIST_MACHINES.store(!crate::runtime::storage::EPHEMERAL.load(std::sync::atomic::Ordering::Relaxed), std::sync::atomic::Ordering::Relaxed);
     let mut rt = runtime::Runtime::with_registry(program, Some(registry));
     for line in rt.audit_interior() { eprintln!("warning: stored data: {}", line); }
     let result = rt.call_child_handler(parent, child, handler, args);
@@ -673,7 +689,7 @@ fn run_interior_handler(program: ast::Program, parent: &str, child: &str, handle
     }
     match result {
         Ok(interpreter::Value::Unit) => {}
-        Ok(val) => println!("{}", run_output(&val)),
+        Ok(val) => finish(&val),
         Err(e) => {
             eprintln!("runtime error: {}", e);
             process::exit(1);
@@ -684,7 +700,7 @@ fn run_interior_handler(program: ast::Program, parent: &str, child: &str, handle
 fn run_with_runtime(program: ast::Program, registry: &Registry) {
     // machine instances, next_id() counters and remember() memory persist,
     // as under a named handler
-    crate::interpreter::PERSIST_MACHINES.store(true, std::sync::atomic::Ordering::Relaxed);
+    crate::interpreter::PERSIST_MACHINES.store(!crate::runtime::storage::EPHEMERAL.load(std::sync::atomic::Ordering::Relaxed), std::sync::atomic::Ordering::Relaxed);
     let mut rt = runtime::Runtime::with_registry(program, Some(registry));
     for line in rt.audit_interior() { eprintln!("warning: stored data: {}", line); }
 
