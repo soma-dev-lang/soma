@@ -20,6 +20,9 @@ pub struct Manifest {
     /// Verification properties
     #[serde(default)]
     pub verify: VerifyConfig,
+    /// The laws the program is under (RFC 0002): `[law] files = ["lois/sanctions.law"]`
+    #[serde(default)]
+    pub law: LawConfig,
     /// Compute configuration
     #[serde(default)]
     pub compute: ComputeConfig,
@@ -168,6 +171,15 @@ impl Default for ComputeConfig {
 }
 
 fn default_compute_backend() -> String { "sequential".to_string() }
+
+/// The business rules the program is held to, written outside the code.
+#[derive(Debug, Default, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct LawConfig {
+    /// `.law` files, relative to soma.toml
+    #[serde(default)]
+    pub files: Vec<String>,
+}
 
 #[derive(Debug, Default, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)] // `seedz` left the node standalone while the
@@ -430,6 +442,7 @@ impl Manifest {
                 // a new project is written in the current edition
                 edition: Some(CURRENT_EDITION.to_string()),
             },
+            law: LawConfig::default(),
             dependencies: HashMap::new(),
             tools: HashMap::new(),
             peers: HashMap::new(),

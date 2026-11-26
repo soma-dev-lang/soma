@@ -1,0 +1,1 @@
+A rule of the law is served but no test says it shows the rule at work. `soma check` reports this as the warning W0020 law_warning, never as E0131. Write `cell test Name under "ID" { … }` with a case the rule refuses; tests in other `.cell` files beside soma.toml (and in `tests/`) are found.

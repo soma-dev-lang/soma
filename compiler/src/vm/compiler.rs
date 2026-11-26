@@ -166,7 +166,7 @@ impl BytecodeCompiler {
                 chunk.emit(Op::Pop);
             }
 
-            Statement::Require { constraint, else_signal } => {
+            Statement::Require { constraint, else_signal, .. } => {
                 // Compile as: if !constraint { call_builtin("_require_fail", else_signal) }
                 self.compile_constraint(chunk, &constraint.node);
                 let skip = chunk.emit_u16(Op::JumpIfFalse, 0xFFFF);

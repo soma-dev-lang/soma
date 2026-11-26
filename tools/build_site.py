@@ -368,7 +368,7 @@ def main():
     # the parts of the agent guide that live in their own files (3.0): the
     # one-fetch documents still carry all of it
     parts = "".join("\n\n---\n\n" + read("site", name).strip()
-                    for name in ("llms-agents.txt", "llms-native.txt", "llms-skeleton.txt", "llms-flesh.txt", "llms-releases.txt"))
+                    for name in ("llms-agents.txt", "llms-native.txt", "llms-skeleton.txt", "llms-law.txt", "llms-flesh.txt", "llms-releases.txt"))
     full = [
         llms.rstrip(),
         parts,
@@ -450,7 +450,7 @@ def main():
     # sitemap: every page and every machine file (not the 316 sources —
     # corpus/index.json is their sitemap)
     machine = [
-        "llms.txt", "llms-learn.txt", "llms-agents.txt", "llms-native.txt", "llms-skeleton.txt", "llms-flesh.txt",
+        "llms.txt", "llms-learn.txt", "llms-agents.txt", "llms-native.txt", "llms-skeleton.txt", "llms-law.txt", "llms-flesh.txt",
         "llms-releases.txt", "llms-service.txt", "llms-full.txt", "agent.md", "skill/SKILL.md",
         "docs/guarantees.md", "docs/serving.md", "docs/reference.md", "docs/builtins.md", "docs/gotchas.md",
         "docs/cluster.md", "docs/operations.md", "docs/robotics.md", "builtins.json", "gotchas.json",

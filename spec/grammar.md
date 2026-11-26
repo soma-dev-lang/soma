@@ -21,7 +21,7 @@ protocol ::= "protocol" ws1 name ws braces
 
 ```gbnf
 nominal ::= "cell" ws1 "type" ws1 name ws "=" ws ( "Int" | "Float" | "String" ) ( ws1 "where" ws1 expr )?
-cell ::= "cell" ws1 ( cell-kind ws1 )? name ws type-params? ws brackets? ws "{" ws ( section ws )* "}"
+cell ::= "cell" ws1 ( cell-kind ws1 )? name ( ws1 law-under )? ws type-params? ws brackets? ws "{" ws ( section ws )* "}"
 cell-kind ::= "agent" | "test" | "type" | "property" | "checker" | "backend" | "builtin"
 type-params ::= "<" ws name ( ws "," ws name )* ws ">"
 section ::= face | memory | state | handler | every | after | const | interior | variants | loose-section | test-rule
@@ -53,11 +53,19 @@ tool-decl ::= "tool" ws1 name ws "(" params ")" ( ws "->" ws type )? ( ws bracke
 The frame: what the handler may read, write, call, emit, and which edges it may take.
 
 ```gbnf
-frame-clause ::= frame-names | frame-moves
+frame-clause ::= frame-names | frame-moves | law-realizes | law-under | law-exempt
 frame-names ::= ( "reads" | "writes" | "calls" | "emits" ) ws1 frame-path ( ws "," ws frame-path )*
 frame-moves ::= "moves" ws1 ( frame-path ws ":" ws )? frame-edge ( ws "," ws frame-edge )*
 frame-path ::= name ( "." name )?
 frame-edge ::= ( name | "*" ) ws "->" ws ( name | "*" ) ( ws1 "when" ws1 frame-path ( ws "||" ws frame-path )* ( ws1 "via" ws1 name )? )?
+```
+
+The law (RFC 0002): the terms a signal realizes, the rules it serves, those it is exempt from. A test cell says the rules it shows at work: `cell test T under "SAN-02" { … }`.
+
+```gbnf
+law-realizes ::= "realizes" ws1 name ( ws "," ws name )*
+law-under ::= "under" ws1 string ( ws "," ws string )*
+law-exempt ::= "exempt" ws1 string ( ws1 string )?
 await-decl ::= "await" ws1 name ws "(" params ")" ( ws "->" ws type )?
 given-decl ::= "given" ws1 name ws ":" ws type ( ws "where" ws braces )?
 promise-decl ::= "promise" [ \t] [^\n]*    # token
@@ -115,14 +123,15 @@ property ::= "property" ws1 string ws "forall" ws1 name ws ":" ws type ws1 "in" 
 
 ```gbnf
 block ::= "{" ws ( stmt ws )* "}"
-stmt ::= let | return | if | for | while | emit | require | ensure | assign | ";" | expr
+stmt ::= let | return | if | for | while | emit | require | ensure | law-mark | assign | ";" | expr
 let ::= "let" ws1 name ( ws ":" ws type )? ws "=" ws expr
 return ::= "return" ( ws expr )?
 if ::= "if" ws1 expr ws block ( ws "else" ws ( if | block ) )?
 for ::= "for" ws ( brackets ws )? name ( ws "," ws name )? ( ws brackets )? ws1 "in" ws1 expr ws block
 while ::= "while" ws1 ( brackets ws )? expr ws block
 emit ::= ( "emit" | "signal" ) ws1 name ws "(" args ")"
-require ::= "require" ws1 expr ws "else" ws1 ( string | name ( hws string )? )
+require ::= "require" ws1 expr ws "else" ws1 ( string | name ( hws string )? ) ( hws "under" ws1 string )?
+law-mark ::= "under" ws1 string
 ensure ::= "ensure" ws1 expr
 assign ::= name ( ws "." ws name | hws "[" ws expr ws "]" )* ws assign-op ws expr
 assign-op ::= "=" | "+=" | "-=" | "*=" | "/="

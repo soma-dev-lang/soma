@@ -1,0 +1,1 @@
+A rule of the law is served by nothing in the program: no `require … under "ID"`, no branch marked `under "ID"`, no guarded edge in a frame `under "ID"`. Serve it where it applies. (When a signal realizes one of the rule's terms, E0130 names that signal instead.)

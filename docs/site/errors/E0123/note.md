@@ -1,0 +1,1 @@
+A law that soma.toml names (`[law] files = […]`) is missing, or a line of it does not read as a law. A law has `law Name`, `term Name "definition"`, `rule "ID" "sentence"`, and under a rule `about`, `source`, `owner`. It names no cell, no handler and no test: the code is aligned on the law, never the reverse.

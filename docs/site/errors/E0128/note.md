@@ -1,0 +1,1 @@
+An `exempt "ID"` has no reason. An exemption says why the rule does not apply to this signal, in a sentence a reviewer can accept or refuse: `exempt "SAN-02" "pays the management company, not a holder"`.

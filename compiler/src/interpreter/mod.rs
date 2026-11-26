@@ -2593,6 +2593,7 @@ impl Interpreter {
             Statement::Require {
                 constraint,
                 else_signal,
+                ..
             } => {
                 let result = self.eval_constraint(&constraint.node, env, cell_name, signal_name)?;
                 if !result {
@@ -8365,7 +8366,7 @@ pub(crate) fn free_names_stmts(stmts: &[Spanned<Statement>], out: &mut HashSet<S
             Statement::For { var, iter, body, .. } => { out.insert(var.clone()); free_names_expr(&iter.node, out); free_names_stmts(body, out); }
             Statement::While { condition, body, .. } => { free_names_expr(&condition.node, out); free_names_stmts(body, out); }
             Statement::Emit { args, .. } => { for a in args { free_names_expr(&a.node, out); } }
-            Statement::Require { constraint, else_signal } => {
+            Statement::Require { constraint, else_signal, .. } => {
                 free_names_constraint(&constraint.node, out);
                 free_names_expr(&Expr::Literal(Literal::String(else_signal.clone())), out);
             }

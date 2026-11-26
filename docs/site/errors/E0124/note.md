@@ -1,0 +1,1 @@
+The law differs from `law.lock`. A change of the law is an event someone reviews: the person who owns the law reads the change, then `soma law app.cell --lock` records it. Until then the program does not check.

@@ -153,7 +153,7 @@ fn fix_stmts(stmts: &mut Vec<Spanned<Statement>>, ctx: &Ctx) {
             // the condition (and, when it fails, the detail) runs here — a
             // call written there was invisible to termination, cost and the
             // invariant prover
-            Statement::Require { constraint, else_signal } => {
+            Statement::Require { constraint, else_signal, .. } => {
                 let mut operands: Vec<Spanned<Expr>> = Vec::new();
                 constraint_operands(&constraint.node, st.span, &mut operands);
                 for mut o in operands {

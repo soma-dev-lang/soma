@@ -116,6 +116,9 @@ pub struct CellDef {
     /// `cell type Lots = Int where value >= 0 && value <= 50`: the bound,
     /// over `value` (checker/nominal.rs turns it into contracts and invariants)
     pub nominal_where: Option<Spanned<Expr>>,
+    /// `cell test T under "SAN-02" { … }`: the rules of the law this test
+    /// shows at work (checker/law.rs).
+    pub under: Vec<String>,
 }
 
 /// A finding of the nominal-type pass, kept on the program until `check`.
@@ -316,6 +319,13 @@ pub struct FrameDecl {
     /// `moves a -> b when Other.s || Other.t [via slot]`: the edge is taken
     /// only while the other machine is in one of those states
     pub conditions: Vec<EdgeCondition>,
+    /// The law (RFC 0002). `realizes Paiement`: this signal is an instance
+    /// of a term of the law.
+    pub realizes: Vec<String>,
+    /// `under "SAN-02"`: the guarded edges of this frame serve that rule.
+    pub under: Vec<String>,
+    /// `exempt "SAN-02" "why"`: that rule does not apply to this signal.
+    pub exempt: Vec<(String, String)>,
 }
 
 /// A rule between machines stated on an edge of a frame (see `FrameDecl`).
@@ -585,6 +595,9 @@ pub enum Statement {
     Require {
         constraint: Spanned<Constraint>,
         else_signal: String,
+        /// `require … else Tag "…" under "SAN-02"`: the rule of the law this
+        /// refusal serves (checker/law.rs). No effect at run time.
+        under: Option<String>,
     },
     MethodCall {
         target: String,

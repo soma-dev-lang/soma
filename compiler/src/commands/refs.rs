@@ -73,7 +73,7 @@ fn walk_stmts(stmts: &[Spanned<Statement>], f: &mut dyn FnMut(&Expr, Span)) {
                 f(&Expr::FnCall { name: format!("emit {}", signal_name), args: Vec::new() }, st.span);
                 for a in args { walk_expr(a, f); }
             }
-            Statement::Require { constraint, else_signal } => {
+            Statement::Require { constraint, else_signal, .. } => {
                 walk_constraint(&constraint.node, constraint.span, f);
                 f(&Expr::Literal(Literal::String(else_signal.clone())), st.span);
             }

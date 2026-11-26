@@ -297,6 +297,7 @@ mod tests {
                 skeleton: false,
                 nominal: None,
                 nominal_where: None,
+                under: vec![],
             },
             Span::new(0, 0),
         )

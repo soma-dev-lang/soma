@@ -28,6 +28,7 @@ pub mod dispatch;
 pub mod dead_code;
 pub mod guards;
 pub mod habits;
+pub mod law;
 pub mod routes;
 pub mod cross_machine;
 pub mod runtime_section;
@@ -347,6 +348,11 @@ pub enum CheckWarning {
         message: String,
         span: Span,
     },
+    /// The law (RFC 0002): a rule that is served but has no test.
+    LawWarning {
+        message: String,
+        span: Span,
+    },
     /// A habit from another language that silently does the wrong thing.
     HabitWarning {
         message: String,
@@ -437,6 +443,7 @@ impl std::fmt::Display for CheckWarning {
             Self::Unreachable { message, .. } => write!(f, "warning: {message}"),
             Self::HabitWarning { message, .. } => write!(f, "warning: {message}"),
             Self::FrameWarning { message, .. } => write!(f, "warning: {message}"),
+            Self::LawWarning { message, .. } => write!(f, "warning: {message}"),
             Self::TypeAdvisory { message, .. } => write!(f, "warning: {message}"),
             Self::NativeSemantics { message, .. } => write!(f, "warning: {message}"),
             Self::InterpolationRecoverable { message, .. } => {
@@ -499,6 +506,7 @@ impl CheckWarning {
             | Self::Unreachable { span, .. }
             | Self::HabitWarning { span, .. }
             | Self::FrameWarning { span, .. }
+            | Self::LawWarning { span, .. }
             | Self::TypeAdvisory { span, .. }
             | Self::InterpolationRecoverable { span, .. } => Some(*span),
             Self::BudgetAdvisory { .. }
@@ -797,6 +805,28 @@ impl<'a> Checker<'a> {
             let manifest = crate::pkg::manifest::Manifest::load(&dir.join("soma.toml")).ok();
             for issue in crate::external::check_program(program, manifest.as_ref(), &dir) {
                 self.errors.push(CheckError::Static { kind: "tool_binding", message: issue.message, span: issue.span });
+            }
+        }
+        // the law (RFC 0002): the business rules soma.toml names, and the
+        // program held to them — a rule nothing serves, a signal that
+        // realizes a term of a rule and does not serve it
+        {
+            let dir = self.source.as_ref().map(|(file, _)| crate::project::root(std::path::Path::new(file)))
+                .unwrap_or_else(|| std::path::PathBuf::from("."));
+            let manifest = crate::pkg::manifest::Manifest::load(&dir.join("soma.toml")).ok();
+            let loaded = law::load(manifest.as_ref(), &dir);
+            let nowhere = Span { start: 0, end: 0 };
+            for message in &loaded.errors {
+                self.errors.push(CheckError::Static { kind: "law_file", message: message.clone(), span: nowhere });
+            }
+            if !loaded.laws.is_empty() {
+                if let Ok(Some(message)) = law::against_lock(&loaded, &dir) {
+                    self.errors.push(CheckError::Static { kind: "law_lock", message, span: nowhere });
+                }
+                for issue in law::analyse(program, &loaded.laws, &law::tests_beside(&dir)).issues {
+                    if issue.warning { self.warnings.push(CheckWarning::LawWarning { message: issue.message, span: issue.span }); }
+                    else { self.errors.push(CheckError::Static { kind: issue.kind, message: issue.message, span: issue.span }); }
+                }
             }
         }
         // 3.0: durable waits — where an `await` may stand
@@ -2605,7 +2635,7 @@ impl<'a> Checker<'a> {
             // For now, we support a simple pattern: check statements that
             // look at the cell's face for specific patterns
             for stmt in &checker_def.check_body {
-                if let Statement::Require { constraint, else_signal } = &stmt.node {
+                if let Statement::Require { constraint, else_signal, .. } = &stmt.node {
                     // an unknown predicate is already an error of its own:
                     // do not ALSO fire this rule against every cell
                     let mut unknown = Vec::new();

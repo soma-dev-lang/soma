@@ -975,7 +975,7 @@ impl<'a> Walker<'a> {
                     self.walk_expr(a);
                 }
             }
-            Statement::Require { constraint, else_signal } => {
+            Statement::Require { constraint, else_signal, .. } => {
                 self.walk_constraint(&constraint.node);
                 // `require regex_match(s, p) else bad`: an Int builtin as the
                 // condition passed check, then raised "cannot compare Int and

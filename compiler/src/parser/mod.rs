@@ -615,6 +615,17 @@ impl Parser {
         matches!(self.peek(), Token::Ident(w) if w == word)
     }
 
+    /// The identifier of a rule of the law, a string: `"SAN-02"` (RFC 0002).
+    fn expect_rule_id(&mut self, clause: &str) -> Result<String, ParseError> {
+        match self.peek().clone() {
+            Token::StringLit(id) if !id.trim().is_empty() && !id.contains('{') => { self.advance(); Ok(id) }
+            _ => Err(ParseError::FixIt {
+                message: format!("`{clause}` names a rule of the law by its identifier, a string: `{clause} \"SAN-02\"`"),
+                span: self.peek_span(),
+            }),
+        }
+    }
+
     /// `flesh Name { on f(a, b) { … } … }`: handler bodies for `skeleton
     /// Name`, and nothing else.
     fn parse_flesh_def(&mut self) -> Result<Spanned<CellDef>, ParseError> {
@@ -633,7 +644,7 @@ impl Parser {
         let end = self.peek_span();
         self.expect(Token::RBrace)?;
         Ok(Spanned::new(
-            CellDef { kind: CellKind::Flesh, name, type_params: vec![], sections, agent_model: None, agent_skill: None, skeleton: false, nominal: None, nominal_where: None },
+            CellDef { under: vec![], kind: CellKind::Flesh, name, type_params: vec![], sections, agent_model: None, agent_skill: None, skeleton: false, nominal: None, nominal_where: None },
             start.merge(end),
         ))
     }
@@ -963,6 +974,17 @@ impl Parser {
             }
         };
 
+        // `cell test T under "SAN-02", "SAN-03" { … }`: the rules of the law
+        // this test shows at work (RFC 0002)
+        let mut under: Vec<String> = Vec::new();
+        if kind == CellKind::Test && self.at_word("under") {
+            self.advance();
+            loop {
+                under.push(self.expect_rule_id("under")?);
+                if self.check(&Token::Comma) { self.advance(); } else { break; }
+            }
+        }
+
         // `cell type Lots = Int`: a nominal type over a base — no body
         if kind == CellKind::Type && self.check(&Token::Eq) {
             self.advance();
@@ -983,7 +1005,7 @@ impl Parser {
                 Some(self.parse_expr()?)
             } else { None };
             return Ok(Spanned::new(
-                CellDef { kind, name, type_params, sections: vec![], agent_model: None, agent_skill: None, skeleton, nominal: Some(base), nominal_where: bound },
+                CellDef { under: vec![], kind, name, type_params, sections: vec![], agent_model: None, agent_skill: None, skeleton, nominal: Some(base), nominal_where: bound },
                 start.merge(self.prev_span()),
             ));
         }
@@ -1108,6 +1130,7 @@ impl Parser {
                 skeleton,
                 nominal: None,
                 nominal_where: None,
+                under,
             },
             start.merge(end),
         ))
@@ -1358,6 +1381,34 @@ impl Parser {
                 f.calls.push(n);
                 if self.check(&Token::Comma) { self.advance(); } else { break; }
             }
+            Ok(true)
+        } else if self.at_word("realizes") {
+            // the law (RFC 0002): this signal is an instance of a term
+            self.advance();
+            let f = frame.get_or_insert_with(FrameDecl::default);
+            loop {
+                f.realizes.push(self.expect_any_name()?.0);
+                if self.check(&Token::Comma) { self.advance(); } else { break; }
+            }
+            Ok(true)
+        } else if self.at_word("under") {
+            // the guarded edges of this frame serve these rules
+            self.advance();
+            let f = frame.get_or_insert_with(FrameDecl::default);
+            loop {
+                f.under.push(self.expect_rule_id("under")?);
+                if self.check(&Token::Comma) { self.advance(); } else { break; }
+            }
+            Ok(true)
+        } else if self.at_word("exempt") {
+            // this rule does not apply to this signal, and why
+            self.advance();
+            let rule = self.expect_rule_id("exempt")?;
+            let why = match self.peek().clone() {
+                Token::StringLit(w) => { self.advance(); w }
+                _ => String::new(),
+            };
+            frame.get_or_insert_with(FrameDecl::default).exempt.push((rule, why));
             Ok(true)
         } else if self.at_word("moves") {
             self.advance();
@@ -2670,6 +2721,22 @@ impl Parser {
 
     fn parse_statement_inner(&mut self) -> Result<Spanned<Statement>, ParseError> {
         let start = self.peek_span();
+        // `under "SAN-02"` as a statement of its own (RFC 0002): the branch it
+        // stands in is where the case of that rule is handled — a rule served
+        // by what the code does (an order rejected, a share withheld) instead
+        // of by a refusal. No effect at run time: it reads as a `require`
+        // that always holds, marked `LAW_HANDLED` for checker/law.rs.
+        if self.at_word("under") && matches!(self.peek_at(1), Token::StringLit(_)) {
+            self.advance();
+            let rule = self.expect_rule_id("under")?;
+            let span = start.merge(self.prev_span());
+            let yes = || Spanned::new(Expr::Literal(Literal::Bool(true)), span);
+            return Ok(Spanned::new(Statement::Require {
+                constraint: Spanned::new(Constraint::Comparison { left: yes(), op: CmpOp::Eq, right: yes() }, span),
+                else_signal: crate::checker::law::LAW_HANDLED.to_string(),
+                under: Some(rule),
+            }, span));
+        }
         // a contextual keyword used as a variable (`let variants = 1` is
         // accepted) is a name at the start of a statement too: `variants = 2`,
         // `variants[k] = v` were "expected statement, found Variants"
@@ -2892,10 +2959,17 @@ impl Parser {
                         }
                     }
                 };
+                // `under "SAN-02"`: the rule of the law this refusal serves
+                // (RFC 0002), on the same line
+                let under = if self.at_word("under") && !self.at_line_start() {
+                    self.advance();
+                    Some(self.expect_rule_id("under")?)
+                } else { None };
                 Ok(Spanned::new(
                     Statement::Require {
                         constraint,
                         else_signal,
+                        under,
                     },
                     start.merge(self.prev_span()),
                 ))

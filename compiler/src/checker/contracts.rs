@@ -152,6 +152,7 @@ pub fn inline_requires(program: &Program) -> Program {
                             right: Spanned::new(Expr::Literal(Literal::Bool(true)), c.span),
                         }, c.span),
                         else_signal: "requires".to_string(),
+                        under: None,
                     }, c.span)).collect();
                     body.append(&mut on.body);
                     on.body = body;

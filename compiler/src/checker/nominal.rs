@@ -350,6 +350,7 @@ fn bound_cell(c: &mut CellDef, bounds: &HashMap<String, Spanned<Expr>>) {
             checks.push(Spanned::new(Statement::Require {
                 constraint: Spanned::new(Constraint::Comparison { left: cond, op: CmpOp::Eq, right: Spanned::new(Expr::Literal(Literal::Bool(true)), span) }, span),
                 else_signal: format!("OutOfRange\u{1f}{}: {n} admits only `{}`", p.name, render_expr(&b.node)),
+                under: None,
             }, span));
         }
         if !checks.is_empty() { on.body.splice(0..0, checks); }

@@ -1,0 +1,1 @@
+An `under "ID"` or `exempt "ID"` in the code names a rule that no law of the program declares. The code cannot invent a rule: a new rule is added to the `.law` file by the person who owns it, then the law is locked again.

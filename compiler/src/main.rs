@@ -259,6 +259,24 @@ enum Commands {
         #[arg(long)]
         dry_run: bool,
     },
+    /// The program against the laws it is under (soma.toml `[law]`): each business rule,
+    /// where the code serves it, its tests, and what is missing
+    Law {
+        /// Path to the .cell source file
+        file: PathBuf,
+        /// One rule by its identifier (`"SAN-02"`): its text, its terms, every signal that
+        /// realizes them, where it is served
+        rule: Option<String>,
+        /// Only what fails, as a numbered work list
+        #[arg(long)]
+        todo: bool,
+        /// Record the laws as reviewed, in law.lock
+        #[arg(long)]
+        lock: bool,
+        /// Output as JSON (for agents)
+        #[arg(long)]
+        json: bool,
+    },
     /// List the holes of a program's skeletons — signals with no body yet — in the order to fill them
     Holes {
         /// Path to the .cell source file
@@ -651,6 +669,7 @@ fn main_inner() {
         Commands::Rename { file, signal, new_name, dry_run } => commands::refs::cmd_rename(&file, &signal, &new_name, dry_run),
         Commands::Refs { file, signal, json } => commands::refs::cmd_refs(&file, &signal, json),
         Commands::Holes { file, only, json } => commands::skeleton::cmd_holes(&file, only.as_deref(), json),
+        Commands::Law { file, rule, todo, lock, json } => commands::law::cmd_law(&file, rule.as_deref(), todo, lock, json),
         Commands::Docs { topic } => commands::docs::cmd_docs(&topic),
         Commands::Fmt { paths, check, json } => commands::fmt::cmd_fmt(&paths, check, json),
         Commands::Eval { file, handler, dataset, grade, threshold, json } => commands::eval::cmd_eval(&file, &handler, &dataset, &grade, threshold, json),

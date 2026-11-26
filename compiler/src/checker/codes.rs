@@ -132,6 +132,16 @@ const ERROR_KINDS: &[(&str, &str)] = &[
     ("skeleton_lock", "a skeleton differs from the one `skeleton.lock` holds (frozen with `soma skeleton --freeze`)"),
     // 3.2
     ("nominal_mismatch", "two nominal types mixed (`cell type Lots = Int` with `Cents`), or a plain value where a nominal one is declared"),
+    // the law (RFC 0002)
+    ("law_file", "a law soma.toml names is missing or does not read as a law"),
+    ("law_lock", "the law differs from law.lock"),
+    ("law_unknown_rule", "an `under` or `exempt` naming a rule no law of the program declares"),
+    ("law_unknown_term", "a `realizes` naming a term no law of the program declares"),
+    ("law_unguarded_under", "a frame `under` a rule with no guarded edge to serve it"),
+    ("law_exempt_reason", "an `exempt` without its reason"),
+    ("law_unserved_rule", "a rule of the law nothing in the program serves"),
+    ("law_unserved_realization", "a signal that realizes a term of a rule and neither serves the rule nor is exempt from it"),
+    ("law_untested_rule", "a rule of the law that is served but has no test (reported as the warning W0020 law_warning)"),
 ];
 
 /// Warning classes (the `CheckWarning` variant, snake_case). APPEND ONLY.
@@ -157,6 +167,7 @@ const WARNING_KINDS: &[(&str, &str)] = &[
     ("type_advisory", "a type the inference could not settle; checked at run time"),
     // 3.1.0
     ("frame_warning", "a skeleton that says more than the program does: a frame wider than its body, a machine edge or a slot no frame touches, a helper nothing calls"),
+    ("law_warning", "a rule of the law that is served but has no test"),
 ];
 
 /// Syntax-error classes, recognised from the parser's message. APPEND ONLY.

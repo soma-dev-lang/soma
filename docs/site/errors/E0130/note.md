@@ -1,0 +1,1 @@
+A signal `realizes` a term that a rule of the law is about, and neither serves the rule nor is exempt from it: the forgotten path. Add a refusal `require … else Tag "…" under "ID"` to its handler (or to a helper of its cell that it calls), or the statement `under "ID"` in the branch that handles the case, or `exempt "ID" "why"` on the signal.

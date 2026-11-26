@@ -11,6 +11,7 @@ const AGENT_SUMMARY: &str = include_str!("../../../site/llms.txt");
 const AGENTS_GUIDE: &str = include_str!("../../../site/llms-agents.txt");
 const NATIVE_GUIDE: &str = include_str!("../../../site/llms-native.txt");
 const SKELETON_GUIDE: &str = include_str!("../../../site/llms-skeleton.txt");
+const LAW_GUIDE: &str = include_str!("../../../site/llms-law.txt");
 const FLESH_CARD: &str = include_str!("../../../site/llms-flesh.txt");
 const RELEASES: &str = include_str!("../../../site/llms-releases.txt");
 const REFERENCE: &str = include_str!("../../../SOMA_REFERENCE.md");
@@ -27,6 +28,7 @@ const TOPICS: &[(&str, &str)] = &[
     ("agents", "running LLM agents: tools, capabilities, [task], hordes, budgets, mocks, replay"),
     ("native", "the [native] vocabulary, its limits and costs"),
     ("skeleton", "large programs: skeleton / flesh, frames, holes, the brief, skeleton.lock"),
+    ("law", "business rules outside the code: the .law file, realizes / under / exempt, soma law"),
     ("flesh", "writing ONE body from its brief: the syntax a handler needs, on one page"),
     ("releases", "what each release changed, newest first"),
     ("reference", "the full language reference"),
@@ -48,6 +50,7 @@ pub fn cmd_docs(topic: &str) {
         "agents" => print!("{}", AGENTS_GUIDE),
         "native" | "performance" => print!("{}", NATIVE_GUIDE),
         "skeleton" | "frames" => print!("{}", SKELETON_GUIDE),
+        "law" | "rules" => print!("{}", LAW_GUIDE),
         "flesh" | "body" => print!("{}", FLESH_CARD),
         "releases" => print!("{}", RELEASES),
         "reference" => print!("{}", REFERENCE),

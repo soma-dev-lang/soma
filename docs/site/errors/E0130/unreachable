@@ -1,0 +1,1 @@
+This diagnostic needs a project: a soma.toml with a `[law]` table and a `.law` file beside the program, which a single-file example cannot show. `compiler/tests/law.rs` holds a program for each case.

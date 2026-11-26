@@ -65,6 +65,12 @@ pub struct Frame {
     pub plain_map_lambda: bool,
     /// `moves a -> b when Other.s`: declared frames only
     pub conditions: BTreeSet<EdgeCondition>,
+    /// The law (RFC 0002), declared frames only: the terms this signal
+    /// realizes, the rules its guarded edges serve, the rules it is exempt
+    /// from (with the reason).
+    pub realizes: BTreeSet<String>,
+    pub under: BTreeSet<String>,
+    pub exempt: BTreeSet<(String, String)>,
 }
 
 impl Frame {
@@ -82,6 +88,9 @@ impl Frame {
             calls: d.calls.iter().cloned().collect(),
             emits: d.emits.iter().cloned().collect(),
             moves: d.moves.iter().cloned().collect(),
+            realizes: d.realizes.iter().cloned().collect(),
+            under: d.under.iter().cloned().collect(),
+            exempt: d.exempt.iter().cloned().collect(),
             ..Frame::default()
         }
     }
@@ -120,6 +129,9 @@ impl Frame {
         if self.dynamic_moves { out.push(("moves", vec!["?".to_string()])); }
         if !self.calls.is_empty() { out.push(("calls", self.calls.iter().cloned().collect())); }
         if !self.emits.is_empty() { out.push(("emits", self.emits.iter().cloned().collect())); }
+        if !self.realizes.is_empty() { out.push(("realizes", self.realizes.iter().cloned().collect())); }
+        if !self.under.is_empty() { out.push(("under", self.under.iter().map(|r| format!("\"{}\"", r)).collect())); }
+        for (rule, why) in &self.exempt { out.push(("exempt", vec![format!("\"{}\" \"{}\"", rule, why)])); }
         out
     }
 }

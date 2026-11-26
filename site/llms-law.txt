@@ -1,0 +1,130 @@
+# Soma — the law: business rules outside the code
+
+`soma verify` proves the flesh keeps to the skeleton. It proves nothing about
+whether the program does what the business requires, unless something says
+what the business requires. That is the law.
+
+Three artefacts, three reviewers:
+
+    law       terms and rules, in sentences      the person who owns the rules
+    skeleton  memory, state machines, frames     the architect
+    flesh     the code                           you
+
+The law is written first, outside the code, and locked. The code is aligned
+on the law — never the reverse. You do not edit a `.law` file or `law.lock`.
+
+## The law: a file that names no code
+
+```
+// lois/sanctions.law
+law Sanctions
+
+term Porteur  "The holder of units of a fund, on its register."
+term Paiement "A payment of cash to a holder: a redemption, a distribution, an indemnity."
+
+rule "SAN-02" "No payment to a frozen holder"
+    about  Paiement, Porteur
+    source "Regulation (EU) 269/2014, art. 2"
+    owner  "compliance"
+```
+
+Its only words are `law`, `term`, `rule`, and under a rule `about` (the terms
+it speaks of — each must be declared), `source`, `owner`. A cell, a handler
+or a test named in it is refused (E0123). `//` starts a comment.
+
+The program says which laws it is under, in soma.toml:
+
+```
+[law]
+files = ["lois/sanctions.law"]
+```
+
+## Aligning the code
+
+```
+skeleton Caisse {
+    face {
+        signal payer(porteur: String, n: Int) -> Int
+            reads etat_de
+            writes solde
+            realizes Paiement                 // this action IS a payment
+        signal frais(n: Int) -> Int
+            writes solde
+            realizes Paiement
+            exempt "SAN-02" "pays the management company, not a holder"
+    }
+}
+flesh Caisse {
+    on payer(porteur, n) {
+        require (etat_de.get(porteur) ?? "valide") != "bloque" else Bloque "{porteur} is frozen" under "SAN-02"
+        …
+    }
+}
+cell test FrozenHolderIsNotPaid under "SAN-02" {
+    rules { … assert_fails Caisse.payer("a", 10) matching "Bloque" }
+}
+```
+
+- `realizes Term[, Term]` — a clause of a signal, in the skeleton: this
+  action is an instance of a term of the law. When you add a signal, ask
+  which term it realizes: that is what lets the check tell you which rules
+  it owes.
+- `under "ID"` serves a rule, in three ways, from the strongest:
+  - on a frame that has a guarded edge (`moves a -> b when Other.state`):
+    **proved** on every path;
+  - at the end of a `require … else Tag "…"` (same line): **checked** at
+    run time. A helper of the cell that the handler calls counts;
+  - as a statement of its own, in the branch that handles the case — an
+    order recorded then rejected, a share withheld while the others are
+    paid: **handled**. Nothing checks the branch does what the rule says;
+    only its tests do. Prefer a refusal when the case can be refused.
+- `exempt "ID" "why"` — a clause of a signal: the rule does not apply to
+  it. The reason is required and is read by a reviewer.
+- `cell test Name under "ID", "ID2" { … }` — the tests that show a rule at
+  work. They may be in another `.cell` file beside soma.toml, or in `tests/`.
+
+Without a `[law]` table these clauses are accepted and do nothing.
+
+## What `soma check` refuses
+
+    E0123  a law that is missing or does not read as a law
+    E0124  a law that differs from law.lock
+    E0125  `under` / `exempt` naming a rule no law declares — you cannot invent a rule
+    E0126  `realizes` naming a term no law declares
+    E0127  a frame `under` a rule with no guarded edge
+    E0128  `exempt` without its reason
+    E0129  a rule nothing serves
+    E0130  a signal that realizes a term of a rule and neither serves it nor is exempt
+    W0020  a rule that is served but has no test
+
+E0130 is the forgotten path: a second way to pay, written later, that omits
+the check. Its message is the instruction:
+
+```
+error: the rule "SAN-02" (No payment to a frozen holder — Regulation (EU)
+269/2014, art. 2) is not served in `Caisse.indemniser`, which realizes
+`Paiement` — add a refusal `under "SAN-02"` to its handler (or the statement
+`under "SAN-02"` in the branch that handles the case), or `exempt "SAN-02"
+"<why it does not apply>"` to its signal
+```
+
+## `soma law`
+
+```
+soma law app.cell             # each rule: source, where it is served and how, its tests, its status
+soma law app.cell --todo      # only what fails, as a numbered work list — start here
+soma law app.cell "SAN-02"    # one rule: its terms and their definitions, every signal that realizes them
+soma law app.cell --json      # the same, for a program
+soma law app.cell --lock      # the owner of the law records it as reviewed (law.lock) — not you
+```
+
+Status of a rule: `unserved`, `incomplete` (a signal that realizes one of
+its terms does not serve it), `handled`, `checked`, `proved` — the weakest
+way it is served anywhere.
+
+## When the law is silent or wrong
+
+Do not add a rule in the code, and do not `exempt` a signal to make the
+check pass. Say what is missing to the person who owns the law: the rule you
+think applies, the signal, and why. A new rule enters the `.law` file, the
+law is locked again, and the check then tells you every place that owes it.

@@ -1,0 +1,1 @@
+A signal is `under` a rule, but its frame has no guarded edge (`moves a -> b when Other.state`), so nothing in the frame serves the rule. Guard the edge, or put `under "ID"` on the `require` of the handler instead.
