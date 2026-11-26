@@ -1,0 +1,1 @@
+In edition 2026, soma check reports this rule (kind local_shadows_slot) as the warning W0014 habit_warning, never as E0080. It is the error E0080 only in edition 2027 (`edition = "2027"` in soma.toml), which a single-file example cannot show.

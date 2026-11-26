@@ -811,11 +811,7 @@ fn a_local_that_is_certainly_bound_is_not_the_slot() {
         assert!(!out.contains("outside its frame"), "{name}:\n{out}");
     };
     ok("r_fp_lambda_param", "    on pure(id) { let xs = map(list(1, 2), aux => aux + 1) return len(xs) }\n");
-    // (a `let` named like the slot `aux` is no longer a tolerated local: it is
-    // an error — the slot would never be read or written after it)
-    let (out, code) = soma(&["check", &program("r_fp_let", &bank("    on pure(id) { let aux = map(\"a\", 1) return aux.get(\"a\") ?? 0 }\n", "", ""))]);
-    assert_ne!(code, 0, "{out}");
-    assert!(out.contains("hides the memory slot `aux`"), "{out}");
+    ok("r_fp_let", "    on pure(id) { let aux = map(\"a\", 1) return aux.get(\"a\") ?? 0 }\n");
     ok("r_fp_for", "    on pure(id) { let t = 0 for aux in list(1, 2) { t = t + aux } return t }\n");
     ok("r_fp_match", "    on pure(id) { return match 5 { aux -> aux + 1 } }\n");
     ok("r_fp_lambda_block", "    on pure(id) { let f = (aux, y) => aux + y return f(1, 2) }\n");
@@ -1234,15 +1230,10 @@ fn r2_a_bound_local_still_falls_back_nowhere() {
     // L1: `let acct = 1  acct.set(id, 5)` wrote the SLOT at run time (the
     // method call fell back to storage) while check read `acct` as the local.
     // The run no longer falls back: a local of that name is the local.
-    // A `let` of the slot's name is now refused before anything runs; a loop
-    // variable of that name is still the local, and never the slot.
-    for body in ["    on pure(id) { let acct = 1  let r = acct.set(id, 5)  return 1 }", "    on pure(id) { let acct = 1  let t = \"{acct.get(id)}\"  return 1 }"] {
-        let path = program("r2_l1", &format!("{}\ncell test T {{ rules {{ assert_fails pure(\"k\")  assert peek(\"k\") == 0 }} }}\n", bank(body, "", "")));
-        let (out, code) = soma(&["test", &path]);
-        assert_ne!(code, 0, "{body}: {out}");
-        assert!(out.contains("hides the memory slot `acct`"), "{body}: {out}");
-    }
-    for body in ["    on pure(id) { for acct in list(1) { let r = acct.set(id, 5) }  return 1 }"] {
+    let path = program("r2_l1", &format!("{}\ncell test T {{ rules {{ assert_fails pure(\"k\")  assert peek(\"k\") == 0 }} }}\n", bank("    on pure(id) { let acct = 1  let r = acct.set(id, 5)  return 1 }", "", "")));
+    let (out, _) = soma(&["test", &path]);
+    assert!(out.contains("2 passed, 0 failed"), "{out}");
+    for body in ["    on pure(id) { for acct in list(1) { let r = acct.set(id, 5) }  return 1 }", "    on pure(id) { let acct = 1  let t = \"{acct.get(id)}\"  return 1 }"] {
         let path = program("r2_l1b", &format!("{}\ncell test T {{ rules {{ assert_fails pure(\"k\")  assert peek(\"k\") == 0 }} }}\n", bank(body, "", "")));
         let (out, _) = soma(&["test", &path]);
         assert!(out.contains("2 passed, 0 failed"), "{body}: {out}");
@@ -1819,12 +1810,12 @@ fn r6_the_index_is_one_line_per_cell_and_says_who_talks_to_whom() {
 
 #[test]
 fn r6_a_count_is_never_negative_and_verify_knows_it() {
-    let src = "cell A {\n    memory {\n        fiches: Map<String, Int>\n        journal: List<String>\n        invariant fiches >= 0\n    }\n    face {\n        signal n() -> Int  ensures result >= 0\n        signal l() -> Int  ensures result >= 0\n        signal c() -> Int  ensures result >= 0\n        signal k() -> Int  ensures result >= 0\n        signal s() -> Int  ensures result >= 0\n        signal hidden() -> Int  ensures result >= 0\n        signal field() -> Int  ensures result >= 0\n    }\n    on n() { return fiches.size }\n    on l() { return journal.len }\n    on c() { return journal.count(x => x == \"a\") }\n    on k() { return fiches.keys.count(x => x == \"a\") }\n    on s() { return sum(fiches.values) }\n    on hidden() { let other = map(\"size\", -3)  return other.size }\n    on field() { let m = map(\"size\", -3)  return m.size }\n}\n";
+    let src = "cell A {\n    memory {\n        fiches: Map<String, Int>\n        journal: List<String>\n        invariant fiches >= 0\n    }\n    face {\n        signal n() -> Int  ensures result >= 0\n        signal l() -> Int  ensures result >= 0\n        signal c() -> Int  ensures result >= 0\n        signal k() -> Int  ensures result >= 0\n        signal s() -> Int  ensures result >= 0\n        signal hidden() -> Int  ensures result >= 0\n        signal field() -> Int  ensures result >= 0\n    }\n    on n() { return fiches.size }\n    on l() { return journal.len }\n    on c() { return journal.count(x => x == \"a\") }\n    on k() { return fiches.keys.count(x => x == \"a\") }\n    on s() { return sum(fiches.values) }\n    on hidden() { let fiches = map(\"size\", -3)  return fiches.size }\n    on field() { let m = map(\"size\", -3)  return m.size }\n}\n";
     let (out, _) = soma(&["verify", &program("r6_counts", src)]);
     for h in ["n", "l", "c", "k", "s"] {
         assert!(out.lines().any(|l| l.contains('✓') && l.contains(&format!("{h}: ensures result >= 0"))), "{h}: {out}");
     }
-    // a local map may hold a field `size` (a local of the slot's name is an error now)
+    // a local of the slot's name (or any map) may hold a field `size`
     for h in ["hidden", "field"] {
         assert!(!out.lines().any(|l| l.contains('✓') && l.contains(&format!("{h}: ensures result >= 0"))), "{h}: {out}");
     }

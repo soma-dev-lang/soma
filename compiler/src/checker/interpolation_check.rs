@@ -803,13 +803,14 @@ impl<'a> Walker<'a> {
                 let lambda_param = matches!(&value.node, Expr::Index { target, .. } if matches!(&target.node, Expr::Ident(n) if n.starts_with("__args")));
                 if self.cell_slots.contains(name) && !self.scope.contains(name) && !lambda_param {
                     self.issues.push(InterpolationIssue {
-                        // an error, like a parameter named like a slot: as a habit
-                        // warning it was lost among the others, and `slot.set` /
-                        // `slot.get` after it silently meant the local
-                        message: format!("`let {name}` hides the memory slot `{name}` for the rest of this block — reads, indexes and writes of `{name}` would mean the local, and the slot would never be read or written; rename the local (e.g. `{name}_local`)"),
+                        // a habit warning in edition 2026, an error in 2027
+                        // (checker/mod.rs): as a warning it was lost among the
+                        // others, and `slot.set` / `slot.get` after it silently
+                        // meant the local
+                        message: format!("`let {name}` hides the memory slot `{name}` for the rest of this block — reads, indexes and writes of `{name}` now mean the local, and the slot is not read or written; rename the local (e.g. `{name}_local`)"),
                         span: stmt.span,
-                        warning: false,
-                        habit: false,
+                        warning: true,
+                        habit: true,
                         kind: "local_shadows_slot",
                     });
                 }

@@ -1304,7 +1304,7 @@ cell C {
   face { signal seed() -> List  signal w() -> List  signal idx() -> List  signal h(x: Int) -> Int  signal hit() -> Int }
   memory { rows: List<Int> [persistent]  n: Map<String, Int> [persistent] }
   on seed() { rows.push(10)  rows.push(20)  return rows }
-  on w() { let mine = [1, 2]  mine[0] = 99  return mine }
+  on w() { let rows = [1, 2]  rows[0] = 99  return rows }
   on idx() { let r = try { rows[5] }  return [rows[-1], r.kind] }
   on h(x: Int) { emit grew(x)  return n.get("g") ?? 0 }
   on grew(x: Int) { n.set("g", (n.get("g") ?? 0) + x) }
@@ -1321,10 +1321,8 @@ cell test T { rules {
     let (out, code) = soma_in(&d, &["test", "app.cell"]);
     assert_eq!(code, 0, "{out}");
     assert!(out.contains("5 passed, 0 failed"), "{out}");
-    // (a local named like the slot `rows` is now an error, not a warning:
-    // see `let_named_like_a_slot_is_an_error`)
     let (out, _) = soma_in(&d, &["check", "app.cell"]);
-    assert!(!out.contains("hides the memory slot"), "{out}");
+    assert!(out.contains("hides the memory slot `rows`"), "{out}");
 
     // size proofs: a sibling that also pushes, a push in a lambda
     std::fs::write(d.join("sz.cell"), r#"
@@ -4848,15 +4846,15 @@ cell Front {
     assert!(!out.contains("write the right-hand slot first"), "{out}");
 }
 
-/// A `let` named like a memory slot of its cell was only a habit warning
-/// (W0014), lost among the others: after it, `slot.get` / `slot.set` meant
-/// the local and the slot was never read or written — found late, by a wrong
-/// number, in a 12k-line program. Like a parameter named like a slot, it is
-/// now an error, in a single cell and in a skeleton/flesh pair alike.
+/// RFC 0001. A `let` named like a memory slot of its cell is a habit warning
+/// (W0014) in edition 2026, where it sat among 180 others in a 12k-line
+/// program: after it, `slot.get` / `slot.set` meant the local and the slot
+/// was never read or written. In edition 2027 it is an error (E0080), as a
+/// parameter named like a slot already is — in a single cell and in a
+/// skeleton/flesh pair alike. A lambda parameter of that name is not a `let`.
 #[test]
-fn let_named_like_a_slot_is_an_error() {
-    let d = dir("let_shadows_slot");
-    std::fs::write(d.join("un.cell"), r#"
+fn a_let_named_like_a_slot_is_an_error_in_edition_2027() {
+    let single = r#"
 cell Compteur {
   memory { total: Map<String, Int> [persistent] }
   on ajouter(k: String, n: Int) {
@@ -4865,11 +4863,23 @@ cell Compteur {
     return total
   }
 }
-"#).unwrap();
+"#;
+    let edition = |d: &std::path::Path, e: &str| std::fs::write(d.join("soma.toml"), format!("[package]\nname = \"app\"\nedition = \"{e}\"\n")).unwrap();
+
+    // edition 2026 (the default): still accepted, and the warning says what comes
+    let d = dir("let_shadows_slot_2026");
+    std::fs::write(d.join("un.cell"), single).unwrap();
+    let (out, code) = soma_in(&d, &["check", "un.cell"]);
+    assert_eq!(code, 0, "{out}");
+    assert!(out.contains("warning") && out.contains("hides the memory slot `total`") && out.contains("an error in edition 2027"), "{out}");
+
+    // edition 2027: refused, with its own code
+    let d = dir("let_shadows_slot_2027");
+    edition(&d, "2027");
+    std::fs::write(d.join("un.cell"), single).unwrap();
     let (out, code) = soma_in(&d, &["check", "un.cell"]);
     assert_ne!(code, 0, "{out}");
-    assert!(out.contains("error") && out.contains("hides the memory slot `total`"), "{out}");
-    assert!(out.contains("E0"), "an error code is shown: {out}");
+    assert!(out.contains("error") && out.contains("hides the memory slot `total`") && out.contains("E0080"), "{out}");
 
     // the same, the slot declared in a skeleton and the `let` in its flesh
     std::fs::write(d.join("app.cell"), r#"
@@ -4895,14 +4905,16 @@ flesh Compteur {
     assert_ne!(code, 0, "{out}");
     assert!(out.contains("hides the memory slot `total`"), "{out}");
 
-    // another name is fine, and so is a local named like ANOTHER cell's slot
+    // another name is fine; so are a local named like ANOTHER cell's slot and
+    // a lambda parameter named like this cell's slot
     std::fs::write(d.join("ok.cell"), r#"
 cell Compteur {
   memory { total: Map<String, Int> [persistent] }
   on ajouter(k: String, n: Int) {
     let nouveau = (total.get(k) ?? 0) + n
     total.set(k, nouveau)
-    return nouveau
+    let plus = (total, y) => total + y
+    return plus(nouveau, 0)
   }
 }
 cell Autre {

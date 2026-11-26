@@ -729,8 +729,15 @@ impl<'a> Checker<'a> {
         // every handler body, scanned with the runtime's segmentation
         // rules. Catches "hello {customr}" before it 500s at runtime.
         // Issues inside try { } are recoverable by design → warnings.
+        // edition 2027: a `let` named like a memory slot of its cell is an
+        // error, as a parameter of that name already is (RFC 0001)
+        let shadow_is_error = self.edition().as_str() >= "2027";
         for issue in interpolation_check::check_program(program) {
-            if issue.habit {
+            if issue.habit && issue.kind == "local_shadows_slot" && shadow_is_error {
+                self.errors.push(CheckError::Static { kind: "local_shadows_slot", message: format!("{} (edition 2027: an error)", issue.message), span: issue.span });
+            } else if issue.habit && issue.kind == "local_shadows_slot" {
+                self.warnings.push(CheckWarning::HabitWarning { message: format!("{} (an error in edition 2027)", issue.message), span: issue.span });
+            } else if issue.habit {
                 self.warnings.push(CheckWarning::HabitWarning { message: issue.message, span: issue.span });
             } else if issue.warning {
                 self.warnings.push(CheckWarning::InterpolationRecoverable {
