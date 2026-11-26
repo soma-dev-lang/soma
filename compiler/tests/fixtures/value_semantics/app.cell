@@ -60,9 +60,9 @@ cell A {
         return [m, n, l]
     }
     on loop_var_is_a_copy() {
-        let rows = [[1], [2]]
-        for r in rows { r[0] = 0 }
-        return rows
+        let grid = [[1], [2]]
+        for r in grid { r[0] = 0 }
+        return grid
     }
     on map_values_copy() {
         let a = [1, 2, 3]

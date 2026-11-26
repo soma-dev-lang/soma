@@ -1304,7 +1304,7 @@ cell C {
   face { signal seed() -> List  signal w() -> List  signal idx() -> List  signal h(x: Int) -> Int  signal hit() -> Int }
   memory { rows: List<Int> [persistent]  n: Map<String, Int> [persistent] }
   on seed() { rows.push(10)  rows.push(20)  return rows }
-  on w() { let rows = [1, 2]  rows[0] = 99  return rows }
+  on w() { let mine = [1, 2]  mine[0] = 99  return mine }
   on idx() { let r = try { rows[5] }  return [rows[-1], r.kind] }
   on h(x: Int) { emit grew(x)  return n.get("g") ?? 0 }
   on grew(x: Int) { n.set("g", (n.get("g") ?? 0) + x) }
@@ -1321,8 +1321,10 @@ cell test T { rules {
     let (out, code) = soma_in(&d, &["test", "app.cell"]);
     assert_eq!(code, 0, "{out}");
     assert!(out.contains("5 passed, 0 failed"), "{out}");
+    // (a local named like the slot `rows` is now an error, not a warning:
+    // see `let_named_like_a_slot_is_an_error`)
     let (out, _) = soma_in(&d, &["check", "app.cell"]);
-    assert!(out.contains("hides the memory slot `rows`"), "{out}");
+    assert!(!out.contains("hides the memory slot"), "{out}");
 
     // size proofs: a sibling that also pushes, a push in a lambda
     std::fs::write(d.join("sz.cell"), r#"
@@ -4844,4 +4846,70 @@ cell Front {
     std::fs::write(d.join("s.cell"), "cell W {\n memory {\n  stock: Map<String, Int> [persistent]\n  reserved: Map<String, Int> [persistent]\n  invariant (reserved ?? 0) <= (stock ?? 0)\n }\n on open(k: String, n: Int) { stock.set(k, n)\n reserved.set(k, 0) }\n}\n").unwrap();
     let (out, _) = soma_in(&d, &["check", "s.cell"]);
     assert!(!out.contains("write the right-hand slot first"), "{out}");
+}
+
+/// A `let` named like a memory slot of its cell was only a habit warning
+/// (W0014), lost among the others: after it, `slot.get` / `slot.set` meant
+/// the local and the slot was never read or written — found late, by a wrong
+/// number, in a 12k-line program. Like a parameter named like a slot, it is
+/// now an error, in a single cell and in a skeleton/flesh pair alike.
+#[test]
+fn let_named_like_a_slot_is_an_error() {
+    let d = dir("let_shadows_slot");
+    std::fs::write(d.join("un.cell"), r#"
+cell Compteur {
+  memory { total: Map<String, Int> [persistent] }
+  on ajouter(k: String, n: Int) {
+    let total = n + 1
+    total.set(k, total)
+    return total
+  }
+}
+"#).unwrap();
+    let (out, code) = soma_in(&d, &["check", "un.cell"]);
+    assert_ne!(code, 0, "{out}");
+    assert!(out.contains("error") && out.contains("hides the memory slot `total`"), "{out}");
+    assert!(out.contains("E0"), "an error code is shown: {out}");
+
+    // the same, the slot declared in a skeleton and the `let` in its flesh
+    std::fs::write(d.join("app.cell"), r#"
+skeleton Compteur {
+  memory { total: Map<String, Int> [persistent] }
+  face {
+    signal ajouter(k: String, n: Int) -> Int
+      writes total
+  }
+}
+"#).unwrap();
+    std::fs::write(d.join("prod.cell"), r#"
+use app
+flesh Compteur {
+  on ajouter(k, n) {
+    let total = n + 1
+    total.set(k, total)
+    return total
+  }
+}
+"#).unwrap();
+    let (out, code) = soma_in(&d, &["check", "prod.cell"]);
+    assert_ne!(code, 0, "{out}");
+    assert!(out.contains("hides the memory slot `total`"), "{out}");
+
+    // another name is fine, and so is a local named like ANOTHER cell's slot
+    std::fs::write(d.join("ok.cell"), r#"
+cell Compteur {
+  memory { total: Map<String, Int> [persistent] }
+  on ajouter(k: String, n: Int) {
+    let nouveau = (total.get(k) ?? 0) + n
+    total.set(k, nouveau)
+    return nouveau
+  }
+}
+cell Autre {
+  on f(n: Int) { let total = n + 1  return total }
+}
+"#).unwrap();
+    let (out, code) = soma_in(&d, &["check", "ok.cell"]);
+    assert_eq!(code, 0, "{out}");
+    assert!(!out.contains("hides the memory slot"), "{out}");
 }

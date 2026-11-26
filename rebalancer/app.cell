@@ -255,12 +255,12 @@ cell Portfolio {
 
     on set_history(payload: Map) {
         let symbol = payload.symbol ?? ""
-        let prices = payload.prices ?? list()
+        let series = payload.prices ?? list()
         if symbol == "" {
             return map("error", "symbol required")
         }
-        price_history.set(symbol, to_json(prices))
-        map("symbol", symbol, "n", len(prices))
+        price_history.set(symbol, to_json(series))
+        map("symbol", symbol, "n", len(series))
     }
 
     on upsert_position(payload: Map) {
