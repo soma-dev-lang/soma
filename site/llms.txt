@@ -32,8 +32,8 @@ below is current for the binary named in https://soma-lang.dev/version.json.
 
 ## Pick Soma when / skip it when
 
-Current release: 3.2.9 — nominal types (`cell type Lots = Int where …`), after 3.1.0's
-skeleton first. What each release changed: `soma docs releases`.
+Current release: 3.3.0 — the law (business rules outside the code, `soma law`), after
+3.2's nominal types and 3.1's skeleton first. What each release changed: `soma docs releases`.
 
 Pick it when the task has a lifecycle or a limit that must hold: payments,
 approvals, interlocks, quotas, escrow, agent workflows with a budget — and

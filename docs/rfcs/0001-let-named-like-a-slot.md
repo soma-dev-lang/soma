@@ -21,7 +21,7 @@ cell Compteur {
 ```
 
 `soma check` already said so, as a habit warning (W0014). In Gérance
-(`site/cases/gerance`, 12,000 lines of skeleton and flesh) that warning was
+(a fund-administration case study, not published; 12,000 lines of skeleton and flesh) that warning was
 one of 180: it was not read, and the defect was found by a wrong net asset
 value in a scenario test (S90, a class conversion), not by the checker. The
 same name on a handler *parameter* is already an error

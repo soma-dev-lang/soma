@@ -20,6 +20,7 @@ below is current for the binary named in https://soma-lang.dev/version.json.
 - [llms-full.txt](https://soma-lang.dev/llms-full.txt): this file + full reference + every gotcha + every builtin, one fetch (~130 KB)
 - [llms-agents.txt](https://soma-lang.dev/llms-agents.txt): LLM agents — tools, capabilities, [task], hordes, budgets, mocks (`soma docs agents`); [llms-native.txt](https://soma-lang.dev/llms-native.txt): the `[native]` vocabulary, limits and costs (`soma docs native`)
 - [llms-skeleton.txt](https://soma-lang.dev/llms-skeleton.txt): large programs — `skeleton` / `flesh`, frames, holes, the brief, skeleton.lock (`soma docs skeleton`)
+- [llms-law.txt](https://soma-lang.dev/llms-law.txt): business rules outside the code — the `.law` file, `realizes` / `under` / `exempt`, `soma law` (`soma docs law`)
 - [llms-releases.txt](https://soma-lang.dev/llms-releases.txt): what each release changed, newest first (`soma docs releases`)
 - [docs/robotics.md](https://soma-lang.dev/docs/robotics.md): 100 robotics robustness scenarios, reproduction commands and limits; offline with `soma docs robotics`; [cases/orbite-core/README.md](https://soma-lang.dev/cases/orbite-core/README.md): a 1,923-line protocol whose 13 rules are proven on the full program in 2 s, and [cases/orbite/README.md](https://soma-lang.dev/cases/orbite/README.md): the 69,000-line system 20 agents wrote around it ([orbite.tar.gz](https://soma-lang.dev/cases/orbite/orbite.tar.gz))
 - [agent.md](https://soma-lang.dev/agent.md): drop-in AGENTS.md / CLAUDE.md block for a project that uses Soma; [skill/SKILL.md](https://soma-lang.dev/skill/SKILL.md): the same as an agent skill
@@ -31,8 +32,8 @@ below is current for the binary named in https://soma-lang.dev/version.json.
 
 ## Pick Soma when / skip it when
 
-Current release: 3.2.9 — nominal types (`cell type Lots = Int where …`), after 3.1.0's
-skeleton first. What each release changed: `soma docs releases`.
+Current release: 3.3.0 — the law (business rules outside the code, `soma law`), after
+3.2's nominal types and 3.1's skeleton first. What each release changed: `soma docs releases`.
 
 Pick it when the task has a lifecycle or a limit that must hold: payments,
 approvals, interlocks, quotas, escrow, agent workflows with a budget — and
@@ -90,6 +91,15 @@ soma init --skeleton myapp            # a starter laid out this way
 ```
 The rules, the clauses and an example: `soma docs skeleton`
 (https://soma-lang.dev/llms-skeleton.txt).
+
+## The law (business rules, outside the code)
+
+The skeleton says what the code MAY do; the law says what the business
+REQUIRES: a `.law` file of terms and rules that names no code, written and
+locked by a person. You align the code on it (`realizes Term` on a signal,
+`under "ID"` on the `require` or the test that serves a rule) and never
+edit it. `soma law app.cell --todo` is the work list — start there;
+`soma docs law` (https://soma-lang.dev/llms-law.txt) has the clauses.
 
 ## Cell anatomy
 
@@ -403,6 +413,8 @@ really has when `x.field` came back `()`.
   `network`); default timeout 30 s; invalid option values are refused;
   a String body is sent as text/plain unless it is JSON; `mock http_post …`
   in tests.
+- `run_process(prog, [args], opts?)` (no shell), `env_var`, `list_dir`, `file_info`, `append_file`, `read_line`:
+  effects a frame names, never raise (`{error, kind}`); a CLI runs `soma run --ephemeral --exit-status`. Bytes as hex: `hex_encode`, `hmac_hex(algo, key_hex, msg_hex)`, `base32_encode/_decode` (TOTP).
 - `verify --strict` bounds a write only from numbers it can bound: literals,
   slots with an interval invariant, and values narrowed by `require`/`if`. A
   number read out of a record (`a.balance`) is unbounded until a `require`
@@ -1172,7 +1184,8 @@ The frame, clause by clause (after the return type and any `requires` /
   ```
   The link must be written once and never deleted — `verify` refuses the
   rule otherwise. Declare the slot `[immutable]` (the run time refuses a
-  second write), or write it in ONE signal, once: at a key made from
+  second write — judged on the skeleton already, whoever writes it), or
+  write it in ONE signal, once: at a key made from
   `next_id()`, or after `require consult_of.get(id) == () else Exists`
   (`!consult_of.has(id)`, or the same guard on another slot the handler
   fills at that key first and nothing empties). A body proves the rule by
@@ -1194,7 +1207,9 @@ The frame, clause by clause (after the return type and any `requires` /
 - **A rule on an edge, in the frame**: `moves drafted -> delivered when
   Consult.done` (alternatives with `||`, another instance with
   `via consult_of`) says the edge is taken only while the other machine is
-  in that state. It is a rule between machines `verify` judges — on the
+  in that state. An edge under two rules is written twice (`moves s -> t
+  when A.x via a_of, s -> t when B.y via b_of`): each rule is proven, and a
+  hole takes the edge only under both. It is a rule between machines `verify` judges — on the
   bodies (each must `require` it before the transition), and on the holes,
   read as taking the edge only under it; a hole that takes the same edge
   without the clause is an open obligation. The brief prints it.
@@ -1250,6 +1265,139 @@ error: `Orders.place` writes `log`, outside its frame (no `writes`) — if the d
 Fix the body — or, when the design itself is wrong, change the skeleton
 and `--amend`. Do not widen a frame just to make an error go away: a
 frame wider than its body is a warning.
+
+---
+
+# Soma — the law: business rules outside the code
+
+`soma verify` proves the flesh keeps to the skeleton. It proves nothing about
+whether the program does what the business requires, unless something says
+what the business requires. That is the law.
+
+Three artefacts, three reviewers:
+
+    law       terms and rules, in sentences      the person who owns the rules
+    skeleton  memory, state machines, frames     the architect
+    flesh     the code                           you
+
+The law is written first, outside the code, and locked. The code is aligned
+on the law — never the reverse. You do not edit a `.law` file or `law.lock`.
+
+## The law: a file that names no code
+
+```
+// lois/sanctions.law
+law Sanctions
+
+term Porteur  "The holder of units of a fund, on its register."
+term Paiement "A payment of cash to a holder: a redemption, a distribution, an indemnity."
+
+rule "SAN-02" "No payment to a frozen holder"
+    about  Paiement, Porteur
+    source "Regulation (EU) 269/2014, art. 2"
+    owner  "compliance"
+```
+
+Its only words are `law`, `term`, `rule`, and under a rule `about` (the terms
+it speaks of — each must be declared), `source`, `owner`. A cell, a handler
+or a test named in it is refused (E0123). `//` starts a comment.
+
+The program says which laws it is under, in soma.toml:
+
+```
+[law]
+files = ["lois/sanctions.law"]
+```
+
+## Aligning the code
+
+```
+skeleton Caisse {
+    face {
+        signal payer(porteur: String, n: Int) -> Int
+            reads etat_de
+            writes solde
+            realizes Paiement                 // this action IS a payment
+        signal frais(n: Int) -> Int
+            writes solde
+            realizes Paiement
+            exempt "SAN-02" "pays the management company, not a holder"
+    }
+}
+flesh Caisse {
+    on payer(porteur, n) {
+        require (etat_de.get(porteur) ?? "valide") != "bloque" else Bloque "{porteur} is frozen" under "SAN-02"
+        …
+    }
+}
+cell test FrozenHolderIsNotPaid under "SAN-02" {
+    rules { … assert_fails Caisse.payer("a", 10) matching "Bloque" }
+}
+```
+
+- `realizes Term[, Term]` — a clause of a signal, in the skeleton: this
+  action is an instance of a term of the law. When you add a signal, ask
+  which term it realizes: that is what lets the check tell you which rules
+  it owes.
+- `under "ID"` serves a rule, in three ways, from the strongest:
+  - on a frame that has a guarded edge (`moves a -> b when Other.state`):
+    **proved** on every path;
+  - at the end of a `require … else Tag "…"` (same line): **checked** at
+    run time. A helper of the cell that the handler calls counts;
+  - as a statement of its own, in the branch that handles the case — an
+    order recorded then rejected, a share withheld while the others are
+    paid: **handled**. Nothing checks the branch does what the rule says;
+    only its tests do. Prefer a refusal when the case can be refused.
+- `exempt "ID" "why"` — a clause of a signal: the rule does not apply to
+  it. The reason is required and is read by a reviewer.
+- `cell test Name under "ID", "ID2" { … }` — the tests that show a rule at
+  work. They may be in another `.cell` file beside soma.toml, or in `tests/`.
+
+Without a `[law]` table these clauses are accepted and do nothing.
+
+## What `soma check` refuses
+
+    E0123  a law that is missing or does not read as a law
+    E0124  a law that differs from law.lock
+    E0125  `under` / `exempt` naming a rule no law declares — you cannot invent a rule
+    E0126  `realizes` naming a term no law declares
+    E0127  a frame `under` a rule with no guarded edge
+    E0128  `exempt` without its reason
+    E0129  a rule nothing serves
+    E0130  a signal that realizes a term of a rule and neither serves it nor is exempt
+    W0020  a rule that is served but has no test
+
+E0130 is the forgotten path: a second way to pay, written later, that omits
+the check. Its message is the instruction:
+
+```
+error: the rule "SAN-02" (No payment to a frozen holder — Regulation (EU)
+269/2014, art. 2) is not served in `Caisse.indemniser`, which realizes
+`Paiement` — add a refusal `under "SAN-02"` to its handler (or the statement
+`under "SAN-02"` in the branch that handles the case), or `exempt "SAN-02"
+"<why it does not apply>"` to its signal
+```
+
+## `soma law`
+
+```
+soma law app.cell             # each rule: source, where it is served and how, its tests, its status
+soma law app.cell --todo      # only what fails, as a numbered work list — start here
+soma law app.cell "SAN-02"    # one rule: its terms and their definitions, every signal that realizes them
+soma law app.cell --json      # the same, for a program
+soma law app.cell --lock      # the owner of the law records it as reviewed (law.lock) — not you
+```
+
+Status of a rule: `unserved`, `incomplete` (a signal that realizes one of
+its terms does not serve it), `handled`, `checked`, `proved` — the weakest
+way it is served anywhere.
+
+## When the law is silent or wrong
+
+Do not add a rule in the code, and do not `exempt` a signal to make the
+check pass. Say what is missing to the person who owns the law: the rule you
+think applies, the signal, and why. A new rule enters the `.law` file, the
+law is locked again, and the check then tells you every place that owes it.
 
 ---
 
@@ -1374,21 +1522,37 @@ it says "error kind X", raise it with `require … else X "…"` or `fail`.
 > Newest first. The language itself: https://soma-lang.dev/llms.txt (`soma docs agent`).
 > Every fix and its compatibility note: https://soma-lang.dev/CHANGELOG.md.
 
+Soma 3.2.10: the 69,000-line case study passes `soma verify` (0 ✗): each
+handler reads the state its rule is on, on the instance the rule's link
+names, just before the move. `verify` keeps a computed id handed to a
+handler as one id, and what a held status is known not to be.
+
+Soma 3.3.0: the law — a `.law` file of terms and rules that names no code;
+the program lists it in soma.toml (`[law]`) and is aligned on it: `realizes
+Term` on a signal, `under "ID"` on the `require`, the branch or the test that
+serves a rule, `exempt "ID" "why"`. `soma check` refuses a rule nothing
+serves (E0129) and a rule not served in a signal that realizes one of its
+terms (E0130). `soma law app.cell --todo` is the work list; `soma docs law`.
+Also: `run_process`, `env_var`, `list_dir`, `file_info`, `append_file`,
+`read_line`; `hmac_hex`, `base32_encode` / `base32_decode`, `hex_encode`;
+`soma run --ephemeral` / `--exit-status`; `require !a || b` means `(!a) || b`
+(it read `!(a || b)`); edition 2027 refuses a `let` named like a memory slot.
+
 Soma 3.2.9: `verify` follows a text chosen from a status by an `if`
 expression, rules out a getter's text for an unknown id once the handler
 refuses it, keeps a status until its own machine may have moved, reads a
 link written under its guard (`if link.get(k) == () { link.set(k, v) }`).
-On a 69,000-line program: 97 ✗ → 70.
+On a 69,000-line program: 96 ✗ → 69.
 
 Soma 3.2.8: a ✗ between machines names the handler that makes the move and
 says whether it, or the entry the run came in by, reads the state the rule
 requires; no verdict changes. On a 69,000-line program whose handlers now
-read the machine their rule names: 110 ✗ → 97.
+read the machine their rule names: 109 ✗ → 96.
 
 Soma 3.2.7: `verify` reads a link written once in an `[immutable]` slot, at a
 key from `next_id()` or guarded on a sibling slot; a status through a getter
 that answers a text for an unknown id; a link written with the value just
-checked; calls 40 deep (12 before). On a 69,000-line program: 228 ✗ → 110.
+checked; calls 40 deep (12 before). On a 69,000-line program: 227 ✗ → 109.
 
 Soma 3.2.6: `verify` keeps what a handler call gives from a state instead of
 walking its body at every call: files of a 69,000-line program that took more

@@ -8,6 +8,17 @@ handler reads the state its rule is on, on the instance the rule's link
 names, just before the move. `verify` keeps a computed id handed to a
 handler as one id, and what a held status is known not to be.
 
+Soma 3.3.0: the law — a `.law` file of terms and rules that names no code;
+the program lists it in soma.toml (`[law]`) and is aligned on it: `realizes
+Term` on a signal, `under "ID"` on the `require`, the branch or the test that
+serves a rule, `exempt "ID" "why"`. `soma check` refuses a rule nothing
+serves (E0129) and a rule not served in a signal that realizes one of its
+terms (E0130). `soma law app.cell --todo` is the work list; `soma docs law`.
+Also: `run_process`, `env_var`, `list_dir`, `file_info`, `append_file`,
+`read_line`; `hmac_hex`, `base32_encode` / `base32_decode`, `hex_encode`;
+`soma run --ephemeral` / `--exit-status`; `require !a || b` means `(!a) || b`
+(it read `!(a || b)`); edition 2027 refuses a `let` named like a memory slot.
+
 Soma 3.2.9: `verify` follows a text chosen from a status by an `if`
 expression, rules out a getter's text for an unknown id once the handler
 refuses it, keeps a status until its own machine may have moved, reads a
