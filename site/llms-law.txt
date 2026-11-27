@@ -85,6 +85,100 @@ cell test FrozenHolderIsNotPaid under "SAN-02" {
 
 Without a `[law]` table these clauses are accepted and do nothing.
 
+## A rule with a formal reading: the guard is derived (3.5)
+
+A tag proves nothing by itself: `require true … under "SAN-02"` used to
+count as serving the rule. When a rule can be said formally, the owner of
+the law says it, and the refusal is no longer yours to write.
+
+The law gets a state and actions — still naming no code:
+
+```
+entity Holder "Whoever holds units of the fund, on its register."
+state  frozen(Holder): Bool "The holder is under an asset freeze."
+action Payment(h: Holder, n: Int) "Cash paid by the fund to a holder."
+action Freeze(h: Holder) "The holder is placed under an asset freeze."
+
+rule "SAN-02" "No payment to a frozen holder"
+    about    Payment, Holder
+    source   "Regulation (EU) 269/2014, art. 2"
+    owner    "compliance"
+    requires Payment(h, n): not frozen(h)
+```
+
+A condition is `not`, `and`, `or`, parentheses, a state of a parameter, and
+a comparison between an Int state or an Int parameter and a number or a
+parameter. No arithmetic, no call, no quantifier (E0132): its owner reads it.
+
+The skeleton says how the program corresponds:
+
+```soma
+skeleton Fund {
+    memory {
+        paid:   Map<String, Int>    [persistent]
+        status: Map<String, String> [persistent]
+    }
+
+    maps frozen(h) = (status.get(h) ?? "valid") == "frozen"
+
+    face {
+        signal redeem(holder: String, n: Int) -> Int
+            writes paid
+            realizes Payment(holder, n)
+        signal freeze(holder: String) -> String
+            writes status
+            realizes Freeze(holder)
+        signal purge() -> Int
+            writes paid
+            silent "removes zero balances; no holder's state changes"
+    }
+}
+```
+
+- `maps state(p) = expression` — a clause of a skeleton: one state of the
+  law, read from the program. Pure, at the type the law declares, once per
+  program. It may read the slots and machines of its cell, and another
+  cell (or its own) through a signal whose frame changes nothing:
+  `maps frozen(h) = Register.state_of(h) == "frozen"`.
+- `realizes Action(args)` — the signal IS that action. An argument is a
+  parameter of the signal, a literal, or what a slot of the cell holds for
+  a parameter: `realizes Payment(o via holder_of, n)`, the holder of order `o`.
+- `silent "why"` — the signal writes under the law and is no action of it.
+
+What follows, and what you do NOT do:
+
+- **The guard is derived.** For `redeem`, the rule gives `not frozen(holder)`,
+  judged before the body runs, outside its frame. A refused call fails with
+  kind `law`, the rule, its sentence and its source in the message, and
+  writes nothing. Do not write that `require`, and do not test for it in
+  the body: the brief of the signal shows it (`law "SAN-02" …`).
+- **A refusal tagged by hand no longer serves a formal rule.** `soma law`
+  says `served Fund.redeem (derived)`.
+- **A signal that writes what a `maps` reads owes a binding** (E0138): it
+  `realizes` an action or is `silent`. This is judged on the frames, before
+  any body exists — a second way to pay cannot be added without the law
+  knowing.
+- **A state a rule needs must be mapped** (E0136): the message gives the
+  line `maps …` to write.
+- A test `under` a formal rule holds an `assert_fails … matching "SAN-02"`.
+
+`soma law app.cell --map` prints the correspondence for the owner of the
+law: each state and its `maps`, each action and its signals, each `silent`
+signal and its reason.
+
+**Map the states your actions change.** The closure sees a signal through
+what it writes: only a slot (or a machine) that some `maps` reads is under
+the law. If the law says nothing of what a payment changes, a second
+signal that pays is not seen. Ask the owner for the state — `state
+paid_to(Holder): Int` — and map it (`maps paid_to(h) = paid.get(h) ?? 0`).
+
+Limits, stated: a guard is a precondition of ONE call — a signal that
+performs the action for many entities at once (a batch) has no formal
+reading, and its rule stays a sentence served `under`. A rule kept by
+something other than a refusal (an order recorded then rejected) needs the
+law to name the action that is refused. `silent` is declared and reviewed,
+not proven.
+
 ## What `soma check` refuses
 
     E0123  a law that is missing or does not read as a law
@@ -95,6 +189,11 @@ Without a `[law]` table these clauses are accepted and do nothing.
     E0128  `exempt` without its reason
     E0129  a rule nothing serves
     E0130  a signal that realizes a term of a rule and neither serves it nor is exempt
+    E0132  a condition outside the closed language      E0133  a name the law does not declare
+    E0134  a `maps` of an unknown state, or twice       E0135  a `maps` that is not a pure reading
+    E0136  a state a rule needs has no `maps`           E0137  `realizes A(args)` that does not fit
+    E0138  a write under the law with no binding        E0139  `silent` without a reason
+    E0140  a law the lock holds, dropped from soma.toml
     W0020  a rule that is served but has no test
 
 E0130 is the forgotten path: a second way to pay, written later, that omits
@@ -115,6 +214,7 @@ soma law app.cell             # each rule: source, where it is served and how, i
 soma law app.cell --todo      # only what fails, as a numbered work list — start here (`soma next` hands them out one at a time)
 soma law app.cell "SAN-02"    # one rule: its terms and their definitions, every signal that realizes them
 soma law app.cell --json      # the same, for a program
+soma law app.cell --map       # the law and the program side by side: states and their maps, actions and their signals
 soma law app.cell --lock      # the owner of the law records it as reviewed (law.lock) — not you
 ```
 

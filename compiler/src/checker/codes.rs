@@ -142,6 +142,16 @@ const ERROR_KINDS: &[(&str, &str)] = &[
     ("law_unserved_rule", "a rule of the law nothing in the program serves"),
     ("law_unserved_realization", "a signal that realizes a term of a rule and neither serves the rule nor is exempt from it"),
     ("law_untested_rule", "a rule of the law that is served but has no test (reported as the warning W0020 law_warning)"),
+    // the law as an abstract machine (RFC 0003)
+    ("law_condition", "the condition of a rule's `requires` is outside the closed language of the law"),
+    ("law_requires_unknown", "the formal part of a law names an action, a parameter, a state or an entity the law does not declare"),
+    ("law_maps_unknown", "a `maps` of a state no law of the program declares, or a state mapped twice"),
+    ("law_maps_impure", "a `maps` that writes, has the wrong type, or reads what it may not"),
+    ("law_state_unmapped", "a state a rule needs has no `maps` in the program"),
+    ("law_realizes_signature", "`realizes Action(args)` whose arguments do not fit the action's parameters"),
+    ("law_unbound_effect", "a signal that writes a slot or moves a machine under the law, with neither `realizes` nor `silent`"),
+    ("law_silent_reason", "a `silent` without its reason"),
+    ("law_unlocked", "a law that law.lock holds and soma.toml no longer names"),
 ];
 
 /// Warning classes (the `CheckWarning` variant, snake_case). APPEND ONLY.

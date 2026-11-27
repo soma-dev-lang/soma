@@ -50,13 +50,15 @@ this method nobody has to.
 ## The order of work
 
 1. **Write the law with its owner.** Terms, then rules, each with its
-   source. Sentences, no code: the law names no cell and no handler, so it
+   source — and, where a rule can be said formally, its states, its actions
+   and its `requires`. Sentences, no code: the law names no cell and no handler, so it
    can be written before the program exists. Lock it (`soma law app.cell
    --lock`). If you are the agent and the law is silent on what you need,
    ask; do not write the rule yourself.
 2. **Write the skeleton.** Memory and its invariants, the state machines,
    and for each signal its frame: `reads`, `writes`, `calls`, `moves`, and
-   `realizes` when the signal is an action the law speaks of. Run `soma
+   `realizes` when the signal is an action the law speaks of; a `maps` for
+   each state of the law. Run `soma
    verify` now — the lifecycle is proven before any body exists. Freeze it
    (`soma skeleton app.cell --freeze`).
 3. **Write a test that fails.** A scenario from the life of the business —
@@ -122,12 +124,17 @@ installs a hook that runs `soma check` after every edit of a `.cell`, a
 |---|---|---|
 | `soma check` | names, types, contracts; every body inside its frame; every signal that realizes a term serves or is exempt from each rule about it | that a body does what its signal's comment says |
 | `soma verify` | each state machine (reachability, deadlocks, liveness), handlers take only declared edges, bounded invariants, termination | anything the skeleton does not state; rules between cells that `soma.toml` does not state |
-| `soma law` | where each rule is served, by what (`proved` by a guarded edge, `checked` by a refusal, `handled` by a marked branch), and its tests | that a refusal tagged `under "R"` refuses what R says: today the tag is a claim, and its tests are what back it |
+| `soma law` | where each rule is served, by what (`proved` by a guarded edge, `checked` by a refusal — derived from the rule when it has a formal reading — `handled` by a marked branch), and its tests | for a rule that is only a sentence: that a refusal tagged `under "R"` refuses what R says — there the tag is a claim, and its tests are what back it |
 | `soma test` | the scenarios somebody thought of | the ones nobody thought of |
 
-The third line is a known limit, stated rather than hidden: a refusal that
-refuses nothing, tagged with a rule, is counted as serving it. Deriving the
-refusal from the rule is the planned next step of the law. Until then, a rule is as good as its tests — written red first.
+The third line is a limit that depends on the rule. When the owner of the
+law gives a rule a formal reading (`requires Payment(h, n): not frozen(h)`),
+the refusal is derived from the rule and from how the skeleton maps the
+law's states: nobody writes it, nobody can forget it, and a signal that
+writes under the law without saying which action it is does not check. When
+a rule stays a sentence — a batch, a separation of roles, a deadline — a
+refusal tagged with it is a claim, and the rule is as good as its tests,
+written red first.
 
 ## For the person who answers for the program
 

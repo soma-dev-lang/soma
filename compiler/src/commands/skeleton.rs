@@ -255,6 +255,10 @@ fn render_cell(sk: &CellSkeleton, notes: bool, out: &mut String) {
             _ => {}
         }
     }
+    // the law (RFC 0003): the states of the law this skeleton defines
+    for m in &cell.maps {
+        out.push_str(&format!("    maps {}({}) = {}\n", m.node.state, m.node.param, render_expr(&m.node.expr.node)));
+    }
     let promises: Vec<String> = cell.sections.iter()
         .filter_map(|s| if let Section::Face(f) = &s.node { Some(f) } else { None })
         .flat_map(|f| f.declarations.iter())
@@ -666,6 +670,15 @@ pub fn render_brief(program: &Program, source: &str, skeletons: &[CellSkeleton],
     }
     for c in b.requires { out.push_str(&format!("    requires {}\n", render_expr(&c.node))); }
     for c in b.ensures { out.push_str(&format!("    ensures {}\n", render_expr(&c.node))); }
+    // the law (RFC 0003): the action this signal is, the rules it owes, and
+    // the guards derived from them — the agent does not open the law
+    for (action, args) in &b.frame.bindings { out.push_str(&format!("    realizes {}({})   // an action of the law\n", action, args.join(", "))); }
+    if let Some(why) = &b.frame.silent { out.push_str(&format!("    silent \"{}\"   // no action of the law: your body must change no state of the law\n", why)); }
+    let guards: Vec<&LawGuard> = sk.cell.law_guards.iter().filter(|g| g.signal == b.name).collect();
+    for g in &guards {
+        out.push_str(&format!("    law \"{}\" {}{} — refused unless `{}`\n", g.rule, g.sentence, if g.source.is_empty() { String::new() } else { format!(" ({})", g.source) }, g.shown));
+    }
+    if !guards.is_empty() { out.push_str("        (these guards are derived from the law and run before your body: do not write them, and do not test for them)\n"); }
     let label = |out: &mut String, kw: &str, lines: Vec<String>| {
         for (i, l) in lines.iter().enumerate() { out.push_str(&format!("{:<10} {}\n", if i == 0 { kw } else { "" }, l)); }
     };

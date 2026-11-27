@@ -3,6 +3,18 @@
 > Newest first. The language itself: https://soma-lang.dev/llms.txt (`soma docs agent`).
 > Every fix and its compatibility note: https://soma-lang.dev/CHANGELOG.md.
 
+Soma 3.5.0: a rule of the law can be said formally, and its guard is
+DERIVED. The `.law` file declares `entity`, `state frozen(Holder): Bool`,
+`action Payment(h: Holder, n: Int)` and under a rule `requires Payment(h,
+n): not frozen(h)` (a closed condition language). The skeleton says how
+the program corresponds: `maps frozen(h) = …`, `realizes Payment(holder,
+n)` (an argument may be `o via slot`), `silent "why"`. The condition is
+judged before the body on every call — kind `law`, nothing written — so the
+body holds no check; a refusal tagged by hand no longer serves a formal
+rule. A signal that writes what a `maps` reads owes a binding (E0138); a
+law dropped from soma.toml is refused (E0140). `soma law --map` is the
+correspondence, for the law's owner. A 3.3 law reads as before.
+
 Soma 3.4.1 (3.4.0 was tagged and not released): the method, held by the toolchain. `soma next app.cell` names
 the ONE thing to do now (a gap of `soma doctor`, an error of check, a
 failure of verify, what the law asks, the next hole, a failing test — or

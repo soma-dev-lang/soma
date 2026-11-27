@@ -32,7 +32,7 @@ below is current for the binary named in https://soma-lang.dev/version.json.
 
 ## Pick Soma when / skip it when
 
-Current release: 3.4.1 — the method (`soma next`, `soma fill`, `soma docs method`), after 3.3's
+Current release: 3.5.0 — the law has a formal reading and its guards are derived; after 3.4's method (`soma next`, `soma fill`), 3.3's
 law, 3.2's nominal types and 3.1's skeleton first. What each release changed: `soma docs releases`.
 
 Pick it when the task has a lifecycle or a limit that must hold: payments,
@@ -99,7 +99,7 @@ REQUIRES: a `.law` file of terms and rules that names no code, written and
 locked by a person. You align the code on it (`realizes Term` on a signal,
 `under "ID"` on the `require` or the test that serves a rule) and never
 edit it. `soma law app.cell --todo` is the work list — start there;
-`soma docs law` (https://soma-lang.dev/llms-law.txt) has the clauses.
+`soma docs law` (https://soma-lang.dev/llms-law.txt) has the clauses. A rule with a formal reading (`requires Payment(h, n): not frozen(h)`) is served by a guard DERIVED from it — `maps` and `realizes Action(args)` in the skeleton; you do not write that refusal.
 
 ## Cell anatomy
 
@@ -807,13 +807,15 @@ this method nobody has to.
 ## The order of work
 
 1. **Write the law with its owner.** Terms, then rules, each with its
-   source. Sentences, no code: the law names no cell and no handler, so it
+   source — and, where a rule can be said formally, its states, its actions
+   and its `requires`. Sentences, no code: the law names no cell and no handler, so it
    can be written before the program exists. Lock it (`soma law app.cell
    --lock`). If you are the agent and the law is silent on what you need,
    ask; do not write the rule yourself.
 2. **Write the skeleton.** Memory and its invariants, the state machines,
    and for each signal its frame: `reads`, `writes`, `calls`, `moves`, and
-   `realizes` when the signal is an action the law speaks of. Run `soma
+   `realizes` when the signal is an action the law speaks of; a `maps` for
+   each state of the law. Run `soma
    verify` now — the lifecycle is proven before any body exists. Freeze it
    (`soma skeleton app.cell --freeze`).
 3. **Write a test that fails.** A scenario from the life of the business —
@@ -879,12 +881,17 @@ installs a hook that runs `soma check` after every edit of a `.cell`, a
 |---|---|---|
 | `soma check` | names, types, contracts; every body inside its frame; every signal that realizes a term serves or is exempt from each rule about it | that a body does what its signal's comment says |
 | `soma verify` | each state machine (reachability, deadlocks, liveness), handlers take only declared edges, bounded invariants, termination | anything the skeleton does not state; rules between cells that `soma.toml` does not state |
-| `soma law` | where each rule is served, by what (`proved` by a guarded edge, `checked` by a refusal, `handled` by a marked branch), and its tests | that a refusal tagged `under "R"` refuses what R says: today the tag is a claim, and its tests are what back it |
+| `soma law` | where each rule is served, by what (`proved` by a guarded edge, `checked` by a refusal — derived from the rule when it has a formal reading — `handled` by a marked branch), and its tests | for a rule that is only a sentence: that a refusal tagged `under "R"` refuses what R says — there the tag is a claim, and its tests are what back it |
 | `soma test` | the scenarios somebody thought of | the ones nobody thought of |
 
-The third line is a known limit, stated rather than hidden: a refusal that
-refuses nothing, tagged with a rule, is counted as serving it. Deriving the
-refusal from the rule is the planned next step of the law. Until then, a rule is as good as its tests — written red first.
+The third line is a limit that depends on the rule. When the owner of the
+law gives a rule a formal reading (`requires Payment(h, n): not frozen(h)`),
+the refusal is derived from the rule and from how the skeleton maps the
+law's states: nobody writes it, nobody can forget it, and a signal that
+writes under the law without saying which action it is does not check. When
+a rule stays a sentence — a batch, a separation of roles, a deadline — a
+refusal tagged with it is a claim, and the rule is as good as its tests,
+written red first.
 
 ## For the person who answers for the program
 
@@ -1517,6 +1524,100 @@ cell test FrozenHolderIsNotPaid under "SAN-02" {
 
 Without a `[law]` table these clauses are accepted and do nothing.
 
+## A rule with a formal reading: the guard is derived (3.5)
+
+A tag proves nothing by itself: `require true … under "SAN-02"` used to
+count as serving the rule. When a rule can be said formally, the owner of
+the law says it, and the refusal is no longer yours to write.
+
+The law gets a state and actions — still naming no code:
+
+```
+entity Holder "Whoever holds units of the fund, on its register."
+state  frozen(Holder): Bool "The holder is under an asset freeze."
+action Payment(h: Holder, n: Int) "Cash paid by the fund to a holder."
+action Freeze(h: Holder) "The holder is placed under an asset freeze."
+
+rule "SAN-02" "No payment to a frozen holder"
+    about    Payment, Holder
+    source   "Regulation (EU) 269/2014, art. 2"
+    owner    "compliance"
+    requires Payment(h, n): not frozen(h)
+```
+
+A condition is `not`, `and`, `or`, parentheses, a state of a parameter, and
+a comparison between an Int state or an Int parameter and a number or a
+parameter. No arithmetic, no call, no quantifier (E0132): its owner reads it.
+
+The skeleton says how the program corresponds:
+
+```soma
+skeleton Fund {
+    memory {
+        paid:   Map<String, Int>    [persistent]
+        status: Map<String, String> [persistent]
+    }
+
+    maps frozen(h) = (status.get(h) ?? "valid") == "frozen"
+
+    face {
+        signal redeem(holder: String, n: Int) -> Int
+            writes paid
+            realizes Payment(holder, n)
+        signal freeze(holder: String) -> String
+            writes status
+            realizes Freeze(holder)
+        signal purge() -> Int
+            writes paid
+            silent "removes zero balances; no holder's state changes"
+    }
+}
+```
+
+- `maps state(p) = expression` — a clause of a skeleton: one state of the
+  law, read from the program. Pure, at the type the law declares, once per
+  program. It may read the slots and machines of its cell, and another
+  cell (or its own) through a signal whose frame changes nothing:
+  `maps frozen(h) = Register.state_of(h) == "frozen"`.
+- `realizes Action(args)` — the signal IS that action. An argument is a
+  parameter of the signal, a literal, or what a slot of the cell holds for
+  a parameter: `realizes Payment(o via holder_of, n)`, the holder of order `o`.
+- `silent "why"` — the signal writes under the law and is no action of it.
+
+What follows, and what you do NOT do:
+
+- **The guard is derived.** For `redeem`, the rule gives `not frozen(holder)`,
+  judged before the body runs, outside its frame. A refused call fails with
+  kind `law`, the rule, its sentence and its source in the message, and
+  writes nothing. Do not write that `require`, and do not test for it in
+  the body: the brief of the signal shows it (`law "SAN-02" …`).
+- **A refusal tagged by hand no longer serves a formal rule.** `soma law`
+  says `served Fund.redeem (derived)`.
+- **A signal that writes what a `maps` reads owes a binding** (E0138): it
+  `realizes` an action or is `silent`. This is judged on the frames, before
+  any body exists — a second way to pay cannot be added without the law
+  knowing.
+- **A state a rule needs must be mapped** (E0136): the message gives the
+  line `maps …` to write.
+- A test `under` a formal rule holds an `assert_fails … matching "SAN-02"`.
+
+`soma law app.cell --map` prints the correspondence for the owner of the
+law: each state and its `maps`, each action and its signals, each `silent`
+signal and its reason.
+
+**Map the states your actions change.** The closure sees a signal through
+what it writes: only a slot (or a machine) that some `maps` reads is under
+the law. If the law says nothing of what a payment changes, a second
+signal that pays is not seen. Ask the owner for the state — `state
+paid_to(Holder): Int` — and map it (`maps paid_to(h) = paid.get(h) ?? 0`).
+
+Limits, stated: a guard is a precondition of ONE call — a signal that
+performs the action for many entities at once (a batch) has no formal
+reading, and its rule stays a sentence served `under`. A rule kept by
+something other than a refusal (an order recorded then rejected) needs the
+law to name the action that is refused. `silent` is declared and reviewed,
+not proven.
+
 ## What `soma check` refuses
 
     E0123  a law that is missing or does not read as a law
@@ -1527,6 +1628,11 @@ Without a `[law]` table these clauses are accepted and do nothing.
     E0128  `exempt` without its reason
     E0129  a rule nothing serves
     E0130  a signal that realizes a term of a rule and neither serves it nor is exempt
+    E0132  a condition outside the closed language      E0133  a name the law does not declare
+    E0134  a `maps` of an unknown state, or twice       E0135  a `maps` that is not a pure reading
+    E0136  a state a rule needs has no `maps`           E0137  `realizes A(args)` that does not fit
+    E0138  a write under the law with no binding        E0139  `silent` without a reason
+    E0140  a law the lock holds, dropped from soma.toml
     W0020  a rule that is served but has no test
 
 E0130 is the forgotten path: a second way to pay, written later, that omits
@@ -1547,6 +1653,7 @@ soma law app.cell             # each rule: source, where it is served and how, i
 soma law app.cell --todo      # only what fails, as a numbered work list — start here (`soma next` hands them out one at a time)
 soma law app.cell "SAN-02"    # one rule: its terms and their definitions, every signal that realizes them
 soma law app.cell --json      # the same, for a program
+soma law app.cell --map       # the law and the program side by side: states and their maps, actions and their signals
 soma law app.cell --lock      # the owner of the law records it as reviewed (law.lock) — not you
 ```
 
@@ -1685,6 +1792,18 @@ it says "error kind X", raise it with `require … else X "…"` or `fail`.
 
 > Newest first. The language itself: https://soma-lang.dev/llms.txt (`soma docs agent`).
 > Every fix and its compatibility note: https://soma-lang.dev/CHANGELOG.md.
+
+Soma 3.5.0: a rule of the law can be said formally, and its guard is
+DERIVED. The `.law` file declares `entity`, `state frozen(Holder): Bool`,
+`action Payment(h: Holder, n: Int)` and under a rule `requires Payment(h,
+n): not frozen(h)` (a closed condition language). The skeleton says how
+the program corresponds: `maps frozen(h) = …`, `realizes Payment(holder,
+n)` (an argument may be `o via slot`), `silent "why"`. The condition is
+judged before the body on every call — kind `law`, nothing written — so the
+body holds no check; a refusal tagged by hand no longer serves a formal
+rule. A signal that writes what a `maps` reads owes a binding (E0138); a
+law dropped from soma.toml is refused (E0140). `soma law --map` is the
+correspondence, for the law's owner. A 3.3 law reads as before.
 
 Soma 3.4.1 (3.4.0 was tagged and not released): the method, held by the toolchain. `soma next app.cell` names
 the ONE thing to do now (a gap of `soma doctor`, an error of check, a
@@ -2285,6 +2404,7 @@ fails `soma check`.
 | Frames | in a `skeleton`, every body does only what its signal's frame says: the slots it reads and writes, the signals and effectful builtins it calls, the edges it takes, the events it emits — helpers included. A body outside its frame is an error that names the missing clause |
 | The locked structure | with `skeleton.lock`, a change to a skeleton, to a cell that moves one of their machines, or to the `[verify]` tables is refused until it is accepted on purpose (`soma skeleton --amend`) |
 | The law is the one reviewed | with `law.lock`, a `.law` file that differs from its lock is refused |
+| Closure by effects | for a program whose skeleton maps a state of the law (`maps`): every signal whose frame writes a slot, or moves a machine, that a `maps` reads carries `realizes Action(…)` or `silent "why"` — before any body exists |
 | No forgotten path | for a program under a law: every signal that `realizes` a term serves each rule about that term (`under "R"` on a refusal, a guarded edge or a marked branch) or is `exempt` from it with a reason; a rule nothing serves is an error; a rule with no test is a warning |
 
 These are checks of the program's text, not of its behaviour: see what they
@@ -2307,6 +2427,7 @@ sit in `authorized` until someone acts.
 | **Storage adapters** | Read failures are errors, not missing keys or empty collections. The legacy JSON backend rejects malformed/unreadable files and changes its in-memory state only after a successful file replacement; it has no multi-slot transaction or cross-process isolation. The HTTP adapter validates replies and has bounded requests, but no remote transactions or exactly-once protocol: a failed write can have an unknown remote outcome. HTTP provider selection is available to provider tooling, not wired into `run`/`serve`. |
 | **Serialized writers** | within each `soma serve` process, top-level handler invocations that write run one at a time: read-modify-write needs no lock. One that only reads runs beside them, on a snapshot of the last commit (see serving.md). Exception: a `[task]` handler (or tick) runs as steps and waits for each `think()` outside the lock — each step is serialized and atomic, the task as a whole is not (see serving.md). |
 | `require` / `ensure` / `fail` | raise; errors carry a `kind` a caller can branch on. |
+| **Guards derived from the law** | a signal bound to an action of the law (`realizes Payment(holder, n)`) is entered only when each rule `requires Payment(…): C` holds, C read through the skeleton's `maps`. Judged before the body, on every way into the handler (a call, `soma serve`, a test, `[native]`); a refused call raises kind `law` and writes nothing. |
 | Token budget | `set_budget(N)` stops `think()` when the budget is spent; a `set_budget` inside a model's tool call can only lower it. |
 | Exhaustive `match` | a missing sum-type arm is a `soma check` error, not a runtime surprise. |
 
@@ -2353,10 +2474,14 @@ See [cluster.md](cluster.md) for setup and migration.
   `[native]` is for numeric kernels only.
 - **That a body does what its signal is for.** A frame bounds what a body
   may touch, not what it computes.
-- **That a refusal says what its rule says.** `require … under "R"` is
-  counted as serving the rule R whatever its condition is: the tag is a
-  claim, backed by the tests written `under "R"`, not a proof. A rule
-  nobody wrote in a law is not checked at all.
+- **That a hand-written refusal says what its rule says.** For a rule that
+  is only a sentence, `require … under "R"` is counted as serving R whatever
+  its condition is: the tag is a claim, backed by the tests written `under
+  "R"`. (A rule with a formal reading is served by a guard derived from it:
+  see ENFORCED.) A rule nobody wrote in a law is not checked at all.
+- **A rule over a batch, a history or a deadline.** The formal reading of a
+  rule is a precondition of one call over the present state. `silent` is
+  declared and reviewed, not proven.
 - **Maturity.** Experimental, one author, nine packages in the registry. The
   verifier itself is tested — every release runs the Rust suite, a numeric
   oracle and a differential fuzzer of the interpreter against native code

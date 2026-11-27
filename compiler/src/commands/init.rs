@@ -99,8 +99,9 @@ pub fn cmd_init(name: Option<&str>, skeleton: bool) {
     }
     println!("  soma check app.cell && soma verify app.cell && soma test app.cell");
     if skeleton {
-        println!("  soma holes app.cell              # what is left to write, in order");
+        println!("  soma next app.cell               # the ONE thing to do now, and its command");
         println!("  soma skeleton app.cell Counter.reset     # the brief for that one signal");
+        println!("  soma fill app.cell Counter.reset         # write its body (on stdin); it comes back checked");
         println!("  soma skeleton app.cell --freeze  # from then on the structure cannot change in passing");
     }
     println!("  soma run app.cell add 5");

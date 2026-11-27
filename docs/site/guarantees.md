@@ -41,6 +41,7 @@ fails `soma check`.
 | Frames | in a `skeleton`, every body does only what its signal's frame says: the slots it reads and writes, the signals and effectful builtins it calls, the edges it takes, the events it emits — helpers included. A body outside its frame is an error that names the missing clause |
 | The locked structure | with `skeleton.lock`, a change to a skeleton, to a cell that moves one of their machines, or to the `[verify]` tables is refused until it is accepted on purpose (`soma skeleton --amend`) |
 | The law is the one reviewed | with `law.lock`, a `.law` file that differs from its lock is refused |
+| Closure by effects | for a program whose skeleton maps a state of the law (`maps`): every signal whose frame writes a slot, or moves a machine, that a `maps` reads carries `realizes Action(…)` or `silent "why"` — before any body exists |
 | No forgotten path | for a program under a law: every signal that `realizes` a term serves each rule about that term (`under "R"` on a refusal, a guarded edge or a marked branch) or is `exempt` from it with a reason; a rule nothing serves is an error; a rule with no test is a warning |
 
 These are checks of the program's text, not of its behaviour: see what they
@@ -63,6 +64,7 @@ sit in `authorized` until someone acts.
 | **Storage adapters** | Read failures are errors, not missing keys or empty collections. The legacy JSON backend rejects malformed/unreadable files and changes its in-memory state only after a successful file replacement; it has no multi-slot transaction or cross-process isolation. The HTTP adapter validates replies and has bounded requests, but no remote transactions or exactly-once protocol: a failed write can have an unknown remote outcome. HTTP provider selection is available to provider tooling, not wired into `run`/`serve`. |
 | **Serialized writers** | within each `soma serve` process, top-level handler invocations that write run one at a time: read-modify-write needs no lock. One that only reads runs beside them, on a snapshot of the last commit (see serving.md). Exception: a `[task]` handler (or tick) runs as steps and waits for each `think()` outside the lock — each step is serialized and atomic, the task as a whole is not (see serving.md). |
 | `require` / `ensure` / `fail` | raise; errors carry a `kind` a caller can branch on. |
+| **Guards derived from the law** | a signal bound to an action of the law (`realizes Payment(holder, n)`) is entered only when each rule `requires Payment(…): C` holds, C read through the skeleton's `maps`. Judged before the body, on every way into the handler (a call, `soma serve`, a test, `[native]`); a refused call raises kind `law` and writes nothing. |
 | Token budget | `set_budget(N)` stops `think()` when the budget is spent; a `set_budget` inside a model's tool call can only lower it. |
 | Exhaustive `match` | a missing sum-type arm is a `soma check` error, not a runtime surprise. |
 
@@ -109,10 +111,14 @@ See [cluster.md](cluster.md) for setup and migration.
   `[native]` is for numeric kernels only.
 - **That a body does what its signal is for.** A frame bounds what a body
   may touch, not what it computes.
-- **That a refusal says what its rule says.** `require … under "R"` is
-  counted as serving the rule R whatever its condition is: the tag is a
-  claim, backed by the tests written `under "R"`, not a proof. A rule
-  nobody wrote in a law is not checked at all.
+- **That a hand-written refusal says what its rule says.** For a rule that
+  is only a sentence, `require … under "R"` is counted as serving R whatever
+  its condition is: the tag is a claim, backed by the tests written `under
+  "R"`. (A rule with a formal reading is served by a guard derived from it:
+  see ENFORCED.) A rule nobody wrote in a law is not checked at all.
+- **A rule over a batch, a history or a deadline.** The formal reading of a
+  rule is a precondition of one call over the present state. `silent` is
+  declared and reviewed, not proven.
 - **Maturity.** Experimental, one author, nine packages in the registry. The
   verifier itself is tested — every release runs the Rust suite, a numeric
   oracle and a differential fuzzer of the interpreter against native code

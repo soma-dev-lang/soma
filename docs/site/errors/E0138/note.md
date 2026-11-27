@@ -1,0 +1,1 @@
+A signal writes a slot, or moves a machine, that a `maps` reads — it changes a state of the law — and says neither which action of the law it is (`realizes Action(…)`) nor that it is none (`silent "why"`). This is the forgotten path, closed on the frames: the message gives both clauses.

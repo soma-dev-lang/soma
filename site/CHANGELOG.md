@@ -1,5 +1,18 @@
 # Changelog
 
+## 3.5.0 — 2026-11-27
+
+The law as an abstract machine, the skeleton as its refinement ([RFC 0003](docs/rfcs/0003-law-refinement.md)). Until now a rule was *cited* where it should be; nothing checked it was *kept*: `require true … under "SAN-02"` counted as serving the rule, a signal that wrote under the law without saying so passed, and deleting the `[law]` table from soma.toml took a program out of its law in silence. Each of those three programs is now refused. Validation: 1,199 Rust tests, 118 CLI checks, 327 corpus programs, 1,280 numeric comparisons; 7,200 interpreter/native comparisons, 0 divergence.
+
+- **A rule can be said formally.** A `.law` file declares `entity`, `state name(Entity): Bool | Int`, `action Name(p: Type, …)`, and under a rule `requires Action(params): condition`, in a closed language — `not`, `and`, `or`, a state of a parameter, a comparison. No arithmetic, no call, no quantifier: its owner reads it (E0132, E0133). A law still names no code; a rule without `requires` keeps its 3.3 behaviour.
+- **The skeleton says how the program corresponds.** `maps state(p) = expression` defines a state of the law from the program — its own slots and machines, or another cell through a signal whose frame changes nothing (E0134, E0135). `realizes Action(args)` binds a signal to an action; an argument is a parameter, a literal, or what a slot holds for a parameter (`realizes Payment(o via holder_of, n)`) (E0137). `silent "why"` says a signal is no action of the law (E0139). All three are in `skeleton.lock`.
+- **The guard is derived.** For a signal bound to an action and each rule `requires` on it, the condition — over the signal's arguments, each state read through its `maps` in the cell that holds it — is judged before the body, outside its frame, on every way into the handler (a call, a test, `soma serve`, `[native]`). A refused call fails with kind `law` and a message that carries the rule, its sentence and its source; it writes nothing. The agent that writes the body does not write the guard and cannot forget it. A refusal tagged by hand no longer serves a formal rule.
+- **Closure by effects.** A slot or a machine a `maps` reads is under the law, and a signal whose frame writes it must carry `realizes Action(…)` or `silent` (E0138) — judged on the frames, before any body. A state a rule needs must be mapped (E0136). A test `under` a formal rule that refuses nothing is a warning.
+- **A program does not leave its law.** A law that `law.lock` holds and soma.toml no longer names is refused (E0140).
+- **`soma law app.cell --map`**: the correspondence, for the owner of the law — each state and its `maps`, each action with its rules and the signals that realize it, each `silent` signal and its reason. `--json`. The table shows a formal rule's reading and `served … (derived)`; the brief of a signal shows the action it is and the guards derived for it.
+- **Limits, stated.** A guard is a precondition of one call: a batch that performs the action for many entities has no formal reading. The closure sees an action only through a state it changes: map the states your actions change. `silent` is declared and reviewed, not proven. The answers to the design's open questions are proposals in the RFC, to be confirmed.
+- `soma init --skeleton` prints the loop `next` / brief / `fill`.
+
 ## 3.4.1 — 2026-11-27
 
 3.4.0 was tagged and not released: rereading the site for what it says against Soma found that the long skill 3.4.0 served as `soma docs handbook` was not fit to publish. This release is 3.4.0 (below) with the site corrected. Validation: 1,183 Rust tests, 118 CLI checks, 327 corpus programs, 1,280 numeric comparisons; 7,200 interpreter/native comparisons, 0 divergence.

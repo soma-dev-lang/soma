@@ -644,7 +644,7 @@ impl Parser {
         let end = self.peek_span();
         self.expect(Token::RBrace)?;
         Ok(Spanned::new(
-            CellDef { under: vec![], kind: CellKind::Flesh, name, type_params: vec![], sections, agent_model: None, agent_skill: None, skeleton: false, nominal: None, nominal_where: None },
+            CellDef { law_guards: vec![], maps: vec![], under: vec![], kind: CellKind::Flesh, name, type_params: vec![], sections, agent_model: None, agent_skill: None, skeleton: false, nominal: None, nominal_where: None },
             start.merge(end),
         ))
     }
@@ -1005,7 +1005,7 @@ impl Parser {
                 Some(self.parse_expr()?)
             } else { None };
             return Ok(Spanned::new(
-                CellDef { under: vec![], kind, name, type_params, sections: vec![], agent_model: None, agent_skill: None, skeleton, nominal: Some(base), nominal_where: bound },
+                CellDef { law_guards: vec![], maps: vec![], under: vec![], kind, name, type_params, sections: vec![], agent_model: None, agent_skill: None, skeleton, nominal: Some(base), nominal_where: bound },
                 start.merge(self.prev_span()),
             ));
         }
@@ -1044,6 +1044,7 @@ impl Parser {
         self.expect(Token::LBrace)?;
 
         let mut sections = Vec::new();
+        let mut maps: Vec<Spanned<MapsDecl>> = Vec::new();
         let section_depth = self.cur_depth();
         // an interior cell reads its parent's constants and its own
         let outer_consts = self.consts.clone();
@@ -1051,7 +1052,30 @@ impl Parser {
         while !self.check(&Token::RBrace) && !self.is_at_end() {
             let item_start = self.pos;
             let is_const = matches!(self.peek(), Token::Ident(w) if w == "const");
+            // the law (RFC 0003): `maps state(param) = expression`
+            let is_maps = matches!(self.peek(), Token::Ident(w) if w == "maps") && matches!(self.peek_at(1), Token::Ident(_)) && matches!(self.peek_at(2), Token::LParen);
             let parsed = if is_const { self.parse_const().map(|_| None) }
+                else if is_maps && !skeleton {
+                    Err(ParseError::FixIt {
+                        message: format!("`maps` belongs to a skeleton: the correspondence with the law is part of the structure, and the law is closed on frames, which a plain cell does not have — `soma skeleton <file> --split` turns `{}` into a skeleton and its flesh", name),
+                        span: self.peek_span(),
+                    })
+                }
+                else if is_maps {
+                    let start = self.peek_span();
+                    self.advance();
+                    (|| -> Result<Option<Spanned<Section>>, ParseError> {
+                        let (state, _) = self.expect_any_name()?;
+                        self.expect(Token::LParen)?;
+                        let (param, _) = self.expect_any_name()?;
+                        self.expect(Token::RParen)?;
+                        self.expect(Token::Eq)?;
+                        let expr = self.parse_expr()?;
+                        let span = start.merge(self.prev_span());
+                        maps.push(Spanned::new(MapsDecl { state, param, expr }, span));
+                        Ok(None)
+                    })()
+                }
                 else if skeleton && self.check(&Token::On) {
                     Err(ParseError::FixIt {
                         message: format!("a skeleton has no handler bodies — declare the signal in `face {{ }}` with its frame, and put the body in `flesh {} {{ on … {{ … }} }}`", name),
@@ -1131,6 +1155,8 @@ impl Parser {
                 nominal: None,
                 nominal_where: None,
                 under,
+                maps,
+                law_guards: vec![],
             },
             start.merge(end),
         ))
@@ -1383,13 +1409,53 @@ impl Parser {
             }
             Ok(true)
         } else if self.at_word("realizes") {
-            // the law (RFC 0002): this signal is an instance of a term
+            // the law (RFC 0002): this signal is an instance of a term —
+            // or, with arguments (RFC 0003), IS an action of the law
             self.advance();
             let f = frame.get_or_insert_with(FrameDecl::default);
             loop {
-                f.realizes.push(self.expect_any_name()?.0);
+                let name = self.expect_any_name()?.0;
+                if self.check(&Token::LParen) {
+                    self.advance();
+                    let mut args = Vec::new();
+                    while !self.check(&Token::RParen) && !self.is_at_end() {
+                        let arg = match self.peek().clone() {
+                            Token::IntLit(n) => { self.advance(); n.to_string() }
+                            Token::StringLit(t) => { self.advance(); format!("\"{}\"", t) }
+                            Token::Minus if matches!(self.peek_at(1), Token::IntLit(_)) => {
+                                self.advance();
+                                let Token::IntLit(n) = self.peek().clone() else { unreachable!() };
+                                self.advance();
+                                format!("-{}", n)
+                            }
+                            _ => {
+                                // a parameter, or what a slot of the cell holds for it:
+                                // `o via holder_of` — the holder of the order `o`
+                                let name = self.expect_any_name()?.0;
+                                if self.at_word("via") {
+                                    self.advance();
+                                    format!("{} via {}", name, self.expect_any_name()?.0)
+                                } else { name }
+                            }
+                        };
+                        args.push(arg);
+                        if self.check(&Token::Comma) { self.advance(); } else { break; }
+                    }
+                    self.expect(Token::RParen)?;
+                    f.bindings.push((name.clone(), args));
+                }
+                f.realizes.push(name);
                 if self.check(&Token::Comma) { self.advance(); } else { break; }
             }
+            Ok(true)
+        } else if self.at_word("silent") {
+            // the law (RFC 0003): this signal is no action of the law, and why
+            self.advance();
+            let why = match self.peek().clone() {
+                Token::StringLit(w) => { self.advance(); w }
+                _ => String::new(),
+            };
+            frame.get_or_insert_with(FrameDecl::default).silent = Some(why);
             Ok(true)
         } else if self.at_word("under") {
             // the guarded edges of this frame serve these rules

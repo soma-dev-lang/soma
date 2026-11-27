@@ -119,6 +119,54 @@ pub struct CellDef {
     /// `cell test T under "SAN-02" { … }`: the rules of the law this test
     /// shows at work (checker/law.rs).
     pub under: Vec<String>,
+    /// `maps frozen(h) = …` in a skeleton: a state of the law, defined from
+    /// the program (RFC 0003).
+    pub maps: Vec<Spanned<MapsDecl>>,
+    /// The guards derived from the law for the signals of this cell (RFC
+    /// 0003): set when the program is loaded, never written in the source.
+    pub law_guards: Vec<LawGuard>,
+}
+
+/// A precondition of a signal, derived from a rule of the law that has a
+/// formal reading and from the `maps` of the states it speaks of.
+#[derive(Debug, Clone)]
+pub struct LawGuard {
+    pub signal: String,
+    pub rule: String,
+    pub sentence: String,
+    pub source: String,
+    /// the condition over the signal's own names: `not frozen(holder)`
+    pub shown: String,
+    pub cond: GuardCond,
+}
+
+#[derive(Debug, Clone)]
+pub enum GuardCond {
+    Not(Box<GuardCond>),
+    And(Box<GuardCond>, Box<GuardCond>),
+    Or(Box<GuardCond>, Box<GuardCond>),
+    Holds(GuardOperand),
+    Cmp(GuardOperand, String, GuardOperand),
+}
+
+#[derive(Debug, Clone)]
+pub enum GuardOperand {
+    /// a parameter of the signal
+    Param(String),
+    Int(i64),
+    Str(String),
+    /// a state of the law: its `maps` expression, read in the cell that
+    /// defines it, with `param` bound to `arg`
+    State { cell: String, param: String, expr: Spanned<Expr>, arg: Box<GuardOperand> },
+}
+
+/// `maps state(param) = expression` (RFC 0003): the correspondence from the
+/// program's memory to one state of the law.
+#[derive(Debug, Clone)]
+pub struct MapsDecl {
+    pub state: String,
+    pub param: String,
+    pub expr: Spanned<Expr>,
 }
 
 /// A finding of the nominal-type pass, kept on the program until `check`.
@@ -326,6 +374,12 @@ pub struct FrameDecl {
     pub under: Vec<String>,
     /// `exempt "SAN-02" "why"`: that rule does not apply to this signal.
     pub exempt: Vec<(String, String)>,
+    /// `realizes Payment(holder, n)` (RFC 0003): the signal IS this action
+    /// of the law, each argument a parameter of the signal or a literal.
+    pub bindings: Vec<(String, Vec<String>)>,
+    /// `silent "why"`: the signal is no action of the law (`Some("")`: the
+    /// reason is missing).
+    pub silent: Option<String>,
 }
 
 /// A rule between machines stated on an edge of a frame (see `FrameDecl`).

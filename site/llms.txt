@@ -32,7 +32,7 @@ below is current for the binary named in https://soma-lang.dev/version.json.
 
 ## Pick Soma when / skip it when
 
-Current release: 3.4.1 — the method (`soma next`, `soma fill`, `soma docs method`), after 3.3's
+Current release: 3.5.0 — the law has a formal reading and its guards are derived; after 3.4's method (`soma next`, `soma fill`), 3.3's
 law, 3.2's nominal types and 3.1's skeleton first. What each release changed: `soma docs releases`.
 
 Pick it when the task has a lifecycle or a limit that must hold: payments,
@@ -99,7 +99,7 @@ REQUIRES: a `.law` file of terms and rules that names no code, written and
 locked by a person. You align the code on it (`realizes Term` on a signal,
 `under "ID"` on the `require` or the test that serves a rule) and never
 edit it. `soma law app.cell --todo` is the work list — start there;
-`soma docs law` (https://soma-lang.dev/llms-law.txt) has the clauses.
+`soma docs law` (https://soma-lang.dev/llms-law.txt) has the clauses. A rule with a formal reading (`requires Payment(h, n): not frozen(h)`) is served by a guard DERIVED from it — `maps` and `realizes Action(args)` in the skeleton; you do not write that refusal.
 
 ## Cell anatomy
 

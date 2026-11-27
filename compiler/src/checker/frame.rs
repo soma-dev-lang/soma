@@ -71,6 +71,9 @@ pub struct Frame {
     pub realizes: BTreeSet<String>,
     pub under: BTreeSet<String>,
     pub exempt: BTreeSet<(String, String)>,
+    /// RFC 0003: `realizes Action(args)`, and `silent "why"`.
+    pub bindings: Vec<(String, Vec<String>)>,
+    pub silent: Option<String>,
 }
 
 impl Frame {
@@ -91,6 +94,8 @@ impl Frame {
             realizes: d.realizes.iter().cloned().collect(),
             under: d.under.iter().cloned().collect(),
             exempt: d.exempt.iter().cloned().collect(),
+            bindings: d.bindings.clone(),
+            silent: d.silent.clone(),
             ..Frame::default()
         }
     }
@@ -129,7 +134,10 @@ impl Frame {
         if self.dynamic_moves { out.push(("moves", vec!["?".to_string()])); }
         if !self.calls.is_empty() { out.push(("calls", self.calls.iter().cloned().collect())); }
         if !self.emits.is_empty() { out.push(("emits", self.emits.iter().cloned().collect())); }
-        if !self.realizes.is_empty() { out.push(("realizes", self.realizes.iter().cloned().collect())); }
+        let plain: Vec<String> = self.realizes.iter().filter(|t| !self.bindings.iter().any(|(a, _)| &a == t)).cloned().collect();
+        if !plain.is_empty() { out.push(("realizes", plain)); }
+        for (action, args) in &self.bindings { out.push(("realizes", vec![format!("{}({})", action, args.join(", "))])); }
+        if let Some(why) = &self.silent { out.push(("silent", vec![format!("\"{}\"", why)])); }
         if !self.under.is_empty() { out.push(("under", self.under.iter().map(|r| format!("\"{}\"", r)).collect())); }
         for (rule, why) in &self.exempt { out.push(("exempt", vec![format!("\"{}\" \"{}\"", rule, why)])); }
         out

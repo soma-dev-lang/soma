@@ -1,0 +1,1 @@
+A `maps` is not a pure reading of the program: it writes, it has another type than the law gives the state, or it reads what it may not. A `maps` may read the slots and the machines of its own cell, and another cell through a signal whose frame is read-only.

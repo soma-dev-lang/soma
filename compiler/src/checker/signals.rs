@@ -285,6 +285,8 @@ mod tests {
 
         Spanned::new(
             CellDef {
+                maps: vec![],
+                law_guards: vec![],
                 kind: CellKind::Cell,
                 name: name.to_string(),
                 type_params: vec![],

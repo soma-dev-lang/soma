@@ -1,0 +1,1 @@
+A `maps` defines a state no law of the program declares, or a state another `maps` already defines. A state of the law has one definition in a program: the message names the state expected, or the other definition.

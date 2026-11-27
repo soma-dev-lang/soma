@@ -35,7 +35,7 @@ A skeleton is a cell without handler bodies: each signal of its face carries a f
 
 ```gbnf
 skeleton ::= "skeleton" ws1 ( "agent" ws1 )? name ws brackets? ws "{" ws ( skeleton-section ws )* "}"
-skeleton-section ::= face | memory | state | every | after | const | interior | loose-section
+skeleton-section ::= face | memory | state | every | after | const | interior | loose-section | law-maps
 flesh ::= "flesh" ws1 name ws "{" ws ( handler ws )* "}"
 loose-section ::= ( "rules" | "runtime" | "scale" | "cost" ) ws braces
 ```
@@ -53,17 +53,21 @@ tool-decl ::= "tool" ws1 name ws "(" params ")" ( ws "->" ws type )? ( ws bracke
 The frame: what the handler may read, write, call, emit, and which edges it may take.
 
 ```gbnf
-frame-clause ::= frame-names | frame-moves | law-realizes | law-under | law-exempt
+frame-clause ::= frame-names | frame-moves | law-realizes | law-under | law-exempt | law-silent
 frame-names ::= ( "reads" | "writes" | "calls" | "emits" ) ws1 frame-path ( ws "," ws frame-path )*
 frame-moves ::= "moves" ws1 ( frame-path ws ":" ws )? frame-edge ( ws "," ws frame-edge )*
 frame-path ::= name ( "." name )?
 frame-edge ::= ( name | "*" ) ws "->" ws ( name | "*" ) ( ws1 "when" ws1 frame-path ( ws "||" ws frame-path )* ( ws1 "via" ws1 name )? )?
 ```
 
-The law (RFC 0002): the terms a signal realizes, the rules it serves, those it is exempt from. A test cell says the rules it shows at work: `cell test T under "SAN-02" { … }`.
+The law (RFC 0002): the terms a signal realizes, the rules it serves, those it is exempt from. A test cell says the rules it shows at work: `cell test T under "SAN-02" { … }`. RFC 0003: with arguments the signal IS an action of the law (`realizes Payment(holder, n)`); `silent "why"`: it is none. `maps state(p) = expr` in a skeleton defines a state of the law.
 
 ```gbnf
-law-realizes ::= "realizes" ws1 name ( ws "," ws name )*
+law-realizes ::= "realizes" ws1 law-binding ( ws "," ws law-binding )*
+law-binding ::= name ( ws "(" ws ( law-arg ( ws "," ws law-arg )* ws )? ")" )?
+law-arg ::= name ( ws1 "via" ws1 name )? | "-"? number | string
+law-silent ::= "silent" ( ws1 string )?
+law-maps ::= "maps" ws1 name ws "(" ws name ws ")" ws "=" ws expr
 law-under ::= "under" ws1 string ( ws "," ws string )*
 law-exempt ::= "exempt" ws1 string ( ws1 string )?
 await-decl ::= "await" ws1 name ws "(" params ")" ( ws "->" ws type )?

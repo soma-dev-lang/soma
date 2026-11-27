@@ -819,6 +819,12 @@ impl<'a> Checker<'a> {
             for message in &loaded.errors {
                 self.errors.push(CheckError::Static { kind: "law_file", message: message.clone(), span: nowhere });
             }
+            for (kind, message) in &loaded.formal_errors {
+                self.errors.push(CheckError::Static { kind, message: message.clone(), span: nowhere });
+            }
+            if let Some(message) = law::left_behind(&loaded, &dir) {
+                self.errors.push(CheckError::Static { kind: "law_unlocked", message, span: nowhere });
+            }
             if !loaded.laws.is_empty() {
                 if let Ok(Some(message)) = law::against_lock(&loaded, &dir) {
                     self.errors.push(CheckError::Static { kind: "law_lock", message, span: nowhere });

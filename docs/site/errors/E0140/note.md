@@ -1,0 +1,1 @@
+`law.lock` holds a law that soma.toml no longer names. A program does not leave a law by deleting a line of its manifest: restore the `[law] files` entry the message gives. When the owner of the law has withdrawn it, `soma law app.cell --lock` records that.

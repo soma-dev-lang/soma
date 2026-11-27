@@ -1124,6 +1124,8 @@ pub(crate) struct FaceContract {
     params: Vec<Param>,
     requires: Vec<Spanned<Expr>>,
     ensures: Vec<Spanned<Expr>>,
+    /// the guards derived from the law (RFC 0003)
+    law: Vec<LawGuard>,
 }
 
 fn collect_face_contracts(cell: &CellDef, out: &mut HashMap<HandlerKey, Arc<FaceContract>>) {
@@ -1131,11 +1133,13 @@ fn collect_face_contracts(cell: &CellDef, out: &mut HashMap<HandlerKey, Arc<Face
         let Section::Face(face) = &section.node else { continue };
         for d in &face.declarations {
             let FaceDecl::Signal(sig) = &d.node else { continue };
-            if sig.requires.is_empty() && sig.ensures.is_empty() { continue; }
+            let law: Vec<LawGuard> = cell.law_guards.iter().filter(|g| g.signal == sig.name).cloned().collect();
+            if sig.requires.is_empty() && sig.ensures.is_empty() && law.is_empty() { continue; }
             out.insert((cell.name.clone(), sig.name.clone()), Arc::new(FaceContract {
                 params: sig.params.clone(),
                 requires: sig.requires.clone(),
                 ensures: sig.ensures.clone(),
+                law,
             }));
         }
     }
@@ -1742,6 +1746,45 @@ impl Interpreter {
         r
     }
 
+    /// A value of a derived guard: a parameter of the signal, a literal, or a
+    /// state of the law read through its `maps`, in the cell that defines it.
+    fn law_operand(&mut self, o: &GuardOperand, env: &Env, signal: &str) -> Result<Value, RuntimeError> {
+        match o {
+            GuardOperand::Param(p) => env.get(p).cloned().ok_or_else(|| RuntimeError::TypeError(format!("`{}` is not a parameter of {}()", p, signal))),
+            GuardOperand::Int(n) => Ok(Value::Int(SomaInt::from_i64(*n))),
+            GuardOperand::Str(s) => Ok(Value::String(s.clone())),
+            GuardOperand::State { cell, param, expr, arg } => {
+                let v = self.law_operand(arg, env, signal)?;
+                let mut inner: Env = FxHashMap::with_capacity_and_hasher(1, Default::default());
+                inner.insert(param.clone(), v);
+                self.eval_expr(&expr.node, &mut inner, cell, signal)
+                    .map_err(|e| RuntimeError::TypeError(format!("its `maps` in `{}` failed: {:?}", cell, e)))
+            }
+        }
+    }
+
+    fn law_cond(&mut self, c: &GuardCond, env: &Env, signal: &str) -> Result<bool, RuntimeError> {
+        Ok(match c {
+            GuardCond::Not(a) => !self.law_cond(a, env, signal)?,
+            GuardCond::And(a, b) => self.law_cond(a, env, signal)? && self.law_cond(b, env, signal)?,
+            GuardCond::Or(a, b) => self.law_cond(a, env, signal)? || self.law_cond(b, env, signal)?,
+            GuardCond::Holds(o) => match self.law_operand(o, env, signal)? {
+                Value::Bool(b) => b,
+                other => return Err(RuntimeError::TypeError(format!("a Bool state gave {}", short_value(&other)))),
+            },
+            GuardCond::Cmp(l, op, r) => {
+                let (a, b) = (self.law_operand(l, env, signal)?, self.law_operand(r, env, signal)?);
+                let (Value::Int(x), Value::Int(y)) = (&a, &b) else {
+                    return Err(RuntimeError::TypeError(format!("a comparison of the law is between Int values, got {} and {}", short_value(&a), short_value(&b))));
+                };
+                let ord = x.cmp(y);
+                match op.as_str() {
+                    "==" => ord == 0, "!=" => ord != 0, "<" => ord < 0, "<=" => ord <= 0, ">" => ord > 0, _ => ord >= 0,
+                }
+            }
+        })
+    }
+
     /// 3.0: the face contract around a call. `requires` is evaluated over
     /// the arguments before anything runs (kind `requires`: the caller's
     /// fault, nothing was written); `ensures` over the arguments and `result`
@@ -1791,6 +1834,23 @@ impl Interpreter {
                 return Err(RuntimeError::Domain { kind: "requires".to_string(), message: format!(
                     "{}(): the face requires `{}`{}", signal_name, crate::ast::render_expr(&clause.node),
                     if with.is_empty() { String::new() } else { format!(" — called with {}", with) }) });
+            }
+        }
+        // the law (RFC 0003): the action this signal realizes is allowed
+        // only when the rule's condition holds — judged before any effect
+        for guard in &contract.law {
+            match self.law_cond(&guard.cond, &env, signal_name) {
+                Ok(true) => {}
+                Ok(false) => {
+                    let message = format!(
+                        "{}(): refused by the law — rule \"{}\" ({}{}): it requires `{}`", signal_name, guard.rule, guard.sentence,
+                        if guard.source.is_empty() { String::new() } else { format!(" — {}", guard.source) }, guard.shown);
+                    // a refusal the program means: its text is what the caller is told
+                    crate::interpreter::builtins::collection::note_authored_failure("law", &message);
+                    return Err(RuntimeError::Domain { kind: "law".to_string(), message });
+                }
+                Err(e) => return Err(RuntimeError::Domain { kind: "law".to_string(), message: format!(
+                    "{}(): the guard of the rule \"{}\" (`{}`) could not be judged: {}", signal_name, guard.rule, guard.shown, e) }),
             }
         }
         let result = self.call_signal_body(cell_name, signal_name, args)?;

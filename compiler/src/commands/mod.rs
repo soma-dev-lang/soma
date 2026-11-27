@@ -552,6 +552,9 @@ pub fn resolve_imports(program: &mut ast::Program, base_path: &PathBuf) {
     // the whole program is here: check its nominal types, then erase them
     if IMPORT_DEPTH.with(|d| d.get()) == 0 {
         crate::checker::nominal::prepare(program);
+        // the law (RFC 0003): the guards its formal rules give the signals
+        // bound to their actions — for every command that loads the program
+        crate::checker::law::derive(program, &crate::project::root(base_path));
     }
 }
 

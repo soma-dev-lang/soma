@@ -53,7 +53,7 @@ That loop — `next`, the brief, `fill` — is the same on [a 69,000-line progra
 
 **Now hand it to your agent.** The project `soma init` wrote already carries what an agent needs: an `AGENTS.md` block, a 3 KB skill, and a hook that runs `soma check` after every edit and returns the diagnostics without being asked. Open the folder in Claude Code (the hook is its own; any agent that reads `AGENTS.md` gets the block) and ask for a feature. Then read what you would have had to review: `soma skeleton app.cell`, not the bodies.
 
-The current release is **Soma 3.4.1** ([release notes](/changelog/3.4.1)). Soma is experimental, and says where: [what is proven and what is not](#what-is-proven-what-is-not), [status](/status).
+The current release is **Soma 3.5.0** ([release notes](/changelog/3.5.0)). Soma is experimental, and says where: [what is proven and what is not](#what-is-proven-what-is-not), [status](/status).
 
 <style>
 .feat{display:block;margin:1.8rem 0 .4rem;border:1px solid var(--accent);border-radius:12px;padding:1.2rem 1.3rem;background:var(--panel);color:var(--fg)}
@@ -162,18 +162,23 @@ The guide: [Large programs, skeleton first](/guide/skeleton). Step by step: [les
 
 ## Business rules, outside the code
 
-A proof that the code keeps to its structure says nothing about what the structure is for. In one 12,000-line program written by agents, `soma verify` passed from the first day while scenario tests found the same rule missing from one more path, three times in a row. Soma has a place for what the business requires: a **law**, a file of terms and rules in sentences, written by whoever owns the rules. It names no code.
+A proof that the code keeps to its structure says nothing about what the structure is for. In one 12,000-line program written by agents, `soma verify` passed from the first day while scenario tests found the same rule missing from one more path, three times in a row. Soma has a place for what the business requires: a **law**, written by whoever owns the rules. It names no code, and where a rule can be said formally, it says it:
 
 ```text file=lois/sanctions.law
 law Sanctions
 
-term Holder  "Whoever holds units of the fund, on its register."
-term Payment "Cash paid by the fund to a holder: a redemption, an indemnity."
+entity Holder "Whoever holds units of the fund, on its register."
+state  frozen(Holder): Bool "The holder is under an asset freeze."
+state  paid_to(Holder): Int "What the fund has paid the holder."
+
+action Payment(h: Holder, n: Int) "Cash paid by the fund to a holder: a redemption, an indemnity."
+action Freeze(h: Holder) "The holder is placed under an asset freeze."
 
 rule "SAN-02" "No payment to a frozen holder"
-    about  Payment, Holder
-    source "Regulation (EU) 269/2014, art. 2"
-    owner  "compliance"
+    about    Payment, Holder
+    source   "Regulation (EU) 269/2014, art. 2"
+    owner    "compliance"
+    requires Payment(h, n): not frozen(h)
 ```
 
 ```toml file=soma.toml
@@ -181,41 +186,41 @@ rule "SAN-02" "No payment to a frozen holder"
 files = ["lois/sanctions.law"]
 ```
 
-The code is aligned on the law. A signal says which term it `realizes`; a refusal says which rule it is `under`. Here two signals pay a holder, and the second one was written later, without the check:
+The skeleton says how the program corresponds: `maps` reads a state of the law from memory, `realizes` says which action a signal is. What a `maps` reads is under the law: a signal that writes it must say which action it is. The bodies hold **no check**. Here a second way to pay was added later, and nobody said what it is:
 
 ```soma file=app.cell
 skeleton Fund {
     memory {
-        frozen: Map<String, Bool> [persistent]
+        status: Map<String, String> [persistent]
         paid: Map<String, Int> [persistent]
     }
 
+    maps frozen(h) = (status.get(h) ?? "valid") == "frozen"
+    maps paid_to(h) = paid.get(h) ?? 0
+
     face {
-        signal freeze(holder: String) -> Bool
-            writes frozen
+        signal freeze(holder: String) -> String
+            writes status
+            realizes Freeze(holder)
 
         // Pays a redemption of `n` to `holder`.
         signal redeem(holder: String, n: Int) -> Int
-            realizes Payment
-            reads frozen
             writes paid
+            realizes Payment(holder, n)
 
         // Pays an indemnity after a pricing error.
         signal indemnify(holder: String, n: Int) -> Int
-            realizes Payment
-            reads frozen
             writes paid
     }
 }
 
 flesh Fund {
     on freeze(holder) {
-        frozen.set(holder, true)
-        return true
+        status.set(holder, "frozen")
+        return "frozen"
     }
 
     on redeem(holder, n) {
-        require (frozen.get(holder) ?? false) == false else Frozen "{holder} is frozen" under "SAN-02"
         paid.set(holder, (paid.get(holder) ?? 0) + n)
         return n
     }
@@ -228,8 +233,9 @@ flesh Fund {
 
 cell test FrozenHolder under "SAN-02" {
     rules {
-        assert Fund.freeze("ana")
-        assert_fails Fund.redeem("ana", 100) matching "Frozen"
+        assert Fund.redeem("bob", 100) == 100
+        assert Fund.freeze("bob") == "frozen"
+        assert_fails Fund.redeem("bob", 100) matching "SAN-02"
     }
 }
 ```
@@ -239,20 +245,70 @@ soma law app.cell --lock
 !soma check app.cell
 ```
 
-The forgotten path is an error, with the rule, its source and the signal. The body is rewritten — one handler, nothing else — and the table says where each rule is served:
+The forgotten path does not check — before its body matters, on its frame alone. Once the signal says it is a payment, the rule applies to it without a line of code:
 
-```text file=body.txt
-require (frozen.get(holder) ?? false) == false else Frozen "{holder} is frozen" under "SAN-02"
-paid.set(holder, (paid.get(holder) ?? 0) + n)
-return n
+```soma file=app.cell
+skeleton Fund {
+    memory {
+        status: Map<String, String> [persistent]
+        paid: Map<String, Int> [persistent]
+    }
+
+    maps frozen(h) = (status.get(h) ?? "valid") == "frozen"
+    maps paid_to(h) = paid.get(h) ?? 0
+
+    face {
+        signal freeze(holder: String) -> String
+            writes status
+            realizes Freeze(holder)
+
+        // Pays a redemption of `n` to `holder`.
+        signal redeem(holder: String, n: Int) -> Int
+            writes paid
+            realizes Payment(holder, n)
+
+        // Pays an indemnity after a pricing error.
+        signal indemnify(holder: String, n: Int) -> Int
+            writes paid
+            realizes Payment(holder, n)
+    }
+}
+
+flesh Fund {
+    on freeze(holder) {
+        status.set(holder, "frozen")
+        return "frozen"
+    }
+
+    on redeem(holder, n) {
+        paid.set(holder, (paid.get(holder) ?? 0) + n)
+        return n
+    }
+
+    on indemnify(holder, n) {
+        paid.set(holder, (paid.get(holder) ?? 0) + n)
+        return n
+    }
+}
+
+cell test FrozenHolder under "SAN-02" {
+    rules {
+        assert Fund.redeem("bob", 100) == 100
+        assert Fund.freeze("bob") == "frozen"
+        assert_fails Fund.redeem("bob", 100) matching "SAN-02"
+    }
+}
 ```
 
 ```run
-soma fill app.cell Fund.indemnify --body-file body.txt
+soma check app.cell
+soma run app.cell indemnify ana 100
+soma run app.cell freeze ana
+!soma run app.cell indemnify ana 100
 soma law app.cell
 ```
 
-The guide: [The law](/guide/law). What a tag proves and what it does not: [the method](/guide/method).
+The refusal is derived from the rule: the agent that writes a body cannot forget it, and cannot weaken it. The guide: [The law](/guide/law). What has a formal reading and what stays a sentence: [the method](/guide/method).
 
 ## What you review instead of the code
 

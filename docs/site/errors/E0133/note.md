@@ -1,0 +1,1 @@
+The formal part of a law names something the law does not declare: an action in a `requires`, a parameter that is not one of the action's, a state, or an entity. The message gives the declaration to add — `entity`, `state` or `action` — and it is the owner of the law who adds it, then locks the law again.
