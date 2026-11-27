@@ -13,6 +13,16 @@ not as an add-on, but as the reason the language exists:
   handler *bodies* implement the machine they're drawn next to.
 - **Memory carries invariants.** `invariant balance >= 0` is enforced before
   any write commits. An overdraft isn't a bug to catch; it's unrepresentable.
+- **Business rules live outside the code, and are kept.** A `.law` file,
+  written by whoever owns the rules, names no code. Where a rule can be said
+  formally (`requires Payment(h, n): not frozen(h)`), the refusal is derived
+  from it and judged before every call: the agent that writes a body cannot
+  forget it, and a second way to pay does not pass `soma check` until it
+  says what it is.
+- **Large programs, one body at a time.** The structure is written and
+  proven first; `soma next` names the one thing to do, `soma fill` writes
+  one body and can change nothing else. A person reviews the law, the
+  skeleton and the verifier's last line — not the bodies.
 - **LLMs run inside the cage.** A `cell agent`'s lifecycle is a state machine
   whose terminal states the compiler proves reachable from every state (add an
   `eventually` property to prove that every run reaches one); `set_budget` stops
@@ -69,6 +79,16 @@ soma verify app.cell       # PROVE the state machines + invariants
 soma test app.cell         # run `cell test` assertions
 soma serve app.cell        # http://localhost:8080
 ```
+
+Skeleton first, and handed to an agent:
+
+```bash
+soma init --skeleton myapp && cd myapp   # structure written, one body missing; AGENTS.md, a skill and a check hook for the agent
+soma next app.cell                       # the one thing to do now
+soma fill app.cell Counter.reset         # write that body (on stdin); it comes back checked
+```
+
+[The method](https://soma-lang.dev/guide/method) is the whole of it.
 
 ## Proof-carrying demo apps
 

@@ -10,7 +10,7 @@ toc: yes
 <p class="lede">Soma is a language in which you can hand back a proof instead of a promise. This page says what that gives you, how to get a correct program on the first try, and when to pick something else. Every resource below is plain text or JSON, and every claim on this page can be checked with a command.</p>
 
 ```
-# new to Soma: six lessons, every output printed by the real binary
+# new to Soma: seven lessons, every output printed by the real binary
 curl -s https://soma-lang.dev/llms-learn.txt
 
 # the whole language, one fetch, for your context
@@ -28,6 +28,7 @@ With the toolchain installed, none of this needs the network: `soma docs agent` 
 - **Evidence you can paste.** `soma verify` model-checks every state machine (reachability, deadlocks, liveness, temporal properties) and checks that the handler bodies take only the edges the machine declares. When the user asks "is it safe?", answer with the verifier's output. [Guarantees](/guide/guarantees) says what is proven, what is enforced at runtime, and what is not covered.
 - **Limits that hold, and no half-written state.** `invariant balance >= 0` is checked before a write commits; a refused write leaves the slot unchanged and raises a catchable error. A handler that fails leaves no slot write and no transition behind. Effects outside the program (an HTTP call, a file, an LLM call) are not undone: send them after the writes that justify them.
 - **Large programs without the whole program in context.** Write the `skeleton` first. `soma skeleton app.cell Cell.signal` is a one-screen brief for one body, and `soma check` refuses a body that leaves its frame. [Skeleton first](/guide/skeleton).
+- **Business rules you cannot forget.** The rules live in a `.law` file their owner writes. A rule with a formal reading gives its refusal to every signal that performs the action: you do not write the check, and a new way to do the same thing does not pass `soma check` until it says what it is. The brief of a signal shows the rules it owes. [The law](/guide/law).
 - **One file is a whole service.** Contract, storage, lifecycle, handlers, HTTP routes and tests live in one cell; `soma serve app.cell` runs it.
 - **Nothing to guess.** The builtin table is generated from the compiler: [Builtins](/builtins/), or `soma describe --builtins --json`.
 - **A cage for the agents you build.** `cell agent` with a state machine and `set_budget(N)`: a lifecycle whose exits the compiler proves reachable, a token budget that stops the next call, tests that mock the model. [Agents](/guide/agents).
@@ -133,7 +134,7 @@ curl -s https://soma-lang.dev/corpus/index.json \
 | URL | What it is |
 |---|---|
 | [/llms.txt](/llms.txt) | The language guide, the page to keep in context while you write. The binary prints the same text: `soma docs agent`. |
-| [/llms-learn.txt](/llms-learn.txt) | The course: six lessons with real outputs. |
+| [/llms-learn.txt](/llms-learn.txt) | The course: seven lessons with real outputs. |
 | [/llms-skeleton.txt](/llms-skeleton.txt) · [/llms-flesh.txt](/llms-flesh.txt) | Large programs: skeleton, frames, holes, the brief, flesh bodies. |
 | [/llms-service.txt](/llms-service.txt) | Guide, guarantees, serving and pitfalls: what you need for a service. |
 | [/llms-full.txt](/llms-full.txt) | Guide, full reference, every pitfall and every builtin, one fetch. |

@@ -1,4 +1,4 @@
-# Learn Soma in six lessons
+# Learn Soma in seven lessons
 
 You are probably a language model. This course is written for you: six
 short lessons, each a program, the commands to run on it, and what the
@@ -486,7 +486,181 @@ returned first). The second loan found the shelf empty. Two holes are
 left, and calling one fails cleanly. `soma skeleton app.cell --freeze`
 locks the structure: from then on a body can only fill it, and a change
 to the design is a deliberate `--amend`. In a 100-signal program you keep
-the same loop: `soma holes`, one brief, one body, `soma check`.
+the same loop, and two commands carry it: `soma next app.cell` names the
+one thing to do — an error, the next hole, a failing test — and `soma
+fill app.cell Cell.signal` writes that one body (given on stdin) and
+returns its diagnostics. `soma fill` cannot touch the skeleton.
+
+## Lesson 7 — A business rule, kept by the compiler
+
+Lessons 3 to 6 prove that the code keeps to its structure. None of them
+says what the structure is for. That is written in a **law**: a file of
+its own, in sentences, by whoever owns the rules of the business. It
+names no cell and no handler, so it can exist before the program does.
+Where a rule can be said formally, the law says it — a `state`, an
+`action`, and what the action `requires`:
+
+```text file=lois/sanctions.law
+law Sanctions
+
+entity Holder "Whoever holds units of the fund, on its register."
+state  frozen(Holder): Bool "The holder is under an asset freeze."
+state  paid_to(Holder): Int "What the fund has paid the holder."
+
+action Payment(h: Holder, n: Int) "Cash paid by the fund to a holder: a redemption, an indemnity."
+action Freeze(h: Holder) "The holder is placed under an asset freeze."
+
+rule "SAN-02" "No payment to a frozen holder"
+    about    Payment, Holder
+    source   "Regulation (EU) 269/2014, art. 2"
+    owner    "compliance"
+    requires Payment(h, n): not frozen(h)
+```
+
+```toml file=soma.toml
+[law]
+files = ["lois/sanctions.law"]
+```
+
+
+The skeleton says how the program corresponds: `maps` reads a state of the law from memory, `realizes` says which action a signal is. What a `maps` reads is under the law: a signal that writes it must say which action it is. The bodies hold **no check**. Here a second way to pay was added later, and nobody said what it is:
+
+```soma file=app.cell
+skeleton Fund {
+    memory {
+        status: Map<String, String> [persistent]
+        paid: Map<String, Int> [persistent]
+    }
+
+    maps frozen(h) = (status.get(h) ?? "valid") == "frozen"
+    maps paid_to(h) = paid.get(h) ?? 0
+
+    face {
+        signal freeze(holder: String) -> String
+            writes status
+            realizes Freeze(holder)
+
+        // Pays a redemption of `n` to `holder`.
+        signal redeem(holder: String, n: Int) -> Int
+            writes paid
+            realizes Payment(holder, n)
+
+        // Pays an indemnity after a pricing error.
+        signal indemnify(holder: String, n: Int) -> Int
+            writes paid
+    }
+}
+
+flesh Fund {
+    on freeze(holder) {
+        status.set(holder, "frozen")
+        return "frozen"
+    }
+
+    on redeem(holder, n) {
+        paid.set(holder, (paid.get(holder) ?? 0) + n)
+        return n
+    }
+
+    on indemnify(holder, n) {
+        paid.set(holder, (paid.get(holder) ?? 0) + n)
+        return n
+    }
+}
+
+cell test FrozenHolder under "SAN-02" {
+    rules {
+        assert Fund.redeem("bob", 100) == 100
+        assert Fund.freeze("bob") == "frozen"
+        assert_fails Fund.redeem("bob", 100) matching "SAN-02"
+    }
+}
+```
+
+```run
+soma law app.cell --lock
+!soma check app.cell
+```
+
+The forgotten path does not check — before its body matters, on its frame alone. Once the signal says it is a payment, the rule applies to it without a line of code:
+
+```soma file=app.cell
+skeleton Fund {
+    memory {
+        status: Map<String, String> [persistent]
+        paid: Map<String, Int> [persistent]
+    }
+
+    maps frozen(h) = (status.get(h) ?? "valid") == "frozen"
+    maps paid_to(h) = paid.get(h) ?? 0
+
+    face {
+        signal freeze(holder: String) -> String
+            writes status
+            realizes Freeze(holder)
+
+        // Pays a redemption of `n` to `holder`.
+        signal redeem(holder: String, n: Int) -> Int
+            writes paid
+            realizes Payment(holder, n)
+
+        // Pays an indemnity after a pricing error.
+        signal indemnify(holder: String, n: Int) -> Int
+            writes paid
+            realizes Payment(holder, n)
+    }
+}
+
+flesh Fund {
+    on freeze(holder) {
+        status.set(holder, "frozen")
+        return "frozen"
+    }
+
+    on redeem(holder, n) {
+        paid.set(holder, (paid.get(holder) ?? 0) + n)
+        return n
+    }
+
+    on indemnify(holder, n) {
+        paid.set(holder, (paid.get(holder) ?? 0) + n)
+        return n
+    }
+}
+
+cell test FrozenHolder under "SAN-02" {
+    rules {
+        assert Fund.redeem("bob", 100) == 100
+        assert Fund.freeze("bob") == "frozen"
+        assert_fails Fund.redeem("bob", 100) matching "SAN-02"
+    }
+}
+```
+
+```run
+soma check app.cell
+soma run app.cell indemnify ana 100
+soma run app.cell freeze ana
+!soma run app.cell indemnify ana 100
+soma law app.cell
+```
+
+
+`redeem`, `indemnify` and `freeze` hold no check: the refusal comes from
+the rule. What you write, as the author of the bodies, is the business of
+each signal and nothing of the law. What the owner of the law reads is
+this — the law and the program side by side:
+
+```run
+soma law app.cell --map
+```
+
+A rule that cannot be said in that small language — a batch, a deadline,
+"approved by someone else" — stays a sentence, served by a refusal you tag
+`under "ID"` and by its tests. `soma docs law` has both forms, and `soma
+docs method` the order of work: the law first, then the skeleton, then
+the bodies, one at a time.
+
 
 ## Where to go next
 

@@ -327,7 +327,7 @@ The agent works below that line, one body at a time, and cannot move it: `soma f
 <div class="grid">
 <div class="card"><h3><a href="#try-it-in-two-minutes">Try it in two minutes</a></h3><p>Install, <code>soma init --skeleton demo</code>, then <code>soma next</code>: one body to write, and the toolchain says when the program is complete.</p></div>
 <div class="card"><h3><a href="/orbite">Orbite: a case study</a></h3><p>Space traffic coordination: a 1,923-line protocol proven whole, and 69,000 lines written by 20 agents around it.</p></div>
-<div class="card"><h3><a href="/learn/">Learn Soma in six lessons</a></h3><p>Each lesson is a program, the commands run on it, and what they printed.</p></div>
+<div class="card"><h3><a href="/learn/">Learn Soma in seven lessons</a></h3><p>Each lesson is a program, the commands run on it, and what they printed.</p></div>
 <div class="card"><h3><a href="/guide/method">The method</a></h3><p>Law, skeleton, flesh: the order of work with a coding agent, and what each step establishes.</p></div>
 <div class="card"><h3><a href="/guide/language">The language guide</a></h3><p>The whole core language on one page: what <code>soma docs agent</code> prints.</p></div>
 <div class="card"><h3><a href="/reference/">Reference</a> and <a href="/builtins/">builtins</a></h3><p>Every construct, and every builtin with its exact signature.</p></div>
@@ -340,7 +340,7 @@ The agent works below that line, one body at a time, and cannot move it: `soma f
 
 | Proven for every input | Checked at runtime | Not covered |
 |---|---|---|
-| Every declared state machine: reachability, deadlocks, liveness, temporal properties, and that handlers take only declared edges. An invariant whose every write is bounded. Termination and declared cost bounds. | Every invariant on every write, including one between two slots of a cell. Transitions, guards, typed parameters, token budgets. | Rules between two cells that `soma.toml` does not state; business rules nobody wrote in a [law](/guide/law), and whether a refusal tagged with a rule says what the rule says; effects outside the program (HTTP, files, LLM answers); cluster behaviour. |
+| Every declared state machine: reachability, deadlocks, liveness, temporal properties, and that handlers take only declared edges. An invariant whose every write is bounded. Termination and declared cost bounds. | Every invariant on every write, including one between two slots of a cell. Transitions, guards, typed parameters, token budgets. A rule of the [law](/guide/law) that has a formal reading: its guard is derived and judged before every call. | Rules between two cells that `soma.toml` does not state; business rules nobody wrote in a law; for a rule that is only a sentence, whether the refusal tagged with it says what it says; a rule over a batch or a history; effects outside the program (HTTP, files, LLM answers); cluster behaviour. |
 
 The full table: [guarantees](/guide/guarantees). The limits of the implementation: [status](/status).
 
