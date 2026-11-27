@@ -14,6 +14,9 @@ execute(md, soma, split="## ")
         !soma run app.cell pay e1    + what it printed. A leading `!` means the
         ```                          command must FAIL (exit != 0).
 
+        ```run setup                 the same, run and checked but not shown: it
+        soma init --skeleton         prepares the folder for the blocks after it
+
     Each heading starting with `split` begins a fresh, empty folder. A command
     whose exit status contradicts the source is a problem: a page cannot teach
     what the toolchain does not do.
@@ -114,9 +117,13 @@ def execute(md, soma, split="## ", where="page"):
                     problems.append(f"{where} §{count}: `{cmd}` exited {code} (the page says it "
                                     f"{'fails' if must_fail else 'passes'})\n{text}")
                 shown.append(f"$ {cmd}" + ("\n" + text if text else ""))
-            out.append("```console")
-            out.append("\n\n".join(shown))
-            out.append("```")
+            # ```run setup: the commands prepare the folder (a project `soma init`
+            # writes) and are checked like the others, but the page shows a
+            # command the reader types instead of their output
+            if "setup" not in rest.split():
+                out.append("```console")
+                out.append("\n\n".join(shown))
+                out.append("```")
         else:
             out.append(f"```{lang}{rest}")
             out.extend(body)

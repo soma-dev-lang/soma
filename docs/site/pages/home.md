@@ -1,7 +1,7 @@
 ---
 title: Soma
 full_title: Soma — a programming language for programs written by coding agents
-description: Soma is an open-source programming language for programs written by AI coding agents. One .cell file holds data, state machine, handlers, tests and HTTP routes; soma check names the fix for every error and soma verify proves lifecycles and limits.
+description: Soma is an open-source programming language for programs written by AI coding agents. You decide the rules and the structure, the agent writes the bodies one at a time, and the compiler holds each to what you decided — try it in two minutes with soma init, soma next and soma fill.
 type: WebPage
 h1: no
 ---
@@ -10,11 +10,50 @@ h1: no
 
 <h1>Soma, a language for programs written by coding agents</h1>
 
-<p class="lede">Soma is an open-source programming language (MIT) for services whose correctness is a lifecycle and a few hard limits: approvals, quotas, escrow, agent workflows. One <code>.cell</code> file holds the data, the state machine, the handlers, the tests and the HTTP routes. <code>soma check</code> answers every mistake with the form to write instead; <code>soma verify</code> proves the lifecycle and the limits it can, and says which ones it only checks at runtime.</p>
+<p class="lede">Coding agents write code faster than anyone can review it. Soma is a language built for that. You decide the rules and the structure; the agent writes the bodies, one at a time; the compiler holds every body to what you decided, answers each mistake with the form to write instead, and proves what it can. Open source (MIT), one binary, Linux and macOS.</p>
 
 <div class="install">curl -fsSL https://soma-lang.dev/install.sh | sh</div>
 
-The current release is **Soma 3.4.1** ([release notes](/changelog/3.4.1)). It runs on Linux and macOS. Soma is experimental: [status](/status) says what that means.
+## Try it in two minutes
+
+```
+soma init --skeleton demo && cd demo
+```
+
+```run setup
+soma init --skeleton
+```
+
+That writes a small program — a counter that cannot go negative, behind a session with a lifecycle — with its structure complete and one body missing. Everything below was printed by `soma` when this page was built.
+
+```run
+!soma next app.cell
+```
+
+`soma next` names the one thing to do. The brief of that signal is one screen, and it is all its body needs — the slots it may touch, their invariants, nothing else:
+
+```run
+soma skeleton app.cell Counter.reset
+```
+
+Write the body, hand it in. It comes back checked against its frame:
+
+```text file=body.txt
+counts.set("n", 0)
+return 0
+```
+
+```run
+soma fill app.cell Counter.reset --body-file body.txt
+soma next app.cell
+soma run app.cell add 5
+```
+
+That loop — `next`, the brief, `fill` — is the same on [a 69,000-line program](/orbite): the agent never needs the rest of the code in context, and cannot write outside the frame it was given.
+
+**Now hand it to your agent.** The project `soma init` wrote already carries what an agent needs: an `AGENTS.md` block, a 3 KB skill, and a hook that runs `soma check` after every edit and returns the diagnostics without being asked. Open the folder in Claude Code (the hook is its own; any agent that reads `AGENTS.md` gets the block) and ask for a feature. Then read what you would have had to review: `soma skeleton app.cell`, not the bodies.
+
+The current release is **Soma 3.4.1** ([release notes](/changelog/3.4.1)). Soma is experimental, and says where: [what is proven and what is not](#what-is-proven-what-is-not), [status](/status).
 
 <style>
 .feat{display:block;margin:1.8rem 0 .4rem;border:1px solid var(--accent);border-radius:12px;padding:1.2rem 1.3rem;background:var(--panel);color:var(--fg)}
@@ -28,6 +67,29 @@ The current release is **Soma 3.4.1** ([release notes](/changelog/3.4.1)). It ru
 .feat .go{font-weight:600;color:var(--accent)}
 </style>
 <a class="feat" href="/orbite"><span class="k">Case study · Orbite</span><span class="t">Who moves? The protocol fits in 1,923 lines of Soma — its safety rules proven on the real code, in two seconds.</span><span class="d">When two satellites are about to collide, exactly one must move. Orbite settles it with rules borrowed from the sea; <code>soma verify</code> proves its 13 safety rules on the real code, bodies included. Around it, twenty AI agents built the 69,000-line institution. Replayed on the 2019 Aeolus–Starlink near-miss, it decides three days before the closest approach — where ESA had to act alone.</span><span class="n"><span class="a"><b>1,923</b>lines: the protocol</span><span class="a"><b>13 / 13</b>rules proven, bodies included</span><span><b>1.8 s</b>to verify</span><span><b>69,150</b>lines around it, by 20 agents</span><span class="a"><b>−69 h</b>decision in the 2019 replay</span></span><span class="go">Read the case study, then download it and check it yourself →</span></a>
+
+## Every error names its fix
+
+Models write habits of other languages. Soma refuses them before anything runs, and the message says what to write:
+
+```soma file=cart.cell
+cell Cart {
+    memory { items: Map<String, Int> [persistent] }
+
+    on add(sku: String) {
+        let current = items.get(sku)
+        if current == null {
+            items.set(sku, 1)
+        }
+    }
+}
+```
+
+```run
+!soma check cart.cell
+```
+
+Each of the 161 diagnostic codes has a page with a program that triggers it, the real output, and the fix: [Diagnostics](/errors/).
 
 ## One rule, and the proof that it holds
 
@@ -61,29 +123,6 @@ soma run quota.cell consume ana 40
 ```
 
 The second call fails and leaves the slot unchanged: a handler that fails leaves no write behind. Remove the `QuotaExceeded` line and `soma verify` no longer proves the bound; it reports it as checked at runtime and names the line that would make it provable. [Lesson 3](/learn/3-a-rule-next-to-the-data-proven) shows it.
-
-## Every error names its fix
-
-Models write habits of other languages. Soma refuses them before anything runs, and the message says what to write:
-
-```soma file=cart.cell
-cell Cart {
-    memory { items: Map<String, Int> [persistent] }
-
-    on add(sku: String) {
-        let current = items.get(sku)
-        if current == null {
-            items.set(sku, 1)
-        }
-    }
-}
-```
-
-```run
-!soma check cart.cell
-```
-
-Each of the 161 diagnostic codes has a page with a program that triggers it, the real output, and the fix: [Diagnostics](/errors/).
 
 ## Large programs, skeleton first
 
@@ -215,21 +254,22 @@ soma law app.cell
 
 The guide: [The law](/guide/law). What a tag proves and what it does not: [the method](/guide/method).
 
-## A method, held by the toolchain
+## What you review instead of the code
 
-Three layers, three owners: the **law** (the owner of the rules), the **skeleton** (the architect), the **flesh** (the coding agent). Each is written before the one below, and the compiler holds each to the one above. The agent's loop is three commands, and nothing in it relies on remembering to run a check:
+Nobody reads 70,000 lines an agent wrote. With Soma you do not have to, because the part too large to review is held by the compiler to three things short enough to read:
 
-```
-soma next app.cell                     # the ONE thing to do now: an error, a rule the law asks, the next hole…
-soma skeleton app.cell Cell.signal     # a hole: its brief, one screen
-soma fill app.cell Cell.signal         # write that one body; it comes back checked
-```
+| You read | Written by | It is |
+|---|---|---|
+| the **law** | whoever owns the business rules | sentences, with their sources |
+| the **skeleton** | the architect | memory, lifecycles, and what each signal may touch — a few hundred lines for a large program |
+| the last line of `soma verify`, and `soma law` | the toolchain | what is proven, what is only checked at run time, where each rule is served |
 
-`soma init --agent` puts in a project what an agent is handed — a 3 KB skill, the `AGENTS.md` block, and a hook that runs `soma check` after every edit — and `soma doctor` says when they are no longer the binary's. The person who answers for the program reads the law, the skeleton and the last line of `soma verify`; not the flesh. [The method](/guide/method) is the whole of it, with what each step establishes and what it does not.
+The agent works below that line, one body at a time, and cannot move it: `soma fill` writes one handler and nothing else, and a change to the structure is a separate act that prints what changed. [The method](/guide/method) is the whole of it — the order of work, and what each step establishes and what it does not.
 
 ## Where to start
 
 <div class="grid">
+<div class="card"><h3><a href="#try-it-in-two-minutes">Try it in two minutes</a></h3><p>Install, <code>soma init --skeleton demo</code>, then <code>soma next</code>: one body to write, and the toolchain says when the program is complete.</p></div>
 <div class="card"><h3><a href="/orbite">Orbite: a case study</a></h3><p>Space traffic coordination: a 1,923-line protocol proven whole, and 69,000 lines written by 20 agents around it.</p></div>
 <div class="card"><h3><a href="/learn/">Learn Soma in six lessons</a></h3><p>Each lesson is a program, the commands run on it, and what they printed.</p></div>
 <div class="card"><h3><a href="/guide/method">The method</a></h3><p>Law, skeleton, flesh: the order of work with a coding agent, and what each step establishes.</p></div>

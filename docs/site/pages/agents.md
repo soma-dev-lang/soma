@@ -44,6 +44,16 @@ soma serve  app.cell -p 8080
 
 A `verify` failure is an error, not a warning: change the machine or the handler, do not delete the property. When you report to the user, paste the summary line.
 
+On a program written skeleton first, the loop is one body at a time, and the toolchain says what is next and when you are done:
+
+```
+soma next app.cell                     # the ONE thing to do now, and its command
+soma skeleton app.cell Cell.signal     # a hole: its brief — all its body needs, on one screen
+soma fill app.cell Cell.signal         # write that body (on stdin); it comes back checked
+```
+
+`soma fill` cannot change a skeleton, another handler or a law; a body that does not parse writes nothing. [The method](/guide/method) says what each step establishes.
+
 ## A complete program
 
 A ledger whose balance cannot go negative, a payment lifecycle, and its tests:
