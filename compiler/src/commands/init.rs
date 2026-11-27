@@ -68,10 +68,9 @@ pub fn cmd_init(name: Option<&str>, skeleton: bool) {
     }
     // AGENTS.md: any coding agent opening this project learns the loop
     // (check → verify → test) and where the exact references are.
-    let agents_path = project_dir.join("AGENTS.md");
-    if !agents_path.exists() {
-        fs::write(&agents_path, AGENTS_MD).ok();
-    }
+    // The skill and the hook with it: the check runs after every edit
+    // without the agent having to think of it.
+    let agent_files = super::agent_setup::install(&project_dir);
 
     let rel_prefix = if let Some(n) = name {
         format!("{}/", n.trim_end_matches('/'))
@@ -88,7 +87,7 @@ pub fn cmd_init(name: Option<&str>, skeleton: bool) {
     } else {
         println!("  {}app.cell         entry point — a counter with an invariant, a lifecycle and tests", rel_prefix);
     }
-    println!("  {}AGENTS.md        instructions for coding agents working in this project", rel_prefix);
+    for line in &agent_files { println!("  {}{}", rel_prefix, line.lines().next().unwrap_or("")); }
     println!("  {}.soma_env/       isolated environment", rel_prefix);
     println!("    stdlib/         {} property definitions", env.all_cell_paths().len());
     println!("    packages/      dependencies (empty)");
@@ -293,10 +292,6 @@ pub fn cmd_env() {
         println!("no environment found (run `soma init`)");
     }
 }
-
-/// Drop-in instructions for coding agents — the same text the site serves
-/// at https://soma-lang.dev/agent.md.
-const AGENTS_MD: &str = include_str!("../../../site/agent.md");
 
 /// The starter of `soma init --skeleton`: the same counter, structure first.
 const STARTER_SKELETON: &str = r#"// A counter that cannot go negative, behind a session that must be opened

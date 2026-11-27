@@ -356,7 +356,47 @@ enum Commands {
         /// Start skeleton-first: app.cell holds the structure (`skeleton`), lib/ the bodies (`flesh`)
         #[arg(long)]
         skeleton: bool,
+        /// In a project that exists: write only what a coding agent is handed — the block in AGENTS.md, the skill, the hook that checks after every edit
+        #[arg(long)]
+        agent: bool,
     },
+    /// Is this project's agent setup this binary's? The edition, the AGENTS.md block, the skill, the hook — each gap with the command that closes it
+    Doctor {
+        /// The project (default: the current directory)
+        dir: Option<PathBuf>,
+        /// Output as JSON (for agents)
+        #[arg(long)]
+        json: bool,
+    },
+    /// The one thing to do now, from an ordered queue: a gap `doctor` reports, an error of check, a failure of verify, what the law asks, the next hole, a failing test — or "complete"
+    Next {
+        /// The program (default: app.cell)
+        file: Option<PathBuf>,
+        /// Only what concerns this cell
+        #[arg(long)]
+        cell: Option<String>,
+        /// Output as JSON (for agents)
+        #[arg(long)]
+        json: bool,
+    },
+    /// Write the body of ONE signal in the flesh of its cell — the body on stdin — then check it: it changes no skeleton, no other handler, no law
+    Fill {
+        /// The program
+        file: PathBuf,
+        /// The signal: Cell.signal (a helper of the flesh: Cell._helper, written whole as `on _helper(a: Int) { … }`)
+        signal: String,
+        /// Read the body from this file instead of stdin
+        #[arg(long)]
+        body_file: Option<PathBuf>,
+        /// Leave the file as it was when the body has diagnostics (by default the body stays, to be corrected)
+        #[arg(long)]
+        reject_on_error: bool,
+        /// Output as JSON (for agents)
+        #[arg(long)]
+        json: bool,
+    },
+    /// The command the agent hook runs after an edit: reads the tool call on stdin, checks the program the edited file belongs to
+    Hook,
     /// Add a dependency: soma add pkg --git url
     Add {
         /// Package name or git URL
@@ -605,7 +645,12 @@ fn main_inner() {
             commands::test_cmd::cmd_test(&file, json, &mut registry)
         }
         Commands::Replay { file, log, at, live } => commands::replay::cmd_replay(&file, log.as_ref(), at.as_deref(), live, &mut registry),
-        Commands::Init { name, skeleton } => commands::init::cmd_init(name.as_deref(), skeleton),
+        Commands::Init { name, agent: true, .. } => commands::agent_setup::cmd_init_agent(std::path::Path::new(name.as_deref().unwrap_or("."))),
+        Commands::Init { name, skeleton, .. } => commands::init::cmd_init(name.as_deref(), skeleton),
+        Commands::Doctor { dir, json } => commands::agent_setup::cmd_doctor(&dir.unwrap_or_else(|| PathBuf::from(".")), json),
+        Commands::Hook => commands::agent_setup::cmd_hook(),
+        Commands::Next { file, cell, json } => commands::fill::cmd_next(&file.unwrap_or_else(|| PathBuf::from("app.cell")), cell.as_deref(), json),
+        Commands::Fill { file, signal, body_file, reject_on_error, json } => commands::fill::cmd_fill(&file, &signal, body_file.as_ref(), reject_on_error, json),
         Commands::Add { package, version, git, path } => commands::init::cmd_add(&package, version.as_deref(), git.as_deref(), path.as_deref()),
         Commands::Embed { file } => {
             runtime::storage::set_data_dir_beside(&file);

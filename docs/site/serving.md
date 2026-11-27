@@ -180,11 +180,14 @@ raises kind `type`): validate which variant you got before trusting it.
 
 ## Concurrency and atomicity
 
-Each request runs on its own thread, and **top-level handler invocations are
-serialized**: one handler at a time, process-wide. A handler that raises is
-rolled back (writes and transitions). You do not need locks or compensation
-code; you do pay for it in throughput, and in a plain handler a `think()` call
-holds the line for as long as the model takes.
+Each request runs on its own thread. **Handler invocations that write are
+serialized**: one at a time, process-wide. A request that only reads runs
+beside them, on a snapshot of the last commit — provided every slot of the
+program is `[persistent]`; `soma serve` says at start-up which slot makes it
+take one request at a time otherwise. A handler that raises is rolled back
+(writes and transitions). You do not need locks or compensation code; you do
+pay for it in write throughput, and in a plain handler a `think()` call holds
+the line of writers for as long as the model takes.
 
 ### `[task]` handlers: think outside the lock
 

@@ -405,10 +405,14 @@ def build_learn(site):
 GUIDES = [
     ("language", "site/llms.txt", "The language guide",
      "The guide `soma docs agent` prints: the whole core language in one page, as an agent reads it before writing Soma."),
+    ("method", "site/llms-method.txt", "The method: building a program with a coding agent",
+     "Law, skeleton, flesh: three layers with three owners, the order of work, the loop the toolchain imposes, and what each step establishes."),
     ("skeleton", "site/llms-skeleton.txt", "Large programs, skeleton first",
      "Write the structure first: memory, machines and each signal's frame; then fill bodies one brief at a time."),
     ("flesh", "site/llms-flesh.txt", "Writing a flesh body",
      "What a flesh body may do, and how `soma check` holds it to its frame."),
+    ("law", "site/llms-law.txt", "The law: business rules outside the code",
+     "A `.law` file of terms and rules that names no code; `realizes`, `under` and `exempt` align the program on it, and `soma check` reports a rule a path forgot."),
     ("agents", "site/llms-agents.txt", "Agents, think() and hordes",
      "LLM calls inside a state machine: think(), tools, budgets, [task] handlers and hordes."),
     ("native", "site/llms-native.txt", "Native handlers",
@@ -425,6 +429,8 @@ GUIDES = [
      "Bounded loops, timing and interlocks for control programs."),
     ("agent-loop", "site/agent.md", "Working on a Soma project, as an agent",
      "The block a Soma project puts in its AGENTS.md: the loop to run, what each command proves, and the limits to state."),
+    ("handbook", "docs/site/handbook.md", "Handbook",
+     "The long-form guide: types, memory properties, state machines, agents and idiomatic templates. `soma docs handbook` prints it."),
     ("releases", "site/llms-releases.txt", "Recent releases, for agents",
      "What changed in recent releases, written for an agent that learned an older Soma."),
 ]

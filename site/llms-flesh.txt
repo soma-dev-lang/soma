@@ -1,7 +1,9 @@
 # Soma — writing one body
 
 What you need to write the body of ONE signal from its brief
-(`soma skeleton app.cell Cell.signal`), and nothing more. The whole
+(`soma skeleton app.cell Cell.signal`), and nothing more. Hand it in with
+`soma fill app.cell Cell.signal` (the body on stdin: the statements alone,
+or the whole `on …` form): it comes back checked. The whole
 language is `soma docs agent`; the skeleton rules are `soma docs skeleton`.
 
 ## The shape of an answer

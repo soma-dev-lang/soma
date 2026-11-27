@@ -183,6 +183,11 @@ soma refs     app.cell Orders.place [--json]   # where it is declared, where its
 soma rename   app.cell Orders.place submit [--dry-run]   # the declaration, the body, every call, frame clause and test; an event is renamed in every cell that hears it
 soma check .                            # the project gate: the entry file and every test file (parts are checked through the entry)
 soma holes    app.cell [Cell] [--json]  # signals with no body yet, by cell, numbered in the order to write them (callees first)
+soma next     app.cell [--cell C] [--json]   # the ONE thing to do now: an error of check, a failure of verify, what the law asks,
+                                        #   the next hole, a failing test — or `complete`; exit 0 only when complete
+soma fill     app.cell Orders.place [--json] # write that ONE body (given on stdin, or --body-file) in the flesh of its cell, then
+                                        #   return the diagnostics of that signal alone, its frame, the holes left. It changes
+                                        #   no skeleton, no other handler, no law; a body that does not parse writes nothing
 soma verify   app.cell --summary        # only the ✗ and ⚠ lines, the count of ✓, the holes, the verdict
 soma skeleton app.cell --split > new.cell    # rewrite existing cells as skeleton + flesh, bodies unchanged
 soma skeleton app.cell --freeze         # write skeleton.lock: every command that loads the program then refuses a change
@@ -197,9 +202,11 @@ soma docs flesh                         # one page: the syntax a body needs — 
 The loop for a large program: write the skeletons → `soma check` (every
 frame names things that exist; an edge no signal moves, a slot no signal
 writes are warnings) → `soma verify` (lifecycles proven before any body
-exists) → `--freeze` → then for each line of `soma holes`: read its brief,
-write that one body, `soma check`. You never need another cell's bodies in
-context: the brief is the whole contract. What `check` says when a body
+exists) → `--freeze` → then, until `soma next` answers `complete`: read the
+brief of the hole it names, write that one body with `soma fill`. You never
+need another cell's bodies in context: the brief is the whole contract. The
+method as a whole — the law first, tests red first, what to report — is
+`soma docs method`. What `check` says when a body
 leaves its frame:
 
 ```

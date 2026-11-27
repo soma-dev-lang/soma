@@ -131,7 +131,7 @@ curl -s https://soma-lang.dev/corpus/index.json \
 | [/gotchas.json](/gotchas.json) | The mistakes models make, with the real diagnostic and the right code. |
 | [/corpus/index.json](/corpus/index.json) | Every verified program: id, title, features, lines, source URL. Per domain: [/corpus/domains.json](/corpus/domains.json). |
 | [/agent.md](/agent.md) | A drop-in `AGENTS.md` / `CLAUDE.md` block for a project that uses Soma. |
-| [/skill/SKILL.md](/skill/SKILL.md) | The same knowledge as an agent skill. |
+| [/skill/SKILL.md](/skill/SKILL.md) | The loop as an agent skill, under 3 KB: what it leaves out, the installed binary serves (`soma docs <topic>`). |
 | [/version.json](/version.json) | The version this site was generated from, and the index of the above. |
 
 All of it is served with `Access-Control-Allow-Origin: *`.
@@ -150,7 +150,9 @@ Soma is experimental; [status](/status) says what that means.
 
 ```
 curl -fsSL https://soma-lang.dev/install.sh | sh
-soma init myapp && cd myapp        # writes app.cell, soma.toml and AGENTS.md
+soma init myapp && cd myapp        # app.cell, soma.toml, AGENTS.md, the skill, the hook that checks every edit
+soma init --agent                  # the same three agent files, in a project that exists
+soma doctor                        # are they this binary's? each gap with its command
 soma check app.cell && soma verify app.cell && soma test app.cell
 ```
 

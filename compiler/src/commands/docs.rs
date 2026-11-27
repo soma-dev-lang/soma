@@ -11,12 +11,14 @@ const AGENT_SUMMARY: &str = include_str!("../../../site/llms.txt");
 const AGENTS_GUIDE: &str = include_str!("../../../site/llms-agents.txt");
 const NATIVE_GUIDE: &str = include_str!("../../../site/llms-native.txt");
 const SKELETON_GUIDE: &str = include_str!("../../../site/llms-skeleton.txt");
+const METHOD: &str = include_str!("../../../site/llms-method.txt");
 const LAW_GUIDE: &str = include_str!("../../../site/llms-law.txt");
 const FLESH_CARD: &str = include_str!("../../../site/llms-flesh.txt");
 const RELEASES: &str = include_str!("../../../site/llms-releases.txt");
 const REFERENCE: &str = include_str!("../../../SOMA_REFERENCE.md");
 const GOTCHAS: &str = include_str!("../../../AGENT_GOTCHAS.md");
-const AGENTS_MD: &str = include_str!("../../../site/agent.md");
+const AGENTS_MD: &str = super::agent_setup::AGENTS_MD;
+const HANDBOOK: &str = include_str!("../../../docs/site/handbook.md");
 const GUARANTEES: &str = include_str!("../../../docs/site/guarantees.md");
 const SERVING: &str = include_str!("../../../docs/site/serving.md");
 const CLUSTER: &str = include_str!("../../../docs/site/cluster.md");
@@ -27,10 +29,12 @@ const TOPICS: &[(&str, &str)] = &[
     ("agent", "working summary of the language for a model's context (start here)"),
     ("agents", "running LLM agents: tools, capabilities, [task], hordes, budgets, mocks, replay"),
     ("native", "the [native] vocabulary, its limits and costs"),
+    ("method", "how a program is built with an agent: law, skeleton, flesh; the order of work; what each step establishes"),
     ("skeleton", "large programs: skeleton / flesh, frames, holes, the brief, skeleton.lock"),
     ("law", "business rules outside the code: the .law file, realizes / under / exempt, soma law"),
     ("flesh", "writing ONE body from its brief: the syntax a handler needs, on one page"),
     ("releases", "what each release changed, newest first"),
+    ("handbook", "the long-form guide: types, memory, machines, agents, idiomatic templates"),
     ("reference", "the full language reference"),
     ("gotchas", "mistakes models make, each with the real diagnostic and the fix"),
     ("builtins", "every builtin with its exact signature, generated from the compiler"),
@@ -49,10 +53,12 @@ pub fn cmd_docs(topic: &str) {
         "agent" | "llms" => print!("{}", AGENT_SUMMARY),
         "agents" => print!("{}", AGENTS_GUIDE),
         "native" | "performance" => print!("{}", NATIVE_GUIDE),
+        "method" => print!("{}", METHOD),
         "skeleton" | "frames" => print!("{}", SKELETON_GUIDE),
         "law" | "rules" => print!("{}", LAW_GUIDE),
         "flesh" | "body" => print!("{}", FLESH_CARD),
         "releases" => print!("{}", RELEASES),
+        "handbook" | "skill" => print!("{}", HANDBOOK),
         "reference" => print!("{}", REFERENCE),
         "gotchas" => print!("{}", GOTCHAS),
         "agents-md" => print!("{}", AGENTS_MD),

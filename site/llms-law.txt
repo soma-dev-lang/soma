@@ -112,7 +112,7 @@ error: the rule "SAN-02" (No payment to a frozen holder — Regulation (EU)
 
 ```
 soma law app.cell             # each rule: source, where it is served and how, its tests, its status
-soma law app.cell --todo      # only what fails, as a numbered work list — start here
+soma law app.cell --todo      # only what fails, as a numbered work list — start here (`soma next` hands them out one at a time)
 soma law app.cell "SAN-02"    # one rule: its terms and their definitions, every signal that realizes them
 soma law app.cell --json      # the same, for a program
 soma law app.cell --lock      # the owner of the law records it as reviewed (law.lock) — not you

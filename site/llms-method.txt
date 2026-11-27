@@ -1,0 +1,148 @@
+# Soma — the method: building a program with a coding agent
+
+A language does not make a program right. A way of working does, and Soma
+is built so that the way of working is held by the toolchain instead of by
+the memory of whoever — or whatever — writes the code. This page is that
+way of working. It is for the agent that writes the program and for the
+person who answers for it.
+
+## What goes wrong
+
+An agent writes fast, forgets what it read an hour ago, and sounds equally
+sure when it is right and when it is wrong. On a 12,000-line
+fund-administration program written by agents (a case study, not
+published), three failures came back again and again:
+
+- **Proof of the wrong thing.** `soma verify` said `VERIFY OK` from the
+  first day to the last, while 118 scenarios played against the program
+  found more than a hundred business defects. The proof was true: the code
+  kept to its structure. Nothing said what the structure was for.
+- **One rule, defended one path at a time.** "No payment to a frozen
+  holder" was missing from the settlement of a redemption, then from the
+  payment of a distribution, then from an indemnity. Three scenarios, three
+  fixes, one rule. Nothing listed the places where a payment is made.
+- **A wrong model, checked with care.** The order book asked for a
+  counterparty at order entry. An order goes to an execution system; the
+  counterparty is known when it is executed. The compiler checked the wrong
+  model faithfully. The fund manager saw it in ten seconds, the first time
+  it reached a screen he could read.
+
+None of these is a bug a better body would have avoided. Each is a
+question nobody had written down.
+
+## Three layers, three owners
+
+| Layer | Holds | Written and reviewed by | Held by |
+|---|---|---|---|
+| Law | the terms and rules of the business, in sentences | the person who owns the rules | `law.lock` |
+| Skeleton | memory, invariants, state machines, each signal's frame | the architect | `skeleton.lock` |
+| Flesh | the handler bodies | the coding agent | `soma check` |
+
+Each layer is written before the one below it, and the compiler holds each
+to the one above: a body may only do what its frame says; a signal that
+realizes a term of the law must serve the rules about that term.
+
+The layers have owners because their readers differ. A compliance officer
+can read a rule. An architect can read a skeleton — a 12,000-line program
+is a few hundred lines of it. Nobody reads 12,000 lines of flesh, and with
+this method nobody has to.
+
+## The order of work
+
+1. **Write the law with its owner.** Terms, then rules, each with its
+   source. Sentences, no code: the law names no cell and no handler, so it
+   can be written before the program exists. Lock it (`soma law app.cell
+   --lock`). If you are the agent and the law is silent on what you need,
+   ask; do not write the rule yourself.
+2. **Write the skeleton.** Memory and its invariants, the state machines,
+   and for each signal its frame: `reads`, `writes`, `calls`, `moves`, and
+   `realizes` when the signal is an action the law speaks of. Run `soma
+   verify` now — the lifecycle is proven before any body exists. Freeze it
+   (`soma skeleton app.cell --freeze`).
+3. **Write a test that fails.** A scenario from the life of the business —
+   a day of the fund, a refused order — not a walk through the code. See it
+   fail before the body exists: a test that has never failed has shown
+   nothing.
+4. **Fill one hole at a time.** `soma next` names it, `soma skeleton
+   app.cell Cell.signal` is its brief — one screen, all the body needs —
+   and `soma fill app.cell Cell.signal` writes it and returns the
+   diagnostics of that signal alone.
+5. **Close.** When `soma next` answers `complete`, report the line it
+   prints, and what you did not check.
+
+Small programs skip to the end: one `cell`, then `check` → `verify` →
+`test` after every edit. The method earns its cost when the program no
+longer fits in one context.
+
+## The loop
+
+```
+soma next app.cell                     # the ONE thing to do now, and its command
+soma skeleton app.cell Cell.signal     # a hole: its brief
+soma fill app.cell Cell.signal         # write that body (on stdin); it is checked
+```
+
+`next` draws from an ordered queue: a gap in the agent's setup (`soma
+doctor`), an error of `check`, a failure of `verify`, what the law still
+asks, the next hole, a failing test — then `complete`. The order is the
+method: nothing is built on a program that does not check, and no body is
+written while the structure is in doubt.
+
+Nothing in the loop relies on remembering to run it. `soma init --agent`
+installs a hook that runs `soma check` after every edit of a `.cell`, a
+`.law` or `soma.toml`, and says nothing when there is nothing to say.
+
+## Rules of conduct
+
+- **Never guess.** A syntax, a builtin, a flag: ask the binary (`soma docs
+  flesh`, `soma describe --builtins --json`, `soma explain E0120`, `soma
+  example <features>`). It is at the version you run; your memory is not.
+- **Fix the body, not the layer above.** A frame error is answered in the
+  body. Widening a frame, deleting an invariant, loosening a test or
+  editing a law to make an error go away is a design change nobody
+  reviewed. `soma fill` cannot do it: it writes one handler, in the flesh,
+  and nothing else.
+- **A design change is an act, with a name.** When the structure is wrong,
+  say so, change the skeleton, and `soma skeleton app.cell --amend` — it
+  prints what changed. That line belongs in the report.
+- **Put the model where its owner can read it.** The wrong order book was
+  right there in the code, where the fund manager would never look. A
+  sentence in the law, a state machine in a skeleton, a screen: the
+  fastest review there is, is the owner of a rule reading it.
+- **Every defect becomes a test, then a question.** The test first, red.
+  Then: is this one path of a rule? If it is, the rule goes to the law, and
+  `soma check` reports every other path at once (E0130).
+- **Report evidence.** The line `verify` printed, the table `soma law`
+  printed, the tests that ran. Say what was not run. "It should work" is
+  not a result.
+
+## What each step establishes — and what it does not
+
+| Step | Establishes | Does not establish |
+|---|---|---|
+| `soma check` | names, types, contracts; every body inside its frame; every signal that realizes a term serves or is exempt from each rule about it | that a body does what its signal's comment says |
+| `soma verify` | each state machine (reachability, deadlocks, liveness), handlers take only declared edges, bounded invariants, termination | anything the skeleton does not state; rules between cells that `soma.toml` does not state |
+| `soma law` | where each rule is served, by what (`proved` by a guarded edge, `checked` by a refusal, `handled` by a marked branch), and its tests | that a refusal tagged `under "R"` refuses what R says: today the tag is a claim, and its tests are what back it |
+| `soma test` | the scenarios somebody thought of | the ones nobody thought of |
+
+The third line is a known limit, stated rather than hidden: a refusal that
+refuses nothing, tagged with a rule, is counted as serving it. Deriving the
+refusal from the rule is the planned next step of the law. Until then, a rule is as good as its tests — written red first.
+
+## For the person who answers for the program
+
+What to read, in this order, and it is short:
+
+1. the law — your own sentences; and `soma law app.cell`, the table of
+   where each is served;
+2. the skeleton (`soma skeleton app.cell`), and at each change what
+   `--amend` printed;
+3. the last line of `soma verify`, and the test names;
+4. the agent's report: what it did, what it did not check.
+
+What you do not need to read is the flesh. That is the point of the
+layers: the part too large to review is the part the compiler holds to the
+parts you did review.
+
+More: `soma docs skeleton`, `soma docs law`, `soma docs flesh`, `soma docs
+guarantees`.

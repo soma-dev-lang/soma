@@ -23,7 +23,7 @@ below is current for the binary named in https://soma-lang.dev/version.json.
 - [llms-law.txt](https://soma-lang.dev/llms-law.txt): business rules outside the code — the `.law` file, `realizes` / `under` / `exempt`, `soma law` (`soma docs law`)
 - [llms-releases.txt](https://soma-lang.dev/llms-releases.txt): what each release changed, newest first (`soma docs releases`)
 - [docs/robotics.md](https://soma-lang.dev/docs/robotics.md): 100 robotics robustness scenarios, reproduction commands and limits; offline with `soma docs robotics`; [cases/orbite-core/README.md](https://soma-lang.dev/cases/orbite-core/README.md): a 1,923-line protocol whose 13 rules are proven on the full program in 2 s, and [cases/orbite/README.md](https://soma-lang.dev/cases/orbite/README.md): the 69,000-line system 20 agents wrote around it ([orbite.tar.gz](https://soma-lang.dev/cases/orbite/orbite.tar.gz))
-- [agent.md](https://soma-lang.dev/agent.md): drop-in AGENTS.md / CLAUDE.md block for a project that uses Soma; [skill/SKILL.md](https://soma-lang.dev/skill/SKILL.md): the same as an agent skill
+- [agent.md](https://soma-lang.dev/agent.md): drop-in AGENTS.md / CLAUDE.md block for a project that uses Soma; [skill/SKILL.md](https://soma-lang.dev/skill/SKILL.md): the loop as a short agent skill — `soma init --agent` writes both into a project with the hook that runs `soma check` after every edit; `soma doctor` says when they are not the binary's
 - [builtins.json](https://soma-lang.dev/builtins.json): every builtin with its exact signature (from `soma describe --builtins --json`) — never guess one
 - [gotchas.json](https://soma-lang.dev/gotchas.json): the mistakes models make, each with the real diagnostic and the fix
 - [corpus/domains.json](https://soma-lang.dev/corpus/domains.json): the domains (~3 KB) → one domain's index (~20 KB, summaries, each program's verify verdict and soma.toml)
@@ -32,8 +32,8 @@ below is current for the binary named in https://soma-lang.dev/version.json.
 
 ## Pick Soma when / skip it when
 
-Current release: 3.3.1 — the law (business rules outside the code, `soma law`), after
-3.2's nominal types and 3.1's skeleton first. What each release changed: `soma docs releases`.
+Current release: 3.4.0 — the method (`soma next`, `soma fill`, `soma docs method`), after 3.3's
+law, 3.2's nominal types and 3.1's skeleton first. What each release changed: `soma docs releases`.
 
 Pick it when the task has a lifecycle or a limit that must hold: payments,
 approvals, interlocks, quotas, escrow, agent workflows with a budget — and
@@ -69,7 +69,7 @@ soma docs agents|native|skeleton|releases   # LLM agents, the [native] vocabular
 soma embed app.cell                  # the program as a library: one JSON call per line; packages/python (`import soma`) and packages/npm use it
 soma example invariant state_machine # verified programs with those features;
 soma example <id>                    #   …and the source of one
-soma init myapp                      # app.cell + soma.toml + AGENTS.md
+soma init myapp                      # app.cell + soma.toml + AGENTS.md, the skill, the check hook
 ```
 Work in that order. `check` is cheap and catches most mistakes before
 anything runs; a `verify` failure is an error, not a warning.
@@ -87,7 +87,7 @@ soma skeleton app.cell                # the map: structure + frames, no bodies (
 soma holes    app.cell                # signals with no body yet, in the order to write them
 soma skeleton app.cell Cell.signal    # the brief for ONE body: its slots, edges, and what it may call
 soma skeleton app.cell --freeze       # skeleton.lock: the structure then changes only with --amend
-soma init --skeleton myapp            # a starter laid out this way
+soma init --skeleton myapp            # a starter laid out this way; then `soma next` / `soma fill app.cell Cell.signal` (one body, on stdin)
 ```
 The rules, the clauses and an example: `soma docs skeleton`
 (https://soma-lang.dev/llms-skeleton.txt).
@@ -755,6 +755,157 @@ vocabulary, limits and costs in `soma docs native`
 
 ---
 
+# Soma — the method: building a program with a coding agent
+
+A language does not make a program right. A way of working does, and Soma
+is built so that the way of working is held by the toolchain instead of by
+the memory of whoever — or whatever — writes the code. This page is that
+way of working. It is for the agent that writes the program and for the
+person who answers for it.
+
+## What goes wrong
+
+An agent writes fast, forgets what it read an hour ago, and sounds equally
+sure when it is right and when it is wrong. On a 12,000-line
+fund-administration program written by agents (a case study, not
+published), three failures came back again and again:
+
+- **Proof of the wrong thing.** `soma verify` said `VERIFY OK` from the
+  first day to the last, while 118 scenarios played against the program
+  found more than a hundred business defects. The proof was true: the code
+  kept to its structure. Nothing said what the structure was for.
+- **One rule, defended one path at a time.** "No payment to a frozen
+  holder" was missing from the settlement of a redemption, then from the
+  payment of a distribution, then from an indemnity. Three scenarios, three
+  fixes, one rule. Nothing listed the places where a payment is made.
+- **A wrong model, checked with care.** The order book asked for a
+  counterparty at order entry. An order goes to an execution system; the
+  counterparty is known when it is executed. The compiler checked the wrong
+  model faithfully. The fund manager saw it in ten seconds, the first time
+  it reached a screen he could read.
+
+None of these is a bug a better body would have avoided. Each is a
+question nobody had written down.
+
+## Three layers, three owners
+
+| Layer | Holds | Written and reviewed by | Held by |
+|---|---|---|---|
+| Law | the terms and rules of the business, in sentences | the person who owns the rules | `law.lock` |
+| Skeleton | memory, invariants, state machines, each signal's frame | the architect | `skeleton.lock` |
+| Flesh | the handler bodies | the coding agent | `soma check` |
+
+Each layer is written before the one below it, and the compiler holds each
+to the one above: a body may only do what its frame says; a signal that
+realizes a term of the law must serve the rules about that term.
+
+The layers have owners because their readers differ. A compliance officer
+can read a rule. An architect can read a skeleton — a 12,000-line program
+is a few hundred lines of it. Nobody reads 12,000 lines of flesh, and with
+this method nobody has to.
+
+## The order of work
+
+1. **Write the law with its owner.** Terms, then rules, each with its
+   source. Sentences, no code: the law names no cell and no handler, so it
+   can be written before the program exists. Lock it (`soma law app.cell
+   --lock`). If you are the agent and the law is silent on what you need,
+   ask; do not write the rule yourself.
+2. **Write the skeleton.** Memory and its invariants, the state machines,
+   and for each signal its frame: `reads`, `writes`, `calls`, `moves`, and
+   `realizes` when the signal is an action the law speaks of. Run `soma
+   verify` now — the lifecycle is proven before any body exists. Freeze it
+   (`soma skeleton app.cell --freeze`).
+3. **Write a test that fails.** A scenario from the life of the business —
+   a day of the fund, a refused order — not a walk through the code. See it
+   fail before the body exists: a test that has never failed has shown
+   nothing.
+4. **Fill one hole at a time.** `soma next` names it, `soma skeleton
+   app.cell Cell.signal` is its brief — one screen, all the body needs —
+   and `soma fill app.cell Cell.signal` writes it and returns the
+   diagnostics of that signal alone.
+5. **Close.** When `soma next` answers `complete`, report the line it
+   prints, and what you did not check.
+
+Small programs skip to the end: one `cell`, then `check` → `verify` →
+`test` after every edit. The method earns its cost when the program no
+longer fits in one context.
+
+## The loop
+
+```
+soma next app.cell                     # the ONE thing to do now, and its command
+soma skeleton app.cell Cell.signal     # a hole: its brief
+soma fill app.cell Cell.signal         # write that body (on stdin); it is checked
+```
+
+`next` draws from an ordered queue: a gap in the agent's setup (`soma
+doctor`), an error of `check`, a failure of `verify`, what the law still
+asks, the next hole, a failing test — then `complete`. The order is the
+method: nothing is built on a program that does not check, and no body is
+written while the structure is in doubt.
+
+Nothing in the loop relies on remembering to run it. `soma init --agent`
+installs a hook that runs `soma check` after every edit of a `.cell`, a
+`.law` or `soma.toml`, and says nothing when there is nothing to say.
+
+## Rules of conduct
+
+- **Never guess.** A syntax, a builtin, a flag: ask the binary (`soma docs
+  flesh`, `soma describe --builtins --json`, `soma explain E0120`, `soma
+  example <features>`). It is at the version you run; your memory is not.
+- **Fix the body, not the layer above.** A frame error is answered in the
+  body. Widening a frame, deleting an invariant, loosening a test or
+  editing a law to make an error go away is a design change nobody
+  reviewed. `soma fill` cannot do it: it writes one handler, in the flesh,
+  and nothing else.
+- **A design change is an act, with a name.** When the structure is wrong,
+  say so, change the skeleton, and `soma skeleton app.cell --amend` — it
+  prints what changed. That line belongs in the report.
+- **Put the model where its owner can read it.** The wrong order book was
+  right there in the code, where the fund manager would never look. A
+  sentence in the law, a state machine in a skeleton, a screen: the
+  fastest review there is, is the owner of a rule reading it.
+- **Every defect becomes a test, then a question.** The test first, red.
+  Then: is this one path of a rule? If it is, the rule goes to the law, and
+  `soma check` reports every other path at once (E0130).
+- **Report evidence.** The line `verify` printed, the table `soma law`
+  printed, the tests that ran. Say what was not run. "It should work" is
+  not a result.
+
+## What each step establishes — and what it does not
+
+| Step | Establishes | Does not establish |
+|---|---|---|
+| `soma check` | names, types, contracts; every body inside its frame; every signal that realizes a term serves or is exempt from each rule about it | that a body does what its signal's comment says |
+| `soma verify` | each state machine (reachability, deadlocks, liveness), handlers take only declared edges, bounded invariants, termination | anything the skeleton does not state; rules between cells that `soma.toml` does not state |
+| `soma law` | where each rule is served, by what (`proved` by a guarded edge, `checked` by a refusal, `handled` by a marked branch), and its tests | that a refusal tagged `under "R"` refuses what R says: today the tag is a claim, and its tests are what back it |
+| `soma test` | the scenarios somebody thought of | the ones nobody thought of |
+
+The third line is a known limit, stated rather than hidden: a refusal that
+refuses nothing, tagged with a rule, is counted as serving it. Deriving the
+refusal from the rule is the planned next step of the law. Until then, a rule is as good as its tests — written red first.
+
+## For the person who answers for the program
+
+What to read, in this order, and it is short:
+
+1. the law — your own sentences; and `soma law app.cell`, the table of
+   where each is served;
+2. the skeleton (`soma skeleton app.cell`), and at each change what
+   `--amend` printed;
+3. the last line of `soma verify`, and the test names;
+4. the agent's report: what it did, what it did not check.
+
+What you do not need to read is the flesh. That is the point of the
+layers: the part too large to review is the part the compiler holds to the
+parts you did review.
+
+More: `soma docs skeleton`, `soma docs law`, `soma docs flesh`, `soma docs
+guarantees`.
+
+---
+
 # Soma — running LLM agents
 
 > `cell agent`, think(), tools and capabilities, [task] handlers, hordes,
@@ -1243,6 +1394,11 @@ soma refs     app.cell Orders.place [--json]   # where it is declared, where its
 soma rename   app.cell Orders.place submit [--dry-run]   # the declaration, the body, every call, frame clause and test; an event is renamed in every cell that hears it
 soma check .                            # the project gate: the entry file and every test file (parts are checked through the entry)
 soma holes    app.cell [Cell] [--json]  # signals with no body yet, by cell, numbered in the order to write them (callees first)
+soma next     app.cell [--cell C] [--json]   # the ONE thing to do now: an error of check, a failure of verify, what the law asks,
+                                        #   the next hole, a failing test — or `complete`; exit 0 only when complete
+soma fill     app.cell Orders.place [--json] # write that ONE body (given on stdin, or --body-file) in the flesh of its cell, then
+                                        #   return the diagnostics of that signal alone, its frame, the holes left. It changes
+                                        #   no skeleton, no other handler, no law; a body that does not parse writes nothing
 soma verify   app.cell --summary        # only the ✗ and ⚠ lines, the count of ✓, the holes, the verdict
 soma skeleton app.cell --split > new.cell    # rewrite existing cells as skeleton + flesh, bodies unchanged
 soma skeleton app.cell --freeze         # write skeleton.lock: every command that loads the program then refuses a change
@@ -1257,9 +1413,11 @@ soma docs flesh                         # one page: the syntax a body needs — 
 The loop for a large program: write the skeletons → `soma check` (every
 frame names things that exist; an edge no signal moves, a slot no signal
 writes are warnings) → `soma verify` (lifecycles proven before any body
-exists) → `--freeze` → then for each line of `soma holes`: read its brief,
-write that one body, `soma check`. You never need another cell's bodies in
-context: the brief is the whole contract. What `check` says when a body
+exists) → `--freeze` → then, until `soma next` answers `complete`: read the
+brief of the hole it names, write that one body with `soma fill`. You never
+need another cell's bodies in context: the brief is the whole contract. The
+method as a whole — the law first, tests red first, what to report — is
+`soma docs method`. What `check` says when a body
 leaves its frame:
 
 ```
@@ -1386,7 +1544,7 @@ error: the rule "SAN-02" (No payment to a frozen holder — Regulation (EU)
 
 ```
 soma law app.cell             # each rule: source, where it is served and how, its tests, its status
-soma law app.cell --todo      # only what fails, as a numbered work list — start here
+soma law app.cell --todo      # only what fails, as a numbered work list — start here (`soma next` hands them out one at a time)
 soma law app.cell "SAN-02"    # one rule: its terms and their definitions, every signal that realizes them
 soma law app.cell --json      # the same, for a program
 soma law app.cell --lock      # the owner of the law records it as reviewed (law.lock) — not you
@@ -1408,7 +1566,9 @@ law is locked again, and the check then tells you every place that owes it.
 # Soma — writing one body
 
 What you need to write the body of ONE signal from its brief
-(`soma skeleton app.cell Cell.signal`), and nothing more. The whole
+(`soma skeleton app.cell Cell.signal`), and nothing more. Hand it in with
+`soma fill app.cell Cell.signal` (the body on stdin: the statements alone,
+or the whole `on …` form): it comes back checked. The whole
 language is `soma docs agent`; the skeleton rules are `soma docs skeleton`.
 
 ## The shape of an answer
@@ -1526,10 +1686,16 @@ it says "error kind X", raise it with `require … else X "…"` or `fail`.
 > Newest first. The language itself: https://soma-lang.dev/llms.txt (`soma docs agent`).
 > Every fix and its compatibility note: https://soma-lang.dev/CHANGELOG.md.
 
-Soma 3.2.10: the 69,000-line case study passes `soma verify` (0 ✗): each
-handler reads the state its rule is on, on the instance the rule's link
-names, just before the move. `verify` keeps a computed id handed to a
-handler as one id, and what a held status is known not to be.
+Soma 3.4.0: the method, held by the toolchain. `soma next app.cell` names
+the ONE thing to do now (a gap of `soma doctor`, an error of check, a
+failure of verify, what the law asks, the next hole, a failing test — or
+`complete`); `soma fill app.cell Cell.signal` writes ONE body given on
+stdin and returns that signal's diagnostics — it cannot change a skeleton,
+another handler or a law. `soma init --agent` writes the AGENTS.md block, a
+3 KB skill and a hook that runs `soma check` after every edit; `soma
+doctor` says when they are not the binary's. `soma docs method`: the order
+of work — law, skeleton, flesh — and what each step establishes. The
+former long skill is `soma docs handbook`.
 
 Soma 3.3.1: a `[native]` handler in the program no longer makes `soma
 serve` take one request at a time (native calls have their own lock); a
@@ -1551,6 +1717,11 @@ Also: `run_process`, `env_var`, `list_dir`, `file_info`, `append_file`,
 `read_line`; `hmac_hex`, `base32_encode` / `base32_decode`, `hex_encode`;
 `soma run --ephemeral` / `--exit-status`; `require !a || b` means `(!a) || b`
 (it read `!(a || b)`); edition 2027 refuses a `let` named like a memory slot.
+
+Soma 3.2.10: the 69,000-line case study passes `soma verify` (0 ✗): each
+handler reads the state its rule is on, on the instance the rule's link
+names, just before the move. `verify` keeps a computed id handed to a
+handler as one id, and what a held status is known not to be.
 
 Soma 3.2.9: `verify` follows a text chosen from a status by an `if`
 expression, rules out a getter's text for an unknown id once the handler
@@ -2107,6 +2278,18 @@ A failed property prints a counter-example path. A property that names a
 state no machine declares is an error. `soma verify` refuses a program that
 fails `soma check`.
 
+## 1b. CHECKED statically — by `soma check`, on every load of the program
+
+| Property | Meaning |
+|---|---|
+| Frames | in a `skeleton`, every body does only what its signal's frame says: the slots it reads and writes, the signals and effectful builtins it calls, the edges it takes, the events it emits — helpers included. A body outside its frame is an error that names the missing clause |
+| The locked structure | with `skeleton.lock`, a change to a skeleton, to a cell that moves one of their machines, or to the `[verify]` tables is refused until it is accepted on purpose (`soma skeleton --amend`) |
+| The law is the one reviewed | with `law.lock`, a `.law` file that differs from its lock is refused |
+| No forgotten path | for a program under a law: every signal that `realizes` a term serves each rule about that term (`under "R"` on a refusal, a guarded edge or a marked branch) or is `exempt` from it with a reason; a rule nothing serves is an error; a rule with no test is a warning |
+
+These are checks of the program's text, not of its behaviour: see what they
+leave out under NOT COVERED.
+
 **"Eventually" is a statement about the graph.** It says no path avoids the
 target forever; it does not say anyone will call your handlers. A payment can
 sit in `authorized` until someone acts.
@@ -2165,8 +2348,15 @@ See [cluster.md](cluster.md) for setup and migration.
   Ordering against `()` raises, equality does not.
 - **Authentication, authorization, TLS, rate limiting**: `soma serve` has none.
   Put it behind a reverse proxy.
-- **Throughput.** Handlers are serialized and the interpreter walks the AST;
+- **Throughput.** Handlers that write are serialized (one that only reads
+  runs beside them on a snapshot) and the interpreter walks the AST;
   `[native]` is for numeric kernels only.
+- **That a body does what its signal is for.** A frame bounds what a body
+  may touch, not what it computes.
+- **That a refusal says what its rule says.** `require … under "R"` is
+  counted as serving the rule R whatever its condition is: the tag is a
+  claim, backed by the tests written `under "R"`, not a proof. A rule
+  nobody wrote in a law is not checked at all.
 - **Maturity.** Experimental, one author, one package in the registry. The
   verifier itself is tested (adversarially, with mutation and differential
   runs) but not mechanically verified.
@@ -2355,11 +2545,14 @@ raises kind `type`): validate which variant you got before trusting it.
 
 ## Concurrency and atomicity
 
-Each request runs on its own thread, and **top-level handler invocations are
-serialized**: one handler at a time, process-wide. A handler that raises is
-rolled back (writes and transitions). You do not need locks or compensation
-code; you do pay for it in throughput, and in a plain handler a `think()` call
-holds the line for as long as the model takes.
+Each request runs on its own thread. **Handler invocations that write are
+serialized**: one at a time, process-wide. A request that only reads runs
+beside them, on a snapshot of the last commit — provided every slot of the
+program is `[persistent]`; `soma serve` says at start-up which slot makes it
+take one request at a time otherwise. A handler that raises is rolled back
+(writes and transitions). You do not need locks or compensation code; you do
+pay for it in write throughput, and in a plain handler a `think()` call holds
+the line of writers for as long as the model takes.
 
 ### `[task]` handlers: think outside the lock
 

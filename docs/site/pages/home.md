@@ -14,7 +14,7 @@ h1: no
 
 <div class="install">curl -fsSL https://soma-lang.dev/install.sh | sh</div>
 
-The current release is **Soma 3.3.1** ([release notes](/changelog/3.3.1)). It runs on Linux and macOS. Soma is experimental: [status](/status) says what that means.
+The current release is **Soma 3.4.0** ([release notes](/changelog/3.4.0)). It runs on Linux and macOS. Soma is experimental: [status](/status) says what that means.
 
 <style>
 .feat{display:block;margin:1.8rem 0 .4rem;border:1px solid var(--accent);border-radius:12px;padding:1.2rem 1.3rem;background:var(--panel);color:var(--fg)}
@@ -121,11 +121,118 @@ soma holes loans.cell
 
 The guide: [Large programs, skeleton first](/guide/skeleton). Step by step: [lesson 6](/learn/6-a-large-program-skeleton-first). At scale: [Orbite](/orbite), a space traffic protocol whose 1,923-line core is proven whole, and the 69,000-line institution twenty agents built around it.
 
+## Business rules, outside the code
+
+A proof that the code keeps to its structure says nothing about what the structure is for. In one 12,000-line program written by agents, `soma verify` passed from the first day while scenario tests found the same rule missing from one more path, three times in a row. Soma has a place for what the business requires: a **law**, a file of terms and rules in sentences, written by whoever owns the rules. It names no code.
+
+```text file=lois/sanctions.law
+law Sanctions
+
+term Holder  "Whoever holds units of the fund, on its register."
+term Payment "Cash paid by the fund to a holder: a redemption, an indemnity."
+
+rule "SAN-02" "No payment to a frozen holder"
+    about  Payment, Holder
+    source "Regulation (EU) 269/2014, art. 2"
+    owner  "compliance"
+```
+
+```toml file=soma.toml
+[law]
+files = ["lois/sanctions.law"]
+```
+
+The code is aligned on the law. A signal says which term it `realizes`; a refusal says which rule it is `under`. Here two signals pay a holder, and the second one was written later, without the check:
+
+```soma file=app.cell
+skeleton Fund {
+    memory {
+        frozen: Map<String, Bool> [persistent]
+        paid: Map<String, Int> [persistent]
+    }
+
+    face {
+        signal freeze(holder: String) -> Bool
+            writes frozen
+
+        // Pays a redemption of `n` to `holder`.
+        signal redeem(holder: String, n: Int) -> Int
+            realizes Payment
+            reads frozen
+            writes paid
+
+        // Pays an indemnity after a pricing error.
+        signal indemnify(holder: String, n: Int) -> Int
+            realizes Payment
+            reads frozen
+            writes paid
+    }
+}
+
+flesh Fund {
+    on freeze(holder) {
+        frozen.set(holder, true)
+        return true
+    }
+
+    on redeem(holder, n) {
+        require (frozen.get(holder) ?? false) == false else Frozen "{holder} is frozen" under "SAN-02"
+        paid.set(holder, (paid.get(holder) ?? 0) + n)
+        return n
+    }
+
+    on indemnify(holder, n) {
+        paid.set(holder, (paid.get(holder) ?? 0) + n)
+        return n
+    }
+}
+
+cell test FrozenHolder under "SAN-02" {
+    rules {
+        assert Fund.freeze("ana")
+        assert_fails Fund.redeem("ana", 100) matching "Frozen"
+    }
+}
+```
+
+```run
+soma law app.cell --lock
+!soma check app.cell
+```
+
+The forgotten path is an error, with the rule, its source and the signal. The body is rewritten — one handler, nothing else — and the table says where each rule is served:
+
+```text file=body.txt
+require (frozen.get(holder) ?? false) == false else Frozen "{holder} is frozen" under "SAN-02"
+paid.set(holder, (paid.get(holder) ?? 0) + n)
+return n
+```
+
+```run
+soma fill app.cell Fund.indemnify --body-file body.txt
+soma law app.cell
+```
+
+The guide: [The law](/guide/law). What a tag proves and what it does not: [the method](/guide/method).
+
+## A method, held by the toolchain
+
+Three layers, three owners: the **law** (the owner of the rules), the **skeleton** (the architect), the **flesh** (the coding agent). Each is written before the one below, and the compiler holds each to the one above. The agent's loop is three commands, and nothing in it relies on remembering to run a check:
+
+```
+soma next app.cell                     # the ONE thing to do now: an error, a rule the law asks, the next hole…
+soma skeleton app.cell Cell.signal     # a hole: its brief, one screen
+soma fill app.cell Cell.signal         # write that one body; it comes back checked
+```
+
+`soma init --agent` puts in a project what an agent is handed — a 3 KB skill, the `AGENTS.md` block, and a hook that runs `soma check` after every edit — and `soma doctor` says when they are no longer the binary's. The person who answers for the program reads the law, the skeleton and the last line of `soma verify`; not the flesh. [The method](/guide/method) is the whole of it, with what each step establishes and what it does not.
+
 ## Where to start
 
 <div class="grid">
 <div class="card"><h3><a href="/orbite">Orbite: a case study</a></h3><p>Space traffic coordination: a 1,923-line protocol proven whole, and 69,000 lines written by 20 agents around it.</p></div>
 <div class="card"><h3><a href="/learn/">Learn Soma in six lessons</a></h3><p>Each lesson is a program, the commands run on it, and what they printed.</p></div>
+<div class="card"><h3><a href="/guide/method">The method</a></h3><p>Law, skeleton, flesh: the order of work with a coding agent, and what each step establishes.</p></div>
 <div class="card"><h3><a href="/guide/language">The language guide</a></h3><p>The whole core language on one page: what <code>soma docs agent</code> prints.</p></div>
 <div class="card"><h3><a href="/reference/">Reference</a> and <a href="/builtins/">builtins</a></h3><p>Every construct, and every builtin with its exact signature.</p></div>
 <div class="card"><h3><a href="/programs/">327 verified programs</a></h3><p>Payments, interlocks, medical devices, games, agents: source and the toolchain's real output.</p></div>
@@ -137,7 +244,7 @@ The guide: [Large programs, skeleton first](/guide/skeleton). Step by step: [les
 
 | Proven for every input | Checked at runtime | Not covered |
 |---|---|---|
-| Every declared state machine: reachability, deadlocks, liveness, temporal properties, and that handlers take only declared edges. An invariant whose every write is bounded. Termination and declared cost bounds. | Every invariant on every write, including one between two slots of a cell. Transitions, guards, typed parameters, token budgets. | Rules between two cells that `soma.toml` does not state; business rules nobody wrote; effects outside the program (HTTP, files, LLM answers); cluster behaviour. |
+| Every declared state machine: reachability, deadlocks, liveness, temporal properties, and that handlers take only declared edges. An invariant whose every write is bounded. Termination and declared cost bounds. | Every invariant on every write, including one between two slots of a cell. Transitions, guards, typed parameters, token budgets. | Rules between two cells that `soma.toml` does not state; business rules nobody wrote in a [law](/guide/law), and whether a refusal tagged with a rule says what the rule says; effects outside the program (HTTP, files, LLM answers); cluster behaviour. |
 
 The full table: [guarantees](/guide/guarantees). The limits of the implementation: [status](/status).
 
@@ -150,6 +257,9 @@ soma test app.cell       # runs `cell test` assertions
 soma run app.cell handler arg1 arg2
 soma serve app.cell -p 8080
 soma skeleton app.cell   # the program's structure, without bodies
+soma next app.cell       # the one thing to do now; soma fill writes one body
+soma law app.cell        # each business rule: where the code serves it, its tests
+soma doctor              # is this project's agent setup the binary's?
 soma explain E0028       # what a diagnostic means
 soma docs agent          # the language guide, offline
 ```

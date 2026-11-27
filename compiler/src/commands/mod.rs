@@ -13,6 +13,8 @@ pub mod provider;
 pub mod describe;
 pub mod skeleton;
 pub mod law;
+pub mod agent_setup;
+pub mod fill;
 pub mod refs;
 pub mod docs;
 pub mod explain;

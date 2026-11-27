@@ -23,7 +23,7 @@ below is current for the binary named in https://soma-lang.dev/version.json.
 - [llms-law.txt](https://soma-lang.dev/llms-law.txt): business rules outside the code — the `.law` file, `realizes` / `under` / `exempt`, `soma law` (`soma docs law`)
 - [llms-releases.txt](https://soma-lang.dev/llms-releases.txt): what each release changed, newest first (`soma docs releases`)
 - [docs/robotics.md](https://soma-lang.dev/docs/robotics.md): 100 robotics robustness scenarios, reproduction commands and limits; offline with `soma docs robotics`; [cases/orbite-core/README.md](https://soma-lang.dev/cases/orbite-core/README.md): a 1,923-line protocol whose 13 rules are proven on the full program in 2 s, and [cases/orbite/README.md](https://soma-lang.dev/cases/orbite/README.md): the 69,000-line system 20 agents wrote around it ([orbite.tar.gz](https://soma-lang.dev/cases/orbite/orbite.tar.gz))
-- [agent.md](https://soma-lang.dev/agent.md): drop-in AGENTS.md / CLAUDE.md block for a project that uses Soma; [skill/SKILL.md](https://soma-lang.dev/skill/SKILL.md): the same as an agent skill
+- [agent.md](https://soma-lang.dev/agent.md): drop-in AGENTS.md / CLAUDE.md block for a project that uses Soma; [skill/SKILL.md](https://soma-lang.dev/skill/SKILL.md): the loop as a short agent skill — `soma init --agent` writes both into a project with the hook that runs `soma check` after every edit; `soma doctor` says when they are not the binary's
 - [builtins.json](https://soma-lang.dev/builtins.json): every builtin with its exact signature (from `soma describe --builtins --json`) — never guess one
 - [gotchas.json](https://soma-lang.dev/gotchas.json): the mistakes models make, each with the real diagnostic and the fix
 - [corpus/domains.json](https://soma-lang.dev/corpus/domains.json): the domains (~3 KB) → one domain's index (~20 KB, summaries, each program's verify verdict and soma.toml)
@@ -32,8 +32,8 @@ below is current for the binary named in https://soma-lang.dev/version.json.
 
 ## Pick Soma when / skip it when
 
-Current release: 3.3.1 — the law (business rules outside the code, `soma law`), after
-3.2's nominal types and 3.1's skeleton first. What each release changed: `soma docs releases`.
+Current release: 3.4.0 — the method (`soma next`, `soma fill`, `soma docs method`), after 3.3's
+law, 3.2's nominal types and 3.1's skeleton first. What each release changed: `soma docs releases`.
 
 Pick it when the task has a lifecycle or a limit that must hold: payments,
 approvals, interlocks, quotas, escrow, agent workflows with a budget — and
@@ -69,7 +69,7 @@ soma docs agents|native|skeleton|releases   # LLM agents, the [native] vocabular
 soma embed app.cell                  # the program as a library: one JSON call per line; packages/python (`import soma`) and packages/npm use it
 soma example invariant state_machine # verified programs with those features;
 soma example <id>                    #   …and the source of one
-soma init myapp                      # app.cell + soma.toml + AGENTS.md
+soma init myapp                      # app.cell + soma.toml + AGENTS.md, the skill, the check hook
 ```
 Work in that order. `check` is cheap and catches most mistakes before
 anything runs; a `verify` failure is an error, not a warning.
@@ -87,7 +87,7 @@ soma skeleton app.cell                # the map: structure + frames, no bodies (
 soma holes    app.cell                # signals with no body yet, in the order to write them
 soma skeleton app.cell Cell.signal    # the brief for ONE body: its slots, edges, and what it may call
 soma skeleton app.cell --freeze       # skeleton.lock: the structure then changes only with --amend
-soma init --skeleton myapp            # a starter laid out this way
+soma init --skeleton myapp            # a starter laid out this way; then `soma next` / `soma fill app.cell Cell.signal` (one body, on stdin)
 ```
 The rules, the clauses and an example: `soma docs skeleton`
 (https://soma-lang.dev/llms-skeleton.txt).

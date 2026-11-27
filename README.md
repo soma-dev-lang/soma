@@ -158,7 +158,7 @@ soma docs agent                  # the language summary, embedded in the binary
 soma describe --builtins --json  # exact signatures — never guess
 soma example invariant state_machine      # verified programs with those features
 soma example <id>                # …and the source of one
-soma init myapp                  # app.cell + soma.toml + AGENTS.md for the next agent
+soma init myapp                  # app.cell + soma.toml + AGENTS.md, the skill and the check hook for the next agent
 ```
 
 Online, [soma-lang.dev/agents](https://soma-lang.dev/agents) lists the
@@ -205,7 +205,7 @@ solve, lstsq, broadcasting helpers) in pure Soma — 43 self-proofs included.
 
 ## Honest status
 
-Soma is an experimental language (release: `soma 3.3.1`; see
+Soma is an experimental language (release: `soma 3.4.0`; see
 [the changelog](CHANGELOG.md) for what it adds and what it leaves out). The
 verifier proves state-machine and invariant properties per cell; a rule
 between two cells is proven when it is stated — a face contract

@@ -34,6 +34,18 @@ A failed property prints a counter-example path. A property that names a
 state no machine declares is an error. `soma verify` refuses a program that
 fails `soma check`.
 
+## 1b. CHECKED statically — by `soma check`, on every load of the program
+
+| Property | Meaning |
+|---|---|
+| Frames | in a `skeleton`, every body does only what its signal's frame says: the slots it reads and writes, the signals and effectful builtins it calls, the edges it takes, the events it emits — helpers included. A body outside its frame is an error that names the missing clause |
+| The locked structure | with `skeleton.lock`, a change to a skeleton, to a cell that moves one of their machines, or to the `[verify]` tables is refused until it is accepted on purpose (`soma skeleton --amend`) |
+| The law is the one reviewed | with `law.lock`, a `.law` file that differs from its lock is refused |
+| No forgotten path | for a program under a law: every signal that `realizes` a term serves each rule about that term (`under "R"` on a refusal, a guarded edge or a marked branch) or is `exempt` from it with a reason; a rule nothing serves is an error; a rule with no test is a warning |
+
+These are checks of the program's text, not of its behaviour: see what they
+leave out under NOT COVERED.
+
 **"Eventually" is a statement about the graph.** It says no path avoids the
 target forever; it does not say anyone will call your handlers. A payment can
 sit in `authorized` until someone acts.
@@ -92,8 +104,15 @@ See [cluster.md](cluster.md) for setup and migration.
   Ordering against `()` raises, equality does not.
 - **Authentication, authorization, TLS, rate limiting**: `soma serve` has none.
   Put it behind a reverse proxy.
-- **Throughput.** Handlers are serialized and the interpreter walks the AST;
+- **Throughput.** Handlers that write are serialized (one that only reads
+  runs beside them on a snapshot) and the interpreter walks the AST;
   `[native]` is for numeric kernels only.
+- **That a body does what its signal is for.** A frame bounds what a body
+  may touch, not what it computes.
+- **That a refusal says what its rule says.** `require … under "R"` is
+  counted as serving the rule R whatever its condition is: the tag is a
+  claim, backed by the tests written `under "R"`, not a proof. A rule
+  nobody wrote in a law is not checked at all.
 - **Maturity.** Experimental, one author, one package in the registry. The
   verifier itself is tested (adversarially, with mutation and differential
   runs) but not mechanically verified.

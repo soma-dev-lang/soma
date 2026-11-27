@@ -3,10 +3,16 @@
 > Newest first. The language itself: https://soma-lang.dev/llms.txt (`soma docs agent`).
 > Every fix and its compatibility note: https://soma-lang.dev/CHANGELOG.md.
 
-Soma 3.2.10: the 69,000-line case study passes `soma verify` (0 ✗): each
-handler reads the state its rule is on, on the instance the rule's link
-names, just before the move. `verify` keeps a computed id handed to a
-handler as one id, and what a held status is known not to be.
+Soma 3.4.0: the method, held by the toolchain. `soma next app.cell` names
+the ONE thing to do now (a gap of `soma doctor`, an error of check, a
+failure of verify, what the law asks, the next hole, a failing test — or
+`complete`); `soma fill app.cell Cell.signal` writes ONE body given on
+stdin and returns that signal's diagnostics — it cannot change a skeleton,
+another handler or a law. `soma init --agent` writes the AGENTS.md block, a
+3 KB skill and a hook that runs `soma check` after every edit; `soma
+doctor` says when they are not the binary's. `soma docs method`: the order
+of work — law, skeleton, flesh — and what each step establishes. The
+former long skill is `soma docs handbook`.
 
 Soma 3.3.1: a `[native]` handler in the program no longer makes `soma
 serve` take one request at a time (native calls have their own lock); a
@@ -28,6 +34,11 @@ Also: `run_process`, `env_var`, `list_dir`, `file_info`, `append_file`,
 `read_line`; `hmac_hex`, `base32_encode` / `base32_decode`, `hex_encode`;
 `soma run --ephemeral` / `--exit-status`; `require !a || b` means `(!a) || b`
 (it read `!(a || b)`); edition 2027 refuses a `let` named like a memory slot.
+
+Soma 3.2.10: the 69,000-line case study passes `soma verify` (0 ✗): each
+handler reads the state its rule is on, on the instance the rule's link
+names, just before the move. `verify` keeps a computed id handed to a
+handler as one id, and what a held status is known not to be.
 
 Soma 3.2.9: `verify` follows a text chosen from a status by an `if`
 expression, rules out a getter's text for an unknown id once the handler
