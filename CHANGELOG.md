@@ -1,5 +1,9 @@
 # Changelog
 
+## Unreleased
+
+- **Memory that was never given back, on macOS.** A list built by `push` and dropped, forty times, held the memory of forty lists: 2.3 GB where 240 MB are live; a strategy's history replayed in one process went to 4.5 GB. Soma freed each list. macOS's allocator keeps every block that a `realloc` outgrew — what a `Vec` does each time it doubles — and reuses none (measured on macOS 26.1 in plain Rust: 3.2 GB against 108 MB when the capacity is reserved). Growing a block of 1 MB or more is now allocate, copy, free, in the process and in the library of every `[native]` handler, which has an allocator of its own: a `strbuf` grown by `sb_push` went from 41 MB for one call to 1.2 GB after forty, and stays at 71 MB. No time is lost (5.7 s → 5.4 s on the list case). Other systems keep their `realloc`. Reported from a rewrite of a Python application in Soma 3.2.9.
+
 ## 3.3.0 — 2026-11-27
 
 The law: what the business requires, written outside the code, and the program held to it. `soma verify` proves that the flesh keeps to the skeleton; until now nothing said what the skeleton was for. On a 12,000-line fund-administration program (a case study, not published), `verify` said OK from the first day to the last while 118 scenario tests found over a hundred business defects — three in a row were one rule, "no payment to a frozen holder", missing from one more path each time. Validation: 1,165 Rust tests, 118 CLI checks, 327 corpus programs, 1,280 numeric comparisons; 7,200 interpreter/native comparisons, 0 divergence. The agent benchmark was not run for this release.

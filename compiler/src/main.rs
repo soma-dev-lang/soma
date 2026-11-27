@@ -1,5 +1,6 @@
 #![allow(dead_code, unused_imports, unused_variables)]
 
+mod alloc;
 mod ast;
 mod checker;
 mod codegen;
