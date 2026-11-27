@@ -474,6 +474,10 @@ def main():
     course = build_learn.build(SOMA, version, today)
 
     broken = [f"learn: {p}" for p in course] + page_problems
+    # a case study is served as files to browse and as an archive to download:
+    # an archive that is not its sources teaches a recipe that does not run
+    import pack_case
+    broken += [p for c in pack_case.cases() for p in pack_case.check(c)]
     for b in broken:
         print(f"  BROKEN {b}")
     print(f"corpus: {len(entries)} published, {len(failing)} withheld")
