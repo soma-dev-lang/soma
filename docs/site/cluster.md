@@ -109,5 +109,5 @@ It covers initial sync, types, rollback, same-named slots, event duplication,
 concurrent writes during a TCP partition and convergence after healing, seed
 failure, stale replica restart, tombstones, reordered
 updates, private slot boundaries and scheduler takeover. Unit tests check
-hash-ring balance/minimal movement and monotonic heartbeat expiry. These are
+monotonic heartbeat expiry. These are
 regression tests, not a model-checked proof of arbitrary partitions.

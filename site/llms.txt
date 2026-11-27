@@ -27,12 +27,12 @@ below is current for the binary named in https://soma-lang.dev/version.json.
 - [builtins.json](https://soma-lang.dev/builtins.json): every builtin with its exact signature (from `soma describe --builtins --json`) — never guess one
 - [gotchas.json](https://soma-lang.dev/gotchas.json): the mistakes models make, each with the real diagnostic and the fix
 - [corpus/domains.json](https://soma-lang.dev/corpus/domains.json): the domains (~3 KB) → one domain's index (~20 KB, summaries, each program's verify verdict and soma.toml)
-- [corpus/index.json](https://soma-lang.dev/corpus/index.json): 300+ verified programs (id, title, features, url) — filter on `features`, then GET the `url` for the raw source. Per domain with summaries: `https://soma-lang.dev/corpus/<domain>/index.json`. Plain listing: [index.md](https://soma-lang.dev/corpus/index.md)
+- [corpus/index.json](https://soma-lang.dev/corpus/index.json): 327 verified programs (id, title, features, url) — filter on `features`, then GET the `url` for the raw source. Per domain with summaries: `https://soma-lang.dev/corpus/<domain>/index.json`. Plain listing: [index.md](https://soma-lang.dev/corpus/index.md)
 - [docs/reference.md](https://soma-lang.dev/docs/reference.md), [docs/builtins.md](https://soma-lang.dev/docs/builtins.md), [docs/gotchas.md](https://soma-lang.dev/docs/gotchas.md): raw markdown; [repo/index.json](https://soma-lang.dev/repo/index.json): the package registry; [status](https://soma-lang.dev/status): maturity, version, MIT license, limits, security contact; source: https://github.com/soma-dev-lang/soma
 
 ## Pick Soma when / skip it when
 
-Current release: 3.4.0 — the method (`soma next`, `soma fill`, `soma docs method`), after 3.3's
+Current release: 3.4.1 — the method (`soma next`, `soma fill`, `soma docs method`), after 3.3's
 law, 3.2's nominal types and 3.1's skeleton first. What each release changed: `soma docs releases`.
 
 Pick it when the task has a lifecycle or a limit that must hold: payments,
@@ -456,8 +456,8 @@ really has when `x.field` came back `()`.
   Python's statistics, `pstdev` / `pvariance` population. `|> map`, `|> filter`,
   `xs[i]`, `len(xs)`, `nth(xs, i)`, `xs.len` and a List slot's `rows[i]` /
   `rows.len` cost O(1) per call (20k rows in 0.1 s); passing a big list to a
-  handler COPIES it (values are copies) — loop inside the handler, or pass
-  an index.
+  handler shares it until one side writes (no copy since 3.2.5; values still
+  behave as copies).
 - `think_json()` raises kind `json` when the model does not answer a JSON
   object (catch it with `try`); a ```json fence around the object is fine.
   `think_json(prompt, map("as", "Decision", "max_tokens", 300))` returns a
@@ -745,7 +745,7 @@ vocabulary, limits and costs in `soma docs native`
 
 ## Learn from working code
 
-- https://soma-lang.dev/corpus/index.json — 300+ programs, all passing
+- https://soma-lang.dev/corpus/index.json — 327 programs, all passing
   check+test (algorithms, web, agents, state machines, finance, games,
   data, safety interlocks, medical, aerospace…). Before writing a cell,
   fetch one with the features you need and adapt it.

@@ -18,7 +18,6 @@ const RELEASES: &str = include_str!("../../../site/llms-releases.txt");
 const REFERENCE: &str = include_str!("../../../SOMA_REFERENCE.md");
 const GOTCHAS: &str = include_str!("../../../AGENT_GOTCHAS.md");
 const AGENTS_MD: &str = super::agent_setup::AGENTS_MD;
-const HANDBOOK: &str = include_str!("../../../docs/site/handbook.md");
 const GUARANTEES: &str = include_str!("../../../docs/site/guarantees.md");
 const SERVING: &str = include_str!("../../../docs/site/serving.md");
 const CLUSTER: &str = include_str!("../../../docs/site/cluster.md");
@@ -34,7 +33,6 @@ const TOPICS: &[(&str, &str)] = &[
     ("law", "business rules outside the code: the .law file, realizes / under / exempt, soma law"),
     ("flesh", "writing ONE body from its brief: the syntax a handler needs, on one page"),
     ("releases", "what each release changed, newest first"),
-    ("handbook", "the long-form guide: types, memory, machines, agents, idiomatic templates"),
     ("reference", "the full language reference"),
     ("gotchas", "mistakes models make, each with the real diagnostic and the fix"),
     ("builtins", "every builtin with its exact signature, generated from the compiler"),
@@ -58,7 +56,6 @@ pub fn cmd_docs(topic: &str) {
         "law" | "rules" => print!("{}", LAW_GUIDE),
         "flesh" | "body" => print!("{}", FLESH_CARD),
         "releases" => print!("{}", RELEASES),
-        "handbook" | "skill" => print!("{}", HANDBOOK),
         "reference" => print!("{}", REFERENCE),
         "gotchas" => print!("{}", GOTCHAS),
         "agents-md" => print!("{}", AGENTS_MD),

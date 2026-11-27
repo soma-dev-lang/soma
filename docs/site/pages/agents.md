@@ -140,7 +140,7 @@ All of it is served with `Access-Control-Allow-Origin: *`.
 
 | Pick it when | Pick something else when |
 |---|---|
-| The task has a lifecycle or a limit that must hold: payments, approvals, interlocks, quotas, escrow, votes, an agent workflow with a budget. | You need a large ecosystem: the registry holds a handful of packages, not thousands. |
+| The task has a lifecycle or a limit that must hold: payments, approvals, interlocks, quotas, escrow, votes, an agent workflow with a budget. | You need a large ecosystem: the registry holds nine packages ([/repo/index.json](/repo/index.json)), not thousands. |
 | The user will ask "how do you know it is correct?" and you want to answer with a verifier's output. | You need general-purpose speed: the interpreter walks the syntax tree; only numeric `[native]` handlers compile to Rust. |
 | A small self-contained HTTP service: one file, storage and tests included. | You need a guarantee between cells that you cannot state as a rule in `soma.toml`: verification is per cell otherwise. |
 

@@ -118,9 +118,8 @@ xs.sort()    xs.sum()    m.transpose()    m.det()
 Two execution backends: a tree-walking interpreter (the reference semantics)
 and `[native]` Rust codegen for hot handlers (a native compile failure aborts
 the run — there is no silent fall-back to the interpreter). `tools/diff_fuzz.py`
-generates handlers and compares the two (108,000 comparisons, no differing
-answer, on 3.0.0). An experimental bytecode VM is in the tree and not reachable
-from the CLI.
+generates handlers and compares the two; each release runs it (the figures
+are on [the status page](https://soma-lang.dev/status)).
 The benchmark harness lives in [`bench/`](bench/), with C and Rust reference
 implementations to measure against.
 
@@ -133,7 +132,7 @@ messages contain their own fix (`invalid transition: Placed → Delivered.
 Valid targets: [Accepted, Cancelled]`); `soma describe --builtins --json`
 and `--faces` give exact signatures so nothing is guessed. Start with
 [`AGENT_GOTCHAS.md`](AGENT_GOTCHAS.md) — verified wrong→right pairs —
-and [`examples/corpus/`](examples/corpus/): **hundreds of complete programs, every
+and [`examples/corpus/`](examples/corpus/): **327 complete programs, every
 one passing `check` and `test`**, generated as LLM training data.
 
 **Large programs, skeleton first.** An agent designs the structure before
@@ -170,7 +169,8 @@ the corpus by `tools/build_site.py`, so the site cannot drift.
 a lifecycle whose exits are proven reachable, token budgets that stop the next call, capability-scoped
 tools, human approval gates, and record / replay of handler inputs
 (`--record` / `soma replay`) for audits — the program's own logic replays
-exactly; LLM and HTTP calls are made again live, so their answers may differ.
+exactly; the model's answers are recorded and handed back (`--live` asks
+again); HTTP calls are made again, so their answers may differ.
 
 ## Packages
 
@@ -187,8 +187,8 @@ soma install           # → .soma_env/packages/, commit-pinned in soma.lock
 
 A package's API is its cells' `face` sections (`soma describe --faces`),
 and its proofs travel with it: `soma test` the installed package re-verifies
-its `cell test` assertions on *your* toolchain. The first package,
-[`matrix`](packages/matrix/), brings numpy-style linear algebra (inverse,
+its `cell test` assertions on *your* toolchain. The registry holds nine
+packages; [`matrix`](packages/matrix/) brings numpy-style linear algebra (inverse,
 solve, lstsq, broadcasting helpers) in pure Soma — 43 self-proofs included.
 
 ## Docs
@@ -205,7 +205,7 @@ solve, lstsq, broadcasting helpers) in pure Soma — 43 self-proofs included.
 
 ## Honest status
 
-Soma is an experimental language (release: `soma 3.4.0`; see
+Soma is an experimental language (release: `soma 3.4.1`; see
 [the changelog](CHANGELOG.md) for what it adds and what it leaves out). The
 verifier proves state-machine and invariant properties per cell; a rule
 between two cells is proven when it is stated — a face contract
@@ -213,7 +213,7 @@ between two cells is proven when it is stated — a face contract
 an AST walker (use `[native]` for hot paths). One known semantic
 asymmetry: `+` on non-numeric lists concatenates, on numeric vectors it
 adds elementwise — `concat(a, b)` is always explicit concatenation.
-The test suite includes hundreds of Rust tests and verified `.cell` programs;
+The test suite holds over a thousand Rust tests and 327 verified `.cell` programs;
 `soma verify` failures are CI-grade errors, not warnings.
 
 ## License

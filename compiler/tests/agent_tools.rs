@@ -44,14 +44,15 @@ fn the_agent_block_and_the_skill_keep_their_size() {
     }
     // every command and topic the skill names exists
     let dir = fresh("size");
-    for topic in ["method", "flesh", "skeleton", "law", "gotchas", "builtins", "agent", "agents", "native", "guarantees", "serving", "operations", "releases", "handbook", "reference"] {
+    for topic in ["method", "flesh", "skeleton", "law", "gotchas", "builtins", "agent", "agents", "native", "guarantees", "serving", "operations", "releases", "reference"] {
         assert!(skill.contains(&format!("`{topic}`")), "the skill lists the topic {topic}");
         let (out, err, code) = soma(&dir, &["docs", topic], "");
         assert!(code == 0 && out.len() > 500, "soma docs {topic}: {code} {err}");
     }
-    // what left the skill is served by the binary
-    let (handbook, _, _) = soma(&dir, &["docs", "handbook"], "");
-    assert!(handbook.contains("Idiomatic templates") && !handbook.contains("mcp__"), "the handbook holds the former skill, without the MCP tools");
+    // what left the skill is served by the binary, from texts the build checks:
+    // the former long skill is not one of them (its templates no longer passed `soma check`)
+    let (_, _, code) = soma(&dir, &["docs", "handbook"], "");
+    assert_ne!(code, 0, "the stale handbook is not served");
 }
 
 #[test]

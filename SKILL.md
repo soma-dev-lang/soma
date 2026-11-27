@@ -54,5 +54,4 @@ soma doctor                            # is this project's agent setup current?
 - `guarantees` — what is proven, checked at run time, or not covered
 - `serving`, `operations` — `soma serve`, deployment, limits
 - `releases` — what each release changed
-- `handbook` — the long-form guide: types, memory, machines, templates
 - `reference` — the full reference

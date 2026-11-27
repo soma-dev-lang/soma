@@ -429,8 +429,6 @@ GUIDES = [
      "Bounded loops, timing and interlocks for control programs."),
     ("agent-loop", "site/agent.md", "Working on a Soma project, as an agent",
      "The block a Soma project puts in its AGENTS.md: the loop to run, what each command proves, and the limits to state."),
-    ("handbook", "docs/site/handbook.md", "Handbook",
-     "The long-form guide: types, memory properties, state machines, agents and idiomatic templates. `soma docs handbook` prints it."),
     ("releases", "site/llms-releases.txt", "Recent releases, for agents",
      "What changed in recent releases, written for an agent that learned an older Soma."),
 ]

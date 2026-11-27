@@ -61,7 +61,7 @@ sit in `authorized` until someone acts.
 | **Cross-cell rules** | Verified when soma.toml states them: `[verify.before."Pay.paid"] requires = ["Approval.signed_off"]` explores the PRODUCT of the two cells' machines over every run of the handlers, following one id through both (the instance of `Pay` and the instance of `Approval` with the same id). What counts as evidence in a body: a `require` (or `if … { return }`) on `get_status(id)`, in the cell itself or through a signal of the other cell whose body is that one `return` (`require Approval.status(id) == "signed_off" else NotSigned`), with the SAME id. `requires` is about the past ("was signed off once"); `while = ["Visit.open"]` in the same table is about the present (the other machine IS in that state when the target is entered). A rule whose target is an initial state is refused: an instance is there from the start, by no transition. Instances of different ids are tied by `via = "Ordo.consult_of"` (the slot where the target's instance names the other — written once, when the entry is created, never deleted: `verify` refuses the rule otherwise). A rule nobody states is not verified: `soma verify` names each handler that transitions its own machine while acting on another cell with a machine (`note: cross-cell: …`). Not covered: a link that changes after the entry is created. |
 | **Invariants between slots** | `invariant (reserved ?? 0) <= (stock ?? 0)` in a cell's `memory` holds on every write to either slot: the written one is its new value, the others are read at the same key. Enforced at run time, never proven by induction (verify lists it as runtime-checked). |
 | **Storage adapters** | Read failures are errors, not missing keys or empty collections. The legacy JSON backend rejects malformed/unreadable files and changes its in-memory state only after a successful file replacement; it has no multi-slot transaction or cross-process isolation. The HTTP adapter validates replies and has bounded requests, but no remote transactions or exactly-once protocol: a failed write can have an unknown remote outcome. HTTP provider selection is available to provider tooling, not wired into `run`/`serve`. |
-| **Serialized handlers** | within each `soma serve` process, top-level handler invocations run one at a time: read-modify-write needs no lock. Exception: a `[task]` handler (or tick) runs as steps and waits for each `think()` outside the lock — each step is serialized and atomic, the task as a whole is not (see serving.md). |
+| **Serialized writers** | within each `soma serve` process, top-level handler invocations that write run one at a time: read-modify-write needs no lock. One that only reads runs beside them, on a snapshot of the last commit (see serving.md). Exception: a `[task]` handler (or tick) runs as steps and waits for each `think()` outside the lock — each step is serialized and atomic, the task as a whole is not (see serving.md). |
 | `require` / `ensure` / `fail` | raise; errors carry a `kind` a caller can branch on. |
 | Token budget | `set_budget(N)` stops `think()` when the budget is spent; a `set_budget` inside a model's tool call can only lower it. |
 | Exhaustive `match` | a missing sum-type arm is a `soma check` error, not a runtime surprise. |
@@ -113,6 +113,8 @@ See [cluster.md](cluster.md) for setup and migration.
   counted as serving the rule R whatever its condition is: the tag is a
   claim, backed by the tests written `under "R"`, not a proof. A rule
   nobody wrote in a law is not checked at all.
-- **Maturity.** Experimental, one author, one package in the registry. The
-  verifier itself is tested (adversarially, with mutation and differential
-  runs) but not mechanically verified.
+- **Maturity.** Experimental, one author, nine packages in the registry. The
+  verifier itself is tested — every release runs the Rust suite, a numeric
+  oracle and a differential fuzzer of the interpreter against native code
+  (figures on [the status page](/status)) — but it is not mechanically
+  verified.

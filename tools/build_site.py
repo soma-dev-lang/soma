@@ -13,7 +13,7 @@ Everything an agent fetches is GENERATED here from the repo and from the
     site/corpus/<domain>/*.cell
     site/llms-learn.txt       the course (docs/site/learn.md), outputs printed by the binary
     site/**/*.html            every page, by tools/build_pages.py (see there)
-    site/skill/SKILL.md       drop-in agent skill (short; its former text is docs/handbook.md)
+    site/skill/SKILL.md       drop-in agent skill
     site/version.json         what this build was generated from
     site/sitemap.xml
 
@@ -331,7 +331,6 @@ def main():
         "docs/builtins.md": "SOMA_BUILTINS.md",
         "docs/gotchas.md": "AGENT_GOTCHAS.md",
         "docs/guarantees.md": "docs/site/guarantees.md",
-        "docs/handbook.md": "docs/site/handbook.md",
         "docs/serving.md": "docs/site/serving.md",
         "docs/operations.md": "docs/site/operations.md",
         "docs/cluster.md": "docs/site/cluster.md",
@@ -453,7 +452,7 @@ def main():
     machine = [
         "llms.txt", "llms-learn.txt", "llms-method.txt", "llms-agents.txt", "llms-native.txt", "llms-skeleton.txt", "llms-law.txt", "llms-flesh.txt",
         "llms-releases.txt", "llms-service.txt", "llms-full.txt", "agent.md", "skill/SKILL.md",
-        "docs/guarantees.md", "docs/handbook.md", "docs/serving.md", "docs/reference.md", "docs/builtins.md", "docs/gotchas.md",
+        "docs/guarantees.md", "docs/serving.md", "docs/reference.md", "docs/builtins.md", "docs/gotchas.md",
         "docs/cluster.md", "docs/operations.md", "docs/robotics.md", "builtins.json", "gotchas.json",
         "corpus/domains.json", "corpus/index.json", "corpus/index.md", "CHANGELOG.md", "LICENSE",
         "repo/index.json", "version.json",

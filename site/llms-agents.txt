@@ -191,8 +191,8 @@ cell agent Researcher {
 // match / cell fit answers, none: an echo — or
 // [agent] mock = "echo" in soma.toml. Record/replay: `soma run --record` (not serve) logs each top-level
 // call; `soma replay` re-runs them from EMPTY storage with the soma.toml
-// [agent], calls think() again (replies are not recorded) and compares the
-// RESULTS — a state difference shows only in a later result.
+// [agent], hands back the recorded model answers (`--live` asks again) and
+// compares the RESULTS — a state difference shows only in a later result.
 ```
 
 ## Untrusted values, replay, evals, telemetry (3.0)

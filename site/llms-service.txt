@@ -27,12 +27,12 @@ below is current for the binary named in https://soma-lang.dev/version.json.
 - [builtins.json](https://soma-lang.dev/builtins.json): every builtin with its exact signature (from `soma describe --builtins --json`) — never guess one
 - [gotchas.json](https://soma-lang.dev/gotchas.json): the mistakes models make, each with the real diagnostic and the fix
 - [corpus/domains.json](https://soma-lang.dev/corpus/domains.json): the domains (~3 KB) → one domain's index (~20 KB, summaries, each program's verify verdict and soma.toml)
-- [corpus/index.json](https://soma-lang.dev/corpus/index.json): 300+ verified programs (id, title, features, url) — filter on `features`, then GET the `url` for the raw source. Per domain with summaries: `https://soma-lang.dev/corpus/<domain>/index.json`. Plain listing: [index.md](https://soma-lang.dev/corpus/index.md)
+- [corpus/index.json](https://soma-lang.dev/corpus/index.json): 327 verified programs (id, title, features, url) — filter on `features`, then GET the `url` for the raw source. Per domain with summaries: `https://soma-lang.dev/corpus/<domain>/index.json`. Plain listing: [index.md](https://soma-lang.dev/corpus/index.md)
 - [docs/reference.md](https://soma-lang.dev/docs/reference.md), [docs/builtins.md](https://soma-lang.dev/docs/builtins.md), [docs/gotchas.md](https://soma-lang.dev/docs/gotchas.md): raw markdown; [repo/index.json](https://soma-lang.dev/repo/index.json): the package registry; [status](https://soma-lang.dev/status): maturity, version, MIT license, limits, security contact; source: https://github.com/soma-dev-lang/soma
 
 ## Pick Soma when / skip it when
 
-Current release: 3.4.0 — the method (`soma next`, `soma fill`, `soma docs method`), after 3.3's
+Current release: 3.4.1 — the method (`soma next`, `soma fill`, `soma docs method`), after 3.3's
 law, 3.2's nominal types and 3.1's skeleton first. What each release changed: `soma docs releases`.
 
 Pick it when the task has a lifecycle or a limit that must hold: payments,
@@ -456,8 +456,8 @@ really has when `x.field` came back `()`.
   Python's statistics, `pstdev` / `pvariance` population. `|> map`, `|> filter`,
   `xs[i]`, `len(xs)`, `nth(xs, i)`, `xs.len` and a List slot's `rows[i]` /
   `rows.len` cost O(1) per call (20k rows in 0.1 s); passing a big list to a
-  handler COPIES it (values are copies) — loop inside the handler, or pass
-  an index.
+  handler shares it until one side writes (no copy since 3.2.5; values still
+  behave as copies).
 - `think_json()` raises kind `json` when the model does not answer a JSON
   object (catch it with `try`); a ```json fence around the object is fine.
   `think_json(prompt, map("as", "Decision", "max_tokens", 300))` returns a
@@ -745,7 +745,7 @@ vocabulary, limits and costs in `soma docs native`
 
 ## Learn from working code
 
-- https://soma-lang.dev/corpus/index.json — 300+ programs, all passing
+- https://soma-lang.dev/corpus/index.json — 327 programs, all passing
   check+test (algorithms, web, agents, state machines, finance, games,
   data, safety interlocks, medical, aerospace…). Before writing a cell,
   fetch one with the features you need and adapt it.
@@ -1099,8 +1099,8 @@ cell agent Researcher {
 // match / cell fit answers, none: an echo — or
 // [agent] mock = "echo" in soma.toml. Record/replay: `soma run --record` (not serve) logs each top-level
 // call; `soma replay` re-runs them from EMPTY storage with the soma.toml
-// [agent], calls think() again (replies are not recorded) and compares the
-// RESULTS — a state difference shows only in a later result.
+// [agent], hands back the recorded model answers (`--live` asks again) and
+// compares the RESULTS — a state difference shows only in a later result.
 ```
 
 ## Untrusted values, replay, evals, telemetry (3.0)
@@ -1686,7 +1686,7 @@ it says "error kind X", raise it with `require … else X "…"` or `fail`.
 > Newest first. The language itself: https://soma-lang.dev/llms.txt (`soma docs agent`).
 > Every fix and its compatibility note: https://soma-lang.dev/CHANGELOG.md.
 
-Soma 3.4.0: the method, held by the toolchain. `soma next app.cell` names
+Soma 3.4.1 (3.4.0 was tagged and not released): the method, held by the toolchain. `soma next app.cell` names
 the ONE thing to do now (a gap of `soma doctor`, an error of check, a
 failure of verify, what the law asks, the next hole, a failing test — or
 `complete`); `soma fill app.cell Cell.signal` writes ONE body given on
@@ -1695,7 +1695,7 @@ another handler or a law. `soma init --agent` writes the AGENTS.md block, a
 3 KB skill and a hook that runs `soma check` after every edit; `soma
 doctor` says when they are not the binary's. `soma docs method`: the order
 of work — law, skeleton, flesh — and what each step establishes. The
-former long skill is `soma docs handbook`.
+former long skill is withdrawn: its templates no longer passed `soma check`.
 
 Soma 3.3.1: a `[native]` handler in the program no longer makes `soma
 serve` take one request at a time (native calls have their own lock); a
@@ -2237,7 +2237,7 @@ It covers initial sync, types, rollback, same-named slots, event duplication,
 concurrent writes during a TCP partition and convergence after healing, seed
 failure, stale replica restart, tombstones, reordered
 updates, private slot boundaries and scheduler takeover. Unit tests check
-hash-ring balance/minimal movement and monotonic heartbeat expiry. These are
+monotonic heartbeat expiry. These are
 regression tests, not a model-checked proof of arbitrary partitions.
 
 ---
@@ -2305,7 +2305,7 @@ sit in `authorized` until someone acts.
 | **Cross-cell rules** | Verified when soma.toml states them: `[verify.before."Pay.paid"] requires = ["Approval.signed_off"]` explores the PRODUCT of the two cells' machines over every run of the handlers, following one id through both (the instance of `Pay` and the instance of `Approval` with the same id). What counts as evidence in a body: a `require` (or `if … { return }`) on `get_status(id)`, in the cell itself or through a signal of the other cell whose body is that one `return` (`require Approval.status(id) == "signed_off" else NotSigned`), with the SAME id. `requires` is about the past ("was signed off once"); `while = ["Visit.open"]` in the same table is about the present (the other machine IS in that state when the target is entered). A rule whose target is an initial state is refused: an instance is there from the start, by no transition. Instances of different ids are tied by `via = "Ordo.consult_of"` (the slot where the target's instance names the other — written once, when the entry is created, never deleted: `verify` refuses the rule otherwise). A rule nobody states is not verified: `soma verify` names each handler that transitions its own machine while acting on another cell with a machine (`note: cross-cell: …`). Not covered: a link that changes after the entry is created. |
 | **Invariants between slots** | `invariant (reserved ?? 0) <= (stock ?? 0)` in a cell's `memory` holds on every write to either slot: the written one is its new value, the others are read at the same key. Enforced at run time, never proven by induction (verify lists it as runtime-checked). |
 | **Storage adapters** | Read failures are errors, not missing keys or empty collections. The legacy JSON backend rejects malformed/unreadable files and changes its in-memory state only after a successful file replacement; it has no multi-slot transaction or cross-process isolation. The HTTP adapter validates replies and has bounded requests, but no remote transactions or exactly-once protocol: a failed write can have an unknown remote outcome. HTTP provider selection is available to provider tooling, not wired into `run`/`serve`. |
-| **Serialized handlers** | within each `soma serve` process, top-level handler invocations run one at a time: read-modify-write needs no lock. Exception: a `[task]` handler (or tick) runs as steps and waits for each `think()` outside the lock — each step is serialized and atomic, the task as a whole is not (see serving.md). |
+| **Serialized writers** | within each `soma serve` process, top-level handler invocations that write run one at a time: read-modify-write needs no lock. One that only reads runs beside them, on a snapshot of the last commit (see serving.md). Exception: a `[task]` handler (or tick) runs as steps and waits for each `think()` outside the lock — each step is serialized and atomic, the task as a whole is not (see serving.md). |
 | `require` / `ensure` / `fail` | raise; errors carry a `kind` a caller can branch on. |
 | Token budget | `set_budget(N)` stops `think()` when the budget is spent; a `set_budget` inside a model's tool call can only lower it. |
 | Exhaustive `match` | a missing sum-type arm is a `soma check` error, not a runtime surprise. |
@@ -2357,9 +2357,11 @@ See [cluster.md](cluster.md) for setup and migration.
   counted as serving the rule R whatever its condition is: the tag is a
   claim, backed by the tests written `under "R"`, not a proof. A rule
   nobody wrote in a law is not checked at all.
-- **Maturity.** Experimental, one author, one package in the registry. The
-  verifier itself is tested (adversarially, with mutation and differential
-  runs) but not mechanically verified.
+- **Maturity.** Experimental, one author, nine packages in the registry. The
+  verifier itself is tested — every release runs the Rust suite, a numeric
+  oracle and a differential fuzzer of the interpreter against native code
+  (figures on [the status page](/status)) — but it is not mechanically
+  verified.
 
 ---
 
@@ -2751,8 +2753,8 @@ program has no such route).
 | Port already answering, `soma check` errors, an unreadable file | `soma serve` refuses to start and exits 1 — it never serves a program that does not check (`--no-check` overrides) |
 | Out of memory, SIGKILL, `kill -9`, SIGTERM | The process dies at once (no draining: an in-flight client gets an empty reply); committed handlers are in `.soma_data/soma.db` (SQLite); the handler in flight is lost as a whole — its writes sat in one uncommitted SQLite transaction |
 | Disk full while writing | Expected (not exercised): the SQLite write fails, the request is rolled back and answered 500 |
-| A slow upstream (`http_post` to a service that hangs) | The handler holds the process-wide lock for the whole call: every other request waits. Every http builtin has a timeout (default 30 s; pass `map("timeout", ms)`) — keep it short; the upstream is not cancelled |
-| A slow handler (a quadratic loop, a huge `to_json`, a loop of 100 000 `slot.set`) | Handlers run one at a time: every other request and every scheduler tick WAITS for it — there is no per-request time limit. `soma verify` proves termination, not speed. A persistent slot write is an SQLite statement inside the handler's transaction (about 0.1 ms measured under serve; more on a slow disk; an invariant that reads `size` adds a COUNT of the slot per write — keep size invariants on small slots): a rebuild of hundreds of thousands of keys in one handler holds the process for a minute or more. Keep handlers short; batch bulk loads outside the request path; put a proxy timeout in front |
+| A slow upstream (`http_post` to a service that hangs) | The handler holds the writers' lock for the whole call: every other request that writes waits (one that only reads runs beside, on a snapshot). Every http builtin has a timeout (default 30 s; pass `map("timeout", ms)`) — keep it short; the upstream is not cancelled |
+| A slow handler (a quadratic loop, a huge `to_json`, a loop of 100 000 `slot.set`) | Handlers that write run one at a time: every other writing request and every scheduler tick WAITS for it — there is no per-request time limit. A request that only reads is not held (it runs on a snapshot of the last commit, when every slot is `[persistent]`). `soma verify` proves termination, not speed. A persistent slot write is an SQLite statement inside the handler's transaction (about 0.1 ms measured under serve; more on a slow disk; an invariant that reads `size` adds a COUNT of the slot per write — keep size invariants on small slots): a rebuild of hundreds of thousands of keys in one handler holds the process for a minute or more. Keep handlers short; batch bulk loads outside the request path; put a proxy timeout in front |
 | The program changed and `.soma_data/` is older | A renamed slot is a new empty slot (the old rows stay in the file); a slot whose value TYPE changed gives back the old values with their old type; an invariant added later is not checked against stored values (verify proves it for future writes only); a state-machine instance stored in a state the new machine no longer declares takes no transition, `*` edges included. `soma serve` first runs SQLite's `quick_check` and refuses to start on a damaged file (restore a backup or move `.soma_data` aside); a file that is not a database stops any command with the same advice. `soma serve` and `soma run` audit the database at start-up and print one `warning: stored data: …` line per problem: instances in undeclared states, values an invariant refuses (List slots and `size` clauses included), values of another type than declared, a slot re-declared List ↔ Map. `soma serve` (which owns its data directory) also reports slot data no slot declares any more and tables of cells the program no longer declares (renamed/removed) — `soma run` does not, since several programs often share one directory. Migrate (below) or delete `.soma_data/` |
 
 ## Addresses and ports
@@ -2799,7 +2801,7 @@ A handler that returns normally answers 200 with its value as JSON (`()` is `nul
 - Int is arbitrary precision (i64 fast path, BigInt beyond); Float is f64; `7 / 2` is `3.5`.
 - Recursion depth: 512 frames, then `stack_overflow`.
 - Request bodies: a declared body past 256 MB is refused (413), and a JSON body holding more than ~1 000 000 values (objects and lists weigh more) is refused (413) before it is parsed; paths have no configured cap (20 KB paths were served). Put tighter caps on the proxy.
-- Handlers run one at a time (a process-wide lock): correct under contention, no parallelism inside one process. Throughput is not a goal.
+- Handlers that write run one at a time (a process-wide lock): correct under contention. Read-only requests run beside them; there is no parallelism between writers inside one process. Measured figures for hordes are in [Serving](/guide/serving).
 - `forall` properties in tests walk every value up to 20 000, then sample with a fixed seed.
 - One process, one SQLite file (`.soma_data/soma.db`, created beside the program); no replication unless a `scale` section and a bus join are configured (experimental).
 
@@ -2838,8 +2840,9 @@ Make `_migrate` idempotent (check before writing) and back up
 | `SOMA_APPROVE=always` \| `never` | answers `approve()` when no terminal is attached (`soma serve` fails closed otherwise: 403 `approval_required`) |
 | `PORT` | not read — pass `-p` |
 
-Other environment variables are not readable from a program. A secret or a
-config value (an admin token) goes in a file read once in `on start()`:
+A program reads any other environment variable with `env_var("NAME")` (an
+effect a frame names). A secret or a config value (an admin token) can also
+go in a file read once in `on start()`:
 `let t = read_file("secrets/admin_token.txt")` then
 `require type_of(t) == "String" && len(trim(t)) >= 16 else NoSecret` — on a
 missing file read_file returns an `{error}` Map, and a check such as
@@ -2901,7 +2904,7 @@ authentication: any local process can send an accepted event — firewall it.
 
 ## Deploying on Linux
 
-There is no published Linux binary yet; build from source (Rust stable + GMP):
+Each release publishes Linux binaries (x86_64 and aarch64): `curl -fsSL https://soma-lang.dev/install.sh | sh` downloads the one for the machine and checks it against the release's `SHA256SUMS`. To build from source instead (Rust stable + GMP):
 
 ```sh
 apt-get install -y build-essential libgmp-dev m4 git

@@ -670,7 +670,7 @@ The http builtins never raise. A 2xx answer is its body; anything else is
 `{error, kind, status, body}`: kind `http_status` (with the upstream status
 and its body, parsed when JSON), `timeout`, `refused` or `network`. Branch on
 `resp.kind` / `resp.status`, not on the text. Under `soma serve` the call
-holds the handler lock for its whole duration (handlers are serialized):
+holds the writers' lock for its whole duration (handlers that write are serialized):
 keep timeouts short. In tests, `mock http_post map(...)` scripts the next
 call, `mock http_get error "timeout: slow"` a failure (`status_404: …`
 gives status 404); an unscripted real call prints a note. A List scripts

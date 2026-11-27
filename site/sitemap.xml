@@ -80,7 +80,6 @@
   <url><loc>https://soma-lang.dev/guide/cluster</loc><lastmod>2026-11-27</lastmod></url>
   <url><loc>https://soma-lang.dev/guide/robotics</loc><lastmod>2026-11-27</lastmod></url>
   <url><loc>https://soma-lang.dev/guide/agent-loop</loc><lastmod>2026-11-27</lastmod></url>
-  <url><loc>https://soma-lang.dev/guide/handbook</loc><lastmod>2026-11-27</lastmod></url>
   <url><loc>https://soma-lang.dev/guide/releases</loc><lastmod>2026-11-27</lastmod></url>
   <url><loc>https://soma-lang.dev/guide/</loc><lastmod>2026-11-27</lastmod></url>
   <url><loc>https://soma-lang.dev/reference/quick-rules</loc><lastmod>2026-11-27</lastmod></url>
@@ -774,6 +773,7 @@
   <url><loc>https://soma-lang.dev/programs/basics/099_comprehensive</loc><lastmod>2026-11-27</lastmod></url>
   <url><loc>https://soma-lang.dev/programs/basics/100_full_app</loc><lastmod>2026-11-27</lastmod></url>
   <url><loc>https://soma-lang.dev/programs/basics/</loc><lastmod>2026-11-27</lastmod></url>
+  <url><loc>https://soma-lang.dev/changelog/3.4.1</loc><lastmod>2026-11-27</lastmod></url>
   <url><loc>https://soma-lang.dev/changelog/3.4.0</loc><lastmod>2026-11-27</lastmod></url>
   <url><loc>https://soma-lang.dev/changelog/3.3.1</loc><lastmod>2026-11-27</lastmod></url>
   <url><loc>https://soma-lang.dev/changelog/3.3.0</loc><lastmod>2026-11-27</lastmod></url>
@@ -821,7 +821,6 @@
   <url><loc>https://soma-lang.dev/agent.md</loc><lastmod>2026-11-27</lastmod></url>
   <url><loc>https://soma-lang.dev/skill/SKILL.md</loc><lastmod>2026-11-27</lastmod></url>
   <url><loc>https://soma-lang.dev/docs/guarantees.md</loc><lastmod>2026-11-27</lastmod></url>
-  <url><loc>https://soma-lang.dev/docs/handbook.md</loc><lastmod>2026-11-27</lastmod></url>
   <url><loc>https://soma-lang.dev/docs/serving.md</loc><lastmod>2026-11-27</lastmod></url>
   <url><loc>https://soma-lang.dev/docs/reference.md</loc><lastmod>2026-11-27</lastmod></url>
   <url><loc>https://soma-lang.dev/docs/builtins.md</loc><lastmod>2026-11-27</lastmod></url>

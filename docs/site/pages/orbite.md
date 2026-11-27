@@ -269,9 +269,9 @@ The protocol fits in 1,923 lines. A real deployment needs far more around it —
 
 <div class="orb-steps">
 <div class="orb-step"><h3>Contract</h3><p class="n">530 lines</p><p>Common types — metres, billionths of probability, roles with their scope — and twenty <em>façades</em>: the only signals a subsystem may call in another.</p></div>
-<div class="orb-step"><h3>Skeletons</h3><p class="n">21,387 lines</p><p>Twenty agents in parallel, each writing one subsystem's memory, invariants, state machines and <em>frames</em>: what every signal may read, write, call, and which edges it may take.</p></div>
+<div class="orb-step"><h3>Skeletons</h3><p class="n">21,444 lines</p><p>Twenty agents in parallel, each writing one subsystem's memory, invariants, state machines and <em>frames</em>: what every signal may read, write, call, and which edges it may take.</p></div>
 <div class="orb-step"><h3>Rules, proven</h3><p class="n">97 ✓</p><p>Ten agents turned seventy requirements across subsystems into rules on edges — <em>a coordination opens only on a conjunction in alert</em> — and <code>soma verify</code> proved them.</p></div>
-<div class="orb-step"><h3>Bodies, checked</h3><p class="n">30,262 lines</p><p>Twenty agents filled every signal from a one-screen brief. <code>soma check</code> refuses a body that leaves its frame; 6,482 assertions and an end-to-end scenario run them together.</p></div>
+<div class="orb-step"><h3>Bodies, checked</h3><p class="n">30,407 lines</p><p>Twenty agents filled every signal from a one-screen brief. <code>soma check</code> refuses a body that leaves its frame; 6,482 assertions and an end-to-end scenario run them together.</p></div>
 </div>
 
 That last point is the one agents need: `soma skeleton prod.cell CoordVerrou.poser` prints everything one body is allowed to touch, and nothing else. An agent writes that body without ever seeing the other 69,000 lines — and cannot quietly reach outside it.
@@ -319,7 +319,7 @@ signal approuver(h: Horodatage, plan: String, par: String) -> ManEtatPlan
 ## What is not proven — yet
 
 - **The core is proven whole**: its 13 rules hold on the real bodies. What it does not cover, the full version adds.
-- **The full version's 97 rules are proven on its skeleton**: they hold for every body that stays in its frame (`soma check` proves each one does) and takes an edge only under its condition — which `soma verify` judges on the bodies. On its 1,787 bodies together, `verify` does not yet finish in reasonable time; 151 rules through a link stay open obligations until it does.
+- **The full version's rules are now proven on its bodies too.** `soma verify prod.cell` reads the 1,816 bodies together in about twelve seconds and ends on `VERIFY OK` with no ✗: each of the 246 guarded entries into a state — 149 of them through a link to another machine — holds on every run of the handlers. (When this page was first written the verifier did not finish on the bodies, and those rules were proven on the skeleton only.) What stays unproven there is of another kind, and `verify` lists it line by line: 1,271 ⚠ — calls and loops whose termination it cannot bound, size invariants and contracts on computed values that are checked at run time instead. `verify --strict`, which the core passes, refuses the full version for that reason.
 - **Notified is not informed**: in the replay, the silent operator receives the decision but never acknowledges it. Orbite reduces the 2019 risk — the other satellite moving too — but cannot remove it.
 - **Simulated**: orbital mechanics are simplified, every actor is fictional. Orbite is a demonstration of method, not a service.
 
@@ -327,15 +327,15 @@ We have not built the same system in another language with the same agents to co
 
 ## Check it yourself in two seconds
 
-Everything above can be checked with the public release — the core in two seconds, the full version in eight minutes:
+Everything above can be checked with the public release — the core in two seconds, the full version in about twelve:
 
 ```console
-$ curl -fsSL https://soma-lang.dev/install.sh | sh          # soma 3.2.4
+$ curl -fsSL https://soma-lang.dev/install.sh | sh          # the current release
 $ curl -fsSL https://soma-lang.dev/cases/orbite-core/orbite-core.tar.gz | tar xz
 $ (cd orbite-core && soma verify --strict app.cell)         # 2 seconds: 13 rules proven, bodies included
 $ curl -fsSL https://soma-lang.dev/cases/orbite/orbite.tar.gz | tar xz && cd orbite
-$ soma check prod.cell                                       # 0 errors, 1,787 signals, all filled
-$ soma verify app.cell                                       # about 8 minutes: VERIFY OK, 97 rules proven
+$ soma check prod.cell                                       # 0 errors, 1,816 signals, all filled
+$ soma verify prod.cell --summary                            # about 12 seconds: VERIFY OK, no ✗, the ⚠ lines listed
 $ soma test test_aeolus.cell                                 # the 2019 replay: 101 assertions
 ```
 

@@ -19,39 +19,41 @@ same as `sha256  lines  path`. Check a download with
 
 | kind | lines | where |
 |---|---|---|
-| skeleton | 21,387 | `commun/*.cell` (types, journal, clock), `sys/<subsystem>/*.cell` — memory, invariants, state machines, frames |
-| bodies | 30,262 | `commun/*_chair.cell`, `sys/<subsystem>/chair/*.cell` — `flesh` blocks |
-| tests | 16,919 | `test_<subsystem>.cell` (13,075, unit, with test doubles), `doublures/*.cell` (3,844), `test_bout_en_bout.cell` (end to end, no doubles) |
+| skeleton | 21,444 | `commun/*.cell` (types, journal, clock), `sys/<subsystem>/*.cell` — memory, invariants, state machines, frames |
+| bodies | 30,407 | `commun/*_chair.cell`, `sys/<subsystem>/chair/*.cell` — `flesh` blocks |
+| tests | 16,981 | `test_<subsystem>.cell` (unit, with test doubles), `doublures/*.cell` (3,906), `test_bout_en_bout.cell` (end to end, no doubles) |
 | entries | 582 | `app.cell` (all skeletons), `prod.cell` (skeletons + all bodies), `banc_<subsystem>.cell` (one subsystem's bodies) |
-| documents | 13,363 | `CONSIGNES*.md` (the instructions each phase's agents got), `INTEGRATION*.md` (integration reports), `sys/*/NOTES.md` (each subsystem's design notes), `sys/*/facade.txt`, `sys/*/regles.toml` |
+| documents | 13,397 | `CONSIGNES*.md` (the instructions each phase's agents got), `INTEGRATION*.md` (integration reports), `sys/*/NOTES.md` (each subsystem's design notes), `sys/*/facade.txt`, `sys/*/regles.toml` |
 
 `soma.toml` holds the rules between machines written as tables; `skeleton.lock` freezes the
 220 skeletons. `outils/cycles.py` checks the call graph has no cycle.
 
-## Check it (soma 3.2.4, the current release)
+## Check it (with the current release)
 
     curl -fsSL https://soma-lang.dev/install.sh | sh
-    soma --version                           # soma 3.2.4
-    soma check prod.cell                     # 0 errors (warnings are listed and expected)
+    soma check prod.cell                     # 0 errors (warnings are listed and expected), 1,816 signals, all filled
     soma check app.cell                      # the skeleton alone: 0 errors, every signal a hole
     for t in test_*.cell; do soma test "$t"; done
-                                             # 23 suites, 6,482 assertions, 0 failures
-    soma verify app.cell                     # about 8 minutes: VERIFY OK
+                                             # 23 suites, 6,482 assertions, 0 failures (half a minute)
+    soma verify app.cell --summary           # the skeleton: a few seconds, VERIFY OK
+    soma verify prod.cell --summary          # the bodies too: about twelve seconds, VERIFY OK, no ✗
     python3 outils/cycles.py | head -3       # no cycle; deepest call chain 23
     soma skeleton prod.cell CoordVerrou.poser    # the one-screen brief of any signal
     soma refs prod.cell ApiCoordination.designe  # where a signal is declared, filled, called
 
-`soma verify app.cell` proves **97 rules between machines, 21 of them across subsystems**, with
-0 failures and 0 unexplored; **151 rules through a link (`via`) stay open obligations** — each
-is proven once the verifier sees, in the body that writes its link, that the link is written
-once, at creation. With soma 3.2.3 the same command ended in `VERIFY FAILED`: 95 rules
-"not explored — more than 12 machines" (no counterexample). 3.2.4 searches each rule over its
-cone of influence first; that is what makes this program provable.
+These figures were measured with soma 3.4.1 on the files of this archive (`MANIFEST.txt` gives
+each one's sha256).
 
-Proven means: for every body that stays in its frame (`soma check` proves each one does) and
-takes an edge only under its `when` condition (judged by `soma verify` on the bodies). Running
-`soma verify prod.cell` on the 1,787 bodies together does not yet finish in reasonable time; it
-is where the 151 open obligations will be closed.
+`soma verify prod.cell` reads the bodies together and proves **246 guarded entries into a state,
+149 of them through a link (`via`) to another machine**, on every run of the handlers, with no
+failure. What it does not prove it lists: 1,271 ⚠ lines — calls and loops whose termination it
+cannot bound, size invariants and contracts on computed values, which are checked at run time
+instead. `soma verify --strict` refuses the program for those.
+
+How it got there: with soma 3.2.3 the skeleton ended in `VERIFY FAILED` — 95 rules "not explored
+— more than 12 machines"; 3.2.4 searches each rule over its cone of influence first and proved
+the skeleton, leaving 151 rules through a link as open obligations and the bodies out of reach
+of the verifier; 3.2.10 closed both.
 
 `test_colreg.cell` checks the rules of the road borrowed from the sea (COLREG): give-way and stand-on,
 the more manoeuvrable gives way, overtaking, a franc manoeuvre, the stand-on keeps its course, relief.

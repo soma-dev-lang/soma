@@ -3,7 +3,7 @@
 > Newest first. The language itself: https://soma-lang.dev/llms.txt (`soma docs agent`).
 > Every fix and its compatibility note: https://soma-lang.dev/CHANGELOG.md.
 
-Soma 3.4.0: the method, held by the toolchain. `soma next app.cell` names
+Soma 3.4.1 (3.4.0 was tagged and not released): the method, held by the toolchain. `soma next app.cell` names
 the ONE thing to do now (a gap of `soma doctor`, an error of check, a
 failure of verify, what the law asks, the next hole, a failing test — or
 `complete`); `soma fill app.cell Cell.signal` writes ONE body given on
@@ -12,7 +12,7 @@ another handler or a law. `soma init --agent` writes the AGENTS.md block, a
 3 KB skill and a hook that runs `soma check` after every edit; `soma
 doctor` says when they are not the binary's. `soma docs method`: the order
 of work — law, skeleton, flesh — and what each step establishes. The
-former long skill is `soma docs handbook`.
+former long skill is withdrawn: its templates no longer passed `soma check`.
 
 Soma 3.3.1: a `[native]` handler in the program no longer makes `soma
 serve` take one request at a time (native calls have their own lock); a

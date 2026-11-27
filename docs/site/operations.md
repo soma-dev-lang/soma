@@ -16,8 +16,8 @@ program has no such route).
 | Port already answering, `soma check` errors, an unreadable file | `soma serve` refuses to start and exits 1 — it never serves a program that does not check (`--no-check` overrides) |
 | Out of memory, SIGKILL, `kill -9`, SIGTERM | The process dies at once (no draining: an in-flight client gets an empty reply); committed handlers are in `.soma_data/soma.db` (SQLite); the handler in flight is lost as a whole — its writes sat in one uncommitted SQLite transaction |
 | Disk full while writing | Expected (not exercised): the SQLite write fails, the request is rolled back and answered 500 |
-| A slow upstream (`http_post` to a service that hangs) | The handler holds the process-wide lock for the whole call: every other request waits. Every http builtin has a timeout (default 30 s; pass `map("timeout", ms)`) — keep it short; the upstream is not cancelled |
-| A slow handler (a quadratic loop, a huge `to_json`, a loop of 100 000 `slot.set`) | Handlers run one at a time: every other request and every scheduler tick WAITS for it — there is no per-request time limit. `soma verify` proves termination, not speed. A persistent slot write is an SQLite statement inside the handler's transaction (about 0.1 ms measured under serve; more on a slow disk; an invariant that reads `size` adds a COUNT of the slot per write — keep size invariants on small slots): a rebuild of hundreds of thousands of keys in one handler holds the process for a minute or more. Keep handlers short; batch bulk loads outside the request path; put a proxy timeout in front |
+| A slow upstream (`http_post` to a service that hangs) | The handler holds the writers' lock for the whole call: every other request that writes waits (one that only reads runs beside, on a snapshot). Every http builtin has a timeout (default 30 s; pass `map("timeout", ms)`) — keep it short; the upstream is not cancelled |
+| A slow handler (a quadratic loop, a huge `to_json`, a loop of 100 000 `slot.set`) | Handlers that write run one at a time: every other writing request and every scheduler tick WAITS for it — there is no per-request time limit. A request that only reads is not held (it runs on a snapshot of the last commit, when every slot is `[persistent]`). `soma verify` proves termination, not speed. A persistent slot write is an SQLite statement inside the handler's transaction (about 0.1 ms measured under serve; more on a slow disk; an invariant that reads `size` adds a COUNT of the slot per write — keep size invariants on small slots): a rebuild of hundreds of thousands of keys in one handler holds the process for a minute or more. Keep handlers short; batch bulk loads outside the request path; put a proxy timeout in front |
 | The program changed and `.soma_data/` is older | A renamed slot is a new empty slot (the old rows stay in the file); a slot whose value TYPE changed gives back the old values with their old type; an invariant added later is not checked against stored values (verify proves it for future writes only); a state-machine instance stored in a state the new machine no longer declares takes no transition, `*` edges included. `soma serve` first runs SQLite's `quick_check` and refuses to start on a damaged file (restore a backup or move `.soma_data` aside); a file that is not a database stops any command with the same advice. `soma serve` and `soma run` audit the database at start-up and print one `warning: stored data: …` line per problem: instances in undeclared states, values an invariant refuses (List slots and `size` clauses included), values of another type than declared, a slot re-declared List ↔ Map. `soma serve` (which owns its data directory) also reports slot data no slot declares any more and tables of cells the program no longer declares (renamed/removed) — `soma run` does not, since several programs often share one directory. Migrate (below) or delete `.soma_data/` |
 
 ## Addresses and ports
@@ -64,7 +64,7 @@ A handler that returns normally answers 200 with its value as JSON (`()` is `nul
 - Int is arbitrary precision (i64 fast path, BigInt beyond); Float is f64; `7 / 2` is `3.5`.
 - Recursion depth: 512 frames, then `stack_overflow`.
 - Request bodies: a declared body past 256 MB is refused (413), and a JSON body holding more than ~1 000 000 values (objects and lists weigh more) is refused (413) before it is parsed; paths have no configured cap (20 KB paths were served). Put tighter caps on the proxy.
-- Handlers run one at a time (a process-wide lock): correct under contention, no parallelism inside one process. Throughput is not a goal.
+- Handlers that write run one at a time (a process-wide lock): correct under contention. Read-only requests run beside them; there is no parallelism between writers inside one process. Measured figures for hordes are in [Serving](/guide/serving).
 - `forall` properties in tests walk every value up to 20 000, then sample with a fixed seed.
 - One process, one SQLite file (`.soma_data/soma.db`, created beside the program); no replication unless a `scale` section and a bus join are configured (experimental).
 
@@ -103,8 +103,9 @@ Make `_migrate` idempotent (check before writing) and back up
 | `SOMA_APPROVE=always` \| `never` | answers `approve()` when no terminal is attached (`soma serve` fails closed otherwise: 403 `approval_required`) |
 | `PORT` | not read — pass `-p` |
 
-Other environment variables are not readable from a program. A secret or a
-config value (an admin token) goes in a file read once in `on start()`:
+A program reads any other environment variable with `env_var("NAME")` (an
+effect a frame names). A secret or a config value (an admin token) can also
+go in a file read once in `on start()`:
 `let t = read_file("secrets/admin_token.txt")` then
 `require type_of(t) == "String" && len(trim(t)) >= 16 else NoSecret` — on a
 missing file read_file returns an `{error}` Map, and a check such as
@@ -166,7 +167,7 @@ authentication: any local process can send an accepted event — firewall it.
 
 ## Deploying on Linux
 
-There is no published Linux binary yet; build from source (Rust stable + GMP):
+Each release publishes Linux binaries (x86_64 and aarch64): `curl -fsSL https://soma-lang.dev/install.sh | sh` downloads the one for the machine and checks it against the release's `SHA256SUMS`. To build from source instead (Rust stable + GMP):
 
 ```sh
 apt-get install -y build-essential libgmp-dev m4 git
