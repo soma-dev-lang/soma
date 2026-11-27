@@ -495,6 +495,21 @@ pub fn cmd_serve(path: &PathBuf, port: u16, host: &str, verbose: bool, join: Opt
     }
     let natives = std::sync::Arc::new(natives);
     let program = std::sync::Arc::new(program);
+    // a read-only request runs beside the one that holds the handler lock
+    // only when every slot is in the database (a slot kept in memory has no
+    // snapshot): say so, a server that takes one request at a time for one
+    // slot without `[persistent]` did not say why
+    {
+        // (a slot is registered under `Cell.slot` and under `slot`: named once)
+        let mut in_memory: Vec<&String> = storage_slots.iter().filter(|(_, b): &(&String, &std::sync::Arc<dyn crate::runtime::storage::StorageBackend>)| b.backend_name() != "sqlite").map(|(k, _)| k)
+            .filter(|k| k.contains('.') || !storage_slots.keys().any(|o| o.ends_with(&format!(".{}", k)))).collect();
+        in_memory.sort();
+        if !in_memory.is_empty() && !readers.is_empty() {
+            let shown: Vec<String> = in_memory.iter().take(4).map(|k| format!("`{}`", k)).collect();
+            eprintln!("[serve] one request at a time: {}{} {} not `[persistent]` — a read-only request runs beside the others only when every slot is (a long computation otherwise holds every other request)",
+                shown.join(", "), if in_memory.len() > 4 { format!(" and {} more", in_memory.len() - 4) } else { String::new() }, if in_memory.len() == 1 { "is" } else { "are" });
+        }
+    }
     let storage_slots = std::sync::Arc::new(storage_slots);
     let handler_names = std::sync::Arc::new(handler_names);
     let handler_params = std::sync::Arc::new(handler_params);
@@ -1173,11 +1188,14 @@ pub fn cmd_serve(path: &PathBuf, port: u16, host: &str, verbose: bool, join: Opt
         let ws = shared_ws_out.clone();
         let cl = cluster_node.clone();
         let sh = sharded_slots.clone();
+        let readers = readers.clone();
         let _ = crate::interpreter::horde::FACTORY.set(Box::new(move || {
             let mut interp = interpreter::Interpreter::new(&prog);
             interp.native_handlers = (*natives).clone();
             interp.set_storage_raw(&slots);
             interp.ensure_state_machine_storage();
+            // a horde target that only reads runs beside the handler lock, like a request
+            interp.snapshot_handlers = Some(readers.clone());
             interp.event_bus = Some(bus.clone());
             interp.peer_bus = Some(pbus.clone());
             if let Some(ref c) = cl { interp.set_cluster(c.clone(), &sh); }

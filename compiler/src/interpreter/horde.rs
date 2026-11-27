@@ -548,6 +548,16 @@ impl Interpreter {
         match &spec.snapshot { Some(snap) => vec![input.clone(), snap.clone()], None => vec![input.clone()] }
     }
 
+    /// May this horde target be tried on a read snapshot, outside the handler
+    /// lock? Not under `SOMA_SERIAL=1`, in a cluster or a replay, nor when a
+    /// slot is kept in memory (it has no snapshot), nor once it was seen to write.
+    fn horde_target_may_read_beside(&self, cell: &str, handler: &str) -> bool {
+        if matches!(&self.snapshot_handlers, Some(readers) if readers.is_empty()) { return false; }
+        if self.snapshot_handlers.is_none() || self.cluster.is_some() || self.replay_mode || self.journal.is_some() || self.task_unit.is_some() { return false; }
+        if !self.storage.values().all(|b| b.backend_name() == "sqlite") { return false; }
+        !super::SNAPSHOT_WRITERS.lock().unwrap_or_else(|e| e.into_inner()).contains(&format!("{}.{} ", cell, handler))
+    }
+
     /// Record a task's result and call `on_result` — inside the unit of the
     /// target's last step. `Ok(false)`: another process already did.
     fn horde_finish(&mut self, spec: &Spec, idx: usize, input: &Value, result: &Value, tokens: i64, attempts: u32) -> Result<bool, RuntimeError> {
@@ -916,12 +926,26 @@ fn run_one(interp: &mut Interpreter, spec: &Spec, idx: usize, input: &Value, att
     interp.agent_trace.clear();
     let task = interp.handler_is_task(&spec.target_cell, &spec.handler);
     let args = interp.horde_task_begin(spec, idx, input, attempt);
+    let args_beside = args.clone();
     let body = |me: &mut Interpreter| -> Result<bool, RuntimeError> {
         let v = me.call_signal_inner(&spec.target_cell, &spec.handler, args)?;
         let spent = me.agent_tokens_used;
         me.horde_finish(spec, idx, input, &v, spent, attempt)
     };
-    let r = if task { interp.run_task(body) } else { interp.atomically(body) };
+    // A target that only reads — a computation — runs on a snapshot of the
+    // last commit, outside the handler lock; its result is then recorded,
+    // and `on_result` called, in a unit of their own. It ran under the lock
+    // from its first line to its last: a computation of thirty seconds
+    // started in the background held every request that writes. (One that
+    // turns out to write is run again as before, and is remembered.)
+    let beside = if !task && interp.horde_target_may_read_beside(&spec.target_cell, &spec.handler) {
+        interp.read_snapshot(&spec.target_cell, &spec.handler, &args_beside)
+    } else { None };
+    let r = match beside {
+        Some(Ok(v)) => interp.atomically(|me| me.horde_finish(spec, idx, input, &v, 0, attempt)),
+        Some(Err(e)) => Err(e),
+        None => if task { interp.run_task(body) } else { interp.atomically(body) },
+    };
     interp.horde_instance = None;
     let spent = interp.agent_tokens_used;
     match r {

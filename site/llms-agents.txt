@@ -49,6 +49,10 @@ cell agent Researcher {
 //   on _store(v: Map) { verdicts.set(v.id, v) }       // or _store(input, result)
 //   horde_status(h)  → {state, total, queued, running, done, failed, cancelled, tokens}
 //   horde_results(h) → results in input order (() if not done); horde_cancel(h)
+// A COMPUTATION IN THE BACKGROUND is a horde too: a target that only READS
+// (no [task], no write) runs on a snapshot of the last commit, outside the
+// handler lock — thirty seconds of it hold no request — and `on_result`
+// stores what it answered, in a unit of its own. All slots [persistent].
 // The target takes one parameter; mark it [task] (check warns when it
 // thinks: each task would hold the lock). Write the target and the options
 // AT THE CALL (a literal map with literal handler names — check refuses a

@@ -348,7 +348,16 @@ fn build_dylib(
     Ok(())
 }
 
+/// A library of `[native]` handlers keeps what a call leaves — its error, its
+/// "a division was inexact" flag, the BigInt arguments it was handed — in
+/// statics: it is entered by one caller at a time. The handler lock used to
+/// see to that, and so a program with ONE native handler had no read-only
+/// request running beside the others: every request waited for the one
+/// before it. The calls now have their own lock.
+static NATIVE_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
 pub fn call_native(native: &LoadedNative, args: &[super::Value]) -> Result<super::Value, String> {
+    let _one_at_a_time = NATIVE_LOCK.lock().unwrap_or_else(|e| e.into_inner());
     // drop a stale flag from an earlier call: the return-value restoration
     // and to_string(a / b) inside the handler both read it
     let _ = take_div_inexact(native);

@@ -488,7 +488,7 @@ previous tick. verify checks the `transition()` targets of these blocks too.
 With SQLite or in-memory storage, a top-level handler invocation is
 all-or-nothing: if it raises, its slot writes and transitions are rolled back. A failing `try { }`
 block's slot writes, transitions and pushes are rolled back to where it started (plain locals it assigned keep their new value), and the handler continues. Under
-`soma serve` handlers that WRITE run one at a time (a [task] handler: each step between think()s / awaits), so read-modify-write is safe; one that only reads runs beside them on a snapshot of the last commit (all slots `[persistent]`, no `[native]`; SOMA_SERIAL=1 turns it off)
+`soma serve` handlers that WRITE run one at a time (a [task] handler: each step between think()s / awaits), so read-modify-write is safe; one that only reads runs beside them on a snapshot of the last commit (all slots `[persistent]`, or `serve` says "one request at a time"; SOMA_SERIAL=1 turns it off). A LONG COMPUTATION: a handler that only reads; to keep its result, `horde(Cell.compute, inputs, map("on_result", "_store"))` — it runs beside, `_store` writes
 (300 parallel payments of 10 against a balance of 1000 pay exactly 100).
 `[immutable]` on a slot makes it append-only: a List slot only grows by
 `push`, a Map slot only gains new keys; overwriting or deleting an entry

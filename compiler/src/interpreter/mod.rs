@@ -5814,8 +5814,9 @@ impl Interpreter {
         let route = snapshot_route(signal_name, args);
         if !(readers.contains(signal_name) || route.starts_with("GET ") || route.starts_with("HEAD ")) { return false; }
         if self.handler_is_task(cell_name, signal_name) { return false; }
-        // compiled handlers were only ever entered one at a time
-        if !self.native_handlers.is_empty() { return false; }
+        // (compiled handlers are entered one at a time: `native_ffi::call_native`
+        // has its own lock — a program with a `[native]` handler used to have
+        // no reader running beside the others at all)
         // every slot and machine in the database: a slot kept in memory has
         // no snapshot (a writer's uncommitted value would be read)
         if !self.storage.values().all(|b| b.backend_name() == "sqlite") { return false; }
