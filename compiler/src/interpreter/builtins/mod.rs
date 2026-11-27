@@ -50,7 +50,7 @@ pub fn call_builtin(interp: &mut super::Interpreter, name: &str, args: &[Value],
     if interp.current_tool_caps.is_some() && matches!(name, "read_file" | "write_file" | "read_csv" | "write_csv" | "read_files" | "par_read_files" | "read_stdin"
         // templates read files too, and link() routes every later emit to a peer
         | "load" | "include" | "load_template" | "link" | "ws_send"
-        | "ws_connect" | "connect" | "subscribe" | "append_file"
+        | "ws_connect" | "connect" | "subscribe" | "append_file" | "file_lock"
         // the environment holds secrets, and a process reaches past every capability
         | "env_var" | "run_process" | "list_dir" | "file_info" | "read_line") {
         let caps = interp.current_tool_caps.clone().unwrap_or_default();

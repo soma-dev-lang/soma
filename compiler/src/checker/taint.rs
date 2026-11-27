@@ -38,7 +38,7 @@ const SINKS: &[(&str, usize, &str)] = &[
     ("read_file", 0, "the file read"), ("write_file", 0, "the file written"), ("read_csv", 0, "the file read"),
     ("write_csv", 0, "the file written"), ("load", 0, "the file loaded"), ("include", 0, "the file included"),
     ("set_budget", 0, "the token budget"),
-    ("append_file", 0, "the file written"), ("list_dir", 0, "the directory listed"),
+    ("append_file", 0, "the file written"), ("file_lock", 0, "the file locked"), ("list_dir", 0, "the directory listed"),
     ("run_process", 0, "the program run"), ("run_process", 1, "the arguments of the program run"),
 ];
 

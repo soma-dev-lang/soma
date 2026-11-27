@@ -8,6 +8,16 @@ handler reads the state its rule is on, on the instance the rule's link
 names, just before the move. `verify` keeps a computed id handed to a
 handler as one id, and what a held status is known not to be.
 
+Soma 3.3.1: a `[native]` handler in the program no longer makes `soma
+serve` take one request at a time (native calls have their own lock); a
+horde whose target only reads — a computation in the background — runs
+outside the handler lock, and `on_result` stores its answer; `serve` says
+which slot without `[persistent]` serializes it. On macOS, memory a list or
+a native `strbuf` outgrew is given back (2.3 GB → 240 MB on a list rebuilt
+twenty times). `write_file` replaces the file in one step; `file_lock(path)`
+holds a lock across processes until the handler ends; HTTP through a proxy
+(`proxy` option, SOMA_HTTP_PROXY).
+
 Soma 3.3.0: the law — a `.law` file of terms and rules that names no code;
 the program lists it in soma.toml (`[law]`) and is aligned on it: `realizes
 Term` on a signal, `under "ID"` on the `require`, the branch or the test that

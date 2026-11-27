@@ -22,6 +22,21 @@ pub fn call_builtin(name: &str, args: &[Value]) -> Option<Result<Value, RuntimeE
             [Value::String(p), content] => Ok(append_file(p, &match content { Value::String(s) => s.clone(), other => format!("{}", other) })),
             _ => Err(RuntimeError::TypeError("append_file(path: String, content)".to_string())),
         }),
+        "file_lock" => Some(match args {
+            [Value::String(p)] => Ok(file_lock(p, 30_000)),
+            [Value::String(p), Value::Map(opts)] => {
+                let mut timeout = 30_000i64;
+                let mut bad = None;
+                for (k, v) in opts.iter() {
+                    match (k.as_str(), v) {
+                        ("timeout", Value::Int(n)) if n.to_i64().is_some_and(|x| x >= 0) => timeout = n.to_i64().unwrap_or(30_000),
+                        _ => bad = Some(format!("file_lock: option `{}` — the option is timeout (ms to wait for the lock, 0: do not wait; default 30000)", k)),
+                    }
+                }
+                match bad { Some(m) => Err(RuntimeError::TypeError(m)), None => Ok(file_lock(p, timeout as u64)) }
+            }
+            _ => Err(RuntimeError::TypeError("file_lock(path: String, opts?: {timeout})".to_string())),
+        }),
         "read_line" => Some(match args {
             [] => Ok(read_line(None)),
             [Value::String(prompt)] => Ok(read_line(Some(prompt))),
@@ -93,6 +108,51 @@ fn file_info(path: &str) -> Value {
             ("exists".to_string(), Value::Bool(false)),
         ]),
         Err(e) => failure(&e, path),
+    }
+}
+
+thread_local! {
+    /// The locks the running handler holds: released when it ends (`release_locks`).
+    static HELD: std::cell::RefCell<Vec<(std::path::PathBuf, std::fs::File)>> = const { std::cell::RefCell::new(Vec::new()) };
+}
+
+/// The top-level handler ended — committed or rolled back: its file locks go.
+pub fn release_locks() {
+    HELD.with(|h| h.borrow_mut().clear());
+}
+
+/// An exclusive lock on `path` (the file is created when it is not there),
+/// across processes, held until the running handler ends. `true`, or
+/// `{error, kind}` with kind `locked` when another holder kept it for
+/// `timeout_ms`. A lock this handler already holds is `true` at once.
+fn file_lock(path: &str, timeout_ms: u64) -> Value {
+    let p = std::path::Path::new(path);
+    if let Some(parent) = p.parent() {
+        if !parent.as_os_str().is_empty() && !parent.exists() {
+            if let Err(e) = std::fs::create_dir_all(parent) { return failure(&e, path); }
+        }
+    }
+    let file = match std::fs::OpenOptions::new().create(true).append(true).open(p) { Ok(f) => f, Err(e) => return failure(&e, path) };
+    let key = std::fs::canonicalize(p).unwrap_or_else(|_| p.to_path_buf());
+    if HELD.with(|h| h.borrow().iter().any(|(k, _)| k == &key)) { return Value::Bool(true); }
+    let until = std::time::Instant::now() + std::time::Duration::from_millis(timeout_ms);
+    loop {
+        match file.try_lock() {
+            Ok(()) => {
+                HELD.with(|h| h.borrow_mut().push((key, file)));
+                return Value::Bool(true);
+            }
+            Err(std::fs::TryLockError::WouldBlock) => {
+                if std::time::Instant::now() >= until {
+                    return map_from_pairs(vec![
+                        ("error".to_string(), Value::String(format!("{}: locked by another program for {} ms", path, timeout_ms))),
+                        ("kind".to_string(), Value::String("locked".to_string())),
+                    ]);
+                }
+                std::thread::sleep(std::time::Duration::from_millis(10));
+            }
+            Err(std::fs::TryLockError::Error(e)) => return failure(&e, path),
+        }
     }
 }
 

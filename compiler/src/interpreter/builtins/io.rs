@@ -827,9 +827,29 @@ fn project_segments(resolved: &str) -> Vec<String> {
 /// `write_csv("zreports/z.csv", …)`: the directory is created (it answered
 /// "No such file or directory" and an end-of-day job committed without its
 /// report). The path guard ran before.
+/// The content is written beside the file and renamed over it: a reader sees
+/// the old file or the new one. (`std::fs::write` truncates, then writes: a
+/// reader in between saw an empty or a half-written file.)
 fn write_creating_dirs(path: &str, content: &str) -> std::io::Result<()> {
-    if let Some(parent) = std::path::Path::new(path).parent() {
+    static N: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+    let target = std::path::Path::new(path);
+    if let Some(parent) = target.parent() {
         if !parent.as_os_str().is_empty() && !parent.exists() { std::fs::create_dir_all(parent)?; }
     }
-    std::fs::write(path, content)
+    // a directory, a device, a pipe: written in place, as before
+    let Some(name) = target.file_name().filter(|_| target.symlink_metadata().map_or(true, |m| m.is_file())) else {
+        return std::fs::write(path, content);
+    };
+    let beside = target.with_file_name(format!(".{}.{}.{}.tmp", name.to_string_lossy(), std::process::id(), N.fetch_add(1, std::sync::atomic::Ordering::Relaxed)));
+    let written = (|| -> std::io::Result<()> {
+        use std::io::Write;
+        let mut f = std::fs::File::create(&beside)?;
+        f.write_all(content.as_bytes())?;
+        // the file keeps the rights it had
+        if let Ok(m) = std::fs::metadata(target) { let _ = std::fs::set_permissions(&beside, m.permissions()); }
+        f.sync_all()?;
+        std::fs::rename(&beside, target)
+    })();
+    if written.is_err() { let _ = std::fs::remove_file(&beside); }
+    written
 }

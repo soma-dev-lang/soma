@@ -14,7 +14,7 @@ h1: no
 
 <div class="install">curl -fsSL https://soma-lang.dev/install.sh | sh</div>
 
-The current release is **Soma 3.3.0** ([release notes](/changelog/3.3.0)). It runs on Linux and macOS. Soma is experimental: [status](/status) says what that means.
+The current release is **Soma 3.3.1** ([release notes](/changelog/3.3.1)). It runs on Linux and macOS. Soma is experimental: [status](/status) says what that means.
 
 <style>
 .feat{display:block;margin:1.8rem 0 .4rem;border:1px solid var(--accent);border-radius:12px;padding:1.2rem 1.3rem;background:var(--panel);color:var(--fg)}

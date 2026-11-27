@@ -139,14 +139,16 @@ fn http_call(method: &str, url: &str, body: Option<String>, opts: Option<&indexm
             let ok = match (k.as_str(), v) {
                 ("timeout" | "max_bytes", Value::Int(n)) => n.to_i64().is_some_and(|x| x > 0),
                 ("headers", Value::Map(h)) => h.values().all(|x| matches!(x, Value::String(_) | Value::Int(_) | Value::Float(_) | Value::Bool(_))),
-                ("timeout" | "max_bytes" | "headers", _) => false,
-                _ => return Err(RuntimeError::TypeError(format!("http: unknown option '{}' — the options are timeout (ms), max_bytes, headers", k))),
+                ("proxy", Value::String(p)) => !p.trim().is_empty(),
+                ("timeout" | "max_bytes" | "headers" | "proxy", _) => false,
+                _ => return Err(RuntimeError::TypeError(format!("http: unknown option '{}' — the options are timeout (ms), max_bytes, headers, proxy", k))),
             };
             if !ok {
                 return Err(RuntimeError::TypeError(format!(
                     "http: option '{}' must be {}, got {} {}", k,
-                    if k == "headers" { "a map of header name → text" } else { "a positive Int" },
-                    super::super::value_type_name(v), v)));
+                    if k == "headers" { "a map of header name → text" } else if k == "proxy" { "the proxy as text: \"http://user:password@host:port\"" } else { "a positive Int" },
+                    // (a proxy holds a password: its value is not repeated)
+                    super::super::value_type_name(v), if k == "proxy" { Value::String("…".to_string()) } else { v.clone() })));
             }
         }
     }
@@ -161,8 +163,46 @@ fn http_call(method: &str, url: &str, body: Option<String>, opts: Option<&indexm
     // ureq counts the final request too: 6 lets 5 redirect hops through
     // (the documented limit; the 5th hop failed as a network error)
     let redirects = if NO_REDIRECTS.with(|c| c.get()) { 0 } else { 6 };
-    let agent = ureq::AgentBuilder::new().timeout(std::time::Duration::from_millis(timeout_ms)).redirects(redirects).build();
+    // the proxy: this call's (`proxy` option), else the deployment's
+    // (SOMA_HTTP_PROXY) — `http://user:password@host:port`
+    let proxy_spec = match opts.and_then(|m| m.get("proxy")) {
+        Some(Value::String(p)) => Some(p.clone()),
+        _ => std::env::var("SOMA_HTTP_PROXY").ok().filter(|p| !p.trim().is_empty()),
+    };
+    // …whose password is in no message
+    let secret = proxy_spec.as_ref().and_then(|p| p.rsplit_once('@').map(|(cred, _)| cred.rsplit_once("://").map_or(cred, |(_, c)| c).to_string())).filter(|c| !c.is_empty());
+    let hide = |text: String| -> String { match &secret { Some(c) => text.replace(c.as_str(), "***"), None => text } };
+    let mut builder = ureq::AgentBuilder::new().timeout(std::time::Duration::from_millis(timeout_ms)).redirects(redirects);
+    if let Some(spec) = &proxy_spec {
+        match ureq::Proxy::new(spec) {
+            Ok(p) => builder = builder.proxy(p),
+            Err(e) => return Ok(crate::interpreter::map_from_pairs(vec![
+                ("error".to_string(), Value::String(hide(format!("proxy: {} — write it as http://user:password@host:port", e)))),
+                ("kind".to_string(), Value::String("proxy".to_string())),
+                ("status".to_string(), Value::Int(crate::interpreter::soma_int::SomaInt::from_i64(0))),
+                ("body".to_string(), Value::Unit),
+            ])),
+        }
+    }
+    let agent = builder.build();
+    // through a proxy, a request to an `http://` target is forwarded as it
+    // is: the credentials go in a header of the request (for `https://` the
+    // library sends them with its CONNECT)
+    let proxy_basic = secret.as_ref().filter(|_| url.trim_start().to_lowercase().starts_with("http://")).map(|cred| {
+        const T: &[u8; 64] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
+        let bytes = cred.as_bytes();
+        let mut out = String::new();
+        for chunk in bytes.chunks(3) {
+            let n = (chunk[0] as u32) << 16 | (*chunk.get(1).unwrap_or(&0) as u32) << 8 | *chunk.get(2).unwrap_or(&0) as u32;
+            out.push(T[(n >> 18) as usize & 63] as char);
+            out.push(T[(n >> 12) as usize & 63] as char);
+            out.push(if chunk.len() > 1 { T[(n >> 6) as usize & 63] as char } else { '=' });
+            out.push(if chunk.len() > 2 { T[n as usize & 63] as char } else { '=' });
+        }
+        format!("Basic {}", out)
+    });
     let mut req = agent.request(method, url);
+    if let Some(basic) = &proxy_basic { req = req.set("Proxy-Authorization", basic); }
     if let Some(b) = &body {
         // a Map/List body was serialized to JSON; a String is sent as is
         let is_json = serde_json::from_str::<serde_json::Value>(b.trim()).is_ok();
@@ -259,7 +299,7 @@ fn http_call(method: &str, url: &str, body: Option<String>, opts: Option<&indexm
                 }
                 detail = detail.replace(full_url, &shown);
             }
-            let msg = format!("{} {}: {}", method, shown, detail);
+            let msg = hide(format!("{} {}: {}", method, shown, detail));
             let lower = msg.to_lowercase();
             let kind = if lower.contains("timed out") || lower.contains("timeout") { "timeout" }
                 else if lower.contains("refused") { "refused" }

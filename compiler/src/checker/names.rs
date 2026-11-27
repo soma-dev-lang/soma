@@ -33,7 +33,7 @@ pub const EFFECT_BUILTINS: &[&str] = &[
     "write_file", "write_csv", "write_str", "http_get", "http_post", "http_put", "http_patch", "http_delete",
     // a program started from a handler
     "run_process",
-    "append_file",
+    "append_file", "file_lock",
     "set_budget", "sleep", "link", "subscribe", "ws_connect", "ws_send", "approve", "clear_context", "clear_trace",
     // they run the handler they are given
     "horde", "vote",

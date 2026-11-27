@@ -537,6 +537,8 @@ pub static BUILTINS: &[BuiltinDoc] = &[
         "The entries of a directory, sorted by name; kind is file, dir, link (not followed) or other; mtime in seconds since the epoch. A missing directory is {error, kind: not_found}, never a raise. An effect a frame names (`calls list_dir`)."),
     doc("file_info", "io", "file_info(path: String) -> {exists, kind, size, mtime}",
         "What is at a path (a link is followed): {exists: false} when nothing is. Compare mtime and size to tell whether a file changed since it was read. An effect a frame names (`calls file_info`)."),
+    doc("file_lock", "io", "file_lock(path: String, opts?: {timeout}) -> Bool | {error, kind}",
+        "One program at a time, across processes: an exclusive lock on the file (created when absent), held until the handler ends — committed or rolled back; there is nothing to release. true, or {error, kind: locked} when another holder kept it for `timeout` ms (default 30000; 0: do not wait). An effect a frame names (`calls file_lock`)."),
     doc("append_file", "io", "append_file(path: String, content) -> Bool | {error, kind}",
         "Add content at the end of a file, creating it and its directories: a log or a transcript that grows without being rewritten. An effect a frame names (`calls append_file`)."),
     doc("read_line", "io", "read_line(prompt?: String) -> String | ()",

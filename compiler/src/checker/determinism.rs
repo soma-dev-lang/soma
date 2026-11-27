@@ -40,7 +40,7 @@ fn forbid_reason(name: &str) -> Option<&'static str> {
         "http_get" | "http_post" | "http_put" | "http_delete" | "http_patch" |
         "fetch" | "fetch_json" =>
             Some("performs network I/O"),
-        "read_file" | "write_file" | "append_file" | "delete_file" =>
+        "read_file" | "write_file" | "append_file" | "delete_file" | "file_lock" =>
             Some("performs file I/O"),
         "run_process" => Some("starts a process"),
         "list_dir" | "file_info" => Some("reads the file system"),

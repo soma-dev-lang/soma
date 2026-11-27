@@ -32,7 +32,7 @@ below is current for the binary named in https://soma-lang.dev/version.json.
 
 ## Pick Soma when / skip it when
 
-Current release: 3.3.0 — the law (business rules outside the code, `soma law`), after
+Current release: 3.3.1 — the law (business rules outside the code, `soma law`), after
 3.2's nominal types and 3.1's skeleton first. What each release changed: `soma docs releases`.
 
 Pick it when the task has a lifecycle or a limit that must hold: payments,
@@ -413,8 +413,8 @@ really has when `x.field` came back `()`.
   `network`); default timeout 30 s; invalid option values are refused;
   a String body is sent as text/plain unless it is JSON; `mock http_post …`
   in tests.
-- `run_process(prog, [args], opts?)` (no shell), `env_var`, `list_dir`, `file_info`, `append_file`, `read_line`:
-  effects a frame names, never raise (`{error, kind}`); a CLI runs `soma run --ephemeral --exit-status`. Bytes as hex: `hex_encode`, `hmac_hex(algo, key_hex, msg_hex)`, `base32_encode/_decode` (TOTP).
+- `run_process(prog, [args], opts?)` (no shell), `env_var`, `list_dir`, `file_info`, `append_file`, `read_line`, `file_lock(path)` (one program at a time across processes; held until the handler ends):
+  effects a frame names, never raise (`{error, kind}`); `write_file` replaces the file in one step (a reader sees the old or the new); HTTP through a proxy: option `proxy` or SOMA_HTTP_PROXY (`http://user:pw@host:port`); a CLI runs `soma run --ephemeral --exit-status`. Bytes as hex: `hex_encode`, `hmac_hex(algo, key_hex, msg_hex)`, `base32_encode/_decode` (TOTP).
 - `verify --strict` bounds a write only from numbers it can bound: literals,
   slots with an interval invariant, and values narrowed by `require`/`if`. A
   number read out of a record (`a.balance`) is unbounded until a `require`
@@ -488,7 +488,7 @@ previous tick. verify checks the `transition()` targets of these blocks too.
 With SQLite or in-memory storage, a top-level handler invocation is
 all-or-nothing: if it raises, its slot writes and transitions are rolled back. A failing `try { }`
 block's slot writes, transitions and pushes are rolled back to where it started (plain locals it assigned keep their new value), and the handler continues. Under
-`soma serve` handlers that WRITE run one at a time (a [task] handler: each step between think()s / awaits), so read-modify-write is safe; one that only reads runs beside them on a snapshot of the last commit (all slots `[persistent]`, no `[native]`; SOMA_SERIAL=1 turns it off)
+`soma serve` handlers that WRITE run one at a time (a [task] handler: each step between think()s / awaits), so read-modify-write is safe; one that only reads runs beside them on a snapshot of the last commit (all slots `[persistent]`, or `serve` says "one request at a time"; SOMA_SERIAL=1 turns it off). A LONG COMPUTATION: a handler that only reads; to keep its result, `horde(Cell.compute, inputs, map("on_result", "_store"))` — it runs beside, `_store` writes
 (300 parallel payments of 10 against a balance of 1000 pay exactly 100).
 `[immutable]` on a slot makes it append-only: a List slot only grows by
 `push`, a Map slot only gains new keys; overwriting or deleting an entry
@@ -806,6 +806,10 @@ cell agent Researcher {
 //   on _store(v: Map) { verdicts.set(v.id, v) }       // or _store(input, result)
 //   horde_status(h)  → {state, total, queued, running, done, failed, cancelled, tokens}
 //   horde_results(h) → results in input order (() if not done); horde_cancel(h)
+// A COMPUTATION IN THE BACKGROUND is a horde too: a target that only READS
+// (no [task], no write) runs on a snapshot of the last commit, outside the
+// handler lock — thirty seconds of it hold no request — and `on_result`
+// stores what it answered, in a unit of its own. All slots [persistent].
 // The target takes one parameter; mark it [task] (check warns when it
 // thinks: each task would hold the lock). Write the target and the options
 // AT THE CALL (a literal map with literal handler names — check refuses a
@@ -1526,6 +1530,16 @@ Soma 3.2.10: the 69,000-line case study passes `soma verify` (0 ✗): each
 handler reads the state its rule is on, on the instance the rule's link
 names, just before the move. `verify` keeps a computed id handed to a
 handler as one id, and what a held status is known not to be.
+
+Soma 3.3.1: a `[native]` handler in the program no longer makes `soma
+serve` take one request at a time (native calls have their own lock); a
+horde whose target only reads — a computation in the background — runs
+outside the handler lock, and `on_result` stores its answer; `serve` says
+which slot without `[persistent]` serializes it. On macOS, memory a list or
+a native `strbuf` outgrew is given back (2.3 GB → 240 MB on a list rebuilt
+twenty times). `write_file` replaces the file in one step; `file_lock(path)`
+holds a lock across processes until the handler ends; HTTP through a proxy
+(`proxy` option, SOMA_HTTP_PROXY).
 
 Soma 3.3.0: the law — a `.law` file of terms and rules that names no code;
 the program lists it in soma.toml (`[law]`) and is aligned on it: `realizes

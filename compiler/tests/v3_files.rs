@@ -178,3 +178,166 @@ fn run_ephemeral_keeps_nothing_on_disk_between_runs() {
     }
     assert!(!dir.join(".soma_data").exists(), "--ephemeral wrote .soma_data");
 }
+
+// ── a file another program reads while this one writes it ───────────────
+
+/// `write_file` truncated the file, then wrote it: a reader in between saw
+/// an empty or a half-written file. A rewrite of a Python application kept a
+/// Python service for that alone ("write a file atomically"). The content is
+/// now written beside the file and renamed over it: a reader sees the old
+/// file or the new one.
+#[test]
+fn write_file_replaces_the_file_in_one_step() {
+    let dir = project("atomic", r#"cell W {
+    on ecrire(p: String, fois: Int) {
+        let a = read_file("a.txt")
+        let b = read_file("b.txt")
+        for k in range(0, fois) {
+            let _ = write_file(p, if k % 2 == 0 { a } else { b })
+        }
+        return fois
+    }
+    on rate() { return write_file("pas/un/dossier\u{0}/x", "y") }
+}
+"#);
+    let (a, b) = ("a".repeat(4_000_000), "b".repeat(4_000_000));
+    std::fs::write(dir.join("a.txt"), &a).unwrap();
+    std::fs::write(dir.join("b.txt"), &b).unwrap();
+    std::fs::write(dir.join("cible.txt"), &a).unwrap();
+    let target = dir.join("cible.txt");
+    let stop = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+    let (stop2, target2, a2, b2) = (stop.clone(), target.clone(), a.clone(), b.clone());
+    let reader = std::thread::spawn(move || {
+        let (mut reads, mut torn) = (0u32, 0u32);
+        while !stop2.load(std::sync::atomic::Ordering::Relaxed) {
+            if let Ok(s) = std::fs::read_to_string(&target2) {
+                reads += 1;
+                if s != a2 && s != b2 { torn += 1; }
+            }
+        }
+        (reads, torn)
+    });
+    let (out, code) = soma(&dir, &["run", "--ephemeral", "app.cell", "ecrire", "cible.txt", "60"], "");
+    stop.store(true, std::sync::atomic::Ordering::Relaxed);
+    let (reads, torn) = reader.join().unwrap();
+    assert_eq!(code, 0, "{out}");
+    assert!(reads > 20, "the reader read the file {reads} times");
+    assert_eq!(torn, 0, "{torn} of {reads} reads saw a file that was neither the old one nor the new one");
+    // nothing is left beside the file
+    let left: Vec<String> = std::fs::read_dir(&dir).unwrap().flatten().map(|e| e.file_name().to_string_lossy().to_string()).filter(|n| n.contains("cible") && n != "cible.txt").collect();
+    assert!(left.is_empty(), "{left:?}");
+    // a failure is still a value
+    let (out, _) = soma(&dir, &["run", "--ephemeral", "app.cell", "rate"], "");
+    assert!(out.contains("error"), "{out}");
+}
+
+/// `file_lock(path)`: one program at a time in a section, across processes —
+/// the other half of "write a file atomically and under a lock". The lock is
+/// held until the handler ends, whatever way it ends: there is nothing to
+/// release and nothing to forget.
+#[test]
+fn file_lock_is_held_until_the_handler_ends() {
+    let dir = project("lock", r#"cell L {
+    on tenir(ms: Int) {
+        let got = file_lock("donnees.lock")
+        let _ = append_file("journal.txt", "tenir:pris\n")
+        let _ = sleep(ms)
+        let _ = append_file("journal.txt", "tenir:fin\n")
+        return got
+    }
+    on essayer() { return file_lock("donnees.lock", map("timeout", 0)) }
+    on attendre() {
+        let got = file_lock("donnees.lock", map("timeout", 8000))
+        let _ = append_file("journal.txt", "attendre:pris\n")
+        return got
+    }
+    on rate() {
+        let got = file_lock("donnees.lock")
+        let x = 1 / (len("") * 1)
+        return got
+    }
+    on deux() { return [file_lock("donnees.lock"), file_lock("donnees.lock")] }
+}
+"#);
+    let d1 = dir.clone();
+    let holder = std::thread::spawn(move || soma(&d1, &["run", "--ephemeral", "app.cell", "tenir", "1500"], ""));
+    // wait for the first to hold it
+    let until = std::time::Instant::now() + std::time::Duration::from_secs(20);
+    while !std::fs::read_to_string(dir.join("journal.txt")).unwrap_or_default().contains("tenir:pris") {
+        assert!(std::time::Instant::now() < until, "the first program never took the lock");
+        std::thread::sleep(std::time::Duration::from_millis(20));
+    }
+    // another program does not get it now…
+    let (out, code) = soma(&dir, &["run", "--ephemeral", "app.cell", "essayer"], "");
+    assert_eq!(code, 0, "{out}");
+    assert!(out.contains("\"kind\": \"locked\"") || out.contains("kind: locked") || out.contains("locked"), "{out}");
+    assert!(!out.trim().ends_with("true"), "{out}");
+    // …and gets it when the first handler has ended
+    let (out, code) = soma(&dir, &["run", "--ephemeral", "app.cell", "attendre"], "");
+    assert_eq!(code, 0, "{out}");
+    assert!(out.trim().ends_with("true"), "{out}");
+    let (out, code) = holder.join().unwrap();
+    assert_eq!(code, 0, "{out}");
+    assert!(out.trim().ends_with("true"), "{out}");
+    let journal = std::fs::read_to_string(dir.join("journal.txt")).unwrap();
+    assert_eq!(journal, "tenir:pris\ntenir:fin\nattendre:pris\n", "the section of the second ran after the first's");
+    // a handler that fails leaves no lock behind
+    let (_, code) = soma(&dir, &["run", "--ephemeral", "app.cell", "rate"], "");
+    assert_ne!(code, 0);
+    let (out, _) = soma(&dir, &["run", "--ephemeral", "app.cell", "essayer"], "");
+    assert!(out.trim().ends_with("true"), "{out}");
+    // taking a lock it already holds is not a wait on itself
+    let (out, code) = soma(&dir, &["run", "--ephemeral", "app.cell", "deux"], "");
+    assert_eq!(code, 0, "{out}");
+    assert!(out.contains("[true, true]"), "{out}");
+}
+
+/// `http_get(url, map("proxy", "http://user:pass@host:port"))`, or
+/// `SOMA_HTTP_PROXY` for every request of the process: the request goes
+/// through the proxy with its credentials, and the password is in no message.
+#[test]
+fn an_http_request_goes_through_an_authenticated_proxy() {
+    use std::io::{BufRead, BufReader};
+    let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+    let port = listener.local_addr().unwrap().port();
+    let seen = std::sync::Arc::new(std::sync::Mutex::new(Vec::<String>::new()));
+    let seen2 = seen.clone();
+    std::thread::spawn(move || {
+        for stream in listener.incoming().flatten().take(2) {
+            let mut reader = BufReader::new(stream.try_clone().unwrap());
+            let mut head = String::new();
+            loop {
+                let mut line = String::new();
+                if reader.read_line(&mut line).unwrap_or(0) == 0 || line == "\r\n" { break; }
+                head.push_str(&line);
+            }
+            seen2.lock().unwrap().push(head);
+            let body = "{\"par\":\"le proxy\"}";
+            let mut s = stream;
+            let _ = write!(s, "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}", body.len(), body);
+        }
+    });
+    let dir = project("proxy", &format!(r#"cell H {{
+    on par_option() {{ return http_get("http://service.invalid/prix", map("proxy", "http://jean:s3cret@127.0.0.1:{port}")) }}
+    on par_environnement() {{ return http_get("http://service.invalid/cours") }}
+    on mauvais() {{ return http_get("http://service.invalid/x", map("proxy", "http://jean:s3cret@127.0.0.1:1", "timeout", 2000)) }}
+}}
+"#));
+    let (out, code) = soma(&dir, &["run", "--ephemeral", "app.cell", "par_option"], "");
+    assert_eq!(code, 0, "{out}");
+    assert!(out.contains("le proxy"), "{out}");
+    let o = Command::new(env!("CARGO_BIN_EXE_soma")).args(["run", "--ephemeral", "app.cell", "par_environnement"]).current_dir(&dir)
+        .env("SOMA_HTTP_PROXY", format!("http://jean:s3cret@127.0.0.1:{port}")).output().unwrap();
+    let out = format!("{}{}", String::from_utf8_lossy(&o.stdout), String::from_utf8_lossy(&o.stderr));
+    assert!(out.contains("le proxy"), "{out}");
+    let heads = seen.lock().unwrap().clone();
+    assert_eq!(heads.len(), 2, "{heads:?}");
+    assert!(heads[0].starts_with("GET http://service.invalid/prix "), "{}", heads[0]);
+    assert!(heads[1].starts_with("GET http://service.invalid/cours "), "{}", heads[1]);
+    // jean:s3cret
+    for h in &heads { assert!(h.to_lowercase().contains("proxy-authorization: basic amvhbjpzm2nyzxq="), "{h}"); }
+    // a proxy that does not answer: a value, and no password in it
+    let (out, code) = soma(&dir, &["run", "--ephemeral", "app.cell", "mauvais"], "");
+    assert_eq!(code, 0, "{out}");
+    assert!(out.contains("error") && !out.contains("s3cret"), "{out}");
+}

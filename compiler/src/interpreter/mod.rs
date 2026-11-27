@@ -5862,6 +5862,8 @@ impl Interpreter {
         let unit = self.unit_begin()?;
         let result = f(self);
         let end = self.unit_end(unit, result.is_ok());
+        // the handler ended, either way: the file locks it took go
+        builtins::files::release_locks();
         self.run_deferred_hordes();
         end?;
         result
@@ -5874,6 +5876,7 @@ impl Interpreter {
         self.task_unit = Some(self.unit_begin()?);
         let result = f(self);
         let end = if let Some(u) = self.task_unit.take() { self.unit_end(u, result.is_ok()) } else { self.check_transaction() };
+        builtins::files::release_locks();
         self.run_deferred_hordes();
         end?;
         result
