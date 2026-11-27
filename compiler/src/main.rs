@@ -24,8 +24,8 @@ use registry::Registry;
 #[derive(ClapParser)]
 #[command(name = "soma")]
 #[command(version)]
-#[command(about = "The Soma language — fractal, declarative, agent-native")]
-#[command(long_about = "The Soma language — fractal, declarative, agent-native\n\n\
+#[command(about = "Soma — a language for programs written by coding agents")]
+#[command(long_about = "Soma — a language for programs written by coding agents\n\n\
     Soma is a language where every system is a cell: state, interface, lifecycle,\n\
     and distribution — in one model, from function to datacenter.\n\n\
     Quick start:\n  \
@@ -274,6 +274,9 @@ enum Commands {
         /// Record the laws as reviewed, in law.lock
         #[arg(long)]
         lock: bool,
+        /// Do not run the tests and the refutations the project keeps (the table then lists them as "not run")
+        #[arg(long)]
+        no_run: bool,
         /// The dictionary the owner of the law reviews: each state and its `maps`, each action and the signals that realize it, each `silent` signal and its reason
         #[arg(long)]
         map: bool,
@@ -394,6 +397,54 @@ enum Commands {
         /// Leave the file as it was when the body has diagnostics (by default the body stays, to be corrected)
         #[arg(long)]
         reject_on_error: bool,
+        /// Output as JSON (for agents)
+        #[arg(long)]
+        json: bool,
+    },
+    /// Name what is affirmed: one digest per law, skeleton, flesh, the manifest and the binary — and one for the program
+    Fingerprint {
+        /// The program
+        file: PathBuf,
+        /// Output as JSON (for agents)
+        #[arg(long)]
+        json: bool,
+    },
+    /// The monitor of a rule: the predicate derived from what the law says always holds, read through the skeleton's `maps` — written by no one
+    Monitor {
+        /// The program
+        file: PathBuf,
+        /// The rule (omit to list every monitor)
+        rule: Option<String>,
+        /// Output as JSON (for agents)
+        #[arg(long)]
+        json: bool,
+    },
+    /// Play a trace of calls from an empty state and judge every monitor after each: `refuted` (exit 1), `holds` (0), `rejected` (2: a call was refused, the trace proves nothing), `mismatch` (3: not the program the trace aimed at)
+    Refute {
+        /// The program
+        file: PathBuf,
+        /// The trace: one `Cell.signal("literal", 42)` per line, nothing else
+        #[arg(long)]
+        trace: PathBuf,
+        /// The fingerprint of the program the trace aims at (`soma fingerprint`)
+        #[arg(long)]
+        expect: Option<String>,
+        /// Output as JSON (for agents)
+        #[arg(long)]
+        json: bool,
+    },
+    /// Search for a trace that refutes a rule: every sequence of at most `--depth` calls over small domains, each from an empty state. Finding none proves nothing, and the command says so. It writes nothing in the program
+    Attack {
+        /// The program
+        file: PathBuf,
+        /// The rule to attack (omit: every rule that has a monitor)
+        rule: Option<String>,
+        /// The longest trace tried
+        #[arg(long, default_value_t = 3)]
+        depth: usize,
+        /// Write the trace found to this file
+        #[arg(long)]
+        out: Option<PathBuf>,
         /// Output as JSON (for agents)
         #[arg(long)]
         json: bool,
@@ -652,6 +703,10 @@ fn main_inner() {
         Commands::Init { name, skeleton, .. } => commands::init::cmd_init(name.as_deref(), skeleton),
         Commands::Doctor { dir, json } => commands::agent_setup::cmd_doctor(&dir.unwrap_or_else(|| PathBuf::from(".")), json),
         Commands::Hook => commands::agent_setup::cmd_hook(),
+        Commands::Attack { file, rule, depth, out, json } => commands::refute::cmd_attack(&file, rule.as_deref(), depth, out.as_ref(), json, &mut registry),
+        Commands::Fingerprint { file, json } => commands::refute::cmd_fingerprint(&file, json, &mut registry),
+        Commands::Monitor { file, rule, json } => commands::refute::cmd_monitor(&file, rule.as_deref(), json, &mut registry),
+        Commands::Refute { file, trace, expect, json } => commands::refute::cmd_refute(&file, &trace, expect.as_deref(), json, &mut registry),
         Commands::Next { file, cell, json } => commands::fill::cmd_next(&file.unwrap_or_else(|| PathBuf::from("app.cell")), cell.as_deref(), json),
         Commands::Fill { file, signal, body_file, reject_on_error, json } => commands::fill::cmd_fill(&file, &signal, body_file.as_ref(), reject_on_error, json),
         Commands::Add { package, version, git, path } => commands::init::cmd_add(&package, version.as_deref(), git.as_deref(), path.as_deref()),
@@ -718,7 +773,7 @@ fn main_inner() {
         Commands::Rename { file, signal, new_name, dry_run } => commands::refs::cmd_rename(&file, &signal, &new_name, dry_run),
         Commands::Refs { file, signal, json } => commands::refs::cmd_refs(&file, &signal, json),
         Commands::Holes { file, only, json } => commands::skeleton::cmd_holes(&file, only.as_deref(), json),
-        Commands::Law { file, rule, todo, lock, json, map } => commands::law::cmd_law(&file, rule.as_deref(), todo, lock, json, map),
+        Commands::Law { file, rule, todo, lock, json, map, no_run } => commands::law::cmd_law(&file, rule.as_deref(), todo, lock, json, map, no_run),
         Commands::Docs { topic } => commands::docs::cmd_docs(&topic),
         Commands::Fmt { paths, check, json } => commands::fmt::cmd_fmt(&paths, check, json),
         Commands::Eval { file, handler, dataset, grade, threshold, json } => commands::eval::cmd_eval(&file, &handler, &dataset, &grade, threshold, json),

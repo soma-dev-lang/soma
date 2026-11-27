@@ -1,5 +1,18 @@
 # Changelog
 
+## 3.6.0 — 2026-11-27
+
+Toward the manifesto: a claim about a program should be exposed to refutation, by a gesture anyone can repeat. Validation: 1,206 Rust tests, 118 CLI checks, 327 corpus programs, 1,280 numeric comparisons; 7,200 interpreter/native comparisons, 0 divergence.
+
+- **A rule can say what always holds, and its monitor is derived.** Under a rule, `always p: refunded(p) <= captured(p)` (the closed condition language). The monitor is computed from that line and the `maps` of its states: nobody writes it, so nobody can write a lenient one. `soma monitor app.cell ["RULE"]` prints it; `soma law` shows `monitored`, and says which rules have no monitor.
+- **`soma fingerprint app.cell`**: one sha256 per law file, per skeleton, per flesh — by tokens: comments and layout are not the program — the manifest and the binary, and one for the program. "This program, under this law, run by this binary", with no registry.
+- **`soma refute app.cell --trace t [--expect <fingerprint>]`**: a trace is calls with literal arguments and nothing else. It is played from an empty state and every monitor is judged after each accepted call. Four verdicts, four exit statuses: `holds` (0), `refuted` (1: the rule, the step, the values), `rejected` (2: the program refused a call — the trace proves nothing), `mismatch` (3: not the program the trace aimed at). A counter-example the program now refuses is no longer reported as a failure of the same kind.
+- **`soma attack app.cell ["RULE"] [--depth n] [--out file]`**: a bounded search for a refuting trace over small domains; it writes nothing in the program, and says that finding none proves nothing.
+- **A program judged by a trace reads nothing of the outside.** `refute` and `attack` refuse a program whose handlers call `now()`, `random()`, `think()`, `http_*` or read a file, and name the handler: two runs must give one verdict.
+- **`soma law` carries evidence, not a count.** Each test `under` a rule is run and shown `passes` or `FAILS` (kept by the program's fingerprint; `--no-run`); a refutation kept in `refutations/*.trace` is replayed, and while it refutes, the rule's status is `refuted` in the table, in `--json`, in `--todo` and in `soma next`.
+- **One sentence everywhere**: the binary's help said "fractal, declarative, agent-native"; it says what the site says. `soma docs manifesto` prints the manifesto.
+- Not done, from the same directions: `grants` (what a rule obliges the program to accept), laws published as packages, a refuter role (there is no MCP server; the commands above write nothing), a second, independent executor.
+
 ## 3.5.0 — 2026-11-27
 
 The law as an abstract machine, the skeleton as its refinement ([RFC 0003](docs/rfcs/0003-law-refinement.md)). Until now a rule was *cited* where it should be; nothing checked it was *kept*: `require true … under "SAN-02"` counted as serving the rule, a signal that wrote under the law without saying so passed, and deleting the `[law]` table from soma.toml took a program out of its law in silence. Each of those three programs is now refused. Validation: 1,199 Rust tests, 118 CLI checks, 327 corpus programs, 1,280 numeric comparisons; 7,200 interpreter/native comparisons, 0 divergence.

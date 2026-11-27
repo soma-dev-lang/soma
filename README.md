@@ -1,6 +1,6 @@
 # Soma
 
-**The language for programs you can prove — built for the age of AI agents.**
+**A language for programs written by coding agents.**
 
 *The goal: let programming agents design large applications in a solid manner.*
 
@@ -225,7 +225,7 @@ solve, lstsq, broadcasting helpers) in pure Soma — 43 self-proofs included.
 
 ## Honest status
 
-Soma is an experimental language (release: `soma 3.5.0`; see
+Soma is an experimental language (release: `soma 3.6.0`; see
 [the changelog](CHANGELOG.md) for what it adds and what it leaves out). The
 verifier proves state-machine and invariant properties per cell; a rule
 between two cells is proven when it is stated — a face contract

@@ -88,6 +88,10 @@ pub struct Rule {
     pub owner: String,
     pub law: String,
     pub requires: Option<Formal>,
+    /// `always p: refunded(p) <= captured(p)` — what holds of every entity,
+    /// in every state: the rule's monitor is derived from it. (`action` is
+    /// empty, `params` holds the one variable.)
+    pub always: Option<Formal>,
 }
 
 #[derive(Debug, Clone)]
@@ -312,10 +316,23 @@ fn check_formal(law: &Law, file: &str) -> Vec<(&'static str, String)> {
             }
         }
     }
+    // an `always` is judged like a `requires` over one parameter: the
+    // entity its states speak of
+    let mut readings: Vec<(&Rule, &Formal, Option<ActionDecl>)> = Vec::new();
     for r in &law.rules {
-        let Some(f) = &r.requires else { continue };
+        if let Some(f) = &r.requires { readings.push((r, f, law.actions.iter().find(|a| a.name == f.action).cloned())); }
+        if let Some(f) = &r.always {
+            let mut used: Vec<String> = Vec::new();
+            cond_states(&f.cond, &mut used);
+            match used.iter().find_map(|st| law.states.iter().find(|d| &d.name == st)) {
+                Some(first) => readings.push((r, f, Some(ActionDecl { name: "always".to_string(), params: vec![(f.params[0].clone(), first.entity.clone())], definition: String::new(), line: f.line }))),
+                None => out.push(("law_requires_unknown", format!("{}:{}: the rule \"{}\": `always {}: {}` speaks of no state the law declares — an `always` says what holds of a state: add `state …(…): Int \"…\"` (ask the owner of the law)", file, f.line, r.id, f.params[0], f.text))),
+            }
+        }
+    }
+    for (r, f, action) in &readings {
         let at = |m: String| ("law_requires_unknown", format!("{}:{}: the rule \"{}\": {}", file, f.line, r.id, m));
-        let Some(action) = law.actions.iter().find(|a| a.name == f.action) else {
+        let Some(action) = action else {
             out.push(at(format!("`requires {}(…)` names an action the law does not declare — add `action {}({}) \"…\"` (ask the owner of the law)", f.action, f.action, f.params.iter().map(|p| format!("{}: …", p)).collect::<Vec<_>>().join(", "))));
             continue;
         };
@@ -393,7 +410,7 @@ pub fn parse_all(file: &str, text: &str) -> (Law, Vec<String>, Vec<(&'static str
     for (n, line) in text.lines().enumerate() {
         let at = |m: String| format!("{}:{}: {}", file, n + 1, m);
         let first = line.split_whitespace().next().unwrap_or("");
-        if ["entity", "state", "action", "requires"].contains(&first) || (line.trim_start().starts_with('"') && last != Last::None) {
+        if ["entity", "state", "action", "requires", "always"].contains(&first) || (line.trim_start().starts_with('"') && last != Last::None) {
             let ft = match formal_tokens(line) { Ok(t) => t, Err(m) => { errors.push(at(m)); continue; } };
             let texts: Vec<String> = ft.iter().filter_map(|t| if let F::Text(s) = t { Some(s.clone()) } else { None }).collect();
             let def = texts.first().cloned().unwrap_or_default();
@@ -446,6 +463,31 @@ pub fn parse_all(file: &str, text: &str) -> (Law, Vec<String>, Vec<(&'static str
                     else if taken { errors.push(at(format!("`{}` is declared twice", name))); }
                     else { law.actions.push(ActionDecl { name, params, definition: def, line: n + 1 }); last = Last::Action; }
                 }
+                "always" => {
+                    let Some(rule) = law.rules.last_mut() else {
+                        errors.push(at("`always` belongs to a rule: write it under a `rule` line".to_string()));
+                        continue;
+                    };
+                    if rule.always.is_some() { errors.push(at(format!("the rule \"{}\" has two `always`: join them with `and`, or write two rules", rule.id))); continue; }
+                    // always <var> : <condition>
+                    let (Some(F::Name(var)), Some(F::P(colon))) = (ft.get(1).cloned(), ft.get(2).cloned()) else {
+                        formal.push(("law_condition", at(format!("the rule \"{}\": `always` names the entity it speaks of, then what holds of it: `always p: refunded(p) <= captured(p)`", rule.id))));
+                        continue;
+                    };
+                    if colon != ":" {
+                        formal.push(("law_condition", at(format!("the rule \"{}\": `always {}` is followed by `:` and what holds: `always {}: refunded({}) <= captured({})`", rule.id, var, var, var, var))));
+                        continue;
+                    }
+                    let mut p = CondParser { t: &ft[3..], i: 0 };
+                    match p.or() {
+                        Ok(cond) if p.peek().is_none() => {
+                            let text = line.trim_start().strip_prefix("always").unwrap_or("").split("//").next().unwrap_or("").trim().to_string();
+                            rule.always = Some(Formal { action: String::new(), params: vec![var], cond, text, line: n + 1 });
+                        }
+                        Ok(_) => formal.push(("law_condition", at(format!("the rule \"{}\": the condition of `always` does not end where it should — {}", rule.id, CLOSED)))),
+                        Err(m) => formal.push(("law_condition", at(format!("the rule \"{}\": {}", rule.id, m)))),
+                    }
+                }
                 _ => {
                     let Some(rule) = law.rules.last_mut() else {
                         errors.push(at("`requires` belongs to a rule: write it under a `rule` line".to_string()));
@@ -485,7 +527,7 @@ pub fn parse_all(file: &str, text: &str) -> (Law, Vec<String>, Vec<(&'static str
             "rule" => match (strs.first(), strs.get(1)) {
                 (Some(id), Some(text)) if !id.trim().is_empty() && !text.trim().is_empty() => {
                     if law.rules.iter().any(|r| &r.id == *id) { errors.push(at(format!("the rule \"{}\" is declared twice", id))); }
-                    else { law.rules.push(Rule { id: (*id).clone(), text: (*text).clone(), about: Vec::new(), source: String::new(), owner: String::new(), law: String::new(), requires: None }); }
+                    else { law.rules.push(Rule { id: (*id).clone(), text: (*text).clone(), about: Vec::new(), source: String::new(), owner: String::new(), law: String::new(), requires: None, always: None }); }
                 }
                 _ => errors.push(at("a rule is an identifier and a sentence: `rule \"SAN-02\" \"Aucun paiement vers un porteur bloqué\"`".to_string())),
             },
@@ -676,6 +718,12 @@ pub struct RuleStatus {
     /// signals that realize a term of the rule and neither serve it nor are exempt
     pub missing: Vec<String>,
     pub tests: Vec<String>,
+    /// test -> "passes" | "fails" | "not run" (set by `soma law`, which runs them)
+    pub results: BTreeMap<String, &'static str>,
+    /// (trace, what it shows): a refutation the project keeps that still refutes the rule
+    pub refuted_by: Vec<(String, String)>,
+    /// traces kept for this rule that no longer refute it
+    pub stale_refutations: Vec<String>,
 }
 
 impl RuleStatus {
@@ -683,8 +731,12 @@ impl RuleStatus {
     /// weakest way it is served anywhere: a guarded edge proves, a refusal
     /// checks at run time, a marked branch only says where it is handled.
     pub fn status(&self) -> &'static str {
-        if self.served.is_empty() { "unserved" }
+        // a known refutation, then a failing test, say more than how the rule is served
+        if !self.refuted_by.is_empty() { "refuted" }
+        else if self.results.values().any(|r| *r == "fails") { "failing" }
+        else if self.served.is_empty() { "unserved" }
         else if !self.missing.is_empty() { "incomplete" }
+        else if self.served.iter().all(|(_, how)| *how == "monitored") { "monitored" }
         else if self.served.iter().any(|(_, how)| *how == "handled") { "handled" }
         else if self.served.iter().all(|(_, how)| *how == "proved") { "proved" }
         else { "checked" }
@@ -820,6 +872,62 @@ pub fn derive(program: &mut Program, root: &Path) {
         }
     }
     attach(&mut program.cells, &formal, &actions, &maps);
+}
+
+/// The monitor of a rule: what it says always holds, read through the
+/// program's `maps`. Derived, never written — nobody can write a lenient one.
+#[derive(Debug, Clone)]
+pub struct Monitor {
+    pub rule: String,
+    pub sentence: String,
+    pub source: String,
+    /// `always p: refunded(p) <= captured(p)`
+    pub form: String,
+    pub var: String,
+    pub cond: GuardCond,
+    /// (state, the cell that maps it, the parameter, the expression)
+    pub maps: Vec<(String, String, String, String)>,
+}
+
+/// The monitors of the program's laws — one per rule with an `always` whose
+/// states are all mapped.
+pub fn monitors(program: &Program, laws: &[Law]) -> Vec<Monitor> {
+    let mut maps: BTreeMap<String, (String, String, Spanned<Expr>)> = BTreeMap::new();
+    fn collect(cells: &[Spanned<CellDef>], maps: &mut BTreeMap<String, (String, String, Spanned<Expr>)>) {
+        for c in cells {
+            for m in &c.node.maps { maps.entry(m.node.state.clone()).or_insert((c.node.name.clone(), m.node.param.clone(), m.node.expr.clone())); }
+            for s in &c.node.sections { if let Section::Interior(i) = &s.node { collect(&i.cells, maps); } }
+        }
+    }
+    collect(&program.cells, &mut maps);
+    fn build(c: &Cond, maps: &BTreeMap<String, (String, String, Spanned<Expr>)>) -> Option<GuardCond> {
+        let state = |s: &str, p: &str| -> Option<GuardOperand> {
+            let (cell, param, expr) = maps.get(s)?;
+            Some(GuardOperand::State { cell: cell.clone(), param: param.clone(), expr: expr.clone(), arg: Box::new(GuardOperand::Param(p.to_string())) })
+        };
+        let operand = |o: &Operand| -> Option<GuardOperand> {
+            match o { Operand::State(s, p) => state(s, p), Operand::Param(p) => Some(GuardOperand::Param(p.clone())), Operand::Int(n) => Some(GuardOperand::Int(*n)) }
+        };
+        Some(match c {
+            Cond::Not(a) => GuardCond::Not(Box::new(build(a, maps)?)),
+            Cond::And(a, b) => GuardCond::And(Box::new(build(a, maps)?), Box::new(build(b, maps)?)),
+            Cond::Or(a, b) => GuardCond::Or(Box::new(build(a, maps)?), Box::new(build(b, maps)?)),
+            Cond::Holds(s, p) => GuardCond::Holds(state(s, p)?),
+            Cond::Cmp(l, op, r) => GuardCond::Cmp(operand(l)?, op.clone(), operand(r)?),
+        })
+    }
+    let mut out = Vec::new();
+    for rule in laws.iter().flat_map(|l| l.rules.iter()) {
+        let Some(f) = &rule.always else { continue };
+        let Some(cond) = build(&f.cond, &maps) else { continue };
+        let mut used: Vec<String> = Vec::new();
+        cond_states(&f.cond, &mut used);
+        out.push(Monitor {
+            rule: rule.id.clone(), sentence: rule.text.clone(), source: rule.source.clone(), form: format!("always {}", f.text), var: f.params[0].clone(), cond,
+            maps: used.iter().filter_map(|st| maps.get(st).map(|(cell, param, expr)| (st.clone(), cell.clone(), param.clone(), crate::ast::render_expr(&expr.node)))).collect(),
+        });
+    }
+    out
 }
 
 /// `soma law --map`: the correspondence between the law and the program,
@@ -1260,12 +1368,13 @@ pub fn analyse(program: &Program, laws: &[Law], tests_beside: &BTreeMap<String, 
 
     // rule by rule, in the order of the law
     for rule in &rules {
-        let mut status = RuleStatus { rule: (*rule).clone(), served: Vec::new(), exempt: Vec::new(), missing: Vec::new(), tests: tested.get(&rule.id).cloned().unwrap_or_default() };
+        let mut status = RuleStatus { rule: (*rule).clone(), served: Vec::new(), exempt: Vec::new(), missing: Vec::new(), tests: tested.get(&rule.id).cloned().unwrap_or_default(),
+            results: BTreeMap::new(), refuted_by: Vec::new(), stale_refutations: Vec::new() };
         for who in proved_anywhere.get(&rule.id).into_iter().flatten() { status.served.push((who.clone(), "proved")); }
         // a rule with a formal reading is served by the guard derived from
         // it (RFC 0003): a refusal or a branch tagged by hand no longer counts
         let formal = rule.requires.as_ref();
-        if formal.is_none() {
+        if formal.is_none() && rule.always.is_none() {
             for who in checked_anywhere.get(&rule.id).into_iter().flatten() {
                 if !status.served.iter().any(|(w, _)| w == who) { status.served.push((who.clone(), "checked")); }
             }
@@ -1276,6 +1385,7 @@ pub fn analyse(program: &Program, laws: &[Law], tests_beside: &BTreeMap<String, 
         for r in &report.realizations {
             if !r.terms.iter().any(|t| rule.about.contains(t)) { continue; }
             let who = format!("{}.{}", r.cell, r.signal);
+            if formal.is_none() && rule.always.is_some() { continue; }   // served by its monitor
             if let Some(f) = formal {
                 if r.proved.contains(&rule.id) {
                     if !status.served.iter().any(|(w, _)| w == &who) { status.served.push((who, "proved")); }
@@ -1305,6 +1415,25 @@ pub fn analyse(program: &Program, laws: &[Law], tests_beside: &BTreeMap<String, 
                 status.missing.push(who);
             }
         }
+        // a rule that says what always holds, each of its states mapped: its
+        // monitor is derived — judged when a trace is played (`soma refute`)
+        if let Some(f) = &rule.always {
+            let mut needed: Vec<String> = Vec::new();
+            cond_states(&f.cond, &mut needed);
+            let missing: Vec<String> = needed.iter().filter(|st| !mapped.contains_key(*st)).cloned().collect();
+            if missing.is_empty() {
+                if status.served.is_empty() { status.served.push(("its monitor, derived from the rule".to_string(), "monitored")); }
+            } else {
+                for st in missing {
+                    let decl = states.iter().find(|d| d.name == st);
+                    report.issues.push(Issue { kind: "law_state_unmapped", warning: false, span: none,
+                        message: format!("the rule \"{}\" ({}) says `always {}`, and no `maps` of the program defines the state `{}`{} — write `maps {}({}) = <{} expression over the memory>` in the skeleton that holds that fact",
+                            rule.id, rule.text, f.text, st, decl.map(|d| format!(" ({})", d.definition)).unwrap_or_default(), st, f.params[0],
+                            decl.map(|d| d.ty.clone()).unwrap_or_else(|| "Int".to_string())) });
+                }
+                status.missing.push("(a state with no `maps`)".to_string());
+            }
+        }
         // (said once: when a signal that realizes one of its terms is named
         // above as not serving it, that is the place to serve it)
         if status.served.is_empty() && status.missing.is_empty() {
@@ -1329,6 +1458,8 @@ fn rule_block(s: &RuleStatus, laws: &[Law], realizations: &[Realization], full: 
     if !s.rule.owner.is_empty() { out.push_str(&format!("             owner    {}\n", s.rule.owner)); }
     if !s.rule.about.is_empty() { out.push_str(&format!("             about    {}\n", s.rule.about.join(", "))); }
     if let Some(f) = &s.rule.requires { out.push_str(&format!("             formal   requires {}({}): {}\n", f.action, f.params.join(", "), f.text)); }
+    if let Some(f) = &s.rule.always { out.push_str(&format!("             formal   always {}\n", f.text)); }
+    else { out.push_str("             monitor  none: the rule says nothing that always holds (`always p: …`) — `soma refute` cannot judge it\n"); }
     if full {
         for t in &s.rule.about {
             if let Some(term) = laws.iter().flat_map(|l| l.terms.iter().chain(l.entities.iter())).find(|x| &x.name == t) {
@@ -1344,7 +1475,28 @@ fn rule_block(s: &RuleStatus, laws: &[Law], realizations: &[Realization], full: 
     for (who, how) in &s.served { out.push_str(&format!("             served   {} ({})\n", who, how)); }
     for (who, why) in &s.exempt { out.push_str(&format!("             exempt   {} — {}\n", who, why)); }
     for who in &s.missing { out.push_str(&format!("             MISSING  {}\n", who)); }
-    if !s.tests.is_empty() { out.push_str(&format!("             tests    {}\n", s.tests.join(", "))); }
+    if !s.tests.is_empty() {
+        let shown: Vec<String> = s.tests.iter().map(|t| match s.results.get(t) {
+            Some(&"passes") => format!("{} (passes)", t), Some(&"fails") => format!("{} (FAILS)", t), Some(r) => format!("{} ({})", t, r), None => t.clone(),
+        }).collect();
+        out.push_str(&format!("             tests    {}\n", shown.join(", ")));
+    }
+    for (trace, what) in &s.refuted_by { out.push_str(&format!("             REFUTED  by {} — {}\n", trace, what)); }
+    for trace in &s.stale_refutations { out.push_str(&format!("             trace    {} no longer refutes it\n", trace)); }
+    out
+}
+
+/// What the evidence says against a rule: a refutation the project keeps, a test that fails.
+pub fn evidence_lines(report: &Report) -> Vec<String> {
+    let mut out = Vec::new();
+    for s in &report.rules {
+        for (trace, what) in &s.refuted_by {
+            out.push(format!("the rule \"{}\" ({}) is refuted by {} — {} — correct the body the trace goes through (`soma refute <file> --trace {}` replays it)", s.rule.id, s.rule.text, trace, what, trace));
+        }
+        for (test, result) in &s.results {
+            if *result == "fails" { out.push(format!("the test `{}` under the rule \"{}\" ({}) fails — `soma test` shows the assertion", test, s.rule.id, s.rule.text)); }
+        }
+    }
     out
 }
 
@@ -1360,8 +1512,11 @@ pub fn render(loaded: &Loaded, report: &Report, lock: &Result<Option<String>, ()
     }
     if only.is_none() {
         let count = |st: &str| report.rules.iter().filter(|s| s.status() == st).count();
-        out.push_str(&format!("{} rule(s): {} proved, {} checked, {} handled, {} incomplete, {} unserved; {} without a test\n",
-            report.rules.len(), count("proved"), count("checked"), count("handled"), count("incomplete"), count("unserved"),
+        // what is against a rule, and a rule only monitored, are said only when there is one
+        let mut extra = String::new();
+        for st in ["refuted", "failing", "monitored"] { if count(st) > 0 { extra.push_str(&format!("{} {}, ", count(st), st.to_uppercase().replace("MONITORED", "monitored"))); } }
+        out.push_str(&format!("{} rule(s): {}{} proved, {} checked, {} handled, {} incomplete, {} unserved; {} without a test\n",
+            report.rules.len(), extra, count("proved"), count("checked"), count("handled"), count("incomplete"), count("unserved"),
             report.rules.iter().filter(|s| s.tests.is_empty()).count()));
         out.push_str(&format!("{} of the program's {} `require` serve a rule\n", report.requires_under, report.requires));
     }
@@ -1373,6 +1528,7 @@ pub fn todo(loaded: &Loaded, report: &Report, lock: &Result<Option<String>, ()>)
     let mut lines: Vec<String> = loaded.errors.clone();
     if let Ok(Some(m)) = lock { lines.push(m.clone()); }
     lines.extend(report.issues.iter().map(|i| format!("{}{}", if i.warning { "(warning) " } else { "" }, i.message)));
+    lines.extend(evidence_lines(report));
     if lines.is_empty() { return "nothing to do: every rule of the law is served and tested\n".to_string(); }
     lines.iter().enumerate().map(|(n, l)| format!("{}. {}\n", n + 1, l)).collect()
 }
@@ -1395,8 +1551,12 @@ pub fn json(loaded: &Loaded, report: &Report, lock: &Result<Option<String>, ()>)
             "exempt": s.exempt.iter().map(|(w, y)| serde_json::json!({"signal": w, "why": y})).collect::<Vec<_>>(),
             "missing": s.missing, "tests": s.tests,
             "requires": s.rule.requires.as_ref().map(|f| serde_json::json!({"action": f.action, "params": f.params, "condition": f.text})),
+            "always": s.rule.always.as_ref().map(|f| f.text.clone()),
+            "test_results": s.results,
+            "refuted_by": s.refuted_by.iter().map(|(t, w)| serde_json::json!({"trace": t, "shows": w})).collect::<Vec<_>>(),
+            "no_longer_refuting": s.stale_refutations,
         })).collect::<Vec<_>>(),
-        "todo": loaded.errors.iter().cloned().chain(report.issues.iter().map(|i| i.message.clone())).collect::<Vec<_>>(),
+        "todo": loaded.errors.iter().cloned().chain(report.issues.iter().map(|i| i.message.clone())).chain(evidence_lines(report)).collect::<Vec<_>>(),
         "requires": report.requires, "requires_under": report.requires_under,
     })
 }

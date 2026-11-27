@@ -1763,6 +1763,37 @@ impl Interpreter {
         }
     }
 
+    /// A monitor of the law on one entity: does what the rule says always
+    /// holds, hold of `value`? Reads the memory through the `maps`, no body.
+    pub fn law_monitor(&mut self, cond: &GuardCond, var: &str, value: &Value) -> Result<bool, RuntimeError> {
+        let mut env: Env = FxHashMap::with_capacity_and_hasher(1, Default::default());
+        env.insert(var.to_string(), value.clone());
+        self.law_cond(cond, &env, "monitor")
+    }
+
+    /// The states a monitor read for `value`, as text: `refunded("p2") = 120`.
+    pub fn law_readings(&mut self, cond: &GuardCond, var: &str, value: &Value) -> Vec<String> {
+        fn operands<'c>(c: &'c GuardCond, out: &mut Vec<&'c GuardOperand>) {
+            match c {
+                GuardCond::Not(a) => operands(a, out),
+                GuardCond::And(a, b) | GuardCond::Or(a, b) => { operands(a, out); operands(b, out); }
+                GuardCond::Holds(o) => out.push(o),
+                GuardCond::Cmp(l, _, r) => { out.push(l); out.push(r); }
+            }
+        }
+        let mut env: Env = FxHashMap::with_capacity_and_hasher(1, Default::default());
+        env.insert(var.to_string(), value.clone());
+        let mut found = Vec::new();
+        operands(cond, &mut found);
+        let mut out = Vec::new();
+        for o in found {
+            if let GuardOperand::State { .. } = o {
+                if let Ok(v) = self.law_operand(o, &env, "monitor") { out.push(short_value(&v)); } else { out.push("?".to_string()); }
+            }
+        }
+        out
+    }
+
     fn law_cond(&mut self, c: &GuardCond, env: &Env, signal: &str) -> Result<bool, RuntimeError> {
         Ok(match c {
             GuardCond::Not(a) => !self.law_cond(a, env, signal)?,

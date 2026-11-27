@@ -9,7 +9,7 @@
 > the compiler gives you a one-screen brief per body and refuses a body
 > that leaves it, so you never hold the whole program in context.
 
-New here? https://soma-lang.dev/learn — six lessons, every output printed by
+New here? https://soma-lang.dev/learn — seven lessons, every output printed by
 the real binary ([plain text](https://soma-lang.dev/llms-learn.txt)). Everything
 below is current for the binary named in https://soma-lang.dev/version.json.
 
@@ -32,7 +32,7 @@ below is current for the binary named in https://soma-lang.dev/version.json.
 
 ## Pick Soma when / skip it when
 
-Current release: 3.5.0 — the law has a formal reading and its guards are derived; after 3.4's method (`soma next`, `soma fill`), 3.3's
+Current release: 3.6.0 — a rule is exposed to refutation (`soma refute`, `soma attack`); after 3.5's formal law and derived guards, 3.4's method (`soma next`, `soma fill`), 3.3's
 law, 3.2's nominal types and 3.1's skeleton first. What each release changed: `soma docs releases`.
 
 Pick it when the task has a lifecycle or a limit that must hold: payments,
@@ -883,6 +883,7 @@ installs a hook that runs `soma check` after every edit of a `.cell`, a
 | `soma verify` | each state machine (reachability, deadlocks, liveness), handlers take only declared edges, bounded invariants, termination | anything the skeleton does not state; rules between cells that `soma.toml` does not state |
 | `soma law` | where each rule is served, by what (`proved` by a guarded edge, `checked` by a refusal — derived from the rule when it has a formal reading — `handled` by a marked branch), and its tests | for a rule that is only a sentence: that a refusal tagged `under "R"` refuses what R says — there the tag is a claim, and its tests are what back it |
 | `soma test` | the scenarios somebody thought of | the ones nobody thought of |
+| `soma refute`, `soma attack` | that a trace of accepted calls breaks a rule that says what always holds (`refuted`), or does not (`holds`) — judged by a monitor derived from the law, on a program named by its fingerprint | that a rule holds: a trace that does not refute proves nothing, and `attack` searches small traces only |
 
 The third line is a limit that depends on the rule. When the owner of the
 law gives a rule a formal reading (`requires Payment(h, n): not frozen(h)`),
@@ -1618,6 +1619,53 @@ something other than a refusal (an order recorded then rejected) needs the
 law to name the action that is refused. `silent` is declared and reviewed,
 not proven.
 
+## What always holds: the monitor, and the gesture of refutation
+
+`requires` says when an action is allowed. A rule may also say what holds
+of every entity, in every state:
+
+```
+rule "RMB-01" "The total refunded on a payment never exceeds the total captured"
+    about  Refund, Payment
+    always p: refunded(p) <= captured(p)
+```
+
+Its **monitor** is derived from that line and from the `maps` of its
+states. Nobody writes it — so nobody, and no agent, can write a lenient
+one. `soma monitor app.cell "RMB-01"` prints it; `soma law` says the rule is
+`monitored`, and for a rule with no `always`, that it has no monitor.
+
+```
+soma fingerprint app.cell                    # one sha256 per law, skeleton, flesh (by tokens), manifest, binary — and the program
+soma refute app.cell --trace t.trace         # play a trace from an empty state; judge every monitor after each call
+soma refute app.cell --trace t.trace --expect <program fingerprint>
+soma attack app.cell "RMB-01" --depth 3      # search small traces for one that refutes; finding none proves nothing
+```
+
+A trace is calls and nothing else — one `Cell.signal("literal", 42)` per
+line; no `assert`, no expression. `soma refute` answers one of four
+verdicts, each with its exit status, and names the program by its
+fingerprint:
+
+    holds     0   every call was played, no monitor failed (on THIS trace: nothing is proven)
+    refuted   1   a monitor fails after an accepted call: the rule, the step, the values
+    rejected  2   the program refused a call: the trace proves nothing
+    mismatch  3   this is not the program the trace aimed at (`--expect`)
+
+`refuted` is not `rejected`: a counter-example that the program now
+refuses is no longer one. A trace kept in `refutations/*.trace` is
+replayed by `soma law`: while it refutes, the rule's status is `refuted`;
+once the body is corrected it is listed as no longer refuting. `soma law`
+also runs the tests `under` each rule and says `passes` or `FAILS`.
+
+A program judged by a trace reads nothing of the outside: `refute` and
+`attack` refuse one whose handlers call `now()`, `random()`, `think()`,
+`http_*` or read a file, and name the handler. Pass what the outside gives
+as a parameter of the signal; the trace then gives it.
+
+You do not weaken a monitor, a trace or a test to make the table green:
+correct the body.
+
 ## What `soma check` refuses
 
     E0123  a law that is missing or does not read as a law
@@ -1792,6 +1840,18 @@ it says "error kind X", raise it with `require … else X "…"` or `fail`.
 
 > Newest first. The language itself: https://soma-lang.dev/llms.txt (`soma docs agent`).
 > Every fix and its compatibility note: https://soma-lang.dev/CHANGELOG.md.
+
+Soma 3.6.0: a rule is exposed to refutation. Under a rule, `always p:
+refunded(p) <= captured(p)` says what holds of every entity; its MONITOR is
+derived from it and the `maps` — nobody writes one (`soma monitor`). `soma
+fingerprint app.cell`: a sha256 per law, skeleton, flesh (by tokens),
+manifest, binary, and one for the program. `soma refute app.cell --trace t
+[--expect <fingerprint>]` plays a trace — calls with literals, nothing else
+— from an empty state: `holds` (exit 0), `refuted` (1), `rejected` (2: a
+call was refused, the trace proves nothing), `mismatch` (3). `soma attack`
+searches small traces; finding none proves nothing. `soma law` runs the
+tests under each rule (`passes` / `FAILS`) and replays `refutations/*.trace`:
+a rule can be `refuted`, `failing` or `monitored`. `soma docs manifesto`.
 
 Soma 3.5.0: a rule of the law can be said formally, and its guard is
 DERIVED. The `.law` file declares `entity`, `state frozen(Holder): Bool`,
@@ -2479,6 +2539,10 @@ See [cluster.md](cluster.md) for setup and migration.
   its condition is: the tag is a claim, backed by the tests written `under
   "R"`. (A rule with a formal reading is served by a guard derived from it:
   see ENFORCED.) A rule nobody wrote in a law is not checked at all.
+- **A rule that says what always holds (`always …`) is monitored, not proven.**
+  Its monitor is derived from the law and judged when a trace is played
+  (`soma refute`), not on every write. A trace that does not refute it
+  proves nothing.
 - **A rule over a batch, a history or a deadline.** The formal reading of a
   rule is a precondition of one call over the present state. `silent` is
   declared and reviewed, not proven.

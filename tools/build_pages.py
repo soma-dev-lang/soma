@@ -405,6 +405,8 @@ def build_learn(site):
 GUIDES = [
     ("language", "site/llms.txt", "The language guide",
      "The guide `soma docs agent` prints: the whole core language in one page, as an agent reads it before writing Soma."),
+    ("manifesto", "docs/site/manifesto.md", "The Economy of Trust — manifesto",
+     "What Soma is for: establishing that autonomous systems act according to human intentions. A working document."),
     ("method", "site/llms-method.txt", "The method: building a program with a coding agent",
      "Law, skeleton, flesh: three layers with three owners, the order of work, the loop the toolchain imposes, and what each step establishes."),
     ("skeleton", "site/llms-skeleton.txt", "Large programs, skeleton first",

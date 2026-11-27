@@ -126,6 +126,7 @@ installs a hook that runs `soma check` after every edit of a `.cell`, a
 | `soma verify` | each state machine (reachability, deadlocks, liveness), handlers take only declared edges, bounded invariants, termination | anything the skeleton does not state; rules between cells that `soma.toml` does not state |
 | `soma law` | where each rule is served, by what (`proved` by a guarded edge, `checked` by a refusal — derived from the rule when it has a formal reading — `handled` by a marked branch), and its tests | for a rule that is only a sentence: that a refusal tagged `under "R"` refuses what R says — there the tag is a claim, and its tests are what back it |
 | `soma test` | the scenarios somebody thought of | the ones nobody thought of |
+| `soma refute`, `soma attack` | that a trace of accepted calls breaks a rule that says what always holds (`refuted`), or does not (`holds`) — judged by a monitor derived from the law, on a program named by its fingerprint | that a rule holds: a trace that does not refute proves nothing, and `attack` searches small traces only |
 
 The third line is a limit that depends on the rule. When the owner of the
 law gives a rule a formal reading (`requires Payment(h, n): not frozen(h)`),

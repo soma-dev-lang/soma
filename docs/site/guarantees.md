@@ -116,6 +116,10 @@ See [cluster.md](cluster.md) for setup and migration.
   its condition is: the tag is a claim, backed by the tests written `under
   "R"`. (A rule with a formal reading is served by a guard derived from it:
   see ENFORCED.) A rule nobody wrote in a law is not checked at all.
+- **A rule that says what always holds (`always …`) is monitored, not proven.**
+  Its monitor is derived from the law and judged when a trace is played
+  (`soma refute`), not on every write. A trace that does not refute it
+  proves nothing.
 - **A rule over a batch, a history or a deadline.** The formal reading of a
   rule is a precondition of one call over the present state. `silent` is
   declared and reviewed, not proven.

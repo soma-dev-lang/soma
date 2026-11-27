@@ -179,6 +179,53 @@ something other than a refusal (an order recorded then rejected) needs the
 law to name the action that is refused. `silent` is declared and reviewed,
 not proven.
 
+## What always holds: the monitor, and the gesture of refutation
+
+`requires` says when an action is allowed. A rule may also say what holds
+of every entity, in every state:
+
+```
+rule "RMB-01" "The total refunded on a payment never exceeds the total captured"
+    about  Refund, Payment
+    always p: refunded(p) <= captured(p)
+```
+
+Its **monitor** is derived from that line and from the `maps` of its
+states. Nobody writes it — so nobody, and no agent, can write a lenient
+one. `soma monitor app.cell "RMB-01"` prints it; `soma law` says the rule is
+`monitored`, and for a rule with no `always`, that it has no monitor.
+
+```
+soma fingerprint app.cell                    # one sha256 per law, skeleton, flesh (by tokens), manifest, binary — and the program
+soma refute app.cell --trace t.trace         # play a trace from an empty state; judge every monitor after each call
+soma refute app.cell --trace t.trace --expect <program fingerprint>
+soma attack app.cell "RMB-01" --depth 3      # search small traces for one that refutes; finding none proves nothing
+```
+
+A trace is calls and nothing else — one `Cell.signal("literal", 42)` per
+line; no `assert`, no expression. `soma refute` answers one of four
+verdicts, each with its exit status, and names the program by its
+fingerprint:
+
+    holds     0   every call was played, no monitor failed (on THIS trace: nothing is proven)
+    refuted   1   a monitor fails after an accepted call: the rule, the step, the values
+    rejected  2   the program refused a call: the trace proves nothing
+    mismatch  3   this is not the program the trace aimed at (`--expect`)
+
+`refuted` is not `rejected`: a counter-example that the program now
+refuses is no longer one. A trace kept in `refutations/*.trace` is
+replayed by `soma law`: while it refutes, the rule's status is `refuted`;
+once the body is corrected it is listed as no longer refuting. `soma law`
+also runs the tests `under` each rule and says `passes` or `FAILS`.
+
+A program judged by a trace reads nothing of the outside: `refute` and
+`attack` refuse one whose handlers call `now()`, `random()`, `think()`,
+`http_*` or read a file, and name the handler. Pass what the outside gives
+as a parameter of the signal; the trace then gives it.
+
+You do not weaken a monitor, a trace or a test to make the table green:
+correct the body.
+
 ## What `soma check` refuses
 
     E0123  a law that is missing or does not read as a law

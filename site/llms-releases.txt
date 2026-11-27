@@ -3,6 +3,18 @@
 > Newest first. The language itself: https://soma-lang.dev/llms.txt (`soma docs agent`).
 > Every fix and its compatibility note: https://soma-lang.dev/CHANGELOG.md.
 
+Soma 3.6.0: a rule is exposed to refutation. Under a rule, `always p:
+refunded(p) <= captured(p)` says what holds of every entity; its MONITOR is
+derived from it and the `maps` — nobody writes one (`soma monitor`). `soma
+fingerprint app.cell`: a sha256 per law, skeleton, flesh (by tokens),
+manifest, binary, and one for the program. `soma refute app.cell --trace t
+[--expect <fingerprint>]` plays a trace — calls with literals, nothing else
+— from an empty state: `holds` (exit 0), `refuted` (1), `rejected` (2: a
+call was refused, the trace proves nothing), `mismatch` (3). `soma attack`
+searches small traces; finding none proves nothing. `soma law` runs the
+tests under each rule (`passes` / `FAILS`) and replays `refutations/*.trace`:
+a rule can be `refuted`, `failing` or `monitored`. `soma docs manifesto`.
+
 Soma 3.5.0: a rule of the law can be said formally, and its guard is
 DERIVED. The `.law` file declares `entity`, `state frozen(Holder): Bool`,
 `action Payment(h: Holder, n: Int)` and under a rule `requires Payment(h,

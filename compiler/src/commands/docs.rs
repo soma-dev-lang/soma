@@ -12,6 +12,7 @@ const AGENTS_GUIDE: &str = include_str!("../../../site/llms-agents.txt");
 const NATIVE_GUIDE: &str = include_str!("../../../site/llms-native.txt");
 const SKELETON_GUIDE: &str = include_str!("../../../site/llms-skeleton.txt");
 const METHOD: &str = include_str!("../../../site/llms-method.txt");
+const MANIFESTO: &str = include_str!("../../../docs/site/manifesto.md");
 const LAW_GUIDE: &str = include_str!("../../../site/llms-law.txt");
 const FLESH_CARD: &str = include_str!("../../../site/llms-flesh.txt");
 const RELEASES: &str = include_str!("../../../site/llms-releases.txt");
@@ -28,6 +29,7 @@ const TOPICS: &[(&str, &str)] = &[
     ("agent", "working summary of the language for a model's context (start here)"),
     ("agents", "running LLM agents: tools, capabilities, [task], hordes, budgets, mocks, replay"),
     ("native", "the [native] vocabulary, its limits and costs"),
+    ("manifesto", "The Economy of Trust: what Soma is for, and what it holds of it today"),
     ("method", "how a program is built with an agent: law, skeleton, flesh; the order of work; what each step establishes"),
     ("skeleton", "large programs: skeleton / flesh, frames, holes, the brief, skeleton.lock"),
     ("law", "business rules outside the code: the .law file, realizes / under / exempt, soma law"),
@@ -51,6 +53,7 @@ pub fn cmd_docs(topic: &str) {
         "agent" | "llms" => print!("{}", AGENT_SUMMARY),
         "agents" => print!("{}", AGENTS_GUIDE),
         "native" | "performance" => print!("{}", NATIVE_GUIDE),
+        "manifesto" => print!("{}", MANIFESTO),
         "method" => print!("{}", METHOD),
         "skeleton" | "frames" => print!("{}", SKELETON_GUIDE),
         "law" | "rules" => print!("{}", LAW_GUIDE),
