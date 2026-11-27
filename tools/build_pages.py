@@ -1105,20 +1105,6 @@ def build_written(site):
                    ld_type=meta.get("type", "TechArticle"))
 
 
-def build_paper(site):
-    src = read("docs", "site", "paper.html")
-    m = re.search(r"<body[^>]*>(.*)</body>", src, re.S)
-    body = m.group(1) if m else src
-    body = re.sub(r"<nav.*?</nav>", "", body, flags=re.S)
-    body = re.sub(r"<(script|style)\b.*?</\1>", "", body, flags=re.S)
-    t = re.search(r"<h1[^>]*>(.*?)</h1>", body, re.S)
-    title = re.sub(r"<[^>]+>", "", t.group(1)).strip() if t else "Soma paper"
-    if t:
-        body = body.replace(t.group(0), "", 1)
-    site.write("paper", title, body, "The Soma paper: cells, verified distribution, signals as replication, evaluation.",
-               ld_type="ScholarlyArticle")
-
-
 def build_404(site):
     body = ('<p class="lede">There is no page at this address.</p><p>The language guide: <a href="/guide/language">/guide/language</a>. '
             'Every diagnostic: <a href="/errors/">/errors/</a>. Every builtin: <a href="/builtins/">/builtins/</a>. '
@@ -1151,7 +1137,6 @@ def build(soma, version, date, commit, builtins, gotchas, entries):
     build_programs(site, entries)
     build_basics(site)
     build_changelog(site)
-    build_paper(site)
     build_404(site)
     LAST["judged"] = site.judged
     return site.pages, site.problems

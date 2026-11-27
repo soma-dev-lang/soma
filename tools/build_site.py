@@ -19,7 +19,7 @@ Everything an agent fetches is GENERATED here from the repo and from the
 
 Hand-written (not touched): llms.txt and its parts (llms-*.txt), agent.md,
 robots.txt, _headers, _redirects, install.sh, setup.sh, repo/. The sources of
-the hand-written pages are docs/site/pages/*.md and docs/site/paper.html.
+the hand-written pages are docs/site/pages/*.md (the paper among them).
 
     python3 tools/build_site.py                 # uses `soma` from PATH
     SOMA=compiler/target/release/soma python3 tools/build_site.py

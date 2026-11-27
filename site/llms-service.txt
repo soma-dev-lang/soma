@@ -2128,8 +2128,8 @@ eventually consistent, with local reads and no fenced scheduler. Use the
 
 # Experimental cluster runtime
 
-The replication protocol described here is available since Soma 2.8.2 and is
-included in the current [Soma 2.8.10 release](https://github.com/soma-dev-lang/soma/releases/tag/v2.8.10).
+The replication protocol described here is available since Soma 2.8.2. What
+a compiler can and cannot check about it: [Scale as a type](/paper).
 
 ## What is implemented
 
