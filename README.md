@@ -1,8 +1,8 @@
 # Soma
 
-**A language for programs written by coding agents.**
+**Soma helps you build programs that work.** Your coding agent writes the code; Soma checks it against what you decided, before it runs.
 
-*The goal: let programming agents design large applications in a solid manner.*
+*A language for programs written by coding agents. The goal: let them design large applications in a solid manner.*
 
 Soma is a declarative language where systems are *cells*: state, contract,
 behavior, and lifecycle in one unit. Its center of gravity is verification —

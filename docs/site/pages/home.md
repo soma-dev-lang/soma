@@ -1,18 +1,25 @@
 ---
 title: Soma
-full_title: Soma — a programming language for programs written by coding agents
-description: Soma is an open-source programming language for programs written by AI coding agents. You decide the rules and the structure, the agent writes the bodies one at a time, and the compiler holds each to what you decided — try it in two minutes with soma init, soma next and soma fill.
+full_title: Soma — build programs that work, with coding agents
+description: Soma helps you build programs that work. It is an open-source programming language for programs written by AI coding agents — your agent writes the code, Soma checks it against what you decided, before it runs. Try it in two minutes.
 type: WebPage
 h1: no
 ---
 
 # Soma
 
-<h1>Soma, a language for programs written by coding agents</h1>
+<h1>Soma helps you build programs that work.</h1>
 
-<p class="lede">Coding agents write code faster than anyone can review it. Soma is a language built for that. You decide the rules and the structure; the agent writes the bodies, one at a time; the compiler holds every body to what you decided, answers each mistake with the form to write instead, and proves what it can. Open source (MIT), one binary, Linux and macOS.</p>
+<p class="lede">Your coding agent writes the code. Soma checks it against what you decided, before it runs. It is a language for programs written by coding agents: free, open source, one binary, Linux and macOS.</p>
 
 <div class="install">curl -fsSL https://soma-lang.dev/install.sh | sh</div>
+
+<div class="grid">
+<div class="card"><h3>Mistakes get caught early</h3><p>Every error says what to write instead. Your agent fixes it and moves on, before anything runs.</p></div>
+<div class="card"><h3>Your rules stay in force</h3><p>Write a business rule once. Every path that should follow it does, or Soma refuses the program.</p></div>
+<div class="card"><h3>You read a page, not the codebase</h3><p>You review the rules and the structure: a few hundred lines. Soma holds the rest of the code to them.</p></div>
+<div class="card"><h3>It scales</h3><p>The agent works on one small piece at a time. The same method built a 69,000-line program.</p></div>
+</div>
 
 ## Try it in two minutes
 
@@ -24,19 +31,19 @@ soma init --skeleton demo && cd demo
 soma init --skeleton
 ```
 
-That writes a small program — a counter that cannot go negative, behind a session with a lifecycle — with its structure complete and one body missing. Everything below was printed by `soma` when this page was built.
+That gives you a small working project: a counter that cannot go negative, with one piece left to write. Ask what to do next. (Everything below was printed by `soma` when this page was built.)
 
 ```run
 !soma next app.cell
 ```
 
-`soma next` names the one thing to do. The brief of that signal is one screen, and it is all its body needs — the slots it may touch, their invariants, nothing else:
+`soma next` names the one thing to do. Ask for its brief: one screen, with everything that piece needs and nothing else.
 
 ```run
 soma skeleton app.cell Counter.reset
 ```
 
-Write the body, hand it in. It comes back checked against its frame:
+Write it, hand it in. Soma checks it on the spot:
 
 ```text file=body.txt
 counts.set("n", 0)
@@ -49,9 +56,9 @@ soma next app.cell
 soma run app.cell add 5
 ```
 
-That loop — `next`, the brief, `fill` — is the same on [a 69,000-line program](/orbite): the agent never needs the rest of the code in context, and cannot write outside the frame it was given.
+Done. That loop — `next`, the brief, `fill` — is the same on [a 69,000-line program](/orbite). The agent never needs the rest of the code in front of it, and it cannot touch what it was not asked to touch.
 
-**Now hand it to your agent.** The project `soma init` wrote already carries what an agent needs: an `AGENTS.md` block, a 3 KB skill, and a hook that runs `soma check` after every edit and returns the diagnostics without being asked. Open the folder in Claude Code (the hook is its own; any agent that reads `AGENTS.md` gets the block) and ask for a feature. Then read what you would have had to review: `soma skeleton app.cell`, not the bodies.
+**Now hand it to your agent.** The project is ready for one: `soma init` wrote an `AGENTS.md` block, a small skill, and a hook that checks every edit and hands the errors back without being asked. Open the folder in Claude Code (the hook is its own; any agent that reads `AGENTS.md` gets the block) and ask for a feature. Then read `soma skeleton app.cell` — the structure, not the code.
 
 The current release is **Soma 3.6.1** ([release notes](/changelog/3.6.1)). Soma is experimental, and says where: [what is proven and what is not](#what-is-proven-what-is-not), [status](/status).
 
@@ -68,9 +75,9 @@ The current release is **Soma 3.6.1** ([release notes](/changelog/3.6.1)). Soma 
 </style>
 <a class="feat" href="/orbite"><span class="k">Case study · Orbite</span><span class="t">Who moves? The protocol fits in 1,923 lines of Soma — its safety rules proven on the real code, in two seconds.</span><span class="d">When two satellites are about to collide, exactly one must move. Orbite settles it with rules borrowed from the sea; <code>soma verify</code> proves its 13 safety rules on the real code, bodies included. Around it, twenty AI agents built the 69,000-line institution. Replayed on the 2019 Aeolus–Starlink near-miss, it decides three days before the closest approach — where ESA had to act alone.</span><span class="n"><span class="a"><b>1,923</b>lines: the protocol</span><span class="a"><b>13 / 13</b>rules proven, bodies included</span><span><b>1.8 s</b>to verify</span><span><b>69,150</b>lines around it, by 20 agents</span><span class="a"><b>−69 h</b>decision in the 2019 replay</span></span><span class="go">Read the case study, then download it and check it yourself →</span></a>
 
-## Every error names its fix
+## Every error says how to fix it
 
-Models write habits of other languages. Soma refuses them before anything runs, and the message says what to write:
+Agents bring habits from other languages. Soma stops them before anything runs, and tells the agent what to write instead:
 
 ```soma file=cart.cell
 cell Cart {
@@ -91,9 +98,9 @@ cell Cart {
 
 Each of the 161 diagnostic codes has a page with a program that triggers it, the real output, and the fix: [Diagnostics](/errors/).
 
-## One rule, and the proof that it holds
+## Set a limit. It holds.
 
-A quota of 100 units per user. The limit is written once, next to the data, as an `invariant`; the handler states its own preconditions with `require`.
+A quota of 100 units per user. You write the limit once, next to the data. No code path can break it.
 
 ```soma file=quota.cell
 cell Quota {
@@ -112,7 +119,7 @@ cell Quota {
 }
 ```
 
-The verifier proves the invariant for every input, then the program runs. These outputs were printed by the `soma` binary when this page was built:
+Soma proves the limit holds for every input, then the program runs:
 
 ```run
 soma verify quota.cell
@@ -122,11 +129,11 @@ soma run quota.cell consume ana 60
 soma run quota.cell consume ana 40
 ```
 
-The second call fails and leaves the slot unchanged: a handler that fails leaves no write behind. Remove the `QuotaExceeded` line and `soma verify` no longer proves the bound; it reports it as checked at runtime and names the line that would make it provable. [Lesson 3](/learn/3-a-rule-next-to-the-data-proven) shows it.
+The second call is refused and changes nothing: a call that fails leaves no half-written data. Remove the `QuotaExceeded` line and `soma verify` says so: the limit is then only checked at run time, and it names the line that would make it provable. [Lesson 3](/learn/3-a-rule-next-to-the-data-proven) shows it.
 
-## Large programs, skeleton first
+## Big programs, one small piece at a time
 
-No model holds a 10,000-line program in context. In Soma the structure is written first, as a `skeleton`: memory, invariants, state machines, and for each signal a **frame** saying what its body may read, write, call, and which edges it may take. Bodies come later, in `flesh` blocks, one at a time, each from a one-screen brief (`soma skeleton app.cell Cell.signal`), and `soma check` refuses a body that leaves its frame. `soma verify` proves the lifecycle before any body exists.
+No agent can keep a 10,000-line program in its head. So you write the structure first, as a `skeleton`: the data, its limits, the lifecycle, and for each operation what its code is allowed to touch. The code comes later, one operation at a time, each from a one-screen brief. Code that steps outside what it was allowed is refused. And the lifecycle is proven before a line of code exists.
 
 ```soma file=loans.cell
 skeleton Loans {
@@ -160,9 +167,9 @@ soma holes loans.cell
 
 The guide: [Large programs, skeleton first](/guide/skeleton). Step by step: [lesson 6](/learn/6-a-large-program-skeleton-first). At scale: [Orbite](/orbite), a space traffic protocol whose 1,923-line core is proven whole, and the 69,000-line institution twenty agents built around it.
 
-## Business rules, outside the code
+## Business rules nobody can forget
 
-A proof that the code keeps to its structure says nothing about what the structure is for. In one 12,000-line program written by agents, `soma verify` passed from the first day while scenario tests found the same rule missing from one more path, three times in a row. Soma has a place for what the business requires: a **law**, written by whoever owns the rules. It names no code, and where a rule can be said formally, it says it:
+The classic bug: a rule is enforced in one place and forgotten in the next. In one 12,000-line program written by agents, the same rule turned up missing from one more path three times in a row. In Soma the rule is written once, in a **law** — a plain file owned by whoever owns the rule, with no code in it:
 
 ```text file=lois/sanctions.law
 law Sanctions
@@ -186,7 +193,7 @@ rule "SAN-02" "No payment to a frozen holder"
 files = ["lois/sanctions.law"]
 ```
 
-The skeleton says how the program corresponds: `maps` reads a state of the law from memory, `realizes` says which action a signal is. What a `maps` reads is under the law: a signal that writes it must say which action it is. The bodies hold **no check**. Here a second way to pay was added later, and nobody said what it is:
+The skeleton connects the program to the law: `maps` says where a fact of the law lives in the data, `realizes` says which operation is which action. The code itself holds **no check**. Here a second way to pay was added later, and nobody said it was a payment:
 
 ```soma file=app.cell
 skeleton Fund {
@@ -245,7 +252,7 @@ soma law app.cell --lock
 !soma check app.cell
 ```
 
-The forgotten path does not check — before its body matters, on its frame alone. Once the signal says it is a payment, the rule applies to it without a line of code:
+Soma catches the forgotten path, before its code even matters. Say it is a payment, and the rule applies to it — without a line of code:
 
 ```soma file=app.cell
 skeleton Fund {
@@ -308,21 +315,19 @@ soma run app.cell freeze ana
 soma law app.cell
 ```
 
-The refusal is derived from the rule: the agent that writes a body cannot forget it, and cannot weaken it. The guide: [The law](/guide/law). What has a formal reading and what stays a sentence: [the method](/guide/method).
+The refusal comes from the rule itself. The agent that writes the code cannot forget it and cannot weaken it. The guide: [The law](/guide/law).
 
-## What you review instead of the code
+## You read a page, not the codebase
 
-Nobody reads 70,000 lines an agent wrote. With Soma you do not have to, because the part too large to review is held by the compiler to three things short enough to read:
+Nobody reads 70,000 lines an agent wrote. With Soma you do not have to. You read three short things, and Soma holds the code to them:
 
 | You read | Written by | It is |
 |---|---|---|
-| the **law** | whoever owns the business rules | sentences, with their sources |
-| the **skeleton** | the architect | memory, lifecycles, and what each signal may touch — a few hundred lines for a large program |
-| the last line of `soma verify`, and `soma law` | the toolchain | what is proven, what is only checked at run time, where each rule is served |
+| the **law** | whoever owns the business rules | the rules, in sentences, with their sources |
+| the **skeleton** | the architect | the data, the lifecycles, and what each operation may touch — a few hundred lines for a large program |
+| the last line of `soma verify`, and `soma law` | Soma | what is proven, what is checked while running, where each rule is enforced |
 
-A skeleton is one possible realization of a law, and the bodies one possible filling of a skeleton: each layer constrains the one below without determining it, so the bodies can be written, and rewritten, without anyone rereading what was decided above them.
-
-The agent works below that line, one body at a time, and cannot move it: `soma fill` writes one handler and nothing else, and a change to the structure is a separate act that prints what changed. [The method](/guide/method) is the whole of it — the order of work, and what each step establishes and what it does not.
+The agent works below that line and cannot move it. It writes one operation at a time and nothing else; changing the structure is a separate step, and it prints what changed. [The method](/guide/method) is the whole way of working.
 
 ## Where to start
 
@@ -331,12 +336,34 @@ The agent works below that line, one body at a time, and cannot move it: `soma f
 <div class="card"><h3><a href="/orbite">Orbite: a case study</a></h3><p>Space traffic coordination: a 1,923-line protocol proven whole, and 69,000 lines written by 20 agents around it.</p></div>
 <div class="card"><h3><a href="/learn/">Learn Soma in seven lessons</a></h3><p>Each lesson is a program, the commands run on it, and what they printed.</p></div>
 <div class="card"><h3><a href="/guide/method">The method</a></h3><p>Law, skeleton, flesh: the order of work with a coding agent, and what each step establishes.</p></div>
+<div class="card"><h3><a href="#under-the-hood-what-works-means-here">Under the hood</a></h3><p>The idea underneath: refinement, proofs, and claims exposed to refutation.</p></div>
 <div class="card"><h3><a href="/guide/language">The language guide</a></h3><p>The whole core language on one page: what <code>soma docs agent</code> prints.</p></div>
 <div class="card"><h3><a href="/reference/">Reference</a> and <a href="/builtins/">builtins</a></h3><p>Every construct, and every builtin with its exact signature.</p></div>
 <div class="card"><h3><a href="/programs/">327 verified programs</a></h3><p>Payments, interlocks, medical devices, games, agents: source and the toolchain's real output.</p></div>
 <div class="card"><h3><a href="/errors/">Diagnostics</a> and <a href="/gotchas/">pitfalls</a></h3><p>What the compiler says when a program is wrong, and how to fix it.</p></div>
 <div class="card"><h3><a href="/agents">For AI agents</a></h3><p>What to fetch, the loop to run, and when not to pick Soma.</p></div>
 </div>
+
+## Under the hood: what "works" means here
+
+Everything above rests on one idea, and it is a precise one. A program is written in three layers, and each is a **refinement** of the one above:
+
+- A **skeleton is one possible realization of a law.** The law is an abstract machine: entities, states, actions, and conditions in a closed language (`requires Payment(h, n): not frozen(h)`, `always p: refunded(p) <= captured(p)`). The skeleton gives a correspondence — each state read from the program's memory (`maps`), each action bound to a signal (`realizes`). Every behaviour of the program, seen through that correspondence, must be one the law permits.
+- A **flesh is one possible filling of a skeleton.** Each body is checked against its frame: the effects it may have — what it reads, writes, calls, and which transitions it takes.
+
+The layer above constrains the one below and does not determine it. That is why a law can exist before any program, and why the code can be rewritten without anyone rereading the structure.
+
+What the toolchain does with that:
+
+| Object | What Soma does | Kind of result |
+|---|---|---|
+| a state machine | model-checks it: reachability, deadlocks, liveness, temporal properties; and checks that the bodies take only the declared transitions | a proof, for every input |
+| an invariant on memory | proves it when every write is bounded; otherwise checks it before each write commits | a proof, or a check at run time — the output says which |
+| a rule with a formal reading | derives its guard from the rule and the correspondence: nobody writes it, so nobody can write a lenient one | a check before every call |
+| a rule that says what always holds | derives a monitor; `soma refute` plays a trace of calls against it, `soma attack` searches for one | a refutation, or none found — which proves nothing, and says so |
+| a program | `soma fingerprint`: one hash for this law, this skeleton, this code, this binary | a claim anyone can replay |
+
+Soma does not claim a program is correct. It says what is proven, what is checked, and what is only exposed to refutation — and keeps the three apart. The reasoning: [the manifesto](/guide/manifesto), [guarantees](/guide/guarantees), [the method](/guide/method); the earlier question of distribution: [Scale as a type](/paper).
 
 ## What is proven, what is not
 
