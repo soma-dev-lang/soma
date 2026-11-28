@@ -8,13 +8,32 @@ h1: no
 
 # Soma
 
+<style>
+.page.single main{max-width:900px;margin:0 auto}
+.hero{padding:2.2rem 0 .6rem}
+.hero h1{font-size:clamp(2.3rem,5.2vw,3.4rem);line-height:1.05;letter-spacing:-.035em;margin:0 0 1.1rem;text-wrap:balance}
+.hero .lede{font-size:1.3rem;line-height:1.5;color:var(--fg);margin:0 0 .5rem;max-width:40rem}
+.hero .sub{color:var(--muted);margin:0 0 1.5rem}
+.hero .install{font-size:1.02rem;padding:.9rem 1.1rem;border-color:var(--accent);max-width:34rem}
+.hero .cta{display:flex;flex-wrap:wrap;gap:.6rem 1.4rem;margin:1rem 0 0;font-weight:600}
+.four{display:grid;grid-template-columns:repeat(2,1fr);gap:1rem;margin:2.2rem 0 0}
+.four .card{padding:1.15rem 1.25rem}.four .card h3{font-size:1.12rem}.four .card p{font-size:.98rem}
+main h2{font-size:1.75rem;letter-spacing:-.02em;margin:3.6rem 0 .8rem;padding-top:2.4rem;border-top:1px solid var(--line)}
+main pre{max-height:25rem;overflow:auto}
+.deep{margin-top:4.5rem;border-top:3px solid var(--accent);padding-top:.4rem}
+.deep .k{font:600 .78rem var(--mono);letter-spacing:.08em;color:var(--accent)}
+.deep + h2{border-top:0;margin-top:.6rem;padding-top:.4rem}
+@media (max-width:640px){.four{grid-template-columns:1fr}.hero{padding-top:1rem}}
+</style>
+<div class="hero">
 <h1>Soma helps you build programs that work.</h1>
-
-<p class="lede">Your coding agent writes the code. Soma checks it against what you decided, before it runs. It is a language for programs written by coding agents: free, open source, one binary, Linux and macOS.</p>
-
+<p class="lede">Your coding agent writes the code. Soma checks it against what you decided, before it runs.</p>
+<p class="sub">A language for programs written by coding agents. Free, open source, one binary, Linux and macOS.</p>
 <div class="install">curl -fsSL https://soma-lang.dev/install.sh | sh</div>
+<p class="cta"><a href="#try-it-in-two-minutes">Try it in two minutes ↓</a> <a href="/orbite">See a 69,000-line program built with it</a></p>
+</div>
 
-<div class="grid">
+<div class="four">
 <div class="card"><h3>Mistakes get caught early</h3><p>Every error says what to write instead. Your agent fixes it and moves on, before anything runs.</p></div>
 <div class="card"><h3>Your rules stay in force</h3><p>Write a business rule once. Every path that should follow it does, or Soma refuses the program.</p></div>
 <div class="card"><h3>You read a page, not the codebase</h3><p>You review the rules and the structure: a few hundred lines. Soma holds the rest of the code to them.</p></div>
@@ -122,10 +141,9 @@ cell Quota {
 Soma proves the limit holds for every input, then the program runs:
 
 ```run
-soma verify quota.cell
+soma verify quota.cell --summary
 soma run quota.cell consume ana 60
 !soma run quota.cell consume ana 60
-!soma run quota.cell consume ana -5
 soma run quota.cell consume ana 40
 ```
 
@@ -161,8 +179,7 @@ skeleton Loans {
 ```
 
 ```run
-soma verify loans.cell
-soma holes loans.cell
+soma verify loans.cell --summary
 ```
 
 The guide: [Large programs, skeleton first](/guide/skeleton). Step by step: [lesson 6](/learn/6-a-large-program-skeleton-first). At scale: [Orbite](/orbite), a space traffic protocol whose 1,923-line core is proven whole, and the 69,000-line institution twenty agents built around it.
@@ -254,57 +271,15 @@ soma law app.cell --lock
 
 Soma catches the forgotten path, before its code even matters. Say it is a payment, and the rule applies to it — without a line of code:
 
-```soma file=app.cell
-skeleton Fund {
-    memory {
-        status: Map<String, String> [persistent]
-        paid: Map<String, Int> [persistent]
-    }
+```soma
+// Pays an indemnity after a pricing error.
+signal indemnify(holder: String, n: Int) -> Int
+    writes paid
+    realizes Payment(holder, n)      // the one line added
+```
 
-    maps frozen(h) = (status.get(h) ?? "valid") == "frozen"
-    maps paid_to(h) = paid.get(h) ?? 0
-
-    face {
-        signal freeze(holder: String) -> String
-            writes status
-            realizes Freeze(holder)
-
-        // Pays a redemption of `n` to `holder`.
-        signal redeem(holder: String, n: Int) -> Int
-            writes paid
-            realizes Payment(holder, n)
-
-        // Pays an indemnity after a pricing error.
-        signal indemnify(holder: String, n: Int) -> Int
-            writes paid
-            realizes Payment(holder, n)
-    }
-}
-
-flesh Fund {
-    on freeze(holder) {
-        status.set(holder, "frozen")
-        return "frozen"
-    }
-
-    on redeem(holder, n) {
-        paid.set(holder, (paid.get(holder) ?? 0) + n)
-        return n
-    }
-
-    on indemnify(holder, n) {
-        paid.set(holder, (paid.get(holder) ?? 0) + n)
-        return n
-    }
-}
-
-cell test FrozenHolder under "SAN-02" {
-    rules {
-        assert Fund.redeem("bob", 100) == 100
-        assert Fund.freeze("bob") == "frozen"
-        assert_fails Fund.redeem("bob", 100) matching "SAN-02"
-    }
-}
+```run setup
+perl -0pi -e 's/(signal indemnify\(holder: String, n: Int\) -> Int\n            writes paid\n)/$1            realizes Payment(holder, n)\n/' app.cell
 ```
 
 ```run
@@ -312,7 +287,6 @@ soma check app.cell
 soma run app.cell indemnify ana 100
 soma run app.cell freeze ana
 !soma run app.cell indemnify ana 100
-soma law app.cell
 ```
 
 The refusal comes from the rule itself. The agent that writes the code cannot forget it and cannot weaken it. The guide: [The law](/guide/law).
@@ -332,7 +306,6 @@ The agent works below that line and cannot move it. It writes one operation at a
 ## Where to start
 
 <div class="grid">
-<div class="card"><h3><a href="#try-it-in-two-minutes">Try it in two minutes</a></h3><p>Install, <code>soma init --skeleton demo</code>, then <code>soma next</code>: one body to write, and the toolchain says when the program is complete.</p></div>
 <div class="card"><h3><a href="/orbite">Orbite: a case study</a></h3><p>Space traffic coordination: a 1,923-line protocol proven whole, and 69,000 lines written by 20 agents around it.</p></div>
 <div class="card"><h3><a href="/learn/">Learn Soma in seven lessons</a></h3><p>Each lesson is a program, the commands run on it, and what they printed.</p></div>
 <div class="card"><h3><a href="/guide/method">The method</a></h3><p>Law, skeleton, flesh: the order of work with a coding agent, and what each step establishes.</p></div>
@@ -343,6 +316,8 @@ The agent works below that line and cannot move it. It writes one operation at a
 <div class="card"><h3><a href="/errors/">Diagnostics</a> and <a href="/gotchas/">pitfalls</a></h3><p>What the compiler says when a program is wrong, and how to fix it.</p></div>
 <div class="card"><h3><a href="/agents">For AI agents</a></h3><p>What to fetch, the loop to run, and when not to pick Soma.</p></div>
 </div>
+
+<div class="deep"><span class="k">FOR THOSE WHO WANT THE THEORY</span></div>
 
 ## Under the hood: what "works" means here
 
