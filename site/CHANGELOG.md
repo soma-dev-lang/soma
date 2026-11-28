@@ -1,5 +1,12 @@
 # Changelog
 
+## 4.0.1 — 2026-11-28
+
+Two defects of 4.0.0. Validation: 1,237 Rust tests, 118 CLI checks, 327 corpus programs, 1,280 numeric comparisons; 7,200 interpreter/native comparisons, 0 divergence.
+
+- **`soma next` said "0 questions open" on any answer handed out before the questions were counted.** They were counted at the fifth rank of its queue; a gap in the agent's setup, an error of `check`, a failure of `verify`, and — the case of a skeleton not frozen yet — a thing the skeleton does not state were answered with `"open_questions": 0` and without the line that names them, while `soma law --questions` listed them. The questions are now counted before anything is handed out: every answer of `next` carries their number and the command that lists them, in the perimeter of a law too (`--law`). Found by replaying the acceptance criteria of 4.0.0 on the field project with the released binary: 27 questions there, none announced.
+- **A test that drew its data at random guarded the release.** `clean_covariance_beats_sample_cov_on_noisy_setup` compared two estimators on an unseeded sample and could lose; it lost on the CI run of the 4.0.0 commit, which stopped the Linux run before the integration tests. It has a fixed seed. Nothing of the language changes.
+
 ## 4.0.0 — 2026-11-28
 
 Soma never lets an agent believe it is done, and gives it one thing to do in a perimeter it can read whole (RFC 0006). Validation: 1,236 Rust tests, 118 CLI checks, 327 corpus programs, 1,280 numeric comparisons; 7,200 interpreter/native comparisons, 0 divergence.

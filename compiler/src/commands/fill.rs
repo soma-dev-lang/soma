@@ -279,6 +279,14 @@ fn first_thing(path: &PathBuf, only: Option<&str>, scope: Option<&super::scope::
     // `--cell`, and the perimeter of a law (RFC 0006, part C)
     let in_cell = |text: &str| only.is_none_or(|c| text.contains(c)) && scope.is_none_or(|s| s.names(text));
     let in_scope = |who: &str| scope.is_none_or(|s| s.has_signal(who));
+    // 0. the questions for the owner of the law, counted before anything is
+    // handed out: every answer says how many are open (4.0.0 counted them at
+    // rank 5, and an answer of an earlier rank said 0)
+    let law = run_json(&dir, &["law", &entry, "--todo", "--json"]);
+    let open: Vec<&serde_json::Value> = law.as_ref().and_then(|l| l["questions"].as_array()).map(|qs| qs.iter().filter(|q| q["open"] == true)
+        .filter(|q| scope.is_none_or(|s| q["rules"].as_array().into_iter().flatten().any(|r| s.rules.iter().any(|x| Some(x.as_str()) == r.as_str()))
+            || q["signals"].as_array().into_iter().flatten().any(|g| g.as_str().is_some_and(|g| s.has_signal(g))))).collect()).unwrap_or_default();
+    OPEN_QUESTIONS.with(|n| n.set(open.len()));
     // 1. the agent's setup
     if let Some(d) = run_json(&dir, &["doctor", "--json"]) {
         if let Some(c) = d["checks"].as_array().and_then(|cs| cs.iter().find(|c| c["ok"] == false)) {
@@ -316,7 +324,6 @@ fn first_thing(path: &PathBuf, only: Option<&str>, scope: Option<&super::scope::
     }
     // 3b. what the evidence says AGAINST a rule — a refutation the project
     // keeps, a test under a rule that fails: a failure like those of verify
-    let law = run_json(&dir, &["law", &entry, "--todo", "--json"]);
     if let Some(t) = law.as_ref().and_then(|l| l["todo"].as_array()).and_then(|t| t.iter().filter_map(|x| x.as_str())
         .find(|t| (t.contains(" is refuted by ") || t.contains(" fails — `soma test`")) && in_cell(t))) {
         let rule = t.split('"').nth(1).unwrap_or("").to_string();
@@ -345,10 +352,6 @@ fn first_thing(path: &PathBuf, only: Option<&str>, scope: Option<&super::scope::
     }
     // 5. the questions for the owner of the law: they are not tasks, and
     // what waits for their answer is not handed out
-    let open: Vec<&serde_json::Value> = law.as_ref().and_then(|l| l["questions"].as_array()).map(|qs| qs.iter().filter(|q| q["open"] == true)
-        .filter(|q| scope.is_none_or(|s| q["rules"].as_array().into_iter().flatten().any(|r| s.rules.iter().any(|x| Some(x.as_str()) == r.as_str()))
-            || q["signals"].as_array().into_iter().flatten().any(|g| g.as_str().is_some_and(|g| s.has_signal(g))))).collect()).unwrap_or_default();
-    OPEN_QUESTIONS.with(|n| n.set(open.len()));
     let texts = |q: &serde_json::Value, key: &str| -> Vec<String> { q[key].as_array().into_iter().flatten().filter_map(|x| x.as_str().map(str::to_string)).collect() };
     let waiting_rules: std::collections::BTreeSet<String> = open.iter().flat_map(|q| texts(q, "rules")).collect();
     let mut waiting_signals: std::collections::BTreeSet<String> = open.iter().flat_map(|q| texts(q, "signals")).collect();

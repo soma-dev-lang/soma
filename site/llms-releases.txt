@@ -3,6 +3,12 @@
 > Newest first. The language itself: https://soma-lang.dev/llms.txt (`soma docs agent`).
 > Every fix and its compatibility note: https://soma-lang.dev/CHANGELOG.md.
 
+Soma 4.0.1: a defect of 4.0.0 — `soma next` said `"open_questions": 0`, and
+did not name the questions for the owner of the law, on any answer handed
+out before they were counted (a gap of a skeleton not frozen yet, an error
+of check, the agent's setup). Every answer of `next` now carries their
+number and `soma law app.cell --questions`. Nothing of the language changes.
+
 Soma 4.0.0: Soma never lets an agent believe it is done. (A) THE VERDICT
 SAYS WHAT WAS NOT JUDGED: for a program under a law or with a skeleton, the
 last line of `soma check` and of `soma verify` is `conforms … — fidelity not

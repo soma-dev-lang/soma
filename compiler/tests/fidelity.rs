@@ -477,3 +477,30 @@ fn every_command_takes_the_same_perimeter() {
     assert!(out.contains("in the perimeter of the law Paying (1 signals in 1 cells)") || out.contains("in the perimeter of the law Paying"), "{out}");
     assert!(!out.contains("Shelf"), "{out}");
 }
+
+/// 4.0.1: every answer of `next` says how many questions are open — a gap
+/// of the skeleton handed out first does not hide them (4.0.0 said 0 there).
+#[test]
+fn every_answer_of_next_says_the_questions_that_are_open() {
+    let d = shop("next_early");
+    // a skeleton not frozen, with a gap: `note` loses its comment
+    std::fs::write(d.join("app.cell"), SHOP.replace("        // Keeps a note on order `o`.\n", "")).unwrap();
+    let (out, code) = soma(&d, &["next", "app.cell"]);
+    assert_eq!(code, 1, "{out}");
+    assert!(out.starts_with("skeleton  Shop.note"), "{out}");
+    assert!(out.contains("1 question open for the owner of the law") && out.contains("soma law app.cell --questions"), "{out}");
+    let (out, _) = soma(&d, &["next", "app.cell", "--json"]);
+    let v: serde_json::Value = serde_json::from_str(&out[out.find('{').unwrap()..]).expect(&out);
+    assert_eq!(v["kind"], "skeleton", "{out}");
+    assert_eq!(v["open_questions"], 1, "{out}");
+    // the same in the perimeter of the law
+    let (out, _) = soma(&d, &["next", "app.cell", "--law", "lois/shop.law", "--json"]);
+    let v: serde_json::Value = serde_json::from_str(&out[out.find('{').unwrap()..]).expect(&out);
+    assert_eq!(v["open_questions"], 1, "{out}");
+    // …and when the setup of the agent is what is handed out
+    std::fs::remove_file(d.join("AGENTS.md")).unwrap();
+    let (out, _) = soma(&d, &["next", "app.cell", "--json"]);
+    let v: serde_json::Value = serde_json::from_str(&out[out.find('{').unwrap()..]).expect(&out);
+    assert_eq!(v["kind"], "doctor", "{out}");
+    assert_eq!(v["open_questions"], 1, "{out}");
+}

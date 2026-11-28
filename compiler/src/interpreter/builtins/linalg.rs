@@ -2133,12 +2133,19 @@ mod tests {
         let (_u_s, s_s, vt_s) = jacobi_svd(&sigma_true);
         // L = V · diag(√s).  Each sample: r_t = L · z_t with z_t i.i.d. N(0,1).
         let mut returns = vec![vec![0.0f64; n]; t];
+        // a fixed seed: a test that draws its data at random can lose, and a
+        // test that can lose does not guard a release (it failed the 4.0.0 CI)
+        let mut state: u64 = 0x9E37_79B9_7F4A_7C15;
+        let mut uniform = move || {
+            state = state.wrapping_mul(6364136223846793005).wrapping_add(1442695040888963407);
+            ((state >> 11) as f64) / ((1u64 << 53) as f64)
+        };
         for ti in 0..t {
             let mut z = vec![0.0f64; n];
             for j in 0..n {
-                // Box-Muller from two rand_f64.
-                let u1 = rand_f64().max(1e-15);
-                let u2 = rand_f64();
+                // Box-Muller from two uniform draws.
+                let u1 = uniform().max(1e-15);
+                let u2 = uniform();
                 z[j] = (-2.0 * u1.ln()).sqrt() * (2.0 * std::f64::consts::PI * u2).cos();
             }
             for i in 0..n {
