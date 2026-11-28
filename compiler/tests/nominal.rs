@@ -444,6 +444,7 @@ cell A {
     on by_key(c: Key) { return balances.get(c) ?? 0 }
     on by_set(c: Key) { balances.set(c, 1)  return 1 }
     on right(i: Id) { balances.set(i, 1)  return balances.get(i) ?? 0 }
+    on plain(name: String) { balances.set(name, 1)  return balances.get(name) ?? 0 }
     on built(c: Key) { return judge(Write { who: Id(to_string(c)) }) }
 }
 "#;
@@ -452,5 +453,7 @@ cell A {
     assert!(out.contains("Write { who: … }: `c` is Key but the field is declared Id"), "{out}");
     assert!(out.contains("`balances.get(c)`: the key is Key and the keys of `balances` are Id"), "{out}");
     assert!(out.contains("`balances.set(c, …)`: the key is Key and the keys of `balances` are Id"), "{out}");
+    // …and a plain String key on a `Map<Id, …>` too, as before 4.0 (4.0.0 refused it: Orbite stopped checking)
     assert_eq!(out.matches("E0122").count(), 3, "the right uses are accepted: {out}");
+    assert!(!out.contains("the key is a String"), "{out}");
 }

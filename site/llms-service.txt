@@ -2034,7 +2034,9 @@ Soma 4.0.1: a defect of 4.0.0 — `soma next` said `"open_questions": 0`, and
 did not name the questions for the owner of the law, on any answer handed
 out before they were counted (a gap of a skeleton not frozen yet, an error
 of check, the agent's setup). Every answer of `next` now carries their
-number and `soma law app.cell --questions`. Nothing of the language changes.
+number and `soma law app.cell --questions`. And 4.0.0 refused a plain String
+key on a `Map<Id, …>` slot (E0122): only a key of ANOTHER nominal type is
+refused now — a program that checked with 3.6 checks again.
 
 Soma 4.0.0: Soma never lets an agent believe it is done. (A) THE VERDICT
 SAYS WHAT WAS NOT JUDGED: for a program under a law or with a skeleton, the

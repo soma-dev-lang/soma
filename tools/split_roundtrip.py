@@ -39,7 +39,10 @@ def tally(out):
 
 def verdict(out):
     lines = [l for l in out.splitlines() if l.startswith("VERIFY")]
-    return lines[-1] if lines else "?"
+    # 4.0: a program with a skeleton ends its verdict on what was not judged
+    # (`— fidelity not judged: …`); a plain cell does not. What is compared
+    # is what verify established, which splitting must not change.
+    return lines[-1].split(" — fidelity not judged")[0] if lines else "?"
 
 
 def one(soma, path):

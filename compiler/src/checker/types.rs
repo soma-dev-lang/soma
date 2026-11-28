@@ -736,7 +736,10 @@ impl<'a, 'b> Cx<'a, 'b> {
         // the key of a `Map<K, V>` slot: a nominal K is not read or written under another type
         if let (Some(kt), Some((k, got))) = (self.slot_keys.get(target).cloned(), args.first().zip(arg_tys.first())) {
             // (a slot keyed by a plain String takes a nominal key: `to_string` is implied there, as it always was)
-            if nominal(&kt).is_some() && matches!(method, "get" | "set" | "put" | "has" | "contains" | "delete" | "remove") {
+            // Refused: a key of ANOTHER nominal type. A plain String key on a
+            // `Map<Id, …>` stays accepted, as it always was: 4.0.0 refused it
+            // too, and with it programs that had checked for months.
+            if nominal(&kt).is_some() && nominal(got).is_some() && matches!(method, "get" | "set" | "put" | "has" | "contains" | "delete" | "remove") {
                 if let Some((is, fix)) = self.nominal_fit(k, got, &kt) {
                     let msg = format!("`{target}.{method}({}{})`: the key is {is} and the keys of `{target}` are {} — {fix}", render_expr(&k.node), if args.len() > 1 { ", …" } else { "" }, kt.name());
                     self.nominal_issue(k.span, msg);
