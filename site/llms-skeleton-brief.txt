@@ -1,0 +1,50 @@
+# Before you write a skeleton — what a good one contains
+
+Read this page, then write. `soma check` says what is wrong in a skeleton;
+it does not say what is missing, and a skeleton with no type, no invariant,
+no contract and no property checks without a word. `soma doctor --program
+app.cell` is the mirror: run it before you call a skeleton done.
+The whole guide: `soma docs skeleton`. A project to imitate: `soma init --law demo`.
+
+A skeleton states, in this order:
+
+1. **Types, one per thing the program names.**
+   - an entity or a unit is a nominal type: `cell type Order = String`,
+     `cell type Cents = Int where value >= 0` — an Order is then never passed
+     where an Invoice is expected, and the bound is proven;
+   - what travels together is a record:
+     `cell type Line { variants { Line { sku: String, qty: Int } } }`;
+   - alternatives are a sum type: `cell type Pay { variants { Card { tx: String }  Cash } }`.
+   No signal takes or returns a bare `Map` or `List` (`request(method, path,
+   body) -> Map`, the HTTP entry, is the one exception).
+2. **Memory, with its invariants.** Every slot that holds numbers has a
+   bound: `invariant stock >= 0`, or a type that carries it. An invariant
+   between two slots is written once, here, not in every body.
+3. **The lifecycle.** `state order { initial: open  open -> closed }`, and in
+   soma.toml what THIS lifecycle must do: `[verify]` `eventually =
+   ["closed"]`, `never = ["lost"]`, or a rule between two machines.
+4. **Each signal, with its comment and its frame.**
+   - one comment line above it: what it does, what it returns. The brief its
+     body is written from carries that line and nothing else of your intent;
+   - `reads` / `writes` / `calls` / `moves` / `emits`: all the body may do.
+     If the body needs a datum, the signal that gives it is in `calls`;
+   - `requires` (owed by the caller) and `ensures` (owed by the body) where a
+     precondition or a result can be said.
+5. **Under a law: the correspondence.**
+   - `maps state(p) = <expression>` for each state of the law. Read the
+     MEMORY of the cell directly: a `maps` that reads through a signal is
+     not judged until that signal has a body;
+   - `realizes Action(args)` on each signal that is an action of the law;
+     `silent "why"` on one that writes under the law and is none;
+   - a parameter bound to an entity has the type named like the entity.
+
+Then, in this order: `soma check` → `soma doctor --program` → `soma verify`
+→ `soma skeleton app.cell --freeze` (refused until the two pass). A change
+after the freeze is `--amend`, and it prints what changed: if you find
+yourself amending signal after signal, the skeleton is to be redone, not
+patched — say so.
+
+Do not: write a body before the freeze; `exempt` a signal to silence a rule
+(an exemption is a judgment on ONE signal, with its own reason); verify a
+copy of the program without its law (the last line of `soma verify` names
+the law it was given under).

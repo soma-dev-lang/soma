@@ -770,6 +770,8 @@ pub struct Report {
     pub issues: Vec<Issue>,
     /// rules in a sentence that signals with no body yet will have to serve
     pub owed: Vec<Owed>,
+    /// what the law could name, for its owner: a state only `silent` signals change
+    pub hints: Vec<String>,
     /// `require` statements of the program, and how many serve a rule
     pub requires: usize,
     pub requires_under: usize,
@@ -1090,6 +1092,43 @@ fn views<'a>(cells: &'a [Spanned<CellDef>], out: &mut Vec<CellView<'a>>, tests: 
     }
 }
 
+/// The program with each `maps` added to its cell as a handler `__maps_<state>(p)
+/// { return <expression> }`, and where each expression stands — (state, cell,
+/// span). The parameter has the type named like the state's entity when the
+/// program declares one (`cell type Invoice = String`), and no type otherwise.
+pub fn maps_as_handlers(program: &Program, laws: &[Law]) -> (Program, Vec<(String, String, Span)>) {
+    fn types(cells: &[Spanned<CellDef>], out: &mut BTreeSet<String>) {
+        for c in cells {
+            if matches!(c.node.kind, CellKind::Type) { out.insert(c.node.name.clone()); }
+            for s in &c.node.sections { if let Section::Interior(i) = &s.node { types(&i.cells, out); } }
+        }
+    }
+    fn add(cells: &mut [Spanned<CellDef>], laws: &[Law], declared: &BTreeSet<String>, spans: &mut Vec<(String, String, Span)>) {
+        for c in cells.iter_mut() {
+            let maps = c.node.maps.clone();
+            for m in &maps {
+                let entity = laws.iter().flat_map(|l| l.states.iter()).find(|s| s.name == m.node.state).map(|s| s.entity.clone());
+                let ty = entity.filter(|e| declared.contains(e)).unwrap_or_else(|| FLESH_PARAM_TYPE.to_string());
+                let on = OnSection {
+                    signal_name: format!("__maps_{}", m.node.state),
+                    params: vec![Param { name: m.node.param.clone(), ty: Spanned::new(TypeExpr::Simple(ty), m.span) }],
+                    body: vec![Spanned::new(Statement::Return { value: m.node.expr.clone() }, m.node.expr.span)],
+                    properties: Vec::new(),
+                };
+                spans.push((m.node.state.clone(), c.node.name.clone(), m.node.expr.span));
+                c.node.sections.push(Spanned::new(Section::OnSignal(on), m.span));
+            }
+            for s in c.node.sections.iter_mut() { if let Section::Interior(i) = &mut s.node { add(&mut i.cells, laws, declared, spans); } }
+        }
+    }
+    let mut out = program.clone();
+    let mut declared = BTreeSet::new();
+    types(&out.cells, &mut declared);
+    let mut spans = Vec::new();
+    add(&mut out.cells, laws, &declared, &mut spans);
+    (out, spans)
+}
+
 /// The signals a `maps` of `cell` reads through — (`Cell.signal`, it has a body).
 fn reads_through(expr: &Spanned<Expr>, cell: &str, cells: &[CellView]) -> Vec<(String, bool)> {
     let text = format!("{:?}", expr);
@@ -1099,6 +1138,17 @@ fn reads_through(expr: &Spanned<Expr>, cell: &str, cells: &[CellView]) -> Vec<(S
         if crate::interpreter::builtins::registry::lookup(f).is_some() { continue; }
         let (owner, name) = f.split_once('.').unwrap_or((cell, f));
         let Some(view) = cells.iter().find(|v| v.name == owner) else { continue };
+        if !view.signals.iter().any(|(s, _)| s.name == name) { continue; }
+        let who = format!("{}.{}", owner, name);
+        if !out.iter().any(|(w, _)| w == &who) { out.push((who, !view.holes.contains(name))); }
+    }
+    // `Other.signal(x)`, and what follows it (`.field`, `.get(…)`): a call on a cell's name
+    for part in text.split("MethodCall { target: Spanned { node: Ident(\"").skip(1) {
+        let owner = part.split('"').next().unwrap_or("");
+        let Some(view) = cells.iter().find(|v| v.name == owner) else { continue };
+        // the method of THIS call: the first `method:` after the target's span closes
+        let Some(rest) = part.split_once("} }, method: \"").map(|(_, r)| r) else { continue };
+        let name = rest.split('"').next().unwrap_or("");
         if !view.signals.iter().any(|(s, _)| s.name == name) { continue; }
         let who = format!("{}.{}", owner, name);
         if !out.iter().any(|(w, _)| w == &who) { out.push((who, !view.holes.contains(name))); }
@@ -1217,6 +1267,21 @@ pub fn analyse(program: &Program, laws: &[Law], tests_beside: &BTreeMap<String, 
             }
             let ty = static_type(&d.expr.node);
             if let Some(t) = ty { if t != decl.ty { why.push(format!("it is {} {}, and the law declares `{}` a {} state", if t == "Int" { "an" } else { "a" }, t, d.state, decl.ty)); } }
+            // `Other.signal(x)` whose frame changes something: said as a warning
+            // (the same through a signal of the cell itself is E0135)
+            for (who_read, _) in reads_through(&d.expr, &view.name, &cells) {
+                let Some((cell, name)) = who_read.split_once('.') else { continue };
+                if cell == view.name { continue; }
+                let Some(fr) = cells.iter().find(|v| v.name == cell).and_then(|v| v.signals.iter().find(|(s, _)| s.name == name)).and_then(|(s, _)| s.frame.as_ref()) else { continue };
+                let mut does: Vec<String> = Vec::new();
+                if !fr.writes.is_empty() { does.push(format!("writes {}", fr.writes.join(", "))); }
+                if !fr.moves.is_empty() { does.push("moves a machine".to_string()); }
+                if !fr.emits.is_empty() { does.push(format!("emits {}", fr.emits.join(", "))); }
+                if !does.is_empty() {
+                    report.issues.push(Issue { kind: "law_maps_awaits", warning: true, span: m.span,
+                        message: format!("`{}` in `{}` reads through `{}`, whose frame {} — a `maps` is a pure reading: every guard that reads this state would run that effect. Read through a signal that changes nothing (W0020 today; E0135 in the next edition)", shown, view.name, who_read, does.join(" and ")) });
+                }
+            }
             let holes: Vec<String> = reads_through(&d.expr, &view.name, &cells).into_iter().filter(|(_, body)| !body).map(|(w, _)| w).collect();
             if !holes.is_empty() {
                 report.issues.push(Issue { kind: "law_maps_awaits", warning: true, span: m.span,
@@ -1263,6 +1328,19 @@ pub fn analyse(program: &Program, laws: &[Law], tests_beside: &BTreeMap<String, 
                                 continue;
                             }
                             else { sig.params.iter().find(|q| &q.name == arg).map(|q| crate::commands::describe::format_type(&q.ty.node)) };
+                        // the program has a type named like the entity (`cell type Invoice
+                        // = String`): the parameter bound to it should be one
+                        if let Some(q) = sig.params.iter().find(|q| &q.name == arg) {
+                            let nominal = crate::checker::nominal::declared();
+                            if nominal.iter().any(|(n, _, _)| n == want) {
+                                let written = crate::checker::nominal::shown(q.ty.span).unwrap_or_else(|| crate::commands::describe::format_type(&q.ty.node));
+                                if &written != want {
+                                    report.issues.push(Issue { kind: "law_maps_awaits", warning: true, span: *span,
+                                        message: format!("`{}` realizes `{}({})`: `{}` is a `{}`, and the action's `{}` is a `{}` — the program declares `cell type {}`, so the parameter bound to it should have that type (`{}: {}`), or the binding names the wrong parameter",
+                                            who, name, args.join(", "), arg, written, p, want, want, arg, want) });
+                                }
+                            }
+                        }
                         match got {
                             None => wrong.push(format!("`{}` is not a parameter of `{}` (its parameters: {})", arg, sig.name, sig.params.iter().map(|q| q.name.clone()).collect::<Vec<_>>().join(", "))),
                             Some(t) => {
@@ -1305,6 +1383,30 @@ pub fn analyse(program: &Program, laws: &[Law], tests_beside: &BTreeMap<String, 
                 let (cell, name) = f.split_once('.').unwrap_or((view.name.as_str(), f));
                 let Some(frame) = cells.iter().find(|v| v.name == cell).and_then(|v| v.signals.iter().find(|(sg, _)| sg.name == name)).and_then(|(sg, _)| sg.frame.as_ref()) else { continue };
                 for r in &frame.reads { put(cell, r); }
+            }
+        }
+    }
+    // for the owner of the law: a state that only `silent` signals change is
+    // changed by acts the law does not name
+    {
+        let mut by_state: BTreeMap<String, (Vec<String>, Vec<String>)> = BTreeMap::new();   // state -> (bound writers, silent writers)
+        for view in &cells {
+            let Some(under) = under_law.get(&view.name) else { continue };
+            for (sig, _) in &view.signals {
+                let Some(frame) = &sig.frame else { continue };
+                for w in &frame.writes {
+                    for st in under.get(w).into_iter().flatten() {
+                        let e = by_state.entry(st.clone()).or_default();
+                        let who = format!("{}.{}", view.name, sig.name);
+                        if !frame.bindings.is_empty() { if !e.0.contains(&who) { e.0.push(who); } }
+                        else if frame.silent.is_some() && !e.1.contains(&who) { e.1.push(who); }
+                    }
+                }
+            }
+        }
+        for (st, (bound, silent)) in &by_state {
+            if bound.is_empty() && !silent.is_empty() {
+                report.hints.push(format!("`{}` — changed only by `silent` signals: {}", st, silent.iter().map(|w| format!("`{}`", w)).collect::<Vec<_>>().join(", ")));
             }
         }
     }
@@ -1399,6 +1501,27 @@ pub fn analyse(program: &Program, laws: &[Law], tests_beside: &BTreeMap<String, 
                 handled: served.iter().filter(|(id, refusal)| !*refusal && known(id)).map(|(id, _)| id.clone()).collect(),
                 proved, exempt: frame.exempt.clone(), bindings: frame.bindings.clone(), hole: view.holes.contains(&sig.name), span: *span,
             });
+        }
+    }
+
+    // an exemption is a judgment on one signal: the same words many times
+    // are a template, and a template judges nothing
+    {
+        let mut by_reason: BTreeMap<String, usize> = BTreeMap::new();
+        let mut total = 0usize;
+        for r in &report.realizations {
+            for (_, why) in &r.exempt {
+                total += 1;
+                // the words, without the names and numbers a script would vary
+                let shape: String = why.split_whitespace().filter(|w| !w.chars().any(|c| c.is_ascii_digit() || c == '`' || c == '"' || c == '.' && w.len() > 1 && w.chars().next().is_some_and(char::is_uppercase))).collect::<Vec<_>>().join(" ").to_lowercase();
+                *by_reason.entry(shape).or_default() += 1;
+            }
+        }
+        let repeated: usize = by_reason.values().filter(|n| **n >= 5).sum();
+        if repeated > 0 {
+            let top = by_reason.iter().max_by_key(|(_, n)| **n).map(|(w, n)| format!("{} times: \"{}\"", n, w)).unwrap_or_default();
+            report.issues.push(Issue { kind: "law_maps_awaits", warning: true, span: none,
+                message: format!("{} of the program's {} `exempt` share their reason with at least four others ({}) — an exemption says why ONE signal is outside ONE rule; the same words many times are a template. If a term makes many signals owe rules that do not concern them, the term is too broad: that is said to the owner of the law, not exempted signal by signal", repeated, total, top) });
         }
     }
 
@@ -1665,6 +1788,7 @@ pub fn json(loaded: &Loaded, report: &Report, lock: &Result<Option<String>, ()>)
             "no_longer_refuting": s.stale_refutations,
         })).collect::<Vec<_>>(),
         "todo": loaded.errors.iter().cloned().chain(report.issues.iter().map(|i| i.message.clone())).chain(evidence_lines(report)).collect::<Vec<_>>(),
+        "hints": report.hints,
         "owed": report.owed.iter().map(|o| serde_json::json!({"rule": o.rule, "signal": o.signal})).collect::<Vec<_>>(),
         "requires": report.requires, "requires_under": report.requires_under,
     })

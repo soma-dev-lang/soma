@@ -535,6 +535,8 @@ pub struct Checker<'a> {
     analysis_names: (std::collections::HashSet<String>, std::collections::HashSet<String>),
     /// holes of the program whose frame has a `calls` clause
     calling_holes: usize,
+    /// this checker reads the `maps` of a program as bodies (see `law::maps_as_handlers`)
+    maps_pass: bool,
 }
 
 /// Every predicate name a checker constraint mentions that no structural
@@ -575,6 +577,7 @@ impl<'a> Checker<'a> {
             analysis_cells: Default::default(),
             analysis_names: Default::default(),
             calling_holes: 0,
+            maps_pass: false,
         }
     }
 
@@ -833,7 +836,77 @@ impl<'a> Checker<'a> {
                     if issue.warning { self.warnings.push(CheckWarning::LawWarning { message: issue.message, span: issue.span }); }
                     else { self.errors.push(CheckError::Static { kind: issue.kind, message: issue.message, span: issue.span }); }
                 }
+                // a `maps` is an expression nobody runs until a guard needs it:
+                // read each as a body, so that a field that does not exist, a
+                // comparison that always raises, a wrong argument are said now
+                if !self.maps_pass {
+                    let (as_bodies, spans) = law::maps_as_handlers(program, &loaded.laws);
+                    if !spans.is_empty() {
+                        let mut sub = Checker::new(self.registry);
+                        sub.manifest = self.manifest;
+                        sub.source = self.source.clone();
+                        sub.maps_pass = true;
+                        sub.check(&as_bodies);
+                        for e in sub.errors {
+                            let Some(sp) = e.span() else { continue };
+                            let Some((state, cell, _)) = spans.iter().find(|(_, _, m)| sp.start >= m.start && sp.start <= m.end) else { continue };
+                            self.warnings.push(CheckWarning::LawWarning { span: sp,
+                                message: format!("in `maps {}` of `{}`: {} — a guard derived from this state would not be judged (W0020 today; an error in the next edition)", state, cell, e.to_string().replace("__maps_", "maps ")) });
+                        }
+                        for w in sub.warnings {
+                            let Some(sp) = w.span() else { continue };
+                            let Some((state, cell, _)) = spans.iter().find(|(_, _, m)| sp.start >= m.start && sp.start <= m.end) else { continue };
+                            self.warnings.push(CheckWarning::LawWarning { span: sp,
+                                message: format!("in `maps {}` of `{}`: {}", state, cell, w.to_string().trim_start_matches("warning: ").replace("__maps_", "maps ")) });
+                        }
+                    }
+                }
             }
+        }
+        // `Other.signal(42, "x")`: a literal of the wrong type, said before it
+        // runs (the same on a handler of the cell itself is E0105)
+        {
+            let cells = names::collect_cells(program);
+            let mut sigs: std::collections::HashMap<(String, String), Vec<String>> = std::collections::HashMap::new();
+            for c in &cells {
+                for s in &c.sections {
+                    let Section::Face(face) = &s.node else { continue };
+                    for d in &face.declarations {
+                        if let FaceDecl::Signal(sig) = &d.node {
+                            sigs.insert((c.name.clone(), sig.name.clone()), sig.params.iter().map(|p| crate::commands::describe::format_type(&p.ty.node)).collect());
+                        }
+                    }
+                }
+            }
+            let mut found: Vec<(String, Span)> = Vec::new();
+            for c in &cells {
+                for s in &c.sections {
+                    let Section::OnSignal(h) = &s.node else { continue };
+                    literals::for_each_expr(&h.body, &mut |e| if let Expr::MethodCall { target, method, args } = e {
+                        let Expr::Ident(owner) = &target.node else { return };
+                        if owner == &c.name { return; }
+                        let Some(types) = sigs.get(&(owner.clone(), method.clone())) else { return };
+                        if args.len() != types.len() { return; }
+                        for (i, (a, ty)) in args.iter().zip(types).enumerate() {
+                            let got = match &a.node {
+                                Expr::Literal(Literal::Int(_)) | Expr::Literal(Literal::BigInt(_)) => "Int",
+                                Expr::Literal(Literal::Float(_)) => "Float",
+                                Expr::Literal(Literal::String(_)) => "String",
+                                Expr::Literal(Literal::Bool(_)) => "Bool",
+                                _ => continue,
+                            };
+                            let ok = match (ty.as_str(), got) {
+                                (t, g) if t == g => true,
+                                ("Float" | "BigInt", "Int") => true,
+                                ("Int" | "Float" | "String" | "Bool", _) => false,
+                                _ => true,   // a type this pass does not know: said by nothing here
+                            };
+                            if !ok { found.push((format!("{}.{}(): argument {} is a {} literal and the signal declares it {} — fix the value or the parameter type (the call fails when it runs)", owner, method, i + 1, got, ty), a.span)); }
+                        }
+                    });
+                }
+            }
+            for (message, span) in found { self.warnings.push(CheckWarning::HabitWarning { message, span }); }
         }
         // 3.0: durable waits — where an `await` may stand
         for issue in waits::check_program(program) {

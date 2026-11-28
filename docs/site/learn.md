@@ -342,7 +342,9 @@ skeleton Stock {
         signal available(book: String) -> Int   reads copies
         // Takes one copy off the shelf; false when there is none.
         signal take(book: String) -> Bool       writes copies
+        // Puts one copy back on the shelf.
         signal give_back(book: String)          writes copies
+        // Adds `n` copies of `book`. Returns how many there are.
         signal restock(book: String, n: Int) -> Int
             requires n > 0
             writes copies
@@ -363,6 +365,7 @@ skeleton Loans {
             writes holder
             moves requested -> out, requested -> refused
             calls Stock.take
+        // Closes loan `id`: its copy of `book` goes back on the shelf.
         signal close(id: String, book: String) -> String
             moves out -> returned
             calls Stock.give_back
@@ -530,12 +533,14 @@ skeleton Fund {
     memory {
         status: Map<String, String> [persistent]
         paid: Map<String, Int> [persistent]
+        invariant paid >= 0
     }
 
     maps frozen(h) = (status.get(h) ?? "valid") == "frozen"
     maps paid_to(h) = paid.get(h) ?? 0
 
     face {
+        // Places `holder` under an asset freeze.
         signal freeze(holder: String) -> String
             writes status
             realizes Freeze(holder)
@@ -589,12 +594,14 @@ skeleton Fund {
     memory {
         status: Map<String, String> [persistent]
         paid: Map<String, Int> [persistent]
+        invariant paid >= 0
     }
 
     maps frozen(h) = (status.get(h) ?? "valid") == "frozen"
     maps paid_to(h) = paid.get(h) ?? 0
 
     face {
+        // Places `holder` under an asset freeze.
         signal freeze(holder: String) -> String
             writes status
             realizes Freeze(holder)

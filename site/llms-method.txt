@@ -62,6 +62,11 @@ this method nobody has to.
 
 ## The order of work
 
+0. **Read the page of the layer before you write it**: `soma docs law
+   --brief`, `soma docs skeleton --brief`, `soma docs flesh` — one screen
+   each, what a good one contains. `soma check` says what is wrong; what is
+   MISSING is said by `soma doctor --program app.cell`. `soma init --law
+   demo` is a whole project to imitate.
 1. **Write the law with its owner.** Terms, then rules, each with its
    source — and, where a rule can be said formally, its states, its actions
    and its `requires`. Sentences, no code: the law names no cell and no handler, so it
@@ -73,8 +78,10 @@ this method nobody has to.
    `realizes` when the signal is an action the law speaks of; a `maps` for
    each state of the law. Run `soma
    verify` now — the lifecycle is proven before any body exists, and what
-   the holes still owe to the law is counted, not refused. Freeze it
-   (`soma skeleton app.cell --freeze`).
+   the holes still owe to the law is counted, not refused. Look at it in
+   the mirror (`soma doctor --program app.cell`), then freeze it (`soma
+   skeleton app.cell --freeze` — refused until it checks and verifies).
+   The last line of `verify` names the law it was given under.
 3. **Write a test that fails.** A scenario from the life of the business —
    a day of the fund, a refused order — not a walk through the code. See it
    fail before the body exists: a test that has never failed has shown

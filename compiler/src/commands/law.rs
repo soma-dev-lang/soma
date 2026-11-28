@@ -160,3 +160,20 @@ fn evidence(path: &PathBuf, root: &std::path::Path, report: &mut law::Report, no
         }
     }
 }
+
+/// The law a program is under, as a verdict names it: `law.lock 3f2a9c1b`
+/// (the first 8 hex of the lock's sha256), `a law not locked yet`, or nothing
+/// when the project is under no law.
+pub fn lock_name(program: Option<&PathBuf>) -> Option<String> {
+    let root = crate::project::root(program?);
+    let manifest = crate::pkg::manifest::Manifest::load(&root.join("soma.toml")).ok()?;
+    if manifest.law.files.is_empty() { return None; }
+    match std::fs::read(root.join("law.lock")) {
+        Ok(bytes) => {
+            use sha2::{Digest, Sha256};
+            let digest = Sha256::digest(&bytes);
+            Some(format!("law.lock {}", digest.iter().take(4).map(|b| format!("{:02x}", b)).collect::<String>()))
+        }
+        Err(_) => Some("a law not locked yet".to_string()),
+    }
+}

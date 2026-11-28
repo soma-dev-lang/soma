@@ -105,9 +105,24 @@ None: both forms are additions.
 
 ## Measured effect
 
-To be measured before acceptance, on the field report's law: how many of
-its 334 rules in sentences read as `entails`, and how many composite keys
-and flattened states form 2 removes.
+Measured on the field report's law (419 rules, 334 of them sentences), by
+a rereading of every rule against the skeleton:
+
+- **51 of the 334 rules in sentences read as "when this happens, that
+  follows"** — mostly rules of effects, spread over ten of fourteen law
+  files.
+- On those rules the triggering signals exist in the skeleton and **no
+  signal calls them**: five triggers, among them the invoicing run and the
+  re-evaluation of the overdue state. `soma check` says nothing. This is
+  the defect `entails`, judged on the frames, would report.
+- **Two kinds of composite keys** in the skeleton ("object|tag",
+  "version|name") that a state returning an entity would remove; a third
+  disappeared when the skeleton was typed (it became a sum type). One more
+  state relates two entities through a `maps` that crosses two cells, and a
+  reviewer found it broader than its definition.
+
+Not measured: the agent benchmark and the fuzzer, which wait for an
+implementation.
 
 ## Alternatives considered
 

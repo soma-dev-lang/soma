@@ -15,6 +15,8 @@ const METHOD: &str = include_str!("../../../site/llms-method.txt");
 const MANIFESTO: &str = include_str!("../../../docs/site/manifesto.md");
 const LAW_GUIDE: &str = include_str!("../../../site/llms-law.txt");
 const FLESH_CARD: &str = include_str!("../../../site/llms-flesh.txt");
+const LAW_BRIEF: &str = include_str!("../../../site/llms-law-brief.txt");
+const SKELETON_BRIEF: &str = include_str!("../../../site/llms-skeleton-brief.txt");
 const RELEASES: &str = include_str!("../../../site/llms-releases.txt");
 const REFERENCE: &str = include_str!("../../../SOMA_REFERENCE.md");
 const GOTCHAS: &str = include_str!("../../../AGENT_GOTCHAS.md");
@@ -34,6 +36,8 @@ const TOPICS: &[(&str, &str)] = &[
     ("skeleton", "large programs: skeleton / flesh, frames, holes, the brief, skeleton.lock"),
     ("law", "business rules outside the code: the .law file, realizes / under / exempt, soma law"),
     ("flesh", "writing ONE body from its brief: the syntax a handler needs, on one page"),
+    ("law --brief", "read BEFORE writing a law: what a good one contains, on one screen"),
+    ("skeleton --brief", "read BEFORE writing a skeleton: what a good one contains, on one screen"),
     ("releases", "what each release changed, newest first"),
     ("reference", "the full language reference"),
     ("gotchas", "mistakes models make, each with the real diagnostic and the fix"),
@@ -57,7 +61,9 @@ pub fn cmd_docs(topic: &str) {
         "method" => print!("{}", METHOD),
         "skeleton" | "frames" => print!("{}", SKELETON_GUIDE),
         "law" | "rules" => print!("{}", LAW_GUIDE),
-        "flesh" | "body" => print!("{}", FLESH_CARD),
+        "flesh" | "body" | "flesh-brief" => print!("{}", FLESH_CARD),
+        "law-brief" => print!("{}", LAW_BRIEF),
+        "skeleton-brief" => print!("{}", SKELETON_BRIEF),
         "releases" => print!("{}", RELEASES),
         "reference" => print!("{}", REFERENCE),
         "gotchas" => print!("{}", GOTCHAS),

@@ -6,7 +6,7 @@ what the business requires. That is the law.
 
 Three artefacts, three reviewers:
 
-    law       terms and rules, in sentences      the person who owns the rules
+    law       entities, states, actions, rules   the person who owns the rules
     skeleton  memory, state machines, frames     the architect
     flesh     the code                           you
 
@@ -19,18 +19,42 @@ on the law — never the reverse. You do not edit a `.law` file or `law.lock`.
 // lois/sanctions.law
 law Sanctions
 
-term Porteur  "The holder of units of a fund, on its register."
-term Paiement "A payment of cash to a holder: a redemption, a distribution, an indemnity."
+entity Holder "Whoever holds units of the fund, on its register."
+term   Report "A declaration made to the regulator."
+
+state  frozen(Holder): Bool "The holder is under an asset freeze."
+state  paid_to(Holder): Int "What the fund has paid the holder, in cents."
+
+action Payment(h: Holder, n: Int) "Cash paid by the fund to a holder: a redemption, an indemnity."
+action Freeze(h: Holder)          "The holder is placed under an asset freeze."
 
 rule "SAN-02" "No payment to a frozen holder"
-    about  Paiement, Porteur
-    source "Regulation (EU) 269/2014, art. 2"
-    owner  "compliance"
+    about    Payment, Holder
+    source   "Regulation (EU) 269/2014, art. 2"
+    owner    "compliance"
+    requires Payment(h, n): not frozen(h)
+
+rule "SAN-05" "A payment above the threshold is reported before it is made"
+    about    Payment, Report
+    source   "Internal procedure 7"
+    owner    "compliance"
 ```
 
-Its only words are `law`, `term`, `rule`, and under a rule `about` (the terms
-it speaks of — each must be declared), `source`, `owner`. A cell, a handler
-or a test named in it is refused (E0123). `//` starts a comment.
+A law declares, in this order:
+
+- `entity Name "definition"` — what the rules are about;
+- `term Name "definition"` — a word of the business a rule in a sentence speaks of;
+- `state name(Entity): Bool | Int "definition"` — a fact a rule reads, about one entity;
+- `action Name(p: Entity, n: Int) "definition"` — what happens;
+- `rule "ID" "sentence"`, and under it `about` (the actions, entities or
+  terms it speaks of — each must be declared), `source`, `owner`, and its
+  formal reading when it has one: `requires Action(params): condition`
+  (when the action is allowed) or `always p: condition` (what holds of
+  every entity).
+
+"SAN-02" has a formal reading: its refusal is derived, nobody writes it.
+"SAN-05" stays a sentence: the code serves it and says where. A cell, a
+handler or a test named in a law is refused (E0123). `//` starts a comment.
 
 The program says which laws it is under, in soma.toml:
 
@@ -39,70 +63,14 @@ The program says which laws it is under, in soma.toml:
 files = ["lois/sanctions.law"]
 ```
 
-## Aligning the code
+## A rule with a formal reading: the guard is derived
+
+When a rule can be said formally, the owner of the law says it, and the
+refusal is not yours to write:
 
 ```
-skeleton Caisse {
-    face {
-        signal payer(porteur: String, n: Int) -> Int
-            reads etat_de
-            writes solde
-            realizes Paiement                 // this action IS a payment
-        signal frais(n: Int) -> Int
-            writes solde
-            realizes Paiement
-            exempt "SAN-02" "pays the management company, not a holder"
-    }
-}
-flesh Caisse {
-    on payer(porteur, n) {
-        require (etat_de.get(porteur) ?? "valide") != "bloque" else Bloque "{porteur} is frozen" under "SAN-02"
-        …
-    }
-}
-cell test FrozenHolderIsNotPaid under "SAN-02" {
-    rules { … assert_fails Caisse.payer("a", 10) matching "Bloque" }
-}
-```
-
-- `realizes Term[, Term]` — a clause of a signal, in the skeleton: this
-  action is an instance of a term of the law. When you add a signal, ask
-  which term it realizes: that is what lets the check tell you which rules
-  it owes.
-- `under "ID"` serves a rule, in three ways, from the strongest:
-  - on a frame that has a guarded edge (`moves a -> b when Other.state`):
-    **proved** on every path;
-  - at the end of a `require … else Tag "…"` (same line): **checked** at
-    run time. A helper of the cell that the handler calls counts;
-  - as a statement of its own, in the branch that handles the case — an
-    order recorded then rejected, a share withheld while the others are
-    paid: **handled**. Nothing checks the branch does what the rule says;
-    only its tests do. Prefer a refusal when the case can be refused.
-- `exempt "ID" "why"` — a clause of a signal: the rule does not apply to
-  it. The reason is required and is read by a reviewer.
-- `cell test Name under "ID", "ID2" { … }` — the tests that show a rule at
-  work. They may be in another `.cell` file beside soma.toml, or in `tests/`.
-
-Without a `[law]` table these clauses are accepted and do nothing.
-
-## A rule with a formal reading: the guard is derived (3.5)
-
-A tag proves nothing by itself: `require true … under "SAN-02"` used to
-count as serving the rule. When a rule can be said formally, the owner of
-the law says it, and the refusal is no longer yours to write.
-
-The law gets a state and actions — still naming no code:
-
-```
-entity Holder "Whoever holds units of the fund, on its register."
-state  frozen(Holder): Bool "The holder is under an asset freeze."
-action Payment(h: Holder, n: Int) "Cash paid by the fund to a holder."
-action Freeze(h: Holder) "The holder is placed under an asset freeze."
-
 rule "SAN-02" "No payment to a frozen holder"
     about    Payment, Holder
-    source   "Regulation (EU) 269/2014, art. 2"
-    owner    "compliance"
     requires Payment(h, n): not frozen(h)
 ```
 
@@ -162,6 +130,13 @@ What follows, and what you do NOT do:
   and the hole, not the rule. `soma check` warns at the `maps`, and `soma
   law` shows the rule as `checked (derived, awaiting Cell.signal)`. A
   `maps` that reads the memory directly is judged on the bare skeleton.
+- **A `maps` is read as a body.** A field that does not exist, `get_status(x)
+  == Variant`, a literal of the wrong type passed to `Other.signal(…)`, a
+  signal of another cell whose frame writes: `soma check` says each at the
+  `maps` (warnings in this edition, errors in the next). And when the
+  program declares a type named like an entity of the law (`cell type
+  Invoice = String`), a parameter bound to that entity by `realizes` must
+  have it — `realizes Payment(account, n)` on an `Account` is said.
 - **A refusal tagged by hand no longer serves a formal rule.** `soma law`
   says `served Fund.redeem (derived)`.
 - **A signal that writes what a `maps` reads owes a binding** (E0138): it
@@ -188,6 +163,55 @@ reading, and its rule stays a sentence served `under`. A rule kept by
 something other than a refusal (an order recorded then rejected) needs the
 law to name the action that is refused. `silent` is declared and reviewed,
 not proven.
+
+## A rule that stays a sentence: served in the code
+
+A rule with no formal reading — a consequence, a batch, a deadline — is
+served by the bodies, and each place says so:
+
+```
+skeleton Fund {
+    face {
+        signal redeem(holder: String, n: Int) -> Int
+            reads reported
+            writes paid
+            realizes Payment(holder, n)       // an action: SAN-02 is derived
+        signal fees(holder: String, n: Int) -> Int
+            writes paid
+            realizes Payment(holder, n)
+            exempt "SAN-05" "management fees are capped far below the threshold"
+    }
+}
+flesh Fund {
+    on redeem(holder, n) {
+        require n < 1000000 || (reported.get(holder) ?? false) else NotReported "{holder}: report first" under "SAN-05"
+        …
+    }
+}
+cell test LargePaymentIsReported under "SAN-05" {
+    rules { … assert_fails Fund.redeem("a", 2000000) matching "NotReported" }
+}
+```
+
+- `realizes Action(args)` or `realizes Term` — a clause of a signal, in the
+  skeleton: this signal is that action, or an instance of that term. When you add a signal, ask
+  which term it realizes: that is what lets the check tell you which rules
+  it owes.
+- `under "ID"` serves a rule, in three ways, from the strongest:
+  - on a frame that has a guarded edge (`moves a -> b when Other.state`):
+    **proved** on every path;
+  - at the end of a `require … else Tag "…"` (same line): **checked** at
+    run time. A helper of the cell that the handler calls counts;
+  - as a statement of its own, in the branch that handles the case — an
+    order recorded then rejected, a share withheld while the others are
+    paid: **handled**. Nothing checks the branch does what the rule says;
+    only its tests do. Prefer a refusal when the case can be refused.
+- `exempt "ID" "why"` — a clause of a signal: the rule does not apply to
+  it. The reason is required and is read by a reviewer.
+- `cell test Name under "ID", "ID2" { … }` — the tests that show a rule at
+  work. They may be in another `.cell` file beside soma.toml, or in `tests/`.
+
+Without a `[law]` table these clauses are accepted and do nothing.
 
 ## What always holds: the monitor, and the gesture of refutation
 
@@ -257,18 +281,18 @@ E0130 is the forgotten path: a second way to pay, written later, that omits
 the check. Its message is the instruction:
 
 ```
-error: the rule "SAN-02" (No payment to a frozen holder — Regulation (EU)
-269/2014, art. 2) is not served in `Caisse.indemniser`, which realizes
-`Paiement` — add a refusal `under "SAN-02"` to its handler (or the statement
-`under "SAN-02"` in the branch that handles the case), or `exempt "SAN-02"
-"<why it does not apply>"` to its signal
+error: the rule "SAN-05" (A payment above the threshold is reported before
+it is made — Internal procedure 7) is not served in `Fund.indemnify`, which
+realizes `Payment` — add a refusal `under "SAN-05"` to its handler (or the
+statement `under "SAN-05"` in the branch that handles the case), or `exempt
+"SAN-05" "<why it does not apply>"` to its signal
 ```
 
 **On a skeleton, a hole owes; it has forgotten nothing.** While the signal
 has no body, the same rule is not an error: it is an open obligation of the
 flesh, counted (`○ 12 rules of the law still owed by the flesh`), listed by
-`soma law --todo` (`Fund.indemnify owes "SAN-02"`) and shown in the brief
-of the hole (`owes "SAN-02" …`). So a skeleton under a law in sentences
+`soma law --todo` (`Fund.indemnify owes "SAN-05"`) and shown in the brief
+of the hole (`owes "SAN-05" …`). So a skeleton under a law in sentences
 checks, and `soma verify`, `soma test`, `soma refute` and `soma attack` run
 on it before any body exists — `VERIFY OK (skeleton — the holes above are
 open obligations, and 12 rules of the law still owed by the flesh)`. The
@@ -289,6 +313,16 @@ Status of a rule: `unserved`, `owed` (nothing serves it yet and the signals
 that realize its terms have no body), `incomplete` (a signal that realizes
 one of its terms does not serve it), `handled`, `checked`, `proved` — the
 weakest way it is served anywhere. `soma law` exits 1 while a rule is owed.
+
+For the owner of the law, `soma doctor --program app.cell` (and `hints` in
+`soma law --json`) names each state that only `silent` signals change: it
+is changed by acts the law does not name. And `soma check` warns when many
+`exempt` share their words: an exemption is a judgment on one signal, and a
+term that makes many signals owe rules that do not concern them is too
+broad — that is said to the owner of the law, not exempted one by one.
+
+`soma docs law --brief` is one screen: what a good law contains. Read it
+before writing one. `soma init --law demo` is a whole project to imitate.
 
 ## When the law is silent or wrong
 

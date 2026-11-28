@@ -13,6 +13,7 @@ pub mod provider;
 pub mod describe;
 pub mod skeleton;
 pub mod law;
+pub mod mirror;
 pub mod agent_setup;
 pub mod fill;
 pub mod refute;

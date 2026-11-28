@@ -3,7 +3,7 @@ use std::process;
 
 use crate::pkg;
 
-pub fn cmd_init(name: Option<&str>, skeleton: bool) {
+pub fn cmd_init(name: Option<&str>, skeleton: bool, law: bool) {
     let cwd = std::env::current_dir().unwrap();
     // `soma init .`: here
     let name = name.filter(|n| *n != "." && *n != "./");
@@ -44,7 +44,10 @@ pub fn cmd_init(name: Option<&str>, skeleton: bool) {
         process::exit(1);
     }
 
-    let manifest = pkg::Manifest::new(&project_name);
+    let mut manifest = pkg::Manifest::new(&project_name);
+    // a skeleton says what its lifecycle must do: one property, proven by `soma verify`
+    if skeleton || law { manifest.verify.eventually = vec!["closed".to_string()]; }
+    if law { manifest.law.files = vec!["lois/payments.law".to_string()]; }
     manifest.save(&manifest_path).unwrap_or_else(|e| {
         eprintln!("error: {}", e);
         process::exit(1);
@@ -57,6 +60,19 @@ pub fn cmd_init(name: Option<&str>, skeleton: bool) {
 
     // app.cell — the name every doc, the help text and the site use.
     let main_path = project_dir.join("app.cell");
+    if !main_path.exists() && law {
+        // a whole small project under a law, to imitate: the law, the typed
+        // skeleton with its correspondence, the flesh, the tests under each rule
+        fs::write(&main_path, LAW_SKELETON).ok();
+        fs::create_dir_all(project_dir.join("lib")).ok();
+        fs::write(project_dir.join("lib").join("shop.cell"), LAW_FLESH).ok();
+        fs::create_dir_all(project_dir.join("lois")).ok();
+        fs::write(project_dir.join("lois").join("payments.law"), LAW_FILE).ok();
+        // the owner of a law locks it; the example comes reviewed
+        if let Ok(me) = std::env::current_exe() {
+            let _ = process::Command::new(me).args(["law", "app.cell", "--lock"]).current_dir(&project_dir).output();
+        }
+    }
     if !main_path.exists() {
         fs::write(&main_path, if skeleton { STARTER_SKELETON } else { STARTER_APP }).ok();
         if skeleton {
@@ -81,7 +97,11 @@ pub fn cmd_init(name: Option<&str>, skeleton: bool) {
     println!("initialized soma project: {}", project_name);
     println!("");
     println!("  {}soma.toml        project manifest", rel_prefix);
-    if skeleton {
+    if law {
+        println!("  {}lois/payments.law the law — entities, states, actions, four rules (three formal, one sentence); law.lock holds it", rel_prefix);
+        println!("  {}app.cell         the skeleton — types, memory, the lifecycle, the `maps`, each signal's frame; a test under each rule", rel_prefix);
+        println!("  {}lib/shop.cell    the flesh — the handler bodies", rel_prefix);
+    } else if skeleton {
         println!("  {}app.cell         the skeleton — memory, the lifecycle, and each signal's frame; tests", rel_prefix);
         println!("  {}lib/counter.cell the flesh — the handler bodies (one signal is left as a hole)", rel_prefix);
     } else {
@@ -98,6 +118,14 @@ pub fn cmd_init(name: Option<&str>, skeleton: bool) {
         println!("  cd {}", project_name);
     }
     println!("  soma check app.cell && soma verify app.cell && soma test app.cell");
+    if law {
+        println!("  soma law app.cell                # each rule: where it is served and how, its tests");
+        println!("  soma law app.cell --map          # the law and the program side by side");
+        println!("  soma doctor --program app.cell   # what the skeleton uses of the language, and what it does not state");
+        println!("  soma attack app.cell             # search for a trace that refutes a rule");
+        println!("  soma run app.cell capture o1 500");
+        return;
+    }
     if skeleton {
         println!("  soma next app.cell               # the ONE thing to do now, and its command");
         println!("  soma skeleton app.cell Counter.reset     # the brief for that one signal");
@@ -324,13 +352,19 @@ skeleton Counter {
     }
 
     face {
+        // The count so far.
         signal total() -> Int                           reads counts
+        // Adds `n` to the count; a negative amount is refused. Returns the new count.
         signal add(n: Int) -> Int
             writes counts
             calls total
-        signal reset() -> Int                           writes counts      // a hole: no body yet
+        // Puts the count back to zero. Returns it.               (a hole: no body yet)
+        signal reset() -> Int                           writes counts
+        // Opens session `id`.
         signal open_session(id: String) -> String       moves idle -> open
+        // Closes session `id`: it cannot be opened again.
         signal close_session(id: String) -> String      moves open -> closed
+        // The HTTP entry: GET / reads the count, POST /counter/N adds N.
         signal request(method: String, path: String, body: String) -> Map
             calls total, add
     }
@@ -349,6 +383,10 @@ cell test CounterTests {
     }
 }
 "#;
+
+const LAW_SKELETON: &str = include_str!("starter_law/app.cell");
+const LAW_FLESH: &str = include_str!("starter_law/shop.cell");
+const LAW_FILE: &str = include_str!("starter_law/payments.law");
 
 const STARTER_FLESH: &str = r#"// The flesh of `skeleton Counter` (app.cell): handler bodies, nothing else.
 // A parameter's type comes from the skeleton's signal. `reset` is not here:

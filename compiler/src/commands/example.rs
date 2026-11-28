@@ -123,6 +123,10 @@ pub fn cmd_example(terms: &[String], json: bool, all: bool) {
     }
     if hits.is_empty() {
         eprintln!("no verified program matches [{}]. `soma example` lists domains and features.", terms.join(", "));
+        // the corpus is single files: a project under a law is not one of them
+        if terms.iter().any(|t| ["law", "maps", "realizes", "skeleton", "flesh", "cell type", "rule", "under"].contains(&t.to_lowercase().as_str())) {
+            eprintln!("  a whole small project under a law — the law, a typed skeleton with its `maps`, the flesh, a test under each rule — is one command away: `soma init --law demo`");
+        }
         std::process::exit(1);
     }
     let shown = if all { hits.len() } else { 20 };

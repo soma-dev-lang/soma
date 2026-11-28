@@ -1,0 +1,81 @@
+// A shop's payments, under the law in lois/payments.law.
+// This file is the SKELETON: what is stored, the lifecycle, and for each
+// signal what its body may touch. The bodies are in lib/shop.cell.
+use lib::shop
+
+cell type Order = String                       // an order, by its id
+cell type Cents = Int where value >= 0         // an amount: never negative
+
+// What the journal keeps of one refund.
+cell type Entry { variants { Entry { amount: Cents, reason: String } } }
+
+skeleton Shop {
+    memory {
+        taken:   Map<Order, Cents> [persistent]   // order -> captured so far
+        back:    Map<Order, Cents> [persistent]   // order -> refunded so far
+        journal: Map<Order, Entry> [persistent]   // order -> its last refund
+    }
+
+    state order {
+        initial: open
+        open -> closed
+    }
+
+    // The correspondence: where each state of the law lives in the program.
+    maps captured(o) = taken.get(o) ?? 0
+    maps refunded(o) = back.get(o) ?? 0
+    maps closed(o)   = get_status(o) == "closed"
+
+    face {
+        // Takes `n` cents on order `o`. Returns what is captured so far.
+        signal capture(o: Order, n: Cents) -> Cents
+            writes taken
+            realizes Capture(o, n)
+            ensures result >= n
+
+        // Gives `n` cents back on order `o`, for `reason`. Returns what is refunded so far.
+        signal refund(o: Order, n: Cents, reason: String) -> Cents
+            requires n > 0
+            reads taken
+            writes back, journal
+            realizes RefundOf(o, n), Refund
+
+        // Closes order `o`: nothing more happens on it.
+        signal close(o: Order) -> String
+            moves open -> closed
+            realizes Closing(o)
+
+        // What is left to refund on order `o`.
+        signal refundable(o: Order) -> Cents
+            reads taken, back
+    }
+}
+
+// Tests name the rule they show at work. A test of a rule shows a case it refuses.
+cell test ClosedOrder under "PAY-01" {
+    rules {
+        assert Shop.capture("o1", 500) == 500
+        assert Shop.close("o1") == "closed"
+        assert_fails Shop.refund("o1", 100, "late") matching "PAY-01"
+    }
+}
+
+cell test PositiveAmount under "PAY-02" {
+    rules { assert_fails Shop.capture("o2", 0) matching "PAY-02" }
+}
+
+cell test NeverMoreThanCaptured under "PAY-03" {
+    rules {
+        assert Shop.capture("o3", 500) == 500
+        assert Shop.refund("o3", 200, "damaged") == 200
+        assert_fails Shop.refund("o3", 400, "again") matching "TooMuch"
+        assert Shop.refundable("o3") == 300
+    }
+}
+
+cell test Journal under "PAY-04" {
+    rules {
+        assert Shop.capture("o4", 500) == 500
+        assert Shop.refund("o4", 100, "wrong size") == 100
+    }
+}

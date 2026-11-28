@@ -1877,6 +1877,8 @@ impl Interpreter {
         // — every rule the call breaks is named, in the order of the law
         let mut broken: Vec<String> = Vec::new();
         let mut unjudged: Option<RuntimeError> = None;
+        // the rules a state with no body behind it kept from being judged
+        let mut awaiting: Vec<String> = Vec::new();
         for guard in &contract.law {
             match self.law_cond(&guard.cond, &env, signal_name) {
                 Ok(true) => {}
@@ -1884,14 +1886,19 @@ impl Interpreter {
                     if guard.source.is_empty() { String::new() } else { format!(" — {}", guard.source) }, guard.shown)),
                 // a state that awaits a body: nothing was judged, and the
                 // failure does not name the rule as if it had refused
-                Err(e) if e.kind() == "not_implemented" => { if unjudged.is_none() { unjudged = Some(RuntimeError::Domain {
-                    kind: "not_implemented".to_string(), message: format!("{}(): {}", signal_name, e) }); } }
+                Err(e) if e.kind() == "not_implemented" => {
+                    awaiting.push(format!("\"{}\"", guard.rule));
+                    if unjudged.is_none() { unjudged = Some(RuntimeError::Domain {
+                        kind: "not_implemented".to_string(), message: format!("{}(): {}", signal_name, e) }); }
+                }
                 Err(e) => { if unjudged.is_none() { unjudged = Some(RuntimeError::Domain { kind: "law".to_string(), message: format!(
                     "{}(): the guard of the rule \"{}\" (`{}`) could not be judged: {}", signal_name, guard.rule, guard.shown, e) }); } }
             }
         }
         if !broken.is_empty() {
-            let message = format!("{}(): refused by the law — {}", signal_name, broken.join("; "));
+            // what could not be judged is said beside what was: silence would read as "kept"
+            let message = format!("{}(): refused by the law — {}{}", signal_name, broken.join("; "),
+                if awaiting.is_empty() { String::new() } else { format!(" — not judged: rule{} {} (a state of the law reads through a signal with no body yet)", if awaiting.len() == 1 { "" } else { "s" }, awaiting.join(", ")) });
             // a refusal the program means: its text is what the caller is told
             crate::interpreter::builtins::collection::note_authored_failure("law", &message);
             return Err(RuntimeError::Domain { kind: "law".to_string(), message });

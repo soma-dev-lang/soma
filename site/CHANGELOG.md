@@ -1,5 +1,25 @@
 # Changelog
 
+## 3.6.2 — 2026-11-28
+
+Validation: 1,222 Rust tests, 118 CLI checks, 327 corpus programs, 1,280 numeric comparisons; 7,200 interpreter/native comparisons, 0 divergence.
+
+What a skeleton does not state, said by the toolchain. From the same field project: a skeleton presented as finished twice, with no invariant, no contract and no property, to which `soma check` answered "no errors" each time — an agent learns the language from what the toolchain tells it.
+
+- **`soma doctor --program app.cell`: the mirror of a program.** What its skeletons use of the language — types, invariants, contracts, properties, comments, tests under the formal rules — and what they do not state, each with the form to write: a signal that takes or returns a bare `Map` or `List`, a slot of numbers with no invariant, state machines with no property in `[verify]`, a signal with no comment. None is an error. `soma check` says it in one line (`○ not stated by the skeleton: …`), and `soma next` once, before the bodies, while the skeleton is not frozen. `--json`: schema `soma.mirror/1`.
+- **A `maps` is read as a body.** A field that does not exist, `get_status(x) == Variant`, a literal of the wrong type: said at the `maps` (warnings in this edition, errors in the next). A `maps` that reads through a signal of another cell whose frame writes is said too (it was E0135 only through a signal of the same cell).
+- **A parameter bound to an entity has its type.** When the program declares a type named like an entity of the law (`cell type Invoice = String`), `realizes Payment(account, n)` on an `Account` is a warning.
+- **`Other.signal(42, "x")`**: a literal of the wrong type passed to a signal of another cell is a warning (the same on a handler of the cell itself was already E0105).
+- **`soma init --law demo`**: a whole small project under a law, to imitate — a law with three formal rules and one sentence, a typed skeleton with its `maps`, invariants, contracts and a property, the flesh, a test under each rule. `soma example law` points to it. The starter of `soma init --skeleton` now comments each signal and states a property.
+- **One screen to read before writing a layer**: `soma docs law --brief`, `soma docs skeleton --brief` (and `soma docs flesh`). The skill and the AGENTS.md block say so, in place of "do not load documentation ahead of need".
+- **For the owner of the law**: a state that only `silent` signals change is named (`soma doctor --program`, `hints` in `soma law --json`) — it is changed by acts the law does not name.
+- **Guard rails of the method.** `soma skeleton --freeze` is refused until `soma check` and `soma verify` pass. The last line of `soma verify` names the law it was given under (`VERIFY OK — under law.lock 3f2a9c1b`; `law` in `--json`): the same words on a copy of the program without its law are not the same verdict. `soma check` warns when many `exempt` share their words.
+- **A `maps` that reads another cell through a hole is seen**, and **a refusal says what it could not judge** (`— not judged: rule "ID"`): two leftovers of 3.6.1.
+- The guide of the law opens on the whole format of a law (entities, states, actions, a formal rule and a sentence); the binary's long help no longer speaks of datacenters, CAP or quorum.
+- RFC 0004 carries its measures: 51 of 334 rules in sentences read as "when this happens, that follows", and none of their triggers is called.
+
+Not done, and known: the closure by effects (E0138) does not follow a `maps` that reads through `Other.signal(x)`; a nominal mismatch inside a `maps` is not seen; a record given as an incomplete `Map` is seen only when it runs.
+
 ## 3.6.1 — 2026-11-28
 
 A skeleton under a law, before any body exists (from a field report: a billing system rewritten under a law of 419 rules, 25 cells and 230 signals with no body). Validation: 1,211 Rust tests, 118 CLI checks, 327 corpus programs, 1,280 numeric comparisons; 7,200 interpreter/native comparisons, 0 divergence.

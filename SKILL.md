@@ -6,8 +6,10 @@ description: Write, check and prove Soma programs (.cell files, a soma.toml, .la
 # Soma
 
 The installed `soma` binary carries the language at the version you run.
-Ask it; do not load documentation ahead of need, and never guess a syntax,
-a builtin or a flag.
+Ask it, and never guess a syntax, a builtin or a flag. Before you WRITE a
+layer, read its one-screen page: `soma docs law --brief`, `soma docs
+skeleton --brief`, `soma docs flesh`. Before you call a skeleton done:
+`soma doctor --program app.cell` — what it does not state.
 
 ## The loop
 

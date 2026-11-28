@@ -995,6 +995,29 @@ pub fn cmd_freeze(path: &PathBuf, amend: bool) {
         eprintln!("error: {} has no `skeleton` to freeze — its cells hold their own handlers (`soma skeleton {} --split` rewrites them as skeleton + flesh)", file_str, file_str);
         std::process::exit(1);
     }
+    // what is frozen is what was proven: the bodies will be written against it
+    if !amend && matches!(lock::read(&lock_path), Ok(None)) {
+        let dir = path.parent().filter(|d| !d.as_os_str().is_empty()).unwrap_or(std::path::Path::new("."));
+        let entry = path.file_name().map(|n| n.to_string_lossy().to_string()).unwrap_or_default();
+        let run = |args: &[&str]| -> Option<serde_json::Value> {
+            let out = std::process::Command::new(std::env::current_exe().ok()?).args(args).current_dir(dir).stdin(std::process::Stdio::null()).output().ok()?;
+            let text = String::from_utf8_lossy(&out.stdout).to_string();
+            serde_json::from_str(&text[text.find('{')?..]).ok()
+        };
+        if let Some(c) = run(&["check", &entry, "--json"]) {
+            let errors = c["error_count"].as_u64().unwrap_or_else(|| c["errors"].as_array().map_or(0, |e| e.len() as u64));
+            if errors > 0 {
+                eprintln!("error: {} does not check ({} error{}) — a skeleton is frozen once it checks and verifies: `soma check {}`, then `soma verify {}`, then freeze", file_str, errors, if errors == 1 { "" } else { "s" }, file_str, file_str);
+                std::process::exit(1);
+            }
+        }
+        if let Some(v) = run(&["verify", &entry, "--json"]) {
+            if v["passed"] == false {
+                eprintln!("error: `soma verify {}` fails ({}) — what is frozen is what was proven: correct the structure, then freeze", file_str, v["verdict"].as_str().unwrap_or("VERIFY FAILED"));
+                std::process::exit(1);
+            }
+        }
+    }
     let file_name = path.file_name().map(|n| n.to_string_lossy().to_string()).unwrap_or_default();
     let existing = lock::read(&lock_path);
     let replaced = !matches!(existing, Ok(None));

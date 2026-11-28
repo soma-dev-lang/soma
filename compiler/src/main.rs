@@ -26,22 +26,23 @@ use registry::Registry;
 #[command(version)]
 #[command(about = "Soma — a language for programs written by coding agents")]
 #[command(long_about = "Soma — a language for programs written by coding agents\n\n\
-    Soma is a language where every system is a cell: state, interface, lifecycle,\n\
-    and distribution — in one model, from function to datacenter.\n\n\
+    You decide the rules and the structure; the agent writes the bodies, one at a\n\
+    time; the compiler holds each to what you decided. A program is cells: state,\n\
+    contract, lifecycle and behaviour in one unit.\n\n\
     Quick start:\n  \
       soma init myapp && cd myapp\n  \
       soma serve app.cell            # HTTP on :8080\n  \
       soma check app.cell            # verify contracts\n  \
       soma verify app.cell           # prove state machines\n\n\
-    Cluster (same code, multiple nodes):\n  \
-      soma serve app.cell -p 8080\n  \
-      soma serve app.cell -p 8081 --join localhost:8082\n\n\
+    Large programs, with an agent:\n  \
+      soma init --skeleton myapp     # structure first, one body left to write\n  \
+      soma next app.cell             # the one thing to do now\n  \
+      soma init --law demo           # a whole small project under a law, to imitate\n\n\
     For coding agents:\n  \
       soma docs agent                # the language, offline, for your context\n  \
       soma describe --builtins --json   # exact signatures — never guess\n  \
       soma example invariant state_machine    # verified programs to start from\n\n\
-    Docs: https://soma-lang.dev   (agents: https://soma-lang.dev/llms-full.txt)\n\
-    Paper: https://soma-lang.dev/paper")]
+    Docs: https://soma-lang.dev   (agents: https://soma-lang.dev/llms-full.txt)")]
 #[command(after_help = "Examples:\n  \
     soma serve app.cell                     Start web server\n  \
     soma serve app.cell --join host:8082    Join a cluster\n  \
@@ -151,7 +152,7 @@ enum Commands {
         #[arg(long, value_name = "EDITION")]
         edition: Option<String>,
     },
-    /// Prove state machines, temporal logic, CAP properties, quorum
+    /// Prove state machines (reachability, deadlocks, liveness, temporal properties), bounded invariants, termination and cost bounds
     Verify {
         /// Path to the .cell source file(s)
         files: Vec<PathBuf>,
@@ -299,6 +300,9 @@ enum Commands {
         /// agent | reference | gotchas | builtins | agents-md | all (omit to list)
         #[arg(default_value = "")]
         topic: String,
+        /// For `law` and `skeleton`: the one-screen page to read BEFORE writing that layer — what a good one contains
+        #[arg(long)]
+        brief: bool,
     },
     /// Format .cell files to the canonical layout: soma fmt app.cell | soma fmt . --check
     Fmt {
@@ -362,6 +366,9 @@ enum Commands {
         /// Start skeleton-first: app.cell holds the structure (`skeleton`), lib/ the bodies (`flesh`)
         #[arg(long)]
         skeleton: bool,
+        /// A whole small project under a law, to imitate: the law (formal rules and a sentence), a typed skeleton with its `maps`, invariants, contracts and a property, the flesh, a test under each rule
+        #[arg(long)]
+        law: bool,
         /// In a project that exists: write only what a coding agent is handed — the block in AGENTS.md, the skill, the hook that checks after every edit
         #[arg(long)]
         agent: bool,
@@ -370,6 +377,9 @@ enum Commands {
     Doctor {
         /// The project (default: the current directory)
         dir: Option<PathBuf>,
+        /// The mirror of a program instead: what its skeletons use of the language — types, invariants, contracts, properties, comments — and what they do not state
+        #[arg(long, value_name = "FILE")]
+        program: Option<PathBuf>,
         /// Output as JSON (for agents)
         #[arg(long)]
         json: bool,
@@ -700,8 +710,9 @@ fn main_inner() {
         }
         Commands::Replay { file, log, at, live } => commands::replay::cmd_replay(&file, log.as_ref(), at.as_deref(), live, &mut registry),
         Commands::Init { name, agent: true, .. } => commands::agent_setup::cmd_init_agent(std::path::Path::new(name.as_deref().unwrap_or("."))),
-        Commands::Init { name, skeleton, .. } => commands::init::cmd_init(name.as_deref(), skeleton),
-        Commands::Doctor { dir, json } => commands::agent_setup::cmd_doctor(&dir.unwrap_or_else(|| PathBuf::from(".")), json),
+        Commands::Init { name, skeleton, law, .. } => commands::init::cmd_init(name.as_deref(), skeleton, law),
+        Commands::Doctor { program: Some(file), json, .. } => commands::mirror::cmd_mirror(&file, json),
+        Commands::Doctor { dir, json, .. } => commands::agent_setup::cmd_doctor(&dir.unwrap_or_else(|| PathBuf::from(".")), json),
         Commands::Hook => commands::agent_setup::cmd_hook(),
         Commands::Attack { file, rule, depth, out, json } => commands::refute::cmd_attack(&file, rule.as_deref(), depth, out.as_ref(), json, &mut registry),
         Commands::Fingerprint { file, json } => commands::refute::cmd_fingerprint(&file, json, &mut registry),
@@ -774,7 +785,7 @@ fn main_inner() {
         Commands::Refs { file, signal, json } => commands::refs::cmd_refs(&file, &signal, json),
         Commands::Holes { file, only, json } => commands::skeleton::cmd_holes(&file, only.as_deref(), json),
         Commands::Law { file, rule, todo, lock, json, map, no_run } => commands::law::cmd_law(&file, rule.as_deref(), todo, lock, json, map, no_run),
-        Commands::Docs { topic } => commands::docs::cmd_docs(&topic),
+        Commands::Docs { topic, brief } => commands::docs::cmd_docs(&if brief { format!("{}-brief", topic) } else { topic }),
         Commands::Fmt { paths, check, json } => commands::fmt::cmd_fmt(&paths, check, json),
         Commands::Eval { file, handler, dataset, grade, threshold, json } => commands::eval::cmd_eval(&file, &handler, &dataset, &grade, threshold, json),
         Commands::Lsp => commands::lsp::cmd_lsp(),
@@ -1316,6 +1327,7 @@ fn cmd_verify(files: &[PathBuf], json: bool, strict: bool) {
         output["cells"] = serde_json::json!(all_cell_names);
         if !hole_notes.is_empty() { output["holes"] = serde_json::json!(hole_notes); }
         if owed > 0 { output["owed_rules"] = serde_json::json!(owed); }
+        if let Some(l) = commands::law::lock_name(files.first()) { output["law"] = serde_json::json!(l); }
         if total_cells > 1 {
             output["note"] = serde_json::json!(
                 "state machines are verified per cell. A value crosses a cell boundary by a face contract (`requires` / `ensures` on the signal); a rule between two cells' machines is proven when soma.toml states it — `[verify.before.\"Pay.paid\"] requires = [\"Approval.signed_off\"]` explores the product of the machines."
@@ -1372,6 +1384,9 @@ fn cmd_verify(files: &[PathBuf], json: bool, strict: bool) {
         // ONE verdict, last, so nobody stops reading at an early "0 failures"
         let structural = all_results.iter().filter(|r| r.has_failures()).count();
         let temporal = all_temporal.iter().flat_map(|(_, rs)| rs.iter()).filter(|r| !r.passed).count();
+        // a verdict names the law it was given under: the same words on a copy
+        // of the program without its law are not the same verdict
+        let under_law = commands::law::lock_name(files.first()).map(|l| format!(" — under {}", l)).unwrap_or_default();
         if has_failures {
             let mut why: Vec<String> = Vec::new();
             if check_failed { why.push("soma check failed".to_string()); }
@@ -1396,12 +1411,12 @@ fn cmd_verify(files: &[PathBuf], json: bool, strict: bool) {
             for n in &hole_notes { println!("{}", n); }
             println!("VERIFY FAILED — {}", why.join("; "));
         } else if hole_notes.is_empty() {
-            println!("VERIFY OK");
+            println!("VERIFY OK{}", under_law);
         } else {
             // the structure is proven; the bodies that are missing are not
             for n in &hole_notes { println!("{}", n); }
-            if owed == 0 { println!("VERIFY OK (skeleton — the holes above are open obligations)"); }
-            else { println!("VERIFY OK (skeleton — the holes above are open obligations, and {} rule{} of the law still owed by the flesh)", owed, if owed == 1 { "" } else { "s" }); }
+            if owed == 0 { println!("VERIFY OK (skeleton — the holes above are open obligations){}", under_law); }
+            else { println!("VERIFY OK (skeleton — the holes above are open obligations, and {} rule{} of the law still owed by the flesh){}", owed, if owed == 1 { "" } else { "s" }, under_law); }
         }
     }
 

@@ -1,0 +1,26 @@
+// The FLESH of Shop: one body per signal, each inside the frame its signal
+// declares in app.cell. No body checks PAY-01 or PAY-02: those refusals are
+// derived from the law and run before the body.
+flesh Shop {
+    on capture(o, n) {
+        taken.set(o, (taken.get(o) ?? 0) + n)
+        return taken.get(o) ?? 0
+    }
+
+    on refund(o, n, reason) {
+        let before = back.get(o) ?? 0
+        // PAY-03 says what always holds; the body is what keeps it
+        require before + n <= (taken.get(o) ?? 0) else TooMuch "order {o}: {n} is more than what is left to refund"
+        back.set(o, before + n)
+        under "PAY-04"
+        journal.set(o, Entry { amount: n, reason: reason })
+        return before + n
+    }
+
+    on close(o) {
+        transition(o, "closed")
+        return "closed"
+    }
+
+    on refundable(o) { return (taken.get(o) ?? 0) - (back.get(o) ?? 0) }
+}

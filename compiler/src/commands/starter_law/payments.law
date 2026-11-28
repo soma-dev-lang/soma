@@ -1,0 +1,40 @@
+// The law of the shop's payments. Written by whoever owns the rules, before
+// the program: it names no cell, no signal, no line of code.
+law Payments
+
+entity Order "An order of the shop, named by its id."
+term   Refund "Money given back to the customer on an order."
+
+state captured(Order): Int  "What was taken on the order, in cents."
+state refunded(Order): Int  "What was given back on the order, in cents."
+state closed(Order):   Bool "The order is closed: nothing more happens on it."
+
+action Capture(o: Order, n: Int)  "Money taken on an order."
+action RefundOf(o: Order, n: Int) "Money given back on an order."
+action Closing(o: Order)          "The order is closed."
+
+// A rule with a formal reading: the refusal is derived, nobody writes it.
+rule "PAY-01" "Nothing is refunded on a closed order"
+    about    RefundOf
+    source   "Terms of sale, §4"
+    owner    "finance"
+    requires RefundOf(o, n): not closed(o)
+
+rule "PAY-02" "An amount taken or given back is positive"
+    about    Capture
+    source   "Terms of sale, §2"
+    owner    "finance"
+    requires Capture(o, n): n > 0
+
+// What always holds: its monitor is derived, and `soma refute` judges it.
+rule "PAY-03" "A refund never exceeds what was captured"
+    about    Order
+    source   "Terms of sale, §4"
+    owner    "finance"
+    always   o: refunded(o) <= captured(o)
+
+// A rule that stays a sentence: the body serves it, and says where.
+rule "PAY-04" "Every refund is written to the journal with its reason"
+    about    Refund
+    source   "Accounting procedure 12"
+    owner    "finance"

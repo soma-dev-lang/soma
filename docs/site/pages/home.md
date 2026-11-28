@@ -79,7 +79,7 @@ Done. That loop — `next`, the brief, `fill` — is the same on [a 69,000-line 
 
 **Now hand it to your agent.** The project is ready for one: `soma init` wrote an `AGENTS.md` block, a small skill, and a hook that checks every edit and hands the errors back without being asked. Open the folder in Claude Code (the hook is its own; any agent that reads `AGENTS.md` gets the block) and ask for a feature. Then read `soma skeleton app.cell` — the structure, not the code.
 
-The current release is **Soma 3.6.1** ([release notes](/changelog/3.6.1)). Soma is experimental, and says where: [what is proven and what is not](#what-is-proven-what-is-not), [status](/status).
+The current release is **Soma 3.6.2** ([release notes](/changelog/3.6.2)). Soma is experimental, and says where: [what is proven and what is not](#what-is-proven-what-is-not), [status](/status).
 
 <style>
 .feat{display:block;margin:1.8rem 0 .4rem;border:1px solid var(--accent);border-radius:12px;padding:1.2rem 1.3rem;background:var(--panel);color:var(--fg)}
@@ -153,6 +153,10 @@ The second call is refused and changes nothing: a call that fails leaves no half
 
 No agent can keep a 10,000-line program in its head. So you write the structure first, as a `skeleton`: the data, its limits, the lifecycle, and for each operation what its code is allowed to touch. The code comes later, one operation at a time, each from a one-screen brief. Code that steps outside what it was allowed is refused. And the lifecycle is proven before a line of code exists.
 
+```run setup
+rm soma.toml
+```
+
 ```soma file=loans.cell
 skeleton Loans {
     memory { holder: Map<String, String> [persistent] }   // loan id -> member
@@ -217,12 +221,14 @@ skeleton Fund {
     memory {
         status: Map<String, String> [persistent]
         paid: Map<String, Int> [persistent]
+        invariant paid >= 0
     }
 
     maps frozen(h) = (status.get(h) ?? "valid") == "frozen"
     maps paid_to(h) = paid.get(h) ?? 0
 
     face {
+        // Places `holder` under an asset freeze.
         signal freeze(holder: String) -> String
             writes status
             realizes Freeze(holder)

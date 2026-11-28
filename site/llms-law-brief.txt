@@ -1,0 +1,41 @@
+# Before you write a law — what a good one contains
+
+Read this page, then write. A law is written by whoever owns the rules, or
+drafted for them to review and lock (`soma law app.cell --lock` is theirs).
+It names no cell, no signal, no line of code: it can exist before the
+program. The whole guide: `soma docs law`. A project to imitate: `soma init --law demo`.
+
+A law states, in this order:
+
+1. **Entities** — the things the rules are about, each with a definition:
+   `entity Order "An order of the shop, named by its id."`
+2. **States** — the facts a rule reads. One entity, Bool or Int:
+   `state closed(Order): Bool "…"`, `state captured(Order): Int "…"`.
+   A date is an Int (a day count); an amount is an Int (cents).
+3. **Actions** — everything that HAPPENS, with its parameters:
+   `action Capture(o: Order, n: Int) "Money taken on an order."`
+   Name every business act, including the ones that only create or declare
+   (opening an order, publishing a catalogue). A state that no action
+   changes will be changed by signals the law cannot see.
+4. **Rules** — each with an id, a sentence, its `source` and its `owner`, and
+   `about` the actions or terms it concerns. Then, whenever it can be said:
+   - what an action requires: `requires RefundOf(o, n): not closed(o)`;
+   - what always holds: `always o: refunded(o) <= captured(o)`.
+   The condition language is closed: `not`, `and`, `or`, parentheses, a
+   state of a parameter, a comparison between Int values. From a formal
+   rule the refusal (or the monitor) is DERIVED: nobody writes it in the
+   code, so nobody can forget or weaken it.
+5. **A rule that cannot be said formally stays a sentence** (a consequence —
+   "when this happens, that follows" —, a batch, a deadline). It is then
+   served in the bodies, and is as good as its tests.
+
+Keep a term narrow: a term `about` which many rules speak makes every
+signal that realizes it owe all of them. If signals end up owing rules that
+do not concern them, split the term — do not exempt signal by signal.
+
+Every rule has a test that shows a case it refuses. `soma law app.cell`
+is the table: where each rule is served and how, its tests, and — in
+`soma doctor --program` — what the law does not name yet.
+
+Do not: write a rule in the code; edit a locked law to make a check pass;
+call a law complete while `soma law` shows a rule `unserved`.

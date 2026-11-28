@@ -55,6 +55,7 @@ pub fn cmd_check(path: &PathBuf, json: bool, registry: &mut Registry) {
         print!("{}", chk.report());
         if !chk.has_errors() {
             if let Some(note) = checker::flesh::holes_note(&program, &file_str) { println!("{}", note); }
+            if let Some(note) = super::mirror::note(path) { println!("{}", note); }
             if !holes.is_empty() {
                 if let Some(note) = checker::law::owed_note(&checker::law::owed(&program, &crate::project::root(path))) { println!("{}  (`soma law {} --todo`)", note, file_str); }
             }

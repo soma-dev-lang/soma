@@ -36,6 +36,8 @@ soma next     app.cell                  # the ONE thing to do now, and its comma
 soma skeleton app.cell Orders.place     # the brief for ONE signal: all its body needs
 soma fill     app.cell Orders.place     # write that body (on stdin); it is checked
 soma docs flesh                         # the syntax a body needs, on one page
+soma docs skeleton --brief              # read BEFORE writing a skeleton (`law --brief`: a law)
+soma doctor --program app.cell          # what a skeleton does not state: run before calling it done
 ```
 
 - One hole at a time, until `soma next` answers `complete`.

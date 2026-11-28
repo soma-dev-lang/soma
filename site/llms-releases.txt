@@ -3,6 +3,20 @@
 > Newest first. The language itself: https://soma-lang.dev/llms.txt (`soma docs agent`).
 > Every fix and its compatibility note: https://soma-lang.dev/CHANGELOG.md.
 
+Soma 3.6.2: what a skeleton does NOT state, said by the toolchain. `soma
+doctor --program app.cell` is the mirror of a program: the types,
+invariants, contracts, properties and comments its skeletons use, and what
+they leave unsaid, each with the form to write (`soma check` says it in one
+line; `soma next` once, before the bodies). A `maps` is read as a body: a
+field that does not exist, `get_status(x) == Variant`, a wrong literal are
+said at the `maps`; a parameter bound to an entity of the law must have the
+type named like it. `soma init --law demo` writes a WHOLE small project
+under a law to imitate. Read one screen before writing a layer: `soma docs
+law --brief`, `soma docs skeleton --brief`. `soma skeleton --freeze` is
+refused until `check` and `verify` pass; the last line of `verify` names the
+law (`VERIFY OK — under law.lock 3f2a9c1b`); many `exempt` with the same
+words are warned. A refusal by the law says which rules it could not judge.
+
 Soma 3.6.1: a skeleton under a law runs before any body exists. A rule in
 a sentence that a signal with NO BODY YET will have to serve is no longer
 E0130: it is owed by the flesh — counted by `soma check`, listed by `soma

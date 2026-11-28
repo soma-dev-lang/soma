@@ -308,6 +308,18 @@ fn first_thing(path: &PathBuf, only: Option<&str>) -> Item {
                 command: if rule.is_empty() { format!("soma law {} --todo", entry) } else { format!("soma law {} \"{}\"", entry, rule) }, then: None };
         }
     }
+    // 4b. a skeleton not frozen yet that leaves things unsaid: said once,
+    // before the bodies — stating them, or freezing as it is, closes it
+    if !crate::checker::lock::path_for(path).exists() {
+        let m = super::mirror::mirror(path);
+        let mine: Vec<&super::mirror::Gap> = m.gaps.iter().filter(|g| only.is_none_or(|c| g.target.starts_with(&format!("{}.", c)) || g.kind == "no_property")).collect();
+        if m.skeletons > 0 && !mine.is_empty() {
+            return Item { kind: "skeleton", target: mine[0].target.clone(),
+                reason: format!("the skeleton is not frozen and does not state {} thing{} a skeleton usually states — the first: {}", mine.len(), if mine.len() == 1 { "" } else { "s" }, mine[0].message),
+                command: format!("soma doctor --program {}", entry),
+                then: Some(format!("soma skeleton {} --freeze   # once it says what you mean: from then on the bodies are written against it", entry)) };
+        }
+    }
     // 5. the next hole
     if let Some(h) = run_json(&dir, &["holes", &entry, "--json"]) {
         let total = h["total_holes"].as_u64().unwrap_or(0);

@@ -195,14 +195,22 @@ soma skeleton app.cell --freeze         # write skeleton.lock: every command tha
                                         #   machines, or a change to soma.toml's [verify] tables — and names the signal.
                                         #   The lock holds for any file of its directory; one that cannot be read is an error
 soma skeleton app.cell --amend          # accept a structural change on purpose (prints the difference)
+                                        #   Refused until `soma check` and `soma verify` pass: what is frozen is what was proven
+soma doctor --program app.cell [--json] # the MIRROR: what the skeletons use of the language (types, invariants, contracts,
+                                        #   properties, comments) and what they do not state, each with the form to write.
+                                        #   `soma check` says it in one line (`○ not stated by the skeleton: …`); none is an error
+soma docs skeleton --brief              # one screen: what a good skeleton contains — read it BEFORE writing one
 soma init --skeleton myapp              # a starter laid out this way, with one hole
+soma init --law demo                    # a whole small project under a law, to imitate: law, typed skeleton, flesh, tests
 soma docs flesh                         # one page: the syntax a body needs — give it, with the brief, to whoever fills a hole
 ```
 
-The loop for a large program: write the skeletons → `soma check` (every
-frame names things that exist; an edge no signal moves, a slot no signal
-writes are warnings) → `soma verify` (lifecycles proven before any body
-exists) → `--freeze` → then, until `soma next` answers `complete`: read the
+The loop for a large program: read `soma docs skeleton --brief` → write the
+skeletons → `soma check` (every frame names things that exist; an edge no
+signal moves, a slot no signal writes are warnings) → `soma doctor --program`
+(what they do not state: `soma next` says it once, before the bodies, while
+the skeleton is not frozen) → `soma verify` (lifecycles proven before any
+body exists) → `--freeze` → then, until `soma next` answers `complete`: read the
 brief of the hole it names, write that one body with `soma fill`. You never
 need another cell's bodies in context: the brief is the whole contract. The
 method as a whole — the law first, tests red first, what to report — is

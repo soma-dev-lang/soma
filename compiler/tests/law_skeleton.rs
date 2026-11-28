@@ -176,5 +176,40 @@ fn a_rule_broken_for_sure_is_a_refusal_even_beside_a_state_that_awaits_a_body() 
     std::fs::write(d.join("t.cell"), "use app\ncell test T under \"B-02\" {\n    rules { assert_fails Invoices.remove(\"x\", -1) matching \"B-02\" }\n}\n").unwrap();
     let (out, code) = soma(&d, &["test", "t.cell"]);
     assert_eq!(code, 0, "{out}");
-    assert!(!out.lines().find(|l| l.contains("matching \"B-02\"")).unwrap().contains("rule \"B-03\""), "{out}");
+    let line = out.lines().find(|l| l.contains("matching \"B-02\"")).unwrap();
+    // B-03 is not among the rules broken — and the message says it was not judged
+    assert!(!line.contains("it requires `not system_credit") && line.contains("not judged: rule \"B-03\""), "{out}");
+}
+
+#[test]
+fn a_maps_that_reads_another_cell_through_a_hole_and_a_field_is_seen() {
+    let source = r#"
+skeleton Ledger {
+    memory { cards: Map<String, Map> [persistent] }
+    face {
+        signal card(l: String) -> Map
+            reads cards
+    }
+}
+skeleton Invoices {
+    memory { lines: Map<String, Int> [persistent] }
+    maps known(l) = lines.get(l) != ()
+    maps system_credit(l) = Ledger.card(l).system == true
+    face {
+        signal remove(l: String, n: Int) -> Int
+            reads lines
+            writes lines
+            calls Ledger.card
+            realizes Removal(l, n)
+        signal adjust(l: String, n: Int) -> Int
+            writes lines
+            realizes Removal(l, n)
+    }
+}
+"#;
+    let d = project("across", source);
+    let (out, _) = soma(&d, &["check", "app.cell"]);
+    assert!(out.contains("`maps system_credit` in `Invoices` reads through `Ledger.card`") && out.contains("no body yet"), "{out}");
+    let (out, _) = soma(&d, &["law", "app.cell", "B-03", "--no-run"]);
+    assert!(out.contains("awaiting Ledger.card"), "{out}");
 }
