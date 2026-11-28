@@ -254,3 +254,75 @@ fn each_layer_has_its_page_to_read_first() {
     assert_eq!(code, 0);
     assert!(out.starts_with("# Before you write a law") && out.lines().count() <= 60);
 }
+
+const WIDE: &str = r#"
+cell type Line { variants { Line { sku: String, lot: Lot } } }
+cell type Lot { variants { Lot { code: String, qty: Int } } }
+
+skeleton Stock {
+    memory {
+        count: Map<String, Int> [persistent]
+        invariant count >= 0
+    }
+    face {
+        // The line of `sku`. A long second sentence that says how it is computed and from what.
+        signal line(sku: String) -> Line
+            reads count
+        // Ships `sku`. Returns how many are left.
+        signal ship(sku: String) -> Int
+            writes count
+            calls line
+    }
+}
+"#;
+
+#[test]
+fn a_brief_gives_of_a_callee_what_a_body_needs_and_full_gives_the_rest() {
+    let d = dir("brief");
+    std::fs::write(d.join("soma.toml"), "[package]\nname = \"essai\"\n").unwrap();
+    std::fs::write(d.join("app.cell"), WIDE).unwrap();
+    let (out, code) = soma(&d, &["skeleton", "app.cell", "Stock.ship"]);
+    assert_eq!(code, 0, "{out}");
+    // the callee: its signature and its first sentence — not its frame, not the rest
+    assert!(out.contains("line(sku: String) -> Line") && out.contains("// The line of `sku`. …"), "{out}");
+    assert!(!out.contains("A long second sentence") && !out.contains("reads count\n               //"), "{out}");
+    // types one level deep: Line is shown, Lot is named in it and not unrolled
+    assert!(out.contains("Line = Line { sku: String, lot: Lot }") && !out.contains("Lot = Lot {"), "{out}");
+    assert!(out.contains("`--full` for all"), "{out}");
+    let (out, _) = soma(&d, &["skeleton", "app.cell", "Stock.ship", "--full"]);
+    assert!(out.contains("A long second sentence") && out.contains("Lot = Lot { code: String, qty: Int }") && !out.contains("`--full` for all"), "{out}");
+}
+
+#[test]
+fn verify_says_nothing_of_a_property_about_another_machine() {
+    let d = dir("elsewhere");
+    std::fs::write(d.join("soma.toml"), "[package]\nname = \"essai\"\n\n[verify.after.shipped]\nnever = [\"packed\"]\n").unwrap();
+    std::fs::write(d.join("app.cell"), "cell Stock {\n    state item {\n        initial: listed\n        listed -> sold\n    }\n    on sell(id: String) { transition(id, \"sold\")  return id }\n}\ncell Parcels {\n    state parcel {\n        initial: packed\n        packed -> shipped\n    }\n    on ship(id: String) { transition(id, \"shipped\")  return id }\n}\n").unwrap();
+    let (out, code) = soma(&d, &["verify", "app.cell"]);
+    assert_eq!(code, 0, "{out}");
+    assert!(!out.contains("vacuously true") && out.contains("1 property of soma.toml names no state of this machine"), "{out}");
+    assert!(out.contains("✓ after('shipped', never 'packed')"), "{out}");
+    // the owner's reading: the declared properties, one line each, and the verdict
+    let (out, code) = soma(&d, &["verify", "app.cell", "--properties"]);
+    assert_eq!(code, 0, "{out}");
+    assert!(out.contains("✓ after('shipped', never 'packed')") && out.lines().last().unwrap().starts_with("VERIFY OK") && !out.contains("reachable from"), "{out}");
+}
+
+#[test]
+fn many_rules_with_no_test_are_one_line_and_a_comment_that_restates_a_rule_is_said() {
+    let d = dir("oneline");
+    std::fs::write(d.join("soma.toml"), "[package]\nname = \"essai\"\n\n[law]\nfiles = [\"lois/t.law\"]\n").unwrap();
+    let rules: String = (1..=5).map(|i| format!("rule \"T-{i}\" \"A unit moved is positive, way {i}\"\n    about Move\n    requires Move(s, n): n > {i}\n\n")).collect();
+    std::fs::write(d.join("lois/t.law"), format!("law T\n\nentity Sku \"A stock keeping unit.\"\naction Move(s: Sku, n: Int) \"Units of a sku are moved.\"\n\n{rules}")).unwrap();
+    std::fs::write(d.join("app.cell"), "skeleton Stock {\n    memory {\n        units: Map<String, Int> [persistent]\n        invariant units >= 0\n    }\n    face {\n        // T-1 : refused when the number of units moved is not above one.\n        signal move(sku: String, n: Int) -> Int\n            writes units\n            realizes Move(sku, n)\n    }\n}\n").unwrap();
+    let (out, _) = soma(&d, &["law", "app.cell", "--lock"]);
+    assert!(d.join("law.lock").exists(), "{out}");
+    let (out, code) = soma(&d, &["check", "app.cell"]);
+    assert_eq!(code, 0, "{out}");
+    assert!(out.contains("○ 5 rules of the law served and with no test") && !out.contains("has no test: `cell test"), "{out}");
+    assert!(out.contains("1 comment that restates a rule of the law"), "{out}");
+    let (out, _) = soma(&d, &["doctor", "--program", "app.cell"]);
+    assert!(out.contains("the comment of `Stock.move` restates \"T-1\""), "{out}");
+    let (out, _) = soma(&d, &["law", "app.cell", "--todo", "--no-run"]);
+    assert!(out.matches("has no test").count() == 5, "{out}");
+}

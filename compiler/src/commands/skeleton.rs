@@ -24,6 +24,11 @@ thread_local! {
     static BRIEF_ENTRY: std::cell::RefCell<Option<PathBuf>> = const { std::cell::RefCell::new(None) };
 }
 
+thread_local! {
+    /// `--full`: the brief with every callee's frame and whole comment, and every type unrolled
+    pub static BRIEF_FULL: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+}
+
 pub fn cmd_skeleton(path: &PathBuf, signal: Option<&str>, json: bool, split: bool) {
     BRIEF_ENTRY.with(|p| *p.borrow_mut() = Some(path.clone()));
     let source = read_source(path);
@@ -579,6 +584,13 @@ fn slot_span(cell: &CellDef, name: &str) -> Option<Span> {
 /// The sum / record types these texts name, and the types THOSE name, as
 /// `Name = Variant { … } | …`, in declaration order.
 pub fn types_closure(program: &Program, texts: &[String]) -> Vec<String> {
+    types_depth(program, texts, true, false)
+}
+
+/// `deep`: a type named by a type shown is shown too, to the end.
+/// `short`: a nominal type on one short line, what a nominal type is said once (a brief);
+/// otherwise each says it itself (the lock holds that text).
+fn types_depth(program: &Program, texts: &[String], deep: bool, short: bool) -> Vec<String> {
     let all: Vec<(&CellDef, String)> = frame::cells_with_parents(program).into_iter().map(|(c, _)| c).filter(|c| c.kind == CellKind::Type)
         .filter_map(|c| c.sections.iter().find_map(|s| match &s.node {
             Section::Variants(v) => Some((c, v.variants.iter().map(|x| format_variant(&x.node)).collect::<Vec<_>>().join(" | "))),
@@ -591,7 +603,7 @@ pub fn types_closure(program: &Program, texts: &[String]) -> Vec<String> {
         for (i, (c, body)) in all.iter().enumerate() {
             if !picked.contains(&i) && names(&text, &c.name) {
                 picked.push(i);
-                frontier.push(body.clone());
+                if deep { frontier.push(body.clone()); }
             }
         }
     }
@@ -602,8 +614,15 @@ pub fn types_closure(program: &Program, texts: &[String]) -> Vec<String> {
     for (name, base, bound) in crate::checker::nominal::declared() {
         if !texts.iter().any(|t| names(t, &name)) { continue; }
         let leave = match base.as_str() { "Float" => "to_float", "String" => "to_string", _ => "to_int" };
-        out.push(format!("{name} = {base}{} (nominal: never mixed with another type; build {name}(x), read {leave}(q); literals take its type)",
-            bound.map(|b| format!(" where {b}")).unwrap_or_default()));
+        if short {
+            out.push(format!("{name} = {base}{}   [nominal]", bound.map(|b| format!(" where {b}")).unwrap_or_default()));
+        } else {
+            out.push(format!("{name} = {base}{} (nominal: never mixed with another type; build {name}(x), read {leave}(q); literals take its type)",
+                bound.map(|b| format!(" where {b}")).unwrap_or_default()));
+        }
+    }
+    if short && out.iter().any(|t| t.ends_with("[nominal]")) {
+        out.push("    ([nominal]: never mixed with another type; build `Name(x)`, read `to_int(q)` / `to_string(q)` / `to_float(q)`; literals take its type)".to_string());
     }
     out
 }
@@ -611,6 +630,7 @@ pub fn types_closure(program: &Program, texts: &[String]) -> Vec<String> {
 fn types_named(program: &Program, texts: &[String]) -> Vec<String> {
     types_closure(program, texts)
 }
+
 
 /// A machine, whole: a body that moves or reads it needs every state.
 fn machine_lines(label: &str, sm: &StateMachineSection, source: &str) -> Vec<String> {
@@ -693,19 +713,28 @@ pub fn render_brief(program: &Program, source: &str, skeletons: &[CellSkeleton],
         if !consts.is_empty() { label(&mut out, "const", consts); }
     }
     // the types its signature and its callees' signatures name
+    // its own: what the body takes, returns and stores — it builds and takes
+    // apart those, so they are shown to the end
     let mut texts: Vec<String> = vec![bone_head(b)];
-    texts.extend(b.frame.calls.iter().filter_map(|c| callee_of(skeletons, sk, c)).map(bone_head));
     // …and the types of the slots it reads or writes: what it stores must be one
     for section in &sk.cell.sections {
         if let Section::Memory(m) = &section.node {
             texts.extend(m.slots.iter().filter(|sl| b.frame.reads.contains(&sl.node.name) || b.frame.writes.contains(&sl.node.name)).map(|sl| slot_line(&sl.node)));
         }
     }
-    let mut types = types_named(program, &texts);
+    let full = BRIEF_FULL.with(|f| f.get());
+    // its callees': one level deep, unless `--full`
+    let theirs: Vec<String> = b.frame.calls.iter().filter_map(|c| callee_of(skeletons, sk, c)).map(bone_head).collect();
+    let mut types = types_depth(program, &texts, true, true);
+    for t in types_depth(program, &theirs, full, true) { if !types.contains(&t) { types.push(t); } }
+    // (what a nominal type is: said once, last)
+    let nominal_note: Vec<String> = types.iter().filter(|t| t.trim_start().starts_with("([nominal]:")).cloned().collect();
+    types.retain(|t| !t.trim_start().starts_with("([nominal]:"));
+    types.extend(nominal_note.into_iter().take(1));
     if !types.is_empty() {
         // (a record or a sum type: how to build and take one apart; a
         // nominal type's line says it itself)
-        if types.iter().any(|t| !t.contains("(nominal:")) {
+        if types.iter().any(|t| !t.contains("(nominal:") && !t.contains("[nominal]")) {
             types.push("    (build one: `Name { field: value }` or `Name(value)`; take one apart: `match v { Name { field } -> … }`)".to_string());
         }
         label(&mut out, "types", types);
@@ -778,14 +807,25 @@ pub fn render_brief(program: &Program, source: &str, skeletons: &[CellSkeleton],
         let rows: Vec<(String, String, Vec<String>)> = b.frame.calls.iter().map(|c| match callee_of(skeletons, sk, c) {
             Some(callee) => {
                 let ret = format_return(&callee.return_type.cloned());
-                let frame = if callee.frame.is_pure() { "pure".to_string() } else { frame_inline(&callee.frame) };
+                // a body needs, of a signal it calls, its signature, what its
+                // answer means and what it refuses — not what it reads and
+                // writes: frames are not transitive. `--full` gives the rest
+                let frame = if !full { String::new() } else if callee.frame.is_pure() { "pure".to_string() } else { frame_inline(&callee.frame) };
                 // what the caller owes, and what it gets
                 let contract: Vec<String> = callee.requires.iter().map(|x| format!("    requires {}", render_expr(&x.node)))
                     .chain(callee.ensures.iter().map(|x| format!("    ensures {}", render_expr(&x.node)))).collect();
                 let mut contract: Vec<String> = contract;
                 // what the callee is for, in its skeleton's words
                 let intent = intent_of(callee.decl_span, source, true);
-                if !intent.is_empty() { contract.insert(0, format!("    // {}", intent.join(" "))); }
+                if !intent.is_empty() {
+                    let whole = intent.join(" ");
+                    let said = if full { whole.clone() } else { first_sentence(&whole) };
+                    contract.insert(0, format!("    // {}", said));
+                }
+                // the rules of the law it refuses under, by their id
+                let (owner, name) = c.split_once('.').unwrap_or((sk.cell.name.as_str(), c.as_str()));
+                let refused: Vec<String> = skeletons.iter().find(|o| o.cell.name == owner).map(|o| o.cell.law_guards.iter().filter(|g| g.signal == name).map(|g| format!("\"{}\"", g.rule)).collect()).unwrap_or_default();
+                if !refused.is_empty() { contract.push(format!("    refused by the law under {}", refused.join(", "))); }
                 (format!("{}({}){}{}", c, format_params(callee.params), ret, if callee.hole { "   [hole]" } else { "" }), frame, contract)
             }
             // a builtin: its signature, and what it does in one sentence
@@ -810,7 +850,7 @@ pub fn render_brief(program: &Program, source: &str, skeletons: &[CellSkeleton],
                 let ret = format_return(&x.return_type.cloned());
                 lines.push(format!("{}({}){}   in {}{}", e, format_params(x.params), ret, o.cell.name, if x.frame.is_pure() { String::new() } else { format!(": {}", frame_inline(&x.frame)) }));
                 let intent = intent_of(x.decl_span, source, true);
-                if !intent.is_empty() { lines.push(format!("    // {}", intent.join(" "))); }
+                if !intent.is_empty() { lines.push(format!("    // {}", if full { intent.join(" ") } else { first_sentence(&intent.join(" ")) })); }
             }
         }
         section("emits", lines);
@@ -820,7 +860,20 @@ pub fn render_brief(program: &Program, source: &str, skeletons: &[CellSkeleton],
     let emitters: Vec<String> = skeletons.iter().flat_map(|o| o.bones.iter().filter(|x| x.frame.emits.contains(&b.name)).map(move |x| format!("{}.{}", o.cell.name, x.name))).collect();
     if !emitters.is_empty() { section("emitted by", emitters); }
     out.push_str(&stub_line(sk, b));
+    if !full {
+        out.push_str("           (callees by their first sentence, types one level deep: `--full` for all)\n");
+        if out.len() > 9000 {
+            out.push_str(&format!("           (this brief is {} characters: a signal that needs this much to be written may be doing too much)\n", out.len()));
+        }
+    }
     out
+}
+
+/// What a comment says first: its first sentence, or its first 160 characters.
+fn first_sentence(whole: &str) -> String {
+    let first = whole.split_inclusive(". ").next().unwrap_or(whole).trim_end();
+    let cut: String = first.chars().take(160).collect();
+    if cut.chars().count() < whole.chars().count() { format!("{} …", cut.trim_end()) } else { whole.to_string() }
 }
 
 /// For a hole: where its body goes, ready to fill.

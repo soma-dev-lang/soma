@@ -564,6 +564,9 @@ pub fn check_property(graph: &StateMachineGraph, property: &Property) -> Propert
     }
 }
 
+/// The message of a property that names no state of the machine it was judged on.
+pub const NOT_THIS_MACHINE: &str = "names no state of this machine";
+
 /// Format property results for display
 pub fn format_property_results(machine: &str, results: &[PropertyResult]) -> String {
     let mut output = String::new();
@@ -572,7 +575,10 @@ pub fn format_property_results(machine: &str, results: &[PropertyResult]) -> Str
 
     output.push_str(&format!("\n  Temporal properties for '{}':\n", machine));
 
+    // properties about another machine: counted, not listed
+    let elsewhere = results.iter().filter(|r| r.passed && r.message == NOT_THIS_MACHINE).count();
     for r in results {
+        if r.passed && r.message == NOT_THIS_MACHINE { continue; }
         if r.passed && r.message.contains("(vacuously true)") {
             // nothing was shown: the state is not one this machine reaches —
             // a note, not a proof (a ✓ here read as a guarantee)
@@ -585,6 +591,9 @@ pub fn format_property_results(machine: &str, results: &[PropertyResult]) -> Str
                 output.push_str(&format!("    counter-example: {}\n", trace.join(" → ")));
             }
         }
+    }
+    if elsewhere > 0 {
+        output.push_str(&format!("  ({} propert{} of soma.toml name{} no state of this machine: judged on the machine that has them)\n", elsewhere, if elsewhere == 1 { "y" } else { "ies" }, if elsewhere == 1 { "s" } else { "" }));
     }
 
     output

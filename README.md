@@ -225,7 +225,7 @@ solve, lstsq, broadcasting helpers) in pure Soma — 43 self-proofs included.
 
 ## Honest status
 
-Soma is an experimental language (release: `soma 3.6.2`; see
+Soma is an experimental language (release: `soma 3.6.3`; see
 [the changelog](CHANGELOG.md) for what it adds and what it leaves out). The
 verifier proves state-machine and invariant properties per cell; a rule
 between two cells is proven when it is stated — a face contract

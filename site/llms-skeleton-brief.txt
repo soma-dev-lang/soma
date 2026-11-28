@@ -25,7 +25,10 @@ A skeleton states, in this order:
    ["closed"]`, `never = ["lost"]`, or a rule between two machines.
 4. **Each signal, with its comment and its frame.**
    - one comment line above it: what it does, what it returns. The brief its
-     body is written from carries that line and nothing else of your intent;
+     body is written from carries that line and nothing else of your intent.
+     Its FIRST sentence is what a caller's brief shows: make it stand alone.
+     Do not restate a rule of the law in it — the brief already joins the
+     law's own words; name the rule by its id and say HOW the signal serves it;
    - `reads` / `writes` / `calls` / `moves` / `emits`: all the body may do.
      If the body needs a datum, the signal that gives it is in `calls`;
    - `requires` (owed by the caller) and `ensures` (owed by the body) where a

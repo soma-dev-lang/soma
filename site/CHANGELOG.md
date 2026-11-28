@@ -1,5 +1,18 @@
 # Changelog
 
+## 3.6.3 — 2026-11-28
+
+Validation: 1,225 Rust tests, 118 CLI checks, 327 corpus programs, 1,280 numeric comparisons; 7,200 interpreter/native comparisons, 0 divergence.
+
+Where an agent is given too much. Measured on the field project (249 signals, 269 types, 419 rules).
+
+- **A brief with a budget.** Of a signal it calls, a body needs the signature, what the answer means and what is refused — not what the callee reads and writes: frames are not transitive. A brief now gives, of a callee, its signature, the first sentence of its comment, its contract and the rules of the law it refuses under; the types of the callees' signatures one level deep (the signal's own types and those of its slots stay whole); what a nominal type is, once. `--full` gives the rest. The largest brief of the field project goes from 31,000 to 18,000 characters; a brief over 9,000 says it may be a signal doing too much.
+- **`soma verify` says nothing of a property about another machine.** A property none of whose states belongs to the machine was listed as "vacuously true" on it: one line per machine now counts them. 414 lines become 241 on the field project. `soma verify --properties`: only the properties soma.toml declares, one line each, and the verdict.
+- **Rules with no test are one line** in `soma check` when there are more than three (`○ 30 rules of the law served and with no test`); `soma law --todo` lists each.
+- **A comment that restates a rule is said** (`soma doctor --program`, and the one line of `soma check`): the brief already joins the law's own words, and a copy can diverge.
+
+Not done: `soma skeleton --diff` between two skeletons; contracts born of a type's bound grouped by type in `soma verify`; a signal nobody calls, an event nobody hears, a slot written and never read as warnings on a skeleton alone.
+
 ## 3.6.2 — 2026-11-28
 
 Validation: 1,222 Rust tests, 118 CLI checks, 327 corpus programs, 1,280 numeric comparisons; 7,200 interpreter/native comparisons, 0 divergence.

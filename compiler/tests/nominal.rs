@@ -395,7 +395,7 @@ fn the_brief_and_the_lock_show_the_nominal_type_as_written() {
     assert!(out.contains("only a nominal type's name differs in: pos"), "{out}");
     // the brief: the signature as written and what Lots is
     let (out, ok) = soma_in(&d, &["skeleton", "app.cell", "Desk.buy"]);
-    assert!(ok && out.contains("q: Lots) -> Lots") && out.contains("Lots = Int where value >= 0 (nominal:"), "{out}");
+    assert!(ok && out.contains("q: Lots) -> Lots") && out.contains("Lots = Int where value >= 0   [nominal]") && out.contains("([nominal]: never mixed with another type"), "{out}");
     // describe too
     let (out, _) = soma_in(&d, &["describe", "app.cell"]);
     assert!(out.contains("\"Lots\""), "{out}");

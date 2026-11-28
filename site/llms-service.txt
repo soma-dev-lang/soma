@@ -33,7 +33,7 @@ below is current for the binary named in https://soma-lang.dev/version.json.
 
 ## Pick Soma when / skip it when
 
-Current release: 3.6.2 (what a skeleton does not state: `soma doctor --program`; `soma init --law`) — 3.6.1: a skeleton under a law runs before any body — 3.6: a rule is exposed to refutation (`soma refute`, `soma attack`); after 3.5's formal law and derived guards, 3.4's method (`soma next`, `soma fill`), 3.3's
+Current release: 3.6.3 (a brief with a budget, `soma verify --properties`) — 3.6.2: what a skeleton does not state (`soma doctor --program`; `soma init --law`) — 3.6.1: a skeleton under a law runs before any body — 3.6: a rule is exposed to refutation (`soma refute`, `soma attack`); after 3.5's formal law and derived guards, 3.4's method (`soma next`, `soma fill`), 3.3's
 law, 3.2's nominal types and 3.1's skeleton first. What each release changed: `soma docs releases`.
 
 Pick it when the task has a lifecycle or a limit that must hold: payments,
@@ -1430,6 +1430,10 @@ soma fill     app.cell Orders.place [--json] # write that ONE body (given on std
                                         #   return the diagnostics of that signal alone, its frame, the holes left. It changes
                                         #   no skeleton, no other handler, no law; a body that does not parse writes nothing
 soma verify   app.cell --summary        # only the ✗ and ⚠ lines, the count of ✓, the holes, the verdict
+soma verify   app.cell --properties     # only the properties soma.toml declares, one line each (✓ / ✗), and the verdict
+soma skeleton app.cell Orders.place --full   # the brief with every callee's frame and whole comment, every type to the end
+                                        #   (by default: of a callee its signature, its first sentence, its contract and the
+                                        #   rules it refuses under; the callees' types one level deep)
 soma skeleton app.cell --split > new.cell    # rewrite existing cells as skeleton + flesh, bodies unchanged
 soma skeleton app.cell --freeze         # write skeleton.lock: every command that loads the program then refuses a change
                                         #   to a skeleton (interior ones too), a cell added that moves one of their
@@ -1925,6 +1929,17 @@ it says "error kind X", raise it with `require … else X "…"` or `fail`.
 
 > Newest first. The language itself: https://soma-lang.dev/llms.txt (`soma docs agent`).
 > Every fix and its compatibility note: https://soma-lang.dev/CHANGELOG.md.
+
+Soma 3.6.3: where an agent is given too much. A BRIEF has a budget: of a
+signal it calls, a body is shown the signature, the first sentence of its
+comment, its contract and the rules of the law it refuses under — not its
+frame (frames are not transitive); the callees' types one level deep; what
+a nominal type is, once. `soma skeleton app.cell Cell.signal --full` gives
+the rest. `soma verify` no longer lists, machine by machine, the properties
+that name no state of that machine; `soma verify --properties` prints only
+the declared properties, one line each, and the verdict. More than three
+rules with no test are one line of `soma check`. A comment that restates a
+rule of the law is said by `soma doctor --program`.
 
 Soma 3.6.2: what a skeleton does NOT state, said by the toolchain. `soma
 doctor --program app.cell` is the mirror of a program: the types,

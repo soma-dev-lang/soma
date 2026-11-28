@@ -127,9 +127,12 @@ fn the_brief_is_what_one_handler_may_touch() {
     assert!(out.starts_with("signal place(id: String, sku: String) -> String   // Orders\n"), "{out}");
     assert!(out.contains("log: Map<String, String> [persistent]"), "{out}");
     assert!(out.contains("placed -> packed   guard n <= 10"), "{out}");
-    // the contract and the frame of each callee
+    // of each callee, its signature — its frame is not the caller's concern
+    // (frames are not transitive) and comes with `--full`
     assert!(out.contains("Stock.take(sku: String, n: Int) -> Bool"), "{out}");
-    assert!(out.contains("writes items  calls level"), "{out}");
+    assert!(!out.contains("writes items  calls level"), "{out}");
+    let (whole, _) = soma(&["skeleton", &path, "Orders.place", "--full"]);
+    assert!(whole.contains("writes items  calls level"), "{whole}");
     // nothing about the cell's other signals
     assert!(!out.contains("quote") && !out.contains("audit"), "{out}");
 

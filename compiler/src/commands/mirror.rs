@@ -64,6 +64,8 @@ pub fn mirror(path: &PathBuf) -> Mirror {
     let root = crate::project::root(path);
     let manifest = crate::pkg::manifest::Manifest::load(&root.join("soma.toml")).ok();
 
+    // the ids of the rules of the law: a comment that follows one with a sentence restates the rule
+    let rule_ids: Vec<String> = crate::checker::law::load(manifest.as_ref(), &root).laws.iter().flat_map(|l| l.rules.iter().map(|r| r.id.clone())).collect();
     let all = frame::build(&program);
     let skeletons: Vec<&frame::CellSkeleton> = all.iter().filter(|s| s.cell.skeleton).collect();
     let mut gaps: Vec<Gap> = Vec::new();
@@ -93,7 +95,18 @@ pub fn mirror(path: &PathBuf) -> Mirror {
                 gaps.push(Gap { kind: "untyped_face", target: who.clone(), message: format!(
                     "`{}` — {}: a bare Map or List says nothing of what is in it. Declare a record (`cell type Line {{ variants {{ Line {{ sku: String, qty: Int }} }} }}`), or give the types (`Map<String, Int>`, `List<Line>`)", who, found.join(", ")) });
             }
-            if super::skeleton::intent_of(b.decl_span, &source, true).is_empty() {
+            let comment = super::skeleton::intent_of(b.decl_span, &source, true).join(" ");
+            let restated: Vec<&String> = rule_ids.iter().filter(|id| comment.match_indices(id.as_str()).any(|(i, _)| {
+                // `ID : sentence`, `ID — sentence`: the rule's text again, in other words
+                let after = comment[i + id.len()..].trim_start();
+                (after.starts_with(':') || after.starts_with('—') || after.starts_with("- ")) && after.chars().filter(|c| c.is_alphabetic()).count() > 12
+            })).collect();
+            if !restated.is_empty() {
+                gaps.push(Gap { kind: "rule_restated", target: who.clone(), message: format!(
+                    "the comment of `{}` restates {} — the brief of the signal already carries the law's own words (its `law` and `owes` lines), and a copy can diverge. Say HOW this signal serves the rule (the parameter, the slot, the call), and name it by its id only",
+                    who, restated.iter().map(|r| format!("\"{}\"", r)).collect::<Vec<_>>().join(", ")) });
+            }
+            if comment.is_empty() {
                 uncommented += 1;
                 gaps.push(Gap { kind: "no_comment", target: who.clone(), message: format!(
                     "`{}` has no comment: the brief its body is written from will say nothing of what the signal is for — one line above it, `// Pays a redemption of n to holder.`", who) });
@@ -165,7 +178,8 @@ pub fn note(path: &PathBuf) -> Option<String> {
     let count = |k: &str| m.gaps.iter().filter(|g| g.kind == k).count();
     let mut parts: Vec<String> = Vec::new();
     for (kind, one, many) in [("untyped_face", "signal with a bare Map or List", "signals with a bare Map or List"), ("no_invariant", "slot of numbers with no invariant", "slots of numbers with no invariant"),
-        ("no_property", "program with no property to prove", "programs with no property to prove"), ("no_comment", "signal with no comment", "signals with no comment")] {
+        ("no_property", "program with no property to prove", "programs with no property to prove"), ("no_comment", "signal with no comment", "signals with no comment"),
+        ("rule_restated", "comment that restates a rule of the law", "comments that restate a rule of the law")] {
         let n = count(kind);
         if n > 0 { parts.push(format!("{} {}", n, if n == 1 { one } else { many })); }
     }
@@ -200,7 +214,7 @@ pub fn cmd_mirror(path: &Path, json: bool) {
     } else {
         println!("\nNot stated ({}) — none is an error; each is something the toolchain would hold for you if it were written:\n", m.gaps.len());
         // by kind, the first few of each: a list of 200 lines teaches nothing
-        for kind in ["untyped_face", "no_invariant", "no_property", "no_comment"] {
+        for kind in ["untyped_face", "no_invariant", "no_property", "no_comment", "rule_restated"] {
             let of: Vec<&Gap> = m.gaps.iter().filter(|g| g.kind == kind).collect();
             for g in of.iter().take(3) { println!("  - {}", g.message); }
             if of.len() > 3 { println!("    … and {} more of the same kind: {}", of.len() - 3, of.iter().skip(3).take(8).map(|g| g.target.clone()).collect::<Vec<_>>().join(", ") + if of.len() > 11 { ", …" } else { "" }); }

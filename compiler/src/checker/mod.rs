@@ -537,6 +537,8 @@ pub struct Checker<'a> {
     calling_holes: usize,
     /// this checker reads the `maps` of a program as bodies (see `law::maps_as_handlers`)
     maps_pass: bool,
+    /// rules of the law that are served and have no test
+    pub law_untested: usize,
 }
 
 /// Every predicate name a checker constraint mentions that no structural
@@ -578,6 +580,7 @@ impl<'a> Checker<'a> {
             analysis_names: Default::default(),
             calling_holes: 0,
             maps_pass: false,
+            law_untested: 0,
         }
     }
 
@@ -832,10 +835,16 @@ impl<'a> Checker<'a> {
                 if let Ok(Some(message)) = law::against_lock(&loaded, &dir) {
                     self.errors.push(CheckError::Static { kind: "law_lock", message, span: nowhere });
                 }
+                let mut untested: Vec<law::Issue> = Vec::new();
                 for issue in law::analyse(program, &loaded.laws, &law::tests_beside(&dir)).issues {
+                    if issue.warning && issue.message.contains(" has no test: `cell test Name under") { untested.push(issue); continue; }
                     if issue.warning { self.warnings.push(CheckWarning::LawWarning { message: issue.message, span: issue.span }); }
                     else { self.errors.push(CheckError::Static { kind: issue.kind, message: issue.message, span: issue.span }); }
                 }
+                // a few rules with no test are named; many are one line
+                // (`soma law --todo` lists each)
+                if untested.len() > 3 { self.law_untested = untested.len(); }
+                else { for issue in untested { self.warnings.push(CheckWarning::LawWarning { message: issue.message, span: issue.span }); } }
                 // a `maps` is an expression nobody runs until a guard needs it:
                 // read each as a body, so that a field that does not exist, a
                 // comparison that always raises, a wrong argument are said now

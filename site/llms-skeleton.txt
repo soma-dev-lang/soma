@@ -189,6 +189,10 @@ soma fill     app.cell Orders.place [--json] # write that ONE body (given on std
                                         #   return the diagnostics of that signal alone, its frame, the holes left. It changes
                                         #   no skeleton, no other handler, no law; a body that does not parse writes nothing
 soma verify   app.cell --summary        # only the ✗ and ⚠ lines, the count of ✓, the holes, the verdict
+soma verify   app.cell --properties     # only the properties soma.toml declares, one line each (✓ / ✗), and the verdict
+soma skeleton app.cell Orders.place --full   # the brief with every callee's frame and whole comment, every type to the end
+                                        #   (by default: of a callee its signature, its first sentence, its contract and the
+                                        #   rules it refuses under; the callees' types one level deep)
 soma skeleton app.cell --split > new.cell    # rewrite existing cells as skeleton + flesh, bodies unchanged
 soma skeleton app.cell --freeze         # write skeleton.lock: every command that loads the program then refuses a change
                                         #   to a skeleton (interior ones too), a cell added that moves one of their

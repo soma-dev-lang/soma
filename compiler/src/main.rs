@@ -165,6 +165,9 @@ enum Commands {
         /// Only what needs attention: every ✗ and ⚠ under its heading, the count of ✓, the holes, the verdict
         #[arg(long)]
         summary: bool,
+        /// Only the properties soma.toml declares in `[verify]`, one line each (✓ or ✗), and the verdict — what the owner of a rule reads
+        #[arg(long)]
+        properties: bool,
         /// Write the proof as an artifact: sources and toolchain hashed, every property with its verdict class, one digest
         #[arg(long, value_name = "OUT.json")]
         attest: Option<PathBuf>,
@@ -238,6 +241,9 @@ enum Commands {
         /// Accept the current skeletons as the new skeleton.lock, printing what changed
         #[arg(long)]
         amend: bool,
+        /// With `Cell.signal`: the brief with every callee's frame and whole comment and every type unrolled to the end (by default: callees by their first sentence, types one level deep)
+        #[arg(long)]
+        full: bool,
     },
     /// Where a signal is declared, where its body is, and every call of it — program and tests — as file:line
     Refs {
@@ -740,7 +746,8 @@ fn main_inner() {
         Commands::TestProvider { name } => commands::provider::cmd_test_provider(&name),
         Commands::Migrate { from, to } => commands::provider::cmd_migrate(&from, &to),
         Commands::Props => commands::props::cmd_props(&registry),
-        Commands::Verify { files, json, strict, summary, attest, check_attestation } => {
+        Commands::Verify { files, json, strict, summary, properties, attest, check_attestation } => {
+            if properties && !json { verify_properties(&files, strict); }
             if summary && !json { verify_summary(&files, strict); }
             if let Some(a) = check_attestation {
                 commands::attest::check(&a);
@@ -776,7 +783,8 @@ fn main_inner() {
                 std::process::exit(1);
             }
         }
-        Commands::Skeleton { file, signal, json, index, split, freeze, amend } => {
+        Commands::Skeleton { file, signal, json, index, split, freeze, amend, full } => {
+            commands::skeleton::BRIEF_FULL.with(|f| f.set(full));
             if freeze || amend { commands::skeleton::cmd_freeze(&file, amend) }
             else if index { commands::skeleton::cmd_index(&file) }
             else { commands::skeleton::cmd_skeleton(&file, signal.as_deref(), json, split) }
@@ -792,6 +800,34 @@ fn main_inner() {
         Commands::Explain { code, json } => commands::explain::cmd_explain(&code, json),
         Commands::Example { terms, json, all } => commands::example::cmd_example(&terms, json, all),
     }
+}
+
+/// `soma verify --properties`: the same verification, and of its report only
+/// the properties the project declares, one line each, under their machine.
+fn verify_properties(files: &[PathBuf], strict: bool) -> ! {
+    let exe = std::env::current_exe().unwrap_or_else(|e| { eprintln!("error: cannot locate the soma binary: {e}"); std::process::exit(1) });
+    let mut cmd = std::process::Command::new(exe);
+    cmd.arg("verify").args(files);
+    if strict { cmd.arg("--strict"); }
+    let out = cmd.output().unwrap_or_else(|e| { eprintln!("error: cannot run soma verify: {e}"); std::process::exit(1) });
+    let text = format!("{}{}", String::from_utf8_lossy(&out.stderr), String::from_utf8_lossy(&out.stdout));
+    let mut inside = false;
+    let (mut heading, mut printed) = (String::new(), String::new());
+    let mut shown = 0usize;
+    for line in text.lines() {
+        let t = line.trim_start();
+        if t.starts_with("Temporal properties for") { inside = true; heading = line.to_string(); continue; }
+        if t.starts_with('○') || t.starts_with("VERIFY") || t.starts_with("error") { println!("{}", line); inside = false; continue; }
+        if !inside { continue; }
+        if t.starts_with('✓') || t.starts_with('✗') {
+            if heading != printed { println!("{}", heading); printed = heading.clone(); }
+            println!("{}", line);
+            shown += 1;
+        } else if line.starts_with("    counter-example") { println!("{}", line); }
+        else if !t.is_empty() && !t.starts_with('·') { inside = false; }
+    }
+    if shown == 0 { println!("no property of soma.toml `[verify]` is judged on a machine of this program — `eventually = [\"closed\"]`, `never = […]`, `[verify.before.\"Pay.paid\"] requires = […]`"); }
+    std::process::exit(out.status.code().unwrap_or(1));
 }
 
 /// `soma verify --summary`: the same verification, and of its report only
@@ -1096,6 +1132,17 @@ fn cmd_verify(files: &[PathBuf], json: bool, strict: bool) {
 
                     let machine_cells = program.cells.iter().filter(|c| c.node.sections.iter().any(|s| matches!(s.node, ast::Section::State(_)))).count();
                     let label = if machine_cells > 1 { format!("{}.{}", cell.node.name, sm.name) } else { sm.name.clone() };
+                    // a property none of whose states is of this machine is not
+                    // "vacuously true" here: it is about another machine
+                    {
+                        let mut states: std::collections::HashSet<&str> = sm.transitions.iter().flat_map(|t| [t.node.from.as_str(), t.node.to.as_str()]).collect();
+                        states.insert(sm.initial.as_str());
+                        for r in results.iter_mut() {
+                            if !(r.passed && r.message.contains("(vacuously true)")) { continue; }
+                            let named: Vec<&str> = r.property.split('\'').skip(1).step_by(2).collect();
+                            if !named.is_empty() && !named.iter().any(|n| states.contains(n)) { r.message = checker::temporal::NOT_THIS_MACHINE.to_string(); }
+                        }
+                    }
                     all_temporal.push((label, results));
                 }
             }

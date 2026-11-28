@@ -11,9 +11,9 @@ The facts a person or an agent needs before adopting Soma. Machine-readable at [
 | | |
 |---|---|
 | **Maturity** | Experimental. One author. Used for the demos in the repository and for the author's own trading automata. Not yet used in a system that other people depend on. |
-| **Version** | [Soma 3.6.2](https://github.com/soma-dev-lang/soma/releases/tag/v3.6.2) ([release notes](/changelog/3.6.2)). Check an installation with `soma --version`. [/version.json](/version.json) records the version, the source commit and documentation hashes; its `llms_txt_sha256` equals `soma docs agent \| shasum -a 256` on the release binary. |
+| **Version** | [Soma 3.6.3](https://github.com/soma-dev-lang/soma/releases/tag/v3.6.3) ([release notes](/changelog/3.6.3)). Check an installation with `soma --version`. [/version.json](/version.json) records the version, the source commit and documentation hashes; its `llms_txt_sha256` equals `soma docs agent \| shasum -a 256` on the release binary. |
 | **License** | MIT: [/LICENSE](/LICENSE). |
-| **Release validation** | Soma 3.6.2: 1,222 Rust tests, 118 CLI checks, 327 corpus programs and 1,280 independent numeric comparisons passed. |
+| **Release validation** | Soma 3.6.3: 1,225 Rust tests, 118 CLI checks, 327 corpus programs and 1,280 independent numeric comparisons passed. |
 | **Install** | `curl -fsSL https://soma-lang.dev/install.sh \| sh` downloads the release binary for the platform (checked against the release's `SHA256SUMS`) or builds from source. Pin a version with `SOMA_VERSION=3.6.0 sh setup.sh`. |
 | **Static verification** | `soma verify` proves properties of each cell's state graph, supported memory invariants, termination and cost bounds. Unproved checks are reported, and `--strict` rejects warnings. Cluster behaviour, arbitrary handler semantics, rules between cells that `soma.toml` does not state, and LLM answers are outside these proofs. [Guarantees](/guide/guarantees). |
 | **What goes wrong** | [Operations](/guide/operations): what stops the process, bind address and ports, exit codes, HTTP status per error kind, limits, deployment on Linux. |
