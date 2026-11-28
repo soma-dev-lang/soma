@@ -3,6 +3,19 @@
 > Newest first. The language itself: https://soma-lang.dev/llms.txt (`soma docs agent`).
 > Every fix and its compatibility note: https://soma-lang.dev/CHANGELOG.md.
 
+Soma 3.6.1: a skeleton under a law runs before any body exists. A rule in
+a sentence that a signal with NO BODY YET will have to serve is no longer
+E0130: it is owed by the flesh — counted by `soma check`, listed by `soma
+law --todo` (`Cell.signal owes "ID"`), shown in the brief of the hole
+(`owes "ID" …`), status `owed` — so `soma verify`, `test`, `refute` and
+`attack` run on the skeleton. A body written without serving the rule gets
+E0130 as before. A derived guard whose `maps` reads through a hole fails
+with kind `not_implemented`, naming the state and the hole, instead of
+naming the rule (`soma check` warns; `soma law`: `awaiting Cell.signal`). A
+refusal by the law names EVERY rule the call breaks, in the order of the
+law. `soma docs method`: a skeleton is one possible realization of a law, a
+flesh one possible filling of a skeleton.
+
 Soma 3.6.0: a rule is exposed to refutation. Under a rule, `always p:
 refunded(p) <= captured(p)` says what holds of every entity; its MONITOR is
 derived from it and the `maps` — nobody writes one (`soma monitor`). `soma

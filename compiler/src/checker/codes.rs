@@ -152,6 +152,7 @@ const ERROR_KINDS: &[(&str, &str)] = &[
     ("law_unbound_effect", "a signal that writes a slot or moves a machine under the law, with neither `realizes` nor `silent`"),
     ("law_silent_reason", "a `silent` without its reason"),
     ("law_unlocked", "a law that law.lock holds and soma.toml no longer names"),
+    ("law_maps_awaits", "a `maps` that reads through a signal with no body yet (reported as the warning W0020 law_warning)"),
 ];
 
 /// Warning classes (the `CheckWarning` variant, snake_case). APPEND ONLY.

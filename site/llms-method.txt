@@ -42,6 +42,19 @@ Each layer is written before the one below it, and the compiler holds each
 to the one above: a body may only do what its frame says; a signal that
 realizes a term of the law must serve the rules about that term.
 
+**One of many, each time.** A skeleton is one possible realization of a
+law, and a flesh one possible filling of a skeleton. The layer above
+constrains the one below and does not determine it: the same law can be
+kept by several skeletons, the same skeleton filled by several fleshes —
+which is why a law can be written before any program, and why a body can
+be rewritten without anyone rereading the structure. The two steps are not
+held the same way:
+
+| Step | What ties it | What that does not say |
+|---|---|---|
+| law → skeleton | a correspondence somebody states: each state of the law read from the program (`maps`), each action bound to a signal (`realizes`). From it the compiler derives the refusals | that the correspondence is the right one: a wrong `maps` realizes another law, faithfully. Its owner reviews it (`soma law --map`) |
+| skeleton → flesh | the frame, checked on every body: what it may read, write, call, which edges it may take | what the body computes inside its frame. The tests say that |
+
 The layers have owners because their readers differ. A compliance officer
 can read a rule. An architect can read a skeleton — a 12,000-line program
 is a few hundred lines of it. Nobody reads 12,000 lines of flesh, and with
@@ -59,7 +72,8 @@ this method nobody has to.
    and for each signal its frame: `reads`, `writes`, `calls`, `moves`, and
    `realizes` when the signal is an action the law speaks of; a `maps` for
    each state of the law. Run `soma
-   verify` now — the lifecycle is proven before any body exists. Freeze it
+   verify` now — the lifecycle is proven before any body exists, and what
+   the holes still owe to the law is counted, not refused. Freeze it
    (`soma skeleton app.cell --freeze`).
 3. **Write a test that fails.** A scenario from the life of the business —
    a day of the fund, a refused order — not a walk through the code. See it

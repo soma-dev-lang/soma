@@ -1753,12 +1753,17 @@ impl Interpreter {
             GuardOperand::Param(p) => env.get(p).cloned().ok_or_else(|| RuntimeError::TypeError(format!("`{}` is not a parameter of {}()", p, signal))),
             GuardOperand::Int(n) => Ok(Value::Int(SomaInt::from_i64(*n))),
             GuardOperand::Str(s) => Ok(Value::String(s.clone())),
-            GuardOperand::State { cell, param, expr, arg } => {
+            GuardOperand::State { name, cell, param, expr, arg } => {
                 let v = self.law_operand(arg, env, signal)?;
                 let mut inner: Env = FxHashMap::with_capacity_and_hasher(1, Default::default());
                 inner.insert(param.clone(), v);
-                self.eval_expr(&expr.node, &mut inner, cell, signal)
-                    .map_err(|e| RuntimeError::TypeError(format!("its `maps` in `{}` failed: {:?}", cell, e)))
+                self.eval_expr(&expr.node, &mut inner, cell, signal).map_err(|e| match e {
+                    // a `maps` that reads through a signal with no body yet: the
+                    // state is unknown, which is not the rule being broken
+                    ExecError::Runtime(r) if r.kind() == "not_implemented" => RuntimeError::Domain { kind: "not_implemented".to_string(), message: format!(
+                        "the state `{}` of the law cannot be read: its `maps` in `{}` calls a signal with no body yet — {}", name, cell, r) },
+                    e => RuntimeError::TypeError(format!("its `maps` in `{}` failed: {:?}", cell, e)),
+                })
             }
         }
     }
@@ -1869,21 +1874,29 @@ impl Interpreter {
         }
         // the law (RFC 0003): the action this signal realizes is allowed
         // only when the rule's condition holds — judged before any effect
+        // — every rule the call breaks is named, in the order of the law
+        let mut broken: Vec<String> = Vec::new();
+        let mut unjudged: Option<RuntimeError> = None;
         for guard in &contract.law {
             match self.law_cond(&guard.cond, &env, signal_name) {
                 Ok(true) => {}
-                Ok(false) => {
-                    let message = format!(
-                        "{}(): refused by the law — rule \"{}\" ({}{}): it requires `{}`", signal_name, guard.rule, guard.sentence,
-                        if guard.source.is_empty() { String::new() } else { format!(" — {}", guard.source) }, guard.shown);
-                    // a refusal the program means: its text is what the caller is told
-                    crate::interpreter::builtins::collection::note_authored_failure("law", &message);
-                    return Err(RuntimeError::Domain { kind: "law".to_string(), message });
-                }
-                Err(e) => return Err(RuntimeError::Domain { kind: "law".to_string(), message: format!(
-                    "{}(): the guard of the rule \"{}\" (`{}`) could not be judged: {}", signal_name, guard.rule, guard.shown, e) }),
+                Ok(false) => broken.push(format!("rule \"{}\" ({}{}): it requires `{}`", guard.rule, guard.sentence,
+                    if guard.source.is_empty() { String::new() } else { format!(" — {}", guard.source) }, guard.shown)),
+                // a state that awaits a body: nothing was judged, and the
+                // failure does not name the rule as if it had refused
+                Err(e) if e.kind() == "not_implemented" => { if unjudged.is_none() { unjudged = Some(RuntimeError::Domain {
+                    kind: "not_implemented".to_string(), message: format!("{}(): {}", signal_name, e) }); } }
+                Err(e) => { if unjudged.is_none() { unjudged = Some(RuntimeError::Domain { kind: "law".to_string(), message: format!(
+                    "{}(): the guard of the rule \"{}\" (`{}`) could not be judged: {}", signal_name, guard.rule, guard.shown, e) }); } }
             }
         }
+        if !broken.is_empty() {
+            let message = format!("{}(): refused by the law — {}", signal_name, broken.join("; "));
+            // a refusal the program means: its text is what the caller is told
+            crate::interpreter::builtins::collection::note_authored_failure("law", &message);
+            return Err(RuntimeError::Domain { kind: "law".to_string(), message });
+        }
+        if let Some(e) = unjudged { return Err(e); }
         let result = self.call_signal_body(cell_name, signal_name, args)?;
         if contract.ensures.is_empty() { return Ok(result); }
         env.insert("result".to_string(), result.clone());

@@ -67,9 +67,9 @@ pub fn cmd_skeleton(path: &PathBuf, signal: Option<&str>, json: bool, split: boo
         match find_bone(&skeletons, target) {
             Ok((sk, bone)) => {
                 if json {
-                    println!("{}", serde_json::to_string_pretty(&brief_json(&program, &source, &skeletons, sk, bone)).unwrap());
+                    println!("{}", serde_json::to_string_pretty(&brief_json(&program, &source, &skeletons, sk, bone, &crate::project::root(path))).unwrap());
                 } else {
-                    print!("{}", render_brief(&program, &source, &skeletons, sk, bone));
+                    print!("{}", render_brief(&program, &source, &skeletons, sk, bone, &crate::project::root(path)));
                 }
             }
             Err(msg) => {
@@ -625,7 +625,7 @@ fn machine_lines(label: &str, sm: &StateMachineSection, source: &str) -> Vec<Str
     lines
 }
 
-pub fn render_brief(program: &Program, source: &str, skeletons: &[CellSkeleton], sk: &CellSkeleton, b: &Bone) -> String {
+pub fn render_brief(program: &Program, source: &str, skeletons: &[CellSkeleton], sk: &CellSkeleton, b: &Bone, root: &std::path::Path) -> String {
     let mut out = String::new();
     // what the cell is, in its author's words
     if let Some(sp) = cell_span(program, &sk.cell.name) {
@@ -679,6 +679,12 @@ pub fn render_brief(program: &Program, source: &str, skeletons: &[CellSkeleton],
         out.push_str(&format!("    law \"{}\" {}{} — refused unless `{}`\n", g.rule, g.sentence, if g.source.is_empty() { String::new() } else { format!(" ({})", g.source) }, g.shown));
     }
     if !guards.is_empty() { out.push_str("        (these guards are derived from the law and run before your body: do not write them, and do not test for them)\n"); }
+    // the rules in a sentence this signal owes while it has no body: the
+    // body serves each, or `soma check` names it as forgotten
+    let who = format!("{}.{}", sk.cell.name, b.name);
+    let owed: Vec<crate::checker::law::Owed> = crate::checker::law::owed(program, root).owed.into_iter().filter(|o| o.signal == who).collect();
+    for o in &owed { out.push_str(&format!("    owes \"{}\" {}\n", o.rule, o.text)); }
+    if !owed.is_empty() { out.push_str("        (your body serves each: a refusal `require … else Tag \"…\" under \"ID\"`, or the statement `under \"ID\"` in the branch that handles the case — a rule that does not apply to this signal is exempted in the skeleton, by its architect (`exempt \"ID\" \"why\"`): report it, do not skip it)\n"); }
     let label = |out: &mut String, kw: &str, lines: Vec<String>| {
         for (i, l) in lines.iter().enumerate() { out.push_str(&format!("{:<10} {}\n", if i == 0 { kw } else { "" }, l)); }
     };
@@ -925,7 +931,7 @@ fn map_json(program: &Program, skeletons: &[CellSkeleton], file: &str) -> serde_
     serde_json::json!({ "file": file, "types": types, "cells": cells })
 }
 
-fn brief_json(program: &Program, source: &str, skeletons: &[CellSkeleton], sk: &CellSkeleton, b: &Bone) -> serde_json::Value {
+fn brief_json(program: &Program, source: &str, skeletons: &[CellSkeleton], sk: &CellSkeleton, b: &Bone, root: &std::path::Path) -> serde_json::Value {
     let callees: Vec<serde_json::Value> = b.frame.calls.iter().map(|c| match callee_of(skeletons, sk, c) {
         Some(callee) => { let mut v = bone_json(callee); v["name"] = serde_json::json!(c); v }
         None => serde_json::json!({ "name": c, "kind": "builtin" }),
@@ -964,6 +970,8 @@ fn brief_json(program: &Program, source: &str, skeletons: &[CellSkeleton], sk: &
         "consts": span.map(|sp| consts_of(sp, source)).unwrap_or_default(),
         "types": types_named(program, &texts),
         "machines": machines,
+        "owes": crate::checker::law::owed(program, root).owed.into_iter().filter(|o| o.signal == format!("{}.{}", sk.cell.name, b.name))
+            .map(|o| serde_json::json!({ "rule": o.rule, "text": o.text })).collect::<Vec<_>>(),
     })
 }
 

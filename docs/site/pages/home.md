@@ -53,7 +53,7 @@ That loop — `next`, the brief, `fill` — is the same on [a 69,000-line progra
 
 **Now hand it to your agent.** The project `soma init` wrote already carries what an agent needs: an `AGENTS.md` block, a 3 KB skill, and a hook that runs `soma check` after every edit and returns the diagnostics without being asked. Open the folder in Claude Code (the hook is its own; any agent that reads `AGENTS.md` gets the block) and ask for a feature. Then read what you would have had to review: `soma skeleton app.cell`, not the bodies.
 
-The current release is **Soma 3.6.0** ([release notes](/changelog/3.6.0)). Soma is experimental, and says where: [what is proven and what is not](#what-is-proven-what-is-not), [status](/status).
+The current release is **Soma 3.6.1** ([release notes](/changelog/3.6.1)). Soma is experimental, and says where: [what is proven and what is not](#what-is-proven-what-is-not), [status](/status).
 
 <style>
 .feat{display:block;margin:1.8rem 0 .4rem;border:1px solid var(--accent);border-radius:12px;padding:1.2rem 1.3rem;background:var(--panel);color:var(--fg)}
@@ -319,6 +319,8 @@ Nobody reads 70,000 lines an agent wrote. With Soma you do not have to, because 
 | the **law** | whoever owns the business rules | sentences, with their sources |
 | the **skeleton** | the architect | memory, lifecycles, and what each signal may touch — a few hundred lines for a large program |
 | the last line of `soma verify`, and `soma law` | the toolchain | what is proven, what is only checked at run time, where each rule is served |
+
+A skeleton is one possible realization of a law, and the bodies one possible filling of a skeleton: each layer constrains the one below without determining it, so the bodies can be written, and rewritten, without anyone rereading what was decided above them.
 
 The agent works below that line, one body at a time, and cannot move it: `soma fill` writes one handler and nothing else, and a change to the structure is a separate act that prints what changed. [The method](/guide/method) is the whole of it — the order of work, and what each step establishes and what it does not.
 

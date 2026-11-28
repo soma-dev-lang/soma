@@ -32,7 +32,7 @@ below is current for the binary named in https://soma-lang.dev/version.json.
 
 ## Pick Soma when / skip it when
 
-Current release: 3.6.0 — a rule is exposed to refutation (`soma refute`, `soma attack`); after 3.5's formal law and derived guards, 3.4's method (`soma next`, `soma fill`), 3.3's
+Current release: 3.6.1 (a skeleton under a law runs before any body: a hole owes a rule) — 3.6: a rule is exposed to refutation (`soma refute`, `soma attack`); after 3.5's formal law and derived guards, 3.4's method (`soma next`, `soma fill`), 3.3's
 law, 3.2's nominal types and 3.1's skeleton first. What each release changed: `soma docs releases`.
 
 Pick it when the task has a lifecycle or a limit that must hold: payments,

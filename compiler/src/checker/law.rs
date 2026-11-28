@@ -706,7 +706,20 @@ pub struct Realization {
     pub exempt: Vec<(String, String)>,
     /// RFC 0003: the actions of the law this signal is bound to (`realizes A(args)`)
     pub bindings: Vec<(String, Vec<String>)>,
+    /// the signal has no body yet: what it does not serve is owed, not forgotten
+    pub hole: bool,
     pub span: Span,
+}
+
+/// A rule in a sentence a hole will have to serve: an open obligation of the
+/// flesh — counted and listed, and no error while the signal has no body.
+#[derive(Debug, Clone)]
+pub struct Owed {
+    pub rule: String,
+    /// the rule's sentence, and its source when it has one
+    pub text: String,
+    pub signal: String,
+    pub message: String,
 }
 
 #[derive(Debug, Clone)]
@@ -724,16 +737,23 @@ pub struct RuleStatus {
     pub refuted_by: Vec<(String, String)>,
     /// traces kept for this rule that no longer refute it
     pub stale_refutations: Vec<String>,
+    /// signals with no body yet that a state of the rule is read through:
+    /// until they have one, its derived guard judges nothing
+    pub awaiting: Vec<String>,
+    /// signals with no body yet that will have to serve it (they are in `missing` too)
+    pub owed: Vec<String>,
 }
 
 impl RuleStatus {
-    /// `unserved` | `incomplete` | `proved` | `checked` | `handled` — the
+    /// `unserved` | `owed` | `incomplete` | `proved` | `checked` | `handled` — the
     /// weakest way it is served anywhere: a guarded edge proves, a refusal
     /// checks at run time, a marked branch only says where it is handled.
     pub fn status(&self) -> &'static str {
         // a known refutation, then a failing test, say more than how the rule is served
         if !self.refuted_by.is_empty() { "refuted" }
         else if self.results.values().any(|r| *r == "fails") { "failing" }
+        // nothing serves it yet, and nothing forgot it: its signals have no body
+        else if self.served.is_empty() && !self.owed.is_empty() && self.owed.len() == self.missing.len() { "owed" }
         else if self.served.is_empty() { "unserved" }
         else if !self.missing.is_empty() { "incomplete" }
         else if self.served.iter().all(|(_, how)| *how == "monitored") { "monitored" }
@@ -748,6 +768,8 @@ pub struct Report {
     pub rules: Vec<RuleStatus>,
     pub realizations: Vec<Realization>,
     pub issues: Vec<Issue>,
+    /// rules in a sentence that signals with no body yet will have to serve
+    pub owed: Vec<Owed>,
     /// `require` statements of the program, and how many serve a rule
     pub requires: usize,
     pub requires_under: usize,
@@ -761,6 +783,8 @@ struct CellView<'a> {
     slots: Vec<String>,
     skeleton: bool,
     signals: Vec<(&'a SignalDecl, Span)>,
+    /// the signals with no body yet
+    holes: BTreeSet<String>,
     /// handler name -> the Debug text of its body
     bodies: BTreeMap<String, (String, Span)>,
 }
@@ -813,7 +837,7 @@ pub fn derive(program: &mut Program, root: &Path) {
     fn build(c: &Cond, arg: &dyn Fn(&str) -> Option<GuardOperand>, maps: &BTreeMap<String, (String, String, Spanned<Expr>)>) -> Option<GuardCond> {
         let state = |s: &str, p: &str| -> Option<GuardOperand> {
             let (cell, param, expr) = maps.get(s)?;
-            Some(GuardOperand::State { cell: cell.clone(), param: param.clone(), expr: expr.clone(), arg: Box::new(arg(p)?) })
+            Some(GuardOperand::State { name: s.to_string(), cell: cell.clone(), param: param.clone(), expr: expr.clone(), arg: Box::new(arg(p)?) })
         };
         let operand = |o: &Operand| -> Option<GuardOperand> {
             match o { Operand::State(s, p) => state(s, p), Operand::Param(p) => arg(p), Operand::Int(n) => Some(GuardOperand::Int(*n)) }
@@ -852,7 +876,7 @@ pub fn derive(program: &mut Program, root: &Path) {
                                         target: Box::new(Spanned::new(Expr::Ident(slot.to_string()), nowhere)), method: "get".to_string(),
                                         args: vec![Spanned::new(Expr::Ident(key.to_string()), nowhere)],
                                     };
-                                    return Some(GuardOperand::State { cell: cell_name.clone(), param: key.to_string(), expr: Spanned::new(get, nowhere), arg: Box::new(GuardOperand::Param(key.to_string())) });
+                                    return Some(GuardOperand::State { name: format!("{} via {}", key, slot), cell: cell_name.clone(), param: key.to_string(), expr: Spanned::new(get, nowhere), arg: Box::new(GuardOperand::Param(key.to_string())) });
                                 }
                                 Some(if let Some(t) = a.strip_prefix('"') { GuardOperand::Str(t.trim_end_matches('"').to_string()) }
                                      else if let Ok(n) = a.parse::<i64>() { GuardOperand::Int(n) }
@@ -903,7 +927,7 @@ pub fn monitors(program: &Program, laws: &[Law]) -> Vec<Monitor> {
     fn build(c: &Cond, maps: &BTreeMap<String, (String, String, Spanned<Expr>)>) -> Option<GuardCond> {
         let state = |s: &str, p: &str| -> Option<GuardOperand> {
             let (cell, param, expr) = maps.get(s)?;
-            Some(GuardOperand::State { cell: cell.clone(), param: param.clone(), expr: expr.clone(), arg: Box::new(GuardOperand::Param(p.to_string())) })
+            Some(GuardOperand::State { name: s.to_string(), cell: cell.clone(), param: param.clone(), expr: expr.clone(), arg: Box::new(GuardOperand::Param(p.to_string())) })
         };
         let operand = |o: &Operand| -> Option<GuardOperand> {
             match o { Operand::State(s, p) => state(s, p), Operand::Param(p) => Some(GuardOperand::Param(p.clone())), Operand::Int(n) => Some(GuardOperand::Int(*n)) }
@@ -941,7 +965,8 @@ pub fn dictionary(program: &Program, laws: &[Law]) -> serde_json::Value {
         let found = cells.iter().find_map(|v| v.maps.iter().find(|m| m.node.state == s.name).map(|m| (v.name.clone(), m)));
         serde_json::json!({
             "name": s.name, "entity": s.entity, "type": s.ty, "definition": s.definition,
-            "maps": found.map(|(cell, m)| serde_json::json!({"cell": cell, "param": m.node.param, "expression": crate::ast::render_expr(&m.node.expr.node)})),
+            "maps": found.map(|(cell, m)| serde_json::json!({"cell": cell, "param": m.node.param, "expression": crate::ast::render_expr(&m.node.expr.node),
+                "reads_through": reads_through(&m.node.expr, &cell, &cells).into_iter().map(|(signal, body)| serde_json::json!({"signal": signal, "body": body})).collect::<Vec<_>>()})),
         })
     }).collect();
     let actions: Vec<serde_json::Value> = laws.iter().flat_map(|l| l.actions.iter()).map(|a| {
@@ -970,7 +995,13 @@ pub fn render_dictionary(d: &serde_json::Value) -> String {
     for s in d["states"].as_array().into_iter().flatten() {
         out.push_str(&format!("  {}({}): {}   {}\n", text(&s["name"]), text(&s["entity"]), text(&s["type"]), text(&s["definition"])));
         match s["maps"].as_object() {
-            Some(m) => out.push_str(&format!("      {}: {}\n", m["cell"].as_str().unwrap_or(""), m["expression"].as_str().unwrap_or(""))),
+            Some(m) => {
+                out.push_str(&format!("      {}: {}\n", m["cell"].as_str().unwrap_or(""), m["expression"].as_str().unwrap_or("")));
+                for r in m["reads_through"].as_array().into_iter().flatten() {
+                    out.push_str(&format!("          reads through {} — {}\n", text(&r["signal"]),
+                        if r["body"] == true { "which has a body" } else { "which has no body yet: the state cannot be read until it has one" }));
+                }
+            }
             None => out.push_str("      NOT MAPPED: no `maps` of the program defines it\n"),
         }
     }
@@ -1038,7 +1069,7 @@ fn views<'a>(cells: &'a [Spanned<CellDef>], out: &mut Vec<CellView<'a>>, tests: 
         // a skeleton and its flesh are two definitions of one cell
         let at = match out.iter().position(|v| v.name == cell.node.name) {
             Some(i) => i,
-            None => { out.push(CellView { name: cell.node.name.clone(), span: cell.span, maps: Vec::new(), slots: Vec::new(), skeleton: false, signals: Vec::new(), bodies: BTreeMap::new() }); out.len() - 1 }
+            None => { out.push(CellView { name: cell.node.name.clone(), span: cell.span, maps: Vec::new(), slots: Vec::new(), skeleton: false, signals: Vec::new(), holes: BTreeSet::new(), bodies: BTreeMap::new() }); out.len() - 1 }
         };
         out[at].maps.extend(cell.node.maps.iter());
         out[at].skeleton |= cell.node.skeleton;
@@ -1048,12 +1079,31 @@ fn views<'a>(cells: &'a [Spanned<CellDef>], out: &mut Vec<CellView<'a>>, tests: 
                     if let FaceDecl::Signal(sig) = &d.node { out[at].signals.push((sig, d.span)); }
                 },
                 Section::Memory(mem) => for slot in &mem.slots { out[at].slots.push(slot.node.name.clone()); },
-                Section::OnSignal(on) => { out[at].bodies.insert(on.signal_name.clone(), (format!("{:?}", on.body), section.span)); }
+                Section::OnSignal(on) => {
+                    if super::flesh::is_hole(on) { out[at].holes.insert(on.signal_name.clone()); }
+                    out[at].bodies.insert(on.signal_name.clone(), (format!("{:?}", on.body), section.span));
+                }
                 Section::Interior(interior) => views(&interior.cells, out, tests),
                 _ => {}
             }
         }
     }
+}
+
+/// The signals a `maps` of `cell` reads through — (`Cell.signal`, it has a body).
+fn reads_through(expr: &Spanned<Expr>, cell: &str, cells: &[CellView]) -> Vec<(String, bool)> {
+    let text = format!("{:?}", expr);
+    let mut out: Vec<(String, bool)> = Vec::new();
+    for part in text.split("FnCall { name: \"").skip(1) {
+        let f = part.split('"').next().unwrap_or("");
+        if crate::interpreter::builtins::registry::lookup(f).is_some() { continue; }
+        let (owner, name) = f.split_once('.').unwrap_or((cell, f));
+        let Some(view) = cells.iter().find(|v| v.name == owner) else { continue };
+        if !view.signals.iter().any(|(s, _)| s.name == name) { continue; }
+        let who = format!("{}.{}", owner, name);
+        if !out.iter().any(|(w, _)| w == &who) { out.push((who, !view.holes.contains(name))); }
+    }
+    out
 }
 
 /// The rules the handler `signal` of a cell serves — by a refusal (`true`)
@@ -1113,6 +1163,8 @@ pub fn analyse(program: &Program, laws: &[Law], tests_beside: &BTreeMap<String, 
     let states: Vec<&StateDecl> = laws.iter().flat_map(|l| l.states.iter()).collect();
     let actions: Vec<&ActionDecl> = laws.iter().flat_map(|l| l.actions.iter()).collect();
     let mut mapped: BTreeMap<String, String> = BTreeMap::new();
+    // state -> the signals with no body yet its `maps` reads through
+    let mut awaiting: BTreeMap<String, Vec<String>> = BTreeMap::new();
     for view in &cells {
         for m in &view.maps {
             let d = &m.node;
@@ -1165,6 +1217,13 @@ pub fn analyse(program: &Program, laws: &[Law], tests_beside: &BTreeMap<String, 
             }
             let ty = static_type(&d.expr.node);
             if let Some(t) = ty { if t != decl.ty { why.push(format!("it is {} {}, and the law declares `{}` a {} state", if t == "Int" { "an" } else { "a" }, t, d.state, decl.ty)); } }
+            let holes: Vec<String> = reads_through(&d.expr, &view.name, &cells).into_iter().filter(|(_, body)| !body).map(|(w, _)| w).collect();
+            if !holes.is_empty() {
+                report.issues.push(Issue { kind: "law_maps_awaits", warning: true, span: m.span,
+                    message: format!("`maps {}` in `{}` reads through {}, which {} no body yet: until then the state cannot be read, and a guard derived from it judges nothing (the call fails with `not_implemented`, not with the rule) — read the memory in the `maps`, or fill {} first",
+                        d.state, view.name, holes.iter().map(|h| format!("`{}`", h)).collect::<Vec<_>>().join(", "), if holes.len() == 1 { "has" } else { "have" }, if holes.len() == 1 { "that signal" } else { "those signals" }) });
+                awaiting.insert(d.state.clone(), holes);
+            }
             if !why.is_empty() {
                 report.issues.push(Issue { kind: "law_maps_impure", warning: false, span: m.span,
                     message: format!("`{}` in `{}`: {} — a `maps` is a pure {} reading of the program: the slots and machines of its cell, or another cell through a read-only signal", shown, view.name, why.join("; "), decl.ty) });
@@ -1338,7 +1397,7 @@ pub fn analyse(program: &Program, laws: &[Law], tests_beside: &BTreeMap<String, 
                 cell: view.name.clone(), signal: sig.name.clone(), terms: frame.realizes.clone(),
                 checked: served.iter().filter(|(id, refusal)| *refusal && known(id)).map(|(id, _)| id.clone()).collect(),
                 handled: served.iter().filter(|(id, refusal)| !*refusal && known(id)).map(|(id, _)| id.clone()).collect(),
-                proved, exempt: frame.exempt.clone(), bindings: frame.bindings.clone(), span: *span,
+                proved, exempt: frame.exempt.clone(), bindings: frame.bindings.clone(), hole: view.holes.contains(&sig.name), span: *span,
             });
         }
     }
@@ -1369,8 +1428,15 @@ pub fn analyse(program: &Program, laws: &[Law], tests_beside: &BTreeMap<String, 
     // rule by rule, in the order of the law
     for rule in &rules {
         let mut status = RuleStatus { rule: (*rule).clone(), served: Vec::new(), exempt: Vec::new(), missing: Vec::new(), tests: tested.get(&rule.id).cloned().unwrap_or_default(),
-            results: BTreeMap::new(), refuted_by: Vec::new(), stale_refutations: Vec::new() };
+            results: BTreeMap::new(), refuted_by: Vec::new(), stale_refutations: Vec::new(), awaiting: Vec::new(), owed: Vec::new() };
         for who in proved_anywhere.get(&rule.id).into_iter().flatten() { status.served.push((who.clone(), "proved")); }
+        {
+            let mut needed: Vec<String> = Vec::new();
+            for f in rule.requires.iter().chain(rule.always.iter()) { cond_states(&f.cond, &mut needed); }
+            for st in &needed {
+                for who in awaiting.get(st).into_iter().flatten() { if !status.awaiting.contains(who) { status.awaiting.push(who.clone()); } }
+            }
+        }
         // a rule with a formal reading is served by the guard derived from
         // it (RFC 0003): a refusal or a branch tagged by hand no longer counts
         let formal = rule.requires.as_ref();
@@ -1409,6 +1475,16 @@ pub fn analyse(program: &Program, laws: &[Law], tests_beside: &BTreeMap<String, 
                 if !status.served.iter().any(|(w, _)| w == &who) { status.served.push((who, how)); }
             } else {
                 let term = r.terms.iter().find(|t| rule.about.contains(t)).cloned().unwrap_or_default();
+                if r.hole {
+                    // no body yet: the rule is owed by the flesh, as the body is
+                    report.owed.push(Owed { rule: rule.id.clone(), signal: who.clone(),
+                        text: format!("{}{}", rule.text, if rule.source.is_empty() { String::new() } else { format!(" ({})", rule.source) }),
+                        message: format!("the rule \"{}\" ({}{}) is owed by `{}`, which realizes `{}` and has no body yet — its body serves it: a refusal `under \"{}\"` (or the statement `under \"{}\"` in the branch that handles the case)",
+                            rule.id, rule.text, if rule.source.is_empty() { String::new() } else { format!(" — {}", rule.source) }, who, term, rule.id, rule.id) });
+                    status.owed.push(who.clone());
+                    status.missing.push(who);
+                    continue;
+                }
                 report.issues.push(Issue { kind: "law_unserved_realization", warning: false, span: r.span,
                     message: format!("the rule \"{}\" ({}{}) is not served in `{}`, which realizes `{}` — add a refusal `under \"{}\"` to its handler (or the statement `under \"{}\"` in the branch that handles the case), or `exempt \"{}\" \"<why it does not apply>\"` to its signal",
                         rule.id, rule.text, if rule.source.is_empty() { String::new() } else { format!(" — {}", rule.source) }, who, term, rule.id, rule.id, rule.id) });
@@ -1453,7 +1529,9 @@ pub fn analyse(program: &Program, laws: &[Law], tests_beside: &BTreeMap<String, 
 
 fn rule_block(s: &RuleStatus, laws: &[Law], realizations: &[Realization], full: bool) -> String {
     let mut out = format!("  {:<10} {}\n", format!("\"{}\"", s.rule.id), s.rule.text);
-    out.push_str(&format!("             status   {}{}\n", s.status(), if s.tests.is_empty() && !s.served.is_empty() { ", no test" } else { "" }));
+    // a guard whose state awaits a body judges nothing yet: said beside the status
+    let awaits = if s.awaiting.is_empty() { String::new() } else { format!(" (derived, awaiting {})", s.awaiting.join(", ")) };
+    out.push_str(&format!("             status   {}{}{}\n", s.status(), awaits, if s.tests.is_empty() && !s.served.is_empty() { ", no test" } else { "" }));
     if !s.rule.source.is_empty() { out.push_str(&format!("             source   {}\n", s.rule.source)); }
     if !s.rule.owner.is_empty() { out.push_str(&format!("             owner    {}\n", s.rule.owner)); }
     if !s.rule.about.is_empty() { out.push_str(&format!("             about    {}\n", s.rule.about.join(", "))); }
@@ -1474,7 +1552,11 @@ fn rule_block(s: &RuleStatus, laws: &[Law], realizations: &[Realization], full: 
     }
     for (who, how) in &s.served { out.push_str(&format!("             served   {} ({})\n", who, how)); }
     for (who, why) in &s.exempt { out.push_str(&format!("             exempt   {} — {}\n", who, why)); }
-    for who in &s.missing { out.push_str(&format!("             MISSING  {}\n", who)); }
+    for who in &s.missing {
+        // a hole owes the rule; a body that does not serve it forgot it
+        if s.owed.contains(who) { out.push_str(&format!("             owed     {} — no body yet\n", who)); }
+        else { out.push_str(&format!("             MISSING  {}\n", who)); }
+    }
     if !s.tests.is_empty() {
         let shown: Vec<String> = s.tests.iter().map(|t| match s.results.get(t) {
             Some(&"passes") => format!("{} (passes)", t), Some(&"fails") => format!("{} (FAILS)", t), Some(r) => format!("{} ({})", t, r), None => t.clone(),
@@ -1514,11 +1596,12 @@ pub fn render(loaded: &Loaded, report: &Report, lock: &Result<Option<String>, ()
         let count = |st: &str| report.rules.iter().filter(|s| s.status() == st).count();
         // what is against a rule, and a rule only monitored, are said only when there is one
         let mut extra = String::new();
-        for st in ["refuted", "failing", "monitored"] { if count(st) > 0 { extra.push_str(&format!("{} {}, ", count(st), st.to_uppercase().replace("MONITORED", "monitored"))); } }
+        for st in ["refuted", "failing", "monitored", "owed"] { if count(st) > 0 { extra.push_str(&format!("{} {}, ", count(st), if st == "monitored" || st == "owed" { st.to_string() } else { st.to_uppercase() })); } }
         out.push_str(&format!("{} rule(s): {}{} proved, {} checked, {} handled, {} incomplete, {} unserved; {} without a test\n",
             report.rules.len(), extra, count("proved"), count("checked"), count("handled"), count("incomplete"), count("unserved"),
             report.rules.iter().filter(|s| s.tests.is_empty()).count()));
         out.push_str(&format!("{} of the program's {} `require` serve a rule\n", report.requires_under, report.requires));
+        if let Some(note) = owed_note(report) { out.push_str(&format!("{}\n", note)); }
     }
     out
 }
@@ -1529,8 +1612,33 @@ pub fn todo(loaded: &Loaded, report: &Report, lock: &Result<Option<String>, ()>)
     if let Ok(Some(m)) = lock { lines.push(m.clone()); }
     lines.extend(report.issues.iter().map(|i| format!("{}{}", if i.warning { "(warning) " } else { "" }, i.message)));
     lines.extend(evidence_lines(report));
-    if lines.is_empty() { return "nothing to do: every rule of the law is served and tested\n".to_string(); }
-    lines.iter().enumerate().map(|(n, l)| format!("{}. {}\n", n + 1, l)).collect()
+    if lines.is_empty() && report.owed.is_empty() { return "nothing to do: every rule of the law is served and tested\n".to_string(); }
+    let mut out: String = lines.iter().enumerate().map(|(n, l)| format!("{}. {}\n", n + 1, l)).collect();
+    // what the holes owe is not a fault: it is the work list of the flesh
+    if let Some(note) = owed_note(report) {
+        out.push_str(&format!("{}\n", note));
+        let mut by_signal: BTreeMap<&str, Vec<&str>> = BTreeMap::new();
+        for o in &report.owed { by_signal.entry(o.signal.as_str()).or_default().push(o.rule.as_str()); }
+        for (signal, rules) in by_signal { out.push_str(&format!("  {} owes {}\n", signal, rules.iter().map(|r| format!("\"{}\"", r)).collect::<Vec<_>>().join(", "))); }
+    }
+    out
+}
+
+/// One line for the rules the holes owe, or nothing.
+pub fn owed_note(report: &Report) -> Option<String> {
+    if report.owed.is_empty() { return None; }
+    let signals: BTreeSet<&str> = report.owed.iter().map(|o| o.signal.as_str()).collect();
+    let n = report.owed.len();
+    Some(format!("○ {} rule{} of the law still owed by the flesh — {} signal{} with no body yet realize{} their terms; each is served when its body is written",
+        n, if n == 1 { "" } else { "s" }, signals.len(), if signals.len() == 1 { "" } else { "s" }, if signals.len() == 1 { "s" } else { "" }))
+}
+
+/// What the holes of a program owe to the law of its project: (rule, `Cell.signal`).
+pub fn owed(program: &Program, root: &std::path::Path) -> Report {
+    let manifest = crate::pkg::manifest::Manifest::load(&root.join("soma.toml")).ok();
+    let loaded = load(manifest.as_ref(), root);
+    if loaded.laws.is_empty() { return Report::default(); }
+    analyse(program, &loaded.laws, &BTreeMap::new())
 }
 
 pub fn json(loaded: &Loaded, report: &Report, lock: &Result<Option<String>, ()>) -> serde_json::Value {
@@ -1549,7 +1657,7 @@ pub fn json(loaded: &Loaded, report: &Report, lock: &Result<Option<String>, ()>)
             "about": s.rule.about, "status": s.status(),
             "served": s.served.iter().map(|(w, h)| serde_json::json!({"signal": w, "how": h})).collect::<Vec<_>>(),
             "exempt": s.exempt.iter().map(|(w, y)| serde_json::json!({"signal": w, "why": y})).collect::<Vec<_>>(),
-            "missing": s.missing, "tests": s.tests,
+            "missing": s.missing, "tests": s.tests, "awaiting": s.awaiting,
             "requires": s.rule.requires.as_ref().map(|f| serde_json::json!({"action": f.action, "params": f.params, "condition": f.text})),
             "always": s.rule.always.as_ref().map(|f| f.text.clone()),
             "test_results": s.results,
@@ -1557,6 +1665,7 @@ pub fn json(loaded: &Loaded, report: &Report, lock: &Result<Option<String>, ()>)
             "no_longer_refuting": s.stale_refutations,
         })).collect::<Vec<_>>(),
         "todo": loaded.errors.iter().cloned().chain(report.issues.iter().map(|i| i.message.clone())).chain(evidence_lines(report)).collect::<Vec<_>>(),
+        "owed": report.owed.iter().map(|o| serde_json::json!({"rule": o.rule, "signal": o.signal})).collect::<Vec<_>>(),
         "requires": report.requires, "requires_under": report.requires_under,
     })
 }

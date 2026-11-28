@@ -1,5 +1,15 @@
 # Changelog
 
+## 3.6.1 — 2026-11-28
+
+A skeleton under a law, before any body exists (from a field report: a billing system rewritten under a law of 419 rules, 25 cells and 230 signals with no body). Validation: 1,211 Rust tests, 118 CLI checks, 327 corpus programs, 1,280 numeric comparisons; 7,200 interpreter/native comparisons, 0 divergence.
+
+- **A hole owes a rule; it has not forgotten it.** A rule in a sentence that a signal with no body yet will have to serve is no longer E0130: it is an open obligation of the flesh — counted by `soma check` (`○ 473 rules of the law still owed by the flesh`, `owed` in `--json`), listed by `soma law --todo` (`Cell.signal owes "ID"`), shown in the brief of the hole (`owes "ID" …`), status `owed` in `soma law`. So `soma verify`, `soma test`, `soma refute` and `soma attack` run on a skeleton under a law in sentences; the verdict says `VERIFY OK (skeleton — the holes above are open obligations, and N rules of the law still owed by the flesh)`. A body written without serving the rule gets E0130 as before.
+- **A state that cannot be read is not a refusal by the law.** A derived guard whose `maps` reads through a signal with no body yet used to fail naming the rule, so that `assert_fails … matching "ID"` passed while nothing was judged. It now fails with kind `not_implemented`, naming the state and the hole. `soma check` warns at the `maps`; `soma law` shows `checked (derived, awaiting Cell.signal)`; `soma law --map` says through which signals each `maps` reads and whether they have a body.
+- **A refusal by the law names every rule the call breaks**, in the order of the law — a rule can be tested without building a state where it is the only one broken.
+- **The method says what ties the layers**: a skeleton is one possible realization of a law, a flesh one possible filling of a skeleton (`soma docs method`).
+- RFC 0004 (proposed, not implemented): `entails`, a rule that says what follows, and states that relate two entities.
+
 ## 3.6.0 — 2026-11-27
 
 Toward the manifesto: a claim about a program should be exposed to refutation, by a gesture anyone can repeat. Validation: 1,206 Rust tests, 118 CLI checks, 327 corpus programs, 1,280 numeric comparisons; 7,200 interpreter/native comparisons, 0 divergence.

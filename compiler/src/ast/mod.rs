@@ -157,7 +157,8 @@ pub enum GuardOperand {
     Str(String),
     /// a state of the law: its `maps` expression, read in the cell that
     /// defines it, with `param` bound to `arg`
-    State { cell: String, param: String, expr: Spanned<Expr>, arg: Box<GuardOperand> },
+    /// `name`: the state of the law, as the law names it
+    State { name: String, cell: String, param: String, expr: Spanned<Expr>, arg: Box<GuardOperand> },
 }
 
 /// `maps state(param) = expression` (RFC 0003): the correspondence from the

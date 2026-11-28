@@ -45,6 +45,8 @@ pub fn cmd_check(path: &PathBuf, json: bool, registry: &mut Registry) {
         match (holes.is_empty(), serde_json::from_str::<serde_json::Value>(&report)) {
             (false, Ok(mut v)) if v.is_object() => {
                 v["holes"] = serde_json::json!(holes.iter().map(|(c, h)| format!("{}.{}", c, h)).collect::<Vec<_>>());
+                let owed = checker::law::owed(&program, &crate::project::root(path)).owed;
+                if !owed.is_empty() { v["owed"] = serde_json::json!(owed.iter().map(|o| serde_json::json!({"rule": o.rule, "signal": o.signal})).collect::<Vec<_>>()); }
                 println!("{}", serde_json::to_string_pretty(&v).unwrap_or(report));
             }
             _ => println!("{}", report),
@@ -53,6 +55,9 @@ pub fn cmd_check(path: &PathBuf, json: bool, registry: &mut Registry) {
         print!("{}", chk.report());
         if !chk.has_errors() {
             if let Some(note) = checker::flesh::holes_note(&program, &file_str) { println!("{}", note); }
+            if !holes.is_empty() {
+                if let Some(note) = checker::law::owed_note(&checker::law::owed(&program, &crate::project::root(path))) { println!("{}  (`soma law {} --todo`)", note, file_str); }
+            }
         }
     }
 

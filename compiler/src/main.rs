@@ -830,6 +830,8 @@ fn cmd_verify(files: &[PathBuf], json: bool, strict: bool) {
     let mut all_results = Vec::new();
     // a skeleton's unfilled signals, per file: open obligations
     let mut hole_notes: Vec<String> = Vec::new();
+    // rules in a sentence the holes will have to serve
+    let mut owed: usize = 0;
     let mut all_cell_names: Vec<String> = Vec::new();
     // horde cost bounds, printed when no state machine gives verify more to say
     let mut horde_lines: Vec<(bool, String)> = Vec::new();
@@ -862,6 +864,7 @@ fn cmd_verify(files: &[PathBuf], json: bool, strict: bool) {
         // from here on a hole is read as its frame: whatever is proven
         // holds for every flesh that conforms
         let checked = program.clone();
+        owed += checker::law::owed(&checked, &project::root(path)).owed.len();
         checker::flesh::model_holes(&mut program);
         checker::runtime_section::as_handler(&mut program);
 
@@ -1312,6 +1315,7 @@ fn cmd_verify(files: &[PathBuf], json: bool, strict: bool) {
         output["errors"] = serde_json::json!(unknown_states.iter().map(|u| serde_json::json!({"level": "error", "kind": "verify", "message": u})).collect::<Vec<_>>());
         output["cells"] = serde_json::json!(all_cell_names);
         if !hole_notes.is_empty() { output["holes"] = serde_json::json!(hole_notes); }
+        if owed > 0 { output["owed_rules"] = serde_json::json!(owed); }
         if total_cells > 1 {
             output["note"] = serde_json::json!(
                 "state machines are verified per cell. A value crosses a cell boundary by a face contract (`requires` / `ensures` on the signal); a rule between two cells' machines is proven when soma.toml states it — `[verify.before.\"Pay.paid\"] requires = [\"Approval.signed_off\"]` explores the product of the machines."
@@ -1396,7 +1400,8 @@ fn cmd_verify(files: &[PathBuf], json: bool, strict: bool) {
         } else {
             // the structure is proven; the bodies that are missing are not
             for n in &hole_notes { println!("{}", n); }
-            println!("VERIFY OK (skeleton — the holes above are open obligations)");
+            if owed == 0 { println!("VERIFY OK (skeleton — the holes above are open obligations)"); }
+            else { println!("VERIFY OK (skeleton — the holes above are open obligations, and {} rule{} of the law still owed by the flesh)", owed, if owed == 1 { "" } else { "s" }); }
         }
     }
 

@@ -62,7 +62,7 @@ pub fn cmd_law(path: &PathBuf, rule: Option<&str>, todo: bool, lock: bool, json:
         for e in &loaded.errors { println!("error: {}", e); }
         print!("{}", law::render(&loaded, &report, &locked, rule));
     }
-    let failing = !loaded.errors.is_empty() || matches!(locked, Ok(Some(_))) || report.issues.iter().any(|i| !i.warning) || !law::evidence_lines(&report).is_empty();
+    let failing = !loaded.errors.is_empty() || matches!(locked, Ok(Some(_))) || report.issues.iter().any(|i| !i.warning) || !report.owed.is_empty() || !law::evidence_lines(&report).is_empty();
     if failing { std::process::exit(1); }
 }
 

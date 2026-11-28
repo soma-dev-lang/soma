@@ -32,7 +32,7 @@ below is current for the binary named in https://soma-lang.dev/version.json.
 
 ## Pick Soma when / skip it when
 
-Current release: 3.6.0 — a rule is exposed to refutation (`soma refute`, `soma attack`); after 3.5's formal law and derived guards, 3.4's method (`soma next`, `soma fill`), 3.3's
+Current release: 3.6.1 (a skeleton under a law runs before any body: a hole owes a rule) — 3.6: a rule is exposed to refutation (`soma refute`, `soma attack`); after 3.5's formal law and derived guards, 3.4's method (`soma next`, `soma fill`), 3.3's
 law, 3.2's nominal types and 3.1's skeleton first. What each release changed: `soma docs releases`.
 
 Pick it when the task has a lifecycle or a limit that must hold: payments,
@@ -799,6 +799,19 @@ Each layer is written before the one below it, and the compiler holds each
 to the one above: a body may only do what its frame says; a signal that
 realizes a term of the law must serve the rules about that term.
 
+**One of many, each time.** A skeleton is one possible realization of a
+law, and a flesh one possible filling of a skeleton. The layer above
+constrains the one below and does not determine it: the same law can be
+kept by several skeletons, the same skeleton filled by several fleshes —
+which is why a law can be written before any program, and why a body can
+be rewritten without anyone rereading the structure. The two steps are not
+held the same way:
+
+| Step | What ties it | What that does not say |
+|---|---|---|
+| law → skeleton | a correspondence somebody states: each state of the law read from the program (`maps`), each action bound to a signal (`realizes`). From it the compiler derives the refusals | that the correspondence is the right one: a wrong `maps` realizes another law, faithfully. Its owner reviews it (`soma law --map`) |
+| skeleton → flesh | the frame, checked on every body: what it may read, write, call, which edges it may take | what the body computes inside its frame. The tests say that |
+
 The layers have owners because their readers differ. A compliance officer
 can read a rule. An architect can read a skeleton — a 12,000-line program
 is a few hundred lines of it. Nobody reads 12,000 lines of flesh, and with
@@ -816,7 +829,8 @@ this method nobody has to.
    and for each signal its frame: `reads`, `writes`, `calls`, `moves`, and
    `realizes` when the signal is an action the law speaks of; a `maps` for
    each state of the law. Run `soma
-   verify` now — the lifecycle is proven before any body exists. Freeze it
+   verify` now — the lifecycle is proven before any body exists, and what
+   the holes still owe to the law is counted, not refused. Freeze it
    (`soma skeleton app.cell --freeze`).
 3. **Write a test that fails.** A scenario from the life of the business —
    a day of the fund, a refused order — not a walk through the code. See it
@@ -1592,6 +1606,16 @@ What follows, and what you do NOT do:
   kind `law`, the rule, its sentence and its source in the message, and
   writes nothing. Do not write that `require`, and do not test for it in
   the body: the brief of the signal shows it (`law "SAN-02" …`).
+- **A refusal names every rule the call breaks**, in the order of the law:
+  `refused by the law — rule "A" (…): it requires …; rule "B" (…): it
+  requires …`. A test of one rule (`matching "B"`) does not need a state
+  where it is the only one broken.
+- **A state that cannot be read is not a refusal.** A `maps` may read
+  through a signal; while that signal has no body, the guard judges
+  nothing: the call fails with kind `not_implemented` and names the state
+  and the hole, not the rule. `soma check` warns at the `maps`, and `soma
+  law` shows the rule as `checked (derived, awaiting Cell.signal)`. A
+  `maps` that reads the memory directly is judged on the bare skeleton.
 - **A refusal tagged by hand no longer serves a formal rule.** `soma law`
   says `served Fund.redeem (derived)`.
 - **A signal that writes what a `maps` reads owes a binding** (E0138): it
@@ -1681,7 +1705,7 @@ correct the body.
     E0136  a state a rule needs has no `maps`           E0137  `realizes A(args)` that does not fit
     E0138  a write under the law with no binding        E0139  `silent` without a reason
     E0140  a law the lock holds, dropped from soma.toml
-    W0020  a rule that is served but has no test
+    W0020  a rule that is served but has no test; a `maps` that reads through a signal with no body yet
 
 E0130 is the forgotten path: a second way to pay, written later, that omits
 the check. Its message is the instruction:
@@ -1694,6 +1718,16 @@ error: the rule "SAN-02" (No payment to a frozen holder — Regulation (EU)
 "<why it does not apply>"` to its signal
 ```
 
+**On a skeleton, a hole owes; it has forgotten nothing.** While the signal
+has no body, the same rule is not an error: it is an open obligation of the
+flesh, counted (`○ 12 rules of the law still owed by the flesh`), listed by
+`soma law --todo` (`Fund.indemnify owes "SAN-02"`) and shown in the brief
+of the hole (`owes "SAN-02" …`). So a skeleton under a law in sentences
+checks, and `soma verify`, `soma test`, `soma refute` and `soma attack` run
+on it before any body exists — `VERIFY OK (skeleton — the holes above are
+open obligations, and 12 rules of the law still owed by the flesh)`. The
+day the body is written without serving the rule, E0130 is back.
+
 ## `soma law`
 
 ```
@@ -1705,9 +1739,10 @@ soma law app.cell --map       # the law and the program side by side: states and
 soma law app.cell --lock      # the owner of the law records it as reviewed (law.lock) — not you
 ```
 
-Status of a rule: `unserved`, `incomplete` (a signal that realizes one of
-its terms does not serve it), `handled`, `checked`, `proved` — the weakest
-way it is served anywhere.
+Status of a rule: `unserved`, `owed` (nothing serves it yet and the signals
+that realize its terms have no body), `incomplete` (a signal that realizes
+one of its terms does not serve it), `handled`, `checked`, `proved` — the
+weakest way it is served anywhere. `soma law` exits 1 while a rule is owed.
 
 ## When the law is silent or wrong
 
@@ -1840,6 +1875,19 @@ it says "error kind X", raise it with `require … else X "…"` or `fail`.
 
 > Newest first. The language itself: https://soma-lang.dev/llms.txt (`soma docs agent`).
 > Every fix and its compatibility note: https://soma-lang.dev/CHANGELOG.md.
+
+Soma 3.6.1: a skeleton under a law runs before any body exists. A rule in
+a sentence that a signal with NO BODY YET will have to serve is no longer
+E0130: it is owed by the flesh — counted by `soma check`, listed by `soma
+law --todo` (`Cell.signal owes "ID"`), shown in the brief of the hole
+(`owes "ID" …`), status `owed` — so `soma verify`, `test`, `refute` and
+`attack` run on the skeleton. A body written without serving the rule gets
+E0130 as before. A derived guard whose `maps` reads through a hole fails
+with kind `not_implemented`, naming the state and the hole, instead of
+naming the rule (`soma check` warns; `soma law`: `awaiting Cell.signal`). A
+refusal by the law names EVERY rule the call breaks, in the order of the
+law. `soma docs method`: a skeleton is one possible realization of a law, a
+flesh one possible filling of a skeleton.
 
 Soma 3.6.0: a rule is exposed to refutation. Under a rule, `always p:
 refunded(p) <= captured(p)` says what holds of every entity; its MONITOR is
