@@ -79,7 +79,7 @@ Done. That loop — `next`, the brief, `fill` — is the same on [a 69,000-line 
 
 **Now hand it to your agent.** The project is ready for one: `soma init` wrote an `AGENTS.md` block, a small skill, and a hook that checks every edit and hands the errors back without being asked. Open the folder in Claude Code (the hook is its own; any agent that reads `AGENTS.md` gets the block) and ask for a feature. Then read `soma skeleton app.cell` — the structure, not the code.
 
-The current release is **Soma 3.6.3** ([release notes](/changelog/3.6.3)). Soma is experimental, and says where: [what is proven and what is not](#what-is-proven-what-is-not), [status](/status).
+The current release is **Soma 4.0.0** ([release notes](/changelog/4.0.0)). Soma is experimental, and says where: [what is proven and what is not](#what-is-proven-what-is-not), [status](/status).
 
 <style>
 .feat{display:block;margin:1.8rem 0 .4rem;border:1px solid var(--accent);border-radius:12px;padding:1.2rem 1.3rem;background:var(--panel);color:var(--fg)}
@@ -308,6 +308,8 @@ Nobody reads 70,000 lines an agent wrote. With Soma you do not have to. You read
 | the **law** | whoever owns the business rules | the rules, in sentences, with their sources |
 | the **skeleton** | the architect | the data, the lifecycles, and what each operation may touch — a few hundred lines for a large program |
 | the last line of `soma verify`, and `soma law` | Soma | what is proven, what is checked while running, where each rule is enforced |
+
+**A green check is not a faithful program, and Soma says so.** The last line of `soma check` is not "all good": it lists what was not judged — the rules that stay sentences, a signal nobody calls, a path that reaches data without the rules that guard it. [A field report](/field-report) is why: no error, and 116 rules misrepresented.
 
 The agent works below that line and cannot move it. It writes one operation at a time and nothing else; changing the structure is a separate step, and it prints what changed. [The method](/guide/method) is the whole way of working.
 

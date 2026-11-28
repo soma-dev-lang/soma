@@ -430,3 +430,27 @@ fn a_lock_frozen_by_3_2_0_with_nominal_types_is_still_accepted() {
     assert!(out.contains("only a nominal type's name differs in: pos, signal buy"), "{out}");
     assert!(out.contains("+ signal count() -> Int") && out.contains("(in `Desk`: signal count)"), "{out}");
 }
+
+/// Two nominal types over String, one used where the other is declared: every way in is refused.
+#[test]
+fn a_nominal_type_does_not_enter_a_variant_or_a_key_unseen() {
+    let src = r#"cell type Id  = String
+cell type Key = String
+cell type Ask { variants { Read  Write { who: Id } } }
+cell A {
+    memory { balances: Map<Id, Int> [persistent] }
+    on judge(d: Ask) { return if is_a(d, "Write") { balances.get(d.who) ?? 0 } else { 0 } }
+    on by_variant(c: Key) { return judge(Write { who: c }) }
+    on by_key(c: Key) { return balances.get(c) ?? 0 }
+    on by_set(c: Key) { balances.set(c, 1)  return 1 }
+    on right(i: Id) { balances.set(i, 1)  return balances.get(i) ?? 0 }
+    on built(c: Key) { return judge(Write { who: Id(to_string(c)) }) }
+}
+"#;
+    let (out, ok) = check(&project("variant_key", src, None), "app.cell");
+    assert!(!ok, "{out}");
+    assert!(out.contains("Write { who: … }: `c` is Key but the field is declared Id"), "{out}");
+    assert!(out.contains("`balances.get(c)`: the key is Key and the keys of `balances` are Id"), "{out}");
+    assert!(out.contains("`balances.set(c, …)`: the key is Key and the keys of `balances` are Id"), "{out}");
+    assert_eq!(out.matches("E0122").count(), 3, "the right uses are accepted: {out}");
+}

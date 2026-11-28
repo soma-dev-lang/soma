@@ -1,0 +1,13 @@
+skeleton Ledger {
+    memory {
+        lines: Map<String, Int> [persistent]
+        total: Map<String, Int> [persistent]
+        held total from entries by recompute
+    }
+    face {
+        // Rebuilds the total of `k` from its lines.
+        signal recompute(k: String) -> Int
+            reads lines
+            writes total
+    }
+}

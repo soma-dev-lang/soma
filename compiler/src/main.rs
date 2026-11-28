@@ -128,6 +128,9 @@ enum Commands {
         /// Output as JSON (for agents)
         #[arg(long)]
         json: bool,
+        /// Only the perimeter of one law (a file of soma.toml `[law] files`): its rules, the signals that serve or owe them, their cells
+        #[arg(long, value_name = "LAW_FILE")]
+        law: Option<String>,
     },
     /// Lint for anti-patterns and suggest improvements
     Lint {
@@ -168,6 +171,9 @@ enum Commands {
         /// Only the properties soma.toml declares in `[verify]`, one line each (✓ or ✗), and the verdict — what the owner of a rule reads
         #[arg(long)]
         properties: bool,
+        /// Only the perimeter of one law (a file of soma.toml `[law] files`): its rules, the signals that serve or owe them, their cells
+        #[arg(long, value_name = "LAW_FILE")]
+        law: Option<String>,
         /// Write the proof as an artifact: sources and toolchain hashed, every property with its verdict class, one digest
         #[arg(long, value_name = "OUT.json")]
         attest: Option<PathBuf>,
@@ -244,6 +250,9 @@ enum Commands {
         /// With `Cell.signal`: the brief with every callee's frame and whole comment and every type unrolled to the end (by default: callees by their first sentence, types one level deep)
         #[arg(long)]
         full: bool,
+        /// With `--index`: the perimeter of one law — its rules, the signals that serve or owe them, their cells, and the frontier (what they call outside, with its signature and whether it has a body)
+        #[arg(long, value_name = "LAW_FILE")]
+        law: Option<String>,
     },
     /// Where a signal is declared, where its body is, and every call of it — program and tests — as file:line
     Refs {
@@ -284,6 +293,12 @@ enum Commands {
         /// Do not run the tests and the refutations the project keeps (the table then lists them as "not run")
         #[arg(long)]
         no_run: bool,
+        /// The questions for the owner of the law: what is decidable on the law and the frames and is not a task for whoever writes the program — a state only `silent` signals change, a term too broad. Exits 3 while one is open
+        #[arg(long)]
+        questions: bool,
+        /// Only one law of the program (a file of soma.toml `[law] files`): its rules, and what speaks of them
+        #[arg(long, value_name = "LAW_FILE")]
+        law: Option<String>,
         /// The dictionary the owner of the law reviews: each state and its `maps`, each action and the signals that realize it, each `silent` signal and its reason
         #[arg(long)]
         map: bool,
@@ -386,6 +401,9 @@ enum Commands {
         /// The mirror of a program instead: what its skeletons use of the language — types, invariants, contracts, properties, comments — and what they do not state
         #[arg(long, value_name = "FILE")]
         program: Option<PathBuf>,
+        /// With `--program`: only the perimeter of one law
+        #[arg(long, value_name = "LAW_FILE")]
+        law: Option<String>,
         /// Output as JSON (for agents)
         #[arg(long)]
         json: bool,
@@ -400,6 +418,9 @@ enum Commands {
         /// Output as JSON (for agents)
         #[arg(long)]
         json: bool,
+        /// Only the perimeter of one law (a file of soma.toml `[law] files`): its rules, the signals that serve or owe them, their cells
+        #[arg(long, value_name = "LAW_FILE")]
+        law: Option<String>,
     },
     /// Write the body of ONE signal in the flesh of its cell — the body on stdin — then check it: it changes no skeleton, no other handler, no law
     Fill {
@@ -607,9 +628,9 @@ fn main_inner() {
     }
 
     match cli.command {
-        Commands::Check { file, json } => {
+        Commands::Check { file, json, law } => {
             if file.is_dir() { run_over_dir("check", &file, json, &[]); }
-            commands::check::cmd_check(&file, json, &mut registry)
+            commands::check::cmd_check(&file, json, &mut registry, law.as_deref())
         }
         Commands::Lint { file, json } => {
             *commands::JSON_SCHEMA.lock().unwrap_or_else(|e| e.into_inner()) = "lint";
@@ -717,14 +738,14 @@ fn main_inner() {
         Commands::Replay { file, log, at, live } => commands::replay::cmd_replay(&file, log.as_ref(), at.as_deref(), live, &mut registry),
         Commands::Init { name, agent: true, .. } => commands::agent_setup::cmd_init_agent(std::path::Path::new(name.as_deref().unwrap_or("."))),
         Commands::Init { name, skeleton, law, .. } => commands::init::cmd_init(name.as_deref(), skeleton, law),
-        Commands::Doctor { program: Some(file), json, .. } => commands::mirror::cmd_mirror(&file, json),
+        Commands::Doctor { program: Some(file), json, law, .. } => commands::mirror::cmd_mirror(&file, json, law.as_deref()),
         Commands::Doctor { dir, json, .. } => commands::agent_setup::cmd_doctor(&dir.unwrap_or_else(|| PathBuf::from(".")), json),
         Commands::Hook => commands::agent_setup::cmd_hook(),
         Commands::Attack { file, rule, depth, out, json } => commands::refute::cmd_attack(&file, rule.as_deref(), depth, out.as_ref(), json, &mut registry),
         Commands::Fingerprint { file, json } => commands::refute::cmd_fingerprint(&file, json, &mut registry),
         Commands::Monitor { file, rule, json } => commands::refute::cmd_monitor(&file, rule.as_deref(), json, &mut registry),
         Commands::Refute { file, trace, expect, json } => commands::refute::cmd_refute(&file, &trace, expect.as_deref(), json, &mut registry),
-        Commands::Next { file, cell, json } => commands::fill::cmd_next(&file.unwrap_or_else(|| PathBuf::from("app.cell")), cell.as_deref(), json),
+        Commands::Next { file, cell, json, law } => commands::fill::cmd_next(&file.unwrap_or_else(|| PathBuf::from("app.cell")), cell.as_deref(), json, law.as_deref()),
         Commands::Fill { file, signal, body_file, reject_on_error, json } => commands::fill::cmd_fill(&file, &signal, body_file.as_ref(), reject_on_error, json),
         Commands::Add { package, version, git, path } => commands::init::cmd_add(&package, version.as_deref(), git.as_deref(), path.as_deref()),
         Commands::Embed { file } => {
@@ -746,7 +767,8 @@ fn main_inner() {
         Commands::TestProvider { name } => commands::provider::cmd_test_provider(&name),
         Commands::Migrate { from, to } => commands::provider::cmd_migrate(&from, &to),
         Commands::Props => commands::props::cmd_props(&registry),
-        Commands::Verify { files, json, strict, summary, properties, attest, check_attestation } => {
+        Commands::Verify { files, json, strict, summary, properties, attest, check_attestation, law } => {
+            if let (Some(l), false) = (&law, json) { verify_perimeter(&files, strict, l); }
             if properties && !json { verify_properties(&files, strict); }
             if summary && !json { verify_summary(&files, strict); }
             if let Some(a) = check_attestation {
@@ -783,16 +805,17 @@ fn main_inner() {
                 std::process::exit(1);
             }
         }
-        Commands::Skeleton { file, signal, json, index, split, freeze, amend, full } => {
+        Commands::Skeleton { file, signal, json, index, split, freeze, amend, full, law } => {
             commands::skeleton::BRIEF_FULL.with(|f| f.set(full));
             if freeze || amend { commands::skeleton::cmd_freeze(&file, amend) }
+            else if let Some(l) = law.as_deref().filter(|_| index || signal.is_none()) { commands::scope::cmd_index(&file, l, json) }
             else if index { commands::skeleton::cmd_index(&file) }
             else { commands::skeleton::cmd_skeleton(&file, signal.as_deref(), json, split) }
         }
         Commands::Rename { file, signal, new_name, dry_run } => commands::refs::cmd_rename(&file, &signal, &new_name, dry_run),
         Commands::Refs { file, signal, json } => commands::refs::cmd_refs(&file, &signal, json),
         Commands::Holes { file, only, json } => commands::skeleton::cmd_holes(&file, only.as_deref(), json),
-        Commands::Law { file, rule, todo, lock, json, map, no_run } => commands::law::cmd_law(&file, rule.as_deref(), todo, lock, json, map, no_run),
+        Commands::Law { file, rule, todo, lock, json, map, no_run, questions, law } => commands::law::cmd_law(&file, rule.as_deref(), todo, lock, json, map, no_run, questions, law.as_deref()),
         Commands::Docs { topic, brief } => commands::docs::cmd_docs(&if brief { format!("{}-brief", topic) } else { topic }),
         Commands::Fmt { paths, check, json } => commands::fmt::cmd_fmt(&paths, check, json),
         Commands::Eval { file, handler, dataset, grade, threshold, json } => commands::eval::cmd_eval(&file, &handler, &dataset, &grade, threshold, json),
@@ -800,6 +823,45 @@ fn main_inner() {
         Commands::Explain { code, json } => commands::explain::cmd_explain(&code, json),
         Commands::Example { terms, json, all } => commands::example::cmd_example(&terms, json, all),
     }
+}
+
+/// `soma verify --law <file>`: the same verification, and of its report what
+/// concerns the cells of one law's perimeter — with the verdict of that
+/// perimeter (RFC 0006, part C).
+fn verify_perimeter(files: &[PathBuf], strict: bool, law: &str) -> ! {
+    let Some(path) = files.first() else { eprintln!("error: no program given"); std::process::exit(4) };
+    let scope = commands::scope::scope_or_exit(path, law);
+    let exe = std::env::current_exe().unwrap_or_else(|e| { eprintln!("error: cannot locate the soma binary: {e}"); std::process::exit(1) });
+    let mut cmd = std::process::Command::new(exe);
+    cmd.arg("verify").args(files);
+    if strict { cmd.arg("--strict"); }
+    let out = cmd.output().unwrap_or_else(|e| { eprintln!("error: cannot run soma verify: {e}"); std::process::exit(1) });
+    let text = format!("{}{}", String::from_utf8_lossy(&out.stderr), String::from_utf8_lossy(&out.stdout));
+    let word = |line: &str, name: &str| line.split(|c: char| !(c.is_alphanumeric() || c == '_')).any(|w| w == name);
+    let of_perimeter = |line: &str| scope.cells.iter().any(|c| word(line, c));
+    // a block is a heading (a line that starts at the margin) and what is indented under it
+    let mut inside = false;
+    let mut shown = 0usize;
+    for line in text.lines() {
+        let t = line.trim_start();
+        if t.starts_with("VERIFY") {
+            // the verdict, with what was not judged in this perimeter
+            let verdict = line.split(" — fidelity not judged").next().unwrap_or(line);
+            let not_judged = commands::scope::not_judged(path, &scope).map(|n| format!(" — in the perimeter of the law {}, {}", scope.law, checker::fidelity::line(&n))).unwrap_or_default();
+            println!("{}{}", verdict, not_judged);
+            continue;
+        }
+        if t.starts_with("error") { println!("{}", line); continue; }
+        if t.is_empty() { continue; }
+        if !line.starts_with(' ') || t.starts_with("Temporal properties for") || t.starts_with("State machine") {
+            inside = of_perimeter(line) && !t.starts_with("note:") && !t.starts_with('○');
+            if inside { println!("{}", line); shown += 1; }
+            continue;
+        }
+        if inside { println!("{}", line); }
+    }
+    if shown == 0 { println!("no state machine, invariant or contract of the perimeter of the law {} ({} cells) is judged by verify", scope.law, scope.cells.len()); }
+    std::process::exit(out.status.code().unwrap_or(1));
 }
 
 /// `soma verify --properties`: the same verification, and of its report only
@@ -879,6 +941,8 @@ fn cmd_verify(files: &[PathBuf], json: bool, strict: bool) {
     let mut hole_notes: Vec<String> = Vec::new();
     // rules in a sentence the holes will have to serve
     let mut owed: usize = 0;
+    // what the verdict does not judge (RFC 0006): said on its last line
+    let mut not_judged: Option<checker::fidelity::NotJudged> = None;
     let mut all_cell_names: Vec<String> = Vec::new();
     // horde cost bounds, printed when no state machine gives verify more to say
     let mut horde_lines: Vec<(bool, String)> = Vec::new();
@@ -912,6 +976,7 @@ fn cmd_verify(files: &[PathBuf], json: bool, strict: bool) {
         // holds for every flesh that conforms
         let checked = program.clone();
         owed += checker::law::owed(&checked, &project::root(path)).owed.len();
+        if not_judged.is_none() { not_judged = checker::fidelity::not_judged(&checked, &project::root(path)); }
         checker::flesh::model_holes(&mut program);
         checker::runtime_section::as_handler(&mut program);
 
@@ -1375,6 +1440,7 @@ fn cmd_verify(files: &[PathBuf], json: bool, strict: bool) {
         if !hole_notes.is_empty() { output["holes"] = serde_json::json!(hole_notes); }
         if owed > 0 { output["owed_rules"] = serde_json::json!(owed); }
         if let Some(l) = commands::law::lock_name(files.first()) { output["law"] = serde_json::json!(l); }
+        if let Some(n) = &not_judged { output["not_judged"] = checker::fidelity::json(n); }
         if total_cells > 1 {
             output["note"] = serde_json::json!(
                 "state machines are verified per cell. A value crosses a cell boundary by a face contract (`requires` / `ensures` on the signal); a rule between two cells' machines is proven when soma.toml states it — `[verify.before.\"Pay.paid\"] requires = [\"Approval.signed_off\"]` explores the product of the machines."
@@ -1433,7 +1499,8 @@ fn cmd_verify(files: &[PathBuf], json: bool, strict: bool) {
         let temporal = all_temporal.iter().flat_map(|(_, rs)| rs.iter()).filter(|r| !r.passed).count();
         // a verdict names the law it was given under: the same words on a copy
         // of the program without its law are not the same verdict
-        let under_law = commands::law::lock_name(files.first()).map(|l| format!(" — under {}", l)).unwrap_or_default();
+        let under_law = format!("{}{}", commands::law::lock_name(files.first()).map(|l| format!(" — under {}", l)).unwrap_or_default(),
+            not_judged.as_ref().map(|n| format!(" — {}", checker::fidelity::line(n))).unwrap_or_default());
         if has_failures {
             let mut why: Vec<String> = Vec::new();
             if check_failed { why.push("soma check failed".to_string()); }

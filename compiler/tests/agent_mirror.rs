@@ -90,7 +90,8 @@ fn init_law_writes_a_whole_project_under_a_law_and_it_holds() {
     let (out, code) = soma(&p, &["verify", "app.cell", "--summary"]);
     assert_eq!(code, 0, "{out}");
     let last = out.lines().last().unwrap();
-    assert!(last.starts_with("VERIFY OK — under law.lock ") && last.len() == "VERIFY OK — under law.lock ".len() + 8, "{last}");
+    let named = last.strip_prefix("VERIFY OK — under law.lock ").expect(last);
+    assert!(named.len() > 8 && named[8..].starts_with(" — fidelity not judged: "), "{last}");
     let (out, code) = soma(&p, &["test", "app.cell"]);
     assert_eq!(code, 0, "{out}");
     let (out, code) = soma(&p, &["law", "app.cell"]);

@@ -1,9 +1,8 @@
 # Before you write a skeleton — what a good one contains
 
-Read this page, then write. `soma check` says what is wrong in a skeleton;
-it does not say what is missing, and a skeleton with no type, no invariant,
-no contract and no property checks without a word. `soma doctor --program
-app.cell` is the mirror: run it before you call a skeleton done.
+Read this page, then write. `soma check` says what is wrong in a skeleton,
+not what is missing: one with no type, no invariant and no property checks.
+`soma doctor --program app.cell` is the mirror: run it before you call one done.
 The whole guide: `soma docs skeleton`. A project to imitate: `soma init --law demo`.
 
 A skeleton states, in this order:
@@ -32,7 +31,11 @@ A skeleton states, in this order:
    - `reads` / `writes` / `calls` / `moves` / `emits`: all the body may do.
      If the body needs a datum, the signal that gives it is in `calls`;
    - `requires` (owed by the caller) and `ensures` (owed by the body) where a
-     precondition or a result can be said.
+     precondition or a result can be said;
+   - who calls it: `entry` (from outside: it takes nothing for granted) or
+     `internal "why"` (only signals of the program, on what the caller holds).
+   A derived slot says so in `memory`: `held balance from lines by recompute`
+   — whoever writes `lines` has `recompute` in its `calls`.
 5. **Under a law: the correspondence.**
    - `maps state(p) = <expression>` for each state of the law. Read the
      MEMORY of the cell directly: a `maps` that reads through a signal is
@@ -40,6 +43,10 @@ A skeleton states, in this order:
    - `realizes Action(args)` on each signal that is an action of the law;
      `silent "why"` on one that writes under the law and is none;
    - a parameter bound to an entity has the type named like the entity.
+
+The last line of `soma check` is not "all good": it says what was NOT judged
+(rules in sentences, `silent` signals, a signal nobody calls, a second path,
+a held slot that can go stale). Read it before you say a skeleton is done.
 
 Then, in this order: `soma check` → `soma doctor --program` → `soma verify`
 → `soma skeleton app.cell --freeze` (refused until the two pass). A change

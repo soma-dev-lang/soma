@@ -74,6 +74,9 @@ pub struct Frame {
     /// RFC 0003: `realizes Action(args)`, and `silent "why"`.
     pub bindings: Vec<(String, Vec<String>)>,
     pub silent: Option<String>,
+    /// RFC 0006: `entry`, and `internal "why"`.
+    pub entry: bool,
+    pub internal: Option<String>,
 }
 
 impl Frame {
@@ -96,6 +99,8 @@ impl Frame {
             exempt: d.exempt.iter().cloned().collect(),
             bindings: d.bindings.clone(),
             silent: d.silent.clone(),
+            entry: d.entry,
+            internal: d.internal.clone(),
             ..Frame::default()
         }
     }
@@ -119,6 +124,8 @@ impl Frame {
     /// `reads`, `writes`, `moves` (one per machine), `calls`, `emits`.
     pub fn clauses(&self) -> Vec<(&'static str, Vec<String>)> {
         let mut out: Vec<(&'static str, Vec<String>)> = Vec::new();
+        if self.entry { out.push(("entry", Vec::new())); }
+        if let Some(why) = &self.internal { out.push(("internal", vec![format!("\"{}\"", why)])); }
         if !self.reads.is_empty() { out.push(("reads", self.reads.iter().cloned().collect())); }
         if !self.writes.is_empty() { out.push(("writes", self.writes.iter().cloned().collect())); }
         let mut by_machine: BTreeMap<&str, Vec<String>> = BTreeMap::new();

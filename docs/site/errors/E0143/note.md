@@ -1,0 +1,1 @@
+`internal` without a reason. The reason is what a reviewer judges: it says what the callers already hold, so that the signal may skip what an `entry` must check. Write `internal "the caller holds the account"`.

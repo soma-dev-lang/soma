@@ -10,7 +10,7 @@ flesh Shop {
     on refund(o, n, reason) {
         let before = back.get(o) ?? 0
         // PAY-03 says what always holds; the body is what keeps it
-        require before + n <= (taken.get(o) ?? 0) else TooMuch "order {o}: {n} is more than what is left to refund"
+        require n <= refundable(o) else TooMuch "order {o}: {n} is more than what is left to refund"
         back.set(o, before + n)
         under "PAY-04"
         journal.set(o, Entry { amount: n, reason: reason })

@@ -87,6 +87,8 @@ The frame, clause by clause (after the return type and any `requires` /
 | `reads a, b` | reading memory slots `a`, `b`; a machine name (`reads flow`, `reads Cell.flow`) grants `get_status` / `has_state` / `valid_transitions` |
 | `writes a` | writing — and reading — slot `a` |
 | `moves s -> t, u -> v` | taking those edges (and reading the machine). `moves Cell.machine: s -> t` for another cell's machine; `moves * -> t` any edge into `t`; `moves * -> *` any edge (a `transition(id, target)` whose target is computed). `transition(id, "t")` without a source takes whichever edge into `t` the instance is on: the frame must list them ALL — or the body names the one it means, `transition(id, "s", "t")` |
+| `entry` | the signal is called from outside the program: it takes nothing for granted. An `entry` that takes an entity the law guards (one a formal rule's action takes) must `realizes` an action of the law on it, or have a signal that does in its `calls` — otherwise it is a second path (a warning) |
+| `internal "why"` | only signals of the program call it, on something the caller already holds; the reason is required (E0143). One that no signal has in its `calls` is a warning. A signal says `entry` or `internal`, not both (E0142); one that says neither is counted on the last line of `soma check` |
 | `calls f, Cell.g, think` | calling signal `f` of the same cell, signal `g` of `Cell`, and builtins that have an effect or an answer that varies (`think`, `now`, `random`, `http_get`, `set_budget`, `next_id`, … — the ✗ ones of `soma describe --builtins`, plus the effectful ones) |
 | `emits s` | `emit s(…)`. An emit runs every handler `on s` of the program: a listener that is a signal answers for what it does with its own frame; a private helper cannot listen (emitting `_helper` is refused) |
 
@@ -183,8 +185,11 @@ soma refs     app.cell Orders.place [--json]   # where it is declared, where its
 soma rename   app.cell Orders.place submit [--dry-run]   # the declaration, the body, every call, frame clause and test; an event is renamed in every cell that hears it
 soma check .                            # the project gate: the entry file and every test file (parts are checked through the entry)
 soma holes    app.cell [Cell] [--json]  # signals with no body yet, by cell, numbered in the order to write them (callees first)
-soma next     app.cell [--cell C] [--json]   # the ONE thing to do now: an error of check, a failure of verify, what the law asks,
-                                        #   the next hole, a failing test — or `complete`; exit 0 only when complete
+soma next     app.cell [--cell C] [--json]   # the ONE thing to do now, from a queue: the agent's setup, an error of check, a
+                                        #   failure of verify (or a rule refuted), before the freeze what the skeleton does not
+                                        #   state (one at a time), what the law asks, the next hole, a failing test — `complete`.
+                                        #   Exit 0 complete · 1 something for you · 2 the program does not load · 3 all that is
+                                        #   left waits for the OWNER of the law (`kind: question`): stop, and report it
 soma fill     app.cell Orders.place [--json] # write that ONE body (given on stdin, or --body-file) in the flesh of its cell, then
                                         #   return the diagnostics of that signal alone, its frame, the holes left. It changes
                                         #   no skeleton, no other handler, no law; a body that does not parse writes nothing
@@ -208,6 +213,36 @@ soma init --skeleton myapp              # a starter laid out this way, with one 
 soma init --law demo                    # a whole small project under a law, to imitate: law, typed skeleton, flesh, tests
 soma docs flesh                         # one page: the syntax a body needs — give it, with the brief, to whoever fills a hole
 ```
+
+A derived slot is declared in `memory`: `held balance from lines, Other.rates by recompute` — `recompute`
+rebuilds `balance` from those sources. A signal that writes a source must be the holder or have it in its
+`calls` (a warning otherwise: the slot goes stale); nothing but the holder writes the held slot; a `held`
+that names what does not exist is E0144. The brief of each signal concerned says it (`held  after writing
+`lines`, call `recompute``).
+
+**The last line of `soma check` and of `soma verify` says what was NOT judged**, for a program under a law or
+with a skeleton: `conforms to its frames and to the formal rules of its law — fidelity not judged: 12 rules
+in sentences (no tool reads them), 3 silent signals, 0 signals neither entry nor internal, 1 signal nobody
+calls, 0 events nobody hears, 0 slots read only by their writers, 0 second paths, 0 held states that can go
+stale`. Every number is there, zero included; `not_judged` in `--json`. A green check is not a faithful
+program: that line is what to report.
+
+**One law at a time.** A large program does not fit in what you can read; a law does. `--law <file>` (a
+file of soma.toml `[law] files`) restricts a command to the perimeter of that law — its rules, the signals
+that serve, owe or are exempt from one of them, their cells:
+
+```
+soma skeleton app.cell --index --law lois/billing.law   # the perimeter on one screen, and its FRONTIER: what its signals
+                                                        #   call outside, each with its signature and [hole] or [body];
+                                                        #   and the signals outside that write a source of a slot held inside
+soma next   app.cell --law lois/billing.law             # the one thing to do, in that perimeter and nowhere else
+soma check  app.cell --law lois/billing.law             # the warnings that speak of it (errors stay, all), and ITS last line
+soma verify app.cell --law lois/billing.law             # the machines and contracts of its cells, and its verdict
+soma law    app.cell --law lois/billing.law             # its rules only
+soma doctor --program app.cell --law lois/billing.law   # what the skeletons of the perimeter do not state
+```
+
+Take a domain to the end of the three layers, tests included, before the next one. The freeze stays global.
 
 The loop for a large program: read `soma docs skeleton --brief` → write the
 skeletons → `soma check` (every frame names things that exist; an edge no

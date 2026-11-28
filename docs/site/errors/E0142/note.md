@@ -1,0 +1,1 @@
+A signal says both `entry` and `internal`. `entry`: it is called from outside the program, so it must take nothing for granted. `internal "why"`: only signals of the program call it, on something the caller already holds. Keep one; a signal used both ways is an `entry`.

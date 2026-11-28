@@ -3,6 +3,25 @@
 > Newest first. The language itself: https://soma-lang.dev/llms.txt (`soma docs agent`).
 > Every fix and its compatibility note: https://soma-lang.dev/CHANGELOG.md.
 
+Soma 4.0.0: Soma never lets an agent believe it is done. (A) THE VERDICT
+SAYS WHAT WAS NOT JUDGED: for a program under a law or with a skeleton, the
+last line of `soma check` and of `soma verify` is `conforms … — fidelity not
+judged: N rules in sentences (no tool reads them), N silent signals, N
+signals neither entry nor internal, N signals nobody calls, N events nobody
+hears, N slots read only by their writers, N second paths, N held states
+that can go stale` — report THAT line, not "no errors". Three clauses say
+what a skeleton only said in comments: `entry` (called from outside),
+`internal "why"` (only by signals of the program), and in `memory` `held
+slot from sources by signal` (a derived slot). (B) `soma next` CAN SAY
+STOP: exit 0 complete, 1 something for you, 2 the program does not load, 3
+all that is left waits for the OWNER of the law (`kind: question`) — `soma
+law --questions` lists them; the owner answers in the law or in
+`decisions.toml`, held by `law.lock`. (C) ONE LAW AT A TIME: `--law
+lois/x.law` on check, verify, law, next, skeleton --index and doctor
+--program restricts the command to that law's rules, signals and cells;
+`soma skeleton app.cell --index --law …` shows the perimeter and its
+frontier. Not in it: roles (who may move a lock) — RFC 0005.
+
 Soma 3.6.3: where an agent is given too much. A BRIEF has a budget: of a
 signal it calls, a body is shown the signature, the first sentence of its
 comment, its contract and the rules of the law it refuses under — not its

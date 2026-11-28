@@ -42,7 +42,11 @@ soma docs skeleton --brief              # read BEFORE writing a skeleton (`law -
 soma doctor --program app.cell          # what a skeleton does not state: run before calling it done
 ```
 
-- One hole at a time, until `soma next` answers `complete`.
+- One hole at a time, until `soma next` answers `complete`. If it answers
+  `question` (exit 3), all that is left waits for the owner of the law:
+  stop and report it — do not answer it in the code.
+- A green check is not a faithful program: the last line of `soma check`
+  says what was NOT judged. Report that line, not "no errors".
 - A body may only do what its signal's frame says (`reads` / `writes` /
   `moves` / `calls` / `emits`); `soma check` names the missing clause.
 

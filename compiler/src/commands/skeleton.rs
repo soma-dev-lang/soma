@@ -249,6 +249,7 @@ fn render_cell(sk: &CellSkeleton, notes: bool, out: &mut String) {
                 out.push_str("    memory {\n");
                 for slot in &mem.slots { out.push_str(&format!("        {}\n", slot_line(&slot.node))); }
                 for inv in &mem.invariants { out.push_str(&format!("        invariant {}\n", render_expr(&inv.node))); }
+                for h in &mem.held { out.push_str(&format!("        held {} from {} by {}\n", h.node.slot, h.node.sources.join(", "), h.node.by)); }
                 out.push_str("    }\n");
             }
             Section::State(sm) => {
@@ -694,6 +695,9 @@ pub fn render_brief(program: &Program, source: &str, skeletons: &[CellSkeleton],
     // the guards derived from them — the agent does not open the law
     for (action, args) in &b.frame.bindings { out.push_str(&format!("    realizes {}({})   // an action of the law\n", action, args.join(", "))); }
     if let Some(why) = &b.frame.silent { out.push_str(&format!("    silent \"{}\"   // no action of the law: your body must change no state of the law\n", why)); }
+    // RFC 0006: who calls it
+    if b.frame.entry { out.push_str("    entry   // called from outside the program: it must take nothing for granted\n"); }
+    if let Some(why) = &b.frame.internal { out.push_str(&format!("    internal \"{}\"   // called only by signals of the program\n", why)); }
     let guards: Vec<&LawGuard> = sk.cell.law_guards.iter().filter(|g| g.signal == b.name).collect();
     for g in &guards {
         out.push_str(&format!("    law \"{}\" {}{} — refused unless `{}`\n", g.rule, g.sentence, if g.source.is_empty() { String::new() } else { format!(" ({})", g.source) }, g.shown));
@@ -775,6 +779,30 @@ pub fn render_brief(program: &Program, source: &str, skeletons: &[CellSkeleton],
     };
     if !b.frame.reads.is_empty() { section("reads", slots(&b.frame.reads)); }
     if !b.frame.writes.is_empty() { section("writes", slots(&b.frame.writes)); }
+    // RFC 0006: a slot held from what this signal writes — the body must refresh it
+    {
+        let mut lines = Vec::new();
+        for o in skeletons {
+            for sec in &o.cell.sections {
+                let Section::Memory(mem) = &sec.node else { continue };
+                for h in &mem.held {
+                    let d = &h.node;
+                    if o.cell.name == sk.cell.name && d.by == b.name {
+                        lines.push(format!("{} is HELD: this signal rebuilds it from {} — nothing else writes it", d.slot, d.sources.join(", ")));
+                        continue;
+                    }
+                    for src in &d.sources {
+                        let (c, slot) = src.split_once('.').unwrap_or((o.cell.name.as_str(), src.as_str()));
+                        if c == sk.cell.name && b.frame.writes.contains(slot) {
+                            let holder = if o.cell.name == sk.cell.name { d.by.clone() } else { format!("{}.{}", o.cell.name, d.by) };
+                            lines.push(format!("after writing `{}`, call `{}`: `{}.{}` is held from it (the frame allows the call; your body must make it)", slot, holder, o.cell.name, d.slot));
+                        }
+                    }
+                }
+            }
+        }
+        if !lines.is_empty() { section("held", lines); }
+    }
     if !b.frame.moves.is_empty() || b.frame.dynamic_moves {
         let mut lines = Vec::new();
         for (label, from, to) in &b.frame.moves {

@@ -352,20 +352,31 @@ skeleton Counter {
     }
 
     face {
+        // `entry`: called from outside the program. `internal "why"`: only by its own signals.
         // The count so far.
-        signal total() -> Int                           reads counts
+        signal total() -> Int
+            internal "read by add and by request"
+            reads counts
         // Adds `n` to the count; a negative amount is refused. Returns the new count.
         signal add(n: Int) -> Int
+            entry
             writes counts
             calls total
         // Puts the count back to zero. Returns it.               (a hole: no body yet)
-        signal reset() -> Int                           writes counts
+        signal reset() -> Int
+            entry
+            writes counts
         // Opens session `id`.
-        signal open_session(id: String) -> String       moves idle -> open
+        signal open_session(id: String) -> String
+            entry
+            moves idle -> open
         // Closes session `id`: it cannot be opened again.
-        signal close_session(id: String) -> String      moves open -> closed
+        signal close_session(id: String) -> String
+            entry
+            moves open -> closed
         // The HTTP entry: GET / reads the count, POST /counter/N adds N.
         signal request(method: String, path: String, body: String) -> Map
+            entry
             calls total, add
     }
 }

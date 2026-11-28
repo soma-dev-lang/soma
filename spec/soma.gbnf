@@ -33,7 +33,7 @@ face-decl ::= signal-decl | tool-decl | await-decl | given-decl | promise-decl
 signal-decl ::= "signal" ws1 name ws "(" params ")" ( ws "->" ws type )? ( ws ( contract | frame-clause ) )*
 contract ::= ( "requires" | "ensures" ) ws1 expr
 tool-decl ::= "tool" ws1 name ws "(" params ")" ( ws "->" ws type )? ( ws brackets )? ( ws string )? ( ws frame-clause )*
-frame-clause ::= frame-names | frame-moves | law-realizes | law-under | law-exempt | law-silent
+frame-clause ::= frame-names | frame-moves | law-realizes | law-under | law-exempt | law-silent | frame-entry | frame-internal
 frame-names ::= ( "reads" | "writes" | "calls" | "emits" ) ws1 frame-path ( ws "," ws frame-path )*
 frame-moves ::= "moves" ws1 ( frame-path ws ":" ws )? frame-edge ( ws "," ws frame-edge )*
 frame-path ::= name ( "." name )?
@@ -42,6 +42,8 @@ law-realizes ::= "realizes" ws1 law-binding ( ws "," ws law-binding )*
 law-binding ::= name ( ws "(" ws ( law-arg ( ws "," ws law-arg )* ws )? ")" )?
 law-arg ::= name ( ws1 "via" ws1 name )? | "-"? number | string
 law-silent ::= "silent" ( ws1 string )?
+frame-entry ::= "entry"
+frame-internal ::= "internal" ( ws1 string )?
 law-maps ::= "maps" ws1 name ws "(" ws name ws ")" ws "=" ws expr
 law-under ::= "under" ws1 string ( ws "," ws string )*
 law-exempt ::= "exempt" ws1 string ( ws1 string )?
@@ -55,9 +57,11 @@ type ::= name ( "." name )? ( ws "<" ws type ( ws "," ws type )* ws ">" )? "?"?
 
 # ── Memory ──────────────────────────────────────────────────────
 memory ::= "memory" ws "{" ws ( memory-item ws )* "}"
-memory-item ::= invariant | slot
+memory-item ::= invariant | held | slot
 slot ::= name ws ":" ws type ( ws brackets )? ( ws "=" ws expr )?
 invariant ::= "invariant" ws1 expr
+held ::= "held" ws1 name ws1 "from" ws1 held-source ( ws "," ws held-source )* ws1 "by" ws1 name
+held-source ::= name ( "." name )?
 
 # ── State machines ──────────────────────────────────────────────
 state ::= "state" ws1 name ( ws ":" ws name )? ( ws brackets )? ws "{" ws ( state-item ws )* "}"

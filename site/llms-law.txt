@@ -324,6 +324,45 @@ broad — that is said to the owner of the law, not exempted one by one.
 `soma docs law --brief` is one screen: what a good law contains. Read it
 before writing one. `soma init --law demo` is a whole project to imitate.
 
+## Questions for the owner, and where the owner answers
+
+Some things are decidable on the law and the frames and are NOT tasks for
+whoever writes the program. `soma law app.cell --questions` lists them, and
+exits 3 while one is open:
+
+- `silent-state:<state>` — a state of the law that only `silent` signals
+  change: is one of them a business act the law should name?
+- `broad-term:<term>` — a term that three signals or more realize and three
+  rules in sentences or more speak of: does each signal owe each rule, or is
+  the term to be split?
+  (Three and three are a choice, not a measure: no project has told yet
+  where a term starts to be too broad.)
+
+The owner answers in the law (name the action, split the term: the question
+closes at the next lock), or writes "it is meant" in `decisions.toml`
+beside the laws:
+
+```
+[[decision]]
+question = "silent-state:closed"
+answer   = "Closing is bookkeeping: no action of the law."
+by       = "finance"
+date     = "2026-11-28"
+fact     = "Shop.close"
+```
+
+`law.lock` holds that file like a law: a decision is not in force until
+the lock holds it, and a question reopens when the fact it answered
+changes. You do not write a decision and you do not lock: the answer is the
+owner's. **Nothing enforces that today**: `soma law --lock` runs for anyone,
+so an agent could answer in the owner's name and lock. The file is short
+and dated, and a change to it changes the fingerprint of the law — that is
+all that makes it visible. Whom a lock belongs to is a proposal (RFC 0005, not
+published yet), not decided. While a question is
+open, `soma next` does not hand out the rules and the holes that wait for
+it; when all that is left waits, it answers `question` and exits 3 — stop,
+and report the question.
+
 ## When the law is silent or wrong
 
 Do not add a rule in the code, and do not `exempt` a signal to make the

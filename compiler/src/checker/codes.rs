@@ -153,6 +153,10 @@ const ERROR_KINDS: &[(&str, &str)] = &[
     ("law_silent_reason", "a `silent` without its reason"),
     ("law_unlocked", "a law that law.lock holds and soma.toml no longer names"),
     ("law_maps_awaits", "a `maps` that reads through a signal with no body yet (reported as the warning W0020 law_warning)"),
+    ("frame_entry_internal", "a signal that says both `entry` and `internal`"),
+    ("internal_reason", "an `internal` without its reason"),
+    ("held_unknown", "a `held` that names a slot, a source or a holder that does not exist, or a holder that does not write the slot"),
+    ("fidelity", "what `entry`, `internal` and `held` show on the frames: an internal signal nobody calls, a second path, a held slot that can go stale (reported as warnings)"),
 ];
 
 /// Warning classes (the `CheckWarning` variant, snake_case). APPEND ONLY.

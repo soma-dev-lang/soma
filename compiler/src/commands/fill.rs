@@ -269,9 +269,16 @@ fn collect_cells(dir: &Path, out: &mut Vec<PathBuf>) {
 
 struct Item { kind: &'static str, target: String, reason: String, command: String, then: Option<String> }
 
-fn first_thing(path: &PathBuf, only: Option<&str>) -> Item {
+thread_local! {
+    /// the questions open for the owner of the law, as the last `first_thing` saw them
+    static OPEN_QUESTIONS: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
+}
+
+fn first_thing(path: &PathBuf, only: Option<&str>, scope: Option<&super::scope::Scope>) -> Item {
     let (dir, entry) = dir_and_name(path);
-    let in_cell = |text: &str| only.is_none_or(|c| text.contains(c));
+    // `--cell`, and the perimeter of a law (RFC 0006, part C)
+    let in_cell = |text: &str| only.is_none_or(|c| text.contains(c)) && scope.is_none_or(|s| s.names(text));
+    let in_scope = |who: &str| scope.is_none_or(|s| s.has_signal(who));
     // 1. the agent's setup
     if let Some(d) = run_json(&dir, &["doctor", "--json"]) {
         if let Some(c) = d["checks"].as_array().and_then(|cs| cs.iter().find(|c| c["ok"] == false)) {
@@ -282,8 +289,15 @@ fn first_thing(path: &PathBuf, only: Option<&str>) -> Item {
     // 2. an error of check
     let checked = run_json(&dir, &["check", &entry, "--json"]);
     let Some(checked) = checked else {
-        return Item { kind: "check", target: entry.clone(), reason: "the program does not read".to_string(), command: format!("soma check {}", entry), then: None };
+        // exit 2: nothing can be said of a program that does not load
+        return Item { kind: "load", target: entry.clone(), reason: "the program does not load: `soma check` gave no report".to_string(), command: format!("soma check {}", entry), then: None };
     };
+    // a program that does not parse is not "something to do" like another: exit 2
+    if let Some(e) = checked["errors"].as_array().and_then(|es| es.iter().find(|e| e["code"].as_str().is_some_and(|c| c.starts_with("E1")))) {
+        return Item { kind: "load", target: format!("{}:{}", e["file"].as_str().unwrap_or(&entry), e["line"]),
+            reason: format!("the program does not load: {} [{}]", e["message"].as_str().unwrap_or(""), e["code"].as_str().unwrap_or("")),
+            command: format!("soma check {}", entry), then: None };
+    }
     if let Some(e) = checked["errors"].as_array().and_then(|es| es.iter().find(|e| in_cell(e["message"].as_str().unwrap_or("")) || only.is_none()).or(es.first())) {
         let more = checked["error_count"].as_u64().unwrap_or(1).saturating_sub(1);
         return Item { kind: "check", target: format!("{}:{}", e["file"].as_str().unwrap_or(&entry), e["line"]),
@@ -300,41 +314,91 @@ fn first_thing(path: &PathBuf, only: Option<&str>) -> Item {
             return Item { kind: "verify", target, reason, command: format!("soma verify {}", entry), then: None };
         }
     }
-    // 4. what the law still asks
-    if let Some(l) = run_json(&dir, &["law", &entry, "--todo", "--json"]) {
-        if let Some(t) = l["todo"].as_array().and_then(|t| t.iter().filter_map(|x| x.as_str()).find(|t| in_cell(t))) {
+    // 3b. what the evidence says AGAINST a rule — a refutation the project
+    // keeps, a test under a rule that fails: a failure like those of verify
+    let law = run_json(&dir, &["law", &entry, "--todo", "--json"]);
+    if let Some(t) = law.as_ref().and_then(|l| l["todo"].as_array()).and_then(|t| t.iter().filter_map(|x| x.as_str())
+        .find(|t| (t.contains(" is refuted by ") || t.contains(" fails — `soma test`")) && in_cell(t))) {
+        let rule = t.split('"').nth(1).unwrap_or("").to_string();
+        return Item { kind: "law", target: rule.clone(), reason: t.to_string(), command: format!("soma law {} \"{}\"", entry, rule), then: None };
+    }
+    // 4. before the freeze: what the skeleton does not state, ONE at a time —
+    // the mirror's, then what the frames show (RFC 0006, part A). Stating
+    // it, or freezing the skeleton as it is, closes it
+    if !crate::checker::lock::path_for(path).exists() {
+        let m = super::mirror::mirror(path);
+        let mut gaps: Vec<(String, String)> = m.gaps.iter().filter(|g| only.is_none_or(|c| g.target.starts_with(&format!("{}.", c)) || g.kind == "no_property"))
+            .filter(|g| scope.is_none_or(|s| s.has_signal(&g.target) || (g.kind == "no_invariant" && g.target.split_once('.').is_some_and(|(c, _)| s.cells.contains(c)))))
+            .map(|g| (g.target.clone(), g.message.clone())).collect();
+        for w in checked["warnings"].as_array().into_iter().flatten() {
+            let text = w["message"].as_str().unwrap_or("");
+            if (text.contains("a second path") || text.contains("goes stale") || text.contains("is `internal` and no signal") || text.contains("a held slot has one writer")) && in_cell(text) {
+                gaps.push((text.split('`').nth(1).unwrap_or("").to_string(), text.to_string()));
+            }
+        }
+        if m.skeletons > 0 && !gaps.is_empty() {
+            return Item { kind: "skeleton", target: gaps[0].0.clone(),
+                reason: format!("{} — {} of {} thing{} the skeleton, not frozen yet, does not state", gaps[0].1, 1, gaps.len(), if gaps.len() == 1 { "" } else { "s" }),
+                command: format!("soma doctor --program {}", entry),
+                then: Some(format!("soma skeleton {} --freeze   # once it says what you mean: from then on the bodies are written against it", entry)) };
+        }
+    }
+    // 5. the questions for the owner of the law: they are not tasks, and
+    // what waits for their answer is not handed out
+    let open: Vec<&serde_json::Value> = law.as_ref().and_then(|l| l["questions"].as_array()).map(|qs| qs.iter().filter(|q| q["open"] == true)
+        .filter(|q| scope.is_none_or(|s| q["rules"].as_array().into_iter().flatten().any(|r| s.rules.iter().any(|x| Some(x.as_str()) == r.as_str()))
+            || q["signals"].as_array().into_iter().flatten().any(|g| g.as_str().is_some_and(|g| s.has_signal(g))))).collect()).unwrap_or_default();
+    OPEN_QUESTIONS.with(|n| n.set(open.len()));
+    let texts = |q: &serde_json::Value, key: &str| -> Vec<String> { q[key].as_array().into_iter().flatten().filter_map(|x| x.as_str().map(str::to_string)).collect() };
+    let waiting_rules: std::collections::BTreeSet<String> = open.iter().flat_map(|q| texts(q, "rules")).collect();
+    let mut waiting_signals: std::collections::BTreeSet<String> = open.iter().flat_map(|q| texts(q, "signals")).collect();
+    if let Some(l) = &law {
+        for o in l["owed"].as_array().into_iter().flatten() {
+            if waiting_rules.contains(o["rule"].as_str().unwrap_or("")) { waiting_signals.insert(o["signal"].as_str().unwrap_or("").to_string()); }
+        }
+        for r in l["rules"].as_array().into_iter().flatten() {
+            if !waiting_rules.contains(r["id"].as_str().unwrap_or("")) { continue; }
+            for sv in r["served"].as_array().into_iter().flatten() { waiting_signals.insert(sv["signal"].as_str().unwrap_or("").to_string()); }
+        }
+    }
+    // 6. what the law still asks, of what waits for no answer
+    if let Some(l) = &law {
+        if let Some(t) = l["todo"].as_array().and_then(|t| t.iter().filter_map(|x| x.as_str())
+            .find(|t| in_cell(t) && !waiting_rules.contains(t.split('"').nth(1).unwrap_or("")))) {
             let rule = t.split('"').nth(1).unwrap_or("").to_string();
             return Item { kind: "law", target: if rule.is_empty() { entry.clone() } else { rule.clone() }, reason: t.to_string(),
                 command: if rule.is_empty() { format!("soma law {} --todo", entry) } else { format!("soma law {} \"{}\"", entry, rule) }, then: None };
         }
     }
-    // 4b. a skeleton not frozen yet that leaves things unsaid: said once,
-    // before the bodies — stating them, or freezing as it is, closes it
-    if !crate::checker::lock::path_for(path).exists() {
-        let m = super::mirror::mirror(path);
-        let mine: Vec<&super::mirror::Gap> = m.gaps.iter().filter(|g| only.is_none_or(|c| g.target.starts_with(&format!("{}.", c)) || g.kind == "no_property")).collect();
-        if m.skeletons > 0 && !mine.is_empty() {
-            return Item { kind: "skeleton", target: mine[0].target.clone(),
-                reason: format!("the skeleton is not frozen and does not state {} thing{} a skeleton usually states — the first: {}", mine.len(), if mine.len() == 1 { "" } else { "s" }, mine[0].message),
-                command: format!("soma doctor --program {}", entry),
-                then: Some(format!("soma skeleton {} --freeze   # once it says what you mean: from then on the bodies are written against it", entry)) };
-        }
-    }
-    // 5. the next hole
+    // 7. the next hole, among those that owe nothing under a question
     if let Some(h) = run_json(&dir, &["holes", &entry, "--json"]) {
         let total = h["total_holes"].as_u64().unwrap_or(0);
-        if let Some(hole) = h["holes"].as_array().and_then(|hs| hs.iter().find(|x| only.is_none_or(|c| x["cell"] == c))) {
+        if let Some(hole) = h["holes"].as_array().and_then(|hs| hs.iter().find(|x| only.is_none_or(|c| x["cell"] == c)
+            && in_scope(x["signal"].as_str().unwrap_or(""))
+            && !waiting_signals.contains(x["signal"].as_str().unwrap_or("")))) {
             let signal = hole["signal"].as_str().unwrap_or("").to_string();
             return Item { kind: "hole", reason: format!("a signal with no body yet — hole {} of {} ({} signals)", hole["order"], total, h["signals"]),
                 command: format!("soma skeleton {} {}", entry, signal), then: Some(format!("soma fill {} {}   # its body on stdin", entry, signal)), target: signal };
         }
     }
-    // 6. a failing test
+    // 8. a failing test
     if let Some(t) = run_json(&dir, &["test", &entry, "--json"]) {
-        if let Some(r) = t["results"].as_array().and_then(|rs| rs.iter().find(|r| r["status"] != "pass" && only.is_none_or(|c| r["cell"] == c))) {
+        // in a perimeter: the tests under its rules
+        let of_scope: Option<std::collections::BTreeSet<String>> = scope.map(|s| law.as_ref().and_then(|l| l["rules"].as_array()).into_iter().flatten()
+            .filter(|r| s.rules.iter().any(|x| Some(x.as_str()) == r["id"].as_str()))
+            .flat_map(|r| r["tests"].as_array().into_iter().flatten().filter_map(|t| t.as_str().map(str::to_string)).collect::<Vec<_>>()).collect());
+        if let Some(r) = t["results"].as_array().and_then(|rs| rs.iter().find(|r| r["status"] != "pass" && only.is_none_or(|c| r["cell"] == c)
+            && of_scope.as_ref().is_none_or(|names| names.contains(r["cell"].as_str().unwrap_or(""))))) {
             return Item { kind: "test", target: r["cell"].as_str().unwrap_or("").to_string(),
                 reason: format!("{} — {}", r["rule"].as_str().unwrap_or(""), r["message"].as_str().unwrap_or("")), command: format!("soma test {}", entry), then: None };
         }
+    }
+    // all that is left waits for the owner: this is not yours (exit 3)
+    if let Some(q) = open.first() {
+        return Item { kind: "question", target: q["id"].as_str().unwrap_or("").to_string(),
+            reason: format!("{} — a question for the owner of the law, not a task: do not answer it in the code, and do not write the bodies that wait for it ({} question{} open)",
+                q["text"].as_str().unwrap_or(""), open.len(), if open.len() == 1 { "" } else { "s" }),
+            command: format!("soma law {} --questions", entry), then: None };
     }
     // 7. nothing
     let verdict = verified.as_ref().and_then(|v| v["verdict"].as_str()).unwrap_or("verify did not answer").to_string();
@@ -342,14 +406,19 @@ fn first_thing(path: &PathBuf, only: Option<&str>) -> Item {
 }
 
 /// `soma next [app.cell] [--cell C] [--json]`: the one thing to do now.
-/// Exits 0 when the program is complete, 1 while something is left.
-pub fn cmd_next(path: &PathBuf, only: Option<&str>, json: bool) {
+/// Exits 0 when the program is complete, 1 while something is left for
+/// whoever writes it, 2 when the program does not load, 3 when all that is
+/// left waits for the owner of the law.
+pub fn cmd_next(path: &PathBuf, only: Option<&str>, json: bool, law: Option<&str>) {
     if !path.is_file() { fail(format!("{}: no such program — `soma next app.cell`", path.display())); }
-    let item = first_thing(path, only);
+    let scope = law.map(|l| super::scope::scope_or_exit(path, l));
+    let item = first_thing(path, only, scope.as_ref());
     if json {
         println!("{}", serde_json::to_string_pretty(&serde_json::json!({
             "schema": "soma.next/1", "kind": item.kind, "target": item.target, "reason": item.reason,
             "command": if item.command.is_empty() { serde_json::Value::Null } else { serde_json::Value::String(item.command.clone()) }, "then": item.then,
+            "for": if item.kind == "question" { "owner" } else { "agent" },
+            "open_questions": OPEN_QUESTIONS.with(|n| n.get()),
         })).unwrap_or_default());
     } else if item.kind == "complete" {
         println!("complete  {}", item.target);
@@ -359,6 +428,10 @@ pub fn cmd_next(path: &PathBuf, only: Option<&str>, json: bool) {
         println!("  why:  {}", item.reason);
         println!("  do:   {}", item.command);
         if let Some(t) = &item.then { println!("  then: {}", t); }
+        let open = OPEN_QUESTIONS.with(|n| n.get());
+        if open > 0 && item.kind != "question" {
+            println!("  ({} question{} open for the owner of the law — `soma law {} --questions`; what waits for an answer is not handed out)", open, if open == 1 { "" } else { "s" }, path.display());
+        }
     }
-    if item.kind != "complete" { std::process::exit(1); }
+    std::process::exit(match item.kind { "complete" => 0, "load" => 2, "question" => 3, _ => 1 });
 }

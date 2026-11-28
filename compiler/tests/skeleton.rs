@@ -355,7 +355,7 @@ flesh Orders {
     assert!(out.contains("no holes — the 7 signals"), "{out}");
     let (out, code) = soma(&["verify", &path]);
     assert_eq!(code, 0, "{out}");
-    assert!(out.contains("VERIFY OK\n") && !out.contains("waits for a hole"), "{out}");
+    assert!(out.contains("VERIFY OK — fidelity not judged: ") && !out.contains("waits for a hole"), "{out}");
 }
 
 #[test]
@@ -608,7 +608,7 @@ cell test ShopTests {{
     let out_path = program("split_out", &split);
     let (out, code) = soma(&["check", &out_path]);
     assert_eq!(code, 0, "{out}\n{split}");
-    assert!(!out.contains("hole") && !out.contains("frame"), "{out}");
+    assert!(!out.contains("hole") && !out.lines().any(|l| !l.starts_with("conforms") && l.contains("frame")), "{out}");
     let (after, _) = soma(&["test", &out_path]);
     let tally = |s: &str| s.lines().rev().find(|l| l.contains("passed")).unwrap_or("").to_string();
     assert_eq!(tally(&before), tally(&after), "{before}\n{after}");
@@ -707,7 +707,7 @@ fn init_skeleton_gives_a_project_that_passes_the_loop_with_one_hole() {
     assert_eq!(code, 0, "{out}");
     assert!(!out.contains("hole"), "{out}");
     let (out, _) = run(&["verify", "app.cell"], &app);
-    assert!(out.contains("VERIFY OK\n"), "{out}");
+    assert!(out.contains("VERIFY OK — fidelity not judged: "), "{out}");
 }
 
 #[test]

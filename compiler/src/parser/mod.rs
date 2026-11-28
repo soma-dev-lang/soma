@@ -1457,6 +1457,20 @@ impl Parser {
             };
             frame.get_or_insert_with(FrameDecl::default).silent = Some(why);
             Ok(true)
+        } else if self.at_word("entry") {
+            // RFC 0006: called from outside the program
+            self.advance();
+            frame.get_or_insert_with(FrameDecl::default).entry = true;
+            Ok(true)
+        } else if self.at_word("internal") {
+            // RFC 0006: called only by signals of the program, and why
+            self.advance();
+            let why = match self.peek().clone() {
+                Token::StringLit(w) => { self.advance(); w }
+                _ => String::new(),
+            };
+            frame.get_or_insert_with(FrameDecl::default).internal = Some(why);
+            Ok(true)
         } else if self.at_word("under") {
             // the guarded edges of this frame serve these rules
             self.advance();
@@ -1685,7 +1699,34 @@ impl Parser {
 
         let mut slots = Vec::new();
         let mut invariants = Vec::new();
+        let mut held = Vec::new();
         while !self.check(&Token::RBrace) && !self.is_at_end() {
+            // RFC 0006: `held s from a, Other.b by f` (a slot named `held` is `held: Type`)
+            if self.at_word("held") && !matches!(self.peek_at(1), Token::Colon) {
+                let start = self.peek_span();
+                self.advance();
+                let (slot, _) = self.expect_any_name()?;
+                let mut sources = Vec::new();
+                if self.at_word("from") {
+                    self.advance();
+                    loop {
+                        let (mut n, _) = self.expect_any_name()?;
+                        if self.check(&Token::Dot) { self.advance(); n = format!("{}.{}", n, self.expect_any_name()?.0); }
+                        sources.push(n);
+                        if self.check(&Token::Comma) { self.advance(); } else { break; }
+                    }
+                }
+                let mut by = String::new();
+                let mut end = start;
+                if self.at_word("by") {
+                    self.advance();
+                    let (n, sp) = self.expect_any_name()?;
+                    by = n;
+                    end = sp;
+                }
+                held.push(Spanned::new(HeldDecl { slot, sources, by }, start.merge(end)));
+                continue;
+            }
             // Check for `invariant expr` declaration
             if let Token::Ident(ref name) = self.peek().clone() {
                 if name == "invariant" {
@@ -1700,7 +1741,7 @@ impl Parser {
         }
 
         self.expect(Token::RBrace)?;
-        Ok(MemorySection { slots, invariants })
+        Ok(MemorySection { slots, invariants, held })
     }
 
     fn parse_memory_slot(&mut self) -> Result<Spanned<MemorySlot>, ParseError> {

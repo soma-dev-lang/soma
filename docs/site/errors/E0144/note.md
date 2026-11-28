@@ -1,0 +1,1 @@
+A `held` clause names a slot, a source or a holder that does not exist, or a holder that does not have the slot in its `writes`. The form is `held <slot> from <sources> by <signal>`, in `memory`: the slot is derived, and the signal rebuilds it from the sources. A source in another cell is `Cell.slot`.

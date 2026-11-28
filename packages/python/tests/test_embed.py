@@ -8,7 +8,7 @@ import soma
 program = sys.argv[1]
 
 with soma.load(program) as app:
-    assert app.version.startswith("3."), app.version
+    assert app.version.split(".")[0] in ("3", "4"), app.version
     info = app.handlers()["Ledger"]["debit"]
     assert info["params"] == [{"name": "amount", "type": "Int"}] and info["returns"] == "Int", info
 

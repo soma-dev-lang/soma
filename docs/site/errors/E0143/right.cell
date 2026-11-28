@@ -1,0 +1,11 @@
+skeleton Notes {
+    memory {
+        notes: Map<String, String> [persistent]
+    }
+    face {
+        // The note of `id`.
+        signal note(id: String) -> String
+            internal "the caller holds the id"
+            reads notes
+    }
+}

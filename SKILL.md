@@ -20,6 +20,9 @@ soma fill app.cell Cell.signal         # write that body (on stdin); it is check
 ```
 
 Repeat until `soma next` answers `complete`; report the line it prints.
+`next` exits 3 when what is left waits for the OWNER of the law: stop,
+report the question. Report the LAST line of `soma check`: it says
+what was not judged.
 `fill` writes one handler and nothing else; each error names its fix.
 A small program with no skeleton: edit, then `check` → `verify` → `test`.
 

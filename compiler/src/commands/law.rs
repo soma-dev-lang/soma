@@ -6,7 +6,7 @@ use std::path::PathBuf;
 use crate::checker::law;
 use super::{read_source, lex_with_location, parse_with_location, resolve_imports};
 
-pub fn cmd_law(path: &PathBuf, rule: Option<&str>, todo: bool, lock: bool, json: bool, map: bool, no_run: bool) {
+pub fn cmd_law(path: &PathBuf, rule: Option<&str>, todo: bool, lock: bool, json: bool, map: bool, no_run: bool, questions: bool, only_law: Option<&str>) {
     let source = read_source(path);
     let file_str = path.display().to_string();
     let tokens = lex_with_location(&source, Some(&file_str));
@@ -33,7 +33,7 @@ pub fn cmd_law(path: &PathBuf, rule: Option<&str>, todo: bool, lock: bool, json:
         }
         let target = root.join("law.lock");
         match std::fs::write(&target, law::lock_text(&loaded)) {
-            Ok(()) => println!("locked {} law file(s) in {}", loaded.files.len(), target.display()),
+            Ok(()) => println!("locked {} law file(s){} in {}", loaded.files.len(), if loaded.decisions_file.is_some() { " and the decisions of their owner" } else { "" }, target.display()),
             Err(e) => { eprintln!("cannot write {}: {}", target.display(), e); std::process::exit(1); }
         }
         return;
@@ -45,9 +45,25 @@ pub fn cmd_law(path: &PathBuf, rule: Option<&str>, todo: bool, lock: bool, json:
         return;
     }
     let mut report = law::analyse(&program, &loaded.laws, &law::tests_beside(&root));
+    // RFC 0006, part C: the perimeter of one law — its rules, and what speaks of them
+    if let Some(l) = only_law {
+        let sc = super::scope::scope_or_exit(path, l);
+        report.rules.retain(|s| s.rule.law == sc.law);
+        report.owed.retain(|o| sc.rules.contains(&o.rule));
+        report.issues.retain(|i| sc.names(&i.message));
+        report.questions.retain(|q| q.rules.iter().any(|r| sc.rules.contains(r)) || q.signals.iter().any(|s| sc.has_signal(s)));
+        loaded.laws.retain(|x| x.name == sc.law);
+    }
     let program_print = super::refute::fingerprint(path, &program).iter().find(|p| p.kind == "program").map(|p| p.digest.clone()).unwrap_or_default();
     evidence(path, &root, &mut report, no_run, &program_print);
     let locked = law::against_lock(&loaded, &root);
+    if questions && !json {
+        let decisions = law::decisions_path(manifest.as_ref()).unwrap_or_else(|| "decisions.toml".to_string());
+        print!("{}", law::render_questions(&loaded, &report, &decisions));
+        // exit 3: something here is for the owner, not for whoever runs the command
+        if !law::open_questions(&loaded, &report).is_empty() { std::process::exit(3); }
+        return;
+    }
     if json {
         println!("{}", serde_json::to_string_pretty(&law::json(&loaded, &report, &locked)).unwrap_or_default());
     } else if todo {

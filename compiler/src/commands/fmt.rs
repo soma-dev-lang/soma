@@ -95,7 +95,8 @@ pub fn format_source(source: &str) -> String {
         //             Audit.record
         let first = text.split_whitespace().next().unwrap_or("");
         let continued = after_signal && clause_open;
-        let clause = continued || (after_signal && matches!(first, "requires" | "ensures" | "reads" | "writes" | "calls" | "moves" | "emits"));
+        let clause = continued || (after_signal && matches!(first, "requires" | "ensures" | "reads" | "writes" | "calls" | "moves" | "emits"
+            | "realizes" | "silent" | "under" | "exempt" | "entry" | "internal"));
         if !text.starts_with("//") {
             after_signal = clause || matches!(first, "signal" | "tool");
             clause_open = clause && text.ends_with(',');

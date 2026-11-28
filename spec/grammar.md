@@ -53,7 +53,7 @@ tool-decl ::= "tool" ws1 name ws "(" params ")" ( ws "->" ws type )? ( ws bracke
 The frame: what the handler may read, write, call, emit, and which edges it may take.
 
 ```gbnf
-frame-clause ::= frame-names | frame-moves | law-realizes | law-under | law-exempt | law-silent
+frame-clause ::= frame-names | frame-moves | law-realizes | law-under | law-exempt | law-silent | frame-entry | frame-internal
 frame-names ::= ( "reads" | "writes" | "calls" | "emits" ) ws1 frame-path ( ws "," ws frame-path )*
 frame-moves ::= "moves" ws1 ( frame-path ws ":" ws )? frame-edge ( ws "," ws frame-edge )*
 frame-path ::= name ( "." name )?
@@ -67,6 +67,13 @@ law-realizes ::= "realizes" ws1 law-binding ( ws "," ws law-binding )*
 law-binding ::= name ( ws "(" ws ( law-arg ( ws "," ws law-arg )* ws )? ")" )?
 law-arg ::= name ( ws1 "via" ws1 name )? | "-"? number | string
 law-silent ::= "silent" ( ws1 string )?
+```
+
+RFC 0006: who calls the signal — from outside the program, or only its own signals (and why).
+
+```gbnf
+frame-entry ::= "entry"
+frame-internal ::= "internal" ( ws1 string )?
 law-maps ::= "maps" ws1 name ws "(" ws name ws ")" ws "=" ws expr
 law-under ::= "under" ws1 string ( ws "," ws string )*
 law-exempt ::= "exempt" ws1 string ( ws1 string )?
@@ -82,9 +89,16 @@ type ::= name ( "." name )? ( ws "<" ws type ( ws "," ws type )* ws ">" )? "?"?
 
 ```gbnf
 memory ::= "memory" ws "{" ws ( memory-item ws )* "}"
-memory-item ::= invariant | slot
+memory-item ::= invariant | held | slot
 slot ::= name ws ":" ws type ( ws brackets )? ( ws "=" ws expr )?
 invariant ::= "invariant" ws1 expr
+```
+
+RFC 0006: a derived slot — `held balance from lines, Other.rates by recompute`.
+
+```gbnf
+held ::= "held" ws1 name ws1 "from" ws1 held-source ( ws "," ws held-source )* ws1 "by" ws1 name
+held-source ::= name ( "." name )?
 ```
 
 ## State machines

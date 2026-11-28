@@ -116,6 +116,78 @@ pub struct Loaded {
     pub errors: Vec<String>,
     /// what the formal part of a law gets wrong (RFC 0003): (kind, `file:line: message`)
     pub formal_errors: Vec<(&'static str, String)>,
+    /// RFC 0006: the answers of the owner of the law to the questions the
+    /// toolchain asks (`decisions.toml` beside the first law file)
+    pub decisions: Vec<Decision>,
+    /// (its path as soma.toml would write it, its text), when it exists
+    pub decisions_file: Option<(String, String)>,
+}
+
+/// An answer of the owner of the law: "it is meant".
+#[derive(Debug, Clone, serde::Deserialize)]
+pub struct Decision {
+    /// the id of the question it answers (`silent-state:closed`)
+    pub question: String,
+    pub answer: String,
+    #[serde(default)]
+    pub by: String,
+    #[serde(default)]
+    pub date: String,
+    /// the fact the question stated when it was answered: the answer holds
+    /// while the fact is the same
+    #[serde(default)]
+    pub fact: String,
+}
+
+#[derive(Debug, Default, serde::Deserialize)]
+struct Decisions {
+    #[serde(default)]
+    decision: Vec<Decision>,
+}
+
+/// A question for the owner of the law: something decidable on the law and
+/// the frames that is not a task for whoever writes the program.
+#[derive(Debug, Clone)]
+pub struct Question {
+    /// `silent-state:<state>` | `broad-term:<term>`
+    pub id: String,
+    pub text: String,
+    /// what the program shows today; an answer holds while it is the same
+    pub fact: String,
+    /// the rules that wait for the answer
+    pub rules: Vec<String>,
+    /// the signals that wait for it
+    pub signals: Vec<String>,
+}
+
+/// The questions no decision of the owner answers. A decision answers a
+/// question while the fact it was given for is the one the program shows.
+pub fn open_questions(loaded: &Loaded, report: &Report) -> Vec<Question> {
+    report.questions.iter().filter(|q| !loaded.decisions.iter().any(|d| d.question == q.id && (d.fact.is_empty() || d.fact == q.fact))).cloned().collect()
+}
+
+/// The questions, for the owner: each with the lines to write to answer "it is meant".
+pub fn render_questions(loaded: &Loaded, report: &Report, decisions: &str) -> String {
+    let open = open_questions(loaded, report);
+    let answered = report.questions.len() - open.len();
+    if open.is_empty() {
+        return format!("no question is open for the owner of the law{}\n", if answered > 0 { format!(" ({} answered in {})", answered, decisions) } else { String::new() });
+    }
+    let mut out = format!("{} question{} for the owner of the law — not tasks for whoever writes the program{}:\n\n", open.len(), if open.len() == 1 { "" } else { "s" },
+        if answered > 0 { format!(" ({} more answered)", answered) } else { String::new() });
+    for q in &open {
+        out.push_str(&format!("  {}\n      {}\n", q.id, q.text));
+        if !q.rules.is_empty() { out.push_str(&format!("      waits for it: {}\n", q.rules.iter().take(12).map(|r| format!("\"{}\"", r)).collect::<Vec<_>>().join(", ") + if q.rules.len() > 12 { ", …" } else { "" })); }
+    }
+    out.push_str(&format!("\nThe owner answers in the law itself (name the action, split the term: the question closes at the next lock), or writes \"it is meant\" in {} and locks:\n\n[[decision]]\nquestion = \"{}\"\nanswer = \"<why it is meant>\"\nby = \"<who answers>\"\ndate = \"<the date>\"\nfact = \"{}\"\n", decisions, open[0].id, open[0].fact));
+    out
+}
+
+/// Where the decisions of a project are written: beside its first law file.
+pub fn decisions_path(manifest: Option<&crate::pkg::manifest::Manifest>) -> Option<String> {
+    let first = manifest?.law.files.first()?;
+    let dir = std::path::Path::new(first).parent().filter(|d| !d.as_os_str().is_empty());
+    Some(match dir { Some(d) => format!("{}/decisions.toml", d.display()), None => "decisions.toml".to_string() })
 }
 
 enum Tok { Word(String), Str(String), Comma }
@@ -570,6 +642,16 @@ pub fn load(manifest: Option<&crate::pkg::manifest::Manifest>, root: &Path) -> L
             Err(e) => out.errors.push(format!("{}: the law soma.toml names cannot be read ({})", file, e)),
         }
     }
+    // the decisions of the owner (RFC 0006): held by law.lock like a law
+    if let Some(rel) = decisions_path(Some(m)) {
+        if let Ok(text) = std::fs::read_to_string(root.join(&rel)) {
+            match toml::from_str::<Decisions>(&text) {
+                Ok(d) => out.decisions = d.decision,
+                Err(e) => out.errors.push(format!("{}: the decisions of the owner of the law do not read ({}) — each is `[[decision]]` with `question`, `answer`, `by`, `date`, `fact`", rel, e.to_string().lines().next().unwrap_or(""))),
+            }
+            out.decisions_file = Some((rel, text));
+        }
+    }
     // across the laws of the program: one identifier, one rule; one name, one term
     let mut seen_rules: BTreeMap<String, String> = BTreeMap::new();
     let mut terms: BTreeSet<String> = BTreeSet::new();
@@ -643,14 +725,21 @@ fn sha(text: &str) -> String {
 pub fn lock_text(loaded: &Loaded) -> String {
     let mut out = String::from("# The laws this program is under, as they were reviewed. `soma law <file> --lock` rewrites it.\n");
     for (file, text) in &loaded.files { out.push_str(&format!("{}  {}\n", sha(text), file)); }
+    if let Some((file, text)) = &loaded.decisions_file { out.push_str(&format!("{}  {}\n", sha(text), file)); }
     out
+}
+
+/// The files `law.lock` holds: the laws, and the decisions of their owner.
+fn locked_files(loaded: &Loaded) -> Vec<(String, String)> {
+    loaded.files.iter().cloned().chain(loaded.decisions_file.iter().cloned()).collect()
 }
 
 /// The laws `law.lock` holds that soma.toml no longer names: a program does
 /// not leave a law by deleting a line of its manifest (RFC 0003, E0140).
 pub fn left_behind(loaded: &Loaded, root: &Path) -> Option<String> {
     let locked = std::fs::read_to_string(root.join("law.lock")).ok()?;
-    let named: BTreeSet<&str> = loaded.files.iter().map(|(f, _)| f.as_str()).collect();
+    let files = locked_files(loaded);
+    let named: BTreeSet<&str> = files.iter().map(|(f, _)| f.as_str()).collect();
     let gone: Vec<String> = locked.lines().filter(|l| !l.starts_with('#') && !l.trim().is_empty())
         .filter_map(|l| l.split_once("  ").map(|(_, f)| f.trim().to_string())).filter(|f| !named.contains(f.as_str())).collect();
     if gone.is_empty() { return None; }
@@ -665,7 +754,7 @@ pub fn against_lock(loaded: &Loaded, root: &Path) -> Result<Option<String>, ()> 
     let Ok(locked) = std::fs::read_to_string(root.join("law.lock")) else { return Err(()) };
     let then: BTreeMap<String, String> = locked.lines().filter(|l| !l.starts_with('#') && !l.trim().is_empty())
         .filter_map(|l| l.split_once("  ").map(|(h, f)| (f.trim().to_string(), h.trim().to_string()))).collect();
-    let now: BTreeMap<String, String> = loaded.files.iter().map(|(f, t)| (f.clone(), sha(t))).collect();
+    let now: BTreeMap<String, String> = locked_files(loaded).iter().map(|(f, t)| (f.clone(), sha(t))).collect();
     if then == now { return Ok(None); }
     let mut changed: Vec<String> = Vec::new();
     for (f, h) in &now {
@@ -772,6 +861,8 @@ pub struct Report {
     pub owed: Vec<Owed>,
     /// what the law could name, for its owner: a state only `silent` signals change
     pub hints: Vec<String>,
+    /// RFC 0006: the questions for the owner of the law (answered or not)
+    pub questions: Vec<Question>,
     /// `require` statements of the program, and how many serve a rule
     pub requires: usize,
     pub requires_under: usize,
@@ -1406,6 +1497,12 @@ pub fn analyse(program: &Program, laws: &[Law], tests_beside: &BTreeMap<String, 
         }
         for (st, (bound, silent)) in &by_state {
             if bound.is_empty() && !silent.is_empty() {
+                let reading: Vec<String> = rules.iter().filter(|r| r.requires.iter().chain(r.always.iter()).any(|f| { let mut n = Vec::new(); cond_states(&f.cond, &mut n); n.contains(st) })).map(|r| r.id.clone()).collect();
+                report.questions.push(Question {
+                    id: format!("silent-state:{}", st),
+                    text: format!("the state `{}` of the law is changed only by signals that say they are no action of the law ({}). Is one of them a business act the law should name as an `action` — or is it meant that no action of the law changes this state?", st, silent.iter().map(|w| format!("`{}`", w)).collect::<Vec<_>>().join(", ")),
+                    fact: silent.join(", "), rules: reading, signals: silent.clone(),
+                });
                 report.hints.push(format!("`{}` — changed only by `silent` signals: {}", st, silent.iter().map(|w| format!("`{}`", w)).collect::<Vec<_>>().join(", ")));
             }
         }
@@ -1645,6 +1742,23 @@ pub fn analyse(program: &Program, laws: &[Law], tests_beside: &BTreeMap<String, 
         }
         report.rules.push(status);
     }
+    // a term that many signals realize and many rules in sentences speak of:
+    // each of those signals owes each of those rules — the owner says whether
+    // that is meant, or whether the term is too broad
+    {
+        let names: BTreeSet<&str> = laws.iter().flat_map(|l| l.terms.iter().chain(l.entities.iter()).map(|t| t.name.as_str()).chain(l.actions.iter().map(|a| a.name.as_str()))).collect();
+        for term in names {
+            let about: Vec<String> = rules.iter().filter(|r| r.requires.is_none() && r.always.is_none() && r.about.iter().any(|t| t == term)).map(|r| r.id.clone()).collect();
+            let by: Vec<String> = report.realizations.iter().filter(|r| r.terms.iter().any(|t| t == term)).map(|r| format!("{}.{}", r.cell, r.signal)).collect();
+            if about.len() < 3 || by.len() < 3 { continue; }
+            report.questions.push(Question {
+                id: format!("broad-term:{}", term),
+                text: format!("`{}` is realized by {} signals and {} rules in sentences speak of it: each of those signals owes each of those rules ({} debts). Does every one of them owe every one — or is the term too broad, and to be split so that a signal owes only what concerns it?", term, by.len(), about.len(), by.len() * about.len()),
+                fact: format!("{} signals, {} rules", by.len(), about.len()), rules: about, signals: by,
+            });
+        }
+    }
+
     report
 }
 
@@ -1725,6 +1839,8 @@ pub fn render(loaded: &Loaded, report: &Report, lock: &Result<Option<String>, ()
             report.rules.iter().filter(|s| s.tests.is_empty()).count()));
         out.push_str(&format!("{} of the program's {} `require` serve a rule\n", report.requires_under, report.requires));
         if let Some(note) = owed_note(report) { out.push_str(&format!("{}\n", note)); }
+        let open = open_questions(loaded, report).len();
+        if open > 0 { out.push_str(&format!("○ {} question{} for the owner of the law — `soma law <file> --questions`\n", open, if open == 1 { "" } else { "s" })); }
     }
     out
 }
@@ -1789,6 +1905,10 @@ pub fn json(loaded: &Loaded, report: &Report, lock: &Result<Option<String>, ()>)
         })).collect::<Vec<_>>(),
         "todo": loaded.errors.iter().cloned().chain(report.issues.iter().map(|i| i.message.clone())).chain(evidence_lines(report)).collect::<Vec<_>>(),
         "hints": report.hints,
+        "questions": report.questions.iter().map(|q| serde_json::json!({
+            "id": q.id, "text": q.text, "fact": q.fact, "rules": q.rules, "signals": q.signals,
+            "open": !loaded.decisions.iter().any(|d| d.question == q.id && (d.fact.is_empty() || d.fact == q.fact)),
+        })).collect::<Vec<_>>(),
         "owed": report.owed.iter().map(|o| serde_json::json!({"rule": o.rule, "signal": o.signal})).collect::<Vec<_>>(),
         "requires": report.requires, "requires_under": report.requires_under,
     })

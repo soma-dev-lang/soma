@@ -186,6 +186,8 @@ pub struct Program2<'a> {
     records: HashMap<String, Vec<(String, Ty)>>,
     /// sum type → the named fields any of its variants declares
     sums: HashMap<String, Vec<(String, Ty)>>,
+    /// a variant of a sum type → its own named fields (a variant name two types share has none)
+    variants: HashMap<String, Vec<(String, Ty)>>,
     variant_of: HashMap<String, String>,
     handlers: HashMap<String, Vec<Sig>>,
     cells: HashSet<String>,
@@ -226,7 +228,7 @@ impl<'a> Program2<'a> {
 
     fn build(program: &Program, strict_absence: bool) -> Self {
         let mut p = Program2 {
-            records: HashMap::new(), sums: HashMap::new(), variant_of: HashMap::new(),
+            records: HashMap::new(), sums: HashMap::new(), variants: HashMap::new(), variant_of: HashMap::new(),
             handlers: HashMap::new(), cells: HashSet::new(), expected_to_fail: HashSet::new(), strict_absence, _p: std::marker::PhantomData,
         };
         // names first (a field may be of a type declared later)
@@ -254,6 +256,9 @@ impl<'a> Program2<'a> {
                     // a variant name two types share names neither
                     if p.variant_of.insert(var.node.name.clone(), cell.name.clone()).is_some() {
                         p.variant_of.insert(var.node.name.clone(), String::new());
+                        p.variants.remove(&var.node.name);
+                    } else if let VariantFields::Struct(fs) = &var.node.fields {
+                        p.variants.insert(var.node.name.clone(), fs.iter().map(|(n, t)| (n.clone(), to_ty(&t.node))).collect());
                     }
                     if let VariantFields::Struct(fs) = &var.node.fields {
                         for (n, t) in fs {
@@ -341,7 +346,7 @@ impl<'a> Program2<'a> {
                 Section::Memory(m) => for inv in &m.invariants {
                     let empty = HashMap::new();
                     let mut cx = Cx {
-                        p: self, cell: &cell.name, slots: &empty, scopes: vec![HashMap::new()],
+                        p: self, cell: &cell.name, slots: &empty, slot_keys: &empty, scopes: vec![HashMap::new()],
                         reassigned: HashSet::new(), index_set: HashSet::new(), in_try: 0, out: &mut out,
                         handler: "", ret: None,
                     };
@@ -367,9 +372,15 @@ impl<'a> Program2<'a> {
         let mut out = Vec::new();
         if !matches!(cell.kind, CellKind::Cell | CellKind::Agent) { return out; }
         let mut slots: HashMap<String, Ty> = HashMap::new();
+        let mut slot_keys: HashMap<String, Ty> = HashMap::new();
         for s in &cell.sections {
             if let Section::Memory(m) = &s.node {
-                for slot in &m.slots { slots.insert(slot.node.name.clone(), self.ty(&slot.node.ty.node)); }
+                for slot in &m.slots {
+                    slots.insert(slot.node.name.clone(), self.ty(&slot.node.ty.node));
+                    if let TypeExpr::Generic { name, args } = &slot.node.ty.node {
+                        if name == "Map" && args.len() == 2 { slot_keys.insert(slot.node.name.clone(), self.ty(&args[0].node)); }
+                    }
+                }
             }
         }
         for s in &cell.sections {
@@ -394,7 +405,7 @@ impl<'a> Program2<'a> {
                 .and_then(|sigs| sigs.iter().find(|sg| sg.cell == cell.name))
                 .and_then(|sg| sg.ret.clone());
             let mut cx = Cx {
-                p: self, cell: &cell.name, slots: &slots, scopes: vec![HashMap::new()],
+                p: self, cell: &cell.name, slots: &slots, slot_keys: &slot_keys, scopes: vec![HashMap::new()],
                 reassigned, index_set, in_try: 0, out: &mut out,
                 handler: name.unwrap_or(""), ret,
             };
@@ -496,6 +507,8 @@ struct Cx<'a, 'b> {
     p: &'a Program2<'b>,
     cell: &'a str,
     slots: &'a HashMap<String, Ty>,
+    /// a `Map<K, V>` slot → K
+    slot_keys: &'a HashMap<String, Ty>,
     scopes: Vec<HashMap<String, Ty>>,
     reassigned: HashSet<String>,
     index_set: HashSet<String>,
@@ -707,7 +720,9 @@ impl<'a, 'b> Cx<'a, 'b> {
         let src = render_expr(&value.node);
         match (an, dn) {
             (Some(a), Some(d)) if a == d => None,
-            (Some(a), Some(d)) => Some((a.to_string(), format!("two nominal types never convert silently: `{d}({}({src}))` if that is meant", leave(actual)))),
+            // two types name two things: the fix is what links them in the
+            // program, not a cast that silences the check and keeps the defect
+            (Some(a), Some(d)) => Some((a.to_string(), format!("{a} and {d} name two different things: get the {d} from what links them in the program (a lookup, a signal) — write `{d}({}({src}))` only if this value already IS a {d}, by construction", leave(actual)))),
             (Some(a), None) => Some((a.to_string(), format!("leave the type: `{}({src})`", leave(actual)))),
             (None, Some(d)) if actual.class() == declared.class() => Some((plain(actual), format!("say what it counts: `{d}({src})`"))),
             (None, Some(_)) => None, // a String for a Lots: the base rules say it
@@ -718,6 +733,16 @@ impl<'a, 'b> Cx<'a, 'b> {
     /// A write into a slot of a nominal type (or of a plain one).
     fn slot_write(&mut self, target: &str, method: &str, args: &[Spanned<Expr>], arg_tys: &[Ty]) {
         if self.lookup(target).is_some() { return; }
+        // the key of a `Map<K, V>` slot: a nominal K is not read or written under another type
+        if let (Some(kt), Some((k, got))) = (self.slot_keys.get(target).cloned(), args.first().zip(arg_tys.first())) {
+            // (a slot keyed by a plain String takes a nominal key: `to_string` is implied there, as it always was)
+            if nominal(&kt).is_some() && matches!(method, "get" | "set" | "put" | "has" | "contains" | "delete" | "remove") {
+                if let Some((is, fix)) = self.nominal_fit(k, got, &kt) {
+                    let msg = format!("`{target}.{method}({}{})`: the key is {is} and the keys of `{target}` are {} — {fix}", render_expr(&k.node), if args.len() > 1 { ", …" } else { "" }, kt.name());
+                    self.nominal_issue(k.span, msg);
+                }
+            }
+        }
         let (Some(slot), Some((v, vt))) = (self.slots.get(target).cloned(), args.last().zip(arg_tys.last())) else { return };
         let elem = match (&slot, method, args.len()) {
             (Ty::Map(e), "set" | "put", 2) | (Ty::List(e), "push", 1) | (Ty::List(e), "set", 2) => (**e).clone(),
@@ -1309,6 +1334,19 @@ impl<'a, 'b> Cx<'a, 'b> {
                         }
                     }
                     return Ty::Record(type_name.clone());
+                }
+                // a variant of a sum type (`Operation { who: c }`): its fields are
+                // declared too — a nominal type does not enter one unseen
+                if let Some(decl) = self.p.variants.get(type_name).cloned() {
+                    for ((fname, value), vt) in fields.iter().zip(&tys) {
+                        if matches!(value.node, Expr::Literal(_)) { continue; }
+                        if let Some((_, ft)) = decl.iter().find(|(f, _)| f == fname) {
+                            if let Some((is, fix)) = self.nominal_fit(value, vt, ft) {
+                                let msg = format!("{type_name} {{ {fname}: … }}: `{}` is {is} but the field is declared {} — {fix}", render_expr(&value.node), ft.name());
+                                self.nominal_issue(value.span, msg);
+                            }
+                        }
+                    }
                 }
                 match self.p.variant_of.get(type_name) {
                     Some(t) if !t.is_empty() => {

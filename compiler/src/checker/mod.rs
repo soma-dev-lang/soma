@@ -16,6 +16,7 @@ pub mod capabilities;
 pub mod cost;
 pub mod effects;
 pub mod frame;
+pub mod fidelity;
 pub mod flesh;
 pub mod conform;
 pub mod lock;
@@ -916,6 +917,16 @@ impl<'a> Checker<'a> {
                 }
             }
             for (message, span) in found { self.warnings.push(CheckWarning::HabitWarning { message, span }); }
+        }
+        // RFC 0006: `entry`, `internal`, `held` — what the declarations get
+        // wrong, and what they show on the frames
+        if !self.maps_pass {
+            let dir = self.source.as_ref().map(|(file, _)| crate::project::root(std::path::Path::new(file)))
+                .unwrap_or_else(|| std::path::PathBuf::from("."));
+            for issue in fidelity::issues(program, &dir) {
+                if issue.warning { self.warnings.push(CheckWarning::HabitWarning { message: issue.message, span: issue.span }); }
+                else { self.errors.push(CheckError::Static { kind: issue.kind, message: issue.message, span: issue.span }); }
+            }
         }
         // 3.0: durable waits — where an `await` may stand
         for issue in waits::check_program(program) {

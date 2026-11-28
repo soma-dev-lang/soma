@@ -15,7 +15,7 @@ import subprocess
 import threading
 
 __all__ = ["load", "Program", "SomaError", "LoadError", "Variant"]
-__version__ = "3.6.3"
+__version__ = "4.0.0"
 
 _INT53 = (1 << 53) - 1
 

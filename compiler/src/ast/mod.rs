@@ -381,6 +381,11 @@ pub struct FrameDecl {
     /// `silent "why"`: the signal is no action of the law (`Some("")`: the
     /// reason is missing).
     pub silent: Option<String>,
+    /// RFC 0006. `entry`: the signal is called from outside the program.
+    pub entry: bool,
+    /// `internal "why"`: called only by signals of the program, on an entity
+    /// the caller already holds (`Some("")`: the reason is missing).
+    pub internal: Option<String>,
 }
 
 /// A rule between machines stated on an edge of a frame (see `FrameDecl`).
@@ -429,6 +434,17 @@ pub struct Param {
 pub struct MemorySection {
     pub slots: Vec<Spanned<MemorySlot>>,
     pub invariants: Vec<Spanned<Expr>>,
+    /// RFC 0006: `held s from a, Other.b by f` — derived slots
+    pub held: Vec<Spanned<HeldDecl>>,
+}
+
+/// `held <slot> from <sources> by <signal>`: the slot is derived — `by`
+/// rebuilds it from the sources (`Cell.slot`: a slot of another cell).
+#[derive(Debug, Clone)]
+pub struct HeldDecl {
+    pub slot: String,
+    pub sources: Vec<String>,
+    pub by: String,
 }
 
 #[derive(Debug, Clone)]

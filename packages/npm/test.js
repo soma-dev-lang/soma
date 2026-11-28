@@ -14,7 +14,7 @@ async function kindOf(f) {
 
 (async () => {
   const app = await load(program);
-  assert.ok(app.version.startsWith('3.'), app.version);
+  assert.ok(['3', '4'].includes(app.version.split('.')[0]), app.version);
   assert.deepStrictEqual(app.handlers().Ledger.debit, { params: [{ name: 'amount', type: 'Int' }], returns: 'Int' });
 
   // typed values in and out

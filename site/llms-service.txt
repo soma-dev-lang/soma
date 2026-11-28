@@ -19,7 +19,7 @@ below is current for the binary named in https://soma-lang.dev/version.json.
 - [llms-service.txt](https://soma-lang.dev/llms-service.txt): this file + [guarantees](https://soma-lang.dev/docs/guarantees.md) (proven / enforced / not covered) + [serving](https://soma-lang.dev/docs/serving.md) (routing, exposure, atomicity) + [operations](https://soma-lang.dev/docs/operations.md) (what kills the process, ports, exit codes, HTTP statuses, limits, Linux deploy) + every gotcha — what a service needs, ~100 KB
 - [llms-full.txt](https://soma-lang.dev/llms-full.txt): this file + full reference + every gotcha + every builtin, one fetch (~130 KB)
 - [llms-agents.txt](https://soma-lang.dev/llms-agents.txt): LLM agents — tools, capabilities, [task], hordes, budgets, mocks (`soma docs agents`); [llms-native.txt](https://soma-lang.dev/llms-native.txt): the `[native]` vocabulary, limits and costs (`soma docs native`)
-- [llms-skeleton.txt](https://soma-lang.dev/llms-skeleton.txt): large programs — `skeleton` / `flesh`, frames, holes, the brief, skeleton.lock (`soma docs skeleton`)
+- [llms-skeleton.txt](https://soma-lang.dev/llms-skeleton.txt): large programs — `skeleton` / `flesh`, frames (`entry` / `internal`, `held`), holes, the brief, skeleton.lock, one law at a time (`--law`), the last line of `check`: what was NOT judged (`soma docs skeleton`)
 - [llms-law.txt](https://soma-lang.dev/llms-law.txt): business rules outside the code — the `.law` file, `realizes` / `under` / `exempt`, `soma law` (`soma docs law`)
 - before WRITING a layer, its one-screen page: `soma docs law --brief` ([llms-law-brief.txt](https://soma-lang.dev/llms-law-brief.txt)), `soma docs skeleton --brief` ([llms-skeleton-brief.txt](https://soma-lang.dev/llms-skeleton-brief.txt)), `soma docs flesh`; `soma init --law demo`: a whole project under a law to imitate
 - [llms-releases.txt](https://soma-lang.dev/llms-releases.txt): what each release changed, newest first (`soma docs releases`)
@@ -33,7 +33,7 @@ below is current for the binary named in https://soma-lang.dev/version.json.
 
 ## Pick Soma when / skip it when
 
-Current release: 3.6.3 (a brief with a budget, `soma verify --properties`) — 3.6.2: what a skeleton does not state (`soma doctor --program`; `soma init --law`) — 3.6.1: a skeleton under a law runs before any body — 3.6: a rule is exposed to refutation (`soma refute`, `soma attack`); after 3.5's formal law and derived guards, 3.4's method (`soma next`, `soma fill`), 3.3's
+Current release: 4.0.0 (a verdict says what it did NOT judge; `soma next` can say "this is the owner's"; one law at a time, `--law`) — 3.6.3: a brief with a budget, `soma verify --properties` — 3.6.2: what a skeleton does not state (`soma doctor --program`; `soma init --law`) — 3.6.1: a skeleton under a law runs before any body — 3.6: a rule is exposed to refutation (`soma refute`, `soma attack`); after 3.5's formal law and derived guards, 3.4's method (`soma next`, `soma fill`), 3.3's
 law, 3.2's nominal types and 3.1's skeleton first. What each release changed: `soma docs releases`.
 
 Pick it when the task has a lifecycle or a limit that must hold: payments,
@@ -219,7 +219,7 @@ match r {
 // client cannot pick one (`_type`/`_variant` are refused).
 // NOMINAL type = what a number counts: `cell type Lots = Int` (or Float / String),
 //   `cell type Cents = Int`; then `lots + price`, `lots <= MAX_CENTS`, `lots * price`, a Cents
-//   passed or stored where Lots is declared, a plain Int variable where Lots stands: E0122.
+//   passed, stored, put in a field (of a record or of a variant) or used as the key of a `Map<Lots, …>` where Lots is declared: E0122.
 //   Literals take the other side's type (`q <= 50`, `?? 0`); `Lots(n)` enters, `to_int(q)` leaves;
 //   `const MAX = Lots(50)` keeps its type. `where value >= 0 && value <= 50` on the type becomes
 //   requires / ensures / slot invariants verify proves. Erased after check: an Int at run time.
@@ -863,6 +863,12 @@ soma skeleton app.cell Cell.signal     # a hole: its brief
 soma fill app.cell Cell.signal         # write that body (on stdin); it is checked
 ```
 
+`next` can also say **stop**: when all that is left waits for an answer of
+the owner of the law, it answers `question` and exits 3. That is not a task:
+report the question, do not answer it in the code. (`soma law app.cell
+--questions` lists them; the owner answers in the law or in
+`decisions.toml`, and locks.)
+
 `next` draws from an ordered queue: a gap in the agent's setup (`soma
 doctor`), an error of `check`, a failure of `verify`, what the law still
 asks, the next hole, a failing test — then `complete`. The order is the
@@ -915,6 +921,26 @@ writes under the law without saying which action it is does not check. When
 a rule stays a sentence — a batch, a separation of roles, a deadline — a
 refusal tagged with it is a claim, and the rule is as good as its tests,
 written red first.
+
+## A green check is not a faithful program
+
+On a billing system rewritten under a law of 419 rules, `soma check` said
+"no errors" and `soma verify` said `VERIFY OK`; a rule-by-rule rereading by
+agents who had not written the skeleton found 116 rules misrepresented. The
+toolchain holds a program to what was written, not to what was meant. So:
+
+- the last line of `check` and of `verify` says what holds AND what was not
+  judged (`fidelity not judged: 334 rules in sentences, 26 silent signals,
+  …`). That line is the result; "no errors" is not;
+- what the frames can show without a body is shown: a signal nobody calls,
+  an event nobody hears, an `entry` that reaches an entity without the
+  rules that guard it, a `held` slot that can go stale. On that project it
+  would have caught a fifth to a quarter of the gaps. The rest needs a
+  reader;
+- **have it reread by someone who did not write it**, rule by rule, with
+  the instruction to look for the gap. A report is not a proof;
+- work **one law at a time** (`--law lois/x.law` on every command): a
+  perimeter you can read whole, instead of a program you can only count.
 
 ## For the person who answers for the program
 
@@ -1328,6 +1354,8 @@ The frame, clause by clause (after the return type and any `requires` /
 | `reads a, b` | reading memory slots `a`, `b`; a machine name (`reads flow`, `reads Cell.flow`) grants `get_status` / `has_state` / `valid_transitions` |
 | `writes a` | writing — and reading — slot `a` |
 | `moves s -> t, u -> v` | taking those edges (and reading the machine). `moves Cell.machine: s -> t` for another cell's machine; `moves * -> t` any edge into `t`; `moves * -> *` any edge (a `transition(id, target)` whose target is computed). `transition(id, "t")` without a source takes whichever edge into `t` the instance is on: the frame must list them ALL — or the body names the one it means, `transition(id, "s", "t")` |
+| `entry` | the signal is called from outside the program: it takes nothing for granted. An `entry` that takes an entity the law guards (one a formal rule's action takes) must `realizes` an action of the law on it, or have a signal that does in its `calls` — otherwise it is a second path (a warning) |
+| `internal "why"` | only signals of the program call it, on something the caller already holds; the reason is required (E0143). One that no signal has in its `calls` is a warning. A signal says `entry` or `internal`, not both (E0142); one that says neither is counted on the last line of `soma check` |
 | `calls f, Cell.g, think` | calling signal `f` of the same cell, signal `g` of `Cell`, and builtins that have an effect or an answer that varies (`think`, `now`, `random`, `http_get`, `set_budget`, `next_id`, … — the ✗ ones of `soma describe --builtins`, plus the effectful ones) |
 | `emits s` | `emit s(…)`. An emit runs every handler `on s` of the program: a listener that is a signal answers for what it does with its own frame; a private helper cannot listen (emitting `_helper` is refused) |
 
@@ -1424,8 +1452,11 @@ soma refs     app.cell Orders.place [--json]   # where it is declared, where its
 soma rename   app.cell Orders.place submit [--dry-run]   # the declaration, the body, every call, frame clause and test; an event is renamed in every cell that hears it
 soma check .                            # the project gate: the entry file and every test file (parts are checked through the entry)
 soma holes    app.cell [Cell] [--json]  # signals with no body yet, by cell, numbered in the order to write them (callees first)
-soma next     app.cell [--cell C] [--json]   # the ONE thing to do now: an error of check, a failure of verify, what the law asks,
-                                        #   the next hole, a failing test — or `complete`; exit 0 only when complete
+soma next     app.cell [--cell C] [--json]   # the ONE thing to do now, from a queue: the agent's setup, an error of check, a
+                                        #   failure of verify (or a rule refuted), before the freeze what the skeleton does not
+                                        #   state (one at a time), what the law asks, the next hole, a failing test — `complete`.
+                                        #   Exit 0 complete · 1 something for you · 2 the program does not load · 3 all that is
+                                        #   left waits for the OWNER of the law (`kind: question`): stop, and report it
 soma fill     app.cell Orders.place [--json] # write that ONE body (given on stdin, or --body-file) in the flesh of its cell, then
                                         #   return the diagnostics of that signal alone, its frame, the holes left. It changes
                                         #   no skeleton, no other handler, no law; a body that does not parse writes nothing
@@ -1449,6 +1480,36 @@ soma init --skeleton myapp              # a starter laid out this way, with one 
 soma init --law demo                    # a whole small project under a law, to imitate: law, typed skeleton, flesh, tests
 soma docs flesh                         # one page: the syntax a body needs — give it, with the brief, to whoever fills a hole
 ```
+
+A derived slot is declared in `memory`: `held balance from lines, Other.rates by recompute` — `recompute`
+rebuilds `balance` from those sources. A signal that writes a source must be the holder or have it in its
+`calls` (a warning otherwise: the slot goes stale); nothing but the holder writes the held slot; a `held`
+that names what does not exist is E0144. The brief of each signal concerned says it (`held  after writing
+`lines`, call `recompute``).
+
+**The last line of `soma check` and of `soma verify` says what was NOT judged**, for a program under a law or
+with a skeleton: `conforms to its frames and to the formal rules of its law — fidelity not judged: 12 rules
+in sentences (no tool reads them), 3 silent signals, 0 signals neither entry nor internal, 1 signal nobody
+calls, 0 events nobody hears, 0 slots read only by their writers, 0 second paths, 0 held states that can go
+stale`. Every number is there, zero included; `not_judged` in `--json`. A green check is not a faithful
+program: that line is what to report.
+
+**One law at a time.** A large program does not fit in what you can read; a law does. `--law <file>` (a
+file of soma.toml `[law] files`) restricts a command to the perimeter of that law — its rules, the signals
+that serve, owe or are exempt from one of them, their cells:
+
+```
+soma skeleton app.cell --index --law lois/billing.law   # the perimeter on one screen, and its FRONTIER: what its signals
+                                                        #   call outside, each with its signature and [hole] or [body];
+                                                        #   and the signals outside that write a source of a slot held inside
+soma next   app.cell --law lois/billing.law             # the one thing to do, in that perimeter and nowhere else
+soma check  app.cell --law lois/billing.law             # the warnings that speak of it (errors stay, all), and ITS last line
+soma verify app.cell --law lois/billing.law             # the machines and contracts of its cells, and its verdict
+soma law    app.cell --law lois/billing.law             # its rules only
+soma doctor --program app.cell --law lois/billing.law   # what the skeletons of the perimeter do not state
+```
+
+Take a domain to the end of the three layers, tests included, before the next one. The freeze stays global.
 
 The loop for a large program: read `soma docs skeleton --brief` → write the
 skeletons → `soma check` (every frame names things that exist; an edge no
@@ -1798,6 +1859,45 @@ broad — that is said to the owner of the law, not exempted one by one.
 `soma docs law --brief` is one screen: what a good law contains. Read it
 before writing one. `soma init --law demo` is a whole project to imitate.
 
+## Questions for the owner, and where the owner answers
+
+Some things are decidable on the law and the frames and are NOT tasks for
+whoever writes the program. `soma law app.cell --questions` lists them, and
+exits 3 while one is open:
+
+- `silent-state:<state>` — a state of the law that only `silent` signals
+  change: is one of them a business act the law should name?
+- `broad-term:<term>` — a term that three signals or more realize and three
+  rules in sentences or more speak of: does each signal owe each rule, or is
+  the term to be split?
+  (Three and three are a choice, not a measure: no project has told yet
+  where a term starts to be too broad.)
+
+The owner answers in the law (name the action, split the term: the question
+closes at the next lock), or writes "it is meant" in `decisions.toml`
+beside the laws:
+
+```
+[[decision]]
+question = "silent-state:closed"
+answer   = "Closing is bookkeeping: no action of the law."
+by       = "finance"
+date     = "2026-11-28"
+fact     = "Shop.close"
+```
+
+`law.lock` holds that file like a law: a decision is not in force until
+the lock holds it, and a question reopens when the fact it answered
+changes. You do not write a decision and you do not lock: the answer is the
+owner's. **Nothing enforces that today**: `soma law --lock` runs for anyone,
+so an agent could answer in the owner's name and lock. The file is short
+and dated, and a change to it changes the fingerprint of the law — that is
+all that makes it visible. Whom a lock belongs to is a proposal (RFC 0005, not
+published yet), not decided. While a question is
+open, `soma next` does not hand out the rules and the holes that wait for
+it; when all that is left waits, it answers `question` and exits 3 — stop,
+and report the question.
+
 ## When the law is silent or wrong
 
 Do not add a rule in the code, and do not `exempt` a signal to make the
@@ -1929,6 +2029,25 @@ it says "error kind X", raise it with `require … else X "…"` or `fail`.
 
 > Newest first. The language itself: https://soma-lang.dev/llms.txt (`soma docs agent`).
 > Every fix and its compatibility note: https://soma-lang.dev/CHANGELOG.md.
+
+Soma 4.0.0: Soma never lets an agent believe it is done. (A) THE VERDICT
+SAYS WHAT WAS NOT JUDGED: for a program under a law or with a skeleton, the
+last line of `soma check` and of `soma verify` is `conforms … — fidelity not
+judged: N rules in sentences (no tool reads them), N silent signals, N
+signals neither entry nor internal, N signals nobody calls, N events nobody
+hears, N slots read only by their writers, N second paths, N held states
+that can go stale` — report THAT line, not "no errors". Three clauses say
+what a skeleton only said in comments: `entry` (called from outside),
+`internal "why"` (only by signals of the program), and in `memory` `held
+slot from sources by signal` (a derived slot). (B) `soma next` CAN SAY
+STOP: exit 0 complete, 1 something for you, 2 the program does not load, 3
+all that is left waits for the OWNER of the law (`kind: question`) — `soma
+law --questions` lists them; the owner answers in the law or in
+`decisions.toml`, held by `law.lock`. (C) ONE LAW AT A TIME: `--law
+lois/x.law` on check, verify, law, next, skeleton --index and doctor
+--program restricts the command to that law's rules, signals and cells;
+`soma skeleton app.cell --index --law …` shows the perimeter and its
+frontier. Not in it: roles (who may move a lock) — RFC 0005.
 
 Soma 3.6.3: where an agent is given too much. A BRIEF has a budget: of a
 signal it calls, a body is shown the signature, the first sentence of its

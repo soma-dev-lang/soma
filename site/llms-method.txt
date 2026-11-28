@@ -105,6 +105,12 @@ soma skeleton app.cell Cell.signal     # a hole: its brief
 soma fill app.cell Cell.signal         # write that body (on stdin); it is checked
 ```
 
+`next` can also say **stop**: when all that is left waits for an answer of
+the owner of the law, it answers `question` and exits 3. That is not a task:
+report the question, do not answer it in the code. (`soma law app.cell
+--questions` lists them; the owner answers in the law or in
+`decisions.toml`, and locks.)
+
 `next` draws from an ordered queue: a gap in the agent's setup (`soma
 doctor`), an error of `check`, a failure of `verify`, what the law still
 asks, the next hole, a failing test — then `complete`. The order is the
@@ -157,6 +163,26 @@ writes under the law without saying which action it is does not check. When
 a rule stays a sentence — a batch, a separation of roles, a deadline — a
 refusal tagged with it is a claim, and the rule is as good as its tests,
 written red first.
+
+## A green check is not a faithful program
+
+On a billing system rewritten under a law of 419 rules, `soma check` said
+"no errors" and `soma verify` said `VERIFY OK`; a rule-by-rule rereading by
+agents who had not written the skeleton found 116 rules misrepresented. The
+toolchain holds a program to what was written, not to what was meant. So:
+
+- the last line of `check` and of `verify` says what holds AND what was not
+  judged (`fidelity not judged: 334 rules in sentences, 26 silent signals,
+  …`). That line is the result; "no errors" is not;
+- what the frames can show without a body is shown: a signal nobody calls,
+  an event nobody hears, an `entry` that reaches an entity without the
+  rules that guard it, a `held` slot that can go stale. On that project it
+  would have caught a fifth to a quarter of the gaps. The rest needs a
+  reader;
+- **have it reread by someone who did not write it**, rule by rule, with
+  the instruction to look for the gap. A report is not a proof;
+- work **one law at a time** (`--law lois/x.law` on every command): a
+  perimeter you can read whole, instead of a program you can only count.
 
 ## For the person who answers for the program
 

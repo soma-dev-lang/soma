@@ -187,13 +187,22 @@ pub fn note(path: &PathBuf) -> Option<String> {
 }
 
 /// `soma doctor --program app.cell [--json]`. Exits 0: nothing here is an error.
-pub fn cmd_mirror(path: &Path, json: bool) {
+pub fn cmd_mirror(path: &Path, json: bool, law: Option<&str>) {
     let path = path.to_path_buf();
     if !path.is_file() {
         eprintln!("error: {}: no such program — `soma doctor --program app.cell`", path.display());
         std::process::exit(4);
     }
-    let m = mirror(&path);
+    let mut m = mirror(&path);
+    // RFC 0006, part C: what the skeletons of one law's perimeter do not state
+    let mut perimeter = String::new();
+    if let Some(l) = law {
+        let sc = super::scope::scope_or_exit(&path, l);
+        m.gaps.retain(|g| sc.has_signal(&g.target) || g.target.split_once('.').is_some_and(|(c, _)| sc.cells.contains(c) && g.kind == "no_invariant"));
+        m.law_hints.retain(|h| sc.signals.iter().any(|s| h.contains(s.as_str())));
+        m.lines.clear();
+        perimeter = format!(" — in the perimeter of the law {} ({} signals in {} cells)", sc.law, sc.signals.len(), sc.cells.len());
+    }
     if json {
         println!("{}", serde_json::to_string_pretty(&serde_json::json!({
             "schema": "soma.mirror/1", "program": path.display().to_string(), "skeletons": m.skeletons,
@@ -207,7 +216,7 @@ pub fn cmd_mirror(path: &Path, json: bool) {
         println!("{} has no `skeleton`: its cells hold their own handlers, and this mirror reads skeletons (`soma skeleton {} --split` rewrites a program as skeleton + flesh)", path.display(), path.display());
         return;
     }
-    println!("What {} uses of the language ({} skeleton{}):\n", path.display(), m.skeletons, if m.skeletons == 1 { "" } else { "s" });
+    println!("What {} uses of the language ({} skeleton{}){}:\n", path.display(), m.skeletons, if m.skeletons == 1 { "" } else { "s" }, perimeter);
     for (k, v) in &m.lines { println!("  {:<11} {}", k, v); }
     if m.gaps.is_empty() {
         println!("\nNothing a skeleton usually states is missing.");

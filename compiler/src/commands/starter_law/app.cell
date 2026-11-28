@@ -1,6 +1,7 @@
 // A shop's payments, under the law in lois/payments.law.
 // This file is the SKELETON: what is stored, the lifecycle, and for each
-// signal what its body may touch. The bodies are in lib/shop.cell.
+// signal who calls it (`entry`: from outside; `internal`: only signals of
+// the program) and what its body may touch. The bodies are in lib/shop.cell.
 use lib::shop
 
 cell type Order = String                       // an order, by its id
@@ -29,24 +30,28 @@ skeleton Shop {
     face {
         // Takes `n` cents on order `o`. Returns what is captured so far.
         signal capture(o: Order, n: Cents) -> Cents
+            entry
             writes taken
             realizes Capture(o, n)
             ensures result >= n
 
         // Gives `n` cents back on order `o`, for `reason`. Returns what is refunded so far.
         signal refund(o: Order, n: Cents, reason: String) -> Cents
+            entry
             requires n > 0
-            reads taken
             writes back, journal
+            calls refundable
             realizes RefundOf(o, n), Refund
 
         // Closes order `o`: nothing more happens on it.
         signal close(o: Order) -> String
+            entry
             moves open -> closed
             realizes Closing(o)
 
         // What is left to refund on order `o`.
         signal refundable(o: Order) -> Cents
+            internal "the caller holds the order: `refund` asks before it gives back"
             reads taken, back
     }
 }
@@ -69,7 +74,6 @@ cell test NeverMoreThanCaptured under "PAY-03" {
         assert Shop.capture("o3", 500) == 500
         assert Shop.refund("o3", 200, "damaged") == 200
         assert_fails Shop.refund("o3", 400, "again") matching "TooMuch"
-        assert Shop.refundable("o3") == 300
     }
 }
 
