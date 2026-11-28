@@ -94,6 +94,8 @@ The current release is **Soma 3.6.2** ([release notes](/changelog/3.6.2)). Soma 
 </style>
 <a class="feat" href="/orbite"><span class="k">Case study · Orbite</span><span class="t">Who moves? The protocol fits in 1,923 lines of Soma — its safety rules proven on the real code, in two seconds.</span><span class="d">When two satellites are about to collide, exactly one must move. Orbite settles it with rules borrowed from the sea; <code>soma verify</code> proves its 13 safety rules on the real code, bodies included. Around it, twenty AI agents built the 69,000-line institution. Replayed on the 2019 Aeolus–Starlink near-miss, it decides three days before the closest approach — where ESA had to act alone.</span><span class="n"><span class="a"><b>1,923</b>lines: the protocol</span><span class="a"><b>13 / 13</b>rules proven, bodies included</span><span><b>1.8 s</b>to verify</span><span><b>69,150</b>lines around it, by 20 agents</span><span class="a"><b>−69 h</b>decision in the 2019 replay</span></span><span class="go">Read the case study, then download it and check it yourself →</span></a>
 
+<a class="feat" href="/field-report"><span class="k">Field report · by the agent · in progress</span><span class="t">“The compiler said there was no error. A rule-by-rule rereading found 116.”</span><span class="d">An AI agent is rewriting Kill Bill, an open-source billing system, in Soma: a law of 419 rules, a skeleton of 230 signals, no body yet. Its own account — what the language did for it, what it did not tell it, and the mistakes it made.</span><span class="n"><span class="a"><b>419</b>rules in the law</span><span class="a"><b>84</b>refusals written by no one</span><span class="a"><b>69</b>properties proven before any code</span><span><b>116</b>gaps the compiler did not see</span></span><span class="go">Read the agent's account, mistakes included →</span></a>
+
 ## Every error says how to fix it
 
 Agents bring habits from other languages. Soma stops them before anything runs, and tells the agent what to write instead:
@@ -312,10 +314,10 @@ The agent works below that line and cannot move it. It writes one operation at a
 ## Where to start
 
 <div class="grid">
+<div class="card"><h3><a href="/field-report">A field report, by the agent</a></h3><p>Rewriting a billing system under a law of 419 rules: what Soma did, what it did not say, the agent's mistakes.</p></div>
 <div class="card"><h3><a href="/orbite">Orbite: a case study</a></h3><p>Space traffic coordination: a 1,923-line protocol proven whole, and 69,000 lines written by 20 agents around it.</p></div>
 <div class="card"><h3><a href="/learn/">Learn Soma in seven lessons</a></h3><p>Each lesson is a program, the commands run on it, and what they printed.</p></div>
 <div class="card"><h3><a href="/guide/method">The method</a></h3><p>Law, skeleton, flesh: the order of work with a coding agent, and what each step establishes.</p></div>
-<div class="card"><h3><a href="#under-the-hood-what-works-means-here">Under the hood</a></h3><p>The idea underneath: refinement, proofs, and claims exposed to refutation.</p></div>
 <div class="card"><h3><a href="/guide/language">The language guide</a></h3><p>The whole core language on one page: what <code>soma docs agent</code> prints.</p></div>
 <div class="card"><h3><a href="/reference/">Reference</a> and <a href="/builtins/">builtins</a></h3><p>Every construct, and every builtin with its exact signature.</p></div>
 <div class="card"><h3><a href="/programs/">327 verified programs</a></h3><p>Payments, interlocks, medical devices, games, agents: source and the toolchain's real output.</p></div>
